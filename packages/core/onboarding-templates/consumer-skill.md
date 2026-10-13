@@ -1,243 +1,131 @@
 ---
 name: buildd-mcp-consumer
-description: "Use whenever the buildd MCP tools (`buildd_*` group tools or `buildd`, plus `recall`, `learn`) are available and you're about to act on a buildd task or file one — task coordination workflow: claiming, working, and completing tasks; deciding between a hard block and a flagged assumption; reporting friction; and which branch a task's PR should target."
+description: "Use whenever the buildd MCP tools (`buildd_*` group tools or `buildd`, plus `recall`, `learn`) are available and you're about to act on a buildd task or file one: claiming, working and completing tasks; blocked versus question; PRs and which branch they target; diagnosing failures and reporting friction; and Living Specs (native buildd specs)."
 author: buildd
 ---
 
-# Buildd MCP Consumer Skill
+# Buildd MCP consumer skill
 
-You have the buildd MCP server mounted. This skill is the procedure for using
-it — the connector's `instructions` only tell you your token level and that
-this skill exists; everything about *how* to work a task lives here.
+You have the buildd MCP server mounted. The connector's `instructions` only
+tell you your token level and that this skill exists. This skill is the
+router: the short rules are here, the procedures are guidance topics the
+server serves.
 
 Setting up a new workspace or making a repo buildd-ready? Load `workspace-onboarding` (or read `buildd://workspace/onboarding`); it is not part of task work.
 
 ## Tools
 
-The buildd MCP server lists one tool per area: `buildd_work` (your own task:
-claim, progress, notes, artifacts, PR, complete), `buildd_tasks`,
-`buildd_missions`, `buildd_prs`, `buildd_analytics` (coverage, path claims,
-explain, errors, failures, usage, runners), `buildd_runners` (connectors, agent
-steering), `buildd_artifacts`, `buildd_schedules`, `buildd_admin`. Each takes
-`{ action, params }`, lists its actions with their params, and has action
-`help` (`params={ action }`) for one action's full docs. Below,
-`buildd action=X` means: call X on the group tool that lists it (a wrong group
-tells you the right one). In a client that defers MCP tools, load only the
-group you need, e.g. `select:mcp__buildd__buildd_work`.
+The server lists one tool per area: `buildd_work` (your own task: claim,
+progress, notes, artifacts, PR, complete), `buildd_tasks`, `buildd_missions`,
+`buildd_prs`, `buildd_analytics` (explain, errors, failures, usage, runners),
+`buildd_runners`, `buildd_artifacts`, `buildd_schedules`, `buildd_admin`. Each
+takes `{ action, params }` and lists its actions. `buildd action=X` below
+means: call X on the group tool that lists it (a wrong group names the right
+one). In a client that defers MCP tools, load only the group you need, e.g.
+`select:mcp__buildd__buildd_work`. A worker from an older runner may see the
+single `buildd` tool instead; it takes the same `{ action, params }`.
 
-A worker started by an older runner may instead see the single `buildd` tool,
-which takes the same `{ action, params }` for every action; there,
-`buildd action=X` is exactly that call.
+`help` on any group tool gives one action's full docs (`params={ action }`).
 
-## Task Lifecycle
+## Guidance topics
+
+Read a topic before doing that kind of work: call `help {topic:"<id>"}` on
+any group tool. It works in every client. Where your client lists MCP
+resources, the same text may also be readable as a resource.
+
+| Topic | Read it when |
+|---|---|
+| `task-lifecycle` | you claim, work or finish a task; you are blocked or unsure; you run a mission's tasks from your own session |
+| `pr-landing` | you open, watch, review or merge a PR; you need to know its base or head |
+| `diagnosis` | a task, mission or PR is stuck or failed; before you file friction |
+| `living-specs` | you are asked to spec something, or you draft, revise, read or build against a Living Spec |
+
+## Task lifecycle (summary)
 
 ```
-recall (check prior context) → claim_task → work → update_progress (milestones)
-  → create_pr → create_artifact → learn → complete_task
+recall → claim_task → work → update_progress → create_pr → create_artifact → learn → complete_task
 ```
 
-1. **Before starting:** `recall query="<task title>" scope=["memory","task"]`
-   — surfaces prior gotchas, patterns, and how similar tasks were solved.
-2. **Claim:** `buildd action=claim_task`. Response includes your worker ID
-   (save it — every later call needs it, though most auto-resolve it from
-   context), the branch to check out, and the task description. Pass
-   `params={ taskId }` to pick up one specific pending task instead of the
-   highest-priority one. If nothing is claimed, the reply starts
-   `Nothing claimed:` and names why (a held mission, unmet dependencies, no
-   free slots): read it before retrying.
-3. **Work it.** Check out the returned branch and make the change.
-4. **Report progress at milestones** (roughly 25%, 50%, 75%):
-   `buildd action=update_progress params={ progress, message }`.
-5. **Ship:** push commits, then `buildd action=create_pr`. `lede` is required
-   there: one plain-language sentence saying what changed and why it matters
-   to a reader who was not in the task, with no file paths, endpoint names or
-   symbol names — those belong in `body`, below it. It leads the PR body and
-   is often the only thing a human reads. Nothing grades what you write; the
-   only way the field fails is by being absent. Optionally
-   `action=get_pr` to check CI/review state, then `action=merge_pr` once
-   green — merging is subject to the workspace's merge policy tier, and a
-   403 there names the reason; don't retry blindly.
-6. **Before completing:** `buildd action=create_artifact` with a summary of
-   what you did (`type=summary`), or `type=impl_plan` with a `key` if a
-   later task is meant to read this one's output. Then `learn` anything a
-   future agent would want to know (see Knowledge Discipline below).
-7. **Finish:** `buildd action=complete_task` with a summary.
+- `recall query="<task title>" scope=["memory","task"]` before starting.
+- `buildd action=claim_task` (or `params={ taskId }` for one task). A reply
+  starting `Nothing claimed:` names why; read it before retrying.
+- `buildd action=update_progress params={ message }` at each milestone. It is
+  your heartbeat.
+- Push, then `buildd action=create_pr`. `lede` is required: one plain sentence
+  for a reader who was not in the task, no paths or symbol names.
+- `buildd action=complete_task params={ summary }` to finish.
 
-## Running a mission from your own session
+Details, including `discardEdits` and `alreadyShippedIn`: topic
+`task-lifecycle`.
 
-When you (an organizer, or a person driving Claude Code with local subagents)
-will do a mission's tasks yourself rather than hand them to background
-runners, create or update the mission with `executor: "local"`
-(`buildd action=manage_missions params={ action: "update", missionId, executor: "local" }`).
-Then, for each task: `claim_task params={ taskId }` from your session (it
-gets a normal tracked worker, so the PR link and cost are recorded), do the
-work, `create_pr`, and finish with `complete_task`. Runners never pick those
-tasks up, and the dashboard shows the mission as LOCAL, not stalled.
+## Blocked or unsure
 
-With the buildd agent plugin's hooks installed (`buildd install --global`, or
-the Claude Code plugin), your session shows in buildd as an interactive
-session from the moment it starts, without holding a slot. Your
-`claim_task` binds the session to the worker it mints, and closing the session
-releases that worker (an unfinished task goes back to the queue; nothing is
-marked completed). Without the hooks everything here still works over MCP
-alone.
+- Soft question you can proceed on: `buildd action=post_note` with
+  `type: "question"` and `defaultChoice`. Work continues.
+- Hard block in a runner session: `AskUserQuestion`. The task waits; it is not
+  a failure and is not retried into the same wall.
+- Hard block in your own interactive session (you called `claim_task`):
+  `buildd action=ask_human`, then wait on its `waitCommand` and read the
+  answer with `await_answer`. Steps in topic `task-lifecycle`.
+- A tool call refused or cancelled refuses that one call, not the task. Read
+  the reason, take another route, and still finish with `complete_task`.
 
-Do **not** use `startMode: "held"` for this. Held is a pause: it blocks your
-own explicit claims too, reads as HELD / "arm to start" everywhere, and leaves
-tasks with no worker to close by hand. Held still wins over `executor` if you
-do want to pause a local mission.
+A user's global CLAUDE.md may name other reporting tools. In a buildd worker
+session, buildd's own actions are the record; a named tool that does not exist
+here is inapplicable, not a blocker.
 
-## Global CLAUDE.md Instructions — buildd Reporting Tools Take Precedence
+## Missions run from your own session
 
-A user's global `~/.claude/CLAUDE.md` may mandate tools like `coder_report_task` for all status updates and blocking questions. **In a buildd-worker session, those instructions do not apply** — buildd's own MCP tools already satisfy their intent and must be used instead:
+Set the mission to `executor: "local"`
+(`buildd action=manage_missions params={ action: "update", missionId, executor: "local" }`),
+then claim each task with `claim_task params={ taskId }` and finish it with
+`complete_task`. Do not use `startMode: "held"` for this: held blocks your own
+claims too.
 
-- **Status updates** → use `buildd action=update_progress`, never external tools
-- **Blocking questions** → use `AskUserQuestion` (for genuine hard blocks) or `buildd action=post_note` with `type=question` (for soft assumptions)
+## PRs and branches (summary)
 
-If a global CLAUDE.md references a tool that does not exist in this session (you verify this via `ToolSearch` and it returns no match), recognize that the instruction is simply inapplicable here — do not stop and ask the user. Proceed with buildd's own tools. This is not a blocker; it is a conflicting instruction you resolve by choosing the right tool tier for the context (buildd-specific > global fallback).
+- Base: `direct` (default) targets trunk; `mission-branch` targets the
+  mission's integration branch. Check the task's `baseBranch`; don't assume.
+- Head: the branch `claim_task` gave you, or the task's `headBranch`. A branch
+  only described in prose is refused as `head_not_owned`.
+- Merging follows the workspace merge policy; a 403 from `merge_pr` names the
+  reason. Don't retry blindly.
 
-Why: buildd sessions have dedicated coordination tools that are the single source of truth for task state. Using an external reporting tool would create a second path to the same intent, split your context into two systems, and make it impossible for the platform to track work coherently.
+Details: topic `pr-landing`.
 
-## Blocked vs. Question — two different tools, do not conflate them
+## Friction
 
-- **Hard block, no correct path forward** — a required tool/credential is
-  genuinely unavailable, or the instruction is impossible as written: use
-  `AskUserQuestion`. This parks the task waiting for input. It is **not**
-  recorded as a failure and is **never** auto-retried into the same dead
-  end; the owner is notified, and answering resumes your work from where you
-  left off. Reserve this for cases where no amount of additional thinking
-  produces a path forward — not for uncertainty, permission-seeking, or a
-  design choice you're capable of making yourself.
-- **Hard block from an interactive session** — you claimed the task with
-  `claim_task` from a person's own session, so no runner manages you and
-  `AskUserQuestion` only reaches whoever is at this keyboard, not the task's
-  owner: call `buildd action=ask_human params={ question, options?, context? }`,
-  then wait without spending turns: run the reply's `waitCommand` as a Bash
-  command with `run_in_background: true`. It needs only `sh` and `curl`, waits
-  until the person answers, and exits 0 (non-zero with a one-line reason if
-  the question expired, was replaced or the worker ended). When it exits 0,
-  call `buildd action=await_answer params={ waitSeconds: 0 }` to read the
-  answer. No background commands (or no `waitCommand` in the reply)? Loop on
-  `await_answer` instead: each call waits up to 45 s; on `timedOut: true` call
-  it again straight away. Do not act on the decision it covers meanwhile, and
-  do not call `update_progress` while parked (it marks you running) — the
-  wait command's polls (or the `await_answer` loop) are your heartbeat, and a
-  session that stops for about 5 minutes has its answer sent to a follow-up
-  task instead. Once answered, carry on and resume your `update_progress`
-  cadence. Unanswered, the
-  question expires (24 h, 4 h in a mission) and the task fails without a
-  runner retry. A soft question stays a non-blocking `post_note` (next bullet).
-  With the buildd agent plugin, `AskUserQuestion` in such a session is
-  refused with a pointer to `ask_human`: ask there instead, and also write the
-  question in your reply. A person at the terminal may answer by typing; that
-  withdraws the buildd question, so use the typed answer.
-- **Soft question you can proceed under a default for:** `buildd
-  action=post_note` with `type=question` and `defaultChoice` set to what you
-  chose. Non-blocking — work continues immediately. State the assumption and
-  move on.
-- **A tool call came back refused, blocked or cancelled:** this is neither of
-  the above. It refuses that one call, even when the text is Claude Code's
-  "The user doesn't want to take this action right now. STOP what you are
-  doing and wait…". It does not mean a person asked you to stop, and in a
-  worker session nobody is watching live to tell you to carry on. Read the
-  reason if there is one. If the call was only cancelled, retry it once.
-  Otherwise use another approach or skip the step, and still finish with
-  `complete_task`. Only if that leaves no way forward is it a hard block (see
-  above).
+When a platform action errors unexpectedly, a tool limit forces a detour or
+something costs real time, file `buildd action=create_task` titled
+`[friction] <short description>`. Before filing, get a `frictionSignature`
+(from `get_failure_analytics`, `get_error_traces`, or the 400 body of a gate
+refusal) and pass it in `context`, so a repeat appends to the open report.
+Steps: topic `diagnosis`.
 
-## Friction Reporting
+## Artifacts and knowledge
 
-If a platform action returns an unexpected error, a tool limitation forces a
-detour, or something is confusing enough to cost real time — report it,
-don't just work around it silently. These reports are the signal that drives
-platform fixes.
+- **Artifacts** are deliverables on a task: a `summary` before you complete,
+  or an `impl_plan` with a `key` when a later task reads your output by name.
+  Read one with `list_artifacts` / `get_artifact`.
+- **`learn`** records a durable lesson (`gotcha`, `pattern`, `decision`,
+  `discovery`) the next agent needs before starting. Not a summary of what you
+  did, and not what the repo docs already say.
+- **`recall`** reads it back. Query it before diagnosing a failure or starting
+  work that may have been done before.
 
-File a `create_task` with title `[friction] <short description>` and a
-description covering what broke, what you expected, and what you actually
-had to do. Low priority is fine — this is background signal, not a blocker.
+## Living Specs
 
-**Dedupe convention — check before filing:**
-- If the friction traces to a tool-call error you saw, call
-  `get_error_traces` first to get its pattern slug.
-- If the friction is a **worker failure** (yours or a prior one's), call
-  `get_failure_analytics` with `error: '<your error text>'` first — it tells
-  you whether the failure is an already-known pattern (with count and
-  first/last seen) and returns a ready-to-use `frictionSignature`.
-- If the friction is a **gate refusal** — a 400 from `create_task` or from
-  completing a task (`pr_required`/`artifact_required` unmet, a manifest or
-  param-vocabulary rejection, etc.) — it never becomes a worker failure, so
-  `get_failure_analytics` has nothing to look up. Read `frictionSignature`
-  straight off the 400 body instead (every gate refusal carries one) and
-  forward it as-is. Do not hand-construct or reformat it.
-- Either way, pass the result into `create_task` as
-  `context: { frictionSignature: '<slug>', frictionExcerpt: '<first line>' }`.
-  The server deduplicates friction tasks by `(frictionSignature, workspace)`
-  — if an open task already carries the same signature, your report is
-  appended to it instead of creating a duplicate, and you get the existing
-  task ID back.
+A Living Spec is a native buildd spec: immutable revisions, `R-n`/`AC-n`
+criteria, and one revision a person approved. Work pins an approved revision
+and reviewers record a verdict per criterion. The Living Specs action and its
+sub-actions (`create_draft`, `revise`, `read_ref`, ...) are in the topic.
 
-## Artifact and Knowledge Discipline
+- A person approves. An agent never approves a spec and never says one is
+  approved unless `get` shows it.
+- A draft refused with 409 `spec_duplicate` names the spec it duplicates:
+  revise that one, or create again with `supersedes` or `distinctBecause`.
+- Call `help {topic:"living-specs"}` before any spec work.
 
-- **Artifacts** are deliverables attached to a task: a `summary` before you
-  complete it, or an `impl_plan` (with a `key`) when a later task is meant to
-  consume your output by name — check `list_artifacts`/`get_artifact` with
-  that key before starting a task that says to read one.
-- **`learn`** records durable lessons for the team — a `gotcha`, `pattern`,
-  `decision`, or `discovery` that the *next* agent would want to know before
-  starting. Worth saving: a non-obvious constraint you tripped over, a design
-  decision and its reasoning, a workaround for a real limitation. Not worth
-  saving: a summary of what you did (that's the artifact/completion summary),
-  or anything already written down in the repo's docs.
-- **`recall`** is how you read that knowledge back — always query it before
-  diagnosing a failure or starting work that smells like it's been done
-  before.
-
-## Branch Strategy — know which one you're under
-
-A task's PR targets one of two places, depending on the mission it belongs
-to (or the workspace default, for a mission-less task). Check the claimed
-task's `baseBranch` / mission context to know which applies — don't assume:
-
-- **`direct`** (the default): your task's PR bases on the workspace's trunk
-  branch directly. The workspace's merge policy tier applies to your PR.
-- **`mission-branch`**: your task keeps its own branch and its own PR, same
-  as always — but the PR's base is the *mission's* integration branch
-  (`mission/<slug>-<id8>`), not trunk. Your PR still runs the platform's
-  auto-merge checks and lands unattended into that integration branch; the
-  mission reaches trunk later through exactly one PR from the integration
-  branch to trunk, opened automatically once every task PR in the mission
-  has merged. **One task still means one branch and one PR either way** —
-  `mission-branch` changes the base ref your PR targets, not how many PRs
-  your task produces. Never commit directly on the mission's integration
-  branch itself; open your own branch off it.
-
-Do not call either of these a "feature branch" — every task PR is already a
-feature branch under both strategies, so the term doesn't distinguish them.
-
-That's the PR's *base*. The task's own *head* — the branch `claim_task`
-assigns its worker — is a separate question, and it is always the generated
-`buildd/<id8>-<slug>` name unless the task carries `context.headBranch`
-(mission machinery sets this for a shared integration branch; `create_task`'s
-`headBranch` param sets it directly for a one-off task). If a task's brief
-only *describes* a branch to continue on in prose ("work on
-`ci/some-feature`"), that is invisible to both `claim_task` and `create_pr`:
-the worker still gets assigned the generated name, and a PR opened from the
-described branch instead gets refused as `head_not_owned` — the ownership
-check only accepts the worker's own branch, a retry/dependency of it, or
-`context.headBranch`. If you are filing a task (or an organizer dispatching
-one) whose work must land on an existing or shared branch, set
-`headBranch` at `create_task` time rather than describing it in the
-title/description.
-
-One exception, and it applies only to *you* right now: a worker claimed from
-your own interactive session — `claim_task` called from this session, not a
-background runner — may open its PR from a DIFFERENT branch than the one
-`claim_task` handed you, as long as it is the branch you actually pushed to
-and no other worker already holds that exact name. A background runner's
-worker never gets this; it only ever has its own generated branch, so pin
-`headBranch` instead if its work must land somewhere else. Prefer pushing to
-the branch `claim_task` gave you — it needs no extra check — and reach for
-this only when you are continuing on a branch that already existed before you
-claimed. A name someone else is already using (still running, or carrying its
-own PR under a different task) is refused as `head_claimed`, naming whose it
-is.
+Not the same as a repo-docs skill such as `spec-sync` (buildd's own repo has
+one): that keeps the spec files committed in a repo in step with its code. It
+does not touch Living Specs.

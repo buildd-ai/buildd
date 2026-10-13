@@ -37,7 +37,8 @@ with the `action` shown.
 4. **Readiness:** `action: "readiness"` is read-only and idempotent. It returns
    items, a `nextStep` and `skill`. Run it after every step.
 5. **Guided fixes:** `action: "scaffold"` (below).
-6. **First spec:** `action: "author_spec"` (below).
+6. **First spec:** `action: "author_spec"` for a repo file, or a native Living
+   Spec (below). The owner picks.
 7. **First mission:** `buildd action=manage_missions`, or the dashboard's
    `/app/missions/new?workspace=<id>`.
 
@@ -87,6 +88,15 @@ silently. Not scaffolded: CI, spec checkers, Vercel config.
 
 ## First spec: the interview
 
+Two homes for the result; ask the owner which:
+
+- **Repo file** (`author_spec`): the spec lives in the repo, under the spec
+  root. Pick it when the repo already keeps its contracts in files.
+- **Living Spec** (a `create_draft` with `title`, `body`, `scope`): the spec
+  lives in buildd, with revisions, approval and per-criterion verdicts. The
+  owner approves it on buildd.dev; you never do. Exact call and procedure:
+  `help {topic:"living-specs"}`.
+
 Ask one product question at a time and each capability question once per Q2
 item. Re-ask a vague answer ("properly", "etc.", "works well"); write "must",
 not "should" or "may". Q5 is pre-filled from a scan; the owner confirms, and
@@ -108,6 +118,9 @@ Pass the answers as `params={ action: "author_spec", workspaceId, answers }`:
 `confirm: true` creates one builder task that opens a PR adding that one file,
 flat under the spec root, `status: draft`. The owner merges and promotes it.
 Never write `active`. Feed Q8 into the merge-policy decision from step 3.
+For a Living Spec, run the dry run only, then pass that markdown as `body` to
+`create_draft` (criteria as `R-n`/`AC-n` lines). It stays a draft until the
+owner approves it.
 
 ## Done
 
