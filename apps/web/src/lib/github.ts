@@ -365,7 +365,7 @@ export function isOwnPrReviewRefusal(message: string): boolean {
   return /GitHub API error: 422\b/.test(message) && /Can not (approve|request changes on) your own pull request/i.test(message);
 }
 
-interface CheckSuiteSummary {
+export interface CheckSuiteSummary {
   status: string;
   conclusion: string | null;
   app?: { slug?: string } | null;

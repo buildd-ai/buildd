@@ -286,6 +286,28 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       return text(`Comments readable on revision ${r.revision}:\n${rows.map((c) => `  ${c.parentCommentId ? '  ↳ ' : ''}[${c.state}] ${c.anchor.kind === 'criterion' ? c.anchor.id : `"${c.anchor.label}"`} (r${c.madeOnRevision}, ${c.author.kind}, ${c.id}): ${c.body.length > 300 ? `${c.body.slice(0, 300)}…` : c.body}`).join('\n')}`);
     }
 
+    case 'metadata': {
+      // The metadata block (living-specs.md §18, R-31): read it, or change
+      // fields with a reason. Never a new revision; write access is enough.
+      const specId = need(params.specId, 'specId');
+      const path = `/api/specs/${encodeURIComponent(specId)}/metadata`;
+      if (params.changes === undefined) {
+        const r = await api(path);
+        const rows = (r.changes ?? []) as Array<{ field: string; previousValue: unknown; newValue: unknown; reason: string; changedByKind: string; createdAt: string }>;
+        return text([`Metadata: ${JSON.stringify(r.metadata ?? {})}`, ...rows.slice(0, 20).map((c) => `  ${c.createdAt.slice(0, 10)} ${c.field}: ${JSON.stringify(c.previousValue)} -> ${JSON.stringify(c.newValue)} (${c.changedByKind}: ${c.reason})`)].join('\n'));
+      }
+      try {
+        const r = await api(path, { method: 'PATCH', body: JSON.stringify({ changes: params.changes, reason: params.reason }) });
+        return text(r.changed?.length
+          ? `Metadata updated (${r.changed.join(', ')}). The version (${r.spec.version}) and the approved revision did not change; a native-sourced spec's repo copy PR is updated.`
+          : 'Nothing changed: the metadata already says that.');
+      } catch (err) {
+        const e = apiError(err);
+        if (e && [400, 404, 409].includes(e.status)) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
+        throw err;
+      }
+    }
+
     case 'read_ref': {
       const specId = need(params.specId, 'specId');
       const q = new URLSearchParams({ path: need(params.path, 'path') });

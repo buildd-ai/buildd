@@ -15,6 +15,7 @@ import SpecDiffView from '@/components/SpecDiffView';
 import SpecRevisionPanes from '@/components/SpecRevisionPanes';
 import SpecComments from '@/components/SpecComments';
 import SpecFiling from '@/components/SpecFiling';
+import SpecRepoChecks from '@/components/SpecRepoChecks';
 import type { SpecPageView } from '@/lib/specs/page-view';
 
 type Ok = Extract<SpecPageView, { state: 'ok' }>;
@@ -96,6 +97,7 @@ export default function SpecPage({ view }: { view: Ok }) {
         </h2>
         {/* The action sits where the reader pressed Review, above the text it approves. */}
         <Approve specId={spec.id} revision={view.review.revision} expectedVersion={spec.version} />
+        <SpecRepoChecks preflight={view.preflight ?? null} />
         <SpecRevisionPanes
           body={view.review.body}
           hunks={view.review.hunks}
@@ -134,7 +136,14 @@ export default function SpecPage({ view }: { view: Ok }) {
         </Link>
         <h1 className="font-voice text-2xl text-text-primary [overflow-wrap:anywhere]" data-testid="spec-page-title">{spec.title}</h1>
         <p className="text-meta text-text-muted">{spec.scope} · {view.standing}</p>
+        {view.source ? <p className="text-meta text-text-muted [overflow-wrap:anywhere]" data-testid="spec-page-source">{view.source.source}</p> : null}
       </header>
+
+      {view.source?.copy ? (
+        view.source.behind
+          ? <Notice tone="warn" data-testid="spec-page-repo-copy">{view.source.copy}</Notice>
+          : <p className="text-meta text-text-muted" data-testid="spec-page-repo-copy">{view.source.copy}</p>
+      ) : null}
 
       <Lede><span data-testid="spec-page-reading">{readingLine(view)}</span></Lede>
 

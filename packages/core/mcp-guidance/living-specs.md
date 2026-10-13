@@ -156,6 +156,17 @@ sees a newer approved revision.
   Each reads `open` (anchor unchanged), `outdated` (anchor changed) or
   `resolved`. Only a person resolves one, on the spec page.
 
+## Metadata
+
+A spec's metadata block (verified_by, surfaces, last_verified, assertions,
+owner) sits outside every revision: changing it needs no
+approval and moves neither the version nor the approved hash.
+
+- Read: `buildd action=manage_specs params={ action: "metadata", specId }`.
+- Change: `buildd action=manage_specs params={ action: "metadata", specId, changes: { verified_by: [...] }, reason }`.
+  `reason` is required and recorded with who changed it and the previous
+  value. `domain` is not a field: it comes from the spec's area.
+
 ## Never
 
 - Never approve, or say a spec is approved, unless `get` shows that revision
