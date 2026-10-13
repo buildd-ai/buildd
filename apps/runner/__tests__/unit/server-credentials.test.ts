@@ -4,7 +4,8 @@
  *
  * Root cause: the runner only captured the server-managed OAuth token / API key
  * from the claim response when it believed it had NO local credentials
- * (`if (!this.hasCredentials)`). But `hasClaudeCredentials()` returns true for
+ * (`if (!this.hasCredentials)`). But the legacy local check (since replaced by
+ * host-seat.ts detectModelAuthSource) returned true for
  * stale/invalid local state (an expired `~/.claude.json` oauthAccount, a
  * leftover `.credentials.json`, or an env var), so the valid server-managed
  * OAuth token was silently dropped and the worker spawned with broken local

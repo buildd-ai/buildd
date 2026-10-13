@@ -93,6 +93,19 @@ describe('list_runners', () => {
     expect(out).toContain('last heartbeat 2026-09-27T00:00:00.000Z');
   });
 
+  it('names the model login each runner reported, or not_reported', async () => {
+    const row = { accountName: 'Runner A', activeWorkers: 0, maxConcurrent: 1, workspaceNames: [], lastUpdated: '2026-09-27T00:00:00.000Z' };
+    mockApi.mockResolvedValueOnce({
+      activeLocalUis: [
+        { ...row, localUiUrl: 'http://localhost:8766', modelAuthSource: 'machine_login' },
+        { ...row, localUiUrl: 'http://localhost:8767' },
+      ],
+    });
+    const out = (await handleBuilddAction(mockApi as unknown as ApiFn, 'list_runners', {}, ctx())).content[0].text;
+    expect(out).toContain('modelAuth=machine_login');
+    expect(out).toContain('modelAuth=not_reported');
+  });
+
   it('omits updateAvailableSince when the runner is up to date', async () => {
     mockApi.mockResolvedValueOnce({
       activeLocalUis: [
