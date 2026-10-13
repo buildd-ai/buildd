@@ -905,6 +905,14 @@ data; none of it MAY approve, pin, grade or block anything (D-11, D-12).
     `path_manifest`). No GitHub call.
   - `overlaps`: criteria the duplicate check judged to mean the same, naming
     each side (§13 writes these; this section only stores and shows them).
+- `overlaps` is written at approval only, from the duplicate decision (§13):
+  the approved spec against every other approved spec in the workspace,
+  itself left out; a duplicate or an overlap becomes a row with Jev's
+  probability as its score. A check that did not run keeps the rows it had.
+  The daily refresh never asks the model.
+- Creating a spec with no parent returns `suggestedParent` (`POST /api/specs`,
+  and the `manage_specs create_draft` reply), the same suggestion the nearby
+  route gives. It is offered, never applied.
 - Each (spec, kind) is replaced whole on each recompute; `overlaps` is never
   touched by the neighbour recompute. A row written for either side counts
   for both, so a spec approved later shows on an older spec's page at once.
@@ -939,6 +947,10 @@ data; none of it MAY approve, pin, grade or block anything (D-11, D-12).
   merged-PR files when the ingest recorded them; WHEN the work stops sharing
   the file and it is refreshed again THEN the row is gone
   (`apps/web/tests/db/spec-neighbours.test.ts`).
+- AC-56: GIVEN an approved spec Jev judges to overlap another WHEN the second
+  is approved THEN both list each other as `overlaps`, the check left the
+  spec itself out, and a later check that did not run keeps the rows
+  (`apps/web/tests/db/spec-neighbours.test.ts`).
 - AC-52: GIVEN `overlaps` rows written for one side WHEN either spec's
   neighbours are read THEN the overlap shows first, naming its criteria the
   right way round, and a neighbour recompute leaves it in place
@@ -964,9 +976,6 @@ data; none of it MAY approve, pin, grade or block anything (D-11, D-12).
 - `apps/web/src/lib/specs/page-view.ts` — `specGroups`
 
 **Not yet**:
-- Nothing writes `overlaps` until the duplicate check (§13) does.
-- The suggested parent is offered through the nearby route only; create
-  responses and MCP do not show it yet.
 - `similar` is lexical wherever no embedder key is configured, and lexical
   scores are not comparable to cosine, so it has no floor there.
 

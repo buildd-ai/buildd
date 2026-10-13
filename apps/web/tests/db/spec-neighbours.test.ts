@@ -131,6 +131,27 @@ describe('neighbours (§14)', () => {
     expect((await rows(y.id)).some((r) => r.kind === 'overlaps')).toBe(true);
   });
 
+  test('approving writes overlaps from the duplicate decision, leaving itself out; a check that did not run keeps them', async () => {
+    noStore();
+    const other = await approved('Basket');
+    const seen: Array<{ excludeSpecId?: string }> = [];
+    specKnowledgeDeps.duplicates = async (input) => {
+      seen.push(input);
+      return { ran: true, blocking: [], compared: 1, warnings: [{ specId: other.id, title: other.title, relation: 'overlap', p: 0.8, similarity: 0.4, decisionRecordId: null }] };
+    };
+    const cart = await approved('Cart');
+    expect(seen.at(-1)!.excludeSpecId).toBe(cart.id);
+    const near = await readSpecNeighbours(cart.id);
+    expect(near.find((n) => n.specId === other.id)).toMatchObject({ kind: 'overlaps', reason: 'Shares some of what it asks for' });
+    // From the other side too.
+    expect((await readSpecNeighbours(other.id)).find((n) => n.specId === cart.id)?.kind).toBe('overlaps');
+
+    specKnowledgeDeps.duplicates = async () => ({ ran: false, reason: 'off' });
+    await refreshSpecDerived(cart.id);
+    const [row] = await q<{ n: number }>(sql`SELECT count(*)::int AS n FROM spec_neighbors WHERE spec_id = ${cart.id}::uuid AND kind = 'overlaps'`);
+    expect(row!.n).toBe(1);
+  });
+
   test('a parent is suggested from the closest product, else from where the closest spec sits', async () => {
     const product = await approved('Billing', { scope: 'product' });
     const child = await approved('Invoices', { parentSpecId: product.id });

@@ -50,6 +50,7 @@ describe('neighbourReason', () => {
     expect(neighbourReason('shares_files', { files: 3 })).toBe("Changes 3 files this spec's work changed");
     expect(neighbourReason('overlaps', { pairs: [{ here: 'AC-2', there: 'AC-4' }] })).toBe('AC-2 here matches AC-4 there');
     expect(neighbourReason('overlaps', { pairs: [{ here: 'AC-2', there: 'AC-4' }, { here: 'R-1', there: 'R-3' }] })).toBe('AC-2 here matches AC-4 there, and 1 more');
-    expect(neighbourReason('overlaps', {})).toBe('Has a criterion that means the same');
+    expect(neighbourReason('overlaps', {})).toBe('Shares some of what it asks for');
+    expect(neighbourReason('overlaps', { relation: 'duplicate' })).toBe('Asks for the same things');
   });
 });
