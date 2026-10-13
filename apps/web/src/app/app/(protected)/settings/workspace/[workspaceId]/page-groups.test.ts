@@ -121,6 +121,7 @@ describe('settings runners page', () => {
     expect(RUNNERS).toContain('pickShownTeam(teams, teamParam, currentTeam)');
     expect(RUNNERS).toContain('<TeamSwitcher');
     expect(RUNNERS).toContain('basePath="/app/settings/runners"');
-    expect(MEMBERS).toContain('<TeamSwitcher');
+    // Members names the team in its card; the shell switcher changes it.
+    expect(MEMBERS).not.toContain('<TeamSwitcher');
   });
 });
