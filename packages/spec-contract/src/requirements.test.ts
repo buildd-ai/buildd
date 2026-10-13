@@ -27,3 +27,30 @@ describe('specCriteria', () => {
     expect(specCriteria('# No ids here\nJust prose.')).toEqual([]);
   });
 });
+
+describe('criteria in a table', () => {
+  const body = [
+    '| ID | Requirement | Check |',
+    '|----|-------------|-------|',
+    '| **R-1** | Totals are in the shopper\'s currency. | unit |',
+    '| AC-2 | Empty cart: show \\| hide | |',
+    '| R-3 is here | not an id cell | x |',
+    '- **R-1** a repeat, the table row wins',
+    '```',
+    '| AC-9 | fenced, ignored |',
+    '```',
+    '- AC-4: a list item still works',
+  ].join('\n');
+  it('a row whose first cell is an id defines it, with the other cells as its text', () => {
+    expect(requirementIds(body).map((r) => [r.id, r.text])).toEqual([
+      ['R-1', "Totals are in the shopper's currency.; unit"],
+      ['AC-2', 'Empty cart: show | hide'],
+      ['AC-4', 'a list item still works'],
+    ]);
+    expect(specCriteria(body).map((r) => r.id)).toEqual(['R-1', 'AC-2', 'AC-4']);
+  });
+  it('a body with no table parses exactly as before', () => {
+    expect(requirementIds('- **R-1** One.\n### D-2 Two\n').map((r) => r.id)).toEqual(['R-1', 'D-2']);
+  });
+});
+
