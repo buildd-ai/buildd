@@ -39,9 +39,10 @@ describe('expired sign-in: five waiting tasks, alert and sentinel task are one s
     }
   });
 
-  it('only the credential owner and a routing-capable admin reach Needs You; a member never does', () => {
+  it('only the credential owner reaches Needs You; a routing-capable admin and a member never do', () => {
     expect(statusAttentionItems(projectServiceStatus(recordsA, viewerFor(MEMBER)))).toHaveLength(0);
     expect(statusAttentionItems(projectServiceStatus(recordsA, viewerFor(OWNER)))).toHaveLength(1);
+    expect(statusAttentionItems(projectServiceStatus(recordsA, admin))).toHaveLength(0);
     const noAlt = correlateSignals({ ...expiredSignInScenario(), alternateRunnerAvailable: false });
     expect(statusAttentionItems(projectServiceStatus(noAlt, admin))).toHaveLength(0);
   });
