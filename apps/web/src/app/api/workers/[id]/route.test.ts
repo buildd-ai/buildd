@@ -312,11 +312,8 @@ mock.module('@/lib/github', () => ({
   postPrReview: mockPostPrReview,
 }));
 
-// Has the mission's one PR into trunk merged? (lib/mission-pr-merged). Null = no.
+// Has the mission's one PR into trunk merged? (lib/mission-integration-branch). Null = no.
 const mockMissionShippingPrMerged = mock((..._args: any[]) => Promise.resolve(null as null | { prNumber: number | null; via: string }));
-mock.module('@/lib/mission-pr-merged', () => ({
-  missionShippingPrMerged: (...args: any[]) => mockMissionShippingPrMerged(...args),
-}));
 
 // The verdict-time escalation gate re-inspects migrations. The real inspector
 // walks several paginated endpoints; mocking it keeps these tests about the
@@ -466,6 +463,7 @@ mock.module('@/lib/mission-release', () => ({
 const mockEnsureIntegrationBaseForTaskPr = mock(() => Promise.resolve({ usable: true, recreated: false } as any));
 mock.module('@/lib/mission-integration-branch', () => ({
   ensureIntegrationBaseForTaskPr: mockEnsureIntegrationBaseForTaskPr,
+  missionShippingPrMerged: (...args: any[]) => mockMissionShippingPrMerged(...args),
 }));
 
 // Phase 2: reviewer outcome mocks

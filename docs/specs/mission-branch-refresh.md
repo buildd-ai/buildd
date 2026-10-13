@@ -8,7 +8,7 @@ domain: missions
 surfaces: [apps/web/src/lib/mission-branch-refresh.ts, apps/web/src/lib/mission-subscribers.ts, apps/web/src/app/api/workers/claim/route.ts, apps/web/src/app/api/cron/pr-reconcile/route.ts]
 related: [workflow-kernel-library, mission-release-gate, mission-task-lifecycle, workflow-state-kernel]
 keywords: [integration branch, mission/*, merge dev into, chore(mission), branch refresh, branchRefreshHeadSha, branch_refreshed_at, refresh conflict task, requireMergeCommit, trunk merge, refresh lease, abandoned lease, conflict reservation, paused mission refresh, mission branch concurrency]
-verified_by: [apps/web/src/lib/mission-branch-refresh.test.ts, apps/web/src/lib/mission-pr-merged.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, scripts/resolve-generated-conflicts.test.ts, apps/web/src/lib/conflict-retry.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/modules.test.ts, apps/web/src/lib/integration-refresh.test.ts]
+verified_by: [apps/web/src/lib/mission-branch-refresh.test.ts, apps/web/src/lib/mission-shipping-pr.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, scripts/resolve-generated-conflicts.test.ts, apps/web/src/lib/conflict-retry.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/modules.test.ts, apps/web/src/lib/integration-refresh.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -226,7 +226,7 @@ and the mission PR merging is not the mission being released.
 **Invariants**:
 - **"Mission PR merged" is read from three sources**, cheapest first, stopping
   at the first that shows the merge (`missionShippingPrMerged`,
-  `apps/web/src/lib/mission-pr-merged.ts`): the owner worker row's `mergedAt`
+  `apps/web/src/lib/mission-shipping-pr.ts`): the owner worker row's `mergedAt`
   (`findMissionPrOwner`); the mission PR's kernel delivery in state `MERGED`
   (any authority); one live GitHub read of the PR (`merged: true`). The worker
   row alone misses a merge whose webhook was lost, and the refresh then kept
@@ -466,7 +466,7 @@ ancestry. This spec is the authority on both.
 | Approval carried or re-reviewed when the mission PR's head moves (§8.3) | `packages/workflow-kernel/src/reducer.test.ts` ("APPROVED (S2)…", "APPROVED (S3)…", "LANDING: aborts landing to a new round when not equivalent"); `apps/web/tests/db/workflow-matrix.test.ts` (carry-forward, S10 pinned landing) |
 | A moved head refuses a pinned merge | `apps/web/src/lib/workflow/pr-landing-effects.test.ts` ("a moved head is not a refusal…") |
 | Generated-file recovery (AC-15–AC-20) | `scripts/resolve-generated-conflicts.test.ts` |
-| AC-34, AC-35 | `mission-branch-refresh.test.ts` › "the shipping PR merged but the owner worker row has no mergedAt"; `apps/web/src/lib/mission-pr-merged.test.ts` |
+| AC-34, AC-35 | `mission-branch-refresh.test.ts` › "the shipping PR merged but the owner worker row has no mergedAt"; `apps/web/src/lib/mission-shipping-pr.test.ts` |
 | AC-36 | `apps/web/src/app/api/workers/[id]/route.test.ts` › "mission-branch refresh already on the branch" |
 
 The real-Git cases run the production refresh and `verifyRefreshLanded` against a
@@ -534,7 +534,7 @@ conflict retry both tell the agent to run it first.
 - `apps/web/src/app/api/cron/pr-reconcile/route.ts`: runs the backstop.
 - `apps/web/src/lib/integration-refresh.ts`: `verifyRefreshLanded`, the ancestry
   proof a merged conflict task must pass.
-- `apps/web/src/lib/mission-pr-merged.ts`: `missionShippingPrMerged`, the
+- `apps/web/src/lib/mission-shipping-pr.ts`: `missionShippingPrMerged`, the
   three-source "mission PR merged" read.
 - `apps/web/src/app/api/workers/[id]/route.ts`: the `pr_required` arm that
   completes a refresh task without a PR (`refreshAlreadyLanded`).

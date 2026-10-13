@@ -15,7 +15,7 @@ mock.module('@/lib/workflow/delivery-view', () => ({
 }));
 mock.module('@/lib/github', () => ({ githubApi: (i: number, path: string) => mockGithubApi(i, path) }));
 
-const { missionShippingPrMerged } = await import('./mission-pr-merged');
+const { missionShippingPrMerged } = await import('./mission-shipping-pr');
 
 const repo = { workspaceId: 'ws-1', installationId: 7, repoFullName: 'org/repo' };
 const owner = (over: Record<string, unknown> = {}) => ({
@@ -58,6 +58,13 @@ describe('missionShippingPrMerged', () => {
     mockGithubApi.mockResolvedValue({ merged: true });
     expect(await missionShippingPrMerged('m', repo)).toEqual({ prNumber: 12, via: 'github' });
     expect(mockGithubApi.mock.calls).toEqual([[7, '/repos/org/repo/pulls/12']]);
+  });
+
+  it('a PR URL naming another repo is not this mission\'s shipping PR: nothing read', async () => {
+    mockFindMissionPrOwner.mockResolvedValue(owner({ prNumber: null, prUrl: 'https://github.com/org/other/pull/12' }));
+    expect(await missionShippingPrMerged('m', repo)).toBeNull();
+    expect(mockDeliveryPrStates).not.toHaveBeenCalled();
+    expect(mockGithubApi).not.toHaveBeenCalled();
   });
 
   it('an open PR everywhere: not merged', async () => {

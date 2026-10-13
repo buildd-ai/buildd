@@ -417,3 +417,7 @@ async function postMissionNote(
     console.error(`[mission-integration-branch] failed to record note for mission ${missionId}:`, err);
   }
 }
+
+// Re-exported so core routes reach it through this already-allowed module edge
+// (scripts/module-boundaries.baseline.json); the logic lives in mission-shipping-pr.ts.
+export { missionShippingPrMerged, type MissionPrMerged, type MissionPrRepo } from '@/lib/mission-shipping-pr';

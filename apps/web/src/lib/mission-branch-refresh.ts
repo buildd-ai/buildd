@@ -85,9 +85,9 @@ import { missionIntegrationBase } from '@buildd/core/mission-integration';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { resolveMissionRepoWorkspaceId } from '@/lib/mission-repo-workspace';
-import { ensureMissionIntegrationBranch } from '@/lib/mission-integration-branch';
 import { findMissionPrOwner } from '@/lib/mission-pr';
-import { missionShippingPrMerged } from '@/lib/mission-pr-merged';
+import { ensureMissionIntegrationBranch } from '@/lib/mission-integration-branch';
+import { missionShippingPrMerged } from '@/lib/mission-shipping-pr';
 import { integrationRefreshOf, verifyRefreshLanded } from '@/lib/integration-refresh';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
@@ -225,7 +225,7 @@ export async function refreshMissionIntegrationBranch(
   // trunk has been taken, and refreshing a branch nothing will ever merge again
   // wastes a GitHub call on every future trigger and, on a conflict, files a
   // task nobody can finish. Read from the worker row, the kernel delivery and
-  // GitHub (lib/mission-pr-merged), since the worker row alone can miss it.
+  // GitHub (lib/mission-shipping-pr), since the worker row alone can miss it.
   const prRepo = { workspaceId: workspace.id, installationId, repoFullName: repo.fullName };
   const shipped = () => missionShippingPrMerged(missionId, prRepo);
   if (await shipped()) {

@@ -35,16 +35,19 @@ export interface MissionPrRepo {
   repoFullName: string;
 }
 
-function prNumberOf(owner: { prNumber: number | null; prUrl: string | null }): number | null {
+function prNumberOf(owner: { prNumber: number | null; prUrl: string | null }, repoFullName?: string): number | null {
   if (typeof owner.prNumber === 'number' && owner.prNumber > 0) return owner.prNumber;
-  const m = /\/pull\/(\d+)/.exec(owner.prUrl ?? '');
-  return m ? Number(m[1]) : null;
+  const m = /github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(owner.prUrl ?? '');
+  if (!m) return null;
+  // A URL naming another repo is not this mission's shipping PR in this repo.
+  if (repoFullName && m[1]!.toLowerCase() !== repoFullName.toLowerCase()) return null;
+  return Number(m[2]);
 }
 
 export async function missionShippingPrMerged(missionId: string, repo?: MissionPrRepo | null): Promise<MissionPrMerged | null> {
   const owner = await findMissionPrOwner(missionId);
   if (!owner) return null;
-  const prNumber = prNumberOf(owner);
+  const prNumber = prNumberOf(owner, repo?.repoFullName);
   if (owner.state === 'merged') return { prNumber, via: 'worker' };
   if (prNumber == null || !repo) return null;
 
