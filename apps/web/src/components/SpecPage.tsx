@@ -119,7 +119,7 @@ export default function SpecPage({ view }: { view: Ok }) {
       </section>
     ) : (
       <Card data-testid="spec-page-body">
-        <MarkdownContent content={view.body} images="link" />
+        <MarkdownContent content={view.body} images="link" surface="spec" />
       </Card>
     )
   );

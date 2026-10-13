@@ -31,8 +31,12 @@ describe('tfidfShortlist', () => {
 });
 
 describe('the decision kind', () => {
-  it('asks the question the eval measured, live, under its own capability', () => {
+  it('asks the question the eval measured, live, under its own capability', async () => {
     expect(specDuplicateKind.binding).toMatchObject({ capability: 'spec_duplicate', mode: 'live' });
+    // Measured beside Jev in the eval; Clef Flash matches the clef prefix, nothing else does.
+    const { isMeasuredForKind } = await import('@buildd/core/decision-kinds');
+    for (const m of ['clef', 'clef-flash', '@cf/cloudflare/clef', '@cf/cloudflare/clef-flash']) expect(isMeasuredForKind(specDuplicateKind.binding, m)).toBe(true);
+    expect(isMeasuredForKind(specDuplicateKind.binding, 'openai/gpt-5-nano')).toBe(false);
     expect(specDuplicateKind.questions.relation.instructions).toContain('by what they REQUIRE, not by topic or wording');
     expect(Object.keys(specDuplicateKind.questions.relation.criteria)).toEqual(['duplicate', 'overlap', 'distinct']);
   });
