@@ -119,7 +119,7 @@ export default function ModelUpgradePolicySection({ teamId, isAdmin }: { teamId:
         <span className="min-w-0 flex-1">
           <span id="model-upgrade-mode-label" className="block text-sm font-semibold text-text-primary">Upgrade policy</span>
           <span className="block text-meta text-text-muted">
-            When your tiers move to a model Buildd has certified. Pinned tiers never move.{' '}
+            When your tiers move to a model buildd has certified. Pinned tiers never move.{' '}
             <span data-testid="model-upgrade-source">{data ? SOURCE_TEXT[data.source] : ''}</span>
           </span>
         </span>

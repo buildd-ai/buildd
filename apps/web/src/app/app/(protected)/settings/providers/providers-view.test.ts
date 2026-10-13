@@ -205,8 +205,8 @@ describe('rows', () => {
     expect(rowState([r({ health: 'revoked' })], [], null).word).toBe('Needs attention');
     expect(rowState([r({ lastVerificationError: 'bad' })], [], null).word).toBe('Needs attention');
     expect(rowState([], [r({})], null).word).toBe('Team key');
-    expect(rowState([], [], 'team only').word).toBe('Not available');
-    expect(rowState([], [], null).word).toBe('Not set');
+    expect(rowState([], [], 'team only').word).toBe('Not set up');
+    expect(rowState([], [], null).word).toBe('Not set up');
   });
 
   it('masks a key by its last four, and names a subscription', () => {

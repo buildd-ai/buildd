@@ -316,7 +316,7 @@ describe('one scope per page', () => {
 
   it('Keys: team-only providers say so only when opened, with no action', async () => {
     await mount({ credentialPolicy: 'personal_first' }, false, WORKSPACES, 'mine');
-    expect($('[data-testid="provider-card-state"]', cardOf('litellm', 'mine'))!.textContent).toBe('Not available');
+    expect($('[data-testid="provider-card-state"]', cardOf('litellm', 'mine'))!.textContent).toBe('Not set up');
     expect(buttons(cardOf('litellm', 'mine')).filter((b) => b !== 'LiteLLM gateway')).toEqual([expect.stringContaining('LiteLLM')]);
     await click(toggle('litellm', 'mine'));
     expect($('[data-testid="provider-closed"]', cardOf('litellm', 'mine'))!.textContent).toContain("team's shared configuration");
