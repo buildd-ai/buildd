@@ -85,7 +85,12 @@ describe('one cause across workspaces and teams (F-1, R2)', () => {
     expect(row.state).toBe('waiting');
     expect(row.owner).toBe('buildd');
     expect(row.sentence).toBe('Waiting for the fix to land. Buildd checks again at 12:20.');
-    expect(row.actions).toEqual([]);
+    // B2: the owner capabilities valid now; run_repair only on the lead, only repairs that apply to its family.
+    const caps = row.actions.map(a => a.capability);
+    expect(caps).toContain('set_priority');
+    expect(caps).toContain('pause_automation');
+    expect(row.actions.filter(a => a.capability === 'run_repair').every(a => 'incidentId' in a.target)).toBe(true);
+    expect(new Set(row.actions.filter(a => a.capability === 'run_repair').map(a => JSON.stringify(a.target))).size).toBeLessThanOrEqual(1);
   });
 
   it('a team-scoped read never names another team', () => {

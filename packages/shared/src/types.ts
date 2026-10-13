@@ -4617,7 +4617,8 @@ export interface FailureIncidentRecovery {
   /** Operator-owned recovery: the capability Buildd lacks to recover on its own. */
   capabilityGap?: { capability: string; reason: string };
   verification: { predicate: string; params: Record<string, unknown> };
-  budget: { spent: number; limit: number; deadlineAt: string; spentKeys: string[] };
+  /** `extended`: repairs the platform owner added to `limit` this generation (operator-recovery §8.1, at most 2). */
+  budget: { spent: number; limit: number; deadlineAt: string; spentKeys: string[]; extended?: number };
   /** The repairs actually run, across generations (bounded). Never rewritten. */
   attempts: FailureRecoveryAttempt[];
   /**

@@ -278,7 +278,12 @@ export function projectIncident(
     phase = 'unavailable';
     owner = 'operator';
     const reason = r.capabilityGap?.reason ?? 'Buildd lacks a capability to repair this';
-    sentence = `Automatic recovery unavailable: ${reason.replace(/\.$/, '')}.${r.nextAction?.label ? ` ${r.nextAction.label}` : ' An operator has been told.'}`;
+    if (isPlatformGap(r.capabilityGap?.capability)) {
+      // operator-recovery §8.5: a platform defect is Buildd's to fix; the customer is told so, never asked.
+      sentence = `${PLATFORM_PROBLEM_SENTENCE}${nextCheckAt ? ` It checks again at ${at(nextCheckAt)}.` : ''}`;
+    } else {
+      sentence = `Automatic recovery unavailable: ${reason.replace(/\.$/, '')}.${r.nextAction?.label ? ` ${r.nextAction.label}` : ' An operator has been told.'}`;
+    }
   } else if (r.state === 'recovering') {
     const kind = r.nextAction?.kind ?? '';
     const n = attemptNumber(r);
@@ -353,6 +358,18 @@ export function projectIncident(
     evidenceRevision: r?.observation.evidenceRevision ?? null,
     options,
   };
+}
+
+/** What a customer reads while the platform owner fixes a platform defect (operator-recovery §8.5). */
+export const PLATFORM_PROBLEM_SENTENCE = 'Buildd is working on a platform problem affecting this task.';
+
+/**
+ * A gap only the platform owner can close: Buildd's own pipeline
+ * (`repair_infrastructure:*`) or a decision on a platform cause
+ * (`platform_decision`). A workspace credential to reconnect is not one.
+ */
+export function isPlatformGap(capability: string | null | undefined): boolean {
+  return !!capability && (capability.startsWith('repair_infrastructure:') || capability === 'platform_decision');
 }
 
 /** Capabilities the click-time re-check route applies itself. The rest are done where their subject lives. */

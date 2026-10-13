@@ -33,6 +33,8 @@ import { createHash } from 'node:crypto';
 import { FAILED_WORKER_STATUSES, TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { effectiveCauseKey, causeCodeOf } from '@/lib/failure-incident-cause-key';
 import type { RecoveryAttemptDetail, SentinelLastRun } from '@/lib/failure-incident-recovery-events';
+import type { AutomationState } from '@/lib/failure-incident-recovery-automation';
+import { availableActions } from '@/lib/failure-incident-recovery-actions';
 import { computeBlockedWork, unblocksOf, type BlockEpisode, type CausePreference } from './blocked-work';
 import { projectIncident, worstState, type IncidentProjection } from './projection';
 import { componentsOf, compareBaseline, ORQ_RANK_VERSION, ORQ_RANK_WEIGHTS, rankCauses, scoreOf, tierOf, type Leverage, type RankInput } from './rank';
@@ -68,7 +70,13 @@ export interface QueueFacts {
   /** Incident ids with a stored person verdict. Null: the read failed. */
   personVerdicts: Set<string> | null;
   automation: RecoveryPanel['automation'];
+  /** The switch with its CAS tokens, for the actions offered. Absent or null: pause/resume are offered against `none`. */
+  automationState?: AutomationState | null;
+  /** The newest owner override per cause key (§5.6), as stored; expiry is checked here. */
+  overrides?: Map<string, PriorityOverride>;
 }
+
+export interface PriorityOverride { mode: 'pin_top' | 'demote' | 'snooze'; until: string; by: string; reason: string }
 
 export const MAX_QUEUE_ROWS = 50;
 export const MAX_TASK_SAMPLE = 10;
@@ -198,7 +206,8 @@ interface AttemptTally { total: number; succeeded: number; failed: number; noEff
 
 export function attemptOutcome(a: QueueAttemptRow): RecoveryAttemptOutcome {
   if (a.outcome === 'rejected') return 'failed';
-  if (a.outcome === 'shadow') return 'refused';
+  // A shadow policy's would-run (§9.5), recorded as `deferred`.
+  if (a.outcome === 'deferred') return 'refused';
   const passed = a.detail.verify?.passed;
   return passed === true ? 'progressed' : passed === false ? 'no_effect' : 'in_flight';
 }
@@ -325,6 +334,11 @@ function build(facts: QueueFacts): Built {
   };
   const teamOfWs = (wsId: string | null) => (wsId ? facts.workspaces.get(wsId)?.teamId ?? null : null);
 
+  const liveOverride = (key: string) => {
+    const o = facts.overrides?.get(key);
+    return o && o.until > facts.now ? o : null;
+  };
+
   // Everything rank needs except blocked work, per cause.
   const pre = new Map<string, Omit<RankInput, 'blockedTaskHours24h'> & { evidence: ReturnType<typeof evidenceOf> }>();
   for (const c of causes) {
@@ -372,7 +386,7 @@ function build(facts: QueueFacts): Built {
       reopens7d: c.members.filter(m => nowMs - ms(m.incident.lastSeenAt) <= 7 * DAY).reduce((s, m) => s + m.incident.recurrenceCount, 0),
       leverage,
       wasteUsd7d: waste,
-      override: null,
+      override: liveOverride(c.key),
       evidence,
     });
   }
@@ -453,7 +467,11 @@ function build(facts: QueueFacts): Built {
       state: worst,
       owner: ownerFrom.projection.owner,
       rank: r
-        ? { position: r.position, tier: r.tier, tierReason: r.tierReason, score: r.score, why: r.why, components: r.components, override: null, advice: null }
+        ? {
+          position: r.position, tier: r.tier, tierReason: r.tierReason, score: r.score, why: r.why, components: r.components,
+          override: (() => { const o = liveOverride(c.key); return o ? { ...o, baselinePosition: r.baselinePosition } : null; })(),
+          advice: null,
+        }
         : { position: 0, tier: 3, tierReason: 'Recovered', score: 0, why: 'Recovered.', components: [], override: null, advice: null },
       impact: {
         teams: named([...wsIds.map(teamOfWs), ...unblockTasks.map(t => teamOfWs(t.workspaceId))].filter((x): x is string => !!x), teamRef),
@@ -511,8 +529,8 @@ function build(facts: QueueFacts): Built {
         total7d: episodes.filter(e => e.causeKey === c.key && nowMs - e.startMs <= 7 * DAY).length,
       },
       telemetry: p.evidence,
-      // Owner capabilities are computed by the action service (B2).
-      actions: [],
+      // §8.1: only what is valid for this cause now; a click re-validates on fresh facts.
+      actions: r ? availableActions({ causeKey: c.key, members: c.members.map(m => m.incident), tier: r.tier, automation: facts.automationState ?? null }) : [],
     };
   };
 
@@ -553,7 +571,7 @@ function build(facts: QueueFacts): Built {
   for (const a of attemptsInWindow) byCapability.set(a.detail.capability, [...(byCapability.get(a.detail.capability) ?? []), a]);
   const effectiveness: Record<string, RecoveryRate> = {};
   for (const [cap, rows] of byCapability) {
-    const executed = rows.filter(r => r.outcome !== 'shadow');
+    const executed = rows.filter(r => r.outcome !== 'deferred');
     effectiveness[cap] = rate(executed.filter(r => attemptOutcome(r) === 'progressed').length, executed.length);
   }
   const recoveredSubjectsAll = new Set(episodes.filter(e => e.endMs !== null && nowMs - e.endMs <= winMs).map(e => e.subjectTaskId));

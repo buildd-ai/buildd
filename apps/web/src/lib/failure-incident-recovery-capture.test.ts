@@ -206,9 +206,16 @@ describe('the policy, in order', () => {
   });
 
   it('fix finished and no fresh capture: retry the capture for the failed audits', () => {
-    const o = evaluateCaptureFailure(inc, facts({ fixTask: { id: 'fix-1', status: 'completed', finishedAt: at(60) } }), at(61));
+    const o = evaluateCaptureFailure(inc, facts({ fixTask: { id: 'fix-1', status: 'completed', finishedAt: at(60), prMerged: true } }), at(61));
     expect(o.verdict).toMatchObject({ kind: 'repair', action: 'retry_capture', params: { taskIds: [AUDIT_A, AUDIT_B] } });
     expect(o.episodeStartedAt).toBe(at(60));
+  });
+
+  it('the scrub runbook (operator-recovery §9.3): a finished fix whose PR has not merged is waited on, not retried', () => {
+    for (const prMerged of [false, null, undefined]) {
+      const o = evaluateCaptureFailure(inc, facts({ fixTask: { id: 'fix-1', status: 'completed', finishedAt: at(60), prMerged } }), at(61));
+      expect(o.verdict.kind).toBe('wait');
+    }
   });
 
   it('re-queued audits that have not run yet are waited on, not retried again', () => {
@@ -300,7 +307,7 @@ describe('assessIncident: recovered on a fresh capture, then resumed once (AC-14
     const store = memoryPort(inc);
     const { adapters, calls } = recordingAdapters();
     const { effects } = recordingEffects();
-    const fixDone = { id: 'fix-1', status: 'completed', finishedAt: at(60) };
+    const fixDone = { id: 'fix-1', status: 'completed', finishedAt: at(60), prMerged: true };
     let current = facts({ fixTask: { id: 'fix-1', status: 'in_progress', finishedAt: null } });
     let now = at(10);
     const deps: RecoveryDeps = { port: store.port, effects, now: () => now, families: [family(adapters, () => current)] };
@@ -397,7 +404,7 @@ describe('the sentinel sweep drives the family (AC-13, AC-15)', () => {
     sentinel = { workspaceId: WS, now: at(0) };
 
     // The fix lands.
-    current = facts({ fixTask: { id: 'fix-1', status: 'completed', finishedAt: at(10) } });
+    current = facts({ fixTask: { id: 'fix-1', status: 'completed', finishedAt: at(10), prMerged: true } });
     let t = 20;
     for (let retry = 1; retry <= 3; retry++) {
       await sweep(t);

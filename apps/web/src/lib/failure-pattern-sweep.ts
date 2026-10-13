@@ -67,6 +67,7 @@ import {
   assessDueIncidents,
   assessIncident,
   claimRecoveryLease,
+  productionOperatorRecoveryDeps,
   productionRecoveryEffects,
   readRecovery,
   recoveryGenerationKey,
@@ -78,6 +79,7 @@ import {
 } from './failure-incident-recovery';
 import { pathOverlapRecoveryFamily } from './failure-incident-recovery-path-overlap';
 import { createInfrastructureRecoveryFamily } from './failure-incident-recovery-infrastructure';
+import { dispatchRecoveryFamily } from './failure-incident-recovery-dispatch';
 import { readCredentialHold } from './task-recovery-hold';
 import { isBookkeepingExit, isInfrastructureExit } from './worker-exit-taxonomy';
 import { dbRecoveryEvents, pruneRecoveryEvents, writeSentinelLastRun, type SentinelLastRun } from './failure-incident-recovery-events';
@@ -201,7 +203,11 @@ export interface SweepDeps {
    * that assess their open incidents, and the existing writers their repairs
    * go through. Absent: no incident is assessed, repaired or auto-resolved.
    */
-  recovery?: { families: ReadonlyArray<RecoveryFamily<any>>; effects: RecoveryEffects; claimLease?: RecoveryDeps['claimLease']; events?: RecoveryDeps['events'] };
+  recovery?: {
+    families: ReadonlyArray<RecoveryFamily<any>>; effects: RecoveryEffects; claimLease?: RecoveryDeps['claimLease']; events?: RecoveryDeps['events'];
+    /** Pause/policy, cause peers and per-repair verify (operator-recovery, B2). Absent: FIR's defaults, nothing paused. */
+    operator?: Pick<RecoveryDeps, 'automation' | 'causePeers' | 'verifyRepair'>;
+  };
   /** Persist the finished run (`system_cache` `failure-sentinel-last-run`) for the operator read model. Never throws. */
   recordLastRun?(run: SentinelLastRun): Promise<void>;
   /** Delete recovery attempt rows past their retention (180 days). Full sweeps only. Returns rows removed. */
@@ -416,7 +422,7 @@ async function recoverOpenIncidents(
   try {
     const port = deps.incidentPort ?? (await createDbIncidentPort());
     if (!port.listUnresolved) return;
-    const rdeps: RecoveryDeps = { port, families: recovery.families, effects: recovery.effects, claimLease: recovery.claimLease, events: recovery.events, now: () => now };
+    const rdeps: RecoveryDeps = { port, families: recovery.families, effects: recovery.effects, claimLease: recovery.claimLease, events: recovery.events, ...recovery.operator, now: () => now };
     for (const family of recovery.families) {
       const open = await port.listUnresolved(workspaceId, family.rule);
       const results = await assessDueIncidents(rdeps, open, 'backstop');
@@ -501,7 +507,7 @@ export async function reassessIncidentsNamingPr(
     const port = deps.incidentPort ?? (await createDbIncidentPort());
     if (!port.listUnresolvedByPr) return [];
     const named = await port.listUnresolvedByPr(workspaceId, prNumber);
-    const rdeps: RecoveryDeps = { port, families: recovery.families, effects: recovery.effects, claimLease: recovery.claimLease, events: recovery.events };
+    const rdeps: RecoveryDeps = { port, families: recovery.families, effects: recovery.effects, claimLease: recovery.claimLease, events: recovery.events, ...recovery.operator };
     const results: AssessResult[] = [];
     for (const incident of named) results.push(await assessIncident(rdeps, incident.id, source));
     await afterAssessment(deps, results);
@@ -1063,7 +1069,10 @@ export function productionSweepDeps(): SweepDeps {
         });
     },
     collectFacts: dbCollectFacts,
-    recovery: { families: [pathOverlapRecoveryFamily, createInfrastructureRecoveryFamily()], effects: productionRecoveryEffects(), claimLease: claimRecoveryLease, events: dbRecoveryEvents() },
+    recovery: {
+      families: [pathOverlapRecoveryFamily, createInfrastructureRecoveryFamily(), dispatchRecoveryFamily],
+      effects: productionRecoveryEffects(), claimLease: claimRecoveryLease, events: dbRecoveryEvents(), operator: productionOperatorRecoveryDeps(),
+    },
     recordLastRun: writeSentinelLastRun,
     pruneRecoveryEvents: () => pruneRecoveryEvents(),
     async reportOpsError(message, detail, severity) {

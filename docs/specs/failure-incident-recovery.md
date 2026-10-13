@@ -1285,3 +1285,52 @@ stale-worker reaper. They add no lifecycle writer of their own.
   ({ incidentId, generation }), the name the workstream (b) projection
   (task `5ef4c315`) uses. This family does not write it yet. Until it does,
   the task surfaces read the hold directly (§18.6).
+
+## 19. Operator controls on the loop (operator-recovery B2)
+
+The platform owner's controls (operator-recovery spec in buildd-admin, §7.2,
+§8 and §9; task `c5e732b0`) act on this loop. They add no state value, no
+writer and no notifier. The contract changes are additive (`v` stays 1).
+
+- **One validator, one service.** `validateRecoveryAction(principal, request,
+  fresh)` and `applyIncidentRecoveryAction` in
+  `apps/web/src/lib/failure-incident-recovery-actions.ts`. The owner route
+  (`POST /api/admin/operator`), the incident page route (§9) and a future model
+  suggestion share them. Each route authorizes its own principal first.
+- **The gate before an automatic repair** (`assessIncident`). It reads
+  `system_cache` `operator-recovery:*` through
+  `failure-incident-recovery-automation.ts`:
+  - **Paused.** The platform, the rule or the cause is paused, or the switch
+    could not be read (fail closed). The repair is held as `waiting` with
+    `nextAction.kind = 'paused'`. Nothing is spent. Assessment and
+    verification go on.
+  - **Shadow or off.** The policy or the repair's rollout says so. Repairs
+    added by B2 (`redeliver_dispatch`, `retry_stale_worker`,
+    `rerun_visual_audit`, `kernel_ci_retry`) start in shadow. A shadow hold
+    records the would-run once, as an `incident_recovery` row with outcome
+    `deferred` and `verify.passed: null`. Its `nextAction.kind` is `shadow`.
+  - **Shared cause.** A repair on a fault the whole cause shares
+    (`release_blocker`, `file_fix_task`, `retry_capture`,
+    `rerun_visual_audit`) runs once, on the lead incident: highest severity,
+    then the oldest. The other members hold with `nextAction.kind =
+    'shared_repair'` and spend no budget. If a peer has already filed the
+    fix, the others follow it and never file a second. The lead's repair
+    covers every member's subjects, and its attempt row lists them
+    (`detail.members`).
+- **Policy.** `operator-recovery:policy` sets a family's budget limit,
+  backoff and episode deadline. A new limit applies to a new budget only. The
+  owner's `retry_recovery` with `extendBudgetBy` raises the current one
+  (`budget.extended`, at most 2 per generation).
+- **Verify windows.** Each RepairKind carries a predicate and a window
+  (`failure-incident-repairs.ts`). Inside the window a failing check is not a
+  verdict. The newest attempt is judged on every look until its verdict
+  lands, because the write is first-verdict-wins.
+- **Platform causes.** A decision on a `platform`-scoped cause becomes
+  `needs_operator` with `capabilityGap.capability = 'platform_decision'`. A
+  customer's surfaces read *Buildd is working on a platform problem affecting
+  this task* for that gap and for `repair_infrastructure:*` (§17).
+- **Runbooks.** `qa.scrub_immutable_violation` adds one rule to §16.3 step 4:
+  the capture re-run waits for the fix task's PR to merge.
+  `dispatch.delivery_exhausted` is a family of its own
+  (`failure-incident-recovery-dispatch.ts`), scoped by `RecoveryFamily.applies`
+  to the incidents the runbook names.

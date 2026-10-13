@@ -116,12 +116,23 @@ describe('projectIncident: one state word, sentence and owner per assessment', (
   it('needs_operator: Automatic recovery unavailable, with the gap and the operator\'s action; not Needs You', () => {
     const p = projectIncident(incident({ recovery: recovery({
       state: 'needs_operator', owner: 'operator',
-      cause: { reasonCode: 'infrastructure_failure.visual_qa.scrub', rule: 'path_overlap_stall', ownership: 'infrastructure' },
+      cause: { reasonCode: 'infrastructure_failure.worker.auth', rule: 'infrastructure_failure', ownership: 'infrastructure' },
+      capabilityGap: { capability: 'reconnect_credential', reason: 'the workspace credential is rejected' },
+      nextAction: { kind: 'operator', label: 'Reconnect the credential.', key: 'k' },
+    }) }), builddHold, opts);
+    expect(p).toMatchObject({ phase: 'unavailable', stateWord: 'Automatic recovery unavailable', owner: 'operator', ownerLabel: 'Operator', needsYou: false, options: [] });
+    expect(p.sentence).toBe('Automatic recovery unavailable: the workspace credential is rejected. Reconnect the credential.');
+  });
+
+  it('a platform defect (operator-recovery §8.5): Buildd is working on a platform problem, with the next check; never a question', () => {
+    const p = projectIncident(incident({ recovery: recovery({
+      state: 'needs_operator', owner: 'operator', nextCheckAt: '2026-10-11T14:20:00.000Z',
+      cause: { reasonCode: 'infrastructure_failure.visual_qa.scrub', rule: 'infrastructure_failure', ownership: 'infrastructure' },
       capabilityGap: { capability: 'repair_infrastructure:visual_qa.scrub', reason: 'the QA database scrub fails on an immutable table' },
       nextAction: { kind: 'operator', label: 'An operator repairs the scrub step.', key: 'k' },
     }) }), builddHold, opts);
-    expect(p).toMatchObject({ phase: 'unavailable', stateWord: 'Automatic recovery unavailable', owner: 'operator', ownerLabel: 'Operator', needsYou: false, options: [] });
-    expect(p.sentence).toBe('Automatic recovery unavailable: the QA database scrub fails on an immutable table. An operator repairs the scrub step.');
+    expect(p).toMatchObject({ phase: 'unavailable', owner: 'operator', needsYou: false, options: [] });
+    expect(p.sentence).toBe('Buildd is working on a platform problem affecting this task. It checks again at 2:20 PM.');
   });
 
   it('needs_decision: the one question, typed options, recommended first, and it is the person\'s', () => {

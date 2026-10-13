@@ -19,7 +19,9 @@ import { GATE_SLUGS } from '@buildd/core/gate-events';
 import type { RecoveryCauseDetail, RecoveryFilter, RecoveryPanel } from '@buildd/shared';
 import { readSentinelLastRun, SENTINEL_LAST_RUN_KEY, type RecoveryAttemptDetail } from '@/lib/failure-incident-recovery-events';
 import { INCIDENT_SUBJECT_TYPE, incidentSubjectKey } from '@/lib/failure-incident-escalation';
-import { buildRecoveryCauseDetail, buildRecoveryPanel, type QueueFacts, type QueueIncident } from './recovery/queue';
+import { buildRecoveryCauseDetail, buildRecoveryPanel, type PriorityOverride, type QueueFacts, type QueueIncident } from './recovery/queue';
+import { buildAutomationState } from '@/lib/failure-incident-recovery-automation';
+import { PRIORITY_CAPABILITY } from '@/lib/failure-incident-recovery-actions';
 import { buildAutomationView, OPERATOR_RECOVERY_DECISION_KINDS, OPERATOR_RECOVERY_KEY_PREFIX } from './recovery/automation';
 import { runExperimentHealth } from '@buildd/core/experiment-health-source';
 import { runExperimentReadout } from '@buildd/core/experiment-readout-source';
@@ -516,7 +518,7 @@ async function loadRecoveryFacts(opts: RecoveryReadOpts): Promise<QueueFacts> {
   const prNumbers = [...new Set(prKeys.map(k => k.prNumber))];
   const startOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 
-  const [wsRows, taskRows, workerRows, prRows, attemptRows, lastRunRow, verdictRows, automationRows, modelRows] = await Promise.all([
+  const [wsRows, taskRows, workerRows, prRows, attemptRows, lastRunRow, verdictRows, automationRows, modelRows, overrideRows] = await Promise.all([
     wsIds.length ? db.select({ id: workspaces.id, name: workspaces.name, teamId: workspaces.teamId }).from(workspaces).where(inArray(workspaces.id, wsIds)) : Promise.resolve([]),
     (taskIds.length
       ? db.select({ id: tasks.id, title: tasks.title, status: tasks.status, workspaceId: tasks.workspaceId, missionId: tasks.missionId, missionTitle: missions.title, missionWorkspaceId: missions.workspaceId })
@@ -546,11 +548,22 @@ async function loadRecoveryFacts(opts: RecoveryReadOpts): Promise<QueueFacts> {
         .where(and(eq(decisionRecords.capability, ESCALATION_GATE_CAPABILITY), eq(decisionRecords.subjectType, INCIDENT_SUBJECT_TYPE),
           inArray(decisionRecords.subjectId, incidentIds.map(incidentSubjectKey))))
       : Promise.resolve([])).catch(() => null),
-    db.select({ key: systemCache.key, value: systemCache.value, expiresAt: systemCache.expiresAt }).from(systemCache)
+    db.select({ key: systemCache.key, value: systemCache.value, updatedAt: systemCache.updatedAt, expiresAt: systemCache.expiresAt }).from(systemCache)
       .where(like(systemCache.key, `${OPERATOR_RECOVERY_KEY_PREFIX}%`)).catch(() => null),
     db.select({ count: sql<number>`count(*)::int`, costUsd: sql<number>`coalesce(sum(${decisionRecords.costUsd}), 0)::float8` }).from(decisionRecords)
       .where(and(inArray(decisionRecords.capability, [...OPERATOR_RECOVERY_DECISION_KINDS]), gte(decisionRecords.createdAt, startOfDay))).catch(() => null),
+    // §5.6 owner overrides: the newest row per cause wins; expiry is the queue's to check.
+    db.select({ subjectId: decisionRecords.subjectId, humanOverride: decisionRecords.humanOverride, overriddenBy: decisionRecords.overriddenBy, createdAt: decisionRecords.createdAt })
+      .from(decisionRecords)
+      .where(and(eq(decisionRecords.capability, PRIORITY_CAPABILITY), eq(decisionRecords.subjectType, 'cause'), gte(decisionRecords.createdAt, new Date(now.getTime() - 8 * DAY_MS))))
+      .orderBy(desc(decisionRecords.createdAt)).limit(500).catch(() => []),
   ]);
+  const overrides = new Map<string, PriorityOverride>();
+  for (const o of overrideRows) {
+    const h = o.humanOverride as { mode?: unknown; until?: unknown; reason?: unknown; by?: unknown } | null;
+    if (!o.subjectId || overrides.has(o.subjectId) || !h || (h.mode !== 'pin_top' && h.mode !== 'demote' && h.mode !== 'snooze') || typeof h.until !== 'string') continue;
+    overrides.set(o.subjectId, { mode: h.mode, until: h.until, by: typeof h.by === 'string' ? h.by : o.overriddenBy ?? 'owner', reason: typeof h.reason === 'string' ? h.reason : '' });
+  }
 
   const teamIds = [...new Set(wsRows.map(w => w.teamId).filter((x): x is string => !!x))];
   const teamRows = teamIds.length ? await db.select({ id: teams.id, name: teams.name }).from(teams).where(inArray(teams.id, teamIds)) : [];
@@ -586,6 +599,8 @@ async function loadRecoveryFacts(opts: RecoveryReadOpts): Promise<QueueFacts> {
     lastRun: lastRunRow ? readSentinelLastRun(lastRunRow[0]?.value ?? null) : null,
     personVerdicts,
     automation: buildAutomationView({ rows: automationRows, model: modelRows?.[0] ?? null, now }),
+    automationState: buildAutomationState(automationRows, now),
+    overrides,
   };
 }
 
