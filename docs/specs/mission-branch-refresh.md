@@ -6,7 +6,7 @@ last_verified: 2026-10-11
 summary: A mission's integration branch MUST be refreshed from trunk on task start or a daily backstop, never per trunk merge; every writer is fenced, owned and reconciled.
 domain: missions
 surfaces: [apps/web/src/lib/mission-branch-refresh.ts, apps/web/src/lib/mission-subscribers.ts, apps/web/src/app/api/workers/claim/route.ts, apps/web/src/app/api/cron/pr-reconcile/route.ts]
-related: [mission-release-gate, mission-task-lifecycle, workflow-state-kernel]
+related: [workflow-kernel-library, mission-release-gate, mission-task-lifecycle, workflow-state-kernel]
 keywords: [integration branch, mission/*, merge dev into, chore(mission), branch refresh, branchRefreshHeadSha, branch_refreshed_at, refresh conflict task, requireMergeCommit, trunk merge, refresh lease, abandoned lease, conflict reservation, paused mission refresh, mission branch concurrency]
 verified_by: [apps/web/src/lib/mission-branch-refresh.test.ts, scripts/resolve-generated-conflicts.test.ts, apps/web/src/lib/conflict-retry.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/modules.test.ts, apps/web/src/lib/integration-refresh.test.ts]
 supersedes: []
@@ -151,6 +151,8 @@ mission is in use. A trunk merge alone MUST NOT trigger it.
   THEN it is refreshed.
 
 ## Lifecycle and concurrency
+
+> Amended 2026-10-13 by `workflow-kernel-library.md` §6: refresh becomes an effect of the mission delivery's writable epoch and reads shipped from delivery state, not `workers.mergedAt`.
 
 This section is the cross-operation contract: who writes the integration branch
 and the mission PR, how those writers coordinate, and what keeps every unfinished
