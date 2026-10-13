@@ -5900,6 +5900,57 @@ describe('PATCH /api/workers/[id]', () => {
         expect(capturedTaskSet?.result?.alreadyShippedIn?.prNumber).toBe(3851);
       });
 
+      describe('mission-branch refresh already on the branch', () => {
+        const refreshTask = {
+          ...shippedTask,
+          context: {
+            baseBranch: 'buildd/mission-x', requireMergeCommit: true,
+            refreshTrunk: 'dev', refreshTrunkSha: 'abc1234', refreshMissionHeadSha: 'def5678',
+          },
+        };
+        const compare = (status: string) => mockGithubApi.mockImplementation((_i: number, path: string) => {
+          if (path.includes('/pulls?head=')) return Promise.resolve([]);
+          if (path.includes('/compare/abc1234...')) return Promise.resolve({ status });
+          return Promise.resolve(null);
+        });
+
+        it('completes without a PR when the branch already contains the trunk sha', async () => {
+          mockTasksFindFirst.mockResolvedValue(refreshTask);
+          mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
+          compare('ahead');
+          expect((await complete({})).status).toBe(200);
+        });
+
+        it('keeps the slashes in the branch name when comparing', async () => {
+          mockTasksFindFirst.mockResolvedValue(refreshTask);
+          mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
+          mockGithubApi.mockClear();
+          compare('ahead');
+          await complete({});
+          const comparePaths = (mockGithubApi.mock.calls as any[]).map((c) => c[1] as string).filter((p) => p.includes('/compare/'));
+          expect(comparePaths.length).toBeGreaterThan(0);
+          for (const p of comparePaths) {
+            expect(p).toContain('buildd/mission-x');
+            expect(p).not.toContain('%2F');
+          }
+        });
+
+        it('still refuses when the branch does not contain the trunk sha', async () => {
+          mockTasksFindFirst.mockResolvedValue(refreshTask);
+          mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
+          compare('diverged');
+          expect((await complete({})).status).toBe(400);
+        });
+
+        it('own commits still need discardEdits', async () => {
+          mockTasksFindFirst.mockResolvedValue(refreshTask);
+          mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 1 });
+          compare('identical');
+          expect((await complete({})).status).toBe(400);
+          expect((await complete({ discardEdits: 'merge already pushed to the branch' })).status).toBe(200);
+        });
+      });
+
       it('the plain pr_required refusal points at alreadyShippedIn', async () => {
         mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
         githubPr(true);

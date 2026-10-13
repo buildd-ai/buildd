@@ -7,6 +7,7 @@ import { codingRunObservations, reviewVerdictObservations } from '@buildd/core/m
 import { reportTaskPolicyOutcome } from '@/lib/model-policy-outcomes';
 import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, workerActionEvents, workerPromptCompositionEvents, connectors, secrets, missions, taskSchedules } from '@buildd/core/db/schema';
 import { githubApi, postPrReview } from '@/lib/github';
+import { integrationRefreshOf, isAncestor, encodeRef } from '@/lib/integration-refresh';
 import { eq, and, or, desc, gte, gt, inArray, isNull, isNotNull, not, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { keepsParkClock, recordInteractiveSessionSeen } from '@/lib/interactive-worker-liveness';
@@ -1492,6 +1493,10 @@ export async function PATCH(
   // Set by the pr_required gate when `alreadyShippedIn` names a PR GitHub
   // confirms merged; snapshotted onto tasks.result for audit.
   let alreadyShipped: { prNumber: number; prUrl: string } | null = null;
+  // Set by the pr_required gate when a mission-branch refresh task finds its
+  // integration branch already containing the trunk sha it was dispatched for
+  // (the merge was pushed straight to the branch, so no PR exists or can).
+  let refreshAlreadyLanded: { trunk: string; trunkSha: string; branch: string } | null = null;
   // Lifted out of the outputRequirement block below (which only runs when
   // outputReq !== 'none') so the planning-contract guard can see a PR that was
   // auto-detected from GitHub even on a task with no output requirement.
@@ -2205,6 +2210,25 @@ export async function PATCH(
         }
       }
 
+      // pr_required, refresh already landed: a mission-branch refresh whose
+      // merge reached the integration branch without a PR (pushed directly, so
+      // the worker branch equals the mission branch and no PR can be opened).
+      // Accepted on the same evidence buildd checks after a refresh merges:
+      // the dispatched trunk sha is an ancestor of the integration branch.
+      if (outputReq === 'pr_required' && !hasPR && !alreadyShipped && repoWithInstallation) {
+        const refresh = integrationRefreshOf(terminalTaskRow[0]?.context);
+        const refreshBranch = (terminalTaskRow[0]?.context as Record<string, unknown> | null | undefined)?.baseBranch;
+        if (refresh?.trunk && refresh.trunkSha && typeof refreshBranch === 'string' && refreshBranch) {
+          const contained = await isAncestor(
+            repoWithInstallation.installation.installationId,
+            repoWithInstallation.fullName,
+            refresh.trunkSha,
+            encodeRef(refreshBranch),
+          );
+          if (contained) refreshAlreadyLanded = { trunk: refresh.trunk, trunkSha: refresh.trunkSha, branch: refreshBranch };
+        }
+      }
+
       // Standing ask from the outputRequirement-rejection bug: a gate-rejected
       // completion used to discard the agent's summary/structuredOutput with
       // zero persistence — a 60-turn run's only record was a 400 in the
@@ -2312,7 +2336,7 @@ export async function PATCH(
         filesChanged: Math.max(filesChanged ?? 0, worker.filesChanged ?? 0),
         dirtyWorktree: effectiveDirtyWorktree,
         observedTouches: sessionObservedTouches,
-        hasPR: hasPR || !!alreadyShipped, mergedAt: worker.mergedAt, discardEdits,
+        hasPR: hasPR || !!alreadyShipped || !!refreshAlreadyLanded, mergedAt: worker.mergedAt, discardEdits,
         summary: body.summary, summarySource: body.summarySource,
       }) && !(await hasDeliverableArtifact(true))) {
         const frictionSignature = await persistRejectedCompletionPayload('silent_completion');
@@ -2399,10 +2423,10 @@ export async function PATCH(
         // need the same explicit discard the `auto` arm asks for.
         const discardReason = typeof discardEdits === 'string' ? discardEdits.trim() : '';
         const strandsOwnEdits = (effectiveCommits > 0 || effectiveDirtyWorktree) && !discardReason;
-        if (!alreadyShipped || strandsOwnEdits) {
+        if ((!alreadyShipped && !refreshAlreadyLanded) || strandsOwnEdits) {
           const frictionSignature = await persistRejectedCompletionPayload('pr_required');
-          const error = alreadyShipped
-            ? `PR #${alreadyShipped.prNumber} is merged, but this worker has ${effectiveCommits > 0 ? `${effectiveCommits} commit(s)` : 'uncommitted changes'} of its own that would be left unshipped. Open a PR for them with create_pr, or call complete_task again with \`discardEdits\` explaining why they are not needed.`
+          const error = alreadyShipped || refreshAlreadyLanded
+            ? `${alreadyShipped ? `PR #${alreadyShipped.prNumber} is merged` : `${refreshAlreadyLanded!.branch} already contains ${refreshAlreadyLanded!.trunk}`}, but this worker has ${effectiveCommits > 0 ? `${effectiveCommits} commit(s)` : 'uncommitted changes'} of its own that would be left unshipped. Open a PR for them with create_pr, or call complete_task again with \`discardEdits\` explaining why they are not needed.`
             : alreadyShippedRefusal
               ? `This task requires a pull request before completing. ${alreadyShippedRefusal}`
               : 'This task requires a pull request before completing. Use create_pr to open one. If the work already landed in a merged PR this task does not own, call complete_task with `alreadyShippedIn` set to that PR number.';
@@ -2421,7 +2445,9 @@ export async function PATCH(
           gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
           surface: 'PATCH /api/workers/[id]',
           outcome: 'accepted',
-          reason: 'completion accepted under pr_required: work already shipped in a merged PR',
+          reason: refreshAlreadyLanded
+            ? 'completion accepted under pr_required: mission branch already contains the refresh trunk sha'
+            : 'completion accepted under pr_required: work already shipped in a merged PR',
           workspaceId: worker.workspaceId,
           missionId: taskMissionId,
           taskId: worker.taskId,
@@ -2429,7 +2455,8 @@ export async function PATCH(
           callerOrigin: 'worker',
           detail: {
             outputRequirement: 'pr_required',
-            alreadyShippedIn: alreadyShipped.prNumber,
+            ...(alreadyShipped ? { alreadyShippedIn: alreadyShipped.prNumber } : {}),
+            ...(refreshAlreadyLanded ? { refreshAlreadyLanded } : {}),
             commits: effectiveCommits,
             dirtyWorktree: effectiveDirtyWorktree,
             ...(discardReason ? { discardEdits: discardReason.slice(0, 500) } : {}),
