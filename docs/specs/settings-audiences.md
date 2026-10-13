@@ -9,6 +9,22 @@ surfaces: [apps/web/src/lib/settings-nav.ts, apps/web/src/app/app/(protected)/se
 related: [team-permissions, mcp-connectors-and-roles, model-tier-ceilings, settings-models]
 keywords: [settings ia, You, Team, read-only, Managed by your team admins, member view, admin view, operator view, route moves, SETTINGS_ROUTE_MOVES, Leave team, My maximum, Pause new starts, Deploy access, Repeat work, Agents page]
 verified_by: [apps/web/src/lib/settings-nav.test.ts, apps/web/src/lib/settings-route-moves.test.ts, apps/web/src/app/app/(protected)/settings/_lib/settings-permissions.test.ts, apps/web/src/app/app/(protected)/settings/_components/SettingsPage.test.tsx, apps/web/src/app/app/(protected)/settings/team/no-grant-table.test.ts, apps/web/src/app/app/(protected)/settings/account/YourTeams.dom.test.tsx, apps/web/src/app/app/(protected)/settings/models/MyMaximumSection.dom.test.tsx, apps/web/src/app/app/(protected)/settings/models/page.test.ts, apps/web/src/app/app/(protected)/settings/agents/[slug]/edit/read-only.test.tsx, apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/PauseStartsSection.dom.test.tsx, apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/SubjectPolicySection.dom.test.tsx, apps/web/src/app/app/(protected)/health/member-scope.test.ts, apps/web/src/app/api/tasks/[id]/start/route.test.ts]
+assertions:
+  - id: "settings-nav"
+    type: "symbol"
+    name: "SETTINGS_NAV"
+    path: "apps/web/src/lib/settings-nav.ts"
+  - id: "team-managed-line"
+    type: "symbol"
+    name: "TEAM_MANAGED_LINE"
+    path: "apps/web/src/lib/settings-nav.ts"
+  - id: "settings-permissions"
+    type: "symbol"
+    name: "settingsPermissions"
+    path: "apps/web/src/app/app/(protected)/settings/_lib/settings-permissions.ts"
+  - id: "settings-nav-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/settings-nav.test.ts"
 supersedes: []
 ---
 
