@@ -74,6 +74,8 @@ const edges = (specId: string) => q<{ edge: string }>(sql`
   SELECT f.kind || ':' || f.key || ' -' || e.type || '-> ' || t.kind || ':' || t.key AS edge
   FROM knowledge_edges e JOIN knowledge_entities f ON f.id = e.from_entity_id JOIN knowledge_entities t ON t.id = e.to_entity_id
   WHERE e.workspace_id = ${ws} AND ((f.kind = 'spec' AND f.key = ${specId}) OR (f.kind = 'spec_revision' AND starts_with(f.key, ${`${specId}@`})))
+    -- The stored graph only: derived edges (§14) have their own test, tests/db/spec-neighbours.test.ts.
+    AND NOT starts_with(e.rule, 'living_spec:derived:')
   ORDER BY 1`).then(rows => rows.map(r => r.edge));
 
 describe('approval indexes the approved text', () => {

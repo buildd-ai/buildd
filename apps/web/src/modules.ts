@@ -266,6 +266,16 @@ export const SPEC_DUPLICATE_CHECK = checkSpecDuplicates;
 export const SPEC_DUPLICATE_OVERRIDE = recordDuplicateOverride;
 
 /**
+ * The knowledge module's boot slot for Living Spec neighbours (instrumentation.ts):
+ * installs the spec-corpus similarity query behind core's `neighbourDeps`
+ * (lib/specs/neighbours.ts), so the nearby route can suggest a parent.
+ */
+export const SPEC_SIMILARITY = async (): Promise<void> => {
+  const { installSpecSimilarity } = await import('@/lib/specs/knowledge');
+  installSpecSimilarity();
+};
+
+/**
  * The decisions module's boot slot (instrumentation.ts): installs the evidence
  * backend store behind `@buildd/core/decision-replay`, so each decision keeps
  * a replayable copy of its input. Without it capture is a no-op.

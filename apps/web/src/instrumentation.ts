@@ -10,6 +10,13 @@ export async function register() {
     // missing table or row leaves every prompt on its public default.
     const { startPrompts } = await import('@buildd/core/prompts-source');
     await Promise.all([startPolicyOverrides(), startPrompts()]);
+    // Living Spec neighbours: the knowledge module answers `similar` (lib/specs/neighbours.ts).
+    try {
+      const { SPEC_SIMILARITY } = await import('./modules');
+      await SPEC_SIMILARITY();
+    } catch (err) {
+      console.warn('[instrumentation] spec similarity not installed:', (err as Error)?.message ?? err);
+    }
     // Replayable copies of decision inputs (@buildd/core/decision-replay), in the
     // team's evidence backend. DECISION_REPLAY=off leaves capture unregistered.
     if (process.env.DECISION_REPLAY !== 'off') {
