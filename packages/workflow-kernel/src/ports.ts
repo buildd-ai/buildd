@@ -278,7 +278,11 @@ export interface WorkFiled {
   skipped?: string;
   /** Which shape the host filed, when it has more than one (`diagnose` for a CI fix that only diagnoses). */
   variant?: string;
-  /** Evidence the host still has to capture for the new task: the kernel owes it as a follow-up effect. */
+  /**
+   * Evidence the host still has to capture for the task: the kernel owes it as
+   * a follow-up effect. Also answered for a task filed before (a run that
+   * crashed before the kernel bound its row), which is owed it just the same.
+   */
   evidence?: Record<string, unknown>;
 }
 

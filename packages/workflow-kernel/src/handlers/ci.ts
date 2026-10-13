@@ -83,8 +83,8 @@ export function ciHandlers(ports: KernelPorts): EffectHandlers {
     });
     if (filed.skipped || !filed.taskId) return { outcome: `skipped:${filed.skipped ?? 'not_filed'}` };
     await ports.store.linkAttemptTask(attempt.id, filed.taskId);
-    if (!filed.created) return { outcome: 'ok:task_exists' };
-
+    // Not created: a run that filed it crashed before binding the row (a bound row returned above),
+    // so it was never woken nor owed its evidence. This run finishes what that one started.
     await work.wake(filed.taskId, 'ci.retry');
     if (filed.evidence) {
       // Owed, not run after the response: the drain captures it and records what it got.
@@ -93,6 +93,7 @@ export function ciHandlers(ports: KernelPorts): EffectHandlers {
         dedupeKey: `capture_ci_evidence:${filed.taskId}`, payload: { ...filed.evidence, taskId: filed.taskId },
       });
     }
+    if (!filed.created) return { outcome: 'ok:task_bound' };
     return { outcome: filed.variant === 'diagnose' ? 'ok:diagnose' : 'ok' };
   };
 

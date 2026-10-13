@@ -730,6 +730,45 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
+    name: 'handlers/ci: a fix filed by a run that crashed before binding its row is bound, woken and owed its evidence by the next run',
+    async run(host) {
+      const s = await new Delivery(host, 66).open();
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      applied(await s.ciRed('H1'), 'REPAIRING', 'CI red');
+      const attempt = (await s.view()).attempts.find((a) => a.family === 'ci')!;
+      const f = fakePorts(host, { work: { ci_fix: { evidence: { failedJobId: 7 } } } });
+      f.github.setPr(s.repo, s.prNumber, s.live('H1'));
+      // The earlier run: filed under the row's id, then died before the kernel bound the row.
+      await f.work.file({ role: 'ci_fix', workspaceId: s.workspaceId, taskId: attempt.id, target: { repoFullName: s.repo, prNumber: s.prNumber, headSha: 'H1' }, lineage: { deliveryId: s.deliveryId, attemptId: attempt.id }, dedupeKey: `ci_fix:${attempt.id}` });
+      await drainKernel(host, s, f.ports);
+      eq(await outcomesOf(host, s, 'dispatch_ci_fix'), ['ok:task_bound'], 'the next run binds it');
+      eq((await s.view()).attempts.find((a) => a.id === attempt.id)?.taskId, attempt.id, 'bound to the task already filed');
+      eq(f.work.woken, [{ taskId: attempt.id, reason: 'ci.retry' }], 'and wakes it');
+      eq(await outcomesOf(host, s, 'capture_ci_evidence'), ['ok:stored'], 'and its job log is still captured');
+      eq(f.work.filed.length, 1, 'nothing filed twice');
+    },
+  },
+  {
+    name: 'handlers: a shared kind\'s families the kernel does not own are the host\'s, and touch none of the kernel\'s work',
+    async run(host) {
+      const s = await new Delivery(host, 67).open();
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      const f = fakePorts(host);
+      const asked: string[] = [];
+      const h = kernelEffectHandlers(f.ports, {
+        cancel_open_attempts: async (e) => { asked.push(`cancel:${String(e.payload.reason)}`); return { outcome: `host:${String(e.payload.reason)}` }; },
+        escalate_exhaustion: async (e) => { asked.push(`escalate:${String(e.payload.family)}`); return { outcome: `host:${String(e.payload.family)}` }; },
+      });
+      eq(await h.cancel_open_attempts!(await direct(host, s, 'cancel_open_attempts', { reason: 'approved', families: ['review_fix'] })), { outcome: 'host:approved' }, 'an approval\'s cancellation');
+      eq(await h.cancel_open_attempts!(await direct(host, s, 'cancel_open_attempts', { reason: 'head_moved', families: ['review_fix'] })), { outcome: 'host:head_moved' }, 'a moved head\'s cancellation');
+      eq(await h.escalate_exhaustion!(await direct(host, s, 'escalate_exhaustion', { family: 'conflict', attempts: 3 })), { outcome: 'host:conflict' }, 'a conflict family\'s exhaustion');
+      eq(await h.escalate_exhaustion!(await direct(host, s, 'escalate_exhaustion', { family: 'review_fix' })), { outcome: 'host:review_fix' }, 'a review family\'s exhaustion');
+      eq(asked, ['cancel:approved', 'cancel:head_moved', 'escalate:conflict', 'escalate:review_fix'], 'each reached the host once');
+      eq({ cancelled: f.work.cancelledPending, escalated: f.escalate.calls }, { cancelled: [], escalated: [] }, 'and none reached the kernel\'s own work');
+      eq(await kernelEffectHandlers(f.ports).cancel_open_attempts!(await direct(host, s, 'cancel_open_attempts', { reason: 'approved' })), { outcome: 'skipped:no_handler' }, 'with no host handler, nothing pretends to cancel');
+    },
+  },
+  {
     name: 'handlers/trunk: one trunk fix per red base, filed under its anchor, linked and woken; a later incident joins it with the checks it lacks; a green base files nothing; blocked CI fixes are cancelled',
     async run(host) {
       const trunk = new RecordingTrunk();

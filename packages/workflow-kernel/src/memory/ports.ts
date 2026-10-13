@@ -32,7 +32,7 @@ export class RecordingWork implements Work {
     const answer = this.answers[req.role] ?? {};
     if (answer.skipped) return { taskId: null, created: false, skipped: answer.skipped };
     const prior = this.filed.find((f) => f.dedupeKey === req.dedupeKey || (req.taskId != null && f.taskId === req.taskId));
-    if (prior) return { taskId: prior.taskId, created: false };
+    if (prior) return { taskId: prior.taskId, created: false, ...(answer.variant ? { variant: answer.variant } : {}), ...(answer.evidence ? { evidence: structuredClone(answer.evidence) } : {}) };
     const taskId = req.taskId ?? this.newId();
     this.filed.push({ ...structuredClone(req), taskId });
     return { taskId, created: true, ...(answer.variant ? { variant: answer.variant } : {}), ...(answer.evidence ? { evidence: structuredClone(answer.evidence) } : {}) };

@@ -1165,7 +1165,8 @@ Shipped live in part 2 (the CI family):
   at dispatch (PR open, head still the bound head, CI not green now), then files the
   legacy-shaped CI fix or drift-diagnose task with `delivery_role = ci_fix` (the
   reviews module's `ciFixWork` in `ci-retry-effects.ts` shapes it); its task id is the
-  attempt id, so a re-run files nothing twice. The failed job's log is captured by a
+  attempt id, so a re-run files nothing twice, and a run that filed it but crashed before
+  binding the row is finished by the next one (bound, woken, owed its evidence). The failed job's log is captured by a
   follow-up effect, `capture_ci_evidence`, which records an `evidence_captured` fact
   (no work after the response). CI exhaustion escalates through `escalateCiRedHead`
   (`ciEscalate`, the `Escalate` port).

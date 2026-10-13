@@ -140,6 +140,8 @@ export const ciEvidence: Evidence = {
       parentTaskId: String(x.parentTaskId ?? ''),
       workerId: String(x.workerId ?? ''),
       prNumber: typeof x.prNumber === 'number' ? x.prNumber : null,
+      // One object per fix task and failed job: a retried effect overwrites it instead of writing another.
+      ...(typeof x.failedJobId === 'number' ? { objectName: `${String(x.taskId ?? '')}-${x.failedJobId}` } : {}),
     });
     if (r.status === 'stored') return { status: 'stored', record: { objectKey: r.objectKey, bytes: r.bytes } };
     return { status: r.status, record: r.status === 'failed' ? { error: r.error } : { reason: r.reason } };

@@ -193,7 +193,8 @@ export function builddWork(builders: WorkBuilders, exec: Exec = dbExec): Work {
           const existing = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { id: true } });
           if (!existing) throw new Error(b.refused);
         }
-        return { taskId, created: false };
+        // Filed before (a run that crashed before the kernel bound it): still owed what the filing owes.
+        return { taskId, created: false, ...(b.variant ? { variant: b.variant } : {}), ...(b.evidence ? { evidence: b.evidence } : {}) };
       }
       const workspace = b.workspace ?? await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, req.workspaceId)) });
       await announceTaskCreated(row as never, workspace as never);
