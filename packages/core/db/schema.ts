@@ -28,7 +28,7 @@ export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'st
 import { sql } from 'drizzle-orm';
 import { DEFAULT_ENABLED_DECISION_SHADOWS } from '../inference-policy';
 import type { ScheduleDelegation, TaskDelegation } from '../token-delegation';
-import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig, WorkspaceQualityScoutConfig, DerivedFileRule, FailureIncidentSeverity, FailureIncidentStatus, FailureIncidentRule, FailureIncidentAffectedRefs, FailureIncidentEvidenceRef, RootCauseClassification, RootCauseCapabilityKind } from '@buildd/shared';
+import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig, WorkspaceQualityScoutConfig, DerivedFileRule, FailureIncidentSeverity, FailureIncidentStatus, FailureIncidentRule, FailureIncidentAffectedRefs, FailureIncidentEvidenceRef, FailureIncidentTrace, IncidentReportSource, IncidentReportRefs, IncidentReportDecision, IncidentReportDecidedBy, RootCauseClassification, RootCauseCapabilityKind } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
 export const teams = pgTable('teams', {
@@ -6755,6 +6755,8 @@ export const failureIncidents = pgTable('failure_incidents', {
   linkedFixTaskId: uuid('linked_fix_task_id').references(() => tasks.id, { onDelete: 'set null' }),
   acknowledgedAt: timestamp('acknowledged_at', { withTimezone: true }),
   resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+  // Lifecycle trace (stage history, owner, fixes). Written only through the incident CAS; NULL = no trace yet.
+  trace: jsonb('trace').$type<FailureIncidentTrace>(),
   // Optimistic-lock counter for the compare-and-swap update.
   version: integer('version').notNull().default(0),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -6766,6 +6768,45 @@ export const failureIncidents = pgTable('failure_incidents', {
 
 export type FailureIncidentRow = typeof failureIncidents.$inferSelect;
 export type NewFailureIncidentRow = typeof failureIncidents.$inferInsert;
+
+/**
+ * One row per problem report, from any source. The only writer is
+ * apps/web/src/lib/incident-intake.ts. Append-only except the decision and
+ * move fields. `(workspace_id, idempotency_key)` is unique: a repeat report
+ * returns the existing row (ON CONFLICT DO NOTHING, no read-then-write).
+ */
+export const incidentReports = pgTable('incident_reports', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  // Null while undecided, and for noise.
+  incidentId: uuid('incident_id').references(() => failureIncidents.id, { onDelete: 'set null' }),
+  source: text('source').notNull().$type<IncidentReportSource>(),
+  signature: text('signature'),
+  fingerprint: text('fingerprint'),
+  subjectAnchor: jsonb('subject_anchor').$type<TaskSubjectAnchor>(),
+  title: text('title').notNull(),
+  excerpt: text('excerpt'),
+  refs: jsonb('refs').$type<IncidentReportRefs>().notNull().default({}),
+  reporterTaskId: uuid('reporter_task_id'),
+  reporterAccountId: uuid('reporter_account_id'),
+  decision: text('decision').$type<IncidentReportDecision>(),
+  decidedBy: text('decided_by').$type<IncidentReportDecidedBy>(),
+  reasonCode: text('reason_code'),
+  confidence: decimal('confidence', { precision: 4, scale: 3 }),
+  decisionRecordId: uuid('decision_record_id').references(() => decisionRecords.id, { onDelete: 'set null' }),
+  movedFromIncidentId: uuid('moved_from_incident_id'),
+  movedAt: timestamp('moved_at', { withTimezone: true }),
+  idempotencyKey: text('idempotency_key').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  idempotencyIdx: uniqueIndex('incident_reports_workspace_idempotency_idx').on(t.workspaceId, t.idempotencyKey),
+  signatureIdx: index('incident_reports_workspace_signature_idx').on(t.workspaceId, t.signature),
+  fingerprintIdx: index('incident_reports_workspace_fingerprint_idx').on(t.workspaceId, t.fingerprint),
+  incidentCreatedIdx: index('incident_reports_incident_created_idx').on(t.incidentId, t.createdAt),
+}));
+
+export type IncidentReportRow = typeof incidentReports.$inferSelect;
+export type NewIncidentReportRow = typeof incidentReports.$inferInsert;
 
 /**
  * One root cause per team: what broke (a runner's credential, a provider key,

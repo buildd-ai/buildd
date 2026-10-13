@@ -4531,6 +4531,96 @@ export type FailureIncidentRule =
   | 'failure_rate_spike'
   | 'output_unmet_boundary';
 
+/** Where a problem report came from. One intake function writes them all. */
+export type IncidentReportSource =
+  | 'agent_friction'
+  | 'gate_refusal'
+  | 'sentinel'
+  | 'ci'
+  | 'reviewer'
+  | 'release_health'
+  | 'post_session'
+  | 'spec_verdict'
+  | 'owner';
+
+export type IncidentReportDecision = 'attach_to' | 'new_pattern' | 'noise' | 'needs_owner';
+export type IncidentReportDecidedBy = 'rule' | 'model' | 'fallback' | 'person' | 'operator';
+
+/** Pointers a report carries back to the rows it is about. */
+export interface IncidentReportRefs {
+  taskId?: string;
+  workerId?: string;
+  prNumber?: number;
+  headSha?: string;
+  missionId?: string;
+  releaseId?: string;
+  /** At most 20. */
+  paths?: string[];
+  criterion?: { specId: string; specRevisionId: string; criterionId: string };
+}
+
+/** One problem report, as stored in `incident_reports`. */
+export interface IncidentReport {
+  id: string;
+  workspaceId: string;
+  /** Null while undecided, and for noise. */
+  incidentId: string | null;
+  source: IncidentReportSource;
+  signature: string | null;
+  fingerprint: string | null;
+  subjectAnchor: TaskSubjectAnchor | null;
+  title: string;
+  excerpt: string | null;
+  refs: IncidentReportRefs;
+  reporterTaskId: string | null;
+  reporterAccountId: string | null;
+  decision: IncidentReportDecision | null;
+  decidedBy: IncidentReportDecidedBy | null;
+  reasonCode: string | null;
+  confidence: number | null;
+  decisionRecordId: string | null;
+  movedFromIncidentId: string | null;
+  movedAt: string | null;
+  idempotencyKey: string;
+  createdAt: string;
+}
+
+export type FailureIncidentTraceStage =
+  | 'open' | 'owned' | 'fixing' | 'pr' | 'released' | 'verified' | 'recurred' | 'noise';
+
+/** `failure_incidents.trace`: lifecycle history that outlives a recovery generation. */
+export interface FailureIncidentTrace {
+  v: 1;
+  origin: 'detector' | 'report';
+  stage: FailureIncidentTraceStage;
+  /** At most 30, append-only. */
+  stages: Array<{ stage: FailureIncidentTraceStage; at: string; fixTaskId?: string }>;
+  owner: { kind: 'fix_task' | 'recovery' | 'remedy' | 'incident' | 'operator' | 'person'; ref?: string } | null;
+  /** At most 5. */
+  fixes: Array<{
+    taskId: string;
+    prNumber?: number;
+    mergedAt?: string;
+    releaseId?: string;
+    releasedAt?: string;
+    outcome: 'open' | 'resolved' | 'recurred' | 'failed';
+    generation: number;
+  }>;
+  /** Attribution detail is defined by the traceability slice. */
+  introducedBy: Record<string, unknown> | null;
+  specs: {
+    coverage: 'pinned' | 'repo' | 'gap' | 'none';
+    specId?: string;
+    specRevisionId?: string;
+    specPath?: string;
+    criterionId?: string;
+    verdictId?: string;
+    discrepancyId?: string;
+  } | null;
+  /** Cached count of attached reports, for list views. */
+  reportCount: number;
+}
+
 /** A pointer at an existing row — never a copy of it. */
 export interface FailureIncidentEvidenceRef {
   kind: 'task' | 'worker' | 'gate_event' | 'pr' | 'terminal_record';
