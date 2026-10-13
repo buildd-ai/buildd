@@ -420,6 +420,18 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
 
   const headSha = check_suite.head_sha;
 
+  // A Living Spec's generated repo copy (docs/specs/living-specs.md §18, R-35)
+  // has its own landing door: no worker owns it, so nothing below acts on it.
+  for (const pr of check_suite.pull_requests) {
+    try {
+      const { landSpecRepoCopy } = await import('@/lib/specs/repo-copy');
+      const landed = await landSpecRepoCopy({ repoFullName: repository.full_name, prNumber: pr.number, headSha, conclusion: check_suite.conclusion, installationId: installation.id });
+      if (landed) console.log(`[spec-copy] ${repository.full_name}#${pr.number}@${headSha}: ${landed.outcome}`);
+    } catch (err) {
+      console.error(`[spec-copy] ${repository.full_name}#${pr.number}: landing check failed`, err);
+    }
+  }
+
   // CI failure: spawn fix tasks for worker PRs AND fail tracked release PRs.
   if (check_suite.conclusion === 'failure') {
     // Mark worker PRs as ci_failed before handling retries.

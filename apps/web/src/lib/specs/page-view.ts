@@ -12,6 +12,7 @@ import { linkedRepoFullName } from './repo-source';
 import { approvedDesignDrift } from './design';
 import { readSpecNeighbours, type NearbySpec } from './neighbours';
 import type { RepoRef } from './repo-refs';
+import { nativeSourceOn, repoCopyLine, repoCopyPreflight, type RepoCopyPreflight } from './repo-copy';
 
 /**
  * What the dashboard's spec pages show (living-specs.md §9): a workspace's
@@ -169,6 +170,10 @@ export type SpecPageView =
     canApprove: boolean;
     /** With `review`: what approving the head would put in force, for an approver only. */
     review: SpecPanes | null;
+    /** The one source (§18, R-13) and how the repo copy stands (AC-79); absent when the workspace has not opted in. */
+    source?: { source: string; copy: string | null; behind: boolean } | null;
+    /** With `review`: the repo checks on the would-be copy (R-34). Warns, never blocks. */
+    preflight?: RepoCopyPreflight | null;
   };
 
 const personLabel = (label: string | null) => (label?.startsWith('user:') ? label.slice(5) : null);
@@ -194,7 +199,8 @@ export async function specPageView(userId: string, specId: string, opts: { revis
   if (!got.ok) return { state: 'not_found' };
   const spec = got.view.spec;
 
-  const [ws] = await db.select({ name: workspaces.name }).from(workspaces).where(eq(workspaces.id, spec.workspaceId)).limit(1);
+  const [ws] = await db.select({ name: workspaces.name, gitConfig: workspaces.gitConfig }).from(workspaces).where(eq(workspaces.id, spec.workspaceId)).limit(1);
+  const native = nativeSourceOn(ws?.gitConfig);
   const revRows = await db.select({
     revision: specRevisions.revision, authorKind: specRevisions.authorKind, changeSummary: specRevisions.changeSummary,
     approvedBy: specRevisions.approvedBy, approvedAt: specRevisions.approvedAt, createdAt: specRevisions.createdAt,
@@ -276,8 +282,12 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     }
   }
 
+  const preflight = review && native ? await repoCopyPreflight(spec, spec.headRevision).catch(() => null) : null;
+
   return {
     state: 'ok',
+    source: repoCopyLine(native, spec.repoCopy, spec.approvedRevision != null),
+    preflight,
     spec: { id: spec.id, title: spec.title, scope: spec.scope, status: spec.status, workspaceId: spec.workspaceId, workspaceName: ws?.name ?? '', version: spec.version, headRevision: spec.headRevision, approvedRevision: spec.approvedRevision },
     standing: specStanding(spec).standing,
     reading: { revision: got.view.revision.revision, approved: spec.approvedRevision === got.view.revision.revision, isHead: got.view.revision.revision === spec.headRevision },
