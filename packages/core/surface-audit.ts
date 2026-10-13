@@ -86,16 +86,38 @@ export const SURFACE_AUDIT_WAIVER_NOTE_TITLE = 'Surface audit waived';
 export const SURFACE_AUDIT_WAIVER_MIN_REASON_LENGTH = 10;
 
 /** The refusal text. Names the UI files and both ways out. */
-export function surfaceAuditMissingReason(uiPaths: string[], source: 'manifest' | 'diff'): string {
+export function surfaceAuditMissingReason(
+  uiPaths: string[],
+  source: 'manifest' | 'diff',
+  opts: { waiverAllowed?: boolean } = {},
+): string {
+  const run = `run a visual audit (create a \`[surface audit]\` task in this mission with the visual auditor role and let it finish)`;
+  return (
+    `This mission changed UI but no surface audit has passed: ${surfaceAuditEvidence(uiPaths, source)}, and no audit task has completed. ` +
+    (opts.waiverAllowed === false
+      ? `To clear it, ${run}. The workspace's Visual Review policy is strict, so it cannot be waived.`
+      : `To clear it, ${run}, ` +
+        `or waive it on purpose: PATCH the mission with surfaceAuditWaiver set to the reason (manage_missions update, surfaceAuditWaiver), ` +
+        `which records the reason on the mission.`)
+  );
+}
+
+/**
+ * The refusal text while buildd runs the audit itself (Visual Review policy
+ * `automatic` or `strict`): a system wait, not a request to the owner.
+ */
+export function surfaceAuditPendingReason(uiPaths: string[], source: 'manifest' | 'diff', auditTaskId: string | null): string {
+  const task = auditTaskId ? ` (task ${auditTaskId.slice(0, 8)})` : '';
+  return (
+    `This mission changed UI and no surface audit has passed yet: ${surfaceAuditEvidence(uiPaths, source)}. ` +
+    `buildd files the \`[surface audit]\` task itself${task}; the mission completes when it passes. Nothing is needed from the owner.`
+  );
+}
+
+function surfaceAuditEvidence(uiPaths: string[], source: 'manifest' | 'diff'): string {
   const shown = uiPaths.slice(0, 3).join(', ');
   const more = uiPaths.length > 3 ? ` and ${uiPaths.length - 3} more` : '';
-  const evidence = source === 'diff' ? 'its merged PRs changed' : 'its tasks declare';
-  return (
-    `This mission changed UI but no surface audit has passed: ${evidence} ${shown}${more}, and no audit task has completed. ` +
-    `To clear it, run a visual audit (create a \`[surface audit]\` task in this mission with the visual auditor role and let it finish), ` +
-    `or waive it on purpose: PATCH the mission with surfaceAuditWaiver set to the reason (manage_missions update, surfaceAuditWaiver), ` +
-    `which records the reason on the mission.`
-  );
+  return `${source === 'diff' ? 'its merged PRs changed' : 'its tasks declare'} ${shown}${more}`;
 }
 
 /** The one plain sentence a person reads in place of `surfaceAuditMissingReason` (which is written for agents). */

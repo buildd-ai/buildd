@@ -156,6 +156,12 @@ const mockEvaluateSurfaceAuditGate = mock(async (_m: any, _t: any) => surfaceGat
 mock.module('@/lib/mission-surface-audit-gate', () => ({
   evaluateSurfaceAuditGate: mockEvaluateSurfaceAuditGate,
 }));
+// The one idempotent audit writer; under `automatic` the gate files through it.
+let auditRequestResult: any = { ok: true, created: true, taskId: 'audit-new', status: 'pending' };
+const mockRequestMissionSurfaceAudit = mock(async (_id: string, _opts?: any) => auditRequestResult);
+mock.module('@/lib/mission-surface-audit', () => ({
+  requestMissionSurfaceAudit: mockRequestMissionSurfaceAudit,
+}));
 
 mock.module('@/lib/mission-release', () => ({
   fireMissionReleaseIfComplete: mockFireMissionRelease,
@@ -223,6 +229,8 @@ function reset() {
   mockLoadVisualReview.mockClear();
   surfaceGate = { required: false, why: 'no_ui_change' };
   mockEvaluateSurfaceAuditGate.mockClear();
+  auditRequestResult = { ok: true, created: true, taskId: 'audit-new', status: 'pending' };
+  mockRequestMissionSurfaceAudit.mockClear();
   delete process.env.VISUAL_REVIEW_GATE;
 }
 
@@ -1534,10 +1542,10 @@ describe('canCompleteMission — visual review hold', () => {
 describe('canCompleteMission — the surface-audit gate', () => {
   beforeEach(reset);
 
-  it('refuses a mission whose merged PRs changed UI and that has no audit, saying what to do', async () => {
+  it('refuses a mission whose merged PRs changed UI and that has no audit, saying what to do (policy ask)', async () => {
     activeMission();
     taskRows = [work('completed')];
-    surfaceGate = { required: true, source: 'diff', uiPaths: ['apps/web/src/components/Card.tsx'] };
+    surfaceGate = { required: true, source: 'diff', uiPaths: ['apps/web/src/components/Card.tsx'], policy: 'ask', waiverAllowed: true };
     const d = await canCompleteMission('m1');
     expect(d.ok).toBe(false);
     expect(d.code).toBe('surface_audit_missing');
@@ -1546,6 +1554,98 @@ describe('canCompleteMission — the surface-audit gate', () => {
     expect(d.reason).toContain('surfaceAuditWaiver');
     // The sheet shows the files without a second read of the diff.
     expect(d.surfaceAuditPaths).toEqual(['apps/web/src/components/Card.tsx']);
+    // Under ask the owner runs it: nothing is filed for them.
+    expect(d.surfaceAuditActor).toBe('owner');
+    expect(mockRequestMissionSurfaceAudit).not.toHaveBeenCalled();
+  });
+
+  // task e7285dc4: under `automatic` (the default) the owner is never asked to run or waive.
+  it('under automatic files the audit itself and reports a system wait, not an owner prompt', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    surfaceGate = { required: true, source: 'diff', uiPaths: ['apps/web/src/app/app/page.tsx'], policy: 'automatic', waiverAllowed: true };
+    const d = await canCompleteMission('m1');
+    expect(d.ok).toBe(false);
+    expect(d.code).toBe('surface_audit_missing');
+    expect(mockRequestMissionSurfaceAudit).toHaveBeenCalledTimes(1);
+    expect(mockRequestMissionSurfaceAudit.mock.calls[0][0]).toBe('m1');
+    expect(d.surfaceAuditActor).toBe('system');
+    expect(d.surfaceAuditTaskId).toBe('audit-new');
+    expect(d.reason).not.toContain('surfaceAuditWaiver');
+    expect(d.reason).toContain('completes when it');
+  });
+
+  it('strict files it too, and its refusal never offers a waiver', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    surfaceGate = { required: true, source: 'diff', uiPaths: ['apps/web/src/app/app/page.tsx'], policy: 'strict', waiverAllowed: false };
+    const d = await canCompleteMission('m1');
+    expect(mockRequestMissionSurfaceAudit).toHaveBeenCalledTimes(1);
+    expect(d.surfaceAuditActor).toBe('system');
+    expect(d.reason).not.toContain('waive');
+  });
+
+  it('a read-only caller files nothing but still reads a system wait', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    surfaceGate = { required: true, source: 'diff', uiPaths: ['apps/web/src/app/app/page.tsx'], policy: 'automatic', waiverAllowed: true };
+    const d = await canCompleteMission('m1', { evaluateCriteria: false });
+    expect(mockRequestMissionSurfaceAudit).not.toHaveBeenCalled();
+    expect(d.surfaceAuditActor).toBe('system');
+  });
+
+  it('after an audit already failed or was cancelled, it goes to the owner instead of refiling on every attempt', async () => {
+    activeMission();
+    taskRows = [
+      work('completed'),
+      { ...work('cancelled', '[surface audit] M2'), roleSlug: 'visual-auditor' },
+    ];
+    surfaceGate = { required: true, source: 'diff', uiPaths: ['apps/web/src/app/app/page.tsx'], policy: 'automatic', waiverAllowed: true };
+    const d = await canCompleteMission('m1');
+    expect(mockRequestMissionSurfaceAudit).not.toHaveBeenCalled();
+    expect(d.surfaceAuditActor).toBe('owner');
+  });
+
+  it('a local-executor mission goes to the owner: no runner would claim the audit', async () => {
+    activeMission({ executor: 'local' });
+    taskRows = [work('completed')];
+    surfaceGate = { required: true, source: 'diff', uiPaths: ['apps/web/src/app/app/page.tsx'], policy: 'automatic', waiverAllowed: true };
+    const d = await canCompleteMission('m1');
+    expect(mockRequestMissionSurfaceAudit).not.toHaveBeenCalled();
+    expect(d.surfaceAuditActor).toBe('owner');
+  });
+
+  it('a failed audit request falls back to the owner and never throws', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    surfaceGate = { required: true, source: 'diff', uiPaths: ['apps/web/src/app/app/page.tsx'], policy: 'automatic', waiverAllowed: true };
+    mockRequestMissionSurfaceAudit.mockImplementationOnce(async () => { throw new Error('db down'); });
+    const orig = console.error;
+    console.error = () => {};
+    try {
+      const d = await canCompleteMission('m1');
+      expect(d.code).toBe('surface_audit_missing');
+      expect(d.surfaceAuditActor).toBe('owner');
+    } finally {
+      console.error = orig;
+    }
+  });
+
+  it("a no-render result completes and keeps the classifier's applicability record", async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    const assessment = { recordKind: 'applicability', verdict: 'not_applicable', basis: 'rule', reasons: [{ code: 'no_render_changes' }] };
+    surfaceGate = { required: false, why: 'no_render_impact', assessment };
+    const d = await canCompleteMission('m1');
+    expect(d.ok).toBe(true);
+    expect(d.surfaceAuditAssessment).toEqual(assessment as any);
+  });
+
+  it('passes the mission workspace to the gate so it can resolve the policy', async () => {
+    activeMission({ workspaceId: 'ws-9' });
+    taskRows = [work('completed')];
+    await canCompleteMission('m1');
+    expect(mockEvaluateSurfaceAuditGate.mock.calls[0][0].workspaceId).toBe('ws-9');
   });
 
   it('completes a backend-only mission (gate not required)', async () => {
