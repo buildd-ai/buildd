@@ -113,6 +113,12 @@ const MARKUP_LINE_RE = /<\/?[A-Za-z][\w.]*(\s|>|\/)|\bJSX\b/;
 const STYLE_LINE_RE = /\b(className|class|style|sx|css)\s*=|\bclsx\(|\bcn\(|\btw`|\bstyled\b/;
 const TEXT_LINE_RE = />[^<>{}]*[A-Za-z]{3,}[^<>{}]*<|\b(title|label|placeholder|alt|aria-label|children)\s*[:=]\s*['"`{][^'"`]*[A-Za-z]{3,}/;
 
+/** True when any changed, non-comment line looks like markup, styling or visible text (the `impactFeatures` counters). */
+function touchesPresentation(patch: string): boolean {
+  return changedLines(patch).some(l =>
+    !COMMENT_OR_BLANK_RE.test(l) && (MARKUP_LINE_RE.test(l) || STYLE_LINE_RE.test(l) || TEXT_LINE_RE.test(l)));
+}
+
 /** Classify one file. Tests, types, docs, comments-only and server-only code never render. */
 export function classifyImpactFile(file: ImpactFile): ImpactCategory {
   const path = file.path.replace(/^\/+/, '');
@@ -126,7 +132,12 @@ export function classifyImpactFile(file: ImpactFile): ImpactCategory {
   // Comment / type-only edits cannot move a pixel, wherever they sit.
   if (file.patch && inertChangeOnly(file.patch)) return 'no_render';
 
-  if (SCREEN_RE.test(path) && isRenderedSurfaceChange(path)) return 'screen';
+  // A route screen is protected by rule unless its hunk proves no markup,
+  // style or text line moved (a data-query port, say): then it is Jev's to
+  // judge like any candidate. No patch keeps it protected.
+  if (SCREEN_RE.test(path) && isRenderedSurfaceChange(path)) {
+    return file.patch && !touchesPresentation(file.patch) ? 'candidate' : 'screen';
+  }
   if (RISKY_FLOW_RE.test(path) && MARKUP_FILE_RE.test(path)) return 'risky_flow';
   return 'candidate';
 }

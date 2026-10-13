@@ -200,3 +200,31 @@ describe('RunnerTokensSection unlinked chip', () => {
     expect(host.textContent).toContain('1 reaches no workspace');
   });
 });
+
+describe('RunnerTokensSection model login (docs/specs/runner-model-auth-source.md AC-7)', () => {
+  const seen = () => new Date(Date.now() - 60_000).toISOString();
+  const line = () => host.querySelector<HTMLElement>('[data-testid="token-model-auth"]');
+
+  it("reads the machine's Claude login in words", async () => {
+    await mount({ lastSeenAt: seen(), modelAuthSource: 'machine_login' });
+    expect(line()?.textContent).toBe("Uses this machine's Claude login");
+    expect(line()?.className).not.toContain('text-status-warning');
+  });
+
+  it('shows the fix-it line as a warning when the runner has no login', async () => {
+    await mount({ lastSeenAt: seen(), modelAuthSource: 'none' });
+    expect(line()?.textContent).toBe('No model login on this machine. Run claude login');
+    expect(line()?.querySelector('code')?.textContent).toBe('claude login');
+    expect(line()?.className).toContain('text-status-warning');
+  });
+
+  it('says not reported for a runner that never sends the field', async () => {
+    await mount({ lastSeenAt: seen(), modelAuthSource: null });
+    expect(line()?.textContent).toBe('Model login: not reported');
+  });
+
+  it('says nothing for a token no runner has reported on', async () => {
+    await mount({});
+    expect(line()).toBeNull();
+  });
+});

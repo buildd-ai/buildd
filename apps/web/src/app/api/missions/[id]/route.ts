@@ -475,7 +475,7 @@ export async function PATCH(
         });
         if (gate?.required) {
           return NextResponse.json({
-            error: surfaceAuditMissingReason(gate.uiPaths, gate.source),
+            error: surfaceAuditMissingReason(gate.uiPaths, gate.source, { waiverAllowed: gate.waiverAllowed }),
             code: 'surface_audit_missing',
             uiPaths: gate.uiPaths.slice(0, 20),
           }, { status: 409 });

@@ -6,7 +6,7 @@ import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds, getUserTeamsWithDetails, resolveActiveTeamId, type UserTeam } from '@/lib/team-access';
-import { isSystemWorkspace } from '@buildd/shared';
+import { isSystemWorkspace, isRunnerModelAuthSource, type RunnerModelAuthSource } from '@buildd/shared';
 import { settingsPermissions, type SettingsPermissions } from './settings-permissions';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
@@ -176,5 +176,27 @@ export async function loadAccountLastSeen(accountIds: string[]): Promise<Record<
     .catch(() => [] as Array<{ accountId: string; at: Date | string }>);
   const out: Record<string, string> = {};
   for (const r of rows) if (r.at) out[r.accountId] = new Date(r.at).toISOString();
+  return out;
+}
+
+/**
+ * The model login each runner token's most recent heartbeat reported
+ * (docs/specs/runner-model-auth-source.md). Null when that runner never sends
+ * the field (older build), so the row says "not reported" instead of guessing.
+ * Degrades to empty on failure.
+ */
+export async function loadAccountModelAuth(accountIds: string[]): Promise<Record<string, RunnerModelAuthSource | null>> {
+  if (accountIds.length === 0) return {};
+  const rows = await db
+    .select({ accountId: workerHeartbeats.accountId, source: workerHeartbeats.modelAuthSource })
+    .from(workerHeartbeats)
+    .where(inArray(workerHeartbeats.accountId, accountIds))
+    .orderBy(desc(workerHeartbeats.lastHeartbeatAt))
+    .catch(() => [] as Array<{ accountId: string; source: string | null }>);
+  const out: Record<string, RunnerModelAuthSource | null> = {};
+  for (const r of rows) {
+    if (r.accountId in out) continue;
+    out[r.accountId] = isRunnerModelAuthSource(r.source) ? r.source : null;
+  }
   return out;
 }
