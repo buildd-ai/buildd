@@ -142,11 +142,14 @@ export function effectiveCauseKey(i: CauseInput & { impact?: Record<string, numb
   const rule = ruleCauseKey(i);
   const g = i.recovery?.causeGroup;
   if (!g || g.source === 'rule' || (g.ruleKey && g.ruleKey !== rule)) return { key: rule, source: 'rule', decisionId: null, confidence: null };
-  // A model grouping only applies once its decision kind is promoted (B3). Until
-  // then it is recorded, not shown as the grouping.
+  // A model grouping applies while `buildd.operator_cause_merge` is live; switching the kind off stops new merges.
   if (g.source === 'model' && !MODEL_GROUPING_APPLIES) return { key: rule, source: 'rule', decisionId: null, confidence: null };
   return { key: g.supersededBy ?? g.key, source: g.source, decisionId: g.decisionId, confidence: g.confidence };
 }
 
-/** `buildd.operator_cause_merge` is in shadow (operator-recovery §6.5). Flipped by its promotion record. */
-export const MODEL_GROUPING_APPLIES = false;
+/**
+ * `buildd.operator_cause_merge` is live from its first deploy (owner decision
+ * 2026-10-11: no shadow period). A model merge only ever joins two rule keys,
+ * never splits one, and an operator regroup always wins over it.
+ */
+export const MODEL_GROUPING_APPLIES = true;

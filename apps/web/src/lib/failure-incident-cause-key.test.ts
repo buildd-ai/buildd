@@ -68,12 +68,12 @@ describe('cause membership', () => {
     expect(nextCauseGroup(op, 'c1:bbbb', NOW).source).toBe('rule');
   });
 
-  it('groups by an operator membership; a model one stays shadow until promoted', () => {
+  it('groups by an operator membership and by a live model merge', () => {
     const base = inc('repeated_failure', `repeated_failure|ws=${WS_A}|fam`, WS_A);
     const rule = ruleCauseKey(base);
     const op = effectiveCauseKey({ ...base, recovery: { causeGroup: { key: 'c1:other', source: 'operator', decisionId: 'a', confidence: null, assignedAt: NOW, ruleKey: rule } } } as any);
     expect(op.key).toBe('c1:other');
     const model = effectiveCauseKey({ ...base, recovery: { causeGroup: { key: 'c1:other', source: 'model', decisionId: 'd', confidence: 0.9, assignedAt: NOW, ruleKey: rule } } } as any);
-    expect(model).toEqual({ key: rule, source: 'rule', decisionId: null, confidence: null });
+    expect(model).toEqual({ key: 'c1:other', source: 'model', decisionId: 'd', confidence: 0.9 });
   });
 });

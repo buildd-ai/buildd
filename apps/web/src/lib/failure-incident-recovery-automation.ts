@@ -87,7 +87,8 @@ export const DEFAULT_RECOVERY_POLICY: RecoveryPolicyView = {
     path_overlap_stall: { ...DEFAULT_RULE_POLICY, autoRepair: 'on' },
     infrastructure_failure: { ...DEFAULT_RULE_POLICY, autoRepair: 'on' },
   },
-  model: { dailyUsd: 5, dailyCalls: 600, timeoutMs: 8000 },
+  // 800 ms per question, the escalation gate's deadline: the owner wants hundreds of ms, not seconds (B3).
+  model: { dailyUsd: 5, dailyCalls: 600, timeoutMs: 800 },
 };
 
 /** §8.4 bounds. Validated on every `set_policy`; nothing outside them is stored. */
@@ -98,7 +99,7 @@ export const POLICY_BOUNDS = {
   episodeDeadlineHours: [1, 48],
   dailyUsd: [0, 25],
   dailyCalls: [0, 2000],
-  timeoutMs: [2000, 15000],
+  timeoutMs: [200, 800],
 } as const;
 
 const MODES: readonly AutoRepairMode[] = ['off', 'shadow', 'on'];

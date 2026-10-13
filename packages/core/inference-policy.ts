@@ -51,6 +51,7 @@ export type InferenceCapability =
   | 'task_verdict'
   | 'early_release'
   | 'merge_readiness'
+  | 'operator_recovery'
   | 'chat';
 
 export type CapabilityKind = 'interactive' | 'built_in' | 'opt_in' | 'server_feature';
@@ -269,6 +270,17 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     label: 'Merge readiness',
     description: 'On a review card, a decision model says whether the pull request looks safe to merge as-is, from its CI, review and policy. Only advice; you merge.',
     costHint: '~$0.00003 per tap',
+  },
+  // Operator recovery (packages/core/decision-kind-operator-recovery.ts). The
+  // platform owner's recovery queue: an ambiguous cause pair, a next repair with
+  // no runbook, priority advice. Bounded by the platform's own daily caps
+  // (operator-recovery §6.4), not a team switch.
+  operator_recovery: {
+    id: 'operator_recovery',
+    kind: 'built_in',
+    label: 'Operator recovery',
+    description: 'When a platform failure is ambiguous, a decision model reads its counts and redacted excerpts (never names) and says whether two problems are one, which allowed repair is next, or whether its priority looks off.',
+    costHint: '~$0.0001 per question, capped at $5 a day platform-wide',
   },
   chat: {
     id: 'chat',

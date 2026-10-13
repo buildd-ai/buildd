@@ -74,6 +74,14 @@ export interface QueueFacts {
   automationState?: AutomationState | null;
   /** The newest owner override per cause key (§5.6), as stored; expiry is checked here. */
   overrides?: Map<string, PriorityOverride>;
+  /** The newest model answers per cause key (§6.2): priority advice and repair suggestion, plus 7-day model spend. */
+  modelDecisions?: Map<string, CauseModelDecisions>;
+}
+
+export interface CauseModelDecisions {
+  advice?: { answer: 'raise' | 'keep' | 'lower'; confidence: number; rationale: string; decisionId: string } | null;
+  suggestion?: { repair: string; confidence: number | null; rationale: string | null; decisionId: string } | null;
+  modelUsd7d?: number;
 }
 
 export interface PriorityOverride { mode: 'pin_top' | 'demote' | 'snooze'; until: string; by: string; reason: string }
@@ -470,7 +478,7 @@ function build(facts: QueueFacts): Built {
         ? {
           position: r.position, tier: r.tier, tierReason: r.tierReason, score: r.score, why: r.why, components: r.components,
           override: (() => { const o = liveOverride(c.key); return o ? { ...o, baselinePosition: r.baselinePosition } : null; })(),
-          advice: null,
+          advice: facts.modelDecisions?.get(c.key)?.advice ?? null,
         }
         : { position: 0, tier: 3, tierReason: 'Recovered', score: 0, why: 'Recovered.', components: [], override: null, advice: null },
       impact: {
@@ -518,8 +526,14 @@ function build(facts: QueueFacts): Built {
         fixTask: fixTaskId ? { id: fixTaskId, name: fixTask?.title ?? `Task ${fixTaskId.slice(0, 8)}`, teamId: teamOfWs(fixTask?.workspaceId ?? null), status: fixTask?.status ?? 'unknown' } : null,
         fixPr: fixTaskId ? facts.fixPrs.get(fixTaskId) ?? null : null,
         wasteUsd7d: waste,
-        // No operator-recovery decision kind runs yet (B3 ships them in shadow).
-        modelUsd7d: { value: 0, basis: 'measured' },
+        modelUsd7d: { value: round2(facts.modelDecisions?.get(c.key)?.modelUsd7d ?? 0), basis: 'measured' },
+        suggestion: (() => {
+          const sg = facts.modelDecisions?.get(c.key)?.suggestion;
+          if (!sg) return null;
+          // Executed only when an attempt names this decision as its actor (§6.6: the validator ran it like a click).
+          const executed = (facts.attempts ?? []).some(a => a.detail.actor === `model:${sg.decisionId}`);
+          return { ...sg, executed };
+        })(),
         costPerRecoveredSubjectUsd: waste.value === null || recoveredSubjects === 0
           ? { value: null, basis: 'unknown' }
           : { value: round2(waste.value / recoveredSubjects), basis: 'measured', ...(waste.atLeast ? { atLeast: true } : {}) },

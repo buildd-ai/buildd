@@ -16,11 +16,10 @@ export {
   DEFAULT_RECOVERY_POLICY, OPERATOR_RECOVERY_KEY_PREFIX, PAUSE_CAUSE_PREFIX, PAUSE_PLATFORM_KEY, PAUSE_RULE_PREFIX, POLICY_KEY,
 } from '@/lib/failure-incident-recovery-automation';
 
-/** §6.2 decision kinds. All start in shadow (B3). */
-export const OPERATOR_RECOVERY_DECISION_KINDS = [
-  'buildd.operator_cause_merge', 'buildd.operator_repair_suggestion', 'buildd.operator_priority_advice',
-] as const;
+/** §6.2 decision kinds, live from their first deploy (owner decision 2026-10-11). */
+export { OPERATOR_RECOVERY_KINDS as OPERATOR_RECOVERY_DECISION_KINDS } from '@buildd/core/decision-kind-operator-recovery';
 
+/** The provider breaker's row (`lib/operator-recovery-decisions.ts` opens it). */
 const MODEL_BREAKER_KEY = 'operator-recovery:model-breaker';
 
 export function buildAutomationView(input: {
