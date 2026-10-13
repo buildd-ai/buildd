@@ -46,6 +46,8 @@ import type { LegacyFirstReview } from '@/lib/workflow/legacy-handoff';
 import { legacyFirstReview } from '@/lib/workflow/review-handoff';
 import type { QuestionCheckDeps } from '@/lib/question-gate-check';
 import { fileRecoverableBlockerRepair } from '@/lib/recoverable-blocker-repair';
+import type { ShippingPrMergedReader } from '@/lib/integration-refresh';
+import { missionShippingPrMerged } from '@/lib/mission-shipping-pr';
 import { escalationGateDeps, escalationGateReadDeps } from '@/lib/escalation-decision';
 import { releaseSubscribers } from '@/lib/release/subscribers';
 import { earlyReleaseSubscribers } from '@/lib/early-release-subscribers';
@@ -165,6 +167,13 @@ export function workflowEffectHandlers(): EffectHandlers {
  * blocker an agent tried to ask about is filed as a repair task instead.
  */
 export const RECOVERABLE_BLOCKER_REPAIR: NonNullable<QuestionCheckDeps['fileRepair']> = fileRecoverableBlockerRepair;
+
+/**
+ * The worker route's shipped-PR slot (lib/integration-refresh.ts): the missions
+ * module says whether a mission's shipping PR merged, so a refresh task with
+ * nothing left to ship can complete on that evidence.
+ */
+export const MISSION_SHIPPING_PR_MERGED: ShippingPrMergedReader = (missionId, repo) => missionShippingPrMerged(missionId, repo);
 
 /**
  * The escalation gate's slots (lib/escalation-gate-check.ts): Jev, the ledger

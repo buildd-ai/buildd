@@ -8,7 +8,6 @@ import { reportTaskPolicyOutcome } from '@/lib/model-policy-outcomes';
 import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, workerActionEvents, workerPromptCompositionEvents, connectors, secrets, missions, taskSchedules } from '@buildd/core/db/schema';
 import { githubApi, postPrReview } from '@/lib/github';
 import { integrationRefreshOf, isAncestor, encodeRef } from '@/lib/integration-refresh';
-import { missionShippingPrMerged } from '@/lib/mission-integration-branch';
 import { eq, and, or, desc, gte, gt, inArray, isNull, isNotNull, not, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { keepsParkClock, recordInteractiveSessionSeen } from '@/lib/interactive-worker-liveness';
@@ -96,7 +95,7 @@ import { redactSecretsInBody } from '@buildd/core/redaction';
 import { decrypt } from '@buildd/core/secrets';
 import type { LoopVerdict } from '@/lib/completion-policy';
 import type { HeldOutcomeAnalytics, SlotFailure } from '@/lib/core-events';
-import { COMPLETION_POLICIES, RECOVERABLE_BLOCKER_REPAIR } from '@/modules';
+import { COMPLETION_POLICIES, MISSION_SHIPPING_PR_MERGED, RECOVERABLE_BLOCKER_REPAIR } from '@/modules';
 import type { TaskHandoff, PathCollisionNotice } from '@buildd/shared';
 import { VISUAL_AUDITOR_ROLE_SLUG, TERMINAL_WORKER_STATUSES, isTerminalWorkerStatus, INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
 import { reportWorkerModelIncident } from '@/lib/model-compatibility-incident';
@@ -2240,7 +2239,7 @@ export async function PATCH(
           if (contained) {
             refreshAlreadyLanded = { ...landed, evidence: 'branch_contains_trunk_sha' };
           } else if (taskMissionId) {
-            const shipped = await missionShippingPrMerged(taskMissionId, {
+            const shipped = await MISSION_SHIPPING_PR_MERGED(taskMissionId, {
               workspaceId: worker.workspaceId,
               installationId: repoWithInstallation.installation.installationId,
               repoFullName: repoWithInstallation.fullName,
