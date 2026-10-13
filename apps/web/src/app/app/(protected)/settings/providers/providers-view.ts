@@ -95,7 +95,7 @@ export function usedFor(surfaces: readonly ProviderSurfaceId[]): string {
   return surfaces.length ? `Used for ${surfaceList(surfaces)}.` : 'Not used by anything.';
 }
 
-export type RowState = { word: 'Needs attention' | 'Working' | 'Set' | `${string}'s key` | 'Team key' | 'Not available' | 'Not set'; tone: 'error' | 'success' | 'muted' };
+export type RowState = { word: 'Needs attention' | 'Working' | 'Set' | `${string}'s key` | 'Team key' | 'Not set up'; tone: 'error' | 'success' | 'muted' };
 
 /** "Acme's key": an inherited row names the team it comes from. "Team key" when the name is unknown. */
 export function teamKeyWord(teamName?: string | null): RowState['word'] {
@@ -121,8 +121,8 @@ export function rowState(rows: readonly ProviderCredentialSummary[], inherited: 
   if (rows.some((r) => r.health === 'healthy')) return { word: 'Working', tone: 'success' };
   if (rows.length > 0) return { word: 'Set', tone: 'muted' };
   if (inherited.length > 0) return { word: teamKeyWord(teamName), tone: 'muted' };
-  if (closed) return { word: 'Not available', tone: 'muted' };
-  return { word: 'Not set', tone: 'muted' };
+  if (closed) return { word: 'Not set up', tone: 'muted' };
+  return { word: 'Not set up', tone: 'muted' };
 }
 
 /** What a stored credential looks like on the row: "…a1b2", "Subscription …bAAA", "Configured". */
