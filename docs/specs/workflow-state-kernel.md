@@ -6,7 +6,7 @@ last_verified: 2026-10-13
 summary: One kernel MUST own each task-to-PR-to-review-to-merge delivery's state, advance it only by version-checked transitions citing GitHub-confirmed evidence, and leave other lifecycle columns fact caches or projections.
 domain: tasks
 surfaces: [apps/web/src/app/api/workers/[id]/route.ts, apps/web/src/app/api/github/webhook/route.ts, apps/web/src/lib/pr-landing.ts, apps/web/src/lib/workflow/landing.ts]
-related: [mission-task-lifecycle, pr-lifecycle-reconciliation, task-dispatch-authority, surface-merge-ordering]
+related: [workflow-kernel-library, mission-task-lifecycle, pr-lifecycle-reconciliation, task-dispatch-authority, surface-merge-ordering]
 keywords: [workflow kernel, delivery state, AWAITING_PUSH, review round, head sha binding, outbox, CAS, fix_ended, stale verdict, write sites, review composition, durable findings, merge doors, landing authority, merged over open findings]
 verified_by: [apps/web/tests/db/pr-facts.test.ts, packages/core/__tests__/generated-artifacts.test.ts, apps/web/tests/db/workflow-scenarios-repeat.test.ts, packages/core/__tests__/pr-fact-write-sites.test.ts, apps/web/src/lib/workflow/pr-fact-effects.test.ts, apps/web/src/lib/pr-fact-import.test.ts, apps/web/src/lib/workflow/projections.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/workflow/pr-activity-render.test.ts, apps/web/src/lib/action-queue.delivery-view.test.ts, apps/web/src/lib/workflow/reducer.test.ts, apps/web/src/lib/workflow/review-effects.test.ts, apps/web/src/lib/workflow/pr-landing-effects.test.ts, apps/web/src/lib/pr-landing.test.ts, apps/web/src/lib/auto-merge.test.ts, apps/web/src/lib/ci-verdict.test.ts, apps/web/tests/db/workflow-probe-github.test.ts, apps/web/tests/db/workflow-probe-concurrency.test.ts, apps/web/src/app/api/prs/[prNumber]/merge/route.test.ts, apps/web/src/app/api/github/pr/route.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/prs/[prNumber]/retry-ci/route.test.ts, apps/web/src/lib/ci-failure-retry.wake.test.ts, apps/web/tests/db/workflow-matrix.test.ts, apps/web/tests/db/review-request-authority.test.ts, apps/web/tests/db/review-provenance.test.ts, packages/core/__tests__/pr-shipped.test.ts, apps/web/src/lib/mission-completion.test.ts, apps/web/src/lib/pr-supersession.test.ts, apps/web/src/app/api/github/pr/supersede/route.test.ts, apps/web/src/app/api/github/pr/review/route.test.ts, apps/web/src/lib/workflow/facts.test.ts, apps/web/src/lib/workflow/github-facts.test.ts, apps/web/src/modules.test.ts, apps/web/src/lib/workflow/conflict-retry-effects.test.ts, apps/web/src/lib/conflict-retry.test.ts, apps/web/src/lib/workflow/trunk.test.ts, apps/web/src/lib/workflow/delivery-display.test.ts, apps/web/src/lib/explain-because.test.ts, apps/web/src/lib/explain.test.ts, apps/web/src/lib/pr-presentation.test.ts, apps/web/src/lib/pr-list.test.ts, apps/web/src/app/api/tasks/[id]/summary/route.test.ts, packages/core/__tests__/workflow-write-sites.test.ts, apps/web/tests/db/workflow-scenarios-treadmill.test.ts, apps/web/src/lib/workflow/base-delta.test.ts, apps/web/tests/db/workflow-scenarios-lane.test.ts, apps/web/src/lib/repair-completion.test.ts, apps/web/src/lib/mission-state-view.landing.test.ts, apps/web/src/lib/pr-predecessors.test.ts, apps/web/src/lib/retry-pr-supersession.test.ts, apps/web/src/lib/migration-inspector.test.ts, apps/web/src/app/api/workers/claim/claim-plan-input.test.ts, apps/runner/__tests__/unit/worktree-mission-integration-guard.test.ts, apps/runner/__tests__/unit/worktree-base-branch.test.ts, packages/core/__tests__/repair-target.test.ts, apps/web/src/lib/workflow/coordination-owner-review.test.ts]
 supersedes: []
@@ -854,6 +854,8 @@ between "merge accepted" and "`task.pr_merged` emitted" loses the effect.
 
 ### 10.3 Delivery and leases
 
+> Amended 2026-10-13 by `workflow-kernel-library.md` §3: in production the drain runs only on the execution control plane, never inline in a Vercel request or from a Vercel cron.
+
 Mirror `task_dispatch_outbox` (`packages/core/dispatch-outbox.ts`, `dispatch-authority.ts`):
 claim due rows with `FOR UPDATE SKIP LOCKED` in one CTE, set `status='delivering'` and
 `attempt_count+1`; a `delivering` row older than the lease (120s) is claimable again.
@@ -914,6 +916,8 @@ as a deferral with its reason (and rendered, §12.1) instead of vanishing.
 ---
 
 ## 11. Reconciliation
+
+> Amended 2026-10-13 by `workflow-kernel-library.md` §1 and §3: the floor runs on the control plane, and page renders never write.
 
 Reconcilers exist because webhooks are lost, reordered and unretried
 (`webhook/route.ts` documents that App webhooks are not redelivered; `X-GitHub-Delivery`
