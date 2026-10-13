@@ -214,7 +214,7 @@ function SectionView({ sec, now, showWorkspace }: { sec: MissionSection; now: nu
 /** "14 open" and one line: what needs you, what's moving, what's waiting, what's landed, and the agent slots. */
 function Headline({ open, counts, slots }: { open: number; counts: Record<PortfolioStatusFilter, number>; slots: { live: number; max: number } }) {
   const parts = [
-    counts.needs > 0 ? `${counts.needs} need${counts.needs === 1 ? 's' : ''} you` : null,
+    counts.needs > 0 ? `${counts.needs} waiting on you` : null,
     `${counts.motion} in motion`,
     `${counts.waiting} waiting`,
     counts.landed > 0 ? `${counts.landed} landed, checks pending` : null,

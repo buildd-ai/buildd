@@ -223,7 +223,7 @@ export function waitingReason(i: {
   // PR that has since gone conflicting or red.
   if (i.handoff && i.status !== 'conflict' && i.status !== 'ci_failed') {
     if (i.handoff.cause === 'deny_path') return `${i.approved ? 'approved, ' : ''}protected path — merge is yours`;
-    return `landing needs you: ${i.handoff.reason}`;
+    return `landing waiting on you: ${i.handoff.reason}`;
   }
   const blocked = i.status === 'conflict' ? 'conflicting'
     : i.status === 'ci_failed' ? 'CI red'

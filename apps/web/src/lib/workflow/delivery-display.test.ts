@@ -122,7 +122,7 @@ describe('S17: every surface agrees with the one DeliveryView', () => {
   test('a worker\'s own question stays a question (§13.2 dev. 3)', () => {
     const d = display('FIXING');
     expect(deriveStage({ taskStatus: 'in_progress', workerStatus: 'waiting_input', delivery: d })).toBe('WAITING_INPUT');
-    expect(taskDockModel(taskView(d, { status: 'waiting_input', waiting: true })).badge.label).toBe('Needs you');
+    expect(taskDockModel(taskView(d, { status: 'waiting_input', waiting: true })).badge.label).toBe('Has a question');
   });
 
   test('a failed owner attempt of a live delivery reads the delivery, not FAILED (S35)', () => {
@@ -163,7 +163,7 @@ const TABLE: Row[] = [
   { name: 'composition verified, a person merges', input: V({ state: 'APPROVED', approvalBasis: 'composition', compositionHeads: ['H1abcdef'] }, { approvedNeedsPerson: true }), label: 'Ready to merge', tone: 'needs' },
   { name: 'approved, a person merges (human tier, approve-only, open handoff)', input: V({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'] }, { approvedNeedsPerson: true }), label: 'Ready to merge', tone: 'needs' },
   { name: 'approved, the landing path merges (approve-and-merge, auto-threshold)', input: V({ state: 'APPROVED', approvalBasis: 'verdict', approvedHeads: ['H1abcdef'] }), label: 'Approved · merging', tone: 'live' },
-  { name: 'escalated', input: V({ state: 'ESCALATED', stateReason: 'review_escalated' }), label: 'Needs you', tone: 'needs' },
+  { name: 'escalated', input: V({ state: 'ESCALATED', stateReason: 'review_escalated' }), label: 'Waiting on you', tone: 'needs' },
   { name: 'in review', input: V({ state: 'AWAITING_REVIEW' }), label: 'In review', tone: 'live' },
   { name: 'changes requested', input: V({ state: 'CHANGES_REQUESTED' }), label: 'Changes requested', tone: 'live' },
   { name: 'fixing review feedback', input: V({ state: 'FIXING' }), label: 'Fixing', tone: 'live' },

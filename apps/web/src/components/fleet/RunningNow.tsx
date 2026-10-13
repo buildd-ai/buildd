@@ -23,7 +23,7 @@ function workerName(w: FleetSlotWorker): string {
 /** Rows a group shows before "Show all N". */
 export const ROWS_SHOWN = 5;
 
-const stateWord = (w: FleetSlotWorker) => (w.status === 'waiting_input' || w.question ? 'Needs input' : 'Working');
+const stateWord = (w: FleetSlotWorker) => (w.status === 'waiting_input' || w.question ? 'Has a question' : 'Working');
 
 function Group({ runner, now, missions, heading }: { runner: FleetRunner; now: number; missions: Readonly<Record<string, LaneMission>>; heading?: string }) {
   const running = runner.slots.flatMap(s => (s.worker ? [s.worker] : []));

@@ -41,9 +41,9 @@ describe('buildAgentsModel', () => {
 
 describe('copy', () => {
   test('headline and sub-line', () => {
-    expect(homeHeadlineSentence(3)).toBe('3 decisions need you.');
-    expect(homeHeadlineSentence(1)).toBe('1 decision needs you.');
-    expect(homeHeadlineSentence(0)).toBe('All clear. Nothing needs you.');
+    expect(homeHeadlineSentence(3)).toBe('3 decisions for you.');
+    expect(homeHeadlineSentence(1)).toBe('1 decision for you.');
+    expect(homeHeadlineSentence(0)).toBe('All clear.');
     expect(homeSubline(0, 0)).toBe('No other action needed.');
     expect(homeSubline(0, 1)).toBe('1 automatic repair is running.');
     expect(homeSubline(2, 3)).toBe('3 automatic repairs are running.');

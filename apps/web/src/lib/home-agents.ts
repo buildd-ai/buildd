@@ -78,8 +78,8 @@ export function elapsedLabel(ms: number): string {
 
 /** The headline sentence: the count of what needs you, or a calm all-clear. */
 export function homeHeadlineSentence(count: number): string {
-  if (count <= 0) return 'All clear. Nothing needs you.';
-  return count === 1 ? '1 decision needs you.' : `${count} decisions need you.`;
+  if (count <= 0) return 'All clear.';
+  return count === 1 ? '1 decision for you.' : `${count} decisions for you.`;
 }
 
 /**

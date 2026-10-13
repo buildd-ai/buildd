@@ -135,7 +135,7 @@ export function missionView(moment: Moment, visual: VisualReviewModel | null = n
     visual,
     kind: 'mission', id: MISSION_ID, workspaceId: WS.id, title: 'Multi-currency invoices',
     goal: 'Let customers see, pay, and get receipts for invoices in their own currency.',
-    status: 'active', stateLabel: moment === 'question' ? 'Needs you' : 'Running', workspaceName: WS.name,
+    status: 'active', stateLabel: moment === 'question' ? 'Waiting on you' : 'Running', workspaceName: WS.name,
     conversationId: 'conv-multi-currency', board, renderedAt: board.now,
   };
 }

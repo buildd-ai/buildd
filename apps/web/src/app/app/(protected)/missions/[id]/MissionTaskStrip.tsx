@@ -80,7 +80,7 @@ export interface LandedStripProps {
 }
 
 const STATUS_PILL: Record<StripState, string> = {
-  landed: 'Landed', review: 'In review', running: 'Running', waiting: 'Needs you',
+  landed: 'Landed', review: 'In review', running: 'Running', waiting: 'Has a question',
   ci_failed: 'CI failed', fixing: 'Fixing', failed: 'Failed', ready: 'Ready', blocked: 'Blocked', queued: 'Queued',
 };
 
@@ -240,7 +240,7 @@ export function stripReason(t: BoardTask, executor: MissionExecutor | null): str
     case 'done':
     case 'blocked':
       return null;
-    case 'waiting': return t.waitingFor?.prompt ?? 'Needs input.';
+    case 'waiting': return t.waitingFor?.prompt ?? 'Has a question.';
     case 'running': return t.currentAction ?? `In progress${t.runner ? ` on ${t.runner}` : ''}.`;
     case 'review': return 'PR open, awaiting merge.';
     case 'ci_failed': return 'CI failed on its PR.';

@@ -70,7 +70,7 @@ const BREAKDOWN: ReadonlyArray<{ kind: DeliveryKind; word: string }> = [
   { kind: 'repair', word: 'repairing' },
   { kind: 'landing', word: 'landing' },
   { kind: 'unavailable', word: 'recovering' },
-  { kind: 'needs', word: 'need you' }, // singular: "1 needs you"
+  { kind: 'needs', word: 'waiting on you' },
   { kind: 'notlanded', word: 'not landed' },
 ];
 const NOT_STARTED: ReadonlySet<DeliveryKind> = new Set(['waiting', 'held', 'planning']);
@@ -90,7 +90,7 @@ export function deliveryBreakdown(now: ActivityNow): { kind: DeliveryKind | 'wai
     .map(b => {
       const state = STATES[STATE_KEY_OF_DELIVERY[b.kind]];
       const n = counts.get(b.kind)!;
-      const word = b.kind === 'needs' && n === 1 ? 'needs you' : b.word;
+      const word = b.word;
       return { kind: b.kind, text: `${DELIVERY_KIND[b.kind].glyph} ${n} ${word}`, tone: STATE_TONE_TEXT[state.tone] };
     });
   if (waiting > 0) out.push({ kind: 'waiting', text: `${waiting} waiting`, tone: null });

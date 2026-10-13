@@ -22,7 +22,7 @@ describe('Lifecycle', () => {
 
   it('recovering reads paused, needs you reads needs you', () => {
     expect(current(renderToStaticMarkup(<Lifecycle state="recovering" />))[1]).toBe('⊘ Audit paused');
-    expect(current(renderToStaticMarkup(<Lifecycle state="needs_you" />))[1]).toBe('! Audit · needs you');
+    expect(current(renderToStaticMarkup(<Lifecycle state="needs_you" />))[1]).toBe('! Audit · waiting on you');
   });
 
   it('landing sits on Land; landed ticks all three', () => {
@@ -63,7 +63,7 @@ describe('Lifecycle: inline', () => {
   });
 
   it('an audit-step exception keeps the rounds already taken', () => {
-    expect(current(renderToStaticMarkup(<Lifecycle state="needs_you" repairs={2} />))[1]).toBe('! Audit · needs you ↻2');
+    expect(current(renderToStaticMarkup(<Lifecycle state="needs_you" repairs={2} />))[1]).toBe('! Audit · waiting on you ↻2');
     expect(current(renderToStaticMarkup(<Lifecycle state="recovering" repairs={1} />))[1]).toBe('⊘ Audit paused ↻1');
   });
 });

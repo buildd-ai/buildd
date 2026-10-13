@@ -90,7 +90,7 @@ export type PortfolioStatusFilter = 'all' | MissionSectionKey;
 
 export const PORTFOLIO_STATUS_FILTERS: ReadonlyArray<{ key: PortfolioStatusFilter; label: string; title: string }> = [
   { key: 'all', label: 'All', title: 'Every open mission' },
-  { key: 'needs', label: 'Needs you', title: 'A decision only a person can make' },
+  { key: 'needs', label: 'Waiting on you', title: 'A decision only a person can make' },
   { key: 'motion', label: 'In motion', title: 'buildd is building, auditing, repairing or landing it' },
   { key: 'waiting', label: 'Waiting', title: 'Waiting on capacity or earlier work, held, or unplanned' },
   { key: 'landed', label: 'Landed', title: 'Landed. A goal criterion hasn’t passed.' },

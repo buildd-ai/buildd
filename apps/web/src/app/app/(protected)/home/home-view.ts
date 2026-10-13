@@ -145,10 +145,10 @@ export function homeChatPlacement(
   return { kind: 'none' };
 }
 
-/** "1 needs you · 4 in flight" — null when both halves are empty. */
+/** "1 waiting on you · 4 in flight" — null when both halves are empty. */
 export function waitingOnYouSummary(needsYouCount: number, inFlightCount: number): string | null {
   const parts: string[] = [];
-  if (needsYouCount > 0) parts.push(`${needsYouCount} need${needsYouCount === 1 ? 's' : ''} you`);
+  if (needsYouCount > 0) parts.push(`${needsYouCount} waiting on you`);
   if (inFlightCount > 0) parts.push(`${inFlightCount} in flight`);
   return parts.length > 0 ? parts.join(' · ') : null;
 }
@@ -160,7 +160,7 @@ export function waitingOnYouSummary(needsYouCount: number, inFlightCount: number
  */
 export function homeSubheading(shipClause: string | null, needsYouCount: number): string {
   const parts = [shipClause, waitingOnYouSummary(needsYouCount, 0)].filter(Boolean) as string[];
-  return parts.length > 0 ? parts.join(' · ') : 'Nothing needs input';
+  return parts.length > 0 ? parts.join(' · ') : 'Nothing waiting on you';
 }
 
 export type RightNowState = 'active' | 'create-workspace' | 'get-started' | 'idle';

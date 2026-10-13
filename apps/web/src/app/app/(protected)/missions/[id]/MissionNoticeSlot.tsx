@@ -34,7 +34,7 @@ export default function MissionNoticeSlot({ needsYou, children }: { needsYou: bo
     <section
       data-testid="mission-notice"
       data-level={needsYou ? '3' : '1'}
-      aria-label={needsYou ? 'Needs you' : 'Status'}
+      aria-label={needsYou ? 'Waiting on you' : 'Status'}
       className={`flex flex-col gap-3 [&>*+*]:border-t [&>*+*]:border-[var(--line-soft)] [&>*+*]:pt-3 ${
         needsYou ? 'card-decision p-4' : 'border-t border-border-default pt-3'
       }`}

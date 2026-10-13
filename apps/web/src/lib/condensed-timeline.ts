@@ -625,7 +625,7 @@ export type RailNode<T> = {
 };
 
 export type RailTick = { kind: 'tick'; id: string; label: string; now: boolean };
-export type RailLabel = { kind: 'label'; id: string; text: 'needs input' | 'running' };
+export type RailLabel = { kind: 'label'; id: string; text: 'has a question' | 'running' };
 export type RailGoal = { total: number; passed: number | null };
 
 /**
@@ -894,7 +894,7 @@ export function buildRail<T extends RailTaskLike>(
 
   const labelAt = new Map<number, RailLabel>();
   if (waitingOnYou.length > 0) {
-    labelAt.set(0, { kind: 'label', id: 'label-waiting', text: 'needs input' });
+    labelAt.set(0, { kind: 'label', id: 'label-waiting', text: 'has a question' });
   }
   if (running.length > 0) {
     labelAt.set(waitingOnYou.length, {
