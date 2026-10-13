@@ -12,10 +12,12 @@
  */
 import { applyCommandOn } from '../command-runner';
 import type { Command, EffectKind, LivePr } from '../commands';
-import { decideAndRecord, decideAt, VISUAL_IMPACT_POINT } from '../decide';
+import { decideAndRecord, decideAt, decisionFactKey, invalidRecordFactKey, VISUAL_IMPACT_POINT } from '../decide';
 import { drainEffects, type EffectHandlers } from '../effects';
+import { kernelEffectHandlers } from '../handlers/index';
 import { acquireLaneOn, settleLanesOn } from '../landing-lane';
-import type { CommandResult, Decide, DeliveryRef, Store } from '../ports';
+import { FakeGithub, RecordingIngest, RecordingLifecycle, RecordingNotify } from '../memory/ports';
+import type { CommandResult, Decide, DeliveryRef, KernelPorts, Store } from '../ports';
 import { deriveDeliveryView } from '../projections';
 import type { DeliverySnapshot, KernelView } from '../types';
 
@@ -167,6 +169,33 @@ function recordingHandlers(ran: string[], override: EffectHandlers = {}): Effect
   const out: EffectHandlers = {};
   for (const k of kinds) out[k] = async () => { ran.push(k); return { outcome: 'ok' }; };
   return { ...out, ...override };
+}
+
+// ── The package's effect handlers, on fake ports ────────────────────────────
+
+interface FakePorts { ports: KernelPorts; github: FakeGithub; lifecycle: RecordingLifecycle; notify: RecordingNotify; ingest: RecordingIngest }
+
+/** The handlers' ports over the host's store, with a fake GitHub and recording Work-side ports. */
+function fakePorts(host: ConformanceHost, o: { lifecycle?: RecordingLifecycle; ingest?: RecordingIngest; notify?: RecordingNotify; omit?: Array<keyof KernelPorts> } = {}): FakePorts {
+  const github = new FakeGithub();
+  const lifecycle = o.lifecycle ?? new RecordingLifecycle();
+  const notify = o.notify ?? new RecordingNotify();
+  const ingest = o.ingest ?? new RecordingIngest();
+  const ports: KernelPorts = { store: host.store, github, clock: { now: () => new Date().toISOString() }, newId: () => host.newId(), notify, ingest, lifecycle };
+  for (const k of o.omit ?? []) delete ports[k];
+  return { ports, github, lifecycle, notify, ingest };
+}
+
+/** Drain one delivery until nothing is due: the package's handlers over `ports`, every other kind recorded. */
+async function drainKernel(host: ConformanceHost, s: Delivery, ports: KernelPorts): Promise<void> {
+  for (let i = 0; i < 6; i++) {
+    const r = await drainEffects(host.store, { handlers: { ...recordingHandlers([]), ...kernelEffectHandlers(ports) }, deliveryId: s.deliveryId, log: { log: () => {}, error: () => {} } });
+    if (r.claimed === 0) return;
+  }
+}
+
+async function outcomesOf(host: ConformanceHost, s: Delivery, kind: EffectKind): Promise<Array<string | null>> {
+  return (await host.effects(s.deliveryId)).filter((e) => e.kind === kind).map((e) => e.outcome);
 }
 
 const neverAsked: Decide = { id: 'never', decide: async () => { throw new ConformanceFailure('a replay called the decider'); } };
@@ -453,6 +482,150 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       notApplied(await s.submit({ type: 'LandingRequested', actor: 'kernel', door: 'auto', headSha: 'H1', live: s.live('H1'), rails: { passed: true } }, d.factId), 'rejected', 'state_not_allowed', 'no review verdict, no landing');
       eq(await s.count('merge_call'), 0, 'no merge owed');
       eq((await s.d()).state, 'AWAITING_REVIEW', 'still under review');
+    },
+  },
+  // ── The package's effect handlers (§2), on fake GitHub / Ingest / Lifecycle / Notify ──
+  {
+    name: 'handlers/landing: the merge is pinned to the approved head, a live read turns it into the merged fact, and the post-merge work runs once',
+    async run(host) {
+      const s = await (await new Delivery(host).open()).approvedAt('H1');
+      applied(await s.land('H1'), 'LANDING', 'landing');
+      const f = fakePorts(host, { ingest: new RecordingIngest(async (fact) => ({ result: fact.kind === 'pr_closed' ? (await s.merged('H1')).result : 'ignored' })) });
+      f.github.setPr(s.repo, s.prNumber, s.mergedLive('H1'));
+      await drainKernel(host, s, f.ports);
+      eq(f.github.merges, [{ repoFullName: s.repo, prNumber: s.prNumber, headSha: 'H1', method: 'squash' }], 'one merge call, pinned to H1');
+      eq(await outcomesOf(host, s, 'merge_call'), ['ok:merged:applied'], 'merge answer applied as T16');
+      eq(await outcomesOf(host, s, 'verify_merge'), ['ok:merged:applied'], 'verified by the live read');
+      eq(f.ingest.facts.map((x) => pick(x, ['kind', 'source', 'prNumber'])), [{ kind: 'pr_closed', source: 'effect:verify_merge', prNumber: s.prNumber }], 'the merged fact goes through the funnel');
+      eq((await s.d()).state, 'MERGED', 'merged');
+      eq(f.lifecycle.ops().sort(), ['finalizeMerge', 'merged'], 'post-merge work, once');
+      eq({ emit: await outcomesOf(host, s, 'emit_pr_merged'), finalize: await outcomesOf(host, s, 'finalize_mission_pr') }, { emit: ['ok'], finalize: ['ok'] }, 'post-merge effects done');
+      await drainKernel(host, s, f.ports);
+      eq(f.lifecycle.calls.length, 2, 'a second drain runs nothing again');
+    },
+  },
+  {
+    name: 'handlers/landing: an indeterminate answer at an open, unmoved head is not_merged; a moved head goes to the funnel; a behind answer is a repair',
+    async run(host) {
+      const a = await (await new Delivery(host, 21).open()).approvedAt('H1');
+      applied(await a.land('H1'), 'LANDING', 'landing a');
+      const fa = fakePorts(host);
+      fa.github.mergeAnswer = { outcome: 'indeterminate', detail: 'socket hang up' };
+      fa.github.setPr(a.repo, a.prNumber, a.live('H1'));
+      await drainKernel(host, a, fa.ports);
+      eq({ merge: await outcomesOf(host, a, 'merge_call'), verify: await outcomesOf(host, a, 'verify_merge') }, { merge: ['ok:indeterminate:applied'], verify: ['ok:not_merged:applied'] }, 'verified as not merged');
+      eq((await a.d()).state, 'APPROVED', 'the approval still stands');
+
+      const b = await (await new Delivery(host, 22).open()).approvedAt('H1');
+      applied(await b.land('H1'), 'LANDING', 'landing b');
+      const fb = fakePorts(host);
+      fb.github.mergeAnswer = { outcome: 'indeterminate' };
+      fb.github.setPr(b.repo, b.prNumber, b.live('H2'));
+      await drainKernel(host, b, fb.ports);
+      eq(await outcomesOf(host, b, 'verify_merge'), ['ok:head_moved'], 'a moved head is observed');
+      eq(fb.ingest.facts.map((x) => x.kind), ['head_observed'], 'through the funnel, from the same read');
+
+      const c = await (await new Delivery(host, 23).open()).approvedAt('H1');
+      applied(await c.land('H1'), 'LANDING', 'landing c');
+      const fc = fakePorts(host);
+      fc.github.mergeAnswer = { outcome: 'behind', detail: 'Head branch is out of date' };
+      await drainKernel(host, c, fc.ports);
+      eq(await outcomesOf(host, c, 'merge_call'), ['ok:behind:applied'], 'behind applied as T16');
+      eq(await c.count('verify_merge'), 0, 'nothing to verify');
+      ok((await c.d()).state !== 'LANDING', 'left LANDING for the repair');
+    },
+  },
+  {
+    name: 'handlers/landing: a merge owed for a head that is no longer current never calls GitHub',
+    async run(host) {
+      const s = await (await new Delivery(host).open()).approvedAt('H1');
+      applied(await s.land('H1'), 'LANDING', 'landing');
+      applied(await s.push('H2'), 'AWAITING_REVIEW', 'head moved before the merge ran');
+      const f = fakePorts(host);
+      await drainKernel(host, s, f.ports);
+      eq(f.github.merges, [], 'no merge call');
+      ok((await outcomesOf(host, s, 'merge_call')).every((o) => String(o).startsWith('skipped:')), 'skipped');
+    },
+  },
+  {
+    name: 'handlers/supersession: a close is scanned; a recorded edge is projected and wakes the coordinator; an abandon projects as abandoned',
+    async run(host) {
+      const s = await new Delivery(host, 31).open();
+      await s.ownerPushed('H1');
+      applied(await s.submit({ type: 'PrClosedUnmerged', actor: 'webhook', live: s.live('H1', { state: 'closed', updatedAt: '2026-01-01T02:00:00Z' }), closeCause: 'manual' }), 'CLOSED_UNMERGED', 'closed');
+      const f = fakePorts(host);
+      await drainKernel(host, s, f.ports);
+      eq(await outcomesOf(host, s, 'scan_supersession'), ['ok:none_found'], 'scanned');
+      applied(await s.submit({ type: 'SupersessionRecorded', actor: 'human:u', target: { repoFullName: s.repo, prNumber: 99, merged: true, url: null }, reason: 'landed in #99', authorised: true }), 'SUPERSEDED', 'edge');
+      await drainKernel(host, s, f.ports);
+      eq({ project: await outcomesOf(host, s, 'project_supersession'), wake: await outcomesOf(host, s, 'wake_mission') }, { project: ['ok:superseded_1'], wake: ['ok:woken'] }, 'projected and woken');
+      eq(f.lifecycle.ops()[0], 'scanSupersession', 'the scan ran first');
+      eq(f.lifecycle.ops().slice(1).sort(), ['projectResolution:superseded', 'wakeCoordinator:pr_resolved'], 'one projection, one wake');
+
+      const a = await new Delivery(host, 32).open();
+      await a.ownerPushed('H1');
+      applied(await a.submit({ type: 'PrClosedUnmerged', actor: 'webhook', live: a.live('H1', { state: 'closed', updatedAt: '2026-01-01T03:00:00Z' }), closeCause: 'manual' }), 'CLOSED_UNMERGED', 'closed a');
+      const fa = fakePorts(host, { lifecycle: new RecordingLifecycle({ scan: null, wake: null }) });
+      await drainKernel(host, a, fa.ports);
+      eq(await outcomesOf(host, a, 'scan_supersession'), ['skipped:no_worker'], 'nothing to scan from');
+      applied(await a.submit({ type: 'Abandon', actor: 'human:u', reason: 'not needed' }), 'ABANDONED', 'abandoned');
+      await drainKernel(host, a, fa.ports);
+      eq({ project: await outcomesOf(host, a, 'project_supersession'), wake: await outcomesOf(host, a, 'wake_mission') }, { project: ['ok:abandoned_1'], wake: ['skipped:no_mission'] }, 'projected as abandoned; nothing to wake');
+    },
+  },
+  {
+    name: 'handlers/activity: every transition is rendered; a render overtaken while it writes owes the newer one; a released delivery is never rendered',
+    async run(host) {
+      const s = await new Delivery(host, 41).open();
+      const notify = new RecordingNotify();
+      let bumped = false;
+      notify.onActivity = async () => {
+        if (bumped) return;
+        bumped = true;
+        applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'moved on mid-render');
+      };
+      const f = fakePorts(host, { notify });
+      await drainKernel(host, s, f.ports);
+      const outs = await outcomesOf(host, s, 'render_activity');
+      ok(outs.some((o) => o === 'ok:rendered+followup'), `the overtaken render owes one more: ${outs}`);
+      const version = (await s.d()).version;
+      eq(Math.max(...notify.activities.map((x) => x.version)), version, 'the last render is at the current version');
+      ok(outs.every((o) => o === 'ok:rendered' || o === 'ok:rendered+followup'), 'every render ran');
+
+      const r = await new Delivery(host, 42).open();
+      await host.setKernelEnabled(r.workspaceId, false);
+      const fr = fakePorts(host);
+      await drainKernel(host, r, fr.ports);
+      eq(fr.notify.activities, [], 'nothing rendered for legacy');
+      ok((await outcomesOf(host, r, 'render_activity')).every((o) => o === 'skipped:legacy_owns'), 'skipped as legacy-owned');
+      await host.setKernelEnabled(r.workspaceId, true);
+    },
+  },
+  {
+    name: 'handlers: a port the host did not supply fails the effect loudly instead of acking it',
+    async run(host) {
+      const s = await new Delivery(host, 51).open();
+      await s.ownerPushed('H1');
+      applied(await s.submit({ type: 'PrClosedUnmerged', actor: 'webhook', live: s.live('H1', { state: 'closed', updatedAt: '2026-01-01T04:00:00Z' }), closeCause: 'manual' }), 'CLOSED_UNMERGED', 'closed');
+      const f = fakePorts(host, { omit: ['lifecycle'] });
+      await drainEffects(host.store, { handlers: { ...recordingHandlers([]), ...kernelEffectHandlers(f.ports) }, deliveryId: s.deliveryId, log: { log: () => {}, error: () => {} } });
+      const row = (await host.effects(s.deliveryId)).find((e) => e.kind === 'scan_supersession')!;
+      eq(pick(row, ['status', 'lastError']), { status: 'pending', lastError: 'scan_supersession: the host supplies no lifecycle port' }, 'backed off, naming the port');
+    },
+  },
+  {
+    name: 'decide: an unreadable recorded decision takes the default with the reason recorded, and replays the same',
+    async run(host) {
+      const s = await new Delivery(host).open();
+      const subject = { workspaceId: s.workspaceId, deliveryId: s.deliveryId, source: 'conformance' };
+      const key = decisionFactKey(s.deliveryId, 'visual_impact', 'H1');
+      ok(await host.store.insertFact({ workspaceId: s.workspaceId, kind: 'decision', factKey: key, source: 'conformance', payload: { garbage: true } }), 'a malformed record');
+      const first = await decideAndRecord(host.store, subject, VISUAL_IMPACT_POINT, { headSha: 'H1' }, { decide: neverAsked });
+      eq(pick(first.fact, ['verdict', 'source', 'fallback', 'deciderId']), { verdict: 'review_required', source: 'default', fallback: 'invalid_record', deciderId: null }, 'the default, with why');
+      eq(first.replayed, false, 'decided now');
+      eq((await host.store.findFact(s.workspaceId, invalidRecordFactKey(key)))?.id, first.factId, 'recorded beside the unreadable one');
+      const again = await decideAndRecord(host.store, subject, VISUAL_IMPACT_POINT, { headSha: 'H1' }, { decide: neverAsked });
+      eq({ replayed: again.replayed, factId: again.factId, fallback: again.fact.fallback }, { replayed: true, factId: first.factId, fallback: 'invalid_record' }, 'a replay answers the same');
     },
   },
 ];

@@ -12,8 +12,8 @@
  * Versioned with the package: a breaking change to a port is a major bump.
  */
 import type { BaseDeltaFact } from './base-delta';
-import type { ApplyDecision, CurrentView, EffectKind, LivePr, RecordOnly } from './commands';
-import type { DeliveryState, KernelView } from './types';
+import type { ApplyDecision, Command, CurrentView, EffectKind, LivePr, RecordOnly } from './commands';
+import type { DeliverySnapshot, DeliveryState, KernelView } from './types';
 
 export const PORTS_VERSION = 1;
 
@@ -200,11 +200,26 @@ export interface GithubFactReader {
   baseDelta?(repoFullName: string, prNumber: number, headSha: string, baseRef: string): Promise<BaseDeltaFact | null>;
 }
 
+/** GitHub's answer to a pinned merge call, read as the T16 outcome it is (`MergeCallResult`). */
+export type MergeCallOutcome = Extract<Command, { type: 'MergeCallResult' }>['outcome'];
+
+export interface MergeAnswer {
+  outcome: MergeCallOutcome;
+  /** What GitHub said, recorded on the transition. */
+  detail?: string;
+  /** A transient answer (rate limit, 5xx): when GitHub said to call again (ISO); null or absent = no wait asked. */
+  retryAt?: string | null;
+}
+
 /** The writes the kernel's effects make on GitHub. Each is idempotent at the host or keyed by the effect. */
 export interface GithubWrites {
-  /** Merge only if the PR's head is still `headSha`. */
-  mergeAtHead(p: { repoFullName: string; prNumber: number; headSha: string; method?: 'squash' | 'merge' | 'rebase' }):
-    Promise<{ outcome: 'merged'; mergeCommitSha: string | null } | { outcome: 'head_moved' | 'behind' | 'conflict' | 'blocked' | 'error'; detail?: string }>;
+  /**
+   * Merge only if the PR's head is still `headSha`. The host reads GitHub's
+   * answer into the outcome (a moved head or a rate limit is `not_merged`, a
+   * lost or 5xx answer `indeterminate`, an out-of-date branch `behind`); the
+   * kernel verifies anything but a definite refusal with a live read.
+   */
+  mergeAtHead(p: { repoFullName: string; prNumber: number; headSha: string; method?: 'squash' | 'merge' | 'rebase' }): Promise<MergeAnswer>;
   postReview(p: { repoFullName: string; prNumber: number; commitId: string; event: 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT'; body: string }): Promise<{ id: string | null }>;
   publishStatus(p: { repoFullName: string; sha: string; context: string; state: 'pending' | 'success' | 'failure' | 'error'; description: string; targetUrl?: string | null }): Promise<void>;
   /** Create or update the comment carrying `marker` on the PR. */
@@ -249,8 +264,13 @@ export interface Work {
 // ── Notify ──────────────────────────────────────────────────────────────────
 
 export interface Notify {
-  /** Re-render the delivery's activity comment from the transition log. */
-  activity(p: { deliveryId: string; version: number }): Promise<void>;
+  /**
+   * Re-render the delivery's activity comment from the transition log, at
+   * `version` (the view the kernel read, when it has one). The kernel owes a
+   * follow-up render itself if the delivery moved on meanwhile; the answer is
+   * the effect's outcome (`ok:created`, `skipped:older_version`, ...).
+   */
+  activity(p: { deliveryId: string; version: number; view?: KernelView }): Promise<{ outcome: string } | void>;
   /** A team notification about a delivery. */
   team(p: { workspaceId: string; deliveryId: string; kind: string; title: string; body?: string }): Promise<void>;
 }
@@ -294,13 +314,76 @@ export interface Decide {
   decide(point: string, input: Record<string, unknown>): Promise<DecideAnswer | null>;
 }
 
+// ── Ingest ──────────────────────────────────────────────────────────────────
+
+/** A fact an effect observed on a live read and hands to the ingest funnel. */
+export interface IngestFact {
+  kind: 'pr_closed' | 'head_observed';
+  workspaceId: string;
+  source: string;
+  repoFullName: string;
+  prNumber: number;
+}
+
+/**
+ * The ingest funnel (record the fact once, apply the command it maps to). Still
+ * the host's: buildd's `ingestFact` sequences its statements in apps/web until
+ * the funnel moves into the package. `github` is the read the fact was taken
+ * from, so the funnel acts on that read rather than taking another.
+ */
+export interface Ingest {
+  ingest(fact: IngestFact, github: GithubFactReader): Promise<{ result: string }>;
+}
+
+// ── Lifecycle ───────────────────────────────────────────────────────────────
+
+/**
+ * What the host does at a delivery's lifecycle points, which the kernel
+ * orders but cannot know: its own records of the outcome and the work that
+ * follows. The kernel decides when (the effect, after the transition) and
+ * re-checks the delivery first; the host does the what.
+ */
+export interface Lifecycle {
+  /**
+   * T20/T21: project the resolution onto the host's records of the PR (in
+   * buildd: every unmerged worker row of it), never overwriting one already
+   * recorded. Returns how many records changed.
+   */
+  projectResolution(d: DeliverySnapshot, resolution: 'superseded' | 'abandoned'): Promise<number>;
+  /**
+   * T18: look for where a closed, unmerged PR's work landed. Detection only
+   * nominates: an edge it can prove comes back as a command. null = nothing to
+   * scan from (no record of the PR's author); else the scan's outcome.
+   */
+  scanSupersession(d: DeliverySnapshot): Promise<string | null>;
+  /** Whatever coordinates the owner task may act now (in buildd: wake its mission). null = nothing coordinates it. */
+  wakeCoordinator(d: DeliverySnapshot, reason: 'pr_resolved'): Promise<{ woken: boolean; reason?: string } | null>;
+  /** T17's once-per-merge work (the post-merge events). false = no record of the PR's author to run it for. */
+  merged(d: DeliverySnapshot): Promise<boolean>;
+  /** After a merge, tidy what the delivery leaves on the host (in buildd: delete a shipped mission branch). */
+  finalizeMerge(d: DeliverySnapshot): Promise<void>;
+}
+
 /** Everything a host hands the kernel, composed once at startup. `decide` is optional. */
 export interface KernelPorts {
   store: Store;
+  /** The host's GitHub when it has one installation for every workspace. */
   github?: GithubFacts;
+  /** The host's GitHub per workspace (an installation per workspace in buildd); null = none. Wins over `github`. */
+  githubFor?(workspaceId: string): Promise<GithubFacts | null>;
   clock: Clock;
+  /** Ids for rows the kernel writes (rounds, attempts); the reducer's default when absent. */
+  newId?: () => string;
   work?: Work;
   notify?: Notify;
   policy?: Policy;
   decide?: Decide;
+  ingest?: Ingest;
+  lifecycle?: Lifecycle;
+}
+
+/** The GitHub to act on for a workspace's delivery, or null when the host has none for it. */
+export async function githubOf(ports: Pick<KernelPorts, 'github' | 'githubFor'>, workspaceId: string): Promise<GithubFacts | null> {
+  if (ports.githubFor) return ports.githubFor(workspaceId);
+  return ports.github ?? null;
 }

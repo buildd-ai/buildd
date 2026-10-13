@@ -2,7 +2,7 @@
  * Effect handlers for the conflict and migration families of the workflow
  * kernel (docs/specs/workflow-state-kernel.md §6.7, §10.2, §10.5), owned by
  * the reviews module like ci-retry-effects.ts and reached only through the
- * composition root (`workflowEffectHandlers()` in apps/web/src/modules.ts).
+ * composition root (`workflowHostEffectHandlers()` in apps/web/src/modules.ts).
  *
  * Mechanical first. `refresh_branch` merges the base in server-side (GitHub
  * update-branch pinned to the bound head, through base-refresh.ts so the

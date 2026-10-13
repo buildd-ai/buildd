@@ -1,41 +1,32 @@
 /**
- * Landing and post-merge effect handlers of the workflow kernel
+ * buildd's half of the landing and post-merge effects
  * (docs/specs/workflow-state-kernel.md §10.2, T15–T17, §14 Slice C), owned by
- * the reviews/merge module and reached only through the composition root
- * (`workflowEffectHandlers()` in apps/web/src/modules.ts).
+ * the reviews/merge module. The handlers (`merge_call`, `verify_merge`,
+ * `emit_pr_merged`, `finalize_mission_pr`) are the package's
+ * (packages/workflow-kernel/src/handlers/landing.ts), composed at the root
+ * (`workflowKernel()` in apps/web/src/modules.ts); this file supplies what
+ * they reach through the ports:
  *
- *  - `merge_call`: the one `PUT /pulls/{n}/merge` of a kernel-owned PR, pinned
- *    to the head T15 approved; its answer is T16, never a merged fact.
- *  - `verify_merge`: the live read that turns a merge answer into a fact
- *    (`PrMerged` through `ingestFact`), or tells the kernel nothing landed.
- *  - A merge answered `behind` or `conflict` is a conflict-family repair
- *    (T16 → §6.7): its `refresh_branch` and `dispatch_conflict_fix` are the
- *    conflict family's handlers (conflict-retry-effects.ts), not this file's.
- *  - `emit_pr_merged`, `finalize_mission_pr`: the post-merge work, once per
- *    merge, durable in the outbox instead of inline in a request.
- *
- * Every handler re-reads the delivery and is idempotent: the outbox delivers
- * at least once.
+ *  - `mergeAnswerOf`: how GitHub's answer to the pinned merge call reads as
+ *    the T16 outcome (`GithubWrites.mergeAtHead`, kernel-ports.ts).
+ *  - `landingLifecycle`: the post-merge work, once per merge
+ *    (`Lifecycle.merged`) and the mission branch's deletion after a mission
+ *    PR ships (`Lifecycle.finalizeMerge`).
  */
 import { and, eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { tasks, workers } from '@buildd/core/db/schema';
-import { mergePullRequest, type MergePullRequestResult } from '@/lib/github';
+import type { MergePullRequestResult } from '@/lib/github';
 import { classifyMergeFailure } from '@/lib/conflict-retry';
 import { finalizeMissionPrMerge } from '@/lib/mission-pr';
 import { runMergedPrWork } from '@/lib/pr-merged-work';
 import { workerOwnsPr } from '@/lib/repo-scope';
-import type { Command } from './commands';
-import type { EffectHandler, EffectHandlers } from './effects';
-import { applyCommand, loadView, type Exec } from './kernel';
-import { ingestFact } from './facts';
-import { githubReader, workspaceRepo } from './github-facts';
+import type { Lifecycle, MergeAnswer as PortMergeAnswer, MergeCallOutcome } from '@buildd/workflow-kernel/ports';
+import { workspaceRepo } from './github-facts';
 import { prUrlOf } from './pr-fact-effects';
 import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
-const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
-
-type MergeOutcome = Extract<Command, { type: 'MergeCallResult' }>['outcome'];
+type MergeOutcome = MergeCallOutcome;
 
 type MergeAnswer = Pick<MergePullRequestResult, 'merged' | 'message' | 'indeterminate' | 'status' | 'retryAfterMs'>;
 
@@ -95,127 +86,57 @@ export function mergeRetryAt(res: MergeAnswer, now = Date.now()): string | null 
   return new Date(now + Math.min(Math.max(0, wait), MAX_MERGE_RETRY_WAIT_MS)).toISOString();
 }
 
-// ── merge_call ──────────────────────────────────────────────────────────────
-
-const mergeCall: EffectHandler = async (e) => {
-  const d = (await loadView({ deliveryId: e.deliveryId }, dbExec)).delivery;
-  const headSha = String(e.payload.headSha ?? '');
-  if (!d?.repoFullName || d.prNumber == null) return { outcome: 'skipped:no_pr' };
-  if (d.state !== 'LANDING' || d.currentHeadSha !== headSha) return { outcome: `skipped:state_${d.state}` };
-  const repo = await workspaceRepo(d.workspaceId);
-  if (!repo) throw new Error('no GitHub installation for the workspace');
-  const method = (e.payload.mergeMethod as 'merge' | 'squash' | 'rebase' | undefined) ?? 'squash';
-  // Pinned to the head T15 approved: a replay at the same head is a no-op or a clean refusal.
-  const res = await mergePullRequest(repo.installationId, d.repoFullName, d.prNumber, method, headSha);
-  const outcome = classifyMergeCall(res);
-  const retryAt = mergeRetryAt(res);
-  const landingVersion = typeof e.payload.landingVersion === 'number' ? e.payload.landingVersion : undefined;
-  const r = await applyCommand(
-    { type: 'MergeCallResult', actor: 'effect:merge_call', headSha, outcome, detail: res.message, ...(landingVersion !== undefined ? { landingVersion } : {}), ...(retryAt ? { retryAt } : {}) },
-    { ref: { deliveryId: d.id }, exec: dbExec },
-  );
-  return { outcome: `ok:${outcome}:${r.result}` };
-};
-
-// ── verify_merge ────────────────────────────────────────────────────────────
-
-const verifyMerge: EffectHandler = async (e) => {
-  const d = (await loadView({ deliveryId: e.deliveryId }, dbExec)).delivery;
-  if (!d?.repoFullName || d.prNumber == null) return { outcome: 'skipped:no_pr' };
-  if (d.state === 'MERGED') return { outcome: 'ok:already_merged' };
-  const repo = await workspaceRepo(d.workspaceId);
-  if (!repo) throw new Error('no GitHub installation for the workspace');
-  const reader = githubReader(repo.installationId);
-  const live = await reader.readPr(d.repoFullName, d.prNumber);
-  if (!live) throw new Error('live PR read failed');
-  const github = { ...reader, readPr: async () => live };
-  if (live.merged || live.state === 'closed') {
-    // The merged (or closed) fact, from the kernel's own read: T17 / T18.
-    const r = await ingestFact({ kind: 'pr_closed', workspaceId: d.workspaceId, source: 'effect:verify_merge', repoFullName: d.repoFullName, prNumber: d.prNumber }, { exec: dbExec, github });
-    return { outcome: `ok:${live.merged ? 'merged' : 'closed'}:${r.result}` };
-  }
-  const headSha = String(e.payload.headSha ?? '');
-  if (live.headSha !== headSha) {
-    await ingestFact({ kind: 'head_observed', workspaceId: d.workspaceId, source: 'effect:verify_merge', repoFullName: d.repoFullName, prNumber: d.prNumber }, { exec: dbExec, github });
-    return { outcome: 'ok:head_moved' };
-  }
-  if (e.payload.outcome === 'merged') {
-    // GitHub accepted the merge and its read has not caught up: read again later (or the webhook arrives first).
-    throw new Error('the merge was accepted but the live read still shows the PR open');
-  }
-  if (d.state !== 'LANDING') return { outcome: `skipped:state_${d.state}` };
-  const landingVersion = typeof e.payload.landingVersion === 'number' ? e.payload.landingVersion : undefined;
-  // A 5xx's retry-after, carried from the merge call through this read.
-  const retryAt = typeof e.payload.retryAt === 'string' ? e.payload.retryAt : undefined;
-  const r = await applyCommand(
-    { type: 'MergeCallResult', actor: 'effect:verify_merge', headSha, outcome: 'not_merged', detail: 'GitHub shows the PR still open and unmerged after the merge call', ...(landingVersion !== undefined ? { landingVersion } : {}), ...(retryAt ? { retryAt } : {}) },
-    { ref: { deliveryId: d.id }, exec: dbExec },
-  );
-  return { outcome: `ok:not_merged:${r.result}` };
-};
+/** GitHub's merge answer as the port's `MergeAnswer`: the T16 outcome, what GitHub said, and when to call again. */
+export function mergeAnswerOf(res: MergeAnswer, now = Date.now()): PortMergeAnswer {
+  return { outcome: classifyMergeCall(res), detail: res.message, retryAt: mergeRetryAt(res, now) };
+}
 
 // ── post-merge work (T17) ───────────────────────────────────────────────────
 
-const emitPrMerged: EffectHandler = async (e) => {
-  const d = (await loadView({ deliveryId: e.deliveryId }, dbExec)).delivery;
-  if (!d?.repoFullName || d.prNumber == null) return { outcome: 'skipped:no_pr' };
-  if (d.state !== 'MERGED') return { outcome: `skipped:state_${d.state}` };
-  // Scoped to the delivery's workspace: another workspace on the same repo can carry a worker row
-  // with this PR number and url, and the merge must never complete that workspace's task.
-  const owner = await db.query.workers.findFirst({
-    where: sqlWhere(and(eq(workers.workspaceId, d.workspaceId), workerOwnsPr(d.repoFullName, d.prNumber))),
-    orderBy: sqlOrderByFn((w, { asc }) => [asc(w.createdAt)]),
-    with: { task: true },
-  });
-  if (!owner) return { outcome: 'skipped:no_worker' };
-  const repo = await workspaceRepo(d.workspaceId);
-  const task = owner.task;
-  await runMergedPrWork({
-    worker: { id: owner.id, workspaceId: owner.workspaceId, taskId: owner.taskId ?? null, runner: owner.runner },
-    task: task
-      ? {
-          id: task.id, status: task.status, workspaceId: task.workspaceId, missionId: task.missionId ?? null,
-          taskClass: task.taskClass ?? null, release: task.release ?? null, loopState: task.loopState ?? null,
-        }
-      : null,
-    repoFullName: d.repoFullName,
-    prNumber: d.prNumber,
-    prUrl: prUrlOf(d.repoFullName, d.prNumber),
-    prHtmlUrl: prUrlOf(d.repoFullName, d.prNumber),
-    baseRef: d.baseRef,
-    headSha: d.currentHeadSha ?? '',
-    installationId: repo?.installationId ?? null,
-    mergedAt: d.mergedAt ?? new Date(),
-    // One effect per merge (its dedupe key): the once-per-merge steps run here, and the
-    // webhook skips them for a kernel-owned PR.
-    mergeIsNew: true,
-    // stamp_pr_rows owns the fact-cache stamp.
-    stamp: false,
-  });
-  return { outcome: 'ok' };
+export const landingLifecycle: Pick<Lifecycle, 'merged' | 'finalizeMerge'> = {
+  async merged(d) {
+    if (!d.repoFullName || d.prNumber == null) return false;
+    // Scoped to the delivery's workspace: another workspace on the same repo can carry a worker row
+    // with this PR number and url, and the merge must never complete that workspace's task.
+    const owner = await db.query.workers.findFirst({
+      where: sqlWhere(and(eq(workers.workspaceId, d.workspaceId), workerOwnsPr(d.repoFullName, d.prNumber))),
+      orderBy: sqlOrderByFn((w, { asc }) => [asc(w.createdAt)]),
+      with: { task: true },
+    });
+    if (!owner) return false;
+    const repo = await workspaceRepo(d.workspaceId);
+    const task = owner.task;
+    await runMergedPrWork({
+      worker: { id: owner.id, workspaceId: owner.workspaceId, taskId: owner.taskId ?? null, runner: owner.runner },
+      task: task
+        ? {
+            id: task.id, status: task.status, workspaceId: task.workspaceId, missionId: task.missionId ?? null,
+            taskClass: task.taskClass ?? null, release: task.release ?? null, loopState: task.loopState ?? null,
+          }
+        : null,
+      repoFullName: d.repoFullName,
+      prNumber: d.prNumber,
+      prUrl: prUrlOf(d.repoFullName, d.prNumber),
+      prHtmlUrl: prUrlOf(d.repoFullName, d.prNumber),
+      baseRef: d.baseRef,
+      headSha: d.currentHeadSha ?? '',
+      installationId: repo?.installationId ?? null,
+      mergedAt: d.mergedAt ?? new Date(),
+      // One effect per merge (its dedupe key): the once-per-merge steps run here, and the
+      // webhook skips them for a kernel-owned PR.
+      mergeIsNew: true,
+      // stamp_pr_rows owns the fact-cache stamp.
+      stamp: false,
+    });
+    return true;
+  },
+
+  async finalizeMerge(d) {
+    if (!d.repoFullName) return;
+    const task = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, d.ownerTaskId)), columns: { title: true, taskClass: true, missionId: true } });
+    const repo = await workspaceRepo(d.workspaceId);
+    if (!repo) throw new Error('no GitHub installation for the workspace');
+    // Deletes the mission branch after the mission PR ships, whichever door (or a person on GitHub) merged it.
+    await finalizeMissionPrMerge(task ?? null, repo.installationId, d.repoFullName);
+  },
 };
-
-const finalizeMissionPr: EffectHandler = async (e) => {
-  const d = (await loadView({ deliveryId: e.deliveryId }, dbExec)).delivery;
-  if (!d?.repoFullName || d.state !== 'MERGED') return { outcome: `skipped:state_${d?.state ?? 'none'}` };
-  const task = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, d.ownerTaskId)), columns: { title: true, taskClass: true, missionId: true } });
-  const repo = await workspaceRepo(d.workspaceId);
-  if (!repo) throw new Error('no GitHub installation for the workspace');
-  // Deletes the mission branch after the mission PR ships, whichever door (or a person on GitHub) merged it.
-  await finalizeMissionPrMerge(task ?? null, repo.installationId, d.repoFullName);
-  return { outcome: 'ok' };
-};
-
-/** The landing family, added at the composition root. */
-export function withLandingEffects(base: EffectHandlers): EffectHandlers {
-  return {
-    ...base,
-    merge_call: mergeCall,
-    verify_merge: verifyMerge,
-    emit_pr_merged: emitPrMerged,
-    finalize_mission_pr: finalizeMissionPr,
-  };
-}
-
-// Exported for tests.
-export const __handlers = { mergeCall, verifyMerge, emitPrMerged, finalizeMissionPr };

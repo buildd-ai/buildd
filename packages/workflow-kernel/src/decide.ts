@@ -45,7 +45,12 @@ export const VISUAL_IMPACT_POINT: DecisionPoint<{ headSha: string; [k: string]: 
 
 export const DECISION_POINTS = { visual_impact: VISUAL_IMPACT_POINT } as const;
 
-export type DecisionFallback = 'no_decider' | 'no_answer' | 'error' | 'timeout' | 'invalid_answer' | 'low_confidence';
+/**
+ * Why the default was taken. `invalid_record`: the fact recorded for this
+ * question cannot be read as a decision (a malformed payload), so the replay
+ * takes the default instead of failing, and records that it did.
+ */
+export type DecisionFallback = 'no_decider' | 'no_answer' | 'error' | 'timeout' | 'invalid_answer' | 'low_confidence' | 'invalid_record';
 
 /** The recorded decision: the fact a transition that uses it links. */
 export interface DecisionFact {
@@ -156,6 +161,7 @@ export async function decideAndRecord<I extends Record<string, unknown>>(
   const prior = await store.findFact(subject.workspaceId, factKey);
   const recorded = prior ? toDecisionFact(prior.payload) : null;
   if (prior && recorded) return { fact: recorded, factId: prior.id, replayed: true };
+  if (prior) return recordInvalid(store, subject, point, input, factKey);
 
   const { fact } = await decideAt(point, input, deps);
   const inserted = await store.insertFact({
@@ -165,7 +171,41 @@ export async function decideAndRecord<I extends Record<string, unknown>>(
   if (inserted) return { fact, factId: inserted.id, replayed: false };
   // Another caller recorded this question between the read and the write: its answer is the decision.
   const winner = await store.findFact(subject.workspaceId, factKey);
-  const won = winner ? toDecisionFact(winner.payload) : null;
-  if (!winner || !won) throw new Error(`decideAndRecord: fact ${factKey} neither inserted nor found`);
+  if (!winner) throw new Error(`decideAndRecord: fact ${factKey} neither inserted nor found`);
+  const won = toDecisionFact(winner.payload);
+  if (!won) return recordInvalid(store, subject, point, input, factKey);
   return { fact: won, factId: winner.id, replayed: true };
+}
+
+/** Where the default taken for an unreadable recorded decision is itself recorded. */
+export function invalidRecordFactKey(factKey: string): string {
+  return `${factKey}#invalid_record`;
+}
+
+/**
+ * The recorded fact for this question is not a decision: take the package
+ * default without asking the decider (a replay never does), record it beside
+ * the unreadable one with the reason, and answer with that record. A later
+ * replay finds it and answers the same, so history stays deterministic.
+ */
+async function recordInvalid<I extends Record<string, unknown>>(
+  store: Store, subject: DecisionSubject, point: DecisionPoint<I>, input: I, factKey: string,
+): Promise<{ fact: DecisionFact; factId: string; replayed: boolean }> {
+  const key = invalidRecordFactKey(factKey);
+  const already = await store.findFact(subject.workspaceId, key);
+  const readBack = already ? toDecisionFact(already.payload) : null;
+  if (already && readBack) return { fact: readBack, factId: already.id, replayed: true };
+  const d = point.fallback(input);
+  const fact: DecisionFact = {
+    point: point.name, inputKey: point.inputKey(input), deciderId: null, verdict: d.verdict, confidence: null,
+    reason: d.reason, source: 'default', fallback: 'invalid_record', error: `the fact recorded under ${factKey} is not a decision`.slice(0, 200),
+  };
+  const inserted = await store.insertFact({
+    workspaceId: subject.workspaceId, kind: 'decision', factKey: key, source: subject.source,
+    repoFullName: subject.repoFullName ?? null, prNumber: subject.prNumber ?? null, payload: { ...fact, deliveryId: subject.deliveryId },
+  });
+  if (inserted) return { fact, factId: inserted.id, replayed: false };
+  const winner = await store.findFact(subject.workspaceId, key);
+  if (!winner) throw new Error(`decideAndRecord: fact ${key} neither inserted nor found`);
+  return { fact: toDecisionFact(winner.payload) ?? fact, factId: winner.id, replayed: true };
 }

@@ -1,11 +1,14 @@
 /**
- * `render_activity` (docs/specs/workflow-state-kernel.md §12.1): regenerate
- * the PR activity comment of a kernel-owned delivery from the delivery row,
- * its full `workflow_transitions` log and the legacy notes diverted into
+ * buildd's activity render, the `Notify.activity` port of `render_activity`
+ * (docs/specs/workflow-state-kernel.md §12.1; the handler is the package's,
+ * packages/workflow-kernel/src/handlers/activity.ts): regenerate the PR
+ * activity comment of a kernel-owned delivery from the delivery row, its full
+ * `workflow_transitions` log and the legacy notes diverted into
  * `workflow_facts` (kind `activity_note`). Never appends, never reads the
  * comment as data: the only thing read back from GitHub is the render-version
  * marker, so a stale render can delay the right text but never leave a wrong
- * one (rule 3).
+ * one (rule 3; the follow-up render owed when the version moved on is the
+ * handler's).
  *
  * Also the diversion half: `divertActivityNote` is what `appendPrActivity`
  * calls for a kernel-owned PR, so the kernel's render stays the comment's
@@ -15,9 +18,11 @@ import { createHash } from 'node:crypto';
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { ACTIVITY_COMMENT_MARKER, type PrActivityEntry } from '@/lib/pr-activity-comment';
-import type { ClaimedEffect, EffectHandler } from './effects';
-import { insertFollowupEffectSql } from './effects';
+import { activityHandlers } from '@buildd/workflow-kernel/handlers/index';
+import type { Notify } from '@buildd/workflow-kernel/ports';
+import type { ClaimedEffect } from './effects';
 import { loadView, type Exec } from './kernel';
+import { postgresStore } from './postgres-store';
 import { workspaceKernelOnSql } from './authority';
 import { workspaceRepo, type WorkspaceRepo } from './github-facts';
 import { parseRenderVersion, renderDeliveryActivity, type ActivityTransition, type DivertedNote } from './pr-activity-render';
@@ -74,69 +79,62 @@ async function findActivityComments(api: GithubApi, installationId: number, repo
   return out.sort((a, b) => a.id - b.id);
 }
 
-export async function renderActivityEffect(e: ClaimedEffect, deps: RenderDeps = {}): Promise<{ outcome: string }> {
-  const exec = deps.exec ?? dbExec;
-  const view = await loadView({ deliveryId: e.deliveryId }, exec);
-  const d = view.delivery;
-  if (!d) return { outcome: 'skipped:no_delivery' };
-  if (d.authority === 'legacy') return { outcome: 'skipped:legacy_owns' };
-  if (!d.repoFullName || d.prNumber == null) return { outcome: 'skipped:no_pr' };
-  const repo = await (deps.repoFor ?? workspaceRepo)(d.workspaceId);
-  if (!repo) throw new Error('no GitHub installation for the workspace');
-  const api = deps.github ?? (await defaultGithub());
+/** The render, as the `Notify.activity` port: the comment at the delivery's version, and what it did. */
+export function activityNotify(deps: RenderDeps = {}): Pick<Notify, 'activity'> {
+  return {
+    async activity(p) {
+      const exec = deps.exec ?? dbExec;
+      const view = p.view ?? (await loadView({ deliveryId: p.deliveryId }, exec));
+      const d = view.delivery;
+      if (!d) return { outcome: 'skipped:no_delivery' };
+      if (!d.repoFullName || d.prNumber == null) return { outcome: 'skipped:no_pr' };
+      const repo = await (deps.repoFor ?? workspaceRepo)(d.workspaceId);
+      if (!repo) throw new Error('no GitHub installation for the workspace');
+      const api = deps.github ?? (await defaultGithub());
 
-  const tRows = ((await exec(transitionsSql(d.id))).rows ?? []) as J[];
-  const transitions: ActivityTransition[] = tRows.map((r) => ({
-    command: String(r.command), fromState: r.from_state == null ? null : String(r.from_state), toState: String(r.to_state),
-    toVersion: Number(r.to_version), evidence: (r.evidence as Record<string, unknown> | null) ?? null, createdAt: iso(r.created_at),
-  }));
-  const nRows = ((await exec(activityNotesSql(d.id))).rows ?? []) as J[];
-  const notes: DivertedNote[] = nRows
-    .filter((r) => r.payload && typeof (r.payload as J).kind === 'string')
-    .map((r) => ({ entry: r.payload as PrActivityEntry, observedAt: iso(r.observed_at) }));
-  const timezone = await (deps.timezone ?? defaultTimezone)(d.workspaceId);
-  const body = renderDeliveryActivity({ view, transitions, notes, timezone });
+      const tRows = ((await exec(transitionsSql(d.id))).rows ?? []) as J[];
+      const transitions: ActivityTransition[] = tRows.map((r) => ({
+        command: String(r.command), fromState: r.from_state == null ? null : String(r.from_state), toState: String(r.to_state),
+        toVersion: Number(r.to_version), evidence: (r.evidence as Record<string, unknown> | null) ?? null, createdAt: iso(r.created_at),
+      }));
+      const nRows = ((await exec(activityNotesSql(d.id))).rows ?? []) as J[];
+      const notes: DivertedNote[] = nRows
+        .filter((r) => r.payload && typeof (r.payload as J).kind === 'string')
+        .map((r) => ({ entry: r.payload as PrActivityEntry, observedAt: iso(r.observed_at) }));
+      const timezone = await (deps.timezone ?? defaultTimezone)(d.workspaceId);
+      const body = renderDeliveryActivity({ view, transitions, notes, timezone });
 
-  const comments = await findActivityComments(api, repo.installationId, d.repoFullName, d.prNumber);
-  const [keep, ...extra] = comments;
-  // Rule 5: exactly one comment. Keep the oldest, remove the rest.
-  for (const c of extra) {
-    await api(repo.installationId, `/repos/${d.repoFullName}/issues/comments/${c.id}`, { method: 'DELETE' }).catch(() => undefined);
-  }
-  let outcome: string;
-  if (keep) {
-    const onGithub = parseRenderVersion(keep.body);
-    if (onGithub != null && onGithub > d.version) {
-      outcome = 'skipped:older_version';
-    } else if (keep.body === body) {
-      outcome = 'ok:unchanged';
-    } else {
-      await api(repo.installationId, `/repos/${d.repoFullName}/issues/comments/${keep.id}`, {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body }),
+      const comments = await findActivityComments(api, repo.installationId, d.repoFullName, d.prNumber);
+      const [keep, ...extra] = comments;
+      // Rule 5: exactly one comment. Keep the oldest, remove the rest.
+      for (const c of extra) {
+        await api(repo.installationId, `/repos/${d.repoFullName}/issues/comments/${c.id}`, { method: 'DELETE' }).catch(() => undefined);
+      }
+      if (keep) {
+        const onGithub = parseRenderVersion(keep.body);
+        if (onGithub != null && onGithub > d.version) return { outcome: 'skipped:older_version' };
+        if (keep.body === body) return { outcome: 'ok:unchanged' };
+        await api(repo.installationId, `/repos/${d.repoFullName}/issues/comments/${keep.id}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body }),
+        });
+        return { outcome: 'ok:updated' };
+      }
+      // Rule 6: always created, whoever opened the PR.
+      await api(repo.installationId, `/repos/${d.repoFullName}/issues/${d.prNumber}/comments`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body }),
       });
-      outcome = 'ok:updated';
-    }
-  } else {
-    // Rule 6: always created, whoever opened the PR.
-    await api(repo.installationId, `/repos/${d.repoFullName}/issues/${d.prNumber}/comments`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body }),
-    });
-    outcome = 'ok:created';
-  }
-
-  // Rule 3: the version may have advanced while we wrote; owe one more render.
-  const after = await loadView({ deliveryId: d.id }, exec);
-  if (after.delivery && after.delivery.version > d.version) {
-    await exec(insertFollowupEffectSql({
-      deliveryId: d.id, transitionId: e.transitionId, kind: 'render_activity',
-      dedupeKey: `render:${d.id}:${after.delivery.version}`, payload: { version: after.delivery.version },
-    }));
-    outcome += '+followup';
-  }
-  return { outcome };
+      return { outcome: 'ok:created' };
+    },
+  };
 }
 
-export const renderActivity: EffectHandler = (e) => renderActivityEffect(e);
+/** One `render_activity` effect: the package's handler over the Postgres store and this render. */
+export async function renderActivityEffect(e: ClaimedEffect, deps: RenderDeps = {}): Promise<{ outcome: string }> {
+  const store = postgresStore(deps.exec ?? dbExec);
+  const notify: Notify = { ...activityNotify(deps), team: async () => {} };
+  const r = await activityHandlers({ store, notify, clock: { now: () => new Date().toISOString() } }).render_activity!(e);
+  return { outcome: r?.outcome ?? 'ok' };
+}
 
 // ── Diversion of legacy writers ─────────────────────────────────────────────
 
