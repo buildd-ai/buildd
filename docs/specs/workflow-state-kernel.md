@@ -2205,6 +2205,8 @@ cycle. Each conflict therefore spends budget until it escalates.
 
 ### 13.12 Review, refresh and landing while an owner keeps running (edc02148)
 
+> Amended 2026-10-13 by `workflow-kernel-library.md` §3: these rules run on the execution control plane, not `apps/web`.
+
 PR #4413 sat open for half an hour with green CI and, once asked, an approval. Its owner was a
 coordination task that stayed assigned after `create_pr` to watch other PRs. So the delivery
 stayed `WORKING`, and no reviewer was asked until a person called `request_pr_review`. The
@@ -2501,6 +2503,8 @@ door.
 Regressions (to be written by the follow-up tasks): AC-20 to AC-37.
 
 ## 14. Migration plan: no two authorities, ever
+
+> Amended 2026-10-13 by `workflow-kernel-library.md` §3: the kill switch and cutover are per host mode; in production the kernel runs only on the control plane.
 
 **Principle.** Authority is assigned per field family, in order, and each slice ends
 with the previous authority for that family *deleted*, not shadowed. A "shadow" that
@@ -3108,7 +3112,7 @@ is a site to tick off in the Phase 2 PR that moves it.
 - AC-4: GIVEN two writers apply a transition at the same `version` THEN exactly one is `applied` and the other is `stale` carrying the current state, version, head and round.
 - AC-5: GIVEN a reviewer verdict whose round head differs from `current_head_sha` THEN the verdict is stored, no GitHub review is posted for it, no merge starts, and the state is unchanged.
 - AC-6: GIVEN any transition THEN its follow-up effect rows exist if and only if the transition committed.
-- AC-7: GIVEN a reconciler run THEN no `workflow_deliveries.state` or guarded column is written outside `apps/web/src/lib/workflow/` (checked by the write-site guard test).
+- AC-7 (amended by `workflow-kernel-library.md` §1 and §2: the guarded path also covers the kernel package): GIVEN a reconciler run THEN no `workflow_deliveries.state` or guarded column is written outside `apps/web/src/lib/workflow/` (checked by the write-site guard test).
 - AC-8: GIVEN `PrMerged` WHEN any later `synchronize`, `check_suite` or `opened` fact arrives THEN the delivery stays `MERGED` and no fact-cache column regresses.
 - AC-9: GIVEN `SupersessionRecorded` for a delivery not in `CLOSED_UNMERGED`, or whose target PR is not merged THEN it is rejected, and an existing edge is never overwritten.
 - AC-10: GIVEN a task with a delivery WHEN the reaper or cleanup finds its worker dead with only local commits THEN `tasks.status` is not set to `completed`, and the delivery is `AWAITING_PUSH`.

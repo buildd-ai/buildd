@@ -28,7 +28,7 @@ with the kernel:
 | #4663 / #4670 | a redundant refresh PR stayed open after the mission shipped, then retargeted to trunk when its base was deleted |
 | #4679 | requested changes stayed presented after the fix landed; resolution is not a recorded fact |
 | #4686 | the mission PR never had a delivery; a coordination-only repair made no edits and was accepted; a person merged on GitHub over open findings |
-| mission ecea17f3 | six "merge dev into mission branch" tasks, two of them filed after the mission shipped; a verified no-op refresh could not complete |
+| mission ecea17f3 | repeated "merge dev into mission branch" tasks, including some filed after the mission shipped; a verified no-op refresh could not complete |
 
 This spec owns four things: the ownership rule (§1), the package boundary (§2),
 the single host (§3) and the landing authority across every door (§4). It also
@@ -182,7 +182,8 @@ never applied by two hosts with different code or by a host that is down.
   version.
 - The drain and the floor (`drainDueEffects`, `reconcileKernelDeliveries`,
   trunk incident reconcile, treadmill restart) run on a control-plane
-  schedule (Cloudflare cron trigger), not from `/api/cron/pr-reconcile`. An
+  schedule (NOT IMPLEMENTED: a Cloudflare cron trigger in
+  `apps/control-plane/wrangler.jsonc`), not from `/api/cron/pr-reconcile`. An
   effect is never drained inline at the end of a Vercel request.
 - Effects run under the Worker's request budget. An effect that needs longer
   (CI evidence capture today runs in `after()`) is split into a fact-producing
@@ -207,7 +208,8 @@ never applied by two hosts with different code or by a host that is down.
 - AC-11: GIVEN the same command submitted twice with one idempotency key WHEN
   both arrive THEN one transition is applied and both callers receive the same
   result.
-- AC-12 (failure): GIVEN the control plane unreachable WHEN a Vercel door
+- AC-12 (failure): GIVEN `EXECUTION_MODE=own` and the control plane
+  unreachable WHEN a Vercel door
   submits a command THEN the door answers with a retryable error naming the
   control plane, and applies nothing itself.
 
@@ -242,7 +244,7 @@ recorded as such, never as an approval.
   "approved". `measureMergeAgainstReview` keeps recording the bypass.
 
 **Acceptance criteria**:
-- AC-13: GIVEN a PR with an open required finding WHEN any of D1–D12 is asked
+- AC-13: GIVEN a PR with an open required finding WHEN any of D1–D11 is asked
   to merge it THEN the merge is refused with the finding named, and the
   `buildd/landing` status at that head is `failure`.
 - AC-14: GIVEN an approval at head A WHEN head B is pushed before the merge
@@ -262,24 +264,29 @@ identity and an explicit disposition until a current review verifies it, so no
 push, refresh, completion or owner change can make it disappear.
 
 **Invariants**:
-- A finding has an id stable across rounds (derived from the delivery, the
-  originating round and its position, carried forward when a later round
-  restates it), the round and head that raised it, a scope (path, line or
-  criterion) and a disposition: `open`, `addressed` (a push claims it, awaiting
-  verification), `resolved` (a review at a later head verified it), `waived`
-  (an authorized person, with reason and scope), or `deferred` (to a named
-  task, accepted by a reviewer or person).
-- Only a review round or an authorized waiver changes a disposition to
-  `resolved`, `waived` or `deferred`. A builder's completion, a push, green
-  CI, a branch refresh, a task completion or an owner replacement never does;
-  a push can move `open` to `addressed` only when it touches the finding's
-  scope (§13.13 rule 4).
+- Findings follow `workflow-state-kernel.md` §13.13 rule 2 (durable, pinned to
+  round, head, path and line; closed only by a resolving round, a person's
+  waiver, or the PR closing unmerged, when the finding moves to the
+  superseding PR). This spec adds two things to rule 2, and §13.13 is amended
+  to match in slice S5:
+  - a stable id across rounds (derived from the delivery, the originating
+    round and its position, carried forward when a later round restates it);
+  - an interim disposition `addressed` (a push touched the finding's path and
+    awaits verification) beside `open`, and `deferred` as a fourth closure (to
+    a named task, accepted by a reviewer or a person, recorded with who and
+    why). `addressed` is not closed: approval still needs a round that
+    resolves it.
+- A builder's completion, a push, green CI, a branch refresh, a task
+  completion or an owner replacement never closes a finding.
 - A repair is a pinned builder: its description is the open findings, its
   target is the delivery's branch, head and base (`repairTarget`), and it
   never inherits a coordination owner's instructions (§13.13 rule 3).
-- A repair that ends with no diff leaves its findings `open` unless it
-  supplies evidence a reviewer then verifies (already fixed, invalid). The
-  attempt reads "no change" on every surface, never "fix finished".
+- Completion evidence is §13.13 rule 4: a repair completes only on a push
+  that touches a finding's path or on a verified no-op (a live read at the
+  current head showing the finding's condition is already absent, recorded
+  as evidence). A zero or unrelated diff is refused, the attempt counts
+  against the round limit, and every surface shows it as "no change", never
+  "fix finished".
 - The activity comment and `get_pr` / `get_pr_review` list findings with their
   disposition, the commit that addressed each, and the round that verified it.
   "Fix attempt n of m" counts attempts, never findings.
@@ -291,9 +298,10 @@ push, refresh, completion or owner change can make it disappear.
   verifies the addressed one (the #4679 sequence).
 - AC-18: GIVEN open findings on a mission PR WHEN its coordination owner is
   replaced and the branch is refreshed THEN the findings are unchanged.
-- AC-19 (failure): GIVEN a repair that ends with zero diff and no evidence
-  WHEN it completes THEN the findings stay `open`, the delivery stays in
-  changes-required, and the attempt is shown as "no change".
+- AC-19 (failure): GIVEN a repair that ends with zero diff and no verified
+  no-op evidence WHEN it tries to complete THEN completion is refused, the
+  attempt counts against the round limit, the findings stay `open`, and the
+  attempt is shown as "no change".
 
 ## 6. Mission deliveries and epochs
 
@@ -379,9 +387,9 @@ Each slice is one or more reviewed PRs to trunk, built locally (mission
 | S0 | this spec, with #4693's amendments to `workflow-state-kernel.md` and `mission-task-lifecycle.md` | — | ed50e3b2, #4693 |
 | S1 | package with the pure modules, boundary test, in-memory store, conformance suite on the pure core; apps/web imports from it | AC-5, AC-6, AC-8 | — |
 | S2 | ports for store, GitHub, clock, work, notify, policy; effect handlers move into the package; Postgres adapter runs the suite | AC-7 | — |
-| S3 | single host: command endpoint, drain and floor on the control plane, Vercel doors submit commands; every merge door through the gate; release doors pinned; `buildd/landing` status | AC-9–AC-16 | cc59da33, 30a47173 |
+| S3 | single host: command endpoint, drain and floor on the control plane, Vercel doors submit commands; every merge door through the gate on review verdict, head and CI; release doors pinned; `buildd/landing` status | AC-9–AC-12, AC-14–AC-16 | cc59da33, 30a47173 |
 | S4 | one writer: lifecycle columns written only by kernel transitions; write-site guard; render write-through retired | AC-1–AC-4 | 459b58ed (projections half) |
-| S5 | findings model and pinned repair builders | AC-17–AC-19 | 7d68f57d, 459b58ed |
+| S5 | findings model and pinned repair builders; the gate and status read open findings | AC-13, AC-17–AC-19 | 7d68f57d, 459b58ed |
 | S6 | mission deliveries, epochs, refresh as an effect, settlement | AC-20–AC-23 | f3bda4e1, a11abc4b |
 | S7 | projections agree | AC-24–AC-26 | — |
 | S8 | remediation and verification: the #4686 strings, audit of recent integration PRs, independent replay of every incident sequence on the merged code, rollout record | all | 5ad8da67, 6a09cd3c, 3f36b5ac |
