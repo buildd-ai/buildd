@@ -26,7 +26,7 @@ import type {
 } from '@buildd/shared';
 import { causeKeyFrom, causeScope, ruleCauseKey } from './failure-incident-cause-key';
 import {
-  applyPolicyPatch, MAX_PAUSE_MS, pauseFor, pauseKey, POLICY_KEY,
+  actionMode, applyPolicyPatch, MAX_PAUSE_MS, pauseFor, pauseKey, POLICY_KEY,
   type AutomationState, type AutoRepairMode, type PauseScope, type PolicyPatch,
 } from './failure-incident-recovery-automation';
 import {
@@ -340,6 +340,11 @@ export function validateRecoveryAction(principal: RecoveryPrincipal, req: AdminR
       const scope = pauseFor(fresh.automation, { rule: incident.rule, causeKey: fresh.causeKey });
       const modelPaused = principal.kind === 'model' && (fresh.automation.paused.model || fresh.automation.readError);
       if (modelPaused) return { result: 'paused', detail: 'Model-selected repairs are paused.' };
+      // AUTO_ELIGIBLE for a model is the allowlist flag AND the repair's live rollout (§9.5):
+      // what the loop would only record in shadow, a model answer never runs either (§6.6).
+      if (principal.kind === 'model' && actionMode(fresh.automation.policy, incident.rule, spec.action, p.repair) !== 'on') {
+        return { result: 'not_supported', detail: `${p.repair} is not rolled out for automatic runs; it is shown as a suggestion.` };
+      }
       if (scope && !(principal.kind === 'platform_admin' && p.overridePause === true)) {
         return { result: 'paused', detail: fresh.automation.readError ? 'The pause switch could not be read, so repairs are paused.' : `Automatic repair is paused (${scope.kind}). Pass overridePause to run it anyway.` };
       }

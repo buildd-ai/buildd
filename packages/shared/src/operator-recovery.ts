@@ -87,6 +87,11 @@ export type RecoveryCauseRow = {
     wasteUsd7d: OperatorMeasured;
     modelUsd7d: OperatorMeasured;
     costPerRecoveredSubjectUsd: OperatorMeasured;
+    /**
+     * The model's suggested next repair (§6.2 `buildd.operator_repair_suggestion`), when one was given.
+     * `executed`: it passed the owner-click validator and ran; otherwise it is a suggestion only.
+     */
+    suggestion?: { repair: string; confidence: number | null; rationale: string | null; decisionId: string; executed: boolean } | null;
   };
   episodes: { open: number; total7d: number };
   telemetry: { completeness: number; missing: Array<RecoveryEvidenceInput | 'sweep_last_run'>; freshness: OperatorFreshness };

@@ -92,8 +92,8 @@ describe('policy bounds (§8.4)', () => {
     bad({ rule: 'path_overlap_stall', episodeDeadlineHours: 49 });
     bad({ model: { dailyUsd: 26 } });
     bad({ model: { dailyCalls: 2001 } });
-    bad({ model: { timeoutMs: 1999 } });
-    bad({ model: { timeoutMs: 15001 } });
+    bad({ model: { timeoutMs: 199 } });
+    bad({ model: { timeoutMs: 801 } });
     bad({ budgetLimit: 3 }); // rule fields need a rule
   });
   it('applies values at the bounds and keeps the rest', () => {

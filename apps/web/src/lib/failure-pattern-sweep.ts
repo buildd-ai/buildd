@@ -212,6 +212,12 @@ export interface SweepDeps {
   recordLastRun?(run: SentinelLastRun): Promise<void>;
   /** Delete recovery attempt rows past their retention (180 days). Full sweeps only. Returns rows removed. */
   pruneRecoveryEvents?(): Promise<number>;
+  /**
+   * The operator-recovery decisions (operator-recovery §6): ambiguous merges,
+   * repairs no runbook owns, priority advice, their outcome labels and the
+   * kinds' switch-off check. Full sweeps only. Never throws.
+   */
+  operatorDecisions?(): Promise<void>;
   /** Defaults (DB-backed) apply when omitted — see `recordIncidentCandidates` / `actOnIncidentResults`. */
   incidentPort?: IncidentStorePort;
   decide?: IncidentDecider | null;
@@ -590,6 +596,7 @@ export async function runFailurePatternSweep(deps: SweepDeps, opts: SweepOpts = 
   // triggered one-workspace run must not hide a backstop that stopped.
   if (!opts.workspaceIds) {
     await deps.pruneRecoveryEvents?.().catch(err => console.error('[failure-pattern-sweep] recovery event prune failed:', err));
+    await deps.operatorDecisions?.().catch(err => console.error('[failure-pattern-sweep] operator decisions failed:', err));
   }
   if (!opts.workspaceIds) await deps.recordLastRun?.({
     startedAt: new Date(start).toISOString(),
@@ -1075,6 +1082,11 @@ export function productionSweepDeps(): SweepDeps {
     },
     recordLastRun: writeSentinelLastRun,
     pruneRecoveryEvents: () => pruneRecoveryEvents(),
+    async operatorDecisions() {
+      const [{ runOperatorRecoveryPass }, { productionOperatorPassDeps }] = await Promise.all([import('./operator-recovery-pass'), import('./operator-recovery-deps')]);
+      const r = await runOperatorRecoveryPass(await productionOperatorPassDeps());
+      if (r.asked || r.merged || r.repaired) console.log('[failure-pattern-sweep] operator decisions:', JSON.stringify(r));
+    },
     async reportOpsError(message, detail, severity) {
       const { reportOps } = await import('@buildd/core/report-ops');
       await reportOps({ source: 'failure-pattern-sentinel', severity, message, detail });

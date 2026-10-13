@@ -19,7 +19,8 @@ import { GATE_SLUGS } from '@buildd/core/gate-events';
 import type { RecoveryCauseDetail, RecoveryFilter, RecoveryPanel } from '@buildd/shared';
 import { readSentinelLastRun, SENTINEL_LAST_RUN_KEY, type RecoveryAttemptDetail } from '@/lib/failure-incident-recovery-events';
 import { INCIDENT_SUBJECT_TYPE, incidentSubjectKey } from '@/lib/failure-incident-escalation';
-import { buildRecoveryCauseDetail, buildRecoveryPanel, type PriorityOverride, type QueueFacts, type QueueIncident } from './recovery/queue';
+import { buildRecoveryCauseDetail, buildRecoveryPanel, type CauseModelDecisions, type PriorityOverride, type QueueFacts, type QueueIncident } from './recovery/queue';
+import { readOperatorReceipt } from '@/lib/operator-recovery-decisions';
 import { buildAutomationState } from '@/lib/failure-incident-recovery-automation';
 import { PRIORITY_CAPABILITY } from '@/lib/failure-incident-recovery-actions';
 import { buildAutomationView, OPERATOR_RECOVERY_DECISION_KINDS, OPERATOR_RECOVERY_KEY_PREFIX } from './recovery/automation';
@@ -475,7 +476,7 @@ const isoOrNull = (d: Date | null) => (d ? d.toISOString() : null);
  * automation keys, each one query over the whole set. A read that fails comes
  * back null and shows up as missing evidence; it never fails the panel.
  */
-async function loadRecoveryFacts(opts: RecoveryReadOpts): Promise<QueueFacts> {
+export async function loadRecoveryFacts(opts: RecoveryReadOpts): Promise<QueueFacts> {
   const now = opts.now ?? new Date();
   const lookbackMs = Math.max(7, WINDOW_DAYS[opts.window]) * DAY_MS;
   const since = new Date(now.getTime() - lookbackMs);
@@ -518,7 +519,7 @@ async function loadRecoveryFacts(opts: RecoveryReadOpts): Promise<QueueFacts> {
   const prNumbers = [...new Set(prKeys.map(k => k.prNumber))];
   const startOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 
-  const [wsRows, taskRows, workerRows, prRows, attemptRows, lastRunRow, verdictRows, automationRows, modelRows, overrideRows] = await Promise.all([
+  const [wsRows, taskRows, workerRows, prRows, attemptRows, lastRunRow, verdictRows, automationRows, modelRows, overrideRows, modelDecisionRows] = await Promise.all([
     wsIds.length ? db.select({ id: workspaces.id, name: workspaces.name, teamId: workspaces.teamId }).from(workspaces).where(inArray(workspaces.id, wsIds)) : Promise.resolve([]),
     (taskIds.length
       ? db.select({ id: tasks.id, title: tasks.title, status: tasks.status, workspaceId: tasks.workspaceId, missionId: tasks.missionId, missionTitle: missions.title, missionWorkspaceId: missions.workspaceId })
@@ -550,14 +551,23 @@ async function loadRecoveryFacts(opts: RecoveryReadOpts): Promise<QueueFacts> {
       : Promise.resolve([])).catch(() => null),
     db.select({ key: systemCache.key, value: systemCache.value, updatedAt: systemCache.updatedAt, expiresAt: systemCache.expiresAt }).from(systemCache)
       .where(like(systemCache.key, `${OPERATOR_RECOVERY_KEY_PREFIX}%`)).catch(() => null),
-    db.select({ count: sql<number>`count(*)::int`, costUsd: sql<number>`coalesce(sum(${decisionRecords.costUsd}), 0)::float8` }).from(decisionRecords)
+    // Calls that reached a model: a rule or a budget/breaker fallback asks none (§6.4).
+    db.select({ count: sql<number>`(count(*) filter (where coalesce(${decisionRecords.attemptCount}, 0) > 0))::int`, costUsd: sql<number>`coalesce(sum(${decisionRecords.costUsd}), 0)::float8` }).from(decisionRecords)
       .where(and(inArray(decisionRecords.capability, [...OPERATOR_RECOVERY_DECISION_KINDS]), gte(decisionRecords.createdAt, startOfDay))).catch(() => null),
     // §5.6 owner overrides: the newest row per cause wins; expiry is the queue's to check.
     db.select({ subjectId: decisionRecords.subjectId, humanOverride: decisionRecords.humanOverride, overriddenBy: decisionRecords.overriddenBy, createdAt: decisionRecords.createdAt })
       .from(decisionRecords)
       .where(and(eq(decisionRecords.capability, PRIORITY_CAPABILITY), eq(decisionRecords.subjectType, 'cause'), gte(decisionRecords.createdAt, new Date(now.getTime() - 8 * DAY_MS))))
       .orderBy(desc(decisionRecords.createdAt)).limit(500).catch(() => []),
+    // §6.2: the newest operator-recovery answers per cause, and their 7-day model spend.
+    db.select({
+      capability: decisionRecords.capability, subjectId: decisionRecords.subjectId, id: decisionRecords.id, status: decisionRecords.status,
+      appliedAnswer: decisionRecords.appliedAnswer, confidence: decisionRecords.confidence, reason: decisionRecords.reason, costUsd: decisionRecords.costUsd,
+    }).from(decisionRecords)
+      .where(and(inArray(decisionRecords.capability, [...OPERATOR_RECOVERY_DECISION_KINDS]), eq(decisionRecords.subjectType, 'cause'), gte(decisionRecords.createdAt, new Date(now.getTime() - 7 * DAY_MS))))
+      .orderBy(desc(decisionRecords.createdAt)).limit(2000).catch(() => []),
   ]);
+  const modelDecisions = buildCauseModelDecisions(modelDecisionRows);
   const overrides = new Map<string, PriorityOverride>();
   for (const o of overrideRows) {
     const h = o.humanOverride as { mode?: unknown; until?: unknown; reason?: unknown; by?: unknown } | null;
@@ -601,7 +611,34 @@ async function loadRecoveryFacts(opts: RecoveryReadOpts): Promise<QueueFacts> {
     automation: buildAutomationView({ rows: automationRows, model: modelRows?.[0] ?? null, now }),
     automationState: buildAutomationState(automationRows, now),
     overrides,
+    modelDecisions,
   };
+}
+
+/** The newest answered advice and repair suggestion per cause, and each cause's model spend (a pair's spend counts for both). */
+export function buildCauseModelDecisions(rows: ReadonlyArray<{
+  capability: string; subjectId: string | null; id: string; status: string; appliedAnswer: string | null; confidence: number | null; reason: string | null; costUsd: number | string | null;
+}>): Map<string, CauseModelDecisions> {
+  const out = new Map<string, CauseModelDecisions>();
+  const entry = (key: string) => { if (!out.has(key)) out.set(key, {}); return out.get(key)!; };
+  for (const r of rows) {
+    if (!r.subjectId) continue;
+    for (const key of r.subjectId.split('+')) {
+      const e = entry(key);
+      e.modelUsd7d = (e.modelUsd7d ?? 0) + (r.costUsd === null ? 0 : Number(r.costUsd));
+    }
+    if (r.status === 'fallback' || !r.appliedAnswer) continue;
+    const e = entry(r.subjectId);
+    const receipt = readOperatorReceipt(r.reason);
+    if (r.capability === 'buildd.operator_priority_advice' && e.advice === undefined && receipt && r.confidence !== null
+      && (r.appliedAnswer === 'raise' || r.appliedAnswer === 'keep' || r.appliedAnswer === 'lower')) {
+      e.advice = { answer: r.appliedAnswer, confidence: r.confidence, rationale: receipt.rationale, decisionId: r.id };
+    }
+    if (r.capability === 'buildd.operator_repair_suggestion' && e.suggestion === undefined && r.appliedAnswer !== 'none') {
+      e.suggestion = { repair: r.appliedAnswer, confidence: r.confidence, rationale: receipt?.rationale ?? null, decisionId: r.id };
+    }
+  }
+  return out;
 }
 
 /**
@@ -657,8 +694,8 @@ export async function loadRecoveryCause(opts: RecoveryReadOpts & { causeKey: str
     decisions: decisionRows.map(d => ({
       decisionId: d.id,
       kind: d.capability,
-      // Every operator-recovery kind starts in shadow (B3); the escalation gate is live.
-      mode: (OPERATOR_RECOVERY_DECISION_KINDS as readonly string[]).includes(d.capability) ? 'shadow' as const : 'live' as const,
+      // Every operator-recovery kind is live from its first deploy (owner decision 2026-10-11), like the escalation gate.
+      mode: 'live' as const,
       answer: d.appliedAnswer ?? d.status,
       confidence: d.confidence,
       rationale: d.reason,

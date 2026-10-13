@@ -73,6 +73,7 @@ async function replayableKinds() {
     import('@buildd/core/decision-kind-post-session-triage'),
     import('@buildd/core/decision-kind-scout-probe-selection'),
     import('@buildd/core/decision-kind-failure-incident-triage'),
+    import('@buildd/core/decision-kind-operator-recovery'),
     import('../merge-readiness-decision'),
     import('../early-release-decision'),
   ].map(p => p.catch(err => console.warn('[prompt-evals] a decision kind did not load:', err instanceof Error ? err.message : String(err)))));
