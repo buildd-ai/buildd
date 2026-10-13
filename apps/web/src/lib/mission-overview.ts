@@ -11,6 +11,14 @@ import { isActiveState, stripMarks, stripOrder, stripState, stripTick } from './
 
 type Model = Pick<MissionBoardModel, 'phases' | 'tasks'>;
 
+/** The Overview rail's two counts, said in words. */
+export function railLines(live: number, needs: number): { agents: string; needs: string } {
+  return {
+    agents: live === 0 ? 'No agents working' : `${live} ${live === 1 ? 'agent' : 'agents'} working`,
+    needs: needs === 0 ? 'Nothing waiting on you' : `${needs} waiting on you`,
+  };
+}
+
 /**
  * The task on arrival: the one setting the finish. With estimates, the first
  * unfinished task on the critical path (`criticalPath`, strip order); until a

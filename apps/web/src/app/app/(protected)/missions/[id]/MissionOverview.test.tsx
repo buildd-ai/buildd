@@ -12,6 +12,7 @@ mock.module('next/navigation', () => ({
 
 const { renderToStaticMarkup } = await import('react-dom/server');
 const { default: MissionOverview } = await import('./MissionOverview');
+const { railLines } = await import('@/lib/mission-overview');
 const { dagBoard, dagId, DAG_SPECS } = await import('@/app/app/dev/fixtures/mission-task-strip-fixtures');
 
 const spec = DAG_SPECS.linear;
@@ -36,6 +37,15 @@ describe('MissionOverview', () => {
     expect(html).toContain('data-testid="overview-rail"');
     expect(html).toContain('data-testid="rail-needs"');
     expect(html).toContain('min-[900px]:grid-cols-[minmax(0,720px)');
+  });
+
+  // Owner report: "Agents live 1 / Needs you 0" is label-speak. Counts read as words.
+  it('says the counts in words, not label and number', () => {
+    const rail = html.slice(html.indexOf('data-testid="overview-counts-rail"'));
+    expect(rail).not.toMatch(/Agents live|Needs you/);
+    expect(railLines(0, 0)).toEqual({ agents: 'No agents working', needs: 'Nothing waiting on you' });
+    expect(railLines(1, 1)).toEqual({ agents: '1 agent working', needs: '1 waiting on you' });
+    expect(railLines(3, 2)).toEqual({ agents: '3 agents working', needs: '2 waiting on you' });
   });
 
   it('names the selection once: "02 of 05" in the card, the stepper keeps only the state', () => {

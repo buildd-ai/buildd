@@ -44,10 +44,10 @@ describe('MissionCard (full)', () => {
     expect(html).toContain('Answer: Lease shadow mode');
   });
 
-  it('links the body to the mission and the primary line to the task sheet in mission context', () => {
+  it('links the body to the mission and a question primary line to its task page, answer focused', () => {
     expect(html).toContain('href="/app/missions/m1?from=home"');
-    expect(html).toContain('href="/app/missions/m1?from=home&amp;task=b"');
-    expect(html).not.toContain('/app/tasks/');
+    expect(html).toContain('href="/app/tasks/b?from=mission&amp;missionId=m1&amp;respond=1"');
+    expect(html).not.toContain('task=b"');
   });
 
   it('carries its group for the list and Home sections', () => {
