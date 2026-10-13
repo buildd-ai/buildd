@@ -203,13 +203,30 @@ describe('confluenceSource', () => {
     const r = await src.proposeChange('101', { body: '- **AC-1** two, fixed\n', summary: 'Fix AC-1', baseVersion: '3' });
     expect(r).toEqual({ ok: true, proposal: { kind: 'confluence', ref: '900', version: '1' } });
     const create = fake.calls.find((c) => c.method === 'POST' && c.url.endsWith('/wiki/api/v2/pages'))!;
-    expect(create.body).toEqual({ spaceId: 's-1', status: 'current', title: 'Proposed: v4 — Cart totals', parentId: '101', body: { representation: 'storage', value: '<ul><li><strong>AC-1</strong> two, fixed</li></ul>' } });
+    expect(create.body).toEqual({ spaceId: 's-1', status: 'current', title: 'Proposed v4: Cart totals', parentId: '101', body: { representation: 'storage', value: '<ul><li><strong>AC-1</strong> two, fixed</li></ul>' } });
     const prop = fake.calls.find((c) => c.url.endsWith('/pages/900/properties'))!;
     expect(prop.body).toEqual({ key: PROPOSAL_PROPERTY_KEY, value: { parentId: '101', baseVersion: '3', summary: 'Fix AC-1' } });
     expect(fake.calls.some((c) => c.method !== 'GET' && /\/pages\/101(\b|$|\?)/.test(new URL(c.url).pathname))).toBe(false);
     expect(fake.pages['101']!.versions.length).toBe(3);
-    // A second proposal on the same base collides on the title: refused, not duplicated.
-    expect(await src.proposeChange('101', { body: 'y', summary: 's', baseVersion: '3' })).toMatchObject({ ok: false, reason: 'refused' });
+    // A second proposal on the same base gets its own page instead of colliding on the title.
+    const second = await src.proposeChange('101', { body: 'y', summary: 's', baseVersion: '3' });
+    expect(second).toMatchObject({ ok: true, proposal: { kind: 'confluence', ref: '901' } });
+    expect(fake.pages['901']!.title).toBe('Proposed v4 (2): Cart totals');
+  });
+
+  it('a proposal title never carries an em or en dash', async () => {
+    const { fake, src } = setup();
+    await src.proposeChange('101', { body: 'x', summary: 's', baseVersion: '3' });
+    const create = fake.calls.find((c) => c.method === 'POST' && c.url.endsWith('/wiki/api/v2/pages'))!;
+    expect(create.body.title).not.toMatch(/[\u2013\u2014]/);
+  });
+
+  it('a host can create proposals as drafts, so the space page tree does not show them', async () => {
+    const fake = fakeConfluence({ '101': { title: 'Cart totals', spaceId: 's-1', versions: [v(1, 'u', '<p>R-1: x</p>')] } });
+    const src = confluenceSource({ baseUrl: SITE, fetch: fake.fetch, authHeader: 'Basic test', proposalStatus: 'draft' });
+    await src.proposeChange('101', { body: 'x', summary: 's', baseVersion: '1' });
+    const create = fake.calls.find((c) => c.method === 'POST' && c.url.endsWith('/wiki/api/v2/pages'))!;
+    expect(create.body.status).toBe('draft');
   });
 
   it('an auth failure throws with the status, rather than reading as a missing page', async () => {
