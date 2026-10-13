@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "6037a9e7-6148-492a-9571-8eb4c3b4333d",
+  "id": "7c7dea06-a617-4850-8116-7c7c3e68850c",
   "prevIds": [
-    "a417f747-5fb3-439b-83c5-3f5b239c1696"
+    "446e53d6-02e5-4c61-9615-48ac9a58e2fe"
   ],
   "ddl": [
     {
@@ -656,6 +656,12 @@
     {
       "isRlsEnabled": false,
       "name": "spec_filings",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "spec_metadata_changes",
       "entityType": "tables",
       "schema": "public"
     },
@@ -20040,6 +20046,136 @@
       "name": "id",
       "entityType": "columns",
       "schema": "public",
+      "table": "spec_metadata_changes"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "workspace_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_metadata_changes"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "spec_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_metadata_changes"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "field",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_metadata_changes"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "previous_value",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_metadata_changes"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "new_value",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_metadata_changes"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "reason",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_metadata_changes"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "changed_by_kind",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_metadata_changes"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "changed_by",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_metadata_changes"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_metadata_changes"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "gen_random_uuid()",
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
       "table": "spec_neighbors"
     },
     {
@@ -20558,6 +20694,32 @@
       "generated": null,
       "identity": null,
       "name": "approved_revision",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "specs"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "metadata",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "specs"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "repo_copy",
       "entityType": "columns",
       "schema": "public",
       "table": "specs"
@@ -36236,6 +36398,34 @@
           "opclass": null
         },
         {
+          "value": "created_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "spec_metadata_changes_spec_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "spec_metadata_changes"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "spec_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
           "value": "neighbor_spec_id",
           "isExpression": false,
           "asc": true,
@@ -43477,6 +43667,40 @@
       ],
       "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
+      "name": "spec_metadata_changes_workspace_id_workspaces_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "spec_metadata_changes"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "spec_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "specs",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "spec_metadata_changes_spec_id_specs_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "spec_metadata_changes"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "workspace_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "workspaces",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
       "name": "spec_neighbors_workspace_id_workspaces_id_fkey",
       "entityType": "fks",
       "schema": "public",
@@ -46186,6 +46410,16 @@
       "name": "spec_filings_pkey",
       "schema": "public",
       "table": "spec_filings",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "spec_metadata_changes_pkey",
+      "schema": "public",
+      "table": "spec_metadata_changes",
       "entityType": "pks"
     },
     {
