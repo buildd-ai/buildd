@@ -32,7 +32,6 @@ import EditTaskButton from './EditTaskButton';
 import DeleteTaskButton from './DeleteTaskButton';
 import RealTimeWorkerView from './RealTimeWorkerView';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
-import { resolvePrDisplayState } from '@/lib/pr-presentation';
 import type { DeliveryPillState } from './TaskSidePanel';
 import PlanReviewPanel from './PlanReviewPanel';
 import PlanChainView from './PlanChainView';
@@ -45,9 +44,7 @@ import { blockedHeadline, gateName, lastForceStart } from '@buildd/core/waiting-
 import { getTeamTimezoneSetting } from '@/lib/team-timezone';
 import SwitchBackendButton, { type BackendOption } from './SwitchBackendButton';
 import TaskQuestionFeed from './TaskQuestionFeed';
-import MarkdownContent from '@/components/MarkdownContent';
 import CollapsibleDescription from './CollapsibleDescription';
-import AiFeedback from '@/components/AiFeedback';
 import { StatusPill } from '@/components/ui/StatePill';
 import { displayBranchName } from '@/lib/branch-display';
 import { LoopHistory, LoopStatusChip } from '@/components/LoopStatus';
@@ -72,7 +69,10 @@ import { originLinkCards } from './origin-links';
 import { TaskShipBadge } from '@/components/TaskShipBadge';
 import { SpecSourceBlock, type SpecSourceContext } from '@/components/SpecSourceBlock';
 import { livingSpecLoad } from '@/lib/specs/task-view';
-import PrDetailsCard, { StoredPrCard } from './PrDetailsCard';
+import PrDetailsCard from './PrDetailsCard';
+import { StoredPrCard } from '@/components/task/StoredPrCard';
+import TaskSummary from '@/components/task/TaskSummary';
+import { taskPrFacts, taskHeaderMerged, isFallbackSummary } from '@/lib/task-sections';
 import { loadOpenAttempt } from '@/lib/explain';
 import TaskEvidenceCard from './TaskEvidenceCard';
 import { plainWorkerError } from '@/lib/provider-auth-failure';
@@ -96,7 +96,7 @@ import { MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH, MISSION_TASK_REFR
 import type { MissionCardRow } from '@/lib/mission-card-view';
 import { missionTaskHref, taskPageHref } from '@/lib/mission-task-href';
 import WorkerSteerPanel from './WorkerSteerPanel';
-import { HeaderStatusPill, FactSheet, SideDescription, type FactRow } from './TaskSidePanel';
+import { HeaderStatusPill, FactSheet, SideDescription, runnerFactRow, branchFactRow, type FactRow } from './TaskSidePanel';
 import { findTaskRole } from './role-lookup';
 import { headerLifecycle, taskHeading } from './task-header';
 import TaskChecks from './TaskChecks';
@@ -1033,11 +1033,9 @@ export default async function TaskDetailPage({
           ),
         }]
       : factWorker && !shippedViewShown
-        ? [{ key: 'runner', label: 'Runner', value: runnerLabel(factWorker) }]
+        ? runnerFactRow(runnerLabel(factWorker))
         : []),
-    ...(factWorker?.branch && !(prOutcome && isTerminal)
-      ? [{ key: 'branch', label: 'Branch', value: <span className="block truncate" title={factWorker.branch}>{factWorker.branch}</span> }]
-      : []),
+    ...(!(prOutcome && isTerminal) ? branchFactRow(factWorker?.branch) : []),
     ...(timeRow
       ? [{
           key: 'time',
@@ -1420,7 +1418,7 @@ export default async function TaskDetailPage({
               <span data-testid="task-header-status" data-status={displayStatus} className="col-start-1 row-start-2 self-center md:col-start-2 md:row-start-1 md:self-start md:mt-0.5">
                 <HeaderStatusPill
                   status={displayStatus}
-                  merged={!!(prWorker && (prWorker.mergedAt || prWorker.prLifecycleStatus === 'merged')) && isTerminal}
+                  merged={taskHeaderMerged(prWorker, task.status)}
                   delivery={deliveryPill}
                 />
               </span>
@@ -1907,17 +1905,11 @@ export default async function TaskDetailPage({
             CI → retry → merge) and checks per commit (AC-4). Shown for an open
             PR and for one that landed. */}
         {(() => {
-          if (!prWorker?.prUrl || !prWorker.prNumber) return null;
-          const prState = resolvePrDisplayState({ delivery: deliveryView, prLifecycleStatus: prWorker.prLifecycleStatus, mergedAt: prWorker.mergedAt });
-          if (prState === 'closed') return null;
+          // The same facts the mission task sheet cards (lib/task-sections).
+          const prFacts = taskPrFacts(prWorker, deliveryView);
+          if (!prFacts) return null;
           const storedPrFacts = {
-            prUrl: prWorker.prUrl,
-            prNumber: prWorker.prNumber,
-            prLifecycleStatus: prWorker.mergedAt ? 'merged' : prWorker.prLifecycleStatus,
-            prState,
-            linesAdded: prWorker.linesAdded,
-            linesRemoved: prWorker.linesRemoved,
-            filesChanged: prWorker.filesChanged,
+            ...prFacts,
             // The header carries the summary and the one action.
             outcome: prOutcome && shippedView ? { ...prOutcome, summary: null } : prOutcome,
             hideAction: !!shippedView,
@@ -1960,14 +1952,9 @@ export default async function TaskDetailPage({
           (() => {
             const result = task.result as { summary?: string; summarySource?: string; branch?: string; commits?: number; sha?: string; files?: number; added?: number; removed?: number; prUrl?: string; prNumber?: number; structuredOutput?: Record<string, unknown> };
             const hasCodeDeliverables = hasTaskCodeDeliverables(result);
-            const isFallbackSummary = result.summarySource === 'fallback';
+            const fallbackSummary = isFallbackSummary(result);
             // The PR outcome card already carries the code deliverables and summary.
             if (prOutcome && hasCodeDeliverables && !result.structuredOutput) return null;
-            const fallbackChip = (
-              <span className="font-mono text-chip border border-border-default rounded-[var(--radius-pill)] text-text-muted px-1 py-px shrink-0">
-                unauthored · last message
-              </span>
-            );
 
             return (
               <div className="mb-8">
@@ -1977,12 +1964,12 @@ export default async function TaskDetailPage({
 
                 {/* Non-code summary — shown prominently when no code deliverables */}
                 {!hasCodeDeliverables && result.summary && (
-                  <div className="p-5 bg-surface-2 border border-border-default mb-4">
-                    {isFallbackSummary && <div className="mb-2">{fallbackChip}</div>}
-                    <MarkdownContent content={result.summary} />
-                    <div className="mt-3 pt-2 border-t border-border-default/50 flex items-center justify-between gap-3">
-                      <AiFeedback entityType="summary" entityId={`task-${task.id}-summary`} />
-                      {suppressedSummaryArtifact && (
+                  <div className="mb-4">
+                    <TaskSummary
+                      summary={result.summary}
+                      entityId={`task-${task.id}-summary`}
+                      fallback={fallbackSummary}
+                      actions={suppressedSummaryArtifact && (
                         <div className="flex items-center gap-2">
                           <ArtifactShareControl
                             artifactId={suppressedSummaryArtifact.id}
@@ -1998,7 +1985,7 @@ export default async function TaskDetailPage({
                           </a>
                         </div>
                       )}
-                    </div>
+                    />
                   </div>
                 )}
 
@@ -2040,13 +2027,7 @@ export default async function TaskDetailPage({
                       )}
                     </div>
                     {result.summary && (
-                      <div className="text-sm text-text-secondary mt-2">
-                        {isFallbackSummary && <div className="mb-2">{fallbackChip}</div>}
-                        <MarkdownContent content={result.summary} />
-                        <div className="mt-2 flex justify-end">
-                          <AiFeedback entityType="summary" entityId={`task-${task.id}-summary`} compact />
-                        </div>
-                      </div>
+                      <TaskSummary summary={result.summary} entityId={`task-${task.id}-summary`} fallback={fallbackSummary} framed={false} />
                     )}
                   </div>
                 )}

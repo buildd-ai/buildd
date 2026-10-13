@@ -19,6 +19,9 @@ import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 import type { WaitingFor } from '@buildd/shared';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { loadTaskView } from '@/lib/task-view';
+import { taskPrFacts, taskHeaderMerged, isFallbackSummary } from '@/lib/task-sections';
+import { loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
+import { runnerDisplayResolver } from '@/lib/runner-display';
 
 /** One record the task produced, as the sheet lists it (W4 "Records"). */
 export interface TaskSummaryRecord {
@@ -96,13 +99,29 @@ export async function GET(
     // newest live worker, else the newest, ordered by (createdAt, id).
     const view = await loadTaskView(task, { userId: user.id, teamId: access.teamId ?? null });
     const worker = view.shownWorker ?? null;
-    const result = task.result as { summary?: string; nextSuggestion?: string } | null;
+    const result = task.result as { summary?: string; summarySource?: string; nextSuggestion?: string } | null;
+    // The PR is the PR worker's, as on the page — not the shown worker's,
+    // which may be a newer attempt that opened none.
+    const prWorker = view.prWorker ?? null;
 
     // Slice F (§13.10): a kernel-owned PR's state is its delivery's, so the
     // drawer's PR card never reads the worker columns for it. Null for a
     // legacy or PR-less task: the card keeps the fact cache.
-    const kernelView = worker?.prNumber != null ? (await getDeliveryViewsForTasks([task.id])).get(task.id) : undefined;
+    const kernelView = prWorker?.prNumber != null || worker?.prNumber != null
+      ? (await getDeliveryViewsForTasks([task.id])).get(task.id)
+      : undefined;
     const prState = kernelView && kernelView.prNumber === worker?.prNumber ? kernelView.prState : null;
+    const pr = taskPrFacts(prWorker, kernelView && kernelView.prNumber === prWorker?.prNumber ? kernelView : null);
+
+    // Runners by hostname, never their raw URL (runner-display), as on the page.
+    let runner: string | null = null;
+    if (worker) {
+      try {
+        runner = runnerDisplayResolver(await loadRunnerHeartbeats([worker]))(worker)?.name ?? null;
+      } catch (err) {
+        console.error('Task summary: runner heartbeats load failed', err);
+      }
+    }
 
     // Failover metadata lives on task.context (stamped when a Claude task is
     // flipped to Codex on budget exhaustion). Surface just the display bits so
@@ -256,6 +275,7 @@ export async function GET(
             completedAt: worker.completedAt,
             waitingFor: worker.waitingFor as WaitingFor | null,
             branch: worker.branch,
+            runner,
             milestones: worker.milestones ?? [],
             account: worker.account
               ? { authType: worker.account.authType }
@@ -263,12 +283,15 @@ export async function GET(
           }
         : null,
       questionNote,
+      pr,
+      merged: taskHeaderMerged(prWorker, task.status),
       lastError: trace
         ? { excerpt: trace.excerpt, pattern: trace.pattern, ts: trace.ts }
         : null,
       result: result
         ? {
             summary: result.summary || null,
+            fallback: isFallbackSummary(result),
             nextSuggestion: result.nextSuggestion || null,
           }
         : null,
