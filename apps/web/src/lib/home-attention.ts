@@ -200,15 +200,18 @@ export function resolveQueueAttention(i: ActionQueueItem): Resolved | null {
 }
 
 /** One owner decision per subject. PR identity includes the workspace because numbers are repository-local. */
-export function deriveHomeAttention({ queue, missions, questions, held, isActionable }: {
+export function deriveHomeAttention({ queue, missions, questions, held, isActionable, status = [] }: {
   /** Supplied by Home, where the action queue and core UI are composed. */
   isActionable: (chip: ActionQueueItem['chip']) => boolean;
   queue: readonly ActionQueueItem[];
   missions: readonly HomeMissionRow[];
   questions: readonly HomeQuestion[];
   held: readonly HomeHeldMission[];
+  /** Service-status cards, already only the action holder's (lib/service-status.ts `statusAttentionItems`). */
+  status?: readonly HomeAttentionItem[];
 }): HomeAttentionItem[] {
   const items = new Map<string, HomeAttentionItem>();
+  for (const s of status) items.set(s.key, s);
   for (const q of questions) {
     const key = `question:${q.taskId ?? q.workerId}`;
     items.set(key, { key, kind: 'question', label: 'needs input', tone: 'warning', title: q.question.headline, sentence: questionSentence(q), meta: q.label, href: q.href ?? '/app/activity', actionType: 'answer', owner: 'human', question: q });

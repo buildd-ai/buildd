@@ -7,7 +7,7 @@
  */
 import type { HomeAttentionItem } from './home-attention';
 
-export type RootCauseClass = 'credential_expired' | 'platform_managed' | 'unknown';
+export type RootCauseClass = 'credential_expired' | 'api_key_rejected' | 'platform_managed' | 'unknown';
 export type RecoveryState = 'investigating' | 'waiting_on_person' | 'recovering' | 'restored';
 export type StatusAttention = 'needs_you' | 'banner' | 'quiet';
 
@@ -47,11 +47,32 @@ export interface RawFailureSignals {
   nextUpdateAt?: string | null;
 }
 
+/**
+ * Who holds the fix for a runner cause (spec section 8): one person, the team
+ * admins as a role, or no one. Exactly one per cause.
+ */
+export type ActionHolder = { kind: 'person'; userId: string } | { kind: 'team_admins' } | { kind: 'none' };
+
+/**
+ * What the holder does: sign in on the runner machine, replace the team's
+ * provider key in Settings, replace the key set on the machine, or remove a
+ * sign-in still saved in buildd and sign in on the runner instead.
+ */
+export type Remedy = 'sign_in' | 'replace_team_key' | 'replace_machine_key' | 'remove_saved_sign_in';
+
 export interface RootCause {
   key: string;
   teamId: string;
   classification: RootCauseClass;
-  capability: { kind: 'runner' | 'platform'; label: string; runnerId?: string; provider?: string; ownerUserId?: string | null; reconnectHref?: string | null };
+  capability: {
+    kind: 'runner' | 'platform'; label: string; runnerId?: string; provider?: string; ownerUserId?: string | null;
+    /** Where the holder's action happens; null when no real path exists. */
+    reconnectHref?: string | null;
+    /** Absent: the owner when one is recorded, else team admins. */
+    holder?: ActionHolder;
+    /** Absent: `sign_in`. */
+    remedy?: Remedy;
+  };
   affectedWork: AffectedWork[];
   firstSeenAt: string;
   lastSeenAt: string;
@@ -115,6 +136,7 @@ export interface ServiceStatusViewer {
 
 export type StatusAction =
   | { kind: 'reconnect'; label: string; href: string }
+  | { kind: 'replace_key'; label: string; href: string }
   | { kind: 'route_work'; label: string; href: string };
 
 export interface ServiceStatus {
@@ -136,14 +158,47 @@ export interface ServiceStatus {
 const GENERIC = 'Something is slowing work; we are looking at it';
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`;
 
-/** One status per root cause for this viewer; the field set depends on who is asking. */
+const isRunnerCause = (c: RootCauseClass) => c === 'credential_expired' || c === 'api_key_rejected';
+
+/** The holder a cause names, with the default for records built before holders existed. */
+export function holderOf(r: RootCause): ActionHolder {
+  if (!isRunnerCause(r.classification)) return { kind: 'none' };
+  if (r.capability.holder) return r.capability.holder;
+  return r.capability.ownerUserId ? { kind: 'person', userId: r.capability.ownerUserId } : { kind: 'team_admins' };
+}
+
+const holds = (h: ActionHolder, v: ServiceStatusViewer) =>
+  h.kind === 'person' ? h.userId === v.userId : h.kind === 'team_admins' && v.isTeamAdmin;
+
+/** What the holder reads and does, by remedy. */
+function holderCopy(remedy: Remedy, label: string, provider: string, href: string | null): { title: string; condition: string; action: StatusAction | null } {
+  switch (remedy) {
+    case 'replace_team_key':
+      return { title: 'Runner key needs replacing', condition: `${label} could not use the team's ${provider} key`, action: href ? { kind: 'replace_key', label: 'Replace the key in Settings', href } : null };
+    case 'replace_machine_key':
+      return { title: 'Runner key needs replacing', condition: `${label} could not use its ${provider} key`, action: href ? { kind: 'replace_key', label: `Replace the key on ${label}`, href } : null };
+    case 'remove_saved_sign_in':
+      return { title: 'Runner needs sign-in', condition: `${label} (${provider}) uses a sign-in saved in buildd that no longer works`, action: href ? { kind: 'reconnect', label: 'Remove the saved sign-in', href } : null };
+    default:
+      return { title: 'Runner needs sign-in', condition: `${label} (${provider}) needs sign-in`, action: href ? { kind: 'reconnect', label: `Sign in on ${label}`, href } : null };
+  }
+}
+
+/**
+ * One status per root cause for this viewer; the field set depends on who is
+ * asking. A runner cause has one action holder (`holderOf`): they get the
+ * action and the only Needs You card. Team admins who do not hold it get the
+ * coordination view (who owns it, and moving the work to another runner) as a
+ * quiet status; members get the waiting line on their own work.
+ */
 export function projectServiceStatus(records: readonly RootCause[], viewer: ServiceStatusViewer): ServiceStatus[] {
   const out: ServiceStatus[] = [];
   for (const r of records) {
     if (r.teamId !== viewer.teamId || r.verifiedRestoredAt) continue;
     const cap = r.capability;
-    const isOwner = r.classification === 'credential_expired' && !!cap.ownerUserId && cap.ownerUserId === viewer.userId;
-    const scope: ServiceStatus['scope'] = isOwner ? 'credential_owner' : viewer.isTeamAdmin ? 'team_admin' : 'member';
+    const holder = holderOf(r);
+    const isHolder = holds(holder, viewer);
+    const scope: ServiceStatus['scope'] = isHolder && holder.kind === 'person' ? 'credential_owner' : viewer.isTeamAdmin ? 'team_admin' : 'member';
     const seesAll = scope !== 'member';
     const work = seesAll ? r.affectedWork : r.affectedWork.filter(w => w.requesterUserId === viewer.userId);
     const usesRunner = !!cap.runnerId && viewer.usableRunnerIds.includes(cap.runnerId);
@@ -156,24 +211,22 @@ export function projectServiceStatus(records: readonly RootCause[], viewer: Serv
     let action: StatusAction | null = null;
     let attention: StatusAttention = r.widespread ? 'banner' : 'quiet';
 
-    if (r.classification === 'credential_expired') {
+    if (isRunnerCause(r.classification)) {
       state = 'waiting_on_person';
-      if (scope === 'credential_owner') {
-        title = 'Runner needs sign-in';
-        condition = `${cap.label} (${cap.provider}) needs sign-in`;
-        if (cap.reconnectHref) {
-          action = { kind: 'reconnect', label: `Sign in on ${cap.label}`, href: cap.reconnectHref };
-          attention = 'needs_you';
-        }
+      const remedy: Remedy = cap.remedy ?? (r.classification === 'api_key_rejected' ? 'replace_team_key' : 'sign_in');
+      const signIn = remedy === 'sign_in' || remedy === 'remove_saved_sign_in';
+      if (isHolder) {
+        ({ title, condition, action } = holderCopy(remedy, cap.label, cap.provider ?? 'provider', cap.reconnectHref ?? null));
+        if (action) attention = 'needs_you';
       } else if (scope === 'team_admin') {
-        title = `${cap.label} is waiting for its owner to sign in`;
+        title = holder.kind === 'person'
+          ? `${cap.label} is waiting for its owner to ${signIn ? 'sign in' : 'replace its key'}`
+          : `${cap.label} is waiting for ${signIn ? 'sign-in' : 'a new key'}`;
         condition = title;
-        if (r.alternateRunnerAvailable && work.length > 0) {
-          action = { kind: 'route_work', label: 'Move work to another runner', href: '/app/settings/runners' };
-          attention = 'needs_you';
-        }
+        // Routing is the admin's to decide, but it is not the fix: quiet, never a card.
+        if (r.alternateRunnerAvailable && work.length > 0) action = { kind: 'route_work', label: 'Move work to another runner', href: '/app/settings/runners' };
       } else {
-        title = 'Waiting for runner sign-in';
+        title = signIn ? 'Waiting for runner sign-in' : 'Waiting for a runner key';
         condition = title;
       }
     } else if (r.classification === 'platform_managed') {
@@ -187,7 +240,7 @@ export function projectServiceStatus(records: readonly RootCause[], viewer: Serv
       ...(r.nextUpdateAt ? { nextUpdateAt: r.nextUpdateAt } : {}),
       work: work.map(w => ({ taskId: w.taskId, title: w.title, href: `/app/tasks/${w.taskId}` })),
       action, attention,
-      ...(scope === 'team_admin' && cap.ownerUserId ? { ownerRef: { userId: cap.ownerUserId } } : {}),
+      ...(scope === 'team_admin' && holder.kind === 'person' ? { ownerRef: { userId: holder.userId } } : {}),
     });
   }
   return out;
@@ -197,15 +250,13 @@ export function projectServiceStatus(records: readonly RootCause[], viewer: Serv
 export function statusAttentionItems(statuses: readonly ServiceStatus[]): HomeAttentionItem[] {
   const items: HomeAttentionItem[] = [];
   for (const s of statuses) {
-    if (s.attention !== 'needs_you' || !s.action) continue;
+    // Only the holder's fix is a card; moving work elsewhere stays on the quiet list.
+    if (s.attention !== 'needs_you' || !s.action || s.action.kind === 'route_work') continue;
     const reconnect = s.action.kind === 'reconnect';
-    const sentence = reconnect
-      ? `${s.condition}. ${plural(s.work.length, 'task')} waiting.`
-      : `${s.condition}. ${plural(s.work.length, 'task')} waiting; you can move the work to another runner.`;
     items.push({
-      key: `service-status:${s.key}`, kind: 'queue', label: reconnect ? 'runner needs sign-in' : 'service status',
-      tone: 'warning', title: s.title, sentence, meta: s.capability, href: s.action.href,
-      actionType: reconnect ? 'reconnect' : 'decide', primary: { label: s.action.label, href: s.action.href }, owner: 'human',
+      key: `service-status:${s.key}`, kind: 'queue', label: reconnect ? 'runner needs sign-in' : 'runner key',
+      tone: 'warning', title: s.title, sentence: `${s.condition}. ${plural(s.work.length, 'task')} waiting.`, meta: s.capability, href: s.action.href,
+      actionType: reconnect ? 'reconnect' : 'fix', primary: { label: s.action.label, href: s.action.href }, owner: 'human',
     });
   }
   return items;

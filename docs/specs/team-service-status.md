@@ -5,10 +5,10 @@ owner: max
 last_verified: 2026-10-12
 summary: Each viewer MUST see one plain status per root cause, actionable only by whoever controls the broken runner; Home never carries operator machinery, operator included.
 domain: surfaces
-surfaces: [apps/web/src/lib/service-status.ts, apps/web/src/lib/home-attention.ts, apps/web/src/lib/failure-incident-escalation.ts, apps/web/src/app/app/(protected)/health/member-scope.test.ts]
+surfaces: [apps/web/src/lib/service-status.ts, apps/web/src/lib/service-status-loader.ts, apps/web/src/lib/home-attention.ts, apps/web/src/lib/failure-incident-escalation.ts]
 related: [team-permissions, credential-refresh-lifecycle, auth-oauth-boundaries, runner-liveness, human-in-the-loop-protocol, surface-ia-home-missions-initiatives]
 keywords: [service status, runner needs sign-in, waiting for runner sign-in, quiet status surface, needs you, credential owner, incident, root cause, member, team admin, operator parity, hosted runner, self-hosted runner, runner owner, platform-owner API]
-verified_by: [apps/web/src/lib/service-status.test.ts, apps/web/src/lib/team-incident-boundary.test.ts, apps/web/src/app/app/(protected)/health/member-scope.test.ts, apps/web/src/lib/failure-incident-escalation.test.ts, apps/web/src/lib/incident-view.test.ts, apps/web/src/lib/home-attention.test.ts]
+verified_by: [apps/web/src/lib/service-status.test.ts, apps/web/src/lib/team-service-status.ownership.test.ts, apps/web/src/lib/service-status-loader.test.ts, apps/web/src/lib/team-incident-boundary.test.ts, apps/web/src/app/app/(protected)/health/member-scope.test.ts, apps/web/src/lib/failure-incident-escalation.test.ts, apps/web/src/lib/incident-view.test.ts, apps/web/src/lib/home-attention.test.ts]
 assertions:
   - id: "escalation-rule"
     type: "symbol"
@@ -26,13 +26,12 @@ supersedes: []
 # Team Service Status
 
 **Status of this document**: active. The pure projection
-(`apps/web/src/lib/service-status.ts`, section 6) and the operator gates on the
-incident page, its API and Home's incident read have landed. Two gaps remain,
-and sections 7 to 9 are the contract that closes them:
+(`apps/web/src/lib/service-status.ts`, section 6), the operator gates on the
+incident page, its API and Home's incident read, and the section 9 loader with
+its Home, Health and task-page renderers have landed. One gap remains, and
+section 7 is the contract that closes it:
 
-1. **Nothing renders the projection.** No loader builds its input from real
-   data and no team surface shows its output, so a team sees no status at all.
-2. **Home still carries operator machinery for whoever is the platform
+1. **Home still carries operator machinery for whoever is the platform
    operator.** Incident cards and decision-feature health rows are gated on
    the operator role, not removed from Home. An operator is also a member of
    their own team, so their Home mixes platform machinery into "things need
@@ -366,15 +365,15 @@ others exist and cover the neighbouring behaviour.
   the action goes to the holder that row names, a hosted runner never yields a
   sign-in action, and a runner whose creator left the team yields the action
   for team admins.
-  Test: `team-service-status.ownership.test.ts` *(new)*.
+  Test: `apps/web/src/lib/team-service-status.ownership.test.ts`.
 - AC-10: GIVEN a runner account with a recorded sign-in failure and tasks
   waiting on it WHEN Home renders for its owner THEN one "Runner needs sign-in"
   card appears, the waiting tasks' own failed cards do not, and the Needs You
   count rises by exactly one for the owner and by zero for anyone else.
-  Test: `service-status-loader.test.ts` *(new)*.
+  Test: `apps/web/src/lib/service-status-loader.test.ts`.
 - AC-11: GIVEN the status loader throws WHEN Home renders THEN Home renders
   every other item and no status.
-  Test: `service-status-loader.test.ts` *(new)*.
+  Test: `apps/web/src/lib/service-status-loader.test.ts`.
 
 ## Code surface
 
@@ -406,8 +405,15 @@ Existing, read-only context for this spec:
 - `apps/web/src/app/api/admin/root-causes/route.ts` — the platform-owner read
   of those records; 404 to team keys and sessions.
 
-To be added: the section 9 loader, the team-facing renderers on Home and
-Health, and the platform-owner API routes for incidents and decision-feature
+- `apps/web/src/lib/service-status-loader.ts` — the section 9 loader:
+  `resolveHolder` (the section 8 table, from runner-account fields),
+  `buildRootCauses` (records to projection input), `serviceStatusView` and
+  `loadServiceStatus` (never throws). Home, Health and the task page read it.
+- `apps/web/src/components/service-status/ServiceStatusList.tsx` — the quiet
+  status list (Health Overview, an affected task's page) and the banner (Home,
+  every Health page).
+
+To be added: the platform-owner API routes for incidents and decision-feature
 health.
 
 ## Out of scope

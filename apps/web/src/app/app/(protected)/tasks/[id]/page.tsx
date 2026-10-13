@@ -81,6 +81,8 @@ import MissionContextBar from './MissionContextBar';
 import TaskPageActionZone from './TaskPageActionZone';
 import { auditTaskIdFor, loadTaskFailureKind } from '@/lib/task-failure-kind-load';
 import RunnerReachBanner from './RunnerReachBanner';
+import { loadServiceStatus } from '@/lib/service-status-loader';
+import { ServiceStatusList } from '@/components/service-status/ServiceStatusList';
 import { loadRunnerReachDiagnosis } from '@/lib/runner-reach';
 import { canAdministerTeamKeys } from '@/lib/key-level-policy';
 import TaskOverflowMenu from './TaskOverflowMenu';
@@ -361,7 +363,10 @@ export default async function TaskDetailPage({
   // Cloud runs only: its time on the hosted runner, all attempts. Started
   // here, awaited below, so it adds no round trip of its own.
   const hostedRunnerUsagePromise = taskHostedRunnerUsage(id).catch(() => null);
-  const [evidenceReview, evidenceArtifactCount, taskArtifacts, errorTraces, ship, teamTimezone, roleRow, ciAttemptRows, dependentTasks, runnerHeartbeats, auditVisual, evidenceFiles, openAttempt, runnerReachRaw, accessItems, failureKindRaw, livingSpec] = await Promise.all([
+  // The team's service status for this viewer, kept to the causes this task waits on. Never throws.
+  const serviceStatusPromise = loadServiceStatus({ userId: user?.id, teamId: (task.workspace as { teamId?: string } | null)?.teamId })
+    .then((v) => v.statuses.filter((s) => s.work.some((w) => w.taskId === task.id)));
+  const [evidenceReview, evidenceArtifactCount, taskArtifacts, errorTraces, ship, teamTimezone, roleRow, ciAttemptRows, dependentTasks, runnerHeartbeats, auditVisual, evidenceFiles, openAttempt, runnerReachRaw, accessItems, failureKindRaw, livingSpec, taskServiceStatus] = await Promise.all([
     prWorker?.prNumber ? RUN_PROGRESS_READERS.review({ workspaceId: task.workspaceId, prNumber: prWorker.prNumber }).catch(() => null) : Promise.resolve(null),
     taskWorkers.find(w => isLiveWorkerStatus(w.status)) ? getWorkerDeliverableArtifactCount(taskWorkers.find(w => isLiveWorkerStatus(w.status))!.id) : Promise.resolve(0),
     // Artifacts for all workers on this task
@@ -453,6 +458,7 @@ export default async function TaskDetailPage({
     loadTaskFailureKind({ id: task.id, title: task.title, status: task.status, missionId: task.missionId ?? null }).catch(() => null),
     // The Living Spec the task is pinned to, with its outcome. No query unless it names one.
     livingSpecLoad(task.id, task.context),
+    serviceStatusPromise,
   ]);
   // CI-retry attempts numbered by (createdAt, id): "attempt N" never swaps.
   const ciAttemptTasks = oldestFirst(ciAttemptRows, compareTasksChrono)
@@ -1540,6 +1546,7 @@ export default async function TaskDetailPage({
           />
         )}
 
+        <ServiceStatusList statuses={taskServiceStatus} showWork={false} />
         {runnerReach && (
           <RunnerReachBanner workspaceId={task.workspaceId} diagnosis={runnerReach.diagnosis} canFix={runnerReach.canFix} />
         )}
