@@ -151,7 +151,7 @@ describe('deriveMissionStateView — a runner verification task nobody claims', 
     if (waiting.kind !== 'criterion_unverified') throw new Error('unreachable');
     expect(waiting.awaitingRunner).toEqual(['Contract applied']);
     expect(waiting.tone).toBe('warning');
-    expect(view.situation.headline.toLowerCase()).toContain('waiting for a runner to verify "contract applied"');
+    expect(view.situation.headline.toLowerCase()).toContain('waiting on a runner to verify "contract applied"');
     expect(view.nextAction).toMatch(/runner/);
   });
 
@@ -180,7 +180,7 @@ describe('deriveMissionStateView — blocked by an unverified criterion', () => 
     expect(waiting.kind).toBe('criterion_unverified');
     // The whole point: neutral, not warning, not error.
     expect(waiting.tone).toBe('neutral');
-    expect(waiting.label).toBe('1 criterion not verified yet · run verification');
+    expect(waiting.label).toBe('1 criterion unverified · run verification');
     expect(view.nextAction).toBe('Run goal-criteria verification to produce a verdict.');
   });
 

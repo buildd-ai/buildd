@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Switch, { SWITCH_HIT_AREA } from '@/components/ui/Switch';
 import { ReadOnlyFacts } from './ReadOnlyFacts';
 
 interface SubjectPolicy {
@@ -18,67 +19,65 @@ interface Props {
   canEdit: boolean;
 }
 
-const DEFAULTS: Required<SubjectPolicy> = {
-  mode: 'observe',
-  autoCloseBuilddSupersededPrs: false,
-  priorWorkInjection: true,
-  conflictDeadDays: 7,
-  proposalGraceHours: 24,
-};
+const DEFAULT_CONFLICT_DEAD_DAYS = 7;
+const AUTO_CLOSE_LABEL = 'Close older buildd PRs when a newer one merges';
+const DAYS_LABEL = 'Close conflicted PRs after (days)';
 
+/**
+ * Repeat work: gitConfig.subjectPolicy as a team admin sees it
+ * (docs/specs/subject-anchor-liveness.md §5). One switch, and the grace
+ * period only while it is on. priorWorkInjection is not shown: its default is
+ * right for everyone, and a save writes the stored policy back with only these
+ * two fields changed, so a stored value keeps working.
+ */
 export default function SubjectPolicySection({ workspaceId, initialPolicy, canEdit }: Props) {
-  const merged = { ...DEFAULTS, ...initialPolicy };
-
-  const [autoClose, setAutoClose] = useState(merged.autoCloseBuilddSupersededPrs);
-  const [priorWork, setPriorWork] = useState(merged.priorWorkInjection);
-  const [conflictDays, setConflictDays] = useState(String(merged.conflictDeadDays));
+  const [stored, setStored] = useState<SubjectPolicy>(initialPolicy ?? {});
+  const autoClose = stored.autoCloseBuilddSupersededPrs === true;
+  const savedDays = stored.conflictDeadDays ?? DEFAULT_CONFLICT_DEAD_DAYS;
+  const [days, setDays] = useState(String(savedDays));
   const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  async function handleSave() {
+  async function save(changes: Pick<SubjectPolicy, 'autoCloseBuilddSupersededPrs' | 'conflictDeadDays'>) {
+    if (saving) return;
+    const next: SubjectPolicy = { ...stored, ...changes };
+    const prev = stored;
+    setStored(next);
     setSaving(true);
-    setMessage(null);
+    setError(null);
     try {
-      const days = parseInt(conflictDays, 10);
-      const policy: SubjectPolicy = {
-        ...merged,
-        autoCloseBuilddSupersededPrs: autoClose,
-        priorWorkInjection: priorWork,
-        conflictDeadDays: Number.isFinite(days) && days >= 1 ? days : DEFAULTS.conflictDeadDays,
-      };
       const res = await fetch(`/api/workspaces/${workspaceId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ gitConfig: { subjectPolicy: policy } }),
+        body: JSON.stringify({ gitConfig: { subjectPolicy: next } }),
       });
-      if (!res.ok) throw new Error('Failed to save');
-      setMessage({ type: 'success', text: 'Subject policy saved.' });
-    } catch {
-      setMessage({ type: 'error', text: 'Couldn\'t save subject policy.' });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error ?? 'Save failed');
+      }
+    } catch (e) {
+      setStored(prev);
+      setError(e instanceof Error ? e.message : 'Save failed');
     } finally {
       setSaving(false);
     }
   }
 
-  const header = (
-    <>
-      <h3 className="text-sm font-medium text-text-primary">Subject anchor policy</h3>
-      <p className="text-xs text-text-secondary mt-0.5 mb-4">
-        How buildd tracks and deduplicates tasks anchored to a shared subject (a PR, a
-        recurring error, or a mission), and what context it gives them. Defaults are observe-only.
-      </p>
-    </>
-  );
+  function saveDays() {
+    const n = parseInt(days, 10);
+    const value = Number.isFinite(n) && n >= 1 ? Math.min(n, 90) : DEFAULT_CONFLICT_DEAD_DAYS;
+    setDays(String(value));
+    save({ conflictDeadDays: value });
+  }
 
   if (!canEdit) {
     return (
       <div className="py-4 first:pt-0 last:pb-0">
-        {header}
+        <h3 className="text-sm font-medium text-text-primary mb-2">Repeat work</h3>
         <ReadOnlyFacts
           facts={[
-            { label: 'Prior-work injection', value: priorWork ? 'On' : 'Off' },
-            { label: 'Auto-close superseded buildd-authored PRs', value: autoClose ? 'On' : 'Off' },
-            ...(autoClose ? [{ label: 'Conflict-dead grace period', value: `${merged.conflictDeadDays} days` }] : []),
+            { label: AUTO_CLOSE_LABEL, value: autoClose ? 'On' : 'Off' },
+            ...(autoClose ? [{ label: 'Close conflicted PRs after', value: `${savedDays} days` }] : []),
           ]}
         />
       </div>
@@ -87,88 +86,45 @@ export default function SubjectPolicySection({ workspaceId, initialPolicy, canEd
 
   return (
     <div className="py-4 first:pt-0 last:pb-0">
-      {header}
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0">
+          <h3 className="text-sm font-medium text-text-primary">Repeat work</h3>
+          <p id="subject-auto-close-label" className="text-xs text-text-secondary mt-0.5">{AUTO_CLOSE_LABEL}</p>
+        </div>
+        <Switch
+          checked={autoClose}
+          onChange={(next) => save({
+            autoCloseBuilddSupersededPrs: next,
+            ...(next && stored.conflictDeadDays === undefined ? { conflictDeadDays: DEFAULT_CONFLICT_DEAD_DAYS } : {}),
+          })}
+          disabled={saving}
+          labelledBy="subject-auto-close-label"
+          className={SWITCH_HIT_AREA}
+        />
+      </div>
 
-      <div className="space-y-4">
-        {/* Prior-work injection */}
-        <label className="flex items-start gap-3 cursor-pointer">
-          <input
-            type="checkbox"
-            className="mt-0.5"
-            checked={priorWork}
-            onChange={e => setPriorWork(e.target.checked)}
-          />
-          <span>
-            <span className="block text-sm text-text-primary">Prior-work injection</span>
-            <span className="block text-xs text-text-muted mt-0.5">
-              A worker that claims a task anchored to an existing subject (PR or error) gets a
-              summary of prior tasks, branches, and PR history in its context. On by default.
-            </span>
-          </span>
-        </label>
-
-        {/* Dead-PR shutdown */}
-        <label className="flex items-start gap-3 cursor-pointer">
-          <input
-            type="checkbox"
-            className="mt-0.5"
-            checked={autoClose}
-            onChange={e => setAutoClose(e.target.checked)}
-          />
-          <span>
-            <span className="block text-sm text-text-primary">
-              Auto-close superseded buildd-authored PRs{' '}
-              <span className="text-xs text-text-muted">(off by default)</span>
-            </span>
-            <span className="block text-xs text-text-muted mt-0.5">
-              When a successor PR merges, buildd closes its other open PRs for the same subject.
-              buildd checks worker records to confirm authorship and never closes PRs a person
-              opened.
-            </span>
-          </span>
-        </label>
-
-        {/* Conflict-dead days */}
-        {autoClose && (
-          <div className="pl-7">
-            <label className="block text-sm text-text-primary mb-1" htmlFor="conflict-dead-days">
-              Conflict-dead grace period (days)
-            </label>
+      {autoClose && (
+        <div className="mt-3 flex flex-wrap items-end gap-3">
+          <div>
+            <label className="block text-xs text-text-secondary mb-1" htmlFor="conflict-dead-days">{DAYS_LABEL}</label>
             <input
               id="conflict-dead-days"
               type="number"
               min={1}
               max={90}
               className="w-24 border border-border-default px-3 py-1.5 bg-surface-1 font-mono text-base md:text-sm"
-              value={conflictDays}
-              onChange={e => setConflictDays(e.target.value)}
+              value={days}
+              onChange={e => setDays(e.target.value)}
             />
-            <p className="mt-1 text-xs text-text-muted">
-              buildd waits this many days before closing a PR that has merge conflicts and no
-              green successor. Default: 7.
-            </p>
           </div>
-        )}
-      </div>
-
-      <div className="mt-4 flex flex-wrap items-center gap-3">
-        <button
-          type="button"
-          onClick={handleSave}
-          disabled={saving}
-          className="btn min-h-11"
-        >
-          {saving ? 'Saving…' : 'Save subject policy'}
-        </button>
-
-        {message && (
-          <span
-            className={`text-sm ${message.type === 'success' ? 'text-status-success' : 'text-status-error'}`}
-          >
-            {message.text}
-          </span>
-        )}
-      </div>
+          {days !== String(savedDays) && (
+            <button type="button" onClick={saveDays} disabled={saving} className="btn min-h-11">
+              {saving ? 'Saving…' : 'Save'}
+            </button>
+          )}
+        </div>
+      )}
+      {error && <p className="text-status-error text-sm mt-2" role="alert">{error}</p>}
     </div>
   );
 }

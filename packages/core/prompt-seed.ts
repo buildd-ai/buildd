@@ -107,15 +107,40 @@ export async function loadPromptSeed(
   reader: PromptFileReader,
   registered: readonly RegisteredPrompt[],
 ): Promise<PromptSeedEntry[]> {
+  const { entries, retired, problems } = await loadPromptSeedPerPrompt(reader, registered);
+  const all = [...retired.map(id => `"${id}": not a registered prompt id`), ...problems];
+  if (all.length > 0) throw new PromptSeedError(all);
+  return entries;
+}
+
+export interface PerPromptSeed {
+  entries: PromptSeedEntry[];
+  /** Manifest ids nothing registers any more (a prompt retired from the code). */
+  retired: string[];
+  /** Ids and reasons for each prompt that could not be loaded. Never text. */
+  problems: string[];
+}
+
+/**
+ * Like `loadPromptSeed`, but a bad prompt only drops itself: a retired id is
+ * listed in `retired`, any other failure in `problems`, and the rest load. For
+ * readers that score what they can (the model comparison); the deploy seed
+ * keeps the all-or-nothing form. A bad manifest still throws.
+ */
+export async function loadPromptSeedPerPrompt(
+  reader: PromptFileReader,
+  registered: readonly RegisteredPrompt[],
+): Promise<PerPromptSeed> {
   const manifest = parsePromptManifest(await reader.read(PROMPT_MANIFEST_FILE));
   const byId = new Map(registered.map(r => [r.id, r]));
   const problems: string[] = [];
-  const out: PromptSeedEntry[] = [];
+  const retired: string[] = [];
+  const entries: PromptSeedEntry[] = [];
 
   for (const e of manifest) {
     const reg = byId.get(e.id);
     if (!reg) {
-      problems.push(`"${e.id}": not a registered prompt id`);
+      retired.push(e.id);
       continue;
     }
     let body: string;
@@ -135,10 +160,9 @@ export async function loadPromptSeed(
       problems.push(`"${e.id}": rejected (${rejected})`);
       continue;
     }
-    out.push({ id: e.id, version: e.version, contentHash: hash, body });
+    entries.push({ id: e.id, version: e.version, contentHash: hash, body });
   }
-  if (problems.length > 0) throw new PromptSeedError(problems);
-  return out;
+  return { entries, retired, problems };
 }
 
 export interface ExistingPromptRow {

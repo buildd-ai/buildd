@@ -6,9 +6,9 @@
  *
  * Every item is its own route so a section is linkable. Groups are labels
  * only; they have no page of their own. A group is one scope: your own
- * settings, or the team's. One page holds both: Connected apps lists the apps
- * you signed in and the team's MCP connectors, since both are outside tools;
- * its team half follows manage_connectors.
+ * settings, or the team's. Connected apps (You) lists the apps you signed in
+ * to buildd; Apps (Team) holds the team's MCP connectors and agent access,
+ * and follows manage_connectors.
  */
 
 import type { Permission } from './permission-registry';
@@ -19,13 +19,14 @@ export type SettingsSectionId =
   | 'notifications'
   | 'connections'
   | 'team'
-  | 'roles'
+  | 'agents'
   | 'billing'
   | 'models'
   | 'workspaces'
   | 'runners'
   | 'alerts'
   | 'integrations'
+  | 'apps'
   | 'features';
 
 export interface SettingsNavItem {
@@ -77,7 +78,7 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
         id: 'keys',
         label: 'Keys',
         href: '/app/settings/keys',
-        description: 'Your own model keys, used when the team lets personal keys pay.',
+        description: 'Your own model keys, and the highest tier your work may use.',
       },
       {
         id: 'notifications',
@@ -89,7 +90,7 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
         id: 'connections',
         label: 'Connected apps',
         href: '/app/settings/connections',
-        description: 'Apps signed in to buildd as you, and the outside tools your agents can call.',
+        description: 'Apps signed in to buildd as you, and the workspaces each one reaches.',
       },
     ],
   },
@@ -101,13 +102,13 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
         id: 'team',
         label: 'Members',
         href: '/app/settings/team',
-        description: 'Who is on the team, what each person can change, and the team timezone.',
+        description: 'Who is on the team, their roles, invites and the team timezone.',
         manage: ['manage_team_members', 'assign_team_roles', 'assign_team_owner', 'manage_team_settings', 'delete_team'],
       },
       {
-        id: 'roles',
+        id: 'agents',
         label: 'Agents',
-        href: '/app/settings/roles',
+        href: '/app/settings/agents',
         description: 'The agents on the team: what each one does, its model and its tools.',
         manage: ['manage_agent_roles'],
       },
@@ -153,6 +154,13 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
         href: '/app/settings/integrations',
         description: 'GitHub, Vercel, and the bucket where run evidence is kept.',
         manage: ['manage_github_installation', 'manage_team_credentials', 'manage_evidence_backends'],
+      },
+      {
+        id: 'apps',
+        label: 'Apps',
+        href: '/app/settings/apps',
+        description: "The outside tools the team's agents can call, and what agents asked for.",
+        manage: ['manage_connectors'],
       },
       {
         id: 'features',
@@ -230,7 +238,7 @@ export const LEGACY_SETTINGS_ANCHORS: Record<string, string> = {
   'runner-tokens': '/app/settings/runners',
   'inference-spending': '/app/settings/models',
   'provider-keys': '/app/settings/models',
-  connectors: '/app/settings/connections',
+  connectors: '/app/settings/apps',
   notifications: '/app/settings/notifications',
   github: '/app/settings/integrations',
   vercel: '/app/settings/integrations',

@@ -29,6 +29,6 @@ export default async function WorkspaceSkillRedirect({
     where: and(eq(workspaceSkills.id, skillId), eq(workspaceSkills.workspaceId, id)),
     columns: { slug: true },
   });
-  if (skill) redirect(`/app/settings/roles/${encodeURIComponent(skill.slug)}`);
-  redirect('/app/settings/roles');
+  if (skill) redirect(`/app/settings/agents/${encodeURIComponent(skill.slug)}`);
+  redirect('/app/settings/agents');
 }

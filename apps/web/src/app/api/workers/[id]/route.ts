@@ -5484,6 +5484,12 @@ async function handleReviewerOutcomeIfNeeded(
         `/repos/${repoFullName}/pulls/${prNumber}/files?per_page=300`,
       );
       if (Array.isArray(fetched)) currentFiles = fetched;
+      // An integration-refresh PR is judged on its trunk delta here too, as
+      // pre-flight does (reviewer-subscribers.ts): its own diff against the
+      // mission branch shows a renumbered mission migration as deleted.
+      const { refreshDeltaBase } = await import('@/lib/integration-refresh');
+      const original = await db.query.tasks.findFirst({ where: eq(tasks.id, originalTaskId), columns: { context: true } });
+      const deltaBase = refreshDeltaBase(original?.context, workspace?.gitConfig ?? null);
       const { inspectPullRequestMigrations } = await import('@/lib/migration-inspector');
       migrationSafety = await inspectPullRequestMigrations({
         installationId,
@@ -5491,6 +5497,7 @@ async function handleReviewerOutcomeIfNeeded(
         prNumber,
         headSha,
         files: currentFiles as never,
+        ...(deltaBase ? { deltaBase, baseRef: gatedWorker?.prBaseRef ?? null } : {}),
       });
     } catch (err) {
       // Leave currentFiles empty: the helper treats an unreadable file list as

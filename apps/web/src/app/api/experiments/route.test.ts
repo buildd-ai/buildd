@@ -4,7 +4,7 @@ import { NextRequest } from 'next/server';
 const TEAM = 'team-a';
 
 type Role = 'member' | 'admin' | 'owner';
-let viewer: { ok: true; viewer: { teamId: string; role: Role; userId: string | null } } | { ok: false; status: 401 | 404; error: string };
+let viewer: { ok: true; viewer: { teamId: string; role: Role; userId: string | null; operator: boolean } } | { ok: false; status: 401 | 404; error: string };
 
 const mockResolveViewer = mock(async () => viewer);
 const mockList = mock(async (_teamId: string) => [] as any[]);
@@ -48,8 +48,9 @@ function row(over: Record<string, unknown> = {}) {
   };
 }
 
-function as(role: Role) {
-  viewer = { ok: true, viewer: { teamId: TEAM, role, userId: 'u-1' } };
+/** A team role, or 'operator': a buildd platform operator (an owner of the team here). */
+function as(who: Role | 'operator') {
+  viewer = { ok: true, viewer: { teamId: TEAM, role: who === 'operator' ? 'owner' : who, userId: 'u-1', operator: who === 'operator' } };
 }
 
 const get = () => GET(new NextRequest('http://localhost/api/experiments'));
@@ -75,8 +76,8 @@ describe('GET /api/experiments', () => {
     expect(mockList).not.toHaveBeenCalled();
   });
 
-  it('member sees team-visible experiments only; admins-only rows are absent, not flagged', async () => {
-    as('member');
+  it.each(['member', 'admin', 'owner'] as const)('a team %s sees team-visible experiments only; operator-only rows are absent, not flagged', async (role) => {
+    as(role);
     const res = await get();
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -85,21 +86,21 @@ describe('GET /api/experiments', () => {
     expect(body.canManage).toBe(false);
   });
 
-  it.each(['admin', 'owner'] as const)('%s sees both visibilities and canManage', async (role) => {
-    as(role);
+  it('a platform operator sees both visibilities and canManage', async () => {
+    as('operator');
     const body = await (await get()).json();
     expect(body.experiments.map((e: any) => e.key)).toEqual(['hidden', 'shared']);
     expect(body.canManage).toBe(true);
   });
 
   it('lists only the viewer team', async () => {
-    as('admin');
+    as('operator');
     await get();
     expect(mockList).toHaveBeenCalledWith(TEAM);
   });
 
   it('attaches enrolment health for running experiments only, keyed by id', async () => {
-    as('admin');
+    as('operator');
     mockList.mockResolvedValue([
       row({ id: 'r', key: 'live', status: 'running', visibility: 'team' }),
       row({ id: 'd', key: 'draft', status: 'draft', visibility: 'team' }),
@@ -113,7 +114,7 @@ describe('GET /api/experiments', () => {
   });
 
   it('a failing health check leaves that experiment out, the list still answers', async () => {
-    as('admin');
+    as('operator');
     mockList.mockResolvedValue([row({ id: 'r', status: 'running', visibility: 'team' })]);
     mockHealth.mockReset();
     mockHealth.mockRejectedValue(new Error('db down'));
@@ -123,7 +124,7 @@ describe('GET /api/experiments', () => {
   });
 
   it('never returns teamId or createdBy', async () => {
-    as('owner');
+    as('operator');
     const body = await (await get()).json();
     for (const e of body.experiments) {
       expect('teamId' in e).toBe(false);
@@ -135,15 +136,16 @@ describe('GET /api/experiments', () => {
 describe('POST /api/experiments', () => {
   const VALID = { key: 'premium-vs-standard', title: 'Premium vs standard', hypothesis: 'h' };
 
-  it('member gets 403 and nothing is written', async () => {
-    as('member');
+  it.each(['member', 'admin', 'owner'] as const)('a team %s gets 403 and nothing is written', async (role) => {
+    as(role);
     const res = await post(VALID);
     expect(res.status).toBe(403);
+    expect((await res.json()).error).toContain('platform operators');
     expect(mockInsert).not.toHaveBeenCalled();
   });
 
-  it.each(['admin', 'owner'] as const)('%s creates a draft on the viewer team', async (role) => {
-    as(role);
+  it('a platform operator creates a draft on the viewer team', async () => {
+    as('operator');
     mockInsert.mockResolvedValue(row({ key: VALID.key, title: VALID.title }));
     const res = await post({ ...VALID, status: 'running' });
     expect(res.status).toBe(201);
@@ -156,14 +158,14 @@ describe('POST /api/experiments', () => {
   });
 
   it('400 on invalid body', async () => {
-    as('admin');
+    as('operator');
     expect((await post({ key: 'k' })).status).toBe(400);
     expect((await post({ key: 'k', title: 't', treatmentFraction: 2 })).status).toBe(400);
     expect(mockInsert).not.toHaveBeenCalled();
   });
 
   it('409 on a duplicate key', async () => {
-    as('admin');
+    as('operator');
     mockInsert.mockResolvedValue('duplicate_key');
     expect((await post(VALID)).status).toBe(409);
   });
@@ -223,7 +225,7 @@ describe('/api/experiments — per-task token', () => {
   });
 
   it('an account key still resolves through resolveExperimentViewer, health included', async () => {
-    as('admin');
+    as('operator');
     const body = await (await GET(bearer('/api/experiments', 'bld_test'))).json();
     expect(mockResolveViewer).toHaveBeenCalled();
     expect(mockTaskViewer).not.toHaveBeenCalled();

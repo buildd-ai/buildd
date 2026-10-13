@@ -21,6 +21,8 @@ export interface GateRefusal {
   canForce?: boolean;
   /** workspace_cap_reached: the person may start this one task past the cap. */
   canExempt?: boolean;
+  /** workspace_cap_reached: the person holds manage_workspace_settings, so raising the cap would be accepted. */
+  canRaiseCap?: boolean;
   backend?: string;
   /** capability_mismatch: backends the team does hold a credential for. */
   availableBackends?: string[];

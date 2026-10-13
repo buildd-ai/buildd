@@ -1,3 +1,4 @@
+// @ui-copy: strings here render in the app; copy:check and the em-dash test scan them.
 /**
  * How Activity groups and trims local interactive sessions. Pure and
  * client-safe (InteractiveSessions renders in the client bundle): types come

@@ -35,8 +35,17 @@ describe('Settings → Models page', () => {
     expect(page).not.toMatch(/\buppercase\b/);
   });
 
+  it('operator controls follow the operator gate, not a team permission; My maximum is on You › Keys', async () => {
+    expect(page).toContain('const operator = await isPlatformOperatorCaller({ user })');
+    expect(page).toContain('operator={operator}');
+    expect(page).not.toMatch(/operator=\{perms\./);
+    expect(page).not.toContain('MyMaximumSection');
+    const keys = await Bun.file(new URL('../keys/page.tsx', import.meta.url)).text();
+    expect(keys).toContain('<MyMaximumSection');
+  });
+
   it('has no decision features, chat retros or goal grading controls', () => {
-    for (const gone of ['DecisionFeatures', 'ChatRetroSection', 'isPlatformOperator', 'ModelFeatures', 'hasTeamInferenceKey']) {
+    for (const gone of ['DecisionFeatures', 'ChatRetroSection', 'isPlatformOperator(', 'ModelFeatures', 'hasTeamInferenceKey']) {
       expect(`${gone}: ${page.includes(gone)}`).toBe(`${gone}: false`);
     }
   });

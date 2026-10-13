@@ -40,7 +40,7 @@ async function open(cell: ModelPolicyCell) {
   await act(async () => {
     root.render(createElement(CellEditor, {
       cell, teamId: 'team-demo', models: MODELS as never, keys: null, catalogLoading: false, suggestion: null,
-      anchorRef: anchor, sheet: true, onClose: () => {}, onSaved: async () => {},
+      anchorRef: anchor, sheet: true, operator: true, onClose: () => {}, onSaved: async () => {},
     }));
   });
   await flush();
@@ -67,8 +67,7 @@ describe('CellEditor routing, phone', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     await click(toggle);
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
-    expect(q('[data-testid="cell-advanced"]')!.textContent).toContain('shadow');
-    expect(q('[data-testid="cell-advanced"]')!.textContent).toContain('live');
+    expect(q('[data-testid="cell-advanced"] [data-testid="cell-dial-3"]')).not.toBeNull();
     await click(toggle);
     expect(q('[data-testid="cell-advanced"]')).toBeNull();
   });
@@ -77,7 +76,7 @@ describe('CellEditor routing, phone', () => {
     await open(find('premium', 'chat'));
     expect(status()).toBe('Quality feedback unavailable: automatic switching paused.');
     await click(q('[data-testid="cell-advanced-toggle"]'));
-    expect(q('[data-testid="cell-advanced"]')!.textContent).toContain('nothing switches on quality');
+    expect(q('[data-testid="cell-advanced"]')!.textContent).not.toMatch(/switches on quality|shadow/);
   });
 
   it('shifted and reverted say what is actually happening', async () => {

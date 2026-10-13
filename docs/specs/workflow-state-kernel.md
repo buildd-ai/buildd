@@ -434,7 +434,10 @@ an ordinary task PR into the same branch is not one). `isCompositionPr` recognis
    (`renumberedMigrations`). That means a mission-side `.sql` the merge dropped, paired
    one to one with a new `.sql` that holds the same blob and is on neither side. This
    is what the generated-conflict resolver's renumber produces. A moved migration whose
-   content changed, or one written in the merge, stays novel.
+   content changed, or one written in the merge, stays novel. The merge-safety
+   inspector reads the same shape in a refresh PR's diff as a renumber, not lineage,
+   using the same pairing (`pairMovedMigrations`, db-migration-gates.md "A renumber in
+   a refresh PR is not lineage").
 
 A truncated or unreadable tree makes the result `unverifiable` (full review). With
 nothing left novel, the refresh is approved on composition with no reviewer. Otherwise a

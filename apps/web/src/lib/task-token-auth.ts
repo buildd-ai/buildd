@@ -6,10 +6,8 @@ import { authenticateApiKey } from './api-auth';
 import { canMintAdminTaskToken, isTaskToken, missingTaskTokenScopes, taskTokenKeyBinding, verifyTaskToken } from './task-token';
 import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
 import { taskLinksPr } from './agent-capabilities/pr-links';
-import {
-  delegationAllows, readScheduleDelegation,
-  type ScheduleDelegationCapability, type ScheduleDelegationGrant,
-} from '@buildd/core/token-delegation';
+import { delegationAllows, type ScheduleDelegationCapability, type ScheduleDelegationGrant } from '@buildd/core/token-delegation';
+import { loadTokenDelegations } from './task-delegation';
 
 /**
  * Authentication for the few routes a cloud container's per-task token may
@@ -39,10 +37,10 @@ export interface TaskScope {
   workspaceId: string;
   expiresAt: number;
   /**
-   * Explicit extra reach from the schedule that spawned the task
-   * (packages/core/token-delegation.ts), already narrowed to workspaces of
-   * the task's own team. Empty for any task no delegating schedule spawned.
-   * Only `taskScopeAllowsDelegated` reads it.
+   * Explicit extra reach from the schedule that spawned the task and from the
+   * task's own delegation (packages/core/token-delegation.ts), already
+   * narrowed to workspaces of the task's own team that the minting key
+   * allows. Only `taskScopeAllowsDelegated` reads it.
    */
   delegations?: ScheduleDelegationGrant[];
 }
@@ -72,7 +70,9 @@ export async function authenticateTaskScopedCaller(
   // An admin token stays admin only while its minting key is: demoting the
   // key ends the admin tokens it minted rather than quietly downgrading them.
   if (claims.level === 'admin' && !canMintAdminTaskToken(account)) return null;
-  const delegations = await loadScheduleDelegations(claims.taskId, claims.workspaceId, account.teamId);
+  // Read on every request (lib/task-delegation.ts), so clearing a grant ends
+  // the reach at once.
+  const delegations = await loadTokenDelegations(claims.taskId, claims.workspaceId, account);
   return {
     ...account,
     scopes: null,
@@ -84,42 +84,6 @@ export async function authenticateTaskScopedCaller(
       ...(delegations.length ? { delegations } : {}),
     },
   };
-}
-
-/**
- * The delegation of the schedule that spawned this task, if any. Read on every
- * request, so clearing it on the schedule ends the reach at once. Narrowed
- * here, whatever the row says, to workspaces of the task's own team, which is
- * also the minting account's team: a grant can never reach across teams. Any
- * error reads as no delegation (fail closed).
- */
-async function loadScheduleDelegations(taskId: string, workspaceId: string, accountTeamId: string | null | undefined): Promise<ScheduleDelegationGrant[]> {
-  try {
-    const task = await db.query.tasks.findFirst({
-      where: (t, { eq: eqOp }) => eqOp(t.id, taskId),
-      columns: { workspaceId: true, scheduleId: true },
-    });
-    if (!task?.scheduleId || task.workspaceId !== workspaceId) return [];
-    const schedule = await db.query.taskSchedules.findFirst({
-      where: (s, { eq: eqOp }) => eqOp(s.id, task.scheduleId!),
-      columns: { workspaceId: true, delegation: true },
-    });
-    // The grant belongs to a schedule of the task's own workspace, or to nothing.
-    if (!schedule || schedule.workspaceId !== workspaceId) return [];
-    const grants = readScheduleDelegation(schedule.delegation);
-    if (!grants.length) return [];
-    const rows = await db.query.workspaces.findMany({
-      where: (w, { inArray: inArrayOp }) => inArrayOp(w.id, [workspaceId, ...grants.map(g => g.workspaceId)]),
-      columns: { id: true, teamId: true },
-    });
-    const ownTeam = rows.find(r => r.id === workspaceId)?.teamId;
-    if (!ownTeam || (accountTeamId && ownTeam !== accountTeamId)) return [];
-    const sameTeam = new Set(rows.filter(r => r.teamId === ownTeam).map(r => r.id));
-    return grants.filter(g => sameTeam.has(g.workspaceId));
-  } catch (err) {
-    console.warn('[task-token-auth] schedule delegation lookup failed; none applied:', (err as Error)?.message ?? err);
-    return [];
-  }
 }
 
 /**
@@ -164,7 +128,8 @@ export function taskScopeAllowsWorkspace(account: { taskScope?: TaskScope } & Gr
 /**
  * `taskScopeAllowsWorkspace`, widened by exactly one delegated capability:
  * true unless the caller is a task token and `workspaceId` is neither its
- * task's workspace nor one its schedule's delegation grants `capability` on.
+ * task's workspace nor one its delegation (schedule or task) grants
+ * `capability` on.
  * For the few routes that serve a delegated capability (see
  * packages/core/token-delegation.ts); every other route keeps
  * `taskScopeAllowsWorkspace`, so a delegation opens nothing else.
