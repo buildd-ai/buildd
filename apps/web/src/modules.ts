@@ -46,6 +46,8 @@ import type { LegacyFirstReview } from '@/lib/workflow/legacy-handoff';
 import { legacyFirstReview } from '@/lib/workflow/review-handoff';
 import type { QuestionCheckDeps } from '@/lib/question-gate-check';
 import { fileRecoverableBlockerRepair } from '@/lib/recoverable-blocker-repair';
+import type { ShippingPrMergedReader } from '@/lib/integration-refresh';
+import { missionShippingPrMerged } from '@/lib/mission-shipping-pr';
 import { escalationGateDeps, escalationGateReadDeps } from '@/lib/escalation-decision';
 import { releaseSubscribers } from '@/lib/release/subscribers';
 import { earlyReleaseSubscribers } from '@/lib/early-release-subscribers';
@@ -66,6 +68,7 @@ import { attachVisualAuditRoutes } from '@/app/api/workers/claim/visual-audit-ro
 import { attachVisualAuditSpecCriteria } from '@/app/api/workers/claim/visual-audit-spec-criteria';
 import { recordVisualVerdict } from '@/lib/visual-audit-spec-verdict';
 import { checkSpecDuplicates, recordDuplicateOverride } from '@/lib/spec-duplicate-decision';
+import { classifySpecArea, recordAreaOverride } from '@/lib/spec-area-decision';
 
 export const SUBSCRIBERS: readonly AnySubscriber[] = [
   // task.created: the category look is scheduled before the mission chain starts.
@@ -167,6 +170,13 @@ export function workflowEffectHandlers(): EffectHandlers {
 export const RECOVERABLE_BLOCKER_REPAIR: NonNullable<QuestionCheckDeps['fileRepair']> = fileRecoverableBlockerRepair;
 
 /**
+ * The worker route's shipped-PR slot (lib/integration-refresh.ts): the missions
+ * module says whether a mission's shipping PR merged, so a refresh task with
+ * nothing left to ship can complete on that evidence.
+ */
+export const MISSION_SHIPPING_PR_MERGED: ShippingPrMergedReader = (missionId, repo) => missionShippingPrMerged(missionId, repo);
+
+/**
  * The escalation gate's slots (lib/escalation-gate-check.ts): Jev, the ledger
  * and the repair filer, for a core caller such as Home that gates PRs.
  */
@@ -264,6 +274,14 @@ export const VISUAL_SPEC_VERDICT = recordVisualVerdict;
  */
 export const SPEC_DUPLICATE_CHECK = checkSpecDuplicates;
 export const SPEC_DUPLICATE_OVERRIDE = recordDuplicateOverride;
+
+/**
+ * The decisions module's spec area slot (lib/spec-area-decision.ts): organize
+ * (lib/specs/organize.ts) asks which area an unfiled spec belongs in, and a
+ * person's move of a spec buildd filed is recorded on that filing's ledger row.
+ */
+export const SPEC_AREA_CLASSIFY = classifySpecArea;
+export const SPEC_AREA_OVERRIDE = recordAreaOverride;
 
 /**
  * The knowledge module's boot slot for Living Spec neighbours (instrumentation.ts):

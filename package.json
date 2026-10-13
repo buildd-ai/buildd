@@ -53,7 +53,7 @@
     "design:check": "bun run scripts/design-check.ts",
     "copy:check": "bun run scripts/copy-check.ts",
     "specs:check": "bun run scripts/check-specs.ts",
-    "specs:lint": "bun run scripts/check-specs.ts --check",
+    "specs:lint": "bun run scripts/check-specs.ts --check && bun run scripts/check-generated-specs.ts",
     "public-docs:check": "bun run scripts/check-public-docs.ts",
     "specs:conformance":"bun run scripts/check-spec-conformance.ts",
     "specs:discrepancies": "bun run packages/core/scripts/write-spec-discrepancies.ts",

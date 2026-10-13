@@ -55,6 +55,7 @@ const KIND_LABELS = {
   'buildd.visual_impact': 'Visual impact',
   'buildd.early_release': 'Early release',
   'buildd.spec_duplicate': 'Spec duplicates',
+  'buildd.spec_area': 'Spec areas',
 } as const;
 
 export type DecisionModelKind = keyof typeof KIND_LABELS;

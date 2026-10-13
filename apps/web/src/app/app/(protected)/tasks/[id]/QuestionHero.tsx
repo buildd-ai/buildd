@@ -277,6 +277,7 @@ function OptionCard({
         type="button"
         data-testid="question-option"
         data-recommended={o.recommended ? 'true' : undefined}
+        data-pending={sending === o.label ? 'true' : undefined}
         onClick={() => onAnswer(o.label)}
         disabled={busy}
         className={`flex flex-col items-stretch justify-start text-left ${d.option} disabled:opacity-60 cursor-pointer`}

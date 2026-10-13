@@ -6,6 +6,7 @@ const mockTasksFindFirst = mock(() => null as any);
 const mockWorkersFindMany = mock(() => Promise.resolve([] as any[]));
 const mockDepTasksFindMany = mock(() => Promise.resolve([] as any[]));
 const mockErrorTracesFindMany = mock(() => Promise.resolve([] as any[]));
+const mockNotesFindMany = mock((_q?: any) => Promise.resolve([] as any[]));
 const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(null as any));
 const mockLoadVisualReview = mock((_m: { id: string; workspaceId: string | null }) => Promise.resolve(null as any));
 
@@ -36,6 +37,7 @@ mock.module('@buildd/core/db', () => ({
       tasks: { findFirst: mockTasksFindFirst, findMany: mockDepTasksFindMany },
       workers: { findMany: mockWorkersFindMany },
       workerErrorTraces: { findMany: mockErrorTracesFindMany },
+      missionNotes: { findMany: mockNotesFindMany },
     },
   },
 }));
@@ -44,6 +46,8 @@ mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   desc: (field: any) => ({ field, type: 'desc' }),
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
+  and: (...parts: any[]) => ({ parts, type: 'and' }),
+  asc: (field: any) => ({ field, type: 'asc' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
@@ -51,9 +55,11 @@ mock.module('@buildd/core/db/schema', () => ({
   workers: { taskId: 'taskId', createdAt: 'createdAt' },
   workerErrorTraces: { taskId: 'taskId', ts: 'ts' },
   artifacts: { createdAt: 'createdAt' },
+  missionNotes: { taskId: 'notes.taskId', type: 'notes.type', status: 'notes.status', createdAt: 'notes.createdAt' },
 }));
 
 import { GET } from './route';
+import { capturedWhere } from '@buildd/core/db/relational-sql';
 import { buildVisualReviewFixtureModel } from '@/lib/visual-review-model.fixtures';
 
 function createRequest(taskId: string): NextRequest {
@@ -75,6 +81,8 @@ describe('GET /api/tasks/[id]/summary', () => {
     mockDepTasksFindMany.mockResolvedValue([]);
     mockErrorTracesFindMany.mockReset();
     mockErrorTracesFindMany.mockResolvedValue([]);
+    mockNotesFindMany.mockReset();
+    mockNotesFindMany.mockResolvedValue([]);
     mockVerifyWorkspaceAccess.mockReset();
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'member' });
   });
@@ -751,6 +759,52 @@ describe('GET /api/tasks/[id]/summary', () => {
     // Derived status: task is "running" but worker is "waiting_input"
     expect(data.status).toBe('waiting_input');
     expect(data.worker?.waitingFor?.prompt).toBe('Which approach do you prefer?');
+  });
+
+  // The sheet answers with the task page's card: a question asked as a
+  // question note must lead with the note there too, and answering from the
+  // sheet must mark that note answered. So the summary carries the note.
+  describe('the open question note (one question on every surface)', () => {
+    const TASK = '0a1b2c3d-2222-4333-8444-555566667777';
+    function waiting(waitingFor: unknown, status = 'waiting_input') {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockTasksFindFirst.mockResolvedValue({
+        id: TASK, title: 'Waiting task', status: 'running', description: null, mode: null, roleSlug: 'builder',
+        createdAt: new Date().toISOString(), missionId: null, workspaceId: 'ws-1', result: null,
+      });
+      mockWorkersFindMany.mockResolvedValue([{ id: 'w-ask', status, waitingFor, branch: null, milestones: [] }]);
+    }
+    const note = (over: Record<string, unknown>) => ({
+      id: 'n1', workerId: 'w-ask', type: 'question', status: 'open', title: 'How should totals round?',
+      body: null, defaultChoice: 'Per line', createdAt: new Date().toISOString(), ...over,
+    });
+
+    it('returns the note that records the waiting worker\'s ask', async () => {
+      waiting({ type: 'question', prompt: 'Round per line, or only the total?' });
+      mockNotesFindMany.mockResolvedValue([note({ id: 'n-other', workerId: 'w-old' }), note({})]);
+      const data = await (await callGET(TASK)).json();
+      expect(data.questionNote).toMatchObject({ id: 'n1', title: 'How should totals round?', defaultChoice: 'Per line' });
+      // This task's open questions only.
+      const where = JSON.stringify(capturedWhere(mockNotesFindMany.mock.calls[0]?.[0]?.where) ?? null);
+      expect(where).toContain('notes.taskId');
+      expect(where).toContain(TASK);
+      expect(where).toContain('"open"');
+      expect(where).toContain('"question"');
+    });
+
+    it('is null, and reads no notes, when nothing is waiting', async () => {
+      waiting(null, 'running');
+      const data = await (await callGET(TASK)).json();
+      expect(data.questionNote).toBeNull();
+      expect(mockNotesFindMany).not.toHaveBeenCalled();
+    });
+
+    it('is null when no open note belongs to the ask', async () => {
+      waiting({ type: 'question', prompt: 'Round per line, or only the total?' });
+      mockNotesFindMany.mockResolvedValue([note({ workerId: 'w-old' })]);
+      const data = await (await callGET(TASK)).json();
+      expect(data.questionNote).toBeNull();
+    });
   });
   // W4: the sheet shows a task's records and origin, so a completed task with
   // no PR still says what it produced and where it came from.

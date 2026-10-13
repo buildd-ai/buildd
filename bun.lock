@@ -74,7 +74,7 @@
     },
     "apps/runner": {
       "name": "@buildd/runner",
-      "version": "0.335.0",
+      "version": "0.337.0",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.3.290",
         "@buildd/core": "workspace:*",
@@ -94,7 +94,7 @@
     },
     "apps/web": {
       "name": "@buildd/web",
-      "version": "0.335.0",
+      "version": "0.337.0",
       "dependencies": {
         "@ai-sdk/anthropic": "^4.0.65",
         "@ai-sdk/openai": "^4.0.78",
@@ -106,6 +106,7 @@
         "@buildd/dispatch-contract": "workspace:*",
         "@buildd/shared": "workspace:*",
         "@buildd/spec-contract": "workspace:*",
+        "@buildd/workflow-kernel": "workspace:*",
         "@builddai/ai-kit": "workspace:*",
         "@modelcontextprotocol/sdk": "^1.26.0",
         "@neondatabase/serverless": "^1.0.0",
@@ -179,7 +180,7 @@
     },
     "packages/core": {
       "name": "@buildd/core",
-      "version": "0.335.0",
+      "version": "0.337.0",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.3.290",
         "@ast-grep/napi": "^0.50.0",
@@ -211,13 +212,20 @@
     },
     "packages/shared": {
       "name": "@buildd/shared",
-      "version": "0.335.0",
+      "version": "0.337.0",
       "devDependencies": {
         "typescript": "^6.0.0",
       },
     },
     "packages/spec-contract": {
       "name": "@buildd/spec-contract",
+      "version": "0.0.0",
+      "devDependencies": {
+        "typescript": "^6.0.0",
+      },
+    },
+    "packages/workflow-kernel": {
+      "name": "@buildd/workflow-kernel",
       "version": "0.0.0",
       "devDependencies": {
         "typescript": "^6.0.0",
@@ -401,6 +409,8 @@
     "@buildd/spec-contract": ["@buildd/spec-contract@workspace:packages/spec-contract"],
 
     "@buildd/web": ["@buildd/web@workspace:apps/web"],
+
+    "@buildd/workflow-kernel": ["@buildd/workflow-kernel@workspace:packages/workflow-kernel"],
 
     "@builddai/ai-kit": ["@builddai/ai-kit@workspace:packages/ai-kit"],
 

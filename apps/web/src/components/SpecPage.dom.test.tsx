@@ -54,12 +54,14 @@ const base = {
   ],
   parent: { id: 'parent-id', title: 'Shop' } as { id: string; title: string } | null,
   children: [] as Array<{ id: string; title: string }>,
+  siblings: [] as Array<{ id: string; title: string }>,
   repoRefs: [{ path: 'docs/specs/checkout.md', sha: 'abcdef123456', href: 'https://github.com/acme/shop/blob/abc/docs/specs/checkout.md' }],
   design: null as any,
   comments: [] as any[],
   commentAnchors: [{ kind: 'criterion' as const, id: 'R-1', label: 'R-1' }],
   canComment: true,
   nearby: [] as any[],
+  filing: null as any,
   compare: null,
   canApprove: true,
   review: null as any,
@@ -123,6 +125,58 @@ describe('SpecPage', () => {
       .toEqual([['shares_files', '/app/specs/n1', "Changes 3 files this spec's work changed"], ['similar', '/app/specs/n2', 'Similar in what it asks for']]);
     act(() => root.render(<SpecPage view={base} />));
     expect(q('spec-page-nearby')).toBeNull();
+  });
+
+  it('AC-83: the neighbour graph shows the spec, its parent, both siblings and 8 of 10 neighbours; the list is the default', () => {
+    const siblings = [{ id: 's1', title: 'Refunds' }, { id: 's2', title: 'Invoices' }];
+    const nearby = Array.from({ length: 10 }, (_, i) => ({ specId: `n${i}`, title: `Near ${i}`, kind: i < 2 ? 'overlaps' : 'similar', score: 0.9 - i / 20, reason: 'Similar in what it asks for' }));
+    act(() => root.render(<SpecPage view={{ ...base, siblings, nearby }} />));
+    // List first: parent, siblings and neighbours in words, no graph mounted.
+    expect(q('spec-graph')).toBeNull();
+    const list = q('spec-page-related-list')!;
+    expect(list.querySelector('[data-testid="spec-page-parent"]')!.textContent).toContain('Shop');
+    expect([...list.querySelectorAll('[data-testid="spec-page-siblings"] a')].map((a) => a.textContent)).toEqual(['Refunds', 'Invoices']);
+    const radio = [...container.querySelectorAll('[role="radio"]')].find((b) => b.textContent === 'Graph') as HTMLElement;
+    expect(container.querySelector('[role="radio"][aria-checked="true"]')!.textContent).toBe('List');
+    act(() => radio.click());
+    const nodes = [...container.querySelectorAll('[data-testid="spec-graph-node"]')];
+    expect(nodes.map((n) => n.getAttribute('data-spec-id'))).toEqual(['parent-id', SPEC, 's1', 's2', 'n0', 'n1', 'n2', 'n3', 'n4', 'n5', 'n6', 'n7']);
+    expect(nodes.map((n) => n.getAttribute('data-relation'))).toEqual(['part of', 'this spec', 'sibling', 'sibling', 'overlaps', 'overlaps', ...Array(6).fill('similar')]);
+    expect(q('spec-graph')!.textContent).toContain('2 more neighbours');
+    // Below md the list stays in place of the graph (R-29).
+    expect(q('spec-page-graph')!.className).toContain('hidden md:block');
+    expect(list.className).toContain('md:hidden');
+  });
+
+  it('with no parent, siblings or neighbours, Related offers no graph', () => {
+    act(() => root.render(<SpecPage view={{ ...base, parent: null }} />));
+    expect([...container.querySelectorAll('[role="radio"]')]).toHaveLength(0);
+  });
+
+  it('says "Filed by buildd" with an undo that posts that filing, and a suggestion with accept and dismiss (§17 R-7)', async () => {
+    const calls: Array<{ url: string; body: any }> = [];
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      calls.push({ url, body: JSON.parse(String(init.body)) });
+      return new Response(JSON.stringify({ filing: null }), { status: 200 });
+    }) as typeof fetch;
+    const filed = { id: 'f1', kind: 'filed', status: 'applied', parent: { specId: 'area-1', title: 'Payments' }, previousParent: null, source: 'model', p: 0.97, newArea: null, createdAt: iso };
+    act(() => root.render(<SpecPage view={{ ...base, filing: filed }} />));
+    expect(q('spec-page-filing')!.textContent).toContain('Filed by buildd under Payments');
+    expect(q('spec-page-filing')!.querySelector('a')!.getAttribute('href')).toBe('/app/specs/area-1');
+    await act(async () => { q('spec-page-filing-undo')!.click(); });
+    expect(calls).toEqual([{ url: `/api/specs/${SPEC}/filing`, body: { action: 'undo', filingId: 'f1' } }]);
+    expect(refreshes).toBe(1);
+
+    act(() => root.render(<SpecPage view={{ ...base, filing: { ...filed, id: 'f2', kind: 'suggested', status: 'open' } }} />));
+    expect(q('spec-page-filing')!.textContent).toContain('buildd suggests filing this under Payments');
+    expect(q('spec-page-filing-undo')).toBeNull();
+    await act(async () => { q('spec-page-filing-accept')!.click(); });
+    expect(calls[1]).toEqual({ url: `/api/specs/${SPEC}/filing`, body: { action: 'accept', filingId: 'f2' } });
+
+    act(() => root.render(<SpecPage view={{ ...base, canComment: false, filing: filed }} />));
+    expect(q('spec-page-filing-undo')).toBeNull();
+    act(() => root.render(<SpecPage view={base} />));
+    expect(q('spec-page-filing')).toBeNull();
   });
 
   it('a reader who may not approve sees no approve action', () => {
@@ -202,5 +256,27 @@ describe('SpecPage', () => {
     await act(async () => { q('spec-page-approve')!.click(); });
     expect(q('spec-page-approve-result')!.textContent).toContain('version 5');
     expect(q('spec-page-approve')).toBeNull();
+  });
+
+  it('names the one source and says when the repo copy is behind (living-specs.md §18, R-13, AC-79)', () => {
+    act(() => root.render(<SpecPage view={base} />));
+    expect(q('spec-page-source')).toBeNull();
+    const source = { source: 'Source: buildd, repo copy at docs/specs/checkout.md', copy: 'Repo copy is behind: Lint specs failed on PR #9.', behind: true };
+    act(() => root.render(<SpecPage view={{ ...base, source }} />));
+    expect(q('spec-page-source')!.textContent).toBe('Source: buildd, repo copy at docs/specs/checkout.md');
+    expect(q('spec-page-repo-copy')!.textContent).toContain('Lint specs failed');
+  });
+
+  it('shows a failing repo check on review and still offers Approve (R-34, AC-96)', () => {
+    const review = { replaces: null, revision: 2, omittedLines: 0, sectionCount: 0, linesAdded: 0, linesRemoved: 0, body: base.body, hunks: [] };
+    const preflight = { state: 'ran' as const, path: 'docs/specs/checkout.md', checks: [
+      { name: 'specs:lint' as const, ok: false, messages: ['frontmatter missing `summary` (one sentence: what MUST hold)'] },
+      { name: 'public-docs:check' as const, ok: true, messages: [] },
+      { name: 'no-prod-data' as const, ok: true, messages: [], note: 'The identifier half runs only in CI.' },
+    ] };
+    act(() => root.render(<SpecPage view={{ ...base, review, preflight }} />));
+    expect(q('spec-repo-checks')!.textContent).toContain('fails specs:lint');
+    expect(q('spec-repo-checks')!.textContent).toContain('frontmatter missing `summary`');
+    expect(q('spec-page-approve')).not.toBeNull();
   });
 });

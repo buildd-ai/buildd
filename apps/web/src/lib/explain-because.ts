@@ -381,7 +381,7 @@ function causeLinksFor(
       if (w.question) {
         return w.question.asks.slice(0, 10).map(a =>
           link(
-            `"${a.title ?? a.taskId}" needs input${a.prompt ? `: ${a.prompt}` : '.'}`,
+            a.prompt ? `"${a.title ?? a.taskId}" asks: ${a.prompt}` : `"${a.title ?? a.taskId}" is waiting for your answer.`,
             'workers.waitingFor',
             { ...base, taskId: a.taskId },
           ),

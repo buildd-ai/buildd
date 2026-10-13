@@ -5,6 +5,7 @@ import Lede from '@/components/ui/Lede';
 import Notice from '@/components/ui/Notice';
 import PrimaryAction from '@/components/ui/PrimaryAction';
 import SpecRevisionPanes from '@/components/SpecRevisionPanes';
+import SpecRepoChecks from '@/components/SpecRepoChecks';
 import type { ApprovalRequestView } from '@/lib/specs/approval-view';
 
 /** States with nothing to approve: one line each. */
@@ -68,6 +69,7 @@ export default function SpecApprovalRequest({ specId, token, view }: { specId: s
           </PrimaryAction>
         </div>
       ) : null}
+      <SpecRepoChecks preflight={view.preflight ?? null} />
       <SpecRevisionPanes
         body={view.body}
         hunks={view.hunks}

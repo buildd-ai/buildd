@@ -1,6 +1,6 @@
 {
   "name": "@buildd/web",
-  "version": "0.336.0",
+  "version": "0.337.0",
   "private": true,
   "scripts": {
     "dev": "bun --bun next dev",
@@ -29,6 +29,7 @@
     "@buildd/dispatch-contract": "workspace:*",
     "@buildd/shared": "workspace:*",
     "@buildd/spec-contract": "workspace:*",
+    "@buildd/workflow-kernel": "workspace:*",
     "@builddai/ai-kit": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@neondatabase/serverless": "^1.0.0",

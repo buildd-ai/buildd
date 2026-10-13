@@ -6,7 +6,7 @@ import TaskCard from '@/components/TaskCard';
 import ExternalLink from '@/components/ExternalLink';
 import MergeConfirmButton from '@/components/MergeConfirmButton';
 import InlineTaskRetry from './InlineTaskRetry';
-import WorkerRespondInput from '@/components/WorkerRespondInput';
+import TaskQuestion from '@/components/tasks/TaskQuestion';
 import { MissionProgressBar } from '@/components/MissionProgressBar';
 import { GroupSection } from '@/components/GroupSection';
 import { SwipeableRow, taskSwipeCardType, type SwipeCardType } from '@/components/SwipeableRow';
@@ -373,15 +373,16 @@ function TaskRow({
         </div>
       )}
 
-      {/* Waiting input form */}
+      {/* The open question: the task page's own question card, compact */}
       {waitingFor && latestWorker && (
         <div className="pl-7 pb-1">
-          <span className="section-label text-status-warning">Needs input</span>
-          <WorkerRespondInput
-            workerId={latestWorker.id}
+          <TaskQuestion
+            testId="timeline-question"
+            variant="compact"
             taskId={task.id}
-            question={waitingFor.prompt}
-            options={waitingFor.options}
+            workerId={latestWorker.id}
+            waitingFor={waitingFor}
+            role={task.roleSlug}
           />
         </div>
       )}

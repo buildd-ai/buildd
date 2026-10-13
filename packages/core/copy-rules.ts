@@ -97,10 +97,12 @@ export const COPY_RULES: CopyRule[] = [
   {
     id: 'needs-you',
     name: 'Dramatised count or demand',
-    test: re(/\bthings? (needs?|waiting on) (you|me)\b|\bwaiting on (you|your|me)\b|\bneeds? your (attention|input|answer|decision|call|review|eyes|response|merge)\b|\bnothing needs you\b|\b(wants?|waiting for) your (answer|review|call|decision)\b|: your call\b/i),
-    why: 'Name what is needed (input, a merge, a decision), not the person. The status word is "Needs input".',
+    // A plain sentence is fine ("Waiting for your answer", "1 waiting on you",
+    // design-system §5 rule 6); a vague dramatised demand is not.
+    test: re(/\bthings? (needs?|waiting on) (you|me)\b|\bwaiting on your\b|\bneeds? your (attention|input|answer|decision|call|review|eyes|response|merge)\b|\bnothing needs you\b|\bwants? your (answer|review|call|decision)\b|: your call\b/i),
+    why: 'Say what is waiting, in words ("2 questions for you", "Waiting for your answer"). Do not dramatise a vague demand.',
     bad: '5 things need you',
-    good: '5 to review',
+    good: '2 questions for you',
   },
   {
     id: 'exclamation',

@@ -150,9 +150,11 @@ describe('HomeMissions', () => {
     expect(html.match(/data-testid="mission-pulse"/g)?.length).toBe(2);
   });
 
-  it('the card primary line opens the task in mission context, never the bare task page', () => {
-    expect(html).toContain('href="/app/missions/m-ask?from=home&amp;task=d"');
-    expect(html).not.toContain('/app/tasks/');
+  // A question is answered in full on its task page, which keeps the way
+  // back to the mission; it never opens the sheet.
+  it('the card primary line for a question opens its task page to answer it, in mission context', () => {
+    expect(html).toContain('href="/app/tasks/d?from=mission&amp;missionId=m-ask&amp;respond=1"');
+    expect(html).not.toContain('task=d"');
   });
 
   it('carries no per-card release footer (D6)', () => {

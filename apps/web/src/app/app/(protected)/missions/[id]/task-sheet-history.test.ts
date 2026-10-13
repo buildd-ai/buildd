@@ -188,6 +188,15 @@ describe('which clicks open the sheet (AC-10)', () => {
     expect(click(node('A', { href: `/app/tasks/${B}` }, row))).toBeNull();
   });
 
+  // An answer link means the full answering experience, which is the task
+  // page: inside its own row it must still navigate, not reopen the sheet.
+  it('an answer link (?respond=1) to the row’s own task navigates to the task page', () => {
+    const row = node('DIV', { 'data-task-id': A });
+    expect(click(node('A', { href: `/app/tasks/${A}?from=mission&missionId=m1&respond=1` }, row))).toBeNull();
+    const rowLink = node('A', { href: `/app/tasks/${A}?respond=1`, 'data-task-id': A });
+    expect(click(node('SPAN', {}, rowLink))).toBeNull();
+  });
+
   it('modified and non-primary clicks fall through to the real link (new tab, middle-click)', () => {
     const row = node('A', { href: `/app/missions/m1?task=${A}`, 'data-task-id': A });
     expect(click(row, { metaKey: true })).toBeNull();

@@ -1,6 +1,8 @@
+import { currentFiling, filingViews, type FilingView } from './filings';
+import { organizeWorkspace } from './organize';
 import { db } from '@buildd/core/db';
-import { artifacts, specRevisions, specs, users, workspaces } from '@buildd/core/db/schema';
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { artifacts, specFilings, specRevisions, specs, users, workspaces } from '@buildd/core/db/schema';
+import { and, desc, eq, inArray, ne } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
 import { getSpec, listSpecs, reach, type SpecCaller, type SpecRow } from './store';
 import { listSpecComments, type CommentView } from './comments';
@@ -10,8 +12,10 @@ import { specApprover } from './approval';
 import { diffSpecHunks, diffSpecRevisions, type DiffHunk } from './diff';
 import { linkedRepoFullName } from './repo-source';
 import { approvedDesignDrift } from './design';
-import { readSpecNeighbours, type NearbySpec } from './neighbours';
+import { readSpecNeighbours, suggestParent, type NearbySpec } from './neighbours';
+import { filingFacts, proposalAreas, type AreaProposal, type SpecIndexInput, type SpecSuggestion } from './index-view';
 import type { RepoRef } from './repo-refs';
+import { nativeSourceOn, repoCopyLine, repoCopyPreflight, type RepoCopyPreflight } from './repo-copy';
 
 /**
  * What the dashboard's spec pages show (living-specs.md §9): a workspace's
@@ -75,25 +79,6 @@ export function specTree(rows: ReadonlyArray<SpecRow>): SpecListItem[] {
   return roots;
 }
 
-/**
- * The list's groups (R-18): each product or area at the top of the tree heads
- * its own group, and every other top-level spec (a feature or mission with no
- * parent in the workspace) is Unfiled. Order is kept. Pure.
- */
-export type SpecListGroup =
-  | { kind: 'area'; head: SpecListItem }
-  | { kind: 'unfiled'; specs: SpecListItem[] };
-
-export function specGroups(roots: ReadonlyArray<SpecListItem>): SpecListGroup[] {
-  const areas: SpecListGroup[] = [];
-  const unfiled: SpecListItem[] = [];
-  for (const r of roots) {
-    if (r.scope === 'product' || r.scope === 'domain') areas.push({ kind: 'area', head: r });
-    else unfiled.push(r);
-  }
-  return unfiled.length ? [...areas, { kind: 'unfiled', specs: unfiled }] : areas;
-}
-
 /** A cited repo file at its commit on GitHub; null without a linked repo. */
 export function repoRefHref(fullName: string | null, ref: RepoRef): string | null {
   if (!fullName) return null;
@@ -102,14 +87,83 @@ export function repoRefHref(fullName: string | null, ref: RepoRef): string | nul
 
 export type SpecListView =
   | { state: 'not_found' }
-  | { state: 'ok'; workspace: { id: string; name: string }; specs: SpecListItem[] };
+  | {
+    state: 'ok';
+    workspace: { id: string; name: string };
+    specs: SpecListItem[];
+    /** The same specs flat, for the index (§19): filings, suggestions and all. */
+    index: SpecIndexInput[];
+    /** A cold-start taxonomy proposal's areas (§17 R-4), shown as possible areas. */
+    proposals: AreaProposal[];
+    /** The reader may file, undo, dismiss and accept (write access). */
+    canAct: boolean;
+    /** When the page was read, so relative times match between server and client. */
+    now: number;
+  };
+
+/** Unfiled specs with no filing row that get a `suggestParent` guess on one page load; the sweep (§17 R-10) records the rest. */
+export const MAX_LIST_SUGGESTIONS = 12;
+
+/** The newest filed or suggested placement still in effect, per spec, in one workspace (§17). */
+async function liveFilings(workspaceId: string): Promise<Map<string, FilingView>> {
+  const rows = await db.select().from(specFilings)
+    .where(and(eq(specFilings.workspaceId, workspaceId), inArray(specFilings.kind, ['filed', 'suggested']), inArray(specFilings.status, ['applied', 'open'])))
+    .orderBy(desc(specFilings.createdAt));
+  const newest = new Map<string, (typeof rows)[number]>();
+  for (const r of rows) if (!newest.has(r.specId)) newest.set(r.specId, r);
+  const views = await filingViews([...newest.values()]);
+  return new Map(views.map((v, i) => [[...newest.keys()][i], v]));
+}
+
+/**
+ * The index rows (§19). Placement comes from `spec_filings` (§17): a filing
+ * in effect is "Filed by buildd" with its undo, an open suggestion is the
+ * unfiled spec's suggestion. An unfiled spec with no filing row at all gets
+ * `suggestParent` (§14) on its title, fail-open, for at most
+ * MAX_LIST_SUGGESTIONS of them. Every read fails open: a missing filing never
+ * hides a spec.
+ */
+export async function specIndexInputs(workspaceId: string, rows: ReadonlyArray<SpecRow>): Promise<SpecIndexInput[]> {
+  const ids = new Set(rows.map((r) => r.id));
+  const filings = await liveFilings(workspaceId).catch(() => new Map<string, FilingView>());
+  const unfiled = rows.filter((r) => !(r.scope === 'product' || r.scope === 'domain') && !(r.parentSpecId && ids.has(r.parentSpecId)));
+  const guesses = new Map<string, SpecSuggestion>();
+  await Promise.all(unfiled.filter((r) => !filings.has(r.id)).slice(0, MAX_LIST_SUGGESTIONS).map(async (r) => {
+    const s = await suggestParent(workspaceId, r.id, r.title).catch(() => null);
+    if (s && ids.has(s.specId)) guesses.set(r.id, { kind: 'parent', specId: s.specId, title: s.title, reason: s.reason });
+  }));
+  return rows.map((r) => {
+    const facts = filingFacts(r, filings.get(r.id));
+    return {
+      id: r.id, title: r.title, scope: r.scope, parentSpecId: r.parentSpecId, status: r.status,
+      approvedRevision: r.approvedRevision, headRevision: r.headRevision, updatedAt: new Date(r.updatedAt).toISOString(),
+      filedBy: facts.filedBy ?? null, filingId: facts.filingId ?? null,
+      suggestion: facts.suggestion ?? guesses.get(r.id) ?? null,
+    };
+  });
+}
+
+/**
+ * With no product or area yet, the taxonomy buildd would propose (§17 R-4,
+ * a dry run: nothing is created). Needs write access, like organize; a reader
+ * without it, or any error, gets none.
+ */
+async function coldStartProposals(caller: SpecCaller, workspaceId: string, rows: ReadonlyArray<SpecRow>): Promise<AreaProposal[]> {
+  const open = rows.filter((r) => r.status !== 'retired' && r.status !== 'superseded');
+  if (open.some((r) => r.scope === 'product' || r.scope === 'domain') || open.length === 0) return [];
+  const r = await organizeWorkspace(caller, { workspaceId, dryRun: true }).catch(() => null);
+  return r?.ok && r.result.mode === 'taxonomy' && r.result.dryRun ? proposalAreas(r.result.proposal) : [];
+}
 
 export async function specListView(userId: string, workspaceId: string): Promise<SpecListView> {
-  const r = await listSpecs({ kind: 'user', userId }, workspaceId);
+  const caller: SpecCaller = { kind: 'user', userId };
+  const r = await listSpecs(caller, workspaceId);
   if (!r.ok) return { state: 'not_found' };
   const [ws] = await db.select({ id: workspaces.id, name: workspaces.name }).from(workspaces).where(eq(workspaces.id, workspaceId)).limit(1);
   if (!ws) return { state: 'not_found' };
-  return { state: 'ok', workspace: ws, specs: specTree(r.specs) };
+  const [index, canAct] = await Promise.all([specIndexInputs(workspaceId, r.specs), reach(caller, workspaceId, true)]);
+  const proposals = canAct ? await coldStartProposals(caller, workspaceId, r.specs) : [];
+  return { state: 'ok', workspace: ws, specs: specTree(r.specs), index, proposals, canAct, now: Date.now() };
 }
 
 export interface SpecRevisionLine {
@@ -150,6 +204,8 @@ export type SpecPageView =
     revisions: SpecRevisionLine[];
     parent: { id: string; title: string } | null;
     children: Array<{ id: string; title: string }>;
+    /** The other specs under the same parent (§19 R-28), at most MAX_SIBLINGS. */
+    siblings: Array<{ id: string; title: string }>;
     repoRefs: Array<{ path: string; sha: string; href: string | null }>;
     /**
      * The design the revision being read is built to (§12), and, when that is
@@ -157,6 +213,8 @@ export type SpecPageView =
      */
     /** Derived neighbours (§14), strongest first, each with why it is near. */
     nearby: NearbySpec[];
+    /** Where buildd filed this spec, or the place it suggests (§17), if either is in effect. */
+    filing: FilingView | null;
     /** Comments readable on the revision being read (§16), and where one can be added. */
     comments: CommentView[];
     commentAnchors: Array<{ kind: 'criterion' | 'section'; id: string; label: string }>;
@@ -169,6 +227,10 @@ export type SpecPageView =
     canApprove: boolean;
     /** With `review`: what approving the head would put in force, for an approver only. */
     review: SpecPanes | null;
+    /** The one source (§18, R-13) and how the repo copy stands (AC-79); absent when the workspace has not opted in. */
+    source?: { source: string; copy: string | null; behind: boolean } | null;
+    /** With `review`: the repo checks on the would-be copy (R-34). Warns, never blocks. */
+    preflight?: RepoCopyPreflight | null;
   };
 
 const personLabel = (label: string | null) => (label?.startsWith('user:') ? label.slice(5) : null);
@@ -180,6 +242,9 @@ function panes(hunks: DiffHunk[], omittedLines: number, body: string, revision: 
     linesRemoved: hunks.reduce((n, h) => n + h.linesRemoved, 0),
   };
 }
+
+/** Siblings read for a spec page; the list shows them all, the graph its own cap. */
+export const MAX_SIBLINGS = 12;
 
 export async function specPageView(userId: string, specId: string, opts: { revision?: number; from?: number; to?: number; review?: boolean } = {}): Promise<SpecPageView> {
   if (!isUuid(specId)) return { state: 'not_found' };
@@ -194,7 +259,8 @@ export async function specPageView(userId: string, specId: string, opts: { revis
   if (!got.ok) return { state: 'not_found' };
   const spec = got.view.spec;
 
-  const [ws] = await db.select({ name: workspaces.name }).from(workspaces).where(eq(workspaces.id, spec.workspaceId)).limit(1);
+  const [ws] = await db.select({ name: workspaces.name, gitConfig: workspaces.gitConfig }).from(workspaces).where(eq(workspaces.id, spec.workspaceId)).limit(1);
+  const native = nativeSourceOn(ws?.gitConfig);
   const revRows = await db.select({
     revision: specRevisions.revision, authorKind: specRevisions.authorKind, changeSummary: specRevisions.changeSummary,
     approvedBy: specRevisions.approvedBy, approvedAt: specRevisions.approvedAt, createdAt: specRevisions.createdAt,
@@ -224,6 +290,11 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     : [];
   const children = await db.select({ id: specs.id, title: specs.title }).from(specs)
     .where(and(eq(specs.workspaceId, spec.workspaceId), eq(specs.parentSpecId, spec.id))).orderBy(specs.title);
+  const siblings = parent
+    ? await db.select({ id: specs.id, title: specs.title }).from(specs)
+      .where(and(eq(specs.workspaceId, spec.workspaceId), eq(specs.parentSpecId, parent.id), ne(specs.id, spec.id)))
+      .orderBy(specs.title).limit(MAX_SIBLINGS)
+    : [];
 
   const refs = got.view.revision.repoRefs ?? [];
   const fullName = refs.length ? await linkedRepoFullName(spec.workspaceId) : null;
@@ -245,6 +316,7 @@ export async function specPageView(userId: string, specId: string, opts: { revis
   }
 
   const nearby = await readSpecNeighbours(spec.id).catch(() => [] as NearbySpec[]);
+  const filing = await currentFiling(spec.id).catch(() => null);
   const listed = await listSpecComments(caller, specId, { revision: got.view.revision.revision }).catch(() => null);
   const comments = listed?.ok ? listed.comments : [];
   const commentAnchors = [
@@ -276,13 +348,17 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     }
   }
 
+  const preflight = review && native ? await repoCopyPreflight(spec, spec.headRevision).catch(() => null) : null;
+
   return {
     state: 'ok',
+    source: repoCopyLine(native, spec.repoCopy, spec.approvedRevision != null),
+    preflight,
     spec: { id: spec.id, title: spec.title, scope: spec.scope, status: spec.status, workspaceId: spec.workspaceId, workspaceName: ws?.name ?? '', version: spec.version, headRevision: spec.headRevision, approvedRevision: spec.approvedRevision },
     standing: specStanding(spec).standing,
     reading: { revision: got.view.revision.revision, approved: spec.approvedRevision === got.view.revision.revision, isHead: got.view.revision.revision === spec.headRevision },
     waiting: pending && open ? spec.headRevision : null,
     body: got.view.body,
-    revisions, parent: parent ?? null, children, repoRefs, design, nearby, comments, commentAnchors, canComment, compare, canApprove, review,
+    revisions, parent: parent ?? null, children, siblings, repoRefs, design, nearby, filing, comments, commentAnchors, canComment, compare, canApprove, review,
   };
 }

@@ -6,11 +6,12 @@ import { choice } from '@builddai/ai-kit/decide';
 import type { DecisionKindConfig, DecisionRequest, DecisionResponse, ModelVerdict } from '@builddai/ai-kit/decide';
 import { defineBuilddDecisionKind, type BuilddDecisionKindBinding } from '@buildd/core/decision-kinds';
 import { runBuilddDecision, type BuilddDecisionScope } from '@buildd/core/decision-policy';
-import { specCriteria } from '@buildd/spec-contract/requirements';
+import { specCard, tfidfRank, type SpecCard } from '@/lib/specs/card';
 import { getArtifactRevision } from '@/lib/artifact-revisions';
 import { SPEC_RELATIONS, type DuplicateCandidate, type DuplicateCheck, type DuplicateCheckInput, type DuplicateOverride, type SpecRelation } from '@/lib/specs/duplicates';
 
 export { SPEC_RELATIONS, type SpecRelation };
+export { specCard, type SpecCard };
 
 /**
  * Spec duplicates (Living Specs slice 5, R-22, D-13; docs/specs/living-specs.md
@@ -48,15 +49,7 @@ export const SHORTLIST_FLOOR = 0.05;
 const MAX_APPROVED_SCANNED = 300;
 const CARD_CHARS = 3000;
 
-export interface SpecCard { title: string; summary: string; criteria: string[] }
 export interface SpecPair { a: SpecCard; b: SpecCard }
-
-/** A spec as the eval saw it: title, the opening paragraph, then its criteria. */
-export function specCard(title: string, body: string): SpecCard {
-  const criteria = specCriteria(body).map((c) => `${c.id}: ${c.text}`);
-  const prose = body.split('\n').filter((l) => l.trim() && !/^\s*#/.test(l) && !/^\s*([-*+]|\d+\.)\s/.test(l));
-  return { title: title.trim(), summary: (prose[0] ?? '').trim().slice(0, 400), criteria };
-}
 
 const block = (label: string, c: SpecCard) => {
   let out = c.title ? `${label}: ${c.title}\n${c.summary}\n` : `${label}:\n`;
@@ -73,35 +66,9 @@ export const specPairState = (p: SpecPair): string => `${block('Spec A', p.a)}\n
 
 // ── Shortlist: TF-IDF cosine, in process ────────────────────────────────────
 
-const tokens = (s: string) => s.toLowerCase().match(/[a-z0-9]+(?:[-'][a-z0-9]+)*/g)?.filter((t) => t.length > 2) ?? [];
-const cardText = (c: SpecCard) => [c.title, c.summary, ...c.criteria].join('\n');
-
 /** Rank `pool` by TF-IDF cosine to `query`, best first, above the floor, at most `k`. Pure. */
 export function tfidfShortlist<T extends { card: SpecCard }>(query: SpecCard, pool: readonly T[], k = SHORTLIST_SIZE, floor = SHORTLIST_FLOOR): Array<T & { score: number }> {
-  const docs = [query, ...pool.map((p) => p.card)].map((c) => tokens(cardText(c)));
-  const df = new Map<string, number>();
-  for (const d of docs) for (const t of new Set(d)) df.set(t, (df.get(t) ?? 0) + 1);
-  const n = docs.length;
-  const vec = (d: string[]) => {
-    const tf = new Map<string, number>();
-    for (const t of d) tf.set(t, (tf.get(t) ?? 0) + 1);
-    const v = new Map<string, number>();
-    for (const [t, f] of tf) v.set(t, (1 + Math.log(f)) * Math.log((1 + n) / (1 + (df.get(t) ?? 0)) + 1));
-    return v;
-  };
-  const norm = (v: Map<string, number>) => Math.sqrt([...v.values()].reduce((a, x) => a + x * x, 0)) || 1;
-  const q = vec(docs[0]!);
-  const qn = norm(q);
-  return pool
-    .map((p, i) => {
-      const v = vec(docs[i + 1]!);
-      let dot = 0;
-      for (const [t, w] of q) dot += w * (v.get(t) ?? 0);
-      return { ...p, score: dot / (qn * norm(v)) };
-    })
-    .filter((p) => p.score >= floor)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, k);
+  return tfidfRank(query, pool, k, floor);
 }
 
 // ── The decision kind ───────────────────────────────────────────────────────
@@ -246,12 +213,22 @@ export async function checkSpecDuplicates(
   }
 }
 
-/** Record a person's override on each blocking judgement's ledger row, so the bar can be re-measured. Never throws. */
+/**
+ * The id in an author label (`user:<uuid>` or `account:<uuid>`), for the
+ * ledger's uuid `overridden_by`, as the decisions override route writes it.
+ * The label itself goes in the override, so an agent's reads as one.
+ */
+export const overrideActorId = (by: string): string | null => /^(?:user|account):([0-9a-f-]{36})$/i.exec(by)?.[1] ?? null;
+
+/**
+ * Record a person's override on each blocking judgement's ledger row, so the
+ * bar can be re-measured. `by` is the author label. Never throws.
+ */
 export async function recordDuplicateOverride(blocking: readonly DuplicateCandidate[], override: DuplicateOverride, by: string): Promise<void> {
   const { recordHumanOverride } = await import('@buildd/core/decision-ledger');
   for (const d of blocking) {
     if (!d.decisionRecordId) continue;
     const decision = override.supersedes === d.specId ? 'duplicate_superseded' : override.supersedes ? 'superseded_other' : 'distinct';
-    await recordHumanOverride(d.decisionRecordId, { decision, ...override }, by);
+    await recordHumanOverride(d.decisionRecordId, { decision, ...override, by }, overrideActorId(by));
   }
 }
