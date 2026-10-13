@@ -26,11 +26,13 @@
  * unified line diff of them.
  */
 import type { ApiFn, ToolResult } from './mcp-tools';
+import { SUB_ACTIONS } from './mcp-sub-actions';
 
 const text = (t: string): ToolResult => ({ content: [{ type: 'text' as const, text: t }] });
 const errorResult = (t: string): ToolResult => ({ content: [{ type: 'text' as const, text: t }], isError: true });
 
-export const SPEC_OPS = ['create_draft', 'get', 'revise', 'list', 'relate', 'submit', 'approve', 'outcome', 'verdict', 'conflict', 'read_ref', 'diff', 'comment', 'comments'] as const;
+/** The sub-actions, from the one registry every surface reads (mcp-sub-actions.ts). */
+export const SPEC_OPS = SUB_ACTIONS.manage_specs;
 export type SpecOp = (typeof SPEC_OPS)[number];
 
 /** A body longer than this is not inlined by `get`: read it in parts with get_artifact. */
