@@ -15,7 +15,7 @@
  * milestone the agent reported. The runner slot an agent held is derived from
  * start/end overlap (`assignSlots`), since no column records it.
  */
-import { isOpenAsk } from './open-ask';
+import { pickTaskView } from './task-view-pick';
 import { TERMINAL_TASK_STATUSES, type VisualReviewModel } from '@buildd/shared';
 import { screensToReview } from './visual-review-model';
 import { assignSlots, occupiedSlots } from '@/components/fleet/slot-lanes-layout';
@@ -464,12 +464,17 @@ export function toBoardWorkerInput(w: Record<string, unknown>): BoardWorkerInput
 
 /** One DB task row (with its workers, newest first) → the board's input. */
 export function toBoardTaskInput(t: Record<string, unknown> & { id: string; title: string; status: string }): BoardTaskInput {
-  const workers = (Array.isArray(t.workers) ? t.workers : []).map(w => toBoardWorkerInput(w as Record<string, unknown>));
-  // A worker parked on a question is the task's worker, wherever the query
-  // put it: `startedAt DESC` sorts a never-started worker (NULL) first, and
-  // the board then missed the ask that `missionOpenQuestions` (any worker) saw.
-  const asking = workers.findIndex(w => isOpenAsk(t.status, w.status));
-  if (asking > 0) workers.unshift(...workers.splice(asking, 1));
+  const rows = (Array.isArray(t.workers) ? t.workers : []).map(w => toBoardWorkerInput(w as Record<string, unknown>));
+  // The task's worker is the one the task page and the sheet show
+  // (pickTaskView), never the query's first row: `startedAt DESC` sorts a
+  // never-started worker (NULL) ahead of the session parked on a question.
+  const pick = pickTaskView({
+    task: { status: t.status },
+    workers: rows.map(w => ({ ...w, createdAt: w.createdAt ?? 0 })),
+    openQuestions: [],
+  });
+  const shown = pick.shownWorker ? { ...pick.shownWorker, createdAt: rows.find(w => w.id === pick.shownWorker!.id)?.createdAt ?? null } : null;
+  const workers = shown ? [shown, ...rows.filter(w => w.id !== shown.id)] : rows;
   const w0 = workers[0] ?? null;
   return {
     id: t.id,
