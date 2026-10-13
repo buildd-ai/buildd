@@ -29,7 +29,8 @@ async function serverClaim(taskId: string): Promise<any> {
     body: JSON.stringify({ taskId, runner: 'concurrency-test' }),
   });
   const worker = res.workers?.[0];
-  if (!worker) throw new Error(`Claim returned no worker for task ${taskId}`);
+  // Name the gate that refused it, so a failure says why instead of just that it happened.
+  if (!worker) throw new Error(`Claim returned no worker for task ${taskId}: ${JSON.stringify(res.diagnostics ?? res.reason ?? null)}`);
   return worker;
 }
 
