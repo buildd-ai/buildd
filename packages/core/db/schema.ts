@@ -2841,6 +2841,38 @@ export const specNeighbors = pgTable('spec_neighbors', {
 }));
 
 /**
+ * A comment on one section or one criterion of a spec revision (Living Specs
+ * R-26, docs/specs/living-specs.md §16). It belongs to the revision it was made
+ * on; a later revision shows it open when the anchored text is unchanged
+ * (same `anchor_hash`) and outdated otherwise. A section is found again on a
+ * later revision by its heading (`anchor_label`), a criterion by its id.
+ * Comments never touch the body, the hash or an approval; resolving is a
+ * person's act.
+ */
+export const specComments = pgTable('spec_comments', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  specId: uuid('spec_id').references(() => specs.id, { onDelete: 'cascade' }).notNull(),
+  specRevisionId: uuid('spec_revision_id').references(() => specRevisions.id, { onDelete: 'cascade' }).notNull(),
+  anchorKind: text('anchor_kind').notNull().$type<'section' | 'criterion'>(),
+  /** The outline section id at that revision (`s3`), or the criterion id (`AC-2`). */
+  anchorId: text('anchor_id').notNull(),
+  /** The section's heading, or the criterion id: how a later revision finds the anchor again. */
+  anchorLabel: text('anchor_label').notNull(),
+  /** sha256 of the anchored text at that revision. */
+  anchorHash: text('anchor_hash').notNull(),
+  body: text('body').notNull(),
+  authorKind: text('author_kind').notNull().$type<'user' | 'agent'>(),
+  authorId: text('author_id').notNull(),
+  parentCommentId: uuid('parent_comment_id'),
+  resolvedBy: text('resolved_by'),
+  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  specIdx: index('spec_comments_spec_idx').on(t.specId, t.createdAt),
+}));
+
+/**
  * One verdict on one acceptance criterion of an approved spec revision, for
  * one task's outcome (Living Specs V1, D-5). Append-only: a re-check adds a
  * row, and the outcome reads the newest row per criterion. A verdict is bound

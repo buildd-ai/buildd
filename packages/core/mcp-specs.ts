@@ -30,7 +30,7 @@ import type { ApiFn, ToolResult } from './mcp-tools';
 const text = (t: string): ToolResult => ({ content: [{ type: 'text' as const, text: t }] });
 const errorResult = (t: string): ToolResult => ({ content: [{ type: 'text' as const, text: t }], isError: true });
 
-export const SPEC_OPS = ['create_draft', 'get', 'revise', 'list', 'relate', 'submit', 'approve', 'outcome', 'verdict', 'conflict', 'read_ref', 'diff'] as const;
+export const SPEC_OPS = ['create_draft', 'get', 'revise', 'list', 'relate', 'submit', 'approve', 'outcome', 'verdict', 'conflict', 'read_ref', 'diff', 'comment', 'comments'] as const;
 export type SpecOp = (typeof SPEC_OPS)[number];
 
 /** A body longer than this is not inlined by `get`: read it in parts with get_artifact. */
@@ -226,6 +226,33 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
         if (e && [400, 409].includes(e.status)) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
         throw err;
       }
+    }
+
+    case 'comment': {
+      const specId = need(params.specId, 'specId');
+      const anchor = params.criterion !== undefined ? { criterion: params.criterion } : params.heading !== undefined ? { heading: params.heading } : { section: params.section };
+      try {
+        const r = await api(`/api/specs/${encodeURIComponent(specId)}/comments`, { method: 'POST', body: JSON.stringify({
+          anchor, body: need(params.body, 'body (the comment)'),
+          ...(params.revision !== undefined ? { revision: params.revision } : {}),
+          ...(params.replyTo !== undefined ? { replyTo: params.replyTo } : {}),
+        }) });
+        const c = r.comment;
+        return text(`Comment ${c.id} added on ${c.anchor.kind === 'criterion' ? c.anchor.id : `section "${c.anchor.label}"`} of revision ${c.madeOnRevision}. It does not change the spec; a person resolves it.`);
+      } catch (err) {
+        const e = apiError(err);
+        if (e && [400, 404].includes(e.status)) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
+        throw err;
+      }
+    }
+
+    case 'comments': {
+      const specId = need(params.specId, 'specId');
+      const q = params.revision !== undefined ? `?revision=${encodeURIComponent(String(params.revision))}` : '';
+      const r = await api(`/api/specs/${encodeURIComponent(specId)}/comments${q}`);
+      const rows = (r.comments ?? []) as Array<{ id: string; anchor: { kind: string; id: string; label: string }; body: string; author: { kind: string }; state: string; madeOnRevision: number; parentCommentId: string | null }>;
+      if (!rows.length) return text(`No comments on revision ${r.revision}.`);
+      return text(`Comments readable on revision ${r.revision}:\n${rows.map((c) => `  ${c.parentCommentId ? '  ↳ ' : ''}[${c.state}] ${c.anchor.kind === 'criterion' ? c.anchor.id : `"${c.anchor.label}"`} (r${c.madeOnRevision}, ${c.author.kind}, ${c.id}): ${c.body.length > 300 ? `${c.body.slice(0, 300)}…` : c.body}`).join('\n')}`);
     }
 
     case 'read_ref': {

@@ -3,6 +3,9 @@ import { artifacts, specRevisions, specs, users, workspaces } from '@buildd/core
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
 import { getSpec, listSpecs, reach, type SpecCaller, type SpecRow } from './store';
+import { listSpecComments, type CommentView } from './comments';
+import { specCriteria } from '@buildd/spec-contract/requirements';
+import { outlineOf } from '@buildd/core/artifact-read';
 import { specApprover } from './approval';
 import { diffSpecHunks, diffSpecRevisions, type DiffHunk } from './diff';
 import { linkedRepoFullName } from './repo-source';
@@ -154,6 +157,11 @@ export type SpecPageView =
      */
     /** Derived neighbours (§14), strongest first, each with why it is near. */
     nearby: NearbySpec[];
+    /** Comments readable on the revision being read (§16), and where one can be added. */
+    comments: CommentView[];
+    commentAnchors: Array<{ kind: 'criterion' | 'section'; id: string; label: string }>;
+    /** The reader may comment (write access) and resolve (a person with write access). */
+    canComment: boolean;
     design: { label: string; href: string | null; version: string; screens: string[]; changedSince: { pinned: string; current: string } | null } | null;
     /** Two picked revisions: the changes from `from` to `to`. */
     compare: (SpecPanes & { from: number; to: number }) | { error: string } | null;
@@ -237,6 +245,13 @@ export async function specPageView(userId: string, specId: string, opts: { revis
   }
 
   const nearby = await readSpecNeighbours(spec.id).catch(() => [] as NearbySpec[]);
+  const listed = await listSpecComments(caller, specId, { revision: got.view.revision.revision }).catch(() => null);
+  const comments = listed?.ok ? listed.comments : [];
+  const commentAnchors = [
+    ...specCriteria(got.view.body).map((c) => ({ kind: 'criterion' as const, id: c.id, label: c.id })),
+    ...outlineOf(got.view.body).map((s) => ({ kind: 'section' as const, id: s.id, label: s.title })),
+  ];
+  const canComment = await reach(caller, spec.workspaceId, true);
 
   let compare: Extract<SpecPageView, { state: 'ok' }>['compare'] = null;
   if (opts.from !== undefined && opts.to !== undefined) {
@@ -268,6 +283,6 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     reading: { revision: got.view.revision.revision, approved: spec.approvedRevision === got.view.revision.revision, isHead: got.view.revision.revision === spec.headRevision },
     waiting: pending && open ? spec.headRevision : null,
     body: got.view.body,
-    revisions, parent: parent ?? null, children, repoRefs, design, nearby, compare, canApprove, review,
+    revisions, parent: parent ?? null, children, repoRefs, design, nearby, comments, commentAnchors, canComment, compare, canApprove, review,
   };
 }
