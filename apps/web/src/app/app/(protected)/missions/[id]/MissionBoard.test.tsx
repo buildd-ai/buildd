@@ -184,13 +184,19 @@ describe('MissionBoard — band alignment', () => {
 describe('MissionBoard — a question open', () => {
   const html = render('question');
 
-  it('raises the needs-you band with the prompt and one button per option, plus Reply…', () => {
+  // The board answers with the task page's question card (TaskQuestion), not
+  // its own row of buttons: the question leads, every option is a choice, and
+  // the own-words field is always there.
+  it('raises the question card with the prompt, one choice per option and the own-words field', () => {
     expect(html).toContain('data-testid="needs-you-band"');
-    expect(html).toContain('Round each line or the total?');
-    const options = html.slice(html.indexOf('data-testid="board-answer-options"'));
-    expect(options).toContain('>Each line<');
+    const card = html.slice(html.indexOf('data-testid="board-question"'));
+    expect(card).toContain('data-density="feed"');
+    expect(card).toContain('Round each line or the total?');
+    const options = card.slice(card.indexOf('data-testid="worker-needs-input-options"'));
+    expect(options).toContain('>Each line — matches the charge<');
     expect(options).toContain('>Total only<');
-    expect(options).toContain('Reply…');
+    expect(card).toContain('Or answer in your own words…');
+    expect(html).not.toContain('Reply…');
     expect(tileStatuses(html)).toContain('waiting');
   });
 });

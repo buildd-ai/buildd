@@ -10,7 +10,7 @@ import WorkerActivityTimeline, { collapseWorkspacePath, ageLabel } from './Worke
 import ModelUsagePanel from './ModelUsagePanel';
 import NowStrip, { PausedBar } from './NowStrip';
 import StatRow, { formatTokens } from './StatRow';
-import QuestionHero from './QuestionHero';
+import TaskQuestion from '@/components/tasks/TaskQuestion';
 import { buildAgentTree, flattenAgentTree, type AgentProgressEntry } from '@/lib/agent-tree';
 import { requestRefresh, flushRefresh } from './coalesced-refresh';
 import { formatElapsed } from './format-elapsed';
@@ -18,9 +18,8 @@ import { deriveNow, touchedFiles, countToolCalls, formatOffset } from './task-ac
 import { showTokenCount } from './milestone-log';
 import { unifyWorkerQuestion, type QuestionNoteLike } from './question-hero';
 import { useHideNeedsInputWhileOpen } from '@/lib/needs-input-hidden';
-import { useNeedsInput } from '@/components/needs-input-context';
-import type { NotWaitingReason } from '@/lib/answer-resume';
-import { answerOutcomeLines, classifyRespondReply } from './respond/submit-answer';
+import type { StaleAnswerNotice } from './respond/submit-answer';
+import { useAnswerSubmit, type AnswerSubmitFailure } from './respond/use-answer-submit';
 import type { WorkerMilestone, WorkerWaitingFor } from '@buildd/core/db/schema';
 
 // Exported for testing: whether a worker-channel event should bypass the
@@ -43,33 +42,6 @@ export async function parseErrorMessage(res: Response, fallback: string): Promis
     // non-JSON body — fall back
   }
   return fallback;
-}
-
-const STALE_REASONS: ReadonlySet<string> = new Set<NotWaitingReason>(['already_answered', 'worker_ended', 'no_longer_waiting']);
-
-export interface StaleAnswerNotice {
-  message: string;
-  href: string | null;
-  linkLabel: string | null;
-}
-
-// Exported for testing: /respond's reply when the card being answered is
-// stale — the worker stopped waiting after this page rendered. Returns null
-// for every other rejection (e.g. a revoked credential), where the question
-// is still open and the answer can be retried in place.
-export function staleAnswerNotice(data: unknown, taskId: string): StaleAnswerNotice | null {
-  if (!data || typeof data !== 'object') return null;
-  const d = data as { error?: unknown; reasonCode?: unknown; nextAction?: { kind?: string; taskId?: string } };
-  if (typeof d.reasonCode !== 'string' || !STALE_REASONS.has(d.reasonCode)) return null;
-  const message = typeof d.error === 'string' ? d.error : 'Already answered.';
-  const next = d.nextAction;
-  if (next?.kind === 'open_task' && typeof next.taskId === 'string') {
-    return { message, href: `/app/tasks/${next.taskId}`, linkLabel: 'Open the follow-up task' };
-  }
-  if (next?.kind === 'follow_up') {
-    return { message, href: `/app/tasks/${taskId}`, linkLabel: 'Retry or start a follow-up from this task' };
-  }
-  return { message, href: null, linkLabel: null };
 }
 
 /** Elapsed as a clock (`4:21`) under ten hours, compact units beyond. */
@@ -182,24 +154,9 @@ export default function RealTimeWorkerView({ initialWorker, outputRequirement, d
     el.querySelector<HTMLElement>('textarea, input, button:not([disabled])')?.focus({ preventScroll: true });
   });
   const lastStatusRef = useRef(initialWorker.status);
-  const [answerSending, setAnswerSending] = useState<string | null>(null);
-  const [answerSent, setAnswerSent] = useState(false);
-  const { markAnswerSent } = useNeedsInput();
-  // Set only when the answer became a COLD continuation — a new task to link
-  // to. A resume returns the same task the reader is already on, so there is
-  // no second task to point at and this stays null.
-  const [continuationTaskId, setContinuationTaskId] = useState<string | null>(null);
-  const [answerError, setAnswerError] = useState<{ message: string; credentialRevoked?: boolean } | null>(null);
   // Set when /respond said the card was stale. Outlives the card: the refresh
   // it triggers drops the question, and this is what explains where it went.
   const [staleNotice, setStaleNotice] = useState<StaleAnswerNotice | null>(null);
-  // What the server said it did with the answer — resumed the parked session,
-  // or fell back to a continuation and why. Never invent this client-side: the
-  // path is the server's decision, and a wrong caption is the silent
-  // degradation this whole flow exists to avoid.
-  const [answerOutcome, setAnswerOutcome] = useState<string | null>(null);
-  const answeredPromptRef = useRef<string | null>(null);
-  const answerInFlightRef = useRef(false);
   const [showMetricsDetail, setShowMetricsDetail] = useState(false);
   const [taskProgress, setTaskProgress] = useState<TaskProgressEntry[]>([]);
   // The question is this page's hero: the global "…needs your input" banner
@@ -211,11 +168,6 @@ export default function RealTimeWorkerView({ initialWorker, outputRequirement, d
   // When the server component re-renders (via router.refresh()), pick up fresh
   // worker data from the updated initialWorker prop.
   useEffect(() => {
-    const newPrompt = initialWorker.waitingFor?.prompt ?? null;
-    if (answeredPromptRef.current && newPrompt !== answeredPromptRef.current) {
-      answeredPromptRef.current = null;
-      setAnswerSent(false);
-    }
     setWorker(initialWorker);
     lastStatusRef.current = initialWorker.status;
   // updatedAt changes on every PATCH — use it as the dep to avoid stale closures
@@ -275,88 +227,26 @@ export default function RealTimeWorkerView({ initialWorker, outputRequirement, d
     }
   }, [worker.id, taskId, router]);
 
-  const noteId = questionNote?.id ?? null;
-
-  // Send the answer via the respond endpoint, which decides between resuming
-  // this worker's own parked session and starting a cold continuation — and
-  // says which it did. The runner aborts the session when a question is asked,
-  // but the transcript and the worktree survive, so a resume is possible
-  // whenever the runner holding them is still reporting. See
-  // docs/specs/answered-question-resume.md. The response's `message` is the
-  // owner-facing sentence for whichever path ran.
-  const handleAnswer = useCallback(async (option: string) => {
-    // A ref, not state: a second tap in the same frame still sees no answer in flight.
-    if (answerInFlightRef.current) return;
-    answerInFlightRef.current = true;
-    setAnswerSending(option);
-    setAnswerError(null);
-    try {
-      const res = await fetch(`/api/workers/${worker.id}/respond`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: option }),
-      });
-      const data = await res.json().catch(() => null);
-      // Already answered (a double tap, or another surface got there first)
-      // is an answer on record, not a failure: show what was recorded.
-      const classified = classifyRespondReply(res.status, data, option);
-      if (classified.kind === 'already_answered') {
-        const lines = answerOutcomeLines(classified);
-        setAnswerOutcome(lines.detail ? `${lines.headline}. ${lines.detail}` : `${lines.headline}. Answer sent, waiting for the agent.`);
-        answeredPromptRef.current = worker.waitingFor?.prompt ?? null;
-        // A cold answer moved the work to a follow-up task: link it, as a sent one does.
-        const next = (data as { nextAction?: { kind?: string; taskId?: unknown } } | null)?.nextAction;
-        setContinuationTaskId(next?.kind === 'open_task' && typeof next.taskId === 'string' ? next.taskId : null);
-        setAnswerSent(true);
-        markAnswerSent?.(taskId);
-        return;
-      }
-      if (!res.ok) {
-        // The worker stopped waiting after this page rendered: say what
-        // happened, and refetch so the stale card goes away.
-        const stale = staleAnswerNotice(data, taskId);
-        if (stale) {
-          setStaleNotice(stale);
-          flushRefresh(router, taskId);
-          return;
-        }
-        // A known-revoked backend credential is refused here rather than
-        // silently dispatched into a continuation that would just fail again
-        // — the question stays open (waitingFor is untouched server-side) so
-        // this can be retried once the credential is reconnected.
-        setAnswerError({
-          message: data?.error || 'Failed to send answer',
-          credentialRevoked: data?.credentialRevoked === true,
-        });
-        return;
-      }
-      // The same ask recorded as a question note is answered too, so the task
-      // stops reading "Waiting on you". The worker already has the answer via
-      // /respond, so this is bookkeeping only — never a second delivery.
-      if (noteId) {
-        await fetch(`/api/tasks/${taskId}/notes/${noteId}/reply`, {
-          method: 'POST',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title: option }),
-        }).catch(() => {});
-      }
-      setAnswerOutcome(typeof data?.message === 'string' ? data.message : 'Answer sent.');
-      answeredPromptRef.current = worker.waitingFor?.prompt ?? null;
-      // Only a cold continuation has a SEPARATE task worth linking to.
-      setContinuationTaskId(
-        data?.path === 'cold_continuation' && typeof data.taskId === 'string' ? data.taskId : null,
-      );
-      setAnswerSent(true);
-      markAnswerSent?.(taskId);
-    } catch (err) {
-      console.error('Failed to send answer:', err);
-      setAnswerError({ message: err instanceof Error ? err.message : 'Failed to send answer' });
-    } finally {
-      answerInFlightRef.current = false;
-      setAnswerSending(null);
-    }
-  }, [worker.id, worker.waitingFor?.prompt, noteId, taskId, markAnswerSent, router]);
+  // The answer goes through TaskQuestion's one path (useAnswerSubmit):
+  // /respond decides between resuming this worker's own parked session and a
+  // cold continuation, and says which it did; the same ask's question note is
+  // marked answered with it. See docs/specs/answered-question-resume.md. Owned
+  // here so a stale card's notice outlives the refetch that drops the card.
+  // The outcome clears when the question changes (or goes).
+  const onAnswerError = useCallback((failure: AnswerSubmitFailure) => {
+    // The worker stopped waiting after this page rendered: say what happened,
+    // and refetch so the stale card goes away.
+    if (!failure.stale) return;
+    setStaleNotice(failure.stale);
+    flushRefresh(router, taskId);
+  }, [router, taskId]);
+  const answer = useAnswerSubmit({
+    workerId: worker.id,
+    taskId,
+    noteId: questionNote?.id ?? null,
+    resetKey: `${worker.id}:${worker.waitingFor?.prompt ?? ''}`,
+    onError: onAnswerError,
+  });
 
   const nowMs = nowProp ?? Date.now();
   const isActive = ['running', 'starting', 'waiting_input'].includes(worker.status);
@@ -382,7 +272,6 @@ export default function RealTimeWorkerView({ initialWorker, outputRequirement, d
   const removed = gitKnown ? worker.linesRemoved : touchedRem || null;
   const filesEdited = touched.rows.filter(r => r.kind !== 'run').length;
   const commands = touched.rows.filter(r => r.kind === 'run').length;
-  const asker = `The ${(roleName || 'agent').toLowerCase()} asks`;
 
   const activity = (
     <WorkerActivityTimeline
@@ -426,32 +315,20 @@ export default function RealTimeWorkerView({ initialWorker, outputRequirement, d
     return (
       <div data-testid="worker-view" data-state="waiting" className="space-y-5">
         <div data-testid="worker-needs-input-banner" ref={questionRef} className="scroll-mt-16">
-          <QuestionHero
+          <TaskQuestion
             testId="worker-question-hero"
+            variant="full"
             landOnArrival
-            question={question}
-            askerLabel={asker}
+            taskId={taskId}
+            workerId={worker.id}
+            waitingFor={worker.waitingFor}
+            questionNote={questionNote}
+            workerError={worker.error}
+            role={roleName}
             askedAgo={askedTs != null ? `${ageLabel(nowMs - askedTs)} ago` : null}
             stateNote="paused"
-            onAnswer={handleAnswer}
-            sending={answerSending}
             enableKeys
-            error={staleBanner || answerError && (
-              <>
-                {answerError.message}
-                {answerError.credentialRevoked && ' Your answer is saved. Reconnect the credential, then retry.'}
-              </>
-            )}
-            sent={answerSent ? (
-              <>
-                {answerOutcome ?? 'Answer sent.'}
-                {continuationTaskId && (
-                  <>
-                    {' '}<a href={`/app/tasks/${continuationTaskId}`} className="underline hover:no-underline">View continuation task →</a>
-                  </>
-                )}
-              </>
-            ) : null}
+            answer={answer}
           />
         </div>
 
