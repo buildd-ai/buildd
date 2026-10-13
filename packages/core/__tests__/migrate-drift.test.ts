@@ -7,16 +7,15 @@ import {
   classifyMissingSchemaObjects,
   createTableColumns,
   expectedColumnsFromSnapshot,
-  loadMigrationSources,
   loadMigrationSourcesV1,
-  loadSnapshotMetas,
   loadSnapshotMetasV1,
   reconcileAppliedCount,
-  resolveSnapshotSelection,
   resolveSnapshotSelectionV1,
   snapshotChainGaps,
+  snapshotLeaves,
+  ROOT_SNAPSHOT_ID,
+  unionLeafDdl,
   type MigrationSource,
-  type SnapshotMeta,
   type SnapshotMetaV1,
 } from '../db/migrate-drift';
 import { predictedFolderName, loadLegacyMap, LEGACY_MIGRATIONS_PATH, type LegacyMigration } from '../db/legacy-migrations';
@@ -324,17 +323,17 @@ describe('check-schema-drift.ts internal-table skip', () => {
   it('resolves the snapshot through the chain, not by filename sort', () => {
     // The original selection was `readdirSync(...).sort()` and took the last
     // entry, which silently picks one arbitrary sibling when the chain forks.
-    expect(script).toContain('resolveSnapshotSelection');
+    expect(script).toContain('resolveSnapshotSelectionV1');
     expect(script).not.toMatch(/readdirSync\(SNAPSHOT_DIR\)/);
   });
 
-  it('refuses to emit a drift verdict when it cannot verify, using a distinct exit code', () => {
+  it('keeps a distinct exit code for what it cannot verify, and reads parallel leaves as a union', () => {
     expect(script).toContain('EXIT_CANNOT_VERIFY');
-    // A fork must not exit with the drift code — that is what conflated a repo
-    // metadata problem with a hand-edited production database.
+    // A fork of commutative branches is the normal state under drizzle v1 (CI's
+    // drizzle-kit check fails a pair that does not commute), so it is not a refusal.
     const forkBlock = /if \(selection\.kind === 'forked'\)[\s\S]*?\n  \}/.exec(script)?.[0] ?? '';
-    expect(forkBlock).toContain('process.exit(EXIT_CANNOT_VERIFY)');
-    expect(forkBlock).not.toContain('EXIT_DRIFT');
+    expect(forkBlock).toContain('unionLeafDdl');
+    expect(forkBlock).not.toContain('process.exit');
   });
 });
 
@@ -357,87 +356,7 @@ describe('check-schema-drift.ts internal-table skip', () => {
  * object is traced to its creating migration before it can be called manual DDL.
  */
 
-function meta(file: string, id: string, prevId: string): SnapshotMeta {
-  return { file, id, prevId };
-}
-
-describe('resolveSnapshotSelection', () => {
-  it('resolves the chain tip on a linear chain', () => {
-    const result = resolveSnapshotSelection([
-      meta('0000_snapshot.json', 'a', ''),
-      meta('0001_snapshot.json', 'b', 'a'),
-      meta('0002_snapshot.json', 'c', 'b'),
-    ]);
-
-    expect(result.kind).toBe('resolved');
-    expect(result.file).toBe('0002_snapshot.json');
-    expect(result.siblings).toEqual([]);
-  });
-
-  it('REFUSES to resolve when the selected tip has a sibling claiming the same parent', () => {
-    // The live shape: 0156 and 0157 both generated from 0155.
-    const result = resolveSnapshotSelection([
-      meta('0155_snapshot.json', 'p', 'o'),
-      meta('0156_snapshot.json', 'x', 'p'),
-      meta('0157_snapshot.json', 'y', 'p'),
-    ]);
-
-    expect(result.kind).toBe('forked');
-    expect(result.file).toBe('0157_snapshot.json');
-    expect(result.siblings).toEqual(['0156_snapshot.json']);
-    expect(result.prevId).toBe('p');
-  });
-
-  it('names every sibling when more than two runs forked off one parent', () => {
-    const result = resolveSnapshotSelection([
-      meta('0010_snapshot.json', 'p', 'o'),
-      meta('0011_snapshot.json', 'x', 'p'),
-      meta('0012_snapshot.json', 'y', 'p'),
-      meta('0013_snapshot.json', 'z', 'p'),
-    ]);
-
-    expect(result.kind).toBe('forked');
-    expect(result.siblings).toEqual(['0011_snapshot.json', '0012_snapshot.json']);
-  });
-
-  it('still resolves when an OLDER fragment dangles — that is healed residue, not a live fork', () => {
-    // 0067/0069-class residue: a snapshot whose successor was removed by past
-    // renumbering leaves a dangling tip. It must not block a release.
-    const result = resolveSnapshotSelection([
-      meta('0000_snapshot.json', 'a', ''),
-      meta('0001_snapshot.json', 'b', 'a'),
-      meta('0003_snapshot.json', 'd', 'deleted-0002'),
-      meta('0004_snapshot.json', 'e', 'd'),
-    ]);
-
-    expect(result.kind).toBe('resolved');
-    expect(result.file).toBe('0004_snapshot.json');
-  });
-
-  it('does not mistake two independent roots for a fork of the tip', () => {
-    const result = resolveSnapshotSelection([
-      meta('0000_snapshot.json', 'a', ''),
-      meta('0001_snapshot.json', 'b', ''),
-      meta('0002_snapshot.json', 'c', 'b'),
-    ]);
-
-    expect(result.kind).toBe('resolved');
-    expect(result.file).toBe('0002_snapshot.json');
-  });
-
-  it('orders by numeric index, not by string length', () => {
-    const result = resolveSnapshotSelection([
-      meta('9_snapshot.json', 'a', ''),
-      meta('10_snapshot.json', 'b', 'a'),
-    ]);
-
-    expect(result.file).toBe('10_snapshot.json');
-  });
-
-  it('reports having nothing to resolve rather than throwing', () => {
-    expect(resolveSnapshotSelection([]).kind).toBe('empty');
-  });
-
+describe("this repo's snapshot chain", () => {
   it("resolves THIS repo's own snapshot chain — a live fork must fail the suite, not the release", () => {
     const metas = loadSnapshotMetasV1(REPO_DRIZZLE);
     // One snapshot per folder: the squashed baseline, every later migration, the rebase.
@@ -827,5 +746,30 @@ describe('loadMigrationSourcesV1 and name-keyed classification', () => {
     expect(
       reconcileAppliedCount({ sources, appliedWhens: new Set([100, 7, 8]), appliedNames: new Set(['l', 'p']), appliedTotal: 4 })
     ).toEqual({ journalEntries: 3, appliedTotal: 4, appliedFromJournal: 2, pending: 1, historicalOutsideRef: 2, reconciles: true });
+  });
+});
+
+describe('parallel leaf snapshots (two branches generated from one base)', () => {
+  const m = (name: string, id: string, prevIds: string[]) => ({ file: `${name}/snapshot.json`, id, prevIds });
+  const metas = [m('20260101_base', 'a', [ROOT_SNAPSHOT_ID]), m('20260102_add_p', 'b', ['a']), m('20260102_add_q', 'c', ['a'])];
+
+  it('finds one leaf per parallel branch, and a single leaf on a linear chain', () => {
+    expect(snapshotLeaves(metas).map((l) => l.id)).toEqual(['b', 'c']);
+    expect(snapshotLeaves([m('x', 'a', [ROOT_SNAPSHOT_ID]), m('y', 'b', ['a'])]).map((l) => l.id)).toEqual(['b']);
+  });
+
+  it('a merge snapshot naming both parents makes it the only leaf', () => {
+    expect(snapshotLeaves([...metas, m('20260103_merge', 'd', ['b', 'c'])]).map((l) => l.id)).toEqual(['d']);
+  });
+
+  it('the schema is the union of the leaves, each entity once', () => {
+    const ddl: Record<string, unknown[]> = {
+      '20260102_add_p/snapshot.json': [{ entityType: 'tables', name: 'base' }, { entityType: 'tables', name: 'p' }],
+      '20260102_add_q/snapshot.json': [{ entityType: 'tables', name: 'base' }, { entityType: 'tables', name: 'q' }],
+    };
+    const union = unionLeafDdl(snapshotLeaves(metas), (f) => ddl[f]!);
+    expect(union).toEqual([{ entityType: 'tables', name: 'base' }, { entityType: 'tables', name: 'p' }, { entityType: 'tables', name: 'q' }]);
+    // So a table either branch added is expected in production, and neither reads as manual DDL.
+    expect([...expectedColumnsFromSnapshot({ ddl: [...union, { entityType: 'columns', schema: 'public', table: 'q', name: 'id' }] }).keys()]).toContain('q');
   });
 });
