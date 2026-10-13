@@ -84,7 +84,7 @@ export default function SurfaceAuditWaiverFixture() {
           />
         </MissionSurfaceAuditWaiverProvider>
         <div className="max-w-xl">
-          <MissionVisualReviewSetting missionId={MISSION_ID} initialEnabled visual={null} auditWaiver={props} />
+          <MissionVisualReviewSetting missionId={MISSION_ID} initialEnabled auditWaiver={props} />
         </div>
       </main>
     </div>

@@ -2067,7 +2067,7 @@ describe('PATCH /api/missions/[id] — surface audit gate and waiver', () => {
     expect(updatedSetData.status).toBe('completed');
     const note = insertedNotes.find(n => n.title === 'Surface audit waived');
     expect(note).toBeDefined();
-    expect(note.body).toBe('Copy-only change, checked by hand');
+    expect(note.body).toBe('Copy-only change, checked by hand\n\nPolicy: automatic');
     expect(note.authorType).toBe('user');
   });
 
@@ -2099,7 +2099,7 @@ describe('PATCH /api/missions/[id] — surface audit gate and waiver', () => {
     const res = await patch({ surfaceAuditWaiver: 'Mission branch cannot be captured by CI' });
     expect(res.status).toBe(200);
     const note = insertedNotes.find(n => n.title === 'Surface audit waived');
-    expect(note).toMatchObject({ body: 'Mission branch cannot be captured by CI', authorType: 'user', actorLabel: 'owner@example.com' });
+    expect(note).toMatchObject({ body: 'Mission branch cannot be captured by CI\n\nPolicy: automatic', authorType: 'user', actorLabel: 'owner@example.com' });
     expect(updatedSetData?.status).toBeUndefined();
   });
 

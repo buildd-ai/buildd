@@ -69,6 +69,10 @@ import { MissionVisualReviewProvider } from './MissionVisualReview';
 import { MissionSurfaceAuditWaiverProvider } from './MissionSurfaceAuditWaiver';
 import { loadSurfaceAuditWaiver } from '@/lib/mission-surface-audit-gate';
 import MissionVisualReviewSetting from './MissionVisualReviewSetting';
+import MissionBranchPanel from './MissionBranchPanel';
+import { getMissionVisualReviewState } from '@/lib/workflow/visual-review-state-load';
+import type { MissionVisualReviewState } from '@/lib/workflow/visual-review-state';
+import { presentVisualReview } from '@/lib/workflow/visual-review-copy';
 import MissionScreensRow from './MissionScreensRow';
 import MissionRecordsSheet from './MissionRecordsSheet';
 import { MissionReleaseSection } from './MissionReleaseSection';
@@ -603,7 +607,7 @@ export default async function MissionDetailPage({
 
   // The breadcrumb initiative, the initiative-selector options, the release
   // footer and the completion note are mutually independent.
-  const [initiativeName, teamInitiativeOptions, releaseFooterData, completionNote, carryingReleaseId, feedNoteRows, shippedRow, surfaceAuditWaiver] = await Promise.all([
+  const [initiativeName, teamInitiativeOptions, releaseFooterData, completionNote, carryingReleaseId, feedNoteRows, shippedRow, surfaceAuditWaiver, visualReviewState] = await Promise.all([
     // Breadcrumb: URL param takes priority, DB-stored initiative is the fallback
     // so users see the parent initiative even when navigating directly to the mission.
     (from === 'initiative' && initiativeId)
@@ -666,6 +670,14 @@ export default async function MissionDetailPage({
     // The person-set "Waive visual audit" record, if any. A failed read only
     // costs the record line; the waiver action stays.
     loadSurfaceAuditWaiver(id).catch(() => null),
+    // The one canonical visual-review / branch state; the panel and the
+    // waiver action both read it, nothing here re-derives it.
+    mission.workspaceId
+      ? getMissionVisualReviewState(id).catch((err): MissionVisualReviewState | null => {
+          console.error('[mission-page] visual review state failed', err);
+          return null;
+        })
+      : Promise.resolve(null as MissionVisualReviewState | null),
   ]);
   const shippedView = mission.status === 'completed'
     ? buildShippedHeaderView((shippedRow?.metadata as { shipped?: unknown } | null)?.shipped, (mission as any).completedAt)
@@ -773,6 +785,18 @@ export default async function MissionDetailPage({
         </a>
       )}
     </div>
+  ) : null;
+
+  const branchPresentation = visualReviewState ? presentVisualReview(visualReviewState) : null;
+  const branchPanel = branchPresentation && (branchPresentation.showPanel || (isTerminal && branchPresentation.recordLine)) ? (
+    <MissionBranchPanel
+      missionId={id}
+      presentation={branchPresentation}
+      branch={missionIntegrationPr?.branch ?? null}
+      integrationPr={missionIntegrationPr?.prNumber ? { number: missionIntegrationPr.prNumber, href: missionIntegrationPr.prUrl ?? null } : null}
+      readonly={isTerminal}
+      showRecord={isTerminal}
+    />
   ) : null;
 
   const reviewSummary = displayState === 'review' ? (
@@ -956,9 +980,8 @@ export default async function MissionDetailPage({
       <MissionVisualReviewSetting
         missionId={id}
         initialEnabled={(mission as { autoSurfaceAudit?: boolean | null }).autoSurfaceAudit ?? null}
-        visual={boardVisual}
         readonly={isTerminal}
-        auditWaiver={showAuditWaiver ? auditWaiverProps : null}
+        auditWaiver={showAuditWaiver && (visualReviewState?.policy.waiverAllowed ?? true) ? auditWaiverProps : null}
       />
 
       {/* Organizer runs are in History › Everything, not repeated here. */}
@@ -1068,7 +1091,7 @@ export default async function MissionDetailPage({
   // The integration PR card and the review summary ride along on every layout.
   const quietState = ['running', 'active', 'complete'].includes(displayState);
   const budgetExhausted = budgetUsd != null && mission.status === 'budget_exhausted';
-  const boardNotice = quietState && !missionPrCard && !reviewSummary ? null : (
+  const boardNotice = quietState && !missionPrCard && !reviewSummary && !branchPanel ? null : (
     <MissionNoticeSlot
       needsYou={!quietState && noticeNeedsPerson({
         displayState,
@@ -1087,6 +1110,7 @@ export default async function MissionDetailPage({
       {!quietState && decisionBlock}
       {!quietState && budgetExhausted && budgetDetail}
       {missionPrCard}
+      {branchPanel}
       {reviewSummary}
     </MissionNoticeSlot>
   );

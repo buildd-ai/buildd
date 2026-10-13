@@ -16,6 +16,7 @@ import { evaluateSurfaceAuditGate, loadSurfaceAuditGateTasks, loadSurfaceAuditWa
 import { loadVisualReview } from '@/lib/visual-review-load';
 import { resolveVisualReviewPolicy } from './visual-review-policy';
 import { autoRetriesLeft, type ScheduleAudit } from './visual-review-schedule';
+import { loadAutoImpactDecision } from './visual-review-auto-decision';
 import {
   deriveMissionVisualReview,
   integrationPrFromDeliveryState,
@@ -53,12 +54,13 @@ export async function getMissionVisualReviewState(
   });
   if (!mission) return null;
 
-  const [ws, tasks, waiver] = await Promise.all([
+  const [ws, tasks, waiver, autoDecision] = await Promise.all([
     mission.workspaceId
       ? db.query.workspaces.findFirst({ where: eq(workspaces.id, mission.workspaceId), columns: { gitConfig: true, githubRepoId: true } })
       : Promise.resolve(undefined),
     loadSurfaceAuditGateTasks(missionId),
     loadSurfaceAuditWaiver(missionId),
+    loadAutoImpactDecision(missionId).catch(() => null),
   ]);
   const gitConfig = (ws?.gitConfig ?? null) as { defaultBranch?: string } | null;
   const policy = resolveVisualReviewPolicy({
@@ -90,6 +92,11 @@ export async function getMissionVisualReviewState(
     }
   }
 
+  // The logged no-impact decision stands only for the head it was made on.
+  const decidedNoImpact = !!autoDecision && !!headSha && autoDecision.headSha === headSha;
+  const uiChange: VisualReviewStateInput['uiChange'] =
+    opts.uiChange ?? (decidedNoImpact ? { state: 'no', source: 'diff', uiFiles: 0 } : gateUiChange);
+
   const uiBuilders = tasks.filter(t => t.taskClass === 'work' && t.roleSlug !== 'visual-auditor');
   const ledger = await loadMissionAuditLedger(missionId);
   const latestAudit = ledger.find(a => a.id === model.audit?.id) ?? null;
@@ -117,6 +124,7 @@ export async function getMissionVisualReviewState(
     auditedSha: latestAudit ? latestAudit.headSha : null,
     autoRetriesLeft: autoRetriesLeft(failedOnHead),
     captureConfigError: latestAudit?.captureConfigError ?? null,
+    autoDecision: decidedNoImpact ? autoDecision : null,
     branch: { headSha, base, integrationPr, workLanded: uiBuilders.length > 0 && uiBuilders.every(t => isTerminalTaskStatus(t.status)) },
   });
 }

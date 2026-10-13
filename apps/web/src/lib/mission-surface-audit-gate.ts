@@ -8,6 +8,7 @@ import {
   touchesUiSurface,
 } from '@buildd/core/surface-audit';
 import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
+import { parseWaiverBody } from '@/lib/surface-audit-waiver-body';
 
 /**
  * The completion side of the per-mission surface audit.
@@ -59,7 +60,7 @@ async function hasWaiver(missionId: string): Promise<boolean> {
  */
 export async function loadSurfaceAuditWaiver(
   missionId: string,
-): Promise<{ reason: string; actorLabel: string | null; at: string } | null> {
+): Promise<{ reason: string; actorLabel: string | null; at: string; policy: string | null } | null> {
   const notes = await db.query.missionNotes.findMany({
     where: and(eq(missionNotes.missionId, missionId), eq(missionNotes.title, SURFACE_AUDIT_WAIVER_NOTE_TITLE)),
     columns: { authorType: true, body: true, actorLabel: true, createdAt: true },
@@ -70,7 +71,8 @@ export async function loadSurfaceAuditWaiver(
     .filter(n => (n.authorType === 'user' || n.authorType === 'mcp') && (n.body ?? '').trim().length > 0)
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
   if (!latest) return null;
-  return { reason: (latest.body ?? '').trim(), actorLabel: latest.actorLabel ?? null, at: new Date(latest.createdAt).toISOString() };
+  const { reason, policy } = parseWaiverBody(latest.body);
+  return { reason, actorLabel: latest.actorLabel ?? null, at: new Date(latest.createdAt).toISOString(), policy };
 }
 
 export async function repoFor(workspaceId: string): Promise<{ installationId: number; fullName: string } | null> {

@@ -160,8 +160,13 @@ describe('loadSurfaceAuditWaiver', () => {
       { authorType: 'mcp', body: 'Older call', actorLabel: 'account "k"', createdAt: new Date('2026-10-01T00:00:00Z') },
     ];
     expect(await loadSurfaceAuditWaiver('m1')).toEqual({
-      reason: 'Copy-only change', actorLabel: 'owner@example.com', at: '2026-10-02T00:00:00.000Z',
+      reason: 'Copy-only change', actorLabel: 'owner@example.com', at: '2026-10-02T00:00:00.000Z', policy: null,
     });
+  });
+
+  it('reads the policy it was recorded under off the body', async () => {
+    waiverNotes = [{ authorType: 'user', body: 'Copy-only change\n\nPolicy: ask', actorLabel: 'owner@example.com', createdAt: new Date('2026-10-02T00:00:00Z') }];
+    expect(await loadSurfaceAuditWaiver('m1')).toMatchObject({ reason: 'Copy-only change', policy: 'ask' });
   });
 
   it('is null when no person waived it', async () => {

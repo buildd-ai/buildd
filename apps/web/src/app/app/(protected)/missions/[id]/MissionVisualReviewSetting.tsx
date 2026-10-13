@@ -3,17 +3,14 @@
 /**
  * The Settings sheet's "Visual review" row (docs/design/visual-qa-human-review.md,
  * "Where it shows"): the mission's `autoSurfaceAudit` switch, modelled on the
- * auto-verify toggle, with the audit's live Line under it.
+ * auto-verify toggle, The audit's state is the branch panel's to show, not this row's.
  *
  * Optimistic: the switch flips at once and rolls back, with a message, if the
  * PATCH is refused. Turning it off stops new audits; it cancels nothing that
  * is already queued (the Tray's "Turn off for this mission" does both).
  */
 import { useId, useState } from 'react';
-import type { VisualReviewModel } from '@buildd/shared';
 import Switch, { SWITCH_HIT_AREA } from '@/components/ui/Switch';
-import VisualReviewLine from '@/components/visual-review/VisualReviewLine';
-import { useMissionVisualReview } from './MissionVisualReview';
 import MissionSurfaceAuditWaiver, { type MissionSurfaceAuditWaiverProps } from './MissionSurfaceAuditWaiver';
 
 export const VISUAL_REVIEW_SETTING_LABEL = 'Audit UI changes automatically';
@@ -21,21 +18,16 @@ export const VISUAL_REVIEW_SETTING_LABEL = 'Audit UI changes automatically';
 export default function MissionVisualReviewSetting({
   missionId,
   initialEnabled,
-  visual,
   readonly = false,
   auditWaiver = null,
 }: {
   missionId: string;
   /** `missions.autoSurfaceAudit`; the column defaults to on. */
   initialEnabled: boolean | null | undefined;
-  /** The server's model; the page's live one wins when it is mounted. */
-  visual: VisualReviewModel | null | undefined;
   readonly?: boolean;
   /** The person-only "Waive visual audit" action; null hides it (no audit on the mission). */
   auditWaiver?: Omit<MissionSurfaceAuditWaiverProps, 'variant'> | null;
 }) {
-  const live = useMissionVisualReview(missionId);
-  const model = live?.model ?? visual ?? null;
   const server = initialEnabled ?? true;
   const [enabled, setEnabled] = useState(server);
   const [saving, setSaving] = useState(false);
@@ -89,13 +81,6 @@ export default function MissionVisualReviewSetting({
         />
       </div>
       {error && <p role="alert" className="mt-2 font-mono text-[12px] text-status-error">{error}</p>}
-      <div className="mt-3 border-t border-border-default pt-3">
-        {model && model.phase !== 'off' ? (
-          <VisualReviewLine model={model} variant="full" />
-        ) : (
-          <p className="font-mono text-[12px] text-text-muted">No visual audit.</p>
-        )}
-      </div>
       {auditWaiver && (
         <div className="mt-3 border-t border-border-default pt-3">
           <MissionSurfaceAuditWaiver {...auditWaiver} variant="setting" />

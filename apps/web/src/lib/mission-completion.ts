@@ -1,6 +1,6 @@
 import { TERMINAL_TASK_STATUSES as SHARED_TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { db } from '@buildd/core/db';
-import { missions, tasks, taskSchedules, missionNotes, workers } from '@buildd/core/db/schema';
+import { missions, tasks, taskSchedules, missionNotes, workers, workspaces } from '@buildd/core/db/schema';
 import { MISSION_PR_TASK_PREFIX, missionIntegrationBase } from '@buildd/core/mission-integration';
 import { evaluateMissionWorkState, findMissionPrOwner } from '@/lib/mission-pr';
 import { eq, and, gte, desc } from 'drizzle-orm';
@@ -16,7 +16,8 @@ import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 import { postMissionFeedEvent, systemActor } from '@/lib/mission-feed';
 import { isSurfaceAuditTask, surfaceAuditMissingReason } from '@buildd/core/surface-audit';
 import { evaluateSurfaceAuditGate } from '@/lib/mission-surface-audit-gate';
-import { VISUAL_AUDITOR_ROLE_SLUG, type VisualReviewModel } from '@buildd/shared';
+import { VISUAL_AUDITOR_ROLE_SLUG, visualReviewPolicyOf, type VisualReviewModel } from '@buildd/shared';
+import { resolveVisualReviewPolicy } from '@/lib/workflow/visual-review-policy';
 import { after } from 'next/server';
 
 /**
@@ -165,6 +166,12 @@ export interface MissionCompletionDecision {
   visualReviewHold?: VisualReviewHold | null;
   /** The rendered UI files behind `surface_audit_missing`, so a surface can say how many without parsing `reason`. */
   surfaceAuditPaths?: string[];
+  /**
+   * With `surface_audit_missing`: the workspace's visual-review policy runs the
+   * review itself (automatic or strict), so the miss is the system's to close
+   * and never a question for the owner.
+   */
+  surfaceAuditAutomatic?: boolean;
 }
 
 export interface VisualReviewHold {
@@ -270,6 +277,18 @@ export const AWAITING_VERIFICATION_NOTE_TITLE = 'Mission awaiting verification';
  * @param opts.evaluateCriteria pass `false` for display/read-only callers that
  *        must not spend tokens or dispatch verification tasks.
  */
+/** Whether the workspace's policy schedules the visual review itself (automatic or strict). Failing to read it means ask. */
+async function visualReviewRunsItself(workspaceId: string | null, autoSurfaceAudit: boolean | null): Promise<boolean> {
+  if (!workspaceId) return false;
+  try {
+    const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId), columns: { gitConfig: true } });
+    const { mode } = resolveVisualReviewPolicy({ workspace: visualReviewPolicyOf(ws?.gitConfig), mission: { autoSurfaceAudit } });
+    return mode === 'automatic' || mode === 'strict';
+  } catch {
+    return false;
+  }
+}
+
 export async function canCompleteMission(
   missionId: string,
   opts: {
@@ -656,6 +675,7 @@ export async function canCompleteMission(
       code: 'surface_audit_missing',
       reason: surfaceAuditMissingReason(surfaceGate.uiPaths, surfaceGate.source),
       surfaceAuditPaths: surfaceGate.uiPaths,
+      surfaceAuditAutomatic: await visualReviewRunsItself(mission.workspaceId, mission.autoSurfaceAudit),
     };
   }
 
