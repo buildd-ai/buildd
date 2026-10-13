@@ -637,9 +637,13 @@ from that package, so a copy is the same rule and not a port of it.
   converts its storage format to Markdown (`confluence-markdown.ts`), and
   hashes it after `normalizeFrozenCopy`. A version written by the configured
   bot account reads as an agent's. A missing page or version is null, never
-  the latest. A proposal is a child page "Proposed: vN — <title>" under the
-  spec page, with its base version and summary in a content property; it is
-  refused on a stale base, and the spec page itself is never written.
+  the latest. A proposal is a child page "Proposed vN: <title>" under the
+  spec page, with its base version and summary in a content property; a
+  second proposal on the same base is "Proposed vN (2): <title>", because
+  Confluence titles are unique per space. It is refused on a stale base, and
+  the spec page itself is never written. Proposals are published (`current`)
+  by default; a host may pass `proposalStatus: 'draft'` to keep them out of
+  the space page tree (untested against a live site).
   `criteriaWarning` says when a converted page has no R-n or AC-n line. A
   table whose first column holds criterion ids is restated as one list line
   per row, so those ids parse.
