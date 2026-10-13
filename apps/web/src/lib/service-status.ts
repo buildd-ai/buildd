@@ -254,7 +254,7 @@ export function statusAttentionItems(statuses: readonly ServiceStatus[]): HomeAt
     if (s.attention !== 'needs_you' || !s.action || s.action.kind === 'route_work') continue;
     const reconnect = s.action.kind === 'reconnect';
     items.push({
-      key: `service-status:${s.key}`, kind: 'queue', label: reconnect ? 'runner needs sign-in' : 'runner key',
+      key: `service-status:${s.key}`, kind: 'queue', label: reconnect ? 'sign-in' : 'runner key',
       tone: 'warning', title: s.title, sentence: `${s.condition}. ${plural(s.work.length, 'task')} waiting.`, meta: s.capability, href: s.action.href,
       actionType: reconnect ? 'reconnect' : 'fix', primary: { label: s.action.label, href: s.action.href }, owner: 'human',
     });
