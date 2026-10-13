@@ -159,7 +159,12 @@ export async function approveSpecRevision(caller: SpecCaller, specId: string, in
   // Modules react (the knowledge index), after the response: the approval has
   // committed, and emit never throws, so nothing there undoes it.
   const workspaceId = after.workspaceId;
-  specApprovalDeps.afterResponse(() => emit({ type: 'spec.approved', specId, workspaceId, revision: n }));
+  // A native-sourced spec (§18, R-15) also gets its repo copy's PR written; a
+  // workspace that has not opted in gets nothing (fileSpecRepoCopy returns null, AC-78).
+  specApprovalDeps.afterResponse(() => Promise.all([
+    emit({ type: 'spec.approved', specId, workspaceId, revision: n }),
+    import('./repo-copy').then((m) => m.fileSpecRepoCopy(specId)).catch(() => null),
+  ]));
   return { ok: true, spec: after, revision };
 }
 

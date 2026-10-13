@@ -8,7 +8,7 @@ domain: knowledge
 surfaces: [apps/web/src/lib/specs/store.ts, apps/web/src/lib/specs/approval.ts, apps/web/src/lib/specs/pin.ts, apps/web/src/app/api/specs/[specId]/route.ts]
 related: [artifacts-and-sharing, knowledge-ingest-pipeline]
 keywords: [living spec, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs, recall, knowledge graph, living_spec, area, taxonomy, spec_area, filed by buildd, backfill, generated repo copy, generated_from, spec import, spec index]
-verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts, apps/web/tests/db/spec-neighbours.test.ts, apps/web/src/lib/specs/neighbours.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/tests/db/spec-duplicates.test.ts, apps/web/src/lib/spec-duplicate-decision.test.ts, apps/web/src/components/MarkdownContent.spec-surface.dom.test.tsx, apps/web/tests/db/spec-comments.test.ts, apps/web/src/components/SpecComments.dom.test.tsx]
+verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts, apps/web/tests/db/spec-neighbours.test.ts, apps/web/src/lib/specs/neighbours.test.ts, apps/web/src/components/SpecList.dom.test.tsx, apps/web/tests/db/spec-duplicates.test.ts, apps/web/src/lib/spec-duplicate-decision.test.ts, apps/web/src/components/MarkdownContent.spec-surface.dom.test.tsx, apps/web/tests/db/spec-comments.test.ts, apps/web/src/components/SpecComments.dom.test.tsx, packages/spec-contract/src/repo-copy.test.ts, apps/web/tests/db/spec-repo-copy.test.ts, scripts/check-generated-specs.test.ts, apps/web/src/lib/specs/no-prod-data-scan.test.ts]
 supersedes: []
 assertions:
   - id: approve-spec-revision
@@ -1201,7 +1201,10 @@ or wants to change.
 
 ## 18. Spec homes in practice: native source, generated repo copy
 
-**Status: contract, not built.**
+**Status: partly built.** The opt-in, the generator, the metadata block, the
+generated PR and its landing exception, the hand-edit check, the short-id
+link and the pre-approval checks are built (R-12 to R-17, R-31 to R-35).
+Import and confirmation (R-18, R-19) are not.
 
 **Capability statement**: In a workspace that opts in, the native spec MUST be
 the one source of its text, its repo file MUST be a generated copy that lands
@@ -1291,25 +1294,27 @@ at any time.
 - AC-74: GIVEN an opted-in workspace WHEN a person approves revision N THEN
   one PR writes `docs/specs/<slug>.md`, its approved text hashes to N's
   content hash, its metadata to `metadata_hash`, and no full spec id is in it
-  (test pending).
+  (`apps/web/tests/db/spec-repo-copy.test.ts`, `packages/spec-contract/src/repo-copy.test.ts`).
 - AC-75: GIVEN a PR that hand-edits a generated copy's body, metadata or
   `domain:` WHEN `specs:lint` runs THEN it fails naming the short id and
-  printing its link (test pending).
+  printing its link (`scripts/check-generated-specs.test.ts`,
+  `packages/spec-contract/src/repo-copy.test.ts`).
 - AC-93: GIVEN an approved spec WHEN an agent adds a `verified_by` path with a
   reason THEN the version, approved revision and content hash are unchanged,
   the change records who, why and the previous value, and the generated PR
-  carries it (test pending).
+  carries it (`apps/web/tests/db/spec-repo-copy.test.ts`).
 - AC-94: GIVEN a spec filed under an area mapped to a value `DOMAINS` lacks
   WHEN its copy is generated THEN `domain:` is that value and the same PR
   adds it to `DOMAINS`; GIVEN an unfiled native-sourced spec THEN no copy is
-  generated (test pending).
+  generated (`apps/web/tests/db/spec-repo-copy.test.ts`).
 - AC-95: GIVEN a reader with access WHEN they open /app/specs/<short id> THEN
   the spec page renders; GIVEN a reader of another team THEN 404
-  (test pending).
+  (`apps/web/tests/db/spec-repo-copy.test.ts`).
 - AC-96: GIVEN a would-be copy that fails `specs:lint` WHEN the approval page
-  opens THEN it shows the failure and Approve still approves (test pending).
+  opens THEN it shows the failure and Approve still approves
+  (`apps/web/tests/db/spec-repo-copy.test.ts`).
 - AC-97: GIVEN a generated PR whose head commit the generator did not write
-  THEN it does not land under the exception (test pending).
+  THEN it does not land under the exception (`apps/web/tests/db/spec-repo-copy.test.ts`).
 - AC-76: GIVEN an imported, unconfirmed spec THEN no PR touches its file;
   GIVEN its file changes in the repo THEN a new imported revision is written
   (test pending).
@@ -1318,15 +1323,38 @@ at any time.
   reported stale and stays imported; GIVEN an agent token THEN 403
   (test pending).
 - AC-78: GIVEN a workspace that has not opted in WHEN a spec is approved THEN
-  no PR is filed (test pending).
+  no PR is filed (`apps/web/tests/db/spec-repo-copy.test.ts`).
 - AC-79: GIVEN a generated PR with a red check THEN it stays open, the
   approval is unchanged and the spec page says the repo copy is behind,
-  naming the check (test pending).
+  naming the check (`apps/web/tests/db/spec-repo-copy.test.ts`).
+
+**Code surface**:
+- `packages/spec-contract/src/repo-copy.ts` — `renderRepoCopy`, `verifyRepoCopy`, `specShortId`: the copy's layout and both hashes
+- `packages/spec-contract/src/repo-spec.ts` — `lintSpecFile`, `buildSpecIndex`, `withDomain`: the `specs:lint` rules, shared by the script and the preflight
+- `apps/web/src/lib/specs/repo-copy.ts` — `fileSpecRepoCopy` (the generated PR), `landSpecRepoCopy` (the `GENERATED_SPEC_COPY_EXCEPTION` landing door, called from the check_suite webhook), `repoCopyPreflight`, `specArea`
+- `apps/web/src/lib/specs/metadata.ts` — `updateSpecMetadata`, over `PATCH /api/specs/[specId]/metadata` and `manage_specs action=metadata`
+- `apps/web/src/lib/specs/short-id.ts` — `resolveSpecShortId`, read by the spec page route
+- `scripts/check-generated-specs.ts` — the hand-edit check, run by `specs:lint` and the build job
+- `packages/core/db/schema.ts` — `specs.metadata`, `specs.repo_copy`, `spec_metadata_changes`
+
+How it works: the copy's frontmatter is the body's own frontmatter verbatim,
+then a marker comment, then the metadata block (`status`, `owner`, `title`
+when the body states none, `last_verified`, `domain`, `surfaces`,
+`verified_by`, `assertions`), then `generated_from: <short id>@r<revision>`,
+`content_hash` and `metadata_hash`. Cutting out the marker through the three
+generated lines gives back the approved body byte for byte. `status` is
+`active` once `verified_by` names a test, else `draft`; `owner` defaults to
+`buildd`; `last_verified` to the approval date. An area's domain is its
+title as lowercase words joined by hyphens. The PR also regenerates
+`docs/specs/INDEX.md` and, for a new domain, `DOMAINS`. It is filed on the
+branch `buildd/spec-copy-<short id>`, which the generator force-updates, and
+it lands by squash once every check suite on the generator's commit passes.
 
 **Not yet**:
-- None of R-12 to R-20 or R-31 to R-35 is built: no source field, no
-  metadata block, no import, no generated copy, no short-id route. D-1 holds
-  everywhere.
+- Import and confirmation (R-18, R-19): no repo spec becomes a native one, so
+  AC-76 and AC-77 have no test, and the spec page shows only the buildd line
+  of R-13.
+- An area cannot name a domain value other than its title's.
 - The R-34 preflight cannot run the identifier half of no-prod-data: that
   pattern is a repo secret only CI holds, so the generated PR's own run is
   the first full check.
