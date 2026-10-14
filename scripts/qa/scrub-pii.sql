@@ -330,6 +330,8 @@ DELETE FROM task_dispatch_outbox;
 -- Workflow kernel ledger: facts, transitions and effects carry repo names, PR
 -- heads and evidence payloads. Children first (effects reference transitions).
 DELETE FROM landing_lanes;
+-- The command API's idempotency ledger: stored answers carry the same payloads.
+DELETE FROM workflow_commands;
 DELETE FROM workflow_effects;
 DELETE FROM workflow_transitions;
 DELETE FROM workflow_facts;

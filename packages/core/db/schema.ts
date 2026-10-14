@@ -5502,6 +5502,9 @@ export const workflowTransitions = pgTable('workflow_transitions', {
   actor: text('actor').notNull(),
   evidence: jsonb('evidence').$type<Record<string, unknown>>().default({}).notNull(),
   bypass: jsonb('bypass').$type<Record<string, unknown>>(),
+  // Which host applied it (docs/specs/workflow-kernel-library.md §3, AC-9):
+  // 'control-plane' or 'web'. Null on rows written before the tag existed.
+  host: text('host').$type<'control-plane' | 'web'>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   idempotencyUnique: uniqueIndex('workflow_transitions_idempotency_unique').on(t.deliveryId, t.idempotencyKey),
@@ -5509,6 +5512,34 @@ export const workflowTransitions = pgTable('workflow_transitions', {
 }));
 
 export type WorkflowTransitionRow = typeof workflowTransitions.$inferSelect;
+
+// §3 of docs/specs/workflow-kernel-library.md — the command API's idempotency
+// ledger: one row per caller-supplied key, so a command submitted twice with one
+// key is applied once and both callers get the stored answer. Lives in Postgres,
+// never in Worker memory (a Worker isolate is not durable and not shared).
+export const workflowCommands = pgTable('workflow_commands', {
+  idempotencyKey: text('idempotency_key').primaryKey(),
+  op: text('op').notNull(),
+  /** `user:<id>`, `account:<id>` or `system:<name>`: who the web host vouched for. */
+  principal: text('principal').notNull(),
+  /** sha256 of the op, input and principal: one key never answers a different request. */
+  requestHash: text('request_hash').notNull(),
+  status: text('status').default('running').notNull().$type<'running' | 'done'>(),
+  /** The stored answer: `{ status, body }`, replayed verbatim to every caller with the key. */
+  response: jsonb('response').$type<Record<string, unknown>>(),
+  deliveryId: uuid('delivery_id'),
+  deliveryVersion: bigint('delivery_version', { mode: 'number' }),
+  host: text('host').notNull(),
+  /** The current claim: completion and release apply only for the claim that still holds the key. */
+  claimToken: text('claim_token').notNull(),
+  claimedAt: timestamp('claimed_at', { withTimezone: true }).defaultNow().notNull(),
+  completedAt: timestamp('completed_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  createdIdx: index('workflow_commands_created_idx').on(t.createdAt),
+}));
+
+export type WorkflowCommandRow = typeof workflowCommands.$inferSelect;
 
 // §5.5 — transactional outbox: inserted by the statement that applied the
 // transition, drained at least once by apps/web/src/lib/workflow/effects.ts.

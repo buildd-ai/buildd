@@ -8,9 +8,16 @@
 import { NextRequest } from './next-server-shim';
 import { runInRequest } from './request-context';
 import { installOutboundFetch } from './outbound-fetch';
-import { anonymousGithubProbe, deepHealthAllowed, executionMode, matchRoute, SERVED_BY, type Env, type Handler } from './router';
+import { anonymousGithubProbe, deepHealthAllowed, executionMode, isCommandRequest, matchRoute, SERVED_BY, type Env, type Handler } from './router';
+import { setKernelHost } from '@/lib/workflow/kernel-host';
+import { commandsConfigured } from '@/lib/workflow/command-api';
 
 installOutboundFetch();
+// This process is the kernel's control-plane host: every transition it applies is tagged so (AC-9).
+setKernelHost('control-plane');
+
+/** The handlers read config from process.env; the bindings the runtime hands this call win. */
+const envOf = (env: Env): Record<string, string | undefined> => ({ ...(process.env as Record<string, string | undefined>), ...(env as Record<string, string | undefined>) });
 
 function tag(res: Response, by: string): Response {
   const out = new Response(res.body, res);
@@ -25,7 +32,11 @@ export default {
     // The Worker's own hostname has no origin behind it.
     const ownHost = !!env.CONTROL_PLANE_HOST && url.hostname === env.CONTROL_PLANE_HOST;
     if (url.pathname === '/__control-plane/health') {
-      const health: Record<string, unknown> = { ok: true, service: 'control-plane', mode: executionMode(env.EXECUTION_MODE), commit: env.GIT_SHA ?? null };
+      // `mode` is who answers the execution routes; `kernel` is whether this Worker applies kernel
+      // commands, which also needs the command key. The web host follows `kernel`, so a web host that
+      // has the key before this Worker does keeps running the kernel itself.
+      const kernel = executionMode(env.EXECUTION_MODE) === 'own' && commandsConfigured(envOf(env)) ? 'own' : 'shadow';
+      const health: Record<string, unknown> = { ok: true, service: 'control-plane', mode: executionMode(env.EXECUTION_MODE), kernel, commit: env.GIT_SHA ?? null };
       // ?deep=1: an unauthenticated GitHub API call through the outbound
       // fetch, the dependency the 2026-10-10 cutover lost (no User-Agent).
       // Probes report ok/fail and a status code, never upstream error text.
@@ -57,6 +68,12 @@ export default {
       }
       return Response.json(health, { status: health.ok ? 200 : 503 });
     }
+    // The kernel command API: the Worker's own hostname only.
+    if (isCommandRequest(request.method, url.pathname, ownHost)) {
+      const { handleCommandRequest } = await import('@/lib/workflow/command-api');
+      const res = await runInRequest(p => ctx.waitUntil(p), () => handleCommandRequest(request, { env: envOf(env) }));
+      return tag(res, 'control-plane');
+    }
     const hit = matchRoute(request.method, url.pathname);
     if (!hit || (!ownHost && executionMode(env.EXECUTION_MODE) !== 'own')) {
       // On a buildd.dev route a subrequest to the same URL goes to the origin
@@ -67,5 +84,15 @@ export default {
     if (!handler) return new Response('Method Not Allowed', { status: 405 });
     const res = await runInRequest(p => ctx.waitUntil(p), () => handler(new NextRequest(request), { params: Promise.resolve(hit.params) }));
     return tag(res, 'control-plane');
+  },
+
+  // The cron trigger (wrangler.jsonc `triggers.crons`): the kernel's effect drain and floor,
+  // hosted here in own mode and a no-op in shadow (workflow-kernel-library.md §3, AC-10).
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    await runInRequest(p => ctx.waitUntil(p), async () => {
+      const { runScheduledKernelFloor } = await import('@/lib/workflow/kernel-floor');
+      const r = await runScheduledKernelFloor({ env: envOf(env) });
+      if (!r.ran) console.log(`[kernel-floor] skipped: ${r.reason}`);
+    });
   },
 };
