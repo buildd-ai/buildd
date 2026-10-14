@@ -1,0 +1,125 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`list view 80x24 1`] = `
+" buildd · laptop-1234                   2 of 3 slots busy · ● online · v0.340.0 
+────────────────────────────────────────────────────────────────────────────────
+ MISSIONS             │ Runner TUI                        3 running · 3 waiting 
+ ▸ Runner TUI     2/8 │─────────────────────────────────────────────────────────
+   Specs import   1/2 │ RUNNING                                                 
+   (no mission)   0/1 │›● name override    Builder     12m Edit config.ts       
+                      │ ? installer hint   Builder      9m asks: "Print the URL…
+                      │ ● single instance  Builder      4m bun run test __tests…
+                      │ WAITING                                                 
+                      │ ○ buildd top       Builder         waits on: name overr…
+                      │ ○ docs page        Writer          starts in 2h         
+                      │ ○ heartbeat name   Builder         another runner has it
+                      │ DONE TODAY                                              
+                      │ ✓ spec draft                       done                 
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+────────────────────────────────────────────────────────────────────────────────
+ ↑↓ move ⏎ open a answer m message p pause x stop c claim o web / filter q quit "
+`;
+
+exports[`list view 120x40 1`] = `
+" buildd · laptop-1234                                                           2 of 3 slots busy · ● online · v0.340.0 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ MISSIONS                   │ Runner TUI                                                          3 running · 3 waiting 
+ ▸ Runner TUI           2/8 │───────────────────────────────────────────────────────────────────────────────────────────
+   Specs import         1/2 │ RUNNING                                                                                   
+   (no mission)         0/1 │›● name override               Builder     12m Edit config.ts                       41k tok
+                            │ ? installer hint              Builder      9m asks: "Print the URL or open the b…         
+                            │ ● single instance             Builder      4m bun run test __tests__/unit/runner…   8k tok
+                            │ WAITING                                                                                   
+                            │ ○ buildd top                  Builder         waits on: name override                     
+                            │ ○ docs page                   Writer          starts in 2h                                
+                            │ ○ heartbeat name              Builder         another runner has it                       
+                            │ DONE TODAY                                                                                
+                            │ ✓ spec draft                                  done                                        
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ↑↓ move  ⏎ open  a answer  m message  p pause  x stop  c claim  o web  / filter  q quit                                "
+`;
+
+exports[`list view 80x24 in colour (night, truecolor) keeps the same text 1`] = `
+" \x1B[38;2;245;155;78mbuildd\x1B[39m\x1B[38;2;168;159;150m · laptop-1234\x1B[39m                   \x1B[38;2;168;159;150m2 of 3 slots busy · \x1B[39m\x1B[38;2;245;155;78m● online\x1B[39m\x1B[38;2;168;159;150m · v0.340.0 \x1B[39m
+\x1B[38;2;122;114;105m────────────────────────────────────────────────────────────────────────────────\x1B[39m
+\x1B[38;2;168;159;150m MISSIONS             \x1B[39m\x1B[38;2;122;114;105m│\x1B[39m \x1B[38;2;237;232;226mRunner TUI                        \x1B[39m\x1B[38;2;245;155;78m3 running · 3 waiting \x1B[39m
+ \x1B[38;2;245;155;78m▸\x1B[39m \x1B[38;2;237;232;226mRunner TUI    \x1B[39m \x1B[38;2;245;155;78m2/8\x1B[39m \x1B[38;2;122;114;105m│\x1B[39m\x1B[38;2;122;114;105m─────────────────────────────────────────────────────────\x1B[39m
+ \x1B[38;2;122;114;105m \x1B[39m \x1B[38;2;237;232;226mSpecs import  \x1B[39m \x1B[38;2;168;159;150m1/2\x1B[39m \x1B[38;2;122;114;105m│\x1B[39m\x1B[38;2;168;159;150m RUNNING                                                 \x1B[39m
+ \x1B[38;2;122;114;105m \x1B[39m \x1B[38;2;237;232;226m(no mission)  \x1B[39m \x1B[38;2;168;159;150m0/1\x1B[39m \x1B[38;2;122;114;105m│\x1B[39m\x1B[48;2;47;44;40m\x1B[38;2;245;155;78m›\x1B[39m\x1B[38;2;245;155;78m●\x1B[39m \x1B[38;2;237;232;226mname override    \x1B[39m\x1B[38;2;168;159;150mBuilder   \x1B[39m\x1B[38;2;168;159;150m  12m \x1B[39m\x1B[38;2;237;232;226mEdit config.ts       \x1B[39m\x1B[38;2;168;159;150m\x1B[39m\x1B[49m
+                      \x1B[38;2;122;114;105m│\x1B[39m \x1B[38;2;245;155;78m?\x1B[39m \x1B[38;2;237;232;226minstaller hint   \x1B[39m\x1B[38;2;168;159;150mBuilder   \x1B[39m\x1B[38;2;168;159;150m   9m \x1B[39m\x1B[38;2;237;232;226masks: "Print the URL…\x1B[39m\x1B[38;2;168;159;150m\x1B[39m
+                      \x1B[38;2;122;114;105m│\x1B[39m \x1B[38;2;245;155;78m●\x1B[39m \x1B[38;2;237;232;226msingle instance  \x1B[39m\x1B[38;2;168;159;150mBuilder   \x1B[39m\x1B[38;2;168;159;150m   4m \x1B[39m\x1B[38;2;237;232;226mbun run test __tests…\x1B[39m\x1B[38;2;168;159;150m\x1B[39m
+                      \x1B[38;2;122;114;105m│\x1B[39m\x1B[38;2;168;159;150m WAITING                                                 \x1B[39m
+                      \x1B[38;2;122;114;105m│\x1B[39m \x1B[38;2;168;159;150m○\x1B[39m \x1B[38;2;237;232;226mbuildd top       \x1B[39m\x1B[38;2;168;159;150mBuilder   \x1B[39m\x1B[38;2;168;159;150m      \x1B[39m\x1B[38;2;168;159;150mwaits on: name overr…\x1B[39m\x1B[38;2;168;159;150m\x1B[39m
+                      \x1B[38;2;122;114;105m│\x1B[39m \x1B[38;2;168;159;150m○\x1B[39m \x1B[38;2;237;232;226mdocs page        \x1B[39m\x1B[38;2;168;159;150mWriter    \x1B[39m\x1B[38;2;168;159;150m      \x1B[39m\x1B[38;2;168;159;150mstarts in 2h         \x1B[39m\x1B[38;2;168;159;150m\x1B[39m
+                      \x1B[38;2;122;114;105m│\x1B[39m \x1B[38;2;168;159;150m○\x1B[39m \x1B[38;2;237;232;226mheartbeat name   \x1B[39m\x1B[38;2;168;159;150mBuilder   \x1B[39m\x1B[38;2;168;159;150m      \x1B[39m\x1B[38;2;168;159;150manother runner has it\x1B[39m\x1B[38;2;168;159;150m\x1B[39m
+                      \x1B[38;2;122;114;105m│\x1B[39m\x1B[38;2;168;159;150m DONE TODAY                                              \x1B[39m
+                      \x1B[38;2;122;114;105m│\x1B[39m \x1B[38;2;134;201;157m✓\x1B[39m \x1B[38;2;237;232;226mspec draft       \x1B[39m\x1B[38;2;168;159;150m          \x1B[39m\x1B[38;2;168;159;150m      \x1B[39m\x1B[38;2;168;159;150mdone                 \x1B[39m\x1B[38;2;168;159;150m\x1B[39m
+                      \x1B[38;2;122;114;105m│\x1B[39m                                                         
+                      \x1B[38;2;122;114;105m│\x1B[39m                                                         
+                      \x1B[38;2;122;114;105m│\x1B[39m                                                         
+                      \x1B[38;2;122;114;105m│\x1B[39m                                                         
+                      \x1B[38;2;122;114;105m│\x1B[39m                                                         
+                      \x1B[38;2;122;114;105m│\x1B[39m                                                         
+                      \x1B[38;2;122;114;105m│\x1B[39m                                                         
+                      \x1B[38;2;122;114;105m│\x1B[39m                                                         
+\x1B[38;2;122;114;105m────────────────────────────────────────────────────────────────────────────────\x1B[39m
+\x1B[38;2;168;159;150m ↑↓ move ⏎ open a answer m message p pause x stop c claim o web / filter q quit \x1B[39m"
+`;
+
+exports[`detail view (R-5) 80x24: plan, milestones, tool calls and the PR link 1`] = `
+" buildd · laptop-1234                   2 of 3 slots busy · ● online · v0.340.0 
+────────────────────────────────────────────────────────────────────────────────
+ ● name override                                      Builder · 12m · Runner TUI
+ PR https://github.com/example/repo/pull/12                                     
+ now: Edit config.ts                                                            
+                                                                                
+ PLAN                                                                           
+  ✓ Read config loader                                                          
+  ● Add BUILDD_RUNNER_NAME                                                      
+  ○ Test heartbeat payload                                                      
+                                                                                
+ MILESTONES                                                                     
+  14:49 Reading the config loader                                               
+  14:59 Edit config.ts                                                          
+                                                                                
+ TOOL CALLS (3)                                                                 
+  14:49 TodoWrite                                                               
+  14:50 Read config.ts                                                          
+  14:59 Edit config.ts                                                          
+                                                                                
+                                                                                
+                                                                                
+────────────────────────────────────────────────────────────────────────────────
+ esc back  a answer  m message  p pause  x stop  c claim  o web  q quit         "
+`;

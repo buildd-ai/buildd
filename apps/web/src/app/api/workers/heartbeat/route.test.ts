@@ -1265,6 +1265,17 @@ describe('POST /api/workers/heartbeat — runner display name (buildd name)', ()
     await beat({ hostname: 'laptop-1234', name: '\u0007 ' });
     expect(capturedValues.environment.labels).toEqual({ hostname: 'laptop-1234' });
   });
+
+  it('applies the same rule as buildd name: invisible characters stripped, a letter or digit required', async () => {
+    await beat({ hostname: 'laptop-1234', name: '\u202Eat\u200Blas\uFEFF' });
+    expect(capturedValues.environment.labels.name).toBe('atlas');
+
+    await beat({ hostname: 'laptop-1234', name: '!!!' });
+    expect(capturedValues.environment.labels).toEqual({ hostname: 'laptop-1234' });
+
+    await beat({ hostname: 'laptop-1234', name: '\u200B\u2066' });
+    expect(capturedValues.environment.labels).toEqual({ hostname: 'laptop-1234' });
+  });
 });
 
 describe('POST /api/workers/heartbeat — Codex auth source (docs/specs/runner-model-auth-source.md AC-12)', () => {

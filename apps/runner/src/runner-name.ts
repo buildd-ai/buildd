@@ -51,9 +51,25 @@ export function resolveRunnerName(deps: RunnerNameDeps = {}): { name: string; so
   return { name: deps.hostname ?? osHostname(), source: 'hostname' };
 }
 
-/** Write `name` into the config file (null removes it), keeping every other field. */
+/** config.json exists but is not a JSON object, so writing it would lose what it holds (the API key). */
+export class UnreadableConfigError extends Error {
+  constructor(readonly configFile: string) {
+    super(`Cannot read ${configFile}: it is not a JSON object. Fix or move it and try again; it was not changed.`);
+    this.name = 'UnreadableConfigError';
+  }
+}
+
+/**
+ * Write `name` into the config file (null removes it), keeping every other field.
+ * Throws UnreadableConfigError, writing nothing, when the file exists but cannot be parsed.
+ */
 export function saveRunnerName(configFile: string, name: string | null): void {
-  const cfg = (existsSync(configFile) ? readConfig(configFile) : null) ?? {};
+  let cfg: Record<string, unknown> = {};
+  if (existsSync(configFile)) {
+    const existing = readConfig(configFile);
+    if (!existing) throw new UnreadableConfigError(configFile);
+    cfg = existing;
+  }
   if (name === null) delete cfg.name;
   else cfg.name = name;
   // config.json holds the API key: owner-only, same as `buildd login` writes it.
@@ -106,8 +122,19 @@ export function runNameCommand(args: string[], deps: RunnerNameDeps = {}): NameC
     return { code: 0, stdout: `${name} (${where})`, stderr: '' };
   }
 
+  const save = (value: string | null): NameCommandResult | null => {
+    try {
+      saveRunnerName(configFile, value);
+      return null;
+    } catch (err) {
+      if (err instanceof UnreadableConfigError) return { code: 1, stdout: '', stderr: err.message };
+      throw err;
+    }
+  };
+
   if (args.length === 1 && args[0] === '--clear') {
-    saveRunnerName(configFile, null);
+    const refused = save(null);
+    if (refused) return refused;
     const { name } = resolveRunnerName(resolveDeps);
     return { code: 0, stdout: `Name removed. This runner shows as ${name} from its next heartbeat.`, stderr: envWarning };
   }
@@ -116,7 +143,8 @@ export function runNameCommand(args: string[], deps: RunnerNameDeps = {}): NameC
   if (!name) {
     return { code: 64, stdout: '', stderr: 'A runner name needs at least one letter or digit. Usage: buildd name <name>' };
   }
-  saveRunnerName(configFile, name);
+  const refused = save(name);
+  if (refused) return refused;
   const cut = args.join(' ').trim().length > RUNNER_NAME_MAX_LENGTH ? ` (cut to ${RUNNER_NAME_MAX_LENGTH} characters)` : '';
   return {
     code: 0,
