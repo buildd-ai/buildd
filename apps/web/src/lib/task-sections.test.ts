@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { taskPrFacts, taskHeaderMerged, isFallbackSummary } from './task-sections';
+import { taskPrFacts, taskHeaderMerged, isFallbackSummary, taskDeliverySections } from './task-sections';
 
 const pr = {
   prUrl: 'https://github.com/org/repo/pull/7',
@@ -53,5 +53,39 @@ describe('isFallbackSummary', () => {
     expect(isFallbackSummary({ summarySource: 'fallback' })).toBe(true);
     expect(isFallbackSummary({ summarySource: 'worker' })).toBe(false);
     expect(isFallbackSummary(null)).toBe(false);
+  });
+});
+
+describe('taskDeliverySections: the header reading and checks both surfaces render', () => {
+  const view = {
+    state: 'AWAITING_REVIEW', stateReason: null, prNumber: 7, headSha: 'HEADB000', prState: 'awaiting_ci',
+    rounds: [{ id: 'r1', round: 1, headSha: 'HEADB000', kind: 'full', status: 'queued', verdict: null, effectiveVerdict: null, failureCount: 0, reviewerTaskId: 'rev1' }],
+    ledger: [], approvedCurrentHead: false, approvalBasis: null,
+    headline: 'Waiting for review', owner: 'reviewer', needsYou: false, stage: 'review', detail: null,
+    repoFullName: 'org/repo',
+  } as never;
+  const findings = new Map([['rev1', { prose: 'Looks fine', verdict: 'approve', status: 'completed' }]]) as never;
+
+  it('is empty without a delivery', () => {
+    expect(taskDeliverySections({ view: null, findings: new Map(), findingsUnavailable: false }, null)).toEqual({ delivery: null, checks: null });
+  });
+
+  it("reads the header pill from the delivery's own words", () => {
+    const { delivery } = taskDeliverySections({ view, findings, findingsUnavailable: false }, null);
+    expect(delivery).toEqual({ headline: 'Waiting for review', owner: 'reviewer', needsYou: false, stage: 'review', detail: null, prState: 'awaiting_ci', state: 'AWAITING_REVIEW' });
+  });
+
+  it('carries the checks with JSON-safe findings and the PR link', () => {
+    const { checks } = taskDeliverySections({ view, findings, findingsUnavailable: false }, { prUrl: 'https://github.com/org/repo/pull/7' });
+    expect(checks?.prNumber).toBe(7);
+    expect(checks?.headSha).toBe('HEADB000');
+    expect(checks?.prUrl).toBe('https://github.com/org/repo/pull/7');
+    expect(checks?.findings).toEqual({ rev1: { prose: 'Looks fine', verdict: 'approve', status: 'completed' } });
+    expect(JSON.parse(JSON.stringify(checks))).toEqual(checks);
+  });
+
+  it("builds the PR link from the delivery's repo when no worker has it", () => {
+    const { checks } = taskDeliverySections({ view, findings, findingsUnavailable: false }, null);
+    expect(checks?.prUrl).toBe('https://github.com/org/repo/pull/7');
   });
 });

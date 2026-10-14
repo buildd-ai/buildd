@@ -97,6 +97,12 @@ const attachText = (a: AttachmentRow, upload: { uploadUrl: string } | null | und
   return lines.join('\n');
 };
 
+/** The server's formatHints (R-48) as one gentle line; advisory, the write already happened. */
+const tipText = (hints: unknown): string => {
+  const msgs = Array.isArray(hints) ? hints.map((h) => (h as { message?: unknown })?.message).filter((m): m is string => typeof m === 'string' && !!m) : [];
+  return msgs.length ? `\nTip: ${msgs.join(' ')} See help topic living-specs, "Tables and diagrams".` : '';
+};
+
 const need = (v: unknown, name: string): string => {
   if (typeof v !== 'string' || !v.trim()) throw new Error(`${name} is required`);
   return v.trim();
@@ -201,14 +207,15 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       let spec;
       let duplicateCheck: DuplicateCheckView | null = null;
       let suggestedParent: { specId: string; title: string; reason: string } | null = null;
+      let formatHints: unknown = null;
       try {
-        ({ spec, duplicateCheck, suggestedParent } = await api('/api/specs', { method: 'POST', body: JSON.stringify(payload) }));
+        ({ spec, duplicateCheck, suggestedParent, formatHints } = await api('/api/specs', { method: 'POST', body: JSON.stringify(payload) }));
       } catch (err) {
         const e = apiError(err);
         if (e?.status === 400 || e?.status === 502 || (e?.status === 409 && e.body?.code === 'spec_duplicate')) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
         throw err;
       }
-      return text(`Spec draft created: "${spec.title}"\nID: ${spec.id}\nVersion: ${spec.version} (pass it as expectedVersion to revise)\nStatus: ${spec.status}\nSpec URL: ${specUrl(spec.id)}\nA person approves it (submit / approve from their own session).${duplicateText(duplicateCheck)}${suggestedParent ? `\nSuggested parent: "${suggestedParent.title}" (${suggestedParent.specId}), ${suggestedParent.reason.charAt(0).toLowerCase()}${suggestedParent.reason.slice(1)}. Set it with manage_specs action=relate { specId, parentSpecId }.` : ''}`);
+      return text(`Spec draft created: "${spec.title}"\nID: ${spec.id}\nVersion: ${spec.version} (pass it as expectedVersion to revise)\nStatus: ${spec.status}\nSpec URL: ${specUrl(spec.id)}\nA person approves it (submit / approve from their own session).${duplicateText(duplicateCheck)}${suggestedParent ? `\nSuggested parent: "${suggestedParent.title}" (${suggestedParent.specId}), ${suggestedParent.reason.charAt(0).toLowerCase()}${suggestedParent.reason.slice(1)}. Set it with manage_specs action=relate { specId, parentSpecId }.` : ''}${tipText(formatHints)}`);
     }
 
     case 'get': {
@@ -254,7 +261,7 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
         const r = await api(`/api/specs/${encodeURIComponent(specId)}`, { method: 'PATCH', body: JSON.stringify(payload) });
         if (r.unchanged) return text(`Unchanged: the body and repo references match revision ${r.revision.revision}, so no new revision was written. Version is still ${r.spec.version}.\nSpec URL: ${specUrl(specId)}`);
         const what = target ? ` (${'section' in target ? `section ${String(target.section)}` : `section "${String(target.heading)}"`} replaced, the rest kept)` : '';
-        return text(`Revised${what}: revision ${r.revision.revision}, version ${r.spec.version} (pass it as expectedVersion next time).\nSpec URL: ${specUrl(specId)}`);
+        return text(`Revised${what}: revision ${r.revision.revision}, version ${r.spec.version} (pass it as expectedVersion next time).\nSpec URL: ${specUrl(specId)}${tipText(r.formatHints)}`);
       } catch (err) {
         const e = apiError(err);
         if (e?.status === 400 || e?.status === 502) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
