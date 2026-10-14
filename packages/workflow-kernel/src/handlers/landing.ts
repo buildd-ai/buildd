@@ -75,7 +75,15 @@ export function landingHandlers(ports: KernelPorts): EffectHandlers {
       const r = await need(ports, 'ingest', e.kind).ingest({ kind: 'head_observed', ...subject }, pinned);
       return { outcome: `skipped:head_moved:${r.result}` };
     }
-    const override = (e.payload.override ?? null) as { verdict?: boolean; kinds?: Array<'verdict' | 'freshness' | 'size'> } | null;
+    const ov = e.payload.override;
+    const override = ov && typeof ov === 'object' && !Array.isArray(ov)
+      ? {
+          verdict: (ov as Record<string, unknown>).verdict === true,
+          kinds: Array.isArray((ov as Record<string, unknown>).kinds)
+            ? ((ov as Record<string, unknown>).kinds as unknown[]).filter((k): k is 'verdict' | 'freshness' | 'size' => k === 'verdict' || k === 'freshness' || k === 'size')
+            : [],
+        }
+      : null;
     const refuse = async (half: 'review' | 'rails', reasons: string[]) => {
       const r = await apply(d.id, {
         type: 'MergeCallResult', actor: 'effect:merge_call', headSha, outcome: 'gate_refused',
@@ -146,7 +154,12 @@ export function landingHandlers(ports: KernelPorts): EffectHandlers {
     const round = view.rounds.find((r) => r.id === e.payload.roundId) ?? null;
     const output = round && ports.reviews ? await ports.reviews.output(round) : {};
     const work = need(ports, 'work', e.kind);
-    const p = e.payload as { round?: number; reviewedHeadSha?: string; mergedHeadSha?: string; mergeCommitSha?: string | null; mergedBy?: string | null };
+    const str = (k: string): string | null => (typeof e.payload[k] === 'string' ? (e.payload[k] as string) : null);
+    const p = {
+      round: typeof e.payload.round === 'number' ? e.payload.round : undefined,
+      reviewedHeadSha: str('reviewedHeadSha') ?? undefined, mergedHeadSha: str('mergedHeadSha') ?? undefined,
+      mergeCommitSha: str('mergeCommitSha'), mergedBy: str('mergedBy'),
+    };
     const filed = await work.file({
       role: 'external_merge_fix',
       workspaceId: d.workspaceId,

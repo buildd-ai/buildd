@@ -41,6 +41,7 @@ import { fixWork, reviewEscalate, reviewsHost, reviewWork } from '@/lib/workflow
 import { ciEscalate, ciEvidence, ciFixWork } from '@/lib/workflow/ci-retry-effects';
 import { externalMergeFixWork, trunkFixWork } from '@/lib/workflow/ci-red-trunk-effects';
 import { guardMissionPrMerge } from '@/lib/mission-pr';
+import { builddLandingRails } from '@/lib/workflow/auto-merge-rails';
 import { conflictEscalate, conflictFixWork, conflictsHost } from '@/lib/workflow/conflict-retry-effects';
 import { builddDecide } from '@/lib/workflow/decision-port';
 import { landingLifecycle, mergeAnswerOf } from '@/lib/workflow/pr-landing-effects';
@@ -200,8 +201,8 @@ export function workflowKernelHooks(opts: { exec?: Parameters<typeof handOffHost
     conflicts: conflictsHost,
     handOff: handOffHost(opts.exec, opts.repoFor),
     decide: builddDecide,
-    // The missions module's half of the merge rails the merge effect reads at merge time.
-    missionGate: (task) => guardMissionPrMerge(task),
+    // The merge rails the merge effect reads at merge time; the mission-PR hold is the missions module's.
+    rails: builddLandingRails({ missionGate: (task) => guardMissionPrMerge(task) }),
   };
 }
 

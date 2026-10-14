@@ -5,7 +5,7 @@
  * overridable); a person's size override lifts the size cap only.
  */
 import { describe, expect, mock, test } from 'bun:test';
-import { builddLandingRails, type RailsContext } from './landing-rails';
+import { builddLandingRails, type RailsContext } from './auto-merge-rails';
 
 const D = { id: 'd1', workspaceId: 'ws', ownerTaskId: 't1', repoFullName: 'o/r', prNumber: 7 } as never;
 const P = (o: Record<string, unknown> = {}) => ({ headSha: 'H1', live: { state: 'open', merged: false, headSha: 'H1', headRepoFullName: 'o/r', baseRef: 'dev' } as never, door: 'auto_merge', ...o });

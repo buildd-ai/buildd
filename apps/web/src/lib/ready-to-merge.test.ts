@@ -141,6 +141,7 @@ describe('every merge door consults the mission gate', () => {
       'lib/workflow/command-api.ts', // the control plane's command endpoint: runs the seam's landThroughKernel for a door that already passed its gates
       'lib/release-executor.ts', // dev -> main release PRs, not a mission integration PR
       'lib/release/compose-runtime.ts', // binds the release executor's merge; dev -> main release PRs only
+      'lib/release/pinned-merge.ts', // the release doors' pinned merge (D8-D10): release PRs, review gate at the verified head
       'app/api/github/webhook/route.ts', // release-pr ci-success only
       ...doors.map(d => d[1]),
     ]);

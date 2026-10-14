@@ -546,7 +546,7 @@ recorded as such, never as an approval.
 
 **As built (S3b):**
 - The gate is `reviewGate` (`packages/workflow-kernel/src/landing-gate.ts`)
-  plus the `Rails` port (`apps/web/src/lib/workflow/landing-rails.ts`:
+  plus the `Rails` port (`apps/web/src/lib/workflow/auto-merge-rails.ts`:
   `evaluateAutoMergeSafety` with freshness left to T15, and the mission-PR
   hold). `merge_call` reads the PR live first: merged or closed goes to the
   funnel, a moved head is recorded and nothing merges (AC-14), then review,

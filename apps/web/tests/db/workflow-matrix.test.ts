@@ -83,14 +83,14 @@ let ciEscalations: string[];
 
 const realGithubFacts = await import('../../src/lib/workflow/github-facts');
 mock.module('../../src/lib/workflow/github-facts', () => ({ ...realGithubFacts, githubReader: () => reader, workspaceRepo: repoFor }));
-// The merge rails the merge effect reads at merge time (landing-rails.ts): real ones read CI,
+// The merge rails the merge effect reads at merge time (auto-merge-rails.ts): real ones read CI,
 // files and the mergeable state through githubApi, which this file does not model. Their own
-// behaviour is proven in landing-rails.test.ts and, against a modelled GitHub, in the fake-GitHub
+// behaviour is proven in auto-merge-rails.test.ts and, against a modelled GitHub, in the fake-GitHub
 // suites; here a reading the test sets, every call recorded.
 let railsReading: { passed: boolean; redCi?: boolean; denyPaths?: boolean; reasons: string[] } = { passed: true, reasons: [] };
 const railsCalls: Array<{ headSha: string; door: string }> = [];
-const realRails = await import('../../src/lib/workflow/landing-rails');
-mock.module('../../src/lib/workflow/landing-rails', () => ({
+const realRails = await import('../../src/lib/workflow/auto-merge-rails');
+mock.module('../../src/lib/workflow/auto-merge-rails', () => ({
   ...realRails,
   builddLandingRails: () => ({ evaluate: async (_d: unknown, p: { headSha: string; door: string }) => { railsCalls.push({ headSha: p.headSha, door: p.door }); return railsReading; } }),
 }));
