@@ -566,10 +566,11 @@ describe('import: placement through the area classifier (§17)', () => {
     expect(inputs.at(-1).specId).toBe(id);
   });
 
-  test('an answer below the bar leaves it Unfiled with the suggestion shown, and a real run records the suggestion', async () => {
+  test('an answer below the bar, for a domain no area declares, leaves it Unfiled with the suggestion shown, and a real run records the suggestion', async () => {
     const { w, decisions } = await threeAreas();
     const classify: Classify = async () => answer(decisions, 0.8, false);
-    const gh = fakeGitHub({ 'decision-kinds.md': spec('Decision Kinds', 'tasks') });
+    // `runners` is only the Runners area's title slug, not a declared domain: no filing by it.
+    const gh = fakeGitHub({ 'decision-kinds.md': spec('Decision Kinds', 'runners') });
     const dry = await ok(importRepoSpecs(user(member), { workspaceId: w }, { ...gh.deps, classify }));
     expect(dry.files[0]).toMatchObject({ area: null, suggestion: { specId: decisions, title: 'Decisions', answer: 'area', p: 0.8 } });
     expect(dry.byArea).toEqual([expect.objectContaining({ area: 'Unfiled', count: 1 })]);
@@ -580,6 +581,29 @@ describe('import: placement through the area classifier (§17)', () => {
     expect(filing).toMatchObject({ kind: 'suggested', status: 'open', parent_spec_id: decisions, source: 'model' });
     for (const t of queued.splice(0)) await t();
     expect((await q<any>(sql`SELECT count(*)::int AS n FROM spec_filings WHERE spec_id = ${id}::uuid`))[0]!.n).toBe(1);
+  });
+
+  test('an answer below the bar, for a domain an area declares, files it there by the declared domain', async () => {
+    const { w, tasks, decisions } = await threeAreas();
+    const classify: Classify = async () => answer(decisions, 0.8, false);
+    const gh = fakeGitHub({ 'decision-kinds.md': spec('Decision Kinds', 'tasks') });
+    const dry = await ok(importRepoSpecs(user(member), { workspaceId: w }, { ...gh.deps, classify }));
+    expect(dry.files[0]!.area).toMatchObject({ specId: tasks, title: 'Tasks and missions', proposed: false, by: 'domain' });
+    expect(dry.files[0]!.placement).toMatchObject({ by: 'domain', reason: expect.stringContaining('0.80') });
+    expect(dry.files[0]!.suggestion).toBeUndefined();
+    const real = await ok(importRepoSpecs(user(member), { workspaceId: w, dryRun: false }, { ...gh.deps, classify }));
+    const id = real.files[0]!.specId!;
+    expect((await q<any>(sql`SELECT parent_spec_id FROM specs WHERE id = ${id}::uuid`))[0]!.parent_spec_id).toBe(tasks);
+    const [filing] = await q<any>(sql`SELECT * FROM spec_filings WHERE spec_id = ${id}::uuid`);
+    expect(filing).toMatchObject({ kind: 'filed', status: 'applied', parent_spec_id: tasks, source: 'domain' });
+  });
+
+  test('a confident answer still wins over a declared domain', async () => {
+    const { w, decisions } = await threeAreas();
+    const classify: Classify = async () => answer(decisions, 0.98, true);
+    const gh = fakeGitHub({ 'decision-kinds.md': spec('Decision Kinds', 'tasks') });
+    const dry = await ok(importRepoSpecs(user(member), { workspaceId: w }, { ...gh.deps, classify }));
+    expect(dry.files[0]!.area).toMatchObject({ specId: decisions, by: 'classifier' });
   });
 
   test('classifier unavailable: the declared-domain mapping, labelled as the fallback', async () => {
