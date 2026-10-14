@@ -4,9 +4,9 @@
  * Mission · Overview: what the mission is doing and what sets its finish.
  *
  * ```
- * 2 of 7 landed
- * [■][■][▶][▦][▦][░][░]        TaskStrip (lg): one cell per task, marks on the ticks
- *  01 02 03 04 05 06 07
+ * 2 done · 1 in progress · 2 waiting on tasks · 1 next in line
+ * [■][■] ┌[▶]┐ [┊][┊][▢]  [◐]   TaskStrip (lg): Done, In progress (outlined),
+ *  01 02    03   04 05 06   07    Waiting, then checks (spec f7f67f1a R-1)
  * ┌ 03 of 07 · level 1 of 3 ───┐   FocusCard: the selected task
  * │ Shared delivery projection  │
  * │ Build › Audit › Land        │   (once: no second stage grid)
@@ -14,8 +14,9 @@
  * ‹ ›                                           Goal · 1 of 4 criteria
  * ```
  *
- * On arrival the task setting the finish is selected (`finishSettingTaskId`),
- * never just the first. From 900px the main column stops at 720px and the
+ * On arrival the task a hold names is selected, else the first in flight
+ * (`overviewDefaultSelection`), never just the first. The selection is a task
+ * id, so a task keeps it when it moves to another group. From 900px the main column stops at 720px and the
  * goal criteria and the agent counts sit in a right rail beside it.
  */
 import { displayTaskTitle } from '@/lib/task-title';
@@ -26,8 +27,9 @@ import FocusCard from '@/components/ui/FocusCard';
 import TaskStrip from '@/components/ui/TaskStrip';
 import { MissionStripContext, createMissionStripStore, type MissionStripValue } from '@/components/missions/mission-strip-context';
 import { boardNeedsYouCount, type MissionBoardModel } from '@/lib/mission-board';
-import { finishSettingTaskId, overviewCells, overviewCounts, overviewSelection, railLines } from '@/lib/mission-overview';
+import { overviewCellState, overviewCells, overviewDefaultSelection, overviewLayout, overviewLegend, overviewSelection, overviewWaitLine, railLines, type OverviewLegendEntry } from '@/lib/mission-overview';
 import { stepIndex, stripOrder, stripState } from '@/lib/mission-task-strip';
+import { STATES, type StateKey } from '@/components/ui/states';
 import type { MissionExecutor } from '@/lib/task-actions';
 import { AskBanner, CompletionRecord, PlanningPlaceholder } from './MissionBoard';
 import { useLiveBoard, useNow, type BoardLinkContext } from './MissionBoardParts';
@@ -63,13 +65,16 @@ function OverviewView({
 }: MissionOverviewProps & { review: MissionVisualReviewValue | null }) {
   const model = useLiveBoard(serverModel);
   const now = useNow(model.now, 15_000, !model.complete);
-  const order = useMemo(() => stripOrder(model), [model]);
+  const layout = useMemo(() => overviewLayout(model, stripOrder(model)), [model]);
+  const order = layout.order;
   const cells = useMemo(() => overviewCells(model, order), [model, order]);
+  const groups = useMemo(() => layout.groups.map(g => ({ key: g.key, ids: g.ids, outline: g.key === 'active' })), [layout]);
+  const legend = useMemo(() => overviewLegend(model, layout), [model, layout]);
   const [store] = useState(createMissionStripStore);
   const stripValue = useMemo<MissionStripValue | null>(() => (order.length > 0 ? { store, taskIds: order } : null), [store, order]);
   const chosen = useSyncExternalStore(store.subscribe, store.getSelected, () => null);
-  // On arrival the task setting the finish; the situation block or a tap overrides it through the store.
-  const selectedId = chosen && order.includes(chosen) ? chosen : finishSettingTaskId(model, order);
+  // A tap or the situation block chooses through the store; else the task a hold names, else the first in flight.
+  const selectedId = overviewDefaultSelection(model, order, chosen, stripFocus?.taskId ?? null);
   const select = useCallback((id: string) => store.select(id), [store]);
   const vm = review?.model ?? null;
   const needs = boardNeedsYouCount(model, vm);
@@ -80,8 +85,8 @@ function OverviewView({
     <MissionStripContext.Provider value={stripValue}>
       <div data-testid="mission-overview" className="mt-4 grid gap-x-10 gap-y-6 min-[900px]:grid-cols-[minmax(0,720px)_minmax(240px,300px)]">
         <div className="flex min-w-0 flex-col gap-4">
-          {/* Merged only: criteria are the header's Verified pill and the rail's list. */}
-          <p data-testid="overview-counts" className="font-mono text-meta text-text-muted">{overviewCounts(model, { criteria: false })}</p>
+          {/* Build counts only: criteria are the header's Verified pill and the rail's list. */}
+          <Legend entries={legend} />
           {notice}
           {model.needsYou.filter(id => !model.tasks[id].delivery).map(id => (
             <AskBanner key={id} task={model.tasks[id]} now={now} />
@@ -91,7 +96,7 @@ function OverviewView({
           {model.phases.length === 0 && model.planning && <PlanningPlaceholder planning={model.planning} now={now} link={link} />}
           {selectedId && (
             <>
-              <TaskStrip cells={cells} selectedId={selectedId} onSelect={select} marks={overviewSelection(model, order, selectedId).marks} label="Mission tasks" />
+              <TaskStrip cells={cells} groups={groups} selectedId={selectedId} onSelect={select} marks={overviewSelection(model, order, selectedId).marks} label="Mission tasks, done first" />
               <Focus model={model} order={order} id={selectedId} onSelect={select} link={link} workspaceId={workspaceId} executor={executor} focusReason={stripFocus?.taskId === selectedId ? stripFocus.reason : null} delivery={deliveries?.[selectedId] ?? null} />
             </>
           )}
@@ -118,6 +123,36 @@ function OverviewView({
   );
 }
 
+/** Each legend entry's swatch: the same cell fill the strip draws for it. */
+const SWATCH: Record<OverviewLegendEntry['key'], { state: StateKey; wait?: string }> = {
+  done: { state: 'landed' },
+  active: { state: 'running' },
+  tasks: { state: 'blocked', wait: 'tasks' },
+  slot: { state: 'ready', wait: 'slot' },
+  hold: { state: 'ready', wait: 'hold' },
+  unknown: { state: 'ready', wait: 'unknown' },
+  closed: { state: 'not_landed' },
+  checks: { state: 'review' },
+};
+
+function Legend({ entries }: { entries: readonly OverviewLegendEntry[] }) {
+  if (entries.length === 0) return <p data-testid="overview-counts" className="font-mono text-meta text-text-muted">No tasks</p>;
+  return (
+    <p data-testid="overview-counts" className="flex flex-wrap gap-x-4 gap-y-1 font-mono text-meta text-text-muted">
+      {entries.map(e => {
+        const sw = SWATCH[e.key];
+        const s = STATES[sw.state];
+        return (
+          <span key={e.key} data-legend={e.key} className="inline-flex items-center gap-1.5">
+            <span aria-hidden="true" className="state-cell inline-block h-2.5 w-2.5 rounded-sm" data-tone={s.tone} data-pattern={s.pattern} data-frame={s.frame} data-wait={sw.wait} />
+            {e.text}
+          </span>
+        );
+      })}
+    </p>
+  );
+}
+
 const STEP_BTN = 'inline-flex h-11 w-11 items-center justify-center rounded-[var(--radius-card)] border border-border-default text-heading text-text-primary hover:bg-surface-3 md:h-9 md:w-9';
 
 function Focus({ model, order, id, onSelect, link, workspaceId, executor, focusReason, delivery }: {
@@ -133,9 +168,10 @@ function Focus({ model, order, id, onSelect, link, workspaceId, executor, focusR
 }) {
   const t = model.tasks[id];
   const i = order.indexOf(id);
-  const state = stripState(model, id);
+  const state = overviewCellState(model, id);
+  const actionState = stripState(model, id);
   const { reason } = overviewSelection(model, order, id);
-  const why = state === 'landed' ? null : focusReason ?? stripReason(t, executor);
+  const why = state === 'landed' ? null : focusReason ?? overviewWaitLine(model, id) ?? stripReason(t, executor);
   const tick = String(i + 1).padStart(2, '0');
   const of = `${tick} of ${String(order.length).padStart(2, '0')}`;
   const meta = [of, t.levels > 1 ? `level ${t.level} of ${t.levels}` : null, t.roleName?.toLowerCase() ?? null, t.pr ? `PR #${t.pr.number}` : null].filter(Boolean).join(' · ');
@@ -157,7 +193,7 @@ function Focus({ model, order, id, onSelect, link, workspaceId, executor, focusR
         footer={
           <div className="flex min-w-0 flex-col gap-2">
             {delivery && delivery.evidence.length > 0 && <DrawerDelivery key={t.id} delivery={delivery} stages={false} />}
-            {workspaceId && <StripTaskActions task={t} state={state} link={link} workspaceId={workspaceId} executor={executor} why={why} />}
+            {workspaceId && <StripTaskActions task={t} state={actionState} link={link} workspaceId={workspaceId} executor={executor} why={why} />}
           </div>
         }
       />

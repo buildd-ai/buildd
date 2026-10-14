@@ -14,20 +14,25 @@
  *                         automatic repair, 35 held behind it. The drawer's
  *                         Build › Audit › Land row and its Audit and repair
  *                         disclosure (`missionTaskDeliveries`).
+ *   &variant=overview-2|overview-10|overview-20|overview-64
+ *                         the Overview tab's Done / In progress / Waiting groups
+ *                         (spec f7f67f1a R-1, R-5): mixed waiting causes, and a
+ *                         surface audit in the checks group from 10 tasks up
  *   &select=<letter>      a DAG variant opens with that task selected
  *
  * Illustrative rows only (made-up ids and titles), built through the real
  * `buildMissionBoard`, so the strip reads exactly what the mission page reads.
  */
 import * as missionHelpers from '@buildd/core/mission-helpers';
-import { buildMissionBoard, type BoardTaskInput, type BoardWorkerInput, type MissionBoardModel } from '@/lib/mission-board';
+import { SURFACE_AUDIT_TITLE_PREFIX } from '@buildd/core/surface-audit';
+import { buildMissionBoard, type BoardTaskInput, type BoardWorkerInput, type MissionBoardModel, type MissionGateFacts } from '@/lib/mission-board';
 import type { TaskDeliveryDetail } from '@/lib/activity-delivery';
 import { missionTaskDeliveries, type MissionDeliveryTaskRow } from '@/app/app/(protected)/missions/[id]/mission-task-delivery';
 import type { MissionExecutor } from '@/lib/task-actions';
 import { MISSION_TASK_STRIP_FIXTURE_STATE } from './visual-review-fixtures';
 
 export const MISSION_TASK_STRIP_STATE = MISSION_TASK_STRIP_FIXTURE_STATE;
-export const MISSION_TASK_STRIP_VARIANTS = ['mid-open', 'all-landed', 'states', 'linear', 'fan-out', 'fan-in', 'field', 'wide', 'delivery'] as const;
+export const MISSION_TASK_STRIP_VARIANTS = ['mid-open', 'all-landed', 'states', 'linear', 'fan-out', 'fan-in', 'field', 'wide', 'delivery', 'overview-2', 'overview-10', 'overview-20', 'overview-64'] as const;
 export type MissionTaskStripVariant = (typeof MISSION_TASK_STRIP_VARIANTS)[number];
 
 export function parseMissionTaskStripVariant(q: URLSearchParams): MissionTaskStripVariant {
@@ -103,6 +108,7 @@ export function missionTaskStripFixture(variant: MissionTaskStripVariant, now = 
     };
   }
   if (variant === 'delivery') return deliveryFixture(base);
+  if (isOverviewVariant(variant)) return { model: overviewWavesBoard(overviewSize(variant), now), executor: 'runner' };
   if (isDagVariant(variant)) {
     return { model: buildMissionBoard({ ...base, tasks: dagTasks(DAG_SPECS[variant]) }), executor: 'runner' };
   }
@@ -298,4 +304,54 @@ function deliveryFixture(base: { now: number; missionCreatedAt: number; missionS
     rules: missionHelpers,
   });
   return { model: buildMissionBoard({ ...base, tasks: rows }), executor: 'runner', deliveries };
+}
+
+// ── Overview groups (spec f7f67f1a R-1, R-5) ──────────────────────────────────
+
+export const OVERVIEW_SIZES = [2, 10, 20, 64] as const;
+export type OverviewVariant = `overview-${(typeof OVERVIEW_SIZES)[number]}`;
+export const isOverviewVariant = (v: string): v is OverviewVariant => v.startsWith('overview-');
+export const overviewSize = (v: OverviewVariant) => Number(v.slice('overview-'.length));
+
+/**
+ * `n` build tasks: about half landed, two building, and the rest waiting for
+ * each of the causes the Overview tells apart: on another task (`dep`), for a
+ * free runner (`slot`), on a hold (`hold`, a mission budget) and on a cause
+ * nobody recorded (`unknown`). From 10 tasks up, a surface audit sits in the
+ * checks group. `kinds` says which cause each waiting task was given.
+ */
+export function overviewWavesInput(n: number): { tasks: BoardTaskInput[]; gateFacts: MissionGateFacts; kinds: Record<string, 'dep' | 'slot' | 'hold' | 'unknown'> } {
+  const tasks: BoardTaskInput[] = [];
+  const kinds: Record<string, 'dep' | 'slot' | 'hold' | 'unknown'> = {};
+  const waitingKinds: Record<string, MissionGateFacts['waitingKinds'][string]> = {};
+  const running = n >= 4 ? 2 : 1;
+  const done = n <= 2 ? 1 : Math.floor(n / 2);
+  const title = (i: number) => `feat(reports): part ${String(i).padStart(2, '0')}`;
+  for (let i = 1; i <= done; i++) tasks.push(landed(i, title(i)));
+  for (let i = done + 1; i <= done + running; i++) {
+    tasks.push(task(i, title(i), { status: 'in_progress', workers: [worker(`w${i}`, { status: 'running', completedAt: null, currentAction: 'Editing files' })] }));
+  }
+  const firstRunning = stripFixtureId(done + 1);
+  const cycle = ['dep', 'slot', 'dep', 'hold', 'unknown'] as const;
+  for (let i = done + running + 1, k = 0; i <= n; i++, k++) {
+    const kind = cycle[k % cycle.length];
+    const id = stripFixtureId(i);
+    kinds[id] = kind;
+    if (kind === 'dep') {
+      tasks.push(task(i, title(i), { dependsOn: [firstRunning] }));
+      waitingKinds[id] = 'dep_declared';
+    } else {
+      tasks.push(task(i, title(i)));
+      if (kind === 'slot') waitingKinds[id] = 'workspace_cap';
+      if (kind === 'hold') waitingKinds[id] = 'mission_budget';
+      if (kind === 'unknown') waitingKinds[id] = 'unknown';
+    }
+  }
+  if (n >= 10) tasks.push(task(n + 1, `${SURFACE_AUDIT_TITLE_PREFIX}Reports`, { roleSlug: 'visual-auditor', outputRequirement: 'artifact_required', dependsOn: [firstRunning] }));
+  return { tasks, gateFacts: { releasedEdges: [], waitingKinds }, kinds };
+}
+
+export function overviewWavesBoard(n: number, now = min(60)): MissionBoardModel {
+  const { tasks, gateFacts } = overviewWavesInput(n);
+  return buildMissionBoard({ now, missionCreatedAt: T0, missionStatus: 'active', tasks, gateFacts });
 }
