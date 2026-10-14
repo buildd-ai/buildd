@@ -195,7 +195,8 @@ export async function hostsKernelHere(deps: ClientDeps = {}): Promise<boolean> {
 // ── Submitting ──────────────────────────────────────────────────────────────
 
 export interface SubmitOptions {
-  principal: KernelPrincipal;
+  /** Null: no principal was named. The command may run on this host, but is never sent to the control plane. */
+  principal: KernelPrincipal | null;
   /** The caller's key; the same key on a retry gets the same answer. Absent: one is made for this call. */
   idempotencyKey?: string;
   /** Overall budget for reaching the control plane, retries included. */
@@ -252,6 +253,8 @@ async function runHere<K extends KernelOp>(op: K, input: KernelOps[K]['input'], 
 }
 
 async function submitRemote<K extends KernelOp>(op: K, input: KernelOps[K]['input'], opts: SubmitOptions & { idempotencyKey: string }, deps: ClientDeps): Promise<KernelAnswer<K>> {
+  // Fail closed: a command the control plane cannot re-check for someone is not sent as the system.
+  if (!opts.principal) throw new KernelCommandRefusedError(403, { code: 'no_principal', error: 'the door named no principal for this command' });
   const env = deps.env ?? process.env;
   const key = signingKey(commandKeyRing(env));
   if (!key) throw new ControlPlaneUnavailableError('no command key is configured on the web host', 'not_applied', opts.idempotencyKey);
@@ -323,26 +326,19 @@ async function submitRemote<K extends KernelOp>(op: K, input: KernelOps[K]['inpu
 //
 // The seam's door functions, same names and inputs, run where the kernel is
 // hosted. A door imports these, never the seam's own (the S3a block of
-// packages/core/__tests__/workflow-write-sites.test.ts fails on a door that does). `door` names who the command is for; absent, the
-// principal is read off the input's actor: `human:<user id>` is that person,
-// anything else (`agent:…`, `system:…`, `rule:…`) a system principal named by it.
+// packages/core/__tests__/workflow-write-sites.test.ts fails on a door that does). Every door
+// names who the command is for (`principal`, required, so leaving it out fails the type check):
+// a door a person, an agent or an API caller reaches passes `kernelPrincipalOf` its authenticated
+// caller; buildd's own sweeps and rules pass `systemPrincipal(...)`. Null (no caller) is never sent.
 
 export interface DoorCall {
-  principal?: KernelPrincipal;
+  principal: KernelPrincipal | null;
   /** The caller's key (an `Idempotency-Key` header); absent, one is made for this call. */
   idempotencyKey?: string;
   deps?: ClientDeps;
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/** The principal an actor string names. */
-export function principalOfActor(actor: string | null | undefined): KernelPrincipal {
-  const a = actor ?? 'system:door';
-  const human = /^human:(.+)$/.exec(a);
-  if (human && UUID.test(human[1])) return { kind: 'user', id: human[1] };
-  return { kind: 'system', id: a.slice(0, 200) };
-}
+export { doorPrincipal, principalOfActor, kernelPrincipalOf, systemPrincipal, type KernelCaller } from './kernel-principal';
 
 /** How many more times a door submits after an `unknown` outcome, always with the same key. */
 export const DOOR_UNKNOWN_RETRIES = 2;
@@ -353,10 +349,11 @@ export const DOOR_UNKNOWN_RETRIES = 2;
  */
 export const DOOR_BUDGET_MS = 20_000;
 
-async function door<K extends KernelOp>(op: K, input: KernelOps[K]['input'], actor: string | null | undefined, c: DoorCall = {}): Promise<KernelOps[K]['result']> {
+async function door<K extends KernelOp>(op: K, input: KernelOps[K]['input'], c: DoorCall): Promise<KernelOps[K]['result']> {
   // One key for the whole door call: every retry below asks the control plane the same question.
   const idempotencyKey = c.idempotencyKey ?? (c.deps?.newKey ?? (() => newIdempotencyKey(op)))();
-  const principal = c.principal ?? principalOfActor(actor);
+  // Never read off the input's actor: null (no caller) stays null and is refused before sending.
+  const principal = c.principal;
   const now = c.deps?.now ?? Date.now;
   const env = c.deps?.env ?? process.env;
   const deadline = now() + (Number(env.KERNEL_DOOR_BUDGET_MS) || DOOR_BUDGET_MS);
@@ -375,14 +372,14 @@ async function door<K extends KernelOp>(op: K, input: KernelOps[K]['input'], act
   }
 }
 
-export const landThroughKernel = (p: KernelOps['land']['input'], c?: DoorCall) => door('land', p, p.actor, c);
-export const applyRecommendationThroughKernel = (p: KernelOps['apply_recommendation']['input'], c?: DoorCall) => door('apply_recommendation', p, p.actor, c);
-export const policyMergeThroughKernel = (p: KernelOps['policy_merge']['input'], c?: DoorCall) => door('policy_merge', p, `rule:${p.rule ?? 'escalation_gate'}`, c);
-export const requestReview = (p: KernelOps['request_review']['input'], c?: DoorCall) => door('request_review', p, p.actor, c);
-export const requestCiRetry = (p: KernelOps['request_ci_retry']['input'], c?: DoorCall) => door('request_ci_retry', p, p.actor, c);
-export const recordSupersession = (p: KernelOps['record_supersession']['input'], c?: DoorCall) => door('record_supersession', p, p.actor, c);
-export const abandonDelivery = (p: KernelOps['abandon']['input'], c?: DoorCall) => door('abandon', p, p.actor, c);
-export const openKernelDelivery = (p: KernelOps['open_delivery']['input'], c?: DoorCall) => door('open_delivery', p, `system:${p.source}`, c);
+export const landThroughKernel = (p: KernelOps['land']['input'], c: DoorCall) => door('land', p, c);
+export const applyRecommendationThroughKernel = (p: KernelOps['apply_recommendation']['input'], c: DoorCall) => door('apply_recommendation', p, c);
+export const policyMergeThroughKernel = (p: KernelOps['policy_merge']['input'], c: DoorCall) => door('policy_merge', p, c);
+export const requestReview = (p: KernelOps['request_review']['input'], c: DoorCall) => door('request_review', p, c);
+export const requestCiRetry = (p: KernelOps['request_ci_retry']['input'], c: DoorCall) => door('request_ci_retry', p, c);
+export const recordSupersession = (p: KernelOps['record_supersession']['input'], c: DoorCall) => door('record_supersession', p, c);
+export const abandonDelivery = (p: KernelOps['abandon']['input'], c: DoorCall) => door('abandon', p, c);
+export const openKernelDelivery = (p: KernelOps['open_delivery']['input'], c: DoorCall) => door('open_delivery', p, c);
 
 /** A door's caller-supplied idempotency key, when the request carries one. */
 export function idempotencyKeyOf(req: { headers: { get(name: string): string | null } }): string | undefined {

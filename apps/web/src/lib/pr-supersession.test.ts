@@ -67,7 +67,7 @@ beforeEach(() => {
 
 describe('recordPrSupersession — same repo (unchanged rule)', () => {
   it('records a merged target in the same repo', async () => {
-    const r = await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 9, reason: 'moved', recordedBy: 'me' });
+    const r = await recordPrSupersession({ caller: 'system', workerId: 'w-1', supersedingPrNumber: 9, reason: 'moved', recordedBy: 'me' });
     expect(r.ok).toBe(true);
     expect(githubCalls).toEqual(['/repos/org/kb/pulls/9']);
     expect(updates[0].set.supersededByPrNumber).toBe(9);
@@ -75,13 +75,13 @@ describe('recordPrSupersession — same repo (unchanged rule)', () => {
 
   it('refuses an unmerged target', async () => {
     githubResponse = () => ({ merged: false, state: 'open' });
-    const r = await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 9, reason: 'x', recordedBy: 'me' });
+    const r = await recordPrSupersession({ caller: 'system', workerId: 'w-1', supersedingPrNumber: 9, reason: 'x', recordedBy: 'me' });
     expect(r).toMatchObject({ ok: false, status: 409 });
     expect(updates).toHaveLength(0);
   });
 
   it('refuses the PR itself as its own target', async () => {
-    const r = await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 6, reason: 'x', recordedBy: 'me' });
+    const r = await recordPrSupersession({ caller: 'system', workerId: 'w-1', supersedingPrNumber: 6, reason: 'x', recordedBy: 'me' });
     expect(r).toMatchObject({ ok: false, status: 400 });
   });
 });
@@ -90,6 +90,7 @@ describe('recordPrSupersession — cross-repo target', () => {
   it('allows a merged target in a repo another task of the same mission works in', async () => {
     missionSiblings = [{ id: 't-2', workspace: { repo: null, githubRepo: { fullName: 'org/buildd' } }, workers: [] }];
     const r = await recordPrSupersession({
+      caller: 'system',
       workerId: 'w-1', supersedingPrNumber: 3366, supersedingRepo: 'org/buildd', reason: 'docs moved', recordedBy: 'me',
     });
     expect(r).toMatchObject({ ok: true, supersedingRepo: 'org/buildd', supersedingPrUrl: 'https://github.com/org/buildd/pull/3366' });
@@ -100,6 +101,7 @@ describe('recordPrSupersession — cross-repo target', () => {
   it('allows a repo a sibling task opened a PR in, even with no workspace bound to it', async () => {
     missionSiblings = [{ id: 't-2', workspace: null, workers: [{ prUrl: 'https://github.com/org/buildd/pull/6' }] }];
     const r = await recordPrSupersession({
+      caller: 'system',
       workerId: 'w-1', supersedingPrNumber: 6, supersedingRepo: 'org/buildd', reason: 'same number, other repo', recordedBy: 'me',
     });
     expect(r.ok).toBe(true);
@@ -108,6 +110,7 @@ describe('recordPrSupersession — cross-repo target', () => {
   it('refuses a repo outside the workspace and mission, without asking GitHub', async () => {
     missionSiblings = [{ id: 't-2', workspace: { githubRepo: { fullName: 'org/buildd' } }, workers: [] }];
     const r = await recordPrSupersession({
+      caller: 'system',
       workerId: 'w-1', supersedingPrNumber: 1, supersedingRepo: 'someone/else', reason: 'x', recordedBy: 'me',
     });
     expect(r).toMatchObject({ ok: false, status: 403 });
@@ -118,6 +121,7 @@ describe('recordPrSupersession — cross-repo target', () => {
   it('refuses a cross-repo target when the task has no mission', async () => {
     missionTask = { missionId: null };
     const r = await recordPrSupersession({
+      caller: 'system',
       workerId: 'w-1', supersedingPrNumber: 1, supersedingRepo: 'org/buildd', reason: 'x', recordedBy: 'me',
     });
     expect(r).toMatchObject({ ok: false, status: 403 });
@@ -127,6 +131,7 @@ describe('recordPrSupersession — cross-repo target', () => {
     missionSiblings = [{ id: 't-2', workspace: { githubRepo: { fullName: 'org/buildd' } }, workers: [] }];
     githubResponse = () => ({ merged: false, state: 'closed' });
     const r = await recordPrSupersession({
+      caller: 'system',
       workerId: 'w-1', supersedingPrNumber: 3366, supersedingRepo: 'org/buildd', reason: 'x', recordedBy: 'me',
     });
     expect(r).toMatchObject({ ok: false, status: 409 });
@@ -135,6 +140,7 @@ describe('recordPrSupersession — cross-repo target', () => {
   it('targetRepoWithinWorkspace drops the mission’s other repos, without asking GitHub', async () => {
     missionSiblings = [{ id: 't-2', workspace: { repo: null, githubRepo: { fullName: 'org/buildd' } }, workers: [] }];
     const r = await recordPrSupersession({
+      caller: 'system',
       workerId: 'w-1', supersedingPrNumber: 3366, supersedingRepo: 'org/buildd', reason: 'x', recordedBy: 'me', targetRepoWithinWorkspace: true,
     });
     expect(r).toMatchObject({ ok: false, status: 403 });
@@ -144,6 +150,7 @@ describe('recordPrSupersession — cross-repo target', () => {
 
   it('targetRepoWithinWorkspace still allows the workspace’s own repo', async () => {
     const r = await recordPrSupersession({
+      caller: 'system',
       workerId: 'w-1', supersedingPrNumber: 9, supersedingRepo: 'org/kb', reason: 'x', recordedBy: 'me', targetRepoWithinWorkspace: true,
     });
     expect(r.ok).toBe(true);
@@ -152,12 +159,12 @@ describe('recordPrSupersession — cross-repo target', () => {
 
 describe('recordPrAbandonment', () => {
   it('requires a reason', async () => {
-    expect(await recordPrAbandonment({ workerId: 'w-1', reason: '  ', recordedBy: 'me', actor: 'human:u-1' })).toMatchObject({ ok: false, status: 400 });
+    expect(await recordPrAbandonment({ caller: { person: 'u-1' }, workerId: 'w-1', reason: '  ', recordedBy: 'me', actor: 'human:u-1' })).toMatchObject({ ok: false, status: 400 });
     expect(updates).toHaveLength(0);
   });
 
   it('records abandonment on a closed PR', async () => {
-    const r = await recordPrAbandonment({ workerId: 'w-1', reason: 'plan changed', recordedBy: 'me', actor: 'human:u-1' });
+    const r = await recordPrAbandonment({ caller: { person: 'u-1' }, workerId: 'w-1', reason: 'plan changed', recordedBy: 'me', actor: 'human:u-1' });
     expect(r.ok).toBe(true);
     expect(updates[0].set).toMatchObject({ abandonedReason: 'plan changed', abandonedRecordedBy: 'me' });
     expect(updates[0].set.abandonedAt).toBeInstanceOf(Date);
@@ -165,19 +172,19 @@ describe('recordPrAbandonment', () => {
 
   it('refuses an open PR', async () => {
     workerRow = closedWorker({ prLifecycleStatus: 'pr_open' });
-    expect(await recordPrAbandonment({ workerId: 'w-1', reason: 'x', recordedBy: 'me', actor: 'human:u-1' })).toMatchObject({ ok: false, status: 409 });
+    expect(await recordPrAbandonment({ caller: { person: 'u-1' }, workerId: 'w-1', reason: 'x', recordedBy: 'me', actor: 'human:u-1' })).toMatchObject({ ok: false, status: 409 });
   });
 
   it.each(['agent:acct-svc', 'agent:task-1', 'runner', 'svc key'])('refuses a non-person actor (%s) before reading or writing anything', async (actor) => {
     workerRow = closedWorker({ workspaceId: 'ws-1' });
-    expect(await recordPrAbandonment({ workerId: 'w-1', reason: 'plan changed', recordedBy: 'svc key', actor })).toMatchObject({ ok: false, status: 403 });
+    expect(await recordPrAbandonment({ caller: { person: 'u-1' }, workerId: 'w-1', reason: 'plan changed', recordedBy: 'svc key', actor })).toMatchObject({ ok: false, status: 403 });
     expect(updates).toHaveLength(0);
     expect(kernelCalls).toHaveLength(0);
   });
 
   it('refuses a PR already recorded as superseded', async () => {
     workerRow = closedWorker({ supersededByPrNumber: 9 });
-    expect(await recordPrAbandonment({ workerId: 'w-1', reason: 'x', recordedBy: 'me', actor: 'human:u-1' })).toMatchObject({ ok: false, status: 409 });
+    expect(await recordPrAbandonment({ caller: { person: 'u-1' }, workerId: 'w-1', reason: 'x', recordedBy: 'me', actor: 'human:u-1' })).toMatchObject({ ok: false, status: 409 });
   });
 });
 
@@ -189,7 +196,7 @@ describe('a kernel-owned PR: T20/T21 decide, the direct column write never runs'
   it('supersession is recorded through T20 with the verified target and the caller as actor', async () => {
     workerRow = closedWorker({ workspaceId: 'ws-1' });
     kernelAnswer = { handled: true, deliveryId: 'd1', result: { result: 'applied', transitionId: 't', deliveryId: 'd1', version: 8, decision: {} } };
-    const r = await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 9, reason: ' moved ', recordedBy: 'agent:abc' });
+    const r = await recordPrSupersession({ caller: 'system', workerId: 'w-1', supersedingPrNumber: 9, reason: ' moved ', recordedBy: 'agent:abc' });
     expect(r).toMatchObject({ ok: true, supersededPrNumber: 6, supersedingPrNumber: 9, supersedingPrUrl: 'https://github.com/org/kb/pull/9' });
     expect(kernelCalls).toEqual([{ fn: 'recordSupersession', p: {
       workspaceId: 'ws-1', repoFullName: 'org/kb', prNumber: 6, installationId: 11, actor: 'agent:abc', reason: 'moved',
@@ -201,17 +208,17 @@ describe('a kernel-owned PR: T20/T21 decide, the direct column write never runs'
   it('a replay is the same answer (duplicate), not an error', async () => {
     workerRow = closedWorker({ workspaceId: 'ws-1' });
     kernelAnswer = { handled: true, deliveryId: 'd1', result: { result: 'duplicate', transitionId: 't', reason: 'edge_exists_same', current: current('SUPERSEDED') } };
-    expect((await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 9, reason: 'moved', recordedBy: 'me' })).ok).toBe(true);
+    expect((await recordPrSupersession({ caller: 'system', workerId: 'w-1', supersedingPrNumber: 9, reason: 'moved', recordedBy: 'me' })).ok).toBe(true);
   });
 
   it('the kernel refuses an open PR and an overwrite, and the refusal says which', async () => {
     workerRow = closedWorker({ workspaceId: 'ws-1', prLifecycleStatus: 'pr_open' });
     kernelAnswer = { handled: true, deliveryId: 'd1', result: { result: 'rejected', reason: 'not_closed_unmerged', current: current('AWAITING_REVIEW') } };
-    const open = await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 9, reason: 'x', recordedBy: 'me' });
+    const open = await recordPrSupersession({ caller: 'system', workerId: 'w-1', supersedingPrNumber: 9, reason: 'x', recordedBy: 'me' });
     expect(open).toMatchObject({ ok: false, status: 409 });
     expect((open as { error: string }).error).toContain('awaiting review');
     kernelAnswer = { handled: true, deliveryId: 'd1', result: { result: 'rejected', reason: 'edge_exists', current: current('SUPERSEDED') } };
-    const over = await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 10, reason: 'x', recordedBy: 'me' });
+    const over = await recordPrSupersession({ caller: 'system', workerId: 'w-1', supersedingPrNumber: 10, reason: 'x', recordedBy: 'me' });
     expect(over).toMatchObject({ ok: false, status: 409 });
     expect((over as { error: string }).error).toContain('never overwritten');
     expect(updates).toHaveLength(0);
@@ -221,14 +228,14 @@ describe('a kernel-owned PR: T20/T21 decide, the direct column write never runs'
     workerRow = closedWorker({ workspaceId: 'ws-1' });
     githubResponse = () => ({ merged: false, state: 'open' });
     kernelAnswer = { handled: true, deliveryId: 'd1', result: { result: 'applied' } };
-    expect(await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 9, reason: 'x', recordedBy: 'me' })).toMatchObject({ ok: false, status: 409 });
+    expect(await recordPrSupersession({ caller: 'system', workerId: 'w-1', supersedingPrNumber: 9, reason: 'x', recordedBy: 'me' })).toMatchObject({ ok: false, status: 409 });
     expect(kernelCalls).toHaveLength(0);
   });
 
   it('abandonment goes through T21 as a person, and the kernel (not a stale column) decides it is closed', async () => {
     workerRow = closedWorker({ workspaceId: 'ws-1', prLifecycleStatus: 'pr_open' }); // the close webhook was lost
     kernelAnswer = { handled: true, deliveryId: 'd1', result: { result: 'applied', transitionId: 't', deliveryId: 'd1', version: 9, decision: {} } };
-    expect(await recordPrAbandonment({ workerId: 'w-1', reason: 'plan changed', recordedBy: 'me@example.com', actor: 'human:u-1' })).toEqual({ ok: true });
+    expect(await recordPrAbandonment({ caller: { person: 'u-1' }, workerId: 'w-1', reason: 'plan changed', recordedBy: 'me@example.com', actor: 'human:u-1' })).toEqual({ ok: true });
     expect(kernelCalls).toEqual([{ fn: 'abandonDelivery', p: {
       workspaceId: 'ws-1', repoFullName: 'org/kb', prNumber: 6, installationId: 11, actor: 'human:u-1', reason: 'plan changed',
     } }]);
@@ -237,7 +244,7 @@ describe('a kernel-owned PR: T20/T21 decide, the direct column write never runs'
 
   it('a legacy PR (no kernel delivery) keeps the direct write', async () => {
     workerRow = closedWorker({ workspaceId: 'ws-1' });
-    expect((await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 9, reason: 'moved', recordedBy: 'me' })).ok).toBe(true);
+    expect((await recordPrSupersession({ caller: 'system', workerId: 'w-1', supersedingPrNumber: 9, reason: 'moved', recordedBy: 'me' })).ok).toBe(true);
     expect(kernelCalls.map((c) => c.fn)).toEqual(['recordSupersession']);
     expect(updates[0].set.supersededByPrNumber).toBe(9);
   });
@@ -253,9 +260,9 @@ describe('cut over to the control plane (workflow-kernel-library §3)', () => {
     const { cutOver } = await import('@/lib/workflow/testing/cut-over');
     cp = cutOver();
     workerRow = closedWorker({ workspaceId: 'ws-1' });
-    const s = await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 9, reason: 'moved', recordedBy: 'me@example.com', principal: { kind: 'user', id: USER }, actor: `human:${USER}` });
+    const s = await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 9, reason: 'moved', recordedBy: 'me@example.com', caller: { person: USER }, actor: `human:${USER}` });
     expect(s).toMatchObject({ ok: false, status: 503, door: { body: { code: 'control_plane_unavailable', retryable: true, controlPlane: true, idempotencyKey: expect.stringMatching(/^record_supersession:/) }, headers: { 'Retry-After': '5' } } });
-    const a = await recordPrAbandonment({ workerId: 'w-1', reason: 'plan changed', recordedBy: 'me@example.com', actor: `human:${USER}` });
+    const a = await recordPrAbandonment({ caller: { person: 'u-1' }, workerId: 'w-1', reason: 'plan changed', recordedBy: 'me@example.com', actor: `human:${USER}` });
     expect(a).toMatchObject({ ok: false, status: 503, door: { body: { code: 'control_plane_unavailable', retryable: true, controlPlane: true, idempotencyKey: expect.stringMatching(/^abandon:/) } } });
     expect(cp.calls.map((c) => c.op)).toEqual(expect.arrayContaining(['record_supersession', 'abandon']));
     expect(kernelCalls).toHaveLength(0);
@@ -266,7 +273,7 @@ describe('cut over to the control plane (workflow-kernel-library §3)', () => {
     const { cutOver, refusedByControlPlane } = await import('@/lib/workflow/testing/cut-over');
     cp = cutOver({ reply: refusedByControlPlane });
     workerRow = closedWorker({ workspaceId: 'ws-1' });
-    const s = await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 9, reason: 'moved', recordedBy: 'me@example.com', principal: { kind: 'account', id: ACCOUNT } });
+    const s = await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 9, reason: 'moved', recordedBy: 'me@example.com', caller: { account: { id: ACCOUNT } } });
     expect(s).toMatchObject({ ok: false, status: 403, door: { body: { code: 'control_plane_refused' } } });
     expect(updates).toHaveLength(0);
   });
@@ -276,12 +283,17 @@ describe('cut over to the control plane (workflow-kernel-library §3)', () => {
     const ok = () => Response.json({ v: 1, op: 'record_supersession', idempotencyKey: 'k', result: { handled: true, deliveryId: 'd1', result: { result: 'applied', transitionId: 't', deliveryId: 'd1', version: 8, decision: {} } }, delivery: null, host: 'control-plane', replayed: false });
     cp = cutOver({ reply: ok });
     workerRow = closedWorker({ workspaceId: 'ws-1' });
-    await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 9, reason: 'moved', recordedBy: 'me@example.com', principal: { kind: 'user', id: USER }, actor: `human:${USER}` });
-    await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 9, reason: 'moved', recordedBy: 'runner-key', principal: { kind: 'account', id: ACCOUNT } });
+    await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 9, reason: 'moved', recordedBy: 'me@example.com', caller: { person: USER }, actor: `human:${USER}` });
+    await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 9, reason: 'moved', recordedBy: 'runner-key', caller: { account: { id: ACCOUNT } } });
+    // A grant session, with or without a person behind it, goes as its grant: the control plane confines it the same way.
+    await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 9, reason: 'moved', recordedBy: 'me@example.com', caller: { person: USER, account: { id: ACCOUNT, oauthGrantId: 'g-1', grantScopes: ['read', 'write'], workspaceIds: ['ws-1'] } }, actor: `human:${USER}` });
+    await recordPrAbandonment({ workerId: 'w-1', reason: 'plan changed', recordedBy: 'me@example.com', caller: { person: USER, account: { id: ACCOUNT, oauthGrantId: 'g-1', grantScopes: ['read', 'write'], workspaceIds: ['ws-1'] } }, actor: `human:${USER}` });
     const sent = cp.calls.map((c) => ({ principal: c.body?.principal, actor: c.body?.input?.actor }));
     expect(sent).toEqual([
       { principal: { kind: 'user', id: USER }, actor: `human:${USER}` },
-      { principal: { kind: 'account', id: ACCOUNT }, actor: 'runner-key' },
+      { principal: { kind: 'account', id: ACCOUNT, grant: null }, actor: 'runner-key' },
+      { principal: { kind: 'grant', id: ACCOUNT, grantId: 'g-1', workspaceIds: ['ws-1'], scopes: ['read', 'write'], userId: USER }, actor: `human:${USER}` },
+      { principal: { kind: 'grant', id: ACCOUNT, grantId: 'g-1', workspaceIds: ['ws-1'], scopes: ['read', 'write'], userId: USER }, actor: `human:${USER}` },
     ]);
     expect(JSON.stringify(sent)).not.toContain('me@example.com');
   });

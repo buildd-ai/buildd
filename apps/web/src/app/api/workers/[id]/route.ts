@@ -5970,6 +5970,7 @@ async function handleReviewerOutcomeIfNeeded(
           eventHeadSha: null,
           door: 'approve',
           actor: { kind: 'system' },
+          principal: { kind: 'system', id: 'system:approve' },
           mode: landingMode,
           policy: approvePolicy!,
           owner: { taskId: originalWorker.taskId ?? null, workerId: originalWorker.id },

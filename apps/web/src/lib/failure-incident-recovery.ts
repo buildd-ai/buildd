@@ -805,7 +805,7 @@ export function productionRecoveryEffects(): RecoveryEffects {
     },
     async kernelCiRetry(p, key) {
       const { requestCiRetry } = await import('./workflow/kernel-client');
-      const r = await requestCiRetry({ ...p, actor: 'buildd:recovery', maxAttempts: 3, reason: `operator recovery ${key}` });
+      const r = await requestCiRetry({ ...p, actor: 'buildd:recovery', maxAttempts: 3, reason: `operator recovery ${key}` }, { principal: { kind: 'system', id: 'buildd:recovery' } });
       return r.handled === true && !!r.result && r.result.result === 'applied';
     },
     async linkFixTask(incidentId, taskId) {
