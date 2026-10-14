@@ -64,7 +64,7 @@ describe('OutcomeSpecPicker', () => {
   it('a read-only viewer sees the selection but no picker', () => {
     render([SELECTED], true);
     expect(container.textContent).toContain('Mission progress');
-    expect(container.textContent).toContain('not approved yet');
+    expect(container.textContent).toContain('proposed');
     expect(q('outcome-spec-choose')).toBeNull();
     expect(container.querySelector('button')).toBeNull();
   });
@@ -108,6 +108,6 @@ describe('outcomeSpecBody', () => {
 describe('specOptionDescription', () => {
   it('names the revision a choice pins', () => {
     expect(specOptionDescription({ id: 'a', title: 't', status: 'approved', headRevision: 7, approvedRevision: 6 })).toBe('Revision 6 approved, revision 7 proposed');
-    expect(specOptionDescription({ id: 'a', title: 't', status: 'draft', headRevision: 2, approvedRevision: null })).toBe('Revision 2, not approved yet');
+    expect(specOptionDescription({ id: 'a', title: 't', status: 'draft', headRevision: 2, approvedRevision: null })).toBe('Revision 2, proposed');
   });
 });

@@ -24,7 +24,7 @@ const LINK = 'min-h-11 md:min-h-0 inline-flex items-center text-meta text-text-m
 /** A spec's option line: which revision a choice would pin. */
 export function specOptionDescription(s: SpecOption): string {
   if (s.approvedRevision) return `Revision ${s.approvedRevision} approved${s.headRevision > s.approvedRevision ? `, revision ${s.headRevision} proposed` : ''}`;
-  return `Revision ${s.headRevision}, not approved yet`;
+  return `Revision ${s.headRevision}, proposed`;
 }
 
 /** The request body for a choice; null when it is not complete. */
@@ -117,7 +117,7 @@ export default function OutcomeSpecPicker({ missionId, workspaceId, selected, re
           {selected.map(c => (
             <li key={c.specId} className="text-meta text-text-secondary leading-snug">
               <a href={`/app/specs/${c.specId}`} className="underline underline-offset-2">{c.label ?? `Spec revision ${c.revision}`}</a>
-              {c.provisional ? ', not approved yet' : ''}
+              {c.provisional ? ', proposed' : ''}
               {c.criteria ? `. Only ${c.criteria.join(', ')}` : ''}
               {!readonly && !open && (
                 <button type="button" className={`${LINK} ml-2`} onClick={() => void openPicker(c)}>Change</button>

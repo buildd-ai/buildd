@@ -37,7 +37,7 @@ export interface OutcomeSpecView {
   specId: string;
   revision: number;
   provisional: boolean;
-  /** e.g. "Revision 7, not approved yet". */
+  /** e.g. "Revision 7, proposed". */
   revisionLine: string;
   /** e.g. "Nine of twelve pass on abc1234." Null before any check has run. */
   coverage: string | null;
@@ -92,7 +92,7 @@ export function outcomeSpecView(c: LivingSpecGoalCriterion, entry: StateEntry | 
     specId: c.specId,
     revision: c.revision,
     provisional: !!c.provisional,
-    revisionLine: `Revision ${c.revision}${c.provisional ? ', not approved yet' : ''}`,
+    revisionLine: `Revision ${c.revision}${c.provisional ? ', proposed' : ''}`,
     coverage,
     short: total === 0 ? 'not checked' : `${passed} of ${total} pass`,
     passed,

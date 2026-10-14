@@ -43,7 +43,7 @@ describe('outcomeSpecView', () => {
 
   it('marks a provisional pin and a narrowed scope', () => {
     const v = outcomeSpecView(crit({ provisional: true, criteria: ['R-1'], narrowedReason: 'only the build half applies here' }), null);
-    expect(v.revisionLine).toBe('Revision 7, not approved yet');
+    expect(v.revisionLine).toBe('Revision 7, proposed');
     expect(v.narrowed).toEqual({ criterionIds: ['R-1'], reason: 'only the build half applies here' });
     expect(v.coverage).toBeNull();
     expect(v.short).toBe('not checked');
