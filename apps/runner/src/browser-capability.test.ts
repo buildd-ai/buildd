@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
 import { EventEmitter } from 'events';
-import { homedir } from 'os';
 
 // No real browser in CI: every exec, spawn and fs check is mocked.
 const mockExecSync = mock((_cmd: string, _opts?: unknown): Buffer => Buffer.from(''));
@@ -183,16 +182,29 @@ describe('detectBrowser', () => {
     expect(playwrightDirs('darwin', '/Users/u')).toEqual([macDir]);
 
     // End to end: a Mac runner with only that build installed advertises a browser.
-    const realMacDir = `${homedir()}/Library/Caches/ms-playwright`;
-    const realMacShell = macShell.replace(macDir, realMacDir);
+    // Whatever the home directory is, its Library/Caches/ms-playwright is the one that exists.
     const prevPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
     Object.defineProperty(process, 'platform', { value: 'darwin' });
     try {
-      install({ dirs: [realMacDir], found: [realMacShell], launch: { [realMacShell]: () => Buffer.from(HTML) } });
+      const isMacDir = (p: string) => p.endsWith('/Library/Caches/ms-playwright');
+      mockExistsSync.mockImplementation(isMacDir);
+      let root = '';
+      mockExecSync.mockImplementation((cmd: string) => {
+        if (cmd.startsWith('find ')) {
+          root = cmd.match(/'([^']*\/Library\/Caches\/ms-playwright)'/)?.[1] ?? '';
+          return Buffer.from(root ? macShell.replace(macDir, root) : '');
+        }
+        throw execError(1, '');
+      });
+      mockExecFileSync.mockImplementation((file: string) => {
+        if (root && file === macShell.replace(macDir, root)) return Buffer.from(HTML);
+        throw execError(1, 'unexpected launch');
+      });
       const d = detectBrowser();
+      expect(root).not.toBe('');
       expect(d.available).toBe(true);
-      expect(d.path).toBe(realMacShell);
-      expect(d.browsersRoot).toBe(realMacDir);
+      expect(d.path).toBe(macShell.replace(macDir, root));
+      expect(d.browsersRoot).toBe(root);
     } finally {
       Object.defineProperty(process, 'platform', prevPlatform);
     }
