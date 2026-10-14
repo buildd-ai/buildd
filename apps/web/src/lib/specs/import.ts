@@ -38,10 +38,11 @@ import { FILE_METADATA_KEYS, updateSpecMetadata } from './metadata';
  * Placement goes through the area classifier (§17, `buildd.spec_area`), with
  * every area of the workspace and, as a hint in its input, the file's
  * `domain:` and the domains each area declares. A confident answer (the
- * measured bar) files the spec; any other answer leaves it Unfiled with the
- * suggestion recorded and shown. Only when the classifier does not run (no
- * key, unmeasured model, no areas, an error) is the declared-domain mapping
- * used, labelled as that fallback.
+ * measured bar) files the spec. Any other answer files it under the area
+ * that declares its `domain:` (a person's mapping, never a title slug), else
+ * leaves it Unfiled with the suggestion recorded and shown. When the
+ * classifier does not run (no key, unmeasured model, no areas, an error) the
+ * domain mapping, title slug included, is used, labelled as that fallback.
  *
  * A file is `exists` only when it is the same spec: a native spec that
  * recorded the path as its provenance, or one with exactly its title, any
@@ -264,10 +265,11 @@ const relatedTo = (natives: readonly NativeSpec[], path: string, except: string 
  * Area by `domain:` value: each value an area declares (metadata `domains`)
  * first, then each area's title slug for a value no area declares.
  */
-export function areasByDomain(areas: readonly Pick<AreaInfo, 'id' | 'title' | 'scope' | 'domains'>[]): Map<string, Pick<AreaInfo, 'id' | 'title'>> {
+export function areasByDomain(areas: readonly Pick<AreaInfo, 'id' | 'title' | 'scope' | 'domains'>[], opts: { declaredOnly?: boolean } = {}): Map<string, Pick<AreaInfo, 'id' | 'title'>> {
   const domainAreas = areas.filter((a) => a.scope === 'domain').sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
   const out = new Map<string, Pick<AreaInfo, 'id' | 'title'>>();
   for (const a of domainAreas) for (const d of a.domains ?? []) if (!out.has(d)) out.set(d, a);
+  if (opts.declaredOnly) return out;
   for (const a of domainAreas) { const slug = areaDomain(a.title); if (!out.has(slug)) out.set(slug, a); }
   return out;
 }
@@ -336,6 +338,7 @@ export async function importRepoSpecs(caller: SpecCaller, input: ImportInput, de
   const nativeById = new Map(natives.map((n) => [n.id, n]));
   for (const id of attachTo.values()) if (!nativeById.has(id)) return fail(400, `attachTo names ${id}, which is not a native spec in this workspace`);
   const areaByDomain = areasByDomain(areas);
+  const areaByDeclaredDomain = areasByDomain(areas, { declaredOnly: true });
   const areaById = new Map(areas.map((a) => [a.id, a]));
   const byPath = new Map(existing.map((s) => [s.repoSource!.path, s]));
   const parsed = files.map((f) => ({ f, p: repoSpecForImport(f.path, f.text) }));
@@ -374,6 +377,13 @@ export async function importRepoSpecs(caller: SpecCaller, input: ImportInput, de
       row.placement = { by: 'classifier', p: c.p, model: c.model, decisionRecordId: c.decisionRecordId };
       if (named && c.confident) {
         row.area = { specId: named.id, title: named.title, domain: p.domain, proposed: false, by: 'classifier', p: c.p };
+        return;
+      }
+      // Not sure, but a person said which area covers this domain: that mapping files it. A title slug is a guess, not a declaration.
+      const declared = p.domain ? areaByDeclaredDomain.get(p.domain) : undefined;
+      if (declared) {
+        row.area = { specId: declared.id, title: declared.title, domain: p.domain, proposed: false, by: 'domain' };
+        row.placement = { by: 'domain', reason: `the classifier was not sure (p ${c.p.toFixed(2)}) and ${declared.title} declares ${p.domain}` };
         return;
       }
       row.area = null;
