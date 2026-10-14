@@ -14,6 +14,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { LivingSpecGoalCriterion } from '@buildd/shared';
 import { Select, type SelectOption } from '@/components/ui/Select';
+import { countWord } from '@/lib/mission-outcome-spec-view';
 
 interface SpecOption { id: string; title: string; status: string; headRevision: number; approvedRevision: number | null }
 
@@ -27,23 +28,40 @@ export function specOptionDescription(s: SpecOption): string {
   return `Revision ${s.headRevision}, proposed`;
 }
 
-/** The request body for a choice; null when it is not complete. */
-export function outcomeSpecBody(input: { specId: string; revision: string; narrow: boolean; criteria: string; reason: string }): Record<string, unknown> | null {
+/**
+ * The request body for a choice; null when it is not complete. With `current`
+ * (changing an existing selection) a revision is sent only when it differs:
+ * the server reads any sent revision as a repin, which drops the waivers. An
+ * unticked narrowed scope is sent as `criteria: null`, which clears it;
+ * leaving it out would keep it.
+ */
+export function outcomeSpecBody(input: { specId: string; revision: string; narrow: boolean; criteria: string; reason: string; current?: LivingSpecGoalCriterion | null }): Record<string, unknown> | null {
   if (!input.specId) return null;
+  const current = input.current && input.current.specId === input.specId ? input.current : null;
   const body: Record<string, unknown> = { specId: input.specId };
   const rev = input.revision.trim();
   if (rev) {
     const n = Number(rev);
     if (!Number.isInteger(n) || n < 1) return null;
-    body.revision = n;
+    if (!current || n !== current.revision) body.revision = n;
   }
   if (input.narrow) {
     const ids = input.criteria.split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
     if (ids.length === 0 || input.reason.trim().length < 10) return null;
     body.criteria = ids;
     body.narrowedReason = input.reason.trim();
+  } else if (current?.criteria) {
+    body.criteria = null;
   }
   return body;
+}
+
+/** What a repin clears, said before it happens; null when nothing is lost. */
+export function repinWarning(body: Record<string, unknown> | null, current: LivingSpecGoalCriterion | null | undefined): string | null {
+  if (!body || !current || body.specId !== current.specId || typeof body.revision !== 'number') return null;
+  const n = current.waived?.length ?? 0;
+  if (n === 0) return null;
+  return `Revision ${body.revision} clears ${n === 1 ? 'the one waiver' : `the ${countWord(n)} waivers`} on this spec.`;
 }
 
 export default function OutcomeSpecPicker({ missionId, workspaceId, selected, readonly }: {
@@ -62,10 +80,12 @@ export default function OutcomeSpecPicker({ missionId, workspaceId, selected, re
   const [reason, setReason] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [changing, setChanging] = useState<LivingSpecGoalCriterion | null>(null);
 
   async function openPicker(prefill?: LivingSpecGoalCriterion) {
     setOpen(true);
     setError(null);
+    setChanging(prefill ?? null);
     setSpecId(prefill?.specId ?? '');
     setRevision(prefill ? String(prefill.revision) : '');
     setNarrow(!!prefill?.criteria);
@@ -82,7 +102,8 @@ export default function OutcomeSpecPicker({ missionId, workspaceId, selected, re
     }
   }
 
-  const body = outcomeSpecBody({ specId, revision, narrow, criteria, reason });
+  const body = outcomeSpecBody({ specId, revision, narrow, criteria, reason, current: changing ?? selected.find(c => c.specId === specId) ?? null });
+  const warning = repinWarning(body, changing ?? selected.find(c => c.specId === specId) ?? null);
 
   async function save() {
     if (!body) return;
@@ -180,6 +201,7 @@ export default function OutcomeSpecPicker({ missionId, workspaceId, selected, re
               </label>
             </>
           )}
+          {warning && <p className="text-meta text-status-warning leading-snug" data-testid="outcome-spec-repin-warning">{warning}</p>}
           <div className="flex items-center gap-3">
             <button type="submit" className={BUTTON} disabled={!body || saving} data-testid="outcome-spec-save">
               {saving ? 'Saving' : 'Use this spec'}

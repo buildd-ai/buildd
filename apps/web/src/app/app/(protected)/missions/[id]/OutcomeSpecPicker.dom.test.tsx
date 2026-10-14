@@ -89,6 +89,48 @@ describe('OutcomeSpecPicker', () => {
 
 function setInputAct(el: HTMLInputElement, value: string) { act(() => setInput(el, value)); }
 
+describe('changing an existing selection', () => {
+  const WAIVED: LivingSpecGoalCriterion = {
+    ...SELECTED,
+    criteria: ['R-1', 'R-2'],
+    narrowedReason: 'only the build half applies',
+    waived: [
+      { criterionId: 'R-1', reason: 'covered by the earlier mission', by: 'user:x', at: '2026-10-14T00:00:00Z' },
+      { criterionId: 'R-2', reason: 'out of reach for this mission', by: 'user:x', at: '2026-10-14T00:00:00Z' },
+    ],
+  };
+  const openChange = async () => { await act(async () => { (container.querySelector('li button') as HTMLButtonElement).click(); }); };
+  const submit = async () => { await act(async () => { (q('outcome-spec-form') as HTMLFormElement).requestSubmit(); }); };
+  const patch = () => calls.find(c => c.method === 'PATCH')!.body.outcomeSpec;
+
+  it('saving with no edits sends no revision, so the waivers stay', async () => {
+    render([WAIVED]);
+    await openChange();
+    expect(q('outcome-spec-repin-warning')).toBeNull();
+    await submit();
+    expect(patch().revision).toBeUndefined();
+    expect(patch().specId).toBe(SPEC_ID);
+  });
+
+  it('a different revision is sent, and the form says the waivers will be cleared first', async () => {
+    render([WAIVED]);
+    await openChange();
+    setInputAct(q('outcome-spec-revision') as HTMLInputElement, '6');
+    expect(q('outcome-spec-repin-warning')!.textContent).toBe('Revision 6 clears the two waivers on this spec.');
+    await submit();
+    expect(patch().revision).toBe(6);
+  });
+
+  it('unticking "Only some of its requirements" clears the narrowed scope', async () => {
+    render([WAIVED]);
+    await openChange();
+    await act(async () => { (q('outcome-spec-narrow') as HTMLInputElement).click(); });
+    await submit();
+    expect(patch()).toHaveProperty('criteria', null);
+    expect(patch().narrowedReason).toBeUndefined();
+  });
+});
+
 describe('outcomeSpecBody', () => {
   it('leaves the revision to the server when blank', () => {
     expect(outcomeSpecBody({ specId: SPEC_ID, revision: '', narrow: false, criteria: '', reason: '' })).toEqual({ specId: SPEC_ID });

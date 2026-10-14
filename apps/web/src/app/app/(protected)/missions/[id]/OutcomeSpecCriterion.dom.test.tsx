@@ -101,6 +101,7 @@ describe('outcome spec row', () => {
     expect(open).toContain('R-2');
     expect(open).toContain('Not checked');
     expect(container.querySelector('[data-testid="outcome-spec-waived"]')!.textContent).toContain('R-3 waived: not part of this mission');
+    expect(container.querySelector('[data-testid="unwaive-R-3"]')!.textContent).toBe('Unwaive');
   });
 
   it('says each fact once: the evaluator sentence is not repeated under the summary', () => {

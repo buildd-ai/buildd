@@ -114,7 +114,7 @@ export default function OutcomeSpecCriterion({ missionId, criterion, entry, read
                   data-testid={`unwaive-${w.criterionId}`}
                   onClick={() => send({ specId: criterion.specId, unwaive: [w.criterionId] })}
                 >
-                  Check it again
+                  Unwaive
                 </button>
               )}
             </li>
