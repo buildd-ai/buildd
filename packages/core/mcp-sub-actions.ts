@@ -18,7 +18,7 @@
 import type { BuilddAction } from './mcp-tools';
 
 export const SUB_ACTIONS = {
-  manage_specs: ['create_draft', 'get', 'revise', 'list', 'relate', 'submit', 'approve', 'outcome', 'verdict', 'conflict', 'read_ref', 'diff', 'comment', 'comments', 'metadata', 'organize', 'attach_provisional', 'import', 'confirm_import', 'attach', 'attachments'],
+  manage_specs: ['create_draft', 'get', 'revise', 'list', 'relate', 'submit', 'approve', 'outcome', 'verdict', 'conflict', 'read_ref', 'diff', 'comment', 'comments', 'metadata', 'organize', 'attach_provisional', 'import', 'confirm_import', 'attach', 'attachments', 'retire', 'restore'],
   manage_missions: ['list', 'create', 'get', 'update', 'arm', 'delete', 'link_task', 'unlink_task', 'evaluate', 'get_criteria_state'],
   manage_initiatives: ['list', 'create', 'get', 'update', 'delete', 'link_mission', 'unlink_mission'],
   manage_workspaces: ['list', 'get', 'create', 'update', 'create_repo', 'init', 'readiness', 'scaffold', 'author_spec'],

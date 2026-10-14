@@ -24,7 +24,7 @@ export default async function SpecDetailPage({
   searchParams,
 }: {
   params: Promise<{ specId: string }>;
-  searchParams: Promise<{ revision?: string; from?: string; to?: string; review?: string }>;
+  searchParams: Promise<{ revision?: string; from?: string; to?: string; review?: string; delivery?: string }>;
 }) {
   const { specId } = await params;
   const sp = await searchParams;
@@ -56,6 +56,7 @@ export default async function SpecDetailPage({
     revision: positive(sp.revision),
     ...(from !== undefined && to !== undefined ? { from, to } : {}),
     review: sp.review === '1',
+    ...(sp.delivery ? { deliveryCursor: sp.delivery } : {}),
   });
   if (view.state !== 'ok') notFound();
   return (

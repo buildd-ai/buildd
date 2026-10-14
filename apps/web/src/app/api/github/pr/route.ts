@@ -51,7 +51,8 @@ import { fetchSplitPrStats } from '@/lib/supersession-check';
 import { loadPrAttempts } from '@/lib/pr-attempts';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { kernelLandingView, type KernelLanding } from '@/lib/workflow/seam';
-import { doorErrorResponse, isDoorError, idempotencyKeyOf, landThroughKernel, openKernelDelivery } from '@/lib/workflow/kernel-client';
+import { doorErrorResponse, isDoorError, idempotencyKeyOf, landThroughKernel, openKernelDelivery, type KernelPrincipal } from '@/lib/workflow/kernel-client';
+import { kernelPrincipalOf } from '@/lib/workflow/kernel-client';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 import { canonicalPrState, prRecord } from '@/lib/pr-presentation';
 import { readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request';
@@ -110,6 +111,8 @@ async function requestIntegrationBranchReview(params: {
   baseRef: string;
   installationId: number;
   repoFullName: string;
+  /** The caller the kernel delivery is opened for (`kernelPrincipalOf`). Required: the door names it. */
+  principal: KernelPrincipal | null;
 }): Promise<void> {
   try {
     const existingReview = await findLiveReviewerTaskForHead(
@@ -149,7 +152,7 @@ async function requestIntegrationBranchReview(params: {
       prNumber: params.prNumber,
       installationId: params.installationId,
       source: 'create_pr',
-    }).catch((err) => {
+    }, { principal: params.principal }).catch((err) => {
       // An unreachable control plane opened nothing (ControlPlaneUnavailableError): the PR is
       // legacy-reviewed, exactly as when the kernel itself fails to open a delivery.
       console.error(`[create_pr] workflow kernel could not open a delivery for PR #${params.prNumber}; legacy review dispatch:`, err);
@@ -572,6 +575,7 @@ export async function POST(req: NextRequest) {
           await requestIntegrationBranchReview({
             workspace: { id: worker.workspace.id, gitConfig: worker.workspace.gitConfig },
             teamId: account.teamId,
+            principal: kernelPrincipalOf({ account }),
             task: {
               id: worker.task.id,
               title: worker.task.title,
@@ -1363,6 +1367,7 @@ export async function POST(req: NextRequest) {
       await requestIntegrationBranchReview({
         workspace: { id: workspace.id, gitConfig: workspace.gitConfig },
         teamId: account.teamId,
+        principal: kernelPrincipalOf({ account }),
         task: {
           id: worker.task.id,
           title: worker.task.title,
@@ -1998,6 +2003,7 @@ export async function PUT(req: NextRequest) {
           eventHeadSha: null,
           door: 'merge_pr',
           actor: landingActor,
+          principal: kernelPrincipalOf({ person: landingActor.kind === 'human' ? landingActor.userId : null, account }),
           mode: landingMode,
           policy,
           owner: { taskId: worker.taskId ?? null, workerId: worker.id ?? null },
@@ -2265,7 +2271,7 @@ export async function PUT(req: NextRequest) {
             ...(kernelOverride ? { override: kernelOverride } : {}),
             ...(expectedVersion !== undefined ? { expectedVersion } : {}),
           }, {
-            principal: landingActor.kind === 'human' && landingActor.userId ? { kind: 'user', id: landingActor.userId } : { kind: 'account', id: account.id },
+            principal: kernelPrincipalOf({ person: landingActor.kind === 'human' ? landingActor.userId : null, account }),
             idempotencyKey: idempotencyKeyOf(req),
           })
         : null;

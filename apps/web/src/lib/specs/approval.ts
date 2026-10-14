@@ -197,8 +197,11 @@ export async function approveSpecRevision(caller: SpecCaller, specId: string, in
     await emit({ type: 'spec.approved', specId, workspaceId, revision: n });
     const { regradeProvisionalPins } = await import('./provisional');
     await regradeProvisionalPins(specId, n).catch((e) => console.error(`[spec-approval] provisional re-grade for ${specId} failed:`, e));
-    const { fileSpecRepoCopy } = await import('./repo-copy');
+    const { fileSpecRepoCopy, redecidePublication } = await import('./repo-copy');
     await fileSpecRepoCopy(specId);
+    // Slice 14, R-70: a product spec carries the publication policy; a new
+    // approved revision of it re-decides every spec in the workspace.
+    if (after.scope === 'product') await redecidePublication(workspaceId);
   });
   return { ok: true, spec: after, revision };
 }

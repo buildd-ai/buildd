@@ -523,6 +523,29 @@ describe('POST /api/github/pr/review — idempotency', () => {
         expect(mockCreateReviewerTask).not.toHaveBeenCalled();
       });
 
+      // The control plane re-checks the caller with the web host's rule: the door submits the session it judged.
+      const principalSent = async (account: Record<string, unknown>) => {
+        const { cutOver } = await import('@/lib/workflow/testing/cut-over');
+        cp = cutOver();
+        mockAuthenticateApiKey.mockReturnValue(account);
+        await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+        return cp.calls.filter((c) => c.op === 'request_review').map((c) => c.body?.principal);
+      };
+
+      it('a grant session is submitted as its grant with its workspace list, a person behind it or not', async () => {
+        const grant = { ...ACCOUNT, oauthGrantId: 'g-1', grantScopes: ['read', 'write'], workspaceIds: ['ws-1'] };
+        const asGrant = { kind: 'grant', id: 'account-1', grantId: 'g-1', workspaceIds: ['ws-1'], scopes: ['read', 'write'] };
+        expect(await principalSent(grant)).toEqual([asGrant]);
+        cp?.restore();
+        expect(await principalSent({ ...grant, sessionUserId: 'user-7' })).toEqual([{ ...asGrant, userId: 'user-7' }]);
+      });
+
+      it('a person is submitted as the user; a plain API account as an account that is not a grant', async () => {
+        expect(await principalSent({ ...ACCOUNT, sessionUserId: 'user-7' })).toEqual([{ kind: 'user', id: 'user-7' }]);
+        cp?.restore();
+        expect(await principalSent(ACCOUNT)).toEqual([{ kind: 'account', id: 'account-1', grant: null }]);
+      });
+
       it('the control plane refuses the command: 403, not a 500, and no legacy reviewer', async () => {
         const { cutOver, refusedByControlPlane } = await import('@/lib/workflow/testing/cut-over');
         cp = cutOver({ reply: refusedByControlPlane });

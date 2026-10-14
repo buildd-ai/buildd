@@ -2803,6 +2803,33 @@ export interface SpecMetadataBlock {
   domains?: string[];
   /** The repo file a spec that already existed in buildd was matched to on import (attachProvenance). */
   repo_provenance?: { path: string; commitSha: string; blobSha: string | null; prNumber: number | null };
+  /**
+   * Living Specs R-66: a person's publication mark. `private` never leaves
+   * buildd, `public` is published once the production-data scan clears it.
+   * Absent: follow the workspace's publication policy. On an area, every member
+   * without a mark of its own inherits it.
+   */
+  publication?: 'private' | 'public';
+}
+
+/**
+ * How the publication decision (R-67, `buildd.spec_publication`) went for one
+ * approved revision. `source`: a fixed rule, the model, or the fallback (no
+ * model, below the bar). `reason` is the one sentence the spec page shows
+ * (R-68); `line` the policy line relied on, quoted.
+ */
+export interface SpecPublicationDecision {
+  publish: boolean;
+  source: 'rule' | 'model' | 'fallback' | 'person';
+  reasonCode: string;
+  reason: string;
+  line?: string;
+  policyVersion: string | null;
+  confidence?: number | null;
+  model?: string | null;
+  decisionRecordId?: string | null;
+  revision: number;
+  decidedAt: string;
 }
 
 /**
@@ -2813,7 +2840,8 @@ export interface SpecMetadataBlock {
  * nothing is generated (R-32). `failed`: the PR could not be written (`error`).
  */
 export interface SpecRepoCopyState {
-  state: 'open' | 'merged' | 'behind' | 'refused' | 'unfiled' | 'failed';
+  /** `private`: the publication decision kept this revision out of the repo (R-68); nothing was written. */
+  state: 'open' | 'merged' | 'behind' | 'refused' | 'unfiled' | 'failed' | 'private';
   path?: string;
   branch?: string;
   prNumber?: number;
@@ -2825,6 +2853,15 @@ export interface SpecRepoCopyState {
   metadataHash?: string;
   failingCheck?: string;
   error?: string;
+  /** The last publication decision (R-67, R-69). */
+  publication?: SpecPublicationDecision;
+  /** A person published this approved revision anyway (R-68): who, when, which revision. */
+  publishAnyway?: { by: string; at: string; revision: number };
+  /**
+   * Kept private while an earlier copy is in the repo (R-70): the PR that
+   * removes it, which only a person merges. buildd never deletes the file itself.
+   */
+  removal?: { path: string; prNumber?: number; branch?: string; error?: string; listedAt: string };
   updatedAt: string;
 }
 

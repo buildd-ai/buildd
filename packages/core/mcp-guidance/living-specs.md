@@ -310,6 +310,21 @@ approval and moves neither the version nor the approved hash.
   `reason` is required and recorded with who changed it and the previous
   value. `domain` is not a field: it comes from the spec's area.
 
+## Retiring
+
+A spec is retired, never deleted. Retiring is a person's act: from an agent
+run or API key it is a 403, so say what should be retired and why, and let
+the person do it on the spec page or from their own session.
+
+- Retire: `buildd action=manage_specs params={ action: "retire", specId, reason }`.
+  Add `supersededBy` (a live spec in the same workspace) when another spec
+  replaces it; the status is then superseded, else retired. `reason` (10+
+  characters) is recorded with who did it in the metadata change log.
+- A retired spec leaves the index counts and the import confirm list, and is
+  no longer revised, approved or attached to.
+- Restore: `buildd action=manage_specs params={ action: "restore", specId }`
+  puts back the status it had.
+
 ## Never
 
 - Never approve, or say a spec is approved, unless `get` shows that revision
@@ -317,6 +332,7 @@ approval and moves neither the version nor the approved hash.
   ahead of approval does not approve anything either.
 - Never call `attach_provisional` from an agent run; it is a person's act.
 - Never call `confirm_import` from an agent run; confirming an import approves specs.
+- Never call `retire` or `restore` from an agent run; ask the person.
 - Never click, open or forward a confirm link as if you were the person.
 - Never record a verdict on your own task, or a pass you did not observe on
   that exact head. Never record a mission-level verdict from a builder, fix

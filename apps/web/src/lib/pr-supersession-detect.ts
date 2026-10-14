@@ -405,6 +405,7 @@ async function recordVerified(opts: {
     ...(crossRepo ? { supersedingRepo: cand.repo } : {}),
     reason: `auto: content verified in ${refOf(cand, closedRepo)} (method: ${opts.method})`,
     recordedBy: AUTO_SUPERSESSION_ACTOR,
+    caller: 'system',
   });
   if (!result.ok) {
     // Proven content but the write refused (repo outside the mission, say):
