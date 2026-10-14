@@ -232,4 +232,3 @@ function tickClass(mark: StripMark | null, selected: boolean, state: StateKey, n
 }
 
 export { TaskStrip };
-

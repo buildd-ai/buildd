@@ -156,7 +156,7 @@ export function overviewLegend(model: Model, layout: OverviewLayout): OverviewLe
 export function overviewWaitLine(model: Model, id: string): string | null {
   const cause = overviewWaitCause(model, id);
   if (cause === 'closed') return 'Closed without merging. The mission cannot finish until it is reopened or replaced.';
-  if (cause === 'unknown') return 'Not started. No reason is recorded yet.';
+  if (cause === 'unknown') return 'Not started, and no reason is recorded.';
   const kind = model.tasks[id]?.waitingKind;
   if (!kind || cause === 'tasks' || cause == null) return null;
   const spec = WAITING_KIND_SPEC[kind];

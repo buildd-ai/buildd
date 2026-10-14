@@ -231,6 +231,6 @@ describe('overviewWaitLine', () => {
 
   it('leaves waiting on tasks to the strip reason, and says plainly when no reason is recorded', () => {
     expect(overviewWaitLine(m, idOf('dep'))).toBeNull();
-    expect(overviewWaitLine(m, idOf('unknown'))).toBe('Not started. No reason is recorded yet.');
+    expect(overviewWaitLine(m, idOf('unknown'))).toBe('Not started, and no reason is recorded.');
   });
 });
