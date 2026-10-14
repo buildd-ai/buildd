@@ -65,17 +65,18 @@ describe('one component per section', () => {
     for (const src of [page]) {
       expect(src).toContain('taskPrFacts(');
       expect(src).toContain('taskHeaderMerged(');
-      expect(src).toContain('isFallbackSummary(');
     }
+    // The fallback mark is decided inside the shared Deliverables block.
+    expect(readFileSync(join(import.meta.dir, '../../../../../components/task/TaskDeliverables.tsx'), 'utf8')).toContain('isFallbackSummary(');
   });
 
-  it('both render the same header pill, PR card, fact rows and summary', () => {
+  it('both render the same header pill, PR card, fact rows and Deliverables', () => {
     for (const src of [page, panel]) {
       expect(src).toContain('<HeaderStatusPill');
       expect(src).toContain('<StoredPrCard');
       expect(src).toContain('runnerFactRow(');
       expect(src).toContain('branchFactRow(');
-      expect(src).toContain('<TaskSummary');
+      expect(src).toContain('<TaskDeliverables');
     }
     expect(panel).not.toContain('WorkerStats');
     expect(panel).not.toContain('<PrCard');

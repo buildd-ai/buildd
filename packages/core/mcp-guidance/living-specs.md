@@ -76,6 +76,43 @@ Asked to "spec this"? Look for an existing spec first: `list` (below), and
    `buildd action=manage_specs params={ action: "conflict", specId, revision, criterionIds, note }`.
    It records an advisory discrepancy and blocks nothing.
 
+## Tables and diagrams
+
+The spec page renders GitHub Markdown tables, and fenced code blocks tagged
+`mermaid` as diagrams. Pick the shape by what the text does:
+
+- **Table:** comparing options, states, roles or permissions. Criteria may
+  live in one: a row whose first cell is an `R-n`/`AC-n` id defines that
+  criterion, its text the row's other cells.
+- **Diagram:** a flow, a state machine or a sequence (`flowchart`,
+  `stateDiagram-v2`, `sequenceDiagram`).
+- **Prose:** everything else.
+
+A criteria table:
+
+```markdown
+| Id   | Role   | Can approve | Can revise |
+| ---- | ------ | ----------- | ---------- |
+| R-1  | Owner  | yes         | yes        |
+| AC-1 | Member | no          | yes        |
+```
+
+A state machine:
+
+```mermaid
+stateDiagram-v2
+  [*] --> Draft
+  Draft --> Submitted: submit
+  Submitted --> Approved: a person approves
+  Submitted --> Draft: revise
+  Approved --> [*]
+```
+
+A draft with three or more numbered steps and no diagram, or three or more
+parallel list lines (`- X: a / b / c`, `- **X**: ...`) and no table, gets a
+`Tip:` line in the `create_draft` or `revise` reply. It is a suggestion: the
+draft is written as sent either way.
+
 ## Building ahead of approval
 
 A person may ask for work to be built before the spec is approved. That is

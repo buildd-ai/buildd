@@ -43,6 +43,17 @@ mock.module('@/lib/runner-heartbeats', () => ({
   loadRunnerHeartbeats: mockLoadRunnerHeartbeats,
 }));
 
+// The live run view's extras and the access log, as the task page reads them.
+const mockDeliverableCount = mock(async (_id: string) => 0);
+mock.module('@/lib/worker-deliverables', () => ({ getWorkerDeliverableArtifactCount: mockDeliverableCount }));
+const mockFindTaskRole = mock(async (_o: unknown) => null as { name: string } | null);
+mock.module('@/app/app/(protected)/tasks/[id]/role-lookup', () => ({ findTaskRole: mockFindTaskRole }));
+const mockReview = mock(async (_o: unknown) => null as { state: string } | null);
+const mockUsesReviewer = mock((..._a: unknown[]) => false);
+mock.module('@/modules', () => ({ RUN_PROGRESS_READERS: { review: mockReview, usesReviewer: mockUsesReviewer } }));
+const mockLoadTaskAccess = mock(async (_id: string) => [] as unknown[]);
+mock.module('@/lib/agent-capabilities/access-log', () => ({ loadTaskAccess: mockLoadTaskAccess }));
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -348,7 +359,7 @@ describe('GET /api/tasks/[id]/summary', () => {
 
     // Slice F: the same task, kernel-owned. The card's state is the delivery's,
     // whatever the column says.
-    mockGetDeliveryViewsForTasks.mockResolvedValueOnce(new Map([['00000000-0000-4000-8000-00000000000c', { prNumber: 1263, prState: 'conflict' }]]));
+    mockGetDeliveryViewsForTasks.mockResolvedValueOnce(new Map([['00000000-0000-4000-8000-00000000000c', { prNumber: 1263, prState: 'conflict', state: 'REPAIRING', stateReason: 'conflict', headSha: 'HEAD1263', rounds: [], ledger: [], approvedCurrentHead: false, approvalBasis: null, headline: 'Fixing a conflict', owner: 'worker', needsYou: false, stage: 'repair', detail: null, ownerTaskId: '00000000-0000-4000-8000-00000000000c' }]]));
     const kernel = await (await callGET('00000000-0000-4000-8000-00000000000c')).json();
     expect(kernel.worker?.prState).toBe('conflict');
   });
@@ -1118,5 +1129,94 @@ describe('GET /api/tasks/[id]/summary: the sections the task page renders (task-
       const data = await (await callGET(TASK2)).json();
       expect(data.worker.runner).toBe('quill-studio');
     });
+  });
+});
+
+describe('GET /api/tasks/[id]/summary: the page sections the sheet now renders (step 4)', () => {
+  const TASK3 = '00000000-0000-4000-8000-0000000000e1';
+  const T = '2026-10-13T10:00:00Z';
+  const running = {
+    id: 'w-live', name: 'builder', branch: 'buildd/abc-task', status: 'running', currentAction: 'Editing', createdAt: T, startedAt: T, updatedAt: T,
+    milestones: [], turns: 2, costUsd: '0.1', inputTokens: 1, outputTokens: 2, prUrl: null, prNumber: null, commitCount: 0,
+    filesChanged: 0, linesAdded: 0, linesRemoved: 0, lastCommitSha: null, waitingFor: null, instructionHistory: [], pendingInstructions: null,
+  };
+  function task(status: string, over: Record<string, unknown> = {}) {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: TASK3, title: 'Live task', status, description: null, mode: null, roleSlug: 'builder', outputRequirement: 'pr_required',
+      createdAt: T, missionId: null, workspaceId: 'ws-1', result: null, workspace: { gitConfig: null, teamId: 'team-1' }, ...over,
+    });
+  }
+  beforeEach(() => {
+    mockWorkersFindMany.mockReset();
+    mockNotesFindMany.mockResolvedValue([]);
+    mockErrorTracesFindMany.mockResolvedValue([]);
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'member' });
+    mockGetDeliveryViewsForTasks.mockReset();
+    mockGetDeliveryViewsForTasks.mockResolvedValue(new Map());
+    mockLoadTaskAccess.mockReset();
+    mockLoadTaskAccess.mockResolvedValue([]);
+    mockDeliverableCount.mockReset();
+    mockDeliverableCount.mockResolvedValue(0);
+    mockFindTaskRole.mockReset();
+    mockFindTaskRole.mockResolvedValue(null);
+  });
+
+  it('hands the live run view its props for a running worker', async () => {
+    task('in_progress');
+    mockWorkersFindMany.mockResolvedValue([running]);
+    mockDeliverableCount.mockResolvedValue(3);
+    mockFindTaskRole.mockResolvedValue({ name: 'Builder' });
+    const data = await (await callGET(TASK3)).json();
+    expect(data.live).toMatchObject({ taskId: TASK3, taskStatus: 'in_progress', outputRequirement: 'pr_required', deliverableArtifactCount: 3, roleName: 'Builder' });
+    expect(data.live.initialWorker).toMatchObject({ id: 'w-live', name: 'builder', currentAction: 'Editing', startedAt: T });
+    expect(data.steer).toMatchObject({ workerId: 'w-live', status: 'running', taskTerminal: false, earlierRun: null });
+  });
+
+  it('has no live view once the task ended', async () => {
+    task('completed');
+    mockWorkersFindMany.mockResolvedValue([{ ...running, status: 'completed' }]);
+    const data = await (await callGET(TASK3)).json();
+    expect(data.live).toBeNull();
+    expect(data.steer).toBeNull();
+  });
+
+  it("carries the delivery's header reading and checks", async () => {
+    task('in_progress');
+    mockWorkersFindMany.mockResolvedValue([{ ...running, prUrl: 'https://github.com/org/repo/pull/9', prNumber: 9 }]);
+    mockGetDeliveryViewsForTasks.mockResolvedValue(new Map([[TASK3, {
+      state: 'AWAITING_REVIEW', stateReason: null, prNumber: 9, headSha: 'HEADB000', prState: 'awaiting_ci', rounds: [], ledger: [],
+      approvedCurrentHead: false, approvalBasis: null, headline: 'Waiting for review', owner: 'reviewer', needsYou: false, stage: 'review',
+      detail: null, repoFullName: 'org/repo', ownerTaskId: TASK3,
+    }]]));
+    const data = await (await callGET(TASK3)).json();
+    expect(data.delivery).toMatchObject({ headline: 'Waiting for review', owner: 'reviewer', state: 'AWAITING_REVIEW' });
+    expect(data.checks).toMatchObject({ prNumber: 9, headSha: 'HEADB000', prUrl: 'https://github.com/org/repo/pull/9' });
+    expect(data.live.delivery).toMatchObject({ headline: 'Waiting for review' });
+  });
+
+  it('lists what the runs were given and refused', async () => {
+    task('completed');
+    mockWorkersFindMany.mockResolvedValue([]);
+    mockLoadTaskAccess.mockResolvedValue([{ id: 'x', label: 'Repo access' }]);
+    const data = await (await callGET(TASK3)).json();
+    expect(data.access).toEqual([{ id: 'x', label: 'Repo access' }]);
+    expect(mockLoadTaskAccess).toHaveBeenCalledWith(TASK3);
+  });
+
+  it("returns the result's deliverables for the shared Deliverables block", async () => {
+    task('completed', { result: { summary: 'Done', branch: 'buildd/x', commits: 2, added: 5, removed: 1, files: 2, sha: 'abcdef123', structuredOutput: { ok: true } } });
+    mockWorkersFindMany.mockResolvedValue([]);
+    const data = await (await callGET(TASK3)).json();
+    expect(data.deliverables).toMatchObject({ summary: 'Done', branch: 'buildd/x', commits: 2, added: 5, removed: 1, files: 2, sha: 'abcdef123', structuredOutput: { ok: true } });
+  });
+
+  it('a failed access read still returns the summary', async () => {
+    task('completed');
+    mockWorkersFindMany.mockResolvedValue([]);
+    mockLoadTaskAccess.mockRejectedValue(new Error('boom'));
+    const res = await callGET(TASK3);
+    expect(res.status).toBe(200);
+    expect((await res.json()).access).toEqual([]);
   });
 });
