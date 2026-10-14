@@ -15,13 +15,13 @@ const OPTIONS = { now: SPEC_INDEX_FIXTURE_NOW };
 const NO_AREA_OPTIONS = { now: SPEC_INDEX_FIXTURE_NOW, proposals: SPEC_INDEX_NO_AREA_PROPOSALS };
 
 /**
- * The spec index (living-specs.md §19) for Visual QA: the map and outline
+ * The spec index (living-specs.md §19) for Visual QA: the area cards
  * over ~30 specs in five areas with Unfiled and a possible area, then the
  * one-area and no-area lines, then the spec page's neighbour graph.
  */
 export default function SpecIndexFixture() {
   return (
-    <main className="mx-auto flex w-full max-w-3xl flex-col gap-10 px-4 py-6" data-testid="spec-index-fixture">
+    <main className="mx-auto flex w-full max-w-6xl flex-col gap-10 px-4 py-6" data-testid="spec-index-fixture">
       <section className="flex flex-col gap-3">
         <h1 className="text-xl font-semibold text-text-primary">Specs</h1>
         <SpecIndex specs={SPEC_INDEX_FIXTURE_SPECS} options={OPTIONS} actions={inMemory} canConfirm />
