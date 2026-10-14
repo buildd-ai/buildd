@@ -345,11 +345,16 @@ the control plane, authenticated as the caller).
     required: nothing is derived from another secret, and while it is unset the
     control plane refuses every request (503 `unconfigured`). A bad or missing
     signature is a 401, before anything runs. The body names the
-    principal the calling host vouches for (`user`, `account` or `system`),
-    and the endpoint re-checks that it still reaches the workspace (team
-    membership for a person, workspace reach for an API account); a principal
-    that does not is a 403. The door keeps its own authorisation; the endpoint
-    proves who it acts for.
+    principal the calling host vouches for (`user`, `account`, `grant` or
+    `system`), and the endpoint re-checks that it still reaches the workspace
+    with the same workspace reach rule as the web host, including grants
+    (team membership for a person, the grant's workspaces and its write
+    scope for an account-level grant session, since every command is a
+    write, workspace reach for any other API account);
+    a principal that does not is a 403. An `account` principal says it is not
+    a grant (`grant: null`); one that does not, from an older host, is refused
+    when it names a team's shared session account. The door keeps its own
+    authorisation; the endpoint proves who it acts for.
   - Idempotent on a caller-supplied key. The key is claimed in Postgres
     (`workflow_commands`, `command-ledger.ts`) before the operation runs,
     never in Worker memory. A second request with the key waits for the first
@@ -391,8 +396,10 @@ the control plane, authenticated as the caller).
   dynamic `import()`, by alias or any relative path) fails
   `packages/core/__tests__/workflow-write-sites.test.ts`, except the files it
   lists with a reason (the web-down e2e harness, which seeds a delivery
-  itself). A person's door names them as the principal by id, an agent's the
-  API account; a sweep's door names a system principal. A door's
+  itself). A door names its authenticated caller (`kernelPrincipalOf`): a grant
+  session as its grant, else a person by id, else the API account; only
+  buildd's own sweeps and rules name a system principal, and a command with
+  no principal is never sent to the control plane. A door's
   `Idempotency-Key` header, when sent, is the command's key, and one key
   covers the whole door call: on an `unknown` outcome the door submits again
   with that same key (twice more at most, `DOOR_UNKNOWN_RETRIES`) inside one

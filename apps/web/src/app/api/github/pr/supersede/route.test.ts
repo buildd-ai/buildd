@@ -90,7 +90,7 @@ describe('POST /api/github/pr/supersede', () => {
       reason: 'branch deleted',
       recordedBy: 'Agent Bob',
       // The control plane checks the API account by id; the name is only the recorded label.
-      principal: { kind: 'account', id: 'acc-1' },
+      caller: { account: expect.objectContaining({ id: 'acc-1' }) },
     }));
   });
 

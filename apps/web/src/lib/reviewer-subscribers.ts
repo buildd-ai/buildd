@@ -216,7 +216,7 @@ async function maybeDispatchReviewer(
         installationId,
         source: 'webhook:opened',
         policy: policyFindingFor({ reason, migrationSafety }),
-      }).catch((err) => {
+      }, { principal: { kind: 'system', id: 'system:webhook:opened' } }).catch((err) => {
         console.error(`[reviewer] workflow kernel could not take PR #${pr.number} for its pre-flight finding; legacy escalation:`, err);
         return { owned: false };
       });
@@ -288,7 +288,7 @@ async function maybeDispatchReviewer(
       prNumber: pr.number,
       installationId,
       source: 'webhook:opened',
-    }).catch((err) => {
+    }, { principal: { kind: 'system', id: 'system:webhook:opened' } }).catch((err) => {
       console.error(`[reviewer] workflow kernel could not open a delivery for PR #${pr.number}; legacy review dispatch:`, err);
       return { owned: false };
     });

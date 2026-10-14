@@ -77,7 +77,7 @@ describe('marking a PR abandoned is a person\'s call', () => {
     w = await world();
     const { pr } = await closedPrInMission(w);
     for (const actor of ['agent:some-account', 'runner', 'svc-key']) {
-      const r = await recordPrAbandonment({ workerId: pr.workerId, reason: 'plan changed', recordedBy: 'svc-key', actor });
+      const r = await recordPrAbandonment({ workerId: pr.workerId, reason: 'plan changed', recordedBy: 'svc-key', actor, caller: {} });
       expect(r).toMatchObject({ ok: false, status: 403 });
     }
     expect((await w.delivery(pr)).state).toBe('CLOSED_UNMERGED');
