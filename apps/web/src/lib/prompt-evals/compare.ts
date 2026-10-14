@@ -8,7 +8,8 @@
  * reaches `costCapUsd` or the deadline passes: the rest count as not run and
  * the run says why. Calls in flight finish, so spend can pass the cap by at
  * most one call per model slot. A call with no price (Workers AI returns
- * tokens, not dollars) cannot count towards the cap; those are reported apart.
+ * tokens, not dollars) cannot count towards the cap; those are reported apart,
+ * and `callCap` bounds them instead: no call starts once that many have.
  *
  * Content-free output: ids, model ids, counts and rates. Case state and
  * question text go to the model and nowhere else.
@@ -55,6 +56,8 @@ export interface ComparisonOptions {
   /** Calls in flight per model. */
   concurrency: number;
   costCapUsd: number;
+  /** Calls started across every model, priced or not. Absent: no limit beyond the cost cap. */
+  callCap?: number;
   /** Epoch ms after which no call starts. */
   deadlineAt?: number;
   timeoutMs?: number;
@@ -92,7 +95,7 @@ export interface ComparisonResult {
   score: ModelScore;
 }
 
-export type ComparisonAbort = 'cost_cap' | 'deadline';
+export type ComparisonAbort = 'cost_cap' | 'call_cap' | 'deadline';
 
 export interface ComparisonOutcome {
   results: ComparisonResult[];
@@ -114,6 +117,7 @@ export async function runComparison(opts: ComparisonOptions): Promise<Comparison
   const targetOf = opts.targets ?? kindTarget;
   const concurrency = Math.max(1, Math.floor(opts.concurrency));
   let spent = 0;
+  let calls = 0;
   let aborted: ComparisonAbort | null = null;
   const problems: string[] = [];
   const results: ComparisonResult[] = [];
@@ -121,6 +125,7 @@ export async function runComparison(opts: ComparisonOptions): Promise<Comparison
   const mayStart = () => {
     if (aborted) return false;
     if (spent >= opts.costCapUsd) { aborted = 'cost_cap'; return false; }
+    if (opts.callCap !== undefined && calls >= opts.callCap) { aborted = 'call_cap'; return false; }
     if (opts.deadlineAt !== undefined && now() >= opts.deadlineAt) { aborted = 'deadline'; return false; }
     return true;
   };
@@ -134,6 +139,7 @@ export async function runComparison(opts: ComparisonOptions): Promise<Comparison
         if (!mayStart()) return;
         const i = next++;
         const c = group.cases[i];
+        calls++;
         const res = await decide({
           // Ignored with apiKey (no policy check); names the call site.
           capability: 'task_category',
@@ -232,6 +238,7 @@ export async function runComparison(opts: ComparisonOptions): Promise<Comparison
   const noKey = opts.routes.filter(r => !r.apiKey).map(r => `${r.model} (${r.via})`);
   if (noKey.length) problems.push(`no key resolves for: ${noKey.join(', ')}; those models were not asked`);
   if (aborted === 'cost_cap') problems.push(`the cost cap ($${opts.costCapUsd}) was reached after $${spent.toFixed(4)}: ${results.reduce((n, r) => n + (r.status === 'scored' ? r.notRun : 0), 0)} case(s) not run`);
+  if (aborted === 'call_cap') problems.push(`the call cap (${opts.callCap} calls) was reached: ${results.reduce((n, r) => n + (r.status === 'scored' ? r.notRun : 0), 0)} case(s) not run`);
   if (aborted === 'deadline') problems.push(`the time budget ran out: ${results.reduce((n, r) => n + (r.status === 'scored' ? r.notRun : 0), 0)} case(s) not run`);
   return { results, costUsd: spent, aborted, problems };
 }

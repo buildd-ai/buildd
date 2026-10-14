@@ -2,13 +2,13 @@
 title: Decision Model Selection (Per-Decision Model, Measured Thresholds, Signal Collection)
 status: draft
 owner: max
-last_verified: 2026-10-12
+last_verified: 2026-10-13
 summary: A decision kind MUST act only at a threshold measured for its model on graded cases, MAY switch model when a challenger measurably wins, and MUST collect every grading signal it can.
 domain: tasks
-surfaces: [packages/core/decision-model.ts, packages/core/decision-client.ts, packages/core/orchestration-outcomes.ts, apps/web/src/lib/prompt-evals/compare-run.ts]
+surfaces: [packages/core/decision-model.ts, apps/web/src/lib/prompt-evals/compare-run.ts, apps/web/src/lib/decision-model-optimizer/optimizer.ts, apps/web/src/app/api/cron/decision-model-optimizer/route.ts]
 related: [decision-kinds, orchestration-decisions-shadow, settings-models]
 keywords: [decision model, jev, clef, clef flash, threshold, calibration, top p, margin, wilson, comparison, replay, outcome, override, champion, challenger, optimizer, undo, signal collection]
-verified_by: []
+verified_by: [apps/web/src/lib/decision-model-optimizer/optimizer.test.ts, apps/web/src/app/api/teams/[id]/decision-model-switches/route.test.ts]
 assertions:
   - id: decision-model-lookup
     skip_until: "2026-12-15"
@@ -64,14 +64,35 @@ and what has to be collected so the choice can be made on evidence.
   cost. `runModelComparison` is the entry point.
 - **Offline challengers, not live parallel calls.** Challengers are scored on
   replays, so the live path makes one call per decision.
-- **Self-optimizing (opt-in per team).** On a schedule, for each kind, the
-  model with the highest share of cases it would act on and get right, at its
-  own derived threshold, replaces the current one only when it wins by a clear
-  margin on the same cases and its test decision passes. Ties keep the current
-  model. Every switch is recorded with the comparison it came from.
+- **Self-optimizing (opt-in per team).** Weekly per team (a daily cron reaches
+  each opted-in team once its last scheduled comparison is a week old), for
+  each kind, the candidates (Jev, Clef, Clef Flash and the models the team uses
+  now) answer the team's collected decisions of the last 30 days. A model's
+  score is the share of cases it would act on and get right at its own derived
+  threshold (coverage x precision); it has one only where that threshold
+  clears the bar above. The best model replaces the current one only when it
+  wins by at least 5 points on the same cases and its test decision passes.
+  Ties keep the current model; a kind with too few graded cases, or whose
+  current model was not asked every case, is left alone. A switch stores the
+  winner's measurement (never loosening a stricter one for the same signal)
+  and changes that kind's model only, never the team default.
+- **Measurements are shared across teams.** A stored threshold belongs to
+  (kind, model), not to a team, so the first winning run for a model creates a
+  row that every other team already using that model for that kind also acts
+  on. One team's run therefore never revives a retired measurement and never
+  replaces one in force on another signal; it leaves that kind on its current
+  model instead. Every switch is
+  a decision-ledger event (`decision_model_switch`) with the eval run id and
+  both scores. `optimizeTeam` is the entry point; a platform admin can run it
+  now (`POST /api/admin/decision-model-optimizer`).
+- **A hard call cap.** Workers AI is unpriced, so the cost cap cannot bound a
+  run: each team run stops starting calls at a call cap, says so, and the kinds
+  it cut short are left alone.
 - **Undo and revert.** A person can undo a switch; the previous model is then
-  pinned for a while. If live graded decisions show the new model below the
-  bar, the previous model is restored without a person.
+  pinned for 30 days and the scheduled run leaves that kind alone. Once the
+  switched-to model has at least 20 live graded decisions on that kind and its
+  acted precision is below the bar it was switched at, the previous model is
+  restored without a person, with the same one line and Undo.
 - **Data stays where the team allows.** A team's collected decisions are
   replayed to a model provider only if the team opted in to that provider
   receiving them.
@@ -178,6 +199,10 @@ Until then they describe the code as it is:
 - AC-11: GIVEN post-session triage skipping a session WHEN that session falls in the sample THEN it is analysed anyway and the skip decision is graded from the result.
 - AC-12: GIVEN a workspace with at least two roles that say when to use them WHEN role pick falls back for too few candidates THEN the fallback is counted as a defect, not as a rule decision.
 - AC-13: GIVEN a threshold stored from synthetic cases only WHEN collected cases for that kind reach the minimum THEN the threshold is derived again from them.
+- AC-14: GIVEN an opted-in team where a challenger beats the current model by 5 points or more on the same cases and passes its test decision WHEN the scheduled comparison runs THEN that kind switches to it, the team default is untouched, and the switch is a ledger event naming the eval run.
+- AC-15: GIVEN a switched kind with at least 20 live graded decisions and acted precision below its bar WHEN the daily check runs THEN the previous model is restored.
+- AC-16: GIVEN a comparison that reaches its call cap WHEN it stops THEN it names the limit and no kind it cut short is switched.
+- AC-17: GIVEN a winning challenger whose shared measurement for that kind is retired, or in force on another signal WHEN the scheduled comparison runs THEN no measurement is written and the kind keeps its current model.
 
 ## Out of scope
 

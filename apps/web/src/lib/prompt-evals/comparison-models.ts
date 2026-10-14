@@ -18,6 +18,7 @@ export const COMPARISON_LIMITS = {
   concurrency: 16,
   limitPerKind: 1000,
   sinceDays: 90,
+  callCap: 10_000,
 } as const;
 
 /**
