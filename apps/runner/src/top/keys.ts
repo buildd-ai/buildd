@@ -3,7 +3,10 @@
  * effects run.ts carries out (a socket action, opening a URL, quitting).
  * Pure, so every key is unit-tested (top-keys.test.ts).
  */
-import { currentMission, missionRows, selectedRow, taskRows, type TaskRow, type TopState } from './state';
+import {
+  currentMission, currentWorkspace, cycleWorkspace, missionRows, selectedRow, taskRows, workspaceList,
+  type TaskRow, type TopState,
+} from './state';
 
 export type Key =
   | { name: 'up' | 'down' | 'left' | 'right' | 'enter' | 'escape' | 'backspace' | 'tab' | 'ctrl-c' }
@@ -16,6 +19,14 @@ export function parseKeys(chunk: string): Key[] {
     const c = chunk[i];
     if (c === '\x1b') {
       const next = chunk[i + 1];
+      // An OSC string (a late answer to the OSC 11 background query): swallow
+      // it up to BEL or ST so none of its bytes are read as keys.
+      if (next === ']') {
+        let j = i + 2;
+        while (j < chunk.length && chunk[j] !== '\x07' && !(chunk[j] === '\x1b' && chunk[j + 1] === '\\')) j++;
+        i = chunk[j] === '\x1b' ? j + 1 : j;
+        continue;
+      }
       if ((next === '[' || next === 'O') && i + 2 < chunk.length) {
         const code = chunk[i + 2];
         const map: Record<string, Key['name']> = { A: 'up', B: 'down', C: 'right', D: 'left' };
@@ -47,6 +58,8 @@ export type Effect =
   | { type: 'action'; action: 'answer' | 'message' | 'pause' | 'stop'; workerId: string; taskId: string; title: string; message?: string }
   | { type: 'claim'; taskId: string; title: string }
   | { type: 'open'; taskId: string }
+  /** The runner's page on buildd.dev, where its workspaces are set (R-20). */
+  | { type: 'openRunner' }
   | { type: 'quit' };
 
 export interface KeyResult {
@@ -158,8 +171,15 @@ export function handleKey(state: TopState, key: Key, now: number): KeyResult {
     return { state: { ...state, mode: backTo(mode), status: { text: `Kept "${title}" running.`, tone: 'info' } }, effects: [] };
   }
 
+  if (mode.kind === 'help') {
+    if (key.name === 'char' && key.ch === 'q') return { state, effects: [{ type: 'quit' }] };
+    if (key.name === 'char' && key.ch === 'o') return { state: info(state, 'Opening this runner on buildd…'), effects: [{ type: 'openRunner' }] };
+    return { state: { ...state, mode: { kind: 'list' }, status: null }, effects: [] };
+  }
+
   // list and detail
   if (key.name === 'char' && key.ch === 'q') return { state, effects: [{ type: 'quit' }] };
+  if (key.name === 'char' && key.ch === '?') return { state: { ...state, mode: { kind: 'help' }, status: null }, effects: [] };
   if (key.name === 'escape') {
     if (mode.kind === 'detail') return { state: { ...state, mode: { kind: 'list' }, status: null }, effects: [] };
     if (state.filter) return { state: { ...state, filter: '', rowCursor: 0, status: null }, effects: [] };
@@ -191,10 +211,20 @@ export function handleKey(state: TopState, key: Key, now: number): KeyResult {
     case 'char':
       if (key.ch === 'k') return { state: state.focus === 'missions' ? moveMission(cleared, -1) : moveRow(cleared, -1, now), effects: [] };
       if (key.ch === 'j') return { state: state.focus === 'missions' ? moveMission(cleared, 1) : moveRow(cleared, 1, now), effects: [] };
+      if (key.ch === 'w') return { state: switchWorkspace(cleared), effects: [] };
       if (key.ch === '/') return { state: { ...cleared, mode: { kind: 'input', purpose: 'filter', text: state.filter } }, effects: [] };
       return { state, effects: [] };
   }
   return { state, effects: [] };
+}
+
+/** `w` (R-19): the next workspace, then all of them again. */
+function switchWorkspace(state: TopState): TopState {
+  const list = workspaceList(state);
+  if (list.length < 2) return info(state, 'This runner serves one workspace, so there is nothing to switch to.');
+  const next = cycleWorkspace(state);
+  const ws = currentWorkspace(next);
+  return info(next, ws ? `Showing ${ws.name}. w for the next workspace.` : `Showing all ${list.length} workspaces.`);
 }
 
 const fromOf = (state: TopState): 'detail' | undefined => (state.mode.kind === 'detail' ? 'detail' : undefined);

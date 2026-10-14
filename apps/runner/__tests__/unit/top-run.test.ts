@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { serveRunnerSocket, type RunnerSocketServer } from '../../src/runner-socket';
-import { createPalette, stripAnsi } from '../../src/terminal-palette';
+import { OSC11_QUERY, createPalette, stripAnsi } from '../../src/terminal-palette';
 import { EXIT_NOT_A_TERMINAL, EXIT_NO_RUNNER, LEAVE_SCREEN, runTop, type TopTerminal } from '../../src/top/run';
 import { TASKS, WORKERS } from './top-fixture';
 
@@ -50,6 +50,10 @@ function serveFakeRunner() {
       case '/api/config': return Response.json({ maxConcurrent: 3, builddServer: 'http://127.0.0.1:1' });
       case '/api/workers': return Response.json({ workers: WORKERS });
       case '/api/tasks': return Response.json({ tasks: TASKS });
+      case '/api/workspaces': return Response.json({ workspaces: [
+        { id: 'ws-a', name: 'alpha', teamId: 'team-1' },
+        { id: 'ws-b', name: 'bravo', teamId: 'team-1' },
+      ] });
       case '/api/events':
         return new Response(new ReadableStream<Uint8Array>({
           start(c) {
@@ -62,7 +66,7 @@ function serveFakeRunner() {
   });
 }
 
-function fakeTerminal(tty = true) {
+function fakeTerminal(tty = true, osc11Reply: string | null = null) {
   const writes: string[] = [];
   const raw: boolean[] = [];
   let onData: ((d: string) => void) | null = null;
@@ -76,7 +80,13 @@ function fakeTerminal(tty = true) {
       pause: () => {},
       setEncoding: () => {},
     },
-    stdout: { isTTY: tty, columns: 80, rows: 24, write: (s: string) => { writes.push(s); } },
+    stdout: {
+      isTTY: tty, columns: 80, rows: 24,
+      write: (s: string) => {
+        writes.push(s);
+        if (s === OSC11_QUERY && osc11Reply !== null) setTimeout(() => onData?.(osc11Reply), 5);
+      },
+    },
   };
   return {
     term,
@@ -135,6 +145,47 @@ describe('runTop', () => {
     expect(LEAVE_SCREEN).toContain('\x1b[?25h');
     expect(LEAVE_SCREEN).toContain('\x1b[?1049l');
     expect(t.raw).toEqual([true, false]);
+  });
+
+  test('asks the terminal for its background before the first frame: white means Day (R-17, AC-6)', async () => {
+    serveFakeRunner();
+    const t = fakeTerminal(true, '\x1b]11;rgb:ffff/ffff/ffff\x07');
+    const done = runTop({ socketPath: sock, terminal: t.term, hostname: 'h', env: { COLORTERM: 'truecolor' }, processHooks: false });
+    await until(() => t.screen().includes('name override'));
+    const q = t.writes.indexOf(OSC11_QUERY);
+    const firstFrame = t.writes.findIndex(w => w.startsWith('\x1b[H'));
+    expect(q).toBeGreaterThan(-1);
+    expect(q).toBeLessThan(firstFrame);
+    const frame = t.writes[firstFrame];
+    expect(frame).toContain('\x1b[38;2;107;101;92m'); // Day muted
+    expect(frame).not.toContain('\x1b[38;2;237;232;226m name override'); // never Night text
+    // The reply never reached the key handler: no filter prompt, no status.
+    expect(t.screen()).not.toContain('filter ›');
+    t.type('q');
+    expect(await done).toBe(0);
+  });
+
+  test('a terminal that never answers costs at most the timeout, then Night', async () => {
+    serveFakeRunner();
+    const t = fakeTerminal(true, null);
+    const start = Date.now();
+    const done = runTop({ socketPath: sock, terminal: t.term, hostname: 'h', env: { COLORTERM: 'truecolor' }, processHooks: false });
+    await until(() => t.writes.some(w => w.startsWith('\x1b[H')));
+    expect(Date.now() - start).toBeLessThan(1_000);
+    expect(t.writes.find(w => w.startsWith('\x1b[H'))).toContain('\x1b[38;2;168;159;150m'); // Night muted
+    t.type('q');
+    await done;
+  });
+
+  test('the header names the workspaces, and w switches', async () => {
+    serveFakeRunner();
+    const t = fakeTerminal();
+    const done = runTop({ socketPath: sock, terminal: t.term, hostname: 'h', palette: createPalette('night', 'none'), processHooks: false });
+    await until(() => t.screen().includes('2 workspaces'));
+    t.type('w');
+    await until(() => t.screen().includes('Showing alpha.'));
+    t.type('q');
+    await done;
   });
 
   test('ctrl-c restores the terminal too', async () => {

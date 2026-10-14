@@ -7,8 +7,8 @@
  */
 import type { Palette, PaletteToken } from '../terminal-palette';
 import {
-  busySlots, currentMission, describeToolCall, formatDuration, missionRows, planOf, selectedRow,
-  taskRows, workerForTask, type RowKind, type TaskRow, type TopState,
+  busySlots, currentMission, currentWorkspace, describeToolCall, formatDuration, missionRows, planOf, selectedRow,
+  taskRows, workerForTask, workspaceSummary, type RowKind, type TaskRow, type TopState,
 } from './state';
 
 export interface FrameOptions {
@@ -95,7 +95,9 @@ function renderRow(row: TaskRow, width: number, selected: boolean, p: Palette): 
   const titleW = Math.max(8, Math.min(28, Math.floor(rest * 0.45)));
   const tailW = Math.max(0, rest - titleW);
 
-  const title = fit(row.title, titleW);
+  // Title, role and status are separate columns (R-21): a cut title ends in
+  // "…" and one space always follows it.
+  const title = fit(row.title, titleW - 1) + ' ';
   const role = cols.role ? fit(row.role ?? '', ROLE_W - 1) + ' ' : '';
   const elapsed = row.elapsedMs !== undefined ? fit(formatDuration(row.elapsedMs), elapsedW - 1, 'right') + ' ' : ' '.repeat(elapsedW);
 
@@ -112,10 +114,14 @@ function renderRow(row: TaskRow, width: number, selected: boolean, p: Palette): 
   }
   const cost = cols.cost ? fit(row.group === 'running' ? formatTokens(row.tokens) : '', COST_W, 'right') : '';
 
-  // The › marks the selection even with no colour at all (NO_COLOR).
+  // The › marks the selection even with no colour at all (NO_COLOR). Primary
+  // text is the terminal's own foreground (R-17); only the selected row, which
+  // paints its own background, pairs it with the theme's text colour.
+  const primary: PaletteToken = selected ? 'selectedText' : 'text';
+  if (tailToken === 'text') tailToken = primary;
   const line =
     (selected ? p.fg('accent', '›') : ' ') + p.fg(g.token, g.ch) + ' ' +
-    p.fg('text', title) +
+    p.fg(primary, title) +
     p.fg('muted', role) +
     p.fg('muted', elapsed) +
     p.fg(tailToken, tail) +
@@ -126,36 +132,59 @@ function renderRow(row: TaskRow, width: number, selected: boolean, p: Palette): 
 // ── frame ───────────────────────────────────────────────────────────────────
 
 function header(state: TopState, cols: number, p: Palette): string {
-  const left = ` buildd · ${state.runner.hostname}`;
+  const host = state.runner.hostname;
+  // R-19: which workspaces this runner serves, e.g. "5 workspaces · Acme".
+  const served = workspaceSummary(state);
   const busy = busySlots(state);
   const online = state.runner.online ? '● online' : '○ reconnecting';
   const version = state.runner.version ? ` · v${state.runner.version}` : '';
-  const right = `${busy} of ${state.runner.maxConcurrent} slots busy · ${online}${version} `;
-  const gap = cols - textWidth(left) - textWidth(right);
-  if (gap < 1) return fit(left, cols);
-  return (
-    ' ' + p.fg('accent', 'buildd') + p.fg('muted', ` · ${state.runner.hostname}`) +
-    ' '.repeat(gap) +
-    p.fg('muted', `${busy} of ${state.runner.maxConcurrent} slots busy · `) +
-    p.fg(state.runner.online ? 'accent' : 'muted', online) +
-    p.fg('muted', `${version} `)
-  );
+  // Widest first; drop the version, then shorten the slots, then the hostname.
+  const variants: Array<{ host: boolean; slots: string; version: string }> = [
+    { host: true, slots: `${busy} of ${state.runner.maxConcurrent} slots busy`, version },
+    { host: true, slots: `${busy} of ${state.runner.maxConcurrent} slots busy`, version: '' },
+    { host: true, slots: `${busy}/${state.runner.maxConcurrent} busy`, version: '' },
+    { host: false, slots: `${busy}/${state.runner.maxConcurrent} busy`, version: '' },
+  ];
+  for (const v of variants) {
+    const leftParts = [v.host ? host : null, served || null].filter(Boolean).join(' · ');
+    const left = ` buildd${leftParts ? ' · ' + leftParts : ''}`;
+    const right = `${v.slots} · ${online}${v.version} `;
+    const gap = cols - textWidth(left) - textWidth(right);
+    if (gap < 1) continue;
+    return (
+      ' ' + p.fg('accent', 'buildd') + p.fg('muted', leftParts ? ` · ${leftParts}` : '') +
+      ' '.repeat(gap) +
+      p.fg('muted', `${v.slots} · `) +
+      p.fg(state.runner.online ? 'accent' : 'muted', online) +
+      p.fg('muted', `${v.version} `)
+    );
+  }
+  return fit(` buildd · ${host}`, cols);
 }
 
 function rule(cols: number, p: Palette): string {
   return p.fg('faint', '─'.repeat(cols));
 }
 
-const HINTS_LIST = ['↑↓ move', '⏎ open', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 'o web', '/ filter', 'q quit'];
+const HINTS_LIST = ['↑↓ move', '⏎ open', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 'o web', 'w workspace', '/ filter', '? help', 'q quit'];
+const HINTS_HELP = ['o open this runner on buildd', 'any key back', 'q quit'];
 const HINTS_DETAIL = ['esc back', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 'o web', 'q quit'];
+
+/** Dropped first when the footer is too narrow; `? help`, `w` and `q quit` always stay. */
+const HINT_DROP_ORDER = ['/ filter', 'o web', '⏎ open', '↑↓ move', 'm message', 'c claim', 'p pause', 'x stop', 'a answer', 'esc back'];
 
 function fitHints(hints: string[], cols: number): string {
   for (const sep of ['  ', ' ']) {
     const s = ' ' + hints.join(sep);
     if (textWidth(s) <= cols) return s;
   }
-  // Drop hints from the middle until it fits; `q quit` always stays.
   const list = [...hints];
+  for (const drop of HINT_DROP_ORDER) {
+    if (textWidth(' ' + list.join(' ')) <= cols) break;
+    const i = list.indexOf(drop);
+    if (i >= 0) list.splice(i, 1);
+  }
+  // Still too wide: drop from the middle until it fits; `q quit` always stays.
   while (list.length > 2 && textWidth(' ' + list.join(' ')) > cols) list.splice(list.length - 2, 1);
   return ' ' + list.join(' ');
 }
@@ -179,7 +208,7 @@ function footer(state: TopState, cols: number, p: Palette): string {
     const token: PaletteToken = state.status.tone === 'error' ? 'error' : state.status.tone === 'ok' ? 'success' : 'muted';
     return p.fg(token, fit(' ' + state.status.text, cols));
   }
-  const hints = m.kind === 'detail' ? HINTS_DETAIL : HINTS_LIST;
+  const hints = m.kind === 'detail' ? HINTS_DETAIL : m.kind === 'help' ? HINTS_HELP : HINTS_LIST;
   return p.fg('muted', fit(fitHints(hints, cols), cols));
 }
 
@@ -212,8 +241,10 @@ function listBody(state: TopState, cols: number, height: number, now: number, p:
   const nWaiting = rows.filter(r => r.group === 'waiting').length;
   const counts = `${nRunning} running · ${nWaiting} waiting `;
   const filterNote = state.filter ? ` (filter: ${state.filter})` : '';
+  const ws = currentWorkspace(state);
+  const heading = (ws ? `${ws.name} · ` : '') + mission.title + (mission.planning ? ' · planning' : '') + filterNote;
   const titleW = rw - textWidth(counts) - 1;
-  right.push(' ' + p.fg('text', fit(mission.title + filterNote, titleW)) + p.fg(nRunning > 0 ? 'accent' : 'muted', counts));
+  right.push(' ' + p.fg('text', fit(heading, titleW)) + p.fg(nRunning > 0 ? 'accent' : 'muted', counts));
   right.push(p.fg('faint', '─'.repeat(rw)));
 
   const groups: Array<{ key: TaskRow['group']; label: string }> = [
@@ -328,12 +359,42 @@ function fitAnsi(line: string, cols: number, _p: Palette): string {
   return line + ' '.repeat(cols - visible);
 }
 
+const HELP_KEYS: Array<[string, string]> = [
+  ['↑↓ j k', 'move; ← → switch between missions and tasks'],
+  ['⏎', 'open a task: plan, milestones, tool calls'],
+  ['a', 'answer the question an agent is asking'],
+  ['m', 'send a message to a running agent'],
+  ['p', 'pause a running agent'],
+  ['x', 'stop a running agent (asks first)'],
+  ['c', 'claim a waiting task onto this runner'],
+  ['o', 'open the task on buildd'],
+  ['w', 'show the next workspace, then all of them'],
+  ['/', 'filter by title; esc clears it'],
+  ['q', 'quit (the runner keeps running)'],
+];
+
+/** `?` (R-20): the keys, and what this view cannot see. */
+function helpBody(state: TopState, cols: number, height: number, p: Palette): string[] {
+  const out: string[] = [];
+  out.push(p.fg('muted', fit(' KEYS', cols)));
+  for (const [k, what] of HELP_KEYS) out.push(p.fg('accent', fit(`  ${k}`, 10)) + p.fg('text', fit(what, cols - 10)));
+  out.push(' '.repeat(cols));
+  const served = workspaceSummary(state);
+  out.push(p.fg('text', fit(` This view shows only the workspaces this runner serves${served ? ` (${served})` : ''}.`, cols)));
+  out.push(p.fg('muted', fit(" Work elsewhere is not shown here. o opens this runner's page on buildd, where its workspaces are set.", cols)));
+  const lines = out.slice(0, height);
+  while (lines.length < height) lines.push(' '.repeat(cols));
+  return lines;
+}
+
 /** The whole screen as `rows` lines, each `cols` wide. */
 export function renderFrame(state: TopState, opts: FrameOptions): string[] {
   const { cols, rows, now, palette: p } = opts;
   const bodyH = Math.max(1, rows - 4);
   const body = state.mode.kind === 'detail'
     ? detailBody(state, state.mode.taskId, cols, bodyH, now, p)
-    : listBody(state, cols, bodyH, now, p);
+    : state.mode.kind === 'help'
+      ? helpBody(state, cols, bodyH, p)
+      : listBody(state, cols, bodyH, now, p);
   return [header(state, cols, p), rule(cols, p), ...body, rule(cols, p), footer(state, cols, p)];
 }

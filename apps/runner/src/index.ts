@@ -182,14 +182,14 @@ function exitAlreadyRunning(decision: { code: number; message: string; stream: '
 }
 
 /** Open `buildd top` on the runner holding the socket, then exit with its code. */
-async function attachTop(missionId: string | null, notice?: string): Promise<never> {
+async function attachTop(missionId: string | null, notice?: string, workspace: string | null = null): Promise<never> {
   const { runTop } = await import('./top/run');
-  process.exit(await runTop({ socketPath: RUNNER_SOCKET, missionId, notice }));
+  process.exit(await runTop({ socketPath: RUNNER_SOCKET, missionId, workspace, notice }));
 }
 
 // `buildd top`: watch the runner already running on this machine. Never starts one.
 if (CLI.kind === 'top') {
-  await attachTop(CLI.missionId);
+  await attachTop(CLI.missionId, undefined, CLI.workspace);
 }
 
 let runnerSocket: RunnerSocketServer | null = null;

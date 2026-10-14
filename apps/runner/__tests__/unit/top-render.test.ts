@@ -6,8 +6,8 @@
 import { describe, expect, test } from 'bun:test';
 import { createPalette, stripAnsi } from '../../src/terminal-palette';
 import { columnsFor, fit, renderFrame, textWidth } from '../../src/top/render';
-import type { TopState } from '../../src/top/state';
-import { NOW, fixtureState } from './top-fixture';
+import { reduce, type TopState } from '../../src/top/state';
+import { NOW, TASKS, fixtureState } from './top-fixture';
 
 const plain = createPalette('night', 'none');
 const frame = (s: TopState, cols: number, rows: number, palette = plain) => renderFrame(s, { cols, rows, now: NOW, palette });
@@ -131,4 +131,77 @@ test('fit cuts with an ellipsis and pads to the width', () => {
   expect(fit('ab', 4)).toBe('ab  ');
   expect(fit('ab', 4, 'right')).toBe('  ab');
   expect(textWidth(fit('日本語のタイトル', 7))).toBe(7);
+});
+
+describe('revision 2 (R-17, R-19, R-21, AC-6)', () => {
+  const truecolor = createPalette('day', 'truecolor');
+  const SGR_FG = /\x1b\[(?:39|38;[0-9;]+)m/g;
+
+  /** The last foreground SGR before `needle` on a line. */
+  function fgBefore(line: string, needle: string): string | undefined {
+    const at = line.indexOf(needle);
+    expect(at).toBeGreaterThan(-1);
+    return line.slice(0, at).match(SGR_FG)?.at(-1);
+  }
+
+  test('row titles are drawn in the terminal default foreground (AC-6)', () => {
+    const s = { ...fixtureState(), focus: 'missions' as const };
+    const lines = frame(s, 80, 24, truecolor);
+    for (const title of ['name override', 'installer hint', 'single instance', 'buildd top', 'docs page', 'spec draft']) {
+      const line = lines.find(l => stripAnsi(l).includes(title))!;
+      expect(fgBefore(line, title)).toBe('\x1b[39m');
+    }
+  });
+
+  test('the selected row pairs the theme text colour with its own background', () => {
+    const lines = frame(fixtureState(), 80, 24, truecolor);
+    const line = lines.find(l => stripAnsi(l).includes('name override'))!;
+    expect(fgBefore(line, 'name override')).toBe(truecolor.fgCode('selectedText'));
+  });
+
+  test('a cut title never runs into the role column (R-21)', () => {
+    const long = 'Verify the repository access token for every workspace';
+    const s = reduce(fixtureState(), {
+      type: 'tasks',
+      tasks: [...TASKS, { id: 't-long', title: long, status: 'pending', missionId: TASKS[0].missionId, mission: TASKS[0].mission, roleSlug: 'ops' }],
+    });
+    for (const cols of [80, 120]) {
+      const t = text(frame(s, cols, 30));
+      const row = t.split('\n').find(l => l.includes('Verify the'))!;
+      expect(row).toMatch(/… +Ops/);
+    }
+    // Every row: something then at least one space before the role.
+    for (const l of text(frame(fixtureState(), 80, 24)).split('\n')) {
+      expect(l).not.toMatch(/\S(Builder|Writer)\b/);
+    }
+  });
+
+  test('the header names the workspaces served (R-19)', () => {
+    const s = reduce(fixtureState(), { type: 'workspaces', workspaces: [
+      { id: 'ws-a', name: 'alpha', teamId: 'team-1', teamName: 'Acme' },
+      { id: 'ws-b', name: 'bravo', teamId: 'team-1', teamName: 'Acme' },
+    ] });
+    for (const cols of [80, 120]) {
+      const head = stripAnsi(frame(s, cols, 24)[0]);
+      expect(head).toContain('2 workspaces · Acme');
+      expect(textWidth(head)).toBe(cols);
+    }
+  });
+
+  test('a selected workspace is named in the heading', () => {
+    const s = reduce(reduce(fixtureState(), { type: 'workspaces', workspaces: [{ id: 'ws-a', name: 'alpha' }, { id: 'ws-b', name: 'bravo' }] }), {
+      type: 'tasks', tasks: TASKS.map(t => ({ ...t, workspaceId: 'ws-a' })),
+    });
+    const t = text(frame({ ...s, selectedWorkspace: 'ws-a' }, 80, 24));
+    expect(t.split('\n')[2]).toContain('alpha · Runner TUI');
+  });
+
+  test('help says what top cannot see and how to change it (R-20)', () => {
+    const lines = frame({ ...fixtureState(), mode: { kind: 'help' } }, 80, 24);
+    expectExactSize(lines, 80, 24);
+    const t = text(lines);
+    expect(t).toContain('w');
+    expect(t).toMatch(/only the workspaces this runner serves/i);
+    expect(t).toMatch(/o opens this runner's page on buildd/i);
+  });
 });

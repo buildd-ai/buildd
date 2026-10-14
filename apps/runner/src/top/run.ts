@@ -12,7 +12,7 @@
  * list. The only timer that fetches is the once-a-minute task list refresh.
  */
 import { hostname as osHostname } from 'os';
-import { terminalPalette, type Palette } from '../terminal-palette';
+import { queryTerminalBackground, terminalPalette, type Palette } from '../terminal-palette';
 import { probeRunnerSocket } from '../runner-socket';
 import { socketClient, type SocketClient } from './client';
 import { actionResultText, handleKey, parseKeys, type Effect } from './keys';
@@ -42,11 +42,15 @@ export interface TopTerminal {
 export interface RunTopOptions {
   socketPath: string;
   missionId?: string | null;
+  /** `--workspace <name or id>` (R-19). */
+  workspace?: string | null;
   /** Printed above nothing, before the view opens (the R-12 hand-off line). */
   notice?: string;
   terminal?: TopTerminal;
   client?: SocketClient;
+  /** Fixed palette (tests). Without one, the terminal is asked for its background (R-17). */
   palette?: Palette;
+  env?: Record<string, string | undefined>;
   hostname?: string;
   openUrl?: (url: string) => void;
   /** Register process-level exit hooks (off in tests). */
@@ -75,10 +79,10 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
     }
   }
   const client = opts.client ?? socketClient(opts.socketPath);
-  const palette = opts.palette ?? terminalPalette(process.env, true);
   const openUrl = opts.openUrl ?? defaultOpenUrl;
+  let palette: Palette = opts.palette ?? terminalPalette(opts.env ?? process.env, true);
 
-  let state: TopState = initialState({ hostname: opts.hostname ?? osHostname(), missionId: opts.missionId });
+  let state: TopState = initialState({ hostname: opts.hostname ?? osHostname(), missionId: opts.missionId, workspace: opts.workspace });
   if (opts.notice) state = { ...state, status: { text: opts.notice, tone: 'info' } };
   let restored = false;
   let renderTimer: ReturnType<typeof setTimeout> | null = null;
@@ -120,11 +124,13 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
   };
 
   const loadSnapshot = async () => {
-    const [runner, config, workers] = await Promise.all([
+    const [runner, config, workers, workspaces] = await Promise.all([
       client.get('/api/runner').catch(() => null),
       client.get('/api/config').catch(() => null),
       client.get('/api/workers').catch(() => null),
+      client.get('/api/workspaces').catch(() => null),
     ]);
+    if (workspaces?.status === 200 && Array.isArray(workspaces.body?.workspaces)) dispatch({ type: 'workspaces', workspaces: workspaces.body.workspaces });
     if (runner?.body) dispatch({ type: 'runner', pid: runner.body.pid, version: runner.body.version });
     if (config?.body) dispatch({ type: 'config', maxConcurrent: config.body.maxConcurrent, builddServer: config.body.builddServer });
     if (workers?.status === 200 && Array.isArray(workers.body?.workers)) dispatch({ type: 'workers', workers: workers.body.workers });
@@ -153,9 +159,10 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
   // ── effects ─────────────────────────────────────────────────────────────
   const runEffect = async (effect: Effect) => {
     if (effect.type === 'quit') { finish(0); return; }
-    if (effect.type === 'open') {
+    if (effect.type === 'open' || effect.type === 'openRunner') {
       const server = state.runner.builddServer || 'https://buildd.dev';
-      const url = `${server.replace(/\/$/, '')}/app/tasks/${effect.taskId}`;
+      // The runner's page is where its workspaces are set (R-20).
+      const url = `${server.replace(/\/$/, '')}${effect.type === 'open' ? `/app/tasks/${effect.taskId}` : '/app/settings/runners'}`;
       openUrl(url);
       dispatch({ type: 'status', status: { text: `Opened ${url}`, tone: 'ok' } });
       return;
@@ -215,8 +222,17 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
 
   if (opts.notice) term.stdout.write(opts.notice + '\n');
   term.stdout.write(ENTER_SCREEN);
-  term.stdin.setRawMode?.(true);
   term.stdin.setEncoding?.('utf8');
+  // R-17: ask the terminal for its background before the first frame, at most
+  // 150 ms, so a light terminal with no COLORFGBG (VS Code) gets Day. The reply
+  // is consumed there; keys typed meanwhile are replayed below.
+  let typedEarly = '';
+  if (!opts.palette) {
+    const { background, rest } = await queryTerminalBackground(term as any, undefined, { leaveRaw: true });
+    palette = terminalPalette(opts.env ?? process.env, true, background);
+    typedEarly = rest;
+  }
+  term.stdin.setRawMode?.(true);
   term.stdin.on('data', onData);
   term.stdin.resume?.();
   term.stdout.on?.('resize', onResize);
@@ -229,6 +245,7 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
     process.on('exit', restore);
   }
 
+  if (typedEarly) onData(typedEarly);
   scheduleDraw();
   // Elapsed times move without any event; redraw (no fetch) once a second.
   timers.push(setInterval(scheduleDraw, 1_000));

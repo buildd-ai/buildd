@@ -9,8 +9,9 @@ exports[`token mapping night, truecolor 1`] = `
   "muted": ""\\u001b[38;2;168;159;150mx\\u001b[39m"",
   "queue": ""\\u001b[38;2;168;159;150mx\\u001b[39m"",
   "selected": ""\\u001b[38;2;47;44;40mx\\u001b[39m"",
+  "selectedText": ""\\u001b[38;2;237;232;226mx\\u001b[39m"",
   "success": ""\\u001b[38;2;134;201;157mx\\u001b[39m"",
-  "text": ""\\u001b[38;2;237;232;226mx\\u001b[39m"",
+  "text": ""\\u001b[39mx\\u001b[39m"",
   "warning": ""\\u001b[38;2;245;155;78mx\\u001b[39m"",
 }
 `;
@@ -24,8 +25,9 @@ exports[`token mapping night, 256 1`] = `
   "muted": ""\\u001b[38;5;247mx\\u001b[39m"",
   "queue": ""\\u001b[38;5;247mx\\u001b[39m"",
   "selected": ""\\u001b[38;5;236mx\\u001b[39m"",
+  "selectedText": ""\\u001b[38;5;254mx\\u001b[39m"",
   "success": ""\\u001b[38;5;115mx\\u001b[39m"",
-  "text": ""\\u001b[38;5;254mx\\u001b[39m"",
+  "text": ""\\u001b[39mx\\u001b[39m"",
   "warning": ""\\u001b[38;5;209mx\\u001b[39m"",
 }
 `;
@@ -39,8 +41,9 @@ exports[`token mapping day, truecolor 1`] = `
   "muted": ""\\u001b[38;2;107;101;92mx\\u001b[39m"",
   "queue": ""\\u001b[38;2;95;89;79mx\\u001b[39m"",
   "selected": ""\\u001b[38;2;238;235;228mx\\u001b[39m"",
+  "selectedText": ""\\u001b[38;2;38;35;31mx\\u001b[39m"",
   "success": ""\\u001b[38;2;47;100;64mx\\u001b[39m"",
-  "text": ""\\u001b[38;2;38;35;31mx\\u001b[39m"",
+  "text": ""\\u001b[39mx\\u001b[39m"",
   "warning": ""\\u001b[38;2;169;82;26mx\\u001b[39m"",
 }
 `;
@@ -54,8 +57,9 @@ exports[`token mapping day, 256 1`] = `
   "muted": ""\\u001b[38;5;241mx\\u001b[39m"",
   "queue": ""\\u001b[38;5;240mx\\u001b[39m"",
   "selected": ""\\u001b[38;5;255mx\\u001b[39m"",
+  "selectedText": ""\\u001b[38;5;235mx\\u001b[39m"",
   "success": ""\\u001b[38;5;238mx\\u001b[39m"",
-  "text": ""\\u001b[38;5;235mx\\u001b[39m"",
+  "text": ""\\u001b[39mx\\u001b[39m"",
   "warning": ""\\u001b[38;5;130mx\\u001b[39m"",
 }
 `;

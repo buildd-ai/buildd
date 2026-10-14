@@ -4,7 +4,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { actionResultText, handleKey, parseKeys, type Effect, type Key } from '../../src/top/keys';
-import { selectedRow, type TopState } from '../../src/top/state';
+import { reduce, selectedRow, type TopState } from '../../src/top/state';
 import { NOW, fixtureState } from './top-fixture';
 
 const ch = (c: string): Key => ({ name: 'char', ch: c });
@@ -158,5 +158,45 @@ describe('status line from the server answer', () => {
       .toEqual({ text: 'Answer refused: Worker is not waiting for input (HTTP 409)', tone: 'error' });
     expect(actionResultText({ type: 'claim', taskId: 't', title: 'x' }, { status: 400, body: 'nope' }).text).toBe('Claim refused: nope (HTTP 400)');
     expect(actionResultText(answer, { status: 502, body: {} }).text).toBe('Answer refused: HTTP 502');
+  });
+});
+
+describe('revision 2 keys (R-19, R-20)', () => {
+  const withWorkspaces = (): TopState => reduce(fixtureState(), {
+    type: 'workspaces',
+    workspaces: [
+      { id: 'ws-aaaa-0000', name: 'alpha', teamId: 'team-1' },
+      { id: 'ws-bbbb-0000', name: 'bravo', teamId: 'team-2' },
+    ],
+  });
+
+  test('w cycles the workspace and says which one', () => {
+    let { s } = press(withWorkspaces(), 'w');
+    expect(s.selectedWorkspace).toBe('ws-aaaa-0000');
+    expect(s.status?.text).toBe('Showing alpha. w for the next workspace.');
+    ({ s } = press(s, 'w', 'w'));
+    expect(s.selectedWorkspace).toBeNull();
+    expect(s.status?.text).toBe('Showing all 2 workspaces.');
+  });
+
+  test('w with nothing to switch to says so', () => {
+    const { s } = press(fixtureState(), 'w');
+    expect(s.selectedWorkspace).toBeNull();
+    expect(s.status?.text).toBe('This runner serves one workspace, so there is nothing to switch to.');
+  });
+
+  test('? opens help; o there opens the runner page; esc or ? closes it', () => {
+    let { s, effects } = press(fixtureState(), '?');
+    expect(s.mode).toEqual({ kind: 'help' });
+    ({ effects } = press(s, 'o'));
+    expect(effects).toEqual([{ type: 'openRunner' }]);
+    expect(press(s, '\x1b').s.mode).toEqual({ kind: 'list' });
+    expect(press(s, '?').s.mode).toEqual({ kind: 'list' });
+    expect(press(s, 'q').effects).toEqual([{ type: 'quit' }]);
+  });
+
+  test('a late OSC 11 reply is swallowed, never typed as keys', () => {
+    expect(parseKeys('\x1b]11;rgb:ffff/ffff/ffff\x07j')).toEqual([ch('j')]);
+    expect(parseKeys('\x1b]11;rgb:0000/0000/0000\x1b\\k')).toEqual([ch('k')]);
   });
 });
