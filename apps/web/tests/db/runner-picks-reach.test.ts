@@ -267,6 +267,37 @@ describe('a pick reaches only while the person who made it still may', () => {
     expect(tomb.removed_by_user_id).toBe(admin);
     const listed = (await listRunnerKeys(person)).find((k) => k.id === minted.accountId);
     expect(listed?.picks).toEqual([expect.objectContaining({ workspaceId: homeWs, removedByAdmin: false })]);
+
+    // Review #2: deleting the removing admin's user row sets removed_by_user_id
+    // NULL (ON DELETE SET NULL); removed_at is the marker, so the pick stays dead.
+    await q(sql`DELETE FROM users WHERE id = ${admin}::uuid`);
+    const [after] = await q<{ removed_by_user_id: string | null; removed_at: string | null }>(sql`
+      SELECT removed_by_user_id, removed_at FROM account_workspaces WHERE account_id = ${minted.accountId}::uuid AND workspace_id = ${otherWs}::uuid`);
+    expect(after.removed_by_user_id).toBeNull();
+    expect(after.removed_at).not.toBeNull();
+    clearAccountWorkspaceCache();
+    expect([...(await liveGrantedWorkspaceIds(minted.accountId))]).toEqual([homeWs]);
+    const { readReachLink } = await import('../../src/lib/granted-links');
+    expect(await readReachLink(minted.accountId, otherWs)).toEqual({ canClaim: false, canCreate: false, revoked: true });
+    expect(await replaceRunnerPicks({ accountId: minted.accountId, userId: person, workspaceIds: [homeWs, otherWs] }))
+      .toMatchObject({ ok: false, status: 403 });
+  });
+
+  test('a tombstone whose remover is unknown (removed_by_user_id NULL, removed_at set) stays dead', async () => {
+    const [home, other] = [await team(), await team()];
+    const person = await user();
+    await member(home, person, 'owner');
+    await member(other, person, 'owner');
+    const ws = await workspace(other, 'open');
+    const k = await key(home, person);
+    await link(k, ws, person);
+    await q(sql`UPDATE account_workspaces SET removed_at = now(), can_claim = false, can_create = false
+      WHERE account_id = ${k}::uuid AND workspace_id = ${ws}::uuid`);
+    clearAccountWorkspaceCache();
+    expect((await liveGrantedWorkspaceIds(k)).size).toBe(0);
+    expect(await getLinkedWorkspaceIds(k, 'canClaim')).toEqual([]);
+    const { readReachLink } = await import('../../src/lib/granted-links');
+    expect(await readReachLink(k, ws)).toMatchObject({ revoked: true });
   });
 
   test("an edit keeps an admin's ordinary cross-team link reachable", async () => {

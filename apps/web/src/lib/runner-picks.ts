@@ -39,7 +39,7 @@ export async function editConsentTeams(userId: string, accountId: string): Promi
       .select({ workspaceId: accountWorkspaces.workspaceId, name: workspaces.name })
       .from(accountWorkspaces)
       .innerJoin(workspaces, eq(workspaces.id, accountWorkspaces.workspaceId))
-      .where(and(eq(accountWorkspaces.accountId, accountId), isNotNull(accountWorkspaces.removedByUserId))),
+      .where(and(eq(accountWorkspaces.accountId, accountId), isNotNull(accountWorkspaces.removedAt))),
   ]);
   const removed = new Set(removedRows.map((r) => r.workspaceId));
   const teams = offered
@@ -156,15 +156,15 @@ export async function replaceRunnerPicks(args: {
     .select({
       workspaceId: accountWorkspaces.workspaceId,
       grantedByUserId: accountWorkspaces.grantedByUserId,
-      removedByUserId: accountWorkspaces.removedByUserId,
+      removedAt: accountWorkspaces.removedAt,
     })
     .from(accountWorkspaces)
     .where(eq(accountWorkspaces.accountId, account.id));
   // A team admin removed this runner from a workspace: the owner cannot put it
   // back here (the row is a tombstone, see /api/workspaces/[id]/accounts).
-  const removed = new Set(existing.filter((r) => r.removedByUserId).map((r) => r.workspaceId));
+  const removed = new Set(existing.filter((r) => r.removedAt != null).map((r) => r.workspaceId));
   if (check.workspaceIds.some((id) => removed.has(id))) {
-    return { ok: false, status: 403, message: 'A team admin removed this runner from one of the chosen workspaces. Ask them to add it back.' };
+    return { ok: false, status: 403, message: 'A team admin removed this runner from one of the chosen workspaces.' };
   }
   // Ordinary (admin-made) links stay exactly as they are, and stay reachable:
   // an edit replaces only the person's own picks.
@@ -173,7 +173,7 @@ export async function replaceRunnerPicks(args: {
   await db.delete(accountWorkspaces).where(and(
     eq(accountWorkspaces.accountId, account.id),
     isNotNull(accountWorkspaces.grantedByUserId),
-    isNull(accountWorkspaces.removedByUserId),
+    isNull(accountWorkspaces.removedAt),
     notInArray(accountWorkspaces.workspaceId, check.workspaceIds),
   ));
   await db.insert(accountWorkspaces).values(pickRows(account.id, args.userId, check.workspaceIds)).onConflictDoNothing();
@@ -241,7 +241,7 @@ export async function listRunnerKeys(userId: string): Promise<RunnerKeySummary[]
     db
       .select({ accountId: accountWorkspaces.accountId, workspaceId: accountWorkspaces.workspaceId })
       .from(accountWorkspaces)
-      .where(and(inArray(accountWorkspaces.accountId, keys.map((k) => k.id)), isNotNull(accountWorkspaces.removedByUserId))),
+      .where(and(inArray(accountWorkspaces.accountId, keys.map((k) => k.id)), isNotNull(accountWorkspaces.removedAt))),
   ]);
   const removed = new Set(removedRows.map((r) => `${r.accountId}:${r.workspaceId}`));
   const wsById = new Map(wsRows.map((w) => [w.id, w]));
@@ -309,7 +309,7 @@ export async function listForeignRunners(userId: string): Promise<ForeignRunner[
     .where(and(
       inArray(workspaces.teamId, adminTeams),
       isNotNull(accountWorkspaces.grantedByUserId),
-      isNull(accountWorkspaces.removedByUserId),
+      isNull(accountWorkspaces.removedAt),
       ne(accounts.teamId, workspaces.teamId),
     ))
     .orderBy(asc(teams.name), asc(workspaces.name), asc(accounts.name));

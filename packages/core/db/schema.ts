@@ -382,8 +382,10 @@ export const accountWorkspaces = pgTable('account_workspaces', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   // A team admin took this pick off the workspace (Settings > Connected apps).
   // The row stays as a tombstone so the key's owner cannot put it back through
-  // Edit; a removed pick reaches nothing (lib/granted-links.ts).
-  removedByUserId: uuid('removed_by_user_id').references(() => users.id, { onDelete: 'cascade' }),
+  // Edit; a removed pick reaches nothing (lib/granted-links.ts). `removed_at`
+  // is the marker: who removed it is kept for display and goes NULL if that
+  // admin's user row is deleted, which never brings the pick back.
+  removedByUserId: uuid('removed_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   removedAt: timestamp('removed_at', { withTimezone: true }),
 }, (t) => ({
   pk: primaryKey({ columns: [t.accountId, t.workspaceId] }),

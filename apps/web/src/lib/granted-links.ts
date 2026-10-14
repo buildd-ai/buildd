@@ -8,8 +8,9 @@
  *   - the workspace is `open`, or the person is an owner or admin there.
  * Leaving the team, losing the role a restricted workspace needed, or the
  * workspace turning restricted under a member drops it, with no cleanup step.
- * So does a team admin removing it (`removed_by_user_id`, a tombstone the
- * key's owner cannot undo through Edit).
+ * So does a team admin removing it (`removed_at`, a tombstone the key's
+ * owner cannot undo through Edit; it stays dead even if the removing admin's
+ * user row is deleted and `removed_by_user_id` goes NULL).
  *
  * A row without the marker (an admin's link, or any row written before picks
  * existed) is not touched by this: it behaves exactly as it always has (R-6).
@@ -35,7 +36,7 @@ export function grantedLinkStillValid(): SQL {
   const aw = schema.accountWorkspaces;
   // The subquery names its own tables (`gw`, `gm`), so it cannot capture or be
   // captured by an outer query on workspaces or team_members.
-  return sql`(${aw.removedByUserId} is null and exists (select 1 from "workspaces" "gw" inner join "team_members" "gm" on "gm"."team_id" = "gw"."team_id" where "gw"."id" = ${aw.workspaceId} and "gm"."user_id" = ${aw.grantedByUserId} and ("gw"."access_mode" = 'open' or "gm"."role" in ('owner', 'admin'))))`;
+  return sql`(${aw.removedAt} is null and exists (select 1 from "workspaces" "gw" inner join "team_members" "gm" on "gm"."team_id" = "gw"."team_id" where "gw"."id" = ${aw.workspaceId} and "gm"."user_id" = ${aw.grantedByUserId} and ("gw"."access_mode" = 'open' or "gm"."role" in ('owner', 'admin'))))`;
 }
 
 /**

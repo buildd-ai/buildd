@@ -162,7 +162,7 @@ export function runnerWording(flow: RunnerConsentFlow): RunnerConsentWording {
         title: 'Change runner workspaces',
         lede: `Choose the workspaces ${flow.accountName || 'this runner'} claims work from. Its key stays the same.`
           + (flow.removedNames?.length
-            ? ` A team admin removed it from ${flow.removedNames.join(', ')}; ask them to add it back.`
+            ? ` A team admin removed it from ${flow.removedNames.join(', ')}.`
             : ''),
         returnsTo: 'Settings',
         approveLabel: 'Save',
