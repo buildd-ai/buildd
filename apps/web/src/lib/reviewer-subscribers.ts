@@ -37,7 +37,8 @@ import { readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request'
 import { pickReviewerRole } from '@/lib/pr-review-status';
 import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
-import { observeHead, openKernelDelivery, policyFindingFor } from '@/lib/workflow/seam';
+import { observeHead, policyFindingFor } from '@/lib/workflow/seam';
+import { openKernelDelivery } from '@/lib/workflow/kernel-client';
 import { releaseKernelDeliveryForPr } from '@/lib/workflow/authority';
 import { agentReviewsDataMigrations } from '@buildd/shared';
 import { sqlWhere } from '@buildd/core/db/relational-sql';

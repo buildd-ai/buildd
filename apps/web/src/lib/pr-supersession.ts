@@ -50,6 +50,14 @@ export interface RecordPrSupersessionParams {
   /** Actor label (user email, or `agent:<taskId>`) — free text, not a FK. */
   recordedBy: string;
   /**
+   * Who the kernel command is for, checked by the control plane against the workspace: the person
+   * (`{ kind: 'user', id }`) or the API account (`{ kind: 'account', id }`). Absent: the system
+   * principal named by `recordedBy`, which is right only for buildd's own sweeps.
+   */
+  principal?: import('@/lib/workflow/kernel-client').KernelPrincipal;
+  /** The kernel transition's actor; defaults to `recordedBy` (`human:<id>` for a person). */
+  actor?: string;
+  /**
    * Confine a cross-repo target to the workspace's own repo, dropping the
    * mission's other repos. Set for a per-task token, which reads only its
    * own task's workspace.
@@ -69,6 +77,18 @@ export interface RecordPrSupersessionError {
   ok: false;
   error: string;
   status: number;
+  /**
+   * When the kernel's host could not take the command: the door's whole answer (kernel-client.ts
+   * `doorErrorAnswer`: the outcome, the idempotency key, retryable, controlPlane), for the route to send as it is.
+   */
+  door?: { body: Record<string, unknown>; headers: Record<string, string> };
+}
+
+/** A door error from the kernel client, as this module's error result. */
+async function doorFailure(err: unknown): Promise<RecordPrSupersessionError> {
+  const { doorErrorAnswer } = await import('@/lib/workflow/kernel-client');
+  const a = doorErrorAnswer(err as Parameters<typeof doorErrorAnswer>[0]);
+  return { ok: false, error: String(a.body.error ?? 'control plane error'), status: a.status, door: { body: a.body, headers: a.headers } };
 }
 
 export type RecordPrSupersessionResult = RecordPrSupersessionOk | RecordPrSupersessionError;
@@ -248,12 +268,14 @@ export async function recordPrSupersession(
     ? wsRepo.installation.installationId
     : await installationIdForRepo(closedRepo).catch(() => null);
   if (worker.workspaceId && closedInstallationId) {
-    const { recordSupersession } = await import('@/lib/workflow/seam');
+    const { recordSupersession, isDoorError } = await import('@/lib/workflow/kernel-client');
     const kernel = await recordSupersession({
       workspaceId: worker.workspaceId, repoFullName: closedRepo, prNumber: worker.prNumber, installationId: closedInstallationId,
-      actor: recordedBy, reason: reason.trim(),
+      actor: params.actor ?? recordedBy, reason: reason.trim(),
       target: { repoFullName: targetRepo, prNumber: supersedingPrNumber, url: supersedingPrUrl },
-    });
+    }, params.principal ? { principal: params.principal } : undefined).catch((err: unknown) => (isDoorError(err) ? err : Promise.reject(err)));
+    // The kernel's host did not take it: nothing was recorded here, and the legacy write must not run in its place.
+    if (isDoorError(kernel)) return doorFailure(kernel);
     if (kernel.handled) return kernelAnswer(kernel.result, worker.prNumber, ok);
   }
 
@@ -286,7 +308,7 @@ function kernelAnswer<T extends { ok: true }>(r: CommandResult, prNumber: number
   return { ok: false, error, status };
 }
 
-export type SimpleWriteResult = { ok: true } | { ok: false; error: string; status: number };
+export type SimpleWriteResult = { ok: true } | { ok: false; error: string; status: number; door?: RecordPrSupersessionError['door'] };
 
 /**
  * Declare a closed-unmerged PR abandoned: the work is deliberately not
@@ -321,11 +343,12 @@ export async function recordPrAbandonment(params: {
   const repo = repoFullNameFromPrUrl(worker.prUrl);
   const installationId = repo ? await installationIdForRepo(repo).catch(() => null) : null;
   if (repo && worker.prNumber && worker.workspaceId && installationId) {
-    const { abandonDelivery } = await import('@/lib/workflow/seam');
+    const { abandonDelivery, isDoorError } = await import('@/lib/workflow/kernel-client');
     const kernel = await abandonDelivery({
       workspaceId: worker.workspaceId, repoFullName: repo, prNumber: worker.prNumber, installationId,
       actor: params.actor, reason,
-    });
+    }).catch((err: unknown) => (isDoorError(err) ? err : Promise.reject(err)));
+    if (isDoorError(kernel)) return doorFailure(kernel);
     if (kernel.handled) return kernelAnswer(kernel.result, worker.prNumber, { ok: true as const });
   }
 

@@ -80,6 +80,8 @@ describe('POST /api/missions/[id]/closed-prs', () => {
     expect(res.status).toBe(200);
     expect(mockRecord).toHaveBeenCalledWith({
       workerId: 'w-6', supersedingPrNumber: 3366, supersedingRepo: 'org/buildd', reason: 'confirmed by user', recordedBy: 'owner@example.com',
+      // The kernel command is for the person by id (the control plane checks their reach), never their email.
+      principal: { kind: 'user', id: 'u-1' }, actor: 'human:u-1',
     });
   });
 
@@ -87,6 +89,15 @@ describe('POST /api/missions/[id]/closed-prs', () => {
     taskRow.workers[0].supersessionScan = null;
     expect((await call({ taskId: TASK, action: 'confirm' })).status).toBe(409);
     expect(mockRecord).not.toHaveBeenCalled();
+  });
+
+  it('a control-plane answer is passed through whole: the 503 body with its key and Retry-After', async () => {
+    const door = { body: { error: 'The control plane did not answer', code: 'control_plane_unavailable', retryable: true, controlPlane: true, idempotencyKey: 'record_supersession:k' }, headers: { 'Retry-After': '5' } };
+    mockRecord.mockImplementationOnce(() => Promise.resolve({ ok: false, error: door.body.error, status: 503, door }));
+    const res = await call({ taskId: TASK, action: 'confirm' });
+    expect(res.status).toBe(503);
+    expect(res.headers.get('Retry-After')).toBe('5');
+    expect(await res.json()).toEqual(door.body);
   });
 
   it('surfaces the write-time refusal (e.g. target not merged)', async () => {
