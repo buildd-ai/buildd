@@ -58,7 +58,7 @@ export interface MissionReleaseRow {
 }
 
 const STATUS_ROW: Partial<Record<MissionReleaseStatus, Omit<MissionReleaseRow, 'linksRelease'>>> = {
-  dispatched: { state: 'partial', text: 'Release dispatched', detail: 'A release was sent. It is not deployed yet.' },
+  dispatched: { state: 'partial', text: 'Release dispatched', detail: 'A release was sent and has not deployed.' },
   deploying: { state: 'partial', text: 'Deploying', detail: 'Released once production reports healthy.' },
   failed: { state: 'blocked', text: 'Deploy failed', detail: 'Not delivered until a deploy is healthy.' },
   unknown: { state: 'partial', text: 'Health not reported', detail: 'Merged, but nothing reports whether the deploy is healthy.' },
