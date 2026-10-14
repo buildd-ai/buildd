@@ -14,6 +14,7 @@ const { approveSpecRevision } = await import('../../src/lib/specs/approval');
 const { pinSpecSource } = await import('../../src/lib/specs/pin');
 const { recordSpecVerdict } = await import('../../src/lib/specs/outcome');
 const { readSpecDelivery } = await import('../../src/lib/specs/delivery');
+const { selectMissionSpec } = await import('../../src/lib/specs/mission-selection');
 
 const rand = () => Math.random().toString(36).slice(2, 10);
 const HEAD = 'a'.repeat(40);
@@ -188,5 +189,95 @@ describe('only real links, only what the reader may see (AC-47, R-65)', () => {
     const before = await snap();
     await read(specId);
     expect(await snap()).toEqual(before);
+  });
+});
+
+/** A mission in wsA that selected the spec at `revision`, as selectMissionSpec writes it. */
+async function selectingMission(specId: string, revision: number, opts: { status?: string; waive?: Array<{ criterionId: string; reason: string }> } = {}) {
+  const [m] = await q<{ id: string }>(sql`INSERT INTO missions (team_id, workspace_id, title, status)
+    VALUES (${teamA}::uuid, ${wsA}::uuid, ${`m-${rand()}`}, ${opts.status ?? 'active'}) RETURNING id`);
+  const r = await selectMissionSpec(user(admin), m.id, { specId, revision, ...(opts.waive ? { waive: opts.waive } : {}) });
+  if (!r.ok) throw new Error(r.error);
+  return { missionId: m.id, criterion: r.criterion! };
+}
+
+/** The evaluator's stored reading of the living_spec criterion (mission-criteria-eval.ts), at TARGET. */
+async function evaluated(missionId: string, specId: string, revision: number, verdict: 'pass' | 'fail' | 'UNVERIFIED', standings: Array<{ criterionId: string; standing: string; verdictId?: string }>) {
+  const state = {
+    evaluatedAt: new Date().toISOString(), evaluatedBy: 'auto', overall: verdict,
+    criteria: [{ index: 0, type: 'living_spec', verdict, spec: { specId, revision, targetSha: HEAD, standings: standings.map((s) => ({ headSha: HEAD, ...s })) } }],
+  };
+  await q(sql`UPDATE missions SET goal_criteria_state = ${JSON.stringify(state)}::jsonb WHERE id = ${missionId}::uuid`);
+}
+
+async function missionVerdict(missionId: string, specRevisionId: string, criterionId: string, verdict: string) {
+  const [v] = await q<{ id: string }>(sql`INSERT INTO spec_outcome_verdicts (workspace_id, mission_id, spec_revision_id, criterion_id, verdict, head_sha, evidence)
+    VALUES (${wsA}::uuid, ${missionId}::uuid, ${specRevisionId}::uuid, ${criterionId}, ${verdict}, ${HEAD}, ${JSON.stringify({ refs: [{ kind: 'report', ref: 'https://example.test/audit/1' }] })}::jsonb) RETURNING id`);
+  return v.id;
+}
+
+describe('missions that selected the spec (R-61, R-62, AC-45, AC-46)', () => {
+  test('AC-45: two missions at different revisions and one direct task list once each, linking to the right page', async () => {
+    const { specId, version } = await approvedSpec();
+    const m1 = await selectingMission(specId, 1);
+    await approveNext(specId, version, '- AC-2: A USD cart shows the dollar sign.\n');
+    const m2 = await selectingMission(specId, 2);
+    await pinnedTask(specId, { missionId: m1.missionId }); // the mission's own work, not an entry of its own
+    const direct = await pinnedTask(specId);
+    const r = (await read(specId))!;
+    const keys = r.entries.map((e) => `${e.kind}:${e.id}`);
+    expect(keys.sort()).toEqual([`mission:${m1.missionId}`, `mission:${m2.missionId}`, `task:${direct.taskId}`].sort());
+    const by = new Map(r.entries.map((e) => [e.id, e]));
+    expect(by.get(m1.missionId)!.href).toBe(`/app/missions/${m1.missionId}`);
+    expect(by.get(m1.missionId)!.builtTo).toBe(1);
+    expect(by.get(m2.missionId)!.builtTo).toBe(2);
+    expect(by.get(direct.taskId)!.href).toBe(`/app/tasks/${direct.taskId}`);
+  });
+
+  test('AC-46: a mission completed and verified on revision 1 reads delivered on 1 and not verified yet against 2', async () => {
+    const { specId, version } = await approvedSpec();
+    const m = await selectingMission(specId, 1, { status: 'completed' });
+    const ids = await Promise.all(['R-1', 'AC-1'].map((c) => missionVerdict(m.missionId, m.criterion.specRevisionId, c, 'pass')));
+    await evaluated(m.missionId, specId, 1, 'pass', [{ criterionId: 'R-1', standing: 'pass', verdictId: ids[0] }, { criterionId: 'AC-1', standing: 'pass', verdictId: ids[1] }]);
+    let e = (await read(specId))!.entries.find((x) => x.id === m.missionId)!;
+    expect(e.deliveredText).toBe('Built to revision 1 and delivered.');
+    expect(e.standing).toEqual({ tone: 'success', text: 'Verified against revision 1.' });
+    expect(e.criteria[0]).toMatchObject({ criterionId: 'R-1', mark: 'pass', evidence: [{ label: 'report', href: 'https://example.test/audit/1' }] });
+
+    await approveNext(specId, version, '- AC-2: A USD cart shows the dollar sign.\n');
+    e = (await read(specId))!.entries.find((x) => x.id === m.missionId)!;
+    expect(e.delivered).toBe(true);
+    expect(e.standing).toEqual({ tone: 'muted', text: 'Not verified yet against revision 2.' });
+  });
+
+  test('a completed mission with no evaluation is delivered and not verified yet; a stale or failing one never reads passed', async () => {
+    const { specId } = await approvedSpec();
+    const quiet = await selectingMission(specId, 1, { status: 'completed' });
+    const stale = await selectingMission(specId, 1);
+    await evaluated(stale.missionId, specId, 1, 'UNVERIFIED', [{ criterionId: 'R-1', standing: 'stale' }, { criterionId: 'AC-1', standing: 'pass' }]);
+    const failing = await selectingMission(specId, 1);
+    await evaluated(failing.missionId, specId, 1, 'fail', [{ criterionId: 'R-1', standing: 'fail' }, { criterionId: 'AC-1', standing: 'pass' }]);
+    const by = new Map((await read(specId))!.entries.map((e) => [e.id, e]));
+    expect(by.get(quiet.missionId)!.standing.text).toBe('Not verified yet against revision 1.');
+    expect(by.get(quiet.missionId)!.criteria.map((c) => c.mark)).toEqual(['none', 'none']);
+    expect(by.get(stale.missionId)!.standing.text).toBe('Passed on an older commit. Not verified yet against revision 1.');
+    expect(by.get(failing.missionId)!.standing).toEqual({ tone: 'error', text: 'R-1 fails against revision 1.' });
+  });
+
+  test('a criterion a person waived reads waived, by whom, and never as passed', async () => {
+    const { specId } = await approvedSpec();
+    await q(sql`UPDATE users SET name = 'Ada' WHERE id = ${admin}::uuid`);
+    const m = await selectingMission(specId, 1, { waive: [{ criterionId: 'AC-1', reason: 'Covered by the payments spec instead.' }] });
+    await evaluated(m.missionId, specId, 1, 'pass', [{ criterionId: 'R-1', standing: 'pass' }, { criterionId: 'AC-1', standing: 'waived' }]);
+    const e = (await read(specId))!.entries.find((x) => x.id === m.missionId)!;
+    expect(e.criteria.find((c) => c.criterionId === 'AC-1')!.mark).toBe('waived');
+    expect(e.standing.text).toBe('Verified against revision 1. AC-1 waived by Ada.');
+  });
+
+  test('a mission in another workspace selecting the spec id is not listed', async () => {
+    const { specId } = await approvedSpec();
+    await q(sql`INSERT INTO missions (team_id, workspace_id, title, goal_criteria)
+      VALUES (${teamB}::uuid, ${wsB}::uuid, 'elsewhere', ${JSON.stringify([{ type: 'living_spec', specId, revision: 1 }])}::jsonb)`);
+    expect((await read(specId))!.entries).toEqual([]);
   });
 });
