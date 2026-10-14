@@ -573,7 +573,7 @@ async function importMetadata(caller: SpecCaller, specId: string, metadata: Reco
 
 export interface ConfirmResult {
   confirmed: Array<{ specId: string; title: string; path: string; commitSha: string; revision: number; area: string | null }>;
-  skipped: Array<{ specId: string; title?: string; path?: string; reason: 'stale' | 'not_imported' | 'not_found' | 'conflict' | 'unavailable'; message: string }>;
+  skipped: Array<{ specId: string; title?: string; path?: string; reason: 'stale' | 'not_imported' | 'not_found' | 'conflict' | 'unavailable' | 'retired'; message: string }>;
   /** From an OAuth session: where the person confirms. Nothing is approved. */
   pending?: { confirmUrl: string; specIds: string[] };
 }
@@ -611,6 +611,8 @@ export async function confirmImportedSpecs(caller: SpecCaller, input: { workspac
   for (const id of [...new Set(specIds)]) {
     const s = byId.get(id);
     if (!s) { result.skipped.push({ specId: id, reason: 'not_found', message: 'no spec with this id in this workspace' }); continue; }
+    // A retired import (§22) left the confirm list: confirming it would approve a spec a person took out of force.
+    if (s.status === 'retired' || s.status === 'superseded') { result.skipped.push({ specId: id, title: s.title, path: s.repoSource?.path, reason: 'retired', message: `it is ${s.status}; restore it first to confirm it` }); continue; }
     if (s.repoSource?.state !== 'imported' || s.repoSource.revision !== s.headRevision) {
       result.skipped.push({ specId: id, title: s.title, path: s.repoSource?.path, reason: 'not_imported', message: s.repoSource?.state === 'confirmed' ? 'already confirmed' : 'no imported revision is waiting for confirmation' });
       continue;

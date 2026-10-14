@@ -6,8 +6,8 @@
  * /api/specs/[id]/submit|approve) are a person's act (G2, decision D-4): the
  * route refuses an agent run or API key with a 403, which this passes through
  * as is. From an OAuth session an approve does not approve: the route returns
- * a link the person opens on buildd.dev to confirm it, which this shows. No
- * other sub-action takes a status.
+ * a link the person opens on buildd.dev to confirm it, which this shows.
+ * Besides retire and restore, no other sub-action takes a status.
  *
  * outcome, verdict and conflict are Living Specs verification (V1, D-5) over
  * /api/specs/outcomes/[taskId] and /api/specs/[id]/conflicts: a task's governed
@@ -32,6 +32,10 @@
  * specs that only cite its path, and skipped files. Each file is shown once.
  * confirm_import approves a batch of imported specs in one act
  * (POST /api/specs/import/confirm): a person's act, an agent run gets a 403.
+ *
+ * retire and restore (POST|DELETE /api/specs/[id]/retire) take a spec out of
+ * force, retired or superseded by another, and put it back: a person's act,
+ * an agent run or API key gets the route's 403, passed through.
  *
  * diff (read-only) says what changed between two revisions, over
  * GET /api/specs/[id]/diff: sections added, removed and changed, then a capped
@@ -539,6 +543,27 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       } catch (err) {
         const e = apiError(err);
         if (e && [400, 403, 404].includes(e.status)) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
+        throw err;
+      }
+    }
+
+    case 'retire':
+    case 'restore': {
+      // A person's act (§22): an agent run or API key gets the route's 403, passed through.
+      const specId = need(params.specId, 'specId');
+      if (op === 'retire' && (typeof params.reason !== 'string' || params.reason.trim().length < 10)) throw new Error('reason (why this spec is retired, 10+ characters) is required');
+      const payload: Record<string, unknown> = {};
+      if (params.reason !== undefined) payload.reason = params.reason;
+      if (op === 'retire' && params.supersededBy !== undefined && params.supersededBy !== null) payload.supersededBy = params.supersededBy;
+      try {
+        const { spec } = await api(`/api/specs/${encodeURIComponent(specId)}/retire`, { method: op === 'retire' ? 'POST' : 'DELETE', body: JSON.stringify(payload) });
+        if (op === 'restore') return text(`Restored: "${spec.title}" is ${spec.status} again. Version ${spec.version}.\nSpec URL: ${specUrl(specId)}`);
+        return text(spec.status === 'superseded'
+          ? `Superseded: "${spec.title}" is replaced by ${String(payload.supersededBy)} and out of force. Undo with restore.\nSpec URL: ${specUrl(specId)}`
+          : `Retired: "${spec.title}" is out of force. Undo with restore.\nSpec URL: ${specUrl(specId)}`);
+      } catch (err) {
+        const e = apiError(err);
+        if (e && [400, 403, 404, 409].includes(e.status)) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
         throw err;
       }
     }
