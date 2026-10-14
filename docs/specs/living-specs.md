@@ -8,7 +8,7 @@ domain: knowledge
 surfaces: [apps/web/src/lib/specs/store.ts, apps/web/src/lib/specs/provisional.ts, apps/web/src/lib/specs/approval.ts, apps/web/src/lib/specs/pin.ts, apps/web/src/app/api/specs/[specId]/route.ts]
 related: [artifacts-and-sharing, knowledge-ingest-pipeline]
 keywords: [living spec, spec_taxonomy, cold-start taxonomy, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs, recall, knowledge graph, living_spec, area, taxonomy, spec_area, filed by buildd, backfill, generated repo copy, generated_from, spec import, spec index, provisional pin, build ahead of approval, attach_provisional, re-grade, confirm_import, import confirmation, repo_source, spec attachment, attachment:, binding attachment, reference attachment, changed since approval, Files]
-verified_by: [apps/web/tests/db/specs.test.ts, apps/web/src/lib/spec-taxonomy-decision.test.ts, apps/web/tests/db/spec-provisional-pin.test.ts, apps/web/src/lib/specs/provisional-text.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecIndex.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts, apps/web/tests/db/spec-neighbours.test.ts, apps/web/src/lib/specs/neighbours.test.ts, apps/web/tests/db/spec-duplicates.test.ts, apps/web/src/lib/spec-duplicate-decision.test.ts, apps/web/src/components/MarkdownContent.spec-surface.dom.test.tsx, apps/web/tests/db/spec-comments.test.ts, apps/web/src/components/SpecComments.dom.test.tsx, packages/spec-contract/src/repo-copy.test.ts, apps/web/tests/db/spec-repo-copy.test.ts, scripts/check-generated-specs.test.ts, apps/web/src/lib/specs/no-prod-data-scan.test.ts, apps/web/tests/db/spec-organize.test.ts, apps/web/src/lib/spec-area-decision.test.ts, apps/web/src/lib/specs/areas.test.ts, apps/web/src/app/app/dev/fixtures/spec-index-fixtures.test.ts, apps/web/tests/db/spec-import.test.ts, packages/spec-contract/src/repo-import.test.ts, apps/web/src/app/api/specs/import/route.test.ts, apps/web/src/lib/specs/index-view-imported.test.ts, apps/web/tests/db/spec-attachments.test.ts, apps/web/src/components/MarkdownContent.attachments.dom.test.tsx, packages/core/__tests__/mcp-specs-attachments.test.ts, apps/web/src/app/api/specs/[specId]/attachments/[name]/route.test.ts, apps/web/src/components/SpecAttachments.dom.test.tsx]
+verified_by: [apps/web/tests/db/specs.test.ts, apps/web/src/lib/spec-taxonomy-decision.test.ts, apps/web/tests/db/spec-provisional-pin.test.ts, apps/web/src/lib/specs/provisional-text.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecIndex.dom.test.tsx, apps/web/src/lib/specs/hub.test.ts, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts, apps/web/tests/db/spec-neighbours.test.ts, apps/web/src/lib/specs/neighbours.test.ts, apps/web/tests/db/spec-duplicates.test.ts, apps/web/src/lib/spec-duplicate-decision.test.ts, apps/web/src/components/MarkdownContent.spec-surface.dom.test.tsx, apps/web/tests/db/spec-comments.test.ts, apps/web/src/components/SpecComments.dom.test.tsx, packages/spec-contract/src/repo-copy.test.ts, apps/web/tests/db/spec-repo-copy.test.ts, scripts/check-generated-specs.test.ts, apps/web/src/lib/specs/no-prod-data-scan.test.ts, apps/web/tests/db/spec-organize.test.ts, apps/web/src/lib/spec-area-decision.test.ts, apps/web/src/lib/specs/areas.test.ts, apps/web/src/app/app/dev/fixtures/spec-index-fixtures.test.ts, apps/web/tests/db/spec-import.test.ts, packages/spec-contract/src/repo-import.test.ts, apps/web/src/app/api/specs/import/route.test.ts, apps/web/src/lib/specs/index-view-imported.test.ts, apps/web/tests/db/spec-attachments.test.ts, apps/web/src/components/MarkdownContent.attachments.dom.test.tsx, packages/core/__tests__/mcp-specs-attachments.test.ts, apps/web/src/app/api/specs/[specId]/attachments/[name]/route.test.ts, apps/web/src/components/SpecAttachments.dom.test.tsx]
 supersedes: []
 assertions:
   - id: approve-spec-revision
@@ -1482,83 +1482,93 @@ in <area>" for a person who may approve.
 §9's reach and wording rules still apply.
 
 **Capability statement**: The spec index MUST show at a glance how a
-workspace's specs cluster, as a compact map above an outline grouped by
-product and area, both legible at phone width, and MUST show as unfiled only
-what buildd could not place.
+workspace's specs cluster, as one card per area holding its own specs,
+legible at phone width, MUST lead with what waits for the reader's approval,
+and MUST show as unfiled only what buildd could not place.
 
 **Invariants**:
 - R-21: Legibility is the rule for every view here: solid fills, labels a
   person can read at the size shown, state also said in words (never by
   colour alone), and a tap shows detail in place without leaving the page.
-- R-22: Status mix, for the map and the outline alike, counts four states:
+- R-22: Status mix, on every area card, counts four states:
   approved, draft, imported awaiting confirmation (§18), and failing: a
   failing governed outcome on any pinned task (§7), a design changed since
   approval (§12), or a repo-sourced file past `specs:check`'s 90-day
   staleness warning.
-- R-23: The cluster map sits above the outline. Each area is a labelled
-  block, its area proportional to the number of specs it holds (with a floor
-  so the smallest block still fits its label and a 44px tap target), filled
-  by its status mix in solid segments, and labelled with its title and
-  counts in words ("Runners · 9 specs, 7 approved, 1 failing").
-- R-24: Unfiled specs show as loose dots outside the blocks. Specs buildd
-  thinks form an unnamed cluster show as a dashed group labelled "possible
-  area: <proposed title>": two or more unfiled specs whose `spec_area`
+- R-23: Each area is one card: its title, its counts in words ("9 specs, 7
+  approved, 1 failing"), a thin bar of its status mix in solid segments, then
+  its specs as rows. A card holds every spec it counts, so a bigger area is a
+  bigger card; cards flow in columns (one on a phone, two from md, three from
+  xl) so a workspace of about 30 specs fits one desktop screen. Every row is a
+  44px tap target. (Owner, 2026-10-14: a separate block map above a repeated
+  outline did not land, so the map and the outline are one view.)
+- R-24: Specs buildd thinks form an unnamed cluster show as a dashed card
+  labelled "Possible area: <proposed title>" holding those specs: two or more
+  unfiled specs whose `spec_area`
   answer (§17 R-6) was `new_area` with the same proposed title, or an area of
   a taxonomy proposal (§17 R-4) no person has acted on yet.
-- R-25: Tapping a block, the dot cloud or a dashed group filters the outline
-  below to those specs in place; tapping it again, or a clear action, shows
-  all. A dashed group's filter offers its proposal's accept action inline.
-- R-26: With one area or none, the map collapses to one line of words
-  ("12 specs, all in Runners, 3 unfiled", or "12 specs, none filed yet" with
-  the taxonomy proposal's link), because a picture with one shape says
-  nothing. With two or more areas it renders from about 10 specs up.
-- R-27: The outline: the product, then each area as a row group headed by its
-  title and status mix in words, then its features as rows in §9's wording,
-  children indented under them. Unfiled comes last, holding only what buildd
+- R-25: A dashed card offers its proposal's accept action on the card. A
+  reader who approves specs sees, first on the page, each spec with a
+  revision waiting for their approval and a "Review revision N" link to it;
+  the line of counts says how many wait.
+- R-26: One line of words states the counts above the cards ("16 specs in 6
+  areas, 2 unfiled.", or "12 specs, none filed yet" with the taxonomy
+  proposal's link); each card carries its own.
+- R-27: Cards group by product, and the product is named only when there is
+  more than one (one product is the workspace's own, said by the page). Rows
+  use §9's wording, children indented under them. Unfiled comes last, a card
+  holding only what buildd
   could not place, each row with its suggestion inline (§17 R-7) and accept
   and dismiss.
+- R-27a: `/app/specs` is the way in, reached from the Missions header (the nav
+  keeps five items and lights Missions for any spec page): with one readable
+  workspace holding specs it opens that workspace's index, else it lists the
+  workspaces that have specs, what waits for approval first, counts in words
+  (`apps/web/src/lib/specs/hub.test.ts`).
 - R-28: On a spec page, Related gains a small neighbour graph as a second
   view: the spec, its parent, its siblings and up to 8 neighbours (§14). The
   list stays the default and carries the same entries in words.
-- R-29: Every view fits a 320px-wide screen with no sideways scroll: map
-  blocks wrap into rows, and where the neighbour graph cannot fit, its list
+- R-29: Every view fits a 320px-wide screen with no sideways scroll: cards
+  stack into one column, and where the neighbour graph cannot fit, its list
   shows instead.
 
 **Acceptance criteria**:
 - AC-80: GIVEN a product with two areas and one approved and one draft
-  feature in the first WHEN the index renders THEN that area heads a group
-  reading "1 approved, 1 draft" with both features as its rows
+  feature in the first WHEN the index renders THEN that area's card reads
+  "1 approved, 1 draft" with both features as its rows, no Product label above
   (`apps/web/src/components/SpecIndex.dom.test.tsx`).
 - AC-81: GIVEN a spec buildd could not place THEN it is under Unfiled with its
   suggestion; GIVEN every spec filed THEN no Unfiled group renders
   (`apps/web/src/components/SpecIndex.dom.test.tsx`).
 - AC-82: GIVEN a pinned task with a failing outcome THEN its spec's area
-  counts it as failing, in the map and the outline (`apps/web/src/components/SpecIndex.dom.test.tsx`).
-- AC-85: GIVEN areas of 8 and 2 specs WHEN the map renders THEN the first
-  block is larger, both carry their title and counts in words, and the
-  smaller still meets the label and tap-target floor (`apps/web/src/components/SpecIndex.dom.test.tsx`).
+  counts it as failing on its card, in words beside the bar (`apps/web/src/components/SpecIndex.dom.test.tsx`).
+- AC-85: GIVEN areas of 8 and 2 specs WHEN the index renders THEN the first
+  card lists 8 rows and the second 2, each with its counts in words, every
+  row a 44px tap target (`apps/web/src/components/SpecIndex.dom.test.tsx`).
 - AC-86: GIVEN three unfiled specs, two answered `new_area` "Billing" WHEN
-  the map renders THEN those two are a dashed group labelled "possible area:
-  Billing" and the third is a loose dot (`apps/web/src/components/SpecIndex.dom.test.tsx`).
-- AC-87: GIVEN the map WHEN a block is tapped THEN the outline shows only that
-  area's specs, the URL path is unchanged, and a second tap shows all
-  (`apps/web/src/components/SpecIndex.dom.test.tsx`).
-- AC-88: GIVEN one area, or no area, WHEN the index renders THEN no map
-  renders and one line of words states the counts (`apps/web/src/components/SpecIndex.dom.test.tsx`).
-- AC-89: GIVEN 10 specs in three areas WHEN the map renders THEN it shows
-  three labelled blocks (`apps/web/src/components/SpecIndex.dom.test.tsx`).
+  the index renders THEN those two sit in a dashed card labelled "Possible
+  area: Billing" and the third is under Unfiled (`apps/web/src/components/SpecIndex.dom.test.tsx`).
+- AC-87: GIVEN a reader who approves specs and a spec with a waiting revision
+  WHEN the index renders THEN a "Waiting for your approval" card comes first
+  with a "Review revision N" link to that revision, and the line says how
+  many wait (`apps/web/src/components/SpecIndex.dom.test.tsx`).
+- AC-88: GIVEN one area, or no area, WHEN the index renders THEN one line of
+  words states the counts (`apps/web/src/components/SpecIndex.dom.test.tsx`).
+- AC-89: GIVEN 10 specs in three areas WHEN the index renders THEN it shows
+  three labelled cards (`apps/web/src/components/SpecIndex.dom.test.tsx`).
 - AC-83: GIVEN a spec with a parent, two siblings and ten neighbours WHEN the
   graph view opens THEN it shows the spec, the parent, both siblings and 8
   neighbours, and the list is the default view (`apps/web/src/components/SpecPage.dom.test.tsx`).
-- AC-84: GIVEN a 320px viewport THEN neither the map, the outline nor either
+- AC-84: GIVEN a 320px viewport THEN neither the cards nor either
   Related view scrolls sideways (`apps/web/src/components/SpecIndex.dom.test.tsx` for the
-  block floor, `apps/web/src/components/SpecPage.dom.test.tsx` for the graph
+  row tap targets, `apps/web/src/components/SpecPage.dom.test.tsx` for the graph
   giving way to the list; the rest is a Visual QA shot of the `spec-index`
   dev fixture).
 
 **Code surface**:
 - `apps/web/src/lib/specs/index-view.ts` — `specIndexView`, `mixState`, `mixWords`, `neighbourGraph`, `filingFacts`, `proposalAreas`
 - `apps/web/src/components/SpecIndex.tsx` — `SpecIndex`, `apiActions`
+- `apps/web/src/lib/specs/hub.ts` — `hubTarget`, `hubWords` (`/app/specs`)
 - `apps/web/src/components/SpecNeighbourGraph.tsx` — `SpecNeighbourGraph`
 - `apps/web/src/lib/specs/page-view.ts` — `specIndexInputs`, `specPageView`
 - `apps/web/src/app/app/dev/fixtures/SpecIndexFixture.tsx` — `SpecIndexFixture`
