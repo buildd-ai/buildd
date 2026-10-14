@@ -39,6 +39,7 @@ export const RUNNER_USAGE = [
   '',
   'Options:',
   '  --debug                    Serve the local UI at http://localhost:8766',
+  '  --foreground               Run in this terminal (refused while the background runner runs)',
   '  --once --task <task-id>    Run one task and exit',
   '  --doctor [--fix]           Diagnose (and repair) the install',
   '  --version                  Print the runner version',
@@ -51,7 +52,7 @@ export const RUNNER_USAGE = [
 
 const HELP = new Set(['--help', '-h', 'help']);
 /** Flags that stand alone. */
-const BOOLEAN_FLAGS = new Set(['--debug', '--version', '--doctor', '--fix', '--env-verify', '--json', '--once']);
+const BOOLEAN_FLAGS = new Set(['--debug', '--foreground', '--version', '--doctor', '--fix', '--env-verify', '--json', '--once']);
 /** Flags that take the next argument (or `=value`) as their value. */
 const VALUE_FLAGS = new Set(['--task', '--resume-worker', '--park-orphan', '--attach-orphan']);
 /** Positional subcommands the runner itself understands, as word sequences. */

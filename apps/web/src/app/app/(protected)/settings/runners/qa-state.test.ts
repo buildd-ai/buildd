@@ -12,6 +12,7 @@ describe('resolveRunnersQaState', () => {
       'model-auth-api_key',
       'model-auth-none',
       'model-auth-not_reported',
+      'model-auth-codex',
     ]);
     for (const state of RUNNERS_QA_STATES) {
       expect(resolveRunnersQaState(state, 'development')).toBe(state);
@@ -58,5 +59,10 @@ describe('withQaModelAuth', () => {
   it('keeps every other field', () => {
     const token = { ...seenToken, name: 'Laptop', canDelete: true };
     expect(withQaModelAuth([token], 'model-auth-api_key')[0]).toEqual({ ...token, modelAuthSource: 'api_key' });
+  });
+
+  it('codex shows a runner on both machine logins, Claude and Codex', () => {
+    const [t] = withQaModelAuth([quietToken], 'model-auth-codex');
+    expect(t).toEqual({ ...quietToken, modelAuthSource: 'machine_login', codexAuthSource: 'machine_login' });
   });
 });

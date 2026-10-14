@@ -25,6 +25,8 @@ describe('classifyCliArgs', () => {
 
   test.each([
     [['--debug']],
+    [['--foreground']],
+    [['--foreground', '--debug']],
     [['--version']],
     [['version']],
     [['--doctor']],
@@ -81,7 +83,7 @@ describe('classifyCliArgs', () => {
   });
 
   test('usage names help, login, service and the flags', () => {
-    for (const s of ['buildd login', 'buildd service', '--debug', '--once', '--version', '--help']) {
+    for (const s of ['buildd login', 'buildd service', '--debug', '--foreground', '--once', '--version', '--help']) {
       expect(RUNNER_USAGE).toContain(s);
     }
   });

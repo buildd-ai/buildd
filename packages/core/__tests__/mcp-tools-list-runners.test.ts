@@ -106,6 +106,19 @@ describe('list_runners', () => {
     expect(out).toContain('modelAuth=not_reported');
   });
 
+  it('names the Codex login only when a runner reported one', async () => {
+    const row = { accountName: 'Runner A', activeWorkers: 0, maxConcurrent: 1, workspaceNames: [], lastUpdated: '2026-09-27T00:00:00.000Z' };
+    mockApi.mockResolvedValueOnce({
+      activeLocalUis: [
+        { ...row, localUiUrl: 'http://localhost:8766', modelAuthSource: 'machine_login', codexAuthSource: 'api_key' },
+        { ...row, localUiUrl: 'http://localhost:8767', modelAuthSource: 'machine_login' },
+      ],
+    });
+    const out = (await handleBuilddAction(mockApi as unknown as ApiFn, 'list_runners', {}, ctx())).content[0].text;
+    expect(out).toContain('modelAuth=machine_login codexAuth=api_key');
+    expect(out.match(/codexAuth=/g)?.length).toBe(1);
+  });
+
   it('omits updateAvailableSince when the runner is up to date', async () => {
     mockApi.mockResolvedValueOnce({
       activeLocalUis: [

@@ -620,6 +620,29 @@ export class BuilddClient {
     }
   }
 
+  /**
+   * POST to a dashboard route on a person's behalf (`buildd top`'s actions,
+   * runner-socket.ts) and hand back the server's status and body as they are.
+   * Never queued in the outbox and never thrown on a 4xx: a person pressed a
+   * key and should see the server's answer, refusal included, right away.
+   */
+  async relayDashboardAction(endpoint: string, body: Record<string, unknown>): Promise<{ status: number; body: unknown }> {
+    try {
+      const res = await this.transport.request(endpoint, {
+        method: 'POST',
+        body: JSON.stringify(body),
+        headers: { 'Content-Type': 'application/json' },
+      });
+      lastServerContactAt = Date.now();
+      const text = await res.text();
+      let parsed: unknown = {};
+      try { parsed = text ? JSON.parse(text) : {}; } catch { parsed = { error: text.slice(0, 500) }; }
+      return { status: res.status, body: parsed };
+    } catch (err: any) {
+      return { status: 502, body: { error: `buildd server unreachable: ${err?.message ?? err}` } };
+    }
+  }
+
   async sendCommand(workerId: string, action: string, text?: string) {
     // Allow 409 (already completed) - can't send commands to finished workers
     return this.fetch(`/api/workers/${workerId}/cmd`, {

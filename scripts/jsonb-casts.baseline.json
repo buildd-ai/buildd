@@ -30,7 +30,7 @@
   "apps/web/src/lib/task-verdict-decision-refresh.ts": 1,
   "apps/web/src/lib/usage-stats.ts": 1,
   "apps/web/src/lib/watch-subjects.ts": 1,
-  "apps/web/src/lib/workflow/conflict-retry-effects.ts": 2,
+  "apps/web/src/lib/workflow/conflict-retry-effects.ts": 1,
   "apps/web/src/lib/workflow/review-effects.ts": 1,
   "packages/core/knowledge-store/scip-runner.ts": 1,
   "packages/core/mcp-visual-review.ts": 1,

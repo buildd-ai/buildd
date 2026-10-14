@@ -13,12 +13,16 @@
  */
 import type { BaseDeltaFact } from './base-delta';
 import type { ApplyDecision, Command, CurrentView, EffectKind, LivePr, RecordOnly } from './commands';
-import type { DeliverySnapshot, DeliveryState, KernelView } from './types';
+import type { AttemptSnapshot, DeliverySnapshot, DeliveryState, KernelView, RoundSnapshot } from './types';
 
 /**
  * 2: `Work` files under the kernel's own id and can skip, cancel what is
- * pending and steer a filed task; `Store.linkAttemptTask`; `Notify.team`
- * carries the PR and a link; the `Trunk`, `Escalate` and `Evidence` ports.
+ * pending and steer a filed task; `Store.linkAttemptTask` and
+ * `linkRoundReviewer`; `Notify.team` carries the PR and a link;
+ * `GithubWrites.postReview` says whether the review went up; the effect
+ * snapshot carries the delivery's own authority and workspace, and the drain
+ * reads the kill switch from `Policy`; the `Trunk`, `Escalate`, `Evidence`,
+ * `Reviews`, `Conflicts` and `HandOff` ports.
  */
 export const PORTS_VERSION = 2;
 
@@ -50,15 +54,19 @@ export type TransitionWrite =
 // ── Effects ─────────────────────────────────────────────────────────────────
 
 /**
- * Who decides for the delivery, read with the effect: `kernel`, `legacy`
+ * Who decides for the delivery, as a handler sees it: `kernel`, `legacy`
  * (released), or `switched_off` (a kernel row whose workspace's kill switch is
- * off; the drain releases it before acting).
+ * off, read from `Policy` by the drain, which releases it before acting).
  */
 export type EffectAuthority = 'kernel' | 'legacy' | 'switched_off';
 
-/** What a drain re-checks before acting (§10.4): the delivery, who decides for it, and the queuing transition. */
+/**
+ * What a drain re-checks before acting (§10.4): the delivery, the authority
+ * its own row records, and the queuing transition. The store never reads the
+ * kill switch: the drain asks `Policy` for the delivery's workspace.
+ */
 export interface EffectSnapshot {
-  delivery: { state: DeliveryState; version: number } | null;
+  delivery: { state: DeliveryState; version: number; workspaceId?: string | null } | null;
   transition: { toState: DeliveryState; toVersion: number } | null;
   authority?: EffectAuthority;
 }
@@ -140,6 +148,8 @@ export interface Store {
   failEffect(id: string, attemptCount: number, error: string): Promise<'pending' | 'dead' | null>;
   /** Bind a ledger row to the task filed for it, once: a row already bound keeps its task. */
   linkAttemptTask(attemptId: string, taskId: string): Promise<void>;
+  /** Bind a review round to its reviewer task, once. */
+  linkRoundReviewer(roundId: string, taskId: string): Promise<void>;
   /** Back to pending after `delayMs`, handing the attempt back (a wait is not a failure). */
   parkEffect(id: string, attemptCount: number, outcome: string, delayMs: number): Promise<boolean>;
   /** A follow-up of an effect still running its course; idempotent on its own dedupe key. */
@@ -218,6 +228,13 @@ export interface MergeAnswer {
   retryAt?: string | null;
 }
 
+export interface PostedReview {
+  id: string | null;
+  posted?: boolean;
+  reason?: string;
+  commentedOwnPr?: boolean;
+}
+
 /** The writes the kernel's effects make on GitHub. Each is idempotent at the host or keyed by the effect. */
 export interface GithubWrites {
   /**
@@ -227,7 +244,12 @@ export interface GithubWrites {
    * kernel verifies anything but a definite refusal with a live read.
    */
   mergeAtHead(p: { repoFullName: string; prNumber: number; headSha: string; method?: 'squash' | 'merge' | 'rebase' }): Promise<MergeAnswer>;
-  postReview(p: { repoFullName: string; prNumber: number; commitId: string; event: 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT'; body: string }): Promise<{ id: string | null }>;
+  /**
+   * A review at `commitId`. `posted: false` with GitHub's reason when it did not
+   * go up (a matching review for the commit already exists is one such reason);
+   * `commentedOwnPr` when the host posted a verdict on its own PR as a comment.
+   */
+  postReview(p: { repoFullName: string; prNumber: number; commitId: string; event: 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT'; body: string }): Promise<PostedReview>;
   publishStatus(p: { repoFullName: string; sha: string; context: string; state: 'pending' | 'success' | 'failure' | 'error'; description: string; targetUrl?: string | null }): Promise<void>;
   /** Create or update the comment carrying `marker` on the PR. */
   upsertComment(p: { repoFullName: string; prNumber: number; marker: string; body: string }): Promise<{ id: string | null }>;
@@ -269,12 +291,15 @@ export interface WorkRequest {
   detail?: Record<string, unknown>;
 }
 
+/** `WorkFiled.skipped` when the host has no role that can run the work: the kernel reads it (a review round fails, T27). */
+export const NO_ROLE = 'no_role';
+
 export interface WorkFiled {
   /** null only when nothing was filed (`skipped`). */
   taskId: string | null;
-  /** false = a task already existed under the id or key (a redelivery), or `skipped`. */
+  /** false = a task already existed under the id or key (a redelivery, or the host adopted a live one), or `skipped`. */
   created: boolean;
-  /** Nothing filed and nothing owed now (the host lacks what the task needs): why. */
+  /** Nothing filed and nothing owed now (the host lacks what the task needs): why. `NO_ROLE` is the one reason the kernel acts on. */
   skipped?: string;
   /** Which shape the host filed, when it has more than one (`diagnose` for a CI fix that only diagnoses). */
   variant?: string;
@@ -455,6 +480,8 @@ export interface ExhaustionNotice {
   /** The kernel's words for why. */
   title: string;
   detail: string;
+  /** What the last reviewer asked for, when the family is the review loop's. */
+  note?: string | null;
 }
 
 export interface Escalate {
@@ -467,6 +494,88 @@ export interface Escalate {
 /** Capture run evidence the host keeps (a CI job log); never throws for a capture that failed. */
 export interface Evidence {
   capture(p: { kind: string; workspaceId: string; deliveryId: string; payload: Record<string, unknown> }): Promise<{ status: string; record?: Record<string, unknown> }>;
+}
+
+// ── Reviews ─────────────────────────────────────────────────────────────────
+
+/** A reviewer's structured output for a round: the raw fact its verdict came from. */
+export interface ReviewOutput {
+  verdict?: string;
+  confidence?: number;
+  summary?: string;
+  feedback?: string | null;
+  escalationReason?: string | null;
+}
+
+/** The host's half of the review loop: what a reviewer said, and what only the host can record or check. */
+export interface Reviews {
+  /** The round's reviewer output; `{}` when it has none. */
+  output(round: RoundSnapshot): Promise<ReviewOutput>;
+  /**
+   * §5.9: a composed PR (a mission integration PR, a release PR) whose commits
+   * are all already-reviewed changes needs no second full review. The effect's
+   * outcome when an attestation took the round, else null (review in full).
+   */
+  attestComposition(d: DeliverySnapshot, round: RoundSnapshot): Promise<string | null>;
+  /** A verdict GitHub would not take as a review: record it where a person sees it. */
+  postFailed(d: DeliverySnapshot, p: { event: 'APPROVE' | 'REQUEST_CHANGES'; reason: string }): Promise<void>;
+  /** An approval supersedes the open fix (the host's own supersession rules). */
+  supersedeFixOnApproval(d: DeliverySnapshot): Promise<void>;
+  /** The reviewer escalated `round`: tell a person, in the host's words. */
+  escalated(d: DeliverySnapshot, round: RoundSnapshot | null): Promise<void>;
+}
+
+// ── Conflicts ───────────────────────────────────────────────────────────────
+
+/** T26's plain base refresh, pinned to a head: done, an operational failure to retry, or refused (the PR's own facts answer it). */
+export type BranchUpdate = { kind: 'updated' } | { kind: 'retry'; reason: string } | { kind: 'refused'; reason: string };
+
+/** A bound attempt's mechanical refresh, pinned to its head. */
+export type MechanicalRefresh =
+  | { kind: 'updated' }
+  | { kind: 'up_to_date' }
+  | { kind: 'head_changed' }
+  /** Refused for a reason an agent can fix (a textual conflict, a same-symbol overlap): T12 allocates the agent attempt. */
+  | { kind: 'refused'; refusal: Record<string, unknown> }
+  /** Operational and bounded by the host: the outbox retries. */
+  | { kind: 'retry'; reason: string }
+  /** A dead end no agent should take: a person lands it. */
+  | { kind: 'failed'; reason: string };
+
+/** A colliding migration's byte-identical renumber, verified against live trees now. */
+export type MigrationRenumber =
+  | { kind: 'renumbered'; to: string }
+  | { kind: 'not_needed'; reason: string }
+  | { kind: 'refused'; refusal: Record<string, unknown> }
+  | { kind: 'head_moved' }
+  | { kind: 'retry'; reason: string };
+
+/** The host's half of the conflict and migration families: the git work, and what only the host can inspect. */
+export interface Conflicts {
+  /** A dependency bot owns the PR's branch: the platform never pushes to it (S27). */
+  botOwned(d: DeliverySnapshot): Promise<boolean>;
+  updateBranch(d: DeliverySnapshot, headSha: string): Promise<BranchUpdate>;
+  refresh(d: DeliverySnapshot, attempt: AttemptSnapshot): Promise<MechanicalRefresh>;
+  renumber(d: DeliverySnapshot, attempt: AttemptSnapshot, payload: Record<string, unknown>): Promise<MigrationRenumber>;
+  /** Is a migration repair's agent attempt still owed at the bound head (§10.5)? Unknown fails toward doing the work. */
+  migrationOwed(d: DeliverySnapshot, attempt: AttemptSnapshot, p: { repairKind: 'migration' | 'migration_split'; baseRef: string | null }): Promise<{ owed: boolean; reason?: string }>;
+}
+
+// ── HandOff ─────────────────────────────────────────────────────────────────
+
+/** §14: legacy's first review for a delivery the kill switch released before its first round. */
+export interface HandOff {
+  /** Claim the hand-off once per owner task; false = already handed off. */
+  claim(d: DeliverySnapshot): Promise<boolean>;
+  /** Let the next owner end try again (the hand-off failed). */
+  unclaim(d: DeliverySnapshot): Promise<void>;
+  /** File what legacy would have filed at PR open: a reviewer at the live head, or a person for a pre-flight finding. */
+  firstReview(p: {
+    d: DeliverySnapshot & { repoFullName: string; prNumber: number };
+    headSha: string;
+    baseRef: string | null;
+    policyEvidence: { headSha: string; outcome: string; reason: string } | null;
+  }): Promise<{ outcome: string }>;
 }
 
 /** Everything a host hands the kernel, composed once at startup. `decide` is optional. */
@@ -488,6 +597,9 @@ export interface KernelPorts {
   trunk?: Trunk;
   escalate?: Escalate;
   evidence?: Evidence;
+  reviews?: Reviews;
+  conflicts?: Conflicts;
+  handOff?: HandOff;
 }
 
 /** The GitHub to act on for a workspace's delivery, or null when the host has none for it. */
