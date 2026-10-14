@@ -11,9 +11,13 @@
 import type { ConsentTeam } from './oauth/account-consent';
 import { pickerTeams } from './oauth/account-consent';
 import { clampKeyLevel, type ApiKeyLevel, type TeamRole } from './key-level-policy';
+import { OWNER_ADMIN, TEAM_ROLES } from './permission-registry';
 
-/** Roles that may pick (and keep reaching) a team's `restricted` workspaces. */
-export const RESTRICTED_PICK_ROLES: readonly string[] = ['owner', 'admin'];
+/**
+ * Roles that may pick (and keep reaching) a team's `restricted` workspaces.
+ * The live re-check in granted-links.ts names the same two in SQL.
+ */
+export const RESTRICTED_PICK_ROLES: readonly string[] = OWNER_ADMIN;
 
 export function mayPickRestricted(role: string | null | undefined): boolean {
   return !!role && RESTRICTED_PICK_ROLES.includes(role);
@@ -54,7 +58,7 @@ export function chooseHomeTeam(
 }
 
 function asRole(role: string | null): TeamRole {
-  return role === 'owner' || role === 'admin' ? role : 'member';
+  return (TEAM_ROLES as readonly string[]).includes(role ?? '') ? (role as TeamRole) : 'member';
 }
 
 /**

@@ -6,12 +6,6 @@
     "apps/web/src/app/api/accounts/route.ts": {
       "apps/web/src/lib/personal-workspace-links.ts": "notifications"
     },
-    "apps/web/src/app/api/auth/cli/route.ts": {
-      "apps/web/src/lib/personal-workspace-links.ts": "notifications"
-    },
-    "apps/web/src/app/api/auth/device/approve/route.ts": {
-      "apps/web/src/lib/personal-workspace-links.ts": "notifications"
-    },
     "apps/web/src/app/api/cron/codex-token-refresh/route.ts": {
       "apps/web/src/lib/mcp-connector-refresh.ts": "connectors",
       "apps/web/src/lib/notify.ts": "notifications"
