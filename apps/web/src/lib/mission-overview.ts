@@ -13,11 +13,11 @@ import { isActiveState, isHeldState, stripMarks, stripOrder, stripState, stripTi
 
 type Model = Pick<MissionBoardModel, 'phases' | 'tasks'>;
 
-/** The Overview rail's two counts, said in words. */
+/** The Overview rail's two counts, said in words. The second names what the viewer decides. */
 export function railLines(live: number, needs: number): { agents: string; needs: string } {
   return {
     agents: live === 0 ? 'No agents working' : `${live} ${live === 1 ? 'agent' : 'agents'} working`,
-    needs: needs === 0 ? 'Nothing waiting on you' : `${needs} waiting on you`,
+    needs: needs === 0 ? 'Nothing to decide' : `${needs} ${needs === 1 ? 'decision' : 'decisions'} to make`,
   };
 }
 

@@ -1,6 +1,7 @@
 import { db } from '@buildd/core/db';
 import { after } from 'next/server';
-import { missions, workspaces, workspaceSkills, missionNotes, workers, tasks, initiatives, artifacts, orchestrationManifestPredictions, taskEstimates } from '@buildd/core/db/schema';
+import { loadBuildEstimateRows } from '@/lib/mission-build-estimates';
+import { missions, workspaces, workspaceSkills, missionNotes, workers, tasks, initiatives, artifacts, orchestrationManifestPredictions } from '@buildd/core/db/schema';
 import { eq, and, or, inArray, desc, isNotNull, isNull, ne } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
@@ -20,7 +21,7 @@ import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/l
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { isOverdue as checkOverdue } from '@/lib/heartbeat-helpers';
 import { describeLastCheck, selectOrganizerRuns } from '@/lib/mission-checkins';
-import { isSystemWorkspace, displayWorkspaceName, type GoalCriterion, type GoalCriteriaState } from '@buildd/shared';
+import { isSystemWorkspace, displayWorkspaceName, type GoalCriterion, type GoalCriteriaState, type LivingSpecGoalCriterion } from '@buildd/shared';
 import { resolvePolicy } from '@/lib/merge-policy';
 import { selectMissionRecords } from '@/lib/flight-strip-nav';
 import MissionVerifiedPill from './MissionVerifiedPill';
@@ -699,13 +700,11 @@ export default async function MissionDetailPage({
       return null;
     }),
     // The build-only estimate reads the same frozen estimates as the Plan page (spec f7f67f1a R-23).
-    isTerminal || allMissionTaskIds.length === 0
-      ? Promise.resolve([] as Array<{ taskId: string; p50Minutes: number; p80Minutes: number }>)
-      : db
-          .select({ taskId: taskEstimates.taskId, p50Minutes: taskEstimates.p50Minutes, p80Minutes: taskEstimates.p80Minutes })
-          .from(taskEstimates)
-          .where(inArray(taskEstimates.taskId, allMissionTaskIds))
-          .orderBy(desc(taskEstimates.createdAt)),
+    // Only for a team with the task-estimates switch on, the Plan page's gate.
+    loadBuildEstimateRows({ teamId: mission.teamId, taskIds: allMissionTaskIds, finished: isTerminal }).catch((err) => {
+      console.error('[mission-page] estimate load failed', err);
+      return [];
+    }),
   ]);
   const shippedView = mission.status === 'completed'
     ? buildShippedHeaderView((shippedRow?.metadata as { shipped?: unknown } | null)?.shipped, (mission as any).completedAt)
@@ -1236,6 +1235,7 @@ export default async function MissionDetailPage({
       completionDecision={completionDecision}
       executor={(mission as any).executor === 'local' ? 'local' : (mission as any).executor === 'runner' ? 'runner' : null}
       visualReview={visualReviewEntry}
+      outcomeSpecs={goalCriteria.filter((c): c is LivingSpecGoalCriterion => c.type === 'living_spec')}
       settings={settings}
     />
   );

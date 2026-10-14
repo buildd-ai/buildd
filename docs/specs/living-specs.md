@@ -1831,10 +1831,19 @@ mission that selects no spec MUST behave exactly as before.
 - `apps/web/src/lib/specs/mission-outcome-fold.ts` — `foldMissionSpec`, `verdictIsCurrent`
 - `apps/web/src/lib/specs/mission-verification.ts` — `ensureFinalVerification`
 - `apps/web/src/app/api/specs/mission-outcomes/[missionId]/route.ts` — `GET`, `POST`
+- `apps/web/src/lib/mission-outcome-spec-view.ts` — `outcomeSpecView`
+
+**Dashboard**: the mission settings choose the outcome spec (spec, revision,
+an optional narrowed scope with its reason) through the same `outcomeSpec`
+write. The goal criteria row reads its pinned revision, coverage on the
+integrated result in words, the open requirements by standing and the waived
+ones as waived, never as passed; waiving and removing take a reason there. The
+Overview shows it as one Verify row read from the same evaluated state
+(`apps/web/src/lib/mission-outcome-spec-view.test.ts`,
+`apps/web/src/app/app/(protected)/missions/[id]/OutcomeSpecCriterion.dom.test.tsx`,
+`apps/web/src/app/app/(protected)/missions/[id]/OutcomeSpecPicker.dom.test.tsx`).
 
 **Not yet**:
-- The dashboard has no outcome-spec picker or criterion row yet; select and
-  read it over MCP or the API.
 - A criterion's `check:` line and the visual audit do not yet record
   mission-level verdicts on their own (`recordMissionVerdictServer` is the
   entry point they will use); the final verification records them.

@@ -105,7 +105,7 @@ function OverviewView({
     () => (checksSource ? missionChecks({ ...checksSource, build: { done: doneCount, total: buildIds.length }, repairs }) : null),
     [checksSource, doneCount, buildIds.length, repairs],
   );
-  // A check the owner must act on (a final merge under the human tier) is waiting on you too.
+  // A check the owner must act on (a final merge under the human tier) is a decision too.
   // Max, not sum: the visual review's own ask may already count the same decision.
   const needs = Math.max(boardNeedsYouCount(model, vm), handoff?.rows.filter(r => r.status === 'owner').length ?? 0);
   const rail = railLines(model.live, needs);

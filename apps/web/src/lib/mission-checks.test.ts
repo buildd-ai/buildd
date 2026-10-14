@@ -136,6 +136,50 @@ describe('criteriaChecks (R-17, R-19, R-20)', () => {
   });
 });
 
+describe('criteriaChecks: the outcome spec is one Verify row (R-29)', () => {
+  const spec: GoalCriterion = {
+    type: 'living_spec', specId: '00000000-0000-4000-8000-000000000001', specRevisionId: '00000000-0000-4000-8000-000000000002',
+    revision: 7, contentHash: 'h',
+    waived: [{ criterionId: 'R-3', reason: 'not part of this mission', by: 'user:x', at: '2026-10-14T00:00:00Z' }],
+  };
+  const fp = criterionFingerprint(spec);
+  const ctx = { branch: 'mission-branch' as const, prMerged: false, target: 'dev' };
+  const state = (verdict: GoalCriteriaState['criteria'][number]['verdict'], standings: Array<[string, 'pass' | 'fail' | 'missing' | 'stale' | 'waived']>, extra = {}) => criteriaState([{
+    index: 0, type: 'living_spec', verdict, fingerprint: fp,
+    spec: { specId: spec.type === 'living_spec' ? spec.specId : '', revision: 7, targetSha: 'abc1234def', standings: standings.map(([criterionId, standing]) => ({ criterionId, standing, headSha: null })) },
+    ...extra,
+  }]);
+
+  it('is judged on the integrated branch before the merge, never "after merge"', () => {
+    const [row] = criteriaChecks([spec], null, ctx);
+    expect(row).toMatchObject({ kind: 'criterion', status: 'queued', state: 'not checked', label: 'Spec revision 7' });
+  });
+
+  it('a waived or stale requirement never reads as passed', () => {
+    const [row] = criteriaChecks([spec], state('UNVERIFIED', [['R-1', 'pass'], ['R-2', 'stale'], ['R-3', 'pass']]), ctx);
+    expect(row.status).toBe('stale');
+    expect(row.state).toBe('1 of 3 pass');
+    expect(row.detail).toContain('Out of date: R-2');
+    expect(row.detail).toContain('Waived: R-3');
+    expect(row.commit).toBe('abc1234');
+  });
+
+  it('passes only when the evaluator says every in-scope requirement passes', () => {
+    const [row] = criteriaChecks([spec], state('pass', [['R-1', 'pass'], ['R-2', 'pass'], ['R-3', 'waived']]), ctx);
+    expect(row).toMatchObject({ status: 'passed', actor: 'none' });
+  });
+
+  it('a requirement not met is a product finding; a running verification is running', () => {
+    expect(criteriaChecks([spec], state('fail', [['R-1', 'fail']]), ctx)[0]).toMatchObject({ status: 'finding', problem: 'product' });
+    expect(criteriaChecks([spec], state('PENDING', [['R-1', 'missing']], { workerTaskId: 't-final' }), ctx)[0]).toMatchObject({ status: 'running', state: 'verifying' });
+  });
+
+  it('a selection changed after judging is stale', () => {
+    const [row] = criteriaChecks([spec], state('pass', [['R-1', 'pass']], { fingerprint: 'older' }), ctx);
+    expect(row.status).toBe('stale');
+  });
+});
+
 describe('missionPrCheck (R-21, AC-9)', () => {
   const pr = { branch: 'mission/x', state: 'open' as const, prNumber: 128, prUrl: 'https://example.test/pr/128', taskId: null };
   const ctx = { target: 'dev', buildComplete: true, visualHolds: false };
