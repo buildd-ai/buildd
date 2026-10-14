@@ -42,7 +42,7 @@ describe('SQL', () => {
   test('a row\'s lease is renewed only while this attempt holds it, and re-reads what §10.4 checks', () => {
     const { sql: text, params } = render(renewEffectLeaseSql('e1', 2));
     expect(text).toContain("WHERE e.id = $2::uuid AND e.status = 'delivering' AND e.attempt_count = $3::int");
-    expect(text).toContain("jsonb_build_object('state', d.state, 'version', d.version)");
+    expect(text).toContain("jsonb_build_object('state', d.state, 'version', d.version, 'workspace_id', d.workspace_id)");
     expect(text).toContain("jsonb_build_object('to_state', tr.to_state, 'to_version', tr.to_version)");
     expect(params.slice(0, 3)).toEqual([120_000, 'e1', 2]);
   });
@@ -162,13 +162,15 @@ describe('runEffects', () => {
     expect(s.skipped).toBe(1);
   });
 
-  // §14 kill switch (task 8a0571d8).
+  // §14 kill switch (task 8a0571d8). The switch is the drain's Policy, read for the delivery's workspace.
+  const switchedOff = { forWorkspace: async () => ({ kernelEnabled: false, landingLane: 'off' as const, maxRounds: 3, maxConflictIterations: 3 }) };
+  const inWorkspace = { delivery: { state: 'CHANGES_REQUESTED', version: 4, workspace_id: 'w1' } };
   test('a delivery the kernel no longer owns never runs a kernel-only effect: acked skipped:legacy_owns', async () => {
     for (const authority of ['legacy', 'switched_off']) {
       for (const kind of KERNEL_ONLY_EFFECTS) {
         let ran = false;
-        const x = exec([claimed({ kind, authority })]);
-        const s = await runEffects({ exec: x.exec, handlers: { [kind]: async () => { ran = true; } } });
+        const x = exec([claimed({ kind, ...inWorkspace, authority: authority === 'legacy' ? 'legacy' : 'kernel' })]);
+        const s = await runEffects({ exec: x.exec, handlers: { [kind]: async () => { ran = true; } }, ...(authority === 'switched_off' ? { policy: switchedOff } : {}) });
         expect({ authority, kind, ran, skipped: s.skipped }).toEqual({ authority, kind, ran: false, skipped: 1 });
         expect(x.seen.at(-1)).toEqual({ tag: 'ack_effect', params: ['skipped:legacy_owns', 'e1', 1] });
       }
@@ -176,14 +178,25 @@ describe('runEffects', () => {
     expect([...KERNEL_ONLY_EFFECTS].sort()).toEqual(['merge_call', 'push_recovery', 'refresh_branch', 'renumber_migration']);
   });
   test('a switched-off delivery is released once by the drain; its committed dispatches and projections still drain', async () => {
-    const x = exec([claimed({ authority: 'switched_off' }), claimed({ id: 'e2', kind: 'render_activity', authority: 'switched_off' })]);
+    const x = exec([claimed({ ...inWorkspace }), claimed({ id: 'e2', kind: 'render_activity', ...inWorkspace })]);
     const ran: string[] = [];
-    await runEffects({ exec: x.exec, handlers: { dispatch_fix: async () => { ran.push('dispatch_fix'); }, render_activity: async () => { ran.push('render_activity'); } } });
+    let asked = 0;
+    const policy = { forWorkspace: async (ws: string) => { asked++; return { ...(await switchedOff.forWorkspace()), ws }; } };
+    await runEffects({ exec: x.exec, policy, handlers: { dispatch_fix: async () => { ran.push('dispatch_fix'); }, render_activity: async () => { ran.push('render_activity'); } } });
     expect(ran).toEqual(['dispatch_fix', 'render_activity']);
     expect(x.seen.filter((q) => q.tag === 'release_to_legacy').map((q) => q.params)).toEqual([['d1']]);
+    expect(asked).toBe(1);
   });
-  test('the claim reads who decides in the same statement, through the one switch reading', () => {
+  test('with no policy given the drain reads the switch from the workspace row, once per workspace', async () => {
+    const x = exec([claimed({ ...inWorkspace }), claimed({ id: 'e2', kind: 'render_activity', ...inWorkspace })]);
+    await runEffects({ exec: x.exec, handlers: { dispatch_fix: async () => {}, render_activity: async () => {} } });
+    expect(x.seen.filter((q) => q.tag === 'workspace_policy').map((q) => q.params)).toEqual([['w1']]);
+  });
+  test('the claim reads the authority the delivery row records and its workspace, never the kill switch', () => {
     const { sql: text } = render(claimDueEffectsSql(10));
-    expect(text).toContain("WHEN d.authority = 'legacy' THEN 'legacy' WHEN (COALESCE((w.git_config)->>'workflowKernel', 'true') IN ('true', 'on')) THEN 'kernel' ELSE 'switched_off' END");
+    expect(text).toContain('(SELECT d.authority FROM workflow_deliveries d WHERE d.id = e.delivery_id) AS authority');
+    expect(text).toContain("'workspace_id', d.workspace_id");
+    expect(text).not.toContain('git_config');
+    expect(text).not.toContain('workspaces');
   });
 });
