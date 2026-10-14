@@ -58,9 +58,15 @@ export interface OutcomeSpecView {
 /**
  * The view of one `living_spec` criterion. `entry` is its evaluated state, or
  * null before the criteria were first checked (then everything in scope reads
- * not checked).
+ * not checked). `opts.buildDone` is the caller's own reading of the build and
+ * wins over the one stored with the evaluation; with neither, the view does
+ * not claim the build is still running.
  */
-export function outcomeSpecView(c: LivingSpecGoalCriterion, entry: StateEntry | null | undefined): OutcomeSpecView {
+export function outcomeSpecView(
+  c: LivingSpecGoalCriterion,
+  entry: StateEntry | null | undefined,
+  opts: { buildDone?: boolean } = {},
+): OutcomeSpecView {
   const standings = entry?.spec?.standings ?? [];
   const waived = (c.waived ?? []).map(w => ({ criterionId: w.criterionId, reason: w.reason }));
   const waivedIds = new Set(waived.map(w => w.criterionId));
@@ -85,8 +91,12 @@ export function outcomeSpecView(c: LivingSpecGoalCriterion, entry: StateEntry | 
   if (verdict === 'pass') next = 'Every requirement in scope passes on the integrated result.';
   else if (by.get('fail')?.length) next = 'A repair task fixes what is not met, then the check runs again.';
   else if (verificationTaskId) next = 'The final verification checks each requirement on the integrated result.';
-  else if (!target) next = 'Checked once the build is done and the integrated branch is known.';
-  else next = 'Checked once the build work is done.';
+  else {
+    const buildDone = opts.buildDone ?? entry?.spec?.buildDone;
+    if (buildDone === false) next = target ? 'Checked once the build work is done.' : 'Checked once the build is done and the integrated branch is known.';
+    else if (buildDone === true) next = target ? 'The build is done. The final verification starts on the next check.' : 'The build is done. Checked once the integrated branch is known.';
+    else next = 'The final verification has not started.';
+  }
 
   return {
     specId: c.specId,

@@ -187,6 +187,16 @@ describe('criteriaChecks: the outcome spec is one Verify row (R-29)', () => {
     expect(criteriaChecks([spec], state('PENDING', [['R-1', 'missing']], { workerTaskId: 't-final' }), ctx)[0]).toMatchObject({ status: 'running', state: 'verifying' });
   });
 
+  it('once the build is done it no longer says it waits for the build (633c77c9)', () => {
+    const [unjudged] = criteriaChecks([spec], null, { ...ctx, buildComplete: true });
+    expect(unjudged.detail).toBe('The build is done. It is checked on the integrated result next.');
+    const [open] = criteriaChecks([spec], state('UNVERIFIED', [['R-1', 'missing']]), { ...ctx, buildComplete: true });
+    expect(open.detail).toContain('The build is done. The final verification starts on the next check.');
+    expect(open.detail).not.toContain('once the build');
+    const [building] = criteriaChecks([spec], null, { ...ctx, buildComplete: false });
+    expect(building.detail).toBe('Checked on the integrated result once the build work is done.');
+  });
+
   it('a selection changed after judging is stale', () => {
     const [row] = criteriaChecks([spec], state('pass', [['R-1', 'pass']], { fingerprint: 'older' }), ctx);
     expect(row.status).toBe('stale');

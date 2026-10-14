@@ -164,7 +164,7 @@ export function criterionName(c: GoalCriterion): string {
  * UNVERIFIED, PENDING and NOT_EVALUATED never read as passed. On a mission
  * branch an unjudged criterion waits for the merge (R-13).
  */
-export function criteriaChecks(criteria: readonly GoalCriterion[], state: GoalCriteriaState | null, ctx: { branch: 'mission-branch' | 'direct'; prMerged: boolean; target: string | null }): CheckRow[] {
+export function criteriaChecks(criteria: readonly GoalCriterion[], state: GoalCriteriaState | null, ctx: { branch: 'mission-branch' | 'direct'; prMerged: boolean; target: string | null; buildComplete?: boolean }): CheckRow[] {
   const byIndex = new Map((state?.criteria ?? []).map(e => [e.index, e]));
   const where = ctx.target ? `on ${ctx.target}` : 'on the target branch';
   return criteria.map((c, i) => {
@@ -184,10 +184,10 @@ export function criteriaChecks(criteria: readonly GoalCriterion[], state: GoalCr
       // The outcome spec is one Verify row (R-29), read from the same evaluated
       // state as the goal criteria panel. Only every in-scope requirement passing
       // on the integrated result passes it; waived and stale never count.
-      const v = outcomeSpecView(c, e);
+      const v = outcomeSpecView(c, e, { buildDone: ctx.buildComplete });
       const detail = sentence(v.coverage, ...v.open.map(o => `${o.label}: ${o.criterionIds.join(', ')}`), v.waived.length ? `Waived: ${v.waived.map(w => w.criterionId).join(', ')}` : null, v.next);
       const spec = { commit: e?.spec?.targetSha ? e.spec.targetSha.slice(0, 7) : null };
-      if (!e) return row('queued', 'not checked', 'Checked on the integrated result once the build work is done.', spec);
+      if (!e) return row('queued', 'not checked', ctx.buildComplete ? 'The build is done. It is checked on the integrated result next.' : 'Checked on the integrated result once the build work is done.', spec);
       if (e.fingerprint && e.fingerprint !== criterionFingerprint(c)) return row('stale', 'out of date', 'The spec selection changed after it was judged. It needs checking again.', spec);
       if (e.verdict === 'pass') return row('passed', 'passed', detail, { ...spec, actor: 'none' });
       if (e.verdict === 'fail') return row('finding', v.short, detail, { ...spec, problem: 'product' });
@@ -273,7 +273,7 @@ export function missionChecks(input: MissionChecksInput): MissionChecks {
 
   const visual = input.visual ? visualCheck(input.visual, { mergeTier: input.mergeTier, repairs: input.repairs, evidence: input.evidence?.visual }) : null;
   const visualHolds = !!visual && input.visual!.blocksMerge && !SETTLED.has(visual.status);
-  const criteria = criteriaChecks(input.criteria, input.criteriaState, { branch, prMerged, target });
+  const criteria = criteriaChecks(input.criteria, input.criteriaState, { branch, prMerged, target, buildComplete });
   const pr = missionPr ? missionPrCheck(missionPr, { mergeTier: input.mergeTier, target, buildComplete, visualHolds }) : null;
   const release = releaseCheck(input.release, input.releaseLabel);
   const rows = [visual, pr, ...criteria, release].filter((r): r is CheckRow => r != null);

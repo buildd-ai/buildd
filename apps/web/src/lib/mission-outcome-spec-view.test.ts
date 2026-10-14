@@ -55,6 +55,26 @@ describe('outcomeSpecView', () => {
     expect(v.next).toMatch(/final verification/);
   });
 
+  it('says the build is done instead of waiting for it when the build has finished (633c77c9)', () => {
+    const done = outcomeSpecView(crit(), entry([['R-1', 'missing']], { spec: { specId: SPEC, revision: 7, targetSha: 'abc1234def5678', standings: [{ criterionId: 'R-1', standing: 'missing', headSha: null }], buildDone: true } }));
+    expect(done.next).toBe('The build is done. The final verification starts on the next check.');
+    expect(done.next).not.toContain('once the build');
+    const pending = outcomeSpecView(crit(), entry([['R-1', 'missing']], { spec: { specId: SPEC, revision: 7, targetSha: 'abc1234def5678', standings: [{ criterionId: 'R-1', standing: 'missing', headSha: null }], buildDone: false } }));
+    expect(pending.next).toBe('Checked once the build work is done.');
+  });
+
+  it('lets the caller say the build is done when the stored state does not', () => {
+    const v = outcomeSpecView(crit(), entry([['R-1', 'missing']]), { buildDone: true });
+    expect(v.next).toBe('The build is done. The final verification starts on the next check.');
+    const noTarget = outcomeSpecView(crit(), null, { buildDone: true });
+    expect(noTarget.next).toBe('The build is done. Checked once the integrated branch is known.');
+  });
+
+  it('does not claim the build is unfinished when nothing says so', () => {
+    const v = outcomeSpecView(crit(), entry([['R-1', 'missing']]));
+    expect(v.next).toBe('The final verification has not started.');
+  });
+
   it('spells counts up to twelve', () => {
     expect(countWord(0)).toBe('zero');
     expect(countWord(12)).toBe('twelve');

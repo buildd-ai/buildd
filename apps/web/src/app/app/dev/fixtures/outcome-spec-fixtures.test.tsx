@@ -54,6 +54,19 @@ describe('outcome spec fixtures (?state=mission-task-strip&variant=outcome-spec-
     expect(view.narrowed?.criterionIds.length).toBeGreaterThan(0);
   });
 
+  it('with the build complete, neither the Verify row nor the spec block waits for the build (633c77c9)', () => {
+    for (const v of ['outcome-spec-open', 'outcome-spec-proposed'] as const) {
+      const { f, criterion, entry } = specOf(v);
+      const checks = f.checks!;
+      const i = checks.criteria.findIndex(c => c.type === 'living_spec');
+      const row = criteriaChecks(checks.criteria, checks.criteriaState, { branch: checks.branch, prMerged: false, target: checks.target, buildComplete: true })[i];
+      expect(row.detail ?? '').not.toContain('once the build');
+      const html = renderToStaticMarkup(<OutcomeSpecCriterion missionId="m" criterion={criterion} entry={entry} />);
+      expect(html).not.toContain('once the build');
+      expect(html).toContain('The build is done.');
+    }
+  });
+
   it('a proposed revision says so', () => {
     expect(specOf('outcome-spec-proposed').view.revisionLine).toContain('proposed');
   });
