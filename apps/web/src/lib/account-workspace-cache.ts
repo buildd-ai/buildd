@@ -8,6 +8,7 @@ import {
   invalidateCachedAccountWorkspaces,
 } from './redis';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { liveGrantedWorkspaceIds } from './granted-links';
 
 /**
  * Cached account workspace permission entry.
@@ -16,6 +17,17 @@ export interface AccountWorkspacePermission {
   workspaceId: string;
   canClaim: boolean;
   canCreate: boolean;
+  /**
+   * The person who picked this workspace on the runner consent page
+   * (lib/granted-links.ts). Absent/null = an ordinary link.
+   */
+  grantedByUserId?: string | null;
+  /**
+   * Only with `includeRevoked`: a granted row whose grant no longer holds
+   * (the person left the team, lost the role, or the workspace turned
+   * restricted). It reaches nothing; canClaim and canCreate are false.
+   */
+  revoked?: boolean;
 }
 
 /**
@@ -34,10 +46,30 @@ const permissionsCache = new TTLCache<AccountWorkspacePermission[]>({
 
 /**
  * Get workspace permissions for an account, with caching.
+ *
+ * The rows are cached; the re-check on person-granted rows is not. When the
+ * account has any granted row, every call asks the database which of them
+ * still hold (lib/granted-links.ts), so leaving a team or losing a role drops
+ * the workspace on the very next call. A row that no longer holds is left out,
+ * or, with `includeRevoked`, returned marked `revoked` with no permission (the
+ * claim route uses that to keep it out even where open-mode would reach it).
  */
 export async function getAccountWorkspacePermissions(
   accountId: string,
+  opts: { includeRevoked?: boolean } = {},
 ): Promise<AccountWorkspacePermission[]> {
+  const rows = await loadAccountWorkspacePermissions(accountId);
+  if (!rows.some((r) => r.grantedByUserId)) return rows;
+  const live = await liveGrantedWorkspaceIds(accountId);
+  const out: AccountWorkspacePermission[] = [];
+  for (const r of rows) {
+    if (!r.grantedByUserId || live.has(r.workspaceId)) out.push(r);
+    else if (opts.includeRevoked) out.push({ ...r, canClaim: false, canCreate: false, revoked: true });
+  }
+  return out;
+}
+
+async function loadAccountWorkspacePermissions(accountId: string): Promise<AccountWorkspacePermission[]> {
   // L1: in-memory TTL cache
   const cached = permissionsCache.get(accountId);
   if (cached) return cached;
@@ -58,6 +90,7 @@ export async function getAccountWorkspacePermissions(
     workspaceId: r.workspaceId,
     canClaim: r.canClaim,
     canCreate: r.canCreate,
+    ...(r.grantedByUserId ? { grantedByUserId: r.grantedByUserId } : {}),
   }));
 
   permissionsCache.set(accountId, permissions);

@@ -38,6 +38,7 @@ import { withCronRun, type CronReport } from '@/lib/cron-run';
 import { resolveEffectiveRoleSlugs } from '@/lib/effective-roles';
 import { assertScheduleSkillsAvailable, fileMissingSkillFriction, MissingScheduleSkillError } from '@/lib/schedule-skill-preflight';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { liveLinkCondition } from '@/lib/granted-links';
 
 const SCHEDULE_TIERS: ReadonlySet<string> = new Set(['premium-plus', 'premium', 'standard', 'budget']);
 
@@ -191,6 +192,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
           where: sqlWhere(and(
             inArray(accountWorkspaces.workspaceId, scheduleWorkspaceIds),
             eq(accountWorkspaces.canClaim, true),
+            liveLinkCondition(),
           )),
           columns: { accountId: true, workspaceId: true },
         })
