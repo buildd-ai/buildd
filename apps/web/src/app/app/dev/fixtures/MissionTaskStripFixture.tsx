@@ -12,11 +12,14 @@
 import { useEffect, useState } from 'react';
 import MissionBoard from '@/app/app/(protected)/missions/[id]/MissionBoard';
 import MissionOverview from '@/app/app/(protected)/missions/[id]/MissionOverview';
+import OutcomeSpecCriterion, { OutcomeSpecSummary } from '@/app/app/(protected)/missions/[id]/OutcomeSpecCriterion';
 import MissionSituationBlock from '@/components/missions/MissionSituationBlock';
+import type { LivingSpecGoalCriterion } from '@buildd/shared';
 import type { MissionSituation } from '@/lib/mission-state-view';
 import {
   dagSelection,
   isHandoffVariant,
+  isOutcomeSpecVariant,
   isOverviewVariant,
   missionTaskStripFixture,
   missionTaskStripLinks,
@@ -73,7 +76,8 @@ export default function MissionTaskStripFixture() {
         </nav>
       </header>
       <main className="mx-auto max-w-[1400px] px-4 py-2 md:px-8">
-        {isOverviewVariant(variant) || isHandoffVariant(variant) ? (
+        {isOverviewVariant(variant) || isHandoffVariant(variant) || isOutcomeSpecVariant(variant) ? (
+          <>
           <MissionOverview
             model={fixture.model}
             missionId={MISSION_ID}
@@ -83,6 +87,8 @@ export default function MissionTaskStripFixture() {
             planTasks={fixture.planTasks ?? null}
             held={fixture.held ?? false}
           />
+          {isOutcomeSpecVariant(variant) ? <OutcomeSpecGoalRow fixture={fixture} /> : null}
+          </>
         ) : (
         <MissionBoard
           model={fixture.model}
@@ -97,5 +103,21 @@ export default function MissionTaskStripFixture() {
         )}
       </main>
     </div>
+  );
+}
+
+/** The goal criteria panel's outcome spec row, as the mission page draws it. Its actions post to the live route: do not press them here. */
+function OutcomeSpecGoalRow({ fixture }: { fixture: Fixture }) {
+  const checks = fixture.checks;
+  const i = checks?.criteria.findIndex(c => c.type === 'living_spec') ?? -1;
+  if (!checks || i < 0) return null;
+  const criterion = checks.criteria[i] as LivingSpecGoalCriterion;
+  const entry = checks.criteriaState?.criteria.find(e => e.index === i) ?? null;
+  return (
+    <section aria-label="Goal criteria" data-testid="outcome-spec-fixture-row" className="mt-6 border-t border-border-default py-3">
+      <p className="text-body font-medium">{criterion.label ?? 'Outcome spec'}</p>
+      <OutcomeSpecSummary criterion={criterion} entry={entry} />
+      <OutcomeSpecCriterion missionId={MISSION_ID} criterion={criterion} entry={entry} />
+    </section>
   );
 }

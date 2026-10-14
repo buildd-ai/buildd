@@ -19,11 +19,16 @@
  *                         (spec f7f67f1a R-1, R-5): mixed waiting causes, and a
  *                         surface audit in the checks group from 10 tasks up
  *   &select=<letter>      a DAG variant opens with that task selected
+ *   &variant=outcome-spec-passing|open|narrowed|proposed|verifying
+ *                         the mission's selected outcome spec in Verify and
+ *                         in the goal criteria row
  *
  * Illustrative rows only (made-up ids and titles), built through the real
  * `buildMissionBoard`, so the strip reads exactly what the mission page reads.
  */
 import * as missionHelpers from '@buildd/core/mission-helpers';
+import { criterionFingerprint } from '@buildd/core/mission-helpers';
+import type { CriterionVerdict, GoalCriteriaState, GoalCriterion, LivingSpecCriterionStanding, LivingSpecGoalCriterion } from '@buildd/shared';
 import { SURFACE_AUDIT_TITLE_PREFIX } from '@buildd/core/surface-audit';
 import { buildMissionBoard, type BoardTaskInput, type BoardWorkerInput, type MissionBoardModel, type MissionGateFacts } from '@/lib/mission-board';
 import type { TaskDeliveryDetail } from '@/lib/activity-delivery';
@@ -38,6 +43,7 @@ export const MISSION_TASK_STRIP_STATE = MISSION_TASK_STRIP_FIXTURE_STATE;
 export const MISSION_TASK_STRIP_VARIANTS = [
   'mid-open', 'all-landed', 'states', 'linear', 'fan-out', 'fan-in', 'field', 'wide', 'delivery', 'overview-2', 'overview-10', 'overview-20', 'overview-64',
   'handoff-building', 'handoff-verifying', 'handoff-repairing', 'handoff-approval', 'handoff-reviewer', 'handoff-delivered', 'handoff-deploy-failed', 'handoff-budget', 'handoff-local',
+  'outcome-spec-passing', 'outcome-spec-open', 'outcome-spec-narrowed', 'outcome-spec-proposed', 'outcome-spec-verifying',
 ] as const;
 export type MissionTaskStripVariant = (typeof MISSION_TASK_STRIP_VARIANTS)[number];
 
@@ -121,6 +127,7 @@ export function missionTaskStripFixture(variant: MissionTaskStripVariant, now = 
   if (variant === 'delivery') return deliveryFixture(base);
   if (isOverviewVariant(variant)) return { model: overviewWavesBoard(overviewSize(variant), now), executor: 'runner' };
   if (isHandoffVariant(variant)) return handoffFixture(variant, base);
+  if (isOutcomeSpecVariant(variant)) return outcomeSpecFixture(variant, base);
   if (isDagVariant(variant)) {
     return { model: buildMissionBoard({ ...base, tasks: dagTasks(DAG_SPECS[variant]) }), executor: 'runner' };
   }
@@ -445,4 +452,69 @@ export function handoffFixture(variant: HandoffVariant, base: { now: number; mis
     planTasks,
     held: variant === 'handoff-budget',
   };
+}
+
+// ── Outcome spec: the mission's selected Living Spec (spec f7f67f1a R-29 to R-31) ──
+
+export const OUTCOME_SPEC_VARIANTS = ['outcome-spec-passing', 'outcome-spec-open', 'outcome-spec-narrowed', 'outcome-spec-proposed', 'outcome-spec-verifying'] as const;
+export type OutcomeSpecVariant = (typeof OUTCOME_SPEC_VARIANTS)[number];
+export const isOutcomeSpecVariant = (v: string): v is OutcomeSpecVariant => v.startsWith('outcome-spec-');
+
+const OUTCOME_SPEC_IDS = ['R-1', 'R-2', 'R-3', 'R-4', 'AC-1', 'AC-2'];
+const INTEGRATED_HEAD = 'c0ffee1234567890abcdef1234567890abcdef12';
+
+/**
+ * Build complete with the mission PR open, and the mission's outcome spec as
+ * a goal criterion, one variant per state the Verify row and the goal
+ * criteria row draw: all passing, open requirements (one could-not-tell, one
+ * out of date) beside a waiver, a narrowed scope, a proposed revision, and
+ * the final verification running. Rendered through the real
+ * `criteriaChecks` / `outcomeSpecView` paths; nothing here restates their words.
+ */
+export function outcomeSpecFixture(variant: OutcomeSpecVariant, base: { now: number; missionCreatedAt: number; missionStatus: 'active' }): MissionTaskStripFixture {
+  const handoff = handoffFixture('handoff-verifying', base);
+  const at = new Date(base.now).toISOString();
+  const criterion: LivingSpecGoalCriterion = {
+    type: 'living_spec',
+    specId: stripFixtureId(960),
+    specRevisionId: stripFixtureId(961),
+    revision: 4,
+    contentHash: 'f'.repeat(64),
+    label: 'Billing exports spec',
+    ...(variant === 'outcome-spec-proposed' ? { provisional: true as const } : {}),
+    ...(variant === 'outcome-spec-narrowed' ? { criteria: ['R-1', 'R-2', 'AC-1'], narrowedReason: 'The scheduled email ships in the next mission.' } : {}),
+    ...(variant === 'outcome-spec-open'
+      ? { waived: [{ criterionId: 'AC-2', reason: 'The bank sandbox is down this week; checked by hand.', by: 'owner', at }] }
+      : {}),
+  };
+  const inScope = criterion.criteria ?? OUTCOME_SPEC_IDS;
+  const standingOf = (id: string): LivingSpecCriterionStanding['standing'] => {
+    if (variant === 'outcome-spec-open') return id === 'R-3' ? 'inconclusive' : id === 'R-4' ? 'stale' : id === 'AC-2' ? 'waived' : 'pass';
+    if (variant === 'outcome-spec-verifying') return id === 'R-1' || id === 'R-2' ? 'pass' : 'missing';
+    if (variant === 'outcome-spec-proposed') return id === 'R-1' ? 'pass' : 'missing';
+    return 'pass';
+  };
+  const standings: LivingSpecCriterionStanding[] = inScope.map(id => ({ criterionId: id, standing: standingOf(id), headSha: standingOf(id) === 'missing' ? null : INTEGRATED_HEAD }));
+  const allPass = standings.every(s => s.standing === 'pass');
+  const verdict: CriterionVerdict = variant === 'outcome-spec-verifying' ? 'PENDING' : allPass ? 'pass' : 'UNVERIFIED';
+  const command = handoff.checks!.criteria[0];
+  const criteria: GoalCriterion[] = [command, criterion];
+  const criteriaState: GoalCriteriaState = {
+    evaluatedAt: at,
+    evaluatedBy: 'auto',
+    overall: allPass ? 'pass' : 'pending',
+    criteria: [
+      { index: 0, type: 'command', verdict: 'pass', evidence: 'Passed on the integration branch.', fingerprint: criterionFingerprint(command) },
+      {
+        index: 1,
+        type: 'living_spec',
+        verdict,
+        evidence: '',
+        fingerprint: criterionFingerprint(criterion),
+        ...(variant === 'outcome-spec-verifying' ? { workerTaskId: stripFixtureId(962) } : {}),
+        spec: { specId: criterion.specId, revision: criterion.revision, targetSha: INTEGRATED_HEAD, standings },
+      },
+    ],
+  } as GoalCriteriaState;
+  return { ...handoff, checks: { ...handoff.checks!, criteria, criteriaState } };
 }

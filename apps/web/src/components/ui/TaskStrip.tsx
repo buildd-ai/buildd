@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, type CSSProperties, type KeyboardEvent } from 'react';
+import { useEffect, useRef, type CSSProperties, type KeyboardEvent } from 'react';
 import { STATES, type StateKey } from './states';
 import { stripKeyTarget, stripRunColumns, stripRunLabel, stripRuns, tickOf, type StripMark } from './task-strip';
 
@@ -138,8 +138,14 @@ function outlineEdge(grouped: ReturnType<typeof groupedColumns> | null): { edge:
   return { edge, pad: `${start ? 'pl-[5px]' : ''} ${end ? 'pr-[5px]' : ''}`.trim() };
 }
 
-const GROUPED_VARS = '[--group-gap:6px] [--cell:minmax(0,1fr)] md:[--group-gap:12px]';
-const GROUPED_VARS_CAPPED = `${GROUPED_VARS} md:[--cell:minmax(0,56px)]`;
+// Below md a grouped cell is a fixed 44px tap target (spec f7f67f1a R-4): a
+// short strip stays compact boxes, a long one scrolls inside the strip rather
+// than shrinking its cells. From md the cells share the column as before.
+const GROUPED_BASE = '[--group-gap:6px] [--cell:44px] md:[--group-gap:12px]';
+const GROUPED_VARS = `${GROUPED_BASE} md:[--cell:minmax(0,1fr)]`;
+const GROUPED_VARS_CAPPED = `${GROUPED_BASE} md:[--cell:minmax(0,56px)]`;
+/** Below md: scrolls a long grouped strip sideways; py keeps the 5px outline from being clipped. */
+const GROUPED_SCROLL = '-my-[5px] overflow-x-auto py-[5px] md:my-0 md:overflow-x-visible md:py-0';
 
 function LargeStrip({ cells, selectedId, onSelect, marks, capped = true, label = 'Tasks', className = '', groups }: TaskStripProps) {
   const ref = useRef<HTMLDivElement>(null);
@@ -152,6 +158,23 @@ function LargeStrip({ cells, selectedId, onSelect, marks, capped = true, label =
   const focusIndex = selIndex === -1 ? 0 : selIndex;
   const numbered = n <= MAX_NUMBERED_TICKS;
   const outline = outlineEdge(grouped);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const width = grouped ? 'w-max md:w-auto' : '';
+
+  // Keep the selected cell in view when a long strip scrolls (phone width).
+  useEffect(() => {
+    const box = scrollRef.current;
+    if (!box || !selectedId || box.scrollWidth <= box.clientWidth) return;
+    const cell = Array.from(box.querySelectorAll<HTMLButtonElement>('button[data-id]')).find(b => b.dataset.id === selectedId);
+    if (!cell) return;
+    // 8px of slack keeps the 5px group outline inside the view; an off-screen
+    // cell is centred so its neighbours in the group show too.
+    const left = cell.offsetLeft - box.offsetLeft - 8;
+    const right = cell.offsetLeft - box.offsetLeft + cell.offsetWidth + 8;
+    if (left < box.scrollLeft || right > box.scrollLeft + box.clientWidth) {
+      box.scrollLeft = Math.max(0, (left + right) / 2 - box.clientWidth / 2);
+    }
+  }, [selectedId]);
 
   function onKeyDown(e: KeyboardEvent<HTMLDivElement>) {
     const from = cells.findIndex(c => c.id === (e.target as HTMLElement).dataset.id);
@@ -162,9 +185,9 @@ function LargeStrip({ cells, selectedId, onSelect, marks, capped = true, label =
     ref.current?.querySelectorAll<HTMLButtonElement>('button[data-id]')[to]?.focus();
   }
 
-  return (
-    <div className={`flex flex-col gap-1.5 ${className}`} data-testid="task-strip" data-size="lg">
-      <div ref={ref} role="toolbar" aria-label={label} onKeyDown={onKeyDown} data-outline-edge={outline.edge} className={`grid gap-1 ${columns} ${outline.pad}`} style={style}>
+  const rows = (
+    <>
+      <div ref={ref} role="toolbar" aria-label={label} onKeyDown={onKeyDown} data-outline-edge={outline.edge} className={`grid gap-1 ${columns} ${width} ${outline.pad}`} style={style}>
         {grouped?.spans.map(sp => (
           // The group outline: one accent frame round the work in progress (spec f7f67f1a R-3).
           <span
@@ -216,7 +239,7 @@ function LargeStrip({ cells, selectedId, onSelect, marks, capped = true, label =
           );
         })}
       </div>
-      <div aria-hidden="true" data-testid="task-strip-ticks" className={`grid gap-1 text-center font-mono text-chip ${columns} ${outline.pad}`} style={style}>
+      <div aria-hidden="true" data-testid="task-strip-ticks" className={`grid gap-1 text-center font-mono text-chip ${columns} ${width} ${outline.pad}`} style={style}>
         {cells.map((c, i) => {
           const selected = c.id === selectedId;
           // MK-3: the selected tick is never marked and always keeps its number.
@@ -228,6 +251,16 @@ function LargeStrip({ cells, selectedId, onSelect, marks, capped = true, label =
           );
         })}
       </div>
+    </>
+  );
+
+  return (
+    <div className={`flex flex-col gap-1.5 ${className}`} data-testid="task-strip" data-size="lg">
+      {grouped ? (
+        <div ref={scrollRef} data-testid="task-strip-scroll" className={`flex flex-col gap-1.5 ${GROUPED_SCROLL}`}>
+          {rows}
+        </div>
+      ) : rows}
     </div>
   );
 }
