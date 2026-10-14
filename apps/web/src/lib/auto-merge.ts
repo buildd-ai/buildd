@@ -41,6 +41,7 @@ import {
 import { classifyReleasePr } from '@buildd/core/release-candidate';
 import type { WorkspaceReleaseConfig } from '@buildd/core/db/schema';
 import { guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
+import { LANDING_STATUS_CONTEXT } from '@buildd/workflow-kernel/landing-gate';
 import { guardReviewVerdict } from '@/lib/review-verdict-gate';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
@@ -248,7 +249,9 @@ export async function evaluateAutoMergeSafety(
     // CI that reports through the Statuses API (Jenkins, CircleCI, Buildkite,
     // Vercel contexts) never creates check runs.
     const statuses = await listAllCommitStatuses(githubApi, installationId, repoFullName, headSha);
-    const notPassing = statuses.items.filter((st) => !isPassingStatus(st));
+    // buildd's own `buildd/landing` status is the kernel's verdict, published from
+    // what this merge decides (workflow-kernel-library.md §4): never CI to wait on.
+    const notPassing = statuses.items.filter((st) => st.context !== LANDING_STATUS_CONTEXT && !isPassingStatus(st));
     if (!statuses.complete || notPassing.length > 0) {
       return {
         ok: false,
@@ -784,7 +787,25 @@ export async function tryAutoMergeWorkerPr(params: {
   // No override here by construction: nothing unattended may bypass a verdict.
   // A human override lives on the dashboard route, where a person is present.
   const reviewWorkspaceId = await workspaceIdOnce();
-  if (reviewWorkspaceId) {
+  if (!reviewWorkspaceId) {
+    // D4 (workflow-kernel-library.md §4): the review gate is never skipped. With no
+    // workspace to read the verdict in, there is no verdict to rely on: nothing merges.
+    const reason = 'no workspace resolves for this PR, so its review verdict cannot be read; nothing was merged';
+    console.log(`Auto-merge blocked for ${repoFullName}#${prNumber}: ${reason}`);
+    fireGateEvent({
+      gate: GATE_SLUGS.REVIEW_VERDICT,
+      surface: 'auto-merge',
+      outcome: 'rejected',
+      reason,
+      workspaceId: null,
+      taskId: worker.taskId ?? null,
+      workerId: worker.id ?? null,
+      callerOrigin: 'system',
+      detail: { prNumber, headSha, repoFullName, reasonClass: 'no_workspace' },
+    });
+    return { merged: false, reason };
+  }
+  {
     const reviewGate = await guardReviewVerdict({
       workspaceId: reviewWorkspaceId,
       prNumber,

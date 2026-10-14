@@ -85,5 +85,5 @@ describe('mergeAnswerOf: the port answer the package handler applies as T16', ()
 test('the landing handlers are exactly the landing and post-merge effects, and no conflict-family one', () => {
   const clock = controllableClock();
   const h = landingHandlers({ store: new MemoryStore(clock, sequentialIds()), clock });
-  expect(Object.keys(h).sort()).toEqual(['emit_pr_merged', 'finalize_mission_pr', 'merge_call', 'verify_merge']);
+  expect(Object.keys(h).sort()).toEqual(['dispatch_external_merge_fix', 'emit_pr_merged', 'finalize_mission_pr', 'merge_call', 'publish_landing_status', 'verify_merge']);
 });

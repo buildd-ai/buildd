@@ -2203,6 +2203,34 @@ export async function PUT(req: NextRequest) {
       }
     }
 
+    // D5 (workflow-kernel-library.md §4, §13.13 rule 6): `force` bypasses the merge policy
+    // (tier, rails), never the review verdict. Only a person's recorded override (the
+    // dashboard's "Merge anyway") passes a verdict; a kernel PR's gate is the kernel's.
+    if (force && !kernelOwned) {
+      const forcedGate = await guardReviewVerdict({
+        workspaceId: workspace.id,
+        prNumber,
+        headSha,
+        surface: 'PUT /api/github/pr force',
+        taskId: worker.taskId ?? null,
+        workerId: worker.id ?? null,
+        callerOrigin: 'api',
+        carryForward: policyPr?.base?.ref
+          ? { installationId: repo.installation.installationId, repoFullName: repo.fullName, baseRef: policyPr.base.ref }
+          : null,
+      });
+      if (forcedGate.blocks) {
+        recordMergeGate('rejected', forcedGate.reason ?? 'review verdict blocks this merge', {
+          force: true, reviewState: forcedGate.state ?? null, reviewKind: forcedGate.kind ?? null, reviewTaskId: forcedGate.reviewTaskId ?? null,
+        }, GATE_SLUGS.REVIEW_VERDICT);
+        return NextResponse.json({
+          error: `merge refused: ${forcedGate.reason}`,
+          reviewState: forcedGate.state ?? null,
+          hint: `\`force\` skips the merge policy, not the review verdict. ${forcedGate.clearedBy ?? ''} A person can merge past it from the dashboard ("Merge anyway"), which records the override.`.trim(),
+        }, { status: 403 });
+      }
+    }
+
     // ── Mission-PR branch-lifecycle gate (P3) ───────────────────────────────
     // Applies even under `force`: this guards data integrity (deleting the
     // integration branch out from under sibling PRs still targeting it), not

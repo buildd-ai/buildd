@@ -644,6 +644,10 @@ mock.module('@/lib/workflow/seam', () => ({
   observeCiFailure: mock(async () => ({ handled: false })),
   policyFindingFor: (p: any) => ({ outcome: 'human', reason: p.reason, destructive: false }),
 }));
+// The one kernel client (D7's kernel landing). Default: the kernel owns no release PR.
+import * as realKernelClient from '@/lib/workflow/kernel-client';
+const mockKernelClientLand = mock(async (_p: any): Promise<any> => null);
+mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, landThroughKernel: mockKernelClientLand }));
 const mockKernelDeliveryForPr = mock(async (..._a: any[]): Promise<string | null> => null);
 mock.module('@/lib/workflow/authority', () => ({ releaseKernelDeliveryForPr: mockReleaseKernelDeliveryForPr, kernelDeliveryForPr: mockKernelDeliveryForPr }));
 
@@ -6381,6 +6385,23 @@ describe('release PR CI success pins the live head', () => {
     await deliverSuccess();
     expect(mockMergePullRequest).toHaveBeenCalledWith(5000, 'test-org/test-repo', 42, 'merge', 'a'.repeat(40));
     expect(updateCalls.some(c => c.setValues.status === 'completed')).toBe(true);
+  });
+
+  it('D7: a release PR the kernel owns lands through the kernel at the checked head, never merged here', async () => {
+    mockGithubApi.mockResolvedValue({ head: { sha: 'a'.repeat(40) } });
+    mockKernelClientLand.mockResolvedValueOnce({ merged: true, outcome: 'merged', reason: 'merged', message: 'Pull request merged', mergeCommitSha: 'm1', current: {}, result: null });
+    await deliverSuccess();
+    expect(mockKernelClientLand.mock.calls.at(-1)?.[0]).toMatchObject({ prNumber: 42, headSha: 'a'.repeat(40), door: 'release_pr_ci_success' });
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+    expect(updateCalls.some(c => c.setValues.status === 'completed')).toBe(true);
+  });
+
+  it('D7: the kernel refusing the release PR merges nothing', async () => {
+    mockGithubApi.mockResolvedValue({ head: { sha: 'a'.repeat(40) } });
+    mockKernelClientLand.mockResolvedValueOnce({ merged: false, outcome: 'rejected', reason: 'gate_refused', message: 'refused', mergeCommitSha: null, current: {}, result: null });
+    await deliverSuccess();
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+    expect(updateCalls.some(c => c.setValues.status === 'completed')).toBe(false);
   });
 });
 

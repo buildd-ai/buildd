@@ -95,6 +95,13 @@ mock.module('@/lib/github', () => ({
   githubApi: mockGithubApi,
 }));
 
+// The release doors' review gate and kernel landing (lib/release/pinned-merge.ts): no verdict on
+// file and no kernel delivery unless a test says otherwise.
+const mockGuardReviewVerdict = mock(async (_p: any) => ({ blocks: false } as any));
+mock.module('@/lib/review-verdict-gate', () => ({ guardReviewVerdict: mockGuardReviewVerdict }));
+const mockKernelLand = mock(async (_p: any) => null as any);
+mock.module('@/lib/workflow/kernel-client', () => ({ landThroughKernel: mockKernelLand }));
+
 const mockTriggerEvent = mock(() => Promise.resolve());
 mock.module('@/lib/pusher', () => ({
   triggerEvent: mockTriggerEvent,
@@ -295,6 +302,8 @@ describe('executeRelease — releaseBranch', () => {
     });
     // previousSha ref lookup (before merge)
     mockGithubApi.mockResolvedValueOnce({ object: { sha: 'prevsha000' } });
+    // the live read the pinned merge takes first: still at the verified head
+    mockGithubApi.mockResolvedValueOnce({ number: 47, state: 'open', merged: false, head: { sha: 'deadbeef' } });
     // merge PR
     mockGithubApi.mockResolvedValueOnce({ sha: 'mergesha123', merged: true, message: 'PR merged' });
 
@@ -314,6 +323,7 @@ describe('executeRelease — releaseBranch', () => {
     mockGithubApi.mockResolvedValueOnce({ check_runs: [{ name: 'ci', status: 'completed', conclusion: 'success' }] });
     // previousSha ref lookup (before merge)
     mockGithubApi.mockResolvedValueOnce({ object: { sha: 'prevsha000' } });
+    mockGithubApi.mockResolvedValueOnce({ number: 47, state: 'open', merged: false, head: { sha: 'deadbeef' } });
     mockGithubApi.mockRejectedValueOnce(new Error('merge conflict'));
 
     const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
@@ -327,6 +337,7 @@ describe('executeRelease — releaseBranch', () => {
     ]);
     mockGithubApi.mockResolvedValueOnce({ check_runs: [{ name: 'ci', status: 'completed', conclusion: 'success' }] });
     mockGithubApi.mockResolvedValueOnce({ object: { sha: 'prevsha000' } });
+    mockGithubApi.mockResolvedValueOnce({ number: 47, state: 'open', merged: false, head: { sha: 'deadbeef' } });
   }
 
   it('a release PR that GitHub reports as already merged counts, with its real merge sha', async () => {
@@ -363,6 +374,60 @@ describe('executeRelease — releaseBranch', () => {
     expect(result.status).toBe('failed');
     expect(result.mergedAt).toBeUndefined();
     expect(result.message).toContain('could not merge');
+  });
+
+  it('AC-16: the merge is pinned to the head CI was verified on', async () => {
+    setupTask();
+    setupWorker();
+    setupWorkspaceWithReleaseBranch();
+    setupRepo();
+    queueReleasePrWithGreenCi();
+    mockGithubApi.mockResolvedValueOnce({ sha: 'mergesha123', merged: true });
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+
+    expect(result.status).toBe('completed');
+    const put = (mockGithubApi.mock.calls as any[]).find((c) => String(c[1]).endsWith('/pulls/47/merge'));
+    expect(JSON.parse(put[2].body)).toEqual({ merge_method: 'merge', sha: 'deadbeef' });
+    expect(mockGuardReviewVerdict.mock.calls.at(-1)?.[0]).toMatchObject({ prNumber: 47, headSha: 'deadbeef' });
+  });
+
+  it('AC-16 (failure): a release PR whose head moved after verification is refused, not merged unpinned', async () => {
+    setupTask();
+    setupWorker();
+    setupWorkspaceWithReleaseBranch();
+    setupRepo();
+    mockGithubApi.mockResolvedValueOnce([
+      { number: 47, head: { sha: 'deadbeef' }, html_url: 'https://github.com/org/repo/pull/47', title: 'Release v0.5.0' },
+    ]);
+    mockGithubApi.mockResolvedValueOnce({ check_runs: [{ name: 'ci', status: 'completed', conclusion: 'success' }] });
+    mockGithubApi.mockResolvedValueOnce({ object: { sha: 'prevsha000' } });
+    // A push landed on the release branch after CI was read on deadbeef.
+    mockGithubApi.mockResolvedValueOnce({ number: 47, state: 'open', merged: false, head: { sha: 'cafef00d' } });
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+
+    expect(result.status).toBe('failed');
+    expect(result.mergedAt).toBeUndefined();
+    expect(result.message).toContain('moved from deadbeef to cafef00d');
+    const paths = (mockGithubApi.mock.calls as any[]).map((c) => c[1] as string);
+    expect(paths.some((p) => p.endsWith('/merge'))).toBe(false);
+  });
+
+  it('a release PR a review verdict holds is not merged', async () => {
+    setupTask();
+    setupWorker();
+    setupWorkspaceWithReleaseBranch();
+    setupRepo();
+    queueReleasePrWithGreenCi();
+    mockGuardReviewVerdict.mockResolvedValueOnce({ blocks: true, reason: 'the reviewer asked for changes' });
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+
+    expect(result.status).toBe('failed');
+    expect(result.message).toContain('the review gate holds PR #47');
+    const paths = (mockGithubApi.mock.calls as any[]).map((c) => c[1] as string);
+    expect(paths.some((p) => p.endsWith('/merge'))).toBe(false);
   });
 
   it('a Vercel deployTarget without projectId fails BEFORE merging anything', async () => {
@@ -483,6 +548,45 @@ describe('executeRelease — worker branch', () => {
       expect(result.mergedAt).toBeUndefined();
       const paths = (mockGithubApi.mock.calls as any[]).map((c) => c[1] as string);
       expect(paths.some((p) => p.endsWith('/merges'))).toBe(false);
+    });
+
+    it('D9: the worker PR is merged through the review gate, pinned to the head it gated', async () => {
+      setupTask();
+      setupWorkerWithPr();
+      setupWorkspace();
+      setupRepo();
+      mockGithubApi.mockImplementation(async (_inst: number, path: string) => {
+        if (path.includes('/git/ref/heads/')) return { object: { sha: 'prevsha000' } };
+        if (path.endsWith('/pulls/12/merge')) return { sha: 'squash777', merged: true };
+        if (path.endsWith('/pulls/12')) return { merged: false, state: 'open', head: { sha: 'workerhead1' } };
+        throw new Error(`unexpected ${path}`);
+      });
+
+      const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+
+      expect(result.status).toBe('completed');
+      const put = (mockGithubApi.mock.calls as any[]).find((c) => String(c[1]).endsWith('/pulls/12/merge'));
+      expect(JSON.parse(put[2].body)).toEqual({ merge_method: 'squash', sha: 'workerhead1' });
+      expect(mockGuardReviewVerdict.mock.calls.at(-1)?.[0]).toMatchObject({ prNumber: 12, headSha: 'workerhead1', surface: 'release-executor every_merge' });
+    });
+
+    it('D9: a worker PR a review verdict holds is not merged, and never pushed around the PR', async () => {
+      setupTask();
+      setupWorkerWithPr();
+      setupWorkspace();
+      setupRepo();
+      mockGuardReviewVerdict.mockResolvedValueOnce({ blocks: true, reason: 'changes requested' });
+      mockGithubApi.mockImplementation(async (_inst: number, path: string) => {
+        if (path.includes('/git/ref/heads/')) return { object: { sha: 'prevsha000' } };
+        if (path.endsWith('/pulls/12')) return { merged: false, state: 'open', head: { sha: 'workerhead1' } };
+        throw new Error(`unexpected ${path}`);
+      });
+
+      const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+
+      expect(result.status).toBe('failed');
+      const paths = (mockGithubApi.mock.calls as any[]).map((c) => c[1] as string);
+      expect(paths.some((p) => p.endsWith('/merge') || p.endsWith('/merges'))).toBe(false);
     });
 
     it('a PR that GitHub reports as already merged counts, with its real merge sha', async () => {
@@ -1092,7 +1196,8 @@ describe('executeRelease — releases row creation', () => {
    *   1. GET pulls?base=<prod>&head=<owner>:<releaseBranch>&state=open  → the release PR
    *   2. GET commits/<headSha>/check-runs                              → CI verdict
    *   3. GET git/ref/heads/<prod>                                      → previousSha
-   *   4. PUT pulls/<n>/merge                                           → merge sha
+   *   4. GET pulls/<n>                                                 → still at the verified head
+   *   5. PUT pulls/<n>/merge                                           → merge sha
    */
   function setupGatedReleasePrMerge() {
     mockGithubApi.mockResolvedValueOnce([
@@ -1102,6 +1207,7 @@ describe('executeRelease — releases row creation', () => {
       check_runs: [{ name: 'Build & Test', status: 'completed', conclusion: 'success' }],
     });
     mockGithubApi.mockResolvedValueOnce({ object: { sha: 'prevmain111' } });
+    mockGithubApi.mockResolvedValueOnce({ number: 77, state: 'open', merged: false, head: { sha: 'prheadsha' } });
     mockGithubApi.mockResolvedValueOnce({ sha: 'mergedmain222', commit: {} });
   }
 

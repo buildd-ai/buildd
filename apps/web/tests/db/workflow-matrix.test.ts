@@ -83,6 +83,17 @@ let ciEscalations: string[];
 
 const realGithubFacts = await import('../../src/lib/workflow/github-facts');
 mock.module('../../src/lib/workflow/github-facts', () => ({ ...realGithubFacts, githubReader: () => reader, workspaceRepo: repoFor }));
+// The merge rails the merge effect reads at merge time (landing-rails.ts): real ones read CI,
+// files and the mergeable state through githubApi, which this file does not model. Their own
+// behaviour is proven in landing-rails.test.ts and, against a modelled GitHub, in the fake-GitHub
+// suites; here a reading the test sets, every call recorded.
+let railsReading: { passed: boolean; redCi?: boolean; denyPaths?: boolean; reasons: string[] } = { passed: true, reasons: [] };
+const railsCalls: Array<{ headSha: string; door: string }> = [];
+const realRails = await import('../../src/lib/workflow/landing-rails');
+mock.module('../../src/lib/workflow/landing-rails', () => ({
+  ...realRails,
+  builddLandingRails: () => ({ evaluate: async (_d: unknown, p: { headSha: string; door: string }) => { railsCalls.push({ headSha: p.headSha, door: p.door }); return railsReading; } }),
+}));
 const realGithub = await import('../../src/lib/github');
 /** The PR's issue comments, as GitHub would hold them (render_activity writes here, §12.1). */
 let comments: Map<number, string>;
@@ -95,8 +106,16 @@ const ghWrites: Array<{ path: string; method: string; body: unknown }> = [];
 /** update-branch calls the mechanical refresh made (§6.7), and an error to answer the next one with. */
 let updateBranchCalls: Array<{ path: string; expectedHead: string | null }>;
 let updateBranchError: string | null;
+/** The `buildd/landing` commit statuses the kernel published (workflow-kernel-library.md §4), apart from the other writes. */
+const statusWrites: Array<{ sha: string; state: string; description: string }> = [];
 async function fakeGithubApi(_installationId: number, path: string, opts?: RequestInit): Promise<unknown> {
   const method = opts?.method ?? 'GET';
+  const status = /\/statuses\/([^/?]+)$/.exec(path);
+  if (method === 'POST' && status) {
+    const body = JSON.parse(String(opts!.body));
+    statusWrites.push({ sha: status[1]!, state: body.state, description: body.description });
+    return {};
+  }
   if (method === 'PUT' && path.endsWith('/update-branch')) {
     updateBranchCalls.push({ path, expectedHead: JSON.parse(String(opts!.body)).expected_head_sha ?? null });
     if (updateBranchError) { const e = updateBranchError; updateBranchError = null; throw new Error(e); }
@@ -231,6 +250,7 @@ beforeEach(() => {
   posted = []; postedBodies = []; activity = []; notified = []; exhaustions = 0; reviewersCreated = []; override = {}; activityEntries = []; ciEscalations = []; ghApi = null; ghWrite = null; ghWrites.length = 0;
   comments = new Map();
   updateBranchCalls = []; updateBranchError = null; mergeCalls = [];
+  railsReading = { passed: true, reasons: [] }; railsCalls.length = 0; statusWrites.length = 0;
   // GitHub merges a PR whose head is the pinned one, as the real PUT /merge does.
   mergeAnswer = () => { gh.state = 'closed'; gh.merged = true; gh.updatedAt = 'u-merged'; return { merged: true, message: 'Pull Request successfully merged' }; };
 });
@@ -875,6 +895,33 @@ describe('S9–S15', () => {
     expect((await transitions(o.deliveryId)).filter((t) => t.command === 'PrMerged').length).toBe(1);
   });
 
+  test('S3b (gate at merge time, AC-14\'s host half): the merge effect reads the rails when it runs; a red rail there merges nothing and the approval stands', async () => {
+    const o = await openAndHandOn();
+    await verdict(o, 'approve');
+    railsReading = { passed: false, redCi: true, reasons: ['CI checks still pending or failed: unit (failure)'] };
+    const res = await seam.landThroughKernel({ workspaceId, installationId: 1, repoFullName: REPO, prNumber: o.prNumber, headSha: 'H1', door: 'auto_merge', actor: 'system:auto_merge' }, deps);
+    expect(res).toMatchObject({ merged: false, outcome: 'rejected', reason: 'gate_refused' });
+    expect(mergeCalls).toEqual([]);
+    expect(railsCalls).toEqual([{ headSha: 'H1', door: 'auto_merge' }]);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'APPROVED', approvedHeads: ['H1'] });
+    const t = (await transitions(o.deliveryId)).filter((x) => x.command === 'LandingRequested').at(-1)!;
+    expect((t.evidence as Record<string, unknown>).rails).toBeUndefined();
+    railsReading = { passed: true, reasons: [] };
+    expect(await seam.landThroughKernel({ workspaceId, installationId: 1, repoFullName: REPO, prNumber: o.prNumber, headSha: 'H1', door: 'auto_merge', actor: 'system:auto_merge' }, deps))
+      .toMatchObject({ merged: true });
+    expect(mergeCalls).toEqual([{ prNumber: o.prNumber, method: 'squash', sha: 'H1' }]);
+  });
+
+  test('S3b (buildd/landing on the host): the status follows the delivery, published through the GitHub App: failure under review, success once approved', async () => {
+    const o = await openAndHandOn();
+    expect(statusWrites.at(-1)).toMatchObject({ sha: 'H1', state: 'failure' });
+    await verdict(o, 'approve');
+    expect(statusWrites.at(-1)).toEqual({ sha: 'H1', state: 'success', description: 'buildd would land H1: approved by review' });
+    const fx = (await effects(o.deliveryId)).filter((e) => e.kind === 'publish_landing_status');
+    expect(fx.every((e) => e.status === 'done')).toBe(true);
+    expect(fx.filter((e) => e.outcome === 'skipped:older_version').length + fx.filter((e) => String(e.outcome).startsWith('ok:')).length).toBe(fx.length);
+  });
+
   // Per-workspace isolation: a second workspace connected to the same repo can hold a worker row with
   // the same PR number and url (and, on a reused database, an earlier run's rows do). The merge's
   // post-merge work must complete THIS delivery's owner task, never the other workspace's.
@@ -1055,7 +1102,7 @@ describe('S9–S15', () => {
     const t = (await transitions(o.deliveryId)).at(-1)!;
     const fx = await effects(o.deliveryId);
     const ofT = fx.filter((e) => e.transition_id === t.id).map((e) => e.kind).sort();
-    expect(ofT).toEqual(['dispatch_fix', 'post_review', 'render_activity']);
+    expect(ofT).toEqual(['dispatch_fix', 'post_review', 'publish_landing_status', 'render_activity']);
     expect(fx.filter((e) => e.transition_id === t.id).every((e) => e.status === 'pending')).toBe(true);
     expect(await tasksOf(o.deliveryId, 'fix')).toEqual([]);
     await drain(o.deliveryId);

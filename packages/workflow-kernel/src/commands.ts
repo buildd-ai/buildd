@@ -38,6 +38,8 @@ export interface LivePr {
   mergeableState?: string | null;
   /** A draft PR (GitHub refuses to merge it); present only when true. */
   draft?: boolean;
+  /** Who GitHub says merged it (`merged_by.login`), when it is merged and GitHub said. */
+  mergedBy?: string | null;
 }
 
 interface Base {
@@ -248,7 +250,13 @@ export type Command =
       door: string;
       headSha: string;
       live: LivePr;
-      rails: { passed: boolean; redCi?: boolean; denyPaths?: boolean; reasons?: string[] };
+      /**
+       * What a door's own rails said, when it reports them. Never trusted as a
+       * pass: the `merge_call` effect evaluates the rails itself against a fresh
+       * read (the `rails` port, workflow-kernel-library.md §4). A door that reports
+       * a refusal is still refused here.
+       */
+      rails?: { passed: boolean; redCi?: boolean; denyPaths?: boolean; reasons?: string[] };
       /**
        * A person merging past a rail (the dashboard's "Merge anyway", `merge_pr`
        * with `overrides`, chat): recorded in `bypass`, never past red CI or a
@@ -280,8 +288,14 @@ export type Command =
        * and unmerged at the head (or the head moved under the call), so nothing
        * landed and landing may be requested again.
        */
-      outcome: 'merged' | 'indeterminate' | 'behind' | 'conflict' | 'refused' | 'not_merged';
+      outcome: 'merged' | 'indeterminate' | 'behind' | 'conflict' | 'refused' | 'not_merged' | 'gate_refused';
       detail?: string;
+      /**
+       * `gate_refused`: the landing gate, asked again when the merge effect ran,
+       * refused before any merge call (§4): which half refused and why. The
+       * approval stands only when the review half still passes.
+       */
+      gate?: { half: 'review' | 'rails'; reasons: string[] };
       /** The version T15 left the delivery at: one landing request, so a re-landing at the same head after a refusal is a new key. */
       landingVersion?: number;
       /** A transient answer (rate limit, 5xx): when GitHub said to call again (ISO). The landing sweep waits until then. */
@@ -384,6 +398,7 @@ export const EFFECT_KINDS = [
   'render_activity', 'notify', 'mission_note', 'wake_mission', 'release_attribution',
   'finalize_mission_pr', 'emit_pr_merged', 'scan_supersession', 'project_supersession',
   'escalate_exhaustion', 'gate_event', 'capture_ci_evidence',
+  'publish_landing_status', 'dispatch_external_merge_fix',
 ] as const;
 
 export type EffectKind = (typeof EFFECT_KINDS)[number];

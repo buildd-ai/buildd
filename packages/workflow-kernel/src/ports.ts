@@ -23,8 +23,11 @@ import type { AttemptSnapshot, DeliverySnapshot, DeliveryState, KernelView, Roun
  * snapshot carries the delivery's own authority and workspace, and the drain
  * reads the kill switch from `Policy`; the `Trunk`, `Escalate`, `Evidence`,
  * `Reviews`, `Conflicts` and `HandOff` ports.
+ *
+ * 3: the `Rails` port (the host's merge rails, read by the `merge_call`
+ * effect at merge time instead of trusted from the door), `LivePr.mergedBy`.
  */
-export const PORTS_VERSION = 2;
+export const PORTS_VERSION = 3;
 
 // ── References and results shared by the store and the command runner ──────
 
@@ -561,6 +564,40 @@ export interface Conflicts {
   migrationOwed(d: DeliverySnapshot, attempt: AttemptSnapshot, p: { repairKind: 'migration' | 'migration_split'; baseRef: string | null }): Promise<{ owed: boolean; reason?: string }>;
 }
 
+// ── Rails ───────────────────────────────────────────────────────────────────
+
+/**
+ * The host's merge rails read at merge time (workflow-kernel-library.md §4):
+ * CI on the head, protected paths, the size cap, the migration inspector,
+ * mission and policy holds. `redCi` and `denyPaths` are never overridable;
+ * `size` is lifted by a person's `size` override. Never a review verdict:
+ * the kernel's own state answers that.
+ */
+export interface RailReading {
+  passed: boolean;
+  /** CI on the head is red (not merely pending). */
+  redCi?: boolean;
+  denyPaths?: boolean;
+  /** Only the size cap refused (a `size` override lifts it). */
+  sizeOnly?: boolean;
+  /** Why it refused, in the host's words. */
+  reasons: string[];
+}
+
+export interface Rails {
+  /**
+   * Read the rails for `headSha` now. `live` is the read the effect just took;
+   * `override` the kinds a person's landing override named. A rail the host
+   * cannot read refuses (`passed: false`), never passes.
+   */
+  evaluate(d: DeliverySnapshot & { repoFullName: string; prNumber: number }, p: {
+    headSha: string;
+    live: LivePr;
+    door: string;
+    override?: { kinds?: Array<'verdict' | 'freshness' | 'size'> } | null;
+  }): Promise<RailReading>;
+}
+
 // ── HandOff ─────────────────────────────────────────────────────────────────
 
 /** §14: legacy's first review for a delivery the kill switch released before its first round. */
@@ -600,6 +637,8 @@ export interface KernelPorts {
   reviews?: Reviews;
   conflicts?: Conflicts;
   handOff?: HandOff;
+  /** The merge rails the `merge_call` effect reads at merge time. Required to merge: without it the effect refuses (and retries). */
+  rails?: Rails;
 }
 
 /** The GitHub to act on for a workspace's delivery, or null when the host has none for it. */

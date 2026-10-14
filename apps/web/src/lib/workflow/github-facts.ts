@@ -22,6 +22,7 @@ interface GithubPull {
   updated_at?: string | null;
   mergeable_state?: string | null;
   draft?: boolean;
+  merged_by?: { login?: string | null } | null;
   head?: { sha?: string; ref?: string; repo?: { full_name?: string } | null };
   base?: { ref?: string };
 }
@@ -41,6 +42,8 @@ export function toLivePr(pr: GithubPull | null | undefined): LivePr | null {
     updatedAt: pr.updated_at ?? null,
     mergeableState: pr.mergeable_state ?? null,
     ...(pr.draft ? { draft: true } : {}),
+    // Who merged it, as GitHub says (§13.13 rule 10: an external merge records its merger).
+    ...(pr.merged_by?.login ? { mergedBy: pr.merged_by.login } : {}),
   };
 }
 

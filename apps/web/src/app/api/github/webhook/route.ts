@@ -1365,6 +1365,11 @@ async function maybeAutoMergeNoCiPr(
 // tryAutoMergeWorkerPr and evaluateAutoMergeSafety are now in @/lib/auto-merge
 // (shared with the reviewer outcome handler in apps/web/src/app/api/workers/[id]/route.ts)
 
+/** D7's kernel landing through the one client; null when the kernel does not own the release PR. */
+async function releaseKernelLand(p: Parameters<typeof import('@/lib/workflow/kernel-client').landThroughKernel>[0]) {
+  return (await import('@/lib/workflow/kernel-client')).landThroughKernel(p);
+}
+
 /**
  * When CI goes green on a PR that a release task is tracking, merge the release
  * PR and mark the task completed. This is the event-driven completion path for
@@ -1409,12 +1414,19 @@ async function handleReleasePrCiSuccess(
     return;
   }
 
+  // D7 (workflow-kernel-library.md §4): a release PR the kernel owns lands through the
+  // kernel, pinned to this head; its merge effect asks the landing gate again when it runs.
+  const kernelLanding = await releaseKernelLand({
+    workspaceId: pendingReleaseTasks[0]!.workspaceId, installationId, repoFullName, prNumber, headSha,
+    door: 'release_pr_ci_success', actor: 'system:release_pr_ci_success', mergeMethod: 'merge',
+  });
+
   // Release promotion is a merge door like any other. buildd never dispatches a
   // reviewer for a release PR on its own, so the gate normally reads
   // `not_requested` and passes — but `request_pr_review` can be pointed at any
   // PR, and a release that ships past its own reviewer's finding is the one
   // merge where that matters most.
-  const releaseGate = await guardReviewVerdict({
+  const releaseGate = kernelLanding ? { blocks: false as const } : await guardReviewVerdict({
     workspaceId: pendingReleaseTasks[0]!.workspaceId,
     prNumber,
     headSha,
@@ -1444,7 +1456,9 @@ async function handleReleasePrCiSuccess(
     return;
   }
 
-  const mergeResult = await mergePullRequest(installationId, repoFullName, prNumber, 'merge', headSha);
+  const mergeResult = kernelLanding
+    ? { merged: kernelLanding.merged, message: kernelLanding.message }
+    : await mergePullRequest(installationId, repoFullName, prNumber, 'merge', headSha);
 
   for (const task of pendingReleaseTasks) {
     const ctx = (task.context ?? {}) as Record<string, unknown>;

@@ -1,10 +1,12 @@
 /**
  * Landing through the kernel (docs/specs/workflow-state-kernel.md §6.3 T15/T16,
- * §14 Slice C). Every merge door — `landPr`, `tryAutoMergeWorkerPr`, the
- * dashboard merge route and `merge_pr` — keeps its own rails (CI, deny paths,
- * size, migration inspector, freshness, surface order, review gate, mission-PR
- * gate) and, for a kernel-owned PR, hands the merge itself to the kernel here
- * instead of calling GitHub:
+ * §14 Slice C; workflow-kernel-library.md §4). Every merge door — `landPr`,
+ * `tryAutoMergeWorkerPr`, the dashboard merge route and `merge_pr` — keeps its
+ * own rails as an early answer (CI, deny paths, size, migration inspector,
+ * freshness, surface order, review gate, mission-PR gate) and, for a
+ * kernel-owned PR, hands the merge itself to the kernel here instead of
+ * calling GitHub. The kernel trusts none of the door's rails: the `merge_call`
+ * effect asks the landing gate again, against a fresh read, when it runs:
  *
  *   LandingRequested (T15) → `merge_call` effect (the pinned PUT /merge)
  *     → MergeCallResult (T16) → `verify_merge` (a live read) → PrMerged (T17)
@@ -275,9 +277,9 @@ export async function landThroughKernel(p: LandingInput, deps: LandingDeps): Pro
     door: p.door,
     headSha: p.headSha,
     live: live as LivePr,
-    // The door's rails already passed (they stay where they were, §17.2); a
-    // red-CI or deny-path refusal never reaches this call.
-    rails: { passed: true },
+    // No rail reading from the door (workflow-kernel-library.md §4): the merge
+    // effect reads CI, protected paths, size and the holds itself, against a
+    // fresh read, when it runs. The door's own rails stay as an early answer.
     ...(p.override ? { override: p.override } : {}),
     ...(p.mergeMethod ? { mergeMethod: p.mergeMethod } : {}),
     ...(p.expectedVersion !== undefined ? { expectedVersion: p.expectedVersion } : {}),
@@ -313,6 +315,8 @@ export async function landThroughKernel(p: LandingInput, deps: LandingDeps): Pro
     const outcome = d.stateReason === 'behind' ? 'behind' : 'conflict';
     return { ...base, merged: false, outcome, reason: d.stateReason, message: detail || (outcome === 'behind' ? 'The branch is behind its base; it is being updated.' : 'The PR has merge conflicts; a fix is queued.') };
   }
+  // §4: the gate, asked again when the merge effect ran, refused before any merge call.
+  if (last?.outcome === 'gate_refused') return { ...base, merged: false, outcome: 'rejected', reason: 'gate_refused', message: detail || 'The landing check refused the merge when it ran; nothing was merged.' };
   if (last?.outcome === 'not_merged') return { ...base, merged: false, outcome: 'not_merged', reason: 'not_merged', message: detail || 'Nothing was merged.' };
   return { ...base, merged: false, outcome: 'refused', reason: d.stateReason ?? last?.outcome ?? 'refused', message: detail || 'GitHub refused the merge; a person needs to look at it.' };
 }

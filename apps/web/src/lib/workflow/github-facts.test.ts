@@ -43,3 +43,14 @@ describe('readBaseDelta (S15 base delta)', () => {
     expect((await readBaseDelta(paged, 'acme/w', 7, 'H1', 'dev')).prFiles).toHaveLength(105);
   });
 });
+
+// D12 / AC-15: a merge no buildd door made records who made it, as GitHub reports it.
+describe('toLivePr: the merger', () => {
+  test('a merged PR carries merged_by; an open one carries nothing extra', async () => {
+    const { toLivePr } = await import('./github-facts');
+    const merged = toLivePr({ state: 'closed', merged: true, merged_at: '2026-10-01T00:00:00Z', merge_commit_sha: 'm1', merged_by: { login: 'a-person' }, head: { sha: 'h1' }, base: { ref: 'dev' } } as never);
+    expect(merged?.mergedBy).toBe('a-person');
+    const open = toLivePr({ state: 'open', merged: false, head: { sha: 'h1' }, base: { ref: 'dev' } } as never);
+    expect(open && 'mergedBy' in open).toBe(false);
+  });
+});

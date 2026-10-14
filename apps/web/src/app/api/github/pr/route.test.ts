@@ -5492,7 +5492,7 @@ describe('PUT /api/github/pr', () => {
       expect(mockMergePullRequest).not.toHaveBeenCalled();
     });
 
-    it('an admin force still bypasses it, and the bypass is already recorded', async () => {
+    it('D5: an admin force no longer passes a review that asked for changes (only a person\'s recorded override on the dashboard does)', async () => {
       autoThresholdWorker();
       mockAuthenticateApiKey.mockResolvedValue({ ...ACCOUNT, level: 'admin' });
       mockReadPrReviewStatus.mockResolvedValue({
@@ -5504,8 +5504,11 @@ describe('PUT /api/github/pr', () => {
 
       const res = await put({ force: true });
 
-      expect(res.status).toBe(200);
-      expect(mockMergePullRequest).toHaveBeenCalled();
+      expect(res.status).toBe(403);
+      const data = await res.json();
+      expect(data.error).toContain('requested changes');
+      expect(data.hint).toContain('dashboard');
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
     });
   });
 });

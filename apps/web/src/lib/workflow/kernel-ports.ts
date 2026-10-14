@@ -26,7 +26,7 @@ import { TERMINAL_WORKER_STATUSES } from '@buildd/shared';
 import type { EffectHandlers } from '@buildd/workflow-kernel/effects';
 import { kernelEffectHandlers } from '@buildd/workflow-kernel/handlers/index';
 import type {
-  Conflicts, Decide, Escalate, Evidence, GithubFacts, GithubWrites, HandOff, Ingest, KernelPorts, Lifecycle, MergeAnswer, Notify, Policy, Reviews, Trunk,
+  Conflicts, Decide, Escalate, Evidence, GithubFacts, GithubWrites, HandOff, Ingest, KernelPorts, Lifecycle, MergeAnswer, Notify, Policy, Rails, Reviews, Trunk,
   Work, WorkFiled, WorkRequest,
 } from '@buildd/workflow-kernel/ports';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
@@ -38,6 +38,7 @@ import type { Exec } from './kernel';
 import { postgresStore } from './postgres-store';
 import { builddTrunk } from './trunk';
 import { builddPolicy } from './kernel-policy';
+import { builddLandingRails, type LandingRailsDeps } from './landing-rails';
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
@@ -243,11 +244,13 @@ export interface BuilddKernelHooks {
   handOff: HandOff;
   /** buildd's decision layer at the kernel's decision points. */
   decide: Decide;
+  /** The mission-PR hold (the missions module's), one of the merge rails the `merge_call` effect reads at merge time. */
+  missionGate: LandingRailsDeps['missionGate'];
 }
 
 /** The ports the package's effect handlers run on in buildd. */
 export function builddKernelPorts(hooks: BuilddKernelHooks, opts: {
-  exec?: Exec; githubFor?: (workspaceId: string) => Promise<GithubFacts | null>; trunk?: Trunk; policy?: Policy;
+  exec?: Exec; githubFor?: (workspaceId: string) => Promise<GithubFacts | null>; trunk?: Trunk; policy?: Policy; rails?: Rails;
 } = {}): KernelPorts {
   const exec = opts.exec ?? dbExec;
   return {
@@ -266,6 +269,7 @@ export function builddKernelPorts(hooks: BuilddKernelHooks, opts: {
     conflicts: hooks.conflicts,
     handOff: hooks.handOff,
     decide: hooks.decide,
+    rails: opts.rails ?? builddLandingRails({ missionGate: hooks.missionGate }),
   };
 }
 

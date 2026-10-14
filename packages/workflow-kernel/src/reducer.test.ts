@@ -105,6 +105,8 @@ describe('generic: every applied transition is a version CAS (§7)', () => {
     expect(dec.command).toBe(cmd.type);
     // Every applied transition of a bound PR re-renders the activity comment for its new version.
     expect(dec.effects.some((e) => e.kind === 'render_activity' && e.dedupeKey === `render:d1:${view.delivery!.version + 1}`)).toBe(view.delivery!.prNumber != null || cmd.type === 'PrBound');
+    // ...and owes the buildd/landing status for that version (workflow-kernel-library.md §4).
+    expect(dec.effects.some((e) => e.kind === 'publish_landing_status' && e.dedupeKey === `landing_status:d1:${view.delivery!.version + 1}`)).toBe(view.delivery!.prNumber != null || cmd.type === 'PrBound');
     // Effect dedupe keys are unique within the statement.
     expect(new Set(dec.effects.map((e) => e.dedupeKey)).size).toBe(dec.effects.length);
   });
@@ -175,7 +177,7 @@ describe('T2 PrBound', () => {
     expect(dec.toState).toBe('AWAITING_REVIEW');
     expect(dec.patch).toMatchObject({ currentHeadSha: 'H1', currentRound: 1 });
     expect(dec.rounds).toEqual([expect.objectContaining({ op: 'insert', round: 1, headSha: 'H1', kind: 'full' })]);
-    expect(effectKinds(dec)).toEqual(['dispatch_review', 'render_activity']);
+    expect(effectKinds(dec)).toEqual(['dispatch_review', 'render_activity', 'publish_landing_status']);
   });
 });
 
@@ -683,7 +685,7 @@ describe('T6 ReviewVerdictRecorded (§8, AC-5)', () => {
   test('request_changes under budget: CHANGES_REQUESTED + dispatch_fix; at budget: ESCALATED(review_exhausted) (S8)', () => {
     const dec = applied(verdict(v()));
     expect(dec.toState).toBe('CHANGES_REQUESTED');
-    expect(effectKinds(dec)).toEqual(['post_review', 'dispatch_fix', 'render_activity']);
+    expect(effectKinds(dec)).toEqual(['post_review', 'dispatch_fix', 'render_activity', 'publish_landing_status']);
     const ex = applied(verdict(v({ currentRound: 3 }, { round: 3 })));
     expect(ex.toState).toBe('ESCALATED');
     expect(ex.patch.stateReason).toBe('review_exhausted');
@@ -1030,6 +1032,32 @@ describe('T15 LandingRequested / T16 MergeCallResult (S10)', () => {
     expect(ov.bypass).toMatchObject({ door: 'dashboard_override', reason: 'owner call' });
     expectResult(land(V(D({ state: 'ESCALATED' })), { door: 'dashboard_override', override: { reason: 'x' }, rails: { passed: false, denyPaths: true } }), 'rejected', 'rail_not_overridable');
   });
+  test('§4: a door need not (and cannot usefully) vouch for rails: T15 applies without a rail reading and the merge effect reads them', () => {
+    const dec = applied(run(ap(), { type: 'LandingRequested', actor: 'kernel', door: 'auto', headSha: 'H1', live: live('H1') }));
+    expect(dec.toState).toBe('LANDING');
+    expect(dec.evidence.rails).toBeUndefined();
+    expect(dec.effects.find((e) => e.kind === 'merge_call')!.payload).toMatchObject({ headSha: 'H1', fromState: 'APPROVED' });
+    expect(dec.effects.find((e) => e.kind === 'merge_call')!.payload.override).toBeUndefined();
+    // A person's verdict override travels to the effect, so the gate at merge time passes only what they did.
+    const ov = applied(run(V(D({ state: 'ESCALATED' })), { type: 'LandingRequested', actor: 'human:owner', door: 'dashboard', headSha: 'H1', live: live('H1'), override: { reason: 'owner call' } }));
+    expect(ov.effects.find((e) => e.kind === 'merge_call')!.payload.override).toEqual({ verdict: true, kinds: ['verdict'] });
+    const size = applied(run(ap(), { type: 'LandingRequested', actor: 'human:owner', door: 'merge_pr', headSha: 'H1', live: live('H1'), override: { reason: 'big', kinds: ['size'] } }));
+    expect(size.effects.find((e) => e.kind === 'merge_call')!.payload.override).toEqual({ verdict: false, kinds: ['size'] });
+  });
+  test('§4: the gate refusing at merge time: a rail leaves the approval standing; the review half, or no approval to stand, is a person\'s', () => {
+    const gate = (v: KernelView, half: 'review' | 'rails') => run(v, { type: 'MergeCallResult', actor: 'effect:merge_call', headSha: 'H1', outcome: 'gate_refused', gate: { half, reasons: ['CI red'] }, landingVersion: 6 });
+    const l = V(D({ state: 'LANDING', approvedHeads: ['H1'], approvalBasis: 'verdict' }));
+    const rails = applied(gate(l, 'rails'));
+    expect({ to: rails.toState, reason: rails.patch.stateReason, gate: rails.evidence.gate }).toEqual({ to: 'APPROVED', reason: null, gate: { half: 'rails', reasons: ['CI red'] } });
+    expect(effectKinds(rails)).not.toContain('merge_call');
+    const review = applied(gate(l, 'review'));
+    expect({ to: review.toState, reason: review.patch.stateReason }).toEqual({ to: 'ESCALATED', reason: 'landing_needs_human' });
+    expect(effectKinds(review)).toContain('notify');
+    // An override landing has no approval to fall back on.
+    const ov = applied(gate(V(D({ state: 'LANDING', approvedHeads: [] })), 'rails'));
+    expect(ov.toState).toBe('ESCALATED');
+    expectResult(gate(V(D({ state: 'APPROVED', approvedHeads: ['H1'] })), 'rails'), 'stale', 'state_moved');
+  });
   test('composition coverage lets a composed head land; evidence names the basis', () => {
     const dec = applied(land(ap({ approvedHeads: [], compositionHeads: ['H1'], approvalBasis: 'composition' })));
     expect(dec.evidence.coverage).toBe('composition');
@@ -1140,6 +1168,22 @@ describe('T17–T21 terminal-wins and closure (S6, S11, S12, AC-8, AC-9)', () =>
     expect(applied(run(V(D({ state: 'APPROVED', approvedHeads: ['H1'] })), { type: 'PrMerged', actor: 'webhook', live: merged })).evidence.reviewClass).toBe('covered:verdict');
     expect(applied(run(V(D({ state: 'APPROVED', compositionHeads: ['H1'], approvalBasis: 'composition' })), { type: 'PrMerged', actor: 'webhook', live: merged })).evidence.reviewClass).toBe('covered:composition');
   });
+  test('AC-15: a merge from outside LANDING is no buildd door\'s: recorded with merger and head, merged over open findings, one fix owed; never approved', () => {
+    const ext = applied(run(V(D({ state: 'CHANGES_REQUESTED' }), [decidedRC]), { type: 'PrMerged', actor: 'webhook', live: { ...merged, mergedBy: 'a-person' } }));
+    expect(ext.evidence).toMatchObject({ external: true, mergedBy: 'a-person', mergedHead: 'H1', fromState: 'CHANGES_REQUESTED', merged_over_open_findings: true, reviewClass: 'merged_over_verdict' });
+    const fix = ext.effects.filter((e) => e.kind === 'dispatch_external_merge_fix');
+    expect(fix).toHaveLength(1);
+    expect(fix[0]!.dedupeKey).toBe('dispatch_external_merge_fix:d1:merged');
+    expect(ext.patch.approvedHeads).toBeUndefined();
+    // Outside LANDING with no open verdict: external, but nothing owed.
+    const clean = applied(run(V(D({ state: 'AWAITING_REVIEW' })), { type: 'PrMerged', actor: 'webhook', live: merged }));
+    expect(clean.evidence).toMatchObject({ external: true, merged_over_open_findings: false });
+    expect(effectKinds(clean)).not.toContain('dispatch_external_merge_fix');
+    // Through LANDING it was a buildd door's merge.
+    const door = applied(run(V(D({ state: 'LANDING', approvedHeads: ['H1'] }), [decidedRC]), { type: 'PrMerged', actor: 'effect:verify_merge', live: merged }));
+    expect(door.evidence.external).toBeUndefined();
+    expect(effectKinds(door)).not.toContain('dispatch_external_merge_fix');
+  });
   test('after MERGED, late head/ci/opened facts never move it (AC-8)', () => {
     const m = V(D({ state: 'MERGED' }));
     expectResult(run(m, { type: 'HeadObserved', actor: 'webhook', live: live('H9') }), 'stale', 'terminal');
@@ -1180,8 +1224,8 @@ describe('T17–T21 terminal-wins and closure (S6, S11, S12, AC-8, AC-9)', () =>
     const c = V(D({ state: 'CLOSED_UNMERGED' }));
     const t20 = applied(run(c, { type: 'SupersessionRecorded', actor: 'agent:t2', target: { repoFullName: REPO, prNumber: 9, merged: true, url: null }, reason: 'r', authorised: true }));
     const t21 = applied(run(c, { type: 'Abandon', actor: 'human:u', reason: 'dropped' }));
-    expect(effectKinds(t20)).toEqual(['project_supersession', 'wake_mission', 'render_activity']);
-    expect(effectKinds(t21)).toEqual(['project_supersession', 'wake_mission', 'render_activity']);
+    expect(effectKinds(t20)).toEqual(['project_supersession', 'wake_mission', 'render_activity', 'publish_landing_status']);
+    expect(effectKinds(t21)).toEqual(['project_supersession', 'wake_mission', 'render_activity', 'publish_landing_status']);
     expect(t21.patch).toMatchObject({ stateReason: 'dropped', recordedBy: 'human:u' });
   });
 });

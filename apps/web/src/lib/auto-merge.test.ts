@@ -307,6 +307,19 @@ describe('evaluateAutoMergeSafety CI verification', () => {
     });
   });
 
+  it('does not read buildd\'s own buildd/landing status as CI (it follows the verdict, not the build)', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ total_count: 1, check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] })
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ mergeable_state: 'dirty', head: { sha: 'head-sha' } });
+    mockStatusApi.mockResolvedValueOnce({ state: 'failure', total_count: 1, statuses: [{ context: 'buildd/landing', state: 'failure' }] });
+    // Past the CI rail: the next refusal is the mergeable-state one, not "CI checks still pending or failed".
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy)).resolves.toEqual({
+      ok: false,
+      reason: expect.stringContaining('dirty'),
+    });
+  });
+
   it('refuses when the commit-status read fails', async () => {
     mockGithubApi.mockResolvedValueOnce({ total_count: 0, check_runs: [] });
     mockStatusApi.mockRejectedValueOnce(new Error('GitHub API error: 502 Bad Gateway'));
@@ -1908,11 +1921,33 @@ describe('tryAutoMergeWorkerPr — return value', () => {
       repoFullName: 'buildd-ai/buildd',
       prNumber: 42,
       headSha: 'head-sha',
-      worker: { id: 'worker-1', taskId: null },
+      worker: { id: 'worker-1', taskId: null, workspaceId: 'ws-1' },
       policy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } },
     });
 
     expect(result).toEqual({ merged: true });
+  });
+
+  it('D4: with no workspace to read the review gate in, nothing merges (the gate is never skipped)', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: CLEAN_GREEN })
+      .mockResolvedValueOnce(ORDINARY_FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha', ref: 'task/x' } });
+    mockGuardReviewVerdict.mockClear();
+
+    const result = await tryAutoMergeWorkerPr({
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      prNumber: 42,
+      headSha: 'head-sha',
+      worker: { id: 'worker-1', taskId: null },
+      policy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } },
+      landThroughKernel: async () => { throw new Error('no landing without a workspace'); },
+    });
+
+    expect(result.merged).toBe(false);
+    expect(result.reason).toContain('no workspace');
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
   });
 
   describe('integration-refresh PR (dev merged into a mission branch)', () => {
@@ -2007,7 +2042,7 @@ describe('tryAutoMergeWorkerPr — return value', () => {
       repoFullName: 'buildd-ai/buildd',
       prNumber: 42,
       headSha: 'head-sha',
-      worker: { id: 'worker-1', taskId: null },
+      worker: { id: 'worker-1', taskId: null, workspaceId: 'ws-1' },
       policy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } },
     });
 

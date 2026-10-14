@@ -254,6 +254,7 @@ export function landingEscalationCopy(t: TransitionRef | null | undefined): { he
       detail: [refreshes != null ? `refreshed ${refreshes} times` : null, behindBy != null ? `${behindBy} commits behind` : null].filter(Boolean).join(', ') || null,
     };
   }
+  if (t?.command === 'MergeCallResult' && ev?.outcome === 'gate_refused') return { headline: 'The landing check refused the merge when it ran; a person has to look', detail: str('detail') };
   if (t?.command === 'MergeCallResult') return { headline: 'GitHub refused the merge; a person has to land it', detail: str('detail') };
   if (t?.command === 'MechanicalRepairFailed') return { headline: 'Updating the branch kept failing; a person has to land it', detail: str('reason') };
   return { headline: ESCALATION_COPY.landing_needs_human!, detail: evidenceDetail(t) };
