@@ -27,7 +27,7 @@ import { createReviewerTask, resolvePriorVerdict, type PriorVerdict } from '@/li
 import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
-import { ControlPlaneUnavailableError, controlPlaneUnavailableResponse, requestReview as requestKernelReview } from '@/lib/workflow/kernel-client';
+import { doorErrorResponse, isDoorError, requestReview as requestKernelReview } from '@/lib/workflow/kernel-client';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { isDependencyBotAuthor } from '@/lib/dependency-bot-pr';
 import {
@@ -46,6 +46,9 @@ import {
 } from '@/lib/pr-review-status';
 import { requestingPerson } from '@/lib/request-person';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+
+// A door call to the control plane is bounded at DOOR_BUDGET_MS (20 s, kernel-client.ts); this leaves the route room.
+export const maxDuration = 60;
 
 type Account = { id: string; teamId: string; taskScope?: TaskScope; sessionUserId?: string | null } & GrantScopedAccount;
 
@@ -249,11 +252,11 @@ export async function POST(req: NextRequest) {
     forced: body.force === true, actor: person ? `human:${person}` : `agent:${account.id}`,
   }, { principal: person ? { kind: 'user', id: person } : { kind: 'account', id: account.id } }).catch((err) => {
     // An unreachable control plane is not a reason to queue a legacy review beside the kernel's.
-    if (err instanceof ControlPlaneUnavailableError) return err;
+    if (isDoorError(err)) return err;
     console.error(`[pr-review] workflow kernel review request failed for PR #${prNumber}:`, err);
     return null;
   });
-  if (kernel instanceof ControlPlaneUnavailableError) return controlPlaneUnavailableResponse(kernel) as NextResponse;
+  if (isDoorError(kernel)) return doorErrorResponse(kernel) as NextResponse;
   // §8.1: the reviewer that answers is the round's at the live head, never the
   // newest reviewer row of the PR number (§14 Slice A retired that rule here).
   // A reviewTaskId whose row is gone is no review task at all: fall through and

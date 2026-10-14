@@ -387,12 +387,23 @@ the control plane, authenticated as the caller).
   command through that client and return its result. Every caller of a door
   command goes through it, the landing sweep, auto-merge, the policy-merge
   rule, operator recovery and the PR subscribers included; a module outside
-  the kernel that imports one from the seam fails
-  `packages/core/__tests__/workflow-write-sites.test.ts`. A person's door names
-  them as the principal; a door's `Idempotency-Key` header, when sent, is the
-  command's key, and one key covers the whole door call: on an `unknown`
-  outcome the door submits again with that same key (twice more at most)
-  before it answers 503, and that 503 carries the key. `update_task` and `correct_task_result` issue no kernel
+  the kernel that reaches one on the seam (a named or namespace import, a
+  dynamic `import()`, by alias or any relative path) fails
+  `packages/core/__tests__/workflow-write-sites.test.ts`, except the files it
+  lists with a reason (the web-down e2e harness, which seeds a delivery
+  itself). A person's door names them as the principal by id, an agent's the
+  API account; a sweep's door names a system principal. A door's
+  `Idempotency-Key` header, when sent, is the command's key, and one key
+  covers the whole door call: on an `unknown` outcome the door submits again
+  with that same key (twice more at most, `DOOR_UNKNOWN_RETRIES`) inside one
+  door budget of 20 seconds (`DOOR_BUDGET_MS`; the door routes set
+  `maxDuration = 60`, and a merge door holds its surface's merge slot for the
+  whole call). It never retries a refusal (4xx), the command's own failure on
+  the control plane (`command_failed`, reported as the real error) or a local
+  throw. Every door answers a door error in one shape (`doorErrorAnswer`): 503
+  `control_plane_unavailable` (retryable, with the outcome and the key), 403
+  `control_plane_refused`, or 500 `command_failed` with the key; supersession
+  and abandonment pass the same body through. `update_task` and `correct_task_result` issue no kernel
   command today: their writes to a delivery-owned task's columns are the
   one-writer work of §1 (S4), not a command to move. Ingesting a fact
   (`observePrState`, `observeHead`, attempt ended, verdicts) is not a door and

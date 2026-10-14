@@ -11,6 +11,9 @@ import { requestingPerson } from '@/lib/request-person';
 import { recordPrAbandonment } from '@/lib/pr-supersession';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
+// A door call to the control plane is bounded at DOOR_BUDGET_MS (20 s, kernel-client.ts); this leaves the route room.
+export const maxDuration = 60;
+
 /**
  * POST /api/tasks/[id]/closed-pr
  *
@@ -77,7 +80,7 @@ export async function POST(
 
     const recordedBy = user?.email ?? apiAccount?.name ?? 'unknown';
     const result = await recordPrAbandonment({ workerId: worker.id, reason, recordedBy, actor: `human:${person}` });
-    if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
+    if (!result.ok) return NextResponse.json(result.door?.body ?? { error: result.error }, { status: result.status, headers: result.door?.headers });
     return NextResponse.json({ ok: true, action: 'abandon' });
   } catch (error) {
     console.error('Task closed PR abandon error:', error);

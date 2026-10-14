@@ -163,10 +163,15 @@ describe('workflow kernel tables have one writer', () => {
  * would apply the command on whatever host it runs on.
  */
 const DOOR_COMMANDS = ['landThroughKernel', 'applyRecommendationThroughKernel', 'policyMergeThroughKernel', 'requestReview', 'requestCiRetry', 'recordSupersession', 'abandonDelivery', 'openKernelDelivery'];
-const SEAM_SPEC = String.raw`['"](?:@\/lib\/workflow|(?:\.\.?\/)+(?:lib\/)?workflow)\/seam['"]`;
+/** The seam by any path: the alias, or a relative path however deep (`../../src/lib/workflow/seam`). */
+const SEAM_SPEC = String.raw`['"](?:@\/lib\/workflow|(?:\.\.?\/)+(?:[\w.-]+\/)*workflow)\/seam(?:\.ts)?['"]`;
 /** `import { a, b as c } from '…/seam'`, `const { a } = await import('…/seam')`, `(await import('…/seam')).a`. */
 const SEAM_NAMED = new RegExp(String.raw`(?:import\s*(?:type\s*)?\{([^}]*)\}\s*from\s*${SEAM_SPEC}|\{([^}]*)\}\s*=\s*await\s+import\(\s*${SEAM_SPEC}\s*\))`, 'g');
 const SEAM_MEMBER = new RegExp(String.raw`\(\s*await\s+import\(\s*${SEAM_SPEC}\s*\)\s*\)\s*\.\s*([A-Za-z_$][\w$]*)`, 'g');
+/** A name bound to the whole module: `import * as seam from '…/seam'`, `const seam = await import('…/seam')`. */
+const SEAM_NAMESPACE = new RegExp(String.raw`(?:import\s*\*\s*as\s+([A-Za-z_$][\w$]*)\s*from\s*${SEAM_SPEC}|(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*await\s+import\(\s*${SEAM_SPEC}\s*\))`, 'g');
+/** `import('…/seam').then((m) => m.a)`. */
+const SEAM_THEN = new RegExp(String.raw`import\(\s*${SEAM_SPEC}\s*\)\s*\.then\(\s*\(?\s*([A-Za-z_$][\w$]*)`, 'g');
 
 function seamDoorImports(src: string): string[] {
   const names: string[] = [];
@@ -177,14 +182,25 @@ function seamDoorImports(src: string): string[] {
     }
   }
   for (const m of src.matchAll(SEAM_MEMBER)) names.push(m[1]);
-  return names.filter((n) => DOOR_COMMANDS.includes(n));
+  const bound = [...src.matchAll(SEAM_NAMESPACE)].map((m) => m[1] ?? m[2]).concat([...src.matchAll(SEAM_THEN)].map((m) => m[1]));
+  for (const ns of bound) {
+    for (const m of src.matchAll(new RegExp(String.raw`\b${ns.replace(/\$/g, '\\$')}\s*\.\s*([A-Za-z_$][\w$]*)`, 'g'))) names.push(m[1]);
+  }
+  return [...new Set(names.filter((n) => DOOR_COMMANDS.includes(n)))];
 }
+
+/** Files allowed to call a door command on the seam directly, each with its reason. */
+const DOOR_DIRECT_ALLOWED: Record<string, string> = {
+  // The web-down e2e's own harness: it seeds the delivery itself (as create_pr would) in a process
+  // that is neither host, then drives only the control plane over HTTP. Never deployed.
+  'apps/web/scripts/control-plane/web-down-callbacks.ts': 'e2e harness seeding a delivery; not a door',
+};
 
 describe('S3a: doors submit kernel commands through the one client', () => {
   it('no module outside the kernel imports a door command from the seam', () => {
     const offenders: string[] = [];
     for (const f of files) {
-      if (inKernel(f) || !f.startsWith('apps/')) continue;
+      if (inKernel(f) || !f.startsWith('apps/') || DOOR_DIRECT_ALLOWED[f]) continue;
       for (const n of seamDoorImports(code(f))) offenders.push(`${f} → seam.${n}`);
     }
     expect(offenders).toEqual([]);
@@ -196,6 +212,16 @@ describe('S3a: doors submit kernel commands through the one client', () => {
     expect(seamDoorImports(`const { abandonDelivery } = await import('@/lib/workflow/seam');`)).toEqual(['abandonDelivery']);
     expect(seamDoorImports(`const m = deps.x ?? (await import('./workflow/seam')).policyMergeThroughKernel;`)).toEqual(['policyMergeThroughKernel']);
     expect(seamDoorImports(`import { landThroughKernel } from '@/lib/workflow/kernel-client';`)).toEqual([]);
+    expect(seamDoorImports(`import * as seam from '@/lib/workflow/seam';\nawait seam.landThroughKernel(x);`)).toEqual(['landThroughKernel']);
+    expect(seamDoorImports(`const seam = await import('./workflow/seam');\nseam.requestCiRetry(p); seam.kernelLandingView(a);`)).toEqual(['requestCiRetry']);
+    expect(seamDoorImports(`const r = await import('@/lib/workflow/seam').then((m) => m.abandonDelivery(p));`)).toEqual(['abandonDelivery']);
+    expect(seamDoorImports(`import { openKernelDelivery } from '../../src/lib/workflow/seam';`)).toEqual(['openKernelDelivery']);
+    expect(seamDoorImports(`import { openKernelDelivery } from '../../src/lib/workflow/seam.ts';`)).toEqual(['openKernelDelivery']);
+    // Every allowed file still exists and still needs the exception, so the list cannot rot.
+    for (const f of Object.keys(DOOR_DIRECT_ALLOWED)) {
+      expect(files).toContain(f);
+      expect(seamDoorImports(code(f)).length).toBeGreaterThan(0);
+    }
     const viaClient = files.filter((f) => !inKernel(f) && /from\s+['"]@\/lib\/workflow\/kernel-client['"]|import\(\s*['"](?:@\/lib\/|\.\/)workflow\/kernel-client['"]\s*\)/.test(code(f)));
     expect(viaClient.length).toBeGreaterThan(5);
   });

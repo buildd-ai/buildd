@@ -28,7 +28,7 @@ import { getUserWorkspaceIds } from '@/lib/team-access';
 import { githubApi } from '@/lib/github';
 import { resolveOrAdoptPrOwner } from '@/lib/pr-review-request';
 import { checkPrIsDraft, fetchCIFailureLogs } from '@/lib/ci-failure-inspect';
-import { ControlPlaneUnavailableError, controlPlaneUnavailableResponse, requestCiRetry } from '@/lib/workflow/kernel-client';
+import { doorErrorResponse, isDoorError, requestCiRetry } from '@/lib/workflow/kernel-client';
 import { isSchemaDriftFailure, buildDriftDiagnoseTask } from '@/lib/ci-drift-diagnose';
 import { buildCIRetryTask } from '@/lib/ci-retry';
 import { policyValue } from '@/lib/policy-overrides';
@@ -39,6 +39,9 @@ import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { dependencyBotPushRefusal, isDependencyBotAuthor } from '@/lib/dependency-bot-pr';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
+
+// A door call to the control plane is bounded at DOOR_BUDGET_MS (20 s, kernel-client.ts); this leaves the route room.
+export const maxDuration = 60;
 
 function bad(error: string, status: number, extra: Record<string, unknown> = {}) {
   return NextResponse.json({ error, ...extra }, { status });
@@ -149,8 +152,8 @@ export async function POST(
     actor: `human:${user.id}`,
     maxAttempts: typeof configuredMax === 'number' ? configuredMax : policyValue('maxCiRetries'),
     reason: typeof body?.reason === 'string' && body.reason.trim() ? body.reason.trim() : 'Fix CI from the dashboard',
-  }, { principal: { kind: 'user', id: user.id } }).catch((err: unknown) => (err instanceof ControlPlaneUnavailableError ? err : Promise.reject(err)));
-  if (kernel instanceof ControlPlaneUnavailableError) return controlPlaneUnavailableResponse(kernel) as NextResponse;
+  }, { principal: { kind: 'user', id: user.id } }).catch((err: unknown) => (isDoorError(err) ? err : Promise.reject(err)));
+  if (isDoorError(kernel)) return doorErrorResponse(kernel) as NextResponse;
   if (kernel.handled) {
     const r = kernel.result;
     if (r.result === 'applied' && r.decision.toState === 'REPAIRING') {

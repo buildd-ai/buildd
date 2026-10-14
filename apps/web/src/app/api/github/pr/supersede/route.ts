@@ -27,6 +27,9 @@ import { canActOnWorkerPr } from '@/lib/worker-pr-access';
 import { agentRunMayActOnPr } from '@/lib/agent-capabilities/worker-pr';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
+// A door call to the control plane is bounded at DOOR_BUDGET_MS (20 s, kernel-client.ts); this leaves the route room.
+export const maxDuration = 60;
+
 // The acting run's task, as agentRunMayActOnPr reads it (same columns close_pr loads).
 const ACTING_TASK_COLUMNS = {
   id: true, roleSlug: true, mode: true, context: true, title: true, description: true, missionId: true,
@@ -144,11 +147,13 @@ export async function POST(req: NextRequest) {
     reason,
     // The workflow kernel records this as T20's actor: the caller's own task for a task token.
     recordedBy: account.taskScope ? `agent:${account.taskScope.taskId}` : account.name,
+    // The control plane checks the API account against the workspace (never a name in the ledger).
+    principal: { kind: 'account', id: account.id },
     ...(account.taskScope ? { targetRepoWithinWorkspace: true } : {}),
   });
 
   if (!result.ok) {
-    return NextResponse.json({ error: result.error }, { status: result.status });
+    return NextResponse.json(result.door?.body ?? { error: result.error }, { status: result.status, headers: result.door?.headers });
   }
 
   return NextResponse.json({

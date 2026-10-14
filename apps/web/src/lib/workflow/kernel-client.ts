@@ -62,16 +62,55 @@ export class KernelCommandRefusedError extends Error {
   }
 }
 
+/**
+ * The command ran on the control plane and threw (`command_failed`, a 500 with the error). Deterministic
+ * as far as the client can tell: reported as the real error, never retried by the door.
+ */
+export class KernelCommandFailedError extends Error {
+  constructor(readonly detail: string, readonly idempotencyKey: string | null) {
+    super(`The command failed on the control plane: ${detail}`);
+    this.name = 'KernelCommandFailedError';
+  }
+}
+
+/** Errors a door turns into an answer of its own rather than a 500. */
+export type DoorError = ControlPlaneUnavailableError | KernelCommandRefusedError | KernelCommandFailedError;
+export const isDoorError = (err: unknown): err is DoorError =>
+  err instanceof ControlPlaneUnavailableError || err instanceof KernelCommandRefusedError || err instanceof KernelCommandFailedError;
+
+/**
+ * Every door's answer for a door error, one shape (status + JSON body):
+ *  - unavailable (AC-12): 503, retryable, naming the control plane, with the outcome and the key;
+ *  - refused (auth, principal, shape): 403, not retryable;
+ *  - failed (the command threw there): 500 with its error and the key.
+ */
+export function doorErrorAnswer(err: DoorError): { status: number; body: Record<string, unknown>; headers: Record<string, string> } {
+  const headers: Record<string, string> = { 'Cache-Control': 'no-store' };
+  if (err instanceof ControlPlaneUnavailableError) {
+    return {
+      status: 503,
+      headers: { ...headers, 'Retry-After': '5' },
+      body: {
+        error: err.message, code: err.code, retryable: true, controlPlane: true, outcome: err.outcome,
+        // Send it back as the Idempotency-Key header and the retry gets the control plane's answer.
+        ...(err.idempotencyKey ? { idempotencyKey: err.idempotencyKey } : {}),
+      },
+    };
+  }
+  if (err instanceof KernelCommandFailedError) {
+    return { status: 500, headers, body: { error: err.message, code: 'command_failed', retryable: false, controlPlane: true, ...(err.idempotencyKey ? { idempotencyKey: err.idempotencyKey } : {}) } };
+  }
+  return { status: 403, headers, body: { error: err.message, code: 'control_plane_refused', retryable: false, controlPlane: true, refusal: err.body.code ?? null } };
+}
+
+export function doorErrorResponse(err: DoorError): Response {
+  const a = doorErrorAnswer(err);
+  return new Response(JSON.stringify(a.body), { status: a.status, headers: { 'content-type': 'application/json', ...a.headers } });
+}
+
 /** A door's answer when the control plane is unreachable (AC-12): retryable, naming the control plane. */
 export function controlPlaneUnavailableResponse(err: ControlPlaneUnavailableError): Response {
-  return new Response(JSON.stringify({
-    error: err.message, code: err.code, retryable: true, controlPlane: true, outcome: err.outcome,
-    // Send it back as the Idempotency-Key header and the retry gets the control plane's answer.
-    ...(err.idempotencyKey ? { idempotencyKey: err.idempotencyKey } : {}),
-  }), {
-    status: 503,
-    headers: { 'content-type': 'application/json', 'Retry-After': '5', 'Cache-Control': 'no-store' },
-  });
+  return doorErrorResponse(err);
 }
 
 export type KernelMode = 'own' | 'shadow';
@@ -163,6 +202,8 @@ export interface SubmitOptions {
   budgetMs?: number;
   /** An earlier submission of this door call came back `unknown`: never fall back to running it here. */
   priorUnknown?: boolean;
+  /** Read the delivery's version after a local run (the answer's `delivery`). Doors do not use it. Default true. */
+  withDelivery?: boolean;
   deps?: ClientDeps;
 }
 
@@ -199,14 +240,14 @@ export async function submitKernelCommand<K extends KernelOp>(op: K, input: Kern
     if (opts.priorUnknown && (deps.host ?? kernelHost)() === 'web') {
       throw new ControlPlaneUnavailableError('the web host now runs the kernel, but an earlier attempt may have reached the control plane', 'unknown', idempotencyKey);
     }
-    return runHere(op, input, idempotencyKey, deps);
+    return runHere(op, input, idempotencyKey, deps, opts.withDelivery !== false);
   }
   return submitRemote(op, input, { ...opts, idempotencyKey }, deps);
 }
 
-async function runHere<K extends KernelOp>(op: K, input: KernelOps[K]['input'], idempotencyKey: string, deps: ClientDeps): Promise<KernelAnswer<K>> {
+async function runHere<K extends KernelOp>(op: K, input: KernelOps[K]['input'], idempotencyKey: string, deps: ClientDeps, withDelivery = true): Promise<KernelAnswer<K>> {
   const result = await (deps.run ?? runKernelOp)(op, input);
-  const delivery = await (deps.deliveryAfter ?? deliveryAfter)(op, input, result).catch(() => null);
+  const delivery = withDelivery ? await (deps.deliveryAfter ?? deliveryAfter)(op, input, result).catch(() => null) : null;
   return { result, delivery, host: (deps.host ?? kernelHost)(), replayed: false, idempotencyKey };
 }
 
@@ -261,12 +302,15 @@ async function submitRemote<K extends KernelOp>(op: K, input: KernelOps[K]['inpu
       // The control plane is in shadow, or holds no command key yet (half switched over): the web host is
       // the host after all. It refused before running anything, so nothing was applied there.
       cached = { mode: 'shadow', at: now() };
-      return runHere(op, input, opts.idempotencyKey, deps);
+      return runHere(op, input, opts.idempotencyKey, deps, opts.withDelivery !== false);
+    }
+    if (res.status === 500 && answer?.code === 'command_failed') {
+      // The command itself threw there (the key was released): the real error, not an outage. Not retried.
+      throw new KernelCommandFailedError(String(answer.error ?? 'unknown error'), opts.idempotencyKey);
     }
     if (RETRYABLE_STATUS.has(res.status) || (res.status === 409 && answer?.code === 'in_progress')) {
       why = `answered ${res.status}${answer?.code ? ` ${String(answer.code)}` : ''}`;
-      // in_progress: it is running there. A 5xx, command_failed included (a command that threw may have
-      // applied part of its work before it did): it may have run. Only a 429 refused before running.
+      // in_progress: it is running there. Any other 5xx: it may have run. Only a 429 refused before running.
       if (res.status !== 429) mayHaveApplied = true;
       await sleep(Math.min(250 * 2 ** attempt, 2_000));
       continue;
@@ -278,8 +322,8 @@ async function submitRemote<K extends KernelOp>(op: K, input: KernelOps[K]['inpu
 // ── The doors' functions ────────────────────────────────────────────────────
 //
 // The seam's door functions, same names and inputs, run where the kernel is
-// hosted. A door imports these, never the seam's own (kernel-client-doors.test.ts
-// fails on a door that does). `door` names who the command is for; absent, the
+// hosted. A door imports these, never the seam's own (the S3a block of
+// packages/core/__tests__/workflow-write-sites.test.ts fails on a door that does). `door` names who the command is for; absent, the
 // principal is read off the input's actor: `human:<user id>` is that person,
 // anything else (`agent:…`, `system:…`, `rule:…`) a system principal named by it.
 
@@ -302,21 +346,31 @@ export function principalOfActor(actor: string | null | undefined): KernelPrinci
 
 /** How many more times a door submits after an `unknown` outcome, always with the same key. */
 export const DOOR_UNKNOWN_RETRIES = 2;
+/**
+ * One door call's whole budget, every submission and retry included. The door routes set
+ * `maxDuration = 60`, so it fits with room for the route's own work; a merge door holds its
+ * surface's merge slot (withMergeSlot) for all of it.
+ */
+export const DOOR_BUDGET_MS = 20_000;
 
 async function door<K extends KernelOp>(op: K, input: KernelOps[K]['input'], actor: string | null | undefined, c: DoorCall = {}): Promise<KernelOps[K]['result']> {
   // One key for the whole door call: every retry below asks the control plane the same question.
   const idempotencyKey = c.idempotencyKey ?? (c.deps?.newKey ?? (() => newIdempotencyKey(op)))();
   const principal = c.principal ?? principalOfActor(actor);
+  const now = c.deps?.now ?? Date.now;
+  const env = c.deps?.env ?? process.env;
+  const deadline = now() + (Number(env.KERNEL_DOOR_BUDGET_MS) || DOOR_BUDGET_MS);
   let priorUnknown = false;
   for (let attempt = 0; ; attempt++) {
     try {
-      return (await submitKernelCommand(op, input, { principal, idempotencyKey, priorUnknown, deps: c.deps })).result;
+      return (await submitKernelCommand(op, input, { principal, idempotencyKey, priorUnknown, withDelivery: false, budgetMs: Math.max(1, Math.min(deadline - now(), Number(env.KERNEL_COMMAND_BUDGET_MS) || Infinity)), deps: c.deps })).result;
     } catch (err) {
       // The outcome is unknown (it may have run): ask again with the same key, which answers with what
-      // was done and never applies it twice. Not applied: the door reports it; nothing to recover.
-      if (err instanceof ControlPlaneUnavailableError && err.outcome === 'unknown') priorUnknown = true;
-      if (err instanceof ControlPlaneUnavailableError && err.outcome === 'unknown' && attempt < DOOR_UNKNOWN_RETRIES) continue;
-      throw err;
+      // was done and never applies it twice, while the door's budget lasts. Anything else (not applied,
+      // a refusal, the command's own failure, a local throw) is the door's answer as it is.
+      if (!(err instanceof ControlPlaneUnavailableError) || err.outcome !== 'unknown') throw err;
+      priorUnknown = true;
+      if (attempt >= DOOR_UNKNOWN_RETRIES || now() >= deadline) throw err;
     }
   }
 }

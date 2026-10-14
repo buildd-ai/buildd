@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 
 let workerRow: any = null;
 let missionTask: any = null;
@@ -240,6 +240,50 @@ describe('a kernel-owned PR: T20/T21 decide, the direct column write never runs'
     expect((await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 9, reason: 'moved', recordedBy: 'me' })).ok).toBe(true);
     expect(kernelCalls.map((c) => c.fn)).toEqual(['recordSupersession']);
     expect(updates[0].set.supersededByPrNumber).toBe(9);
+  });
+});
+
+describe('cut over to the control plane (workflow-kernel-library §3)', () => {
+  let cp: ReturnType<typeof import('@/lib/workflow/testing/cut-over').cutOver> | null = null;
+  afterEach(() => { cp?.restore(); cp = null; });
+  const USER = '22222222-2222-4222-8222-222222222222';
+  const ACCOUNT = '33333333-3333-4333-8333-333333333333';
+
+  it('the control plane unreachable: supersession and abandonment answer the doors\' 503 (key, retryable, control plane), and the legacy write never runs', async () => {
+    const { cutOver } = await import('@/lib/workflow/testing/cut-over');
+    cp = cutOver();
+    workerRow = closedWorker({ workspaceId: 'ws-1' });
+    const s = await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 9, reason: 'moved', recordedBy: 'me@example.com', principal: { kind: 'user', id: USER }, actor: `human:${USER}` });
+    expect(s).toMatchObject({ ok: false, status: 503, door: { body: { code: 'control_plane_unavailable', retryable: true, controlPlane: true, idempotencyKey: expect.stringMatching(/^record_supersession:/) }, headers: { 'Retry-After': '5' } } });
+    const a = await recordPrAbandonment({ workerId: 'w-1', reason: 'plan changed', recordedBy: 'me@example.com', actor: `human:${USER}` });
+    expect(a).toMatchObject({ ok: false, status: 503, door: { body: { code: 'control_plane_unavailable', retryable: true, controlPlane: true, idempotencyKey: expect.stringMatching(/^abandon:/) } } });
+    expect(cp.calls.map((c) => c.op)).toEqual(expect.arrayContaining(['record_supersession', 'abandon']));
+    expect(kernelCalls).toHaveLength(0);
+    expect(updates).toHaveLength(0);
+  });
+
+  it('a refusal from the control plane is a 403 with the doors\' body, and nothing is written', async () => {
+    const { cutOver, refusedByControlPlane } = await import('@/lib/workflow/testing/cut-over');
+    cp = cutOver({ reply: refusedByControlPlane });
+    workerRow = closedWorker({ workspaceId: 'ws-1' });
+    const s = await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 9, reason: 'moved', recordedBy: 'me@example.com', principal: { kind: 'account', id: ACCOUNT } });
+    expect(s).toMatchObject({ ok: false, status: 403, door: { body: { code: 'control_plane_refused' } } });
+    expect(updates).toHaveLength(0);
+  });
+
+  it('the command names the principal the caller passes (a person by id, an API account), never the recordedBy label', async () => {
+    const { cutOver } = await import('@/lib/workflow/testing/cut-over');
+    const ok = () => Response.json({ v: 1, op: 'record_supersession', idempotencyKey: 'k', result: { handled: true, deliveryId: 'd1', result: { result: 'applied', transitionId: 't', deliveryId: 'd1', version: 8, decision: {} } }, delivery: null, host: 'control-plane', replayed: false });
+    cp = cutOver({ reply: ok });
+    workerRow = closedWorker({ workspaceId: 'ws-1' });
+    await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 9, reason: 'moved', recordedBy: 'me@example.com', principal: { kind: 'user', id: USER }, actor: `human:${USER}` });
+    await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 9, reason: 'moved', recordedBy: 'runner-key', principal: { kind: 'account', id: ACCOUNT } });
+    const sent = cp.calls.map((c) => ({ principal: c.body?.principal, actor: c.body?.input?.actor }));
+    expect(sent).toEqual([
+      { principal: { kind: 'user', id: USER }, actor: `human:${USER}` },
+      { principal: { kind: 'account', id: ACCOUNT }, actor: 'runner-key' },
+    ]);
+    expect(JSON.stringify(sent)).not.toContain('me@example.com');
   });
 });
 

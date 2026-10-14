@@ -34,8 +34,11 @@ import { resolveMergeMethod } from '@/lib/integration-refresh';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { latestRunPerName } from '@/lib/auto-merge-bound';
 import { kernelLandingView, type KernelLanding } from '@/lib/workflow/seam';
-import { ControlPlaneUnavailableError, controlPlaneUnavailableResponse, idempotencyKeyOf, landThroughKernel } from '@/lib/workflow/kernel-client';
+import { doorErrorResponse, isDoorError, idempotencyKeyOf, landThroughKernel } from '@/lib/workflow/kernel-client';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+
+// A door call to the control plane is bounded at DOOR_BUDGET_MS (20 s, kernel-client.ts); this leaves the route room.
+export const maxDuration = 60;
 
 /**
  * The dashboard's answer when the landing function did not merge. A refresh in
@@ -645,8 +648,8 @@ export async function POST(
         }, { principal: { kind: 'user', id: user.id }, idempotencyKey })
       : null;
     return kernel ? { kernel } : { legacy: await mergePullRequest(installationId, repoFullName, prNumber, mergeMethod, liveHeadSha!) };
-  }).catch((err: unknown) => (err instanceof ControlPlaneUnavailableError ? err : Promise.reject(err)));
-  if (slotted instanceof ControlPlaneUnavailableError) return controlPlaneUnavailableResponse(slotted) as NextResponse;
+  }).catch((err: unknown) => (isDoorError(err) ? err : Promise.reject(err)));
+  if (isDoorError(slotted)) return doorErrorResponse(slotted) as NextResponse;
   if ('refused' in slotted) {
     return NextResponse.json({ error: `Merge deferred: ${slotted.refused}`, surfaceOrderBlocked: true }, { status: 409 });
   }

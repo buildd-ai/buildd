@@ -330,7 +330,8 @@ describe('a door after an unknown outcome', () => {
     const keys: string[] = [];
     let t = 0;
     // A budget of one attempt per submission, so each unknown outcome reaches the door.
-    const base = { env: { ...OWN, KERNEL_COMMAND_BUDGET_MS: '1' }, now: () => t, sleep: async (ms: number) => { t += ms + 10_000; }, newKey: () => 'land:door-call-key', host: () => 'web' as const };
+    // (A door budget long enough for every retry: the budget has its own test below.)
+    const base = { env: { ...OWN, KERNEL_COMMAND_BUDGET_MS: '1', KERNEL_DOOR_BUDGET_MS: '120000' }, now: () => t, sleep: async (ms: number) => { t += ms + 10_000; }, newKey: () => 'land:door-call-key', host: () => 'web' as const };
     // Two calls time out (outcome unknown), then the replay of the stored answer arrives.
     const replies: Array<() => Promise<Response>> = [
       async () => { throw Object.assign(new Error('t'), { name: 'TimeoutError' }); },
@@ -376,7 +377,7 @@ describe('no local run after an attempt that may have reached the control plane'
   it('across a door call: after an unknown submission, a later not_host, unconfigured or shadow reading never runs it here', async () => {
     const { landThroughKernel } = await import('./kernel-client');
     let t = 0;
-    const base = { env: { ...OWN, KERNEL_COMMAND_BUDGET_MS: '1' }, now: () => t, sleep: async (ms: number) => { t += ms + 10_000; }, newKey: () => 'land:door-k-0001', host: () => 'web' as const };
+    const base = { env: { ...OWN, KERNEL_COMMAND_BUDGET_MS: '1', KERNEL_DOOR_BUDGET_MS: '120000' }, now: () => t, sleep: async (ms: number) => { t += ms + 10_000; }, newKey: () => 'land:door-k-0001', host: () => 'web' as const };
     for (const later of [
       async () => Response.json({ v: 1, code: 'not_host' }, { status: 409 }),
       async () => Response.json({ v: 1, code: 'unconfigured' }, { status: 503 }),
@@ -398,5 +399,65 @@ describe('no local run after an attempt that may have reached the control plane'
     }).catch((e) => e);
     expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
     expect(ran).toEqual([]);
+  });
+});
+
+describe('a door\'s retry and time rules', () => {
+  it('pins the rules: two more submissions after an unknown outcome, inside one 20 s budget', async () => {
+    const { DOOR_UNKNOWN_RETRIES, DOOR_BUDGET_MS } = await import('./kernel-client');
+    expect(DOOR_UNKNOWN_RETRIES).toBe(2);
+    expect(DOOR_BUDGET_MS).toBe(20_000);
+  });
+
+  it('a refusal from the control plane (4xx) is never retried by the door', async () => {
+    const { landThroughKernel, KernelCommandRefusedError } = await import('./kernel-client');
+    let n = 0;
+    const err = await landThroughKernel(input, { deps: { env: OWN, host: () => 'web', sleep: async () => {}, fetch: (async () => { n++; return Response.json({ v: 1, code: 'forbidden', error: 'no' }, { status: 403 }); }) as unknown as typeof fetch } }).catch((e) => e);
+    expect(err).toBeInstanceOf(KernelCommandRefusedError);
+    expect(n).toBe(1);
+  });
+
+  it('the command failing on the control plane (command_failed) is the real error: reported, not retried', async () => {
+    const { landThroughKernel, KernelCommandFailedError, doorErrorAnswer } = await import('./kernel-client');
+    let n = 0;
+    const err = await landThroughKernel(input, { idempotencyKey: 'land:failed-0001', deps: { env: OWN, host: () => 'web', sleep: async () => {}, fetch: (async () => { n++; return Response.json({ v: 1, code: 'command_failed', error: 'delivery row missing', retryable: true }, { status: 500 }); }) as unknown as typeof fetch } }).catch((e) => e);
+    expect(err).toBeInstanceOf(KernelCommandFailedError);
+    expect(err.message).toContain('delivery row missing');
+    expect(n).toBe(1);
+    expect(doorErrorAnswer(err)).toMatchObject({ status: 500, body: { code: 'command_failed', retryable: false, idempotencyKey: 'land:failed-0001' } });
+  });
+
+  it('a local throw in shadow mode is the door\'s answer as it is: run once, never retried', async () => {
+    const { landThroughKernel } = await import('./kernel-client');
+    let runs = 0;
+    const err = await landThroughKernel(input, { deps: { env: { EXECUTION_MODE: 'shadow' }, host: () => 'web', run: (async () => { runs++; throw new Error('seam boom'); }) as never } }).catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toBe('seam boom');
+    expect(runs).toBe(1);
+  });
+
+  it('in shadow a door does not read the delivery afterwards (it never uses it)', async () => {
+    const { landThroughKernel } = await import('./kernel-client');
+    let reads = 0;
+    await landThroughKernel(input, { deps: { env: { EXECUTION_MODE: 'shadow' }, host: () => 'web', run: (async () => ({ merged: true })) as never, deliveryAfter: async () => { reads++; return null; } } });
+    expect(reads).toBe(0);
+  });
+
+  it('one door call never outlasts its budget, whatever the control plane does', async () => {
+    const { landThroughKernel, DOOR_BUDGET_MS } = await import('./kernel-client');
+    let t = 0;
+    let calls = 0;
+    const err = await landThroughKernel(input, {
+      deps: {
+        env: OWN, host: () => 'web', now: () => t, sleep: async (ms) => { t += ms; },
+        // Every request hangs until its own timeout, then reads as unknown.
+        fetch: (async () => { calls++; t += 8_000; throw Object.assign(new Error('t'), { name: 'TimeoutError' }); }) as unknown as typeof fetch,
+      },
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+    expect(err.outcome).toBe('unknown');
+    // The last request may start just before the deadline; nothing starts after it.
+    expect(t).toBeLessThanOrEqual(DOOR_BUDGET_MS + 8_000 + 2_000);
+    expect(calls).toBeLessThanOrEqual(4);
   });
 });

@@ -51,7 +51,7 @@ import { fetchSplitPrStats } from '@/lib/supersession-check';
 import { loadPrAttempts } from '@/lib/pr-attempts';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { kernelLandingView, type KernelLanding } from '@/lib/workflow/seam';
-import { ControlPlaneUnavailableError, controlPlaneUnavailableResponse, idempotencyKeyOf, landThroughKernel, openKernelDelivery } from '@/lib/workflow/kernel-client';
+import { doorErrorResponse, isDoorError, idempotencyKeyOf, landThroughKernel, openKernelDelivery } from '@/lib/workflow/kernel-client';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 import { canonicalPrState, prRecord } from '@/lib/pr-presentation';
 import { readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request';
@@ -75,6 +75,9 @@ import { canActOnWorkerPr } from '@/lib/worker-pr-access';
 import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
 import { findStackedReleaseForBase } from '@/lib/early-release-stacking';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+
+// A door call to the control plane is bounded at DOOR_BUDGET_MS (20 s, kernel-client.ts); this leaves the route room.
+export const maxDuration = 60;
 
 
 /**
@@ -2276,8 +2279,8 @@ export async function PUT(req: NextRequest) {
         effectiveMergeMethod,
         headSha,
       ) };
-    }).catch((err: unknown) => (err instanceof ControlPlaneUnavailableError ? err : Promise.reject(err)));
-    if (slotted instanceof ControlPlaneUnavailableError) return controlPlaneUnavailableResponse(slotted) as NextResponse;
+    }).catch((err: unknown) => (isDoorError(err) ? err : Promise.reject(err)));
+    if (isDoorError(slotted)) return doorErrorResponse(slotted) as NextResponse;
     if ('refused' in slotted) {
       return NextResponse.json({
         error: `merge deferred: ${slotted.refused}`,

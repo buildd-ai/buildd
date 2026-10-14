@@ -31,9 +31,12 @@ import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
 import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
 import { resolveReReviewPlan } from '@/lib/pr-re-review';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
-import { ControlPlaneUnavailableError, controlPlaneUnavailableResponse, requestReview as requestKernelReview } from '@/lib/workflow/kernel-client';
+import { doorErrorResponse, isDoorError, requestReview as requestKernelReview } from '@/lib/workflow/kernel-client';
 import { workspaceRepo } from '@/lib/workflow/github-facts';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+
+// A door call to the control plane is bounded at DOOR_BUDGET_MS (20 s, kernel-client.ts); this leaves the route room.
+export const maxDuration = 60;
 
 export async function POST(
   req: NextRequest,
@@ -95,11 +98,11 @@ export async function POST(
       installationId: kernelRepo.installationId, forced: true, actor: `human:${user.id}`,
     }, { principal: { kind: 'user', id: user.id } }).catch((err) => {
       // An unreachable control plane is not a reason to queue a legacy review beside the kernel's.
-      if (err instanceof ControlPlaneUnavailableError) return err;
+      if (isDoorError(err)) return err;
       console.error(`[re-review] workflow kernel review request failed for PR #${prNumber}:`, err);
       return null;
     });
-    if (kernel instanceof ControlPlaneUnavailableError) return controlPlaneUnavailableResponse(kernel) as NextResponse;
+    if (isDoorError(kernel)) return doorErrorResponse(kernel) as NextResponse;
     if (kernel?.handled) {
       const r = kernel.result;
       if (r.result === 'applied') {
