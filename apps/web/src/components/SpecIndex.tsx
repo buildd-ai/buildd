@@ -38,8 +38,8 @@ export interface IndexActions {
   acceptSuggestion: (specId: string, s: SpecSuggestion) => Promise<ActionResult>;
   dismissSuggestion: (specId: string, s: SpecSuggestion) => Promise<ActionResult>;
   undoFiling: (specId: string, filingId: string) => Promise<ActionResult>;
-  /** Create one area of the taxonomy proposal (organize with that key) and file its members. */
-  acceptProposal: (key: string) => Promise<ActionResult>;
+  /** Create one area of the taxonomy proposal (organize with that key, from the proposal it came from) and file its members. */
+  acceptProposal: (key: string, source?: 'model' | 'words') => Promise<ActionResult>;
   /** Confirm a batch of imported specs (§18, R-19): approves each whose repo file is unchanged. */
   confirmImports: (specIds: string[]) => Promise<ActionResult & { confirmed?: number; stale?: number }>;
 }
@@ -60,8 +60,8 @@ export const apiActions = (workspaceId: string | null): IndexActions => ({
     ? send(filingUrl(specId), 'POST', { action: 'dismiss', filingId: s.filingId }, ACTION_FAILED)
     : Promise.resolve({ ok: true }),
   undoFiling: (specId, filingId) => send(filingUrl(specId), 'POST', { action: 'undo', filingId }, ACTION_FAILED),
-  acceptProposal: (key) => workspaceId
-    ? send('/api/specs/organize', 'POST', { workspaceId, dryRun: false, areas: [key] }, ACTION_FAILED)
+  acceptProposal: (key, source) => workspaceId
+    ? send('/api/specs/organize', 'POST', { workspaceId, dryRun: false, areas: [key], ...(source ? { source } : {}) }, ACTION_FAILED)
     : Promise.resolve({ ok: false, error: ACTION_FAILED }),
   confirmImports: async (specIds) => {
     const res = await fetch('/api/specs/import/confirm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ workspaceId, specIds }) }).catch(() => null);
@@ -307,7 +307,7 @@ function ProposalAccept({ possible, actions, canAct }: { possible: PossibleArea;
   const key = possible.proposalKey;
   const go = async () => {
     setState('busy');
-    const r = await actions.acceptProposal(key).catch(() => ({ ok: false, error: ACTION_FAILED }));
+    const r = await actions.acceptProposal(key, possible.proposalSource).catch(() => ({ ok: false, error: ACTION_FAILED }));
     setState(r.ok ? { done: `${possible.title} is an area now, with these specs filed under it. Reload to see them there.` } : { error: r.error ?? ACTION_FAILED });
   };
   return (

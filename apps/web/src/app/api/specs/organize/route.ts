@@ -3,14 +3,17 @@ import { specCaller } from '@/lib/specs/caller';
 import { batchFilings, organizeWorkspace, type OrganizeInput } from '@/lib/specs/organize';
 
 /**
- * POST /api/specs/organize { workspaceId, dryRun? = true, limit?, areas?, edits? }:
+ * POST /api/specs/organize { workspaceId, dryRun? = true, limit?, areas?, edits?, source? }:
  * organize a workspace's specs into its product > area > feature tree
  * (Living Specs §17, lib/specs/organize.ts).
  *
  * - No product and no area: `mode: taxonomy`. A dry run returns the proposed
- *   product and areas, each with a key, a charter and the specs it would hold;
- *   nothing exists until a person sends `dryRun: false` (optionally `areas`,
- *   the keys to accept, and `edits`, `{ [key]: { title?, charter? } }`).
+ *   product and areas, each with a key, a charter and the specs it would hold,
+ *   the specs left `unplaced`, and `proposedBy`: the team's decision model, or
+ *   the word-based fallback and why. Nothing exists until a person sends
+ *   `dryRun: false` (optionally `areas`, the keys to accept, `edits`,
+ *   `{ [key]: { title?, charter? } }`, and `source: 'words'` to accept the
+ *   word-based proposal).
  * - Otherwise `mode: sweep`: every unfiled spec not yet placed or reviewed,
  *   at most `limit` (default 50), as one batch grouped by area. A dry run
  *   writes nothing; `dryRun: false` applies confident filings (with undo) and

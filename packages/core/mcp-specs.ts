@@ -124,10 +124,14 @@ export function outcomeText(o: Outcome): string {
   return [`Governed outcome: ${o.outcome.toUpperCase()} against spec revision ${o.revision}, head ${head}. ${o.reason}.`, ...rows].join('\n');
 }
 
+type ProposedBy = { source: 'model'; model: string | null } | { source: 'words'; label: string; reason: string };
+/** Which produced the proposal, in words. */
+const proposedByText = (b: ProposedBy | undefined) => (!b ? '' : b.source === 'model' ? `Proposed by the decision model${b.model ? ` (${b.model})` : ''}.` : `Proposed by the ${b.label} (${b.reason}).`);
+
 type OrganizeRow = { specId: string; title: string; p: number | null; answer?: string; newArea?: { title: string } };
 type OrganizeReply =
-  | { mode: 'taxonomy'; dryRun: true; specs: number; proposal: { product: { title: string }; areas: Array<{ key: string; title: string; charter: string; members: Array<{ specId: string; title: string }> }> } }
-  | { mode: 'taxonomy'; dryRun: false; product: { title: string } | null; created: Array<{ key: string; title: string; specId: string; filed: number }>; refused: Array<{ key: string; title: string; reason: string }> }
+  | { mode: 'taxonomy'; dryRun: true; specs: number; proposedBy?: ProposedBy; proposal: { product: { title: string }; areas: Array<{ key: string; title: string; charter: string; members: Array<{ specId: string; title: string }> }>; unplaced?: Array<{ specId: string; title: string }> } }
+  | { mode: 'taxonomy'; dryRun: false; proposedBy?: ProposedBy; product: { title: string } | null; created: Array<{ key: string; title: string; specId: string; filed: number }>; refused: Array<{ key: string; title: string; reason: string }> }
   | { mode: 'sweep'; dryRun: boolean; scanned: number; remaining: number; skipped: number; classifier: string | null; groups: Array<{ label: string; area: { specId: string } | null; filed: OrganizeRow[]; suggested: OrganizeRow[] }> };
 
 const pText = (p: number | null) => (p === null ? '' : `, p ${p.toFixed(2)}`);
@@ -136,8 +140,9 @@ const pText = (p: number | null) => (p === null ? '' : `, p ${p.toFixed(2)}`);
 export function organizeText(r: OrganizeReply): string {
   if (r.mode === 'taxonomy' && r.dryRun) {
     const areas = r.proposal.areas.map((a) => `- ${a.title} [key ${a.key}] (${a.members.length} spec${a.members.length === 1 ? '' : 's'})\n  ${a.charter}\n${a.members.slice(0, 8).map((m) => `    · ${m.title} (${m.specId})`).join('\n')}${a.members.length > 8 ? `\n    · and ${a.members.length - 8} more` : ''}`);
-    return [`Proposed taxonomy for ${r.specs} spec(s) (nothing created): product "${r.proposal.product.title}" and ${r.proposal.areas.length} area(s).`, ...areas,
-      'Show it to a person. To create it: organize { dryRun: false }, optionally areas: [keys] for part of it and edits: { [key]: { title, charter } }.'].join('\n');
+    const unplaced = r.proposal.unplaced?.length ? [`- Left for a person to place (${r.proposal.unplaced.length}): ${r.proposal.unplaced.slice(0, 8).map((u) => `${u.title} (${u.specId})`).join('; ')}${r.proposal.unplaced.length > 8 ? `; and ${r.proposal.unplaced.length - 8} more` : ''}`] : [];
+    return [`Proposed taxonomy for ${r.specs} spec(s) (nothing created): product "${r.proposal.product.title}" and ${r.proposal.areas.length} area(s).`, proposedByText(r.proposedBy), ...areas, ...unplaced,
+      'Show it to a person. To create it: organize { dryRun: false }, optionally areas: [keys] for part of it and edits: { [key]: { title, charter } }.'].filter(Boolean).join('\n');
   }
   if (r.mode === 'taxonomy') {
     return [`Taxonomy created${r.product ? ` under product "${r.product.title}"` : ''}:`, ...r.created.map((c) => `- ${c.title} (${c.specId}): ${c.filed} spec(s) filed`),
@@ -496,7 +501,7 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
     case 'organize': {
       if (!workspaceId) throw new Error('workspaceId is required (no workspace in this session)');
       const payload: Record<string, unknown> = { workspaceId };
-      for (const k of ['dryRun', 'limit', 'areas', 'edits'] as const) if (params[k] !== undefined) payload[k] = params[k];
+      for (const k of ['dryRun', 'limit', 'areas', 'edits', 'source'] as const) if (params[k] !== undefined) payload[k] = params[k];
       try {
         return text(organizeText(await api('/api/specs/organize', { method: 'POST', body: JSON.stringify(payload) })));
       } catch (err) {

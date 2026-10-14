@@ -47,6 +47,16 @@ describe('manage_specs', () => {
     expect(WORKSPACE_SPEC_OPS).toContain('organize');
   });
 
+  it('a taxonomy dry run says which produced it, and lists the specs it left for a person', async () => {
+    const proposal = { product: { title: 'Shop' }, areas: [{ key: 'payments', title: 'Payments', charter: 'Specs about payments.', members: [{ specId: 's1', title: 'Refunds' }] }], unplaced: [{ specId: 's9', title: 'Test spec' }] };
+    api.mockResolvedValueOnce({ mode: 'taxonomy', dryRun: true, specs: 2, proposal, proposedBy: { source: 'words', label: 'word-based fallback, no model available', reason: 'this team has no decision-model key' } });
+    const words = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'organize' }, ctx()));
+    expect(words).toContain('Proposed by the word-based fallback, no model available (this team has no decision-model key).');
+    expect(words).toContain('Left for a person to place (1): Test spec (s9)');
+    api.mockResolvedValueOnce({ mode: 'taxonomy', dryRun: true, specs: 2, proposal, proposedBy: { source: 'model', model: 'typesafe/jev-1' } });
+    expect(out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'organize' }, ctx()))).toContain('Proposed by the decision model (typesafe/jev-1).');
+  });
+
   it('create_draft and get return the spec page URL, from appBaseUrl when set and buildd.dev otherwise', async () => {
     const run = async (action: string, c: ActionContext) => {
       api.mockResolvedValueOnce(action === 'get'

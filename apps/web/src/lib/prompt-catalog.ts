@@ -22,6 +22,7 @@ import './mission-prompts';
 import './reviewer';
 import './spec-area-decision';
 import './spec-duplicate-decision';
+import './spec-taxonomy-decision';
 import './strand-choice-decision';
 import './surface-audit-advice';
 import './task-category-decision';

@@ -72,6 +72,7 @@ import { attachVisualAuditSpecCriteria } from '@/app/api/workers/claim/visual-au
 import { recordVisualVerdict } from '@/lib/visual-audit-spec-verdict';
 import { checkSpecDuplicates, recordDuplicateOverride } from '@/lib/spec-duplicate-decision';
 import { classifySpecArea, recordAreaOverride } from '@/lib/spec-area-decision';
+import { proposeSpecTaxonomy } from '@/lib/spec-taxonomy-decision';
 
 export const SUBSCRIBERS: readonly AnySubscriber[] = [
   // task.created: the category look is scheduled before the mission chain starts.
@@ -305,6 +306,14 @@ export const SPEC_DUPLICATE_OVERRIDE = recordDuplicateOverride;
  */
 export const SPEC_AREA_CLASSIFY = classifySpecArea;
 export const SPEC_AREA_OVERRIDE = recordAreaOverride;
+
+/**
+ * The decisions module's spec taxonomy slot (lib/spec-taxonomy-decision.ts):
+ * organize, on a workspace with no areas, asks the team's decision model to
+ * sort its specs into a proposed taxonomy; `ran: false` means the word-based
+ * fallback in lib/specs/areas.ts proposes instead.
+ */
+export const SPEC_TAXONOMY_PROPOSE = proposeSpecTaxonomy;
 
 /**
  * The knowledge module's boot slot for Living Spec neighbours (instrumentation.ts):
