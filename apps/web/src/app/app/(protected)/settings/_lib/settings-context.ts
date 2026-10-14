@@ -6,7 +6,13 @@ import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds, getUserTeamsWithDetails, resolveActiveTeamId, type UserTeam } from '@/lib/team-access';
-import { isSystemWorkspace, isRunnerModelAuthSource, type RunnerModelAuthSource } from '@buildd/shared';
+import {
+  isSystemWorkspace,
+  isRunnerModelAuthSource,
+  isRunnerCodexAuthSource,
+  type RunnerModelAuthSource,
+  type RunnerCodexAuthSource,
+} from '@buildd/shared';
 import { settingsPermissions, type SettingsPermissions } from './settings-permissions';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
@@ -179,24 +185,38 @@ export async function loadAccountLastSeen(accountIds: string[]): Promise<Record<
   return out;
 }
 
+/** The model logins one runner token's latest heartbeat reported. */
+export interface AccountModelAuth {
+  claude: RunnerModelAuthSource | null;
+  codex: RunnerCodexAuthSource | null;
+}
+
 /**
- * The model login each runner token's most recent heartbeat reported
- * (docs/specs/runner-model-auth-source.md). Null when that runner never sends
- * the field (older build), so the row says "not reported" instead of guessing.
- * Degrades to empty on failure.
+ * The model logins (Claude and Codex) each runner token's most recent
+ * heartbeat reported (docs/specs/runner-model-auth-source.md). Null when that
+ * runner never sends the field (older build), so the row says "not reported"
+ * (Claude) or shows no Codex line, instead of guessing. Degrades to empty on
+ * failure.
  */
-export async function loadAccountModelAuth(accountIds: string[]): Promise<Record<string, RunnerModelAuthSource | null>> {
+export async function loadAccountModelAuth(accountIds: string[]): Promise<Record<string, AccountModelAuth>> {
   if (accountIds.length === 0) return {};
   const rows = await db
-    .select({ accountId: workerHeartbeats.accountId, source: workerHeartbeats.modelAuthSource })
+    .select({
+      accountId: workerHeartbeats.accountId,
+      source: workerHeartbeats.modelAuthSource,
+      codex: workerHeartbeats.codexAuthSource,
+    })
     .from(workerHeartbeats)
     .where(inArray(workerHeartbeats.accountId, accountIds))
     .orderBy(desc(workerHeartbeats.lastHeartbeatAt))
-    .catch(() => [] as Array<{ accountId: string; source: string | null }>);
-  const out: Record<string, RunnerModelAuthSource | null> = {};
+    .catch(() => [] as Array<{ accountId: string; source: string | null; codex: string | null }>);
+  const out: Record<string, AccountModelAuth> = {};
   for (const r of rows) {
     if (r.accountId in out) continue;
-    out[r.accountId] = isRunnerModelAuthSource(r.source) ? r.source : null;
+    out[r.accountId] = {
+      claude: isRunnerModelAuthSource(r.source) ? r.source : null,
+      codex: isRunnerCodexAuthSource(r.codex) ? r.codex : null,
+    };
   }
   return out;
 }

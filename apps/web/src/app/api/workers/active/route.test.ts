@@ -328,6 +328,8 @@ describe('GET /api/workers/active', () => {
         environment: null,
         runnerCommit: '5bfaeef',
         runnerVersion: '0.206.0',
+        modelAuthSource: 'machine_login',
+        codexAuthSource: 'machine_login',
         lastHeartbeatAt: new Date(),
         account: { id: 'account-1', name: 'Runner', maxConcurrentWorkers: 3 },
       },
@@ -340,6 +342,8 @@ describe('GET /api/workers/active', () => {
     const data = await res.json();
     expect(data.activeLocalUis[0].runnerCommit).toBe('5bfaeef');
     expect(data.activeLocalUis[0].runnerVersion).toBe('0.206.0');
+    expect(data.activeLocalUis[0].modelAuthSource).toBe('machine_login');
+    expect(data.activeLocalUis[0].codexAuthSource).toBe('machine_login');
   });
 
   it('returns null runnerCommit/runnerVersion when not set on heartbeat (legacy runner)', async () => {
@@ -376,6 +380,7 @@ describe('GET /api/workers/active', () => {
     const data = await res.json();
     expect(data.activeLocalUis[0].runnerCommit).toBeNull();
     expect(data.activeLocalUis[0].runnerVersion).toBeNull();
+    expect(data.activeLocalUis[0].codexAuthSource).toBeNull();
   });
 
   it('includes the runner update-snapshot fields and computes upToDateWithDeployed for a main-tracking runner', async () => {
