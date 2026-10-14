@@ -373,10 +373,14 @@ the control plane, authenticated as the caller).
   door's budget the client raises `ControlPlaneUnavailableError` and the door
   answers 503 with a retryable error naming the control plane
   (`controlPlaneUnavailableResponse`); nothing is applied on the web host. The
-  error says what is known: `not_applied` when no request reached the control
-  plane, `unknown` when one may have (a timeout, `in_progress`, a 5xx). An
-  unknown outcome carries the idempotency key: retrying with that key returns
-  the control plane's answer and never applies the command twice.
+  error says what is known: `not_applied` only when the connection itself
+  failed (refused, or the name did not resolve: `ECONNREFUSED`, `ENOTFOUND`,
+  `EAI_AGAIN`), `unknown` for anything else (a timeout, a reset after the body
+  was sent, `in_progress`, a 5xx). Both carry the idempotency key, and so does
+  the door's 503: retrying with that key returns the control plane's answer and
+  never applies the command twice. Once any attempt of a door call may have
+  reached the control plane, the web host never runs that command itself: a
+  later `not_host`, `unconfigured` or shadow reading raises `unknown` instead.
 - Doors that run on Vercel today (dashboard and chat merge, MCP `merge_pr`,
   `create_pr`, re-review, retry-CI, apply-recommendation, supersession,
   `update_task` on a delivery-owned task, `correct_task_result`) submit a
