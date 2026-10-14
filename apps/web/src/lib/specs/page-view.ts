@@ -273,7 +273,9 @@ export type SpecPageView =
     /** With `review`: what approving the head would put in force, for an approver only. */
     review: SpecPanes | null;
     /** The one source (§18, R-13) and how the repo copy stands (AC-79); absent when the workspace has not opted in. */
-    source?: { source: string; copy: string | null; behind: boolean } | null;
+    source?: { source: string; copy: string | null; behind: boolean; publishAnyway?: boolean } | null;
+    /** Slice 14, R-68: the reader may publish a kept-private revision anyway (a person who may approve here). */
+    canPublishAnyway?: boolean;
     /** With `review`: the repo checks on the would-be copy (R-34). Warns, never blocks. */
     preflight?: RepoCopyPreflight | null;
     /** Why and by what the spec is retired (§22), when it is. */
@@ -415,9 +417,13 @@ export async function specPageView(userId: string, specId: string, opts: { revis
 
   const preflight = review && native ? await repoCopyPreflight(spec, spec.headRevision).catch(() => null) : null;
 
+  const source = repoCopyLine(native, spec.repoCopy, spec.approvedRevision != null, spec.repoSource);
+  const canPublishAnyway = !!source?.publishAnyway && caller.kind === 'user' && !!(await specApprover(caller, spec.workspaceId).catch(() => null));
+
   return {
     state: 'ok',
-    source: repoCopyLine(native, spec.repoCopy, spec.approvedRevision != null, spec.repoSource),
+    source,
+    canPublishAnyway,
     preflight,
     spec: { id: spec.id, title: spec.title, scope: spec.scope, status: spec.status, workspaceId: spec.workspaceId, workspaceName: ws?.name ?? '', version: spec.version, headRevision: spec.headRevision, approvedRevision: spec.approvedRevision },
     standing: specStanding(spec).standing,

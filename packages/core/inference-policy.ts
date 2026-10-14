@@ -56,6 +56,7 @@ export type InferenceCapability =
   | 'spec_duplicate'
   | 'spec_area'
   | 'spec_taxonomy'
+  | 'spec_publication'
   | 'chat';
 
 export type CapabilityKind = 'interactive' | 'built_in' | 'opt_in' | 'server_feature';
@@ -330,6 +331,18 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     label: 'Spec taxonomy',
     description: 'When a workspace has specs but no areas yet, a decision model reads every spec and proposes a handful of areas with their specs. A person accepts, edits or rejects it; nothing is created before that.',
     costHint: '~$0.0005 per spec, once',
+  },
+  // Spec publication (apps/web/src/lib/spec-publication-decision.ts, Living
+  // Specs Slice 14). Asked once per approved revision, only in a workspace with
+  // native spec homes on, when the fixed rules leave it open. Every doubt keeps
+  // the spec private and no model answer publishes until a measured bar exists,
+  // so it is built in: its worst case is publication off.
+  spec_publication: {
+    id: 'spec_publication',
+    kind: 'built_in',
+    label: 'Spec publication',
+    description: 'Before an approved spec is written to the repo, a decision model reads the workspace\'s publication policy and the spec and says whether it may be published. When in doubt the spec stays in buildd.',
+    costHint: '~$0.0001 per approved revision',
   },
   chat: {
     id: 'chat',
