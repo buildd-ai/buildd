@@ -89,6 +89,33 @@ function Approve({ specId, revision, expectedVersion }: { specId: string; revisi
   );
 }
 
+/** Slice 14, R-68: publish a revision the policy kept private. A person's call, recorded as an override. */
+function PublishAnyway({ specId }: { specId: string }) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ tone: 'ok' | 'warn' | 'err'; text: string } | null>(null);
+  const publish = async () => {
+    setBusy(true);
+    const res = await fetch(`/api/specs/${encodeURIComponent(specId)}/publish`, { method: 'POST' });
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    setBusy(false);
+    if (res.ok) { setResult({ tone: 'ok', text: 'Publishing it: the repo copy is on its way.' }); router.refresh(); return; }
+    setResult({ tone: res.status === 409 ? 'warn' : 'err', text: body.error ?? 'Could not publish it. Try again.' });
+  };
+  return (
+    <div className="flex flex-col gap-2">
+      {result ? <Notice tone={result.tone} data-testid="spec-page-publish-result">{result.text}</Notice> : null}
+      {result?.tone === 'ok' ? null : (
+        <div>
+          <button type="button" className="btn btn-sm h-11 md:h-8" onClick={publish} disabled={busy} data-testid="spec-page-publish-anyway">
+            Publish anyway
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Compare({ specId, revisions, from, to }: { specId: string; revisions: number[]; from: number; to: number }) {
   const [a, setA] = useState(String(from));
   const [b, setB] = useState(String(to));
@@ -361,6 +388,7 @@ export default function SpecPage({ view }: { view: Ok }) {
           ? <Notice tone="warn" data-testid="spec-page-repo-copy">{view.source.copy}</Notice>
           : <p className="text-meta text-text-muted" data-testid="spec-page-repo-copy">{view.source.copy}</p>
       ) : null}
+      {view.canPublishAnyway ? <PublishAnyway specId={spec.id} /> : null}
 
       {line ? <Lede><span data-testid="spec-page-reading">{line}</span></Lede> : null}
 
