@@ -1,14 +1,17 @@
 import { db } from '@buildd/core/db';
 import { specMetadataChanges, specs, type SpecMetadataBlock } from '@buildd/core/db/schema';
-import { desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, ne, notInArray, sql } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
 import { author, fail, reach, type SpecCaller, type SpecError, type SpecRow } from './store';
 import { specApprovalDeps } from './approval';
+import { AREA_GONE_STATUSES } from './areas';
 
 /**
  * A spec's metadata block (docs/specs/living-specs.md §18, R-14, R-31): the
  * mechanical fields of its repo copy (`verified_by`, `surfaces`,
- * `last_verified`, `assertions`, `owner`), kept outside every revision.
+ * `last_verified`, `assertions`, `owner`), kept outside every revision. An
+ * area also keeps there the `domains` it covers, and a spec matched to a repo
+ * file on import its `repo_provenance`.
  *
  * Anyone with write access to the workspace's specs changes it, an agent or CI
  * included, with a reason. One statement writes the block (only while it is
@@ -18,8 +21,14 @@ import { specApprovalDeps } from './approval';
  * in a workspace that opted in gets its generated PR updated (R-15).
  */
 
-export const METADATA_KEYS = ['owner', 'last_verified', 'surfaces', 'verified_by', 'assertions'] as const;
+export const METADATA_KEYS = ['owner', 'last_verified', 'surfaces', 'verified_by', 'assertions', 'domains', 'repo_provenance'] as const;
 type Key = (typeof METADATA_KEYS)[number];
+/** The fields a repo spec file states, and so the ones an import writes and clears. */
+export const FILE_METADATA_KEYS = ['owner', 'last_verified', 'surfaces', 'verified_by', 'assertions'] as const;
+
+/** A `domain:` value: lowercase words joined by hyphens, like the repo's DOMAINS list. */
+export const DOMAIN_VALUE = /^[a-z0-9][a-z0-9-]{0,39}$/;
+const SHA = /^[0-9a-f]{40}$/;
 
 const PATH = /^(?!\/)(?!.*\.\.)[A-Za-z0-9_./[\]@+-]+$/;
 
@@ -40,10 +49,27 @@ function parseField(key: Key, raw: unknown): { value: SpecMetadataBlock[Key] | n
         && Object.keys(a).length > 0 && Object.entries(a).every(([k, v]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k) && ['string', 'number', 'boolean'].includes(typeof v) && !String(v).includes('\n')));
       return ok ? { value: raw as SpecMetadataBlock['assertions'] } : { error: 'assertions is a list of flat objects of one-line strings, numbers or booleans' };
     }
+    case 'domains': {
+      const list = Array.isArray(raw) && raw.length <= 20 && raw.every((d) => typeof d === 'string') ? [...new Set((raw as string[]).map((d) => d.trim().toLowerCase()))] : null;
+      if (!list || !list.every((d) => DOMAIN_VALUE.test(d))) return { error: 'domains is a list of up to 20 domain values, lowercase words joined by hyphens (e.g. ["tasks", "missions"])' };
+      return { value: list };
+    }
+    case 'repo_provenance': {
+      const p = raw as Record<string, unknown>;
+      const ok = !!p && typeof p === 'object' && !Array.isArray(p) && typeof p.path === 'string' && /^docs\/specs\/[^/]+\.md$/.test(p.path)
+        && typeof p.commitSha === 'string' && SHA.test(p.commitSha)
+        && (p.blobSha == null || (typeof p.blobSha === 'string' && SHA.test(p.blobSha)))
+        && (p.prNumber == null || (typeof p.prNumber === 'number' && Number.isInteger(p.prNumber) && p.prNumber > 0));
+      return ok
+        ? { value: { path: p.path as string, commitSha: p.commitSha as string, blobSha: (p.blobSha as string | null | undefined) ?? null, prNumber: (p.prNumber as number | null | undefined) ?? null } }
+        : { error: 'repo_provenance is { path: docs/specs/<file>.md, commitSha, blobSha?, prNumber? } with full SHAs' };
+    }
   }
 }
 
-const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+/** Equal as JSON values, whatever the key order (jsonb stores keys in its own order). */
+const canon = (v: unknown): unknown => (Array.isArray(v) ? v.map(canon) : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, canon((v as Record<string, unknown>)[k])])) : v);
+const same = (a: unknown, b: unknown) => JSON.stringify(canon(a ?? null)) === JSON.stringify(canon(b ?? null));
 
 export interface MetadataChangeView {
   field: string;
@@ -74,6 +100,14 @@ export async function updateSpecMetadata(caller: SpecCaller, specId: string, inp
   }
   const [spec] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
   if (!spec || !(await reach(caller, spec.workspaceId, true))) return fail(404, 'Spec not found');
+  if (parsed.domains) {
+    // Only an area covers domains, and each value names one area: placement and the repo copy must not have to choose.
+    if (spec.scope !== 'domain') return fail(400, 'domains is set on an area (a spec with scope domain), not on a feature or product spec');
+    const others = await db.select({ id: specs.id, title: specs.title, metadata: specs.metadata }).from(specs)
+      .where(and(eq(specs.workspaceId, spec.workspaceId), eq(specs.scope, 'domain'), ne(specs.id, specId), notInArray(specs.status, [...AREA_GONE_STATUSES])));
+    const taken = (parsed.domains as string[]).map((d) => [d, others.find((o) => (o.metadata?.domains ?? []).includes(d))] as const).filter(([, o]) => o);
+    if (taken.length) return fail(409, `already covered by another area: ${taken.map(([d, o]) => `${d} (${o!.title}, ${o!.id})`).join(', ')}. Remove it there first.`);
+  }
 
   const before: SpecMetadataBlock = spec.metadata ?? {};
   const next: SpecMetadataBlock = { ...before };
