@@ -5,11 +5,14 @@
  *
  * A runner claims with `workers.runner = <its localUiUrl>`, and heartbeats are
  * unique per (account, localUiUrl). The heartbeat's `environment.labels` carry
- * the hostname and machine; without a heartbeat the name is parsed from the
+ * the hostname and machine, and the runner's display name when it has one
+ * (`labels.name`); without a heartbeat the name is parsed from the
  * URL's host (`http://atlas.local:8766` → `atlas`).
  *
  * Pure and client-safe. `lib/runner-heartbeats.ts` loads the heartbeat rows.
  */
+
+import { normalizeRunnerName } from '@buildd/shared';
 
 export interface RunnerHeartbeatLike {
   accountId?: string | null;
@@ -46,16 +49,25 @@ export function runnerInitial(nameOrUrl: string): string {
 
 const OS_NAME: Record<string, string> = { darwin: 'macOS', linux: 'Linux', win32: 'Windows' };
 
-/** A heartbeat's own identity: hostname label, else the URL host. */
+/**
+ * A heartbeat's own identity. The name is the runner's display name
+ * (`labels.name`, set by `buildd name` or BUILDD_RUNNER_NAME) when it has one,
+ * with the hostname as the machine label; otherwise the hostname label, else
+ * the URL host. Never the identity key: rows join on `localUiUrl` either way.
+ */
 export function runnerIdentity(hb: Pick<RunnerHeartbeatLike, 'localUiUrl' | 'environment'>): { name: string; machine: string | null } {
   const labels = hb.environment?.labels ?? {};
   // `quill-studio.local` names the machine as well as `quill-studio`, and the
   // suffix costs a narrow runner column most of its width.
-  const name = (labels.hostname || '').replace(/\.(local|lan|home|localdomain)$/i, '') || runnerNameFromUrl(hb.localUiUrl);
-  const machine = labels.machine
+  const host = (labels.hostname || '').replace(/\.(local|lan|home|localdomain)$/i, '');
+  const description = labels.machine
     || [labels.os ? OS_NAME[labels.os] ?? labels.os : null, labels.arch].filter(Boolean).join(' · ')
     || null;
-  return { name, machine };
+  const displayName = normalizeRunnerName(labels.name);
+  if (displayName) {
+    return { name: displayName, machine: host && host !== displayName ? host : description };
+  }
+  return { name: host || runnerNameFromUrl(hb.localUiUrl), machine: description };
 }
 
 /** The key a worker joins its runner's heartbeat on. */
