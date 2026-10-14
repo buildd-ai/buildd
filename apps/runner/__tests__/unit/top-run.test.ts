@@ -66,7 +66,8 @@ function serveFakeRunner() {
   });
 }
 
-function fakeTerminal(tty = true, osc11Reply: string | null = null) {
+/** osc11Reply: the whole answer 5 ms after the query, or [delay ms, chunk] reads. */
+function fakeTerminal(tty = true, osc11Reply: string | Array<[number, string]> | null = null) {
   const writes: string[] = [];
   const raw: boolean[] = [];
   let onData: ((d: string) => void) | null = null;
@@ -84,7 +85,10 @@ function fakeTerminal(tty = true, osc11Reply: string | null = null) {
       isTTY: tty, columns: 80, rows: 24,
       write: (s: string) => {
         writes.push(s);
-        if (s === OSC11_QUERY && osc11Reply !== null) setTimeout(() => onData?.(osc11Reply), 5);
+        if (s === OSC11_QUERY && osc11Reply !== null) {
+          const chunks: Array<[number, string]> = typeof osc11Reply === 'string' ? [[5, osc11Reply]] : osc11Reply;
+          for (const [ms, chunk] of chunks) setTimeout(() => onData?.(chunk), ms);
+        }
       },
     },
   };
@@ -176,6 +180,33 @@ describe('runTop', () => {
     t.type('q');
     await done;
   });
+
+  // A late reply, split over two reads, must never reach the key handler: the
+  // c's of rgb:cccc would claim the waiting task, the / would open the filter.
+  const LATE = '\x1b]11;rgb:cccc/cccc/cccc\x07';
+  const splits: Array<[string, Array<[number, string]>]> = [
+    ['both halves after the timeout', [[220, LATE.slice(0, 14)], [240, LATE.slice(14)]]],
+    ['tail of c after the timeout', [[220, LATE.slice(0, LATE.length - 2)], [240, LATE.slice(-2)]]],
+    ['first half inside the probe window, rest after it', [[5, LATE.slice(0, 9)], [220, LATE.slice(9)]]],
+    ['split right after ESC, after the timeout', [[220, LATE.slice(0, 1)], [222, LATE.slice(1)]]],
+  ];
+  for (const [name, chunks] of splits) {
+    test(`a late OSC 11 reply split over two reads fires no key: ${name}`, async () => {
+      serveFakeRunner();
+      const t = fakeTerminal(true, chunks);
+      const done = runTop({ socketPath: sock, terminal: t.term, hostname: 'h', env: {}, processHooks: false, openUrl: () => {} });
+      await until(() => t.screen().includes('name override'));
+      await Bun.sleep(320);
+      expect(posts).toEqual([]);
+      const screen = t.screen();
+      expect(screen).not.toContain('filter ›');
+      expect(screen).not.toContain('Claiming');
+      expect(screen).not.toContain('nothing to claim');
+      expect(screen).not.toContain('Pick a task first');
+      t.type('q');
+      expect(await done).toBe(0);
+    });
+  }
 
   test('the header names the workspaces, and w switches', async () => {
     serveFakeRunner();

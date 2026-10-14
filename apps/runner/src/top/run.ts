@@ -15,7 +15,7 @@ import { hostname as osHostname } from 'os';
 import { queryTerminalBackground, terminalPalette, type Palette } from '../terminal-palette';
 import { probeRunnerSocket } from '../runner-socket';
 import { socketClient, type SocketClient } from './client';
-import { actionResultText, handleKey, parseKeys, type Effect } from './keys';
+import { actionResultText, createKeyDecoder, handleKey, type Effect, type Key } from './keys';
 import { renderFrame } from './render';
 import { eventChangesQueue, initialState, reduce, type TopEvent, type TopState } from './state';
 
@@ -26,6 +26,8 @@ export const EXIT_NOT_A_TERMINAL = 64;
 export const TASK_REFRESH_MS = 60_000;
 /** Coalesce a burst of queue events into one refetch. */
 const QUEUE_DEBOUNCE_MS = 250;
+/** How long a lone ESC waits for the rest of a sequence before it counts as the escape key. */
+const ESC_WAIT_MS = 50;
 
 export const ENTER_SCREEN = '\x1b[?1049h\x1b[?25l\x1b[H\x1b[2J';
 export const LEAVE_SCREEN = '\x1b[0m\x1b[?25h\x1b[?1049l';
@@ -183,13 +185,23 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
   };
 
   // ── terminal ────────────────────────────────────────────────────────────
-  const onData = (d: Buffer | string) => {
-    for (const key of parseKeys(typeof d === 'string' ? d : d.toString('utf8'))) {
+  // One decoder for the whole session: a terminal reply split across reads
+  // (a late OSC 11 answer) is swallowed whole, never typed as keys.
+  const decoder = createKeyDecoder();
+  let escTimer: ReturnType<typeof setTimeout> | null = null;
+  const applyKeys = (keys: Key[]) => {
+    for (const key of keys) {
       const r = handleKey(state, key, Date.now());
       state = r.state;
       for (const e of r.effects) void runEffect(e);
     }
     scheduleDraw();
+  };
+  const onData = (d: Buffer | string) => {
+    if (escTimer) { clearTimeout(escTimer); escTimer = null; }
+    applyKeys(decoder.feed(typeof d === 'string' ? d : d.toString('utf8')));
+    // A lone ESC is the escape key only once nothing follows it.
+    if (decoder.pendingEscape()) escTimer = setTimeout(() => { escTimer = null; applyKeys(decoder.flush()); }, ESC_WAIT_MS);
   };
   const onResize = () => scheduleDraw();
   const onSignal = () => finish(0);
@@ -205,6 +217,7 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
     for (const t of timers) clearInterval(t);
     if (renderTimer) clearTimeout(renderTimer);
     if (queueTimer) clearTimeout(queueTimer);
+    if (escTimer) clearTimeout(escTimer);
     term.stdin.off?.('data', onData);
     term.stdin.pause?.();
     term.stdout.off?.('resize', onResize);
@@ -225,7 +238,8 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
   term.stdin.setEncoding?.('utf8');
   // R-17: ask the terminal for its background before the first frame, at most
   // 150 ms, so a light terminal with no COLORFGBG (VS Code) gets Day. The reply
-  // is consumed there; keys typed meanwhile are replayed below.
+  // is consumed there; keys typed meanwhile, and the start of a reply that came
+  // too late, go through the session decoder below.
   let typedEarly = '';
   if (!opts.palette) {
     const { background, rest } = await queryTerminalBackground(term as any, undefined, { leaveRaw: true });

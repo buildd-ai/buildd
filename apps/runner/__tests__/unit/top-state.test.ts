@@ -233,6 +233,19 @@ describe('workspaces (R-19, AC-8)', () => {
     expect(currentWorkspace({ ...wsState(), selectedWorkspace: 'nope' })).toBeNull();
   });
 
+  test('--workspace that matches nothing: opens on all, and the status line says so', () => {
+    let s = reduce(fixtureState(), { type: 'workers', workers: [] });
+    s = { ...reduce(s, { type: 'tasks', tasks: WS_TASKS }), selectedWorkspace: 'nope' };
+    s = reduce(s, { type: 'workspaces', workspaces: WS });
+    expect(s.selectedWorkspace).toBeNull();
+    expect(s.status).toEqual({ text: 'No workspace matches "nope", so this shows all 3.', tone: 'error' });
+    // A match is left alone, with no status.
+    let ok = reduce(fixtureState(), { type: 'workers', workers: [] });
+    ok = reduce({ ...ok, selectedWorkspace: 'bravo' }, { type: 'workspaces', workspaces: WS });
+    expect(currentWorkspace(ok)?.id).toBe(WS[1].id);
+    expect(ok.status).toBeNull();
+  });
+
   test('with no workspace list yet, the tasks name the workspaces', () => {
     const s = reduce(reduce(fixtureState(), { type: 'workers', workers: [] }), {
       type: 'tasks',
@@ -249,8 +262,10 @@ describe('organizer runs are not work (R-22)', () => {
     expect(isOrganizerTask({ id: 'x', title: 'Aggregate results: Runner TUI', status: 'pending' })).toBe(true);
     expect(isOrganizerTask({ id: 'x', title: 'Evaluate mission completion: x', status: 'pending' })).toBe(true);
     expect(isOrganizerTask({ id: 'x', title: 'plan it', status: 'pending', roleSlug: 'organizer' })).toBe(true);
-    expect(isOrganizerTask({ id: 'x', title: 'plan it', status: 'pending', mode: 'planning' })).toBe(true);
-    expect(isOrganizerTask({ id: 'x', title: 'check in', status: 'pending', kind: 'coordination' })).toBe(true);
+    // Only organizer runs and the mission's own planning / check-in tasks: a
+    // coordination-kind or planning-mode task someone filed is real work.
+    expect(isOrganizerTask({ id: 'x', title: 'Reconcile the release queue', status: 'pending', kind: 'coordination' })).toBe(false);
+    expect(isOrganizerTask({ id: 'x', title: 'Spec the importer', status: 'pending', mode: 'planning' })).toBe(false);
     expect(isOrganizerTask({ id: 'x', title: 'Mission statement page', status: 'pending', roleSlug: 'builder' })).toBe(false);
   });
 
@@ -266,6 +281,13 @@ describe('organizer runs are not work (R-22)', () => {
     const row = missionRows(s).find(r => r.key === M.id)!;
     expect(row).toMatchObject({ done: 2, total: 8, planning: true });
     expect(missionRows(fixtureState()).find(r => r.key === M.id)!.planning).toBe(false);
+  });
+
+  test('a real coordination task stays visible', () => {
+    const M = TASKS[0].mission!;
+    const coord: TopTask = { id: 't-coord', title: 'Reconcile the release queue', status: 'pending', missionId: M.id, mission: M, roleSlug: 'builder', kind: 'coordination' };
+    const s = reduce(fixtureState(), { type: 'tasks', tasks: [...TASKS, coord] });
+    expect(taskRows(s, NOW).map(r => r.title)).toContain('Reconcile the release queue');
   });
 
   test('a worker on an organizer task the list does not carry is left out too', () => {

@@ -3,8 +3,8 @@
  * run.ts for one effect; an action on the wrong kind of row says why instead.
  */
 import { describe, expect, test } from 'bun:test';
-import { actionResultText, handleKey, parseKeys, type Effect, type Key } from '../../src/top/keys';
-import { reduce, selectedRow, type TopState } from '../../src/top/state';
+import { actionResultText, createKeyDecoder, handleKey, parseKeys, type Effect, type Key } from '../../src/top/keys';
+import { reduce, selectedRow, taskRows, type TopState } from '../../src/top/state';
 import { NOW, fixtureState } from './top-fixture';
 
 const ch = (c: string): Key => ({ name: 'char', ch: c });
@@ -198,5 +198,81 @@ describe('revision 2 keys (R-19, R-20)', () => {
   test('a late OSC 11 reply is swallowed, never typed as keys', () => {
     expect(parseKeys('\x1b]11;rgb:ffff/ffff/ffff\x07j')).toEqual([ch('j')]);
     expect(parseKeys('\x1b]11;rgb:0000/0000/0000\x1b\\k')).toEqual([ch('k')]);
+  });
+});
+
+describe('terminal replies split across reads never become keys (R-17)', () => {
+  // Real answers to the OSC 11 query, ended by BEL and by ST. The c's are the
+  // dangerous part: a bare c claims the selected waiting task.
+  const REPLIES = ['\x1b]11;rgb:cccc/cccc/cccc\x07', '\x1b]11;rgb:ffff/ffff/ffff\x1b\\', '\x1b]11;rgba:fafa/fafa/fafa/ffff\x07'];
+
+  /** The selected row is a waiting task, so a leaked c would claim it. */
+  const onWaiting = (): TopState => {
+    const s = { ...fixtureState(), focus: 'tasks' as const };
+    const idx = taskRows(s, NOW).findIndex(r => r.kind === 'waiting');
+    expect(idx).toBeGreaterThan(-1);
+    return { ...s, rowCursor: idx };
+  };
+
+  for (const reply of REPLIES) {
+    test(`every split point of ${JSON.stringify(reply)} is swallowed`, () => {
+      for (let k = 1; k < reply.length; k++) {
+        const d = createKeyDecoder();
+        const keys = [...d.feed(reply.slice(0, k)), ...d.feed(reply.slice(k))];
+        expect({ k, keys }).toEqual({ k, keys: [] });
+        // Nothing left half-read: the next key is read normally.
+        expect(d.feed('j')).toEqual([ch('j')]);
+
+        // And no key action fires on a waiting row.
+        let s = onWaiting();
+        const before = s;
+        const effects: Effect[] = [];
+        const d2 = createKeyDecoder();
+        for (const part of [reply.slice(0, k), reply.slice(k)]) {
+          for (const key of d2.feed(part)) {
+            const r = handleKey(s, key, NOW);
+            s = r.state;
+            effects.push(...r.effects);
+          }
+        }
+        expect({ k, effects }).toEqual({ k, effects: [] });
+        expect(s).toEqual(before);
+      }
+    });
+  }
+
+  test('a split point inside the reply, with a real key typed right after, keeps only the key', () => {
+    const reply = REPLIES[0];
+    for (let k = 1; k < reply.length; k++) {
+      const d = createKeyDecoder();
+      expect([...d.feed(reply.slice(0, k)), ...d.feed(reply.slice(k) + 'q')]).toEqual([ch('q')]);
+    }
+  });
+
+  test('a split CSI (arrow) still reads as the arrow', () => {
+    const d = createKeyDecoder();
+    expect([...d.feed('\x1b'), ...d.feed('[B')]).toEqual([{ name: 'down' }]);
+    const d2 = createKeyDecoder();
+    expect([...d2.feed('\x1b['), ...d2.feed('3'), ...d2.feed('~x')]).toEqual([ch('x')]);
+  });
+
+  test('a lone escape is a key once the read settles (flush)', () => {
+    const d = createKeyDecoder();
+    expect(d.feed('\x1b')).toEqual([]);
+    expect(d.pendingEscape()).toBe(true);
+    expect(d.flush()).toEqual([{ name: 'escape' }]);
+    expect(d.pendingEscape()).toBe(false);
+  });
+
+  test('flush never turns a half-read reply into keys', () => {
+    const d = createKeyDecoder();
+    d.feed('\x1b]11;rgb:cc');
+    expect(d.flush()).toEqual([]);
+    expect(d.feed('cc/cccc/cccc\x07c')).toEqual([ch('c')]);
+  });
+
+  test('ctrl-c still quits from inside an unfinished terminal string', () => {
+    const d = createKeyDecoder();
+    expect(d.feed('\x1b]11;rgb:cc\x03')).toEqual([{ name: 'ctrl-c' }]);
   });
 });

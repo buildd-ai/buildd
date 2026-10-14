@@ -12,46 +12,101 @@ export type Key =
   | { name: 'up' | 'down' | 'left' | 'right' | 'enter' | 'escape' | 'backspace' | 'tab' | 'ctrl-c' }
   | { name: 'char'; ch: string };
 
-/** Split one chunk of raw stdin into keys. */
+/** Split one chunk of raw stdin into keys (a fresh decoder, flushed at the end). */
 export function parseKeys(chunk: string): Key[] {
-  const keys: Key[] = [];
-  for (let i = 0; i < chunk.length; i++) {
-    const c = chunk[i];
-    if (c === '\x1b') {
-      const next = chunk[i + 1];
-      // An OSC string (a late answer to the OSC 11 background query): swallow
-      // it up to BEL or ST so none of its bytes are read as keys.
-      if (next === ']') {
-        let j = i + 2;
-        while (j < chunk.length && chunk[j] !== '\x07' && !(chunk[j] === '\x1b' && chunk[j + 1] === '\\')) j++;
-        i = chunk[j] === '\x1b' ? j + 1 : j;
-        continue;
-      }
-      if ((next === '[' || next === 'O') && i + 2 < chunk.length) {
-        const code = chunk[i + 2];
-        const map: Record<string, Key['name']> = { A: 'up', B: 'down', C: 'right', D: 'left' };
-        if (map[code]) { keys.push({ name: map[code] } as Key); i += 2; continue; }
-        // Unknown CSI sequence (e.g. F-keys, \x1b[3~): skip to its final byte.
-        let j = i + 2;
-        while (j < chunk.length && !/[A-Za-z~]/.test(chunk[j])) j++;
-        i = j;
-        continue;
-      }
-      keys.push({ name: 'escape' });
-      continue;
+  const d = createKeyDecoder();
+  return [...d.feed(chunk), ...d.flush()];
+}
+
+export interface KeyDecoder {
+  /** Decode the next read. A sequence cut off at the end is carried into the next feed. */
+  feed(chunk: string): Key[];
+  /** The read has settled: a lone ESC waiting for more is the escape key. Half-read terminal strings stay swallowed. */
+  flush(): Key[];
+  /** True when the last byte read was a lone ESC (run.ts flushes it after a short wait). */
+  pendingEscape(): boolean;
+}
+
+const ARROWS: Record<string, Key['name']> = { A: 'up', B: 'down', C: 'right', D: 'left' };
+/** Longest CSI / terminal string swallowed before giving up on it, so a stray ESC can never eat the keyboard. */
+const MAX_SEQ = 64;
+const MAX_STRING = 1024;
+
+/**
+ * A stateful stdin decoder for the whole session. Terminal sequences (CSI
+ * `ESC [ … final`, SS3 `ESC O x`, and strings `ESC ] … BEL | ESC \`, which is
+ * the shape of a late OSC 11 background reply) are tracked across reads, so a
+ * reply split over two chunks is swallowed whole and none of its bytes (the
+ * `c` of `rgb:cccc`, a `/`) are read as keys.
+ */
+export function createKeyDecoder(): KeyDecoder {
+  type St = 'ground' | 'esc' | 'csi' | 'ss3' | 'str' | 'strEsc';
+  let st: St = 'ground';
+  let seqLen = 0;
+
+  const ground = (keys: Key[], c: string, cp: number) => {
+    if (c === '\x1b') { st = 'esc'; return; }
+    if (c === '\r' || c === '\n') { keys.push({ name: 'enter' }); return; }
+    if (c === '\x03') { keys.push({ name: 'ctrl-c' }); return; }
+    if (c === '\x7f' || c === '\b') { keys.push({ name: 'backspace' }); return; }
+    if (c === '\t') { keys.push({ name: 'tab' }); return; }
+    if (cp < 0x20) return;
+    keys.push({ name: 'char', ch: c });
+  };
+
+  const step = (keys: Key[], c: string, cp: number) => {
+    switch (st) {
+      case 'ground':
+        return ground(keys, c, cp);
+      case 'esc':
+        if (c === '[') { st = 'csi'; seqLen = 0; return; }
+        if (c === 'O') { st = 'ss3'; return; }
+        // OSC, DCS, SOS, PM, APC: a terminal string, never typed.
+        if (c === ']' || c === 'P' || c === 'X' || c === '^' || c === '_') { st = 'str'; seqLen = 0; return; }
+        keys.push({ name: 'escape' });
+        st = 'ground';
+        return ground(keys, c, cp);
+      case 'csi':
+        if (cp >= 0x40 && cp <= 0x7e) {
+          st = 'ground';
+          if (ARROWS[c]) keys.push({ name: ARROWS[c] } as Key);
+          return;
+        }
+        if (c === '\x03') { st = 'ground'; keys.push({ name: 'ctrl-c' }); return; }
+        if (++seqLen > MAX_SEQ) st = 'ground';
+        return;
+      case 'ss3':
+        st = 'ground';
+        if (ARROWS[c]) keys.push({ name: ARROWS[c] } as Key);
+        return;
+      case 'str':
+        if (c === '\x07') { st = 'ground'; return; }
+        if (c === '\x1b') { st = 'strEsc'; return; }
+        // A terminal reply never carries ctrl-c: a person pressed it.
+        if (c === '\x03') { st = 'ground'; keys.push({ name: 'ctrl-c' }); return; }
+        if (++seqLen > MAX_STRING) st = 'ground';
+        return;
+      case 'strEsc':
+        if (c === '\\') { st = 'ground'; return; }
+        // ESC inside a string ends it and starts a new sequence.
+        st = 'esc';
+        return step(keys, c, cp);
     }
-    if (c === '\r' || c === '\n') { keys.push({ name: 'enter' }); continue; }
-    if (c === '\x03') { keys.push({ name: 'ctrl-c' }); continue; }
-    if (c === '\x7f' || c === '\b') { keys.push({ name: 'backspace' }); continue; }
-    if (c === '\t') { keys.push({ name: 'tab' }); continue; }
-    if (c < ' ') continue;
-    // Keep surrogate pairs together.
-    const cp = chunk.codePointAt(i)!;
-    const ch = String.fromCodePoint(cp);
-    if (ch.length > 1) i += ch.length - 1;
-    keys.push({ name: 'char', ch });
-  }
-  return keys;
+  };
+
+  return {
+    feed(chunk) {
+      const keys: Key[] = [];
+      for (const c of chunk) step(keys, c, c.codePointAt(0)!); // for-of keeps surrogate pairs together
+      return keys;
+    },
+    flush() {
+      if (st !== 'esc') return [];
+      st = 'ground';
+      return [{ name: 'escape' }];
+    },
+    pendingEscape: () => st === 'esc',
+  };
 }
 
 export type Effect =

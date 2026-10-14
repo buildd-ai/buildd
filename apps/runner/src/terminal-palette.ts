@@ -111,7 +111,8 @@ export interface QueryableTerminal {
 /**
  * Ask the terminal for its background (OSC 11) and wait at most `timeoutMs`.
  * Never throws and never waits longer. The reply is consumed here; anything
- * else read meanwhile (keys typed during startup) comes back in `rest`. Leaves
+ * else read meanwhile (keys typed during startup, or the start of a reply cut
+ * off by the timeout) comes back in `rest`, for a key decoder to read. Leaves
  * the terminal's raw mode as it found it, unless `leaveRaw` (the caller wants
  * raw mode next anyway).
  */
@@ -132,9 +133,10 @@ export function queryTerminalBackground(
       clearTimeout(timer);
       (stdin.off ?? stdin.removeListener)?.call(stdin, 'data', onData);
       if (!wasRaw && !opts.leaveRaw) { try { stdin.setRawMode?.(false); } catch { /* gone */ } }
-      // Drop the reply (or an unfinished one at the end) so no byte of it reaches the key handler.
-      // eslint-disable-next-line no-control-regex
-      const rest = buf.replace(OSC11_REPLY, '').replace(/\x1b\][^\x07\x1b]*(\x1b)?$/, '');
+      // Drop the reply. An unfinished one stays in `rest` on purpose: fed to
+      // top's key decoder it opens the terminal string, so the tail that
+      // arrives later is swallowed too instead of being typed as keys.
+      const rest = buf.replace(OSC11_REPLY, '');
       resolve({ background, rest });
     };
     const onData = (d: Buffer | string) => {
@@ -247,6 +249,28 @@ export function createPalette(theme: Theme, depth: ColorDepth): Palette {
 /** The palette for this process's terminal. */
 export function terminalPalette(env: Env = process.env, isTTY = !!process.stdout.isTTY, background: Rgb | null = null): Palette {
   return createPalette(detectTheme(env, background), detectColorDepth(env, isTTY));
+}
+
+/**
+ * The palette for a terminal, asking it for its background first (R-17): the
+ * startup banner's entry point, the same probe and 150 ms cap `top` uses. Asks
+ * only when stdin and stdout are both a terminal, and leaves raw mode as it
+ * found it. What else was read meanwhile is dropped: the banner reads no keys.
+ */
+export async function detectTerminalPalette(
+  term: QueryableTerminal = { stdin: process.stdin as any, stdout: process.stdout },
+  env: Env = process.env,
+  timeoutMs = OSC11_TIMEOUT_MS,
+): Promise<Palette> {
+  const isTTY = !!term.stdout.isTTY;
+  // NO_COLOR, a forced theme or a non-terminal: nothing to ask.
+  const forced = env.BUILDD_THEME?.toLowerCase();
+  const needAsk = isTTY && !!term.stdin.isTTY && env.NO_COLOR === undefined
+    && !['day', 'light', 'night', 'dark'].includes(forced ?? '');
+  if (!needAsk) return terminalPalette(env, isTTY);
+  const { background } = await queryTerminalBackground(term, timeoutMs);
+  term.stdin.pause?.();
+  return terminalPalette(env, isTTY, background);
 }
 
 /** Strip SGR and OSC 8 sequences (for widths and plain snapshots). */

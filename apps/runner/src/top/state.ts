@@ -197,7 +197,13 @@ export function reduce(state: TopState, event: TopEvent): TopState {
           teamId: w.teamId ?? null,
           teamName: w.teamName ?? w.team?.name ?? null,
         }));
-      return { ...state, workspaces };
+      const next = { ...state, workspaces };
+      // `--workspace` naming nothing this runner serves: open on all, and say so (R-19).
+      const sel = state.selectedWorkspace?.trim();
+      if (sel && workspaces.length > 0 && !currentWorkspace(next)) {
+        return { ...next, selectedWorkspace: null, status: { text: `No workspace matches "${sel}", so this shows all ${workspaces.length}.`, tone: 'error' } };
+      }
+      return next;
     }
     case 'connection':
       return { ...state, runner: { ...state.runner, online: !!(event as any).online } };
@@ -295,13 +301,13 @@ function relevantTasks(state: TopState, workers: Map<string, TopWorker>): TopTas
 const ORGANIZER_TITLE_PREFIXES = ['Mission:', 'Aggregate results:', 'Evaluate mission completion:', 'Close mission'];
 
 /**
- * The mission's own planning and check-in runs (R-22): the organizer role, a
- * planning-mode or coordination task, or one of the titles the server gives
- * them (the same prefixes the mission page leaves out of its work list).
+ * The mission's own planning and check-in runs (R-22): the organizer role, or
+ * one of the titles the server gives them (the same prefixes the mission page
+ * leaves out of its work list). A coordination-kind or planning-mode task that
+ * someone filed is real work and stays listed.
  */
-export function isOrganizerTask(t: Pick<TopTask, 'title' | 'roleSlug' | 'mode' | 'kind'>): boolean {
+export function isOrganizerTask(t: Pick<TopTask, 'title' | 'roleSlug'>): boolean {
   if (t.roleSlug === 'organizer') return true;
-  if (t.mode === 'planning' || t.kind === 'coordination') return true;
   const title = t.title ?? '';
   return ORGANIZER_TITLE_PREFIXES.some(p => title.startsWith(p));
 }
