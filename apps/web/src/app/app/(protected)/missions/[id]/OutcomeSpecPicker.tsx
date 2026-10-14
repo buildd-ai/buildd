@@ -154,13 +154,21 @@ export default function OutcomeSpecPicker({ missionId, workspaceId, selected, re
         </button>
       )}
 
-      {!readonly && open && (
+      {!readonly && open && specs && specs.length === 0 && (
+        <p className="mt-2 text-meta text-text-muted leading-snug" data-testid="outcome-spec-empty">
+          This workspace has no specs to choose from.{' '}
+          <a href="/app/specs" className={LINK}>Go to specs</a>{' '}
+          <button type="button" className={LINK} onClick={() => setOpen(false)}>Close</button>
+        </p>
+      )}
+
+      {!readonly && open && !(specs && specs.length === 0) && (
         <form
           className="mt-2 space-y-2"
           data-testid="outcome-spec-form"
           onSubmit={(e) => { e.preventDefault(); void save(); }}
         >
-          <p className="text-meta text-text-muted leading-snug">The mission completes only when every requirement in scope passes on the integrated result.</p>
+          <p className="text-meta text-text-muted leading-snug">With a spec chosen, the mission completes only when every requirement in scope passes on the integrated result.</p>
           <label className="block text-meta text-text-secondary">
             Spec
             <Select

@@ -131,6 +131,31 @@ describe('changing an existing selection', () => {
   });
 });
 
+describe('a workspace with no specs', () => {
+  beforeEach(() => {
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      calls.push({ url: String(url), method: init?.method ?? 'GET', body: null });
+      return new Response(JSON.stringify({ specs: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }) as typeof fetch;
+  });
+
+  it('says there is nothing to choose and links to the specs page instead of opening the form', async () => {
+    render([]);
+    await act(async () => { (q('outcome-spec-choose') as HTMLButtonElement).click(); });
+    expect(q('outcome-spec-form')).toBeNull();
+    const empty = q('outcome-spec-empty');
+    expect(empty?.textContent).toContain('This workspace has no specs to choose from.');
+    expect(empty?.querySelector('a')?.getAttribute('href')).toBe('/app/specs');
+    expect(container.textContent).not.toContain('completes only when');
+  });
+
+  it('with no outcome spec, says what choosing one would do without contradicting itself', () => {
+    render([]);
+    expect(container.textContent).toContain('None. The mission completes on its goal criteria alone.');
+    expect(container.textContent).not.toContain('The mission completes only when');
+  });
+});
+
 describe('outcomeSpecBody', () => {
   it('leaves the revision to the server when blank', () => {
     expect(outcomeSpecBody({ specId: SPEC_ID, revision: '', narrow: false, criteria: '', reason: '' })).toEqual({ specId: SPEC_ID });

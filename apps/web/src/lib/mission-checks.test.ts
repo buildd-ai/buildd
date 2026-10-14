@@ -82,6 +82,19 @@ describe('visualCheck (R-17, R-18, AC-7, AC-8)', () => {
     expect(new Set(states.map(s => `${s.status}:${s.state}`)).size).toBe(4);
   });
 
+  it('when off or not needed it offers no screens link and says optional once', () => {
+    const evidence = [{ label: 'Open screens', href: '/app/missions/m1?visualReview=1' }];
+    const off = visualCheck(visual({ status: 'optional', blocksMerge: false, blocksCompletion: false, policy: { mode: 'off', origin: 'workspace', waiverAllowed: true, locked: false } as MissionVisualReviewState['policy'] }), { ...opts, evidence });
+    const notNeeded = visualCheck(visual({ status: 'not_applicable', blocksMerge: false, blocksCompletion: false }), { ...opts, evidence });
+    for (const r of [off, notNeeded]) {
+      expect(r.evidence).toEqual([]);
+      expect(r.chip).toBeNull();
+    }
+    expect(off.state).toBe('optional');
+    const running = visualCheck(visual(), { ...opts, evidence });
+    expect(running.evidence).toEqual(evidence);
+  });
+
   it('is advisory when it gates neither the merge nor the finish', () => {
     const r = visualCheck(visual({ blocksMerge: false, blocksCompletion: false }), opts);
     expect(r).toMatchObject({ blocks: false, chip: 'advisory' });

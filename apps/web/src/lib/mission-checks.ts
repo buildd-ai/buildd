@@ -114,9 +114,12 @@ export function visualCheck(state: MissionVisualReviewState, opts: { mergeTier: 
   const actor: CheckActor = p.needsYou ? 'owner' : state.nextActor === 'jev' ? 'reviewer' : state.nextActor === 'none' ? 'none' : 'system';
   const row = (status: CheckStatus, text: string, detail: string | null, who: CheckActor = actor): CheckRow => ({ ...base, status, state: text, detail, actor: who });
 
+  // Off or not needed: there are no screens to open, and the state says it once.
+  const idle = (text: string, detail: string): CheckRow => ({ ...row('not_applicable', text, detail, 'none'), chip: null, evidence: [] });
+
   if (state.status === 'waived') return row('waived', 'waived', p.detail, 'none');
-  if (state.status === 'not_applicable') return row('not_applicable', 'not needed', 'No screens changed, so there was nothing to check.', 'none');
-  if (state.status === 'optional' || state.policy.mode === 'off') return row('not_applicable', 'optional', 'Visual review is off for this mission.', 'none');
+  if (state.status === 'not_applicable') return idle('not needed', 'No screens changed, so there was nothing to check.');
+  if (state.status === 'optional' || state.policy.mode === 'off') return idle('optional', 'Visual review is off for this mission.');
   if (state.status === 'passed') {
     if (state.staleEvidence) return row('stale', 'out of date', 'The branch changed after the last pass. It checks again.', 'system');
     return row('passed', 'passed', p.record?.detail ?? p.detail, 'none');
