@@ -85,10 +85,10 @@ export default function TaskDeliverables({
       )}
 
       {showCodeBar && (
-        <div className="p-4 bg-status-success/10 border border-status-success/20">
+        <div className="p-4 bg-surface-2 border border-border-default">
           <div className="flex items-center gap-3 text-sm flex-wrap">
             {result.branch && (
-              <code className="px-2 py-0.5 bg-status-success/15 text-status-success text-xs">
+              <code className="px-2 py-0.5 border border-border-default font-mono text-xs text-text-secondary">
                 {result.branch}
               </code>
             )}
@@ -114,7 +114,7 @@ export default function TaskDeliverables({
                 href={result.prUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="px-3 py-[5px] text-xs bg-status-success/10 text-status-success hover:bg-status-success/20"
+                className="px-3 py-[5px] text-xs border border-border-default text-accent-text hover:bg-surface-3"
               >
                 PR #{result.prNumber}
               </a>
