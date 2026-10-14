@@ -36,6 +36,13 @@ export interface CiJobLogEvidenceInput {
   /** The worker whose PR failed CI; evidence_objects.worker_id is required. */
   workerId: string;
   prNumber: number | null;
+  /**
+   * The object's name under the evidence key, without `.log.gz`. A caller that
+   * retries (the kernel's `capture_ci_evidence` effect) names it after what it
+   * captures, so a retry overwrites one object rather than writing a second.
+   * Absent: the capture time and job id.
+   */
+  objectName?: string;
 }
 
 export interface EvidenceObjectInsert {
@@ -116,7 +123,7 @@ async function capture(input: CiJobLogEvidenceInput, deps: CiJobLogEvidenceDeps)
   const rootTaskId = await deps.findRootTaskId(input.parentTaskId);
   const objectKey = buildEvidenceObjectKey(
     backend.prefix, input.workspaceId, rootTaskId, input.retryTaskId, input.workerId,
-    'ci_job_log', `${now.getTime()}-${input.failedJobId}.log.gz`,
+    'ci_job_log', `${input.objectName ?? `${now.getTime()}-${input.failedJobId}`}.log.gz`,
   );
   const expiresAt = new Date(now.getTime() + backend.retentionDays * 24 * 60 * 60 * 1000);
   const taskIds = [...new Set([input.retryTaskId, rootTaskId])];

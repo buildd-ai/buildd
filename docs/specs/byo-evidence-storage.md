@@ -80,7 +80,9 @@ anonymous GitHub API calls were rate-limited.
   (`confirmEvidenceUpload`, `apps/web/src/lib/evidence-confirm.ts`).
 - **CI job logs**: `captureCiJobLogEvidence` in
   `apps/web/src/lib/ci-job-log-evidence.ts`, called from
-  `apps/web/src/lib/ci-failure-retry.ts`.
+  `apps/web/src/lib/ci-failure-retry.ts` (legacy CI retries) and, for a
+  kernel-owned PR, from the workflow kernel's `capture_ci_evidence` effect
+  (`ciEvidence`, `apps/web/src/lib/workflow/ci-retry-effects.ts`).
 - **Read paths**: `GET /api/tasks/:id/evidence`, `GET /api/evidence`,
   `GET /api/evidence/download`, MCP `read_evidence`, the chat registry entry,
   and the inline object list on `get_task`, `get_pr` and `explain`

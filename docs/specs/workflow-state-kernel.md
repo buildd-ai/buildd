@@ -1161,11 +1161,15 @@ Shipped live in part 2 (the CI family):
   configured `maxCiRetries`, raised only by a `trigger=human` row. `attemptView`
   counts the same rows, so N of M is 1-based and identical in the title, the task
   context and the activity entry.
-- **`dispatch_ci_fix`** (`ci-retry-effects.ts`, reviews module, composed into
-  `workflowHostEffectHandlers()`) revalidates at dispatch (PR open, head still the bound
-  head, CI not green now), then files the legacy-shaped CI fix or drift-diagnose task
-  with `delivery_role = ci_fix`; its task id is the attempt id, so a re-run files
-  nothing twice. CI exhaustion escalates through `escalateCiRedHead`.
+- **`dispatch_ci_fix`** (the package's `handlers/ci.ts`, on the `Work` port) revalidates
+  at dispatch (PR open, head still the bound head, CI not green now), then files the
+  legacy-shaped CI fix or drift-diagnose task with `delivery_role = ci_fix` (the
+  reviews module's `ciFixWork` in `ci-retry-effects.ts` shapes it); its task id is the
+  attempt id, so a re-run files nothing twice, and a run that filed it but crashed before
+  binding the row is finished by the next one (bound, woken, owed its evidence). The failed job's log is captured by a
+  follow-up effect, `capture_ci_evidence`, which records an `evidence_captured` fact
+  (no work after the response). CI exhaustion escalates through `escalateCiRedHead`
+  (`ciEscalate`, the `Escalate` port).
 - **Claim (T9 for `ci`).** `FixClaimed` on a `ci` attempt moves it to `running`; CI
   green at claim resumes the delivery and cancels the task as skipped.
   `RepairNotNeeded` is the dispatch-time equivalent.
@@ -1505,7 +1509,8 @@ T25/T26, S24, AC-15):
   delivery already `REPAIRING(ci)` joins too (its queued attempt is `skipped`, it
   spends nothing). A newly opened incident also takes every kernel delivery on the
   same base repairing a failure it explains. `dispatch_trunk_fix`
-  (`lib/workflow/ci-red-trunk-effects.ts`) files one trunk-fix task per red base,
+  (the package's `handlers/trunk.ts`; the incident ledger is the `Trunk` port,
+  `builddTrunk` in `lib/workflow/trunk.ts`) files one trunk-fix task per red base,
   not per incident: a base can hold several unresolved incidents at once (one per
   signature: its runs were read before every check finished, or its head moved and
   broke more), and each used to file its own fixer. The task id is the base's
@@ -2184,7 +2189,7 @@ deferred behind its own lineage's PR.
 
 **Deviations and remaining gaps.**
 
-1. The kernel CI fix (`ci-retry-effects.ts`) does not read the live PR, so it
+1. The kernel CI fix (`ciFixWork`, `ci-retry-effects.ts`) does not read the live PR, so it
    carries no `repairTarget`. It resumes the worker's branch as before. Legacy CI
    retries and every conflict and migration attempt carry the stamp.
 2. A supersession stated only in prose (a PR body saying "Supersedes #N") is not

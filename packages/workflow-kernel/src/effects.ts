@@ -14,8 +14,8 @@
  * GitHub for the kernel's own landing and repair loop and are done as
  * `skipped:legacy_owns`.
  *
- * Handlers are the host's for now (apps/web composes them); the drain only
- * needs their shape.
+ * Handlers are the package's (`handlers/`, on the host's ports) plus the
+ * families the host still owns; the drain only needs their shape.
  */
 import type { EffectKind } from './commands';
 import type { ClaimedEffect, EffectSnapshot, Store } from './ports';
@@ -45,7 +45,7 @@ export const CRITICAL_EFFECTS: ReadonlySet<EffectKind> = new Set([
 export const UNGATED_EFFECTS: ReadonlySet<EffectKind> = new Set([
   'render_activity', 'stamp_pr_rows', 'notify', 'mission_note', 'wake_mission', 'release_attribution',
   'finalize_mission_pr', 'emit_pr_merged', 'verify_merge', 'cancel_open_attempts', 'scan_supersession',
-  'project_supersession', 'post_review', 'escalate_exhaustion', 'gate_event',
+  'project_supersession', 'post_review', 'escalate_exhaustion', 'gate_event', 'capture_ci_evidence',
 ]);
 
 /**

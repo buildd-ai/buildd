@@ -34,6 +34,8 @@ export interface CaseReading {
   label: string | null;
   confidence: number | null;
   topP: number | null;
+  /** Top p minus the runner-up's probability, as a stored `margin` measurement reads it. Absent or null: no probabilities. */
+  margin?: number | null;
 }
 
 export interface EvalCase {
@@ -80,21 +82,25 @@ export interface UnscoredGroup {
 const short = (hex: string) => hex.slice(0, 12);
 const bump = (m: Record<string, number>, k: string) => { m[k] = (m[k] ?? 0) + 1; };
 
-/** The probability of the chosen label: the largest option probability. */
-function topProbability(answer: unknown): number | null {
+/**
+ * The probability of the chosen label (the largest option probability) and its
+ * margin over the runner-up (the largest alone when there is one option), the
+ * same numbers `measuredSignal` compares a stored measurement with.
+ */
+function probabilitySignals(answer: unknown): { topP: number | null; margin: number | null } {
   const p = (answer as { probabilities?: Record<string, number> } | undefined)?.probabilities;
-  if (!p || typeof p !== 'object') return null;
-  const vals = Object.values(p).filter(v => typeof v === 'number' && Number.isFinite(v));
-  return vals.length ? Math.max(...vals) : null;
+  if (!p || typeof p !== 'object') return { topP: null, margin: null };
+  const vals = Object.values(p).filter(v => typeof v === 'number' && Number.isFinite(v)).sort((a, b) => b - a);
+  return vals.length ? { topP: vals[0], margin: vals[0] - (vals[1] ?? 0) } : { topP: null, margin: null };
 }
 
 function readChoice(answers: DecisionAnswers<DecisionQuestions>, key: string, toLabel: (c: string) => string): CaseReading {
   const a = (answers as Record<string, unknown>)[key] as { choice?: string; confidence?: number } | undefined;
-  if (!a || typeof a.choice !== 'string') return { label: null, confidence: null, topP: null };
+  if (!a || typeof a.choice !== 'string') return { label: null, confidence: null, topP: null, margin: null };
   return {
     label: toLabel(a.choice),
     confidence: typeof a.confidence === 'number' ? a.confidence : null,
-    topP: topProbability(a),
+    ...probabilitySignals(a),
   };
 }
 
@@ -295,11 +301,11 @@ export interface CollectedDeps {
   kinds: () => AnyBuilddDecisionKind[] | Promise<AnyBuilddDecisionKind[]>;
 }
 
-/** The probability of the chosen label of a kind's only choice question; null when it has none or several. */
-function kindTopP(kind: AnyBuilddDecisionKind, answers: DecisionAnswers<DecisionQuestions>): number | null {
+/** Top p and margin of a kind's only choice question; null when it has none or several. */
+function kindProbabilities(kind: AnyBuilddDecisionKind, answers: DecisionAnswers<DecisionQuestions>): { topP: number | null; margin: number | null } {
   const choiceKeys = Object.entries(kind.questions as DecisionQuestions).filter(([, q]) => q.type === 'choice').map(([k]) => k);
-  if (choiceKeys.length !== 1) return null;
-  return topProbability((answers as Record<string, unknown>)[choiceKeys[0]]);
+  if (choiceKeys.length !== 1) return { topP: null, margin: null };
+  return probabilitySignals((answers as Record<string, unknown>)[choiceKeys[0]]);
 }
 
 export async function collectedFromReplay(
@@ -359,8 +365,8 @@ export async function collectedFromReplay(
           verdict = null;
         }
         return verdict
-          ? { label: verdict.decision, confidence: verdict.confidence, topP: kindTopP(kind, answers) }
-          : { label: null, confidence: null, topP: null };
+          ? { label: verdict.decision, confidence: verdict.confidence, ...kindProbabilities(kind, answers) }
+          : { label: null, confidence: null, topP: null, margin: null };
       },
       judge: label => objective.score({ label: outcome.label, value: outcome.value }, label),
       labelled: (kind.decisions as readonly string[]).some(d => objective.score({ label: outcome.label, value: outcome.value }, d) !== null),

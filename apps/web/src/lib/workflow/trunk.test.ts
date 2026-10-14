@@ -8,11 +8,11 @@ import { describe, expect, test } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { checkRunsSummary } from './github-facts';
 import {
-  blockedOnResolvedSql, openIncidentsForBaseSql, openOrJoinIncidentSql, recentSignatureDeliveriesSql, repairingCiOnBaseSql,
-  resolveIncidentSql, unresolvedIncidentsSql,
+  blockedOnResolvedSql, linkTrunkFixSql, openIncidentsForBaseSql, openOrJoinIncidentSql, recentSignatureDeliveriesSql, repairingCiOnBaseSql,
+  resolveIncidentSql, trunkFixAnchorSql, trunkIncidentSql, unresolvedIncidentsSql,
   DEFAULT_TRUNK_WINDOW_MINUTES, UNKNOWN_CI_SIGNATURE, ciSignature, signatureChecks, trunkBreakerConfig, trunkExplains, trunkRecovered,
 } from './trunk';
-import { trunkFixAnchorSql, trunkFixDescription, trunkFixTitle } from './ci-red-trunk-effects';
+import { trunkFixDescription, trunkFixTitle } from '@buildd/workflow-kernel/handlers/trunk';
 
 describe('trunkBreakerConfig', () => {
   test('absent = on with the base-red rule only; false turns it off; the multi-delivery rule is opt-in', () => {
@@ -99,6 +99,12 @@ describe('incident SQL (rendered through PgDialect)', () => {
     expect(s).toContain('(o.trunk_fix_task_id IS NULL AND (o.first_seen_at, o.id) < (me.first_seen_at, me.id))');
     expect(s).toMatch(/t\.status NOT IN \(\$\d+::text, \$\d+::text, \$\d+::text\)/);
     expect(s).toContain('ORDER BY (o.first_seen_at, o.id) LIMIT 1');
+  });
+  test('the Trunk port reads one incident and links its fix only while it has none, is unresolved, and the task exists', () => {
+    expect(render(trunkIncidentSql(D))).toContain('SELECT id, workspace_id, repo_full_name, base_ref, signature, status, trunk_fix_task_id, affected_deliveries FROM trunk_incidents WHERE id = $1::uuid');
+    const link = render(linkTrunkFixSql(D, D));
+    expect(link).toContain("UPDATE trunk_incidents SET trunk_fix_task_id = $1::uuid, status = 'fixing'");
+    expect(link).toContain("WHERE id = $2::uuid AND trunk_fix_task_id IS NULL AND status <> 'resolved' AND EXISTS (SELECT 1 FROM tasks WHERE id = $3::uuid)");
   });
   test('resolve is a CAS: only an unresolved incident resolves, once', () => {
     expect(render(resolveIncidentSql(D))).toContain("SET status = 'resolved', resolved_at = now(), updated_at = now() WHERE id = $1::uuid AND status <> 'resolved' RETURNING id");

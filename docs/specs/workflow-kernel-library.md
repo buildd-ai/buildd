@@ -132,6 +132,8 @@ GitHub or Next.js.
     to them with the Postgres store. NOT IMPLEMENTED: the ingest funnel
     (`ingestFact`), authority resolution and the projections' SQL still
     sequence their statements in apps/web.
+    The Store also binds a ledger row to the task filed for it
+    (`linkAttemptTask`, `linkAttemptTaskSql`).
   - GitHub facts: `GithubFactReader` (now the package's; `facts.ts`
     re-exports it), plus `GithubWrites`, the writes the effects need (merge
     at a pinned head, post a review, publish a commit status, update a
@@ -144,19 +146,35 @@ GitHub or Next.js.
     `@/lib/github`, `builddGithubFor` (the workspace's installation, its
     live reads and writes); how a merge answer reads as T16 is the reviews
     module's `mergeAnswerOf` (`pr-landing-effects.ts`). NOT IMPLEMENTED: the
-    handlers not moved yet (review, CI, conflict, trunk) still call
-    `@/lib/github` directly.
+    handlers not moved yet (review, conflict) still call `@/lib/github`
+    directly.
   - Clock: `now()`; the in-memory store and the conformance suite use a
     controllable clock (`controllableClock`, `src/memory/clock.ts`). SQL
     `now()` stays inside the Postgres statements.
-  - Work: file a task of a given role with a description, pinned target and
-    lineage; wake a task; cancel a task. The host maps this to its scheduler
-    (in buildd: task insert plus `announceTaskCreated`). Port and
-    `RecordingWork` exist; NOT IMPLEMENTED: the buildd adapter.
+  - Work: file a task of a given role under the kernel's own id (the ledger
+    row's, or the trunk anchor's), with a pinned target, lineage and the
+    detail the host's builder needs; the host may answer `skipped` (nothing it
+    can file now) or `evidence` (still owed for the new task, which the kernel
+    turns into a follow-up effect). Also wake a task, cancel one, cancel a
+    delivery's pending tasks of a role, and steer a filed task. buildd's
+    adapter is `builddWork` (`kernel-ports.ts`: the task insert under the id,
+    `announceTaskCreated`, `wakeTask`, the instruction queue), with each
+    role's row shaped by its module's builder handed in from the root
+    (`ciFixWork`, `trunkFixWork`); `RecordingWork` in memory.
   - Notify: a delivery's activity comment and team notifications. Port and
     `RecordingNotify` exist; `activity` answers with the render's outcome.
     buildd's adapter is composed at the root: the comment render
-    (`activityNotify`, `pr-activity-effects.ts`) and `notifyTeamOf`.
+    (`activityNotify`, `pr-activity-effects.ts`, loaded on its first render)
+    and `notifyTeamOf`, which refuses an alert kind it does not know
+    (`isTeamAlertEvent`) instead of casting it.
+  - Trunk: the trunk breaker's incident ledger (read an incident, its fix
+    anchor, link its fix, the host's failing-check signature). buildd's is
+    `builddTrunk` (`trunk.ts`) over `trunk_incidents`; `RecordingTrunk` in
+    memory. Comparing signatures is the package's (`src/trunk-signature.ts`).
+  - Escalate: hand a delivery whose repair family ran out to a person
+    (`ciEscalate` for family `ci`); Evidence: capture run evidence the host
+    keeps (`ciEvidence`, the CI job log). `RecordingEscalate`,
+    `RecordingEvidence` in memory.
   - Ingest: the fact funnel an effect hands a live read's fact to
     (`IngestFact`: a close or a head move). Still buildd's `ingestFact`
     (`builddIngest`); `RecordingIngest` in memory.
@@ -184,13 +202,19 @@ GitHub or Next.js.
   composition root's slots (`workflowKernelHooks`,
   `workflowHostEffectHandlers` in `@/modules`, which replace the old
   handler chain there) and the package's handlers win over the
-  host's for the kinds they own. Implemented: landing and post-merge work
-  (`merge_call`, `verify_merge`, `emit_pr_merged`, `finalize_mission_pr`), a
-  closed PR's resolution (`scan_supersession`, `project_supersession`,
-  `wake_mission`) and the PR activity render (`render_activity`). NOT
-  IMPLEMENTED: review, review hand-off, CI retry, CI-red trunk and conflict
-  retry are still apps/web modules (`workflowHostEffectHandlers`); the drain
-  that runs them is the package's.
+  host's for the kinds they own; for a kind several families share
+  (`escalate_exhaustion`, `cancel_open_attempts`) the package answers its own
+  families and hands the others to the host's handler. Implemented: landing
+  and post-merge work (`merge_call`, `verify_merge`, `emit_pr_merged`,
+  `finalize_mission_pr`), a closed PR's resolution (`scan_supersession`,
+  `project_supersession`, `wake_mission`), the PR activity render
+  (`render_activity`), the CI family (`dispatch_ci_fix`, its follow-up
+  `capture_ci_evidence`, which replaced work in `after()` and records an
+  `evidence_captured` fact, and CI exhaustion) and the trunk breaker
+  (`dispatch_trunk_fix`, `cancel_open_attempts` for `blocked_on_trunk`). NOT
+  IMPLEMENTED: review, review hand-off and conflict retry are still apps/web
+  modules (`workflowHostEffectHandlers`); the drain that runs them is the
+  package's.
 - Conformance suite: `CONFORMANCE_SCENARIOS`
   (`packages/workflow-kernel/src/conformance/scenarios.ts`), host-independent
   scenarios over a `ConformanceHost`, run on the in-memory store by
@@ -202,8 +226,11 @@ GitHub or Next.js.
   §10.4 supersession, §14 kill switch), the landing lane, AC-27–AC-29, and
   the package's handlers (the `handlers/...` scenarios) run by a real drain
   on a fake GitHub (`FakeGithub`) and the recording Ingest, Lifecycle and
-  Notify. NOT IMPLEMENTED: the rest of the §16 matrix, §15 replay, the #3787
-  and #4663/#4670 sequences, and scenarios for the handlers not moved yet.
+  Notify, Work, Trunk, Escalate and Evidence (a `handlers/...` scenario may
+  also run a handler directly, past the drain's guards, so the handler's own
+  guard is what it tests). NOT IMPLEMENTED: the rest of the §16 matrix, §15
+  replay, the #3787 and #4663/#4670 sequences, and scenarios for the handlers
+  not moved yet.
 - No model calls, prompts or decision policies in the package. Model-backed
   judgment stays possible through the Decide port:
   - Where the kernel needs a judgment (a reviewer verdict, whether a conflict
@@ -282,8 +309,9 @@ never applied by two hosts with different code or by a host that is down.
   `apps/control-plane/wrangler.jsonc`), not from `/api/cron/pr-reconcile`. An
   effect is never drained inline at the end of a Vercel request.
 - Effects run under the Worker's request budget. An effect that needs longer
-  (CI evidence capture today runs in `after()`) is split into a fact-producing
-  step the drain can retry, or handed to Dispatch.
+  is split into a fact-producing step the drain can retry, or handed to
+  Dispatch: CI evidence capture is its own effect (`capture_ci_evidence`)
+  recording an `evidence_captured` fact, not work in `after()`.
 - Reads (task page, mission page, `get_pr`, `explain`, Home) read projections
   from Postgres directly on either host; reading needs no command.
 - `EXECUTION_MODE=shadow` still passes every request to Vercel, and in shadow

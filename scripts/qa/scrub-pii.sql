@@ -314,6 +314,9 @@ DELETE FROM decision_feature_modes;
 -- Stored model measurements: owner notes in `reason`; a QA clone runs every
 -- decision on Jev at its code default.
 DELETE FROM decision_model_measurements;
+-- Automatic decision model switches: eval run ids and the routes a team chose;
+-- a QA clone has no switch in effect.
+DELETE FROM decision_model_switches;
 -- Stripe webhook idempotency ledger: event ids are Stripe-side identifiers.
 DELETE FROM stripe_events;
 -- Capability decisions: per-run grant/PR audit; resources name repos and PRs.

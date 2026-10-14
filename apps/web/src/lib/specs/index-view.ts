@@ -54,6 +54,8 @@ export interface AreaProposal {
   specIds: string[];
   /** Where a person accepts it; absent until the proposal flow exists. */
   acceptHref?: string | null;
+  /** Which proposal it is from (organize's `proposedBy.source`), sent back on accept so the keys match. */
+  source?: 'model' | 'words';
 }
 
 export interface SpecIndexOptions {
@@ -110,6 +112,8 @@ export interface PossibleArea {
   key: string;
   /** The taxonomy proposal key, when it is one. */
   proposalKey: string | null;
+  /** Which proposal the key is from, when it is one. */
+  proposalSource?: 'model' | 'words';
   title: string;
   specIds: string[];
   acceptHref: string | null;
@@ -255,7 +259,7 @@ export function specIndexView(input: readonly SpecIndexInput[], options: SpecInd
     const members = p.specIds.filter((id) => unfiledIds.has(id) && !claimed.has(id));
     if (!members.length) continue;
     members.forEach((id) => claimed.add(id));
-    possibleAreas.push({ key: `proposal:${p.key ?? p.title}`, proposalKey: p.key ?? null, title: p.title, specIds: members, acceptHref: p.acceptHref ?? null });
+    possibleAreas.push({ key: `proposal:${p.key ?? p.title}`, proposalKey: p.key ?? null, ...(p.source ? { proposalSource: p.source } : {}), title: p.title, specIds: members, acceptHref: p.acceptHref ?? null });
   }
   const byTitle = new Map<string, { title: string; ids: string[] }>();
   for (const u of unfiled) {
@@ -406,8 +410,8 @@ export function filingFacts(spec: { parentSpecId: string | null }, f: IndexFilin
 }
 
 /** A cold-start taxonomy proposal (§17 R-4) as possible areas, each accepted by its key. Pure. */
-export function proposalAreas(proposal: { areas: ReadonlyArray<{ key: string; title: string; members: ReadonlyArray<{ specId: string }> }> } | null | undefined): AreaProposal[] {
-  return (proposal?.areas ?? []).map((a) => ({ key: a.key, title: a.title, specIds: a.members.map((m) => m.specId) }));
+export function proposalAreas(proposal: { areas: ReadonlyArray<{ key: string; title: string; members: ReadonlyArray<{ specId: string }> }> } | null | undefined, source?: 'model' | 'words'): AreaProposal[] {
+  return (proposal?.areas ?? []).map((a) => ({ key: a.key, title: a.title, specIds: a.members.map((m) => m.specId), ...(source ? { source } : {}) }));
 }
 
 /** One area's imported specs waiting for a person's confirmation (§18, R-19). */
