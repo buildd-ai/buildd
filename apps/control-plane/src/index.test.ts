@@ -139,7 +139,22 @@ describe('pusher shim', () => {
 describe('health', () => {
   it('reports the deployed commit, so release CI can verify lockstep with the web app', async () => {
     const res = await worker.fetch(new Request('https://control-plane.buildd.dev/__control-plane/health'), { EXECUTION_MODE: 'own', GIT_SHA: 'abc123' }, { waitUntil() {}, passThroughOnException() {} } as never);
-    expect(await res.json()).toEqual({ ok: true, service: 'control-plane', mode: 'own', commit: 'abc123' });
+    expect(await res.json()).toEqual({ ok: true, service: 'control-plane', mode: 'own', kernel: 'shadow', commit: 'abc123' });
+  });
+
+  it('reports kernel own only in own mode AND with a command key, so a web host keyed first keeps running the kernel itself', async () => {
+    const ctx = { waitUntil() {}, passThroughOnException() {} } as never;
+    const kernelOf = async (env: Record<string, string>) =>
+      ((await (await worker.fetch(new Request('https://control-plane.buildd.dev/__control-plane/health'), env, ctx)).json()) as { kernel: string; mode: string });
+    const prior = process.env.KERNEL_COMMAND_SECRET;
+    delete process.env.KERNEL_COMMAND_SECRET;
+    try {
+      expect(await kernelOf({ EXECUTION_MODE: 'own' })).toMatchObject({ mode: 'own', kernel: 'shadow' });
+      expect(await kernelOf({ EXECUTION_MODE: 'own', KERNEL_COMMAND_SECRET: 'k1:s' })).toMatchObject({ mode: 'own', kernel: 'own' });
+      expect(await kernelOf({ EXECUTION_MODE: 'shadow', KERNEL_COMMAND_SECRET: 'k1:s' })).toMatchObject({ mode: 'shadow', kernel: 'shadow' });
+    } finally {
+      if (prior !== undefined) process.env.KERNEL_COMMAND_SECRET = prior;
+    }
   });
 });
 
@@ -216,5 +231,93 @@ describe('deep health', () => {
   it('shallow health stays public', async () => {
     const res = await worker.fetch(new Request('https://control-plane.buildd.dev/__control-plane/health'), { EXECUTION_MODE: 'own', CRON_SECRET: 's3cret' }, ctx);
     expect([res.status, (await res.json() as { ok: boolean }).ok]).toEqual([200, true]);
+  });
+});
+
+describe('the kernel command API (workflow-kernel-library.md §3)', () => {
+  const ctx = { waitUntil() {}, passThroughOnException() {} } as never;
+  const OWN_HOST = { EXECUTION_MODE: 'own', CONTROL_PLANE_HOST: 'control-plane.buildd.dev', KERNEL_COMMAND_SECRET: 'k1:s3cret' };
+
+  it('this process is the kernel\'s control-plane host: every transition it applies is tagged so', async () => {
+    const { kernelHost } = await import('@/lib/workflow/kernel-host');
+    expect(kernelHost()).toBe('control-plane');
+  });
+
+  it('POST /v1/commands is served on the Worker\'s own hostname, and refuses an unsigned request before anything runs', async () => {
+    const res = await worker.fetch(new Request('https://control-plane.buildd.dev/v1/commands', { method: 'POST', body: '{}' }), OWN_HOST, ctx);
+    expect(res.status).toBe(401);
+    expect(res.headers.get(SERVED_BY)).toBe('control-plane');
+  });
+
+  it('in shadow it answers not_host, so the web host runs the command and the two never both apply', async () => {
+    const res = await worker.fetch(new Request('https://control-plane.buildd.dev/v1/commands', { method: 'POST', body: '{}' }), { ...OWN_HOST, EXECUTION_MODE: 'shadow' }, ctx);
+    expect([res.status, ((await res.json()) as { code: string }).code]).toEqual([409, 'not_host']);
+  });
+
+  it('without KERNEL_COMMAND_SECRET every command is refused, even in own mode and signed with another secret', async () => {
+    const body = '{}';
+    // Shaped like a signed request; the refusal comes before any signature is read.
+    const headers = { 'Dispatch-Key-Id': 'cron', 'Dispatch-Timestamp': String(Math.floor(Date.now() / 1000)), 'Dispatch-Signature': '0'.repeat(64) };
+    const res = await worker.fetch(new Request('https://control-plane.buildd.dev/v1/commands', { method: 'POST', body, headers }), { EXECUTION_MODE: 'own', CONTROL_PLANE_HOST: 'control-plane.buildd.dev', CRON_SECRET: 's3cret' }, ctx);
+    expect([res.status, ((await res.json()) as { code: string }).code]).toEqual([503, 'unconfigured']);
+  });
+
+  it('is never served on a buildd.dev route: there the path passes through to the web app', async () => {
+    const seen: string[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (r: Request) => { seen.push(new URL(r.url).pathname); return new Response('origin', { status: 404 }); }) as typeof fetch;
+    try {
+      const res = await worker.fetch(new Request('https://buildd.dev/v1/commands', { method: 'POST', body: '{}' }), OWN_HOST, ctx);
+      expect(res.headers.get(SERVED_BY)).toBe('web');
+      expect(seen).toEqual(['/v1/commands']);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    expect(ROUTES).toHaveLength(7);
+  });
+});
+
+describe('the cron trigger: the kernel\'s drain and floor (AC-10)', () => {
+  it('is committed hourly at :10, sharing the web app\'s merge-state wake window', async () => {
+    const { readFileSync } = await import('node:fs');
+    const cfg = readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8');
+    expect(cfg).toContain('"triggers": { "crons": ["10 * * * *"] }');
+  });
+
+  it('in shadow the tick does nothing: no database read, no outbound call', async () => {
+    const seen: string[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (r: RequestInfo | URL) => { seen.push(String(r instanceof Request ? r.url : r)); return new Response('x'); }) as typeof fetch;
+    const logs: string[] = [];
+    const realLog = console.log;
+    console.log = (...a: unknown[]) => { logs.push(a.join(' ')); };
+    try {
+      await worker.scheduled({ cron: '10 * * * *', scheduledTime: Date.now(), noRetry() {} } as never, { EXECUTION_MODE: 'shadow' }, { waitUntil() {}, passThroughOnException() {} } as never);
+    } finally {
+      globalThis.fetch = realFetch;
+      console.log = realLog;
+    }
+    expect(seen).toEqual([]);
+    expect(logs.some((l) => l.includes('[kernel-floor] skipped: shadow'))).toBe(true);
+  });
+
+  it('in own mode without KERNEL_COMMAND_SECRET (not switched over) the tick does nothing either', async () => {
+    const seen: string[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (r: RequestInfo | URL) => { seen.push(String(r instanceof Request ? r.url : r)); return new Response('x'); }) as typeof fetch;
+    const logs: string[] = [];
+    const realLog = console.log;
+    console.log = (...a: unknown[]) => { logs.push(a.join(' ')); };
+    const prior = process.env.KERNEL_COMMAND_SECRET;
+    delete process.env.KERNEL_COMMAND_SECRET;
+    try {
+      await worker.scheduled({ cron: '10 * * * *', scheduledTime: Date.now(), noRetry() {} } as never, { EXECUTION_MODE: 'own' }, { waitUntil() {}, passThroughOnException() {} } as never);
+    } finally {
+      globalThis.fetch = realFetch;
+      console.log = realLog;
+      if (prior !== undefined) process.env.KERNEL_COMMAND_SECRET = prior;
+    }
+    expect(seen).toEqual([]);
+    expect(logs.some((l) => l.includes('[kernel-floor] skipped: no_command_key'))).toBe(true);
   });
 });

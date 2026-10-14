@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
 const ZERO = { total: 0, stamped: 0, closed: 0, skipped: 0, errors: 0 };
@@ -86,6 +86,16 @@ mock.module('@/lib/workflow/seam', () => ({
   drainDueEffects: mockDrainDueEffects, reconcileTrunkIncidents: mockTrunk, reconcileKernelDeliveries: mockKernelFloor,
   restartTreadmillCycles: mockTreadmillCycles,
 }));
+// The command ledger's retention prune rides the same kernel pass (lib/workflow/kernel-floor.ts).
+const mockPrune = mock(async () => 0);
+mock.module('@/lib/workflow/command-ledger', () => ({
+  postgresCommandLedger: () => ({ prune: mockPrune }), COMMAND_LEASE_MS: 120_000, COMMAND_RETENTION_DAYS: 7,
+}));
+
+// When the control plane's floor last ran (its `kernel-floor` cron run): the liveness fallback's input.
+let lastFloorAt: Date | null = null;
+const realKernelFloor = await import('@/lib/workflow/kernel-floor');
+mock.module('@/lib/workflow/kernel-floor', () => ({ ...realKernelFloor, lastControlPlaneFloorAt: async () => lastFloorAt }));
 
 let dueCount: number | null = 0;
 mock.module('@/lib/redis', () => ({
@@ -211,6 +221,53 @@ describe('GET /api/cron/pr-reconcile', () => {
     expect(mockTreadmillCycles).toHaveBeenCalled();
     expect(mockTreadmillCycles.mock.calls[0]![0]).toEqual({ cooldownMs: 60 * 60_000 });
     expect(body.treadmillCycles).toMatchObject({ restarted: 1, refused: 1 });
+  });
+
+  describe('who runs the kernel\'s drain and floor (workflow-kernel-library §3)', () => {
+    const kernelMocks = [mockDrainDueEffects, mockTrunk, mockKernelFloor, mockTreadmillCycles, mockPrune];
+    const saved: Record<string, string | undefined> = {};
+    beforeEach(async () => {
+      for (const k of ['EXECUTION_MODE', 'KERNEL_COMMAND_SECRET']) saved[k] = process.env[k];
+      for (const m of kernelMocks) m.mockClear();
+      (await import('@/lib/workflow/kernel-client')).resetKernelModeCache();
+    });
+    afterEach(() => {
+      for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    });
+    const cutOver = () => { process.env.EXECUTION_MODE = 'own'; process.env.KERNEL_COMMAND_SECRET = 'k1:test'; };
+
+    it('no command key on this host: not switched over, so this route drains and runs the floor, even with EXECUTION_MODE=own', async () => {
+      process.env.EXECUTION_MODE = 'own';
+      delete process.env.KERNEL_COMMAND_SECRET;
+      const body = await (await GET(makeRequest('test-secret'))).json();
+      expect(body.kernelSkipped).toBeUndefined();
+      expect(body).toMatchObject({ kernelHost: 'web', kernelReason: 'shadow' });
+      for (const m of kernelMocks) expect(m).toHaveBeenCalled();
+    });
+
+    it('cut over, with the control plane\'s floor current: none of it runs here', async () => {
+      cutOver();
+      lastFloorAt = new Date(Date.now() - 50 * 60_000);
+      const res = await GET(makeRequest('test-secret'));
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.kernelSkipped).toBe('control_plane_hosts');
+      expect(body.kernelOutbox).toBeUndefined();
+      for (const m of kernelMocks) expect(m).not.toHaveBeenCalled();
+      // The rest of the hourly pass still runs here.
+      expect(mockReconcile).toHaveBeenCalled();
+    });
+
+    it('cut over, with the control plane\'s floor older than two periods or never run: the liveness fallback drains here, and says so', async () => {
+      cutOver();
+      for (const at of [new Date(Date.now() - 121 * 60_000), null]) {
+        lastFloorAt = at;
+        for (const m of kernelMocks) m.mockClear();
+        const body = await (await GET(makeRequest('test-secret'))).json();
+        expect(body).toMatchObject({ kernelHost: 'web', kernelReason: 'control_plane_floor_stale', kernelOutbox: { claimed: 0 } });
+        for (const m of kernelMocks) expect(m).toHaveBeenCalled();
+      }
+    });
   });
 
   it('returns 500 when reconcileStalePrWorkers throws', async () => {
