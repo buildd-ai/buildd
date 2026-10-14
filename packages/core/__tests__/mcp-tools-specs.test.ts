@@ -330,6 +330,31 @@ describe('manage_specs', () => {
     expect(last).not.toContain('remain');
   });
 
+  it('import text shows each file once, the classifier\'s suggestion for an Unfiled one, the fallback label, and a related spec as an explicit attach_to', async () => {
+    const REL = '33333333-3333-4333-8333-333333333333';
+    api.mockResolvedValueOnce({
+      dryRun: true, repo: 'acme/app', commitSha: 'a'.repeat(40), counts: { create: 3, reimport: 0, exists: 1, skip: 0 },
+      byArea: [
+        { area: 'Unfiled', areaSpecId: null, proposed: false, count: 2, by: null },
+        { area: 'Tasks and missions', areaSpecId: SPEC, proposed: false, count: 1, by: 'domain' },
+      ],
+      files: [
+        { path: 'docs/specs/task-page.md', action: 'exists', specId: SPEC, spec: { title: 'Task Page' }, area: null, existing: { specId: SPEC, title: 'Task Page', url: `https://buildd.dev/app/specs/${SPEC}`, matchedBy: 'title' } },
+        { path: 'docs/specs/decision-kinds.md', action: 'create', spec: { title: 'Decision Kinds' }, area: null, suggestion: { specId: 'd1', title: 'Decisions', answer: 'area', p: 0.8 }, placement: { by: 'classifier' } },
+        { path: 'docs/specs/claim-ordering.md', action: 'create', spec: { title: 'Claim Ordering' }, area: null, related: [{ specId: REL, title: 'Claim routing overview', url: `https://buildd.dev/app/specs/${REL}` }], placement: { by: 'classifier' }, suggestion: { specId: null, title: 'Unsure', answer: 'unsure', p: 0.4 } },
+        { path: 'docs/specs/runs.md', action: 'create', spec: { title: 'Runs' }, area: { specId: SPEC, title: 'Tasks and missions', proposed: false, by: 'domain' }, placement: { by: 'domain', reason: 'this team has no decision-model key' } },
+      ],
+    });
+    const r = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'import', attach_to: { 'docs/specs/claim-ordering.md': REL } }, ctx()));
+    expect(JSON.parse(api.mock.calls[0][1].body)).toEqual({ workspaceId: WS, attachTo: { 'docs/specs/claim-ordering.md': REL } });
+    expect(r.split('docs/specs/task-page.md').length - 1).toBe(1);
+    expect(r).not.toContain('create: Task Page');
+    expect(r).toContain('suggested: Decisions (d1) (p 0.80), below the filing bar, so it stays Unfiled');
+    expect(r).toContain(`related: "Claim routing overview" (${REL}) cites this path`);
+    expect(r).toContain(`attach_to: { "docs/specs/claim-ordering.md": "${REL}" }`);
+    expect(r).toContain('Tasks and missions (by domain, classifier unavailable: this team has no decision-model key)');
+  });
+
   it('confirm_import POSTs the batch and passes an agent run\'s 403 through; an OAuth session is told where to confirm', async () => {
     api.mockResolvedValueOnce({ confirmed: [{ specId: SPEC, title: 'Invoices', path: 'docs/specs/invoices.md', commitSha: 'b'.repeat(40) }], skipped: [{ specId: 'x2', path: 'docs/specs/moved.md', reason: 'stale', message: 'changed since bbbbbbb' }] });
     const r = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'confirm_import', specIds: [SPEC, 'x2'] }, ctx()));

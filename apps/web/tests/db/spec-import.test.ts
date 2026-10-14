@@ -469,15 +469,44 @@ describe('import: a spec that already exists in buildd', () => {
     expect((await q<any>(sql`SELECT metadata FROM specs WHERE id = ${native.spec.id}::uuid`))[0]!.metadata ?? {}).not.toHaveProperty('repo_provenance');
   });
 
-  test('a spec whose head revision cites the same path wins over a title match', async () => {
+  test('a native spec that only cites the path is a related hint, never "exists": the file is still a create', async () => {
     const w = await freshWs();
-    const byTitle = await createSpecDraft(user(member), { workspaceId: w, title: 'Task Page', body: '# Task Page\n' }, { duplicates: false });
-    const byRef = await createSpecDraft(user(member), { workspaceId: w, title: 'The task detail view', body: '# The task detail view\n' }, { duplicates: false });
-    if (!byTitle.ok || !byRef.ok) throw new Error('seed');
-    await q(sql`UPDATE spec_revisions SET repo_refs = ${JSON.stringify([{ path: 'docs/specs/task-page.md', commitSha: 'a'.repeat(40) }])}::jsonb WHERE spec_id = ${byRef.spec.id}::uuid AND revision = 1`);
+    const background = await createSpecDraft(user(member), { workspaceId: w, title: 'Claim routing overview', body: '# Claim routing overview\n' }, { duplicates: false });
+    if (!background.ok) throw new Error('seed');
+    await q(sql`UPDATE spec_revisions SET repo_refs = ${JSON.stringify([{ path: 'docs/specs/claim-ordering.md', commitSha: 'a'.repeat(40) }, { path: 'docs/specs/force-start.md', commitSha: 'a'.repeat(40) }])}::jsonb WHERE spec_id = ${background.spec.id}::uuid AND revision = 1`);
+    const gh = fakeGitHub({ 'claim-ordering.md': spec('Claim Ordering', 'tasks'), 'force-start.md': spec('Force Start', 'tasks') });
+    const dry = await ok(importRepoSpecs(user(member), { workspaceId: w }, gh.deps));
+    for (const f of dry.files) {
+      expect(f).toMatchObject({ action: 'create', related: [{ specId: background.spec.id, title: 'Claim routing overview' }] });
+      expect(f.related![0]!.url).toContain(`/app/specs/${background.spec.id}`);
+      expect(f.existing).toBeUndefined();
+    }
+    expect(dry.counts).toMatchObject({ create: 2, exists: 0 });
+    const count = await specCount(w);
+    const real = await ok(importRepoSpecs(user(member), { workspaceId: w, dryRun: false, attachProvenance: true }, gh.deps));
+    expect(real.files.map((f) => f.action)).toEqual(['create', 'create']);
+    expect(await specCount(w)).toBe(count + 2);
+    // attachProvenance never reaches a spec that only cites the path.
+    expect((await q<any>(sql`SELECT metadata FROM specs WHERE id = ${background.spec.id}::uuid`))[0]!.metadata ?? {}).not.toHaveProperty('repo_provenance');
+  });
+
+  test('attachTo names a related spec explicitly: the file is recorded on it, not created', async () => {
+    const w = await freshWs();
+    const target = await createSpecDraft(user(member), { workspaceId: w, title: 'The task detail view', body: '# The task detail view\n' }, { duplicates: false });
+    if (!target.ok) throw new Error('seed');
+    await q(sql`UPDATE spec_revisions SET repo_refs = ${JSON.stringify([{ path: 'docs/specs/task-page.md', commitSha: 'a'.repeat(40) }])}::jsonb WHERE spec_id = ${target.spec.id}::uuid AND revision = 1`);
     const gh = fakeGitHub({ 'task-page.md': spec('Task Page', 'tasks') });
-    const r = await ok(importRepoSpecs(user(member), { workspaceId: w }, gh.deps));
-    expect(r.files[0]).toMatchObject({ action: 'exists', specId: byRef.spec.id, existing: { matchedBy: 'repo_ref' } });
+    const attachTo = { 'docs/specs/task-page.md': target.spec.id };
+    const dry = await ok(importRepoSpecs(user(member), { workspaceId: w, attachTo }, gh.deps));
+    expect(dry.files[0]).toMatchObject({ action: 'exists', specId: target.spec.id, existing: { matchedBy: 'named' } });
+    const count = await specCount(w);
+    const real = await ok(importRepoSpecs(user(member), { workspaceId: w, dryRun: false, attachTo }, gh.deps));
+    expect(real.files[0]).toMatchObject({ action: 'exists', specId: target.spec.id, provenanceAttached: true });
+    expect(await specCount(w)).toBe(count);
+    expect((await q<any>(sql`SELECT metadata FROM specs WHERE id = ${target.spec.id}::uuid`))[0]!.metadata.repo_provenance).toMatchObject({ path: 'docs/specs/task-page.md' });
+    for (const bad of [{ 'docs/specs/task-page.md': 'nope' }, ['x'], { 'docs/specs/task-page.md': '00000000-0000-4000-8000-000000000999' }]) {
+      expect(await importRepoSpecs(user(member), { workspaceId: w, attachTo: bad }, gh.deps)).toMatchObject({ ok: false, status: 400 });
+    }
   });
 
   test('attachProvenance records the path and commit on the existing spec, without a revision; again it changes nothing', async () => {
@@ -501,5 +530,95 @@ describe('import: a spec that already exists in buildd', () => {
     const again = await ok(importRepoSpecs(user(member), { workspaceId: w, dryRun: false, attachProvenance: true }, gh.deps));
     expect(again.files[0]).toMatchObject({ action: 'exists', specId: native.spec.id, existing: { matchedBy: 'provenance' } });
     expect((await q<any>(sql`SELECT count(*)::int AS n FROM spec_metadata_changes WHERE spec_id = ${native.spec.id}::uuid`))[0]!.n).toBe(1);
+  });
+});
+
+describe('import: placement through the area classifier (§17)', () => {
+  type Classify = (input: any) => Promise<any>;
+  const answer = (areaId: string, p: number, confident: boolean) => ({ ran: true, answer: 'area', areaId, p, confident, model: 'typesafe/jev-1', decisionRecordId: null, shown: 3, omitted: 0 });
+  async function threeAreas() {
+    const w = await freshWs();
+    const tasks = await area(w, 'Tasks and missions');
+    const decisions = await area(w, 'Decisions');
+    const runners = await area(w, 'Runners');
+    const r = await updateSpecMetadata(user(member), tasks, { changes: { domains: ['tasks'] }, reason: 'declare' });
+    if (!r.ok) throw new Error(r.error);
+    return { w, tasks, decisions, runners };
+  }
+
+  test('a confident answer files the spec where the classifier says, over its domain, with the domain and every area in its input', async () => {
+    const { w, tasks, decisions } = await threeAreas();
+    const inputs: any[] = [];
+    const classify: Classify = async (input) => { inputs.push(input); return answer(decisions, 0.98, true); };
+    const gh = fakeGitHub({ 'decision-kinds.md': spec('Decision Kinds', 'tasks') });
+    const dry = await ok(importRepoSpecs(user(member), { workspaceId: w }, { ...gh.deps, classify }));
+    expect(dry.files[0]!.area).toMatchObject({ specId: decisions, title: 'Decisions', proposed: false, by: 'classifier', p: 0.98 });
+    expect(inputs[0]).toMatchObject({ workspaceId: w, hint: { domain: 'tasks' }, card: { title: 'Decision Kinds' } });
+    expect(inputs[0].areas.map((a: any) => a.id).sort()).toEqual([tasks, decisions, (await q<any>(sql`SELECT id FROM specs WHERE workspace_id = ${w}::uuid AND title = 'Runners'`))[0]!.id].sort());
+    expect(inputs[0].areas.find((a: any) => a.id === tasks).domains).toEqual(['tasks']);
+
+    const real = await ok(importRepoSpecs(user(member), { workspaceId: w, dryRun: false }, { ...gh.deps, classify }));
+    const id = real.files[0]!.specId!;
+    expect((await q<any>(sql`SELECT parent_spec_id FROM specs WHERE id = ${id}::uuid`))[0]!.parent_spec_id).toBe(decisions);
+    const [filing] = await q<any>(sql`SELECT * FROM spec_filings WHERE spec_id = ${id}::uuid`);
+    expect(filing).toMatchObject({ kind: 'filed', status: 'applied', parent_spec_id: decisions, source: 'model' });
+    // The real run asks about the spec it created.
+    expect(inputs.at(-1).specId).toBe(id);
+  });
+
+  test('an answer below the bar leaves it Unfiled with the suggestion shown, and a real run records the suggestion', async () => {
+    const { w, decisions } = await threeAreas();
+    const classify: Classify = async () => answer(decisions, 0.8, false);
+    const gh = fakeGitHub({ 'decision-kinds.md': spec('Decision Kinds', 'tasks') });
+    const dry = await ok(importRepoSpecs(user(member), { workspaceId: w }, { ...gh.deps, classify }));
+    expect(dry.files[0]).toMatchObject({ area: null, suggestion: { specId: decisions, title: 'Decisions', answer: 'area', p: 0.8 } });
+    expect(dry.byArea).toEqual([expect.objectContaining({ area: 'Unfiled', count: 1 })]);
+    const real = await ok(importRepoSpecs(user(member), { workspaceId: w, dryRun: false }, { ...gh.deps, classify }));
+    const id = real.files[0]!.specId!;
+    expect((await q<any>(sql`SELECT parent_spec_id FROM specs WHERE id = ${id}::uuid`))[0]!.parent_spec_id).toBeNull();
+    const [filing] = await q<any>(sql`SELECT * FROM spec_filings WHERE spec_id = ${id}::uuid`);
+    expect(filing).toMatchObject({ kind: 'suggested', status: 'open', parent_spec_id: decisions, source: 'model' });
+    for (const t of queued.splice(0)) await t();
+    expect((await q<any>(sql`SELECT count(*)::int AS n FROM spec_filings WHERE spec_id = ${id}::uuid`))[0]!.n).toBe(1);
+  });
+
+  test('classifier unavailable: the declared-domain mapping, labelled as the fallback', async () => {
+    const { w, tasks } = await threeAreas();
+    const classify: Classify = async () => ({ ran: false, reason: 'this team has no decision-model key' });
+    const gh = fakeGitHub({ 'decision-kinds.md': spec('Decision Kinds', 'tasks') });
+    const dry = await ok(importRepoSpecs(user(member), { workspaceId: w }, { ...gh.deps, classify }));
+    expect(dry.files[0]!.area).toMatchObject({ specId: tasks, by: 'domain' });
+    expect(dry.files[0]!.placement).toMatchObject({ by: 'domain', reason: 'this team has no decision-model key' });
+    expect(dry.byArea[0]).toMatchObject({ area: 'Tasks and missions', by: 'domain' });
+  });
+
+  test('classifier calls run at most 4 at a time, and a page that would run long is cut short with nextCursor, losing no file', async () => {
+    const { w, decisions } = await threeAreas();
+    let t = 0; let inFlight = 0; let maxInFlight = 0;
+    const classify: Classify = async () => {
+      inFlight++; maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((r) => setTimeout(r, 5));
+      t += 60; inFlight--;
+      return answer(decisions, 0.98, true);
+    };
+    const names = Array.from({ length: 10 }, (_, i) => `t${String(i).padStart(2, '0')}.md`);
+    const gh = fakeGitHub(Object.fromEntries(names.map((n, i) => [n, spec(`Timed ${i}`, 'tasks')])));
+    const deps = { ...gh.deps, classify, clock: () => t, pageBudgetMs: 100 };
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    let pages = 0;
+    do {
+      const page: any = await ok(importRepoSpecs(user(member), { workspaceId: w, limit: 10, ...(cursor ? { cursor } : {}) }, deps));
+      pages++;
+      seen.push(...page.files.map((f: any) => f.path));
+      if (page.nextCursor) expect(page.files.length).toBeLessThan(10);
+      expect(page.remaining).toBe(names.length - seen.length);
+      cursor = page.nextCursor;
+      t = 0;
+    } while (cursor && pages < 20);
+    expect(maxInFlight).toBeLessThanOrEqual(4);
+    expect(maxInFlight).toBeGreaterThan(1);
+    expect(pages).toBeGreaterThan(1);
+    expect(seen).toEqual(names.map((n) => `docs/specs/${n}`));
   });
 });

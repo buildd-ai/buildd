@@ -1324,18 +1324,24 @@ at any time.
   `verified_by`, surfaces, symbol liveness, conformance per
   `docs/design/spec-conformance.md`), offline and in a public repo, with no
   call to buildd.
-- R-18: Import. A repo spec becomes a native spec filed under the area its
-  `domain:` maps to, with provenance: path, the commit SHA read, and the PR
-  that last merged a change to it. Its first revision is imported, not
-  approved, and is the file as read minus the mechanical fields, which become
-  its metadata block (R-14). Until confirmed the repo file stays the
-  source: nothing is generated and the file is never overwritten. A repo
-  change before confirmation re-imports it as a new imported revision.
-  A `domain:` maps to the area that declares it in `domains`, else to the
-  area whose title slug it is. A file already in buildd (a native spec
-  citing its path, or with its exact title) is reported as existing, never
-  created again; the caller may record the path and commit on that spec's
-  metadata instead. Import runs in pages read at one commit.
+- R-18: Import. A repo spec becomes a native spec, with provenance: path,
+  the commit SHA read, and the PR that last merged a change to it. Its first
+  revision is imported, not approved, and is the file as read minus the
+  mechanical fields, which become its metadata block (R-14). Until confirmed
+  the repo file stays the source: nothing is generated and the file is never
+  overwritten. A repo change before confirmation re-imports it as a new
+  imported revision. It is placed by the area classifier (R-5 to R-7), shown
+  every area with the file's `domain:` and each area's declared `domains` as
+  a hint: a confident answer files it, any other answer leaves it Unfiled
+  with the suggestion recorded and shown. Only when the classifier does not
+  run does the `domain:` map to the area that declares it in `domains`, else
+  to the area whose title slug it is, labelled as that fallback. A file
+  already in buildd (a native spec that recorded its path as provenance, or
+  with its exact title) is reported as existing, never created again; the
+  caller may record the path and commit on that spec's metadata instead. A
+  native spec that only cites the path is a related hint, never a match; a
+  person may name it (`attachTo`) to record the file there. Import runs in
+  pages read at one commit, each cut short by a time bound.
 - R-19: Confirmation is one action by a person with `approve_specs` over a
   selected batch, listed per area with each spec's path and commit. It is
   still one approval per spec (§6), each written only while the file is
@@ -1411,13 +1417,17 @@ it lands by squash once every check suite on the generator's commit passes.
 
 How import works: it reads `docs/specs/*.md` at one commit through the
 GitHub App (the default branch head unless a ref is named) and, per file,
-reports the spec it would create, the area whose domain matches its
-`domain:` (or the area that domain would name), its provenance (path,
-commit, blob, the last merged PR) and duplicates of approved specs (§13). It
-skips the meta files, superseded specs, generated copies and files already
-imported at the same blob. A dry run is the default and writes nothing.
-Written, revision 1 carries the provenance and the spec is filed under the
-matching area, or placed by organize (§17) when none matches. A duplicate is
+reports the spec it would create, where the area classifier would file it
+(or its suggestion when below the bar, or the declared-domain fallback when
+the classifier does not run), its provenance (path, commit, blob, the last
+merged PR), duplicates of approved specs (§13) and related native specs that
+cite its path. It skips the meta files, superseded specs, generated copies
+and files already imported at the same blob. A dry run is the default and
+writes nothing. Written, revision 1 carries the provenance and the spec is
+filed where placement put it, with a suggestion row when it stays Unfiled,
+or placed by organize (§17) when neither the classifier nor a domain placed
+it. Files are worked four at a time and a page stops starting files after
+its time budget, returning the cursor for the rest. A duplicate is
 skipped unless named in `allowDuplicates`. Until confirmed, revise and
 approve refuse an imported spec (409 `spec_imported`) and no repo copy is
 generated. Confirmation re-reads the default branch and approves each spec

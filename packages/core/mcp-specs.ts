@@ -27,7 +27,9 @@
  *
  * import reads the linked repo's docs/specs/*.md at one commit and, as a dry
  * run by default, says what each file would become (POST /api/specs/import):
- * the spec, its area, its provenance, duplicates and skipped files.
+ * the spec, where the area classifier would file it (or its suggestion, or the
+ * declared-domain fallback, labelled), its provenance, duplicates, related
+ * specs that only cite its path, and skipped files. Each file is shown once.
  * confirm_import approves a batch of imported specs in one act
  * (POST /api/specs/import/confirm): a person's act, an agent run gets a 403.
  *
@@ -154,12 +156,32 @@ export function organizeText(r: OrganizeReply): string {
 /** Sub-actions scoped to a workspace rather than to a spec or task: the caller resolves the session workspace for these. */
 export const WORKSPACE_SPEC_OPS = ['create_draft', 'list', 'organize', 'import'] as const;
 
-type ImportRow = { path: string; action: 'create' | 'reimport' | 'exists' | 'skip'; reason?: string; message?: string; specId?: string; revision?: number; spec?: { title: string }; area: { specId: string | null; title: string; proposed: boolean } | null; provenance?: { commitSha: string; prNumber: number | null }; duplicates?: Array<{ specId: string; title: string; relation: string; p: number }>; existing?: { specId: string; title: string; url: string; matchedBy: string }; provenanceAttached?: boolean };
-type ImportReply = { dryRun?: boolean; repo?: string; commitSha?: string; files?: ImportRow[]; counts?: { create: number; reimport: number; exists?: number; skip: number }; byArea?: Array<{ area: string; areaSpecId: string | null; proposed: boolean; count: number }>; limit?: number; remaining?: number; nextCursor?: string | null };
+type AreaBy = 'classifier' | 'domain' | 'existing';
+type ImportRow = {
+  path: string; action: 'create' | 'reimport' | 'exists' | 'skip'; reason?: string; message?: string; specId?: string; revision?: number; spec?: { title: string };
+  area: { specId: string | null; title: string; proposed: boolean; by?: AreaBy; p?: number } | null;
+  placement?: { by: AreaBy; reason?: string; p?: number };
+  suggestion?: { specId: string | null; title: string; answer: string; p: number };
+  related?: Array<{ specId: string; title: string; url: string }>;
+  provenance?: { commitSha: string; prNumber: number | null }; duplicates?: Array<{ specId: string; title: string; relation: string; p: number }>;
+  existing?: { specId: string; title: string; url: string; matchedBy: string }; provenanceAttached?: boolean;
+};
+type ImportReply = { dryRun?: boolean; repo?: string; commitSha?: string; files?: ImportRow[]; counts?: { create: number; reimport: number; exists?: number; skip: number }; byArea?: Array<{ area: string; areaSpecId: string | null; proposed: boolean; count: number; by?: AreaBy | null }>; limit?: number; remaining?: number; nextCursor?: string | null };
 
 /** The import params a continuation call repeats, as the caller passed them (cursor is added last). */
-const IMPORT_PARAMS = ['dryRun', 'ref', 'paths', 'allowDuplicates', 'limit', 'attach_provenance'] as const;
-const MATCHED_BY: Record<string, string> = { repo_ref: 'a cited repo path', provenance: 'its recorded provenance', title: 'title' };
+const IMPORT_PARAMS = ['dryRun', 'ref', 'paths', 'allowDuplicates', 'limit', 'attach_provenance', 'attach_to'] as const;
+const MATCHED_BY: Record<string, string> = { provenance: 'its recorded provenance', title: 'title', named: 'attach_to' };
+
+/** One create / re-import line, with what a person should see under it: duplicates, the suggestion, related specs. */
+function importRowText(f: ImportRow): string {
+  const lines = [`  ${f.action === 'reimport' ? 're-import' : 'create'}: ${f.spec?.title ?? f.path} from ${f.path}${f.provenance?.prNumber ? `, last changed in #${f.provenance.prNumber}` : ''}${f.specId ? ` → ${f.specId}${f.revision ? ` r${f.revision}` : ''}` : ''}${f.area?.by === 'classifier' && typeof f.area.p === 'number' ? ` (classifier p ${f.area.p.toFixed(2)})` : ''}`];
+  if (f.duplicates?.length) lines.push(`    possible duplicate of ${f.duplicates.map((d) => `"${d.title}" (${d.specId}, ${d.relation} p ${d.p.toFixed(2)})`).join(', ')}`);
+  if (f.suggestion) lines.push(`    suggested: ${f.suggestion.title}${f.suggestion.specId ? ` (${f.suggestion.specId})` : ''} (p ${f.suggestion.p.toFixed(2)}), below the filing bar, so it stays Unfiled`);
+  for (const r of f.related ?? []) {
+    lines.push(`    related: "${r.title}" (${r.specId}) cites this path; it is still created as its own spec. If a person says this file IS that spec, pass attach_to: { "${f.path}": "${r.specId}" } to record it there instead`);
+  }
+  return lines.join('\n');
+}
 
 /** An import run in words: counts, then the files grouped by area, then what was skipped and why. */
 export function importText(r: ImportReply, call: Record<string, unknown> = {}): string {
@@ -167,10 +189,14 @@ export function importText(r: ImportReply, call: Record<string, unknown> = {}): 
   const c = r.counts ?? { create: 0, reimport: 0, skip: 0 };
   const at = r.commitSha ? `${r.repo ?? 'the repo'}@${r.commitSha.slice(0, 7)}` : (r.repo ?? 'the repo');
   const head = `${r.dryRun === false ? 'Imported' : 'Dry run (nothing written)'} from ${at}: ${c.create} to create, ${c.reimport} to re-import as a new revision, ${c.exists ? `${c.exists} already in buildd, ` : ''}${c.skip} skipped.`;
+  // Each file once: only creates and re-imports are listed by area; exists and skips have their own lists.
+  const listed = files.filter((f) => f.action === 'create' || f.action === 'reimport');
   const groups = (r.byArea ?? []).map((a) => {
-    const rows = files.filter((f) => f.action !== 'skip' && (f.area?.title ?? 'Unfiled') === a.area && (f.area?.specId ?? null) === a.areaSpecId);
-    return [`${a.area}${a.proposed ? ' (no such area yet; organize will suggest one)' : a.areaSpecId ? ` (${a.areaSpecId})` : ''}: ${a.count}`,
-      ...rows.map((f) => `  ${f.action === 'reimport' ? 're-import' : 'create'}: ${f.spec?.title ?? f.path} from ${f.path}${f.provenance?.prNumber ? `, last changed in #${f.provenance.prNumber}` : ''}${f.specId ? ` → ${f.specId}${f.revision ? ` r${f.revision}` : ''}` : ''}${f.duplicates?.length ? `\n    possible duplicate of ${f.duplicates.map((d) => `"${d.title}" (${d.specId}, ${d.relation} p ${d.p.toFixed(2)})`).join(', ')}` : ''}`)].join('\n');
+    const rows = listed.filter((f) => (f.area?.title ?? 'Unfiled') === a.area && (f.area?.specId ?? null) === a.areaSpecId && (a.by === undefined || (f.area?.by ?? null) === a.by));
+    const reason = a.by === 'domain' ? rows.find((f) => f.placement?.reason)?.placement?.reason : undefined;
+    const how = a.by === 'domain' ? ` (by domain, classifier unavailable${reason ? `: ${reason}` : ''})` : '';
+    return [`${a.area}${how}${a.proposed ? ' (no such area yet; organize will suggest one)' : a.areaSpecId ? ` (${a.areaSpecId})` : ''}: ${a.count}`,
+      ...rows.map(importRowText)].join('\n');
   });
   const exists = files.filter((f) => f.action === 'exists' && f.existing);
   const existsLines = exists.length ? [
@@ -486,8 +512,10 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       for (const k of ['dryRun', 'ref', 'paths', 'allowDuplicates', 'limit', 'cursor'] as const) if (params[k] !== undefined) payload[k] = params[k];
       const attach = params.attach_provenance ?? params.attachProvenance;
       if (attach !== undefined) payload.attachProvenance = attach;
+      const attachTo = params.attach_to ?? params.attachTo;
+      if (attachTo !== undefined) payload.attachTo = attachTo;
       try {
-        return text(importText(await api('/api/specs/import', { method: 'POST', body: JSON.stringify(payload) }), { ...params, ...(attach !== undefined ? { attach_provenance: attach } : {}) }));
+        return text(importText(await api('/api/specs/import', { method: 'POST', body: JSON.stringify(payload) }), { ...params, ...(attach !== undefined ? { attach_provenance: attach } : {}), ...(attachTo !== undefined ? { attach_to: attachTo } : {}) }));
       } catch (err) {
         const e = apiError(err);
         if (e && [400, 404, 502].includes(e.status)) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
