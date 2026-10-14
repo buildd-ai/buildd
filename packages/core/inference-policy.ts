@@ -55,6 +55,7 @@ export type InferenceCapability =
   | 'operator_recovery'
   | 'spec_duplicate'
   | 'spec_area'
+  | 'spec_taxonomy'
   | 'chat';
 
 export type CapabilityKind = 'interactive' | 'built_in' | 'opt_in' | 'server_feature';
@@ -318,6 +319,17 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     label: 'Spec areas',
     description: 'When a spec has no parent, a decision model reads it and the workspace\'s areas and files it under the one it belongs in when it is sure, with undo. Otherwise it only suggests a place.',
     costHint: '~$0.00005 per new spec',
+  },
+  // The cold-start taxonomy (apps/web/src/lib/spec-taxonomy-decision.ts,
+  // Living Specs §17 R-4). Asked once or twice per spec, only when a person
+  // runs organize on a workspace with no areas. Nothing is created until a
+  // person accepts the proposal, so it is built in like spec_area.
+  spec_taxonomy: {
+    id: 'spec_taxonomy',
+    kind: 'built_in',
+    label: 'Spec taxonomy',
+    description: 'When a workspace has specs but no areas yet, a decision model reads every spec and proposes a handful of areas with their specs. A person accepts, edits or rejects it; nothing is created before that.',
+    costHint: '~$0.0005 per spec, once',
   },
   chat: {
     id: 'chat',

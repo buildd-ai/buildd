@@ -7,8 +7,8 @@ summary: Every Living Spec revision MUST stay immutable and no writer silently o
 domain: knowledge
 surfaces: [apps/web/src/lib/specs/store.ts, apps/web/src/lib/specs/provisional.ts, apps/web/src/lib/specs/approval.ts, apps/web/src/lib/specs/pin.ts, apps/web/src/app/api/specs/[specId]/route.ts]
 related: [artifacts-and-sharing, knowledge-ingest-pipeline]
-keywords: [living spec, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs, recall, knowledge graph, living_spec, area, taxonomy, spec_area, filed by buildd, backfill, generated repo copy, generated_from, spec import, spec index, provisional pin, build ahead of approval, attach_provisional, re-grade, confirm_import, import confirmation, repo_source, spec attachment, attachment:, binding attachment, reference attachment, changed since approval, Files]
-verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-provisional-pin.test.ts, apps/web/src/lib/specs/provisional-text.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecIndex.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts, apps/web/tests/db/spec-neighbours.test.ts, apps/web/src/lib/specs/neighbours.test.ts, apps/web/tests/db/spec-duplicates.test.ts, apps/web/src/lib/spec-duplicate-decision.test.ts, apps/web/src/components/MarkdownContent.spec-surface.dom.test.tsx, apps/web/tests/db/spec-comments.test.ts, apps/web/src/components/SpecComments.dom.test.tsx, packages/spec-contract/src/repo-copy.test.ts, apps/web/tests/db/spec-repo-copy.test.ts, scripts/check-generated-specs.test.ts, apps/web/src/lib/specs/no-prod-data-scan.test.ts, apps/web/tests/db/spec-organize.test.ts, apps/web/src/lib/spec-area-decision.test.ts, apps/web/src/lib/specs/areas.test.ts, apps/web/src/app/app/dev/fixtures/spec-index-fixtures.test.ts, apps/web/tests/db/spec-import.test.ts, packages/spec-contract/src/repo-import.test.ts, apps/web/src/app/api/specs/import/route.test.ts, apps/web/src/lib/specs/index-view-imported.test.ts, apps/web/tests/db/spec-attachments.test.ts, apps/web/src/components/MarkdownContent.attachments.dom.test.tsx, packages/core/__tests__/mcp-specs-attachments.test.ts, apps/web/src/app/api/specs/[specId]/attachments/[name]/route.test.ts, apps/web/src/components/SpecAttachments.dom.test.tsx]
+keywords: [living spec, spec_taxonomy, cold-start taxonomy, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs, recall, knowledge graph, living_spec, area, taxonomy, spec_area, filed by buildd, backfill, generated repo copy, generated_from, spec import, spec index, provisional pin, build ahead of approval, attach_provisional, re-grade, confirm_import, import confirmation, repo_source, spec attachment, attachment:, binding attachment, reference attachment, changed since approval, Files]
+verified_by: [apps/web/tests/db/specs.test.ts, apps/web/src/lib/spec-taxonomy-decision.test.ts, apps/web/tests/db/spec-provisional-pin.test.ts, apps/web/src/lib/specs/provisional-text.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecIndex.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts, apps/web/tests/db/spec-neighbours.test.ts, apps/web/src/lib/specs/neighbours.test.ts, apps/web/tests/db/spec-duplicates.test.ts, apps/web/src/lib/spec-duplicate-decision.test.ts, apps/web/src/components/MarkdownContent.spec-surface.dom.test.tsx, apps/web/tests/db/spec-comments.test.ts, apps/web/src/components/SpecComments.dom.test.tsx, packages/spec-contract/src/repo-copy.test.ts, apps/web/tests/db/spec-repo-copy.test.ts, scripts/check-generated-specs.test.ts, apps/web/src/lib/specs/no-prod-data-scan.test.ts, apps/web/tests/db/spec-organize.test.ts, apps/web/src/lib/spec-area-decision.test.ts, apps/web/src/lib/specs/areas.test.ts, apps/web/src/app/app/dev/fixtures/spec-index-fixtures.test.ts, apps/web/tests/db/spec-import.test.ts, packages/spec-contract/src/repo-import.test.ts, apps/web/src/app/api/specs/import/route.test.ts, apps/web/src/lib/specs/index-view-imported.test.ts, apps/web/tests/db/spec-attachments.test.ts, apps/web/src/components/MarkdownContent.attachments.dom.test.tsx, packages/core/__tests__/mcp-specs-attachments.test.ts, apps/web/src/app/api/specs/[specId]/attachments/[name]/route.test.ts, apps/web/src/components/SpecAttachments.dom.test.tsx]
 supersedes: []
 assertions:
   - id: approve-spec-revision
@@ -1121,6 +1121,17 @@ or wants to change.
   specs are split. It is one proposal a person accepts, edits or rejects,
   whole or per area. Accepting creates the areas and files their members by
   R-7. Nothing is created before a person acts.
+- R-49: The cold-start proposal is asked of the team's decision model when a
+  measured one answers: a decision kind, `buildd.spec_taxonomy`, capability
+  `spec_taxonomy`, whose input is every spec's title, a short summary and its
+  `domain:` hint within a token budget. It proposes four to eight areas, each
+  with a name in a person's words (two to four plain words, never a pair of
+  frequent words), a one-sentence charter and its members, and every spec is
+  in exactly one area or left unplaced. With no measured model the word
+  clustering of R-4 proposes instead, and the reply says which produced it
+  ("word-based fallback, no model available"). A person accepts the proposal
+  they read: an accept, and the spec index re-reading it, reuse the answers
+  the dry run recorded rather than asking again.
 - R-5: The classifier is a decision kind, `buildd.spec_area`, capability
   `spec_area`, built like `buildd.spec_duplicate` (§13): a measured model list,
   every answer in the decision ledger under subject `spec`, fail-open, and a
@@ -1180,14 +1191,28 @@ or wants to change.
   along) and `manual` (any set or clear through `relate`, by a person or an
   agent). The sweep skips every spec with any row, so a spec it has looked at
   once is not asked about again.
-- The cold-start taxonomy is drawn without a model: `domain:` frontmatter in
+- The cold-start taxonomy (R-49): a decision model only classifies, so the
+  names are candidates (the specs' `domain:` values, nouns two or more titles
+  share, and a short list of generic product-area names) and the model, with
+  every spec in view, picks the one each spec belongs under. Names that hold
+  specs are dropped smallest first, a generic one before the workspace's own,
+  until about 1.5 × √n stand (four to eight), and the dropped name's specs
+  are asked again against the rest; a dropped name whose specs mostly join
+  one area is folded into its title ("Tasks and missions"). A spec still
+  `unsure`, or under p 0.3, is unplaced. Measured 2026-10-13 (knowledge base:
+  `buildd/reports/spec-taxonomy-eval/`) on Jev; Clef was measured and is not
+  listed, so under it the words propose. Answers recorded in the ledger for
+  the same input in the last 7 days are reused; the spec index reads only
+  recorded answers and never waits on the model.
+- The word fallback is drawn without a model: `domain:` frontmatter in
   a spec's body seeds the groups, a cross-cutting value (`surfaces`, `ui`,
   `api`, catch-alls) is re-clustered by the specs' words, and a group at
   about a quarter of all specs or more is split the same way. Titles and
   charters come from the members' distinctive words, for a person to edit.
 - `POST /api/specs/organize { workspaceId, dryRun = true, limit?, areas?,
-  edits? }` and MCP `manage_specs action=organize`: a taxonomy (no product
-  or area) or a sweep batch grouped by area. `GET /api/specs/organize?
+  edits?, source? }` and MCP `manage_specs action=organize`: a taxonomy (no
+  product or area, with `proposedBy` and `unplaced`; `source: words` re-reads
+  the word-based one) or a sweep batch grouped by area. `GET /api/specs/organize?
   workspaceId=&batchId=` lists one run's filings.
   `GET|POST /api/specs/[id]/filing { action: undo | accept | dismiss,
   filingId }` reads and acts on one spec's placement.
@@ -1200,6 +1225,14 @@ or wants to change.
 - AC-90: GIVEN repo specs where one `domain:` value holds a third of all
   specs, or the value is `surfaces`, WHEN the taxonomy is proposed THEN that
   value is split across two or more proposed areas (`apps/web/src/lib/specs/areas.test.ts`).
+- AC-108: GIVEN a workspace with no area and a measured decision model WHEN
+  the taxonomy is proposed THEN every spec is asked with every spec in view,
+  the proposal is the model's with each spec in one area or unplaced, the
+  reply says the model produced it, and accepting files only the members;
+  GIVEN no measured model THEN the word-based proposal is returned labelled
+  "word-based fallback, no model available"; GIVEN answers recorded for the
+  same input THEN they are reused and the spec index never asks the model
+  (`apps/web/src/lib/spec-taxonomy-decision.test.ts`, `apps/web/tests/db/spec-organize.test.ts`, `packages/core/__tests__/mcp-tools-specs.test.ts`).
 - AC-67: GIVEN three areas WHEN a spec is classified THEN the model's state
   holds all three areas' ids, titles and charters (`apps/web/src/lib/spec-area-decision.test.ts`).
 - AC-91: GIVEN 40 areas WHEN a spec is classified THEN the state holds the
@@ -1229,6 +1262,7 @@ or wants to change.
 
 **Code surface**:
 - `apps/web/src/lib/spec-area-decision.ts` — `classifySpecArea`, `selectAreasForState`, `specAreaState`, `specAreaKind`, `recordAreaOverride`
+- `apps/web/src/lib/spec-taxonomy-decision.ts` — `proposeSpecTaxonomy`, `candidateAreaNames`, `taxonomyState`, `assembleTaxonomy`, `specTaxonomyKind`
 - `apps/web/src/lib/specs/areas.ts` — `listAreas`, `proposeTaxonomy`
 - `apps/web/src/lib/specs/organize.ts` — `organizeNewSpec`, `organizeWorkspace`, `actOnFiling`
 - `apps/web/src/lib/specs/filings.ts` — `recordManualPlacement`, `setParentIfUnfiled`
@@ -1324,18 +1358,24 @@ at any time.
   `verified_by`, surfaces, symbol liveness, conformance per
   `docs/design/spec-conformance.md`), offline and in a public repo, with no
   call to buildd.
-- R-18: Import. A repo spec becomes a native spec filed under the area its
-  `domain:` maps to, with provenance: path, the commit SHA read, and the PR
-  that last merged a change to it. Its first revision is imported, not
-  approved, and is the file as read minus the mechanical fields, which become
-  its metadata block (R-14). Until confirmed the repo file stays the
-  source: nothing is generated and the file is never overwritten. A repo
-  change before confirmation re-imports it as a new imported revision.
-  A `domain:` maps to the area that declares it in `domains`, else to the
-  area whose title slug it is. A file already in buildd (a native spec
-  citing its path, or with its exact title) is reported as existing, never
-  created again; the caller may record the path and commit on that spec's
-  metadata instead. Import runs in pages read at one commit.
+- R-18: Import. A repo spec becomes a native spec, with provenance: path,
+  the commit SHA read, and the PR that last merged a change to it. Its first
+  revision is imported, not approved, and is the file as read minus the
+  mechanical fields, which become its metadata block (R-14). Until confirmed
+  the repo file stays the source: nothing is generated and the file is never
+  overwritten. A repo change before confirmation re-imports it as a new
+  imported revision. It is placed by the area classifier (R-5 to R-7), shown
+  every area with the file's `domain:` and each area's declared `domains` as
+  a hint: a confident answer files it, any other answer leaves it Unfiled
+  with the suggestion recorded and shown. Only when the classifier does not
+  run does the `domain:` map to the area that declares it in `domains`, else
+  to the area whose title slug it is, labelled as that fallback. A file
+  already in buildd (a native spec that recorded its path as provenance, or
+  with its exact title) is reported as existing, never created again; the
+  caller may record the path and commit on that spec's metadata instead. A
+  native spec that only cites the path is a related hint, never a match; a
+  person may name it (`attachTo`) to record the file there. Import runs in
+  pages read at one commit, each cut short by a time bound.
 - R-19: Confirmation is one action by a person with `approve_specs` over a
   selected batch, listed per area with each spec's path and commit. It is
   still one approval per spec (§6), each written only while the file is
@@ -1411,13 +1451,17 @@ it lands by squash once every check suite on the generator's commit passes.
 
 How import works: it reads `docs/specs/*.md` at one commit through the
 GitHub App (the default branch head unless a ref is named) and, per file,
-reports the spec it would create, the area whose domain matches its
-`domain:` (or the area that domain would name), its provenance (path,
-commit, blob, the last merged PR) and duplicates of approved specs (§13). It
-skips the meta files, superseded specs, generated copies and files already
-imported at the same blob. A dry run is the default and writes nothing.
-Written, revision 1 carries the provenance and the spec is filed under the
-matching area, or placed by organize (§17) when none matches. A duplicate is
+reports the spec it would create, where the area classifier would file it
+(or its suggestion when below the bar, or the declared-domain fallback when
+the classifier does not run), its provenance (path, commit, blob, the last
+merged PR), duplicates of approved specs (§13) and related native specs that
+cite its path. It skips the meta files, superseded specs, generated copies
+and files already imported at the same blob. A dry run is the default and
+writes nothing. Written, revision 1 carries the provenance and the spec is
+filed where placement put it, with a suggestion row when it stays Unfiled,
+or placed by organize (§17) when neither the classifier nor a domain placed
+it. Files are worked four at a time and a page stops starting files after
+its time budget, returning the cursor for the rest. A duplicate is
 skipped unless named in `allowDuplicates`. Until confirmed, revise and
 approve refuse an imported spec (409 `spec_imported`) and no repo copy is
 generated. Confirmation re-reads the default branch and approves each spec

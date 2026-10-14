@@ -27,7 +27,9 @@
  *
  * import reads the linked repo's docs/specs/*.md at one commit and, as a dry
  * run by default, says what each file would become (POST /api/specs/import):
- * the spec, its area, its provenance, duplicates and skipped files.
+ * the spec, where the area classifier would file it (or its suggestion, or the
+ * declared-domain fallback, labelled), its provenance, duplicates, related
+ * specs that only cite its path, and skipped files. Each file is shown once.
  * confirm_import approves a batch of imported specs in one act
  * (POST /api/specs/import/confirm): a person's act, an agent run gets a 403.
  *
@@ -122,10 +124,14 @@ export function outcomeText(o: Outcome): string {
   return [`Governed outcome: ${o.outcome.toUpperCase()} against spec revision ${o.revision}, head ${head}. ${o.reason}.`, ...rows].join('\n');
 }
 
+type ProposedBy = { source: 'model'; model: string | null } | { source: 'words'; label: string; reason: string };
+/** Which produced the proposal, in words. */
+const proposedByText = (b: ProposedBy | undefined) => (!b ? '' : b.source === 'model' ? `Proposed by the decision model${b.model ? ` (${b.model})` : ''}.` : `Proposed by the ${b.label} (${b.reason}).`);
+
 type OrganizeRow = { specId: string; title: string; p: number | null; answer?: string; newArea?: { title: string } };
 type OrganizeReply =
-  | { mode: 'taxonomy'; dryRun: true; specs: number; proposal: { product: { title: string }; areas: Array<{ key: string; title: string; charter: string; members: Array<{ specId: string; title: string }> }> } }
-  | { mode: 'taxonomy'; dryRun: false; product: { title: string } | null; created: Array<{ key: string; title: string; specId: string; filed: number }>; refused: Array<{ key: string; title: string; reason: string }> }
+  | { mode: 'taxonomy'; dryRun: true; specs: number; proposedBy?: ProposedBy; proposal: { product: { title: string }; areas: Array<{ key: string; title: string; charter: string; members: Array<{ specId: string; title: string }> }>; unplaced?: Array<{ specId: string; title: string }> } }
+  | { mode: 'taxonomy'; dryRun: false; proposedBy?: ProposedBy; product: { title: string } | null; created: Array<{ key: string; title: string; specId: string; filed: number }>; refused: Array<{ key: string; title: string; reason: string }> }
   | { mode: 'sweep'; dryRun: boolean; scanned: number; remaining: number; skipped: number; classifier: string | null; groups: Array<{ label: string; area: { specId: string } | null; filed: OrganizeRow[]; suggested: OrganizeRow[] }> };
 
 const pText = (p: number | null) => (p === null ? '' : `, p ${p.toFixed(2)}`);
@@ -134,8 +140,9 @@ const pText = (p: number | null) => (p === null ? '' : `, p ${p.toFixed(2)}`);
 export function organizeText(r: OrganizeReply): string {
   if (r.mode === 'taxonomy' && r.dryRun) {
     const areas = r.proposal.areas.map((a) => `- ${a.title} [key ${a.key}] (${a.members.length} spec${a.members.length === 1 ? '' : 's'})\n  ${a.charter}\n${a.members.slice(0, 8).map((m) => `    · ${m.title} (${m.specId})`).join('\n')}${a.members.length > 8 ? `\n    · and ${a.members.length - 8} more` : ''}`);
-    return [`Proposed taxonomy for ${r.specs} spec(s) (nothing created): product "${r.proposal.product.title}" and ${r.proposal.areas.length} area(s).`, ...areas,
-      'Show it to a person. To create it: organize { dryRun: false }, optionally areas: [keys] for part of it and edits: { [key]: { title, charter } }.'].join('\n');
+    const unplaced = r.proposal.unplaced?.length ? [`- Left for a person to place (${r.proposal.unplaced.length}): ${r.proposal.unplaced.slice(0, 8).map((u) => `${u.title} (${u.specId})`).join('; ')}${r.proposal.unplaced.length > 8 ? `; and ${r.proposal.unplaced.length - 8} more` : ''}`] : [];
+    return [`Proposed taxonomy for ${r.specs} spec(s) (nothing created): product "${r.proposal.product.title}" and ${r.proposal.areas.length} area(s).`, proposedByText(r.proposedBy), ...areas, ...unplaced,
+      'Show it to a person. To create it: organize { dryRun: false }, optionally areas: [keys] for part of it and edits: { [key]: { title, charter } }.'].filter(Boolean).join('\n');
   }
   if (r.mode === 'taxonomy') {
     return [`Taxonomy created${r.product ? ` under product "${r.product.title}"` : ''}:`, ...r.created.map((c) => `- ${c.title} (${c.specId}): ${c.filed} spec(s) filed`),
@@ -154,12 +161,32 @@ export function organizeText(r: OrganizeReply): string {
 /** Sub-actions scoped to a workspace rather than to a spec or task: the caller resolves the session workspace for these. */
 export const WORKSPACE_SPEC_OPS = ['create_draft', 'list', 'organize', 'import'] as const;
 
-type ImportRow = { path: string; action: 'create' | 'reimport' | 'exists' | 'skip'; reason?: string; message?: string; specId?: string; revision?: number; spec?: { title: string }; area: { specId: string | null; title: string; proposed: boolean } | null; provenance?: { commitSha: string; prNumber: number | null }; duplicates?: Array<{ specId: string; title: string; relation: string; p: number }>; existing?: { specId: string; title: string; url: string; matchedBy: string }; provenanceAttached?: boolean };
-type ImportReply = { dryRun?: boolean; repo?: string; commitSha?: string; files?: ImportRow[]; counts?: { create: number; reimport: number; exists?: number; skip: number }; byArea?: Array<{ area: string; areaSpecId: string | null; proposed: boolean; count: number }>; limit?: number; remaining?: number; nextCursor?: string | null };
+type AreaBy = 'classifier' | 'domain' | 'existing';
+type ImportRow = {
+  path: string; action: 'create' | 'reimport' | 'exists' | 'skip'; reason?: string; message?: string; specId?: string; revision?: number; spec?: { title: string };
+  area: { specId: string | null; title: string; proposed: boolean; by?: AreaBy; p?: number } | null;
+  placement?: { by: AreaBy; reason?: string; p?: number };
+  suggestion?: { specId: string | null; title: string; answer: string; p: number };
+  related?: Array<{ specId: string; title: string; url: string }>;
+  provenance?: { commitSha: string; prNumber: number | null }; duplicates?: Array<{ specId: string; title: string; relation: string; p: number }>;
+  existing?: { specId: string; title: string; url: string; matchedBy: string }; provenanceAttached?: boolean;
+};
+type ImportReply = { dryRun?: boolean; repo?: string; commitSha?: string; files?: ImportRow[]; counts?: { create: number; reimport: number; exists?: number; skip: number }; byArea?: Array<{ area: string; areaSpecId: string | null; proposed: boolean; count: number; by?: AreaBy | null }>; limit?: number; remaining?: number; nextCursor?: string | null };
 
 /** The import params a continuation call repeats, as the caller passed them (cursor is added last). */
-const IMPORT_PARAMS = ['dryRun', 'ref', 'paths', 'allowDuplicates', 'limit', 'attach_provenance'] as const;
-const MATCHED_BY: Record<string, string> = { repo_ref: 'a cited repo path', provenance: 'its recorded provenance', title: 'title' };
+const IMPORT_PARAMS = ['dryRun', 'ref', 'paths', 'allowDuplicates', 'limit', 'attach_provenance', 'attach_to'] as const;
+const MATCHED_BY: Record<string, string> = { provenance: 'its recorded provenance', title: 'title', named: 'attach_to' };
+
+/** One create / re-import line, with what a person should see under it: duplicates, the suggestion, related specs. */
+function importRowText(f: ImportRow): string {
+  const lines = [`  ${f.action === 'reimport' ? 're-import' : 'create'}: ${f.spec?.title ?? f.path} from ${f.path}${f.provenance?.prNumber ? `, last changed in #${f.provenance.prNumber}` : ''}${f.specId ? ` → ${f.specId}${f.revision ? ` r${f.revision}` : ''}` : ''}${f.area?.by === 'classifier' && typeof f.area.p === 'number' ? ` (classifier p ${f.area.p.toFixed(2)})` : ''}`];
+  if (f.duplicates?.length) lines.push(`    possible duplicate of ${f.duplicates.map((d) => `"${d.title}" (${d.specId}, ${d.relation} p ${d.p.toFixed(2)})`).join(', ')}`);
+  if (f.suggestion) lines.push(`    suggested: ${f.suggestion.title}${f.suggestion.specId ? ` (${f.suggestion.specId})` : ''} (p ${f.suggestion.p.toFixed(2)}), below the filing bar, so it stays Unfiled`);
+  for (const r of f.related ?? []) {
+    lines.push(`    related: "${r.title}" (${r.specId}) cites this path; it is still created as its own spec. If a person says this file IS that spec, pass attach_to: { "${f.path}": "${r.specId}" } to record it there instead`);
+  }
+  return lines.join('\n');
+}
 
 /** An import run in words: counts, then the files grouped by area, then what was skipped and why. */
 export function importText(r: ImportReply, call: Record<string, unknown> = {}): string {
@@ -167,10 +194,14 @@ export function importText(r: ImportReply, call: Record<string, unknown> = {}): 
   const c = r.counts ?? { create: 0, reimport: 0, skip: 0 };
   const at = r.commitSha ? `${r.repo ?? 'the repo'}@${r.commitSha.slice(0, 7)}` : (r.repo ?? 'the repo');
   const head = `${r.dryRun === false ? 'Imported' : 'Dry run (nothing written)'} from ${at}: ${c.create} to create, ${c.reimport} to re-import as a new revision, ${c.exists ? `${c.exists} already in buildd, ` : ''}${c.skip} skipped.`;
+  // Each file once: only creates and re-imports are listed by area; exists and skips have their own lists.
+  const listed = files.filter((f) => f.action === 'create' || f.action === 'reimport');
   const groups = (r.byArea ?? []).map((a) => {
-    const rows = files.filter((f) => f.action !== 'skip' && (f.area?.title ?? 'Unfiled') === a.area && (f.area?.specId ?? null) === a.areaSpecId);
-    return [`${a.area}${a.proposed ? ' (no such area yet; organize will suggest one)' : a.areaSpecId ? ` (${a.areaSpecId})` : ''}: ${a.count}`,
-      ...rows.map((f) => `  ${f.action === 'reimport' ? 're-import' : 'create'}: ${f.spec?.title ?? f.path} from ${f.path}${f.provenance?.prNumber ? `, last changed in #${f.provenance.prNumber}` : ''}${f.specId ? ` → ${f.specId}${f.revision ? ` r${f.revision}` : ''}` : ''}${f.duplicates?.length ? `\n    possible duplicate of ${f.duplicates.map((d) => `"${d.title}" (${d.specId}, ${d.relation} p ${d.p.toFixed(2)})`).join(', ')}` : ''}`)].join('\n');
+    const rows = listed.filter((f) => (f.area?.title ?? 'Unfiled') === a.area && (f.area?.specId ?? null) === a.areaSpecId && (a.by === undefined || (f.area?.by ?? null) === a.by));
+    const reason = a.by === 'domain' ? rows.find((f) => f.placement?.reason)?.placement?.reason : undefined;
+    const how = a.by === 'domain' ? ` (by domain, classifier unavailable${reason ? `: ${reason}` : ''})` : '';
+    return [`${a.area}${how}${a.proposed ? ' (no such area yet; organize will suggest one)' : a.areaSpecId ? ` (${a.areaSpecId})` : ''}: ${a.count}`,
+      ...rows.map(importRowText)].join('\n');
   });
   const exists = files.filter((f) => f.action === 'exists' && f.existing);
   const existsLines = exists.length ? [
@@ -470,7 +501,7 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
     case 'organize': {
       if (!workspaceId) throw new Error('workspaceId is required (no workspace in this session)');
       const payload: Record<string, unknown> = { workspaceId };
-      for (const k of ['dryRun', 'limit', 'areas', 'edits'] as const) if (params[k] !== undefined) payload[k] = params[k];
+      for (const k of ['dryRun', 'limit', 'areas', 'edits', 'source'] as const) if (params[k] !== undefined) payload[k] = params[k];
       try {
         return text(organizeText(await api('/api/specs/organize', { method: 'POST', body: JSON.stringify(payload) })));
       } catch (err) {
@@ -486,8 +517,10 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       for (const k of ['dryRun', 'ref', 'paths', 'allowDuplicates', 'limit', 'cursor'] as const) if (params[k] !== undefined) payload[k] = params[k];
       const attach = params.attach_provenance ?? params.attachProvenance;
       if (attach !== undefined) payload.attachProvenance = attach;
+      const attachTo = params.attach_to ?? params.attachTo;
+      if (attachTo !== undefined) payload.attachTo = attachTo;
       try {
-        return text(importText(await api('/api/specs/import', { method: 'POST', body: JSON.stringify(payload) }), { ...params, ...(attach !== undefined ? { attach_provenance: attach } : {}) }));
+        return text(importText(await api('/api/specs/import', { method: 'POST', body: JSON.stringify(payload) }), { ...params, ...(attach !== undefined ? { attach_provenance: attach } : {}), ...(attachTo !== undefined ? { attach_to: attachTo } : {}) }));
       } catch (err) {
         const e = apiError(err);
         if (e && [400, 404, 502].includes(e.status)) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));

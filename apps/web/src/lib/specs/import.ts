@@ -12,7 +12,8 @@ import type { DuplicateCheckDeps } from '@/lib/spec-duplicate-decision';
 import type { DuplicateCandidate } from './duplicates';
 import { linkedRepo } from './repo-source';
 import { areaDomain } from './repo-copy';
-import { AREA_GONE_STATUSES, AREA_SCOPES, CROSS_CUTTING_DOMAINS, listAreas, type AreaInfo } from './areas';
+import { AREA_GONE_STATUSES, AREA_SCOPES, CROSS_CUTTING_DOMAINS, listAreas, type AreaClassification, type AreaClassifier, type AreaInfo } from './areas';
+import { specCard } from './card';
 import { insertFiling, setParentIfUnfiled } from './filings';
 import { author, createSpecDraft, fail, reach, reviseSpecDraft, type SpecCaller, type SpecError, type SpecRow } from './store';
 import { approveSpecRevision, specApprovalDeps, specApprover } from './approval';
@@ -25,26 +26,37 @@ import { FILE_METADATA_KEYS, updateSpecMetadata } from './metadata';
  * Import reads `docs/specs/*.md` at one commit of the workspace's linked repo,
  * through its GitHub App installation (never a local checkout), and for each
  * file says what it would create: the spec (title, body, scope `feature`),
- * the area its `domain:` names, its provenance (path, commit, blob, the PR
- * that last changed it) and any duplicate of an approved spec. A dry run (the
+ * where it would be filed, its provenance (path, commit, blob, the PR that
+ * last changed it) and any duplicate of an approved spec. A dry run (the
  * default) writes nothing. A real run creates each spec with revision 1
  * marked imported, not approved, and its mechanical frontmatter in the
- * metadata block, filed under the area whose domain matches (else left to the
- * organize path, §17). It is idempotent: a file whose blob is unchanged is
+ * metadata block. It is idempotent: a file whose blob is unchanged is
  * skipped, and a changed one becomes a new imported revision of the same spec.
  * A duplicate is reported in the dry run and skipped on import unless the
  * caller names its path in `allowDuplicates`.
  *
- * A file whose spec already lives in buildd (a native spec whose head revision
- * cites the path, one that recorded it as its provenance, or one with exactly
- * its title, any case) is reported `exists` with that spec's link and never
- * created again; `attachProvenance` records the path and commit on that
- * spec's metadata block instead (no revision).
+ * Placement goes through the area classifier (§17, `buildd.spec_area`), with
+ * every area of the workspace and, as a hint in its input, the file's
+ * `domain:` and the domains each area declares. A confident answer (the
+ * measured bar) files the spec; any other answer leaves it Unfiled with the
+ * suggestion recorded and shown. Only when the classifier does not run (no
+ * key, unmeasured model, no areas, an error) is the declared-domain mapping
+ * used, labelled as that fallback.
+ *
+ * A file is `exists` only when it is the same spec: a native spec that
+ * recorded the path as its provenance, or one with exactly its title, any
+ * case. `attachProvenance` records the path and commit on that spec's metadata
+ * block instead (no revision). A native spec that merely cites the path in its
+ * repoRefs is a `related` hint: the file is still a create, unless a person
+ * names that spec in `attachTo: { <path>: <specId> }`, never automatically.
  *
  * It runs in pages (`limit`, default 15, at most 40, and `cursor`): files in
  * path order, every page read at the commit the first page resolved, which the
- * cursor carries. One request stays well inside the serverless limit however
- * large the folder, and each page is idempotent on its own.
+ * cursor carries. Files are worked IMPORT_CONCURRENCY at a time, and no new
+ * file starts once the page has run IMPORT_PAGE_BUDGET_MS: the page is then
+ * cut short and `nextCursor` continues it, so one request stays inside the
+ * serverless limit however slow the classifier is, and each page is
+ * idempotent on its own.
  *
  * Until a person confirms it the repo file stays the source: no revise in
  * buildd, no approval outside confirmation, no generated copy (store.ts,
@@ -62,6 +74,12 @@ export interface ImportDeps {
   now: () => Date;
   /** The duplicate check's own deps; false skips it (tests). */
   duplicates?: DuplicateCheckDeps | false;
+  /** The area classifier; default the decisions module's, through modules.ts. */
+  classify?: AreaClassifier;
+  /** Milliseconds for the page's time bound; default Date.now. */
+  clock?: () => number;
+  /** No new file starts after this long into the page; default IMPORT_PAGE_BUDGET_MS. */
+  pageBudgetMs?: number;
 }
 export const defaultImportDeps: ImportDeps = { api: githubApi, repo: linkedRepo, now: () => new Date() };
 
@@ -71,6 +89,10 @@ const HISTORY_CHUNK = 40;
 export const MAX_IMPORT_FILES = 300;
 export const DEFAULT_IMPORT_PAGE = 15;
 export const MAX_IMPORT_PAGE = 40;
+/** Files worked at once: each may make a classifier call and a duplicate check. */
+export const IMPORT_CONCURRENCY = 4;
+/** After this, no new file starts; the ones in flight finish, so a page ends in about 40 seconds. */
+export const IMPORT_PAGE_BUDGET_MS = 25_000;
 
 /** Where the next page starts: the commit every page reads and the last path the previous page covered. */
 interface ImportCursor { c: string; a: string }
@@ -174,12 +196,22 @@ export interface ImportFileRow {
   specId?: string;
   /** The revision written by a real run. */
   revision?: number;
-  /** `exists`: the spec already in buildd this file is, and how it was recognised. */
-  existing?: { specId: string; title: string; url: string; matchedBy: 'repo_ref' | 'provenance' | 'title' };
+  /** `exists`: the spec already in buildd this file is, and how it was recognised (`named`: by `attachTo`). */
+  existing?: { specId: string; title: string; url: string; matchedBy: 'provenance' | 'title' | 'named' };
+  /** Native specs that cite this path in their repoRefs: not this spec, but `attachTo` may name one. */
+  related?: Array<{ specId: string; title: string; url: string }>;
   /** `exists` with attachProvenance on a real run: the path and commit are on that spec's metadata block. */
   provenanceAttached?: boolean;
-  /** Where it is filed: an existing area, a proposed one named from its `domain:`, or nothing. */
-  area: { specId: string | null; title: string; domain: string | null; proposed: boolean } | null;
+  /**
+   * Where it is filed: an area the classifier answered confidently, by the
+   * declared-domain fallback (an existing area or one its `domain:` would
+   * name), the area a re-imported spec is already under, or nothing (Unfiled).
+   */
+  area: { specId: string | null; title: string; domain: string | null; proposed: boolean; by: 'classifier' | 'domain' | 'existing'; p?: number } | null;
+  /** How placement was decided; for `domain`, why the classifier did not run. */
+  placement?: { by: 'classifier'; p: number; model: string | null; decisionRecordId: string | null } | { by: 'domain'; reason: string } | { by: 'existing' };
+  /** A classifier answer below the bar (or new_area/unsure): left Unfiled, offered as this. */
+  suggestion?: { specId: string | null; title: string; answer: 'area' | 'new_area' | 'unsure'; p: number };
   provenance: { path: string; commitSha: string; blobSha: string; prNumber: number | null };
   metadata: SpecMetadata;
   /** Mechanical fields that could not be read and are not imported. */
@@ -199,28 +231,34 @@ export interface ImportResult {
   counts: { create: number; reimport: number; exists: number; skip: number };
   /** Page size used. */
   limit: number;
-  /** Files after this page; 0 on the last page. */
+  /** Files after this page; 0 on the last page. A page cut short by its time bound leaves more. */
   remaining: number;
   /** Pass as `cursor` for the next page (same commit); null on the last page. */
   nextCursor: string | null;
   /** Files to create or re-import, per area, for the summary. */
-  byArea: Array<{ area: string; areaSpecId: string | null; proposed: boolean; count: number }>;
+  byArea: Array<{ area: string; areaSpecId: string | null; proposed: boolean; count: number; by: 'classifier' | 'domain' | 'existing' | null }>;
 }
 
-export interface ImportInput { workspaceId: unknown; dryRun?: unknown; ref?: unknown; paths?: unknown; allowDuplicates?: unknown; limit?: unknown; cursor?: unknown; attachProvenance?: unknown }
+export interface ImportInput { workspaceId: unknown; dryRun?: unknown; ref?: unknown; paths?: unknown; allowDuplicates?: unknown; limit?: unknown; cursor?: unknown; attachProvenance?: unknown; attachTo?: unknown }
 
 type NativeSpec = { id: string; title: string; metadata: SpecRow['metadata']; repoRefs: Array<{ path: string; commitSha: string }> | null };
 
-/** The spec already in buildd a repo file is: one citing its path, then one that recorded it as provenance, then the exact title. */
-function nativeMatch(natives: readonly NativeSpec[], path: string, title: string): { spec: NativeSpec; matchedBy: 'repo_ref' | 'provenance' | 'title' } | null {
-  const ref = natives.find((n) => (n.repoRefs ?? []).some((r) => r.path === path));
-  if (ref) return { spec: ref, matchedBy: 'repo_ref' };
+/**
+ * The spec already in buildd a repo file is: one that recorded it as its
+ * provenance, then the exact title (any case). Citing the path is not enough:
+ * a spec cites contracts it builds on, which are other specs (see `relatedTo`).
+ */
+function nativeMatch(natives: readonly NativeSpec[], path: string, title: string): { spec: NativeSpec; matchedBy: 'provenance' | 'title' } | null {
   const prov = natives.find((n) => n.metadata?.repo_provenance?.path === path);
   if (prov) return { spec: prov, matchedBy: 'provenance' };
   const t = title.trim().toLowerCase();
   const byTitle = natives.find((n) => n.title.trim().toLowerCase() === t);
   return byTitle ? { spec: byTitle, matchedBy: 'title' } : null;
 }
+
+/** Native specs whose head revision cites the path: a hint for a person, never a match. */
+const relatedTo = (natives: readonly NativeSpec[], path: string, except: string | null) =>
+  natives.filter((n) => n.id !== except && (n.repoRefs ?? []).some((r) => r.path === path));
 
 /**
  * Area by `domain:` value: each value an area declares (metadata `domains`)
@@ -237,7 +275,11 @@ export function areasByDomain(areas: readonly Pick<AreaInfo, 'id' | 'title' | 's
 const titleFromDomain = (d: string) => d.split(/[-_\s]+/).filter(Boolean).map((w) => w[0]!.toUpperCase() + w.slice(1)).join(' ');
 const strList = (v: unknown): string[] | null => (Array.isArray(v) && v.every((x) => typeof x === 'string') ? v as string[] : null);
 
+const NOT_PLACED = 'no single area';
+
 export async function importRepoSpecs(caller: SpecCaller, input: ImportInput, deps: ImportDeps = defaultImportDeps): Promise<{ ok: true; result: ImportResult } | SpecError> {
+  const clock = deps.clock ?? Date.now;
+  const started = clock();
   const { workspaceId } = input;
   if (typeof workspaceId !== 'string' || !isUuid(workspaceId)) return fail(400, 'workspaceId must be a UUID');
   if (input.dryRun !== undefined && typeof input.dryRun !== 'boolean') return fail(400, 'dryRun is true or false (default true)');
@@ -255,6 +297,16 @@ export async function importRepoSpecs(caller: SpecCaller, input: ImportInput, de
   if (input.cursor !== undefined && input.cursor !== null && !cursor) return fail(400, 'cursor is the nextCursor a previous import page returned');
   if (input.attachProvenance !== undefined && typeof input.attachProvenance !== 'boolean') return fail(400, 'attachProvenance is true or false');
   const attachProvenance = input.attachProvenance === true;
+  // A person names the native spec a file should be recorded on: the only way a related spec becomes the match.
+  const ATTACH_TO = 'attachTo maps a docs/specs/<file>.md path to the id of the native spec in this workspace to record it on';
+  let attachTo = new Map<string, string>();
+  if (input.attachTo !== undefined && input.attachTo !== null) {
+    const v = input.attachTo;
+    if (typeof v !== 'object' || Array.isArray(v)) return fail(400, ATTACH_TO);
+    const entries = Object.entries(v as Record<string, unknown>);
+    if (entries.length > MAX_IMPORT_FILES || !entries.every(([k, id]) => k.startsWith(`${SPECS_DIR}/`) && typeof id === 'string' && isUuid(id))) return fail(400, ATTACH_TO);
+    attachTo = new Map(entries as Array<[string, string]>);
+  }
   if (!(await reach(caller, workspaceId, true))) return fail(404, 'Workspace not found');
 
   const repo = await deps.repo(workspaceId);
@@ -270,9 +322,8 @@ export async function importRepoSpecs(caller: SpecCaller, input: ImportInput, de
   }
   if (only) files = files.filter((f) => only.includes(f.path));
   if (cursor) files = files.filter((f) => f.path.localeCompare(cursor.a) > 0);
-  const remaining = Math.max(0, files.length - limit);
+  const after = files.length;
   files = files.slice(0, limit);
-  const nextCursor = remaining > 0 ? encodeImportCursor({ c: commitSha, a: files[files.length - 1]!.path }) : null;
 
   const [areas, existing, natives] = await Promise.all([
     listAreas(workspaceId),
@@ -282,7 +333,10 @@ export async function importRepoSpecs(caller: SpecCaller, input: ImportInput, de
       .where(and(eq(specs.workspaceId, workspaceId), isNull(specs.repoSource), notInArray(specs.scope, [...AREA_SCOPES]), notInArray(specs.status, [...AREA_GONE_STATUSES])))
       .orderBy(specs.createdAt),
   ]);
+  const nativeById = new Map(natives.map((n) => [n.id, n]));
+  for (const id of attachTo.values()) if (!nativeById.has(id)) return fail(400, `attachTo names ${id}, which is not a native spec in this workspace`);
   const areaByDomain = areasByDomain(areas);
+  const areaById = new Map(areas.map((a) => [a.id, a]));
   const byPath = new Map(existing.map((s) => [s.repoSource!.path, s]));
   const parsed = files.map((f) => ({ f, p: repoSpecForImport(f.path, f.text) }));
   const wanted = parsed.filter((x) => x.p.ok).map((x) => x.f.path);
@@ -290,45 +344,87 @@ export async function importRepoSpecs(caller: SpecCaller, input: ImportInput, de
   const who = author(caller);
   const ids = caller.kind === 'user' ? { userId: caller.userId } : { accountId: caller.account.id };
   const { SPEC_DUPLICATE_CHECK } = await import('@/modules');
+  const classify = deps.classify ?? (await (await import('./organize')).areaClassifier());
   const batchId = dryRun ? null : randomUUID();
   const importedAt = deps.now().toISOString();
+  const specUrl = (id: string) => `${appBaseUrl()}/app/specs/${id}`;
 
-  const rows: ImportFileRow[] = [];
-  for (const { f, p } of parsed) {
+  /** The declared-domain mapping (R-18): the fallback when the classifier does not run. */
+  const byDomain = (domain: string | null): ImportFileRow['area'] => {
+    const match = domain ? areaByDomain.get(domain) : undefined;
+    // A cross-cutting value (`surfaces`, `api`) names a kind of code, not a part of the product: never an area of its own (§17 R-4).
+    return match
+      ? { specId: match.id, title: match.title, domain, proposed: false, by: 'domain' }
+      : domain && !CROSS_CUTTING_DOMAINS.has(domain) ? { specId: null, title: titleFromDomain(domain), domain, proposed: true, by: 'domain' } : null;
+  };
+
+  /** Place one new spec through the classifier (§17), else by domain. Sets area, placement and suggestion on the row. Never throws. */
+  const placeRow = async (row: ImportFileRow, p: { title: string; body: string; domain: string | null }, subjectId: string): Promise<void> => {
+    let c: AreaClassification = { ran: false, reason: 'the workspace has no areas' };
+    if (areas.length) {
+      try {
+        c = await classify({ workspaceId, specId: subjectId, card: specCard(p.title, p.body), areas, ...('userId' in ids ? { userId: ids.userId } : { accountId: ids.accountId }), hint: { domain: p.domain } });
+      } catch (err) {
+        c = { ran: false, reason: `the area check failed (${errMsg(err)})` };
+      }
+    }
+    if (c.ran) {
+      // The classifier may only name an area it was shown, in this workspace (R-6, R-8).
+      const named = c.answer === 'area' && c.areaId ? areaById.get(c.areaId) : undefined;
+      row.placement = { by: 'classifier', p: c.p, model: c.model, decisionRecordId: c.decisionRecordId };
+      if (named && c.confident) {
+        row.area = { specId: named.id, title: named.title, domain: p.domain, proposed: false, by: 'classifier', p: c.p };
+        return;
+      }
+      row.area = null;
+      const answer = named ? 'area' : c.answer === 'new_area' ? 'new_area' : 'unsure';
+      const title = named ? named.title
+        : answer === 'new_area' ? `a new area${p.domain && !CROSS_CUTTING_DOMAINS.has(p.domain) ? ` (${titleFromDomain(p.domain)})` : ''}` : NOT_PLACED;
+      row.suggestion = { specId: named?.id ?? null, title, answer, p: c.p };
+      return;
+    }
+    row.area = byDomain(p.domain);
+    row.placement = { by: 'domain', reason: c.reason };
+  };
+
+  const one = async ({ f, p }: (typeof parsed)[number]): Promise<ImportFileRow> => {
     const provenance = { path: f.path, commitSha, blobSha: f.blobSha, prNumber: prs.get(f.path) ?? null };
     const base = { path: f.path, provenance, metadata: {}, unread: [], duplicates: [], duplicateCheck: null, area: null } satisfies Omit<ImportFileRow, 'action'>;
-    if (!p.ok) { rows.push({ ...base, action: 'skip', reason: p.reason, message: p.message }); continue; }
-    // A cross-cutting value (`surfaces`, `api`) names a kind of code, not a part of the product: never an area of its own (§17 R-4).
-    const match = p.domain ? areaByDomain.get(p.domain) : undefined;
-    const area = match
-      ? { specId: match.id, title: match.title, domain: p.domain, proposed: false }
-      : p.domain && !CROSS_CUTTING_DOMAINS.has(p.domain) ? { specId: null, title: titleFromDomain(p.domain), domain: p.domain, proposed: true } : null;
-    const row: ImportFileRow = { ...base, area, metadata: p.metadata, unread: p.unread, action: 'create', spec: { title: p.title, scope: 'feature', body: p.body } };
+    if (!p.ok) return { ...base, action: 'skip', reason: p.reason, message: p.message };
+    const row: ImportFileRow = { ...base, metadata: p.metadata, unread: p.unread, action: 'create', spec: { title: p.title, scope: 'feature', body: p.body } };
     const prior = byPath.get(f.path);
-    if (prior?.repoSource?.state === 'confirmed') { rows.push({ ...row, action: 'skip', reason: 'confirmed', message: `${f.path} was imported and confirmed; buildd is its source now`, specId: prior.id }); continue; }
-    if (prior && prior.repoSource!.blobSha === f.blobSha) { rows.push({ ...row, action: 'skip', reason: 'already_imported', message: `${f.path} is imported at this blob already`, specId: prior.id }); continue; }
+    if (prior?.repoSource?.state === 'confirmed') return { ...row, action: 'skip', reason: 'confirmed', message: `${f.path} was imported and confirmed; buildd is its source now`, specId: prior.id };
+    if (prior && prior.repoSource!.blobSha === f.blobSha) return { ...row, action: 'skip', reason: 'already_imported', message: `${f.path} is imported at this blob already`, specId: prior.id };
     if (!prior) {
-      // Already in buildd under its own name: never a second spec, at most its provenance.
-      const m = nativeMatch(natives, f.path, p.title);
+      // Already in buildd as the same spec: never a second one, at most its provenance.
+      const namedId = attachTo.get(f.path);
+      const m = namedId ? { spec: nativeById.get(namedId)!, matchedBy: 'named' as const } : nativeMatch(natives, f.path, p.title);
       if (m) {
+        const how = m.matchedBy === 'named' ? 'named in attachTo' : m.matchedBy === 'provenance' ? 'matched by its recorded provenance' : 'matched by title';
         const existingRow: ImportFileRow = {
           ...row, action: 'exists', specId: m.spec.id,
-          existing: { specId: m.spec.id, title: m.spec.title, url: `${appBaseUrl()}/app/specs/${m.spec.id}`, matchedBy: m.matchedBy },
-          message: `already in buildd as "${m.spec.title}" (${m.spec.id}, matched by ${m.matchedBy === 'repo_ref' ? 'a cited repo path' : m.matchedBy === 'provenance' ? 'its recorded provenance' : 'title'}); not created`,
+          existing: { specId: m.spec.id, title: m.spec.title, url: specUrl(m.spec.id), matchedBy: m.matchedBy },
+          message: `already in buildd as "${m.spec.title}" (${m.spec.id}, ${how}); not created`,
         };
-        if (!dryRun && attachProvenance) {
+        // Naming the spec is the person's explicit ask to record the file on it.
+        if (!dryRun && (attachProvenance || m.matchedBy === 'named')) {
           const r = await updateSpecMetadata(caller, m.spec.id, { changes: { repo_provenance: provenance }, reason: `Matched to ${f.path}@${commitSha.slice(0, 7)} on import` });
           if (r.ok) existingRow.provenanceAttached = true;
           else existingRow.message = `${existingRow.message}; provenance not recorded: ${r.error}`;
         }
-        rows.push(existingRow);
-        continue;
+        return existingRow;
       }
+      const related = relatedTo(natives, f.path, null);
+      if (related.length) row.related = related.map((n) => ({ specId: n.id, title: n.title, url: specUrl(n.id) }));
     }
-    if (p.body.length > 400_000) { rows.push({ ...row, action: 'skip', reason: 'too_large', message: `${f.path} is longer than a spec body may be` }); continue; }
+    if (p.body.length > 400_000) return { ...row, action: 'skip', reason: 'too_large', message: `${f.path} is longer than a spec body may be` };
     if (prior) {
+      // Filed (or not) by its first import: a re-import moves nothing.
       row.action = 'reimport';
       row.specId = prior.id;
+      const parent = prior.parentSpecId ? areaById.get(prior.parentSpecId) : undefined;
+      row.area = parent ? { specId: parent.id, title: parent.title, domain: p.domain, proposed: false, by: 'existing' } : null;
+      row.placement = { by: 'existing' };
     } else {
       // §13: an imported spec is checked like a new draft, against the approved ones.
       const d = deps.duplicates === false ? null : await SPEC_DUPLICATE_CHECK({ workspaceId, title: p.title, body: p.body, ...('userId' in ids ? { userId: ids.userId } : { accountId: ids.accountId }) }, deps.duplicates ?? {});
@@ -336,24 +432,40 @@ export async function importRepoSpecs(caller: SpecCaller, input: ImportInput, de
       else if (d) row.duplicateCheck = d.reason;
       if (d?.ran && d.blocking.length && !allow.has(f.path)) {
         row.message = `looks like a duplicate of ${d.blocking.map((x) => `"${x.title}" (${x.specId})`).join(', ')}`;
-        if (!dryRun) { rows.push({ ...row, action: 'skip', reason: 'duplicate', message: `${row.message}; not imported. Pass allowDuplicates: ["${f.path}"] to import it anyway` }); continue; }
+        if (!dryRun) return { ...row, action: 'skip', reason: 'duplicate', message: `${row.message}; not imported. Pass allowDuplicates: ["${f.path}"] to import it anyway` };
       }
     }
-    if (!dryRun) {
-      const wrote = await writeImport(caller, workspaceId, row, prior ?? null, { importedAt, batchId: batchId!, by: who.label, ids });
-      rows.push(wrote);
-      continue;
+    if (dryRun) {
+      if (!prior) await placeRow(row, p, `import:${f.path}`);
+      return row;
     }
-    rows.push(row);
-  }
+    return writeImport(caller, workspaceId, row, prior ?? null, { importedAt, batchId: batchId!, by: who.label, ids, place: (specId) => placeRow(row, p, specId) });
+  };
+
+  // IMPORT_CONCURRENCY files at a time, in path order; once the page has run its budget no new file starts.
+  // Started files are always a prefix of the page, so the cursor is the last of them.
+  const budget = deps.pageBudgetMs ?? IMPORT_PAGE_BUDGET_MS;
+  const rows: ImportFileRow[] = [];
+  let next = 0;
+  const worker = async () => {
+    while (next < parsed.length) {
+      if (next > 0 && clock() - started >= budget) return;
+      const i = next++;
+      rows[i] = await one(parsed[i]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(IMPORT_CONCURRENCY, parsed.length) }, worker));
+  const covered = next;
+  const remaining = Math.max(0, after - covered);
+  const nextCursor = remaining > 0 ? encodeImportCursor({ c: commitSha, a: parsed[covered - 1]!.f.path }) : null;
 
   const counts = { create: 0, reimport: 0, exists: 0, skip: 0 };
-  const areaCount = new Map<string, { area: string; areaSpecId: string | null; proposed: boolean; count: number }>();
+  const areaCount = new Map<string, ImportResult['byArea'][number]>();
   for (const r of rows) {
     counts[r.action]++;
     if (r.action === 'skip' || r.action === 'exists') continue;
-    const key = r.area ? `${r.area.specId ?? 'new'}:${r.area.title}` : 'unfiled';
-    const cur = areaCount.get(key) ?? { area: r.area?.title ?? 'Unfiled', areaSpecId: r.area?.specId ?? null, proposed: !!r.area?.proposed, count: 0 };
+    const key = r.area ? `${r.area.specId ?? 'new'}:${r.area.title}:${r.area.by}` : 'unfiled';
+    const cur = areaCount.get(key) ?? { area: r.area?.title ?? 'Unfiled', areaSpecId: r.area?.specId ?? null, proposed: !!r.area?.proposed, count: 0, by: r.area?.by ?? null };
     cur.count++;
     areaCount.set(key, cur);
   }
@@ -367,7 +479,7 @@ export async function importRepoSpecs(caller: SpecCaller, input: ImportInput, de
 }
 
 /** Write one file's import: a new spec, or a new imported revision of the one it was. Never throws. */
-async function writeImport(caller: SpecCaller, workspaceId: string, row: ImportFileRow, prior: SpecRow | null, ctx: { importedAt: string; batchId: string; by: string; ids: { userId: string } | { accountId: string } }): Promise<ImportFileRow> {
+async function writeImport(caller: SpecCaller, workspaceId: string, row: ImportFileRow, prior: SpecRow | null, ctx: { importedAt: string; batchId: string; by: string; ids: { userId: string } | { accountId: string }; place: (specId: string) => Promise<void> }): Promise<ImportFileRow> {
   const imported = { ...row.provenance, importedAt: ctx.importedAt };
   const summary = `Imported from ${row.path}@${row.provenance.commitSha.slice(0, 7)}${row.provenance.prNumber ? ` (last changed in #${row.provenance.prNumber})` : ''}`;
   try {
@@ -387,6 +499,8 @@ async function writeImport(caller: SpecCaller, workspaceId: string, row: ImportF
       if (!r.ok) return { ...row, action: 'skip', reason: 'failed', message: r.error };
       specId = r.spec.id;
       revision = 1;
+      // Asked about the spec just created, so the decision's subject is that spec.
+      await ctx.place(specId);
       await fileImported(workspaceId, specId, row, ctx);
     }
     // A re-import also clears a mechanical field the file no longer states.
@@ -399,15 +513,30 @@ async function writeImport(caller: SpecCaller, workspaceId: string, row: ImportF
   }
 }
 
-/** File a new import under the area its `domain:` names (R-18); with none, the organize path places it (§17). */
+/**
+ * File a new import where placement put it: a confident classifier answer or
+ * the domain fallback's existing area is applied (with undo); a classifier
+ * suggestion is recorded open for a person; with neither, the organize path
+ * places it after the response (§17).
+ */
 async function fileImported(workspaceId: string, specId: string, row: ImportFileRow, ctx: { batchId: string; by: string; ids: { userId: string } | { accountId: string } }): Promise<void> {
+  const pl = row.placement;
+  const model = pl?.by === 'classifier' ? pl : null;
   if (row.area?.specId) {
     if (await setParentIfUnfiled(workspaceId, specId, row.area.specId)) {
       await insertFiling({
-        workspaceId, specId, kind: 'filed', status: 'applied', source: 'domain', previousParentId: null, parentSpecId: row.area.specId,
-        proposal: { answer: 'domain', domain: row.area.domain, path: row.path }, batchId: ctx.batchId, createdBy: 'buildd',
+        workspaceId, specId, kind: 'filed', status: 'applied', source: model ? 'model' : 'domain', previousParentId: null, parentSpecId: row.area.specId,
+        proposal: model ? { answer: 'area', p: model.p, model: model.model, domain: row.area.domain, path: row.path } : { answer: 'domain', domain: row.area.domain, path: row.path },
+        decisionRecordId: model?.decisionRecordId ?? null, batchId: ctx.batchId, createdBy: 'buildd',
       });
     }
+    return;
+  }
+  if (model && row.suggestion) {
+    await insertFiling({
+      workspaceId, specId, kind: 'suggested', status: 'open', source: 'model', parentSpecId: row.suggestion.specId,
+      proposal: { answer: row.suggestion.answer, p: row.suggestion.p, model: model.model, path: row.path }, decisionRecordId: model.decisionRecordId, batchId: ctx.batchId, createdBy: 'buildd',
+    });
     return;
   }
   specApprovalDeps.afterResponse(async () => {

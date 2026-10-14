@@ -3,7 +3,7 @@ import { db } from '@buildd/core/db';
 import { specFilings, specs, workspaces } from '@buildd/core/db/schema';
 import { and, asc, eq, inArray, isNull, notInArray } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
-import { AREA_GONE_STATUSES, domainHintOf, headBodies, listAreas, proposeTaxonomy, type AreaClassification, type AreaClassifier, type AreaInfo, type TaxonomyProposal } from './areas';
+import { AREA_GONE_STATUSES, domainHintOf, headBodies, listAreas, proposeTaxonomy, type AreaClassification, type AreaClassifier, type AreaInfo, type TaxonomyProposal, type TaxonomyProposer } from './areas';
 import { specCard } from './card';
 import { currentFiling, filingViews, insertFiling, setParentIfUnfiled, specsWithFilings, type FilingView } from './filings';
 import { suggestParent } from './neighbours';
@@ -21,7 +21,10 @@ import { author, createSpecDraft, fail, reach, relateSpec, type SpecCaller, type
  *   `suggested` row. No areas, no key, an unmeasured model or an error: the
  *   similarity suggestion (§14) instead. Never fails the draft.
  * - A workspace with no product and no area (R-4): one proposed taxonomy, from
- *   every spec's card, `domain:` frontmatter as hints only. Nothing is created
+ *   every spec's card, `domain:` frontmatter as hints only. The team's decision
+ *   model sorts the specs (`buildd.spec_taxonomy`, behind the
+ *   `SPEC_TAXONOMY_PROPOSE` slot) when a measured one answers; otherwise the
+ *   word clustering in areas.ts does, and the reply says so. Nothing is created
  *   until a person accepts it; accepting creates the product and the areas
  *   (each through the duplicate check, like any spec) and files their members.
  * - A sweep (R-10): every unfiled spec with no filing row at all, bounded,
@@ -33,10 +36,17 @@ export const SWEEP_LIMIT = 50;
 /** Specs whose placement is theirs to organize: not the tree's own nodes. */
 const FILEABLE_SCOPES = ['feature', 'mission'] as const;
 
-/** Overridable for tests: the classifier and the fallback suggestion. */
-export const organizeDeps: { classify?: AreaClassifier; suggest?: typeof suggestParent } = {};
+/** Overridable for tests: the classifier, the taxonomy proposer and the fallback suggestion. */
+export const organizeDeps: { classify?: AreaClassifier; propose?: TaxonomyProposer; suggest?: typeof suggestParent } = {};
 
-async function classifier(): Promise<AreaClassifier> {
+/** What the reply says when the words, not a model, produced the proposal. */
+export const WORD_FALLBACK_LABEL = 'word-based fallback, no model available';
+
+async function taxonomyProposer(): Promise<TaxonomyProposer> {
+  return organizeDeps.propose ?? (await import('@/modules')).SPEC_TAXONOMY_PROPOSE;
+}
+
+export async function areaClassifier(): Promise<AreaClassifier> {
   return organizeDeps.classify ?? (await import('@/modules')).SPEC_AREA_CLASSIFY;
 }
 
@@ -67,7 +77,7 @@ async function place(spec: SpecRow, opts: PlaceOpts): Promise<FilingOutcome & { 
     const card = specCard(spec.title, body);
     let c: AreaClassification = { ran: false, reason: 'the workspace has no areas' };
     if (areas.length) {
-      c = await (await classifier())({ workspaceId: spec.workspaceId, specId: spec.id, card, areas, userId: opts.userId ?? null, accountId: opts.accountId ?? null });
+      c = await (await areaClassifier())({ workspaceId: spec.workspaceId, specId: spec.id, card, areas, userId: opts.userId ?? null, accountId: opts.accountId ?? null });
     }
     // The classifier may only name an area it was shown, in this workspace (R-6, R-8).
     if (c.ran) {
@@ -189,9 +199,14 @@ export async function actOnFiling(caller: SpecCaller, specId: string, input: { a
 export interface SweepRow { specId: string; title: string; outcome: FilingOutcome['outcome']; p: number | null; filingId: string | null; answer?: string; newArea?: { title: string; charter: string } }
 export interface SweepGroup { area: { specId: string; title: string } | null; label: string; filed: SweepRow[]; suggested: SweepRow[] }
 
+/** Which produced a taxonomy proposal: the team's decision model, or the word-based fallback and why. */
+export type ProposedBy =
+  | { source: 'model'; model: string | null }
+  | { source: 'words'; label: typeof WORD_FALLBACK_LABEL; reason: string };
+
 export type OrganizeResult =
-  | { mode: 'taxonomy'; dryRun: true; proposal: TaxonomyProposal; specs: number }
-  | { mode: 'taxonomy'; dryRun: false; batchId: string; product: { specId: string; title: string } | null; created: Array<{ key: string; specId: string; title: string; filed: number }>; refused: Array<{ key: string; title: string; reason: string }> }
+  | { mode: 'taxonomy'; dryRun: true; proposal: TaxonomyProposal; specs: number; proposedBy: ProposedBy }
+  | { mode: 'taxonomy'; dryRun: false; batchId: string; product: { specId: string; title: string } | null; created: Array<{ key: string; specId: string; title: string; filed: number }>; refused: Array<{ key: string; title: string; reason: string }>; proposedBy: ProposedBy }
   | { mode: 'sweep'; dryRun: boolean; batchId: string | null; scanned: number; remaining: number; skipped: number; groups: SweepGroup[]; classifier: string | null };
 
 export interface OrganizeInput {
@@ -202,7 +217,16 @@ export interface OrganizeInput {
   areas?: unknown;
   /** Taxonomy accept: a person's edits, by key: `{ title?, charter? }`. */
   edits?: unknown;
+  /**
+   * Taxonomy: `words` uses the word-based proposal only (what the spec index
+   * showed when no model proposal existed yet), so its keys match. Omitted or
+   * `model`: the decision model's when a measured one answers.
+   */
+  source?: unknown;
 }
+
+/** How organize is run, not what was asked: the spec index reads a proposal without waiting on the model. */
+export interface OrganizeOptions { cachedOnly?: boolean }
 
 async function unfiledSpecs(workspaceId: string): Promise<SpecRow[]> {
   return db.select().from(specs)
@@ -217,19 +241,20 @@ async function unfiledSpecs(workspaceId: string): Promise<SpecRow[]> {
  * tree, and the batch says what would happen. Needs write access to the
  * workspace's specs either way: it asks the decision model.
  */
-export async function organizeWorkspace(caller: SpecCaller, input: OrganizeInput): Promise<{ ok: true; result: OrganizeResult } | SpecError> {
+export async function organizeWorkspace(caller: SpecCaller, input: OrganizeInput, opts: OrganizeOptions = {}): Promise<{ ok: true; result: OrganizeResult } | SpecError> {
   const { workspaceId } = input;
   if (typeof workspaceId !== 'string' || !isUuid(workspaceId)) return fail(400, 'workspaceId must be a UUID');
   if (input.dryRun !== undefined && typeof input.dryRun !== 'boolean') return fail(400, 'dryRun must be true or false');
   const dryRun = input.dryRun !== false;
   const limit = input.limit === undefined ? SWEEP_LIMIT : Number(input.limit);
   if (!Number.isInteger(limit) || limit < 1 || limit > 200) return fail(400, 'limit must be an integer from 1 to 200');
+  if (input.source !== undefined && input.source !== 'model' && input.source !== 'words') return fail(400, 'source must be model or words');
   if (!(await reach(caller, workspaceId, true))) return fail(404, 'Workspace not found');
   const who = author(caller);
   const ids = caller.kind === 'user' ? { userId: caller.userId, accountId: null } : { userId: null, accountId: caller.account.id };
 
   const areas = await listAreas(workspaceId);
-  if (areas.length === 0) return taxonomy(caller, workspaceId, dryRun, input, who.label);
+  if (areas.length === 0) return taxonomy(caller, workspaceId, dryRun, input, who.label, ids, opts);
 
   const all = await unfiledSpecs(workspaceId);
   const placed = await specsWithFilings(all.map((s) => s.id));
@@ -278,16 +303,24 @@ function readEdits(raw: unknown): Map<string, { title?: string; charter?: string
 
 const areaBody = (title: string, charter: string) => `# ${title}\n\n${charter}\n`;
 
-async function taxonomy(caller: SpecCaller, workspaceId: string, dryRun: boolean, input: OrganizeInput, by: string): Promise<{ ok: true; result: OrganizeResult } | SpecError> {
+async function taxonomy(caller: SpecCaller, workspaceId: string, dryRun: boolean, input: OrganizeInput, by: string, ids: { userId: string | null; accountId: string | null }, opts: OrganizeOptions): Promise<{ ok: true; result: OrganizeResult } | SpecError> {
   const products = await db.select({ id: specs.id }).from(specs).where(and(eq(specs.workspaceId, workspaceId), eq(specs.scope, 'product'), notInArray(specs.status, [...AREA_GONE_STATUSES]))).limit(1);
   const [ws] = await db.select({ name: workspaces.name }).from(workspaces).where(eq(workspaces.id, workspaceId)).limit(1);
   const all = await unfiledSpecs(workspaceId);
   const bodies = await headBodies(all);
-  const proposal = proposeTaxonomy(all.map((s) => {
+  const items = all.map((s) => {
     const body = bodies.get(s.id) ?? '';
     return { specId: s.id, title: s.title, card: specCard(s.title, body.replace(/^---\n[\s\S]*?\n---\n?/, '')), domainHint: domainHintOf(body) };
-  }), { title: ws?.name ?? 'Product' });
-  if (dryRun) return { ok: true, result: { mode: 'taxonomy', dryRun: true, proposal, specs: all.length } };
+  });
+  const product = { title: ws?.name ?? 'Product' };
+  // The decision model when a measured one answers; the words otherwise, labelled as such.
+  const asked = input.source === 'words'
+    ? { ran: false as const, reason: 'the word-based proposal was asked for' }
+    : await (await taxonomyProposer())({ workspaceId, items, product, ...ids, ...(opts.cachedOnly ? { cachedOnly: true } : {}) })
+      .catch((err: unknown) => ({ ran: false as const, reason: `the taxonomy proposal failed (${(err as Error)?.message ?? err})` }));
+  const proposal = asked.ran ? asked.proposal : proposeTaxonomy(items, product);
+  const proposedBy: ProposedBy = asked.ran ? { source: 'model', model: asked.model } : { source: 'words', label: WORD_FALLBACK_LABEL, reason: asked.reason };
+  if (dryRun) return { ok: true, result: { mode: 'taxonomy', dryRun: true, proposal, specs: all.length, proposedBy } };
 
   let keys: Set<string> | null = null;
   if (input.areas !== undefined) {
@@ -330,7 +363,7 @@ async function taxonomy(caller: SpecCaller, workspaceId: string, dryRun: boolean
     }
     created.push({ key: a.key, specId: d.spec.id, title, filed });
   }
-  return { ok: true, result: { mode: 'taxonomy', dryRun: false, batchId, product: productOut, created, refused } };
+  return { ok: true, result: { mode: 'taxonomy', dryRun: false, batchId, product: productOut, created, refused, proposedBy } };
 }
 
 /** The filings of one organize run, for a reviewer. */
