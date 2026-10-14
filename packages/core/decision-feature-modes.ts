@@ -114,6 +114,7 @@ export const FEATURE_EFFECT: Record<InferenceCapability, DecisionFeatureEffect> 
   spec_duplicate: 'acts',
   spec_area: 'acts',
   spec_taxonomy: 'advises',
+  spec_publication: 'acts',
   chat: 'interactive',
 };
 
