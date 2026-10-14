@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { specRepairStamp, withoutMissionVerificationMarkers } from './mission-markers';
+import { specRepairStamp, withoutMissionVerificationMarkers } from './server-context-markers';
 
 describe('outcome-spec markers are the server\'s to write', () => {
   it('drops a caller\'s finalVerification and specRepair, keeping everything else', () => {

@@ -1832,7 +1832,7 @@ mission that selects no spec MUST behave exactly as before.
   (`apps/web/src/lib/specs/mission-outcome-fold.test.ts`,
   `apps/web/src/lib/specs/mission-selection.test.ts`,
   `apps/web/src/lib/specs/mission-verdict-authority.test.ts`,
-  `apps/web/src/lib/specs/mission-markers.test.ts`,
+  `apps/web/src/lib/server-context-markers.test.ts`,
   `apps/web/src/lib/specs/mission-verification.test.ts`,
   `apps/web/src/app/api/missions/[id]/route.test.ts`,
   `apps/web/src/lib/mission-criteria-eval.test.ts`,
@@ -1844,7 +1844,7 @@ mission that selects no spec MUST behave exactly as before.
 - `apps/web/src/lib/specs/mission-outcome.ts` — `recordMissionSpecVerdict`, `recordMissionVerdictServer`, `readMissionSpecStanding`, `resolveMissionTarget`, `missionVerdictAuthority`
 - `apps/web/src/lib/specs/mission-outcome-fold.ts` — `foldMissionSpec`, `verdictIsCurrent`
 - `apps/web/src/lib/specs/mission-verification.ts` — `ensureFinalVerification`, `decideFinalVerification`, `targetKey`
-- `apps/web/src/lib/specs/mission-markers.ts` — `withoutMissionVerificationMarkers`, `specRepairStamp`
+- `apps/web/src/lib/server-context-markers.ts` — `withoutMissionVerificationMarkers`, `specRepairStamp`
 - `apps/web/src/app/api/specs/mission-outcomes/[missionId]/route.ts` — `GET`, `POST`
 
 **Not yet**:

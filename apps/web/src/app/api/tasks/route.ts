@@ -14,7 +14,7 @@ import { assertMemberRepoAccess, memberRepoAccessSubject, resolveMemberRepoAcces
 import { stampLandingOverrideGrant } from '@/lib/landing-override-grant';
 import { requestingPerson } from '@/lib/request-person';
 import { withoutReviewDispatchContext } from '@/lib/verdict-provenance';
-import { specRepairStamp, withoutMissionVerificationMarkers } from '@/lib/specs/mission-markers';
+import { specRepairStamp, withoutMissionVerificationMarkers } from '@/lib/server-context-markers';
 import { resolveCreatorContext } from '@/lib/task-service';
 import { validateRequiredConnectors } from '@/lib/required-connectors';
 import { authenticateTaskScopedCaller, isDelegatedReach, taskScopeAllowsDelegated, taskScopeAllowsMission, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
@@ -495,7 +495,7 @@ export async function POST(req: NextRequest) {
     // context.prReach is the server's to write (lib/pr-reach-grant.ts): a caller's value is dropped
     // here and the link this filing earns is stamped just before the insert.
     // context.finalVerification and context.specRepair are the server's to write
-    // (lib/specs/mission-markers.ts): a caller's copy is dropped here, and a repair
+    // (lib/server-context-markers.ts): a caller's copy is dropped here, and a repair
     // filed by the mission's own final verification is stamped below.
     const requestedSpecRepair = (rawIncomingContext as Record<string, unknown> | null | undefined)?.specRepair;
     let incomingContext = withoutMissionVerificationMarkers(withoutPrReachGrant(withoutReviewDispatchContext(stampedGrant.context))) as typeof rawIncomingContext;
