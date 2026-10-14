@@ -88,7 +88,7 @@ describe('buildMissionListCard — a worker waiting on the owner', () => {
   const card = build(row);
 
   it('says Needs you and carries the inline answer strip', () => {
-    expect(card.status).toEqual({ label: 'Needs you', tone: 'warning' });
+    expect(card.status).toEqual({ label: 'Waiting on you', tone: 'warning' });
     expect(card.question).toMatchObject({ taskId: 'checkout', workerId: 'w-q', label: 'checkout', options: ['Per line', 'Total only'] });
     expect(card.counts.needsYou).toBe(1);
   });
@@ -116,11 +116,11 @@ describe('buildMissionListCard — a PR that just went green is merging, not an 
     const card = build(mk(20_000));
     expect(card.counts.needsYou).toBe(0);
     expect(card.phases.flatMap(p => p.cells).find(c => c.taskId === 'inv')?.state).not.toBe('needs_you');
-    expect(card.status.label).not.toBe('Needs you');
+    expect(card.status.label).not.toBe('Waiting on you');
   });
   it('once auto-merge had its chance and the PR is still open, it is yours', () => {
     const card = build(mk(30 * 60_000));
-    expect(card.status.label).toBe('Needs you');
+    expect(card.status.label).toBe('Waiting on you');
   });
 });
 

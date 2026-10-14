@@ -177,8 +177,6 @@
     "apps/web/src/components/onboarding/ProviderOnboardingCard.tsx": 2,
     "apps/web/src/components/skills/SkillPills.tsx": 1,
     "apps/web/src/components/task/PrCard.tsx": 28,
-    "apps/web/src/components/task/TaskSummary.tsx": 3,
-    "apps/web/src/components/task/WorkerStats.tsx": 3,
     "apps/web/src/components/visual-review/ShotImage.tsx": 4,
     "apps/web/src/components/visual-review/VisualReviewAsk.tsx": 5,
     "apps/web/src/components/visual-review/VisualReviewLine.tsx": 3,
@@ -247,7 +245,6 @@
     "apps/web/src/app/app/(protected)/tasks/[id]/EditTaskModal.tsx": 3,
     "apps/web/src/app/app/(protected)/tasks/[id]/ReassignButton.tsx": 3,
     "apps/web/src/app/app/(protected)/tasks/[id]/SwitchBackendButton.tsx": 1,
-    "apps/web/src/app/app/(protected)/tasks/[id]/page.tsx": 1,
     "apps/web/src/app/app/device/DeviceConfirm.tsx": 4,
     "apps/web/src/app/app/device/page.tsx": 3,
     "apps/web/src/app/share/[token]/page.tsx": 5,
@@ -269,7 +266,6 @@
     "apps/web/src/components/missions/MissionArtifacts.tsx": 1,
     "apps/web/src/components/skills/SkillSlashTypeahead.tsx": 1,
     "apps/web/src/components/skills/WorkflowSelector.tsx": 1,
-    "apps/web/src/components/task/WorkerStats.tsx": 1,
     "apps/web/src/components/tasks/DependencySelector.tsx": 1
   },
   "trackedLabels": {
@@ -350,7 +346,6 @@
     "apps/web/src/components/models/CatalogModelPicker.tsx": 10,
     "apps/web/src/components/onboarding/ProviderOnboardingCard.tsx": 2,
     "apps/web/src/components/task/PrCard.tsx": 6,
-    "apps/web/src/components/task/TaskSummary.tsx": 1,
     "apps/web/src/components/visual-review/ShotImage.tsx": 3,
     "apps/web/src/components/visual-review/VisualReviewDeck.tsx": 4,
     "apps/web/src/components/visual-review/VisualReviewTray.tsx": 2,

@@ -11,7 +11,7 @@ const HOUR = 3_600_000;
 const WINDOW_MS: Record<FlowWindow, number> = { '7d': 7 * 24 * HOUR, '30d': 30 * 24 * HOUR };
 
 export const TIME_LABEL: Record<TimeCategory, string> = {
-  needs_input: 'Needs input',
+  needs_input: 'Has a question',
   ci: 'Waiting for CI',
   review: 'In review',
   runner: 'Waiting for a runner',

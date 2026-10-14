@@ -201,7 +201,7 @@ export const TONE_TEXT: Record<StripTone, string> = {
 };
 
 const STATUS_WORDS: Record<StripState, string> = {
-  landed: 'landed', review: 'in review', running: 'running', waiting: 'needs you',
+  landed: 'landed', review: 'in review', running: 'running', waiting: 'has a question',
   ci_failed: 'CI failed', fixing: 'fixing', failed: 'failed', ready: 'ready', blocked: 'blocked', queued: 'queued behind',
 };
 

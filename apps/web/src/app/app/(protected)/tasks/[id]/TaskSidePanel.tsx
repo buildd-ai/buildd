@@ -71,6 +71,16 @@ export interface FactRow {
   value: ReactNode;
 }
 
+/** The runner a worker ran on, by name (runner-display), as a fact row. Empty without one. */
+export function runnerFactRow(name: string | null | undefined): FactRow[] {
+  return name ? [{ key: 'runner', label: 'Runner', value: name }] : [];
+}
+
+/** The worker's branch as a fact row. Empty without one. */
+export function branchFactRow(branch: string | null | undefined): FactRow[] {
+  return branch ? [{ key: 'branch', label: 'Branch', value: <span className="block truncate" title={branch}>{branch}</span> }] : [];
+}
+
 /** The right-hand fact sheet: label/value rows in one bordered card. */
 export function FactSheet({ rows, testId = 'task-fact-sheet' }: { rows: FactRow[]; testId?: string }) {
   if (rows.length === 0) return null;

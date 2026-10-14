@@ -31,6 +31,18 @@ mock.module('@/lib/workflow/delivery-view', () => ({
   replacedFailedTaskIds: () => new Set(),
 }));
 
+// Recovery that owns a failure supersedes the worker's question (task-view).
+const mockRecoveryViews = mock(async (_ids: readonly string[], _viewer: unknown): Promise<Map<string, any>> => new Map());
+mock.module('@/lib/incident-recovery-load', () => ({
+  loadTaskRecoveryViewsForViewer: mockRecoveryViews,
+}));
+
+// Runner names come from the runners' heartbeats, as on the task page.
+const mockLoadRunnerHeartbeats = mock(async (_w: readonly unknown[]): Promise<any[]> => []);
+mock.module('@/lib/runner-heartbeats', () => ({
+  loadRunnerHeartbeats: mockLoadRunnerHeartbeats,
+}));
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -52,7 +64,7 @@ mock.module('drizzle-orm', () => ({
 
 mock.module('@buildd/core/db/schema', () => ({
   tasks: { id: 'id' },
-  workers: { taskId: 'taskId', createdAt: 'createdAt' },
+  workers: { taskId: 'taskId', createdAt: 'createdAt', id: 'id' },
   workerErrorTraces: { taskId: 'taskId', ts: 'ts' },
   artifacts: { createdAt: 'createdAt' },
   missionNotes: { taskId: 'notes.taskId', type: 'notes.type', status: 'notes.status', createdAt: 'notes.createdAt' },
@@ -792,11 +804,11 @@ describe('GET /api/tasks/[id]/summary', () => {
       expect(where).toContain('"question"');
     });
 
-    it('is null, and reads no notes, when nothing is waiting', async () => {
+    it('is null when nothing is waiting', async () => {
       waiting(null, 'running');
+      mockNotesFindMany.mockResolvedValue([note({})]);
       const data = await (await callGET(TASK)).json();
       expect(data.questionNote).toBeNull();
-      expect(mockNotesFindMany).not.toHaveBeenCalled();
     });
 
     it('is null when no open note belongs to the ask', async () => {
@@ -804,6 +816,66 @@ describe('GET /api/tasks/[id]/summary', () => {
       mockNotesFindMany.mockResolvedValue([note({ workerId: 'w-old' })]);
       const data = await (await callGET(TASK)).json();
       expect(data.questionNote).toBeNull();
+    });
+  });
+  // The sheet and the task page pick their worker through one loader
+  // (lib/task-view.ts), so both show the same question for the same task.
+  describe('the same worker the task page shows', () => {
+    const TASK = '0a1b2c3d-3333-4444-8555-666677778888';
+    const ask = { type: 'question', prompt: 'Tabs or spaces?' };
+    function task(status: string) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockTasksFindFirst.mockResolvedValue({
+        id: TASK, title: 'Ask', status, description: null, mode: null, roleSlug: 'builder',
+        createdAt: new Date().toISOString(), missionId: null, workspaceId: 'ws-1', result: null,
+      });
+    }
+    beforeEach(() => { mockRecoveryViews.mockReset(); mockRecoveryViews.mockResolvedValue(new Map()); });
+
+    it('shows the worker parked on a question when a newer worker has ended', async () => {
+      task('in_progress');
+      mockWorkersFindMany.mockResolvedValue([
+        { id: 'w-new', status: 'failed', createdAt: '2026-10-13T11:00:00Z', waitingFor: null, milestones: [] },
+        { id: 'w-ask', status: 'waiting_input', createdAt: '2026-10-13T10:00:00Z', waitingFor: ask, milestones: [] },
+      ]);
+      mockNotesFindMany.mockResolvedValue([{ id: 'n1', workerId: 'w-ask', type: 'question', status: 'open', title: 'Tabs or spaces?', body: null, defaultChoice: null, createdAt: null }]);
+      const data = await (await callGET(TASK)).json();
+      expect(data.worker.id).toBe('w-ask');
+      expect(data.status).toBe('waiting_input');
+      expect(data.worker.waitingFor).toEqual(ask);
+      expect(data.questionNote?.id).toBe('n1');
+    });
+
+    it('breaks a creation-time tie by id, as the page does', async () => {
+      task('in_progress');
+      mockWorkersFindMany.mockResolvedValue([
+        { id: 'w-a', status: 'completed', createdAt: '2026-10-13T10:00:00Z', waitingFor: null, milestones: [] },
+        { id: 'w-b', status: 'completed', createdAt: '2026-10-13T10:00:00Z', waitingFor: null, milestones: [] },
+      ]);
+      const data = await (await callGET(TASK)).json();
+      expect(data.worker.id).toBe('w-b');
+    });
+
+    it('offers no question on an ended task', async () => {
+      task('completed');
+      mockWorkersFindMany.mockResolvedValue([
+        { id: 'w-ask', status: 'waiting_input', createdAt: '2026-10-13T10:00:00Z', waitingFor: ask, milestones: [] },
+      ]);
+      const data = await (await callGET(TASK)).json();
+      expect(data.status).toBe('completed');
+      expect(data.worker.waitingFor).toBeNull();
+      expect(data.questionNote).toBeNull();
+    });
+
+    it('drops the question while recovery owns the next step', async () => {
+      task('in_progress');
+      mockWorkersFindMany.mockResolvedValue([
+        { id: 'w-ask', status: 'waiting_input', createdAt: '2026-10-13T10:00:00Z', waitingFor: ask, milestones: [] },
+      ]);
+      mockRecoveryViews.mockResolvedValue(new Map([[TASK, { supersedesQuestion: true }]]));
+      const data = await (await callGET(TASK)).json();
+      expect(data.worker.waitingFor).toBeNull();
+      expect(mockRecoveryViews.mock.calls[0]?.[1]).toMatchObject({ userId: 'user-1', teamId: 'team-1' });
     });
   });
   // W4: the sheet shows a task's records and origin, so a completed task with
@@ -979,5 +1051,72 @@ describe('GET /api/tasks/[id]/summary: the visual review (docs/design/visual-qa-
     const res = await callGET(TASK);
     expect(res.status).toBe(200);
     expect((await res.json()).visual).toBeNull();
+  });
+
+});
+
+describe('GET /api/tasks/[id]/summary: the sections the task page renders (task-sections)', () => {
+  beforeEach(() => {
+    mockWorkersFindMany.mockReset();
+    mockNotesFindMany.mockResolvedValue([]);
+    mockErrorTracesFindMany.mockResolvedValue([]);
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'member' });
+  });
+  describe('sections', () => {
+    const TASK2 = '00000000-0000-4000-8000-0000000000d1';
+    function task(status: string, result: unknown = null) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockTasksFindFirst.mockResolvedValue({
+        id: TASK2, title: 'PR task', status, description: null, mode: null, roleSlug: null,
+        createdAt: new Date().toISOString(), missionId: null, workspaceId: 'ws-1', result,
+      });
+    }
+    const prRow = {
+      id: 'w-pr', status: 'completed', createdAt: '2026-10-13T10:00:00Z', milestones: [],
+      prUrl: 'https://github.com/org/repo/pull/9', prNumber: 9, prLifecycleStatus: 'ci_green', mergedAt: null,
+      linesAdded: 4, linesRemoved: 1, filesChanged: 2,
+    };
+
+    it("cards the PR worker's PR when a newer worker opened none", async () => {
+      task('completed');
+      mockWorkersFindMany.mockResolvedValue([
+        { id: 'w-new', status: 'completed', createdAt: '2026-10-13T11:00:00Z', milestones: [], prUrl: null, prNumber: null },
+        prRow,
+      ]);
+      const data = await (await callGET(TASK2)).json();
+      expect(data.pr).toMatchObject({ prUrl: prRow.prUrl, prNumber: 9, prState: 'ci_passed', linesAdded: 4 });
+    });
+
+    it('cards no PR once it was closed', async () => {
+      task('completed');
+      mockWorkersFindMany.mockResolvedValue([{ ...prRow, prLifecycleStatus: 'closed' }]);
+      const data = await (await callGET(TASK2)).json();
+      expect(data.pr).toBeNull();
+    });
+
+    it('reads Merged in the header only for an ended task whose PR merged', async () => {
+      task('completed');
+      mockWorkersFindMany.mockResolvedValue([{ ...prRow, mergedAt: '2026-10-13T12:00:00Z' }]);
+      expect((await (await callGET(TASK2)).json()).merged).toBe(true);
+      task('in_progress');
+      expect((await (await callGET(TASK2)).json()).merged).toBe(false);
+    });
+
+    it("says when the summary is the worker's last message", async () => {
+      task('completed', { summary: 'Did it', summarySource: 'fallback' });
+      mockWorkersFindMany.mockResolvedValue([]);
+      const data = await (await callGET(TASK2)).json();
+      expect(data.result).toMatchObject({ summary: 'Did it', fallback: true });
+    });
+
+    it("names the worker's runner by hostname, never its raw URL", async () => {
+      task('completed');
+      mockWorkersFindMany.mockResolvedValue([{ ...prRow, localUiUrl: 'http://quill.local:8766', accountId: 'acct-1' }]);
+      mockLoadRunnerHeartbeats.mockResolvedValueOnce([
+        { localUiUrl: 'http://quill.local:8766', accountId: 'acct-1', environment: { labels: { hostname: 'quill-studio.local' } } },
+      ]);
+      const data = await (await callGET(TASK2)).json();
+      expect(data.worker.runner).toBe('quill-studio');
+    });
   });
 });

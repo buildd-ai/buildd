@@ -86,7 +86,7 @@ describe('MissionGrid portfolio', () => {
 
   it('groups open missions into Needs you / In motion / Waiting, each with its ordering named', () => {
     const sec = (k: string) => html.match(new RegExp(`<section[^>]*data-section="${k}"[\\s\\S]*?</section>`))![0];
-    expect(sec('needs')).toContain('Needs you');
+    expect(sec('needs')).toContain('Waiting on you');
     expect(sec('needs')).toContain('oldest first');
     expect(sec('motion')).toContain('In motion');
     expect(sec('motion')).toContain('slipping first');
@@ -117,7 +117,7 @@ describe('MissionGrid portfolio', () => {
     expect(html).not.toContain('portfolio-counters');
     expect(html).toMatch(/data-testid="portfolio-open"[^>]*>12</);
     const line = html.match(/<p[^>]*data-testid="portfolio-breakdown"[^>]*>([\s\S]*?)<\/p>/)![1];
-    expect(line).toContain('1 needs you');
+    expect(line).toContain('1 waiting on you');
     expect(line).toContain('in motion');
     expect(line).toContain('waiting');
     expect(line).toContain('1 landed, checks pending');
@@ -176,7 +176,7 @@ describe('MissionGrid portfolio', () => {
     const filters = html.match(/<div[^>]*data-testid="portfolio-filters"[\s\S]*?<\/div>/)![0];
     expect(filters).toContain('data-testid="segmented"');
     expect(filters).toContain('role="radiogroup"');
-    for (const label of ['All', 'Needs you', 'In motion', 'Waiting', 'Landed']) expect(filters).toContain(label);
+    for (const label of ['All', 'Waiting on you', 'In motion', 'Waiting', 'Landed']) expect(filters).toContain(label);
     expect(filters).not.toContain('Executing');
   });
 

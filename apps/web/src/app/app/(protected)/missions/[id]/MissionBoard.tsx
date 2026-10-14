@@ -321,7 +321,7 @@ export function Band({ model, compact, missionId, visual = null, onReview, strip
         </span>
       </div>
       <div data-testid="needs-you-cell" className={`${cell} ${L.needs} ${needs ? 'bg-accent-soft' : ''}`}>
-        <SectionLabel className={needs ? '!text-accent-text' : ''}>Needs you</SectionLabel>
+        <SectionLabel className={needs ? '!text-accent-text' : ''}>Waiting on you</SectionLabel>
         <span className={`font-mono text-[34px] font-semibold leading-none tracking-[-1px] tabular-nums ${needs ? 'text-accent-text' : 'text-[var(--fleet-faint)]'}`}>{needs}</span>
         <span className="font-mono text-[12px] md:text-[11.5px] text-text-muted">
           {needsCaption}
@@ -571,7 +571,7 @@ function Tile({ task: t, retry, model, now, span, link, popSide, compact = false
     body = (
       <div className="flex min-h-[18px] items-center gap-2.5 font-mono text-[12px] md:text-[11.5px] text-text-muted">
         <span className="flex items-center gap-1.5 text-[11px] md:text-[10.5px] font-bold uppercase tracking-[1px] text-accent-text">
-          <span className="h-2 w-2 animate-status-pulse bg-accent" />Needs you
+          <span className="h-2 w-2 animate-status-pulse bg-accent" />Waiting on you
         </span>
         <span className="flex-1" />
         <span className="font-medium tabular-nums text-text-secondary">{formatAge(t.waitStartedAt != null ? now - t.waitStartedAt : 0)}</span>

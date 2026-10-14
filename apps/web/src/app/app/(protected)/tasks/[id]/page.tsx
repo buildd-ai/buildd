@@ -5,17 +5,17 @@ import { ANSWER_IN_CHAT, RUN_PROGRESS_READERS } from '@/modules';
 import { Suspense } from 'react';
 import { after } from 'next/server';
 import { resolveRunnerDisplay, runnerDisplayResolver } from '@/lib/runner-display';
-import { compareTasksChrono, compareWorkersChrono, newestFirst, oldestFirst, selectTaskWorkers } from '@/lib/attempt-order';
+import { compareTasksChrono, compareWorkersChrono, newestFirst, oldestFirst } from '@/lib/attempt-order';
 import { getRunnerHeartbeats, isRunnerOnline, loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
 import { db } from '@buildd/core/db';
-import { tasks, workers, artifacts, workspaceSkills, workerErrorTraces, workspaces, missionNotes, releases, missions, taskEstimates } from '@buildd/core/db/schema';
+import { tasks, workers, artifacts, workspaceSkills, workerErrorTraces, workspaces, releases, missions, taskEstimates } from '@buildd/core/db/schema';
 import { taskEstimatesEnabled } from '@buildd/core/task-estimate-source';
 import { buildTimeRow } from '@/lib/task-time-row';
 import { eq, desc, inArray, asc, ne, and, isNotNull, sql } from 'drizzle-orm';
 import { deriveTaskEyebrow, taskEyebrowText } from '@/lib/task-eyebrow';
 import { deriveDisplayStatus, deriveTaskPhase, isSubjectDead, isGateSatisfied, findBlockingPrWorker } from '@/lib/task-presentation';
 import { normalizeRepoFullName } from '@/lib/repo-scope';
-import { isOpenAsk, isOpenQuestionNote } from '@/lib/open-ask';
+import { loadTaskView } from '@/lib/task-view';
 import { BYPASS_MISSION_BUDGET_KEY, hasBypassFlag } from '@/lib/bypass-flags';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
@@ -32,7 +32,6 @@ import EditTaskButton from './EditTaskButton';
 import DeleteTaskButton from './DeleteTaskButton';
 import RealTimeWorkerView from './RealTimeWorkerView';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
-import { resolvePrDisplayState } from '@/lib/pr-presentation';
 import type { DeliveryPillState } from './TaskSidePanel';
 import PlanReviewPanel from './PlanReviewPanel';
 import PlanChainView from './PlanChainView';
@@ -45,9 +44,7 @@ import { blockedHeadline, gateName, lastForceStart } from '@buildd/core/waiting-
 import { getTeamTimezoneSetting } from '@/lib/team-timezone';
 import SwitchBackendButton, { type BackendOption } from './SwitchBackendButton';
 import TaskQuestionFeed from './TaskQuestionFeed';
-import MarkdownContent from '@/components/MarkdownContent';
 import CollapsibleDescription from './CollapsibleDescription';
-import AiFeedback from '@/components/AiFeedback';
 import { StatusPill } from '@/components/ui/StatePill';
 import { displayBranchName } from '@/lib/branch-display';
 import { LoopHistory, LoopStatusChip } from '@/components/LoopStatus';
@@ -72,7 +69,10 @@ import { originLinkCards } from './origin-links';
 import { TaskShipBadge } from '@/components/TaskShipBadge';
 import { SpecSourceBlock, type SpecSourceContext } from '@/components/SpecSourceBlock';
 import { livingSpecLoad } from '@/lib/specs/task-view';
-import PrDetailsCard, { StoredPrCard } from './PrDetailsCard';
+import PrDetailsCard from './PrDetailsCard';
+import { StoredPrCard } from '@/components/task/StoredPrCard';
+import TaskSummary from '@/components/task/TaskSummary';
+import { taskPrFacts, taskHeaderMerged, isFallbackSummary } from '@/lib/task-sections';
 import { loadOpenAttempt } from '@/lib/explain';
 import TaskEvidenceCard from './TaskEvidenceCard';
 import { plainWorkerError } from '@/lib/provider-auth-failure';
@@ -96,7 +96,7 @@ import { MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH, MISSION_TASK_REFR
 import type { MissionCardRow } from '@/lib/mission-card-view';
 import { missionTaskHref, taskPageHref } from '@/lib/mission-task-href';
 import WorkerSteerPanel from './WorkerSteerPanel';
-import { HeaderStatusPill, FactSheet, SideDescription, type FactRow } from './TaskSidePanel';
+import { HeaderStatusPill, FactSheet, SideDescription, runnerFactRow, branchFactRow, type FactRow } from './TaskSidePanel';
 import { findTaskRole } from './role-lookup';
 import { headerLifecycle, taskHeading } from './task-header';
 import TaskChecks from './TaskChecks';
@@ -107,7 +107,6 @@ import { loadTaskDeliveryContext } from '@/lib/task-delivery-context';
 import { normaliseReviewVerdict, readableTaskResult } from '@/lib/task-result';
 import Lifecycle from '@/components/ui/Lifecycle';
 import { displayTaskTitle } from '@/lib/task-title';
-import { linkQuestionNote } from './question-hero';
 import { buildLineage, diffStatsRecorded } from './pr-lineage';
 import { lineageDisplayStatus, lineageWorkerHistory } from './lineage-status';
 import type { PrOutcome } from '@/components/task/PrCard';
@@ -132,7 +131,6 @@ import { priorAttemptFactsOf, resolveTraceConsequences } from '@/lib/trace-conse
 import type { WorkerMilestone } from '@buildd/core/db/schema';
 import StartTimeControl from '@/components/StartTimeControl';
 import Notice from '@/components/ui/Notice';
-import { loadTaskRecoveryViewsForViewer } from '@/lib/incident-recovery-load';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 // Exit causes that get their own badge instead of a bare "Failed" — each one
@@ -216,29 +214,12 @@ export default async function TaskDetailPage({
   // task's workers for a viewer who turns out not to have access is not a
   // trade worth two round trips.
   const depTaskIds = (task.dependsOn as string[] | undefined) || [];
-  const [openQuestionRows, depTasks, taskWorkers, missionContextRow, taskEstimate, answerInChat, taskRecoveryViews] = await Promise.all([
-    // Open question notes scoped to this task (drives the "Waiting on you"
-    // badge, and lets the live worker view show the note and the worker's
-    // waitingFor as ONE question). A mission task's questions carry its
-    // missionId too — they are still this task's, so no mission gate (S6).
-    db
-      .select({
-        id: missionNotes.id,
-        workerId: missionNotes.workerId,
-        type: missionNotes.type,
-        status: missionNotes.status,
-        title: missionNotes.title,
-        body: missionNotes.body,
-        defaultChoice: missionNotes.defaultChoice,
-        createdAt: missionNotes.createdAt,
-      })
-      .from(missionNotes)
-      .where(and(
-        eq(missionNotes.taskId, id),
-        eq(missionNotes.type, 'question'),
-        eq(missionNotes.status, 'open'),
-      ))
-      .orderBy(asc(missionNotes.createdAt)),
+  const [taskView, depTasks, missionContextRow, taskEstimate, answerInChat] = await Promise.all([
+    // The task's workers, open question notes and any failure recovery holding
+    // it, picked the way the sheet picks them (lib/task-view.ts): one worker
+    // and one question on both surfaces. A mission task's questions carry its
+    // missionId too; they are still this task's, so no mission gate (S6).
+    loadTaskView(task, { userId: user.id, teamId: (task.workspace as { teamId?: string } | null)?.teamId ?? null }),
     // Dependency tasks, if dependsOn has entries
     depTaskIds.length > 0
       ? db.query.tasks.findMany({
@@ -255,12 +236,6 @@ export default async function TaskDetailPage({
           },
         })
       : Promise.resolve([]),
-    // Workers for this task
-    db.query.workers.findMany({
-      where: sqlWhere(eq(workers.taskId, id)),
-      orderBy: sqlOrderBy([desc(workers.createdAt), desc(workers.id)]),
-      with: { account: { columns: { name: true } } },
-    }),
     // Mission context bar (W6): the mission row and its tasks' light columns —
     // the same selection a Home card makes, so no result/context/artifact
     // content — fed through the builders every mission surface shares.
@@ -299,10 +274,10 @@ export default async function TaskDetailPage({
     // An answer link for a mission filed from the reader's own conversation
     // opens that conversation instead, when chat is on for them.
     focusAnswer && task.missionId ? ANSWER_IN_CHAT(id, user.id).catch(() => null) : Promise.resolve(null),
-    // A failure incident's recovery holding this task (failure-incident-recovery §16.4).
-    loadTaskRecoveryViewsForViewer([task.id], { userId: user.id, teamId: (task.workspace as { teamId?: string } | null)?.teamId ?? null }),
   ]);
   if (answerInChat) redirect(answerInChat);
+  // Newest first by (createdAt, id).
+  const taskWorkers = taskView.ordered;
   const failedExcerpt = truncateExcerpt(taskWorkers[0]?.error);
   const taskBackend = (task.backend as 'claude' | 'codex' | null) ?? null;
   // S35: the mission's failed deliverables read through the kernel, as its card does.
@@ -341,10 +316,7 @@ export default async function TaskDetailPage({
   // resolver (it needs the release id it returns), so it stays chained inside
   // that entry rather than becoming a fourth serial step.
   const workerIds = taskWorkers.map(w => w.id);
-  // Latest / live / PR worker by (createdAt, id), never by row position: two
-  // workers created in the same instant must not trade places between renders.
-  const workerPicks = selectTaskWorkers(taskWorkers, isLiveWorkerStatus);
-  const prWorker = workerPicks.prWorker ?? null;
+  const prWorker = taskView.prWorker ?? null;
   // Stored evidence objects (pointers only; the text is read on demand by the
   // section). Best-effort: a failed lookup shows the empty list, never an error page.
   const evidenceFilesPromise = listTaskEvidenceObjects({ id: task.id, workspaceId: task.workspaceId })
@@ -652,17 +624,12 @@ export default async function TaskDetailPage({
     }
   }
 
-  // Never revive an ended worker merely because it retained a question.
-  const activeWorkerRow = !isTerminalTaskStatus(task.status)
-    ? workerPicks.activeWorker : undefined;
-  // A task blocked by a failure incident reads the incident's recovery (failure-incident-recovery
-  // §16.4, §17.2): while recovery owns the next step, a question the worker asked about the same
-  // failure is stale, so its controls are not offered; history keeps it.
-  const taskRecovery = taskRecoveryViews.get(task.id) ?? null;
-  const activeWorker = activeWorkerRow?.waitingFor && (!isOpenAsk(task.status, activeWorkerRow.status) || taskRecovery?.supersedesQuestion)
-    ? { ...activeWorkerRow, waitingFor: null } : activeWorkerRow;
-
-  const openQuestionCount = openQuestionRows.filter(n => isOpenQuestionNote(n, task.status, activeWorker)).length;
+  // The live worker, with its question dropped once the task ended or a failure
+  // incident's recovery owns the next step (failure-incident-recovery §16.4, §17.2):
+  // a question about the same failure is stale then; history keeps it.
+  const taskRecovery = taskView.recovery;
+  const activeWorker = taskView.activeWorker;
+  const openQuestionCount = taskView.openQuestionCount;
 
   // A kernel-owned delivery's header reads the kernel's DeliveryView, not the
   // raw task/worker columns below (workflow-state-kernel §17.5). Legacy-owned
@@ -872,7 +839,7 @@ export default async function TaskDetailPage({
   const roleName = roleRow?.name ?? null;
   const headerTrack = headerLifecycle(deliveryView);
   const heading = taskHeading({ title: task.title, label: (task as { label?: string | null }).label ?? null }, roleName);
-  const questionNote = activeWorker?.waitingFor ? linkQuestionNote(openQuestionRows, activeWorker.id) : null;
+  const questionNote = taskView.questionNote;
 
 
   let prOutcome: PrOutcome | null = null;
@@ -1066,11 +1033,9 @@ export default async function TaskDetailPage({
           ),
         }]
       : factWorker && !shippedViewShown
-        ? [{ key: 'runner', label: 'Runner', value: runnerLabel(factWorker) }]
+        ? runnerFactRow(runnerLabel(factWorker))
         : []),
-    ...(factWorker?.branch && !(prOutcome && isTerminal)
-      ? [{ key: 'branch', label: 'Branch', value: <span className="block truncate" title={factWorker.branch}>{factWorker.branch}</span> }]
-      : []),
+    ...(!(prOutcome && isTerminal) ? branchFactRow(factWorker?.branch) : []),
     ...(timeRow
       ? [{
           key: 'time',
@@ -1453,7 +1418,7 @@ export default async function TaskDetailPage({
               <span data-testid="task-header-status" data-status={displayStatus} className="col-start-1 row-start-2 self-center md:col-start-2 md:row-start-1 md:self-start md:mt-0.5">
                 <HeaderStatusPill
                   status={displayStatus}
-                  merged={!!(prWorker && (prWorker.mergedAt || prWorker.prLifecycleStatus === 'merged')) && isTerminal}
+                  merged={taskHeaderMerged(prWorker, task.status)}
                   delivery={deliveryPill}
                 />
               </span>
@@ -1940,17 +1905,11 @@ export default async function TaskDetailPage({
             CI → retry → merge) and checks per commit (AC-4). Shown for an open
             PR and for one that landed. */}
         {(() => {
-          if (!prWorker?.prUrl || !prWorker.prNumber) return null;
-          const prState = resolvePrDisplayState({ delivery: deliveryView, prLifecycleStatus: prWorker.prLifecycleStatus, mergedAt: prWorker.mergedAt });
-          if (prState === 'closed') return null;
+          // The same facts the mission task sheet cards (lib/task-sections).
+          const prFacts = taskPrFacts(prWorker, deliveryView);
+          if (!prFacts) return null;
           const storedPrFacts = {
-            prUrl: prWorker.prUrl,
-            prNumber: prWorker.prNumber,
-            prLifecycleStatus: prWorker.mergedAt ? 'merged' : prWorker.prLifecycleStatus,
-            prState,
-            linesAdded: prWorker.linesAdded,
-            linesRemoved: prWorker.linesRemoved,
-            filesChanged: prWorker.filesChanged,
+            ...prFacts,
             // The header carries the summary and the one action.
             outcome: prOutcome && shippedView ? { ...prOutcome, summary: null } : prOutcome,
             hideAction: !!shippedView,
@@ -1993,14 +1952,9 @@ export default async function TaskDetailPage({
           (() => {
             const result = task.result as { summary?: string; summarySource?: string; branch?: string; commits?: number; sha?: string; files?: number; added?: number; removed?: number; prUrl?: string; prNumber?: number; structuredOutput?: Record<string, unknown> };
             const hasCodeDeliverables = hasTaskCodeDeliverables(result);
-            const isFallbackSummary = result.summarySource === 'fallback';
+            const fallbackSummary = isFallbackSummary(result);
             // The PR outcome card already carries the code deliverables and summary.
             if (prOutcome && hasCodeDeliverables && !result.structuredOutput) return null;
-            const fallbackChip = (
-              <span className="font-mono text-chip border border-border-default rounded-[var(--radius-pill)] text-text-muted px-1 py-px shrink-0">
-                unauthored · last message
-              </span>
-            );
 
             return (
               <div className="mb-8">
@@ -2010,12 +1964,12 @@ export default async function TaskDetailPage({
 
                 {/* Non-code summary — shown prominently when no code deliverables */}
                 {!hasCodeDeliverables && result.summary && (
-                  <div className="p-5 bg-surface-2 border border-border-default mb-4">
-                    {isFallbackSummary && <div className="mb-2">{fallbackChip}</div>}
-                    <MarkdownContent content={result.summary} />
-                    <div className="mt-3 pt-2 border-t border-border-default/50 flex items-center justify-between gap-3">
-                      <AiFeedback entityType="summary" entityId={`task-${task.id}-summary`} />
-                      {suppressedSummaryArtifact && (
+                  <div className="mb-4">
+                    <TaskSummary
+                      summary={result.summary}
+                      entityId={`task-${task.id}-summary`}
+                      fallback={fallbackSummary}
+                      actions={suppressedSummaryArtifact && (
                         <div className="flex items-center gap-2">
                           <ArtifactShareControl
                             artifactId={suppressedSummaryArtifact.id}
@@ -2031,7 +1985,7 @@ export default async function TaskDetailPage({
                           </a>
                         </div>
                       )}
-                    </div>
+                    />
                   </div>
                 )}
 
@@ -2073,13 +2027,7 @@ export default async function TaskDetailPage({
                       )}
                     </div>
                     {result.summary && (
-                      <div className="text-sm text-text-secondary mt-2">
-                        {isFallbackSummary && <div className="mb-2">{fallbackChip}</div>}
-                        <MarkdownContent content={result.summary} />
-                        <div className="mt-2 flex justify-end">
-                          <AiFeedback entityType="summary" entityId={`task-${task.id}-summary`} compact />
-                        </div>
-                      </div>
+                      <TaskSummary summary={result.summary} entityId={`task-${task.id}-summary`} fallback={fallbackSummary} framed={false} />
                     )}
                   </div>
                 )}
@@ -2153,7 +2101,7 @@ export default async function TaskDetailPage({
               taskTerminal={isTerminal}
               earlierRun={(() => {
                 // The run before this one, for the messages it ended before reading.
-                const prev = workerPicks.ordered.find(w => w.id !== activeWorker.id && compareWorkersChrono(w, activeWorker) < 0);
+                const prev = taskWorkers.find(w => w.id !== activeWorker.id && compareWorkersChrono(w, activeWorker) < 0);
                 return prev ? { workerId: prev.id, status: prev.status, history: (prev.instructionHistory as any[]) || [] } : null;
               })()}
             />

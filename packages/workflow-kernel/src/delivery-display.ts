@@ -149,7 +149,7 @@ export function deliveryReading(d: DeliveryReadingInput): DeliveryReading | null
     // auto-threshold the landing path merges it, so it is live (S35).
     case 'approved': return d.owner === 'human' ? reading('Ready to merge', 'needs') : reading('Approved · merging', 'live');
     case 'landing': return reading('Merging', 'live');
-    case 'needs_you': return reading('Needs you', 'needs');
+    case 'needs_you': return reading('Waiting on you', 'needs');
     case 'merged': return reading('Merged', 'landed');
     case 'superseded': return reading('Shipped elsewhere', 'landed');
     case 'closed':

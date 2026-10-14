@@ -2,13 +2,13 @@
 title: Task Page
 status: active
 owner: max
-last_verified: 2026-10-12
+last_verified: 2026-10-13
 summary: The task page MUST lead with the deliverable, its track and one outcome, list checks by round from delivery facts, frame attempts by their parent, fit a phone's first screen, and open Code review only to substance.
 domain: surfaces
 surfaces: [apps/web/src/app/app/(protected)/tasks/[id]/page.tsx, apps/web/src/lib/task-checks.ts, apps/web/src/lib/task-result.ts, apps/web/src/lib/workflow/projections.ts]
 related: [workflow-state-kernel, mission-task-lifecycle, surface-ia-home-missions-initiatives]
 keywords: [task detail, mobile header, show full title, review queued, no findings yet, review of PR, what shipped, why this, verdict block, review approved, updating branch, awaiting merge, repair 1, checks list, review round, attempt, reviewer task, fix attempt, structured output, technical summary, raw output, lifecycle track]
-verified_by: [apps/web/src/lib/task-checks.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskChecks.test.tsx, apps/web/src/app/app/(protected)/tasks/[id]/TaskTitle.dom.test.tsx, apps/web/src/app/app/dev/fixtures/task-page-fixtures.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/pr-lineage.test.ts, apps/web/src/lib/task-result.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/task-header.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskVerdictBlock.test.tsx, packages/workflow-kernel/src/projections.test.ts, apps/web/src/lib/task-verdict.test.ts, apps/web/src/components/LoopStatus.test.tsx, apps/web/src/components/task/PrCard.test.tsx]
+verified_by: [apps/web/src/lib/task-checks.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskChecks.test.tsx, apps/web/src/app/app/(protected)/tasks/[id]/TaskTitle.dom.test.tsx, apps/web/src/app/app/dev/fixtures/task-page-fixtures.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/pr-lineage.test.ts, apps/web/src/lib/task-result.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/task-header.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/TaskVerdictBlock.test.tsx, packages/workflow-kernel/src/projections.test.ts, apps/web/src/lib/task-verdict.test.ts, apps/web/src/components/LoopStatus.test.tsx, apps/web/src/components/task/PrCard.test.tsx, apps/web/src/lib/task-view.test.ts, apps/web/src/app/api/tasks/[id]/summary/route.test.ts, apps/web/src/lib/task-sections.test.ts, apps/web/src/app/app/(protected)/missions/[id]/TaskPanel.sections.test.tsx]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -228,6 +228,15 @@ never described as released.
   figure. The card draws only recorded figures (diff counters, more than one
   attempt, the diff bar), and no card at all when there are none; PR history
   stays. The status row's link is the way to the PR at every width.
+- The page and the mission sheet (`/api/tasks/[id]/summary`) read a task's
+  workers and open question through one loader, `loadTaskView`. Workers are
+  ordered by `createdAt`, then `id`. Both show the newest live worker, else the
+  newest, and both drop its question once the task has ended or a failure
+  recovery owns the next step.
+- The sheet renders the page's header pill, stored PR card, runner and branch
+  fact rows and summary card. `lib/task-sections.ts` decides the PR card (the
+  PR worker's PR, none once closed), the Merged header and the last-message
+  summary mark for both.
 
 ## Interaction
 
@@ -339,6 +348,7 @@ branch update" for a carried approval), binding what follows to that round.
 - AC-17: GIVEN a title longer than three phone lines WHEN the header renders below `md` THEN the h1 is `text-heading`, spans the full width, is clamped to three lines with a 44px "Show full title" (`aria-expanded=false`) that expands it in place and "Show less" that collapses it; Ask and ⋯ sit on the row under the title, never beside it.
 - AC-18: GIVEN a review attempt of a deliverable with PR #N WHEN the header renders THEN the attempt link reads "Review of PR #N ›" and the deliverable's full title is in its accessible name and tooltip, not its visible text.
 - AC-19: GIVEN the long-title pending reviewer fixture (`review-pending`) at 390×844 with the title collapsed WHEN it renders THEN the Checks heading and the Code review and Tests rows are above the bottom nav without scrolling; at 320 and 360 wide there is no sideways scroll and no tap target under 44px (Visual QA `assertLayout`).
+- AC-20: GIVEN an older worker parked on a question and a newer worker that failed, on a task still in progress, WHEN the page and the sheet load THEN both show the parked worker and the same linked question note; GIVEN the task completed THEN neither offers the question.
 
 ## Code surface
 
@@ -357,6 +367,8 @@ branch update" for a carried approval), binding what follows to that round.
 - `apps/web/src/lib/workflow/projections.ts` — `deriveDeliveryView` headlines, `rounds` and `ledger` on the view.
 - `apps/web/src/components/LoopStatus.tsx` — loop chip (`loopAttemptShown`) and Loop history.
 - `apps/web/src/components/task/PrCard.tsx` — the PR card; `statedAbove` drops what the status row already says.
+- `apps/web/src/lib/task-view.ts` — `loadTaskView` / `pickTaskView`: the workers, worker and question the page and the sheet share.
+- `apps/web/src/lib/task-sections.ts` — `taskPrFacts` / `taskHeaderMerged` / `isFallbackSummary`: the PR card, header and summary decisions the page and the sheet share.
 
 ## Regression cases (visual)
 

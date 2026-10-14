@@ -12,17 +12,17 @@ describe('phone Home attention', () => {
     const items = deriveHomeAttention({ queue: [pr('mission'), pr('task'), pr('other', 'workspace-b')], missions: [], questions: [], held: [] });
     expect(items).toHaveLength(2);
     expect(homeAttentionCopy(items).count).toBe(items.length);
-    expect(homeAttentionCopy(items).headline).toBe('2 things need you.');
+    expect(homeAttentionCopy(items).headline).toBe('2 waiting on you.');
   });
   it('does not turn machine-owned waits or resolved PRs into human asks', () => {
     const items = deriveHomeAttention({ queue: [pr('fix', undefined, 'FIXING_CI'), pr('checks', undefined, 'CI_RUNNING'), { ...pr('done'), prLifecycleStatus: 'merged' }], missions: [], questions: [], held: [] });
     expect(items).toEqual([]);
-    expect(homeAttentionCopy(items)).toEqual({ count: 0, headline: 'Nothing needs you.', subline: 'The fleet is working without you.' });
+    expect(homeAttentionCopy(items)).toEqual({ count: 0, headline: 'Nothing waiting on you.', subline: 'The fleet is working without you.' });
   });
   // Surface audit: a team with no runner was told "The fleet is working without you."
   it('with no runner connected, the empty sub-line says so instead of claiming the fleet is working', () => {
     const copy = homeAttentionCopy([], { runnerConnected: false });
-    expect(copy.headline).toBe('Nothing needs you.');
+    expect(copy.headline).toBe('Nothing waiting on you.');
     expect(copy.subline).not.toContain('working without you');
     expect(copy.subline).toBe('No runner is connected yet, so nothing is running.');
     expect(homeAttentionCopy([], { runnerConnected: true }).subline).toBe('The fleet is working without you.');
@@ -52,7 +52,7 @@ describe('phone Home attention', () => {
   it('includes an open doc-fix PR as one merge decision', () => {
     const items = deriveHomeAttention({ queue: [{ ...pr('doc'), docFixTaskId: 'doc-task' }], missions: [], questions: [], held: [] });
     expect(items[0].sentence).toContain('doc back in line');
-    expect(homeAttentionCopy(items).headline).toBe('1 thing needs you.');
+    expect(homeAttentionCopy(items).headline).toBe('1 waiting on you.');
   });
 });
 
@@ -97,14 +97,14 @@ describe('Home question cards are never context-free', () => {
     const snapshot = deriveHomeNeedsYou({ queue: [pr('ready')], missions: [], questions: [], held: [], isActionable: () => false });
     expect(snapshot.items).toEqual([]);
     expect(snapshot.count).toBe(snapshot.items.length);
-    expect(snapshot.headline).toBe('Nothing needs you.');
+    expect(snapshot.headline).toBe('Nothing waiting on you.');
     expect(snapshot.subline).toBe('The fleet is working without you.');
   });
   it('shares the deduplicated singular and plural headline', () => {
     for (const queue of [[pr('ready'), pr('duplicate')], [pr('ready'), pr('other', 'workspace-b')]]) {
       const snapshot = deriveHomeNeedsYou({ queue, missions: [], questions: [], held: [], isActionable: isActionableChip });
       expect(snapshot.count).toBe(snapshot.items.length);
-      expect(snapshot.headline).toBe(snapshot.count === 1 ? '1 thing needs you.' : '2 things need you.');
+      expect(snapshot.headline).toBe(snapshot.count === 1 ? '1 waiting on you.' : '2 waiting on you.');
     }
   });
 });

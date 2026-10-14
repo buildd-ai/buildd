@@ -35,7 +35,7 @@ describe('AgentsPanel', () => {
     const marks = [...html.matchAll(/data-testid="agent-line-square" data-kind="(\w+)"/g)].map(m => m[1]);
     expect(marks).toEqual(['busy', 'waiting']);
     expect(html).not.toContain('▶');
-    expect(html).toContain('needs you');
+    expect(html).toContain('waiting on you');
   });
 
   test('the count sits beside the squares; no runner says so plainly', () => {

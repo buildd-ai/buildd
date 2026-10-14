@@ -56,7 +56,7 @@ export const DELIVERY_KIND: Record<DeliveryKind, { label: string; glyph: string;
   planning: { label: 'Planning', glyph: '○', tone: 'muted' },
   unavailable: { label: 'Audit can’t run', glyph: '⊘', tone: 'warning' },
   notlanded: { label: 'Not landed', glyph: '✕', tone: 'error' },
-  needs: { label: 'Needs input', glyph: '!', tone: 'ink' },
+  needs: { label: 'Waiting on you', glyph: '!', tone: 'ink' },
 };
 
 /** A mission's delivery kind as the shared state vocabulary (glyph + word). */

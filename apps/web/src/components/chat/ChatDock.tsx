@@ -64,7 +64,7 @@ export default function ChatDock({ mode, objRef, onClose, history, onSend, onOpe
   // `wide` is the review deck in the panel: the header says so and carries the
   // one way back to the mission (the deck's own boxed close is hidden).
   const reviewing = wide && mode === 'object';
-  const lead = mode === 'history' ? 'History' : mode === 'needs' ? 'Needs you' : 'About';
+  const lead = mode === 'history' ? 'History' : mode === 'needs' ? 'Waiting on you' : 'About';
   const open = objRef ? popOutHref(objRef) : null;
   return (
     <aside

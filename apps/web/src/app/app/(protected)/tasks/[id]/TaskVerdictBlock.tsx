@@ -18,7 +18,7 @@ const STATE: Record<VerdictState, { label: string; tone: ChipTone }> = {
   done: { label: 'Done', tone: 'success' },
   blocked: { label: 'Blocked', tone: 'error' },
   failed: { label: 'Failed', tone: 'error' },
-  needs_you: { label: 'Needs you', tone: 'warning' },
+  needs_you: { label: 'Waiting on you', tone: 'warning' },
   in_progress: { label: 'In progress', tone: 'running' },
 };
 

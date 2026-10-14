@@ -213,6 +213,6 @@ export function visualReviewNeedsYou(state: MissionVisualReviewState | null | un
 /** The state in one plain line, for text surfaces (chat and MCP tools, completion notes). */
 export function visualReviewStateLine(p: VisualReviewPresentation): string {
   const head = p.record?.kind === 'waiver' ? `${p.label}. Reason: ${p.record.reason}` : p.detail ? `${p.label}. ${p.detail}` : p.label;
-  const tail = p.owner ? ` Needs you: ${p.owner.label}.` : '';
+  const tail = p.owner ? ` Waiting on ${p.owner.label}.` : '';
   return `${head}${/[.!?]$/.test(head) ? '' : '.'}${tail}`;
 }
