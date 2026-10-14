@@ -238,6 +238,7 @@ describe('RunnerTokensSection model login (docs/specs/runner-model-auth-source.m
     'model-auth-api_key': { text: 'Uses an API key (billed per token)', warning: false },
     'model-auth-none': { text: 'No model login on this machine. Run claude login', warning: true },
     'model-auth-not_reported': { text: 'Model login: not reported', warning: false },
+    'model-auth-codex': { text: "Uses this machine's Claude login", warning: false },
   };
   for (const state of RUNNERS_QA_STATES) {
     it(`?state=${state} renders its line`, async () => {
@@ -247,4 +248,35 @@ describe('RunnerTokensSection model login (docs/specs/runner-model-auth-source.m
       expect(line()?.className.includes('text-status-warning')).toBe(fixtureWords[state].warning);
     });
   }
+});
+
+describe('RunnerTokensSection Codex login (docs/specs/runner-model-auth-source.md R-13, AC-13)', () => {
+  const seen = () => new Date(Date.now() - 60_000).toISOString();
+  const codexLine = () => host.querySelector<HTMLElement>('[data-testid="token-codex-auth"]');
+
+  it("shows the machine's Codex login on its own line", async () => {
+    await mount({ lastSeenAt: seen(), modelAuthSource: 'machine_login', codexAuthSource: 'machine_login' });
+    expect(codexLine()?.textContent).toBe("Codex: uses this machine's Codex login");
+    expect(host.querySelector('[data-testid="token-model-auth"]')?.textContent).toBe("Uses this machine's Claude login");
+  });
+
+  it('names an OpenAI API key', async () => {
+    await mount({ lastSeenAt: seen(), modelAuthSource: 'machine_login', codexAuthSource: 'api_key' });
+    expect(codexLine()?.textContent).toBe('Codex: uses an OpenAI API key (billed per token)');
+  });
+
+  it('shows no Codex line for none or not reported', async () => {
+    await mount({ lastSeenAt: seen(), modelAuthSource: 'machine_login', codexAuthSource: 'none' });
+    expect(codexLine()).toBeNull();
+    act(() => root.unmount()); host.remove();
+    await mount({ lastSeenAt: seen(), modelAuthSource: 'machine_login', codexAuthSource: null });
+    expect(codexLine()).toBeNull();
+  });
+
+  it('?state=model-auth-codex renders both lines', async () => {
+    const [token] = withQaModelAuth([{ ...account, lastSeenAt: null, modelAuthSource: null }], 'model-auth-codex');
+    await mount(token);
+    expect(host.querySelector('[data-testid="token-model-auth"]')?.textContent).toBe("Uses this machine's Claude login");
+    expect(codexLine()?.textContent).toBe("Codex: uses this machine's Codex login");
+  });
 });

@@ -3438,6 +3438,9 @@ export const workerHeartbeats = pgTable('worker_heartbeats', {
   // a credential; null = not reported (older runner).
   modelAuthSource: text('model_auth_source').$type<'machine_token' | 'machine_login' | 'api_key' | 'none'>(),
   modelAuthMode: text('model_auth_mode').$type<'auto' | 'prefer' | 'off'>(),
+  // Which Codex login this runner's Codex agents use (same spec, R-10..R-13).
+  // A label from a fixed list, never a credential; null = not reported.
+  codexAuthSource: text('codex_auth_source').$type<'machine_login' | 'api_key' | 'none'>(),
   lastHeartbeatAt: timestamp('last_heartbeat_at', { withTimezone: true }).defaultNow().notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),

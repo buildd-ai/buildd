@@ -1,4 +1,4 @@
-import type { RunnerModelAuthSource } from '@buildd/shared';
+import type { RunnerModelAuthSource, RunnerCodexAuthSource } from '@buildd/shared';
 
 /**
  * `?state=` fixtures for Settings → Runners, so the visual audit can see every
@@ -8,7 +8,9 @@ import type { RunnerModelAuthSource } from '@buildd/shared';
  *
  * `?state=model-auth-<source>` sets that reported source on every token shown;
  * `model-auth-not_reported` clears it and marks each token seen so the line
- * renders. Display only: nothing is written.
+ * renders. `model-auth-codex` shows a runner on this machine's Claude login and
+ * its Codex login, so the separate Codex line renders. Display only: nothing
+ * is written.
  *
  * Dev-server only: Visual QA runs `bun dev`, production ignores the param.
  */
@@ -19,6 +21,7 @@ export const RUNNERS_QA_STATES = [
   'model-auth-api_key',
   'model-auth-none',
   'model-auth-not_reported',
+  'model-auth-codex',
 ] as const;
 
 export type RunnersQaState = (typeof RUNNERS_QA_STATES)[number];
@@ -35,6 +38,7 @@ export function resolveRunnersQaState(
 interface TokenRow {
   lastSeenAt: string | null;
   modelAuthSource: RunnerModelAuthSource | null;
+  codexAuthSource?: RunnerCodexAuthSource | null;
 }
 
 export function withQaModelAuth<T extends TokenRow>(
@@ -45,6 +49,9 @@ export function withQaModelAuth<T extends TokenRow>(
   if (!state) return tokens;
   if (state === 'model-auth-not_reported') {
     return tokens.map((t) => ({ ...t, lastSeenAt: t.lastSeenAt ?? now(), modelAuthSource: null }));
+  }
+  if (state === 'model-auth-codex') {
+    return tokens.map((t) => ({ ...t, modelAuthSource: 'machine_login', codexAuthSource: 'machine_login' }));
   }
   const source = state.slice('model-auth-'.length) as RunnerModelAuthSource;
   return tokens.map((t) => ({ ...t, modelAuthSource: source }));
