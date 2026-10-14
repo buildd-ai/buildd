@@ -27,7 +27,7 @@ import { createReviewerTask, resolvePriorVerdict, type PriorVerdict } from '@/li
 import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
-import { requestReview as requestKernelReview } from '@/lib/workflow/seam';
+import { ControlPlaneUnavailableError, controlPlaneUnavailableResponse, requestReview as requestKernelReview } from '@/lib/workflow/kernel-client';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { isDependencyBotAuthor } from '@/lib/dependency-bot-pr';
 import {
@@ -247,10 +247,13 @@ export async function POST(req: NextRequest) {
   const kernel = await requestKernelReview({
     workspaceId: workspace.id, repoFullName: repo.fullName, prNumber, installationId: repo.installationId,
     forced: body.force === true, actor: person ? `human:${person}` : `agent:${account.id}`,
-  }).catch((err) => {
+  }, { principal: person ? { kind: 'user', id: person } : { kind: 'account', id: account.id } }).catch((err) => {
+    // An unreachable control plane is not a reason to queue a legacy review beside the kernel's.
+    if (err instanceof ControlPlaneUnavailableError) return err;
     console.error(`[pr-review] workflow kernel review request failed for PR #${prNumber}:`, err);
     return null;
   });
+  if (kernel instanceof ControlPlaneUnavailableError) return controlPlaneUnavailableResponse(kernel) as NextResponse;
   // §8.1: the reviewer that answers is the round's at the live head, never the
   // newest reviewer row of the PR number (§14 Slice A retired that rule here).
   // A reviewTaskId whose row is gone is no review task at all: fall through and

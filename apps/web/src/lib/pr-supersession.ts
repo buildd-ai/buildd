@@ -248,12 +248,14 @@ export async function recordPrSupersession(
     ? wsRepo.installation.installationId
     : await installationIdForRepo(closedRepo).catch(() => null);
   if (worker.workspaceId && closedInstallationId) {
-    const { recordSupersession } = await import('@/lib/workflow/seam');
+    const { recordSupersession, ControlPlaneUnavailableError } = await import('@/lib/workflow/kernel-client');
     const kernel = await recordSupersession({
       workspaceId: worker.workspaceId, repoFullName: closedRepo, prNumber: worker.prNumber, installationId: closedInstallationId,
       actor: recordedBy, reason: reason.trim(),
       target: { repoFullName: targetRepo, prNumber: supersedingPrNumber, url: supersedingPrUrl },
-    });
+    }).catch((err: unknown) => (err instanceof ControlPlaneUnavailableError ? err : Promise.reject(err)));
+    // The kernel's host did not answer: nothing was recorded, and the legacy write must not run in its place.
+    if (kernel instanceof ControlPlaneUnavailableError) return { ok: false, error: kernel.message, status: 503 };
     if (kernel.handled) return kernelAnswer(kernel.result, worker.prNumber, ok);
   }
 
@@ -321,11 +323,12 @@ export async function recordPrAbandonment(params: {
   const repo = repoFullNameFromPrUrl(worker.prUrl);
   const installationId = repo ? await installationIdForRepo(repo).catch(() => null) : null;
   if (repo && worker.prNumber && worker.workspaceId && installationId) {
-    const { abandonDelivery } = await import('@/lib/workflow/seam');
+    const { abandonDelivery, ControlPlaneUnavailableError } = await import('@/lib/workflow/kernel-client');
     const kernel = await abandonDelivery({
       workspaceId: worker.workspaceId, repoFullName: repo, prNumber: worker.prNumber, installationId,
       actor: params.actor, reason,
-    });
+    }).catch((err: unknown) => (err instanceof ControlPlaneUnavailableError ? err : Promise.reject(err)));
+    if (kernel instanceof ControlPlaneUnavailableError) return { ok: false, error: kernel.message, status: 503 };
     if (kernel.handled) return kernelAnswer(kernel.result, worker.prNumber, { ok: true as const });
   }
 

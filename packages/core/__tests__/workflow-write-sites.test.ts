@@ -154,3 +154,48 @@ describe('workflow kernel tables have one writer', () => {
     ]) expect(SQL_ACCESS.test(s) || DRIZZLE_ACCESS.test(s)).toBe(false);
   });
 });
+
+/**
+ * S3a (docs/specs/workflow-kernel-library.md §3): every door reaches a kernel command
+ * through ONE client, `kernel-client.ts`, which runs it where the kernel is hosted (the
+ * control plane in own mode). A door that imports one of these straight from the seam
+ * would apply the command on whatever host it runs on.
+ */
+const DOOR_COMMANDS = ['landThroughKernel', 'applyRecommendationThroughKernel', 'policyMergeThroughKernel', 'requestReview', 'requestCiRetry', 'recordSupersession', 'abandonDelivery', 'openKernelDelivery'];
+const SEAM_SPEC = String.raw`['"](?:@\/lib\/workflow|(?:\.\.?\/)+(?:lib\/)?workflow)\/seam['"]`;
+/** `import { a, b as c } from '…/seam'`, `const { a } = await import('…/seam')`, `(await import('…/seam')).a`. */
+const SEAM_NAMED = new RegExp(String.raw`(?:import\s*(?:type\s*)?\{([^}]*)\}\s*from\s*${SEAM_SPEC}|\{([^}]*)\}\s*=\s*await\s+import\(\s*${SEAM_SPEC}\s*\))`, 'g');
+const SEAM_MEMBER = new RegExp(String.raw`\(\s*await\s+import\(\s*${SEAM_SPEC}\s*\)\s*\)\s*\.\s*([A-Za-z_$][\w$]*)`, 'g');
+
+function seamDoorImports(src: string): string[] {
+  const names: string[] = [];
+  for (const m of src.matchAll(SEAM_NAMED)) {
+    for (const part of (m[1] ?? m[2] ?? '').split(',')) {
+      const name = part.trim().replace(/^type\s+/, '').split(/\s+as\s+|\s*:\s*/)[0]?.trim();
+      if (name) names.push(name);
+    }
+  }
+  for (const m of src.matchAll(SEAM_MEMBER)) names.push(m[1]);
+  return names.filter((n) => DOOR_COMMANDS.includes(n));
+}
+
+describe('S3a: doors submit kernel commands through the one client', () => {
+  it('no module outside the kernel imports a door command from the seam', () => {
+    const offenders: string[] = [];
+    for (const f of files) {
+      if (inKernel(f) || !f.startsWith('apps/')) continue;
+      for (const n of seamDoorImports(code(f))) offenders.push(`${f} → seam.${n}`);
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('the scan can fail: it sees every import shape, and the client is what doors use', () => {
+    expect(seamDoorImports(`import { kernelLandingView, landThroughKernel, type KernelLanding } from '@/lib/workflow/seam';`)).toEqual(['landThroughKernel']);
+    expect(seamDoorImports(`import { requestReview as requestKernelReview } from '@/lib/workflow/seam';`)).toEqual(['requestReview']);
+    expect(seamDoorImports(`const { abandonDelivery } = await import('@/lib/workflow/seam');`)).toEqual(['abandonDelivery']);
+    expect(seamDoorImports(`const m = deps.x ?? (await import('./workflow/seam')).policyMergeThroughKernel;`)).toEqual(['policyMergeThroughKernel']);
+    expect(seamDoorImports(`import { landThroughKernel } from '@/lib/workflow/kernel-client';`)).toEqual([]);
+    const viaClient = files.filter((f) => !inKernel(f) && /from\s+['"]@\/lib\/workflow\/kernel-client['"]|import\(\s*['"](?:@\/lib\/|\.\/)workflow\/kernel-client['"]\s*\)/.test(code(f)));
+    expect(viaClient.length).toBeGreaterThan(5);
+  });
+});

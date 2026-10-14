@@ -380,9 +380,20 @@ the control plane, authenticated as the caller).
 - Doors that run on Vercel today (dashboard and chat merge, MCP `merge_pr`,
   `create_pr`, re-review, retry-CI, apply-recommendation, supersession,
   `update_task` on a delivery-owned task, `correct_task_result`) submit a
-  command through that client and return its result. NOT IMPLEMENTED: the
-  doors still call the seam directly; their move to the client is the second
-  half of slice S3a.
+  command through that client and return its result. Every caller of a door
+  command goes through it, the landing sweep, auto-merge, the policy-merge
+  rule, operator recovery and the PR subscribers included; a module outside
+  the kernel that imports one from the seam fails
+  `packages/core/__tests__/workflow-write-sites.test.ts`. A person's door names
+  them as the principal; a door's `Idempotency-Key` header, when sent, is the
+  command's key, and one key covers the whole door call: on an `unknown`
+  outcome the door submits again with that same key (twice more at most)
+  before it answers 503, and that 503 carries the key. `update_task` and `correct_task_result` issue no kernel
+  command today: their writes to a delivery-owned task's columns are the
+  one-writer work of §1 (S4), not a command to move. Ingesting a fact
+  (`observePrState`, `observeHead`, attempt ended, verdicts) is not a door and
+  still runs where the fact arrives; on the web host that is the render
+  read-through and the sweeps, a §9 write site S3b and S4 remove.
 - Routing is off until `KERNEL_COMMAND_SECRET` is set on the web host: without
   it the web host runs the package itself, exactly as before, whatever either
   host's `EXECUTION_MODE`, and the control plane's cron does nothing. With it,
@@ -463,8 +474,9 @@ the web host.
   THEN the Vercel route submits a landing command, the control plane applies
   T15 and drains the merge effect, and no kernel statement runs in the Vercel
   process (asserted by a host tag on every transition row). The client path
-  and the host tags: `apps/web/tests/db/kernel-command-host.test.ts`. The
-  dashboard route itself submits once the doors move to the client.
+  and the host tags: `apps/web/tests/db/kernel-command-host.test.ts`; the
+  dashboard route submitting and applying nothing itself:
+  `apps/web/src/app/api/prs/[prNumber]/merge/route.test.ts`.
 - AC-10: GIVEN the Vercel project paused WHEN the drain schedule fires THEN
   due effects drain and the floor runs on the control plane
   (`kernel-command-host.test.ts`, `kernel-floor.test.ts`,

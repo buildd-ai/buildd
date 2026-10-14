@@ -277,3 +277,74 @@ describe('the client and the endpoint agree', () => {
     expect(l.ran).toEqual([]);
   });
 });
+
+describe('the doors\' functions', () => {
+  it('read the principal off the actor: a person by id, anything else a named system principal', async () => {
+    const { principalOfActor } = await import('./kernel-client');
+    expect(principalOfActor(`human:${USER}`)).toEqual({ kind: 'user', id: USER });
+    expect(principalOfActor('human:not-a-uuid')).toEqual({ kind: 'system', id: 'human:not-a-uuid' });
+    expect(principalOfActor('agent:w-1')).toEqual({ kind: 'system', id: 'agent:w-1' });
+    expect(principalOfActor(undefined)).toEqual({ kind: 'system', id: 'system:door' });
+  });
+
+  it('a door\'s Idempotency-Key header is the command\'s key when it is well formed', async () => {
+    const { idempotencyKeyOf } = await import('./kernel-client');
+    const req = (v?: string) => new Request('https://x', { headers: v ? { 'Idempotency-Key': v } : {} });
+    expect(idempotencyKeyOf(req('merge:click-0001'))).toBe('merge:click-0001');
+    expect(idempotencyKeyOf(req('short'))).toBeUndefined();
+    expect(idempotencyKeyOf(req('has spaces in it'))).toBeUndefined();
+    expect(idempotencyKeyOf(req())).toBeUndefined();
+  });
+
+  it('in own mode a door function submits its op with the person as principal and returns the bare result', async () => {
+    const { landThroughKernel } = await import('./kernel-client');
+    const saved = { ...process.env };
+    process.env.EXECUTION_MODE = 'own';
+    process.env.KERNEL_COMMAND_SECRET = 'k1:s3cret';
+    const realFetch = globalThis.fetch;
+    const bodies: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (_u: string, init: RequestInit) => { bodies.push(JSON.parse(String(init.body))); return answer(); }) as unknown as typeof fetch;
+    try {
+      const r = await landThroughKernel(input, { idempotencyKey: 'land:from-header' });
+      expect(r).toEqual({ merged: true, where: 'control-plane' } as never);
+      expect(bodies).toEqual([{ v: 1, op: 'land', input, principal: { kind: 'user', id: USER }, idempotencyKey: 'land:from-header' }]);
+    } finally {
+      globalThis.fetch = realFetch;
+      process.env = saved;
+    }
+  });
+});
+
+describe('a door after an unknown outcome', () => {
+  it('submits again with the same key and returns the control plane\'s answer; a not_applied failure is not retried', async () => {
+    const { landThroughKernel, DOOR_UNKNOWN_RETRIES } = await import('./kernel-client');
+    const keys: string[] = [];
+    let t = 0;
+    // A budget of one attempt per submission, so each unknown outcome reaches the door.
+    const base = { env: { ...OWN, KERNEL_COMMAND_BUDGET_MS: '1' }, now: () => t, sleep: async (ms: number) => { t += ms + 10_000; }, newKey: () => 'land:door-call-key', host: () => 'web' as const };
+    // Two calls time out (outcome unknown), then the replay of the stored answer arrives.
+    const replies: Array<() => Promise<Response>> = [
+      async () => { throw Object.assign(new Error('t'), { name: 'TimeoutError' }); },
+      async () => { throw Object.assign(new Error('t'), { name: 'TimeoutError' }); },
+      async () => answer({ replayed: true }),
+    ];
+    const fetchImpl = (async (_u: string, init: RequestInit) => { keys.push(JSON.parse(String(init.body)).idempotencyKey); return replies.shift()!(); }) as unknown as typeof fetch;
+    const r = await landThroughKernel(input, { deps: { ...base, fetch: fetchImpl, run: (async () => { throw new Error('ran locally'); }) as never } });
+    expect(r).toEqual({ merged: true, where: 'control-plane' } as never);
+    expect(keys).toEqual(['land:door-call-key', 'land:door-call-key', 'land:door-call-key']);
+    expect(DOOR_UNKNOWN_RETRIES).toBeGreaterThan(0);
+
+    let refusedCalls = 0;
+    const err = await landThroughKernel(input, {
+      deps: { ...base, fetch: (async () => { refusedCalls++; throw new TypeError('fetch failed'); }) as unknown as typeof fetch },
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+    expect(err.outcome).toBe('not_applied');
+    const perSubmit = refusedCalls;
+    // One submission's own retries only: the door did not start a second submission.
+    expect(perSubmit).toBeGreaterThan(0);
+    refusedCalls = 0;
+    await submitKernelCommand('land', input, { principal, deps: { ...base, fetch: (async () => { refusedCalls++; throw new TypeError('fetch failed'); }) as unknown as typeof fetch } }).catch(() => {});
+    expect(perSubmit).toBe(refusedCalls);
+  });
+});

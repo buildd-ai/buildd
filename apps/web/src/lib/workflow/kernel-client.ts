@@ -203,7 +203,7 @@ async function submitRemote<K extends KernelOp>(op: K, input: KernelOps[K]['inpu
   const doFetch = deps.fetch ?? fetch;
   const now = deps.now ?? Date.now;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
-  const deadline = now() + (opts.budgetMs ?? 45_000);
+  const deadline = now() + (opts.budgetMs ?? (Number(env.KERNEL_COMMAND_BUDGET_MS) || 45_000));
   let why = 'no attempt';
   // Once any request may have reached the control plane, a failure's outcome is unknown.
   let mayHaveApplied = false;
@@ -249,4 +249,63 @@ async function submitRemote<K extends KernelOp>(op: K, input: KernelOps[K]['inpu
     }
     throw new KernelCommandRefusedError(res.status, answer ?? {});
   }
+}
+
+// ── The doors' functions ────────────────────────────────────────────────────
+//
+// The seam's door functions, same names and inputs, run where the kernel is
+// hosted. A door imports these, never the seam's own (kernel-client-doors.test.ts
+// fails on a door that does). `door` names who the command is for; absent, the
+// principal is read off the input's actor: `human:<user id>` is that person,
+// anything else (`agent:…`, `system:…`, `rule:…`) a system principal named by it.
+
+export interface DoorCall {
+  principal?: KernelPrincipal;
+  /** The caller's key (an `Idempotency-Key` header); absent, one is made for this call. */
+  idempotencyKey?: string;
+  deps?: ClientDeps;
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** The principal an actor string names. */
+export function principalOfActor(actor: string | null | undefined): KernelPrincipal {
+  const a = actor ?? 'system:door';
+  const human = /^human:(.+)$/.exec(a);
+  if (human && UUID.test(human[1])) return { kind: 'user', id: human[1] };
+  return { kind: 'system', id: a.slice(0, 200) };
+}
+
+/** How many more times a door submits after an `unknown` outcome, always with the same key. */
+export const DOOR_UNKNOWN_RETRIES = 2;
+
+async function door<K extends KernelOp>(op: K, input: KernelOps[K]['input'], actor: string | null | undefined, c: DoorCall = {}): Promise<KernelOps[K]['result']> {
+  // One key for the whole door call: every retry below asks the control plane the same question.
+  const idempotencyKey = c.idempotencyKey ?? (c.deps?.newKey ?? (() => newIdempotencyKey(op)))();
+  const principal = c.principal ?? principalOfActor(actor);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return (await submitKernelCommand(op, input, { principal, idempotencyKey, deps: c.deps })).result;
+    } catch (err) {
+      // The outcome is unknown (it may have run): ask again with the same key, which answers with what
+      // was done and never applies it twice. Not applied: the door reports it; nothing to recover.
+      if (err instanceof ControlPlaneUnavailableError && err.outcome === 'unknown' && attempt < DOOR_UNKNOWN_RETRIES) continue;
+      throw err;
+    }
+  }
+}
+
+export const landThroughKernel = (p: KernelOps['land']['input'], c?: DoorCall) => door('land', p, p.actor, c);
+export const applyRecommendationThroughKernel = (p: KernelOps['apply_recommendation']['input'], c?: DoorCall) => door('apply_recommendation', p, p.actor, c);
+export const policyMergeThroughKernel = (p: KernelOps['policy_merge']['input'], c?: DoorCall) => door('policy_merge', p, `rule:${p.rule ?? 'escalation_gate'}`, c);
+export const requestReview = (p: KernelOps['request_review']['input'], c?: DoorCall) => door('request_review', p, p.actor, c);
+export const requestCiRetry = (p: KernelOps['request_ci_retry']['input'], c?: DoorCall) => door('request_ci_retry', p, p.actor, c);
+export const recordSupersession = (p: KernelOps['record_supersession']['input'], c?: DoorCall) => door('record_supersession', p, p.actor, c);
+export const abandonDelivery = (p: KernelOps['abandon']['input'], c?: DoorCall) => door('abandon', p, p.actor, c);
+export const openKernelDelivery = (p: KernelOps['open_delivery']['input'], c?: DoorCall) => door('open_delivery', p, `system:${p.source}`, c);
+
+/** A door's caller-supplied idempotency key, when the request carries one. */
+export function idempotencyKeyOf(req: { headers: { get(name: string): string | null } }): string | undefined {
+  const k = req.headers.get('idempotency-key')?.trim();
+  return k && /^[A-Za-z0-9:._\-]{8,200}$/.test(k) ? k : undefined;
 }

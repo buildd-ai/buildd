@@ -37,7 +37,8 @@ import { applyRecommendationTitle } from '@/lib/task-title';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
 import { performLandingAction } from '@/lib/landing-action-run';
-import { applyRecommendationThroughKernel, kernelDeliveryOfPr } from '@/lib/workflow/seam';
+import { kernelDeliveryOfPr } from '@/lib/workflow/seam';
+import { ControlPlaneUnavailableError, controlPlaneUnavailableResponse, applyRecommendationThroughKernel } from '@/lib/workflow/kernel-client';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // A human choosing to apply a fix is a deliberate one-off, not another lap of
@@ -108,7 +109,8 @@ async function applyOnKernel(p: {
     actor: `human:${p.user.id}`,
     expectedVersion: p.expectedVersion,
     instructions,
-  });
+  }, { principal: { kind: 'user', id: p.user.id } }).catch((err: unknown) => (err instanceof ControlPlaneUnavailableError ? err : Promise.reject(err)));
+  if (out instanceof ControlPlaneUnavailableError) return controlPlaneUnavailableResponse(out) as NextResponse;
   if (!out) return NextResponse.json({ error: 'PR is no longer owned by the workflow kernel; retry' }, { status: 409 });
   const r = out.result;
   if (r.result === 'stale') {

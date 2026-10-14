@@ -28,7 +28,7 @@ import { getUserWorkspaceIds } from '@/lib/team-access';
 import { githubApi } from '@/lib/github';
 import { resolveOrAdoptPrOwner } from '@/lib/pr-review-request';
 import { checkPrIsDraft, fetchCIFailureLogs } from '@/lib/ci-failure-inspect';
-import { requestCiRetry } from '@/lib/workflow/seam';
+import { ControlPlaneUnavailableError, controlPlaneUnavailableResponse, requestCiRetry } from '@/lib/workflow/kernel-client';
 import { isSchemaDriftFailure, buildDriftDiagnoseTask } from '@/lib/ci-drift-diagnose';
 import { buildCIRetryTask } from '@/lib/ci-retry';
 import { policyValue } from '@/lib/policy-overrides';
@@ -149,7 +149,8 @@ export async function POST(
     actor: `human:${user.id}`,
     maxAttempts: typeof configuredMax === 'number' ? configuredMax : policyValue('maxCiRetries'),
     reason: typeof body?.reason === 'string' && body.reason.trim() ? body.reason.trim() : 'Fix CI from the dashboard',
-  });
+  }, { principal: { kind: 'user', id: user.id } }).catch((err: unknown) => (err instanceof ControlPlaneUnavailableError ? err : Promise.reject(err)));
+  if (kernel instanceof ControlPlaneUnavailableError) return controlPlaneUnavailableResponse(kernel) as NextResponse;
   if (kernel.handled) {
     const r = kernel.result;
     if (r.result === 'applied' && r.decision.toState === 'REPAIRING') {
