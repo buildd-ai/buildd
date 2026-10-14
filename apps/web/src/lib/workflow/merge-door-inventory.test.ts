@@ -31,7 +31,7 @@ const INVENTORY: Record<string, { what: string; calls: number }> = {
   'apps/web/src/lib/auto-merge.ts': { what: 'D4: tryAutoMergeWorkerPr; never without a workspace to read the verdict in', calls: 1 },
   'apps/web/src/app/api/github/pr/route.ts': { what: 'D5: merge_pr; `force` never skips the review verdict', calls: 1 },
   'apps/web/src/app/api/prs/[prNumber]/merge/route.ts': { what: 'D6: the dashboard merge (a person may override, recorded)', calls: 1 },
-  'apps/web/src/app/api/github/webhook/route.ts': { what: 'D7: release PR on green CI; a kernel PR lands through the kernel', calls: 1 },
+  'apps/web/src/lib/held-pr-tasks.ts': { what: 'D7: release PR on green CI (webhook and the held-release sweep); a kernel PR lands through the kernel', calls: 1 },
   'apps/web/src/lib/release/pinned-merge.ts': { what: 'D8/D9/D10: the release doors, review gate + pinned to the verified head', calls: 1 },
   'apps/web/src/lib/specs/repo-copy.ts': { what: 'D14: a Living Spec\'s generated repo copy, only the generator\'s own commit, pinned (living-specs R-35)', calls: 1 },
   'apps/web/src/lib/release-executor.ts': { what: 'not a door: a branch-to-prod merge with no PR (POST /merges)', calls: 1 },

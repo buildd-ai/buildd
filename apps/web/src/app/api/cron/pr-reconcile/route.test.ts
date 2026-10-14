@@ -43,6 +43,11 @@ mock.module('@/lib/early-release-reconciler', () => ({
   reconcileEarlyReleases: mockEarlyRelease,
 }));
 
+// Held release tasks (lib/held-pr-tasks.ts): the hourly backstop rides this route.
+const HELD_ZERO = { scanned: 0, completed: 0, failed: 0, retried: 0, waiting: 0, errors: 0 };
+const mockHeldReleases = mock(async () => HELD_ZERO);
+mock.module('@/lib/held-pr-tasks', () => ({ sweepHeldReleases: mockHeldReleases }));
+
 // The two sweeps below were unmocked too, so they queried the live database.
 mock.module('@/lib/stranded-tasks-sweep', () => ({
   sweepStrandedTasks: async () => ({ scanned: 0, stranded: 0, cleared: 0 }),
@@ -168,6 +173,14 @@ describe('GET /api/cron/pr-reconcile', () => {
     mockReconcile.mockResolvedValue(ZERO);
     await GET(makeRequest('test-secret'));
     expect(dbTouches).toEqual([]);
+  });
+
+  it('runs the held-release backstop on the hourly tick and reports it', async () => {
+    mockHeldReleases.mockClear();
+    mockHeldReleases.mockResolvedValueOnce({ ...HELD_ZERO, scanned: 2, completed: 1, retried: 1 });
+    const res = await GET(makeRequest('test-secret'));
+    expect(mockHeldReleases).toHaveBeenCalledTimes(1);
+    expect((await res.json()).heldReleases).toMatchObject({ scanned: 2, completed: 1, retried: 1 });
   });
 
   it('returns 401 when no authorization header', async () => {

@@ -644,6 +644,11 @@ mock.module('@/lib/workflow/seam', () => ({
   observeCiFailure: mock(async () => ({ handled: false })),
   policyFindingFor: (p: any) => ({ outcome: 'human', reason: p.reason, destructive: false }),
 }));
+// Held release tasks are settled by their PR's close (lib/held-pr-tasks.ts, real-SQL cases in
+// tests/db/held-release.test.ts); here, that every close delivery hands it over.
+import * as realHeld from '@/lib/held-pr-tasks';
+const mockSettleHeldOnClose = mock(async (_p: any): Promise<number> => 0);
+mock.module('@/lib/held-pr-tasks', () => ({ ...realHeld, settleHeldReleasesOnClose: mockSettleHeldOnClose }));
 // The one kernel client (D7's kernel landing). Default: the kernel owns no release PR.
 import * as realKernelClient from '@/lib/workflow/kernel-client';
 const mockKernelClientLand = mock(async (_p: any): Promise<any> => null);
@@ -5994,6 +5999,14 @@ describe('pull_request merged — effects that belong to the merge, not the tran
       installation: { id: 5000 },
     };
   }
+
+  it('every close delivery hands the PR to the held-release settle, merged or not', async () => {
+    mockSettleHeldOnClose.mockClear();
+    await POST(createWebhookRequest('pull_request', mergedPrPayload({})));
+    expect(mockSettleHeldOnClose.mock.calls.at(-1)?.[0]).toMatchObject({ repoFullName: 'test-org/test-repo', merged: true });
+    await POST(createWebhookRequest('pull_request', mergedPrPayload({ pull_request: { merged: false, merged_at: null } })));
+    expect(mockSettleHeldOnClose.mock.calls.at(-1)?.[0]).toMatchObject({ merged: false });
+  });
 
   /**
    * The worker row that owns a mission integration PR: a bookkeeping task that

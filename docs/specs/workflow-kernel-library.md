@@ -559,9 +559,12 @@ recorded as such, never as an approval.
   `evaluateAutoMergeSafety` with freshness left to T15, and the mission-PR
   hold). `merge_call` reads the PR live first: merged or closed goes to the
   funnel, a moved head is recorded and nothing merges (AC-14), then review,
-  base (a retarget is recorded like a moved head) and rails. A person's door
-  is held to a person's rails (red CI, protected paths); the unattended ones
-  (size cap, migration inspector, semantic hold) apply only to automatic doors.
+  base (a retarget is recorded like a moved head) and rails. Only a human
+  actor's own landing is a person's: it is held to red CI and protected paths,
+  and may merge on pending CI but never on red; the unattended rails (size cap,
+  migration inspector, semantic hold) apply to every other landing. An agent
+  acting under a person's grant is not a person: the grant lifts only the rail
+  it names (freshness at T15, size in the size check).
   A refusal is T16 `gate_refused`: a rail that clears by waiting (pending CI, a
   hold) leaves the approval standing (`APPROVED`); a lasting one (protected
   path, migration, size) and the review half are `ESCALATED(landing_needs_human)`,
@@ -571,6 +574,12 @@ recorded as such, never as an approval.
 - Release doors hold, never fail or throw, when a kernel-owned PR is not landed
   yet or the control plane does not answer; a PR the kernel does not own never
   reaches the kernel. A lost GitHub answer is indeterminate, not a refusal.
+  A held release task records its PR and merge method (a held worker PR
+  squashes) and is settled by the PR: completed when it merges by any door,
+  failed with the reason when it closes unmerged. The hourly pr-reconcile tick
+  sweeps held tasks (`apps/web/src/lib/held-pr-tasks.ts`): a merged or closed
+  PR settles, a green open one is retried through the release-on-green door,
+  and a task still held after 24 sweeps fails with the reason.
 - Release doors D7–D10 go through `apps/web/src/lib/release/pinned-merge.ts`
   (or the kernel, for a PR it owns): live read, refuse a head other than the
   verified one (AC-16), `guardReviewVerdict` at that head, GitHub's `sha` pin.
