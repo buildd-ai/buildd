@@ -288,12 +288,80 @@ describe('the client and the endpoint agree', () => {
 });
 
 describe('the doors\' functions', () => {
-  it('read the principal off the actor: a person by id, anything else a named system principal', async () => {
+  it('read the principal off the actor: a person by id, buildd\'s own actors the system, an agent run or a malformed person nothing', async () => {
     const { principalOfActor } = await import('./kernel-client');
     expect(principalOfActor(`human:${USER}`)).toEqual({ kind: 'user', id: USER });
-    expect(principalOfActor('human:not-a-uuid')).toEqual({ kind: 'system', id: 'human:not-a-uuid' });
-    expect(principalOfActor('agent:w-1')).toEqual({ kind: 'system', id: 'agent:w-1' });
+    expect(principalOfActor('system:auto_merge')).toEqual({ kind: 'system', id: 'system:auto_merge' });
+    expect(principalOfActor('rule:escalation_gate')).toEqual({ kind: 'system', id: 'rule:escalation_gate' });
+    expect(principalOfActor('buildd:recovery')).toEqual({ kind: 'system', id: 'buildd:recovery' });
     expect(principalOfActor(undefined)).toEqual({ kind: 'system', id: 'system:door' });
+    // Never the system: an agent run, a person with no valid id, a free-text label.
+    for (const a of ['agent:w-1', 'human:not-a-uuid', 'human:unknown', 'my-api-key', '']) expect(principalOfActor(a)).toBeNull();
+  });
+
+  it('a door names its authenticated caller: a grant session as its grant, whoever is behind it', async () => {
+    const { kernelPrincipalOf } = await import('./kernel-client');
+    const ACCT = '44444444-4444-4444-8444-444444444444';
+    const grant = { id: ACCT, oauthGrantId: 'g-1', grantScopes: ['read', 'write'], workspaceIds: [WS] };
+    const asGrant = { kind: 'grant', id: ACCT, grantId: 'g-1', workspaceIds: [WS], scopes: ['read', 'write'] };
+    expect(kernelPrincipalOf({ account: grant })).toEqual(asGrant);
+    expect(kernelPrincipalOf({ account: grant, person: USER })).toEqual({ ...asGrant, userId: USER });
+    // A grant with no list reaches nothing, and says so.
+    expect(kernelPrincipalOf({ account: { ...grant, workspaceIds: null } })).toMatchObject({ kind: 'grant', workspaceIds: [] });
+    expect(kernelPrincipalOf({ person: USER, account: { id: ACCT, oauthGrantId: null } })).toEqual({ kind: 'user', id: USER });
+    expect(kernelPrincipalOf({ account: { id: ACCT } })).toEqual({ kind: 'account', id: ACCT, grant: null });
+    expect(kernelPrincipalOf({ person: USER })).toEqual({ kind: 'user', id: USER });
+    expect(kernelPrincipalOf({})).toBeNull();
+  });
+
+  it('a sweep is the system only when its actor names buildd; a caller is named by its session', async () => {
+    const { doorPrincipal } = await import('./kernel-client');
+    expect(doorPrincipal('system', 'system:auto-supersession')).toEqual({ kind: 'system', id: 'system:auto-supersession' });
+    for (const a of ['agent:t-1', 'human:not-a-uuid', 'my-api-key', '', undefined]) expect(doorPrincipal('system', a)).toBeNull();
+    expect(doorPrincipal({ person: USER }, 'agent:t-1')).toEqual({ kind: 'user', id: USER });
+  });
+
+  it('a command with no principal is never sent to the control plane: refused, nothing applied anywhere', async () => {
+    const l = local();
+    let sent = 0;
+    const err = await submitKernelCommand('land', { ...input, actor: 'agent:w-1' }, {
+      principal: null,
+      deps: { ...l.deps, env: OWN, fetch: (async () => { sent++; return answer(); }) as unknown as typeof fetch },
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(KernelCommandRefusedError);
+    expect(err.body.code).toBe('no_principal');
+    expect([sent, l.ran]).toEqual([0, []]);
+  });
+
+  it('an explicit null principal stays null: a system-actor door is not sent as the system for a caller that named none', async () => {
+    const { openKernelDelivery, policyMergeThroughKernel } = await import('./kernel-client');
+    const l = local();
+    let sent = 0;
+    const deps = { ...l.deps, env: OWN, fetch: (async () => { sent++; return answer(); }) as unknown as typeof fetch };
+    const open = await openKernelDelivery({ workspaceId: WS, ownerTaskId: 't', repoFullName: 'acme/w', prNumber: 7, installationId: 1, source: 'create_pr' } as never, { principal: null, deps }).catch((e) => e);
+    expect(open).toBeInstanceOf(KernelCommandRefusedError);
+    expect(open.body.code).toBe('no_principal');
+    const merge = await policyMergeThroughKernel({ workspaceId: WS, prNumber: 7, headSha: 'H1', reason: 'r' } as never, { principal: null, deps }).catch((e) => e);
+    expect(merge).toBeInstanceOf(KernelCommandRefusedError);
+    expect([sent, l.ran]).toEqual([0, []]);
+    // A sweep names itself explicitly as the system.
+    const { systemPrincipal } = await import('./kernel-client');
+    await openKernelDelivery({ workspaceId: WS, ownerTaskId: 't', repoFullName: 'acme/w', prNumber: 7, installationId: 1, source: 'webhook:opened' } as never, { principal: systemPrincipal('system:webhook:opened'), deps });
+    expect(sent).toBe(1);
+  });
+
+  it('an agent-run door with no principal of its own fails closed instead of submitting as the system', async () => {
+    const { landThroughKernel } = await import('./kernel-client');
+    const l = local();
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchSpy = (async (_u: string, init: RequestInit) => { bodies.push(JSON.parse(String(init.body))); return answer(); }) as unknown as typeof fetch;
+    const err = await landThroughKernel({ ...input, actor: 'agent:w-1' } as never, { principal: null, deps: { ...l.deps, env: OWN, fetch: fetchSpy } }).catch((e) => e);
+    expect(err).toBeInstanceOf(KernelCommandRefusedError);
+    expect(bodies).toEqual([]);
+    // In shadow the web host runs it itself, as before: the principal is the control plane's check only.
+    const shadow = local();
+    await landThroughKernel({ ...input, actor: 'agent:w-1' } as never, { principal: null, deps: { ...shadow.deps, env: {} } });
+    expect(shadow.ran).toEqual(['land']);
   });
 
   it('a door\'s Idempotency-Key header is the command\'s key when it is well formed', async () => {
@@ -314,7 +382,7 @@ describe('the doors\' functions', () => {
     const bodies: Array<Record<string, unknown>> = [];
     globalThis.fetch = (async (_u: string, init: RequestInit) => { bodies.push(JSON.parse(String(init.body))); return answer(); }) as unknown as typeof fetch;
     try {
-      const r = await landThroughKernel(input, { idempotencyKey: 'land:from-header' });
+      const r = await landThroughKernel(input, { principal, idempotencyKey: 'land:from-header' });
       expect(r).toEqual({ merged: true, where: 'control-plane' } as never);
       expect(bodies).toEqual([{ v: 1, op: 'land', input, principal: { kind: 'user', id: USER }, idempotencyKey: 'land:from-header' }]);
     } finally {
@@ -339,13 +407,14 @@ describe('a door after an unknown outcome', () => {
       async () => answer({ replayed: true }),
     ];
     const fetchImpl = (async (_u: string, init: RequestInit) => { keys.push(JSON.parse(String(init.body)).idempotencyKey); return replies.shift()!(); }) as unknown as typeof fetch;
-    const r = await landThroughKernel(input, { deps: { ...base, fetch: fetchImpl, run: (async () => { throw new Error('ran locally'); }) as never } });
+    const r = await landThroughKernel(input, { principal, deps: { ...base, fetch: fetchImpl, run: (async () => { throw new Error('ran locally'); }) as never } });
     expect(r).toEqual({ merged: true, where: 'control-plane' } as never);
     expect(keys).toEqual(['land:door-call-key', 'land:door-call-key', 'land:door-call-key']);
     expect(DOOR_UNKNOWN_RETRIES).toBeGreaterThan(0);
 
     let refusedCalls = 0;
     const err = await landThroughKernel(input, {
+      principal,
       deps: { ...base, fetch: (async () => { refusedCalls++; throw refusedErr(); }) as unknown as typeof fetch },
     }).catch((e) => e);
     expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
@@ -385,6 +454,7 @@ describe('no local run after an attempt that may have reached the control plane'
       const ran: string[] = [];
       const replies: Array<() => Promise<Response>> = [async () => { throw timeout(); }, later, later, later];
       const err = await landThroughKernel(input, {
+      principal,
         deps: { ...base, fetch: (async () => replies.shift()!()) as unknown as typeof fetch, run: (async (op: string) => { ran.push(op); return {}; }) as never, deliveryAfter: async () => null },
       }).catch((e) => e);
       expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
@@ -412,7 +482,7 @@ describe('a door\'s retry and time rules', () => {
   it('a refusal from the control plane (4xx) is never retried by the door', async () => {
     const { landThroughKernel, KernelCommandRefusedError } = await import('./kernel-client');
     let n = 0;
-    const err = await landThroughKernel(input, { deps: { env: OWN, host: () => 'web', sleep: async () => {}, fetch: (async () => { n++; return Response.json({ v: 1, code: 'forbidden', error: 'no' }, { status: 403 }); }) as unknown as typeof fetch } }).catch((e) => e);
+    const err = await landThroughKernel(input, { principal, deps: { env: OWN, host: () => 'web', sleep: async () => {}, fetch: (async () => { n++; return Response.json({ v: 1, code: 'forbidden', error: 'no' }, { status: 403 }); }) as unknown as typeof fetch } }).catch((e) => e);
     expect(err).toBeInstanceOf(KernelCommandRefusedError);
     expect(n).toBe(1);
   });
@@ -420,7 +490,7 @@ describe('a door\'s retry and time rules', () => {
   it('the command failing on the control plane (command_failed) is the real error: reported, not retried', async () => {
     const { landThroughKernel, KernelCommandFailedError, doorErrorAnswer } = await import('./kernel-client');
     let n = 0;
-    const err = await landThroughKernel(input, { idempotencyKey: 'land:failed-0001', deps: { env: OWN, host: () => 'web', sleep: async () => {}, fetch: (async () => { n++; return Response.json({ v: 1, code: 'command_failed', error: 'delivery row missing', retryable: true }, { status: 500 }); }) as unknown as typeof fetch } }).catch((e) => e);
+    const err = await landThroughKernel(input, { principal, idempotencyKey: 'land:failed-0001', deps: { env: OWN, host: () => 'web', sleep: async () => {}, fetch: (async () => { n++; return Response.json({ v: 1, code: 'command_failed', error: 'delivery row missing', retryable: true }, { status: 500 }); }) as unknown as typeof fetch } }).catch((e) => e);
     expect(err).toBeInstanceOf(KernelCommandFailedError);
     expect(err.message).toContain('delivery row missing');
     expect(n).toBe(1);
@@ -430,7 +500,7 @@ describe('a door\'s retry and time rules', () => {
   it('a local throw in shadow mode is the door\'s answer as it is: run once, never retried', async () => {
     const { landThroughKernel } = await import('./kernel-client');
     let runs = 0;
-    const err = await landThroughKernel(input, { deps: { env: { EXECUTION_MODE: 'shadow' }, host: () => 'web', run: (async () => { runs++; throw new Error('seam boom'); }) as never } }).catch((e) => e);
+    const err = await landThroughKernel(input, { principal, deps: { env: { EXECUTION_MODE: 'shadow' }, host: () => 'web', run: (async () => { runs++; throw new Error('seam boom'); }) as never } }).catch((e) => e);
     expect(err).toBeInstanceOf(Error);
     expect(err.message).toBe('seam boom');
     expect(runs).toBe(1);
@@ -439,7 +509,7 @@ describe('a door\'s retry and time rules', () => {
   it('in shadow a door does not read the delivery afterwards (it never uses it)', async () => {
     const { landThroughKernel } = await import('./kernel-client');
     let reads = 0;
-    await landThroughKernel(input, { deps: { env: { EXECUTION_MODE: 'shadow' }, host: () => 'web', run: (async () => ({ merged: true })) as never, deliveryAfter: async () => { reads++; return null; } } });
+    await landThroughKernel(input, { principal, deps: { env: { EXECUTION_MODE: 'shadow' }, host: () => 'web', run: (async () => ({ merged: true })) as never, deliveryAfter: async () => { reads++; return null; } } });
     expect(reads).toBe(0);
   });
 
@@ -448,6 +518,7 @@ describe('a door\'s retry and time rules', () => {
     let t = 0;
     let calls = 0;
     const err = await landThroughKernel(input, {
+      principal,
       deps: {
         env: OWN, host: () => 'web', now: () => t, sleep: async (ms) => { t += ms; },
         // Every request hangs until its own timeout, then reads as unknown.

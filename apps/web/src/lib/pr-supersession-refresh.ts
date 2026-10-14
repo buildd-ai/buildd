@@ -219,6 +219,7 @@ export async function retireSupersededRefreshPr(opts: {
       supersedingPrNumber: newer.prNumber,
       reason: evidence,
       recordedBy: REFRESH_SUPERSESSION_ACTOR,
+      caller: 'system',
     });
     // 409 = an edge (or a merge) is already there: a prior run finished the job.
     if (!recorded.ok && recorded.status !== 409) throw new Error(`record refused: ${recorded.error}`);

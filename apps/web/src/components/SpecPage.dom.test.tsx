@@ -323,3 +323,49 @@ describe('SpecPage', () => {
     expect(q('spec-page-approve')).not.toBeNull();
   });
 });
+
+describe('Delivery and verification (Slice 13, R-61, AC-48)', () => {
+  const T = '22222222-2222-4222-8222-222222222222';
+  const entry = {
+    kind: 'task' as const, id: T, title: 'Show totals in euros', href: `/app/tasks/${T}`,
+    builtTo: 1, provisional: false, delivered: true, deliveredText: 'Built to revision 1 and delivered.',
+    standing: { tone: 'muted' as const, text: 'Not verified against revision 2.' },
+    criteria: [{ criterionId: 'R-1', text: 'Totals in the shopper currency.', mark: 'pass' as const, evidence: [{ label: 'ci', href: 'https://example.test/run/1' }] }],
+    links: [{ label: 'PR #12', href: 'https://github.com/acme/shop/pull/12' }],
+    at: iso,
+  };
+
+  it('AC-48: no entries, no section, no heading and no jump link', () => {
+    act(() => root.render(<SpecPage view={{ ...base, delivery: { entries: [], next: null } }} />));
+    expect(q('spec-delivery')).toBeNull();
+    expect(container.textContent).not.toContain('Delivery and verification');
+    expect(container.querySelector('a[href="#delivery"]')).toBeNull();
+    act(() => root.render(<SpecPage view={{ ...base, delivery: null }} />));
+    expect(q('spec-delivery')).toBeNull();
+  });
+
+  it('lists each entry once, linking to its task, with delivery and standing on separate lines', () => {
+    act(() => root.render(<SpecPage view={{ ...base, delivery: { entries: [entry], next: null } }} />));
+    expect(container.querySelectorAll('[data-testid="spec-delivery-entry"]')).toHaveLength(1);
+    expect(q('spec-delivery-link')?.getAttribute('href')).toBe(`/app/tasks/${T}`);
+    expect(q('spec-delivery-delivered')?.textContent).toContain('Built to revision 1 and delivered.');
+    expect(q('spec-delivery-standing')?.textContent).toBe('Not verified against revision 2.');
+    expect(container.querySelector('a[href="#delivery"]')).not.toBeNull();
+    expect(q('spec-delivery-more')).toBeNull();
+    // It sits in the main column, before Related, and leaves Revisions in the rail alone.
+    const main = q('spec-page-body')!.parentElement!;
+    expect(main.contains(q('spec-delivery'))).toBe(true);
+    expect(container.querySelector('aside')!.contains(q('spec-delivery'))).toBe(false);
+    expect(container.textContent).not.toContain('—');
+  });
+
+  it('opening an entry shows the criteria it answered for and their evidence (R-64)', () => {
+    act(() => root.render(<SpecPage view={{ ...base, delivery: { entries: [entry], next: 'c' } }} />));
+    expect(q('spec-delivery-criteria')).toBeNull();
+    const toggle = q('spec-delivery-entry')!.querySelector('button')!;
+    act(() => toggle.click());
+    expect(q('spec-delivery-criterion')?.textContent).toContain('Passes');
+    expect(q('spec-delivery-evidence')?.querySelector('a')?.getAttribute('href')).toBe('https://example.test/run/1');
+    expect(q('spec-delivery-more')?.getAttribute('href')).toBe(`/app/specs/${SPEC}?delivery=c#delivery`);
+  });
+});

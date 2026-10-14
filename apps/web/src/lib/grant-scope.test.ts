@@ -137,9 +137,6 @@ describe('every workspace check is judged on the session, not a bare account id'
     const allowed = new Set([
       'src/lib/ai/deps.ts: accountId',
       'src/lib/evidence-backend-access.ts: viewer.accountId',
-      // The kernel command endpoint's second check of an account the web host vouched for: the
-      // door already judged the caller's session (grant included); this only re-confirms the account.
-      'src/lib/workflow/command-api.ts: principal.id',
     ]);
     expect(offenders.filter(o => !allowed.has(o))).toEqual([]);
   });

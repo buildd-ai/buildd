@@ -7,7 +7,8 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { signRequest } from '@buildd/dispatch-contract';
-import { COMMAND_PATH, commandKeyRing, commandProblem, handleCommandRequest, requestHash, type CommandServerDeps } from './command-api';
+import { COMMAND_PATH, commandKeyRing, commandProblem, handleCommandRequest, principalKey, principalReaches, requestHash, sessionOfPrincipal, type CommandServerDeps, type KernelPrincipal, type ReachDeps } from './command-api';
+import { assertGrantedWorkspace } from '../grant-scope';
 import type { CommandLedger, LedgerRow, StoredAnswer } from './command-ledger';
 
 const WS = '11111111-1111-4111-8111-111111111111';
@@ -142,6 +143,118 @@ describe('the v1 request shape', () => {
     const res = await s.call(await signed(body({ op: 'nope' })));
     expect(res.status).toBe(400);
     expect(s.ran).toEqual([]);
+  });
+});
+
+const ACCT = '44444444-4444-4444-8444-444444444444';
+const OTHER_WS = '55555555-5555-4555-8555-555555555555';
+const grantP = (o: Record<string, unknown> = {}) => ({ kind: 'grant', id: ACCT, grantId: 'grant-1', workspaceIds: [WS], scopes: ['read', 'write'], ...o });
+
+describe('the principal carries the grant a session is confined to', () => {
+  it('a grant principal is well formed only with its grant, a uuid workspace list and its scopes', () => {
+    expect(commandProblem(body({ principal: grantP() }))).toBeNull();
+    expect(commandProblem(body({ principal: grantP({ userId: USER }) }))).toBeNull();
+    expect(commandProblem(body({ principal: grantP({ workspaceIds: [] }) }))).toBeNull();
+    for (const bad of [grantP({ grantId: '' }), grantP({ grantId: undefined }), grantP({ workspaceIds: undefined }), grantP({ workspaceIds: ['ws'] }),
+      grantP({ scopes: 'write' }), grantP({ id: 'not-a-uuid' }), grantP({ userId: 'nope' })]) {
+      expect(commandProblem(body({ principal: bad }))).toContain('principal');
+    }
+    // A plain account says it is not a grant, and cannot smuggle one in under `account`.
+    expect(commandProblem(body({ principal: { kind: 'account', id: ACCT, grant: null } }))).toBeNull();
+    expect(commandProblem(body({ principal: { kind: 'account', id: ACCT, grant: { id: 'g' } } }))).toContain('principal');
+  });
+
+  it('the ledger records a grant session by its grant', () => {
+    expect(principalKey(grantP() as KernelPrincipal)).toBe('grant:grant-1');
+    expect(principalKey({ kind: 'account', id: ACCT, grant: null })).toBe(`account:${ACCT}`);
+  });
+
+  it('the control plane rebuilds the session the web host judged', () => {
+    expect(sessionOfPrincipal(grantP() as Extract<KernelPrincipal, { kind: 'grant' }>)).toEqual({ id: ACCT, oauthGrantId: 'grant-1', grantScopes: ['read', 'write'], workspaceIds: [WS] });
+    expect(sessionOfPrincipal({ kind: 'account', id: ACCT, grant: null })).toEqual({ id: ACCT, oauthGrantId: null });
+  });
+});
+
+/** principalReaches with the team-access checks recorded: the grant arm is team-access's own first branch. */
+function reach(o: { sessionAccount?: boolean; accountReaches?: boolean } = {}) {
+  const calls: unknown[] = [];
+  const deps: ReachDeps = {
+    verifyWorkspaceAccess: async (u, w) => { calls.push(['user', u, w]); return { teamId: 't', role: 'member' }; },
+    verifyAccountWorkspaceAccess: async (acct, w, permission) => {
+      calls.push(['account', acct, w]);
+      if (acct.oauthGrantId) return assertGrantedWorkspace(acct, w, permission ? 'write' : 'read');
+      return o.accountReaches ?? true;
+    },
+    isSessionAccount: async (id) => { calls.push(['session?', id]); return o.sessionAccount ?? false; },
+  };
+  return { calls, check: (p: KernelPrincipal, w: string | null) => principalReaches(p, w, deps) };
+}
+
+describe('principalReaches applies the web host\'s rule', () => {
+  it('a grant session reaches exactly its granted workspaces, judged on the grant and never the shared account', async () => {
+    const r = reach({ accountReaches: true });
+    expect(await r.check(grantP() as KernelPrincipal, WS)).toBe(true);
+    expect(await r.check(grantP() as KernelPrincipal, OTHER_WS)).toBe(false);
+    expect(await r.check(grantP({ workspaceIds: [] }) as KernelPrincipal, WS)).toBe(false);
+    // Every kernel command is a write: a read-only grant reaches nothing here, even its own workspace.
+    expect(await r.check(grantP({ scopes: ['read'] }) as KernelPrincipal, WS)).toBe(false);
+    expect(r.calls.every((c) => (c as unknown[])[0] === 'account' && ((c as unknown[])[1] as { oauthGrantId: unknown }).oauthGrantId === 'grant-1')).toBe(true);
+  });
+
+  it('a plain account is judged on its own row, whether or not it is a team\'s session account', async () => {
+    const r = reach({ sessionAccount: true, accountReaches: true });
+    expect(await r.check({ kind: 'account', id: ACCT, grant: null }, WS)).toBe(true);
+    expect(r.calls).toEqual([['account', { id: ACCT, oauthGrantId: null }, WS]]);
+  });
+
+  it('an older host\'s account principal (no grant marker): refused for a team\'s session account, which a grant may be behind', async () => {
+    const shared = reach({ sessionAccount: true, accountReaches: true });
+    expect(await shared.check({ kind: 'account', id: ACCT }, WS)).toBe(false);
+    expect(shared.calls).toEqual([['session?', ACCT]]);
+    // Any other account (an API key) keeps working on its row.
+    const key = reach({ sessionAccount: false, accountReaches: true });
+    expect(await key.check({ kind: 'account', id: ACCT }, WS)).toBe(true);
+    expect(key.calls).toEqual([['session?', ACCT], ['account', { id: ACCT, oauthGrantId: null }, WS]]);
+  });
+
+  it('a person by membership; no workspace reaches nothing; the system always', async () => {
+    const r = reach();
+    expect(await r.check({ kind: 'user', id: USER }, WS)).toBe(true);
+    expect(r.calls).toEqual([['user', USER, WS]]);
+    expect(await r.check(grantP() as KernelPrincipal, null)).toBe(false);
+    expect(await r.check({ kind: 'system', id: 'system:auto_merge' }, WS)).toBe(true);
+  });
+
+  it('end to end: a grant-narrowed session is refused 403 for a workspace outside its grant, and nothing runs', async () => {
+    const r = reach({ accountReaches: true });
+    const s = server({ reaches: (p, w) => r.check(p, w) });
+    const outside = await s.call(await signed(body({ principal: grantP({ workspaceIds: [OTHER_WS] }), idempotencyKey: 'land:grant-out-1' })));
+    expect([outside.status, (await outside.json()).code]).toEqual([403, 'forbidden']);
+    expect(s.ran).toEqual([]);
+    const inside = await s.call(await signed(body({ principal: grantP(), idempotencyKey: 'land:grant-in-1' })));
+    expect(inside.status).toBe(200);
+    expect(s.ran).toHaveLength(1);
+  });
+});
+
+describe('mixed versions fail closed for grant sessions and keep working for everyone else', () => {
+  // The principal check of the control plane before grant principals existed, verbatim.
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const olderControlPlaneAccepts = (p: Record<string, unknown>) => {
+    const { kind, id } = p;
+    if (typeof id !== 'string' || id.length === 0 || id.length > 200) return false;
+    if (kind === 'user' || kind === 'account') return UUID.test(id);
+    return kind === 'system';
+  };
+
+  it('a newer host to an older control plane: a grant session is refused as malformed; a plain account and a person still pass', () => {
+    expect(olderControlPlaneAccepts(grantP())).toBe(false);
+    expect(olderControlPlaneAccepts({ kind: 'account', id: ACCT, grant: null })).toBe(true);
+    expect(olderControlPlaneAccepts({ kind: 'user', id: USER })).toBe(true);
+  });
+
+  it('an older host to a newer control plane: its unmarked account principal is still well formed', () => {
+    expect(commandProblem(body({ principal: { kind: 'account', id: ACCT } }))).toBeNull();
   });
 });
 
