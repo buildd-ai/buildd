@@ -27,12 +27,17 @@ const FLASH: DecisionModelRoute = { endpoint: 'systemone', model: 'clef-flash', 
 const NOW = Date.parse('2026-10-13T12:00:00Z');
 const DAY = 86_400_000;
 
-type Derived = { coverage: number; precision: number; threshold?: number; source?: 'confidence' | 'top_p' } | null;
+type Derived = {
+  coverage: number; precision: number; threshold?: number;
+  source?: 'confidence' | 'top_p' | 'margin' | 'calibrated_top_p';
+  calibration?: { x: number[]; y: number[] } | null;
+} | null;
 
 /** One comparison result row as compare-run stores it. */
 function row(model: string, via: string, derived: Derived, opts: { labelled?: number; notRun?: number; status?: 'scored' | 'no_key'; kind?: string } = {}): PromptEvalResultRow {
   const d = derived ? {
     source: derived.source ?? 'top_p', threshold: derived.threshold ?? 0.7, coverage: derived.coverage, precision: derived.precision, wilsonLower: 0.91,
+    ...(derived.calibration !== undefined ? { calibration: derived.calibration } : {}),
   } : null;
   return {
     runId: 'run-1', benchmarkSet: opts.kind ?? KIND, promptId: opts.kind ?? KIND, promptSource: 'replay', promptRowVersion: null,
@@ -40,7 +45,7 @@ function row(model: string, via: string, derived: Derived, opts: { labelled?: nu
     coverageAt90: null, accuracyAt90: null, errors: 0, notRun: opts.notRun ?? 0, costUsd: 0, caseSource: 'collected', caseOrigin: 'replay',
     metrics: {
       via, status: opts.status ?? 'scored', target: { target: 0.9, minLabelled: 50 }, labelled: opts.labelled ?? 100,
-      derived: d, thresholds: { confidence: { bar: 0.9 }, top_p: { bar: 0.9 } },
+      derived: d, thresholds: { confidence: { bar: 0.9 }, top_p: { bar: 0.9 }, margin: { bar: 0.9 }, calibrated_top_p: { bar: 0.9 } },
     },
   };
 }
@@ -130,7 +135,7 @@ function world(opts: { rows?: PromptEvalResultRow[]; optedIn?: boolean; prefligh
 
 const result = (route: DecisionModelRoute, derived: Derived, extra: Partial<ModelResult> = {}): ModelResult => ({
   route, scored: true, notRun: 0, labelled: 100,
-  derived: derived ? { source: 'top_p', threshold: 0.7, coverage: derived.coverage, precision: derived.precision, wilsonLower: 0.91 } : null,
+  derived: derived ? { source: 'top_p', threshold: 0.7, coverage: derived.coverage, precision: derived.precision, wilsonLower: 0.91, calibration: null } : null,
   bar: 0.9, ...extra,
 });
 
@@ -210,7 +215,7 @@ describe('optimizeTeam', () => {
     expect(out.status).toBe('ran');
     expect(w.compared[0]).toMatchObject({ teamId: TEAM, source: 'collected', trigger: 'manual' });
     expect(w.preflights).toEqual([CLEF]);
-    expect(w.written).toEqual([expect.objectContaining({ kind: KIND, model: 'clef', threshold: 0.65, confidenceSource: 'top_p', measuredFingerprint: 'fp-1', evalRunId: 'run-1', status: 'active' })]);
+    expect(w.written).toEqual([expect.objectContaining({ kind: KIND, model: 'clef', threshold: 0.65, confidenceSource: 'top_p', calibration: null, measuredFingerprint: 'fp-1', evalRunId: 'run-1', status: 'active' })]);
     expect(readDecisionModelOverrides(w.stored.value)[KIND]).toEqual(CLEF);
     // The team default is never touched.
     expect(readDecisionModel(w.stored.value)).toEqual({ endpoint: 'chat', model: 'acme/default-1', via: 'openrouter' });
@@ -220,6 +225,40 @@ describe('optimizeTeam', () => {
     expect(w.ledger[0]).toMatchObject({ teamId: TEAM, capability: 'decision_model_switch', subjectId: KIND, appliedAnswer: 'clef', ruleAnswer: JEV_ID });
     expect(w.ledger[0].reason).toContain('eval_run=run-1');
     expect(w.ledger[0].reason).toContain('before=0.475');
+  });
+
+  it('a winner on margin stores a margin measurement, with no calibration', async () => {
+    const w = world({ rows: [
+      row(JEV_ID, 'openrouter', { coverage: 0.5, precision: 0.95 }),
+      row('clef', 'cloudflare', { coverage: 0.85, precision: 0.96, threshold: 0.35, source: 'margin' }),
+    ] });
+    await optimizeTeam(TEAM, {}, w.deps);
+    expect(w.written).toEqual([expect.objectContaining({ model: 'clef', threshold: 0.35, confidenceSource: 'margin', calibration: null })]);
+    expect(readDecisionModelOverrides(w.stored.value)[KIND]).toEqual(CLEF);
+  });
+
+  it('a winner on calibrated top p stores its isotonic breakpoints with the measurement', async () => {
+    const calibration = { x: [0.4, 0.55, 0.9], y: [0.2, 0.6, 0.98] };
+    const w = world({ rows: [
+      row(JEV_ID, 'openrouter', { coverage: 0.5, precision: 0.95 }),
+      row('clef', 'cloudflare', { coverage: 0.85, precision: 0.96, threshold: 0.9, source: 'calibrated_top_p', calibration }),
+    ] });
+    await optimizeTeam(TEAM, {}, w.deps);
+    expect(w.written).toEqual([expect.objectContaining({ model: 'clef', threshold: 0.9, confidenceSource: 'calibrated_top_p', calibration })]);
+    expect(readDecisionModelOverrides(w.stored.value)[KIND]).toEqual(CLEF);
+  });
+
+  it('a calibrated top p result without usable breakpoints has no score, so it never wins', async () => {
+    for (const calibration of [null, { x: [0.5], y: [0.9] }, { x: [0.2, 0.8], y: [0.9, 0.1] }]) {
+      const w = world({ rows: [
+        row(JEV_ID, 'openrouter', { coverage: 0.5, precision: 0.95 }),
+        row('clef', 'cloudflare', { coverage: 0.85, precision: 0.96, threshold: 0.9, source: 'calibrated_top_p', calibration }),
+      ] });
+      const out = await optimizeTeam(TEAM, {}, w.deps);
+      expect(out.status === 'ran' && out.kinds[0]).toMatchObject({ kind: KIND, action: 'keep', reason: 'current_best' });
+      expect(w.written).toHaveLength(0);
+      expect(w.stored.value).toBeNull();
+    }
   });
 
   it('asks the current per-kind models and the default candidates', async () => {

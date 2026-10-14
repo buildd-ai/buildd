@@ -46,7 +46,14 @@ import {
   type DecisionModelKind,
   type DecisionModelRoute,
 } from '@buildd/core/decision-model';
-import { canonicalMeasuredModel, type StoredMeasurement } from '@buildd/core/decision-model-measurements';
+import {
+  CONFIDENCE_SOURCES,
+  canonicalMeasuredModel,
+  isCalibration,
+  type Calibration,
+  type ConfidenceSource,
+  type StoredMeasurement,
+} from '@buildd/core/decision-model-measurements';
 import type { DecisionLedgerInput } from '@buildd/core/decision-ledger';
 import type { ModelComparisonInput, ModelComparisonOutcome } from '../prompt-evals/compare-run';
 import type { ComparisonAbort } from '../prompt-evals/compare';
@@ -79,11 +86,37 @@ export const SWITCH_LEDGER_CAPABILITY = 'decision_model_switch';
 // ── The decision, pure ───────────────────────────────────────────────────────
 
 export interface DerivedAt {
-  source: 'confidence' | 'top_p';
+  /** The signal the threshold is compared with, as the comparison read it. */
+  source: ConfidenceSource;
   threshold: number;
   coverage: number;
   precision: number;
   wilsonLower: number;
+  /** The isotonic breakpoints a `calibrated_top_p` threshold is read through; null for any other signal. */
+  calibration: Calibration | null;
+}
+
+/**
+ * A stored comparison's `derived`, or null when it cannot be acted on: an
+ * unknown signal, or `calibrated_top_p` without breakpoints a measurement can
+ * store. Such a result has no score, so it never wins.
+ */
+export function readDerived(v: unknown): DerivedAt | null {
+  if (!v || typeof v !== 'object') return null;
+  const d = v as Record<string, unknown>;
+  if (!(CONFIDENCE_SOURCES as readonly unknown[]).includes(d.source)) return null;
+  const nums = [d.threshold, d.coverage, d.precision, d.wilsonLower];
+  if (!nums.every(n => typeof n === 'number' && Number.isFinite(n))) return null;
+  const source = d.source as ConfidenceSource;
+  if (source === 'calibrated_top_p' && !isCalibration(d.calibration)) return null;
+  return {
+    source,
+    threshold: d.threshold as number,
+    coverage: d.coverage as number,
+    precision: d.precision as number,
+    wilsonLower: d.wilsonLower as number,
+    calibration: source === 'calibrated_top_p' ? { x: [...(d.calibration as Calibration).x], y: [...(d.calibration as Calibration).y] } : null,
+  };
 }
 
 /** One model's result on one kind's collected cases. */
@@ -159,7 +192,7 @@ export function resultsFromRows(rows: readonly PromptEvalResultRow[], kind: stri
     if (!route) continue;
     const target = m.target as { minLabelled?: unknown } | undefined;
     if (typeof target?.minLabelled === 'number') minLabelled = target.minLabelled;
-    const derived = (m.derived ?? null) as DerivedAt | null;
+    const derived = readDerived(m.derived);
     const thresholds = (m.thresholds ?? {}) as Record<string, { bar?: unknown } | undefined>;
     const bar = derived ? thresholds[derived.source]?.bar : undefined;
     results.push({
@@ -334,7 +367,7 @@ export async function optimizeTeam(teamId: string, opts: OptimizeOptions, deps: 
         setByAccountId: null,
         reason: 'decision model optimizer: won the comparison on collected cases',
         confidenceSource: derived.source,
-        calibration: null,
+        calibration: derived.calibration,
         labelThresholds: null,
       });
     }

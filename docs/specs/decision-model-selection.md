@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [packages/core/decision-model.ts, apps/web/src/lib/prompt-evals/compare-run.ts, apps/web/src/lib/decision-model-optimizer/optimizer.ts, apps/web/src/app/api/cron/decision-model-optimizer/route.ts]
 related: [decision-kinds, orchestration-decisions-shadow, settings-models]
 keywords: [decision model, jev, clef, clef flash, threshold, calibration, top p, margin, wilson, comparison, replay, outcome, override, champion, challenger, optimizer, undo, signal collection]
-verified_by: [apps/web/src/lib/decision-model-optimizer/optimizer.test.ts, apps/web/src/app/api/teams/[id]/decision-model-switches/route.test.ts]
+verified_by: [apps/web/src/lib/decision-model-optimizer/optimizer.test.ts, apps/web/src/lib/prompt-evals/calibration.test.ts, apps/web/src/app/api/teams/[id]/decision-model-switches/route.test.ts]
 assertions:
   - id: decision-model-lookup
     skip_until: "2026-12-15"
@@ -62,6 +62,15 @@ and what has to be collected so the choice can be made on evidence.
   (kind, source, model): accuracy, the rule's accuracy, agreement with the
   production model, calibration per signal, the derived threshold, latency and
   cost. `runModelComparison` is the entry point.
+- **Every signal is measured.** The comparison derives a threshold on each of
+  the four signals: confidence, top p, margin, and calibrated top p. For
+  calibrated top p, the isotonic map is fitted on the graded cases, but the
+  threshold is swept on cross-fitted values (each case is mapped through the
+  map fitted on the other half), so it is never derived on the points that
+  shaped the map. The model's derived threshold is the signal that covers the
+  most cases. On a tie, confidence or top p is used before margin, and margin
+  before calibrated top p. A calibrated top p threshold always carries the
+  map it is read through.
 - **Offline challengers, not live parallel calls.** Challengers are scored on
   replays, so the live path makes one call per decision.
 - **Self-optimizing (opt-in per team).** Weekly per team (a daily cron reaches
@@ -75,7 +84,9 @@ and what has to be collected so the choice can be made on evidence.
   Ties keep the current model; a kind with too few graded cases, or whose
   current model was not asked every case, is left alone. A switch stores the
   winner's measurement (never loosening a stricter one for the same signal)
-  and changes that kind's model only, never the team default.
+  and changes that kind's model only, never the team default. The stored
+  measurement names the winner's signal and, for calibrated top p, its
+  isotonic map; a calibrated top p result with no usable map has no score.
 - **Measurements are shared across teams.** A stored threshold belongs to
   (kind, model), not to a team, so the first winning run for a model creates a
   row that every other team already using that model for that kind also acts
