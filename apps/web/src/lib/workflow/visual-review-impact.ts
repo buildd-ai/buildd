@@ -14,6 +14,7 @@
  * SHA. It is not a waiver: waivers are a person's recorded skip
  * (`loadSurfaceAuditWaiver`) and are stored and shown separately.
  */
+import type { DecisionFact } from '@buildd/workflow-kernel/decide';
 import { isRenderedSurfaceChange, isUiSurfacePath } from '@buildd/core/surface-audit';
 import {
   VISUAL_IMPACT_CONFIG,
@@ -184,8 +185,22 @@ export interface ImpactDecisionAnswer {
   source: 'rule' | 'model' | 'fallback';
 }
 
-/** The Jev port. The default goes through `runBuilddDecision` (visual-review-impact-load.ts). */
+/** The Jev port. The default goes through the kernel's `Decide` port and `decideAndRecord` (visual-review-impact-load.ts). */
 export type ImpactDecider = (features: VisualImpactFeatures) => Promise<ImpactDecisionAnswer>;
+
+/**
+ * A recorded `visual_impact` decision (the kernel's `DecisionFact`) as the
+ * classifier's answer. Only the decider's own answer is the model's; the
+ * package default carries why it was taken, so a low-confidence answer still
+ * reads as `model_low_confidence` and anything else as `model_error`.
+ */
+export function impactAnswerOf(fact: Pick<DecisionFact, 'source' | 'verdict' | 'confidence' | 'reason' | 'fallback' | 'error'>): ImpactDecisionAnswer {
+  if (fact.source === 'decider') {
+    return { decision: fact.verdict as VisualImpactDecision, confidence: fact.confidence, reasonCode: fact.reason, source: 'model' };
+  }
+  const why = fact.fallback === 'low_confidence' ? 'low_confidence' : (fact.error ?? fact.fallback ?? 'no_answer');
+  return { decision: 'review_required', confidence: fact.confidence, reasonCode: why, source: 'fallback' };
+}
 
 export interface AssessVisualImpactInput {
   policy: Pick<ResolvedVisualReviewPolicy, 'mode'>;

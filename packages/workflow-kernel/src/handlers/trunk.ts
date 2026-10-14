@@ -95,12 +95,13 @@ export function trunkHandlers(ports: KernelPorts): EffectHandlers {
       detail: { incidentId: inc.id, baseRef: inc.baseRef, signature: inc.signature, baseHeadSha: baseHead },
     });
     if (filed.skipped) return { outcome: `skipped:${filed.skipped}` };
+    // Woken before the link: once linked, a redelivery answers ok:task_exists above and never wakes it.
+    // Our own task not created was filed by a run that died before linking it, maybe before waking it;
+    // the wake coalesces while the task is pending. A fix this incident joins was woken by its own.
+    if (filed.created || taskId === inc.id) await work.wake(taskId, 'task.created');
     await trunk.linkFix(inc.id, taskId);
-    if (filed.created) {
-      await work.wake(taskId, 'task.created');
-      return { outcome: 'ok' };
-    }
-    if (taskId === inc.id) return { outcome: 'ok:task_exists' };
+    if (filed.created) return { outcome: 'ok' };
+    if (taskId === inc.id) return { outcome: 'ok:task_bound' };
     const steer = trunkSteerNote({ incidentId: inc.id, baseRef: inc.baseRef, signature: inc.signature, fixSignature: anchor?.fixSignature ?? null });
     if (steer) await work.steer(taskId, steer);
     return { outcome: 'ok:joined_open_fix' };

@@ -295,7 +295,7 @@ export function reconstructCommand(t: CorpusTransition, ctx: ReconstructCtx): Re
       const p = (effect?.payload ?? {}) as J;
       const mechanical = E.mode === 'mechanical';
       // Who sent it is recorded: a mechanical repair's own effect hands a refusal to an agent
-      // (conflict-retry-effects.ts `refusedToAgent`, always mechanicalRefused), the door never does.
+      // (the package's handlers/conflict.ts `refusedToAgent`, always mechanicalRefused), the door never does.
       // Only an actor neither says is read off the replay's ledger.
       const openMech = view.attempts.some((a: AttemptSnapshot) => a.mode === 'mechanical' && a.boundHeadSha === h && (a.status === 'queued' || a.status === 'running'));
       const refusedBy = REFUSING_EFFECTS.has(actor) ? true : actor.startsWith('door:') ? false : null;

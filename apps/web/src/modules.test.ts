@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { SUBSCRIBERS, COMPLETION_POLICIES, PR_OPENED_POLICY, workflowHostEffectHandlers, workflowKernelHooks } from './modules';
+import { SUBSCRIBERS, COMPLETION_POLICIES, PR_OPENED_POLICY, workflowKernelHooks } from './modules';
 import { workflowKernel } from './lib/workflow/kernel-ports';
 import { EFFECT_KINDS } from './lib/workflow/commands';
 import { withPrFactEffects } from './lib/workflow/pr-fact-effects';
@@ -124,32 +124,35 @@ describe('composition root', () => {
     expect(missing).toEqual([]);
   });
 
-  // Dropping the host map from the composition would ack every review/conflict cancellation and
-  // every review/conflict/migration exhaustion as skipped:no_handler in production.
-  it('the production composition hands a shared kind\'s other families to the host\'s handler', async () => {
-    const host = workflowHostEffectHandlers();
-    const saved = { cancel: host.cancel_open_attempts, escalate: host.escalate_exhaustion };
-    host.cancel_open_attempts = async (e) => ({ outcome: `host:cancel:${String(e.payload.reason)}` });
-    host.escalate_exhaustion = async (e) => ({ outcome: `host:escalate:${String(e.payload.family)}` });
-    const effect = (kind: 'cancel_open_attempts' | 'escalate_exhaustion', payload: Record<string, unknown>) => ({
-      id: 'e1', deliveryId: '00000000-0000-0000-0000-000000000001', transitionId: 't1', kind, dedupeKey: 'k', payload, attemptCount: 1, delivery: null, transition: null,
-    });
-    try {
-      const h = (await workflowKernel()).handlers;
-      expect(await h.cancel_open_attempts!(effect('cancel_open_attempts', { reason: 'approved', families: ['review_fix'] }))).toEqual({ outcome: 'host:cancel:approved' });
-      expect(await h.cancel_open_attempts!(effect('cancel_open_attempts', { reason: 'head_moved', families: ['conflict'] }))).toEqual({ outcome: 'host:cancel:head_moved' });
-      expect(await h.escalate_exhaustion!(effect('escalate_exhaustion', { family: 'conflict' }))).toEqual({ outcome: 'host:escalate:conflict' });
-      expect(await h.escalate_exhaustion!(effect('escalate_exhaustion', { family: 'review_fix' }))).toEqual({ outcome: 'host:escalate:review_fix' });
-    } finally {
-      host.cancel_open_attempts = saved.cancel;
-      host.escalate_exhaustion = saved.escalate;
-    }
+  // There is no host handler map any more: every family of a shared kind is the package's
+  // (conformance: 'handlers: every family of a shared kind reaches its own handler').
+  it('the production composition is the package\'s handlers alone, plus core\'s fact-cache projection', async () => {
+    const { KERNEL_HANDLED_EFFECTS } = await import('@buildd/workflow-kernel/handlers/index');
+    const composed = Object.keys((await workflowKernel()).handlers).sort();
+    expect(composed).toEqual([...KERNEL_HANDLED_EFFECTS].sort());
+    expect(EFFECT_KINDS.filter(k => !composed.includes(k))).toEqual(['stamp_pr_rows']);
   });
 
   // The team-notification adapter used to cast the kind unchecked; notify's routing would drop an unknown one silently.
   it('the kernel\'s team notifications refuse an alert kind notify does not know', async () => {
     const team = workflowKernelHooks().notify.team;
     await expect(team({ workspaceId: 'w', deliveryId: 'd', kind: 'needs_attention', title: 't' })).rejects.toThrow('unknown team alert kind: needs_attention');
+  });
+
+  // The seam's legacy hand-off injects its db handle and repo lookup; the hand-off port used to ignore both.
+  it('the hand-off port runs on the db handle and repo lookup the caller injected', async () => {
+    const statements: unknown[] = [];
+    const looked: string[] = [];
+    const handOff = workflowKernelHooks({
+      exec: async (q) => { statements.push(q); return { rows: [{ id: 'o1' }] }; },
+      repoFor: async (ws) => { looked.push(ws); return null; },
+    }).handOff;
+    const d = { id: 'd1', workspaceId: 'w1', ownerTaskId: 'o1', repoFullName: 'acme/widgets', prNumber: 3 } as never;
+    expect(await handOff.claim(d)).toBe(true);
+    await handOff.unclaim(d);
+    expect(statements.length).toBe(2);
+    await expect(handOff.firstReview({ d, headSha: 'H1', baseRef: 'dev', policyEvidence: null })).rejects.toThrow('no GitHub installation for the workspace');
+    expect(looked).toEqual(['w1']);
   });
 
   it('the activity render is loaded on its first render, not with the composition root', () => {

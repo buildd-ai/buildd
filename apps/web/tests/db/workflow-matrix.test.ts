@@ -4,7 +4,7 @@
  *
  * Every passing case drives the functions the routes and sweeps call (seam.ts)
  * through the real CAS statements on real Postgres, and drains the outbox
- * through the real review-loop effect handlers (review-effects.ts). Only
+ * through the real effect handlers (the package's, on buildd's ports). Only
  * GitHub and the side-effect leaves (posting a review, the PR activity
  * comment, notifications, the dispatch wake, the reviewer prompt) are faked:
  * the decisions under test are the kernel's.
@@ -1084,7 +1084,7 @@ describe('S9–S15', () => {
     await q(sql`UPDATE workflow_effects SET status = 'delivering', lease_until = now() - interval '1 second' WHERE id = ${df.id}::uuid`);
     await drain(o.deliveryId);
     [df] = await effects(o.deliveryId, 'dispatch_fix');
-    expect(df).toMatchObject({ status: 'done', outcome: 'ok:task_exists', attempt_count: 3 });
+    expect(df).toMatchObject({ status: 'done', outcome: 'ok:task_rewoken', attempt_count: 3 });
     expect((await tasksOf(o.deliveryId, 'fix')).length).toBe(1);
     expect((await loadView({ deliveryId: o.deliveryId })).attempts.length).toBe(1);
   });

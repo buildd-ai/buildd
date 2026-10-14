@@ -2,8 +2,8 @@
  * buildd's adapters for the kernel's ports (docs/specs/workflow-kernel-library.md
  * §2), and `builddKernelPorts`, which composes them into the `KernelPorts` the
  * package's effect handlers run on. Composed once, at the composition root
- * (`workflowKernelHooks()` and `workflowHostEffectHandlers()` in
- * apps/web/src/modules.ts fill it; `workflowKernel()` below composes it).
+ * (`workflowKernelHooks()` in apps/web/src/modules.ts fills it;
+ * `workflowKernel()` below composes it).
  *
  * The core halves live here: the Postgres store, GitHub per workspace (its
  * installation's live reads plus `GithubWrites` over `@/lib/github`), the
@@ -12,9 +12,11 @@
  * `wakeTask`). The module halves are handed in as hooks, so this core file
  * imports no module (scripts/module-boundaries.test.ts): how a merge answer
  * reads as T16 and the activity render (reviews), the supersession and
- * post-merge work (reviews, missions), team notifications, and per role the
- * shape of the task `Work` files (the CI fix, the trunk fix), the CI job-log
- * capture and the CI hand-off to a person (reviews).
+ * post-merge work (reviews, missions), team notifications, per role the shape
+ * of the task `Work` files (reviewer, review fix, CI fix, conflict fix, trunk
+ * fix), the review loop's and conflict families' host halves, legacy's first
+ * review, the CI job-log capture, each family's hand-off to a person, and the
+ * decision layer (`Decide`).
  */
 import { and, eq, ne, sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
@@ -24,7 +26,8 @@ import { TERMINAL_WORKER_STATUSES } from '@buildd/shared';
 import type { EffectHandlers } from '@buildd/workflow-kernel/effects';
 import { kernelEffectHandlers } from '@buildd/workflow-kernel/handlers/index';
 import type {
-  Escalate, Evidence, GithubFacts, GithubWrites, Ingest, KernelPorts, Lifecycle, MergeAnswer, Notify, Trunk, Work, WorkRequest,
+  Conflicts, Decide, Escalate, Evidence, GithubFacts, GithubWrites, HandOff, Ingest, KernelPorts, Lifecycle, MergeAnswer, Notify, Policy, Reviews, Trunk,
+  Work, WorkFiled, WorkRequest,
 } from '@buildd/workflow-kernel/ports';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { queueSystemInstruction } from '@/lib/system-instruction-queue';
@@ -34,6 +37,7 @@ import { githubReader, workspaceRepo } from './github-facts';
 import type { Exec } from './kernel';
 import { postgresStore } from './postgres-store';
 import { builddTrunk } from './trunk';
+import { builddPolicy } from './kernel-policy';
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
@@ -64,10 +68,13 @@ export function builddGithubWrites(installationId: number, mergeAnswerOf: MergeA
         const r = (await api(installationId, `/repos/${p.repoFullName}/pulls/${p.prNumber}/reviews`, {
           method: 'POST', ...json({ commit_id: p.commitId, event: 'COMMENT', body: p.body }),
         })) as { id?: number } | null;
-        return { id: r?.id != null ? String(r.id) : null };
+        return { id: r?.id != null ? String(r.id) : null, posted: true };
       }
       const r = await review({ installationId, repoFullName: p.repoFullName, prNumber: p.prNumber, headSha: p.commitId, event: p.event, body: p.body });
-      return { id: r.reviewId != null ? String(r.reviewId) : null };
+      return {
+        id: r.reviewId != null ? String(r.reviewId) : null, posted: r.posted,
+        ...(r.reason ? { reason: r.reason } : {}), ...(r.commentedOwnPr ? { commentedOwnPr: true } : {}),
+      };
     },
     async publishStatus(p) {
       await api(installationId, `/repos/${p.repoFullName}/statuses/${p.sha}`, {
@@ -144,8 +151,12 @@ export interface WorkBuilt {
   afterFile?: (row: { id: string; title: string }) => Promise<void>;
 }
 
-/** A role's half of `Work`: the task the kernel asked for, as buildd files it; or why it cannot be filed now. */
-export type WorkBuilder = (req: WorkRequest) => Promise<WorkBuilt | { skipped: string }>;
+/**
+ * A role's half of `Work`: the task the kernel asked for, as buildd files it;
+ * or why it cannot be filed now; or, for a role whose own creation path keeps
+ * its own dedupe (the reviewer), what that path filed.
+ */
+export type WorkBuilder = (req: WorkRequest) => Promise<WorkBuilt | { skipped: string } | { filed: WorkFiled }>;
 export type WorkBuilders = Record<string, WorkBuilder>;
 
 /** Pending tasks of a delivery's role, cancelled as skipped (all but `keepTaskId`). */
@@ -185,15 +196,19 @@ export function builddWork(builders: WorkBuilders, exec: Exec = dbExec): Work {
       if (!build) throw new Error(`no task builder for role ${req.role}`);
       const b = await build(req);
       if ('skipped' in b) return { taskId: null, created: false, skipped: b.skipped };
+      if ('filed' in b) return b.filed;
       const taskId = req.taskId;
       if (!taskId) throw new Error(`a ${req.role} task is filed under the kernel's id`);
       const [row] = await db.insert(tasks).values({ id: taskId, ...b.values } as never).onConflictDoNothing().returning();
       if (!row) {
-        if (b.refused) {
-          const existing = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { id: true } });
-          if (!existing) throw new Error(b.refused);
+        const existing = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)) });
+        if (!existing && b.refused) throw new Error(b.refused);
+        // Filed before (a run that crashed before the kernel bound it, maybe before it announced it):
+        // still owed what the filing owes. The announcement only refreshes the dashboard, so a task
+        // nobody has picked up yet is announced again rather than risk never being announced.
+        if (existing?.status === 'pending') {
+          await announceTaskCreated(existing as never, (b.workspace ?? await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, req.workspaceId)) })) as never);
         }
-        // Filed before (a run that crashed before the kernel bound it): still owed what the filing owes.
         return { taskId, created: false, ...(b.variant ? { variant: b.variant } : {}), ...(b.evidence ? { evidence: b.evidence } : {}) };
       }
       const workspace = b.workspace ?? await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, req.workspaceId)) });
@@ -219,19 +234,27 @@ export interface BuilddKernelHooks {
   mergeAnswerOf: MergeAnswerOf;
   notify: Notify;
   lifecycle: Lifecycle;
-  /** Per role, the task `Work` files (`ci_fix`, `trunk_fix`). */
+  /** Per role, the task `Work` files (`review`, `fix`, `ci_fix`, `conflict_fix`, `trunk_fix`). */
   work: WorkBuilders;
   escalate: Escalate;
   evidence: Evidence;
+  reviews: Reviews;
+  conflicts: Conflicts;
+  handOff: HandOff;
+  /** buildd's decision layer at the kernel's decision points. */
+  decide: Decide;
 }
 
 /** The ports the package's effect handlers run on in buildd. */
-export function builddKernelPorts(hooks: BuilddKernelHooks, opts: { exec?: Exec; githubFor?: (workspaceId: string) => Promise<GithubFacts | null>; trunk?: Trunk } = {}): KernelPorts {
+export function builddKernelPorts(hooks: BuilddKernelHooks, opts: {
+  exec?: Exec; githubFor?: (workspaceId: string) => Promise<GithubFacts | null>; trunk?: Trunk; policy?: Policy;
+} = {}): KernelPorts {
   const exec = opts.exec ?? dbExec;
   return {
     store: postgresStore(exec),
     githubFor: opts.githubFor ?? builddGithubFor(hooks.mergeAnswerOf),
     clock: { now: () => new Date().toISOString() },
+    policy: opts.policy ?? builddPolicy(exec),
     ingest: builddIngest(exec),
     notify: hooks.notify,
     lifecycle: hooks.lifecycle,
@@ -239,6 +262,10 @@ export function builddKernelPorts(hooks: BuilddKernelHooks, opts: { exec?: Exec;
     trunk: opts.trunk ?? builddTrunk(exec),
     escalate: hooks.escalate,
     evidence: hooks.evidence,
+    reviews: hooks.reviews,
+    conflicts: hooks.conflicts,
+    handOff: hooks.handOff,
+    decide: hooks.decide,
   };
 }
 
@@ -246,7 +273,7 @@ export function builddKernelPorts(hooks: BuilddKernelHooks, opts: { exec?: Exec;
 
 export interface WorkflowKernel {
   ports: KernelPorts;
-  /** Every effect kind's handler: the package's over `ports`, then the families still in apps/web. */
+  /** Every effect kind's handler: the package's, over `ports`. */
   handlers: EffectHandlers;
 }
 
@@ -254,14 +281,12 @@ let composed: WorkflowKernel | null = null;
 
 /**
  * The kernel as buildd runs it, composed on first use from the composition
- * root's slots (`workflowKernelHooks`, `workflowHostEffectHandlers` in
- * apps/web/src/modules.ts). Lazy, so loading a kernel module does not load
- * every module.
+ * root's `workflowKernelHooks` slot (apps/web/src/modules.ts). Lazy, so
+ * loading a kernel module does not load every module.
  */
 export async function workflowKernel(): Promise<WorkflowKernel> {
   if (composed) return composed;
   const m = await import('@/modules');
   const ports = builddKernelPorts(m.workflowKernelHooks());
-  const host = m.workflowHostEffectHandlers();
-  return (composed = { ports, handlers: { ...host, ...kernelEffectHandlers(ports, host) } });
+  return (composed = { ports, handlers: kernelEffectHandlers(ports) });
 }
