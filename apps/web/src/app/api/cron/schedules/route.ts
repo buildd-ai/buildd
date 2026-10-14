@@ -2,7 +2,7 @@ import { OPEN_TASK_STATUSES } from '@buildd/shared';
 import { withoutLandingOverrideGrant } from '@/lib/landing-override-grant';
 import { withoutPrReachGrant } from '@/lib/pr-reach-grant';
 import { withoutReviewDispatchContext } from '@/lib/verdict-provenance';
-import { withoutMissionVerificationMarkers } from '@/lib/specs/mission-markers';
+import { withoutMissionVerificationMarkers } from '@/lib/server-context-markers';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
 import { taskSchedules, tasks, workspaces, missions, workers, accounts, accountWorkspaces } from '@buildd/core/db/schema';
