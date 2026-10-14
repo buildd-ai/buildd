@@ -91,6 +91,15 @@ describe('stripAnsi', () => {
 });
 
 describe('captureCiJobLogEvidence', () => {
+  it('a caller-named object keeps its name, so a retried capture overwrites the same object', async () => {
+    await captureCiJobLogEvidence({ ...input, objectName: 'retry-task-777' }, deps());
+    await captureCiJobLogEvidence({ ...input, objectName: 'retry-task-777' }, deps());
+    expect(puts.map((p: { Key: string }) => p.Key)).toEqual([
+      'evidence/ws-1/root-task/retry-task/worker-1/ci_job_log/retry-task-777.log.gz',
+      'evidence/ws-1/root-task/retry-task/worker-1/ci_job_log/retry-task-777.log.gz',
+    ]);
+  });
+
   it('writes one gzipped object through the resolved backend under the evidence key', async () => {
     const res = await captureCiJobLogEvidence(input, deps());
     expect(res.status).toBe('stored');
