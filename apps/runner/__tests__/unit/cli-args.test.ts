@@ -58,6 +58,30 @@ describe('classifyCliArgs', () => {
     expect(classifyCliArgs(argv('--once', '--task', 't1', 'stray'))).toEqual({ kind: 'unknown', arg: 'stray' });
   });
 
+  test('`name` is answered before the runner starts, with its words as the name', () => {
+    expect(classifyCliArgs(argv('name'))).toEqual({ kind: 'name', args: [] });
+    expect(classifyCliArgs(argv('name', 'atlas'))).toEqual({ kind: 'name', args: ['atlas'] });
+    expect(classifyCliArgs(argv('name', 'quill', 'studio'))).toEqual({ kind: 'name', args: ['quill', 'studio'] });
+    expect(classifyCliArgs(argv('name', '--clear'))).toEqual({ kind: 'name', args: ['--clear'] });
+  });
+
+  test('`name` rejects any other flag', () => {
+    expect(classifyCliArgs(argv('name', '--debug'))).toEqual({ kind: 'unknown', arg: '--debug' });
+  });
+
+  test('`name` only counts as the leading word', () => {
+    expect(classifyCliArgs(argv('--debug', 'name'))).toEqual({ kind: 'unknown', arg: 'name' });
+  });
+
+  test('`name --help` is help', () => {
+    expect(classifyCliArgs(argv('name', '--help'))).toEqual({ kind: 'help' });
+  });
+
+  test('usage lists buildd name', () => {
+    expect(RUNNER_USAGE).toContain('buildd name');
+    expect(RUNNER_USAGE).toContain('BUILDD_RUNNER_NAME');
+  });
+
   test('usage names help, login, service and the flags', () => {
     for (const s of ['buildd login', 'buildd service', '--debug', '--foreground', '--once', '--version', '--help']) {
       expect(RUNNER_USAGE).toContain(s);
@@ -72,5 +96,26 @@ describe('classifyCliArgs', () => {
 
   test('usage exit code is the sysexits usage code', () => {
     expect(EXIT_CLI_USAGE).toBe(64);
+  });
+});
+
+describe('buildd top', () => {
+  test('top on its own', () => {
+    expect(classifyCliArgs(argv('top'))).toEqual({ kind: 'top', missionId: null });
+  });
+  test('--mission <id> and --mission=<id>', () => {
+    expect(classifyCliArgs(argv('top', '--mission', 'abc123'))).toEqual({ kind: 'top', missionId: 'abc123' });
+    expect(classifyCliArgs(argv('top', '--mission=abc123'))).toEqual({ kind: 'top', missionId: 'abc123' });
+  });
+  test('anything else after top is refused, not ignored', () => {
+    expect(classifyCliArgs(argv('top', '--debug'))).toEqual({ kind: 'unknown', arg: '--debug' });
+    expect(classifyCliArgs(argv('top', '--mission'))).toEqual({ kind: 'unknown', arg: '--mission' });
+    expect(classifyCliArgs(argv('top', 'extra'))).toEqual({ kind: 'unknown', arg: 'extra' });
+  });
+  test('--mission is not a runner flag', () => {
+    expect(classifyCliArgs(argv('--mission', 'x'))).toEqual({ kind: 'unknown', arg: '--mission' });
+  });
+  test('help lists top', () => {
+    expect(RUNNER_USAGE).toMatch(/^ {2}buildd top {2,}\S/m);
   });
 });

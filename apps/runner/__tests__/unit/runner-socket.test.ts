@@ -152,10 +152,10 @@ describe('decideStart', () => {
     expect(decideStart({ probe: { state: 'stale' }, isTTY: false, foreground: true })).toEqual({ action: 'start' });
   });
 
-  test('in a terminal: starts nothing, names buildd top, exits 0', () => {
+  test('in a terminal: starts nothing and attaches buildd top (R-12)', () => {
     expect(decideStart({ probe: live, isTTY: true, foreground: false })).toEqual({
-      action: 'exit', code: 0, stream: 'stdout',
-      message: 'The background runner is already running (pid 77). Watch it with: buildd top',
+      action: 'attach',
+      message: 'The background runner is already running (pid 77). This is buildd top, watching it; q leaves it running.',
     });
   });
 
@@ -190,6 +190,11 @@ describe('decideStart', () => {
   test('decideStart names the socket when the live runner gave no pid', () => {
     const d = decideStart({ probe: { state: 'live', pid: null, version: null }, isTTY: false, foreground: false, socketPath: '/s.sock' });
     expect(d).toMatchObject({ action: 'exit', message: alreadyRunningMessage(null, '/s.sock') });
+  });
+
+  test('in a terminal, a runner that never answered is named, not attached (top would show nothing)', () => {
+    const d = decideStart({ probe: { state: 'live', pid: null, version: null }, isTTY: true, foreground: false, socketPath: '/s.sock' });
+    expect(d).toEqual({ action: 'exit', code: EXIT_ALREADY_RUNNING, stream: 'stderr', message: alreadyRunningMessage(null, '/s.sock') });
   });
 });
 

@@ -117,3 +117,23 @@ describe('a not-logged-in headless buildd', () => {
     expect(elseBranch).not.toContain('--debug');
   });
 });
+
+describe('with the background service installed (spec c7410e76 R-14, AC-5)', () => {
+  for (const loggedIn of [true, false]) {
+    test(`${loggedIn ? 'logged in' : 'not logged in'}: names buildd top, then buildd web`, () => {
+      const out = nextSteps({ loggedIn, service: true });
+      const top = out.indexOf('  buildd top ');
+      const web = out.indexOf('  buildd web ');
+      expect(top).toBeGreaterThan(out.indexOf('Next:'));
+      expect(web).toBeGreaterThan(top);
+    });
+  }
+
+  test('a foreground install does not offer buildd top as the next step', () => {
+    expect(nextSteps({ loggedIn: true, service: false })).not.toContain('  buildd top ');
+  });
+
+  test('the service install the installer runs leaves the watch lines to the Next block', () => {
+    expect(installSh).toMatch(/BUILDD_INSTALLER=1 "\$BIN_DIR\/buildd" service install/);
+  });
+});
