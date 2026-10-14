@@ -27,6 +27,7 @@ import { lockScroll } from '@/components/BottomSheet';
 import { Kbd } from '@/components/KeyHints';
 import { findScrollRoot } from '@/lib/scroll-root';
 import { useHideNeedsInputBanner } from '@/lib/needs-input-hidden';
+import { useAskButtonHidden } from '@/lib/ask-button-hidden';
 import { askAboutHref, conversationHref, type ChatAbout } from '@/lib/chat/entry-points';
 import { canvasPresentation, canvasScopeFromPath, isCanvasToggle, showsAskButton, type CanvasScope } from '@/lib/chat/canvas-scope';
 import { COMPOSER_INPUT_ID } from './ChatEntry';
@@ -163,7 +164,9 @@ export function ChatCanvasProvider({ available, teamId, workspaces, viewerName, 
 
   const entry = { intent: null, about: scope.about, workspaceId: scope.workspaceId };
   const fullChatHref = conversationId ? conversationHref(conversationId, entry) : scope.about ? askAboutHref(scope.about, scope.workspaceId) : '/app/chat';
-  const showFab = enabled && !isOpen && showsAskButton(pathname, true);
+  // A page can hold this corner for its own primary action (lib/ask-button-hidden.ts).
+  const askHeld = useAskButtonHidden();
+  const showFab = enabled && !isOpen && !askHeld && showsAskButton(pathname, true);
   // Asked about the page you're on: the page behind already is the object.
   const aboutIsPage = !!scope.about && scopeKey(canvasScopeFromPath(pathname)) === scopeKey(scope);
 

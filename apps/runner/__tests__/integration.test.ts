@@ -106,8 +106,8 @@ let originalServer: string | null = null;
 beforeAll(async () => {
   // Verify server is running
   try {
-    const config = await api<{ configured: boolean; hasClaudeCredentials: boolean; builddServer?: string }>('/api/config');
-    if (!config.hasClaudeCredentials) {
+    const config = await api<{ configured: boolean; modelAuthSource?: string; builddServer?: string }>('/api/config');
+    if (!config.modelAuthSource || config.modelAuthSource === 'none') {
       throw new Error('No Claude credentials configured');
     }
 
@@ -173,7 +173,9 @@ describe('Local-UI Integration', () => {
       const config = await api('/api/config');
 
       expect(config.configured).toBe(true);
-      expect(config.hasClaudeCredentials).toBe(true);
+      expect(config.modelAuthSource).toBeDefined();
+      expect(config.modelAuthSource).not.toBe('none');
+      expect('hasClaudeCredentials' in config).toBe(false);
     });
 
     test('workspaces are available', async () => {

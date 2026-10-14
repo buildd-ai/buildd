@@ -39,6 +39,22 @@ export function claudeCostBasis(
   return 'unknown';
 }
 
+/**
+ * Which kind of login a parsed Codex `auth.json` holds, in the order the Codex
+ * backend resolves it: an API key under `tokens`, a ChatGPT login
+ * (`tokens.access_token`), then a top-level API key. Null when it holds
+ * neither. Shared by the cost basis and the runner's Codex auth label
+ * (host-seat.ts detectCodexAuthSource); never returns a value.
+ */
+export function codexAuthJsonKind(auth: Record<string, unknown> | null | undefined): 'api_key' | 'chatgpt' | null {
+  if (!auth || typeof auth !== 'object') return null;
+  const tokens = (auth.tokens && typeof auth.tokens === 'object' ? auth.tokens : auth) as Record<string, unknown>;
+  if (set(tokens.api_key as string) || set(tokens.apiKey as string)) return 'api_key';
+  if (set(tokens.access_token as string)) return 'chatgpt';
+  if (set(auth.api_key as string) || set(auth.apiKey as string) || set(auth.OPENAI_API_KEY as string)) return 'api_key';
+  return null;
+}
+
 /** A Codex run, in the order the Codex backend resolves auth (codex-backend.ts `resolveAuth`). */
 export function codexCostBasis(input: {
   teamEndpoint: boolean;
@@ -47,13 +63,9 @@ export function codexCostBasis(input: {
   envApiKey?: string;
 }): RunnerCostBasis {
   if (input.teamEndpoint) return 'real';
-  const auth = input.authJson;
-  if (auth) {
-    const tokens = (auth.tokens && typeof auth.tokens === 'object' ? auth.tokens : auth) as Record<string, unknown>;
-    if (set(tokens.api_key as string) || set(tokens.apiKey as string)) return 'real';
-    if (set(tokens.access_token as string)) return 'virtual';
-    if (set(auth.api_key as string) || set(auth.apiKey as string) || set(auth.OPENAI_API_KEY as string)) return 'real';
-  }
+  const kind = codexAuthJsonKind(input.authJson);
+  if (kind === 'api_key') return 'real';
+  if (kind === 'chatgpt') return 'virtual';
   if (set(input.envApiKey)) return 'real';
   return 'unknown';
 }
