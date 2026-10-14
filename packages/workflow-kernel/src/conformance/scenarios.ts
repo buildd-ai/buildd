@@ -808,6 +808,23 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
+    name: 'buildd/landing: a drain holding an older read is never the last write (newest wins across drains)',
+    async run(host) {
+      const s = await new Delivery(host, 40).open();
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'under review');
+      const f = fakePorts(host);
+      let moved = false;
+      // While this drain publishes "review pending", the review approves (another drain's version).
+      f.github.onStatus = async () => { if (moved) return; moved = true; applied(await s.verdict('approve'), 'APPROVED', 'approved mid-publish'); };
+      const h = kernelEffectHandlers(f.ports);
+      const rows = (await host.effects(s.deliveryId)).filter((e) => e.kind === 'publish_landing_status');
+      const mine = rows.at(-1)!;
+      await h.publish_landing_status!({ ...(await direct(host, s, 'publish_landing_status')), payload: mine.payload, dedupeKey: mine.dedupeKey });
+      const last = f.github.written.filter((w) => w.op === 'publishStatus').at(-1)!;
+      eq({ sha: last.sha, state: last.state }, { sha: 'H1', state: 'success' }, 'the newer answer is the last write');
+    },
+  },
+  {
     name: 'buildd/landing: an effect that runs out of retries never leaves a success it could not re-confirm',
     async run(host) {
       const s = await (await new Delivery(host, 30).open()).approvedAt('H1');

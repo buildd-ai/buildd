@@ -132,6 +132,8 @@ export class FakeGithub implements GithubFacts {
   readonly merges: Array<{ repoFullName: string; prNumber: number; headSha: string; method?: string }> = [];
   readonly written: Array<{ op: string; [k: string]: unknown }> = [];
   mergeAnswer: MergeAnswer = { outcome: 'merged', detail: 'Pull Request successfully merged' };
+  /** Runs inside each status write, after it is recorded: a test moves the delivery on mid-publish with it. */
+  onStatus?: (p: { sha: string; state: string }) => Promise<void>;
   /** Runs inside each merge call, after it is recorded: a test moves the PR on under the call with it. */
   onMerge?: (p: { repoFullName: string; prNumber: number; headSha: string }) => void;
   /** What a posted review answers; absent = posted. */
@@ -176,7 +178,7 @@ export class FakeGithub implements GithubFacts {
       return { ...this.mergeAnswer };
     },
     postReview: async (p) => { this.written.push({ op: 'postReview', ...p }); return { ...this.reviewAnswer }; },
-    publishStatus: async (p) => { this.written.push({ op: 'publishStatus', ...p }); },
+    publishStatus: async (p) => { this.written.push({ op: 'publishStatus', ...p }); await this.onStatus?.(p); },
     upsertComment: async (p) => { this.written.push({ op: 'upsertComment', ...p }); return { id: null }; },
     deleteBranch: async (p) => { this.written.push({ op: 'deleteBranch', ...p }); },
   };
