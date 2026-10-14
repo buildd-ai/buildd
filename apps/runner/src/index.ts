@@ -29,6 +29,7 @@ import { emitHeartbeatTick } from './heartbeat-log';
 import { sweepStaleSessionPromptFiles } from './session-prompt-files';
 import { heartbeatState, withClaimHealthCheck } from './claim-budget-signals';
 import { authorizeLocalRequest, escapeHtml, injectLocalToken, isLoopbackAddress, loadOrCreateLocalToken, resolveBindHost } from './local-server-auth';
+import { terminalPalette } from './terminal-palette';
 import { checkSingleInstance, decideStart, probeRunnerSocket, matchWorkerAction, relayWorkerAction, runnerSocketPath, serveRunnerSocket, type RunnerIdentity, type RunnerSocketServer } from './runner-socket';
 
 const PORT = parseInt(process.env.PORT || '8766');
@@ -50,6 +51,17 @@ if (CLI.kind === 'help') {
 if (CLI.kind === 'unknown') {
   console.error(`Unknown argument: ${CLI.arg}\n\n${RUNNER_USAGE}`);
   process.exit(EXIT_CLI_USAGE);
+}
+
+// `buildd name [<name>|--clear]`: read or set the display name, then exit. It
+// never starts a runner; a running one picks the new name up on its next
+// heartbeat (runner-name.ts).
+if (CLI.kind === 'name') {
+  const { runNameCommand } = await import('./runner-name');
+  const r = runNameCommand(CLI.args, { configFile: CONFIG_FILE });
+  if (r.stdout) console.log(r.stdout);
+  if (r.stderr) console.error(r.stderr);
+  process.exit(r.code);
 }
 
 // --version: print and exit. Deliberately after every static import above, so a
@@ -161,12 +173,25 @@ function exitAlreadyRunning(decision: { code: number; message: string; stream: '
   process.exit(decision.code);
 }
 
+/** Open `buildd top` on the runner holding the socket, then exit with its code. */
+async function attachTop(missionId: string | null, notice?: string): Promise<never> {
+  const { runTop } = await import('./top/run');
+  process.exit(await runTop({ socketPath: RUNNER_SOCKET, missionId, notice }));
+}
+
+// `buildd top`: watch the runner already running on this machine. Never starts one.
+if (CLI.kind === 'top') {
+  await attachTop(CLI.missionId);
+}
+
 let runnerSocket: RunnerSocketServer | null = null;
 if (ONCE_TASK_ID === null) {
   const foreground = process.argv.includes('--foreground');
-  const isTTY = !!process.stdout.isTTY;
+  // `top` needs both ends of the terminal (raw keys in, frames out).
+  const isTTY = !!process.stdout.isTTY && !!process.stdin.isTTY;
   const { decision } = await checkSingleInstance({ socketPath: RUNNER_SOCKET, isTTY, foreground, log: (m) => console.log(m) });
   if (decision.action === 'exit') exitAlreadyRunning(decision);
+  if (decision.action === 'attach') await attachTop(null, decision.message);
   try {
     mkdirSync(BUILDD_DIR, { recursive: true });
     runnerSocket = serveRunnerSocket(RUNNER_SOCKET, (req) => {
@@ -180,6 +205,7 @@ if (ONCE_TASK_ID === null) {
     // serveRunnerSocket never unlinks an existing file, so the bind fails here
     // rather than stealing the other runner's socket.
     const again = decideStart({ probe: await probeRunnerSocket(RUNNER_SOCKET), isTTY, foreground, socketPath: RUNNER_SOCKET });
+    if (again.action === 'attach') await attachTop(null, again.message);
     if (again.action === 'exit') exitAlreadyRunning(again);
     console.warn(`[runner-socket] could not serve ${RUNNER_SOCKET} (${err?.message ?? err}); continuing without it — buildd top will not find this runner`);
   }
@@ -2724,33 +2750,31 @@ const localUrl = `http://localhost:${PORT}`;
 
 // ── Startup banner ──────────────────────────────────────────────────────────
 
-const DIM = '\x1b[2m';
-const RESET = '\x1b[0m';
-const BOLD = '\x1b[1m';
-const AMBER = '\x1b[38;2;200;149;106m';   // warm charcoal accent #c8956a
-const WARM = '\x1b[38;2;138;132;128m';     // muted warm gray
-const GREEN = '\x1b[38;2;52;211;153m';     // status-success
-const RED = '\x1b[38;2;248;113;113m';      // status-error
+// Colours come from the shared terminal palette (terminal-palette.ts): the
+// wordmark in the one accent, meta in muted, ok/err in the status tokens.
+// NO_COLOR or a non-TTY drops them all.
+const PAL = terminalPalette();
+// Meta text is muted; --faint is for rules only, never text.
+const DIM = PAL.fgCode('muted');
+const RESET = PAL.reset;
+const BOLD = PAL.depth === 'none' ? '' : '\x1b[1m';
+const AMBER = PAL.fgCode('accent');
+const WARM = PAL.fgCode('muted');
+const GREEN = PAL.fgCode('success');
+const RED = PAL.fgCode('error');
 
 const commitShort = updateState.currentCommit ? updateState.currentCommit.slice(0, 7) : '';
 
-// Amber gradient hero — each line subtly shifts warmth
-const A1 = '\x1b[38;2;210;160;110m';
-const A2 = '\x1b[38;2;200;149;106m';
-const A3 = '\x1b[38;2;185;138;100m';
-const A4 = '\x1b[38;2;168;126;92m';
-const A5 = '\x1b[38;2;148;112;82m';
-
 console.log('');
-console.log(`${A1}   ██████╗  ██╗   ██╗ ██╗ ██╗     ██████╗  ██████╗ ${RESET}`);
-console.log(`${A2}   ██╔══██╗ ██║   ██║ ██║ ██║     ██╔══██╗ ██╔══██╗${RESET}`);
-console.log(`${A3}   ██████╔╝ ██║   ██║ ██║ ██║     ██║  ██║ ██║  ██║${RESET}`);
-console.log(`${A4}   ██╔══██╗ ██║   ██║ ██║ ██║     ██║  ██║ ██║  ██║${RESET}`);
-console.log(`${A5}   ██████╔╝ ╚██████╔╝ ██║ ███████╗██████╔╝ ██████╔╝${RESET}`);
-console.log(`${DIM}   ╚═════╝   ╚═════╝  ╚═╝ ╚══════╝╚═════╝  ╚═════╝ ${RESET}`);
+console.log(`${AMBER}   ██████╗  ██╗   ██╗ ██╗ ██╗     ██████╗  ██████╗ ${RESET}`);
+console.log(`${AMBER}   ██╔══██╗ ██║   ██║ ██║ ██║     ██╔══██╗ ██╔══██╗${RESET}`);
+console.log(`${AMBER}   ██████╔╝ ██║   ██║ ██║ ██║     ██║  ██║ ██║  ██║${RESET}`);
+console.log(`${AMBER}   ██╔══██╗ ██║   ██║ ██║ ██║     ██║  ██║ ██║  ██║${RESET}`);
+console.log(`${AMBER}   ██████╔╝ ╚██████╔╝ ██║ ███████╗██████╔╝ ██████╔╝${RESET}`);
+console.log(`${AMBER}   ╚═════╝   ╚═════╝  ╚═╝ ╚══════╝╚═════╝  ╚═════╝ ${RESET}`);
 console.log('');
 console.log(`   ${WARM}runner${RESET} ${DIM}v${PKG_VERSION}${commitShort ? ` · ${commitShort}` : ''}${RESET}`);
-console.log(`${DIM}   ${'─'.repeat(48)}${RESET}`);
+console.log(`${PAL.fgCode('faint')}   ${'─'.repeat(48)}${RESET}`);
 
 // Status lines
 const modeLabel = DEBUG_MODE ? `${AMBER}debug${RESET}` : `${GREEN}headless${RESET}`;

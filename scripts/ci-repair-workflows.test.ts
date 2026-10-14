@@ -73,3 +73,17 @@ describe('ci-fix.yml: gh calls in jobs with no checkout can resolve the repo', (
     }
   });
 });
+
+describe('ci-fix.yml: a failed job name never becomes shell code', () => {
+  const parsed = parsedWorkflow('.github/workflows/ci-fix.yml');
+
+  // Job names carry spaces and parentheses ("build · unit tests (2/3)"). A
+  // `${{ ... failed_job }}` pasted into a run block is a bash syntax error at
+  // best (the infra auto-retry died on exactly that) and code at worst. Pass it
+  // through env and read it as a quoted variable.
+  it('reads failed_job only through env, never interpolated into run', () => {
+    for (const step of allSteps(parsed)) {
+      expect(String(step?.run ?? ''), String(step?.name)).not.toMatch(/\$\{\{[^}]*failed_job[^}]*\}\}/);
+    }
+  });
+});

@@ -621,6 +621,12 @@ export interface BuilddTask {
   mission?: {
     workingBranch?: string | null;
     integrationBranchEnabled?: boolean | null;
+    /** Task list (GET /api/tasks) only: what `buildd top` shows and why a task waits. */
+    id?: string;
+    title?: string;
+    isHeld?: boolean;
+    executor?: 'runner' | 'local';
+    taskCounts?: { done: number; total: number };
   } | null;
   // Role slug this task is routed to (e.g. "builder", "researcher") — drives
   // role-scoped runner behaviour such as pr-mutation-enforcement.ts.

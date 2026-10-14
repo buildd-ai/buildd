@@ -18,6 +18,8 @@ export const RUNNER_USAGE = [
   '',
   'Commands:',
   '  buildd                     Start the runner in the foreground',
+  '  buildd top                 Watch the runner on this machine and act on its work',
+  '                             (--mission <id> opens on one mission)',
   '  buildd login [--device]    Sign in and save an API key to ~/.buildd/config.json',
   '  buildd logout              Remove the saved API key',
   '  buildd status              Show whether you are signed in',
@@ -33,6 +35,8 @@ export const RUNNER_USAGE = [
   '                             not as you (for a shared or remote machine)',
   '  buildd install [--global] --status|--uninstall   Inspect or remove those hooks',
   '  buildd env verify [--json] Check that the current repo is runnable',
+  '  buildd name [<name>]       Name this runner on the dashboard (the hostname by default);',
+  '                             with no name, print it and where it comes from. --clear removes it',
   '  buildd help                Show this help',
   '',
   'Options:',
@@ -44,7 +48,7 @@ export const RUNNER_USAGE = [
   '  -h, --help                 Show this help',
   '',
   'Configuration comes from ~/.buildd/config.json and variables exported in your',
-  'shell or service (BUILDD_API_KEY, BUILDD_SERVER, PROJECTS_ROOT, PORT).',
+  'shell or service (BUILDD_API_KEY, BUILDD_SERVER, BUILDD_RUNNER_NAME, PROJECTS_ROOT, PORT).',
   'A .env file in the current folder is never read.',
 ].join('\n');
 
@@ -58,12 +62,43 @@ const SUBCOMMANDS: string[][] = [['version'], ['env', 'verify']];
 
 export type CliDecision =
   | { kind: 'help' }
+  /** `buildd name [<name>|--clear]` (runner-name.ts); `args` are the words after `name`. */
+  | { kind: 'name'; args: string[] }
   | { kind: 'run' }
+  | { kind: 'top'; missionId: string | null }
   | { kind: 'unknown'; arg: string };
+
+/** `buildd top [--mission <id>]`: its own small grammar, nothing else is accepted. */
+function classifyTop(args: string[]): CliDecision {
+  let missionId: string | null = null;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--mission') {
+      const v = args[i + 1];
+      if (v === undefined || v.startsWith('-')) return { kind: 'unknown', arg: a };
+      missionId = v;
+      i++;
+      continue;
+    }
+    if (a.startsWith('--mission=') && a.length > '--mission='.length) {
+      missionId = a.slice('--mission='.length);
+      continue;
+    }
+    return { kind: 'unknown', arg: a };
+  }
+  return { kind: 'top', missionId };
+}
 
 export function classifyCliArgs(argv: string[]): CliDecision {
   const args = argv.slice(2);
   if (args.some(a => HELP.has(a))) return { kind: 'help' };
+  if (args[0] === 'top') return classifyTop(args.slice(1));
+
+  if (args[0] === 'name') {
+    const rest = args.slice(1);
+    const flag = rest.find(a => a.startsWith('-') && a !== '--clear');
+    return flag ? { kind: 'unknown', arg: flag } : { kind: 'name', args: rest };
+  }
 
   let i = 0;
   // A subcommand may only lead.

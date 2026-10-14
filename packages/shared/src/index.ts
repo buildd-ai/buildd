@@ -10,6 +10,7 @@ export * from './executor';
 export * from './runner-size';
 export * from './onboarding-interview';
 export * from './runner-fleet';
+export * from './runner-name';
 export * from './claude-ai-artifacts';
 export * from './tool-names';
 export * from './entitlements';
