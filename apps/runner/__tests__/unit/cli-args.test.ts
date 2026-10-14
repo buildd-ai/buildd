@@ -58,6 +58,30 @@ describe('classifyCliArgs', () => {
     expect(classifyCliArgs(argv('--once', '--task', 't1', 'stray'))).toEqual({ kind: 'unknown', arg: 'stray' });
   });
 
+  test('`name` is answered before the runner starts, with its words as the name', () => {
+    expect(classifyCliArgs(argv('name'))).toEqual({ kind: 'name', args: [] });
+    expect(classifyCliArgs(argv('name', 'atlas'))).toEqual({ kind: 'name', args: ['atlas'] });
+    expect(classifyCliArgs(argv('name', 'quill', 'studio'))).toEqual({ kind: 'name', args: ['quill', 'studio'] });
+    expect(classifyCliArgs(argv('name', '--clear'))).toEqual({ kind: 'name', args: ['--clear'] });
+  });
+
+  test('`name` rejects any other flag', () => {
+    expect(classifyCliArgs(argv('name', '--debug'))).toEqual({ kind: 'unknown', arg: '--debug' });
+  });
+
+  test('`name` only counts as the leading word', () => {
+    expect(classifyCliArgs(argv('--debug', 'name'))).toEqual({ kind: 'unknown', arg: 'name' });
+  });
+
+  test('`name --help` is help', () => {
+    expect(classifyCliArgs(argv('name', '--help'))).toEqual({ kind: 'help' });
+  });
+
+  test('usage lists buildd name', () => {
+    expect(RUNNER_USAGE).toContain('buildd name');
+    expect(RUNNER_USAGE).toContain('BUILDD_RUNNER_NAME');
+  });
+
   test('usage names help, login, service and the flags', () => {
     for (const s of ['buildd login', 'buildd service', '--debug', '--foreground', '--once', '--version', '--help']) {
       expect(RUNNER_USAGE).toContain(s);

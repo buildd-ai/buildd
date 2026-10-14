@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { heartbeatAccountIds, resolveRunnerDisplay, runnerDisplayResolver, runnerInitial, runnerNameFromUrl, type RunnerHeartbeatLike } from './runner-display';
+import { heartbeatAccountIds, resolveRunnerDisplay, runnerIdentity, runnerDisplayResolver, runnerInitial, runnerNameFromUrl, type RunnerHeartbeatLike } from './runner-display';
 
 // Illustrative runners only.
 const hb = (over: Partial<RunnerHeartbeatLike> = {}): RunnerHeartbeatLike => ({
@@ -68,5 +68,39 @@ describe('heartbeatAccountIds', () => {
       { runner: null, accountId: 'acct-2' },
       { runner: 'http://birch.local:8766', accountId: 'acct-3' },
     ])).toEqual(['acct-1', 'acct-3']);
+  });
+});
+
+describe('runnerIdentity with a display name (buildd name)', () => {
+  const named = (labels: Record<string, string>) => hb({ environment: { labels } });
+
+  it('shows the name, with the hostname as the machine label', () => {
+    expect(runnerIdentity(named({ hostname: 'laptop-1234.local', os: 'darwin', arch: 'arm64', name: 'atlas' })))
+      .toEqual({ name: 'atlas', machine: 'laptop-1234' });
+  });
+
+  it('without a name shows the hostname and the machine, as before', () => {
+    expect(runnerIdentity(named({ hostname: 'laptop-1234', os: 'darwin', arch: 'arm64' })))
+      .toEqual({ name: 'laptop-1234', machine: 'macOS · arm64' });
+  });
+
+  it('a name equal to the hostname keeps the machine label rather than repeating itself', () => {
+    expect(runnerIdentity(named({ hostname: 'atlas', os: 'linux', arch: 'x64', name: 'atlas' })))
+      .toEqual({ name: 'atlas', machine: 'Linux · x64' });
+  });
+
+  it('a blank name is ignored', () => {
+    expect(runnerIdentity(named({ hostname: 'laptop-1234', name: '   ' })).name).toBe('laptop-1234');
+  });
+
+  it('a named runner with no hostname label keeps the machine description', () => {
+    expect(runnerIdentity(named({ os: 'darwin', arch: 'arm64', name: 'atlas' })))
+      .toEqual({ name: 'atlas', machine: 'macOS · arm64' });
+  });
+
+  it('a worker resolves to the named runner on the same heartbeat key', () => {
+    const beat = hb({ environment: { labels: { hostname: 'laptop-1234', os: 'darwin', arch: 'arm64', name: 'atlas' } } });
+    expect(resolveRunnerDisplay({ runner: 'http://localhost:8766', accountId: 'acct-1' }, [beat]))
+      .toEqual({ name: 'atlas', initial: 'A', machineLabel: 'laptop-1234' });
   });
 });

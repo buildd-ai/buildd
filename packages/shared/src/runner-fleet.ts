@@ -14,6 +14,7 @@
  * by runner builds that predate it. Pure and client-safe.
  */
 import { isRunnerExecutor, type RunnerExecutor } from './executor';
+import { normalizeRunnerName } from './runner-name';
 
 /** Env var the cloud dispatcher sets in the container: its deployment (Worker) name. */
 export const RUNNER_GROUP_ENV = 'BUILDD_RUNNER_GROUP';
@@ -90,13 +91,25 @@ export function runnerFleetIdentity(hb: { localUiUrl: string; environment?: unkn
  * its normalised identity, anyone else's exactly as sent minus a `fleet` key
  * (a long-lived runner does not get to describe itself as ephemeral). No
  * environment stays null, as before; the URL still marks the row ephemeral.
+ * A display name (`labels.name`, from `buildd name`) is kept tidied and capped
+ * by normalizeRunnerName, or dropped when nothing printable is left.
  */
 export function storedHeartbeatEnvironment<E>(environment: E, identity: RunnerFleetIdentity): E | null {
   if (!environment || typeof environment !== 'object' || Array.isArray(environment)) return null;
-  if (identity.ephemeral) return { ...environment, fleet: identity };
-  if (!('fleet' in environment)) return environment;
-  const { fleet: _dropped, ...rest } = environment as Record<string, unknown>;
+  const named = withNormalizedName(environment as Record<string, unknown>) as E;
+  if (identity.ephemeral) return { ...named, fleet: identity };
+  if (!('fleet' in (named as object))) return named;
+  const { fleet: _dropped, ...rest } = named as Record<string, unknown>;
   return rest as E;
+}
+
+/** `environment` with `labels.name` normalised; the same object when it has none. */
+function withNormalizedName(environment: Record<string, unknown>): Record<string, unknown> {
+  const labels = environment.labels;
+  if (!labels || typeof labels !== 'object' || Array.isArray(labels) || !('name' in labels)) return environment;
+  const { name: raw, ...rest } = labels as Record<string, unknown>;
+  const name = normalizeRunnerName(raw);
+  return { ...environment, labels: name ? { ...rest, name } : rest };
 }
 
 /** True for a runner that runs one task and exits. */

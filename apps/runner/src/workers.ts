@@ -95,6 +95,7 @@ import { applyHostSeatPolicy, decideCodexSeat, describeCodexAuthSource, describe
 import { bundledTierEntry } from '@buildd/core/model-tier-defaults';
 import type { WorkerEnvironment, ClaimDiagnostics, ClaimModelEndpoint, ClaimCredentialDecision } from '@buildd/shared';
 import { withFleetIdentity } from './fleet-identity';
+import { heartbeatRunnerName, withRunnerName } from './runner-name';
 import {
   resolveBypassPermissions,
   resolveMaxBudgetUsd,
@@ -1125,6 +1126,9 @@ export class WorkerManager {
     // A single-task runner never polls for Scout runs, so it never advertises one.
     const scoutHost = env && !this.config.singleTask ? this.scoutHostPoller?.advert() : undefined;
     if (env && scoutHost) env = { ...env, scoutHost };
+    // The display name (`buildd name`), read fresh each beat so a rename needs
+    // no restart. A label only: localUiUrl stays the identity.
+    env = withRunnerName(env, heartbeatRunnerName());
     return withFleetIdentity(env, this.config.fleetIdentity);
   }
 
