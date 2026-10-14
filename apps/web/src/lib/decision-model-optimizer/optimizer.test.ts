@@ -287,6 +287,34 @@ describe('optimizeTeam', () => {
     expect(w.written).toHaveLength(0);
     expect(readDecisionModelOverrides(w.stored.value)[KIND]).toEqual(CLEF);
   });
+
+  // Measurements are platform-wide (one row per kind x model): a team's run must
+  // never undo an operator's retirement for every team.
+  it('never revives a retired measurement, and does not switch the kind', async () => {
+    const w = world({ rows: CLEAR_WIN });
+    w.measurements.push({
+      kind: KIND, model: 'clef', threshold: 0.6, precisionLower: 0.92, coverage: 0.7, n: 200, evalRunId: 'older', measuredFingerprint: 'fp-1',
+      status: 'retired', setByAccountId: 'operator', setAt: new Date(NOW - DAY), reason: 'records only', confidenceSource: 'top_p',
+    });
+    const out = await optimizeTeam(TEAM, {}, w.deps);
+    expect(w.written).toHaveLength(0);
+    expect(readDecisionModelOverrides(w.stored.value)[KIND]).toBeUndefined();
+    expect(w.switches).toHaveLength(0);
+    expect(out.status === 'ran' && out.kinds[0]).toMatchObject({ kind: KIND, action: 'keep', reason: 'measurement_retired' });
+  });
+
+  it('never replaces an active measurement on a different signal, and does not switch the kind', async () => {
+    const w = world({ rows: CLEAR_WIN });
+    w.measurements.push({
+      kind: KIND, model: 'clef', threshold: 0.95, precisionLower: 0.93, coverage: 0.3, n: 200, evalRunId: 'older', measuredFingerprint: 'fp-1',
+      status: 'active', setByAccountId: null, setAt: new Date(NOW - DAY), reason: null, confidenceSource: 'confidence',
+    });
+    const out = await optimizeTeam(TEAM, {}, w.deps);
+    expect(w.written).toHaveLength(0);
+    expect(readDecisionModelOverrides(w.stored.value)[KIND]).toBeUndefined();
+    expect(w.switches).toHaveLength(0);
+    expect(out.status === 'ran' && out.kinds[0]).toMatchObject({ kind: KIND, action: 'keep', reason: 'measurement_other_signal' });
+  });
 });
 
 describe('undo', () => {

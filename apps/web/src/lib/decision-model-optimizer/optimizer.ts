@@ -18,7 +18,9 @@
  *      Ties keep the current model. A kind with too few graded cases, a model
  *      not asked every case, and a kind pinned by an Undo are left alone.
  *   4. A switch stores the winner's measurement (never loosening a stricter one
- *      already stored for the same signal), sets `decision_model.byKind` for
+ *      already stored for the same signal; measurements are shared by every
+ *      team, so a retired row or one in force on another signal is left alone
+ *      and the kind is not switched), sets `decision_model.byKind` for
  *      that kind only (never the team default), writes one switch row and one
  *      decision-ledger event with the eval run id and both scores.
  *   5. Auto-revert: once the switched-to model has `REVERT_MIN_GRADED` live
@@ -101,7 +103,9 @@ export interface ModelResult {
 
 export type KeepReason =
   | 'pinned' | 'too_few_graded' | 'current_not_asked' | 'no_model_clears_bar' | 'current_best' | 'within_margin'
-  | 'preflight_failed' | 'no_fingerprint' | 'write_failed';
+  | 'preflight_failed' | 'no_fingerprint' | 'write_failed'
+  // The shared (kind x model) measurement row is retired, or in force on another signal: not one team's to change.
+  | 'measurement_retired' | 'measurement_other_signal';
 
 export type KindPlan =
   | { action: 'switch'; kind: string; from: ModelResult; to: ModelResult; before: number; after: number }
@@ -254,13 +258,23 @@ export interface OptimizeOptions {
 
 const fmt = (n: number) => String(Math.round(n * 1000) / 1000);
 
-/** Keep a stored row that is at least as strict on the same signal; otherwise the winner's measurement is written. */
-function keepsExisting(rows: readonly StoredMeasurement[], kind: string, model: string, fingerprint: string, derived: DerivedAt): boolean {
-  const existing = rows.find(r => r.kind === kind && canonicalMeasuredModel(r.model) === canonicalMeasuredModel(model)
-    && r.status === 'active' && r.measuredFingerprint === fingerprint);
-  if (!existing) return false;
-  if (existing.labelThresholds) return true;
-  return (existing.confidenceSource ?? 'confidence') === derived.source && existing.threshold >= derived.threshold;
+/**
+ * What to do with the winner's measurement. Measurements are platform-wide
+ * (one row per kind x model, read by every team), so one team's run never
+ * revives a retired row (an operator's "this model records only") and never
+ * replaces a row in force on another signal: the kind is not switched.
+ * A row in force on the same signal that is at least as strict is kept; any
+ * other case writes the winner's measurement.
+ */
+export function measurementPlan(rows: readonly StoredMeasurement[], kind: string, model: string, fingerprint: string, derived: DerivedAt):
+  'write' | 'keep' | 'measurement_retired' | 'measurement_other_signal' {
+  const same = rows.filter(r => r.kind === kind && canonicalMeasuredModel(r.model) === canonicalMeasuredModel(model));
+  if (same.some(r => r.status === 'retired')) return 'measurement_retired';
+  const existing = same.find(r => r.status === 'active' && r.measuredFingerprint === fingerprint);
+  if (!existing) return 'write';
+  if (existing.labelThresholds) return 'keep';
+  if ((existing.confidenceSource ?? 'confidence') !== derived.source) return 'measurement_other_signal';
+  return existing.threshold >= derived.threshold ? 'keep' : 'write';
 }
 
 export async function optimizeTeam(teamId: string, opts: OptimizeOptions, deps: OptimizerDeps): Promise<TeamOptimizeResult> {
@@ -304,7 +318,9 @@ export async function optimizeTeam(teamId: string, opts: OptimizeOptions, deps: 
     const fingerprint = await deps.fingerprintFor(kind);
     if (!fingerprint) { kept('no_fingerprint'); continue; }
     const derived = plan.to.derived!;
-    if (!keepsExisting(await deps.measurements(), kind, plan.to.route.model, fingerprint, derived)) {
+    const measured = measurementPlan(await deps.measurements(), kind, plan.to.route.model, fingerprint, derived);
+    if (measured === 'measurement_retired' || measured === 'measurement_other_signal') { kept(measured); continue; }
+    if (measured === 'write') {
       await deps.writeMeasurement({
         kind,
         model: canonicalMeasuredModel(plan.to.route.model),

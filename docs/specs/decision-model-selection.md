@@ -75,7 +75,13 @@ and what has to be collected so the choice can be made on evidence.
   Ties keep the current model; a kind with too few graded cases, or whose
   current model was not asked every case, is left alone. A switch stores the
   winner's measurement (never loosening a stricter one for the same signal)
-  and changes that kind's model only, never the team default. Every switch is
+  and changes that kind's model only, never the team default.
+- **Measurements are shared across teams.** A stored threshold belongs to
+  (kind, model), not to a team, so the first winning run for a model creates a
+  row that every other team already using that model for that kind also acts
+  on. One team's run therefore never revives a retired measurement and never
+  replaces one in force on another signal; it leaves that kind on its current
+  model instead. Every switch is
   a decision-ledger event (`decision_model_switch`) with the eval run id and
   both scores. `optimizeTeam` is the entry point; a platform admin can run it
   now (`POST /api/admin/decision-model-optimizer`).
@@ -196,6 +202,7 @@ Until then they describe the code as it is:
 - AC-14: GIVEN an opted-in team where a challenger beats the current model by 5 points or more on the same cases and passes its test decision WHEN the scheduled comparison runs THEN that kind switches to it, the team default is untouched, and the switch is a ledger event naming the eval run.
 - AC-15: GIVEN a switched kind with at least 20 live graded decisions and acted precision below its bar WHEN the daily check runs THEN the previous model is restored.
 - AC-16: GIVEN a comparison that reaches its call cap WHEN it stops THEN it names the limit and no kind it cut short is switched.
+- AC-17: GIVEN a winning challenger whose shared measurement for that kind is retired, or in force on another signal WHEN the scheduled comparison runs THEN no measurement is written and the kind keeps its current model.
 
 ## Out of scope
 
