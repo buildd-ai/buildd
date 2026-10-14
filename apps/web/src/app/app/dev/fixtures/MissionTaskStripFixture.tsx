@@ -16,6 +16,7 @@ import MissionSituationBlock from '@/components/missions/MissionSituationBlock';
 import type { MissionSituation } from '@/lib/mission-state-view';
 import {
   dagSelection,
+  isHandoffVariant,
   isOverviewVariant,
   missionTaskStripFixture,
   missionTaskStripLinks,
@@ -72,8 +73,16 @@ export default function MissionTaskStripFixture() {
         </nav>
       </header>
       <main className="mx-auto max-w-[1400px] px-4 py-2 md:px-8">
-        {isOverviewVariant(variant) ? (
-          <MissionOverview model={fixture.model} missionId={MISSION_ID} workspaceId={WORKSPACE_ID} executor={fixture.executor} />
+        {isOverviewVariant(variant) || isHandoffVariant(variant) ? (
+          <MissionOverview
+            model={fixture.model}
+            missionId={MISSION_ID}
+            workspaceId={WORKSPACE_ID}
+            executor={fixture.executor}
+            checks={fixture.checks ?? null}
+            planTasks={fixture.planTasks ?? null}
+            held={fixture.held ?? false}
+          />
         ) : (
         <MissionBoard
           model={fixture.model}

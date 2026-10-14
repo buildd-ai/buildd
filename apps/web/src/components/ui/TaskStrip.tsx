@@ -111,7 +111,7 @@ function SmallStrip({ cells, label = 'Tasks', className = '' }: TaskStripProps) 
  * track between groups. `col` is each cell's 1-based column; `spans` each
  * outlined group's [start, end) columns.
  */
-export function groupedColumns(groups: readonly TaskStripGroup[]): { template: string; col: Map<string, number>; spans: { key: string; from: number; to: number }[] } {
+export function groupedColumns(groups: readonly TaskStripGroup[]): { template: string; col: Map<string, number>; spans: { key: string; from: number; to: number }[]; tracks: number } {
   const tracks: string[] = [];
   const col = new Map<string, number>();
   const spans: { key: string; from: number; to: number }[] = [];
@@ -122,7 +122,20 @@ export function groupedColumns(groups: readonly TaskStripGroup[]): { template: s
     for (const id of g.ids) { tracks.push('var(--cell)'); col.set(id, tracks.length); }
     if (g.outline) spans.push({ key: g.key, from, to: tracks.length + 1 });
   }
-  return { template: tracks.join(' '), col, spans };
+  return { template: tracks.join(' '), col, spans, tracks: tracks.length };
+}
+
+/**
+ * Which strip edge an outline touches. The outline sits 5px outside its
+ * cells, so a strip whose first (or last) group is outlined pads that side
+ * by the same 5px and the frame never sticks out past the strip.
+ */
+function outlineEdge(grouped: ReturnType<typeof groupedColumns> | null): { edge: 'start' | 'end' | 'both' | undefined; pad: string } {
+  if (!grouped) return { edge: undefined, pad: '' };
+  const start = grouped.spans.some(s => s.from === 1);
+  const end = grouped.spans.some(s => s.to === grouped.tracks + 1);
+  const edge = start && end ? 'both' : start ? 'start' : end ? 'end' : undefined;
+  return { edge, pad: `${start ? 'pl-[5px]' : ''} ${end ? 'pr-[5px]' : ''}`.trim() };
 }
 
 const GROUPED_VARS = '[--group-gap:6px] [--cell:minmax(0,1fr)] md:[--group-gap:12px]';
@@ -138,6 +151,7 @@ function LargeStrip({ cells, selectedId, onSelect, marks, capped = true, label =
   const selIndex = cells.findIndex(c => c.id === selectedId);
   const focusIndex = selIndex === -1 ? 0 : selIndex;
   const numbered = n <= MAX_NUMBERED_TICKS;
+  const outline = outlineEdge(grouped);
 
   function onKeyDown(e: KeyboardEvent<HTMLDivElement>) {
     const from = cells.findIndex(c => c.id === (e.target as HTMLElement).dataset.id);
@@ -150,7 +164,7 @@ function LargeStrip({ cells, selectedId, onSelect, marks, capped = true, label =
 
   return (
     <div className={`flex flex-col gap-1.5 ${className}`} data-testid="task-strip" data-size="lg">
-      <div ref={ref} role="toolbar" aria-label={label} onKeyDown={onKeyDown} className={`grid gap-1 ${columns}`} style={style}>
+      <div ref={ref} role="toolbar" aria-label={label} onKeyDown={onKeyDown} data-outline-edge={outline.edge} className={`grid gap-1 ${columns} ${outline.pad}`} style={style}>
         {grouped?.spans.map(sp => (
           // The group outline: one accent frame round the work in progress (spec f7f67f1a R-3).
           <span
@@ -202,7 +216,7 @@ function LargeStrip({ cells, selectedId, onSelect, marks, capped = true, label =
           );
         })}
       </div>
-      <div aria-hidden="true" data-testid="task-strip-ticks" className={`grid gap-1 text-center font-mono text-chip ${columns}`} style={style}>
+      <div aria-hidden="true" data-testid="task-strip-ticks" className={`grid gap-1 text-center font-mono text-chip ${columns} ${outline.pad}`} style={style}>
         {cells.map((c, i) => {
           const selected = c.id === selectedId;
           // MK-3: the selected tick is never marked and always keeps its number.

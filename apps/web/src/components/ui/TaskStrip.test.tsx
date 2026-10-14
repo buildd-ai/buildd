@@ -18,6 +18,28 @@ function ticks(html: string): string[] {
   return row.match(/<span[^>]*>[^<]*<\/span>/g) ?? [];
 }
 
+describe('TaskStrip lg group outline', () => {
+  const toolbar = (html: string) => html.match(/<div[^>]*role="toolbar"[^>]*>/)![0];
+
+  it('pads the strip so an outline on the first group never sticks out past its left edge', () => {
+    const html = renderToStaticMarkup(
+      <TaskStrip cells={cells} selectedId="t1" groups={[{ key: 'active', ids: ['t1', 't2'], outline: true }, { key: 'waiting', ids: ['t3', 't4', 't5', 't6', 't7'] }]} />,
+    );
+    expect(toolbar(html)).toContain('data-outline-edge="start"');
+    expect(toolbar(html)).toContain('pl-[5px]');
+    expect(toolbar(html)).not.toContain('pr-[5px]');
+  });
+
+  it('pads the right edge when the outlined group is last, and neither edge when it sits between groups', () => {
+    const last = renderToStaticMarkup(<TaskStrip cells={cells} selectedId="t1" groups={[{ key: 'done', ids: ['t1', 't2'] }, { key: 'active', ids: ['t3', 't4', 't5', 't6', 't7'], outline: true }]} />);
+    expect(toolbar(last)).toContain('data-outline-edge="end"');
+    expect(toolbar(last)).toContain('pr-[5px]');
+    const middle = renderToStaticMarkup(<TaskStrip cells={cells} selectedId="t1" groups={[{ key: 'done', ids: ['t1', 't2'] }, { key: 'active', ids: ['t3'], outline: true }, { key: 'waiting', ids: ['t4', 't5', 't6', 't7'] }]} />);
+    expect(toolbar(middle)).not.toContain('data-outline-edge');
+    expect(toolbar(middle)).not.toContain('pl-[5px]');
+  });
+});
+
 describe('TaskStrip lg', () => {
   it('one button per task, textured by state', () => {
     const html = renderToStaticMarkup(<TaskStrip cells={cells} selectedId="t3" />);

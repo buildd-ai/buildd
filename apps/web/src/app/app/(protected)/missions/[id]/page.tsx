@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { after } from 'next/server';
-import { missions, workspaces, workspaceSkills, missionNotes, workers, tasks, initiatives, artifacts, orchestrationManifestPredictions } from '@buildd/core/db/schema';
+import { missions, workspaces, workspaceSkills, missionNotes, workers, tasks, initiatives, artifacts, orchestrationManifestPredictions, taskEstimates } from '@buildd/core/db/schema';
 import { eq, and, or, inArray, desc, isNotNull, isNull, ne } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
@@ -55,7 +55,8 @@ import { mastheadBack, parseMissionOrigin } from './MissionDetailView';
 import MissionLayoutShell, { MISSION_HEADER_ACTION, MissionBoardHeader, MissionLayoutTabs } from './MissionLayoutShell';
 import FlowTimeline from './FlowTimeline';
 import { expectedMinutesFromPredictions, sameFilesFromRows } from '@/lib/flow-timeline';
-import MissionOverview from './MissionOverview';
+import MissionOverview, { type MissionChecksSource } from './MissionOverview';
+import { missionPlanInputs } from '@/lib/mission-plan-source';
 import MissionFeedLayout from './MissionFeedLayout';
 import { missionSummaryLine } from '@/lib/mission-summary-line';
 import { buildMissionBoard, toBoardTaskInput } from '@/lib/mission-board';
@@ -629,7 +630,7 @@ export default async function MissionDetailPage({
 
   // The breadcrumb initiative, the initiative-selector options, the release
   // footer and the completion note are mutually independent.
-  const [initiativeName, teamInitiativeOptions, releaseFooterData, completionNote, carryingReleaseId, feedNoteRows, shippedRow, surfaceAuditWaiver, visualReviewState] = await Promise.all([
+  const [initiativeName, teamInitiativeOptions, releaseFooterData, completionNote, carryingReleaseId, feedNoteRows, shippedRow, surfaceAuditWaiver, visualReviewState, estimateRows] = await Promise.all([
     // Breadcrumb: URL param takes priority, DB-stored initiative is the fallback
     // so users see the parent initiative even when navigating directly to the mission.
     (from === 'initiative' && initiativeId)
@@ -697,6 +698,14 @@ export default async function MissionDetailPage({
       console.error('[mission-page] visual review state load failed', err);
       return null;
     }),
+    // The build-only estimate reads the same frozen estimates as the Plan page (spec f7f67f1a R-23).
+    isTerminal || allMissionTaskIds.length === 0
+      ? Promise.resolve([] as Array<{ taskId: string; p50Minutes: number; p80Minutes: number }>)
+      : db
+          .select({ taskId: taskEstimates.taskId, p50Minutes: taskEstimates.p50Minutes, p80Minutes: taskEstimates.p80Minutes })
+          .from(taskEstimates)
+          .where(inArray(taskEstimates.taskId, allMissionTaskIds))
+          .orderBy(desc(taskEstimates.createdAt)),
   ]);
   const shippedView = mission.status === 'completed'
     ? buildShippedHeaderView((shippedRow?.metadata as { shipped?: unknown } | null)?.shipped, (mission as any).completedAt)
@@ -791,6 +800,29 @@ export default async function MissionDetailPage({
     mergedAt: missionMergedAt,
     releasedAt: releasedAtRaw ? new Date(releasedAtRaw).toISOString() : null,
   });
+  // Overview's checks after the build (spec f7f67f1a R-11 to R-22): a projection over the
+  // same visual review state, criteria, mission PR and release status this page already reads.
+  const trunkName = (workspaceForPolicy?.gitConfig as { defaultBranch?: unknown } | null)?.defaultBranch;
+  const overviewChecks: MissionChecksSource = {
+    branch: (mission as { integrationBranchEnabled?: boolean | null }).integrationBranchEnabled === true ? 'mission-branch' : 'direct',
+    target: (typeof trunkName === 'string' && trunkName ? trunkName : null) ?? visualReviewState?.branch.base ?? null,
+    mergeTier: effectivePolicy.tier as MissionChecksSource['mergeTier'],
+    visual: visualReviewState ?? null,
+    criteria: goalCriteria,
+    criteriaState: goalCriteriaStateFull,
+    integrationPr: missionIntegrationPr,
+    release: releaseStatus,
+    evidence: visualReviewState ? { visual: [{ label: 'Open screens', href: `/app/missions/${id}?visualReview=1` }] } : undefined,
+  };
+  // The Plan page's schedule over the build tasks only (P-2): Overview and Plan give the same numbers.
+  const newestEstimate = new Map<string, { p50Minutes: number; p80Minutes: number }>();
+  for (const e of estimateRows) if (!newestEstimate.has(e.taskId)) newestEstimate.set(e.taskId, e);
+  const buildPlanTasks = missionPlanInputs([{
+    id, title: mission.title, workspaceId: mission.workspaceId ?? null, dependsOnMissionId: null, isHeld: false,
+    tasks: (mission.tasks ?? []).filter(t => t.taskClass !== 'attempt' && missionHelpers.deliverableRole(t as Parameters<typeof missionHelpers.deliverableRole>[0]) === 'build') as never,
+  }], newestEstimate, new Map())[0]?.tasks ?? [];
+  // Waiting on another mission is an outside wait: no time promise (R-24).
+  const waitsOnMission = !!(mission as { dependsOnMissionId?: string | null }).dependsOnMissionId;
   const visualStep = deliverySteps.find(s => s.key === 'visual') ?? null;
   const missionPrCard = shouldRenderMissionPrBlock(missionIntegrationPr, { workLanded: feedCounts.total > 0 && feedCounts.done >= feedCounts.total }) && missionIntegrationPr ? (
     // Mission integration PR (Option A′): the mission's review gate, and a
@@ -1290,7 +1322,7 @@ export default async function MissionDetailPage({
       <MissionSurfaceAuditWaiverProvider {...auditWaiverProps}>
       <MissionLayoutShell
         initial={parseMissionLayout(layoutParam, listViewParam)}
-        board={boardHeader(<MissionOverview model={boardModel} completionText={completionText} notice={boardNotice} visual={boardVisual} {...boardLink} {...boardStrip} />)}
+        board={boardHeader(<MissionOverview model={boardModel} completionText={completionText} notice={boardNotice} visual={boardVisual} checks={overviewChecks} planTasks={buildPlanTasks} held={isHeld || waitsOnMission || mission.status === 'budget_exhausted'} {...boardLink} {...boardStrip} />)}
         flow={boardHeader(<FlowTimeline model={boardModel} sameFiles={flowSameFiles} expectedMinutes={flowExpectedMinutes} {...boardLink} />)}
         feed={boardHeader(
           <MissionFeedLayout

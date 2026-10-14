@@ -29,10 +29,16 @@ import { buildMissionBoard, type BoardTaskInput, type BoardWorkerInput, type Mis
 import type { TaskDeliveryDetail } from '@/lib/activity-delivery';
 import { missionTaskDeliveries, type MissionDeliveryTaskRow } from '@/app/app/(protected)/missions/[id]/mission-task-delivery';
 import type { MissionExecutor } from '@/lib/task-actions';
+import type { MissionChecksSource } from '@/app/app/(protected)/missions/[id]/MissionOverview';
+import type { MissionVisualReviewState } from '@/lib/workflow/visual-review-state';
+import type { PlanTask } from '@/lib/mission-plan';
 import { MISSION_TASK_STRIP_FIXTURE_STATE } from './visual-review-fixtures';
 
 export const MISSION_TASK_STRIP_STATE = MISSION_TASK_STRIP_FIXTURE_STATE;
-export const MISSION_TASK_STRIP_VARIANTS = ['mid-open', 'all-landed', 'states', 'linear', 'fan-out', 'fan-in', 'field', 'wide', 'delivery', 'overview-2', 'overview-10', 'overview-20', 'overview-64'] as const;
+export const MISSION_TASK_STRIP_VARIANTS = [
+  'mid-open', 'all-landed', 'states', 'linear', 'fan-out', 'fan-in', 'field', 'wide', 'delivery', 'overview-2', 'overview-10', 'overview-20', 'overview-64',
+  'handoff-building', 'handoff-verifying', 'handoff-repairing', 'handoff-approval', 'handoff-reviewer', 'handoff-delivered', 'handoff-deploy-failed', 'handoff-budget', 'handoff-local',
+] as const;
 export type MissionTaskStripVariant = (typeof MISSION_TASK_STRIP_VARIANTS)[number];
 
 export function parseMissionTaskStripVariant(q: URLSearchParams): MissionTaskStripVariant {
@@ -97,6 +103,11 @@ export interface MissionTaskStripFixture {
   executor: MissionExecutor;
   /** Per-task delivery, as the page builds it; absent on the older variants. */
   deliveries?: Record<string, TaskDeliveryDetail>;
+  /** The Overview's checks after the build (handoff variants). */
+  checks?: MissionChecksSource;
+  /** The build tasks as the Plan page schedules them, for the build-only estimate. */
+  planTasks?: PlanTask[];
+  held?: boolean;
 }
 
 export function missionTaskStripFixture(variant: MissionTaskStripVariant, now = min(60)): MissionTaskStripFixture {
@@ -109,6 +120,7 @@ export function missionTaskStripFixture(variant: MissionTaskStripVariant, now = 
   }
   if (variant === 'delivery') return deliveryFixture(base);
   if (isOverviewVariant(variant)) return { model: overviewWavesBoard(overviewSize(variant), now), executor: 'runner' };
+  if (isHandoffVariant(variant)) return handoffFixture(variant, base);
   if (isDagVariant(variant)) {
     return { model: buildMissionBoard({ ...base, tasks: dagTasks(DAG_SPECS[variant]) }), executor: 'runner' };
   }
@@ -354,4 +366,83 @@ export function overviewWavesInput(n: number): { tasks: BoardTaskInput[]; gateFa
 export function overviewWavesBoard(n: number, now = min(60)): MissionBoardModel {
   const { tasks, gateFacts } = overviewWavesInput(n);
   return buildMissionBoard({ now, missionCreatedAt: T0, missionStatus: 'active', tasks, gateFacts });
+}
+
+// ── Handoff: Build complete, checks and delivery (spec f7f67f1a R-11 to R-24) ──
+
+export type HandoffVariant = Extract<MissionTaskStripVariant, `handoff-${string}`>;
+export const isHandoffVariant = (v: string): v is HandoffVariant => v.startsWith('handoff-');
+
+function visualState(over: Partial<MissionVisualReviewState>): MissionVisualReviewState {
+  return {
+    status: 'running', blocksCompletion: true, blocksMerge: true, pendingVerification: true, staleEvidence: false, nextActor: 'system',
+    policy: { mode: 'automatic', origin: 'workspace', waiverAllowed: true, locked: false },
+    scope: { screens: 8, uiFiles: 4, source: 'diff', workLanded: true },
+    progress: { captured: 6, expected: 8 },
+    auditTaskId: stripFixtureId(950),
+    branch: { headSha: 'a1b2c3d4e5f6a7b8', base: 'dev', integrationPr: { number: 128, stage: 'open' }, postMergeRecovery: false },
+    ...over,
+  };
+}
+
+/**
+ * Ten build tasks and the checks after them, one variant per prototype
+ * screen: building (with a build-only estimate), verifying, repairing (a
+ * visual fix inside the check), the final merge under each tier, delivered,
+ * a failed deploy, and the budget and local-session holds.
+ */
+export function handoffFixture(variant: HandoffVariant, base: { now: number; missionCreatedAt: number; missionStatus: 'active' }): MissionTaskStripFixture {
+  const building = variant === 'handoff-building' || variant === 'handoff-budget' || variant === 'handoff-local';
+  const tasks: BoardTaskInput[] = TITLES.map((t, i) => (building && i >= 6
+    ? task(i + 1, t, i === 6 ? { status: 'in_progress', workers: [worker(`w${i + 1}`, { status: 'running', completedAt: null, currentAction: 'Editing files' })] } : {})
+    : landed(i + 1, t)));
+  tasks.push(task(950, `${SURFACE_AUDIT_TITLE_PREFIX}Mission handoff`, building ? {} : { status: 'in_progress', workers: [worker('w950', { status: 'running', completedAt: null, currentAction: 'Capturing screens' })] }));
+  if (variant === 'handoff-repairing') {
+    tasks.push(task(951, '[surface fix] /app/reports: filter selection resets after a refresh', { status: 'in_progress', workers: [worker('w951', { status: 'running', completedAt: null, currentAction: 'Editing files' })] }));
+  }
+  const model = buildMissionBoard({ ...base, tasks, missionStatus: variant === 'handoff-budget' ? 'budget_exhausted' as 'active' : base.missionStatus });
+
+  const merged = variant === 'handoff-delivered' || variant === 'handoff-deploy-failed';
+  const ready = variant === 'handoff-approval' || variant === 'handoff-reviewer';
+  const prStage = merged ? 'merged' as const : ready ? 'ready' as const : 'open' as const;
+  const branch = { headSha: 'a1b2c3d4e5f6a7b8', base: 'dev', integrationPr: { number: 128, stage: prStage }, postMergeRecovery: false };
+  const visual: MissionVisualReviewState = building
+    ? visualState({ status: 'needed', progress: undefined, branch })
+    : variant === 'handoff-verifying'
+      ? visualState({ branch })
+      : variant === 'handoff-repairing'
+        ? visualState({ status: 'findings', findings: { issues: 1, undecided: 0, fixesOpen: 1, stage: 'fixing', exhausted: false }, branch })
+        : visualState({ status: 'passed', blocksMerge: false, blocksCompletion: false, pendingVerification: false, progress: undefined, branch });
+
+  const checks: MissionChecksSource = {
+    branch: 'mission-branch',
+    target: 'dev',
+    mergeTier: variant === 'handoff-approval' ? 'human' : 'agent-review',
+    visual,
+    criteria: [{ type: 'command', command: 'bun run test', label: 'Unit tests pass' }],
+    criteriaState: merged
+      ? { evaluatedAt: new Date(base.now).toISOString(), evaluatedBy: 'auto', overall: 'pass', criteria: [{ index: 0, type: 'command', verdict: 'pass', evidence: 'Passed on dev.' }] }
+      : null,
+    integrationPr: { branch: 'mission/billing-exports', state: merged ? 'merged' : 'open', prNumber: 128, prUrl: '#mission-pr', taskId: null },
+    release: variant === 'handoff-delivered' ? 'healthy' : variant === 'handoff-deploy-failed' ? 'failed' : merged ? 'deploying' : 'waiting',
+    releaseLabel: 'Release v0.42.0',
+  };
+  // Frozen estimates on the build tasks, as the Plan page reads them: p50 and p80 minutes.
+  const ESTIMATES: readonly [number, number][] = [[18, 30], [9, 15], [7, 12], [5, 9]];
+  const planTasks: PlanTask[] = tasks.slice(0, 10).map((t, i) => ({
+    id: t.id,
+    status: i < 6 || !building ? 'completed' : t.status,
+    dependsOn: [],
+    startedAt: t.workers?.[0]?.startedAt ? new Date(t.workers[0].startedAt).getTime() : null,
+    endedAt: i < 6 || !building ? base.now - (10 - i) * 60_000 : null,
+    p50Minutes: i >= 6 ? ESTIMATES[i - 6][0] : 10,
+    p80Minutes: i >= 6 ? ESTIMATES[i - 6][1] : 20,
+  }));
+  return {
+    model,
+    executor: variant === 'handoff-local' ? 'local' : 'runner',
+    checks,
+    planTasks,
+    held: variant === 'handoff-budget',
+  };
 }
