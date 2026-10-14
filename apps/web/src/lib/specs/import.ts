@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { db } from '@buildd/core/db';
-import { specs, workspaces } from '@buildd/core/db/schema';
-import { and, eq, inArray, isNotNull } from 'drizzle-orm';
+import { specRevisions, specs, workspaces } from '@buildd/core/db/schema';
+import { and, eq, inArray, isNotNull, isNull, notInArray } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
 import { githubApi } from '@/lib/github';
 import { appBaseUrl } from '@/lib/app-url';
@@ -12,11 +12,11 @@ import type { DuplicateCheckDeps } from '@/lib/spec-duplicate-decision';
 import type { DuplicateCandidate } from './duplicates';
 import { linkedRepo } from './repo-source';
 import { areaDomain } from './repo-copy';
-import { CROSS_CUTTING_DOMAINS, listAreas } from './areas';
+import { AREA_GONE_STATUSES, AREA_SCOPES, CROSS_CUTTING_DOMAINS, listAreas, type AreaInfo } from './areas';
 import { insertFiling, setParentIfUnfiled } from './filings';
 import { author, createSpecDraft, fail, reach, reviseSpecDraft, type SpecCaller, type SpecError, type SpecRow } from './store';
 import { approveSpecRevision, specApprovalDeps, specApprover } from './approval';
-import { updateSpecMetadata } from './metadata';
+import { FILE_METADATA_KEYS, updateSpecMetadata } from './metadata';
 
 /**
  * Import a workspace's repo spec files as native specs (docs/specs/living-specs.md
@@ -34,6 +34,17 @@ import { updateSpecMetadata } from './metadata';
  * skipped, and a changed one becomes a new imported revision of the same spec.
  * A duplicate is reported in the dry run and skipped on import unless the
  * caller names its path in `allowDuplicates`.
+ *
+ * A file whose spec already lives in buildd (a native spec whose head revision
+ * cites the path, one that recorded it as its provenance, or one with exactly
+ * its title, any case) is reported `exists` with that spec's link and never
+ * created again; `attachProvenance` records the path and commit on that
+ * spec's metadata block instead (no revision).
+ *
+ * It runs in pages (`limit`, default 15, at most 40, and `cursor`): files in
+ * path order, every page read at the commit the first page resolved, which the
+ * cursor carries. One request stays well inside the serverless limit however
+ * large the folder, and each page is idempotent on its own.
  *
  * Until a person confirms it the repo file stays the source: no revise in
  * buildd, no approval outside confirmation, no generated copy (store.ts,
@@ -58,6 +69,24 @@ const SPECS_DIR = 'docs/specs';
 /** Files history is asked for per GraphQL request. */
 const HISTORY_CHUNK = 40;
 export const MAX_IMPORT_FILES = 300;
+export const DEFAULT_IMPORT_PAGE = 15;
+export const MAX_IMPORT_PAGE = 40;
+
+/** Where the next page starts: the commit every page reads and the last path the previous page covered. */
+interface ImportCursor { c: string; a: string }
+export function encodeImportCursor(c: ImportCursor): string {
+  return Buffer.from(JSON.stringify({ v: 1, c: c.c, a: c.a })).toString('base64url');
+}
+export function decodeImportCursor(raw: unknown): ImportCursor | null {
+  if (typeof raw !== 'string' || raw.length > 600) return null;
+  try {
+    const v = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8')) as { v?: unknown; c?: unknown; a?: unknown };
+    if (v?.v !== 1 || typeof v.c !== 'string' || !/^[0-9a-f]{40}$/.test(v.c) || typeof v.a !== 'string' || !v.a.startsWith(`${SPECS_DIR}/`)) return null;
+    return { c: v.c, a: v.a };
+  } catch {
+    return null;
+  }
+}
 
 export interface RepoSpecFile { path: string; name: string; text: string; blobSha: string }
 
@@ -131,11 +160,12 @@ async function lastPrs(repo: { fullName: string; installationId: number }, commi
 
 // ── Import ──────────────────────────────────────────────────────────────────
 
+export type ImportAction = 'create' | 'reimport' | 'exists' | 'skip';
 export type ImportSkip = 'meta_file' | 'not_a_spec_file' | 'superseded' | 'generated_copy' | 'no_title' | 'too_large' | 'already_imported' | 'confirmed' | 'duplicate' | 'failed';
 
 export interface ImportFileRow {
   path: string;
-  action: 'create' | 'reimport' | 'skip';
+  action: ImportAction;
   reason?: ImportSkip;
   message?: string;
   /** What it would create (or the new revision a re-import writes). */
@@ -144,6 +174,10 @@ export interface ImportFileRow {
   specId?: string;
   /** The revision written by a real run. */
   revision?: number;
+  /** `exists`: the spec already in buildd this file is, and how it was recognised. */
+  existing?: { specId: string; title: string; url: string; matchedBy: 'repo_ref' | 'provenance' | 'title' };
+  /** `exists` with attachProvenance on a real run: the path and commit are on that spec's metadata block. */
+  provenanceAttached?: boolean;
   /** Where it is filed: an existing area, a proposed one named from its `domain:`, or nothing. */
   area: { specId: string | null; title: string; domain: string | null; proposed: boolean } | null;
   provenance: { path: string; commitSha: string; blobSha: string; prNumber: number | null };
@@ -160,13 +194,45 @@ export interface ImportResult {
   repo: string;
   commitSha: string;
   batchId: string | null;
+  /** This page's files, in path order. */
   files: ImportFileRow[];
-  counts: { create: number; reimport: number; skip: number };
+  counts: { create: number; reimport: number; exists: number; skip: number };
+  /** Page size used. */
+  limit: number;
+  /** Files after this page; 0 on the last page. */
+  remaining: number;
+  /** Pass as `cursor` for the next page (same commit); null on the last page. */
+  nextCursor: string | null;
   /** Files to create or re-import, per area, for the summary. */
   byArea: Array<{ area: string; areaSpecId: string | null; proposed: boolean; count: number }>;
 }
 
-export interface ImportInput { workspaceId: unknown; dryRun?: unknown; ref?: unknown; paths?: unknown; allowDuplicates?: unknown }
+export interface ImportInput { workspaceId: unknown; dryRun?: unknown; ref?: unknown; paths?: unknown; allowDuplicates?: unknown; limit?: unknown; cursor?: unknown; attachProvenance?: unknown }
+
+type NativeSpec = { id: string; title: string; metadata: SpecRow['metadata']; repoRefs: Array<{ path: string; commitSha: string }> | null };
+
+/** The spec already in buildd a repo file is: one citing its path, then one that recorded it as provenance, then the exact title. */
+function nativeMatch(natives: readonly NativeSpec[], path: string, title: string): { spec: NativeSpec; matchedBy: 'repo_ref' | 'provenance' | 'title' } | null {
+  const ref = natives.find((n) => (n.repoRefs ?? []).some((r) => r.path === path));
+  if (ref) return { spec: ref, matchedBy: 'repo_ref' };
+  const prov = natives.find((n) => n.metadata?.repo_provenance?.path === path);
+  if (prov) return { spec: prov, matchedBy: 'provenance' };
+  const t = title.trim().toLowerCase();
+  const byTitle = natives.find((n) => n.title.trim().toLowerCase() === t);
+  return byTitle ? { spec: byTitle, matchedBy: 'title' } : null;
+}
+
+/**
+ * Area by `domain:` value: each value an area declares (metadata `domains`)
+ * first, then each area's title slug for a value no area declares.
+ */
+export function areasByDomain(areas: readonly Pick<AreaInfo, 'id' | 'title' | 'scope' | 'domains'>[]): Map<string, Pick<AreaInfo, 'id' | 'title'>> {
+  const domainAreas = areas.filter((a) => a.scope === 'domain').sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
+  const out = new Map<string, Pick<AreaInfo, 'id' | 'title'>>();
+  for (const a of domainAreas) for (const d of a.domains ?? []) if (!out.has(d)) out.set(d, a);
+  for (const a of domainAreas) { const slug = areaDomain(a.title); if (!out.has(slug)) out.set(slug, a); }
+  return out;
+}
 
 const titleFromDomain = (d: string) => d.split(/[-_\s]+/).filter(Boolean).map((w) => w[0]!.toUpperCase() + w.slice(1)).join(' ');
 const strList = (v: unknown): string[] | null => (Array.isArray(v) && v.every((x) => typeof x === 'string') ? v as string[] : null);
@@ -181,6 +247,14 @@ export async function importRepoSpecs(caller: SpecCaller, input: ImportInput, de
   if (input.paths !== undefined && !only) return fail(400, 'paths is a list of docs/specs/<file>.md paths');
   const allow = new Set(input.allowDuplicates === undefined ? [] : strList(input.allowDuplicates) ?? []);
   if (input.allowDuplicates !== undefined && !strList(input.allowDuplicates)) return fail(400, 'allowDuplicates is a list of paths');
+  if (input.limit !== undefined && (typeof input.limit !== 'number' || !Number.isInteger(input.limit) || input.limit < 1 || input.limit > MAX_IMPORT_PAGE)) {
+    return fail(400, `limit is a whole number of files per page, 1 to ${MAX_IMPORT_PAGE} (default ${DEFAULT_IMPORT_PAGE})`);
+  }
+  const limit = (input.limit as number | undefined) ?? DEFAULT_IMPORT_PAGE;
+  const cursor = input.cursor === undefined || input.cursor === null ? null : decodeImportCursor(input.cursor);
+  if (input.cursor !== undefined && input.cursor !== null && !cursor) return fail(400, 'cursor is the nextCursor a previous import page returned');
+  if (input.attachProvenance !== undefined && typeof input.attachProvenance !== 'boolean') return fail(400, 'attachProvenance is true or false');
+  const attachProvenance = input.attachProvenance === true;
   if (!(await reach(caller, workspaceId, true))) return fail(404, 'Workspace not found');
 
   const repo = await deps.repo(workspaceId);
@@ -188,18 +262,27 @@ export async function importRepoSpecs(caller: SpecCaller, input: ImportInput, de
   let commitSha: string;
   let files: RepoSpecFile[];
   try {
-    commitSha = await resolveCommit(workspaceId, repo, input.ref as string | undefined, deps);
+    // A cursor pins the commit its first page read, so every page comes from one commit.
+    commitSha = cursor ? cursor.c : await resolveCommit(workspaceId, repo, input.ref as string | undefined, deps);
     files = await readSpecDir(repo, commitSha, deps);
   } catch (err) {
     return fail(502, `GitHub could not be read: ${errMsg(err)}; nothing was imported`);
   }
   if (only) files = files.filter((f) => only.includes(f.path));
+  if (cursor) files = files.filter((f) => f.path.localeCompare(cursor.a) > 0);
+  const remaining = Math.max(0, files.length - limit);
+  files = files.slice(0, limit);
+  const nextCursor = remaining > 0 ? encodeImportCursor({ c: commitSha, a: files[files.length - 1]!.path }) : null;
 
-  const [areas, existing] = await Promise.all([
+  const [areas, existing, natives] = await Promise.all([
     listAreas(workspaceId),
     db.select().from(specs).where(and(eq(specs.workspaceId, workspaceId), isNotNull(specs.repoSource))),
+    db.select({ id: specs.id, title: specs.title, metadata: specs.metadata, repoRefs: specRevisions.repoRefs }).from(specs)
+      .leftJoin(specRevisions, and(eq(specRevisions.specId, specs.id), eq(specRevisions.revision, specs.headRevision)))
+      .where(and(eq(specs.workspaceId, workspaceId), isNull(specs.repoSource), notInArray(specs.scope, [...AREA_SCOPES]), notInArray(specs.status, [...AREA_GONE_STATUSES])))
+      .orderBy(specs.createdAt),
   ]);
-  const areaByDomain = new Map(areas.filter((a) => a.scope === 'domain').map((a) => [areaDomain(a.title), a]));
+  const areaByDomain = areasByDomain(areas);
   const byPath = new Map(existing.map((s) => [s.repoSource!.path, s]));
   const parsed = files.map((f) => ({ f, p: repoSpecForImport(f.path, f.text) }));
   const wanted = parsed.filter((x) => x.p.ok).map((x) => x.f.path);
@@ -224,6 +307,24 @@ export async function importRepoSpecs(caller: SpecCaller, input: ImportInput, de
     const prior = byPath.get(f.path);
     if (prior?.repoSource?.state === 'confirmed') { rows.push({ ...row, action: 'skip', reason: 'confirmed', message: `${f.path} was imported and confirmed; buildd is its source now`, specId: prior.id }); continue; }
     if (prior && prior.repoSource!.blobSha === f.blobSha) { rows.push({ ...row, action: 'skip', reason: 'already_imported', message: `${f.path} is imported at this blob already`, specId: prior.id }); continue; }
+    if (!prior) {
+      // Already in buildd under its own name: never a second spec, at most its provenance.
+      const m = nativeMatch(natives, f.path, p.title);
+      if (m) {
+        const existingRow: ImportFileRow = {
+          ...row, action: 'exists', specId: m.spec.id,
+          existing: { specId: m.spec.id, title: m.spec.title, url: `${appBaseUrl()}/app/specs/${m.spec.id}`, matchedBy: m.matchedBy },
+          message: `already in buildd as "${m.spec.title}" (${m.spec.id}, matched by ${m.matchedBy === 'repo_ref' ? 'a cited repo path' : m.matchedBy === 'provenance' ? 'its recorded provenance' : 'title'}); not created`,
+        };
+        if (!dryRun && attachProvenance) {
+          const r = await updateSpecMetadata(caller, m.spec.id, { changes: { repo_provenance: provenance }, reason: `Matched to ${f.path}@${commitSha.slice(0, 7)} on import` });
+          if (r.ok) existingRow.provenanceAttached = true;
+          else existingRow.message = `${existingRow.message}; provenance not recorded: ${r.error}`;
+        }
+        rows.push(existingRow);
+        continue;
+      }
+    }
     if (p.body.length > 400_000) { rows.push({ ...row, action: 'skip', reason: 'too_large', message: `${f.path} is longer than a spec body may be` }); continue; }
     if (prior) {
       row.action = 'reimport';
@@ -246,17 +347,23 @@ export async function importRepoSpecs(caller: SpecCaller, input: ImportInput, de
     rows.push(row);
   }
 
-  const counts = { create: 0, reimport: 0, skip: 0 };
+  const counts = { create: 0, reimport: 0, exists: 0, skip: 0 };
   const areaCount = new Map<string, { area: string; areaSpecId: string | null; proposed: boolean; count: number }>();
   for (const r of rows) {
     counts[r.action]++;
-    if (r.action === 'skip') continue;
+    if (r.action === 'skip' || r.action === 'exists') continue;
     const key = r.area ? `${r.area.specId ?? 'new'}:${r.area.title}` : 'unfiled';
     const cur = areaCount.get(key) ?? { area: r.area?.title ?? 'Unfiled', areaSpecId: r.area?.specId ?? null, proposed: !!r.area?.proposed, count: 0 };
     cur.count++;
     areaCount.set(key, cur);
   }
-  return { ok: true, result: { dryRun, repo: repo.fullName, commitSha, batchId, files: rows, counts, byArea: [...areaCount.values()].sort((a, b) => b.count - a.count || a.area.localeCompare(b.area)) } };
+  return {
+    ok: true,
+    result: {
+      dryRun, repo: repo.fullName, commitSha, batchId, files: rows, counts, limit, remaining, nextCursor,
+      byArea: [...areaCount.values()].sort((a, b) => b.count - a.count || a.area.localeCompare(b.area)),
+    },
+  };
 }
 
 /** Write one file's import: a new spec, or a new imported revision of the one it was. Never throws. */
@@ -283,7 +390,7 @@ async function writeImport(caller: SpecCaller, workspaceId: string, row: ImportF
       await fileImported(workspaceId, specId, row, ctx);
     }
     // A re-import also clears a mechanical field the file no longer states.
-    const cleared = prior ? Object.fromEntries(Object.keys(prior.metadata ?? {}).filter((k) => !(k in row.metadata)).map((k) => [k, null])) : {};
+    const cleared = prior ? Object.fromEntries(Object.keys(prior.metadata ?? {}).filter((k) => (FILE_METADATA_KEYS as readonly string[]).includes(k) && !(k in row.metadata)).map((k) => [k, null])) : {};
     const unread = [...row.unread, ...(await importMetadata(caller, specId, { ...cleared, ...row.metadata }, summary))];
     return { ...row, specId, revision, unread };
   } catch (err) {
