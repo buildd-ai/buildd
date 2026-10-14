@@ -358,6 +358,7 @@
       "apps/web/src/lib/reviewer.ts": "reviews-merge",
       "apps/web/src/lib/spec-area-decision.ts": "jev-decisions",
       "apps/web/src/lib/spec-duplicate-decision.ts": "jev-decisions",
+      "apps/web/src/lib/spec-publication-decision.ts": "jev-decisions",
       "apps/web/src/lib/spec-taxonomy-decision.ts": "jev-decisions",
       "apps/web/src/lib/strand-choice-decision.ts": "jev-decisions",
       "apps/web/src/lib/surface-audit-advice.ts": "visual-qa",

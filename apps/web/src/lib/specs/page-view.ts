@@ -18,6 +18,7 @@ import { readSpecNeighbours, suggestParent, type NearbySpec } from './neighbours
 import { filingFacts, proposalAreas, type AreaProposal, type SpecIndexInput, type SpecSuggestion } from './index-view';
 import type { RepoRef } from './repo-refs';
 import { nativeSourceOn, repoCopyLine, repoCopyPreflight, type RepoCopyPreflight } from './repo-copy';
+import { specRetirement, type RetirementView } from './retire';
 
 /**
  * What the dashboard's spec pages show (living-specs.md §9): a workspace's
@@ -272,9 +273,16 @@ export type SpecPageView =
     /** With `review`: what approving the head would put in force, for an approver only. */
     review: SpecPanes | null;
     /** The one source (§18, R-13) and how the repo copy stands (AC-79); absent when the workspace has not opted in. */
-    source?: { source: string; copy: string | null; behind: boolean } | null;
+    source?: { source: string; copy: string | null; behind: boolean; publishAnyway?: boolean } | null;
+    /** Slice 14, R-68: the reader may publish a kept-private revision anyway (a person who may approve here). */
+    canPublishAnyway?: boolean;
     /** With `review`: the repo checks on the would-be copy (R-34). Warns, never blocks. */
     preflight?: RepoCopyPreflight | null;
+    /** Why and by what the spec is retired (§22), when it is. */
+    retirement?: RetirementView | null;
+    /** The reader may retire or restore it (a person with approval rights, §22 R-51), and the live specs that could replace it. */
+    canRetire?: boolean;
+    retireTargets?: Array<{ id: string; title: string }>;
   };
 
 const personLabel = (label: string | null) => (label?.startsWith('user:') ? label.slice(5) : null);
@@ -382,7 +390,15 @@ export async function specPageView(userId: string, specId: string, opts: { revis
       : { error: d.error };
   }
 
-  const canApprove = pending && open && !!(await specApprover(caller, spec.workspaceId));
+  const approver = !!(await specApprover(caller, spec.workspaceId));
+  const canApprove = pending && open && approver;
+  const retirement = open ? null : await specRetirement(spec.id).catch(() => null);
+  // The replacements a person may pick (§22): live specs of the workspace, by title.
+  const retireTargets = approver && open
+    ? await db.select({ id: specs.id, title: specs.title }).from(specs)
+      .where(and(eq(specs.workspaceId, spec.workspaceId), ne(specs.id, spec.id), notInArray(specs.status, ['retired', 'superseded'])))
+      .orderBy(specs.title).limit(200)
+    : [];
   let review: SpecPanes | null = null;
   if (opts.review && canApprove) {
     if (spec.approvedRevision != null) {
@@ -401,9 +417,13 @@ export async function specPageView(userId: string, specId: string, opts: { revis
 
   const preflight = review && native ? await repoCopyPreflight(spec, spec.headRevision).catch(() => null) : null;
 
+  const source = repoCopyLine(native, spec.repoCopy, spec.approvedRevision != null, spec.repoSource);
+  const canPublishAnyway = !!source?.publishAnyway && caller.kind === 'user' && !!(await specApprover(caller, spec.workspaceId).catch(() => null));
+
   return {
     state: 'ok',
-    source: repoCopyLine(native, spec.repoCopy, spec.approvedRevision != null, spec.repoSource),
+    source,
+    canPublishAnyway,
     preflight,
     spec: { id: spec.id, title: spec.title, scope: spec.scope, status: spec.status, workspaceId: spec.workspaceId, workspaceName: ws?.name ?? '', version: spec.version, headRevision: spec.headRevision, approvedRevision: spec.approvedRevision },
     standing: specStanding(spec).standing,
@@ -411,5 +431,6 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     waiting: pending && open ? spec.headRevision : null,
     body: got.view.body,
     revisions, parent: parent ?? null, children, siblings, repoRefs, design, attachments, attachmentSources: sources, nearby, filing, comments, commentAnchors, canComment, compare, canApprove, review,
+    retirement, canRetire: approver, retireTargets,
   };
 }
