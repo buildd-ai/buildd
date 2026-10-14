@@ -3,7 +3,7 @@
 import { resolvePrDisplayState, type PrDisplayState } from '@/lib/pr-presentation';
 import { isOpenAsk } from '@/lib/open-ask';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
 import WorkerActivityTimeline, { collapseWorkspacePath, ageLabel } from './WorkerActivityTimeline';
@@ -49,7 +49,7 @@ export function elapsedLabel(ms: number): string {
   return ms < 10 * 3_600_000 ? formatOffset(ms) : formatElapsed(ms);
 }
 
-interface Worker {
+export interface LiveWorker {
   id: string;
   name: string;
   branch: string;
@@ -93,7 +93,7 @@ interface Worker {
 }
 
 interface Props {
-  initialWorker: Worker;
+  initialWorker: LiveWorker;
   outputRequirement?: string | null;
   deliverableArtifactCount?: number;
   usesReviewer?: boolean;
@@ -134,19 +134,26 @@ interface Props {
    * stopped on a question (workflow-state-kernel §17.5, S36).
    */
   delivery?: { headline: string; owner: string; needsYou: boolean; detail: string | null; prState?: PrDisplayState | null; state: string } | null;
+  /**
+   * How a worker event re-reads the view. The page re-renders its server
+   * component (router.refresh, coalesced with TaskAutoRefresh); the mission
+   * sheet must never re-run the mission render, so it refetches its own data.
+   */
+  refresh?: () => void;
 }
 
 // Entries carry optional agentId/parentAgentId (SDK v0.3.202+) so nested agent
 // trees can be reconstructed; see @/lib/agent-tree.
 type TaskProgressEntry = AgentProgressEntry;
 
-export default function RealTimeWorkerView({ initialWorker, outputRequirement, deliverableArtifactCount, usesReviewer, reviewState, taskId, taskStatus = 'running', modelTier, questionNote = null, roleName = null, nowMs: nowProp, delivery = null, focusAnswer = false }: Props) {
+export default function RealTimeWorkerView({ initialWorker, outputRequirement, deliverableArtifactCount, usesReviewer, reviewState, taskId, taskStatus = 'running', modelTier, questionNote = null, roleName = null, nowMs: nowProp, delivery = null, focusAnswer = false, refresh }: Props) {
   const questionRef = useRef<HTMLDivElement>(null);
   // Once, on the first render that shows the question: a later refresh never
   // pulls focus back from wherever the reader went.
   const focusedAnswerRef = useRef(false);
-  const router = useRouter();
-  const [worker, setWorker] = useState<Worker>(initialWorker);
+  const nextRouter = useRouter();
+  const router = useMemo(() => (refresh ? { refresh } : nextRouter), [refresh, nextRouter]);
+  const [worker, setWorker] = useState<LiveWorker>(initialWorker);
   useEffect(() => {
     const el = questionRef.current;
     if (!focusAnswer || focusedAnswerRef.current || !el) return;

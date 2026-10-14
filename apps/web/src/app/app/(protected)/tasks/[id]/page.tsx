@@ -31,8 +31,8 @@ import ReassignButton from './ReassignButton';
 import EditTaskButton from './EditTaskButton';
 import DeleteTaskButton from './DeleteTaskButton';
 import RealTimeWorkerView from './RealTimeWorkerView';
+import { liveWorkerViewProps } from '@/lib/task-live-view';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
-import type { DeliveryPillState } from './TaskSidePanel';
 import PlanReviewPanel from './PlanReviewPanel';
 import PlanChainView from './PlanChainView';
 
@@ -72,7 +72,7 @@ import { livingSpecLoad } from '@/lib/specs/task-view';
 import PrDetailsCard from './PrDetailsCard';
 import { StoredPrCard } from '@/components/task/StoredPrCard';
 import TaskSummary from '@/components/task/TaskSummary';
-import { taskPrFacts, taskHeaderMerged, isFallbackSummary } from '@/lib/task-sections';
+import { taskPrFacts, taskHeaderMerged, isFallbackSummary, taskDeliverySections } from '@/lib/task-sections';
 import { loadOpenAttempt } from '@/lib/explain';
 import TaskEvidenceCard from './TaskEvidenceCard';
 import { plainWorkerError } from '@/lib/provider-auth-failure';
@@ -99,10 +99,10 @@ import WorkerSteerPanel from './WorkerSteerPanel';
 import { HeaderStatusPill, FactSheet, SideDescription, runnerFactRow, branchFactRow, type FactRow } from './TaskSidePanel';
 import { findTaskRole } from './role-lookup';
 import { headerLifecycle, taskHeading } from './task-header';
-import TaskChecks from './TaskChecks';
+import TaskChecksSection from '@/components/task/TaskChecksSection';
 import TaskSubjectLink from './TaskSubjectLink';
 import TaskTitle from './TaskTitle';
-import { deriveTaskChecks, taskSubjectOf } from '@/lib/task-checks';
+import { taskSubjectOf } from '@/lib/task-checks';
 import { loadTaskDeliveryContext } from '@/lib/task-delivery-context';
 import { normaliseReviewVerdict, readableTaskResult } from '@/lib/task-result';
 import Lifecycle from '@/components/ui/Lifecycle';
@@ -654,10 +654,8 @@ export default async function TaskDetailPage({
     taskId: subject.deliverableTaskId,
     title: deliveryContext.deliverableTitle ?? (task.parentTask?.id === subject.deliverableTaskId ? task.parentTask.title : null),
   };
-  const taskChecks = deliveryView ? deriveTaskChecks(deliveryView) : null;
-  const deliveryPill: DeliveryPillState | null = deliveryView
-    ? { headline: deliveryView.headline, owner: deliveryView.owner, needsYou: deliveryView.needsYou, stage: deliveryView.stage, detail: deliveryView.detail, prState: deliveryView.prState, state: deliveryView.state }
-    : null;
+  // The header's delivery reading and the checks list, as the sheet gets them.
+  const { delivery: deliveryPill, checks: checksSection } = taskDeliverySections(deliveryContext, prWorker);
 
   // Derive canonical display status from task + active worker state.
   // If the worker is running, the chip shows "Running" not "Assigned".
@@ -1534,17 +1532,7 @@ export default async function TaskDetailPage({
         )}
 
         {/* Checks on the delivery's current head, by round (task-page spec). */}
-        {taskChecks && deliveryView && (
-          <TaskChecks
-            checks={taskChecks}
-            prNumber={deliveryView.prNumber}
-            prUrl={prWorker?.prUrl ?? (deliveryView.repoFullName && deliveryView.prNumber != null ? `https://github.com/${deliveryView.repoFullName}/pull/${deliveryView.prNumber}` : null)}
-            headSha={deliveryView.headSha}
-            findings={deliveryContext.findings}
-            findingsUnavailable={deliveryContext.findingsUnavailable}
-            currentTaskId={task.id}
-          />
-        )}
+        {checksSection && <TaskChecksSection section={checksSection} currentTaskId={task.id} />}
 
         <ServiceStatusList statuses={taskServiceStatus} showWork={false} />
         {runnerReach && (
@@ -1853,50 +1841,18 @@ export default async function TaskDetailPage({
         {activeWorker && (
           <div className="mb-8 order-first" data-testid="task-active-worker">
             <RealTimeWorkerView
-              delivery={deliveryPill}
-              outputRequirement={task.outputRequirement}
-              deliverableArtifactCount={evidenceArtifactCount}
-              usesReviewer={RUN_PROGRESS_READERS.usesReviewer(task.workspace, missionContextRow, task, { baseRef: activeWorker.prBaseRef })}
-              reviewState={evidenceReview?.state}
-              taskStatus={task.status}
-              taskId={task.id}
-              initialWorker={{
-                id: activeWorker.id,
-                name: activeWorker.name,
-                branch: activeWorker.branch,
-                status: activeWorker.status,
-                currentAction: activeWorker.currentAction,
-                milestones: (activeWorker.milestones as any[]) || [],
-                turns: activeWorker.turns,
-                costUsd: activeWorker.costUsd?.toString() || null,
-                inputTokens: activeWorker.inputTokens,
-                outputTokens: activeWorker.outputTokens,
-                createdAt: activeWorker.createdAt?.toISOString() || null,
-                mergedAt: activeWorker.mergedAt?.toISOString() || null,
-                dirtyWorktree: activeWorker.dirtyWorktree,
-                observedTouches: activeWorker.observedTouches,
-                prIsDraft: activeWorker.prIsDraft,
-                startedAt: activeWorker.startedAt?.toISOString() || null,
-                prUrl: activeWorker.prUrl,
-                prNumber: activeWorker.prNumber,
-                prLifecycleStatus: activeWorker.prLifecycleStatus,
-                localUiUrl: null,
-                commitCount: activeWorker.commitCount,
-                filesChanged: activeWorker.filesChanged,
-                linesAdded: activeWorker.linesAdded,
-                linesRemoved: activeWorker.linesRemoved,
-                lastCommitSha: activeWorker.lastCommitSha,
-                waitingFor: activeWorker.waitingFor as any,
-                error: activeWorker.error,
-                instructionHistory: (activeWorker.instructionHistory as any[]) || [],
-                pendingInstructions: activeWorker.pendingInstructions,
-                updatedAt: activeWorker.updatedAt?.toISOString() || null,
-                resultMeta: activeWorker.resultMeta as any,
-              }}
-              modelTier={modelSummary.tierLabel}
-              questionNote={questionNote}
+              {...liveWorkerViewProps({
+                task: { id: task.id, status: task.status, outputRequirement: task.outputRequirement },
+                worker: activeWorker,
+                delivery: deliveryPill,
+                deliverableArtifactCount: evidenceArtifactCount,
+                usesReviewer: RUN_PROGRESS_READERS.usesReviewer(task.workspace, missionContextRow, task, { baseRef: activeWorker.prBaseRef }),
+                reviewState: evidenceReview?.state,
+                modelTier: modelSummary.tierLabel,
+                questionNote,
+                roleName,
+              })}
               focusAnswer={focusAnswer}
-              roleName={roleName}
             />
           </div>
         )}
