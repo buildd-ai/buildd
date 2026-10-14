@@ -20,6 +20,7 @@ import Segmented from '@/components/ui/Segmented';
 import { neighbourGraph } from '@/lib/specs/index-view';
 import SpecFiling from '@/components/SpecFiling';
 import SpecRepoChecks from '@/components/SpecRepoChecks';
+import SpecDelivery from '@/components/SpecDelivery';
 import SpecRetire from '@/components/SpecRetire';
 import { useHideAskButton } from '@/lib/ask-button-hidden';
 import type { SpecPageView } from '@/lib/specs/page-view';
@@ -366,7 +367,9 @@ export default function SpecPage({ view }: { view: Ok }) {
     </Section>
   );
 
+  const hasDelivery = !!view.delivery?.entries.length;
   const jumps = [
+    hasDelivery ? { href: '#delivery', label: 'Delivery' } : null,
     hasRelated ? { href: '#related', label: 'Related' } : null,
     { href: '#comments', label: 'Comments' },
     { href: '#revisions', label: 'Revisions' },
@@ -412,6 +415,7 @@ export default function SpecPage({ view }: { view: Ok }) {
       <div className="flex flex-col gap-4 lg:grid lg:grid-cols-[minmax(0,1fr)_20rem] lg:items-start lg:gap-10">
         <div className="flex min-w-0 flex-col gap-4">
           {main}
+          <SpecDelivery specId={spec.id} delivery={view.delivery} />
           {related}
           {comments}
         </div>

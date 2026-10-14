@@ -18,6 +18,7 @@ import { readSpecNeighbours, suggestParent, type NearbySpec } from './neighbours
 import { filingFacts, proposalAreas, type AreaProposal, type SpecIndexInput, type SpecSuggestion } from './index-view';
 import type { RepoRef } from './repo-refs';
 import { nativeSourceOn, repoCopyLine, repoCopyPreflight, type RepoCopyPreflight } from './repo-copy';
+import { readSpecDelivery, type SpecDelivery } from './delivery';
 import { specRetirement, type RetirementView } from './retire';
 
 /**
@@ -278,6 +279,8 @@ export type SpecPageView =
     canPublishAnyway?: boolean;
     /** With `review`: the repo checks on the would-be copy (R-34). Warns, never blocks. */
     preflight?: RepoCopyPreflight | null;
+    /** Delivery and verification (Slice 13): the work that answered to this spec, one page. Null when it cannot be read. */
+    delivery?: SpecDelivery | null;
     /** Why and by what the spec is retired (§22), when it is. */
     retirement?: RetirementView | null;
     /** The reader may retire or restore it (a person with approval rights, §22 R-51), and the live specs that could replace it. */
@@ -298,7 +301,7 @@ function panes(hunks: DiffHunk[], omittedLines: number, body: string, revision: 
 /** Siblings read for a spec page; the list shows them all, the graph its own cap. */
 export const MAX_SIBLINGS = 12;
 
-export async function specPageView(userId: string, specId: string, opts: { revision?: number; from?: number; to?: number; review?: boolean } = {}): Promise<SpecPageView> {
+export async function specPageView(userId: string, specId: string, opts: { revision?: number; from?: number; to?: number; review?: boolean; deliveryCursor?: string } = {}): Promise<SpecPageView> {
   if (!isUuid(specId)) return { state: 'not_found' };
   const caller: SpecCaller = { kind: 'user', userId };
   const [row] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
@@ -416,6 +419,11 @@ export async function specPageView(userId: string, specId: string, opts: { revis
   if (review) review.attachmentSources = await attachmentSources(spec.id, review.revision).catch(() => ({}));
 
   const preflight = review && native ? await repoCopyPreflight(spec, spec.headRevision).catch(() => null) : null;
+  // Fail-open (R-65): the page renders without the section when it cannot be read.
+  const delivery = await readSpecDelivery(caller, spec.id, { cursor: opts.deliveryCursor ?? null }).catch((err) => {
+    console.warn(`[spec-page] delivery for spec ${spec.id} failed:`, err);
+    return null;
+  });
 
   const source = repoCopyLine(native, spec.repoCopy, spec.approvedRevision != null, spec.repoSource);
   const canPublishAnyway = !!source?.publishAnyway && caller.kind === 'user' && !!(await specApprover(caller, spec.workspaceId).catch(() => null));
@@ -425,6 +433,7 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     source,
     canPublishAnyway,
     preflight,
+    delivery,
     spec: { id: spec.id, title: spec.title, scope: spec.scope, status: spec.status, workspaceId: spec.workspaceId, workspaceName: ws?.name ?? '', version: spec.version, headRevision: spec.headRevision, approvedRevision: spec.approvedRevision },
     standing: specStanding(spec).standing,
     reading: { revision: got.view.revision.revision, approved: spec.approvedRevision === got.view.revision.revision, isHead: got.view.revision.revision === spec.headRevision },
