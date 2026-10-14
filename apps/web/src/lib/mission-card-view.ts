@@ -629,6 +629,7 @@ export function toFeedTask(t: MissionCardTaskRow): MissionFeedTaskInput {
         status: w.status, startedAt: w.startedAt ?? null, updatedAt: w.updatedAt ?? null,
         prNumber: w.prNumber ?? null, prUrl: w.prUrl ?? null,
         prLifecycleStatus: w.prLifecycleStatus ?? null, mergedAt: w.mergedAt ?? null,
+        supersededByPrNumber: w.supersededByPrNumber ?? null, abandonedAt: w.abandonedAt ?? null,
       }
     : null;
   return {

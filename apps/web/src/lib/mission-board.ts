@@ -15,6 +15,7 @@
  * milestone the agent reported. The runner slot an agent held is derived from
  * start/end overlap (`assignSlots`), since no column records it.
  */
+import type { DeliverableRole } from '@buildd/core/mission-helpers';
 import { pickTaskView } from './task-view-pick';
 import { TERMINAL_TASK_STATUSES, type VisualReviewModel } from '@buildd/shared';
 import { screensToReview } from './visual-review-model';
@@ -65,6 +66,10 @@ export interface BoardWorkerInput {
   prNumber: number | null;
   prUrl: string | null;
   prLifecycleStatus: string | null;
+  /** A closed PR's work landed under this merged PR (`record_pr_supersession`). */
+  supersededByPrNumber?: number | null;
+  /** A person settled this closed PR as deliberately not shipping. */
+  abandonedAt?: number | null;
   currentAction: string | null;
   waitingFor: { prompt: string; options: string[] } | null;
   milestones: BoardMilestone[];
@@ -212,6 +217,11 @@ export interface BoardTask {
   /** The role's own colour (`workspaceSkills.color`), never a constant. */
   roleColor: string | null;
   phaseKey: string;
+  /**
+   * What the tile is for (`deliverableRole`, spec f7f67f1a P-2). Only `build`
+   * tiles count toward `landed` and a phase's done / total (R-14).
+   */
+  deliverableRole: DeliverableRole;
   status: BoardStatus;
   /**
    * The kernel's sentence for a kernel-owned delivery (§17.5): its headline
@@ -486,6 +496,8 @@ export function toBoardWorkerInput(w: Record<string, unknown>): BoardWorkerInput
     prNumber: num(w.prNumber),
     prUrl: str(w.prUrl),
     prLifecycleStatus: str(w.prLifecycleStatus),
+    supersededByPrNumber: num(w.supersededByPrNumber),
+    abandonedAt: epoch(w.abandonedAt),
     currentAction: str(w.currentAction),
     waitingFor: wf && typeof wf.prompt === 'string' ? { prompt: wf.prompt, options } : null,
     milestones: selectMilestones(w.milestones),
@@ -538,6 +550,8 @@ export function toBoardTaskInput(t: Record<string, unknown> & { id: string; titl
           prUrl: w0.prUrl,
           prLifecycleStatus: w0.prLifecycleStatus,
           mergedAt: w0.mergedAt != null ? new Date(w0.mergedAt) : null,
+          supersededByPrNumber: w0.supersededByPrNumber ?? null,
+          abandonedAt: w0.abandonedAt != null ? new Date(w0.abandonedAt) : null,
         }
       : null,
     workers,
@@ -761,6 +775,7 @@ export function buildBoardCells(
     tasks[t.id] = {
       id: t.id,
       title: t.title,
+      deliverableRole: r.deliverableRole,
       ...labelOf.get(t.id)!,
       glyph: kind?.glyph ?? null,
       roleSlug: t.roleSlug ?? null,
@@ -813,8 +828,8 @@ export function buildBoardCells(
       ordinal: i + 1,
       label: g.label,
       taskIds: ids,
-      done: ids.filter(id => BOARD_LANDED.has(tasks[id].status)).length,
-      total: ids.length,
+      done: ids.filter(id => tasks[id].deliverableRole === 'build' && BOARD_LANDED.has(tasks[id].status)).length,
+      total: ids.filter(id => tasks[id].deliverableRole === 'build').length,
     };
   });
 
@@ -829,6 +844,9 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
 
   const all = Object.values(tasks);
   const landedN = all.filter(t => BOARD_LANDED.has(t.status)).length;
+  // The build count (spec f7f67f1a R-14): audit, fix and refresh tiles are drawn, never counted.
+  const build = all.filter(t => t.deliverableRole === 'build');
+  const buildLanded = build.filter(t => BOARD_LANDED.has(t.status)).length;
 
   // ── Lanes: every worker that ran for this mission, on its runner ──
   type Span = MissionLaneBar;
@@ -1034,7 +1052,7 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
     phases,
     planning,
     tasks,
-    landed: { done: landedN, total: all.length },
+    landed: { done: buildLanded, total: build.length },
     criteria,
     criteriaPassed: criteria.filter(c => c.state === 'pass').length,
     runners,
