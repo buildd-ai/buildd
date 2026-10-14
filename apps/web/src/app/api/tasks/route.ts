@@ -316,6 +316,7 @@ export async function GET(req: NextRequest) {
             outputRequirement: true,
             missionId: true,
             dependsOn: true,
+            roleSlug: true,
             createdAt: true,
             updatedAt: true,
           },
@@ -325,6 +326,16 @@ export async function GET(req: NextRequest) {
                 id: true,
                 name: true,
                 repo: true,
+              },
+            },
+            // `buildd top` groups a runner's work by mission and names why a
+            // task waits (a held mission, one a person runs from their session).
+            mission: {
+              columns: {
+                id: true,
+                title: true,
+                isHeld: true,
+                executor: true,
               },
             },
           },

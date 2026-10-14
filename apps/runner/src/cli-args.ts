@@ -18,6 +18,8 @@ export const RUNNER_USAGE = [
   '',
   'Commands:',
   '  buildd                     Start the runner in the foreground',
+  '  buildd top                 Watch the runner on this machine and act on its work',
+  '                             (--mission <id> opens on one mission)',
   '  buildd login [--device]    Sign in and save an API key to ~/.buildd/config.json',
   '  buildd logout              Remove the saved API key',
   '  buildd status              Show whether you are signed in',
@@ -59,11 +61,34 @@ const SUBCOMMANDS: string[][] = [['version'], ['env', 'verify']];
 export type CliDecision =
   | { kind: 'help' }
   | { kind: 'run' }
+  | { kind: 'top'; missionId: string | null }
   | { kind: 'unknown'; arg: string };
+
+/** `buildd top [--mission <id>]`: its own small grammar, nothing else is accepted. */
+function classifyTop(args: string[]): CliDecision {
+  let missionId: string | null = null;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--mission') {
+      const v = args[i + 1];
+      if (v === undefined || v.startsWith('-')) return { kind: 'unknown', arg: a };
+      missionId = v;
+      i++;
+      continue;
+    }
+    if (a.startsWith('--mission=') && a.length > '--mission='.length) {
+      missionId = a.slice('--mission='.length);
+      continue;
+    }
+    return { kind: 'unknown', arg: a };
+  }
+  return { kind: 'top', missionId };
+}
 
 export function classifyCliArgs(argv: string[]): CliDecision {
   const args = argv.slice(2);
   if (args.some(a => HELP.has(a))) return { kind: 'help' };
+  if (args[0] === 'top') return classifyTop(args.slice(1));
 
   let i = 0;
   // A subcommand may only lead.

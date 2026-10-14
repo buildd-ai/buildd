@@ -390,6 +390,23 @@ describe('GET /api/tasks', () => {
     expect(data.tasks[0].id).toBe('task-1');
   });
 
+  // `buildd top` groups a runner's work by mission and says why a task waits
+  // (held mission, a person's session, role), reading only this list.
+  it('full list carries the role and the mission title, hold and executor', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true, canCreate: false }]);
+    mockWorkspacesFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValue([]);
+
+    await GET(createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' } }));
+
+    const query = (mockTasksFindMany.mock.calls[0] as any[])[0];
+    expect(query.columns.roleSlug).toBe(true);
+    expect(query.columns.missionId).toBe(true);
+    expect(query.with.mission.columns).toEqual({ id: true, title: true, isHeld: true, executor: true });
+  });
+
   it('lists only its own workspace for a per-task token', async () => {
     mockGetCurrentUser.mockResolvedValue(null);
     // Reachable by the minting account: ws-1 (linked) and ws-2 (open); the token's task is in ws-3.

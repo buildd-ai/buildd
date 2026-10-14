@@ -100,6 +100,7 @@ export async function probeRunnerSocket(
 
 export type StartDecision =
   | { action: 'start' }
+  | { action: 'attach'; message: string }
   | { action: 'exit'; code: number; message: string; stream: 'stdout' | 'stderr' };
 
 /**
@@ -112,18 +113,24 @@ export function alreadyRunningMessage(pid: number | null, socketPath?: string): 
   return `The background runner is already running${who}. Watch it with: buildd top`;
 }
 
+/** The line `buildd` shows when it opens `top` on the runner already running. */
+export function attachingMessage(pid: number | null): string {
+  const who = pid ? ` (pid ${pid})` : '';
+  return `The background runner is already running${who}. This is buildd top, watching it; q leaves it running.`;
+}
+
 /**
  * R-12/R-13. A runner answering on the socket means this start starts nothing.
- * In a terminal that is a hand-off, not a failure: exit 0 (until `buildd top`
- * exists, it names the command). Without a terminal (a service manager, a
- * script) it is a refusal and exits non-zero. `--foreground` asks for a second
- * runner explicitly, so it is always a refusal.
+ * In a terminal that is a hand-off, not a failure: it attaches `buildd top` to
+ * the running runner. Without a terminal (a service manager, a script) it is a
+ * refusal and exits non-zero. `--foreground` asks for a second runner
+ * explicitly, so it is always a refusal.
  */
 export function decideStart(input: { probe: SocketProbe; isTTY: boolean; foreground: boolean; socketPath?: string }): StartDecision {
   if (input.probe.state !== 'live') return { action: 'start' };
-  const message = alreadyRunningMessage(input.probe.pid, input.socketPath);
-  if (input.isTTY && !input.foreground) return { action: 'exit', code: 0, message, stream: 'stdout' };
-  return { action: 'exit', code: EXIT_ALREADY_RUNNING, message, stream: 'stderr' };
+  // A runner that never answered (no pid) has nothing for top to show: name its socket instead.
+  if (input.isTTY && !input.foreground && input.probe.pid !== null) return { action: 'attach', message: attachingMessage(input.probe.pid) };
+  return { action: 'exit', code: EXIT_ALREADY_RUNNING, message: alreadyRunningMessage(input.probe.pid, input.socketPath), stream: 'stderr' };
 }
 
 /**

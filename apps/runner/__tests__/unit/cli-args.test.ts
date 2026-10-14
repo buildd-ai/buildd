@@ -74,3 +74,24 @@ describe('classifyCliArgs', () => {
     expect(EXIT_CLI_USAGE).toBe(64);
   });
 });
+
+describe('buildd top', () => {
+  test('top on its own', () => {
+    expect(classifyCliArgs(argv('top'))).toEqual({ kind: 'top', missionId: null });
+  });
+  test('--mission <id> and --mission=<id>', () => {
+    expect(classifyCliArgs(argv('top', '--mission', 'abc123'))).toEqual({ kind: 'top', missionId: 'abc123' });
+    expect(classifyCliArgs(argv('top', '--mission=abc123'))).toEqual({ kind: 'top', missionId: 'abc123' });
+  });
+  test('anything else after top is refused, not ignored', () => {
+    expect(classifyCliArgs(argv('top', '--debug'))).toEqual({ kind: 'unknown', arg: '--debug' });
+    expect(classifyCliArgs(argv('top', '--mission'))).toEqual({ kind: 'unknown', arg: '--mission' });
+    expect(classifyCliArgs(argv('top', 'extra'))).toEqual({ kind: 'unknown', arg: 'extra' });
+  });
+  test('--mission is not a runner flag', () => {
+    expect(classifyCliArgs(argv('--mission', 'x'))).toEqual({ kind: 'unknown', arg: '--mission' });
+  });
+  test('help lists top', () => {
+    expect(RUNNER_USAGE).toMatch(/^ {2}buildd top {2,}\S/m);
+  });
+});
