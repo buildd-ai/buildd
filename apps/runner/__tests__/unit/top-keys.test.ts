@@ -1,0 +1,162 @@
+/**
+ * `buildd top` keys (R-5, R-6): each key either changes the view or asks
+ * run.ts for one effect; an action on the wrong kind of row says why instead.
+ */
+import { describe, expect, test } from 'bun:test';
+import { actionResultText, handleKey, parseKeys, type Effect, type Key } from '../../src/top/keys';
+import { selectedRow, type TopState } from '../../src/top/state';
+import { NOW, fixtureState } from './top-fixture';
+
+const ch = (c: string): Key => ({ name: 'char', ch: c });
+function press(s: TopState, ...keys: Array<Key | string>) {
+  const effects: Effect[] = [];
+  for (const k of keys) {
+    const list = typeof k === 'string' ? parseKeys(k) : [k];
+    for (const key of list) {
+      const r = handleKey(s, key, NOW);
+      s = r.state;
+      effects.push(...r.effects);
+    }
+  }
+  return { s, effects };
+}
+/** Put the cursor on the row with this title. */
+const on = (title: string): TopState => {
+  const s = fixtureState();
+  for (let i = 0; i < 20; i++) {
+    const st = { ...s, rowCursor: i };
+    if (selectedRow(st, NOW)?.title === title) return st;
+  }
+  throw new Error(`no row ${title}`);
+};
+
+describe('parseKeys', () => {
+  test('arrows, enter, escape, ctrl-c, backspace, text', () => {
+    expect(parseKeys('\x1b[A\x1b[B\x1bOC\x1b[D')).toEqual([{ name: 'up' }, { name: 'down' }, { name: 'right' }, { name: 'left' }]);
+    expect(parseKeys('\r')).toEqual([{ name: 'enter' }]);
+    expect(parseKeys('\x1b')).toEqual([{ name: 'escape' }]);
+    expect(parseKeys('\x03')).toEqual([{ name: 'ctrl-c' }]);
+    expect(parseKeys('\x7f')).toEqual([{ name: 'backspace' }]);
+    expect(parseKeys('hé😀')).toEqual([ch('h'), ch('é'), ch('😀')]);
+  });
+  test('unknown escape sequences are swallowed, not typed', () => {
+    expect(parseKeys('\x1b[3~x')).toEqual([ch('x')]);
+  });
+});
+
+describe('moving', () => {
+  test('↓/j move the row cursor, ← and → switch panes, ↓ in missions changes the mission', () => {
+    let { s } = press(fixtureState(), '\x1b[B', 'j');
+    expect(selectedRow(s, NOW)?.title).toBe('single instance');
+    ({ s } = press(s, '\x1b[D', '\x1b[B'));
+    expect(s.focus).toBe('missions');
+    expect(s.selectedMission).toBe('m-spec-0000-0000');
+    expect(s.rowCursor).toBe(0);
+    ({ s } = press(s, '\r'));
+    expect(s.focus).toBe('tasks');
+  });
+
+  test('enter opens detail, esc returns', () => {
+    let { s } = press(fixtureState(), '\r');
+    expect(s.mode).toEqual({ kind: 'detail', taskId: 't-name' });
+    ({ s } = press(s, '\x1b'));
+    expect(s.mode).toEqual({ kind: 'list' });
+  });
+});
+
+describe('actions (R-6)', () => {
+  test('a answers a question inline: type, enter, one answer effect', () => {
+    const { s, effects } = press(on('installer hint'), 'a', 'Print the URL', '\r');
+    expect(effects).toEqual([{ type: 'action', action: 'answer', workerId: 'w-hint', taskId: 't-hint', title: 'installer hint', message: 'Print the URL' }]);
+    expect(s.mode).toEqual({ kind: 'list' });
+    expect(s.status?.text).toContain('Sending the answer');
+  });
+
+  test('an empty answer is not sent', () => {
+    const { effects, s } = press(on('installer hint'), 'a', '  ', '\r');
+    expect(effects).toEqual([]);
+    expect(s.status?.tone).toBe('error');
+  });
+
+  test('esc cancels an answer and backspace edits it', () => {
+    let { s, effects } = press(on('installer hint'), 'a', 'abc', { name: 'backspace' });
+    expect(s.mode).toMatchObject({ kind: 'input', text: 'ab' });
+    ({ s, effects } = press(s, '\x1b'));
+    expect(effects).toEqual([]);
+    expect(s.mode).toEqual({ kind: 'list' });
+  });
+
+  test('a on a row that is not asking says so', () => {
+    const { s, effects } = press(fixtureState(), 'a');
+    expect(effects).toEqual([]);
+    expect(s.status).toEqual({ text: '"name override" is not asking anything.', tone: 'error' });
+  });
+
+  test('m messages a running agent', () => {
+    const { effects } = press(fixtureState(), 'm', 'use the env var', '\r');
+    expect(effects).toEqual([{ type: 'action', action: 'message', workerId: 'w-name', taskId: 't-name', title: 'name override', message: 'use the env var' }]);
+  });
+
+  test('p pauses a running agent; not a waiting task', () => {
+    expect(press(fixtureState(), 'p').effects).toEqual([{ type: 'action', action: 'pause', workerId: 'w-name', taskId: 't-name', title: 'name override' }]);
+    const r = press(on('buildd top'), 'p');
+    expect(r.effects).toEqual([]);
+    expect(r.s.status?.text).toBe('No agent is running on "buildd top".');
+  });
+
+  test('x asks first; y stops, anything else keeps it running', () => {
+    let r = press(fixtureState(), 'x');
+    expect(r.effects).toEqual([]);
+    expect(r.s.mode).toMatchObject({ kind: 'confirm', workerId: 'w-name' });
+    const yes = press(r.s, 'y');
+    expect(yes.effects).toEqual([{ type: 'action', action: 'stop', workerId: 'w-name', taskId: 't-name', title: 'name override' }]);
+    const no = press(r.s, 'n');
+    expect(no.effects).toEqual([]);
+    expect(no.s.status?.text).toBe('Kept "name override" running.');
+  });
+
+  test('c claims a waiting task onto this runner; refused on a running one', () => {
+    expect(press(on('buildd top'), 'c').effects).toEqual([{ type: 'claim', taskId: 't-top', title: 'buildd top' }]);
+    expect(press(fixtureState(), 'c').effects).toEqual([]);
+  });
+
+  test('o opens the task', () => {
+    expect(press(on('docs page'), 'o').effects).toEqual([{ type: 'open', taskId: 't-docs' }]);
+  });
+
+  test('actions from the detail view go back to it', () => {
+    const { s, effects } = press(on('installer hint'), '\r', 'a', 'ok', '\r');
+    expect(effects[0]).toMatchObject({ action: 'answer', message: 'ok' });
+    expect(s.mode).toEqual({ kind: 'detail', taskId: 't-hint' });
+  });
+
+  test('/ filters by title; esc clears it', () => {
+    let { s } = press(fixtureState(), '/', 'docs', '\r');
+    expect(s.filter).toBe('docs');
+    expect(selectedRow(s, NOW)?.title).toBe('docs page');
+    ({ s } = press(s, '\x1b'));
+    expect(s.filter).toBe('');
+  });
+
+  test('q and ctrl-c quit; q while typing is just a letter', () => {
+    expect(press(fixtureState(), 'q').effects).toEqual([{ type: 'quit' }]);
+    expect(press(fixtureState(), '\x03').effects).toEqual([{ type: 'quit' }]);
+    const typing = press(fixtureState(), 'm', 'q');
+    expect(typing.effects).toEqual([]);
+    expect(typing.s.mode).toMatchObject({ text: 'q' });
+    expect(press(typing.s, '\x03').effects).toEqual([{ type: 'quit' }]);
+  });
+});
+
+describe('status line from the server answer', () => {
+  const answer: Effect = { type: 'action', action: 'answer', workerId: 'w', taskId: 't', title: 'installer hint', message: 'x' };
+  test('ok', () => {
+    expect(actionResultText(answer, { status: 200, body: { ok: true } })).toEqual({ text: 'Answer sent to "installer hint". The agent picks it up from here.', tone: 'ok' });
+  });
+  test('a refusal shows the server reason verbatim', () => {
+    expect(actionResultText(answer, { status: 409, body: { error: 'Worker is not waiting for input' } }))
+      .toEqual({ text: 'Answer refused: Worker is not waiting for input (HTTP 409)', tone: 'error' });
+    expect(actionResultText({ type: 'claim', taskId: 't', title: 'x' }, { status: 400, body: 'nope' }).text).toBe('Claim refused: nope (HTTP 400)');
+    expect(actionResultText(answer, { status: 502, body: {} }).text).toBe('Answer refused: HTTP 502');
+  });
+});

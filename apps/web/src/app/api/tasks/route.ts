@@ -316,6 +316,7 @@ export async function GET(req: NextRequest) {
             outputRequirement: true,
             missionId: true,
             dependsOn: true,
+            roleSlug: true,
             createdAt: true,
             updatedAt: true,
           },
@@ -327,9 +328,20 @@ export async function GET(req: NextRequest) {
                 repo: true,
               },
             },
+            // `buildd top` groups a runner's work by mission and names why a
+            // task waits (a held mission, one a person runs from their session).
+            mission: {
+              columns: {
+                id: true,
+                title: true,
+                isHeld: true,
+                executor: true,
+              },
+            },
           },
         })
       : [];
+    const listedTasks = await withTaskListAggregates(allTasks, workspaceIds, terminalStatuses);
 
     // Stale-while-revalidate: refresh stale PR state for workers in these
     // workspaces after the response is sent, pushing updates via WORKER_PROGRESS.
@@ -346,7 +358,7 @@ export async function GET(req: NextRequest) {
     }
 
     return jsonResponse({
-      tasks: allTasks,
+      tasks: listedTasks,
       budgetWindows: apiAccount ? {
         claude: {
           resetAt: apiAccount.budgetResetsAt?.toISOString?.() ?? apiAccount.budgetResetsAt ?? null,
@@ -367,6 +379,58 @@ export async function GET(req: NextRequest) {
     const detail = error instanceof Error ? error.message : String(error);
     console.error('Get tasks error:', error);
     return NextResponse.json({ error: 'Failed to get tasks', detail }, { status: 500 });
+  }
+}
+
+/**
+ * Two counts the full list's rows cannot give `buildd top`, which sees only
+ * this list (active tasks plus a day of finished ones, capped):
+ *   - mission.taskCounts { done, total } over EVERY task of each listed
+ *     mission in the caller's workspaces, not just the listed ones;
+ *   - prMergedAt on a finished task whose PR has merged.
+ * Best effort: a failed aggregate leaves the list as it was.
+ */
+async function withTaskListAggregates<T extends { id: string; status: string; missionId: string | null; mission?: unknown }>(
+  rows: T[],
+  workspaceIds: string[],
+  terminalStatuses: readonly string[],
+): Promise<Array<T & { prMergedAt?: unknown }>> {
+  const missionIds = [...new Set(rows.map(t => t.missionId).filter((id): id is string => !!id))];
+  const finishedIds = rows.filter(t => terminalStatuses.includes(t.status)).map(t => t.id);
+  if (missionIds.length === 0 && finishedIds.length === 0) return rows;
+  try {
+    const [counts, merged] = await Promise.all([
+      missionIds.length > 0
+        ? db.select({
+            missionId: tasks.missionId,
+            done: sql<number>`count(*) filter (where ${tasks.status} = 'completed')::int`,
+            total: sql<number>`count(*)::int`,
+          })
+            .from(tasks)
+            .where(and(inArray(tasks.missionId, missionIds), inArray(tasks.workspaceId, workspaceIds)))
+            .groupBy(tasks.missionId)
+        : Promise.resolve([] as Array<{ missionId: string | null; done: number; total: number }>),
+      finishedIds.length > 0
+        ? db.select({ taskId: workers.taskId, mergedAt: sql<string>`max(${workers.mergedAt})` })
+            .from(workers)
+            .where(and(inArray(workers.taskId, finishedIds), isNotNull(workers.mergedAt)))
+            .groupBy(workers.taskId)
+        : Promise.resolve([] as Array<{ taskId: string | null; mergedAt: string }>),
+    ]);
+    const countBy = new Map(counts.map(c => [c.missionId, { done: Number(c.done) || 0, total: Number(c.total) || 0 }]));
+    const mergedBy = new Map(merged.map(m => [m.taskId, m.mergedAt]));
+    return rows.map(t => {
+      const taskCounts = t.missionId ? countBy.get(t.missionId) : undefined;
+      const mergedAt = mergedBy.get(t.id);
+      return {
+        ...t,
+        ...(taskCounts && t.mission && typeof t.mission === 'object' ? { mission: { ...t.mission, taskCounts } } : {}),
+        ...(mergedAt ? { prMergedAt: mergedAt } : {}),
+      };
+    });
+  } catch (err) {
+    console.error('[tasks] list aggregates failed:', err);
+    return rows;
   }
 }
 
