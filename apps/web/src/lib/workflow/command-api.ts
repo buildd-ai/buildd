@@ -32,7 +32,8 @@
  * The operations are the seam's door functions (seam.ts), unchanged: the same
  * code runs here, and on the web host in shadow (kernel-client.ts).
  */
-import { parseKeyRing, verifyRequest } from '@buildd/dispatch-contract';
+import { verifyRequest } from '@buildd/dispatch-contract';
+import { commandKeyRing } from './command-keys';
 import type { DrainSummary } from './effects';
 import { kernelHost } from './kernel-host';
 import { postgresCommandLedger, type CommandLedger, type StoredAnswer } from './command-ledger';
@@ -172,19 +173,8 @@ export async function requestHash(b: Pick<CommandRequest, 'op' | 'input' | 'prin
 
 // ── Keys ────────────────────────────────────────────────────────────────────
 
-/**
- * The command key ring: `KERNEL_COMMAND_SECRET` (`keyId:secret[,keyId:secret]`,
- * two ids live during rotation), and nothing else. Unset: empty. The control
- * plane then refuses every command, and the web host never submits one (it runs
- * the package itself, kernel-client.ts): the secret on both hosts is the switch.
- */
-export function commandKeyRing(env: Record<string, string | undefined> = process.env): Record<string, string> {
-  return parseKeyRing(env.KERNEL_COMMAND_SECRET);
-}
-
-/** True when this process holds a command key: the switch that lets it submit or apply commands. */
-export const commandsConfigured = (env: Record<string, string | undefined> = process.env): boolean =>
-  Object.keys(commandKeyRing(env)).length > 0;
+// The key ring lives in command-keys.ts (no database code), re-exported here.
+export { commandKeyRing, commandsConfigured } from './command-keys';
 
 // ── The endpoint ────────────────────────────────────────────────────────────
 

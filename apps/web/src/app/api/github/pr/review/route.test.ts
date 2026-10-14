@@ -506,6 +506,34 @@ describe('POST /api/github/pr/review — idempotency', () => {
     const current = { state: 'AWAITING_REVIEW', version: 3, head: 'h', round: 1 };
     afterEach(() => { mockRequestKernelReview.mockReset(); mockRequestKernelReview.mockResolvedValue({ handled: false }); });
 
+    describe('cut over to the control plane (workflow-kernel-library §3)', () => {
+      let cp: ReturnType<typeof import('@/lib/workflow/testing/cut-over').cutOver> | null = null;
+      afterEach(() => { cp?.restore(); cp = null; });
+
+      it('the control plane unreachable: 503 naming it, and no legacy reviewer is created in its place', async () => {
+        const { cutOver } = await import('@/lib/workflow/testing/cut-over');
+        cp = cutOver();
+        mockRequestKernelReview.mockClear();
+        mockCreateReviewerTask.mockClear();
+        const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+        expect(res.status).toBe(503);
+        expect(await res.json()).toMatchObject({ code: 'control_plane_unavailable', controlPlane: true, retryable: true, idempotencyKey: expect.stringMatching(/^request_review:/) });
+        expect(cp.calls.map((c) => c.op)).toContain('request_review');
+        expect(mockRequestKernelReview).not.toHaveBeenCalled();
+        expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+      });
+
+      it('the control plane refuses the command: 403, not a 500, and no legacy reviewer', async () => {
+        const { cutOver, refusedByControlPlane } = await import('@/lib/workflow/testing/cut-over');
+        cp = cutOver({ reply: refusedByControlPlane });
+        mockCreateReviewerTask.mockClear();
+        const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+        expect(res.status).toBe(403);
+        expect(await res.json()).toMatchObject({ code: 'control_plane_refused' });
+        expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+      });
+    });
+
     it('is T5 on the live head and never creates a legacy reviewer', async () => {
       mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'applied', transitionId: 't', deliveryId: 'd', version: 4, decision: {} } });
       const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));

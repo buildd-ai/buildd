@@ -1062,7 +1062,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   // Every rail above passed. A kernel-owned PR is merged by the kernel (T15 →
   // merge_call → T16 → verify_merge → PrMerged), which also owns the
   // post-merge work; any other PR merges here as before.
-  const kernelLand = deps.landThroughKernel ?? (await import('@/lib/workflow/seam')).landThroughKernel;
+  const kernelLand = deps.landThroughKernel ?? (await import('@/lib/workflow/kernel-client')).landThroughKernel;
   const kernelOverride = kernelOverrideFor(actor, override);
   const slotted = await mergeInSurfaceSlot(surfaceOrder, async () => {
     const kernel = await kernelLand({
