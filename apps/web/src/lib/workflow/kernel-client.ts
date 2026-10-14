@@ -347,8 +347,8 @@ export function principalOfActor(actor: string | null | undefined): KernelPrinci
 /** How many more times a door submits after an `unknown` outcome, always with the same key. */
 export const DOOR_UNKNOWN_RETRIES = 2;
 /**
- * One door call's whole budget, every submission and retry included. The door routes set
- * `maxDuration = 60`, so it fits with room for the route's own work; a merge door holds its
+ * One door call's whole budget, every submission and retry included. It fits well inside the
+ * routes' function limit (the project default); a merge door holds its
  * surface's merge slot (withMergeSlot) for all of it.
  */
 export const DOOR_BUDGET_MS = 20_000;

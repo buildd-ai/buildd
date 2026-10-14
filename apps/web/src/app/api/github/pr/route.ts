@@ -76,9 +76,6 @@ import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
 import { findStackedReleaseForBase } from '@/lib/early-release-stacking';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
-// A door call to the control plane is bounded at DOOR_BUDGET_MS (20 s, kernel-client.ts); this leaves the route room.
-export const maxDuration = 60;
-
 
 /**
  * Request a review for a task PR that targets a mission's integration branch.

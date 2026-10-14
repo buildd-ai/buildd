@@ -27,9 +27,6 @@ import { canActOnWorkerPr } from '@/lib/worker-pr-access';
 import { agentRunMayActOnPr } from '@/lib/agent-capabilities/worker-pr';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
-// A door call to the control plane is bounded at DOOR_BUDGET_MS (20 s, kernel-client.ts); this leaves the route room.
-export const maxDuration = 60;
-
 // The acting run's task, as agentRunMayActOnPr reads it (same columns close_pr loads).
 const ACTING_TASK_COLUMNS = {
   id: true, roleSlug: true, mode: true, context: true, title: true, description: true, missionId: true,

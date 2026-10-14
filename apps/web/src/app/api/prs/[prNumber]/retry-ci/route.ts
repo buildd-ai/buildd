@@ -40,9 +40,6 @@ import { dependencyBotPushRefusal, isDependencyBotAuthor } from '@/lib/dependenc
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
-// A door call to the control plane is bounded at DOOR_BUDGET_MS (20 s, kernel-client.ts); this leaves the route room.
-export const maxDuration = 60;
-
 function bad(error: string, status: number, extra: Record<string, unknown> = {}) {
   return NextResponse.json({ error, ...extra }, { status });
 }

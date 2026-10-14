@@ -41,9 +41,6 @@ import { kernelDeliveryOfPr } from '@/lib/workflow/seam';
 import { doorErrorResponse, isDoorError, applyRecommendationThroughKernel } from '@/lib/workflow/kernel-client';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
-// A door call to the control plane is bounded at DOOR_BUDGET_MS (20 s, kernel-client.ts); this leaves the route room.
-export const maxDuration = 60;
-
 // A human choosing to apply a fix is a deliberate one-off, not another lap of
 // the bounded agent-only request-changes loop — it gets its own fresh budget
 // (see the "Apply dispatch" spec note) rather than continuing whatever the

@@ -396,8 +396,8 @@ the control plane, authenticated as the caller).
   `Idempotency-Key` header, when sent, is the command's key, and one key
   covers the whole door call: on an `unknown` outcome the door submits again
   with that same key (twice more at most, `DOOR_UNKNOWN_RETRIES`) inside one
-  door budget of 20 seconds (`DOOR_BUDGET_MS`; the door routes set
-  `maxDuration = 60`, and a merge door holds its surface's merge slot for the
+  door budget of 20 seconds (`DOOR_BUDGET_MS`, well inside the routes' function limit;
+  a merge door holds its surface's merge slot for the
   whole call). It never retries a refusal (4xx), the command's own failure on
   the control plane (`command_failed`, reported as the real error) or a local
   throw. Every door answers a door error in one shape (`doorErrorAnswer`): 503

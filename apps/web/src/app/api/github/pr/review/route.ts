@@ -47,9 +47,6 @@ import {
 import { requestingPerson } from '@/lib/request-person';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
-// A door call to the control plane is bounded at DOOR_BUDGET_MS (20 s, kernel-client.ts); this leaves the route room.
-export const maxDuration = 60;
-
 type Account = { id: string; teamId: string; taskScope?: TaskScope; sessionUserId?: string | null } & GrantScopedAccount;
 
 const FORCE_NEEDS_PERSON = 'force re-reviews a head that already has a verdict, which is a person\'s call: ask the owner, or re-review from the dashboard. Without force, a review is requested once the PR head moves.';

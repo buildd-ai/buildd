@@ -35,9 +35,6 @@ import { doorErrorResponse, isDoorError, requestReview as requestKernelReview } 
 import { workspaceRepo } from '@/lib/workflow/github-facts';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
-// A door call to the control plane is bounded at DOOR_BUDGET_MS (20 s, kernel-client.ts); this leaves the route room.
-export const maxDuration = 60;
-
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ prNumber: string }> }

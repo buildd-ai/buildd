@@ -37,9 +37,6 @@ import { kernelLandingView, type KernelLanding } from '@/lib/workflow/seam';
 import { doorErrorResponse, isDoorError, idempotencyKeyOf, landThroughKernel } from '@/lib/workflow/kernel-client';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
-// A door call to the control plane is bounded at DOOR_BUDGET_MS (20 s, kernel-client.ts); this leaves the route room.
-export const maxDuration = 60;
-
 /**
  * The dashboard's answer when the landing function did not merge. A refresh in
  * flight is accepted work (202); everything else is a refusal the card shows.
