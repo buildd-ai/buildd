@@ -31,6 +31,8 @@ import {
 } from './mission-pulse';
 import { deriveWorkKind, LIVE_WORKER_STATUSES, reduceToFrontier } from './task-presentation';
 import { buildMissionAdjacency, type AdjacencyGateRow } from './condensed-timeline';
+import type { DepReleaseArm } from './dep-gate-contract';
+import type { WaitingKind } from '@buildd/core/waiting-reason';
 import { classifyTaskFailure, type TaskFailureKind } from './task-failure-kind';
 import { boardTaskLabel } from './mission-board-label';
 import { resolveRunnerDisplay, runnerKey, type RunnerDisplay, type RunnerHeartbeatLike } from './runner-display';
@@ -129,6 +131,32 @@ export interface MissionBoardInput {
    * the claim gate judges them, so the Board does too (strip spec ST-2).
    */
   externalDeps?: readonly BoardExternalDepInput[];
+  /**
+   * What the claim gate's own SQL says about this mission's waiting work
+   * (`loadMissionGateFacts`): which arm released each edge its status did not,
+   * and one waiting cause per pending task. Absent: the status arm only.
+   */
+  gateFacts?: MissionGateFacts | null;
+}
+
+/** A dependency edge the claim gate releases by an arm other than its status (spec f7f67f1a P-1). */
+export interface ReleasedEdge {
+  dependentId: string;
+  dependencyId: string;
+  arm: DepReleaseArm;
+}
+
+export interface MissionGateFacts {
+  releasedEdges: readonly ReleasedEdge[];
+  /** One cause per waiting task; a task with no known cause is absent. */
+  waitingKinds: Readonly<Record<string, WaitingKind>>;
+}
+
+/** The adjacency's `releasedBy` over loaded facts. */
+export function releasedByOf(facts: MissionGateFacts | null | undefined): (dependentId: string, dependencyId: string) => DepReleaseArm | undefined {
+  if (!facts || facts.releasedEdges.length === 0) return () => undefined;
+  const byEdge = new Map(facts.releasedEdges.map(e => [`${e.dependentId}>${e.dependencyId}`, e.arm]));
+  return (dependentId, dependencyId) => byEdge.get(`${dependentId}>${dependencyId}`);
 }
 
 /** A dependency row from outside the mission (`DependencyRow`'s shape). */
@@ -160,8 +188,10 @@ export interface BoardDep {
   id: string;
   scope: string | null;
   label: string;
-  /** The claim gate's verdict (`isGateSatisfied`): the dependency no longer holds this task. */
+  /** The claim gate's verdict: the dependency no longer holds this task. */
   satisfied: boolean;
+  /** Set when an arm other than the dependency's status released it (an early release, a force start, ...). */
+  releasedBy?: DepReleaseArm;
 }
 
 /** An unsatisfied dependency with no cell on the strip: another mission's task, or a non-deliverable. */
@@ -227,6 +257,8 @@ export interface BoardTask {
   /** Attempts beyond the first (↻2 = one retry). */
   attempt: number;
   waitingFor: { prompt: string; options: string[] } | null;
+  /** Why a queued task is not running (`MissionGateFacts.waitingKinds`); absent when unknown. */
+  waitingKind?: WaitingKind;
   /**
    * The raw row the Landed drawer's task actions derive their phase from
    * (`taskActionPhase`, the same function the task sheet uses): the task's own
@@ -671,7 +703,7 @@ export interface BoardCells {
 const sentence = (s: string) => (/[.!?]$/.test(s.trimEnd()) ? s.trimEnd() : `${s.trimEnd()}.`);
 
 export function buildBoardCells(
-  input: Pick<MissionBoardInput, 'tasks' | 'roles' | 'runnerHeartbeats' | 'externalDeps'>,
+  input: Pick<MissionBoardInput, 'tasks' | 'roles' | 'runnerHeartbeats' | 'externalDeps' | 'gateFacts'>,
 ): BoardCells {
   const roles = new Map((input.roles ?? []).map(r => [r.slug, r]));
   const displayOf = (w: BoardWorkerInput) => resolveRunnerDisplay(w, input.runnerHeartbeats);
@@ -704,14 +736,14 @@ export function buildBoardCells(
   };
   const adjacency = buildMissionAdjacency(
     cellRows.map(r => ({ ...r.task, workers: [] })),
-    { lookup: gateRow, resolveId: id => rowIdFor.get(id) ?? id },
+    { lookup: gateRow, resolveId: id => rowIdFor.get(id) ?? id, releasedBy: releasedByOf(input.gateFacts) },
   );
   const reach = cellRows.map(r => ({ id: r.task.id, dependsOn: adjacency.blockersOf.get(r.task.id)!.map(e => e.id) }));
 
   const tasks: Record<string, BoardTask> = {};
   for (const r of cellRows) {
     const t = r.task;
-    const deps: BoardDep[] = adjacency.blockersOf.get(t.id)!.map(e => ({ id: e.id, ...labelOf.get(e.id)!, satisfied: e.satisfied }));
+    const deps: BoardDep[] = adjacency.blockersOf.get(t.id)!.map(e => ({ id: e.id, ...labelOf.get(e.id)!, satisfied: e.satisfied, ...(e.releasedBy ? { releasedBy: e.releasedBy } : {}) }));
     const blockers = deps.filter(d => !d.satisfied).map(d => d.id);
     const offStrip: BoardOffStripBlocker[] = adjacency.offSetBlockersOf.get(t.id)!.map(id => ({
       id,
@@ -762,6 +794,7 @@ export function buildBoardCells(
       lines: own && (own.linesAdded || own.linesRemoved) ? { added: own.linesAdded ?? 0, removed: own.linesRemoved ?? 0 } : null,
       attempt: 1 + r.attempts.filter(a => a.workers.length > 0 || a.status !== 'pending').length,
       waitingFor: status === 'waiting' ? activeWorker?.waitingFor ?? null : null,
+      ...(BOARD_QUEUED.has(status) && input.gateFacts?.waitingKinds[t.id] ? { waitingKind: input.gateFacts.waitingKinds[t.id] } : {}),
       taskStatus: t.status,
       taskMode: t.mode ?? null,
       workerStatus: own?.status ?? null,

@@ -3,6 +3,7 @@ import { LIVE_WORKER_STATUSES, isGateSatisfied } from '@/lib/task-presentation';
 import type { SegmentState } from '@/lib/task-presentation';
 import { shouldSerializeByManifest } from '@buildd/core/path-overlap';
 import type { WaitingFor } from '@buildd/shared';
+import type { DepReleaseArm } from '@/lib/dep-gate-contract';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -96,8 +97,13 @@ export type AdjacencyGateRow = { status: string; workers: readonly AdjacencyWork
 
 export type AdjacencyTask = AdjacencyGateRow & { id: string; dependsOn?: readonly string[] | null };
 
-/** One on-set edge end, tagged by the claim gate. */
-export type AdjacencyEdge = { id: string; satisfied: boolean };
+/**
+ * One on-set edge end, tagged by the claim gate. `releasedBy` is set only when
+ * an arm other than the dependency's own status released it (an early release,
+ * a force start, a bypass: `DepReleaseArm`), read from the claim gate's SQL by
+ * `lib/mission-board-waiting.ts`.
+ */
+export type AdjacencyEdge = { id: string; satisfied: boolean; releasedBy?: DepReleaseArm };
 
 export type MissionAdjacency = {
   /** On-set dependencies per task, deduplicated, in `dependsOn` order. */
@@ -126,18 +132,26 @@ export type MissionAdjacency = {
  *   on-set edge to it counts as satisfied, an off-set one is ignored.
  * - `resolveId` folds a raw id onto the cell that carries it (an attempt or a
  *   re-creation onto its row). Default: identity.
+ * - `releasedBy` names the claim-gate arm that released the edge from a
+ *   dependent to a raw dependency id when its status alone does not (early
+ *   release, force start, bypass, ...). Default: none, the status arm only.
  *
  * O(N + E). Cycles terminate: their members get the component's released
  * depth + 1 (Rule CYC-1).
  */
 export function buildMissionAdjacency(
   tasks: readonly AdjacencyTask[],
-  opts: { lookup?: (id: string) => AdjacencyGateRow | undefined; resolveId?: (id: string) => string } = {},
+  opts: {
+    lookup?: (id: string) => AdjacencyGateRow | undefined;
+    resolveId?: (id: string) => string;
+    releasedBy?: (dependentId: string, rawDependencyId: string) => DepReleaseArm | undefined;
+  } = {},
 ): MissionAdjacency {
   const byId = new Map(tasks.map(t => [t.id, t]));
   const lookup = opts.lookup ?? ((id: string) => byId.get(id));
   const resolve = opts.resolveId ?? ((id: string) => id);
   const satisfied = (dep: AdjacencyGateRow) => isGateSatisfied(dep, dep.workers as AdjacencyWorker[]);
+  const releasedBy = opts.releasedBy ?? (() => undefined);
 
   const blockersOf = new Map<string, AdjacencyEdge[]>();
   const dependentsOf = new Map<string, AdjacencyEdge[]>();
@@ -155,19 +169,24 @@ export function buildMissionAdjacency(
       const target = resolve(raw);
       if (target === t.id) continue;
       const dep = lookup(raw);
+      const byStatus = dep ? satisfied(dep) : true;
+      const arm = byStatus ? undefined : releasedBy(t.id, raw);
       if (byId.has(target)) {
-        const ok = dep ? satisfied(dep) : true;
+        const edge: AdjacencyEdge = arm ? { id: target, satisfied: true, releasedBy: arm } : { id: target, satisfied: byStatus };
         const prev = onSet.get(target);
-        if (prev) prev.satisfied = prev.satisfied && ok;
-        else onSet.set(target, { id: target, satisfied: ok });
-      } else if (dep && !satisfied(dep) && !off.includes(raw)) {
+        if (!prev) onSet.set(target, edge);
+        else if (!edge.satisfied) { prev.satisfied = false; delete prev.releasedBy; }
+        else if (prev.satisfied && edge.releasedBy && !prev.releasedBy) prev.releasedBy = edge.releasedBy;
+      } else if (dep && !byStatus && !arm && !off.includes(raw)) {
         off.push(raw);
       }
     }
     blockersOf.set(t.id, [...onSet.values()]);
   }
   for (const t of tasks) {
-    for (const e of blockersOf.get(t.id)!) dependentsOf.get(e.id)!.push({ id: t.id, satisfied: e.satisfied });
+    for (const e of blockersOf.get(t.id)!) {
+      dependentsOf.get(e.id)!.push(e.releasedBy ? { id: t.id, satisfied: e.satisfied, releasedBy: e.releasedBy } : { id: t.id, satisfied: e.satisfied });
+    }
   }
 
   // Components: union-find over on-set edges, named by their first member.
