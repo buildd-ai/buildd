@@ -47,7 +47,16 @@ export type ReleaseCleanReason =
 
 export type ReleaseState =
   | { state: 'none' }
-  | { state: 'clean'; reason: ReleaseCleanReason }
+  | {
+      state: 'clean';
+      reason: ReleaseCleanReason;
+      /**
+       * `zero_queue` only: the baseline rung that emptied the queue. Still no
+       * count; it says whether "nothing to ship" rests on a healthy release or
+       * only on the prod branch head.
+       */
+      baselineSource?: ReleaseBaselineSource;
+    }
   | {
       state: 'unseeded';
       archetype: 'gated';
@@ -106,7 +115,7 @@ export function classifyReleaseState(input: {
     // No rung of the ladder resolved. Render nothing and expose no number —
     // this is the branch where `c3ea1d05` fabricated an epoch-keyed count.
     if (data.queueDepth.kind === 'unavailable') return { state: 'clean', reason: 'no_baseline' };
-    if (data.queueDepth.value === 0) return { state: 'clean', reason: 'zero_queue' };
+    if (data.queueDepth.value === 0) return { state: 'clean', reason: 'zero_queue', baselineSource: data.baselineSource };
 
     return {
       state: 'unseeded',
