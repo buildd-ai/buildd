@@ -257,6 +257,43 @@ describe('manage_specs', () => {
     expect([refused.isError, out(refused)]).toEqual([true, 'an agent run cannot attach work']);
   });
 
+  it('import is a dry run unless told otherwise, in the session workspace, and lists the files by area with what was skipped', async () => {
+    expect(WORKSPACE_SPEC_OPS).toContain('import');
+    api.mockResolvedValueOnce({
+      dryRun: true, repo: 'acme/app', commitSha: 'a'.repeat(40), counts: { create: 1, reimport: 0, skip: 1 },
+      byArea: [{ area: 'Billing', areaSpecId: SPEC, proposed: false, count: 1 }],
+      files: [
+        { path: 'docs/specs/invoices.md', action: 'create', spec: { title: 'Invoices' }, area: { specId: SPEC, title: 'Billing', proposed: false }, provenance: { commitSha: 'a'.repeat(40), prNumber: 12 }, duplicates: [{ specId: 'x1', title: 'Old invoices', relation: 'duplicate', p: 0.95 }] },
+        { path: 'docs/specs/INDEX.md', action: 'skip', reason: 'meta_file', message: 'INDEX.md is generated', area: null },
+      ],
+    });
+    const r = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'import' }, ctx()));
+    expect([api.mock.calls[0][0], JSON.parse(api.mock.calls[0][1].body)]).toEqual(['/api/specs/import', { workspaceId: WS }]);
+    expect(r).toContain('Dry run (nothing written) from acme/app@aaaaaaa');
+    expect(r).toContain('create: Invoices from docs/specs/invoices.md, last changed in #12');
+    expect(r).toContain('possible duplicate of "Old invoices"');
+    expect(r).toContain('docs/specs/INDEX.md: meta_file');
+
+    api.mockResolvedValueOnce({ dryRun: false, files: [], counts: { create: 0, reimport: 0, skip: 0 }, byArea: [] });
+    await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'import', dryRun: false, paths: ['docs/specs/invoices.md'] }, ctx());
+    expect(JSON.parse(api.mock.calls[1][1].body)).toEqual({ workspaceId: WS, dryRun: false, paths: ['docs/specs/invoices.md'] });
+  });
+
+  it('confirm_import POSTs the batch and passes an agent run\'s 403 through; an OAuth session is told where to confirm', async () => {
+    api.mockResolvedValueOnce({ confirmed: [{ specId: SPEC, title: 'Invoices', path: 'docs/specs/invoices.md', commitSha: 'b'.repeat(40) }], skipped: [{ specId: 'x2', path: 'docs/specs/moved.md', reason: 'stale', message: 'changed since bbbbbbb' }] });
+    const r = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'confirm_import', specIds: [SPEC, 'x2'] }, ctx()));
+    expect([api.mock.calls[0][0], JSON.parse(api.mock.calls[0][1].body)]).toEqual(['/api/specs/import/confirm', { specIds: [SPEC, 'x2'] }]);
+    expect(r).toContain('Confirmed 1 import(s), 1 not confirmed');
+    expect(r).toContain('docs/specs/moved.md: stale');
+
+    api.mockResolvedValueOnce({ confirmed: [], skipped: [], pending: { confirmUrl: 'https://buildd.dev/app/workspaces/w/specs#imported', specIds: [SPEC] } });
+    expect(out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'confirm_import', specIds: [SPEC] }, ctx()))).toContain('Nothing was confirmed');
+
+    api.mockRejectedValueOnce(new Error('API error: 403 - {"error":"an agent run cannot confirm"}'));
+    const refused: any = await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'confirm_import', specIds: [SPEC] }, ctx());
+    expect([refused.isError, out(refused)]).toEqual([true, 'an agent run cannot confirm']);
+  });
+
   it('create_draft and revise pass repoRefs through; get lists the cited repo specs; a refused reference is the route error', async () => {
     const refs = [{ path: 'docs/specs/checkout.md', commitSha: 'c'.repeat(40) }];
     api.mockResolvedValueOnce({ spec: { ...spec, version: 1 } });

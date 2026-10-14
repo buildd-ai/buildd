@@ -76,7 +76,7 @@ export function buildTaskRowMeta<T extends MissionFeedTaskInput>(row: FeedRow<T>
               : row.pr?.state === 'ci_failed' ? 'CI failing'
               : 'ready to merge';
           case 'failed': return 'failed';
-          default: return 'needs you';
+          default: return 'waiting on you';
         }
       }
       case 'moving': {

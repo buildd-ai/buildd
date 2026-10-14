@@ -27,7 +27,7 @@ describe('Home inbox', () => {
     expect(html).toContain('home-all-clear');
     expect(html).toContain('All clear.');
     // No empty Needs you section, no shipped placeholder, no worker rows.
-    expect(html).not.toContain('>Needs you<');
+    expect(html).not.toContain('>Waiting on you<');
     expect(html).not.toContain('Nothing shipped today');
     expect(html).not.toContain('In flight');
     expect(html.indexOf('home-all-clear')).toBeLessThan(html.indexOf('data-testid="ask"'));
@@ -92,12 +92,12 @@ describe('Home inbox', () => {
     expect(html).toContain('Systemic · failed');
     expect(html).toContain('3 affected');
     expect(html.indexOf('data-systemic')).toBeLessThan(html.indexOf('Keep the old route?'));
-    expect(html).toContain('2 things need you.');
+    expect(html).toContain('2 waiting on you.');
   });
   it('uses one card frame and a guarded merge action', () => {
     const items = deriveHomeAttention({ queue: [{ subjectKey: 'ready', chip: 'MERGE', prNumber: 7, workspaceId: 'example', taskTitle: 'A change', prUrl: 'https://github.com/example/project/pull/7', missionMergeBlockedReason: 'Other work is still running.' }], questions: [], held: [], missions: [] });
     const html = render(items);
-    expect(html).toContain('1 thing needs you.');
+    expect(html).toContain('1 waiting on you.');
     expect(html).toContain('1 open');
     expect(html).toContain('data-testid="needs-you-card"');
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Merge/);
@@ -120,7 +120,7 @@ it('renders a mixed list with named actions, concrete reasons and no generic fal
     { subjectKey: 'b', chip: 'REVIEW', prNumber: 8, workspaceId: 'example', taskTitle: 'Another change', prUrl: 'https://github.com/example/project/pull/8', humanReview: { label: 'Review PR', reason: 'Protected migration paths changed. More detail.', decision: 'Protected migration paths changed.', blockers: [] } },
     { subjectKey: 'c', chip: 'DECIDE' },
   ], questions: [], held: [], missions: [] }));
-  expect(html).toContain('2 things need you.');
+  expect(html).toContain('2 waiting on you.');
   expect(html).toContain('1 decision · 1 review');
   expect(html).toContain('Pick a rollout order');
   expect(html).toContain('>Choose…<');
@@ -162,7 +162,7 @@ describe('one decisions list at every width', () => {
     expect(cards).toHaveLength(3);
     // 4 reviews asking the same thing are one group row (its 3 members after the card).
     expect(html.match(/data-testid="needs-you-row"/g)).toHaveLength(5);
-    expect(html).toContain('8 things need you.');
+    expect(html).toContain('8 waiting on you.');
     // The headline is the section's header: no second "Needs you · N open" count.
     expect(html).not.toContain('>8 open<');
     expect(html).not.toContain('needs-you-count');

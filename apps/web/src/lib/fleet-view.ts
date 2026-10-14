@@ -221,7 +221,7 @@ export function buildFleetSnapshot(
         label, rest, name: t ? taskShortName(t) : undefined, title: t?.title ?? null, roleSlug: t?.roleSlug ?? null, roleName: role?.name ?? null, roleColor: role?.color ?? null,
         status: w.status, phase: w.phase ?? null,
         startedAt: new Date(iv.start).toISOString(),
-        question: w.status === 'waiting_input' ? w.waitingFor?.prompt ?? 'Needs input' : null,
+        question: w.status === 'waiting_input' ? w.waitingFor?.prompt ?? 'Has a question' : null,
       };
     } else {
       slot.last = {
@@ -392,15 +392,15 @@ export function fleetLabel(fleet: Pick<FleetSnapshot, 'runners'>): string {
 
 export type HeadlinePart = { text: string; tone?: 'accent' | 'success' };
 
-/** "5 agents working. 2 need you." / "No agents working. Multi-currency invoices shipped." */
+/** "5 agents working. 2 waiting on you." / "No agents working. Multi-currency invoices shipped." */
 export function homeHeadline(input: { live: number; needsYou: number; shipped?: string | null }): HeadlinePart[] {
   const { live, needsYou, shipped } = input;
-  const needs: HeadlinePart = { text: `${needsYou} need${needsYou === 1 ? 's' : ''} you.`, tone: 'accent' };
+  const needs: HeadlinePart = { text: `${needsYou} waiting on you.`, tone: 'accent' };
   if (live > 0) {
-    return [{ text: `${live} agent${live === 1 ? '' : 's'} working. ` }, needsYou > 0 ? needs : { text: 'Nothing needs input.' }];
+    return [{ text: `${live} agent${live === 1 ? '' : 's'} working. ` }, needsYou > 0 ? needs : { text: 'Nothing waiting on you.' }];
   }
   if (shipped) return [{ text: `No agents working. ${shipped} ` }, { text: 'shipped', tone: 'success' }, { text: '.' }];
-  return needsYou > 0 ? [{ text: 'No agents working. ' }, needs] : [{ text: 'No agents working. Nothing needs input.' }];
+  return needsYou > 0 ? [{ text: 'No agents working. ' }, needs] : [{ text: 'No agents working. Nothing waiting on you.' }];
 }
 
 /** Midnight of `now`'s calendar day in `tz` (IANA), epoch ms. Invalid zone → UTC. */

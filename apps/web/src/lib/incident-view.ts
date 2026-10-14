@@ -315,7 +315,7 @@ export function projectIncident(
     waiting: 'Waiting',
     inconclusive: "Couldn't confirm",
     unavailable: 'Automatic recovery unavailable',
-    decision: 'Needs you',
+    decision: 'Waiting on you',
     recovered: 'Recovered',
   };
 
@@ -334,7 +334,7 @@ export function projectIncident(
       options = decisionOptions.options.map(o => optionView(o, decisionOptions!.recommended === o.capability, r!, opts));
       options.sort((a, b) => Number(b.recommended) - Number(a.recommended));
     } else if (needsYou) {
-      options = [optionView({ capability: 'dismiss', label: 'Dismiss', effect: 'It leaves Needs You; Buildd keeps checking it.' }, true, r, opts)];
+      options = [optionView({ capability: 'dismiss', label: 'Dismiss', effect: 'It leaves your list; Buildd keeps checking it.' }, true, r, opts)];
     }
   }
 

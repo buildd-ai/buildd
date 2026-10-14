@@ -409,3 +409,43 @@ export function filingFacts(spec: { parentSpecId: string | null }, f: IndexFilin
 export function proposalAreas(proposal: { areas: ReadonlyArray<{ key: string; title: string; members: ReadonlyArray<{ specId: string }> }> } | null | undefined): AreaProposal[] {
   return (proposal?.areas ?? []).map((a) => ({ key: a.key, title: a.title, specIds: a.members.map((m) => m.specId) }));
 }
+
+/** One area's imported specs waiting for a person's confirmation (§18, R-19). */
+export interface ImportedGroup {
+  /** The area spec's id; null for imported specs not filed under one. */
+  areaId: string | null;
+  title: string;
+  specs: Array<{ id: string; title: string }>;
+}
+
+/**
+ * The imported, unconfirmed specs grouped by the area above them (their
+ * nearest `domain` ancestor), areas in title order and Unfiled last, so a
+ * person confirms one area's batch in one act. Retired and superseded specs
+ * are left out. Pure.
+ */
+export function importedByArea(input: readonly SpecIndexInput[]): ImportedGroup[] {
+  const byId = new Map(input.map((r) => [r.id, r]));
+  const areaOf = (r: SpecIndexInput): SpecIndexInput | null => {
+    const seen = new Set<string>();
+    let p = r.parentSpecId ? byId.get(r.parentSpecId) : undefined;
+    while (p && !seen.has(p.id)) {
+      if (p.scope === 'domain') return p;
+      seen.add(p.id);
+      p = p.parentSpecId ? byId.get(p.parentSpecId) : undefined;
+    }
+    return null;
+  };
+  const groups = new Map<string, ImportedGroup>();
+  for (const r of input) {
+    if (!r.imported || isClosed(r.status) || isArea(r.scope)) continue;
+    const a = areaOf(r);
+    const key = a?.id ?? '';
+    const g = groups.get(key) ?? { areaId: a?.id ?? null, title: a?.title ?? 'Unfiled', specs: [] };
+    g.specs.push({ id: r.id, title: r.title });
+    groups.set(key, g);
+  }
+  return [...groups.values()]
+    .map((g) => ({ ...g, specs: [...g.specs].sort((x, y) => x.title.localeCompare(y.title)) }))
+    .sort((x, y) => (x.areaId === null ? 1 : 0) - (y.areaId === null ? 1 : 0) || x.title.localeCompare(y.title));
+}

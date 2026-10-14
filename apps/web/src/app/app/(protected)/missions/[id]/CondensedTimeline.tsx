@@ -838,7 +838,7 @@ function TimelineView({
       {/* ── WAITING ON YOU ─────────────────────────────────────────── */}
       {waitingOnYou.length > 0 && (
         <div>
-          <SectionLabel>Needs input</SectionLabel>
+          <SectionLabel>Questions for you</SectionLabel>
           <ChainList
             chains={waitingOnYou}
             effectivePolicyTier={effectivePolicyTier}
@@ -851,7 +851,7 @@ function TimelineView({
       {runningSorted.length > 0 && (
         <div>
           <SectionLabel>
-            Running{runningSorted.some(c => c.head.latestWorker?.status === 'waiting_input') ? ' · Needs Input' : ''}
+            Running{runningSorted.some(c => c.head.latestWorker?.status === 'waiting_input') ? ' · has a question' : ''}
           </SectionLabel>
           <ChainList
             chains={runningSorted}

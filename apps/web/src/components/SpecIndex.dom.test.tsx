@@ -50,7 +50,7 @@ const render = (specs: Input[], options?: Parameters<typeof SpecIndex>[0]['optio
 function recorder() {
   const calls: Array<[string, ...unknown[]]> = [];
   const ok = (name: string) => async (...a: unknown[]) => { calls.push([name, ...a]); return { ok: true }; };
-  const actions: Actions = { acceptSuggestion: ok('accept'), dismissSuggestion: ok('dismiss'), undoFiling: ok('undo'), acceptProposal: ok('proposal') };
+  const actions: Actions = { acceptSuggestion: ok('accept'), dismissSuggestion: ok('dismiss'), undoFiling: ok('undo'), acceptProposal: ok('proposal'), confirmImports: ok('confirm') };
   return { calls, actions };
 }
 
@@ -188,6 +188,29 @@ describe('SpecIndex filings (§17)', () => {
     await act(async () => { (q('[data-testid="spec-index-possible-accept"]') as HTMLElement).click(); });
     expect(calls).toEqual([['proposal', 'cooking']]);
     expect(q('[data-testid="spec-index-possible-done"]')!.textContent).toContain('Cooking is an area now');
+  });
+});
+
+describe('SpecIndex imports (§18, R-19)', () => {
+  it('lists imported specs per area, and a person confirms one area in one act', async () => {
+    const calls: unknown[] = [];
+    const specs = [area('a1', 'Billing'), draft('f1', 'a1', { imported: true, title: 'Invoices' }), draft('f2', 'a1', { imported: true, title: 'Refunds' }), draft('f3', null, { imported: true, title: 'Loose' })];
+    act(() => root.render(<SpecIndex specs={specs} options={{ now: now.getTime() }} canConfirm actions={{ confirmImports: async (ids) => { calls.push(ids); return { ok: true, confirmed: 1, stale: 1 }; } }} />));
+    expect(q('[data-testid="spec-index-imported"] h2')!.textContent).toContain('Imported, waiting for confirmation');
+    const groups = qa('[data-testid="spec-index-imported-group"]');
+    expect(groups.map((g) => g.getAttribute('data-area-id'))).toEqual(['a1', '']);
+    expect(groups[0]!.textContent).toContain('Billing: 2 specs');
+    await act(async () => { (groups[0]!.querySelector('[data-testid="spec-index-confirm-imports"]') as HTMLElement).click(); });
+    expect(calls).toEqual([['f1', 'f2']]);
+    expect(groups[0]!.querySelector('[data-testid="spec-index-confirm-done"]')!.textContent).toContain('1 spec changed in the repo since the import');
+  });
+
+  it('a reader who cannot approve sees the imports but no confirm button; with none imported there is no group', () => {
+    render([area('a1', 'Billing'), draft('f1', 'a1', { imported: true })]);
+    expect(q('[data-testid="spec-index-imported"]')).not.toBeNull();
+    expect(q('[data-testid="spec-index-confirm-imports"]')).toBeNull();
+    render([area('a1', 'Billing'), draft('f1', 'a1')]);
+    expect(q('[data-testid="spec-index-imported"]')).toBeNull();
   });
 });
 

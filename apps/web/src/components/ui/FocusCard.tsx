@@ -85,7 +85,7 @@ export default function FocusCard({ meta, title, state, repairs, next, reason, e
           </>
         )}
         <TimeRow estimate={estimate} state={state} />
-        {needs != null && <><dt className="text-text-muted">Needs you</dt><dd>{needs}</dd></>}
+        {needs != null && <><dt className="text-text-muted">Waiting on you</dt><dd>{needs}</dd></>}
       </dl>
       {note && (
         <p className="flex gap-2 text-body leading-normal text-text-muted">

@@ -9,7 +9,7 @@ import {
 
 /** Accepting a suggestion here files nothing: the fixture answers in memory. */
 const ok = async () => ({ ok: true });
-const inMemory: IndexActions = { acceptSuggestion: ok, dismissSuggestion: ok, undoFiling: ok, acceptProposal: ok };
+const inMemory: IndexActions = { acceptSuggestion: ok, dismissSuggestion: ok, undoFiling: ok, acceptProposal: ok, confirmImports: async (ids) => ({ ok: true, confirmed: ids.length, stale: 0 }) };
 
 const OPTIONS = { now: SPEC_INDEX_FIXTURE_NOW };
 const NO_AREA_OPTIONS = { now: SPEC_INDEX_FIXTURE_NOW, proposals: SPEC_INDEX_NO_AREA_PROPOSALS };
@@ -24,7 +24,7 @@ export default function SpecIndexFixture() {
     <main className="mx-auto flex w-full max-w-3xl flex-col gap-10 px-4 py-6" data-testid="spec-index-fixture">
       <section className="flex flex-col gap-3">
         <h1 className="text-xl font-semibold text-text-primary">Specs</h1>
-        <SpecIndex specs={SPEC_INDEX_FIXTURE_SPECS} options={OPTIONS} actions={inMemory} />
+        <SpecIndex specs={SPEC_INDEX_FIXTURE_SPECS} options={OPTIONS} actions={inMemory} canConfirm />
       </section>
       <section className="flex flex-col gap-3" data-testid="spec-index-fixture-one-area">
         <h2 className="section-label text-text-muted">One area</h2>

@@ -4,7 +4,7 @@ import { runEndReason } from './fleet-view-end-reason';
 describe('runEndReason', () => {
   it('a live run says what it is doing', () => {
     expect(runEndReason({ status: 'running' })).toBe('Working');
-    expect(runEndReason({ status: 'waiting_input' })).toBe('Needs input');
+    expect(runEndReason({ status: 'waiting_input' })).toBe('Has a question');
     expect(runEndReason({ status: 'waiting_input', waitingFor: { type: 'pause' } })).toBe('Paused');
   });
 

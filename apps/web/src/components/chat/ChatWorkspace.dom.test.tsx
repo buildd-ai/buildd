@@ -439,7 +439,7 @@ describe('mission sheet (the summoned canvas over a mission)', () => {
 
   it('the context card: status badge, LANDED and GOAL counts, an insight line', async () => {
     await render(overlay());
-    expect(q('[data-testid="mission-context-status"]')?.textContent).toContain('Needs you');
+    expect(q('[data-testid="mission-context-status"]')?.textContent).toContain('Waiting on you');
     expect(q('[data-testid="mission-context-landed-count"]')?.textContent).toMatch(/^\d+\/\d+$/);
     expect(q('[data-testid="mission-context-goal-count"]')?.textContent).toMatch(/^\d+\/\d+$/);
     expect(q('[data-testid="mission-context-insight"]')?.textContent).toMatch(/needs? you/);
@@ -846,14 +846,14 @@ describe('desktop right panel (>= 1024px, docs/design/chat-v3-desktop.md "Dock")
     expect(dock.dataset.mode).toBe('needs');
     expect(cls(dock)).toEqual(expect.arrayContaining(['hidden', 'xl:flex']));
     expect(cls(dock)).not.toContain('lg:flex');
-    expect(q('[data-testid="chat-dock-crumbs"]')?.textContent).toMatch(/Needs you\s*\/\s*Task/i);
-    expect(q('[data-testid="dock-task-badge"]')?.textContent).toBe('Needs you');
+    expect(q('[data-testid="chat-dock-crumbs"]')?.textContent).toMatch(/Waiting on you\s*\/\s*Task/i);
+    expect(q('[data-testid="dock-task-badge"]')?.textContent).toBe('Has a question');
     expect(q('[data-testid="dock-task-title"]')?.className).toContain('font-voice');
     expect(q('[data-testid="dock-task-tries"]')?.textContent).toContain('2');
     expect(q('[data-testid="dock-task-insight"]')?.textContent).toContain('Round per line');
     const steps = qa('[data-testid="dock-happened-row"]').map(r => r.textContent);
     expect(steps[0]).toContain('Started the change');
-    expect(steps.at(-1)).toContain('Needs input.');
+    expect(steps.at(-1)).toContain('Has a question.');
     expect(qa('[data-testid="dock-action"]').map(b => b.textContent)).toEqual(['Answer it', 'Ask about it']);
   });
 

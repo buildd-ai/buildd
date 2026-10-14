@@ -209,8 +209,8 @@ are.
   separable in every split, so session usage never disappears into runner usage.
 - Virtual dollars are labelled as list-price value, not spend, wherever they
   are shown.
-- The surfaces that today switch between cost and tokens on
-  `accounts.authType` (`WorkerStats.tsx`, `LiveWorkerActivity.tsx`) switch on
+- The surface that today switches between cost and tokens on
+  `accounts.authType` (`LiveWorkerActivity.tsx`) switches on
   the worker's basis instead.
 - The "no cost recorded" state (`usage-and-cost-accounting.md` AC-5) still
   applies per basis: a basis with no recorded cost reads as unavailable, not

@@ -5,7 +5,7 @@ import { isUuid } from '@/lib/uuid';
 import { requestingPerson } from '@/lib/request-person';
 import { holdsInWorkspace } from '@/lib/team-access';
 import { appBaseUrl } from '@/lib/app-url';
-import { fail, reach, type SpecCaller, type SpecError, type SpecRevisionRow, type SpecRow } from './store';
+import { fail, importedRefusal, reach, type SpecCaller, type SpecError, type SpecRevisionRow, type SpecRow } from './store';
 import { signSpecApprovalRequest, specApprovalConfirmPath, verifySpecApprovalRequest } from './approval-request';
 import { emit } from '@/lib/core-emit';
 import { after } from 'next/server';
@@ -118,7 +118,15 @@ export async function submitSpecRevision(caller: SpecCaller, specId: string, inp
 /** What an approve over MCP or chat returns: the link a person opens to confirm it. */
 export interface PendingSpecApproval { confirmUrl: string; revision: number; expiresAt: string }
 
-export async function approveSpecRevision(caller: SpecCaller, specId: string, input: { revision: unknown; expectedVersion: unknown }): Promise<{ ok: true; spec: SpecRow; revision: SpecRevisionRow } | { ok: true; spec: SpecRow; pending: PendingSpecApproval } | SpecError> {
+export async function approveSpecRevision(caller: SpecCaller, specId: string, input: { revision: unknown; expectedVersion: unknown }, opts: {
+  /**
+   * A person confirming an import (§18, R-19, ./import.ts), which has checked
+   * the repo file is unchanged since the imported commit. The confirmation is
+   * recorded on the spec in the approving statement. Without it, an imported
+   * spec is refused: its file may have moved, and only confirmation checks.
+   */
+  importConfirmation?: { note: string };
+} = {}): Promise<{ ok: true; spec: SpecRow; revision: SpecRevisionRow } | { ok: true; spec: SpecRow; pending: PendingSpecApproval } | SpecError> {
   if (!Number.isInteger(input.revision)) return fail(400, 'revision (the spec revision you read and are approving) is required');
   const loaded = await loadForDecision(caller, specId, input.expectedVersion);
   if ('ok' in loaded) return loaded;
@@ -126,6 +134,12 @@ export async function approveSpecRevision(caller: SpecCaller, specId: string, in
   const n = input.revision as number;
   if (n !== spec.headRevision) return fail(409, `Revision ${n} is not the head (revision ${spec.headRevision}); only the head is approved. Read it, then approve it.`, { currentVersion: spec.version });
   if (spec.approvedRevision === n) return fail(409, `Revision ${n} is already approved`, { currentVersion: spec.version });
+  if (!opts.importConfirmation) {
+    const refused = importedRefusal(spec);
+    if (refused) return refused;
+  } else if (spec.repoSource?.state !== 'imported' || spec.repoSource.revision !== n) {
+    return fail(409, 'This spec has no imported revision waiting for confirmation', { code: 'not_imported' });
+  }
 
   if (caller.kind === 'account') {
     // A bearer session: the person's own, but maybe driven by an agent. Ask, don't approve.
@@ -141,15 +155,23 @@ export async function approveSpecRevision(caller: SpecCaller, specId: string, in
   }
 
   const label = `user:${approver}`;
+  // A confirmed import records who, when and what, with the approval (R-19), and buildd is the source from then on.
+  const confirmJson = opts.importConfirmation
+    ? JSON.stringify({ state: 'confirmed', confirmedBy: label, note: opts.importConfirmation.note })
+    : null;
   const rows = await db.execute(sql`
     WITH stamp AS (
       UPDATE spec_revisions SET approved_by = ${label}, approved_at = now()
       WHERE spec_id = ${specId}::uuid AND revision = ${n} AND approved_at IS NULL
-        AND EXISTS (SELECT 1 FROM specs WHERE id = ${specId}::uuid AND version = ${spec.version} AND head_revision = ${n})
+        AND EXISTS (SELECT 1 FROM specs WHERE id = ${specId}::uuid AND version = ${spec.version} AND head_revision = ${n}
+          AND (${confirmJson}::jsonb IS NULL OR repo_source->>'state' = 'imported'))
       RETURNING revision
     )
-    UPDATE specs SET approved_revision = ${n}, status = 'approved', version = version + 1, updated_at = now()
+    UPDATE specs SET approved_revision = ${n}, status = 'approved', version = version + 1, updated_at = now(),
+      repo_source = CASE WHEN ${confirmJson}::jsonb IS NULL THEN repo_source
+        ELSE repo_source || ${confirmJson}::jsonb || jsonb_build_object('confirmedAt', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')) END
     WHERE id = ${specId}::uuid AND version = ${spec.version} AND head_revision = ${n} AND EXISTS (SELECT 1 FROM stamp)
+      AND (${confirmJson}::jsonb IS NULL OR repo_source->>'state' = 'imported')
     RETURNING id`);
   if (rowsOf(rows).length === 0) return conflictNow(specId);
   const [[after], [revision]] = await Promise.all([

@@ -11,11 +11,11 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import type { VisualReviewModel } from '@buildd/shared';
 import Link from 'next/link';
 import LiveWorkerActivity from './LiveWorkerActivity';
-import { StatusPill } from '@/components/ui/StatePill';
-import PrCard from '@/components/task/PrCard';
+import { StoredPrCard } from '@/components/task/StoredPrCard';
 import type { PrDisplayState } from '@/lib/pr-presentation';
-import WorkerStats from '@/components/task/WorkerStats';
 import TaskSummary from '@/components/task/TaskSummary';
+import type { TaskPrFacts } from '@/lib/task-sections';
+import { HeaderStatusPill, FactSheet, runnerFactRow, branchFactRow } from '@/app/app/(protected)/tasks/[id]/TaskSidePanel';
 import AiFeedback from '@/components/AiFeedback';
 import { deriveDisplayStatus } from '@/lib/task-presentation';
 import { taskActionPhase } from '@/lib/task-actions';
@@ -69,13 +69,21 @@ export interface TaskPanelData {
     completedAt: string | null;
     waitingFor: WaitingFor | null;
     branch: string | null;
+    /** The runner's name (runner-display), as the page's fact sheet shows it. Absent from older responses. */
+    runner?: string | null;
     milestones: Array<{ type: string; label: string; ts: number; [k: string]: unknown }> | null;
     account: { authType: string } | null;
   } | null;
   result: {
     summary: string | null;
     nextSuggestion: string | null;
+    /** `isFallbackSummary`: the summary is the worker's last message. Absent from older responses. */
+    fallback?: boolean;
   } | null;
+  /** The PR card's facts, decided by `taskPrFacts` from the PR worker. Absent from older responses. */
+  pr?: TaskPrFacts | null;
+  /** `taskHeaderMerged`: the header reads Merged. Absent from older responses. */
+  merged?: boolean;
   lastError: { excerpt: string; pattern: string | null; ts: string } | null;
   blockedByCount: number;
   /** `classifyTaskFailure`: null unless the task failed. */
@@ -280,7 +288,7 @@ export default function TaskPanelBody({ data, workspaceId, onChanged }: TaskPane
   });
   const displayStatus = deriveDisplayStatus(data.status, w?.status);
   const isRunning = phase === 'running';
-  const hasPr = !!w?.prUrl;
+  const facts = [...runnerFactRow(w?.runner), ...branchFactRow(w?.branch)];
 
   return (
     <div className="space-y-4">
@@ -289,7 +297,7 @@ export default function TaskPanelBody({ data, workspaceId, onChanged }: TaskPane
       <div>
         <div className="flex flex-wrap items-center gap-2">
           <span data-testid="task-header-status" data-status={displayStatus}>
-            <StatusPill status={displayStatus} />
+            <HeaderStatusPill status={displayStatus} merged={!!data.merged} />
           </span>
           {data.backend && (
             <span
@@ -354,18 +362,8 @@ export default function TaskPanelBody({ data, workspaceId, onChanged }: TaskPane
         />
       )}
 
-      {/* PR → review CI state + merge (in GitHub) without leaving to find it */}
-      {hasPr && w && (
-        <PrCard
-          prUrl={w.prUrl!}
-          prNumber={w.prNumber}
-          prLifecycleStatus={w.prLifecycleStatus}
-          prState={w.prState ?? null}
-          linesAdded={w.linesAdded}
-          linesRemoved={w.linesRemoved}
-          filesChanged={w.filesChanged}
-        />
-      )}
+      {/* PR → the task page's stored PR card, its facts decided by taskPrFacts */}
+      {data.pr && <StoredPrCard {...data.pr} />}
 
       {/* ── Details ── */}
       {/* The task page's own description: markdown, clamped with Show more. */}
@@ -375,21 +373,11 @@ export default function TaskPanelBody({ data, workspaceId, onChanged }: TaskPane
         </div>
       )}
 
-      {/* Worker stats — the run's shape once it's not live (live view owns these) */}
-      {w && !isRunning && (
-        <WorkerStats
-          turns={w.turns}
-          commitCount={w.commitCount}
-          costUsd={w.costUsd}
-          inputTokens={w.inputTokens}
-          outputTokens={w.outputTokens}
-          costBasis={w.costBasis ?? null}
-          branch={w.branch}
-        />
-      )}
+      {/* The page's fact sheet: where the run happened */}
+      <FactSheet rows={facts} />
 
       {data.result?.summary && (
-        <TaskSummary summary={data.result.summary} entityId={`task-${data.id}-summary`} label="Summary" />
+        <TaskSummary summary={data.result.summary} entityId={`task-${data.id}-summary`} fallback={!!data.result.fallback} label="Summary" />
       )}
 
       <TaskProvenance records={data.records} origin={data.origin} />

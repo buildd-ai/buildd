@@ -2814,6 +2814,32 @@ export interface SpecRepoCopyState {
   updatedAt: string;
 }
 
+/**
+ * Where an imported spec came from (living-specs.md §18, R-18/R-19): the repo
+ * file it was read from, at which commit and blob, and the PR that last merged
+ * a change to it. `imported`: the repo file is still the source, nothing is
+ * generated over it, and the head revision is the imported one. `confirmed`: a
+ * person confirmed the import (who, when and the note say so); buildd is the
+ * source from then on.
+ */
+export interface SpecRepoSource {
+  state: 'imported' | 'confirmed';
+  path: string;
+  commitSha: string;
+  blobSha: string;
+  prNumber: number | null;
+  /** The imported revision the head is (re-imports move it). */
+  revision: number;
+  importedAt: string;
+  confirmedBy?: string;
+  confirmedAt?: string;
+  /** "confirmed import of <path>@<short sha>". */
+  note?: string;
+}
+
+/** On a spec revision written by an import: the file it is, exactly as read. */
+export interface SpecRevisionImport { path: string; commitSha: string; blobSha: string; prNumber: number | null }
+
 export const specs = pgTable('specs', {
   id: uuid('id').primaryKey().defaultRandom(),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
@@ -2834,12 +2860,16 @@ export const specs = pgTable('specs', {
   // The generated repo copy's PR (R-15/R-35), in a workspace that opted in to a
   // native source. NULL: never generated.
   repoCopy: jsonb('repo_copy').$type<SpecRepoCopyState>(),
+  // A spec imported from a repo file (R-18): its provenance and whether a
+  // person has confirmed it (R-19). NULL: not imported.
+  repoSource: jsonb('repo_source').$type<SpecRepoSource>(),
   createdBy: text('created_by'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   workspaceIdx: index('specs_workspace_idx').on(t.workspaceId),
   parentIdx: index('specs_parent_idx').on(t.parentSpecId),
+  repoSourcePathIdx: index('specs_repo_source_path_idx').on(t.workspaceId, sql`(${t.repoSource}->>'path')`),
 }));
 
 export const specRevisions = pgTable('spec_revisions', {
@@ -2860,6 +2890,9 @@ export const specRevisions = pgTable('spec_revisions', {
   // version: an artifact at a revision number, a URL or a design-tool file at a
   // version id. Immutable with the revision, so an approval records it too.
   design: jsonb('design').$type<{ kind: 'artifact' | 'url' | 'figma'; ref: string; version: string; screens?: Array<{ id: string; name: string }> }>(),
+  // Set on a revision an import wrote (R-18): the repo file it is, as read. An
+  // imported revision is never approved except by a person's confirmation.
+  imported: jsonb('imported').$type<SpecRevisionImport>(),
   // Set once by a person's approval (G2); never for an agent.
   approvedBy: text('approved_by'),
   approvedAt: timestamp('approved_at', { withTimezone: true }),

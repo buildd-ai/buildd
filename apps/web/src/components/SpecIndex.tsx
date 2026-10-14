@@ -5,8 +5,8 @@ import { useMemo, useState, type CSSProperties } from 'react';
 import Card from '@/components/ui/Card';
 import Lede from '@/components/ui/Lede';
 import {
-  MAP_BLOCK_MIN_HEIGHT_PX, MAP_BLOCK_MIN_WIDTH_PX, MIX_STATES, sameFilter, specIndexView,
-  type IndexArea, type IndexFilter, type IndexMap, type IndexRow, type Mix, type PossibleArea,
+  MAP_BLOCK_MIN_HEIGHT_PX, MAP_BLOCK_MIN_WIDTH_PX, MIX_STATES, importedByArea, sameFilter, specIndexView,
+  type ImportedGroup, type IndexArea, type IndexFilter, type IndexMap, type IndexRow, type Mix, type PossibleArea,
   type SpecIndexInput, type SpecIndexOptions, type SpecMixState, type SpecSuggestion,
 } from '@/lib/specs/index-view';
 
@@ -40,6 +40,8 @@ export interface IndexActions {
   undoFiling: (specId: string, filingId: string) => Promise<ActionResult>;
   /** Create one area of the taxonomy proposal (organize with that key) and file its members. */
   acceptProposal: (key: string) => Promise<ActionResult>;
+  /** Confirm a batch of imported specs (§18, R-19): approves each whose repo file is unchanged. */
+  confirmImports: (specIds: string[]) => Promise<ActionResult & { confirmed?: number; stale?: number }>;
 }
 
 async function send(url: string, method: string, body: unknown, failed: string): Promise<ActionResult> {
@@ -61,6 +63,12 @@ export const apiActions = (workspaceId: string | null): IndexActions => ({
   acceptProposal: (key) => workspaceId
     ? send('/api/specs/organize', 'POST', { workspaceId, dryRun: false, areas: [key] }, ACTION_FAILED)
     : Promise.resolve({ ok: false, error: ACTION_FAILED }),
+  confirmImports: async (specIds) => {
+    const res = await fetch('/api/specs/import/confirm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ workspaceId, specIds }) }).catch(() => null);
+    const got = (await res?.json().catch(() => ({}))) as { error?: string; confirmed?: unknown[]; skipped?: Array<{ reason: string }> } | undefined;
+    if (!res?.ok) return { ok: false, error: got?.error ?? ACTION_FAILED };
+    return { ok: true, confirmed: got?.confirmed?.length ?? 0, stale: (got?.skipped ?? []).filter((x) => x.reason === 'stale').length };
+  },
 });
 const ACTION_FAILED = 'That did not work. Try again.';
 
@@ -312,22 +320,58 @@ function ProposalAccept({ possible, actions, canAct }: { possible: PossibleArea;
   );
 }
 
+const specWord = (n: number) => `${n} spec${n === 1 ? '' : 's'}`;
+
+/** One area's imported specs and the person's one act that confirms them all (§18, R-19). */
+function ImportedBatch({ group, actions, canConfirm }: { group: ImportedGroup; actions: IndexActions; canConfirm: boolean }) {
+  const [state, setState] = useState<Busy>('open');
+  const go = async () => {
+    setState('busy');
+    const r = await actions.confirmImports(group.specs.map((x) => x.id)).catch(() => ({ ok: false, error: ACTION_FAILED }) as ActionResult & { confirmed?: number; stale?: number });
+    if (!r.ok) return setState({ error: r.error ?? ACTION_FAILED });
+    const stale = r.stale ? ` ${specWord(r.stale)} changed in the repo since the import, so ${r.stale === 1 ? 'it stays' : 'they stay'} imported: run the import again, then confirm.` : '';
+    setState({ done: `Confirmed ${specWord(r.confirmed ?? 0)}. buildd is their source now.${stale}` });
+  };
+  return (
+    <div className="flex flex-col gap-1" data-testid="spec-index-imported-group" data-area-id={group.areaId ?? ''}>
+      <div className="flex flex-wrap items-center justify-between gap-2 px-2">
+        <p className="text-body text-text-primary [overflow-wrap:anywhere]">{group.title}: {specWord(group.specs.length)}</p>
+        {canConfirm && state !== 'busy' && !(typeof state === 'object' && 'done' in state) ? (
+          <button type="button" className="btn btn-sm h-11 md:h-8" onClick={go} data-testid="spec-index-confirm-imports">
+            Confirm all in {group.title}
+          </button>
+        ) : null}
+      </div>
+      <ul className="flex flex-col px-2">
+        {group.specs.map((x) => (
+          <li key={x.id}><Link href={`/app/specs/${x.id}`} className="text-meta text-text-secondary hover:text-text-primary hover:underline [overflow-wrap:anywhere]">{x.title}</Link></li>
+        ))}
+      </ul>
+      {typeof state === 'object' && 'done' in state ? <p className="px-2 text-meta text-status-success" data-testid="spec-index-confirm-done">{state.done}</p> : null}
+      {typeof state === 'object' && 'error' in state ? <p className="px-2 text-meta text-status-error">{state.error}</p> : null}
+    </div>
+  );
+}
+
 /**
  * A workspace's spec index (living-specs.md §19): a cluster map of its areas
  * above an outline grouped by product and area, Unfiled last with each
  * spec's suggestion. Tapping the map filters the outline in place; the URL
  * never changes. With one area or none, the map is one line of words.
  */
-export default function SpecIndex({ specs, options, workspaceId = null, canAct = true, actions: given }: {
+export default function SpecIndex({ specs, options, workspaceId = null, canAct = true, canConfirm = false, actions: given }: {
   specs: SpecIndexInput[];
   options?: SpecIndexOptions;
   /** For accepting a taxonomy proposal's area (organize is per workspace). */
   workspaceId?: string | null;
   /** The reader may file, undo and dismiss (write access to the workspace's specs). */
   canAct?: boolean;
+  /** The reader approves specs here (approve_specs), so may confirm imports. */
+  canConfirm?: boolean;
   actions?: Partial<IndexActions>;
 }) {
   const view = useMemo(() => specIndexView(specs, options), [specs, options]);
+  const imported = useMemo(() => importedByArea(specs), [specs]);
   const actions = useMemo(() => ({ ...apiActions(workspaceId), ...given }), [workspaceId, given]);
   const ctx: RowCtx = { actions, canAct };
   const [filter, setFilter] = useState<IndexFilter | null>(null);
@@ -359,6 +403,17 @@ export default function SpecIndex({ specs, options, workspaceId = null, canAct =
 
   return (
     <div className="flex flex-col gap-5" data-testid="spec-index">
+      {imported.length ? (
+        <Card className="flex flex-col gap-3" data-testid="spec-index-imported">
+          <h2 id="imported" className="flex flex-col gap-0.5 px-2">
+            <span className="text-body font-semibold text-text-primary">Imported, waiting for confirmation</span>
+            <span className="text-meta text-text-secondary">
+              Read from the repo. Until someone confirms them, the repo files stay their source and buildd writes nothing over them.
+            </span>
+          </h2>
+          {imported.map((g) => <ImportedBatch key={g.areaId ?? 'unfiled'} group={g} actions={actions} canConfirm={canConfirm} />)}
+        </Card>
+      ) : null}
       {view.map.kind === 'map' ? (
         <SpecMap map={view.map} filter={filter} onPick={pick} />
       ) : (
