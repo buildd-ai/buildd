@@ -32,7 +32,7 @@ beforeAll(async () => {
   // No similarity provider in this process: the corpus query is not what is under test.
   neighbourDeps.similar = async () => [];
 });
-afterEach(() => { organizeDeps.classify = undefined; organizeDeps.suggest = undefined; });
+afterEach(() => { organizeDeps.classify = undefined; organizeDeps.suggest = undefined; organizeDeps.propose = undefined; });
 
 async function newWorkspace(): Promise<string> {
   const [ws] = await q<{ id: string }>(sql`INSERT INTO workspaces (name, team_id, dispatch_transport) VALUES (${`w-${rand()}`}, ${teamId}::uuid, 'in_app') RETURNING id`);
@@ -209,9 +209,12 @@ describe('cold start (R-4)', () => {
       await spec(ws, 'Sessions', `${fm('auth')}# Sessions\nLogin password session token.\n`),
     ];
     const count = async () => (await q<{ n: number }>(sql`SELECT count(*)::int AS n FROM specs WHERE workspace_id = ${ws}::uuid`))[0]!.n;
+    // No measured model answers: the word-based fallback proposes, and the reply says so.
+    organizeDeps.propose = async () => ({ ran: false, reason: 'this team has no decision-model key' });
     const dry = await organizeWorkspace(user(), { workspaceId: ws });
     if (!dry.ok || dry.result.mode !== 'taxonomy' || !dry.result.dryRun) throw new Error('expected a taxonomy proposal');
     expect(dry.result.proposal.areas.map((a) => a.title).sort()).toEqual(['Auth', 'Billing', 'Search']);
+    expect(dry.result.proposedBy).toEqual({ source: 'words', label: 'word-based fallback, no model available', reason: 'this team has no decision-model key' });
     expect(await count()).toBe(made.length);
 
     const keys = dry.result.proposal.areas.filter((a) => a.title !== 'Auth').map((a) => a.key);
@@ -229,5 +232,86 @@ describe('cold start (R-4)', () => {
     // Now there are areas: the next run is a sweep, not a second taxonomy.
     organizeDeps.classify = async () => ({ ran: false, reason: 'no key' });
     expect(await organizeWorkspace(user(), { workspaceId: ws })).toMatchObject({ ok: true, result: { mode: 'sweep' } });
+  });
+
+  test('with a measured model the proposal is the model\'s: every spec of the workspace is asked, the reply says so, and accepting files only its members', async () => {
+    const ws = await newWorkspace();
+    const made = [
+      await spec(ws, 'Task page', '# Task page\nThe page for one task.\n'),
+      await spec(ws, 'Mission overview', '# Mission overview\nA mission and its tasks.\n'),
+      await spec(ws, 'Runner login', '# Runner login\nA runner signs in on its machine.\n'),
+      await spec(ws, 'Test spec', '# Test spec\nTrying the editor.\n'),
+    ];
+    let seen: string[] = [];
+    organizeDeps.propose = async (input) => {
+      seen = input.items.map((i) => i.title);
+      expect(input.workspaceId).toBe(ws);
+      return {
+        ran: true, model: 'typesafe/jev-1',
+        proposal: {
+          product: { title: 'Product', charter: 'Everything.' },
+          areas: [
+            { key: 'tasks-and-missions', title: 'Tasks and missions', charter: 'Specs about tasks and missions.', members: [{ specId: made[0]!, title: 'Task page' }, { specId: made[1]!, title: 'Mission overview' }], hint: null },
+            { key: 'runners', title: 'Runners', charter: 'Specs about runners.', members: [{ specId: made[2]!, title: 'Runner login' }], hint: null },
+          ],
+          unplaced: [{ specId: made[3]!, title: 'Test spec' }],
+        },
+      };
+    };
+    const dry = await organizeWorkspace(user(), { workspaceId: ws });
+    if (!dry.ok || dry.result.mode !== 'taxonomy' || !dry.result.dryRun) throw new Error('expected a taxonomy proposal');
+    expect(seen.sort()).toEqual(['Mission overview', 'Runner login', 'Task page', 'Test spec']);
+    expect(dry.result.proposedBy).toEqual({ source: 'model', model: 'typesafe/jev-1' });
+    expect(dry.result.proposal.areas.map((a) => a.title)).toEqual(['Tasks and missions', 'Runners']);
+    expect(dry.result.proposal.unplaced).toEqual([{ specId: made[3]!, title: 'Test spec' }]);
+    const n = async () => (await q<{ n: number }>(sql`SELECT count(*)::int AS n FROM specs WHERE workspace_id = ${ws}::uuid`))[0]!.n;
+    expect(await n()).toBe(4); // nothing created by the dry run
+
+    const accepted = await organizeWorkspace(user(), { workspaceId: ws, dryRun: false });
+    if (!accepted.ok || accepted.result.mode !== 'taxonomy' || accepted.result.dryRun) throw new Error('expected an accept');
+    expect(accepted.result.created.map((c) => [c.title, c.filed])).toEqual([['Tasks and missions', 2], ['Runners', 1]]);
+    expect((await row(made[3]!)).parent_spec_id).toBeNull(); // unplaced stays for a person
+    expect((await row(made[0]!)).parent_spec_id).toBe(accepted.result.created[0]!.specId);
+  });
+
+  test('the spec index reads the model\'s proposal from the answers organize recorded, never asking; with none it shows the words', async () => {
+    const ws = await newWorkspace();
+    for (const [t, b] of [['Task page', 'The page for one task.'], ['Task claims', 'Claiming a task.'], ['Runner login', 'A runner signs in.'], ['Runner presence', 'A runner is online.']]) {
+      await spec(ws, t, `# ${t}\n${b}\n`);
+    }
+    // Nothing recorded: the index gets the word-based proposal, labelled, and no model is asked.
+    const words = await organizeWorkspace(user(), { workspaceId: ws }, { cachedOnly: true });
+    if (!words.ok || words.result.mode !== 'taxonomy' || !words.result.dryRun) throw new Error('expected a taxonomy proposal');
+    expect(words.result.proposedBy).toEqual({ source: 'words', label: 'word-based fallback, no model available', reason: 'no model proposal yet: run organize to ask the decision model' });
+
+    // What organize would send the proposer, and the answers a model gave for it, recorded in the ledger as runBuilddDecision records them.
+    let input: any = null;
+    organizeDeps.propose = async (i) => { input = i; return { ran: false, reason: 'capturing' }; };
+    await organizeWorkspace(user(), { workspaceId: ws });
+    organizeDeps.propose = undefined;
+    const { proposeSpecTaxonomy, featureDigestOf, SPEC_TAXONOMY_CONFIG } = await import('../../src/lib/spec-taxonomy-decision');
+    const answers: Array<{ fp: string; decision: string; p: number }> = [];
+    const live = await proposeSpecTaxonomy(input, {
+      judge: async (f, _id) => {
+        const name = f.focus.title.startsWith('Task') ? 'Tasks' : 'Runners';
+        const decision = `name_${f.names.indexOf(name) + 1}` as any;
+        answers.push({ fp: featureDigestOf(f), decision, p: 0.9 });
+        return { decision, confidence: 0.9, source: 'model', fallbackCause: null, model: 'typesafe/jev-1' };
+      },
+    });
+    if (!live.ran) throw new Error(live.reason);
+    for (const a of answers) {
+      await q(sql`INSERT INTO decision_records (team_id, workspace_id, capability, fingerprint, policy_version, model, verdict, confidence, applied, status)
+        VALUES (${teamId}::uuid, ${ws}::uuid, 'spec_taxonomy', ${a.fp}, ${SPEC_TAXONOMY_CONFIG.policyVersion}, 'typesafe/jev-1', ${a.decision}, ${a.p}, true, 'applied')`);
+    }
+    const cached = await organizeWorkspace(user(), { workspaceId: ws }, { cachedOnly: true });
+    if (!cached.ok || cached.result.mode !== 'taxonomy' || !cached.result.dryRun) throw new Error('expected a taxonomy proposal');
+    expect(cached.result.proposedBy).toEqual({ source: 'model', model: 'typesafe/jev-1' });
+    expect(cached.result.proposal).toEqual(live.proposal);
+    expect(cached.result.proposal.areas.map((a) => a.title).sort()).toEqual(['Runners', 'Tasks']);
+    // An answer under another policy version is not reused.
+    await q(sql`UPDATE decision_records SET policy_version = 'older' WHERE workspace_id = ${ws}::uuid AND capability = 'spec_taxonomy'`);
+    const stale = await organizeWorkspace(user(), { workspaceId: ws }, { cachedOnly: true });
+    expect(stale.ok && stale.result.mode === 'taxonomy' && stale.result.proposedBy.source).toBe('words');
   });
 });

@@ -150,13 +150,15 @@ export async function specIndexInputs(workspaceId: string, rows: ReadonlyArray<S
 /**
  * With no product or area yet, the taxonomy buildd would propose (§17 R-4,
  * a dry run: nothing is created). Needs write access, like organize; a reader
- * without it, or any error, gets none.
+ * without it, or any error, gets none. Each area carries which proposal it
+ * came from, so accepting it re-reads that same proposal.
  */
 async function coldStartProposals(caller: SpecCaller, workspaceId: string, rows: ReadonlyArray<SpecRow>): Promise<AreaProposal[]> {
   const open = rows.filter((r) => r.status !== 'retired' && r.status !== 'superseded');
   if (open.some((r) => r.scope === 'product' || r.scope === 'domain') || open.length === 0) return [];
-  const r = await organizeWorkspace(caller, { workspaceId, dryRun: true }).catch(() => null);
-  return r?.ok && r.result.mode === 'taxonomy' && r.result.dryRun ? proposalAreas(r.result.proposal) : [];
+  // Never waits on the model: its proposal when organize already asked it, else the word-based one.
+  const r = await organizeWorkspace(caller, { workspaceId, dryRun: true }, { cachedOnly: true }).catch(() => null);
+  return r?.ok && r.result.mode === 'taxonomy' && r.result.dryRun ? proposalAreas(r.result.proposal, r.result.proposedBy.source) : [];
 }
 
 export async function specListView(userId: string, workspaceId: string): Promise<SpecListView> {

@@ -229,6 +229,18 @@ describe('filingFacts', () => {
       .toMatchObject({ reason: 'Closest area by what it asks for' });
     expect(filingFacts({ parentSpecId: null }, null)).toEqual({});
     expect(proposalAreas({ areas: [{ key: 'k', title: 'Cooking', members: [{ specId: 'u1' }] }] })).toEqual([{ key: 'k', title: 'Cooking', specIds: ['u1'] }]);
+    // Which proposal an area came from rides along, so the accept re-reads that one.
+    expect(proposalAreas({ areas: [{ key: 'k', title: 'Cooking', members: [{ specId: 'u1' }] }] }, 'words')).toEqual([{ key: 'k', title: 'Cooking', specIds: ['u1'], source: 'words' }]);
+  });
+
+  it('accepting a word-based proposal\'s area sends that source back, so its keys match', async () => {
+    const { calls, actions } = recorder();
+    render(Array.from({ length: 12 }, (_, i) => draft(`u${i}`, null)), {
+      proposals: [{ key: 'cooking', title: 'Cooking', specIds: ['u0', 'u1', 'u2'], source: 'words' }, { key: 'plans', title: 'Planning', specIds: ['u3', 'u4'], source: 'words' }],
+    }, actions);
+    click(qa('[data-testid="spec-index-proposals"] [data-testid="spec-index-possible"]')[0]!);
+    await act(async () => { (q('[data-testid="spec-index-possible-accept"]') as HTMLElement).click(); });
+    expect(calls).toEqual([['proposal', 'cooking', 'words']]);
   });
 });
 

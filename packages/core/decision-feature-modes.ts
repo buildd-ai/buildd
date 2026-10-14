@@ -113,6 +113,7 @@ export const FEATURE_EFFECT: Record<InferenceCapability, DecisionFeatureEffect> 
   operator_recovery: 'acts',
   spec_duplicate: 'acts',
   spec_area: 'acts',
+  spec_taxonomy: 'advises',
   chat: 'interactive',
 };
 
