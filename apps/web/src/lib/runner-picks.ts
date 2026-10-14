@@ -8,7 +8,7 @@
  * an agent run has no path to write a pick (R-8).
  */
 import { randomBytes } from 'crypto';
-import { and, asc, desc, eq, inArray, isNotNull, ne, notInArray } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, notInArray } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { accounts, accountWorkspaces, teamMembers, teams, users, workspaces } from '@buildd/core/db/schema';
@@ -26,6 +26,27 @@ import {
   runnerPickerTeams,
   teamsOfPicks,
 } from './runner-picks-plan';
+
+/**
+ * What the edit page offers for one key: the consent page's teams, less the
+ * workspaces a team admin removed this key from (they stay off until an admin
+ * adds them back), and the names of those removed.
+ */
+export async function editConsentTeams(userId: string, accountId: string): Promise<{ teams: ConsentTeam[]; removedNames: string[] }> {
+  const [offered, removedRows] = await Promise.all([
+    runnerConsentTeams(userId),
+    db
+      .select({ workspaceId: accountWorkspaces.workspaceId, name: workspaces.name })
+      .from(accountWorkspaces)
+      .innerJoin(workspaces, eq(workspaces.id, accountWorkspaces.workspaceId))
+      .where(and(eq(accountWorkspaces.accountId, accountId), isNotNull(accountWorkspaces.removedByUserId))),
+  ]);
+  const removed = new Set(removedRows.map((r) => r.workspaceId));
+  const teams = offered
+    .map((t) => ({ ...t, workspaces: t.workspaces.filter((w) => !removed.has(w.id)) }))
+    .filter((t) => t.workspaces.length > 0);
+  return { teams, removedNames: removedRows.map((r) => r.name) };
+}
 
 /** What the runner consent page offers this person now. */
 export async function runnerConsentTeams(userId: string): Promise<ConsentTeam[]> {
@@ -131,14 +152,34 @@ export async function replaceRunnerPicks(args: {
     };
   }
 
+  const existing = await db
+    .select({
+      workspaceId: accountWorkspaces.workspaceId,
+      grantedByUserId: accountWorkspaces.grantedByUserId,
+      removedByUserId: accountWorkspaces.removedByUserId,
+    })
+    .from(accountWorkspaces)
+    .where(eq(accountWorkspaces.accountId, account.id));
+  // A team admin removed this runner from a workspace: the owner cannot put it
+  // back here (the row is a tombstone, see /api/workspaces/[id]/accounts).
+  const removed = new Set(existing.filter((r) => r.removedByUserId).map((r) => r.workspaceId));
+  if (check.workspaceIds.some((id) => removed.has(id))) {
+    return { ok: false, status: 403, message: 'A team admin removed this runner from one of the chosen workspaces. Ask them to add it back.' };
+  }
+  // Ordinary (admin-made) links stay exactly as they are, and stay reachable:
+  // an edit replaces only the person's own picks.
+  const unmarked = existing.filter((r) => !r.grantedByUserId).map((r) => r.workspaceId);
+
   await db.delete(accountWorkspaces).where(and(
     eq(accountWorkspaces.accountId, account.id),
     isNotNull(accountWorkspaces.grantedByUserId),
+    isNull(accountWorkspaces.removedByUserId),
     notInArray(accountWorkspaces.workspaceId, check.workspaceIds),
   ));
-  // An admin's link already on the key is left as it is.
   await db.insert(accountWorkspaces).values(pickRows(account.id, args.userId, check.workspaceIds)).onConflictDoNothing();
-  await db.update(accounts).set({ workspaceIds: check.workspaceIds }).where(eq(accounts.id, account.id));
+  await db.update(accounts)
+    .set({ workspaceIds: [...new Set([...check.workspaceIds, ...unmarked])] })
+    .where(eq(accounts.id, account.id));
 
   invalidateAccountCacheByHash(account.apiKey);
   invalidateAccountWorkspaceCache(account.id);
@@ -150,8 +191,10 @@ export interface RunnerKeyPick {
   workspaceName: string;
   teamId: string;
   teamName: string;
-  /** The person can still reach it: member of its team, at a role it needs. */
+  /** The person can still reach it: member of its team, at a role it needs, not removed. */
   reachable: boolean;
+  /** A team admin removed this runner from the workspace; Edit cannot put it back. */
+  removedByAdmin: boolean;
 }
 
 export interface RunnerKeySummary {
@@ -186,7 +229,7 @@ export async function listRunnerKeys(userId: string): Promise<RunnerKeySummary[]
   if (keys.length === 0) return [];
 
   const pickedIds = [...new Set(keys.flatMap((k) => k.workspaceIds ?? []))];
-  const [wsRows, memberships] = await Promise.all([
+  const [wsRows, memberships, removedRows] = await Promise.all([
     pickedIds.length > 0
       ? db
           .select({ id: workspaces.id, name: workspaces.name, teamId: workspaces.teamId, accessMode: workspaces.accessMode, teamName: teams.name })
@@ -195,7 +238,12 @@ export async function listRunnerKeys(userId: string): Promise<RunnerKeySummary[]
           .where(inArray(workspaces.id, pickedIds))
       : Promise.resolve([]),
     db.select({ teamId: teamMembers.teamId, role: teamMembers.role }).from(teamMembers).where(eq(teamMembers.userId, userId)),
+    db
+      .select({ accountId: accountWorkspaces.accountId, workspaceId: accountWorkspaces.workspaceId })
+      .from(accountWorkspaces)
+      .where(and(inArray(accountWorkspaces.accountId, keys.map((k) => k.id)), isNotNull(accountWorkspaces.removedByUserId))),
   ]);
+  const removed = new Set(removedRows.map((r) => `${r.accountId}:${r.workspaceId}`));
   const wsById = new Map(wsRows.map((w) => [w.id, w]));
   const roleByTeam = new Map(memberships.map((m) => [m.teamId, m.role as string]));
 
@@ -211,8 +259,9 @@ export async function listRunnerKeys(userId: string): Promise<RunnerKeySummary[]
       const w = wsById.get(id);
       if (!w) return [];
       const role = roleByTeam.get(w.teamId);
-      const reachable = role != null && (w.accessMode === 'open' || mayPickRestricted(role));
-      return [{ workspaceId: w.id, workspaceName: w.name, teamId: w.teamId, teamName: w.teamName, reachable }];
+      const removedByAdmin = removed.has(`${k.id}:${id}`);
+      const reachable = !removedByAdmin && role != null && (w.accessMode === 'open' || mayPickRestricted(role));
+      return [{ workspaceId: w.id, workspaceName: w.name, teamId: w.teamId, teamName: w.teamName, reachable, removedByAdmin }];
     }),
   }));
 }
@@ -260,6 +309,7 @@ export async function listForeignRunners(userId: string): Promise<ForeignRunner[
     .where(and(
       inArray(workspaces.teamId, adminTeams),
       isNotNull(accountWorkspaces.grantedByUserId),
+      isNull(accountWorkspaces.removedByUserId),
       ne(accounts.teamId, workspaces.teamId),
     ))
     .orderBy(asc(teams.name), asc(workspaces.name), asc(accounts.name));

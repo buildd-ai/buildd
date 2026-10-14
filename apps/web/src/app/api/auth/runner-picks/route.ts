@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/auth';
 import { isUuid } from '@/lib/uuid';
-import { listRunnerKeys, replaceRunnerPicks, runnerConsentTeams } from '@/lib/runner-picks';
+import { editConsentTeams, listRunnerKeys, replaceRunnerPicks } from '@/lib/runner-picks';
 import {
   RUNNER_CONSENT_HEADERS,
   decideRunnerConsent,
@@ -39,10 +39,10 @@ export async function GET(req: NextRequest) {
   const key = (await listRunnerKeys(userId)).find((k) => k.id === accountId);
   if (!key) return plain('Key not found', 404);
 
-  const teams = await runnerConsentTeams(userId);
+  const { teams, removedNames } = await editConsentTeams(userId, accountId);
   if (teams.length === 0) return plain('No workspaces available.', 403);
   const html = renderRunnerConsentPage({
-    flow: { kind: 'edit', accountId, accountName: key.name },
+    flow: { kind: 'edit', accountId, accountName: key.name, removedNames },
     userId,
     teams,
     state: initialRunnerState(teams, (key.picks ?? []).map((p) => p.workspaceId)),
@@ -70,9 +70,9 @@ export async function POST(req: NextRequest) {
 
   const key = (await listRunnerKeys(userId)).find((k) => k.id === flow.accountId);
   if (!key) return plain('Key not found', 404);
-  const named = { ...flow, accountName: key.name };
+  const { teams, removedNames } = await editConsentTeams(userId, flow.accountId);
+  const named = { ...flow, accountName: key.name, removedNames };
 
-  const teams = await runnerConsentTeams(userId);
   const decision = decideRunnerConsent(form, teams);
   if (decision.type === 'deny') return NextResponse.redirect(new URL(SETTINGS, req.url), 303);
   if (decision.type === 'refuse') return plain(decision.message, decision.status);

@@ -33,6 +33,10 @@ describe('grantedLinkStillValid', () => {
     expect(text).toContain('"gm"."user_id" = "account_workspaces"."granted_by_user_id"');
   });
 
+  it('never holds once a team admin removed it', () => {
+    expect(text).toMatch(/^\("account_workspaces"\."removed_by_user_id" is null and exists /);
+  });
+
   it('holds for an open workspace at any role, a restricted one only for owners and admins', () => {
     expect(text).toContain(`("gw"."access_mode" = 'open' or "gm"."role" in ('owner', 'admin'))`);
     expect(text).not.toContain("'member'");
@@ -42,7 +46,7 @@ describe('grantedLinkStillValid', () => {
 describe('liveLinkCondition', () => {
   it('leaves an unmarked row as it was and re-checks a granted one', () => {
     const text = render(liveLinkCondition());
-    expect(text).toMatch(/^\("account_workspaces"\."granted_by_user_id" is null or exists \(select 1 /);
+    expect(text).toMatch(/^\("account_workspaces"\."granted_by_user_id" is null or \("account_workspaces"\."removed_by_user_id" is null and exists \(select 1 /);
   });
 
   it('re-points the row columns at the alias inside a relational query, not the subquery tables', () => {

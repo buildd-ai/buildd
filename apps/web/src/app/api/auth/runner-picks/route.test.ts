@@ -20,7 +20,8 @@ const mockList = mock(async (_u: string) => [{ id: KEY, name: 'Laptop', picks: [
 const mockReplace = mock(async (_a: any) => ({ ok: true, workspaceIds: ['ws-a1', 'ws-b1'] }) as any);
 
 mock.module('@/auth', () => ({ auth: mockAuth }));
-mock.module('@/lib/runner-picks', () => ({ listRunnerKeys: mockList, replaceRunnerPicks: mockReplace, runnerConsentTeams: async () => teams }));
+const mockEditTeams = mock(async (_u: string, _a: string) => ({ teams: teams as any[], removedNames: [] as string[] }));
+mock.module('@/lib/runner-picks', () => ({ listRunnerKeys: mockList, replaceRunnerPicks: mockReplace, editConsentTeams: mockEditTeams }));
 
 const { GET, POST } = await import('./route');
 
@@ -50,6 +51,13 @@ describe('/api/auth/runner-picks', () => {
     expect(html).toContain('Laptop');
     expect(html).toContain('value="ws-a1" checked');
     expect(html).not.toContain('value="ws-b1" checked');
+  });
+
+  it('says which workspaces a team admin removed this runner from, and leaves them off the picker', async () => {
+    mockEditTeams.mockResolvedValueOnce({ teams: [teams[0]] as any[], removedNames: ['beta-one'] });
+    const html = await (await GET(new NextRequest(`${ORIGIN}/api/auth/runner-picks?account=${KEY}`))).text();
+    expect(html).toContain('A team admin removed it from beta-one');
+    expect(html).not.toContain('value="ws-b1"');
   });
 
   it("GET for a key the person did not mint is not found", async () => {

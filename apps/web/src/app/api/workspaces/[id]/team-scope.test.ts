@@ -63,7 +63,7 @@ function evaluate(table: string, where: unknown): Row[] {
     // person-granted one only while its grant holds. No fixture link is
     // granted, so only the "is null" arm is evaluated here; the grant arm is
     // pinned in granted-links.test.ts and on real rows in tests/db.
-    .replace(/\("(\w+)"\."granted_by_user_id" is null or exists \(select 1 from "workspaces" "gw" .*?\('owner', 'admin'\)\)\)\)/g, () => {
+    .replace(/\("(\w+)"\."granted_by_user_id" is null or .*?\('owner', 'admin'\)\)+/g, () => {
       conds.push(r => r.grantedByUserId == null);
       return '';
     })

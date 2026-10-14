@@ -106,7 +106,9 @@ export default function RunnerKeysSection({ keys: initialKeys, foreign: initialF
                         {g.picks.map((p) => (
                           <li key={p.workspaceId} className="flex min-h-11 items-center justify-between gap-3" data-testid="runner-key-pick" data-reachable={p.reachable}>
                             <span className="min-w-0 break-words text-body text-text-primary">{p.workspaceName}</span>
-                            {!p.reachable && <span className="text-meta text-text-muted">No longer reachable</span>}
+                            {p.removedByAdmin
+                              ? <span className="text-meta text-text-muted">Removed by a team admin</span>
+                              : !p.reachable && <span className="text-meta text-text-muted">No longer reachable</span>}
                           </li>
                         ))}
                       </ul>

@@ -35,7 +35,7 @@ import {
 export type RunnerConsentFlow =
   | { kind: 'cli'; callback: string; client: string | null; accountName: string | null; level: string | null; machine: string | null }
   | { kind: 'device'; code: string }
-  | { kind: 'edit'; accountId: string; accountName: string };
+  | { kind: 'edit'; accountId: string; accountName: string; removedNames?: string[] };
 
 /** A runner page never offers write or act-as-person: those are MCP choices. */
 const RUNNER_REQUESTED: RequestedAccess = { write: false, person: false };
@@ -160,7 +160,10 @@ export function runnerWording(flow: RunnerConsentFlow): RunnerConsentWording {
     case 'edit':
       return {
         title: 'Change runner workspaces',
-        lede: `Choose the workspaces ${flow.accountName || 'this runner'} claims work from. Its key stays the same.`,
+        lede: `Choose the workspaces ${flow.accountName || 'this runner'} claims work from. Its key stays the same.`
+          + (flow.removedNames?.length
+            ? ` A team admin removed it from ${flow.removedNames.join(', ')}; ask them to add it back.`
+            : ''),
         returnsTo: 'Settings',
         approveLabel: 'Save',
         footnote: FOOTNOTE,

@@ -165,7 +165,8 @@ describe('a pick reaches only while the person who made it still may', () => {
       SELECT workspace_id, granted_by_user_id FROM account_workspaces WHERE account_id = ${minted.accountId}::uuid`);
     expect(after.map((r) => r.workspace_id).sort()).toEqual([otherOpen, extra].sort());
     const [same] = await q<{ id: string; workspace_ids: string[] }>(sql`SELECT id, workspace_ids FROM accounts WHERE id = ${minted.accountId}::uuid`);
-    expect(same.workspace_ids).toEqual([otherOpen]);
+    // The admin's ordinary link stays reachable (review #1).
+    expect([...same.workspace_ids].sort()).toEqual([otherOpen, extra].sort());
 
     // Someone else cannot edit it: it reads as not found.
     const stranger = await user();
@@ -175,7 +176,117 @@ describe('a pick reaches only while the person who made it still may', () => {
     // Settings lists it, and after leaving the team the pick shows unreachable (AC-3).
     await q(sql`DELETE FROM team_members WHERE team_id = ${other}::uuid AND user_id = ${person}::uuid`);
     const listed = (await listRunnerKeys(person)).find((k) => k.id === minted.accountId);
-    expect(listed?.picks).toEqual([expect.objectContaining({ workspaceId: otherOpen, reachable: false })]);
+    expect(listed?.picks?.find((p) => p.workspaceId === otherOpen)).toMatchObject({ reachable: false, removedByAdmin: false });
+  });
+
+  // Review #1 (blocking): the picker leaves the key's HOME team. The pick was
+  // an open workspace there, so the open-within-team rule alone would still
+  // reach it; every reader must take the dead pick as a deny first.
+  test('leaving the HOME team: every reach check denies the open picked workspace there', async () => {
+    const { verifyAccountWorkspaceAccess } = await import('../../src/lib/team-access');
+    const { resolveWorkspaceAccess, listReachableWorkspaceIds } = await import('../../src/lib/workspace-access');
+    const { isWorkspaceInCallerScope } = await import('../../src/lib/mcp-request-scope');
+    const { workspaceOpenToCaller } = await import('../../src/lib/open-workspaces');
+    const { readReachLink } = await import('../../src/lib/granted-links');
+
+    const home = await team();
+    const person = await user();
+    await member(home, person, 'admin');
+    const w = await workspace(home, 'open');
+    const k = await key(home, person);
+    await q(sql`UPDATE accounts SET workspace_ids = ${JSON.stringify([w])}::jsonb WHERE id = ${k}::uuid`);
+    await link(k, w, person);
+    clearAccountWorkspaceCache();
+    const account = { id: k, name: 'Runner', teamId: home, workspaceIds: [w] };
+
+    // While the person is on the team, it reaches everywhere.
+    expect(await readReachLink(k, w)).toEqual({ canClaim: true, canCreate: true });
+    expect(await verifyAccountWorkspaceAccess(k, w, 'canCreate')).toBe(true);
+    expect((await resolveWorkspaceAccess(w, { account } as any, 'canCreate')).ok).toBe(true);
+    expect(await isWorkspaceInCallerScope(w, account)).toBe(true);
+    expect(await workspaceOpenToCaller(w, { teamIds: [home], accountId: k })).toBe(true);
+    expect(await listReachableWorkspaceIds({ account } as any)).toEqual([w]);
+
+    await q(sql`DELETE FROM team_members WHERE team_id = ${home}::uuid AND user_id = ${person}::uuid`);
+
+    expect(await readReachLink(k, w)).toEqual({ canClaim: false, canCreate: false, revoked: true });
+    // (verifyAccountWorkspaceAccess is React-cached per request: called with
+    // other arguments than above so a memoised answer cannot stand in.)
+    expect(await verifyAccountWorkspaceAccess(k, w)).toBe(false);
+    expect((await resolveWorkspaceAccess(w, { account } as any, 'canClaim')).ok).toBe(false);
+    expect(await isWorkspaceInCallerScope(w, account)).toBe(false);
+    expect(await workspaceOpenToCaller(w, { teamIds: [home], accountId: k })).toBe(false);
+    expect(await listReachableWorkspaceIds({ account } as any)).toEqual([]);
+    const perms = await getAccountWorkspacePermissions(k, { includeRevoked: true });
+    expect(perms).toEqual([expect.objectContaining({ workspaceId: w, revoked: true })]);
+  });
+
+  test('R-6: a key with no picks keeps reaching its own open workspace through every reader', async () => {
+    const { verifyAccountWorkspaceAccess } = await import('../../src/lib/team-access');
+    const { isWorkspaceInCallerScope } = await import('../../src/lib/mcp-request-scope');
+    const { workspaceOpenToCaller } = await import('../../src/lib/open-workspaces');
+    const home = await team();
+    const person = await user();
+    await member(home, person, 'owner');
+    const w = await workspace(home, 'open');
+    const k = await key(home, person);
+    expect(await verifyAccountWorkspaceAccess(k, w, 'canClaim')).toBe(true);
+    expect(await isWorkspaceInCallerScope(w, { id: k, teamId: home })).toBe(true);
+    expect(await workspaceOpenToCaller(w, { teamIds: [home], accountId: k })).toBe(true);
+  });
+
+  test("a team admin's removal is a tombstone: the pick reaches nothing and Edit cannot put it back", async () => {
+    const { mintRunnerKey, replaceRunnerPicks, listRunnerKeys, listForeignRunners } = await import('../../src/lib/runner-picks');
+    const person = await user();
+    const [{ id: home }] = await q<{ id: string }>(sql`
+      INSERT INTO teams (name, slug) VALUES ('Personal', ${`personal-${person}`}) RETURNING id`);
+    const other = await team();
+    const admin = await user();
+    await member(home, person, 'owner');
+    await member(other, person, 'member');
+    await member(other, admin, 'admin');
+    const homeWs = await workspace(home, 'open');
+    const otherWs = await workspace(other, 'open');
+    const minted = await mintRunnerKey({ userId: person, workspaceIds: [homeWs, otherWs], name: 'Runner', requestedLevel: 'worker' });
+    if (!minted.ok) throw new Error(minted.message);
+    expect((await listForeignRunners(admin)).map((r) => r.accountId)).toEqual([minted.accountId]);
+
+    // What DELETE /api/workspaces/[id]/accounts does for a granted row.
+    await q(sql`UPDATE account_workspaces SET removed_by_user_id = ${admin}::uuid, removed_at = now(), can_claim = false, can_create = false
+      WHERE account_id = ${minted.accountId}::uuid AND workspace_id = ${otherWs}::uuid AND granted_by_user_id IS NOT NULL`);
+    clearAccountWorkspaceCache();
+
+    expect([...(await liveGrantedWorkspaceIds(minted.accountId))]).toEqual([homeWs]);
+    expect(await listForeignRunners(admin)).toEqual([]);
+    const refused = await replaceRunnerPicks({ accountId: minted.accountId, userId: person, workspaceIds: [homeWs, otherWs] });
+    expect(refused).toMatchObject({ ok: false, status: 403 });
+    // Editing without it keeps the tombstone.
+    expect(await replaceRunnerPicks({ accountId: minted.accountId, userId: person, workspaceIds: [homeWs] })).toMatchObject({ ok: true });
+    const [tomb] = await q<{ removed_by_user_id: string }>(sql`
+      SELECT removed_by_user_id FROM account_workspaces WHERE account_id = ${minted.accountId}::uuid AND workspace_id = ${otherWs}::uuid`);
+    expect(tomb.removed_by_user_id).toBe(admin);
+    const listed = (await listRunnerKeys(person)).find((k) => k.id === minted.accountId);
+    expect(listed?.picks).toEqual([expect.objectContaining({ workspaceId: homeWs, removedByAdmin: false })]);
+  });
+
+  test("an edit keeps an admin's ordinary cross-team link reachable", async () => {
+    const { mintRunnerKey, replaceRunnerPicks } = await import('../../src/lib/runner-picks');
+    const person = await user();
+    const [{ id: home }] = await q<{ id: string }>(sql`
+      INSERT INTO teams (name, slug) VALUES ('Personal', ${`personal-${person}`}) RETURNING id`);
+    const other = await team();
+    await member(home, person, 'owner');
+    const homeWs = await workspace(home, 'open');
+    const adminLinked = await workspace(other, 'restricted');
+    const minted = await mintRunnerKey({ userId: person, workspaceIds: [homeWs], name: 'Runner', requestedLevel: 'worker' });
+    if (!minted.ok) throw new Error(minted.message);
+    await link(minted.accountId, adminLinked, null);
+
+    expect(await replaceRunnerPicks({ accountId: minted.accountId, userId: person, workspaceIds: [homeWs] })).toMatchObject({ ok: true });
+    const [row] = await q<{ workspace_ids: string[] }>(sql`SELECT workspace_ids FROM accounts WHERE id = ${minted.accountId}::uuid`);
+    expect([...row.workspace_ids].sort()).toEqual([homeWs, adminLinked].sort());
+    clearAccountWorkspaceCache();
+    expect((await getAccountWorkspacePermissions(minted.accountId)).map((p) => p.workspaceId).sort()).toEqual([homeWs, adminLinked].sort());
   });
 
   test('the relational link reader applies the same re-check', async () => {

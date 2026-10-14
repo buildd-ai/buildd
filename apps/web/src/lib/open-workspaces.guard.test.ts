@@ -25,7 +25,6 @@ const PATTERNS = [
 const ALLOWED: Record<string, string> = {
   'apps/web/src/lib/open-workspaces.ts': 'the helper itself',
   'apps/web/src/lib/workspace-reach.ts': 'the pure rule; compares workspace.teamId to account.teamId',
-  'apps/web/src/lib/team-access.ts': 'verifyAccountWorkspaceAccess decides through accountReachesWorkspace',
   'apps/web/src/lib/workspace-access.ts': 'query ANDs eq(teamId, account.teamId); pinned in workspace-access.test.ts',
   'apps/web/src/app/api/workers/claim/route.ts': 'both queries AND the account team; pinned in claim/route.test.ts',
   'apps/web/src/lib/subscriptions.ts': 'raw SQL joins the owner to w."team_id" before the open arm',
