@@ -21,6 +21,8 @@ interface SpecOption { id: string; title: string; status: string; headRevision: 
 const FIELD = 'mt-1 block w-full min-h-11 md:min-h-0 px-2 py-1.5 text-body bg-surface-2';
 const BUTTON = 'btn min-h-11 md:min-h-0 disabled:opacity-40 touch-manipulation';
 const LINK = 'min-h-11 md:min-h-0 inline-flex items-center text-meta text-text-muted hover:text-text-primary underline underline-offset-2 touch-manipulation';
+/** A short link like "Close" also needs 44px of width to tap at phone size. */
+const TAP_WIDTH = 'min-w-11 md:min-w-0 justify-center';
 
 /** A spec's option line: which revision a choice would pin. */
 export function specOptionDescription(s: SpecOption): string {
@@ -157,8 +159,8 @@ export default function OutcomeSpecPicker({ missionId, workspaceId, selected, re
       {!readonly && open && specs && specs.length === 0 && (
         <p className="mt-2 text-meta text-text-muted leading-snug" data-testid="outcome-spec-empty">
           This workspace has no specs to choose from.{' '}
-          <a href="/app/specs" className={LINK}>Go to specs</a>{' '}
-          <button type="button" className={LINK} onClick={() => setOpen(false)}>Close</button>
+          <a href="/app/specs" className={`${LINK} ${TAP_WIDTH}`}>Go to specs</a>{' '}
+          <button type="button" className={`${LINK} ${TAP_WIDTH}`} data-testid="outcome-spec-empty-close" onClick={() => setOpen(false)}>Close</button>
         </p>
       )}
 

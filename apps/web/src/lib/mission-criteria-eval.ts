@@ -507,8 +507,8 @@ export async function evaluateCriteriaNow(
       );
       cs.verdict = standing.verdict;
       cs.evidence = standing.evidence;
-      cs.spec = { specId: criterion.specId, revision: criterion.revision, targetSha: standing.targetSha, standings: standing.standings };
       const buildDone = !hasPendingDeliverableWork(missionTasks);
+      cs.spec = { specId: criterion.specId, revision: criterion.revision, targetSha: standing.targetSha, standings: standing.standings, buildDone };
       if (standing.verdict !== 'pass' && standing.verdict !== 'fail' && standing.target.kind !== 'unknown' && buildDone && canDispatch) {
         const fv = await ensureFinalVerification(missionId, criterion, standing);
         if (fv.kind !== 'unavailable') {

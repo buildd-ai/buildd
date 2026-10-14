@@ -3254,6 +3254,8 @@ export interface GoalCriteriaState {
       revision: number;
       targetSha: string | null;
       standings: LivingSpecCriterionStanding[];
+      /** Whether the mission's build work was done when this was evaluated. Absent on older states. */
+      buildDone?: boolean;
     };
   }>;
 }

@@ -147,6 +147,11 @@ describe('a workspace with no specs', () => {
     expect(empty?.textContent).toContain('This workspace has no specs to choose from.');
     expect(empty?.querySelector('a')?.getAttribute('href')).toBe('/app/specs');
     expect(container.textContent).not.toContain('completes only when');
+    // Phone tap targets: both actions are at least 44px wide and tall below md (633c77c9).
+    for (const el of [empty!.querySelector('a')!, q('outcome-spec-empty-close')!]) {
+      expect(el.className).toContain('min-h-11');
+      expect(el.className).toContain('min-w-11');
+    }
   });
 
   it('with no outcome spec, says what choosing one would do without contradicting itself', () => {

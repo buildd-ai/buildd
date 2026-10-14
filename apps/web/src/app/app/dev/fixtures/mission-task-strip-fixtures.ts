@@ -512,7 +512,8 @@ export function outcomeSpecFixture(variant: OutcomeSpecVariant, base: { now: num
         evidence: '',
         fingerprint: criterionFingerprint(criterion),
         ...(variant === 'outcome-spec-verifying' ? { workerTaskId: stripFixtureId(962) } : {}),
-        spec: { specId: criterion.specId, revision: criterion.revision, targetSha: INTEGRATED_HEAD, standings },
+        // Build complete: the stored state says so, as the evaluator writes it.
+        spec: { specId: criterion.specId, revision: criterion.revision, targetSha: INTEGRATED_HEAD, standings, buildDone: true },
       },
     ],
   } as GoalCriteriaState;
