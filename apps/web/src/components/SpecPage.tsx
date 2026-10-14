@@ -20,6 +20,7 @@ import Segmented from '@/components/ui/Segmented';
 import { neighbourGraph } from '@/lib/specs/index-view';
 import SpecFiling from '@/components/SpecFiling';
 import SpecRepoChecks from '@/components/SpecRepoChecks';
+import SpecRetire from '@/components/SpecRetire';
 import { useHideAskButton } from '@/lib/ask-button-hidden';
 import type { SpecPageView } from '@/lib/specs/page-view';
 
@@ -383,6 +384,8 @@ export default function SpecPage({ view }: { view: Ok }) {
         {view.source ? <p className="text-meta text-text-muted [overflow-wrap:anywhere]" data-testid="spec-page-source">{view.source.source}</p> : null}
       </header>
 
+      {view.retirement ? <SpecRetire specId={spec.id} retirement={view.retirement} canRetire={!!view.canRetire} /> : null}
+
       {view.source?.copy ? (
         view.source.behind
           ? <Notice tone="warn" data-testid="spec-page-repo-copy">{view.source.copy}</Notice>
@@ -415,6 +418,8 @@ export default function SpecPage({ view }: { view: Ok }) {
         <aside aria-label="Revisions and files" className="flex min-w-0 flex-col lg:border-l lg:border-[var(--line-soft)] lg:pl-6">
           {revisions}
           {files}
+          {/* Secondary, never the Approve corner (§22 R-54). */}
+          {!view.retirement && view.canRetire ? <SpecRetire specId={spec.id} retirement={null} canRetire targets={view.retireTargets ?? []} /> : null}
         </aside>
       </div>
     </div>
