@@ -35,6 +35,7 @@ import { existsSync, readFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import * as childProcess from 'child_process';
+import { codexAuthJsonKind } from './cost-basis';
 
 export type HostSeat = 'env' | 'login';
 
@@ -179,7 +180,9 @@ export interface ModelAuthReport {
 
 /**
  * Precedence: machine_token > machine_login > api_key > none.
- * `BUILDD_HOST_SEAT=off` stops the first two from counting. Under
+ * `BUILDD_HOST_SEAT=off` stops only machine_token from counting: the env token
+ * is withheld from the agent, but a `claude login` still reaches it through
+ * HOME, so machine_login is still reported. Under
  * `BUILDD_MODEL_AUTH_SOURCE=runner` an inherited key is stripped from the agent
  * env unless an operator-set ANTHROPIC_BASE_URL selects a paid route
  * (model-auth-source.ts), so it is reported only in that case.
@@ -278,4 +281,66 @@ export function decideCodexSeat(opts: {
   if (!serverCredentialType) return machineAvailable ? 'machine' : 'none';
   if (mode === 'prefer' && serverCredentialType === 'oauth' && machineAvailable) return 'machine';
   return 'server';
+}
+
+// ─── Codex auth label (docs/specs: runner model login, R-10/R-11) ──────────
+
+/**
+ * Which kind of Codex login this runner's Codex agent gets for a claim that
+ * delivers no Codex credential. Sent as the heartbeat's `codexAuthSource`.
+ * A label, never a value.
+ */
+export type CodexAuthSource = 'machine_login' | 'api_key' | 'none';
+
+export interface CodexAuthProbe {
+  env?: Record<string, string | undefined>;
+  home?: string;
+  /** Reads a file's text, or null when it is absent/unreadable. Injected in tests. */
+  readFile?: (path: string) => string | null;
+}
+
+function readFileOrNull(path: string): string | null {
+  try {
+    return existsSync(path) ? readFileSync(path, 'utf-8') : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Mirrors what a Codex task with no delivered credential actually gets
+ * (`decideCodexSeat` + `localCodexAuthPath`, then the env API key): the local
+ * `auth.json` (`$CODEX_HOME`, else `~/.codex`) counts only when
+ * `BUILDD_HOST_SEAT` is not `off` or `CODEX_HOME` is set explicitly. If it
+ * counts, a ChatGPT login is `machine_login` and an API key in it is
+ * `api_key`. Otherwise `OPENAI_API_KEY` in the env is `api_key`, else `none`.
+ * The file is parsed only to classify it; no value leaves this function.
+ */
+export function detectCodexAuthSource(probe: CodexAuthProbe = {}): CodexAuthSource {
+  const env = probe.env ?? process.env;
+  const home = probe.home ?? homedir();
+  const explicitCodexHome = (env.CODEX_HOME ?? '').trim().length > 0;
+  if (hostSeatMode(env) !== 'off' || explicitCodexHome) {
+    const raw = (probe.readFile ?? readFileOrNull)(join(resolveLocalCodexHome(env, home), 'auth.json'));
+    if (raw !== null) {
+      let parsed: Record<string, unknown> | null = null;
+      try { parsed = JSON.parse(raw); } catch { parsed = null; }
+      const kind = codexAuthJsonKind(parsed);
+      if (kind === 'chatgpt') return 'machine_login';
+      if (kind === 'api_key') return 'api_key';
+    }
+  }
+  if ((env.OPENAI_API_KEY ?? '').trim().length > 0) return 'api_key';
+  return 'none';
+}
+
+export const NO_CODEX_AUTH_FIX = 'run `codex login` as the runner user, or set OPENAI_API_KEY';
+
+/** Human words for a Codex label (the startup `Codex auth: <words>` line). Not a warning: Codex is optional. */
+export function describeCodexAuthSource(source: CodexAuthSource): string {
+  switch (source) {
+    case 'machine_login': return "this machine's Codex login";
+    case 'api_key': return 'an OpenAI API key (billed per token)';
+    default: return `no Codex login on this machine. To fix: ${NO_CODEX_AUTH_FIX}`;
+  }
 }

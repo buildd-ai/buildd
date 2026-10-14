@@ -13,12 +13,15 @@ import { BuilddTransport } from '@buildd/core/buildd-transport';
 import { createRedactionInterceptor } from '@buildd/core/redaction';
 import { ServerRefusalError, isServerRefusal } from './server-refusal';
 import { TRACKED_BRANCH, type RunnerUpdateSnapshot } from './updater';
-import type { ModelAuthReport } from './host-seat';
+import type { CodexAuthSource, ModelAuthReport } from './host-seat';
 import { claimHealth, describeClaimErrorBody } from './claim-budget-signals';
 import { PATH_CLAIM_TIMEOUT_MS } from './path-claim-enforcement';
 
 /** Heartbeat model-auth fields; local to the runner (the server owns its own type). */
-export type HeartbeatModelAuth = Pick<ModelAuthReport, 'source' | 'mode'>;
+export type HeartbeatModelAuth = Pick<ModelAuthReport, 'source' | 'mode'> & {
+  /** The Codex label (host-seat.ts detectCodexAuthSource), sent as `codexAuthSource`. */
+  codexSource?: CodexAuthSource;
+};
 
 /**
  * Timestamp (ms) of the last time the runner received ANY HTTP response from the
@@ -1035,8 +1038,8 @@ export class BuilddClient {
     claimHandoff?: ClaimHandoffSnapshot,
     /**
      * Which kind of model credential this runner's agents use, and the
-     * BUILDD_HOST_SEAT mode (host-seat.ts detectModelAuthSource). A label,
-     * never a value. Omitted by older callers; the server keeps the stored
+     * BUILDD_HOST_SEAT mode (host-seat.ts detectModelAuthSource), plus the
+     * Codex label (detectCodexAuthSource). Labels, never a value. Omitted by older callers; the server keeps the stored
      * label when the field is absent.
      */
     modelAuth?: HeartbeatModelAuth | null,
@@ -1081,6 +1084,7 @@ export class BuilddClient {
     if (modelAuth) {
       payload.modelAuthSource = modelAuth.source;
       payload.modelAuthMode = modelAuth.mode;
+      if (modelAuth.codexSource) payload.codexAuthSource = modelAuth.codexSource;
     }
     const data = await this.fetch('/api/workers/heartbeat', {
       method: 'POST',

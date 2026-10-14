@@ -91,7 +91,7 @@ import { archiveSession } from './history-store';
 import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
 import { applyModelEnv, endpointSessionModels, shouldUseClaudeCredential, TRUSTED_MODEL_BASE_URL_ENV } from './agent-model-env';
 import { resolveModelAuthSource, stripInheritedApiKeys } from './model-auth-source';
-import { applyHostSeatPolicy, decideCodexSeat, describeHostSeat, describeModelAuthSource, detectModelAuthSource, hostModelCredentialValues, hostSeatMode, localCodexAuthPath, type ModelAuthReport } from './host-seat';
+import { applyHostSeatPolicy, decideCodexSeat, describeCodexAuthSource, describeHostSeat, describeModelAuthSource, detectCodexAuthSource, detectModelAuthSource, type CodexAuthSource, hostModelCredentialValues, hostSeatMode, localCodexAuthPath, type ModelAuthReport } from './host-seat';
 import { bundledTierEntry } from '@buildd/core/model-tier-defaults';
 import type { WorkerEnvironment, ClaimDiagnostics, ClaimModelEndpoint, ClaimCredentialDecision } from '@buildd/shared';
 import { withFleetIdentity } from './fleet-identity';
@@ -717,6 +717,7 @@ export class WorkerManager {
   private pusherManager: PusherManager;
   private hasCredentials: boolean = false;
   private modelAuth: ModelAuthReport = { source: 'none', mode: 'auto' };
+  private codexAuth: CodexAuthSource = 'none';
   private acceptRemoteTasks: boolean = true;
   private cleanupInterval?: Timer;
   private terminalWorktreeSweepTimer?: Timer;
@@ -1013,6 +1014,8 @@ export class WorkerManager {
       const line = `Model auth: ${describeModelAuthSource(modelAuth.source)}`;
       if (modelAuth.source === 'none') console.warn(line);
       else console.log(line);
+      // Codex is optional, so `none` here is not a warning.
+      console.log(`Codex auth: ${describeCodexAuthSource(this.codexAuth)}`);
     }
   }
 
@@ -1026,13 +1029,14 @@ export class WorkerManager {
   /** Re-run the model-auth detector and cache it (keychain probe is cached 60s). */
   private refreshModelAuth(): ModelAuthReport {
     this.modelAuth = detectModelAuthSource();
+    this.codexAuth = detectCodexAuthSource();
     this.hasCredentials = this.modelAuth.source !== 'none';
     return this.modelAuth;
   }
 
-  // Which model credential this runner uses (label + mode, never a value)
-  getAuthStatus(): { hasCredentials: boolean; modelAuthSource: ModelAuthReport['source']; modelAuthMode: ModelAuthReport['mode'] } {
-    return { hasCredentials: this.hasCredentials, modelAuthSource: this.modelAuth.source, modelAuthMode: this.modelAuth.mode };
+  // Which model credential this runner uses (labels + mode, never a value)
+  getAuthStatus(): { modelAuthSource: ModelAuthReport['source']; modelAuthMode: ModelAuthReport['mode']; codexAuthSource: CodexAuthSource } {
+    return { modelAuthSource: this.modelAuth.source, modelAuthMode: this.modelAuth.mode, codexAuthSource: this.codexAuth };
   }
 
   getViewerToken(): string | undefined {
@@ -1151,7 +1155,7 @@ export class WorkerManager {
         .map(w => w.id);
       const probeAt = getBwrapProbeAt();
       const sandboxEnabled = probeAt !== null ? isBwrapSupported() : null;
-      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.heartbeatEnvironment(), getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds, getRunnerCommit(), RUNNER_VERSION, getRunnerUpdateSnapshot(), this.handoff().snapshot(), this.refreshModelAuth());
+      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.heartbeatEnvironment(), getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds, getRunnerCommit(), RUNNER_VERSION, getRunnerUpdateSnapshot(), this.handoff().snapshot(), { ...this.refreshModelAuth(), codexSource: this.codexAuth });
       if (viewerToken) {
         this.viewerToken = viewerToken;
       }
