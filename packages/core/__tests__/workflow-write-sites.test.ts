@@ -59,8 +59,9 @@ const ALLOWED = new Set<string>();
 // S3a (workflow-kernel-library.md §3) adds the single host's way in. `kernel-client` is the one client every door
 // submits a command through (it runs the seam's door functions locally or on the control plane, never the reducer);
 // `command-api` is the control plane's command endpoint over those same functions and its ledger; `kernel-floor` is
-// the drain-and-floor pass both schedules call (seam functions only); `kernel-host` is the host tag (no I/O).
-const KERNEL_ENTRY_POINTS = new Set(['kernel-client', 'command-api', 'kernel-floor', 'kernel-host', 'seam', 'authority', 'github-facts', 'projections', 'delivery-view', 'pr-activity-effects', 'delivery-ship', 'delivery-display', 'base-delta', 'visual-review-state', 'visual-review-state-load', 'visual-review-schedule-run', 'visual-review-presentation', 'visual-review-diagnostics', 'visual-review-policy', 'visual-review-impact', 'pr-display']);
+// the drain-and-floor pass both schedules call (seam functions only); `kernel-host` is the host tag (no I/O);
+// `command-keys` is the command key ring alone (no I/O), which the control plane's entry reads at load.
+const KERNEL_ENTRY_POINTS = new Set(['kernel-client', 'command-api', 'command-keys', 'kernel-floor', 'kernel-host', 'seam', 'authority', 'github-facts', 'projections', 'delivery-view', 'pr-activity-effects', 'delivery-ship', 'delivery-display', 'base-delta', 'visual-review-state', 'visual-review-state-load', 'visual-review-schedule-run', 'visual-review-presentation', 'visual-review-diagnostics', 'visual-review-policy', 'visual-review-impact', 'pr-display']);
 const COMPOSITION_ROOT = 'apps/web/src/modules.ts';
 // The package is matched too: importing `@buildd/workflow-kernel/reducer` is importing the reducer, and its
 // root (`@buildd/workflow-kernel`, every module at once) reads as `index`, which is no entry point.

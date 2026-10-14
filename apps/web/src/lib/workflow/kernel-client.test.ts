@@ -21,6 +21,9 @@ const OWN = { EXECUTION_MODE: 'own', KERNEL_COMMAND_SECRET: 'k1:s3cret' };
 
 afterEach(() => resetKernelModeCache());
 
+/** Node's fetch when the connection is refused: `fetch failed` with the socket error as its cause. */
+const refusedErr = (code = 'ECONNREFUSED') => Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error(code), { code }) });
+
 function local() {
   const ran: string[] = [];
   return {
@@ -130,7 +133,7 @@ describe('in own mode the web host submits and applies nothing itself', () => {
     let t = 0;
     const err = await submitKernelCommand('land', input, {
       principal, budgetMs: 3_000,
-      deps: { ...l.deps, env: OWN, now: () => t, sleep: async (ms) => { t += ms + 500; }, fetch: (async () => { attempts++; throw new TypeError('fetch failed'); }) as unknown as typeof fetch },
+      deps: { ...l.deps, env: OWN, now: () => t, sleep: async (ms) => { t += ms + 500; }, fetch: (async () => { attempts++; throw refusedErr(); }) as unknown as typeof fetch },
     }).catch((e) => e);
     expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
     expect(err.retryable).toBe(true);
@@ -198,9 +201,14 @@ describe('in own mode the web host submits and applies nothing itself', () => {
       expect(l.ran).toEqual([]);
       return err as InstanceType<typeof ControlPlaneUnavailableError>;
     };
-    const refused = await run(async () => { throw new TypeError('fetch failed'); });
+    const refused = await run(async () => { throw refusedErr(); });
     expect(refused.outcome).toBe('not_applied');
     expect(refused.message).toContain('nothing was applied');
+    for (const code of ['ENOTFOUND', 'EAI_AGAIN']) expect((await run(async () => { throw refusedErr(code); })).outcome).toBe('not_applied');
+    // Node reports a connection reset after the body was sent as the same `fetch failed`: it may have run.
+    const reset = await run(async () => { throw Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' }) }); });
+    expect(reset.outcome).toBe('unknown');
+    expect((await run(async () => { throw new TypeError('fetch failed'); })).outcome).toBe('unknown');
     const timeout = Object.assign(new Error('timed out'), { name: 'TimeoutError' });
     for (const unknown of [
       await run(async () => { throw timeout; }),
@@ -214,7 +222,8 @@ describe('in own mode the web host submits and applies nothing itself', () => {
       const body = await controlPlaneUnavailableResponse(unknown).json();
       expect(body).toMatchObject({ outcome: 'unknown', idempotencyKey: 'land:the-one-key', retryable: true });
     }
-    expect(await controlPlaneUnavailableResponse(refused).json()).not.toHaveProperty('idempotencyKey');
+    // The key is in every unavailable answer, so the caller can always retry with it.
+    expect(await controlPlaneUnavailableResponse(refused).json()).toMatchObject({ outcome: 'not_applied', idempotencyKey: 'land:the-one-key' });
   });
 
   it('a control plane in shadow answers not_host and the web host runs it after all (nothing was applied there)', async () => {
@@ -336,7 +345,7 @@ describe('a door after an unknown outcome', () => {
 
     let refusedCalls = 0;
     const err = await landThroughKernel(input, {
-      deps: { ...base, fetch: (async () => { refusedCalls++; throw new TypeError('fetch failed'); }) as unknown as typeof fetch },
+      deps: { ...base, fetch: (async () => { refusedCalls++; throw refusedErr(); }) as unknown as typeof fetch },
     }).catch((e) => e);
     expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
     expect(err.outcome).toBe('not_applied');
@@ -344,7 +353,50 @@ describe('a door after an unknown outcome', () => {
     // One submission's own retries only: the door did not start a second submission.
     expect(perSubmit).toBeGreaterThan(0);
     refusedCalls = 0;
-    await submitKernelCommand('land', input, { principal, deps: { ...base, fetch: (async () => { refusedCalls++; throw new TypeError('fetch failed'); }) as unknown as typeof fetch } }).catch(() => {});
+    await submitKernelCommand('land', input, { principal, deps: { ...base, fetch: (async () => { refusedCalls++; throw refusedErr(); }) as unknown as typeof fetch } }).catch(() => {});
     expect(perSubmit).toBe(refusedCalls);
+  });
+});
+
+describe('no local run after an attempt that may have reached the control plane', () => {
+  const timeout = () => Object.assign(new Error('t'), { name: 'TimeoutError' });
+
+  it('within one submission: a timeout, then not_host or unconfigured, raises unknown instead of running here', async () => {
+    for (const second of [Response.json({ v: 1, code: 'not_host' }, { status: 409 }), Response.json({ v: 1, code: 'unconfigured' }, { status: 503 })]) {
+      const l = local();
+      const replies: Array<() => Promise<Response>> = [async () => { throw timeout(); }, async () => second];
+      const err = await submitKernelCommand('land', input, { principal, idempotencyKey: 'land:k-0001', deps: { ...l.deps, env: OWN, fetch: (async () => replies.shift()!()) as unknown as typeof fetch } }).catch((e) => e);
+      expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+      expect(err.outcome).toBe('unknown');
+      expect(err.idempotencyKey).toBe('land:k-0001');
+      expect(l.ran).toEqual([]);
+    }
+  });
+
+  it('across a door call: after an unknown submission, a later not_host, unconfigured or shadow reading never runs it here', async () => {
+    const { landThroughKernel } = await import('./kernel-client');
+    let t = 0;
+    const base = { env: { ...OWN, KERNEL_COMMAND_BUDGET_MS: '1' }, now: () => t, sleep: async (ms: number) => { t += ms + 10_000; }, newKey: () => 'land:door-k-0001', host: () => 'web' as const };
+    for (const later of [
+      async () => Response.json({ v: 1, code: 'not_host' }, { status: 409 }),
+      async () => Response.json({ v: 1, code: 'unconfigured' }, { status: 503 }),
+    ]) {
+      const ran: string[] = [];
+      const replies: Array<() => Promise<Response>> = [async () => { throw timeout(); }, later, later, later];
+      const err = await landThroughKernel(input, {
+        deps: { ...base, fetch: (async () => replies.shift()!()) as unknown as typeof fetch, run: (async (op: string) => { ran.push(op); return {}; }) as never, deliveryAfter: async () => null },
+      }).catch((e) => e);
+      expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+      expect(err.outcome).toBe('unknown');
+      expect(ran).toEqual([]);
+    }
+    // The submission itself, told an earlier one was unknown, refuses to run here even when the mode now says shadow.
+    const ran: string[] = [];
+    const err = await submitKernelCommand('land', input, {
+      principal, idempotencyKey: 'land:door-k-0002', priorUnknown: true,
+      deps: { env: { EXECUTION_MODE: 'shadow', KERNEL_COMMAND_SECRET: 'k1:s3cret' }, host: () => 'web', run: (async (op: string) => { ran.push(op); return {}; }) as never },
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+    expect(ran).toEqual([]);
   });
 });

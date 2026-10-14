@@ -37,7 +37,8 @@ function installControlPlane(): ControlPlane {
     let op: string | null = null;
     try { op = JSON.parse(String(init?.body ?? '{}')).op ?? null; } catch { /* not JSON */ }
     cp.calls.push({ path: new URL(href).pathname, op });
-    if (cp.down) throw new TypeError('fetch failed');
+    // Unreachable: the connection is refused, so nothing was sent.
+    if (cp.down) throw Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) });
     depth++;
     setKernelHost('control-plane');
     try {

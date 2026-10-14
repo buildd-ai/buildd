@@ -10,7 +10,8 @@ import { runInRequest } from './request-context';
 import { installOutboundFetch } from './outbound-fetch';
 import { anonymousGithubProbe, deepHealthAllowed, executionMode, isCommandRequest, matchRoute, SERVED_BY, type Env, type Handler } from './router';
 import { setKernelHost } from '@/lib/workflow/kernel-host';
-import { commandsConfigured } from '@/lib/workflow/command-api';
+// The key ring only: the command endpoint (and its ledger and database client) stays lazy.
+import { commandsConfigured } from '@/lib/workflow/command-keys';
 
 installOutboundFetch();
 // This process is the kernel's control-plane host: every transition it applies is tagged so (AC-9).

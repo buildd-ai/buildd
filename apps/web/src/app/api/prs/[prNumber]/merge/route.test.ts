@@ -1289,12 +1289,12 @@ describe('POST /api/prs/[prNumber]/merge — kernel-owned PR (Slice C)', () => {
     });
 
     it('AC-12: the control plane unreachable → 503, retryable, naming the control plane; nothing merged here', async () => {
-      globalThis.fetch = (async () => { throw new TypeError('fetch failed'); }) as unknown as typeof fetch;
+      globalThis.fetch = (async () => { throw Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) }); }) as unknown as typeof fetch;
       const [req, ctx] = makeRequest('42', { version: 7 });
       const res = await POST(req, ctx);
       expect(res.status).toBe(503);
       const body = await res.json();
-      expect(body).toMatchObject({ code: 'control_plane_unavailable', retryable: true, controlPlane: true });
+      expect(body).toMatchObject({ code: 'control_plane_unavailable', retryable: true, controlPlane: true, outcome: 'not_applied', idempotencyKey: expect.stringMatching(/^land:/) });
       expect(body.error).toContain('control plane');
       expect(mockLandThroughKernel).not.toHaveBeenCalled();
       expect(mockMergePullRequest).not.toHaveBeenCalled();

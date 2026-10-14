@@ -67,7 +67,7 @@ export function controlPlaneUnavailableResponse(err: ControlPlaneUnavailableErro
   return new Response(JSON.stringify({
     error: err.message, code: err.code, retryable: true, controlPlane: true, outcome: err.outcome,
     // Send it back as the Idempotency-Key header and the retry gets the control plane's answer.
-    ...(err.outcome === 'unknown' && err.idempotencyKey ? { idempotencyKey: err.idempotencyKey } : {}),
+    ...(err.idempotencyKey ? { idempotencyKey: err.idempotencyKey } : {}),
   }), {
     status: 503,
     headers: { 'content-type': 'application/json', 'Retry-After': '5', 'Cache-Control': 'no-store' },
@@ -161,7 +161,18 @@ export interface SubmitOptions {
   idempotencyKey?: string;
   /** Overall budget for reaching the control plane, retries included. */
   budgetMs?: number;
+  /** An earlier submission of this door call came back `unknown`: never fall back to running it here. */
+  priorUnknown?: boolean;
   deps?: ClientDeps;
+}
+
+/** Connection errors that prove nothing was sent: refused, or the name did not resolve. */
+const PRE_CONNECT_CODES = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN']);
+
+export function failedBeforeConnecting(err: unknown): boolean {
+  const e = err as { code?: unknown; cause?: { code?: unknown } } | null;
+  const code = e?.cause?.code ?? e?.code;
+  return typeof code === 'string' && PRE_CONNECT_CODES.has(code);
 }
 
 export interface KernelAnswer<K extends KernelOp> {
@@ -183,7 +194,13 @@ export function newIdempotencyKey(op: KernelOp): string {
 export async function submitKernelCommand<K extends KernelOp>(op: K, input: KernelOps[K]['input'], opts: SubmitOptions): Promise<KernelAnswer<K>> {
   const deps = opts.deps ?? {};
   const idempotencyKey = opts.idempotencyKey ?? (deps.newKey ?? (() => newIdempotencyKey(op)))();
-  if (await hostsKernelHere(deps)) return runHere(op, input, idempotencyKey, deps);
+  if (await hostsKernelHere(deps)) {
+    // After an unknown outcome the control plane may have applied it: the web host never runs it as well.
+    if (opts.priorUnknown && (deps.host ?? kernelHost)() === 'web') {
+      throw new ControlPlaneUnavailableError('the web host now runs the kernel, but an earlier attempt may have reached the control plane', 'unknown', idempotencyKey);
+    }
+    return runHere(op, input, idempotencyKey, deps);
+  }
   return submitRemote(op, input, { ...opts, idempotencyKey }, deps);
 }
 
@@ -206,7 +223,7 @@ async function submitRemote<K extends KernelOp>(op: K, input: KernelOps[K]['inpu
   const deadline = now() + (opts.budgetMs ?? (Number(env.KERNEL_COMMAND_BUDGET_MS) || 45_000));
   let why = 'no attempt';
   // Once any request may have reached the control plane, a failure's outcome is unknown.
-  let mayHaveApplied = false;
+  let mayHaveApplied = opts.priorUnknown === true;
 
   for (let attempt = 0; ; attempt++) {
     const left = deadline - now();
@@ -221,10 +238,13 @@ async function submitRemote<K extends KernelOp>(op: K, input: KernelOps[K]['inpu
         signal: AbortSignal.timeout(Math.min(left, 25_000)),
       });
     } catch (err) {
+      // Only a failure to connect at all proves the request never reached the control plane. Everything
+      // else (a timeout, a reset after the body was sent, which Node also reports as `fetch failed`)
+      // may have reached it.
+      const preConnect = failedBeforeConnecting(err);
+      if (!preConnect) mayHaveApplied = true;
       const timedOut = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError');
-      // A timeout means the request was sent and nothing came back; a connection failure, that it never got there.
-      if (timedOut) mayHaveApplied = true;
-      why = timedOut ? 'timed out' : `unreachable: ${err instanceof Error ? err.message : String(err)}`;
+      why = timedOut ? 'timed out' : `${preConnect ? 'unreachable' : 'connection lost'}: ${err instanceof Error ? err.message : String(err)}`;
       await sleep(Math.min(250 * 2 ** attempt, 2_000));
       continue;
     }
@@ -234,6 +254,10 @@ async function submitRemote<K extends KernelOp>(op: K, input: KernelOps[K]['inpu
       return { result: a.result, delivery: a.delivery, host: a.host, replayed: a.replayed, idempotencyKey: opts.idempotencyKey };
     }
     if ((res.status === 409 && answer?.code === 'not_host') || (res.status === 503 && answer?.code === 'unconfigured')) {
+      // An earlier attempt of this door call may have run there: running it here too could apply it twice.
+      if (mayHaveApplied) {
+        throw new ControlPlaneUnavailableError(`answered ${res.status} ${String(answer.code)} after an earlier attempt may have reached it`, 'unknown', opts.idempotencyKey);
+      }
       // The control plane is in shadow, or holds no command key yet (half switched over): the web host is
       // the host after all. It refused before running anything, so nothing was applied there.
       cached = { mode: 'shadow', at: now() };
@@ -283,12 +307,14 @@ async function door<K extends KernelOp>(op: K, input: KernelOps[K]['input'], act
   // One key for the whole door call: every retry below asks the control plane the same question.
   const idempotencyKey = c.idempotencyKey ?? (c.deps?.newKey ?? (() => newIdempotencyKey(op)))();
   const principal = c.principal ?? principalOfActor(actor);
+  let priorUnknown = false;
   for (let attempt = 0; ; attempt++) {
     try {
-      return (await submitKernelCommand(op, input, { principal, idempotencyKey, deps: c.deps })).result;
+      return (await submitKernelCommand(op, input, { principal, idempotencyKey, priorUnknown, deps: c.deps })).result;
     } catch (err) {
       // The outcome is unknown (it may have run): ask again with the same key, which answers with what
       // was done and never applies it twice. Not applied: the door reports it; nothing to recover.
+      if (err instanceof ControlPlaneUnavailableError && err.outcome === 'unknown') priorUnknown = true;
       if (err instanceof ControlPlaneUnavailableError && err.outcome === 'unknown' && attempt < DOOR_UNKNOWN_RETRIES) continue;
       throw err;
     }
