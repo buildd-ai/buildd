@@ -469,6 +469,16 @@ describe('PATCH teams/[id]/experiment-flags', () => {
     expect(writes).toHaveLength(0);
   });
 
+  it('turns decision model optimization on for a team, and refuses a non-boolean', async () => {
+    const res = await routes.flags.PATCH(req(`teams/${TEAM}/experiment-flags`, 'PATCH', { decisionModelOptimizer: true }), idCtx(TEAM));
+    expect(res.status).toBe(200);
+    expect(writes).toEqual([{ teamId: TEAM, next: { decisionModelOptimizer: true, deleteLessons: false } }]);
+    expect(audits[0]).toMatchObject({ after: { decisionModelOptimizer: true } });
+    writes.length = 0;
+    expect((await routes.flags.PATCH(req(`teams/${TEAM}/experiment-flags`, 'PATCH', { decisionModelOptimizer: 'yes' }), idCtx(TEAM))).status).toBe(400);
+    expect(writes).toHaveLength(0);
+  });
+
   it('rejects an unknown capability and writes nothing', async () => {
     const res = await routes.flags.PATCH(req(`teams/${TEAM}/experiment-flags`, 'PATCH', { enabledDecisionShadows: ['not_a_capability'] }), idCtx(TEAM));
     expect(res.status).toBe(400);

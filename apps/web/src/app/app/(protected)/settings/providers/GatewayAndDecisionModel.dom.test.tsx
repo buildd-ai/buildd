@@ -29,6 +29,7 @@ const { describeControls } = await import('../_lib/form-controls');
 let gateway: unknown = null;
 let decisionModel: unknown = null;
 let decisionModelOverrides: unknown = undefined;
+let switches: { lines: Array<{ id: string; text: string }>; canUndo: boolean } = { lines: [], canUndo: false };
 const writes: Array<{ url: string; method: string; body: unknown }> = [];
 
 beforeEach(() => {
@@ -36,9 +37,11 @@ beforeEach(() => {
   gateway = null;
   decisionModel = null;
   decisionModelOverrides = undefined;
+  switches = { lines: [], canUndo: false };
   globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
     const method = init?.method ?? 'GET';
     if (method !== 'GET') { writes.push({ url, method, body: init?.body ? JSON.parse(String(init.body)) : null }); return new Response('{}', { status: 200 }); }
+    if (url.endsWith('/decision-model-switches')) return new Response(JSON.stringify(switches), { status: 200 });
     if (url.endsWith('/litellm-gateway')) return new Response(JSON.stringify({ gateway }), { status: 200 });
     return new Response(JSON.stringify({ team: { decisionModel, decisionModelOverrides } }), { status: 200 });
   }) as unknown as typeof fetch;
@@ -77,6 +80,19 @@ describe('GatewayAndDecisionModel', () => {
     await mount(false);
     const lines = [...host.querySelectorAll('[data-testid="decision-model-overrides"] li')].map((li) => li.textContent);
     expect(lines).toEqual(['Task category uses qwen3-8b', 'Start or wait uses Clef']);
+  });
+
+  it('shows one line per switch buildd made, with Undo only for people who can change settings', async () => {
+    switches = { lines: [{ id: 's1', text: 'Start or wait now uses Clef' }], canUndo: false };
+    await mount(false);
+    expect(text('decision-model-switches')).toBe('Start or wait now uses Clef');
+    expect(host.querySelector('[data-testid="decision-model-switch-undo"]')).toBeNull();
+    act(() => root.unmount()); host.remove();
+
+    switches = { lines: [{ id: 's1', text: 'Start or wait now uses Clef' }], canUndo: true };
+    await mount();
+    await click(host.querySelector('[data-testid="decision-model-switch-undo"]'));
+    expect(writes.at(-1)).toEqual({ url: '/api/teams/t/decision-model-switches', method: 'POST', body: { switchId: 's1', action: 'undo' } });
   });
 
   it('shows a connected gateway by URL and last4 only, and Jev as the default decision model', async () => {

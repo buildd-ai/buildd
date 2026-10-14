@@ -113,6 +113,26 @@ describe('runComparison', () => {
     expect(out.problems.join(' ')).toContain('cost cap');
   });
 
+  it('stops starting calls at the call cap, priced or not, and names the limit', async () => {
+    const calls: Call[] = [];
+    const out = await runComparison({
+      groups: [group('collected', 50)],
+      routes: [route('jev', { isProduction: true }), route('clef', { via: 'cloudflare' })],
+      concurrency: 1,
+      costCapUsd: 10,
+      callCap: 30,
+      // Workers AI returns no price, so the cost cap never stops it.
+      decide: fakeDecide({
+        jev: { right: () => true, confidence: 0.9, topP: 0.9 },
+        clef: { right: () => true, confidence: 0.4, topP: 0.9, cost: null },
+      }, calls),
+    });
+    expect(calls.length).toBe(30);
+    expect(out.aborted).toBe('call_cap');
+    expect(out.results.reduce((n, r) => n + r.notRun, 0)).toBe(70);
+    expect(out.problems.join(' ')).toContain('call cap (30 calls)');
+  });
+
   it('stops at the deadline', async () => {
     let t = 0;
     const out = await runComparison({

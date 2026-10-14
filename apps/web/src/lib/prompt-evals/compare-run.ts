@@ -39,7 +39,7 @@ import {
   type CaseSourceFilter,
   type UnscoredGroup,
 } from './cases';
-import { runComparison, type ComparisonResult, type ComparisonRoute } from './compare';
+import { runComparison, type ComparisonAbort, type ComparisonResult, type ComparisonRoute } from './compare';
 import {
   PROMPT_EVAL_BUDGET_MS,
   PROMPT_EVAL_STALE_MS,
@@ -63,6 +63,8 @@ export interface ModelComparisonInput {
   /** Prompts repo ref for the repo's labelled sets; default the deploy seed's. */
   ref?: string;
   costCapUsd?: number;
+  /** Calls started across every model, priced or not (Workers AI is unpriced, so the cost cap cannot bound it). */
+  callCap?: number;
   /** Calls in flight per model. */
   concurrency?: number;
   /** Cases per (kind, origin). */
@@ -71,6 +73,10 @@ export interface ModelComparisonInput {
   sinceDays?: number;
   /** Load and count the cases; ask no model. */
   dryRun?: boolean;
+  /** What started the run, stored on it. Default `manual`. */
+  trigger?: 'manual' | 'cron';
+  /** Epoch ms after which no call starts. Default: the route's time budget from now. */
+  deadlineAt?: number;
 }
 
 export type ModelComparisonOutcome =
@@ -84,6 +90,8 @@ export type ModelComparisonOutcome =
     problems: string[];
     costUsd: number;
     rows: PromptEvalResultRow[];
+    /** Why calls stopped before every case was asked, if they did. */
+    aborted: ComparisonAbort | null;
   };
 
 const keyOf = (c: DecisionModelConfig) => `${c.via}:${c.endpoint}:${c.model}`;
@@ -174,13 +182,15 @@ export async function runModelComparison(input: ModelComparisonInput, deps: Prom
   const repoRef = wantLabelled && repoCfg ? input.ref?.trim() || repoCfg.ref : null;
 
   const runId = await deps.insertRun({
-    teamId: teamId ?? null, trigger: 'manual', status: 'running', promptsRef: repoRef,
+    teamId: teamId ?? null, trigger: input.trigger ?? 'manual', status: 'running', promptsRef: repoRef,
     evalModel: models.join(','), prodModel, modelMismatch: false, dryRun, models, caseSource: source,
   });
+  let comparison: Awaited<ReturnType<typeof runComparison>> | null = null;
   const finish = async (status: PromptEvalRunPatch['status'], extra: string[], rows: PromptEvalResultRow[], loaded: number, costUsd = 0) => {
     const all = [...problems, ...extra];
     await deps.finishRun(runId, { status, loadedPrompts: loaded, costUsd, problems: all, finishedAt: new Date(now()) });
-    return { status, runId, prodModel, models, source, problems: all, costUsd, rows } as const;
+    const aborted = (comparison as { aborted: ComparisonAbort | null } | null)?.aborted ?? null;
+    return { status, runId, prodModel, models, source, problems: all, costUsd, rows, aborted } as const;
   };
   if (!teamId) return finish('failed', ['no team to pay for the calls: pass one, or set BUILDD_PLATFORM_ADMIN_ACCOUNT_IDS'], [], 0);
 
@@ -221,7 +231,6 @@ export async function runModelComparison(input: ModelComparisonInput, deps: Prom
     });
   }
 
-  let comparison: Awaited<ReturnType<typeof runComparison>> | null = null;
   const groups: CaseGroup[] = [];
   const unscored: UnscoredGroup[] = [];
   try {
@@ -274,7 +283,8 @@ export async function runModelComparison(input: ModelComparisonInput, deps: Prom
           routes,
           concurrency: clamp(input.concurrency, COMPARISON_DEFAULTS.concurrency, COMPARISON_LIMITS.concurrency),
           costCapUsd: clamp(input.costCapUsd, COMPARISON_DEFAULTS.costCapUsd, COMPARISON_LIMITS.costCapUsd, 0),
-          deadlineAt: now() + PROMPT_EVAL_BUDGET_MS,
+          ...(input.callCap !== undefined ? { callCap: clamp(input.callCap, COMPARISON_LIMITS.callCap, COMPARISON_LIMITS.callCap, 0) } : {}),
+          deadlineAt: input.deadlineAt ?? now() + PROMPT_EVAL_BUDGET_MS,
           ...(deps.decide ? { decide: deps.decide } : {}),
           now,
         });

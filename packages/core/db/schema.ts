@@ -134,6 +134,12 @@ export const teams = pgTable('teams', {
   // NULL = Jev on OpenRouter. Otherwise any chat model, via OpenRouter or the
   // team's LiteLLM gateway, with confidence from token logprobs.
   decisionModel: jsonb('decision_model').$type<import('../decision-model').DecisionModelConfig | null>(),
+  // Opt-in: buildd may switch a decision's model (decision_model.byKind) when
+  // another model measurably wins on this team's own replayed decisions
+  // (apps/web/src/lib/decision-model-optimizer/). Replaying sends the team's
+  // decision inputs to the candidate providers, so it is off until the team
+  // opts in; a team that has not opted in is never replayed.
+  decisionModelOptimizer: boolean('decision_model_optimizer').notNull().default(false),
   // DEPRECATED — nothing reads or writes this. It was the admin kill switch for
   // chat; chat is now always on and runs whenever a key resolves. Drop in a
   // follow-up release, after the build that stopped reading it is live
@@ -6084,6 +6090,47 @@ export const decisionModelMeasurements = pgTable('decision_model_measurements', 
 }));
 
 export type DecisionModelMeasurementRow = typeof decisionModelMeasurements.$inferSelect;
+
+/**
+ * Every change of one decision's model for a team made by buildd, not a person
+ * (apps/web/src/lib/decision-model-optimizer/): the scheduled comparison
+ * switching to a model that won, the switch back when live graded decisions
+ * fall below the bar, and a person's Undo of either. One row per switch.
+ *
+ * `fromRoute` null means the kind had no override (it followed the team
+ * default); Undo writes it back, so null clears the override. `status`:
+ * `active` is the switch in effect (the team sees one line for it, with Undo);
+ * `undone` a person restored `fromRoute`, which is then pinned until
+ * `pinnedUntil`; `reverted` buildd switched back; `superseded` a later switch
+ * replaced it. Scores and the eval run id are operator data, never shown to
+ * the team.
+ */
+export const decisionModelSwitches = pgTable('decision_model_switches', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  kind: text('kind').notNull(),
+  cause: text('cause').notNull().$type<'optimizer' | 'auto_revert'>(),
+  fromRoute: jsonb('from_route').$type<import('../decision-model').DecisionModelRoute | null>(),
+  toRoute: jsonb('to_route').$type<import('../decision-model').DecisionModelRoute | null>(),
+  evalRunId: text('eval_run_id'),
+  // Share of the compared cases each would act on and get right (optimizer), or
+  // the live acted precision against the bar (auto_revert).
+  beforeScore: real('before_score'),
+  afterScore: real('after_score'),
+  // The precision the switched-to model must keep on live graded decisions.
+  bar: real('bar'),
+  n: integer('n'),
+  status: text('status').notNull().default('active').$type<'active' | 'undone' | 'reverted' | 'superseded'>(),
+  pinnedUntil: timestamp('pinned_until', { withTimezone: true }),
+  endedAt: timestamp('ended_at', { withTimezone: true }),
+  endedBy: uuid('ended_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  teamKindIdx: index('decision_model_switches_team_kind_idx').on(t.teamId, t.kind, t.createdAt),
+  statusIdx: index('decision_model_switches_status_idx').on(t.status, t.createdAt),
+}));
+
+export type DecisionModelSwitchRow = typeof decisionModelSwitches.$inferSelect;
 
 /**
  * One row per worker session end, on every path — completed, failed, the
