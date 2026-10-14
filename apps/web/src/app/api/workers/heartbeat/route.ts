@@ -8,6 +8,7 @@ import {
   storedHeartbeatEnvironment,
   isRunnerModelAuthSource,
   isRunnerModelAuthMode,
+  isRunnerCodexAuthSource,
 } from '@buildd/shared';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
 import { randomBytes } from 'crypto';
@@ -88,9 +89,12 @@ export async function POST(req: NextRequest) {
        */
       modelAuthSource: rawModelAuthSource = undefined,
       modelAuthMode: rawModelAuthMode = undefined,
+      /** The runner's Codex login label (same spec, R-12), under the same rules. */
+      codexAuthSource: rawCodexAuthSource = undefined,
     } = body;
     const modelAuthSource = isRunnerModelAuthSource(rawModelAuthSource) ? rawModelAuthSource : null;
     const modelAuthMode = isRunnerModelAuthMode(rawModelAuthMode) ? rawModelAuthMode : null;
+    const codexAuthSource = isRunnerCodexAuthSource(rawCodexAuthSource) ? rawCodexAuthSource : null;
     // Presence of the bundle is keyed on one field rather than requiring all
     // six, since `undefined` only ever appears here when the runner omitted
     // the whole group (buildd.ts sends it as one unit or not at all).
@@ -169,6 +173,7 @@ export async function POST(req: NextRequest) {
         trackedBranch: (trackedBranch ?? null) as string | null,
         modelAuthSource,
         modelAuthMode,
+        codexAuthSource,
         lastHeartbeatAt: now,
       })
       .onConflictDoUpdate({
@@ -197,6 +202,7 @@ export async function POST(req: NextRequest) {
           // or a garbled beat keeps the last good value — runnerVersion's rule.
           ...(modelAuthSource !== null ? { modelAuthSource } : {}),
           ...(modelAuthMode !== null ? { modelAuthMode } : {}),
+          ...(codexAuthSource !== null ? { codexAuthSource } : {}),
           lastHeartbeatAt: now,
           updatedAt: now,
         },

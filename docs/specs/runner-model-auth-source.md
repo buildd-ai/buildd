@@ -2,13 +2,13 @@
 title: Runner Model Auth Source
 status: active
 owner: max
-last_verified: 2026-10-13
+last_verified: 2026-10-14
 summary: A runner MUST detect the model login on its own machine, use it with no setup, say which one it uses, and report that label (never the value) to the server.
 domain: runners
 surfaces: [apps/runner/src/host-seat.ts, apps/runner/src/workers.ts, apps/web/src/app/api/workers/heartbeat/route.ts, apps/cloud-runner/src/owner-seat.ts]
 related: [runner-liveness, credential-isolation, real-and-virtual-cost, auth-oauth-boundaries]
-keywords: [host seat, claude login, setup-token, CLAUDE_CODE_OAUTH_TOKEN, BUILDD_HOST_SEAT, owner seat, keychain, hasClaudeCredentials, model_auth_source, detectModelAuthSource]
-verified_by: [apps/runner/__tests__/unit/model-auth-detect.test.ts, apps/web/src/app/api/workers/heartbeat/route.test.ts, apps/web/src/app/app/(protected)/settings/_lib/model-auth-label.test.ts, apps/web/src/app/app/(protected)/settings/RunnerTokensSection.dom.test.tsx, apps/cloud-runner/src/owner-seat.test.ts]
+keywords: [host seat, claude login, codex login, codex_auth_source, codexAuthSource, setup-token, CLAUDE_CODE_OAUTH_TOKEN, BUILDD_HOST_SEAT, owner seat, keychain, hasClaudeCredentials, model_auth_source, detectModelAuthSource]
+verified_by: [apps/runner/__tests__/unit/model-auth-detect.test.ts, apps/web/src/app/api/workers/heartbeat/route.test.ts, apps/web/src/app/app/(protected)/settings/_lib/model-auth-label.test.ts, apps/web/src/app/app/(protected)/settings/RunnerTokensSection.dom.test.tsx, apps/web/src/app/app/(protected)/settings/runners/qa-state.test.ts, apps/web/src/app/api/workers/active/route.test.ts, packages/core/__tests__/mcp-tools-list-runners.test.ts, apps/cloud-runner/src/owner-seat.test.ts]
 assertions:
   - id: detector
     type: symbol
@@ -33,6 +33,18 @@ assertions:
   - id: settings-label
     type: symbol
     name: modelAuthLabel
+    path: apps/web/src/app/app/(protected)/settings/_lib/model-auth-label.ts
+  - id: heartbeat-reads-codex-label
+    type: symbol_reachable
+    symbol: isRunnerCodexAuthSource
+    entry: apps/web/src/app/api/workers/heartbeat/route.ts
+  - id: stored-codex-column
+    type: config_key
+    key: codex_auth_source
+    file: packages/core/db/schema.ts
+  - id: settings-codex-label
+    type: symbol
+    name: codexAuthLabel
     path: apps/web/src/app/app/(protected)/settings/_lib/model-auth-label.ts
 ---
 
@@ -119,6 +131,43 @@ it, so the container never sees it, and each run report carries
   a run's model route resolves to the seat THEN its run report carries
   `modelAuth: owner_seat`, and the claim and container env carry no token.
 
+## Codex
+
+The same detection path also names the runner's Codex login. Codex is
+optional, so `none` is not a warning anywhere.
+
+- R-10: Detection follows the rules `decideCodexSeat` uses for a Codex task
+  with no delivered credential: `machine_login` (a `codex login` with a ChatGPT
+  login in `$CODEX_HOME/auth.json`, else `~/.codex/auth.json`), `api_key` (that
+  file holds an API key, or `OPENAI_API_KEY` is set), `none`. Under
+  `BUILDD_HOST_SEAT=off` the machine's `codex login` counts only through an
+  explicitly set `CODEX_HOME`. The file is read for which kind of login it
+  holds, never for a value.
+- R-11: Startup prints a second line, `Codex auth: <words>`. With `none` it
+  says the fix: run `codex login` as the runner user, or set `OPENAI_API_KEY`.
+- R-12: The heartbeat carries the label as `codexAuthSource`, under the
+  no-secret rule above. The server stores it in
+  `worker_heartbeats.codex_auth_source` by the same rules as the Claude label:
+  unknown dropped, omitted keeps the stored value, never sent shows nothing.
+- R-13: The runner row in Settings shows the Codex label on its own line only
+  when it is not `none`: "Codex: uses this machine's Codex login" or "Codex:
+  uses an OpenAI API key (billed per token)". `none` and not reported show
+  nothing, so a Claude-only runner looks as it does today.
+
+- AC-10: GIVEN `~/.codex/auth.json` with a ChatGPT login and no `CODEX_HOME`
+  THEN the Codex label is `machine_login`; under `BUILDD_HOST_SEAT=off` it is
+  `none`, and with `CODEX_HOME` set to that directory it is `machine_login`.
+- AC-11: GIVEN an auth.json holding only an API key, or no file and
+  `OPENAI_API_KEY` set THEN the label is `api_key`, and neither value appears in
+  the serialized heartbeat.
+- AC-12: GIVEN a heartbeat with Codex `machine_login` and then one without the
+  field THEN the stored label is `machine_login`; a token-shaped value stores
+  nothing and returns 200.
+- AC-13: GIVEN a runner row with Codex `none` THEN no Codex line shows; with
+  `machine_login` THEN "Codex: uses this machine's Codex login" shows.
+- AC-14: GIVEN the runner's local config endpoint THEN it carries the Claude
+  and Codex labels and no `hasClaudeCredentials` field.
+
 ## Code surface
 
 - Detection: `apps/runner/src/host-seat.ts` (`detectModelAuthSource`, `describeModelAuthSource`, `detectHostSeat`)
@@ -126,7 +175,8 @@ it, so the container never sees it, and each run report carries
 - Heartbeat client: `apps/runner/src/buildd.ts` (heartbeat payload)
 - Heartbeat route: `apps/web/src/app/api/workers/heartbeat/route.ts`
 - Storage: `workerHeartbeats` in `packages/core/db/schema.ts`
-- Display: `apps/web/src/app/app/(protected)/settings/RunnerTokensSection.tsx`
+- Display: `apps/web/src/app/app/(protected)/settings/RunnerTokensSection.tsx` (`codexAuthLabel` in `_lib/model-auth-label.ts` for the Codex line)
+- Readers: `GET /api/workers/active` and `list_runners` (`codexAuth=` only when reported)
 - Cloud: `apps/cloud-runner/src/owner-seat.ts` (`ownerSeatEnabled`), `apps/cloud-runner/src/run-report.ts`
 
 ## Out of scope
@@ -135,6 +185,7 @@ it, so the container never sees it, and each run report carries
   the label is trusted in production).
 - Hiding a `claude login` from the agent under `off`.
 - Ingesting the cloud run report's `modelAuth` into the runner row.
+- Codex on the Cloudflare runner (it runs Claude only).
 - Removing server-held subscription seats (`knowledge-base: buildd/plans/seat-custody-removal.md`).
 - Checking that a detected login actually works (an expired login still
   reports `machine_login`).

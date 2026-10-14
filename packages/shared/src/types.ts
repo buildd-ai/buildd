@@ -1417,6 +1417,18 @@ export function isRunnerModelAuthMode(value: unknown): value is RunnerModelAuthM
   return typeof value === 'string' && (RUNNER_MODEL_AUTH_MODES as readonly string[]).includes(value);
 }
 
+/**
+ * Which Codex login a runner's Codex agents use, detected by the same rules as
+ * the Claude label (docs/specs/runner-model-auth-source.md R-10..R-13). A label
+ * only, sent on every heartbeat as `codexAuthSource`.
+ */
+export const RUNNER_CODEX_AUTH_SOURCES = ['machine_login', 'api_key', 'none'] as const;
+export type RunnerCodexAuthSource = (typeof RUNNER_CODEX_AUTH_SOURCES)[number];
+
+export function isRunnerCodexAuthSource(value: unknown): value is RunnerCodexAuthSource {
+  return typeof value === 'string' && (RUNNER_CODEX_AUTH_SOURCES as readonly string[]).includes(value);
+}
+
 /** The model-auth fields a runner adds to its heartbeat body. Both optional: older runners omit them. */
 export interface RunnerModelAuthHeartbeatFields {
   modelAuthSource?: RunnerModelAuthSource;
