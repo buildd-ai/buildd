@@ -51,6 +51,17 @@ if (CLI.kind === 'unknown') {
   process.exit(EXIT_CLI_USAGE);
 }
 
+// `buildd name [<name>|--clear]`: read or set the display name, then exit. It
+// never starts a runner; a running one picks the new name up on its next
+// heartbeat (runner-name.ts).
+if (CLI.kind === 'name') {
+  const { runNameCommand } = await import('./runner-name');
+  const r = runNameCommand(CLI.args, { configFile: CONFIG_FILE });
+  if (r.stdout) console.log(r.stdout);
+  if (r.stderr) console.error(r.stderr);
+  process.exit(r.code);
+}
+
 // --version: print and exit. Deliberately after every static import above, so a
 // zero exit also proves the runner's whole module graph loads (the installer
 // smoke test relies on that).
