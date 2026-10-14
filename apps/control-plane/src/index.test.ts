@@ -139,7 +139,22 @@ describe('pusher shim', () => {
 describe('health', () => {
   it('reports the deployed commit, so release CI can verify lockstep with the web app', async () => {
     const res = await worker.fetch(new Request('https://control-plane.buildd.dev/__control-plane/health'), { EXECUTION_MODE: 'own', GIT_SHA: 'abc123' }, { waitUntil() {}, passThroughOnException() {} } as never);
-    expect(await res.json()).toEqual({ ok: true, service: 'control-plane', mode: 'own', commit: 'abc123' });
+    expect(await res.json()).toEqual({ ok: true, service: 'control-plane', mode: 'own', kernel: 'shadow', commit: 'abc123' });
+  });
+
+  it('reports kernel own only in own mode AND with a command key, so a web host keyed first keeps running the kernel itself', async () => {
+    const ctx = { waitUntil() {}, passThroughOnException() {} } as never;
+    const kernelOf = async (env: Record<string, string>) =>
+      ((await (await worker.fetch(new Request('https://control-plane.buildd.dev/__control-plane/health'), env, ctx)).json()) as { kernel: string; mode: string });
+    const prior = process.env.KERNEL_COMMAND_SECRET;
+    delete process.env.KERNEL_COMMAND_SECRET;
+    try {
+      expect(await kernelOf({ EXECUTION_MODE: 'own' })).toMatchObject({ mode: 'own', kernel: 'shadow' });
+      expect(await kernelOf({ EXECUTION_MODE: 'own', KERNEL_COMMAND_SECRET: 'k1:s' })).toMatchObject({ mode: 'own', kernel: 'own' });
+      expect(await kernelOf({ EXECUTION_MODE: 'shadow', KERNEL_COMMAND_SECRET: 'k1:s' })).toMatchObject({ mode: 'shadow', kernel: 'shadow' });
+    } finally {
+      if (prior !== undefined) process.env.KERNEL_COMMAND_SECRET = prior;
+    }
   });
 });
 

@@ -36,12 +36,20 @@ export type { KernelOp, KernelOps, KernelPrincipal, DeliveryVersion } from './co
 
 export const CONTROL_PLANE_URL = 'https://control-plane.buildd.dev';
 
-/** The control plane did not answer: nothing was applied. Retry later; the door says so. */
+/**
+ * The control plane did not give an answer. Retryable either way; `outcome` says what is known:
+ *  - `not_applied`: nothing reached it that could apply (unreachable, refused before running);
+ *  - `unknown`: a request may have reached it (a timeout, an in-progress reply, a gateway error),
+ *    so the command may have been applied. Retry with the SAME `idempotencyKey`: the control plane
+ *    then answers with what it did, and never applies it twice.
+ */
 export class ControlPlaneUnavailableError extends Error {
   readonly code = 'control_plane_unavailable';
   readonly retryable = true;
-  constructor(readonly why: string) {
-    super(`The control plane did not answer (${why}), so nothing was applied. Try again in a moment.`);
+  constructor(readonly why: string, readonly outcome: 'not_applied' | 'unknown' = 'not_applied', readonly idempotencyKey: string | null = null) {
+    super(outcome === 'unknown'
+      ? `The control plane did not confirm the outcome (${why}); it may have been applied. Retry with the same idempotency key${idempotencyKey ? ` (${idempotencyKey})` : ''} to get its answer.`
+      : `The control plane did not answer (${why}), so nothing was applied. Try again in a moment.`);
     this.name = 'ControlPlaneUnavailableError';
   }
 }
@@ -56,7 +64,11 @@ export class KernelCommandRefusedError extends Error {
 
 /** A door's answer when the control plane is unreachable (AC-12): retryable, naming the control plane. */
 export function controlPlaneUnavailableResponse(err: ControlPlaneUnavailableError): Response {
-  return new Response(JSON.stringify({ error: err.message, code: err.code, retryable: true, controlPlane: true }), {
+  return new Response(JSON.stringify({
+    error: err.message, code: err.code, retryable: true, controlPlane: true, outcome: err.outcome,
+    // Send it back as the Idempotency-Key header and the retry gets the control plane's answer.
+    ...(err.outcome === 'unknown' && err.idempotencyKey ? { idempotencyKey: err.idempotencyKey } : {}),
+  }), {
     status: 503,
     headers: { 'content-type': 'application/json', 'Retry-After': '5', 'Cache-Control': 'no-store' },
   });
@@ -97,8 +109,10 @@ export async function readWorkerMode(env: Record<string, string | undefined> = p
   try {
     const res = await fetch(env.CONTROL_PLANE_HEALTH_URL || `${CONTROL_PLANE_URL}/__control-plane/health`, { signal: AbortSignal.timeout(1500), cache: 'no-store' });
     if (!res.ok) return null;
-    const mode = ((await res.json()) as { mode?: unknown }).mode;
-    return typeof mode === 'string' ? mode : null;
+    // `kernel`, not `mode`: whether the Worker applies kernel commands (own mode AND a command key).
+    // A Worker that predates the field is not switched over.
+    const kernel = ((await res.json()) as { kernel?: unknown }).kernel;
+    return typeof kernel === 'string' ? kernel : 'shadow';
   } catch {
     return null;
   }
@@ -182,7 +196,7 @@ async function runHere<K extends KernelOp>(op: K, input: KernelOps[K]['input'], 
 async function submitRemote<K extends KernelOp>(op: K, input: KernelOps[K]['input'], opts: SubmitOptions & { idempotencyKey: string }, deps: ClientDeps): Promise<KernelAnswer<K>> {
   const env = deps.env ?? process.env;
   const key = signingKey(commandKeyRing(env));
-  if (!key) throw new ControlPlaneUnavailableError('no command key is configured on the web host');
+  if (!key) throw new ControlPlaneUnavailableError('no command key is configured on the web host', 'not_applied', opts.idempotencyKey);
   const base = (env.CONTROL_PLANE_URL || CONTROL_PLANE_URL).replace(/\/+$/, '');
   const url = new URL(COMMAND_PATH, base);
   const body = JSON.stringify({ v: COMMAND_API_VERSION, op, input, principal: opts.principal, idempotencyKey: opts.idempotencyKey } satisfies CommandRequest<K>);
@@ -191,10 +205,12 @@ async function submitRemote<K extends KernelOp>(op: K, input: KernelOps[K]['inpu
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const deadline = now() + (opts.budgetMs ?? 45_000);
   let why = 'no attempt';
+  // Once any request may have reached the control plane, a failure's outcome is unknown.
+  let mayHaveApplied = false;
 
   for (let attempt = 0; ; attempt++) {
     const left = deadline - now();
-    if (left <= 0) throw new ControlPlaneUnavailableError(why);
+    if (left <= 0) throw new ControlPlaneUnavailableError(why, mayHaveApplied ? 'unknown' : 'not_applied', opts.idempotencyKey);
     let res: Response;
     try {
       const headers = await signRequest({ keyId: key.keyId, secret: key.secret, method: 'POST', path: url.pathname + url.search, body });
@@ -205,7 +221,10 @@ async function submitRemote<K extends KernelOp>(op: K, input: KernelOps[K]['inpu
         signal: AbortSignal.timeout(Math.min(left, 25_000)),
       });
     } catch (err) {
-      why = err instanceof Error && err.name === 'TimeoutError' ? 'timed out' : `unreachable: ${err instanceof Error ? err.message : String(err)}`;
+      const timedOut = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError');
+      // A timeout means the request was sent and nothing came back; a connection failure, that it never got there.
+      if (timedOut) mayHaveApplied = true;
+      why = timedOut ? 'timed out' : `unreachable: ${err instanceof Error ? err.message : String(err)}`;
       await sleep(Math.min(250 * 2 ** attempt, 2_000));
       continue;
     }
@@ -214,13 +233,17 @@ async function submitRemote<K extends KernelOp>(op: K, input: KernelOps[K]['inpu
       const a = answer as unknown as CommandAnswer<K>;
       return { result: a.result, delivery: a.delivery, host: a.host, replayed: a.replayed, idempotencyKey: opts.idempotencyKey };
     }
-    if (res.status === 409 && answer?.code === 'not_host') {
-      // The control plane is in shadow: the web host is the host after all. Nothing was applied there.
+    if ((res.status === 409 && answer?.code === 'not_host') || (res.status === 503 && answer?.code === 'unconfigured')) {
+      // The control plane is in shadow, or holds no command key yet (half switched over): the web host is
+      // the host after all. It refused before running anything, so nothing was applied there.
       cached = { mode: 'shadow', at: now() };
       return runHere(op, input, opts.idempotencyKey, deps);
     }
     if (RETRYABLE_STATUS.has(res.status) || (res.status === 409 && answer?.code === 'in_progress')) {
       why = `answered ${res.status}${answer?.code ? ` ${String(answer.code)}` : ''}`;
+      // in_progress: it is running there. A 5xx, command_failed included (a command that threw may have
+      // applied part of its work before it did): it may have run. Only a 429 refused before running.
+      if (res.status !== 429) mayHaveApplied = true;
       await sleep(Math.min(250 * 2 ** attempt, 2_000));
       continue;
     }

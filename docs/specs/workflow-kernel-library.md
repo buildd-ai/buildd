@@ -372,7 +372,11 @@ the control plane, authenticated as the caller).
   the control plane's answer. If the control plane does not answer within the
   door's budget the client raises `ControlPlaneUnavailableError` and the door
   answers 503 with a retryable error naming the control plane
-  (`controlPlaneUnavailableResponse`); nothing is applied on the web host.
+  (`controlPlaneUnavailableResponse`); nothing is applied on the web host. The
+  error says what is known: `not_applied` when no request reached the control
+  plane, `unknown` when one may have (a timeout, `in_progress`, a 5xx). An
+  unknown outcome carries the idempotency key: retrying with that key returns
+  the control plane's answer and never applies the command twice.
 - Doors that run on Vercel today (dashboard and chat merge, MCP `merge_pr`,
   `create_pr`, re-review, retry-CI, apply-recommendation, supersession,
   `update_task` on a delivery-owned task, `correct_task_result`) submit a
@@ -383,11 +387,14 @@ the control plane, authenticated as the caller).
   it the web host runs the package itself, exactly as before, whatever either
   host's `EXECUTION_MODE`, and the control plane's cron does nothing. With it,
   the mode is one setting: the control plane's `EXECUTION_MODE`. The web host
-  follows what the Worker's health reports (`/__control-plane/health`, read
+  follows the Worker's health `kernel` field, which is `own` only when the
+  Worker is in own mode and holds the command key (`mode` alone still says who
+  answers the execution routes) (`/__control-plane/health`, read
   with a short timeout and cached for 30 s; a reading up to five minutes old
   stands in for a failed re-read; no reading at all counts as `own`, so a door
   fails retryably rather than applying a command the control plane may also be
-  applying). `EXECUTION_MODE` set on the web host overrides that for tests and
+  applying). A 503 `unconfigured` from the control plane is answered like
+  `not_host`: it ran nothing, so the web host runs the command itself. `EXECUTION_MODE` set on the web host overrides that for tests and
   a local e2e; off Vercel with nothing set the web host is the host, since no
   control plane is there to follow.
 - The drain and the floor (`drainDueEffects`, `reconcileKernelDeliveries`,
@@ -401,8 +408,11 @@ the control plane, authenticated as the caller).
   switch-over, `/api/cron/pr-reconcile` runs it and the control plane's tick
   does nothing and reads nothing. Liveness fallback: even switched over,
   `/api/cron/pr-reconcile` runs the pass itself whenever the control plane's
-  newest successful `kernel-floor` run is older than two cron periods (two
-  hours) or has never happened, and records `kernelHost: web` with
+  newest successful `kernel-floor` run is older than one and a half cron
+  periods (`KERNEL_FLOOR_STALE_MS`, 90 minutes) or has never happened. Both
+  crons fire at :10, so a healthy floor is about one period old when the web
+  host looks, and one missed control-plane tick is caught at the web host's
+  next tick. It records `kernelHost: web` with
   `kernelReason: control_plane_floor_stale`. A cron trigger that was never
   deployed, or a stopped Worker, can delay the drain, never stop it. An effect is never
   drained inline at the end of a Vercel request in own mode: the seam's inline
@@ -428,20 +438,25 @@ the control plane, authenticated as the caller).
 
 **Switching over** (owner/operator steps, NOT DONE yet). Merging and
 releasing this code changes nothing on its own: without the secret the web
-host keeps applying commands and draining exactly as before. To move the
-kernel to the control plane:
+host keeps applying commands and draining exactly as before. The order
+matters: the control plane first, then the web host.
 
-1. Set `KERNEL_COMMAND_SECRET` to the same value on both hosts: the web app's
-   environment and the control plane Worker's secrets.
-2. Run `wrangler triggers deploy` for the control plane Worker from an account
-   login, so its cron trigger exists (the release workflow deploys versions,
-   not triggers).
+1. Set `KERNEL_COMMAND_SECRET` on the control plane Worker (a Worker secret),
+   and run `wrangler triggers deploy` for it from an account login so its cron
+   trigger exists (the release workflow deploys versions, not triggers).
+   Confirm `/__control-plane/health` reports `kernel: own`.
+2. Then set the same `KERNEL_COMMAND_SECRET` value in the web app's
+   environment.
 3. Confirm the switch: the `kernel-floor` cron runs report the control plane as
    their host, `/api/cron/pr-reconcile` reports `kernelSkipped`, and new
    `workflow_transitions` rows from doors carry `host = control-plane`.
 
-The rollback is the Worker's `EXECUTION_MODE=shadow`, or unsetting the secret
-on the web host.
+The other order is safe but does nothing yet: a web host with the secret
+follows the Worker's health `kernel` field, which reads `own` only when the
+Worker is in own mode and holds the secret, and a Worker without it answers
+503 `unconfigured`, on which the web host runs the command itself. The
+rollback is the Worker's `EXECUTION_MODE=shadow`, or unsetting the secret on
+the web host.
 
 **Acceptance criteria**:
 - AC-9: GIVEN `EXECUTION_MODE=own` WHEN a person merges from the dashboard

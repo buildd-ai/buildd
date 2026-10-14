@@ -61,6 +61,18 @@ describe('the mode', () => {
     expect(reads).toBe(0);
   });
 
+  it('a cached reading older than the stale bound plus a failed re-read is own, never the old reading', async () => {
+    let t = 0;
+    let reported: string | null = 'shadow';
+    const deps: ClientDeps = { host: () => 'web', env: { VERCEL: '1', KERNEL_COMMAND_SECRET: 'k1:s3cret' }, now: () => t, readMode: async () => reported };
+    expect(await kernelMode(deps)).toBe('shadow');
+    reported = null;
+    t = MODE_STALE_MS - 1;
+    expect(await kernelMode(deps)).toBe('shadow');
+    t = MODE_STALE_MS + 1;
+    expect(await kernelMode(deps)).toBe('own');
+  });
+
   it('on Vercel: follows the Worker\'s reported mode, cached; a failed re-read keeps a recent reading; no reading at all is own', async () => {
     let t = 0;
     let reported: string | null = 'shadow';
@@ -153,6 +165,58 @@ describe('in own mode the web host submits and applies nothing itself', () => {
     expect(l.ran).toEqual([]);
   });
 
+  it('half switched over: a control plane with no command key answers 503 unconfigured, and the web host runs it at once (nothing was applied there)', async () => {
+    const l = local();
+    let n = 0;
+    const a = await submitKernelCommand('land', input, { principal, deps: { ...l.deps, env: OWN, fetch: (async () => { n++; return Response.json({ v: 1, code: 'unconfigured', retryable: true }, { status: 503 }); }) as unknown as typeof fetch } });
+    expect(n).toBe(1);
+    expect(l.ran).toEqual(['land']);
+    expect(a.host).toBe('web');
+  });
+
+  it('the Worker\'s health is read for `kernel`, not `mode`: own execution routes without a command key read shadow, and a Worker without the field is not switched over', async () => {
+    const { readWorkerMode } = await import('./kernel-client');
+    const realFetch = globalThis.fetch;
+    const replies = [{ mode: 'own', kernel: 'shadow' }, { mode: 'own', kernel: 'own' }, { mode: 'own' }];
+    globalThis.fetch = (async () => Response.json(replies.shift())) as unknown as typeof fetch;
+    try {
+      expect([await readWorkerMode({}), await readWorkerMode({}), await readWorkerMode({})]).toEqual(['shadow', 'own', 'shadow']);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it('a failure before any request reached the control plane is not_applied; one after a request may have reached it is unknown and carries the key to retry with', async () => {
+    const run = async (fetchImpl: () => Promise<Response>) => {
+      const l = local();
+      let t = 0;
+      const err = await submitKernelCommand('land', input, {
+        principal, idempotencyKey: 'land:the-one-key', budgetMs: 3_000,
+        deps: { ...l.deps, env: OWN, now: () => t, sleep: async (ms) => { t += ms + 500; }, fetch: fetchImpl as unknown as typeof fetch },
+      }).catch((e) => e);
+      expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+      expect(l.ran).toEqual([]);
+      return err as InstanceType<typeof ControlPlaneUnavailableError>;
+    };
+    const refused = await run(async () => { throw new TypeError('fetch failed'); });
+    expect(refused.outcome).toBe('not_applied');
+    expect(refused.message).toContain('nothing was applied');
+    const timeout = Object.assign(new Error('timed out'), { name: 'TimeoutError' });
+    for (const unknown of [
+      await run(async () => { throw timeout; }),
+      await run(async () => Response.json({ v: 1, code: 'in_progress' }, { status: 409 })),
+      await run(async () => new Response('bad gateway', { status: 502 })),
+    ]) {
+      expect(unknown.outcome).toBe('unknown');
+      expect(unknown.idempotencyKey).toBe('land:the-one-key');
+      expect(unknown.message).not.toContain('nothing was applied');
+      expect(unknown.message).toContain('land:the-one-key');
+      const body = await controlPlaneUnavailableResponse(unknown).json();
+      expect(body).toMatchObject({ outcome: 'unknown', idempotencyKey: 'land:the-one-key', retryable: true });
+    }
+    expect(await controlPlaneUnavailableResponse(refused).json()).not.toHaveProperty('idempotencyKey');
+  });
+
   it('a control plane in shadow answers not_host and the web host runs it after all (nothing was applied there)', async () => {
     const l = local();
     const a = await submitKernelCommand('land', input, { principal, deps: { ...l.deps, env: OWN, fetch: (async () => Response.json({ v: 1, code: 'not_host', mode: 'shadow' }, { status: 409 })) as unknown as typeof fetch } });
@@ -175,7 +239,7 @@ describe('in own mode the web host submits and applies nothing itself', () => {
     globalThis.fetch = (async (u: string | URL | Request) => {
       const url = String(u instanceof Request ? u.url : u);
       urls.push(url);
-      return url.endsWith('/__control-plane/health') ? Response.json({ ok: true, mode: 'own', commit: 'a-different-commit' }) : answer();
+      return url.endsWith('/__control-plane/health') ? Response.json({ ok: true, mode: 'own', kernel: 'own', commit: 'a-different-commit' }) : answer();
     }) as typeof fetch;
     try {
       await submitKernelCommand('land', input, { principal, deps: { ...l.deps, env: { VERCEL: '1', VERCEL_GIT_COMMIT_SHA: 'this-commit', KERNEL_COMMAND_SECRET: 'k1:s3cret' } } });

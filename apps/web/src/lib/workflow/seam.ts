@@ -209,8 +209,9 @@ export async function openKernelDelivery(p: OpenInput, deps: SeamDeps = {}): Pro
   const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, p.workspaceId)), columns: { id: true, gitConfig: true } });
   if (!ws || !kernelEnabled(ws.gitConfig)) return { owned: false, reason: 'kernel_off' };
 
+  // The owner task must be the workspace's own: a command names both, and they are checked together.
   const task = await db.query.tasks.findFirst({
-    where: sqlWhere(eq(tasks.id, p.ownerTaskId)),
+    where: sqlWhere(and(eq(tasks.id, p.ownerTaskId), eq(tasks.workspaceId, p.workspaceId))),
     columns: { id: true, status: true, category: true, kind: true, deliveryId: true, deliveryRole: true },
   });
   if (!task) return { owned: false, reason: 'no_task' };

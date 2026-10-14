@@ -252,7 +252,32 @@ describe('AC-10: the drain and the floor on the control plane, with the web app 
   });
 });
 
+describe('open_delivery names a workspace and its own task', () => {
+  test('an owner task from another workspace opens nothing', async () => {
+    const { seedTask, seedWorkspace } = await import('./harness');
+    process.env.EXECUTION_MODE = 'shadow';
+    w = await world();
+    const other = await seedWorkspace();
+    const foreignTask = await seedTask(other.workspaceId, { status: 'in_progress' });
+    const r = await seam.openKernelDelivery({ workspaceId: w.workspaceId, ownerTaskId: foreignTask, repoFullName: w.repo, prNumber: 9, installationId: w.installationId, source: 'test' });
+    expect(r).toEqual({ owned: false, reason: 'no_task' });
+    const [{ n }] = await q<{ n: string }>(sql`SELECT count(*) AS n FROM workflow_deliveries WHERE owner_task_id = ${foreignTask}::uuid`);
+    expect(Number(n)).toBe(0);
+  });
+});
+
 describe('the ledger on Postgres', () => {
+  test('a completed key past the lease is never taken over: its stored answer stands and nothing runs again', async () => {
+    const ledger = postgresCommandLedger();
+    const key = `test:${crypto.randomUUID()}`;
+    const base = { key, op: 'land', principal: 'system:test', requestHash: 'h1', host: 'control-plane' };
+    expect(await ledger.claim({ ...base, token: 't1' })).toBe(true);
+    expect(await ledger.complete({ key, token: 't1', response: { status: 200, body: { first: true } }, deliveryId: null, deliveryVersion: 1 })).toBe(true);
+    await q(sql`UPDATE workflow_commands SET claimed_at = now() - make_interval(secs => ${COMMAND_LEASE_MS / 1000 + 60}::double precision) WHERE idempotency_key = ${key}`);
+    expect(await ledger.claim({ ...base, token: 't2' })).toBe(false);
+    expect(await ledger.read(key)).toMatchObject({ status: 'done', response: { status: 200, body: { first: true } } });
+  });
+
   test('claim once per key; completion and release only by the current claim; a dead claim is taken over after the lease; prune keeps recent keys', async () => {
     const ledger = postgresCommandLedger();
     const key = `test:${crypto.randomUUID()}`;

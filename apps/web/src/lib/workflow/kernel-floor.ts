@@ -89,8 +89,13 @@ export const KERNEL_FLOOR_JOB = 'kernel-floor';
 
 /** The control plane's cron period (wrangler.jsonc `10 * * * *`). */
 export const KERNEL_FLOOR_PERIOD_MS = 60 * 60_000;
-/** Older than two periods, the control plane's floor is presumed not running (a trigger never deployed, a broken Worker). */
-export const KERNEL_FLOOR_STALE_MS = 2 * KERNEL_FLOOR_PERIOD_MS;
+/**
+ * Past this the control plane's floor is presumed not running (a trigger never deployed, a broken
+ * Worker). Both crons fire at :10, so a healthy floor is about one period old when the web host
+ * looks, and one missed tick makes it about two periods old at the web host's next tick. The cutoff
+ * sits between the two, at one and a half periods, so that next tick catches it whatever the jitter.
+ */
+export const KERNEL_FLOOR_STALE_MS = 1.5 * KERNEL_FLOOR_PERIOD_MS;
 
 /** When the control plane's floor last completed: its newest successful `kernel-floor` run, or null for never. */
 export async function lastControlPlaneFloorAt(): Promise<Date | null> {
@@ -104,8 +109,8 @@ export async function lastControlPlaneFloorAt(): Promise<Date | null> {
 
 /**
  * The liveness fallback: the web host runs the drain and floor itself, even cut over,
- * when the control plane's floor has not completed within two periods. A cron trigger
- * that was never deployed, or a Worker that stopped, can then cost two hours, never the drain.
+ * when the control plane's floor has not completed within `KERNEL_FLOOR_STALE_MS`. A cron
+ * trigger that was never deployed, or a Worker that stopped, costs at most one missed tick.
  */
 export function controlPlaneFloorStale(lastAt: Date | null, now: number = Date.now()): boolean {
   return !lastAt || now - lastAt.getTime() > KERNEL_FLOOR_STALE_MS;

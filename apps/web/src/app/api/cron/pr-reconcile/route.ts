@@ -120,8 +120,8 @@ export async function GET(req: NextRequest) {
 
     // The kernel's drain and floor run here while this host is the kernel's (shadow). Cut over, the
     // control plane's cron trigger runs them (workflow-kernel-library.md §3), and this route runs
-    // them only as the liveness fallback: when the control plane's last floor run is older than two
-    // cron periods (or never happened), so an undeployed trigger or a stopped Worker never stops the drain.
+    // them only as the liveness fallback: when the control plane's last floor run is older than KERNEL_FLOOR_STALE_MS
+    // (90 min, or never happened), so an undeployed trigger or a stopped Worker never stops the drain.
     const kernelShadow = await hostsKernelHere().catch(() => false);
     const controlPlaneStale = kernelShadow
       ? false

@@ -10,6 +10,7 @@ import { runInRequest } from './request-context';
 import { installOutboundFetch } from './outbound-fetch';
 import { anonymousGithubProbe, deepHealthAllowed, executionMode, isCommandRequest, matchRoute, SERVED_BY, type Env, type Handler } from './router';
 import { setKernelHost } from '@/lib/workflow/kernel-host';
+import { commandsConfigured } from '@/lib/workflow/command-api';
 
 installOutboundFetch();
 // This process is the kernel's control-plane host: every transition it applies is tagged so (AC-9).
@@ -31,7 +32,11 @@ export default {
     // The Worker's own hostname has no origin behind it.
     const ownHost = !!env.CONTROL_PLANE_HOST && url.hostname === env.CONTROL_PLANE_HOST;
     if (url.pathname === '/__control-plane/health') {
-      const health: Record<string, unknown> = { ok: true, service: 'control-plane', mode: executionMode(env.EXECUTION_MODE), commit: env.GIT_SHA ?? null };
+      // `mode` is who answers the execution routes; `kernel` is whether this Worker applies kernel
+      // commands, which also needs the command key. The web host follows `kernel`, so a web host that
+      // has the key before this Worker does keeps running the kernel itself.
+      const kernel = executionMode(env.EXECUTION_MODE) === 'own' && commandsConfigured(envOf(env)) ? 'own' : 'shadow';
+      const health: Record<string, unknown> = { ok: true, service: 'control-plane', mode: executionMode(env.EXECUTION_MODE), kernel, commit: env.GIT_SHA ?? null };
       // ?deep=1: an unauthenticated GitHub API call through the outbound
       // fetch, the dependency the 2026-10-10 cutover lost (no User-Agent).
       // Probes report ok/fail and a status code, never upstream error text.

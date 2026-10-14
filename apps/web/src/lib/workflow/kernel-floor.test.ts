@@ -46,10 +46,13 @@ describe('the scheduled pass', () => {
   it('the liveness fallback: the control plane\'s floor is stale past two periods, or when it never ran', async () => {
     const { controlPlaneFloorStale, KERNEL_FLOOR_STALE_MS } = await import('./kernel-floor');
     const now = Date.now();
-    expect(KERNEL_FLOOR_STALE_MS).toBe(2 * 60 * 60_000);
     expect(controlPlaneFloorStale(null, now)).toBe(true);
+    // Both crons fire at :10. A healthy floor is about one period old when the web host looks (a slow
+    // Worker run can land minutes later); one missed tick makes it about two periods old, minus jitter,
+    // at the web host's next tick, which must catch it.
+    expect(controlPlaneFloorStale(new Date(now - 70 * 60_000), now)).toBe(false);
+    expect(controlPlaneFloorStale(new Date(now - (2 * 60 - 5) * 60_000), now)).toBe(true);
     expect(controlPlaneFloorStale(new Date(now - KERNEL_FLOOR_STALE_MS - 1), now)).toBe(true);
-    expect(controlPlaneFloorStale(new Date(now - 65 * 60_000), now)).toBe(false);
   });
 });
 
