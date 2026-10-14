@@ -119,6 +119,36 @@ describe('manage_specs', () => {
     expect(JSON.parse(api.mock.calls[1][1].body)).toEqual({ expectedVersion: 2, heading: 'Caching', body: text });
   });
 
+  // R-48 / AC-36: the server's formatHints come back as one gentle Tip line; the write still happened.
+  it('create_draft and revise show formatHints as one Tip line, and no line when there are none', async () => {
+    const hints = [
+      { kind: 'diagram', line: 3, message: 'The 5 numbered steps at line 3 read as a flow.' },
+      { kind: 'table', line: 9, message: 'The 3 parallel list lines at line 9 compare like a table.' },
+    ];
+    api.mockResolvedValueOnce({ spec: { ...spec, version: 1 }, formatHints: hints });
+    const created = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'create_draft', title: 'Checkout', body: '1. a\n2. b\n3. c\n4. d\n5. e' }, ctx()));
+    expect(created).toContain('Spec draft created');
+    const tips = created.split('\n').filter((l) => l.startsWith('Tip: '));
+    expect(tips).toHaveLength(1);
+    expect(tips[0]).toContain('read as a flow');
+    expect(tips[0]).toContain('compare like a table');
+    expect(tips[0]).toContain('living-specs');
+
+    api.mockResolvedValueOnce({ spec: { ...spec, version: 3 }, revision: { revision: 3 }, unchanged: false, formatHints: hints.slice(0, 1) });
+    const revised = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'revise', specId: SPEC, expectedVersion: 2, body: 'n' }, ctx()));
+    expect(revised).toContain('Revised: revision 3');
+    expect(revised).toMatch(/^Tip: .*read as a flow/m);
+
+    api.mockResolvedValueOnce({ spec: { ...spec, version: 1 }, formatHints: [] });
+    expect(out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'create_draft', title: 'T', body: 'R-1 x' }, ctx()))).not.toContain('Tip:');
+  });
+
+  it('the long help for create_draft and revise points at tables, diagrams and the guidance topic', () => {
+    const d = buildParamsDescription(workerActions);
+    const specs = d.slice(d.indexOf('- manage_specs:'));
+    expect(specs.slice(0, specs.indexOf('\n- ', 2))).toMatch(/table[\s\S]*mermaid[\s\S]*living-specs/);
+  });
+
   it('the long help documents section revise', () => {
     expect(buildParamsDescription(workerActions)).toMatch(/manage_specs[\s\S]*section\?/);
   });
