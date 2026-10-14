@@ -1934,6 +1934,35 @@ describe('POST /api/github/pr', () => {
 
       expect(res.status).toBe(200);
     });
+
+    describe('cut over: the adopted PR\'s kernel delivery is opened for the caller the door authenticated', () => {
+      let cp: ReturnType<typeof import('@/lib/workflow/testing/cut-over').cutOver> | null = null;
+      afterEach(() => { cp?.restore(); cp = null; });
+      const adopt = async (account: Record<string, unknown>) => {
+        const { cutOver } = await import('@/lib/workflow/testing/cut-over');
+        cp = cutOver();
+        mockAuthenticateApiKey.mockResolvedValue(account);
+        mockWorkersFindFirst.mockResolvedValue(taskWorker({ taskId: 't-1', workspaceId: 'ws-1', workspace: { ...WORKSPACE_OK, id: 'ws-1', gitConfig: { defaultBranch: 'dev' } } }));
+        mockGithubReposFindFirst.mockResolvedValue(REPO);
+        optedInMission();
+        mockGithubApi.mockResolvedValueOnce({ number: 42, base: { ref: INTEGRATION_BRANCH }, head: { sha: 'headsha' }, draft: false });
+        const res = await POST(createMockRequest({
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { workerId: 'w-1', title: 'My PR', head: 'buildd/t-1-do-thing', base: INTEGRATION_BRANCH, prUrl: 'https://github.com/owner/repo/pull/42', prNumber: 42 },
+        }));
+        expect(res.status).toBe(200);
+        return cp.calls.filter((c) => c.op === 'open_delivery').map((c) => c.body?.principal);
+      };
+
+      it('a plain API account: an account that is not a grant, never the system', async () => {
+        expect(await adopt(ACCOUNT)).toEqual([{ kind: 'account', id: 'account-1', grant: null }]);
+      });
+
+      it('a grant session: its grant with its workspace list', async () => {
+        expect(await adopt({ ...ACCOUNT, oauthGrantId: 'g-1', grantScopes: ['read', 'write'], workspaceIds: ['ws-1'] }))
+          .toEqual([{ kind: 'grant', id: 'account-1', grantId: 'g-1', workspaceIds: ['ws-1'], scopes: ['read', 'write'] }]);
+      });
+    });
   });
 
   // A worker's stored prUrl/prNumber must never outrank a prUrl the caller
@@ -4158,6 +4187,24 @@ describe('PUT /api/github/pr', () => {
         // The merge is landPr's, never a second one from the route.
         expect(mockMergePullRequest).not.toHaveBeenCalled();
         expectMergedFactFor('w-1');
+      });
+
+      it('the landing is for the caller the door authenticated: a grant session with a person behind it goes as its grant', async () => {
+        enforceWorker({ tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } });
+        mockWorkersFindFirst.mockResolvedValue({
+          id: 'w-1', accountId: 'account-1', taskId: 'task-1', workspaceId: 'ws-1', prUrl: 'https://github.com/owner/repo/pull/42', prNumber: 42,
+          workspace: { ...WORKSPACE_OK, id: 'ws-1', gitConfig: { mergePolicy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } }, ...ENFORCE } },
+        });
+        mockAuthenticateApiKey.mockResolvedValue({ ...ACCOUNT, oauthGrantId: 'g-1', grantScopes: ['read', 'write'], workspaceIds: ['ws-1'], sessionUserId: 'user-7' });
+        await put();
+        expect(mockLandPr).toHaveBeenCalledTimes(1);
+        // Never the person's own principal (membership reaches more than the grant), and never the shared account.
+        expect(mockLandPr.mock.calls[0]![0].principal).toEqual({ kind: 'grant', id: 'account-1', grantId: 'g-1', workspaceIds: ['ws-1'], scopes: ['read', 'write'] });
+        // A plain API account: an account that is not a grant.
+        mockLandPr.mockClear();
+        enforceWorker({ tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } });
+        await put();
+        expect(mockLandPr.mock.calls[0]![0].principal).toEqual({ kind: 'account', id: 'account-1', grant: null });
       });
 
       it('behind base: the branch is refreshed with a marker; 202, nothing more asked of the caller', async () => {

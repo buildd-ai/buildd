@@ -111,8 +111,8 @@ async function requestIntegrationBranchReview(params: {
   baseRef: string;
   installationId: number;
   repoFullName: string;
-  /** The caller the kernel delivery is opened for (`kernelPrincipalOf`). */
-  principal?: KernelPrincipal | null;
+  /** The caller the kernel delivery is opened for (`kernelPrincipalOf`). Required: the door names it. */
+  principal: KernelPrincipal | null;
 }): Promise<void> {
   try {
     const existingReview = await findLiveReviewerTaskForHead(
@@ -152,7 +152,7 @@ async function requestIntegrationBranchReview(params: {
       prNumber: params.prNumber,
       installationId: params.installationId,
       source: 'create_pr',
-    }, params.principal !== undefined ? { principal: params.principal } : undefined).catch((err) => {
+    }, { principal: params.principal }).catch((err) => {
       // An unreachable control plane opened nothing (ControlPlaneUnavailableError): the PR is
       // legacy-reviewed, exactly as when the kernel itself fails to open a delivery.
       console.error(`[create_pr] workflow kernel could not open a delivery for PR #${params.prNumber}; legacy review dispatch:`, err);

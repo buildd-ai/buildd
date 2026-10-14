@@ -21,6 +21,25 @@ export function principalOfActor(actor: string | null | undefined): KernelPrinci
   return null;
 }
 
+/** buildd's own sweeps and rules: the only principal the control plane does not re-check against a workspace. */
+export function systemPrincipal(id: string): KernelPrincipal {
+  return { kind: 'system', id: id.slice(0, 200) };
+}
+
+/**
+ * A door's principal from its caller: `'system'` for buildd's own sweeps, which must name
+ * themselves with a `system:`/`rule:`/`buildd:` actor (anything else is null, refused), else
+ * `kernelPrincipalOf` the authenticated caller.
+ */
+export function doorPrincipal(caller: KernelCaller | 'system', actor: string | null | undefined): KernelPrincipal | null {
+  if (caller === 'system') {
+    if (!actor) return null;
+    const p = principalOfActor(actor);
+    return p?.kind === 'system' ? p : null;
+  }
+  return kernelPrincipalOf(caller);
+}
+
 /** The authenticated API caller as the door saw it: the session object, never a bare id. */
 export interface KernelCaller {
   /** The person behind the request (a dashboard session or a person's own OAuth session). */

@@ -261,6 +261,7 @@ const deps = (): LandPrDeps => ({
 });
 
 const input = (over: Partial<LandPrInput> = {}): LandPrInput => ({
+  principal: { kind: 'system', id: 'system:check_suite' },
   workspaceId: 'ws-1',
   installationId: 7,
   repoFullName: 'buildd-ai/buildd',
@@ -391,9 +392,10 @@ describe('landPr — kernel-owned PR (T15/T16)', () => {
     const principal = { kind: 'grant' as const, id: 'a-1', grantId: 'g-1', workspaceIds: ['ws-1'], scopes: ['read', 'write'] };
     await land({ door: 'merge_pr', actor: { kind: 'agent', workerId: 'w-1' }, principal }, d);
     expect(seen).toEqual([{ principal }]);
-    // No principal from the door: none is invented here (the client reads the actor).
-    await land({ door: 'sweep', actor: { kind: 'system' } }, d);
-    expect(seen[1]).toBeUndefined();
+    // A sweep names the system explicitly; a null (no caller) is passed on as null, never invented.
+    await land({ door: 'sweep', actor: { kind: 'system' }, principal: { kind: 'system', id: 'system:sweep' } }, d);
+    await land({ door: 'merge_pr', actor: { kind: 'agent', workerId: 'w-1' }, principal: null }, d);
+    expect(seen.slice(1)).toEqual([{ principal: { kind: 'system', id: 'system:sweep' } }, { principal: null }]);
   });
 
   it("a person's verdict override reaches the kernel as a recorded override", async () => {
