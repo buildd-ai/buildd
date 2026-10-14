@@ -353,7 +353,8 @@ export const DOOR_BUDGET_MS = 20_000;
 async function door<K extends KernelOp>(op: K, input: KernelOps[K]['input'], actor: string | null | undefined, c: DoorCall = {}): Promise<KernelOps[K]['result']> {
   // One key for the whole door call: every retry below asks the control plane the same question.
   const idempotencyKey = c.idempotencyKey ?? (c.deps?.newKey ?? (() => newIdempotencyKey(op)))();
-  const principal = c.principal ?? principalOfActor(actor);
+  // An explicit null (a door whose caller named no principal) stays null: it is never read off the actor.
+  const principal = c.principal !== undefined ? c.principal : principalOfActor(actor);
   const now = c.deps?.now ?? Date.now;
   const env = c.deps?.env ?? process.env;
   const deadline = now() + (Number(env.KERNEL_DOOR_BUDGET_MS) || DOOR_BUDGET_MS);

@@ -326,6 +326,22 @@ describe('the doors\' functions', () => {
     expect([sent, l.ran]).toEqual([0, []]);
   });
 
+  it('an explicit null principal stays null: a system-actor door is not sent as the system for a caller that named none', async () => {
+    const { openKernelDelivery, policyMergeThroughKernel } = await import('./kernel-client');
+    const l = local();
+    let sent = 0;
+    const deps = { ...l.deps, env: OWN, fetch: (async () => { sent++; return answer(); }) as unknown as typeof fetch };
+    const open = await openKernelDelivery({ workspaceId: WS, ownerTaskId: 't', repoFullName: 'acme/w', prNumber: 7, installationId: 1, source: 'create_pr' } as never, { principal: null, deps }).catch((e) => e);
+    expect(open).toBeInstanceOf(KernelCommandRefusedError);
+    expect(open.body.code).toBe('no_principal');
+    const merge = await policyMergeThroughKernel({ workspaceId: WS, prNumber: 7, headSha: 'H1', reason: 'r' } as never, { principal: null, deps }).catch((e) => e);
+    expect(merge).toBeInstanceOf(KernelCommandRefusedError);
+    expect([sent, l.ran]).toEqual([0, []]);
+    // Absent (a sweep), the actor still names the system.
+    await openKernelDelivery({ workspaceId: WS, ownerTaskId: 't', repoFullName: 'acme/w', prNumber: 7, installationId: 1, source: 'webhook:opened' } as never, { deps });
+    expect(sent).toBe(1);
+  });
+
   it('an agent-run door with no principal of its own fails closed instead of submitting as the system', async () => {
     const { landThroughKernel } = await import('./kernel-client');
     const l = local();

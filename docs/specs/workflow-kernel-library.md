@@ -348,8 +348,9 @@ the control plane, authenticated as the caller).
     principal the calling host vouches for (`user`, `account`, `grant` or
     `system`), and the endpoint re-checks that it still reaches the workspace
     with the same workspace reach rule as the web host, including grants
-    (team membership for a person, the grant's workspaces for an
-    account-level grant session, workspace reach for any other API account);
+    (team membership for a person, the grant's workspaces and its write
+    scope for an account-level grant session, since every command is a
+    write, workspace reach for any other API account);
     a principal that does not is a 403. An `account` principal says it is not
     a grant (`grant: null`); one that does not, from an older host, is refused
     when it names a team's shared session account. The door keeps its own

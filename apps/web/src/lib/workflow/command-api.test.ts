@@ -180,9 +180,9 @@ function reach(o: { sessionAccount?: boolean; accountReaches?: boolean } = {}) {
   const calls: unknown[] = [];
   const deps: ReachDeps = {
     verifyWorkspaceAccess: async (u, w) => { calls.push(['user', u, w]); return { teamId: 't', role: 'member' }; },
-    verifyAccountWorkspaceAccess: async (acct, w) => {
+    verifyAccountWorkspaceAccess: async (acct, w, permission) => {
       calls.push(['account', acct, w]);
-      if (acct.oauthGrantId) return assertGrantedWorkspace(acct, w, 'read');
+      if (acct.oauthGrantId) return assertGrantedWorkspace(acct, w, permission ? 'write' : 'read');
       return o.accountReaches ?? true;
     },
     isSessionAccount: async (id) => { calls.push(['session?', id]); return o.sessionAccount ?? false; },
@@ -196,6 +196,8 @@ describe('principalReaches applies the web host\'s rule', () => {
     expect(await r.check(grantP() as KernelPrincipal, WS)).toBe(true);
     expect(await r.check(grantP() as KernelPrincipal, OTHER_WS)).toBe(false);
     expect(await r.check(grantP({ workspaceIds: [] }) as KernelPrincipal, WS)).toBe(false);
+    // Every kernel command is a write: a read-only grant reaches nothing here, even its own workspace.
+    expect(await r.check(grantP({ scopes: ['read'] }) as KernelPrincipal, WS)).toBe(false);
     expect(r.calls.every((c) => (c as unknown[])[0] === 'account' && ((c as unknown[])[1] as { oauthGrantId: unknown }).oauthGrantId === 'grant-1')).toBe(true);
   });
 

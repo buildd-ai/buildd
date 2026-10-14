@@ -192,7 +192,7 @@ describe('the control plane gives the same workspace answer as the web host', ()
     const p = kernelPrincipalOf({ account: acct })!;
     expect(p.kind).toBe('grant');
     for (const ws of [s.granted, s.sibling, s.foreign]) {
-      expect(await principalReaches(p, ws)).toBe(await verifyAccountWorkspaceAccess(acct, ws));
+      expect(await principalReaches(p, ws)).toBe(await verifyAccountWorkspaceAccess(acct, ws, 'canCreate'));
     }
     expect(await principalReaches(p, s.granted)).toBe(true);
     // The shared account would have reached the open sibling: the grant is what refuses it.
@@ -220,6 +220,19 @@ describe('the control plane gives the same workspace answer as the web host', ()
       expect(await principalReaches(p, ws)).toBe(await verifyAccountWorkspaceAccess(acct, ws));
     }
     expect(await principalReaches(p, s.second!)).toBe(false);
+  });
+
+  test('every kernel command is a write: a read-only grant is refused on both hosts, even in its own workspace', async () => {
+    const s = await setup({ scopes: ['read'] });
+    const acct = await session(s);
+    const p = kernelPrincipalOf({ account: acct })!;
+    expect(p).toMatchObject({ kind: 'grant', scopes: ['read'] });
+    // The web host reads with it but refuses a write; the control plane checks the write.
+    expect(await verifyAccountWorkspaceAccess(acct, s.granted)).toBe(true);
+    for (const ws of [s.granted, s.sibling, s.foreign]) {
+      expect(await principalReaches(p, ws)).toBe(await verifyAccountWorkspaceAccess(acct, ws, 'canCreate'));
+    }
+    expect(await principalReaches(p, s.granted)).toBe(false);
   });
 
   test('a plain bld_ key: restricted without a link no, open in its own team yes, linked yes', async () => {

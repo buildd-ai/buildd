@@ -238,7 +238,7 @@ export function sessionOfPrincipal(p: Extract<KernelPrincipal, { kind: 'account'
 
 export interface ReachDeps {
   verifyWorkspaceAccess?: (userId: string, workspaceId: string) => Promise<unknown>;
-  verifyAccountWorkspaceAccess?: (account: ReturnType<typeof sessionOfPrincipal>, workspaceId: string) => Promise<boolean>;
+  verifyAccountWorkspaceAccess?: (account: ReturnType<typeof sessionOfPrincipal>, workspaceId: string, permission?: 'canCreate') => Promise<boolean>;
   /** Whether a grant session could be acting as this account: it is its team's shared session account. */
   isSessionAccount?: (accountId: string) => Promise<boolean>;
 }
@@ -262,7 +262,11 @@ export async function principalReaches(principal: KernelPrincipal, workspaceId: 
   if (principal.kind === 'account' && !('grant' in principal)) {
     if (await (deps.isSessionAccount ?? defaultIsSessionAccount)(principal.id)) return false;
   }
-  return (deps.verifyAccountWorkspaceAccess ?? access!.verifyAccountWorkspaceAccess)(sessionOfPrincipal(principal), workspaceId);
+  // Every kernel command is a write, so a grant needs write reach (its `write` scope), exactly as the
+  // web host checks a grant session's write. Any other account keeps the read-reach rule its doors
+  // apply: a `canCreate` link is not what lets a runner act on its own PR.
+  const permission = principal.kind === 'grant' ? 'canCreate' as const : undefined;
+  return (deps.verifyAccountWorkspaceAccess ?? access!.verifyAccountWorkspaceAccess)(sessionOfPrincipal(principal), workspaceId, permission);
 }
 
 /** `POST /v1/commands`. Never throws: every outcome is a response. */
