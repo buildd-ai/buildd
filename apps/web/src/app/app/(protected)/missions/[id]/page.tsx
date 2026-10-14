@@ -77,8 +77,8 @@ import { getMissionVisualReviewState } from '@/lib/workflow/visual-review-state-
 import { presentVisualReview } from '@/lib/workflow/visual-review-presentation';
 import MissionScreensRow from './MissionScreensRow';
 import MissionRecordsSheet from './MissionRecordsSheet';
-import { MissionReleaseSection } from './MissionReleaseSection';
-import { buildDeliverySteps, deliveryReleaseInput, missionPrCount, missionTrunkMergedAt } from '@/lib/mission-delivery';
+import { MissionReleaseSection, missionReleaseRow } from './MissionReleaseSection';
+import { buildDeliverySteps, deliveryReleaseInput, missionPrCount, missionReleaseStatus, missionTrunkMergedAt } from '@/lib/mission-delivery';
 import { classifyReleaseState } from '@/lib/release-state';
 import { taskPageHref } from '@/lib/mission-task-href';
 import MissionDecisionSheet from './MissionDecisionSheet';
@@ -759,6 +759,11 @@ export default async function MissionDetailPage({
         ...(vs.bootFailed ? { bootFailed: true } : {}),
       }
     : null;
+  // D6: this mission's own trunk merges, read against the release baseline.
+  const missionMergedAt = missionTrunkMergedAt(
+    (mission.tasks ?? []) as Array<{ id: string; workers?: Array<{ mergedAt?: string | Date | null }> | null }>,
+    missionIntegrationPr,
+  );
   // The footer renders Shipped and Screens; the band says the rest.
   const deliverySteps = buildDeliverySteps({
     missionStatus: mission.status,
@@ -770,11 +775,7 @@ export default async function MissionDetailPage({
     visual: visualReview,
     visualPhase: boardVisual,
     visualReview: visualPresentation ?? undefined,
-    // D6: this mission's own trunk merges, read against the release baseline.
-    mergedAt: missionTrunkMergedAt(
-      (mission.tasks ?? []) as Array<{ id: string; workers?: Array<{ mergedAt?: string | Date | null }> | null }>,
-      missionIntegrationPr,
-    ),
+    mergedAt: missionMergedAt,
     release: deliveryReleaseInput(releaseState),
     budget: budgetUsd != null
       ? { budgetUsd, spendUsd, exhausted: mission.status === 'budget_exhausted' }
@@ -783,6 +784,13 @@ export default async function MissionDetailPage({
     durationLabel: null,
   });
   const shippedStep = deliverySteps.find(s => s.key === 'shipped');
+  // P-3: a deploying, dispatched or failed release shows even when Shipped is hidden.
+  const releasedAtRaw = (mission as { releasedAt?: string | Date | null }).releasedAt ?? null;
+  const releaseStatus = missionReleaseStatus({
+    state: releaseState,
+    mergedAt: missionMergedAt,
+    releasedAt: releasedAtRaw ? new Date(releasedAtRaw).toISOString() : null,
+  });
   const visualStep = deliverySteps.find(s => s.key === 'visual') ?? null;
   const missionPrCard = shouldRenderMissionPrBlock(missionIntegrationPr, { workLanded: feedCounts.total > 0 && feedCounts.done >= feedCounts.total }) && missionIntegrationPr ? (
     // Mission integration PR (Option A′): the mission's review gate, and a
@@ -1205,9 +1213,9 @@ export default async function MissionDetailPage({
   const footerRows = (
     <>
       {/* F6: this mission's own release status, linking to the release. */}
-      {mission.workspaceId && shippedStep && (
+      {mission.workspaceId && missionReleaseRow(shippedStep, releaseStatus) && (
         <div className="border-t border-border-default">
-          <MissionReleaseSection step={shippedStep} releaseId={carryingReleaseId} workspaceId={mission.workspaceId} />
+          <MissionReleaseSection step={shippedStep} status={releaseStatus} releaseId={carryingReleaseId} workspaceId={mission.workspaceId} />
         </div>
       )}
       {/* The visual review, live: opens the review deck (or, before any

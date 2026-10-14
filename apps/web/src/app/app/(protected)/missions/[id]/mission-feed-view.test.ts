@@ -77,7 +77,10 @@ describe('mission page wiring (source shape)', () => {
   });
 
   it('feeds the Shipped step this mission\'s own trunk merges (D6)', () => {
-    expect(src).toMatch(/mergedAt: missionTrunkMergedAt\(/);
+    expect(src).toMatch(/const missionMergedAt = missionTrunkMergedAt\(/);
+    expect(src).toMatch(/mergedAt: missionMergedAt,/);
+    // P-3: the release status reads the same merges.
+    expect(src).toMatch(/missionReleaseStatus\(\{[\s\S]*?mergedAt: missionMergedAt/);
   });
 
   it('builds no chain grouping for a graph it no longer draws (Flow replaced Structure)', () => {
