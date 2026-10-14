@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "0c6c1896-0529-4964-b42b-2e5c65012333",
+  "id": "d03cd3ef-2478-4579-8a2f-b9b673251607",
   "prevIds": [
-    "5d59e030-37e5-4588-944d-d5b47bf7bb8f"
+    "8fdacd09-2f7d-4051-91fd-9d87a06d8595"
   ],
   "ddl": [
     {
@@ -27141,6 +27141,19 @@
       "generated": null,
       "identity": null,
       "name": "model_auth_mode",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "worker_heartbeats"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "codex_auth_source",
       "entityType": "columns",
       "schema": "public",
       "table": "worker_heartbeats"

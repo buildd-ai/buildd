@@ -91,16 +91,13 @@ jobs:
     steps:
       - name: Auto-rerun failed jobs with backoff
         run: |
-          RUN_ID=${{ needs.detect-error-type.outputs.run_id }}
-          FAILED_JOB=${{ needs.detect-error-type.outputs.failed_job }}
-
           echo "Detected infrastructure error in job: $FAILED_JOB"
           echo "Will attempt to auto-rerun the failed job up to 3 times with backoff."
 
           # Attempt rerun with exponential backoff
           for attempt in 1 2 3; do
             echo "Rerun attempt $attempt/3..."
-            if gh run rerun $RUN_ID --failed 2>&1; then
+            if gh run rerun "$RUN_ID" --failed 2>&1; then
               echo "✓ Successfully triggered rerun of failed jobs"
               echo "The job will execute again — if it passes, no code change was needed."
               echo "If it fails again with the same error, this indicates a persistent infra issue."
@@ -122,6 +119,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           # No checkout in this job, so gh cannot infer the repo from a git remote.
           GH_REPO: ${{ github.repository }}
+          # Job names hold spaces and parentheses: read them as env, never paste them into the script.
+          RUN_ID: ${{ needs.detect-error-type.outputs.run_id }}
+          FAILED_JOB: ${{ needs.detect-error-type.outputs.failed_job }}
 
   infra-retry-exhausted:
     runs-on: ubuntu-latest
@@ -133,8 +133,6 @@ jobs:
     steps:
       - name: Alert a human — infra retries exhausted
         run: |
-          RUN_ID=${{ needs.detect-error-type.outputs.run_id }}
-          FAILED_JOB="${{ needs.detect-error-type.outputs.failed_job }}"
           echo "::warning::Infrastructure error persisted for ${{ github.event.workflow_run.run_attempt }} attempts on run $RUN_ID (job: $FAILED_JOB) — giving up on auto-retry."
 
           TITLE="CI infra outage: $FAILED_JOB has failed ${{ github.event.workflow_run.run_attempt }}x on dev (run $RUN_ID)"
@@ -149,6 +147,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           # No checkout in this job, so gh cannot infer the repo from a git remote.
           GH_REPO: ${{ github.repository }}
+          # Job names hold spaces and parentheses: read them as env, never paste them into the script.
+          RUN_ID: ${{ needs.detect-error-type.outputs.run_id }}
+          FAILED_JOB: ${{ needs.detect-error-type.outputs.failed_job }}
 
   auto-fix:
     runs-on: ubuntu-latest
