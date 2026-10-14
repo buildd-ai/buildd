@@ -383,7 +383,7 @@ export const EFFECT_KINDS = [
   'renumber_migration', 'push_recovery', 'stamp_pr_rows', 'cancel_open_attempts',
   'render_activity', 'notify', 'mission_note', 'wake_mission', 'release_attribution',
   'finalize_mission_pr', 'emit_pr_merged', 'scan_supersession', 'project_supersession',
-  'escalate_exhaustion', 'gate_event',
+  'escalate_exhaustion', 'gate_event', 'capture_ci_evidence',
 ] as const;
 
 export type EffectKind = (typeof EFFECT_KINDS)[number];

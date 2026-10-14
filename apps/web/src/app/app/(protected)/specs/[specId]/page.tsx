@@ -36,7 +36,7 @@ export default async function SpecDetailPage({
     if (found.state === 'one') redirect(`/app/specs/${found.id}`);
     if (found.state === 'none') notFound();
     return (
-      <main className="mx-auto w-full max-w-3xl px-4 pt-[4.5rem] pb-24 md:px-8 md:pt-8 md:pb-10">
+      <div className="mx-auto w-full max-w-3xl px-4 pt-[4.5rem] pb-24 md:px-8 md:pt-8 md:pb-10">
         <h1 className="font-voice text-2xl text-text-primary">Specs starting {specId}</h1>
         <p className="mt-1 text-meta text-text-muted">More than one spec you can open starts with this id.</p>
         <ul className="mt-4 flex flex-col gap-2" data-testid="spec-short-id-matches">
@@ -47,7 +47,7 @@ export default async function SpecDetailPage({
             </li>
           ))}
         </ul>
-      </main>
+      </div>
     );
   }
   const from = positive(sp.from);
@@ -59,8 +59,9 @@ export default async function SpecDetailPage({
   });
   if (view.state !== 'ok') notFound();
   return (
-    <main className="mx-auto w-full max-w-3xl px-4 pt-[4.5rem] pb-24 md:px-8 md:pt-8 md:pb-10">
+    // A div, not <main>: the app layout's scroll root is already the page's main landmark.
+    <div className="mx-auto w-full max-w-6xl px-4 pt-[4.5rem] pb-24 md:px-8 md:pt-8 md:pb-10">
       <SpecPage view={view} />
-    </main>
+    </div>
   );
 }
