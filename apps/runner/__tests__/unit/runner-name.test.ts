@@ -15,6 +15,7 @@ import {
   heartbeatRunnerName,
   withRunnerName,
 } from '../../src/runner-name';
+import { normalizeRunnerName } from '@buildd/shared';
 
 let home: string;
 let configFile: string;
@@ -123,6 +124,64 @@ describe('runNameCommand', () => {
     const r = run(['\u0007']);
     expect(r.code).not.toBe(0);
     expect(existsSync(configFile)).toBe(false);
+  });
+
+  test('punctuation alone is refused, as the message says', () => {
+    const r = run(['!!!']);
+    expect(r.code).not.toBe(0);
+    expect(r.stderr).toContain('letter or digit');
+    expect(existsSync(configFile)).toBe(false);
+  });
+});
+
+describe('normalizeRunnerName (runner and server share it)', () => {
+  test('strips zero-width characters', () => {
+    expect(normalizeRunnerName('at\u200Bl\u200Ca\u200Ds\uFEFF')).toBe('atlas');
+  });
+
+  test('strips bidi controls, so a name cannot render reversed', () => {
+    expect(normalizeRunnerName('\u202Eatlas\u202C')).toBe('atlas');
+    expect(normalizeRunnerName('\u2066a\u2067b\u2068c\u2069\u202A\u202B\u202D')).toBe('abc');
+  });
+
+  test('a name made only of invisible characters is null', () => {
+    expect(normalizeRunnerName('\u200B\u202E\uFEFF\u2066')).toBeNull();
+  });
+
+  test('needs at least one letter or digit, in any script', () => {
+    expect(normalizeRunnerName('!!!')).toBeNull();
+    expect(normalizeRunnerName('- _ .')).toBeNull();
+    expect(normalizeRunnerName('r2-d2!')).toBe('r2-d2!');
+    expect(normalizeRunnerName('東京')).toBe('東京');
+    expect(normalizeRunnerName('٣')).toBe('٣');
+  });
+});
+
+describe('an unreadable config is never overwritten', () => {
+  const run = (args: string[]) => runNameCommand(args, { env: {}, configFile, hostname: 'laptop-1234' });
+
+  for (const [label, contents] of [['not JSON', '{"apiKey": "bld_x",'], ['not an object', '["bld_x"]']] as const) {
+    test(`buildd name <x> refuses when config.json is ${label}`, () => {
+      writeFileSync(configFile, contents);
+      const r = run(['atlas']);
+      expect(r.code).not.toBe(0);
+      expect(r.stderr).toContain(configFile);
+      expect(readFileSync(configFile, 'utf8')).toBe(contents);
+    });
+
+    test(`buildd name --clear refuses when config.json is ${label}`, () => {
+      writeFileSync(configFile, contents);
+      const r = run(['--clear']);
+      expect(r.code).not.toBe(0);
+      expect(r.stderr).toContain(configFile);
+      expect(readFileSync(configFile, 'utf8')).toBe(contents);
+    });
+  }
+
+  test('saveRunnerName throws instead of replacing an unreadable file', () => {
+    writeFileSync(configFile, '{not json');
+    expect(() => saveRunnerName(configFile, 'atlas')).toThrow(configFile);
+    expect(readFileSync(configFile, 'utf8')).toBe('{not json');
   });
 });
 
