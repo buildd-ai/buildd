@@ -55,7 +55,7 @@ import { mastheadBack, parseMissionOrigin } from './MissionDetailView';
 import MissionLayoutShell, { MISSION_HEADER_ACTION, MissionBoardHeader, MissionLayoutTabs } from './MissionLayoutShell';
 import FlowTimeline from './FlowTimeline';
 import { expectedMinutesFromPredictions, sameFilesFromRows } from '@/lib/flow-timeline';
-import MissionOverview from './MissionOverview';
+import MissionOverview, { type MissionChecksSource } from './MissionOverview';
 import MissionFeedLayout from './MissionFeedLayout';
 import { missionSummaryLine } from '@/lib/mission-summary-line';
 import { buildMissionBoard, toBoardTaskInput } from '@/lib/mission-board';
@@ -791,6 +791,20 @@ export default async function MissionDetailPage({
     mergedAt: missionMergedAt,
     releasedAt: releasedAtRaw ? new Date(releasedAtRaw).toISOString() : null,
   });
+  // Overview's checks after the build (spec f7f67f1a R-11 to R-22): a projection over the
+  // same visual review state, criteria, mission PR and release status this page already reads.
+  const trunkName = (workspaceForPolicy?.gitConfig as { defaultBranch?: unknown } | null)?.defaultBranch;
+  const overviewChecks: MissionChecksSource = {
+    branch: (mission as { integrationBranchEnabled?: boolean | null }).integrationBranchEnabled === true ? 'mission-branch' : 'direct',
+    target: (typeof trunkName === 'string' && trunkName ? trunkName : null) ?? visualReviewState?.branch.base ?? null,
+    mergeTier: effectivePolicy.tier as MissionChecksSource['mergeTier'],
+    visual: visualReviewState ?? null,
+    criteria: goalCriteria,
+    criteriaState: goalCriteriaStateFull,
+    integrationPr: missionIntegrationPr,
+    release: releaseStatus,
+    evidence: visualReviewState ? { visual: [{ label: 'Open screens', href: `/app/missions/${id}?visualReview=1` }] } : undefined,
+  };
   const visualStep = deliverySteps.find(s => s.key === 'visual') ?? null;
   const missionPrCard = shouldRenderMissionPrBlock(missionIntegrationPr, { workLanded: feedCounts.total > 0 && feedCounts.done >= feedCounts.total }) && missionIntegrationPr ? (
     // Mission integration PR (Option A′): the mission's review gate, and a
@@ -1290,7 +1304,7 @@ export default async function MissionDetailPage({
       <MissionSurfaceAuditWaiverProvider {...auditWaiverProps}>
       <MissionLayoutShell
         initial={parseMissionLayout(layoutParam, listViewParam)}
-        board={boardHeader(<MissionOverview model={boardModel} completionText={completionText} notice={boardNotice} visual={boardVisual} {...boardLink} {...boardStrip} />)}
+        board={boardHeader(<MissionOverview model={boardModel} completionText={completionText} notice={boardNotice} visual={boardVisual} checks={overviewChecks} expectedMinutes={flowExpectedMinutes} held={isHeld || mission.status === 'budget_exhausted'} {...boardLink} {...boardStrip} />)}
         flow={boardHeader(<FlowTimeline model={boardModel} sameFiles={flowSameFiles} expectedMinutes={flowExpectedMinutes} {...boardLink} />)}
         feed={boardHeader(
           <MissionFeedLayout

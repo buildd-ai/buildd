@@ -26,8 +26,9 @@ import Criteria, { type Criterion } from '@/components/ui/Criteria';
 import FocusCard from '@/components/ui/FocusCard';
 import TaskStrip from '@/components/ui/TaskStrip';
 import { MissionStripContext, createMissionStripStore, type MissionStripValue } from '@/components/missions/mission-strip-context';
-import { boardNeedsYouCount, type MissionBoardModel } from '@/lib/mission-board';
-import { overviewCellState, overviewCells, overviewDefaultSelection, overviewLayout, overviewLegend, overviewSelection, overviewWaitLine, railLines, type OverviewLegendEntry } from '@/lib/mission-overview';
+import { BOARD_LANDED, boardNeedsYouCount, type MissionBoardModel } from '@/lib/mission-board';
+import { buildEstimateLine, missionChecks, type CheckStatus, type MissionChecksInput } from '@/lib/mission-checks';
+import { isClosedUnshipped, overviewCellState, overviewCells, overviewDefaultSelection, overviewLayout, overviewLegend, overviewSelection, overviewWaitLine, railLines, type OverviewLegendEntry } from '@/lib/mission-overview';
 import { stepIndex, stripOrder, stripState } from '@/lib/mission-task-strip';
 import { STATES, type StateKey } from '@/components/ui/states';
 import type { MissionExecutor } from '@/lib/task-actions';
@@ -37,6 +38,10 @@ import { DrawerDelivery, StripTaskActions, stripReason, type StripFocus } from '
 import CriteriaCheckNow from './CriteriaCheckNow';
 import { MissionVisualAsk, WithMissionVisualReview, type MissionVisualReviewValue } from './MissionVisualReview';
 import type { TaskDeliveryDetail } from '@/lib/activity-delivery';
+import { BuildCompleteBar, CheckRail, ChecksCard } from './MissionChecks';
+
+/** What the page knows about the checks; the build counts and repairs come from the live board. */
+export type MissionChecksSource = Omit<MissionChecksInput, 'build' | 'repairs'>;
 
 export interface MissionOverviewProps extends BoardLinkContext {
   model: MissionBoardModel;
@@ -49,7 +54,16 @@ export interface MissionOverviewProps extends BoardLinkContext {
   /** The situation block's task, when its one affordance is a single task. */
   stripFocus?: StripFocus | null;
   deliveries?: Readonly<Record<string, TaskDeliveryDetail>> | null;
+  /** The checks that apply after the build (spec f7f67f1a R-11 to R-22). Absent: the build view only. */
+  checks?: MissionChecksSource | null;
+  /** Each task's expected minutes, for the build-only estimate (R-23). */
+  expectedMinutes?: Readonly<Record<string, number>> | null;
+  /** A hold or empty budget: no time promise (R-24). */
+  held?: boolean;
 }
+
+/** Checks already at work before the build ends (R-13) are shown under the strip. */
+const STARTED: ReadonlySet<CheckStatus> = new Set(['running', 'finding', 'owner', 'unable', 'stale']);
 
 export default function MissionOverview(props: MissionOverviewProps) {
   return (
@@ -61,7 +75,8 @@ export default function MissionOverview(props: MissionOverviewProps) {
 
 function OverviewView({
   model: serverModel, completionText = null, notice, visual: _visual, review,
-  workspaceId = null, executor = null, stripFocus = null, deliveries = null, ...link
+  workspaceId = null, executor = null, stripFocus = null, deliveries = null,
+  checks: checksSource = null, expectedMinutes = null, held = false, ...link
 }: MissionOverviewProps & { review: MissionVisualReviewValue | null }) {
   const model = useLiveBoard(serverModel);
   const now = useNow(model.now, 15_000, !model.complete);
@@ -77,16 +92,49 @@ function OverviewView({
   const selectedId = overviewDefaultSelection(model, order, chosen, stripFocus?.taskId ?? null);
   const select = useCallback((id: string) => store.select(id), [store]);
   const vm = review?.model ?? null;
-  const needs = boardNeedsYouCount(model, vm);
-  const rail = railLines(model.live, needs);
   const unevaluated = model.complete && !model.criteriaEvaluated && model.criteria.length > 0;
+
+  // Build tasks only (P-2): fixes, audits and refreshes sit in the checks group and never count.
+  const buildIds = useMemo(() => layout.groups.filter(g => g.key !== 'checks').flatMap(g => g.ids), [layout]);
+  const doneCount = layout.groups.find(g => g.key === 'done')?.ids.length ?? 0;
+  const repairs = useMemo(() => order.filter(id => model.tasks[id].deliverableRole === 'repair').map(id => ({
+    id, title: displayTaskTitle(model.tasks[id].title), done: BOARD_LANDED.has(model.tasks[id].status) && !isClosedUnshipped(model, id),
+  })), [model, order]);
+  const handoff = useMemo(
+    () => (checksSource ? missionChecks({ ...checksSource, build: { done: doneCount, total: buildIds.length }, repairs }) : null),
+    [checksSource, doneCount, buildIds.length, repairs],
+  );
+  // A check the owner must act on (a final merge under the human tier) is waiting on you too.
+  // Max, not sum: the visual review's own ask may already count the same decision.
+  const needs = Math.max(boardNeedsYouCount(model, vm), handoff?.rows.filter(r => r.status === 'owner').length ?? 0);
+  const rail = railLines(model.live, needs);
+  const [showBuild, setShowBuild] = useState(false);
+  const activeCount = layout.groups.find(g => g.key === 'active')?.ids.length ?? 0;
+  const waitingCount = layout.groups.find(g => g.key === 'waiting')?.ids.length ?? 0;
+  // A decision, a hold or nothing running while work waits (capacity, outside) removes any time promise.
+  const estimate = handoff && !handoff.buildComplete && expectedMinutes
+    ? buildEstimateLine(
+        buildIds.filter(id => !BOARD_LANDED.has(model.tasks[id].status)).map(id => expectedMinutes[id] ?? null),
+        held || needs > 0 || (activeCount === 0 && waitingCount > 0),
+      )
+    : null;
+  const where = checksSource?.branch === 'mission-branch' ? 'the mission branch' : checksSource?.target ?? 'the target branch';
+  const openTask = (id: string) => { setShowBuild(true); select(id); };
+
+  const stripAndFocus = selectedId && (
+    <>
+      <TaskStrip cells={cells} groups={groups} selectedId={selectedId} onSelect={select} marks={overviewSelection(model, order, selectedId).marks} label="Mission tasks, done first" />
+      <Focus model={model} order={order} id={selectedId} onSelect={select} link={link} workspaceId={workspaceId} executor={executor} focusReason={stripFocus?.taskId === selectedId ? stripFocus.reason : null} delivery={deliveries?.[selectedId] ?? null} />
+    </>
+  );
 
   return (
     <MissionStripContext.Provider value={stripValue}>
       <div data-testid="mission-overview" className="mt-4 grid gap-x-10 gap-y-6 min-[900px]:grid-cols-[minmax(0,720px)_minmax(240px,300px)]">
         <div className="flex min-w-0 flex-col gap-4">
+          {handoff && <CheckRail steps={handoff.rail} />}
           {/* Build counts only: criteria are the header's Verified pill and the rail's list. */}
-          <Legend entries={legend} />
+          {!handoff?.buildComplete && <Legend entries={legend} />}
           {notice}
           {model.needsYou.filter(id => !model.tasks[id].delivery).map(id => (
             <AskBanner key={id} task={model.tasks[id]} now={now} />
@@ -94,15 +142,24 @@ function OverviewView({
           {review && <MissionVisualAsk review={review} board={model} />}
           {model.complete && <CompletionRecord model={model} text={completionText} visual={vm} />}
           {model.phases.length === 0 && model.planning && <PlanningPlaceholder planning={model.planning} now={now} link={link} />}
-          {selectedId && (
+          {handoff?.buildComplete ? (
             <>
-              <TaskStrip cells={cells} groups={groups} selectedId={selectedId} onSelect={select} marks={overviewSelection(model, order, selectedId).marks} label="Mission tasks, done first" />
-              <Focus model={model} order={order} id={selectedId} onSelect={select} link={link} workspaceId={workspaceId} executor={executor} focusReason={stripFocus?.taskId === selectedId ? stripFocus.reason : null} delivery={deliveries?.[selectedId] ?? null} />
+              <BuildCompleteBar done={buildIds.length} where={where} open={showBuild} onToggle={() => setShowBuild(v => !v)}>
+                {stripAndFocus}
+              </BuildCompleteBar>
+              <ChecksCard rows={handoff.rows} onOpenTask={openTask} />
+            </>
+          ) : (
+            <>
+              {stripAndFocus}
+              {handoff && handoff.rows.some(r => STARTED.has(r.status)) && <ChecksCard rows={handoff.rows.filter(r => STARTED.has(r.status))} onOpenTask={select} />}
+              {estimate && <p data-testid="overview-estimate" className="font-mono text-meta text-text-muted">{estimate}</p>}
             </>
           )}
         </div>
         <aside data-testid="overview-rail" aria-label="Goal and agents" className="flex min-w-0 flex-col gap-6">
-          <div>
+          {/* Once the build is done each criterion is a row in the checks; the rail does not repeat them. */}
+          {!handoff?.buildComplete && <div>
             {model.criteria.length === 0 ? (
               <p className="text-body text-text-muted">No goal criteria set.</p>
             ) : (
@@ -112,7 +169,7 @@ function OverviewView({
                 evaluated={unevaluated ? 'Criteria not evaluated' : undefined}
               />
             )}
-          </div>
+          </div>}
           <ul data-testid="overview-counts-rail" className="flex flex-col gap-1.5 border-t border-[var(--line-soft)] pt-3 text-title">
             <li className="text-text-secondary" data-testid="rail-agents" data-count={model.live}>{rail.agents}</li>
             <li className={needs ? 'font-semibold text-accent-text' : 'text-text-muted'} data-testid="rail-needs" data-count={needs}>{rail.needs}</li>
