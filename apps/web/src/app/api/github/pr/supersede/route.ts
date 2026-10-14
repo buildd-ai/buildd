@@ -145,7 +145,7 @@ export async function POST(req: NextRequest) {
     // The workflow kernel records this as T20's actor: the caller's own task for a task token.
     recordedBy: account.taskScope ? `agent:${account.taskScope.taskId}` : account.name,
     // The control plane checks the API account against the workspace (never a name in the ledger).
-    principal: { kind: 'account', id: account.id },
+    caller: { account },
     ...(account.taskScope ? { targetRepoWithinWorkspace: true } : {}),
   });
 

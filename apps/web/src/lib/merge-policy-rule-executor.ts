@@ -45,9 +45,12 @@ export async function runPolicyMerge(
   const policy = await (deps.loadPolicy ?? defaultLoadPolicy)(p.workspaceId);
   if (!policyAllowsRuleMerge(policy)) return false;
   const merge = deps.policyMerge ?? (await import('./workflow/kernel-client')).policyMergeThroughKernel;
-  await merge({ ...p, reason: POLICY_MERGE_REASON });
+  await merge({ ...p, reason: POLICY_MERGE_REASON }, RULE_PRINCIPAL);
   return true;
 }
+
+/** The rule acting on its own account: buildd's merge policy, never a person or an agent run. */
+const RULE_PRINCIPAL = { principal: { kind: 'system' as const, id: 'rule:escalation_gate' } };
 
 const POLICY_MERGE_REASON = 'policy-only escalation; CI green on the reviewed head, not a draft, not XL, risk classes that landed cleanly';
 
@@ -60,6 +63,6 @@ export function escalationRuleExecutor(deps: RuleExecutorDeps = {}) {
     await merge({
       workspaceId: s.workspaceId, prNumber: s.prNumber, headSha: s.headSha,
       reason: POLICY_MERGE_REASON,
-    });
+    }, RULE_PRINCIPAL);
   };
 }

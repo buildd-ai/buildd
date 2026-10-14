@@ -566,6 +566,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
             eventHeadSha: headSha,
             door: 'check_suite',
             actor: { kind: 'system' },
+            principal: { kind: 'system', id: 'system:check_suite' },
             mode: landingMode,
             policy,
             owner: { taskId: worker.taskId ?? null, workerId: worker.id },

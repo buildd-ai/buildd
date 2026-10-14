@@ -910,7 +910,7 @@ export async function tryAutoMergeWorkerPr(params: {
   const landingWorkspaceId = await workspaceIdOnce();
   const slotted = await mergeInSurfaceSlot(surfaceOrder, async () => {
     const kernel = landingWorkspaceId
-      ? await kernelLand({ workspaceId: landingWorkspaceId, installationId, repoFullName, prNumber, headSha, door: 'auto_merge', actor: 'system:auto_merge', mergeMethod })
+      ? await kernelLand({ workspaceId: landingWorkspaceId, installationId, repoFullName, prNumber, headSha, door: 'auto_merge', actor: 'system:auto_merge', mergeMethod }, { principal: { kind: 'system', id: 'system:auto_merge' } })
       : null;
     return kernel ? { kernel } : { legacy: await mergePullRequest(installationId, repoFullName, prNumber, mergeMethod, headSha) };
   });

@@ -445,6 +445,8 @@ export async function POST(
             }
           : {}),
       },
+      // A dashboard session: the person, checked by membership on both hosts.
+      principal: { kind: 'user', id: user.id },
       mode: landingMode,
       policy,
       owner: { taskId: worker.taskId ?? null, workerId: worker.id },

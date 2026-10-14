@@ -197,6 +197,12 @@ export interface LandPrInput {
    * before calling here so no rail acts on a stale screen either.
    */
   expectedVersion?: number;
+  /**
+   * Who a kernel landing is for, as the door authenticated them (`kernelPrincipalOf`), which the
+   * control plane re-checks against the workspace; buildd's own sweeps pass `systemPrincipal`.
+   * Required, so a door cannot leave it out; null (no caller) is refused before sending.
+   */
+  principal: import('@/lib/workflow/kernel-client').KernelPrincipal | null;
 }
 
 export interface FixDispatchInput {
@@ -249,7 +255,7 @@ export interface LandPrDeps {
    */
   claimReviewRevalidation?: (taskId: string, reviewTaskId: string) => Promise<boolean>;
   /** The kernel's landing (T15/T16) for a kernel-owned PR; null = not the kernel's PR. Defaults to the seam's. */
-  landThroughKernel?: (input: LandingInput) => Promise<KernelLanding | null>;
+  landThroughKernel?: (input: LandingInput, call: import('@/lib/workflow/kernel-client').DoorCall) => Promise<KernelLanding | null>;
   /**
    * The kernel delivery that owns this PR and its current view; null = legacy-owned.
    * On a kernel PR the delivery, not the legacy reviewer row, is the review gate.
@@ -1073,7 +1079,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
       ...(kernelOverride ? { override: kernelOverride } : {}),
       ...(input.expectedVersion !== undefined ? { expectedVersion: input.expectedVersion } : {}),
       ...(landBehind ? { behind: { maxBaseCommits: policyValue('treadmillMaxBaseCommits') } } : {}),
-    });
+    }, { principal: input.principal });
     return kernel ? { kernel } : { legacy: await mergePullRequest(installationId, repoFullName, prNumber, mergeMethod, liveHead) };
   });
   if ('refused' in slotted) return waiting(slotted.refused, { waitingOn: 'surface_slot' });

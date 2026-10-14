@@ -75,6 +75,7 @@ import { recordVisualVerdict } from '@/lib/visual-audit-spec-verdict';
 import { checkSpecDuplicates, recordDuplicateOverride } from '@/lib/spec-duplicate-decision';
 import { classifySpecArea, recordAreaOverride } from '@/lib/spec-area-decision';
 import { proposeSpecTaxonomy } from '@/lib/spec-taxonomy-decision';
+import { decidePublication, recordPublicationOverride } from '@/lib/spec-publication-decision';
 
 export const SUBSCRIBERS: readonly AnySubscriber[] = [
   // task.created: the category look is scheduled before the mission chain starts.
@@ -333,6 +334,15 @@ export const SPEC_AREA_OVERRIDE = recordAreaOverride;
  * fallback in lib/specs/areas.ts proposes instead.
  */
 export const SPEC_TAXONOMY_PROPOSE = proposeSpecTaxonomy;
+
+/**
+ * The decisions module's spec publication slot (lib/spec-publication-decision.ts):
+ * the repo copy (lib/specs/repo-copy.ts) asks whether an approved revision may
+ * leave buildd before anything is written to GitHub, and a person's "Publish
+ * anyway" is recorded on that decision's ledger row.
+ */
+export const SPEC_PUBLICATION_DECIDE = decidePublication;
+export const SPEC_PUBLICATION_OVERRIDE = recordPublicationOverride;
 
 /**
  * The knowledge module's boot slot for Living Spec neighbours (instrumentation.ts):
