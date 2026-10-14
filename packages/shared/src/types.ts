@@ -1433,6 +1433,7 @@ export function isRunnerCodexAuthSource(value: unknown): value is RunnerCodexAut
 export interface RunnerModelAuthHeartbeatFields {
   modelAuthSource?: RunnerModelAuthSource;
   modelAuthMode?: RunnerModelAuthMode;
+  codexAuthSource?: RunnerCodexAuthSource;
 }
 
 // ============================================================================
