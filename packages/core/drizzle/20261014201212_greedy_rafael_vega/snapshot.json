@@ -1,7 +1,7 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "a45b6edd-3202-4fd4-8afd-db97fb14e90f",
+  "id": "eb1a5570-5054-4271-b274-0f95765ff57f",
   "prevIds": [
     "4aad1736-0a06-4117-821e-ca17670b925d"
   ],
@@ -40839,7 +40839,7 @@
         "id"
       ],
       "onUpdate": "NO ACTION",
-      "onDelete": "CASCADE",
+      "onDelete": "SET NULL",
       "name": "account_workspaces_removed_by_user_id_users_id_fkey",
       "entityType": "fks",
       "schema": "public",
