@@ -1432,9 +1432,11 @@ async function handleReleasePrCiSuccess(
 
   // D7 (workflow-kernel-library.md §4): a release PR the kernel owns lands through the
   // kernel, pinned to this head; its merge effect asks the landing gate again when it runs.
+  // The method the hold recorded: a held worker PR (every_merge) squashes; a release PR merges.
+  const heldMethod = (pendingReleaseTasks[0]!.context as Record<string, unknown> | null)?.releaseMergeMethod === 'squash' ? 'squash' as const : 'merge' as const;
   const kernelAnswer = await releaseKernelLand({
     workspaceId: pendingReleaseTasks[0]!.workspaceId, installationId, repoFullName, prNumber, headSha,
-    door: 'release_pr_ci_success', actor: 'system:release_pr_ci_success', mergeMethod: 'merge',
+    door: 'release_pr_ci_success', actor: 'system:release_pr_ci_success', mergeMethod: heldMethod,
   });
   // Nothing applied and nothing recorded: the release task stays pending for the next green CI or sweep.
   if (kernelAnswer === 'unavailable') return;
@@ -1483,7 +1485,7 @@ async function handleReleasePrCiSuccess(
 
   const mergeResult = kernelLanding
     ? { merged: kernelLanding.merged, message: kernelLanding.message }
-    : await mergePullRequest(installationId, repoFullName, prNumber, 'merge', headSha);
+    : await mergePullRequest(installationId, repoFullName, prNumber, heldMethod, headSha);
 
   for (const task of pendingReleaseTasks) {
     const ctx = (task.context ?? {}) as Record<string, unknown>;

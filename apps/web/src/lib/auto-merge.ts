@@ -30,6 +30,7 @@ import {
 } from '@/lib/auto-merge-bound';
 import {
   isPassingCheckRun,
+  isFailingCheckRun,
   isPassingStatus,
   listAllCheckRuns,
   listAllCommitStatuses,
@@ -243,7 +244,9 @@ export async function evaluateAutoMergeSafety(
       };
     }
 
-    const pendingOrFailed = checkRuns.filter((r) => !isPassingCheckRun(r));
+    // A person may merge on pending CI (the dashboard always could), never on red: for a
+    // person's merge only a finished, failing run refuses here.
+    const pendingOrFailed = checkRuns.filter((r) => (opts?.personDecides ? isFailingCheckRun(r) : !isPassingCheckRun(r)));
     if (pendingOrFailed.length > 0) {
       return {
         ok: false,
@@ -258,7 +261,8 @@ export async function evaluateAutoMergeSafety(
     const statuses = await listAllCommitStatuses(githubApi, installationId, repoFullName, headSha);
     // buildd's own `buildd/landing` status is the kernel's verdict, published from
     // what this merge decides (workflow-kernel-library.md §4): never CI to wait on.
-    const notPassing = statuses.items.filter((st) => st.context !== LANDING_STATUS_CONTEXT && !isPassingStatus(st));
+    const notPassing = statuses.items.filter((st) => st.context !== LANDING_STATUS_CONTEXT
+      && (opts?.personDecides ? st.state === 'failure' || st.state === 'error' : !isPassingStatus(st)));
     if (!statuses.complete || notPassing.length > 0) {
       return {
         ok: false,

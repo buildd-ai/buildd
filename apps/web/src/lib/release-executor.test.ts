@@ -624,6 +624,24 @@ describe('executeRelease — worker branch', () => {
       expect(paths.some((p) => p.endsWith('/merge') || p.endsWith('/merges'))).toBe(false);
     });
 
+    it('D9: a kernel-owned worker PR not landed yet holds the release, keeping the squash it merges with', async () => {
+      setupTask();
+      setupWorkerWithPr();
+      setupWorkspace();
+      setupRepo();
+      mockKernelDeliveryForPr.mockResolvedValueOnce('d-1');
+      mockKernelLand.mockResolvedValueOnce({ merged: false, outcome: 'rejected', reason: 'state_not_allowed', message: 'not approved yet', mergeCommitSha: null, current: {}, result: null });
+      mockGithubApi.mockImplementation(async (_inst: number, path: string) => {
+        if (path.includes('/git/ref/heads/')) return { object: { sha: 'prevsha000' } };
+        if (path.endsWith('/pulls/12')) return { merged: false, state: 'open', head: { sha: 'workerhead1' } };
+        throw new Error(`unexpected ${path}`);
+      });
+
+      const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+
+      expect(result).toMatchObject({ status: 'pending_ci', releasePrNumber: 12, releaseMergeMethod: 'squash' });
+    });
+
     it('a PR that GitHub reports as already merged counts, with its real merge sha', async () => {
       setupTask();
       setupWorkerWithPr();

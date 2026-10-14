@@ -972,8 +972,10 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
           kind: 'merge_call', dedupeKey: `merge_call:${dd.id}:${cmd.headSha}:v${landingVersion}`,
           payload: {
             headSha: cmd.headSha, door: cmd.door, mergeMethod: cmd.mergeMethod ?? 'squash', landingVersion, fromState: dd.state,
-            // A person's door keeps a person's rails at merge time (red CI, protected paths).
-            ...(isHumanActor(cmd.actor) || (!!ov?.grantedBy && isHumanActor(ov.grantedBy)) || (overrideDoor && cmd.door === 'dashboard_override') ? { person: true } : {}),
+            // A person's own door keeps a person's rails at merge time (red CI, protected paths).
+            // Only a human actor: an agent under a person's grant is held to every rail, and the
+            // grant lifts only what it names (`override.kinds`: freshness at T15, size in the size check).
+            ...(isHumanActor(cmd.actor) ? { person: true } : {}),
             // What the gate at merge time may pass, and only because a person said so (§13.13 rule 6).
             ...(overrideDoor ? { override: { verdict: !ov!.kinds || ov!.kinds.includes('verdict'), kinds: ov!.kinds ?? ['verdict'] } } : {}),
           },

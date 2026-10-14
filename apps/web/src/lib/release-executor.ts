@@ -609,6 +609,11 @@ export interface ReleaseInput {
  */
 export type ReleaseOutcome = ReleaseResult & {
   skipReason?: 'mission_integration_branch';
+  /**
+   * A held release (`pending_ci`): how the PR merges when it lands later. A held worker PR
+   * (every_merge) squashes, as `mergeIntoProd` does; a release PR merges with a merge commit.
+   */
+  releaseMergeMethod?: 'merge' | 'squash';
 };
 
 export async function executeRelease(input: ReleaseInput): Promise<ReleaseOutcome> {
@@ -891,6 +896,7 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseOutcom
         message: `Release: waiting — ${mergeResult.message}`,
         releasePrNumber: worker.prNumber,
         releasePrUrl: worker.prUrl ?? undefined,
+        releaseMergeMethod: 'squash',
       };
     }
     if (!mergeResult.merged) {

@@ -717,6 +717,24 @@ describe('evaluateAutoMergeSafety for a person\'s merge (personDecides)', () => 
     await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy)).resolves.toEqual({ ok: false, reason: 'drops column missions.legacy_mode' });
   });
 
+  it('a person may merge on pending CI (as the dashboard always could), never on red; unattended, pending still waits', async () => {
+    const pending = [{ name: 'build', status: 'in_progress', conclusion: null }];
+    mockGithubApi.mockReset();
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: pending })
+      .mockResolvedValueOnce([{ filename: 'apps/web/src/lib/foo.ts', additions: 1, deletions: 0 }])
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha' } });
+    mockStatusApi.mockResolvedValueOnce({ state: 'pending', total_count: 1, statuses: [{ context: 'ci/jenkins', state: 'pending' }] });
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy, { personDecides: true })).resolves.toEqual({ ok: true });
+    mockGithubApi.mockReset();
+    mockGithubApi.mockResolvedValueOnce({ check_runs: pending });
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy)).resolves.toMatchObject({ ok: false, reason: expect.stringContaining('pending or failed') });
+    mockGithubApi.mockReset();
+    mockGithubApi.mockResolvedValueOnce({ check_runs: [] });
+    mockStatusApi.mockResolvedValueOnce({ state: 'failure', total_count: 1, statuses: [{ context: 'ci/jenkins', state: 'failure' }] });
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy, { personDecides: true })).resolves.toMatchObject({ ok: false, reason: expect.stringContaining('ci/jenkins (failure)') });
+  });
+
   it('a person is not held to the size cap, but is to red CI and protected paths', async () => {
     mockGithubApi.mockReset();
     mockGithubApi

@@ -729,6 +729,25 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
+    name: 'gate at merge time: an agent under a person\'s freshness grant is not a person: a destructive migration still escalates',
+    async run(host) {
+      const s = await (await new Delivery(host, 41).open()).approvedAt('H1');
+      applied(await s.land('H1'), 'LANDING', 'an automatic landing');
+      const f = fakePorts(host);
+      f.github.setPr(s.repo, s.prNumber, s.live('H1'));
+      f.rails.reading = { passed: false, lasting: true, reasons: ['destructive migration: DROP COLUMN'] };
+      f.rails.personReading = { passed: true, reasons: [] };
+      await drainKernel(host, s, f.ports);
+      eq((await s.d()).stateReason, 'landing_needs_human', 'escalated on the migration');
+      // merge_pr with force (an admin token) and a freshness-only grant a person put on the agent's task.
+      applied(await s.submit({ type: 'LandingRequested', actor: 'agent:w1', door: 'merge_pr_force', headSha: 'H1', live: s.live('H1'), override: { reason: 'base keeps moving', kinds: ['freshness'], grantedBy: 'human:owner' } }), 'LANDING', 'the agent\'s landing');
+      await drainKernel(host, s, f.ports);
+      eq(f.rails.calls.map((c) => c.person), [false, false], 'the agent was never read as a person');
+      eq(f.github.merges, [], 'the destructive migration did not merge');
+      eq(pick(await s.d(), ['state', 'stateReason']), { state: 'ESCALATED', stateReason: 'landing_needs_human' }, 'still a person\'s');
+    },
+  },
+  {
     name: 'gate at merge time: a base retarget under the call is recorded like a moved head, and nothing merges',
     async run(host) {
       const s = await (await new Delivery(host, 39).open()).approvedAt('H1');

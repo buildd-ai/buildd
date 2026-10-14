@@ -1046,6 +1046,12 @@ describe('T15 LandingRequested / T16 MergeCallResult (S10)', () => {
     expect(dec.effects.find((e) => e.kind === 'merge_call')!.payload.person).toBeUndefined();
     const human = applied(run(ap(), { type: 'LandingRequested', actor: 'human:owner', door: 'dashboard', headSha: 'H1', live: live('H1') }));
     expect(human.effects.find((e) => e.kind === 'merge_call')!.payload.person).toBe(true);
+    // An agent under a person's grant is not a person: the grant lifts only the rails it names
+    // (here freshness; size goes through the size check), never the migration inspector or the hold.
+    const granted = applied(run(V(D({ state: 'ESCALATED', stateReason: 'landing_needs_human', approvedHeads: ['H1'], approvalBasis: 'verdict' })),
+      { type: 'LandingRequested', actor: 'agent:w1', door: 'merge_pr_force', headSha: 'H1', live: live('H1'), override: { reason: 'base keeps moving', kinds: ['freshness'], grantedBy: 'human:owner' } }));
+    expect(granted.effects.find((e) => e.kind === 'merge_call')!.payload.person).toBeUndefined();
+    expect(granted.effects.find((e) => e.kind === 'merge_call')!.payload.override).toEqual({ verdict: false, kinds: ['freshness'] });
     const size = applied(run(ap(), { type: 'LandingRequested', actor: 'human:owner', door: 'merge_pr', headSha: 'H1', live: live('H1'), override: { reason: 'big', kinds: ['size'] } }));
     expect(size.effects.find((e) => e.kind === 'merge_call')!.payload.override).toEqual({ verdict: false, kinds: ['size'] });
   });

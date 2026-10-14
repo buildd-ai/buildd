@@ -6387,6 +6387,15 @@ describe('release PR CI success pins the live head', () => {
     expect(updateCalls.some(c => c.setValues.status === 'completed')).toBe(true);
   });
 
+  it('a held worker PR lands with the method its hold recorded (squash), not a hardcoded merge', async () => {
+    selectTableResults = (table) => table === schemaMock.tasks
+      ? [{ id: 'release-task', workspaceId: 'ws-release', context: { releasePrPending: true, releasePrNumber: 42, releaseMergeMethod: 'squash' } }]
+      : null;
+    mockGithubApi.mockResolvedValue({ head: { sha: 'a'.repeat(40) } });
+    await deliverSuccess();
+    expect(mockMergePullRequest).toHaveBeenCalledWith(5000, 'test-org/test-repo', 42, 'squash', 'a'.repeat(40));
+  });
+
   it('D7: a release PR the kernel does not own never reaches the kernel; it merges pinned as before', async () => {
     mockGithubApi.mockResolvedValue({ head: { sha: 'a'.repeat(40) } });
     mockKernelClientLand.mockClear();
