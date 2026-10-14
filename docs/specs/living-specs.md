@@ -1307,7 +1307,8 @@ at any time.
   hand-edits any part of a native-sourced copy, `domain:` included, fails;
   the generated PR always passes.
 - R-32: The copy's `domain:` is derived on generation from the spec's filed
-  area. Each area maps to exactly one domain value. Creating an area whose
+  area. Each area maps to exactly one domain value: the first of the
+  `domains` its metadata block declares, else its title's slug. Creating an area whose
   value is new adds it to the allowed list (`DOMAINS` in
   `scripts/check-specs.ts`) in the same generated PR. A native-sourced spec
   with no area is not generated until it is filed, and its page says so.
@@ -1330,6 +1331,11 @@ at any time.
   its metadata block (R-14). Until confirmed the repo file stays the
   source: nothing is generated and the file is never overwritten. A repo
   change before confirmation re-imports it as a new imported revision.
+  A `domain:` maps to the area that declares it in `domains`, else to the
+  area whose title slug it is. A file already in buildd (a native spec
+  citing its path, or with its exact title) is reported as existing, never
+  created again; the caller may record the path and commit on that spec's
+  metadata instead. Import runs in pages read at one commit.
 - R-19: Confirmation is one action by a person with `approve_specs` over a
   selected batch, listed per area with each spec's path and commit. It is
   still one approval per spec (§6), each written only while the file is

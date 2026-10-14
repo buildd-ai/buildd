@@ -116,7 +116,7 @@ export default function MarkdownContent({ content, className = '', variant = 'de
               const hit = attachments && Object.hasOwn(attachments, name) ? attachments[name] : undefined;
               if (!hit) {
                 return (
-                  <span className="my-2 block rounded-md border border-dashed border-border-default px-3 py-2 text-meta text-text-muted not-italic [overflow-wrap:anywhere]" data-testid="spec-attachment-missing" role="note">
+                  <span className="my-2 block border-l-2 border-dashed border-border-default py-1 pl-3 text-meta text-text-muted not-italic [overflow-wrap:anywhere]" data-testid="spec-attachment-missing" role="note">
                     Missing attachment: {name}{alt ? ` (${alt})` : ''}
                   </span>
                 );

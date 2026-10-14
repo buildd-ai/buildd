@@ -48,6 +48,8 @@ ${extra}---
 function fakeGitHub(files: Record<string, string>) {
   const GH = `acme/app-${rand()}`;
   const state = { commit: hex(40), files: new Map(Object.entries(files).map(([n, t]) => [n, { text: t, oid: hex(40) }])), prOf: new Map<string, number>() };
+  // Every commit's docs/specs, so a read pinned to an older commit sees that commit's files.
+  const snapshots = new Map([[state.commit, new Map(state.files)]]);
   const calls: Array<{ method: string; path: string; body: any }> = [];
   const api = async (_inst: number, path: string, init?: RequestInit) => {
     const method = init?.method ?? 'GET';
@@ -66,14 +68,19 @@ function fakeGitHub(files: Record<string, string>) {
         }
         return { data: { repository: { commit } } };
       }
-      return { data: { repository: { specs: { entries: [...state.files].map(([name, f]) => ({ name, type: 'blob', oid: f.oid, object: { text: f.text } })) } } } };
+      const at = String(body.variables?.specs ?? '').split(':')[0]!;
+      const snap = snapshots.get(at);
+      if (!snap) throw new Error(`fake GitHub: no commit ${at}`);
+      return { data: { repository: { specs: { entries: [...snap].map(([name, f]) => ({ name, type: 'blob', oid: f.oid, object: { text: f.text } })) } } } };
     }
     throw new Error(`fake GitHub: unexpected ${method} ${path}`);
   };
   return {
     GH, state, calls,
     deps: { api, repo: async () => ({ fullName: GH, installationId: 1 }), now: () => new Date('2026-10-13T12:00:00Z'), duplicates: false as const },
-    edit(name: string, text: string) { state.files.set(name, { text, oid: hex(40) }); state.commit = hex(40); },
+    edit(name: string, text: string) { state.files.set(name, { text, oid: hex(40) }); state.commit = hex(40); snapshots.set(state.commit, new Map(state.files)); },
+    /** GraphQL reads of the docs/specs tree, by the commit each named. */
+    treeReads: () => calls.filter((c) => c.path === '/graphql' && !String(c.body?.query).includes('history(')).map((c) => String(c.body.variables.specs).split(':')[0]),
     writes: () => calls.filter((c) => c.method !== 'GET' && c.path !== '/graphql'),
   };
 }
@@ -203,14 +210,14 @@ describe('import: writing it (R-18, AC-76)', () => {
   test('a duplicate of an approved native spec is reported in the dry run and skipped on import, not created silently', async () => {
     const w = (await seedWorkspace()).workspaceId;
     await q(sql`UPDATE workspaces SET team_id = ${teamA}::uuid, access_mode = 'open' WHERE id = ${w}::uuid`);
-    const native = await createSpecDraft(user(member), { workspaceId: w, title: 'Invoices', body: '# Invoices\n\n- R-1: Invoices holds for every widget.\n' }, { duplicates: false });
+    const native = await createSpecDraft(user(member), { workspaceId: w, title: 'Invoices', body: '# Invoices\n\n- R-1: Invoices Overview holds for every widget.\n' }, { duplicates: false });
     if (!native.ok) throw new Error(native.error);
     const ok = await approveSpecRevision(user(admin), native.spec.id, { revision: 1, expectedVersion: 1 });
     if (!ok.ok) throw new Error(ok.error);
-    const gh = fakeGitHub({ 'invoices.md': spec('Invoices', 'billing'), 'other.md': spec('Shipping Labels', 'billing') });
+    const gh = fakeGitHub({ 'invoices.md': spec('Invoices Overview', 'billing'), 'other.md': spec('Shipping Labels', 'billing') });
     const deps = {
       ...gh.deps,
-      duplicates: { judge: async (pair: any) => ({ response: { decision: pair.b.title === 'Invoices' ? 'duplicate' : 'distinct', confidence: 0.96, source: 'model', fallbackCause: null } as any, recordId: null }) },
+      duplicates: { judge: async (pair: any) => ({ response: { decision: pair.b.title === 'Invoices Overview' ? 'duplicate' : 'distinct', confidence: 0.96, source: 'model', fallbackCause: null } as any, recordId: null }) },
     };
     const dry = await importRepoSpecs(user(member), { workspaceId: w }, deps);
     if (!dry.ok) throw new Error(dry.error);
@@ -310,5 +317,189 @@ describe('AC-77: one person-only confirmation over a batch', () => {
     const member403 = await confirmImportedSpecs(user(member), { workspaceId: w, specIds: all }, gh.deps);
     expect(member403).toMatchObject({ ok: false, status: 403 });
     expect((await importedRows(w)).every((r) => r.approved_revision === null && r.repo_source.state === 'imported')).toBe(true);
+  });
+});
+
+async function freshWs() {
+  const w = (await seedWorkspace()).workspaceId;
+  await q(sql`UPDATE workspaces SET team_id = ${teamA}::uuid, access_mode = 'open' WHERE id = ${w}::uuid`);
+  return w;
+}
+async function ok<T>(p: Promise<{ ok: true; result: T } | { ok: false; error: string }>): Promise<T> {
+  const r = await p;
+  if (!r.ok) throw new Error(r.error);
+  return r.result;
+}
+
+describe('import: pages (a whole folder does not fit one request)', () => {
+  const five = () => Object.fromEntries(['e', 'a', 'd', 'b', 'c'].map((n) => [`${n}.md`, spec(`Page ${n.toUpperCase()}`, 'ops')]));
+
+  test('limit and cursor walk the files in path order, each page at the commit the first one read', async () => {
+    const w = await freshWs();
+    const gh = fakeGitHub(five());
+    const first = gh.state.commit;
+    const p1 = await ok(importRepoSpecs(user(member), { workspaceId: w, limit: 2 }, gh.deps));
+    expect(p1.files.map((f) => f.path)).toEqual(['docs/specs/a.md', 'docs/specs/b.md']);
+    expect(p1.remaining).toBe(3);
+    expect(typeof p1.nextCursor).toBe('string');
+
+    // The repo moves on between pages: the next pages still read the first commit.
+    gh.edit('c.md', spec('Page C', 'ops').replace('every widget', 'every widget, moved'));
+    const p2 = await ok(importRepoSpecs(user(member), { workspaceId: w, limit: 2, cursor: p1.nextCursor }, gh.deps));
+    expect(p2.files.map((f) => f.path)).toEqual(['docs/specs/c.md', 'docs/specs/d.md']);
+    expect(p2.commitSha).toBe(first);
+    expect(p2.files[0]!.provenance.commitSha).toBe(first);
+    expect(p2.remaining).toBe(1);
+    const p3 = await ok(importRepoSpecs(user(member), { workspaceId: w, limit: 2, cursor: p2.nextCursor }, gh.deps));
+    expect(p3.files.map((f) => f.path)).toEqual(['docs/specs/e.md']);
+    expect([p3.remaining, p3.nextCursor]).toEqual([0, null]);
+    expect(gh.treeReads()).toEqual([first, first, first]);
+  });
+
+  test('the default page is 15 files, at most 40; a bad limit or cursor is a 400', async () => {
+    const w = await freshWs();
+    const gh = fakeGitHub(Object.fromEntries(Array.from({ length: 18 }, (_, i) => [`s${String(i).padStart(2, '0')}.md`, spec(`Many ${i}`, 'ops')])));
+    const r = await ok(importRepoSpecs(user(member), { workspaceId: w }, gh.deps));
+    expect([r.files.length, r.remaining]).toEqual([15, 3]);
+    for (const limit of [0, 41, 2.5, '5']) expect(await importRepoSpecs(user(member), { workspaceId: w, limit }, gh.deps)).toMatchObject({ ok: false, status: 400 });
+    expect(await importRepoSpecs(user(member), { workspaceId: w, cursor: 'not-a-cursor' }, gh.deps)).toMatchObject({ ok: false, status: 400 });
+  });
+
+  test('a real run pages too, and running every page again imports nothing', async () => {
+    const w = await freshWs();
+    const gh = fakeGitHub(five());
+    const created: string[] = [];
+    let cursor: string | null | undefined;
+    do {
+      const page = await ok(importRepoSpecs(user(member), { workspaceId: w, dryRun: false, limit: 2, ...(cursor ? { cursor } : {}) }, gh.deps));
+      created.push(...page.files.filter((f) => f.action === 'create').map((f) => f.path));
+      cursor = page.nextCursor;
+    } while (cursor);
+    expect(created).toEqual(['a', 'b', 'c', 'd', 'e'].map((n) => `docs/specs/${n}.md`));
+    const count = await specCount(w);
+    cursor = undefined;
+    do {
+      const page = await ok(importRepoSpecs(user(member), { workspaceId: w, dryRun: false, limit: 2, ...(cursor ? { cursor } : {}) }, gh.deps));
+      expect(page.files.every((f) => f.action === 'skip' && f.reason === 'already_imported')).toBe(true);
+      cursor = page.nextCursor;
+    } while (cursor);
+    expect(await specCount(w)).toBe(count);
+  });
+});
+
+describe('areas declare the domain values they cover', () => {
+  test('domains is set on an area through the metadata block, without a revision; never on a feature spec, never a value another area has', async () => {
+    const w = await freshWs();
+    const tasks = await area(w, 'Tasks and missions');
+    const before = (await q<any>(sql`SELECT version, head_revision FROM specs WHERE id = ${tasks}::uuid`))[0];
+    const set = await updateSpecMetadata(user(member), tasks, { changes: { domains: ['tasks', 'Missions', 'tasks'] }, reason: 'what this area covers' });
+    if (!set.ok) throw new Error(set.error);
+    expect(set.spec.metadata?.domains).toEqual(['tasks', 'missions']);
+    expect((await q<any>(sql`SELECT version, head_revision FROM specs WHERE id = ${tasks}::uuid`))[0]).toEqual(before);
+
+    expect(await updateSpecMetadata(user(member), tasks, { changes: { domains: ['tasks and missions'] }, reason: 'bad value' })).toMatchObject({ ok: false, status: 400 });
+    const feature = await createSpecDraft(user(member), { workspaceId: w, title: 'A feature', body: '# A feature\n' }, { duplicates: false });
+    if (!feature.ok) throw new Error(feature.error);
+    expect(await updateSpecMetadata(user(member), feature.spec.id, { changes: { domains: ['tasks'] }, reason: 'not an area' })).toMatchObject({ ok: false, status: 400 });
+    const other = await area(w, 'Runners');
+    const clash = await updateSpecMetadata(user(member), other, { changes: { domains: ['runners', 'missions'] }, reason: 'overlaps' });
+    expect(clash).toMatchObject({ ok: false, status: 409 });
+    expect(clash.ok ? '' : clash.error).toContain('Tasks and missions');
+  });
+
+  test('placement: a declared domain first, then the area title slug, else a proposed area', async () => {
+    const w = await freshWs();
+    const tasks = await area(w, 'Tasks and missions');
+    const knowledge = await area(w, 'Specs and knowledge');
+    const runners = await area(w, 'Runners');
+    await area(w, 'Ops');
+    const platform = await area(w, 'Platform and operations');
+    for (const [id, domains] of [[tasks, ['tasks', 'missions']], [knowledge, ['knowledge']], [platform, ['ops']]] as const) {
+      const r = await updateSpecMetadata(user(member), id, { changes: { domains: [...domains] }, reason: 'declare' });
+      if (!r.ok) throw new Error(r.error);
+    }
+    const gh = fakeGitHub({
+      'task-page.md': spec('Task Detail', 'tasks'),
+      'living-specs.md': spec('Living Specs', 'knowledge'),
+      'runner-liveness.md': spec('Runner Liveness', 'runners'),
+      'deploys.md': spec('Deploys', 'ops'),
+      'billing.md': spec('Billing Things', 'billing'),
+    });
+    const r = await ok(importRepoSpecs(user(member), { workspaceId: w }, gh.deps));
+    const by = new Map(r.files.map((f) => [f.path, f.area]));
+    expect(by.get('docs/specs/task-page.md')).toMatchObject({ specId: tasks, proposed: false });
+    expect(by.get('docs/specs/living-specs.md')).toMatchObject({ specId: knowledge, proposed: false });
+    expect(by.get('docs/specs/runner-liveness.md')).toMatchObject({ specId: runners, proposed: false });
+    // `ops` is the slug of "Ops", but "Platform and operations" declares it: the declaration wins.
+    expect(by.get('docs/specs/deploys.md')).toMatchObject({ specId: platform, proposed: false });
+    expect(by.get('docs/specs/billing.md')).toMatchObject({ specId: null, proposed: true });
+  });
+
+  test("the repo copy's domain is the area's first declared domain, else the title slug", async () => {
+    const w = await freshWs();
+    const tasks = await area(w, 'Tasks and missions');
+    const runners = await area(w, 'Runners');
+    const r = await updateSpecMetadata(user(member), tasks, { changes: { domains: ['tasks', 'missions'] }, reason: 'declare' });
+    if (!r.ok) throw new Error(r.error);
+    const mk = async (title: string, parent: string) => {
+      const s = await createSpecDraft(user(member), { workspaceId: w, title, body: `# ${title}\n`, parentSpecId: parent }, { duplicates: false });
+      if (!s.ok) throw new Error(s.error);
+      return s.spec.id;
+    };
+    expect((await repoCopy.specArea(await mk('Task Page Thing', tasks)))?.domain).toBe('tasks');
+    expect((await repoCopy.specArea(await mk('Runner Thing', runners)))?.domain).toBe('runners');
+  });
+});
+
+describe('import: a spec that already exists in buildd', () => {
+  test('a native spec with the same title (any case) is reported as exists with its link, and a real run creates nothing', async () => {
+    const w = await freshWs();
+    const native = await createSpecDraft(user(member), { workspaceId: w, title: 'Task Page', body: '# Task Page\n\nWritten in buildd.\n' }, { duplicates: false });
+    if (!native.ok) throw new Error(native.error);
+    const gh = fakeGitHub({ 'task-page.md': spec('task page', 'tasks'), 'new.md': spec('Something New', 'tasks') });
+    const dry = await ok(importRepoSpecs(user(member), { workspaceId: w }, gh.deps));
+    const row = dry.files.find((f) => f.path === 'docs/specs/task-page.md')!;
+    expect(row).toMatchObject({ action: 'exists', specId: native.spec.id, existing: { specId: native.spec.id, title: 'Task Page', matchedBy: 'title' } });
+    expect(row.existing!.url).toContain(`/app/specs/${native.spec.id}`);
+    expect(dry.counts).toMatchObject({ create: 1, exists: 1 });
+    const count = await specCount(w);
+    const real = await ok(importRepoSpecs(user(member), { workspaceId: w, dryRun: false }, gh.deps));
+    expect(real.files.find((f) => f.path === 'docs/specs/task-page.md')).toMatchObject({ action: 'exists', specId: native.spec.id });
+    expect(await specCount(w)).toBe(count + 1);
+    expect((await q<any>(sql`SELECT metadata FROM specs WHERE id = ${native.spec.id}::uuid`))[0]!.metadata ?? {}).not.toHaveProperty('repo_provenance');
+  });
+
+  test('a spec whose head revision cites the same path wins over a title match', async () => {
+    const w = await freshWs();
+    const byTitle = await createSpecDraft(user(member), { workspaceId: w, title: 'Task Page', body: '# Task Page\n' }, { duplicates: false });
+    const byRef = await createSpecDraft(user(member), { workspaceId: w, title: 'The task detail view', body: '# The task detail view\n' }, { duplicates: false });
+    if (!byTitle.ok || !byRef.ok) throw new Error('seed');
+    await q(sql`UPDATE spec_revisions SET repo_refs = ${JSON.stringify([{ path: 'docs/specs/task-page.md', commitSha: 'a'.repeat(40) }])}::jsonb WHERE spec_id = ${byRef.spec.id}::uuid AND revision = 1`);
+    const gh = fakeGitHub({ 'task-page.md': spec('Task Page', 'tasks') });
+    const r = await ok(importRepoSpecs(user(member), { workspaceId: w }, gh.deps));
+    expect(r.files[0]).toMatchObject({ action: 'exists', specId: byRef.spec.id, existing: { matchedBy: 'repo_ref' } });
+  });
+
+  test('attachProvenance records the path and commit on the existing spec, without a revision; again it changes nothing', async () => {
+    const w = await freshWs();
+    const native = await createSpecDraft(user(member), { workspaceId: w, title: 'Task Page', body: '# Task Page\n' }, { duplicates: false });
+    if (!native.ok) throw new Error(native.error);
+    const gh = fakeGitHub({ 'task-page.md': spec('Task Page', 'tasks') });
+    gh.state.prOf.set('task-page.md', 31);
+    const dry = await ok(importRepoSpecs(user(member), { workspaceId: w, attachProvenance: true }, gh.deps));
+    expect(dry.files[0]).toMatchObject({ action: 'exists' });
+    expect((await q<any>(sql`SELECT metadata FROM specs WHERE id = ${native.spec.id}::uuid`))[0]!.metadata ?? {}).not.toHaveProperty('repo_provenance');
+
+    const real = await ok(importRepoSpecs(user(member), { workspaceId: w, dryRun: false, attachProvenance: true }, gh.deps));
+    expect(real.files[0]).toMatchObject({ action: 'exists', specId: native.spec.id, provenanceAttached: true });
+    const [s] = await q<any>(sql`SELECT version, head_revision, repo_source, metadata FROM specs WHERE id = ${native.spec.id}::uuid`);
+    expect([s.version, s.head_revision, s.repo_source]).toEqual([1, 1, null]);
+    expect(s.metadata.repo_provenance).toEqual({ path: 'docs/specs/task-page.md', commitSha: gh.state.commit, blobSha: gh.state.files.get('task-page.md')!.oid, prNumber: 31 });
+    const changes = await q<any>(sql`SELECT field FROM spec_metadata_changes WHERE spec_id = ${native.spec.id}::uuid`);
+    expect(changes.map((c) => c.field)).toEqual(['repo_provenance']);
+
+    const again = await ok(importRepoSpecs(user(member), { workspaceId: w, dryRun: false, attachProvenance: true }, gh.deps));
+    expect(again.files[0]).toMatchObject({ action: 'exists', specId: native.spec.id, existing: { matchedBy: 'provenance' } });
+    expect((await q<any>(sql`SELECT count(*)::int AS n FROM spec_metadata_changes WHERE spec_id = ${native.spec.id}::uuid`))[0]!.n).toBe(1);
   });
 });

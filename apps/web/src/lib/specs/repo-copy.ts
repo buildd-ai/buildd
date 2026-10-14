@@ -63,19 +63,30 @@ export const specSlug = (title: string): string => areaDomain(title).slice(0, 60
 export const confirmedImportPath = (spec: Pick<SpecRow, 'repoSource'>): string | undefined =>
   (spec.repoSource?.state === 'confirmed' ? spec.repoSource.path : undefined);
 
+/**
+ * An area's `domain:` value: the first one it declares (its metadata block's
+ * `domains`), else its title's slug. A declared value is one the repo's
+ * DOMAINS list already uses, where a slug like `tasks-and-missions` is not.
+ */
+export function domainOfArea(area: { title: string; metadata?: SpecMetadataBlock | null }): string {
+  return area.metadata?.domains?.[0] ?? areaDomain(area.title);
+}
+
 /** The spec's filed area (R-32): itself if it is one, else its nearest ancestor with scope `domain`. */
 export async function specArea(specId: string): Promise<{ id: string; title: string; domain: string } | null> {
   const rows = (await db.execute(sql`
-    WITH RECURSIVE up(id, parent_spec_id, scope, title, depth) AS (
-      SELECT s.id, s.parent_spec_id, s.scope, s.title, 0 FROM specs s WHERE s.id = ${specId}::uuid
+    WITH RECURSIVE up(id, parent_spec_id, scope, title, metadata, depth) AS (
+      SELECT s.id, s.parent_spec_id, s.scope, s.title, s.metadata, 0 FROM specs s WHERE s.id = ${specId}::uuid
       UNION ALL
-      SELECT p.id, p.parent_spec_id, p.scope, p.title, up.depth + 1
+      SELECT p.id, p.parent_spec_id, p.scope, p.title, p.metadata, up.depth + 1
       FROM specs p JOIN up ON p.id = up.parent_spec_id
       WHERE up.depth < 50 AND up.scope <> 'domain'
     )
-    SELECT id, title FROM up WHERE scope = 'domain' ORDER BY depth LIMIT 1`)) as unknown as { rows: Array<{ id: string; title: string }> };
+    SELECT id, title, metadata FROM up WHERE scope = 'domain' ORDER BY depth LIMIT 1`)) as unknown as { rows: Array<{ id: string; title: string; metadata: SpecMetadataBlock | string | null }> };
   const a = rows.rows[0];
-  return a ? { id: a.id, title: a.title, domain: areaDomain(a.title) } : null;
+  if (!a) return null;
+  const metadata = typeof a.metadata === 'string' ? (JSON.parse(a.metadata) as SpecMetadataBlock) : a.metadata;
+  return { id: a.id, title: a.title, domain: domainOfArea({ title: a.title, metadata }) };
 }
 
 export type BuiltCopy =

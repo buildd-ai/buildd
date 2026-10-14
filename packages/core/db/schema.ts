@@ -2789,6 +2789,14 @@ export interface SpecMetadataBlock {
   surfaces?: string[];
   verified_by?: string[];
   assertions?: Array<Record<string, string | number | boolean>>;
+  /**
+   * An area's own: the `domain:` values it covers (e.g. `[tasks, missions]`).
+   * Import files a repo spec by them, and a member's repo copy writes the
+   * first as its `domain:`; with none, the area title's slug stands in.
+   */
+  domains?: string[];
+  /** The repo file a spec that already existed in buildd was matched to on import (attachProvenance). */
+  repo_provenance?: { path: string; commitSha: string; blobSha: string | null; prNumber: number | null };
 }
 
 /**
