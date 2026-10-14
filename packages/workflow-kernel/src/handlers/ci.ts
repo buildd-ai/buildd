@@ -38,7 +38,13 @@ export function ciHandlers(ports: KernelPorts): EffectHandlers {
     if (!d || !attempt) return { outcome: 'skipped:no_attempt' };
     // The task id IS the attempt id, so a re-run after a crash between filing and linking files nothing twice.
     const taskId = attempt.id;
-    if (attempt.taskId) return { outcome: 'ok:task_exists' };
+    if (attempt.taskId) {
+      // Bound by an earlier run. Still unclaimed, it may never have been woken (that run died between the
+      // bind and the wake): wake it again. The wake coalesces while the task is pending, so this costs nothing.
+      if (attempt.status !== 'queued') return { outcome: 'ok:task_exists' };
+      await need(ports, 'work', e.kind).wake(attempt.taskId, 'ci.retry');
+      return { outcome: 'ok:task_rewoken' };
+    }
     if (attempt.status !== 'queued') return { outcome: `skipped:attempt_${attempt.status}` };
     if (d.state !== 'REPAIRING' || d.boundAttemptId !== attempt.id) {
       const r = await apply(d.id, { type: 'RepairNotNeeded', actor: source, attemptId: attempt.id, reason: 'state_moved' });
@@ -82,17 +88,18 @@ export function ciHandlers(ports: KernelPorts): EffectHandlers {
       detail: { attemptNo: attempt.attemptNo, maxAttempts: attempt.maxAttempts, trigger: attempt.trigger, firstAtHead, signature: attempt.triggerReason },
     });
     if (filed.skipped || !filed.taskId) return { outcome: `skipped:${filed.skipped ?? 'not_filed'}` };
-    await ports.store.linkAttemptTask(attempt.id, filed.taskId);
-    // Not created: a run that filed it crashed before binding the row (a bound row returned above),
-    // so it was never woken nor owed its evidence. This run finishes what that one started.
-    await work.wake(filed.taskId, 'ci.retry');
     if (filed.evidence) {
-      // Owed, not run after the response: the drain captures it and records what it got.
+      // Owed, not run after the response: the drain captures it and records what it got. Owed before the
+      // bind, so a run that dies after binding has left it owed; a re-run's insert is a no-op (its key).
       await ports.store.insertFollowupEffect({
         deliveryId: d.id, transitionId: e.transitionId, kind: 'capture_ci_evidence',
         dedupeKey: `capture_ci_evidence:${filed.taskId}`, payload: { ...filed.evidence, taskId: filed.taskId },
       });
     }
+    await ports.store.linkAttemptTask(attempt.id, filed.taskId);
+    // Not created: a run that filed it crashed before binding the row (a bound row returned above),
+    // so it was never woken nor owed its evidence. This run finishes what that one started.
+    await work.wake(filed.taskId, 'ci.retry');
     if (!filed.created) return { outcome: 'ok:task_bound' };
     return { outcome: filed.variant === 'diagnose' ? 'ok:diagnose' : 'ok' };
   };

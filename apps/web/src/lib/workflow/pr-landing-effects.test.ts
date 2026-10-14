@@ -80,7 +80,7 @@ describe('mergeAnswerOf: the port answer the package handler applies as T16', ()
   });
 });
 
-// T16's behind/conflict is a conflict-family repair: its handlers are conflict-retry-effects.ts's,
+// T16's behind/conflict is a conflict-family repair: its handlers are the package's handlers/conflict.ts,
 // so the landing family must not register a second one that shadows them by composition order.
 test('the landing handlers are exactly the landing and post-merge effects, and no conflict-family one', () => {
   const clock = controllableClock();

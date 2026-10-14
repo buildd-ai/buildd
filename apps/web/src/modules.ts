@@ -35,18 +35,18 @@ import { specCheckSubscribers } from '@/lib/spec-check-subscribers';
 import type { PrOpenedPolicy } from '@/lib/pr-opened-policy';
 import type { ApprovedMergeRule } from '@/lib/workflow/delivery-view';
 import { approvedNeedsPerson } from '@/lib/merge-policy-approved';
-import type { EffectHandlers } from '@/lib/workflow/effects';
 import type { BuilddKernelHooks } from '@/lib/workflow/kernel-ports';
-import { reviewEffectHandlers } from '@/lib/workflow/review-effects';
+import type { Escalate } from '@buildd/workflow-kernel/ports';
+import { fixWork, reviewEscalate, reviewsHost, reviewWork } from '@/lib/workflow/review-effects';
 import { ciEscalate, ciEvidence, ciFixWork } from '@/lib/workflow/ci-retry-effects';
 import { trunkFixWork } from '@/lib/workflow/ci-red-trunk-effects';
-import { withConflictEffects } from '@/lib/workflow/conflict-retry-effects';
+import { conflictEscalate, conflictFixWork, conflictsHost } from '@/lib/workflow/conflict-retry-effects';
+import { builddDecide } from '@/lib/workflow/decision-port';
 import { landingLifecycle, mergeAnswerOf } from '@/lib/workflow/pr-landing-effects';
 import { supersessionLifecycle } from '@/lib/workflow/supersession-effects';
 import { notifyTeamOf } from '@/lib/notify';
 import { isTeamAlertEvent } from '@/lib/notify-rules';
-import type { LegacyFirstReview } from '@/lib/workflow/legacy-handoff';
-import { legacyFirstReview } from '@/lib/workflow/review-handoff';
+import { handOffHost } from '@/lib/workflow/review-handoff';
 import type { QuestionCheckDeps } from '@/lib/question-gate-check';
 import { fileRecoverableBlockerRepair } from '@/lib/recoverable-blocker-repair';
 import type { ShippingPrMergedReader } from '@/lib/integration-refresh';
@@ -126,13 +126,6 @@ export const COMPLETION_POLICIES: CompletionPolicies = {
  */
 export const PR_OPENED_POLICY: PrOpenedPolicy = reviewerDispatchOnOpen;
 
-/**
- * The kill-switch hand-off slot (lib/workflow/legacy-handoff.ts): a delivery
- * the switch released before its first kernel round gets legacy's first
- * review from the reviews module, so the PR is never left with no reviewer.
- */
-export const LEGACY_FIRST_REVIEW: LegacyFirstReview = legacyFirstReview;
-
 /** Review-backed read hooks for core's run-progress projection. */
 export const RUN_PROGRESS_READERS: RunProgressReaders = {
   review: readPrReviewStatus,
@@ -152,22 +145,23 @@ export const APPROVED_MERGE_RULE: ApprovedMergeRule = approvedNeedsPerson;
  * the effect handler map the drain runs. The kernel (core) decides and
  * records the effect.
  *
- * `workflowKernelHooks()`: each module's half of the ports. How GitHub's merge
- * answer reads as T16 and the activity render (reviews), the supersession
- * scan, the edge's projection and the mission wake (reviews, missions), the
- * post-merge work and mission-PR finalize (reviews, missions), team
- * notifications, and per role the task `Work` files: the CI fix or
- * schema-drift diagnose (reviews, `ci_fix`) and the trunk fix (`trunk_fix`),
- * with the CI job-log capture and the CI hand-off to a person. The package's
- * handlers (landing and post-merge work, a closed PR's resolution, the
- * activity render, the CI family and the trunk breaker) run on these.
- *
- * `workflowHostEffectHandlers()`: the families not moved into the package
- * yet, still this app's modules: the review loop (reviewer and fix tasks,
- * GitHub reviews, escalations) and the conflict/migration families
- * (mechanical refresh and renumber first, an agent conflict fix only on a
- * refusal, conflict exhaustion). Each effect kind has exactly one handler;
- * the package's win, and hand a shared kind's other families to these.
+ * `workflowKernelHooks()`: each module's half of the ports. Every effect
+ * handler is the package's and runs on these:
+ *  - reviews: how GitHub's merge answer reads as T16, the activity render, the
+ *    review loop's host half (`reviewsHost`: a reviewer's output, the §5.9
+ *    composition attestation, a review GitHub refused, the approval's
+ *    supersession, the escalation notice), the conflict families' git work
+ *    (`conflictsHost`), and legacy's first review for a delivery the kill
+ *    switch released (`handOffHost`, so the PR is never left with no
+ *    reviewer);
+ *  - reviews, missions: the supersession scan, the edge's projection and the
+ *    mission wake, the post-merge work and mission-PR finalize;
+ *  - per role the task `Work` files: the reviewer and the review fix
+ *    (reviews), the CI fix or schema-drift diagnose, the conflict fix, the
+ *    trunk fix; with the CI job-log capture;
+ *  - each repair family's hand-off to a person (`Escalate`, by family);
+ *  - notifications: team notices;
+ *  - decisions: the decision model at the kernel's decision points (`Decide`).
  *
  * Built on first use, not at load: the handler modules reach back into this
  * file through core-emit (post-merge work emits events), so composing them at
@@ -175,7 +169,10 @@ export const APPROVED_MERGE_RULE: ApprovedMergeRule = approvedNeedsPerson;
  * The activity render is loaded on its first render, as it was before the
  * kernel composed it.
  */
-export function workflowKernelHooks(): BuilddKernelHooks {
+const ESCALATE_BY_FAMILY: Record<string, Escalate> = { ci: ciEscalate, review_fix: reviewEscalate, conflict: conflictEscalate, migration: conflictEscalate };
+
+/** `exec` and `repoFor`: the db handle and repo lookup a caller injected (the seam's deps), for the ports that read them. */
+export function workflowKernelHooks(opts: { exec?: Parameters<typeof handOffHost>[0]; repoFor?: Parameters<typeof handOffHost>[1] } = {}): BuilddKernelHooks {
   return {
     mergeAnswerOf,
     notify: {
@@ -189,14 +186,20 @@ export function workflowKernelHooks(): BuilddKernelHooks {
       },
     },
     lifecycle: { ...supersessionLifecycle, ...landingLifecycle },
-    work: { ci_fix: ciFixWork, trunk_fix: trunkFixWork },
-    escalate: ciEscalate,
+    work: { review: reviewWork, fix: fixWork, ci_fix: ciFixWork, conflict_fix: conflictFixWork, trunk_fix: trunkFixWork },
+    escalate: {
+      exhausted: (d, n) => {
+        const e = ESCALATE_BY_FAMILY[n.family];
+        if (!e) throw new Error(`no escalation for family ${n.family}`);
+        return e.exhausted(d, n);
+      },
+    },
     evidence: ciEvidence,
+    reviews: reviewsHost,
+    conflicts: conflictsHost,
+    handOff: handOffHost(opts.exec, opts.repoFor),
+    decide: builddDecide,
   };
-}
-let workflowHostEffectHandlersMemo: EffectHandlers | null = null;
-export function workflowHostEffectHandlers(): EffectHandlers {
-  return (workflowHostEffectHandlersMemo ??= withConflictEffects(reviewEffectHandlers));
 }
 
 /**

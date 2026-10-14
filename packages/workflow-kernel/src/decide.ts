@@ -31,9 +31,8 @@ export interface DecisionPoint<I = Record<string, unknown>> {
 /**
  * `visual_impact`: does a head change anything a person can see? The
  * default is fail-safe, `review_required`: only a confident answer can skip
- * a visual review. (buildd's current classifier lives in apps/web and asks
- * its decision model directly; routing it through `decideAt` comes with the
- * effect handlers.)
+ * a visual review. (buildd's classifier, apps/web visual-review-impact-load.ts,
+ * asks it through `decideAndRecord` with its decision model as the decider.)
  */
 export const VISUAL_IMPACT_POINT: DecisionPoint<{ headSha: string; [k: string]: unknown }> = {
   name: 'visual_impact',
