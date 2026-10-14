@@ -16,6 +16,9 @@ assertions:
   - id: "design-drift-check-tests"
     type: "test_file"
     path: "scripts/design-check.test.ts"
+  - id: "token-tables-match-globals"
+    type: "test_file"
+    path: "apps/web/src/app/design-system-tokens.test.ts"
 ---
 
 # Design System
