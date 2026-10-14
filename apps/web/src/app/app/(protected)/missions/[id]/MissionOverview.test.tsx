@@ -111,3 +111,81 @@ describe('MissionOverview groups', () => {
     expect(two.match(/<button[^>]*data-id=/g)).toHaveLength(2);
   });
 });
+
+const { handoffFixture } = await import('@/app/app/dev/fixtures/mission-task-strip-fixtures');
+
+describe('MissionOverview handoff (spec f7f67f1a R-11 to R-24)', () => {
+  const base = { now: Date.UTC(2026, 9, 14, 12), missionCreatedAt: Date.UTC(2026, 9, 14, 11), missionStatus: 'active' as const };
+  const render = (variant: Parameters<typeof handoffFixture>[0]) => {
+    const f = handoffFixture(variant, base);
+    return renderToStaticMarkup(
+      <MissionOverview model={f.model} missionId="mission-1" workspaceId="ws-1" executor={f.executor} checks={f.checks} planTasks={f.planTasks} held={f.held} />,
+    );
+  };
+  const rows = (markup: string) => [...markup.matchAll(/data-testid="mission-check" data-kind="([^"]+)" data-status="([^"]+)"/g)].map(m => `${m[1]}:${m[2]}`);
+  const rail = (markup: string) => [...markup.matchAll(/data-step="([^"]+)" data-state="([^"]+)"/g)].map(m => `${m[1]}:${m[2]}`);
+
+  it('while building: the strip and counts stay, Build is the checkpoint, and the estimate says build only', () => {
+    const html = render('handoff-building');
+    expect(html).toContain('data-testid="task-strip"');
+    expect(html).not.toContain('data-testid="build-complete-bar"');
+    expect(rail(html)).toEqual(['build:now', 'verify:todo', 'deliver:todo']);
+    expect(html).toMatch(/data-testid="overview-estimate"[^>]*>build only: /);
+  });
+
+  it('build done: the strip folds into Build complete and the checks take the focus, with no overall done claim', () => {
+    const html = render('handoff-verifying');
+    expect(html).toContain('data-testid="build-complete-bar"');
+    expect(html).toContain('Build complete');
+    expect(html).toContain('Show tasks');
+    expect(html).not.toContain('data-testid="task-strip"');
+    expect(html).not.toContain('data-testid="overview-counts"');
+    expect(rows(html)).toEqual(['visual:running', 'mission_pr:queued', 'criterion:queued', 'release:queued']);
+    expect(rail(html)).toEqual(['build:done', 'verify:now', 'deliver:todo']);
+    expect(html).not.toMatch(/Delivered|%/);
+  });
+
+  it('a visual finding shows its fix inside the check, and the fix is not in the build count', () => {
+    const html = render('handoff-repairing');
+    expect(rows(html)[0]).toBe('visual:finding');
+    expect(html).toContain('data-testid="mission-check-repairs"');
+    expect(html).toContain('filter selection resets after a refresh');
+    expect(html).toContain('10 of 10 in the mission branch');
+  });
+
+  it('reviewer merge shows no owner button; human merge names the owner but adds no Approve or Merge button here', () => {
+    const reviewer = render('handoff-reviewer');
+    expect(reviewer).toContain('reviewer deciding');
+    const human = render('handoff-approval');
+    expect(human).toContain('approve to deliver');
+    const checksAndRail = human.slice(0, human.indexOf('data-testid="overview-rail"'));
+    expect(checksAndRail).not.toMatch(/your merge|your call|waiting on you/);
+    // The rail agrees with the check: one decision waits on the owner.
+    expect(human).toMatch(/data-testid="rail-needs" data-count="1"/);
+    expect(reviewer).toMatch(/data-testid="rail-needs" data-count="0"/);
+    for (const html of [reviewer, human]) {
+      const card = html.slice(html.indexOf('data-testid="mission-checks"'));
+      expect(card).not.toMatch(/<button[^>]*>(Approve|Merge)[^<]*<\/button>/);
+    }
+  });
+
+  it('a failed deploy never reads delivered; a healthy one does', () => {
+    expect(rail(render('handoff-deploy-failed'))).toEqual(['build:done', 'verify:done', 'deliver:held']);
+    const healthy = render('handoff-delivered');
+    expect(rail(healthy)).toEqual(['build:done', 'verify:done', 'deliver:done']);
+    expect(healthy).toContain('released, healthy');
+  });
+
+  it('the build-only estimate is the Plan page\u2019s schedule for the same build tasks', async () => {
+    const { planMissions } = await import('@/lib/mission-plan');
+    const { buildEstimate } = await import('@/lib/mission-checks');
+    const f = handoffFixture('handoff-building', base);
+    const [plan] = planMissions([{ id: 'm', title: 'M', href: '', workspaceId: null, blocked: null, dependsOnMissionId: null, tasks: f.planTasks! }], base.now);
+    const ours = buildEstimate(f.planTasks!, base.now, false)!;
+    expect([ours.p50, ours.p80]).toEqual([plan.p50!, plan.p80!]);
+  });
+
+  it('a budget hold removes the time promise', () => {
+    expect(render('handoff-budget')).not.toContain('data-testid="overview-estimate"');
+  });
+});

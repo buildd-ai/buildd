@@ -159,9 +159,17 @@ export function overviewWaitLine(model: Model, id: string): string | null {
   if (cause === 'unknown') return 'Not started, and no reason is recorded.';
   const kind = model.tasks[id]?.waitingKind;
   if (!kind || cause === 'tasks' || cause == null) return null;
+  if (NEVER_LINE[kind]) return NEVER_LINE[kind]!;
   const spec = WAITING_KIND_SPEC[kind];
+  // A hold nothing lifts on its own has no "starts when" to give.
+  if (spec.releasesWhen.event === 'never') return `${spec.gateName}. It will not start on its own.`;
   return `${spec.gateName}. Starts when ${spec.releasesWhen.text}.`;
 }
+
+/** Holds that never lift on their own, said in a sentence of their own. */
+const NEVER_LINE: Partial<Record<WaitingKind, string>> = {
+  subject_dead: 'The PR it was filed for was closed, so it will not start on its own.',
+};
 
 /** One strip cell per task, in the order given, ticked by position; a waiting cell carries its cause. */
 export function overviewCells(model: Model, order: readonly string[] = stripOrder(model)): TaskStripCell[] {

@@ -233,4 +233,12 @@ describe('overviewWaitLine', () => {
     expect(overviewWaitLine(m, idOf('dep'))).toBeNull();
     expect(overviewWaitLine(m, idOf('unknown'))).toBe('Not started, and no reason is recorded.');
   });
+
+  it('a task whose subject PR closed says so plainly, never "starts when never"', () => {
+    const id = idOf('hold');
+    const dead = { ...m, tasks: { ...m.tasks, [id]: { ...m.tasks[id], waitingKind: 'subject_dead' as const } } };
+    const line = overviewWaitLine(dead, id)!;
+    expect(line).toBe('The PR it was filed for was closed, so it will not start on its own.');
+    expect(line).not.toContain('Starts when never');
+  });
 });
