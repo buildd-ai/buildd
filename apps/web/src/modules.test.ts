@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { SUBSCRIBERS, COMPLETION_POLICIES, PR_OPENED_POLICY } from './modules';
+import { SUBSCRIBERS, COMPLETION_POLICIES, PR_OPENED_POLICY, workflowHostEffectHandlers, workflowKernelHooks } from './modules';
 import { workflowKernel } from './lib/workflow/kernel-ports';
 import { EFFECT_KINDS } from './lib/workflow/commands';
 import { withPrFactEffects } from './lib/workflow/pr-fact-effects';
@@ -122,6 +122,40 @@ describe('composition root', () => {
     const production = withPrFactEffects((await workflowKernel()).handlers); // as seam.ts composes it
     const missing = EFFECT_KINDS.filter(k => typeof production[k] !== 'function');
     expect(missing).toEqual([]);
+  });
+
+  // Dropping the host map from the composition would ack every review/conflict cancellation and
+  // every review/conflict/migration exhaustion as skipped:no_handler in production.
+  it('the production composition hands a shared kind\'s other families to the host\'s handler', async () => {
+    const host = workflowHostEffectHandlers();
+    const saved = { cancel: host.cancel_open_attempts, escalate: host.escalate_exhaustion };
+    host.cancel_open_attempts = async (e) => ({ outcome: `host:cancel:${String(e.payload.reason)}` });
+    host.escalate_exhaustion = async (e) => ({ outcome: `host:escalate:${String(e.payload.family)}` });
+    const effect = (kind: 'cancel_open_attempts' | 'escalate_exhaustion', payload: Record<string, unknown>) => ({
+      id: 'e1', deliveryId: '00000000-0000-0000-0000-000000000001', transitionId: 't1', kind, dedupeKey: 'k', payload, attemptCount: 1, delivery: null, transition: null,
+    });
+    try {
+      const h = (await workflowKernel()).handlers;
+      expect(await h.cancel_open_attempts!(effect('cancel_open_attempts', { reason: 'approved', families: ['review_fix'] }))).toEqual({ outcome: 'host:cancel:approved' });
+      expect(await h.cancel_open_attempts!(effect('cancel_open_attempts', { reason: 'head_moved', families: ['conflict'] }))).toEqual({ outcome: 'host:cancel:head_moved' });
+      expect(await h.escalate_exhaustion!(effect('escalate_exhaustion', { family: 'conflict' }))).toEqual({ outcome: 'host:escalate:conflict' });
+      expect(await h.escalate_exhaustion!(effect('escalate_exhaustion', { family: 'review_fix' }))).toEqual({ outcome: 'host:escalate:review_fix' });
+    } finally {
+      host.cancel_open_attempts = saved.cancel;
+      host.escalate_exhaustion = saved.escalate;
+    }
+  });
+
+  // The team-notification adapter used to cast the kind unchecked; notify's routing would drop an unknown one silently.
+  it('the kernel\'s team notifications refuse an alert kind notify does not know', async () => {
+    const team = workflowKernelHooks().notify.team;
+    await expect(team({ workspaceId: 'w', deliveryId: 'd', kind: 'needs_attention', title: 't' })).rejects.toThrow('unknown team alert kind: needs_attention');
+  });
+
+  it('the activity render is loaded on its first render, not with the composition root', () => {
+    const src = readFileSync(join(import.meta.dir, 'modules.ts'), 'utf8');
+    expect(src).not.toMatch(/^import [^;]*from '@\/lib\/workflow\/pr-activity-effects'/m);
+    expect(src).toContain("await import('@/lib/workflow/pr-activity-effects')");
   });
 
   it('labels are unique, so a page names exactly one step', () => {

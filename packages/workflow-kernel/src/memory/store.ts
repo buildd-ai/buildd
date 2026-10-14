@@ -349,6 +349,12 @@ export class MemoryStore implements Store {
     return true;
   }
 
+  /** `linkAttemptTaskSql`: only a row with no task yet takes one. */
+  async linkAttemptTask(attemptId: string, taskId: string): Promise<void> {
+    const a = this.attempts.find((x) => x.id === attemptId);
+    if (a && a.taskId == null) a.taskId = taskId;
+  }
+
   async insertFollowupEffect(f: FollowupEffect): Promise<boolean> {
     if (this.effectLog.some((x) => x.dedupeKey === f.dedupeKey)) return false;
     this.effectLog.push(this.newEffect(f.deliveryId, f.transitionId, f.kind, f.dedupeKey, f.payload, f.delayMs ?? 0, this.clock.now()));

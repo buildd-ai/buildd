@@ -174,8 +174,10 @@ say so and stop.
 - Organize a whole workspace:
   `buildd action=manage_specs params={ action: "organize", workspaceId, dryRun }`.
   `dryRun` defaults to true and writes nothing. With no product or area it
-  proposes a taxonomy (areas with charters and the specs each would hold);
-  `dryRun: false` creates it, `areas: [keys]` and
+  proposes a taxonomy (areas with charters and the specs each would hold,
+  and the specs it left for a person). The team's decision model sorts the
+  specs when a measured one answers; otherwise a word-based fallback does,
+  and the reply says which. `dryRun: false` creates it, `areas: [keys]` and
   `edits: { [key]: { title, charter } }` accept part of it or rename. With
   areas it sweeps the unfiled specs into one batch grouped by area; with
   `dryRun: false` the confident ones are filed (each with undo) and the rest
