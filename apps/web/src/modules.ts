@@ -171,7 +171,8 @@ export const APPROVED_MERGE_RULE: ApprovedMergeRule = approvedNeedsPerson;
  */
 const ESCALATE_BY_FAMILY: Record<string, Escalate> = { ci: ciEscalate, review_fix: reviewEscalate, conflict: conflictEscalate, migration: conflictEscalate };
 
-export function workflowKernelHooks(): BuilddKernelHooks {
+/** `exec` and `repoFor`: the db handle and repo lookup a caller injected (the seam's deps), for the ports that read them. */
+export function workflowKernelHooks(opts: { exec?: Parameters<typeof handOffHost>[0]; repoFor?: Parameters<typeof handOffHost>[1] } = {}): BuilddKernelHooks {
   return {
     mergeAnswerOf,
     notify: {
@@ -196,7 +197,7 @@ export function workflowKernelHooks(): BuilddKernelHooks {
     evidence: ciEvidence,
     reviews: reviewsHost,
     conflicts: conflictsHost,
-    handOff: handOffHost(),
+    handOff: handOffHost(opts.exec, opts.repoFor),
     decide: builddDecide,
   };
 }

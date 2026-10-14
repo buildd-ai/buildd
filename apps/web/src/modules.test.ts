@@ -139,6 +139,22 @@ describe('composition root', () => {
     await expect(team({ workspaceId: 'w', deliveryId: 'd', kind: 'needs_attention', title: 't' })).rejects.toThrow('unknown team alert kind: needs_attention');
   });
 
+  // The seam's legacy hand-off injects its db handle and repo lookup; the hand-off port used to ignore both.
+  it('the hand-off port runs on the db handle and repo lookup the caller injected', async () => {
+    const statements: unknown[] = [];
+    const looked: string[] = [];
+    const handOff = workflowKernelHooks({
+      exec: async (q) => { statements.push(q); return { rows: [{ id: 'o1' }] }; },
+      repoFor: async (ws) => { looked.push(ws); return null; },
+    }).handOff;
+    const d = { id: 'd1', workspaceId: 'w1', ownerTaskId: 'o1', repoFullName: 'acme/widgets', prNumber: 3 } as never;
+    expect(await handOff.claim(d)).toBe(true);
+    await handOff.unclaim(d);
+    expect(statements.length).toBe(2);
+    await expect(handOff.firstReview({ d, headSha: 'H1', baseRef: 'dev', policyEvidence: null })).rejects.toThrow('no GitHub installation for the workspace');
+    expect(looked).toEqual(['w1']);
+  });
+
   it('the activity render is loaded on its first render, not with the composition root', () => {
     const src = readFileSync(join(import.meta.dir, 'modules.ts'), 'utf8');
     expect(src).not.toMatch(/^import [^;]*from '@\/lib\/workflow\/pr-activity-effects'/m);

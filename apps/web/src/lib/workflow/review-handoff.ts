@@ -127,7 +127,7 @@ export const legacyFirstReview = async (p: LegacyFirstReviewInput): Promise<{ ou
 };
 
 /** The `HandOff` port: the claim once per owner task, and legacy's first review. */
-export function handOffHost(exec: Exec = dbExec): HandOff {
+export function handOffHost(exec: Exec = dbExec, repoFor: typeof workspaceRepo = workspaceRepo): HandOff {
   return {
     async claim(d) {
       return ((await exec(claimLegacyHandoffSql(d.ownerTaskId, d.id))).rows ?? []).length > 0;
@@ -136,7 +136,7 @@ export function handOffHost(exec: Exec = dbExec): HandOff {
       await exec(unclaimLegacyHandoffSql(d.ownerTaskId));
     },
     async firstReview(p) {
-      const repo = await workspaceRepo(p.d.workspaceId);
+      const repo = await repoFor(p.d.workspaceId);
       if (!repo) throw new Error('no GitHub installation for the workspace');
       const r = await legacyFirstReview({
         workspaceId: p.d.workspaceId, deliveryId: p.d.id, ownerTaskId: p.d.ownerTaskId, repoFullName: p.d.repoFullName, prNumber: p.d.prNumber,

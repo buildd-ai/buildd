@@ -553,7 +553,7 @@ export async function handOffToLegacy(deliveryId: string, deps: SeamDeps = {}): 
       import('./kernel-ports'), import('./kernel-policy'), import('@buildd/workflow-kernel/handlers/hand-off'), import('@/modules'),
     ]);
     const repoFor = deps.repoFor ?? workspaceRepo;
-    const ports = builddKernelPorts(m.workflowKernelHooks(), {
+    const ports = builddKernelPorts(m.workflowKernelHooks({ exec: deps.exec, repoFor }), {
       exec: deps.exec,
       githubFor: async (ws) => { const repo = await repoFor(ws); return repo ? readerFor(deps, repo.installationId) : null; },
       policy: { forWorkspace: async (ws) => policyFromGitConfig((await repoFor(ws))?.gitConfig ?? null) },

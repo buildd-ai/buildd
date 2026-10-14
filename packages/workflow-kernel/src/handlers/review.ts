@@ -203,7 +203,14 @@ export function reviewHandlers(ports: KernelPorts): EffectHandlers {
       },
     });
     if (filed.skipped) return { outcome: `skipped:${filed.skipped}` };
-    if (!filed.created || !filed.taskId) return { outcome: 'ok:task_exists' };
+    if (!filed.taskId) return { outcome: 'ok:task_exists' };
+    if (!filed.created) {
+      // Filed by an earlier run. Still unclaimed, it may never have been woken (that run died between
+      // filing and waking): wake it again. The wake coalesces while the task is pending.
+      if (attempt.status !== 'queued') return { outcome: 'ok:task_exists' };
+      await work.wake(filed.taskId, 'review.fix_requested');
+      return { outcome: 'ok:task_rewoken' };
+    }
     await work.wake(filed.taskId, 'review.fix_requested');
     return { outcome: 'ok' };
   };

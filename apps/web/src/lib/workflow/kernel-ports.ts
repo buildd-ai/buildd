@@ -201,11 +201,14 @@ export function builddWork(builders: WorkBuilders, exec: Exec = dbExec): Work {
       if (!taskId) throw new Error(`a ${req.role} task is filed under the kernel's id`);
       const [row] = await db.insert(tasks).values({ id: taskId, ...b.values } as never).onConflictDoNothing().returning();
       if (!row) {
-        if (b.refused) {
-          const existing = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { id: true } });
-          if (!existing) throw new Error(b.refused);
+        const existing = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)) });
+        if (!existing && b.refused) throw new Error(b.refused);
+        // Filed before (a run that crashed before the kernel bound it, maybe before it announced it):
+        // still owed what the filing owes. The announcement only refreshes the dashboard, so a task
+        // nobody has picked up yet is announced again rather than risk never being announced.
+        if (existing?.status === 'pending') {
+          await announceTaskCreated(existing as never, (b.workspace ?? await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, req.workspaceId)) })) as never);
         }
-        // Filed before (a run that crashed before the kernel bound it): still owed what the filing owes.
         return { taskId, created: false, ...(b.variant ? { variant: b.variant } : {}), ...(b.evidence ? { evidence: b.evidence } : {}) };
       }
       const workspace = b.workspace ?? await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, req.workspaceId)) });

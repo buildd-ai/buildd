@@ -1084,7 +1084,7 @@ describe('S9–S15', () => {
     await q(sql`UPDATE workflow_effects SET status = 'delivering', lease_until = now() - interval '1 second' WHERE id = ${df.id}::uuid`);
     await drain(o.deliveryId);
     [df] = await effects(o.deliveryId, 'dispatch_fix');
-    expect(df).toMatchObject({ status: 'done', outcome: 'ok:task_exists', attempt_count: 3 });
+    expect(df).toMatchObject({ status: 'done', outcome: 'ok:task_rewoken', attempt_count: 3 });
     expect((await tasksOf(o.deliveryId, 'fix')).length).toBe(1);
     expect((await loadView({ deliveryId: o.deliveryId })).attempts.length).toBe(1);
   });

@@ -23,7 +23,7 @@ import {
 } from '../memory/ports';
 import { NO_ROLE, type ClaimedEffect, type CommandResult, type Decide, type DeliveryRef, type KernelPorts, type Policy, type Store } from '../ports';
 import { deriveDeliveryView } from '../projections';
-import type { DeliverySnapshot, KernelView } from '../types';
+import type { CompositionAttestation, ConstituentEvidence, DeliverySnapshot, KernelView } from '../types';
 
 /** What a host gives the scenarios: its store, ids it accepts, a way to seed owners, and read-back of the outbox. */
 export interface ConformanceHost {
@@ -688,7 +688,8 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       eq(f.evidence.captures.map((c) => pick(c.payload, ['failedJobId', 'taskId'])), [{ failedJobId: 42, taskId: attempt.id }], 'for the filed task');
       const fact = await host.store.findFact(s.workspaceId, ciEvidenceFactKey(attempt.id));
       eq(pick(fact?.payload ?? null, ['status', 'taskId', 'objectKey']), { status: 'stored', taskId: attempt.id, objectKey: 'evidence/ci.log.gz' }, 'recorded as a fact');
-      eq(await kernelEffectHandlers(f.ports).dispatch_ci_fix!(await direct(host, s, 'dispatch_ci_fix')), { outcome: 'ok:task_exists' }, 'a redelivery finds the bound task');
+      // A redelivery finds the bound task; nobody claimed it yet, so it is woken again (the wake coalesces).
+      eq(await kernelEffectHandlers(f.ports).dispatch_ci_fix!(await direct(host, s, 'dispatch_ci_fix')), { outcome: 'ok:task_rewoken' }, 'a redelivery finds the bound task');
       eq(await kernelEffectHandlers(f.ports).capture_ci_evidence!(await direct(host, s, 'capture_ci_evidence')), { outcome: 'ok:already_recorded' }, 'and captures nothing twice');
       eq({ asked: f.work.requested.length, captures: f.evidence.captures.length }, { asked: 1, captures: 1 }, 'a bound row asks for nothing again');
     },
@@ -774,14 +775,23 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       const h = kernelEffectHandlers(f.ports);
       eq(await h.cancel_open_attempts!(await direct(host, s, 'cancel_open_attempts', { reason: 'approved', families: ['review_fix'] })), { outcome: 'ok' }, 'an approval\'s cancellation');
       eq(await h.cancel_open_attempts!(await direct(host, s, 'cancel_open_attempts', { reason: 'head_moved', families: ['conflict'] })), { outcome: 'ok:cancelled_0' }, 'a moved head\'s cancellation');
+      for (const families of [['ci'], ['migration'], ['review_fix'], undefined]) {
+        eq(await h.cancel_open_attempts!(await direct(host, s, 'cancel_open_attempts', { reason: 'head_moved', ...(families ? { families } : {}) })), { outcome: 'ok:cancelled_0' }, `a moved head, families ${families}`);
+      }
       eq(f.reviews.ops(), ['supersedeFixOnApproval'], 'the approval supersedes the open fix');
+      const moved = 'the PR head moved before the fix started';
       eq(f.work.cancelledPending.map((c) => pick(c, ['role', 'reason'])), [
-        { role: 'fix', reason: 'the PR was approved' }, { role: 'conflict_fix', reason: 'the PR head moved before the fix started' },
-      ], 'each family cancels its own pending tasks');
+        { role: 'fix', reason: 'the PR was approved' }, { role: 'conflict_fix', reason: moved },
+        { role: 'ci_fix', reason: moved }, { role: 'conflict_fix', reason: moved }, { role: 'fix', reason: moved }, { role: 'fix', reason: moved },
+      ], 'each family cancels its own pending tasks; no family named is the review fix');
       eq(await h.cancel_open_attempts!(await direct(host, s, 'cancel_open_attempts', { reason: 'merged' })), { outcome: 'skipped:legacy_owns' }, 'a merge\'s cancellation is legacy\'s');
       eq(await h.escalate_exhaustion!(await direct(host, s, 'escalate_exhaustion', { family: 'conflict', attempts: 3 })), { outcome: 'ok' }, 'a conflict family\'s exhaustion');
       eq(await h.escalate_exhaustion!(await direct(host, s, 'escalate_exhaustion', { family: 'review_fix' })), { outcome: 'ok' }, 'a review family\'s exhaustion');
-      eq(f.escalate.calls.map((c) => c.family), ['conflict', 'review_fix'], 'each handed to a person once');
+      // Each through its own family's path: the conflict path would hand the review family over in its own words.
+      eq(f.escalate.calls.map((c) => pick(c, ['family', 'title', 'detail', 'attempts'])), [
+        { family: 'conflict', title: 'Conflict resolution exhausted', detail: `conflict repair attempts used 3 on PR #${s.prNumber}`, attempts: 3 },
+        { family: 'review_fix', title: 'Review fix attempts exhausted', detail: 'after 1 review rounds', attempts: 1 },
+      ], 'each handed to a person once, in its own family\'s words');
       eq(await h.escalate_exhaustion!(await direct(host, s, 'escalate_exhaustion', { family: 'release' })), { outcome: 'skipped:legacy_owns' }, 'an unknown family');
     },
   },
@@ -881,8 +891,9 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       eq(f.work.filed.filter((w) => w.role === 'fix').map((w) => ({ taskId: w.taskId, attemptId: w.lineage.attemptId, firstAtHead: w.detail?.firstAtHead })), [{ taskId: attempt.taskId, attemptId: attempt.id, firstAtHead: true }], 'the fix, under the row');
       ok(f.work.woken.some((w) => w.taskId === attempt.taskId && w.reason === 'review.fix_requested'), 'woken');
       eq(await outcomesOf(host, s, 'dispatch_fix'), ['ok'], 'filed');
-      eq(await kernelEffectHandlers(f.ports).dispatch_fix!(await direct(host, s, 'dispatch_fix')), { outcome: 'ok:task_exists' }, 'a redelivery files nothing twice');
+      eq(await kernelEffectHandlers(f.ports).dispatch_fix!(await direct(host, s, 'dispatch_fix')), { outcome: 'ok:task_rewoken' }, 'a redelivery files nothing twice, and wakes the unclaimed fix again');
       eq(f.work.filed.filter((w) => w.role === 'fix').length, 1, 'one fix');
+      eq(f.work.woken.filter((w) => w.taskId === attempt.taskId && w.reason === 'review.fix_requested').length, 2, 'woken again by the redelivery');
 
       applied(await s.submit({ type: 'FixClaimed', actor: 'runner', attemptId: attempt.id, revalidation: { live: s.live('H1'), approved: false } }), 'FIXING', 'claimed');
       applied(await s.push('H2'), 'FIXING', 'the fix pushed');
@@ -1064,6 +1075,195 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
 
       const k = await new Delivery(host, 99).open();
       eq(await handOffToLegacyOn(f.ports, k.deliveryId), 'not_released', 'the kernel\'s own delivery');
+    },
+  },
+  {
+    name: 'handlers/review: a closed PR sends no reviewer-escalation notice; a pre-flight finding is announced only for the head it escalated at',
+    async run(host) {
+      const s = await new Delivery(host, 101).open();
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      applied(await s.submit({ type: 'PolicyEvidenceRecorded', actor: 'kernel', evidence: { headSha: 'H1', outcome: 'human', reason: 'drops a column', destructive: true } }), 'ESCALATED', 'a person must decide');
+      const f = fakePorts(host);
+      const h = kernelEffectHandlers(f.ports);
+      // Past the drain, which never gates notify: the handler alone keeps an older finding quiet.
+      eq(await h.notify!(await direct(host, s, 'notify', { event: 'policy_human', headSha: 'H0', reason: 'an older finding' })), { outcome: 'skipped:state_moved' }, 'a finding for an older head');
+      eq(await h.notify!(await direct(host, s, 'notify')), { outcome: 'ok' }, 'the finding for the head it escalated at');
+      eq(f.notify.teams.map((t) => t.body), ['drops a column'], 'one notice, for the current head');
+
+      applied(await s.submit({ type: 'PrClosedUnmerged', actor: 'webhook', live: s.live('H1', { state: 'closed', updatedAt: '2026-01-01T05:00:00Z' }), closeCause: 'manual' }), 'CLOSED_UNMERGED', 'closed');
+      // Every close owes a mission_note, and the drain never gates it.
+      eq(await h.mission_note!(await direct(host, s, 'mission_note')), { outcome: 'skipped:legacy_owns' }, 'a close is not an escalation');
+      eq(await h.mission_note!(await direct(host, s, 'mission_note', { reason: 'review_escalated', roundId: null })), { outcome: 'ok' }, 'a review escalation is');
+      eq(f.reviews.ops().filter((o) => o.startsWith('escalated')), ['escalated'], 'one "escalated by reviewer" notice, for the escalation only');
+    },
+  },
+  {
+    name: 'handlers/review: a fix owed for a round the delivery moved on from (pushed, then approved) allocates nothing and files nothing',
+    async run(host) {
+      const s = await new Delivery(host, 102).open();
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      applied(await s.verdict('request_changes'), 'CHANGES_REQUESTED', 'changes requested');
+      const owed = await direct(host, s, 'dispatch_fix');
+      const f = fakePorts(host);
+      f.github.setPr(s.repo, s.prNumber, s.live('H2'));
+      let reads = 0;
+      const readPr = f.github.readPr.bind(f.github);
+      f.github.readPr = async (repo, n) => { reads++; return readPr(repo, n); };
+      const h = kernelEffectHandlers(f.ports);
+      applied(await s.push('H2'), 'AWAITING_REVIEW', 'the owner pushed before the fix was filed');
+      eq(await h.dispatch_fix!(owed), { outcome: 'skipped:state_moved' }, 'pushed');
+      applied(await s.verdict('approve'), 'APPROVED', 'and the new head was approved');
+      eq(await h.dispatch_fix!(owed), { outcome: 'skipped:state_moved' }, 'approved');
+      eq({ asked: f.work.requested.length, rows: (await s.view()).attempts.filter((a) => a.family === 'review_fix').length, reads }, { asked: 0, rows: 0, reads: 0 }, 'no fix allocated (T8) or filed, decided without a live read');
+    },
+  },
+  {
+    name: 'handlers/review: a round that is no longer open (superseded, decided) gets no reviewer',
+    async run(host) {
+      const s = await new Delivery(host, 103).open();
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      const r1 = await s.latestRound();
+      applied(await s.push('H2'), 'AWAITING_REVIEW', 'a push supersedes round 1');
+      const r2 = await s.latestRound();
+      applied(await s.verdict('approve', r2.id), 'APPROVED', 'round 2 decided without its dispatch having run');
+      const f = fakePorts(host);
+      const h = kernelEffectHandlers(f.ports);
+      eq(await h.dispatch_review!(await direct(host, s, 'dispatch_review', { roundId: r1.id })), { outcome: 'skipped:round_closed' }, 'a superseded round');
+      eq(await h.dispatch_review!(await direct(host, s, 'dispatch_review', { roundId: r2.id })), { outcome: 'skipped:round_closed' }, 'a decided round');
+      eq(f.work.requested.length, 0, 'no reviewer filed');
+    },
+  },
+  {
+    name: 'handlers/review: a composition\'s delta round is reviewed on its novel paths, never attested again, and carries no prior verdict for the head that verdict judged',
+    async run(host) {
+      const s = await new Delivery(host, 104).open();
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      const r1 = await s.latestRound();
+      applied(await s.verdict('request_changes'), 'CHANGES_REQUESTED', 'round 1 decided at H1');
+      applied(await s.submit({ type: 'ReviewRequested', actor: 'human:u', headSha: 'H1', live: s.live('H1'), forced: true }), 'AWAITING_REVIEW', 'a person asks for another look at H1');
+      const attestation: CompositionAttestation = {
+        repoFullName: s.repo, prNumber: s.prNumber, baseSha: 'B0', aggregateHeadSha: 'H1', method: 'tree_equal', verifiedAt: MERGED_AT, verifier: 'kernel',
+        constituents: [{ deliveryId: 'dx', roundId: 'rx', prNumber: 3, reviewedHeadSha: 'C1', equivalentHeadShas: [], mergedHeadSha: 'C1', landedSha: 'SQ1', landedPatchId: 'a'.repeat(64), reviewedPatchId: 'a'.repeat(64) }],
+        novelDelta: { result: 'present', paths: ['src/new.ts'] },
+      };
+      const constituents: ConstituentEvidence[] = [{ roundId: 'rx', deliveryId: 'dx', prNumber: 3, repoFullName: s.repo, roundHeadSha: 'C1', roundStatus: 'decided', effectiveVerdict: 'approve', deliveryApprovedHeads: ['C1'] }];
+      applied(await s.submit({ type: 'CompositionAttested', actor: 'kernel', attestation, constituents }), 'AWAITING_REVIEW', 'composed, with a novel delta');
+      const delta = await s.latestRound();
+      eq(pick(delta, ['headSha', 'kind']), { headSha: 'H1', kind: 'delta' }, 'the delta round, at the head round 1 judged');
+      const f = fakePorts(host);
+      f.reviews.outputs.set(r1.id, { verdict: 'request-changes', confidence: 0.9, summary: 's', feedback: 'check the caller' });
+      f.reviews.attested.set(delta.id, 'ok:composition_attested');
+      eq(await kernelEffectHandlers(f.ports).dispatch_review!(await direct(host, s, 'dispatch_review', { roundId: delta.id })), { outcome: 'ok' }, 'reviewed');
+      eq(f.reviews.ops().filter((o) => o.startsWith('attestComposition')), [], 'the composition is not attested a second time');
+      eq(f.work.filed.filter((w) => w.role === 'review').map((w) => ({ scope: w.detail?.compositionScope ?? null, prior: w.detail?.priorVerdict ?? null })),
+        [{ scope: { novelDeltaPaths: ['src/new.ts'] }, prior: null }], 'scoped to the novel paths; no prior verdict at the head it judged');
+    },
+  },
+  {
+    name: 'handlers/review: push recovery owed while the fix was unpushed stops once the delivery left AWAITING_PUSH',
+    async run(host) {
+      const s = await new Delivery(host, 105).open();
+      applied(await s.submit({ type: 'AttemptEnded', actor: 'runner', workerId: 'wk', taskId: s.ownerTaskId, outcome: 'success', localHeadSha: 'L2', commitCount: 1, live: s.live('H1') }), 'AWAITING_PUSH', 'nothing on GitHub');
+      const owed = await direct(host, s, 'push_recovery');
+      eq((await s.push('L2')).result, 'applied', 'the push arrived by webhook');
+      ok((await s.d()).state !== 'AWAITING_PUSH', 'no longer waiting on the push');
+      const f = fakePorts(host);
+      f.github.setPr(s.repo, s.prNumber, s.live('L2'));
+      eq(await kernelEffectHandlers(f.ports).push_recovery!(owed), { outcome: 'skipped:state_moved' }, 'nothing to recover');
+      eq({ tries: await s.count('push_recovery'), facts: f.ingest.facts.length }, { tries: 1, facts: 0 }, 'no next try, no read');
+    },
+  },
+  {
+    name: 'handlers/conflict: an agent fix whose bound head moved files nothing; a bound row is never filed again, is woken again only while nobody claimed it',
+    async run(host) {
+      const s = await new Delivery(host, 107).open();
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      applied(await s.submit({ type: 'ConflictObserved', actor: 'webhook', headSha: 'H1', mergeable: 'dirty', maxAgentAttempts: 3 }), 'REPAIRING', 'conflict');
+      const f = fakePorts(host);
+      const h = kernelEffectHandlers(f.ports);
+      f.github.setPr(s.repo, s.prNumber, s.live('H1', { mergeableState: 'dirty' }));
+      f.conflicts.refreshAnswer = { kind: 'refused', refusal: { reason: 'merge conflict', mode: 'textual' } };
+      eq(await h.refresh_branch!(await direct(host, s, 'refresh_branch')), { outcome: 'ok:refused:merge conflict' }, 'refused to an agent');
+      const agent = (await s.view()).attempts.find((x) => x.mode === 'agent')!;
+      const fixes = () => f.work.requested.filter((w) => w.role === 'conflict_fix').length;
+      const wakes = () => f.work.woken.filter((w) => w.taskId === agent.id).length;
+
+      f.github.setPr(s.repo, s.prNumber, s.live('H2', { mergeableState: 'dirty' }));
+      eq(await h.dispatch_conflict_fix!(await direct(host, s, 'dispatch_conflict_fix')), { outcome: 'skipped:head_moved' }, 'the live head is not the bound one');
+      eq(f.ingest.facts.map((x) => pick(x, ['kind', 'source'])), [{ kind: 'head_observed', source: 'effect:dispatch_conflict_fix' }], 'the new head goes to the funnel');
+      eq(fixes(), 0, 'no fix filed for a head that is gone');
+
+      f.github.setPr(s.repo, s.prNumber, s.live('H1', { mergeableState: 'dirty' }));
+      eq(await h.dispatch_conflict_fix!(await direct(host, s, 'dispatch_conflict_fix')), { outcome: 'ok' }, 'filed at the bound head');
+      eq({ fixes: fixes(), wakes: wakes() }, { fixes: 1, wakes: 1 }, 'filed and woken');
+      // A run that died between the bind and the wake: the next one wakes it (the wake coalesces), files nothing.
+      eq(await h.dispatch_conflict_fix!(await direct(host, s, 'dispatch_conflict_fix')), { outcome: 'ok:task_rewoken' }, 'a redelivery while unclaimed');
+      eq({ fixes: fixes(), wakes: wakes() }, { fixes: 1, wakes: 2 }, 'woken again, not filed again');
+      eq((await s.submit({ type: 'FixClaimed', actor: 'runner', attemptId: agent.id, revalidation: { live: s.live('H1'), approved: false } })).result, 'applied', 'claimed');
+      eq(await h.dispatch_conflict_fix!(await direct(host, s, 'dispatch_conflict_fix')), { outcome: 'ok:task_exists' }, 'a redelivery once claimed');
+      eq({ fixes: fixes(), wakes: wakes() }, { fixes: 1, wakes: 2 }, 'does nothing');
+    },
+  },
+  {
+    name: 'handlers/ci: a fix bound by a run that died before waking it is woken by the next run, and never once it is claimed',
+    async run(host) {
+      const s = await new Delivery(host, 108).open();
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      applied(await s.ciRed('H1'), 'REPAIRING', 'CI red');
+      const attempt = (await s.view()).attempts.find((a) => a.family === 'ci')!;
+      const f = fakePorts(host);
+      f.github.setPr(s.repo, s.prNumber, s.live('H1'));
+      // The earlier run: filed under the row's id and bound the row, then died before the wake.
+      await f.work.file({ role: 'ci_fix', workspaceId: s.workspaceId, taskId: attempt.id, target: { repoFullName: s.repo, prNumber: s.prNumber, headSha: 'H1' }, lineage: { deliveryId: s.deliveryId, attemptId: attempt.id }, dedupeKey: `ci_fix:${attempt.id}` });
+      await host.store.linkAttemptTask(attempt.id, attempt.id);
+      await drainKernel(host, s, f.ports);
+      eq(await outcomesOf(host, s, 'dispatch_ci_fix'), ['ok:task_rewoken'], 'the next run wakes it');
+      eq({ woken: f.work.woken, asked: f.work.requested.length }, { woken: [{ taskId: attempt.id, reason: 'ci.retry' }], asked: 1 }, 'woken, not filed again');
+      eq((await s.submit({ type: 'FixClaimed', actor: 'runner', attemptId: attempt.id, revalidation: { live: s.live('H1'), approved: false } })).result, 'applied', 'claimed');
+      eq(await kernelEffectHandlers(f.ports).dispatch_ci_fix!(await direct(host, s, 'dispatch_ci_fix')), { outcome: 'ok:task_exists' }, 'a redelivery once claimed');
+      eq(f.work.woken.length, 1, 'is not woken again');
+    },
+  },
+  {
+    name: 'handlers/ci: a run that dies at the wake has already owed the job log; the next run wakes the fix and owes nothing twice',
+    async run(host) {
+      const s = await new Delivery(host, 110).open();
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      applied(await s.ciRed('H1'), 'REPAIRING', 'CI red');
+      const attempt = (await s.view()).attempts.find((a) => a.family === 'ci')!;
+      const f = fakePorts(host, { work: { ci_fix: { evidence: { failedJobId: 9 } } } });
+      f.github.setPr(s.repo, s.prNumber, s.live('H1'));
+      const wake = f.work.wake.bind(f.work);
+      let dies = true;
+      f.work.wake = async (taskId, reason) => { if (dies) { dies = false; throw new Error('process died at the wake'); } return wake(taskId, reason); };
+      const h = kernelEffectHandlers(f.ports);
+      const owed = await direct(host, s, 'dispatch_ci_fix');
+      let died = false;
+      await h.dispatch_ci_fix!(owed).catch(() => { died = true; });
+      ok(died, 'the first run died at the wake');
+      eq((await s.view()).attempts.find((a) => a.id === attempt.id)?.taskId, attempt.id, 'after binding the row');
+      eq(await s.count('capture_ci_evidence'), 1, 'the job log was already owed');
+      eq(await h.dispatch_ci_fix!(owed), { outcome: 'ok:task_rewoken' }, 'the next run wakes it');
+      eq({ woken: f.work.woken, evidence: await s.count('capture_ci_evidence'), asked: f.work.requested.length }, { woken: [{ taskId: attempt.id, reason: 'ci.retry' }], evidence: 1, asked: 1 }, 'woken once, owed once, filed once');
+    },
+  },
+  {
+    name: 'handlers/trunk: a trunk fix filed by a run that died before linking it is linked and woken by the next run',
+    async run(host) {
+      const trunk = new RecordingTrunk();
+      const f = fakePorts(host, { trunk });
+      const a = await new Delivery(host, 109).open();
+      applied(await a.ownerPushed('H1'), 'AWAITING_REVIEW', 'a pushed');
+      const i1 = host.newId();
+      trunk.add({ id: i1, workspaceId: a.workspaceId, repoFullName: a.repo, baseRef: 'dev', signature: 'ci:unit', status: 'open', fixTaskId: null, affectedDeliveries: [a.deliveryId] });
+      f.github.heads.set(`${a.repo}:dev`, 'B1');
+      f.github.runs.set(`${a.repo}@B1`, { complete: true, failing: ['unit'] });
+      applied(await a.trunkRed(i1, 'ci:unit'), 'BLOCKED_ON_TRUNK', 'a blocked');
+      // The earlier run: filed the fix under the incident's id, then died before linking or waking it.
+      await f.work.file({ role: 'trunk_fix', workspaceId: a.workspaceId, taskId: i1, target: { repoFullName: a.repo, baseRef: 'dev', headSha: 'B1' }, lineage: { deliveryId: a.deliveryId }, dedupeKey: `trunk_fix:${i1}` });
+      await drainKernel(host, a, f.ports);
+      eq(await outcomesOf(host, a, 'dispatch_trunk_fix'), ['ok:task_bound'], 'the next run binds it');
+      eq({ links: trunk.links, woken: f.work.woken, filed: f.work.filed.length }, { links: [{ incidentId: i1, taskId: i1 }], woken: [{ taskId: i1, reason: 'task.created' }], filed: 1 }, 'linked and woken, filed once');
     },
   },
   {

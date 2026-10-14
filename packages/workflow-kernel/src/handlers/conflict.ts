@@ -168,7 +168,13 @@ export function conflictHandlers(ports: KernelPorts): EffectHandlers {
     const view0 = await ports.store.loadView({ deliveryId: e.deliveryId });
     const pre = view0.attempts.find((a) => a.id === e.payload.attemptId);
     // The task id IS the attempt id, so a re-run after a crash between filing and linking files nothing twice.
-    if (pre?.taskId) return { outcome: 'ok:task_exists' };
+    if (pre?.taskId) {
+      // Bound by an earlier run. Still unclaimed, it may never have been woken (that run died between the
+      // bind and the wake): wake it again. The wake coalesces while the task is pending.
+      if (pre.status !== 'queued') return { outcome: 'ok:task_exists' };
+      await need(ports, 'work', e.kind).wake(pre.taskId, 'conflict.retry');
+      return { outcome: 'ok:task_rewoken' };
+    }
     const b = await boundAttempt(e, source);
     if ('outcome' in b) return b;
     const repairKind = String(e.payload.repairKind ?? b.attempt.triggerReason ?? (b.attempt.family === 'migration' ? 'migration' : 'conflict'));
