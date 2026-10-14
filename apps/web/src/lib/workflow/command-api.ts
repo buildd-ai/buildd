@@ -43,10 +43,23 @@ export const COMMAND_PATH = '/v1/commands';
 
 type Seam = typeof import('./seam');
 
-/** Who the calling host vouches for. `system` is a sweep or a door acting on its own account. */
+/**
+ * Who the calling host vouches for, carrying what the control plane needs to apply the same
+ * workspace reach rule as the web host (lib/team-access.ts):
+ *  - `user`: a person signed in to the dashboard, judged by team membership;
+ *  - `account`: an API account that is NOT a grant session, judged by the account row. A host
+ *    sends `grant: null` to say so; a principal without it comes from a host that predates
+ *    grant principals and cannot tell a grant session from its team's shared account;
+ *  - `grant`: an account-level grant session. It acts as its team's shared session account (`id`)
+ *    but reaches only the workspaces on its grant, as the web host resolved them for this
+ *    request (`workspaceIds`), with the grant's scopes. A control plane that predates this kind
+ *    refuses it as malformed, so it fails closed.
+ *  - `system`: buildd's own sweeps and rules, never a person or an agent run.
+ */
 export type KernelPrincipal =
   | { kind: 'user'; id: string }
-  | { kind: 'account'; id: string }
+  | { kind: 'account'; id: string; grant?: null }
+  | { kind: 'grant'; id: string; grantId: string; workspaceIds: string[]; scopes: string[]; userId?: string | null }
   | { kind: 'system'; id: string };
 
 /** The v1 operations: each is one seam door function, its input and its result. */
@@ -133,11 +146,23 @@ export interface CommandAnswer<K extends KernelOp = KernelOp> {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const KEY = /^[A-Za-z0-9:._\-]{8,200}$/;
 
+const MAX_GRANT_WORKSPACES = 500;
+
 function isPrincipal(p: unknown): p is KernelPrincipal {
   if (!p || typeof p !== 'object') return false;
-  const { kind, id } = p as Record<string, unknown>;
+  const r = p as Record<string, unknown>;
+  const { kind, id } = r;
   if (typeof id !== 'string' || id.length === 0 || id.length > 200) return false;
-  if (kind === 'user' || kind === 'account') return UUID.test(id);
+  if (kind === 'user') return UUID.test(id);
+  if (kind === 'account') return UUID.test(id) && (!('grant' in r) || r.grant === null);
+  if (kind === 'grant') {
+    return UUID.test(id)
+      && typeof r.grantId === 'string' && r.grantId.length > 0 && r.grantId.length <= 200
+      && Array.isArray(r.workspaceIds) && r.workspaceIds.length <= MAX_GRANT_WORKSPACES
+      && r.workspaceIds.every((w) => typeof w === 'string' && UUID.test(w))
+      && Array.isArray(r.scopes) && r.scopes.length <= 20 && r.scopes.every((x) => typeof x === 'string' && x.length <= 50)
+      && (r.userId === undefined || r.userId === null || (typeof r.userId === 'string' && UUID.test(r.userId)));
+  }
   return kind === 'system';
 }
 
@@ -148,7 +173,7 @@ export function commandProblem(body: unknown): string | null {
   if (b.v !== COMMAND_API_VERSION) return `unsupported version ${JSON.stringify(b.v)}; this endpoint speaks v${COMMAND_API_VERSION}`;
   if (!isKernelOp(b.op)) return `unknown op ${JSON.stringify(b.op)}`;
   if (typeof b.idempotencyKey !== 'string' || !KEY.test(b.idempotencyKey)) return 'idempotencyKey must be 8-200 characters of [A-Za-z0-9:._-]';
-  if (!isPrincipal(b.principal)) return 'principal must be { kind: user|account (uuid id) | system, id }';
+  if (!isPrincipal(b.principal)) return 'principal must be { kind: user|account|grant (uuid id) | system, id }';
   const input = b.input as Record<string, unknown> | null;
   if (!input || typeof input !== 'object') return 'input must be an object';
   if (b.op === 'drain') return typeof input.deliveryId === 'string' && UUID.test(input.deliveryId) ? null : 'drain needs input.deliveryId (uuid)';
@@ -157,8 +182,8 @@ export function commandProblem(body: unknown): string | null {
   return null;
 }
 
-/** `user:<id>`: how the ledger records the principal. */
-export const principalKey = (p: KernelPrincipal): string => `${p.kind}:${p.id}`;
+/** `user:<id>`: how the ledger records the principal (a grant session by its grant, which is what acts). */
+export const principalKey = (p: KernelPrincipal): string => (p.kind === 'grant' ? `grant:${p.grantId}` : `${p.kind}:${p.id}`);
 
 function canonical(v: unknown): unknown {
   if (Array.isArray(v)) return v.map(canonical);
@@ -201,13 +226,43 @@ const json = (body: unknown, status = 200, headers: Record<string, string> = {})
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...NO_STORE, ...headers } });
 const refuse = (status: number, code: string, error: string, extra: Record<string, unknown> = {}) => json({ v: COMMAND_API_VERSION, code, error, ...extra }, status);
 
-/** Default reach check: a person by team membership, an API account by workspace reach, a system principal always. */
-export async function principalReaches(principal: KernelPrincipal, workspaceId: string | null): Promise<boolean> {
+/**
+ * The session object the web host judged, rebuilt from the principal, so the control plane runs
+ * the very same check (`verifyAccountWorkspaceAccess`) on the same inputs: a grant session by
+ * its grant, any other account by its row.
+ */
+export function sessionOfPrincipal(p: Extract<KernelPrincipal, { kind: 'account' | 'grant' }>) {
+  if (p.kind === 'grant') return { id: p.id, oauthGrantId: p.grantId, grantScopes: p.scopes, workspaceIds: p.workspaceIds };
+  return { id: p.id, oauthGrantId: null };
+}
+
+export interface ReachDeps {
+  verifyWorkspaceAccess?: (userId: string, workspaceId: string) => Promise<unknown>;
+  verifyAccountWorkspaceAccess?: (account: ReturnType<typeof sessionOfPrincipal>, workspaceId: string) => Promise<boolean>;
+  /** Whether a grant session could be acting as this account: it is its team's shared session account. */
+  isSessionAccount?: (accountId: string) => Promise<boolean>;
+}
+
+async function defaultIsSessionAccount(accountId: string): Promise<boolean> {
+  return (await import('@/lib/oauth/session-account')).isTeamSessionAccount(accountId);
+}
+
+/**
+ * Default reach check, the web host's rule: a person by team membership; a grant session by its
+ * grant; any other API account by its row. A system principal always (buildd's own sweeps). An
+ * account principal from a host that predates grant principals (no `grant: null`) is refused
+ * when it names a team's shared session account, since that may be a grant session whose grant
+ * the request does not carry.
+ */
+export async function principalReaches(principal: KernelPrincipal, workspaceId: string | null, deps: ReachDeps = {}): Promise<boolean> {
   if (principal.kind === 'system') return true;
   if (!workspaceId) return false;
-  const { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } = await import('@/lib/team-access');
-  if (principal.kind === 'user') return !!(await verifyWorkspaceAccess(principal.id, workspaceId));
-  return verifyAccountWorkspaceAccess(principal.id, workspaceId);
+  const access = deps.verifyWorkspaceAccess && deps.verifyAccountWorkspaceAccess ? null : await import('@/lib/team-access');
+  if (principal.kind === 'user') return !!(await (deps.verifyWorkspaceAccess ?? access!.verifyWorkspaceAccess)(principal.id, workspaceId));
+  if (principal.kind === 'account' && !('grant' in principal)) {
+    if (await (deps.isSessionAccount ?? defaultIsSessionAccount)(principal.id)) return false;
+  }
+  return (deps.verifyAccountWorkspaceAccess ?? access!.verifyAccountWorkspaceAccess)(sessionOfPrincipal(principal), workspaceId);
 }
 
 /** `POST /v1/commands`. Never throws: every outcome is a response. */

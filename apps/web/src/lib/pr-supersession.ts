@@ -50,11 +50,11 @@ export interface RecordPrSupersessionParams {
   /** Actor label (user email, or `agent:<taskId>`) — free text, not a FK. */
   recordedBy: string;
   /**
-   * Who the kernel command is for, checked by the control plane against the workspace: the person
-   * (`{ kind: 'user', id }`) or the API account (`{ kind: 'account', id }`). Absent: the system
-   * principal named by `recordedBy`, which is right only for buildd's own sweeps.
+   * Who the kernel command is for, as the door authenticated them: the person and/or the session
+   * object (never a bare id), so the control plane re-checks the same reach the door did, a grant
+   * session by its grant (`kernelPrincipalOf`). Absent: buildd's own sweeps, named by `recordedBy`.
    */
-  principal?: import('@/lib/workflow/kernel-client').KernelPrincipal;
+  caller?: import('@/lib/workflow/kernel-client').KernelCaller;
   /** The kernel transition's actor; defaults to `recordedBy` (`human:<id>` for a person). */
   actor?: string;
   /**
@@ -268,12 +268,12 @@ export async function recordPrSupersession(
     ? wsRepo.installation.installationId
     : await installationIdForRepo(closedRepo).catch(() => null);
   if (worker.workspaceId && closedInstallationId) {
-    const { recordSupersession, isDoorError } = await import('@/lib/workflow/kernel-client');
+    const { recordSupersession, isDoorError, kernelPrincipalOf } = await import('@/lib/workflow/kernel-client');
     const kernel = await recordSupersession({
       workspaceId: worker.workspaceId, repoFullName: closedRepo, prNumber: worker.prNumber, installationId: closedInstallationId,
       actor: params.actor ?? recordedBy, reason: reason.trim(),
       target: { repoFullName: targetRepo, prNumber: supersedingPrNumber, url: supersedingPrUrl },
-    }, params.principal ? { principal: params.principal } : undefined).catch((err: unknown) => (isDoorError(err) ? err : Promise.reject(err)));
+    }, params.caller ? { principal: kernelPrincipalOf(params.caller) } : undefined).catch((err: unknown) => (isDoorError(err) ? err : Promise.reject(err)));
     // The kernel's host did not take it: nothing was recorded here, and the legacy write must not run in its place.
     if (isDoorError(kernel)) return doorFailure(kernel);
     if (kernel.handled) return kernelAnswer(kernel.result, worker.prNumber, ok);
@@ -323,6 +323,8 @@ export async function recordPrAbandonment(params: {
   recordedBy: string;
   /** Who decided: `human:<userId>` for a person; anything else is refused. */
   actor: string;
+  /** Who the kernel command is for, as the door authenticated them (see `recordPrSupersession`). */
+  caller?: import('@/lib/workflow/kernel-client').KernelCaller;
 }): Promise<SimpleWriteResult> {
   const reason = params.reason?.trim();
   if (!reason) return { ok: false, error: 'A reason is required to mark a PR abandoned', status: 400 };
@@ -343,11 +345,11 @@ export async function recordPrAbandonment(params: {
   const repo = repoFullNameFromPrUrl(worker.prUrl);
   const installationId = repo ? await installationIdForRepo(repo).catch(() => null) : null;
   if (repo && worker.prNumber && worker.workspaceId && installationId) {
-    const { abandonDelivery, isDoorError } = await import('@/lib/workflow/kernel-client');
+    const { abandonDelivery, isDoorError, kernelPrincipalOf } = await import('@/lib/workflow/kernel-client');
     const kernel = await abandonDelivery({
       workspaceId: worker.workspaceId, repoFullName: repo, prNumber: worker.prNumber, installationId,
       actor: params.actor, reason,
-    }).catch((err: unknown) => (isDoorError(err) ? err : Promise.reject(err)));
+    }, params.caller ? { principal: kernelPrincipalOf(params.caller) } : undefined).catch((err: unknown) => (isDoorError(err) ? err : Promise.reject(err)));
     if (isDoorError(kernel)) return doorFailure(kernel);
     if (kernel.handled) return kernelAnswer(kernel.result, worker.prNumber, { ok: true as const });
   }

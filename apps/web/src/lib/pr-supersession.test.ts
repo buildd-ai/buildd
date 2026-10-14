@@ -253,7 +253,7 @@ describe('cut over to the control plane (workflow-kernel-library §3)', () => {
     const { cutOver } = await import('@/lib/workflow/testing/cut-over');
     cp = cutOver();
     workerRow = closedWorker({ workspaceId: 'ws-1' });
-    const s = await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 9, reason: 'moved', recordedBy: 'me@example.com', principal: { kind: 'user', id: USER }, actor: `human:${USER}` });
+    const s = await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 9, reason: 'moved', recordedBy: 'me@example.com', caller: { person: USER }, actor: `human:${USER}` });
     expect(s).toMatchObject({ ok: false, status: 503, door: { body: { code: 'control_plane_unavailable', retryable: true, controlPlane: true, idempotencyKey: expect.stringMatching(/^record_supersession:/) }, headers: { 'Retry-After': '5' } } });
     const a = await recordPrAbandonment({ workerId: 'w-1', reason: 'plan changed', recordedBy: 'me@example.com', actor: `human:${USER}` });
     expect(a).toMatchObject({ ok: false, status: 503, door: { body: { code: 'control_plane_unavailable', retryable: true, controlPlane: true, idempotencyKey: expect.stringMatching(/^abandon:/) } } });
@@ -266,7 +266,7 @@ describe('cut over to the control plane (workflow-kernel-library §3)', () => {
     const { cutOver, refusedByControlPlane } = await import('@/lib/workflow/testing/cut-over');
     cp = cutOver({ reply: refusedByControlPlane });
     workerRow = closedWorker({ workspaceId: 'ws-1' });
-    const s = await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 9, reason: 'moved', recordedBy: 'me@example.com', principal: { kind: 'account', id: ACCOUNT } });
+    const s = await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 9, reason: 'moved', recordedBy: 'me@example.com', caller: { account: { id: ACCOUNT } } });
     expect(s).toMatchObject({ ok: false, status: 403, door: { body: { code: 'control_plane_refused' } } });
     expect(updates).toHaveLength(0);
   });
@@ -276,12 +276,17 @@ describe('cut over to the control plane (workflow-kernel-library §3)', () => {
     const ok = () => Response.json({ v: 1, op: 'record_supersession', idempotencyKey: 'k', result: { handled: true, deliveryId: 'd1', result: { result: 'applied', transitionId: 't', deliveryId: 'd1', version: 8, decision: {} } }, delivery: null, host: 'control-plane', replayed: false });
     cp = cutOver({ reply: ok });
     workerRow = closedWorker({ workspaceId: 'ws-1' });
-    await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 9, reason: 'moved', recordedBy: 'me@example.com', principal: { kind: 'user', id: USER }, actor: `human:${USER}` });
-    await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 9, reason: 'moved', recordedBy: 'runner-key', principal: { kind: 'account', id: ACCOUNT } });
+    await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 9, reason: 'moved', recordedBy: 'me@example.com', caller: { person: USER }, actor: `human:${USER}` });
+    await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 9, reason: 'moved', recordedBy: 'runner-key', caller: { account: { id: ACCOUNT } } });
+    // A grant session, with or without a person behind it, goes as its grant: the control plane confines it the same way.
+    await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 9, reason: 'moved', recordedBy: 'me@example.com', caller: { person: USER, account: { id: ACCOUNT, oauthGrantId: 'g-1', grantScopes: ['read', 'write'], workspaceIds: ['ws-1'] } }, actor: `human:${USER}` });
+    await recordPrAbandonment({ workerId: 'w-1', reason: 'plan changed', recordedBy: 'me@example.com', caller: { person: USER, account: { id: ACCOUNT, oauthGrantId: 'g-1', grantScopes: ['read', 'write'], workspaceIds: ['ws-1'] } }, actor: `human:${USER}` });
     const sent = cp.calls.map((c) => ({ principal: c.body?.principal, actor: c.body?.input?.actor }));
     expect(sent).toEqual([
       { principal: { kind: 'user', id: USER }, actor: `human:${USER}` },
-      { principal: { kind: 'account', id: ACCOUNT }, actor: 'runner-key' },
+      { principal: { kind: 'account', id: ACCOUNT, grant: null }, actor: 'runner-key' },
+      { principal: { kind: 'grant', id: ACCOUNT, grantId: 'g-1', workspaceIds: ['ws-1'], scopes: ['read', 'write'], userId: USER }, actor: `human:${USER}` },
+      { principal: { kind: 'grant', id: ACCOUNT, grantId: 'g-1', workspaceIds: ['ws-1'], scopes: ['read', 'write'], userId: USER }, actor: `human:${USER}` },
     ]);
     expect(JSON.stringify(sent)).not.toContain('me@example.com');
   });

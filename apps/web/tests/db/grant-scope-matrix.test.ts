@@ -35,7 +35,9 @@ const grants = await import('../../src/lib/mcp-grants');
 const tokens = await import('../../src/lib/oauth/tokens');
 const storage = await import('../../src/lib/oauth/storage');
 const { authenticateApiKey, authenticateGrantSession, clearAccountCache, GRANT_WORKSPACE_HEADER } = await import('../../src/lib/api-auth');
-const { verifyAccountWorkspaceAccess } = await import('../../src/lib/team-access');
+const { verifyAccountWorkspaceAccess, verifyWorkspaceAccess } = await import('../../src/lib/team-access');
+const { principalReaches } = await import('../../src/lib/workflow/command-api');
+const { kernelPrincipalOf } = await import('../../src/lib/workflow/kernel-principal');
 const { listReachableWorkspaceIds, resolveWorkspaceAccess } = await import('../../src/lib/workspace-access');
 const { resolveWorkerByPrNumber } = await import('../../src/lib/pr-resolve');
 const { canActOnWorkerPr } = await import('../../src/lib/worker-pr-access');
@@ -178,6 +180,73 @@ describe('restricted-mode reach: grant ∩ membership, not the shared account\'s
     const acct = await session(s);
     expect(await verifyAccountWorkspaceAccess(acct, s.granted)).toBe(true);
     expect(await verifyAccountWorkspaceAccess(acct, s.granted, 'canCreate')).toBe(false);
+  });
+});
+
+describe('the control plane gives the same workspace answer as the web host', () => {
+  // The web door judges the session object; the control plane gets only the principal the door
+  // submits (kernelPrincipalOf) and must reach the same verdict on every workspace.
+  test('a grant session: its restricted granted workspace yes; an open sibling and the other team no', async () => {
+    const s = await setup();
+    const acct = await session(s);
+    const p = kernelPrincipalOf({ account: acct })!;
+    expect(p.kind).toBe('grant');
+    for (const ws of [s.granted, s.sibling, s.foreign]) {
+      expect(await principalReaches(p, ws)).toBe(await verifyAccountWorkspaceAccess(acct, ws));
+    }
+    expect(await principalReaches(p, s.granted)).toBe(true);
+    // The shared account would have reached the open sibling: the grant is what refuses it.
+    expect(await verifyAccountWorkspaceAccess(s.accountA, s.sibling)).toBe(true);
+    expect(await principalReaches(p, s.sibling)).toBe(false);
+  });
+
+  test('a grant session with a person behind it is still judged by its grant, not by the person\'s memberships', async () => {
+    const s = await setup();
+    const acct = await session(s);
+    const p = kernelPrincipalOf({ account: acct, person: s.userId })!;
+    expect(p.kind).toBe('grant');
+    // The person is an owner of both teams, so membership alone would reach all three.
+    for (const ws of [s.sibling, s.foreign]) expect(!!(await verifyWorkspaceAccess(s.userId, ws))).toBe(true);
+    for (const ws of [s.granted, s.sibling, s.foreign]) {
+      expect(await principalReaches(p, ws)).toBe(await verifyAccountWorkspaceAccess(acct, ws));
+    }
+  });
+
+  test('a grant spanning two workspaces, bound to one: only the bound one, as on the web host', async () => {
+    const s = await setup({ extraGranted: true });
+    const acct = await session(s, s.granted);
+    const p = kernelPrincipalOf({ account: acct })!;
+    for (const ws of [s.granted, s.second!, s.sibling]) {
+      expect(await principalReaches(p, ws)).toBe(await verifyAccountWorkspaceAccess(acct, ws));
+    }
+    expect(await principalReaches(p, s.second!)).toBe(false);
+  });
+
+  test('a plain bld_ key: restricted without a link no, open in its own team yes, linked yes', async () => {
+    const s = await setup();
+    const k = await apiKey(s.teamA);
+    const acct = (await authenticateApiKey(k.key, new NextRequest('http://localhost/api/tasks')))!;
+    const p = kernelPrincipalOf({ account: acct })!;
+    expect(p).toEqual({ kind: 'account', id: k.id, grant: null });
+    for (const ws of [s.granted, s.sibling, s.foreign]) {
+      expect(await principalReaches(p, ws)).toBe(await verifyAccountWorkspaceAccess(acct, ws));
+    }
+    expect(await principalReaches(p, s.granted)).toBe(false);
+    expect(await principalReaches(p, s.sibling)).toBe(true);
+    await q(sql`INSERT INTO account_workspaces (account_id, workspace_id) VALUES (${k.id}::uuid, ${s.granted}::uuid)`);
+    expect(await principalReaches(p, s.granted)).toBe(await verifyAccountWorkspaceAccess(acct, s.granted));
+    expect(await principalReaches(p, s.granted)).toBe(true);
+  });
+
+  test('an older host\'s unmarked account principal: refused for the team\'s shared session account, unchanged for a key', async () => {
+    const s = await setup();
+    // The shared account a grant session acts as: an unmarked principal may be a grant session.
+    expect(await principalReaches({ kind: 'account', id: s.accountA }, s.sibling)).toBe(false);
+    // Marked as not a grant (a newer host), it is judged on its row like any account.
+    expect(await principalReaches({ kind: 'account', id: s.accountA, grant: null }, s.sibling)).toBe(true);
+    const k = await apiKey(s.teamA);
+    expect(await principalReaches({ kind: 'account', id: k.id }, s.sibling)).toBe(true);
+    expect(await principalReaches({ kind: 'account', id: k.id }, s.granted)).toBe(false);
   });
 });
 

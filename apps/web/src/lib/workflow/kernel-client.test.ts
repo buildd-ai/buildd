@@ -288,12 +288,56 @@ describe('the client and the endpoint agree', () => {
 });
 
 describe('the doors\' functions', () => {
-  it('read the principal off the actor: a person by id, anything else a named system principal', async () => {
+  it('read the principal off the actor: a person by id, buildd\'s own actors the system, an agent run or a malformed person nothing', async () => {
     const { principalOfActor } = await import('./kernel-client');
     expect(principalOfActor(`human:${USER}`)).toEqual({ kind: 'user', id: USER });
-    expect(principalOfActor('human:not-a-uuid')).toEqual({ kind: 'system', id: 'human:not-a-uuid' });
-    expect(principalOfActor('agent:w-1')).toEqual({ kind: 'system', id: 'agent:w-1' });
+    expect(principalOfActor('system:auto_merge')).toEqual({ kind: 'system', id: 'system:auto_merge' });
+    expect(principalOfActor('rule:escalation_gate')).toEqual({ kind: 'system', id: 'rule:escalation_gate' });
+    expect(principalOfActor('buildd:recovery')).toEqual({ kind: 'system', id: 'buildd:recovery' });
     expect(principalOfActor(undefined)).toEqual({ kind: 'system', id: 'system:door' });
+    // Never the system: an agent run, a person with no valid id, a free-text label.
+    for (const a of ['agent:w-1', 'human:not-a-uuid', 'human:unknown', 'my-api-key', '']) expect(principalOfActor(a)).toBeNull();
+  });
+
+  it('a door names its authenticated caller: a grant session as its grant, whoever is behind it', async () => {
+    const { kernelPrincipalOf } = await import('./kernel-client');
+    const ACCT = '44444444-4444-4444-8444-444444444444';
+    const grant = { id: ACCT, oauthGrantId: 'g-1', grantScopes: ['read', 'write'], workspaceIds: [WS] };
+    const asGrant = { kind: 'grant', id: ACCT, grantId: 'g-1', workspaceIds: [WS], scopes: ['read', 'write'] };
+    expect(kernelPrincipalOf({ account: grant })).toEqual(asGrant);
+    expect(kernelPrincipalOf({ account: grant, person: USER })).toEqual({ ...asGrant, userId: USER });
+    // A grant with no list reaches nothing, and says so.
+    expect(kernelPrincipalOf({ account: { ...grant, workspaceIds: null } })).toMatchObject({ kind: 'grant', workspaceIds: [] });
+    expect(kernelPrincipalOf({ person: USER, account: { id: ACCT, oauthGrantId: null } })).toEqual({ kind: 'user', id: USER });
+    expect(kernelPrincipalOf({ account: { id: ACCT } })).toEqual({ kind: 'account', id: ACCT, grant: null });
+    expect(kernelPrincipalOf({ person: USER })).toEqual({ kind: 'user', id: USER });
+    expect(kernelPrincipalOf({})).toBeNull();
+  });
+
+  it('a command with no principal is never sent to the control plane: refused, nothing applied anywhere', async () => {
+    const l = local();
+    let sent = 0;
+    const err = await submitKernelCommand('land', { ...input, actor: 'agent:w-1' }, {
+      principal: null,
+      deps: { ...l.deps, env: OWN, fetch: (async () => { sent++; return answer(); }) as unknown as typeof fetch },
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(KernelCommandRefusedError);
+    expect(err.body.code).toBe('no_principal');
+    expect([sent, l.ran]).toEqual([0, []]);
+  });
+
+  it('an agent-run door with no principal of its own fails closed instead of submitting as the system', async () => {
+    const { landThroughKernel } = await import('./kernel-client');
+    const l = local();
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchSpy = (async (_u: string, init: RequestInit) => { bodies.push(JSON.parse(String(init.body))); return answer(); }) as unknown as typeof fetch;
+    const err = await landThroughKernel({ ...input, actor: 'agent:w-1' } as never, { deps: { ...l.deps, env: OWN, fetch: fetchSpy } }).catch((e) => e);
+    expect(err).toBeInstanceOf(KernelCommandRefusedError);
+    expect(bodies).toEqual([]);
+    // In shadow the web host runs it itself, as before: the principal is the control plane's check only.
+    const shadow = local();
+    await landThroughKernel({ ...input, actor: 'agent:w-1' } as never, { deps: { ...shadow.deps, env: {} } });
+    expect(shadow.ran).toEqual(['land']);
   });
 
   it('a door\'s Idempotency-Key header is the command\'s key when it is well formed', async () => {

@@ -27,6 +27,7 @@
  */
 import { signRequest, signingKey } from '@buildd/dispatch-contract';
 import { kernelHost, type KernelHost } from './kernel-host';
+import { principalOfActor } from './kernel-principal';
 import {
   COMMAND_API_VERSION, COMMAND_PATH, commandKeyRing, commandsConfigured, deliveryAfter, executionModeOf, runKernelOp,
   type CommandAnswer, type CommandRequest, type DeliveryVersion, type KernelOp, type KernelOps, type KernelPrincipal,
@@ -195,7 +196,8 @@ export async function hostsKernelHere(deps: ClientDeps = {}): Promise<boolean> {
 // ── Submitting ──────────────────────────────────────────────────────────────
 
 export interface SubmitOptions {
-  principal: KernelPrincipal;
+  /** Null: no principal was named. The command may run on this host, but is never sent to the control plane. */
+  principal: KernelPrincipal | null;
   /** The caller's key; the same key on a retry gets the same answer. Absent: one is made for this call. */
   idempotencyKey?: string;
   /** Overall budget for reaching the control plane, retries included. */
@@ -252,6 +254,8 @@ async function runHere<K extends KernelOp>(op: K, input: KernelOps[K]['input'], 
 }
 
 async function submitRemote<K extends KernelOp>(op: K, input: KernelOps[K]['input'], opts: SubmitOptions & { idempotencyKey: string }, deps: ClientDeps): Promise<KernelAnswer<K>> {
+  // Fail closed: a command the control plane cannot re-check for someone is not sent as the system.
+  if (!opts.principal) throw new KernelCommandRefusedError(403, { code: 'no_principal', error: 'the door named no principal for this command' });
   const env = deps.env ?? process.env;
   const key = signingKey(commandKeyRing(env));
   if (!key) throw new ControlPlaneUnavailableError('no command key is configured on the web host', 'not_applied', opts.idempotencyKey);
@@ -324,25 +328,18 @@ async function submitRemote<K extends KernelOp>(op: K, input: KernelOps[K]['inpu
 // The seam's door functions, same names and inputs, run where the kernel is
 // hosted. A door imports these, never the seam's own (the S3a block of
 // packages/core/__tests__/workflow-write-sites.test.ts fails on a door that does). `door` names who the command is for; absent, the
-// principal is read off the input's actor: `human:<user id>` is that person,
-// anything else (`agent:…`, `system:…`, `rule:…`) a system principal named by it.
+// principal is read off the input's actor (`principalOfActor`): `human:<user id>` is that person,
+// buildd's own actors (`system:…`, `rule:…`, `buildd:…`) the system, and an agent run nothing, so
+// a door an agent or API caller reaches passes `kernelPrincipalOf` its authenticated caller.
 
 export interface DoorCall {
-  principal?: KernelPrincipal;
+  principal?: KernelPrincipal | null;
   /** The caller's key (an `Idempotency-Key` header); absent, one is made for this call. */
   idempotencyKey?: string;
   deps?: ClientDeps;
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/** The principal an actor string names. */
-export function principalOfActor(actor: string | null | undefined): KernelPrincipal {
-  const a = actor ?? 'system:door';
-  const human = /^human:(.+)$/.exec(a);
-  if (human && UUID.test(human[1])) return { kind: 'user', id: human[1] };
-  return { kind: 'system', id: a.slice(0, 200) };
-}
+export { principalOfActor, kernelPrincipalOf, type KernelCaller } from './kernel-principal';
 
 /** How many more times a door submits after an `unknown` outcome, always with the same key. */
 export const DOOR_UNKNOWN_RETRIES = 2;

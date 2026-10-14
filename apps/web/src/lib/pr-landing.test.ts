@@ -385,6 +385,17 @@ describe('landPr — kernel-owned PR (T15/T16)', () => {
     expect(landingEvents()[0].detail.landingOutcome).toBe('merged');
   });
 
+  it("the door's principal reaches the kernel landing, so the control plane re-checks the caller it authenticated", async () => {
+    const seen: any[] = [];
+    const d = { ...deps(), landThroughKernel: async (_i: any, call?: any) => { seen.push(call); return k({ merged: true, outcome: 'merged' }) as any; } };
+    const principal = { kind: 'grant' as const, id: 'a-1', grantId: 'g-1', workspaceIds: ['ws-1'], scopes: ['read', 'write'] };
+    await land({ door: 'merge_pr', actor: { kind: 'agent', workerId: 'w-1' }, principal }, d);
+    expect(seen).toEqual([{ principal }]);
+    // No principal from the door: none is invented here (the client reads the actor).
+    await land({ door: 'sweep', actor: { kind: 'system' } }, d);
+    expect(seen[1]).toBeUndefined();
+  });
+
   it("a person's verdict override reaches the kernel as a recorded override", async () => {
     const { calls, d } = kernelDeps({ merged: true, outcome: 'merged' });
     await land({ door: 'dashboard', actor: { kind: 'human', userId: 'u-1', override: { verdict: true } } }, d);
