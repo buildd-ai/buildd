@@ -7,7 +7,8 @@ import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import {
-  PALETTE_HEX, createPalette, detectColorDepth, detectTheme, hexTo256, stripAnsi, terminalPalette, type PaletteToken,
+  OSC11_QUERY, PALETTE_HEX, createPalette, detectColorDepth, detectTheme, hexTo256, luminance, parseOsc11,
+  queryTerminalBackground, stripAnsi, terminalPalette, themeForBackground, type PaletteToken,
 } from '../../src/terminal-palette';
 
 const TOKENS = Object.keys(PALETTE_HEX.night) as PaletteToken[];
@@ -26,6 +27,122 @@ describe('theme', () => {
   test('BUILDD_THEME wins over COLORFGBG', () => {
     expect(detectTheme({ BUILDD_THEME: 'day' })).toBe('day');
     expect(detectTheme({ BUILDD_THEME: 'night', COLORFGBG: '0;15' })).toBe('night');
+  });
+});
+
+describe('terminal background (OSC 11, R-17)', () => {
+  const WHITE = { r: 1, g: 1, b: 1 };
+  const BLACK = { r: 0, g: 0, b: 0 };
+
+  test('parses rgb:RRRR/GGGG/BBBB ended by BEL or ST', () => {
+    expect(parseOsc11('\x1b]11;rgb:ffff/ffff/ffff\x07')).toEqual(WHITE);
+    expect(parseOsc11('\x1b]11;rgb:0000/0000/0000\x1b\\')).toEqual(BLACK);
+    const vs = parseOsc11('\x1b]11;rgb:1e1e/1e1e/1e1e\x07')!;
+    expect(vs.r).toBeCloseTo(0x1e1e / 0xffff, 5);
+  });
+  test('short hex components scale to the same range', () => {
+    expect(parseOsc11('\x1b]11;rgb:ff/ff/ff\x07')).toEqual(WHITE);
+    expect(parseOsc11('\x1b]11;rgb:f/f/f\x07')).toEqual(WHITE);
+  });
+  test('anything else is no answer', () => {
+    expect(parseOsc11('')).toBeNull();
+    expect(parseOsc11('\x1b]11;rgb:ffff/ffff\x07')).toBeNull();
+    expect(parseOsc11('\x1b]10;rgb:ffff/ffff/ffff\x07')).toBeNull();
+    expect(parseOsc11('\x1b]11;rgb:ffff/ffff/ffff')).toBeNull(); // not terminated yet
+  });
+  test('luminance decides the theme', () => {
+    expect(luminance(WHITE)).toBeCloseTo(1, 5);
+    expect(luminance(BLACK)).toBe(0);
+    expect(themeForBackground(WHITE)).toBe('day');
+    expect(themeForBackground({ r: 0.95, g: 0.94, b: 0.92 })).toBe('day');
+    expect(themeForBackground({ r: 0.12, g: 0.12, b: 0.12 })).toBe('night');
+  });
+  test('order: BUILDD_THEME, then the terminal answer, then COLORFGBG, then night', () => {
+    expect(detectTheme({}, WHITE)).toBe('day');
+    expect(detectTheme({ COLORFGBG: '15;0' }, WHITE)).toBe('day');
+    expect(detectTheme({ COLORFGBG: '0;15' }, BLACK)).toBe('night');
+    expect(detectTheme({ BUILDD_THEME: 'night' }, WHITE)).toBe('night');
+    expect(detectTheme({ COLORFGBG: '0;15' }, null)).toBe('day');
+    expect(detectTheme({}, null)).toBe('night');
+  });
+
+  function fakeTerminal(reply: ((write: string, emit: (d: string) => void) => void) | null) {
+    const listeners = new Set<(d: string) => void>();
+    const emit = (d: string) => { for (const l of [...listeners]) l(d); };
+    const writes: string[] = [];
+    const raw: boolean[] = [];
+    return {
+      writes, raw, listeners,
+      stdin: {
+        isTTY: true,
+        isRaw: false,
+        setRawMode(on: boolean) { raw.push(on); this.isRaw = on; },
+        on(_e: 'data', cb: (d: string) => void) { listeners.add(cb); },
+        off(_e: 'data', cb: (d: string) => void) { listeners.delete(cb); },
+        resume() {}, pause() {},
+      },
+      stdout: { isTTY: true, write(s: string) { writes.push(s); reply?.(s, emit); return true; } },
+    };
+  }
+
+  test('asks the terminal and reads a white background', async () => {
+    const t = fakeTerminal((w, emit) => { if (w === OSC11_QUERY) setTimeout(() => emit('\x1b]11;rgb:ffff/ffff/ffff\x07'), 5); });
+    const r = await queryTerminalBackground(t, 150);
+    expect(t.writes).toEqual([OSC11_QUERY]);
+    expect(r.background).toEqual(WHITE);
+    expect(r.rest).toBe('');
+    expect(t.listeners.size).toBe(0);
+  });
+
+  test('a reply split across chunks still parses, and typed keys around it are kept', async () => {
+    const t = fakeTerminal((w, emit) => {
+      if (w !== OSC11_QUERY) return;
+      setTimeout(() => { emit('j\x1b]11;rgb:00'); emit('00/0000/0000\x1b\\'); }, 5);
+    });
+    const r = await queryTerminalBackground(t, 150);
+    expect(r.background).toEqual(BLACK);
+    expect(r.rest).toBe('j');
+  });
+
+  test('no answer gives up after the timeout and never blocks longer', async () => {
+    const t = fakeTerminal(null);
+    const start = Date.now();
+    const r = await queryTerminalBackground(t, 40);
+    expect(Date.now() - start).toBeLessThan(400);
+    expect(r.background).toBeNull();
+    expect(t.listeners.size).toBe(0);
+  });
+
+  test('a terminal that is not a TTY is never asked', async () => {
+    const t = fakeTerminal(null);
+    (t.stdin as any).isTTY = false;
+    const r = await queryTerminalBackground(t, 40);
+    expect(t.writes).toEqual([]);
+    expect(r.background).toBeNull();
+  });
+});
+
+describe('primary text is the terminal default foreground (R-17, AC-6)', () => {
+  test('text never carries a palette colour', () => {
+    for (const theme of ['night', 'day'] as const) {
+      for (const depth of ['truecolor', '256'] as const) {
+        const p = createPalette(theme, depth);
+        expect(p.fgCode('text')).toBe('\x1b[39m');
+        expect(p.fg('text', 'title')).not.toMatch(/\x1b\[38;/);
+      }
+    }
+  });
+  test('meta and glyphs keep their palette colours', () => {
+    expect(createPalette('night', 'truecolor').fgCode('muted')).toMatch(/^\x1b\[38;2;/);
+    expect(createPalette('day', 'truecolor').fgCode('accent')).toMatch(/^\x1b\[38;2;/);
+  });
+  test('the selected row pairs its own background with the theme text colour', () => {
+    const p = createPalette('night', 'truecolor');
+    expect(p.fgCode('selectedText')).toBe('\x1b[38;2;237;232;226m');
+  });
+  test('terminalPalette takes the terminal answer into account', () => {
+    expect(terminalPalette({}, true, { r: 1, g: 1, b: 1 }).theme).toBe('day');
+    expect(terminalPalette({}, true, null).theme).toBe('night');
   });
 });
 
@@ -85,7 +202,9 @@ describe('startup banner uses the palette', () => {
   const src = readFileSync(join(import.meta.dir, '../../src/index.ts'), 'utf8');
   const banner = src.slice(src.indexOf('// ── Startup banner'), src.indexOf('// Auto-install HTTP MCP'));
   test('no hard-coded truecolor escapes or gradient left', () => {
-    expect(banner).toContain('terminalPalette()');
+    // The banner reads its theme from the environment, never the terminal.
+    expect(banner).toContain('bannerPalette(');
+    expect(banner).toContain('renderBanner(');
     expect(banner).not.toMatch(/38;2;\d+;\d+;\d+m/);
     expect(banner).not.toMatch(/\bA[1-5]\b/);
   });

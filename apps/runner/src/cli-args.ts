@@ -19,7 +19,8 @@ export const RUNNER_USAGE = [
   'Commands:',
   '  buildd                     Start the runner in the foreground',
   '  buildd top                 Watch the runner on this machine and act on its work',
-  '                             (--mission <id> opens on one mission)',
+  '                             (--mission <id> opens on one mission, --workspace <name or id>',
+  '                             on one workspace; w switches workspace, ? shows the keys)',
   '  buildd login [--device]    Sign in and save an API key to ~/.buildd/config.json',
   '  buildd logout              Remove the saved API key',
   '  buildd status              Show whether you are signed in',
@@ -68,28 +69,28 @@ export type CliDecision =
   /** `buildd web`: open the running runner's local web UI (runner-web.ts). */
   | { kind: 'web' }
   | { kind: 'run' }
-  | { kind: 'top'; missionId: string | null }
+  | { kind: 'top'; missionId: string | null; workspace: string | null }
   | { kind: 'unknown'; arg: string };
 
-/** `buildd top [--mission <id>]`: its own small grammar, nothing else is accepted. */
+/** `buildd top [--mission <id>] [--workspace <name or id>]`: its own small grammar, nothing else is accepted. */
 function classifyTop(args: string[]): CliDecision {
-  let missionId: string | null = null;
+  const values: Record<'--mission' | '--workspace', string | null> = { '--mission': null, '--workspace': null };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
-    if (a === '--mission') {
+    const flag = (['--mission', '--workspace'] as const).find(f => a === f || a.startsWith(f + '='));
+    if (!flag) return { kind: 'unknown', arg: a };
+    if (a === flag) {
       const v = args[i + 1];
       if (v === undefined || v.startsWith('-')) return { kind: 'unknown', arg: a };
-      missionId = v;
+      values[flag] = v;
       i++;
       continue;
     }
-    if (a.startsWith('--mission=') && a.length > '--mission='.length) {
-      missionId = a.slice('--mission='.length);
-      continue;
-    }
-    return { kind: 'unknown', arg: a };
+    const v = a.slice(flag.length + 1);
+    if (!v) return { kind: 'unknown', arg: a };
+    values[flag] = v;
   }
-  return { kind: 'top', missionId };
+  return { kind: 'top', missionId: values['--mission'], workspace: values['--workspace'] };
 }
 
 export function classifyCliArgs(argv: string[]): CliDecision {

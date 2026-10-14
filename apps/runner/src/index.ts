@@ -29,7 +29,7 @@ import { emitHeartbeatTick } from './heartbeat-log';
 import { sweepStaleSessionPromptFiles } from './session-prompt-files';
 import { heartbeatState, withClaimHealthCheck } from './claim-budget-signals';
 import { authorizeLocalRequest, escapeHtml, injectLocalToken, isLoopbackAddress, loadOrCreateLocalToken, resolveBindHost } from './local-server-auth';
-import { terminalPalette } from './terminal-palette';
+import { bannerPalette, renderBanner } from './banner';
 import { checkSingleInstance, decideStart, probeRunnerSocket, matchWorkerAction, relayWorkerAction, runnerSocketPath, serveRunnerSocket, type RunnerIdentity, type RunnerSocketServer } from './runner-socket';
 
 const PORT = parseInt(process.env.PORT || '8766');
@@ -182,14 +182,14 @@ function exitAlreadyRunning(decision: { code: number; message: string; stream: '
 }
 
 /** Open `buildd top` on the runner holding the socket, then exit with its code. */
-async function attachTop(missionId: string | null, notice?: string): Promise<never> {
+async function attachTop(missionId: string | null, notice?: string, workspace: string | null = null): Promise<never> {
   const { runTop } = await import('./top/run');
-  process.exit(await runTop({ socketPath: RUNNER_SOCKET, missionId, notice }));
+  process.exit(await runTop({ socketPath: RUNNER_SOCKET, missionId, workspace, notice }));
 }
 
 // `buildd top`: watch the runner already running on this machine. Never starts one.
 if (CLI.kind === 'top') {
-  await attachTop(CLI.missionId);
+  await attachTop(CLI.missionId, undefined, CLI.workspace);
 }
 
 let runnerSocket: RunnerSocketServer | null = null;
@@ -370,11 +370,6 @@ function loadSavedConfig(): SavedConfig {
   return {};
 }
 
-// Create clickable terminal link using OSC 8 escape sequence
-function terminalLink(url: string, text?: string): string {
-  const displayText = text || url;
-  return `\x1b]8;;${url}\x07${displayText}\x1b]8;;\x07`;
-}
 
 // Prompt user for yes/no input
 async function promptYesNo(question: string): Promise<boolean> {
@@ -2758,68 +2753,30 @@ const localUrl = `http://localhost:${PORT}`;
 
 // ── Startup banner ──────────────────────────────────────────────────────────
 
-// Colours come from the shared terminal palette (terminal-palette.ts): the
-// wordmark in the one accent, meta in muted, ok/err in the status tokens.
-// NO_COLOR or a non-TTY drops them all.
-const PAL = terminalPalette();
-// Meta text is muted; --faint is for rules only, never text.
-const DIM = PAL.fgCode('muted');
-const RESET = PAL.reset;
-const BOLD = PAL.depth === 'none' ? '' : '\x1b[1m';
-const AMBER = PAL.fgCode('accent');
-const WARM = PAL.fgCode('muted');
-const GREEN = PAL.fgCode('success');
-const RED = PAL.fgCode('error');
-
-const commitShort = updateState.currentCommit ? updateState.currentCommit.slice(0, 7) : '';
-
-console.log('');
-console.log(`${AMBER}   ██████╗  ██╗   ██╗ ██╗ ██╗     ██████╗  ██████╗ ${RESET}`);
-console.log(`${AMBER}   ██╔══██╗ ██║   ██║ ██║ ██║     ██╔══██╗ ██╔══██╗${RESET}`);
-console.log(`${AMBER}   ██████╔╝ ██║   ██║ ██║ ██║     ██║  ██║ ██║  ██║${RESET}`);
-console.log(`${AMBER}   ██╔══██╗ ██║   ██║ ██║ ██║     ██║  ██║ ██║  ██║${RESET}`);
-console.log(`${AMBER}   ██████╔╝ ╚██████╔╝ ██║ ███████╗██████╔╝ ██████╔╝${RESET}`);
-console.log(`${AMBER}   ╚═════╝   ╚═════╝  ╚═╝ ╚══════╝╚═════╝  ╚═════╝ ${RESET}`);
-console.log('');
-console.log(`   ${WARM}runner${RESET} ${DIM}v${PKG_VERSION}${commitShort ? ` · ${commitShort}` : ''}${RESET}`);
-console.log(`${PAL.fgCode('faint')}   ${'─'.repeat(48)}${RESET}`);
-
-// Status lines
-const modeLabel = DEBUG_MODE ? `${AMBER}debug${RESET}` : `${GREEN}headless${RESET}`;
-const modeHint = DEBUG_MODE ? ` ${DIM}:${PORT}${RESET}` : '';
-console.log(`   ${WARM}mode${RESET}     ${modeLabel}${modeHint}`);
-console.log(`   ${WARM}server${RESET}   ${DIM}${config.builddServer}${RESET}`);
-const keyDisplay = config.apiKey
-  ? `${GREEN}bld_···${config.apiKey.slice(-4)}${RESET}`
-  : `${RED}not set${RESET}`;
-console.log(`   ${WARM}key${RESET}      ${keyDisplay}`);
-if (runnerSocket) {
-  console.log(`   ${WARM}socket${RESET}   ${DIM}${runnerSocket.path}${RESET}`);
-}
-if (DEBUG_MODE) {
-  console.log(`   ${WARM}url${RESET}      ${terminalLink(localUrl)}`);
-  if (config.localUiUrl && config.localUiUrl !== localUrl) {
-    console.log(`   ${WARM}remote${RESET}   ${terminalLink(config.localUiUrl)}`);
-  }
-  console.log(`   ${WARM}bind${RESET}     ${DIM}${BIND_HOST}:${PORT}${RESET}`);
-  if (localToken) {
-    console.log(`   ${WARM}token${RESET}    ${DIM}${localToken.path} (send as X-Buildd-Local-Token for POST/DELETE)${RESET}`);
-  }
-}
-
+// Colours come from the shared terminal palette (terminal-palette.ts), themed
+// from the environment only (BUILDD_THEME, COLORFGBG, else Night). The banner
+// never queries the terminal: a runner started with `buildd &` would be
+// stopped by the shell for touching the TTY. Values are the terminal's own
+// foreground (R-17). NO_COLOR or a non-TTY drops every colour.
+const PAL = bannerPalette();
 const repos = getRepos(); // Use cached, will scan only if no cache
-console.log('');
-console.log(`   ${DIM}${repos.length} repo${repos.length !== 1 ? 's' : ''}${reposLoadedFromCache ? ' · cached' : ''} · ${projectRoots.length} root${projectRoots.length !== 1 ? 's' : ''}${RESET}`);
-
-if (!config.apiKey && !config.serverless) {
-  console.log('');
-  if (DEBUG_MODE) {
-    console.log(`   ${RED}▸${RESET} No API key — visit ${terminalLink(localUrl)} to set up`);
-  } else {
-    console.log(`   ${RED}▸${RESET} Not logged in — run ${BOLD}buildd login${RESET} (or set ${BOLD}BUILDD_API_KEY${RESET}), then start buildd again`);
-  }
-}
-console.log('');
+for (const line of renderBanner({
+  version: PKG_VERSION,
+  commit: updateState.currentCommit ? updateState.currentCommit.slice(0, 7) : '',
+  debug: DEBUG_MODE,
+  port: PORT,
+  server: config.builddServer,
+  apiKey: config.apiKey || '',
+  socketPath: runnerSocket?.path ?? null,
+  localUrl,
+  remoteUrl: config.localUiUrl || null,
+  bindHost: BIND_HOST,
+  tokenPath: localToken?.path ?? null,
+  repos: repos.length,
+  reposCached: reposLoadedFromCache,
+  roots: projectRoots.length,
+  serverless: !!config.serverless,
+}, PAL)) console.log(line);
 
 // Auto-install HTTP MCP for onboarded repos (non-blocking)
 async function autoInstallMcp() {
