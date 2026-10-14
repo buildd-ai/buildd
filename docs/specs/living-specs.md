@@ -1366,10 +1366,12 @@ at any time.
   overwritten. A repo change before confirmation re-imports it as a new
   imported revision. It is placed by the area classifier (R-5 to R-7), shown
   every area with the file's `domain:` and each area's declared `domains` as
-  a hint: a confident answer files it, any other answer leaves it Unfiled
-  with the suggestion recorded and shown. Only when the classifier does not
-  run does the `domain:` map to the area that declares it in `domains`, else
-  to the area whose title slug it is, labelled as that fallback. A file
+  a hint: a confident answer files it. Any other answer files it under the
+  area that declares its `domain:` in `domains`, labelled as filed by domain,
+  because a person made that mapping; with no declaring area it stays
+  Unfiled with the suggestion recorded and shown. When the classifier does
+  not run, the `domain:` maps to the area that declares it, else to the area
+  whose title slug it is, labelled as that fallback. A file
   already in buildd (a native spec that recorded its path as provenance, or
   with its exact title) is reported as existing, never created again; the
   caller may record the path and commit on that spec's metadata instead. A
