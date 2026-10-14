@@ -545,7 +545,9 @@ recorded as such, never as an approval.
 - A merge observed by webhook that no buildd door made is recorded as an
   external merge: `MERGED` with the merger, the head, and
   `merged_over_open_findings` when any were open, plus a fix task against
-  trunk for those findings (§13.13 rule 10). It is never projected as
+  trunk for those findings (§13.13 rule 10): filed only for changes asked of
+  the head that merged (not for an escalation a person resolved by merging,
+  nor a verdict on an older head). It is never projected as
   "approved". `measureMergeAgainstReview` keeps recording the bypass.
   Every buildd door lands a kernel PR through `LANDING`, so "external" is a
   `PrMerged` from any other state. Until S5's findings model, an open finding
@@ -557,8 +559,18 @@ recorded as such, never as an approval.
   `evaluateAutoMergeSafety` with freshness left to T15, and the mission-PR
   hold). `merge_call` reads the PR live first: merged or closed goes to the
   funnel, a moved head is recorded and nothing merges (AC-14), then review,
-  base and rails. A refusal is T16 `gate_refused`: a rail leaves the approval
-  standing (`APPROVED`), the review half is `ESCALATED(landing_needs_human)`.
+  base (a retarget is recorded like a moved head) and rails. A person's door
+  is held to a person's rails (red CI, protected paths); the unattended ones
+  (size cap, migration inspector, semantic hold) apply only to automatic doors.
+  A refusal is T16 `gate_refused`: a rail that clears by waiting (pending CI, a
+  hold) leaves the approval standing (`APPROVED`); a lasting one (protected
+  path, migration, size) and the review half are `ESCALATED(landing_needs_human)`,
+  notified, with the rail named on `buildd/landing`. The status is written only
+  when GitHub does not already show it, and re-checked after writing so the
+  newest version wins across drains.
+- Release doors hold, never fail or throw, when a kernel-owned PR is not landed
+  yet or the control plane does not answer; a PR the kernel does not own never
+  reaches the kernel. A lost GitHub answer is indeterminate, not a refusal.
 - Release doors D7–D10 go through `apps/web/src/lib/release/pinned-merge.ts`
   (or the kernel, for a PR it owns): live read, refuse a head other than the
   verified one (AC-16), `guardReviewVerdict` at that head, GitHub's `sha` pin.
