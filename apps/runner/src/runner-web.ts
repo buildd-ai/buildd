@@ -15,7 +15,7 @@ export type WebProbe =
   | { state: 'live'; httpPort: number | null };
 
 export const WEB_OFF_HINT =
-  'The runner is running without its browser view. To turn it on, run buildd service install --debug (this restarts it), or start it in a terminal with buildd --debug.';
+  'The runner is running without its browser view. To turn it on, run buildd service install --debug (this restarts it).';
 
 const NOT_RUNNING =
   'No buildd runner is running on this machine. Start one with buildd, or keep one running in the background with buildd service install.';

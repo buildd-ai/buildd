@@ -64,7 +64,8 @@ describe('decideWeb', () => {
     expect(d.stderr).toBe(WEB_OFF_HINT);
     expect(WEB_OFF_HINT.split('\n')).toHaveLength(1);
     expect(WEB_OFF_HINT).toContain('buildd service install --debug');
-    expect(WEB_OFF_HINT).toContain('--debug');
+    // One runner per machine: a second `buildd --debug` would be refused, so it is not offered.
+    expect(WEB_OFF_HINT).not.toContain('buildd --debug');
   });
 });
 

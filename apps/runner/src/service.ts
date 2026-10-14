@@ -15,7 +15,7 @@
  * root — the whole point is a per-user service a sandboxed agent account can
  * manage without sudo.
  */
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { homedir } from 'os';
 import { resolveBuilddHome } from './buildd-home';
@@ -227,6 +227,9 @@ export function installService(
   if (platform === 'linux') {
     const unitPath = systemdUnitPath(paths);
     mkdirSync(dirname(unitPath), { recursive: true });
+    // `enable --now` does not restart a unit that is already running, so a
+    // reinstall (e.g. to add --debug) would leave the old process in place.
+    const wasActive = run('systemctl', ['--user', 'is-active', '--quiet', `${paths.unitName}.service`]).exitCode === 0;
     writeFileSync(unitPath, generateSystemdUnit(paths, opts));
     const reload = run('systemctl', ['--user', 'daemon-reload']);
     if (reload.exitCode !== 0) {
@@ -235,6 +238,12 @@ export function installService(
     const enable = run('systemctl', ['--user', 'enable', '--now', `${paths.unitName}.service`]);
     if (enable.exitCode !== 0) {
       return { ok: false, message: `systemctl --user enable failed: ${(enable.stderr || enable.stdout).trim()}` };
+    }
+    if (wasActive) {
+      const restart = run('systemctl', ['--user', 'restart', `${paths.unitName}.service`]);
+      if (restart.exitCode !== 0) {
+        return { ok: false, message: `systemctl --user restart failed: ${(restart.stderr || restart.stdout).trim()}` };
+      }
     }
     return {
       ok: true,
@@ -248,6 +257,26 @@ export function installService(
   }
 
   return { ok: false, message: UNSUPPORTED_PLATFORM_MESSAGE };
+}
+
+/** Whether the installed service runs with --debug, so a plain reinstall keeps it. False when none is installed. */
+export function installedServiceDebug(paths: ServicePaths, platform: ServicePlatform): boolean {
+  const file = platform === 'darwin' ? launchdPlistPath(paths) : platform === 'linux' ? systemdUnitPath(paths) : null;
+  if (!file || !existsSync(file)) return false;
+  const text = readFileSync(file, 'utf-8');
+  return platform === 'darwin'
+    ? text.includes('<string>--debug</string>')
+    : /^ExecStart=.* --debug$/m.test(text);
+}
+
+/** `buildd service install [--debug|--no-debug]`: with neither, keep what the installed service does. */
+export function parseInstallArgs(args: string[], installedDebug: boolean): { debug: boolean } | { error: string } {
+  const unknown = args.find((a) => a !== '--debug' && a !== '--no-debug');
+  if (unknown) return { error: `Unknown argument: ${unknown}` };
+  const on = args.includes('--debug');
+  const off = args.includes('--no-debug');
+  if (on && off) return { error: 'Pass --debug or --no-debug, not both' };
+  return { debug: on ? true : off ? false : installedDebug };
 }
 
 export function uninstallService(
@@ -315,7 +344,8 @@ export function serviceStatus(
 
 const USAGE = [
   'Usage: buildd service <install|uninstall|status|logs>',
-  '  buildd service install --debug   also serve the local web UI (buildd web)',
+  '  buildd service install --debug     also serve the local web UI (buildd web); kept on reinstall',
+  '  buildd service install --no-debug  turn the web UI off again',
 ].join('\n');
 
 async function main(): Promise<void> {
@@ -325,15 +355,14 @@ async function main(): Promise<void> {
 
   switch (sub) {
     case 'install': {
-      const extra = Bun.argv.slice(3);
-      const unknown = extra.find((a) => a !== '--debug');
-      if (unknown) {
-        console.error(`Unknown argument: ${unknown}\n${USAGE}`);
+      const parsed = parseInstallArgs(Bun.argv.slice(3), installedServiceDebug(paths, platform));
+      if ('error' in parsed) {
+        console.error(`${parsed.error}\n${USAGE}`);
         process.exit(64);
       }
       // install.sh prints the watch lines in its own Next block.
       const result = installService(paths, platform, runSync, {
-        debug: extra.includes('--debug'),
+        debug: parsed.debug,
         watchHint: process.env.BUILDD_INSTALLER !== '1',
       });
       console.log(result.message);
