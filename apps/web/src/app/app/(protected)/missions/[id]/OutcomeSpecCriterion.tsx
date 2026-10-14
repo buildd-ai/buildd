@@ -160,7 +160,7 @@ export default function OutcomeSpecCriterion({ missionId, criterion, entry, read
         </form>
       )}
       {!readonly && !pending && (
-        <button type="button" className={ACTION} disabled={saving} data-testid="outcome-spec-remove" onClick={() => { setPending({ kind: 'remove' }); setReason(''); }}>
+        <button type="button" className={`${ACTION} ml-3`} disabled={saving} data-testid="outcome-spec-remove" onClick={() => { setPending({ kind: 'remove' }); setReason(''); }}>
           Remove the outcome spec
         </button>
       )}
