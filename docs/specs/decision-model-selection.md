@@ -70,7 +70,12 @@ and what has to be collected so the choice can be made on evidence.
   shaped the map. The model's derived threshold is the signal that covers the
   most cases. On a tie, confidence or top p is used before margin, and margin
   before calibrated top p. A calibrated top p threshold always carries the
-  map it is read through.
+  map it is read through. That threshold is validated on the cross-fitted
+  values but stored with the map fitted on all graded cases, so the stored
+  pair was never itself checked on held-out cases. The comparison reads top
+  p as the largest label probability, while the live gate reads the chosen
+  label's probability. The two differ only when the chosen label is not the
+  most probable one, and this was already true for plain top p.
 - **Offline challengers, not live parallel calls.** Challengers are scored on
   replays, so the live path makes one call per decision.
 - **Self-optimizing (opt-in per team).** Weekly per team (a daily cron reaches
@@ -83,7 +88,9 @@ and what has to be collected so the choice can be made on evidence.
   wins by at least 5 points on the same cases and its test decision passes.
   Ties keep the current model; a kind with too few graded cases, or whose
   current model was not asked every case, is left alone. A switch stores the
-  winner's measurement (never loosening a stricter one for the same signal)
+  winner's measurement (never loosening a stricter one for the same signal;
+  for calibrated top p, stricter means acting only at a higher top p once
+  each threshold is read through its own map)
   and changes that kind's model only, never the team default. The stored
   measurement names the winner's signal and, for calibrated top p, its
   isotonic map; a calibrated top p result with no usable map has no score.

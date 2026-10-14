@@ -292,12 +292,32 @@ export interface OptimizeOptions {
 const fmt = (n: number) => String(Math.round(n * 1000) / 1000);
 
 /**
+ * The smallest top p in [0, 1] a calibrated threshold acts at: the least p
+ * with calibrate(p, C) >= t, read off the piecewise-linear map exactly. A
+ * threshold the map never reaches (or no usable map) is above 1, the strictest.
+ * Two calibrated rows are compared on this, never on their raw thresholds,
+ * which sit on different maps.
+ */
+export function calibratedCutoff(threshold: number, calibration: Calibration | null | undefined): number {
+  if (!calibration || !isCalibration(calibration)) return Infinity;
+  const { x, y } = calibration;
+  if (y[0] >= threshold) return 0;
+  for (let i = 0; i < x.length - 1; i++) {
+    if (y[i + 1] < threshold) continue;
+    if (x[i + 1] === x[i]) return x[i];
+    return x[i] + ((threshold - y[i]) / (y[i + 1] - y[i])) * (x[i + 1] - x[i]);
+  }
+  return Infinity;
+}
+
+/**
  * What to do with the winner's measurement. Measurements are platform-wide
  * (one row per kind x model, read by every team), so one team's run never
  * revives a retired row (an operator's "this model records only") and never
  * replaces a row in force on another signal: the kind is not switched.
  * A row in force on the same signal that is at least as strict is kept; any
- * other case writes the winner's measurement.
+ * other case writes the winner's measurement. For `calibrated_top_p`, strict
+ * means the top p it acts at (`calibratedCutoff`), not the raw threshold.
  */
 export function measurementPlan(rows: readonly StoredMeasurement[], kind: string, model: string, fingerprint: string, derived: DerivedAt):
   'write' | 'keep' | 'measurement_retired' | 'measurement_other_signal' {
@@ -307,6 +327,10 @@ export function measurementPlan(rows: readonly StoredMeasurement[], kind: string
   if (!existing) return 'write';
   if (existing.labelThresholds) return 'keep';
   if ((existing.confidenceSource ?? 'confidence') !== derived.source) return 'measurement_other_signal';
+  if (derived.source === 'calibrated_top_p') {
+    // Each threshold is read through its own map: compare where they act on top p.
+    return calibratedCutoff(existing.threshold, existing.calibration) >= calibratedCutoff(derived.threshold, derived.calibration) ? 'keep' : 'write';
+  }
   return existing.threshold >= derived.threshold ? 'keep' : 'write';
 }
 
