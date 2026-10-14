@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useOptimisticApprove } from '@/components/useOptimisticApprove';
 import Card from '@/components/ui/Card';
 import Lede from '@/components/ui/Lede';
@@ -20,18 +20,46 @@ import Segmented from '@/components/ui/Segmented';
 import { neighbourGraph } from '@/lib/specs/index-view';
 import SpecFiling from '@/components/SpecFiling';
 import SpecRepoChecks from '@/components/SpecRepoChecks';
+import { useHideAskButton } from '@/lib/ask-button-hidden';
 import type { SpecPageView } from '@/lib/specs/page-view';
 
 type Ok = Extract<SpecPageView, { state: 'ok' }>;
 
-/** The one sentence that says which revision this is and what waits. */
-export function readingLine(v: Pick<Ok, 'reading' | 'waiting' | 'spec'>): string {
+/**
+ * The one sentence that says which revision this is and what waits, or null
+ * when the header already says it all (reading the approved revision with
+ * nothing waiting: "approved at revision N" is right above).
+ */
+export function readingLine(v: Pick<Ok, 'reading' | 'waiting' | 'spec'> & { canApprove?: boolean }): string | null {
   const n = v.reading.revision;
   const approved = v.spec.approvedRevision;
-  const waits = v.waiting && v.waiting !== n ? ` Revision ${v.waiting} is waiting for approval.` : '';
-  if (v.reading.approved) return `You're reading revision ${n}, the approved one.${waits}`;
-  if (approved == null) return `You're reading revision ${n}, a draft. Nothing is approved yet.${waits}`;
-  return `You're reading revision ${n}, which is not approved. Revision ${approved} is in force.${waits}`;
+  const other = v.waiting && v.waiting !== n ? v.waiting : null;
+  const waits = other ? `Revision ${other} waits for ${v.canApprove ? 'your ' : ''}approval.` : '';
+  if (v.reading.approved) return waits || null;
+  if (approved == null) return `Nothing is approved yet.${waits ? ` ${waits}` : ''}`;
+  return `This is revision ${n}. Revision ${approved} is the approved one.${waits ? ` ${waits}` : ''}`;
+}
+
+/** The body without a first heading that only repeats the page title. */
+export function withoutRepeatedTitle(body: string, title: string): string {
+  const m = /^\s*#\s+(.+?)\s*#*\s*(?:\r?\n|$)/.exec(body);
+  if (!m) return body;
+  const norm = (t: string) => t.replace(/[*_`]/g, '').trim().toLowerCase();
+  return norm(m[1]) === norm(title) ? body.slice(m[0].length).replace(/^\s*\n/, '') : body;
+}
+
+/**
+ * Where the page's one primary action sits: inline on a phone, and on desktop
+ * in the bottom-right corner the Ask button otherwise holds, which hides
+ * while this is on screen. The approval is the thing to find; Ask is ⌘K away.
+ */
+function ActionDock({ children }: { children: ReactNode }) {
+  useHideAskButton(true);
+  return (
+    <div className="md:fixed md:bottom-6 md:right-6 md:z-30 md:max-w-sm" data-testid="spec-page-action-dock">
+      {children}
+    </div>
+  );
 }
 
 function Approve({ specId, revision, expectedVersion }: { specId: string; revision: number; expectedVersion: number }) {
@@ -81,10 +109,19 @@ function Compare({ specId, revisions, from, to }: { specId: string; revisions: n
   );
 }
 
+/** A small heading inside Related, so a screen reader can jump between its parts. */
+function Sub({ children }: { children: ReactNode }) {
+  return <h3 className="text-meta font-semibold text-text-secondary">{children}</h3>;
+}
+
 /**
  * One spec (living-specs.md §9): the revision in force rendered, its history,
  * the changes between any two revisions and, for a person who may approve,
  * the waiting revision with one Approve action (§6's route; nothing new).
+ *
+ * Desktop reads as a document with a rail: the text, Related and Comments in
+ * the main column; Revisions and Files beside it. A phone stacks them, the
+ * text first, with jump links to the rest.
  */
 export default function SpecPage({ view }: { view: Ok }) {
   const { spec } = view;
@@ -92,20 +129,24 @@ export default function SpecPage({ view }: { view: Ok }) {
   const numbers = view.revisions.map((r) => r.revision);
   const defaultFrom = spec.approvedRevision && spec.approvedRevision !== spec.headRevision ? spec.approvedRevision : Math.max(1, spec.headRevision - 1);
 
-  const focused = !!(view.review || view.compare);
   const graph = neighbourGraph({ spec, parent: view.parent, siblings: view.siblings ?? [], nearby: view.nearby });
   const hasGraph = !!(graph.parent || graph.siblings.length || graph.neighbours.length);
   const [relatedView, setRelatedView] = useState<'list' | 'graph'>('list');
   // Related renders only when something sits under it: no empty heading.
   const hasRelated = hasGraph || !!view.filing || view.children.length > 0 || !!view.design || view.repoRefs.length > 0;
+  const line = readingLine(view);
+  const reviewLink = view.canApprove && view.waiting && !view.review;
+
   const main = (
     view.review ? (
-      <section className="flex flex-col gap-3" data-testid="spec-page-review-panel">
-        <h2 className="text-body font-semibold text-text-primary">
+      <section className="flex flex-col gap-3" data-testid="spec-page-review-panel" aria-labelledby="spec-review-heading">
+        <h2 id="spec-review-heading" className="text-title font-semibold text-text-primary">
           {view.review.replaces ? `Revision ${view.review.revision} replaces revision ${view.review.replaces}` : `Revision ${view.review.revision} (nothing approved yet)`}
         </h2>
-        {/* The action sits where the reader pressed Review, above the text it approves. */}
-        <Approve specId={spec.id} revision={view.review.revision} expectedVersion={spec.version} />
+        {/* Above the text it approves on a phone; in the Ask corner on desktop. */}
+        <ActionDock>
+          <Approve specId={spec.id} revision={view.review.revision} expectedVersion={spec.version} />
+        </ActionDock>
         <SpecRepoChecks preflight={view.preflight ?? null} />
         <SpecRevisionPanes
           body={view.review.body}
@@ -124,7 +165,7 @@ export default function SpecPage({ view }: { view: Ok }) {
           <Notice tone="warn">{view.compare.error}</Notice>
         ) : (
           <>
-            <h2 className="text-body font-semibold text-text-primary">
+            <h2 className="text-title font-semibold text-text-primary">
               Changes from revision {view.compare.from} to revision {view.compare.to}
             </h2>
             <SpecDiffView hunks={view.compare.hunks} omittedLines={view.compare.omittedLines} />
@@ -132,19 +173,185 @@ export default function SpecPage({ view }: { view: Ok }) {
         )}
       </section>
     ) : (
-      <Card data-testid="spec-page-body">
-        <MarkdownContent content={view.body} images="link" surface="spec" attachments={view.attachmentSources ?? {}} />
+      <Card as="article" className="md:p-8" data-testid="spec-page-body" aria-label={`Revision ${view.reading.revision} of the spec`}>
+        <MarkdownContent content={withoutRepeatedTitle(view.body, spec.title)} images="link" surface="spec" attachments={view.attachmentSources ?? {}} />
       </Card>
     )
   );
 
+  const related = hasRelated ? (
+    <Section title="Related" id="related">
+      {hasGraph ? (
+        <div className="hidden md:block">
+          <Segmented
+            items={[{ value: 'list', label: 'List' }, { value: 'graph', label: 'Graph' }] as const}
+            value={relatedView}
+            onChange={setRelatedView}
+            label="Show related specs as"
+          />
+        </div>
+      ) : null}
+      {hasGraph && relatedView === 'graph' ? (
+        <div className="mt-3 hidden md:block" data-testid="spec-page-graph">
+          <SpecNeighbourGraph graph={graph} />
+        </div>
+      ) : null}
+      {/* The list is the default, and below md the only view: the graph needs the width (R-29). */}
+      <div className={`mt-3 flex flex-col gap-4 ${hasGraph && relatedView === 'graph' ? 'md:hidden' : ''}`} data-testid="spec-page-related-list">
+        {view.parent ? (
+          <p className="text-body text-text-secondary" data-testid="spec-page-parent">
+            Part of <Link href={`/app/specs/${view.parent.id}`} className="text-text-primary underline">{view.parent.title}</Link>
+          </p>
+        ) : null}
+        {view.parent && (view.siblings ?? []).length > 0 ? (
+          <div data-testid="spec-page-siblings">
+            <Sub>Alongside it under {view.parent.title}</Sub>
+            <ul className="mt-1 flex flex-col">
+              {(view.siblings ?? []).map((c) => (
+                <li key={c.id}>
+                  <Link href={`/app/specs/${c.id}`} className="flex min-h-11 items-center text-body text-text-primary underline md:min-h-9 [overflow-wrap:anywhere]">{c.title}</Link>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+        {view.children.length ? (
+          <div data-testid="spec-page-children">
+            <Sub>Under this spec</Sub>
+            <ul className="mt-1 flex flex-col">
+              {view.children.map((c) => (
+                <li key={c.id}>
+                  <Link href={`/app/specs/${c.id}`} className="flex min-h-11 items-center text-body text-text-primary underline md:min-h-9 [overflow-wrap:anywhere]">{c.title}</Link>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+        {view.nearby.length ? (
+          <div data-testid="spec-page-nearby">
+            <Sub>Nearby, from their text and their work</Sub>
+            <ul className="mt-1 flex flex-col">
+              {view.nearby.map((n) => (
+                <li key={n.specId} className="flex min-h-11 flex-col justify-center py-1" data-testid="spec-page-nearby-item" data-kind={n.kind}>
+                  <Link href={`/app/specs/${n.specId}`} className="text-body text-text-primary underline [overflow-wrap:anywhere]">{n.title}</Link>
+                  <span className="text-meta text-text-muted">{n.reason}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+      </div>
+      {view.filing ? <SpecFiling specId={spec.id} filing={view.filing} canAct={view.canComment} /> : null}
+      {view.design ? (
+        <div className="mt-4" data-testid="spec-page-design">
+          <p className="text-body text-text-secondary">
+            Built to the design{' '}
+            {view.design.href
+              ? <a href={view.design.href} className="text-text-primary underline">{view.design.label}</a>
+              : <span className="text-text-primary">{view.design.label}</span>}
+            , version {view.design.version}.
+          </p>
+          {view.design.screens.length ? (
+            <p className="text-meta text-text-secondary">Screens: {view.design.screens.join(', ')}</p>
+          ) : null}
+          {view.design.changedSince ? (
+            <p className="text-body text-status-warning" data-testid="spec-page-design-changed">
+              The design changed since approval: it is at version {view.design.changedSince.current}, and revision {view.reading.revision} was approved with version {view.design.changedSince.pinned}.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+      {view.repoRefs.length ? (
+        <div className="mt-4" data-testid="spec-page-repo-refs">
+          <Sub>Repo specs revision {view.reading.revision} cites</Sub>
+          <ul className="mt-1 flex flex-col font-mono text-meta">
+            {view.repoRefs.map((r) => (
+              <li key={r.path} className="flex min-h-11 items-center [overflow-wrap:anywhere] md:min-h-9">
+                {r.href
+                  ? <a href={r.href} className="underline hover:text-text-primary" rel="noreferrer" target="_blank">{r.path} @ {r.sha}</a>
+                  : <span>{r.path} @ {r.sha}</span>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </Section>
+  ) : null;
+
+  const comments = (
+    <Section title="Comments" id="comments">
+      <SpecComments
+        specId={spec.id}
+        revision={view.reading.revision}
+        comments={view.comments}
+        anchors={view.commentAnchors}
+        canComment={view.canComment}
+        canResolve={view.canComment}
+      />
+    </Section>
+  );
+
+  const revisions = (
+    <Section title="Revisions" id="revisions">
+      {numbers.length > 1 ? <Compare specId={spec.id} revisions={numbers} from={defaultFrom} to={spec.headRevision} /> : null}
+      <ol className="mt-2 flex flex-col divide-y divide-[var(--line-soft)]" data-testid="spec-page-revisions">
+        {view.revisions.map((r) => {
+          const here = r.revision === view.reading.revision && !view.review && !view.compare;
+          return (
+            <li key={r.revision} className="flex flex-col gap-0.5 py-2" data-testid="spec-page-revision" data-revision={r.revision}>
+              <span className="flex flex-wrap items-baseline gap-x-2 text-body text-text-primary">
+                <Link
+                  href={`${base}?revision=${r.revision}`}
+                  aria-current={here ? 'page' : undefined}
+                  className={`inline-flex min-h-11 items-center underline md:min-h-0 ${here ? 'font-semibold' : 'font-medium'}`}
+                >
+                  Revision {r.revision}
+                </Link>
+                {r.revision === spec.approvedRevision ? <span className="text-meta font-medium text-status-success">in force</span> : null}
+                {r.revision === view.waiting ? <span className="text-meta font-medium text-status-warning">waiting</span> : null}
+                <span className="text-meta text-text-muted">
+                  by {r.author === 'person' ? 'a person' : 'an agent'}, {r.createdAgo}
+                </span>
+              </span>
+              {r.changeSummary ? <span className="text-meta text-text-secondary [overflow-wrap:anywhere]">{r.changeSummary}</span> : null}
+              {r.approvedAt ? (
+                <span className="text-meta text-text-muted" data-testid="spec-page-approved-by">
+                  Approved by {r.approvedBy} {r.approvedAgo}
+                </span>
+              ) : null}
+            </li>
+          );
+        })}
+      </ol>
+    </Section>
+  );
+
+  const files = (
+    <Section title="Files" id="files">
+      <SpecAttachments
+        specId={spec.id}
+        revision={view.reading.revision}
+        attachments={view.attachments ?? []}
+        canAttach={view.canComment}
+        isHead={view.reading.isHead}
+      />
+    </Section>
+  );
+
+  const jumps = [
+    hasRelated ? { href: '#related', label: 'Related' } : null,
+    { href: '#comments', label: 'Comments' },
+    { href: '#revisions', label: 'Revisions' },
+    { href: '#files', label: 'Files' },
+  ].filter((j): j is { href: string; label: string } => !!j);
+
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-4 md:pb-24">
       <header className="flex flex-col gap-1">
-        <Link href={`/app/workspaces/${spec.workspaceId}/specs`} className="text-meta text-text-muted hover:text-text-primary">
-          {spec.workspaceName ? `${spec.workspaceName} specs` : 'Specs'}
+        <Link href={`/app/workspaces/${spec.workspaceId}/specs`} className="inline-flex min-h-11 items-center self-start text-meta text-text-muted hover:text-text-primary md:min-h-0">
+          {spec.workspaceName ? `Specs in ${spec.workspaceName}` : 'Specs'}
         </Link>
-        <h1 className="font-voice text-2xl text-text-primary [overflow-wrap:anywhere]" data-testid="spec-page-title">{spec.title}</h1>
+        <h1 className="font-voice text-2xl text-text-primary [overflow-wrap:anywhere] md:text-3xl" data-testid="spec-page-title">{spec.title}</h1>
         <p className="text-meta text-text-muted">{spec.scope} · {view.standing}</p>
         {view.source ? <p className="text-meta text-text-muted [overflow-wrap:anywhere]" data-testid="spec-page-source">{view.source.source}</p> : null}
       </header>
@@ -155,162 +362,33 @@ export default function SpecPage({ view }: { view: Ok }) {
           : <p className="text-meta text-text-muted" data-testid="spec-page-repo-copy">{view.source.copy}</p>
       ) : null}
 
-      <Lede><span data-testid="spec-page-reading">{readingLine(view)}</span></Lede>
+      {line ? <Lede><span data-testid="spec-page-reading">{line}</span></Lede> : null}
 
-      {view.canApprove && view.waiting && !view.review ? (
-        <div>
+      {reviewLink ? (
+        <ActionDock>
           <PrimaryAction href={`${base}?review=1`} fullWidthOnMobile data-testid="spec-page-review">
             Review revision {view.waiting}
           </PrimaryAction>
-        </div>
+        </ActionDock>
       ) : null}
 
-      {focused ? main : null}
+      <nav aria-label="On this page" className="flex flex-wrap gap-x-4 text-meta lg:hidden" data-testid="spec-page-jumps">
+        {jumps.map((j) => (
+          <a key={j.href} href={j.href} className="inline-flex min-h-11 items-center text-text-secondary underline hover:text-text-primary">{j.label}</a>
+        ))}
+      </nav>
 
-      {hasRelated ? <Section title="Related">
-        {hasGraph ? (
-          <div className="hidden md:block">
-            <Segmented
-              items={[{ value: 'list', label: 'List' }, { value: 'graph', label: 'Graph' }] as const}
-              value={relatedView}
-              onChange={setRelatedView}
-              label="Show related specs as"
-            />
-          </div>
-        ) : null}
-        {hasGraph && relatedView === 'graph' ? (
-          <div className="hidden md:block" data-testid="spec-page-graph">
-            <SpecNeighbourGraph graph={graph} />
-          </div>
-        ) : null}
-        {/* The list is the default, and below md the only view: the graph needs the width (R-29). */}
-        <div className={`flex flex-col gap-3 ${hasGraph && relatedView === 'graph' ? 'md:hidden' : ''}`} data-testid="spec-page-related-list">
-          {view.parent ? (
-            <p className="text-body text-text-secondary" data-testid="spec-page-parent">
-              Part of <Link href={`/app/specs/${view.parent.id}`} className="underline hover:text-text-primary">{view.parent.title}</Link>
-            </p>
-          ) : null}
-          {view.parent && (view.siblings ?? []).length > 0 ? (
-            <div data-testid="spec-page-siblings">
-              <p className="text-body text-text-secondary">Alongside it under {view.parent.title}:</p>
-              <ul className="mt-1 flex flex-col">
-                {(view.siblings ?? []).map((c) => (
-                  <li key={c.id}>
-                    <Link href={`/app/specs/${c.id}`} className="flex min-h-11 items-center text-body text-text-primary underline [overflow-wrap:anywhere]">{c.title}</Link>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
-          {view.nearby.length ? (
-            <div data-testid="spec-page-nearby">
-              <p className="text-body text-text-secondary">Nearby specs, found from their text and their work:</p>
-              <ul className="mt-1 flex flex-col">
-                {view.nearby.map((n) => (
-                  <li key={n.specId} className="flex min-h-11 flex-col justify-center py-1" data-testid="spec-page-nearby-item" data-kind={n.kind}>
-                    <Link href={`/app/specs/${n.specId}`} className="text-body text-text-primary underline [overflow-wrap:anywhere]">{n.title}</Link>
-                    <span className="text-meta text-text-muted">{n.reason}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
+      <div className="flex flex-col gap-4 lg:grid lg:grid-cols-[minmax(0,1fr)_20rem] lg:items-start lg:gap-10">
+        <div className="flex min-w-0 flex-col gap-4">
+          {main}
+          {related}
+          {comments}
         </div>
-        {view.filing ? <SpecFiling specId={spec.id} filing={view.filing} canAct={view.canComment} /> : null}
-        {view.children.length ? (
-          <div data-testid="spec-page-children">
-            <p className="text-body text-text-secondary">Specs under this one:</p>
-            <ul className="mt-1 flex flex-col">
-              {view.children.map((c) => (
-                <li key={c.id}>
-                  <Link href={`/app/specs/${c.id}`} className="flex min-h-11 items-center text-body text-text-primary underline">{c.title}</Link>
-                </li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
-        {view.design ? (
-          <div data-testid="spec-page-design">
-            <p className="text-body text-text-secondary">
-              Built to the design{' '}
-              {view.design.href
-                ? <a href={view.design.href} className="text-text-primary underline">{view.design.label}</a>
-                : <span className="text-text-primary">{view.design.label}</span>}
-              , version {view.design.version}.
-            </p>
-            {view.design.screens.length ? (
-              <p className="text-meta text-text-secondary">Screens: {view.design.screens.join(', ')}</p>
-            ) : null}
-            {view.design.changedSince ? (
-              <p className="text-body text-status-warning" data-testid="spec-page-design-changed">
-                The design changed since approval: it is at version {view.design.changedSince.current}, and revision {view.reading.revision} was approved with version {view.design.changedSince.pinned}.
-              </p>
-            ) : null}
-          </div>
-        ) : null}
-        {view.repoRefs.length ? (
-          <div data-testid="spec-page-repo-refs">
-            <p className="text-body text-text-secondary">Repo specs revision {view.reading.revision} cites:</p>
-            <ul className="mt-1 flex flex-col font-mono text-meta">
-              {view.repoRefs.map((r) => (
-                <li key={r.path} className="flex min-h-11 items-center [overflow-wrap:anywhere]">
-                  {r.href
-                    ? <a href={r.href} className="underline hover:text-text-primary" rel="noreferrer" target="_blank">{r.path} @ {r.sha}</a>
-                    : <span>{r.path} @ {r.sha}</span>}
-                </li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
-      </Section> : null}
-
-      <Section title="Files">
-        <SpecAttachments
-          specId={spec.id}
-          revision={view.reading.revision}
-          attachments={view.attachments ?? []}
-          canAttach={view.canComment}
-          isHead={view.reading.isHead}
-        />
-      </Section>
-
-      <Section title="Comments">
-        <SpecComments
-          specId={spec.id}
-          revision={view.reading.revision}
-          comments={view.comments}
-          anchors={view.commentAnchors}
-          canComment={view.canComment}
-          canResolve={view.canComment}
-        />
-      </Section>
-
-      <Section title="Revisions">
-        {numbers.length > 1 ? <Compare specId={spec.id} revisions={numbers} from={defaultFrom} to={spec.headRevision} /> : null}
-        <ul className="mt-2 flex flex-col divide-y divide-[var(--line-soft)]" data-testid="spec-page-revisions">
-          {view.revisions.map((r) => (
-            <li key={r.revision} className="flex flex-col gap-0.5 py-2" data-testid="spec-page-revision" data-revision={r.revision}>
-              <span className="flex flex-wrap items-baseline gap-x-2 text-body text-text-primary">
-                <Link href={`${base}?revision=${r.revision}`} className="inline-flex min-h-11 items-center font-medium underline md:min-h-0">
-                  Revision {r.revision}
-                </Link>
-                <span className="text-meta text-text-muted">
-                  by {r.author === 'person' ? 'a person' : 'an agent'} · {r.createdAgo}
-                </span>
-              </span>
-              {r.changeSummary ? <span className="text-meta text-text-secondary [overflow-wrap:anywhere]">{r.changeSummary}</span> : null}
-              {r.approvedAt ? (
-                <span className="text-meta text-status-success" data-testid="spec-page-approved-by">
-                  Approved by {r.approvedBy} {r.approvedAgo}
-                </span>
-              ) : null}
-            </li>
-          ))}
-        </ul>
-      </Section>
-
-      {/* A long spec would push its history out of reach, so the body reads last. */}
-      {focused ? null : main}
+        <aside aria-label="Revisions and files" className="flex min-w-0 flex-col lg:border-l lg:border-[var(--line-soft)] lg:pl-6">
+          {revisions}
+          {files}
+        </aside>
+      </div>
     </div>
   );
 }
