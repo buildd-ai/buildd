@@ -24,7 +24,7 @@ exports[`list view 80x24 1`] = `
                       │                                                         
                       │                                                         
 ────────────────────────────────────────────────────────────────────────────────
- ↑↓ move ⏎ open a answer m message p pause x stop c claim o web / filter q quit "
+ ↑↓ move a answer m message p pause x stop c claim w workspace ? help q quit    "
 `;
 
 exports[`list view 120x40 1`] = `
@@ -67,24 +67,24 @@ exports[`list view 120x40 1`] = `
                             │                                                                                           
                             │                                                                                           
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- ↑↓ move  ⏎ open  a answer  m message  p pause  x stop  c claim  o web  / filter  q quit                                "
+ ↑↓ move  ⏎ open  a answer  m message  p pause  x stop  c claim  o web  w workspace  / filter  ? help  q quit           "
 `;
 
 exports[`list view 80x24 in colour (night, truecolor) keeps the same text 1`] = `
 " \x1B[38;2;245;155;78mbuildd\x1B[39m\x1B[38;2;168;159;150m · laptop-1234\x1B[39m                   \x1B[38;2;168;159;150m2 of 3 slots busy · \x1B[39m\x1B[38;2;245;155;78m● online\x1B[39m\x1B[38;2;168;159;150m · v0.340.0 \x1B[39m
 \x1B[38;2;122;114;105m────────────────────────────────────────────────────────────────────────────────\x1B[39m
-\x1B[38;2;168;159;150m MISSIONS             \x1B[39m\x1B[38;2;122;114;105m│\x1B[39m \x1B[38;2;237;232;226mRunner TUI                        \x1B[39m\x1B[38;2;245;155;78m3 running · 3 waiting \x1B[39m
- \x1B[38;2;245;155;78m▸\x1B[39m \x1B[38;2;237;232;226mRunner TUI    \x1B[39m \x1B[38;2;245;155;78m2/8\x1B[39m \x1B[38;2;122;114;105m│\x1B[39m\x1B[38;2;122;114;105m─────────────────────────────────────────────────────────\x1B[39m
- \x1B[38;2;122;114;105m \x1B[39m \x1B[38;2;237;232;226mSpecs import  \x1B[39m \x1B[38;2;168;159;150m1/2\x1B[39m \x1B[38;2;122;114;105m│\x1B[39m\x1B[38;2;168;159;150m RUNNING                                                 \x1B[39m
- \x1B[38;2;122;114;105m \x1B[39m \x1B[38;2;237;232;226m(no mission)  \x1B[39m \x1B[38;2;168;159;150m0/1\x1B[39m \x1B[38;2;122;114;105m│\x1B[39m\x1B[48;2;47;44;40m\x1B[38;2;245;155;78m›\x1B[39m\x1B[38;2;245;155;78m●\x1B[39m \x1B[38;2;237;232;226mname override    \x1B[39m\x1B[38;2;168;159;150mBuilder   \x1B[39m\x1B[38;2;168;159;150m  12m \x1B[39m\x1B[38;2;237;232;226mEdit config.ts       \x1B[39m\x1B[38;2;168;159;150m\x1B[39m\x1B[49m
-                      \x1B[38;2;122;114;105m│\x1B[39m \x1B[38;2;245;155;78m?\x1B[39m \x1B[38;2;237;232;226minstaller hint   \x1B[39m\x1B[38;2;168;159;150mBuilder   \x1B[39m\x1B[38;2;168;159;150m   9m \x1B[39m\x1B[38;2;237;232;226masks: "Print the URL…\x1B[39m\x1B[38;2;168;159;150m\x1B[39m
-                      \x1B[38;2;122;114;105m│\x1B[39m \x1B[38;2;245;155;78m●\x1B[39m \x1B[38;2;237;232;226msingle instance  \x1B[39m\x1B[38;2;168;159;150mBuilder   \x1B[39m\x1B[38;2;168;159;150m   4m \x1B[39m\x1B[38;2;237;232;226mbun run test __tests…\x1B[39m\x1B[38;2;168;159;150m\x1B[39m
+\x1B[38;2;168;159;150m MISSIONS             \x1B[39m\x1B[38;2;122;114;105m│\x1B[39m \x1B[39mRunner TUI                        \x1B[39m\x1B[38;2;245;155;78m3 running · 3 waiting \x1B[39m
+ \x1B[38;2;245;155;78m▸\x1B[39m \x1B[39mRunner TUI    \x1B[39m \x1B[38;2;245;155;78m2/8\x1B[39m \x1B[38;2;122;114;105m│\x1B[39m\x1B[38;2;122;114;105m─────────────────────────────────────────────────────────\x1B[39m
+ \x1B[38;2;122;114;105m \x1B[39m \x1B[39mSpecs import  \x1B[39m \x1B[38;2;168;159;150m1/2\x1B[39m \x1B[38;2;122;114;105m│\x1B[39m\x1B[38;2;168;159;150m RUNNING                                                 \x1B[39m
+ \x1B[38;2;122;114;105m \x1B[39m \x1B[39m(no mission)  \x1B[39m \x1B[38;2;168;159;150m0/1\x1B[39m \x1B[38;2;122;114;105m│\x1B[39m\x1B[48;2;47;44;40m\x1B[38;2;245;155;78m›\x1B[39m\x1B[38;2;245;155;78m●\x1B[39m \x1B[38;2;237;232;226mname override    \x1B[39m\x1B[38;2;168;159;150mBuilder   \x1B[39m\x1B[38;2;168;159;150m  12m \x1B[39m\x1B[38;2;237;232;226mEdit config.ts       \x1B[39m\x1B[38;2;168;159;150m\x1B[39m\x1B[49m
+                      \x1B[38;2;122;114;105m│\x1B[39m \x1B[38;2;245;155;78m?\x1B[39m \x1B[39minstaller hint   \x1B[39m\x1B[38;2;168;159;150mBuilder   \x1B[39m\x1B[38;2;168;159;150m   9m \x1B[39m\x1B[39masks: "Print the URL…\x1B[39m\x1B[38;2;168;159;150m\x1B[39m
+                      \x1B[38;2;122;114;105m│\x1B[39m \x1B[38;2;245;155;78m●\x1B[39m \x1B[39msingle instance  \x1B[39m\x1B[38;2;168;159;150mBuilder   \x1B[39m\x1B[38;2;168;159;150m   4m \x1B[39m\x1B[39mbun run test __tests…\x1B[39m\x1B[38;2;168;159;150m\x1B[39m
                       \x1B[38;2;122;114;105m│\x1B[39m\x1B[38;2;168;159;150m WAITING                                                 \x1B[39m
-                      \x1B[38;2;122;114;105m│\x1B[39m \x1B[38;2;168;159;150m○\x1B[39m \x1B[38;2;237;232;226mbuildd top       \x1B[39m\x1B[38;2;168;159;150mBuilder   \x1B[39m\x1B[38;2;168;159;150m      \x1B[39m\x1B[38;2;168;159;150mwaits on: name overr…\x1B[39m\x1B[38;2;168;159;150m\x1B[39m
-                      \x1B[38;2;122;114;105m│\x1B[39m \x1B[38;2;168;159;150m○\x1B[39m \x1B[38;2;237;232;226mdocs page        \x1B[39m\x1B[38;2;168;159;150mWriter    \x1B[39m\x1B[38;2;168;159;150m      \x1B[39m\x1B[38;2;168;159;150mstarts in 2h         \x1B[39m\x1B[38;2;168;159;150m\x1B[39m
-                      \x1B[38;2;122;114;105m│\x1B[39m \x1B[38;2;168;159;150m○\x1B[39m \x1B[38;2;237;232;226mheartbeat name   \x1B[39m\x1B[38;2;168;159;150mBuilder   \x1B[39m\x1B[38;2;168;159;150m      \x1B[39m\x1B[38;2;168;159;150manother runner has it\x1B[39m\x1B[38;2;168;159;150m\x1B[39m
+                      \x1B[38;2;122;114;105m│\x1B[39m \x1B[38;2;168;159;150m○\x1B[39m \x1B[39mbuildd top       \x1B[39m\x1B[38;2;168;159;150mBuilder   \x1B[39m\x1B[38;2;168;159;150m      \x1B[39m\x1B[38;2;168;159;150mwaits on: name overr…\x1B[39m\x1B[38;2;168;159;150m\x1B[39m
+                      \x1B[38;2;122;114;105m│\x1B[39m \x1B[38;2;168;159;150m○\x1B[39m \x1B[39mdocs page        \x1B[39m\x1B[38;2;168;159;150mWriter    \x1B[39m\x1B[38;2;168;159;150m      \x1B[39m\x1B[38;2;168;159;150mstarts in 2h         \x1B[39m\x1B[38;2;168;159;150m\x1B[39m
+                      \x1B[38;2;122;114;105m│\x1B[39m \x1B[38;2;168;159;150m○\x1B[39m \x1B[39mheartbeat name   \x1B[39m\x1B[38;2;168;159;150mBuilder   \x1B[39m\x1B[38;2;168;159;150m      \x1B[39m\x1B[38;2;168;159;150manother runner has it\x1B[39m\x1B[38;2;168;159;150m\x1B[39m
                       \x1B[38;2;122;114;105m│\x1B[39m\x1B[38;2;168;159;150m DONE TODAY                                              \x1B[39m
-                      \x1B[38;2;122;114;105m│\x1B[39m \x1B[38;2;134;201;157m✓\x1B[39m \x1B[38;2;237;232;226mspec draft       \x1B[39m\x1B[38;2;168;159;150m          \x1B[39m\x1B[38;2;168;159;150m      \x1B[39m\x1B[38;2;168;159;150mdone                 \x1B[39m\x1B[38;2;168;159;150m\x1B[39m
+                      \x1B[38;2;122;114;105m│\x1B[39m \x1B[38;2;134;201;157m✓\x1B[39m \x1B[39mspec draft       \x1B[39m\x1B[38;2;168;159;150m          \x1B[39m\x1B[38;2;168;159;150m      \x1B[39m\x1B[38;2;168;159;150mdone                 \x1B[39m\x1B[38;2;168;159;150m\x1B[39m
                       \x1B[38;2;122;114;105m│\x1B[39m                                                         
                       \x1B[38;2;122;114;105m│\x1B[39m                                                         
                       \x1B[38;2;122;114;105m│\x1B[39m                                                         
@@ -94,7 +94,7 @@ exports[`list view 80x24 in colour (night, truecolor) keeps the same text 1`] = 
                       \x1B[38;2;122;114;105m│\x1B[39m                                                         
                       \x1B[38;2;122;114;105m│\x1B[39m                                                         
 \x1B[38;2;122;114;105m────────────────────────────────────────────────────────────────────────────────\x1B[39m
-\x1B[38;2;168;159;150m ↑↓ move ⏎ open a answer m message p pause x stop c claim o web / filter q quit \x1B[39m"
+\x1B[38;2;168;159;150m ↑↓ move a answer m message p pause x stop c claim w workspace ? help q quit    \x1B[39m"
 `;
 
 exports[`detail view (R-5) 80x24: plan, milestones, tool calls and the PR link 1`] = `

@@ -12,10 +12,10 @@
  * list. The only timer that fetches is the once-a-minute task list refresh.
  */
 import { hostname as osHostname } from 'os';
-import { terminalPalette, type Palette } from '../terminal-palette';
+import { queryTerminalBackground, terminalPalette, type Palette } from '../terminal-palette';
 import { probeRunnerSocket } from '../runner-socket';
 import { socketClient, type SocketClient } from './client';
-import { actionResultText, handleKey, parseKeys, type Effect } from './keys';
+import { actionResultText, createKeyDecoder, handleKey, type Effect, type Key } from './keys';
 import { renderFrame } from './render';
 import { eventChangesQueue, initialState, reduce, type TopEvent, type TopState } from './state';
 
@@ -26,6 +26,8 @@ export const EXIT_NOT_A_TERMINAL = 64;
 export const TASK_REFRESH_MS = 60_000;
 /** Coalesce a burst of queue events into one refetch. */
 const QUEUE_DEBOUNCE_MS = 250;
+/** How long a lone ESC waits for the rest of a sequence before it counts as the escape key. */
+const ESC_WAIT_MS = 50;
 
 export const ENTER_SCREEN = '\x1b[?1049h\x1b[?25l\x1b[H\x1b[2J';
 export const LEAVE_SCREEN = '\x1b[0m\x1b[?25h\x1b[?1049l';
@@ -42,11 +44,15 @@ export interface TopTerminal {
 export interface RunTopOptions {
   socketPath: string;
   missionId?: string | null;
+  /** `--workspace <name or id>` (R-19). */
+  workspace?: string | null;
   /** Printed above nothing, before the view opens (the R-12 hand-off line). */
   notice?: string;
   terminal?: TopTerminal;
   client?: SocketClient;
+  /** Fixed palette (tests). Without one, the terminal is asked for its background (R-17). */
   palette?: Palette;
+  env?: Record<string, string | undefined>;
   hostname?: string;
   openUrl?: (url: string) => void;
   /** Register process-level exit hooks (off in tests). */
@@ -75,10 +81,10 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
     }
   }
   const client = opts.client ?? socketClient(opts.socketPath);
-  const palette = opts.palette ?? terminalPalette(process.env, true);
   const openUrl = opts.openUrl ?? defaultOpenUrl;
+  let palette: Palette = opts.palette ?? terminalPalette(opts.env ?? process.env, true);
 
-  let state: TopState = initialState({ hostname: opts.hostname ?? osHostname(), missionId: opts.missionId });
+  let state: TopState = initialState({ hostname: opts.hostname ?? osHostname(), missionId: opts.missionId, workspace: opts.workspace });
   if (opts.notice) state = { ...state, status: { text: opts.notice, tone: 'info' } };
   let restored = false;
   let renderTimer: ReturnType<typeof setTimeout> | null = null;
@@ -120,11 +126,13 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
   };
 
   const loadSnapshot = async () => {
-    const [runner, config, workers] = await Promise.all([
+    const [runner, config, workers, workspaces] = await Promise.all([
       client.get('/api/runner').catch(() => null),
       client.get('/api/config').catch(() => null),
       client.get('/api/workers').catch(() => null),
+      client.get('/api/workspaces').catch(() => null),
     ]);
+    if (workspaces?.status === 200 && Array.isArray(workspaces.body?.workspaces)) dispatch({ type: 'workspaces', workspaces: workspaces.body.workspaces });
     if (runner?.body) dispatch({ type: 'runner', pid: runner.body.pid, version: runner.body.version });
     if (config?.body) dispatch({ type: 'config', maxConcurrent: config.body.maxConcurrent, builddServer: config.body.builddServer });
     if (workers?.status === 200 && Array.isArray(workers.body?.workers)) dispatch({ type: 'workers', workers: workers.body.workers });
@@ -153,9 +161,10 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
   // ── effects ─────────────────────────────────────────────────────────────
   const runEffect = async (effect: Effect) => {
     if (effect.type === 'quit') { finish(0); return; }
-    if (effect.type === 'open') {
+    if (effect.type === 'open' || effect.type === 'openRunner') {
       const server = state.runner.builddServer || 'https://buildd.dev';
-      const url = `${server.replace(/\/$/, '')}/app/tasks/${effect.taskId}`;
+      // The runner's page is where its workspaces are set (R-20).
+      const url = `${server.replace(/\/$/, '')}${effect.type === 'open' ? `/app/tasks/${effect.taskId}` : '/app/settings/runners'}`;
       openUrl(url);
       dispatch({ type: 'status', status: { text: `Opened ${url}`, tone: 'ok' } });
       return;
@@ -176,13 +185,23 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
   };
 
   // ── terminal ────────────────────────────────────────────────────────────
-  const onData = (d: Buffer | string) => {
-    for (const key of parseKeys(typeof d === 'string' ? d : d.toString('utf8'))) {
+  // One decoder for the whole session: a terminal reply split across reads
+  // (a late OSC 11 answer) is swallowed whole, never typed as keys.
+  const decoder = createKeyDecoder();
+  let escTimer: ReturnType<typeof setTimeout> | null = null;
+  const applyKeys = (keys: Key[]) => {
+    for (const key of keys) {
       const r = handleKey(state, key, Date.now());
       state = r.state;
       for (const e of r.effects) void runEffect(e);
     }
     scheduleDraw();
+  };
+  const onData = (d: Buffer | string) => {
+    if (escTimer) { clearTimeout(escTimer); escTimer = null; }
+    applyKeys(decoder.feed(typeof d === 'string' ? d : d.toString('utf8')));
+    // A lone ESC is the escape key only once nothing follows it.
+    if (decoder.pendingEscape()) escTimer = setTimeout(() => { escTimer = null; applyKeys(decoder.flush()); }, ESC_WAIT_MS);
   };
   const onResize = () => scheduleDraw();
   const onSignal = () => finish(0);
@@ -198,6 +217,7 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
     for (const t of timers) clearInterval(t);
     if (renderTimer) clearTimeout(renderTimer);
     if (queueTimer) clearTimeout(queueTimer);
+    if (escTimer) clearTimeout(escTimer);
     term.stdin.off?.('data', onData);
     term.stdin.pause?.();
     term.stdout.off?.('resize', onResize);
@@ -215,8 +235,18 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
 
   if (opts.notice) term.stdout.write(opts.notice + '\n');
   term.stdout.write(ENTER_SCREEN);
-  term.stdin.setRawMode?.(true);
   term.stdin.setEncoding?.('utf8');
+  // R-17: ask the terminal for its background before the first frame, at most
+  // 150 ms, so a light terminal with no COLORFGBG (VS Code) gets Day. The reply
+  // is consumed there; keys typed meanwhile, and the start of a reply that came
+  // too late, go through the session decoder below.
+  let typedEarly = '';
+  if (!opts.palette) {
+    const { background, rest } = await queryTerminalBackground(term as any, undefined, { leaveRaw: true });
+    palette = terminalPalette(opts.env ?? process.env, true, background);
+    typedEarly = rest;
+  }
+  term.stdin.setRawMode?.(true);
   term.stdin.on('data', onData);
   term.stdin.resume?.();
   term.stdout.on?.('resize', onResize);
@@ -229,6 +259,7 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
     process.on('exit', restore);
   }
 
+  if (typedEarly) onData(typedEarly);
   scheduleDraw();
   // Elapsed times move without any event; redraw (no fetch) once a second.
   timers.push(setInterval(scheduleDraw, 1_000));
