@@ -218,3 +218,63 @@ describe('deep health', () => {
     expect([res.status, (await res.json() as { ok: boolean }).ok]).toEqual([200, true]);
   });
 });
+
+describe('the kernel command API (workflow-kernel-library.md §3)', () => {
+  const ctx = { waitUntil() {}, passThroughOnException() {} } as never;
+  const OWN_HOST = { EXECUTION_MODE: 'own', CONTROL_PLANE_HOST: 'control-plane.buildd.dev', KERNEL_COMMAND_SECRET: 'k1:s3cret' };
+
+  it('this process is the kernel\'s control-plane host: every transition it applies is tagged so', async () => {
+    const { kernelHost } = await import('@/lib/workflow/kernel-host');
+    expect(kernelHost()).toBe('control-plane');
+  });
+
+  it('POST /v1/commands is served on the Worker\'s own hostname, and refuses an unsigned request before anything runs', async () => {
+    const res = await worker.fetch(new Request('https://control-plane.buildd.dev/v1/commands', { method: 'POST', body: '{}' }), OWN_HOST, ctx);
+    expect(res.status).toBe(401);
+    expect(res.headers.get(SERVED_BY)).toBe('control-plane');
+  });
+
+  it('in shadow it answers not_host, so the web host runs the command and the two never both apply', async () => {
+    const res = await worker.fetch(new Request('https://control-plane.buildd.dev/v1/commands', { method: 'POST', body: '{}' }), { ...OWN_HOST, EXECUTION_MODE: 'shadow' }, ctx);
+    expect([res.status, ((await res.json()) as { code: string }).code]).toEqual([409, 'not_host']);
+  });
+
+  it('is never served on a buildd.dev route: there the path passes through to the web app', async () => {
+    const seen: string[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (r: Request) => { seen.push(new URL(r.url).pathname); return new Response('origin', { status: 404 }); }) as typeof fetch;
+    try {
+      const res = await worker.fetch(new Request('https://buildd.dev/v1/commands', { method: 'POST', body: '{}' }), OWN_HOST, ctx);
+      expect(res.headers.get(SERVED_BY)).toBe('web');
+      expect(seen).toEqual(['/v1/commands']);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    expect(ROUTES).toHaveLength(7);
+  });
+});
+
+describe('the cron trigger: the kernel\'s drain and floor (AC-10)', () => {
+  it('is committed hourly at :10, sharing the web app\'s merge-state wake window', async () => {
+    const { readFileSync } = await import('node:fs');
+    const cfg = readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8');
+    expect(cfg).toContain('"triggers": { "crons": ["10 * * * *"] }');
+  });
+
+  it('in shadow the tick does nothing: no database read, no outbound call', async () => {
+    const seen: string[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (r: RequestInfo | URL) => { seen.push(String(r instanceof Request ? r.url : r)); return new Response('x'); }) as typeof fetch;
+    const logs: string[] = [];
+    const realLog = console.log;
+    console.log = (...a: unknown[]) => { logs.push(a.join(' ')); };
+    try {
+      await worker.scheduled({ cron: '10 * * * *', scheduledTime: Date.now(), noRetry() {} } as never, { EXECUTION_MODE: 'shadow' }, { waitUntil() {}, passThroughOnException() {} } as never);
+    } finally {
+      globalThis.fetch = realFetch;
+      console.log = realLog;
+    }
+    expect(seen).toEqual([]);
+    expect(logs.some((l) => l.includes('[kernel-floor] skipped: shadow'))).toBe(true);
+  });
+});

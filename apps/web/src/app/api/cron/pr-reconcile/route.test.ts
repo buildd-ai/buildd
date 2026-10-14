@@ -86,6 +86,11 @@ mock.module('@/lib/workflow/seam', () => ({
   drainDueEffects: mockDrainDueEffects, reconcileTrunkIncidents: mockTrunk, reconcileKernelDeliveries: mockKernelFloor,
   restartTreadmillCycles: mockTreadmillCycles,
 }));
+// The command ledger's retention prune rides the same kernel pass (lib/workflow/kernel-floor.ts).
+const mockPrune = mock(async () => 0);
+mock.module('@/lib/workflow/command-ledger', () => ({
+  postgresCommandLedger: () => ({ prune: mockPrune }), COMMAND_LEASE_MS: 120_000, COMMAND_RETENTION_DAYS: 7,
+}));
 
 let dueCount: number | null = 0;
 mock.module('@/lib/redis', () => ({
@@ -211,6 +216,25 @@ describe('GET /api/cron/pr-reconcile', () => {
     expect(mockTreadmillCycles).toHaveBeenCalled();
     expect(mockTreadmillCycles.mock.calls[0]![0]).toEqual({ cooldownMs: 60 * 60_000 });
     expect(body.treadmillCycles).toMatchObject({ restarted: 1, refused: 1 });
+  });
+
+  it('in own mode it runs none of the kernel\'s drain or floor: the control plane\'s cron does (workflow-kernel-library §3)', async () => {
+    const prior = process.env.EXECUTION_MODE;
+    process.env.EXECUTION_MODE = 'own';
+    for (const m of [mockDrainDueEffects, mockTrunk, mockKernelFloor, mockTreadmillCycles, mockPrune]) m.mockClear();
+    try {
+      const res = await GET(makeRequest('test-secret'));
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.kernelSkipped).toBe('control_plane_hosts');
+      expect(body.kernelOutbox).toBeUndefined();
+      for (const m of [mockDrainDueEffects, mockTrunk, mockKernelFloor, mockTreadmillCycles, mockPrune]) expect(m).not.toHaveBeenCalled();
+      // The rest of the hourly pass still runs here.
+      expect(mockReconcile).toHaveBeenCalled();
+    } finally {
+      if (prior === undefined) delete process.env.EXECUTION_MODE;
+      else process.env.EXECUTION_MODE = prior;
+    }
   });
 
   it('returns 500 when reconcileStalePrWorkers throws', async () => {

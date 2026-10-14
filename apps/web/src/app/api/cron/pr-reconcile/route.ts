@@ -83,9 +83,10 @@ import { sweepMissionBranchRefresh } from '@/lib/mission-branch-refresh';
 import { reconcileEarlyReleases, type ReconcileEarlyReleasesResult } from '@/lib/early-release-reconciler';
 import { sweepLandingPrs } from '@/lib/pr-landing-sweep-deps';
 import { redriveDeferredRefreshes, type RefreshRedriveResult } from '@/lib/refresh-redrive';
-import { LANDING_CYCLE_COOLDOWN_MS, PR_LANDING_DUE_QUEUE, type LandingSweepResult } from '@/lib/pr-landing-sweep';
+import { PR_LANDING_DUE_QUEUE, type LandingSweepResult } from '@/lib/pr-landing-sweep';
 import { sweepCiRedPrs } from '@/lib/ci-red-sweep-deps';
-import { drainDueEffects, reconcileKernelDeliveries, reconcileTrunkIncidents, restartTreadmillCycles } from '@/lib/workflow/seam';
+import { runKernelFloor, kernelFloorOutcome, logKernelFloor, type KernelFloorResult } from '@/lib/workflow/kernel-floor';
+import { hostsKernelHere } from '@/lib/workflow/kernel-client';
 import type { CiRedSweepResult } from '@/lib/ci-red-sweep';
 import { CI_RED_DUE_QUEUE } from '@/lib/ci-red-queue';
 import { gateOnDueQueue } from '@/lib/cron-due-queue';
@@ -117,7 +118,11 @@ export async function GET(req: NextRequest) {
     if (landingOnly) return runLandingScope(req, report);
     if (ciRedOnly) return runCiRedScope(req, report);
 
-    const [reconcile, deadZone, missionPrs, branchRefresh, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, earlyRelease, kernelOutbox, trunk, kernelFloor, treadmillCycles] = await Promise.all([
+    // The kernel's drain and floor run here only while this host is the kernel's (shadow). In own
+    // mode the control plane's cron trigger runs them (workflow-kernel-library.md §3) and this
+    // route never drains an effect.
+    const kernelHere = await hostsKernelHere().catch(() => false);
+    const [reconcile, deadZone, missionPrs, branchRefresh, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, earlyRelease, kernel] = await Promise.all([
       reconcileStalePrWorkers(),
       mergeStateOnly ? Promise.resolve(null) : sweepDeadZonePrs(),
       // Isolated, unlike the other two: healing merge state is the time-critical
@@ -193,47 +198,21 @@ export async function GET(req: NextRequest) {
       reconcileEarlyReleases().catch((err): { error: string } => ({
         error: err instanceof Error ? err.message : String(err),
       })),
-      // The workflow kernel's outbox floor drain (docs/specs/workflow-state-kernel.md
-      // §10.3): effects a request's inline drain did not finish (a crash, a
-      // backed-off retry, a delayed push_recovery try). Isolated.
-      drainDueEffects().catch((err): { error: string } => ({
-        error: err instanceof Error ? err.message : String(err),
-      })),
-      // The trunk circuit breaker's recovery (§6.10, T26): re-read each open
-      // incident's base head; a green base resolves it and every delivery
-      // blocked on it resumes. Isolated.
-      reconcileTrunkIncidents().catch((err): { error: string } => ({
-        error: err instanceof Error ? err.message : String(err),
-      })),
-      // The kernel's reconciliation floor (§11): re-read each open kernel delivery's PR and
-      // import its head / merged / closed state as a fact, then re-enqueue any effect its
-      // state owes and lacks. A lost synchronize or closed webhook costs an hour, not the PR.
-      // Isolated.
-      reconcileKernelDeliveries().catch((err): { error: string } => ({
-        error: err instanceof Error ? err.message : String(err),
-      })),
-      // S15 cycles: a delivery the behind-refresh treadmill escalated gets a fresh refresh
-      // budget once the landing cooldown has passed (bounded by the reducer's cycle cap), the
-      // kernel's counterpart of the legacy marker's cycle. The landing sweep then lands it.
-      // Isolated.
-      restartTreadmillCycles({ cooldownMs: LANDING_CYCLE_COOLDOWN_MS }).catch((err): { error: string } => ({
-        error: err instanceof Error ? err.message : String(err),
-      })),
+      // The workflow kernel's drain and floor (lib/workflow/kernel-floor.ts): the outbox floor
+      // drain (workflow-state-kernel.md §10.3), the trunk breaker's recovery (§6.10, T26), the
+      // reconciliation floor (§11), the S15 treadmill restart, the command ledger's pruning.
+      // Each step isolated. Null when the control plane hosts them.
+      kernelHere ? runKernelFloor() : Promise.resolve(null),
       // Module backstops for lossy webhooks (e.g. merge readiness outcome
       // labels). Core only emits; modules.ts lists who reacts. Each
       // subscriber is isolated by emit().
       emit({ type: 'sweep.pr_hourly', at: new Date() }),
     ]);
-    if ('error' in kernelFloor) {
-      console.error('[KernelFloor] error:', kernelFloor.error);
-    } else {
-      console.log(`[KernelFloor] checked=${kernelFloor.checked} imported=${kernelFloor.imported} enqueued=${kernelFloor.enqueued} errors=${kernelFloor.errors}`);
-    }
-    if ('error' in treadmillCycles) {
-      console.error('[TreadmillCycles] error:', treadmillCycles.error);
-    } else {
-      console.log(`[TreadmillCycles] checked=${treadmillCycles.checked} restarted=${treadmillCycles.restarted} refused=${treadmillCycles.refused} errors=${treadmillCycles.errors}`);
-    }
+    if (kernel) logKernelFloor(kernel, 'web');
+    else console.log('[KernelFloor] skipped: the control plane hosts the kernel');
+    const kernelOutcome = kernel ? kernelFloorOutcome(kernel) : { processed: 0, changed: 0, errors: 0 };
+    // Same keys as before the floor moved into kernel-floor.ts; `kernelSkipped` when the control plane hosts it.
+    const kernelResult: KernelFloorResult | { kernelSkipped: 'control_plane_hosts' } = kernel ?? { kernelSkipped: 'control_plane_hosts' };
     // subjectsReconciled is NOT folded into `changed` below: the subject sweep
     // only runs on the merged/closed branches, each of which already increments
     // stamped or closed, so adding it would count one event twice. It rides in
@@ -336,15 +315,13 @@ export async function GET(req: NextRequest) {
         + ('error' in refreshRedrive ? 0 : refreshRedrive.merged + refreshRedrive.exhausted)
         + ('error' in ciRed ? 0 : ciRedChanged(ciRed))
         + ('error' in closedPrs ? 0 : closedPrs.recorded + closedPrs.suggested)
-        + ('error' in kernelFloor ? 0 : kernelFloor.imported + kernelFloor.enqueued)
-        + ('error' in treadmillCycles ? 0 : treadmillCycles.restarted)
+        + kernelOutcome.changed
         + ('error' in earlyRelease ? 0 : earlyRelease.refreshed + earlyRelease.escalated),
       errors:
         reconcile.errors + missionPrErrors + branchRefreshErrors + strandedErrors + specRecheckErrors + lineageErrors
         + landingErrors + refreshRedriveErrors + ciRedErrors + closedPrErrors + earlyReleaseErrors
-        + ('error' in kernelFloor ? 1 : kernelFloor.errors)
-        + ('error' in treadmillCycles ? 1 : treadmillCycles.errors),
-      result: { scope: mergeStateOnly ? 'merge-state' : 'full', reconcile, deadZone, missionPrs, branchRefresh, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, earlyRelease, kernelOutbox, trunk, kernelFloor, treadmillCycles },
+        + kernelOutcome.errors,
+      result: { scope: mergeStateOnly ? 'merge-state' : 'full', reconcile, deadZone, missionPrs, branchRefresh, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, earlyRelease, ...kernelResult },
     });
 
     return NextResponse.json({
@@ -361,10 +338,7 @@ export async function GET(req: NextRequest) {
       refreshRedrive,
       ciRed,
       closedPrs,
-      kernelOutbox,
-      trunk,
-      kernelFloor,
-      treadmillCycles,
+      ...kernelResult,
       earlyRelease,
     });
   });

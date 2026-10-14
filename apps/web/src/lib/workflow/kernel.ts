@@ -22,6 +22,7 @@ import { applyCommandOn } from '@buildd/workflow-kernel/command-runner';
 import type { CommandResult, DeliveryRef } from '@buildd/workflow-kernel/ports';
 import type { ApplyDecision, AttemptOp, Command, DeliveryPatch, RecordOnly, RoundOp } from './commands';
 import { postgresStore } from './postgres-store';
+import { kernelHost } from './kernel-host';
 import type {
   ApprovalBasis,
   AttemptSnapshot,
@@ -221,9 +222,9 @@ export function transitionSql(decision: ApplyDecision, ref: { deliveryId?: strin
   }
 
   ctes.push(sql`t AS (
-  INSERT INTO workflow_transitions (delivery_id, from_version, to_version, from_state, to_state, command, idempotency_key, actor, evidence, bypass)
+  INSERT INTO workflow_transitions (delivery_id, from_version, to_version, from_state, to_state, command, idempotency_key, actor, evidence, bypass, host)
   SELECT d.id, d.version - 1, d.version, ${d.fromState}::text, ${d.toState}::text, ${d.command}::text, ${d.idempotencyKey}::text,
-    ${String(d.evidence.actor ?? 'kernel')}::text, ${jsonb(d.evidence)}, ${d.bypass ? jsonb(d.bypass) : sql`NULL::jsonb`}
+    ${String(d.evidence.actor ?? 'kernel')}::text, ${jsonb(d.evidence)}, ${d.bypass ? jsonb(d.bypass) : sql`NULL::jsonb`}, ${kernelHost()}::text
   FROM d
   RETURNING id, delivery_id, to_version
 )`);

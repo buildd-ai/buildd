@@ -8,9 +8,15 @@
 import { NextRequest } from './next-server-shim';
 import { runInRequest } from './request-context';
 import { installOutboundFetch } from './outbound-fetch';
-import { anonymousGithubProbe, deepHealthAllowed, executionMode, matchRoute, SERVED_BY, type Env, type Handler } from './router';
+import { anonymousGithubProbe, deepHealthAllowed, executionMode, isCommandRequest, matchRoute, SERVED_BY, type Env, type Handler } from './router';
+import { setKernelHost } from '@/lib/workflow/kernel-host';
 
 installOutboundFetch();
+// This process is the kernel's control-plane host: every transition it applies is tagged so (AC-9).
+setKernelHost('control-plane');
+
+/** The handlers read config from process.env; the bindings the runtime hands this call win. */
+const envOf = (env: Env): Record<string, string | undefined> => ({ ...(process.env as Record<string, string | undefined>), ...(env as Record<string, string | undefined>) });
 
 function tag(res: Response, by: string): Response {
   const out = new Response(res.body, res);
@@ -57,6 +63,12 @@ export default {
       }
       return Response.json(health, { status: health.ok ? 200 : 503 });
     }
+    // The kernel command API: the Worker's own hostname only.
+    if (isCommandRequest(request.method, url.pathname, ownHost)) {
+      const { handleCommandRequest } = await import('@/lib/workflow/command-api');
+      const res = await runInRequest(p => ctx.waitUntil(p), () => handleCommandRequest(request, { env: envOf(env) }));
+      return tag(res, 'control-plane');
+    }
     const hit = matchRoute(request.method, url.pathname);
     if (!hit || (!ownHost && executionMode(env.EXECUTION_MODE) !== 'own')) {
       // On a buildd.dev route a subrequest to the same URL goes to the origin
@@ -67,5 +79,15 @@ export default {
     if (!handler) return new Response('Method Not Allowed', { status: 405 });
     const res = await runInRequest(p => ctx.waitUntil(p), () => handler(new NextRequest(request), { params: Promise.resolve(hit.params) }));
     return tag(res, 'control-plane');
+  },
+
+  // The cron trigger (wrangler.jsonc `triggers.crons`): the kernel's effect drain and floor,
+  // hosted here in own mode and a no-op in shadow (workflow-kernel-library.md §3, AC-10).
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    await runInRequest(p => ctx.waitUntil(p), async () => {
+      const { runScheduledKernelFloor } = await import('@/lib/workflow/kernel-floor');
+      const r = await runScheduledKernelFloor({ env: envOf(env) });
+      if (!r.ran) console.log(`[kernel-floor] skipped: ${r.reason}`);
+    });
   },
 };

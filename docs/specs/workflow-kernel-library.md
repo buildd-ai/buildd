@@ -2,13 +2,13 @@
 title: Workflow Kernel Library and Single Host
 status: draft
 owner: max
-last_verified: 2026-10-13
+last_verified: 2026-10-14
 summary: Delivery state MUST have one writer, the workflow kernel, packaged as a library with no buildd imports and run in production only by the execution control plane.
 domain: tasks
-surfaces: [apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/reducer.ts, apps/web/src/lib/workflow/seam.ts, apps/control-plane/src/router.ts]
+surfaces: [apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts]
 related: [workflow-state-kernel, execution-control-plane, mission-branch-refresh, mission-task-lifecycle, living-specs]
 keywords: [workflow kernel, delivery state, single writer, single host, control plane, portable library, ports, adapters, conformance suite, merge door, landing authority, required status, durable findings, finding disposition, delivery epoch, mission delivery, refresh settlement, no-op completion, workflow-kernel package]
-verified_by: []
+verified_by: [apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/tests/db/kernel-command-host.test.ts]
 supersedes: []
 ---
 # Workflow Kernel Library and Single Host
@@ -317,23 +317,91 @@ GitHub or Next.js.
 and floor MUST run only on the execution control plane, so a transition is
 never applied by two hosts with different code or by a host that is down.
 
+Owner decision, 2026-10-13: the control plane hosts the kernel; it is not a
+separate service. The command API is the service boundary: versioned,
+idempotent and authenticated. Q2 below is answered by that decision (a route on
+the control plane, authenticated as the caller).
+
 **Invariants**:
 - The control plane (`apps/control-plane`) is the only process that calls a
   kernel command or drains `workflow_effects` in production. This amends
   `execution-control-plane.md` §1: the Worker hosts the kernel, not only the
   seven handler routes.
+- The command API is `POST /v1/commands` on the control plane's own hostname,
+  never on a `buildd.dev` route (`apps/web/src/lib/workflow/command-api.ts`,
+  routed by `apps/control-plane/src/router.ts`):
+  - Versioned. The body carries `v: 1`; any other version is a 400 naming the
+    one this endpoint speaks. A breaking change is a new path (`/v2/...`) served
+    beside the old one until no door sends it.
+  - Operations are the seam's door functions, unchanged: `land`,
+    `apply_recommendation`, `policy_merge`, `request_review`,
+    `request_ci_retry`, `record_supersession`, `abandon`, `open_delivery`, and
+    `drain` (one delivery's due effects, `system` principals only). The same
+    code runs on the web host in shadow, so the two modes cannot drift.
+  - Authenticated. The request is signed: HMAC-SHA256 over timestamp, method,
+    path and body (the scheme Dispatch callbacks use, `@buildd/dispatch-contract`)
+    with the command key ring `KERNEL_COMMAND_SECRET`, or, when that is unset,
+    a key derived from `CRON_SECRET` under its own label, so a cron bearer
+    token is never itself a valid signature. No key configured is a 503 and a
+    bad or missing signature a 401, before anything runs. The body names the
+    principal the calling host vouches for (`user`, `account` or `system`),
+    and the endpoint re-checks that it still reaches the workspace (team
+    membership for a person, workspace reach for an API account); a principal
+    that does not is a 403. The door keeps its own authorisation; the endpoint
+    proves who it acts for.
+  - Idempotent on a caller-supplied key. The key is claimed in Postgres
+    (`workflow_commands`, `command-ledger.ts`) before the operation runs,
+    never in Worker memory. A second request with the key waits for the first
+    and receives its stored answer with `replayed: true`; one still running
+    past the wait answers 409 `in_progress` (retryable, same key). The same key
+    with a different request is a 422. An operation that throws stores
+    nothing, so the key may be retried. A claim older than the lease (two
+    minutes) belongs to an isolate that died and is taken over; completion is
+    recorded only for the claim that still holds the key. Keys are kept seven
+    days.
+  - Answered with the operation's result and the delivery's version:
+    `{ v, op, idempotencyKey, result, delivery: { id, version } | null, host, replayed }`.
+  - Only the host applies. A process that is not the control plane in `own`
+    mode answers 409 `not_host` and applies nothing.
+- Doors reach the kernel through one client module,
+  `apps/web/src/lib/workflow/kernel-client.ts` (`submitKernelCommand`). On the
+  control plane it runs the operation in-process. On the web host in shadow it
+  runs the same package locally, exactly as before. On the web host in own
+  mode it submits the command, signed, retrying with the same key, and returns
+  the control plane's answer. If the control plane does not answer within the
+  door's budget the client raises `ControlPlaneUnavailableError` and the door
+  answers 503 with a retryable error naming the control plane
+  (`controlPlaneUnavailableResponse`); nothing is applied on the web host.
 - Doors that run on Vercel today (dashboard and chat merge, MCP `merge_pr`,
   `create_pr`, re-review, retry-CI, apply-recommendation, supersession,
   `update_task` on a delivery-owned task, `correct_task_result`) submit a
-  command to the control plane and return its result. NOT IMPLEMENTED: the
-  command endpoint, authenticated as the calling principal, idempotent on a
-  caller-supplied key, answering with the command result and the delivery's
-  version.
+  command through that client and return its result. NOT IMPLEMENTED: the
+  doors still call the seam directly; their move to the client is the second
+  half of slice S3a.
+- The mode is one setting: the control plane's `EXECUTION_MODE`. The web host
+  follows what the Worker's health reports (`/__control-plane/health`, read
+  with a short timeout and cached for 30 s; a reading up to five minutes old
+  stands in for a failed re-read; no reading at all counts as `own`, so a door
+  fails retryably rather than applying a command the control plane may also be
+  applying). `EXECUTION_MODE` set on the web host overrides that for tests and
+  a local e2e; off Vercel with nothing set the web host is the host, since no
+  control plane is there to follow.
 - The drain and the floor (`drainDueEffects`, `reconcileKernelDeliveries`,
-  trunk incident reconcile, treadmill restart) run on a control-plane
-  schedule (NOT IMPLEMENTED: a Cloudflare cron trigger in
-  `apps/control-plane/wrangler.jsonc`), not from `/api/cron/pr-reconcile`. An
-  effect is never drained inline at the end of a Vercel request.
+  trunk incident reconcile, treadmill restart, and pruning the command ledger)
+  are one pass, `runKernelFloor` (`apps/web/src/lib/workflow/kernel-floor.ts`).
+  In own mode it runs on the control plane's cron trigger
+  (`apps/control-plane/wrangler.jsonc`, `triggers.crons`, hourly at :10, the
+  web app's merge-state minute, so it opens no extra Neon wake window) and is
+  recorded as the `kernel-floor` cron run; `/api/cron/pr-reconcile` skips it
+  (`kernelSkipped`). In shadow `/api/cron/pr-reconcile` runs it and the
+  control plane's tick does nothing and reads nothing. An effect is never
+  drained inline at the end of a Vercel request in own mode: the seam's inline
+  drain becomes a `drain` command to the control plane, best effort, with the
+  floor as the backstop.
+- Every transition row records the host that applied it
+  (`workflow_transitions.host`: `control-plane` or `web`, null on rows written
+  before the tag). The Worker's entry sets it in code (`kernel-host.ts`), never
+  from an env var.
 - Effects run under the Worker's request budget. An effect that needs longer
   is split into a fact-producing step the drain can retry, or handed to
   Dispatch: CI evidence capture is its own effect (`capture_ci_evidence`)
@@ -343,7 +411,7 @@ never applied by two hosts with different code or by a host that is down.
 - `EXECUTION_MODE=shadow` still passes every request to Vercel, and in shadow
   the Vercel host runs the same package. The rollback stays one setting;
   the single-host rule holds per mode, never both at once.
-- Lockstep (`execution-control-plane.md` §2) is a precondition for command
+- Lockstep (`execution-control-plane.md` §2) is not a precondition for command
   submission: a Vercel door that sees `lockstep: false` in deploy identity
   still submits, because the control plane is the authority, and the release
   watcher degrades the release as today.
@@ -352,16 +420,22 @@ never applied by two hosts with different code or by a host that is down.
 - AC-9: GIVEN `EXECUTION_MODE=own` WHEN a person merges from the dashboard
   THEN the Vercel route submits a landing command, the control plane applies
   T15 and drains the merge effect, and no kernel statement runs in the Vercel
-  process (asserted by a host tag on every transition row).
+  process (asserted by a host tag on every transition row). The client path
+  and the host tags: `apps/web/tests/db/kernel-command-host.test.ts`. The
+  dashboard route itself submits once the doors move to the client.
 - AC-10: GIVEN the Vercel project paused WHEN the drain schedule fires THEN
-  due effects drain and the floor runs on the control plane.
+  due effects drain and the floor runs on the control plane
+  (`kernel-command-host.test.ts`, `kernel-floor.test.ts`,
+  `apps/control-plane/src/index.test.ts`).
 - AC-11: GIVEN the same command submitted twice with one idempotency key WHEN
   both arrive THEN one transition is applied and both callers receive the same
-  result.
+  result (`kernel-command-host.test.ts`, `command-api.test.ts`; the kernel's
+  half on both stores in the conformance suite).
 - AC-12 (failure): GIVEN `EXECUTION_MODE=own` and the control plane
   unreachable WHEN a Vercel door
   submits a command THEN the door answers with a retryable error naming the
-  control plane, and applies nothing itself.
+  control plane, and applies nothing itself (`kernel-client.test.ts`,
+  `kernel-command-host.test.ts`).
 
 ## 4. One landing authority
 
@@ -590,17 +664,17 @@ column outside the kernel; S3 and S4 remove or route each one.
   repo's FSL, so embedding is free and a competing hosted service is not
   during the FSL window; the conformance suite and port types carry Apache-2.0
   so an adopter's adapter code is unencumbered. Owner decides.
-- Q2: whether the command endpoint is a route on the control plane's own host
-  or a service binding Vercel cannot reach, with Vercel calling through a
-  signed relay. Default: a route on the control plane, authenticated as the
-  caller.
+- Q2 (answered 2026-10-13, §3): the command endpoint is a route on the
+  control plane's own host, signed by the calling host and re-checked as the
+  principal it names.
 - Q3: whether tasks with no delivery keep their writers permanently or move
   behind a second, smaller task-lifecycle authority later. Out of scope here.
 
 ## Code surface
 
 - `apps/web/src/lib/workflow/` (moves to the package in S1–S2)
-- `apps/control-plane/src/` (hosts the kernel in S3)
+- `apps/control-plane/src/` (hosts the kernel in S3: the command route and the cron trigger)
+- `apps/web/src/lib/workflow/command-api.ts`, `command-ledger.ts`, `kernel-client.ts`, `kernel-floor.ts`, `kernel-host.ts` (S3)
 - `apps/web/src/modules.ts` (handler composition replaced in S2)
 - `apps/web/src/lib/mission-branch-refresh.ts`, `mission-pr.ts` (S6)
 - `apps/web/src/lib/release-executor.ts`, `release/compose-actions.ts` (S3)
