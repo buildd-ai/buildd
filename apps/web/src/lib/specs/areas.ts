@@ -43,6 +43,8 @@ export interface AreaClassifyInput {
   areas: readonly AreaInfo[];
   userId?: string | null;
   accountId?: string | null;
+  /** A repo import's `domain:` value, shown to the classifier with each area's declared domains (lib/specs/import.ts). */
+  hint?: { domain: string | null };
 }
 
 export type AreaClassification =
@@ -113,7 +115,24 @@ export const MAX_AREA_SHARE = 0.25;
 
 export interface TaxonomyItem { specId: string; title: string; card: SpecCard; domainHint?: string | null }
 export interface ProposedArea { key: string; title: string; charter: string; members: Array<{ specId: string; title: string }>; hint: string | null }
-export interface TaxonomyProposal { product: { title: string; charter: string }; areas: ProposedArea[] }
+/** `unplaced`: specs the proposal leaves for a person to place (the model path only; the word fallback places every spec). */
+export interface TaxonomyProposal { product: { title: string; charter: string }; areas: ProposedArea[]; unplaced?: Array<{ specId: string; title: string }> }
+
+export interface ProposeTaxonomyInput {
+  workspaceId: string;
+  items: readonly TaxonomyItem[];
+  product: { title: string };
+  userId?: string | null;
+  accountId?: string | null;
+  /** Use only answers already recorded; never ask the model (the index page, which must not wait on it). */
+  cachedOnly?: boolean;
+}
+/**
+ * The model-driven proposal (lib/spec-taxonomy-decision.ts), reached through
+ * the `SPEC_TAXONOMY_PROPOSE` slot. `ran: false` means no measured model
+ * answered and the caller uses `proposeTaxonomy`, the word-based fallback.
+ */
+export type TaxonomyProposer = (input: ProposeTaxonomyInput) => Promise<{ ran: true; proposal: TaxonomyProposal; model: string | null } | { ran: false; reason: string }>;
 
 /** The `domain:` value in a spec body's frontmatter, if it opens with one. Pure. */
 export function domainHintOf(body: string): string | null {

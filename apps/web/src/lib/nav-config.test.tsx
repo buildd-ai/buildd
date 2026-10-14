@@ -88,6 +88,7 @@ describe('mobilePageTitle', () => {
     expect(mobilePageTitle('/app/missions')).toBe('Missions');
     expect(mobilePageTitle('/app/missions/plan')).toBe('Plan');
     expect(mobilePageTitle('/app/releases')).toBe('Releases');
+    expect(mobilePageTitle('/app/specs')).toBe('Specs');
     expect(mobilePageTitle('/app/tasks')).toBe('Activity');
     expect(mobilePageTitle('/app/team')).toBe('Team');
     expect(mobilePageTitle('/app/health')).toBe('Health');

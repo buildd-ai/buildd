@@ -31,7 +31,7 @@ const SIGN_INS_HREF = '/app/settings/models#sign-ins';
  * New runner token sheet over it. Shows the active team, or `?team=<id>` when
  * it names one of the person's teams (the workspace page links here that way).
  * `?state=model-auth-<source>` (dev server only) shows that model login on every
- * token — see ./qa-state.ts.
+ * token, `?state=model-auth-codex` adds the Codex line — see ./qa-state.ts.
  */
 export default async function RunnersSettingsPage({
   searchParams,
@@ -66,7 +66,8 @@ export default async function RunnersSettingsPage({
   const tokens = withQaModelAuth(accounts.map(({ createdByUserId, ...a }) => ({
     ...a,
     lastSeenAt: lastSeen[a.id] ?? null,
-    modelAuthSource: modelAuth[a.id] ?? null,
+    modelAuthSource: modelAuth[a.id]?.claude ?? null,
+    codexAuthSource: modelAuth[a.id]?.codex ?? null,
     canManageHostRunner: adminTeamIds.has(a.teamId),
     // DELETE /api/accounts/[id]: your own key, or manage_team_keys in its team.
     canDelete: adminTeamIds.has(a.teamId) || (createdByUserId != null && createdByUserId === user.id),

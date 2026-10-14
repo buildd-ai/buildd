@@ -31,7 +31,9 @@ describe('labelledFromDatasets', () => {
     const [c1, c2] = g.cases;
     expect(c1.ruleLabel).toBe('HOLD');
     const r = c1.read(choice('A', { A: 0.7, B: 0.3 }, 0.4));
-    expect(r).toEqual({ label: 'START', confidence: 0.4, topP: 0.7 });
+    expect(r).toMatchObject({ label: 'START', confidence: 0.4, topP: 0.7 });
+    // Margin: top p minus the runner-up's probability.
+    expect(r.margin).toBeCloseTo(0.4, 9);
     expect(c1.judge('START')).toBe(true);
     expect(c1.judge('HOLD')).toBe(false);
     // `either` is unscored, not right and not wrong.
@@ -110,7 +112,9 @@ describe('collectedFromReplay', () => {
     const c = g.cases[0];
     expect(c.state).toBe('n=1');
     expect(c.ruleLabel).toBe('stop');
-    expect(c.read(choice('A', { A: 0.8, B: 0.2 }, 0.3))).toEqual({ label: 'go', confidence: 0.3, topP: 0.8 });
+    const read = c.read(choice('A', { A: 0.8, B: 0.2 }, 0.3));
+    expect(read).toMatchObject({ label: 'go', confidence: 0.3, topP: 0.8 });
+    expect(read.margin).toBeCloseTo(0.6, 9);
     expect(c.judge('go')).toBe(true);
     expect(c.judge('stop')).toBe(false);
   });

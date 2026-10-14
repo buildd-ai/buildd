@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.340.0",
+  "version": "0.341.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -71,6 +71,7 @@
     "./decision-probe": "./decision-probe.ts",
     "./decision-model": "./decision-model.ts",
     "./decision-model-measurements": "./decision-model-measurements.ts",
+    "./decision-model-store": "./decision-model-store.ts",
     "./litellm-gateway": "./litellm-gateway.ts",
     "./cloudflare-gateway-tokens": "./cloudflare-gateway-tokens.ts",
     "./net/public-address": "./net/public-address.ts",

@@ -1,6 +1,6 @@
 /**
- * The spec index (living-specs.md §19): a workspace's specs as a cluster map
- * above an outline grouped by product and area. Pure: no DB, so the page,
+ * The spec index (living-specs.md §19): a workspace's specs as one card per
+ * area, each listing its own specs, grouped by product. Pure: no DB, so the page,
  * the dev fixture and the DOM tests all feed it the same shape.
  *
  * What it reads per spec is the list row plus three optional facts other
@@ -54,6 +54,8 @@ export interface AreaProposal {
   specIds: string[];
   /** Where a person accepts it; absent until the proposal flow exists. */
   acceptHref?: string | null;
+  /** Which proposal it is from (organize's `proposedBy.source`), sent back on accept so the keys match. */
+  source?: 'model' | 'words';
 }
 
 export interface SpecIndexOptions {
@@ -110,30 +112,15 @@ export interface PossibleArea {
   key: string;
   /** The taxonomy proposal key, when it is one. */
   proposalKey: string | null;
+  /** Which proposal the key is from, when it is one. */
+  proposalSource?: 'model' | 'words';
   title: string;
   specIds: string[];
   acceptHref: string | null;
 }
 
-export interface MapSegment { state: SpecMixState; count: number; pct: number }
-export interface MapBlock {
-  areaId: string;
-  title: string;
-  count: number;
-  /** Share of all filed specs: the block's width on a wide screen. */
-  basisPct: number;
-  /** Share of the largest area: the block's width on a phone, where shares of the total would all sit at the floor. */
-  relPct: number;
-  segments: MapSegment[];
-  /** "Runners · 9 specs, 7 approved, 1 failing". */
-  label: string;
-  words: string;
-}
-
-export type IndexMap =
-  | { kind: 'map'; blocks: MapBlock[]; loose: IndexRow[]; possible: Array<PossibleArea & { rows: IndexRow[] }> }
-  /** `possible`: a taxonomy proposal's areas still show as dashed groups under the line, the cold-start case (§17 R-4). */
-  | { kind: 'line'; text: string; href: string | null; possible: Array<PossibleArea & { rows: IndexRow[] }> };
+/** A possible area with its member rows, in the order given. */
+export type PossibleGroup = PossibleArea & { rows: IndexRow[] };
 
 export interface SpecIndexView {
   /** Specs counted (not products or areas, not retired or superseded). */
@@ -143,16 +130,21 @@ export interface SpecIndexView {
   /** Specs buildd could not place, in order. Empty means no Unfiled group. */
   unfiled: IndexRow[];
   possibleAreas: PossibleArea[];
-  map: IndexMap;
+  /** Possible areas with their rows: each renders as a dashed card holding its specs (R-24). */
+  possible: PossibleGroup[];
+  /** Unfiled specs in no possible area: the Unfiled card. */
+  loose: IndexRow[];
+  /** Specs with a revision waiting for approval, in outline order. */
+  waiting: IndexRow[];
+  /** Areas holding at least one spec. */
+  areaCount: number;
+  /** The one line of counts in words: "16 specs in 6 areas, 2 unfiled" (R-26). */
+  line: { text: string; href: string | null };
+  /** More than one product: the outline names each; with one it is said by the page. */
+  manyProducts: boolean;
   /** Every row by id, for filtering and lookups. */
   rowsById: Map<string, IndexRow>;
 }
-
-/** With two or more areas the map renders from about this many specs up (R-26). */
-export const MAP_MIN_SPECS = 10;
-/** Floor for a block: its label in two lines and a 44px tap target (R-23), and two fit side by side in 320px. */
-export const MAP_BLOCK_MIN_WIDTH_PX = 136;
-export const MAP_BLOCK_MIN_HEIGHT_PX = 88;
 
 const isArea = (scope: string) => scope === 'product' || scope === 'domain';
 const isClosed = (status: string) => status === 'retired' || status === 'superseded';
@@ -255,7 +247,7 @@ export function specIndexView(input: readonly SpecIndexInput[], options: SpecInd
     const members = p.specIds.filter((id) => unfiledIds.has(id) && !claimed.has(id));
     if (!members.length) continue;
     members.forEach((id) => claimed.add(id));
-    possibleAreas.push({ key: `proposal:${p.key ?? p.title}`, proposalKey: p.key ?? null, title: p.title, specIds: members, acceptHref: p.acceptHref ?? null });
+    possibleAreas.push({ key: `proposal:${p.key ?? p.title}`, proposalKey: p.key ?? null, ...(p.source ? { proposalSource: p.source } : {}), title: p.title, specIds: members, acceptHref: p.acceptHref ?? null });
   }
   const byTitle = new Map<string, { title: string; ids: string[] }>();
   for (const u of unfiled) {
@@ -272,28 +264,18 @@ export function specIndexView(input: readonly SpecIndexInput[], options: SpecInd
     possibleAreas.push({ key: `new_area:${k}`, proposalKey: null, title: g.title, specIds: g.ids, acceptHref: null });
   }
 
-  const unfiledCounted = unfiled.filter((u) => u.state);
   const withRows = (ps: PossibleArea[]) => ps.map((p) => ({ ...p, rows: p.specIds.map((id) => rowsById.get(id)!) }));
   const filed = areas.reduce((n, a) => n + a.count, 0);
-  const total = filed + countDeep(unfiled);
-
-  let map: IndexMap;
-  const withSpecs = areas.filter((a) => a.count > 0);
-  if (withSpecs.length >= 2 && total >= MAP_MIN_SPECS) {
-    const largest = Math.max(...withSpecs.map((a) => a.count));
-    const blocks = withSpecs.map((a) => ({
-      areaId: a.id, title: a.title, count: a.count,
-      basisPct: Math.round((a.count / filed) * 1000) / 10,
-      relPct: Math.round((a.count / largest) * 1000) / 10,
-      segments: MIX_STATES.filter((s) => a.mix[s]).map((s) => ({ state: s, count: a.mix[s], pct: (a.mix[s] / a.count) * 100 })),
-      label: `${a.title} · ${a.words}`, words: a.words,
-    }));
-    map = { kind: 'map', blocks, loose: unfiledCounted.filter((u) => !claimed.has(u.id)), possible: withRows(possibleAreas) };
-  } else {
-    map = { kind: 'line', ...collapsedLine(total, withSpecs, countDeep(unfiled), options.taxonomyHref ?? null), possible: withRows(possibleAreas) };
-  }
-
-  return { total, products, areas, unfiled, possibleAreas, map, rowsById };
+  const unfiledCount = countDeep(unfiled);
+  const total = filed + unfiledCount;
+  const areaCount = areas.filter((a) => a.count > 0).length;
+  const waiting: IndexRow[] = [];
+  const walk = (rows: readonly IndexRow[]) => { for (const r of rows) { if (r.waiting && r.state) waiting.push(r); walk(r.children); } };
+  for (const a of areas) walk(a.rows);
+  walk(unfiled);
+  const line = indexLine(total, areaCount, unfiledCount, options.taxonomyHref ?? null);
+  const manyProducts = products.filter((p) => p.head).length > 1;
+  return { total, products, areas, unfiled, possibleAreas, possible: withRows(possibleAreas), loose: unfiled.filter((u) => !claimed.has(u.id)), waiting, areaCount, line, manyProducts, rowsById };
 }
 
 function countDeep(rows: readonly IndexRow[]): number {
@@ -302,26 +284,13 @@ function countDeep(rows: readonly IndexRow[]): number {
   return n;
 }
 
-/** R-26: one line of words when a picture would have one shape, or too few specs to cluster. */
-function collapsedLine(total: number, areas: readonly IndexArea[], unfiled: number, taxonomyHref: string | null): { text: string; href: string | null } {
+/** R-26: the counts in one line of words; the cards below carry each area's own. */
+function indexLine(total: number, areas: number, unfiled: number, taxonomyHref: string | null): { text: string; href: string | null } {
   const specs = plural(total, 'spec');
   if (total === 0) return { text: 'No specs yet', href: null };
-  if (areas.length === 0) return { text: `${specs}, none filed yet`, href: taxonomyHref };
-  const tail = unfiled ? `, ${unfiled} unfiled` : '';
-  if (areas.length === 1) {
-    return { text: unfiled ? `${specs}: ${areas[0].count} in ${areas[0].title}${tail}` : `${specs}, all in ${areas[0].title}`, href: null };
-  }
-  return { text: `${specs}: ${areas.map((a) => `${a.count} in ${a.title}`).join(', ')}${tail}`, href: null };
+  if (areas === 0) return { text: `${specs}, none filed yet`, href: taxonomyHref };
+  return { text: `${specs} in ${plural(areas, 'area')}${unfiled ? `, ${unfiled} unfiled` : ''}`, href: null };
 }
-
-/** What the outline shows for a map selection (R-25). */
-export type IndexFilter =
-  | { kind: 'area'; id: string }
-  | { kind: 'unfiled' }
-  | { kind: 'possible'; key: string };
-
-export const sameFilter = (a: IndexFilter | null, b: IndexFilter | null) =>
-  !!a && !!b && a.kind === b.kind && (a.kind === 'area' ? a.id === (b as { id: string }).id : a.kind === 'possible' ? a.key === (b as { key: string }).key : true);
 
 /** The neighbour graph's cap on neighbours (R-28), and on siblings so it stays readable. */
 export const GRAPH_MAX_NEIGHBOURS = 8;
@@ -406,8 +375,8 @@ export function filingFacts(spec: { parentSpecId: string | null }, f: IndexFilin
 }
 
 /** A cold-start taxonomy proposal (§17 R-4) as possible areas, each accepted by its key. Pure. */
-export function proposalAreas(proposal: { areas: ReadonlyArray<{ key: string; title: string; members: ReadonlyArray<{ specId: string }> }> } | null | undefined): AreaProposal[] {
-  return (proposal?.areas ?? []).map((a) => ({ key: a.key, title: a.title, specIds: a.members.map((m) => m.specId) }));
+export function proposalAreas(proposal: { areas: ReadonlyArray<{ key: string; title: string; members: ReadonlyArray<{ specId: string }> }> } | null | undefined, source?: 'model' | 'words'): AreaProposal[] {
+  return (proposal?.areas ?? []).map((a) => ({ key: a.key, title: a.title, specIds: a.members.map((m) => m.specId), ...(source ? { source } : {}) }));
 }
 
 /** One area's imported specs waiting for a person's confirmation (§18, R-19). */

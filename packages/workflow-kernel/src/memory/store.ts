@@ -96,8 +96,6 @@ export class MemoryStore implements Store {
   readonly effectLog: EffectRecord[] = [];
   readonly facts: FactRecord[] = [];
   readonly lanes = new Map<string, LaneRecord>();
-  /** Workspaces whose kill switch is off (§14): the drain reads them as `switched_off`. */
-  readonly switchedOff = new Set<string>();
   private seq = 0;
 
   constructor(readonly clock: ControllableClock, private readonly newId: () => string) {}
@@ -284,10 +282,10 @@ export class MemoryStore implements Store {
   private snapshot(e: EffectRecord): EffectSnapshot {
     const d = this.deliveries.get(e.deliveryId);
     const t = this.transitionLog.find((x) => x.id === e.transitionId);
-    // As the Postgres claim: no delivery row reads as `kernel` (the snapshot's null delivery gates it instead).
-    const authority: EffectAuthority = d?.authority === 'legacy' ? 'legacy' : d && this.switchedOff.has(d.workspaceId) ? 'switched_off' : 'kernel';
+    // As the Postgres claim: the row's own authority; the kill switch is the drain's `Policy`.
+    const authority: EffectAuthority = d?.authority === 'legacy' ? 'legacy' : 'kernel';
     return {
-      delivery: d ? { state: d.state, version: d.version } : null,
+      delivery: d ? { state: d.state, version: d.version, workspaceId: d.workspaceId } : null,
       transition: t ? { toState: t.toState, toVersion: t.toVersion } : null,
       authority,
     };
@@ -347,6 +345,18 @@ export class MemoryStore implements Store {
     e.status = 'pending'; e.attemptCount = Math.max(e.attemptCount - 1, 0); e.outcome = outcome.slice(0, 200);
     e.notBefore = new Date(this.clock.ms() + delayMs).toISOString(); e.leaseUntil = null;
     return true;
+  }
+
+  /** `linkRoundReviewerSql`: only a round with no reviewer yet takes one. */
+  async linkRoundReviewer(roundId: string, taskId: string): Promise<void> {
+    const r = this.rounds.find((x) => x.id === roundId);
+    if (r && r.reviewerTaskId == null) r.reviewerTaskId = taskId;
+  }
+
+  /** `linkAttemptTaskSql`: only a row with no task yet takes one. */
+  async linkAttemptTask(attemptId: string, taskId: string): Promise<void> {
+    const a = this.attempts.find((x) => x.id === attemptId);
+    if (a && a.taskId == null) a.taskId = taskId;
   }
 
   async insertFollowupEffect(f: FollowupEffect): Promise<boolean> {

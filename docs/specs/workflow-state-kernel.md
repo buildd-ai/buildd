@@ -1120,7 +1120,7 @@ Later slices add the files named in §14.
 
 Shipped live (part 1, the review family): schema linkage (§5.6, `authority`);
 `seam.ts` (route API), `authority.ts` (kill switch and release), `github-facts.ts`
-(live reads), `review-effects.ts` (effects, owned by the reviews module and wired through the composition root `workflowHostEffectHandlers()`); `openKernelDelivery` at the two legacy
+(live reads), the effect handlers (now the package's `handlers/review.ts`, on the reviews module's port halves in `review-effects.ts`, wired through the composition root `workflowKernelHooks()`); `openKernelDelivery` at the two legacy
 first-review points (the PR `opened` policy after pre-flight and role resolution, and
 create_pr's integration-branch review); T4 at the terminal worker PATCH; the
 `delivery_not_advanced` gate; T6 in `handleReviewerOutcomeIfNeeded`; T9 at claim;
@@ -1161,11 +1161,15 @@ Shipped live in part 2 (the CI family):
   configured `maxCiRetries`, raised only by a `trigger=human` row. `attemptView`
   counts the same rows, so N of M is 1-based and identical in the title, the task
   context and the activity entry.
-- **`dispatch_ci_fix`** (`ci-retry-effects.ts`, reviews module, composed into
-  `workflowHostEffectHandlers()`) revalidates at dispatch (PR open, head still the bound
-  head, CI not green now), then files the legacy-shaped CI fix or drift-diagnose task
-  with `delivery_role = ci_fix`; its task id is the attempt id, so a re-run files
-  nothing twice. CI exhaustion escalates through `escalateCiRedHead`.
+- **`dispatch_ci_fix`** (the package's `handlers/ci.ts`, on the `Work` port) revalidates
+  at dispatch (PR open, head still the bound head, CI not green now), then files the
+  legacy-shaped CI fix or drift-diagnose task with `delivery_role = ci_fix` (the
+  reviews module's `ciFixWork` in `ci-retry-effects.ts` shapes it); its task id is the
+  attempt id, so a re-run files nothing twice, and a run that filed it but crashed before
+  binding the row is finished by the next one (bound, woken, owed its evidence). The failed job's log is captured by a
+  follow-up effect, `capture_ci_evidence`, which records an `evidence_captured` fact
+  (no work after the response). CI exhaustion escalates through `escalateCiRedHead`
+  (`ciEscalate`, the `Escalate` port).
 - **Claim (T9 for `ci`).** `FixClaimed` on a `ci` attempt moves it to `running`; CI
   green at claim resumes the delivery and cancels the task as skipped.
   `RepairNotNeeded` is the dispatch-time equivalent.
@@ -1423,8 +1427,8 @@ not own keeps the legacy conflict retry unchanged:
   refresh belongs to the kernel's `refresh_branch` effect, reached through T12
   `behind` (the auto-merge door) or T16 (the kernel's own merge call refused as
   behind). A legacy PR keeps the in-door refresh.
-- **Mechanical first (§6.7), in `conflict-retry-effects.ts`** (composed into
-  `workflowHostEffectHandlers()`). `refresh_branch` runs `refreshBehindPr` pinned to the
+- **Mechanical first (§6.7), in the package's `handlers/conflict.ts`** (the git work is
+  the `Conflicts` port, `conflictsHost` in `conflict-retry-effects.ts`). `refresh_branch` runs `refreshBehindPr` pinned to the
   bound head (GitHub update-branch with `expected_head_sha`, so the semantic check, the
   single-flight lease and the operational bound still apply). Success: the new head
   arrives through T3, is attributed to the mechanical row by §6.9, ends it `delivered`,
@@ -1467,7 +1471,7 @@ Deviations, each deliberate:
 2. **The mechanical refresh is the conflict recheck.** A conflict flagged from a stale
    snapshot that GitHub's own merge of today's base resolves never reaches an agent. A
    sharper pre-agent check (a merge-tree replay against the base tip, task 61dbc148,
-   not landed) plugs in at `agentIsOwed` in `conflict-retry-effects.ts`.
+   not landed) plugs in at `dispatch_conflict_fix`'s "still owed" check (`handlers/conflict.ts`, `Conflicts.migrationOwed`).
 3. **A migration collision found at PR open stays legacy** unless the kernel already
    owns the PR: the opened door dispatches the renumber before the kernel opens a
    delivery, so that PR never becomes kernel-owned. A collision on a kernel delivery
@@ -1505,7 +1509,8 @@ T25/T26, S24, AC-15):
   delivery already `REPAIRING(ci)` joins too (its queued attempt is `skipped`, it
   spends nothing). A newly opened incident also takes every kernel delivery on the
   same base repairing a failure it explains. `dispatch_trunk_fix`
-  (`lib/workflow/ci-red-trunk-effects.ts`) files one trunk-fix task per red base,
+  (the package's `handlers/trunk.ts`; the incident ledger is the `Trunk` port,
+  `builddTrunk` in `lib/workflow/trunk.ts`) files one trunk-fix task per red base,
   not per incident: a base can hold several unresolved incidents at once (one per
   signature: its runs were read before every check finished, or its head moved and
   broke more), and each used to file its own fixer. The task id is the base's
@@ -1548,7 +1553,7 @@ Deviations, each deliberate:
    open incidents; a base push does not resume PRs sooner. A trunk-fix task is a
    plain task with no delivery role (it is not an attempt of any PR's delivery).
 4. **T26's `refresh_branch` is the conflict family's handler** (§13.4,
-   `conflict-retry-effects.ts`): with no ledger row it is a plain GitHub
+   `handlers/conflict.ts`, `Conflicts.updateBranch`): with no ledger row it is a plain GitHub
    update-branch pinned to the head T26 judged stale, skipped if the head moved and
    retried by the outbox on an operational failure. The breaker registers no
    `refresh_branch` of its own: one handler per effect kind.
@@ -1731,7 +1736,7 @@ Deviations, each deliberate:
    merge call GitHub refuses as behind is T16's `refresh_branch`.
 6. **T16's `behind` and `conflict` are conflict-family repairs.** The landing family
    registers no `refresh_branch` or `dispatch_conflict_fix` of its own: both are the
-   conflict family's handlers (`conflict-retry-effects.ts`, §13.4), so the refresh
+   conflict family's handlers (`handlers/conflict.ts`, §13.4), so the refresh
    runs `refreshBehindPr` pinned to the bound head and the agent attempt's task is
    filed against its ledger row, exactly as from any other conflict door.
 7. **The doc-fix spec recheck stays in the webhook** for every merged worker PR: it
@@ -2055,9 +2060,9 @@ writer, so dropping it in this release would break a live path:
 
 | Column, index or key | Still used by | Why it cannot go yet |
 |---|---|---|
-| `tasks.reviewer_retry_pr_number`, `reviewer_retry_head_sha`, index `tasks_reviewer_retry_event_unique` | the legacy request-changes fix insert (workers route), `supersession.ts` / `supersession-store.ts`, and the kernel's own `dispatch_fix` (`review-effects.ts` stamps the head on the first fix at a head) | The kill switch hands a released delivery back to legacy, and legacy dedupes its fix insert on this index. The kernel stamps the first fix so that a legacy insert after a release still collides. |
+| `tasks.reviewer_retry_pr_number`, `reviewer_retry_head_sha`, index `tasks_reviewer_retry_event_unique` | the legacy request-changes fix insert (workers route), `supersession.ts` / `supersession-store.ts`, and the kernel's own `dispatch_fix` (`fixWork` in `review-effects.ts` stamps the head on the first fix at a head) | The kill switch hands a released delivery back to legacy, and legacy dedupes its fix insert on this index. The kernel stamps the first fix so that a legacy insert after a release still collides. |
 | `tasks.ci_retry_pr_number`, `ci_retry_head_sha`, index `tasks_ci_retry_event_unique` (and the pending-retry index beside it) | `ci-failure-retry.ts` (legacy path and the cap count), `retry-ci` route, `apply-recommendation` route, `pr-list.ts` CI-fix counts, the kernel's `ci-retry-effects.ts` | The same kill-switch dedupe, and the CI-fix attempt count `list_prs` reports. |
-| `tasks.conflict_retry_pr_number`, `conflict_retry_head_sha`, index `tasks_conflict_retry_event_unique` | `conflict-retry.ts`, `dead-zone-sweep.ts`, `pr-attention.ts`, the delivery view's own remediation lookup (`delivery-view.ts`), the kernel's `conflict-retry-effects.ts` | S37's remediation join reads `conflict_retry_pr_number`. Legacy conflict retries dedupe on the index. |
+| `tasks.conflict_retry_pr_number`, `conflict_retry_head_sha`, index `tasks_conflict_retry_event_unique` | `conflict-retry.ts`, `dead-zone-sweep.ts`, `pr-attention.ts`, the delivery view's own remediation lookup (`delivery-view.ts`), the kernel's `conflictFixWork` (`conflict-retry-effects.ts`) | S37's remediation join reads `conflict_retry_pr_number`. Legacy conflict retries dedupe on the index. |
 | `tasks.context.iteration` / `maxIterations` (and `conflictIteration`) | the runner's prompt builder (`apps/runner/src/prompt-builder.ts`, deployed by release), the activity comment's attempt line, `pr-attention.ts`, legacy CI and review paths | No decision reads them for a kernel-owned delivery (§13.1). The runner reads them to word its prompt, and fix tasks created by kernel effects keep carrying them for it (§14, kill switch semantics). |
 
 The safe order is the schema-change skill's. First, a release removes the
@@ -2184,7 +2189,7 @@ deferred behind its own lineage's PR.
 
 **Deviations and remaining gaps.**
 
-1. The kernel CI fix (`ci-retry-effects.ts`) does not read the live PR, so it
+1. The kernel CI fix (`ciFixWork`, `ci-retry-effects.ts`) does not read the live PR, so it
    carries no `repairTarget`. It resumes the worker's branch as before. Legacy CI
    retries and every conflict and migration attempt carry the stamp.
 2. A supersession stated only in prose (a PR body saying "Supersedes #N") is not
@@ -2399,7 +2404,7 @@ type".
    - `repairTarget: { prNumber, headRef, headSha, baseRef }` (§13.11 rule 1), so it
      resumes the PR head even when that head is a mission branch far ahead of trunk.
 
-   *Today:* both paths copy `owner.description` (`review-effects.ts` `dispatch_fix`,
+   *Today:* both paths copy `owner.description` (`review-effects.ts` `fixWork`, filed by `dispatch_fix`,
    `workers/[id]/route.ts`). Neither stamps `repairTarget`, and the fix inherits the
    owner's null role.
 4. **Completion evidence has three separate states.** A task ending is not a repair
@@ -2540,7 +2545,10 @@ purpose.
 `kernelEnabled(gitConfig)` in TypeScript and `kernelOnSql(gitConfigColumn)` in SQL
 (`apps/web/src/lib/workflow/authority.ts`); no other code parses it, and a test runs
 both over the same value forms and requires them to agree
-(`apps/web/tests/db/workflow-probe-killswitch.test.ts`). The kernel is **on** only
+(`apps/web/tests/db/workflow-probe-killswitch.test.ts`). The outbox drain reads it
+through the kernel's `Policy` port (`builddPolicy`, `kernel-policy.ts`, over
+`kernelEnabled`), not in the effect claim statement, which reports only the
+delivery row's own authority. The kernel is **on** only
 when the key is absent, JSON `null`, `true`, or the string `'true'` or `'on'` (a
 `git_config` that is null or not an object reads as absent). **Every other value is
 off**: `false`, `'false'`, `'off'`, and anything unrecognised (`'no'`, `'TRUE'`,
@@ -2614,8 +2622,9 @@ attempt ends (§6.5 row 1). A delivery the switch releases before then has had n
 review from either authority, and legacy files a first review only when the PR opens,
 which has passed. So when an owner attempt ends on a released delivery that has no
 round, in a workspace whose switch is off, for a PR that is still open, the seam
-(`handOffToLegacy`) runs legacy's first review through the reviews module's
-`LEGACY_FIRST_REVIEW` slot: one reviewer task at the live head with no
+(`handOffToLegacy`, the package's `handOffToLegacyOn`, reading the switch from `Policy`) runs
+legacy's first review through the reviews module's `HandOff` port (`handOffHost`,
+`review-handoff.ts`): one reviewer task at the live head with no
 `workflowRound` (legacy's), announced and woken, and the PR's `review_queued` line; a
 delivery opened with a pre-flight finding gets legacy's answer to that instead, a
 `human_review_required` line and a team notice. The policy is not re-run, because the

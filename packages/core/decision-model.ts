@@ -56,6 +56,7 @@ const KIND_LABELS = {
   'buildd.early_release': 'Early release',
   'buildd.spec_duplicate': 'Spec duplicates',
   'buildd.spec_area': 'Spec areas',
+  'buildd.spec_taxonomy': 'Spec taxonomy',
 } as const;
 
 export type DecisionModelKind = keyof typeof KIND_LABELS;

@@ -1,4 +1,4 @@
-import type { RunnerModelAuthSource } from '@buildd/shared';
+import type { RunnerModelAuthSource, RunnerCodexAuthSource } from '@buildd/shared';
 
 export interface ModelAuthLabel {
   text: string;
@@ -22,5 +22,18 @@ export function modelAuthLabel(source: RunnerModelAuthSource | null | undefined)
     case 'api_key': return { text: 'Uses an API key (billed per token)', warning: false };
     case 'none': return { text: 'No model login on this machine. Run', command: 'claude login', warning: true };
     default: return NOT_REPORTED;
+  }
+}
+
+/**
+ * The Codex line for a runner row (docs/specs/runner-model-auth-source.md
+ * R-13). Null for `none` and for not reported: Codex is optional, so a
+ * Claude-only runner shows no Codex line at all.
+ */
+export function codexAuthLabel(source: RunnerCodexAuthSource | null | undefined): string | null {
+  switch (source) {
+    case 'machine_login': return "Codex: uses this machine's Codex login";
+    case 'api_key': return 'Codex: uses an OpenAI API key (billed per token)';
+    default: return null;
   }
 }

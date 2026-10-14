@@ -9,16 +9,17 @@
  * state); otherwise the effect is done as `skipped:superseded`.
  *
  * The kill switch (§14): an effect claimed for a delivery the kernel no longer
- * owns (released to legacy, or switched off, which the drain releases there and
- * then) still drains, except the kinds in `KERNEL_ONLY_EFFECTS`: those act on
+ * owns (released to legacy, or switched off — read from `Policy` for the
+ * delivery's workspace, never from the store — which the drain releases there
+ * and then) still drains, except the kinds in `KERNEL_ONLY_EFFECTS`: those act on
  * GitHub for the kernel's own landing and repair loop and are done as
  * `skipped:legacy_owns`.
  *
- * Handlers are the host's for now (apps/web composes them); the drain only
- * needs their shape.
+ * Handlers are the package's (`handlers/`, on the host's ports) plus the
+ * families the host still owns; the drain only needs their shape.
  */
 import type { EffectKind } from './commands';
-import type { ClaimedEffect, EffectSnapshot, Store } from './ports';
+import type { ClaimedEffect, EffectSnapshot, Policy, Store } from './ports';
 
 export const EFFECT_LEASE_MS = 120_000;
 export const EFFECT_MAX_ATTEMPTS = 8;
@@ -45,7 +46,7 @@ export const CRITICAL_EFFECTS: ReadonlySet<EffectKind> = new Set([
 export const UNGATED_EFFECTS: ReadonlySet<EffectKind> = new Set([
   'render_activity', 'stamp_pr_rows', 'notify', 'mission_note', 'wake_mission', 'release_attribution',
   'finalize_mission_pr', 'emit_pr_merged', 'verify_merge', 'cancel_open_attempts', 'scan_supersession',
-  'project_supersession', 'post_review', 'escalate_exhaustion', 'gate_event',
+  'project_supersession', 'post_review', 'escalate_exhaustion', 'gate_event', 'capture_ci_evidence',
 ]);
 
 /**
@@ -109,6 +110,8 @@ const consoleLog: DrainLog = {
 
 export interface DrainOptions {
   handlers: EffectHandlers;
+  /** Where the kill switch is read (`kernelEnabled`), once per workspace per drain. */
+  policy: Policy;
   limit?: number;
   deliveryId?: string | null;
   /** What runs for each effect that just went dead. Its failure never fails the drain. */
@@ -117,8 +120,9 @@ export interface DrainOptions {
   log?: DrainLog;
 }
 
-function withSnapshot(e: ClaimedEffect, s: EffectSnapshot): ClaimedEffect {
-  return { ...e, delivery: s.delivery, transition: s.transition, authority: s.authority ?? 'kernel' };
+function withSnapshot(e: ClaimedEffect, s: EffectSnapshot, kernelOn: boolean): ClaimedEffect {
+  const recorded = s.authority === 'legacy' ? 'legacy' : 'kernel';
+  return { ...e, delivery: s.delivery, transition: s.transition, authority: recorded === 'kernel' && !kernelOn ? 'switched_off' : recorded };
 }
 
 /** Keeps a running handler's lease alive (fenced to its attempt), so a slow handler is not re-claimed under it. */
@@ -137,6 +141,14 @@ export async function drainEffects(store: Store, opts: DrainOptions): Promise<Dr
   const rows = await store.claimDueEffects({ limit: opts.limit ?? 25, leaseMs, deliveryId: opts.deliveryId ?? null });
   const summary: DrainSummary = { claimed: rows.length, done: 0, skipped: 0, failed: 0, lost: 0, dead: [] };
   const released = new Set<string>();
+  const switches = new Map<string, Promise<boolean>>();
+  // No delivery row (or no workspace on it) reads as on: the snapshot's null delivery gates the effect instead.
+  const kernelOn = (workspaceId: string | null | undefined): Promise<boolean> => {
+    if (!workspaceId) return Promise.resolve(true);
+    let p = switches.get(workspaceId);
+    if (!p) switches.set(workspaceId, (p = opts.policy.forWorkspace(workspaceId).then((x) => x.kernelEnabled)));
+    return p;
+  };
   for (const claimed of rows) {
     // §10.3: renew this row's lease, fenced to this attempt, before touching it. Nothing back
     // means the batch lease ran out and another drain holds the row now: its attempt answers.
@@ -145,7 +157,7 @@ export async function drainEffects(store: Store, opts: DrainOptions): Promise<Dr
       summary.lost++;
       continue;
     }
-    const e = withSnapshot(claimed, renewed);
+    const e = withSnapshot(claimed, renewed, renewed.authority === 'legacy' ? true : await kernelOn(renewed.delivery?.workspaceId));
     if (e.authority === 'switched_off' && !released.has(e.deliveryId)) {
       // §14: the first kernel touch after switch-off releases the delivery (sticky).
       if (await store.releaseToLegacy(e.deliveryId)) log.log(`[workflow] delivery ${e.deliveryId} released to legacy (workflowKernel kill switch, effect drain)`);

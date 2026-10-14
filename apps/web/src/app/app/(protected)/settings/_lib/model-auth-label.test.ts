@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { modelAuthLabel } from './model-auth-label';
+import { modelAuthLabel, codexAuthLabel } from './model-auth-label';
 
 describe('modelAuthLabel (docs/specs/runner-model-auth-source.md AC-7)', () => {
   it('names each reported source in words', () => {
@@ -19,5 +19,19 @@ describe('modelAuthLabel (docs/specs/runner-model-auth-source.md AC-7)', () => {
 
   it('treats an unlisted value as not reported', () => {
     expect(modelAuthLabel('sk-something' as never)).toEqual({ text: 'Model login: not reported', warning: false });
+  });
+});
+
+describe('codexAuthLabel (docs/specs/runner-model-auth-source.md R-13, AC-13)', () => {
+  it('names a reported Codex login in words', () => {
+    expect(codexAuthLabel('machine_login')).toBe("Codex: uses this machine's Codex login");
+    expect(codexAuthLabel('api_key')).toBe('Codex: uses an OpenAI API key (billed per token)');
+  });
+
+  it('shows nothing for none or not reported, so a Claude-only runner looks unchanged', () => {
+    expect(codexAuthLabel('none')).toBeNull();
+    expect(codexAuthLabel(null)).toBeNull();
+    expect(codexAuthLabel(undefined)).toBeNull();
+    expect(codexAuthLabel('sk-something' as never)).toBeNull();
   });
 });

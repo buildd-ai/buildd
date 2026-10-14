@@ -239,6 +239,8 @@ export async function GET(req: NextRequest) {
           trackedBranch: hb.trackedBranch || null,
           // Which model login the runner reported (a label, never a credential).
           modelAuthSource: hb.modelAuthSource ?? null,
+          // And its Codex login, same rule (docs/specs/runner-model-auth-source.md R-12).
+          codexAuthSource: hb.codexAuthSource ?? null,
           // Only meaningful for a `main`-tracking runner (Vercel deploys from
           // `main` only) with both sides known; otherwise null, not a guess.
           upToDateWithDeployed: hb.trackedBranch === 'main' && hb.diskCommit && deployedSha

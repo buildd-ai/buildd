@@ -94,6 +94,34 @@ describe('classifySpecArea', () => {
     expect(await classifySpecArea(input, answered('unsure', 0.99))).toMatchObject({ ran: true, answer: 'unsure', confident: false });
   });
 
+  it('the measured state is unchanged without a hint, even when areas declare domains', async () => {
+    const pinned = specAreaState({ card: { title: 'Partial refunds', summary: 'Refund part of a card payment.', criteria: ['A refund returns that amount.'] }, areas: [
+      { id: 'p', title: 'Shop', scope: 'product', charter: 'Everything the shop does.', members: [], memberCount: 0 },
+      { id: 'pay', title: 'Payments', scope: 'domain', charter: 'Charging cards.', members: ['Refunds', 'Card capture'], memberCount: 2 },
+    ], omitted: 3 });
+    expect(pinned).toBe('New spec: Partial refunds\nRefund part of a card payment.\n- A refund returns that amount.\n\nAreas of this product (2 shown, 3 more not shown):\n'
+      + '[1] Shop (the whole product): Everything the shop does. Holds no specs yet.\n'
+      + '[2] Payments: Charging cards. Holds 2 specs, such as: Refunds; Card capture.\n');
+    let seen: any = null;
+    const judge = async (features: any) => { seen = features; return answered('unsure', 0.5).judge(features); };
+    await classifySpecArea({ ...input, areas: [{ ...PAYMENTS, domains: ['payments'] }, SEARCH] }, { judge, teamOf: async () => 'team' });
+    const state = specAreaState(seen);
+    expect(state).not.toContain('domain');
+    expect(seen.hint).toBeUndefined();
+  });
+
+  it('an import passes its domain and the areas\' declared domains as a hint in the state, the question unchanged', async () => {
+    let seen: any = null;
+    const judge = async (features: any) => { seen = features; return answered('unsure', 0.5).judge(features); };
+    await classifySpecArea({ ...input, areas: [{ ...PAYMENTS, domains: ['payments', 'billing'] }, SEARCH], hint: { domain: 'billing' } }, { judge, teamOf: async () => 'team' });
+    const state = specAreaState(seen);
+    expect(state).toContain('The repo file names its domain: billing');
+    expect(state).toContain('Payments: Charging cards, refunds and payouts. Holds 2 specs, such as: Refunds; Card capture. Declares domains: payments, billing.');
+    expect(state).not.toContain('Search: Finding products by text and filters. Holds 1 spec, such as: Facets. Declares');
+    // The measured question text (AREA_FILE_P was set on it) is not touched by the hint.
+    expect(specAreaKind.questions.area.instructions).toBe('A team keeps its specs in one tree: the product, its areas, and the specs under each area. Decide which listed entry the New spec belongs under, by the part of the product it is about (the entry\'s description and the specs it already holds), not by shared words. Choose the whole-product entry only when no single area covers the spec. Choose a number only if that entry is in the list.');
+  });
+
   it('AC-69/AC-70: an unmeasured model, no key, a provider error or a throw does not run, and says why', async () => {
     const fb = (cause: string) => ({ judge: async () => ({ response: { decision: 'unsure', confidence: null, source: 'fallback', fallbackCause: cause } as any, recordId: null }), teamOf: async () => 'team' });
     expect(await classifySpecArea(input, fb('unmeasured_model'))).toMatchObject({ ran: false, reason: expect.stringContaining('not measured') });

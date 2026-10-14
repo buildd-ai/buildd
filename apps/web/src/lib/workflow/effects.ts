@@ -10,8 +10,9 @@
  * state); otherwise the effect is done as `skipped:superseded`.
  *
  * The kill switch (§14): an effect claimed for a delivery the kernel no longer
- * owns (released to legacy, or in a workspace whose switch is off, which the
- * claim releases there and then) still drains, except the kinds in
+ * owns (released to legacy, or in a workspace whose switch is off — read from
+ * `Policy` by the drain, not by the claim — which the drain releases there and
+ * then) still drains, except the kinds in
  * `KERNEL_ONLY_EFFECTS`: those act on GitHub for the kernel's own landing and
  * repair loop (the merge, a branch refresh, a renumber push, push recovery)
  * and are done as `skipped:legacy_owns`. Whatever a draining handler then
@@ -26,8 +27,8 @@ import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { drainEffects, effectRetry, EFFECT_LEASE_MS, type DeadEffect, type DrainSummary, type EffectHandlers } from '@buildd/workflow-kernel/effects';
 import type { EffectKind } from './commands';
+import type { Policy } from '@buildd/workflow-kernel/ports';
 import type { Exec } from './kernel';
-import { kernelOnSql } from './authority';
 
 // The outbox rules (lease, backoff, dead-lettering, §10.4 gating, the §14
 // kernel-only kinds) and the drain loop are the package's; this file keeps
@@ -64,11 +65,14 @@ RETURNING e.id, e.delivery_id, e.transition_id, e.kind, e.dedupe_key, e.payload,
 SELECT * FROM claimed ORDER BY not_before, id`;
 }
 
-/** What a runner re-checks before acting: the delivery, who decides for it, and the queuing transition. */
+/**
+ * What a runner re-checks before acting: the delivery (with its workspace), the
+ * authority its own row records, and the queuing transition. The kill switch is
+ * not read here: the drain asks `Policy` for the delivery's workspace (§14).
+ */
 function effectSnapshotSql(): SQL {
-  return sql`(SELECT jsonb_build_object('state', d.state, 'version', d.version) FROM workflow_deliveries d WHERE d.id = e.delivery_id) AS delivery,
-  (SELECT CASE WHEN d.authority = 'legacy' THEN 'legacy' WHEN ${kernelOnSql(sql`w.git_config`)} THEN 'kernel' ELSE 'switched_off' END
-     FROM workflow_deliveries d JOIN workspaces w ON w.id = d.workspace_id WHERE d.id = e.delivery_id) AS authority,
+  return sql`(SELECT jsonb_build_object('state', d.state, 'version', d.version, 'workspace_id', d.workspace_id) FROM workflow_deliveries d WHERE d.id = e.delivery_id) AS delivery,
+  (SELECT d.authority FROM workflow_deliveries d WHERE d.id = e.delivery_id) AS authority,
   (SELECT jsonb_build_object('to_state', tr.to_state, 'to_version', tr.to_version) FROM workflow_transitions tr WHERE tr.id = e.transition_id) AS transition`;
 }
 
@@ -132,13 +136,15 @@ const defaultOnDead: OnDeadEffect = async (dead, exec) => {
 };
 
 /** Drain up to `limit` due effects once (the package's `drainEffects` on the Postgres store). Handlers MUST be idempotent (§10.2). */
-export async function runEffects(opts: { handlers: EffectHandlers; limit?: number; exec?: Exec; deliveryId?: string | null; onDead?: OnDeadEffect }): Promise<DrainSummary> {
+export async function runEffects(opts: { handlers: EffectHandlers; limit?: number; exec?: Exec; deliveryId?: string | null; onDead?: OnDeadEffect; policy?: Policy }): Promise<DrainSummary> {
   const exec = opts.exec ?? dbExec;
   const onDead = opts.onDead ?? defaultOnDead;
   // Loaded on use: the adapter imports every statement module, this one included.
   const { postgresStore } = await import('./postgres-store');
+  const policy = opts.policy ?? (await import('./kernel-policy')).builddPolicy(exec);
   return drainEffects(postgresStore(exec), {
     handlers: opts.handlers,
+    policy,
     limit: opts.limit ?? 25,
     deliveryId: opts.deliveryId ?? null,
     leaseMs: EFFECT_LEASE_MS,

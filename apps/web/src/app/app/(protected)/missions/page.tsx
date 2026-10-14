@@ -179,12 +179,15 @@ export default async function MissionsPage({
           Missions
         </h1>
         <div className="ml-auto flex flex-wrap items-center gap-3">
-          {/* Releases left the primary nav; this is its door. */}
+          {/* Releases and specs have no nav item; these are their doors. */}
           {planEnabled && (
             <Link href="/app/missions/plan" data-testid="missions-plan-link" className="btn btn-quiet h-11 md:h-8">
               Plan ›
             </Link>
           )}
+          <Link href="/app/specs" data-testid="missions-specs-link" className="btn btn-quiet h-11 md:h-8">
+            Specs
+          </Link>
           <Link href="/app/releases" data-testid="missions-releases-link" className="btn btn-quiet h-11 md:h-8">
             Releases
           </Link>

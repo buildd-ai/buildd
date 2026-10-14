@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { SUBSCRIBERS, COMPLETION_POLICIES, PR_OPENED_POLICY } from './modules';
+import { SUBSCRIBERS, COMPLETION_POLICIES, PR_OPENED_POLICY, workflowKernelHooks } from './modules';
 import { workflowKernel } from './lib/workflow/kernel-ports';
 import { EFFECT_KINDS } from './lib/workflow/commands';
 import { withPrFactEffects } from './lib/workflow/pr-fact-effects';
@@ -122,6 +122,43 @@ describe('composition root', () => {
     const production = withPrFactEffects((await workflowKernel()).handlers); // as seam.ts composes it
     const missing = EFFECT_KINDS.filter(k => typeof production[k] !== 'function');
     expect(missing).toEqual([]);
+  });
+
+  // There is no host handler map any more: every family of a shared kind is the package's
+  // (conformance: 'handlers: every family of a shared kind reaches its own handler').
+  it('the production composition is the package\'s handlers alone, plus core\'s fact-cache projection', async () => {
+    const { KERNEL_HANDLED_EFFECTS } = await import('@buildd/workflow-kernel/handlers/index');
+    const composed = Object.keys((await workflowKernel()).handlers).sort();
+    expect(composed).toEqual([...KERNEL_HANDLED_EFFECTS].sort());
+    expect(EFFECT_KINDS.filter(k => !composed.includes(k))).toEqual(['stamp_pr_rows']);
+  });
+
+  // The team-notification adapter used to cast the kind unchecked; notify's routing would drop an unknown one silently.
+  it('the kernel\'s team notifications refuse an alert kind notify does not know', async () => {
+    const team = workflowKernelHooks().notify.team;
+    await expect(team({ workspaceId: 'w', deliveryId: 'd', kind: 'needs_attention', title: 't' })).rejects.toThrow('unknown team alert kind: needs_attention');
+  });
+
+  // The seam's legacy hand-off injects its db handle and repo lookup; the hand-off port used to ignore both.
+  it('the hand-off port runs on the db handle and repo lookup the caller injected', async () => {
+    const statements: unknown[] = [];
+    const looked: string[] = [];
+    const handOff = workflowKernelHooks({
+      exec: async (q) => { statements.push(q); return { rows: [{ id: 'o1' }] }; },
+      repoFor: async (ws) => { looked.push(ws); return null; },
+    }).handOff;
+    const d = { id: 'd1', workspaceId: 'w1', ownerTaskId: 'o1', repoFullName: 'acme/widgets', prNumber: 3 } as never;
+    expect(await handOff.claim(d)).toBe(true);
+    await handOff.unclaim(d);
+    expect(statements.length).toBe(2);
+    await expect(handOff.firstReview({ d, headSha: 'H1', baseRef: 'dev', policyEvidence: null })).rejects.toThrow('no GitHub installation for the workspace');
+    expect(looked).toEqual(['w1']);
+  });
+
+  it('the activity render is loaded on its first render, not with the composition root', () => {
+    const src = readFileSync(join(import.meta.dir, 'modules.ts'), 'utf8');
+    expect(src).not.toMatch(/^import [^;]*from '@\/lib\/workflow\/pr-activity-effects'/m);
+    expect(src).toContain("await import('@/lib/workflow/pr-activity-effects')");
   });
 
   it('labels are unique, so a page names exactly one step', () => {

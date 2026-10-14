@@ -22,7 +22,8 @@ mock.module('next/navigation', () => ({
 
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
-const { default: SpecPage, readingLine } = await import('./SpecPage');
+const { default: SpecPage, readingLine, withoutRepeatedTitle } = await import('./SpecPage');
+const { askButtonHiddenSnapshot } = await import('@/lib/ask-button-hidden');
 
 const SPEC = '11111111-1111-4111-8111-111111111111';
 let container: HTMLElement;
@@ -69,24 +70,39 @@ const base = {
 const q = (id: string) => container.querySelector(`[data-testid="${id}"]`) as HTMLElement | null;
 
 describe('readingLine', () => {
-  it('names the approved revision and the one waiting', () => {
-    expect(readingLine(base)).toBe("You're reading revision 1, the approved one. Revision 2 is waiting for approval.");
+  it('says nothing when reading the approved revision with nothing waiting: the header already says it', () => {
+    expect(readingLine({ ...base, waiting: null })).toBeNull();
+  });
+  it('names only what waits when reading the approved revision', () => {
+    expect(readingLine({ ...base, canApprove: false })).toBe('Revision 2 waits for approval.');
+    expect(readingLine(base)).toBe('Revision 2 waits for your approval.');
   });
   it('says nothing is approved yet for a never-approved draft', () => {
     expect(readingLine({ ...base, spec: { ...base.spec, approvedRevision: null }, reading: { revision: 2, approved: false, isHead: true }, waiting: 2 }))
-      .toBe("You're reading revision 2, a draft. Nothing is approved yet.");
+      .toBe('Nothing is approved yet.');
   });
-  it('names the revision in force when reading another one', () => {
+  it('names the approved revision when reading another one', () => {
     expect(readingLine({ ...base, reading: { revision: 2, approved: false, isHead: true } }))
-      .toBe("You're reading revision 2, which is not approved. Revision 1 is in force.");
+      .toBe('This is revision 2. Revision 1 is the approved one.');
+  });
+});
+
+describe('withoutRepeatedTitle', () => {
+  it('drops a first heading that only repeats the title, and keeps any other', () => {
+    expect(withoutRepeatedTitle('# Checkout\n\nBody', 'Checkout')).toBe('Body');
+    expect(withoutRepeatedTitle('# **Checkout**\nBody', 'checkout')).toBe('Body');
+    expect(withoutRepeatedTitle('# Overview\n\nBody', 'Checkout')).toBe('# Overview\n\nBody');
+    expect(withoutRepeatedTitle('Intro\n# Checkout', 'Checkout')).toBe('Intro\n# Checkout');
   });
 });
 
 describe('SpecPage', () => {
   it('renders the approved revision, its history, parent and repo references', () => {
     act(() => root.render(<SpecPage view={base} />));
-    expect(q('spec-page-reading')!.textContent).toContain('revision 1, the approved one');
+    expect(q('spec-page-reading')!.textContent).toBe('Revision 2 waits for your approval.');
     expect(q('spec-page-body')!.querySelector('strong')!.textContent).toBe('Totals');
+    // The body's own "# Checkout" would repeat the page title right under it.
+    expect(q('spec-page-body')!.querySelector('h1')).toBeNull();
     expect(q('spec-page-parent')!.querySelector('a')!.getAttribute('href')).toBe('/app/specs/parent-id');
     const ref = q('spec-page-repo-refs')!.querySelector('a')!;
     expect(ref.textContent).toBe('docs/specs/checkout.md @ abcdef123456');
@@ -96,6 +112,10 @@ describe('SpecPage', () => {
     expect(revs[0].textContent).toContain('by an agent');
     expect(revs[0].textContent).toContain('Pick the currency');
     expect(revs[1].querySelector('[data-testid="spec-page-approved-by"]')!.textContent).toContain('Approved by Max');
+    expect(revs[1].textContent).toContain('in force');
+    expect(revs[0].textContent).toContain('waiting');
+    expect(revs[1].querySelector('a')!.getAttribute('aria-current')).toBe('page');
+    expect(revs[0].querySelector('a')!.getAttribute('aria-current')).toBeNull();
     expect(q('spec-page-review')!.getAttribute('href')).toBe(`/app/specs/${SPEC}?review=1`);
     expect(q('spec-page-approve')).toBeNull();
   });
@@ -187,10 +207,25 @@ describe('SpecPage', () => {
     expect(q('spec-page-filing')).toBeNull();
   });
 
+  it('the approval holds the Ask corner: the Ask button hides while it shows, and comes back after', () => {
+    act(() => root.render(<SpecPage view={base} />));
+    expect(q('spec-page-action-dock')!.querySelector('[data-testid="spec-page-review"]')).not.toBeNull();
+    expect(askButtonHiddenSnapshot()).toBe(true);
+    act(() => root.render(<SpecPage view={{ ...base, waiting: null }} />));
+    expect(q('spec-page-action-dock')).toBeNull();
+    expect(askButtonHiddenSnapshot()).toBe(false);
+  });
+
+  it('with nothing waiting, reading the approved revision has no reading line', () => {
+    act(() => root.render(<SpecPage view={{ ...base, waiting: null }} />));
+    expect(q('spec-page-reading')).toBeNull();
+  });
+
   it('a reader who may not approve sees no approve action', () => {
     act(() => root.render(<SpecPage view={{ ...base, canApprove: false }} />));
     expect(q('spec-page-review')).toBeNull();
     expect(q('spec-page-approve')).toBeNull();
+    expect(askButtonHiddenSnapshot()).toBe(false);
   });
 
   it('reviewing sends exactly one approve for the waiting revision at the rendered version', async () => {

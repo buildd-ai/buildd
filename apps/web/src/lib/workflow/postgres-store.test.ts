@@ -8,7 +8,7 @@
 import { describe, expect, test } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
-import { findFactRecordSql, isUniqueViolation, postgresStore, toClaimedEffect } from './postgres-store';
+import { findFactRecordSql, isUniqueViolation, linkAttemptTaskSql, linkRoundReviewerSql, postgresStore, toClaimedEffect } from './postgres-store';
 import type { Exec } from './kernel';
 
 const render = (q: SQL) => new PgDialect().sqlToQuery(q);
@@ -24,16 +24,36 @@ describe('findFactRecordSql', () => {
   });
 });
 
+describe('linkAttemptTaskSql', () => {
+  test('binds only a ledger row with no task yet', () => {
+    const { sql: text, params } = render(linkAttemptTaskSql('a1', 't1'));
+    expect(text).toContain('UPDATE workflow_attempts SET task_id = $1::uuid, updated_at = now()');
+    expect(text).toContain('WHERE id = $2::uuid AND task_id IS NULL');
+    expect(params).toEqual(['t1', 'a1']);
+  });
+});
+
+describe('linkRoundReviewerSql', () => {
+  test('binds only a round with no reviewer yet', () => {
+    const { sql: text, params } = render(linkRoundReviewerSql('r1', 't1'));
+    expect(text).toContain('UPDATE workflow_review_rounds SET reviewer_task_id = $1::uuid, updated_at = now()');
+    expect(text).toContain('WHERE id = $2::uuid AND reviewer_task_id IS NULL');
+    expect(params).toEqual(['t1', 'r1']);
+  });
+});
+
 describe('row mapping', () => {
   test('a claimed row maps authority, delivery and transition exactly as the drain reads them', () => {
     const e = toClaimedEffect({
       id: 'e1', delivery_id: 'd1', transition_id: 't1', kind: 'dispatch_fix', dedupe_key: 'k', payload: null, attempt_count: '2',
-      delivery: { state: 'FIXING', version: '4' }, transition: { to_state: 'FIXING', to_version: 4 }, authority: 'switched_off',
+      delivery: { state: 'FIXING', version: '4', workspace_id: 'w1' }, transition: { to_state: 'FIXING', to_version: 4 }, authority: 'legacy',
     });
     expect(e).toEqual({
       id: 'e1', deliveryId: 'd1', transitionId: 't1', kind: 'dispatch_fix', dedupeKey: 'k', payload: {}, attemptCount: 2,
-      delivery: { state: 'FIXING', version: 4 }, transition: { toState: 'FIXING', toVersion: 4 }, authority: 'switched_off',
+      delivery: { state: 'FIXING', version: 4, workspaceId: 'w1' }, transition: { toState: 'FIXING', toVersion: 4 }, authority: 'legacy',
     });
+    // The store reports only the row's own authority: the kill switch is the drain's Policy.
+    expect(toClaimedEffect({ id: 'e', delivery_id: 'd', transition_id: 't', kind: 'notify', dedupe_key: 'k', delivery: null, transition: null, authority: 'switched_off' }).authority).toBe('kernel');
     expect(toClaimedEffect({ id: 'e', delivery_id: 'd', transition_id: 't', kind: 'notify', dedupe_key: 'k', delivery: null, transition: null, authority: null }))
       .toMatchObject({ delivery: null, transition: null, authority: 'kernel' });
   });

@@ -47,6 +47,16 @@ describe('manage_specs', () => {
     expect(WORKSPACE_SPEC_OPS).toContain('organize');
   });
 
+  it('a taxonomy dry run says which produced it, and lists the specs it left for a person', async () => {
+    const proposal = { product: { title: 'Shop' }, areas: [{ key: 'payments', title: 'Payments', charter: 'Specs about payments.', members: [{ specId: 's1', title: 'Refunds' }] }], unplaced: [{ specId: 's9', title: 'Test spec' }] };
+    api.mockResolvedValueOnce({ mode: 'taxonomy', dryRun: true, specs: 2, proposal, proposedBy: { source: 'words', label: 'word-based fallback, no model available', reason: 'this team has no decision-model key' } });
+    const words = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'organize' }, ctx()));
+    expect(words).toContain('Proposed by the word-based fallback, no model available (this team has no decision-model key).');
+    expect(words).toContain('Left for a person to place (1): Test spec (s9)');
+    api.mockResolvedValueOnce({ mode: 'taxonomy', dryRun: true, specs: 2, proposal, proposedBy: { source: 'model', model: 'typesafe/jev-1' } });
+    expect(out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'organize' }, ctx()))).toContain('Proposed by the decision model (typesafe/jev-1).');
+  });
+
   it('create_draft and get return the spec page URL, from appBaseUrl when set and buildd.dev otherwise', async () => {
     const run = async (action: string, c: ActionContext) => {
       api.mockResolvedValueOnce(action === 'get'
@@ -328,6 +338,31 @@ describe('manage_specs', () => {
     const last = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'import', dryRun: false, cursor: 'CUR123' }, ctx()));
     expect(JSON.parse(api.mock.calls[1][1].body)).toEqual({ workspaceId: WS, dryRun: false, cursor: 'CUR123' });
     expect(last).not.toContain('remain');
+  });
+
+  it('import text shows each file once, the classifier\'s suggestion for an Unfiled one, the fallback label, and a related spec as an explicit attach_to', async () => {
+    const REL = '33333333-3333-4333-8333-333333333333';
+    api.mockResolvedValueOnce({
+      dryRun: true, repo: 'acme/app', commitSha: 'a'.repeat(40), counts: { create: 3, reimport: 0, exists: 1, skip: 0 },
+      byArea: [
+        { area: 'Unfiled', areaSpecId: null, proposed: false, count: 2, by: null },
+        { area: 'Tasks and missions', areaSpecId: SPEC, proposed: false, count: 1, by: 'domain' },
+      ],
+      files: [
+        { path: 'docs/specs/task-page.md', action: 'exists', specId: SPEC, spec: { title: 'Task Page' }, area: null, existing: { specId: SPEC, title: 'Task Page', url: `https://buildd.dev/app/specs/${SPEC}`, matchedBy: 'title' } },
+        { path: 'docs/specs/decision-kinds.md', action: 'create', spec: { title: 'Decision Kinds' }, area: null, suggestion: { specId: 'd1', title: 'Decisions', answer: 'area', p: 0.8 }, placement: { by: 'classifier' } },
+        { path: 'docs/specs/claim-ordering.md', action: 'create', spec: { title: 'Claim Ordering' }, area: null, related: [{ specId: REL, title: 'Claim routing overview', url: `https://buildd.dev/app/specs/${REL}` }], placement: { by: 'classifier' }, suggestion: { specId: null, title: 'Unsure', answer: 'unsure', p: 0.4 } },
+        { path: 'docs/specs/runs.md', action: 'create', spec: { title: 'Runs' }, area: { specId: SPEC, title: 'Tasks and missions', proposed: false, by: 'domain' }, placement: { by: 'domain', reason: 'this team has no decision-model key' } },
+      ],
+    });
+    const r = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'import', attach_to: { 'docs/specs/claim-ordering.md': REL } }, ctx()));
+    expect(JSON.parse(api.mock.calls[0][1].body)).toEqual({ workspaceId: WS, attachTo: { 'docs/specs/claim-ordering.md': REL } });
+    expect(r.split('docs/specs/task-page.md').length - 1).toBe(1);
+    expect(r).not.toContain('create: Task Page');
+    expect(r).toContain('suggested: Decisions (d1) (p 0.80), below the filing bar, so it stays Unfiled');
+    expect(r).toContain(`related: "Claim routing overview" (${REL}) cites this path`);
+    expect(r).toContain(`attach_to: { "docs/specs/claim-ordering.md": "${REL}" }`);
+    expect(r).toContain('Tasks and missions (by domain, classifier unavailable: this team has no decision-model key)');
   });
 
   it('confirm_import POSTs the batch and passes an agent run\'s 403 through; an OAuth session is told where to confirm', async () => {

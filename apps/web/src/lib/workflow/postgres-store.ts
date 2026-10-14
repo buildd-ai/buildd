@@ -42,13 +42,14 @@ export function isUniqueViolation(err: unknown): boolean {
   return /duplicate key value violates unique constraint/.test(String((err as Error)?.message ?? ''));
 }
 
+/** The row's own authority (the kill switch is the drain's `Policy`); no delivery row reads as `kernel`. */
 function toSnapshot(r: Row): EffectSnapshot {
-  const d = r.delivery as { state?: string; version?: number | string } | null;
+  const d = r.delivery as { state?: string; version?: number | string; workspace_id?: string | null } | null;
   const t = r.transition as { to_state?: string; to_version?: number | string } | null;
   return {
-    delivery: d && d.state ? { state: d.state as DeliveryState, version: Number(d.version) } : null,
+    delivery: d && d.state ? { state: d.state as DeliveryState, version: Number(d.version), workspaceId: d.workspace_id == null ? null : String(d.workspace_id) } : null,
     transition: t && t.to_state ? { toState: t.to_state as DeliveryState, toVersion: Number(t.to_version) } : null,
-    authority: r.authority === 'legacy' || r.authority === 'switched_off' ? r.authority : 'kernel',
+    authority: r.authority === 'legacy' ? 'legacy' : 'kernel',
   };
 }
 
@@ -71,6 +72,20 @@ export function findFactRecordSql(workspaceId: string, factKey: string): SQL {
 SELECT id, applied_transition_id, payload FROM workflow_facts
 WHERE workspace_id = ${workspaceId}::uuid AND fact_key = ${factKey}::text
 LIMIT 1`;
+}
+
+/** Bind a ledger row to the task filed for it; a row already bound keeps its task. */
+export function linkAttemptTaskSql(attemptId: string, taskId: string): SQL {
+  return sql`-- workflow:link_attempt_task
+UPDATE workflow_attempts SET task_id = ${taskId}::uuid, updated_at = now()
+WHERE id = ${attemptId}::uuid AND task_id IS NULL`;
+}
+
+/** Bind a review round to its reviewer task, once. */
+export function linkRoundReviewerSql(roundId: string, taskId: string): SQL {
+  return sql`-- workflow:link_round_reviewer
+UPDATE workflow_review_rounds SET reviewer_task_id = ${taskId}::uuid, updated_at = now()
+WHERE id = ${roundId}::uuid AND reviewer_task_id IS NULL`;
 }
 
 export function postgresStore(exec: Exec): Store {
@@ -139,6 +154,14 @@ export function postgresStore(exec: Exec): Store {
 
     async parkEffect(id, attemptCount, outcome, delayMs) {
       return (await rows(exec, parkEffectSql(id, attemptCount, outcome, delayMs))).length > 0;
+    },
+
+    async linkAttemptTask(attemptId, taskId) {
+      await exec(linkAttemptTaskSql(attemptId, taskId));
+    },
+
+    async linkRoundReviewer(roundId, taskId) {
+      await exec(linkRoundReviewerSql(roundId, taskId));
     },
 
     async insertFollowupEffect(e) {
