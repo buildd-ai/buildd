@@ -7,8 +7,8 @@ summary: Every Living Spec revision MUST stay immutable and no writer silently o
 domain: knowledge
 surfaces: [apps/web/src/lib/specs/store.ts, apps/web/src/lib/specs/provisional.ts, apps/web/src/lib/specs/approval.ts, apps/web/src/lib/specs/pin.ts, apps/web/src/app/api/specs/[specId]/route.ts]
 related: [artifacts-and-sharing, knowledge-ingest-pipeline]
-keywords: [living spec, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs, recall, knowledge graph, living_spec, area, taxonomy, spec_area, filed by buildd, backfill, generated repo copy, generated_from, spec import, spec index, provisional pin, build ahead of approval, attach_provisional, re-grade]
-verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-provisional-pin.test.ts, apps/web/src/lib/specs/provisional-text.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecIndex.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts, apps/web/tests/db/spec-neighbours.test.ts, apps/web/src/lib/specs/neighbours.test.ts, apps/web/tests/db/spec-duplicates.test.ts, apps/web/src/lib/spec-duplicate-decision.test.ts, apps/web/src/components/MarkdownContent.spec-surface.dom.test.tsx, apps/web/tests/db/spec-comments.test.ts, apps/web/src/components/SpecComments.dom.test.tsx, packages/spec-contract/src/repo-copy.test.ts, apps/web/tests/db/spec-repo-copy.test.ts, scripts/check-generated-specs.test.ts, apps/web/src/lib/specs/no-prod-data-scan.test.ts, apps/web/tests/db/spec-organize.test.ts, apps/web/src/lib/spec-area-decision.test.ts, apps/web/src/lib/specs/areas.test.ts, apps/web/src/app/app/dev/fixtures/spec-index-fixtures.test.ts]
+keywords: [living spec, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs, recall, knowledge graph, living_spec, area, taxonomy, spec_area, filed by buildd, backfill, generated repo copy, generated_from, spec import, spec index, provisional pin, build ahead of approval, attach_provisional, re-grade, confirm_import, import confirmation, repo_source]
+verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-provisional-pin.test.ts, apps/web/src/lib/specs/provisional-text.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecIndex.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts, apps/web/tests/db/spec-neighbours.test.ts, apps/web/src/lib/specs/neighbours.test.ts, apps/web/tests/db/spec-duplicates.test.ts, apps/web/src/lib/spec-duplicate-decision.test.ts, apps/web/src/components/MarkdownContent.spec-surface.dom.test.tsx, apps/web/tests/db/spec-comments.test.ts, apps/web/src/components/SpecComments.dom.test.tsx, packages/spec-contract/src/repo-copy.test.ts, apps/web/tests/db/spec-repo-copy.test.ts, scripts/check-generated-specs.test.ts, apps/web/src/lib/specs/no-prod-data-scan.test.ts, apps/web/tests/db/spec-organize.test.ts, apps/web/src/lib/spec-area-decision.test.ts, apps/web/src/lib/specs/areas.test.ts, apps/web/src/app/app/dev/fixtures/spec-index-fixtures.test.ts, apps/web/tests/db/spec-import.test.ts, packages/spec-contract/src/repo-import.test.ts, apps/web/src/app/api/specs/import/route.test.ts, apps/web/src/lib/specs/index-view-imported.test.ts]
 supersedes: []
 assertions:
   - id: approve-spec-revision
@@ -1252,10 +1252,10 @@ or wants to change.
 
 ## 18. Spec homes in practice: native source, generated repo copy
 
-**Status: partly built.** The opt-in, the generator, the metadata block, the
+**Status: built.** The opt-in, the generator, the metadata block, the
 generated PR and its landing exception, the hand-edit check, the short-id
-link and the pre-approval checks are built (R-12 to R-17, R-31 to R-35).
-Import and confirmation (R-18, R-19) are not.
+link and the pre-approval checks (R-12 to R-17, R-31 to R-35), and import
+with its bulk confirmation (R-18, R-19).
 
 **Capability statement**: In a workspace that opts in, the native spec MUST be
 the one source of its text, its repo file MUST be a generated copy that lands
@@ -1368,11 +1368,11 @@ at any time.
   THEN it does not land under the exception (`apps/web/tests/db/spec-repo-copy.test.ts`).
 - AC-76: GIVEN an imported, unconfirmed spec THEN no PR touches its file;
   GIVEN its file changes in the repo THEN a new imported revision is written
-  (test pending).
+  (`apps/web/tests/db/spec-import.test.ts`).
 - AC-77: GIVEN a batch of three imported specs, one whose file moved since
   import, WHEN a person confirms THEN two are approved and the third is
   reported stale and stays imported; GIVEN an agent token THEN 403
-  (test pending).
+  (`apps/web/tests/db/spec-import.test.ts`).
 - AC-78: GIVEN a workspace that has not opted in WHEN a spec is approved THEN
   no PR is filed (`apps/web/tests/db/spec-repo-copy.test.ts`).
 - AC-79: GIVEN a generated PR with a red check THEN it stays open, the
@@ -1386,7 +1386,9 @@ at any time.
 - `apps/web/src/lib/specs/metadata.ts` — `updateSpecMetadata`, over `PATCH /api/specs/[specId]/metadata` and `manage_specs action=metadata`
 - `apps/web/src/lib/specs/short-id.ts` — `resolveSpecShortId`, read by the spec page route
 - `scripts/check-generated-specs.ts` — the hand-edit check, run by `specs:lint` and the build job
-- `packages/core/db/schema.ts` — `specs.metadata`, `specs.repo_copy`, `spec_metadata_changes`
+- `packages/spec-contract/src/repo-import.ts` — `repoSpecForImport`: one repo file as an import (body minus mechanical fields, the metadata block, the domain hint) or why it is skipped
+- `apps/web/src/lib/specs/import.ts` — `importRepoSpecs` (dry run by default), `confirmImportedSpecs`, over `POST /api/specs/import`, `POST /api/specs/import/confirm` and `manage_specs action=import|confirm_import`
+- `packages/core/db/schema.ts` — `specs.metadata`, `specs.repo_copy`, `specs.repo_source`, `spec_revisions.imported`, `spec_metadata_changes`
 
 How it works: the copy's frontmatter is the body's own frontmatter verbatim,
 then a marker comment, then the metadata block (`status`, `owner`, `title`
@@ -1401,10 +1403,24 @@ title as lowercase words joined by hyphens. The PR also regenerates
 branch `buildd/spec-copy-<short id>`, which the generator force-updates, and
 it lands by squash once every check suite on the generator's commit passes.
 
+How import works: it reads `docs/specs/*.md` at one commit through the
+GitHub App (the default branch head unless a ref is named) and, per file,
+reports the spec it would create, the area whose domain matches its
+`domain:` (or the area that domain would name), its provenance (path,
+commit, blob, the last merged PR) and duplicates of approved specs (§13). It
+skips the meta files, superseded specs, generated copies and files already
+imported at the same blob. A dry run is the default and writes nothing.
+Written, revision 1 carries the provenance and the spec is filed under the
+matching area, or placed by organize (§17) when none matches. A duplicate is
+skipped unless named in `allowDuplicates`. Until confirmed, revise and
+approve refuse an imported spec (409 `spec_imported`) and no repo copy is
+generated. Confirmation re-reads the default branch and approves each spec
+whose blob is unchanged, recording who, when and "confirmed import of
+<path>@<short sha>" on the spec; its repo copy is then written over the file
+it came from. The specs index lists imported specs per area with "Confirm all
+in <area>" for a person who may approve.
+
 **Not yet**:
-- Import and confirmation (R-18, R-19): no repo spec becomes a native one, so
-  AC-76 and AC-77 have no test, and the spec page shows only the buildd line
-  of R-13.
 - An area cannot name a domain value other than its title's.
 - The R-34 preflight cannot run the identifier half of no-prod-data: that
   pattern is a repo secret only CI holds, so the generated PR's own run is

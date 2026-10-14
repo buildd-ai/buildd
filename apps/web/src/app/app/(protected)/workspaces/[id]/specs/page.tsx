@@ -22,7 +22,7 @@ export default async function WorkspaceSpecsPage({ params }: { params: Promise<{
           </Link>
           <h1 className="text-xl font-semibold text-text-primary">Specs</h1>
         </header>
-        <SpecIndex specs={view.index} options={{ now: view.now, proposals: view.proposals }} workspaceId={view.workspace.id} canAct={view.canAct} />
+        <SpecIndex specs={view.index} options={{ now: view.now, proposals: view.proposals }} workspaceId={view.workspace.id} canAct={view.canAct} canConfirm={view.canConfirm} />
       </div>
     </main>
   );
