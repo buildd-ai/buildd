@@ -1,6 +1,3 @@
-'use client';
-
-import { useState } from 'react';
 import type { DeviceConfirmDetails } from '@/lib/device-confirm';
 
 function formatRequested(iso: string): string {
@@ -11,50 +8,16 @@ function formatRequested(iso: string): string {
 }
 
 /**
- * Shows a pending device code and approves it ONLY when the user presses
- * "Approve device". Nothing here runs on render or mount: the code arriving
- * pre-filled in the URL is never enough to approve it.
+ * Shows a pending device code. Nothing here runs on render or mount: the code
+ * arriving pre-filled in the URL is never enough to approve it. "Choose
+ * workspaces" opens the runner consent page for the code
+ * (/api/auth/device/consent), where the person picks the workspaces, across
+ * their teams, the runner claims from; only its Connect runner approves.
  */
 export default function DeviceConfirm({ details }: { details: DeviceConfirmDetails }) {
-  const [status, setStatus] = useState<'idle' | 'submitting' | 'success' | 'error'>('idle');
-  const [errorMessage, setErrorMessage] = useState('');
+  const consentHref = `/api/auth/device/consent?code=${encodeURIComponent(details.userCode)}`;
 
-  async function approve() {
-    setStatus('submitting');
-    setErrorMessage('');
-    try {
-      const res = await fetch('/api/auth/device/approve', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: details.userCode, confirm: true }),
-      });
-      if (res.ok) {
-        setStatus('success');
-      } else {
-        const data = await res.json().catch(() => ({ error: 'Unknown error' }));
-        setErrorMessage(data.error || 'Failed to approve device');
-        setStatus('error');
-      }
-    } catch {
-      setErrorMessage('Could not reach buildd. This device is not approved.');
-      setStatus('error');
-    }
-  }
-
-  if (status === 'success') {
-    return (
-      <div
-        data-testid="device-approved"
-        className="text-center mb-4 bg-status-success/10 border border-status-success/20 rounded-lg p-4 text-status-success"
-      >
-        Device approved. Close this tab and go back to your terminal.
-      </div>
-    );
-  }
-
-  const target = details.teamName
-    ? `${details.teamName}${details.accountEmail ? ` (${details.accountEmail})` : ''}`
-    : details.accountEmail || 'your account';
+  const target = details.accountEmail || 'your account';
 
   return (
     <div data-testid="device-confirm">
@@ -82,38 +45,30 @@ export default function DeviceConfirm({ details }: { details: DeviceConfirmDetai
           </dd>
         </div>
         <div className="flex justify-between gap-4 px-4 py-3">
-          <dt className="text-text-muted whitespace-nowrap shrink-0">Connects to</dt>
+          <dt className="text-text-muted whitespace-nowrap shrink-0">Signed in as</dt>
           <dd data-testid="device-confirm-target" className="text-text-primary text-right break-words">
             {target}
           </dd>
         </div>
         <div className="flex justify-between gap-4 px-4 py-3">
           <dt className="text-text-muted whitespace-nowrap shrink-0">Access</dt>
-          <dd className="text-text-primary">{details.level}</dd>
+          <dd className="text-text-primary">up to {details.level}</dd>
         </div>
       </dl>
 
       <div className="mb-4 bg-status-warning/10 border border-status-warning/20 rounded-lg p-3 text-sm text-text-primary">
-        Approve only if you started this sign-in yourself, just now, and the code matches your terminal.
+        Continue only if you started this sign-in yourself, just now, and the code matches your terminal.
         If you did not, press Cancel.
       </div>
 
-      {status === 'error' && errorMessage && (
-        <div className="mb-4 bg-status-error/10 border border-status-error/20 rounded-lg p-4 text-status-error text-sm">
-          {errorMessage}
-        </div>
-      )}
-
       <div className="flex flex-col gap-2">
-        <button
-          type="button"
+        <a
+          href={consentHref}
           data-testid="device-confirm-approve"
-          onClick={approve}
-          disabled={status === 'submitting'}
-          className="w-full px-4 py-3 bg-primary text-white font-medium rounded-md hover:bg-primary-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          className="w-full px-4 py-3 text-center bg-primary text-white font-medium rounded-md hover:bg-primary-hover transition-colors"
         >
-          {status === 'submitting' ? 'Approving…' : 'Approve device'}
-        </button>
+          Choose workspaces
+        </a>
         <a
           href="/app/home"
           data-testid="device-confirm-cancel"

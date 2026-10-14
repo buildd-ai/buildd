@@ -3,6 +3,7 @@ import { workspaces, accountWorkspaces } from '@buildd/core/db/schema';
 import { eq, and, or, ilike, inArray, sql, type SQL } from 'drizzle-orm';
 import { getUserTeamIds } from '@/lib/team-access';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { liveLinkCondition } from '@/lib/granted-links';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -95,6 +96,7 @@ export async function getLinkedWorkspaceIds(
       eq(accountWorkspaces.accountId, accountId),
       permission === 'canClaim' ? eq(accountWorkspaces.canClaim, true) : undefined,
       permission === 'canCreate' ? eq(accountWorkspaces.canCreate, true) : undefined,
+      liveLinkCondition(),
     )),
     columns: { workspaceId: true },
   });
@@ -114,6 +116,7 @@ export async function autoResolveAccountWorkspace(
     where: sqlWhere(and(
       eq(accountWorkspaces.accountId, accountId),
       eq(accountWorkspaces.canCreate, true),
+      liveLinkCondition(),
     )),
     with: { workspace: { columns: { id: true, name: true } } },
   });

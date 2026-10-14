@@ -373,6 +373,13 @@ export const accountWorkspaces = pgTable('account_workspaces', {
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
   canClaim: boolean('can_claim').default(true).notNull(),
   canCreate: boolean('can_create').default(false).notNull(),
+  // The person who picked this workspace for the key on the runner consent
+  // page (lib/runner-picks.ts). NULL = a link an admin made, or one written
+  // before picks existed; those behave as they always have. A non-NULL row is
+  // re-checked on every claim against the person's current membership and
+  // role in the workspace's team and the workspace's access mode.
+  grantedByUserId: uuid('granted_by_user_id').references(() => users.id, { onDelete: 'cascade' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 }, (t) => ({
   pk: primaryKey({ columns: [t.accountId, t.workspaceId] }),
 }));

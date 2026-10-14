@@ -10,6 +10,7 @@ import { isUuid } from './uuid';
 import { accountReachesWorkspace } from './workspace-reach';
 import { roleHas, type Permission, type TeamScopeCaller } from './permissions';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { liveLinkCondition } from './granted-links';
 
 /**
  * Builds the two scope subqueries below without a db handle, so the predicate
@@ -128,7 +129,8 @@ export const verifyAccountWorkspaceAccess = cache(async (
   const link = await db.query.accountWorkspaces.findFirst({
     where: sqlWhere(and(
       eq(accountWorkspaces.accountId, accountId),
-      eq(accountWorkspaces.workspaceId, workspaceId)
+      eq(accountWorkspaces.workspaceId, workspaceId),
+      liveLinkCondition(),
     )),
   });
 

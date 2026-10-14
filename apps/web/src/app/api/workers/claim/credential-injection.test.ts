@@ -320,6 +320,18 @@ describe('attachServerManagedSecrets', () => {
     expect(predicate(mockSecretsFindMany.mock.calls[1]?.[0], 'eq', 'teamId').value).toBe('team-b');
   });
 
+  // Spec "One runner for every team you run", AC-5 / R-5: a runner key lives in
+  // one home team but may claim a task from another team's workspace it was
+  // picked into. That task's secrets come from the task's team, never the
+  // key's home: the function is not even told the key's team.
+  it('a picked task from another team gets that team\'s secrets, not the key\'s home team\'s', async () => {
+    await attachServerManagedSecrets([swWorker('t1', { teamId: 'team-picked', workspaceId: 'ws-picked' })], 'acct-home-team');
+
+    const args = mockSecretsFindMany.mock.calls[0]?.[0] as any;
+    expect(predicate(args, 'eq', 'teamId').value).toBe('team-picked');
+    expect(JSON.stringify(args)).not.toContain('team-home');
+  });
+
   it('injects mcp_credential secrets as mcpSecrets keyed by label', async () => {
     mockSecretsFindMany.mockResolvedValue([
       secretRow({ id: 'sec-mcp-1', purpose: 'mcp_credential', label: 'CUE_API_KEY' }),

@@ -1,19 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/auth';
-import { db } from '@buildd/core/db';
-import { deviceCodes, accounts } from '@buildd/core/db/schema';
-import { eq, and, gt } from 'drizzle-orm';
-import { randomBytes } from 'crypto';
-import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
-import { getUserDefaultTeamId, getUserTeamRole } from '@/lib/team-access';
-import { clampKeyLevel, parseKeyLevel } from '@/lib/key-level-policy';
-
-import { linkAccountToPersonalWorkspaces } from '@/lib/personal-workspace-links';
-import { trackEvent } from '@/lib/axiom';
-
-function generateApiKey(): string {
-  return `bld_${randomBytes(32).toString('hex')}`;
-}
+import { approveDeviceCode } from '@/lib/device-approve';
 
 function requestIp(req: NextRequest): string | null {
   const fwd = req.headers.get('x-forwarded-for');
@@ -23,8 +10,9 @@ function requestIp(req: NextRequest): string | null {
 
 // POST /api/auth/device/approve
 // Requires session auth. Invariant: a device code is approved only by an
-// explicit confirm. The body must carry `confirm: true`, which only the
-// "Approve device" action on /app/device sends; there is no GET handler.
+// explicit confirm. The body must carry `confirm: true` and the workspaces
+// the person picked (`workspaceIds`); the device page sends both from the
+// runner consent page (/api/auth/device/consent). There is no GET handler.
 export async function POST(req: NextRequest) {
   const session = await auth();
 
@@ -34,102 +22,30 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json().catch(() => ({}));
-    const { code, confirm } = body;
+    const { code, confirm, workspaceIds } = body;
 
     if (!code || typeof code !== 'string') {
       return NextResponse.json({ error: 'code is required' }, { status: 400 });
     }
     if (confirm !== true) {
       return NextResponse.json({
-        error: 'Approving a device needs an explicit confirm. Open the device page and press Approve device.',
+        error: 'Approving a device needs an explicit confirm. Open the device page and choose workspaces.',
       }, { status: 400 });
     }
-
-    // Normalize: uppercase, trim whitespace
-    const normalizedCode = code.trim().toUpperCase();
-
-    // Atomic update: find pending, non-expired device code and approve it
-    const [updated] = await db
-      .update(deviceCodes)
-      .set({
-        status: 'approved',
-        userId: session.user.id,
-      })
-      .where(
-        and(
-          eq(deviceCodes.userCode, normalizedCode),
-          eq(deviceCodes.status, 'pending'),
-          gt(deviceCodes.expiresAt, new Date()),
-        )
-      )
-      .returning();
-
-    if (!updated) {
+    if (!Array.isArray(workspaceIds) || workspaceIds.length === 0) {
       return NextResponse.json({
-        error: 'Invalid or expired code. Check the code and try again.',
+        error: 'Choose the workspaces this runner claims from. Open the device page and choose workspaces.',
       }, { status: 400 });
     }
 
-    // Check if it's actually expired (race condition guard)
-    if (new Date() > updated.expiresAt) {
-      await db.update(deviceCodes)
-        .set({ status: 'expired' })
-        .where(eq(deviceCodes.id, updated.id));
-      return NextResponse.json({ error: 'Code has expired' }, { status: 400 });
-    }
-
-    // Create a new named account for this login. Approving never rotates or
-    // returns an existing account's key, even one with the same name.
-    const accountName = updated.clientName || 'CLI';
-    const requestedLevel = parseKeyLevel(updated.level) || 'worker';
-
-    const teamId = await getUserDefaultTeamId(session.user.id);
-    if (!teamId) {
-      return NextResponse.json({ error: 'No team found for user' }, { status: 500 });
-    }
-
-    // The key's level is capped by the approver's current role on that team.
-    const role = await getUserTeamRole(session.user.id, teamId);
-    if (!role) {
-      return NextResponse.json({ error: 'You are not a member of this team' }, { status: 403 });
-    }
-    const level = clampKeyLevel(role, requestedLevel);
-
-    const plaintextKey = generateApiKey();
-
-    const [created] = await db.insert(accounts).values({
-      name: accountName,
-      type: 'user',
-      level,
-      authType: 'api',
-      apiKey: hashApiKey(plaintextKey),
-      apiKeyPrefix: extractApiKeyPrefix(plaintextKey),
-      teamId,
-      createdByUserId: session.user.id,
-    }).returning({ id: accounts.id });
-
-    // A personal team's workspace starts restricted; without a link this
-    // login's runner could never claim the user's own tasks.
-    if (created?.id) await linkAccountToPersonalWorkspaces({ accountId: created.id, userId: session.user.id });
-
-    // Store plaintext in device code record for CLI to retrieve
-    await db.update(deviceCodes)
-      .set({ apiKey: plaintextKey })
-      .where(eq(deviceCodes.id, updated.id));
-
-    const audit = {
-      deviceCodeId: updated.id,
+    const result = await approveDeviceCode({
       userId: session.user.id,
-      teamId,
-      accountId: created?.id ?? null,
-      clientName: accountName,
-      level,
+      code,
+      workspaceIds,
       ip: requestIp(req),
       userAgent: req.headers.get('user-agent'),
-    };
-    console.info('[device-approve]', JSON.stringify(audit));
-    trackEvent('api.auth.device.approve', audit);
-
+    });
+    if (!result.ok) return NextResponse.json({ error: result.message }, { status: result.status });
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error('Device approve error:', error);

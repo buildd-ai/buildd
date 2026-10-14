@@ -8,6 +8,7 @@ import { CAPABILITY_MCP_GROUP_TOOLS } from '@buildd/shared';
 import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { getLinkedWorkspaceIds } from '@/lib/workspace-resolver';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { liveLinkCondition } from '@/lib/granted-links';
 
 type McpAccount = { id: string; teamId: string; workspaceIds?: string[] | null; taskScope?: { taskId: string; workspaceId: string } };
 
@@ -35,6 +36,7 @@ export async function isWorkspaceInCallerScope(workspaceId: string, account: Mcp
     where: sqlWhere(and(
       eq(accountWorkspaces.accountId, account.id),
       eq(accountWorkspaces.workspaceId, workspaceId),
+      liveLinkCondition(),
     )),
     columns: { workspaceId: true },
   });

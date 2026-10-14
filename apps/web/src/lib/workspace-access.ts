@@ -9,6 +9,7 @@ import { isUuid } from '@/lib/uuid';
 import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
 import { assertGrantedWorkspace, isGrantSession, type GrantScopedAccount } from '@/lib/grant-scope';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { liveLinkCondition } from '@/lib/granted-links';
 
 /**
  * Workspace reach, shared by every surface that lists workspaces or acts on one
@@ -128,6 +129,7 @@ export async function resolveWorkspaceAccess(
       where: sqlWhere(and(
         eq(accountWorkspaces.accountId, caller.account.id),
         eq(accountWorkspaces.workspaceId, found.id),
+        liveLinkCondition(),
       )),
       columns: { canClaim: true, canCreate: true },
     });

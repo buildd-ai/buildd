@@ -18,6 +18,7 @@ import { db } from '@buildd/core/db';
 import { workspaces, accountWorkspaces } from '@buildd/core/db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { liveLinkCondition } from '@/lib/granted-links';
 
 /**
  * WHERE predicate: open workspaces owned by one of `teamIds`. Callers with no
@@ -77,6 +78,7 @@ export async function workspaceOpenToCaller(
     where: sqlWhere(and(
       eq(accountWorkspaces.accountId, caller.accountId),
       eq(accountWorkspaces.workspaceId, workspaceId),
+      liveLinkCondition(),
     )),
     columns: { workspaceId: true },
   });

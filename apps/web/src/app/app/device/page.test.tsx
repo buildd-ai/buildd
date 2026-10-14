@@ -67,14 +67,17 @@ describe('/app/device — loading the page never approves', () => {
     expect(html).not.toContain('data-testid="device-approved"');
   });
 
-  it('shows the code, the client, when it was requested and the target account/team', async () => {
+  it('shows the code, the client, when it was requested and the signed-in account', async () => {
     mockLookup.mockResolvedValue({ ok: true, details });
     const html = await renderPage({ code: 'ABCD-1234' });
     expect(html).toMatch(/data-testid="device-confirm-code"[^>]*>ABCD-1234</);
     expect(html).toMatch(/data-testid="device-confirm-client"[^>]*>buildd-runner@laptop</);
     expect(html).toMatch(/data-testid="device-confirm-requested"[^>]*>2 minutes ago/);
-    expect(html).toContain('Example Team (dev@example.com)');
-    expect(html).toContain('Approve only if you started this sign-in yourself');
+    // The workspaces (and so the teams) are chosen on the next page, the
+    // runner consent page, so this one names no team.
+    expect(html).toMatch(/data-testid="device-confirm-target"[^>]*>dev@example.com</);
+    expect(html).toContain('Continue only if you started this sign-in yourself');
+    expect(html).toContain('href="/api/auth/device/consent?code=ABCD-1234"');
   });
 
   it('with no code it shows a GET entry form, never an approve action', async () => {
