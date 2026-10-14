@@ -1,10 +1,10 @@
 /**
  * The runner's startup banner, as lines. Pure: index.ts gathers the facts and
- * the palette (detectTerminalPalette, the same OSC 11 probe `top` uses) and
- * prints. Labels and meta are muted; values are primary text in the terminal's
- * own foreground (R-17), so they read on any background.
+ * the palette (bannerPalette) and prints. Labels and meta are muted; values are
+ * primary text in the terminal's own foreground (R-17), so they read on any
+ * background.
  */
-import type { Palette } from './terminal-palette';
+import { terminalPalette, type Palette } from './terminal-palette';
 
 export interface BannerInfo {
   version: string;
@@ -22,6 +22,21 @@ export interface BannerInfo {
   reposCached: boolean;
   roots: number;
   serverless: boolean;
+}
+
+type Env = Record<string, string | undefined>;
+
+/**
+ * The banner's palette, from the environment only: BUILDD_THEME, then
+ * COLORFGBG, then Night. Never asks the terminal. The banner prints once,
+ * often from a runner started in the background (`buildd &`), and a
+ * background process that reads the terminal or changes its mode is stopped
+ * by the shell (SIGTTIN/SIGTTOU), which froze the runner at startup. Primary
+ * text is the terminal's own foreground anyway, so only the accent and muted
+ * colours depend on the guess. `buildd top`, a foreground program, asks.
+ */
+export function bannerPalette(env: Env = process.env, isTTY = !!process.stdout.isTTY): Palette {
+  return terminalPalette(env, isTTY);
 }
 
 /** A clickable terminal link (OSC 8). */

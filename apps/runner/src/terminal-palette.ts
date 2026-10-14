@@ -8,7 +8,8 @@
  * - Theme order: BUILDD_THEME, then the background the terminal reports to an
  *   OSC 11 query (queryTerminalBackground, light = Day), then COLORFGBG (ends
  *   in 7 or 15 = Day), then Night. VS Code's terminal sets no COLORFGBG but
- *   answers OSC 11.
+ *   answers OSC 11. Only `buildd top`, a foreground program, asks: the startup
+ *   banner may run in the background, where touching the TTY stops the process.
  * - Truecolor when COLORTERM is truecolor/24bit, else the nearest xterm-256.
  * - NO_COLOR (any value) or a non-TTY drops every colour: the glyphs carry the
  *   meaning on their own.
@@ -249,28 +250,6 @@ export function createPalette(theme: Theme, depth: ColorDepth): Palette {
 /** The palette for this process's terminal. */
 export function terminalPalette(env: Env = process.env, isTTY = !!process.stdout.isTTY, background: Rgb | null = null): Palette {
   return createPalette(detectTheme(env, background), detectColorDepth(env, isTTY));
-}
-
-/**
- * The palette for a terminal, asking it for its background first (R-17): the
- * startup banner's entry point, the same probe and 150 ms cap `top` uses. Asks
- * only when stdin and stdout are both a terminal, and leaves raw mode as it
- * found it. What else was read meanwhile is dropped: the banner reads no keys.
- */
-export async function detectTerminalPalette(
-  term: QueryableTerminal = { stdin: process.stdin as any, stdout: process.stdout },
-  env: Env = process.env,
-  timeoutMs = OSC11_TIMEOUT_MS,
-): Promise<Palette> {
-  const isTTY = !!term.stdout.isTTY;
-  // NO_COLOR, a forced theme or a non-terminal: nothing to ask.
-  const forced = env.BUILDD_THEME?.toLowerCase();
-  const needAsk = isTTY && !!term.stdin.isTTY && env.NO_COLOR === undefined
-    && !['day', 'light', 'night', 'dark'].includes(forced ?? '');
-  if (!needAsk) return terminalPalette(env, isTTY);
-  const { background } = await queryTerminalBackground(term, timeoutMs);
-  term.stdin.pause?.();
-  return terminalPalette(env, isTTY, background);
 }
 
 /** Strip SGR and OSC 8 sequences (for widths and plain snapshots). */

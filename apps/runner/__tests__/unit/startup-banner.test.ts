@@ -1,35 +1,18 @@
 /**
- * The startup banner (R-17): it asks the terminal for its background the same
- * way `buildd top` does, so a light terminal with no COLORFGBG (VS Code) gets
- * Day muted text instead of Night grey on white, and its primary text is the
- * terminal's own foreground.
+ * The startup banner (R-17). It prints once, at startup, often from a runner
+ * started in the background (`buildd &`), so it must never read the terminal:
+ * no OSC 11 probe, no raw mode, no stdin. A background process that does is
+ * stopped by the shell (SIGTTOU/SIGTTIN) and the runner freezes at startup.
+ * Its primary text is the terminal's own foreground, so only its accent and
+ * muted colours need a theme, and that comes from the environment
+ * (BUILDD_THEME, then COLORFGBG, then Night). `buildd top`, an interactive
+ * foreground program, keeps the probe.
  */
 import { describe, expect, test } from 'bun:test';
-import { renderBanner, type BannerInfo } from '../../src/banner';
-import { OSC11_QUERY, createPalette, detectTerminalPalette, stripAnsi } from '../../src/terminal-palette';
-
-function fakeTerminal(opts: { stdinTTY?: boolean; stdoutTTY?: boolean; reply?: string | null } = {}) {
-  const listeners = new Set<(d: string) => void>();
-  const writes: string[] = [];
-  const raw: boolean[] = [];
-  const stdin = {
-    isTTY: opts.stdinTTY ?? true,
-    isRaw: false,
-    setRawMode(on: boolean) { raw.push(on); this.isRaw = on; },
-    on(_e: 'data', cb: (d: string) => void) { listeners.add(cb); },
-    off(_e: 'data', cb: (d: string) => void) { listeners.delete(cb); },
-    resume() {}, pause() {},
-  };
-  const stdout = {
-    isTTY: opts.stdoutTTY ?? true,
-    write(s: string) {
-      writes.push(s);
-      if (s === OSC11_QUERY && opts.reply) setTimeout(() => { for (const l of [...listeners]) l(opts.reply!); }, 5);
-      return true;
-    },
-  };
-  return { stdin, stdout, writes, raw, listeners };
-}
+import { readFileSync } from 'fs';
+import { join } from 'path';
+import { bannerPalette, renderBanner, type BannerInfo } from '../../src/banner';
+import { createPalette, stripAnsi } from '../../src/terminal-palette';
 
 const INFO: BannerInfo = {
   version: '0.340.0', commit: 'abc1234', debug: false, port: 8766, server: 'https://buildd.dev',
@@ -37,38 +20,54 @@ const INFO: BannerInfo = {
   serverless: false, localUrl: 'http://localhost:8766',
 };
 
-describe('banner palette: the same OSC 11 probe as top', () => {
-  test('a white background answer gives Day, and the terminal is left as it was', async () => {
-    const t = fakeTerminal({ reply: '\x1b]11;rgb:ffff/ffff/ffff\x07' });
-    const p = await detectTerminalPalette(t, { COLORTERM: 'truecolor' });
-    expect(t.writes).toEqual([OSC11_QUERY]);
-    expect(p.theme).toBe('day');
-    expect(t.raw).toEqual([true, false]);
-    expect(t.listeners.size).toBe(0);
-  });
-
-  test('no answer: at most the 150 ms cap, then COLORFGBG / Night', async () => {
-    const t = fakeTerminal({ reply: null });
-    const start = Date.now();
-    const p = await detectTerminalPalette(t, { COLORTERM: 'truecolor' });
-    expect(Date.now() - start).toBeLessThan(600);
-    expect(p.theme).toBe('night');
-    expect(t.raw).toEqual([true, false]);
-  });
-
-  test('never asks unless both stdin and stdout are a terminal', async () => {
-    for (const o of [{ stdinTTY: false }, { stdoutTTY: false }]) {
-      const t = fakeTerminal({ ...o, reply: '\x1b]11;rgb:ffff/ffff/ffff\x07' });
-      const p = await detectTerminalPalette(t, { COLORTERM: 'truecolor' });
-      expect(t.writes).toEqual([]);
-      expect(t.raw).toEqual([]);
+describe('banner palette: from the environment, never the terminal', () => {
+  test('never touches stdin or raw mode, and writes nothing', () => {
+    const desc = Object.getOwnPropertyDescriptor(process, 'stdin')!;
+    const out = process.stdout.write;
+    let touched = 0;
+    let wrote = 0;
+    Object.defineProperty(process, 'stdin', { configurable: true, get() { touched++; throw new Error('the banner read stdin'); } });
+    (process.stdout as any).write = () => { wrote++; return true; };
+    try {
+      const p = bannerPalette({ COLORTERM: 'truecolor' }, true);
       expect(p.theme).toBe('night');
+    } finally {
+      Object.defineProperty(process, 'stdin', desc);
+      (process.stdout as any).write = out;
     }
+    expect(touched).toBe(0);
+    expect(wrote).toBe(0);
   });
 
-  test('BUILDD_THEME still wins over the answer', async () => {
-    const t = fakeTerminal({ reply: '\x1b]11;rgb:ffff/ffff/ffff\x07' });
-    expect((await detectTerminalPalette(t, { BUILDD_THEME: 'night' })).theme).toBe('night');
+  test('is synchronous: there is nothing to wait for', () => {
+    const p = bannerPalette({}, true);
+    expect(typeof (p as any).then).toBe('undefined');
+  });
+
+  test('BUILDD_THEME, then COLORFGBG, then Night', () => {
+    expect(bannerPalette({ BUILDD_THEME: 'day', COLORFGBG: '15;0' }, true).theme).toBe('day');
+    expect(bannerPalette({ BUILDD_THEME: 'night', COLORFGBG: '0;15' }, true).theme).toBe('night');
+    expect(bannerPalette({ COLORFGBG: '0;15' }, true).theme).toBe('day');
+    expect(bannerPalette({ COLORFGBG: '15;0' }, true).theme).toBe('night');
+    expect(bannerPalette({}, true).theme).toBe('night');
+  });
+
+  test('NO_COLOR or a non-terminal stdout: no colour', () => {
+    expect(bannerPalette({ NO_COLOR: '1' }, true).depth).toBe('none');
+    expect(bannerPalette({}, false).depth).toBe('none');
+  });
+
+  test('the banner code path has no probe, stdin or raw mode in it', () => {
+    const index = readFileSync(join(import.meta.dir, '../../src/index.ts'), 'utf8');
+    const section = index.slice(index.indexOf('// ── Startup banner'), index.indexOf('// Auto-install HTTP MCP'));
+    expect(section).toContain('bannerPalette(');
+    for (const banned of ['queryTerminalBackground', 'detectTerminalPalette', 'stdin', 'setRawMode', 'await ']) {
+      expect({ banned, found: section.includes(banned) }).toEqual({ banned, found: false });
+    }
+    const banner = readFileSync(join(import.meta.dir, '../../src/banner.ts'), 'utf8');
+    for (const banned of ['queryTerminalBackground', 'stdin', 'setRawMode', 'OSC11_QUERY']) {
+      expect({ banned, found: banner.includes(banned) }).toEqual({ banned, found: false });
+    }
   });
 });
 

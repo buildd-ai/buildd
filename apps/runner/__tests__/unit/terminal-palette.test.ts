@@ -202,8 +202,8 @@ describe('startup banner uses the palette', () => {
   const src = readFileSync(join(import.meta.dir, '../../src/index.ts'), 'utf8');
   const banner = src.slice(src.indexOf('// ── Startup banner'), src.indexOf('// Auto-install HTTP MCP'));
   test('no hard-coded truecolor escapes or gradient left', () => {
-    // The banner asks the terminal for its background, like top (R-17).
-    expect(banner).toContain('await detectTerminalPalette()');
+    // The banner reads its theme from the environment, never the terminal.
+    expect(banner).toContain('bannerPalette(');
     expect(banner).toContain('renderBanner(');
     expect(banner).not.toMatch(/38;2;\d+;\d+;\d+m/);
     expect(banner).not.toMatch(/\bA[1-5]\b/);

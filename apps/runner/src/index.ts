@@ -29,8 +29,7 @@ import { emitHeartbeatTick } from './heartbeat-log';
 import { sweepStaleSessionPromptFiles } from './session-prompt-files';
 import { heartbeatState, withClaimHealthCheck } from './claim-budget-signals';
 import { authorizeLocalRequest, escapeHtml, injectLocalToken, isLoopbackAddress, loadOrCreateLocalToken, resolveBindHost } from './local-server-auth';
-import { detectTerminalPalette } from './terminal-palette';
-import { renderBanner } from './banner';
+import { bannerPalette, renderBanner } from './banner';
 import { checkSingleInstance, decideStart, probeRunnerSocket, matchWorkerAction, relayWorkerAction, runnerSocketPath, serveRunnerSocket, type RunnerIdentity, type RunnerSocketServer } from './runner-socket';
 
 const PORT = parseInt(process.env.PORT || '8766');
@@ -2754,12 +2753,12 @@ const localUrl = `http://localhost:${PORT}`;
 
 // ── Startup banner ──────────────────────────────────────────────────────────
 
-// Colours come from the shared terminal palette (terminal-palette.ts). Like
-// `buildd top`, ask the terminal for its background first (OSC 11, 150 ms cap,
-// only on a TTY, raw mode restored), so a light terminal with no COLORFGBG
-// (VS Code) gets Day muted text, not Night grey on white (R-17).
-// NO_COLOR or a non-TTY drops every colour.
-const PAL = await detectTerminalPalette();
+// Colours come from the shared terminal palette (terminal-palette.ts), themed
+// from the environment only (BUILDD_THEME, COLORFGBG, else Night). The banner
+// never queries the terminal: a runner started with `buildd &` would be
+// stopped by the shell for touching the TTY. Values are the terminal's own
+// foreground (R-17). NO_COLOR or a non-TTY drops every colour.
+const PAL = bannerPalette();
 const repos = getRepos(); // Use cached, will scan only if no cache
 for (const line of renderBanner({
   version: PKG_VERSION,

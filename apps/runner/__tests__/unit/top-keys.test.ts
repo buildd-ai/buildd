@@ -3,7 +3,7 @@
  * run.ts for one effect; an action on the wrong kind of row says why instead.
  */
 import { describe, expect, test } from 'bun:test';
-import { actionResultText, createKeyDecoder, handleKey, parseKeys, type Effect, type Key } from '../../src/top/keys';
+import { OSC_ABANDON_MS, actionResultText, createKeyDecoder, handleKey, parseKeys, type Effect, type Key } from '../../src/top/keys';
 import { reduce, selectedRow, taskRows, type TopState } from '../../src/top/state';
 import { NOW, fixtureState } from './top-fixture';
 
@@ -274,5 +274,62 @@ describe('terminal replies split across reads never become keys (R-17)', () => {
   test('ctrl-c still quits from inside an unfinished terminal string', () => {
     const d = createKeyDecoder();
     expect(d.feed('\x1b]11;rgb:cc\x03')).toEqual([{ name: 'ctrl-c' }]);
+  });
+});
+
+describe('an unterminated terminal string never eats the keyboard', () => {
+  // Alt+] sends ESC ] and Alt+Shift+P sends ESC P: no terminal reply follows.
+  test('Alt+] then a key that cannot be in an OSC 11 reply: the key is read', () => {
+    const d = createKeyDecoder();
+    expect(d.feed('\x1b]', 0)).toEqual([]);
+    expect(d.feed('j', 10)).toEqual([ch('j')]);
+    expect(d.feed('k', 20)).toEqual([ch('k')]);
+  });
+
+  test('Alt+] then q in the same read quits', () => {
+    expect(parseKeys('\x1b]q')).toEqual([ch('q')]);
+  });
+
+  test('Alt+] then a key that could start a reply is dropped after 100 ms of silence', () => {
+    const d = createKeyDecoder();
+    expect(d.feed('\x1b]', 0)).toEqual([]);
+    expect(d.feed('1', 20)).toEqual([]); // still a possible "11;rgb:…"
+    expect(d.feed('c', 200)).toEqual([ch('c')]); // abandoned: c is a key again
+    expect(d.feed('a', 210)).toEqual([ch('a')]);
+  });
+
+  test('a lone Alt+] goes stale after 100 ms and the next key reads', () => {
+    const d = createKeyDecoder();
+    expect(d.feed('\x1b]', 0)).toEqual([]);
+    expect(d.feed('1', 150)).toEqual([ch('1')]);
+  });
+
+  test('a reply that strays from the OSC 11 shape is dropped where it strays', () => {
+    const d = createKeyDecoder();
+    expect(d.feed('\x1b]11;rgb:cc', 0)).toEqual([]);
+    expect(d.feed('x', 5)).toEqual([ch('x')]);
+    expect(d.feed('j', 6)).toEqual([ch('j')]);
+  });
+
+  test('Alt+Shift+P (ESC P) and the other string introducers never swallow later keys', () => {
+    for (const intro of ['P', 'X', '^', '_']) {
+      const d = createKeyDecoder();
+      expect(d.feed(`\x1b${intro}`, 0)).toEqual([]);
+      expect({ intro, keys: d.feed('j', 10) }).toEqual({ intro, keys: [ch('j')] });
+    }
+  });
+
+  test('a real reply streaming in within 100 ms gaps is still swallowed whole', () => {
+    const reply = '\x1b]11;rgb:cccc/cccc/cccc\x07';
+    const d = createKeyDecoder();
+    let t = 0;
+    const keys: Key[] = [];
+    for (const c of reply) keys.push(...d.feed(c, (t += 40)));
+    expect(keys).toEqual([]);
+    expect(d.feed('c', t + 1)).toEqual([ch('c')]);
+  });
+
+  test('OSC_ABANDON_MS is 100', () => {
+    expect(OSC_ABANDON_MS).toBe(100);
   });
 });

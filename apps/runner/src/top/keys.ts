@@ -19,8 +19,12 @@ export function parseKeys(chunk: string): Key[] {
 }
 
 export interface KeyDecoder {
-  /** Decode the next read. A sequence cut off at the end is carried into the next feed. */
-  feed(chunk: string): Key[];
+  /**
+   * Decode the next read, received at `now` (ms). A sequence cut off at the
+   * end is carried into the next feed; an unterminated terminal string that
+   * has been silent for OSC_ABANDON_MS is dropped first.
+   */
+  feed(chunk: string, now?: number): Key[];
   /** The read has settled: a lone ESC waiting for more is the escape key. Half-read terminal strings stay swallowed. */
   flush(): Key[];
   /** True when the last byte read was a lone ESC (run.ts flushes it after a short wait). */
@@ -31,6 +35,20 @@ const ARROWS: Record<string, Key['name']> = { A: 'up', B: 'down', C: 'right', D:
 /** Longest CSI / terminal string swallowed before giving up on it, so a stray ESC can never eat the keyboard. */
 const MAX_SEQ = 64;
 const MAX_STRING = 1024;
+/** An unterminated terminal string silent this long is abandoned, so Alt+] never eats later keys. */
+export const OSC_ABANDON_MS = 100;
+
+/**
+ * The only terminal string `top` asks for is the OSC 11 reply
+ * `11;rgb:RRRR/GGGG/BBBB` (or `rgba:…/AAAA`). True while `s`, the bytes after
+ * `ESC ]`, can still grow into one; a byte that breaks the shape means a person
+ * typed it (Alt+] then a key), so the string is dropped there.
+ */
+const H = '[0-9a-f]{0,4}';
+const OSC11_PREFIX = new RegExp(`^(?:1(?:1(?:;(?:r(?:g(?:b(?:a|a?:${H}(?:/${H}(?:/${H}(?:/${H})?)?)?)?)?)?)?)?)?)?$`, 'i');
+export function couldBeOsc11Reply(s: string): boolean {
+  return OSC11_PREFIX.test(s);
+}
 
 /**
  * A stateful stdin decoder for the whole session. Terminal sequences (CSI
@@ -38,11 +56,21 @@ const MAX_STRING = 1024;
  * the shape of a late OSC 11 background reply) are tracked across reads, so a
  * reply split over two chunks is swallowed whole and none of its bytes (the
  * `c` of `rgb:cccc`, a `/`) are read as keys.
+ *
+ * The string is bounded, because Alt+] sends `ESC ]` with no reply behind it:
+ * it is dropped (and the byte read as a key) as soon as a byte arrives that
+ * cannot continue an OSC 11 reply, or once it has been silent for
+ * OSC_ABANDON_MS. DCS, SOS, PM and APC (`ESC P`, Alt+Shift+P) are never asked
+ * for, so their introducer is dropped on the spot.
  */
 export function createKeyDecoder(): KeyDecoder {
   type St = 'ground' | 'esc' | 'csi' | 'ss3' | 'str' | 'strEsc';
   let st: St = 'ground';
   let seqLen = 0;
+  /** The bytes of the OSC string so far, after `ESC ]`. */
+  let osc = '';
+  /** When the OSC string last received a byte. */
+  let oscAt = 0;
 
   const ground = (keys: Key[], c: string, cp: number) => {
     if (c === '\x1b') { st = 'esc'; return; }
@@ -61,8 +89,10 @@ export function createKeyDecoder(): KeyDecoder {
       case 'esc':
         if (c === '[') { st = 'csi'; seqLen = 0; return; }
         if (c === 'O') { st = 'ss3'; return; }
-        // OSC, DCS, SOS, PM, APC: a terminal string, never typed.
-        if (c === ']' || c === 'P' || c === 'X' || c === '^' || c === '_') { st = 'str'; seqLen = 0; return; }
+        // OSC: possibly the background reply, never typed.
+        if (c === ']') { st = 'str'; seqLen = 0; osc = ''; return; }
+        // DCS, SOS, PM, APC: never asked for, so a person typed it (Alt+Shift+P). Drop it.
+        if (c === 'P' || c === 'X' || c === '^' || c === '_') { st = 'ground'; return; }
         keys.push({ name: 'escape' });
         st = 'ground';
         return ground(keys, c, cp);
@@ -84,6 +114,8 @@ export function createKeyDecoder(): KeyDecoder {
         if (c === '\x1b') { st = 'strEsc'; return; }
         // A terminal reply never carries ctrl-c: a person pressed it.
         if (c === '\x03') { st = 'ground'; keys.push({ name: 'ctrl-c' }); return; }
+        if (!couldBeOsc11Reply(osc + c)) { st = 'ground'; return ground(keys, c, cp); }
+        osc += c;
         if (++seqLen > MAX_STRING) st = 'ground';
         return;
       case 'strEsc':
@@ -95,9 +127,12 @@ export function createKeyDecoder(): KeyDecoder {
   };
 
   return {
-    feed(chunk) {
+    feed(chunk, now = Date.now()) {
       const keys: Key[] = [];
+      // A string left open and silent is no reply: drop it before reading on.
+      if ((st === 'str' || st === 'strEsc') && now - oscAt > OSC_ABANDON_MS) st = 'ground';
       for (const c of chunk) step(keys, c, c.codePointAt(0)!); // for-of keeps surrogate pairs together
+      if (st === 'str' || st === 'strEsc') oscAt = now;
       return keys;
     },
     flush() {
