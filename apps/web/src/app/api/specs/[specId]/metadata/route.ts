@@ -18,7 +18,8 @@ export async function GET(req: NextRequest, { params }: Ctx) {
 
 /**
  * PATCH /api/specs/[specId]/metadata { changes: { verified_by?, surfaces?,
- * last_verified?, assertions?, owner?, domains? (an area's), repo_provenance? }, reason }: change the metadata block
+ * last_verified?, assertions?, owner?, domains? (an area's), repo_provenance?,
+ * publication? (private | public | policy; only a person sets public) }, reason }: change the metadata block
  * without a new revision (R-31). Write access is enough, an agent or CI
  * included; the version, the approved revision and its hash do not move.
  */
