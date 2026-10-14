@@ -2901,6 +2901,11 @@ export const specRevisions = pgTable('spec_revisions', {
   // Set on a revision an import wrote (R-18): the repo file it is, as read. An
   // imported revision is never approved except by a person's confirmation.
   imported: jsonb('imported').$type<SpecRevisionImport>(),
+  // The binding attachments this revision was approved with (living-specs.md
+  // §21), each at the artifact revision it had then. Written once, by the
+  // approving statement, next to approved_at; reference attachments are never
+  // in it. NULL: not approved, or approved before attachments existed.
+  approvedAttachments: jsonb('approved_attachments').$type<SpecApprovedAttachment[]>(),
   // Set once by a person's approval (G2); never for an agent.
   approvedBy: text('approved_by'),
   approvedAt: timestamp('approved_at', { withTimezone: true }),
@@ -3020,6 +3025,44 @@ export const specComments = pgTable('spec_comments', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   specIdx: index('spec_comments_spec_idx').on(t.specId, t.createdAt),
+}));
+
+/**
+ * A file or image attached to a Living Spec (living-specs.md §21): an artifact
+ * in the spec's workspace, under a name the body can place inline
+ * (`![caption](attachment:<name>)`). No second file store: the bytes are the
+ * artifact's.
+ *
+ * It belongs to the revision it was added in and applies to every revision
+ * from `added_in_revision` up to (not including) `removed_from_revision`, so a
+ * removal never changes what an older revision shows. Live names are unique per
+ * spec. `binding` attachments are part of what an approval records
+ * (spec_revisions.approved_attachments); `reference` ones never are.
+ * Only apps/web/src/lib/specs/attachments.ts writes it.
+ */
+export const SPEC_ATTACHMENT_KINDS = ['binding', 'reference'] as const;
+export type SpecAttachmentKind = (typeof SPEC_ATTACHMENT_KINDS)[number];
+export interface SpecApprovedAttachment { attachmentId: string; name: string; artifactId: string; revision: number }
+
+export const specAttachments = pgTable('spec_attachments', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  specId: uuid('spec_id').references(() => specs.id, { onDelete: 'cascade' }).notNull(),
+  artifactId: uuid('artifact_id').references(() => artifacts.id, { onDelete: 'cascade' }).notNull(),
+  name: text('name').notNull(),
+  kind: text('kind').notNull().$type<SpecAttachmentKind>(),
+  caption: text('caption'),
+  addedInRevision: integer('added_in_revision').notNull(),
+  // The first revision it no longer applies to; NULL while it is live.
+  removedFromRevision: integer('removed_from_revision'),
+  addedBy: text('added_by').notNull(),
+  removedBy: text('removed_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  removedAt: timestamp('removed_at', { withTimezone: true }),
+}, (t) => ({
+  specIdx: index('spec_attachments_spec_idx').on(t.specId, t.createdAt),
+  liveNameIdx: uniqueIndex('spec_attachments_live_name_idx').on(t.specId, t.name).where(sql`removed_from_revision IS NULL`),
+  kindCheck: check('spec_attachments_kind', sql`${t.kind} IN ('binding', 'reference')`),
 }));
 
 /**

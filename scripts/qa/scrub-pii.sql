@@ -634,6 +634,16 @@ UPDATE spec_comments SET body = pg_temp.qa_text(body), anchor_label = pg_temp.qa
 -- import names the repo path it was read from: both wiped.
 UPDATE spec_revisions SET author_id = md5(author_id), change_summary = pg_temp.qa_text(change_summary),
   approved_by = CASE WHEN approved_by IS NULL THEN NULL ELSE md5(approved_by) END, design = NULL, imported = NULL;
+-- Spec attachments: a name is chosen by its author and a caption is free text;
+-- who added or removed one is an id. A name maps to the same placeholder in the
+-- approval record (spec_revisions.approved_attachments), so "changed since
+-- approval" still reads the same; md5 keeps live names unique per spec.
+UPDATE spec_attachments SET name = 'file-' || md5(name), caption = pg_temp.qa_text(caption), added_by = md5(added_by),
+  removed_by = CASE WHEN removed_by IS NULL THEN NULL ELSE md5(removed_by) END;
+UPDATE spec_revisions SET approved_attachments = (
+  SELECT coalesce(jsonb_agg(e || jsonb_build_object('name', 'file-' || md5(e->>'name'))), '[]'::jsonb)
+  FROM jsonb_array_elements(approved_attachments) e)
+WHERE approved_attachments IS NOT NULL;
 -- Outcome verdicts: the evidence holds what a reviewer observed (prose), file
 -- refs and who recorded it; criterion ids and head SHAs are not content.
 UPDATE spec_outcome_verdicts SET evidence = pg_temp.qa_json(evidence);
