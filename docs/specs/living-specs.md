@@ -7,8 +7,8 @@ summary: Every Living Spec revision MUST stay immutable and no writer silently o
 domain: knowledge
 surfaces: [apps/web/src/lib/specs/store.ts, apps/web/src/lib/specs/provisional.ts, apps/web/src/lib/specs/approval.ts, apps/web/src/lib/specs/pin.ts, apps/web/src/app/api/specs/[specId]/route.ts]
 related: [artifacts-and-sharing, knowledge-ingest-pipeline]
-keywords: [living spec, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs, recall, knowledge graph, living_spec, area, taxonomy, spec_area, filed by buildd, backfill, generated repo copy, generated_from, spec import, spec index, provisional pin, build ahead of approval, attach_provisional, re-grade, confirm_import, import confirmation, repo_source]
-verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-provisional-pin.test.ts, apps/web/src/lib/specs/provisional-text.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecIndex.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts, apps/web/tests/db/spec-neighbours.test.ts, apps/web/src/lib/specs/neighbours.test.ts, apps/web/tests/db/spec-duplicates.test.ts, apps/web/src/lib/spec-duplicate-decision.test.ts, apps/web/src/components/MarkdownContent.spec-surface.dom.test.tsx, apps/web/tests/db/spec-comments.test.ts, apps/web/src/components/SpecComments.dom.test.tsx, packages/spec-contract/src/repo-copy.test.ts, apps/web/tests/db/spec-repo-copy.test.ts, scripts/check-generated-specs.test.ts, apps/web/src/lib/specs/no-prod-data-scan.test.ts, apps/web/tests/db/spec-organize.test.ts, apps/web/src/lib/spec-area-decision.test.ts, apps/web/src/lib/specs/areas.test.ts, apps/web/src/app/app/dev/fixtures/spec-index-fixtures.test.ts, apps/web/tests/db/spec-import.test.ts, packages/spec-contract/src/repo-import.test.ts, apps/web/src/app/api/specs/import/route.test.ts, apps/web/src/lib/specs/index-view-imported.test.ts]
+keywords: [living spec, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs, recall, knowledge graph, living_spec, area, taxonomy, spec_area, filed by buildd, backfill, generated repo copy, generated_from, spec import, spec index, provisional pin, build ahead of approval, attach_provisional, re-grade, confirm_import, import confirmation, repo_source, spec attachment, attachment:, binding attachment, reference attachment, changed since approval, Files]
+verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-provisional-pin.test.ts, apps/web/src/lib/specs/provisional-text.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecIndex.dom.test.tsx, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts, apps/web/tests/db/spec-neighbours.test.ts, apps/web/src/lib/specs/neighbours.test.ts, apps/web/tests/db/spec-duplicates.test.ts, apps/web/src/lib/spec-duplicate-decision.test.ts, apps/web/src/components/MarkdownContent.spec-surface.dom.test.tsx, apps/web/tests/db/spec-comments.test.ts, apps/web/src/components/SpecComments.dom.test.tsx, packages/spec-contract/src/repo-copy.test.ts, apps/web/tests/db/spec-repo-copy.test.ts, scripts/check-generated-specs.test.ts, apps/web/src/lib/specs/no-prod-data-scan.test.ts, apps/web/tests/db/spec-organize.test.ts, apps/web/src/lib/spec-area-decision.test.ts, apps/web/src/lib/specs/areas.test.ts, apps/web/src/app/app/dev/fixtures/spec-index-fixtures.test.ts, apps/web/tests/db/spec-import.test.ts, packages/spec-contract/src/repo-import.test.ts, apps/web/src/app/api/specs/import/route.test.ts, apps/web/src/lib/specs/index-view-imported.test.ts, apps/web/tests/db/spec-attachments.test.ts, apps/web/src/components/MarkdownContent.attachments.dom.test.tsx, packages/core/__tests__/mcp-specs-attachments.test.ts, apps/web/src/app/api/specs/[specId]/attachments/[name]/route.test.ts, apps/web/src/components/SpecAttachments.dom.test.tsx]
 supersedes: []
 assertions:
   - id: approve-spec-revision
@@ -1627,3 +1627,82 @@ the fact grades what already shipped.
   say "built ahead of approval" there.
 - A re-grade interrupted after its pin moved is not resumed: the note, check
   runs or PR edit it had not reached stay undone.
+
+## 21. Attachments
+
+**Capability statement**: A spec MUST be able to carry the files its text
+points at, inline or listed, from a lasting access-checked link; an approval
+MUST record the exact version of every attachment the requirements depend on,
+and the spec MUST say when one changed since.
+
+**Decision**:
+- D-15: An attachment is an artifact linked to a spec (2026-10-14), through
+  the existing upload and storage path. No second file store.
+- D-16: An attachment is `binding` (the requirements depend on it: a mockup,
+  a diagram) or `reference` (notes, research, screenshots). Approval records
+  each binding attachment's artifact revision, as it does a design (§12);
+  reference attachments are never approved and never graded.
+
+**Invariants**:
+- R-44: A person or an agent with write access attaches an artifact in the
+  spec's workspace, or starts an upload into it (a pending artifact and a
+  size-bound presigned PUT for its staging key, as `upload_artifact`), under
+  a name (`a-z0-9._-`, unique among live attachments of the spec), a kind and
+  an optional caption. The attachment belongs to the head revision then and
+  applies to every revision from it until removed. Removing it stops it from
+  the head while the head is a draft, else from the next revision, so an
+  older or approved revision never loses what it showed. `replace: true`
+  removes the live one the same way and adds the new one; where two apply to
+  one revision, the newer wins (`spec_attachments`).
+- R-45: The body places an attachment with `![caption](attachment:<name>)`.
+  It renders on the spec page, the approval confirm page and a review's
+  rendered pane from `/api/specs/[specId]/attachments/[name]?revision=N`,
+  which checks read access to the spec on every request and redirects to a
+  fresh download URL; no expiring URL is written into a spec. A name the
+  revision does not attach renders as a visible "Missing attachment"
+  placeholder, never as an image. Any other image on a spec surface stays a
+  link, as before.
+- R-46: The spec page's Files section lists the attachments of the revision
+  read: name, kind, caption, who added it, when and in which revision.
+- R-47: The approving statement records `spec_revisions.approved_attachments`
+  (each binding attachment's id, name, artifact and artifact revision) with
+  the stamp. Reading the approved revision or a later one, a binding
+  attachment whose artifact moved on, that was swapped, or that was added
+  after approval reads "changed since approval" (or "added since approval").
+  Reference attachments are left out of the record and never flagged.
+- R-48: `manage_specs action=attach { specId, name, kind, caption?, artifactId? | filename + mimeType + sizeBytes, replace? }`
+  and `action=attachments { specId, revision? }` go through the routes
+  above; each listed attachment names its artifact id, which `get_artifact`
+  reads, an image included. The guidance says when to attach and when to
+  write the content into the body.
+
+**Acceptance criteria**:
+- AC-104: GIVEN an image attached as binding and placed inline WHEN the spec
+  page and the approval page render THEN both resolve it to the attachment
+  link; approving records its artifact revision; replacing it shows "changed
+  since approval" (`apps/web/tests/db/spec-attachments.test.ts`,
+  `apps/web/src/components/MarkdownContent.attachments.dom.test.tsx`).
+- AC-105: GIVEN a reference attachment WHEN the spec is approved and the
+  attachment changes THEN it is under Files, absent from the approval record,
+  and carries no warning (`apps/web/tests/db/spec-attachments.test.ts`).
+- AC-106: GIVEN `attachment:<name>` for a name the revision does not attach
+  WHEN it renders THEN it shows as missing, never as an image
+  (`apps/web/src/components/MarkdownContent.attachments.dom.test.tsx`).
+- AC-107: GIVEN an agent run WHEN it attaches an image and lists the
+  attachments THEN it reads the artifact id back; a reader outside the
+  workspace gets a 404 from the list and the link, and no URL is signed
+  (`apps/web/tests/db/spec-attachments.test.ts`,
+  `packages/core/__tests__/mcp-specs-attachments.test.ts`,
+  `apps/web/src/app/api/specs/[specId]/attachments/[name]/route.test.ts`).
+
+**Code surface**:
+- `apps/web/src/lib/specs/attachments.ts` — `attachToSpec`, `listSpecAttachments`, `removeSpecAttachment`, `openSpecAttachment`, `attachmentViews`
+- `apps/web/src/lib/specs/attachment-pins.ts` — `approvedAttachmentsSql`
+- `apps/web/src/app/api/specs/[specId]/attachments/route.ts` — `GET`, `POST`
+- `apps/web/src/app/api/specs/[specId]/attachments/[name]/route.ts` — `GET`, `DELETE`
+- `apps/web/src/components/SpecAttachments.tsx` — `SpecAttachments`
+
+**Not yet**:
+- The Files list shows a binding attachment's change, not the two versions
+  side by side.
+- A spec's generated repo copy (§18) does not carry its attachments.
