@@ -15,7 +15,7 @@
  *     or both. Never pooled: each row names its source and origin.
  *   - Scores (`./calibration.ts`): accuracy, rule accuracy on the same cases,
  *     agreement with production, calibration and a threshold sweep for each
- *     confidence source (`confidence`, `top_p`), the derived threshold and the
+ *     confidence source (`confidence`, `top_p`, `margin`, `calibrated_top_p`), the derived threshold and the
  *     source it reads, latency p50/p95, cost per 1k decisions.
  *   - Bounded (`./compare.ts`): per-model concurrency, a cost cap and the
  *     route's time budget; whatever was not run is counted and named.

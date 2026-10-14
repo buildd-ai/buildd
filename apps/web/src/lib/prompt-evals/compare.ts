@@ -201,6 +201,7 @@ export async function runComparison(opts: ComparisonOptions): Promise<Comparison
           correct: label !== null ? judged : c.labelled ? false : null,
           confidence: a.reading?.confidence ?? null,
           topP: a.reading?.topP ?? null,
+          margin: a.reading?.margin ?? null,
           ruleCorrect: c.ruleLabel !== null ? c.judge(c.ruleLabel) : null,
           ...(prodLabel !== undefined ? { prodLabel } : {}),
           latencyMs: a.latencyMs,
