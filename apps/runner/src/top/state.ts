@@ -8,7 +8,8 @@
  *   - workers: GET /api/workers, then `worker_update` frames on /api/events
  *   - tasks:   GET /api/tasks (the server's task list via the runner key; it
  *              carries missionId, dependsOn, startAt, roleSlug and the mission's
- *              title, hold and executor). Refetched when the runner learns of a
+ *              title, hold, executor and done/total over all its tasks,
+ *              plus prMergedAt on a finished task). Refetched when the runner learns of a
  *              queue change (task_assigned, claim_rejected, a worker finishing),
  *              and at most once a minute otherwise.
  *   - capacity: maxConcurrent from GET /api/config.
@@ -59,7 +60,16 @@ export interface TopTask {
   claimedBy?: string | null;
   roleSlug?: string | null;
   updatedAt?: string | null;
-  mission?: { id: string; title: string; isHeld?: boolean; executor?: string } | null;
+  /** Set by the server on a finished task whose PR has merged. */
+  prMergedAt?: string | null;
+  mission?: {
+    id: string;
+    title: string;
+    isHeld?: boolean;
+    executor?: string;
+    /** The server's count over every task of the mission (the list itself is windowed). */
+    taskCounts?: { done: number; total: number };
+  } | null;
 }
 
 export type Mode =
@@ -267,6 +277,7 @@ function sameLocalDay(iso: string | null | undefined, now: number): boolean {
 export function missionRows(state: TopState): MissionRow[] {
   const workers = workerByTask(state);
   const map = new Map<string, MissionRow>();
+  const serverCounts = new Map<string, { done: number; total: number }>();
   for (const t of relevantTasks(state, workers)) {
     const key = t.missionId || NO_MISSION;
     let row = map.get(key);
@@ -278,6 +289,14 @@ export function missionRows(state: TopState): MissionRow[] {
     if (t.status === 'completed') row.done++;
     const w = workers.get(t.id);
     if (w && (BUSY.includes(w.status) || w.status === 'waiting')) row.running++;
+    if (t.mission?.taskCounts) serverCounts.set(key, t.mission.taskCounts);
+  }
+  // The list holds active tasks and only a day of finished ones, so the local
+  // tally undercounts a long mission; the server's count wins when it sent one.
+  for (const [key, c] of serverCounts) {
+    const row = map.get(key)!;
+    row.done = c.done;
+    row.total = Math.max(c.total, row.total);
   }
   const rows = [...map.values()].filter(r => r.key !== NO_MISSION);
   rows.sort((a, b) => (b.running > 0 ? 1 : 0) - (a.running > 0 ? 1 : 0) || a.title.localeCompare(b.title));
@@ -418,6 +437,9 @@ export function taskRows(state: TopState, now: number): TaskRow[] {
         done.push({ ...base, workerId: w?.id, group: 'done', kind: 'failed', reason: w?.error ? `failed: ${w.error}` : 'failed' });
       } else if (t.status === 'cancelled') {
         done.push({ ...base, workerId: w?.id, group: 'done', kind: 'cancelled', reason: 'cancelled' });
+      } else if (t.prMergedAt) {
+        const pr = w?.prUrl ? ` ${w.prUrl.replace(/^https:\/\/github\.com\//, '')}` : '';
+        done.push({ ...base, workerId: w?.id, group: 'done', kind: 'done', reason: `PR merged${pr}` });
       } else if (w?.prUrl) {
         done.push({ ...base, workerId: w.id, group: 'done', kind: 'review', reason: `PR open ${w.prUrl.replace(/^https:\/\/github\.com\//, '')}` });
       } else {

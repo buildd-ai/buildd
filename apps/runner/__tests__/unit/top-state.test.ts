@@ -65,6 +65,21 @@ describe('missions pane (R-2)', () => {
     ]);
   });
 
+  test('done/total comes from the server count, so work finished outside the list window still counts', () => {
+    // The list holds active tasks and a day of finished ones (capped), so a
+    // mission whose finished work is older reads as 0/2 locally. The server
+    // counts every task of the mission and top shows that.
+    const mission = { id: 'm-long-0000-0000', title: 'Long mission', isHeld: false, executor: 'runner', taskCounts: { done: 7, total: 9 } };
+    const s = reduce(fixtureState(), { type: 'tasks', tasks: [
+      ...TASKS,
+      { id: 't-l1', title: 'long a', status: 'pending', missionId: mission.id, mission },
+      { id: 't-l2', title: 'long b', status: 'pending', missionId: mission.id, mission },
+    ] });
+    expect(missionRows(s).find(r => r.key === mission.id)).toMatchObject({ done: 7, total: 9 });
+    // A server without the field: the local count stands.
+    expect(missionRows(s).find(r => r.title === 'Runner TUI')).toMatchObject({ done: 2, total: 8 });
+  });
+
   test('(no mission) is there even with no loose tasks', () => {
     const s = reduce(fixtureState(), { type: 'tasks', tasks: TASKS.filter(t => t.missionId) });
     expect(missionRows(s).at(-1)).toMatchObject({ key: NO_MISSION, total: 0 });
@@ -128,6 +143,15 @@ describe('rows (R-3)', () => {
     expect(rowsByTitle(s)['single instance']).toMatchObject({ kind: 'paused', reason: 'paused, a resumes it' });
     s = reduce(s, { type: 'worker_update', worker: { ...WORKERS[0], status: 'done', completedAt: NOW - 60_000 } });
     expect(rowsByTitle(s)['name override']).toMatchObject({ group: 'done', kind: 'review', reason: 'PR open example/repo/pull/12' });
+  });
+
+  test('a finished task whose PR merged reads as merged, not as open', () => {
+    let s = reduce(fixtureState(), { type: 'worker_update', worker: { ...WORKERS[0], status: 'done', completedAt: NOW - 60_000 } });
+    s = reduce(s, { type: 'tasks', tasks: TASKS.map(t => t.id === 't-name' ? { ...t, status: 'completed', prMergedAt: new Date(NOW - 30_000).toISOString() } : t) });
+    expect(rowsByTitle(s)['name override']).toMatchObject({ group: 'done', kind: 'done', reason: 'PR merged example/repo/pull/12' });
+    // Merged with no local worker left (runner restarted): still merged.
+    const gone = reduce(fixtureState(), { type: 'tasks', tasks: TASKS.map(t => t.id === 't-draft' ? { ...t, prMergedAt: new Date(NOW - 30_000).toISOString() } : t) });
+    expect(rowsByTitle(gone)['spec draft']).toMatchObject({ kind: 'done', reason: 'PR merged' });
   });
 
   test('the filter narrows rows by title', () => {
