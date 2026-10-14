@@ -7,7 +7,7 @@ summary: A runner MUST detect the model login on its own machine, use it with no
 domain: runners
 surfaces: [apps/runner/src/host-seat.ts, apps/runner/src/workers.ts, apps/web/src/app/api/workers/heartbeat/route.ts, apps/cloud-runner/src/owner-seat.ts]
 related: [runner-liveness, credential-isolation, real-and-virtual-cost, auth-oauth-boundaries]
-keywords: [host seat, claude login, codex login, codex_auth_source, codexAuthSource, setup-token, CLAUDE_CODE_OAUTH_TOKEN, BUILDD_HOST_SEAT, owner seat, keychain, hasClaudeCredentials, model_auth_source, detectModelAuthSource]
+keywords: [host seat, claude login, codex login, codex_auth_source, codexAuthSource, setup-token, CLAUDE_CODE_OAUTH_TOKEN, BUILDD_HOST_SEAT, owner seat, keychain, model_auth_source, detectModelAuthSource]
 verified_by: [apps/runner/__tests__/unit/model-auth-detect.test.ts, apps/web/src/app/api/workers/heartbeat/route.test.ts, apps/web/src/app/app/(protected)/settings/_lib/model-auth-label.test.ts, apps/web/src/app/app/(protected)/settings/RunnerTokensSection.dom.test.tsx, apps/web/src/app/app/(protected)/settings/runners/qa-state.test.ts, apps/web/src/app/api/workers/active/route.test.ts, packages/core/__tests__/mcp-tools-list-runners.test.ts, apps/cloud-runner/src/owner-seat.test.ts]
 assertions:
   - id: detector
@@ -82,7 +82,7 @@ The mode (`auto` / `prefer` / `off`) is reported next to the label.
 - Detection MUST go through one path: `detectModelAuthSource` and the agent
   env decision (`applyHostSeatPolicy`) both build on `detectHostSeat`, so the
   startup message, the heartbeat label and what the agent gets never disagree.
-  The legacy hasClaudeCredentials check is gone.
+  The old yes/no credentials check is gone.
 - A stub `oauthAccount` in `~/.claude.json`, or a credentials file holding only
   MCP OAuth entries, MUST NOT count as a login.
 - No token, key or keychain secret MUST appear in the heartbeat payload, the
@@ -166,7 +166,7 @@ optional, so `none` is not a warning anywhere.
 - AC-13: GIVEN a runner row with Codex `none` THEN no Codex line shows; with
   `machine_login` THEN "Codex: uses this machine's Codex login" shows.
 - AC-14: GIVEN the runner's local config endpoint THEN it carries the Claude
-  and Codex labels and no `hasClaudeCredentials` field.
+  and Codex labels and no old yes/no credentials field.
 
 ## Code surface
 
