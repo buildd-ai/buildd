@@ -1,9 +1,8 @@
 /**
  * The spec index, mounted (happy-dom), living-specs.md §19 AC-80..AC-89:
- * the outline groups by product and area with counts in words, Unfiled
- * comes last with each suggestion, the map sizes blocks by spec count with a
- * floor, collapses to one line with one area or none, and a tap filters the
- * outline in place.
+ * one card per area listing its own specs with counts in words, Unfiled last
+ * with each suggestion, possible areas as dashed cards holding their specs,
+ * one line of counts, and what waits for the reader's approval first.
  *
  * Runs in its own process (scripts/run-unit-tests.ts), so the DOM globals stay here.
  */
@@ -17,7 +16,6 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: SpecIndex } = await import('./SpecIndex');
-const { MAP_BLOCK_MIN_WIDTH_PX, MAP_BLOCK_MIN_HEIGHT_PX } = await import('@/lib/specs/index-view');
 type Input = import('@/lib/specs/index-view').SpecIndexInput;
 
 let container: HTMLElement;
@@ -44,8 +42,8 @@ const area = (id: string, title: string, parent: string | null = null) => spec(i
 const many = (areaId: string, n: number) => Array.from({ length: n }, (_, i) => approved(`${areaId}-${i}`, areaId));
 
 type Actions = import('./SpecIndex').IndexActions;
-const render = (specs: Input[], options?: Parameters<typeof SpecIndex>[0]['options'], actions?: Partial<Actions>, canAct = true) =>
-  act(() => root.render(<SpecIndex specs={specs} options={{ now: now.getTime(), ...options }} actions={actions} canAct={canAct} />));
+const render = (specs: Input[], options?: Parameters<typeof SpecIndex>[0]['options'], actions?: Partial<Actions>, canAct = true, canConfirm = false) =>
+  act(() => root.render(<SpecIndex specs={specs} options={{ now: now.getTime(), ...options }} actions={actions} canAct={canAct} canConfirm={canConfirm} />));
 /** Records every action; each answers ok. */
 function recorder() {
   const calls: Array<[string, ...unknown[]]> = [];
@@ -57,7 +55,6 @@ function recorder() {
 const q = (sel: string) => container.querySelector(sel);
 const qa = (sel: string) => [...container.querySelectorAll(sel)];
 const rowIds = (scope: Element | null) => [...(scope?.querySelectorAll(':scope > ul > [data-testid="spec-index-row"]') ?? [])].map((r) => r.getAttribute('data-spec-id'));
-const click = (el: Element | null) => act(() => { (el as HTMLElement).click(); });
 
 describe('SpecIndex outline', () => {
   it('AC-80: a product heads its areas; each area says its mix in words and lists its features', () => {
@@ -69,12 +66,15 @@ describe('SpecIndex outline', () => {
     ]);
     const product = q('[data-testid="spec-index-product"]')!;
     expect(product.getAttribute('data-product-id')).toBe('p');
-    expect(product.textContent).toContain('Shop');
+    // One product: the page already says whose specs these are, so no Product label.
+    expect(q('[data-testid="spec-index-product-label"]')).toBeNull();
     const groups = qa('[data-testid="spec-index-area"]');
     expect(groups.map((g) => g.getAttribute('data-area-id'))).toEqual(['a1', 'a2']);
     expect(groups[0].querySelector('[data-testid="spec-index-area-words"]')!.textContent).toBe('2 specs, 1 approved, 1 draft');
     expect(rowIds(groups[0])).toEqual(['f1', 'f2']);
-    expect(groups[0].textContent).toContain('feature · draft, never approved');
+    expect(groups[0].textContent).toContain('draft, never approved');
+    // Each area is one card holding its own specs, headed at h2 under the page's h1.
+    expect(groups[0].querySelector('h2')!.textContent).toBe('Checkout');
     expect(q('[data-testid="spec-index-unfiled"]')).toBeNull();
   });
 
@@ -114,8 +114,8 @@ describe('SpecIndex outline', () => {
       area('a1', 'Checkout'), approved('f1', 'a1'),
       draft('u2', null, { suggestion: billing }),
     ], undefined, actions);
-    const outline = q('[data-testid="spec-index-outline"]')!;
-    expect(outline.lastElementChild!.getAttribute('data-testid')).toBe('spec-index-unfiled');
+    const cards = [...q('[data-testid="spec-index-outline"]')!.querySelectorAll('[data-testid="spec-index-area"], [data-testid="spec-index-possible"], [data-testid="spec-index-unfiled"]')];
+    expect(cards.at(-1)!.getAttribute('data-testid')).toBe('spec-index-unfiled');
     const unfiled = q('[data-testid="spec-index-unfiled"]')!;
     expect(rowIds(unfiled)).toEqual(['u1', 'u2']);
     const u1 = unfiled.querySelector('[data-spec-id="u1"]')!;
@@ -179,13 +179,12 @@ describe('SpecIndex filings (§17)', () => {
     render(Array.from({ length: 12 }, (_, i) => draft(`u${i}`, null)), {
       proposals: [{ key: 'cooking', title: 'Cooking', specIds: ['u0', 'u1', 'u2'] }, { key: 'plans', title: 'Planning', specIds: ['u3', 'u4'] }],
     }, actions);
-    expect(q('[data-testid="spec-index-map"]')).toBeNull();
-    expect(q('[data-testid="spec-index-line"]')!.textContent).toBe('12 specs, none filed yet. buildd proposes 2 areas for them:');
-    const groups = qa('[data-testid="spec-index-proposals"] [data-testid="spec-index-possible"]');
-    expect(groups.map((g) => g.querySelector('[data-testid="spec-index-possible-label"]')!.textContent)).toEqual(['possible area: Cooking', 'possible area: Planning']);
-    click(groups[0]);
-    expect(rowIds(q('[data-testid="spec-index-unfiled"]'))).toEqual(['u0', 'u1', 'u2']);
-    await act(async () => { (q('[data-testid="spec-index-possible-accept"]') as HTMLElement).click(); });
+    expect(q('[data-testid="spec-index-line"]')!.textContent).toBe('12 specs, none filed yet. buildd proposes 2 areas for them.');
+    const groups = qa('[data-testid="spec-index-possible"]');
+    expect(groups.map((g) => g.querySelector('[data-testid="spec-index-possible-label"]')!.textContent)).toEqual(['Possible area: Cooking', 'Possible area: Planning']);
+    expect(rowIds(groups[0])).toEqual(['u0', 'u1', 'u2']);
+    expect(rowIds(q('[data-testid="spec-index-unfiled"]'))).toEqual(['u5', 'u6', 'u7', 'u8', 'u9', 'u10', 'u11']);
+    await act(async () => { (groups[0].querySelector('[data-testid="spec-index-possible-accept"]') as HTMLElement).click(); });
     expect(calls).toEqual([['proposal', 'cooking']]);
     expect(q('[data-testid="spec-index-possible-done"]')!.textContent).toContain('Cooking is an area now');
   });
@@ -238,44 +237,51 @@ describe('filingFacts', () => {
     render(Array.from({ length: 12 }, (_, i) => draft(`u${i}`, null)), {
       proposals: [{ key: 'cooking', title: 'Cooking', specIds: ['u0', 'u1', 'u2'], source: 'words' }, { key: 'plans', title: 'Planning', specIds: ['u3', 'u4'], source: 'words' }],
     }, actions);
-    click(qa('[data-testid="spec-index-proposals"] [data-testid="spec-index-possible"]')[0]!);
-    await act(async () => { (q('[data-testid="spec-index-possible-accept"]') as HTMLElement).click(); });
+    await act(async () => { (qa('[data-testid="spec-index-possible"]')[0]!.querySelector('[data-testid="spec-index-possible-accept"]') as HTMLElement).click(); });
     expect(calls).toEqual([['proposal', 'cooking', 'words']]);
   });
 });
 
-describe('SpecIndex map', () => {
-  it('AC-82: a failing outcome counts as failing in the map and the outline', () => {
+describe('SpecIndex cards', () => {
+  it('lists the waiting revisions first for a reader who approves, each with its Review link', () => {
+    render([
+      area('a1', 'Runners'), approved('f1', 'a1', { title: 'Pools', approvedRevision: 2, headRevision: 3 }), approved('f2', 'a1'),
+      draft('u1', null),
+    ], undefined, undefined, true, true);
+    const card = q('[data-testid="spec-index-waiting-card"]')!;
+    expect(card.querySelector('h2')!.textContent).toBe('Waiting for your approval');
+    const link = card.querySelector('[data-testid="spec-index-review"]')!;
+    expect(link.getAttribute('href')).toBe('/app/specs/f1?review=1');
+    expect(link.textContent).toBe('Review revision 3');
+    expect(card.textContent).toContain('Pools');
+    expect(q('[data-testid="spec-index-line"]')!.textContent).toBe('3 specs in 1 area, 1 unfiled. 1 waits for your approval.');
+  });
+
+  it('a reader who cannot approve gets no waiting card, and the line says it neutrally', () => {
+    render([area('a1', 'Runners'), approved('f1', 'a1', { headRevision: 2 }), approved('f2', 'a1', { headRevision: 2 })]);
+    expect(q('[data-testid="spec-index-waiting-card"]')).toBeNull();
+    expect(q('[data-testid="spec-index-line"]')!.textContent).toBe('2 specs in 1 area. 2 wait for approval.');
+  });
+
+  it('AC-82: a failing outcome counts as failing on its area card, in words beside the bar', () => {
     render([area('a1', 'Runners'), ...many('a1', 6), approved('bad', 'a1', { failing: 'outcome failed' }), area('a2', 'Billing'), ...many('a2', 3)]);
-    const block = q('[data-testid="spec-index-block"][data-area-id="a1"]')!;
-    expect(block.querySelector('[data-testid="spec-index-block-words"]')!.textContent).toBe('7 specs, 6 approved, 1 failing');
-    expect(block.querySelector('[data-state="failing"]')).not.toBeNull();
-    expect(q('[data-testid="spec-index-area"][data-area-id="a1"] [data-testid="spec-index-area-words"]')!.textContent).toBe('7 specs, 6 approved, 1 failing');
+    const card = q('[data-testid="spec-index-area"][data-area-id="a1"]')!;
+    expect(card.querySelector('[data-testid="spec-index-area-words"]')!.textContent).toBe('7 specs, 6 approved, 1 failing');
+    expect(card.querySelector('[data-testid="spec-index-mix-bar"] [data-state="failing"]')).not.toBeNull();
     expect(q('[data-testid="spec-index-legend"]')!.textContent).toContain('failing');
   });
 
-  it('AC-85: blocks are sized by spec count, labelled in words, and the small one keeps the floor', () => {
+  it('AC-85: an area card holds every spec it counts, so a bigger area is a bigger card', () => {
     render([area('a1', 'Runners'), ...many('a1', 8), area('a2', 'Billing'), ...many('a2', 2)]);
-    const [big, small] = qa('[data-testid="spec-index-block"]') as HTMLElement[];
-    expect(big.getAttribute('data-area-id')).toBe('a1');
-    // Wide: a share of all filed specs. Phone: a share of the largest area. Never grown to fill a row.
-    expect(parseFloat(big.style.getPropertyValue('--block-share'))).toBe(80);
-    expect(parseFloat(small.style.getPropertyValue('--block-share'))).toBe(20);
-    expect(parseFloat(big.style.getPropertyValue('--block-rel'))).toBe(100);
-    expect(parseFloat(small.style.getPropertyValue('--block-rel'))).toBe(25);
-    expect(big.className).toContain('grow-0');
-    expect(big.getAttribute('aria-label')).toContain('Runners · 8 specs, 8 approved');
-    expect(small.getAttribute('aria-label')).toContain('Billing · 2 specs, 2 approved');
-    expect(small.querySelector('[data-testid="spec-index-block-title"]')!.textContent).toBe('Billing');
-    expect(small.style.minWidth).toBe(`${MAP_BLOCK_MIN_WIDTH_PX}px`);
-    expect(MAP_BLOCK_MIN_HEIGHT_PX).toBeGreaterThanOrEqual(44);
-    expect(small.style.minHeight).toBe(`${MAP_BLOCK_MIN_HEIGHT_PX}px`);
-    // Two floors and the gap fit a 320px screen less its padding, so blocks wrap rather than scroll (AC-84).
-    expect(MAP_BLOCK_MIN_WIDTH_PX * 2 + 8).toBeLessThanOrEqual(320 - 32);
-    expect(q('[data-testid="spec-index-map"] > div')!.className).toContain('flex-wrap');
+    const [big, small] = qa('[data-testid="spec-index-area"]');
+    expect(rowIds(big)).toHaveLength(8);
+    expect(rowIds(small)).toHaveLength(2);
+    expect(small.querySelector('[data-testid="spec-index-area-words"]')!.textContent).toBe('2 specs, 2 approved');
+    // Rows are 44px tap targets at phone width.
+    expect(small.querySelector('[data-testid="spec-index-row"] a')!.className).toContain('min-h-11');
   });
 
-  it('AC-86: two unfiled specs answering new_area "Billing" form a dashed group; the third is a loose dot', () => {
+  it('AC-86: two unfiled specs answering new_area "Billing" form a dashed card holding them; the third stays in Unfiled', () => {
     render([
       area('a1', 'Runners'), ...many('a1', 4), area('a2', 'Checkout'), ...many('a2', 3),
       draft('u1', null, { suggestion: { kind: 'new_area', title: 'Billing' } }),
@@ -284,78 +290,51 @@ describe('SpecIndex map', () => {
     ]);
     const groups = qa('[data-testid="spec-index-possible"]');
     expect(groups).toHaveLength(1);
-    expect(groups[0].querySelector('[data-testid="spec-index-possible-label"]')!.textContent).toBe('possible area: Billing');
-    expect(groups[0].className).toContain('outline-dashed');
-    expect([...groups[0].querySelectorAll('[data-testid="spec-index-dot"]')].map((d) => d.getAttribute('data-spec-id'))).toEqual(['u1', 'u2']);
-    const loose = q('[data-testid="spec-index-loose"]')!;
-    expect([...loose.querySelectorAll('[data-testid="spec-index-dot"]')].map((d) => d.getAttribute('data-spec-id'))).toEqual(['u3']);
-    expect(loose.textContent).toContain('1 unfiled');
+    expect(groups[0].querySelector('[data-testid="spec-index-possible-label"]')!.textContent).toBe('Possible area: Billing');
+    expect(groups[0].className).toContain('border-dashed');
+    expect(rowIds(groups[0])).toEqual(['u1', 'u2']);
+    expect(rowIds(q('[data-testid="spec-index-unfiled"]'))).toEqual(['u3']);
   });
 
-  it('a taxonomy proposal area forms a possible group whose filter offers its accept action', () => {
+  it('a taxonomy proposal area offers its accept link on its card', () => {
     render([
       area('a1', 'Runners'), ...many('a1', 5), area('a2', 'Checkout'), ...many('a2', 3),
       draft('u1', null), draft('u2', null),
     ], { proposals: [{ title: 'Billing', specIds: ['u1', 'u2'], acceptHref: '/app/specs/proposal' }] });
-    click(q('[data-testid="spec-index-possible"]'));
-    expect(rowIds(q('[data-testid="spec-index-unfiled"]'))).toEqual(['u1', 'u2']);
-    expect(q('[data-testid="spec-index-area"]')).toBeNull();
-    expect(q('[data-testid="spec-index-possible-accept"]')!.getAttribute('href')).toBe('/app/specs/proposal');
-  });
-
-  it('AC-87: tapping a block filters the outline in place; a second tap shows all', () => {
-    render([area('a1', 'Runners'), ...many('a1', 5), area('a2', 'Billing'), ...many('a2', 4), draft('u1', null)]);
-    const path = window.location.pathname;
-    const block = q('[data-testid="spec-index-block"][data-area-id="a2"]')!;
-    click(block);
-    expect(qa('[data-testid="spec-index-area"]').map((g) => g.getAttribute('data-area-id'))).toEqual(['a2']);
+    const card = q('[data-testid="spec-index-possible"]')!;
+    expect(rowIds(card)).toEqual(['u1', 'u2']);
+    expect(card.querySelector('[data-testid="spec-index-possible-accept"]')!.getAttribute('href')).toBe('/app/specs/proposal');
     expect(q('[data-testid="spec-index-unfiled"]')).toBeNull();
-    expect(block.getAttribute('aria-pressed')).toBe('true');
-    expect(q('[data-testid="spec-index-filter-line"]')!.textContent).toBe('Showing Billing only.');
-    expect(window.location.pathname).toBe(path);
-    click(block);
-    expect(qa('[data-testid="spec-index-area"]').map((g) => g.getAttribute('data-area-id'))).toEqual(['a1', 'a2']);
-    expect(q('[data-testid="spec-index-unfiled"]')).not.toBeNull();
-    // The clear action does the same.
-    click(block);
-    click(q('[data-testid="spec-index-filter-clear"]'));
-    expect(qa('[data-testid="spec-index-area"]')).toHaveLength(2);
-    // The dot cloud filters to the unfiled specs.
-    click(q('[data-testid="spec-index-loose"]'));
-    expect(q('[data-testid="spec-index-area"]')).toBeNull();
-    expect(rowIds(q('[data-testid="spec-index-unfiled"]'))).toEqual(['u1']);
   });
 
-  it('AC-88: with one area, no map renders and one line states the counts', () => {
+  it('with more than one product, each is named and its areas sit under it at h3', () => {
+    render([
+      spec('p1', { title: 'Shop', scope: 'product' }), area('a1', 'Checkout', 'p1'), approved('f1', 'a1'),
+      spec('p2', { title: 'Ops', scope: 'product' }), area('a2', 'Runners', 'p2'), approved('f2', 'a2'),
+    ]);
+    expect(qa('[data-testid="spec-index-product-label"]').map((l) => l.textContent)).toEqual(['Shop', 'Ops']);
+    expect(q('[data-testid="spec-index-area"][data-area-id="a1"] h3')!.textContent).toBe('Checkout');
+  });
+
+  it('AC-88: the line states the counts in words, with or without areas', () => {
     render([area('a1', 'Runners'), ...many('a1', 9), draft('u1', null), draft('u2', null), draft('u3', null)]);
-    expect(q('[data-testid="spec-index-map"]')).toBeNull();
-    expect(q('[data-testid="spec-index-line"]')!.textContent).toBe('12 specs: 9 in Runners, 3 unfiled');
-  });
-
-  it('AC-88: with one area and nothing unfiled, the line says all are in it', () => {
+    expect(q('[data-testid="spec-index-line"]')!.textContent).toBe('12 specs in 1 area, 3 unfiled.');
     render([area('a1', 'Runners'), ...many('a1', 12)]);
-    expect(q('[data-testid="spec-index-line"]')!.textContent).toBe('12 specs, all in Runners');
+    expect(q('[data-testid="spec-index-line"]')!.textContent).toBe('12 specs in 1 area.');
   });
 
   it('AC-88: with no area, the line says none are filed and links the taxonomy proposal', () => {
     render(Array.from({ length: 12 }, (_, i) => draft(`u${i}`, null)), { taxonomyHref: '/app/specs/taxonomy' });
-    expect(q('[data-testid="spec-index-map"]')).toBeNull();
     const line = q('[data-testid="spec-index-line"]')!;
     expect(line.textContent).toContain('12 specs, none filed yet');
     expect(line.querySelector('a')!.getAttribute('href')).toBe('/app/specs/taxonomy');
   });
 
-  it('AC-89: 10 specs in three areas render three labelled blocks', () => {
+  it('AC-89: 10 specs in three areas render three labelled cards', () => {
     render([area('a1', 'Runners'), ...many('a1', 5), area('a2', 'Billing'), ...many('a2', 3), area('a3', 'Specs'), ...many('a3', 2)]);
-    const blocks = qa('[data-testid="spec-index-block"]');
-    expect(blocks.map((b) => b.querySelector('[data-testid="spec-index-block-title"]')!.textContent)).toEqual(['Runners', 'Billing', 'Specs']);
-    expect(blocks.every((b) => /\d+ specs?, /.test(b.querySelector('[data-testid="spec-index-block-words"]')!.textContent ?? ''))).toBe(true);
-  });
-
-  it('below about 10 specs, two areas still read as one line', () => {
-    render([area('a1', 'Runners'), ...many('a1', 3), area('a2', 'Billing'), ...many('a2', 2)]);
-    expect(q('[data-testid="spec-index-map"]')).toBeNull();
-    expect(q('[data-testid="spec-index-line"]')!.textContent).toBe('5 specs: 3 in Runners, 2 in Billing');
+    const cards = qa('[data-testid="spec-index-area"]');
+    expect(cards.map((b) => b.querySelector('h2')!.textContent)).toEqual(['Runners', 'Billing', 'Specs']);
+    expect(q('[data-testid="spec-index-line"]')!.textContent).toBe('10 specs in 3 areas.');
   });
 
   it('AC-22: an empty workspace says how specs get made and shows no count', () => {

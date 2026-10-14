@@ -10,19 +10,18 @@ describe('spec index fixture', () => {
     const v = specIndexView(SPEC_INDEX_FIXTURE_SPECS);
     expect(v.total).toBeGreaterThanOrEqual(25);
     expect(v.total).toBeLessThanOrEqual(35);
-    expect(v.map.kind).toBe('map');
-    if (v.map.kind !== 'map') return;
-    expect(v.map.blocks).toHaveLength(5);
-    expect(v.map.possible.map((p) => p.title)).toEqual(['Notifications']);
-    expect(v.map.loose.length).toBeGreaterThan(0);
+    expect(v.areaCount).toBe(5);
+    expect(v.possible.map((p) => p.title)).toEqual(['Notifications']);
+    expect(v.loose.length).toBeGreaterThan(0);
+    expect(v.waiting.length).toBeGreaterThan(0);
     const states = new Set(v.areas.flatMap((a) => Object.entries(a.mix).filter(([, n]) => n > 0).map(([s]) => s)));
     expect([...states].sort()).toEqual(['approved', 'draft', 'failing', 'imported']);
     expect(v.unfiled.some((u) => u.suggestion?.kind === 'parent')).toBe(true);
   });
 
-  it('collapses to one line with one area and with none', () => {
-    expect(specIndexView(SPEC_INDEX_ONE_AREA_FIXTURE).map.kind).toBe('line');
-    expect(specIndexView(SPEC_INDEX_NO_AREA_FIXTURE).map).toMatchObject({ kind: 'line', text: '12 specs, none filed yet' });
+  it('says its counts in one line with one area and with none', () => {
+    expect(specIndexView(SPEC_INDEX_ONE_AREA_FIXTURE).areaCount).toBe(1);
+    expect(specIndexView(SPEC_INDEX_NO_AREA_FIXTURE).line.text).toBe('12 specs, none filed yet');
   });
 
   it('graph fixture caps neighbours at 8', () => {
