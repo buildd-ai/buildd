@@ -1377,7 +1377,8 @@ async function releaseKernelLand(p: Parameters<typeof import('@/lib/workflow/ker
   if (!(await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber))) return null;
   const client = await import('@/lib/workflow/kernel-client');
   try {
-    return await client.landThroughKernel(p);
+    // buildd's own door on a webhook: the system principal, named by its actor.
+    return await client.landThroughKernel(p, { principal: client.systemPrincipal('system:release_pr_ci_success') });
   } catch (err) {
     if (!client.isDoorError(err)) throw err;
     console.warn(`[release-pr] the control plane did not land ${p.repoFullName}#${p.prNumber}; the release stays pending:`, err.message);

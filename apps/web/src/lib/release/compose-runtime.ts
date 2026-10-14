@@ -52,9 +52,9 @@ export function composeActionDeps(target: ReleaseTarget, origin: string): Compos
     // D10 (workflow-kernel-library.md §4): the candidate merges only at the SHA it was verified
     // on, through buildd's review gate (or the kernel's, for a PR it owns), not on GitHub's
     // reviews alone. A moved head is refused.
-    mergePr: async (installationId, repo, prNumber, method, sha) => {
+    mergePr: async (installationId, repo, prNumber, method, sha, actorUserId) => {
       const r = await mergeReleasePrPinned({
-        workspaceId: target.workspaceId, installationId, repoFullName: repo, prNumber, verifiedHeadSha: sha, mergeMethod: method, surface: 'release compose',
+        workspaceId: target.workspaceId, installationId, repoFullName: repo, prNumber, verifiedHeadSha: sha, mergeMethod: method, surface: 'release compose', actorUserId,
       });
       // A lost answer stays pending (indeterminate), never reads as a refusal.
       return r.merged ? { merged: true, message: r.message } : { merged: false, message: r.message, ...(r.indeterminate ? { indeterminate: true } : {}) };

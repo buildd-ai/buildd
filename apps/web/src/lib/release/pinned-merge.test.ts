@@ -70,7 +70,12 @@ describe('mergeReleasePrPinned', () => {
     const gate = mock(async () => ({ blocks: false }) as never);
     const r = await mergeReleasePrPinned(input(), { api: g.api, land, reviewGate: gate, owned });
     expect(r).toEqual({ merged: true, sha: 'kmerge', message: 'Pull request merged', via: 'kernel' });
-    expect((land.mock.calls[0] as unknown[])[0]).toMatchObject({ headSha: 'verified1', door: 'release:release compose', prNumber: 47 });
+    expect((land.mock.calls[0] as unknown[])[0]).toMatchObject({ headSha: 'verified1', door: 'release:release compose', prNumber: 47, actor: 'system:release:release compose' });
+    // buildd's own release door asks as the system; a person releasing asks as themselves.
+    expect((land.mock.calls[0] as unknown[])[1]).toEqual({ kind: 'system', id: 'system:release:release compose' });
+    await mergeReleasePrPinned(input({ actorUserId: 'u-1' }), { api: github(open('verified1')).api, land, reviewGate: gate, owned });
+    expect((land.mock.calls[1] as unknown[])[0]).toMatchObject({ actor: 'human:u-1' });
+    expect((land.mock.calls[1] as unknown[])[1]).toEqual({ kind: 'user', id: 'u-1' });
     expect(g.merges()).toEqual([]);
     expect(gate).not.toHaveBeenCalled();
   });

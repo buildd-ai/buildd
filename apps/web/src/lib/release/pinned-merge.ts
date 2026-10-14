@@ -23,7 +23,7 @@ import { githubApi } from '@/lib/github';
 import { guardReviewVerdict } from '@/lib/review-verdict-gate';
 import { kernelDeliveryForPr } from '@/lib/workflow/authority';
 import { isDoorError } from '@/lib/workflow/kernel-client';
-import type { KernelOps } from '@/lib/workflow/kernel-client';
+import type { KernelOps, KernelPrincipal } from '@/lib/workflow/kernel-client';
 
 type LandingInput = KernelOps['land']['input'];
 type KernelLanding = NonNullable<KernelOps['land']['result']>;
@@ -40,6 +40,11 @@ export interface PinnedMergeInput {
   mergeMethod: 'merge' | 'squash' | 'rebase';
   /** Which door (recorded on the gate and the kernel transition). */
   surface: string;
+  /**
+   * Who asks: a person (release compose) is their own principal and actor; absent, buildd's
+   * own release door (the executor on task completion) asks as the system.
+   */
+  actorUserId?: string | null;
   taskId?: string | null;
 }
 
@@ -57,7 +62,7 @@ export interface PinnedMergeDeps {
   api?: Api;
   reviewGate?: typeof guardReviewVerdict;
   /** The kernel's landing through the one client (kernel-client.ts); null = the kernel does not own the PR. */
-  land?: (p: LandingInput) => Promise<KernelLanding | null>;
+  land?: (p: LandingInput, principal: KernelPrincipal) => Promise<KernelLanding | null>;
   /** Whether a kernel delivery owns the PR (authority.ts), read locally: a PR it does not own never reaches the kernel. */
   owned?: (workspaceId: string, repoFullName: string, prNumber: number) => Promise<boolean>;
 }
@@ -91,13 +96,16 @@ export async function mergeReleasePrPinned(p: PinnedMergeInput, deps: PinnedMerg
 
   const owned = await (deps.owned ?? (async (ws: string, repo: string, n: number) => !!(await kernelDeliveryForPr(ws, repo, n))))(p.workspaceId, p.repoFullName, p.prNumber);
   if (owned) {
-    const land = deps.land ?? (async (input: LandingInput) => (await import('@/lib/workflow/kernel-client')).landThroughKernel(input));
+    const land = deps.land ?? (async (input: LandingInput, principal: KernelPrincipal) => (await import('@/lib/workflow/kernel-client')).landThroughKernel(input, { principal }));
+    const person = p.actorUserId ?? null;
+    const actor = person ? `human:${person}` : `system:release:${p.surface}`;
+    const principal: KernelPrincipal = person ? { kind: 'user', id: person } : { kind: 'system', id: actor.slice(0, 200) };
     let kernel: KernelLanding | null;
     try {
       kernel = await land({
         workspaceId: p.workspaceId, installationId: p.installationId, repoFullName: p.repoFullName, prNumber: p.prNumber,
-        headSha: head, door: `release:${p.surface}`, actor: `system:release:${p.surface}`, mergeMethod: p.mergeMethod,
-      });
+        headSha: head, door: `release:${p.surface}`, actor, mergeMethod: p.mergeMethod,
+      }, principal);
     } catch (err) {
       if (!isDoorError(err)) throw err;
       return { merged: false, refused: 'unavailable', hold: true, headSha: head, message: `the control plane did not land PR #${p.prNumber} (${err.message}); the release waits and is retried` };
