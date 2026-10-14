@@ -52,10 +52,11 @@ rewrite, and the two cannot drift.
   `POST /v1/commands` (`workflow-kernel-library.md` §3,
   `apps/web/src/lib/workflow/command-api.ts`). It is not a web-app handler and
   is never on a `buildd.dev` route; it refuses with `not_host` unless
-  `EXECUTION_MODE=own` (`index.test.ts`).
+  `EXECUTION_MODE=own`, and every request while `KERNEL_COMMAND_SECRET` is
+  unset (`index.test.ts`).
 - Its `scheduled` handler is the kernel's drain and floor
   (`apps/web/src/lib/workflow/kernel-floor.ts`), on the cron trigger in
-  `wrangler.jsonc`; a no-op in shadow. The Worker's entry tags itself as the
+  `wrangler.jsonc`; a no-op in shadow or without `KERNEL_COMMAND_SECRET`. The Worker's entry tags itself as the
   kernel's `control-plane` host, so every transition it applies says so.
 - `next/server` resolves to a shim: `NextRequest` (Request plus `nextUrl`),
   `NextResponse` (`json`, `redirect`), `after()` (the request's

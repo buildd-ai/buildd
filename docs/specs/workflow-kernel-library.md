@@ -340,10 +340,11 @@ the control plane, authenticated as the caller).
     code runs on the web host in shadow, so the two modes cannot drift.
   - Authenticated. The request is signed: HMAC-SHA256 over timestamp, method,
     path and body (the scheme Dispatch callbacks use, `@buildd/dispatch-contract`)
-    with the command key ring `KERNEL_COMMAND_SECRET`, or, when that is unset,
-    a key derived from `CRON_SECRET` under its own label, so a cron bearer
-    token is never itself a valid signature. No key configured is a 503 and a
-    bad or missing signature a 401, before anything runs. The body names the
+    with the dedicated command key ring `KERNEL_COMMAND_SECRET`
+    (`keyId:secret[,keyId:secret]`, two ids live during rotation). The secret is
+    required: nothing is derived from another secret, and while it is unset the
+    control plane refuses every request (503 `unconfigured`). A bad or missing
+    signature is a 401, before anything runs. The body names the
     principal the calling host vouches for (`user`, `account` or `system`),
     and the endpoint re-checks that it still reaches the workspace (team
     membership for a person, workspace reach for an API account); a principal
@@ -378,7 +379,10 @@ the control plane, authenticated as the caller).
   command through that client and return its result. NOT IMPLEMENTED: the
   doors still call the seam directly; their move to the client is the second
   half of slice S3a.
-- The mode is one setting: the control plane's `EXECUTION_MODE`. The web host
+- Routing is off until `KERNEL_COMMAND_SECRET` is set on the web host: without
+  it the web host runs the package itself, exactly as before, whatever either
+  host's `EXECUTION_MODE`, and the control plane's cron does nothing. With it,
+  the mode is one setting: the control plane's `EXECUTION_MODE`. The web host
   follows what the Worker's health reports (`/__control-plane/health`, read
   with a short timeout and cached for 30 s; a reading up to five minutes old
   stands in for a failed re-read; no reading at all counts as `own`, so a door
@@ -392,9 +396,15 @@ the control plane, authenticated as the caller).
   In own mode it runs on the control plane's cron trigger
   (`apps/control-plane/wrangler.jsonc`, `triggers.crons`, hourly at :10, the
   web app's merge-state minute, so it opens no extra Neon wake window) and is
-  recorded as the `kernel-floor` cron run; `/api/cron/pr-reconcile` skips it
-  (`kernelSkipped`). In shadow `/api/cron/pr-reconcile` runs it and the
-  control plane's tick does nothing and reads nothing. An effect is never
+  recorded as the `kernel-floor` cron run, which names the host that ran it;
+  `/api/cron/pr-reconcile` skips it (`kernelSkipped`). In shadow, or before the
+  switch-over, `/api/cron/pr-reconcile` runs it and the control plane's tick
+  does nothing and reads nothing. Liveness fallback: even switched over,
+  `/api/cron/pr-reconcile` runs the pass itself whenever the control plane's
+  newest successful `kernel-floor` run is older than two cron periods (two
+  hours) or has never happened, and records `kernelHost: web` with
+  `kernelReason: control_plane_floor_stale`. A cron trigger that was never
+  deployed, or a stopped Worker, can delay the drain, never stop it. An effect is never
   drained inline at the end of a Vercel request in own mode: the seam's inline
   drain becomes a `drain` command to the control plane, best effort, with the
   floor as the backstop.
@@ -415,6 +425,23 @@ the control plane, authenticated as the caller).
   submission: a Vercel door that sees `lockstep: false` in deploy identity
   still submits, because the control plane is the authority, and the release
   watcher degrades the release as today.
+
+**Switching over** (owner/operator steps, NOT DONE yet). Merging and
+releasing this code changes nothing on its own: without the secret the web
+host keeps applying commands and draining exactly as before. To move the
+kernel to the control plane:
+
+1. Set `KERNEL_COMMAND_SECRET` to the same value on both hosts: the web app's
+   environment and the control plane Worker's secrets.
+2. Run `wrangler triggers deploy` for the control plane Worker from an account
+   login, so its cron trigger exists (the release workflow deploys versions,
+   not triggers).
+3. Confirm the switch: the `kernel-floor` cron runs report the control plane as
+   their host, `/api/cron/pr-reconcile` reports `kernelSkipped`, and new
+   `workflow_transitions` rows from doors carry `host = control-plane`.
+
+The rollback is the Worker's `EXECUTION_MODE=shadow`, or unsetting the secret
+on the web host.
 
 **Acceptance criteria**:
 - AC-9: GIVEN `EXECUTION_MODE=own` WHEN a person merges from the dashboard

@@ -26,20 +26,30 @@ describe('the scheduled pass', () => {
   it('runs every step on the control plane in own mode', async () => {
     setKernelHost('control-plane');
     const s = steps();
-    const r = await runScheduledKernelFloor({ env: { EXECUTION_MODE: 'own' }, deps: s.deps });
+    const r = await runScheduledKernelFloor({ env: { EXECUTION_MODE: 'own', KERNEL_COMMAND_SECRET: 'k1:s' }, deps: s.deps });
     expect(r.ran).toBe(true);
     expect(s.ran.sort()).toEqual(['drainDueEffects', 'pruneCommands', 'reconcileKernelDeliveries', 'reconcileTrunkIncidents', 'restartTreadmillCycles']);
     expect(kernelFloorOutcome(r.result!)).toEqual({ processed: 7, changed: 6, errors: 0 });
   });
 
-  it('does nothing in shadow, or on the web host whatever its mode', async () => {
+  it('does nothing in shadow, without the command key (not switched over), or on the web host whatever its mode', async () => {
     setKernelHost('control-plane');
     const a = steps();
-    expect(await runScheduledKernelFloor({ env: { EXECUTION_MODE: 'shadow' }, deps: a.deps })).toEqual({ ran: false, reason: 'shadow' });
+    expect(await runScheduledKernelFloor({ env: { EXECUTION_MODE: 'shadow', KERNEL_COMMAND_SECRET: 'k1:s' }, deps: a.deps })).toEqual({ ran: false, reason: 'shadow' });
+    expect(await runScheduledKernelFloor({ env: { EXECUTION_MODE: 'own', CRON_SECRET: 'c' }, deps: a.deps })).toEqual({ ran: false, reason: 'no_command_key' });
     setKernelHost('web');
     const b = steps();
-    expect(await runScheduledKernelFloor({ env: { EXECUTION_MODE: 'own' }, deps: b.deps })).toEqual({ ran: false, reason: 'not_control_plane' });
+    expect(await runScheduledKernelFloor({ env: { EXECUTION_MODE: 'own', KERNEL_COMMAND_SECRET: 'k1:s' }, deps: b.deps })).toEqual({ ran: false, reason: 'not_control_plane' });
     expect([...a.ran, ...b.ran]).toEqual([]);
+  });
+
+  it('the liveness fallback: the control plane\'s floor is stale past two periods, or when it never ran', async () => {
+    const { controlPlaneFloorStale, KERNEL_FLOOR_STALE_MS } = await import('./kernel-floor');
+    const now = Date.now();
+    expect(KERNEL_FLOOR_STALE_MS).toBe(2 * 60 * 60_000);
+    expect(controlPlaneFloorStale(null, now)).toBe(true);
+    expect(controlPlaneFloorStale(new Date(now - KERNEL_FLOOR_STALE_MS - 1), now)).toBe(true);
+    expect(controlPlaneFloorStale(new Date(now - 65 * 60_000), now)).toBe(false);
   });
 });
 

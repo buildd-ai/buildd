@@ -16,7 +16,8 @@
  *
  * - Authenticated: the request is signed (HMAC over timestamp, method, path and
  *   body, the scheme Dispatch callbacks use, `@buildd/dispatch-contract`) with
- *   the command key ring, and the principal it names must still reach the
+ *   the dedicated command key ring `KERNEL_COMMAND_SECRET` (required: with it
+ *   unset every request is refused), and the principal it names must still reach the
  *   workspace it acts on (team membership for a person, workspace reach for an
  *   API account). The door already authorised the action; this re-checks who it
  *   is for, so a signed request can act only for someone who could have.
@@ -173,15 +174,17 @@ export async function requestHash(b: Pick<CommandRequest, 'op' | 'input' | 'prin
 
 /**
  * The command key ring: `KERNEL_COMMAND_SECRET` (`keyId:secret[,keyId:secret]`,
- * two ids live during rotation). Unset: a key derived from `CRON_SECRET`, which
- * both hosts already hold, under its own label so a cron bearer token is never a
- * valid command signature. Neither: empty, and every request is refused.
+ * two ids live during rotation), and nothing else. Unset: empty. The control
+ * plane then refuses every command, and the web host never submits one (it runs
+ * the package itself, kernel-client.ts): the secret on both hosts is the switch.
  */
 export function commandKeyRing(env: Record<string, string | undefined> = process.env): Record<string, string> {
-  const ring = parseKeyRing(env.KERNEL_COMMAND_SECRET);
-  if (Object.keys(ring).length) return ring;
-  return env.CRON_SECRET ? { cron: `buildd-kernel-command-v1:${env.CRON_SECRET}` } : {};
+  return parseKeyRing(env.KERNEL_COMMAND_SECRET);
 }
+
+/** True when this process holds a command key: the switch that lets it submit or apply commands. */
+export const commandsConfigured = (env: Record<string, string | undefined> = process.env): boolean =>
+  Object.keys(commandKeyRing(env)).length > 0;
 
 // ── The endpoint ────────────────────────────────────────────────────────────
 

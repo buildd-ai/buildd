@@ -37,17 +37,27 @@ function local() {
 const answer = (o: Record<string, unknown> = {}) => Response.json({ v: 1, op: 'land', idempotencyKey: 'k', result: { merged: true, where: 'control-plane' }, delivery: { id: DELIVERY, version: 5 }, host: 'control-plane', replayed: false, ...o });
 
 describe('the mode', () => {
-  it('on the control plane: its own EXECUTION_MODE', async () => {
-    expect(await kernelMode({ host: () => 'control-plane', env: { EXECUTION_MODE: 'own' } })).toBe('own');
+  it('on the control plane: its own EXECUTION_MODE, and only with the command key', async () => {
+    expect(await kernelMode({ host: () => 'control-plane', env: OWN })).toBe('own');
+    expect(await kernelMode({ host: () => 'control-plane', env: { EXECUTION_MODE: 'own' } })).toBe('shadow');
     expect(await kernelMode({ host: () => 'control-plane', env: {} })).toBe('shadow');
+  });
+
+  it('on the web host with no KERNEL_COMMAND_SECRET: shadow, whatever either host\'s mode, and the Worker is not even asked', async () => {
+    let reads = 0;
+    const readMode = async () => { reads++; return 'own'; };
+    for (const env of [{ EXECUTION_MODE: 'own' }, { VERCEL: '1' }, { VERCEL: '1', EXECUTION_MODE: 'own', CRON_SECRET: 'c' }]) {
+      expect(await kernelMode({ host: () => 'web', env, readMode })).toBe('shadow');
+    }
+    expect(reads).toBe(0);
   });
 
   it('on the web host: an explicit EXECUTION_MODE wins; off Vercel with none it is shadow and reads nothing', async () => {
     let reads = 0;
     const readMode = async () => { reads++; return 'own'; };
-    expect(await kernelMode({ host: () => 'web', env: { EXECUTION_MODE: 'own' }, readMode })).toBe('own');
-    expect(await kernelMode({ host: () => 'web', env: { EXECUTION_MODE: 'shadow', VERCEL: '1' }, readMode })).toBe('shadow');
-    expect(await kernelMode({ host: () => 'web', env: {}, readMode })).toBe('shadow');
+    expect(await kernelMode({ host: () => 'web', env: OWN, readMode })).toBe('own');
+    expect(await kernelMode({ host: () => 'web', env: { ...OWN, EXECUTION_MODE: 'shadow', VERCEL: '1' }, readMode })).toBe('shadow');
+    expect(await kernelMode({ host: () => 'web', env: { KERNEL_COMMAND_SECRET: 'k1:s3cret' }, readMode })).toBe('shadow');
     expect(reads).toBe(0);
   });
 
@@ -55,7 +65,7 @@ describe('the mode', () => {
     let t = 0;
     let reported: string | null = 'shadow';
     let reads = 0;
-    const deps: ClientDeps = { host: () => 'web', env: { VERCEL: '1' }, now: () => t, readMode: async () => { reads++; return reported; } };
+    const deps: ClientDeps = { host: () => 'web', env: { VERCEL: '1', KERNEL_COMMAND_SECRET: 'k1:s3cret' }, now: () => t, readMode: async () => { reads++; return reported; } };
     expect(await kernelMode(deps)).toBe('shadow');
     reported = 'own';
     t += MODE_FRESH_MS - 1;
@@ -121,12 +131,13 @@ describe('in own mode the web host submits and applies nothing itself', () => {
     expect(await res.json()).toMatchObject({ code: 'control_plane_unavailable', retryable: true, controlPlane: true });
   });
 
-  it('no command key on the web host is the same retryable error, with no request made', async () => {
+  it('no KERNEL_COMMAND_SECRET on the web host: the command runs here, exactly as before, and nothing is submitted', async () => {
     const l = local();
     let fetched = 0;
-    const err = await submitKernelCommand('land', input, { principal, deps: { ...l.deps, env: { EXECUTION_MODE: 'own' }, fetch: (async () => { fetched++; return answer(); }) as unknown as typeof fetch } }).catch((e) => e);
-    expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
-    expect([fetched, l.ran.length]).toEqual([0, 0]);
+    const a = await submitKernelCommand('land', input, { principal, deps: { ...l.deps, env: { EXECUTION_MODE: 'own', VERCEL: '1', CRON_SECRET: 'c' }, fetch: (async () => { fetched++; return answer(); }) as unknown as typeof fetch } });
+    expect(fetched).toBe(0);
+    expect(l.ran).toEqual(['land']);
+    expect(a.host).toBe('web');
   });
 
   it('every retry reuses the one idempotency key (a 503, an in_progress, then the answer)', async () => {

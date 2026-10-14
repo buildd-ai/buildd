@@ -239,6 +239,14 @@ describe('the kernel command API (workflow-kernel-library.md §3)', () => {
     expect([res.status, ((await res.json()) as { code: string }).code]).toEqual([409, 'not_host']);
   });
 
+  it('without KERNEL_COMMAND_SECRET every command is refused, even in own mode and signed with another secret', async () => {
+    const body = '{}';
+    // Shaped like a signed request; the refusal comes before any signature is read.
+    const headers = { 'Dispatch-Key-Id': 'cron', 'Dispatch-Timestamp': String(Math.floor(Date.now() / 1000)), 'Dispatch-Signature': '0'.repeat(64) };
+    const res = await worker.fetch(new Request('https://control-plane.buildd.dev/v1/commands', { method: 'POST', body, headers }), { EXECUTION_MODE: 'own', CONTROL_PLANE_HOST: 'control-plane.buildd.dev', CRON_SECRET: 's3cret' }, ctx);
+    expect([res.status, ((await res.json()) as { code: string }).code]).toEqual([503, 'unconfigured']);
+  });
+
   it('is never served on a buildd.dev route: there the path passes through to the web app', async () => {
     const seen: string[] = [];
     const realFetch = globalThis.fetch;
@@ -276,5 +284,25 @@ describe('the cron trigger: the kernel\'s drain and floor (AC-10)', () => {
     }
     expect(seen).toEqual([]);
     expect(logs.some((l) => l.includes('[kernel-floor] skipped: shadow'))).toBe(true);
+  });
+
+  it('in own mode without KERNEL_COMMAND_SECRET (not switched over) the tick does nothing either', async () => {
+    const seen: string[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (r: RequestInfo | URL) => { seen.push(String(r instanceof Request ? r.url : r)); return new Response('x'); }) as typeof fetch;
+    const logs: string[] = [];
+    const realLog = console.log;
+    console.log = (...a: unknown[]) => { logs.push(a.join(' ')); };
+    const prior = process.env.KERNEL_COMMAND_SECRET;
+    delete process.env.KERNEL_COMMAND_SECRET;
+    try {
+      await worker.scheduled({ cron: '10 * * * *', scheduledTime: Date.now(), noRetry() {} } as never, { EXECUTION_MODE: 'own' }, { waitUntil() {}, passThroughOnException() {} } as never);
+    } finally {
+      globalThis.fetch = realFetch;
+      console.log = realLog;
+      if (prior !== undefined) process.env.KERNEL_COMMAND_SECRET = prior;
+    }
+    expect(seen).toEqual([]);
+    expect(logs.some((l) => l.includes('[kernel-floor] skipped: no_command_key'))).toBe(true);
   });
 });

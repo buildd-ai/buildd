@@ -17,11 +17,11 @@ import { seam, world, type OpenedPr, type World } from './workflow-scenarios-wor
 const { handleCommandRequest } = await import('../../src/lib/workflow/command-api');
 const { submitKernelCommand, ControlPlaneUnavailableError, resetKernelModeCache, CONTROL_PLANE_URL } = await import('../../src/lib/workflow/kernel-client');
 const { setKernelHost } = await import('../../src/lib/workflow/kernel-host');
-const { runScheduledKernelFloor } = await import('../../src/lib/workflow/kernel-floor');
+const { runScheduledKernelFloor, lastControlPlaneFloorAt, controlPlaneFloorStale } = await import('../../src/lib/workflow/kernel-floor');
 const { postgresCommandLedger, COMMAND_LEASE_MS } = await import('../../src/lib/workflow/command-ledger');
 const { applyCommand } = await import('../../src/lib/workflow/kernel');
 
-const ENV_KEYS = ['EXECUTION_MODE', 'CRON_SECRET', 'KERNEL_COMMAND_SECRET', 'VERCEL'] as const;
+const ENV_KEYS = ['EXECUTION_MODE', 'CRON_SECRET', 'KERNEL_COMMAND_SECRET', 'VERCEL', 'BUILDD_CRON_RUN_RECORD_IN_TESTS'] as const;
 const savedEnv: Record<string, string | undefined> = {};
 
 interface ControlPlane { calls: Array<{ path: string; op: string | null }>; down: boolean; restore(): void }
@@ -55,10 +55,10 @@ let cp: ControlPlane | undefined;
 
 beforeEach(() => {
   for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
-  // The web host in own mode (explicit, as on a local e2e); the key ring both sides derive from CRON_SECRET.
+  // Switched over: the web host in own mode (explicit, as on a local e2e), and the command key on both sides.
   process.env.EXECUTION_MODE = 'own';
-  process.env.CRON_SECRET = 'db-test-cron-secret';
-  delete process.env.KERNEL_COMMAND_SECRET;
+  process.env.KERNEL_COMMAND_SECRET = 'k1:db-test-command-secret';
+  delete process.env.CRON_SECRET;
   delete process.env.VERCEL;
   resetKernelModeCache();
   setKernelHost('web');
@@ -195,7 +195,12 @@ describe('AC-12: the control plane unreachable', () => {
 });
 
 describe('AC-10: the drain and the floor on the control plane, with the web app absent', () => {
-  test('the cron tick drains a due merge and runs the floor; no request goes to the web app', async () => {
+  test('the cron tick drains a due merge and runs the floor; no request goes to the web app; its run is recorded as the control plane\'s', async () => {
+    // Record the run as production does (cron-run.ts skips recording in tests unless asked).
+    process.env.BUILDD_CRON_RUN_RECORD_IN_TESTS = '1';
+    const cronSecret = 'db-test-cron-secret';
+    process.env.CRON_SECRET = cronSecret;
+    const priorFloor = await lastControlPlaneFloorAt();
     const { pr, head } = await approvedPr('feat/cron-drain');
     const live = { state: 'open' as const, merged: false, headSha: head, headRepoFullName: w!.repo, baseRef: 'dev' };
     setKernelHost('control-plane');
@@ -214,7 +219,7 @@ describe('AC-10: the drain and the floor on the control plane, with the web app 
     let floorRan = false;
     try {
       const r = await runScheduledKernelFloor({
-        env: { EXECUTION_MODE: 'own' },
+        env: { EXECUTION_MODE: 'own', KERNEL_COMMAND_SECRET: 'k1:db-test-command-secret', CRON_SECRET: cronSecret },
         // Scoped to this world's delivery: the shared test database holds other files' rows.
         deps: {
           drainDueEffects: async () => (await seam.drainDelivery(pr.deliveryId))!,
@@ -235,6 +240,15 @@ describe('AC-10: the drain and the floor on the control plane, with the web app 
     const written = await hostsSince(pr.deliveryId, before);
     expect(written.map((t) => t.command)).toContain('PrMerged');
     expect(written.filter((t) => t.host !== 'control-plane')).toEqual([]);
+
+    // The run record the web host's liveness fallback reads: this host, just now, so not stale.
+    const [run] = await q<{ ok: boolean; host: string }>(sql`SELECT ok, result->>'host' AS host FROM cron_runs WHERE job = 'kernel-floor' ORDER BY started_at DESC LIMIT 1`);
+    expect(run).toEqual({ ok: true, host: 'control-plane' });
+    const last = await lastControlPlaneFloorAt();
+    expect(last).not.toBeNull();
+    if (priorFloor) expect(last!.getTime()).toBeGreaterThanOrEqual(priorFloor.getTime());
+    expect(controlPlaneFloorStale(last)).toBe(false);
+    expect(controlPlaneFloorStale(last, last!.getTime() + 2 * 60 * 60_000 + 1)).toBe(true);
   });
 });
 

@@ -109,12 +109,19 @@ describe('authentication', () => {
     expect([...s.ran, ...d.ran]).toEqual([]);
   });
 
-  it('the key ring: a dedicated ring, else one derived from CRON_SECRET under its own label (never the bearer token itself), else empty', () => {
+  it('the key ring is the dedicated KERNEL_COMMAND_SECRET only: nothing is derived from another secret', () => {
     expect(commandKeyRing({ KERNEL_COMMAND_SECRET: 'a:1,b:2', CRON_SECRET: 'c' })).toEqual({ a: '1', b: '2' });
-    const derived = commandKeyRing({ CRON_SECRET: 'cron-secret' });
-    expect(Object.keys(derived)).toEqual(['cron']);
-    expect(derived.cron).not.toBe('cron-secret');
+    expect(commandKeyRing({ CRON_SECRET: 'cron-secret' })).toEqual({});
     expect(commandKeyRing({})).toEqual({});
+  });
+
+  it('with KERNEL_COMMAND_SECRET unset the control plane refuses every command, however it is signed', async () => {
+    const s = server({ env: { EXECUTION_MODE: 'own', CRON_SECRET: 'test-secret' } });
+    for (const req of [await signed(body()), await signed(body(), 'test-secret', 'cron'), new Request(`https://control-plane.buildd.dev${COMMAND_PATH}`, { method: 'POST', body: '{}' })]) {
+      const res = await s.call(req);
+      expect([res.status, (await res.json()).code]).toEqual([503, 'unconfigured']);
+    }
+    expect(s.ran).toEqual([]);
   });
 });
 

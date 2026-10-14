@@ -16,16 +16,19 @@
  *    sees the two hosts on different commits still submits, because the
  *    control plane is the authority.
  *
- * The mode is one setting, the control plane's `EXECUTION_MODE`: the web host
- * follows what the Worker's health reports (cached briefly), so flipping the
- * Worker to `shadow` is the whole rollback. `EXECUTION_MODE` set on the web
- * host overrides that (tests, a local e2e); off Vercel with nothing set the
- * web host runs the package itself, since there is no control plane to follow.
+ * Routing switches on only when `KERNEL_COMMAND_SECRET` is set on the web host:
+ * without it the web host runs the package itself, exactly as before, whatever
+ * either host's mode. With it, the mode is one setting, the control plane's
+ * `EXECUTION_MODE`: the web host follows what the Worker's health reports
+ * (cached briefly), so flipping the Worker to `shadow` is the whole rollback.
+ * `EXECUTION_MODE` set on the web host overrides that (tests, a local e2e); off
+ * Vercel with nothing set the web host runs the package itself, since there is
+ * no control plane to follow.
  */
 import { signRequest, signingKey } from '@buildd/dispatch-contract';
 import { kernelHost, type KernelHost } from './kernel-host';
 import {
-  COMMAND_API_VERSION, COMMAND_PATH, commandKeyRing, deliveryAfter, executionModeOf, runKernelOp,
+  COMMAND_API_VERSION, COMMAND_PATH, commandKeyRing, commandsConfigured, deliveryAfter, executionModeOf, runKernelOp,
   type CommandAnswer, type CommandRequest, type DeliveryVersion, type KernelOp, type KernelOps, type KernelPrincipal,
 } from './command-api';
 
@@ -110,7 +113,9 @@ export async function readWorkerMode(env: Record<string, string | undefined> = p
  */
 export async function kernelMode(deps: ClientDeps = {}): Promise<KernelMode> {
   const env = deps.env ?? process.env;
-  if ((deps.host ?? kernelHost)() === 'control-plane') return executionModeOf(env.EXECUTION_MODE);
+  // No command key on this host: nothing is routed, and this host runs the package (the switch is unset).
+  if ((deps.host ?? kernelHost)() === 'control-plane') return commandsConfigured(env) ? executionModeOf(env.EXECUTION_MODE) : 'shadow';
+  if (!commandsConfigured(env)) return 'shadow';
   if (env.EXECUTION_MODE === 'own' || env.EXECUTION_MODE === 'shadow') return env.EXECUTION_MODE;
   if (!env.VERCEL) return 'shadow';
   const now = (deps.now ?? Date.now)();
@@ -124,9 +129,13 @@ export async function kernelMode(deps: ClientDeps = {}): Promise<KernelMode> {
   return 'own';
 }
 
-/** True when this process applies kernel commands and drains effects itself. */
+/**
+ * True when this process applies the kernel commands it is asked for, and drains
+ * inline, itself. The control plane always does (its webhook and execution
+ * handlers ran the kernel before it was the only host); the web host only in shadow.
+ */
 export async function hostsKernelHere(deps: ClientDeps = {}): Promise<boolean> {
-  if ((deps.host ?? kernelHost)() === 'control-plane') return (await kernelMode(deps)) === 'own';
+  if ((deps.host ?? kernelHost)() === 'control-plane') return true;
   return (await kernelMode(deps)) === 'shadow';
 }
 
@@ -161,10 +170,6 @@ export async function submitKernelCommand<K extends KernelOp>(op: K, input: Kern
   const deps = opts.deps ?? {};
   const idempotencyKey = opts.idempotencyKey ?? (deps.newKey ?? (() => newIdempotencyKey(op)))();
   if (await hostsKernelHere(deps)) return runHere(op, input, idempotencyKey, deps);
-  if ((deps.host ?? kernelHost)() === 'control-plane') {
-    // The control plane in shadow: the web host is the kernel's host, and this process is not it.
-    throw new ControlPlaneUnavailableError('the control plane is in shadow mode and does not apply commands');
-  }
   return submitRemote(op, input, { ...opts, idempotencyKey }, deps);
 }
 

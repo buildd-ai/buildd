@@ -85,7 +85,7 @@ import { sweepLandingPrs } from '@/lib/pr-landing-sweep-deps';
 import { redriveDeferredRefreshes, type RefreshRedriveResult } from '@/lib/refresh-redrive';
 import { PR_LANDING_DUE_QUEUE, type LandingSweepResult } from '@/lib/pr-landing-sweep';
 import { sweepCiRedPrs } from '@/lib/ci-red-sweep-deps';
-import { runKernelFloor, kernelFloorOutcome, logKernelFloor, type KernelFloorResult } from '@/lib/workflow/kernel-floor';
+import { controlPlaneFloorStale, kernelFloorOutcome, lastControlPlaneFloorAt, logKernelFloor, runKernelFloor, type KernelFloorResult } from '@/lib/workflow/kernel-floor';
 import { hostsKernelHere } from '@/lib/workflow/kernel-client';
 import type { CiRedSweepResult } from '@/lib/ci-red-sweep';
 import { CI_RED_DUE_QUEUE } from '@/lib/ci-red-queue';
@@ -118,10 +118,16 @@ export async function GET(req: NextRequest) {
     if (landingOnly) return runLandingScope(req, report);
     if (ciRedOnly) return runCiRedScope(req, report);
 
-    // The kernel's drain and floor run here only while this host is the kernel's (shadow). In own
-    // mode the control plane's cron trigger runs them (workflow-kernel-library.md §3) and this
-    // route never drains an effect.
-    const kernelHere = await hostsKernelHere().catch(() => false);
+    // The kernel's drain and floor run here while this host is the kernel's (shadow). Cut over, the
+    // control plane's cron trigger runs them (workflow-kernel-library.md §3), and this route runs
+    // them only as the liveness fallback: when the control plane's last floor run is older than two
+    // cron periods (or never happened), so an undeployed trigger or a stopped Worker never stops the drain.
+    const kernelShadow = await hostsKernelHere().catch(() => false);
+    const controlPlaneStale = kernelShadow
+      ? false
+      : controlPlaneFloorStale(await lastControlPlaneFloorAt().catch(() => null));
+    const kernelHere = kernelShadow || controlPlaneStale;
+    const kernelReason = kernelShadow ? 'shadow' : controlPlaneStale ? 'control_plane_floor_stale' : null;
     const [reconcile, deadZone, missionPrs, branchRefresh, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, earlyRelease, kernel] = await Promise.all([
       reconcileStalePrWorkers(),
       mergeStateOnly ? Promise.resolve(null) : sweepDeadZonePrs(),
@@ -208,11 +214,13 @@ export async function GET(req: NextRequest) {
       // subscriber is isolated by emit().
       emit({ type: 'sweep.pr_hourly', at: new Date() }),
     ]);
-    if (kernel) logKernelFloor(kernel, 'web');
-    else console.log('[KernelFloor] skipped: the control plane hosts the kernel');
+    if (kernel) logKernelFloor(kernel, `web (${kernelReason})`);
+    else console.log('[KernelFloor] skipped: the control plane hosts the kernel and its floor is current');
     const kernelOutcome = kernel ? kernelFloorOutcome(kernel) : { processed: 0, changed: 0, errors: 0 };
     // Same keys as before the floor moved into kernel-floor.ts; `kernelSkipped` when the control plane hosts it.
-    const kernelResult: KernelFloorResult | { kernelSkipped: 'control_plane_hosts' } = kernel ?? { kernelSkipped: 'control_plane_hosts' };
+    // `kernelHost` records which host ran the pass, and why this one did.
+    const kernelResult: (KernelFloorResult & { kernelHost: 'web'; kernelReason: string | null }) | { kernelSkipped: 'control_plane_hosts' } =
+      kernel ? { ...kernel, kernelHost: 'web', kernelReason } : { kernelSkipped: 'control_plane_hosts' };
     // subjectsReconciled is NOT folded into `changed` below: the subject sweep
     // only runs on the merged/closed branches, each of which already increments
     // stamped or closed, so adding it would count one event twice. It rides in

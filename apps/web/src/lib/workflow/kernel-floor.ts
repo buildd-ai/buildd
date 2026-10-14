@@ -10,12 +10,16 @@
  * web host's hourly `/api/cron/pr-reconcile` in `shadow`.
  */
 import { NextRequest, NextResponse } from 'next/server';
+import { and, desc, eq } from 'drizzle-orm';
+import { db } from '@buildd/core/db';
+import { cronRuns } from '@buildd/core/db/schema';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { withCronRun } from '@/lib/cron-run';
 import { drainDueEffects, reconcileKernelDeliveries, reconcileTrunkIncidents, restartTreadmillCycles, type FloorSummary, type TreadmillCycleSummary, type TrunkSweepSummary } from './seam';
 import type { DrainSummary } from './effects';
 import { postgresCommandLedger } from './command-ledger';
 import { kernelHost } from './kernel-host';
-import { executionModeOf } from './command-api';
+import { commandsConfigured, executionModeOf } from './command-api';
 
 type Isolated<T> = T | { error: string };
 
@@ -83,6 +87,30 @@ export function logKernelFloor(r: KernelFloorResult, where: string): void {
 
 export const KERNEL_FLOOR_JOB = 'kernel-floor';
 
+/** The control plane's cron period (wrangler.jsonc `10 * * * *`). */
+export const KERNEL_FLOOR_PERIOD_MS = 60 * 60_000;
+/** Older than two periods, the control plane's floor is presumed not running (a trigger never deployed, a broken Worker). */
+export const KERNEL_FLOOR_STALE_MS = 2 * KERNEL_FLOOR_PERIOD_MS;
+
+/** When the control plane's floor last completed: its newest successful `kernel-floor` run, or null for never. */
+export async function lastControlPlaneFloorAt(): Promise<Date | null> {
+  const row = await db.query.cronRuns.findFirst({
+    where: sqlWhere(and(eq(cronRuns.job, KERNEL_FLOOR_JOB), eq(cronRuns.ok, true))),
+    columns: { startedAt: true },
+    orderBy: sqlOrderBy(desc(cronRuns.startedAt)),
+  });
+  return row?.startedAt ? new Date(row.startedAt) : null;
+}
+
+/**
+ * The liveness fallback: the web host runs the drain and floor itself, even cut over,
+ * when the control plane's floor has not completed within two periods. A cron trigger
+ * that was never deployed, or a Worker that stopped, can then cost two hours, never the drain.
+ */
+export function controlPlaneFloorStale(lastAt: Date | null, now: number = Date.now()): boolean {
+  return !lastAt || now - lastAt.getTime() > KERNEL_FLOOR_STALE_MS;
+}
+
 /**
  * The control plane's cron trigger. Runs only on the control plane in `own`;
  * anywhere else it does nothing and touches nothing (no database read, so a
@@ -94,6 +122,8 @@ export async function runScheduledKernelFloor(o: { env?: Record<string, string |
   const env = o.env ?? process.env;
   if (kernelHost() !== 'control-plane') return { ran: false, reason: 'not_control_plane' };
   if (executionModeOf(env.EXECUTION_MODE) !== 'own') return { ran: false, reason: 'shadow' };
+  // Not switched over: without the command key the web host is the kernel's host and drains.
+  if (!commandsConfigured(env)) return { ran: false, reason: 'no_command_key' };
   let result: KernelFloorResult | undefined;
   const pass = async () => {
     result = await runKernelFloor(o.deps);
@@ -106,6 +136,11 @@ export async function runScheduledKernelFloor(o: { env?: Record<string, string |
       report({ ...kernelFloorOutcome(result!), result: { host: 'control-plane', ...result } as Record<string, unknown> });
       return NextResponse.json({ ok: true });
     });
+    // withCronRun reads its secret from process.env; a mismatch refuses before the handler. Never skip the floor for that.
+    if (!result) {
+      console.warn('[kernel-floor] the run could not be recorded; the pass runs unrecorded');
+      await pass();
+    }
   } else {
     console.warn('[kernel-floor] CRON_SECRET is not configured; the pass runs unrecorded');
     await pass();
