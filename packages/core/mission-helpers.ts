@@ -1,4 +1,4 @@
-import { LIVE_WORKER_STATUSES } from '@buildd/shared';
+import { LIVE_WORKER_STATUSES, VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 import type { GoalCriterion, GoalCriterionType, GoalCriteriaState, CriterionVerdict, InitiativeKPI, InitiativeKPIState } from '@buildd/shared';
 export type { GoalCriterion, GoalCriterionType, GoalCriteriaState, CriterionVerdict, InitiativeKPI, InitiativeKPIState };
 import { type DerivedMetric, derivedValue, derivedUnavailable } from './derived-metric';
@@ -8,7 +8,7 @@ import {
   looksLikeMissionIntegrationBranch,
   missionIntegrationBase,
 } from './mission-integration';
-import { isSurfaceAuditTask } from './surface-audit';
+import { isSurfaceAuditTask, isSurfaceFixTask, isTrunkRefreshTask } from './surface-audit';
 import { countDistinctPrs, deriveLineageSupersession, prShipState, summarizePrShipStates } from './pr-shipped';
 export type { DerivedMetric } from './derived-metric';
 
@@ -820,6 +820,34 @@ export function isDeliverableTask(task: {
   return true;
 }
 
+/**
+ * What a deliverable is FOR (spec f7f67f1a P-2): build work the mission set
+ * out to do, or work that checks, repairs or maintains it. Only build work
+ * enters a mission's build count (R-14); the others stay listed.
+ *
+ * Read from markers the creating code already writes, never inferred:
+ * - verification: the auto-appended `[surface audit]` task, or any task routed
+ *   to the visual auditor role;
+ * - repair: a `[surface fix]` task, by title or its `context.surfaceFix`;
+ * - maintenance: a trunk refresh of the integration branch (`isTrunkRefreshTask`).
+ */
+export type DeliverableRole = 'build' | 'verification' | 'repair' | 'maintenance';
+
+
+export function deliverableRole(task: { title?: string | null; roleSlug?: string | null; context?: unknown }): DeliverableRole {
+  const title = task.title ?? '';
+  if (isSurfaceAuditTask(title) || task.roleSlug === VISUAL_AUDITOR_ROLE_SLUG) return 'verification';
+  const ctx = task.context && typeof task.context === 'object' && !Array.isArray(task.context) ? task.context as Record<string, unknown> : null;
+  if (isSurfaceFixTask(title) || (ctx?.surfaceFix != null && typeof ctx.surfaceFix === 'object')) return 'repair';
+  if (isTrunkRefreshTask({ title, context: task.context })) return 'maintenance';
+  return 'build';
+}
+
+/** A deliverable (`isDeliverableTask`) that counts toward the build: the one predicate every build count uses. */
+export function isBuildDeliverable(task: Parameters<typeof isDeliverableTask>[0] & { roleSlug?: string | null; context?: unknown }): boolean {
+  return isDeliverableTask(task) && deliverableRole(task) === 'build';
+}
+
 const TERMINAL_DELIVERABLE_STATUSES: ReadonlySet<string> = new Set(['completed', 'cancelled', 'failed']);
 
 /**
@@ -915,6 +943,8 @@ export function computeMissionProgress(tasks: Array<{
   creationSource?: string | null;
   category?: string | null;
   parentTaskId?: string | null;
+  roleSlug?: string | null;
+  context?: unknown;
   workers?: Array<{
     status: string;
     prUrl?: string | null;
@@ -970,7 +1000,7 @@ export function computeMissionProgress(tasks: Array<{
       // Planning tasks (orchestrator) normally excluded, but count when they
       // produced a PR — in orchestrator-only missions the plan IS the deliverable.
       if (t.mode === 'planning' && t.workers?.some(w => w.prUrl)) return true;
-      return isDeliverableTask(t);
+      return isBuildDeliverable(t);
     })
     .filter(t => t.status !== 'cancelled');
   const total = countable.length;

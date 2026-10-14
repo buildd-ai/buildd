@@ -576,3 +576,26 @@ describe('releasedByOf', () => {
     expect(releasedByOf(null)('b', 'a')).toBeUndefined();
   });
 });
+
+describe('buildMissionBoard — deliverable roles and closed PRs (spec f7f67f1a P-2, R-2, R-14)', () => {
+  it('audit, fix and refresh tiles carry their role and stay out of the landed count', () => {
+    const merged = task('db', { status: 'completed', workers: [worker({ status: 'completed', prNumber: 11, prUrl: 'u11', mergedAt: min(6), prLifecycleStatus: 'merged' })] });
+    const open = task('api');
+    const audit = task('au', { title: '[surface audit] Example mission', roleSlug: 'visual-auditor' });
+    const fix = task('fx', { title: '[surface fix] /app/x: tidy the header', status: 'completed', workers: [worker({ status: 'completed', prNumber: 12, prUrl: 'u12', mergedAt: min(7), prLifecycleStatus: 'merged' })] });
+    const refresh = task('rf', { title: 'chore(mission): merge dev into the Example integration branch', status: 'completed', context: { requireMergeCommit: true } });
+    const m = board([merged, open, audit, fix, refresh]);
+    expect([m.tasks.db.deliverableRole, m.tasks.api.deliverableRole, m.tasks.au.deliverableRole, m.tasks.fx.deliverableRole, m.tasks.rf.deliverableRole])
+      .toEqual(['build', 'build', 'verification', 'repair', 'maintenance']);
+    expect(m.landed).toEqual({ done: 1, total: 2 });
+    const phase = m.phases[0];
+    expect({ done: phase.done, total: phase.total }).toEqual({ done: 1, total: 2 });
+  });
+
+  it('a completed task whose PR closed with no supersession is not landed', () => {
+    const closed = task('cl', { status: 'completed', workers: [worker({ status: 'completed', prNumber: 21, prUrl: 'u21', prLifecycleStatus: 'closed' })] });
+    const m = board([closed]);
+    expect(m.tasks.cl.status).toBe('failed');
+    expect(m.landed).toEqual({ done: 0, total: 1 });
+  });
+});

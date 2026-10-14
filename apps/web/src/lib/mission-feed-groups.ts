@@ -103,6 +103,7 @@ export function buildMissionFeedGroups<T extends MissionFeedTaskInput>(
 ): MissionFeedModel<T> {
   const folded = foldMissionDeliverables(tasks);
   const ordered: DeliverableRow<T>[] = orderDeliverables(folded.rows);
+  const buildRowIds = new Set(ordered.filter(r => r.deliverableRole === 'build').map(r => r.task.id));
   const order = ordered.map(r => r.task.id);
 
   // Folded ids → survivor, so a dependency on a superseded task resolves to its row.
@@ -165,8 +166,10 @@ export function buildMissionFeedGroups<T extends MissionFeedTaskInput>(
     // Finished: nothing left to do (done or cancelled). Counted: `pulseDoneCounts`'
     // definition — a cancelled row is listed but is neither done nor in N (F3).
     const finished = p.rows.every(r => DONE_STATES.has(r.state));
-    const done = p.rows.filter(r => r.state === 'done').length;
-    const countable = p.rows.filter(r => r.state !== 'skipped').length;
+    // The build count (spec f7f67f1a R-14): audit, fix and refresh rows are listed, never counted.
+    const build = p.rows.filter(r => buildRowIds.has(r.taskId));
+    const done = build.filter(r => r.state === 'done').length;
+    const countable = build.filter(r => r.state !== 'skipped').length;
     const status = finished ? 'finished' : currentAssigned ? 'future' : 'current';
     if (status === 'current') currentAssigned = true;
 
