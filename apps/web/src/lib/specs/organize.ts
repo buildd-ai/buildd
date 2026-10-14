@@ -36,7 +36,7 @@ const FILEABLE_SCOPES = ['feature', 'mission'] as const;
 /** Overridable for tests: the classifier and the fallback suggestion. */
 export const organizeDeps: { classify?: AreaClassifier; suggest?: typeof suggestParent } = {};
 
-async function classifier(): Promise<AreaClassifier> {
+export async function areaClassifier(): Promise<AreaClassifier> {
   return organizeDeps.classify ?? (await import('@/modules')).SPEC_AREA_CLASSIFY;
 }
 
@@ -67,7 +67,7 @@ async function place(spec: SpecRow, opts: PlaceOpts): Promise<FilingOutcome & { 
     const card = specCard(spec.title, body);
     let c: AreaClassification = { ran: false, reason: 'the workspace has no areas' };
     if (areas.length) {
-      c = await (await classifier())({ workspaceId: spec.workspaceId, specId: spec.id, card, areas, userId: opts.userId ?? null, accountId: opts.accountId ?? null });
+      c = await (await areaClassifier())({ workspaceId: spec.workspaceId, specId: spec.id, card, areas, userId: opts.userId ?? null, accountId: opts.accountId ?? null });
     }
     // The classifier may only name an area it was shown, in this workspace (R-6, R-8).
     if (c.ran) {
