@@ -8,11 +8,11 @@
  * built to and whether it shipped. Standing: where the revision in force now
  * stands for that work. Work built to revision N never reads as proof of
  * revision N+1: once a newer revision is approved, the standing is "not
- * verified yet" until the work is checked against it again (AC-46). A
+ * verified" until the work is checked against it again (AC-46). A
  * completed mission or a merged PR is delivery, never a pass.
  *
  * No new status words (AC-48): the words are the ones the task page's spec
- * block already uses (verified, fails, not verified yet, passed on an older
+ * block already uses (verified, fails, not verified, passed on an older
  * commit), plus "waived" for a criterion a person waived on a mission's
  * outcome spec.
  */
@@ -36,6 +36,8 @@ export interface StandingInput {
   waivedBy?: ReadonlyArray<{ criterionId: string; by: string }>;
 }
 
+const notVerified = (n: number) => `Not verified against revision ${n}.`;
+
 const list = (ids: readonly string[]) => (ids.length > 4 ? `${ids.slice(0, 4).join(', ')} and ${ids.length - 4} more` : ids.join(', '));
 
 /** Where the revision in force stands for this work, as one or two sentences. */
@@ -45,7 +47,7 @@ export function standingSentence(s: StandingInput): { tone: DeliveryTone; text: 
   const withWaived = (text: string) => (waived ? `${text} ${waived}` : text);
   // Built to an older (or a draft) revision: nothing it recorded speaks for the one in force.
   if (s.approved != null && s.builtTo !== s.approved) {
-    return { tone: 'muted', text: `Not verified yet against revision ${s.approved}.` };
+    return { tone: 'muted', text: notVerified(s.approved) };
   }
   if (s.outcome === 'fail') {
     const failed = s.criteria.filter((c) => c.mark === 'fail').map((c) => c.criterionId);
@@ -54,8 +56,8 @@ export function standingSentence(s: StandingInput): { tone: DeliveryTone; text: 
   if (s.outcome === 'verified') return { tone: 'success', text: withWaived(`Verified against revision ${against}.`) };
   const judged = s.criteria.filter((c) => c.mark !== 'waived');
   const allStale = judged.length > 0 && judged.every((c) => c.mark === 'stale' || c.mark === 'pass') && judged.some((c) => c.mark === 'stale');
-  if (allStale) return { tone: 'muted', text: withWaived(`Passed on an older commit. Not verified yet against revision ${against}.`) };
-  return { tone: 'muted', text: withWaived(`Not verified yet against revision ${against}.`) };
+  if (allStale) return { tone: 'muted', text: withWaived(`Passed on an older commit. ${notVerified(against)}`) };
+  return { tone: 'muted', text: withWaived(notVerified(against)) };
 }
 
 function waivedSentence(w: ReadonlyArray<{ criterionId: string; by: string }>): string | null {
@@ -68,7 +70,7 @@ function waivedSentence(w: ReadonlyArray<{ criterionId: string; by: string }>): 
 /** The revision the work was built to and whether it shipped. Never a verdict. */
 export function deliveredSentence(d: { builtTo: number; provisional: boolean; delivered: boolean }): string {
   const built = d.provisional ? `Built to revision ${d.builtTo} ahead of its approval` : `Built to revision ${d.builtTo}`;
-  return d.delivered ? `${built} and delivered.` : `${built}, not delivered yet.`;
+  return `${built} and ${d.delivered ? 'delivered' : 'not delivered'}.`;
 }
 
 /** One criterion's mark in the drill-down: the task page's words, plus waived. */

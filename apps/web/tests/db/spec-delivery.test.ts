@@ -117,7 +117,7 @@ describe('entries come from pins, each once (R-61, R-62, AC-45)', () => {
 });
 
 describe('delivery and standing are kept apart (R-63, AC-46)', () => {
-  test('verified on revision 1, then revision 2 approved: delivered on 1, not verified yet against 2', async () => {
+  test('verified on revision 1, then revision 2 approved: delivered on 1, not verified against 2', async () => {
     const { specId, version } = await approvedSpec();
     const t = await pinnedTask(specId);
     for (const criterionId of ['R-1', 'AC-1']) {
@@ -134,7 +134,7 @@ describe('delivery and standing are kept apart (R-63, AC-46)', () => {
     e = (await read(specId))!.entries[0];
     expect(e.builtTo).toBe(1);
     expect(e.delivered).toBe(true);
-    expect(e.standing).toEqual({ tone: 'muted', text: 'Not verified yet against revision 2.' });
+    expect(e.standing).toEqual({ tone: 'muted', text: 'Not verified against revision 2.' });
   });
 
   test('a failing criterion reads fails; an unmerged PR reads not delivered yet; a merged PR alone is not a pass', async () => {
@@ -146,9 +146,9 @@ describe('delivery and standing are kept apart (R-63, AC-46)', () => {
     const silent = await pinnedTask(specId);
     const by = new Map((await read(specId))!.entries.map((e) => [e.id, e]));
     expect(by.get(failing.taskId)!.standing).toEqual({ tone: 'error', text: 'AC-1 fails against revision 1.' });
-    expect(by.get(open.taskId)!.deliveredText).toBe('Built to revision 1, not delivered yet.');
+    expect(by.get(open.taskId)!.deliveredText).toBe('Built to revision 1 and not delivered.');
     expect(by.get(silent.taskId)!.delivered).toBe(true);
-    expect(by.get(silent.taskId)!.standing.text).toBe('Not verified yet against revision 1.');
+    expect(by.get(silent.taskId)!.standing.text).toBe('Not verified against revision 1.');
   });
 
   test('a pass on an older commit is not verified', async () => {
@@ -157,7 +157,7 @@ describe('delivery and standing are kept apart (R-63, AC-46)', () => {
     for (const criterionId of ['R-1', 'AC-1']) await recordSpecVerdict(user(admin), t.taskId, { criterionId, verdict: 'pass', headSha: HEAD });
     await q(sql`UPDATE workflow_deliveries SET current_head_sha = ${'b'.repeat(40)} WHERE id = ${t.deliveryId}::uuid`);
     const e = (await read(specId))!.entries[0];
-    expect(e.standing.text).toBe('Passed on an older commit. Not verified yet against revision 1.');
+    expect(e.standing.text).toBe('Passed on an older commit. Not verified against revision 1.');
     expect(e.criteria.every((c) => c.mark === 'stale')).toBe(true);
   });
 });

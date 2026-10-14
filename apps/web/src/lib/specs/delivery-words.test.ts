@@ -10,9 +10,9 @@ import { criterionWords, deliveredSentence, markOf, standingSentence, type Crite
 const crit = (...marks: CriterionMark[]) => marks.map((mark, i) => ({ criterionId: `AC-${i + 1}`, mark }));
 
 describe('standingSentence', () => {
-  it('AC-46: verified on revision 2 reads not verified yet once revision 3 is approved', () => {
+  it('AC-46: verified on revision 2 reads not verified once revision 3 is approved', () => {
     const s = standingSentence({ builtTo: 2, approved: 3, outcome: 'verified', criteria: crit('pass', 'pass') });
-    expect(s).toEqual({ tone: 'muted', text: 'Not verified yet against revision 3.' });
+    expect(s).toEqual({ tone: 'muted', text: 'Not verified against revision 3.' });
   });
 
   it('verified on the revision in force reads verified', () => {
@@ -26,14 +26,14 @@ describe('standingSentence', () => {
     expect(s.text).toBe('AC-2 fails against revision 3.');
   });
 
-  it('a pass on an older commit reads not verified yet, never verified', () => {
+  it('a pass on an older commit reads not verified, never verified', () => {
     const s = standingSentence({ builtTo: 3, approved: 3, outcome: 'unverified', criteria: crit('stale', 'pass') });
-    expect(s).toEqual({ tone: 'muted', text: 'Passed on an older commit. Not verified yet against revision 3.' });
+    expect(s).toEqual({ tone: 'muted', text: 'Passed on an older commit. Not verified against revision 3.' });
   });
 
-  it('verdict-less work reads not verified yet', () => {
+  it('verdict-less work reads not verified', () => {
     expect(standingSentence({ builtTo: 1, approved: 1, outcome: 'unverified', criteria: crit('none') }).text)
-      .toBe('Not verified yet against revision 1.');
+      .toBe('Not verified against revision 1.');
   });
 
   it('a waived criterion is said as waived, by whom, and the rest still has to pass', () => {
@@ -42,20 +42,20 @@ describe('standingSentence', () => {
       waivedBy: [{ criterionId: 'AC-2', by: 'Max' }],
     });
     expect(s.tone).toBe('muted');
-    expect(s.text).toBe('Not verified yet against revision 2. AC-2 waived by Max.');
+    expect(s.text).toBe('Not verified against revision 2. AC-2 waived by Max.');
   });
 
   it('with nothing approved, the standing is against the revision it was built to', () => {
     expect(standingSentence({ builtTo: 1, approved: null, outcome: 'unverified', criteria: crit('none') }).text)
-      .toBe('Not verified yet against revision 1.');
+      .toBe('Not verified against revision 1.');
   });
 });
 
 describe('deliveredSentence', () => {
   it('says the revision and whether it shipped, and nothing about a verdict', () => {
     expect(deliveredSentence({ builtTo: 2, provisional: false, delivered: true })).toBe('Built to revision 2 and delivered.');
-    expect(deliveredSentence({ builtTo: 2, provisional: false, delivered: false })).toBe('Built to revision 2, not delivered yet.');
-    expect(deliveredSentence({ builtTo: 4, provisional: true, delivered: false })).toBe('Built to revision 4 ahead of its approval, not delivered yet.');
+    expect(deliveredSentence({ builtTo: 2, provisional: false, delivered: false })).toBe('Built to revision 2 and not delivered.');
+    expect(deliveredSentence({ builtTo: 4, provisional: true, delivered: false })).toBe('Built to revision 4 ahead of its approval and not delivered.');
   });
 });
 

@@ -28,11 +28,11 @@ import {
  * was delivered (the kernel's delivery reading: a merged PR, or a completed
  * task with no PR delivery), and where the revision in force stands for it,
  * read through the governed-outcome reader (./outcome.ts). Work built to an
- * older revision reads "not verified yet" against the one approved now.
+ * older revision reads "not verified" against the one approved now.
  *
  * Read-only (R-65): no lifecycle state, count or spec body is written, no
  * GitHub call is made, and an entry whose outcome cannot be read still lists,
- * as not verified yet. Scoped to the spec's own workspace and to a reader who
+ * as not verified. Scoped to the spec's own workspace and to a reader who
  * reaches it; paged newest first.
  */
 
