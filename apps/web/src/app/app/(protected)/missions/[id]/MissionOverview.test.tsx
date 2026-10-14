@@ -43,10 +43,10 @@ describe('MissionOverview', () => {
   // Owner report: "Agents live 1 / Needs you 0" is label-speak. Counts read as words.
   it('says the counts in words, not label and number', () => {
     const rail = html.slice(html.indexOf('data-testid="overview-counts-rail"'));
-    expect(rail).not.toMatch(/Agents live|Needs you/);
-    expect(railLines(0, 0)).toEqual({ agents: 'No agents working', needs: 'Nothing waiting on you' });
-    expect(railLines(1, 1)).toEqual({ agents: '1 agent working', needs: '1 waiting on you' });
-    expect(railLines(3, 2)).toEqual({ agents: '3 agents working', needs: '2 waiting on you' });
+    expect(rail).not.toMatch(/Agents live|Needs you|waiting on you/);
+    expect(railLines(0, 0)).toEqual({ agents: 'No agents working', needs: 'Nothing to decide' });
+    expect(railLines(1, 1)).toEqual({ agents: '1 agent working', needs: '1 decision to make' });
+    expect(railLines(3, 2)).toEqual({ agents: '3 agents working', needs: '2 decisions to make' });
   });
 
   it('names the selection once: "02 of 05" in the card, the stepper keeps only the state', () => {

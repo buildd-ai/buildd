@@ -13,6 +13,7 @@ import {
   type PlainError,
 } from '@/lib/goal-criteria-panel';
 import Switch from '@/components/ui/Switch';
+import OutcomeSpecCriterion, { OutcomeSpecSummary } from './OutcomeSpecCriterion';
 import { Select } from '@/components/ui/Select';
 
 interface Props {
@@ -483,7 +484,21 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
               ))}
             </p>
           )}
-          {cs?.evidence ? (
+          {c.type === 'living_spec' && (
+            <>
+              <OutcomeSpecSummary criterion={c} entry={cs} />
+              {isExpanded && (
+                <OutcomeSpecCriterion
+                  missionId={missionId}
+                  criterion={c}
+                  entry={cs}
+                  readonly={readonly}
+                  onChanged={() => startTransition(() => router.refresh())}
+                />
+              )}
+            </>
+          )}
+          {c.type === 'living_spec' ? null : cs?.evidence ? (
             <p className={`text-meta text-text-muted mt-0.5 leading-snug font-mono break-words${isExpanded ? '' : ' line-clamp-1'}`}>
               {cs.evidence}
             </p>
@@ -492,7 +507,7 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
               Not checked since this was added or changed.
             </p>
           ) : null}
-          {cs?.workerTaskId && (
+          {cs?.workerTaskId && c.type !== 'living_spec' && (
             <a
               href={`/app/tasks/${cs.workerTaskId}`}
               onClick={(e) => e.stopPropagation()}
@@ -513,7 +528,8 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
         </div>
         {/* Expand chevron + remove button */}
         <div className="shrink-0 flex items-center gap-2 mt-0.5">
-          {!readonly && (
+          {/* An outcome spec is removed with a reason, from its own detail. */}
+          {!readonly && c.type !== 'living_spec' && (
             <button
               onClick={(e) => { e.stopPropagation(); handleRemoveCriterion(i); }}
               disabled={savingCriteria}

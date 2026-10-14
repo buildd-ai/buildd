@@ -17,6 +17,7 @@ import type { MissionVisualReviewState } from './workflow/visual-review-state';
 import type { MissionIntegrationPrView } from './mission-integration-pr';
 import type { MissionReleaseStatus } from './mission-delivery';
 import { planMissions, type PlanTask } from './mission-plan';
+import { outcomeSpecView } from './mission-outcome-spec-view';
 
 /** R-17's statuses. Only `passed` reads as passed; waived and not applicable never do. */
 export type CheckStatus = 'queued' | 'running' | 'passed' | 'finding' | 'unable' | 'owner' | 'stale' | 'waived' | 'not_applicable';
@@ -149,6 +150,7 @@ export function criterionName(c: GoalCriterion): string {
     case 'no_open_tasks': return 'No open tasks';
     case 'artifact_exists': return c.key ? `Artifact ${c.key} exists` : 'An artifact exists';
     case 'metric': return 'Metric';
+    case 'living_spec': return `Spec revision ${c.revision}`;
     default: return 'Goal';
   }
 }
@@ -175,6 +177,25 @@ export function criteriaChecks(criteria: readonly GoalCriterion[], state: GoalCr
       : row('queued', 'not checked', 'Not checked.');
 
     if (c.type === 'metric') return row('unable', 'no checker', 'Nothing runs this kind of criterion.', { actor: 'owner' });
+    if (c.type === 'living_spec') {
+      // The outcome spec is one Verify row (R-29), read from the same evaluated
+      // state as the goal criteria panel. Only every in-scope requirement passing
+      // on the integrated result passes it; waived and stale never count.
+      const v = outcomeSpecView(c, e);
+      const detail = sentence(v.coverage, ...v.open.map(o => `${o.label}: ${o.criterionIds.join(', ')}`), v.waived.length ? `Waived: ${v.waived.map(w => w.criterionId).join(', ')}` : null, v.next);
+      const spec = { commit: e?.spec?.targetSha ? e.spec.targetSha.slice(0, 7) : null };
+      if (!e) return row('queued', 'not checked', 'Checked on the integrated result once the build work is done.', spec);
+      if (e.fingerprint && e.fingerprint !== criterionFingerprint(c)) return row('stale', 'out of date', 'The spec selection changed after it was judged. It needs checking again.', spec);
+      if (e.verdict === 'pass') return row('passed', 'passed', detail, { ...spec, actor: 'none' });
+      if (e.verdict === 'fail') return row('finding', v.short, detail, { ...spec, problem: 'product' });
+      if (e.verdict === 'PENDING') return row('running', 'verifying', detail, spec);
+      // Judged on the integration branch before the mission PR merges, so never "after merge".
+      if (e.verdict === 'NOT_EVALUATED' || e.verdict === 'UNVERIFIED') {
+        const onlyStale = v.open.length > 0 && v.open.every(o => o.standing === 'stale');
+        return row(onlyStale ? 'stale' : 'queued', v.short, detail, spec);
+      }
+      return row('queued', v.short, detail, spec);
+    }
     if (!e) return unjudged();
     if (e.fingerprint && e.fingerprint !== criterionFingerprint(c)) {
       return row('stale', 'out of date', 'The criterion changed after it was judged. It needs checking again.');
