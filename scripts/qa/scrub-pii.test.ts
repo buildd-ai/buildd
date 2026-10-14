@@ -225,6 +225,7 @@ const SAFE: Record<string, string[]> = {
   spec_metadata_changes: ['field', 'changed_by_kind'], // a metadata key name and user|agent
   spec_comments: ['anchor_id', 'anchor_hash'], // an outline id (s3) or criterion id (AC-2), and a sha256
   spec_filings: ['source'], // model | similarity | taxonomy | person
+  spec_attachments: ['kind'], // binding | reference
   mission_notes: ['delivered_to'],
   // tracked_branch is the runner's BUILDD_BRANCH (main/dev), same class as
   // github_repos.default_branch.

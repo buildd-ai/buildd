@@ -20,6 +20,8 @@ export interface SpecRevisionPanesProps {
   linesRemoved: number;
   /** Which view opens first: the spec when there is nothing to compare against, else the changes. */
   initial: Pane;
+  /** The revision's attachments, for inline `attachment:<name>` images (living-specs.md §21). */
+  attachments?: Record<string, { src: string; alt: string | null; image: boolean }>;
 }
 
 /**
@@ -27,7 +29,7 @@ export interface SpecRevisionPanesProps {
  * numbered diff (SpecDiffView), with a Spec / Changes switch and the totals
  * beside it. Used by the approval confirm page and the spec page's review.
  */
-export default function SpecRevisionPanes({ body, hunks, omittedLines, sectionCount, linesAdded, linesRemoved, initial }: SpecRevisionPanesProps) {
+export default function SpecRevisionPanes({ body, hunks, omittedLines, sectionCount, linesAdded, linesRemoved, initial, attachments }: SpecRevisionPanesProps) {
   const [pane, setPane] = useState<Pane>(initial);
   return (
     <>
@@ -42,7 +44,7 @@ export default function SpecRevisionPanes({ body, hunks, omittedLines, sectionCo
       </div>
       {pane === 'spec' ? (
         <Card data-testid="spec-approval-rendered">
-          <MarkdownContent content={body} images="link" surface="spec" />
+          <MarkdownContent content={body} images="link" surface="spec" attachments={attachments ?? {}} />
         </Card>
       ) : (
         <SpecDiffView hunks={hunks} omittedLines={omittedLines} />
