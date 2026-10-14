@@ -97,7 +97,8 @@ const setupError = document.getElementById('setupError');
 
 let isServerless = false;
 
-let hasClaudeCredentials = false;
+// Model-auth label from /api/config (host-seat.ts); 'none' = no model login on this machine.
+let modelAuthSource = null;
 
 // Check configuration on startup
 async function checkConfig() {
@@ -112,7 +113,7 @@ async function checkConfig() {
     console.log('Config check:', data);
     isConfigured = data.configured;
     isServerless = data.serverless;
-    hasClaudeCredentials = data.hasClaudeCredentials;
+    modelAuthSource = data.modelAuthSource || null;
     currentAccountId = data.accountId || null;
     // Store config values from API response
     config.bypassPermissions = data.bypassPermissions || false;
@@ -138,8 +139,8 @@ async function checkConfig() {
 
     if (isConfigured || isServerless) {
       showApp();
-      // Show warning if no Claude credentials found
-      if (!hasClaudeCredentials) {
+      // Show warning if the machine has no model login
+      if (modelAuthSource === 'none') {
         showClaudeAuthWarning();
       }
     } else {
