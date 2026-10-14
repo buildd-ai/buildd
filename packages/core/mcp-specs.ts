@@ -72,6 +72,31 @@ const duplicateText = (d: DuplicateCheckView | null): string => {
   return `\nOverlaps with approved specs (check the shared criteria; consider a common parent):\n${d.warnings.map((w) => `  ${w.title} (${w.specId}): ${w.relation}, p ${w.p.toFixed(2)}`).join('\n')}`;
 };
 
+type AttachmentRow = {
+  name: string; kind: string; caption: string | null; artifactId: string; mimeType: string | null; isImage: boolean;
+  addedInRevision: number; addedBy: { kind: string }; approval: { state: string; pinned: number | null; current: number } | null;
+};
+
+/** One attachment, one line: what it is, where it came from, and how it stands against approval. */
+const attachmentLine = (a: AttachmentRow): string => {
+  const what = [a.kind, a.isImage ? 'image' : a.mimeType].filter(Boolean).join(', ');
+  const stands = a.approval?.state === 'changed' ? '; changed since approval'
+    : a.approval?.state === 'added' ? '; added since approval' : '';
+  return `  ${a.name} (${what}), added in revision ${a.addedInRevision} by ${a.addedBy.kind === 'person' ? 'a person' : 'an agent'}, artifact ${a.artifactId}${a.caption ? `: ${a.caption}` : ''}${stands}`;
+};
+
+/** The attach reply: what was attached, how to place it, how to read it, and the PUT for an upload. */
+const attachText = (a: AttachmentRow, upload: { uploadUrl: string } | null | undefined, params: Record<string, unknown>): string => {
+  const lines = [
+    `Attached ${a.name} (${a.kind}) from revision ${a.addedInRevision}, artifact ${a.artifactId}.`,
+    `Place it in the body with ![${a.caption ?? a.name}](attachment:${a.name}); read it back with get_artifact { artifactId: "${a.artifactId}" }.`,
+  ];
+  if (upload) {
+    lines.push(`Upload the file now (one PUT of exactly ${String(params.sizeBytes)} bytes): curl -X PUT -H "Content-Type: ${String(params.mimeType)}" --data-binary @${String(params.filename)} "${upload.uploadUrl}"`);
+  }
+  return lines.join('\n');
+};
+
 const need = (v: unknown, name: string): string => {
   if (typeof v !== 'string' || !v.trim()) throw new Error(`${name} is required`);
   return v.trim();
@@ -457,6 +482,34 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
         if (e && [400, 403, 404].includes(e.status)) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
         throw err;
       }
+    }
+
+    case 'attach': {
+      // Attachments (living-specs.md §21): an artifact in the spec's workspace,
+      // or an upload started here, under a name the body can place inline.
+      const specId = need(params.specId, 'specId');
+      const payload: Record<string, unknown> = { name: need(params.name, 'name'), kind: need(params.kind, 'kind (binding or reference)') };
+      for (const k of ['caption', 'artifactId', 'replace', 'filename', 'mimeType', 'sizeBytes'] as const) if (params[k] !== undefined) payload[k] = params[k];
+      try {
+        const r = await api(`/api/specs/${encodeURIComponent(specId)}/attachments`, { method: 'POST', body: JSON.stringify(payload) });
+        return text(attachText(r.attachment, r.upload, params));
+      } catch (err) {
+        const e = apiError(err);
+        if (e && [400, 403, 404, 409, 502].includes(e.status)) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
+        throw err;
+      }
+    }
+
+    case 'attachments': {
+      const specId = need(params.specId, 'specId');
+      const q = params.revision !== undefined ? `?revision=${encodeURIComponent(String(params.revision))}` : '';
+      const r = await api(`/api/specs/${encodeURIComponent(specId)}/attachments${q}`);
+      const rows = (r.attachments ?? []) as AttachmentRow[];
+      if (!rows.length) return text(`No attachments on revision ${r.revision}.`);
+      return text([
+        `Attachments on revision ${r.revision} (read one, image included, with get_artifact { artifactId }):`,
+        ...rows.map(attachmentLine),
+      ].join('\n'));
     }
 
     case 'relate': {

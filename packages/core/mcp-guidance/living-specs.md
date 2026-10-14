@@ -162,6 +162,36 @@ say so and stop.
   `figma`; `url` and `figma` need `version`. Figma is one kind among several,
   not the default.
 
+## Attachments
+
+A spec can carry files beside its text: mockups, screenshots, diagrams as
+images, notes.
+
+- **Attach or write it in?** Write it in the body when it is words a
+  criterion can quote: a rule, a list of states, a table of options. Attach it
+  when it is a picture or a file the words point at (a mockup, a screenshot,
+  an exported diagram, a research note). A spec whose criteria only make
+  sense with the image needs the image attached as `binding`.
+- **Kind:** `binding` when the requirements depend on it. Approving records
+  its version, and the spec shows "changed since approval" when it moves on.
+  `reference` for notes, research and screenshots of today's behaviour. It is
+  never approved or graded.
+- Attach an artifact already in the workspace:
+  `buildd action=manage_specs params={ action: "attach", specId, name, kind, caption, artifactId }`.
+  Or upload a file in one call: replace `artifactId` with `filename`,
+  `mimeType` and `sizeBytes`, then run the `curl` PUT the reply gives.
+  `name` is lower case (`a-z`, `0-9`, `.`, `_`, `-`); a live name is unique,
+  and `replace: true` puts a new file under it.
+- Place it inline with `![caption](attachment:<name>)`. It renders on the
+  spec page, the approval page and the diff's rendered view, from a buildd
+  link that checks access on every read. A name that is not attached shows
+  as missing.
+- It belongs to the revision it was added in. Removing one (on the spec page)
+  stops it from a later revision; older revisions keep it.
+- Read them: `buildd action=manage_specs params={ action: "attachments", specId, revision }`
+  lists each with its artifact id. Read one, an image included, with
+  `buildd action=get_artifact params={ artifactId }`.
+
 ## Importing repo spec files
 
 A workspace's `docs/specs/*.md` can become native specs, filed under the area

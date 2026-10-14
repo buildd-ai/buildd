@@ -78,6 +78,7 @@ export default function SpecApprovalRequest({ specId, token, view }: { specId: s
         linesAdded={view.sections.reduce((n, x) => n + x.linesAdded, 0)}
         linesRemoved={view.sections.reduce((n, x) => n + x.linesRemoved, 0)}
         initial={view.replaces ? 'changes' : 'spec'}
+        attachments={view.attachments}
       />
     </div>
   );

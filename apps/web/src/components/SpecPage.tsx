@@ -14,6 +14,7 @@ import MarkdownContent from '@/components/MarkdownContent';
 import SpecDiffView from '@/components/SpecDiffView';
 import SpecRevisionPanes from '@/components/SpecRevisionPanes';
 import SpecComments from '@/components/SpecComments';
+import SpecAttachments from '@/components/SpecAttachments';
 import SpecNeighbourGraph from '@/components/SpecNeighbourGraph';
 import Segmented from '@/components/ui/Segmented';
 import { neighbourGraph } from '@/lib/specs/index-view';
@@ -112,6 +113,7 @@ export default function SpecPage({ view }: { view: Ok }) {
           linesAdded={view.review.linesAdded}
           linesRemoved={view.review.linesRemoved}
           initial={view.review.replaces ? 'changes' : 'spec'}
+          attachments={view.review.attachmentSources}
         />
       </section>
     ) : view.compare ? (
@@ -129,7 +131,7 @@ export default function SpecPage({ view }: { view: Ok }) {
       </section>
     ) : (
       <Card data-testid="spec-page-body">
-        <MarkdownContent content={view.body} images="link" surface="spec" />
+        <MarkdownContent content={view.body} images="link" surface="spec" attachments={view.attachmentSources ?? {}} />
       </Card>
     )
   );
@@ -258,6 +260,16 @@ export default function SpecPage({ view }: { view: Ok }) {
             </ul>
           </div>
         ) : null}
+      </Section>
+
+      <Section title="Files">
+        <SpecAttachments
+          specId={spec.id}
+          revision={view.reading.revision}
+          attachments={view.attachments ?? []}
+          canAttach={view.canComment}
+          isHead={view.reading.isHead}
+        />
       </Section>
 
       <Section title="Comments">

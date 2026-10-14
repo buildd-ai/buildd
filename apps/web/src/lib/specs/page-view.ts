@@ -12,6 +12,7 @@ import { specApprover } from './approval';
 import { diffSpecHunks, diffSpecRevisions, type DiffHunk } from './diff';
 import { linkedRepoFullName } from './repo-source';
 import { approvedDesignDrift } from './design';
+import { attachmentSources, attachmentViews, sourcesOf, type AttachmentSource, type AttachmentView } from './attachments';
 import { readSpecNeighbours, suggestParent, type NearbySpec } from './neighbours';
 import { filingFacts, proposalAreas, type AreaProposal, type SpecIndexInput, type SpecSuggestion } from './index-view';
 import type { RepoRef } from './repo-refs';
@@ -195,6 +196,8 @@ export interface SpecPanes {
   linesRemoved: number;
   sectionCount: number;
   body: string;
+  /** What `attachment:<name>` resolves to on `revision` (§21); a name absent here renders as missing. */
+  attachmentSources?: Record<string, AttachmentSource>;
 }
 
 export type SpecPageView =
@@ -228,6 +231,10 @@ export type SpecPageView =
     /** The reader may comment (write access) and resolve (a person with write access). */
     canComment: boolean;
     design: { label: string; href: string | null; version: string; screens: string[]; changedSince: { pinned: string; current: string } | null } | null;
+    /** The Files section (§21): the attachments that apply to the revision read, each binding one against the approval record. */
+    attachments: Array<AttachmentView & { addedAgo: string }>;
+    /** What `attachment:<name>` resolves to on the revision read. */
+    attachmentSources: Record<string, AttachmentSource>;
     /** Two picked revisions: the changes from `from` to `to`. */
     compare: (SpecPanes & { from: number; to: number }) | { error: string } | null;
     /** The reader may approve the waiting revision. */
@@ -322,6 +329,11 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     };
   }
 
+  const readRev = got.view.revision.revision;
+  const views = await attachmentViews(spec, readRev).catch(() => [] as AttachmentView[]);
+  const sources = sourcesOf(views);
+  const attachments = views.map((a) => ({ ...a, addedAgo: ago(a.addedAt) }));
+
   const nearby = await readSpecNeighbours(spec.id).catch(() => [] as NearbySpec[]);
   const filing = await currentFiling(spec.id).catch(() => null);
   const listed = await listSpecComments(caller, specId, { revision: got.view.revision.revision }).catch(() => null);
@@ -336,7 +348,7 @@ export async function specPageView(userId: string, specId: string, opts: { revis
   if (opts.from !== undefined && opts.to !== undefined) {
     const d = await diffSpecRevisions(caller, specId, { from: opts.from, to: opts.to, rows: true });
     compare = d.ok
-      ? { ...panes(d.diff.hunks ?? [], d.diff.omittedLines, d.diff.toBody ?? '', opts.to, opts.from), from: opts.from, to: opts.to }
+      ? { ...panes(d.diff.hunks ?? [], d.diff.omittedLines, d.diff.toBody ?? '', opts.to, opts.from), from: opts.from, to: opts.to, attachmentSources: await attachmentSources(spec.id, opts.to).catch(() => ({})) }
       : { error: d.error };
   }
 
@@ -355,6 +367,8 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     }
   }
 
+  if (review) review.attachmentSources = await attachmentSources(spec.id, review.revision).catch(() => ({}));
+
   const preflight = review && native ? await repoCopyPreflight(spec, spec.headRevision).catch(() => null) : null;
 
   return {
@@ -366,6 +380,6 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     reading: { revision: got.view.revision.revision, approved: spec.approvedRevision === got.view.revision.revision, isHead: got.view.revision.revision === spec.headRevision },
     waiting: pending && open ? spec.headRevision : null,
     body: got.view.body,
-    revisions, parent: parent ?? null, children, siblings, repoRefs, design, nearby, filing, comments, commentAnchors, canComment, compare, canApprove, review,
+    revisions, parent: parent ?? null, children, siblings, repoRefs, design, attachments, attachmentSources: sources, nearby, filing, comments, commentAnchors, canComment, compare, canApprove, review,
   };
 }

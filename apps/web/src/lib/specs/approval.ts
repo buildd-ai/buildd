@@ -8,6 +8,7 @@ import { appBaseUrl } from '@/lib/app-url';
 import { fail, importedRefusal, reach, type SpecCaller, type SpecError, type SpecRevisionRow, type SpecRow } from './store';
 import { signSpecApprovalRequest, specApprovalConfirmPath, verifySpecApprovalRequest } from './approval-request';
 import { emit } from '@/lib/core-emit';
+import { approvedAttachmentsSql } from './attachment-pins';
 import { after } from 'next/server';
 
 /**
@@ -155,13 +156,16 @@ export async function approveSpecRevision(caller: SpecCaller, specId: string, in
   }
 
   const label = `user:${approver}`;
+  // The binding attachments (§21) are recorded in the same statement as the
+  // stamp, at their artifact revisions now, beside the design the revision pins.
   // A confirmed import records who, when and what, with the approval (R-19), and buildd is the source from then on.
   const confirmJson = opts.importConfirmation
     ? JSON.stringify({ state: 'confirmed', confirmedBy: label, note: opts.importConfirmation.note })
     : null;
   const rows = await db.execute(sql`
     WITH stamp AS (
-      UPDATE spec_revisions SET approved_by = ${label}, approved_at = now()
+      UPDATE spec_revisions SET approved_by = ${label}, approved_at = now(),
+        approved_attachments = ${approvedAttachmentsSql(specId, n)}
       WHERE spec_id = ${specId}::uuid AND revision = ${n} AND approved_at IS NULL
         AND EXISTS (SELECT 1 FROM specs WHERE id = ${specId}::uuid AND version = ${spec.version} AND head_revision = ${n}
           AND (${confirmJson}::jsonb IS NULL OR repo_source->>'state' = 'imported'))
