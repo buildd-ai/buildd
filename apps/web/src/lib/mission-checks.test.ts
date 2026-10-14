@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'bun:test';
 import type { GoalCriteriaState, GoalCriterion } from '@buildd/shared';
 import { criterionFingerprint } from '@buildd/core/mission-helpers';
-import { buildEstimateLine, criteriaChecks, missionChecks, missionPrCheck, releaseCheck, visualCheck, type MissionChecksInput } from './mission-checks';
+import { buildEstimate, criteriaChecks, missionChecks, missionPrCheck, releaseCheck, visualCheck, type MissionChecksInput } from './mission-checks';
 import type { MissionVisualReviewState } from './workflow/visual-review-state';
+import { planMissions, type PlanTask } from './mission-plan';
 
 function visual(over: Partial<MissionVisualReviewState> = {}): MissionVisualReviewState {
   return {
@@ -241,15 +242,22 @@ describe('the rail (R-11 to R-13, R-22)', () => {
   });
 });
 
-describe('buildEstimateLine (R-23, R-24, AC-10)', () => {
-  it('labels the range build only', () => {
-    expect(buildEstimateLine([18, 7], false)).toBe('build only: 18 to 25 min');
-    expect(buildEstimateLine([12], false)).toBe('build only: about 12 min');
+describe('buildEstimate (R-23, R-24, R-25, AC-10)', () => {
+  const now = Date.UTC(2026, 9, 14, 12);
+  const t = (id: string, over: Partial<PlanTask> = {}): PlanTask => ({ id, status: 'pending', dependsOn: [], startedAt: null, endedAt: null, p50Minutes: 18, p80Minutes: 30, ...over });
+  const tasks = [t('a', { status: 'completed', endedAt: now - 60_000 }), t('b'), t('c', { dependsOn: ['b'], p50Minutes: 7, p80Minutes: 12 })];
+
+  it('gives the Plan page\u2019s own p50 and p80 for the same tasks, labelled build only', () => {
+    const [plan] = planMissions([{ id: 'm', title: 'M', href: '', workspaceId: null, blocked: null, dependsOnMissionId: null, tasks }], now);
+    const e = buildEstimate(tasks, now, false)!;
+    expect(e.p50).toBe(plan.p50!);
+    expect(e.p80).toBe(plan.p80!);
+    expect(e.line).toMatch(/^build only: /);
   });
 
-  it('a hold removes the promise, and missing estimates show none', () => {
-    expect(buildEstimateLine([18, 7], true)).toBeNull();
-    expect(buildEstimateLine([], false)).toBeNull();
-    expect(buildEstimateLine([18, null], false)).toBeNull();
+  it('a hold removes the promise, and tasks with no frozen estimate show none', () => {
+    expect(buildEstimate(tasks, now, true)).toBeNull();
+    expect(buildEstimate([], now, false)).toBeNull();
+    expect(buildEstimate([t('x', { p50Minutes: null, p80Minutes: null })], now, false)).toBeNull();
   });
 });

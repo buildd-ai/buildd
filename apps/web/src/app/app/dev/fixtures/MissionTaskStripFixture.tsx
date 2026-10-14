@@ -80,7 +80,7 @@ export default function MissionTaskStripFixture() {
             workspaceId={WORKSPACE_ID}
             executor={fixture.executor}
             checks={fixture.checks ?? null}
-            expectedMinutes={fixture.expectedMinutes ?? null}
+            planTasks={fixture.planTasks ?? null}
             held={fixture.held ?? false}
           />
         ) : (

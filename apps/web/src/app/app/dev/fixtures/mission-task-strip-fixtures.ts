@@ -31,6 +31,7 @@ import { missionTaskDeliveries, type MissionDeliveryTaskRow } from '@/app/app/(p
 import type { MissionExecutor } from '@/lib/task-actions';
 import type { MissionChecksSource } from '@/app/app/(protected)/missions/[id]/MissionOverview';
 import type { MissionVisualReviewState } from '@/lib/workflow/visual-review-state';
+import type { PlanTask } from '@/lib/mission-plan';
 import { MISSION_TASK_STRIP_FIXTURE_STATE } from './visual-review-fixtures';
 
 export const MISSION_TASK_STRIP_STATE = MISSION_TASK_STRIP_FIXTURE_STATE;
@@ -104,7 +105,8 @@ export interface MissionTaskStripFixture {
   deliveries?: Record<string, TaskDeliveryDetail>;
   /** The Overview's checks after the build (handoff variants). */
   checks?: MissionChecksSource;
-  expectedMinutes?: Record<string, number>;
+  /** The build tasks as the Plan page schedules them, for the build-only estimate. */
+  planTasks?: PlanTask[];
   held?: boolean;
 }
 
@@ -425,12 +427,22 @@ export function handoffFixture(variant: HandoffVariant, base: { now: number; mis
     release: variant === 'handoff-delivered' ? 'healthy' : variant === 'handoff-deploy-failed' ? 'failed' : merged ? 'deploying' : 'waiting',
     releaseLabel: 'Release v0.42.0',
   };
-  const expectedMinutes = Object.fromEntries(tasks.slice(6, 10).map((t, i) => [t.id, [18, 9, 7, 5][i]]));
+  // Frozen estimates on the build tasks, as the Plan page reads them: p50 and p80 minutes.
+  const ESTIMATES: readonly [number, number][] = [[18, 30], [9, 15], [7, 12], [5, 9]];
+  const planTasks: PlanTask[] = tasks.slice(0, 10).map((t, i) => ({
+    id: t.id,
+    status: i < 6 || !building ? 'completed' : t.status,
+    dependsOn: [],
+    startedAt: t.workers?.[0]?.startedAt ? new Date(t.workers[0].startedAt).getTime() : null,
+    endedAt: i < 6 || !building ? base.now - (10 - i) * 60_000 : null,
+    p50Minutes: i >= 6 ? ESTIMATES[i - 6][0] : 10,
+    p80Minutes: i >= 6 ? ESTIMATES[i - 6][1] : 20,
+  }));
   return {
     model,
     executor: variant === 'handoff-local' ? 'local' : 'runner',
     checks,
-    expectedMinutes,
+    planTasks,
     held: variant === 'handoff-budget',
   };
 }

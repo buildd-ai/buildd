@@ -16,6 +16,7 @@ import { presentVisualReview } from './workflow/visual-review-presentation';
 import type { MissionVisualReviewState } from './workflow/visual-review-state';
 import type { MissionIntegrationPrView } from './mission-integration-pr';
 import type { MissionReleaseStatus } from './mission-delivery';
+import { planMissions, type PlanTask } from './mission-plan';
 
 /** R-17's statuses. Only `passed` reads as passed; waived and not applicable never do. */
 export type CheckStatus = 'queued' | 'running' | 'passed' | 'finding' | 'unable' | 'owner' | 'stale' | 'waived' | 'not_applicable';
@@ -120,13 +121,13 @@ export function visualCheck(state: MissionVisualReviewState, opts: { mergeTier: 
     return row('passed', 'passed', p.record?.detail ?? p.detail, 'none');
   }
   if (state.status === 'blocked') {
-    return row(p.needsYou ? 'owner' : 'unable', p.needsYou ? 'waiting on you' : 'unable to run', sentence(p.label, p.detail));
+    return row(p.needsYou ? 'owner' : 'unable', p.owner ? p.owner.label : 'unable to run', sentence(p.label, p.detail));
   }
   if (state.status === 'findings' && state.findings) {
-    if (p.needsYou) return row('owner', 'your call', sentence(p.label, p.detail));
+    if (p.owner) return row('owner', p.owner.label, sentence(p.label, p.detail));
     return row('finding', plural(Math.max(state.findings.issues, 1), 'finding'), sentence(p.label, p.detail));
   }
-  if (p.needsYou) return row('owner', 'waiting on you', p.detail);
+  if (p.owner) return row('owner', p.owner.label, p.detail);
   if (state.staleEvidence) return row('stale', 'out of date', 'The branch changed after the last check. It checks again.');
   if (state.status === 'running') {
     const pr = state.progress;
@@ -171,9 +172,9 @@ export function criteriaChecks(criteria: readonly GoalCriterion[], state: GoalCr
     const afterMerge = ctx.branch === 'mission-branch' && !ctx.prMerged;
     const unjudged = () => afterMerge
       ? row('queued', 'after merge', `Checked ${where} after the mission PR merges.`)
-      : row('queued', 'not checked', 'Not checked yet.');
+      : row('queued', 'not checked', 'Not checked.');
 
-    if (c.type === 'metric') return row('unable', 'no checker', 'Nothing can run this kind of criterion yet.', { actor: 'owner' });
+    if (c.type === 'metric') return row('unable', 'no checker', 'Nothing runs this kind of criterion.', { actor: 'owner' });
     if (!e) return unjudged();
     if (e.fingerprint && e.fingerprint !== criterionFingerprint(c)) {
       return row('stale', 'out of date', 'The criterion changed after it was judged. It needs checking again.');
@@ -210,7 +211,7 @@ export function missionPrCheck(pr: MissionIntegrationPrView, ctx: { mergeTier: M
       return row('queued', 'not open', ctx.buildComplete ? 'Opens when the last task PR merges.' : 'Opens when the build is done.', 'system');
     default:
       if (ctx.visualHolds) return row('queued', 'waiting', 'Merges after visual review.', 'system');
-      if (ctx.mergeTier === 'human') return row('owner', 'waiting on you', 'You make the final merge. Task PRs merged on their own.', 'owner');
+      if (ctx.mergeTier === 'human') return row('owner', 'approve to deliver', 'Approve the mission PR to deliver it. Task PRs merged on their own.', 'owner');
       if (ctx.mergeTier === 'agent-review') return row('running', 'reviewer deciding', 'Merges when the reviewer approves.', 'reviewer');
       return row('running', 'merging', 'Merges on its own once CI passes.', 'system');
   }
@@ -264,7 +265,7 @@ export function missionChecks(input: MissionChecksInput): MissionChecks {
   const deliverHeld = pr?.status === 'unable' || release?.status === 'finding' || release?.status === 'unable';
 
   const buildStep: RailStep = build.total === 0
-    ? { key: 'build', label: 'Build', state: 'todo', text: 'no tasks yet' }
+    ? { key: 'build', label: 'Build', state: 'todo', text: 'no tasks' }
     : buildComplete
       ? { key: 'build', label: 'Build', state: 'done', text: `${build.done} of ${build.total}` }
       : { key: 'build', label: 'Build', state: 'now', text: `${build.done} of ${build.total} landed` };
@@ -292,7 +293,7 @@ export function missionChecks(input: MissionChecksInput): MissionChecks {
     : deliverHeld
       ? { key: 'deliver', label: 'Deliver', state: 'held', text: deliverOpen?.state ?? 'held' }
       : deliverReady || (merged && !!release)
-        ? { key: 'deliver', label: 'Deliver', state: 'now', text: deliverOpen ? (deliverOpen.actor === 'owner' ? 'your merge' : deliverOpen.state) : `into ${into}` }
+        ? { key: 'deliver', label: 'Deliver', state: 'now', text: deliverOpen ? (deliverOpen.actor === 'owner' ? 'approve the mission PR' : deliverOpen.state) : `into ${into}` }
         : { key: 'deliver', label: 'Deliver', state: 'todo', text: visualHolds ? 'after visual review' : `into ${into}` };
 
   const checkpoint: RailKey | 'done' = !buildComplete ? 'build'
@@ -305,19 +306,28 @@ export function missionChecks(input: MissionChecksInput): MissionChecks {
 
 // ── Build-only estimate (R-23, R-24) ─────────────────────────────────────────
 
+const minutesText = (ms: number) => {
+  const m = Math.max(1, Math.round(ms / 60_000));
+  if (m < 90) return `${m} min`;
+  const h = Math.round(m / 30) / 2;
+  return `${h} h`;
+};
+
 /**
- * The build estimate, labelled build only, from the minutes the unfinished
- * build tasks are expected to take. Null when anything removes the promise: a
- * person's decision, a capacity or budget wait, an outside wait, or no
- * estimate on any open task. Never an estimate for checks or delivery.
+ * The build estimate, from the Plan page's own planner (`planMissions` in
+ * lib/mission-plan.ts) over the build tasks only (P-2), so Overview and Plan
+ * give the same p50 and p80 for the same tasks. Labelled build only. Null when
+ * anything removes the promise: a person's decision, a hold, a capacity or
+ * budget wait, an outside wait, or no frozen estimate on any open task. Never
+ * an estimate for checks or delivery.
  */
-export function buildEstimateLine(openMinutes: readonly (number | null | undefined)[], held: boolean): string | null {
-  if (held) return null;
-  const known = openMinutes.filter((m): m is number => typeof m === 'number' && Number.isFinite(m) && m > 0);
-  if (known.length === 0 || known.length < openMinutes.length) return null;
-  const longest = Math.max(...known);
-  const total = known.reduce((a, b) => a + b, 0);
-  const lo = Math.round(longest);
-  const hi = Math.round(total);
-  return lo === hi ? `build only: about ${lo} min` : `build only: ${lo} to ${hi} min`;
+export function buildEstimate(tasks: readonly PlanTask[], now: number, held: boolean): { p50: number; p80: number; line: string } | null {
+  if (held || tasks.length === 0) return null;
+  const [row] = planMissions([{ id: 'build', title: 'Build', href: '', workspaceId: null, blocked: null, dependsOnMissionId: null, tasks: [...tasks] }], now);
+  if (!row || row.p50 == null || row.p80 == null) return null;
+  const lo = minutesText(row.p50 - now);
+  const hi = minutesText(row.p80 - now);
+  const [loN, loUnit] = lo.split(' ');
+  const line = lo === hi ? `build only: about ${lo}` : loUnit === hi.split(' ')[1] ? `build only: ${loN} to ${hi}` : `build only: ${lo} to ${hi}`;
+  return { p50: row.p50, p80: row.p80, line };
 }

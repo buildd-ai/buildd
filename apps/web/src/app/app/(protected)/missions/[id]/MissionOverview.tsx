@@ -27,7 +27,7 @@ import FocusCard from '@/components/ui/FocusCard';
 import TaskStrip from '@/components/ui/TaskStrip';
 import { MissionStripContext, createMissionStripStore, type MissionStripValue } from '@/components/missions/mission-strip-context';
 import { BOARD_LANDED, boardNeedsYouCount, type MissionBoardModel } from '@/lib/mission-board';
-import { buildEstimateLine, missionChecks, type CheckStatus, type MissionChecksInput } from '@/lib/mission-checks';
+import { buildEstimate, missionChecks, type CheckStatus, type MissionChecksInput } from '@/lib/mission-checks';
 import { isClosedUnshipped, overviewCellState, overviewCells, overviewDefaultSelection, overviewLayout, overviewLegend, overviewSelection, overviewWaitLine, railLines, type OverviewLegendEntry } from '@/lib/mission-overview';
 import { stepIndex, stripOrder, stripState } from '@/lib/mission-task-strip';
 import { STATES, type StateKey } from '@/components/ui/states';
@@ -38,6 +38,7 @@ import { DrawerDelivery, StripTaskActions, stripReason, type StripFocus } from '
 import CriteriaCheckNow from './CriteriaCheckNow';
 import { MissionVisualAsk, WithMissionVisualReview, type MissionVisualReviewValue } from './MissionVisualReview';
 import type { TaskDeliveryDetail } from '@/lib/activity-delivery';
+import type { PlanTask } from '@/lib/mission-plan';
 import { BuildCompleteBar, CheckRail, ChecksCard } from './MissionChecks';
 
 /** What the page knows about the checks; the build counts and repairs come from the live board. */
@@ -56,8 +57,8 @@ export interface MissionOverviewProps extends BoardLinkContext {
   deliveries?: Readonly<Record<string, TaskDeliveryDetail>> | null;
   /** The checks that apply after the build (spec f7f67f1a R-11 to R-22). Absent: the build view only. */
   checks?: MissionChecksSource | null;
-  /** Each task's expected minutes, for the build-only estimate (R-23). */
-  expectedMinutes?: Readonly<Record<string, number>> | null;
+  /** The build tasks as the Plan page schedules them (frozen estimates), for the build-only estimate (R-23). */
+  planTasks?: readonly PlanTask[] | null;
   /** A hold or empty budget: no time promise (R-24). */
   held?: boolean;
 }
@@ -76,7 +77,7 @@ export default function MissionOverview(props: MissionOverviewProps) {
 function OverviewView({
   model: serverModel, completionText = null, notice, visual: _visual, review,
   workspaceId = null, executor = null, stripFocus = null, deliveries = null,
-  checks: checksSource = null, expectedMinutes = null, held = false, ...link
+  checks: checksSource = null, planTasks = null, held = false, ...link
 }: MissionOverviewProps & { review: MissionVisualReviewValue | null }) {
   const model = useLiveBoard(serverModel);
   const now = useNow(model.now, 15_000, !model.complete);
@@ -112,11 +113,8 @@ function OverviewView({
   const activeCount = layout.groups.find(g => g.key === 'active')?.ids.length ?? 0;
   const waitingCount = layout.groups.find(g => g.key === 'waiting')?.ids.length ?? 0;
   // A decision, a hold or nothing running while work waits (capacity, outside) removes any time promise.
-  const estimate = handoff && !handoff.buildComplete && expectedMinutes
-    ? buildEstimateLine(
-        buildIds.filter(id => !BOARD_LANDED.has(model.tasks[id].status)).map(id => expectedMinutes[id] ?? null),
-        held || needs > 0 || (activeCount === 0 && waitingCount > 0),
-      )
+  const estimate = handoff && !handoff.buildComplete && planTasks
+    ? buildEstimate(planTasks, now, held || needs > 0 || (activeCount === 0 && waitingCount > 0))?.line ?? null
     : null;
   const where = checksSource?.branch === 'mission-branch' ? 'the mission branch' : checksSource?.target ?? 'the target branch';
   const openTask = (id: string) => { setShowBuild(true); select(id); };

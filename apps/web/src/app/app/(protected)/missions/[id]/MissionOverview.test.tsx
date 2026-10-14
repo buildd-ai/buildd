@@ -119,7 +119,7 @@ describe('MissionOverview handoff (spec f7f67f1a R-11 to R-24)', () => {
   const render = (variant: Parameters<typeof handoffFixture>[0]) => {
     const f = handoffFixture(variant, base);
     return renderToStaticMarkup(
-      <MissionOverview model={f.model} missionId="mission-1" workspaceId="ws-1" executor={f.executor} checks={f.checks} expectedMinutes={f.expectedMinutes} held={f.held} />,
+      <MissionOverview model={f.model} missionId="mission-1" workspaceId="ws-1" executor={f.executor} checks={f.checks} planTasks={f.planTasks} held={f.held} />,
     );
   };
   const rows = (markup: string) => [...markup.matchAll(/data-testid="mission-check" data-kind="([^"]+)" data-status="([^"]+)"/g)].map(m => `${m[1]}:${m[2]}`);
@@ -157,7 +157,9 @@ describe('MissionOverview handoff (spec f7f67f1a R-11 to R-24)', () => {
     const reviewer = render('handoff-reviewer');
     expect(reviewer).toContain('reviewer deciding');
     const human = render('handoff-approval');
-    expect(human).toContain('waiting on you');
+    expect(human).toContain('approve to deliver');
+    const checksAndRail = human.slice(0, human.indexOf('data-testid="overview-rail"'));
+    expect(checksAndRail).not.toMatch(/your merge|your call|waiting on you/);
     // The rail agrees with the check: one decision waits on the owner.
     expect(human).toMatch(/data-testid="rail-needs" data-count="1"/);
     expect(reviewer).toMatch(/data-testid="rail-needs" data-count="0"/);
@@ -172,6 +174,15 @@ describe('MissionOverview handoff (spec f7f67f1a R-11 to R-24)', () => {
     const healthy = render('handoff-delivered');
     expect(rail(healthy)).toEqual(['build:done', 'verify:done', 'deliver:done']);
     expect(healthy).toContain('released, healthy');
+  });
+
+  it('the build-only estimate is the Plan page\u2019s schedule for the same build tasks', async () => {
+    const { planMissions } = await import('@/lib/mission-plan');
+    const { buildEstimate } = await import('@/lib/mission-checks');
+    const f = handoffFixture('handoff-building', base);
+    const [plan] = planMissions([{ id: 'm', title: 'M', href: '', workspaceId: null, blocked: null, dependsOnMissionId: null, tasks: f.planTasks! }], base.now);
+    const ours = buildEstimate(f.planTasks!, base.now, false)!;
+    expect([ours.p50, ours.p80]).toEqual([plan.p50!, plan.p80!]);
   });
 
   it('a budget hold removes the time promise', () => {

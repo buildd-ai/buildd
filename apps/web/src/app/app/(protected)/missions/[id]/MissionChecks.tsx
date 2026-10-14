@@ -9,7 +9,7 @@
  * Build      Verify     Deliver           rail: which checkpoint it waits on
  * 10 of 10   capturing  after visual review
  * ┌ ■■■■■■■■ Build complete · 10 of 10 in mission/x   Show tasks ┐
- * Checks for this mission
+ * Checks
  * │ ◔ Visual review  blocks merge            capturing 6 of 8 │
  * │ ○ Mission PR #128 into dev                       waiting  │
  * │ ○ Unit tests pass  goal                       after merge │
@@ -21,11 +21,12 @@
  * Approve or Merge button (R-21).
  */
 import type { ReactNode } from 'react';
+import Card from '@/components/ui/Card';
 import type { CheckRow, CheckStatus, RailStep } from '@/lib/mission-checks';
 
 const RAIL_BAR: Record<RailStep['state'], string> = {
   done: 'bg-status-success',
-  now: 'bg-accent',
+  now: 'bg-text-primary',
   part: 'bg-[linear-gradient(90deg,var(--status-success)_0_50%,var(--border-strong)_50%)]',
   held: 'bg-status-error',
   todo: 'bg-border-strong',
@@ -50,7 +51,7 @@ export function CheckRail({ steps }: { steps: readonly RailStep[] }) {
 export function BuildCompleteBar({ done, where, open, onToggle, children }: { done: number; where: string; open: boolean; onToggle: () => void; children?: ReactNode }) {
   return (
     <div className="flex flex-col gap-3">
-      <div data-testid="build-complete-bar" className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-[var(--radius-card)] border border-border-default bg-card px-3.5 py-3 md:px-4">
+      <Card data-testid="build-complete-bar" padding="sm" className="flex flex-wrap items-center gap-x-4 gap-y-2 md:px-4">
         <span aria-hidden="true" className="flex gap-[3px]">
           {Array.from({ length: Math.min(done, 12) }, (_, i) => (
             <span key={i} className="state-cell inline-block h-3.5 w-2 rounded-[var(--radius-cell)]" data-tone="ok" data-pattern="solid" />
@@ -63,7 +64,7 @@ export function BuildCompleteBar({ done, where, open, onToggle, children }: { do
         <button type="button" aria-expanded={open} data-testid="build-complete-toggle" onClick={onToggle} className="min-h-11 font-mono text-meta text-text-secondary underline-offset-4 hover:text-text-primary hover:underline md:min-h-0">
           {open ? 'Hide tasks' : 'Show tasks'}
         </button>
-      </div>
+      </Card>
       {open && children}
     </div>
   );
@@ -111,7 +112,7 @@ export function ChecksCard({ rows, onOpenTask }: { rows: readonly CheckRow[]; on
   if (rows.length === 0) return null;
   return (
     <section data-testid="mission-checks" aria-labelledby="mission-checks-title" className="flex flex-col gap-2">
-      <h2 id="mission-checks-title" className="text-meta text-text-muted">Checks for this mission</h2>
+      <h2 id="mission-checks-title" className="text-meta text-text-muted">Checks</h2>
       <ul className="overflow-hidden rounded-[var(--radius-card)] border border-border-default bg-card">
         {rows.map(r => (
           <li
@@ -141,7 +142,7 @@ export function ChecksCard({ rows, onOpenTask }: { rows: readonly CheckRow[]; on
                       <li key={f.id} className="flex min-w-0 items-center gap-2.5 text-body">
                         <span aria-hidden="true" className="state-cell inline-block h-3.5 w-3.5 shrink-0 rounded-[var(--radius-cell)]" data-tone={f.done ? 'ok' : 'act'} data-pattern={f.done ? 'solid' : 'hatch-bold'} />
                         {onOpenTask
-                          ? <button type="button" onClick={() => onOpenTask(f.id)} className="min-w-0 text-left text-text-primary underline-offset-4 hover:underline [overflow-wrap:anywhere]">{f.title}</button>
+                          ? <button type="button" onClick={() => onOpenTask(f.id)} className="min-h-11 min-w-0 text-left md:min-h-0 text-text-primary underline-offset-4 hover:underline [overflow-wrap:anywhere]">{f.title}</button>
                           : <span className="min-w-0 text-text-primary [overflow-wrap:anywhere]">{f.title}</span>}
                         <span className="ml-auto shrink-0 font-mono text-meta text-text-muted">{f.done ? 'landed' : 'fixing'}</span>
                       </li>
@@ -151,7 +152,7 @@ export function ChecksCard({ rows, onOpenTask }: { rows: readonly CheckRow[]; on
                 {r.evidence.length > 0 && (
                   <p className="flex flex-wrap gap-x-4 font-mono text-meta">
                     {r.evidence.map(e => (
-                      <a key={e.href} href={e.href} className="text-text-secondary underline-offset-4 hover:text-text-primary hover:underline">{e.label}</a>
+                      <a key={e.href} href={e.href} className="inline-flex min-h-11 items-center text-text-secondary md:min-h-0 underline-offset-4 hover:text-text-primary hover:underline">{e.label}</a>
                     ))}
                   </p>
                 )}
