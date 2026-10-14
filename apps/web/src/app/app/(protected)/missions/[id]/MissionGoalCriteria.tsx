@@ -34,6 +34,7 @@ const CRITERION_TYPE_LABELS: Record<GoalCriterionType, string> = {
   command: 'Command passes',
   metric: 'Metric',
   description: 'Judged by AI',
+  living_spec: 'Spec requirements',
 };
 
 const VERDICT_CONFIG: Record<CriterionVerdict, { label: string; cls: string; icon: string }> = {

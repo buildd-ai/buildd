@@ -2,9 +2,12 @@ import { db } from '@buildd/core/db';
 import { resolvePrompt, resolvePromptTemplate } from '@buildd/core/prompts';
 import { missions, tasks, workers, artifacts, missionNotes } from '@buildd/core/db/schema';
 import { eq, inArray } from 'drizzle-orm';
-import { evaluateGoalCriteria, recalculateOverall, isDeliverableTask } from '@buildd/core/mission-helpers';
+import { evaluateGoalCriteria, recalculateOverall, isDeliverableTask, hasPendingDeliverableWork } from '@buildd/core/mission-helpers';
+import { readMissionSpecStanding } from './specs/mission-outcome';
+import { ensureFinalVerification } from './specs/mission-verification';
 import type {
   GoalCriterion,
+  LivingSpecGoalCriterion,
   GoalCriteriaState,
   CriterionVerdict,
   GoalCriteriaEvidenceRef,
@@ -87,7 +90,7 @@ interface LLMCriterionVerdict {
  * needs the (unimplemented) metric-query registry.
  */
 export function isLlmEligible(type: string): boolean {
-  return !['artifact_exists', 'no_open_tasks', 'all_prs_merged', 'metric', 'command'].includes(type);
+  return !['artifact_exists', 'no_open_tasks', 'all_prs_merged', 'metric', 'command', 'living_spec'].includes(type);
 }
 
 export function criterionText(criterion: GoalCriterion): string {
@@ -482,6 +485,45 @@ export async function evaluateCriteriaNow(
       if (cs.type === 'command' && cs.verdict === 'NOT_EVALUATED') {
         cs.evidence = 'Not run: another criterion has already failed, so the mission cannot pass this round';
       }
+    }
+  }
+
+  // ── Outcome spec (living_spec): mission-level verdicts on the integrated target ─
+  //
+  // Living Specs Slice 12. Read from verdicts recorded about the MISSION (the
+  // final verification, a check run, the visual audit or a person), folded
+  // against the integrated target as GitHub reports it now. A task PR's own
+  // verdicts are never read, so every PR review passing cannot pass this. When
+  // the build is done and the criterion is not yet verified at the target, one
+  // final verification task is filed (deduped); it runs where the mission runs.
+  for (const cs of state.criteria) {
+    if (cs.type !== 'living_spec') continue;
+    const criterion = criteria[cs.index] as LivingSpecGoalCriterion | undefined;
+    if (!criterion || criterion.type !== 'living_spec') continue;
+    try {
+      const standing = await readMissionSpecStanding(
+        { id: mission.id, workspaceId: mission.workspaceId, workingBranch: mission.workingBranch, integrationBranchEnabled: mission.integrationBranchEnabled, goalCriteria: mission.goalCriteria },
+        criterion,
+      );
+      cs.verdict = standing.verdict;
+      cs.evidence = standing.evidence;
+      cs.spec = { specId: criterion.specId, revision: criterion.revision, targetSha: standing.targetSha, standings: standing.standings };
+      const buildDone = !hasPendingDeliverableWork(missionTasks);
+      if (standing.verdict !== 'pass' && standing.verdict !== 'fail' && standing.target.kind !== 'unknown' && buildDone && canDispatch) {
+        const fv = await ensureFinalVerification(missionId, criterion, standing);
+        if (fv.kind !== 'unavailable') {
+          cs.verdict = 'PENDING';
+          cs.workerTaskId = fv.taskId;
+          cs.evidence = `${standing.evidence} Final verification ${fv.taskId.slice(0, 8)} is ${fv.kind === 'dispatched' ? 'filed' : 'open'}.`;
+        } else {
+          cs.evidence = `${standing.evidence} No final verification could be filed: ${fv.reason}.`;
+        }
+      } else if (!buildDone && standing.verdict !== 'pass') {
+        cs.evidence = `${standing.evidence} The final verification starts once the build work is done.`;
+      }
+    } catch (err) {
+      cs.verdict = 'UNVERIFIED';
+      cs.evidence = `The outcome spec could not be read: ${err instanceof Error ? err.message : String(err)}`;
     }
   }
 

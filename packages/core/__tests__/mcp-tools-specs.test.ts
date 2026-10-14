@@ -251,6 +251,27 @@ describe('manage_specs', () => {
     expect(refused.isError).toBe(true);
   });
 
+  // Living Specs Slice 12: the mission's selected outcome spec, judged on the integrated target.
+  it('with missionId, outcome and verdict read and record mission-level verdicts', async () => {
+    const MISSION = '00000000-0000-4000-8000-0000000000aa';
+    const standing = { verdict: 'UNVERIFIED', evidence: 'One of two pass on aaaaaaa. R-2 has no verdict.', targetSha: 'a'.repeat(40), standings: [{ criterionId: 'R-1', standing: 'pass', headSha: 'a'.repeat(40) }, { criterionId: 'R-2', standing: 'missing', headSha: null }] };
+    api.mockResolvedValueOnce({ outcomes: [{ criterion: { revision: 3, label: 'Spec "Overview" revision 3' }, standing }] });
+    const read = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'outcome', missionId: MISSION }, ctx()));
+    expect(api.mock.calls[0][0]).toBe(`/api/specs/mission-outcomes/${MISSION}`);
+    expect(read).toContain('Spec "Overview" revision 3 at aaaaaaaaaaaa: UNVERIFIED');
+    expect(read).toContain('R-2: missing');
+
+    api.mockResolvedValueOnce({ verdictId: 'v1', standing });
+    const rec = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'verdict', missionId: MISSION, criterionId: 'R-1', verdict: 'pass', headSha: HEAD, reaffirms: 'v0' }, ctx()));
+    const [endpoint, opts] = api.mock.calls[1];
+    expect([endpoint, opts.method, JSON.parse(opts.body)]).toEqual([`/api/specs/mission-outcomes/${MISSION}`, 'POST', { criterionId: 'R-1', verdict: 'pass', headSha: HEAD, reaffirms: 'v0' }]);
+    expect(rec).toContain('Recorded pass on R-1 at the integrated target');
+
+    api.mockRejectedValueOnce(Object.assign(new Error('API error: 403 - {"error":"A mission-level verdict is recorded by a person or by the mission\'s final verification task."}'), {}));
+    const refused: any = await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'verdict', missionId: MISSION, criterionId: 'R-1', verdict: 'pass', headSha: HEAD }, ctx());
+    expect(refused.isError).toBe(true);
+  });
+
   it('a visual verdict sends what the audit captured instead of a head', async () => {
     api.mockResolvedValueOnce(outcome('unverified', 'AC-1 has no verdict'));
     await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'verdict', taskId: TASK, checker: 'visual', criterionId: 'AC-1', verdict: 'pass', capturedSha: HEAD, screenshotIds: ['s-1'], headSha: 'ignored' }, ctx());
