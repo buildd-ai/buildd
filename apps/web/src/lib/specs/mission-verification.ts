@@ -4,7 +4,7 @@ import { and, desc, eq, sql } from 'drizzle-orm';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { missionIntegrationBase } from '@buildd/core/mission-integration';
 import { criterionFingerprint } from '@buildd/core/mission-helpers';
-import type { LivingSpecGoalCriterion } from '@buildd/shared';
+import { TERMINAL_TASK_STATUSES, type LivingSpecGoalCriterion } from '@buildd/shared';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { pickEffectiveRole } from '@/lib/effective-roles';
 import type { MissionSpecStanding } from './mission-outcome';
@@ -32,11 +32,47 @@ export interface FinalVerificationContext {
   specRevisionId: string;
   fingerprint: string;
   targetSha: string | null;
+  /** `targetKey`: what makes two verifications about the same integrated result. */
+  targetKey: string | null;
 }
 
 export const FINAL_VERIFICATION_PREFIX = '[final verification]';
 
-async function findOpen(missionId: string, fingerprint: string) {
+/**
+ * Which integrated target a verification is about, as a stable key. On a
+ * mission-branch mission, the integration head. On a direct mission, the set
+ * of merged mission PRs it must contain: a new merge is a new target, an
+ * unrelated trunk commit is not.
+ */
+export function targetKey(target: MissionSpecStanding['target']): string | null {
+  if (target.kind === 'integration') return `head:${target.headSha}`;
+  if (target.kind === 'direct') return `merges:${[...target.mergeShas].sort().join(',')}`;
+  return null;
+}
+
+/** Attempts per target before buildd stops re-filing a verification that keeps ending without a verdict. */
+export const MAX_ATTEMPTS_PER_TARGET = 2;
+
+type Prior = { id: string; status: string; targetKey: string | null };
+
+/**
+ * Pure: reuse an open or already-finished verification of this target, or file
+ * one. A completed run at the same target is never repeated (an inconclusive
+ * verdict waits for a person or a new commit); a run that failed or was
+ * cancelled is retried once.
+ */
+export function decideFinalVerification(prior: readonly Prior[], key: string | null): { kind: 'open'; taskId: string } | { kind: 'file' } {
+  const live = prior.find((r) => !(TERMINAL_TASK_STATUSES as readonly string[]).includes(r.status));
+  if (live) return { kind: 'open', taskId: live.id };
+  if (key === null) return { kind: 'file' };
+  const same = prior.filter((r) => r.targetKey === key);
+  const done = same.find((r) => r.status === 'completed');
+  if (done) return { kind: 'open', taskId: done.id };
+  if (same.length >= MAX_ATTEMPTS_PER_TARGET) return { kind: 'open', taskId: same[0].id };
+  return { kind: 'file' };
+}
+
+async function findPrior(missionId: string, fingerprint: string): Promise<Prior[]> {
   const rows = await db.query.tasks.findMany({
     where: sqlWhere(and(
       eq(tasks.missionId, missionId),
@@ -44,9 +80,13 @@ async function findOpen(missionId: string, fingerprint: string) {
     )),
     columns: { id: true, status: true, context: true },
     orderBy: sqlOrderBy([desc(tasks.createdAt)]),
-    limit: 5,
+    limit: 10,
   });
-  return rows.filter((r) => (r.context as { finalVerification?: FinalVerificationContext } | null)?.finalVerification?.missionId === missionId);
+  return rows.flatMap((r) => {
+    const marker = (r.context as { finalVerification?: unknown } | null)?.finalVerification as Partial<FinalVerificationContext> | undefined;
+    if (!marker || marker.missionId !== missionId) return [];
+    return [{ id: r.id, status: r.status, targetKey: typeof marker.targetKey === 'string' ? marker.targetKey : null }];
+  });
 }
 
 export type FinalVerification = { kind: 'open' | 'dispatched'; taskId: string } | { kind: 'unavailable'; reason: string };
@@ -54,13 +94,9 @@ export type FinalVerification = { kind: 'open' | 'dispatched'; taskId: string } 
 export async function ensureFinalVerification(missionId: string, criterion: LivingSpecGoalCriterion, standing: MissionSpecStanding): Promise<FinalVerification> {
   const fingerprint = criterionFingerprint(criterion);
   const targetSha = standing.target.kind === 'integration' ? standing.target.headSha : null;
-  const existing = await findOpen(missionId, fingerprint);
-  const live = existing.find((r) => !['completed', 'failed', 'cancelled'].includes(r.status));
-  if (live) return { kind: 'open', taskId: live.id };
-  // Already verified this exact target once: a second run would only repeat it.
-  // A moved target (new integrated commit) is a different marker.
-  const sameTarget = existing.find((r) => r.status === 'completed' && (r.context as { finalVerification?: FinalVerificationContext }).finalVerification?.targetSha === targetSha && targetSha !== null);
-  if (sameTarget) return { kind: 'open', taskId: sameTarget.id };
+  const key = targetKey(standing.target);
+  const decision = decideFinalVerification(await findPrior(missionId, fingerprint), key);
+  if (decision.kind === 'open') return decision;
 
   const mission = await db.query.missions.findFirst({
     where: sqlWhere(eq(missions.id, missionId)),
@@ -70,7 +106,7 @@ export async function ensureFinalVerification(missionId: string, criterion: Livi
   const workspace = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, mission.workspaceId)) });
   if (!workspace) return { kind: 'unavailable', reason: 'workspace not found' };
 
-  const marker: FinalVerificationContext = { missionId, specId: criterion.specId, specRevisionId: criterion.specRevisionId, fingerprint, targetSha };
+  const marker: FinalVerificationContext = { missionId, specId: criterion.specId, specRevisionId: criterion.specRevisionId, fingerprint, targetSha, targetKey: key };
   const roleSlug = await pickEffectiveRole(mission.workspaceId, ['reviewer', 'researcher']);
   const base = missionIntegrationBase(mission);
   const open = standing.standings.filter((s) => s.standing !== 'pass' && s.standing !== 'waived');

@@ -266,6 +266,28 @@ export function validateGoalCriteria(
   return null;
 }
 
+/**
+ * Refuse a `goalCriteria` write that drops or changes a stored `living_spec`
+ * criterion (the mission's outcome spec, Living Specs Slice 12). Removing or
+ * changing it goes through `outcomeSpec` only, where removal and waivers are a
+ * person's acts with a reason. An unchanged entry in a full-list save passes,
+ * in any position. `incoming` null clears every criterion, so it counts as a drop.
+ */
+export function outcomeSpecWriteRefusal(stored: unknown, incoming: unknown): string | null {
+  const kept = (Array.isArray(stored) ? stored : []).filter(
+    (c): c is GoalCriterion => !!c && typeof c === 'object' && (c as { type?: unknown }).type === 'living_spec',
+  );
+  if (kept.length === 0) return null;
+  const next = new Set((Array.isArray(incoming) ? incoming : []).map(c => JSON.stringify(c)));
+  const lost = kept.filter(c => !next.has(JSON.stringify(c)));
+  if (lost.length === 0) return null;
+  return (
+    'goalCriteria would drop or change the mission\'s outcome spec. Keep that entry unchanged here; ' +
+    'change it with outcomeSpec { specId, revision?, criteria?, narrowedReason?, waive?, unwaive? }, ' +
+    'or remove it with outcomeSpec { remove: true, reason } (a person, 10+ characters)'
+  );
+}
+
 // ─── Goal criteria evaluator ──────────────────────────────────────────────────
 
 /**

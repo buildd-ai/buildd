@@ -89,7 +89,7 @@ export async function selectMissionSpec(caller: SpecCaller, missionId: string, i
   } else {
     const pinned = await pinSpecSource(mission.workspaceId, { specSource: { specId: input.specId, ...(input.revision !== undefined ? { revision: input.revision } : {}) } });
     if (!pinned.ok) return fail(pinned.status, pinned.error.replace(/context\.specSource\./g, 'outcomeSpec.'));
-    const src = (pinned.context as { specSource: Record<string, unknown> }).specSource;
+    const src = ((pinned.context as { specSource?: unknown } | null)?.specSource ?? {}) as Record<string, unknown>;
     pin = { specRevisionId: src.specRevisionId as string, revision: src.revision as number, contentHash: src.contentHash as string, ...(src.provisional ? { provisional: true as const } : {}) };
   }
   const read = await readPinnedSpecRevision({ specId: input.specId, ...pin });

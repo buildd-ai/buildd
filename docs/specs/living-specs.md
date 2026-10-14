@@ -1816,11 +1816,25 @@ mission that selects no spec MUST behave exactly as before.
   when it lands the target moves and the verification runs again. A criterion
   the new commits did not touch is re-affirmed with a new verdict that cites
   the earlier one (`reaffirms`); nothing carries silently.
+- A `goalCriteria` write that drops or changes a stored `living_spec` entry,
+  `null` included, is refused (`outcomeSpecWriteRefusal`); it leaves only
+  through `outcomeSpec { remove: true, reason }`.
+- `context.finalVerification` and `context.specRepair` are the server's to
+  write: a caller's copy is dropped on every create path and template
+  (`withoutMissionVerificationMarkers`), and a repair is marked only when the
+  mission's own final verification files it (`specRepairStamp`).
+- The final verification is filed once per integrated target (the integration
+  head, or on a direct mission the set of merged mission PRs): a completed run
+  is not repeated at the same target, and a run that ended without one is
+  retried once (`decideFinalVerification`).
 - PR reviews and visual evidence may inform a verdict; only a mission-level
   verdict decides it.
   (`apps/web/src/lib/specs/mission-outcome-fold.test.ts`,
   `apps/web/src/lib/specs/mission-selection.test.ts`,
   `apps/web/src/lib/specs/mission-verdict-authority.test.ts`,
+  `apps/web/src/lib/specs/mission-markers.test.ts`,
+  `apps/web/src/lib/specs/mission-verification.test.ts`,
+  `apps/web/src/app/api/missions/[id]/route.test.ts`,
   `apps/web/src/lib/mission-criteria-eval.test.ts`,
   `packages/core/__tests__/goal-criteria-living-spec.test.ts`,
   `packages/core/__tests__/mcp-tools-specs.test.ts`).
@@ -1829,7 +1843,8 @@ mission that selects no spec MUST behave exactly as before.
 - `apps/web/src/lib/specs/mission-selection.ts` — `selectMissionSpec`, `mergeSelection`
 - `apps/web/src/lib/specs/mission-outcome.ts` — `recordMissionSpecVerdict`, `recordMissionVerdictServer`, `readMissionSpecStanding`, `resolveMissionTarget`, `missionVerdictAuthority`
 - `apps/web/src/lib/specs/mission-outcome-fold.ts` — `foldMissionSpec`, `verdictIsCurrent`
-- `apps/web/src/lib/specs/mission-verification.ts` — `ensureFinalVerification`
+- `apps/web/src/lib/specs/mission-verification.ts` — `ensureFinalVerification`, `decideFinalVerification`, `targetKey`
+- `apps/web/src/lib/specs/mission-markers.ts` — `withoutMissionVerificationMarkers`, `specRepairStamp`
 - `apps/web/src/app/api/specs/mission-outcomes/[missionId]/route.ts` — `GET`, `POST`
 - `apps/web/src/lib/mission-outcome-spec-view.ts` — `outcomeSpecView`
 
