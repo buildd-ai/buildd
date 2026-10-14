@@ -671,6 +671,10 @@ print_next_steps() {
     echo "  buildd service status    the runner is already running in the background"
   elif [ "$service" = "1" ]; then
     echo "  buildd service install   restart the background service with your account"
+  fi
+  if [ "$service" = "1" ]; then
+    echo "  buildd top               watch the runner and act on its work"
+    echo "  buildd web               open it in your browser"
   else
     echo "  buildd                   start the runner in this terminal"
     echo "                           (or buildd service install to keep it running in the background)"
@@ -771,7 +775,7 @@ fi
 
 SERVICE_INSTALLED=0
 if [ "$INSTALL_SERVICE" = "1" ]; then
-  if "$BIN_DIR/buildd" service install; then
+  if BUILDD_INSTALLER=1 "$BIN_DIR/buildd" service install; then
     SERVICE_INSTALLED=1
   else
     echo -e "${YELLOW}Could not install the background service — run 'buildd service install' to retry, or 'buildd' to run it in the foreground.${NC}"
