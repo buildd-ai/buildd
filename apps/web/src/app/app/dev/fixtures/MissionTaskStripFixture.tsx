@@ -11,10 +11,12 @@
  */
 import { useEffect, useState } from 'react';
 import MissionBoard from '@/app/app/(protected)/missions/[id]/MissionBoard';
+import MissionOverview from '@/app/app/(protected)/missions/[id]/MissionOverview';
 import MissionSituationBlock from '@/components/missions/MissionSituationBlock';
 import type { MissionSituation } from '@/lib/mission-state-view';
 import {
   dagSelection,
+  isOverviewVariant,
   missionTaskStripFixture,
   missionTaskStripLinks,
   parseMissionTaskStripVariant,
@@ -70,6 +72,9 @@ export default function MissionTaskStripFixture() {
         </nav>
       </header>
       <main className="mx-auto max-w-[1400px] px-4 py-2 md:px-8">
+        {isOverviewVariant(variant) ? (
+          <MissionOverview model={fixture.model} missionId={MISSION_ID} workspaceId={WORKSPACE_ID} executor={fixture.executor} />
+        ) : (
         <MissionBoard
           model={fixture.model}
           missionId={MISSION_ID}
@@ -80,6 +85,7 @@ export default function MissionTaskStripFixture() {
           notice={situation ? <MissionSituationBlock missionId={MISSION_ID} situation={situation} because={[]} /> : null}
           completionText={variant === 'all-landed' ? 'Shipped the runner and checked it end to end.' : null}
         />
+        )}
       </main>
     </div>
   );

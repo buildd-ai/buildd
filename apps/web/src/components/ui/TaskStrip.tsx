@@ -4,6 +4,9 @@ import { useRef, type CSSProperties, type KeyboardEvent } from 'react';
 import { STATES, type StateKey } from './states';
 import { stripKeyTarget, stripRunColumns, stripRunLabel, stripRuns, tickOf, type StripMark } from './task-strip';
 
+/** Why a waiting cell waits (spec f7f67f1a R-5): its own fill, apart from the state's. */
+export type TaskStripWait = 'tasks' | 'slot' | 'hold' | 'unknown' | 'closed';
+
 export interface TaskStripCell {
   id: string;
   state: StateKey;
@@ -11,6 +14,17 @@ export interface TaskStripCell {
   tick?: string;
   /** The task's title, for the cell's accessible name and tooltip. */
   title?: string;
+  /** A waiting cell's cause, one texture each (globals.css `data-wait`). `closed` keeps its state's fill. */
+  wait?: TaskStripWait;
+  /** The cell's state word, when it says more than the state's (`Next in line`). */
+  word?: string;
+}
+
+/** A run of cells drawn as one group, a gap before it; `outline` encloses it (the work in progress). */
+export interface TaskStripGroup {
+  key: string;
+  ids: readonly string[];
+  outline?: boolean;
 }
 
 export type TaskStripMarks = ReadonlyMap<string, StripMark> | Readonly<Record<string, StripMark | undefined>>;
@@ -29,6 +43,11 @@ export interface TaskStripProps {
   marks?: TaskStripMarks;
   /** Desktop caps large cells at 56px instead of stretching them across the column. Default true. */
   capped?: boolean;
+  /**
+   * `lg` only: draw the cells as these groups, in this order, a gap between
+   * groups and an outline round each `outline` group. Absent: one plain row.
+   */
+  groups?: readonly TaskStripGroup[];
   label?: string;
   className?: string;
 }
@@ -87,11 +106,35 @@ function SmallStrip({ cells, label = 'Tasks', className = '' }: TaskStripProps) 
   );
 }
 
-function LargeStrip({ cells, selectedId, onSelect, marks, capped = true, label = 'Tasks', className = '' }: TaskStripProps) {
+/**
+ * Grid columns for grouped cells: one `--cell` track per cell, a `--group-gap`
+ * track between groups. `col` is each cell's 1-based column; `spans` each
+ * outlined group's [start, end) columns.
+ */
+export function groupedColumns(groups: readonly TaskStripGroup[]): { template: string; col: Map<string, number>; spans: { key: string; from: number; to: number }[] } {
+  const tracks: string[] = [];
+  const col = new Map<string, number>();
+  const spans: { key: string; from: number; to: number }[] = [];
+  for (const g of groups) {
+    if (g.ids.length === 0) continue;
+    if (tracks.length > 0) tracks.push('var(--group-gap)');
+    const from = tracks.length + 1;
+    for (const id of g.ids) { tracks.push('var(--cell)'); col.set(id, tracks.length); }
+    if (g.outline) spans.push({ key: g.key, from, to: tracks.length + 1 });
+  }
+  return { template: tracks.join(' '), col, spans };
+}
+
+const GROUPED_VARS = '[--group-gap:6px] [--cell:minmax(0,1fr)] md:[--group-gap:12px]';
+const GROUPED_VARS_CAPPED = `${GROUPED_VARS} md:[--cell:minmax(0,56px)]`;
+
+function LargeStrip({ cells, selectedId, onSelect, marks, capped = true, label = 'Tasks', className = '', groups }: TaskStripProps) {
   const ref = useRef<HTMLDivElement>(null);
   const n = cells.length;
-  const columns = capped ? LG_COLUMNS_CAPPED : LG_COLUMNS;
-  const style = { '--n': n } as CSSProperties;
+  const grouped = groups && groups.length > 0 ? groupedColumns(groups) : null;
+  const columns = grouped ? (capped ? GROUPED_VARS_CAPPED : GROUPED_VARS) : capped ? LG_COLUMNS_CAPPED : LG_COLUMNS;
+  const style = (grouped ? { gridTemplateColumns: grouped.template } : { '--n': n }) as CSSProperties;
+  const place = (id: string): CSSProperties | undefined => (grouped ? { gridColumn: grouped.col.get(id), gridRow: 1 } : undefined);
   const selIndex = cells.findIndex(c => c.id === selectedId);
   const focusIndex = selIndex === -1 ? 0 : selIndex;
   const numbered = n <= MAX_NUMBERED_TICKS;
@@ -108,6 +151,17 @@ function LargeStrip({ cells, selectedId, onSelect, marks, capped = true, label =
   return (
     <div className={`flex flex-col gap-1.5 ${className}`} data-testid="task-strip" data-size="lg">
       <div ref={ref} role="toolbar" aria-label={label} onKeyDown={onKeyDown} className={`grid gap-1 ${columns}`} style={style}>
+        {grouped?.spans.map(sp => (
+          // The group outline: one accent frame round the work in progress (spec f7f67f1a R-3).
+          <span
+            key={`outline-${sp.key}`}
+            aria-hidden="true"
+            data-testid="task-strip-group-outline"
+            data-group={sp.key}
+            className="pointer-events-none -m-[5px] rounded-[var(--radius-card)] border border-accent"
+            style={{ gridColumn: `${sp.from} / ${sp.to}`, gridRow: 1 }}
+          />
+        ))}
         {cells.map((c, i) => {
           const s = STATES[c.state];
           const tick = c.tick ?? tickOf(i);
@@ -121,8 +175,10 @@ function LargeStrip({ cells, selectedId, onSelect, marks, capped = true, label =
               data-tone={s.tone}
               data-pattern={s.pattern}
               data-frame={s.frame}
+              data-wait={c.wait}
+              style={place(c.id)}
               aria-pressed={selected}
-              aria-label={`${tick} ${s.word}${c.title ? `: ${c.title}` : ''}`}
+              aria-label={`${tick} ${c.word ?? s.word}${c.title ? `: ${c.title}` : ''}`}
               title={c.title}
               tabIndex={i === focusIndex ? 0 : -1}
               onClick={() => onSelect?.(c.id)}
@@ -137,9 +193,10 @@ function LargeStrip({ cells, selectedId, onSelect, marks, capped = true, label =
                 data-tone={s.tone}
                 data-pattern={s.pattern}
                 data-frame={s.frame}
+                data-wait={c.wait}
                 className={`state-cell flex h-4 w-full shrink-0 items-center justify-center rounded-[var(--radius-cell)] font-mono text-chip font-semibold leading-none md:h-full ${selected ? 'md:[outline:2px_solid_var(--text-primary)] md:[outline-offset:2px]' : ''}`}
               >
-                {s.cellGlyph ? s.glyph : null}
+                {c.wait && c.wait !== 'closed' ? null : s.cellGlyph ? s.glyph : null}
               </span>
             </button>
           );
@@ -151,7 +208,7 @@ function LargeStrip({ cells, selectedId, onSelect, marks, capped = true, label =
           // MK-3: the selected tick is never marked and always keeps its number.
           const mark = selected ? null : markOf(marks, c.id);
           return (
-            <span key={c.id} data-mark={mark ?? undefined} className={tickClass(mark, selected, c.state, numbered)}>
+            <span key={c.id} data-mark={mark ?? undefined} style={place(c.id)} className={tickClass(mark, selected, c.state, numbered)}>
               {numbered || selected ? (c.tick ?? tickOf(i)) : null}
             </span>
           );
