@@ -3,8 +3,8 @@
  * run.ts for one effect; an action on the wrong kind of row says why instead.
  */
 import { describe, expect, test } from 'bun:test';
-import { actionResultText, handleKey, parseKeys, type Effect, type Key } from '../../src/top/keys';
-import { selectedRow, type TopState } from '../../src/top/state';
+import { OSC_ABANDON_MS, actionResultText, createKeyDecoder, handleKey, parseKeys, type Effect, type Key } from '../../src/top/keys';
+import { reduce, selectedRow, taskRows, type TopState } from '../../src/top/state';
 import { NOW, fixtureState } from './top-fixture';
 
 const ch = (c: string): Key => ({ name: 'char', ch: c });
@@ -158,5 +158,178 @@ describe('status line from the server answer', () => {
       .toEqual({ text: 'Answer refused: Worker is not waiting for input (HTTP 409)', tone: 'error' });
     expect(actionResultText({ type: 'claim', taskId: 't', title: 'x' }, { status: 400, body: 'nope' }).text).toBe('Claim refused: nope (HTTP 400)');
     expect(actionResultText(answer, { status: 502, body: {} }).text).toBe('Answer refused: HTTP 502');
+  });
+});
+
+describe('revision 2 keys (R-19, R-20)', () => {
+  const withWorkspaces = (): TopState => reduce(fixtureState(), {
+    type: 'workspaces',
+    workspaces: [
+      { id: 'ws-aaaa-0000', name: 'alpha', teamId: 'team-1' },
+      { id: 'ws-bbbb-0000', name: 'bravo', teamId: 'team-2' },
+    ],
+  });
+
+  test('w cycles the workspace and says which one', () => {
+    let { s } = press(withWorkspaces(), 'w');
+    expect(s.selectedWorkspace).toBe('ws-aaaa-0000');
+    expect(s.status?.text).toBe('Showing alpha. w for the next workspace.');
+    ({ s } = press(s, 'w', 'w'));
+    expect(s.selectedWorkspace).toBeNull();
+    expect(s.status?.text).toBe('Showing all 2 workspaces.');
+  });
+
+  test('w with nothing to switch to says so', () => {
+    const { s } = press(fixtureState(), 'w');
+    expect(s.selectedWorkspace).toBeNull();
+    expect(s.status?.text).toBe('This runner serves one workspace, so there is nothing to switch to.');
+  });
+
+  test('? opens help; o there opens the runner page; esc or ? closes it', () => {
+    let { s, effects } = press(fixtureState(), '?');
+    expect(s.mode).toEqual({ kind: 'help' });
+    ({ effects } = press(s, 'o'));
+    expect(effects).toEqual([{ type: 'openRunner' }]);
+    expect(press(s, '\x1b').s.mode).toEqual({ kind: 'list' });
+    expect(press(s, '?').s.mode).toEqual({ kind: 'list' });
+    expect(press(s, 'q').effects).toEqual([{ type: 'quit' }]);
+  });
+
+  test('a late OSC 11 reply is swallowed, never typed as keys', () => {
+    expect(parseKeys('\x1b]11;rgb:ffff/ffff/ffff\x07j')).toEqual([ch('j')]);
+    expect(parseKeys('\x1b]11;rgb:0000/0000/0000\x1b\\k')).toEqual([ch('k')]);
+  });
+});
+
+describe('terminal replies split across reads never become keys (R-17)', () => {
+  // Real answers to the OSC 11 query, ended by BEL and by ST. The c's are the
+  // dangerous part: a bare c claims the selected waiting task.
+  const REPLIES = ['\x1b]11;rgb:cccc/cccc/cccc\x07', '\x1b]11;rgb:ffff/ffff/ffff\x1b\\', '\x1b]11;rgba:fafa/fafa/fafa/ffff\x07'];
+
+  /** The selected row is a waiting task, so a leaked c would claim it. */
+  const onWaiting = (): TopState => {
+    const s = { ...fixtureState(), focus: 'tasks' as const };
+    const idx = taskRows(s, NOW).findIndex(r => r.kind === 'waiting');
+    expect(idx).toBeGreaterThan(-1);
+    return { ...s, rowCursor: idx };
+  };
+
+  for (const reply of REPLIES) {
+    test(`every split point of ${JSON.stringify(reply)} is swallowed`, () => {
+      for (let k = 1; k < reply.length; k++) {
+        const d = createKeyDecoder();
+        const keys = [...d.feed(reply.slice(0, k)), ...d.feed(reply.slice(k))];
+        expect({ k, keys }).toEqual({ k, keys: [] });
+        // Nothing left half-read: the next key is read normally.
+        expect(d.feed('j')).toEqual([ch('j')]);
+
+        // And no key action fires on a waiting row.
+        let s = onWaiting();
+        const before = s;
+        const effects: Effect[] = [];
+        const d2 = createKeyDecoder();
+        for (const part of [reply.slice(0, k), reply.slice(k)]) {
+          for (const key of d2.feed(part)) {
+            const r = handleKey(s, key, NOW);
+            s = r.state;
+            effects.push(...r.effects);
+          }
+        }
+        expect({ k, effects }).toEqual({ k, effects: [] });
+        expect(s).toEqual(before);
+      }
+    });
+  }
+
+  test('a split point inside the reply, with a real key typed right after, keeps only the key', () => {
+    const reply = REPLIES[0];
+    for (let k = 1; k < reply.length; k++) {
+      const d = createKeyDecoder();
+      expect([...d.feed(reply.slice(0, k)), ...d.feed(reply.slice(k) + 'q')]).toEqual([ch('q')]);
+    }
+  });
+
+  test('a split CSI (arrow) still reads as the arrow', () => {
+    const d = createKeyDecoder();
+    expect([...d.feed('\x1b'), ...d.feed('[B')]).toEqual([{ name: 'down' }]);
+    const d2 = createKeyDecoder();
+    expect([...d2.feed('\x1b['), ...d2.feed('3'), ...d2.feed('~x')]).toEqual([ch('x')]);
+  });
+
+  test('a lone escape is a key once the read settles (flush)', () => {
+    const d = createKeyDecoder();
+    expect(d.feed('\x1b')).toEqual([]);
+    expect(d.pendingEscape()).toBe(true);
+    expect(d.flush()).toEqual([{ name: 'escape' }]);
+    expect(d.pendingEscape()).toBe(false);
+  });
+
+  test('flush never turns a half-read reply into keys', () => {
+    const d = createKeyDecoder();
+    d.feed('\x1b]11;rgb:cc');
+    expect(d.flush()).toEqual([]);
+    expect(d.feed('cc/cccc/cccc\x07c')).toEqual([ch('c')]);
+  });
+
+  test('ctrl-c still quits from inside an unfinished terminal string', () => {
+    const d = createKeyDecoder();
+    expect(d.feed('\x1b]11;rgb:cc\x03')).toEqual([{ name: 'ctrl-c' }]);
+  });
+});
+
+describe('an unterminated terminal string never eats the keyboard', () => {
+  // Alt+] sends ESC ] and Alt+Shift+P sends ESC P: no terminal reply follows.
+  test('Alt+] then a key that cannot be in an OSC 11 reply: the key is read', () => {
+    const d = createKeyDecoder();
+    expect(d.feed('\x1b]', 0)).toEqual([]);
+    expect(d.feed('j', 10)).toEqual([ch('j')]);
+    expect(d.feed('k', 20)).toEqual([ch('k')]);
+  });
+
+  test('Alt+] then q in the same read quits', () => {
+    expect(parseKeys('\x1b]q')).toEqual([ch('q')]);
+  });
+
+  test('Alt+] then a key that could start a reply is dropped after 100 ms of silence', () => {
+    const d = createKeyDecoder();
+    expect(d.feed('\x1b]', 0)).toEqual([]);
+    expect(d.feed('1', 20)).toEqual([]); // still a possible "11;rgb:…"
+    expect(d.feed('c', 200)).toEqual([ch('c')]); // abandoned: c is a key again
+    expect(d.feed('a', 210)).toEqual([ch('a')]);
+  });
+
+  test('a lone Alt+] goes stale after 100 ms and the next key reads', () => {
+    const d = createKeyDecoder();
+    expect(d.feed('\x1b]', 0)).toEqual([]);
+    expect(d.feed('1', 150)).toEqual([ch('1')]);
+  });
+
+  test('a reply that strays from the OSC 11 shape is dropped where it strays', () => {
+    const d = createKeyDecoder();
+    expect(d.feed('\x1b]11;rgb:cc', 0)).toEqual([]);
+    expect(d.feed('x', 5)).toEqual([ch('x')]);
+    expect(d.feed('j', 6)).toEqual([ch('j')]);
+  });
+
+  test('Alt+Shift+P (ESC P) and the other string introducers never swallow later keys', () => {
+    for (const intro of ['P', 'X', '^', '_']) {
+      const d = createKeyDecoder();
+      expect(d.feed(`\x1b${intro}`, 0)).toEqual([]);
+      expect({ intro, keys: d.feed('j', 10) }).toEqual({ intro, keys: [ch('j')] });
+    }
+  });
+
+  test('a real reply streaming in within 100 ms gaps is still swallowed whole', () => {
+    const reply = '\x1b]11;rgb:cccc/cccc/cccc\x07';
+    const d = createKeyDecoder();
+    let t = 0;
+    const keys: Key[] = [];
+    for (const c of reply) keys.push(...d.feed(c, (t += 40)));
+    expect(keys).toEqual([]);
+    expect(d.feed('c', t + 1)).toEqual([ch('c')]);
+  });
+
+  test('OSC_ABANDON_MS is 100', () => {
+    expect(OSC_ABANDON_MS).toBe(100);
   });
 });

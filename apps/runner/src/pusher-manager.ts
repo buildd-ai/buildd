@@ -68,6 +68,8 @@ export interface PusherManagerCallbacks {
   getProbedWorkers: () => Set<string>;
 }
 
+const GENERIC_SERVER_FAILURE = 'Task failed on server';
+
 export class PusherManager {
   private pusher?: Pusher;
   private pusherChannels = new Map<string, any>();
@@ -255,6 +257,35 @@ export class PusherManager {
     }
   }
 
+  /**
+   * The server marked this worker failed. Keep the reason it recorded (R-22 of
+   * "Runner on your terminal"): the event's own error, else one the worker
+   * already had, else the worker row's (the server's event is thin and usually
+   * carries none). "Task failed on server" only when nothing says why.
+   */
+  async applyServerFailure(workerId: string, data: any): Promise<void> {
+    const worker = this.callbacks.getWorkers().get(workerId);
+    // Only apply if worker hasn't already completed locally
+    if (!worker || worker.status === 'done' || worker.status === 'error') return;
+    console.log(`[Worker ${workerId}] Pusher resolution: server marked failed`);
+    const given = typeof data?.error === 'string' && data.error.trim() ? data.error : null;
+    const known = given || worker.error || null;
+    worker.status = 'error';
+    worker.error = known || GENERIC_SERVER_FAILURE;
+    worker.completedAt = worker.completedAt || Date.now();
+    this.callbacks.emit({ type: 'worker_update', worker });
+    this.callbacks.abort(workerId).catch(() => {});
+    if (known) return;
+    try {
+      const remote = await this.buildd.getWorkerRemote(workerId) as { error?: unknown } | null;
+      const reason = typeof remote?.error === 'string' ? remote.error.trim() : '';
+      if (reason && worker.error === GENERIC_SERVER_FAILURE) {
+        worker.error = reason;
+        this.callbacks.emit({ type: 'worker_update', worker });
+      }
+    } catch { /* offline: the generic line stands */ }
+  }
+
   // Subscribe to Pusher channel for worker commands
   subscribeToWorker(workerId: string) {
     if (!this.pusher || this.pusherChannels.has(workerId)) return;
@@ -279,16 +310,7 @@ export class PusherManager {
     });
 
     channel.bind('worker:failed', (data: any) => {
-      const worker = this.callbacks.getWorkers().get(workerId);
-      // Only apply if worker hasn't already completed locally
-      if (worker && worker.status !== 'done' && worker.status !== 'error') {
-        console.log(`[Worker ${workerId}] Pusher resolution: server marked failed`);
-        worker.status = 'error';
-        worker.error = data?.error || 'Task failed on server';
-        worker.completedAt = worker.completedAt || Date.now();
-        this.callbacks.emit({ type: 'worker_update', worker });
-        this.callbacks.abort(workerId).catch(() => {});
-      }
+      void this.applyServerFailure(workerId, data);
     });
 
     // Progress heartbeat: when the server confirms a progress update (from the agent's
