@@ -14,11 +14,11 @@
     "deploy:buildd": "bun scripts/deploy.ts"
   },
   "dependencies": {
-    "agents": "0.28.0"
+    "agents": "0.28.1"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "5.20261013.1",
-    "wrangler": "4.150.0"
+    "@cloudflare/workers-types": "5.20261014.1",
+    "wrangler": "4.151.0"
   },
   "license": "FSL-1.1-ALv2"
 }
