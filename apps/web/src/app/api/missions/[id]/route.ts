@@ -11,7 +11,7 @@ import {
 } from '@/lib/task-token-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { computeNextRunAt } from '@/lib/schedule-helpers';
-import { computeMissionProgress, validateGoalCriteria } from '@buildd/core/mission-helpers';
+import { computeMissionProgress, outcomeSpecWriteRefusal, validateGoalCriteria } from '@buildd/core/mission-helpers';
 import { computeAndStoreFlightStripCache } from '@buildd/core/flight-strip-store';
 import { isMissionBlocked, wouldCreateCycle } from '@/lib/mission-dependency';
 import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
@@ -662,6 +662,11 @@ export async function PATCH(
     if (executor !== undefined) updateData.executor = executor;
 
     if (goalCriteria !== undefined) {
+      // The outcome spec (living_spec) leaves only through outcomeSpec, where
+      // removal is a person's act with a reason: never by clearing or
+      // re-saving the list without it.
+      const outcomeSpecError = outcomeSpecWriteRefusal(existing.goalCriteria, goalCriteria);
+      if (outcomeSpecError) return NextResponse.json({ error: outcomeSpecError }, { status: 400 });
       if (goalCriteria !== null) {
         // Grandfather unchanged entries: the dashboard saves the whole array, so
         // a mission holding a pre-gate prose criterion would otherwise 400 on

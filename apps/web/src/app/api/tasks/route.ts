@@ -14,6 +14,7 @@ import { assertMemberRepoAccess, memberRepoAccessSubject, resolveMemberRepoAcces
 import { stampLandingOverrideGrant } from '@/lib/landing-override-grant';
 import { requestingPerson } from '@/lib/request-person';
 import { withoutReviewDispatchContext } from '@/lib/verdict-provenance';
+import { specRepairStamp, withoutMissionVerificationMarkers } from '@/lib/specs/mission-markers';
 import { resolveCreatorContext } from '@/lib/task-service';
 import { validateRequiredConnectors } from '@/lib/required-connectors';
 import { authenticateTaskScopedCaller, isDelegatedReach, taskScopeAllowsDelegated, taskScopeAllowsMission, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
@@ -493,7 +494,11 @@ export async function POST(req: NextRequest) {
     // The keys that make a task a dispatched review are the review system's to write (verdict-provenance.ts).
     // context.prReach is the server's to write (lib/pr-reach-grant.ts): a caller's value is dropped
     // here and the link this filing earns is stamped just before the insert.
-    let incomingContext = withoutPrReachGrant(withoutReviewDispatchContext(stampedGrant.context)) as typeof rawIncomingContext;
+    // context.finalVerification and context.specRepair are the server's to write
+    // (lib/specs/mission-markers.ts): a caller's copy is dropped here, and a repair
+    // filed by the mission's own final verification is stamped below.
+    const requestedSpecRepair = (rawIncomingContext as Record<string, unknown> | null | undefined)?.specRepair;
+    let incomingContext = withoutMissionVerificationMarkers(withoutPrReachGrant(withoutReviewDispatchContext(stampedGrant.context))) as typeof rawIncomingContext;
 
     // Spec-to-build opt-in — see docs/design/spec-to-build-pattern.md Proposal §1.
     // Never opens `mode` itself as a public parameter (that would let any task,
@@ -947,6 +952,15 @@ export async function POST(req: NextRequest) {
         return null;
       });
     const prReachCtx = prReach ? { prReach } : {};
+    let specRepairCtx: { specRepair?: NonNullable<ReturnType<typeof specRepairStamp>> } = {};
+    if (prReachFiler.kind === 'task' && missionId) {
+      const filerTask = await db.query.tasks.findFirst({
+        where: sqlWhere(eq(tasks.id, prReachFiler.taskId)),
+        columns: { missionId: true, context: true },
+      });
+      const stamp = specRepairStamp({ requested: requestedSpecRepair, missionId, filerTaskId: prReachFiler.taskId, filerTask: filerTask ?? null });
+      if (stamp) specRepairCtx = { specRepair: stamp };
+    }
 
     // Decomposition re-check gate. `runMission()` detects pre-filed sibling
     // tasks exactly ONCE, when the mission's planning task is created — but
@@ -1629,6 +1643,7 @@ export async function POST(req: NextRequest) {
           // A reservation is the server's to write, from the authenticated account.
           [TASK_RESERVATION_KEY]: reserveVerified ? buildReservation(apiAccount!.id) : undefined,
           ...prReachCtx,
+          ...specRepairCtx,
           ...(processedAttachments.length > 0 ? { attachments: processedAttachments } : {}),
           ...(skillSlugs.length > 0 ? { skillSlugs } : {}),
           ...(resolvedSkillRefs.length > 0 ? { skillRefs: resolvedSkillRefs } : {}),
@@ -1689,6 +1704,7 @@ export async function POST(req: NextRequest) {
           context: {
             ...(typeof incomingContext === 'object' && incomingContext !== null && !Array.isArray(incomingContext) ? incomingContext : {}),
             ...prReachCtx,
+            ...specRepairCtx,
             ...(processedAttachments.length > 0 ? { attachments: processedAttachments } : {}),
             ...(skillSlugs.length > 0 ? { skillSlugs } : {}),
             ...(resolvedSkillRefs.length > 0 ? { skillRefs: resolvedSkillRefs } : {}),

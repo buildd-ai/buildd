@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
 // The goal-criteria quality shadow (lib/goal-criteria-quality-shadow.ts) runs
@@ -2401,5 +2401,46 @@ describe("/api/missions/[id] — an orchestration task's admin per-task token", 
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', teamId: 'team-1', level: 'admin', scopes: null });
     expect((await patch({ maxConcurrentTasks: 4 })).status).toBe(200);
     expect(updatedSetData.maxConcurrentTasks).toBe(4);
+  });
+});
+
+// Living Specs Slice 12: the outcome spec leaves only through outcomeSpec { remove: true, reason }.
+describe('PATCH /api/missions/[id] — goalCriteria cannot drop or change the outcome spec', () => {
+  const ID = '11111111-1111-4111-8111-111111111111';
+  const SPEC_CRITERION = {
+    type: 'living_spec', specId: '22222222-2222-4222-8222-222222222222', specRevisionId: '33333333-3333-4333-8333-333333333333',
+    revision: 3, contentHash: 'h'.repeat(64), label: 'Spec "Overview" revision 3',
+  };
+  const stored = [{ type: 'no_open_tasks' }, SPEC_CRITERION];
+  const send = (body: Record<string, unknown>) => PATCH(
+    new NextRequest(`http://localhost/api/missions/${ID}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    { params: makeParams(ID) },
+  );
+  const defaultMission = mockMissionsFindFirst.getMockImplementation();
+  beforeEach(() => {
+    mockMissionsFindFirst.mockImplementation(() => ({ id: ID, teamId: 'team-1', title: 'Existing Mission', workspaceId: 'ws-1', scheduleId: null, priority: 0, goalCriteria: stored }) as any);
+  });
+  afterEach(() => { if (defaultMission) mockMissionsFindFirst.mockImplementation(defaultMission); });
+
+  it('refuses goalCriteria: null', async () => {
+    const res = await send({ goalCriteria: null });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain('outcomeSpec');
+  });
+
+  it('refuses a list that omits the outcome spec', async () => {
+    const res = await send({ goalCriteria: [{ type: 'no_open_tasks' }] });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain('remove: true');
+  });
+
+  it('refuses a list that alters the outcome spec', async () => {
+    const res = await send({ goalCriteria: [{ type: 'no_open_tasks' }, { ...SPEC_CRITERION, contentHash: 'x'.repeat(64) }] });
+    expect(res.status).toBe(400);
+  });
+
+  it('accepts a full-list save that keeps it unchanged', async () => {
+    const res = await send({ goalCriteria: [...stored, { type: 'all_prs_merged' }] });
+    expect(res.status).toBe(200);
   });
 });

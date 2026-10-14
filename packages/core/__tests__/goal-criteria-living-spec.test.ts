@@ -5,6 +5,7 @@ import {
   evaluateGoalCriteria,
   MECHANICAL_CRITERION_TYPES,
   deliverableRole,
+  outcomeSpecWriteRefusal,
 } from '../mission-helpers';
 import type { GoalCriterion, LivingSpecGoalCriterion } from '@buildd/shared';
 
@@ -65,5 +66,32 @@ describe('final verification and spec repair tasks stay out of the build count',
   it('reads a final verification task as verification and a spec repair as repair', () => {
     expect(deliverableRole({ title: '[final verification] Mission spec', context: { finalVerification: { missionId: 'm' } } })).toBe('verification');
     expect(deliverableRole({ title: '[spec repair] R-3: empty state copy', context: { specRepair: { missionId: 'm', criterionId: 'R-3' } } })).toBe('repair');
+  });
+});
+
+describe('living_spec criterion: a goalCriteria write cannot drop or change the outcome spec', () => {
+  const stored: GoalCriterion[] = [{ type: 'no_open_tasks' }, base];
+
+  it('refuses null (clearing every criterion)', () => {
+    expect(outcomeSpecWriteRefusal(stored, null)).toContain('outcomeSpec');
+  });
+
+  it('refuses a list that omits the stored outcome spec', () => {
+    expect(outcomeSpecWriteRefusal(stored, [{ type: 'no_open_tasks' }])).toContain('remove: true');
+  });
+
+  it('refuses a list that alters it (narrowing scope, dropping a waiver)', () => {
+    expect(outcomeSpecWriteRefusal(stored, [{ type: 'no_open_tasks' }, { ...base, criteria: ['R-1'], narrowedReason: 'only the API half' }])).not.toBeNull();
+    const waived = { ...base, waived: [{ criterionId: 'R-2', reason: 'owner accepted the gap', by: 'user:x', at: '2026-10-14T00:00:00Z' }] };
+    expect(outcomeSpecWriteRefusal([waived], [base])).not.toBeNull();
+  });
+
+  it('passes a full-list save that keeps the stored entry unchanged, in any position', () => {
+    expect(outcomeSpecWriteRefusal(stored, [base, { type: 'no_open_tasks' }, { type: 'all_prs_merged' }])).toBeNull();
+  });
+
+  it('passes any write on a mission with no outcome spec', () => {
+    expect(outcomeSpecWriteRefusal([{ type: 'no_open_tasks' }], null)).toBeNull();
+    expect(outcomeSpecWriteRefusal(null, [{ type: 'all_prs_merged' }])).toBeNull();
   });
 });
