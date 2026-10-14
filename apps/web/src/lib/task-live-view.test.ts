@@ -3,7 +3,7 @@
  * page and the mission sheet. Illustrative fixtures only.
  */
 import { describe, expect, it } from 'bun:test';
-import { liveWorkerOf, liveWorkerViewProps } from './task-live-view';
+import { liveWorkerOf, liveWorkerViewProps, workerSteerProps } from './task-live-view';
 
 const T = new Date('2026-01-01T12:00:00Z');
 const row = {
@@ -38,5 +38,22 @@ describe('liveWorkerViewProps', () => {
     });
     expect(p).toMatchObject({ taskId: 't1', taskStatus: 'in_progress', outputRequirement: 'pr_required', deliverableArtifactCount: 2, usesReviewer: true, reviewState: 'pending', modelTier: 'Standard', roleName: 'Builder' });
     expect(p.initialWorker.id).toBe('w1');
+  });
+});
+
+describe('workerSteerProps', () => {
+  const at = (m: number) => new Date(T.getTime() + m * 60_000);
+  it("names the run before this one, by creation time, whatever the list order", () => {
+    const active = { id: 'w3', createdAt: at(3), status: 'running', waitingFor: null, instructionHistory: [{ message: 'hi', timestamp: 1, type: 'instruction' }], runner: 'atlas' };
+    const workers = [{ id: 'w1', createdAt: at(1), status: 'failed', instructionHistory: null }, active, { id: 'w2', createdAt: at(2), status: 'failed', instructionHistory: [] }];
+    const p = workerSteerProps(active, workers, false);
+    expect(p).toMatchObject({ workerId: 'w3', status: 'running', hasUnansweredQuestion: false, runner: 'atlas', taskTerminal: false });
+    expect(p.instructionHistory).toHaveLength(1);
+    expect(p.earlierRun).toEqual({ workerId: 'w2', status: 'failed', history: [] });
+  });
+
+  it('has no earlier run for the first one', () => {
+    const active = { id: 'w1', createdAt: at(1), status: 'waiting_input', waitingFor: { prompt: 'q?' } };
+    expect(workerSteerProps(active, [active], false)).toMatchObject({ hasUnansweredQuestion: true, earlierRun: null, instructionHistory: [] });
   });
 });

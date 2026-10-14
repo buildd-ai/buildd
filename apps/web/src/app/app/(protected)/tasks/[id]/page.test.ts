@@ -5,7 +5,9 @@ import { describe, it, expect } from 'bun:test';
 // tasks/page.test.ts's mission-budget plumbing suite — a re-derivation of the
 // wiring in this test file would prove nothing about the actual page.
 const pageSource = await Bun.file(new URL('./page.tsx', import.meta.url)).text();
-const taskViewSource = await Bun.file(new URL('../../../../../lib/task-view.ts', import.meta.url)).text();
+// The load (lib/task-view.ts) and the pick it makes (lib/task-view-pick.ts).
+const taskViewSource = (await Bun.file(new URL('../../../../../lib/task-view.ts', import.meta.url)).text())
+  + (await Bun.file(new URL('../../../../../lib/task-view-pick.ts', import.meta.url)).text());
 
 describe('ship badge plumbing — tasks/[id]/page.tsx (spec §10.3)', () => {
   it('imports the single shared ship-state loader, not a local re-derivation', () => {
@@ -149,10 +151,11 @@ describe('mission continuity — tasks/[id]/page.tsx (docs/design/mission-feed-m
   });
 
   it('one question, one surface: the worker view gets the linked note and the feed skips it', () => {
-    // The note is linked once, in lib/task-view.ts, for the page and the sheet.
+    // The note is linked once, in lib/task-view-pick.ts, for the page, the sheet and the board.
     expect(taskViewSource).toContain('linkQuestionNote(openQuestions, activeWorker.id)');
     expect(pageSource).toContain('const questionNote = taskView.questionNote;');
-    expect(pageSource).toContain('questionNote={questionNote}');
+    // The live run view's props are built by lib/task-live-view.ts, for the sheet too.
+    expect(pageSource).toMatch(/liveWorkerViewProps\(\{[^]*?questionNote,[^]*?\}\)/);
     expect(pageSource).toContain('excludeNoteId={questionNote?.id ?? null}');
   });
 

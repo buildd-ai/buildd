@@ -7,6 +7,7 @@
 import type { LiveWorker } from '@/app/app/(protected)/tasks/[id]/RealTimeWorkerView';
 import type { QuestionNoteLike } from '@/app/app/(protected)/tasks/[id]/question-hero';
 import type { DeliveryPillState } from '@/app/app/(protected)/tasks/[id]/TaskSidePanel';
+import { compareWorkersChrono, newestWhere, type Chrono } from '@/lib/attempt-order';
 
 type Stamp = Date | string | null | undefined;
 const iso = (v: Stamp): string | null => (v == null ? null : typeof v === 'string' ? v : v.toISOString());
@@ -118,5 +119,35 @@ export function liveWorkerViewProps(input: {
     questionNote: input.questionNote ?? null,
     roleName: input.roleName ?? null,
     delivery: input.delivery,
+  };
+}
+
+/** WorkerSteerPanel's props: steer or stop the live worker, and what it was told. */
+export interface WorkerSteerProps {
+  workerId: string;
+  status: string;
+  hasUnansweredQuestion: boolean;
+  instructionHistory: LiveWorker['instructionHistory'];
+  runner: string | null;
+  taskTerminal: boolean;
+  /** The run before this one, for the messages it ended before reading. */
+  earlierRun: { workerId: string; status: string; history: LiveWorker['instructionHistory'] } | null;
+}
+
+export function workerSteerProps(
+  active: Chrono & { status: string; waitingFor?: unknown; instructionHistory?: unknown; runner?: string | null },
+  workers: ReadonlyArray<Chrono & { status: string; instructionHistory?: unknown }>,
+  taskTerminal: boolean,
+): WorkerSteerProps {
+  const history = (v: unknown) => (Array.isArray(v) ? v : []) as LiveWorker['instructionHistory'];
+  const prev = newestWhere(workers, w => w.id !== active.id && compareWorkersChrono(w, active) < 0, compareWorkersChrono);
+  return {
+    workerId: active.id,
+    status: active.status,
+    hasUnansweredQuestion: !!active.waitingFor,
+    instructionHistory: history(active.instructionHistory),
+    runner: active.runner ?? null,
+    taskTerminal,
+    earlierRun: prev ? { workerId: prev.id, status: prev.status, history: history(prev.instructionHistory) } : null,
   };
 }
