@@ -124,6 +124,14 @@ export function outcomeText(o: Outcome): string {
   return [`Governed outcome: ${o.outcome.toUpperCase()} against spec revision ${o.revision}, head ${head}. ${o.reason}.`, ...rows].join('\n');
 }
 
+type MissionStanding = { verdict: string; evidence: string; targetSha: string | null; standings: Array<{ criterionId: string; standing: string; headSha: string | null }> };
+/** A mission's outcome spec on its integrated target, one line per criterion. */
+export function missionStandingText(label: string, s: MissionStanding): string {
+  const at = s.targetSha ? ` at ${s.targetSha.slice(0, 12)}` : '';
+  const rows = s.standings.map((c) => `  ${c.criterionId}: ${c.standing}${c.standing === 'stale' && c.headSha ? ` (on ${c.headSha.slice(0, 12)})` : ''}`);
+  return [`${label}${at}: ${s.verdict}. ${s.evidence}`, ...rows].join('\n');
+}
+
 type ProposedBy = { source: 'model'; model: string | null } | { source: 'words'; label: string; reason: string };
 /** Which produced the proposal, in words. */
 const proposedByText = (b: ProposedBy | undefined) => (!b ? '' : b.source === 'model' ? `Proposed by the decision model${b.model ? ` (${b.model})` : ''}.` : `Proposed by the ${b.label} (${b.reason}).`);
@@ -346,7 +354,31 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
 
     case 'outcome':
     case 'verdict': {
-      const taskId = need(params.taskId, 'taskId');
+      if (params.missionId !== undefined && params.taskId === undefined) {
+        const missionId = need(params.missionId, 'missionId');
+        const path = `/api/specs/mission-outcomes/${encodeURIComponent(missionId)}`;
+        try {
+          if (op === 'outcome') {
+            const r = await api(path);
+            const outs = r.outcomes as Array<{ criterion: { revision: number; label?: string }; standing: MissionStanding }>;
+            return text(outs.length === 0 ? 'This mission has no selected outcome spec.' : outs.map((o) => missionStandingText(o.criterion.label ?? `revision ${o.criterion.revision}`, o.standing)).join('\n\n'));
+          }
+          const r = await api(path, { method: 'POST', body: JSON.stringify({
+            criterionId: need(params.criterionId, 'criterionId'), verdict: need(params.verdict, 'verdict'), headSha: need(params.headSha, 'headSha'),
+            ...(params.specId !== undefined ? { specId: params.specId } : {}),
+            ...(params.evidenceRefs !== undefined ? { evidenceRefs: params.evidenceRefs } : {}),
+            ...(params.readIds !== undefined ? { readIds: params.readIds } : {}),
+            ...(params.observed !== undefined ? { observed: params.observed } : {}),
+            ...(params.reaffirms !== undefined ? { reaffirms: params.reaffirms } : {}),
+          }) });
+          return text(`Recorded ${params.verdict} on ${params.criterionId} at the integrated target (verdict ${r.verdictId}).\n${missionStandingText('Outcome spec', r.standing)}`);
+        } catch (err) {
+          const e = apiError(err);
+          if (e && [400, 403, 404, 409].includes(e.status)) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
+          throw err;
+        }
+      }
+      const taskId = need(params.taskId, 'taskId (or missionId for the mission\'s outcome spec)');
       const path = `/api/specs/outcomes/${encodeURIComponent(taskId)}`;
       try {
         const r = op === 'outcome'

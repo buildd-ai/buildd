@@ -74,6 +74,9 @@ export const MECHANICAL_CRITERION_TYPES = [
   'all_prs_merged',
   'no_open_tasks',
   'artifact_exists',
+  // Living Specs Slice 12: recorded mission-level verdicts on the integrated
+  // target decide it, never a model reading prose.
+  'living_spec',
 ] as const;
 
 /** Ceiling on criteria per mission (shared by POST and PATCH /api/missions). */
@@ -96,6 +99,15 @@ export function criterionFingerprint(criterion: GoalCriterion): string {
   else if (criterion.type === 'metric') parts.push(criterion.query, criterion.operator, String(criterion.threshold));
   else if (criterion.type === 'artifact_exists') parts.push(criterion.key ?? '', criterion.artifactType ?? '');
   else if (criterion.type === 'all_prs_merged') parts.push(String(criterion.requireBranchDeleted ?? false));
+  else if (criterion.type === 'living_spec') {
+    // A repin, a new hash, a narrowed scope or a waiver is a different
+    // criterion: no recorded verdict may carry across any of them.
+    parts.push(
+      criterion.specRevisionId, criterion.contentHash,
+      [...(criterion.criteria ?? [])].sort().join(','),
+      (criterion.waived ?? []).map(w => w.criterionId).sort().join(','),
+    );
+  }
   if (criterion.label) parts.push(criterion.label);
 
   const text = parts.join('\0');
@@ -167,7 +179,7 @@ export function validateGoalCriteria(
   );
 
   const validTypes: GoalCriterionType[] = [
-    'all_prs_merged', 'command', 'no_open_tasks', 'artifact_exists', 'metric', 'description',
+    'all_prs_merged', 'command', 'no_open_tasks', 'artifact_exists', 'metric', 'description', 'living_spec',
   ];
 
   for (let i = 0; i < criteria.length; i++) {
@@ -186,6 +198,15 @@ export function validateGoalCriteria(
     if (grandfathered.has(JSON.stringify(c))) continue;
 
     switch (raw.type) {
+      case 'living_spec':
+        // Server-written only: the revision id, number and hash come from the
+        // database through the mission's outcome-spec selection. A caller's
+        // copy is never trusted, so only an unchanged stored row passes (above).
+        return (
+          `${at}: a living_spec criterion is written by selecting the mission's outcome spec ` +
+          `(outcomeSpec: { specId, revision?, criteria?, narrowedReason? }), not in goalCriteria`
+        );
+
       case 'command':
         if (typeof raw.command !== 'string' || raw.command.trim() === '') {
           return `${at}.command is required and must be a non-blank string`;
@@ -520,6 +541,14 @@ export function evaluateGoalCriteria(
         break;
       }
 
+      case 'living_spec': {
+        // Read by `mission-criteria-eval` from mission-level verdicts on the
+        // integrated target. Never a pass from here: no evidence, no verdict.
+        verdict = 'NOT_EVALUATED';
+        evidence = `Awaiting the final verification of spec revision ${criterion.revision}`;
+        break;
+      }
+
       case 'description': {
         // Free-form criteria are graded by `mission-criteria-eval` (an inference
         // call or a runner task, per the criterion's grader).
@@ -838,7 +867,11 @@ export function deliverableRole(task: { title?: string | null; roleSlug?: string
   const title = task.title ?? '';
   if (isSurfaceAuditTask(title) || task.roleSlug === VISUAL_AUDITOR_ROLE_SLUG) return 'verification';
   const ctx = task.context && typeof task.context === 'object' && !Array.isArray(task.context) ? task.context as Record<string, unknown> : null;
+  // A mission's final requirement verification (Living Specs Slice 12) checks
+  // the integrated result; a spec repair fixes a criterion it found failing.
+  if (ctx?.finalVerification != null && typeof ctx.finalVerification === 'object') return 'verification';
   if (isSurfaceFixTask(title) || (ctx?.surfaceFix != null && typeof ctx.surfaceFix === 'object')) return 'repair';
+  if (ctx?.specRepair != null && typeof ctx.specRepair === 'object') return 'repair';
   if (isTrunkRefreshTask({ title, context: task.context })) return 'maintenance';
   return 'build';
 }

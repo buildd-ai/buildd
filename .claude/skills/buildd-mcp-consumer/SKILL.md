@@ -124,6 +124,10 @@ sub-actions (`create_draft`, `revise`, `read_ref`, ...) are in the topic.
   approved unless `get` shows it.
 - A draft refused with 409 `spec_duplicate` names the spec it duplicates:
   revise that one, or create again with `supersedes` or `distinctBecause`.
+- A mission may select an outcome spec (`manage_missions update outcomeSpec`).
+  It then completes only when every in-scope criterion passes on the
+  integrated result, recorded by its `[final verification]` task or a person,
+  never by builder, fix or review work, and never from PR reviews alone.
 - Call `help {topic:"living-specs"}` before any spec work.
 
 Not the same as a repo-docs skill such as `spec-sync` (buildd's own repo has

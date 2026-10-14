@@ -136,6 +136,30 @@ allowed, and buildd keeps it honest:
   An agent run gets a 403: ask the person to do it, and name the revision
   the work was built against.
 
+## A mission's outcome spec
+
+A mission can answer to a spec as a whole, not just task by task. Only when a
+person or the mission's filer chooses it:
+
+- Select it: `manage_missions` update `outcomeSpec: { specId, revision?, criteria?, narrowedReason? }`.
+  That adds one required goal criterion pinned to the revision (the approved
+  one, else the head, provisional). Running it again with the same input
+  changes nothing. The pin moves only when you name a revision. A spec that is
+  only mentioned, cited or pinned by tasks is not selected.
+- The mission then completes only when every in-scope criterion passes on its
+  integrated result: the integration branch head on a mission-branch mission,
+  or a trunk commit that holds every merged mission PR on a direct one. Every
+  PR review passing does not count for this.
+- When the build is done, buildd files one `[final verification]` task. Its
+  token records verdicts with `manage_specs verdict { missionId, criterionId, verdict, headSha }`
+  at the current target. A builder, fix or review token is refused. Read where
+  it stands with `manage_specs outcome { missionId }`.
+- A fail gets an explicit `[spec repair]` task; once it lands the target
+  moves and the verification runs again. A criterion the new commits did not
+  touch is re-affirmed with a new verdict that names the old one (`reaffirms`).
+- Waiving a criterion, narrowing without a reason and removing the selection
+  are refused for agents: a person decides those.
+
 ## Version conflicts
 
 A stale `expectedVersion` writes nothing and the error names
@@ -295,7 +319,9 @@ approval and moves neither the version nor the approved hash.
 - Never call `confirm_import` from an agent run; confirming an import approves specs.
 - Never click, open or forward a confirm link as if you were the person.
 - Never record a verdict on your own task, or a pass you did not observe on
-  that exact head.
+  that exact head. Never record a mission-level verdict from a builder, fix
+  or review task, or report a mission's outcome spec as verified from PR
+  reviews.
 - Never write a spec body through `update_artifact`; it is refused. Use
   `revise`.
 - Never build against the head revision when the task is pinned to another.
