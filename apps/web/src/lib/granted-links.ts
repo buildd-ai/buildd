@@ -19,6 +19,7 @@
 import { sql, type SQL } from 'drizzle-orm/sql/sql';
 import { and, eq, isNotNull } from 'drizzle-orm/sql/expressions/conditions';
 import { db } from '@buildd/core/db';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 // A namespace import: route tests that mock the schema with only the tables
 // they use would fail to load this file on a named import of the others.
 import * as schema from '@buildd/core/db/schema';
@@ -56,4 +57,38 @@ export function liveGrantedLinksQuery(accountId: string) {
 export async function liveGrantedWorkspaceIds(accountId: string): Promise<Set<string>> {
   const rows = await liveGrantedLinksQuery(accountId);
   return new Set(rows.map((r) => r.workspaceId));
+}
+
+/** True while the granted row (account, workspace) still holds. One indexed lookup. */
+export async function grantedLinkHolds(accountId: string, workspaceId: string): Promise<boolean> {
+  const aw = schema.accountWorkspaces;
+  const rows = await db
+    .select({ workspaceId: aw.workspaceId })
+    .from(aw)
+    .where(and(eq(aw.accountId, accountId), eq(aw.workspaceId, workspaceId), grantedLinkStillValid()))
+    .limit(1);
+  return rows.length > 0;
+}
+
+/**
+ * The link the shared reach rule (workspace-reach.ts) decides with, for one
+ * account and workspace: null when there is none, the row as it is when it is
+ * an ordinary link, and for a person-granted row whose grant no longer holds,
+ * `revoked: true` with no permission. A revoked pick is a deny before any
+ * open-mode rule, so a key whose picker left the team cannot fall back to
+ * "open within the home team" (spec "One runner for every team you run", R-3).
+ */
+export async function readReachLink(
+  accountId: string,
+  workspaceId: string,
+): Promise<{ canClaim: boolean; canCreate: boolean; revoked?: boolean } | null> {
+  const aw = schema.accountWorkspaces;
+  const row = await db.query.accountWorkspaces.findFirst({
+    where: sqlWhere(and(eq(aw.accountId, accountId), eq(aw.workspaceId, workspaceId))),
+    columns: { canClaim: true, canCreate: true, grantedByUserId: true },
+  });
+  if (!row) return null;
+  if (!row.grantedByUserId) return { canClaim: row.canClaim, canCreate: row.canCreate };
+  if (await grantedLinkHolds(accountId, workspaceId)) return { canClaim: row.canClaim, canCreate: row.canCreate };
+  return { canClaim: false, canCreate: false, revoked: true };
 }

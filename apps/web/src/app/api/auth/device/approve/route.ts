@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/auth';
 import { approveDeviceCode } from '@/lib/device-approve';
+import { isSameOriginPost } from '@/lib/runner-consent';
 
 function requestIp(req: NextRequest): string | null {
   const fwd = req.headers.get('x-forwarded-for');
@@ -13,11 +14,17 @@ function requestIp(req: NextRequest): string | null {
 // explicit confirm. The body must carry `confirm: true` and the workspaces
 // the person picked (`workspaceIds`); the device page sends both from the
 // runner consent page (/api/auth/device/consent). There is no GET handler.
+// Nothing in the app posts here any more (the device page approves through
+// /api/auth/device/consent); it stays for scripted use and so is held to the
+// same same-origin rule as that page's form.
 export async function POST(req: NextRequest) {
   const session = await auth();
 
   if (!session?.user?.id) {
     return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+  }
+  if (!isSameOriginPost(req)) {
+    return NextResponse.json({ error: 'Approve the device from the buildd device page.' }, { status: 403 });
   }
 
   try {

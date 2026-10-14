@@ -12,7 +12,7 @@ const { POST } = route;
 function req(body: unknown, headers: Record<string, string> = {}) {
   return new NextRequest('http://localhost:3000/api/auth/device/approve', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', ...headers },
+    headers: { 'content-type': 'application/json', origin: 'http://localhost:3000', ...headers },
     body: JSON.stringify(body),
   });
 }
@@ -31,6 +31,21 @@ describe('POST /api/auth/device/approve', () => {
   it('needs a signed-in person', async () => {
     mockAuth.mockResolvedValue(null as any);
     expect((await POST(req({ code: 'ABCD-1234', confirm: true, workspaceIds: ['ws-1'] }))).status).toBe(401);
+  });
+
+  it('refuses a post from another site, and changes nothing', async () => {
+    const res = await POST(req({ code: 'ABCD-1234', confirm: true, workspaceIds: ['ws-1'] }, { origin: 'https://evil.example' }));
+    expect(res.status).toBe(403);
+    expect(mockApprove).not.toHaveBeenCalled();
+  });
+
+  it('refuses a post with no Origin header', async () => {
+    const r = new NextRequest('http://localhost:3000/api/auth/device/approve', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code: 'ABCD-1234', confirm: true, workspaceIds: ['ws-1'] }),
+    });
+    expect((await POST(r)).status).toBe(403);
+    expect(mockApprove).not.toHaveBeenCalled();
   });
 
   it('refuses a code submitted without confirm: true and changes nothing', async () => {

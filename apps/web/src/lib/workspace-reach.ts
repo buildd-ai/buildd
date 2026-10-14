@@ -16,6 +16,15 @@
  * link, including for the owning team's own accounts (docs/SPEC.md: restricted
  * = linked accounts only).
  *
+ * Two refusals come before both arms:
+ *   - a `revoked` link: a workspace a person picked for this key on the runner
+ *     consent page, whose grant no longer holds (they left its team, lost the
+ *     role a restricted workspace needs, or it turned restricted under them;
+ *     granted-links.ts readReachLink). It is a deny even where arm 2 would
+ *     reach it, so a picked key never falls back to its home team's open mode.
+ *   - a key confined to a list (`workspaceIds`, which a picked key always is)
+ *     reaches nothing outside it.
+ *
  * The one exception is an account-level MCP grant session (lib/grant-scope.ts):
  * it reaches exactly its granted workspaces (grant ∩ current membership) and
  * nothing else, independent of links and of `access_mode`. A grant session
@@ -38,6 +47,8 @@ export interface ReachWorkspace {
 export interface ReachLink {
   canClaim: boolean;
   canCreate: boolean;
+  /** A person's pick whose grant no longer holds: reaches nothing. */
+  revoked?: boolean;
 }
 
 export function accountReachesWorkspace(
@@ -47,6 +58,8 @@ export function accountReachesWorkspace(
   permission?: WorkspacePermission,
 ): boolean {
   if (isGrantSession(account)) return assertGrantedWorkspace(account, workspace.id, permission ? 'write' : 'read');
+  if (link?.revoked) return false;
+  if (account.workspaceIds != null && workspace.id && !account.workspaceIds.includes(workspace.id)) return false;
   if (link && (!permission || link[permission])) return true;
   return workspace.accessMode === 'open' && workspace.teamId === account.teamId;
 }

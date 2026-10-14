@@ -3,12 +3,12 @@
 // resolved only within the authenticated account's reach before any tool runs.
 
 import { db } from '@buildd/core/db';
-import { accountWorkspaces, workerHeartbeats, workspaces, workers } from '@buildd/core/db/schema';
+import { workerHeartbeats, workspaces, workers } from '@buildd/core/db/schema';
 import { CAPABILITY_MCP_GROUP_TOOLS } from '@buildd/shared';
 import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { getLinkedWorkspaceIds } from '@/lib/workspace-resolver';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
-import { liveLinkCondition } from '@/lib/granted-links';
+import { readReachLink } from '@/lib/granted-links';
 
 type McpAccount = { id: string; teamId: string; workspaceIds?: string[] | null; taskScope?: { taskId: string; workspaceId: string } };
 
@@ -31,15 +31,11 @@ export async function isWorkspaceInCallerScope(workspaceId: string, account: Mcp
     columns: { teamId: true },
   });
   if (!ws) return false;
+  // A person's pick whose grant no longer holds is a deny before the own-team
+  // rule (granted-links.ts readReachLink, workspace-reach.ts).
+  const link = await readReachLink(account.id, workspaceId);
+  if (link?.revoked) return false;
   if (ws.teamId === account.teamId) return true;
-  const link = await db.query.accountWorkspaces.findFirst({
-    where: sqlWhere(and(
-      eq(accountWorkspaces.accountId, account.id),
-      eq(accountWorkspaces.workspaceId, workspaceId),
-      liveLinkCondition(),
-    )),
-    columns: { workspaceId: true },
-  });
   return !!link;
 }
 
