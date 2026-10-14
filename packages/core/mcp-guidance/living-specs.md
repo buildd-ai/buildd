@@ -76,6 +76,43 @@ Asked to "spec this"? Look for an existing spec first: `list` (below), and
    `buildd action=manage_specs params={ action: "conflict", specId, revision, criterionIds, note }`.
    It records an advisory discrepancy and blocks nothing.
 
+## Tables and diagrams
+
+The spec page renders GitHub Markdown tables, and fenced code blocks tagged
+`mermaid` as diagrams. Pick the shape by what the text does:
+
+- **Table:** comparing options, states, roles or permissions. Criteria may
+  live in one: a row whose first cell is an `R-n`/`AC-n` id defines that
+  criterion, its text the row's other cells.
+- **Diagram:** a flow, a state machine or a sequence (`flowchart`,
+  `stateDiagram-v2`, `sequenceDiagram`).
+- **Prose:** everything else.
+
+A criteria table:
+
+```markdown
+| Id   | Role   | Can approve | Can revise |
+| ---- | ------ | ----------- | ---------- |
+| R-1  | Owner  | yes         | yes        |
+| AC-1 | Member | no          | yes        |
+```
+
+A state machine:
+
+```mermaid
+stateDiagram-v2
+  [*] --> Draft
+  Draft --> Submitted: submit
+  Submitted --> Approved: a person approves
+  Submitted --> Draft: revise
+  Approved --> [*]
+```
+
+A draft with three or more numbered steps and no diagram, or three or more
+parallel list lines (`- X: a / b / c`, `- **X**: ...`) and no table, gets a
+`Tip:` line in the `create_draft` or `revise` reply. It is a suggestion: the
+draft is written as sent either way.
+
 ## Building ahead of approval
 
 A person may ask for work to be built before the spec is approved. That is
@@ -162,6 +199,33 @@ say so and stop.
   `figma`; `url` and `figma` need `version`. Figma is one kind among several,
   not the default.
 
+## Importing repo spec files
+
+A workspace's `docs/specs/*.md` can become native specs, filed under the area
+each file's `domain:` names, with the path, the commit and the PR that last
+changed it recorded.
+
+- Look first: `buildd action=manage_specs params={ action: "import" }` is a
+  dry run. It writes nothing and lists, per file, the spec it would create,
+  its area, its provenance, any duplicate of an approved spec, and the files
+  it skips with a reason (`SPEC-FORMAT.md`, `INDEX.md`, superseded, already
+  imported). `ref` reads another branch or commit; `paths` limits it.
+- Write:
+  `buildd action=manage_specs params={ action: "import", dryRun: false }`.
+  Revision 1 is imported, not approved; the mechanical frontmatter goes to
+  the metadata block. Running it again with no repo change imports nothing;
+  a changed file becomes a new imported revision. A duplicate is skipped
+  unless you name it in `allowDuplicates` after reading the spec it
+  duplicates.
+- Until a person confirms, the repo file is the source: `revise` and
+  `approve` are refused with a 409 (code spec_imported) and no repo copy is
+  written. Change the file and import again instead.
+- Confirming is a person's act:
+  `buildd action=manage_specs params={ action: "confirm_import", specIds }`
+  approves each spec whose file is unchanged since its imported commit and
+  reports the rest stale. From an agent run or API key it is a 403; from an
+  OAuth session it returns the specs page link. Hand that link to the person.
+
 ## Reading changes
 
 `buildd action=manage_specs params={ action: "diff", specId, from, to }`
@@ -196,6 +260,7 @@ approval and moves neither the version nor the approved hash.
   approved. Drafted, submitted and in review are not approved. Building
   ahead of approval does not approve anything either.
 - Never call `attach_provisional` from an agent run; it is a person's act.
+- Never call `confirm_import` from an agent run; confirming an import approves specs.
 - Never click, open or forward a confirm link as if you were the person.
 - Never record a verdict on your own task, or a pass you did not observe on
   that exact head.

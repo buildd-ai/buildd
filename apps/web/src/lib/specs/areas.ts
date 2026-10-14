@@ -32,6 +32,8 @@ export interface AreaInfo {
   memberCount: number;
   /** Up to 5 member titles, newest first. */
   memberTitles: string[];
+  /** The `domain:` values the area declares it covers (metadata block); empty when it declares none. */
+  domains?: string[];
 }
 
 export interface AreaClassifyInput {
@@ -94,6 +96,7 @@ export async function listAreas(workspaceId: string): Promise<AreaInfo[]> {
       id: r.id, workspaceId: r.workspaceId, title: r.title, scope: r.scope as 'product' | 'domain',
       charter: specCard(r.title, bodies.get(r.id) ?? '').summary,
       memberCount: mine.length, memberTitles: mine.slice(0, 5).map((m) => m.title),
+      domains: r.metadata?.domains ?? [],
     };
   });
 }

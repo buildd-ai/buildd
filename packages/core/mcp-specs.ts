@@ -25,6 +25,12 @@
  * against (POST /api/specs/[id]/provisional), so a later approval grades them:
  * a person's or an admin token's act, never an agent run's.
  *
+ * import reads the linked repo's docs/specs/*.md at one commit and, as a dry
+ * run by default, says what each file would become (POST /api/specs/import):
+ * the spec, its area, its provenance, duplicates and skipped files.
+ * confirm_import approves a batch of imported specs in one act
+ * (POST /api/specs/import/confirm): a person's act, an agent run gets a 403.
+ *
  * diff (read-only) says what changed between two revisions, over
  * GET /api/specs/[id]/diff: sections added, removed and changed, then a capped
  * unified line diff of them.
@@ -64,6 +70,12 @@ const duplicateText = (d: DuplicateCheckView | null): string => {
   if (!d.ran) return `\nDuplicate check did not run: ${d.reason}.`;
   if (!d.warnings.length) return '';
   return `\nOverlaps with approved specs (check the shared criteria; consider a common parent):\n${d.warnings.map((w) => `  ${w.title} (${w.specId}): ${w.relation}, p ${w.p.toFixed(2)}`).join('\n')}`;
+};
+
+/** The server's formatHints (R-48) as one gentle line; advisory, the write already happened. */
+const tipText = (hints: unknown): string => {
+  const msgs = Array.isArray(hints) ? hints.map((h) => (h as { message?: unknown })?.message).filter((m): m is string => typeof m === 'string' && !!m) : [];
+  return msgs.length ? `\nTip: ${msgs.join(' ')} See help topic living-specs, "Tables and diagrams".` : '';
 };
 
 const need = (v: unknown, name: string): string => {
@@ -115,7 +127,57 @@ export function organizeText(r: OrganizeReply): string {
 }
 
 /** Sub-actions scoped to a workspace rather than to a spec or task: the caller resolves the session workspace for these. */
-export const WORKSPACE_SPEC_OPS = ['create_draft', 'list', 'organize'] as const;
+export const WORKSPACE_SPEC_OPS = ['create_draft', 'list', 'organize', 'import'] as const;
+
+type ImportRow = { path: string; action: 'create' | 'reimport' | 'exists' | 'skip'; reason?: string; message?: string; specId?: string; revision?: number; spec?: { title: string }; area: { specId: string | null; title: string; proposed: boolean } | null; provenance?: { commitSha: string; prNumber: number | null }; duplicates?: Array<{ specId: string; title: string; relation: string; p: number }>; existing?: { specId: string; title: string; url: string; matchedBy: string }; provenanceAttached?: boolean };
+type ImportReply = { dryRun?: boolean; repo?: string; commitSha?: string; files?: ImportRow[]; counts?: { create: number; reimport: number; exists?: number; skip: number }; byArea?: Array<{ area: string; areaSpecId: string | null; proposed: boolean; count: number }>; limit?: number; remaining?: number; nextCursor?: string | null };
+
+/** The import params a continuation call repeats, as the caller passed them (cursor is added last). */
+const IMPORT_PARAMS = ['dryRun', 'ref', 'paths', 'allowDuplicates', 'limit', 'attach_provenance'] as const;
+const MATCHED_BY: Record<string, string> = { repo_ref: 'a cited repo path', provenance: 'its recorded provenance', title: 'title' };
+
+/** An import run in words: counts, then the files grouped by area, then what was skipped and why. */
+export function importText(r: ImportReply, call: Record<string, unknown> = {}): string {
+  const files = r.files ?? [];
+  const c = r.counts ?? { create: 0, reimport: 0, skip: 0 };
+  const at = r.commitSha ? `${r.repo ?? 'the repo'}@${r.commitSha.slice(0, 7)}` : (r.repo ?? 'the repo');
+  const head = `${r.dryRun === false ? 'Imported' : 'Dry run (nothing written)'} from ${at}: ${c.create} to create, ${c.reimport} to re-import as a new revision, ${c.exists ? `${c.exists} already in buildd, ` : ''}${c.skip} skipped.`;
+  const groups = (r.byArea ?? []).map((a) => {
+    const rows = files.filter((f) => f.action !== 'skip' && (f.area?.title ?? 'Unfiled') === a.area && (f.area?.specId ?? null) === a.areaSpecId);
+    return [`${a.area}${a.proposed ? ' (no such area yet; organize will suggest one)' : a.areaSpecId ? ` (${a.areaSpecId})` : ''}: ${a.count}`,
+      ...rows.map((f) => `  ${f.action === 'reimport' ? 're-import' : 'create'}: ${f.spec?.title ?? f.path} from ${f.path}${f.provenance?.prNumber ? `, last changed in #${f.provenance.prNumber}` : ''}${f.specId ? ` → ${f.specId}${f.revision ? ` r${f.revision}` : ''}` : ''}${f.duplicates?.length ? `\n    possible duplicate of ${f.duplicates.map((d) => `"${d.title}" (${d.specId}, ${d.relation} p ${d.p.toFixed(2)})`).join(', ')}` : ''}`)].join('\n');
+  });
+  const exists = files.filter((f) => f.action === 'exists' && f.existing);
+  const existsLines = exists.length ? [
+    'Already in buildd (not created again):',
+    ...exists.map((f) => `  exists: ${f.path} is "${f.existing!.title}" (${f.existing!.url}, matched by ${MATCHED_BY[f.existing!.matchedBy] ?? f.existing!.matchedBy})${f.provenanceAttached ? ', provenance recorded' : ''}`),
+    ...(exists.some((f) => !f.provenanceAttached) ? ['  To record the repo path and commit on those specs instead: pass attach_provenance: true on a real run (dryRun: false).'] : []),
+  ] : [];
+  const skipped = files.filter((f) => f.action === 'skip');
+  const skipLines = skipped.length ? [`Skipped:`, ...skipped.map((f) => `  ${f.path}: ${f.reason}${f.message ? `, ${f.message}` : ''}`)] : [];
+  const next = r.dryRun === false
+    ? 'Imported specs are not approved, and the repo file stays their source until a person confirms them: confirm_import { specIds } from the specs page, by area.'
+    : 'Show it to a person. To write it: import { dryRun: false }.';
+  const more: string[] = [];
+  if (r.remaining && r.nextCursor) {
+    const args = [`action: "import"`, `dryRun: ${r.dryRun === false ? 'false' : 'true'}`];
+    for (const k of IMPORT_PARAMS) if (k !== 'dryRun' && call[k] !== undefined) args.push(`${k}: ${JSON.stringify(call[k])}`);
+    args.push(`cursor: ${JSON.stringify(r.nextCursor)}`);
+    more.push(`This page covered ${files.length} file(s); ${r.remaining} file(s) remain at the same commit. Continue with: manage_specs { ${args.join(', ')} }`);
+  }
+  return [head, ...groups, ...existsLines, ...skipLines, ...more, next].join('\n');
+}
+
+type ConfirmReply = { confirmed?: Array<{ specId: string; title: string; path: string; commitSha: string }>; skipped?: Array<{ specId: string; path?: string; reason: string; message: string }>; pending?: { confirmUrl: string; specIds: string[] } };
+
+export function confirmImportText(r: ConfirmReply): string {
+  if (r.pending) return `Nothing was confirmed: confirming an import is a person's act on buildd.dev. Open ${r.pending.confirmUrl} to confirm ${r.pending.specIds.length} spec(s).`;
+  const ok = r.confirmed ?? [];
+  const no = r.skipped ?? [];
+  return [`Confirmed ${ok.length} import(s)${no.length ? `, ${no.length} not confirmed` : ''}.`,
+    ...ok.map((x) => `  confirmed: ${x.title} (${x.specId}) from ${x.path}@${x.commitSha.slice(0, 7)}`),
+    ...no.map((x) => `  not confirmed: ${x.path ?? x.specId}: ${x.reason}, ${x.message}`)].join('\n');
+}
 
 export async function handleSpecsAction(api: ApiFn, params: Record<string, any>, workspaceId: string | null, appBase = 'https://buildd.dev'): Promise<ToolResult> {
   const specUrl = (id: string) => `${appBase.replace(/\/+$/, '')}/app/specs/${encodeURIComponent(id)}`;
@@ -137,14 +199,15 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       let spec;
       let duplicateCheck: DuplicateCheckView | null = null;
       let suggestedParent: { specId: string; title: string; reason: string } | null = null;
+      let formatHints: unknown = null;
       try {
-        ({ spec, duplicateCheck, suggestedParent } = await api('/api/specs', { method: 'POST', body: JSON.stringify(payload) }));
+        ({ spec, duplicateCheck, suggestedParent, formatHints } = await api('/api/specs', { method: 'POST', body: JSON.stringify(payload) }));
       } catch (err) {
         const e = apiError(err);
         if (e?.status === 400 || e?.status === 502 || (e?.status === 409 && e.body?.code === 'spec_duplicate')) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
         throw err;
       }
-      return text(`Spec draft created: "${spec.title}"\nID: ${spec.id}\nVersion: ${spec.version} (pass it as expectedVersion to revise)\nStatus: ${spec.status}\nSpec URL: ${specUrl(spec.id)}\nA person approves it (submit / approve from their own session).${duplicateText(duplicateCheck)}${suggestedParent ? `\nSuggested parent: "${suggestedParent.title}" (${suggestedParent.specId}), ${suggestedParent.reason.charAt(0).toLowerCase()}${suggestedParent.reason.slice(1)}. Set it with manage_specs action=relate { specId, parentSpecId }.` : ''}`);
+      return text(`Spec draft created: "${spec.title}"\nID: ${spec.id}\nVersion: ${spec.version} (pass it as expectedVersion to revise)\nStatus: ${spec.status}\nSpec URL: ${specUrl(spec.id)}\nA person approves it (submit / approve from their own session).${duplicateText(duplicateCheck)}${suggestedParent ? `\nSuggested parent: "${suggestedParent.title}" (${suggestedParent.specId}), ${suggestedParent.reason.charAt(0).toLowerCase()}${suggestedParent.reason.slice(1)}. Set it with manage_specs action=relate { specId, parentSpecId }.` : ''}${tipText(formatHints)}`);
     }
 
     case 'get': {
@@ -190,7 +253,7 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
         const r = await api(`/api/specs/${encodeURIComponent(specId)}`, { method: 'PATCH', body: JSON.stringify(payload) });
         if (r.unchanged) return text(`Unchanged: the body and repo references match revision ${r.revision.revision}, so no new revision was written. Version is still ${r.spec.version}.\nSpec URL: ${specUrl(specId)}`);
         const what = target ? ` (${'section' in target ? `section ${String(target.section)}` : `section "${String(target.heading)}"`} replaced, the rest kept)` : '';
-        return text(`Revised${what}: revision ${r.revision.revision}, version ${r.spec.version} (pass it as expectedVersion next time).\nSpec URL: ${specUrl(specId)}`);
+        return text(`Revised${what}: revision ${r.revision.revision}, version ${r.spec.version} (pass it as expectedVersion next time).\nSpec URL: ${specUrl(specId)}${tipText(r.formatHints)}`);
       } catch (err) {
         const e = apiError(err);
         if (e?.status === 400 || e?.status === 502) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
@@ -388,6 +451,36 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       } catch (err) {
         const e = apiError(err);
         if (e?.status === 400 || e?.status === 409) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
+        throw err;
+      }
+    }
+
+    case 'import': {
+      if (!workspaceId) throw new Error('workspaceId is required (no workspace in this session)');
+      const payload: Record<string, unknown> = { workspaceId };
+      for (const k of ['dryRun', 'ref', 'paths', 'allowDuplicates', 'limit', 'cursor'] as const) if (params[k] !== undefined) payload[k] = params[k];
+      const attach = params.attach_provenance ?? params.attachProvenance;
+      if (attach !== undefined) payload.attachProvenance = attach;
+      try {
+        return text(importText(await api('/api/specs/import', { method: 'POST', body: JSON.stringify(payload) }), { ...params, ...(attach !== undefined ? { attach_provenance: attach } : {}) }));
+      } catch (err) {
+        const e = apiError(err);
+        if (e && [400, 404, 502].includes(e.status)) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
+        throw err;
+      }
+    }
+
+    case 'confirm_import': {
+      // A person's act (R-19): an agent run or API key gets the route's 403, passed through.
+      if (!Array.isArray(params.specIds) || !params.specIds.length) throw new Error('specIds (the imported specs to confirm) is required');
+      const payload: Record<string, unknown> = { specIds: params.specIds };
+      // The batch names its workspace; an explicit one must be a UUID (a repo name is not resolved here).
+      if (typeof params.workspaceId === 'string' && /^[0-9a-f-]{36}$/i.test(params.workspaceId)) payload.workspaceId = params.workspaceId;
+      try {
+        return text(confirmImportText(await api('/api/specs/import/confirm', { method: 'POST', body: JSON.stringify(payload) })));
+      } catch (err) {
+        const e = apiError(err);
+        if (e && [400, 403, 404].includes(e.status)) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
         throw err;
       }
     }

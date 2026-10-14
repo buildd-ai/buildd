@@ -12,6 +12,7 @@ import {
   type MissionBoardInput,
 } from './mission-board';
 import { boardTaskLabel } from './mission-board-label';
+import { pickTaskView } from './task-view-pick';
 import { taskDisplayLabel } from '@buildd/core/task-label';
 import { WORK_KIND_GLYPHS } from './task-presentation';
 import { buildVisualReviewFixtureModel } from './visual-review-model.fixtures';
@@ -369,6 +370,27 @@ describe('helpers', () => {
     expect(t.workers[0].startedAt).toBe(min(1));
     expect(t.workers[0].waitingFor).toEqual({ prompt: 'q?', options: ['A', 'B'] });
     expect(t.worker?.status).toBe('waiting_input');
+  });
+
+  // The board, the mission sheet and the task page show one worker per task:
+  // pickTaskView's (lib/task-view.ts), never whichever the query returned first.
+  it('picks the worker the task page shows, whatever order the query returned', () => {
+    const live = { id: 'w-old', status: 'running', createdAt: new Date(T0 + min(1)), startedAt: new Date(T0 + min(9)) };
+    const done = { id: 'w-new', status: 'completed', createdAt: new Date(T0 + min(5)), startedAt: new Date(T0 + min(6)) };
+    const row = (workers: unknown[]) => ({ id: 'x', title: 'feat(x): y', status: 'in_progress', createdAt: new Date(T0).toISOString(), workers });
+    for (const order of [[done, live], [live, done]]) {
+      const t = toBoardTaskInput(row(order));
+      expect(t.worker?.status).toBe('running');
+      expect(t.workers[0].id).toBe(pickTaskView({ task: { status: 'in_progress' }, workers: order as never, openQuestions: [] }).shownWorker?.id);
+    }
+  });
+
+  it('drops a question a terminal task still carries, as the page does', () => {
+    const t = toBoardTaskInput({
+      id: 'x', title: 'feat(x): y', status: 'completed', createdAt: new Date(T0).toISOString(),
+      workers: [{ id: 'w', status: 'waiting_input', createdAt: new Date(T0 + min(1)), waitingFor: { prompt: 'q?' } }],
+    });
+    expect(t.workers[0].waitingFor).toBeNull();
   });
 
   it('formats clocks and ages', () => {

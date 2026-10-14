@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { specRevisions, specs, workspaces, type SpecMetadataBlock, type SpecRepoCopyState } from '@buildd/core/db/schema';
+import { specRevisions, specs, workspaces, type SpecMetadataBlock, type SpecRepoCopyState, type SpecRepoSource } from '@buildd/core/db/schema';
 import { and, eq, sql } from 'drizzle-orm';
 import { getArtifactRevision } from '@/lib/artifact-revisions';
 import { githubApi, checkSuitesAllPassed, type CheckSuiteSummary } from '@/lib/github';
@@ -27,8 +27,11 @@ import type { SpecRow } from './store';
  *
  * The copy also brings `docs/specs/INDEX.md` up to date, and adds the spec's
  * domain to `DOMAINS` in `scripts/check-specs.ts` when it is new (R-32), so
- * `specs:lint` passes on the generated PR. Nothing here imports repo specs
- * (R-18, R-19); a later change does.
+ * `specs:lint` passes on the generated PR.
+ *
+ * An imported spec (R-18, ./import.ts) gets nothing here until a person
+ * confirms it: its repo file is still the source. Once confirmed, its copy is
+ * written over the file it was imported from.
  */
 
 /** The merge-policy exception the generated PR lands under (R-35). */
@@ -56,19 +59,34 @@ export function areaDomain(title: string): string {
 /** A file slug from a spec title. */
 export const specSlug = (title: string): string => areaDomain(title).slice(0, 60) || 'spec';
 
+/** The file a confirmed import came from: its copy is written there (R-18). Null before confirmation or for a spec never imported. */
+export const confirmedImportPath = (spec: Pick<SpecRow, 'repoSource'>): string | undefined =>
+  (spec.repoSource?.state === 'confirmed' ? spec.repoSource.path : undefined);
+
+/**
+ * An area's `domain:` value: the first one it declares (its metadata block's
+ * `domains`), else its title's slug. A declared value is one the repo's
+ * DOMAINS list already uses, where a slug like `tasks-and-missions` is not.
+ */
+export function domainOfArea(area: { title: string; metadata?: SpecMetadataBlock | null }): string {
+  return area.metadata?.domains?.[0] ?? areaDomain(area.title);
+}
+
 /** The spec's filed area (R-32): itself if it is one, else its nearest ancestor with scope `domain`. */
 export async function specArea(specId: string): Promise<{ id: string; title: string; domain: string } | null> {
   const rows = (await db.execute(sql`
-    WITH RECURSIVE up(id, parent_spec_id, scope, title, depth) AS (
-      SELECT s.id, s.parent_spec_id, s.scope, s.title, 0 FROM specs s WHERE s.id = ${specId}::uuid
+    WITH RECURSIVE up(id, parent_spec_id, scope, title, metadata, depth) AS (
+      SELECT s.id, s.parent_spec_id, s.scope, s.title, s.metadata, 0 FROM specs s WHERE s.id = ${specId}::uuid
       UNION ALL
-      SELECT p.id, p.parent_spec_id, p.scope, p.title, up.depth + 1
+      SELECT p.id, p.parent_spec_id, p.scope, p.title, p.metadata, up.depth + 1
       FROM specs p JOIN up ON p.id = up.parent_spec_id
       WHERE up.depth < 50 AND up.scope <> 'domain'
     )
-    SELECT id, title FROM up WHERE scope = 'domain' ORDER BY depth LIMIT 1`)) as unknown as { rows: Array<{ id: string; title: string }> };
+    SELECT id, title, metadata FROM up WHERE scope = 'domain' ORDER BY depth LIMIT 1`)) as unknown as { rows: Array<{ id: string; title: string; metadata: SpecMetadataBlock | string | null }> };
   const a = rows.rows[0];
-  return a ? { id: a.id, title: a.title, domain: areaDomain(a.title) } : null;
+  if (!a) return null;
+  const metadata = typeof a.metadata === 'string' ? (JSON.parse(a.metadata) as SpecMetadataBlock) : a.metadata;
+  return { id: a.id, title: a.title, domain: domainOfArea({ title: a.title, metadata }) };
 }
 
 export type BuiltCopy =
@@ -93,7 +111,7 @@ export async function buildSpecRepoCopy(spec: SpecRow, opts: { revision?: number
     defaultOwner: 'buildd', defaultLastVerified: approvedOn,
   });
   if (!copy.ok) return { ok: false, reason: 'unrenderable', message: copy.message };
-  const path = spec.repoCopy?.path ?? `docs/specs/${specSlug(spec.title)}.md`;
+  const path = spec.repoCopy?.path ?? confirmedImportPath(spec) ?? `docs/specs/${specSlug(spec.title)}.md`;
   return { ok: true, copy, path, domain: area.domain, revision: n, shortId, title: spec.title };
 }
 
@@ -194,6 +212,8 @@ const errMsg = (err: unknown) => (err instanceof Error ? err.message : String(er
 export async function fileSpecRepoCopy(specId: string, deps: RepoCopyDeps = defaultRepoCopyDeps): Promise<SpecRepoCopyState | null> {
   const [spec] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
   if (!spec || spec.approvedRevision == null) return null;
+  // AC-76: an unconfirmed import's repo file is its source; nothing is generated over it.
+  if (spec.repoSource?.state === 'imported') return null;
   const [ws] = await db.select({ gitConfig: workspaces.gitConfig }).from(workspaces).where(eq(workspaces.id, spec.workspaceId)).limit(1);
   if (!nativeSourceOn(ws?.gitConfig)) return null;
   const at = () => deps.now().toISOString();
@@ -204,7 +224,7 @@ export async function fileSpecRepoCopy(specId: string, deps: RepoCopyDeps = defa
   try {
     const repo = await readRepoState(spec.workspaceId, deps, false);
     if ('error' in repo) return saveState(specId, { ...(spec.repoCopy ?? {}), state: 'failed', error: repo.error, updatedAt: at() });
-    const path = await choosePath(built, spec.repoCopy?.path, repo.specFiles);
+    const path = await choosePath(built, spec.repoCopy?.path ?? confirmedImportPath(spec), repo.specFiles);
     const { files } = generatedFiles(built, path, repo);
     const branch = spec.repoCopy?.branch ?? `buildd/spec-copy-${built.shortId}`;
     const { api } = deps;
@@ -342,7 +362,7 @@ export async function repoCopyPreflight(spec: SpecRow, revision: number, deps: R
   }
   const offline = 'error' in repo;
   const state: Pick<RepoState, 'specFiles' | 'checkSpecsSource' | 'paths'> = 'error' in repo ? { specFiles: new Map<string, string>(), checkSpecsSource: null, paths: null } : repo;
-  const path = offline ? built.path : await choosePath(built, spec.repoCopy?.path, state.specFiles);
+  const path = offline ? built.path : await choosePath(built, spec.repoCopy?.path ?? confirmedImportPath(spec), state.specFiles);
   const { domains, indexed } = generatedFiles(built, path, state);
   const slug = path.slice('docs/specs/'.length).replace(/\.md$/, '');
   const { fm, body } = parseSpecFrontmatter(built.copy.text);
@@ -366,7 +386,11 @@ export async function repoCopyPreflight(spec: SpecRow, revision: number, deps: R
 }
 
 /** The spec page's source line (R-13) and how the repo copy stands (AC-79). */
-export function repoCopyLine(on: boolean, rc: SpecRepoCopyState | null | undefined, approved: boolean): { source: string; copy: string | null; behind: boolean } | null {
+export function repoCopyLine(on: boolean, rc: SpecRepoCopyState | null | undefined, approved: boolean, imported?: SpecRepoSource | null): { source: string; copy: string | null; behind: boolean } | null {
+  // R-13: an unconfirmed import names its repo file as the source, opted in or not.
+  if (imported?.state === 'imported') {
+    return { source: `Imported from ${imported.path}@${imported.commitSha.slice(0, 7)}, waiting for confirmation`, copy: on ? 'No repo copy is written until a person confirms the import; the repo file stays the source.' : null, behind: false };
+  }
   if (!on) return null;
   if (!rc) return { source: 'Source: buildd', copy: approved ? 'No repo copy written yet.' : 'A repo copy is written when a revision is approved.', behind: false };
   const at = rc.path ? `, repo copy at ${rc.path}` : '';

@@ -3,53 +3,18 @@
  * (/app/tasks/[id]) and the sheet (/api/tasks/[id]/summary), so both show the
  * same worker and the same question for the same task.
  *
- * `pickTaskView` is pure: workers are ordered by `createdAt`, then `id`
- * (lib/attempt-order), never by the order a query returned them. The worker a
- * surface shows is the newest live one, else the newest of all. Its question is
- * dropped once the task has ended or a failure recovery owns the next step.
+ * The pick itself, `pickTaskView`, is pure and lives in lib/task-view-pick.ts
+ * so the mission board uses it too.
  */
 import { db } from '@buildd/core/db';
 import { workers, missionNotes } from '@buildd/core/db/schema';
 import { and, asc, desc, eq } from 'drizzle-orm';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
-import { isLiveWorkerStatus, isTerminalTaskStatus } from '@buildd/shared';
-import { selectTaskWorkers, type Chrono } from '@/lib/attempt-order';
-import { isOpenAsk, isOpenQuestionNote } from '@/lib/open-ask';
+import { pickTaskView } from '@/lib/task-view-pick';
 import { loadTaskRecoveryViewsForViewer } from '@/lib/incident-recovery-load';
 import type { TaskRecoveryView } from '@/lib/incident-recovery-refs';
-import { linkQuestionNote, type QuestionNoteLike } from '@/app/app/(protected)/tasks/[id]/question-hero';
 
-type ViewWorker = Chrono & { status: string; waitingFor?: unknown; prUrl?: string | null; prNumber?: number | null };
-
-export function pickTaskView<W extends ViewWorker, N extends QuestionNoteLike, R extends { supersedesQuestion?: boolean } = { supersedesQuestion?: boolean }>(input: {
-  task: { status: string };
-  workers: readonly W[];
-  openQuestions: readonly N[];
-  recovery?: R | null;
-}) {
-  const { task, recovery } = input;
-  const picks = selectTaskWorkers(input.workers, isLiveWorkerStatus);
-  // Never revive an ended worker merely because it retained a question.
-  const liveRow = !isTerminalTaskStatus(task.status) ? picks.activeWorker : undefined;
-  const mask = <T extends ViewWorker>(row: T | undefined): T | undefined =>
-    row?.waitingFor && (!isOpenAsk(task.status, row.status) || recovery?.supersedesQuestion)
-      ? { ...row, waitingFor: null }
-      : row;
-  const activeWorker = mask(liveRow);
-  const shownWorker = activeWorker ?? mask(picks.latestWorker);
-  const openQuestions = [...input.openQuestions];
-  return {
-    ordered: picks.ordered,
-    latestWorker: picks.latestWorker,
-    prWorker: picks.prWorker,
-    activeWorker,
-    shownWorker,
-    openQuestions,
-    questionNote: activeWorker?.waitingFor ? linkQuestionNote(openQuestions, activeWorker.id) : null,
-    openQuestionCount: openQuestions.filter(n => isOpenQuestionNote(n, task.status, activeWorker)).length,
-    recovery: recovery ?? null,
-  };
-}
+export { pickTaskView } from '@/lib/task-view-pick';
 
 /**
  * The task's workers (with their account), its open question notes and any
