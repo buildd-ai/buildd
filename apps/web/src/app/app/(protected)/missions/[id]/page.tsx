@@ -108,6 +108,7 @@ import { explainMission } from '@/lib/explain';
 import { deriveMissionStateView } from '@/lib/mission-state-view';
 import { missionOpenQuestions } from '@/lib/open-ask';
 import { loadDependencyRows } from '@/lib/dependency-rows';
+import { loadMissionGateFacts } from '@/lib/mission-board-waiting';
 import { resolveEffectiveRoles } from '@/lib/effective-roles';
 import MissionSituationBlock, { affordanceFor, MISSION_CRITERIA_ANCHOR } from '@/components/missions/MissionSituationBlock';
 import { formatEstimatedUsd, ESTIMATED_COST_TITLE } from '@/lib/cost-label';
@@ -357,7 +358,7 @@ export default async function MissionDetailPage({
   // shipped under another task/PR, or that the kernel already replaced, must
   // not drive this fallback reading to FAILING.
   const failedDeliverableRows = (mission.tasks || []).filter((t) => isDeliverableTask(t as never) && t.status === 'failed');
-  const [foreignDeps, supersededMap, deliveryViews] = await Promise.all([
+  const [foreignDeps, supersededMap, deliveryViews, gateFacts] = await Promise.all([
     loadDependencyRows(foreignDependencyIds(mission.tasks || [])),
     computeSupersededFailedTasks(
       mission.id,
@@ -367,6 +368,13 @@ export default async function MissionDetailPage({
     // One DeliveryView load for the page (§17.5): the failure reading, the
     // board/strip, the timeline cards and the structure view all read it.
     getDeliveryViewsForTasks((mission.tasks || []).map((t) => t.id)),
+    // Which claim-gate arm released each dependency, and why each queued task
+    // waits, from the claim's own SQL (spec f7f67f1a P-1). Never throws.
+    loadMissionGateFacts(mission.id, {
+      held: (mission as any).isHeld === true,
+      local: (mission as any).executor === 'local',
+      budgetExhausted: mission.status === 'budget_exhausted',
+    }),
   ]);
   const kernelReplaced = replacedFailedTaskIds(deliveryViews, failedDeliverableRows.map((t) => t.id));
   const deliveryDisplays = ownerDeliveryDisplays(deliveryViews);
@@ -1087,6 +1095,7 @@ export default async function MissionDetailPage({
     humanTouches: humanSteeringNotes.map(n => new Date(n.createdAt).getTime()),
     // Another mission's dependency is judged by the claim gate, not dropped.
     externalDeps: [...foreignDeps.values()],
+    gateFacts,
   });
   // Flow: the same-files waits Buildd added, and each task's expected size.
   const flowSameFiles = sameFilesFromRows(allTasks as Array<{ id: string; pathDeclaration?: unknown }>);

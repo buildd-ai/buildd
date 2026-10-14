@@ -5,6 +5,7 @@ import {
   concurrencyBins,
   formatAge,
   formatClock,
+  releasedByOf,
   selectMilestones,
   toBoardTaskInput,
   type BoardTaskInput,
@@ -524,5 +525,54 @@ describe('buildMissionBoard: the kernel reason is one sentence', () => {
   it('a bare detail, or none, still ends in one period', () => {
     expect(withDelivery('confirm the boundary')).toBe('The reviewer escalated this PR: confirm the boundary.');
     expect(withDelivery(null)).toBe('The reviewer escalated this PR.');
+  });
+});
+
+describe('buildMissionBoard — claim-gate release arms (spec f7f67f1a P-1)', () => {
+  const upstream = () => task('api', { status: 'in_progress', workers: [worker({ runner: 'birch' })] });
+
+  it('an early-released dependent is ready, not blocked, while its upstream is still running', () => {
+    const m = board([upstream(), task('e2e', { dependsOn: ['api'] })], {
+      gateFacts: { releasedEdges: [{ dependentId: 'e2e', dependencyId: 'api', arm: 'early_release' }], waitingKinds: {} },
+    });
+    expect(m.tasks.e2e.status).toBe('ready');
+    expect(m.tasks.e2e.blockers).toEqual([]);
+    expect(m.tasks.e2e.deps).toEqual([expect.objectContaining({ id: 'api', satisfied: true, releasedBy: 'early_release' })]);
+    expect(m.tasks.api.status).toBe('running');
+  });
+
+  it('without a release row the dependent holds, exactly as before', () => {
+    const m = board([upstream(), task('e2e', { dependsOn: ['api'] })], { gateFacts: { releasedEdges: [], waitingKinds: {} } });
+    expect(m.tasks.e2e.status).toBe('blocked');
+    expect(m.tasks.e2e.deps[0]).not.toHaveProperty('releasedBy');
+  });
+
+  it('a released dependency on another mission is not an off-strip blocker', () => {
+    const m = board([task('e2e', { dependsOn: ['other'] })], {
+      externalDeps: [{ id: 'other', title: 'Elsewhere', status: 'in_progress' }],
+      gateFacts: { releasedEdges: [{ dependentId: 'e2e', dependencyId: 'other', arm: 'bypass' }], waitingKinds: {} },
+    });
+    expect(m.tasks.e2e.offStrip).toEqual([]);
+    expect(m.tasks.e2e.status).toBe('ready');
+  });
+
+  it('a queued task carries its waiting cause; a running one does not', () => {
+    const m = board([upstream(), task('docs')], { gateFacts: { releasedEdges: [], waitingKinds: { docs: 'workspace_cap', api: 'mission_local' } } });
+    expect(m.tasks.docs.waitingKind).toBe('workspace_cap');
+    expect(m.tasks.api).not.toHaveProperty('waitingKind');
+  });
+
+  it('a queued task with no known cause carries none', () => {
+    const m = board([task('docs')], { gateFacts: { releasedEdges: [], waitingKinds: {} } });
+    expect(m.tasks.docs).not.toHaveProperty('waitingKind');
+  });
+});
+
+describe('releasedByOf', () => {
+  it('looks an edge up by dependent and raw dependency id', () => {
+    const f = releasedByOf({ releasedEdges: [{ dependentId: 'b', dependencyId: 'a', arm: 'force_start' }], waitingKinds: {} });
+    expect(f('b', 'a')).toBe('force_start');
+    expect(f('a', 'b')).toBeUndefined();
+    expect(releasedByOf(null)('b', 'a')).toBeUndefined();
   });
 });
