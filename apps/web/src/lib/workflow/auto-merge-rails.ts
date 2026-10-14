@@ -84,11 +84,21 @@ export function builddLandingRails(deps: LandingRailsDeps): Rails {
         skipBaseFreshness: true,
         gitConfig: ctx.gitConfig,
         observed,
+        // A person's door: the rails a person merges under, not the unattended ones.
+        ...(p.person ? { personDecides: true } : {}),
       });
       if (!verdict.ok) {
         const cls = classifyAutoMergeRefusal(verdict.reason);
         const redCi = cls === 'ci' && (observed.checkRuns ?? []).some(isFailingCheckRun);
-        return { passed: false, reasons: [verdict.reason], ...(redCi ? { redCi: true } : {}), ...(cls === 'deny_path' ? { denyPaths: true } : {}), ...(cls === 'size' ? { sizeOnly: true } : {}) };
+        // Lasting: it will not clear by waiting, so a person decides (and is told which rail).
+        // CI (pending or red, which the CI family repairs), a read, a moved head or a hold waits.
+        const lasting = cls === 'deny_path' || cls === 'size' || cls === 'blocked'
+          || (cls === 'migration' && !/^could not /.test(verdict.reason) && !/snapshot parent is no longer a leaf/.test(verdict.reason));
+        return {
+          passed: false, reasons: [verdict.reason],
+          ...(redCi ? { redCi: true } : {}), ...(cls === 'deny_path' ? { denyPaths: true } : {}), ...(cls === 'size' ? { sizeOnly: true } : {}),
+          ...(lasting ? { lasting: true } : {}),
+        };
       }
       const hold = await deps.missionGate(ctx.task);
       if (hold.blocks) return { passed: false, reasons: [hold.reason ?? 'mission work is not finished'] };

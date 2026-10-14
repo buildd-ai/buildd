@@ -83,6 +83,16 @@ export function githubReader(installationId: number, api: typeof githubApi = git
         return null;
       }
     },
+    async statusOf(repoFullName, sha, context) {
+      try {
+        // The combined status lists the latest status per context.
+        const data = await api(installationId, `/repos/${repoFullName}/commits/${sha}/status?per_page=100`) as { statuses?: Array<{ context?: string; state?: string; description?: string | null }> } | null;
+        const st = (data?.statuses ?? []).find((x) => x.context === context);
+        return st?.state ? { state: st.state, description: st.description ?? '' } : null;
+      } catch {
+        return null;
+      }
+    },
     async ciGreen(repoFullName, headSha) {
       try {
         const data = await api(installationId, `/repos/${repoFullName}/commits/${headSha}/check-suites`) as { check_suites?: Array<{ status?: string; conclusion?: string | null }> } | null;

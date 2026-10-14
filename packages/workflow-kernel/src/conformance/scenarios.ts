@@ -696,6 +696,53 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
+    name: 'gate at merge time: a lasting rail (a migration, a protected path) is a person\'s, named on buildd/landing; a person\'s own merge is held only to a person\'s rails',
+    async run(host) {
+      const s = await (await new Delivery(host, 37).open()).approvedAt('H1');
+      applied(await s.land('H1'), 'LANDING', 'an automatic landing');
+      const f = fakePorts(host);
+      f.github.setPr(s.repo, s.prNumber, s.live('H1'));
+      f.rails.reading = { passed: false, lasting: true, reasons: ['destructive migration: DROP COLUMN'] };
+      f.rails.personReading = { passed: true, reasons: [] };
+      await drainKernel(host, s, f.ports);
+      eq(f.github.merges, [], 'the automatic door does not merge it');
+      eq(await outcomesOf(host, s, 'merge_call'), ['ok:gate_refused:rails:lasting:applied'], 'refused as lasting');
+      eq(pick(await s.d(), ['state', 'stateReason']), { state: 'ESCALATED', stateReason: 'landing_needs_human' }, 'a person is asked, not the sweep');
+      const last = f.github.written.filter((w) => w.op === 'publishStatus').at(-1)!;
+      eq(last.state, 'failure', 'buildd/landing says no');
+      ok(String(last.description).includes('destructive migration'), `names the rail: ${String(last.description)}`);
+      ok((await s.count('notify')) >= 1, 'a person is notified');
+      // The person merges it ("Merge anyway"): their door is held to their rails, and it lands.
+      applied(await s.submit({ type: 'LandingRequested', actor: 'human:owner', door: 'dashboard', headSha: 'H1', live: s.live('H1'), override: { reason: 'migration reviewed by the owner', kinds: ['verdict'] } }), 'LANDING', 'the person\'s landing');
+      await drainKernel(host, s, f.ports);
+      eq(f.rails.calls.map((c) => c.person), [false, true], 'the second read was a person\'s');
+      eq(f.github.merges.map((m) => m.headSha), ['H1'], 'the person merged it');
+
+      // A rail that clears by waiting (pending CI) leaves the approval standing.
+      const w = await (await new Delivery(host, 38).open()).approvedAt('H1');
+      applied(await w.land('H1'), 'LANDING', 'landing');
+      const fw = fakePorts(host);
+      fw.github.setPr(w.repo, w.prNumber, w.live('H1'));
+      fw.rails.reading = { passed: false, reasons: ['CI checks still pending or failed: unit (in_progress)'] };
+      await drainKernel(host, w, fw.ports);
+      eq((await w.d()).state, 'APPROVED', 'it waits');
+    },
+  },
+  {
+    name: 'gate at merge time: a base retarget under the call is recorded like a moved head, and nothing merges',
+    async run(host) {
+      const s = await (await new Delivery(host, 39).open()).approvedAt('H1');
+      applied(await s.land('H1'), 'LANDING', 'landing');
+      const f = fakePorts(host, { ingest: new RecordingIngest(async (fact) => ({ result: fact.kind === 'base_changed' ? (await s.submit({ type: 'BaseChanged', actor: 'webhook', live: s.live('H1', { baseRef: 'release' }) })).result : 'ignored' })) });
+      f.github.setPr(s.repo, s.prNumber, s.live('H1', { baseRef: 'release' }));
+      await drainKernel(host, s, f.ports);
+      eq(f.github.merges, [], 'no merge');
+      eq(f.ingest.facts.map((x) => x.kind), ['base_changed'], 'the retarget through the funnel');
+      eq(await outcomesOf(host, s, 'merge_call'), ['skipped:base_moved:applied'], 'recorded');
+      ok((await s.d()).state !== 'LANDING' && !(await s.d()).approvedHeads.includes('H1'), 'the approval of the old diff is dropped');
+    },
+  },
+  {
     name: 'D11: the policy-merge rule\'s approval lands past an escalation, never past a request for changes the review loop ran out on',
     async run(host) {
       const policyMerge = (s: Delivery) => s.submit({ type: 'PolicyMergeApproved', actor: 'rule:policy_merge', headSha: 'H1', reason: 'policy-only escalation, CI green' });
@@ -752,8 +799,8 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       const older = versions.filter((e) => Number(e.payload.version) < now).at(-1)!;
       const h = kernelEffectHandlers(f.ports);
       eq(await h.publish_landing_status!({ ...(await direct(host, s, 'publish_landing_status')), payload: older.payload, dedupeKey: older.dedupeKey }), { outcome: 'skipped:older_version' }, 'a late older effect publishes nothing');
-      eq(await h.publish_landing_status!(await direct(host, s, 'publish_landing_status')), { outcome: 'ok:success' }, 'a duplicate of the newest publishes the same answer');
-      eq(published().length, count + 1, 'one more write, the same answer');
+      eq(await h.publish_landing_status!(await direct(host, s, 'publish_landing_status')), { outcome: 'ok:unchanged:success' }, 'a duplicate of the newest finds GitHub already showing it');
+      eq(published().length, count, 'no second write of the same answer');
       eq(published().at(-1), { sha: 'H2', state: 'success', context: 'buildd/landing' }, 'still success at H2');
       applied(await s.push('H3'), 'AWAITING_REVIEW', 'a new head');
       await drainKernel(host, s, f.ports);

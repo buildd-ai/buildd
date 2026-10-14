@@ -1041,6 +1041,11 @@ describe('T15 LandingRequested / T16 MergeCallResult (S10)', () => {
     // A person's verdict override travels to the effect, so the gate at merge time passes only what they did.
     const ov = applied(run(V(D({ state: 'ESCALATED' })), { type: 'LandingRequested', actor: 'human:owner', door: 'dashboard', headSha: 'H1', live: live('H1'), override: { reason: 'owner call' } }));
     expect(ov.effects.find((e) => e.kind === 'merge_call')!.payload.override).toEqual({ verdict: true, kinds: ['verdict'] });
+    // A person's door is marked, so the merge effect holds it to a person's rails; an automatic one is not.
+    expect(ov.effects.find((e) => e.kind === 'merge_call')!.payload.person).toBe(true);
+    expect(dec.effects.find((e) => e.kind === 'merge_call')!.payload.person).toBeUndefined();
+    const human = applied(run(ap(), { type: 'LandingRequested', actor: 'human:owner', door: 'dashboard', headSha: 'H1', live: live('H1') }));
+    expect(human.effects.find((e) => e.kind === 'merge_call')!.payload.person).toBe(true);
     const size = applied(run(ap(), { type: 'LandingRequested', actor: 'human:owner', door: 'merge_pr', headSha: 'H1', live: live('H1'), override: { reason: 'big', kinds: ['size'] } }));
     expect(size.effects.find((e) => e.kind === 'merge_call')!.payload.override).toEqual({ verdict: false, kinds: ['size'] });
   });
@@ -1050,6 +1055,11 @@ describe('T15 LandingRequested / T16 MergeCallResult (S10)', () => {
     const rails = applied(gate(l, 'rails'));
     expect({ to: rails.toState, reason: rails.patch.stateReason, gate: rails.evidence.gate }).toEqual({ to: 'APPROVED', reason: null, gate: { half: 'rails', reasons: ['CI red'] } });
     expect(effectKinds(rails)).not.toContain('merge_call');
+    // A lasting rail (a protected path, a migration, the size cap) is a person's, with the rail named on the status.
+    const lasting = applied(run(l, { type: 'MergeCallResult', actor: 'effect:merge_call', headSha: 'H1', outcome: 'gate_refused', gate: { half: 'rails', reasons: ['touches protected path (infra/x)'], lasting: true }, landingVersion: 6 }));
+    expect({ to: lasting.toState, reason: lasting.patch.stateReason }).toEqual({ to: 'ESCALATED', reason: 'landing_needs_human' });
+    expect(lasting.effects.find((e) => e.kind === 'publish_landing_status')!.payload.detail).toBe('touches protected path (infra/x)');
+    expect(effectKinds(lasting)).toContain('notify');
     const review = applied(gate(l, 'review'));
     expect({ to: review.toState, reason: review.patch.stateReason }).toEqual({ to: 'ESCALATED', reason: 'landing_needs_human' });
     expect(effectKinds(review)).toContain('notify');
@@ -1179,6 +1189,13 @@ describe('T17–T21 terminal-wins and closure (S6, S11, S12, AC-8, AC-9)', () =>
     const clean = applied(run(V(D({ state: 'AWAITING_REVIEW' })), { type: 'PrMerged', actor: 'webhook', live: merged }));
     expect(clean.evidence).toMatchObject({ external: true, merged_over_open_findings: false });
     expect(effectKinds(clean)).not.toContain('dispatch_external_merge_fix');
+    // Not owed: an escalation a person resolved by merging, or a verdict on an older head.
+    const esc = applied(run(V(D({ state: 'ESCALATED' }), [R({ status: 'decided', verdict: 'escalate', effectiveVerdict: 'escalate' })]), { type: 'PrMerged', actor: 'webhook', live: merged }));
+    expect(esc.evidence).toMatchObject({ external: true, merged_over_open_findings: true });
+    expect(effectKinds(esc)).not.toContain('dispatch_external_merge_fix');
+    const older = applied(run(V(D({ state: 'CHANGES_REQUESTED', currentHeadSha: 'H1' }), [R({ status: 'decided', verdict: 'request_changes', effectiveVerdict: 'request_changes', headSha: 'H0' })]), { type: 'PrMerged', actor: 'webhook', live: merged }));
+    expect(older.evidence).toMatchObject({ external: true, merged_over_open_findings: true });
+    expect(effectKinds(older)).not.toContain('dispatch_external_merge_fix');
     // Through LANDING it was a buildd door's merge.
     const door = applied(run(V(D({ state: 'LANDING', approvedHeads: ['H1'] }), [decidedRC]), { type: 'PrMerged', actor: 'effect:verify_merge', live: merged }));
     expect(door.evidence.external).toBeUndefined();

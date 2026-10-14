@@ -1365,9 +1365,23 @@ async function maybeAutoMergeNoCiPr(
 // tryAutoMergeWorkerPr and evaluateAutoMergeSafety are now in @/lib/auto-merge
 // (shared with the reviewer outcome handler in apps/web/src/app/api/workers/[id]/route.ts)
 
-/** D7's kernel landing through the one client; null when the kernel does not own the release PR. */
+/**
+ * D7's kernel landing through the one client. `null`: the kernel does not own the release
+ * PR (read locally, so such a PR never reaches the kernel and merges pinned below as before).
+ * `'unavailable'`: the control plane did not answer; the release stays pending, never thrown,
+ * because GitHub does not redeliver this event.
+ */
 async function releaseKernelLand(p: Parameters<typeof import('@/lib/workflow/kernel-client').landThroughKernel>[0]) {
-  return (await import('@/lib/workflow/kernel-client')).landThroughKernel(p);
+  const { kernelDeliveryForPr } = await import('@/lib/workflow/authority');
+  if (!(await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber))) return null;
+  const client = await import('@/lib/workflow/kernel-client');
+  try {
+    return await client.landThroughKernel(p);
+  } catch (err) {
+    if (!client.isDoorError(err)) throw err;
+    console.warn(`[release-pr] the control plane did not land ${p.repoFullName}#${p.prNumber}; the release stays pending:`, err.message);
+    return 'unavailable' as const;
+  }
 }
 
 /**
@@ -1416,10 +1430,19 @@ async function handleReleasePrCiSuccess(
 
   // D7 (workflow-kernel-library.md §4): a release PR the kernel owns lands through the
   // kernel, pinned to this head; its merge effect asks the landing gate again when it runs.
-  const kernelLanding = await releaseKernelLand({
+  const kernelAnswer = await releaseKernelLand({
     workspaceId: pendingReleaseTasks[0]!.workspaceId, installationId, repoFullName, prNumber, headSha,
     door: 'release_pr_ci_success', actor: 'system:release_pr_ci_success', mergeMethod: 'merge',
   });
+  // Nothing applied and nothing recorded: the release task stays pending for the next green CI or sweep.
+  if (kernelAnswer === 'unavailable') return;
+  const kernelLanding = kernelAnswer;
+  if (kernelLanding && !kernelLanding.merged) {
+    // The kernel owns it and did not land it (not approved at this head yet, a repair, the gate
+    // at merge time): the release waits for the kernel, it has not failed.
+    console.log(`[release-pr] ${repoFullName}#${prNumber} not landed by the kernel yet (${kernelLanding.reason}); the release stays pending`);
+    return;
+  }
 
   // Release promotion is a merge door like any other. buildd never dispatches a
   // reviewer for a release PR on its own, so the gate normally reads

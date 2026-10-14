@@ -6387,8 +6387,28 @@ describe('release PR CI success pins the live head', () => {
     expect(updateCalls.some(c => c.setValues.status === 'completed')).toBe(true);
   });
 
+  it('D7: a release PR the kernel does not own never reaches the kernel; it merges pinned as before', async () => {
+    mockGithubApi.mockResolvedValue({ head: { sha: 'a'.repeat(40) } });
+    mockKernelClientLand.mockClear();
+    await deliverSuccess();
+    expect(mockKernelClientLand).not.toHaveBeenCalled();
+    expect(mockMergePullRequest).toHaveBeenCalledWith(5000, 'test-org/test-repo', 42, 'merge', 'a'.repeat(40));
+  });
+
+  it('D7: the control plane not answering leaves the release pending: nothing merged, nothing failed, nothing thrown', async () => {
+    mockGithubApi.mockResolvedValue({ head: { sha: 'a'.repeat(40) } });
+    mockKernelDeliveryForPr.mockResolvedValueOnce('d-1');
+    const { ControlPlaneUnavailableError } = await import('@/lib/workflow/kernel-client');
+    mockKernelClientLand.mockRejectedValueOnce(new ControlPlaneUnavailableError('timeout', 'not_applied'));
+    const res = await deliverSuccess();
+    expect(res.status).toBe(200);
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+    expect(updateCalls.filter(c => c.table === schemaMock.tasks)).toHaveLength(0);
+  });
+
   it('D7: a release PR the kernel owns lands through the kernel at the checked head, never merged here', async () => {
     mockGithubApi.mockResolvedValue({ head: { sha: 'a'.repeat(40) } });
+    mockKernelDeliveryForPr.mockResolvedValueOnce('d-1');
     mockKernelClientLand.mockResolvedValueOnce({ merged: true, outcome: 'merged', reason: 'merged', message: 'Pull request merged', mergeCommitSha: 'm1', current: {}, result: null });
     await deliverSuccess();
     expect(mockKernelClientLand.mock.calls.at(-1)?.[0]).toMatchObject({ prNumber: 42, headSha: 'a'.repeat(40), door: 'release_pr_ci_success' });
@@ -6396,12 +6416,13 @@ describe('release PR CI success pins the live head', () => {
     expect(updateCalls.some(c => c.setValues.status === 'completed')).toBe(true);
   });
 
-  it('D7: the kernel refusing the release PR merges nothing', async () => {
+  it('D7: the kernel not landing the release PR yet holds it: nothing merged, nothing failed', async () => {
     mockGithubApi.mockResolvedValue({ head: { sha: 'a'.repeat(40) } });
-    mockKernelClientLand.mockResolvedValueOnce({ merged: false, outcome: 'rejected', reason: 'gate_refused', message: 'refused', mergeCommitSha: null, current: {}, result: null });
+    mockKernelDeliveryForPr.mockResolvedValueOnce('d-1');
+    mockKernelClientLand.mockResolvedValueOnce({ merged: false, outcome: 'rejected', reason: 'state_not_allowed', message: 'refused', mergeCommitSha: null, current: {}, result: null });
     await deliverSuccess();
     expect(mockMergePullRequest).not.toHaveBeenCalled();
-    expect(updateCalls.some(c => c.setValues.status === 'completed')).toBe(false);
+    expect(updateCalls.filter(c => c.table === schemaMock.tasks)).toHaveLength(0);
   });
 });
 

@@ -204,6 +204,13 @@ export async function evaluateAutoMergeSafety(
      */
     skipBaseFreshness?: boolean;
     /**
+     * A person's own merge, read again at merge time (the kernel's `merge_call` for a person's
+     * door): only the rails a person has always merged under apply, CI and protected paths and
+     * the PR's own state. The semantic hold, the migration inspector and the size cap are the
+     * unattended merge's stand-ins for judgment, and a person is the judgment.
+     */
+    personDecides?: boolean;
+    /**
      * The workspace gitConfig, for the post-refresh semantic hold
      * (base-refresh.ts `checkBaseRefreshHold`). Every merge door passes it;
      * omitted, or with `semanticRefresh` off, the hold makes no read.
@@ -293,7 +300,7 @@ export async function evaluateAutoMergeSafety(
   // can merge in base commits that landed after its semantic verdict. Under
   // enforce the PR waits here until that arrived range is re-verified. Only
   // consulted once CI is green, and makes no read when the check is off.
-  const hold = await checkBaseRefreshHold({
+  const hold = opts?.personDecides ? { blocks: false as const, reason: '' } : await checkBaseRefreshHold({
     installationId,
     repoFullName,
     prNumber,
@@ -368,7 +375,7 @@ export async function evaluateAutoMergeSafety(
   const hasMigrationOrSchema = files.some(
     (f) => isGeneratedMigrationPath(f.filename) || f.filename === 'packages/core/db/schema.ts',
   );
-  if (hasMigrationOrSchema) {
+  if (hasMigrationOrSchema && !opts?.personDecides) {
     const migrationSafety = await inspectPullRequestMigrations({
       installationId,
       repoFullName,
@@ -419,7 +426,7 @@ export async function evaluateAutoMergeSafety(
   // doc comment). `agent-review` and `human` never reach this block, so a
   // workspace on either tier cannot inherit the 800-line default just
   // because `policy.threshold` happened to be unset.
-  if (policy.tier === 'auto-threshold') {
+  if (policy.tier === 'auto-threshold' && !opts?.personDecides) {
     // Is this a task PR into its own mission's integration branch
     // (task branch → integration branch)?
     //

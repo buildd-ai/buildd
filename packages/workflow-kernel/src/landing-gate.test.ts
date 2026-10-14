@@ -69,6 +69,12 @@ describe('landingStatusOf: the buildd/landing status (§4)', () => {
     expect(landingStatusOf(V(D({ state: 'ESCALATED', stateReason: 'review_exhausted' })))!.description).toContain('a person has to decide (review_exhausted)');
     expect(landingStatusOf(V(D({ state: 'CHANGES_REQUESTED' })))!.state).toBe('failure');
   });
+  test('a lasting rail\'s refusal is named while a person decides it', () => {
+    expect(landingStatusOf(V(D({ state: 'ESCALATED', stateReason: 'landing_needs_human' })), { detail: 'touches protected path (infra/x)' })!.description)
+      .toBe('buildd will not land abcdef1: touches protected path (infra/x)');
+    // Only while escalated: a detail never turns into a reason for a delivery that moved on.
+    expect(landingStatusOf(V(D(), [R(1, 'approve')]), { detail: 'touches protected path (infra/x)' })!.state).toBe('success');
+  });
   test('nothing to publish without a PR head, or once the delivery is over', () => {
     expect(landingStatusOf(V(D({ currentHeadSha: null })))).toBeNull();
     expect(landingStatusOf(V(D({ prNumber: null })))).toBeNull();

@@ -175,6 +175,8 @@ export interface Store {
 export interface GithubFactReader {
   /** Live `GET /repos/{repo}/pulls/{n}`; null when it cannot be read. */
   readPr(repoFullName: string, prNumber: number): Promise<LivePr | null>;
+  /** The latest commit status of `context` on `sha` (state and description); null = none or unreadable. */
+  statusOf?(repoFullName: string, sha: string, context: string): Promise<{ state: string; description: string } | null>;
   /** Compare API: is `ancestorSha` contained in `headSha`? */
   contains?(repoFullName: string, ancestorSha: string, headSha: string): Promise<boolean>;
   /**
@@ -393,7 +395,7 @@ export interface Decide {
 
 /** A fact an effect observed on a live read and hands to the ingest funnel. */
 export interface IngestFact {
-  kind: 'pr_closed' | 'head_observed';
+  kind: 'pr_closed' | 'head_observed' | 'base_changed';
   workspaceId: string;
   source: string;
   repoFullName: string;
@@ -580,6 +582,11 @@ export interface RailReading {
   denyPaths?: boolean;
   /** Only the size cap refused (a `size` override lifts it). */
   sizeOnly?: boolean;
+  /**
+   * The refusal will not clear on its own (a protected path, a migration, the size
+   * cap): a person has to decide. Absent = it waits (pending CI, a hold, a read).
+   */
+  lasting?: boolean;
   /** Why it refused, in the host's words. */
   reasons: string[];
 }
@@ -595,6 +602,12 @@ export interface Rails {
     live: LivePr;
     door: string;
     override?: { kinds?: Array<'verdict' | 'freshness' | 'size'> } | null;
+    /**
+     * A person's door (their own merge, or an agent under their grant): the rails a
+     * person has always merged under, red CI and protected paths, not the unattended
+     * ones (size cap, migration inspector, semantic hold), which are theirs to decide.
+     */
+    person?: boolean;
   }): Promise<RailReading>;
 }
 

@@ -295,7 +295,7 @@ export type Command =
        * refused before any merge call (§4): which half refused and why. The
        * approval stands only when the review half still passes.
        */
-      gate?: { half: 'review' | 'rails'; reasons: string[] };
+      gate?: { half: 'review' | 'rails'; reasons: string[]; lasting?: boolean };
       /** The version T15 left the delivery at: one landing request, so a re-landing at the same head after a refusal is a new key. */
       landingVersion?: number;
       /** A transient answer (rate limit, 5xx): when GitHub said to call again (ISO). The landing sweep waits until then. */

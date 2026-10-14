@@ -56,7 +56,8 @@ export function composeActionDeps(target: ReleaseTarget, origin: string): Compos
       const r = await mergeReleasePrPinned({
         workspaceId: target.workspaceId, installationId, repoFullName: repo, prNumber, verifiedHeadSha: sha, mergeMethod: method, surface: 'release compose',
       });
-      return r.merged ? { merged: true, message: r.message } : { merged: false, message: r.message };
+      // A lost answer stays pending (indeterminate), never reads as a refusal.
+      return r.merged ? { merged: true, message: r.message } : { merged: false, message: r.message, ...(r.indeterminate ? { indeterminate: true } : {}) };
     },
     branchHead: async (branch) => {
       const ref = await githubApi(target.installationId, `/repos/${target.repoFullName}/git/ref/heads/${encodeURIComponent(branch)}`);

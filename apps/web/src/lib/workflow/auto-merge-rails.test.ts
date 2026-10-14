@@ -52,6 +52,24 @@ describe('builddLandingRails', () => {
     expect((plain.s.mock.calls[0] as any[])[4].threshold?.maxLines).not.toBe(Number.MAX_SAFE_INTEGER);
   });
 
+  test('a person\'s door is read with a person\'s rails; an automatic one with all of them', async () => {
+    const { s, r } = rails(async () => ({ ok: true }));
+    await r.evaluate(D, P({ person: true }));
+    await r.evaluate(D, P());
+    expect((s.mock.calls[0] as any[])[5].personDecides).toBe(true);
+    expect((s.mock.calls[1] as any[])[5].personDecides).toBeUndefined();
+  });
+
+  test('lasting refusals (protected path, migration, size) are a person\'s; CI, reads and holds wait', async () => {
+    const reading = async (reason: string) => rails(async () => ({ ok: false, reason })).r.evaluate(D, P());
+    expect((await reading('touches protected path (infra/main.tf)')).lasting).toBe(true);
+    expect((await reading('drops column missions.legacy_mode (destructive migration)')).lasting).toBe(true);
+    expect((await reading('auto-threshold tier: diff size 2500 source lines > source limit 800 (0 noise files excluded)')).lasting).toBe(true);
+    expect((await reading('CI checks still pending or failed: unit (in_progress)')).lasting).toBeUndefined();
+    expect((await reading('could not verify migration safety: GitHub 502')).lasting).toBeUndefined();
+    expect((await reading('PR head changed — ignoring stale merge trigger')).lasting).toBeUndefined();
+  });
+
   test('the mission-PR hold is a rail', async () => {
     const { r } = rails(async () => ({ ok: true }), async () => ({ blocks: true, reason: 'two task PRs still open on the integration branch' }));
     expect(await r.evaluate(D, P())).toEqual({ passed: false, reasons: ['two task PRs still open on the integration branch'] });

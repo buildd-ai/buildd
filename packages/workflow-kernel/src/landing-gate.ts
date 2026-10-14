@@ -90,7 +90,7 @@ export interface LandingStatus {
  * to publish on (no PR or head, or the delivery is over: a merged or closed
  * PR's head keeps the last status it was given).
  */
-export function landingStatusOf(view: KernelView): LandingStatus | null {
+export function landingStatusOf(view: KernelView, o: { detail?: string | null } = {}): LandingStatus | null {
   const d = view.delivery;
   if (!d || d.prNumber == null || !d.repoFullName || !d.currentHeadSha) return null;
   if (d.state === 'MERGED' || d.state === 'CLOSED_UNMERGED' || d.state === 'SUPERSEDED' || d.state === 'ABANDONED' || d.state === 'FAILED') return null;
@@ -100,7 +100,9 @@ export function landingStatusOf(view: KernelView): LandingStatus | null {
     const by = g.coverage === 'human' ? 'a person' : g.coverage === 'composition' ? 'composition' : g.coverage === 'policy' ? 'merge policy' : 'review';
     return { state: 'success', sha: d.currentHeadSha, description: clip(`buildd would land ${at}: approved by ${by}`) };
   }
-  return { state: 'failure', sha: d.currentHeadSha, description: clip(`buildd will not land ${at}: ${g.reason}`) };
+  // The detail the transition named (a lasting rail's refusal), while the delivery still waits on a person for it.
+  const why = o.detail && d.state === 'ESCALATED' ? o.detail : g.reason;
+  return { state: 'failure', sha: d.currentHeadSha, description: clip(`buildd will not land ${at}: ${why}`) };
 }
 
 /** What the status says when the kernel could not decide it (the effect ran out of retries). Never success. */

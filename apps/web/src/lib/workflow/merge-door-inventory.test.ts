@@ -23,20 +23,23 @@ const PATTERNS: Record<string, RegExp> = {
   graphql_merge: /enablePullRequestAutoMerge|mergePullRequest\s*\(\s*input/,
 };
 
-/** File → what it is. Doors name their §13.13 id. */
-const INVENTORY: Record<string, string> = {
-  'apps/web/src/lib/github.ts': 'the one REST merge helper, pinned with `sha`',
-  'apps/web/src/lib/workflow/kernel-ports.ts': 'D1: the kernel merge_call effect (GithubWrites.mergeAtHead), behind the gate at merge time',
-  'apps/web/src/lib/pr-landing.ts': 'D2/D3: landPr; a kernel PR lands through the kernel',
-  'apps/web/src/lib/auto-merge.ts': 'D4: tryAutoMergeWorkerPr; never without a workspace to read the verdict in',
-  'apps/web/src/app/api/github/pr/route.ts': 'D5: merge_pr; `force` never skips the review verdict',
-  'apps/web/src/app/api/prs/[prNumber]/merge/route.ts': 'D6: the dashboard merge (a person may override, recorded)',
-  'apps/web/src/app/api/github/webhook/route.ts': 'D7: release PR on green CI; a kernel PR lands through the kernel',
-  'apps/web/src/lib/release/pinned-merge.ts': 'D8/D9/D10: the release doors, review gate + pinned to the verified head',
-  'apps/web/src/lib/specs/repo-copy.ts': 'D14: a Living Spec\'s generated repo copy, only the generator\'s own commit, pinned (living-specs R-35)',
-  'apps/web/src/lib/release-executor.ts': 'not a door: a branch-to-prod merge with no PR (POST /merges)',
-  'apps/web/src/lib/mission-branch-refresh.ts': 'not a door: a base refresh into a mission branch (POST /merges)',
+/** File → what it is (doors name their §13.13 id) and how many merge calls it holds. */
+const INVENTORY: Record<string, { what: string; calls: number }> = {
+  'apps/web/src/lib/github.ts': { what: 'the one REST merge helper, pinned with `sha` (its definition and its URL)', calls: 2 },
+  'apps/web/src/lib/workflow/kernel-ports.ts': { what: 'D1: the kernel merge_call effect (GithubWrites.mergeAtHead), behind the gate at merge time', calls: 1 },
+  'apps/web/src/lib/pr-landing.ts': { what: 'D2/D3: landPr; a kernel PR lands through the kernel', calls: 1 },
+  'apps/web/src/lib/auto-merge.ts': { what: 'D4: tryAutoMergeWorkerPr; never without a workspace to read the verdict in', calls: 1 },
+  'apps/web/src/app/api/github/pr/route.ts': { what: 'D5: merge_pr; `force` never skips the review verdict', calls: 1 },
+  'apps/web/src/app/api/prs/[prNumber]/merge/route.ts': { what: 'D6: the dashboard merge (a person may override, recorded)', calls: 1 },
+  'apps/web/src/app/api/github/webhook/route.ts': { what: 'D7: release PR on green CI; a kernel PR lands through the kernel', calls: 1 },
+  'apps/web/src/lib/release/pinned-merge.ts': { what: 'D8/D9/D10: the release doors, review gate + pinned to the verified head', calls: 1 },
+  'apps/web/src/lib/specs/repo-copy.ts': { what: 'D14: a Living Spec\'s generated repo copy, only the generator\'s own commit, pinned (living-specs R-35)', calls: 1 },
+  'apps/web/src/lib/release-executor.ts': { what: 'not a door: a branch-to-prod merge with no PR (POST /merges)', calls: 1 },
+  'apps/web/src/lib/mission-branch-refresh.ts': { what: 'not a door: a base refresh into a mission branch (POST /merges)', calls: 1 },
 };
+
+/** One merge call: the helper called, a REST merge path, a branch merge, the kernel's pinned call. */
+const CALL = /\bmergePullRequest\(|\/pulls\/\$\{[^}]+\}\/merge[`'"]|\/merges[`'"]|\bmerge\(installationId/g;
 
 const PROVEN_BY: Record<string, string> = {
   D1: 'packages/workflow-kernel/src/conformance/scenarios.ts (AC-14, gate at merge time) on both stores',
@@ -77,6 +80,11 @@ describe('merge door inventory (§13.13)', () => {
       return Object.values(PATTERNS).some((re) => re.test(src));
     }).sort();
     expect(found, 'a new merge call: route it through the landing gate (kernel-client landThroughKernel, or release/pinned-merge.ts) and add it to §13.13 and INVENTORY').toEqual(Object.keys(INVENTORY).sort());
+  });
+
+  test('each known door holds exactly the merge calls it is known for: a second merge inside a door is a new door', () => {
+    const counts = Object.fromEntries(Object.keys(INVENTORY).map((f) => [f, (stripComments(readFileSync(join(ROOT, f), 'utf8')).match(CALL) ?? []).length]));
+    expect(counts).toEqual(Object.fromEntries(Object.entries(INVENTORY).map(([f, v]) => [f, v.calls])));
   });
 
   test('no GraphQL merge and no GitHub auto-merge anywhere', () => {

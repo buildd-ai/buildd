@@ -100,7 +100,10 @@ mock.module('@/lib/github', () => ({
 const mockGuardReviewVerdict = mock(async (_p: any) => ({ blocks: false } as any));
 mock.module('@/lib/review-verdict-gate', () => ({ guardReviewVerdict: mockGuardReviewVerdict }));
 const mockKernelLand = mock(async (_p: any) => null as any);
-mock.module('@/lib/workflow/kernel-client', () => ({ landThroughKernel: mockKernelLand }));
+const realKernelClient = await import('@/lib/workflow/kernel-client');
+mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, landThroughKernel: mockKernelLand }));
+const mockKernelDeliveryForPr = mock(async (..._a: any[]): Promise<string | null> => null);
+mock.module('@/lib/workflow/authority', () => ({ kernelDeliveryForPr: mockKernelDeliveryForPr }));
 
 const mockTriggerEvent = mock(() => Promise.resolve());
 mock.module('@/lib/pusher', () => ({
@@ -410,6 +413,38 @@ describe('executeRelease — releaseBranch', () => {
     expect(result.status).toBe('failed');
     expect(result.mergedAt).toBeUndefined();
     expect(result.message).toContain('moved from deadbeef to cafef00d');
+    const paths = (mockGithubApi.mock.calls as any[]).map((c) => c[1] as string);
+    expect(paths.some((p) => p.endsWith('/merge'))).toBe(false);
+  });
+
+  it('a release PR the kernel owns and has not landed yet holds the release (pending), it does not fail it', async () => {
+    setupTask();
+    setupWorker();
+    setupWorkspaceWithReleaseBranch();
+    setupRepo();
+    queueReleasePrWithGreenCi();
+    mockKernelDeliveryForPr.mockResolvedValueOnce('d-1');
+    mockKernelLand.mockResolvedValueOnce({ merged: false, outcome: 'rejected', reason: 'state_not_allowed', message: 'not approved at deadbeef yet', mergeCommitSha: null, current: {}, result: null });
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+
+    expect(result.status).toBe('pending_ci');
+    expect(result.releasePrNumber).toBe(47);
+    expect(result.message).toContain('not landed yet');
+  });
+
+  it('the control plane not answering for a kernel-owned release PR holds the release, never throws', async () => {
+    setupTask();
+    setupWorker();
+    setupWorkspaceWithReleaseBranch();
+    setupRepo();
+    queueReleasePrWithGreenCi();
+    mockKernelDeliveryForPr.mockResolvedValueOnce('d-1');
+    mockKernelLand.mockRejectedValueOnce(new realKernelClient.ControlPlaneUnavailableError('timeout', 'not_applied'));
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+
+    expect(result.status).toBe('pending_ci');
     const paths = (mockGithubApi.mock.calls as any[]).map((c) => c[1] as string);
     expect(paths.some((p) => p.endsWith('/merge'))).toBe(false);
   });

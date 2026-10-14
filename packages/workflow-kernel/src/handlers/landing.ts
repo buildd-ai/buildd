@@ -84,19 +84,24 @@ export function landingHandlers(ports: KernelPorts): EffectHandlers {
             : [],
         }
       : null;
-    const refuse = async (half: 'review' | 'rails', reasons: string[]) => {
+    const refuse = async (half: 'review' | 'rails', reasons: string[], lasting = false) => {
       const r = await apply(d.id, {
         type: 'MergeCallResult', actor: 'effect:merge_call', headSha, outcome: 'gate_refused',
-        detail: `the landing gate refused at merge time: ${reasons.join('; ')}`, gate: { half, reasons }, ...lv,
+        detail: `the landing gate refused at merge time: ${reasons.join('; ')}`, gate: { half, reasons, ...(lasting ? { lasting: true } : {}) }, ...lv,
       });
-      return { outcome: `ok:gate_refused:${half}:${r.result}` };
+      return { outcome: `ok:gate_refused:${half}${lasting ? ':lasting' : ''}:${r.result}` };
     };
     const review = reviewGate(view, { headSha, states: ['LANDING'], verdictOverride: override?.verdict === true });
     if (!review.ok) return refuse('review', [review.reason]);
-    if (live.baseRef && d.baseRef && live.baseRef !== d.baseRef) return refuse('rails', [`the base moved from ${d.baseRef} to ${live.baseRef}`]);
-    const rails = await need(ports, 'rails', e.kind).evaluate(d, { headSha, live, door: String(e.payload.door ?? ''), override });
+    if (live.baseRef && d.baseRef && live.baseRef !== d.baseRef) {
+      // A retarget under the call: recorded the way a moved head is (T29 drops or re-checks the
+      // approval of the old diff); nothing is merged.
+      const r = await need(ports, 'ingest', e.kind).ingest({ kind: 'base_changed', ...subject }, pinned);
+      return { outcome: `skipped:base_moved:${r.result}` };
+    }
+    const rails = await need(ports, 'rails', e.kind).evaluate(d, { headSha, live, door: String(e.payload.door ?? ''), override, person: e.payload.person === true });
     const sizeLifted = rails.sizeOnly === true && !!override?.kinds?.includes('size');
-    if (!rails.passed && !sizeLifted) return refuse('rails', rails.reasons.length ? rails.reasons : ['a merge rail refused']);
+    if (!rails.passed && !sizeLifted) return refuse('rails', rails.reasons.length ? rails.reasons : ['a merge rail refused'], rails.lasting === true);
 
     const method = (e.payload.mergeMethod as 'merge' | 'squash' | 'rebase' | undefined) ?? 'squash';
     // Pinned to the head T15 approved and the gate just passed: a replay at the same head is a no-op or a clean refusal.
@@ -122,15 +127,34 @@ export function landingHandlers(ports: KernelPorts): EffectHandlers {
     if (!hasPr(d)) return { outcome: 'skipped:no_pr' };
     const version = typeof e.payload.version === 'number' ? e.payload.version : null;
     if (version !== null && d.version > version) return { outcome: 'skipped:older_version' };
-    const status = landingStatusOf(view);
+    const detail = typeof e.payload.detail === 'string' ? e.payload.detail : null;
+    let status = landingStatusOf(view, { detail });
     if (!status) return { outcome: `skipped:state_${d.state}` };
     const github = await githubOf(ports, d.workspaceId);
     const writes = github?.writes;
-    if (!writes) throw new Error(NO_INSTALLATION);
+    if (!github || !writes) throw new Error(NO_INSTALLATION);
     const publish = (s: { state: 'success' | 'failure'; description: string; sha: string }) =>
       writes.publishStatus({ repoFullName: d.repoFullName, sha: s.sha, context: LANDING_STATUS_CONTEXT, state: s.state, description: s.description });
+    let wrote = false;
     try {
-      await publish(status);
+      // Newest wins across drains (the cron's and a door's inline one): publish what this version
+      // says, then read the delivery again; if it moved meanwhile, publish the newer answer, so a
+      // slower drain holding an older read can never be the last write.
+      let seen = d.version;
+      for (let pass = 0; pass < 3; pass++) {
+        const current = github.statusOf ? await github.statusOf(d.repoFullName, status.sha, LANDING_STATUS_CONTEXT).catch(() => null) : null;
+        // Nothing to say that GitHub does not already show: no write (statuses pile up per commit).
+        if (!current || current.state !== status.state || current.description !== status.description) {
+          await publish(status);
+          wrote = true;
+        }
+        const again = await ports.store.loadView({ deliveryId: e.deliveryId });
+        if (!again.delivery || again.delivery.version === seen) break;
+        seen = again.delivery.version;
+        const next = landingStatusOf(again, { detail: again.delivery.version === version ? detail : null });
+        if (!next) break;
+        status = next;
+      }
     } catch (err) {
       if (e.attemptCount >= EFFECT_MAX_ATTEMPTS && status.state === 'success') {
         // Exhausted: never leave a success the kernel could not re-confirm. Best effort.
@@ -138,7 +162,7 @@ export function landingHandlers(ports: KernelPorts): EffectHandlers {
       }
       throw err;
     }
-    return { outcome: `ok:${status.state}` };
+    return { outcome: wrote ? `ok:${status.state}` : `ok:unchanged:${status.state}` };
   };
 
   /**

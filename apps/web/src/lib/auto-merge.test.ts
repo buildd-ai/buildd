@@ -696,6 +696,46 @@ describe('evaluateAutoMergeSafety migration operation-class gate (unconditional)
   });
 });
 
+// workflow-kernel-library.md §4 (review of #4786, finding 1): the merge effect reads the rails again for a
+// person's own merge, and a person is held to the rails they have always merged under: CI and protected
+// paths, not the migration inspector, the size cap or the semantic hold. An escalated schema PR a person
+// decided to merge must merge.
+describe('evaluateAutoMergeSafety for a person\'s merge (personDecides)', () => {
+  it('a destructive migration a person merges is theirs to decide; unattended, it still refuses', async () => {
+    const files = [{ filename: 'packages/core/drizzle/0095_drop.sql', additions: 1, deletions: 0 }];
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue({ safe: false, operationClass: 'CONTRACT', reason: 'drops column missions.legacy_mode' } as never);
+    mockGithubApi.mockReset();
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce(files)
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha' } });
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy, { personDecides: true })).resolves.toEqual({ ok: true });
+    expect(mockInspectPullRequestMigrations).not.toHaveBeenCalled();
+    mockGithubApi.mockReset();
+    mockGithubApi.mockResolvedValueOnce({ check_runs: [] }).mockResolvedValueOnce(files);
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy)).resolves.toEqual({ ok: false, reason: 'drops column missions.legacy_mode' });
+  });
+
+  it('a person is not held to the size cap, but is to red CI and protected paths', async () => {
+    mockGithubApi.mockReset();
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce(OVERSIZED_FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha' } });
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy, { personDecides: true })).resolves.toEqual({ ok: true });
+    mockGithubApi.mockReset();
+    mockGithubApi.mockResolvedValueOnce({ check_runs: [{ name: 'build', status: 'completed', conclusion: 'failure' }] });
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy, { personDecides: true })).resolves.toMatchObject({ ok: false, reason: expect.stringContaining('CI checks') });
+    mockGithubApi.mockReset();
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce([{ filename: '.github/workflows/build.yml', additions: 1, deletions: 0 }]);
+    const deny: MergePolicy = { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: ['.github/workflows/'] } };
+    await expect(evaluateAutoMergeSafety(...params, deny, { personDecides: true })).resolves.toMatchObject({ ok: false, reason: expect.stringContaining('protected path') });
+  });
+});
+
 describe('evaluateAutoMergeSafety data migrations (mergePolicy.dataMigrations)', () => {
   const dataVerdict = { safe: false, operationClass: 'CONTRACT', reason: 'runs data migration UPDATE on tasks', kind: 'data' } as const;
   const arm = (verdict: unknown) => {

@@ -154,6 +154,10 @@ export class FakeGithub implements GithubFacts {
   setPr(repoFullName: string, prNumber: number, live: LivePr | null): void {
     if (live) this.prs.set(`${repoFullName}#${prNumber}`, live); else this.prs.delete(`${repoFullName}#${prNumber}`);
   }
+  async statusOf(repoFullName: string, sha: string, context: string): Promise<{ state: string; description: string } | null> {
+    const last = this.written.filter((w) => w.op === 'publishStatus' && w.repoFullName === repoFullName && w.sha === sha && w.context === context).at(-1);
+    return last ? { state: String(last.state), description: String(last.description) } : null;
+  }
   async readPr(repoFullName: string, prNumber: number): Promise<LivePr | null> {
     const pr = this.prs.get(`${repoFullName}#${prNumber}`);
     return pr ? structuredClone(pr) : null;
@@ -180,11 +184,13 @@ export class FakeGithub implements GithubFacts {
 
 /** The host's merge rails as data: a fixed reading, every evaluation recorded. */
 export class RecordingRails implements Rails {
-  readonly calls: Array<{ deliveryId: string; headSha: string; door: string; override: unknown }> = [];
+  readonly calls: Array<{ deliveryId: string; headSha: string; door: string; override: unknown; person: boolean }> = [];
   reading: RailReading = { passed: true, reasons: [] };
-  async evaluate(d: DeliverySnapshot, p: { headSha: string; live: LivePr; door: string; override?: unknown }): Promise<RailReading> {
-    this.calls.push({ deliveryId: d.id, headSha: p.headSha, door: p.door, override: p.override ?? null });
-    return structuredClone(this.reading);
+  /** A person's door's reading, when it differs (the unattended rails a person is not held to). */
+  personReading: RailReading | null = null;
+  async evaluate(d: DeliverySnapshot, p: { headSha: string; live: LivePr; door: string; override?: unknown; person?: boolean }): Promise<RailReading> {
+    this.calls.push({ deliveryId: d.id, headSha: p.headSha, door: p.door, override: p.override ?? null, person: p.person === true });
+    return structuredClone(p.person && this.personReading ? this.personReading : this.reading);
   }
 }
 

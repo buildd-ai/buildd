@@ -179,7 +179,7 @@ async function mergeIntoProd(
   prNumber: number | null | undefined,
   prodBranch: string,
   gate: { workspaceId: string; taskId: string },
-): Promise<{ merged: boolean; sha?: string; message: string }> {
+): Promise<{ merged: boolean; sha?: string; message: string; hold?: boolean }> {
   // A tracked PR is the release unit. If it cannot be merged, the release
   // fails — it never falls back to pushing the branch around the PR, because
   // "not mergeable" (405) is exactly the answer from required reviews, required
@@ -192,6 +192,7 @@ async function mergeIntoProd(
       mergeMethod: 'squash', surface: 'release-executor every_merge', taskId: gate.taskId,
     });
     if (r.merged) return { merged: true, sha: r.sha ?? undefined, message: r.alreadyMerged ? `PR #${prNumber} already merged` : 'PR merged via squash' };
+    if (r.hold) return { merged: false, hold: true, message: `PR #${prNumber} is not landed yet: ${r.message}` };
     return { merged: false, message: `PR #${prNumber} merge failed: ${r.message}` };
   }
 
@@ -840,6 +841,16 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseOutcom
       workspaceId, installationId: repo.installation.installationId, repoFullName: repo.fullName, prNumber: releasePr.number,
       verifiedHeadSha: releasePr.headSha, mergeMethod: 'merge', surface: 'release-executor release-pr', taskId,
     });
+    if (!merged.merged && merged.hold) {
+      // The kernel owns it and has not landed it yet (or the control plane did not answer):
+      // the release waits for CI/the kernel and is retried, it has not failed.
+      return {
+        status: 'pending_ci',
+        message: `Release: waiting — release PR #${releasePr.number} is not landed yet: ${merged.message}`,
+        releasePrNumber: releasePr.number,
+        releasePrUrl: releasePr.url,
+      };
+    }
     if (!merged.merged) {
       return {
         status: 'failed',
@@ -874,6 +885,14 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseOutcom
       { workspaceId, taskId },
     );
 
+    if (!mergeResult.merged && mergeResult.hold && worker.prNumber) {
+      return {
+        status: 'pending_ci',
+        message: `Release: waiting — ${mergeResult.message}`,
+        releasePrNumber: worker.prNumber,
+        releasePrUrl: worker.prUrl ?? undefined,
+      };
+    }
     if (!mergeResult.merged) {
       return {
         status: 'failed',
