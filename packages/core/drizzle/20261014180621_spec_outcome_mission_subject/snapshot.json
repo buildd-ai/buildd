@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "d03cd3ef-2478-4579-8a2f-b9b673251607",
+  "id": "e31f808f-9235-4eb1-9802-ff67e4f603e1",
   "prevIds": [
-    "8fdacd09-2f7d-4051-91fd-9d87a06d8595"
+    "4aad1736-0a06-4117-821e-ca17670b925d"
   ],
   "ddl": [
     {
@@ -902,6 +902,12 @@
     {
       "isRlsEnabled": false,
       "name": "workflow_attempts",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "workflow_commands",
       "entityType": "tables",
       "schema": "public"
     },
@@ -28810,6 +28816,175 @@
       "table": "workflow_attempts"
     },
     {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "idempotency_key",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_commands"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "op",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_commands"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "principal",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_commands"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "request_hash",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_commands"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'running'",
+      "generated": null,
+      "identity": null,
+      "name": "status",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_commands"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "response",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_commands"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "delivery_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_commands"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "delivery_version",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_commands"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "host",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_commands"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "claim_token",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_commands"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "claimed_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_commands"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "completed_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_commands"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_commands"
+    },
+    {
       "type": "uuid",
       "typeSchema": null,
       "notNull": true,
@@ -29936,6 +30111,19 @@
       "generated": null,
       "identity": null,
       "name": "bypass",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_transitions"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "host",
       "entityType": "columns",
       "schema": "public",
       "table": "workflow_transitions"
@@ -39966,6 +40154,27 @@
       "nameExplicit": true,
       "columns": [
         {
+          "value": "created_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "workflow_commands_created_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "workflow_commands"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
           "value": "workspace_id",
           "isExpression": false,
           "asc": true,
@@ -47541,6 +47750,16 @@
       "name": "workflow_attempts_pkey",
       "schema": "public",
       "table": "workflow_attempts",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "idempotency_key"
+      ],
+      "nameExplicit": false,
+      "name": "workflow_commands_pkey",
+      "schema": "public",
+      "table": "workflow_commands",
       "entityType": "pks"
     },
     {
