@@ -43,6 +43,8 @@ export interface AreaClassifyInput {
   areas: readonly AreaInfo[];
   userId?: string | null;
   accountId?: string | null;
+  /** A repo import's `domain:` value, shown to the classifier with each area's declared domains (lib/specs/import.ts). */
+  hint?: { domain: string | null };
 }
 
 export type AreaClassification =

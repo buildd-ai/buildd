@@ -59,8 +59,14 @@ export type AreaSlot = (typeof AREA_SLOT_LABELS)[number];
 export const SPEC_AREA_DECISIONS = [...AREA_SLOT_LABELS, 'new_area', 'unsure'] as const;
 export type SpecAreaDecision = (typeof SPEC_AREA_DECISIONS)[number];
 
-export interface AreaStateEntry { id: string; title: string; scope: 'product' | 'domain'; charter: string; members: string[]; memberCount: number }
-export interface SpecAreaFeatures { card: SpecCard; areas: AreaStateEntry[]; omitted: number }
+export interface AreaStateEntry { id: string; title: string; scope: 'product' | 'domain'; charter: string; members: string[]; memberCount: number; domains?: string[] }
+/**
+ * `hint` is set only by a repo import (lib/specs/import.ts): the file's own
+ * `domain:` and, on each entry, the domain values that area declares. Without
+ * it the state is byte for byte the one measured; with it, two kinds of line
+ * are added and the question text is unchanged.
+ */
+export interface SpecAreaFeatures { card: SpecCard; areas: AreaStateEntry[]; omitted: number; hint?: { domain: string | null } }
 
 // ── The state ───────────────────────────────────────────────────────────────
 
@@ -71,8 +77,11 @@ const entryLine = (n: number, a: AreaStateEntry): string => {
   const charter = a.charter ? ` ${a.charter.slice(0, CHARTER_CHARS)}` : '';
   const holds = a.memberCount === 0 ? ' Holds no specs yet.'
     : ` Holds ${a.memberCount} spec${a.memberCount === 1 ? '' : 's'}${a.members.length ? `, such as: ${a.members.join('; ')}` : ''}.`;
-  return `[${n}] ${a.title}${kind}:${charter}${holds}\n`;
+  const declares = a.domains?.length ? ` Declares domains: ${a.domains.join(', ')}.` : '';
+  return `[${n}] ${a.title}${kind}:${charter}${holds}${declares}\n`;
 };
+
+const HINT_DOMAINS = 6;
 
 /**
  * Pick the areas the model reads (R-6). Pure. Products first, then the most
@@ -104,6 +113,7 @@ export function selectAreasForState(card: SpecCard, areas: readonly AreaInfo[], 
 /** The model's view: the card, then the numbered areas and how many were left out. */
 export function specAreaState(f: SpecAreaFeatures): string {
   let card = `New spec: ${f.card.title}\n${f.card.summary}\n`;
+  if (f.hint?.domain) card += `The repo file names its domain: ${f.hint.domain} (a hint only; place it by what it is about).\n`;
   for (const c of f.card.criteria) {
     const line = `- ${c}\n`;
     if (card.length + line.length > CARD_CHARS) break;
@@ -134,7 +144,8 @@ function parseFeatures(raw: unknown): { ok: true; features: SpecAreaFeatures } |
   const c = r?.card;
   const okCard = !!c && typeof c.title === 'string' && typeof c.summary === 'string' && Array.isArray(c.criteria) && c.criteria.every((x) => typeof x === 'string');
   const okAreas = Array.isArray(r?.areas) && r!.areas.length > 0 && r!.areas.length <= AREA_SLOTS && r!.areas.every((a) => a && typeof a.id === 'string' && typeof a.title === 'string');
-  return okCard && okAreas ? { ok: true, features: { card: c!, areas: r!.areas!, omitted: Number(r!.omitted) || 0 } } : { ok: false, message: 'card must be a spec card and areas 1 to 18 entries' };
+  const hint = r?.hint && (r.hint.domain === null || typeof r.hint.domain === 'string') ? { hint: { domain: r.hint.domain } } : {};
+  return okCard && okAreas ? { ok: true, features: { card: c!, areas: r!.areas!, omitted: Number(r!.omitted) || 0, ...hint } } : { ok: false, message: 'card must be a spec card and areas 1 to 18 entries' };
 }
 
 /** The label the model put most weight on, and that weight; a slot past the list is `unsure`. */
@@ -219,7 +230,16 @@ export async function classifySpecArea(input: AreaClassifyInput, deps: AreaClass
     const teamId = await (deps.teamOf ?? teamOfWorkspace)(input.workspaceId);
     if (!teamId) return { ran: false, reason: 'the workspace has no team' };
     const scope: BuilddDecisionScope = { teamId, workspaceId: input.workspaceId, userId: input.userId ?? null, accountId: input.accountId ?? null };
-    const features: SpecAreaFeatures = { card: input.card, areas, omitted };
+    // An import's hint: its `domain:` on the card, each area's declared domains on its line. Absent, the measured state.
+    const features: SpecAreaFeatures = input.hint
+      ? {
+        card: input.card, omitted, hint: { domain: input.hint.domain },
+        areas: areas.map((a) => {
+          const domains = (input.areas.find((x) => x.id === a.id)?.domains ?? []).slice(0, HINT_DOMAINS);
+          return domains.length ? { ...a, domains } : a;
+        }),
+      }
+      : { card: input.card, areas, omitted };
     const { response, recordId } = await (deps.judge ?? judgeOnce)(features, scope, input.specId);
     if (response.source !== 'model' || response.confidence === null) {
       const cause = response.fallbackCause ?? 'unavailable';
