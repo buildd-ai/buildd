@@ -41,6 +41,7 @@ import {
   resolveIncidentSql, trunkExplains, trunkRecovered, unresolvedIncidentsSql, type TrunkClassification,
 } from './trunk';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import { hostsKernelHere, submitKernelCommand } from './kernel-client';
 
 const seamExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
@@ -79,6 +80,9 @@ async function effectHandlers(): Promise<EffectHandlers> {
 
 export async function drainDelivery(deliveryId: string, deps: SeamDeps = {}): Promise<DrainSummary | null> {
   if (deps.drain) return deps.drain(deliveryId);
+  // workflow-kernel-library.md §3: in own mode the web host never drains an effect inline;
+  // it asks the control plane to drain this delivery, and the control plane's floor is the backstop.
+  if (!(await hostsKernelHere())) return drainOnControlPlane(deliveryId);
   try {
     const kernelEffectHandlers = await effectHandlers();
     // Effects can enqueue follow-ups for the same delivery; a few passes settle it.
@@ -102,6 +106,17 @@ export async function drainDelivery(deliveryId: string, deps: SeamDeps = {}): Pr
   } catch (err) {
     // The effect rows are durable; the cron drain picks up whatever this missed.
     console.error(`[workflow] inline drain for delivery ${deliveryId} failed:`, err);
+    return null;
+  }
+}
+
+/** The web host's inline drain in own mode: one `drain` command, best effort (the rows are durable). */
+async function drainOnControlPlane(deliveryId: string): Promise<DrainSummary | null> {
+  try {
+    const answer = await submitKernelCommand('drain', { deliveryId }, { principal: { kind: 'system', id: 'inline-drain' }, budgetMs: 10_000 });
+    return answer.result;
+  } catch (err) {
+    console.warn(`[workflow] control-plane drain for delivery ${deliveryId} not confirmed; the floor drains it:`, err instanceof Error ? err.message : err);
     return null;
   }
 }
@@ -194,8 +209,9 @@ export async function openKernelDelivery(p: OpenInput, deps: SeamDeps = {}): Pro
   const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, p.workspaceId)), columns: { id: true, gitConfig: true } });
   if (!ws || !kernelEnabled(ws.gitConfig)) return { owned: false, reason: 'kernel_off' };
 
+  // The owner task must be the workspace's own: a command names both, and they are checked together.
   const task = await db.query.tasks.findFirst({
-    where: sqlWhere(eq(tasks.id, p.ownerTaskId)),
+    where: sqlWhere(and(eq(tasks.id, p.ownerTaskId), eq(tasks.workspaceId, p.workspaceId))),
     columns: { id: true, status: true, category: true, kind: true, deliveryId: true, deliveryRole: true },
   });
   if (!task) return { owned: false, reason: 'no_task' };

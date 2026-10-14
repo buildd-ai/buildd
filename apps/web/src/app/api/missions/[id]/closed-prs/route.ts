@@ -105,14 +105,16 @@ export async function POST(
             supersedingRepo: suggestion.repo,
             reason: 'confirmed by user',
             recordedBy,
+            // The person when there is one (their id, never their email), else the API account.
+            ...(person ? { principal: { kind: 'user' as const, id: person }, actor: `human:${person}` } : apiAccount ? { principal: { kind: 'account' as const, id: apiAccount.id } } : {}),
           })
         : await dismissSupersessionSuggestion({ workerId: worker.id, candidatePrUrl: suggestion.prUrl });
-      if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
+      if (!result.ok) return NextResponse.json(('door' in result && result.door?.body) || { error: result.error }, { status: result.status, headers: 'door' in result ? result.door?.headers : undefined });
       return NextResponse.json({ ok: true, action });
     }
 
     const result = await recordPrAbandonment({ workerId: worker.id, reason, recordedBy, actor: `human:${person}` });
-    if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
+    if (!result.ok) return NextResponse.json(result.door?.body ?? { error: result.error }, { status: result.status, headers: result.door?.headers });
     return NextResponse.json({ ok: true, action });
   } catch (error) {
     console.error('Closed PR resolution error:', error);

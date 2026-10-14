@@ -345,6 +345,19 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
+    name: 'AC-11 (the kernel\'s half): one landing request submitted twice at once applies one transition and owes one merge; the other answers duplicate',
+    async run(host) {
+      const s = await new Delivery(host).open();
+      await s.approvedAt('H1');
+      const v = (await s.d()).version;
+      const [a, b] = await Promise.all([s.land('H1'), s.land('H1')]);
+      eq([a.result, b.result].sort(), ['applied', 'duplicate'], 'one applied, one duplicate');
+      eq((await s.d()).version, v + 1, 'one version');
+      eq((await host.transitions(s.deliveryId)).filter((t) => t.command === 'LandingRequested').length, 1, 'one LandingRequested');
+      eq(await s.count('merge_call'), 1, 'one merge owed');
+    },
+  },
+  {
     name: 'opening twice: the second open is a duplicate, never a second delivery',
     async run(host) {
       const { workspaceId, ownerTaskId } = await host.seedOwner();

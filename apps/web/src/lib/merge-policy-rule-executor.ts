@@ -44,7 +44,7 @@ export async function runPolicyMerge(
 ): Promise<boolean> {
   const policy = await (deps.loadPolicy ?? defaultLoadPolicy)(p.workspaceId);
   if (!policyAllowsRuleMerge(policy)) return false;
-  const merge = deps.policyMerge ?? (await import('./workflow/seam')).policyMergeThroughKernel;
+  const merge = deps.policyMerge ?? (await import('./workflow/kernel-client')).policyMergeThroughKernel;
   await merge({ ...p, reason: POLICY_MERGE_REASON });
   return true;
 }
@@ -56,7 +56,7 @@ export function escalationRuleExecutor(deps: RuleExecutorDeps = {}) {
     if (action !== 'policy_merge' || s.prNumber == null || !s.headSha) return;
     const policy = await (deps.loadPolicy ?? defaultLoadPolicy)(s.workspaceId);
     if (!policyAllowsRuleMerge(policy)) return;
-    const merge = deps.policyMerge ?? (await import('./workflow/seam')).policyMergeThroughKernel;
+    const merge = deps.policyMerge ?? (await import('./workflow/kernel-client')).policyMergeThroughKernel;
     await merge({
       workspaceId: s.workspaceId, prNumber: s.prNumber, headSha: s.headSha,
       reason: POLICY_MERGE_REASON,

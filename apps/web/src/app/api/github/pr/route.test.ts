@@ -1,7 +1,7 @@
 // Ensure test mode — routes short-circuit in development
 process.env.NODE_ENV = 'production';
 
-import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 import { TOKEN_PRESETS } from '@buildd/core/token-scopes';
 
@@ -4033,6 +4033,34 @@ describe('PUT /api/github/pr', () => {
         expect(res.status).toBe(202);
         expect(await res.json()).toMatchObject({ merged: false, branchUpdated: true });
         expect(recordedFacts).toHaveLength(0);
+      });
+
+      describe('cut over to the control plane (workflow-kernel-library §3)', () => {
+        let cp: ReturnType<typeof import('@/lib/workflow/testing/cut-over').cutOver> | null = null;
+        afterEach(() => { cp?.restore(); cp = null; });
+
+        it('MCP merge_pr with the control plane unreachable: 503 naming it, and nothing is merged on the legacy path', async () => {
+          const { cutOver } = await import('@/lib/workflow/testing/cut-over');
+          cp = cutOver();
+          workerOk();
+          const res = await putV(7);
+          expect(res.status).toBe(503);
+          expect(await res.json()).toMatchObject({ code: 'control_plane_unavailable', controlPlane: true, retryable: true, idempotencyKey: expect.stringMatching(/^land:/) });
+          expect(cp.calls.map((c) => c.op)).toContain('land');
+          expect(mockLandThroughKernel).not.toHaveBeenCalled();
+          expect(mockMergePullRequest).not.toHaveBeenCalled();
+          expect(recordedFacts).toHaveLength(0);
+        });
+
+        it('MCP merge_pr refused by the control plane: 403, not a 500, and nothing merged', async () => {
+          const { cutOver, refusedByControlPlane } = await import('@/lib/workflow/testing/cut-over');
+          cp = cutOver({ reply: refusedByControlPlane });
+          workerOk();
+          const res = await putV(7);
+          expect(res.status).toBe(403);
+          expect(await res.json()).toMatchObject({ code: 'control_plane_refused' });
+          expect(mockMergePullRequest).not.toHaveBeenCalled();
+        });
       });
     });
 
