@@ -11,7 +11,6 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { withCronRun } from '@/lib/cron-run';
-import { LANDING_CYCLE_COOLDOWN_MS } from '@/lib/pr-landing-sweep';
 import { drainDueEffects, reconcileKernelDeliveries, reconcileTrunkIncidents, restartTreadmillCycles, type FloorSummary, type TreadmillCycleSummary, type TrunkSweepSummary } from './seam';
 import type { DrainSummary } from './effects';
 import { postgresCommandLedger } from './command-ledger';
@@ -19,6 +18,13 @@ import { kernelHost } from './kernel-host';
 import { executionModeOf } from './command-api';
 
 type Isolated<T> = T | { error: string };
+
+/**
+ * The S15 cooldown before a spent treadmill cycle restarts: the landing sweep's
+ * `LANDING_CYCLE_COOLDOWN_MS`, restated here because the kernel (core) never imports
+ * the landing module; kernel-floor.test.ts pins the two equal.
+ */
+export const TREADMILL_COOLDOWN_MS = 60 * 60_000;
 
 export interface KernelFloorResult {
   kernelOutbox: Isolated<DrainSummary>;
@@ -44,7 +50,7 @@ export async function runKernelFloor(deps: KernelFloorDeps = {}): Promise<Kernel
     isolate(() => (deps.drainDueEffects ?? drainDueEffects)()),
     isolate(() => (deps.reconcileTrunkIncidents ?? (() => reconcileTrunkIncidents()))()),
     isolate(() => (deps.reconcileKernelDeliveries ?? (() => reconcileKernelDeliveries()))()),
-    isolate(() => (deps.restartTreadmillCycles ?? restartTreadmillCycles)({ cooldownMs: LANDING_CYCLE_COOLDOWN_MS })),
+    isolate(() => (deps.restartTreadmillCycles ?? restartTreadmillCycles)({ cooldownMs: TREADMILL_COOLDOWN_MS })),
     isolate(() => (deps.pruneCommands ?? (() => postgresCommandLedger().prune()))()),
   ]);
   return { kernelOutbox, trunk, kernelFloor, treadmillCycles, commandsPruned };

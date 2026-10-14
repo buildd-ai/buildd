@@ -23,7 +23,6 @@
  * web host runs the package itself, since there is no control plane to follow.
  */
 import { signRequest, signingKey } from '@buildd/dispatch-contract';
-import { getControlPlaneIdentity } from '@/lib/deploy-identity';
 import { kernelHost, type KernelHost } from './kernel-host';
 import {
   COMMAND_API_VERSION, COMMAND_PATH, commandKeyRing, deliveryAfter, executionModeOf, runKernelOp,
@@ -87,7 +86,20 @@ let cached: { mode: KernelMode; at: number } | null = null;
 /** Tests. */
 export function resetKernelModeCache(): void { cached = null; }
 
-const readWorkerMode = async (): Promise<string | null> => (await getControlPlaneIdentity())?.mode ?? null;
+/**
+ * The Worker's mode from its public shallow health, the same read `/api/deploy-identity`
+ * makes (lib/deploy-identity.ts, which the kernel does not import): short timeout, never a throw.
+ */
+export async function readWorkerMode(env: Record<string, string | undefined> = process.env): Promise<string | null> {
+  try {
+    const res = await fetch(env.CONTROL_PLANE_HEALTH_URL || `${CONTROL_PLANE_URL}/__control-plane/health`, { signal: AbortSignal.timeout(1500), cache: 'no-store' });
+    if (!res.ok) return null;
+    const mode = ((await res.json()) as { mode?: unknown }).mode;
+    return typeof mode === 'string' ? mode : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Where kernel commands run, as seen from this process. On the control plane:
@@ -103,7 +115,7 @@ export async function kernelMode(deps: ClientDeps = {}): Promise<KernelMode> {
   if (!env.VERCEL) return 'shadow';
   const now = (deps.now ?? Date.now)();
   if (cached && now - cached.at < MODE_FRESH_MS) return cached.mode;
-  const read = await (deps.readMode ?? readWorkerMode)().catch(() => null);
+  const read = await (deps.readMode ?? (() => readWorkerMode(env)))().catch(() => null);
   if (read !== null) {
     cached = { mode: executionModeOf(read), at: now };
     return cached.mode;

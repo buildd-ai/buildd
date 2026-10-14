@@ -43,6 +43,14 @@ describe('the scheduled pass', () => {
   });
 });
 
+describe('the treadmill cooldown', () => {
+  it('is the landing sweep\'s cycle cooldown', async () => {
+    const { LANDING_CYCLE_COOLDOWN_MS } = await import('@/lib/pr-landing-sweep');
+    const { TREADMILL_COOLDOWN_MS } = await import('./kernel-floor');
+    expect(TREADMILL_COOLDOWN_MS).toBe(LANDING_CYCLE_COOLDOWN_MS);
+  });
+});
+
 describe('isolation', () => {
   it('one step failing never discards the others, and counts as an error', async () => {
     const s = steps({ reconcileKernelDeliveries: async () => { throw new Error('github down'); } });
