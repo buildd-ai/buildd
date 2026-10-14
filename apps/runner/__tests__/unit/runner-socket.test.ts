@@ -101,6 +101,12 @@ describe('serveRunnerSocket', () => {
     expect(new TextDecoder().decode(value)).toContain('"type":"init"');
     await reader.cancel();
   });
+
+  test('a second serve on a live socket fails and leaves the first runner answering', async () => {
+    serveIdentity(4242);
+    expect(() => serveRunnerSocket(sock, () => Response.json({ pid: 5151 }))).toThrow();
+    expect(await probeRunnerSocket(sock)).toEqual({ state: 'live', pid: 4242, version: '9.9.9' });
+  });
 });
 
 describe('probeRunnerSocket', () => {
@@ -172,6 +178,19 @@ describe('decideStart', () => {
   test('a runner whose pid is unknown is still named', () => {
     expect(alreadyRunningMessage(null)).toBe('The background runner is already running. Watch it with: buildd top');
   });
+
+  test('a runner that accepts but never answers is named by its socket path', () => {
+    expect(alreadyRunningMessage(null, '/h/.buildd/runner.sock')).toBe(
+      'The background runner is already running (it holds /h/.buildd/runner.sock but did not answer). Watch it with: buildd top',
+    );
+    // A known pid is the better name; the path is only the fallback.
+    expect(alreadyRunningMessage(77, '/h/.buildd/runner.sock')).toBe(alreadyRunningMessage(77));
+  });
+
+  test('decideStart names the socket when the live runner gave no pid', () => {
+    const d = decideStart({ probe: { state: 'live', pid: null, version: null }, isTTY: false, foreground: false, socketPath: '/s.sock' });
+    expect(d).toMatchObject({ action: 'exit', message: alreadyRunningMessage(null, '/s.sock') });
+  });
 });
 
 describe('checkSingleInstance', () => {
@@ -216,7 +235,9 @@ describe('worker actions', () => {
     await relayWorkerAction('w1', 'stop', {}, send);
     expect(calls).toEqual([
       ['/api/workers/w1/respond', { message: 'yes' }],
-      ['/api/workers/w1/instruct', { message: 'look at x', priority: 'urgent' }],
+      // /instruct needs a session or admin key and refuses a runner key, so a
+      // message rides /cmd, which accepts the key that claimed the worker.
+      ['/api/workers/w1/cmd', { action: 'message', text: 'look at x' }],
       ['/api/workers/w1/pause', {}],
       ['/api/workers/w1/cmd', { action: 'abort' }],
     ]);

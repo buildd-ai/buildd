@@ -29,7 +29,7 @@ import { emitHeartbeatTick } from './heartbeat-log';
 import { sweepStaleSessionPromptFiles } from './session-prompt-files';
 import { heartbeatState, withClaimHealthCheck } from './claim-budget-signals';
 import { authorizeLocalRequest, escapeHtml, injectLocalToken, isLoopbackAddress, loadOrCreateLocalToken, resolveBindHost } from './local-server-auth';
-import { checkSingleInstance, probeRunnerSocket, alreadyRunningMessage, EXIT_ALREADY_RUNNING, matchWorkerAction, relayWorkerAction, runnerSocketPath, serveRunnerSocket, type RunnerIdentity, type RunnerSocketServer } from './runner-socket';
+import { checkSingleInstance, decideStart, probeRunnerSocket, matchWorkerAction, relayWorkerAction, runnerSocketPath, serveRunnerSocket, type RunnerIdentity, type RunnerSocketServer } from './runner-socket';
 
 const PORT = parseInt(process.env.PORT || '8766');
 // Entrypoint: resolving once at load is fine here (see buildd-home.ts).
@@ -177,14 +177,10 @@ if (ONCE_TASK_ID === null) {
     }, { error: (err) => localServerError(err) });
   } catch (err: any) {
     // Lost a race with another start that bound first: that one is the runner.
-    const again = await probeRunnerSocket(RUNNER_SOCKET);
-    if (again.state === 'live') {
-      exitAlreadyRunning({
-        code: isTTY && !foreground ? 0 : EXIT_ALREADY_RUNNING,
-        message: alreadyRunningMessage(again.pid),
-        stream: isTTY && !foreground ? 'stdout' : 'stderr',
-      });
-    }
+    // serveRunnerSocket never unlinks an existing file, so the bind fails here
+    // rather than stealing the other runner's socket.
+    const again = decideStart({ probe: await probeRunnerSocket(RUNNER_SOCKET), isTTY, foreground, socketPath: RUNNER_SOCKET });
+    if (again.action === 'exit') exitAlreadyRunning(again);
     console.warn(`[runner-socket] could not serve ${RUNNER_SOCKET} (${err?.message ?? err}); continuing without it — buildd top will not find this runner`);
   }
 }

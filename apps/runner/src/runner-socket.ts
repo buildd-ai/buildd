@@ -22,7 +22,7 @@
  * process still holds open, and removing it would let a second runner start
  * beside the first.
  */
-import { chmodSync, existsSync, lstatSync, statSync, unlinkSync } from 'fs';
+import { chmodSync, lstatSync, statSync, unlinkSync } from 'fs';
 import { join } from 'path';
 
 export const RUNNER_SOCKET_NAME = 'runner.sock';
@@ -102,8 +102,13 @@ export type StartDecision =
   | { action: 'start' }
   | { action: 'exit'; code: number; message: string; stream: 'stdout' | 'stderr' };
 
-export function alreadyRunningMessage(pid: number | null): string {
-  const who = pid ? ` (pid ${pid})` : '';
+/**
+ * A pid names the runner best. A runner that accepted the probe but never
+ * answered gave no pid, so name the socket it holds instead: that is what the
+ * person has to look at (or remove, once they have found the process).
+ */
+export function alreadyRunningMessage(pid: number | null, socketPath?: string): string {
+  const who = pid ? ` (pid ${pid})` : socketPath ? ` (it holds ${socketPath} but did not answer)` : '';
   return `The background runner is already running${who}. Watch it with: buildd top`;
 }
 
@@ -114,9 +119,9 @@ export function alreadyRunningMessage(pid: number | null): string {
  * script) it is a refusal and exits non-zero. `--foreground` asks for a second
  * runner explicitly, so it is always a refusal.
  */
-export function decideStart(input: { probe: SocketProbe; isTTY: boolean; foreground: boolean }): StartDecision {
+export function decideStart(input: { probe: SocketProbe; isTTY: boolean; foreground: boolean; socketPath?: string }): StartDecision {
   if (input.probe.state !== 'live') return { action: 'start' };
-  const message = alreadyRunningMessage(input.probe.pid);
+  const message = alreadyRunningMessage(input.probe.pid, input.socketPath);
   if (input.isTTY && !input.foreground) return { action: 'exit', code: 0, message, stream: 'stdout' };
   return { action: 'exit', code: EXIT_ALREADY_RUNNING, message, stream: 'stderr' };
 }
@@ -139,7 +144,7 @@ export async function checkSingleInstance(input: {
       input.log?.(`[runner-socket] removed stale socket ${input.socketPath} (no runner answered)`);
     } catch { /* gone already */ }
   }
-  return { probe, decision: decideStart({ probe, isTTY: input.isTTY, foreground: input.foreground }) };
+  return { probe, decision: decideStart({ probe, isTTY: input.isTTY, foreground: input.foreground, socketPath: input.socketPath }) };
 }
 
 export interface RunnerSocketServer {
@@ -152,15 +157,18 @@ export interface RunnerSocketServer {
  * 0177 umask so it is never group/world-accessible, even for the moment
  * before the chmod. On exit the socket is removed, but only if it is still
  * ours (a later runner may already have replaced it).
+ *
+ * It never removes an existing file first. checkSingleInstance has already
+ * cleared a stale one, so a file still at the path here belongs to a start that
+ * raced this one and bound first. Binding then fails (EADDRINUSE) and the
+ * caller probes again and exits, instead of unlinking a live runner's socket
+ * and running beside it.
  */
 export function serveRunnerSocket(
   socketPath: string,
   fetch: (req: Request) => Response | Promise<Response>,
   opts: { error?: (err: Error) => Response | Promise<Response> } = {},
 ): RunnerSocketServer {
-  if (existsSync(socketPath)) {
-    try { unlinkSync(socketPath); } catch { /* bind will report it */ }
-  }
   const prevUmask = process.umask(0o177);
   let server: ReturnType<typeof Bun.serve>;
   try {
@@ -200,16 +208,21 @@ export function serveRunnerSocket(
 // ── Actions for `buildd top` ────────────────────────────────────────────────
 
 /**
- * The socket's worker actions, each relayed to the buildd server route the
- * dashboard calls for the same button, authenticated with the runner's API key
- * (each route accepts the key that claimed the worker). So an answer given in
- * the terminal is recorded and resumed exactly like one given on the dashboard.
+ * The socket's worker actions, each relayed to a buildd server route that
+ * accepts the runner's API key (the key that claimed the worker), so an answer
+ * given in the terminal is recorded and resumed exactly like one given on the
+ * dashboard.
+ *
+ * A message goes to /cmd { action: 'message', text }, not /instruct: /instruct
+ * takes a session or admin key and refuses a runner (worker-level) key with
+ * 401. /cmd queues and records the message through the same queueInstruction
+ * path, always at urgent priority.
  */
 export const WORKER_ACTIONS = {
   /** a: answer a waiting question. Body { message }. */
   answer: { endpoint: 'respond', needsMessage: true },
-  /** m: message a running agent. Body { message, priority? }. */
-  message: { endpoint: 'instruct', needsMessage: true },
+  /** m: message a running agent. Body { message }. Delivered at urgent priority. */
+  message: { endpoint: 'cmd', needsMessage: true },
   /** p: pause at the next safe point. */
   pause: { endpoint: 'pause', needsMessage: false },
   /** x: stop the agent. */
@@ -248,7 +261,7 @@ export async function relayWorkerAction(
   let body: Record<string, unknown>;
   switch (action) {
     case 'answer': body = { message }; break;
-    case 'message': body = { message, ...(input.priority === 'urgent' ? { priority: 'urgent' } : {}) }; break;
+    case 'message': body = { action: 'message', text: message }; break;
     case 'pause': body = {}; break;
     case 'stop': body = { action: 'abort' }; break;
   }
