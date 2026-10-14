@@ -16,7 +16,7 @@ mock.module('../../src/lib/notify', () => ({ ...realNotify, notifyTeamOf: async 
 const realOutcome = await import('../../src/lib/task-outcome-event');
 mock.module('../../src/lib/task-outcome-event', () => ({ ...realOutcome, emitHeldReleaseOutcome: async (taskId: string, failure: unknown) => { outcomes.push({ taskId, failure }); } }));
 
-const { settleHeldReleasesOnClose, sweepHeldReleases } = await import('../../src/lib/held-pr-tasks');
+const { settleHeldReleaseTask, settleHeldReleasesOnClose, sweepHeldReleases } = await import('../../src/lib/held-pr-tasks');
 
 beforeAll(() => { assertDbConfigured(); });
 
@@ -56,6 +56,15 @@ describe('held releases', () => {
     expect(r.status).toBe('failed');
     expect(String(r.release_result?.error)).toContain('closed without merging');
     expect(notified.some((t) => t.startsWith('Release PR closed'))).toBe(true);
+  });
+
+  test('two settles racing on the same held task (the webhook and the sweep): only the first acts', async () => {
+    const h = await held();
+    const t = { id: h.taskId, workspaceId, context: { releasePrPending: true, releasePrNumber: h.prNumber } };
+    expect(await settleHeldReleaseTask(t, { merged: true, prNumber: h.prNumber, repoFullName: REPO, via: 'the PR merged' })).toBe(true);
+    expect(await settleHeldReleaseTask(t, { merged: false, prNumber: h.prNumber, repoFullName: REPO, reason: 'late close', title: 'Release PR closed' })).toBe(false);
+    expect((await row(h.taskId)).status).toBe('completed');
+    expect(outcomes.filter((x) => x.taskId === h.taskId)).toHaveLength(1);
   });
 
   test('a PR in another repo with the same number settles nothing', async () => {
