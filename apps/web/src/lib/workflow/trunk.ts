@@ -8,7 +8,8 @@
  * the same signature inside a window, the failure is the trunk's, not the
  * PR's: the delivery joins one `trunk_incidents` row and goes
  * BLOCKED_ON_TRUNK (T25) instead of filing a per-PR CI attempt. One trunk-fix
- * task exists per incident (`dispatch_trunk_fix`, ci-red-trunk-effects.ts). The
+ * task exists per red base (`dispatch_trunk_fix`, the package's
+ * handlers/trunk.ts, reading this ledger through `builddTrunk`). The
  * recovery sweep re-reads each open incident's base head; once the base no
  * longer fails the incident's checks the incident resolves and every blocked
  * delivery re-enters its resume state (T26), with a mechanical branch refresh
@@ -19,6 +20,8 @@
  */
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
+import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
+import type { Trunk, TrunkIncident } from '@buildd/workflow-kernel/ports';
 import type { Exec } from './kernel';
 import type { GithubFactReader } from './facts';
 import { UNKNOWN_CI_SIGNATURE, ciSignature, trunkExplains } from './trunk-signature';
@@ -122,6 +125,67 @@ SELECT d.id, d.workspace_id, d.repo_full_name, d.current_head_sha, d.trunk_incid
 FROM workflow_deliveries d JOIN trunk_incidents i ON i.id = d.trunk_incident_id
 WHERE d.state = 'BLOCKED_ON_TRUNK' AND d.authority = 'kernel' AND i.status = 'resolved'
 LIMIT ${limit}::int`;
+}
+
+// ── The incident ledger as the kernel's `Trunk` port ───────────────────────
+
+export function trunkIncidentSql(id: string): SQL {
+  return sql`-- workflow:trunk_incident
+SELECT id, workspace_id, repo_full_name, base_ref, signature, status, trunk_fix_task_id, affected_deliveries FROM trunk_incidents WHERE id = ${id}::uuid`;
+}
+
+/**
+ * The trunk-fix task this incident belongs to: the oldest unresolved incident on
+ * the same base whose fix is not finished (no task yet, or a task still open),
+ * falling back to the incident itself. Its linked task when it has one, else its
+ * own id, which is the id its own dispatch files under. One statement, no
+ * interactive transaction (neon-http): every incident of one red base resolves
+ * to the same id, and the task insert's primary key makes it one row.
+ */
+export function trunkFixAnchorSql(incidentId: string): SQL {
+  const terminal = sql.join(TERMINAL_TASK_STATUSES.map((s) => sql`${s}::text`), sql`, `);
+  return sql`-- workflow:trunk_fix_anchor
+SELECT COALESCE(o.trunk_fix_task_id, o.id) AS task_id, o.id AS incident_id, t.context->>'signature' AS fix_signature
+FROM trunk_incidents me
+JOIN trunk_incidents o ON o.workspace_id = me.workspace_id AND o.repo_full_name = me.repo_full_name AND o.base_ref = me.base_ref
+  AND o.status <> 'resolved'
+LEFT JOIN tasks t ON t.id = o.trunk_fix_task_id
+WHERE me.id = ${incidentId}::uuid
+  AND (o.id = me.id OR (o.trunk_fix_task_id IS NULL AND (o.first_seen_at, o.id) < (me.first_seen_at, me.id)) OR t.status NOT IN (${terminal}))
+ORDER BY (o.first_seen_at, o.id)
+LIMIT 1`;
+}
+
+/** The incident's fix task, only while it has none, is unresolved, and the task exists (the FK, §13.1 deviation 9). */
+export function linkTrunkFixSql(incidentId: string, taskId: string): SQL {
+  return sql`-- workflow:trunk_link_fix
+UPDATE trunk_incidents SET trunk_fix_task_id = ${taskId}::uuid, status = 'fixing', updated_at = now()
+WHERE id = ${incidentId}::uuid AND trunk_fix_task_id IS NULL AND status <> 'resolved'
+  AND EXISTS (SELECT 1 FROM tasks WHERE id = ${taskId}::uuid)`;
+}
+
+/** buildd's `trunk_incidents` as the kernel's `Trunk` port. */
+export function builddTrunk(exec: Exec = dbExec): Trunk {
+  return {
+    async incident(id) {
+      const r = ((await exec(trunkIncidentSql(id))).rows ?? [])[0] as Record<string, unknown> | undefined;
+      if (!r) return null;
+      const inc: TrunkIncident = {
+        id: String(r.id), workspaceId: String(r.workspace_id), repoFullName: String(r.repo_full_name), baseRef: String(r.base_ref),
+        signature: String(r.signature), status: String(r.status), fixTaskId: r.trunk_fix_task_id == null ? null : String(r.trunk_fix_task_id),
+        affectedDeliveries: Array.isArray(r.affected_deliveries) ? r.affected_deliveries.map(String) : [],
+      };
+      return inc;
+    },
+    async fixAnchor(incidentId) {
+      const r = ((await exec(trunkFixAnchorSql(incidentId))).rows ?? [])[0] as { task_id?: string; incident_id?: string; fix_signature?: string | null } | undefined;
+      return r?.task_id ? { taskId: String(r.task_id), incidentId: String(r.incident_id), fixSignature: r.fix_signature ?? null } : null;
+    },
+    async linkFix(incidentId, taskId) {
+      await exec(linkTrunkFixSql(incidentId, taskId));
+    },
+    signatureOf: ciSignature,
+  };
 }
 
 // ── Classification at ingestion (T10 → T25) ────────────────────────────────

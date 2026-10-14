@@ -73,6 +73,13 @@ WHERE workspace_id = ${workspaceId}::uuid AND fact_key = ${factKey}::text
 LIMIT 1`;
 }
 
+/** Bind a ledger row to the task filed for it; a row already bound keeps its task. */
+export function linkAttemptTaskSql(attemptId: string, taskId: string): SQL {
+  return sql`-- workflow:link_attempt_task
+UPDATE workflow_attempts SET task_id = ${taskId}::uuid, updated_at = now()
+WHERE id = ${attemptId}::uuid AND task_id IS NULL`;
+}
+
 export function postgresStore(exec: Exec): Store {
   return {
     async loadView(ref) {
@@ -139,6 +146,10 @@ export function postgresStore(exec: Exec): Store {
 
     async parkEffect(id, attemptCount, outcome, delayMs) {
       return (await rows(exec, parkEffectSql(id, attemptCount, outcome, delayMs))).length > 0;
+    },
+
+    async linkAttemptTask(attemptId, taskId) {
+      await exec(linkAttemptTaskSql(attemptId, taskId));
     },
 
     async insertFollowupEffect(e) {

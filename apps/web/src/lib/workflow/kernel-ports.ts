@@ -6,23 +6,34 @@
  * apps/web/src/modules.ts fill it; `workflowKernel()` below composes it).
  *
  * The core halves live here: the Postgres store, GitHub per workspace (its
- * installation's live reads plus `GithubWrites` over `@/lib/github`), and the
- * ingest funnel (`ingestFact`). The module halves are handed in as hooks, so
- * this core file imports no module (scripts/module-boundaries.test.ts): how a
- * merge answer reads as T16 and the activity render (reviews), the
- * supersession and post-merge work (reviews, missions), team notifications.
+ * installation's live reads plus `GithubWrites` over `@/lib/github`), the
+ * ingest funnel (`ingestFact`), the trunk incident ledger (`builddTrunk`) and
+ * the scheduler (`builddWork`: a task insert, `announceTaskCreated`,
+ * `wakeTask`). The module halves are handed in as hooks, so this core file
+ * imports no module (scripts/module-boundaries.test.ts): how a merge answer
+ * reads as T16 and the activity render (reviews), the supersession and
+ * post-merge work (reviews, missions), team notifications, and per role the
+ * shape of the task `Work` files (the CI fix, the trunk fix), the CI job-log
+ * capture and the CI hand-off to a person (reviews).
  */
+import { and, eq, ne, sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
+import { tasks, workspaces } from '@buildd/core/db/schema';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { TERMINAL_WORKER_STATUSES } from '@buildd/shared';
 import type { EffectHandlers } from '@buildd/workflow-kernel/effects';
 import { kernelEffectHandlers } from '@buildd/workflow-kernel/handlers/index';
 import type {
-  GithubFacts, GithubWrites, Ingest, KernelPorts, Lifecycle, MergeAnswer, Notify,
+  Escalate, Evidence, GithubFacts, GithubWrites, Ingest, KernelPorts, Lifecycle, MergeAnswer, Notify, Trunk, Work, WorkRequest,
 } from '@buildd/workflow-kernel/ports';
+import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
+import { queueSystemInstruction } from '@/lib/system-instruction-queue';
 import { githubApi, mergePullRequest, postPrReview, type MergePullRequestResult } from '@/lib/github';
 import { ingestFact, type FactInput } from './facts';
 import { githubReader, workspaceRepo } from './github-facts';
 import type { Exec } from './kernel';
 import { postgresStore } from './postgres-store';
+import { builddTrunk } from './trunk';
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
@@ -111,15 +122,111 @@ export function builddIngest(exec: Exec = dbExec): Ingest {
   };
 }
 
+// ── Work: the task insert, announced and woken ─────────────────────────────
+
+/** A task row a role's builder made from a `WorkRequest`: what `builddWork` inserts under the kernel's id. */
+export interface WorkBuilt {
+  /** The `tasks` insert, without `id` (the request's `taskId`). */
+  values: Record<string, unknown>;
+  /** The workspace row, when the builder read it (else it is read for the announcement). */
+  workspace?: unknown;
+  /**
+   * When nothing was inserted and no task exists under the id: another unique
+   * index refused the row, and this is the error (the effect retries). Absent =
+   * the refusal is a redelivery's answer, not a failure.
+   */
+  refused?: string;
+  /** Which shape was filed, for the effect's outcome. */
+  variant?: string;
+  /** Evidence still owed for the new task (`WorkFiled.evidence`). */
+  evidence?: Record<string, unknown>;
+  /** The module's own record of the new task (an activity line), after it is announced. */
+  afterFile?: (row: { id: string; title: string }) => Promise<void>;
+}
+
+/** A role's half of `Work`: the task the kernel asked for, as buildd files it; or why it cannot be filed now. */
+export type WorkBuilder = (req: WorkRequest) => Promise<WorkBuilt | { skipped: string }>;
+export type WorkBuilders = Record<string, WorkBuilder>;
+
+/** Pending tasks of a delivery's role, cancelled as skipped (all but `keepTaskId`). */
+async function cancelPendingTasks(p: { deliveryId: string; role: string; reason: string; summary: string; keepTaskId?: string | null }): Promise<number> {
+  const rows = await db.update(tasks)
+    .set({
+      status: 'cancelled',
+      result: sql`COALESCE(${tasks.result}, '{}'::jsonb) || jsonb_build_object('skipped', true, 'skipReason', ${p.reason}::text, 'summary', ${p.summary}::text)`,
+      updatedAt: new Date(),
+    })
+    .where(and(
+      eq(tasks.deliveryId, p.deliveryId),
+      eq(tasks.deliveryRole, p.role as never),
+      eq(tasks.status, 'pending'),
+      ...(p.keepTaskId ? [ne(tasks.id, p.keepTaskId)] : []),
+    ))
+    .returning({ id: tasks.id });
+  return rows.length;
+}
+
+/** The note on a filed task's description (read at claim, if nobody has it yet) and on any live worker's instruction queue. */
+async function steerTask(exec: Exec, taskId: string, p: { marker: string; note: string }): Promise<void> {
+  await exec(sql`-- workflow:steer_task
+UPDATE tasks SET description = COALESCE(description, '') || E'\n\n' || ${p.note}::text, updated_at = now()
+WHERE id = ${taskId}::uuid AND strpos(COALESCE(description, ''), ${p.marker}::text) = 0`);
+  const terminal = sql.join(TERMINAL_WORKER_STATUSES.map((st) => sql`${st}::text`), sql`, `);
+  const live = ((await exec(sql`-- workflow:steer_task_workers
+SELECT id FROM workers WHERE task_id = ${taskId}::uuid AND status NOT IN (${terminal})`)).rows ?? []) as Array<{ id: string }>;
+  for (const w of live) await queueSystemInstruction(String(w.id), p.note, { marker: p.marker });
+}
+
+/** buildd's scheduler as the kernel's `Work` port: each role's builder words the row, this files it once under the kernel's id. */
+export function builddWork(builders: WorkBuilders, exec: Exec = dbExec): Work {
+  return {
+    async file(req) {
+      const build = builders[req.role];
+      if (!build) throw new Error(`no task builder for role ${req.role}`);
+      const b = await build(req);
+      if ('skipped' in b) return { taskId: null, created: false, skipped: b.skipped };
+      const taskId = req.taskId;
+      if (!taskId) throw new Error(`a ${req.role} task is filed under the kernel's id`);
+      const [row] = await db.insert(tasks).values({ id: taskId, ...b.values } as never).onConflictDoNothing().returning();
+      if (!row) {
+        if (b.refused) {
+          const existing = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { id: true } });
+          if (!existing) throw new Error(b.refused);
+        }
+        // Filed before (a run that crashed before the kernel bound it): still owed what the filing owes.
+        return { taskId, created: false, ...(b.variant ? { variant: b.variant } : {}), ...(b.evidence ? { evidence: b.evidence } : {}) };
+      }
+      const workspace = b.workspace ?? await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, req.workspaceId)) });
+      await announceTaskCreated(row as never, workspace as never);
+      await b.afterFile?.(row as { id: string; title: string });
+      return { taskId, created: true, ...(b.variant ? { variant: b.variant } : {}), ...(b.evidence ? { evidence: b.evidence } : {}) };
+    },
+    async wake(taskId, reason) {
+      await wakeTask(taskId, reason as Parameters<typeof wakeTask>[1]);
+    },
+    async cancel(taskId, reason) {
+      await db.update(tasks)
+        .set({ status: 'cancelled', result: sql`COALESCE(${tasks.result}, '{}'::jsonb) || jsonb_build_object('skipped', true, 'skipReason', ${reason}::text)`, updatedAt: new Date() })
+        .where(and(eq(tasks.id, taskId), eq(tasks.status, 'pending')));
+    },
+    cancelPending: cancelPendingTasks,
+    steer: (taskId, p) => steerTask(exec, taskId, p),
+  };
+}
+
 /** The module halves the composition root hands in. */
 export interface BuilddKernelHooks {
   mergeAnswerOf: MergeAnswerOf;
   notify: Notify;
   lifecycle: Lifecycle;
+  /** Per role, the task `Work` files (`ci_fix`, `trunk_fix`). */
+  work: WorkBuilders;
+  escalate: Escalate;
+  evidence: Evidence;
 }
 
 /** The ports the package's effect handlers run on in buildd. */
-export function builddKernelPorts(hooks: BuilddKernelHooks, opts: { exec?: Exec; githubFor?: (workspaceId: string) => Promise<GithubFacts | null> } = {}): KernelPorts {
+export function builddKernelPorts(hooks: BuilddKernelHooks, opts: { exec?: Exec; githubFor?: (workspaceId: string) => Promise<GithubFacts | null>; trunk?: Trunk } = {}): KernelPorts {
   const exec = opts.exec ?? dbExec;
   return {
     store: postgresStore(exec),
@@ -128,6 +235,10 @@ export function builddKernelPorts(hooks: BuilddKernelHooks, opts: { exec?: Exec;
     ingest: builddIngest(exec),
     notify: hooks.notify,
     lifecycle: hooks.lifecycle,
+    work: builddWork(hooks.work, exec),
+    trunk: opts.trunk ?? builddTrunk(exec),
+    escalate: hooks.escalate,
+    evidence: hooks.evidence,
   };
 }
 
@@ -151,5 +262,6 @@ export async function workflowKernel(): Promise<WorkflowKernel> {
   if (composed) return composed;
   const m = await import('@/modules');
   const ports = builddKernelPorts(m.workflowKernelHooks());
-  return (composed = { ports, handlers: { ...m.workflowHostEffectHandlers(), ...kernelEffectHandlers(ports) } });
+  const host = m.workflowHostEffectHandlers();
+  return (composed = { ports, handlers: { ...host, ...kernelEffectHandlers(ports, host) } });
 }

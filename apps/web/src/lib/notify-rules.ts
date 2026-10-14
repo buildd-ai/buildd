@@ -17,6 +17,11 @@ export type NotifyEvent = 'taskClaimed' | 'taskCompleted' | 'taskFailed' | 'cred
  */
 export type TeamAlertEvent = NotifyEvent | 'needsAttention';
 
+/** A kind `notifyTeamOf` routes: `needsAttention` or a known preference-backed event. */
+export function isTeamAlertEvent(kind: string): kind is TeamAlertEvent {
+  return kind === 'needsAttention' || Object.prototype.hasOwnProperty.call(DEFAULT_NOTIFICATION_PREFERENCES, kind);
+}
+
 /**
  * Push what needs a person; routine per-task events are opt-in. Claimed and
  * completed fire once per task each, which at fleet volume exhausted a team's

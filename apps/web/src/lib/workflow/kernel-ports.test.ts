@@ -6,7 +6,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import type { MergePullRequestResult } from '@/lib/github';
-import { builddGithubFor, builddGithubWrites, builddKernelPorts } from './kernel-ports';
+import { builddGithubFor, builddGithubWrites, builddKernelPorts, builddWork } from './kernel-ports';
 import { mergeAnswerOf } from './pr-landing-effects';
 
 function fakeApi(answers: Record<string, unknown> = {}) {
@@ -75,6 +75,18 @@ describe('GitHub per workspace', () => {
 });
 
 test('the composed ports carry every port the package handlers reach', () => {
-  const ports = builddKernelPorts({ mergeAnswerOf, notify: { activity: async () => {}, team: async () => {} }, lifecycle: {} as never });
-  expect(Object.keys(ports).sort()).toEqual(['clock', 'githubFor', 'ingest', 'lifecycle', 'notify', 'store']);
+  const ports = builddKernelPorts({
+    mergeAnswerOf, notify: { activity: async () => {}, team: async () => {} }, lifecycle: {} as never, work: {}, escalate: {} as never, evidence: {} as never,
+  });
+  expect(Object.keys(ports).sort()).toEqual(['clock', 'escalate', 'evidence', 'githubFor', 'ingest', 'lifecycle', 'notify', 'store', 'trunk', 'work']);
+});
+
+describe('builddWork', () => {
+  const req = { role: 'ci_fix', workspaceId: 'w', taskId: 't', target: { repoFullName: 'acme/x', prNumber: 1 }, lineage: { deliveryId: 'd' }, dedupeKey: 'k' };
+  test('a role with no builder is an error, so the effect backs off instead of filing nothing', async () => {
+    await expect(builddWork({}).file(req)).rejects.toThrow('no task builder for role ci_fix');
+  });
+  test('a builder that cannot file now answers skipped, and nothing is inserted', async () => {
+    expect(await builddWork({ ci_fix: async () => ({ skipped: 'missing_context' }) }).file(req)).toEqual({ taskId: null, created: false, skipped: 'missing_context' });
+  });
 });
