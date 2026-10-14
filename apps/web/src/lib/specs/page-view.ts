@@ -2,7 +2,8 @@ import { currentFiling, filingViews, type FilingView } from './filings';
 import { organizeWorkspace } from './organize';
 import { db } from '@buildd/core/db';
 import { artifacts, specFilings, specRevisions, specs, users, workspaces } from '@buildd/core/db/schema';
-import { and, desc, eq, inArray, ne } from 'drizzle-orm';
+import { and, desc, eq, inArray, ne, notInArray, sql } from 'drizzle-orm';
+import type { HubWorkspace } from './hub';
 import { isUuid } from '@/lib/uuid';
 import { getSpec, listSpecs, reach, type SpecCaller, type SpecRow } from './store';
 import { listSpecComments, type CommentView } from './comments';
@@ -167,13 +168,40 @@ export async function specListView(userId: string, workspaceId: string): Promise
   if (!r.ok) return { state: 'not_found' };
   const [ws] = await db.select({ id: workspaces.id, name: workspaces.name }).from(workspaces).where(eq(workspaces.id, workspaceId)).limit(1);
   if (!ws) return { state: 'not_found' };
-  const anyImported = r.specs.some((s) => s.repoSource?.state === 'imported');
+  // The approver confirms imports and sees what waits for their approval first.
   const [index, canAct, approver] = await Promise.all([
     specIndexInputs(workspaceId, r.specs), reach(caller, workspaceId, true),
-    anyImported ? specApprover(caller, workspaceId) : Promise.resolve(null),
+    specApprover(caller, workspaceId).catch(() => null),
   ]);
   const proposals = canAct ? await coldStartProposals(caller, workspaceId, r.specs) : [];
   return { state: 'ok', workspace: ws, specs: specTree(r.specs), index, proposals, canAct, canConfirm: !!approver, now: Date.now() };
+}
+
+/**
+ * Spec counts for `/app/specs` over the workspaces of the reader's active team
+ * (the layout's scope) that they may read, counted as the index counts them.
+ */
+export async function specHubWorkspaces(userId: string, all: ReadonlyArray<{ id: string; name: string }>): Promise<HubWorkspace[]> {
+  const caller: SpecCaller = { kind: 'user', userId };
+  // Only workspaces whose specs this reader may open (a restricted workspace may not be).
+  const readable = await Promise.all(all.map((w) => reach(caller, w.id, false).catch(() => false)));
+  const list = all.filter((_, i) => readable[i]);
+  if (!list.length) return [];
+  const rows = await db
+    .select({
+      workspaceId: specs.workspaceId,
+      n: sql<number>`count(*)::int`,
+      waiting: sql<number>`count(*) filter (where ${specs.approvedRevision} is not null and ${specs.headRevision} > ${specs.approvedRevision})::int`,
+    })
+    .from(specs)
+    .where(and(
+      inArray(specs.workspaceId, list.map((w) => w.id)),
+      notInArray(specs.status, ['retired', 'superseded']),
+      notInArray(specs.scope, ['product', 'domain']),
+    ))
+    .groupBy(specs.workspaceId);
+  const by = new Map(rows.map((r) => [r.workspaceId, r]));
+  return list.map((w) => ({ id: w.id, name: w.name, specs: Number(by.get(w.id)?.n ?? 0), waiting: Number(by.get(w.id)?.waiting ?? 0) }));
 }
 
 export interface SpecRevisionLine {
