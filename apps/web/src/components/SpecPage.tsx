@@ -96,6 +96,8 @@ export default function SpecPage({ view }: { view: Ok }) {
   const graph = neighbourGraph({ spec, parent: view.parent, siblings: view.siblings ?? [], nearby: view.nearby });
   const hasGraph = !!(graph.parent || graph.siblings.length || graph.neighbours.length);
   const [relatedView, setRelatedView] = useState<'list' | 'graph'>('list');
+  // Related renders only when something sits under it: no empty heading.
+  const hasRelated = hasGraph || !!view.filing || view.children.length > 0 || !!view.design || view.repoRefs.length > 0;
   const main = (
     view.review ? (
       <section className="flex flex-col gap-3" data-testid="spec-page-review-panel">
@@ -165,7 +167,7 @@ export default function SpecPage({ view }: { view: Ok }) {
 
       {focused ? main : null}
 
-      <Section title="Related">
+      {hasRelated ? <Section title="Related">
         {hasGraph ? (
           <div className="hidden md:block">
             <Segmented
@@ -260,7 +262,7 @@ export default function SpecPage({ view }: { view: Ok }) {
             </ul>
           </div>
         ) : null}
-      </Section>
+      </Section> : null}
 
       <Section title="Files">
         <SpecAttachments

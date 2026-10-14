@@ -44,11 +44,12 @@ describe('Files', () => {
     ]} />));
     const items = [...container.querySelectorAll('[data-testid="spec-attachment"]')];
     expect(items.map((i) => i.getAttribute('data-name'))).toEqual(['pay-screen', 'notes']);
-    expect(items[0]!.textContent).toContain('Binding');
+    expect(items[0]!.textContent).toContain('Part of the spec');
+    expect(items[0]!.textContent).not.toContain('Binding');
     expect(items[0]!.textContent).toContain('The pay screen');
     expect(items[0]!.textContent).toContain('Added by Sam in revision 1');
     expect(items[0]!.querySelector('[data-testid="spec-attachment-changed"]')?.textContent).toContain('Changed since approval');
-    expect(items[1]!.textContent).toContain('Reference');
+    expect(items[1]!.textContent).toContain('Reference only');
     expect(items[1]!.textContent).toContain('Added by an agent in revision 2');
     expect(items[1]!.querySelector('[data-testid="spec-attachment-changed"]')).toBeNull();
     expect(container.querySelector('[data-testid="spec-attach-add"]')).not.toBeNull();

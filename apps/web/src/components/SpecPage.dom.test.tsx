@@ -148,6 +148,14 @@ describe('SpecPage', () => {
     expect(list.className).toContain('md:hidden');
   });
 
+  it('with nothing related, there is no Related heading at all', () => {
+    act(() => root.render(<SpecPage view={{ ...base, parent: null, repoRefs: [] }} />));
+    expect([...container.querySelectorAll('h2')].map((h) => h.textContent)).not.toContain('Related');
+    expect(q('spec-page-related-list')).toBeNull();
+    act(() => root.render(<SpecPage view={base} />));
+    expect([...container.querySelectorAll('h2')].map((h) => h.textContent)).toContain('Related');
+  });
+
   it('with no parent, siblings or neighbours, Related offers no graph', () => {
     act(() => root.render(<SpecPage view={{ ...base, parent: null }} />));
     expect([...container.querySelectorAll('[role="radio"]')]).toHaveLength(0);

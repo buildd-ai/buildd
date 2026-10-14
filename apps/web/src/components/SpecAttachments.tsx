@@ -16,7 +16,9 @@ import type { AttachmentView } from '@/lib/specs/attachments';
 
 export type SpecAttachmentRow = AttachmentView & { addedAgo: string };
 
-const KINDS = [{ value: 'binding', label: 'Binding' }, { value: 'reference', label: 'Reference' }] as const;
+/** How a kind reads to a person; the API and MCP keep binding / reference. */
+export const KIND_LABEL = { binding: 'Part of the spec', reference: 'Reference only' } as const;
+const KINDS = [{ value: 'binding', label: KIND_LABEL.binding }, { value: 'reference', label: KIND_LABEL.reference }] as const;
 
 /** A file name as an attachment name: lower case, safe characters, no extension clash. */
 export function suggestedName(filename: string): string {
@@ -141,7 +143,7 @@ export default function SpecAttachments({ specId, revision, attachments, canAtta
                 <div className="flex min-w-0 flex-col gap-0.5">
                   <span className="flex flex-wrap items-baseline gap-x-2">
                     <a href={a.url} className="font-mono text-body text-text-primary underline [overflow-wrap:anywhere]">{a.name}</a>
-                    <span className="text-meta text-text-muted">{a.kind === 'binding' ? 'Binding' : 'Reference'}</span>
+                    <span className="text-meta text-text-muted">{KIND_LABEL[a.kind]}</span>
                   </span>
                   {a.caption ? <span className="text-body text-text-secondary [overflow-wrap:anywhere]">{a.caption}</span> : null}
                   <span className="text-meta text-text-muted">
