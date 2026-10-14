@@ -63,6 +63,14 @@ if (CLI.kind === 'name') {
   process.exit(r.code);
 }
 
+// `buildd web`: open the running runner's web UI, or say in one line how to
+// turn it on. It never starts or restarts a runner (runner-web.ts).
+if (CLI.kind === 'web') {
+  const { runWebCommand } = await import('./runner-web');
+  const { runnerSocketPath: socketPathFor } = await import('./runner-socket');
+  process.exit(await runWebCommand({ socketPath: socketPathFor(BUILDD_DIR) }));
+}
+
 // --version: print and exit. Deliberately after every static import above, so a
 // zero exit also proves the runner's whole module graph loads (the installer
 // smoke test relies on that).

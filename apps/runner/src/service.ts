@@ -88,8 +88,13 @@ function escapeXml(value: string): string {
   return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+/** How the service runs the launcher. `debug` passes --debug, so it serves the local web UI (`buildd web`). */
+export interface ServiceRunOptions {
+  debug?: boolean;
+}
+
 /** macOS LaunchAgent plist. KeepAlive + RunAtLoad cover both reboot survival and crash restart. */
-export function generateLaunchdPlist(paths: ServicePaths): string {
+export function generateLaunchdPlist(paths: ServicePaths, opts: ServiceRunOptions = {}): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -98,7 +103,7 @@ export function generateLaunchdPlist(paths: ServicePaths): string {
 	<string>${escapeXml(paths.label)}</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>${escapeXml(paths.builddBin)}</string>
+		<string>${escapeXml(paths.builddBin)}</string>${opts.debug ? '\n\t\t<string>--debug</string>' : ''}
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
@@ -125,7 +130,7 @@ export function generateLaunchdPlist(paths: ServicePaths): string {
 }
 
 /** Linux systemd --user unit. Restart=always covers crash restart; reboot survival needs `loginctl enable-linger`. */
-export function generateSystemdUnit(paths: ServicePaths): string {
+export function generateSystemdUnit(paths: ServicePaths, opts: ServiceRunOptions = {}): string {
   return `[Unit]
 Description=buildd runner
 After=network-online.target
@@ -133,7 +138,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${paths.builddBin}
+ExecStart=${paths.builddBin}${opts.debug ? ' --debug' : ''}
 WorkingDirectory=${paths.home}
 Restart=always
 RestartSec=5
@@ -181,6 +186,16 @@ export interface ServiceActionResult {
   message: string;
 }
 
+/** Printed last after a successful install: the two ways to look at the runner, in that order. */
+export const SERVICE_WATCH_HINT = [
+  'Watch it:                buildd top',
+  'Open it in your browser: buildd web',
+].join('\n');
+
+function withWatchHint(message: string, opts: { watchHint?: boolean }): string {
+  return opts.watchHint === false ? message : `${message}\n\n${SERVICE_WATCH_HINT}`;
+}
+
 const UNSUPPORTED_PLATFORM_MESSAGE =
   'buildd service is only supported on macOS and Linux. On Windows, install.ps1 registers a Scheduled Task automatically.';
 
@@ -188,6 +203,7 @@ export function installService(
   paths: ServicePaths,
   platform: ServicePlatform,
   run: CommandRunner = runSync,
+  opts: ServiceRunOptions & { watchHint?: boolean } = {},
 ): ServiceActionResult {
   if (platform === 'unsupported') return { ok: false, message: UNSUPPORTED_PLATFORM_MESSAGE };
 
@@ -196,7 +212,7 @@ export function installService(
   if (platform === 'darwin') {
     const plistPath = launchdPlistPath(paths);
     mkdirSync(dirname(plistPath), { recursive: true });
-    writeFileSync(plistPath, generateLaunchdPlist(paths));
+    writeFileSync(plistPath, generateLaunchdPlist(paths, opts));
     run('launchctl', ['unload', plistPath]); // idempotent: ignore failure if not already loaded
     const load = run('launchctl', ['load', '-w', plistPath]);
     if (load.exitCode !== 0) {
@@ -204,14 +220,14 @@ export function installService(
     }
     return {
       ok: true,
-      message: `Installed launchd service (${plistPath}).\n${serviceLogsHint(paths)}`,
+      message: withWatchHint(`Installed launchd service (${plistPath}).\n${serviceLogsHint(paths)}`, opts),
     };
   }
 
   if (platform === 'linux') {
     const unitPath = systemdUnitPath(paths);
     mkdirSync(dirname(unitPath), { recursive: true });
-    writeFileSync(unitPath, generateSystemdUnit(paths));
+    writeFileSync(unitPath, generateSystemdUnit(paths, opts));
     const reload = run('systemctl', ['--user', 'daemon-reload']);
     if (reload.exitCode !== 0) {
       return { ok: false, message: `systemctl --user daemon-reload failed: ${(reload.stderr || reload.stdout).trim()}` };
@@ -222,10 +238,12 @@ export function installService(
     }
     return {
       ok: true,
-      message:
+      message: withWatchHint(
         `Installed systemd --user service (${unitPath}).\n${serviceLogsHint(paths)}\n\n` +
         'To keep it running after you log out and across reboots, run:\n' +
         '  loginctl enable-linger $USER',
+        opts,
+      ),
     };
   }
 
@@ -295,7 +313,10 @@ export function serviceStatus(
   return { ok: false, message: UNSUPPORTED_PLATFORM_MESSAGE };
 }
 
-const USAGE = 'Usage: buildd service <install|uninstall|status|logs>';
+const USAGE = [
+  'Usage: buildd service <install|uninstall|status|logs>',
+  '  buildd service install --debug   also serve the local web UI (buildd web)',
+].join('\n');
 
 async function main(): Promise<void> {
   const sub = Bun.argv[2];
@@ -304,7 +325,17 @@ async function main(): Promise<void> {
 
   switch (sub) {
     case 'install': {
-      const result = installService(paths, platform);
+      const extra = Bun.argv.slice(3);
+      const unknown = extra.find((a) => a !== '--debug');
+      if (unknown) {
+        console.error(`Unknown argument: ${unknown}\n${USAGE}`);
+        process.exit(64);
+      }
+      // install.sh prints the watch lines in its own Next block.
+      const result = installService(paths, platform, runSync, {
+        debug: extra.includes('--debug'),
+        watchHint: process.env.BUILDD_INSTALLER !== '1',
+      });
       console.log(result.message);
       process.exit(result.ok ? 0 : 1);
     }

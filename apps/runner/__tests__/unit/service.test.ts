@@ -314,3 +314,58 @@ describe('unsupported platform', () => {
     }
   });
 });
+
+// ── Spec c7410e76 R-14/R-15/AC-5: say how to watch it; --debug turns the web UI on ──
+
+describe('installService: how to watch the runner', () => {
+  let home: string;
+  beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'buildd-service-test-watch-')); });
+  afterEach(() => { rmSync(home, { recursive: true, force: true }); });
+
+  for (const platform of ['darwin', 'linux'] as const) {
+    test(`${platform}: ends with buildd top, then buildd web`, () => {
+      const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd') });
+      const result = installService(paths, platform, fakeRunner(0).run);
+      expect(result.ok).toBe(true);
+      const lines = result.message.trimEnd().split('\n');
+      const top = lines.findIndex((l) => l.includes('buildd top'));
+      const web = lines.findIndex((l) => l.includes('buildd web'));
+      expect(top).toBeGreaterThan(-1);
+      expect(web).toBeGreaterThan(top);
+      expect(web).toBe(lines.length - 1);
+    });
+  }
+
+  test('a failed install does not tell anyone to watch it', () => {
+    const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd') });
+    expect(installService(paths, 'darwin', fakeRunner(1).run).message).not.toContain('buildd top');
+  });
+});
+
+describe('--debug: the service serves the web UI', () => {
+  const paths = resolveServicePaths({ home: '/home/alice', builddHome: '/home/alice/.buildd' });
+
+  test('off by default: the service runs the launcher with no arguments', () => {
+    expect(generateLaunchdPlist(paths)).not.toContain('--debug');
+    expect(generateSystemdUnit(paths)).not.toContain('--debug');
+  });
+
+  test('launchd passes --debug as its own argument', () => {
+    expect(generateLaunchdPlist(paths, { debug: true })).toContain(`<string>${paths.builddBin}</string>\n\t\t<string>--debug</string>`);
+  });
+
+  test('systemd runs the launcher with --debug', () => {
+    expect(generateSystemdUnit(paths, { debug: true })).toContain(`ExecStart=${paths.builddBin} --debug\n`);
+  });
+
+  test('installService writes what it was asked for', () => {
+    const home = mkdtempSync(join(tmpdir(), 'buildd-service-test-debug-'));
+    try {
+      const p = resolveServicePaths({ home, builddHome: join(home, '.buildd') });
+      installService(p, 'linux', fakeRunner(0).run, { debug: true });
+      expect(readFileSync(systemdUnitPath(p), 'utf-8')).toBe(generateSystemdUnit(p, { debug: true }));
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
