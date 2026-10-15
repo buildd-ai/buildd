@@ -346,12 +346,13 @@ describe('repo checks before approval (R-34, AC-96)', () => {
   test('a would-be copy that fails specs:lint shows the failure, and Approve still approves', async () => {
     const gh = fakeGitHub();
     Object.assign(repoCopy.defaultRepoCopyDeps, gh.deps);
-    const spec = await filedSpec(wsOn, { body: '# No Summary\n\n- AC-1: GIVEN x WHEN y THEN z.\n' });
+    // A summary written as a list: the copy always carries a summary now, so a malformed one is the failure.
+    const spec = await filedSpec(wsOn, { body: '---\nsummary: [one, two]\n---\n# List Summary\n\n- AC-1: GIVEN x WHEN y THEN z.\n' });
     const p = await repoCopy.repoCopyPreflight(spec, 1, gh.deps);
     if (p.state !== 'ran') throw new Error(`preflight did not run: ${p.state}`);
     const lint = p.checks.find((c) => c.name === 'specs:lint')!;
     expect(lint.ok).toBe(false);
-    expect(lint.messages.join('\n')).toContain('frontmatter missing `summary`');
+    expect(lint.messages.join('\n')).toContain('`summary` must be a single sentence, not a list');
     expect(p.checks.find((c) => c.name === 'public-docs:check')!.ok).toBe(true);
     expect(p.checks.find((c) => c.name === 'no-prod-data')).toMatchObject({ ok: true });
     expect(p.checks.find((c) => c.name === 'no-prod-data')!.note).toContain('only in CI');

@@ -70,6 +70,48 @@ describe('renderRepoCopy', () => {
     expect(back.generated && back.ok && back.approvedText === plain).toBe(true);
   });
 
+  // The first native copy (a body with no frontmatter, as a native spec's body
+  // usually is) failed specs:lint on `frontmatter missing summary`.
+  const lintCopy = (text: string) => {
+    const { fm, body } = parseSpecFrontmatter(text);
+    return { fm, lint: lintSpecFile('runner-login', fm, body, { domains: new Set(['runners']), exists: () => true, now: Date.parse('2026-10-14') }) };
+  };
+  const NATIVE = '# Runner login\n\nContext: a runner uses its own login (`host-seat.ts`). It never says which. More prose here.\n\n## Requirements\n\n- R-1: A runner detects its login.\n';
+
+  it('a body with no frontmatter: the copy carries a summary, the first prose sentence, and passes specs:lint', async () => {
+    const r = await render({ body: NATIVE, title: 'Runner login', domain: 'runners', status: 'draft', metadata: {} });
+    const { fm, lint } = lintCopy(r.text);
+    expect(lint.errors).toEqual([]);
+    expect(fm?.summary).toBe('Context: a runner uses its own login (`host-seat.ts`).');
+    const back = await verifyRepoCopy(r.text);
+    expect(back.generated && back.ok && back.approvedText === NATIVE).toBe(true);
+  });
+
+  it('the metadata block summary wins over the body prose', async () => {
+    const r = await render({ body: NATIVE, title: 'Runner login', domain: 'runners', status: 'draft', metadata: { summary: 'A runner MUST name the login its agents use.' } });
+    expect(lintCopy(r.text).fm?.summary).toBe('A runner MUST name the login its agents use.');
+    expect((await verifyRepoCopy(r.text)).generated).toBe(true);
+  });
+
+  it('a body that states its own summary is not given a second one', async () => {
+    const r = await render();
+    expect(r.text.match(/^summary:/gm)).toHaveLength(1);
+  });
+
+  it('a summary is one line, quoted so YAML reads it as one string, and never a list', async () => {
+    const body = '# Odd\n\n[Draft] a: b # not a comment, "quoted" too\nsecond line of the same paragraph.\n';
+    const r = await render({ body, title: 'Odd', domain: 'runners', status: 'draft', metadata: {} });
+    const line = r.text.split('\n').find((l) => l.startsWith('summary:'))!;
+    expect(line).toBe('summary: \'[Draft] a: b # not a comment, "quoted" too second line of the same paragraph.\'');
+    expect(lintCopy(r.text).lint.errors).toEqual([]);
+    expect((await verifyRepoCopy(r.text)).generated && (await verifyRepoCopy(r.text) as { ok: boolean }).ok).toBe(true);
+  });
+
+  it('a body with no prose falls back to the title for its summary', async () => {
+    const r = await render({ body: '# Only\n\n- R-1: a thing.\n', title: 'Only', domain: 'runners', status: 'draft', metadata: {} });
+    expect(lintCopy(r.text).fm?.summary).toBe('Only');
+  });
+
   it('refuses a body whose frontmatter carries a mechanical field', async () => {
     const r = await renderRepoCopy(input({ body: '---\ntitle: X\ndomain: tasks\n---\n# X\n' }));
     expect(r).toMatchObject({ ok: false, reason: 'mechanical_in_body' });
