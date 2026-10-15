@@ -17,6 +17,15 @@ import {
   STALE_EXPIRED_ERROR,
 } from './worker-exit-taxonomy';
 
+describe('stale expiry diagnostic', () => {
+  it('reports the configured reaper window and preserves the historical signature', async () => {
+    const { WORKER_STALE_REAP_MS } = await import('@buildd/shared');
+    const { normalizeErrorSignature } = await import('@buildd/core/error-signature');
+    expect(STALE_EXPIRED_ERROR).toBe(`Stale worker expired (no update for ${WORKER_STALE_REAP_MS / 60000}+ minutes)`);
+    expect(normalizeErrorSignature(STALE_EXPIRED_ERROR)).toBe(normalizeErrorSignature('Stale worker expired (no update for 15+ minutes)'));
+  });
+});
+
 describe('classifyReportedFailure', () => {
   it('prioritises budget over everything else', () => {
     expect(classifyReportedFailure({ budgetLimited: true, sandboxMountGap: true })).toBe('budget_limited');

@@ -2,7 +2,7 @@
 title: Living Specs
 status: draft
 owner: max
-last_verified: 2026-10-14
+last_verified: 2026-10-15
 summary: Every Living Spec revision MUST stay immutable and no writer silently overwrites another; a person approves one revision, and work reads verified only when it passes that revision on its current head.
 domain: knowledge
 surfaces: [apps/web/src/lib/specs/store.ts, apps/web/src/lib/specs/mission-outcome.ts, apps/web/src/lib/specs/mission-selection.ts, apps/web/src/lib/specs/provisional.ts, apps/web/src/lib/specs/approval.ts, apps/web/src/lib/specs/pin.ts, apps/web/src/app/api/specs/[specId]/route.ts]
@@ -262,11 +262,11 @@ later ones are proposed (D-4).
   most 8 with the rest counted (`apps/web/src/components/SpecSourceBlock.tsx`).
 
 **Acceptance criteria**:
-- AC-3: GIVEN revision N approved and a task filed against the spec WHEN an
+- AC-117: GIVEN revision N approved and a task filed against the spec WHEN an
   agent proposes N+1 THEN the task's pin and its review still resolve N byte
   for byte, the spec's approved revision stays N, and the agent cannot approve
   N+1; a person can (`apps/web/tests/db/spec-approval.test.ts`).
-- AC-4: GIVEN an agent token, a bare API key or a plain member WHEN they
+- AC-118: GIVEN an agent token, a bare API key or a plain member WHEN they
   submit or approve THEN 403 and nothing is stamped.
 - AC-11: GIVEN a person's own OAuth session WHEN it approves THEN nothing is
   stamped and it gets a confirmation link; WHEN that person (or another owner
@@ -723,8 +723,8 @@ captured contains that head; no task MAY grade its own work this way.
   writes nothing.
 
 **Acceptance criteria**:
-- AC-35: GIVEN a builder task in a mission pinned to a spec scoped to AC-1 and
-  AC-2 WHEN its audit claims THEN the block lists AC-1 and AC-2 with their text
+- AC-35: GIVEN a builder task in a mission pinned to a spec scoped to AC-1
+  and AC-2 WHEN its audit claims THEN the block lists AC-1 and AC-2 with their text
   and the revision (`apps/web/tests/db/spec-visual-verdict.test.ts`,
   `apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts`).
 - AC-36: GIVEN the audit's own screenshot and a captured commit containing the
@@ -1067,8 +1067,8 @@ and a comment MUST never change the body, its hash or an approval.
   action for writers and a resolve action for people.
 
 **Acceptance criteria**:
-- AC-62: GIVEN a comment on AC-2 of revision 1 WHEN revision 2 changes only
-  AC-1 THEN it reads open on revision 2; WHEN revision 3 changes AC-2 THEN it
+- AC-62: GIVEN a comment on AC-2 of revision 1 WHEN revision 2
+  changes only AC-1 THEN it reads open on revision 2; WHEN revision 3 changes AC-2 THEN it
   reads outdated on revision 3 and still open on revision 1; the spec's
   version, approval and hash did not move when it was added
   (`apps/web/tests/db/spec-comments.test.ts`).
@@ -1119,8 +1119,8 @@ or wants to change.
   (such as `surfaces`, which names a kind of code rather than a part of the
   product) and any proposed area holding more than about a quarter of all
   specs are split. It is one proposal a person accepts, edits or rejects,
-  whole or per area. Accepting creates the areas and files their members by
-  R-7. Nothing is created before a person acts.
+  whole or per area. Accepting creates the areas and files their members
+  by R-7. Nothing is created before a person acts.
 - R-49: The cold-start proposal is asked of the team's decision model when a
   measured one answers: a decision kind, `buildd.spec_taxonomy`, capability
   `spec_taxonomy`, whose input is every spec's title, a short summary and its
@@ -1360,8 +1360,10 @@ at any time.
   call to buildd.
 - R-18: Import. A repo spec becomes a native spec, with provenance: path,
   the commit SHA read, and the PR that last merged a change to it. Its first
-  revision is imported, not approved, and is the file as read minus the
-  mechanical fields, which become its metadata block (R-14). Until confirmed
+  revision is imported, not approved. Its body excludes the entire YAML
+  frontmatter; mechanical fields and the summary become metadata (R-14),
+  and the original file remains available through its pinned repo reference.
+  Until confirmed
   the repo file stays the source: nothing is generated and the file is never
   overwritten. A repo change before confirmation re-imports it as a new
   imported revision. It is placed by the area classifier (R-5 to R-7), shown
@@ -1522,7 +1524,7 @@ and MUST show as unfiled only what buildd could not place.
   holding only what buildd
   could not place, each row with its suggestion inline (§17 R-7) and accept
   and dismiss.
-- R-27a: `/app/specs` is the way in, reached from the Missions header (the nav
+- R-71: `/app/specs` is the way in, reached from the Missions header (the nav
   keeps five items and lights Missions for any spec page): with one readable
   workspace holding specs it opens that workspace's index, else it lists the
   workspaces that have specs, what waits for approval first, counts in words
@@ -2013,3 +2015,9 @@ Overview shows it as one Verify row read from the same evaluated state
 - A criterion's `check:` line and the visual audit do not yet record
   mission-level verdicts on their own (`recordMissionVerdictServer` is the
   entry point they will use); the final verification records them.
+
+## Criterion numbering note
+
+The approval/pinning checks formerly sharing numbers with revision checks
+now use the next free acceptance ids. Continuation references are prose,
+not additional criterion declarations.
