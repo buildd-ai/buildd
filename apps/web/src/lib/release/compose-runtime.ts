@@ -5,7 +5,8 @@
  */
 
 import { NextRequest } from 'next/server';
-import { githubApi, mergePullRequest } from '@/lib/github';
+import { githubApi } from '@/lib/github';
+import { mergeReleasePrPinned } from './pinned-merge';
 import { teamIdsWhere } from '@/lib/permissions';
 import { fetchDeployedSha } from '@/lib/release-health-watcher';
 import { loadReleaseFlow, type LoadFlowResult } from './compose-source';
@@ -48,7 +49,16 @@ export function composeActionDeps(target: ReleaseTarget, origin: string): Compos
     },
     recordAndDispatch: (params) => recordAndDispatchRelease(params),
     dispatch: (installationId, owner, name, opts) => dispatchWorkflowRelease(installationId, owner, name, opts),
-    mergePr: (installationId, repo, prNumber, method, sha) => mergePullRequest(installationId, repo, prNumber, method, sha),
+    // D10 (workflow-kernel-library.md §4): the candidate merges only at the SHA it was verified
+    // on, through buildd's review gate (or the kernel's, for a PR it owns), not on GitHub's
+    // reviews alone. A moved head is refused.
+    mergePr: async (installationId, repo, prNumber, method, sha, actorUserId) => {
+      const r = await mergeReleasePrPinned({
+        workspaceId: target.workspaceId, installationId, repoFullName: repo, prNumber, verifiedHeadSha: sha, mergeMethod: method, surface: 'release compose', actorUserId,
+      });
+      // A lost answer stays pending (indeterminate), never reads as a refusal.
+      return r.merged ? { merged: true, message: r.message } : { merged: false, message: r.message, ...(r.indeterminate ? { indeterminate: true } : {}) };
+    },
     branchHead: async (branch) => {
       const ref = await githubApi(target.installationId, `/repos/${target.repoFullName}/git/ref/heads/${encodeURIComponent(branch)}`);
       return (ref?.object?.sha as string | undefined) ?? null;

@@ -26,7 +26,7 @@ import { TERMINAL_WORKER_STATUSES } from '@buildd/shared';
 import type { EffectHandlers } from '@buildd/workflow-kernel/effects';
 import { kernelEffectHandlers } from '@buildd/workflow-kernel/handlers/index';
 import type {
-  Conflicts, Decide, Escalate, Evidence, GithubFacts, GithubWrites, HandOff, Ingest, KernelPorts, Lifecycle, MergeAnswer, Notify, Policy, Reviews, Trunk,
+  Conflicts, Decide, Escalate, Evidence, GithubFacts, GithubWrites, HandOff, Ingest, KernelPorts, Lifecycle, MergeAnswer, Notify, Policy, Rails, Reviews, Trunk,
   Work, WorkFiled, WorkRequest,
 } from '@buildd/workflow-kernel/ports';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
@@ -243,11 +243,13 @@ export interface BuilddKernelHooks {
   handOff: HandOff;
   /** buildd's decision layer at the kernel's decision points. */
   decide: Decide;
+  /** The merge rails the `merge_call` effect reads at merge time (auto-merge-rails.ts, the reviews-merge module's). */
+  rails: Rails;
 }
 
 /** The ports the package's effect handlers run on in buildd. */
 export function builddKernelPorts(hooks: BuilddKernelHooks, opts: {
-  exec?: Exec; githubFor?: (workspaceId: string) => Promise<GithubFacts | null>; trunk?: Trunk; policy?: Policy;
+  exec?: Exec; githubFor?: (workspaceId: string) => Promise<GithubFacts | null>; trunk?: Trunk; policy?: Policy; rails?: Rails;
 } = {}): KernelPorts {
   const exec = opts.exec ?? dbExec;
   return {
@@ -266,6 +268,7 @@ export function builddKernelPorts(hooks: BuilddKernelHooks, opts: {
     conflicts: hooks.conflicts,
     handOff: hooks.handOff,
     decide: hooks.decide,
+    rails: opts.rails ?? hooks.rails,
   };
 }
 

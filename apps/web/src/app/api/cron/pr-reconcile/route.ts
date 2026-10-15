@@ -91,6 +91,7 @@ import type { CiRedSweepResult } from '@/lib/ci-red-sweep';
 import { CI_RED_DUE_QUEUE } from '@/lib/ci-red-queue';
 import { gateOnDueQueue } from '@/lib/cron-due-queue';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
+import { sweepHeldReleases } from '@/lib/held-pr-tasks';
 import { emit } from '@/lib/core-emit';
 
 export const maxDuration = 60;
@@ -214,6 +215,15 @@ export async function GET(req: NextRequest) {
       // subscriber is isolated by emit().
       emit({ type: 'sweep.pr_hourly', at: new Date() }),
     ]);
+    // Held release tasks (lib/held-pr-tasks.ts): a release that could not land when its task
+    // finished and whose PR event never came (CI already green, the control plane down, landed by
+    // another path). Runs on both scopes: the hourly merge-state pass (which already wakes the
+    // database every hour) and the daily full one. No wake window of its own; bounded per task. Isolated.
+    const heldReleases = await sweepHeldReleases().catch((err): { error: string } => ({
+      error: err instanceof Error ? err.message : String(err),
+    }));
+    if (heldReleases && 'error' in heldReleases) console.error('[HeldReleaseSweep] error:', heldReleases.error);
+    else if (heldReleases) console.log(`[HeldReleaseSweep] scanned=${heldReleases.scanned} completed=${heldReleases.completed} failed=${heldReleases.failed} retried=${heldReleases.retried} waiting=${heldReleases.waiting} errors=${heldReleases.errors}`);
     if (kernel) logKernelFloor(kernel, `web (${kernelReason})`);
     else console.log('[KernelFloor] skipped: the control plane hosts the kernel and its floor is current');
     const kernelOutcome = kernel ? kernelFloorOutcome(kernel) : { processed: 0, changed: 0, errors: 0 };
@@ -324,12 +334,13 @@ export async function GET(req: NextRequest) {
         + ('error' in ciRed ? 0 : ciRedChanged(ciRed))
         + ('error' in closedPrs ? 0 : closedPrs.recorded + closedPrs.suggested)
         + kernelOutcome.changed
-        + ('error' in earlyRelease ? 0 : earlyRelease.refreshed + earlyRelease.escalated),
+        + ('error' in earlyRelease ? 0 : earlyRelease.refreshed + earlyRelease.escalated)
+        + (!heldReleases || 'error' in heldReleases ? 0 : heldReleases.completed + heldReleases.failed + heldReleases.retried),
       errors:
         reconcile.errors + missionPrErrors + branchRefreshErrors + strandedErrors + specRecheckErrors + lineageErrors
         + landingErrors + refreshRedriveErrors + ciRedErrors + closedPrErrors + earlyReleaseErrors
-        + kernelOutcome.errors,
-      result: { scope: mergeStateOnly ? 'merge-state' : 'full', reconcile, deadZone, missionPrs, branchRefresh, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, earlyRelease, ...kernelResult },
+        + kernelOutcome.errors + (!heldReleases ? 0 : 'error' in heldReleases ? 1 : heldReleases.errors),
+      result: { scope: mergeStateOnly ? 'merge-state' : 'full', reconcile, deadZone, missionPrs, branchRefresh, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, earlyRelease, heldReleases, ...kernelResult },
     });
 
     return NextResponse.json({
@@ -348,6 +359,7 @@ export async function GET(req: NextRequest) {
       closedPrs,
       ...kernelResult,
       earlyRelease,
+      heldReleases,
     });
   });
 }

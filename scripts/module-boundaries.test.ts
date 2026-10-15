@@ -144,9 +144,12 @@ describe('seams that have shipped stay cut', () => {
       'apps/web/src/lib/pr-review-request.ts',
       'apps/web/src/lib/pr-review-status.ts',
       'apps/web/src/lib/pr-scope-reconcile-trigger.ts',
-      'apps/web/src/lib/review-verdict-gate.ts',
     ]);
     expect(imported.map(([f]) => f)).not.toContain('apps/web/src/lib/migration-inspector.ts');
+    // The release door's verdict read moved with the door into lib/held-pr-tasks.ts, which the
+    // webhook and the held-release sweep share; it reads the verdict and nothing more of reviews.
+    expect(Object.entries(current.backend['apps/web/src/lib/held-pr-tasks.ts'] ?? {}).filter(([, mod]) => mod === 'reviews-merge').map(([f]) => f))
+      .toEqual(['apps/web/src/lib/review-verdict-gate.ts']);
   });
 
   test('no core file writes the subscriptions ledger directly; it is a notifications subscriber', () => {

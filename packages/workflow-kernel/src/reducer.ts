@@ -141,6 +141,18 @@ export function deliveryProof(i: {
 }
 
 /** What covers `head` for landing. Ordinary verdicts are exact-head (plus recorded equivalents). */
+/**
+ * The newest decided review round, when its verdict still stands against
+ * landing (§13.13 rules 2 and 6, until the findings model of S5): it asked for
+ * changes or escalated, and no later round has decided since.
+ */
+export function openVerdict(view: Pick<KernelView, 'rounds'>): RoundSnapshot | null {
+  const newest = view.rounds.filter((r) => r.status === 'decided').sort((a, b) => b.round - a.round)[0];
+  if (!newest) return null;
+  const v = newest.effectiveVerdict ?? newest.verdict;
+  return v === 'request_changes' || v === 'escalate' ? newest : null;
+}
+
 export function headCoverage(d: Pick<DeliverySnapshot, 'approvedHeads' | 'approvalBasis' | 'compositionHeads'> & { currentHeadSha?: string | null }, head: string | null):
   'verdict' | 'human' | 'composition' | 'policy' | 'none' {
   if (!head) return 'none';
@@ -398,6 +410,8 @@ class Ctx {
     patch?: DeliveryPatch; rounds?: RoundOp[]; attempts?: AttemptOp[]; effects?: EffectSpec[];
     evidence?: Record<string, unknown>; bypass?: Record<string, unknown> | null;
     create?: ApplyDecision['create'];
+    /** What the `buildd/landing` status should name for this version (a lasting rail's refusal). */
+    statusDetail?: string;
   } = {}): ApplyDecision {
     const d = this.d;
     const version = d?.version ?? 0;
@@ -408,6 +422,10 @@ class Ctx {
       // §12.1: the activity comment is regenerated from canonical state; one
       // render per version, the handler drops all but the newest.
       effects.push({ kind: 'render_activity', dedupeKey: `render:${this.did}:${version + 1}`, payload: { version: version + 1 } });
+      // §4: the `buildd/landing` status follows every version of a PR delivery (a head change, a
+      // base refresh, a verdict, a waiver, an owner replacement are all transitions); the handler
+      // publishes the newest version's answer and drops the rest.
+      effects.push({ kind: 'publish_landing_status', dedupeKey: `landing_status:${this.did}:${version + 1}`, payload: { version: version + 1, ...(o.statusDetail ? { detail: o.statusDetail } : {}) } });
     }
     return {
       result: 'apply',
@@ -929,8 +947,11 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         && !(dd.state === 'ESCALATED' && dd.stateReason === 'landing_needs_human')) {
         return c.rejected('override_does_not_cover_state');
       }
-      if (cmd.rails.redCi || cmd.rails.denyPaths) return c.rejected('rail_not_overridable', { missing: cmd.rails.reasons });
-      if (!cmd.rails.passed && !overrideDoor) return c.rejected('rails_failed', { missing: cmd.rails.reasons });
+      // A door's own rail reading is never trusted as a pass (the merge effect reads the rails
+      // itself, §4); a door that reports a refusal is refused here all the same.
+      const rails = cmd.rails ?? null;
+      if (rails?.redCi || rails?.denyPaths) return c.rejected('rail_not_overridable', { missing: rails.reasons });
+      if (rails && !rails.passed && !overrideDoor) return c.rejected('rails_failed', { missing: rails.reasons });
       const coverage = headCoverage(dd, cmd.headSha);
       if (dd.state === 'APPROVED' && coverage === 'none' && !overrideDoor) return c.rejected('head_not_approved');
       // S15: a door landing a head that is behind its base, under the disjoint-delta rule. The base
@@ -949,9 +970,17 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         patch: { stateReason: null },
         effects: [{
           kind: 'merge_call', dedupeKey: `merge_call:${dd.id}:${cmd.headSha}:v${landingVersion}`,
-          payload: { headSha: cmd.headSha, door: cmd.door, mergeMethod: cmd.mergeMethod ?? 'squash', landingVersion },
+          payload: {
+            headSha: cmd.headSha, door: cmd.door, mergeMethod: cmd.mergeMethod ?? 'squash', landingVersion, fromState: dd.state,
+            // A person's own door keeps a person's rails at merge time (red CI, protected paths).
+            // Only a human actor: an agent under a person's grant is held to every rail, and the
+            // grant lifts only what it names (`override.kinds`: freshness at T15, size in the size check).
+            ...(isHumanActor(cmd.actor) ? { person: true } : {}),
+            // What the gate at merge time may pass, and only because a person said so (§13.13 rule 6).
+            ...(overrideDoor ? { override: { verdict: !ov!.kinds || ov!.kinds.includes('verdict'), kinds: ov!.kinds ?? ['verdict'] } } : {}),
+          },
         }],
-        evidence: { door: cmd.door, coverage, rails: cmd.rails, fromState: dd.state, ...(freshness ? { freshness } : {}) },
+        evidence: { door: cmd.door, coverage, ...(rails ? { rails } : {}), fromState: dd.state, ...(freshness ? { freshness } : {}) },
         bypass: overrideDoor
           ? { door: cmd.door, reason: ov!.reason, actor: cmd.actor, overrodeState: dd.state, ...(ov!.kinds ? { kinds: ov!.kinds } : {}), ...(ov!.grantedBy ? { grantedBy: ov!.grantedBy } : {}) }
           : null,
@@ -980,6 +1009,23 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         // Nothing landed: the approval still stands, a door or the sweep may land it again.
         return c.apply(key, 'APPROVED', { guardHead: true, patch: { stateReason: null }, evidence });
       }
+      if (cmd.outcome === 'gate_refused') {
+        // §4: the gate, asked again when the merge effect ran, refused before any merge call.
+        // A rail (CI, protected paths, size, a hold) leaves a standing approval standing: a door
+        // or the sweep asks again once the rail passes. Anything else is a person's to look at.
+        const gate = { half: cmd.gate?.half ?? 'rails', reasons: cmd.gate?.reasons ?? [], ...(cmd.gate?.lasting ? { lasting: true } : {}) };
+        // A rail that clears on its own (pending CI, a hold) waits with the approval standing;
+        // a lasting one (protected path, migration, size) is a person's, named in the notice.
+        if (gate.half === 'rails' && !gate.lasting && headCoverage(dd, cmd.headSha) !== 'none') {
+          return c.apply(key, 'APPROVED', { guardHead: true, patch: { stateReason: null }, evidence: { ...evidence, gate } });
+        }
+        return c.apply(key, 'ESCALATED', {
+          guardHead: true, patch: { stateReason: 'landing_needs_human' },
+          effects: [{ kind: 'notify', dedupeKey: `notify:${dd.id}:landing_gate:${cmd.headSha}:${cmd.landingVersion ?? 'x'}`, payload: { event: 'landing_needs_human', detail: cmd.detail ?? gate.reasons.join('; ') } }],
+          evidence: { ...evidence, gate },
+          ...(gate.reasons[0] ? { statusDetail: gate.reasons[0] } : {}),
+        });
+      }
       if (cmd.outcome === 'refused') {
         return c.apply(key, 'ESCALATED', {
           guardHead: true, patch: { stateReason: 'landing_needs_human' },
@@ -1003,6 +1049,22 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       const rc = c.view.rounds.some((r) => r.headSha === mergedHead && r.status === 'decided' && r.effectiveVerdict === 'request_changes');
       const reviewClass = coverage !== 'none' ? `covered:${coverage}` : rc ? 'merged_over_verdict' : 'merged_unreviewed';
       const fx = (kind: EffectSpec['kind']): EffectSpec => ({ kind, dedupeKey: `${kind}:${dd.id}:merged`, payload: { mergeCommitSha: cmd.live.mergeCommitSha ?? null } });
+      // §13.13 rule 10: every buildd door lands a kernel PR through LANDING, so a merge that
+      // arrives from any other state is one no buildd door made. It is recorded as it happened
+      // (who, at which head, over which verdict) and approves nothing; an open verdict it merged
+      // over is owed a fix against the base, filed once.
+      const external = dd.state !== 'LANDING';
+      const open = external ? openVerdict(c.view) : null;
+      const mergedOverOpenFindings = !!open;
+      // The fix is owed only for changes asked of the head that merged: an escalation a person
+      // resolved by merging is their decision, and a verdict on an older head was not about it.
+      const owesFix = !!open && (open.effectiveVerdict ?? open.verdict) === 'request_changes' && open.headSha === mergedHead;
+      const externalEffects: EffectSpec[] = owesFix && open
+        ? [{
+            kind: 'dispatch_external_merge_fix', dedupeKey: `dispatch_external_merge_fix:${dd.id}:merged`,
+            payload: { roundId: open.id, round: open.round, reviewedHeadSha: open.headSha, mergedHeadSha: mergedHead, mergeCommitSha: cmd.live.mergeCommitSha ?? null, mergedBy: cmd.live.mergedBy ?? null },
+          }]
+        : [];
       return c.apply(`merged:${c.prKey}`, 'MERGED', {
         states: NON_TERMINAL,
         patch: { mergedAt: cmd.live.mergedAt ?? null, mergeCommitSha: cmd.live.mergeCommitSha ?? null, boundAttemptId: null, resumeState: null },
@@ -1010,8 +1072,12 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         attempts: [{ op: 'cancel_open', families: ['review_fix', 'ci', 'conflict', 'migration'], status: 'cancelled' }],
         // The mission wake and the release attribution are subscribers of the one `task.pr_merged`
         // fan-out `emit_pr_merged` makes, so they see the task transition this merge produced.
-        effects: [fx('stamp_pr_rows'), fx('cancel_open_attempts'), fx('emit_pr_merged'), fx('finalize_mission_pr')],
-        evidence: { live: cmd.live, reviewClass },
+        effects: [fx('stamp_pr_rows'), fx('cancel_open_attempts'), fx('emit_pr_merged'), fx('finalize_mission_pr'), ...externalEffects],
+        evidence: {
+          live: cmd.live, reviewClass,
+          ...(external ? { external: true, mergedBy: cmd.live.mergedBy ?? null, mergedHead, fromState: dd.state, merged_over_open_findings: mergedOverOpenFindings } : {}),
+          ...(open ? { openVerdict: { roundId: open.id, round: open.round, headSha: open.headSha, verdict: open.effectiveVerdict ?? open.verdict } } : {}),
+        },
       });
     }
 
