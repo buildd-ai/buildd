@@ -162,6 +162,13 @@ mock.module('@/lib/mission-surface-audit-gate', () => ({
   loadSurfaceAuditGateTasks: async () => [],
 }));
 
+// A recorded waiver retires the mission's queued audit (spec 8e137fdb AC-2);
+// the predicate itself is tested as SQL in lib/surface-audit-waiver-cancel.test.ts.
+const mockCancelWaivedSurfaceAudits = mock(async (_m: string, _r: string, _a: string) => ['audit-1']);
+mock.module('@/lib/surface-audit-waiver-cancel', () => ({
+  cancelWaivedSurfaceAudits: mockCancelWaivedSurfaceAudits,
+}));
+
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
 }));
@@ -2102,6 +2109,20 @@ describe('PATCH /api/missions/[id] — surface audit gate and waiver', () => {
     const note = insertedNotes.find(n => n.title === 'Surface audit waived');
     expect(note).toMatchObject({ body: 'Mission branch cannot be captured by CI', authorType: 'user', actorLabel: 'owner@example.com' });
     expect(updatedSetData?.status).toBeUndefined();
+  });
+
+  it('a recorded waiver cancels the queued audit, naming the waiver', async () => {
+    mockGetCurrentUser.mockReturnValue({ id: 'user-1', email: 'owner@example.com' } as any);
+    mockCancelWaivedSurfaceAudits.mockClear();
+    expect((await patch({ surfaceAuditWaiver: 'Mission branch cannot be captured by CI' })).status).toBe(200);
+    expect(mockCancelWaivedSurfaceAudits).toHaveBeenCalledTimes(1);
+    expect(mockCancelWaivedSurfaceAudits.mock.calls[0]).toEqual([MID, 'Mission branch cannot be captured by CI', 'user:user-1']);
+  });
+
+  it('a refused waiver cancels nothing', async () => {
+    mockCancelWaivedSurfaceAudits.mockClear();
+    expect((await patch({ surfaceAuditWaiver: 'skip' })).status).toBe(400);
+    expect(mockCancelWaivedSurfaceAudits).not.toHaveBeenCalled();
   });
 
   it("a task's per-task token cannot set the waiver, and nothing is recorded", async () => {

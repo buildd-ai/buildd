@@ -2,7 +2,7 @@
 // list card and Next name what is left, never "The mission PR merges to trunk";
 // a waiting check names the claim gate's real hold.
 import { describe, expect, it } from 'bun:test';
-import { criteriaPendingOf, projectMissionDelivery as project, type MissionDeliveryInput, type MissionTaskRow } from './delivery-projection';
+import { projectMissionDelivery as project, type MissionDeliveryInput, type MissionTaskRow } from './delivery-projection';
 import * as missionHelpers from '@buildd/core/mission-helpers';
 
 const projectMissionDelivery = (m: MissionDeliveryInput) => project(m, missionHelpers);
@@ -104,7 +104,7 @@ describe('R-33: a queued audit names the claim gate hold', () => {
 describe('visual review round 1: what is left reads the waiver, criteria and a local strand', () => {
   const on = (over: Partial<MissionDeliveryInput>) => projectMissionDelivery(mission({ missionPrMerged: true, ...over }));
   it('a waived visual review is not what is left', () => {
-    const m = on({ visualWaived: true, released: true, tasks: [merged('One'), shipTask('2026-10-12T00:00:00Z'), audit()], holdReasons: new Map([['audit1', 'budget_paused']]) });
+    const m = on({ visualReview: { status: 'waived', blockedDetail: null, holdReason: null }, released: true, tasks: [merged('One'), shipTask('2026-10-12T00:00:00Z'), audit()], holdReasons: new Map([['audit1', 'budget_paused']]) });
     expect(m.next).toBe('Mission completes');
     expect(m.exception).toBeNull();
     expect(m.remaining).toBe('completion');
@@ -135,11 +135,21 @@ describe('visual review round 1: what is left reads the waiver, criteria and a l
   });
 });
 
-describe('criteriaPendingOf', () => {
-  it('reads the stored columns', () => {
-    expect(criteriaPendingOf(null, null)).toBe(0);
-    expect(criteriaPendingOf([{}, {}], null)).toBe(2);
-    expect(criteriaPendingOf([{}, {}], { overall: 'pass' })).toBe(0);
-    expect(criteriaPendingOf([{}, {}], { overall: 'pending', criteria: [{ verdict: 'pass' }, { verdict: 'pending' }] })).toBe(1);
+
+describe('visual review round 2: the card names the review state\'s one cause', () => {
+  const on = (over: Partial<MissionDeliveryInput>) => projectMissionDelivery(mission({ missionPrMerged: true, ...over }));
+  const tasks = [merged('One'), shipTask('2026-10-12T00:00:00Z'), audit()];
+  it('blocked on a browser: the card says what the page says, not the budget record', () => {
+    const m = on({ tasks, holdReasons: new Map([['audit1', 'budget_paused']]), visualReview: { status: 'blocked', blockedDetail: 'it needs a runner with a browser', holdReason: null } });
+    expect(m.next).toBe('Visual review unable to run: it needs a runner with a browser');
+    expect(m.next).not.toContain('budget');
+  });
+  it('queued: the hold comes from the review state', () => {
+    const m = on({ tasks, visualReview: { status: 'queued', blockedDetail: null, holdReason: 'budget_paused' } });
+    expect(m.next).toBe('Visual review queued: runners paused new work until the model budget resets');
+  });
+  it('a task with no hold is next in line for a runner, never "a slot frees up"', () => {
+    const m = projectMissionDelivery(mission({ integrationBranch: false, tasks: [merged('One'), task({ title: 'Two' })] }));
+    expect(m.next).toBe('Next in line for a runner');
   });
 });

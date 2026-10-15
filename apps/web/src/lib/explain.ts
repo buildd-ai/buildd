@@ -49,8 +49,7 @@ import { getDeliveryViewsForTasks, kernelReplacedFailedTaskIds, replacedFailedTa
 import { attemptLine } from '@/lib/workflow/projections';
 import { loadClaimHoldReasons, loadMissionClaimDeferrals } from '@/lib/mission-claim-deferrals';
 import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
-import { BROWSER_RUNNER_MISSING } from '@/lib/claim-hold-phrase';
-import { presentVisualReview } from '@/lib/workflow/visual-review-presentation';
+import { summarizeVisualReview } from '@/lib/mission-open-checks';
 import { deriveMissionIntegrationPr } from '@/lib/mission-integration-pr';
 import { missionCardProgress, ownerUnmergedPrs, type MissionCardTaskRow } from '@/lib/mission-card-view';
 import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
@@ -498,16 +497,7 @@ async function viewForMission(missionId: string): Promise<{
         .catch(() => null)
     : null;
   const visualReviewActor = completion.code === 'surface_audit_missing' ? visualReviewState?.nextActor ?? null : null;
-  const visualReview = visualReviewState
-    ? {
-        status: visualReviewState.status,
-        blockedDetail: visualReviewState.status === 'blocked'
-          ? visualReviewState.blocked?.cause === 'no_browser_runner'
-            ? BROWSER_RUNNER_MISSING
-            : presentVisualReview(visualReviewState).label.toLowerCase()
-          : null,
-      }
-    : null;
+  const visualReview = summarizeVisualReview(visualReviewState);
 
   const wait = classifyMissionWait(loaded as unknown as WaitClassifiableTask[]);
 

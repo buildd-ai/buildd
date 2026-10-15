@@ -11,10 +11,10 @@ import { getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
 import * as missionHelpers from '@buildd/core/mission-helpers';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { summarizeMissionForCard, type MissionCardRow } from '@/lib/mission-card-view';
-import { criteriaPendingOf, projectMissionDelivery } from '@/lib/delivery-projection';
+import { projectMissionDelivery } from '@/lib/delivery-projection';
+import { openCriteriaCount, summarizeVisualReview } from '@/lib/mission-open-checks';
+import { getMissionVisualReviewState } from '@/lib/workflow/visual-review-state-load';
 import { deriveLocalStrand } from '@/lib/local-strand';
-import { loadSurfaceAuditWaivedMissionIds } from '@/lib/mission-surface-audit-gate';
-import { loadClaimHoldReasons } from '@/lib/mission-claim-deferrals';
 import { deriveMissionIntegrationPr } from '@/lib/mission-integration-pr';
 import { SURFACE_AUDIT_TITLE_PREFIX } from '@buildd/core/member-scoped-deps';
 import { taskRowsStripProjection } from '@/lib/mission-strip-order';
@@ -135,20 +135,15 @@ export default async function MissionsPage({
     if (mission) mission.escalationGateVerdict = verdict;
   }
 
-  // R-33: a queued visual review names the claim loop's hold on it. Only
-  // pending audits of open missions, one read for the whole list.
-  const pendingAuditIds = allMissions
-    .filter(m => m.status !== 'completed')
-    .flatMap(m => ((m.tasks ?? []) as Array<{ id: string; title: string; status: string }>)
-      .filter(t => t.status === 'pending' && t.title.startsWith(SURFACE_AUDIT_TITLE_PREFIX))
-      .map(t => t.id));
+  // The visual review as the mission page reads it, for every open mission
+  // with an audit: the card names the same state and cause (spec 8e137fdb
+  // I-1, I-5). Few missions carry one at a time; each read is the page's own.
   const auditMissionIds = allMissions
-    .filter(m => m.status !== 'completed' && ((m.tasks ?? []) as Array<{ title: string }>).some(t => t.title.startsWith(SURFACE_AUDIT_TITLE_PREFIX)))
+    .filter(m => m.status !== 'completed' && ((m.tasks ?? []) as Array<{ title: string; status: string }>)
+      .some(t => t.status !== 'cancelled' && t.title.startsWith(SURFACE_AUDIT_TITLE_PREFIX)))
     .map(m => m.id as string);
-  const [holdReasons, waivedMissionIds] = await Promise.all([
-    loadClaimHoldReasons(pendingAuditIds),
-    loadSurfaceAuditWaivedMissionIds(auditMissionIds),
-  ]);
+  const visualReviews = new Map(await Promise.all(auditMissionIds.map(async id =>
+    [id, summarizeVisualReview(await getMissionVisualReviewState(id).catch(() => null))] as const)));
 
   // One row per mission from the shared delivery projection — the same one
   // Home reads (lib/delivery-projection.ts), so a mission's chip, landed n/m
@@ -156,15 +151,20 @@ export default async function MissionsPage({
   const live = new Set<string>(LIVE_WORKER_STATUSES);
   const now = Date.now();
   const rows: PortfolioRow[] = allMissions.map((obj) => {
+    const missionPrMerged = deriveMissionIntegrationPr({ mission: obj, tasks: obj.tasks ?? [] })?.state === 'merged';
     const delivery = projectMissionDelivery({
       id: obj.id, title: obj.title, status: obj.status, href: `/app/missions/${obj.id}`,
       isHeld: obj.isHeld ?? false, integrationBranch: obj.integrationBranchEnabled === true,
       tasks: obj.tasks ?? [],
       // R-32: a merged mission PR puts the work on trunk; the row says what is left.
-      missionPrMerged: deriveMissionIntegrationPr({ mission: obj, tasks: obj.tasks ?? [] })?.state === 'merged',
-      holdReasons,
-      visualWaived: waivedMissionIds.has(obj.id),
-      criteriaPending: criteriaPendingOf(obj.goalCriteria, obj.goalCriteriaState),
+      missionPrMerged,
+      visualReview: visualReviews.get(obj.id) ?? null,
+      // AC-7: every open required check, the selected outcome spec included.
+      criteriaPending: openCriteriaCount(obj.goalCriteria, obj.goalCriteriaState, {
+        branch: obj.integrationBranchEnabled === true ? 'mission-branch' : 'direct',
+        prMerged: missionPrMerged,
+        buildComplete: true,
+      }),
       localStrand: deriveLocalStrand({ executor: obj.executor ?? null, isHeld: obj.isHeld ?? false, status: obj.status, tasks: obj.tasks ?? [], now }),
     }, missionHelpers);
     const tasks = (obj.tasks ?? []) as Array<{ updatedAt?: Date | string | null; workers?: Array<{ status: string }> }>;
