@@ -26,6 +26,8 @@ export class RecordingWork implements Work {
   readonly steered: Array<{ taskId: string; marker: string; note: string }> = [];
   /** How many pending tasks `cancelPending` reports; recorded calls are the assertion. */
   pendingToCancel = 0;
+  /** Tasks someone has claimed: a task filed before is answered `unclaimed` until it is in here. */
+  readonly claimed = new Set<string>();
   /** `newTaskId`: the id a new task gets (a host whose store references tasks mints a real one). */
   constructor(private readonly newTaskId: (workspaceId: string) => string | Promise<string>, private readonly answers: Record<string, WorkAnswer> = {}) {}
 
@@ -34,7 +36,7 @@ export class RecordingWork implements Work {
     const answer = this.answers[req.role] ?? {};
     if (answer.skipped) return { taskId: null, created: false, skipped: answer.skipped };
     const prior = this.filed.find((f) => f.dedupeKey === req.dedupeKey || (req.taskId != null && f.taskId === req.taskId));
-    if (prior) return { taskId: prior.taskId, created: false, ...(answer.variant ? { variant: answer.variant } : {}), ...(answer.evidence ? { evidence: structuredClone(answer.evidence) } : {}) };
+    if (prior) return { taskId: prior.taskId, created: false, ...(this.claimed.has(prior.taskId) ? {} : { unclaimed: true }), ...(answer.variant ? { variant: answer.variant } : {}), ...(answer.evidence ? { evidence: structuredClone(answer.evidence) } : {}) };
     const taskId = req.taskId ?? await this.newTaskId(req.workspaceId);
     this.filed.push({ ...structuredClone(req), taskId });
     return { taskId, created: true, ...(answer.variant ? { variant: answer.variant } : {}), ...(answer.evidence ? { evidence: structuredClone(answer.evidence) } : {}) };

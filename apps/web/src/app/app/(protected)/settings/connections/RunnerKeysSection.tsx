@@ -5,16 +5,17 @@
  * run", R-4): the runner keys this person made with `buildd login`, each with
  * the workspaces it claims from, grouped by team. Edit reopens the runner
  * consent page with the current picks (the key stays the same); Disconnect
- * deletes the key. A pick the person can no longer reach (they left the team,
+ * deletes the key, after the same inline confirm the app rows use. A pick the person can no longer reach (they left the team,
  * or lost the role a restricted workspace needs) says so: the runner stops
  * claiming there on its next claim.
  *
  * Below it, for a person who owns or administers a team: runners from other
  * teams that reach that team's workspaces, with who connected them, and
- * Remove to take one off a workspace.
+ * Remove to take one off a workspace, also asked first.
  */
 import { useState } from 'react';
 import Section from '@/components/ui/Section';
+import InlineConfirm from './InlineConfirm';
 import type { ForeignRunner, RunnerKeySummary } from '@/lib/runner-picks';
 
 const ROWS = 'divide-y divide-border-default border-y border-border-default';
@@ -29,6 +30,12 @@ function groupPicks(picks: NonNullable<RunnerKeySummary['picks']>) {
   return [...groups.entries()].map(([teamId, g]) => ({ teamId, ...g }));
 }
 
+/** The two calls the section makes. The dev fixture swaps in a local one. */
+export interface RunnerKeysApi {
+  disconnect(accountId: string): Promise<{ ok: true } | { ok: false; error: string }>;
+  removeForeign(r: ForeignRunner): Promise<{ ok: true } | { ok: false; error: string }>;
+}
+
 async function errorOf(res: Response, fallback: string): Promise<string> {
   try {
     const body = await res.json();
@@ -38,18 +45,40 @@ async function errorOf(res: Response, fallback: string): Promise<string> {
   }
 }
 
-export default function RunnerKeysSection({ keys: initialKeys, foreign: initialForeign }: { keys: RunnerKeySummary[]; foreign: ForeignRunner[] }) {
+export const fetchRunnerKeysApi: RunnerKeysApi = {
+  async disconnect(accountId) {
+    const res = await fetch(`/api/accounts/${encodeURIComponent(accountId)}`, { method: 'DELETE' });
+    return res.ok ? { ok: true } : { ok: false, error: await errorOf(res, 'Could not disconnect it. Try again.') };
+  },
+  async removeForeign(r) {
+    const res = await fetch(`/api/workspaces/${encodeURIComponent(r.workspaceId)}/accounts?accountId=${encodeURIComponent(r.accountId)}`, { method: 'DELETE' });
+    return res.ok ? { ok: true } : { ok: false, error: await errorOf(res, 'Could not remove it. Try again.') };
+  },
+};
+
+export default function RunnerKeysSection({
+  keys: initialKeys,
+  foreign: initialForeign,
+  api = fetchRunnerKeysApi,
+}: {
+  keys: RunnerKeySummary[];
+  foreign: ForeignRunner[];
+  api?: RunnerKeysApi;
+}) {
   const [keys, setKeys] = useState(initialKeys);
   const [foreign, setForeign] = useState(initialForeign);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** The row whose destructive action is waiting on a second tap. */
+  const [confirm, setConfirm] = useState<string | null>(null);
 
   async function disconnect(k: RunnerKeySummary) {
     setBusy(k.id);
     setError(null);
-    const res = await fetch(`/api/accounts/${encodeURIComponent(k.id)}`, { method: 'DELETE' });
+    const r = await api.disconnect(k.id);
     setBusy(null);
-    if (!res.ok) return setError(await errorOf(res, 'Could not disconnect it. Try again.'));
+    setConfirm(null);
+    if (!r.ok) return setError(r.error);
     setKeys((list) => list.filter((x) => x.id !== k.id));
   }
 
@@ -57,9 +86,10 @@ export default function RunnerKeysSection({ keys: initialKeys, foreign: initialF
     const id = `${r.accountId}:${r.workspaceId}`;
     setBusy(id);
     setError(null);
-    const res = await fetch(`/api/workspaces/${encodeURIComponent(r.workspaceId)}/accounts?accountId=${encodeURIComponent(r.accountId)}`, { method: 'DELETE' });
+    const res = await api.removeForeign(r);
     setBusy(null);
-    if (!res.ok) return setError(await errorOf(res, 'Could not remove it. Try again.'));
+    setConfirm(null);
+    if (!res.ok) return setError(res.error);
     setForeign((list) => list.filter((x) => !(x.accountId === r.accountId && x.workspaceId === r.workspaceId)));
   }
 
@@ -81,27 +111,42 @@ export default function RunnerKeysSection({ keys: initialKeys, foreign: initialF
                     <span className="ml-2 font-mono text-meta text-text-muted">{k.apiKeyPrefix ?? ''}</span>
                     <span className="block text-meta text-text-muted">Limits count in {k.homeTeamName}</span>
                   </span>
-                  <span className="flex gap-2">
-                    <a className="btn btn-sm h-11 md:h-8" href={`/api/auth/runner-picks?account=${encodeURIComponent(k.id)}`} data-testid="runner-key-edit">
-                      Edit
-                    </a>
-                    <button
-                      type="button"
-                      className="btn btn-quiet btn-sm h-11 md:h-8"
-                      disabled={busy !== null}
-                      onClick={() => void disconnect(k)}
-                      data-testid="runner-key-disconnect"
-                    >
-                      Disconnect
-                    </button>
-                  </span>
+                  {confirm !== k.id && (
+                    <span className="flex gap-2">
+                      <a className="btn btn-sm h-11 md:h-8" href={`/api/auth/runner-picks?account=${encodeURIComponent(k.id)}`} data-testid="runner-key-edit">
+                        Edit
+                      </a>
+                      <button
+                        type="button"
+                        className="btn btn-quiet btn-sm h-11 md:h-8"
+                        disabled={busy !== null}
+                        onClick={() => setConfirm(k.id)}
+                        data-testid="runner-key-disconnect"
+                      >
+                        Disconnect
+                      </button>
+                    </span>
+                  )}
                 </div>
+                {confirm === k.id && (
+                  <InlineConfirm
+                    testId="runner-key-disconnect-confirm"
+                    confirmTestId="runner-key-disconnect-yes"
+                    question={<>Disconnect {k.name}? The runner on that machine stops until someone runs <code className="font-mono">buildd login</code> there again.</>}
+                    confirmLabel="Disconnect"
+                    busyLabel="Disconnecting…"
+                    busy={busy === k.id}
+                    disabled={busy !== null}
+                    onKeep={() => setConfirm(null)}
+                    onConfirm={() => void disconnect(k)}
+                  />
+                )}
                 {k.picks == null ? (
                   <p className="text-meta text-text-muted">Claims from the open workspaces of {k.homeTeamName}. Edit to choose workspaces.</p>
                 ) : (
                   groupPicks(k.picks).map((g) => (
                     <div key={g.teamId}>
-                      <p className="text-meta text-text-muted">{g.teamName}</p>
+                      <p className="text-meta text-text-muted" data-testid="runner-key-team">{g.teamName}</p>
                       <ul className="divide-y divide-[var(--line-soft)]">
                         {g.picks.map((p) => (
                           <li key={p.workspaceId} className="flex min-h-11 items-center justify-between gap-3" data-testid="runner-key-pick" data-reachable={p.reachable}>
@@ -123,25 +168,46 @@ export default function RunnerKeysSection({ keys: initialKeys, foreign: initialF
       <Section title="Runners from other teams" count={foreign.length}>
         {foreign.length > 0 && (
           <ul className={ROWS} data-testid="foreign-runners">
-            {foreign.map((r) => (
-              <li key={`${r.accountId}:${r.workspaceId}`} className="flex min-h-11 items-center justify-between gap-3 py-2" data-testid="foreign-runner-row">
-                <span className="min-w-0 text-body text-text-primary">
-                  {r.workspaceName}
-                  <span className="block text-meta text-text-muted">
-                    {r.accountName}, connected by {r.ownerName}, home team {r.homeTeamName}
-                  </span>
-                </span>
-                <button
-                  type="button"
-                  className="btn btn-quiet btn-sm h-11 md:h-8"
-                  disabled={busy !== null}
-                  aria-label={`Remove ${r.accountName} from ${r.workspaceName}`}
-                  onClick={() => void removeForeign(r)}
-                >
-                  Remove
-                </button>
-              </li>
-            ))}
+            {foreign.map((r) => {
+              const id = `${r.accountId}:${r.workspaceId}`;
+              return (
+                <li key={id} className="space-y-2 py-2" data-testid="foreign-runner-row">
+                  <div className="flex min-h-11 items-center justify-between gap-3">
+                    <span className="min-w-0 break-words text-body text-text-primary">
+                      {r.workspaceName}
+                      <span className="block text-meta text-text-muted">
+                        {r.accountName}, connected by {r.ownerName}, home team {r.homeTeamName}
+                      </span>
+                    </span>
+                    {confirm !== id && (
+                      <button
+                        type="button"
+                        className="btn btn-quiet btn-sm h-11 md:h-8"
+                        disabled={busy !== null}
+                        aria-label={`Remove ${r.accountName} from ${r.workspaceName}`}
+                        onClick={() => setConfirm(id)}
+                        data-testid="foreign-runner-remove"
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                  {confirm === id && (
+                    <InlineConfirm
+                      testId="foreign-runner-remove-confirm"
+                      confirmTestId="foreign-runner-remove-yes"
+                      question={`Remove ${r.accountName} from ${r.workspaceName}? That runner stops claiming work in this workspace.`}
+                      confirmLabel="Remove"
+                      busyLabel="Removing…"
+                      busy={busy === id}
+                      disabled={busy !== null}
+                      onKeep={() => setConfirm(null)}
+                      onConfirm={() => void removeForeign(r)}
+                    />
+                  )}
+                </li>
+              );
+            })}
           </ul>
         )}
       </Section>
