@@ -67,7 +67,7 @@ import {
   type MissionCardSummary,
   type MissionCardView,
 } from '@/lib/mission-card-view';
-import { loadMissionCardViews, MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH, MISSION_TASK_REFRESH_EXTRAS } from '@/lib/mission-card-views';
+import { loadCardVisualReviews, loadMissionCardViews, missionDeliveryFacts, MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH, MISSION_TASK_REFRESH_EXTRAS } from '@/lib/mission-card-views';
 import type { HomeMissionSummary } from './HomeMissions';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
 import { resolveLandingOwnership, landingModeOf, resolveReviewerGate, resolveReviewInFlight, deriveStoredVerdictFallback, gateReachesActionQueue } from '@/lib/reviewer-gate';
@@ -576,6 +576,10 @@ export default async function HomePage({
           // the same builder the missions list uses (AC-14, D8).
           // The nested workers are capped per task, so live workers are an
           // exact batched count, not a count of the loaded rows.
+          // The visual review the mission page reads, for missions whose audit is
+          // still open, so a Home card names the same state and cause as the
+          // mission header (spec 8e137fdb I-1). Runs beside the live count.
+          const visualReviewsLoad = loadCardVisualReviews(allMissions as Parameters<typeof loadCardVisualReviews>[0]);
           const liveWorkerCounts = new Map<string, number>();
           if (allMissions.length > 0) {
             const liveRows = await db
@@ -589,12 +593,16 @@ export default async function HomePage({
               .groupBy(tasks.missionId);
             for (const r of liveRows) if (r.missionId) liveWorkerCounts.set(r.missionId, r.n);
           }
+          const visualReviews = await visualReviewsLoad;
+          const factsNow = Date.now();
 
           missionDeliveries = allMissions.map(m => ({
             delivery: projectMissionDelivery({
               id: m.id, title: m.title, status: m.status, href: `/app/missions/${m.id}`,
               isHeld: m.isHeld, integrationBranch: m.integrationBranchEnabled === true,
               tasks: m.tasks as unknown as Parameters<typeof projectMissionDelivery>[0]['tasks'],
+              // The same facts the missions list reads, so both cards agree.
+              ...missionDeliveryFacts(m as Parameters<typeof missionDeliveryFacts>[0], visualReviews.get(m.id), factsNow),
             }, missionHelpers),
             status: m.status,
             liveAgents: liveWorkerCounts.get(m.id) ?? 0,
@@ -608,6 +616,7 @@ export default async function HomePage({
           for (const m of allMissions) {
             summaries.set(m.id, summarizeMissionForCard(m as MissionCardRow, {
               now: nowMs, liveWorkers: liveWorkerCounts.get(m.id) ?? 0, deliveryViews: missionDeliveryViews,
+              visualReview: visualReviews.get(m.id) ?? null,
             }));
           }
           missions = allMissions.map(m => ({

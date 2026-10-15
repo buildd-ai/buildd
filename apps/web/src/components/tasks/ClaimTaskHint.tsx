@@ -9,8 +9,11 @@
 import { useState, type ReactNode } from 'react';
 import { claimTaskCommand } from '@/lib/task-actions';
 
-/** The one button look in the claim row: Copy, Run now and Task share it (spec f7f67f1a R-39). */
-export const CLAIM_ROW_BTN = 'btn min-h-11 md:min-h-9';
+/**
+ * The one button look in the claim row: Copy, Run now and Task share it (spec
+ * f7f67f1a R-39). Full width of its column on a phone, its own width from md.
+ */
+export const CLAIM_ROW_BTN = 'btn min-h-11 w-full whitespace-nowrap px-2 md:min-h-9 md:w-auto md:px-3';
 
 export default function ClaimTaskHint({
   taskId,
@@ -45,14 +48,16 @@ export default function ClaimTaskHint({
       <p className="font-mono text-meta leading-snug text-text-secondary [overflow-wrap:anywhere]">
         {lead} <code className="text-text-primary" title={command}>{shown}</code>
       </p>
-      <div data-testid="claim-task-actions" className="flex flex-wrap items-center gap-2">
+      {/* One row at every width: equal columns on a phone, so Task never wraps under the others. */}
+      <div data-testid="claim-task-actions" className="grid grid-flow-col auto-cols-fr gap-2 md:flex md:flex-wrap md:items-center">
       <button
         type="button"
         data-testid="claim-task-copy"
+        aria-label="Copy claim command"
         onClick={(e) => { e.preventDefault(); e.stopPropagation(); void copy(); }}
         className={CLAIM_ROW_BTN}
       >
-        {copied ? 'Copied' : 'Copy claim command'}
+        {copied ? 'Copied' : <><span className="md:hidden">Copy</span><span className="hidden md:inline">Copy claim command</span></>}
       </button>
       {actions}
       </div>

@@ -304,8 +304,6 @@ export interface MissionDeliveryInput {
   released?: boolean | null;
   /** Mission-branch only: the mission PR merged into trunk (`deriveMissionIntegrationPr`). Absent reads as not merged. */
   missionPrMerged?: boolean | null;
-  /** The claim loop's latest hold reason per still-pending task (gate_events), when the caller has it. */
-  holdReasons?: ReadonlyMap<string, string> | null;
   /**
    * The visual review as the mission state reads it (`summarizeVisualReview`),
    * when the caller loaded it. It decides what the card says about the review,
@@ -314,6 +312,8 @@ export interface MissionDeliveryInput {
   visualReview?: { status: string; blockedDetail: string | null; holdReason: string | null } | null;
   /** Goal criteria that have not passed (outcome spec included), when the caller read them. */
   criteriaPending?: number | null;
+  /** With one pending: its name as the Checks rail shows it, so Next names it. */
+  criteriaPendingLabel?: string | null;
   /** Local-executor missions: `deriveLocalStrand`'s reading, when the caller has it. */
   localStrand?: { stranded: boolean; quietMs: number } | null;
   tasks: readonly MissionTaskRow[];
@@ -432,11 +432,10 @@ function visualAuditState(audits: readonly MissionTaskRow[], findings: number | 
 
 const OPEN_AUDIT = new Set<string>(OPEN_TASK_STATUSES);
 
-const VISUAL_SETTLED = new Set(['waived', 'passed', 'not_applicable', 'optional']);
+const VISUAL_SETTLED = new Set(['waived', 'passed', 'not_applicable']);
 
 function visualOpenState(
   audits: readonly MissionTaskRow[],
-  holds: ReadonlyMap<string, string> | null | undefined,
   review: MissionDeliveryInput['visualReview'],
 ): NonNullable<MissionDelivery['visualOpen']> | null {
   if (review) {
@@ -444,7 +443,8 @@ function visualOpenState(
     if (review.status === 'blocked') return { text: 'Visual review unable to run', hold: review.blockedDetail };
     if (review.status === 'running') return { text: 'Visual review running', hold: null };
     if (review.status === 'queued' || review.status === 'needed') return { text: 'Visual review queued', hold: claimHoldPhrase(review.holdReason) };
-    return null;
+    // `optional`: the review could not be read; an audit row still open is still the wait (c9353c11).
+    if (review.status !== 'optional') return null;
   }
   const live = audits.filter(a => a.status !== 'cancelled');
   const latest = [...live].sort((a, b) => auditRound(b) - auditRound(a))[0];
@@ -452,7 +452,8 @@ function visualOpenState(
   const running = (latest.workers ?? []).some(w => (LIVE_WORKER_STATUSES as readonly string[]).includes(w.status));
   return running
     ? { text: 'Visual review running', hold: null }
-    : { text: 'Visual review queued', hold: claimHoldPhrase(holds?.get(latest.id)) };
+    // No review state loaded: the hold is the review state's to name, so say only that it is queued.
+    : { text: 'Visual review queued', hold: null };
 }
 
 export function projectMissionDelivery(input: MissionDeliveryInput, rules: MissionTaskRules): MissionDelivery {
@@ -464,7 +465,7 @@ export function projectMissionDelivery(input: MissionDeliveryInput, rules: Missi
   const hidden = (id: string) => auditIds.has(id) || superseded.has(id);
   const m: MissionDeliveryInput = { ...input, tasks: input.tasks.filter(t => !hidden(t.id) && !(t.parentTaskId && hidden(t.parentTaskId))) };
   const visual = visualAuditState(audits, input.visualFindings);
-  const visualOpen = visual ? null : visualOpenState(audits, input.holdReasons, input.visualReview);
+  const visualOpen = visual ? null : visualOpenState(audits, input.visualReview);
   const missionPrMerged = !!input.integrationBranch && input.missionPrMerged === true;
   const progress = computeMissionProgress(m.tasks.map(t => ({ ...t, dependsOn: undefined, workers: (t.workers ?? []).map(w => ({ ...w })) })));
   const attempts = new Map<string, MissionTaskRow[]>();
@@ -567,7 +568,7 @@ export function projectMissionDelivery(input: MissionDeliveryInput, rules: Missi
   const next = visual && (kind === 'landed' || kind === 'landing')
     ? visual.next
     : remaining === 'visual' && visualOpen ? (visualOpen.hold ? `${visualOpen.text}: ${visualOpen.hold}` : visualOpen.text)
-    : remaining === 'criteria' ? (criteriaPending === 1 ? 'A goal criterion passes' : `${criteriaPending} goal criteria pass`)
+    : remaining === 'criteria' ? (criteriaPending === 1 ? (input.criteriaPendingLabel ? `${input.criteriaPendingLabel} passes` : 'A goal criterion passes') : `${criteriaPending} goal criteria pass`)
     : described.next;
 
   return {

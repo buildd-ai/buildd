@@ -20,6 +20,7 @@
  *   counts as live, on Home and the list alike.
  * - chip: `deriveMissionStateView(...).chip`, the detail header's accessor.
  */
+import { openCriteriaChecks, type MissionVisualReviewSummary } from './mission-open-checks';
 import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
 import { OPEN_TASK_STATUSES } from '@buildd/shared';
 import {
@@ -319,7 +320,11 @@ export const MISSION_CARD_VIEW_CAP = 30;
  */
 export function summarizeMissionForCard(
   row: MissionCardRow,
-  opts: { now?: number; liveWorkers?: number; deliveryViews?: ReadonlyMap<string, DeliveryView> | null } = {},
+  opts: {
+    now?: number; liveWorkers?: number; deliveryViews?: ReadonlyMap<string, DeliveryView> | null;
+    /** The visual review as the mission page reads it (`summarizeVisualReview`), so the card names the same state and cause (8e137fdb I-1). */
+    visualReview?: MissionVisualReviewSummary | null;
+  } = {},
 ): MissionCardSummary {
   const now = opts.now ?? Date.now();
   const tasks = row.tasks ?? [];
@@ -362,7 +367,7 @@ export function summarizeMissionForCard(
   // The card's state — chip, situation, and whether the next step is yours —
   // is derived once, here, so the group the header counts and the chip the
   // card shows cannot come from two derivations (F1, D2).
-  const state = deriveCardState(row, { liveWorkers, progress, healthState, hasPendingDeliverableWork: pending, now, replaced, escalationGateVerdict: row.escalationGateVerdict });
+  const state = deriveCardState(row, { liveWorkers, progress, healthState, hasPendingDeliverableWork: pending, now, replaced, escalationGateVerdict: row.escalationGateVerdict, visualReview: opts.visualReview ?? null });
   const health = deriveMissionHealth({
     status: row.status,
     activeAgents: liveWorkers,
@@ -488,7 +493,7 @@ function toWaitClassifiable(t: MissionCardTaskRow): WaitClassifiableTask {
  */
 function deriveCardState(
   row: MissionCardRow,
-  s: { liveWorkers: number; progress: number; healthState: Health; hasPendingDeliverableWork: boolean; now: number; replaced: ReadonlySet<string>; escalationGateVerdict?: { owner: 'person' | 'machine'; reason?: string | null } | null },
+  s: { liveWorkers: number; progress: number; healthState: Health; hasPendingDeliverableWork: boolean; now: number; replaced: ReadonlySet<string>; escalationGateVerdict?: { owner: 'person' | 'machine'; reason?: string | null } | null; visualReview?: MissionVisualReviewSummary | null },
 ): MissionStateView {
   const tasks = row.tasks ?? [];
   const deliverables = tasks.filter(t => isDeliverableTask(t as any));
@@ -528,7 +533,16 @@ function deriveCardState(
         id: t.id, status: t.status, title: t.title,
         ...(t.status === 'pending' ? { waitingOnTaskIds: unmetDependencyIds(t, byId), waitingOnPrs: unmetDependencyPrs(t, byId) } : {}),
         surfaceAudit: isSurfaceAuditTask(t.title ?? ''),
+        // The audit's hold is the one the review state read (the same claim-loop record `explain` reads).
+        ...(t.status === 'pending' && isSurfaceAuditTask(t.title ?? '') && s.visualReview?.holdReason ? { holdReason: s.visualReview.holdReason } : {}),
       })),
+    visualReview: s.visualReview ?? null,
+    // AC-7: what is left when nothing else is, read the way the Checks rail reads it.
+    openChecks: openCriteriaChecks(row.goalCriteria, row.goalCriteriaState, {
+      branch: row.integrationBranchEnabled ? 'mission-branch' : 'direct',
+      prMerged: integrationPr?.state === 'merged',
+      buildComplete: s.progress >= 100,
+    }),
     // Same reading as `explain`: a merged mission PR with only the visual review open is a check, not a stall.
     missionPrMerged: integrationPr?.state === 'merged',
     localStrand: strand ? { ...strand, flipBlockedReason: continueOnRunnerBlockedReason({ status: row.status, workspaceId: row.workspaceId }) } : null,

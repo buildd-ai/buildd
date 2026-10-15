@@ -123,7 +123,10 @@ export function visualCheck(state: MissionVisualReviewState, opts: { mergeTier: 
 
   if (state.status === 'waived') return row('waived', 'waived', p.detail, 'none');
   if (state.status === 'not_applicable') return idle('not needed', 'No screens changed, so there was nothing to check.');
-  if (state.status === 'optional' || state.policy.mode === 'off') return idle('optional', 'Visual review is off for this mission.');
+  if (state.policy.mode === 'off') return idle('optional', 'Visual review is off for this mission.');
+  // On, but the builders' files could not be read: say that, never "off" (c9353c11).
+  if (state.status === 'optional' && state.scope.impact === 'unknown') return idle('not checked', 'Could not tell whether any screens changed, so nothing was captured.');
+  if (state.status === 'optional') return idle('optional', 'Visual review is optional for this mission.');
   if (state.status === 'passed') {
     if (state.staleEvidence) return row('stale', 'out of date', 'The branch changed after the last pass. It checks again.', 'system');
     return row('passed', 'passed', p.record?.detail ?? p.detail, 'none');

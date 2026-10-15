@@ -790,7 +790,10 @@ export function deriveMissionStateView(input: MissionStateInput): MissionStateVi
       // All clear: the mission can complete, nothing is under review. A
       // required check still open is named instead (spec 8e137fdb AC-7).
       : resolved.kind === 'idle' && resolved.displayState === 'review'
-        ? { ...getMissionStateChip(resolved.displayState), label: (input.openChecks?.length ?? 0) > 0 ? 'CHECK PENDING' : 'READY TO COMPLETE' }
+        ? (input.openChecks?.length ?? 0) > 0
+          // A pending check waits; only the all-clear wears the success tone.
+          ? { label: 'CHECK PENDING', cls: getMissionStateChip('awaiting_verification').cls }
+          : { ...getMissionStateChip(resolved.displayState), label: 'READY TO COMPLETE' }
       : w?.kind === 'task' && w.nextInLine
         ? { ...getMissionStateChip(resolved.displayState), label: 'NEXT IN LINE' }
       : w?.kind === 'task' && (w.hold || w.waitingNoCause)
@@ -1449,7 +1452,8 @@ function mergeFact(input: MissionStateInput): Resolution | null {
  * still something the header owes the reader and is deliberately quiet.
  */
 /** Visual review states in which an open audit row is no longer outstanding work. */
-const VISUAL_SETTLED = new Set(['waived', 'passed', 'not_applicable', 'optional']);
+// `optional` is not here: it means the review could not be read, and an audit row still open is still the wait (c9353c11).
+const VISUAL_SETTLED = new Set(['waived', 'passed', 'not_applicable']);
 
 function openTaskFact(input: MissionStateInput, live: boolean): Resolution | null {
   const { completion } = input;
