@@ -1461,7 +1461,7 @@ describe('S16–S21', () => {
     expect(await delivery(manual.deliveryId)).toMatchObject({ state: 'CLOSED_UNMERGED', stateReason: 'unknown' });
   });
 
-  test('S19: fix worker killed after claim → CHANGES_REQUESTED, ledger row failed, the next attempt_no dispatched; the last one exhausts', async () => {
+  test('S19: fix worker killed after claim → CHANGES_REQUESTED, ledger row ended with no change, the next attempt_no dispatched; the last one exhausts', async () => {
     const o = await open();
     await q(sql`UPDATE workflow_deliveries SET max_rounds = 2 WHERE id = ${o.deliveryId}::uuid`);
     const ow = await seedWorker(o.ownerTaskId, { status: 'completed', lastCommitSha: 'H1', prNumber: o.prNumber, commitCount: 1 });
@@ -1472,7 +1472,8 @@ describe('S16–S21', () => {
     await seam.attemptEnded({ task: f.fix, workerId: w1, status: 'lost', localHeadSha: null, commitCount: 2, source: 'sweep:stale-workers' }, deps);
     let v = await loadView({ deliveryId: o.deliveryId });
     expect(v.delivery!.state).toBe('CHANGES_REQUESTED');
-    expect(v.attempts.map((a) => [a.attemptNo, a.status, a.outcome])).toEqual([[1, 'ended', 'failed'], [2, 'queued', null]]);
+    // AC-19: the PR head never moved, so the ended attempt reads "no change" (and still counted).
+    expect(v.attempts.map((a) => [a.attemptNo, a.status, a.outcome])).toEqual([[1, 'ended', 'noop'], [2, 'queued', null]]);
     const fixes = await tasksOf(o.deliveryId, 'fix');
     expect(fixes.length).toBe(2);
     expect(fixes[1].context).toMatchObject({ iteration: 2, maxIterations: 2, workflowAttemptId: v.attempts[1].id });
@@ -2610,7 +2611,8 @@ describe('S30 — runner hand-off failures', () => {
     await seam.attemptEnded({ task: f.fix, workerId: w, status: 'failed', localHeadSha: 'L7', commitCount: 1, source: 'runner' }, deps);
     const view = await loadView({ deliveryId: f.deliveryId });
     expect(view.delivery!.state).toBe('CHANGES_REQUESTED');
-    expect(view.attempts.find((a) => a.family === 'review_fix' && a.attemptNo === 1)).toMatchObject({ status: 'ended', outcome: 'failed' });
+    // AC-19: nothing reached the PR head, so the attempt reads "no change".
+    expect(view.attempts.find((a) => a.family === 'review_fix' && a.attemptNo === 1)).toMatchObject({ status: 'ended', outcome: 'noop' });
     expect(await effects(f.deliveryId, 'push_recovery')).toEqual([]);
   });
 });

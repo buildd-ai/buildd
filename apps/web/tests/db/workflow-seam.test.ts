@@ -299,7 +299,8 @@ describe('S7/S8/S25 — fix dispatch races, budget, claim-time revalidation', ()
     const after = await loadView({ deliveryId });
     expect(after.delivery!.state).toBe('CHANGES_REQUESTED');
     const fixes = after.attempts.filter((a) => a.family === 'review_fix').sort((a, b) => a.attemptNo - b.attemptNo);
-    expect(fixes.map((a) => [a.attemptNo, a.status, a.outcome])).toEqual([[1, 'ended', 'failed'], [2, 'queued', null]]);
+    // AC-19: the PR head never moved: "no change", and it counted.
+    expect(fixes.map((a) => [a.attemptNo, a.status, a.outcome])).toEqual([[1, 'ended', 'noop'], [2, 'queued', null]]);
     expect(dispatched.filter((x) => x.kind === 'fix').length).toBe(2);
   });
 
