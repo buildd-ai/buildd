@@ -808,20 +808,24 @@ export async function adoptReviewVerdict(p: {
 
 /**
  * A deferral names its task the way agents cite tasks: often by its short id. The kernel
- * takes only a full id, so a short one is resolved here to the one task of the delivery's
- * workspace it prefixes. One that resolves to no task (or to several) is left as written:
+ * takes only a full id of a task in the delivery's own workspace, so every id is resolved
+ * here: a full one must be such a task, a short one must prefix exactly one. Anything else
+ * (no task, a task of another workspace, a prefix shared by several) is marked unresolved:
  * the kernel then refuses that deferral and the finding stays open, recorded as unresolved.
  */
 export async function resolveDeferralTasks(v: VerdictFindings, deliveryId: string, exec: Exec): Promise<VerdictFindings> {
   if (!v.deferredFindings?.length) return v;
   const deferredFindings = await Promise.all(v.deferredFindings.map(async (d) => {
-    const id = d.taskId?.trim();
-    if (!id || isTaskId(id) || !/^[0-9a-f]{8,}$/i.test(id) || id.length > 36) return d;
+    const id = d.taskId?.trim().toLowerCase();
+    if (!id) return d;
+    const unresolved = { ...d, taskId: `unresolved:${id.slice(0, 36)}` };
+    if (!/^[0-9a-f-]{8,36}$/.test(id)) return unresolved;
+    const match = isTaskId(id) ? sql`t.id = ${id}::uuid` : sql`t.id::text LIKE ${`${id}%`}`;
     const rows = ((await exec(sql`-- workflow:resolve_deferral_task
 SELECT t.id FROM tasks t JOIN workflow_deliveries d ON d.workspace_id = t.workspace_id
-WHERE d.id = ${deliveryId}::uuid AND t.id::text LIKE ${`${id.toLowerCase()}%`}
+WHERE d.id = ${deliveryId}::uuid AND ${match}
 LIMIT 2`)).rows ?? []) as Array<{ id: string }>;
-    return rows.length === 1 ? { ...d, taskId: String(rows[0]!.id) } : d;
+    return rows.length === 1 ? { ...d, taskId: String(rows[0]!.id) } : unresolved;
   }));
   return { ...v, deferredFindings };
 }

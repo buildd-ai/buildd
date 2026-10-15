@@ -498,4 +498,38 @@ describe('S5: a reviewer\'s deferral names its task by short id (workflow-kernel
     expect(after.find((f) => f.id === b)).toMatchObject({ status: 'open', deferredToTaskId: null });
     expect((await rounds(deliveryId)).map((x) => x.status)).toEqual(['decided', 'decided']);
   });
+
+  test('a short id that prefixes two tasks resolves to neither; another workspace\'s task never resolves, by short id or full id', async () => {
+    const { deliveryId, review } = await openAndHandOn();
+    await recordReviewVerdict({ reviewerTask: await reviewerTask(review.taskId), verdict: 'request-changes', effectiveVerdict: 'request-changes', headSha: 'H1', confidence: 0.9,
+      output: { findings: [{ path: 'a.ts', title: 'fix a' }, { path: 'b.ts', title: 'fix b' }, { path: 'c.ts', title: 'fix c' }] } }, deps);
+    const fix = dispatched.find((x) => x.kind === 'fix')!;
+    const t = await fixTask(fix.taskId);
+    await claimFix(t, deps);
+    gh.head = 'H2';
+    gh.ancestors = { H2: ['H1'] };
+    await attemptEnded({ task: t, workerId: await seedWorker(fix.taskId, { status: 'completed', lastCommitSha: 'H2' }), status: 'completed', localHeadSha: 'H2', commitCount: 1, source: 'runner' }, deps);
+    const review2 = dispatched.filter((x) => x.kind === 'review').at(-1)!;
+    const findings = (await loadView({ deliveryId })).findings!;
+    const id = (path: string) => findings.find((f) => f.path === path)!.id;
+    // Two tasks of this workspace sharing an 8-character prefix, and one task of another workspace.
+    const prefix = Array.from({ length: 8 }, () => '0123456789abcdef'[Math.floor(Math.random() * 16)]).join('');
+    const full = (tail: string) => [prefix, '0000', '4000', '8000', tail].join('-');
+    for (const tail of ['00000000000a', '00000000000b']) {
+      await q(sql`INSERT INTO tasks (id, workspace_id, title, status) VALUES (${full(tail)}::uuid, ${workspaceId}::uuid, 'twin', 'pending')`);
+    }
+    const { workspaceId: other } = await seedWorkspace();
+    const foreign = await seedTask(other, { title: 'another workspace' });
+    const r = await recordReviewVerdict({ reviewerTask: await reviewerTask(review2.taskId), verdict: 'request-changes', effectiveVerdict: 'request-changes', headSha: 'H2', confidence: 0.9,
+      output: { deferredFindings: [
+        { id: id('a.ts'), reason: 'ambiguous', taskId: prefix },
+        { id: id('b.ts'), reason: 'foreign by short id', taskId: foreign.slice(0, 8) },
+        { id: id('c.ts'), reason: 'foreign by full id', taskId: foreign },
+      ] } }, deps);
+    expect(r).toMatchObject({ handled: true, result: { result: 'applied' }, toState: 'CHANGES_REQUESTED' });
+    const after = (await loadView({ deliveryId })).findings!;
+    for (const path of ['a.ts', 'b.ts', 'c.ts']) expect(after.find((f) => f.path === path)).toMatchObject({ status: 'open', deferredToTaskId: null });
+    const ev = (r as { result: { decision: { evidence: { findings: { unresolvedDeferrals: Array<{ id: string }> } } } } }).result.decision.evidence.findings.unresolvedDeferrals;
+    expect(ev.map((x) => x.id).sort()).toEqual([id('a.ts'), id('b.ts'), id('c.ts')].sort());
+  });
 });
