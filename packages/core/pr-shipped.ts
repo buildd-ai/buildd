@@ -126,6 +126,13 @@ export interface SupersessionScan {
   suggestion: SupersessionSuggestion | null;
   /** Candidate prUrls a person rejected ("Not this") — never suggested again. */
   dismissed?: string[];
+  /**
+   * A verified candidate whose record the kernel's host did not take (the control plane did not
+   * answer): deferred to the next sweep, counted and bounded (apps/web/src/lib/control-plane-deferral.ts).
+   */
+  deferral?: { firstAt: string; count: number; reason: string };
+  /** The deferral ran out: recorded as a suggestion a person settles, with why. */
+  deferralExhausted?: { firstAt: string; count: number; reason: string };
 }
 
 /** True when the row has a PR and that PR's work shipped (merged or superseded). */

@@ -9,21 +9,37 @@ import { describe, expect, it } from 'bun:test';
 import { signRequest } from '@buildd/dispatch-contract';
 import { COMMAND_PATH, commandKeyRing, commandProblem, handleCommandRequest, principalKey, principalReaches, requestHash, sessionOfPrincipal, type CommandServerDeps, type KernelPrincipal, type ReachDeps } from './command-api';
 import { assertGrantedWorkspace } from '../grant-scope';
-import type { CommandLedger, LedgerRow, StoredAnswer } from './command-ledger';
+import { COMMAND_HEARTBEAT_MS, COMMAND_LEASE_MS, type CommandLedger, type LedgerRow, type StoredAnswer } from './command-ledger';
 
 const WS = '11111111-1111-4111-8111-111111111111';
 const USER = '22222222-2222-4222-8222-222222222222';
 const DELIVERY = '33333333-3333-4333-8333-333333333333';
 const ENV = { EXECUTION_MODE: 'own', KERNEL_COMMAND_SECRET: 'k1:test-secret' };
 
-/** command-ledger.ts's semantics in memory: claim is insert-or-takeover, complete/release only for the current token. */
-function memoryLedger(): CommandLedger & { rows: Map<string, LedgerRow & { token: string }> } {
-  const rows = new Map<string, LedgerRow & { token: string }>();
+/**
+ * command-ledger.ts's semantics in memory: claim is insert, or takeover of a running row not renewed
+ * within the lease (same request only); renew/complete/release only for the current token. `now` is
+ * the ledger's clock (the database's), so a test can age a claim.
+ */
+function memoryLedger(now: () => number = Date.now): CommandLedger & { rows: Map<string, LedgerRow & { token: string; claimedMs: number }> } {
+  const rows = new Map<string, LedgerRow & { token: string; claimedMs: number }>();
   return {
     rows,
     async claim(p) {
-      if (rows.has(p.key)) return false;
-      rows.set(p.key, { key: p.key, op: p.op, principal: p.principal, requestHash: p.requestHash, status: 'running', response: null, claimedAt: new Date().toISOString(), token: p.token });
+      const r = rows.get(p.key);
+      if (r) {
+        if (r.status !== 'running' || r.requestHash !== p.requestHash || now() - r.claimedMs <= COMMAND_LEASE_MS) return false;
+        r.token = p.token;
+        r.claimedMs = now();
+        return true;
+      }
+      rows.set(p.key, { key: p.key, op: p.op, principal: p.principal, requestHash: p.requestHash, status: 'running', response: null, claimedAt: new Date(now()).toISOString(), claimedMs: now(), token: p.token });
+      return true;
+    },
+    async renew(p) {
+      const r = rows.get(p.key);
+      if (!r || r.status !== 'running' || r.token !== p.token) return false;
+      r.claimedMs = now();
       return true;
     },
     async complete(p) {
@@ -42,6 +58,12 @@ function memoryLedger(): CommandLedger & { rows: Map<string, LedgerRow & { token
   };
 }
 
+/** Until the condition holds: the endpoint verifies a signature (async crypto) before it claims, so one tick is not enough under load. */
+async function until(cond: () => boolean, tries = 500): Promise<void> {
+  for (let i = 0; i < tries && !cond(); i++) await new Promise((r) => setTimeout(r, 1));
+  expect(cond()).toBe(true);
+}
+
 const landInput = { workspaceId: WS, installationId: 1, repoFullName: 'acme/w', prNumber: 7, headSha: 'H1', door: 'dashboard', actor: `human:${USER}` };
 
 function body(o: Record<string, unknown> = {}) {
@@ -54,9 +76,9 @@ async function signed(b: unknown, secret = 'test-secret', keyId = 'k1'): Promise
   return new Request(`https://control-plane.buildd.dev${COMMAND_PATH}`, { method: 'POST', body: text, headers });
 }
 
-function server(o: Partial<CommandServerDeps> = {}) {
+function server(o: Partial<CommandServerDeps> = {}, ledgerNow?: () => number) {
   const ran: unknown[] = [];
-  const ledger = memoryLedger();
+  const ledger = memoryLedger(ledgerNow);
   const deps: CommandServerDeps = {
     env: ENV,
     host: () => 'control-plane',
@@ -324,5 +346,132 @@ describe('AC-11: one idempotency key is one execution and one answer', () => {
     const res = await s.call(await signed(body()));
     expect([res.status, (await res.json()).code]).toEqual([409, 'in_progress']);
     expect(s.ran).toEqual([]);
+  });
+});
+
+/**
+ * Incident 197552dc: a Worker request cancelled or killed mid-command left its claim `running`. With a
+ * two-minute lease and nothing renewing it, every request with that key waited out the server's wait
+ * and answered `in_progress` for two minutes, and a caller's whole door budget went on it.
+ */
+describe('a dead claim recovers promptly, a live one is never taken over', () => {
+  const hash = async () => requestHash(body() as never);
+  const deadClaim = async (s: ReturnType<typeof server>) =>
+    s.ledger.claim({ key: 'land:key-0001', op: 'land', principal: `user:${USER}`, requestHash: await hash(), host: 'control-plane', token: 'cancelled-request' });
+
+  it('a request arriving once the lease has run out takes the dead claim over and runs the command, well inside a door budget', async () => {
+    let t = 0;
+    const s = server({ now: () => t, waitMs: 20_000, sleep: async (ms) => { t += ms; } }, () => t);
+    await deadClaim(s);
+    // Within the lease: the server waits its whole wait and answers in_progress, running nothing.
+    const first = await s.call(await signed(body()));
+    expect([first.status, (await first.json()).code]).toEqual([409, 'in_progress']);
+    expect(s.ran).toEqual([]);
+    // Thirty-odd seconds after the claim was last renewed, the next request with the key runs it.
+    t = 31_000;
+    const second = await s.call(await signed(body()));
+    expect([second.status, (await second.json()).replayed]).toEqual([200, false]);
+    expect(s.ran).toHaveLength(1);
+    expect(COMMAND_LEASE_MS).toBeLessThanOrEqual(30_000);
+  });
+
+  it('a live command renews its claim while it runs, so a request past the lease waits for it instead of running it twice', async () => {
+    let t = 0;
+    const beats: Array<() => void> = [];
+    let finish!: () => void;
+    const gate = new Promise<void>((r) => { finish = r; });
+    let runs = 0;
+    const s = server({
+      now: () => t, waitMs: 20_000,
+      every: (ms, fn) => { expect(ms).toBe(COMMAND_HEARTBEAT_MS); beats.push(fn); return () => { beats.length = 0; }; },
+      run: (async () => { runs++; await gate; return { merged: true }; }) as CommandServerDeps['run'],
+      // The second caller's polls: time passes, and the live command's heartbeat fires on schedule.
+      sleep: async (ms) => { const before = Math.floor(t / COMMAND_HEARTBEAT_MS); t += ms; if (Math.floor(t / COMMAND_HEARTBEAT_MS) > before) for (const b of [...beats]) b(); await new Promise((r) => setTimeout(r, 0)); },
+    }, () => t);
+    const first = s.call(await signed(body()));
+    await until(() => beats.length === 1);
+    // Long past the lease since the claim was taken, but renewed all along.
+    t = 25_000;
+    beats[0]();
+    await new Promise((r) => setTimeout(r, 0));
+    t = 45_000;
+    const second = await s.call(await signed(body()));
+    expect([second.status, (await second.json()).code]).toEqual([409, 'in_progress']);
+    expect(runs).toBe(1);
+    finish();
+    expect((await first).status).toBe(200);
+    // The heartbeat stops with the command.
+    expect(beats).toHaveLength(0);
+  });
+
+  it('a heartbeat that finds its claim taken over stops renewing it', async () => {
+    const beats: Array<() => void> = [];
+    let stopped = 0;
+    let renews = 0;
+    let finish!: () => void;
+    const gate = new Promise<void>((r) => { finish = r; });
+    const s = server({
+      every: (_ms, fn) => { beats.push(fn); return () => { stopped++; }; },
+      run: (async () => { await gate; return { merged: true }; }) as CommandServerDeps['run'],
+    });
+    s.ledger.renew = async () => { renews++; return false; };
+    const pending = s.call(await signed(body()));
+    await until(() => beats.length === 1);
+    beats[0]();
+    await until(() => stopped === 1);
+    expect(renews).toBe(1);
+    // A later tick (the interval had already queued it) renews nothing.
+    beats[0]();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(renews).toBe(1);
+    finish();
+    await pending;
+  });
+
+  it('a command that starts is handed to the Worker\'s waitUntil, so a caller that disconnects does not cancel it mid-way', async () => {
+    const handed: Array<Promise<unknown>> = [];
+    let finish!: () => void;
+    const gate = new Promise<void>((r) => { finish = r; });
+    const s = server({ waitUntil: (p) => { handed.push(p); }, run: (async () => { await gate; return { merged: true }; }) as CommandServerDeps['run'] });
+    const pending = s.call(await signed(body()));
+    await until(() => handed.length === 1);
+    finish();
+    const res = (await handed[0]) as Response;
+    expect(res.status).toBe(200);
+    expect((await pending).status).toBe(200);
+    // Its claim completed: the stored answer, not a running row.
+    expect(s.ledger.rows.get('land:key-0001')?.status).toBe('done');
+    // A replay runs nothing and hands nothing over.
+    await s.call(await signed(body()));
+    expect(handed).toHaveLength(1);
+  });
+});
+
+describe('a ledger that does not answer before the claim', () => {
+  it('is answered 503 ledger_unavailable (nothing ran), never thrown as a bare 500', async () => {
+    for (const broken of ['claim', 'read'] as const) {
+      const s = server();
+      if (broken === 'claim') s.ledger.claim = async () => { throw new Error('ledger unreachable'); };
+      else {
+        s.ledger.claim = async () => false;
+        s.ledger.read = async () => { throw new Error('ledger unreachable'); };
+      }
+      const res = await s.call(await signed(body()));
+      expect(res.status).toBe(503);
+      expect(await res.json()).toMatchObject({ code: 'ledger_unavailable', retryable: true, applied: false });
+      expect(s.ran).toEqual([]);
+    }
+  });
+});
+
+describe('a reach check that cannot be made', () => {
+  it('is 503 reach_unavailable (nothing ran), not a 403; an answered "no" is still a 403', async () => {
+    const down = server({ reaches: async () => { throw new Error('db down'); } });
+    const res = await down.call(await signed(body()));
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ code: 'reach_unavailable', retryable: true, applied: false });
+    expect(down.ran).toEqual([]);
+    const no = server({ reaches: async () => false });
+    expect((await no.call(await signed(body()))).status).toBe(403);
   });
 });
