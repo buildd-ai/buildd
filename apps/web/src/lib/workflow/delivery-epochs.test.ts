@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { applyEpochOpsSql, contentContained, missionEpochsSql, type GithubApi } from './delivery-epochs';
+import { applyEpochOpsSql, contentContained, missionEpochsSql, settleLeaseSql, settleReleaseSql, type GithubApi } from './delivery-epochs';
 
 const dialect = new PgDialect();
 const render = (q: Parameters<PgDialect['sqlToQuery']>[0]) => dialect.sqlToQuery(q);
@@ -112,5 +112,17 @@ describe('contentContained', () => {
     ]);
     expect([a, b]).toEqual([true, true]);
     expect(new Set(f.refs).size).toBe(2);
+  });
+});
+
+describe('settle lease SQL', () => {
+  it('takes the lease only when free or expired, and releases only its own token', () => {
+    const take = render(settleLeaseSql('e1', 'tok', 60_000));
+    expect(take.sql).toContain('WHERE id = $');
+    expect(take.sql).toContain('(settle_lease_until IS NULL OR settle_lease_until < now())');
+    expect(take.sql).toContain("interval '1 millisecond'");
+    expect(take.params).toEqual(['tok', 60_000, 'e1']);
+    const release = render(settleReleaseSql('e1', 'tok'));
+    expect(release.sql).toMatch(/AND settle_lease_token = \$\d+::text/);
   });
 });
