@@ -82,6 +82,10 @@ export interface ClaimLogEntry {
    * WHERE logs as a bare `no_pending_tasks`, identical to a lost race.
    */
   taskExclusion?: string;
+  /** When the exclusion ends (ISO), when the server said. */
+  until?: string;
+  /** The plan and rate limits that held the claim, with when each lifts. */
+  walls?: Array<{ kind: string; backend: string; resetsAt?: string | null }>;
   /** Candidate-window sizes: a deferral count is unreadable without them. */
   pendingTasks?: number;
   matchedTasks?: number;

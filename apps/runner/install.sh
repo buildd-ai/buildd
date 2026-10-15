@@ -618,6 +618,8 @@ while true; do
   EXIT_CODE=$?
   if [ "$EXIT_CODE" -ne 75 ]; then exit $EXIT_CODE; fi
   echo "Restarting after update..."
+  # The runner opens its debug page in a browser on the first start only.
+  export BUILDD_RESTART=update
   sleep 1
 done
 LAUNCHER

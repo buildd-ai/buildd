@@ -686,9 +686,14 @@ export function metricsOnlyPayload(
  */
 function claimDiagnosticDetail(
   diagnostics: ClaimDiagnostics | null | undefined,
-): Pick<ClaimLogEntry, 'deferrals' | 'pendingTasks' | 'matchedTasks'> {
+): Pick<ClaimLogEntry, 'deferrals' | 'pendingTasks' | 'matchedTasks' | 'walls' | 'until'> {
   if (!diagnostics) return {};
+  const walls = diagnostics.budgetBlock?.walls;
   return {
+    ...(walls && walls.length > 0
+      ? { walls: walls.map(w => ({ kind: w.kind, backend: w.backend, resetsAt: w.resetsAt ?? null })) }
+      : {}),
+    ...(diagnostics.taskExclusion?.until ? { until: diagnostics.taskExclusion.until } : {}),
     ...(diagnostics.deferrals && Object.keys(diagnostics.deferrals).length > 0
       ? { deferrals: diagnostics.deferrals }
       : {}),
