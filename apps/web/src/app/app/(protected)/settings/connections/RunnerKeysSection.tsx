@@ -29,6 +29,12 @@ function groupPicks(picks: NonNullable<RunnerKeySummary['picks']>) {
   return [...groups.entries()].map(([teamId, g]) => ({ teamId, ...g }));
 }
 
+/** The two calls the section makes. The dev fixture swaps in a local one. */
+export interface RunnerKeysApi {
+  disconnect(accountId: string): Promise<{ ok: true } | { ok: false; error: string }>;
+  removeForeign(r: ForeignRunner): Promise<{ ok: true } | { ok: false; error: string }>;
+}
+
 async function errorOf(res: Response, fallback: string): Promise<string> {
   try {
     const body = await res.json();
@@ -38,7 +44,26 @@ async function errorOf(res: Response, fallback: string): Promise<string> {
   }
 }
 
-export default function RunnerKeysSection({ keys: initialKeys, foreign: initialForeign }: { keys: RunnerKeySummary[]; foreign: ForeignRunner[] }) {
+export const fetchRunnerKeysApi: RunnerKeysApi = {
+  async disconnect(accountId) {
+    const res = await fetch(`/api/accounts/${encodeURIComponent(accountId)}`, { method: 'DELETE' });
+    return res.ok ? { ok: true } : { ok: false, error: await errorOf(res, 'Could not disconnect it. Try again.') };
+  },
+  async removeForeign(r) {
+    const res = await fetch(`/api/workspaces/${encodeURIComponent(r.workspaceId)}/accounts?accountId=${encodeURIComponent(r.accountId)}`, { method: 'DELETE' });
+    return res.ok ? { ok: true } : { ok: false, error: await errorOf(res, 'Could not remove it. Try again.') };
+  },
+};
+
+export default function RunnerKeysSection({
+  keys: initialKeys,
+  foreign: initialForeign,
+  api = fetchRunnerKeysApi,
+}: {
+  keys: RunnerKeySummary[];
+  foreign: ForeignRunner[];
+  api?: RunnerKeysApi;
+}) {
   const [keys, setKeys] = useState(initialKeys);
   const [foreign, setForeign] = useState(initialForeign);
   const [busy, setBusy] = useState<string | null>(null);
@@ -47,9 +72,9 @@ export default function RunnerKeysSection({ keys: initialKeys, foreign: initialF
   async function disconnect(k: RunnerKeySummary) {
     setBusy(k.id);
     setError(null);
-    const res = await fetch(`/api/accounts/${encodeURIComponent(k.id)}`, { method: 'DELETE' });
+    const r = await api.disconnect(k.id);
     setBusy(null);
-    if (!res.ok) return setError(await errorOf(res, 'Could not disconnect it. Try again.'));
+    if (!r.ok) return setError(r.error);
     setKeys((list) => list.filter((x) => x.id !== k.id));
   }
 
@@ -57,9 +82,9 @@ export default function RunnerKeysSection({ keys: initialKeys, foreign: initialF
     const id = `${r.accountId}:${r.workspaceId}`;
     setBusy(id);
     setError(null);
-    const res = await fetch(`/api/workspaces/${encodeURIComponent(r.workspaceId)}/accounts?accountId=${encodeURIComponent(r.accountId)}`, { method: 'DELETE' });
+    const res = await api.removeForeign(r);
     setBusy(null);
-    if (!res.ok) return setError(await errorOf(res, 'Could not remove it. Try again.'));
+    if (!res.ok) return setError(res.error);
     setForeign((list) => list.filter((x) => !(x.accountId === r.accountId && x.workspaceId === r.workspaceId)));
   }
 
@@ -101,7 +126,7 @@ export default function RunnerKeysSection({ keys: initialKeys, foreign: initialF
                 ) : (
                   groupPicks(k.picks).map((g) => (
                     <div key={g.teamId}>
-                      <p className="text-meta text-text-muted">{g.teamName}</p>
+                      <p className="text-meta text-text-muted" data-testid="runner-key-team">{g.teamName}</p>
                       <ul className="divide-y divide-[var(--line-soft)]">
                         {g.picks.map((p) => (
                           <li key={p.workspaceId} className="flex min-h-11 items-center justify-between gap-3" data-testid="runner-key-pick" data-reachable={p.reachable}>
