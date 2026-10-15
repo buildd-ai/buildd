@@ -169,7 +169,7 @@ describe('the sheet agrees with the pill (Mission checks I-3, AC-3, AC-8; visual
 
   it('with a hold, the header names it and never says PASS; each row reads its live state', () => {
     render({ criteria: [PRS, OPEN], criteriaState: stalePass, hold: 'open tasks not met', liveStates: ['pass', 'partial'] });
-    expect(q('criteria-hold')?.textContent).toContain('open tasks not met');
+    expect(q('criteria-hold')?.textContent).toBe('Open tasks not met.');
     expect(q('criteria-overall')?.textContent).not.toContain('Pass');
     expect(badges()).toEqual(['✓', '?']);
   });
