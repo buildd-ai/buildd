@@ -1077,8 +1077,8 @@ export class BuilddClient {
      */
     claimHandoff?: ClaimHandoffSnapshot,
     /**
-     * Which kind of model credential this runner's agents use, and the
-     * BUILDD_HOST_SEAT mode (host-seat.ts detectModelAuthSource), plus the
+     * Which kind of model credential this runner's agents use: the
+     * machine login label (host-seat.ts detectModelAuthSource), plus the
      * Codex label (detectCodexAuthSource). Labels, never a value. Omitted by older callers; the server keeps the stored
      * label when the field is absent.
      */
@@ -1123,7 +1123,6 @@ export class BuilddClient {
     }
     if (modelAuth) {
       payload.modelAuthSource = modelAuth.source;
-      payload.modelAuthMode = modelAuth.mode;
       if (modelAuth.codexSource) payload.codexAuthSource = modelAuth.codexSource;
     }
     const data = await this.fetch('/api/workers/heartbeat', {

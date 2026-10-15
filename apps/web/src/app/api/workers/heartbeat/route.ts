@@ -7,7 +7,6 @@ import {
   runnerFleetIdentity,
   storedHeartbeatEnvironment,
   isRunnerModelAuthSource,
-  isRunnerModelAuthMode,
   isRunnerCodexAuthSource,
 } from '@buildd/shared';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
@@ -87,13 +86,12 @@ export async function POST(req: NextRequest) {
        * mistake) is dropped here so it never reaches the table, and the beat
        * still succeeds.
        */
+      // Old runners may still send a mode; it is ignored.
       modelAuthSource: rawModelAuthSource = undefined,
-      modelAuthMode: rawModelAuthMode = undefined,
       /** The runner's Codex login label (same spec, R-12), under the same rules. */
       codexAuthSource: rawCodexAuthSource = undefined,
     } = body;
     const modelAuthSource = isRunnerModelAuthSource(rawModelAuthSource) ? rawModelAuthSource : null;
-    const modelAuthMode = isRunnerModelAuthMode(rawModelAuthMode) ? rawModelAuthMode : null;
     const codexAuthSource = isRunnerCodexAuthSource(rawCodexAuthSource) ? rawCodexAuthSource : null;
     // Presence of the bundle is keyed on one field rather than requiring all
     // six, since `undefined` only ever appears here when the runner omitted
@@ -172,7 +170,6 @@ export async function POST(req: NextRequest) {
         updateAvailableSince,
         trackedBranch: (trackedBranch ?? null) as string | null,
         modelAuthSource,
-        modelAuthMode,
         codexAuthSource,
         lastHeartbeatAt: now,
       })
@@ -201,7 +198,6 @@ export async function POST(req: NextRequest) {
           // Omitted when not sent (or not a listed label), so an older runner
           // or a garbled beat keeps the last good value — runnerVersion's rule.
           ...(modelAuthSource !== null ? { modelAuthSource } : {}),
-          ...(modelAuthMode !== null ? { modelAuthMode } : {}),
           ...(codexAuthSource !== null ? { codexAuthSource } : {}),
           lastHeartbeatAt: now,
           updatedAt: now,

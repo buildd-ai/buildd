@@ -1422,16 +1422,15 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
 
     // Check if configured
     if (path === '/api/config' && req.method === 'GET') {
-      const authStatus = workerManager?.getAuthStatus() || { modelAuthSource: undefined, modelAuthMode: undefined, codexAuthSource: undefined };
+      const authStatus = workerManager?.getAuthStatus() || { modelAuthSource: undefined, codexAuthSource: undefined };
       return Response.json({
         configured: !!config.apiKey,
         serverless: config.serverless || false,
         builddServer: config.builddServer,
         projectRoots: config.projectRoots,
-        // Labels + mode only (host-seat.ts detectModelAuthSource /
+        // Labels only (host-seat.ts detectModelAuthSource /
         // detectCodexAuthSource), never a value.
         modelAuthSource: authStatus.modelAuthSource,
-        modelAuthMode: authStatus.modelAuthMode,
         codexAuthSource: authStatus.codexAuthSource,
         model: config.model,
         maxConcurrent: config.maxConcurrent,

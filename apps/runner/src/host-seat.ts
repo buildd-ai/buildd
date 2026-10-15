@@ -1,9 +1,8 @@
 /**
- * The runner machine's own Claude subscription login ("host seat").
+ * The runner machine's own Claude subscription login.
  *
  * A runner whose machine is configured with its own model login gives that
- * login to its agents (when it wins over a seat stored in buildd: see
- * "Precedence" below). Two shapes count:
+ * login to its agents. Two shapes count:
  *
  * - `env`: `CLAUDE_CODE_OAUTH_TOKEN` is set in the runner's environment (a
  *   `claude setup-token` value exported in the service env, a container env, a
@@ -16,18 +15,6 @@
  * A stub `~/.claude.json` `oauthAccount` or a credentials file holding only
  * MCP OAuth entries is NOT a login, so neither counts.
  *
- * Precedence, set by `BUILDD_HOST_SEAT` on the runner:
- *
- * - unset / `auto` (default): the machine's seat is used whenever the claim
- *   delivers no stored seat. When the claim does deliver one, the stored seat
- *   is used and the agent env is exactly what it was before this module
- *   existed, so a runner that relies on a stored seat sees no change.
- * - `prefer`: the machine's seat wins over a stored seat. Set it once the
- *   machine's login is known to work (run one real `claude -p` with it).
- * - `off`: the machine's env token is never given to the agent; a stored seat
- *   is used as before.
- *
-
  * This module never reads or returns a token value. It only says whether one
  * is present.
  */
@@ -37,29 +24,17 @@ import { join } from 'path';
 import * as childProcess from 'child_process';
 import { codexAuthJsonKind } from './cost-basis';
 
-export type HostSeat = 'env' | 'login';
+export type MachineLogin = 'env' | 'login';
 
-export const HOST_SEAT_ENV = 'BUILDD_HOST_SEAT';
-export const HOST_SEAT_TOKEN_VAR = 'CLAUDE_CODE_OAUTH_TOKEN';
+export const MACHINE_LOGIN_TOKEN_VAR = 'CLAUDE_CODE_OAUTH_TOKEN';
 const MAC_KEYCHAIN_SERVICE = 'Claude Code-credentials';
 
-export interface HostSeatProbe {
+export interface MachineLoginProbe {
   env?: Record<string, string | undefined>;
   home?: string;
   platform?: NodeJS.Platform;
   /** Whether the macOS keychain holds a Claude Code login. Injected in tests. */
   macKeychainHasLogin?: () => boolean;
-}
-
-export type HostSeatMode = 'auto' | 'prefer' | 'off';
-
-export function hostSeatMode(env: Record<string, string | undefined> = process.env): HostSeatMode {
-  const v = (env[HOST_SEAT_ENV] ?? '').trim().toLowerCase();
-  return v === 'off' || v === 'prefer' ? v : 'auto';
-}
-
-export function hostSeatDisabled(env: Record<string, string | undefined> = process.env): boolean {
-  return hostSeatMode(env) === 'off';
 }
 
 /** True when `~/.claude/.credentials.json` holds a Claude subscription login (not just MCP OAuth). */
@@ -101,11 +76,10 @@ export function defaultMacKeychainHasLogin(): boolean {
   return value;
 }
 
-/** Which host seat this runner machine has, or null. Honors `BUILDD_HOST_SEAT=off`. */
-export function detectHostSeat(probe: HostSeatProbe = {}): HostSeat | null {
+/** Which Claude login this runner machine has, or null. */
+export function detectMachineLogin(probe: MachineLoginProbe = {}): MachineLogin | null {
   const env = probe.env ?? process.env;
-  if (hostSeatDisabled(env)) return null;
-  if ((env[HOST_SEAT_TOKEN_VAR] ?? '').trim().length > 0) return 'env';
+  if ((env[MACHINE_LOGIN_TOKEN_VAR] ?? '').trim().length > 0) return 'env';
   const home = probe.home ?? homedir();
   if (credentialsFileHasLogin(home)) return 'login';
   const platform = probe.platform ?? process.platform;
@@ -113,52 +87,34 @@ export function detectHostSeat(probe: HostSeatProbe = {}): HostSeat | null {
   return null;
 }
 
-export interface HostSeatDecision {
-  /** The machine's seat, when it is the one the agent gets. Pass to applyModelEnv. */
-  hostSeat: HostSeat | null;
-  /** The machine has a seat but a stored seat was used instead (mode `auto`). */
-  deferredTo: 'server' | null;
-  /** The machine's seat that was detected, used or not. */
-  detected: HostSeat | null;
-  mode: HostSeatMode;
+export interface MachineLoginDecision {
+  machineLogin: MachineLogin | null;
+  detected: MachineLogin | null;
 }
 
-/**
- * Decide whose Claude seat the agent gets, and make the agent env match.
- * Mutates `env` (built from the passthrough): the machine's env token is
- * removed unless the machine's seat is the one being used, so with a stored
- * seat under `auto` the env is identical to the pre-passthrough one.
- */
-export function applyHostSeatPolicy(
+/** Use the machine's own login unless personal_only forbids local credentials. */
+export function applyMachineLoginPolicy(
   env: Record<string, string>,
   opts: {
-    serverSeatDelivered: boolean;
     isCodexTask?: boolean;
-    probe?: HostSeatProbe;
-    /**
-     * The claim's `credentialDecision.runnerLocalAllowed`. `false` (the
-     * requester's own key under personal_only): the machine's seat is never
-     * used, whatever BUILDD_HOST_SEAT says, and its env token is removed.
-     */
+    probe?: MachineLoginProbe;
+    /** personal_only: the requester's key must not be displaced by this machine's login. */
     runnerLocalAllowed?: boolean;
   },
-): HostSeatDecision {
-  const runnerEnv = opts.probe?.env ?? process.env;
-  const mode = hostSeatMode(runnerEnv);
-  const detected = mode === 'off' ? null : detectHostSeat(opts.probe ?? {});
-  const localAllowed = opts.runnerLocalAllowed !== false;
-  const use = localAllowed && !opts.isCodexTask && !!detected && (mode === 'prefer' || !opts.serverSeatDelivered);
-  if (!use && (mode === 'off' || opts.serverSeatDelivered || !localAllowed)) delete env[HOST_SEAT_TOKEN_VAR];
-  return {
-    hostSeat: use ? detected : null,
-    deferredTo: !use && localAllowed && detected && opts.serverSeatDelivered && !opts.isCodexTask ? 'server' : null,
-    detected,
-    mode,
-  };
+): MachineLoginDecision {
+  const detected = detectMachineLogin(opts.probe ?? {});
+  const use = opts.runnerLocalAllowed !== false && !opts.isCodexTask && !!detected;
+  if (!use) delete env[MACHINE_LOGIN_TOKEN_VAR];
+  return { machineLogin: use ? detected : null, detected };
+}
+
+/** Report an obsolete setting once at startup; its value has no effect. */
+export function reportIgnoredLoginSetting(env: Record<string, string | undefined> = process.env, log: (line: string) => void = console.log): void {
+  if (env.BUILDD_HOST_SEAT !== undefined) log('BUILDD_HOST_SEAT no longer does anything; the runner uses this machine’s own model login when present.');
 }
 
 /** Human-readable source label for the runner log. Never includes a value. */
-export function describeHostSeat(seat: HostSeat): string {
+export function describeMachineLogin(seat: MachineLogin): string {
   return seat === 'env'
     ? "this machine's own login (CLAUDE_CODE_OAUTH_TOKEN in the runner environment)"
     : "this machine's own login (claude login on the runner host)";
@@ -175,33 +131,24 @@ export type ModelAuthSource = 'machine_token' | 'machine_login' | 'api_key' | 'n
 
 export interface ModelAuthReport {
   source: ModelAuthSource;
-  mode: HostSeatMode;
 }
 
 /**
  * Precedence: machine_token > machine_login > api_key > none.
- * `BUILDD_HOST_SEAT=off` stops only machine_token from counting: the env token
- * is withheld from the agent, but a `claude login` still reaches it through
- * HOME, so machine_login is still reported. Under
  * `BUILDD_MODEL_AUTH_SOURCE=runner` an inherited key is stripped from the agent
  * env unless an operator-set ANTHROPIC_BASE_URL selects a paid route
  * (model-auth-source.ts), so it is reported only in that case.
  */
-export function detectModelAuthSource(probe: HostSeatProbe = {}): ModelAuthReport {
+export function detectModelAuthSource(probe: MachineLoginProbe = {}): ModelAuthReport {
   const env = probe.env ?? process.env;
-  const mode = hostSeatMode(env);
-  // `off` withholds only the env token (applyHostSeatPolicy deletes it); a
-  // `claude login` still reaches the agent through HOME, so it still counts.
-  const seat = mode === 'off'
-    ? detectHostSeat({ ...probe, env: { ...env, [HOST_SEAT_ENV]: 'auto', [HOST_SEAT_TOKEN_VAR]: '' } })
-    : detectHostSeat({ ...probe, env });
-  if (seat === 'env') return { source: 'machine_token', mode };
-  if (seat === 'login') return { source: 'machine_login', mode };
+  const seat = detectMachineLogin({ ...probe, env });
+  if (seat === 'env') return { source: 'machine_token' };
+  if (seat === 'login') return { source: 'machine_login' };
   const has = (name: string) => (env[name] ?? '').trim().length > 0;
   const runnerManaged = (env.BUILDD_MODEL_AUTH_SOURCE ?? '').trim().toLowerCase() === 'runner';
   const keyReachesAgent = !runnerManaged || has('ANTHROPIC_BASE_URL');
-  if (keyReachesAgent && (has('ANTHROPIC_API_KEY') || has('ANTHROPIC_AUTH_TOKEN'))) return { source: 'api_key', mode };
-  return { source: 'none', mode };
+  if (keyReachesAgent && (has('ANTHROPIC_API_KEY') || has('ANTHROPIC_AUTH_TOKEN'))) return { source: 'api_key' };
+  return { source: 'none' };
 }
 
 export const NO_MODEL_AUTH_FIX =
@@ -220,7 +167,7 @@ export function describeModelAuthSource(source: ModelAuthSource): string {
 
 /** Machine-level model credential variables the agent env can inherit through the passthrough. */
 export const HOST_MODEL_CREDENTIAL_VARS = [
-  HOST_SEAT_TOKEN_VAR, 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'OPENAI_API_KEY',
+  MACHINE_LOGIN_TOKEN_VAR, 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'OPENAI_API_KEY',
 ] as const;
 
 /**
@@ -256,31 +203,16 @@ export function localCodexAuthPath(
   return existsSync(p) ? p : null;
 }
 
-export type CodexSeatChoice = 'machine' | 'server' | 'none';
+export type CodexLoginChoice = 'machine' | 'server' | 'none';
 
-/**
- * Whose Codex login a Codex task gets. Same modes as the Claude seat:
- * - `auto`: the machine's login when the claim delivers no Codex credential;
- *   a delivered credential is used as before.
- * - `prefer`: the machine's login also beats a delivered ChatGPT (OAuth)
- *   credential. A delivered API key is metered usage the team chose, and is
- *   still used.
- * - `off`: the old behaviour: the machine's login only through an explicitly
- *   set `CODEX_HOME`, and only with no delivered credential.
- */
-export function decideCodexSeat(opts: {
-  mode: HostSeatMode;
+/** Use the machine's Codex login first; personal_only forbids local credentials. */
+export function decideCodexLogin(opts: {
   serverCredentialType?: 'oauth' | 'api_key' | null;
   localAuthPath: string | null;
-  explicitCodexHome: boolean;
-  /** The claim's `credentialDecision.runnerLocalAllowed`; `false` never picks the machine's login. */
   runnerLocalAllowed?: boolean;
-}): CodexSeatChoice {
-  const { mode, serverCredentialType, localAuthPath } = opts;
-  const machineAvailable = opts.runnerLocalAllowed !== false && !!localAuthPath && (mode !== 'off' || opts.explicitCodexHome);
-  if (!serverCredentialType) return machineAvailable ? 'machine' : 'none';
-  if (mode === 'prefer' && serverCredentialType === 'oauth' && machineAvailable) return 'machine';
-  return 'server';
+}): CodexLoginChoice {
+  if (opts.runnerLocalAllowed !== false && opts.localAuthPath) return 'machine';
+  return opts.serverCredentialType ? 'server' : 'none';
 }
 
 // ─── Codex auth label (docs/specs: runner model login, R-10/R-11) ──────────
@@ -307,28 +239,17 @@ function readFileOrNull(path: string): string | null {
   }
 }
 
-/**
- * Mirrors what a Codex task with no delivered credential actually gets
- * (`decideCodexSeat` + `localCodexAuthPath`, then the env API key): the local
- * `auth.json` (`$CODEX_HOME`, else `~/.codex`) counts only when
- * `BUILDD_HOST_SEAT` is not `off` or `CODEX_HOME` is set explicitly. If it
- * counts, a ChatGPT login is `machine_login` and an API key in it is
- * `api_key`. Otherwise `OPENAI_API_KEY` in the env is `api_key`, else `none`.
- * The file is parsed only to classify it; no value leaves this function.
- */
+/** Classify the machine's Codex auth.json, then the env API key. Never returns a value. */
 export function detectCodexAuthSource(probe: CodexAuthProbe = {}): CodexAuthSource {
   const env = probe.env ?? process.env;
   const home = probe.home ?? homedir();
-  const explicitCodexHome = (env.CODEX_HOME ?? '').trim().length > 0;
-  if (hostSeatMode(env) !== 'off' || explicitCodexHome) {
-    const raw = (probe.readFile ?? readFileOrNull)(join(resolveLocalCodexHome(env, home), 'auth.json'));
-    if (raw !== null) {
-      let parsed: Record<string, unknown> | null = null;
-      try { parsed = JSON.parse(raw); } catch { parsed = null; }
-      const kind = codexAuthJsonKind(parsed);
-      if (kind === 'chatgpt') return 'machine_login';
-      if (kind === 'api_key') return 'api_key';
-    }
+  const raw = (probe.readFile ?? readFileOrNull)(join(resolveLocalCodexHome(env, home), 'auth.json'));
+  if (raw !== null) {
+    let parsed: Record<string, unknown> | null = null;
+    try { parsed = JSON.parse(raw); } catch { parsed = null; }
+    const kind = codexAuthJsonKind(parsed);
+    if (kind === 'chatgpt') return 'machine_login';
+    if (kind === 'api_key') return 'api_key';
   }
   if ((env.OPENAI_API_KEY ?? '').trim().length > 0) return 'api_key';
   return 'none';

@@ -79,12 +79,12 @@ export interface ModelEnvInput {
    * set, it wins over a server-delivered seat: no `serverOauthToken` is
    * injected and no claim-delivered Claude credential is materialized.
    */
-  hostSeat?: 'env' | 'login' | null;
+  machineLogin?: 'env' | 'login' | null;
   /**
    * The claim's `credentialDecision.runnerLocalAllowed` (absent = true). With
    * `false` (the requester's own key under personal_only) nothing of the
    * machine's may displace the claim's credential: the per-machine provider
-   * and host seat are ignored, and inherited model auth variables (and a
+   * and machine login are ignored, and inherited model auth variables (and a
    * machine OPENAI_BASE_URL) are removed before anything is applied. An
    * operator ANTHROPIC_BASE_URL is kept, so an untrusted origin still gets no
    * server credential: the run fails closed rather than sending the key there.
@@ -119,7 +119,7 @@ export interface ModelEnvResult {
    * non-Codex, no tenant token). The claim's Claude credential is then not
    * used either (`shouldUseClaudeCredential`).
    */
-  hostSeatUsed?: boolean;
+  machineLoginUsed?: boolean;
   /**
    * Set when a Codex task's team endpoint cannot serve Codex at all (an
    * `anthropic-compatible` endpoint — Anthropic Messages format only, no
@@ -161,12 +161,12 @@ export function endpointSessionModels(
  * third-party host.
  */
 export function shouldUseClaudeCredential(
-  modelEnv: Pick<ModelEnvResult, 'endpoint'> & { hostSeatUsed?: boolean },
+  modelEnv: Pick<ModelEnvResult, 'endpoint'> & { machineLoginUsed?: boolean },
   worker: { claudeAccessToken?: string | null; claudeCredentialId?: string | null },
 ): boolean {
   if (modelEnv.endpoint === 'team') return false;
   // The machine's own login wins over a server-delivered seat.
-  if (modelEnv.hostSeatUsed) return false;
+  if (modelEnv.machineLoginUsed) return false;
   return !!(worker.claudeAccessToken || worker.claudeCredentialId);
 }
 
@@ -192,7 +192,7 @@ export function applyModelEnv(env: Record<string, string>, input: ModelEnvInput)
   // Machine config is simply not there for this run: no provider, no seat,
   // no inherited key. Everything below then behaves as on a bare machine.
   const llmProvider = localAllowed ? input.llmProvider : undefined;
-  const inputHostSeat = localAllowed ? input.hostSeat : null;
+  const inputMachineLogin = localAllowed ? input.machineLogin : null;
   if (!localAllowed) for (const k of MACHINE_MODEL_VARS) delete env[k];
 
   // Only the team endpoint branch below may turn deferred tool loading on.
@@ -281,8 +281,8 @@ export function applyModelEnv(env: Record<string, string>, input: ModelEnvInput)
     }
     // The machine's own seat (an env token, or `claude login` on the host)
     // wins: a server-delivered seat only fills in when the machine has none.
-    const hostSeat = !isCodexTask && !tenantOauthToken && (inputHostSeat || (env.CLAUDE_CODE_OAUTH_TOKEN ? 'env' : null));
-    if (!isCodexTask && serverOauthToken && !env.CLAUDE_CODE_OAUTH_TOKEN && !hostSeat) {
+    const machineLogin = !isCodexTask && !tenantOauthToken && (inputMachineLogin || (env.CLAUDE_CODE_OAUTH_TOKEN ? 'env' : null));
+    if (!isCodexTask && serverOauthToken && !env.CLAUDE_CODE_OAUTH_TOKEN && !machineLogin) {
       env.CLAUDE_CODE_OAUTH_TOKEN = serverOauthToken;
       injected.push('serverOauthToken');
     }
@@ -291,7 +291,7 @@ export function applyModelEnv(env: Record<string, string>, input: ModelEnvInput)
       injected.push('tenantOauthToken');
     }
     if (!isCodexTask && input.toolSearchDisabled && endpoint === 'anthropic') env[TOOL_SEARCH_ENV] = 'false';
-    return { env, endpoint, baseUrlOrigin, injected, withheld, teamEndpointIgnored, toolSearch: false, ...(hostSeat ? { hostSeatUsed: true } : {}) };
+    return { env, endpoint, baseUrlOrigin, injected, withheld, teamEndpointIgnored, toolSearch: false, ...(machineLogin ? { machineLoginUsed: true } : {}) };
   }
 
   if (!isCodexTask && serverApiKey) withheld.push('serverApiKey');
