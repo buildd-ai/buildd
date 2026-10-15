@@ -24,7 +24,7 @@ export default function specCriterionMarkdown(this: Processor) {
       const ref = definitions.get(line)!;
       // Strip presentation only AFTER the shared parser identified the definition.
       const raw = lines[line - 1]!;
-      const text = tableRowId(raw)?.text ?? raw.replace(/^.*?(?:R|AC|D|I)-\d+\s*(?:\*\*|__)?\s*[:.)—–-]?\s*/, '');
+      const text = tableRowId(raw)?.text ?? raw.replace(/^.*?(?:R|AC|D|I)-\d+\s*(?:\*\*|__)?\s*[:.)\u2014\u2013-]?\s*/, '');
       const node: Paragraph = {
         type: 'paragraph', children: children ?? inline(text),
         data: { hName: 'div', hProperties: { 'data-criterion-id': ref.id } },
