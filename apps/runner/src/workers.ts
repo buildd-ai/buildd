@@ -80,6 +80,7 @@ import { collectLoopVerificationEvidence, VERIFICATION_COMMAND_TIMEOUT_MS } from
 import { sessionLog, cleanupOldLogs, readSessionLogs, claimLog } from './session-logger';
 import { IdlePollTracker } from './idle-poll-tracker';
 import type { ClaimLogEntry } from './session-logger';
+import { ClaimOutcomeStore, outcomeFromDiagnostics, outcomeFromRefusal, type ClaimOutcome, type ClaimOutcomeSnapshot } from './claim-outcomes';
 import {
   SessionStderrCollector,
   flushStderrTrace,
@@ -755,6 +756,8 @@ export class WorkerManager {
   private roleEnvGapLog = new RoleEnvGapLog();
   /** Idle-poll counter + last-poll time (claims.log `claim_idle`, debug internals). */
   private claimPolls = new IdlePollTracker();
+  /** What the server said about the last claims, for `buildd top` (claim-outcomes.ts). */
+  private claimOutcomes = new ClaimOutcomeStore();
   // workerId → auth context the worker was started under, for breaker routing on error.
   private workerAuthContexts = new Map<string, string>();
   // workerId → team cache key, so an auth failure can invalidate the right
@@ -1042,6 +1045,22 @@ export class WorkerManager {
 
   getViewerToken(): string | undefined {
     return this.viewerToken;
+  }
+
+  /** The latest claim outcome per task and of the broad claim, for `buildd top` (R-25). */
+  getClaimOutcomes(): ClaimOutcomeSnapshot {
+    return this.claimOutcomes.snapshot();
+  }
+
+  /** Keep a claim outcome and tell `top` (one `claim_outcome` frame; no taskId = the broad claim). */
+  private noteClaimOutcome(taskId: string | null, outcome: ClaimOutcome): void {
+    if (taskId) {
+      if (outcome.reason === 'claimed') this.claimOutcomes.clearTask(taskId);
+      else this.claimOutcomes.recordTask(taskId, outcome);
+    } else {
+      outcome = this.claimOutcomes.recordBroad(outcome);
+    }
+    this.emit({ type: 'claim_outcome', ...(taskId ? { taskId } : {}), outcome });
   }
 
   /** Expose internal state for the debug dashboard */
@@ -1609,6 +1628,7 @@ export class WorkerManager {
         }
         this.claimPolls.recordPoll('rejected');
         this.emit({ type: 'claim_rejected', status, reason });
+        this.noteClaimOutcome(null, outcomeFromRefusal(status, reason, Date.now()));
         this.onClaimServerErrorStreak(status);
         throw err;
       }
@@ -1654,6 +1674,10 @@ export class WorkerManager {
       } else {
         this.pastResetStreak = 0;
       }
+
+      // `buildd top` reads what held this claim (R-25), or that nothing did.
+      this.noteClaimOutcome(null, claimed.length > 0 ? { at: Date.now(), reason: 'claimed' } : outcomeFromDiagnostics(diagnostics, Date.now()));
+      for (const cw of claimed) if (cw?.taskId) this.claimOutcomes.clearTask(cw.taskId);
 
       if (claimed.length === 0) {
         // no_pending_tasks is the normal idle state: count it, and write one
@@ -1994,6 +2018,7 @@ export class WorkerManager {
       const until = pausedCtx.until;
       console.log(`[WorkerManager] Context ${pausedCtx.key} paused (until ${until ? new Date(until).toISOString() : 'unknown'}) — skipping Pusher assignment for task ${task.id}`);
       claimLog({ event: 'claim_empty', slotsRequested: 1, workersClaimed: 0, taskId: task.id, diagnosticReason: 'context_paused' });
+      this.noteClaimOutcome(task.id, { at: Date.now(), reason: 'context_paused', until: until ? new Date(until).toISOString() : null });
       // The discarded nudge was the only thing that would have restarted this
       // work; make sure something wakes us when the pause lifts.
       this.scheduleContextWake();
@@ -2019,9 +2044,11 @@ export class WorkerManager {
       const { status, reason } = parseClaimError(err);
       claimLog({ event: 'claim_rejected', slotsRequested: 1, workersClaimed: 0, taskId: task.id, status, reason });
       this.emit({ type: 'claim_rejected', taskId: task.id, status, reason });
+      this.noteClaimOutcome(task.id, outcomeFromRefusal(status, reason, Date.now()));
       throw err;
     }
     const { workers: claimed, diagnostics } = claimResult;
+    this.noteClaimOutcome(task.id, claimed.length > 0 ? { at: Date.now(), reason: 'claimed' } : outcomeFromDiagnostics(diagnostics, Date.now()));
     if (claimed.length === 0) {
       const reason = diagnostics?.reason || 'unknown';
       claimLog({
