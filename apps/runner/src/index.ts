@@ -5,6 +5,7 @@ import { setCatalogPrices } from '@buildd/core/model-prices';
 import { join } from 'path';
 import { hostname } from 'os';
 import { resolveBuilddHome } from './buildd-home';
+import { resolveBuilddServer } from './server-url';
 import type { LocalUIConfig, LLMProvider, LocalWorker, ProviderConfig } from './types';
 import { BuilddClient, getLastServerContactAt } from './buildd';
 import { WorkerManager } from './workers';
@@ -582,7 +583,7 @@ function buildProviderConfig(): ProviderConfig | undefined {
 // Build runtime config
 const config: LocalUIConfig = {
   projectRoots, // All roots
-  builddServer: process.env.BUILDD_SERVER || savedConfig.builddServer || 'https://buildd.dev',
+  builddServer: resolveBuilddServer({ env: process.env, saved: savedConfig.builddServer }),
   apiKey: resolvedApiKey,
   maxConcurrent: savedConfig.maxConcurrent || parseInt(process.env.MAX_CONCURRENT || '3'),
   model: process.env.MODEL || savedConfig.model || bundledTierEntry('standard').model,

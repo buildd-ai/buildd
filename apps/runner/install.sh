@@ -166,6 +166,7 @@ write_client_sparse_checkout() {
   cat > .git/info/sparse-checkout << 'CLIENT_SPARSE'
 apps/runner/src/login.ts
 apps/runner/src/login-workspaces.ts
+apps/runner/src/server-url.ts
 apps/runner/src/agent-plugin-install.ts
 apps/runner/src/buildd-home.ts
 apps/runner/src/claude-json-mcp.ts
