@@ -2,7 +2,7 @@
 title: Team Namespace Scoping
 status: active
 owner: max
-last_verified: 2026-07-18
+last_verified: 2026-10-15
 summary: Home, the missions view and the workspaces view MUST all show only the single active team resolved server-side from the buildd-team cookie, via the same resolver the app shell uses.
 domain: surfaces
 surfaces: [apps/web/src/lib/team-access.ts, apps/web/src/app/app/(protected)/layout.tsx, apps/web/src/components/TeamSwitcher.tsx, apps/web/src/app/api/missions/route.ts]
@@ -25,12 +25,11 @@ assertions:
 ---
 # Team Namespace Scoping
 
-How "team" organizes workspaces and missions in the dashboard. Today team is a
-real boundary in the DB/API and in creation forms, but the `buildd-team`
-active-team cookie is cosmetic: `/app/workspaces`, `/app/missions`, and the home
-page list everything across every team the user belongs to and merely *label*
-rows with a team name (see `layout.tsx` reads the cookie but never filters;
-`GET /api/workspaces` and `GET /api/missions` return all of the user's teams).
+How "team" organizes workspaces and missions in the dashboard. Team is a real
+boundary in the DB and API, and the `buildd-team` cookie names the one active
+team every working view shows. `resolveActiveTeamId` and
+`resolveActiveTeamScope` in `team-access.ts` resolve it server-side; `switchTeam`
+in `switch-team.ts` writes it.
 
 This spec defines a **namespaced views** model (Home included since the revision below):
 
@@ -41,10 +40,9 @@ This spec defines a **namespaced views** model (Home included since the revision
   and seeds creation defaults. Navigating into an item from Home re-scopes the
   active team to that item's team.
 
-Status legend: ✅ implemented · ⚠️ partial · ❌ not yet built (this spec is the
-target; most items below are ❌ pending the PR).
+Status legend: ✅ implemented · ⚠️ partial · ❌ not yet built.
 
-Out of scope for this spec/PR: full URL path namespacing
+Out of scope for this spec: full URL path namespacing
 (`/app/t/[teamSlug]/…`) — a deep-linkable follow-up; task-level scoping; team
 RBAC changes; secrets (already team-scoped).
 
@@ -82,7 +80,7 @@ truth for scoped views.
 - `apps/web/src/components/TeamSwitcher.tsx` (sets cookie)
 - `apps/web/src/app/app/(protected)/layout.tsx` (reads cookie, validates against
   `getUserTeamIds`)
-- New shared helper, e.g. `resolveActiveTeamId(user, cookieValue)` in
+- `resolveActiveTeamId(userId, cookieValue)` and `pickDefaultTeam` in
   `apps/web/src/lib/team-access.ts`
 - Model: `packages/core/db/schema.ts` (`teams`, `teamMembers`)
 
@@ -115,15 +113,15 @@ workspaces, personal preferred.
   workspace set, not by any derived list.
 
 **Acceptance criteria**:
-- AC-1: GIVEN no `buildd-team` cookie, WHEN Home loads, THEN it shows the
+- AC-4: GIVEN no `buildd-team` cookie, WHEN Home loads, THEN it shows the
   default team's workspaces, and the header names that same team.
-- AC-1b: GIVEN no cookie, an empty personal team and another team with
+- AC-5: GIVEN no cookie, an empty personal team and another team with
   workspaces, WHEN Home loads, THEN that other team is active (no "create a
   workspace" state).
-- AC-2: GIVEN a cookie naming a team the user left, WHEN Home loads, THEN it
-  behaves as AC-1 (no empty state for a team that has workspaces).
-- AC-3: GIVEN a valid cookie, WHEN Home loads, THEN only that team's items show.
-- AC-4 (error): GIVEN a user in zero teams, WHEN Home loads, THEN it renders an
+- AC-6: GIVEN a cookie naming a team the user left, WHEN Home loads, THEN it
+  behaves as AC-4 (no empty state for a team that has workspaces).
+- AC-7: GIVEN a valid cookie, WHEN Home loads, THEN only that team's items show.
+- AC-8 (error): GIVEN a user in zero teams, WHEN Home loads, THEN it renders an
   empty state (no crash, no query against an empty team-id list that returns
   another user's data).
 
@@ -148,20 +146,20 @@ the active team; switching the active team MUST change the set shown.
 - The endpoint MUST reject a `teamId` the user is not a member of.
 
 **Acceptance criteria**:
-- AC-1: GIVEN active team A, WHEN `/app/missions` loads, THEN only team A's
+- AC-9: GIVEN active team A, WHEN `/app/missions` loads, THEN only team A's
   missions are listed (team B's are absent).
-- AC-2: GIVEN `GET /api/missions?teamId=A`, WHEN the user is a member of A, THEN
+- AC-10: GIVEN `GET /api/missions?teamId=A`, WHEN the user is a member of A, THEN
   the response contains only missions where `teamId === A`.
-- AC-3: WHEN the active team changes from A to B, THEN reloading `/app/missions`
+- AC-11: WHEN the active team changes from A to B, THEN reloading `/app/missions`
   shows team B's missions and not team A's.
-- AC-4 (error): GIVEN `GET /api/missions?teamId=X` where the user is not a member
+- AC-12 (error): GIVEN `GET /api/missions?teamId=X` where the user is not a member
   of X, THEN the request is rejected (HTTP 403) or treated as empty — never
   returns X's missions.
 
 **Code surface**:
-- `apps/web/src/app/app/(protected)/missions/page.tsx` (currently
-  `inArray(missions.teamId, teamIds)` across all teams — scope to active team)
-- `apps/web/src/app/api/missions/route.ts` (GET — add `teamId` filter +
+- `apps/web/src/app/app/(protected)/missions/page.tsx` (filters on
+  `missions.teamId` equal to the active team)
+- `apps/web/src/app/api/missions/route.ts` (GET: `teamId` filter with a
   membership check)
 - Model: `packages/core/db/schema.ts` (`missions.teamId`)
 
@@ -183,23 +181,22 @@ by the active team; switching the active team MUST change the set shown.
   scoping applies to session (dashboard) auth.
 
 **Acceptance criteria**:
-- AC-1: GIVEN active team A, WHEN `/app/workspaces` loads, THEN only team A's
+- AC-13: GIVEN active team A, WHEN `/app/workspaces` loads, THEN only team A's
   workspaces are listed.
-- AC-2: GIVEN `GET /api/workspaces?teamId=A` with session auth and the user a
+- AC-14: GIVEN `GET /api/workspaces?teamId=A` with session auth and the user a
   member of A, THEN every returned workspace has `teamId === A`.
-- AC-3: WHEN the active team changes to B, THEN `/app/settings/workspaces` shows team B's
+- AC-15: WHEN the active team changes to B, THEN `/app/settings/workspaces` shows team B's
   workspaces.
-- AC-4 (error): GIVEN `?teamId=X` where the user is not a member of X, THEN the
+- AC-16 (error): GIVEN `?teamId=X` where the user is not a member of X, THEN the
   response excludes X's workspaces (empty or HTTP 403).
 
 **Code surface**:
 - `apps/web/src/app/app/(protected)/settings/workspaces/page.tsx` (the one
   workspaces list; `/app/workspaces` redirects here)
-- `apps/web/src/app/api/workspaces/route.ts` (GET — add `teamId` filter)
-- `apps/web/src/lib/team-access.ts` (`getUserWorkspaceIds` — add team-scoped
-  variant)
+- `apps/web/src/app/api/workspaces/route.ts` (GET: `teamId` filter, refused
+  for a team the user is not in)
 
-**Out of scope**: Settings page workspace list (may remain global for admin).
+**Out of scope**: none beyond the spec-wide list.
 
 ---
 
@@ -216,23 +213,25 @@ item's owning team so subsequent scoped views are coherent.
   the target).
 
 **Acceptance criteria**:
-- AC-1: GIVEN active team A, WHEN the user opens a team-B mission from Home, THEN
+- AC-17: GIVEN active team A, WHEN the user opens a team-B mission from Home, THEN
   the mission detail renders AND the active team becomes B.
-- AC-2: GIVEN the active team became B per AC-1, WHEN the user then opens
+- AC-18: GIVEN the active team became B per AC-17, WHEN the user then opens
   `/app/missions`, THEN team B's missions are shown.
-- AC-3 (error): GIVEN the user opens an item in a team they were removed from,
+- AC-19 (error): GIVEN the user opens an item in a team they were removed from,
   THEN the active team is NOT changed to that team and access is denied.
 
 **Code surface**:
 - Mission detail / workspace detail server components under
   `apps/web/src/app/app/(protected)/missions/[id]/` and `workspaces/[id]/`
-- Active-team cookie writer (shared with `TeamSwitcher`)
+- Active-team cookie writer: `openInTeam` in `apps/web/src/lib/switch-team.ts`
+  (shared with `TeamSwitcher`). Today only the move-to-team dialog calls it;
+  Home links do not re-scope yet.
 
 **Out of scope**: Deep-link URL slug form.
 
 ---
 
-## Creation defaults to the active team ⚠️ (mission done, workspace pending)
+## Creation defaults to the active team ✅
 
 **Capability statement**: Workspace and mission creation MUST default to the
 active team (not the personal/first team), while still allowing an explicit
@@ -245,18 +244,20 @@ choice when the user belongs to multiple teams.
   team.
 
 **Acceptance criteria**:
-- AC-1: GIVEN active team B, WHEN `/app/workspaces/new` loads, THEN the Team
+- AC-20: GIVEN active team B, WHEN `/app/workspaces/new` loads, THEN the Team
   selector defaults to B.
-- AC-2: GIVEN active team B, WHEN a mission is created without choosing a team,
+- AC-21: GIVEN active team B, WHEN a mission is created without choosing a team,
   THEN the mission's `teamId` is B.
-- AC-3 (error): GIVEN active team B, WHEN the user explicitly selects team A and
+- AC-22 (error): GIVEN active team B, WHEN the user explicitly selects team A and
   submits, THEN the resource is created in A (explicit choice overrides default).
 
 **Code surface**:
-- `apps/web/src/app/app/(protected)/settings/workspaces/new/page.tsx` (`loadTeams` —
-  currently defaults to personal team)
-- `apps/web/src/app/app/(protected)/missions/NewMissionForm.tsx` (reads
-  `localStorage 'buildd:lastTeamId'` — replace with active-team cookie)
+- `apps/web/src/app/app/(protected)/settings/workspaces/new/page.tsx`
+  (`defaultTeamId(teams, readActiveTeamCookie())` from
+  `apps/web/src/lib/active-team-client.ts`)
+- `apps/web/src/app/app/(protected)/missions/NewMissionForm.tsx` (the active
+  team passed from the server; `localStorage 'buildd:lastTeamId'` only when no
+  active team is available)
 - Routes: `api/workspaces/route.ts`, `api/missions/route.ts` (POST team
   resolution)
 
@@ -277,12 +278,13 @@ Home included.
 - Switching MUST persist the choice (`buildd-team` cookie) across reloads.
 
 **Acceptance criteria**:
-- AC-1: WHEN the user selects team B in the switcher, THEN the `buildd-team`
+- AC-23: WHEN the user selects team B in the switcher, THEN the `buildd-team`
   cookie is set to B and the scoped views show team B.
-- AC-2: GIVEN the user switched to B, WHEN they return in a later session, THEN
+- AC-24: GIVEN the user switched to B, WHEN they return in a later session, THEN
   the active team is still B.
-- AC-3: WHEN the active team is switched, THEN Home's contents do not change.
-- AC-4 (error): GIVEN the switcher lists only teams the user belongs to, WHEN a
+- AC-25: WHEN the active team is switched, THEN Home shows the new team's items
+  (Home follows the active team, AC-7).
+- AC-26 (error): GIVEN the switcher lists only teams the user belongs to, WHEN a
   team the user was removed from is no longer returned by `GET /api/teams`, THEN
   it MUST NOT appear as a switch target.
 
@@ -317,15 +319,15 @@ across tabs/views are a defect.
   worker count so the user can investigate.
 
 **Acceptance criteria**:
-- AC-1: GIVEN N workers running in workspace W, WHEN the Team tab and Activity tab
+- AC-27: GIVEN N workers running in workspace W, WHEN the Team tab and Activity tab
   are viewed at the same moment, THEN both surfaces show N as the active count for
   workspace W.
-- AC-2: GIVEN a running worker whose task has `roleSlug = NULL` and no
+- AC-28: GIVEN a running worker whose task has `roleSlug = NULL` and no
   `skillSlugs` in context, WHEN the Team page loads, THEN the Team header shows
   the worker as active (not idle), even though no role card claims attribution.
-- AC-3: GIVEN 2 Builder workers running simultaneously, WHEN the Team page loads,
+- AC-29: GIVEN 2 Builder workers running simultaneously, WHEN the Team page loads,
   THEN the Builder card shows "Running · 2" (or equivalent), not "Running".
-- AC-4 (error): GIVEN zero active workers, WHEN the Team page loads, THEN the
+- AC-30 (error): GIVEN zero active workers, WHEN the Team page loads, THEN the
   header shows "Idle" — NOT a count of 0.
 
 **Code surface**:
@@ -335,4 +337,20 @@ across tabs/views are a defect.
 - `apps/web/src/app/app/(protected)/settings/agents/TeamGrid.tsx` — header badge uses
   `totalActiveWorkerCount`; unattributed workers surfaced in idle section label.
 - Test: `apps/web/src/app/app/(protected)/settings/agents/page.test.ts` — covers the
-  unattributed-worker case (AC-2).
+  unattributed-worker case (AC-28).
+
+---
+
+## Renumbered
+
+Each section used to restart at AC-1, so the ids collided. Ids now run once
+through the file:
+
+- Active team resolution: AC-1 to AC-3 unchanged.
+- Home follows the active team: AC-1 to AC-4, AC-1b to AC-5, AC-2 to AC-6, AC-3 to AC-7, AC-4 to AC-8.
+- Missions list is team-scoped: AC-1..AC-4 to AC-9..AC-12.
+- Workspaces list is team-scoped: AC-1..AC-4 to AC-13..AC-16.
+- Navigating from Home re-scopes the active team: AC-1..AC-3 to AC-17..AC-19.
+- Creation defaults to the active team: AC-1..AC-3 to AC-20..AC-22.
+- Team switch re-scopes the app: AC-1..AC-4 to AC-23..AC-26.
+- Activity count consistency: AC-1..AC-4 to AC-27..AC-30.
