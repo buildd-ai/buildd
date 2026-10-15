@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "e31f808f-9235-4eb1-9802-ff67e4f603e1",
+  "id": "018c8494-31c0-4070-b64e-8c55e0130a36",
   "prevIds": [
-    "4aad1736-0a06-4117-821e-ca17670b925d"
+    "eb1a5570-5054-4271-b274-0f95765ff57f"
   ],
   "ddl": [
     {
@@ -1001,6 +1001,58 @@
       "generated": null,
       "identity": null,
       "name": "can_create",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "account_workspaces"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "granted_by_user_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "account_workspaces"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "account_workspaces"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "removed_by_user_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "account_workspaces"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "removed_at",
       "entityType": "columns",
       "schema": "public",
       "table": "account_workspaces"
@@ -40810,6 +40862,40 @@
       "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
       "name": "account_workspaces_workspace_id_workspaces_id_fk",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "account_workspaces"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "granted_by_user_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "users",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "account_workspaces_granted_by_user_id_users_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "account_workspaces"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "removed_by_user_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "users",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "SET NULL",
+      "name": "account_workspaces_removed_by_user_id_users_id_fkey",
       "entityType": "fks",
       "schema": "public",
       "table": "account_workspaces"
