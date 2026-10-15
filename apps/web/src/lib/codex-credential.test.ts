@@ -233,22 +233,34 @@ describe('resolveCodexCredential', () => {
     expect(result?.accessToken).toBe('teamAT');
   });
 
-  it('includes expired credentials — Codex CLI auto-refreshes via refresh_token', async () => {
+  // Model credentials spec R-3 / AC-2: a claim never carries a credential that
+  // has already expired. Handing one over killed the worker seconds after the
+  // claim ("Codex credential expired") and the task retried forever.
+  it('skips an expired credential, even a more specific one, for a live one', async () => {
     mockDbFindMany.mockResolvedValue([
       { encryptedValue: blob('expiredAT', 'expiredRT', 'expired-acc'), accountId: null, workspaceId: 'w', tokenExpiresAt: new Date(Date.now() - 1000), lastRefreshedAt: null },
       { encryptedValue: blob('teamAT', 'teamRT', 'team-acc'), accountId: null, workspaceId: null, tokenExpiresAt: null, lastRefreshedAt: null },
     ]);
     const result = await resolveCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' });
-    // Workspace-scoped credential wins on specificity even when expired.
-    expect(result?.accessToken).toBe('expiredAT');
+    expect(result?.accessToken).toBe('teamAT');
   });
 
-  it('returns expired credential when it is the only one available', async () => {
+  it('returns null when the only credential has expired', async () => {
     mockDbFindMany.mockResolvedValue([
       { encryptedValue: blob('expiredAT', 'expiredRT', 'expired-acc'), accountId: null, workspaceId: null, tokenExpiresAt: new Date(Date.now() - 1000), lastRefreshedAt: null, healthStatus: 'unknown' },
     ]);
     const result = await resolveCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' });
-    expect(result?.accessToken).toBe('expiredAT');
+    expect(result).toBeNull();
+  });
+
+  it('still returns a credential whose expiry is in the future', async () => {
+    const future = new Date(Date.now() + 3600_000);
+    mockDbFindMany.mockResolvedValue([
+      { encryptedValue: blob('liveAT', 'liveRT', 'live-acc'), accountId: null, workspaceId: 'w', tokenExpiresAt: future, lastRefreshedAt: null },
+    ]);
+    const result = await resolveCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' });
+    expect(result?.accessToken).toBe('liveAT');
+    expect(result?.tokenExpiresAt).toEqual(future);
   });
 
   it('returns null when the only credential is revoked', async () => {
@@ -288,9 +300,27 @@ describe('hasCodexCredential', () => {
     expect(await hasCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' })).toBe(true);
   });
 
-  it('returns true for an expired credential — CLI can refresh the token', async () => {
+  it('returns true for an expired credential by default (readiness reporting)', async () => {
     mockDbFindMany.mockResolvedValue([{ tokenExpiresAt: new Date(Date.now() - 1000) }]);
     expect(await hasCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' })).toBe(true);
+  });
+
+  // The claim asks deliverableOnly: an expired row is never delivered
+  // (resolveCodexCredential skips it), so it must not let a task through the
+  // claim's Codex capability filter either.
+  it('deliverableOnly: an expired credential does not count', async () => {
+    mockDbFindMany.mockResolvedValue([{ tokenExpiresAt: new Date(Date.now() - 1000), healthStatus: 'healthy' }]);
+    expect(await hasCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w', deliverableOnly: true })).toBe(false);
+  });
+
+  it('deliverableOnly: a live or expiry-less credential still counts', async () => {
+    mockDbFindMany.mockResolvedValue([
+      { tokenExpiresAt: new Date(Date.now() - 1000), healthStatus: 'healthy' },
+      { tokenExpiresAt: new Date(Date.now() + 3600_000), healthStatus: 'healthy' },
+    ]);
+    expect(await hasCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w', deliverableOnly: true })).toBe(true);
+    mockDbFindMany.mockResolvedValue([{ tokenExpiresAt: null, healthStatus: 'healthy' }]);
+    expect(await hasCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w', deliverableOnly: true })).toBe(true);
   });
 
   it('returns false when the only credential is revoked — cannot be refreshed', async () => {
