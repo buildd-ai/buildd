@@ -37,7 +37,7 @@ Every `prLifecycleStatus` value in the CI set (`ci_running`, `ci_failed`, `ci_gr
 
 ### I-3: Live CI reconciliation
 
-> Amended 2026-10-13 by `workflow-kernel-library.md` §1: for a delivery-owned PR this read records a fact and never writes `prLifecycleStatus` during a render; retired in slice S4.
+> Amended 2026-10-13 by the native spec "Workflow kernel" (fa62b865; repo copy `workflow-kernel-library.md`) §1: for a delivery-owned PR this read records a fact and never writes `prLifecycleStatus` during a render; retired in slice S4.
 
 `pr-state-refresh.ts` MUST fetch live CI state (via `fetchCiLifecycleStatus` → `/commits/{sha}/check-suites`) for every open-PR worker whose `prLifecycleStatus` is in `{ci_running, ci_failed, ci_green}` and whose `prLastCheckedAt` is stale (≥5 min). The resolved value is written only when it differs from the stored value.
 
