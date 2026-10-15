@@ -166,7 +166,7 @@ export interface DeliveryWorker {
   supersededByPrNumber?: number | null;
   abandonedAt?: string | Date | null;
   /** `workers.supersessionScan`: stamped once the automatic scan of a closed PR has run. */
-  supersessionScan?: { scannedAt?: string | null; suggestion?: { prNumber: number } | null } | null;
+  supersessionScan?: { scannedAt?: string | null; suggestion?: { prNumber: number } | null; deferral?: unknown; deferralExhausted?: unknown } | null;
 }
 
 export interface TaskDeliveryInput {
@@ -243,6 +243,8 @@ export function projectTaskDelivery(input: TaskDeliveryInput): TaskDelivery {
     const scan = pr?.supersessionScan;
     if (!scan?.scannedAt) return make('notlanded', { reconciling: true });
     if (scan.suggestion) return make('needs', { confirmPrNumber: scan.suggestion.prNumber });
+    // A rescan the sweep deferred (GitHub timed out, the control plane down) is still owed.
+    if (scan.deferral && !scan.deferralExhausted) return make('notlanded', { reconciling: true });
     return make('notlanded');
   }
   if (ship === 'abandoned') return make('notlanded');
