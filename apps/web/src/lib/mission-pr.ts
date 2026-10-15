@@ -64,6 +64,17 @@ import { sqlWhere } from '@buildd/core/db/relational-sql';
  */
 export { MISSION_PR_TASK_PREFIX, isMissionPrTask };
 
+/**
+ * §6 mission deliveries, reached through the module the PR routes already
+ * import. Loaded on first use: the epoch door pulls in the kernel client.
+ */
+export async function ensureMissionWritableBranch(missionId: string, reason: string): Promise<string | null> {
+  return (await import('@/lib/mission-epoch-door')).ensureMissionWritableBranch(missionId, reason);
+}
+export async function reconcileMissionDeliveries(missionId: string): Promise<string[]> {
+  return (await import('@/lib/mission-epoch-door')).reconcileMissionDeliveries(missionId);
+}
+
 /** Statuses in which a task still represents unlanded deliverable work. */
 const UNFINISHED_TASK_STATUSES = OPEN_TASK_STATUSES;
 
@@ -295,6 +306,13 @@ export interface MissionWorkState {
    * cancelled must not be held open waiting for a PR that would be empty.
    */
   landedOnIntegrationCount: number;
+  /**
+   * Every deliverable task PR that merged, with the base it merged into and
+   * when (a delivery's branch, or trunk for a task that predates the branch). The
+   * completion gate reads it per delivery (`epochCompletionHold`): after a
+   * rotation the current branch is not the one earlier work landed on.
+   */
+  landedOnIntegration: Array<{ taskId: string; baseRef: string; mergedAt: string | null }>;
 }
 
 /**
@@ -349,6 +367,7 @@ export async function evaluateMissionWorkState(
     unfinishedTasks: [] as UnfinishedMissionTask[],
     unmergedPrs: [] as UnmergedMissionPr[],
     landedOnIntegrationCount: 0,
+    landedOnIntegration: [] as MissionWorkState['landedOnIntegration'],
   };
   if (deliverable.length === 0) {
     return { ...empty, reason: 'no_deliverable_work' };
@@ -367,6 +386,12 @@ export async function evaluateMissionWorkState(
     const w = latest.get(t.id);
     return !!w?.mergedAt && isMissionIntegrationBase({ baseRef: w.prBaseRef, mission });
   }).length;
+  // Every merged deliverable PR with its base; a reader keeps the bases that are deliveries' branches.
+  const landedOnIntegration = deliverable.flatMap(t => {
+    const w = latest.get(t.id);
+    if (!w?.mergedAt || !w.prBaseRef) return [];
+    return [{ taskId: t.id, baseRef: w.prBaseRef, mergedAt: w.mergedAt.toISOString() }];
+  });
 
   // Waiting on a PR: the task's live worker holds one that is still expected to
   // merge. Checked before the status sweep so a `completed` task with an open PR
@@ -398,6 +423,7 @@ export async function evaluateMissionWorkState(
     unfinishedTasks,
     unmergedPrs,
     landedOnIntegrationCount,
+    landedOnIntegration,
   };
 
   if (unfinished.length > 0) {
@@ -695,6 +721,13 @@ export async function openMissionIntegrationPr(
     trunk,
     isMissionPr: true,
   });
+  // The open delivery's PR, recorded by the kernel (§6).
+  const ownerRow = await db.query.workers.findFirst({ where: sqlWhere(eq(workers.id, ownerWorker.id)), columns: { taskId: true } });
+  const { bindMissionDeliveryPr } = await import('@/lib/mission-epoch-door');
+  await bindMissionDeliveryPr({
+    missionId, workspaceId: workspace.id, prNumber, repoFullName: repo.fullName,
+    ownerTaskId: ownerRow?.taskId ?? null, headRef: branch,
+  });
 
   await db.insert(missionNotes).values({
     missionId,
@@ -739,10 +772,18 @@ async function ensureMissionPrOwnerRows(args: {
   base: string;
 }): Promise<{ id: string }> {
   const { missionId, missionTitle, workspaceId, branch, base } = args;
-  const reusableTask = (await db.query.tasks.findMany({
+  // One owner per delivery (workflow-kernel-library.md §6): the kernel keys a
+  // PR's delivery on its owner task, so an owner whose PR already merged is a
+  // past delivery's record and never reused for the next one.
+  const ownerCandidates = ((await db.query.tasks.findMany({
     where: sqlWhere(eq(tasks.missionId, missionId)),
     columns: { id: true, title: true, taskClass: true },
-  }))?.find(isMissionPrTask) ?? null;
+  })) ?? []).filter(isMissionPrTask);
+  const shippedOwners = ownerCandidates.length === 0 ? new Set<string>() : new Set(((await db.query.workers.findMany({
+    where: sqlWhere(and(inArray(workers.taskId, ownerCandidates.map(t => t.id)), isNotNull(workers.mergedAt))),
+    columns: { taskId: true },
+  })) ?? []).map(w => w.taskId as string));
+  const reusableTask = ownerCandidates.find(t => !shippedOwners.has(t.id)) ?? null;
 
   const [ownerTask] = reusableTask ? [reusableTask] : await db
     .insert(tasks)
@@ -1182,8 +1223,20 @@ function nameHolders(labels: string[]): string {
  * gate forever is how a mission becomes unmergeable by hand.
  */
 export async function guardMissionPrMerge(
-  task: { title?: string | null; taskClass?: string | null; missionId?: string | null } | null | undefined,
+  task: { id?: string | null; title?: string | null; taskClass?: string | null; missionId?: string | null; context?: unknown } | null | undefined,
 ): Promise<MissionPrMergeGate> {
+  // A refresh PR lands on the branch it was filed for, which must still be the
+  // mission's writable delivery, or nowhere (a11abc4b R-3, AC-5): every merge
+  // door asks this, so a refresh retargeted to trunk never ships implicitly.
+  // An unreadable answer adds no hold: every other rail still applies, and this
+  // one did not exist before delivery records (it is logged, never silent).
+  const refreshHold = task && !isMissionPrTask(task)
+    ? await refreshTargetHold(task).catch((err) => {
+        console.warn('[mission-pr] refresh target identity unreadable:', err instanceof Error ? err.message : err);
+        return null;
+      })
+    : null;
+  if (refreshHold) return { blocks: true, reason: refreshHold, codes: ['refresh_target_mismatch'], nextActor: 'owner' };
   if (!task || !isMissionPrTask(task) || !task.missionId) return { blocks: false };
   const work = await evaluateMissionWorkState(task.missionId);
 
@@ -1233,40 +1286,64 @@ export async function guardMissionPrMerge(
 }
 
 /**
- * After a mission PR merges, delete its integration branch — deliberately,
- * not via the repo's delete-branch-on-merge setting.
+ * Why a refresh PR may not merge, or null. A refresh (`integrationRefreshOf`)
+ * exists to merge trunk into ONE branch, the delivery it was filed for
+ * (`context.baseBranch`). It may land only there, and only while that branch
+ * is still the mission's writable delivery. GitHub retargets a PR to trunk
+ * when its base is deleted on merge, so the recorded base is read too.
+ */
+async function refreshTargetHold(
+  task: { id?: string | null; missionId?: string | null; context?: unknown } | null | undefined,
+): Promise<string | null> {
+  if (!task?.id || !task.missionId) return null;
+  let context = task.context;
+  if (context === undefined) {
+    context = (await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, task.id)), columns: { context: true } }))?.context;
+  }
+  const { integrationRefreshOf } = await import('@/lib/integration-refresh');
+  if (!integrationRefreshOf(context)) return null;
+  const filedFor = (context as Record<string, unknown>).baseBranch;
+  if (typeof filedFor !== 'string' || !filedFor) return null;
+  const rows = ((await db.query.workers.findMany({
+    where: sqlWhere(and(eq(workers.taskId, task.id), isNotNull(workers.prNumber))),
+    columns: { prBaseRef: true, startedAt: true, createdAt: true, taskId: true, prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true },
+  })) ?? []) as WorkerRow[];
+  const prBase = latestWorkerByTask(rows).get(task.id)?.prBaseRef ?? null;
+  if (prBase && prBase !== filedFor) {
+    return `This refresh PR now targets \`${prBase}\`, not the mission branch it was filed for (\`${filedFor}\`). `
+      + `A refresh only ever lands on that branch; close it, or retarget it there if that delivery is still open.`;
+  }
+  const { missionEpochsOf, writableEpoch } = await import('@/lib/workflow/delivery-ship');
+  const epochs = await missionEpochsOf(task.missionId);
+  if (epochs.length > 0 && writableEpoch({ epochs })?.branch !== filedFor) {
+    return `The delivery this refresh was for (\`${filedFor}\`) already shipped, so there is nothing left for it to refresh. Close it.`;
+  }
+  return null;
+}
+
+/**
+ * After a mission PR merges: record the merged delivery with the kernel
+ * (docs/specs/workflow-kernel-library.md §6), which owns everything that
+ * follows. The delivery becomes terminal; when the mission still has work the
+ * kernel rotates it to exactly one successor delivery on a new branch, cut
+ * from the merge commit, and moves `missions.workingBranch` to it in the same
+ * statement. The merged branch is deleted only after every PR still on it
+ * (or moved to trunk by GitHub's delete-branch-on-merge) is settled: closed
+ * as redundant, moved to the successor, or held for a person. Before epochs
+ * this deleted the branch straight away, which is how later task PRs were
+ * stranded and refresh PRs ended up targeting trunk.
  *
- * That repo setting cannot be scoped to "only after every task PR based on
- * this branch has already landed" — it fires on ANY merge with the branch as
- * head, which is exactly how a prior mission lost six task PRs' review gate:
- * the mission PR merged early, the setting deleted the branch, and GitHub
- * silently retargeted the still-open task PRs to trunk. `guardMissionPrMerge`
- * above closes the "early" half; this closes the other half by having buildd
- * own the deletion itself, at the moment it is actually safe.
- *
- * No-op for anything that is not a mission PR. Best-effort: a failed delete
- * leaves a stale branch, not a broken mission.
+ * No-op for anything that is not a mission PR. Never throws: a failure is
+ * retried by the hourly reconcile.
  */
 export async function finalizeMissionPrMerge(
   task: { title?: string | null; taskClass?: string | null; missionId?: string | null } | null | undefined,
   installationId: number,
   repoFullName: string,
+  prNumber?: number | null,
 ): Promise<void> {
   if (!task || !isMissionPrTask(task) || !task.missionId) return;
-  const mission = await db.query.missions.findFirst({
-    where: sqlWhere(eq(missions.id, task.missionId)),
-    columns: { workingBranch: true, integrationBranchEnabled: true },
-  });
-  const branch = missionIntegrationBase(mission);
-  if (!branch) return;
-  try {
-    await githubApi(
-      installationId,
-      `/repos/${repoFullName}/git/refs/heads/${encodeURIComponent(branch)}`,
-      { method: 'DELETE' },
-    );
-    console.log(`[mission-pr] deleted integration branch '${branch}' on ${repoFullName} after mission PR merge`);
-  } catch (err) {
-    console.error(`[mission-pr] failed to delete integration branch '${branch}' on ${repoFullName}:`, err);
-  }
+  const { recordMissionPrMerged } = await import('@/lib/mission-epoch-door');
+  const r = await recordMissionPrMerged(task, installationId, repoFullName, prNumber);
+  console.log(`[mission-pr] mission ${task.missionId} PR merge recorded with the kernel: ${r.reason}`);
 }

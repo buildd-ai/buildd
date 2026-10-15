@@ -5,10 +5,10 @@ owner: max
 last_verified: 2026-10-14
 summary: Delivery state MUST have one writer, the workflow kernel, packaged as a library with no buildd imports and run in production only by the execution control plane.
 domain: tasks
-surfaces: [apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts]
+surfaces: [apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
 related: [workflow-state-kernel, execution-control-plane, mission-branch-refresh, mission-task-lifecycle, living-specs]
 keywords: [workflow kernel, delivery state, single writer, single host, control plane, portable library, ports, adapters, conformance suite, merge door, landing authority, required status, durable findings, finding disposition, delivery epoch, mission delivery, refresh settlement, no-op completion, workflow-kernel package]
-verified_by: [packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/tests/db/kernel-command-host.test.ts]
+verified_by: [packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/tests/db/kernel-command-host.test.ts]
 supersedes: []
 ---
 # Workflow Kernel Library and Single Host
@@ -60,7 +60,7 @@ work" and no code path can advance or contradict it on its own.
 - Delivery state is: the kernel tables (`workflow_deliveries`,
   `workflow_review_rounds`, `workflow_facts`, `workflow_transitions`,
   `workflow_effects`, `landing_lanes`, `workflow_attempts`,
-  `trunk_incidents`); and, for any task that has a delivery, the lifecycle
+  `workflow_mission_epochs`, `trunk_incidents`); and, for any task that has a delivery, the lifecycle
   columns people read: `tasks.status` and `tasks.result` delivery fields
   (`prUrl`, `prNumber`, merged/shipped), `workers.prUrl`, `workers.prNumber`,
   `workers.mergedAt`, `workers.prLifecycleStatus`, and mission completion.
@@ -252,7 +252,9 @@ GitHub or Next.js.
   directly, past the drain's guards, so the handler's own guard is what it
   tests). The host's `policy` is part of the `ConformanceHost`: the drain
   reads the kill switch from it on both stores. NOT IMPLEMENTED: the rest of
-  the §16 matrix, §15 replay, and the #3787 and #4663/#4670 sequences.
+  the §16 matrix, §15 replay, and the #3787 and #4663/#4670 sequences as
+  conformance scenarios (they run today as the epoch reducer's package tests
+  and the Postgres epoch suite, §6).
 - No model calls, prompts or decision policies in the package. Model-backed
   judgment stays possible through the Decide port:
   - Where the kernel needs a judgment (a reviewer verdict, whether a conflict
@@ -336,7 +338,10 @@ the control plane, authenticated as the caller).
   - Operations are the seam's door functions, unchanged: `land`,
     `apply_recommendation`, `policy_merge`, `request_review`,
     `request_ci_retry`, `record_supersession`, `abandon`, `open_delivery`, and
-    `drain` (one delivery's due effects, `system` principals only). The same
+    `drain` (one delivery's due effects, `system` principals only), and
+    `mission_epoch` (§6: a mission delivery merged, ensure a writable one, bind
+    its PR, reconcile what is owed; re-checked against the mission's repo
+    workspace). The same
     code runs on the web host in shadow, so the two modes cannot drift.
   - Authenticated. The request is signed: HMAC-SHA256 over timestamp, method,
     path and body (the scheme Dispatch callbacks use, `@buildd/dispatch-contract`)
@@ -653,39 +658,79 @@ push, refresh, completion or owner change can make it disappear.
 
 ## 6. Mission deliveries and epochs
 
-**Capability statement**: A mission-branch mission MUST be a kernel delivery
-with ordered epochs, so shipping one epoch never strands the mission's later
-work and nothing refreshes or re-ships a branch that already landed.
+**Capability statement**: A mission-branch mission MUST be a sequence of
+kernel-owned delivery epochs, so shipping one epoch never strands the mission's
+later work and nothing refreshes or re-ships a branch that already landed.
 
 **Invariants**:
 - A mission's integration PR is a delivery of role mission, opened when the
   branch is cut (today `openMissionIntegrationPr`). #4686 is the case of a
   mission PR with none.
-- Epochs: the mission delivery has an ordered sequence of epochs, each one
-  integration branch and PR. At most one epoch is writable. When an epoch
-  merges, the kernel rotates idempotently: it settles the shipped epoch, and
-  if the mission has unshipped work it cuts the next epoch from trunk and
-  retargets that work, as one transition keyed on the merged head (task
-  f3bda4e1). A merged epoch is terminal; the mission is not.
-- Scope amendments: adding a task to a mission whose current epoch is in
-  review or landing is an explicit amendment recorded on the mission (version,
-  actor, reason) and goes to the next epoch unless the amendment says
-  otherwise.
-- Refresh is a kernel effect of the writable epoch, and it reads "shipped"
-  from delivery state. It never runs for a merged epoch. This replaces the
-  `findMissionPrOwner` / `workers.mergedAt` check in
-  `refreshMissionIntegrationBranch` and the unchecked `reserved` path.
+- Epochs (task f3bda4e1): `workflow_mission_epochs`, one row per epoch (one
+  integration branch and, once its work is in, one PR into trunk), written only
+  by the kernel. The transition table is the package's
+  (`packages/workflow-kernel/src/delivery-epochs.ts`, `reduceMissionEpochs`);
+  the host applies each transition as one statement
+  (`apps/web/src/lib/workflow/delivery-epochs.ts`, `applyEpochOpsSql`): a
+  version-guarded UPDATE of the epoch row, any successor INSERT and the
+  projection of the writable branch onto `missions.workingBranch`, chained as
+  CTEs. Unique indexes hold the shape: one epoch per (mission, number), one
+  successor per predecessor, one open epoch per mission. A lost race re-reads
+  and reduces again, so a replayed or concurrent merge is a `noop`.
+- At most one epoch is writable (`open`). When an epoch merges (`Merged`, from
+  GitHub's values), the kernel records it terminal and, if the mission has
+  unshipped work (unfinished deliverable tasks or open task PRs), cuts exactly one
+  successor from the merge commit, as one transition. A merged epoch is terminal
+  and immutable (branch, PR, merge commit, merged head, timestamps, the scope
+  version it carried); the mission is not. A successor gets a name no epoch used
+  (`<branch>-delivery-<n>`), so GitHub's delete-branch-on-merge of a merged
+  branch can never take later work with it.
+- Work filed or a task PR opened after the newest epoch merged with nothing left
+  (`EnsureWritable`): the kernel cuts one successor from trunk's head. A
+  completed or archived mission is never given one.
+- What a transition leaves owed is derived from the rows
+  (`pendingEpochSteps`): cut the successor's branch, settle the merged branch,
+  retire it, in that order. Each is performed against GitHub and recorded back
+  through the reducer, by the merge's own door, the kernel's `finalize_mission_pr`
+  effect, or the hourly reconcile, whichever comes first; a crash between a step
+  and its record redoes the step.
+- The doors: every mission-PR merge door and the merge webhook record the merge
+  through `kernel-client` (`mission_epoch`, action `merged`); the branch is no
+  longer deleted at merge (`finalizeMissionPrMerge`). A task filed into the
+  mission and `create_pr` ask for a writable epoch first. A task filed under an
+  earlier epoch is claimed onto the writable branch (`isPriorEpochBranch` at the
+  claim); a refresh keeps the branch it was filed for.
+- Compatibility: a mission that predates epochs is adopted on its first epoch
+  command, from its recorded mission PR (`adoptionOf`): no PR, or an open one, is
+  epoch 1 open; a merged PR with no work left is epoch 1 merged and retired; a
+  merged PR with work left (the live re-cut under the same name) is epoch 1
+  merged plus epoch 2 open on that same branch, which is never deleted while the
+  open epoch uses it. Until adopted, a mission's readers keep the pre-epoch
+  answers. History before adoption is not reconstructed.
+- Scope amendments: NOT IMPLEMENTED (slice S6b). Adding a task to a mission is
+  an explicit scope decision recorded on the mission (version, actor, reason);
+  epochs already carry `scopeVersion`.
+- Refresh reads "shipped" from delivery state: a refresh acts on the writable
+  epoch's branch only, and never runs for a merged epoch
+  (`mission-branch-refresh.md`, Eligibility). NOT IMPLEMENTED: the refresh as
+  an outbox effect of the epoch; it still runs from the start trigger and the
+  backstop, gated on epoch state.
 - A clean refresh merge is a recorded fact on the delivery (head moved by
   refresh, not a fix, §13.13 rule 5).
 - A conflicted refresh files one pinned builder (single-flight per epoch and
   trunk head). If it finds the branch already contains trunk it completes as
   a verified no-op with the ancestry as evidence, no PR required.
-- Before an epoch's branch is deleted, the kernel settles every open refresh
-  PR against it: proven redundant (its tree is contained in the merged
-  epoch) is closed with the satisfying PR recorded; unique work is retargeted
-  to the next epoch; ambiguous work escalates (task a11abc4b).
-- Mission completion reads delivery and epoch state, never
-  `workers.mergedAt`.
+- Before an epoch's branch is deleted, the kernel settles every open PR still on
+  it and every mission task PR GitHub moved to trunk when it deleted the branch
+  (`classifySettlement`, task a11abc4b): proven redundant (its head is in the
+  merge commit, or a scratch test merge leaves the tree unchanged) is closed
+  with the epoch PR recorded on its delivery; task work is retargeted to the
+  successor; a refresh with work of its own, or anything unreadable, holds the
+  branch and asks a person once. The branch retires only when nothing is held
+  and a fresh read shows nothing open on it.
+- Mission completion reads delivery and epoch state, never `workers.mergedAt`:
+  it is held while the writable epoch carries landed work that has not reached
+  trunk (`epochCompletionHold`), then the mission's criteria decide.
 
 **Acceptance criteria**:
 - AC-20: GIVEN a mission whose epoch 1 merges while tasks remain WHEN the merge
@@ -699,6 +744,14 @@ work and nothing refreshes or re-ships a branch that already landed.
 - AC-23 (failure): GIVEN an open refresh PR with unique commits WHEN its epoch
   merges THEN the branch is not deleted until that PR is retargeted or
   escalated, and nothing retargets it to trunk silently (the #4670 sequence).
+
+| AC | Test |
+| --- | --- |
+| AC-20 | `packages/workflow-kernel/src/delivery-epochs.test.ts` › "AC-20 / scenario 1 and 3"; `apps/web/tests/db/mission-epochs.test.ts` › "AC-20", "scenario 2" |
+| AC-21 | `apps/web/src/lib/mission-branch-refresh.test.ts` › "mission delivery records (AC-21)" |
+| AC-22 | `apps/web/src/app/api/workers/[id]/route.test.ts` › "mission-branch refresh already on the branch" |
+| AC-23 | `apps/web/tests/db/mission-epochs.test.ts` › "AC-23 / a11abc4b"; `apps/web/src/lib/mission-pr.test.ts` › "a refresh PR lands only on the delivery it was filed for" |
+| Completion reads epochs (task f3bda4e1 scenarios 1, 4) | `apps/web/src/lib/mission-completion.test.ts` › "scenario 1", "scenario 4" |
 
 ## 7. Projections
 
@@ -777,9 +830,9 @@ column outside the kernel; S3 and S4 remove or route each one.
   and the legacy arm of the dashboard merge, `PUT /api/github/pr`, the landing
   lane and auto-merge.
 - Refresh: the clean-merge write to the mission branch and
-  `dispatchBranchRefreshConflictTask`, both outside the kernel, deciding
-  shipped from `workers.mergedAt`; the completion gate's "refresh already
-  landed" arm uses `isAncestor`, which reads null once the branch is deleted.
+  `dispatchBranchRefreshConflictTask`, both outside the kernel. They read
+  "shipped" from epoch state for a mission with epochs (S6), and from
+  `workers.mergedAt` for one that predates them.
 
 ## 10. Open questions
 

@@ -2,13 +2,13 @@
 title: Mission Branch Refresh
 status: active
 owner: max
-last_verified: 2026-10-13
+last_verified: 2026-10-14
 summary: A mission's integration branch MUST be refreshed from trunk on task start or a daily backstop, never per trunk merge; every writer is fenced, owned and reconciled.
 domain: missions
-surfaces: [apps/web/src/lib/mission-branch-refresh.ts, apps/web/src/lib/mission-subscribers.ts, apps/web/src/app/api/workers/claim/route.ts, apps/web/src/app/api/cron/pr-reconcile/route.ts]
+surfaces: [apps/web/src/lib/mission-branch-refresh.ts, apps/web/src/lib/mission-subscribers.ts, apps/web/src/app/api/workers/claim/route.ts, apps/web/src/app/api/cron/pr-reconcile/route.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
 related: [workflow-kernel-library, mission-release-gate, mission-task-lifecycle, workflow-state-kernel]
-keywords: [integration branch, mission/*, merge dev into, chore(mission), branch refresh, branchRefreshHeadSha, branch_refreshed_at, refresh conflict task, requireMergeCommit, trunk merge, refresh lease, abandoned lease, conflict reservation, paused mission refresh, mission branch concurrency]
-verified_by: [apps/web/src/lib/mission-branch-refresh.test.ts, apps/web/src/lib/mission-shipping-pr.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, scripts/resolve-generated-conflicts.test.ts, apps/web/src/lib/conflict-retry.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/modules.test.ts, apps/web/src/lib/integration-refresh.test.ts]
+keywords: [refresh settlement, redundant refresh PR, branch retirement, delivery epoch, integration branch, mission/*, merge dev into, chore(mission), branch refresh, branchRefreshHeadSha, branch_refreshed_at, refresh conflict task, requireMergeCommit, trunk merge, refresh lease, abandoned lease, conflict reservation, paused mission refresh, mission branch concurrency]
+verified_by: [apps/web/tests/db/mission-epochs.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/src/lib/mission-pr.test.ts, apps/web/src/lib/mission-branch-refresh.test.ts, apps/web/src/lib/mission-shipping-pr.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, scripts/resolve-generated-conflicts.test.ts, apps/web/src/lib/conflict-retry.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/modules.test.ts, apps/web/src/lib/integration-refresh.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -221,6 +221,7 @@ and the mission PR merging is not the mission being released.
 | resumed (`paused` → `active`, or armed) | refreshes | refreshes when due | n/a |
 | `completed`, `archived` | skipped | skipped | stops at the next commit boundary with `mission_terminal`: no merge and no conflict task |
 | mission PR merged | skipped (`mission_pr_merged`) | skipped | re-read just before the merges call and just before finishing a reserved conflict task: stops with `mission_pr_merged` |
+| the delivery this branch belongs to merged (delivery records, `workflow-kernel-library` §6) | skipped (`mission_pr_merged`); the next task gets the successor's branch | skipped | the same re-reads: a branch that is no longer the writable delivery's stops with `mission_pr_merged` |
 | no integration branch | skipped | skipped | n/a |
 
 **Invariants**:
@@ -252,11 +253,18 @@ and the mission PR merging is not the mission being released.
   nothing will merge again. That adds no mission content, loses nothing and
   changes no fact. If the branch was deleted on merge, the API answers an error
   outcome with no side effect.
-- **Delivery epochs.** "Mission PR merged" here means the mission's current
-  delivery. Task `f3bda4e1` (mission lifecycle with delivery epochs) owns
-  rotation to a successor delivery. When that lands, this check reads the
-  current delivery's PR, and a refresh targets the current delivery's branch.
-  This spec does not model epochs and does not rotate branches.
+- **Delivery epochs** (`workflow-kernel-library` §6, task `f3bda4e1`). For a
+  mission with delivery records (`workflow_mission_epochs`), a refresh acts on
+  the writable delivery and nothing else: the branch it was called for must be
+  that delivery's branch, read on entry and at both re-reads. A merged delivery
+  is never refreshed, by a claim or the backstop, and no refresh task is filed
+  for it (AC-21 there). The three-source read above remains the answer only for
+  a mission that predates delivery records. Rotation to a successor delivery is
+  the kernel's, not this spec's: when a delivery merges with work left, the
+  mission's branch (`missions.workingBranch`) moves to the successor in the same
+  statement, and the refresh pointers (`branchRefreshHeadSha`,
+  `branchRefreshConflictTaskId`) are cleared with it, so the successor starts
+  current by construction and with no conflict task.
 
 ### Bounded start
 
@@ -451,6 +459,66 @@ ancestry. This spec is the authority on both.
   contains its trunk sha, or the mission's shipping PR merged THEN completion
   succeeds and the evidence is on the task result; with neither it is refused.
 
+### Settlement before branch retirement
+
+> Folded in from Living Spec amendment `mission-refresh-settlement-spec` (task `a11abc4b`, the #4663 / #4670 regression). Implemented by the kernel's mission delivery steps (`apps/web/src/lib/workflow/delivery-epochs.ts`, the package's `classifySettlement` and `pendingEpochSteps`).
+
+A merged delivery's branch is not deleted when its PR merges. The kernel first
+settles every PR still based on it, plus every mission task PR GitHub moved to
+trunk when it deleted the branch on merge (delete-branch-on-merge retargets a
+deleted base's open PRs to that PR's base). Each is classified from a fresh read:
+
+| Read | Task PR | Refresh PR |
+| --- | --- | --- |
+| Every commit it carries is already in trunk through this delivery: its head is an ancestor of the merge commit, or a test merge into the merge commit leaves the tree unchanged (a squash-merged delivery leaves no ancestry) | closed as redundant; the delivery PR is recorded as where it landed (T20 on its kernel delivery) | same |
+| It carries work of its own | moved onto the successor delivery, never left on trunk | held: kept open, never closed or retargeted automatically, a person decides |
+| The read failed, or GitHub refused the close or retarget | held, retried on the next pass | held |
+
+The test merge runs on a scratch ref (`buildd-settle/…`) that is deleted in the
+same step, never on a branch anything else reads.
+
+**Invariants**:
+- R-1. A refresh whose trunk sha the branch already contains completes without a
+  PR from verified ancestry (AC-36); when the branch is gone, "its delivery
+  shipped" is read from that delivery's record (`missionShippingPrMerged` with
+  the refresh's branch), never from the mission's newest PR.
+- R-2. The branch is retired only after settlement, with nothing held, and only
+  when a fresh read shows no open PR still based on it. A PR opened on it after
+  settlement is settled on the next pass. Unique or ambiguous work keeps the
+  branch and posts one mission note naming each PR and what to do.
+- R-3. A refresh PR lands only on the branch it was filed for, and only while that
+  branch is the writable delivery's. Every merge door asks this through
+  `guardMissionPrMerge` (`refresh_target_mismatch`): a refresh retargeted to
+  trunk is never merged as an implicit mission-shipping PR.
+- R-4. Shipping, settlement and retirement are ordered and recoverable: each is a
+  step derived from the delivery rows (`pendingEpochSteps`), recorded through the
+  reducer after it succeeds, so a replayed webhook, a concurrent landing or a
+  failed GitHub call redoes the step and never doubles it. The hourly reconcile
+  (`pr-reconcile`) finishes what a request left owed, including a merge whose
+  webhook was lost. Refresh tasks filed for the merged branch that never started
+  are cancelled; no new refresh is dispatched for it.
+- R-5. Settlement bookkeeping never holds a shipped mission open: completion
+  reads the writable delivery's landed work (`mission-task-lifecycle`, Mission
+  Completion Gate), not a refresh PR.
+
+**Acceptance criteria**:
+- AC-37 (a11abc4b AC-1): GIVEN a refresh PR whose tree is already in the merged
+  delivery WHEN the delivery merges THEN the refresh PR is closed as superseded
+  by the delivery PR with the read recorded, nothing is merged to trunk, and the
+  branch is retired.
+- AC-38 (a11abc4b AC-2): GIVEN a refresh pushed straight to the branch WHEN its
+  task completes THEN completion succeeds on ancestry, with no PR (AC-36).
+- AC-39 (a11abc4b AC-3): GIVEN a refresh PR with work of its own WHEN its
+  delivery merges THEN it stays open on its base, the branch is not deleted, and
+  one note asks a person.
+- AC-40 (a11abc4b AC-4): GIVEN a replayed merge, concurrent passes, a GitHub
+  delete-on-merge that moved PRs to trunk, or a failed close or retarget WHEN the
+  reconcile runs again THEN the state converges with one successor and every PR
+  settled once.
+- AC-41 (a11abc4b AC-5): GIVEN a refresh PR retargeted to trunk, or one whose
+  delivery shipped WHEN any merge door is asked to merge it THEN it is refused
+  with `refresh_target_mismatch`.
+
 ### Spec-to-test matrix
 
 | Invariant / AC | Test |
@@ -468,6 +536,9 @@ ancestry. This spec is the authority on both.
 | Generated-file recovery (AC-15–AC-20) | `scripts/resolve-generated-conflicts.test.ts` |
 | AC-34, AC-35 | `mission-branch-refresh.test.ts` › "the shipping PR merged but the owner worker row has no mergedAt"; `apps/web/src/lib/mission-shipping-pr.test.ts` |
 | AC-36 | `apps/web/src/app/api/workers/[id]/route.test.ts` › "mission-branch refresh already on the branch" |
+| Delivery epochs: a merged delivery is never refreshed; a rotated-away branch is not | `mission-branch-refresh.test.ts` › "mission delivery records (AC-21)" |
+| AC-37, AC-39, AC-40, R-2 retirement freshness | `apps/web/tests/db/mission-epochs.test.ts` › "AC-23 / a11abc4b", "scenario 2", "retirement reads GitHub fresh"; `packages/workflow-kernel/src/delivery-epochs.test.ts` › "AC-23 / a11abc4b" |
+| AC-41 | `apps/web/src/lib/mission-pr.test.ts` › "a refresh PR lands only on the delivery it was filed for" |
 
 The real-Git cases run the production refresh and `verifyRefreshLanded` against a
 local repository that stands in for GitHub, one atomic operation per API call.
@@ -546,6 +617,12 @@ conflict retry both tell the agent to run it first.
 - `packages/core/db/schema.ts`: `missions.branchRefreshHeadSha`,
   `branchRefreshedAt`, `branchRefreshLeaseUntil`, `branchRefreshLeaseToken`,
   `branchRefreshConflictTaskId`.
+- `apps/web/src/lib/workflow/delivery-epochs.ts`: `reconcileMissionEpochs`,
+  `contentContained`, the settlement and retirement steps.
+- `packages/workflow-kernel/src/delivery-epochs.ts`: `classifySettlement`,
+  `pendingEpochSteps`.
+- `apps/web/src/lib/mission-pr.ts`: `guardMissionPrMerge` (refresh target
+  identity at every merge door).
 
 ## Out of scope
 

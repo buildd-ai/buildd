@@ -62,6 +62,7 @@ import {
 import {
   evaluateMissionWorkState,
   findMissionPrOwner,
+  reconcileMissionDeliveries,
   maybeOpenMissionIntegrationPr,
   noteMissionPrOpenFailure,
 } from '@/lib/mission-pr';
@@ -731,6 +732,10 @@ export async function sweepMissionIntegrationPrs(): Promise<MissionPrSweepResult
 
   for (const mission of candidates) {
     try {
+      // §6 backstop: finish whatever a delivery transition left owed (a lost
+      // merge, a successor branch not yet cut, PRs left on a merged branch).
+      await Promise.resolve().then(() => reconcileMissionDeliveries(mission.id))
+        .catch((err) => console.error(`[pr-reconcile] mission ${mission.id} delivery reconcile failed:`, err));
       const owner = await findMissionPrOwner(mission.id);
       // A live gate: this is the normal answer for a mission mid-review.
       if (owner?.state === 'open') {

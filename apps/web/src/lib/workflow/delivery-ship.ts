@@ -67,3 +67,37 @@ export async function deliveryShipsForPrs(
   }
   return out;
 }
+
+// ── §6: mission epochs, the read ────────────────────────────────────────────
+
+export type { EpochSnapshot } from '@buildd/workflow-kernel/delivery-epochs';
+export type { MissionEpochHooks } from './delivery-epochs';
+export { epochCompletionHold, writableEpoch, latestEpoch, isPriorEpochBranch } from '@buildd/workflow-kernel/delivery-epochs';
+
+/**
+ * A mission's delivery epochs, ordered (empty for a mission that predates
+ * them or uses no integration branch). Mission completion, the branch
+ * refresh and the mission page read delivery state here, never from
+ * `workers.mergedAt`. Never throws: unreadable reads as no epochs, which
+ * every reader treats as the pre-epoch answer.
+ */
+export async function missionEpochsOf(missionId: string, exec: Exec = dbExec): Promise<import('@buildd/workflow-kernel/delivery-epochs').EpochSnapshot[]> {
+  try {
+    const { epochsForMissions } = await import('./delivery-epochs');
+    return (await epochsForMissions([missionId], exec)).get(missionId) ?? [];
+  } catch (err) {
+    console.warn('[workflow] mission epochs unavailable; readers fall back to the mission PR columns:', err instanceof Error ? err.message : err);
+    return [];
+  }
+}
+
+/** Batch form of {@link missionEpochsOf}, for list surfaces. */
+export async function missionEpochsFor(missionIds: string[], exec: Exec = dbExec): Promise<Map<string, import('@buildd/workflow-kernel/delivery-epochs').EpochSnapshot[]>> {
+  try {
+    const { epochsForMissions } = await import('./delivery-epochs');
+    return await epochsForMissions(missionIds, exec);
+  } catch (err) {
+    console.warn('[workflow] mission epochs unavailable:', err instanceof Error ? err.message : err);
+    return new Map();
+  }
+}

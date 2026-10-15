@@ -104,10 +104,13 @@ const mockEvaluateMissionWorkState = mock(() => Promise.resolve({
   unmergedPrCount: 0,
   landedOnIntegrationCount: 1,
 } as any));
+const mockReconcileMissionDeliveries = mock((_missionId: string) => Promise.resolve([] as string[]));
 mock.module('@/lib/mission-pr', () => ({
   maybeOpenMissionIntegrationPr: mockMaybeOpenMissionIntegrationPr,
   findMissionPrOwner: mockFindMissionPrOwner,
   evaluateMissionWorkState: mockEvaluateMissionWorkState,
+  // §6 backstop: finishes what a delivery transition left owed (its own tests are the kernel's).
+  reconcileMissionDeliveries: mockReconcileMissionDeliveries,
 }));
 
 // A shipped mission (its mission PR merged) is handed to the one completion

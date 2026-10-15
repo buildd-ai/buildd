@@ -5617,6 +5617,48 @@ export const workflowEffects = pgTable('workflow_effects', {
 
 export type WorkflowEffectRow = typeof workflowEffects.$inferSelect;
 
+// Mission deliveries (docs/specs/workflow-kernel-library.md §6): one row per
+// epoch of a mission-branch mission, each one integration branch and its PR
+// into trunk. Written only by the kernel (apps/web/src/lib/workflow/
+// delivery-epochs.ts, one compare-and-set statement per transition of
+// packages/workflow-kernel/src/delivery-epochs.ts). A merged row is the
+// immutable record of what that delivery shipped; rows are never deleted.
+export const workflowMissionEpochs = pgTable('workflow_mission_epochs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'cascade' }).notNull(),
+  epoch: integer('epoch').notNull(),
+  branch: text('branch').notNull(),
+  // 'open' (the one writable epoch) | 'merged' (terminal).
+  state: text('state').notNull().$type<'open' | 'merged'>(),
+  version: bigint('version', { mode: 'number' }).default(0).notNull(),
+  // 'cut' (rotated by the kernel) | 'adopted' | 'adopted_recut' (a mission predating epochs).
+  origin: text('origin').notNull().$type<'cut' | 'adopted' | 'adopted_recut'>(),
+  cutFromSha: text('cut_from_sha'),
+  branchReadyAt: timestamp('branch_ready_at', { withTimezone: true }),
+  predecessorId: uuid('predecessor_id'),
+  scopeVersion: integer('scope_version').default(1).notNull(),
+  repoFullName: text('repo_full_name'),
+  prNumber: integer('pr_number'),
+  ownerTaskId: uuid('owner_task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  // GitHub's values, never receipt time.
+  mergedAt: timestamp('merged_at', { withTimezone: true }),
+  mergeCommitSha: text('merge_commit_sha'),
+  mergedHeadSha: text('merged_head_sha'),
+  settlement: jsonb('settlement').$type<Record<string, unknown>>(),
+  settledAt: timestamp('settled_at', { withTimezone: true }),
+  retiredAt: timestamp('retired_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  epochUnique: uniqueIndex('workflow_mission_epochs_epoch_unique').on(t.missionId, t.epoch),
+  // One successor per predecessor: a replayed or racing merge cannot cut two.
+  successorUnique: uniqueIndex('workflow_mission_epochs_successor_unique').on(t.predecessorId).where(sql`${t.predecessorId} IS NOT NULL`),
+  // At most one writable epoch per mission.
+  openUnique: uniqueIndex('workflow_mission_epochs_open_unique').on(t.missionId).where(sql`${t.state} = 'open'`),
+}));
+
+export type WorkflowMissionEpochRow = typeof workflowMissionEpochs.$inferSelect;
+
 // The landing lane (lib/workflow/landing-lane.ts): one row per repo + base
 // whose delivery is the one behind-refresh in flight there. A row whose
 // delivery left the refresh window, or whose lease ran out, holds nothing;

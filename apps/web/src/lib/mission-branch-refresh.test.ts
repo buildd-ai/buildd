@@ -9,7 +9,7 @@
  * concurrency tests exercise the actual race rather than asserting mocks were
  * called.
  */
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 
 // ── In-memory mission row + DB mock ─────────────────────────────────────────
 
@@ -286,6 +286,15 @@ mock.module('@/lib/mission-pr', () => ({
 const mockDeliveryPrStates = mock((_ws: string, _prs: number[]) => Promise.resolve([] as Array<{ prNumber: number; state: string; mergedAt: string | null }>));
 mock.module('@/lib/workflow/delivery-view', () => ({
   deliveryPrStates: (...args: any[]) => mockDeliveryPrStates(...(args as [string, number[]])),
+}));
+
+// Mission delivery records (workflow-kernel-library.md §6). Empty = a mission
+// that predates them, which keeps the worker/delivery/GitHub shipped reading.
+const mockMissionEpochsOf = mock((_missionId: string) => Promise.resolve([] as any[]));
+mock.module('@/lib/workflow/delivery-ship', () => ({
+  missionEpochsOf: (...args: any[]) => mockMissionEpochsOf(...(args as [string])),
+  writableEpoch: (v: { epochs: Array<{ state: string }> }) => v.epochs.find((e) => e.state === 'open') ?? null,
+  latestEpoch: (v: { epochs: Array<{ epoch: number }> }) => v.epochs.reduce((a: any, b: any) => (!a || b.epoch > a.epoch ? b : a), null),
 }));
 
 mock.module('@/lib/repo-scope', () => ({
@@ -732,6 +741,50 @@ describe('refreshMissionIntegrationBranch', () => {
     mockFindMissionPrOwner.mockResolvedValue({ state: 'merged', prNumber: 1, prUrl: 'x', workerId: 'w', taskId: 't', mergedAt: new Date() });
     const outcome = await refreshMissionIntegrationBranch('m-1');
     expect(outcome).toEqual({ kind: 'skipped', reason: 'mission_pr_merged' });
+  });
+
+  // §6 / AC-21 (workflow-kernel-library.md): with delivery records, refresh acts
+  // on the writable delivery only. The ecea17f3 sequence: a merged delivery is
+  // never refreshed, by a claim or by the backstop, and no refresh task is filed.
+  describe('mission delivery records (AC-21)', () => {
+    const githubConflicting = () => {
+      const calls = { merges: 0 };
+      mockGithubApi.mockImplementation(((_i: number, path: string, opts?: any) => {
+        if (path.endsWith('/git/ref/heads/dev')) return Promise.resolve({ object: { sha: 'dev-sha-current' } });
+        if (path.endsWith('/merges') && opts?.method === 'POST') { calls.merges++; return Promise.reject(githubError(409, 'conflict')); }
+        return Promise.resolve(null);
+      }) as any);
+      return calls;
+    };
+    const epoch = (o: Record<string, unknown>) => ({ id: 'e1', epoch: 1, branch: missionRow.workingBranch, state: 'open', ...o });
+    afterEach(() => { mockMissionEpochsOf.mockReset(); mockMissionEpochsOf.mockResolvedValue([]); });
+
+    it('a merged delivery with no successor: no merge call and no refresh task, from a claim or the backstop', async () => {
+      // The legacy reading would refresh: the owner worker row says open.
+      mockFindMissionPrOwner.mockResolvedValue({ state: 'open', prNumber: 7, prUrl: 'x', workerId: 'w', taskId: 't', mergedAt: null });
+      mockMissionEpochsOf.mockResolvedValue([epoch({ state: 'merged' })]);
+      const calls = githubConflicting();
+      expect(await refreshMissionIntegrationBranch('m-1', { trigger: 'start' })).toEqual({ kind: 'skipped', reason: 'mission_pr_merged' });
+      expect(await refreshMissionIntegrationBranch('m-1', { trigger: 'backstop' })).toEqual({ kind: 'skipped', reason: 'mission_pr_merged' });
+      expect(calls.merges).toBe(0);
+      expect(insertedTasks).toHaveLength(0);
+    });
+
+    it('a branch the mission already rotated away from is never refreshed (the read raced a merge)', async () => {
+      mockFindMissionPrOwner.mockResolvedValue({ state: 'open', prNumber: 7, prUrl: 'x', workerId: 'w', taskId: 't', mergedAt: null });
+      mockMissionEpochsOf.mockResolvedValue([epoch({ state: 'merged' }), epoch({ id: 'e2', epoch: 2, branch: `${missionRow.workingBranch}-delivery-2` })]);
+      const calls = githubConflicting();
+      expect(await refreshMissionIntegrationBranch('m-1')).toEqual({ kind: 'skipped', reason: 'mission_pr_merged' });
+      expect(calls.merges).toBe(0);
+    });
+
+    it('the writable delivery on this branch refreshes as before, even though an earlier delivery merged', async () => {
+      mockFindMissionPrOwner.mockResolvedValue({ state: 'merged', prNumber: 7, prUrl: 'x', workerId: 'w', taskId: 't', mergedAt: new Date() });
+      mockMissionEpochsOf.mockResolvedValue([epoch({ state: 'merged', branch: 'mission/old' }), epoch({ id: 'e2', epoch: 2 })]);
+      const calls = githubConflicting();
+      expect((await refreshMissionIntegrationBranch('m-1')).kind).toBe('conflict');
+      expect(calls.merges).toBe(1);
+    });
   });
 
   // The incident behind #4686: the shipping PR merged, but its owner worker row

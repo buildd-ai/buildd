@@ -2,12 +2,12 @@
 title: Mission & Task Lifecycle
 status: active
 owner: max
-last_verified: 2026-10-13
+last_verified: 2026-10-14
 summary: The coordination layer MUST allow only documented task/worker/mission transitions, name every claim gate, refuse completion without passing criteria, and refuse any merge that outruns an outstanding review verdict.
 domain: missions
 surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/app/api/workers/claim/route.ts, packages/core/mission-helpers.ts, apps/web/src/lib/review-verdict-gate.ts]
 related: [subject-anchor-liveness, external-cron-triggers, release-flow]
-keywords: [gatereason, cancompletemission, derivemissionhealth, goalcriteria, dependson, activehours, awaitingmerge, isWaitingOnYou, workingbranch, integration branch, primaryprnumber, review_verdict, changes_requested, reviewheadsha, effectiveverdict, prsupersession, supersededbyprnumber, recordprsupersession]
+keywords: [delivery epoch, mission delivery, successor delivery, gatereason, cancompletemission, derivemissionhealth, goalcriteria, dependson, activehours, awaitingmerge, isWaitingOnYou, workingbranch, integration branch, primaryprnumber, review_verdict, changes_requested, reviewheadsha, effectiveverdict, prsupersession, supersededbyprnumber, recordprsupersession]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -707,9 +707,21 @@ stored — it is derived on read from the state of associated tasks via
   owner task (`MISSION_PR_TASK_PREFIX`, whose base IS trunk by design), a
   stacked-plan phase (`isStackedPhaseBase`), a mission with no integration base,
   and a task with no mission.
+- **A merged mission PR is one delivery, not the mission** (`workflow-kernel-library.md`
+  §6, task `f3bda4e1`). Each integration branch and its PR into trunk is a
+  delivery epoch the kernel records (`workflow_mission_epochs`). When one merges
+  with work left, the mission rotates to exactly one successor delivery on a new
+  branch (`<branch>-delivery-<n>`) cut from the merge commit, and
+  `missions.workingBranch` moves to it in the same statement; every later task PR
+  bases on it, and a task filed under the merged delivery is claimed onto it.
+  The merged branch is deleted only after the PRs left on it are settled
+  (`mission-branch-refresh.md`, "Settlement before branch retirement"), never at
+  merge. Mission completion is held while the writable delivery carries landed
+  work that has not reached trunk; "a mission PR merged" is never sufficient on
+  its own, and the mission's goal criteria still decide after that.
 - **The mission PR MUST NOT merge while the mission's work is unfinished.**
-  Merging it deletes the integration branch deliberately
-  (`finalizeMissionPrMerge`), so the gate in front of that merge
+  Merging it retires the integration branch once the PRs left on it are settled
+  (`finalizeMissionPrMerge` records the merge with the kernel), so the gate in front of that merge
   (`guardMissionPrMerge`, shared by all three merge call sites) asks whether the
   mission's work is finished — NOT merely whether any task PR is open. It MUST
   refuse while any deliverable task of the mission is in a non-terminal state

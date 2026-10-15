@@ -3144,6 +3144,42 @@ describe('POST /api/workers/claim', () => {
     });
   });
 
+  // §6 (workflow-kernel-library.md): a task filed under an earlier mission
+  // delivery names that delivery's branch as its base. Once it merged, the
+  // claim hands the worker the writable delivery's branch instead (scenario 2:
+  // no later worker receives the merged, deleted branch). A refresh is the one
+  // task FOR a specific branch and keeps it.
+  for (const [label, context, expected] of [
+    ['a task filed under delivery 1 builds on delivery 2', { baseBranch: 'mission/checkout-arc-1a2b3c4d' }, 'mission/checkout-arc-1a2b3c4d-delivery-2'],
+    ['a refresh keeps the branch it was filed for', { baseBranch: 'mission/checkout-arc-1a2b3c4d', requireMergeCommit: true }, 'mission/checkout-arc-1a2b3c4d'],
+    ['a stacked predecessor branch is left alone', { baseBranch: 'buildd/0a1b2c3d-step-one' }, 'buildd/0a1b2c3d-step-one'],
+  ] as const) {
+    it(`claim base: ${label}`, async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3, type: 'user', authType: 'api' });
+      mockWorkersFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+      mockAccountWorkspacesFindMany.mockResolvedValue([]);
+      mockMissionsFindMany.mockResolvedValue([{
+        id: 'mission-1', status: 'active', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null,
+        lastTaskStartedAt: null, workingBranch: 'mission/checkout-arc-1a2b3c4d-delivery-2', integrationBranchEnabled: true,
+      }]);
+      mockTasksFindMany.mockResolvedValueOnce([{
+        id: 'task-1', workspaceId: 'ws-1', missionId: 'mission-1', title: 'Test task', context: { ...context },
+        workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' } },
+      }]);
+      const sets: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((v: any) => { sets.push(v); return { where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]) })) }; }),
+      });
+      mockDbExecute.mockReturnValue(Promise.resolve({ rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }] }));
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } }));
+      expect(res.status).toBe(200);
+      const claimed = sets.find((v) => v?.status === 'assigned');
+      expect(claimed?.context?.baseBranch).toBe(expected);
+    });
+  }
+
   it('allows tasks with failed dependencies (terminal state)', async () => {
     mockAuthenticateApiKey.mockResolvedValue({
       id: 'account-1',

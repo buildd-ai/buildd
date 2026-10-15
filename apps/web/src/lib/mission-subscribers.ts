@@ -63,6 +63,20 @@ export const missionSubscribers: readonly AnySubscriber[] = [
       keepAlive: pending => after(() => pending.then(() => {})),
     });
   }),
+  // §6: deliverable work filed into a mission whose newest delivery already
+  // merged gets a writable successor delivery now, so the claim hands its
+  // worker a live branch. A no-op (one read) for every other mission.
+  subscriber('missions', 'task.created', 'open-writable-mission-delivery', async e => {
+    if (!e.missionId) return;
+    const [task] = await db
+      .select({ taskClass: tasks.taskClass, mode: tasks.mode })
+      .from(tasks)
+      .where(eq(tasks.id, e.taskId))
+      .limit(1);
+    if (task?.taskClass !== 'work' || task.mode === 'planning') return;
+    const { ensureMissionWritableBranch } = await import('@/lib/mission-epoch-door');
+    await ensureMissionWritableBranch(e.missionId, 'task_filed');
+  }),
   subscriber('missions', 'task.created', 'task-created-mission-feed', e => {
     if (!e.missionId) return;
     const missionId = e.missionId;
@@ -165,6 +179,21 @@ export const missionSubscribers: readonly AnySubscriber[] = [
         err,
       ),
     );
+  }),
+  // §6 (workflow-kernel-library.md): a mission PR merged on GitHub itself
+  // (no buildd door ran) is still a merged delivery. Every door records it
+  // too; the kernel's transition is idempotent, so the second is a noop.
+  subscriber('missions', 'pr.closed', 'record-mission-delivery-merged', async e => {
+    if (!e.merged || !e.taskId || e.installationId == null) return;
+    const [task] = await db
+      .select({ title: tasks.title, taskClass: tasks.taskClass, missionId: tasks.missionId })
+      .from(tasks)
+      .where(eq(tasks.id, e.taskId))
+      .limit(1);
+    const { isMissionPrTask } = await import('@buildd/core/mission-integration');
+    if (!task?.missionId || !isMissionPrTask(task)) return;
+    const { recordMissionPrMerged } = await import('@/lib/mission-epoch-door');
+    await recordMissionPrMerged(task, e.installationId, e.repoFullName, e.prNumber);
   }),
   subscriber('missions', 'pr.closed', 'settle-surface-intents', async e => {
     const settle = () => import('@/lib/surface-ordering')

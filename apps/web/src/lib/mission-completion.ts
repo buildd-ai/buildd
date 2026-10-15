@@ -6,7 +6,7 @@ import { evaluateMissionWorkState, findMissionPrOwner } from '@/lib/mission-pr';
 import { eq, and, gte, desc } from 'drizzle-orm';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
 import { deriveLineageSupersession, isPrUnshipped, prShipState, withDeliveryShip, type SupersessionScan, type SupersessionSuggestion } from '@buildd/core/pr-shipped';
-import { deliveryShipsForPrs, shipKey } from '@/lib/workflow/delivery-ship';
+import { deliveryShipsForPrs, epochCompletionHold, missionEpochsOf, shipKey } from '@/lib/workflow/delivery-ship';
 import { MISSION_COMPLETED_NOTE_TITLE } from '@/lib/mission-helpers';
 import { computeAndStoreFlightStripCache } from '@buildd/core/flight-strip-store';
 import type { CriterionVerdict, GoalCriteriaState, GoalCriterion } from '@buildd/shared';
@@ -642,7 +642,54 @@ export async function canCompleteMission(
     // all-cancelled deliverables DO allow completion, because the work was
     // deliberately called off, which is a decision, not an absence.
     const work = await evaluateMissionWorkState(missionId);
-    if (work.landedOnIntegrationCount > 0) {
+    // §6 (workflow-kernel-library.md): a mission with delivery records is
+    // judged by them. "A mission PR merged" is never enough on its own: the
+    // writable delivery must carry nothing that has not reached trunk.
+    const epochs = await missionEpochsOf(missionId);
+    if (epochs.length > 0) {
+      const hold = epochCompletionHold({ epochs }, (branch, after) =>
+        work.landedOnIntegration.filter(l => l.baseRef === branch && (!after || (!!l.mergedAt && l.mergedAt > after))).length);
+      if (hold.holds) {
+        const e = hold.epoch;
+        const owner = e.prNumber != null ? await findMissionPrOwner(missionId) : null;
+        const prUrl = e.prNumber != null && e.repoFullName ? `https://github.com/${e.repoFullName}/pull/${e.prNumber}` : null;
+        if (e.prNumber == null) {
+          return {
+            ...base,
+            ok: false,
+            code: 'awaiting_mission_pr',
+            reason:
+              `Delivery ${e.epoch} of this mission (\`${e.branch}\`) has work that has not reached trunk, `
+              + `and its PR is not open yet.`,
+          };
+        }
+        if (owner?.prNumber === e.prNumber && owner.state === 'closed') {
+          return {
+            ...base,
+            ok: false,
+            code: 'awaiting_mission_pr',
+            reason:
+              `Delivery ${e.epoch}'s PR #${e.prNumber} was closed without merging, so its work is still only on `
+              + `\`${e.branch}\`. Reopen it or land the work another way. This will not resolve on its own.`,
+          };
+        }
+        base.awaitingMerge = 1;
+        base.awaitingMergeDetails = [{
+          taskId: e.ownerTaskId ?? owner?.taskId ?? '',
+          title: `${MISSION_PR_TASK_PREFIX}${mission.title}`,
+          prNumber: e.prNumber,
+          prUrl: prUrl ?? owner?.prUrl ?? '',
+        }];
+        return {
+          ...base,
+          ok: false,
+          code: 'awaiting_mission_pr',
+          reason:
+            `Delivery ${e.epoch}'s PR #${e.prNumber} is open and unmerged. Its work is on \`${e.branch}\` `
+            + `and has not reached trunk.`,
+        };
+      }
+    } else if (work.landedOnIntegrationCount > 0) {
       // One implementation of "what state is the mission PR in", shared with
       // the opener. These two used to answer it separately and disagreed: the
       // opener scanned every worker of the mission while this took `workers[0]`

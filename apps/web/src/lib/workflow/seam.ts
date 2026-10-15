@@ -1414,3 +1414,43 @@ export async function landThroughKernel(p: LandingInput, deps: SeamDeps = {}): P
     drain: (deliveryId) => drainDelivery(deliveryId, deps),
   });
 }
+
+// ── §6: mission deliveries and epochs ───────────────────────────────────────
+
+/**
+ * The mission epoch door (docs/specs/workflow-kernel-library.md §6), one
+ * operation per action. Reached through kernel-client's `mission_epoch` op,
+ * so it runs on the host that owns the kernel. `workspaceId` is the
+ * mission's repo workspace: the one the principal is re-checked against.
+ */
+export type MissionEpochInput =
+  | { action: 'merged'; workspaceId: string; missionId: string; prNumber: number; repoFullName: string; headRef: string | null; mergeCommitSha: string | null; mergedHeadSha: string | null; mergedAt: string; actor: string }
+  | { action: 'ensure_writable'; workspaceId: string; missionId: string; reason: string; actor: string }
+  | { action: 'bind_pr'; workspaceId: string; missionId: string; prNumber: number; repoFullName: string; ownerTaskId: string | null; headRef: string | null; actor: string }
+  | { action: 'reconcile'; workspaceId: string; missionId: string };
+
+export type MissionEpochAnswer =
+  | { action: 'merged'; result: string; reason: string; steps: string[] }
+  | { action: 'ensure_writable'; branch: string | null; rotated: boolean; ready: boolean; reason: string }
+  | { action: 'bind_pr'; result: string; reason: string }
+  | { action: 'reconcile'; steps: string[] };
+
+export async function missionEpochCommand(p: MissionEpochInput): Promise<MissionEpochAnswer> {
+  const epochs = await import('./delivery-epochs');
+  const stepsOf = (r: { steps: Array<{ step: string; epoch: number; outcome: string }> }) => r.steps.map((s) => `${s.step}#${s.epoch}:${s.outcome}`);
+  switch (p.action) {
+    case 'merged': {
+      const r = await epochs.epochMerged({
+        missionId: p.missionId, prNumber: p.prNumber, repoFullName: p.repoFullName, headRef: p.headRef,
+        mergeCommitSha: p.mergeCommitSha, mergedHeadSha: p.mergedHeadSha, mergedAt: p.mergedAt, actor: p.actor,
+      });
+      return { action: 'merged', result: r.result, reason: r.reason, steps: stepsOf(r.reconcile) };
+    }
+    case 'ensure_writable':
+      return { action: 'ensure_writable', ...(await epochs.ensureWritableEpoch({ missionId: p.missionId, reason: p.reason, actor: p.actor })) };
+    case 'bind_pr':
+      return { action: 'bind_pr', ...(await epochs.bindEpochPr(p)) };
+    case 'reconcile':
+      return { action: 'reconcile', steps: stepsOf(await epochs.reconcileMissionEpochs(p.missionId)) };
+  }
+}
