@@ -24,6 +24,8 @@ export const EXIT_NOT_A_TERMINAL = 64;
 
 /** Never fetch the task list on a timer faster than this (R-4). */
 export const TASK_REFRESH_MS = 60_000;
+/** Never fetch the missions list faster than this (R-24). */
+export const MISSION_REFRESH_MS = 60_000;
 /** Coalesce a burst of queue events into one refetch. */
 const QUEUE_DEBOUNCE_MS = 250;
 /** How long a lone ESC waits for the rest of a sequence before it counts as the escape key. */
@@ -46,6 +48,8 @@ export interface RunTopOptions {
   missionId?: string | null;
   /** `--workspace <name or id>` (R-19). */
   workspace?: string | null;
+  /** `--team <name>`: open on one team (R-23). */
+  team?: string | null;
   /** Printed above nothing, before the view opens (the R-12 hand-off line). */
   notice?: string;
   terminal?: TopTerminal;
@@ -84,7 +88,7 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
   const openUrl = opts.openUrl ?? defaultOpenUrl;
   let palette: Palette = opts.palette ?? terminalPalette(opts.env ?? process.env, true);
 
-  let state: TopState = initialState({ hostname: opts.hostname ?? osHostname(), missionId: opts.missionId, workspace: opts.workspace });
+  let state: TopState = initialState({ hostname: opts.hostname ?? osHostname(), missionId: opts.missionId, workspace: opts.workspace, team: opts.team });
   if (opts.notice) state = { ...state, status: { text: opts.notice, tone: 'info' } };
   let restored = false;
   let renderTimer: ReturnType<typeof setTimeout> | null = null;
@@ -120,9 +124,20 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
       else if (r.body?.error) dispatch({ type: 'status', status: { text: `Could not load the task list: ${r.body.error}`, tone: 'error' } });
     } catch { /* the stream's reconnect reports a dead socket */ }
   };
+  // The open and recently delivered missions of the runner's workspaces (R-24):
+  // at most once a minute, whoever asks (the timer, a snapshot, a queue event).
+  let missionsAt = 0;
+  const refreshMissions = async () => {
+    if (Date.now() - missionsAt < MISSION_REFRESH_MS) return;
+    missionsAt = Date.now();
+    try {
+      const r = await client.get<{ missions?: any[] }>('/api/missions/recent');
+      if (r.status === 200 && Array.isArray(r.body?.missions)) dispatch({ type: 'missions', missions: r.body.missions });
+    } catch { /* the pane keeps the missions the task list names */ }
+  };
   const queueChanged = () => {
     if (queueTimer) return;
-    queueTimer = setTimeout(() => { queueTimer = null; void refreshTasks(); }, QUEUE_DEBOUNCE_MS);
+    queueTimer = setTimeout(() => { queueTimer = null; void refreshTasks(); void refreshMissions(); }, QUEUE_DEBOUNCE_MS);
   };
 
   const loadSnapshot = async () => {
@@ -136,7 +151,7 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
     if (runner?.body) dispatch({ type: 'runner', pid: runner.body.pid, version: runner.body.version });
     if (config?.body) dispatch({ type: 'config', maxConcurrent: config.body.maxConcurrent, builddServer: config.body.builddServer });
     if (workers?.status === 200 && Array.isArray(workers.body?.workers)) dispatch({ type: 'workers', workers: workers.body.workers });
-    await refreshTasks();
+    await Promise.all([refreshTasks(), refreshMissions()]);
   };
 
   const stream = async () => {
@@ -264,6 +279,7 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
   // Elapsed times move without any event; redraw (no fetch) once a second.
   timers.push(setInterval(scheduleDraw, 1_000));
   timers.push(setInterval(() => void refreshTasks(), TASK_REFRESH_MS));
+  timers.push(setInterval(() => void refreshMissions(), MISSION_REFRESH_MS));
   void loadSnapshot().then(() => stream());
 
   return done;
