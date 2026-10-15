@@ -14,11 +14,13 @@ const TONE = {
 } as const;
 
 /** External evidence opens in a new tab; an app page stays in this one. */
-function EvidenceLink({ href, label }: { href: string; label: string }) {
+function EvidenceLink({ href, label, target = false }: { href: string; label: string; target?: boolean }) {
   const external = href.startsWith('https://');
+  // On its own (not inside a sentence) a link is a tap target: 44px on a phone.
+  const cls = `underline hover:text-text-primary${target ? ' inline-flex min-h-11 min-w-11 items-center md:min-h-0 md:min-w-0' : ''}`;
   return external
-    ? <a href={href} target="_blank" rel="noreferrer" className="underline hover:text-text-primary">{label}</a>
-    : <Link href={href} className="underline hover:text-text-primary">{label}</Link>;
+    ? <a href={href} target="_blank" rel="noreferrer" className={cls}>{label}</a>
+    : <Link href={href} className={cls}>{label}</Link>;
 }
 
 function Entry({ e }: { e: DeliveryEntry }) {
@@ -26,7 +28,7 @@ function Entry({ e }: { e: DeliveryEntry }) {
     <li className="flex flex-col gap-1 py-3" data-testid="spec-delivery-entry" data-kind={e.kind} data-id={e.id}>
       <span className="flex flex-wrap items-baseline gap-x-2">
         <span className="text-meta text-text-muted">{e.kind === 'mission' ? 'Mission' : 'Task'}</span>
-        <Link href={e.href} className="text-body font-medium text-text-primary underline [overflow-wrap:anywhere]" data-testid="spec-delivery-link">
+        <Link href={e.href} className="inline-flex min-h-11 items-center text-body font-medium text-text-primary underline [overflow-wrap:anywhere] md:min-h-0" data-testid="spec-delivery-link">
           {e.title}
         </Link>
       </span>
@@ -49,7 +51,7 @@ function Entry({ e }: { e: DeliveryEntry }) {
                   </span>
                   {c.evidence.length ? (
                     <span className="flex flex-wrap gap-x-3 pl-10 text-text-muted" data-testid="spec-delivery-evidence">
-                      {c.evidence.map((l) => <EvidenceLink key={l.href} href={l.href} label={l.label} />)}
+                      {c.evidence.map((l) => <EvidenceLink key={l.href} href={l.href} label={l.label} target />)}
                     </span>
                   ) : null}
                 </li>

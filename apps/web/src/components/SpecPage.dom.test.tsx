@@ -368,4 +368,21 @@ describe('Delivery and verification (Slice 13, R-61, AC-48)', () => {
     expect(q('spec-delivery-evidence')?.querySelector('a')?.getAttribute('href')).toBe('https://example.test/run/1');
     expect(q('spec-delivery-more')?.getAttribute('href')).toBe(`/app/specs/${SPEC}?delivery=c#delivery`);
   });
+
+  it('a mission entry links to its mission and says a waived criterion as waived', () => {
+    const M = '33333333-3333-4333-8333-333333333333';
+    const mission = {
+      ...entry, kind: 'mission' as const, id: M, title: 'Checkout in euros', href: `/app/missions/${M}`,
+      standing: { tone: 'success' as const, text: 'Verified against revision 1. AC-1 waived by Ada.' },
+      criteria: [{ criterionId: 'AC-1', text: 'A EUR cart shows the euro sign.', mark: 'waived' as const, evidence: [] }],
+      links: [],
+    };
+    act(() => root.render(<SpecPage view={{ ...base, delivery: { entries: [mission, entry], next: null } }} />));
+    const rows = container.querySelectorAll('[data-testid="spec-delivery-entry"]');
+    expect(rows).toHaveLength(2);
+    expect(rows[0].getAttribute('data-kind')).toBe('mission');
+    expect(rows[0].querySelector('[data-testid="spec-delivery-link"]')?.getAttribute('href')).toBe(`/app/missions/${M}`);
+    act(() => (rows[0].querySelector('button') as HTMLButtonElement).click());
+    expect(rows[0].querySelector('[data-testid="spec-delivery-criterion"]')?.textContent).toContain('Waived');
+  });
 });

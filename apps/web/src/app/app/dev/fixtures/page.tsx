@@ -19,6 +19,7 @@ import GoalCriteriaFixture from './GoalCriteriaFixture';
 import SpecSurfaceFixture from './SpecSurfaceFixture';
 import SpecIndexFixture from './SpecIndexFixture';
 import SpecAttachmentsFixture from './SpecAttachmentsFixture';
+import SpecDeliveryFixture from './SpecDeliveryFixture';
 import OnboardingFixture, { ONBOARDING_FIXTURE_VIEWS, type OnboardingFixtureView } from './OnboardingFixture';
 import EvidenceStorageFixture from './EvidenceStorageFixture';
 import ConnectionsFixture from './ConnectionsFixture';
@@ -79,6 +80,7 @@ import {
     SPEC_SURFACE_FIXTURE_STATE,
     SPEC_INDEX_FIXTURE_STATE,
     SPEC_ATTACHMENTS_FIXTURE_STATE,
+    SPEC_DELIVERY_FIXTURE_STATE,
     TASK_SHIPPED_FIXTURE_STATE,
     COMMIT_CHECKS_FIXTURE_STATE,
     TASK_PAGE_FIXTURE_STATE,
@@ -172,6 +174,10 @@ export default function DevFixturesPage() {
 
     if (state === SPEC_ATTACHMENTS_FIXTURE_STATE) {
         return <SpecAttachmentsFixture />;
+    }
+
+    if (state === SPEC_DELIVERY_FIXTURE_STATE) {
+        return <SpecDeliveryFixture />;
     }
 
     if (state === TASK_ERROR_EVIDENCE_FIXTURE_STATE) {
