@@ -992,7 +992,12 @@ export async function POST(req: NextRequest) {
     if (codexAvailability.has(wsId)) return codexAvailability.get(wsId)!;
     let available = false;
     try {
-      available = (await hasCodexCredential(scope)) || (await hasOpenAiApiKey(scope)) ||
+      // deliverableOnly: an expired stored login is never delivered
+      // (attachCodexCredentials leaves it out, model credentials spec R-3), so it
+      // must not let a Codex task through to a runner with no login of its own;
+      // that worker died on "Codex credential expired" and the task retried
+      // forever. Excluded here, the task stays pending for a runner that has one.
+      available = (await hasCodexCredential({ ...scope, deliverableOnly: true })) || (await hasOpenAiApiKey(scope)) ||
         (runnerSupportsEndpointForCapabilityCheck && await hasOpenAiCompatibleAgentEndpoint(scope));
     } catch (err) {
       console.warn(`[claim] Codex credential check failed for workspace ${wsId}:`, err);
@@ -1044,7 +1049,7 @@ export async function POST(req: NextRequest) {
         ...(taskId ? {
           taskExclusion: {
             code: 'capability_mismatch',
-            detail: 'The task runs on the Codex backend, and this caller advertises neither backend:codex with local Codex auth nor access to a team Codex credential.',
+            detail: 'The task runs on the Codex backend, and this caller advertises neither backend:codex with its own Codex login (codex login or OPENAI_API_KEY) nor access to a usable team Codex credential (a stored login that has expired is never sent). Run codex login on the runner or add an OpenAI API key; another runner with a Codex login can still take the task.',
           },
         } : {}),
       } satisfies ClaimDiagnostics,

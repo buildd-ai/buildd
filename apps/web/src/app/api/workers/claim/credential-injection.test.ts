@@ -151,6 +151,38 @@ describe('attachServerManagedSecrets', () => {
     expect(workers[0].serverOauthToken).toBe('oauth-tok');
   });
 
+  // Model credentials spec R-3 / AC-2: an oauth_token row that carries an
+  // expiry in the past is not delivered; a live one (or one with no recorded
+  // expiry, the long-lived setup-token shape) still is.
+  it('does not deliver an oauth_token whose recorded expiry has passed', async () => {
+    mockSecretsFindMany.mockResolvedValue([
+      secretRow({ id: 'sec-key', purpose: 'anthropic_api_key' }),
+      secretRow({ id: 'sec-oauth', purpose: 'oauth_token', tokenExpiresAt: new Date(Date.now() - 60_000) }),
+    ]);
+    mockProviderGet.mockImplementation(async (id: string) =>
+      id === 'sec-key' ? 'sk-ant-key' : id === 'sec-oauth' ? 'dead-oauth' : null);
+    const workers = [swWorker('t1')];
+
+    await attachServerManagedSecrets(workers, 'acct-1');
+
+    expect(workers[0].serverApiKey).toBe('sk-ant-key');
+    expect(workers[0].serverOauthToken).toBeUndefined();
+    expect(mockProviderGet).not.toHaveBeenCalledWith('sec-oauth');
+  });
+
+  it('an expired oauth_token does not shadow a live one at a wider scope', async () => {
+    mockSecretsFindMany.mockResolvedValue([
+      secretRow({ id: 'sec-ws', purpose: 'oauth_token', workspaceId: 'ws-t1', tokenExpiresAt: new Date(Date.now() - 60_000) }),
+      secretRow({ id: 'sec-team', purpose: 'oauth_token', tokenExpiresAt: new Date(Date.now() + 3600_000) }),
+    ]);
+    mockProviderGet.mockImplementation(async (id: string) => (id === 'sec-team' ? 'live-oauth' : 'dead-oauth'));
+    const workers = [swWorker('t1')];
+
+    await attachServerManagedSecrets(workers, 'acct-1');
+
+    expect(workers[0].serverOauthToken).toBe('live-oauth');
+  });
+
   // The cross-backend boundary. Codex tasks run the OpenAI CLI; an Anthropic
   // token reaching that subprocess produces spurious Claude auth errors (and is
   // an exposure we don't need to take). Flipping `===` to `!==` here left this
@@ -400,7 +432,7 @@ describe('attachServerManagedSecrets', () => {
 
 describe('attachCodexCredentials', () => {
   it('attaches an oauth Codex credential to a codex-backend task', async () => {
-    const expiresAt = new Date('2026-09-03T12:00:00.000Z');
+    const expiresAt = new Date('2099-09-03T12:00:00.000Z');
     mockResolveCodex.mockResolvedValue({
       credentialType: 'oauth',
       accessToken: 'codex-access',
@@ -544,6 +576,36 @@ describe('attachCodexCredentials', () => {
       expect(mockResolveOpenAiApiKey).not.toHaveBeenCalled();
     });
 
+    // Model credentials spec R-3 / AC-2. The resolver already skips expired
+    // rows; this is the attach step's own guard, so a resolver regression can
+    // never put a dead login on the wire again.
+    it('never attaches a Codex login whose expiry has passed, and falls back to an OpenAI key', async () => {
+      mockResolveCodex.mockResolvedValue({
+        credentialType: 'oauth', accessToken: 'dead-access', refreshToken: 'dead-refresh',
+        accountId: 'codex-acct', idToken: 'codex-id', tokenExpiresAt: new Date(Date.now() - 60_000),
+      });
+      mockResolveOpenAiApiKey.mockResolvedValue({ apiKey: 'sk-team-openai', secretId: 'sec-openai' });
+      const workers = [worker('t1')];
+
+      await attachCodexCredentials(workers, [task('t1', 'codex')], 'acct-1');
+
+      expect(workers[0].codexCredential).toEqual({ credentialType: 'api_key', apiKey: 'sk-team-openai', expiresAt: null });
+      expect(JSON.stringify(workers[0])).not.toContain('dead-access');
+    });
+
+    it('attaches nothing when the only Codex login has expired and there is no key', async () => {
+      mockResolveCodex.mockResolvedValue({
+        credentialType: 'oauth', accessToken: 'dead-access', refreshToken: 'dead-refresh',
+        accountId: 'codex-acct', idToken: 'codex-id', tokenExpiresAt: new Date(Date.now() - 60_000),
+      });
+      mockResolveOpenAiApiKey.mockResolvedValue(null);
+      const workers = [worker('t1')];
+
+      await attachCodexCredentials(workers, [task('t1', 'codex')], 'acct-1');
+
+      expect(workers[0].codexCredential).toBeUndefined();
+    });
+
     it('resolves with the task workspace and the claiming account', async () => {
       mockResolveCodex.mockResolvedValue(null);
       mockResolveOpenAiApiKey.mockResolvedValue(null);
@@ -563,14 +625,14 @@ describe('attachClaudeCredentials', () => {
   it('attaches the access token and an ISO expiry for a claude-backend task', async () => {
     mockResolveClaude.mockResolvedValue({
       accessToken: 'claude-access',
-      tokenExpiresAt: new Date('2026-09-03T12:00:00.000Z'),
+      tokenExpiresAt: new Date('2099-09-03T12:00:00.000Z'),
     });
     const workers = [worker('t1')];
 
     await attachClaudeCredentials(workers, [task('t1', 'claude')], 'acct-1');
 
     expect(workers[0].claudeAccessToken).toBe('claude-access');
-    expect(workers[0].claudeTokenExpiresAt).toBe('2026-09-03T12:00:00.000Z');
+    expect(workers[0].claudeTokenExpiresAt).toBe('2099-09-03T12:00:00.000Z');
   });
 
   it('passes the recorded scopes through, and nothing when none were recorded', async () => {
@@ -598,6 +660,17 @@ describe('attachClaudeCredentials', () => {
     await attachClaudeCredentials(workers, [task('t1', 'claude')], 'acct-1');
 
     expect(JSON.stringify(workers[0])).not.toContain('claude-refresh');
+  });
+
+  // Model credentials spec R-3 / AC-2: the runner falls back to its own login.
+  it('never attaches a Claude login whose expiry has passed', async () => {
+    mockResolveClaude.mockResolvedValue({ accessToken: 'dead-claude', tokenExpiresAt: new Date(Date.now() - 60_000) });
+    const workers = [worker('t1')];
+
+    await attachClaudeCredentials(workers, [task('t1', 'claude')], 'acct-1');
+
+    expect(workers[0].claudeAccessToken).toBeUndefined();
+    expect(workers[0].claudeTokenExpiresAt).toBeUndefined();
   });
 
   it('nulls the expiry when the credential has none', async () => {
