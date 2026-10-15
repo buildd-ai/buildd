@@ -72,6 +72,8 @@ export async function GET(req: NextRequest) {
               accountWorkspaces: {
                 with: { account: { columns: CONNECTED_ACCOUNT_COLUMNS } },
               },
+              // The team's name only: `buildd top` says "5 workspaces · <team>".
+              team: { columns: { name: true } },
             },
           })
         : [];
@@ -101,6 +103,7 @@ export async function GET(req: NextRequest) {
                   account: { columns: CONNECTED_ACCOUNT_COLUMNS },
                 },
               },
+              team: { columns: { name: true } },
             },
           })
         : [];
@@ -123,6 +126,7 @@ export async function GET(req: NextRequest) {
       // webhook_config.token, a plaintext bearer credential.
       return {
         ...toPublicWorkspace(ws),
+        teamName: (ws as { team?: { name?: string | null } | null }).team?.name ?? null,
         runners: {
           action: hasActionRunner,
           service: hasServiceRunner,

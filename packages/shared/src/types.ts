@@ -3209,6 +3209,18 @@ export interface GoalCriteriaEvidenceRef {
   title?: string;
 }
 
+/**
+ * A mission's stage as `GET /api/missions/stages` sends it, keyed by mission
+ * id; the runner puts it on each listed task's mission as `mission.stage`.
+ * The current step of the mission page's Build / Verify / Deliver rail in words, and what that step waits on in the rail's own words.
+ * Absent when the server could not derive it; clients then show done/total.
+ */
+export type MissionStageStep = 'building' | 'verifying' | 'delivering' | 'delivered' | 'on_hold' | 'planning';
+export interface MissionStage {
+  step: MissionStageStep;
+  waitingOn: string | null;
+}
+
 export interface GoalCriteriaState {
   evaluatedAt: string;
   evaluatedBy: 'auto' | 'manual' | 'mcp';

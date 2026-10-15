@@ -9,7 +9,8 @@
  *   - tasks:   GET /api/tasks (the server's task list via the runner key; it
  *              carries missionId, dependsOn, startAt, roleSlug and the mission's
  *              title, hold, executor and done/total over all its tasks,
- *              plus prMergedAt on a finished task). Refetched when the runner learns of a
+ *              plus prMergedAt on a finished task, and the mission's stage, which
+ *              the runner adds from GET /api/missions/stages). Refetched when the runner learns of a
  *              queue change (task_assigned, claim_rejected, a worker finishing),
  *              and at most once a minute otherwise.
  *   - capacity: maxConcurrent from GET /api/config.
@@ -74,7 +75,15 @@ export interface TopTask {
     executor?: string;
     /** The server's count over every task of the mission (the list itself is windowed). */
     taskCounts?: { done: number; total: number };
+    /** The mission page rail's current step and what it waits on (R-18). Absent from older servers. */
+    stage?: MissionStage;
   } | null;
+}
+
+export type MissionStageStep = 'building' | 'verifying' | 'delivering' | 'delivered' | 'on_hold' | 'planning';
+export interface MissionStage {
+  step: MissionStageStep;
+  waitingOn: string | null;
 }
 
 export interface TopWorkspace {
@@ -403,6 +412,24 @@ export interface MissionRow {
   running: number;
   /** The mission's organizer is running (R-22): it plans, it is not work. */
   planning: boolean;
+  /** From the server, in the rail's words; absent means show done/total only. */
+  stage?: MissionStage;
+}
+
+const STAGE_WORD: Record<MissionStageStep, string> = {
+  building: 'building', verifying: 'verifying', delivering: 'delivering', delivered: 'delivered', on_hold: 'on hold', planning: 'planning',
+};
+
+/** The stage in one word or two, for the mission row; null without a stage. */
+export function missionStageWord(row: Pick<MissionRow, 'stage'>): string | null {
+  return row.stage ? STAGE_WORD[row.stage.step] ?? null : null;
+}
+
+/** The stage and what it waits on, for the heading: `verifying: 2 checks left`. */
+export function missionStageLine(row: Pick<MissionRow, 'stage'>): string | null {
+  const word = missionStageWord(row);
+  if (!word) return null;
+  return row.stage!.waitingOn ? `${word}: ${row.stage!.waitingOn}` : word;
 }
 
 function sameLocalDay(iso: string | null | undefined, now: number): boolean {
@@ -428,6 +455,7 @@ export function missionRows(state: TopState): MissionRow[] {
     const w = workers.get(t.id);
     if (w && (BUSY.includes(w.status) || w.status === 'waiting')) row.running++;
     if (t.mission?.taskCounts) serverCounts.set(key, t.mission.taskCounts);
+    if (t.mission?.stage && STAGE_WORD[t.mission.stage.step]) row.stage = t.mission.stage;
   }
   // The list holds active tasks and only a day of finished ones, so the local
   // tally undercounts a long mission; the server's count wins when it sent one.

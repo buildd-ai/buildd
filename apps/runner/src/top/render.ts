@@ -7,7 +7,7 @@
  */
 import type { Palette, PaletteToken } from '../terminal-palette';
 import {
-  busySlots, currentMission, currentWorkspace, describeToolCall, formatDuration, missionRows, planOf, selectedRow,
+  busySlots, currentMission, currentWorkspace, describeToolCall, formatDuration, missionRows, missionStageLine, missionStageWord, planOf, selectedRow,
   taskRows, workerForTask, workspaceSummary, type RowKind, type TaskRow, type TopState,
 } from './state';
 
@@ -228,7 +228,8 @@ function listBody(state: TopState, cols: number, height: number, now: number, p:
   const left: string[] = [p.fg('muted', fit(' MISSIONS', lw))];
   for (const m of missions) {
     const isCurrent = m.key === mission.key;
-    const count = `${m.done}/${m.total}`;
+    // The stage in words when the server sent one (R-18), else done/total.
+    const count = missionStageWord(m) ?? `${m.done}/${m.total}`;
     const marker = isCurrent ? '▸' : ' ';
     const titleW = lw - 3 - count.length - 2;
     const line = ` ${p.fg(isCurrent ? 'accent' : 'faint', marker)} ${p.fg('text', fit(m.title, titleW))} ${p.fg(m.running > 0 ? 'accent' : 'muted', count)} `;
@@ -242,9 +243,10 @@ function listBody(state: TopState, cols: number, height: number, now: number, p:
   const counts = `${nRunning} running · ${nWaiting} waiting `;
   const filterNote = state.filter ? ` (filter: ${state.filter})` : '';
   const ws = currentWorkspace(state);
-  const heading = (ws ? `${ws.name} · ` : '') + mission.title + (mission.planning ? ' · planning' : '') + filterNote;
+  const heading = (ws ? `${ws.name} · ` : '') + mission.title + (missionStageLine(mission) ? ` · ${missionStageLine(mission)}` : mission.planning ? ' · planning' : '') + filterNote;
   const titleW = rw - textWidth(counts) - 1;
-  right.push(' ' + p.fg('text', fit(heading, titleW)) + p.fg(nRunning > 0 ? 'accent' : 'muted', counts));
+  // One space always separates a cut heading from the counts (R-21).
+  right.push(' ' + p.fg('text', fit(heading, titleW - 1)) + ' ' + p.fg(nRunning > 0 ? 'accent' : 'muted', counts));
   right.push(p.fg('faint', '─'.repeat(rw)));
 
   const groups: Array<{ key: TaskRow['group']; label: string }> = [
