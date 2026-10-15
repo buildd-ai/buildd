@@ -12,15 +12,17 @@ import type { MissionVisualReviewState } from './workflow/visual-review-state';
 
 const SETTLED = new Set(['passed', 'waived', 'not_applicable']);
 
-/** Required goal criteria the rail does not show as passed, waived or not applicable. */
-export function openCriteriaCount(
-  goalCriteria: unknown,
-  goalCriteriaState: unknown,
-  ctx: { branch: 'mission-branch' | 'direct'; prMerged: boolean; buildComplete: boolean },
-): number {
-  if (!Array.isArray(goalCriteria) || goalCriteria.length === 0) return 0;
+type CriteriaCtx = { branch: 'mission-branch' | 'direct'; prMerged: boolean; buildComplete: boolean };
+
+/** Required goal criteria the rail does not show as passed, waived or not applicable: name and state, as the rail words them. */
+export function openCriteriaChecks(goalCriteria: unknown, goalCriteriaState: unknown, ctx: CriteriaCtx): Array<{ label: string; state: string }> {
+  if (!Array.isArray(goalCriteria) || goalCriteria.length === 0) return [];
   const rows = criteriaChecks(goalCriteria as GoalCriterion[], (goalCriteriaState ?? null) as GoalCriteriaState | null, { ...ctx, target: null });
-  return rows.filter(r => r.blocks && !SETTLED.has(r.status)).length;
+  return rows.filter(r => r.blocks && !SETTLED.has(r.status)).map(r => ({ label: r.label, state: r.state }));
+}
+
+export function openCriteriaCount(goalCriteria: unknown, goalCriteriaState: unknown, ctx: CriteriaCtx): number {
+  return openCriteriaChecks(goalCriteria, goalCriteriaState, ctx).length;
 }
 
 export interface MissionVisualReviewSummary {

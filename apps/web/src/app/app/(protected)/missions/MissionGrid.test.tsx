@@ -8,7 +8,7 @@ import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import * as missionHelpers from '@buildd/core/mission-helpers';
 import { projectMissionDelivery, type MissionTaskRow } from '@/lib/delivery-projection';
-import { DoneRow, MissionGrid, landedLeft, type PortfolioRow } from './MissionGrid';
+import { DoneRow, MissionGrid, ago, landedLeft, type PortfolioRow } from './MissionGrid';
 
 const NOW = Date.UTC(2026, 9, 8, 12);
 const PR = 'https://github.com/o/r/pull/1';
@@ -97,6 +97,15 @@ describe('MissionGrid portfolio', () => {
     expect(ids('motion')).toContain('m01');
     expect(ids('motion')).not.toContain('m12');
     expect(ids('waiting').indexOf('m04')).toBeLessThan(ids('waiting').indexOf('m05')); // waiting before held
+  });
+
+  it('an update under a minute old reads "just now", never "now ago"', () => {
+    expect(ago(NOW - 5_000, NOW)).toBe('just now');
+    expect(ago(NOW - 120_000, NOW)).toMatch(/ ago$/);
+    expect(ago(null, NOW)).toBe('');
+    const out = renderToStaticMarkup(<MissionGrid rows={[row('j1', 'Fresh', [landed('a'), task('b')], { lastAdvancedAt: NOW - 1_000 })]} slots={{ live: 0, max: 4 }} now={NOW} />);
+    expect(out).toContain('just now');
+    expect(out).not.toContain('now ago');
   });
 
   it('the Landed subtitle counts what is left on its missions', () => {

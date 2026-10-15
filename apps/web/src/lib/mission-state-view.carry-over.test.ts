@@ -21,14 +21,14 @@ describe('R-32: merged mission PR, visual review open', () => {
     expect(v.situation?.headline).toContain('runners paused new work until the model budget resets');
   });
 
-  it('without a merged mission PR an open audit is still the plain stall', () => {
+  it('without a merged mission PR an open audit is next in line, not a visual check', () => {
     const v = deriveMissionStateView({ ...base, openTasks: [audit] });
-    expect(v.displayState).toBe('stalled');
+    expect(v.chip.label).toBe('NEXT IN LINE');
   });
 
-  it('a build task open beside the audit keeps the stall', () => {
+  it('a build task open beside the audit is not read as the visual review', () => {
     const v = deriveMissionStateView({ ...base, missionPrMerged: true, openTasks: [audit, { id: 'b1', status: 'pending', title: 'Build it' }] });
-    expect(v.displayState).toBe('stalled');
+    expect(v.chip.label).not.toContain('VISUAL');
   });
 });
 
@@ -40,9 +40,10 @@ describe('R-33: a held open task names its hold', () => {
     expect(v.situation?.headline).toContain('queued: runners paused new work until the model budget resets');
   });
 
-  it('an unknown reason falls back to the stall', () => {
+  it('an unknown reason reads waiting, with no invented cause (AC-9)', () => {
     const v = deriveMissionStateView({ ...base, openTasks: [{ id: 'b1', status: 'pending', title: 'Build it', holdReason: 'something_new' }] });
-    expect(v.displayState).toBe('stalled');
+    expect(v.chip.label).toBe('WAITING');
+    expect(v.situation?.headline).toBe('The open task is waiting.');
   });
 
   it('rows held for different reasons do not invent one cause', () => {
@@ -50,7 +51,7 @@ describe('R-33: a held open task names its hold', () => {
       { id: 'b1', status: 'pending', holdReason: 'budget_paused' },
       { id: 'b2', status: 'pending', holdReason: 'workspace_cap' },
     ] });
-    expect(v.displayState).toBe('stalled');
+    expect(v.situation?.headline).toBe('2 open tasks are waiting.');
   });
 });
 
@@ -78,5 +79,32 @@ describe('visual review round 1: the header reads the visual review state', () =
     expect(v.situation?.headline).not.toContain('budget');
     const plain = deriveMissionStateView({ ...base, openTasks: [{ id: 'b1', status: 'pending', title: 'Audit', holdReason: 'budget_paused', missingBrowser: true }] });
     expect(plain.situation?.headline).not.toContain('budget');
+  });
+});
+
+describe('round 3: queued work nothing holds is next in line (spec 8e137fdb I-4, I-5)', () => {
+  it('six queued tasks on runners read next in line in chip and headline, not Stalled', () => {
+    const openTasks = Array.from({ length: 6 }, (_, i) => ({ id: `t${i}`, status: 'pending', title: `Task ${i}` }));
+    const v = deriveMissionStateView({ ...base, openTasks });
+    expect(v.chip.label).toBe('NEXT IN LINE');
+    expect(v.displayState).not.toBe('stalled');
+    expect(v.situation?.headline).toBe('6 open tasks are next in line for a runner.');
+  });
+  it('a started task with nothing running it is still the stall', () => {
+    const v = deriveMissionStateView({ ...base, openTasks: [{ id: 't1', status: 'in_progress' }] });
+    expect(v.displayState).toBe('stalled');
+  });
+});
+
+describe('round 3: the quiet notice says what is left (spec 8e137fdb AC-7)', () => {
+  const quiet: MissionStateInput = { status: 'active', isHeld: false, activeAgents: 0, health: 'NOMINAL', progress: 100, hasPendingDeliverableWork: false };
+  it('all clear reads ready to complete, not machine output', () => {
+    const v = deriveMissionStateView(quiet);
+    expect(v.situation?.headline).toBe('Ready to complete.');
+  });
+  it('an unchecked outcome spec is named', () => {
+    const v = deriveMissionStateView({ ...quiet, openChecks: [{ label: 'Spec revision 3', state: 'not checked' }] });
+    expect(v.situation?.headline).toBe('Waiting on Spec revision 3: not checked.');
+    expect(v.situation?.openChecks).toEqual(['Spec revision 3']);
   });
 });

@@ -39,7 +39,7 @@ describe('buildStateBecause', () => {
     expect(chain[0].refs.taskId).toBe('task-a');
     expect(chain[0].derivedFrom).toBe('tasks.status + workers.status');
     // Last link is the conclusion.
-    expect(chain[1].claim).toContain('State is blocked');
+    expect(chain[1].claim).toContain('next in line for a runner');
     for (const l of chain) {
       expect(l.refs.missionId).toBe('mission-1');
       expect(l.derivedFrom).toBeTruthy();
@@ -194,7 +194,7 @@ describe('buildStateBecause', () => {
     const view = deriveMissionStateView(base);
     const chain = buildStateBecause(view, { missionId: 'm' });
     expect(chain).toHaveLength(1);
-    expect(chain[0].claim).toContain('No source reports outstanding work');
+    expect(chain[0].claim).toBe('No task, PR, check or decision is open.');
   });
 });
 

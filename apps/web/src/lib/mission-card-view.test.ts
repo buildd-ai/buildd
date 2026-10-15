@@ -189,8 +189,14 @@ describe('buildMissionCardView', () => {
     expect(view.situation.headline).toBe(detail.situation.headline);
   });
 
-  it('a stalled mission reads STALLED on the card', () => {
+  it('a queued task nothing holds reads next in line on the card (spec 8e137fdb I-4)', () => {
     const row = mission({ tasks: [task('a', { status: 'pending' })] });
+    const view = buildMissionCardView(row, { from: 'missions', now: NOW });
+    expect(view.chip.label).toBe('NEXT IN LINE');
+  });
+
+  it('a started task with nothing running it reads STALLED on the card', () => {
+    const row = mission({ tasks: [task('a', { status: 'assigned' })] });
     const view = buildMissionCardView(row, { from: 'missions', now: NOW });
     expect(view.chip.label).toBe('STALLED');
   });

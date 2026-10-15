@@ -231,10 +231,11 @@ function Headline({ open, counts, slots }: { open: number; counts: Record<Portfo
   );
 }
 
-function ago(ms: number | null, now: number): string {
+/** "just now" under a minute, else "<duration> ago". Exported for its test. */
+export function ago(ms: number | null, now: number): string {
   if (ms == null) return '';
   const d = now - ms;
-  return d < 60_000 ? 'now' : shortDuration(d);
+  return d < 60_000 ? 'just now' : `${shortDuration(d)} ago`;
 }
 
 const LEFT_WORDS: Record<MissionRemaining, { one: string; part: string }> = {
@@ -270,7 +271,7 @@ function PortfolioRowView({ row, now, showWorkspace }: { row: PortfolioRow; now:
   const aside = [
     row.liveAgents > 0 ? `${row.liveAgents} agent${row.liveAgents === 1 ? '' : 's'}` : null,
     showWorkspace ? row.workspaceName : null,
-    age ? `${age} ago` : null,
+    age || null,
   ].filter(Boolean).join(' · ');
   return (
     <div data-testid="portfolio-row" data-mission-id={d.id} data-kind={d.kind}>

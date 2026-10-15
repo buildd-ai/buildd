@@ -49,7 +49,7 @@ import { getDeliveryViewsForTasks, kernelReplacedFailedTaskIds, replacedFailedTa
 import { attemptLine } from '@/lib/workflow/projections';
 import { loadClaimHoldReasons, loadMissionClaimDeferrals } from '@/lib/mission-claim-deferrals';
 import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
-import { summarizeVisualReview } from '@/lib/mission-open-checks';
+import { openCriteriaChecks, summarizeVisualReview } from '@/lib/mission-open-checks';
 import { deriveMissionIntegrationPr } from '@/lib/mission-integration-pr';
 import { missionCardProgress, ownerUnmergedPrs, type MissionCardTaskRow } from '@/lib/mission-card-view';
 import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
@@ -590,6 +590,12 @@ async function viewForMission(missionId: string): Promise<{
       missingBrowser: missingBrowser && t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG,
     })),
     visualReview,
+    // AC-7: what is left when nothing else is outstanding, the rail's own reading.
+    openChecks: openCriteriaChecks(m.goalCriteria, m.goalCriteriaState, {
+      branch: m.integrationBranchEnabled ? 'mission-branch' : 'direct',
+      prMerged: integrationPr?.state === 'merged',
+      buildComplete: progress !== undefined && progress >= 100,
+    }),
     missionPrMerged: integrationPr?.state === 'merged',
     openQuestions: missionOpenQuestions(loaded),
     localStrand: strand

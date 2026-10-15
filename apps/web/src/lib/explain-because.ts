@@ -162,7 +162,9 @@ export function buildStateBecause(
     ? `State is ${view.kind} because ${w.label}.`
     : view.outstanding.length > 0
       ? `State is ${view.kind}, but ${view.outstanding.length} fact(s) are still outstanding: ${view.outstanding.map(o => o.label).join('; ')}.`
-      : `State is ${view.kind}. No source reports outstanding work.`;
+      : view.situation.openChecks?.length
+        ? `No task, PR or decision is open; ${view.situation.openChecks.length === 1 ? 'that check is' : 'those checks are'} what is left.`
+        : 'No task, PR, check or decision is open.';
   links.push(link(closing, view.derivedFrom.kind, base));
 
   return orderChain(links);
