@@ -1452,7 +1452,8 @@ function mergeFact(input: MissionStateInput): Resolution | null {
  * still something the header owes the reader and is deliberately quiet.
  */
 /** Visual review states in which an open audit row is no longer outstanding work. */
-const VISUAL_SETTLED = new Set(['waived', 'passed', 'not_applicable', 'optional']);
+// `optional` is not here: it means the review could not be read, and an audit row still open is still the wait (c9353c11).
+const VISUAL_SETTLED = new Set(['waived', 'passed', 'not_applicable']);
 
 function openTaskFact(input: MissionStateInput, live: boolean): Resolution | null {
   const { completion } = input;

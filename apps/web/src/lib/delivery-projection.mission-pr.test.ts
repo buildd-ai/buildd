@@ -159,3 +159,12 @@ describe('visual review round 2: the card names the review state\'s one cause', 
     expect(m.next).toBe('Next in line for a runner');
   });
 });
+
+describe('c9353c11: a review that could not be read does not hide a queued audit', () => {
+  const on = (over: Partial<MissionDeliveryInput>) => projectMissionDelivery(mission({ missionPrMerged: true, ...over }));
+  it('optional with an open audit still reads the audit as queued', () => {
+    const m = on({ visualReview: { status: 'optional', blockedDetail: null, holdReason: null }, tasks: [merged('One'), shipTask('2026-10-12T00:00:00Z'), audit()] });
+    expect(m.remaining).toBe('visual');
+    expect(m.next).toBe('Visual review queued');
+  });
+});

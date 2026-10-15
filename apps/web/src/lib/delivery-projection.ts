@@ -432,7 +432,7 @@ function visualAuditState(audits: readonly MissionTaskRow[], findings: number | 
 
 const OPEN_AUDIT = new Set<string>(OPEN_TASK_STATUSES);
 
-const VISUAL_SETTLED = new Set(['waived', 'passed', 'not_applicable', 'optional']);
+const VISUAL_SETTLED = new Set(['waived', 'passed', 'not_applicable']);
 
 function visualOpenState(
   audits: readonly MissionTaskRow[],
@@ -443,7 +443,8 @@ function visualOpenState(
     if (review.status === 'blocked') return { text: 'Visual review unable to run', hold: review.blockedDetail };
     if (review.status === 'running') return { text: 'Visual review running', hold: null };
     if (review.status === 'queued' || review.status === 'needed') return { text: 'Visual review queued', hold: claimHoldPhrase(review.holdReason) };
-    return null;
+    // `optional`: the review could not be read; an audit row still open is still the wait (c9353c11).
+    if (review.status !== 'optional') return null;
   }
   const live = audits.filter(a => a.status !== 'cancelled');
   const latest = [...live].sort((a, b) => auditRound(b) - auditRound(a))[0];

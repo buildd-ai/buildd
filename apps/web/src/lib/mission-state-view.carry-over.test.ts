@@ -129,3 +129,15 @@ describe('round 4: one all-clear phrase (spec 8e137fdb I-1)', () => {
     expect(v.chip.label).not.toBe('READY TO COMPLETE');
   });
 });
+
+describe('c9353c11: an open audit is never dropped as settled when the review could not be read', () => {
+  it('optional (impact unknown) keeps the queued audit as what the mission waits on', () => {
+    const v = deriveMissionStateView({ ...base, health: 'NOMINAL', progress: 100, missionPrMerged: true, openTasks: [audit], visualReview: { status: 'optional' }, completion: { ok: false, code: 'pending_deliverables', reason: '', pendingDeliverables: 1 } as never });
+    expect(v.chip.label).not.toBe('READY TO COMPLETE');
+    expect(v.situation?.headline ?? '').not.toMatch(/^Ready to complete|Nothing is waiting/);
+  });
+  it('waived still drops it', () => {
+    const v = deriveMissionStateView({ ...base, health: 'NOMINAL', progress: 100, missionPrMerged: true, openTasks: [audit], visualReview: { status: 'waived' } });
+    expect(v.chip.label).toBe('READY TO COMPLETE');
+  });
+});
