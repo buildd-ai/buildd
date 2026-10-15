@@ -7,8 +7,8 @@ summary: Delivery state MUST have one writer, the workflow kernel, packaged as a
 domain: tasks
 surfaces: [apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
 related: [workflow-state-kernel, execution-control-plane, mission-branch-refresh, mission-task-lifecycle, living-specs]
-keywords: [workflow kernel, delivery state, single writer, single host, control plane, portable library, ports, adapters, conformance suite, merge door, landing authority, required status, durable findings, finding disposition, delivery epoch, mission delivery, refresh settlement, no-op completion, workflow-kernel package]
-verified_by: [packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts]
+keywords: [scope amendment, mission scope version, workflow kernel, delivery state, single writer, single host, control plane, portable library, ports, adapters, conformance suite, merge door, landing authority, required status, durable findings, finding disposition, delivery epoch, mission delivery, refresh settlement, no-op completion, workflow-kernel package]
+verified_by: [packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts]
 supersedes: []
 ---
 # Workflow Kernel Library and Single Host
@@ -900,9 +900,32 @@ later work and nothing refreshes or re-ships a branch that already landed.
   merged plus epoch 2 open on that same branch, which is never deleted while the
   open epoch uses it. Until adopted, a mission's readers keep the pre-epoch
   answers. History before adoption is not reconstructed.
-- Scope amendments: NOT IMPLEMENTED (slice S6b). Adding a task to a mission is
-  an explicit scope decision recorded on the mission (version, actor, reason);
-  epochs already carry `scopeVersion`.
+- Scope amendments (S6b): a deliverable task added to a mission (not the
+  organizer decomposing its own brief) gets one scope decision at the Decide
+  point `mission_scope` (`in_scope | amend_scope | ask`, decision kind
+  `buildd.mission_scope`), recorded with `decideAndRecord`, so a replay reads
+  it and never asks again. The package's `planScope` turns it into what is
+  written, in one statement (`apps/web/src/lib/workflow/scope-amendments.ts`,
+  `workflow_scope_amendments`):
+  - `in_scope`: the decision row only. No description churn, no prompt.
+  - `amend_scope`: the row with the mission's description and goal criteria
+    before and after, the reason and the source task; the mission's
+    `scopeVersion` moves by one (compare-and-set on the version the plan read,
+    so two amendments at once each get their own version), and the open
+    delivery takes it when it has no PR yet. A delivery already in review keeps
+    the version it was reviewed under, and the next one is cut with the new
+    version. The amendment is the filer's proposal (`context.missionScope`) or,
+    by default, one scope line naming the task appended to the description.
+  - `ask`, or any amendment that would remove a criterion, change a command,
+    turn a mechanical criterion into prose or clear the list
+    (`criteriaWeakening`): held. The task gets the claim gate's single-task
+    hold, and one mission note asks a person; the contract is unchanged.
+  - The default (no decider, an error, a timeout, an invalid or low-confidence
+    answer) is `in_scope`, or `amend_scope` when the filer proposed one, so
+    ordinary filing never waits on a person, and the default is recorded with
+    its reason. NOT IMPLEMENTED: recording the person's resolution of a held
+    decision when the task is resumed (the hold is lifted by the normal Resume),
+    and the decision for a task moved into a mission by `link_task`.
 - Refresh reads "shipped" from delivery state: a refresh acts on the writable
   epoch's branch only, and never runs for a merged epoch
   (`mission-branch-refresh.md`, Eligibility). NOT IMPLEMENTED: the refresh as
@@ -948,6 +971,7 @@ later work and nothing refreshes or re-ships a branch that already landed.
 | AC-21 | `apps/web/src/lib/mission-branch-refresh.test.ts` › "mission delivery records (AC-21)" |
 | AC-22 | `apps/web/src/app/api/workers/[id]/route.test.ts` › "mission-branch refresh already on the branch" |
 | AC-23 | `apps/web/tests/db/mission-epochs.test.ts` › "AC-23 / a11abc4b"; `apps/web/src/lib/mission-pr.test.ts` › "a refresh PR lands only on the delivery it was filed for" |
+| Scope decisions (task f3bda4e1 scenarios 5–7) | `packages/workflow-kernel/src/scope-amendments.test.ts`; `apps/web/tests/db/scope-amendments.test.ts` |
 | Completion reads epochs (task f3bda4e1 scenarios 1, 4) | `apps/web/src/lib/mission-completion.test.ts` › "scenario 1", "scenario 4" |
 
 ## 7. Projections
