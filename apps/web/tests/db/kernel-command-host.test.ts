@@ -18,7 +18,7 @@ const { handleCommandRequest } = await import('../../src/lib/workflow/command-ap
 const { submitKernelCommand, ControlPlaneUnavailableError, resetKernelModeCache, CONTROL_PLANE_URL } = await import('../../src/lib/workflow/kernel-client');
 const { setKernelHost } = await import('../../src/lib/workflow/kernel-host');
 const { runScheduledKernelFloor, lastControlPlaneFloorAt, controlPlaneFloorStale } = await import('../../src/lib/workflow/kernel-floor');
-const { postgresCommandLedger, COMMAND_LEASE_MS } = await import('../../src/lib/workflow/command-ledger');
+const { postgresCommandLedger, COMMAND_LEASE_MS, COMMAND_HEARTBEAT_MS } = await import('../../src/lib/workflow/command-ledger');
 const { applyCommand } = await import('../../src/lib/workflow/kernel');
 
 const ENV_KEYS = ['EXECUTION_MODE', 'CRON_SECRET', 'KERNEL_COMMAND_SECRET', 'VERCEL', 'BUILDD_CRON_RUN_RECORD_IN_TESTS'] as const;
@@ -277,6 +277,29 @@ describe('the ledger on Postgres', () => {
     await q(sql`UPDATE workflow_commands SET claimed_at = now() - make_interval(secs => ${COMMAND_LEASE_MS / 1000 + 60}::double precision) WHERE idempotency_key = ${key}`);
     expect(await ledger.claim({ ...base, token: 't2' })).toBe(false);
     expect(await ledger.read(key)).toMatchObject({ status: 'done', response: { status: 200, body: { first: true } } });
+  });
+
+  test('a running claim renews its lease: a renewed claim is never taken over; a dead one is, promptly; only the holder renews', async () => {
+    const ledger = postgresCommandLedger();
+    const key = `test:${crypto.randomUUID()}`;
+    const base = { key, op: 'drain', principal: 'system:inline-drain', requestHash: 'h1', host: 'control-plane' };
+    const age = (secs: number) => q(sql`UPDATE workflow_commands SET claimed_at = clock_timestamp() - make_interval(secs => ${secs}::double precision) WHERE idempotency_key = ${key}`);
+    expect(await ledger.claim({ ...base, token: 'live' })).toBe(true);
+    // Long running, but renewed on its heartbeat: past the lease since it was claimed, never since renewed.
+    await age(COMMAND_LEASE_MS / 1000 + 30);
+    expect(await ledger.renew({ key, token: 'live' })).toBe(true);
+    expect(await ledger.claim({ ...base, token: 'intruder' })).toBe(false);
+    expect(await ledger.renew({ key, token: 'intruder' })).toBe(false);
+    // The request was cancelled mid-command: no renewals, and one lease later the key is taken over.
+    await age(COMMAND_LEASE_MS / 1000 + 1);
+    expect(await ledger.claim({ ...base, token: 'takeover' })).toBe(true);
+    // The dead claim can neither renew nor complete.
+    expect(await ledger.renew({ key, token: 'live' })).toBe(false);
+    expect(await ledger.complete({ key, token: 'live', response: { status: 200, body: {} }, deliveryId: null, deliveryVersion: null })).toBe(false);
+    expect(await ledger.complete({ key, token: 'takeover', response: { status: 200, body: { ok: true } }, deliveryId: null, deliveryVersion: null })).toBe(true);
+    // A completed key is not renewable.
+    expect(await ledger.renew({ key, token: 'takeover' })).toBe(false);
+    expect(COMMAND_HEARTBEAT_MS * 3).toBeLessThanOrEqual(COMMAND_LEASE_MS);
   });
 
   test('claim once per key; completion and release only by the current claim; a dead claim is taken over after the lease; prune keeps recent keys', async () => {

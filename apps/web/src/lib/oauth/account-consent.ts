@@ -376,8 +376,13 @@ function plural(n: number, one: string, many: string): string {
 /**
  * Tokens from apps/web/src/app/globals.css (the page does not load the app's
  * stylesheet). Night by default, Day under prefers-color-scheme: light.
+ * The faces are the app's own self-hosted files (public/fonts, the same ones
+ * app/layout.tsx hands next/font), from this origin: no font CDN.
  */
 export const CONSENT_CSS = `
+@font-face { font-family: "Schibsted Grotesk"; src: url("/fonts/schibsted-grotesk-latin-wght-normal.woff2") format("woff2"); font-weight: 400 900; font-style: normal; font-display: swap; }
+@font-face { font-family: "JetBrains Mono"; src: url("/fonts/jetbrains-mono-latin-wght-normal.woff2") format("woff2"); font-weight: 100 800; font-style: normal; font-display: swap; }
+@font-face { font-family: "Newsreader"; src: url("/fonts/newsreader-latin-wght-normal.woff2") format("woff2"); font-weight: 200 800; font-style: normal; font-display: swap; }
 :root {
   --surface-1: #1a1816; --card: #221f1c; --inset: #26221e; --q-tint: rgba(255,245,230,0.06);
   --text-primary: #ede8e2; --text-muted: #a89f96; --on-ink: #1a1816;
@@ -385,7 +390,7 @@ export const CONSENT_CSS = `
   --accent: #f4811f; --dec-frame: #f4811f; --status-error: #e08a7f;
   --font-sans: "Schibsted Grotesk", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-  --font-voice: Newsreader, Georgia, "Times New Roman", serif;
+  --font-voice: "Newsreader", Georgia, "Times New Roman", serif;
   --type-chip: 12px; --type-eyebrow: 13px; --type-meta: 12px; --type-body: 13px; --type-title: 14px; --type-lede: 16px; --type-heading: 20px;
   color-scheme: dark;
 }
@@ -438,7 +443,9 @@ details.team > summary { list-style: none; display: flex; align-items: center; g
 details.team > summary::-webkit-details-marker { display: none; }
 details.team > summary::before { content: "\\25B8"; color: var(--text-muted); width: 12px; flex: none; }
 details.team[open] > summary::before { content: "\\25BE"; }
-.team-name { font-size: var(--type-title); font-weight: 600; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.team-head { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.team-name { font-size: var(--type-title); font-weight: 600; flex: 1 1 7rem; min-width: 0; overflow-wrap: break-word; }
+.team-chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip { font-family: var(--font-mono); font-size: var(--type-chip); line-height: 1; padding: 3px 8px; border: 1px solid var(--border-strong); border-radius: 4px; color: var(--text-muted); white-space: nowrap; }
 .team-body { padding: 0 0 12px 20px; }
 .ws { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 4px 0; border-bottom: 1px solid var(--line-soft); cursor: pointer; overflow-wrap: anywhere; }
@@ -519,7 +526,11 @@ function navButton(value: string, label: string, cls = 'btn', ariaLabel?: string
   return `<button class="${cls}" type="submit" name="nav" value="${escapeHtml(value)}"${aria}>${escapeHtml(label)}</button>`;
 }
 
-function renderTeam(team: ConsentTeam, state: ConsentState, selected: Set<string>, carried: string[]): string {
+/**
+ * One team's block. `teamActions` is false when the page offers a single team:
+ * its Select team / Clear team would repeat Select all / Clear all above it.
+ */
+function renderTeam(team: ConsentTeam, state: ConsentState, selected: Set<string>, carried: string[], teamActions: boolean): string {
   const shown = filteredWorkspaces(team, state.query);
   if (shown.length === 0) {
     for (const w of team.workspaces) if (selected.has(w.id)) carried.push(w.id);
@@ -549,11 +560,10 @@ function renderTeam(team: ConsentTeam, state: ConsentState, selected: Set<string
     : `${shown.length} of ${team.workspaces.length}`;
 
   return `<details class="team" data-team="${escapeHtml(team.id)}"${open ? ' open' : ''}>
-<summary><span class="team-name">${escapeHtml(team.name)}</span><span class="chip">${escapeHtml(count)}</span><span class="chip">${escapeHtml(accessLabel(team.role).toLowerCase())}</span></summary>
+<summary><span class="team-head"><span class="team-name">${escapeHtml(team.name)}</span><span class="team-chips"><span class="chip">${escapeHtml(count)}</span><span class="chip">${escapeHtml(accessLabel(team.role).toLowerCase())}</span></span></span></summary>
 <div class="team-body">
 ${rows}
-<div class="team-actions">${navButton(`team_all:${team.id}`, 'Select team', 'btn btn-quiet', `Select all in ${team.name}`)}${navButton(`team_clear:${team.id}`, 'Clear team', 'btn btn-quiet', `Clear ${team.name}`)}</div>
-${pager}
+${teamActions ? `<div class="team-actions">${navButton(`team_all:${team.id}`, 'Select team', 'btn btn-quiet', `Select all in ${team.name}`)}${navButton(`team_clear:${team.id}`, 'Clear team', 'btn btn-quiet', `Clear ${team.name}`)}</div>\n` : ''}${pager}
 </div>
 </details>`;
 }
@@ -569,7 +579,7 @@ export function renderAccountConsentPage(args: ConsentPageArgs): string {
   const selected = new Set(state.selected);
   const safeClient = escapeHtml(args.clientName);
   const carried: string[] = [];
-  const teamBlocks = teams.map((t) => renderTeam(t, state, selected, carried)).filter(Boolean);
+  const teamBlocks = teams.map((t) => renderTeam(t, state, selected, carried, teams.length > 1)).filter(Boolean);
   const totalWorkspaces = teams.reduce((n, t) => n + t.workspaces.length, 0);
 
   const hidden = args.hidden
@@ -614,7 +624,7 @@ ${hidden}
 ${carriedInputs}
 <fieldset>
 <legend>Workspaces</legend>
-<div class="search"><input type="search" name="q" value="${escapeHtml(state.query)}" placeholder="Search ${escapeHtml(plural(totalWorkspaces, 'workspace', 'workspaces'))}" aria-label="Search workspaces, teams and repositories" maxlength="${MAX_QUERY}">${navButton('search', 'Search')}</div>
+<div class="search"><input type="search" name="q" value="${escapeHtml(state.query)}" placeholder="Name or repo" aria-label="Search workspaces, teams and repositories" maxlength="${MAX_QUERY}">${navButton('search', 'Search')}</div>
 <div class="bulk">${navButton('select_all', searchActive ? 'Select all matches' : 'Select all', 'btn btn-quiet')}${navButton('clear_all', 'Clear all', 'btn btn-quiet')}</div>
 ${workspaceList}
 <p class="meta">${runner ? escapeHtml(runner.footnote) : 'Access covers the workspaces ticked here. Workspaces created later need adding in Settings.'}</p>
