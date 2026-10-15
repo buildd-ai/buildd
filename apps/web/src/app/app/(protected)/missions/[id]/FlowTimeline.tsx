@@ -16,7 +16,7 @@ import FocusCard from '@/components/ui/FocusCard';
 import { STATES } from '@/components/ui/states';
 import type { MissionBoardModel } from '@/lib/mission-board';
 import {
-  buildFlowTimeline, criticalPathLine, defaultFlowSelection, flowAxisTicks, flowEdgePaths, flowEdges, flowLit,
+  buildFlowTimeline, criticalPathLine, defaultFlowSelection, flowAxisTicks, flowTickNearNow, flowEdgePaths, flowEdges, flowLit,
   FLOW_ROW_UNITS, FLOW_X_UNITS, layoutFlowTimeline, type FlowBarLayout, type FlowTimeline as FlowTimelineModel,
 } from '@/lib/flow-timeline';
 import { stripSelectionReason, type StripState } from '@/lib/mission-task-strip';
@@ -73,9 +73,12 @@ export default function FlowTimeline({ model: serverModel, sameFiles, expectedMi
           <div aria-hidden="true" className={`grid ${LABEL_COLS} gap-2.5`}>
             <span />
             <div data-testid="flow-axis" className="relative h-4 font-mono text-chip text-text-muted">
-              {ticks.map(t => (
-                <span key={t.label} className={`absolute ${t.at === 0 ? '' : '-translate-x-1/2'}`} style={{ left: `${t.at}%` }}>{t.label}</span>
-              ))}
+              {ticks.map(t => {
+                // A tick that would run into "now" is dropped, on a phone or everywhere.
+                const near = flowTickNearNow(t.at, model.complete ? null : layout.nowAt);
+                if (near === 'hide') return null;
+                return <span key={t.label} data-near-now={near === 'phone' || undefined} className={`absolute ${t.at === 0 ? '' : '-translate-x-1/2'} ${near === 'phone' ? 'hidden md:inline' : ''}`} style={{ left: `${t.at}%` }}>{t.label}</span>;
+              })}
               {!model.complete && <span className="absolute -translate-x-1/2 text-accent-text" style={{ left: `${layout.nowAt}%` }}>now</span>}
             </div>
           </div>

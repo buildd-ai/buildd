@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState, Suspense } from 'react';
 import { useSearchParams, useRouter, usePathname } from 'next/navigation';
 import type { GoalCriterion, GoalCriteriaState } from '@buildd/shared';
-import { deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS } from '@buildd/core/mission-helpers';
+import { criterionFingerprint, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS } from '@buildd/core/mission-helpers';
 import SideSheet from '@/components/SideSheet';
 import MissionGoalCriteria from './MissionGoalCriteria';
 import { MISSION_CRITERIA_ANCHOR } from '@/components/missions/MissionSituationBlock';
@@ -25,6 +25,27 @@ function useOpenOnCriteriaLink(open: () => void) {
     return () => document.removeEventListener('click', onClick);
   }, [open]);
 }
+
+/**
+ * Every criterion has a pass judged for it as it is now. A stored `overall:
+ * pass` is not enough: a criterion added since (an outcome spec selected after
+ * the last evaluation) or changed since (fingerprint mismatch) has no verdict,
+ * and a required criterion nobody has judged is never clear (Mission checks
+ * I-3, AC-3, AC-8).
+ */
+export function everyCriterionPassed(criteria: readonly GoalCriterion[], state: GoalCriteriaState | null): boolean {
+  const byIndex = new Map((state?.criteria ?? []).map(e => [e.index, e]));
+  return criteria.every((c, i) => {
+    const e = byIndex.get(i);
+    return !!e && e.verdict === 'pass' && (!e.fingerprint || e.fingerprint === criterionFingerprint(c));
+  });
+}
+
+/**
+ * The chip is one line beside the status word at every width; on a phone the
+ * 44px tap target is an invisible pseudo-element, never a taller box.
+ */
+export const CHIP_HIT = "relative inline-flex items-center gap-1 whitespace-nowrap border px-1.5 py-0.5 font-mono text-[11px] leading-none rounded-sm md:text-[10px] after:absolute after:inset-x-0 after:-inset-y-[13px] after:content-[''] md:after:hidden";
 
 interface Props {
   missionId: string;
@@ -121,7 +142,7 @@ function MissionVerifiedPillInner({
           type="button"
           id={MISSION_CRITERIA_ANCHOR}
           onClick={handleOpen}
-          className="inline-flex min-h-11 items-center gap-1 px-1.5 py-0.5 md:min-h-0 border border-border-default text-text-muted font-mono text-[11px] md:text-[10px] rounded-sm hover:text-text-secondary transition-colors"
+          className={`${CHIP_HIT} border-border-default text-text-muted hover:text-text-secondary transition-colors`}
         >
           + Criteria
         </button>
@@ -162,7 +183,9 @@ function MissionVerifiedPillInner({
     title = 'Evaluation in progress';
     toneClass = 'text-text-muted/70 border-border-default/70';
   } else {
-    const gate = deriveCriteriaGatePresentation({ criteriaCount, overall });
+    // A pass the per-criterion verdicts do not back reads as unverified.
+    const effective = overall === 'pass' && !everyCriterionPassed(criteria, criteriaState) ? 'UNVERIFIED' : overall;
+    const gate = deriveCriteriaGatePresentation({ criteriaCount, overall: effective });
     if (gate) {
       icon = gate.state === 'clear' ? '✓' : gate.state === 'failing' ? '✗' : '?';
       text = gate.state === 'clear' ? 'Verified' : gate.state === 'failing' ? 'Not met' : 'Needs verification';
@@ -178,7 +201,7 @@ function MissionVerifiedPillInner({
         id={MISSION_CRITERIA_ANCHOR}
         onClick={handleOpen}
         title={title}
-        className={`inline-flex min-h-11 items-center gap-1 px-1.5 py-0.5 md:min-h-0 border font-mono text-[11px] md:text-[10px] rounded-sm transition-opacity hover:opacity-80 ${toneClass}`}
+        className={`${CHIP_HIT} transition-opacity hover:opacity-80 ${toneClass}`}
       >
         {icon ? `${icon} ${text}` : text}
       </button>
