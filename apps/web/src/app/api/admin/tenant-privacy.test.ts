@@ -222,8 +222,10 @@ describe('what the other team still contributes', () => {
 
   it('counts its estimates in every number, names it by pseudonym and keeps its area labels out', async () => {
     const body = await (await (await route('./estimates/route')).GET(req('estimates'))).json();
-    const live = body.live[0];
+    const live = body.live.find((v: any) => v.estimatorVersion === 'blend-v1');
     expect(live.overall.n).toBe(24);
+    expect(body.selection).toHaveLength(12);
+    expect(body.selection.every((r: any) => r.workspaceId === OWN_WS && r.evidence === null)).toBe(true);
     expect(live.byCluster.map((g: any) => g.key)).toEqual(['Mine area']);
     expect(live.byTeam.find((g: any) => g.key === OTHER_TEAM)).toMatchObject({ own: false, name: expect.stringMatching(/^Team [0-9a-f]{6}$/) });
     expect(live.byWorkspace.find((g: any) => g.key === OWN_WS)).toMatchObject({ own: true, name: 'Mine repo' });
