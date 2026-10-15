@@ -28,6 +28,13 @@ export const ROUND_FINDING_TITLE = 'the review asked for changes';
 
 export const isOpenFinding = (f: Pick<FindingSnapshot, 'status'>): boolean => OPEN_FINDING_STATUSES.has(f.status);
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** A task id a deferral may name: a full id the host resolved. A short id or free text is not one. */
+export const isTaskId = (v: unknown): boolean => typeof v === 'string' && UUID.test(v);
+
+/** The one finding a request for changes with no structured findings stands for. */
+export const isRoundFinding = (f: Pick<FindingSnapshot, 'path' | 'title'>): boolean => f.path == null && f.title === ROUND_FINDING_TITLE;
+
 /** Every finding still open (`open` or `addressed`), oldest first. */
 export function openFindings(view: Pick<KernelView, 'findings'>): FindingSnapshot[] {
   return (view.findings ?? []).filter(isOpenFinding);
@@ -66,6 +73,8 @@ export interface VerdictFindingsOutcome {
   restated: string[];
   raised: string[];
   deferred: string[];
+  /** Deferrals that named no resolvable task: refused, the finding stays open. */
+  unresolvedDeferrals: Array<{ id: string; taskId: string | null }>;
 }
 
 /**
@@ -88,16 +97,18 @@ export function applyVerdictToFindings(
   const byId = new Map(all.map((f) => [f.id, f]));
   const touched = new Set<string>();
   const ops: FindingOp[] = [];
-  const out: VerdictFindingsOutcome = { ops, stillOpen: [], resolved: [], restated: [], raised: [], deferred: [] };
+  const out: VerdictFindingsOutcome = { ops, stillOpen: [], resolved: [], restated: [], raised: [], deferred: [], unresolvedDeferrals: [] };
   const closed = new Map<string, FindingSnapshot['status']>();
 
   for (const d of v.deferredFindings ?? []) {
     const f = byId.get(d.id);
     if (!f || !isOpenFinding(f) || touched.has(f.id) || !d.reason?.trim()) continue;
+    // "Deferred to a named task": with no task the host resolved to a full id, nothing closes.
+    if (!isTaskId(d.taskId)) { out.unresolvedDeferrals.push({ id: f.id, taskId: d.taskId ?? null }); continue; }
     touched.add(f.id);
     closed.set(f.id, 'deferred');
     out.deferred.push(f.id);
-    ops.push({ op: 'update', findingId: f.id, whenStatus: ['open', 'addressed'], set: { status: 'deferred', closedByRoundId: round.id, closedBy: actor, closedReason: d.reason.trim(), deferredToTaskId: d.taskId ?? null } });
+    ops.push({ op: 'update', findingId: f.id, whenStatus: ['open', 'addressed'], set: { status: 'deferred', closedByRoundId: round.id, closedBy: actor, closedReason: d.reason.trim(), deferredToTaskId: d.taskId as string } });
   }
 
   const restatedInputs: FindingInput[] = [];
@@ -115,6 +126,18 @@ export function applyVerdictToFindings(
     for (const f of all) if (isOpenFinding(f) && !restatedIds.has(f.id)) resolveIds.add(f.id);
   }
   for (const id of v.resolvedFindings ?? []) if (!restatedIds.has(id)) resolveIds.add(id);
+  // The stand-in for a request for changes that named nothing has no id a reviewer is likely to
+  // report. An unscoped approval verifies it when it reviewed a later head than the one asked to
+  // change, or when it verified every structured finding still open.
+  const scoped = !!round.scope && (round.scope.composition === true || round.scope.refresh === true);
+  if (verdict === 'approve' && !scoped) {
+    const structured = all.filter((f) => isOpenFinding(f) && !isRoundFinding(f) && !restatedIds.has(f.id));
+    const coversStructured = structured.every((f) => resolveIds.has(f.id) || closed.has(f.id));
+    for (const f of all) {
+      if (!isOpenFinding(f) || !isRoundFinding(f) || restatedIds.has(f.id)) continue;
+      if (f.originHeadSha !== round.headSha || coversStructured) resolveIds.add(f.id);
+    }
+  }
   for (const id of resolveIds) {
     const f = byId.get(id);
     if (!f || !isOpenFinding(f) || touched.has(f.id)) continue;

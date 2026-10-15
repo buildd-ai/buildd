@@ -2065,3 +2065,47 @@ describe('review, refresh and landing while a coordination owner keeps running (
     expect(applied(run(v, { type: 'PrMerged', actor: 'floor', live: live('H1', { state: 'closed', merged: true }) })).toState).toBe('MERGED');
   });
 });
+
+describe('S5 (workflow-kernel-library.md §5): rules no other path reaches', () => {
+  const finding = (o: Partial<import('./types').FindingSnapshot> = {}): import('./types').FindingSnapshot => ({
+    id: 'r1:0', originRoundId: 'r1', originRound: 1, originHeadSha: 'H1', ordinal: 0, path: 'src/a.ts', line: 3, title: 'rename the flag',
+    required: true, status: 'open', lastRound: 1, addressedBySha: null, closedByRoundId: null, closedBy: null, closedReason: null, deferredToTaskId: null, ...o,
+  });
+  const approvedWith = (findings: import('./types').FindingSnapshot[], o: Partial<DeliverySnapshot> = {}): KernelView => ({
+    ...V(D({ state: 'APPROVED', currentRound: 1, approvedHeads: ['H1'], approvalBasis: 'verdict', ...o }), [R({ status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' })]),
+    findings,
+  });
+  const land = (v: KernelView, o: Partial<Extract<Command, { type: 'LandingRequested' }>> = {}) =>
+    run(v, { type: 'LandingRequested', actor: 'kernel', door: 'auto', headSha: 'H1', live: live('H1'), ...o });
+
+  test('T15 refuses an approved, covered head while a required finding is open, naming it (AC-13)', () => {
+    const dec = land(approvedWith([finding()]));
+    expectResult(dec, 'rejected', 'open_finding');
+    expect((dec as { missing?: string[] }).missing).toEqual(['src/a.ts:3: rename the flag']);
+    // Closed or optional findings never refuse; the same head lands.
+    for (const f of [finding({ status: 'resolved' }), finding({ status: 'waived' }), finding({ required: false })]) expect(land(approvedWith([f])).result).toBe('apply');
+  });
+
+  test('T15 lets a person pass it: their verdict override, or their own approval of this head; a freshness-only grant does not', () => {
+    const v = approvedWith([finding()]);
+    expect(land(v, { actor: 'human:owner', door: 'dashboard_override', override: { reason: 'accepted' } }).result).toBe('apply');
+    expect(land(approvedWith([finding()], { approvalBasis: 'human' })).result).toBe('apply');
+    expectResult(land(v, { actor: 'human:owner', door: 'dashboard_override', override: { reason: 'stale base', kinds: ['freshness'] } }), 'rejected', 'open_finding');
+  });
+
+  test('reenterVerdict: a decided approval never re-enters as APPROVED over an open required finding; it owes a verification round', () => {
+    // A repair held the head while the approval arrived; the repair turns out not to be needed.
+    const v: KernelView = {
+      ...V(D({ state: 'REPAIRING', stateReason: 'ci', currentRound: 2, boundAttemptId: 'c1', currentHeadSha: 'H2' }),
+        [R({ id: 'r1', round: 1, status: 'decided', verdict: 'request_changes', effectiveVerdict: 'request_changes' }), R({ id: 'r2', round: 2, headSha: 'H2', kind: 'delta', status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' })],
+        [A({ id: 'c1', family: 'ci', boundHeadSha: 'H2', triggerReason: 'ci:unit', taskId: null, status: 'queued' })]),
+      findings: [finding()],
+    };
+    const dec = applied(run(v, { type: 'RepairNotNeeded', actor: 'claim', attemptId: 'c1', reason: 'ci_green' }));
+    expect(dec.toState).toBe('AWAITING_REVIEW');
+    expect(dec.patch.approvedHeads).toBeUndefined();
+    expect(dec.rounds.find((r) => r.op === 'insert')).toMatchObject({ headSha: 'H2', scope: { verifyFindings: ['r1:0'] } });
+    // With nothing open it re-enters the approval, as before.
+    expect(applied(run({ ...v, findings: [finding({ status: 'resolved' })] }, { type: 'RepairNotNeeded', actor: 'claim', attemptId: 'c1', reason: 'ci_green' })).toState).toBe('APPROVED');
+  });
+});
