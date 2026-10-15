@@ -2,7 +2,7 @@
 title: Runner Liveness
 status: active
 owner: max
-last_verified: 2026-10-10
+last_verified: 2026-10-15
 summary: The coordination layer MUST detect a runner or worker that has gone silent, reclaim or permanently fail its task, and alert ops on systematic failure without ever blocking the claim path.
 domain: runners
 surfaces: [apps/web/src/lib/stale-workers.ts, apps/web/src/lib/lost-claim.ts, apps/runner/src/claim-handoff.ts, apps/web/src/app/api/workers/heartbeat/route.ts, apps/web/src/app/api/version/route.ts, packages/core/runner-health.ts]
@@ -217,12 +217,12 @@ branch in GitHub (`latestAvailable`).
   public route, updated in the same change that introduced this shape).
 
 **Acceptance criteria**:
-- AC-22: WHEN `GET /api/version` is called with no Vercel env vars set (local
+- AC-27: WHEN `GET /api/version` is called with no Vercel env vars set (local
   dev) THEN `deployed` reports all fields `null` rather than throwing.
-- AC-23: WHEN `?branch=main` is given THEN `latestAvailable.branch` is
+- AC-28: WHEN `?branch=main` is given THEN `latestAvailable.branch` is
   `"main"` and the GitHub lookup is for `main`'s head, independent of
   `deployed`.
-- AC-24: WHEN the GitHub lookup fails (network error, non-2xx) THEN the
+- AC-29: WHEN the GitHub lookup fails (network error, non-2xx) THEN the
   response is still HTTP 200, `deployed` is populated, and
   `latestAvailable = { commit: null, tag: null, checkedAt: null, error:
   <message> }`.
@@ -241,7 +241,17 @@ branch in GitHub (`latestAvailable`).
 
 **Invariants**:
 - A worker in `running` or `starting` status with no `updatedAt` change for
-  **15 minutes** is stale.
+  **35 minutes** (`WORKER_STALE_REAP_MS`: the runner's own backstop
+  `WORKER_HARD_TIMEOUT_MS`, 30 minutes, plus `WORKER_STALE_REAP_GRACE_MS`,
+  5 minutes) is stale. The threshold MUST stay above the runner's backstop:
+  `updatedAt` only moves when the runner syncs a state change, so a shorter
+  server threshold kills healthy workers inside long silent tool calls, and
+  the runner's own, more specific error would be overwritten. A run the cloud
+  agent parked after a restart (`notParkedScope`) is not stale while parked.
+- A started worker with at most `SILENT_START_MAX_TURNS` turns, no tokens and
+  no spend, and no `updatedAt` change for **10 minutes**, is a silent start:
+  the session died before its first real turn. It is reaped with
+  `SILENT_START_ERROR` before the generic rule would notice it.
 - A worker in `idle` status with no `updatedAt` change for **5 minutes** is
   stale (runners that crash before starting the agent).
 - Stale detection runs during `POST /api/workers/claim` (synchronously) and MAY
@@ -266,17 +276,18 @@ branch in GitHub (`latestAvailable`).
   the cleaning account is a seat leak in both directions.
 
 **Acceptance criteria**:
-- AC-4: GIVEN a worker in `running` status with `updatedAt` > 15 minutes ago
-  WHEN `cleanupStaleWorkers` runs THEN the worker status transitions to `failed`
-  with `error: "Stale worker expired (no update for 15+ minutes)"`.
+- AC-4: GIVEN a worker in `running` status with `updatedAt` older than
+  `WORKER_STALE_REAP_MS` (35 minutes) WHEN `cleanupStaleWorkers` runs THEN the
+  worker status transitions to `failed` with `STALE_EXPIRED_ERROR`; GIVEN one
+  last updated 20 minutes ago THEN it is left untouched.
 - AC-5: GIVEN an `idle` worker with `updatedAt` > 5 minutes ago WHEN
   `cleanupStaleWorkers` runs THEN the worker is marked `failed`.
-- AC-5a: GIVEN an `idle` worker with `startedAt IS NULL` past the idle threshold
+- AC-30: GIVEN an `idle` worker with `startedAt IS NULL` past the idle threshold
   belonging to account A WHEN `cleanupStaleWorkers(B)` runs for a different
   account B in the SAME team THEN the worker is marked `failed` with
   `exitCause: 'never_started'`, and `activeSessions` is decremented on account
   A, not on account B.
-- AC-5b: GIVEN the same row WHEN `cleanupStaleWorkers` runs for an account in a
+- AC-31: GIVEN the same row WHEN `cleanupStaleWorkers` runs for an account in a
   DIFFERENT team THEN the worker is left untouched.
 - AC-6: GIVEN a stale worker whose task has another active worker WHEN cleanup
   runs THEN the task is NOT reset to pending (prevents duplicate claims).
@@ -287,8 +298,16 @@ branch in GitHub (`latestAvailable`).
 - Scope tests: `apps/web/src/lib/stale-workers-scope.test.ts` (renders the
   predicate builders through `PgDialect` — the behavioural test file mocks
   `drizzle-orm`, which makes WHERE-clause columns unobservable there)
-- Constants: `STALE_THRESHOLD_MS = 15 * 60 * 1000`,
-  `IDLE_STALE_THRESHOLD_MS = 5 * 60 * 1000`
+- Rule: `staleWorkerScope()` in `apps/web/src/lib/stale-workers.ts` (one arm
+  per rule, each carrying its own account or team scope)
+- Constants: `WORKER_STALE_REAP_MS`, `WORKER_HARD_TIMEOUT_MS`,
+  `WORKER_STALE_REAP_GRACE_MS` in `packages/shared/src/runner-liveness.ts`
+  (their order is pinned by `packages/core/__tests__/worker-stale-thresholds.test.ts`);
+  the 5-minute idle and 10-minute silent-start windows are local constants of
+  `staleWorkerScope()`; `STALE_EXPIRED_ERROR`, `SILENT_START_ERROR` and
+  `SILENT_START_MAX_TURNS` in `apps/web/src/lib/worker-exit-taxonomy.ts`.
+  `STALE_EXPIRED_ERROR`'s text still reads "15+ minutes", a leftover from the
+  old threshold; the threshold that applies is `WORKER_STALE_REAP_MS`.
 
 ---
 
@@ -327,13 +346,13 @@ self-update restart, and the worker one of them minted was reaped as
   asked; its rows are left to the 5-minute never-started reap.
 
 **Acceptance criteria**:
-- AC-CH1: GIVEN an unstarted row minted 2 minutes ago for runner R, and R's
+- AC-32: GIVEN an unstarted row minted 2 minutes ago for runner R, and R's
   heartbeat reports neither it nor a claim in flight, WHEN the heartbeat lands
   THEN the row is failed with `CLAIM_RESPONSE_LOST_ERROR` and its task is
   requeued.
-- AC-CH2: GIVEN the same row and `claimInFlight: true`, or the id in
+- AC-33: GIVEN the same row and `claimInFlight: true`, or the id in
   `pendingStartIds` or `activeWorkerIds`, THEN it is untouched.
-- AC-CH3: GIVEN the runner's `running` PATCH lands between the select and the
+- AC-34: GIVEN the runner's `running` PATCH lands between the select and the
   release THEN the worker keeps running and the task is not requeued.
 
 **Observability**: each release logs one
@@ -397,7 +416,7 @@ before and after this change.
   workers failed by this check).
 - AC-9: `heartbeatOrphanScope` and `heartbeatFreshnessScope` MUST each render a
   single-account predicate and MUST NOT reference `team_id`.
-- AC-9a: GIVEN an account with one stale and one fresh heartbeat row WHEN
+- AC-35: GIVEN an account with one stale and one fresh heartbeat row WHEN
   `POST /api/tasks/cleanup` or the maintenance cron runs THEN no worker on the
   account is failed by the offline-runner rule.
 
@@ -413,77 +432,14 @@ before and after this change.
 
 ## Interactive (MCP-claimed) Workers
 
-A worker minted by an MCP `claim_task` has `runner = 'mcp'`. A person's own
-session (or its local agents) does the work; no runner ever starts a session
-for the row, syncs tokens or turns, or sends a heartbeat for it.
-
-`runner = 'mcp'` is recorded only for a claim carrying the server-signed
-interactive session marker the MCP routes add to their internal calls
-(`apps/web/src/lib/interactive-session.ts`). A client that sends
-`runner: 'mcp'` without it is recorded as `mcp-unverified`, an ordinary runner
-id, and every runner rule applies to its workers.
-
-**Invariants**:
-- No runner liveness rule applies to an interactive worker: the generic stale,
-  idle, silent-start and never-started arms of `cleanupStaleWorkers`, the
-  runner-heartbeat rule, and the cleanup route's 1h stalled and local-UI
-  heartbeat rules all exclude `runner = 'mcp'`.
-- Any MCP request from a `worker` or `admin` session (either transport) bumps
-  `updatedAt` on that session's interactive workers in `idle`, `running` or
-  `starting`, at most once a minute, after the response is sent. When the
-  session carries a user (OAuth `sub`), only workers whose task records that
-  user as the interactive claimer (`context.interactiveClaimUserId`) are
-  touched; a token with no user covers the account's interactive workers.
-  Trigger-level tokens touch nothing. `update_progress` bumps it as before.
-- An interactive worker with no MCP or hook activity for
-  `INTERACTIVE_WORKER_IDLE_TTL_MS` (2 hours) is reaped by an account-scoped arm,
-  booked with its own error text, and does not consume a retry attempt. MCP
-  silence, client presence, a running command and the claim are separate
-  signals, so the arm spares a worker while (a) an open plugin presence holding
-  it was heard from within the TTL, or marked itself inside a turn
-  (`local_sessions.busy_since`, set by `UserPromptSubmit`/`PreToolUse`, cleared
-  by `Stop`) and was heard from within `INTERACTIVE_WORKER_BUSY_MAX_MS`
-  (8 hours); or (b) the worker was itself active within 8 hours and an open
-  presence of its claimant (the claiming account, the person the claim
-  recorded, or when it recorded nobody a member of the claiming account's
-  team) in its workspace was heard from within the TTL. 8 hours is the hard
-  backstop: a client that died mid-turn, or a person whose session merely
-  stays open, never holds a claim past it.
-- The release text names the signal that expired: `INTERACTIVE_ABANDONED_ERROR`
-  (2 hours with no touch and no live presence) or `INTERACTIVE_BACKSTOP_ERROR`
-  (8 hours with no touch, whatever the presence says).
-- A reaped interactive worker's task is never completed from its deliverables
-  (a PR opened mid-work is not the work done) and is never charged an infra
-  retry or backoff: an open task goes straight back to `pending`, so the same
-  client can claim it again at once; a terminal task keeps its status.
-- `waiting_input` interactive workers stay governed by the waiting_input timeout.
-- The buildd agent plugin's hooks can also keep an interactive worker alive,
-  but only the one bound to that hook's own session presence, under the same
-  once-a-minute `updatedAt` guard (so a hook touch and an MCP touch coalesce).
-  A presence without a bound worker holds no seat. See
-  [local-agent-presence](local-agent-presence.md).
-
-**Acceptance criteria**:
-- AC-9a: GIVEN an interactive worker in `idle` with `updatedAt` 10 minutes ago
-  WHEN `cleanupStaleWorkers` runs THEN it is left untouched.
-- AC-9b: GIVEN an interactive worker whose account made no MCP call for over 2
-  hours WHEN `cleanupStaleWorkers` runs THEN it is marked `failed` with
-  `INTERACTIVE_ABANDONED_ERROR` and its open task goes back to `pending` with no
-  backoff, never `completed`, even with a PR on the worker.
-- AC-9c: GIVEN an interactive worker last touched 3 hours ago, held by an open
-  presence whose `busy_since` is set and that was last heard from 3 hours ago
-  (one long command) WHEN `cleanupStaleWorkers` runs THEN it is left untouched;
-  GIVEN the same presence last heard from 9 hours ago (the client died
-  mid-turn) THEN it is reaped with `INTERACTIVE_BACKSTOP_ERROR`.
-
-**Code surface**:
-- `apps/web/src/lib/interactive-worker-liveness.ts`: `touchInteractiveWorkers()`,
-  `interactiveAbandonedScope()`, `runnerWorkerOnly()`
-- `apps/web/src/lib/stale-workers.ts`: `staleWorkerScope()`
-- `apps/web/src/lib/interactive-worker-liveness.ts`: `heldByLivePresence()`,
-  `claimantPresenceAlive()`
-- Constants: `INTERACTIVE_WORKER_RUNNER`, `INTERACTIVE_WORKER_IDLE_TTL_MS`,
-  `INTERACTIVE_WORKER_BUSY_MAX_MS` in `packages/shared/src/runner-liveness.ts`
+A worker minted by an MCP `claim_task` has `runner = 'mcp'`. No runner
+liveness rule in this spec applies to it: the generic stale, idle,
+silent-start and never-started arms of `cleanupStaleWorkers`, the
+runner-heartbeat rule, and the cleanup route's 1h stalled and local-UI
+heartbeat rules all exclude it (`runnerWorkerOnly()`). Its own reaper (the
+2-hour idle TTL, the presence holds and the 8-hour backstop) lives in
+[local-agent-presence](local-agent-presence.md), section "Interactive worker
+reaper".
 
 ---
 
@@ -502,7 +458,7 @@ id, and every runner rule applies to its workers.
   downstream DAG tasks.
 
 **Acceptance criteria**:
-- AC-9: GIVEN a stale worker with a `prUrl` set WHEN `resolveStaleTask` runs
+- AC-36: GIVEN a stale worker with a `prUrl` set WHEN `resolveStaleTask` runs
   THEN `tasks.status = 'completed'` (deliverables present).
 - AC-10: GIVEN 3 prior `failed` workers on a task WHEN a 4th worker goes stale
   THEN `tasks.status = 'failed'` permanently.
@@ -565,3 +521,18 @@ id, and every runner rule applies to its workers.
 **Out of scope**: The Pusher-based `WORKER_COMMAND: 'recover'` recovery path
 (`attemptStaleRecovery`), which is best-effort and not yet called from a
 reliable cron. The runner's own internal health checks (out of process).
+
+## Renumbered
+
+Ids changed on 2026-10-15 so every criterion in this file is unique and
+parses. Old to new:
+
+- Old AC-22, AC-23, AC-24 (the `/api/version` copies) to AC-27, AC-28, AC-29. The
+  heartbeat section keeps AC-22 to AC-24.
+- Old AC-5a to AC-30, AC-5b to AC-31 (stale worker detection).
+- Old AC-CH1, AC-CH2, AC-CH3 to AC-32, AC-33, AC-34 (claim handoff).
+- Old AC-9a (the heartbeat-driven liveness copy) to AC-35. The heartbeat section
+  keeps AC-9.
+- Old AC-9a, AC-9b, AC-9c (interactive workers) moved to local-agent-presence,
+  section "Interactive worker reaper", as its AC-18, AC-19, AC-20.
+- Old AC-9 (the task reclaim copy) to AC-36.

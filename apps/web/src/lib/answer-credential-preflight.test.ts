@@ -73,8 +73,8 @@ describe('preflightBackendCredential', () => {
     expect(mockRefreshClaude).not.toHaveBeenCalled();
   });
 
-  // AC-AQR-19 — `revoked` is a stronger statement than `unhealthy`, and the
-  // route refuses on it rather than degrading (AC-AQR-25), so the flag must be
+  // AC-27 (docs/specs/answered-question-resume.md) — `revoked` is a stronger statement than `unhealthy`, and the
+  // route refuses on it rather than degrading (AC-25), so the flag must be
   // set and not merely implied by the prose.
   it('reports unhealthy AND revoked for a revoked credential, without attempting a refresh', async () => {
     secretRows = [healthy({ healthStatus: 'revoked', lastFailureMessage: 'invalid_grant' })];
@@ -86,7 +86,7 @@ describe('preflightBackendCredential', () => {
     expect(mockRefreshClaude).not.toHaveBeenCalled();
   });
 
-  // AC-AQR-20 (refresh succeeds)
+  // AC-20 (refresh succeeds)
   it('refreshes an expired credential and reports ok when the refresh lands', async () => {
     secretRows = [
       healthy({ tokenExpiresAt: new Date(NOW - 1000) }),
@@ -97,7 +97,7 @@ describe('preflightBackendCredential', () => {
     expect(result.state).toBe('ok');
   });
 
-  // AC-AQR-20 (refresh does not land)
+  // AC-20 (refresh does not land)
   it('reports unhealthy when the credential is still expired after the refresh', async () => {
     secretRows = [
       healthy({ tokenExpiresAt: new Date(NOW - 1000) }),
@@ -139,7 +139,7 @@ describe('preflightBackendCredential', () => {
     expect(result.state).toBe('ok');
   });
 
-  // AC-AQR-21
+  // AC-21
   it('reports unknown when no managed credential row exists at either scope', async () => {
     secretRows = [undefined, undefined];
     const result = await preflightBackendCredential(claude);
@@ -152,7 +152,7 @@ describe('preflightBackendCredential', () => {
     expect(mockFindFirst).not.toHaveBeenCalled();
   });
 
-  // AC-AQR-22
+  // AC-22
   it('reports unknown when the refresh throws', async () => {
     secretRows = [healthy({ tokenExpiresAt: new Date(NOW - 1000) })];
     mockRefreshClaude.mockImplementation(async () => { throw new Error('provider down'); });
