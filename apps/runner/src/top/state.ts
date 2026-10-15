@@ -571,7 +571,7 @@ export function formatDuration(ms: number): string {
   return `${Math.floor(h / 24)}d`;
 }
 
-function untilWords(ms: number): string {
+export function untilWords(ms: number): string {
   if (ms < 60_000) return 'under a minute';
   const m = Math.ceil(ms / 60_000);
   if (m < 60) return `${m}m`;
@@ -588,7 +588,7 @@ function roleLabel(slug: string | null | undefined): string | undefined {
 // ── Claim outcomes (R-25) ───────────────────────────────────────────────────
 
 /** The server's per-runner cooldown after a failed worker (claim route CLAIM_COOLDOWN_MS). */
-const RUNNER_COOLDOWN_MS = 60_000;
+export const RUNNER_COOLDOWN_MS = 60_000;
 /** An outcome with no end time of its own describes the queue for this long. */
 const OUTCOME_TTL_MS = 15 * 60_000;
 
@@ -686,7 +686,7 @@ function taskBackend(t: TopTask): string {
 const PROVIDER_NAME: Record<string, string> = { claude: 'Claude', codex: 'Codex' };
 const WALL_WORD: Record<string, string> = { account_seat: 'plan limit', provider_pause: 'rate limit', tenant_budget: 'tenant budget' };
 
-function wallWord(kind: string): string {
+export function wallWord(kind: string): string {
   return WALL_WORD[kind] ?? 'usage limit';
 }
 
@@ -760,7 +760,7 @@ export function providerHoldLine(h: ProviderHold, now: number): string {
 }
 
 /** Exclusion codes in words; a code missing here reads as the server's first sentence. */
-const EXCLUSION_WORDS: Record<string, string> = {
+export const EXCLUSION_WORDS: Record<string, string> = {
   mission_local: 'local session',
   mission_held: 'mission is on hold',
   task_held: 'held by a person',
@@ -790,7 +790,7 @@ const EXCLUSION_WORDS: Record<string, string> = {
 };
 
 /** Codes that only say the task moved; the list catches up on its own. */
-const MOVED_CODES = new Set(['not_found', 'not_pending', 'state_changed', 'duplicate_worker', 'sibling_retry_open']);
+export const MOVED_CODES = new Set(['not_found', 'not_pending', 'state_changed', 'duplicate_worker', 'sibling_retry_open']);
 
 function firstSentence(s: string): string {
   const m = s.match(/^.*?[.!?](?=\s|$)/);
@@ -855,7 +855,7 @@ function outcomeWords(o: ClaimOutcome, task: TopTask, state: TopState, holds: Pr
 }
 
 /** Deferral reasons the server counts on a broad claim, in words. */
-const DEFERRAL_WORDS: Record<string, string> = {
+export const DEFERRAL_WORDS: Record<string, string> = {
   ...EXCLUSION_WORDS,
   budget_paused: 'held by a usage limit',
   oauth_parallelism: 'the plan allows only a few sessions at once',
