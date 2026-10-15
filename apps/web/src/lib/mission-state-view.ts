@@ -787,6 +787,10 @@ export function deriveMissionStateView(input: MissionStateInput): MissionStateVi
     ? { ...getMissionStateChip(resolved.displayState), label: /retry/i.test(w.reason) ? 'WAITING TO RETRY' : 'WAITING' }
     : w?.kind === 'task' && w.visualQueued
       ? { ...getMissionStateChip(resolved.displayState), label: w.visualBlocked ? 'VISUAL REVIEW UNABLE TO RUN' : w.visualRunning ? 'VISUAL REVIEW RUNNING' : 'VISUAL REVIEW QUEUED' }
+      // All clear: the mission can complete, nothing is under review. A
+      // required check still open is named instead (spec 8e137fdb AC-7).
+      : resolved.kind === 'idle' && resolved.displayState === 'review'
+        ? { ...getMissionStateChip(resolved.displayState), label: (input.openChecks?.length ?? 0) > 0 ? 'CHECK PENDING' : 'READY TO COMPLETE' }
       : w?.kind === 'task' && w.nextInLine
         ? { ...getMissionStateChip(resolved.displayState), label: 'NEXT IN LINE' }
       : w?.kind === 'task' && (w.hold || w.waitingNoCause)

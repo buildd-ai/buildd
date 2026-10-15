@@ -108,3 +108,20 @@ describe('round 3: the quiet notice says what is left (spec 8e137fdb AC-7)', () 
     expect(v.situation?.openChecks).toEqual(['Spec revision 3']);
   });
 });
+
+describe('round 4: one all-clear phrase (spec 8e137fdb I-1)', () => {
+  const quiet: MissionStateInput = { status: 'active', isHeld: false, activeAgents: 0, health: 'NOMINAL', progress: 100, hasPendingDeliverableWork: false };
+  it('chip and notice both say ready to complete', () => {
+    const v = deriveMissionStateView(quiet);
+    expect(v.chip.label).toBe('READY TO COMPLETE');
+    expect(v.situation?.headline).toBe('Ready to complete.');
+  });
+  it('an open check is not ready to complete', () => {
+    const v = deriveMissionStateView({ ...quiet, openChecks: [{ label: 'Spec revision 3', state: 'not checked' }] });
+    expect(v.chip.label).toBe('CHECK PENDING');
+  });
+  it('a PR still awaiting merge keeps Ready for review', () => {
+    const v = deriveMissionStateView({ ...quiet, missionPr: { state: 'open', prNumber: 7, prUrl: 'u' }, completion: { ok: false, code: 'mission_pr_unmerged', reason: '' } as never });
+    expect(v.chip.label).not.toBe('READY TO COMPLETE');
+  });
+});

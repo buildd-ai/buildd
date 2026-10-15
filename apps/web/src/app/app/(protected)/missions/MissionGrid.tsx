@@ -242,7 +242,7 @@ const LEFT_WORDS: Record<MissionRemaining, { one: string; part: string }> = {
   visual: { one: 'The visual review is what’s left.', part: 'visual review' },
   criteria: { one: 'A goal criterion hasn’t passed.', part: 'goal criteria' },
   release: { one: 'Waiting on the release.', part: 'release' },
-  completion: { one: 'Ready for review.', part: 'ready for review' },
+  completion: { one: 'Ready to complete.', part: 'ready to complete' },
 };
 
 /** The Landed group's subtitle: what is actually left on its missions (spec f7f67f1a R-32). */

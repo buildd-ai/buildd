@@ -120,7 +120,7 @@ describe('MissionGrid portfolio', () => {
     expect(group).toContain('Landed, checks pending');
     expect(group).toContain('aria-expanded="false"');
     // The subtitle names what is actually left (spec f7f67f1a R-32), not a fixed line.
-    expect(group).toContain('Ready for review.');
+    expect(group).toContain('Ready to complete.');
     // Collapsed: its rows mount only when opened.
     expect(group).not.toContain('data-mission-id="m12"');
   });
