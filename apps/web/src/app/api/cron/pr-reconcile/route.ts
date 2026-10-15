@@ -320,7 +320,7 @@ export async function GET(req: NextRequest) {
       console.error('[ClosedPrSupersession] error:', closedPrs.error);
     } else {
       console.log(
-        `[ClosedPrSupersession] candidates=${closedPrs.candidates} recorded=${closedPrs.recorded} suggested=${closedPrs.suggested} none=${closedPrs.none} skipped=${closedPrs.skipped}`,
+        `[ClosedPrSupersession] candidates=${closedPrs.candidates} recorded=${closedPrs.recorded} suggested=${closedPrs.suggested} none=${closedPrs.none} skipped=${closedPrs.skipped} deferred=${closedPrs.deferred ?? 0}`,
       );
     }
     if ('error' in earlyRelease) {

@@ -7,7 +7,7 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { handleCommandRequest } from './command-api';
 import {
-  ControlPlaneUnavailableError, KernelCommandRefusedError, MODE_FRESH_MS, MODE_RETRY_MS, MODE_STALE_MS, controlPlaneUnavailableResponse,
+  ControlPlaneUnavailableError, KernelCommandRefusedError, MODE_FRESH_MS, MODE_STALE_MS, controlPlaneUnavailableResponse,
   kernelMode, resetKernelModeCache, submitKernelCommand, type ClientDeps,
 } from './kernel-client';
 import type { CommandLedger } from './command-ledger';
@@ -114,7 +114,8 @@ describe('the mode read under a sweep\'s load (incident 197552dc)', () => {
     expect(await all).toEqual(Array(13).fill('own'));
     expect(reads).toBe(1);
     // The health did not answer: the next calls within the retry window do not wait on it again.
-    t += MODE_RETRY_MS - 1;
+    // Literals, not the constant: the window is pinned at 5 s.
+    t += 4_999;
     expect(await kernelMode(deps)).toBe('own');
     expect(reads).toBe(1);
     t += 2;
@@ -573,7 +574,8 @@ describe('a pass\'s control-plane budget', () => {
     AbortSignal.timeout = ((ms: number) => { lastTimeout = ms; return realTimeout.call(AbortSignal, ms); }) as typeof AbortSignal.timeout;
     const cp = {
       calls: 0,
-      fetch: (async () => { cp.calls++; clock.t += lastTimeout; throw Object.assign(new Error('t'), { name: 'TimeoutError' }); }) as unknown as typeof fetch,
+      timeouts: [] as number[],
+      fetch: (async () => { cp.calls++; cp.timeouts.push(lastTimeout); clock.t += lastTimeout; throw Object.assign(new Error('t'), { name: 'TimeoutError' }); }) as unknown as typeof fetch,
       restore: () => { AbortSignal.timeout = realTimeout; },
     };
     return cp;
@@ -635,10 +637,32 @@ describe('a pass\'s control-plane budget', () => {
       }, { now: () => clock.t }));
     } finally { cp.restore(); }
     expect(clock.t).toBeLessThanOrEqual(30_000 + 2_000);
-    // Each one waited at most the pass's drain wait (plus one back-off), never the request's 10 s.
-    expect(cp.calls).toBeGreaterThanOrEqual(Math.floor(30_000 / (PASS_DRAIN_WAIT_MS + 2_000)));
+    // Each one waited at most 2.5 s (a literal: the pass's drain wait), never the request's 10 s.
+    expect(Math.max(...cp.timeouts)).toBeLessThanOrEqual(2_500);
+    expect(cp.calls).toBeGreaterThanOrEqual(10);
+    expect(PASS_DRAIN_WAIT_MS).toBe(2_500);
     expect(report!.drainsSkipped).toBeGreaterThan(0);
     expect(report!.drainsSkipped + report!.submitted).toBe(20);
+  });
+
+  it('a submission inside a pass is cut to what is left of it, whatever budget its caller asked for', async () => {
+    const { withControlPlaneBudget } = await import('./kernel-client');
+    const clock = { t: 0 };
+    const cp = silentControlPlane(clock);
+    let errs: unknown[] = [];
+    try {
+      await withControlPlaneBudget('test-pass', 5_000, async () => {
+        // The caller asks for 20 s; the pass has 5 s.
+        errs.push(await submitKernelCommand('land', input, { principal, budgetMs: 20_000, deps: deps(clock, cp) }).catch((e) => e));
+        expect(clock.t).toBeLessThanOrEqual(5_000 + 2_000);
+        const before = cp.calls;
+        errs.push(await submitKernelCommand('land', input, { principal, budgetMs: 20_000, deps: deps(clock, cp) }).catch((e) => e));
+        // Spent: refused without a request.
+        expect(cp.calls).toBe(before);
+      }, { now: () => clock.t });
+    } finally { cp.restore(); }
+    expect((errs[1] as ControlPlaneUnavailableError).why).toContain('spent its control-plane budget');
+    expect((errs[1] as ControlPlaneUnavailableError).outcome).toBe('not_applied');
   });
 
   it('nested passes keep the earlier deadline, and outside any pass nothing is budgeted', async () => {

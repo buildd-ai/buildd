@@ -10,6 +10,7 @@ const ghCalls: string[] = [];
 const recordCalls: any[] = [];
 let recordResult: any = { ok: true };
 const gateEvents: any[] = [];
+let sweepRows: Array<{ id: string; prUrl: string }> = [];
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -18,6 +19,11 @@ mock.module('@buildd/core/db', () => ({
       tasks: { findMany: mock(() => Promise.resolve(siblingTasks)) },
     },
     update: () => ({ set: (set: any) => ({ where: () => { scanWrites.push(set); return Promise.resolve(); } }) }),
+    // The sweep's candidate query: from → innerJoin → where → orderBy → limit.
+    select: () => {
+      const chain: any = { from: () => chain, innerJoin: () => chain, where: () => chain, orderBy: () => chain, limit: () => Promise.resolve(sweepRows) };
+      return chain;
+    },
   },
 }));
 mock.module('@/lib/github', () => ({
@@ -43,7 +49,7 @@ mock.module('@/lib/gate-ledger', () => ({
   fireGateEvent: mock((e: any) => { gateEvents.push(e); return 'id'; }),
 }));
 
-import { detectPrSupersession } from './pr-supersession-detect';
+import { detectPrSupersession, sweepClosedUnsupersededPrs } from './pr-supersession-detect';
 
 const DOC_LINES = [
   '# Strategy notes',
@@ -180,6 +186,46 @@ describe('detectPrSupersession', () => {
     gh['org/kb/issues/6/comments'] = [{ body: 'superseded by #9' }];
     mergedPr('org/kb', 9, [{ filename: 'buildd/design/strategy.md', status: 'added', patch: patch(...DOC_LINES) }]);
     const r = await detectPrSupersession({ workerId: 'w-6', via: 'webhook' });
+    expect(r.outcome).toBe('suggested');
+  });
+});
+
+/**
+ * Incident 197552dc review: a verified candidate whose record the kernel's host did not take (the
+ * control plane did not answer, or the sweep's control-plane budget was spent) was filed as a
+ * suggestion "short of the bar" and stamped scanned, so the PR waited out the rescan window with
+ * its mission's completion blocked.
+ */
+describe('a verified record the kernel\'s host did not take is deferred, not suggested', () => {
+  const doorError = { ok: false, error: 'The workflow sweep pass spent its control-plane budget', status: 503, door: { body: { code: 'control_plane_unavailable', outcome: 'not_applied', retryable: true }, headers: {} } };
+
+  it('detection: outcome deferred, nothing stamped, no suggestion, no gate event', async () => {
+    gh['org/kb/issues/6/comments'] = [{ body: 'superseded by #9' }];
+    mergedPr('org/kb', 9, [{ filename: 'buildd/design/strategy.md', status: 'added', patch: patch(...DOC_LINES) }]);
+    recordResult = doorError;
+    const r = await detectPrSupersession({ workerId: 'w-6', via: 'sweep' });
+    expect(r).toMatchObject({ outcome: 'deferred' });
+    expect(recordCalls).toHaveLength(1);
+    expect(scanWrites).toEqual([]);
+    expect(gateEvents).toEqual([]);
+  });
+
+  it('the sweep counts it deferred and leaves the row unstamped, so the next tick tries again', async () => {
+    gh['org/kb/issues/6/comments'] = [{ body: 'superseded by #9' }];
+    mergedPr('org/kb', 9, [{ filename: 'buildd/design/strategy.md', status: 'added', patch: patch(...DOC_LINES) }]);
+    recordResult = doorError;
+    sweepRows = [{ id: 'w-6', prUrl: 'https://github.com/org/kb/pull/6' }];
+    const r = await sweepClosedUnsupersededPrs(new Date('2026-10-14T23:10:00Z'));
+    expect(r).toMatchObject({ candidates: 1, deferred: 1, suggested: 0, skipped: 0 });
+    expect(scanWrites).toEqual([]);
+    sweepRows = [];
+  });
+
+  it('a refusal on the merits (not a door error) still falls back to a suggestion', async () => {
+    gh['org/kb/issues/6/comments'] = [{ body: 'superseded by #9' }];
+    mergedPr('org/kb', 9, [{ filename: 'buildd/design/strategy.md', status: 'added', patch: patch(...DOC_LINES) }]);
+    recordResult = { ok: false, error: 'outside mission', status: 403 };
+    const r = await detectPrSupersession({ workerId: 'w-6', via: 'sweep' });
     expect(r.outcome).toBe('suggested');
   });
 });

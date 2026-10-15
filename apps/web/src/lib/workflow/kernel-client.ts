@@ -413,10 +413,10 @@ async function submitUntil<K extends KernelOp>(
       // The command itself threw there (the key was released): the real error, not an outage. Not retried.
       throw new KernelCommandFailedError(String(answer.error ?? 'unknown error'), opts.idempotencyKey);
     }
-    if (res.status === 503 && answer?.code === 'ledger_unavailable') {
+    if (res.status === 503 && (answer?.code === 'ledger_unavailable' || answer?.code === 'reach_unavailable')) {
       // Refused before the claim: this request ran nothing (earlier ones may have; mayHaveApplied keeps that).
-      // One more try, then the answer: a ledger that is down now is not back within a door's budget.
-      why = 'answered 503 ledger_unavailable';
+      // One more try, then the answer: a database that is down now is not back within a door's budget.
+      why = `answered 503 ${String(answer.code)}`;
       if (attempt >= 1) throw new ControlPlaneUnavailableError(why, mayHaveApplied ? 'unknown' : 'not_applied', opts.idempotencyKey);
       await sleep(Math.min(250 * 2 ** attempt, 2_000));
       continue;

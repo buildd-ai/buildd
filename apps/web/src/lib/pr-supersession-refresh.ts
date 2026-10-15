@@ -156,7 +156,9 @@ export async function verifyRefreshSuperseded(opts: {
 
 export type RetireOutcome =
   | { outcome: 'retired'; prNumber: number; supersededBy: number; evidence: string }
-  | { outcome: 'kept'; prNumber: number; reason: string };
+  | { outcome: 'kept'; prNumber: number; reason: string }
+  /** Verified, but the kernel's host did not take the record: nothing is wrong with the PR; the next tick retries. */
+  | { outcome: 'deferred'; prNumber: number; reason: string };
 
 function evidenceLine(v: Extract<RefreshSupersessionVerdict, { ok: true }>, newer: number): string {
   return `auto: replaced by merged refresh #${newer}; ancestry and ${v.filesChecked} file(s) verified against ${v.branch}`
@@ -221,6 +223,12 @@ export async function retireSupersededRefreshPr(opts: {
       recordedBy: REFRESH_SUPERSESSION_ACTOR,
       caller: 'system',
     });
+    // The kernel's host did not take it (the control plane did not answer, the pass spent its budget):
+    // not stranded, deferred. The PR stays in the sweep's set (no edge yet), so the next tick retries.
+    if (!recorded.ok && recorded.door) {
+      console.warn(`[pr-supersession-refresh] #${older.prNumber}: record deferred, the kernel's host did not take it: ${recorded.error}`);
+      return { outcome: 'deferred', prNumber: older.prNumber, reason: recorded.error };
+    }
     // 409 = an edge (or a merge) is already there: a prior run finished the job.
     if (!recorded.ok && recorded.status !== 409) throw new Error(`record refused: ${recorded.error}`);
   } catch (err) {
@@ -259,6 +267,8 @@ export interface RefreshSupersessionSweepResult {
   retired: number;
   kept: number;
   skipped: number;
+  /** Verified, record not taken by the kernel's host this tick; retried next tick. */
+  deferred: number;
 }
 
 /** Open (or closed-without-an-edge) and merged refresh PRs, from our own rows. */
@@ -303,7 +313,7 @@ export async function sweepSupersededRefreshPrs(
   now: Date = new Date(),
   deps: { load?: typeof loadRefreshPrs; installation?: (repo: string) => Promise<number | null>; api?: Api } = {},
 ): Promise<RefreshSupersessionSweepResult> {
-  const result: RefreshSupersessionSweepResult = { candidates: 0, retired: 0, kept: 0, skipped: 0 };
+  const result: RefreshSupersessionSweepResult = { candidates: 0, retired: 0, kept: 0, skipped: 0, deferred: 0 };
   const { open, merged } = await (deps.load ?? loadRefreshPrs)(now);
   const installation = deps.installation ?? ((repo: string) => installationIdForRepo(repo).catch(() => null));
   const cache = new Map<string, number | null>();
@@ -328,6 +338,8 @@ export async function sweepSupersededRefreshPrs(
         return { outcome: 'kept', prNumber: older.prNumber, reason: 'error' };
       });
       if (out.outcome === 'retired') { result.retired++; done = true; break; }
+      // The control plane is not taking records now: another successor would only wait on it again.
+      if (out.outcome === 'deferred') { result.deferred++; done = true; break; }
     }
     if (!done) result.kept++;
   }

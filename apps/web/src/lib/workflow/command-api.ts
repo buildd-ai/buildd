@@ -305,7 +305,16 @@ export async function handleCommandRequest(req: Request, deps: CommandServerDeps
   const cmd = body as CommandRequest;
   const workspaceId = cmd.op === 'drain' ? null : String((cmd.input as { workspaceId: string }).workspaceId);
   if (cmd.op === 'drain' && cmd.principal.kind !== 'system') return refuse(403, 'forbidden', 'drain is a system operation');
-  if (!(await (deps.reaches ?? principalReaches)(cmd.principal, workspaceId).catch(() => false))) {
+  // A reach check that could not be made (the database did not answer) is not a refusal: nothing ran,
+  // retry. Only an answered "no" is a 403.
+  const reaches = await (deps.reaches ?? principalReaches)(cmd.principal, workspaceId).catch((err: unknown) => {
+    console.error(`[kernel-command] ${cmd.op} ${cmd.idempotencyKey}: the reach check did not answer:`, err);
+    return null;
+  });
+  if (reaches === null) {
+    return refuse(503, 'reach_unavailable', 'Whether the principal reaches the workspace could not be read; nothing was run. Retry with the same key.', { retryable: true, applied: false });
+  }
+  if (!reaches) {
     return refuse(403, 'forbidden', `${principalKey(cmd.principal)} does not reach this workspace`);
   }
 

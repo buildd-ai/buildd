@@ -52,7 +52,13 @@ export type DetectResult =
   | { outcome: 'skipped'; reason: string }
   | { outcome: 'recorded'; repo: string; prNumber: number; method: SupersessionMethod; confidence: number }
   | { outcome: 'suggested'; suggestion: SupersessionSuggestion; candidatesChecked: number }
-  | { outcome: 'none'; candidatesChecked: number };
+  | { outcome: 'none'; candidatesChecked: number }
+  /**
+   * A candidate verified, but the kernel's host did not take the record (the control plane did not
+   * answer, the pass spent its budget, the command failed there). Nothing is stamped or suggested:
+   * the content DID verify, so the next sweep tick tries again instead of waiting out the rescan window.
+   */
+  | { outcome: 'deferred'; reason: string; candidatesChecked: number };
 
 /** Actor label on an auto-recorded edge — distinguishes it from a person's. */
 export const AUTO_SUPERSESSION_ACTOR = 'system:auto-supersession';
@@ -319,6 +325,7 @@ export async function detectPrSupersession(opts: {
       merged.push({ ...cand, prUrl: v.prUrl!, confidence: v.confidence });
       if (!v.verified) continue;
       const recorded = await recordVerified({ workerId: worker.id, workspaceId: worker.workspaceId, taskId: worker.taskId, closedRepo, prNumber, cand, method: v.method!, confidence: v.confidence, via: opts.via });
+      if (recorded?.outcome === 'deferred') return { ...recorded, candidatesChecked: checked };
       if (recorded) return recorded;
     }
     return null;
@@ -407,6 +414,11 @@ async function recordVerified(opts: {
     recordedBy: AUTO_SUPERSESSION_ACTOR,
     caller: 'system',
   });
+  if (!result.ok && result.door) {
+    // The kernel's host did not take it: not a judgement on the candidate. Deferred, never a suggestion.
+    console.warn(`[pr-supersession-detect] verified ${refOf(cand, closedRepo)}; recording deferred, the kernel's host did not take it: ${result.error}`);
+    return { outcome: 'deferred', reason: result.error, candidatesChecked: 0 };
+  }
   if (!result.ok) {
     // Proven content but the write refused (repo outside the mission, say):
     // fall through and treat it as a suggestion a person can judge.
@@ -483,6 +495,8 @@ export interface ClosedPrSweepResult {
   suggested: number;
   none: number;
   skipped: number;
+  /** Verified but not recorded (the kernel's host did not take it): left unstamped for the next tick. */
+  deferred: number;
 }
 
 /**
@@ -491,7 +505,7 @@ export interface ClosedPrSweepResult {
  * backlog that predates the webhook door.
  */
 export async function sweepClosedUnsupersededPrs(now: Date = new Date()): Promise<ClosedPrSweepResult> {
-  const result: ClosedPrSweepResult = { candidates: 0, recorded: 0, suggested: 0, none: 0, skipped: 0 };
+  const result: ClosedPrSweepResult = { candidates: 0, recorded: 0, suggested: 0, none: 0, skipped: 0, deferred: 0 };
   const cutoff = new Date(now.getTime() - RESCAN_AFTER_MS);
   const rows = await db
     .select({ id: workers.id, prUrl: workers.prUrl })

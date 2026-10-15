@@ -179,6 +179,14 @@ describe('retireSupersededRefreshPr', () => {
     expect(mockRecord).toHaveBeenCalledTimes(1);
   });
 
+  // Incident 197552dc review: a record the kernel's host did not take is not a stranded PR.
+  it('a door error on the record is deferred: no stranded event, and the PR stays retryable', async () => {
+    mockRecord.mockImplementation(async () => ({ ok: false, status: 503, error: 'the pass spent its control-plane budget', door: { body: { outcome: 'not_applied' }, headers: {} } }));
+    const out = await retireSupersededRefreshPr({ installationId: 1, older: OLDER, newer: NEWER, api });
+    expect(out.outcome).toBe('deferred');
+    expect(events('stranded')).toHaveLength(0);
+  });
+
   it('treats an already-recorded edge (409) as done, not as a failure', async () => {
     mockRecord.mockImplementation(async () => ({ ok: false, status: 409, error: 'already recorded' }));
     const out = await retireSupersededRefreshPr({ installationId: 1, older: OLDER, newer: NEWER, api });
@@ -193,7 +201,7 @@ describe('sweepSupersededRefreshPrs', () => {
 
   it('retires the older open refresh when a higher-numbered one merged in the same mission', async () => {
     const r = await run([OLDER], [NEWER]);
-    expect(r).toEqual({ candidates: 1, retired: 1, kept: 0, skipped: 0 });
+    expect(r).toEqual({ candidates: 1, retired: 1, kept: 0, skipped: 0, deferred: 0 });
   });
 
   it('leaves unrelated PRs alone: other mission, lower-numbered merged refresh, or no successor', async () => {
@@ -208,7 +216,7 @@ describe('sweepSupersededRefreshPrs', () => {
   it('counts a candidate whose verification fails as kept, not retired', async () => {
     w.olderDelta!.push(file('apps/web/src/lib/only-here.ts', 'blobC', lines('export const uniqueWork = 1;', 'export const moreWork = 2;', 'export function doIt() {}')));
     const r = await run([OLDER], [NEWER]);
-    expect(r).toEqual({ candidates: 1, retired: 0, kept: 1, skipped: 0 });
+    expect(r).toEqual({ candidates: 1, retired: 0, kept: 1, skipped: 0, deferred: 0 });
     expect(mutations()).toEqual([]);
   });
 
@@ -220,8 +228,15 @@ describe('sweepSupersededRefreshPrs', () => {
     expect(mockRecord).not.toHaveBeenCalled();
   });
 
+  it('a deferred record stops at the first successor: the next one would only wait on the control plane again', async () => {
+    mockRecord.mockImplementation(async () => ({ ok: false, status: 503, error: 'control plane did not answer', door: { body: {}, headers: {} } }));
+    const r = await run([OLDER], [NEWER, pr(4310, { refresh: refresh('trunk4310', 'missionhead') })]);
+    expect(r).toMatchObject({ candidates: 1, retired: 0, kept: 0, deferred: 1 });
+    expect(mockRecord).toHaveBeenCalledTimes(1);
+  });
+
   it('skips a repo with no installation', async () => {
     const r = await sweepSupersededRefreshPrs(new Date(), { load: async () => ({ open: [OLDER], merged: [NEWER] }), installation: async () => null, api });
-    expect(r).toEqual({ candidates: 1, retired: 0, kept: 0, skipped: 1 });
+    expect(r).toEqual({ candidates: 1, retired: 0, kept: 0, skipped: 1, deferred: 0 });
   });
 });

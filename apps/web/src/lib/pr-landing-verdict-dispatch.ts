@@ -70,6 +70,8 @@ export interface DispatchDeps {
   /** True when this call won the verdict's one dispatch. */
   claim(recordId: string, teamId: string): Promise<boolean>;
   settle(recordId: string, result: DispatchResult): Promise<void>;
+  /** Give the verdict's one dispatch back, so a later sweep can start it: nothing was started. */
+  unclaim?(recordId: string): Promise<void>;
   resolve(workspaceId: string, prNumber: number): Promise<CiRedResolution>;
   peek(target: CiRedTarget): Promise<CiRedPeek>;
   retryCi(input: CiFailureInput): Promise<CiRetryOutcome>;
@@ -160,6 +162,15 @@ export async function dispatchVerdictAction(t: DispatchTarget, deps: DispatchDep
   try {
     result = await run(t, deps);
   } catch (err) {
+    // The kernel's host did not take the command (the control plane did not answer, or the sweep's
+    // control-plane budget was spent): nothing was decided, so the claim goes back for the next sweep
+    // instead of being settled as skipped for good.
+    const { isDoorError } = await import('@/lib/workflow/kernel-client');
+    if (isDoorError(err) && deps.unclaim) {
+      console.warn(`[verdict-dispatch] ${t.action} for PR #${t.prNumber} deferred, the kernel's host did not take it:`, err.message);
+      await deps.unclaim(t.recordId).catch(() => {});
+      return null;
+    }
     console.warn(`[verdict-dispatch] ${t.action} for PR #${t.prNumber} failed:`, (err as Error)?.message ?? err);
     result = skipped('dispatch_error');
   }
@@ -272,6 +283,9 @@ export function defaultDispatchDeps(): DispatchDeps {
         .onConflictDoNothing({ target: [decisionOutcomes.decisionRecordId, decisionOutcomes.source] })
         .returning({ id: decisionOutcomes.id });
       return rows.length > 0;
+    },
+    async unclaim(recordId) {
+      await db.delete(decisionOutcomes).where(dispatchRowWhere(recordId));
     },
     async settle(recordId, result) {
       await db.update(decisionOutcomes)

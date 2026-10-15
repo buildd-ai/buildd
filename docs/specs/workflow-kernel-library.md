@@ -368,8 +368,9 @@ the control plane, authenticated as the caller).
     is recorded only for the claim that still holds the key. The Worker hands
     every command it starts to `waitUntil`, so a caller that times out and
     disconnects does not cancel it mid-way. A ledger that does not answer
-    before the claim is a 503 `ledger_unavailable` (nothing ran, `applied:
-    false`), never an uncaught throw, which the Workers runtime turns into a
+    before the claim is a 503 `ledger_unavailable`, and a reach check that
+    could not be made is a 503 `reach_unavailable` (nothing ran, `applied:
+    false`; only an answered "no" is a 403), never an uncaught throw, which the Workers runtime turns into a
     bare 500 the caller must read as "may have run"; the client retries it
     once and then answers `not_applied`. Keys are kept seven days.
   - Answered with the operation's result and the delivery's version:
@@ -467,8 +468,13 @@ the control plane, authenticated as the caller).
   inline drain waits at most 2.5 s for its answer (`PASS_DRAIN_WAIT_MS`), since
   the control plane finishes it either way. Once the budget is spent nothing
   more is sent: a door gets `ControlPlaneUnavailableError` with outcome
-  `not_applied` at once, so its work is retried next tick, and a drain is left
-  to the control plane. A sweep that used to call a door in-process now pays a
+  `not_applied` at once, and a drain is left to the control plane. A sweep
+  treats a door error as deferred, never as a judgement on the PR: the closed-PR
+  supersession scan stamps nothing and suggests nothing (outcome `deferred`),
+  the superseded-refresh retirement records no stranded event and tries no
+  second successor, and the escalation dispatcher gives its claim back, so the
+  next tick retries each; landing, held releases and the pinned release merge
+  already leave the work pending. A sweep that used to call a door in-process now pays a
   round trip per call, and its per-run caps were sized for the in-process
   cost. Each step of a pass logs its time as it finishes, and the pass result
   carries `timings` per step and `controlPlane` (calls sent, refused unsent,

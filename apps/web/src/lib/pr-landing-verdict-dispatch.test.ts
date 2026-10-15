@@ -129,6 +129,25 @@ describe('dispatchVerdictAction', () => {
   });
 });
 
+// Incident 197552dc review: a policy merge the control plane did not take was settled `skipped` for good.
+describe('a door the kernel\'s host did not take', () => {
+  it('gives the claim back and settles nothing, so the next sweep starts it again', async () => {
+    const { ControlPlaneUnavailableError } = await import('./workflow/kernel-client');
+    const unclaimed: string[] = [];
+    const h = deps({
+      policyMerge: async () => { throw new ControlPlaneUnavailableError('the pr-reconcile:merge-state pass spent its control-plane budget', 'not_applied', 'policy_merge:k'); },
+      unclaim: async (id) => { unclaimed.push(id); },
+    });
+    expect(await dispatchVerdictAction(target({ action: 'policy_merge' }), h.d)).toBeNull();
+    expect(unclaimed).toEqual(['rec-1']);
+    expect(h.settled).toEqual([]);
+    // Any other throw is still recorded as skipped.
+    const other = deps({ policyMerge: async () => { throw new Error('boom'); }, unclaim: async (id) => { unclaimed.push(id); } });
+    expect(await dispatchVerdictAction(target({ action: 'policy_merge' }), other.d)).toEqual({ kind: 'skipped', cause: 'dispatch_error' });
+    expect(unclaimed).toEqual(['rec-1']);
+  });
+});
+
 describe('labelWithDispatch: the label says what is running, or the person gets it', () => {
   const rule = { owner: 'buildd', by: 'rule', action: 'renumber_migration', reason: 'Buildd is renumbering a migration that collides with another PR' } as const;
 

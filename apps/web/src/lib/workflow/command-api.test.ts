@@ -399,6 +399,31 @@ describe('a dead claim recovers promptly, a live one is never taken over', () =>
     expect(beats).toHaveLength(0);
   });
 
+  it('a heartbeat that finds its claim taken over stops renewing it', async () => {
+    const beats: Array<() => void> = [];
+    let stopped = 0;
+    let renews = 0;
+    let finish!: () => void;
+    const gate = new Promise<void>((r) => { finish = r; });
+    const s = server({
+      every: (_ms, fn) => { beats.push(fn); return () => { stopped++; }; },
+      run: (async () => { await gate; return { merged: true }; }) as CommandServerDeps['run'],
+    });
+    s.ledger.renew = async () => { renews++; return false; };
+    const pending = s.call(await signed(body()));
+    await new Promise((r) => setTimeout(r, 0));
+    beats[0]();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(renews).toBe(1);
+    expect(stopped).toBe(1);
+    // A later tick (the interval had already queued it) renews nothing.
+    beats[0]();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(renews).toBe(1);
+    finish();
+    await pending;
+  });
+
   it('a command that starts is handed to the Worker\'s waitUntil, so a caller that disconnects does not cancel it mid-way', async () => {
     const handed: Array<Promise<unknown>> = [];
     let finish!: () => void;
@@ -433,5 +458,17 @@ describe('a ledger that does not answer before the claim', () => {
       expect(await res.json()).toMatchObject({ code: 'ledger_unavailable', retryable: true, applied: false });
       expect(s.ran).toEqual([]);
     }
+  });
+});
+
+describe('a reach check that cannot be made', () => {
+  it('is 503 reach_unavailable (nothing ran), not a 403; an answered "no" is still a 403', async () => {
+    const down = server({ reaches: async () => { throw new Error('db down'); } });
+    const res = await down.call(await signed(body()));
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ code: 'reach_unavailable', retryable: true, applied: false });
+    expect(down.ran).toEqual([]);
+    const no = server({ reaches: async () => false });
+    expect((await no.call(await signed(body()))).status).toBe(403);
   });
 });
