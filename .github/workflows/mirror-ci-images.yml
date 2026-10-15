@@ -1,0 +1,95 @@
+name: Mirror CI images
+
+# Copies the third-party images CI pulls into our own GHCR namespace
+# (ghcr.io/buildd-ai/ci-mirror/*), so CI does not depend on a public registry's
+# anonymous quota.
+#
+# Why: Docker Hub rate-limits anonymous pulls per shared runner IP, so CI moved
+# to the ECR Public mirror of the official images. On 2026-10-14/15 ECR Public
+# answered "toomanyrequests: Data limit exceeded" too, and jobs failed before
+# any test ran. GHCR pulls from Actions authenticate with the workflow's own
+# GITHUB_TOKEN (permissions: packages: read), so no new secret is needed and
+# we are not sharing an anonymous quota with every other GitHub runner.
+#
+# Who reads the mirror:
+#   build.yml           DB architecture (real Postgres): postgres:17, via
+#                       scripts/ci/pull-image.sh with ECR Public and Docker Hub
+#                       as step-level fallbacks
+#   installer-smoke.yml Fresh install jobs: ubuntu:26.04 as the job container.
+#                       The runner pulls a job container before any step runs,
+#                       so there is no step-level fallback there; this mirror is
+#                       the fix.
+#
+# Tags match the upstream tags the jobs used before (postgres:17, ubuntu:26.04),
+# refreshed weekly so the mirror tracks upstream patch releases. Each copy is a
+# server-side manifest copy (docker buildx imagetools create): every platform,
+# same digests as upstream. Sources are tried in order, ECR Public then Docker
+# Hub, so one registry being limited does not stop the refresh. A failed refresh
+# leaves the previous mirror tag in place.
+#
+# Adding an image: add a matrix row here, then point the job at
+# ghcr.io/buildd-ai/ci-mirror/<name>:<tag>. scripts/ci/pull-image.test.ts checks
+# every mirrored image the jobs use is listed.
+
+on:
+  schedule:
+    - cron: '17 4 * * 1' # weekly, Monday 04:17 UTC
+  workflow_dispatch:
+  # Seeds the mirror from the branch that changes this file, before the jobs
+  # that read it need it (workflow_dispatch only works once the file is on dev).
+  push:
+    paths:
+      - '.github/workflows/mirror-ci-images.yml'
+
+concurrency:
+  group: mirror-ci-images
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    name: Mirror ${{ matrix.name }}:${{ matrix.tag }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: postgres
+            tag: '17'
+            sources: public.ecr.aws/docker/library/postgres:17 docker.io/library/postgres:17
+          - name: ubuntu
+            tag: '26.04'
+            sources: public.ecr.aws/docker/library/ubuntu:26.04 docker.io/library/ubuntu:26.04
+    steps:
+      - name: Log in to GHCR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: echo "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+
+      - name: Copy into ghcr.io/buildd-ai/ci-mirror/${{ matrix.name }}:${{ matrix.tag }}
+        env:
+          TARGET: ghcr.io/buildd-ai/ci-mirror/${{ matrix.name }}:${{ matrix.tag }}
+          SOURCES: ${{ matrix.sources }}
+          SOURCE_REPO: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          # The source annotation links the package to this repo, so this
+          # repo's workflows can read it with GITHUB_TOKEN.
+          for attempt in 1 2 3 4 5; do
+            for src in $SOURCES; do
+              if docker buildx imagetools create \
+                   --annotation "index:org.opencontainers.image.source=$SOURCE_REPO" \
+                   --tag "$TARGET" "$src"; then
+                echo "Mirrored $src -> $TARGET"
+                docker buildx imagetools inspect "$TARGET"
+                exit 0
+              fi
+              echo "::warning::copy from $src failed (round $attempt/5); trying the next source"
+            done
+            if [ "$attempt" -lt 5 ]; then sleep $((15 * attempt)); fi
+          done
+          echo "::error::could not mirror $TARGET from any of: $SOURCES"
+          exit 1
