@@ -474,9 +474,7 @@ the control plane, authenticated as the caller).
   the superseded-refresh retirement records no stranded event and tries no
   second successor, and the escalation dispatcher gives its claim back, so the
   next tick retries each; landing, held releases and the pinned release merge
-  already leave the work pending. A sweep that used to call a door in-process now pays a
-  round trip per call, and its per-run caps were sized for the in-process
-  cost. Each step of a pass logs its time as it finishes, and the pass result
+  already leave the work pending. Each step of a pass logs its time as it finishes, and the pass result
   carries `timings` per step and `controlPlane` (calls sent, refused unsent,
   drains skipped, time waited), so a slow run names the step it waited on.
 - Every transition row records the host that applied it
