@@ -116,6 +116,17 @@ export interface ReviewerTaskOutput {
     rewrite?: string;
     reason?: string;
   }>;
+  /**
+   * The findings of a request for changes, one per distinct issue
+   * (docs/specs/workflow-kernel-library.md §5). `id` restates a finding the
+   * prompt listed as still open. They survive every push and completion until
+   * a later round lists them in `resolvedFindings`.
+   */
+  findings?: Array<{ id?: string; path?: string; line?: number; title: string; required?: boolean }>;
+  /** The ids of the listed open findings this review verified as fixed at this head. */
+  resolvedFindings?: string[];
+  /** Listed open findings handed to another task, with why (`taskId` when one exists). */
+  deferredFindings?: Array<{ id: string; taskId?: string; reason: string }>;
 }
 
 export const REVIEWER_TASK_OUTPUT_SCHEMA = {
@@ -170,6 +181,37 @@ export const REVIEWER_TASK_OUTPUT_SCHEMA = {
         'ONLY when the PR\'s opening lede contradicts the diff: one plain-language sentence that is actually true of this change. Correctness, never taste — omit this for a lede that is accurate but clumsy, dull or badly worded. Same rules as the author\'s: one sentence, no file paths, no endpoint or symbol names.',
     },
     criteriaFindings: REVIEWER_CRITERIA_FINDINGS_SCHEMA,
+    findings: {
+      type: 'array',
+      description: 'request-changes: one entry per distinct issue, pinned to the file and line it is about. Restate a still-open listed finding with its id.',
+      items: {
+        type: 'object',
+        required: ['title'],
+        properties: {
+          id: { type: 'string' },
+          path: { type: 'string' },
+          line: { type: 'number' },
+          title: { type: 'string' },
+          required: { type: 'boolean' },
+        },
+        additionalProperties: false,
+      },
+    },
+    resolvedFindings: {
+      type: 'array',
+      description: 'The ids of the listed open findings you verified are fixed at this head.',
+      items: { type: 'string' },
+    },
+    deferredFindings: {
+      type: 'array',
+      description: 'Listed open findings that belong to another task, with why.',
+      items: {
+        type: 'object',
+        required: ['id', 'reason'],
+        properties: { id: { type: 'string' }, taskId: { type: 'string' }, reason: { type: 'string' } },
+        additionalProperties: false,
+      },
+    },
     copyFindings: {
       type: 'array',
       description:
@@ -500,6 +542,46 @@ export interface CreateReviewerTaskParams {
    * attested, so this review covers ONLY these novel paths.
    */
   compositionScope?: { novelDeltaPaths: string[] };
+  /**
+   * Set by the kernel: the delivery's findings still open (§5), and, for a
+   * verification round, the ones this round exists to verify.
+   */
+  findingsBrief?: FindingsBrief;
+}
+
+export interface FindingsBrief {
+  open: Array<{ id: string; path: string | null; line: number | null; title: string; status: string }>;
+  verify?: string[];
+}
+
+/**
+ * The prompt section on findings (docs/specs/workflow-kernel-library.md §5):
+ * how to report them, and, when some are open, each one with its id to
+ * resolve, restate or defer. An approval that leaves a listed one out does not
+ * approve the head: buildd asks for another round to verify it.
+ */
+export function findingsSection(brief: FindingsBrief | null | undefined): string {
+  const lines = [
+    '',
+    '## Findings',
+    '',
+    'On request-changes, list each distinct issue in `findings`: `{ path, line, title }`, one per issue, with the',
+    'file and line it is about. buildd keeps every finding open until a later review verifies it, whatever is pushed.',
+  ];
+  const open = brief?.open ?? [];
+  if (open.length) {
+    const verify = new Set(brief?.verify ?? []);
+    lines.push(
+      '',
+      'These findings from earlier rounds are still open. For each one, check it at this head and either list its id in',
+      '`resolvedFindings` (fixed), restate it in `findings` with its `id` (not fixed), or put it in `deferredFindings`',
+      'with a reason (belongs to another task). An approve that leaves one of them unlisted does not approve this head.',
+      '',
+      ...open.map((f) => `- \`${f.id}\`${verify.has(f.id) ? ' (verify this one)' : ''}${f.status === 'addressed' ? ' (a push touched its file)' : ''}: ${f.path ? `\`${f.path}${f.line != null ? `:${f.line}` : ''}\` ` : ''}${f.title}`),
+    );
+  }
+  lines.push('');
+  return lines.join('\n');
 }
 
 /** The prompt section that scopes a composition delta review to its novel paths. */
@@ -750,7 +832,7 @@ export async function createReviewerTask(
     prNumber,
     files: params.priorVerdict ? params.deltaFiles : params.prFiles,
   });
-  const description = `${params.compositionScope ? `${diffContext}${compositionScopeSection(params.compositionScope)}` : diffContext}${copySection}`;
+  const description = `${params.compositionScope ? `${diffContext}${compositionScopeSection(params.compositionScope)}` : diffContext}${params.workflowRound ? findingsSection(params.findingsBrief) : ''}${copySection}`;
 
   const title = reviewerTitle(prNumber, originalTask.title);
 

@@ -5515,6 +5515,37 @@ export const workflowReviewRounds = pgTable('workflow_review_rounds', {
 
 export type WorkflowReviewRoundRow = typeof workflowReviewRounds.$inferSelect;
 
+// workflow-kernel-library.md §5 — review findings that survive until a round
+// verifies them, a person waives them or a deferral names the task that owns
+// them. The id is stable across rounds (`<origin round id>:<ordinal>`), so a
+// later round restating a finding updates this row rather than adding one.
+// Written only by the kernel's transition statement (workflow-write-sites).
+export const workflowFindings = pgTable('workflow_findings', {
+  id: text('id').primaryKey(),
+  deliveryId: uuid('delivery_id').references(() => workflowDeliveries.id, { onDelete: 'cascade' }).notNull(),
+  originRoundId: uuid('origin_round_id').notNull(),
+  originRound: integer('origin_round').notNull(),
+  originHeadSha: text('origin_head_sha').notNull(),
+  ordinal: integer('ordinal').notNull(),
+  path: text('path'),
+  line: integer('line'),
+  title: text('title').notNull(),
+  required: boolean('required').default(true).notNull(),
+  status: text('status').default('open').notNull().$type<'open' | 'addressed' | 'resolved' | 'waived' | 'deferred'>(),
+  lastRound: integer('last_round').notNull(),
+  addressedBySha: text('addressed_by_sha'),
+  closedByRoundId: uuid('closed_by_round_id'),
+  closedBy: text('closed_by'),
+  closedReason: text('closed_reason'),
+  deferredToTaskId: uuid('deferred_to_task_id'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  deliveryIdx: index('workflow_findings_delivery_idx').on(t.deliveryId, t.originRound, t.ordinal),
+}));
+
+export type WorkflowFindingRow = typeof workflowFindings.$inferSelect;
+
 // §5.3 — append-only observations. A duplicate fact_key is a no-op that
 // returns the first application's result. payload holds normalised fields the
 // reducer read, never a raw webhook body.

@@ -19,6 +19,7 @@ import { db } from '@buildd/core/db';
 import type { Command, LivePr } from './commands';
 import { applyCommand, loadView, type CommandResult, type DeliveryRef, type Exec } from './kernel';
 import { baseChangeKey, headCoverage, headObservationKey } from './reducer';
+import { openFindings } from '@buildd/workflow-kernel/findings';
 import type { CloseCause, CompositionAttestation, ConstituentEvidence, DeliverySnapshot, KernelView } from './types';
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
@@ -331,10 +332,14 @@ async function commandFor(fact: FactInput, live: LivePr | null, exec: Exec, gith
       const reading = live ? await carryForwardReading(view, fact.repoFullName, live, exec, github) : { evidence: null, diffChanged: false };
       const carryForward = reading.evidence;
       const diffChanged = reading.diffChanged;
+      // §5: what the push changed, read only when an open finding names a path it could address.
+      const changedPaths = live && d?.currentHeadSha && d.currentHeadSha !== live.headSha && openFindings(view).some((f) => f.status === 'open' && f.path) && github?.changedPaths
+        ? await github.changedPaths(fact.repoFullName, d.currentHeadSha, live.headSha).catch(() => null)
+        : null;
       return {
-        command: { type: 'HeadObserved', actor, hintedHeadSha: fact.hintedHeadSha ?? null, live: live!, ...(proof ? { proof } : {}), ...(carryForward ? { carryForward } : {}), ...(diffChanged ? { diffChanged } : {}), ...(attribution ? { attribution } : {}) },
+        command: { type: 'HeadObserved', actor, hintedHeadSha: fact.hintedHeadSha ?? null, live: live!, ...(proof ? { proof } : {}), ...(carryForward ? { carryForward } : {}), ...(diffChanged ? { diffChanged } : {}), ...(attribution ? { attribution } : {}), ...(changedPaths ? { changedPaths } : {}) },
         ref,
-        payload: { hintedHeadSha: fact.hintedHeadSha ?? null, live, proof: proof ?? null, carryForward, ...(diffChanged ? { diffChanged } : {}), attribution: attribution ?? null },
+        payload: { hintedHeadSha: fact.hintedHeadSha ?? null, live, proof: proof ?? null, carryForward, ...(diffChanged ? { diffChanged } : {}), attribution: attribution ?? null, ...(changedPaths ? { changedPaths: changedPaths.slice(0, 50) } : {}) },
         repoFullName: fact.repoFullName, prNumber: fact.prNumber,
         held: d ? { deliveryId: d.id, headSha: d.currentHeadSha, version: d.version, state: d.state, round: d.currentRound } : null,
       };

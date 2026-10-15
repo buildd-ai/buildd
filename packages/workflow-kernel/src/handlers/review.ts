@@ -25,7 +25,8 @@ import type { Command } from '../commands';
 import type { EffectHandler, EffectHandlers } from '../effects';
 import { githubOf, NO_ROLE, type ClaimedEffect, type KernelPorts, type PostedReview, type ReviewOutput } from '../ports';
 import { PUSH_RECOVERY_BACKOFF_MS } from '../reducer';
-import type { DeliverySnapshot, RoundSnapshot } from '../types';
+import { openFindings } from '../findings';
+import type { DeliverySnapshot, KernelView, RoundSnapshot } from '../types';
 import { hasPr, need, type WithPr } from './ports-of';
 
 const NO_INSTALLATION = 'no GitHub installation for the workspace';
@@ -72,6 +73,17 @@ function compositionScopeOf(round: RoundSnapshot): { novelDeltaPaths: string[] }
   const sc = round.scope;
   if (!sc?.composition || !Array.isArray(sc.novelDeltaPaths)) return undefined;
   return { novelDeltaPaths: (sc.novelDeltaPaths as unknown[]).map(String) };
+}
+
+/** What the reviewer is told about the delivery's open findings (§5); `verify`: a verification round's own list. */
+export function findingsBriefOf(view: Pick<KernelView, 'findings'>, round: Pick<RoundSnapshot, 'scope'>): {
+  open: Array<{ id: string; path: string | null; line: number | null; title: string; status: string }>; verify?: string[];
+} {
+  const verify = Array.isArray(round.scope?.verifyFindings) ? (round.scope!.verifyFindings as unknown[]).map(String) : undefined;
+  return {
+    open: openFindings(view).map((f) => ({ id: f.id, path: f.path, line: f.line, title: f.title, status: f.status })),
+    ...(verify ? { verify } : {}),
+  };
 }
 
 const prUrl = (d: WithPr) => `https://github.com/${d.repoFullName}/pull/${d.prNumber}`;
@@ -134,6 +146,8 @@ export function reviewHandlers(ports: KernelPorts): EffectHandlers {
       detail: {
         roundId: round.id, round: round.round, maxRounds: d.maxRounds,
         ...(priorVerdict ? { priorVerdict } : {}), ...(compositionScopeOf(round) ? { compositionScope: compositionScopeOf(round) } : {}),
+        // §5: the findings still open, each with its id, for the reviewer to verify, restate or defer.
+        findingsBrief: findingsBriefOf(view, round),
       },
     });
     if (filed.skipped === NO_ROLE) {

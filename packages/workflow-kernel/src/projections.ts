@@ -19,8 +19,9 @@
  *     canonical state and its current attempt, never from the worst attempt.
  */
 import type { PrDisplayState, PrSupersededBy } from './pr-display';
+import { openRequiredFindings } from './findings';
 import { attemptView } from './reducer';
-import type { AttemptFamily, AttemptSnapshot, DeliverySnapshot, DeliveryState, KernelView, RoundSnapshot } from './types';
+import type { AttemptFamily, AttemptSnapshot, DeliverySnapshot, DeliveryState, FindingSnapshot, KernelView, RoundSnapshot } from './types';
 
 export type { DeliverySnapshot } from './types';
 
@@ -145,6 +146,10 @@ export interface DeliveryView {
   /** The current head carries a standing approval (a verdict, or one carried across a content-equivalent refresh). */
   approvedCurrentHead: boolean;
   approvalBasis: DeliverySnapshot['approvalBasis'];
+  /** §5: every finding with its disposition, oldest first; resolved ones stay for history. */
+  findings?: FindingSnapshot[];
+  /** §5: how many required findings are still open (`open` or `addressed`). */
+  openFindings?: number;
 }
 
 /**
@@ -417,6 +422,8 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
     ledger: input.view.attempts,
     approvedCurrentHead: d.currentHeadSha != null && d.approvedHeads.includes(d.currentHeadSha),
     approvalBasis: d.approvalBasis,
+    findings: input.view.findings ?? [],
+    openFindings: openRequiredFindings(input.view).length,
   };
 }
 

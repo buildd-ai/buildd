@@ -336,6 +336,7 @@ DELETE FROM workflow_effects;
 DELETE FROM workflow_transitions;
 DELETE FROM workflow_facts;
 DELETE FROM workflow_review_rounds;
+DELETE FROM workflow_findings;
 DELETE FROM workflow_attempts;
 DELETE FROM workflow_deliveries;
 -- Mission delivery epochs: branch names, repo names, merge SHAs, settlement proofs.

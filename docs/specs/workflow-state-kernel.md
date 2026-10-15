@@ -2392,9 +2392,15 @@ type".
    - the PR closes unmerged (the finding moves to the superseding PR, if any).
 
    An open finding blocks landing at every door (rule 6).
-   *Today:* findings exist only as prose in the reviewer's result and the activity
-   comment. The gate reads only the newest round's verdict, so a later approve
-   (including a delta approve that never read the path) clears every earlier finding.
+   Amended by `workflow-kernel-library.md` §5 (slice S5): a finding's id is stable
+   across rounds (derived from the round that raised it and its position, kept when a
+   later round restates it); `addressed` (a push touched its path) is an interim state
+   that still blocks; `deferred` (to a named task, by a reviewer or a person, with who
+   and why) is a fourth closure.
+   *As built (S5):* `workflow_findings`, written by the kernel's transition statement;
+   the gate, T15, the policy-merge rule and `buildd/landing` read open required
+   findings. An approval that leaves one unverified queues a verification round at the
+   same head instead of approving it (library §5, "As built").
 3. **A repair is an executable builder pinned to the exact target.** A review fix,
    whether kernel `dispatch_fix` or legacy, carries all of the following:
    - its own description: the open findings, verbatim, as its task. The owner's
