@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { missionNotes, tasks, workspaces } from '@buildd/core/db/schema';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import {
   SURFACE_AUDIT_WAIVER_NOTE_TITLE,
   isRenderedSurfaceChange,
@@ -125,6 +125,26 @@ export async function loadSurfaceAuditWaiver(
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
   if (!latest) return null;
   return { reason: (latest.body ?? '').trim(), actorLabel: latest.actorLabel ?? null, at: new Date(latest.createdAt).toISOString() };
+}
+
+/**
+ * The missions among these with a person's visual-review waiver on record,
+ * by the same rule as `loadSurfaceAuditWaiver` (a user or MCP note with a
+ * reason). One read for a whole list; a failed read waives nothing.
+ */
+export async function loadSurfaceAuditWaivedMissionIds(missionIds: readonly string[]): Promise<Set<string>> {
+  if (missionIds.length === 0) return new Set();
+  try {
+    const notes = await db.query.missionNotes.findMany({
+      where: sqlWhere(and(inArray(missionNotes.missionId, [...missionIds]), eq(missionNotes.title, SURFACE_AUDIT_WAIVER_NOTE_TITLE))),
+      columns: { missionId: true, authorType: true, body: true },
+    });
+    return new Set(notes
+      .filter(n => (n.authorType === 'user' || n.authorType === 'mcp') && (n.body ?? '').trim().length > 0)
+      .flatMap(n => (n.missionId ? [n.missionId] : [])));
+  } catch {
+    return new Set();
+  }
 }
 
 export async function repoFor(workspaceId: string): Promise<{ installationId: number; fullName: string } | null> {

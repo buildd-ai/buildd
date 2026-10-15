@@ -49,6 +49,8 @@ import { getDeliveryViewsForTasks, kernelReplacedFailedTaskIds, replacedFailedTa
 import { attemptLine } from '@/lib/workflow/projections';
 import { loadClaimHoldReasons, loadMissionClaimDeferrals } from '@/lib/mission-claim-deferrals';
 import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
+import { BROWSER_RUNNER_MISSING } from '@/lib/claim-hold-phrase';
+import { presentVisualReview } from '@/lib/workflow/visual-review-presentation';
 import { deriveMissionIntegrationPr } from '@/lib/mission-integration-pr';
 import { missionCardProgress, ownerUnmergedPrs, type MissionCardTaskRow } from '@/lib/mission-card-view';
 import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
@@ -487,11 +489,24 @@ async function viewForMission(missionId: string): Promise<{
   const completion = await canCompleteMission(missionId, { evaluateCriteria: false });
   // A missing visual review is the owner's to run only when the policy asks. Read
   // the canonical state only then, so every other explain stays one query lighter.
-  const visualReviewActor = completion.code === 'surface_audit_missing'
+  // An open audit row also needs it: the header follows the visual review state
+  // (waived, blocked, running), not the audit task row (spec 8e137fdb I-1, I-5).
+  const openAudit = loaded.some(t => OPEN_TASK_STATUSES.has(t.status) && isSurfaceAuditTask(t.title ?? ''));
+  const visualReviewState = completion.code === 'surface_audit_missing' || openAudit
     ? await import('@/lib/workflow/visual-review-state-load')
         .then(m => m.getMissionVisualReviewState(missionId))
-        .then(v => v?.nextActor ?? null)
         .catch(() => null)
+    : null;
+  const visualReviewActor = completion.code === 'surface_audit_missing' ? visualReviewState?.nextActor ?? null : null;
+  const visualReview = visualReviewState
+    ? {
+        status: visualReviewState.status,
+        blockedDetail: visualReviewState.status === 'blocked'
+          ? visualReviewState.blocked?.cause === 'no_browser_runner'
+            ? BROWSER_RUNNER_MISSING
+            : presentVisualReview(visualReviewState).label.toLowerCase()
+          : null,
+      }
     : null;
 
   const wait = classifyMissionWait(loaded as unknown as WaitClassifiableTask[]);
@@ -557,6 +572,7 @@ async function viewForMission(missionId: string): Promise<{
     .filter(t => supersededMap.has(t.id))
     .map(t => ({ task: t, superseded: supersededMap.get(t.id)! }));
 
+  const missingBrowser = await missingBrowserFor(openTasks, m.workspaceId ?? null, m.executor === 'local');
   const input: MissionStateInput = {
     status: String(m.status),
     isHeld: m.isHeld === true,
@@ -581,7 +597,9 @@ async function viewForMission(missionId: string): Promise<{
       ...(t.status === 'pending' ? { waitingOnPrs: unmetDependencyPrs(t, loadedById) } : {}),
       surfaceAudit: isSurfaceAuditTask(t.title ?? ''),
       holdReason: t.status === 'pending' ? holdReasons.get(t.id) ?? null : null,
+      missingBrowser: missingBrowser && t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG,
     })),
+    visualReview,
     missionPrMerged: integrationPr?.state === 'merged',
     openQuestions: missionOpenQuestions(loaded),
     localStrand: strand
@@ -607,7 +625,6 @@ async function viewForMission(missionId: string): Promise<{
     ),
   };
 
-  const missingBrowser = await missingBrowserFor(openTasks, m.workspaceId ?? null, m.executor === 'local');
   return {
     view: deriveMissionStateView(input),
     mission: m,

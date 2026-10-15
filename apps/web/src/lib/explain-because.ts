@@ -220,7 +220,7 @@ function openTaskLinks(
     }
     if (t.missingBrowser && orphaned(t)) {
       return link(
-        `Task "${t.title ?? t.id}" is waiting for a runner with the missing browser capability. No eligible runner advertises a working browser provider for this workspace.`,
+        `${name(t)} needs a runner with a browser. None is online for this workspace.`,
         'tasks.roleSlug + workerHeartbeats.environment + workspaces.gitConfig.executor',
         { ...base, taskId: t.id },
       );
@@ -229,10 +229,14 @@ function openTaskLinks(
     if (hold && orphaned(t)) {
       return link(`${name(t)} is queued: ${hold}.`, 'gate_events.reason', { ...base, taskId: t.id });
     }
+    // A reason the derivation does not know reads as waiting, with no invented cause (spec 8e137fdb AC-9).
+    if (t.status === 'pending' && t.holdReason && orphaned(t)) {
+      return link(`${name(t)} is waiting.`, 'gate_events.reason', { ...base, taskId: t.id });
+    }
     return link(
       orphaned(t)
         ? t.status === 'pending'
-          ? `${name(t)} is waiting for a runner.`
+          ? `${name(t)} is next in line for a runner.`
           : `${name(t)} was started, but nothing is running it now.`
         : t.live
           ? `${name(t)} is in progress${w.local ? ' in a local session' : ''}.`

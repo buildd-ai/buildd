@@ -1017,13 +1017,13 @@ describe('visual task browser claimability explanation', () => {
     browserHeartbeats = [];
     taskRows = [task({ status: 'pending', roleSlug: 'visual-auditor' })];
     const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
-    expect(answer.because.map(l => l.claim).join(' ')).toContain('browser capability');
+    expect(answer.because.map(l => l.claim).join(' ')).toContain('needs a runner with a browser');
   });
   it('does not invent a missing browser when the capability read failed', async () => {
     browserHeartbeats = null;
     taskRows = [task({ status: 'pending', roleSlug: 'visual-auditor' })];
     const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
-    expect(answer.because.map(l => l.claim).join(' ')).not.toContain('missing browser capability');
+    expect(answer.because.map(l => l.claim).join(' ')).not.toContain('needs a runner with a browser');
     browserHeartbeats = [];
   });
 });

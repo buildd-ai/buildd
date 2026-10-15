@@ -70,7 +70,7 @@ describe('buildStateBecause', () => {
       // The row without a worker is still named as such, and leads the chain —
       // it is the one worth a reader's attention.
       expect(chain[0].refs.taskId).toBe('task-queued');
-      expect(chain[0].claim).toBe('"Write the docs" is waiting for a runner.');
+      expect(chain[0].claim).toBe('"Write the docs" is next in line for a runner.');
     });
 
     it('names the claim loop hold instead of "waiting for a runner" (spec f7f67f1a R-33)', () => {

@@ -26,6 +26,7 @@ import { LIVE_WORKER_STATUSES, OPEN_TASK_STATUSES } from '@buildd/shared';
 import type { StateKey } from '@/components/ui/states';
 import { displayTaskTitle } from './task-title';
 import { claimHoldPhrase } from './claim-hold-phrase';
+import { quietLabel } from './local-strand';
 
 // ── Vocabulary ──────────────────────────────────────────────────────────────
 
@@ -305,12 +306,20 @@ export interface MissionDeliveryInput {
   missionPrMerged?: boolean | null;
   /** The claim loop's latest hold reason per still-pending task (gate_events), when the caller has it. */
   holdReasons?: ReadonlyMap<string, string> | null;
+  /** A person waived the visual review: an open audit is no longer what is left. */
+  visualWaived?: boolean | null;
+  /** Goal criteria that have not passed (outcome spec included), when the caller read them. */
+  criteriaPending?: number | null;
+  /** Local-executor missions: `deriveLocalStrand`'s reading, when the caller has it. */
+  localStrand?: { stranded: boolean; quietMs: number } | null;
   tasks: readonly MissionTaskRow[];
   /** Findings the latest visual audit reported, when the caller knows them. */
   visualFindings?: number | null;
   /** Per-task review evidence, when the caller has it. */
   reviews?: ReadonlyMap<string, { review: ReviewEvidence; headSha: string | null }>;
 }
+
+export type MissionRemaining = 'visual' | 'criteria' | 'release' | 'completion';
 
 export interface MissionMilestones {
   /** No agent is live on any task and every task stopped. */
@@ -354,6 +363,8 @@ export interface MissionDelivery {
    * on it when one is known (R-33).
    */
   visualOpen?: { text: string; hold: string | null } | null;
+  /** Every task landed and the mission is open: what is left, in the order it clears. */
+  remaining?: MissionRemaining | null;
   /** The chip is a closed PR the platform is still reconciling (see `TaskDelivery.reconciling`). */
   reconciling?: boolean;
   tasks: Array<{ id: string; title: string; delivery: TaskDelivery }>;
@@ -436,7 +447,7 @@ export function projectMissionDelivery(input: MissionDeliveryInput, rules: Missi
   const hidden = (id: string) => auditIds.has(id) || superseded.has(id);
   const m: MissionDeliveryInput = { ...input, tasks: input.tasks.filter(t => !hidden(t.id) && !(t.parentTaskId && hidden(t.parentTaskId))) };
   const visual = visualAuditState(audits, input.visualFindings);
-  const visualOpen = visual ? null : visualOpenState(audits, input.holdReasons);
+  const visualOpen = visual || input.visualWaived ? null : visualOpenState(audits, input.holdReasons);
   const missionPrMerged = !!input.integrationBranch && input.missionPrMerged === true;
   const progress = computeMissionProgress(m.tasks.map(t => ({ ...t, dependsOn: undefined, workers: (t.workers ?? []).map(w => ({ ...w })) })));
   const attempts = new Map<string, MissionTaskRow[]>();
@@ -513,7 +524,12 @@ export function projectMissionDelivery(input: MissionDeliveryInput, rules: Missi
         : { tone: 'error', text: `${focus.title} did not land and needs your decision` };
     }
     else if (focus.delivery.kind === 'unavailable') exception = { tone: 'warning', text: `The audit for ${displayTaskTitle(focus.title)} could not run; it retries on its own` };
-    else if (kind === 'waiting') exception = { tone: 'muted', text: focus.delivery.waitingOn === 'dependency' ? 'Waiting on earlier work, not on you' : 'Waiting on capacity, not on you' };
+    else if (kind === 'waiting') {
+      exception = focus.delivery.waitingOn === 'dependency' ? { tone: 'muted', text: 'Waiting on earlier work, not on you' }
+        : m.localStrand?.stranded ? { tone: 'warning', text: 'No local session is running it' }
+        : m.localStrand ? { tone: 'muted', text: 'Waiting for a local session' }
+        : { tone: 'muted', text: 'Waiting on capacity, not on you' };
+    }
   }
 
   if (visual && !exception) exception = { tone: 'warning', text: visual.text };
@@ -525,9 +541,17 @@ export function projectMissionDelivery(input: MissionDeliveryInput, rules: Missi
     ? { evidence: 'The integration branch has not been refreshed from trunk yet.', next: 'The platform retries the refresh' }
     : describe(kind, focus, m, repairRounds);
   const evidence = described.evidence;
+  const criteriaPending = Math.max(0, input.criteriaPending ?? 0);
+  const remaining: MissionRemaining | null = kind !== 'landed' || complete ? null
+    : visual || visualOpen ? 'visual'
+    : criteriaPending > 0 ? 'criteria'
+    : m.released === false ? 'release'
+    : 'completion';
   const next = visual && (kind === 'landed' || kind === 'landing')
     ? visual.next
-    : visualOpen && kind === 'landed' && !complete ? (visualOpen.hold ? `${visualOpen.text}: ${visualOpen.hold}` : visualOpen.text) : described.next;
+    : remaining === 'visual' && visualOpen ? (visualOpen.hold ? `${visualOpen.text}: ${visualOpen.hold}` : visualOpen.text)
+    : remaining === 'criteria' ? (criteriaPending === 1 ? 'A goal criterion passes' : `${criteriaPending} goal criteria pass`)
+    : described.next;
 
   return {
     id: m.id,
@@ -547,6 +571,7 @@ export function projectMissionDelivery(input: MissionDeliveryInput, rules: Missi
     exception,
     visual,
     visualOpen,
+    remaining,
     reconciling: kind === 'notlanded' && !!focus?.delivery.reconciling,
     tasks,
   };
@@ -594,6 +619,11 @@ function describe(kind: DeliveryKind, focus: MissionDelivery['tasks'][number] | 
         ? { evidence: `The PR for ${t} closed without merging.`, next: 'Checking whether another PR carries it' }
         : { evidence: `${t} did not land: its PR closed, was abandoned, or the task failed.`, next: 'Open it to retry or drop it' };
     case 'waiting':
+      if (d?.waitingOn !== 'dependency' && m.localStrand) {
+        return m.localStrand.stranded
+          ? { evidence: `${t} has not started.`, next: `Waiting for a local session (none for ${quietLabel(m.localStrand.quietMs)})` }
+          : { evidence: `${t} has not started.`, next: 'Waiting for a local session' };
+      }
       return { evidence: `${t} has not started.`, next: d?.waitingOn === 'dependency' ? `After its dependencies land` : 'Starts when a slot frees up' };
     case 'held':
       return { evidence: 'Held by its owner.', next: 'Starts when armed' };
@@ -657,4 +687,18 @@ export function deliveryCounts(input: {
     liveAgents: input.liveAgents,
     slots: { used: input.liveAgents, total: input.capacity },
   };
+}
+
+/**
+ * How many of a mission's goal criteria have not passed, from the stored
+ * columns (no evaluation). A criterion the stored state does not mention has
+ * not passed; a stored overall pass clears them all.
+ */
+export function criteriaPendingOf(goalCriteria: unknown, goalCriteriaState: unknown): number {
+  const declared = Array.isArray(goalCriteria) ? goalCriteria.length : 0;
+  if (declared === 0) return 0;
+  const state = (goalCriteriaState ?? null) as { overall?: string; criteria?: Array<{ verdict?: string }> } | null;
+  if (state?.overall === 'pass') return 0;
+  const passed = (state?.criteria ?? []).filter(c => c.verdict === 'pass').length;
+  return Math.max(0, declared - passed);
 }

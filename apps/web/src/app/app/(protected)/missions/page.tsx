@@ -11,7 +11,9 @@ import { getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
 import * as missionHelpers from '@buildd/core/mission-helpers';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { summarizeMissionForCard, type MissionCardRow } from '@/lib/mission-card-view';
-import { projectMissionDelivery } from '@/lib/delivery-projection';
+import { criteriaPendingOf, projectMissionDelivery } from '@/lib/delivery-projection';
+import { deriveLocalStrand } from '@/lib/local-strand';
+import { loadSurfaceAuditWaivedMissionIds } from '@/lib/mission-surface-audit-gate';
 import { loadClaimHoldReasons } from '@/lib/mission-claim-deferrals';
 import { deriveMissionIntegrationPr } from '@/lib/mission-integration-pr';
 import { SURFACE_AUDIT_TITLE_PREFIX } from '@buildd/core/member-scoped-deps';
@@ -140,7 +142,13 @@ export default async function MissionsPage({
     .flatMap(m => ((m.tasks ?? []) as Array<{ id: string; title: string; status: string }>)
       .filter(t => t.status === 'pending' && t.title.startsWith(SURFACE_AUDIT_TITLE_PREFIX))
       .map(t => t.id));
-  const holdReasons = await loadClaimHoldReasons(pendingAuditIds);
+  const auditMissionIds = allMissions
+    .filter(m => m.status !== 'completed' && ((m.tasks ?? []) as Array<{ title: string }>).some(t => t.title.startsWith(SURFACE_AUDIT_TITLE_PREFIX)))
+    .map(m => m.id as string);
+  const [holdReasons, waivedMissionIds] = await Promise.all([
+    loadClaimHoldReasons(pendingAuditIds),
+    loadSurfaceAuditWaivedMissionIds(auditMissionIds),
+  ]);
 
   // One row per mission from the shared delivery projection — the same one
   // Home reads (lib/delivery-projection.ts), so a mission's chip, landed n/m
@@ -155,6 +163,9 @@ export default async function MissionsPage({
       // R-32: a merged mission PR puts the work on trunk; the row says what is left.
       missionPrMerged: deriveMissionIntegrationPr({ mission: obj, tasks: obj.tasks ?? [] })?.state === 'merged',
       holdReasons,
+      visualWaived: waivedMissionIds.has(obj.id),
+      criteriaPending: criteriaPendingOf(obj.goalCriteria, obj.goalCriteriaState),
+      localStrand: deriveLocalStrand({ executor: obj.executor ?? null, isHeld: obj.isHeld ?? false, status: obj.status, tasks: obj.tasks ?? [], now }),
     }, missionHelpers);
     const tasks = (obj.tasks ?? []) as Array<{ updatedAt?: Date | string | null; workers?: Array<{ status: string }> }>;
     const lastAdvancedAt = Math.max(

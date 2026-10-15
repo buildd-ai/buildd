@@ -2,7 +2,7 @@
 // list card and Next name what is left, never "The mission PR merges to trunk";
 // a waiting check names the claim gate's real hold.
 import { describe, expect, it } from 'bun:test';
-import { projectMissionDelivery as project, type MissionDeliveryInput, type MissionTaskRow } from './delivery-projection';
+import { criteriaPendingOf, projectMissionDelivery as project, type MissionDeliveryInput, type MissionTaskRow } from './delivery-projection';
 import * as missionHelpers from '@buildd/core/mission-helpers';
 
 const projectMissionDelivery = (m: MissionDeliveryInput) => project(m, missionHelpers);
@@ -98,5 +98,48 @@ describe('R-33: a queued audit names the claim gate hold', () => {
       tasks: [merged('One'), shipTask('2026-10-12T00:00:00Z'), audit({ status: 'failed' })],
     }));
     expect(m.visual?.text).toBe('Visual audit could not run');
+  });
+});
+
+describe('visual review round 1: what is left reads the waiver, criteria and a local strand', () => {
+  const on = (over: Partial<MissionDeliveryInput>) => projectMissionDelivery(mission({ missionPrMerged: true, ...over }));
+  it('a waived visual review is not what is left', () => {
+    const m = on({ visualWaived: true, released: true, tasks: [merged('One'), shipTask('2026-10-12T00:00:00Z'), audit()], holdReasons: new Map([['audit1', 'budget_paused']]) });
+    expect(m.next).toBe('Mission completes');
+    expect(m.exception).toBeNull();
+    expect(m.remaining).toBe('completion');
+  });
+  it('unpassed goal criteria come before completion', () => {
+    const m = on({ criteriaPending: 1, tasks: [merged('One'), shipTask('2026-10-12T00:00:00Z')] });
+    expect(m.next).toBe('A goal criterion passes');
+    expect(m.remaining).toBe('criteria');
+    expect(on({ criteriaPending: 3, tasks: [merged('One')] }).next).toBe('3 goal criteria pass');
+  });
+  it('an open visual review leads, then criteria', () => {
+    expect(on({ criteriaPending: 1, tasks: [merged('One'), audit()] }).remaining).toBe('visual');
+  });
+  it('a direct mission with every task landed also waits on its criteria', () => {
+    const m = projectMissionDelivery(mission({ integrationBranch: false, criteriaPending: 1, tasks: [merged('One')] }));
+    expect(m.kind).toBe('landed');
+    expect(m.next).toBe('A goal criterion passes');
+  });
+  it('a stranded local mission says so instead of "a slot frees up"', () => {
+    const m = projectMissionDelivery(mission({ integrationBranch: false, localStrand: { stranded: true, quietMs: 33 * 3_600_000 }, tasks: [merged('One'), task({ title: 'Two' })] }));
+    expect(m.kind).toBe('waiting');
+    expect(m.next).toBe('Waiting for a local session (none for 33h)');
+    expect(m.next).not.toContain('slot');
+  });
+  it('a local mission that is not stranded starts from a local session', () => {
+    const m = projectMissionDelivery(mission({ integrationBranch: false, localStrand: { stranded: false, quietMs: 0 }, tasks: [merged('One'), task({ title: 'Two' })] }));
+    expect(m.next).toBe('Waiting for a local session');
+  });
+});
+
+describe('criteriaPendingOf', () => {
+  it('reads the stored columns', () => {
+    expect(criteriaPendingOf(null, null)).toBe(0);
+    expect(criteriaPendingOf([{}, {}], null)).toBe(2);
+    expect(criteriaPendingOf([{}, {}], { overall: 'pass' })).toBe(0);
+    expect(criteriaPendingOf([{}, {}], { overall: 'pending', criteria: [{ verdict: 'pass' }, { verdict: 'pending' }] })).toBe(1);
   });
 });

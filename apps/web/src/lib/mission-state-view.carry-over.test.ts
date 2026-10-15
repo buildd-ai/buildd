@@ -53,3 +53,30 @@ describe('R-33: a held open task names its hold', () => {
     expect(v.displayState).toBe('stalled');
   });
 });
+
+describe('visual review round 1: the header reads the visual review state', () => {
+  const merged = { ...base, missionPrMerged: true };
+  it('a waived review is not queued and the mission is not stalled', () => {
+    const v = deriveMissionStateView({ ...merged, visualReview: { status: 'waived' }, openTasks: [{ ...audit, holdReason: 'budget_paused' }] });
+    expect(v.chip.label).not.toBe('VISUAL REVIEW QUEUED');
+    expect(v.displayState).not.toBe('stalled');
+    expect(v.situation?.headline.toLowerCase() ?? '').not.toContain('visual review queued');
+  });
+  it('a blocked review says it cannot run, with its cause, and no other cause', () => {
+    const v = deriveMissionStateView({ ...merged, visualReview: { status: 'blocked', blockedDetail: 'it needs a runner with a browser' }, openTasks: [{ ...audit, holdReason: 'budget_paused' }] });
+    expect(v.chip.label).toBe('VISUAL REVIEW UNABLE TO RUN');
+    expect(v.situation?.headline).toContain('it needs a runner with a browser');
+    expect(v.situation?.headline).not.toContain('budget');
+  });
+  it('a running review reads running', () => {
+    const v = deriveMissionStateView({ ...merged, visualReview: { status: 'running' }, openTasks: [audit] });
+    expect(v.chip.label).toBe('VISUAL REVIEW RUNNING');
+  });
+  it('a missing browser runner is the one cause, ahead of a claim-loop hold', () => {
+    const v = deriveMissionStateView({ ...merged, openTasks: [{ ...audit, holdReason: 'budget_paused', missingBrowser: true }] });
+    expect(v.situation?.headline).toContain('it needs a runner with a browser');
+    expect(v.situation?.headline).not.toContain('budget');
+    const plain = deriveMissionStateView({ ...base, openTasks: [{ id: 'b1', status: 'pending', title: 'Audit', holdReason: 'budget_paused', missingBrowser: true }] });
+    expect(plain.situation?.headline).not.toContain('budget');
+  });
+});
