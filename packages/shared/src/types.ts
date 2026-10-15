@@ -3237,6 +3237,23 @@ export type MissionStageStep = 'building' | 'verifying' | 'delivering' | 'delive
 export interface MissionStage {
   step: MissionStageStep;
   waitingOn: string | null;
+  /**
+   * One cell per task of the mission, in the mission page's Overview strip
+   * order and groups (done, in progress, waiting, then checks), from the same
+   * projection (`overviewProgress`, lib/mission-overview.ts). `buildd top`
+   * draws it as the selected mission's progress row (spec c7410e76 R-29).
+   * Organizer runs and cancelled tasks have no cell. Absent from older servers.
+   */
+  progress?: MissionProgressCell[];
+}
+
+/** The four groups of the mission page's Overview strip, in display order. */
+export type MissionProgressGroup = 'done' | 'active' | 'waiting' | 'checks';
+
+export interface MissionProgressCell {
+  /** The strip's display state (`StateKey` in components/ui/states.ts): landed, running, failed, ready, blocked... */
+  state: string;
+  group: MissionProgressGroup;
 }
 
 /**

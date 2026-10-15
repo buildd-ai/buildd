@@ -6,6 +6,7 @@
  * cost column goes first, then the role column, and text is cut with "…".
  */
 import type { Palette, PaletteToken } from '../terminal-palette';
+import { progressPieces } from './progress';
 import {
   busySlots, currentMission, currentWorkspace, deliveredDay, describeToolCall, filterLine, formatDuration, missionMeta, missionRows, missionStageLine, missionStageWord, planOf,
   providerHoldLine, providerHolds, selectedRow,
@@ -285,6 +286,9 @@ function listBody(state: TopState, cols: number, height: number, now: number, p:
   const titleW = rw - textWidth(counts) - 1;
   // One space always separates a cut heading from the counts (R-21).
   right.push(' ' + p.fg('text', fit(heading, titleW - 1)) + ' ' + p.fg(nRunning > 0 ? 'accent' : 'muted', counts));
+  // R-29: the whole mission as squares, done first, under its heading.
+  const progress = mission.key === NO_MISSION ? null : progressRow(mission, rw, p);
+  if (progress) right.push(progress);
   right.push(p.fg('faint', '─'.repeat(rw)));
 
   const groups: Array<{ key: TaskRow['group']; label: string }> = [
@@ -323,6 +327,23 @@ function listBody(state: TopState, cols: number, height: number, now: number, p:
     out.push(l + p.fg('faint', '│') + r);
   }
   return out;
+}
+
+/** The selected mission's progress row, exactly `width` wide; null when the server sent no cells. */
+function progressRow(mission: MissionRow, width: number, p: Palette): string | null {
+  const pieces = progressPieces(mission.stage?.progress, width - 1, textWidth);
+  if (!pieces) return null;
+  let used = 1;
+  let out = ' ';
+  for (const piece of pieces) {
+    const room = width - used;
+    if (room <= 0) break;
+    const w = textWidth(piece.text);
+    const t = w <= room ? piece.text : fit(piece.text, room);
+    out += p.fg(piece.token, t);
+    used += Math.min(w, room);
+  }
+  return out + ' '.repeat(Math.max(0, width - used));
 }
 
 function detailBody(state: TopState, taskId: string, cols: number, height: number, now: number, p: Palette): string[] {

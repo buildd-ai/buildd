@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { dagBoard, dagId, DAG_SPECS, overviewWavesBoard, overviewWavesInput } from '@/app/app/dev/fixtures/mission-task-strip-fixtures';
 import { buildMissionBoard } from './mission-board';
 import { stripOrder } from './mission-task-strip';
-import { finishSettingTaskId, overviewCells, overviewWaitLine, overviewCounts, overviewDefaultSelection, overviewLayout, overviewLegend, overviewSelection, overviewWaitCause } from './mission-overview';
+import { finishSettingTaskId, overviewCells, overviewWaitLine, overviewCounts, overviewDefaultSelection, overviewLayout, overviewLegend, overviewProgress, overviewSelection, overviewWaitCause } from './mission-overview';
 
 const spec = DAG_SPECS.linear; // A landed, B running, C blocked, D/E queued
 const model = dagBoard(spec);
@@ -27,6 +27,28 @@ describe('overviewCells', () => {
     expect(cells.map(c => c.id)).toEqual(order);
     expect(cells.map(c => c.tick)).toEqual(['01', '02', '03', '04', '05']);
     expect(cells.map(c => c.state)).toEqual(['landed', 'running', 'blocked', 'queued', 'queued']);
+  });
+});
+
+describe('overviewProgress', () => {
+  // buildd top's progress row (spec c7410e76 R-29): the page's own cells and groups, nothing re-derived.
+  it('is the Overview strip: its cells in its order, each tagged with its group', () => {
+    const layout = overviewLayout(model);
+    const cells = overviewCells(model, layout.order);
+    const progress = overviewProgress(model);
+    expect(progress.map(c => c.state)).toEqual(cells.map(c => c.state));
+    expect(progress.map(c => c.group)).toEqual(layout.groups.flatMap(g => g.ids.map(() => g.key)));
+    expect(progress).toEqual([
+      { state: 'landed', group: 'done' },
+      { state: 'running', group: 'active' },
+      { state: 'blocked', group: 'waiting' },
+      { state: 'queued', group: 'waiting' },
+      { state: 'queued', group: 'waiting' },
+    ]);
+  });
+
+  it('is empty for a mission with no tasks', () => {
+    expect(overviewProgress({ phases: [], tasks: {} })).toEqual([]);
   });
 });
 

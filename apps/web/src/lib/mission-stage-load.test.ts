@@ -12,10 +12,7 @@ mock.module('@buildd/core/db/relational-sql', () => ({ sqlWhere: (expr: any) => 
 mock.module('@buildd/core/db/schema', () => ({
   missions: { id: 'missions.id', workspaceId: 'missions.workspaceId' },
   tasks: { missionId: 'tasks.missionId', workspaceId: 'tasks.workspaceId' },
-  workers: {
-    taskId: 'workers.taskId', prUrl: 'workers.prUrl', prNumber: 'workers.prNumber',
-    mergedAt: 'workers.mergedAt', prLifecycleStatus: 'workers.prLifecycleStatus',
-  },
+  workers: new Proxy({}, { get: (_t, k) => `workers.${String(k)}` }),
 }));
 
 let missionRows: any[] = [];
@@ -77,12 +74,9 @@ describe('loadMissionStages', () => {
       { type: 'inArray', field: 'tasks.missionId', values: ['m1', 'm2'] },
       { type: 'inArray', field: 'tasks.workspaceId', values: ['ws-1'] },
     ] });
-    // Workers: only the tasks those scoped reads returned, and only PR-bearing rows.
+    // Workers: only the tasks those scoped reads returned (every worker: the progress row needs them).
     expect(selectCalls).toHaveLength(1);
-    expect(selectCalls[0].where).toEqual({ type: 'and', args: [
-      { type: 'inArray', field: 'workers.taskId', values: ['t1'] },
-      { type: 'isNotNull', field: 'workers.prUrl' },
-    ] });
+    expect(selectCalls[0].where).toEqual({ type: 'inArray', field: 'workers.taskId', values: ['t1'] });
   });
 
   it('is three reads however many missions are listed (no N+1)', async () => {
@@ -100,7 +94,7 @@ describe('loadMissionStages', () => {
     taskRows = [task({ id: 't1' }), task({ id: 't2' })];
     workerRows = [{ taskId: 't1', prUrl: 'https://example.test/pr/1', prNumber: 1, mergedAt: '2026-10-14T10:00:00.000Z', prLifecycleStatus: 'merged' }];
     const stages = await loadMissionStages(['m1'], ['ws-1']);
-    expect(stages.get('m1')).toEqual({ step: 'verifying', waitingOn: 'Unit tests pass: not checked' });
+    expect(stages.get('m1')).toMatchObject({ step: 'verifying', waitingOn: 'Unit tests pass: not checked' });
   });
 
   it('a direct mission whose audit completed (pass or findings) is verifying, not delivered, until the mission completes', async () => {
@@ -109,18 +103,50 @@ describe('loadMissionStages', () => {
     missionRows = [mission({ goalCriteria: [] })];
     taskRows = rows;
     workerRows = [{ taskId: 't1', ...merged }];
-    expect((await loadMissionStages(['m1'], ['ws-1'])).get('m1')).toEqual({ step: 'verifying', waitingOn: 'see the mission page' });
+    expect((await loadMissionStages(['m1'], ['ws-1'])).get('m1')).toMatchObject({ step: 'verifying', waitingOn: 'see the mission page' });
     expect(tasksFindMany.mock.calls[0][0].columns.createdAt).toBe(true);
 
     missionRows = [mission({ goalCriteria: [], status: 'completed' })];
-    expect((await loadMissionStages(['m1'], ['ws-1'])).get('m1')).toEqual({ step: 'delivered', waitingOn: null });
+    expect((await loadMissionStages(['m1'], ['ws-1'])).get('m1')).toMatchObject({ step: 'delivered', waitingOn: null });
   });
 
   it('an unmerged PR keeps the build open', async () => {
     missionRows = [mission()];
     taskRows = [task({ id: 't1' })];
     workerRows = [{ taskId: 't1', prUrl: 'https://example.test/pr/1', prNumber: 1, mergedAt: null, prLifecycleStatus: 'pr_open' }];
-    expect((await loadMissionStages(['m1'], ['ws-1'])).get('m1')).toEqual({ step: 'building', waitingOn: '0 of 1 landed' });
+    expect((await loadMissionStages(['m1'], ['ws-1'])).get('m1')).toMatchObject({ step: 'building', waitingOn: '0 of 1 landed' });
+  });
+
+  it('a worker without a PR counts for progress, never as a PR for the stage', async () => {
+    missionRows = [mission()];
+    taskRows = [task({ id: 't1', status: 'in_progress' })];
+    workerRows = [{ id: 'w1', taskId: 't1', status: 'running', startedAt: '2026-10-14T10:00:00.000Z', prUrl: null, prNumber: null, mergedAt: null, prLifecycleStatus: null }];
+    const stage = (await loadMissionStages(['m1'], ['ws-1'])).get('m1');
+    expect(stage?.step).toBe('building');
+    expect(stage?.progress).toEqual([{ state: 'running', group: 'active' }]);
+  });
+
+  it('R-29: each mission carries its progress cells, done first, organizer runs excluded', async () => {
+    const merged = { prUrl: 'https://example.test/pr/1', prNumber: 1, mergedAt: '2026-10-14T10:00:00.000Z', prLifecycleStatus: 'merged', status: 'completed' };
+    missionRows = [mission({ id: 'a' }), mission({ id: 'b' })];
+    taskRows = [
+      task({ id: 'a-wait', missionId: 'a', status: 'pending', createdAt: '2026-10-14T09:00:00.000Z' }),
+      task({ id: 'a-done', missionId: 'a', status: 'completed', createdAt: '2026-10-14T09:01:00.000Z' }),
+      task({ id: 'a-plan', missionId: 'a', status: 'in_progress', taskClass: 'bookkeeping', mode: 'planning', roleSlug: 'organizer', kind: 'coordination', title: 'Mission: example' }),
+      task({ id: 'b-run', missionId: 'b', status: 'in_progress' }),
+    ];
+    workerRows = [
+      { id: 'w1', taskId: 'a-done', ...merged },
+      { id: 'w2', taskId: 'a-plan', status: 'running', prUrl: null },
+      { id: 'w3', taskId: 'b-run', status: 'running', prUrl: null },
+    ];
+    const stages = await loadMissionStages(['a', 'b'], ['ws-1']);
+    expect(stages.get('a')?.progress).toEqual([{ state: 'landed', group: 'done' }, { state: 'ready', group: 'waiting' }]);
+    expect(stages.get('b')?.progress).toEqual([{ state: 'running', group: 'active' }]);
+    // The board reads dependencies and phases, so the task read loads them.
+    const cols = tasksFindMany.mock.calls[0][0].columns;
+    expect(cols.dependsOn).toBe(true);
+    expect(cols.missionPhaseIndex).toBe(true);
   });
 
   it('reads nothing with no missions or no workspaces', async () => {

@@ -9,6 +9,7 @@
 import { buildBoardCells, toBoardTaskInput, type BoardExternalDepInput } from './mission-board';
 import type { BlockingTask } from './mission-card-view';
 import type { MissionFeedTaskInput } from './mission-pulse';
+import { overviewProgress, type OverviewProgressCell } from './mission-overview';
 import { stripOrder, stripState, type StripState } from './mission-task-strip';
 
 export function feedStripOrder(
@@ -62,4 +63,19 @@ export function taskRowsStripProjection(
   const model = buildBoardCells({ tasks: rows, externalDeps: taskIndex ? externalDepsOf(tasks, taskIndex) : [] });
   const order = stripOrder(model);
   return { order, states: new Map(order.map(id => [id, stripState(model, id)])) };
+}
+
+/**
+ * The mission Overview strip's cells (done, in progress, waiting, then
+ * checks), from task rows with their workers: `buildd top`'s progress row
+ * (spec c7410e76 R-29) through the page's own `overviewProgress`. Without the
+ * page's kernel delivery displays and claim-gate facts, a cell reads from its
+ * task and workers alone, as the list and Home strips do.
+ */
+export function taskRowsProgress(
+  tasks: readonly TaskRow[],
+  taskIndex?: ReadonlyMap<string, BlockingTask & { title?: string | null }>,
+): OverviewProgressCell[] {
+  const rows = tasks.map(t => toBoardTaskInput(t));
+  return overviewProgress(buildBoardCells({ tasks: rows, externalDeps: taskIndex ? externalDepsOf(tasks, taskIndex) : [] }));
 }
