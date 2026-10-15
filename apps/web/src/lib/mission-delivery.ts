@@ -319,6 +319,68 @@ export function deliveryReleaseInput(state: ReleaseState): DeliveryRelease | nul
   return null;
 }
 
+/**
+ * What happened to this mission's merged work after it reached trunk (spec
+ * f7f67f1a P-3, R-22). Unlike `deliveryReleaseInput`, which only says how far
+ * healthy releases reach, this names the deploy in flight and the deploy that
+ * failed, so the page can show them instead of hiding the row.
+ *
+ * Only `healthy` means delivered. A workspace deploy older than the mission's
+ * last merge says nothing about this work; a deploy with no recorded time is
+ * read as covering it, so a failure is never hidden by a missing timestamp.
+ */
+export type MissionReleaseStatus = 'not_configured' | 'waiting' | 'dispatched' | 'deploying' | 'healthy' | 'failed' | 'unknown';
+
+export interface MissionReleaseStatusInput {
+  state: ReleaseState;
+  /** This mission's trunk merges (`missionTrunkMergedAt`). */
+  mergedAt: readonly string[];
+  /** `missions.releasedAt`: a release was dispatched (or merged) for this mission. */
+  releasedAt: string | null;
+}
+
+const IN_FLIGHT_DEPLOY = new Set(['deploying', 'pending_external']);
+const FAILED_DEPLOY = new Set(['failed', 'degraded']);
+
+export function missionReleaseStatus({ state, mergedAt, releasedAt }: MissionReleaseStatusInput): MissionReleaseStatus {
+  if (state.state === 'none') return 'not_configured';
+  if (state.state === 'clean' && state.reason === 'no_pipeline') return 'not_configured';
+  const merges = mergedAt.map(timestampMs).filter(t => !Number.isNaN(t));
+  if (merges.length === 0) return 'waiting';
+  const lastMerge = Math.max(...merges);
+  const notYet: MissionReleaseStatus = releasedAt ? 'dispatched' : 'waiting';
+  const covers = (at: string | null | undefined) => {
+    if (!at) return false;
+    const t = timestampMs(at);
+    return !Number.isNaN(t) && t >= lastMerge;
+  };
+
+  if (state.state === 'clean') {
+    if (state.reason === 'zero_queue') return state.baselineSource === 'healthy' ? 'healthy' : 'unknown';
+    if (state.reason === 'no_deploy_state') return notYet;
+    return 'unknown';
+  }
+
+  if (state.archetype === 'gated') {
+    if (!covers(state.baselineAsOf)) return notYet;
+    switch (state.baselineSource) {
+      case 'healthy': return 'healthy';
+      case 'deployed': return 'deploying';
+      case 'dispatched': return 'dispatched';
+      default: return 'unknown';
+    }
+  }
+
+  const deployAt = state.deployState === 'healthy' ? (state.healthyAt ?? state.deployedAt) : state.deployedAt;
+  const applies = deployAt == null ? state.deployState !== 'healthy' : covers(deployAt);
+  if (!applies) return notYet;
+  if (state.deployState === 'healthy') return 'healthy';
+  if (state.deployState === 'dispatched') return 'dispatched';
+  if (IN_FLIGHT_DEPLOY.has(state.deployState)) return 'deploying';
+  if (FAILED_DEPLOY.has(state.deployState)) return 'failed';
+  return 'unknown';
+}
+
 interface TrunkTaskLike {
   id: string;
   workers?: ReadonlyArray<{ mergedAt?: string | Date | null }> | null;

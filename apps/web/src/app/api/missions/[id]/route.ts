@@ -11,7 +11,7 @@ import {
 } from '@/lib/task-token-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { computeNextRunAt } from '@/lib/schedule-helpers';
-import { computeMissionProgress, validateGoalCriteria } from '@buildd/core/mission-helpers';
+import { computeMissionProgress, outcomeSpecWriteRefusal, validateGoalCriteria } from '@buildd/core/mission-helpers';
 import { computeAndStoreFlightStripCache } from '@buildd/core/flight-strip-store';
 import { isMissionBlocked, wouldCreateCycle } from '@/lib/mission-dependency';
 import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
@@ -45,6 +45,8 @@ import {
   surfaceAuditMissingReason,
 } from '@buildd/core/surface-audit';
 import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
+import { selectMissionSpec, type OutcomeSpecInput, type OutcomeSpecRemoval } from '@/lib/specs/mission-selection';
+import type { SpecCaller } from '@/lib/specs/store';
 
 const resolveTeamIds = resolveAccountTeamIds;
 
@@ -272,6 +274,28 @@ export async function PATCH(
         return NextResponse.json({ error: 'actorWorkerId must be its own worker' }, { status: 403 });
       }
     }
+    // Living Specs Slice 12: selecting the mission's outcome spec. Its own write
+    // path (lib/specs/mission-selection.ts): the server pins the revision and
+    // adds one required `living_spec` goal criterion, idempotently. A task token
+    // never reaches here (outcomeSpec is not a task-token field above).
+    if (body && typeof body === 'object' && 'outcomeSpec' in body) {
+      if ('goalCriteria' in body) {
+        return NextResponse.json({ error: 'Send outcomeSpec or goalCriteria, not both: the outcome spec writes its own criterion' }, { status: 400 });
+      }
+      const raw = (body as { outcomeSpec: unknown }).outcomeSpec;
+      if (raw === null || typeof raw !== 'object') {
+        return NextResponse.json({ error: 'outcomeSpec must be { specId, revision?, criteria?, narrowedReason?, waive?, unwaive? } or { remove: true, specId?, reason }' }, { status: 400 });
+      }
+      const caller: SpecCaller = apiAccount ? { kind: 'account', account: apiAccount as any } : { kind: 'user', userId: user!.id };
+      const selected = await selectMissionSpec(caller, id, raw as OutcomeSpecInput | OutcomeSpecRemoval);
+      if (!selected.ok) return NextResponse.json({ error: selected.error }, { status: selected.status });
+      delete (body as Record<string, unknown>).outcomeSpec;
+      existing.goalCriteria = selected.goalCriteria as any;
+      if (Object.keys(body).filter(k => k !== 'actorWorkerId').length === 0) {
+        return NextResponse.json({ ...existing, outcomeSpec: { criterion: selected.criterion, changed: selected.changed } });
+      }
+    }
+
     const { title, description, status, priority, cronExpression, workspaceId: requestedWorkspaceId, initiativeId, skillSlugs, outputSchema, model,
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, maxConcurrentTasks, backend,
       dependsOnMission, gateCondition, mergePolicy, orchestrationMode, externalIssueId, externalIssueUrl, costBudgetUsd,
@@ -638,6 +662,11 @@ export async function PATCH(
     if (executor !== undefined) updateData.executor = executor;
 
     if (goalCriteria !== undefined) {
+      // The outcome spec (living_spec) leaves only through outcomeSpec, where
+      // removal is a person's act with a reason: never by clearing or
+      // re-saving the list without it.
+      const outcomeSpecError = outcomeSpecWriteRefusal(existing.goalCriteria, goalCriteria);
+      if (outcomeSpecError) return NextResponse.json({ error: outcomeSpecError }, { status: 400 });
       if (goalCriteria !== null) {
         // Grandfather unchanged entries: the dashboard saves the whole array, so
         // a mission holding a pre-gate prose criterion would otherwise 400 on

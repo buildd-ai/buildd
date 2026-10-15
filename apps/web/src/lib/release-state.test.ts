@@ -174,3 +174,12 @@ describe('AC-45 — card footer visibility agrees with the shared classifier', (
     });
   }
 });
+
+describe('classifyReleaseState — zero_queue keeps its baseline rung (spec f7f67f1a P-3)', () => {
+  it('says which rung made the queue empty, so a mission can tell a healthy release from a prod-branch head', () => {
+    const healthy = classifyReleaseState({ archetype: 'gated', data: gated({ queueDepth: val(0), baselineSource: 'healthy' }) });
+    expect(healthy).toEqual({ state: 'clean', reason: 'zero_queue', baselineSource: 'healthy' });
+    const head = classifyReleaseState({ archetype: 'gated', data: gated({ queueDepth: val(0), baselineSource: 'prod_head' }) });
+    expect(head).toEqual({ state: 'clean', reason: 'zero_queue', baselineSource: 'prod_head' });
+  });
+});

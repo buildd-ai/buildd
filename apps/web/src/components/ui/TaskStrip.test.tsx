@@ -18,6 +18,67 @@ function ticks(html: string): string[] {
   return row.match(/<span[^>]*>[^<]*<\/span>/g) ?? [];
 }
 
+describe('TaskStrip lg group outline', () => {
+  const toolbar = (html: string) => html.match(/<div[^>]*role="toolbar"[^>]*>/)![0];
+
+  it('pads the strip so an outline on the first group never sticks out past its left edge', () => {
+    const html = renderToStaticMarkup(
+      <TaskStrip cells={cells} selectedId="t1" groups={[{ key: 'active', ids: ['t1', 't2'], outline: true }, { key: 'waiting', ids: ['t3', 't4', 't5', 't6', 't7'] }]} />,
+    );
+    expect(toolbar(html)).toContain('data-outline-edge="start"');
+    expect(toolbar(html)).toContain('pl-[5px]');
+    expect(toolbar(html)).not.toContain('pr-[5px]');
+  });
+
+  it('pads the right edge when the outlined group is last, and neither edge when it sits between groups', () => {
+    const last = renderToStaticMarkup(<TaskStrip cells={cells} selectedId="t1" groups={[{ key: 'done', ids: ['t1', 't2'] }, { key: 'active', ids: ['t3', 't4', 't5', 't6', 't7'], outline: true }]} />);
+    expect(toolbar(last)).toContain('data-outline-edge="end"');
+    expect(toolbar(last)).toContain('pr-[5px]');
+    const middle = renderToStaticMarkup(<TaskStrip cells={cells} selectedId="t1" groups={[{ key: 'done', ids: ['t1', 't2'] }, { key: 'active', ids: ['t3'], outline: true }, { key: 'waiting', ids: ['t4', 't5', 't6', 't7'] }]} />);
+    expect(toolbar(middle)).not.toContain('data-outline-edge');
+    expect(toolbar(middle)).not.toContain('pl-[5px]');
+  });
+});
+
+describe('TaskStrip lg grouped sizing (spec f7f67f1a R-4, AC-2)', () => {
+  const toolbar = (html: string) => html.match(/<div[^>]*role="toolbar"[^>]*>/)![0];
+  const scroller = (html: string) => html.match(/<div[^>]*data-testid="task-strip-scroll"[^>]*>/)?.[0] ?? '';
+  const grouped = (ids: string[]) => [{ key: 'done', ids: ids.slice(0, 1) }, { key: 'active', ids: ids.slice(1), outline: true }];
+  const many = (n: number): TaskStripCell[] => Array.from({ length: n }, (_, i) => ({ id: `g${i}`, state: 'queued' as StateKey }));
+
+  it('below md every cell is a fixed 44px track, so two tasks stay two compact boxes, never two wide slabs', () => {
+    for (const n of [2, 10, 20, 64]) {
+      const c = many(n);
+      const bar = toolbar(renderToStaticMarkup(<TaskStrip cells={c} groups={grouped(c.map(x => x.id))} />));
+      expect(bar).toContain('[--cell:44px]');
+      expect(bar).not.toContain('[--cell:minmax(0,1fr)]');
+      expect(bar).toContain('md:[--cell:minmax(0,56px)]');
+    }
+  });
+
+  it('a long grouped strip scrolls inside itself below md instead of shrinking cells under 44px', () => {
+    const c = many(12);
+    const html = renderToStaticMarkup(<TaskStrip cells={c} groups={grouped(c.map(x => x.id))} />);
+    const wrap = scroller(html);
+    expect(wrap).toContain('overflow-x-auto');
+    expect(wrap).toContain('md:overflow-x-visible');
+    // The outline sits 5px outside its cells; the scroller pads so it is not clipped.
+    expect(wrap).toContain('py-[5px]');
+    expect(toolbar(html)).toContain('w-max');
+    expect(toolbar(html)).toContain('md:w-auto');
+    // The tick row scrolls with the cells: both live inside the scroller.
+    const inside = html.slice(html.indexOf('data-testid="task-strip-scroll"'));
+    expect(inside).toContain('role="toolbar"');
+    expect(inside).toContain('data-testid="task-strip-ticks"');
+  });
+
+  it('an ungrouped strip keeps its own sizing (Flow and other strips are unchanged)', () => {
+    const html = renderToStaticMarkup(<TaskStrip cells={cells} />);
+    expect(scroller(html)).toBe('');
+    expect(toolbar(html)).toContain('[grid-template-columns:repeat(var(--n),minmax(0,1fr))]');
+  });
+});
+
 describe('TaskStrip lg', () => {
   it('one button per task, textured by state', () => {
     const html = renderToStaticMarkup(<TaskStrip cells={cells} selectedId="t3" />);

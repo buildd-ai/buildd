@@ -15,6 +15,7 @@
  * milestone the agent reported. The runner slot an agent held is derived from
  * start/end overlap (`assignSlots`), since no column records it.
  */
+import type { DeliverableRole } from '@buildd/core/mission-helpers';
 import { pickTaskView } from './task-view-pick';
 import { TERMINAL_TASK_STATUSES, type VisualReviewModel } from '@buildd/shared';
 import { screensToReview } from './visual-review-model';
@@ -31,6 +32,8 @@ import {
 } from './mission-pulse';
 import { deriveWorkKind, LIVE_WORKER_STATUSES, reduceToFrontier } from './task-presentation';
 import { buildMissionAdjacency, type AdjacencyGateRow } from './condensed-timeline';
+import type { DepReleaseArm } from './dep-gate-contract';
+import type { WaitingKind } from '@buildd/core/waiting-reason';
 import { classifyTaskFailure, type TaskFailureKind } from './task-failure-kind';
 import { boardTaskLabel } from './mission-board-label';
 import { resolveRunnerDisplay, runnerKey, type RunnerDisplay, type RunnerHeartbeatLike } from './runner-display';
@@ -63,6 +66,10 @@ export interface BoardWorkerInput {
   prNumber: number | null;
   prUrl: string | null;
   prLifecycleStatus: string | null;
+  /** A closed PR's work landed under this merged PR (`record_pr_supersession`). */
+  supersededByPrNumber?: number | null;
+  /** A person settled this closed PR as deliberately not shipping. */
+  abandonedAt?: number | null;
   currentAction: string | null;
   waitingFor: { prompt: string; options: string[] } | null;
   milestones: BoardMilestone[];
@@ -129,6 +136,32 @@ export interface MissionBoardInput {
    * the claim gate judges them, so the Board does too (strip spec ST-2).
    */
   externalDeps?: readonly BoardExternalDepInput[];
+  /**
+   * What the claim gate's own SQL says about this mission's waiting work
+   * (`loadMissionGateFacts`): which arm released each edge its status did not,
+   * and one waiting cause per pending task. Absent: the status arm only.
+   */
+  gateFacts?: MissionGateFacts | null;
+}
+
+/** A dependency edge the claim gate releases by an arm other than its status (spec f7f67f1a P-1). */
+export interface ReleasedEdge {
+  dependentId: string;
+  dependencyId: string;
+  arm: DepReleaseArm;
+}
+
+export interface MissionGateFacts {
+  releasedEdges: readonly ReleasedEdge[];
+  /** One cause per waiting task; a task with no known cause is absent. */
+  waitingKinds: Readonly<Record<string, WaitingKind>>;
+}
+
+/** The adjacency's `releasedBy` over loaded facts. */
+export function releasedByOf(facts: MissionGateFacts | null | undefined): (dependentId: string, dependencyId: string) => DepReleaseArm | undefined {
+  if (!facts || facts.releasedEdges.length === 0) return () => undefined;
+  const byEdge = new Map(facts.releasedEdges.map(e => [`${e.dependentId}>${e.dependencyId}`, e.arm]));
+  return (dependentId, dependencyId) => byEdge.get(`${dependentId}>${dependencyId}`);
 }
 
 /** A dependency row from outside the mission (`DependencyRow`'s shape). */
@@ -160,8 +193,10 @@ export interface BoardDep {
   id: string;
   scope: string | null;
   label: string;
-  /** The claim gate's verdict (`isGateSatisfied`): the dependency no longer holds this task. */
+  /** The claim gate's verdict: the dependency no longer holds this task. */
   satisfied: boolean;
+  /** Set when an arm other than the dependency's status released it (an early release, a force start, ...). */
+  releasedBy?: DepReleaseArm;
 }
 
 /** An unsatisfied dependency with no cell on the strip: another mission's task, or a non-deliverable. */
@@ -182,6 +217,11 @@ export interface BoardTask {
   /** The role's own colour (`workspaceSkills.color`), never a constant. */
   roleColor: string | null;
   phaseKey: string;
+  /**
+   * What the tile is for (`deliverableRole`, spec f7f67f1a P-2). Only `build`
+   * tiles count toward `landed` and a phase's done / total (R-14).
+   */
+  deliverableRole: DeliverableRole;
   status: BoardStatus;
   /**
    * The kernel's sentence for a kernel-owned delivery (§17.5): its headline
@@ -227,6 +267,8 @@ export interface BoardTask {
   /** Attempts beyond the first (↻2 = one retry). */
   attempt: number;
   waitingFor: { prompt: string; options: string[] } | null;
+  /** Why a queued task is not running (`MissionGateFacts.waitingKinds`); absent when unknown. */
+  waitingKind?: WaitingKind;
   /**
    * The raw row the Landed drawer's task actions derive their phase from
    * (`taskActionPhase`, the same function the task sheet uses): the task's own
@@ -454,6 +496,8 @@ export function toBoardWorkerInput(w: Record<string, unknown>): BoardWorkerInput
     prNumber: num(w.prNumber),
     prUrl: str(w.prUrl),
     prLifecycleStatus: str(w.prLifecycleStatus),
+    supersededByPrNumber: num(w.supersededByPrNumber),
+    abandonedAt: epoch(w.abandonedAt),
     currentAction: str(w.currentAction),
     waitingFor: wf && typeof wf.prompt === 'string' ? { prompt: wf.prompt, options } : null,
     milestones: selectMilestones(w.milestones),
@@ -506,6 +550,8 @@ export function toBoardTaskInput(t: Record<string, unknown> & { id: string; titl
           prUrl: w0.prUrl,
           prLifecycleStatus: w0.prLifecycleStatus,
           mergedAt: w0.mergedAt != null ? new Date(w0.mergedAt) : null,
+          supersededByPrNumber: w0.supersededByPrNumber ?? null,
+          abandonedAt: w0.abandonedAt != null ? new Date(w0.abandonedAt) : null,
         }
       : null,
     workers,
@@ -671,7 +717,7 @@ export interface BoardCells {
 const sentence = (s: string) => (/[.!?]$/.test(s.trimEnd()) ? s.trimEnd() : `${s.trimEnd()}.`);
 
 export function buildBoardCells(
-  input: Pick<MissionBoardInput, 'tasks' | 'roles' | 'runnerHeartbeats' | 'externalDeps'>,
+  input: Pick<MissionBoardInput, 'tasks' | 'roles' | 'runnerHeartbeats' | 'externalDeps' | 'gateFacts'>,
 ): BoardCells {
   const roles = new Map((input.roles ?? []).map(r => [r.slug, r]));
   const displayOf = (w: BoardWorkerInput) => resolveRunnerDisplay(w, input.runnerHeartbeats);
@@ -704,14 +750,14 @@ export function buildBoardCells(
   };
   const adjacency = buildMissionAdjacency(
     cellRows.map(r => ({ ...r.task, workers: [] })),
-    { lookup: gateRow, resolveId: id => rowIdFor.get(id) ?? id },
+    { lookup: gateRow, resolveId: id => rowIdFor.get(id) ?? id, releasedBy: releasedByOf(input.gateFacts) },
   );
   const reach = cellRows.map(r => ({ id: r.task.id, dependsOn: adjacency.blockersOf.get(r.task.id)!.map(e => e.id) }));
 
   const tasks: Record<string, BoardTask> = {};
   for (const r of cellRows) {
     const t = r.task;
-    const deps: BoardDep[] = adjacency.blockersOf.get(t.id)!.map(e => ({ id: e.id, ...labelOf.get(e.id)!, satisfied: e.satisfied }));
+    const deps: BoardDep[] = adjacency.blockersOf.get(t.id)!.map(e => ({ id: e.id, ...labelOf.get(e.id)!, satisfied: e.satisfied, ...(e.releasedBy ? { releasedBy: e.releasedBy } : {}) }));
     const blockers = deps.filter(d => !d.satisfied).map(d => d.id);
     const offStrip: BoardOffStripBlocker[] = adjacency.offSetBlockersOf.get(t.id)!.map(id => ({
       id,
@@ -729,6 +775,7 @@ export function buildBoardCells(
     tasks[t.id] = {
       id: t.id,
       title: t.title,
+      deliverableRole: r.deliverableRole,
       ...labelOf.get(t.id)!,
       glyph: kind?.glyph ?? null,
       roleSlug: t.roleSlug ?? null,
@@ -762,6 +809,7 @@ export function buildBoardCells(
       lines: own && (own.linesAdded || own.linesRemoved) ? { added: own.linesAdded ?? 0, removed: own.linesRemoved ?? 0 } : null,
       attempt: 1 + r.attempts.filter(a => a.workers.length > 0 || a.status !== 'pending').length,
       waitingFor: status === 'waiting' ? activeWorker?.waitingFor ?? null : null,
+      ...(BOARD_QUEUED.has(status) && input.gateFacts?.waitingKinds[t.id] ? { waitingKind: input.gateFacts.waitingKinds[t.id] } : {}),
       taskStatus: t.status,
       taskMode: t.mode ?? null,
       workerStatus: own?.status ?? null,
@@ -780,8 +828,8 @@ export function buildBoardCells(
       ordinal: i + 1,
       label: g.label,
       taskIds: ids,
-      done: ids.filter(id => BOARD_LANDED.has(tasks[id].status)).length,
-      total: ids.length,
+      done: ids.filter(id => tasks[id].deliverableRole === 'build' && BOARD_LANDED.has(tasks[id].status)).length,
+      total: ids.filter(id => tasks[id].deliverableRole === 'build').length,
     };
   });
 
@@ -796,6 +844,9 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
 
   const all = Object.values(tasks);
   const landedN = all.filter(t => BOARD_LANDED.has(t.status)).length;
+  // The build count (spec f7f67f1a R-14): audit, fix and refresh tiles are drawn, never counted.
+  const build = all.filter(t => t.deliverableRole === 'build');
+  const buildLanded = build.filter(t => BOARD_LANDED.has(t.status)).length;
 
   // ── Lanes: every worker that ran for this mission, on its runner ──
   type Span = MissionLaneBar;
@@ -1001,7 +1052,7 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
     phases,
     planning,
     tasks,
-    landed: { done: landedN, total: all.length },
+    landed: { done: buildLanded, total: build.length },
     criteria,
     criteriaPassed: criteria.filter(c => c.state === 'pass').length,
     runners,
