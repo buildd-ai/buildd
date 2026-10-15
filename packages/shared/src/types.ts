@@ -1375,6 +1375,17 @@ export interface RunnerUpdateCanaryReport {
 }
 
 /**
+ * The workspaces one runner row of `GET /api/workers/active` serves, as the
+ * caller can see them. The three arrays run index for index. A team name is
+ * null when the team is unknown; older servers omit `workspaceTeamNames`.
+ */
+export interface ActiveRunnerWorkspaces {
+  workspaceIds: string[];
+  workspaceNames: string[];
+  workspaceTeamNames?: Array<string | null>;
+}
+
+/**
  * The runner's own live update-state — the same fields it reports on its
  * local, unauthenticated-off-box `/api/version` endpoint
  * (`apps/runner/src/index.ts`) — now also sent on every heartbeat (see

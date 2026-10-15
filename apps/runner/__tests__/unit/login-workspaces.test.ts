@@ -14,6 +14,7 @@ import { join, resolve } from 'path';
 import {
   currentKey, editLine, picksEditUrl, resolvePicksEdit, runWorkspacesEdit,
 } from '../../src/login-workspaces';
+import { resolveBuilddServer } from '../../src/server-url';
 
 const ACCOUNT = 'acct-test-1';
 const DEAD = 'http://127.0.0.1:9';
@@ -35,6 +36,46 @@ describe('which key and server', () => {
 
   test('--server wins over both', () => {
     expect(currentKey({ apiKey: 'bld_saved', builddServer: 'https://saved.test' }, {}, 'https://flag.test')?.server).toBe('https://flag.test');
+  });
+
+  test('a saved key with no saved server asks BUILDD_SERVER, as the runner does', () => {
+    expect(currentKey({ apiKey: 'bld_saved' }, { BUILDD_SERVER: 'https://env.test' })).toEqual({
+      apiKey: 'bld_saved', server: 'https://env.test', source: 'config',
+    });
+  });
+
+  test('BUILDD_SERVER beats the saved server for a saved key too (the runner order)', () => {
+    expect(currentKey({ apiKey: 'bld_saved', builddServer: 'https://saved.test' }, { BUILDD_SERVER: 'https://env.test' })?.server)
+      .toBe('https://env.test');
+  });
+
+  test('same answer as the runner for every mix of flag, env and saved server', () => {
+    const flags = [undefined, 'https://flag.test'];
+    const envs = [{}, { BUILDD_SERVER: 'https://env.test' }, { BUILDD_SERVER: '  ' }];
+    const saved = [{}, { builddServer: 'https://saved.test' }];
+    for (const f of flags) for (const e of envs) for (const c of saved) {
+      expect(currentKey({ apiKey: 'bld_saved', ...c }, e, f)?.server).toBe(resolveBuilddServer({ flag: f, env: e, saved: c.builddServer }));
+    }
+  });
+
+  test('a saved key with no saved server asks BUILDD_SERVER, as the runner does', () => {
+    expect(currentKey({ apiKey: 'bld_saved' }, { BUILDD_SERVER: 'https://env.test' })).toEqual({
+      apiKey: 'bld_saved', server: 'https://env.test', source: 'config',
+    });
+  });
+
+  test('BUILDD_SERVER beats the saved server for a saved key too (the runner order)', () => {
+    expect(currentKey({ apiKey: 'bld_saved', builddServer: 'https://saved.test' }, { BUILDD_SERVER: 'https://env.test' })?.server)
+      .toBe('https://env.test');
+  });
+
+  test('same answer as the runner for every mix of flag, env and saved server', () => {
+    const flags = [undefined, 'https://flag.test'];
+    const envs: Record<string, string>[] = [{}, { BUILDD_SERVER: 'https://env.test' }, { BUILDD_SERVER: '  ' }];
+    const saved: Record<string, string>[] = [{}, { builddServer: 'https://saved.test' }];
+    for (const f of flags) for (const e of envs) for (const c of saved) {
+      expect(currentKey({ apiKey: 'bld_saved', ...c }, e, f)?.server).toBe(resolveBuilddServer({ flag: f, env: e, saved: c.builddServer }));
+    }
   });
 
   test('defaults to buildd.dev; no key at all is null', () => {
@@ -180,6 +221,36 @@ describe('buildd login --workspaces (login.ts)', () => {
       // Nothing minted: the only request was which account this key is.
       expect(seen).toEqual(['GET /api/accounts/me']);
       expect(readFileSync(cfgPath, 'utf8')).toBe(before);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test('a saved key and no saved server: asks BUILDD_SERVER, not buildd.dev', async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch(req) {
+        const url = new URL(req.url);
+        if (url.pathname === '/api/accounts/me' && req.headers.get('authorization') === 'Bearer bld_current') {
+          return Response.json({ id: ACCOUNT, name: 'laptop' });
+        }
+        return new Response('no', { status: 404 });
+      },
+    });
+    try {
+      const sb = sandbox();
+      const base = `http://127.0.0.1:${server.port}`;
+      mkdirSync(join(sb.home, '.buildd'), { recursive: true });
+      writeFileSync(join(sb.home, '.buildd', 'config.json'), JSON.stringify({ apiKey: 'bld_current' }));
+      const p = Bun.spawn([process.execPath, '--no-env-file', 'run', LOGIN, '--workspaces'], {
+        cwd: sb.cwd,
+        env: { PATH: `${sb.bin}:${process.env.PATH ?? ''}`, HOME: sb.home, BUILDD_HOME: join(sb.home, '.buildd'), NODE_ENV: 'production', BUILDD_SERVER: base },
+        stdout: 'pipe', stderr: 'pipe',
+      });
+      const [code, out, err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
+      expect(err).toBe('');
+      expect(code).toBe(0);
+      expect(out).toContain(`${base}/api/auth/runner-picks?account=${ACCOUNT}`);
     } finally {
       server.stop(true);
     }
