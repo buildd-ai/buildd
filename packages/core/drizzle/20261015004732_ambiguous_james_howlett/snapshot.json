@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "789cefb8-9ae1-420e-8518-df618b98ab2a",
+  "id": "c50014f5-0aba-47e3-b4cf-a337c91c3e39",
   "prevIds": [
-    "eb1a5570-5054-4271-b274-0f95765ff57f"
+    "018c8494-31c0-4070-b64e-8c55e0130a36"
   ],
   "ddl": [
     {
@@ -20771,12 +20771,25 @@
     {
       "type": "uuid",
       "typeSchema": null,
-      "notNull": true,
+      "notNull": false,
       "dimensions": 0,
       "default": null,
       "generated": null,
       "identity": null,
       "name": "task_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "spec_outcome_verdicts"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "mission_id",
       "entityType": "columns",
       "schema": "public",
       "table": "spec_outcome_verdicts"
@@ -37343,6 +37356,48 @@
       "nameExplicit": true,
       "columns": [
         {
+          "value": "mission_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "spec_revision_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "criterion_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "created_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": "mission_id IS NOT NULL",
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "spec_outcome_verdicts_mission_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "spec_outcome_verdicts"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
           "value": "spec_id",
           "isExpression": false,
           "asc": true,
@@ -44754,6 +44809,23 @@
     {
       "nameExplicit": false,
       "columns": [
+        "mission_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "missions",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "spec_outcome_verdicts_mission_id_missions_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "spec_outcome_verdicts"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
         "spec_revision_id"
       ],
       "schemaTo": "public",
@@ -48047,6 +48119,13 @@
       "entityType": "checks",
       "schema": "public",
       "table": "spec_attachments"
+    },
+    {
+      "value": "(\"task_id\" IS NULL) <> (\"mission_id\" IS NULL)",
+      "name": "spec_outcome_verdicts_one_subject",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "spec_outcome_verdicts"
     },
     {
       "value": "num_nonnulls(\"owner_user_id\", \"owner_task_id\", \"owner_account_id\") = 1",
