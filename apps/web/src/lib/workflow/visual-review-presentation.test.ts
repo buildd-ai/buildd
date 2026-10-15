@@ -197,3 +197,17 @@ describe('presentVisualReview: copy', () => {
     }
   });
 });
+
+describe('a queued review names the claim gate hold (spec f7f67f1a R-33)', () => {
+  const queued = deriveMissionVisualReview(base({ audit, review: review({ phase: 'queued' }) }));
+  it('budget paused replaces the generic line', () => {
+    const p = presentVisualReview({ ...queued, holdReason: 'budget_paused' });
+    expect(p.label).toBe('Visual check queued');
+    expect(p.detail).toBe('Runners paused new work until the model budget resets.');
+    expect(copyOf(p)).not.toMatch(MECHANICS);
+  });
+  it('no or unknown hold keeps "Starts on the latest changes."', () => {
+    expect(presentVisualReview(queued).detail).toBe('Starts on the latest changes.');
+    expect(presentVisualReview({ ...queued, holdReason: 'something_new' }).detail).toBe('Starts on the latest changes.');
+  });
+});

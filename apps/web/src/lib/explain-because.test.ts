@@ -73,6 +73,14 @@ describe('buildStateBecause', () => {
       expect(chain[0].claim).toBe('"Write the docs" is waiting for a runner.');
     });
 
+    it('names the claim loop hold instead of "waiting for a runner" (spec f7f67f1a R-33)', () => {
+      const rows = [{ id: 'task-queued', title: 'Write the docs', status: 'pending', live: false, holdReason: 'budget_paused' }];
+      const view = deriveMissionStateView({ ...base, health: 'STALLED', openTasks: rows.map(({ id, title, status, holdReason }) => ({ id, title, status, holdReason })) });
+      const chain = buildStateBecause(view, { missionId: 'm' }, { openTasks: rows });
+      const row = chain.find(l => l.refs.taskId === 'task-queued');
+      expect(row?.claim).toBe('"Write the docs" is queued: runners paused new work until the model budget resets.');
+    });
+
     it('does not claim "no live worker" when per-task liveness is unknown and agents are running', () => {
       const view = deriveMissionStateView({
         ...base,

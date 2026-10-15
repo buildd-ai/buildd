@@ -12,6 +12,9 @@ import * as missionHelpers from '@buildd/core/mission-helpers';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { summarizeMissionForCard, type MissionCardRow } from '@/lib/mission-card-view';
 import { projectMissionDelivery } from '@/lib/delivery-projection';
+import { loadClaimHoldReasons } from '@/lib/mission-claim-deferrals';
+import { deriveMissionIntegrationPr } from '@/lib/mission-integration-pr';
+import { SURFACE_AUDIT_TITLE_PREFIX } from '@buildd/core/member-scoped-deps';
 import { taskRowsStripProjection } from '@/lib/mission-strip-order';
 import { MissionGrid, type PortfolioRow } from './MissionGrid';
 import NewMissionSheet from './NewMissionSheet';
@@ -130,6 +133,15 @@ export default async function MissionsPage({
     if (mission) mission.escalationGateVerdict = verdict;
   }
 
+  // R-33: a queued visual review names the claim loop's hold on it. Only
+  // pending audits of open missions, one read for the whole list.
+  const pendingAuditIds = allMissions
+    .filter(m => m.status !== 'completed')
+    .flatMap(m => ((m.tasks ?? []) as Array<{ id: string; title: string; status: string }>)
+      .filter(t => t.status === 'pending' && t.title.startsWith(SURFACE_AUDIT_TITLE_PREFIX))
+      .map(t => t.id));
+  const holdReasons = await loadClaimHoldReasons(pendingAuditIds);
+
   // One row per mission from the shared delivery projection — the same one
   // Home reads (lib/delivery-projection.ts), so a mission's chip, landed n/m
   // and next milestone read the same on both.
@@ -140,6 +152,9 @@ export default async function MissionsPage({
       id: obj.id, title: obj.title, status: obj.status, href: `/app/missions/${obj.id}`,
       isHeld: obj.isHeld ?? false, integrationBranch: obj.integrationBranchEnabled === true,
       tasks: obj.tasks ?? [],
+      // R-32: a merged mission PR puts the work on trunk; the row says what is left.
+      missionPrMerged: deriveMissionIntegrationPr({ mission: obj, tasks: obj.tasks ?? [] })?.state === 'merged',
+      holdReasons,
     }, missionHelpers);
     const tasks = (obj.tasks ?? []) as Array<{ updatedAt?: Date | string | null; workers?: Array<{ status: string }> }>;
     const lastAdvancedAt = Math.max(

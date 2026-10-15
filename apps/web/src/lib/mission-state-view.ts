@@ -103,6 +103,7 @@ import type { SupersessionSuggestion } from '@buildd/core/pr-shipped';
 import { isRepeatedlyDeferred, SURFACE_DEFERRAL_MS } from './claim-deferral-thresholds';
 import { quietLabel } from './local-strand';
 import type { LandingBlocker, LandingBlockCause } from './landing-blocker';
+import { claimHoldPhrase } from './claim-hold-phrase';
 
 // ─── Provenance ───────────────────────────────────────────────────────────────
 
@@ -192,6 +193,16 @@ export type WaitingOnDescriptor =
        * Nothing here is the owner's to do.
        */
       blockedBy?: { prNumbers: number[]; unfinished: number };
+      /**
+       * The claim loop's hold on every claimable open row, in words
+       * (`claimHoldPhrase`): the honest cause instead of "nothing is running".
+       */
+      hold?: string;
+      /**
+       * The mission PR has merged and only the visual review is left (spec
+       * f7f67f1a R-32): the mission is waiting on a check, not stalled.
+       */
+      visualQueued?: true;
     }
   /** A deliverable failed. `infra` distinguishes "failed on infrastructure" from "failed on its merits". */
   | { kind: 'task_failed'; tone: WaitingOnTone; label: string; infra: boolean; taskIds: string[]; titles: string[] }
@@ -544,7 +555,17 @@ export interface MissionStateInput {
     title?: string | null;
     waitingOnTaskIds?: string[];
     waitingOnPrs?: Record<string, number>;
+    /** A `[surface audit]` row: the visual review, not build work. */
+    surfaceAudit?: boolean;
+    /** The claim loop's newest refusal reason for this row (gate_events), when known. */
+    holdReason?: string | null;
   }>;
+  /**
+   * The mission's integration PR merged into trunk. Unlike `missionPr`, which
+   * collapses a merged PR to null, this keeps the fact so an open check is read
+   * as what is left, never as a stall.
+   */
+  missionPrMerged?: boolean;
   /**
    * Tasks whose worker is parked on a question for a person
    * (`missionOpenQuestions`, lib/open-ask.ts). Such a worker still counts in
@@ -737,9 +758,14 @@ export function deriveMissionStateView(input: MissionStateInput): MissionStateVi
 
   // A self-resolving wait resumes by itself: say so, rather than the generic
   // AUTO every `active` state shares. Same tone as that state.
-  const chip = resolved.waitingOn?.kind === 'self_resolving_wait'
-    ? { ...getMissionStateChip(resolved.displayState), label: /retry/i.test(resolved.waitingOn.reason) ? 'WAITING TO RETRY' : 'WAITING' }
-    : getMissionStateChip(resolved.displayState);
+  const w = resolved.waitingOn;
+  const chip = w?.kind === 'self_resolving_wait'
+    ? { ...getMissionStateChip(resolved.displayState), label: /retry/i.test(w.reason) ? 'WAITING TO RETRY' : 'WAITING' }
+    : w?.kind === 'task' && w.visualQueued
+      ? { ...getMissionStateChip(resolved.displayState), label: 'VISUAL REVIEW QUEUED' }
+      : w?.kind === 'task' && w.hold
+        ? { ...getMissionStateChip(resolved.displayState), label: 'WAITING' }
+        : getMissionStateChip(resolved.displayState);
   const criteriaBlockingReason =
     resolved.waitingOn?.kind === 'criterion_failing' || resolved.waitingOn?.kind === 'criterion_unverified'
       ? resolved.waitingOn.label
@@ -1442,6 +1468,29 @@ function openTaskFact(input: MissionStateInput, live: boolean): Resolution | nul
   }
   const citedIds = (live ? openTasks : claimable).map(t => t.id);
 
+  // R-32 / R-33: with nothing live, say what the open rows actually wait on.
+  if (!live && claimable.length > 0) {
+    const holds = claimable.map(t => claimHoldPhrase(t.holdReason));
+    const hold = holds.every(h => h && h === holds[0]) ? holds[0]! : undefined;
+    const base = { kind: 'task' as const, count: pendingCount, taskIds: citedIds, byStatus, ...(isLocal(input) ? { local: true as const } : {}) };
+    if (input.missionPrMerged && claimable.every(t => t.surfaceAudit)) {
+      return {
+        kind: 'awaiting_verification',
+        waitingOn: { ...base, tone: 'neutral', label: hold ? `Visual review queued: ${hold}` : 'Visual review queued', visualQueued: true, ...(hold ? { hold } : {}) },
+        displayState: 'awaiting_verification',
+        source: completion?.code === 'pending_deliverables' ? 'canCompleteMission' : 'deriveTaskHealthSignal',
+      };
+    }
+    if (hold) {
+      return {
+        kind: 'waiting',
+        waitingOn: { ...base, tone: 'warning', label: `${pendingCount === 1 ? 'The open task is' : `${pendingCount} open tasks are`} queued: ${hold}`, hold },
+        displayState: 'active',
+        source: completion?.code === 'pending_deliverables' ? 'canCompleteMission' : 'deriveTaskHealthSignal',
+      };
+    }
+  }
+
   return {
     kind: live ? 'running' : 'blocked',
     waitingOn: {
@@ -1789,6 +1838,8 @@ function situationPhrase(d: WaitingOnDescriptor, opts: { running?: boolean } = {
       if (d.blockedBy) {
         return `${d.count === 1 ? '1 task is' : `${d.count} tasks are`} waiting on ${unblocksWhen(d.blockedBy, 'phrase')}`;
       }
+      if (d.visualQueued) return d.hold ? `visual review queued: ${d.hold}` : 'visual review queued';
+      if (d.hold) return `${d.count === 1 ? 'the open task is' : `${d.count} open tasks are`} queued: ${d.hold}`;
       // `neutral` is open work with something live on the mission; `warning`
       // is the stall, where nothing is.
       if (d.tone === 'warning') {
@@ -2023,6 +2074,12 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
       if (waitingOn.blockedBy) {
         return `Unblocks when ${unblocksWhen(waitingOn.blockedBy, 'action')}.`;
       }
+      if (waitingOn.hold && !waitingOn.local) {
+        return waitingOn.visualQueued
+          ? 'It starts when the hold lifts. A person can skip the visual review instead.'
+          : 'It starts when the hold lifts. Cancel it if you no longer want the work.';
+      }
+      if (waitingOn.visualQueued && !waitingOn.local) return 'It starts when a browser runner picks it up. A person can skip the visual review instead.';
       if (waitingOn.local) {
         return waitingOn.count === 1
           ? 'Start it from a local session with claim_task {taskId}, or cancel it if you no longer want the work.'

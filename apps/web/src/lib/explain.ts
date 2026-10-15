@@ -47,7 +47,8 @@ import { deriveMissionStateView, type MissionStateInput, type MissionStateView }
 import { computeSupersededFailedTasks } from '@/lib/mission-task-superseded';
 import { getDeliveryViewsForTasks, kernelReplacedFailedTaskIds, replacedFailedTaskIds } from '@/lib/workflow/delivery-view';
 import { attemptLine } from '@/lib/workflow/projections';
-import { loadMissionClaimDeferrals } from '@/lib/mission-claim-deferrals';
+import { loadClaimHoldReasons, loadMissionClaimDeferrals } from '@/lib/mission-claim-deferrals';
+import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
 import { deriveMissionIntegrationPr } from '@/lib/mission-integration-pr';
 import { missionCardProgress, ownerUnmergedPrs, type MissionCardTaskRow } from '@/lib/mission-card-view';
 import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
@@ -512,7 +513,12 @@ async function viewForMission(missionId: string): Promise<{
   // already loaded above is the current answer to "did it leave pending" and
   // costs nothing extra to consult.
   const pendingTaskIds = new Set(loaded.filter(t => t.status === 'pending').map(t => t.id));
-  const deferrals = (await loadMissionClaimDeferrals(missionId)).filter(d => pendingTaskIds.has(d.taskId));
+  const [deferralRows, holdReasons] = await Promise.all([
+    loadMissionClaimDeferrals(missionId),
+    // R-33: the newest refusal names why a pending task has not started.
+    loadClaimHoldReasons([...pendingTaskIds]),
+  ]);
+  const deferrals = deferralRows.filter(d => pendingTaskIds.has(d.taskId));
 
   // `canCompleteMission` knows the mission PR has not merged; only the task
   // rows know where it is. Supplying it turns "the mission PR has not merged"
@@ -573,7 +579,10 @@ async function viewForMission(missionId: string): Promise<{
     openTasks: openTasks.map(t => ({
       id: t.id, status: t.status, title: t.title, waitingOnTaskIds: waitingOnOf(t),
       ...(t.status === 'pending' ? { waitingOnPrs: unmetDependencyPrs(t, loadedById) } : {}),
+      surfaceAudit: isSurfaceAuditTask(t.title ?? ''),
+      holdReason: t.status === 'pending' ? holdReasons.get(t.id) ?? null : null,
     })),
+    missionPrMerged: integrationPr?.state === 'merged',
     openQuestions: missionOpenQuestions(loaded),
     localStrand: strand
       ? { ...strand, flipBlockedReason: continueOnRunnerBlockedReason({ status: String(m.status), workspaceId: (m.workspaceId as string | null) ?? null }) }
@@ -612,6 +621,7 @@ async function viewForMission(missionId: string): Promise<{
         waiting: hasOpenAsk(t),
         runnerClaimable: !!(t.context as Record<string, unknown> | null)?.reviewerFor,
         missingBrowser: missingBrowser && t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG,
+        holdReason: t.status === 'pending' ? holdReasons.get(t.id) ?? null : null,
         waitingOn: waitingOnOf(t).map(id => ({ id, title: loadedById.get(id)?.title ?? null })),
       })),
       failedTasks: failedTasks.map(t => ({

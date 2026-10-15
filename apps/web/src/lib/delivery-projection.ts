@@ -22,9 +22,10 @@
 import type { computeMissionProgress, deriveTaskType, isAttempt } from '@buildd/core/mission-helpers';
 import { prShipState } from '@buildd/core/pr-shipped';
 import { SURFACE_AUDIT_TITLE_PREFIX } from '@buildd/core/member-scoped-deps';
-import { LIVE_WORKER_STATUSES } from '@buildd/shared';
+import { LIVE_WORKER_STATUSES, OPEN_TASK_STATUSES } from '@buildd/shared';
 import type { StateKey } from '@/components/ui/states';
 import { displayTaskTitle } from './task-title';
+import { claimHoldPhrase } from './claim-hold-phrase';
 
 // ── Vocabulary ──────────────────────────────────────────────────────────────
 
@@ -300,6 +301,10 @@ export interface MissionDeliveryInput {
   integrationBranch?: boolean;
   /** Whether a release carried the mission; null/absent when unknown. */
   released?: boolean | null;
+  /** Mission-branch only: the mission PR merged into trunk (`deriveMissionIntegrationPr`). Absent reads as not merged. */
+  missionPrMerged?: boolean | null;
+  /** The claim loop's latest hold reason per still-pending task (gate_events), when the caller has it. */
+  holdReasons?: ReadonlyMap<string, string> | null;
   tasks: readonly MissionTaskRow[];
   /** Findings the latest visual audit reported, when the caller knows them. */
   visualFindings?: number | null;
@@ -343,6 +348,12 @@ export interface MissionDelivery {
    * observation, never an undelivered change: it is not in `landed`/`total`.
    */
   visual: { text: string; next: string } | null;
+  /**
+   * The latest visual audit round, while it has not finished: what is left once
+   * the work itself is on trunk (spec f7f67f1a R-32), and the claim gate's hold
+   * on it when one is known (R-33).
+   */
+  visualOpen?: { text: string; hold: string | null } | null;
   /** The chip is a closed PR the platform is still reconciling (see `TaskDelivery.reconciling`). */
   reconciling?: boolean;
   tasks: Array<{ id: string; title: string; delivery: TaskDelivery }>;
@@ -404,6 +415,18 @@ function visualAuditState(audits: readonly MissionTaskRow[], findings: number | 
     : { text: 'Visual audit could not run', next: 'Open the audit to retry it' };
 }
 
+const OPEN_AUDIT = new Set<string>(OPEN_TASK_STATUSES);
+
+function visualOpenState(audits: readonly MissionTaskRow[], holds: ReadonlyMap<string, string> | null | undefined): NonNullable<MissionDelivery['visualOpen']> | null {
+  const live = audits.filter(a => a.status !== 'cancelled');
+  const latest = [...live].sort((a, b) => auditRound(b) - auditRound(a))[0];
+  if (!latest || !OPEN_AUDIT.has(latest.status)) return null;
+  const running = (latest.workers ?? []).some(w => (LIVE_WORKER_STATUSES as readonly string[]).includes(w.status));
+  return running
+    ? { text: 'Visual review running', hold: null }
+    : { text: 'Visual review queued', hold: claimHoldPhrase(holds?.get(latest.id)) };
+}
+
 export function projectMissionDelivery(input: MissionDeliveryInput, rules: MissionTaskRules): MissionDelivery {
   const { computeMissionProgress, isAttempt } = rules;
   const auditIds = new Set(input.tasks.filter(t => t.title.startsWith(SURFACE_AUDIT_TITLE_PREFIX)).map(t => t.id));
@@ -413,6 +436,8 @@ export function projectMissionDelivery(input: MissionDeliveryInput, rules: Missi
   const hidden = (id: string) => auditIds.has(id) || superseded.has(id);
   const m: MissionDeliveryInput = { ...input, tasks: input.tasks.filter(t => !hidden(t.id) && !(t.parentTaskId && hidden(t.parentTaskId))) };
   const visual = visualAuditState(audits, input.visualFindings);
+  const visualOpen = visual ? null : visualOpenState(audits, input.holdReasons);
+  const missionPrMerged = !!input.integrationBranch && input.missionPrMerged === true;
   const progress = computeMissionProgress(m.tasks.map(t => ({ ...t, dependsOn: undefined, workers: (t.workers ?? []).map(w => ({ ...w })) })));
   const attempts = new Map<string, MissionTaskRow[]>();
   for (const t of m.tasks) {
@@ -452,7 +477,7 @@ export function projectMissionDelivery(input: MissionDeliveryInput, rules: Missi
   const allLanded = progress.totalTasks > 0 && progress.completedTasks >= progress.totalTasks;
   const anyLive = deliveries.some(d => [...d.workers, ...d.reviewers].some(w => LIVE.has(w.status)));
   const complete = m.status === 'completed';
-  const onTrunk = m.integrationBranch ? complete : null;
+  const onTrunk = m.integrationBranch ? complete || (allLanded && missionPrMerged) : null;
   const milestones: MissionMilestones = {
     agentsDone: !anyLive && deliveries.length > 0 && deliveries.every(d => d.status === 'completed' || d.status === 'failed'),
     allLanded,
@@ -472,6 +497,8 @@ export function projectMissionDelivery(input: MissionDeliveryInput, rules: Missi
   if (complete) kind = 'landed';
   else if (m.isHeld) kind = 'held';
   else if (tasks.length === 0 || progress.totalTasks === 0) kind = 'planning';
+  // R-32: a merged mission PR put the work on trunk; what is left is a check or the release.
+  else if (allLanded && missionPrMerged) kind = 'landed';
   else if (allLanded && m.integrationBranch) {
     kind = 'landing';
     exception = { tone: 'info', text: 'All tasks done, not yet on trunk' };
@@ -490,6 +517,7 @@ export function projectMissionDelivery(input: MissionDeliveryInput, rules: Missi
   }
 
   if (visual && !exception) exception = { tone: 'warning', text: visual.text };
+  if (visualOpen?.hold && !exception && kind === 'landed' && !complete) exception = { tone: 'muted', text: `${visualOpen.text}: ${visualOpen.hold}` };
 
   const repairRounds = deliveries.reduce((n, d) => n + d.repairRounds, 0);
   const inAudit = tasks.filter(t => ['audit', 'repair', 'landing', 'unavailable'].includes(t.delivery.kind)).length;
@@ -497,7 +525,9 @@ export function projectMissionDelivery(input: MissionDeliveryInput, rules: Missi
     ? { evidence: 'The integration branch has not been refreshed from trunk yet.', next: 'The platform retries the refresh' }
     : describe(kind, focus, m, repairRounds);
   const evidence = described.evidence;
-  const next = visual && (kind === 'landed' || kind === 'landing') ? visual.next : described.next;
+  const next = visual && (kind === 'landed' || kind === 'landing')
+    ? visual.next
+    : visualOpen && kind === 'landed' && !complete ? (visualOpen.hold ? `${visualOpen.text}: ${visualOpen.hold}` : visualOpen.text) : described.next;
 
   return {
     id: m.id,
@@ -516,6 +546,7 @@ export function projectMissionDelivery(input: MissionDeliveryInput, rules: Missi
     next,
     exception,
     visual,
+    visualOpen,
     reconciling: kind === 'notlanded' && !!focus?.delivery.reconciling,
     tasks,
   };
@@ -569,7 +600,10 @@ function describe(kind: DeliveryKind, focus: MissionDelivery['tasks'][number] | 
     case 'planning':
       return { evidence: 'No tasks planned yet.', next: 'A plan' };
     case 'landed':
-      return { evidence: m.status === 'completed' ? 'Mission complete.' : 'Every task landed.', next: m.status === 'completed' ? 'Release' : 'Mission completes' };
+      if (m.status === 'completed') return { evidence: 'Mission complete.', next: 'Release' };
+      return m.integrationBranch
+        ? { evidence: 'The mission PR merged to trunk.', next: m.released === false ? 'Release' : 'Mission completes' }
+        : { evidence: 'Every task landed.', next: 'Mission completes' };
   }
 }
 

@@ -25,6 +25,7 @@ import type { SupersessionSuggestion } from '@buildd/core/pr-shipped';
 import { ENTITLEMENT_BLOCK_CONTEXT_KEY, parseEntitlementBlock } from '@buildd/shared';
 import { taskRecoverySentence } from './task-recovery-hold';
 import { cancellationLine } from './task-cancellation';
+import { claimHoldPhrase } from './claim-hold-phrase';
 
 const repoOf = (url: string | null | undefined) => url?.match(/github\.com\/([^/]+\/[^/]+)\/pull\/\d+/)?.[1] ?? null;
 
@@ -65,6 +66,8 @@ export interface StateBecauseExtras {
     /** A reviewer task: runners claim it even in a local-executor mission. */
     runnerClaimable?: boolean;
     missingBrowser?: boolean;
+    /** The claim loop's newest refusal reason for this pending row (spec f7f67f1a R-33). */
+    holdReason?: string | null;
     /**
      * Unmet dependencies of a pending row. Such a row cannot be claimed, so it
      * is described as waiting on them (and ref'd to the first), never as
@@ -221,6 +224,10 @@ function openTaskLinks(
         'tasks.roleSlug + workerHeartbeats.environment + workspaces.gitConfig.executor',
         { ...base, taskId: t.id },
       );
+    }
+    const hold = t.status === 'pending' ? claimHoldPhrase(t.holdReason) : null;
+    if (hold && orphaned(t)) {
+      return link(`${name(t)} is queued: ${hold}.`, 'gate_events.reason', { ...base, taskId: t.id });
     }
     return link(
       orphaned(t)

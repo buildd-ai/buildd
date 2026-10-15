@@ -24,6 +24,7 @@ import type {
   VisualReviewBlockedCause,
   VisualReviewNextActor,
 } from './visual-review-state';
+import { claimHoldPhrase } from '../claim-hold-phrase';
 
 export type VisualReviewStage = 'none' | 'verifying' | 'fixing' | 'ready' | 'merged' | 'blocked' | 'judgment' | 'waived';
 export type VisualReviewTone = 'neutral' | 'info' | 'success' | 'warning' | 'error';
@@ -86,6 +87,13 @@ const BLOCKED_COPY: Record<VisualReviewBlockedCause, { label: string; detail: st
   auditor_failed: { label: 'The visual check failed', detail: 'It stopped before it could look at the screens.' },
   unknown: { label: 'The visual check could not run', detail: 'It stopped before it could look at the screens.' },
 };
+
+/** R-33: the claim loop's hold on a queued audit, as a sentence; null when none is known. */
+function queuedHold(state: MissionVisualReviewState): string | null {
+  if (state.status !== 'queued') return null;
+  const phrase = claimHoldPhrase(state.holdReason);
+  return phrase ? `${phrase[0].toUpperCase()}${phrase.slice(1)}.` : null;
+}
 
 export function presentVisualReview(state: MissionVisualReviewState, opts: PresentOptions = {}): VisualReviewPresentation {
   const pr = state.branch.integrationPr;
@@ -197,7 +205,7 @@ export function presentVisualReview(state: MissionVisualReviewState, opts: Prese
   const progress = state.progress;
   const detail = state.status === 'running' && progress
     ? progress.expected ? `Captured ${progress.captured} of ${progress.expected} screens.` : `Captured ${plural(progress.captured, 'screen')}.`
-    : state.staleEvidence ? 'The branch changed since the last check.' : 'Starts on the latest changes.';
+    : state.staleEvidence ? 'The branch changed since the last check.' : queuedHold(state) ?? 'Starts on the latest changes.';
   return {
     ...quiet, ...common, stage: 'verifying', tone: 'info', showPanel: !!pr || state.status !== 'needed',
     label: state.staleEvidence ? 'Checking the latest changes' : state.status === 'running' ? 'Checking screens' : 'Visual check queued',
