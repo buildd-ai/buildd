@@ -1122,7 +1122,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   }
 
   async function landed(sha: string, mergingTask: Parameters<typeof finalizeMissionPrMerge>[0]): Promise<LandingOutcome> {
-    await finalizeMissionPrMerge(mergingTask, installationId, repoFullName).catch((err) =>
+    await finalizeMissionPrMerge(mergingTask, installationId, repoFullName, prNumber).catch((err) =>
       console.warn(`[pr-landing] mission finalize failed for PR #${prNumber}:`, err),
     );
     // The earliest known start wins: a refresh restarts CI, and the wait it caused is still the PR's wait.

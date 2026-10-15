@@ -136,7 +136,7 @@ export const landingLifecycle: Pick<Lifecycle, 'merged' | 'finalizeMerge'> = {
     const task = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, d.ownerTaskId)), columns: { title: true, taskClass: true, missionId: true } });
     const repo = await workspaceRepo(d.workspaceId);
     if (!repo) throw new Error('no GitHub installation for the workspace');
-    // Deletes the mission branch after the mission PR ships, whichever door (or a person on GitHub) merged it.
-    await finalizeMissionPrMerge(task ?? null, repo.installationId, d.repoFullName);
+    // Records the merged mission delivery (rotation, settlement, retirement), whichever door (or a person on GitHub) merged it.
+    await finalizeMissionPrMerge(task ?? null, repo.installationId, d.repoFullName, d.prNumber);
   },
 };

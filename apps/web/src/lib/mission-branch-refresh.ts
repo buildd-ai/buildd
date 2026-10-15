@@ -227,7 +227,16 @@ export async function refreshMissionIntegrationBranch(
   // task nobody can finish. Read from the worker row, the kernel delivery and
   // GitHub (lib/mission-shipping-pr), since the worker row alone can miss it.
   const prRepo = { workspaceId: workspace.id, installationId, repoFullName: repo.fullName };
-  const shipped = () => missionShippingPrMerged(missionId, prRepo);
+  // With delivery records (workflow-kernel-library.md §6) refresh is an act on
+  // the writable delivery and nothing else: this branch must be its branch. A
+  // merged delivery is never refreshed, and neither is a branch the mission
+  // already rotated away from mid-call.
+  const shipped = async (): Promise<boolean> => {
+    const { missionEpochsOf, writableEpoch } = await import('@/lib/workflow/delivery-ship');
+    const epochs = await missionEpochsOf(missionId);
+    if (epochs.length > 0) return writableEpoch({ epochs })?.branch !== branch;
+    return !!(await missionShippingPrMerged(missionId, prRepo));
+  };
   if (await shipped()) {
     return { kind: 'skipped', reason: 'mission_pr_merged' };
   }

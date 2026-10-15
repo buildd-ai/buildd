@@ -36,6 +36,7 @@ const INVENTORY: Record<string, { what: string; calls: number }> = {
   'apps/web/src/lib/specs/repo-copy.ts': { what: 'D14: a Living Spec\'s generated repo copy, only the generator\'s own commit, pinned (living-specs R-35)', calls: 1 },
   'apps/web/src/lib/release-executor.ts': { what: 'not a door: a branch-to-prod merge with no PR (POST /merges)', calls: 1 },
   'apps/web/src/lib/mission-branch-refresh.ts': { what: 'not a door: a base refresh into a mission branch (POST /merges)', calls: 1 },
+  'apps/web/src/lib/workflow/delivery-epochs.ts': { what: 'not a door: the settlement tree probe, a test merge onto a scratch ref deleted in the same step (POST /merges, workflow-kernel-library §6)', calls: 1 },
 };
 
 /** One merge call: the helper called, a REST merge path, a branch merge, the kernel's pinned call. */

@@ -142,7 +142,7 @@ describe('#4686: a review fix that changes nothing', () => {
     expect(s.d).toMatchObject({ mergedAt: '2026-01-01T01:00:00.000Z', mergeCommitSha: 'M1' });
   });
 
-  test.todo('AC-19: a repair that ends with zero diff and no evidence keeps its findings open and its attempt reads "no change"');
+  // AC-19 is a shared scenario (./scenarios), so it runs on Postgres too.
 });
 
 describe('#4679: a second push before re-review', () => {

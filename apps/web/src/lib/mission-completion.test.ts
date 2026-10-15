@@ -11,7 +11,13 @@ mock.module('@/lib/mission-pr', () => ({
 // The workflow kernel's deliveries by PR (Slice D): empty = every PR is legacy, so every
 // test above the S16 block runs exactly the column answer it always did.
 let deliveryShips = new Map<string, any>();
+// Mission delivery records (workflow-kernel-library.md §6): empty = a mission
+// that predates them, judged by the mission-PR owner as before.
+let missionEpochs: any[] = [];
+const { epochCompletionHold: realEpochCompletionHold } = await import('@buildd/workflow-kernel/delivery-epochs');
 mock.module('@/lib/workflow/delivery-ship', () => ({
+  missionEpochsOf: () => Promise.resolve(missionEpochs),
+  epochCompletionHold: realEpochCompletionHold,
   deliveryShipsForPrs: () => Promise.resolve(deliveryShips),
   shipKey: (ws: string | null, u: string | null) => (ws && u ? `${ws}:${u.replace('https://github.com/', '').replace('/pull/', '#').toLowerCase()}` : null),
 }));
@@ -208,6 +214,7 @@ const PASSING_STATE = {
 
 function reset() {
   missionRow = null;
+  missionEpochs = [];
   missionWorkState = { complete: true, reason: 'complete', unfinishedTaskCount: 0, unmergedPrCount: 0, landedOnIntegrationCount: 0 };
   missionPrOwner = null;
   taskRows = [];
@@ -1404,6 +1411,86 @@ describe('canCompleteMission — Option A′: the mission integration PR is the 
 
     const d = await canCompleteMission('m1', { path: 'dormancy' });
     expect(d.ok).toBe(true);
+  });
+
+  // ── §6: delivery epochs. "A mission PR merged" is never enough on its own. ──
+  function epoch(n: number, o: Record<string, unknown> = {}) {
+    return {
+      id: `e${n}`, missionId: 'm1', epoch: n, branch: n === 1 ? OPTED_IN.workingBranch : `${OPTED_IN.workingBranch}-delivery-${n}`,
+      state: 'open', version: 0, origin: n === 1 ? 'adopted' : 'cut', cutFromSha: null, branchReadyAt: null,
+      predecessorId: n === 1 ? null : `e${n - 1}`, scopeVersion: 1, repoFullName: 'acme/app', prNumber: null, ownerTaskId: null,
+      mergedAt: null, mergeCommitSha: null, mergedHeadSha: null, settlement: null, settledAt: null, retiredAt: null,
+      // A shipped delivery is settled and retired unless a test says otherwise.
+      ...(o.state === 'merged' ? { settledAt: '2026-10-14T10:05:00.000Z', retiredAt: '2026-10-14T10:06:00.000Z' } : {}),
+      ...o,
+    };
+  }
+
+  it('scenario 1: delivery 1 merged and later work landed on delivery 2 — the mission is not shipped', async () => {
+    activeMission({ ...OPTED_IN, workingBranch: `${OPTED_IN.workingBranch}-delivery-2` });
+    taskRows = [mergedWork()];
+    landedOnIntegration();
+    // The legacy reading says shipped: the newest mission-PR owner merged.
+    missionPrOwner = { taskId: 't-own', workerId: 'w-own', prNumber: 42, prUrl: 'https://example.test/pr/42', mergedAt: new Date(), state: 'merged' };
+    missionEpochs = [epoch(1, { state: 'merged', prNumber: 42, mergedAt: '2026-10-14T10:00:00.000Z' }), epoch(2)];
+    missionWorkState = { ...missionWorkState, landedOnIntegration: [{ taskId: 't-2', baseRef: `${OPTED_IN.workingBranch}-delivery-2`, mergedAt: '2026-10-14T11:00:00.000Z' }] };
+
+    const d = await canCompleteMission('m1', { path: 'dormancy' });
+    expect(d.ok).toBe(false);
+    expect(d.code).toBe('awaiting_mission_pr');
+    expect(d.reason).toContain('Delivery 2');
+  });
+
+  it('scenario 1: delivery 2 has its PR open — the mission waits on that PR, by number', async () => {
+    activeMission(OPTED_IN);
+    taskRows = [mergedWork()];
+    missionEpochs = [epoch(1, { state: 'merged', prNumber: 42 }), epoch(2, { prNumber: 43 })];
+    missionWorkState = { ...missionWorkState, landedOnIntegration: [{ taskId: 't-2', baseRef: `${OPTED_IN.workingBranch}-delivery-2`, mergedAt: '2026-10-14T11:00:00.000Z' }] };
+
+    const d = await canCompleteMission('m1', { path: 'dormancy' });
+    expect(d.code).toBe('awaiting_mission_pr');
+    expect(d.reason).toContain('#43');
+    expect(d.awaitingMerge).toBe(1);
+  });
+
+  it('scenario 4: every delivery merged and nothing on a writable branch — the delivery gate passes, criteria decide', async () => {
+    activeMission(OPTED_IN);
+    taskRows = [mergedWork()];
+    landedOnIntegration();
+    missionPrOwner = null;
+    missionEpochs = [epoch(1, { state: 'merged', prNumber: 42 }), epoch(2, { state: 'merged', prNumber: 43 })];
+    missionWorkState = { ...missionWorkState, landedOnIntegration: [{ taskId: 't-1', baseRef: OPTED_IN.workingBranch, mergedAt: '2026-10-14T09:00:00.000Z' }] };
+
+    const d = await canCompleteMission('m1', { path: 'dormancy' });
+    expect(d.code).not.toBe('awaiting_mission_pr');
+  });
+
+  it('review of #4806: a shipped delivery with PRs still on its branch holds completion, naming them', async () => {
+    activeMission(OPTED_IN);
+    taskRows = [mergedWork()];
+    landedOnIntegration();
+    missionEpochs = [
+      epoch(1, { state: 'merged', prNumber: 42, retiredAt: null, settlement: { settled: [], held: [{ prNumber: 77, kind: 'refresh', disposition: 'hold', reason: 'r', proof: {} }], satisfiedByPr: 42 } }),
+      epoch(2),
+    ];
+    missionWorkState = { ...missionWorkState, landedOnIntegration: [] };
+    const d = await canCompleteMission('m1', { path: 'dormancy' });
+    expect(d.code).toBe('awaiting_mission_pr');
+    expect(d.reason).toContain('#77');
+    // Not yet settled at all: held too.
+    missionEpochs = [epoch(1, { state: 'merged', prNumber: 42, settledAt: null, retiredAt: null }), epoch(2)];
+    expect((await canCompleteMission('m1', { path: 'dormancy' })).code).toBe('awaiting_mission_pr');
+  });
+
+  it('an open delivery with nothing landed on it (just cut) does not hold completion', async () => {
+    activeMission(OPTED_IN);
+    taskRows = [mergedWork()];
+    landedOnIntegration();
+    missionEpochs = [epoch(1, { state: 'merged', prNumber: 42 }), epoch(2)];
+    missionWorkState = { ...missionWorkState, landedOnIntegration: [{ taskId: 't-1', baseRef: OPTED_IN.workingBranch, mergedAt: '2026-10-14T09:00:00.000Z' }] };
+
+    const d = await canCompleteMission('m1', { path: 'dormancy' });
+    expect(d.code).not.toBe('awaiting_mission_pr');
   });
 
   it('does not demand a mission PR when nothing landed on the integration branch', async () => {

@@ -143,6 +143,12 @@ export type Command =
       ci?: { liveChecks: { complete: boolean; failing: string[] }; signature: string; maxAttempts: number } | null;
       /** §5: the paths changed between the repair's bound head and the live head (a compare read); absent = unread. */
       changedPaths?: string[] | null;
+      /**
+       * §13.13 rule 4: a review fix that changed nothing because the findings' condition is
+       * already absent at the head, with what it read. Never a resolution on its own: a
+       * verification round at the same head decides.
+       */
+      noopEvidence?: { findingIds: string[]; evidence: string } | null;
     })
   | (Base & { type: 'ReviewRequested'; headSha: string; live: LivePr; forced?: boolean })
   | (Base & {
