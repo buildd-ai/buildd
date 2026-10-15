@@ -1450,7 +1450,13 @@ describe('S16–S21', () => {
     expect(t.at(-1)!.evidence.actor).toBe('system:auto-supersession');
     expect((await effects(o.deliveryId, 'scan_supersession')).map((e) => [e.status, e.outcome])).toEqual([['done', 'ok:recorded']]);
     expect((await prRows(o)).every((r) => r.superseded_by_pr_number === reopened && r.superseded_recorded_by === 'system:auto-supersession')).toBe(true);
-    const [gate] = await q<{ outcome: string; surface: string }>(sql`SELECT outcome, surface FROM gate_events WHERE worker_id = ${await prWorkerOf(o)}::uuid AND gate = 'auto_pr_supersession'`);
+    // The gate event is fire-and-forget (fireGateEvent): under CI load it can land after the drain returns.
+    const gateWorker = await prWorkerOf(o);
+    let gate: { outcome: string; surface: string } | undefined;
+    for (let i = 0; i < 40 && !gate; i++) {
+      [gate] = await q<{ outcome: string; surface: string }>(sql`SELECT outcome, surface FROM gate_events WHERE worker_id = ${gateWorker}::uuid AND gate = 'auto_pr_supersession'`);
+      if (!gate) await new Promise((r) => setTimeout(r, 50));
+    }
     expect(gate).toMatchObject({ outcome: 'accepted', surface: 'workflow scan_supersession' });
 
     // A close whose base still exists is not guessed to be anything.
