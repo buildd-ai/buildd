@@ -3062,7 +3062,8 @@ export type GoalCriterionType =
   | 'no_open_tasks'
   | 'artifact_exists'
   | 'metric'
-  | 'description';
+  | 'description'
+  | 'living_spec';
 
 /**
  * A criterion's verdict.
@@ -3145,7 +3146,43 @@ export type GoalCriterion =
        */
       grader?: CriteriaGrader;
       label?: string;
-    };
+    }
+  | LivingSpecGoalCriterion;
+
+/**
+ * The mission's selected outcome spec (Living Specs Slice 12, D-19/D-20): the
+ * mission completes only when every in-scope requirement of this pinned
+ * revision passes on the mission's integrated target. Written by the server
+ * (`selectMissionSpec`): the revision id, number and hash come from the
+ * database, never from the caller. Verdicts are mission-level rows in
+ * `spec_outcome_verdicts` recorded by the final verification, a check run, the
+ * visual audit or a person; a task PR's own verdicts are never read here, so a
+ * union of PR passes cannot stand in for the integrated audit.
+ */
+export interface LivingSpecGoalCriterion {
+  type: 'living_spec';
+  specId: string;
+  specRevisionId: string;
+  revision: number;
+  contentHash: string;
+  /** Pinned to a revision nobody has approved yet: shown as provisional. */
+  provisional?: true;
+  /** Narrowed scope (R-n / AC-n ids). Absent = every criterion of the revision. */
+  criteria?: string[];
+  /** Why the scope is narrowed (10+ chars). Required with `criteria`. */
+  narrowedReason?: string;
+  /** Criteria a person waived, with why. Shown as waived, never as passed. */
+  waived?: Array<{ criterionId: string; reason: string; by: string; at: string }>;
+  label?: string;
+}
+
+/** One criterion's standing under a `living_spec` goal criterion, for UI and MCP. */
+export interface LivingSpecCriterionStanding {
+  criterionId: string;
+  standing: 'pass' | 'fail' | 'inconclusive' | 'unsupported' | 'missing' | 'stale' | 'waived';
+  headSha: string | null;
+  verdictId?: string;
+}
 
 /**
  * How a `description` (prose) criterion is graded.
@@ -3208,6 +3245,18 @@ export interface GoalCriteriaState {
      * stored verdict MUST match on this.
      */
     fingerprint?: string;
+    /**
+     * `living_spec` criteria: the integrated target the verdicts were read
+     * against and each in-scope criterion's standing there.
+     */
+    spec?: {
+      specId: string;
+      revision: number;
+      targetSha: string | null;
+      standings: LivingSpecCriterionStanding[];
+      /** Whether the mission's build work was done when this was evaluated. Absent on older states. */
+      buildDone?: boolean;
+    };
   }>;
 }
 

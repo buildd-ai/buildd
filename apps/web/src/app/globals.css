@@ -801,6 +801,12 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   }
 
   .state-cell[data-frame="hairline"] { box-shadow: inset 0 0 0 1px var(--border-strong); }
+  /* Why a waiting Overview cell waits (spec f7f67f1a R-5), one texture each:
+     dashed on other tasks, filled next in line, striped held, an empty frame unexplained. */
+  .state-cell[data-wait="tasks"] { background: transparent; box-shadow: none; border: 1px dashed var(--faint); }
+  .state-cell[data-wait="slot"] { background: var(--q-tint); box-shadow: inset 0 0 0 1px var(--faint); }
+  .state-cell[data-wait="hold"] { background: repeating-linear-gradient(90deg, var(--faint) 0 1px, var(--q-tint) 1px 4px); box-shadow: inset 0 0 0 1px var(--faint); }
+  .state-cell[data-wait="unknown"] { background: transparent; box-shadow: inset 0 0 0 1px var(--faint); }
   .state-cell[data-frame="decision"] { box-shadow: inset 0 0 0 1.5px var(--dec-frame); }
   .state-cell[data-frame="heavy"] { box-shadow: inset 0 0 0 2.5px var(--accent); }
 }

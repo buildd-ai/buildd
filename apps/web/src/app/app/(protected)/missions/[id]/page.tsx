@@ -1,5 +1,6 @@
 import { db } from '@buildd/core/db';
 import { after } from 'next/server';
+import { loadBuildEstimateRows } from '@/lib/mission-build-estimates';
 import { missions, workspaces, workspaceSkills, missionNotes, workers, tasks, initiatives, artifacts, orchestrationManifestPredictions } from '@buildd/core/db/schema';
 import { eq, and, or, inArray, desc, isNotNull, isNull, ne } from 'drizzle-orm';
 import Link from 'next/link';
@@ -20,7 +21,7 @@ import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/l
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { isOverdue as checkOverdue } from '@/lib/heartbeat-helpers';
 import { describeLastCheck, selectOrganizerRuns } from '@/lib/mission-checkins';
-import { isSystemWorkspace, displayWorkspaceName, type GoalCriterion, type GoalCriteriaState } from '@buildd/shared';
+import { isSystemWorkspace, displayWorkspaceName, type GoalCriterion, type GoalCriteriaState, type LivingSpecGoalCriterion } from '@buildd/shared';
 import { resolvePolicy } from '@/lib/merge-policy';
 import { selectMissionRecords } from '@/lib/flight-strip-nav';
 import MissionVerifiedPill from './MissionVerifiedPill';
@@ -55,7 +56,8 @@ import { mastheadBack, parseMissionOrigin } from './MissionDetailView';
 import MissionLayoutShell, { MISSION_HEADER_ACTION, MissionBoardHeader, MissionLayoutTabs } from './MissionLayoutShell';
 import FlowTimeline from './FlowTimeline';
 import { expectedMinutesFromPredictions, sameFilesFromRows } from '@/lib/flow-timeline';
-import MissionOverview from './MissionOverview';
+import MissionOverview, { type MissionChecksSource } from './MissionOverview';
+import { missionPlanInputs } from '@/lib/mission-plan-source';
 import MissionFeedLayout from './MissionFeedLayout';
 import { missionSummaryLine } from '@/lib/mission-summary-line';
 import { buildMissionBoard, toBoardTaskInput } from '@/lib/mission-board';
@@ -77,8 +79,8 @@ import { getMissionVisualReviewState } from '@/lib/workflow/visual-review-state-
 import { presentVisualReview } from '@/lib/workflow/visual-review-presentation';
 import MissionScreensRow from './MissionScreensRow';
 import MissionRecordsSheet from './MissionRecordsSheet';
-import { MissionReleaseSection } from './MissionReleaseSection';
-import { buildDeliverySteps, deliveryReleaseInput, missionPrCount, missionTrunkMergedAt } from '@/lib/mission-delivery';
+import { MissionReleaseSection, missionReleaseRow } from './MissionReleaseSection';
+import { buildDeliverySteps, deliveryReleaseInput, missionPrCount, missionReleaseStatus, missionTrunkMergedAt } from '@/lib/mission-delivery';
 import { classifyReleaseState } from '@/lib/release-state';
 import { taskPageHref } from '@/lib/mission-task-href';
 import MissionDecisionSheet from './MissionDecisionSheet';
@@ -108,6 +110,7 @@ import { explainMission } from '@/lib/explain';
 import { deriveMissionStateView } from '@/lib/mission-state-view';
 import { missionOpenQuestions } from '@/lib/open-ask';
 import { loadDependencyRows } from '@/lib/dependency-rows';
+import { loadMissionGateFacts } from '@/lib/mission-board-waiting';
 import { resolveEffectiveRoles } from '@/lib/effective-roles';
 import MissionSituationBlock, { affordanceFor, MISSION_CRITERIA_ANCHOR } from '@/components/missions/MissionSituationBlock';
 import { formatEstimatedUsd, ESTIMATED_COST_TITLE } from '@/lib/cost-label';
@@ -357,7 +360,7 @@ export default async function MissionDetailPage({
   // shipped under another task/PR, or that the kernel already replaced, must
   // not drive this fallback reading to FAILING.
   const failedDeliverableRows = (mission.tasks || []).filter((t) => isDeliverableTask(t as never) && t.status === 'failed');
-  const [foreignDeps, supersededMap, deliveryViews] = await Promise.all([
+  const [foreignDeps, supersededMap, deliveryViews, gateFacts] = await Promise.all([
     loadDependencyRows(foreignDependencyIds(mission.tasks || [])),
     computeSupersededFailedTasks(
       mission.id,
@@ -367,6 +370,13 @@ export default async function MissionDetailPage({
     // One DeliveryView load for the page (§17.5): the failure reading, the
     // board/strip, the timeline cards and the structure view all read it.
     getDeliveryViewsForTasks((mission.tasks || []).map((t) => t.id)),
+    // Which claim-gate arm released each dependency, and why each queued task
+    // waits, from the claim's own SQL (spec f7f67f1a P-1). Never throws.
+    loadMissionGateFacts(mission.id, {
+      held: (mission as any).isHeld === true,
+      local: (mission as any).executor === 'local',
+      budgetExhausted: mission.status === 'budget_exhausted',
+    }),
   ]);
   const kernelReplaced = replacedFailedTaskIds(deliveryViews, failedDeliverableRows.map((t) => t.id));
   const deliveryDisplays = ownerDeliveryDisplays(deliveryViews);
@@ -621,7 +631,7 @@ export default async function MissionDetailPage({
 
   // The breadcrumb initiative, the initiative-selector options, the release
   // footer and the completion note are mutually independent.
-  const [initiativeName, teamInitiativeOptions, releaseFooterData, completionNote, carryingReleaseId, feedNoteRows, shippedRow, surfaceAuditWaiver, visualReviewState] = await Promise.all([
+  const [initiativeName, teamInitiativeOptions, releaseFooterData, completionNote, carryingReleaseId, feedNoteRows, shippedRow, surfaceAuditWaiver, visualReviewState, estimateRows] = await Promise.all([
     // Breadcrumb: URL param takes priority, DB-stored initiative is the fallback
     // so users see the parent initiative even when navigating directly to the mission.
     (from === 'initiative' && initiativeId)
@@ -689,6 +699,12 @@ export default async function MissionDetailPage({
       console.error('[mission-page] visual review state load failed', err);
       return null;
     }),
+    // The build-only estimate reads the same frozen estimates as the Plan page (spec f7f67f1a R-23).
+    // Only for a team with the task-estimates switch on, the Plan page's gate.
+    loadBuildEstimateRows({ teamId: mission.teamId, taskIds: allMissionTaskIds, finished: isTerminal }).catch((err) => {
+      console.error('[mission-page] estimate load failed', err);
+      return [];
+    }),
   ]);
   const shippedView = mission.status === 'completed'
     ? buildShippedHeaderView((shippedRow?.metadata as { shipped?: unknown } | null)?.shipped, (mission as any).completedAt)
@@ -751,6 +767,11 @@ export default async function MissionDetailPage({
         ...(vs.bootFailed ? { bootFailed: true } : {}),
       }
     : null;
+  // D6: this mission's own trunk merges, read against the release baseline.
+  const missionMergedAt = missionTrunkMergedAt(
+    (mission.tasks ?? []) as Array<{ id: string; workers?: Array<{ mergedAt?: string | Date | null }> | null }>,
+    missionIntegrationPr,
+  );
   // The footer renders Shipped and Screens; the band says the rest.
   const deliverySteps = buildDeliverySteps({
     missionStatus: mission.status,
@@ -762,11 +783,7 @@ export default async function MissionDetailPage({
     visual: visualReview,
     visualPhase: boardVisual,
     visualReview: visualPresentation ?? undefined,
-    // D6: this mission's own trunk merges, read against the release baseline.
-    mergedAt: missionTrunkMergedAt(
-      (mission.tasks ?? []) as Array<{ id: string; workers?: Array<{ mergedAt?: string | Date | null }> | null }>,
-      missionIntegrationPr,
-    ),
+    mergedAt: missionMergedAt,
     release: deliveryReleaseInput(releaseState),
     budget: budgetUsd != null
       ? { budgetUsd, spendUsd, exhausted: mission.status === 'budget_exhausted' }
@@ -775,6 +792,36 @@ export default async function MissionDetailPage({
     durationLabel: null,
   });
   const shippedStep = deliverySteps.find(s => s.key === 'shipped');
+  // P-3: a deploying, dispatched or failed release shows even when Shipped is hidden.
+  const releasedAtRaw = (mission as { releasedAt?: string | Date | null }).releasedAt ?? null;
+  const releaseStatus = missionReleaseStatus({
+    state: releaseState,
+    mergedAt: missionMergedAt,
+    releasedAt: releasedAtRaw ? new Date(releasedAtRaw).toISOString() : null,
+  });
+  // Overview's checks after the build (spec f7f67f1a R-11 to R-22): a projection over the
+  // same visual review state, criteria, mission PR and release status this page already reads.
+  const trunkName = (workspaceForPolicy?.gitConfig as { defaultBranch?: unknown } | null)?.defaultBranch;
+  const overviewChecks: MissionChecksSource = {
+    branch: (mission as { integrationBranchEnabled?: boolean | null }).integrationBranchEnabled === true ? 'mission-branch' : 'direct',
+    target: (typeof trunkName === 'string' && trunkName ? trunkName : null) ?? visualReviewState?.branch.base ?? null,
+    mergeTier: effectivePolicy.tier as MissionChecksSource['mergeTier'],
+    visual: visualReviewState ?? null,
+    criteria: goalCriteria,
+    criteriaState: goalCriteriaStateFull,
+    integrationPr: missionIntegrationPr,
+    release: releaseStatus,
+    evidence: visualReviewState ? { visual: [{ label: 'Open screens', href: `/app/missions/${id}?visualReview=1` }] } : undefined,
+  };
+  // The Plan page's schedule over the build tasks only (P-2): Overview and Plan give the same numbers.
+  const newestEstimate = new Map<string, { p50Minutes: number; p80Minutes: number }>();
+  for (const e of estimateRows) if (!newestEstimate.has(e.taskId)) newestEstimate.set(e.taskId, e);
+  const buildPlanTasks = missionPlanInputs([{
+    id, title: mission.title, workspaceId: mission.workspaceId ?? null, dependsOnMissionId: null, isHeld: false,
+    tasks: (mission.tasks ?? []).filter(t => t.taskClass !== 'attempt' && missionHelpers.deliverableRole(t as Parameters<typeof missionHelpers.deliverableRole>[0]) === 'build') as never,
+  }], newestEstimate, new Map())[0]?.tasks ?? [];
+  // Waiting on another mission is an outside wait: no time promise (R-24).
+  const waitsOnMission = !!(mission as { dependsOnMissionId?: string | null }).dependsOnMissionId;
   const visualStep = deliverySteps.find(s => s.key === 'visual') ?? null;
   const missionPrCard = shouldRenderMissionPrBlock(missionIntegrationPr, { workLanded: feedCounts.total > 0 && feedCounts.done >= feedCounts.total }) && missionIntegrationPr ? (
     // Mission integration PR (Option A′): the mission's review gate, and a
@@ -1079,6 +1126,7 @@ export default async function MissionDetailPage({
     humanTouches: humanSteeringNotes.map(n => new Date(n.createdAt).getTime()),
     // Another mission's dependency is judged by the claim gate, not dropped.
     externalDeps: [...foreignDeps.values()],
+    gateFacts,
   });
   // Flow: the same-files waits Buildd added, and each task's expected size.
   const flowSameFiles = sameFilesFromRows(allTasks as Array<{ id: string; pathDeclaration?: unknown }>);
@@ -1187,6 +1235,7 @@ export default async function MissionDetailPage({
       completionDecision={completionDecision}
       executor={(mission as any).executor === 'local' ? 'local' : (mission as any).executor === 'runner' ? 'runner' : null}
       visualReview={visualReviewEntry}
+      outcomeSpecs={goalCriteria.filter((c): c is LivingSpecGoalCriterion => c.type === 'living_spec')}
       settings={settings}
     />
   );
@@ -1196,9 +1245,9 @@ export default async function MissionDetailPage({
   const footerRows = (
     <>
       {/* F6: this mission's own release status, linking to the release. */}
-      {mission.workspaceId && shippedStep && (
+      {mission.workspaceId && missionReleaseRow(shippedStep, releaseStatus) && (
         <div className="border-t border-border-default">
-          <MissionReleaseSection step={shippedStep} releaseId={carryingReleaseId} workspaceId={mission.workspaceId} />
+          <MissionReleaseSection step={shippedStep} status={releaseStatus} releaseId={carryingReleaseId} workspaceId={mission.workspaceId} />
         </div>
       )}
       {/* The visual review, live: opens the review deck (or, before any
@@ -1273,7 +1322,7 @@ export default async function MissionDetailPage({
       <MissionSurfaceAuditWaiverProvider {...auditWaiverProps}>
       <MissionLayoutShell
         initial={parseMissionLayout(layoutParam, listViewParam)}
-        board={boardHeader(<MissionOverview model={boardModel} completionText={completionText} notice={boardNotice} visual={boardVisual} {...boardLink} {...boardStrip} />)}
+        board={boardHeader(<MissionOverview model={boardModel} completionText={completionText} notice={boardNotice} visual={boardVisual} checks={overviewChecks} planTasks={buildPlanTasks} held={isHeld || waitsOnMission || mission.status === 'budget_exhausted'} {...boardLink} {...boardStrip} />)}
         flow={boardHeader(<FlowTimeline model={boardModel} sameFiles={flowSameFiles} expectedMinutes={flowExpectedMinutes} {...boardLink} />)}
         feed={boardHeader(
           <MissionFeedLayout

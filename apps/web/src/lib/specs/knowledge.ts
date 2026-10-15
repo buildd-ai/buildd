@@ -130,7 +130,8 @@ async function derivedInputs(spec: SpecRow, rev: RevisionRow, body: string) {
     .where(and(eq(tasks.workspaceId, spec.workspaceId), sql`${tasks.context}->'specSource'->>'specRevisionId' = ${rev.id}`));
   const verdicts = pinned.length
     ? await db.select({ taskId: specOutcomeVerdicts.taskId, criterionId: specOutcomeVerdicts.criterionId, verdict: specOutcomeVerdicts.verdict, headSha: specOutcomeVerdicts.headSha })
-      .from(specOutcomeVerdicts).where(eq(specOutcomeVerdicts.specRevisionId, rev.id)).orderBy(asc(specOutcomeVerdicts.createdAt))
+      // Task outcomes only: a mission-level verdict (Slice 12) is not a task's.
+      .from(specOutcomeVerdicts).where(and(eq(specOutcomeVerdicts.specRevisionId, rev.id), isNotNull(specOutcomeVerdicts.taskId))).orderBy(asc(specOutcomeVerdicts.createdAt))
     : [];
   const newest = new Map<string, (typeof verdicts)[number]>();
   for (const v of verdicts) newest.set(`${v.taskId}|${v.criterionId}`, v);

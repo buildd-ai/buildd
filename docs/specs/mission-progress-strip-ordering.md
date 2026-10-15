@@ -146,6 +146,17 @@ model. Same model in, same array out.
 run of cells that share its component and level. A cell never crosses a level
 boundary or a component boundary because something landed or started.
 
+### 2.1a Scoped amendment: the Overview tab groups by outcome
+
+On the mission page's Overview tab only, the strip draws build tasks in three
+groups, Done, then In progress, then Waiting, with audit, fix and refresh rows
+after them (Living Spec f7f67f1a R-1). ORD-1 and the §2.1 sort key still hold
+inside each group, so a dependency never sits right of its dependent within a
+group, and a cell changes group only when its status changes. Every other
+consumer of `stripOrder` (Flow, the mission list, Home, the pulse and the card
+view) keeps plain §2.1 order, unchanged. The projection is `overviewLayout` in
+`apps/web/src/lib/mission-overview.ts`.
+
 ### 2.2 Why levels, not a free Kahn order
 
 A priority-queue Kahn sort with readiness as the priority is also topological,

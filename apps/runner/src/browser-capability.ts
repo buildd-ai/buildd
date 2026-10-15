@@ -2,7 +2,8 @@
  * Truthful 'browser' capability: find a Chromium build AND prove it launches.
  *
  * Discovery covers Playwright browser directories — PLAYWRIGHT_BROWSERS_PATH,
- * ~/.cache/ms-playwright, and the system-wide /opt/ms-playwright that container
+ * the platform default (~/.cache/ms-playwright on Linux,
+ * ~/Library/Caches/ms-playwright on macOS), and the system-wide /opt/ms-playwright that container
  * images install into (a home directory mounted as a volume hides anything the
  * image put under ~/.cache) — and system binaries on PATH (including
  * `chrome-headless-shell`). Playwright builds are probed first, headless shells
@@ -131,13 +132,23 @@ function isHeadlessShell(path: string): boolean {
   return name === 'chrome-headless-shell' || name === 'headless_shell';
 }
 
+/**
+ * Playwright's own default browsers directory for this platform: macOS uses
+ * ~/Library/Caches, Windows %LOCALAPPDATA%, everything else ~/.cache.
+ */
+export function defaultPlaywrightDir(platform: string = process.platform, home: string = homedir()): string {
+  if (platform === 'darwin') return join(home, 'Library', 'Caches', 'ms-playwright');
+  if (platform === 'win32') return join(process.env.LOCALAPPDATA || join(home, 'AppData', 'Local'), 'ms-playwright');
+  return join(home, '.cache', 'ms-playwright');
+}
+
 /** Playwright directories to search, deduped, existing only. */
-export function playwrightDirs(): string[] {
+export function playwrightDirs(platform: string = process.platform, home: string = homedir()): string[] {
   const dirs: string[] = [];
   const env = process.env.PLAYWRIGHT_BROWSERS_PATH;
   // "0" means "next to the package in node_modules" — not a directory to scan.
   if (env && env !== '0') dirs.push(env);
-  dirs.push(join(homedir(), '.cache', 'ms-playwright'));
+  dirs.push(defaultPlaywrightDir(platform, home));
   dirs.push(SYSTEM_PLAYWRIGHT_DIR);
   return [...new Set(dirs)].filter(d => fs.existsSync(d));
 }
@@ -170,7 +181,9 @@ function findOnPath(): string[] {
 function findInPlaywrightDirs(dirs: string[]): string[] {
   if (dirs.length === 0) return [];
   const names = PLAYWRIGHT_BIN_NAMES.map(n => `-name ${shellQuote(n)}`).join(' -o ');
-  const cmd = `find ${dirs.map(shellQuote).join(' ')} -maxdepth 5 \\( ${names} \\) \\( -type f -o -type l \\) -perm -u+x 2>/dev/null | head -20`;
+  // -H: follow a search root that is itself a symlink. BSD/macOS find does not
+  // descend into one otherwise; -H works on GNU find too and follows nothing deeper.
+  const cmd = `find -H ${dirs.map(shellQuote).join(' ')} -maxdepth 5 \\( ${names} \\) \\( -type f -o -type l \\) -perm -u+x 2>/dev/null | head -20`;
   try {
     return cp.execSync(cmd, { timeout: 3000, stdio: 'pipe' })
       .toString()
