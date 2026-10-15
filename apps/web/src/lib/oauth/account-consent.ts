@@ -144,6 +144,8 @@ export interface ConsentWorkspace {
   repo?: string | null;
   /** An internal workspace (`__` prefix, e.g. `__coordination`). */
   system?: boolean;
+  /** `open` or `restricted`; the runner picker offers `restricted` to owners and admins only. */
+  accessMode?: string | null;
 }
 
 export interface ConsentTeam {
@@ -477,6 +479,21 @@ export interface ConsentPageArgs {
   error?: string | null;
   /** The form's action; the authorize endpoint. */
   action?: string;
+  /**
+   * The runner login variant (lib/runner-consent.ts): the same picker, worded
+   * for a runner, with no permission or connection-kind choice (a runner key's
+   * level is capped by the person's role, not chosen here).
+   */
+  runner?: RunnerConsentWording;
+}
+
+export interface RunnerConsentWording {
+  title: string;
+  lede: string;
+  /** Where the browser or the key goes next, in words (e.g. a localhost port). */
+  returnsTo: string;
+  approveLabel: string;
+  footnote: string;
 }
 
 /** An internal workspace reads as the app names it elsewhere (displayWorkspaceName). */
@@ -573,6 +590,7 @@ export function renderAccountConsentPage(args: ConsentPageArgs): string {
     ? `<label class="option"><input type="checkbox" id="perm-write" name="perm_write" value="on"${state.write ? ' checked' : ''}><span><span class="t">Write</span><span class="d" style="display:block">Create and update tasks, claim work, open pull requests, record progress and knowledge.</span></span></label>`
     : '';
 
+  const runner = args.runner ?? null;
   const searchActive = state.query.trim() !== '';
   const workspaceList = teamBlocks.length > 0
     ? teamBlocks.join('\n')
@@ -582,16 +600,16 @@ export function renderAccountConsentPage(args: ConsentPageArgs): string {
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Authorize ${safeClient}</title>
+<title>${runner ? escapeHtml(runner.title) : `Authorize ${safeClient}`}</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>${CONSENT_CSS}</style>
 </head>
 <body>
 <main class="wrap">
-${clientHeader(args.clientName, args.clientVerified === true, args.redirectHost)}
-<p class="lede">Choose the teams and workspaces ${safeClient} can access.</p>
+${runner ? `<div class="ident"><h1>${escapeHtml(runner.title)}</h1></div>` : clientHeader(args.clientName, args.clientVerified === true, args.redirectHost)}
+<p class="lede">${runner ? escapeHtml(runner.lede) : `Choose the teams and workspaces ${safeClient} can access.`}</p>
 ${args.error ? `<div class="notice-err" role="alert">${escapeHtml(args.error)}</div>` : ''}
-<form method="post" action="${escapeHtml(args.action ?? '/api/oauth/authorize')}" style="--carried: ${carried.length}" data-consent="account">
+<form method="post" action="${escapeHtml(args.action ?? '/api/oauth/authorize')}" style="--carried: ${carried.length}" data-consent="${runner ? 'runner' : 'account'}">
 ${hidden}
 ${carriedInputs}
 <fieldset>
@@ -599,24 +617,23 @@ ${carriedInputs}
 <div class="search"><input type="search" name="q" value="${escapeHtml(state.query)}" placeholder="Search ${escapeHtml(plural(totalWorkspaces, 'workspace', 'workspaces'))}" aria-label="Search workspaces, teams and repositories" maxlength="${MAX_QUERY}">${navButton('search', 'Search')}</div>
 <div class="bulk">${navButton('select_all', searchActive ? 'Select all matches' : 'Select all', 'btn btn-quiet')}${navButton('clear_all', 'Clear all', 'btn btn-quiet')}</div>
 ${workspaceList}
-<p class="meta">Access covers the workspaces ticked here. Workspaces created later need adding in Settings.</p>
+<p class="meta">${runner ? escapeHtml(runner.footnote) : 'Access covers the workspaces ticked here. Workspaces created later need adding in Settings.'}</p>
 </fieldset>
-<fieldset>
+${runner ? '' : `<fieldset>
 <legend>Permissions</legend>
 <div class="option off"><input type="checkbox" checked disabled aria-label="Read, always included"><span><span class="t">Read</span><span class="d" style="display:block">See tasks, missions, artifacts, pull requests and knowledge.</span></span></div>
 ${writeOption}
 <p class="meta">Admin actions work only where you are a team owner or admin.</p>
 </fieldset>
-${kind}
+${kind}`}
 <div class="decision sticky" aria-live="polite">
 <dl>
 <dt>Selected</dt><dd><span class="count mono"></span> of ${escapeHtml(plural(totalWorkspaces, 'workspace', 'workspaces'))}</dd>
-<dt>Can</dt><dd><span class="p-read">read</span><span class="p-write">read and write</span>, <span class="k-agent">as your agent</span><span class="k-person">as you</span></dd>
-<dt>Returns to</dt><dd class="mono">${escapeHtml(args.redirectHost)}</dd>
+${runner ? '' : `<dt>Can</dt><dd><span class="p-read">read</span><span class="p-write">read and write</span>, <span class="k-agent">as your agent</span><span class="k-person">as you</span></dd>\n`}<dt>Returns to</dt><dd class="mono">${escapeHtml(runner ? runner.returnsTo : args.redirectHost)}</dd>
 </dl>
 <div class="actions">
 <button class="btn" type="submit" name="decision" value="deny">Cancel</button>
-<button class="btn btn-ink" type="submit" name="decision" value="approve">Allow access</button>
+<button class="btn btn-ink" type="submit" name="decision" value="approve">${runner ? escapeHtml(runner.approveLabel) : 'Allow access'}</button>
 </div>
 </div>
 </form>

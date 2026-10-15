@@ -1258,6 +1258,82 @@ describe('POST /api/workers/claim', () => {
     });
   });
 
+  // Spec "One runner for every team you run": a runner key minted on the
+  // runner consent page lives in one home team and claims from the workspaces
+  // the person picked, across teams. Each pick is a granted link the permission
+  // cache re-checks live (lib/granted-links.ts); one that no longer holds comes
+  // back `revoked`.
+  describe('runner picks across teams', () => {
+    const runnerKey = { id: 'acct-runner', type: 'user', teamId: 'team-home', authType: 'api', level: 'worker', maxConcurrentWorkers: 3 };
+    const taskIn = (workspaceId: string, teamId: string) => ({
+      id: 'task-1',
+      workspaceId,
+      title: 'Picked task',
+      dependsOn: [],
+      workspace: { id: workspaceId, gitConfig: { claimPlanner: 'record' }, teamId },
+    });
+    function setupClaimWrites() {
+      mockTasksUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]) })) })),
+      });
+      mockDbExecute.mockReturnValue(Promise.resolve({
+        rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+      }));
+    }
+
+    it("claims a task from another team's workspace the person picked (AC-1)", async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ ...runnerKey, workspaceIds: ['ws-home', 'ws-other'] });
+      mockGetAccountWorkspacePermissions.mockResolvedValue([
+        { workspaceId: 'ws-other', canClaim: true, canCreate: true, grantedByUserId: 'user-1' },
+      ]);
+      mockWorkspacesFindMany.mockResolvedValueOnce([{ id: 'ws-home' }]);
+      mockWorkspacesFindMany.mockResolvedValueOnce([{ id: 'ws-other' }]);
+      mockTasksFindMany.mockResolvedValueOnce([taskIn('ws-other', 'team-other')]);
+      setupClaimWrites();
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } }));
+      const data = await res.json();
+      expect(res.status).toBe(200);
+      expect(data.workers).toHaveLength(1);
+      // The live re-check is asked for, with revoked picks reported.
+      expect(mockGetAccountWorkspacePermissions).toHaveBeenCalledWith('acct-runner', { includeRevoked: true });
+    });
+
+    it('a pick that no longer holds is not claimed, even in an open workspace of the home team (R-3, AC-3)', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ ...runnerKey, workspaceIds: ['ws-home'] });
+      mockGetAccountWorkspacePermissions.mockResolvedValue([
+        { workspaceId: 'ws-home', canClaim: false, canCreate: false, grantedByUserId: 'user-1', revoked: true },
+      ]);
+      // The open arm alone would reach it.
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-home' }]);
+      mockTasksFindMany.mockResolvedValue([taskIn('ws-home', 'team-home')]);
+      setupClaimWrites();
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } }));
+      const data = await res.json();
+      expect(res.status).toBe(200);
+      expect(data.workers ?? []).toHaveLength(0);
+      expect(data.diagnostics?.reason).toBe('no_workspaces');
+    });
+
+    it("counts the key's own workers toward its limit, whatever team their tasks are in (AC-5)", async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ ...runnerKey, maxConcurrentWorkers: 1, workspaceIds: ['ws-home', 'ws-other'] });
+      // One live worker, on a picked task from the other team.
+      mockWorkersFindMany.mockResolvedValueOnce([{ id: 'w-other', workspaceId: 'ws-other' }]);
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } }));
+      expect(res.status).toBe(429);
+      expect((await res.json()).code).toBe('max_concurrent_workers');
+      // The slot count is the key's workers, scoped by the key alone: no team
+      // or workspace in the predicate, so a second team's work shares the
+      // home team's limit instead of getting its own.
+      const where = capturedWhere((mockWorkersFindMany.mock.calls[0] as any)?.[0]?.where);
+      const accountArm = where.args.find((n: any) => n.type === 'eq' && n.field === 'accountId');
+      expect(accountArm.value).toBe('acct-runner');
+      expect(JSON.stringify(where)).not.toMatch(/teamId|workspaceId/);
+    });
+  });
+
   describe('budget failover to Codex', () => {
     // A flip needs a worker that will actually hold Codex auth: a runner that
     // advertises backend:codex (every buildd runner does) and, for a server

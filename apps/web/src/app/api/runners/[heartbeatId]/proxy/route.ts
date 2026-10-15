@@ -6,6 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { isUuid } from '@/lib/uuid';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { liveLinkCondition } from '@/lib/granted-links';
 
 const ALLOWED_PATHS = ['doctor', 'history/stats', 'debug/claims'] as const;
 type AllowedPath = typeof ALLOWED_PATHS[number];
@@ -33,6 +34,7 @@ async function canAccessRunner(
         and(
           eq(accountWorkspaces.accountId, heartbeatAccountId),
           inArray(accountWorkspaces.workspaceId, wsIds),
+          liveLinkCondition(),
         ),
       ),
     db
