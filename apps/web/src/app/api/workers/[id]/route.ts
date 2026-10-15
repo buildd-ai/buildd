@@ -41,6 +41,7 @@ import { getMissionSpendUsd, exhaustMissionBudget } from '@/lib/mission-budget';
 import { isBudgetExhaustionError, isSessionBudgetCapError, extractResetTime, SESSION_WINDOW_MS } from '@/lib/budget-errors';
 import { loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
 import { recordBackendPause, resolveFailoverBackend, teamEnabledBackends } from '@/lib/backend-failover';
+import { resolveRunnerSeatWallKey } from '@/lib/runner-seat-wall';
 import { backendLabel, claimedBackendOf, isBackendPinned } from '@buildd/core/backend-policy';
 import { tryAutoMergeWorkerPr, escalateReviewerExhaustion, escalateReviewContractFailure } from '@/lib/auto-merge';
 import { landPr, resolveLandingMode } from '@/lib/pr-landing';
@@ -3004,17 +3005,41 @@ export async function PATCH(
       workspaceId: taskForBudget?.workspaceId,
       tenantId: tenantCtx?.tenantId,
     };
+    // A Claude limit on the runner's OWN machine login (lib/runner-seat-wall.ts)
+    // is that runner's wall, not the account's or the team's: other runners on
+    // the account run on their own logins. It is recorded under the runner's
+    // seat key and holds only that runner's claims. A wall whose login cannot
+    // be identified comes back with no key and is recorded as before.
+    const seatWall = await resolveRunnerSeatWallKey({
+      backend: walledBackend,
+      error,
+      runner: worker.runner,
+      claimedByCloud: worker.claimedByCloud,
+      tenantId: tenantCtx?.tenantId,
+      accountId: account.id,
+      teamId,
+      workspaceId: taskForBudget?.workspaceId,
+    });
+    const runnerSeatWall = seatWall.seatKey;
+    if (runnerSeatWall) {
+      console.log(`[workers PATCH] Claude wall on worker ${id} is its runner's own login (${seatWall.reason}): holding that runner only`);
+    }
+
     await recordBackendPause({
       backend: walledBackend,
       scope: budgetScope,
       resetsAt: budgetResetsAt,
       reason: 'budget',
       sourceWorkerId: id,
+      seatKey: runnerSeatWall,
     });
 
     // The account/tenant flags and the OAuth pacing episode describe Claude
     // session capacity only, so they are written for Claude walls exclusively.
-    const isClaudePoolWall = walledBackend === 'claude';
+    // A runner-scoped wall writes neither: the account flag would hold every
+    // runner on the account, and the account's pacing episode would book one
+    // machine's login as the account's capacity.
+    const isClaudePoolWall = walledBackend === 'claude' && !runnerSeatWall;
     if (isClaudePoolWall && tenantCtx?.tenantId && teamId) {
       // Tenant-level budget exhaustion: upsert into tenantBudgets
       await db
@@ -3127,7 +3152,10 @@ export async function PATCH(
     let earliestAlternateReset: Date | null = null;
     // A backend the creator asked for explicitly is never failed over: the task
     // waits out its own provider's reset (provider-failover spec, pinned backends).
-    if (taskForBudget?.workspaceId && teamId && !isBackendPinned(taskForBudget?.context)) {
+    // A runner-scoped wall is not failed over either: Claude is still open to
+    // every other runner, and the walled runner's own claims still fail it
+    // over in memory when they can (claim route, claudeBudgetBlocked).
+    if (!runnerSeatWall && taskForBudget?.workspaceId && teamId && !isBackendPinned(taskForBudget?.context)) {
       try {
         const decision = await resolveFailoverBackend({
           from: walledBackend,
@@ -3156,7 +3184,11 @@ export async function PATCH(
     // immediately on Codex when a failover backend was resolved.
     // Guard: don't re-queue a cancelled task even when its worker hit a budget wall.
     const existingCtx = (taskForBudget?.context || {}) as Record<string, unknown>;
-    const budgetStartAt = failoverBackend ? null : (() => {
+    // A runner-scoped wall leaves the task claimable now, with no start floor
+    // and no "budget paused" flag: another runner can take it at once, and the
+    // walled runner's claims are deferred by its own seat-keyed pause, so no
+    // claim lands back in the same wall.
+    const budgetStartAt = failoverBackend || runnerSeatWall ? null : (() => {
       const wakeAt = earliestAlternateReset && earliestAlternateReset < budgetResetsAt
         ? earliestAlternateReset
         : budgetResetsAt;
@@ -3175,10 +3207,12 @@ export async function PATCH(
         ...(budgetStartAt && { startAt: budgetStartAt }),
         context: {
           ...existingCtx,
-          budgetExhausted: true,
-          // Persisted so every UI surface (detail banner, list/sidebar/mobile
-          // badges) can show WHEN it retries without an account join.
-          budgetResetsAt: budgetResetsAt.toISOString(),
+          ...(!runnerSeatWall && {
+            budgetExhausted: true,
+            // Persisted so every UI surface (detail banner, list/sidebar/mobile
+            // badges) can show WHEN it retries without an account join.
+            budgetResetsAt: budgetResetsAt.toISOString(),
+          }),
           previousWorkerId: id,
           ...(failoverBackend && { failedOverFrom: taskForBudget?.backend || 'claude', failoverReason: 'budget_exhausted' }),
         },
@@ -3215,7 +3249,9 @@ export async function PATCH(
       title: `⏳ ${walledLabel} budget/rate-limit hit`,
       message: failoverBackend
         ? `${(taskForBudget as any)?.title || 'Task'}\n${(taskForBudget?.workspace as any)?.name || 'unknown'} — ${walledLabel} paused, re-queued on ${backendLabel(failoverBackend)}.`
-        : `${(taskForBudget as any)?.title || 'Task'}\n${(taskForBudget?.workspace as any)?.name || 'unknown'} — claims paused, resets ~${budgetResetsAt.toISOString().slice(11, 16)} UTC. Auto-retries.`,
+        : runnerSeatWall
+          ? `${(taskForBudget as any)?.title || 'Task'}\n${(taskForBudget?.workspace as any)?.name || 'unknown'} — one runner's own ${walledLabel} login hit its limit. That runner waits; other runners can take the task now.`
+          : `${(taskForBudget as any)?.title || 'Task'}\n${(taskForBudget?.workspace as any)?.name || 'unknown'} — claims paused, resets ~${budgetResetsAt.toISOString().slice(11, 16)} UTC. Auto-retries.`,
       url: `https://buildd.dev/app/tasks/${worker.taskId}`,
       urlTitle: 'View task',
       priority: 0,

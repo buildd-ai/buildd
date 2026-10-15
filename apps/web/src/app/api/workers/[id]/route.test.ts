@@ -536,6 +536,17 @@ mock.module('@/lib/dispatch-authority', () => ({
   DISPATCH_DUE_QUEUE: 'dispatch',
   DRAIN_BATCH: 25,
 }));
+// Whether a Claude wall belongs to one runner's own machine login (task
+// e68327a1). Its decision is unit-tested in lib/runner-seat-wall.test.ts;
+// here it is pinned so the route's wiring can be asserted. Default: shared,
+// which is the pre-existing behaviour every other test expects.
+const mockResolveRunnerSeatWallKey = mock((..._args: unknown[]) =>
+  Promise.resolve({ seatKey: null as string | null, reason: 'test default' }));
+mock.module('@/lib/runner-seat-wall', () => ({
+  resolveRunnerSeatWallKey: mockResolveRunnerSeatWallKey,
+  runnerSeatKey: (runner: string | null | undefined) => (runner ? `runner:${runner}` : null),
+  isMachineLoginWallError: () => true,
+}));
 /** Causes wakeTask was called with for one task, in call order. */
 const wakeCausesFor = (taskId: string) =>
   (mockWakeTask.mock.calls as any[][]).filter(c => c[0] === taskId).map(c => c[1]);
@@ -7565,6 +7576,79 @@ describe('PATCH /api/workers/[id]', () => {
 
       // Account should have budgetExhaustedAt set
       expect(mockAccountsUpdate).toHaveBeenCalled();
+    });
+
+    // Task e68327a1: one of two runners on a shared runner account hit the
+    // weekly limit of its OWN machine login. The wall is that runner's, so the
+    // account flag (which holds every runner) is not written, the pause carries
+    // the runner's seat key, and the task is claimable now by another runner.
+    describe("a wall on a runner's own machine login", () => {
+      const WEEKLY = "You've hit your weekly limit · resets Oct 16, 4am (UTC)";
+      function setup() {
+        mockBackendPausesInsert.mockClear();
+        mockBackendPausesFindMany.mockResolvedValue([]);
+        mockAccountsFindFirst.mockResolvedValue(null);
+        mockWakeTask.mockClear();
+        accountsUpdateSets = [];
+        lastBackendPauseValues = null;
+        mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'oauth', teamId: 'team-1', seatId: 'seat-1' });
+        mockWorkersFindFirst.mockResolvedValue({
+          id: 'worker-1', taskId: 'task-1', workspaceId: 'ws-1', accountId: 'account-1',
+          status: 'running', milestones: [], runner: 'headless://box-a', claimedByCloud: false,
+        });
+        mockTasksFindFirst.mockResolvedValue({
+          id: 'task-1', context: {}, workspaceId: 'ws-1', backend: 'claude', status: 'in_progress',
+          workspace: { teamId: 'team-1' },
+        });
+        const taskSets: any[] = [];
+        mockTasksUpdate.mockImplementation(() => ({
+          set: mock((vals: any) => { taskSets.push(vals); return { where: mock(() => Promise.resolve()) }; }),
+        }));
+        return { taskSets };
+      }
+      afterEach(() => {
+        mockResolveRunnerSeatWallKey.mockReset();
+        mockResolveRunnerSeatWallKey.mockImplementation(() => Promise.resolve({ seatKey: null, reason: 'test default' }));
+      });
+      const report = () => PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: WEEKLY, budgetExhausted: true },
+      }), { params: mockParams });
+
+      it('records the wall for that runner only and leaves the task claimable now', async () => {
+        const { taskSets } = setup();
+        mockResolveRunnerSeatWallKey.mockImplementation(() => Promise.resolve({ seatKey: 'runner:box-a', reason: 'machine login' }));
+
+        const res = await report();
+        expect(res.status).toBe(200);
+
+        expect(mockResolveRunnerSeatWallKey).toHaveBeenCalledWith(expect.objectContaining({
+          backend: 'claude', runner: 'headless://box-a', accountId: 'account-1', teamId: 'team-1', workspaceId: 'ws-1',
+        }));
+        expect(lastBackendPauseValues).toMatchObject({ backend: 'claude', reason: 'budget', seatKey: 'runner:box-a' });
+        // The account-wide flag would hold every runner on the account.
+        expect(accountsUpdateSets.some((s: any) => s?.budgetExhaustedAt)).toBe(false);
+        // Re-queued with no start floor and no "budget paused" banner: another
+        // runner can take it now; the walled runner's own claims defer it.
+        const requeue = taskSets.find((s: any) => s?.status === 'pending');
+        expect(requeue).toBeTruthy();
+        expect(requeue.startAt ?? null).toBeNull();
+        expect(requeue.backend).toBeUndefined();
+        expect(requeue.context?.budgetExhausted).toBeUndefined();
+        expect(wakeCausesFor('task-1')).toContain('task.requeued');
+      });
+
+      it('keeps the account-wide wall when the login identity is unknown', async () => {
+        const { taskSets } = setup();
+        // default mock: seatKey null
+        await report();
+        expect(lastBackendPauseValues?.seatKey ?? null).toBeNull();
+        expect(accountsUpdateSets.some((s: any) => s?.budgetExhaustedAt)).toBe(true);
+        const requeue = taskSets.find((s: any) => s?.status === 'pending');
+        expect(requeue?.context?.budgetExhausted).toBe(true);
+        expect(requeue?.startAt).toBeInstanceOf(Date);
+      });
     });
 
     // A per-session dollar cap (the SDK's maxBudgetUsd) is THIS task's own

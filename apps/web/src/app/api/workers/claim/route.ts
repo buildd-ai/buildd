@@ -61,6 +61,7 @@ import { drawAgentPoolArm, applyAgentPoolArm, recordAgentPoolAssignment, type Ag
 import { BACKEND_ROUTING_KEY, claimedBackendOf, isBackendPinned, maskBackend, type AgentBackend, type ClaimBackendRouting, type ClaimRoutingReason } from '@buildd/core/backend-policy';
 import { generateTaskBranchName } from '@buildd/core/branch-names';
 import { getActiveBackendPauses, type ActivePause } from '@/lib/backend-failover';
+import { runnerSeatKey } from '@/lib/runner-seat-wall';
 import { findBlockingPr, declaresNoScope, intersectPaths, boundDeferralPaths, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import {
@@ -297,6 +298,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'runner is required' }, { status: 400 });
   }
   runner = resolveClaimRunner(runner, interactiveSession);
+  // Which login this caller's Claude runs draw on, as far as a wall is
+  // concerned (lib/runner-seat-wall.ts). A wall one runner's own machine login
+  // hit is recorded under that runner's key and holds only its claims. Null —
+  // a session on its own seat (exempt from walls anyway), a cloud run, or a
+  // caller that names no runner — reads every wall, seat-scoped ones included.
+  const callerSeatKey = runsOnCallersSeat || cloudExecutor ? null : runnerSeatKey(runner);
 
   // Workspaces this account can claim from. Memoized: the claim query needs it,
   // and so does the lastClaimAttempt stamp on an explicit claim, which can fire
@@ -909,7 +916,7 @@ export async function POST(req: NextRequest) {
     if (!teamId) return new Map();
     const cached = teamPauseCache.get(teamId);
     if (cached) return cached;
-    const pauses = await getActiveBackendPauses({ teamId, accountId: account.id });
+    const pauses = await getActiveBackendPauses({ teamId, accountId: account.id, seatKey: callerSeatKey });
     teamPauseCache.set(teamId, pauses);
     return pauses;
   };
@@ -2220,9 +2227,12 @@ export async function POST(req: NextRequest) {
     // on its own credentials. Without this, a task whose runner just died on a
     // session limit could not be claimed (even with force) until the reset.
     const pauses = runsOnCallersSeat ? new Map<AgentBackend, ActivePause>() : await teamPauses(taskTeamId);
+    // A pause carrying a seat key is this runner's own login wall (only the
+    // caller's own seat-scoped pauses are read, see callerSeatKey).
     if (pauses.has('claude')) {
       claudePoolBlocked = true;
-      claudeWall ??= { kind: 'provider_pause', resetsAt: pauses.get('claude')!.resetsAt };
+      const claudePause = pauses.get('claude')!;
+      claudeWall ??= { kind: claudePause.seatKey ? 'runner_seat' : 'provider_pause', resetsAt: claudePause.resetsAt };
     }
 
     // Does a Claude run of THIS task draw on that walled pool? Only when its

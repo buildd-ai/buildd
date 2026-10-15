@@ -564,6 +564,7 @@ import { planPersonalWorkspaceLinks, personalTeamSlug } from '@/lib/personal-wor
 import { choice as choiceQ, defineDecision as defineD } from '@builddai/ai-kit/decide';
 import { CLAIM_CREDENTIAL_FIELDS } from '@buildd/shared';
 import { capturedWhere } from '@buildd/core/db/relational-sql';
+import { runnerSeatKey } from '@/lib/runner-seat-wall';
 
 function createMockRequest(options: {
   headers?: Record<string, string>;
@@ -2017,6 +2018,134 @@ describe('POST /api/workers/claim', () => {
         expect(data.workers[0].task.backend).toBe('claude');
         expect(data.workers[0].codexCredential).toBeUndefined();
       });
+    });
+  });
+
+  // Task e68327a1: two host runners share one runner account, each on its own
+  // machine's Claude login. One login hits its weekly limit. Before, that wall
+  // held every Claude task for every runner on the account and team for days,
+  // though the other runner's login was fine.
+  describe("a runner's own Claude login wall holds only that runner", () => {
+    const RUNNER_A = 'headless://box-a';
+    const RUNNER_B = 'headless://box-b';
+    const weeklyReset = () => new Date(Date.now() + 40 * 60 * 60 * 1000);
+
+    beforeEach(() => {
+      mockBackendPausesFindMany.mockResolvedValue([]);
+      mockAccountsFindFirst.mockResolvedValue(null);
+      mockHasCodexCredential.mockResolvedValue(false); // nowhere to fail over: a wall defers
+      mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'private', teamId: 'team-1' }]);
+      mockWorkersFindMany.mockResolvedValue([]);
+      mockTasksUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]) })) })),
+      });
+      mockDbExecute.mockReturnValue(Promise.resolve({
+        rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+      }));
+      // The account flag is NOT set: a runner-scoped wall never writes it.
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1', maxConcurrentWorkers: 5, type: 'user' as const, authType: 'oauth' as const,
+        maxConcurrentSessions: 10, activeSessions: 0, budgetExhaustedAt: null, budgetResetsAt: null,
+      });
+    });
+    afterEach(() => {
+      mockBackendPausesFindMany.mockResolvedValue([]);
+    });
+
+    const claudeTask = () => ({
+      id: 'task-1', workspaceId: 'ws-1', title: 'T', backend: 'claude', dependsOn: [], context: {},
+      workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' }, teamId: 'team-1' },
+    });
+    const claimAs = (runner: string) => POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner, capabilities: ['backend:codex'] },
+    }));
+    const wallOn = (seatKey: string | null, resetsAt = weeklyReset()) =>
+      mockBackendPausesFindMany.mockResolvedValue([{ backend: 'claude', resetsAt, reason: 'budget', seatKey }]);
+
+    it('lets runner B claim Claude work while runner A, whose login hit the wall, is deferred', async () => {
+      const resetsAt = weeklyReset();
+      wallOn(runnerSeatKey(RUNNER_A), resetsAt);
+
+      mockTasksFindMany.mockResolvedValueOnce([claudeTask()]);
+      const b = await (await claimAs(RUNNER_B)).json();
+      expect(b.workers).toHaveLength(1);
+      expect(b.workers[0].task.backend).toBe('claude');
+      expect(b.diagnostics?.deferrals?.budget_paused).toBeUndefined();
+      // B is not walled, so it is not told to sleep until A's reset.
+      expect(b.budgetResetsAt ?? null).toBeNull();
+
+      mockTasksFindMany.mockResolvedValueOnce([claudeTask()]);
+      const a = await (await claimAs(RUNNER_A)).json();
+      expect(a.workers).toHaveLength(0);
+      expect(a.diagnostics.reason).toBe('budget_exhausted');
+      expect(a.diagnostics.budgetBlock.walls).toEqual([
+        { kind: 'runner_seat', backend: 'claude', resetsAt: resetsAt.toISOString() },
+      ]);
+      expect(a.diagnostics.budgetBlock.summary).toContain("This runner's own Claude login hit its limit");
+      // A's resume poll lands on its own reset, in the future: no hot loop.
+      expect(a.budgetResetsAt).toBe(resetsAt.toISOString());
+    });
+
+    it('asks the pause log for shared walls plus only the caller runner\'s own', async () => {
+      mockTasksFindMany.mockResolvedValueOnce([claudeTask()]);
+      await claimAs(RUNNER_B);
+      // drizzle-orm is stubbed in this file, so the predicate is a tree of
+      // { type, field, value } nodes: walk it (the rendered SQL is asserted
+      // in lib/backend-failover.test.ts, which runs the real operators).
+      const where = capturedWhere((mockBackendPausesFindMany.mock.calls.at(-1) as any[])?.[0]?.where);
+      const nodes: any[] = [];
+      const walk = (n: any) => {
+        if (!n || typeof n !== 'object' || nodes.includes(n)) return;
+        nodes.push(n);
+        for (const k of ['args', 'expr', 'value', 'values']) {
+          const v = n[k];
+          if (Array.isArray(v)) v.forEach(walk); else walk(v);
+        }
+      };
+      walk(where);
+      const seatOr = nodes.find(n => n.type === 'or'
+        && n.args.some((a: any) => a.type === 'isNull')
+        && n.args.some((a: any) => a.type === 'eq' && a.value === runnerSeatKey(RUNNER_B)));
+      expect(seatOr).toBeTruthy();
+      expect(nodes.some(n => n.type === 'eq' && n.value === runnerSeatKey(RUNNER_A))).toBe(false);
+    });
+
+    // Fail-safe: a wall whose login identity is unknown (an old runner, a team
+    // credential, an API-key pause) is recorded with no seat key and holds both.
+    it('still holds both runners on a wall with no seat key', async () => {
+      for (const runner of [RUNNER_A, RUNNER_B]) {
+        wallOn(null);
+        mockTasksFindMany.mockResolvedValueOnce([claudeTask()]);
+        const data = await (await claimAs(runner)).json();
+        expect(data.workers).toHaveLength(0);
+        expect(data.diagnostics.reason).toBe('budget_exhausted');
+        expect(data.diagnostics.budgetBlock.walls[0].kind).toBe('provider_pause');
+      }
+    });
+
+    it("holds a runner that sends only the client's default id on any seat wall", async () => {
+      wallOn(runnerSeatKey(RUNNER_A));
+      mockTasksFindMany.mockResolvedValueOnce([claudeTask()]);
+      const data = await (await claimAs('runner')).json();
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics.reason).toBe('budget_exhausted');
+    });
+
+    it('still holds both runners on the account-wide flag', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1', maxConcurrentWorkers: 5, type: 'user' as const, authType: 'oauth' as const,
+        maxConcurrentSessions: 10, activeSessions: 0,
+        budgetExhaustedAt: new Date().toISOString(),
+        budgetResetsAt: weeklyReset().toISOString(),
+      });
+      for (const runner of [RUNNER_A, RUNNER_B]) {
+        mockTasksFindMany.mockResolvedValueOnce([claudeTask()]);
+        const data = await (await claimAs(runner)).json();
+        expect(data.workers).toHaveLength(0);
+        expect(data.diagnostics.budgetBlock.walls[0].kind).toBe('account_seat');
+      }
     });
   });
 

@@ -2,10 +2,10 @@
 title: Provider Failover
 status: active
 owner: max
-last_verified: 2026-10-04
+last_verified: 2026-10-14
 summary: When a task's agent backend hits a budget or rate-limit wall or has its credential rejected, the system MUST re-queue that task on another enabled, un-walled backend, or park it until the earliest provider reset.
 domain: runners
-surfaces: [packages/core/backend-policy.ts, apps/web/src/lib/backend-failover.ts, apps/web/src/app/api/workers/claim/route.ts, apps/web/src/app/api/workers/[id]/route.ts]
+surfaces: [packages/core/backend-policy.ts, apps/web/src/lib/backend-failover.ts, apps/web/src/lib/runner-seat-wall.ts, apps/web/src/app/api/workers/claim/route.ts, apps/web/src/app/api/workers/[id]/route.ts]
 related: [codex-backend-spec, credential-isolation, runner-liveness]
 keywords: [backend_pauses, budget_exhausted_at, failoverpriority, rate limit, openrouter, oauth budget]
 assertions:
@@ -39,6 +39,13 @@ assertions:
     type: symbol
     name: describeBackendRouting
     path: packages/core/backend-policy.ts
+  - id: resolve-runner-seat-wall-key
+    type: symbol
+    name: resolveRunnerSeatWallKey
+    path: apps/web/src/lib/runner-seat-wall.ts
+  - id: runner-seat-wall-test
+    type: test_file
+    path: apps/web/src/lib/runner-seat-wall.test.ts
 supersedes: []
 ---
 # Provider Failover
@@ -190,6 +197,48 @@ dispatched onto a provider that is itself walled.
   WHEN a runner claims THEN the task is claimed on Claude.
 - AC-16: GIVEN a Claude-pool pause AND a cloud executor claim THEN a Claude
   task is claimed on Claude.
+
+### A runner's own login limit holds only that runner
+
+**Invariants**:
+- Several host runners can share one runner account, each running Claude on
+  its own machine's login. A session, weekly or extra-usage limit that one of
+  those logins hits is that runner's wall. The worker report MUST record it as
+  a `backend_pauses` row carrying the runner's `seat_key`, and MUST NOT write
+  `accounts.budget_exhausted_at` or an `oauth_budget_episodes` row for it.
+- The decision is `resolveRunnerSeatWallKey`
+  (`apps/web/src/lib/runner-seat-wall.ts`). A wall is runner-scoped only when
+  it is a Claude subscription limit (by its text), not tenant or cloud work,
+  the worker names its runner (`workers.runner`, the id every runner sends on
+  claim), that runner's heartbeat reports `modelAuthSource` `machine_login` or
+  `machine_token`, the team stores no Claude model credential the run could
+  have been handed (an Anthropic key, `oauth_token` or `claude_credential`),
+  and the team agent endpoint does not carry Claude. Anything else, including
+  a lookup error or a runner that reports no model auth, records the wall with
+  no seat key: shared, as before.
+- `seat_key` is a hash of the runner id (`runnerSeatKey`), never a credential.
+- A claim reads shared pauses plus only the pauses keyed to its own runner. A
+  caller with no seat key (the client's default id, a cloud run) reads every
+  pause, seat-scoped ones included. Interactive sessions stay exempt from both.
+- A runner-scoped wall re-queues the task with no `start_at` floor, no
+  `context.budgetExhausted` and no report-time failover: other runners take it
+  now, and the walled runner's own claims defer it (`budget_paused`, wall kind
+  `runner_seat`) or fail it over in memory, with `budgetResetsAt` set to that
+  runner's own reset.
+
+**Acceptance criteria**:
+- AC-23: GIVEN two runners on one account AND a Claude pause keyed to runner
+  A WHEN runner B claims a Claude task THEN it is claimed, AND WHEN runner A
+  claims THEN it is deferred with wall kind `runner_seat` and `budgetResetsAt`
+  equal to that pause's reset.
+- AC-24: GIVEN a Claude pause with no seat key, OR the account's
+  `budget_exhausted_at` set, WHEN either runner claims THEN the task is
+  deferred.
+- AC-25: GIVEN a weekly-limit report from a runner on its own machine login
+  with no team Claude credential WHEN it is processed THEN the pause carries
+  the seat key, `accounts.budget_exhausted_at` is not written and the task is
+  pending with no `start_at`. GIVEN the same report from a runner that reports
+  no model auth THEN the wall is recorded as before.
 
 ### A flip to Codex only where Codex auth will exist
 

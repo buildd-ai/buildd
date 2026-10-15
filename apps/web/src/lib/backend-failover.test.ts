@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { capturedWhere } from '@buildd/core/db/relational-sql';
 
 const mockBackendPausesFindMany = mock(() => Promise.resolve([] as any[]));
 const mockAccountsFindFirst = mock(() => Promise.resolve(null as any));
@@ -197,5 +199,61 @@ describe('resolveFailoverBackend', () => {
     const decision = await resolveFailoverBackend({ from: 'claude', scope, busy: { codex: true } });
     expect(decision.backend).toBeNull();
     expect(decision.blocked[0]).toMatchObject({ backend: 'codex', reason: 'busy' });
+  });
+});
+
+// A runner on its own machine login hits a wall that is its own, not the
+// team's (task e68327a1). The pause row carries that runner's seat key; a
+// reader with a different key must not see it, a reader with no key must.
+describe('seat-scoped pauses', () => {
+  const dialect = new PgDialect();
+  const renderedWhere = () => {
+    const call = mockBackendPausesFindMany.mock.calls.at(-1) as any[] | undefined;
+    return dialect.sqlToQuery(capturedWhere(call?.[0]?.where));
+  };
+  const soon = () => new Date(Date.now() + HOUR);
+
+  it('records the seat key a runner-scoped wall carries, and none for a shared wall', async () => {
+    await recordBackendPause({ backend: 'claude', scope, resetsAt: soon(), seatKey: 'runner:aaa' });
+    await recordBackendPause({ backend: 'claude', scope, resetsAt: soon() });
+    expect(insertedPauses[0]).toMatchObject({ backend: 'claude', seatKey: 'runner:aaa' });
+    expect(insertedPauses[1].seatKey ?? null).toBeNull();
+  });
+
+  it("ignores another runner's seat wall but keeps its own and every shared one", async () => {
+    const shared = soon();
+    mockBackendPausesFindMany.mockResolvedValue([
+      { backend: 'claude', resetsAt: new Date(Date.now() + 40 * HOUR), reason: 'budget', seatKey: 'runner:other' },
+    ]);
+    expect((await getActiveBackendPauses({ ...scope, seatKey: 'runner:mine' })).has('claude')).toBe(false);
+
+    mockBackendPausesFindMany.mockResolvedValue([
+      { backend: 'claude', resetsAt: new Date(Date.now() + 40 * HOUR), reason: 'budget', seatKey: 'runner:mine' },
+    ]);
+    const own = await getActiveBackendPauses({ ...scope, seatKey: 'runner:mine' });
+    expect(own.get('claude')?.seatKey).toBe('runner:mine');
+
+    mockBackendPausesFindMany.mockResolvedValue([
+      { backend: 'claude', resetsAt: shared, reason: 'budget', seatKey: null },
+    ]);
+    expect((await getActiveBackendPauses({ ...scope, seatKey: 'runner:mine' })).get('claude')?.resetsAt).toEqual(shared);
+  });
+
+  it('scopes the query itself: shared rows or this seat only', async () => {
+    await getActiveBackendPauses({ ...scope, seatKey: 'runner:mine' });
+    const q = renderedWhere();
+    expect(q.sql).toContain('"seat_key" is null');
+    expect(q.sql).toMatch(/"seat_key" = \$\d+/);
+    expect(q.params).toContain('runner:mine');
+  });
+
+  // Fail-safe: a reader that cannot say which login it runs on is held by
+  // every wall, seat-scoped or not.
+  it('reads every wall, seat-scoped ones included, for a reader with no seat key', async () => {
+    mockBackendPausesFindMany.mockResolvedValue([
+      { backend: 'claude', resetsAt: soon(), reason: 'budget', seatKey: 'runner:other' },
+    ]);
+    expect((await getActiveBackendPauses(scope)).has('claude')).toBe(true);
+    expect(renderedWhere().sql).not.toContain('seat_key');
   });
 });

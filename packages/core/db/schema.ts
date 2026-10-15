@@ -4651,6 +4651,13 @@ export const backendPauses = pgTable('backend_pauses', {
   reason: text('reason').notNull().default('budget'),
   resetsAt: timestamp('resets_at', { withTimezone: true }).notNull(),
   sourceWorkerId: uuid('source_worker_id').references(() => workers.id, { onDelete: 'set null' }),
+  // Which login the wall belongs to, when it is one runner's own machine login
+  // rather than a pool the team shares: an opaque key derived from the runner
+  // id (apps/web/src/lib/runner-seat-wall.ts), never a credential. The wall
+  // then holds only claims from that runner. NULL = a shared wall (a team
+  // credential, an API-key limit, or a login nobody could identify): it holds
+  // every claim for the team, as every row did before this column.
+  seatKey: text('seat_key'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   activeIdx: index('backend_pauses_team_backend_resets_idx').on(t.teamId, t.backend, t.resetsAt),

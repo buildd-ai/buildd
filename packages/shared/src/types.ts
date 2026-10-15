@@ -1704,8 +1704,8 @@ export type ClaimTaskExclusionCode =
 
 /** A wall that held a claim: what it is, on which provider, and when it lifts (ISO, or null when unknown). */
 export interface ClaimBudgetWall {
-  /** account_seat: the account's own OAuth session or budget; provider_pause: a rate limit or budget wall a run recorded for the team; tenant_budget: the tenant's own budget. */
-  kind: 'account_seat' | 'provider_pause' | 'tenant_budget';
+  /** account_seat: the account's own OAuth session or budget; provider_pause: a rate limit or budget wall a run recorded for the team; runner_seat: this runner's own machine login hit its limit (other runners are not held); tenant_budget: the tenant's own budget. */
+  kind: 'account_seat' | 'provider_pause' | 'runner_seat' | 'tenant_budget';
   backend: AgentBackend;
   resetsAt: string | null;
 }
