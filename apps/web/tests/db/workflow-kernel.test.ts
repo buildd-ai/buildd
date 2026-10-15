@@ -221,7 +221,8 @@ describe('effect drain', () => {
     const ran: string[] = [];
     let summary = { claimed: 0, done: 0, skipped: 0, failed: 0, dead: [] as unknown[] };
     for (let i = 0; i < 5; i++) {
-      const s = await runEffects({ limit: 50, handlers: { render_activity: async (e) => { if (e.deliveryId === deliveryId) ran.push(e.kind); }, notify: async () => {}, push_recovery: async () => { throw new Error('must not run'); } } });
+      // Scoped to this delivery: a drain over the whole outbox meets every other file's leftovers first.
+      const s = await runEffects({ limit: 50, deliveryId, handlers: { render_activity: async (e) => { if (e.deliveryId === deliveryId) ran.push(e.kind); }, publish_landing_status: async () => {}, notify: async () => {}, push_recovery: async () => { throw new Error('must not run'); } } });
       summary = { ...summary, claimed: summary.claimed + s.claimed, skipped: summary.skipped + s.skipped };
       if (s.claimed === 0) break;
     }

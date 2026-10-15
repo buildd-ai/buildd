@@ -9,7 +9,7 @@ import type { LivePr } from '../commands';
 import type {
   Decide, DecideAnswer, Escalate, Evidence, ExhaustionNotice, GithubFacts, GithubWrites, Ingest, IngestFact, GithubFactReader, KernelPolicy, Lifecycle,
   MergeAnswer, Notify, Policy, TeamNotice, Trunk, TrunkIncident, Work, WorkFiled, WorkRequest,
-  BranchUpdate, Conflicts, HandOff, MechanicalRefresh, MigrationRenumber, PostedReview, ReviewOutput, Reviews,
+  BranchUpdate, Conflicts, HandOff, MechanicalRefresh, MigrationRenumber, PostedReview, RailReading, Rails, ReviewOutput, Reviews,
 } from '../ports';
 import type { AttemptSnapshot, DeliverySnapshot, KernelView, RoundSnapshot } from '../types';
 
@@ -132,6 +132,10 @@ export class FakeGithub implements GithubFacts {
   readonly merges: Array<{ repoFullName: string; prNumber: number; headSha: string; method?: string }> = [];
   readonly written: Array<{ op: string; [k: string]: unknown }> = [];
   mergeAnswer: MergeAnswer = { outcome: 'merged', detail: 'Pull Request successfully merged' };
+  /** Runs inside each status write, after it is recorded: a test moves the delivery on mid-publish with it. */
+  onStatus?: (p: { sha: string; state: string }) => Promise<void>;
+  /** Runs inside each merge call, after it is recorded: a test moves the PR on under the call with it. */
+  onMerge?: (p: { repoFullName: string; prNumber: number; headSha: string }) => void;
   /** What a posted review answers; absent = posted. */
   reviewAnswer: PostedReview = { id: null, posted: true };
 
@@ -152,18 +156,44 @@ export class FakeGithub implements GithubFacts {
   setPr(repoFullName: string, prNumber: number, live: LivePr | null): void {
     if (live) this.prs.set(`${repoFullName}#${prNumber}`, live); else this.prs.delete(`${repoFullName}#${prNumber}`);
   }
+  async statusOf(repoFullName: string, sha: string, context: string): Promise<{ state: string; description: string } | null> {
+    const last = this.written.filter((w) => w.op === 'publishStatus' && w.repoFullName === repoFullName && w.sha === sha && w.context === context).at(-1);
+    return last ? { state: String(last.state), description: String(last.description) } : null;
+  }
   async readPr(repoFullName: string, prNumber: number): Promise<LivePr | null> {
     const pr = this.prs.get(`${repoFullName}#${prNumber}`);
     return pr ? structuredClone(pr) : null;
   }
 
   readonly writes: GithubWrites = {
-    mergeAtHead: async (p) => { this.merges.push({ ...p }); return { ...this.mergeAnswer }; },
+    mergeAtHead: async (p) => {
+      this.merges.push({ ...p });
+      this.onMerge?.(p);
+      // A merge GitHub accepted shows on the next read, as it does on GitHub.
+      const key = `${p.repoFullName}#${p.prNumber}`;
+      const pr = this.prs.get(key);
+      if (this.mergeAnswer.outcome === 'merged' && pr && pr.headSha === p.headSha && !pr.merged) {
+        this.prs.set(key, { ...pr, state: 'closed', merged: true, mergedAt: '2026-01-01T01:00:00.000Z', mergeCommitSha: pr.mergeCommitSha ?? 'M1' });
+      }
+      return { ...this.mergeAnswer };
+    },
     postReview: async (p) => { this.written.push({ op: 'postReview', ...p }); return { ...this.reviewAnswer }; },
-    publishStatus: async (p) => { this.written.push({ op: 'publishStatus', ...p }); },
+    publishStatus: async (p) => { this.written.push({ op: 'publishStatus', ...p }); await this.onStatus?.(p); },
     upsertComment: async (p) => { this.written.push({ op: 'upsertComment', ...p }); return { id: null }; },
     deleteBranch: async (p) => { this.written.push({ op: 'deleteBranch', ...p }); },
   };
+}
+
+/** The host's merge rails as data: a fixed reading, every evaluation recorded. */
+export class RecordingRails implements Rails {
+  readonly calls: Array<{ deliveryId: string; headSha: string; door: string; override: unknown; person: boolean }> = [];
+  reading: RailReading = { passed: true, reasons: [] };
+  /** A person's door's reading, when it differs (the unattended rails a person is not held to). */
+  personReading: RailReading | null = null;
+  async evaluate(d: DeliverySnapshot, p: { headSha: string; live: LivePr; door: string; override?: unknown; person?: boolean }): Promise<RailReading> {
+    this.calls.push({ deliveryId: d.id, headSha: p.headSha, door: p.door, override: p.override ?? null, person: p.person === true });
+    return structuredClone(p.person && this.personReading ? this.personReading : this.reading);
+  }
 }
 
 /** The trunk incident ledger as data: incidents by id, anchors by incident, the links made. */

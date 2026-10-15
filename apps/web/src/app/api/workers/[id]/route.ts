@@ -4231,6 +4231,8 @@ export async function PATCH(
                   releasePrPending: true,
                   releasePrNumber: release.prNumber,
                   releasePrUrl: release.prUrl,
+                  // How the held PR merges when it lands (a held worker PR squashes, as mergeIntoProd does).
+                  ...(release.mergeMethod ? { releaseMergeMethod: release.mergeMethod } : {}),
                   heldReleaseOutcome: outcomeAnalytics,
                 },
                 updatedAt: new Date(),

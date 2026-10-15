@@ -644,6 +644,20 @@ mock.module('@/lib/workflow/seam', () => ({
   observeCiFailure: mock(async () => ({ handled: false })),
   policyFindingFor: (p: any) => ({ outcome: 'human', reason: p.reason, destructive: false }),
 }));
+// The repo a held release task's workspace is linked to (lib/held-pr-tasks.ts scopes a held task
+// to its own repo's PR): the fixture repo unless a test says otherwise.
+import * as realGithubFacts from '@/lib/workflow/github-facts';
+let heldTaskRepo = 'test-org/test-repo';
+mock.module('@/lib/workflow/github-facts', () => ({ ...realGithubFacts, workspaceRepo: async () => ({ installationId: 5000, repoFullName: heldTaskRepo, gitConfig: null }) }));
+// Held release tasks are settled by their PR's close (lib/held-pr-tasks.ts, real-SQL cases in
+// tests/db/held-release.test.ts); here, that every close delivery hands it over.
+import * as realHeld from '@/lib/held-pr-tasks';
+const mockSettleHeldOnClose = mock(async (_p: any): Promise<number> => 0);
+mock.module('@/lib/held-pr-tasks', () => ({ ...realHeld, settleHeldReleasesOnClose: mockSettleHeldOnClose }));
+// The one kernel client (D7's kernel landing). Default: the kernel owns no release PR.
+import * as realKernelClient from '@/lib/workflow/kernel-client';
+const mockKernelClientLand = mock(async (_p: any): Promise<any> => null);
+mock.module('@/lib/workflow/kernel-client', () => ({ ...realKernelClient, landThroughKernel: mockKernelClientLand }));
 const mockKernelDeliveryForPr = mock(async (..._a: any[]): Promise<string | null> => null);
 mock.module('@/lib/workflow/authority', () => ({ releaseKernelDeliveryForPr: mockReleaseKernelDeliveryForPr, kernelDeliveryForPr: mockKernelDeliveryForPr }));
 
@@ -5991,6 +6005,14 @@ describe('pull_request merged — effects that belong to the merge, not the tran
     };
   }
 
+  it('every close delivery hands the PR to the held-release settle, merged or not', async () => {
+    mockSettleHeldOnClose.mockClear();
+    await POST(createWebhookRequest('pull_request', mergedPrPayload({})));
+    expect(mockSettleHeldOnClose.mock.calls.at(-1)?.[0]).toMatchObject({ repoFullName: 'test-org/test-repo', merged: true });
+    await POST(createWebhookRequest('pull_request', mergedPrPayload({ pull_request: { merged: false, merged_at: null } })));
+    expect(mockSettleHeldOnClose.mock.calls.at(-1)?.[0]).toMatchObject({ merged: false });
+  });
+
   /**
    * The worker row that owns a mission integration PR: a bookkeeping task that
    * was `completed` the moment it was created, and a PR nobody has merged yet.
@@ -6381,6 +6403,82 @@ describe('release PR CI success pins the live head', () => {
     await deliverSuccess();
     expect(mockMergePullRequest).toHaveBeenCalledWith(5000, 'test-org/test-repo', 42, 'merge', 'a'.repeat(40));
     expect(updateCalls.some(c => c.setValues.status === 'completed')).toBe(true);
+  });
+
+  it('a held worker PR lands with the method its hold recorded (squash), not a hardcoded merge', async () => {
+    selectTableResults = (table) => table === schemaMock.tasks
+      ? [{ id: 'release-task', workspaceId: 'ws-release', context: { releasePrPending: true, releasePrNumber: 42, releaseMergeMethod: 'squash' } }]
+      : null;
+    mockGithubApi.mockResolvedValue({ head: { sha: 'a'.repeat(40) } });
+    await deliverSuccess();
+    expect(mockMergePullRequest).toHaveBeenCalledWith(5000, 'test-org/test-repo', 42, 'squash', 'a'.repeat(40));
+  });
+
+  it('D7 is repo-scoped: a task held on the same PR number in another repo is not merged or settled', async () => {
+    heldTaskRepo = 'other-org/other-repo';
+    try {
+      mockGithubApi.mockResolvedValue({ head: { sha: 'a'.repeat(40) } });
+      await deliverSuccess();
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+      expect(updateCalls.filter(c => c.table === schemaMock.tasks)).toHaveLength(0);
+    } finally { heldTaskRepo = 'test-org/test-repo'; }
+  });
+
+  it('D7 lost the merge race (the sweep, or a person, merged it first): the release completes, it is never failed', async () => {
+    mockGithubApi.mockImplementation(async (_i: number, path: string) => (String(path).endsWith('/pulls/42') ? { head: { sha: 'a'.repeat(40) }, merged: mockMergePullRequest.mock.calls.length > 0 } : null));
+    mockMergePullRequest.mockResolvedValueOnce({ merged: false, message: 'Pull Request is not mergeable' } as any);
+    await deliverSuccess();
+    const writes = updateCalls.filter(c => c.table === schemaMock.tasks).map(c => c.setValues.status);
+    expect(writes).toEqual(['completed']);
+    expect(mockNotifyTeam.mock.calls.some((c: any[]) => String(c[2]?.title ?? '').startsWith('Release merge failed'))).toBe(false);
+  });
+
+  it('D7 never re-settles a task the close already settled (the guarded write found nothing held)', async () => {
+    mockGithubApi.mockResolvedValue({ head: { sha: 'a'.repeat(40) } });
+    updateReturningByStatus.completed = [];
+    try {
+      mockRecordEvent.mockClear();
+      await deliverSuccess();
+      expect(mockRecordEvent.mock.calls.map(c => c[0]).filter((e: any) => e.type?.startsWith('task.'))).toEqual([]);
+    } finally { delete updateReturningByStatus.completed; }
+  });
+
+  it('D7: a release PR the kernel does not own never reaches the kernel; it merges pinned as before', async () => {
+    mockGithubApi.mockResolvedValue({ head: { sha: 'a'.repeat(40) } });
+    mockKernelClientLand.mockClear();
+    await deliverSuccess();
+    expect(mockKernelClientLand).not.toHaveBeenCalled();
+    expect(mockMergePullRequest).toHaveBeenCalledWith(5000, 'test-org/test-repo', 42, 'merge', 'a'.repeat(40));
+  });
+
+  it('D7: the control plane not answering leaves the release pending: nothing merged, nothing failed, nothing thrown', async () => {
+    mockGithubApi.mockResolvedValue({ head: { sha: 'a'.repeat(40) } });
+    mockKernelDeliveryForPr.mockResolvedValueOnce('d-1');
+    const { ControlPlaneUnavailableError } = await import('@/lib/workflow/kernel-client');
+    mockKernelClientLand.mockRejectedValueOnce(new ControlPlaneUnavailableError('timeout', 'not_applied'));
+    const res = await deliverSuccess();
+    expect(res.status).toBe(200);
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+    expect(updateCalls.filter(c => c.table === schemaMock.tasks)).toHaveLength(0);
+  });
+
+  it('D7: a release PR the kernel owns lands through the kernel at the checked head, never merged here', async () => {
+    mockGithubApi.mockResolvedValue({ head: { sha: 'a'.repeat(40) } });
+    mockKernelDeliveryForPr.mockResolvedValueOnce('d-1');
+    mockKernelClientLand.mockResolvedValueOnce({ merged: true, outcome: 'merged', reason: 'merged', message: 'Pull request merged', mergeCommitSha: 'm1', current: {}, result: null });
+    await deliverSuccess();
+    expect(mockKernelClientLand.mock.calls.at(-1)?.[0]).toMatchObject({ prNumber: 42, headSha: 'a'.repeat(40), door: 'release_pr_ci_success' });
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+    expect(updateCalls.some(c => c.setValues.status === 'completed')).toBe(true);
+  });
+
+  it('D7: the kernel not landing the release PR yet holds it: nothing merged, nothing failed', async () => {
+    mockGithubApi.mockResolvedValue({ head: { sha: 'a'.repeat(40) } });
+    mockKernelDeliveryForPr.mockResolvedValueOnce('d-1');
+    mockKernelClientLand.mockResolvedValueOnce({ merged: false, outcome: 'rejected', reason: 'state_not_allowed', message: 'refused', mergeCommitSha: null, current: {}, result: null });
+    await deliverSuccess();
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+    expect(updateCalls.filter(c => c.table === schemaMock.tasks)).toHaveLength(0);
   });
 });
 

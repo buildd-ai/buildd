@@ -85,10 +85,10 @@ describe('GitHub per workspace', () => {
 test('the composed ports carry every port the package handlers reach', () => {
   const ports = builddKernelPorts({
     mergeAnswerOf, notify: { activity: async () => {}, team: async () => {} }, lifecycle: {} as never, work: {}, escalate: {} as never, evidence: {} as never,
-    reviews: {} as never, conflicts: {} as never, handOff: {} as never, decide: {} as never,
+    reviews: {} as never, conflicts: {} as never, handOff: {} as never, decide: {} as never, rails: {} as never,
   });
   expect(Object.keys(ports).sort()).toEqual([
-    'clock', 'conflicts', 'decide', 'escalate', 'evidence', 'githubFor', 'handOff', 'ingest', 'lifecycle', 'notify', 'policy', 'reviews', 'store', 'trunk', 'work',
+    'clock', 'conflicts', 'decide', 'escalate', 'evidence', 'githubFor', 'handOff', 'ingest', 'lifecycle', 'notify', 'policy', 'rails', 'reviews', 'store', 'trunk', 'work',
   ]);
 });
 

@@ -20,5 +20,6 @@ export * from './ports';
 export * from './command-runner';
 export * from './effects';
 export * from './landing-lane';
+export * from './landing-gate';
 export * from './decide';
 export * from './handlers/index';
