@@ -35,7 +35,7 @@ function eligible(overrides: Partial<AnswerPathInput> = {}): AnswerPathInput {
 }
 
 describe('evaluateAnswerPath', () => {
-  // AC-AQR-1
+  // AC-1 (docs/specs/answered-question-resume.md; AC-n below cite it too)
   it('resumes a parked, freshly-synced, ack-capable worker with headroom and a healthy credential', () => {
     const decision = evaluateAnswerPath(eligible());
     expect(decision.path).toBe('resume');
@@ -43,7 +43,7 @@ describe('evaluateAnswerPath', () => {
     expect(decision.reason).toBe(ANSWER_PATH_REASONS.resume_eligible);
   });
 
-  // AC-AQR-2 — G1. An `error` worker may still carry waitingFor (that is the
+  // AC-2 — G1. An `error` worker may still carry waitingFor (that is the
   // /respond contract) but the runner already deleted its worktree.
   it.each([['error'], ['failed'], ['completed'], ['running'], [null]])(
     'falls back when the worker status is %p rather than waiting_input',
@@ -54,7 +54,7 @@ describe('evaluateAnswerPath', () => {
     },
   );
 
-  // AC-AQR-3 — G2
+  // AC-3 — G2
   it('falls back when the owning runner has stopped syncing the worker', () => {
     const decision = evaluateAnswerPath(
       eligible({ workerUpdatedAt: new Date(NOW - RESUME_RUNNER_FRESH_MS - 1) }),
@@ -108,14 +108,14 @@ describe('evaluateAnswerPath', () => {
     expect(decision.path).toBe('resume');
   });
 
-  // AC-AQR-4 — G3
+  // AC-4 — G3
   it('falls back when the runner cannot confirm delivery', () => {
     const decision = evaluateAnswerPath(eligible({ supportsInstructionAck: false }));
     expect(decision.path).toBe('cold_continuation');
     expect(decision.reasonCode).toBe('runner_cannot_confirm_delivery');
   });
 
-  // AC-AQR-5 — G4
+  // AC-5 — G4
   it('falls back deliberately above the turn ceiling instead of resuming into it', () => {
     const decision = evaluateAnswerPath(eligible({ workerTurns: RESUME_MAX_TURNS + 1 }));
     expect(decision.path).toBe('cold_continuation');
@@ -164,20 +164,20 @@ describe('evaluateAnswerPath', () => {
     expect(decision.path).toBe('resume');
   });
 
-  // AC-AQR-6 — G5
+  // AC-6 — G5
   it('falls back when the backend credential preflight reports unhealthy', () => {
     const decision = evaluateAnswerPath(eligible({ credentialPreflight: 'unhealthy' }));
     expect(decision.path).toBe('cold_continuation');
     expect(decision.reasonCode).toBe('credential_unhealthy');
   });
 
-  // AC-AQR-8 — absence is not breakage
+  // AC-8 — absence is not breakage
   it('resumes when no managed credential row exists (preflight unknown)', () => {
     const decision = evaluateAnswerPath(eligible({ credentialPreflight: 'unknown' }));
     expect(decision.path).toBe('resume');
   });
 
-  // AC-AQR-7 — fixed gate order, so the recorded reason is stable
+  // AC-7 — fixed gate order, so the recorded reason is stable
   it('reports the most fundamental failing gate when several fail at once', () => {
     const decision = evaluateAnswerPath(
       eligible({

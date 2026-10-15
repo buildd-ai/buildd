@@ -2,10 +2,10 @@
 title: Webhook Dataflow
 status: active
 owner: max
-last_verified: 2026-10-03
+last_verified: 2026-10-15
 summary: The coordination layer MUST emit a Pusher event on every task, worker, mission, and schedule state change, and MUST dispatch task webhooks and notifications best-effort so no delivery failure aborts the DB write.
 domain: integrations
-surfaces: [apps/web/src/lib/pusher.ts, apps/web/src/app/api/github/webhook/route.ts, apps/web/src/lib/task-dependencies.ts, apps/web/src/lib/notify.ts]
+surfaces: [apps/web/src/lib/pusher.ts, apps/web/src/app/api/github/webhook/route.ts, apps/web/src/lib/task-dependencies.ts, apps/web/src/lib/notify.ts, apps/web/src/lib/notify-rules.ts]
 related: [work-tracker-integration, mission-task-lifecycle, runner-liveness]
 keywords: [pusher_channel_prefix, task:unblocked, worker:command, webhookconfig, pushover, notificationpreferences]
 assertions:
@@ -36,7 +36,7 @@ configured.
 
 ## Pusher Event Contracts
 
-The Pusher client is optional — when `PUSHER_APP_ID`, `PUSHER_KEY`,
+The Pusher client is optional: when `PUSHER_APP_ID`, `PUSHER_KEY`,
 `PUSHER_SECRET`, and `PUSHER_CLUSTER` are not all set, all `triggerEvent` calls
 are silent no-ops. No route may block on a Pusher failure.
 
@@ -78,7 +78,7 @@ An optional `PUSHER_CHANNEL_PREFIX` env var isolates events per environment
 | `mission:note_posted` | `mission-{id}` | Agent posts a note to the mission feed |
 
 **Invariants**:
-- `triggerEvent` MUST be called as a fire-and-forget side effect — it MUST NOT
+- `triggerEvent` MUST be called as a fire-and-forget side effect; it MUST NOT
   be awaited in a way that allows its failure to abort the primary DB write.
 - All channel names are prefixed with `PUSHER_CHANNEL_PREFIX` (default: `""`).
 - `worker:command` is the mechanism for admin→runner steering: the runner
@@ -124,20 +124,19 @@ directly.
   `TASK_ASSIGNED` broadcast, and the outbox row is retried only if that fails too.
 - The webhook endpoint receives the payload with `Authorization: Bearer
   {webhookConfig.token}` and a 10-second timeout (`WEBHOOK_DISPATCH_TIMEOUT_MS`).
-- `webhookConfig.events` is an opt-in. A config without it receives only the
-  causes it received before the outbox existed. A config with it receives
-  exactly the listed events (`task.created`, `task.unblocked`, `task.retry`,
-  `task.resume`). The per-cause mapping is in task-dispatch-authority.
+- `webhookConfig.events` is an opt-in list (`task.created`, `task.unblocked`,
+  `task.retry`, `task.resume`, `task.scheduled`). A config without it gets
+  only new and unblocked tasks, the causes it received before the outbox
+  existed; retries, plan children and deferred-start re-dispatches reach it
+  only when it lists the event. A config with it receives exactly the listed
+  events. The per-cause mapping is in task-dispatch-authority.
 - `webhookConfig.runnerPreference` optionally filters: only tasks whose
   `runnerPreference` matches are dispatched (one legacy exception, documented
   in task-dispatch-authority).
 - Held tasks, tasks in held or local-executor missions, and tasks whose
   `start_at` is in the future are never sent to the webhook.
 - `webhookConfig` is stored as JSONB on `workspaces.webhookConfig`.
-- `webhookConfig.events` is an opt-in list (`task.created`, `task.unblocked`,
-  `task.retry`, `task.resume`, `task.scheduled`). Without it a webhook gets
-  only new and unblocked tasks; retries, plan children and deferred-start
-  re-dispatches reach it only when it lists the event.
+
 - `task.scheduled`: a future work wake (a deferred `startAt`, a retry backoff)
   due no more than 24 h ahead gets an advance notice, once per due time, to a
   webhook that lists `task.scheduled`: `event: 'task.scheduled'` with
@@ -170,7 +169,7 @@ instead, and do not use the outbox.
 - AC-7: GIVEN `webhookConfig.runnerPreference = 'service'` and a task with
   `runnerPreference = 'user'` WHEN the task is created THEN NO webhook dispatch
   occurs for that task.
-- AC-7a: GIVEN a webhook whose `events` lists `task.scheduled` WHEN a retry
+- AC-15: GIVEN a webhook whose `events` lists `task.scheduled` WHEN a retry
   defers a task to a `startAt` 5 minutes ahead THEN the webhook receives
   `event: 'task.scheduled'` with `notBefore` = that `startAt` immediately, and
   no `task:assigned` broadcast is sent. GIVEN the same retry on a webhook
@@ -183,7 +182,7 @@ instead, and do not use the outbox.
   (`webhookWants`, `offerScheduledNotice` for the opt-in `task.scheduled`)
 - Payload and POST: `apps/web/src/lib/task-dispatch-delivery.ts`
   (`buildWebhookPayload`, `dispatchToWebhook`)
-- Schema: `packages/core/db/schema.ts` — `WorkspaceWebhookConfig`,
+- Schema: `packages/core/db/schema.ts`: `WorkspaceWebhookConfig`,
   `workspaces.webhookConfig`
 
 ---
@@ -197,8 +196,8 @@ keep workspace and repo data in sync and optionally auto-create tasks.
 **Invariants**:
 - Every incoming payload MUST be verified against the GitHub webhook secret
   before processing.
-- Unrecognized event types MUST be accepted with HTTP 200 (no error) — GitHub
-  retries on non-2xx.
+- Unrecognized event types MUST be accepted with HTTP 200 (no error), so a
+  delivery never reads as failed for an event buildd ignores.
 - Installation events update `github_installations` rows.
 - `installation.created` and `installation_repositories.added` MUST mirror the
   installation's repos into `github_repos` and back-link every workspace whose
@@ -208,7 +207,7 @@ keep workspace and repo data in sync and optionally auto-create tasks.
   already points at, so a brand-new installation is otherwise unreachable.
 - Repo matching MUST normalize `workspaces.repo` to a bare `owner/name`
   (accepting `owner/name`, an https URL, or an SSH URL, with or without `.git`)
-  and compare for equality. Substring matching is forbidden — `owner/name`
+  and compare for equality. Substring matching is forbidden: `owner/name`
   would also match `owner/name-legacy`.
 - Back-link failures MUST NOT fail the delivery (GitHub does not retry App
   webhooks); they log and alert instead.
@@ -234,15 +233,15 @@ keep workspace and repo data in sync and optionally auto-create tasks.
 
 **Code surface**:
 - Route: `apps/web/src/app/api/github/webhook/route.ts`
-- Schema: `packages/core/db/schema.ts` — `githubInstallations`, `githubRepos`
+- Schema: `packages/core/db/schema.ts`: `githubInstallations`, `githubRepos`
 
 ---
 
 ## PR Activity Comment (agent presence on the PR)
 
 **Capability statement**: When buildd takes an automated action on a pull
-request — dispatching a reviewer, fixing a CI failure, applying review
-feedback, escalating to a human — it MUST say so on the PR itself, so a human
+request (dispatching a reviewer, fixing a CI failure, applying review
+feedback, escalating to a human), it MUST say so on the PR itself, so a human
 watching GitHub can see an agent is on it without opening the dashboard.
 
 **Invariants**:
@@ -255,12 +254,12 @@ watching GitHub can see an agent is on it without opening the dashboard.
   the comment is located by scanning the PR's issue comments for the marker.
 - A repeat of the newest entry (same kind, detail, iteration and sha) MUST be dropped, so a
   webhook redelivery does not stack identical lines. Corrupt state parses as an
-  empty log — never as an error.
+  empty log, never as an error.
 - Posting is best-effort: a GitHub failure logs and returns `failed`. It MUST
   NOT abort the lifecycle step that triggered it (retry dispatch, auto-merge,
   escalation).
 - A push to the branch (`pull_request.synchronize`) is recorded only when the
-  comment already exists (`onlyIfPresent`) — buildd announces its own follow-up
+  comment already exists (`onlyIfPresent`): buildd announces its own follow-up
   commits, not a human's.
 - The header MUST state only what is true now. A fix task that is queued (no
   worker has claimed it) MUST read as queued ("Fix 1 of 3 queued · waiting for
@@ -272,18 +271,18 @@ watching GitHub can see an agent is on it without opening the dashboard.
   for a worker", no spinner). "Reviewing" is written only by the claim route,
   after a worker has claimed a task whose context carries `reviewerFor`.
 - The header MUST carry an animated spinner only while an agent is working
-  right now (reviewing, fixing), and a static glyph otherwise — queued, waiting
+  right now (reviewing, fixing), and a static glyph otherwise: queued, waiting
   on checks, approved and every terminal state are not motion, and movement
   MUST NOT persist on a finished PR.
 - Long text (reviewer feedback, escalation reasons, the original lede) MUST be
-  collapsed under its row in `<details>`, never pasted inline. Copy rules —
-  status vocabulary, length limits, glyph set — are in
+  collapsed under its row in `<details>`, never pasted inline. Copy rules
+  (status vocabulary, length limits, glyph set) are in
   `apps/web/src/lib/pr-activity-comment.STYLE.md`.
 - The PR's own close is the last word: on `pull_request.closed` an existing
   comment MUST be resolved to `merged` or `closed_unmerged` (both terminal), so
-  a header left mid-flight ("Review passed — merging once checks are green")
+  a header left mid-flight ("Review passed, merging once checks are green")
   stops spinning even when no further buildd step ran. This append is
-  `onlyIfPresent` — a PR buildd never announced on stays comment-free.
+  `onlyIfPresent`: a PR buildd never announced on stays comment-free.
 - The spinner MUST be an animated GIF served from a publicly reachable https
   origin. GitHub fetches comment images server-side through camo, so animated
   SVG/CSS does not survive sanitization and a localhost origin renders broken;
@@ -304,10 +303,9 @@ watching GitHub can see an agent is on it without opening the dashboard.
 - AC-11: WHEN CI fails on a worker PR and a fix task is dispatched THEN the
   existing comment is PATCHed with a "CI failed · fix N of M queued" entry
   linking the fix task, with no spinner, and no second comment is created.
-- AC-11a: WHEN a reviewer requests changes THEN the header reads "Fix N of M
+- AC-16: WHEN a reviewer requests changes THEN the header reads "Fix N of M
   queued · waiting for a worker" with no spinner; WHEN a worker then claims
   that fix task THEN the header reads "Fixing · fix N of M" with the spinner.
-
 - AC-12: WHEN the newest entry is a terminal state THEN the rendered comment
   contains no reference to the spinner asset.
 - AC-13: GIVEN a team with `timezone = 'America/New_York'` WHEN an entry stamped
@@ -338,29 +336,44 @@ watching GitHub can see an agent is on it without opening the dashboard.
 ## External Notification (Pushover / Slack / Discord)
 
 **Capability statement**: The buildd notification system MUST send Pushover
-and/or webhook notifications for task lifecycle events
-(`task_claimed`, `task_completed`, `task_failed`, `credential_expired`) subject
-to per-team `notificationPreferences`.
+and/or webhook notifications on the team's own channel for the events in
+`NotifyEvent` (`taskClaimed`, `taskCompleted`, `taskFailed`,
+`credentialExpired`, `connectorBlocked`, `artifactReady`) subject to the
+team's `notification_preferences` row, plus `needsAttention` (a person has to
+act), which has no preference and is sent whenever the team has a channel.
 
 **Invariants**:
-- `notificationPreferences` defaults to `true` for all event types — existing
-  teams receive all notifications unless explicitly disabled.
+- A team with no `notification_preferences` row gets
+  `DEFAULT_NOTIFICATION_PREFERENCES` (`apps/web/src/lib/notify-rules.ts`):
+  `taskFailed`, `credentialExpired` and `connectorBlocked` on;
+  `taskClaimed`, `taskCompleted` and `artifactReady` off. Per-task claimed and
+  completed pushes are opt-in because the dashboard already shows them.
+- A team's alerts never fall back to the platform's own Pushover app: the
+  team brings its own app token and user key.
 - Pushover and notify-webhook credentials are stored in `secrets`
   (`purpose = 'pushover'` and `purpose = 'notify_webhook'`).
-- Notification sends MUST be fire-and-forget — failures MUST NOT block the
+- Notification sends MUST be fire-and-forget; failures MUST NOT block the
   event that triggered them.
 
 **Acceptance criteria**:
-- AC-10: GIVEN `notificationPreferences.taskCompleted = false` for a team WHEN
-  a task completes THEN no Pushover notification is sent for that event type.
-- AC-11: GIVEN no `pushover` secret configured WHEN a task completes THEN no
+- AC-17: GIVEN `taskCompleted = false` in a team's preferences WHEN a task
+  completes THEN no Pushover notification is sent for that event type.
+- AC-18: GIVEN no `pushover` secret configured WHEN a task completes THEN no
   Pushover notification is attempted (not an error).
 
 **Code surface**:
-- Notify helper: `apps/web/src/lib/notify.ts` — `notifyTeam()`
-- Schema: `packages/core/db/schema.ts` — `notificationPreferences`,
-  `secrets.purpose`
+- Notify helper: `apps/web/src/lib/notify.ts`: `notifyTeam()`; rules and
+  defaults: `apps/web/src/lib/notify-rules.ts`: `NotifyEvent`,
+  `DEFAULT_NOTIFICATION_PREFERENCES`
+- Schema: `packages/core/db/schema.ts`: `notificationPreferences` (table
+  `notification_preferences`), `secrets.purpose`
 - Observability doc: `docs/observability-and-notifications.md`
 
 **Out of scope**: the `report-ops` critical-alert path (covered in
 `runner-liveness.md`). MCP Resources (read-only, no Pusher involvement).
+
+## Renumbered
+
+Ids were repeated across sections; the first definition of each is kept.
+Webhook dispatch AC-7a became AC-15. PR activity AC-11a became AC-16.
+Notification AC-10 and AC-11 became AC-17 and AC-18.

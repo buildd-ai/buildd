@@ -35,7 +35,7 @@ describe('processLinearWebhook', () => {
     expect(res.status).toBe(401);
   });
 
-  it('401 on a bad signature — no mutation (AC-4)', async () => {
+  it('401 on a bad signature — no mutation (AC-12)', async () => {
     const handle = mock(async () => ({ action: 'created' as const }));
     const res = await processLinearWebhook(
       fakeDb,

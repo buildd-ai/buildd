@@ -39,7 +39,7 @@ export interface TaskStripProps {
   size?: 'lg' | 'sm';
   selectedId?: string | null;
   onSelect?: (id: string) => void;
-  /** Relation to the selection (spec §5): drawn on the tick row only, never on a cell (MK-4). */
+  /** Relation to the selection (spec §5): drawn on the tick row only, never on a cell (strip R-17). */
   marks?: TaskStripMarks;
   /** Desktop caps large cells at 56px instead of stretching them across the column. Default true. */
   capped?: boolean;
@@ -283,7 +283,7 @@ function LargeStrip({ cells, selectedId, onSelect, marks, capped = true, label =
           {rowCells.map(c => {
             const i = indexOf.get(c.id) ?? 0;
             const selected = c.id === selectedId;
-            // MK-3: the selected tick is never marked and always keeps its number.
+            // strip R-16: the selected tick is never marked and always keeps its number.
             const mark = selected ? null : markOf(marks, c.id);
             return (
               <span key={c.id} data-mark={mark ?? undefined} style={place(c.id)} className={tickClass(mark, selected, c.state, numbered)}>
@@ -319,7 +319,7 @@ function LargeStrip({ cells, selectedId, onSelect, marks, capped = true, label =
 function tickClass(mark: StripMark | null, selected: boolean, state: StateKey, numbered: boolean): string {
   if (selected) return 'font-semibold text-text-primary';
   if (!numbered) {
-    // MK-1/MK-2 unnumbered: a 6px bar for direct, a 2px line for transitive, nothing otherwise.
+    // strip R-14/R-15 unnumbered: a 6px bar for direct, a 2px line for transitive, nothing otherwise.
     return mark === 'direct' ? 'h-1.5 self-start rounded-sm bg-accent'
       : mark === 'transitive' ? 'h-0.5 self-start bg-accent'
       : '';

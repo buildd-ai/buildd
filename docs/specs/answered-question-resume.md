@@ -2,7 +2,7 @@
 title: Answered-Question Resume
 status: active
 owner: max
-last_verified: 2026-10-12
+last_verified: 2026-10-15
 summary: Answering a parked worker's question MUST resume that worker's own session when the runner still holds it, and MUST fall back to a cold continuation only for a recorded, owner-visible reason.
 domain: runners
 surfaces: [apps/web/src/lib/answer-resume.ts, apps/web/src/app/api/workers/[id]/respond/route.ts, apps/web/src/lib/await-answer.ts, apps/web/src/app/api/workers/[id]/answer/route.ts, apps/web/src/lib/answer-wait-capability.ts, apps/web/src/app/api/workers/[id]/answer/capability/route.ts, apps/web/src/app/api/workers/[id]/answer/wait/route.ts, apps/runner/src/recovery.ts, apps/web/src/lib/answer-credential-preflight.ts, apps/web/src/app/api/cron/waiting-input-sweep/route.ts]
@@ -171,27 +171,27 @@ section below. G5 covers the recoverable case only — a token that is expired a
 could not be refreshed. A revoked credential never reaches the gates.
 
 **Acceptance criteria**:
-- AC-AQR-1: GIVEN a worker with `status: 'waiting_input'`, `updatedAt` 5s old,
+- AC-1: GIVEN a worker with `status: 'waiting_input'`, `updatedAt` 5s old,
   `supportsInstructionAck: true`, `turns: 40` and a credential preflight of
   `ok` WHEN `evaluateAnswerPath` runs THEN it returns
   `path: 'resume'`, `reasonCode: 'resume_eligible'`.
-- AC-AQR-2: GIVEN the same worker with `status: 'error'` THEN the result is
+- AC-2: GIVEN the same worker with `status: 'error'` THEN the result is
   `path: 'cold_continuation'`, `reasonCode: 'worker_not_parked'`.
-- AC-AQR-3: GIVEN the same worker with `updatedAt` older than
+- AC-3: GIVEN the same worker with `updatedAt` older than
   `RESUME_RUNNER_FRESH_MS` THEN the result is `path: 'cold_continuation'`,
   `reasonCode: 'runner_not_holding_transcript'`.
-- AC-AQR-4: GIVEN the same worker with `supportsInstructionAck: false` THEN the
+- AC-4: GIVEN the same worker with `supportsInstructionAck: false` THEN the
   result is `path: 'cold_continuation'`,
   `reasonCode: 'runner_cannot_confirm_delivery'`.
-- AC-AQR-5: GIVEN the same worker with `turns` above `RESUME_MAX_TURNS` THEN
+- AC-5: GIVEN the same worker with `turns` above `RESUME_MAX_TURNS` THEN
   the result is `path: 'cold_continuation'`, `reasonCode: 'context_ceiling'`.
-- AC-AQR-6: GIVEN the same worker with a credential preflight of `unhealthy`
+- AC-6: GIVEN the same worker with a credential preflight of `unhealthy`
   THEN the result is `path: 'cold_continuation'`,
   `reasonCode: 'credential_unhealthy'`.
-- AC-AQR-7: GIVEN a worker failing G1 AND G4 simultaneously THEN the reported
+- AC-7: GIVEN a worker failing G1 AND G4 simultaneously THEN the reported
   `reasonCode` is `worker_not_parked` — gate order is fixed, so the reason a
   reader sees is stable rather than dependent on evaluation order.
-- AC-AQR-8: GIVEN a credential preflight of `unknown` (no managed credential
+- AC-8: GIVEN a credential preflight of `unknown` (no managed credential
   row — the account supplies its own key) THEN G5 passes and the path is
   `resume`; an absent credential MUST NOT be read as a broken one.
 
@@ -239,16 +239,16 @@ immediately. Before this, a second device kept showing a question that had
 already been answered.
 
 **Acceptance criteria**:
-- AC-AQR-P1: GIVEN a `waiting_input` worker with a `permission` prompt, a fresh
+- AC-28: GIVEN a `waiting_input` worker with a `permission` prompt, a fresh
   sync, ack support and `turns` far above `RESUME_MAX_TURNS` WHEN answered THEN
   the path is `resume` and no continuation task is inserted.
-- AC-AQR-P2: GIVEN a `failed`/`error`/`completed` worker still carrying a
+- AC-29: GIVEN a `failed`/`error`/`completed` worker still carrying a
   `permission` prompt WHEN answered THEN `/respond` returns `400`,
   `reasonCode: 'worker_ended'`, and writes nothing.
-- AC-AQR-P3: GIVEN a `superseded` worker with a `continuationTaskId` WHEN
+- AC-30: GIVEN a `superseded` worker with a `continuationTaskId` WHEN
   answered THEN the reply carries `reasonCode: 'already_answered'` and
   `nextAction: { kind: 'open_task', taskId }`.
-- AC-AQR-P4: GIVEN a terminal status PATCH for a worker carrying a `permission`
+- AC-31: GIVEN a terminal status PATCH for a worker carrying a `permission`
   prompt THEN `waitingFor` is cleared. A `question` prompt is kept.
 
 ---
@@ -319,20 +319,20 @@ already been answered.
   every case.
 
 **Acceptance criteria**:
-- AC-AQR-9: GIVEN a resume-eligible parked worker WHEN `POST /respond`
+- AC-9: GIVEN a resume-eligible parked worker WHEN `POST /respond`
   succeeds THEN no row is inserted into `tasks`, the response carries
   `path: 'resume'` and the original task id, and the worker's `status` is
   unchanged.
-- AC-AQR-10: GIVEN the same call THEN the worker's `pendingInstructions`
+- AC-10: GIVEN the same call THEN the worker's `pendingInstructions`
   contains the answer text and a new `instructionHistory` entry carries
   `deliveryState: 'pending'` — never `'delivered'`, which only the runner's
   acknowledgement may write.
-- AC-AQR-11: GIVEN the same call THEN the worker's `status` is NOT
+- AC-11: GIVEN the same call THEN the worker's `status` is NOT
   `superseded` and `completedAt` is not set.
-- AC-AQR-12: GIVEN a worker whose `waitingFor` is already null WHEN `POST
+- AC-12: GIVEN a worker whose `waitingFor` is already null WHEN `POST
   /respond` is called THEN HTTP 400 and nothing is queued — the resume path
   offers no second way past the single-answer guard.
-- AC-AQR-13: GIVEN two concurrent answers to the same resume-eligible worker
+- AC-13: GIVEN two concurrent answers to the same resume-eligible worker
   THEN exactly one receives HTTP 200 and the other HTTP 409, and the answer is
   queued exactly once.
 
@@ -466,13 +466,13 @@ a shell command that does the waiting instead.
   clients without background commands.
 
 **Acceptance criteria**:
-- AC-AQR-I11: GIVEN a minted capability WHEN it is used for another worker,
+- AC-42: GIVEN a minted capability WHEN it is used for another worker,
   after its expiry, tampered with, or after a newer ask THEN the wait route
   answers 401 and reads nothing for the first three.
-- AC-AQR-I12: GIVEN the answer to the capability's ask WHEN the wait route is
+- AC-43: GIVEN the answer to the capability's ask WHEN the wait route is
   called THEN `{ answered: true, state: 'answered' }` and the body contains
   neither the answer nor the question.
-- AC-AQR-I13: GIVEN the generated `waitCommand` against a stub that answers
+- AC-44: GIVEN the generated `waitCommand` against a stub that answers
   "waiting" then "answered" THEN it exits 0, sending the capability header on
   every call; a 401 exits 3 with one line, a passed deadline exits 2 without
   calling.
@@ -505,19 +505,19 @@ a shell command that does the waiting instead.
   The worker's error says it was not retried and how to pick it up again.
 
 **Acceptance criteria**:
-- AC-AQR-I6: GIVEN `/respond` answered an interactive worker and the queue
+- AC-37: GIVEN `/respond` answered an interactive worker and the queue
   then evicted the message WHEN `await_answer` THEN it returns the answer
   text, and its ack marks the history entry `acknowledged`; a second call
   returns `stillWaiting: false`.
-- AC-AQR-I7: GIVEN no answer WHEN `await_answer { waitSeconds: 300 }` THEN
+- AC-38: GIVEN no answer WHEN `await_answer { waitSeconds: 300 }` THEN
   the server waits at most 45 s and returns `timedOut: true, stillWaiting: true`.
-- AC-AQR-I8: GIVEN a parked interactive worker whose `sessionSeenAt` is older
+- AC-39: GIVEN a parked interactive worker whose `sessionSeenAt` is older
   than 5 min WHEN `POST /respond` THEN `path: 'cold_continuation'`,
   `reasonCode: 'interactive_session_stopped_polling'`. With no
   `sessionSeenAt`, or a recent one, THEN `path: 'interactive'`.
-- AC-AQR-I9: GIVEN a parked interactive worker WHEN `receive_messages` THEN
+- AC-40: GIVEN a parked interactive worker WHEN `receive_messages` THEN
   `waitingFor.sessionSeenAt` is stamped and `updated_at` is unchanged.
-- AC-AQR-I10: GIVEN an interactive worker's question past the sweep's
+- AC-41: GIVEN an interactive worker's question past the sweep's
   threshold THEN the worker and task fail and no retry task is inserted;
   on an `executor = 'local'` mission the retry is inserted.
 
@@ -555,32 +555,32 @@ sweep looks at.
   are all down is still covered.
 
 **Acceptance criteria**:
-- AC-AQR-I14: GIVEN an interactive answer unread and the worker quiet for over
+- AC-45: GIVEN an interactive answer unread and the worker quiet for over
   15 min WHEN the sweep runs THEN a `Continue:` task carries the answer with
   `reasonCode: 'interactive_answer_not_read'`, the worker is superseded and
   points at it, and the message leaves the old task's queue.
-- AC-AQR-I15: GIVEN the same answer with the worker active within 15 min, or
+- AC-46: GIVEN the same answer with the worker active within 15 min, or
   the entry `acknowledged` THEN the sweep leaves it alone.
-- AC-AQR-I16: GIVEN a superseded worker whose answer is still unread WHEN
+- AC-47: GIVEN a superseded worker whose answer is still unread WHEN
   `await_answer` THEN `session_ended` with the continuation id, never the
   answer.
-- AC-AQR-I17: GIVEN an answer queued for a bound worker WHEN a presence touch
+- AC-48: GIVEN an answer queued for a bound worker WHEN a presence touch
   THEN the response flags `pendingInstructions: true`.
 
 **Acceptance criteria**:
-- AC-AQR-I1: GIVEN an interactive worker in `waiting_input` checked in within
+- AC-32: GIVEN an interactive worker in `waiting_input` checked in within
   the idle window WHEN `POST /respond` THEN `path: 'interactive'`, no task is
   inserted, one `answer` message is queued on the worker's task, and the worker
   write sets `status: 'running'` and `waitingFor: null`.
-- AC-AQR-I2: GIVEN the same worker and a revoked managed credential THEN the
+- AC-33: GIVEN the same worker and a revoked managed credential THEN the
   answer is accepted on the interactive path and no preflight runs.
-- AC-AQR-I3: GIVEN a `running` interactive worker past the idle window, or a
+- AC-34: GIVEN a `running` interactive worker past the idle window, or a
   `failed` / `error` one, THEN `path: 'cold_continuation'`, `reasonCode:
   'interactive_session_gone'`.
-- AC-AQR-I5: GIVEN an interactive worker in `waiting_input` whose `updatedAt`
+- AC-36: GIVEN an interactive worker in `waiting_input` whose `updatedAt`
   is 3h old (past the idle window) WHEN `POST /respond` THEN `path:
   'interactive'`, and no continuation task is inserted.
-- AC-AQR-I4: GIVEN a `workerMessagesDelivered` ack naming an instruction-history
+- AC-35: GIVEN a `workerMessagesDelivered` ack naming an instruction-history
   entry's id THEN that entry is `acknowledged`.
 
 ---
@@ -633,28 +633,28 @@ sweep looks at.
   counts toward `degraded`; the failure is logged, not raised.
 
 **Acceptance criteria**:
-- AC-AQR-14: GIVEN an answer that falls back for any reason WHEN `POST
+- AC-14: GIVEN an answer that falls back for any reason WHEN `POST
   /respond` succeeds THEN the new task's `context.answerDelivery.reasonCode` is
   the failing gate's code and the response carries
   `path: 'cold_continuation'`.
-- AC-AQR-15: GIVEN the same call THEN exactly one note is posted to the task
+- AC-15: GIVEN the same call THEN exactly one note is posted to the task
   feed naming the path and the reason.
-- AC-AQR-16: GIVEN a worker parked with `answerDelivery.path: 'resume'` and
+- AC-16: GIVEN a worker parked with `answerDelivery.path: 'resume'` and
   `pendingInstructions` still set, older than `RESUME_ACK_DEADLINE_MS`, WHEN
   `cleanupUnresumedAnswers` runs THEN a `Continue:` task is created carrying
   the queued answer, the worker becomes `superseded`, and
   `answerDelivery.reasonCode` is `resume_not_acknowledged`.
-- AC-AQR-17: GIVEN the same worker after that sweep has already run WHEN it
+- AC-17: GIVEN the same worker after that sweep has already run WHEN it
   runs again THEN no second task is created.
-- AC-AQR-18: GIVEN a worker whose queued answer WAS acknowledged (its
+- AC-18: GIVEN a worker whose queued answer WAS acknowledged (its
   `instructionHistory` entry reads `delivered` and `pendingInstructions` is
   null) WHEN `cleanupUnresumedAnswers` runs THEN it is left alone.
-- AC-AQR-19: GIVEN a worker superseded by the sweep's CAS WHEN the
+- AC-19: GIVEN a worker superseded by the sweep's CAS WHEN the
   compensating `Continue:` task insert throws THEN the worker is rolled back
   to `status: 'waiting_input'` with the answer restored on
   `pendingInstructions`, no continuation task exists, and the OAuth seat is
   not released.
-- AC-AQR-26: GIVEN a `Continue:` task that was inserted successfully WHEN the
+- AC-26: GIVEN a `Continue:` task that was inserted successfully WHEN the
   `answerDelivery` context stamp or the feed-note insert then throws THEN
   `cleanupUnresumedAnswers` does not raise, the worker still counts toward
   `degraded`, and any later candidate in the same call is still processed.
@@ -716,24 +716,24 @@ stale, and the resumed session dies on its first request.
   analytics; "not logged in" 300 turns deep is not.
 
 **Acceptance criteria**:
-- AC-AQR-19: GIVEN a managed Claude credential whose `healthStatus` is
+- AC-27: GIVEN a managed Claude credential whose `healthStatus` is
   `revoked` WHEN `preflightBackendCredential` runs THEN it returns `unhealthy`
   with `revoked: true` and attempts no refresh.
-- AC-AQR-20: GIVEN a credential whose `tokenExpiresAt` is in the past WHEN the
+- AC-20: GIVEN a credential whose `tokenExpiresAt` is in the past WHEN the
   preflight runs THEN a refresh is attempted; if it succeeds the result is `ok`
   and if it still reports expired the result is `unhealthy`.
-- AC-AQR-21: GIVEN no credential row for the team or workspace THEN the result
+- AC-21: GIVEN no credential row for the team or workspace THEN the result
   is `unknown` and the answer path is unaffected.
-- AC-AQR-22: GIVEN a refresh that throws THEN the result is `unknown`, not
+- AC-22: GIVEN a refresh that throws THEN the result is `unknown`, not
   `unhealthy`.
-- AC-AQR-23: GIVEN an `unhealthy` preflight WITHOUT `revoked` (expired and
+- AC-23: GIVEN an `unhealthy` preflight WITHOUT `revoked` (expired and
   unrefreshable) WHEN `POST /respond` succeeds THEN a continuation task exists
   (the answer is not dropped) AND a `warning` note naming the credential is
   posted.
-- AC-AQR-24: GIVEN a resume invocation whose broker lookup returns nothing and
+- AC-24: GIVEN a resume invocation whose broker lookup returns nothing and
   whose claim-delivered token expired WHEN the runner starts the session THEN
   it throws a named credential error before spawning the agent.
-- AC-AQR-25: GIVEN a preflight returning `revoked: true` WHEN `POST /respond`
+- AC-25: GIVEN a preflight returning `revoked: true` WHEN `POST /respond`
   runs THEN it responds `409` with `credentialRevoked: true` and the backend
   name, no worker row is written, no continuation task is inserted and no feed
   note is posted.
@@ -845,3 +845,12 @@ them.
    with ask_human and never calls `await_answer` or `receive_messages` stamps
    no heartbeat, so its answer is still queued to it until the waiting_input
    sweep fails the worker — the behaviour before the heartbeat existed.
+
+## Renumbered
+
+Ids were renumbered on 2026-10-15 so every criterion parses and is unique.
+
+- Old AC-AQR-n to AC-n for n from 1 to 26, except the second AC-AQR-19.
+- The second AC-AQR-19 (the managed credential `revoked` flag, in the credential preflight section) to AC-27.
+- Old AC-AQR-P1 to AC-28, AC-AQR-P2 to AC-29, AC-AQR-P3 to AC-30, AC-AQR-P4 to AC-31.
+- Old AC-AQR-In to AC-(31+n): AC-AQR-I1 to AC-32, through AC-AQR-I17 to AC-48.

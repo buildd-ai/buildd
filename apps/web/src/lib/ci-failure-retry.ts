@@ -499,7 +499,7 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
     });
 
     // The diagnose task re-attempts the PR's owner task, so it carries the
-    // same identity as the CI retry below would (Rule P1-7).
+    // same identity as the CI retry below would (mission-legibility R-7).
     const diagnoseIdentity = await inheritAttemptIdentity(diagnoseTask.parentTaskId);
 
     const [newDiagnoseTask] = await db
@@ -622,7 +622,7 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
     origin: 'webhook',
   });
 
-  // An attempt inherits the backend, role, routing kind and phase (Rule P1-7)
+  // An attempt inherits the backend, role, routing kind and phase (mission-legibility R-7)
   // of the task it re-attempts.
   const retryIdentity = await inheritAttemptIdentity(retryTask.parentTaskId);
 

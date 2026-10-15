@@ -77,6 +77,12 @@ state machines for both tasks and missions, allowing only documented transitions
 deriving mission health from live task state (never storing it), and unblocking
 downstream DAG tasks when a task reaches a terminal state.
 
+Split warranted: this file is too large to grade as one spec. Candidate
+children are the task state machine with output requirements, the claim-gate
+legibility contract, the mission completion gate with the blocked-verdict
+consumer, the organizer context contracts (prior-work retrieval and situational
+awareness) and the per-mission surface audit. This file is not split yet.
+
 ---
 
 ## Task State Machine
@@ -107,7 +113,7 @@ an enum) to allow extension without migrations.
   `idle`) MUST NOT be reset to `pending` while that worker is alive.
 - `outputRequirement = 'pr_required'` MUST block `complete_task` unless
   `workers.prUrl` is set, an open PR is auto-detected on the worker's own
-  branch, or the referenced-PR fallback (AC-3j) resolves one.
+  branch, or the referenced-PR fallback (AC-48) resolves one.
 - `outputRequirement = 'auto'` (the default) MUST block `complete_task` when the
   worker has committed at least one commit — or has uncommitted modifications
   to tracked files sitting in its worktree — and has neither a tracked/detected
@@ -137,16 +143,16 @@ an enum) to allow extension without migrations.
   `workers.mergedAt`, and the discard reason is snapshotted onto
   `tasks.result.discardedEdits` for audit. A **reviewer task** (`category =
   'review'`, `context.reviewerFor` set — created by `createReviewerTask`,
-  `apps/web/src/lib/reviewer.ts`) is exempt from this entire check: see AC-3f.
+  `apps/web/src/lib/reviewer.ts`) is exempt from this entire check: see AC-44.
   Its contract is judged on `structuredOutput.verdict` instead, by the
   review-contract guard in `apps/web/src/app/api/workers/[id]/route.ts`.
-  A gate-rejected completion (any of AC-3/AC-3a/AC-3b/AC-3c/AC-3g) persists the
+  A gate-rejected completion (any of AC-3/AC-39/AC-40/AC-41/AC-45) persists the
   agent's `summary`/`structuredOutput`/`resultMeta` verbatim onto
   `workers.rejectedCompletionPayload` before returning the 400 — a 60-turn
   run's only output must not evaporate along with the 400. That payload is
-  exposed read-only (AC-3h) and, when the refusal is terminal by construction
-  (AC-3i), salvaged as an artifact — see below. Persisting it is not enough on
-  its own: see AC-3h.
+  exposed read-only (AC-46) and, when the refusal is terminal by construction
+  (AC-47), salvaged as an artifact; see below. Persisting it is not enough on
+  its own: see AC-46.
 - A task transitions to `failed` permanently after `MAX_WORKER_RETRIES = 3`
   failed workers with no deliverables.
 - A task with `roleSlug = null` is claimable by any runner with access to the
@@ -164,19 +170,19 @@ an enum) to allow extension without migrations.
 - AC-3: GIVEN `outputRequirement = 'pr_required'` and `prUrl` is null WHEN
   `complete_task` is called THEN the server returns an error — the task is NOT
   completed.
-- AC-3a: GIVEN `outputRequirement = 'auto'`, `commitCount > 0`, no PR detected
+- AC-39: GIVEN `outputRequirement = 'auto'`, `commitCount > 0`, no PR detected
   (worker-reported or via GitHub branch lookup), and no deliverable artifact
   WHEN `complete_task` is called THEN the server returns a 400 with
   `hint: 'create_pr'` — the task is NOT completed. GIVEN the same worker has
   zero commits, completion succeeds unchanged.
-- AC-3b: GIVEN `outputRequirement = 'auto'`, `commitCount = 0`,
+- AC-40: GIVEN `outputRequirement = 'auto'`, `commitCount = 0`,
   `workers.dirtyWorktree = true`, no PR detected, and no deliverable artifact
   WHEN `complete_task` is called THEN the server returns a 400 with
   `hint: 'create_pr'` — the task is NOT completed. GIVEN the same worker has a
   clean worktree, or has a deliverable artifact, or its branch already carries
   a PR (e.g. a CI/conflict retry), completion succeeds unchanged regardless of
   the dirty-worktree flag.
-- AC-3c: GIVEN `outputRequirement = 'auto'`, `summarySource = 'fallback'` (the
+- AC-41: GIVEN `outputRequirement = 'auto'`, `summarySource = 'fallback'` (the
   runner's own session-end PATCH, not an agent-authored `complete_task` call —
   see `docs/specs`'s summary-provenance note in workers.ts), no PR detected,
   and no deliverable artifact WHEN `complete_task` is called THEN the server
@@ -189,20 +195,20 @@ an enum) to allow extension without migrations.
   GIVEN the same completion carries a PR, or `summarySource = 'agent'`,
   completion succeeds unchanged. **Carve-out:** this AC does not apply to a
   reviewer task (`tasks.category = 'review'` with `context.reviewerFor` set,
-  created by `createReviewerTask`) — see AC-3f.
-- AC-3d: GIVEN `outputRequirement = 'auto'`, no PR of the worker's own, and a
+  created by `createReviewerTask`); see AC-44.
+- AC-42: GIVEN `outputRequirement = 'auto'`, no PR of the worker's own, and a
   dirty worktree or commits WHEN `workers.mergedAt` is already set (a prior
   `merge_pr` call GitHub-confirmed a merge, of any PR) AND `complete_task` is
   called THEN completion succeeds — a verified cross-branch deliverable
   satisfies the gate without a PR of the worker's own.
-- AC-3e: GIVEN the same otherwise-refusing shape as AC-3a/AC-3b WHEN
+- AC-43: GIVEN the same otherwise-refusing shape as AC-39/AC-40 WHEN
   `complete_task` is called with a non-empty `discardEdits` reason THEN
   completion succeeds and the reason is written to
   `tasks.result.discardedEdits` — an explicit discard is a success, not the
   `failed` status the `error` param produces.
-- AC-3f: GIVEN a reviewer task (`category = 'review'`, `context.reviewerFor`
+- AC-44: GIVEN a reviewer task (`category = 'review'`, `context.reviewerFor`
   set) WHEN `complete_task` reports `status = 'completed'` THEN the `auto`
-  gate's PR/artifact/fallback-summary check (AC-3a/AC-3b/AC-3c) does NOT apply
+  gate's PR/artifact/fallback-summary check (AC-39/AC-40/AC-41) does NOT apply
   — a reviewer task structurally never opens a PR or produces an artifact of
   its own; its deliverable is `structuredOutput.verdict`. The completion is
   instead judged by the review-contract guard: a verdict present ⇒ normal
@@ -218,29 +224,29 @@ an enum) to allow extension without migrations.
   permanent failure here would strand the PR unreviewed forever. This is
   narrower than it once was: a `synchronize` push DOES now re-dispatch a
   reviewer, but only when the PR carries a terminal `changes_requested` /
-  `escalated` verdict to re-review (see AC-11z) — a `review_failed` round
+  `escalated` verdict to re-review (see AC-65), a `review_failed` round
   produced no verdict to react to, so it still depends entirely on this
   requeue-then-escalate path.
-- AC-3g: GIVEN `outputRequirement = 'none'` and `tasks.taskClass != 'bookkeeping'`,
+- AC-45: GIVEN `outputRequirement = 'none'` and `tasks.taskClass != 'bookkeeping'`,
   `commitCount > 0` or `workers.dirtyWorktree = true`, no PR detected, and no
   deliverable artifact WHEN `complete_task` is called THEN the server returns a
   400 with `hint: 'create_pr'` — the task is NOT completed. `'none'` means "no
   deliverable required," which is correct for a `taskClass = 'bookkeeping'` row
   (every creation site that sets `outputRequirement: 'none'` explicitly is
   bookkeeping: heartbeats, criteria evaluators, the mission-PR owner task —
-  those are exempt from this AC entirely, matching AC-3c's bookkeeping
+  those are exempt from this AC entirely, matching AC-41's bookkeeping
   carve-out) and correct for a genuine investigation/diagnosis task that
   concludes with nothing to ship, including via a bare fallback summary alone
-  — unlike AC-3c, `summarySource = 'fallback'` by itself does NOT trigger this
+  unlike AC-41, `summarySource = 'fallback'` by itself does NOT trigger this
   AC, only real commit/dirty-worktree evidence does. A non-bookkeeping task
   that actually committed code has no legitimate reason to have declared
   `'none'`; before this AC, that declaration silently skipped every
   deliverable check regardless of commits, which is how a task with real,
   unreviewed changes reached `completed` on a fallback summary. The same
   cross-branch-deliverable (`workers.mergedAt`) and `discardEdits`
-  satisfiers from AC-3d/AC-3e apply here too.
-- AC-3h: GIVEN a worker row carries `rejectedCompletionPayload` (set by any of
-  AC-3/AC-3a/AC-3b/AC-3c/AC-3g/AC-3i) WHEN `get_task` (`GET
+  satisfiers from AC-42/AC-43 apply here too.
+- AC-46: GIVEN a worker row carries `rejectedCompletionPayload` (set by any
+  of AC-3/AC-39/AC-40/AC-41/AC-45/AC-47) WHEN `get_task` (`GET
   /api/tasks/[id]?include=workers` and the MCP `get_task` action built on it)
   is called THEN the payload's `reason`, `summary`, and (if present)
   `salvagedArtifactId` are returned/printed, labeled as a **rejected**
@@ -249,8 +255,8 @@ an enum) to allow extension without migrations.
   /api/tasks/[id]` did not select the column, and the MCP tool never asked for
   it — so a preserved 54-turn run's findings were unreadable by any operator
   or agent surface, only the raw 400 text on `worker.error` was visible.
-- AC-3i: GIVEN an `artifact_required` (or `pr_required`/`auto`/`none`)
-  completion is refused (any arm of AC-3/AC-3a/AC-3b/AC-3c/AC-3g) AND
+- AC-47: GIVEN an `artifact_required` (or `pr_required`/`auto`/`none`)
+  completion is refused (any arm of AC-3/AC-39/AC-40/AC-41/AC-45) AND
   `summarySource = 'fallback'` WHEN the refusal is persisted (AC-3 note) THEN
   a `summary`-type artifact is also created from the preserved summary,
   tagged `metadata: { salvaged: true, rejectedReason }`, and cross-referenced
@@ -265,7 +271,7 @@ an enum) to allow extension without migrations.
   (`packages/core/mcp-tools.ts`) and can call `create_artifact` itself within
   the same session — salvaging there too would risk a stray duplicate
   artifact once that retry succeeds.
-- AC-3j: GIVEN `outputRequirement = 'pr_required'`, no PR on the worker's own
+- AC-48: GIVEN `outputRequirement = 'pr_required'`, no PR on the worker's own
   branch, and the task's `title`/`description` reference a PR by number
   (`#N`) WHEN `complete_task` is called THEN that PR satisfies the gate two
   ways: (1) it is already `merged` (a concurrent/racing merge left the worker
@@ -279,20 +285,20 @@ an enum) to allow extension without migrations.
   still refuses. GIVEN the same shape via `create_pr`'s `prUrl` parameter
   instead (registering an externally-created PR), completion succeeds too,
   unrelated to this fallback.
-- AC-3j1: GIVEN `outputRequirement = 'pr_required'` and no PR of the worker's
+- AC-49: GIVEN `outputRequirement = 'pr_required'` and no PR of the worker's
   own WHEN `complete_task` is called with `alreadyShippedIn: N` THEN the gate
   reads PR #N from the workspace's linked repo and, if GitHub reports it
   `merged`, completion succeeds: `tasks.result.alreadyShippedIn` records
   `{ prNumber, prUrl }`, an `output_requirement` gate event with outcome
   `accepted` is written, and the PR is NOT adopted onto the worker row (it
   belongs to the task that shipped it). This is the exit for a task whose work
-  another task already shipped, where the task text does not name the PR so
-  AC-3j cannot see it. An unmerged, unreadable or non-numeric `N`, or no linked
+  another task already shipped, where the task text does not name the PR, so
+  the check in AC-48 cannot see it. An unmerged, unreadable or non-numeric `N`, or no linked
   repo, still refuses, and the refusal says which. GIVEN the worker also has
   commits or a dirty worktree, completion additionally needs `discardEdits`
-  (AC-3e), so its own edits are never stranded silently. The plain `pr_required`
+  (AC-43), so its own edits are never stranded silently. The plain `pr_required`
   refusal names `alreadyShippedIn` so an agent in this position can find it.
-- AC-3k: GIVEN completion with effective `auto` or `pr_required`, an ordinary
+- AC-50: GIVEN completion with effective `auto` or `pr_required`, an ordinary
   work task of kind engineering, writing or design (or with a concrete manifest),
   no commits, changed files, dirty worktree or observed session touches, and no
   registered, auto-detected or referenced PR, deliverable artifact, verified merge
@@ -560,22 +566,22 @@ Use `executor: 'local'` for work someone runs locally. `startMode: 'held'` is a
 pause: it also blocks the interactive claim, so it was never a fit for that.
 
 **Acceptance criteria**:
-- AC-CG-1: GIVEN a task excluded by any gate WHEN `/start` is called without
+- AC-51: GIVEN a task excluded by any gate WHEN `/start` is called without
   `forceOverride` THEN the response is `422` with a `gateReason`, no Pusher
   broadcast is emitted and the priority is unchanged.
-- AC-CG-2: GIVEN a gate with a bypass key WHEN `/start` is called with
+- AC-52: GIVEN a gate with a bypass key WHEN `/start` is called with
   `forceOverride` THEN the key is written to `task.context` AND the claim query
   admits the task on the next poll.
-- AC-CG-3: GIVEN a bypass key written as boolean `true` or string `'true'` THEN
+- AC-53: GIVEN a bypass key written as boolean `true` or string `'true'` THEN
   both the SQL prefilter and the in-loop guard accept it.
-- AC-CG-4: GIVEN a task pending beyond `STALL_THRESHOLD_HOURS` (4h, declared in
-  `apps/web/src/app/api/cron/queue-stall/route.ts:99`) with no
+- AC-54: GIVEN a task pending beyond `STALL_THRESHOLD_HOURS` (4h, declared in
+  `apps/web/src/app/api/cron/queue-stall/route.ts`) with no
   successful claim THEN `/api/cron/queue-stall` reports it with the first gate
   actually blocking it — never a bare "stalled".
-- AC-CG-5: GIVEN a subject-dead task with a binding anchor WHEN the
+- AC-55: GIVEN a subject-dead task with a binding anchor WHEN the
   reconciliation sweep runs THEN the task becomes `cancelled` AND its dependents
   become claimable.
-- AC-CG-6: GIVEN a pending task whose effective backend has no credential THEN
+- AC-56: GIVEN a pending task whose effective backend has no credential THEN
   `/api/cron/queue-stall` reports `backend_credential_missing` (not
   `no_gate_identified`) AND Settings → Models counts it against that
   backend AND `/start` still returns no `gateReason` for it.
@@ -620,13 +626,14 @@ status and tracks the agent's runtime state:
 - A terminal worker (`completed`, `failed`, `error`) MUST NOT accept status
   updates except a single `running` reactivation (for follow-up messages from
   the runner), and that reactivation MUST require BOTH an explicit
-  `body.reactivate === true` AND a `worker.error` matching none of the
-  server-expiry phrases (`Interrupted — human takeover`, `expired`, `timed out`,
-  `went offline`, `runner restarted`). No named guard helper exists: both
-  predicates are inline locals `reactivateRequested` and
-  `isNonReactivatableTermination` in the PATCH handler
-  (`apps/web/src/app/api/workers/[id]/route.ts:270–278`); failing either returns
-  `409`.
+  `body.reactivate === true` AND a `worker.error` that
+  `isNonReactivatableError` (`apps/web/src/lib/worker-termination.ts`) does not
+  flag. Its phrase list, `NON_REACTIVATABLE_ERROR_PHRASES`, covers human
+  takeover, task reassignment, a released interactive slot, `expired`,
+  `timed out`, `went offline` and `runner restarted`. The PATCH handler in
+  `apps/web/src/app/api/workers/[id]/route.ts` checks both as the locals
+  `reactivateRequested` and `isNonReactivatableTermination`; failing either
+  returns `409`.
 - `waitingFor` MUST be cleared (`null`) automatically when status transitions
   to `running`.
 - `workers.startedAt` is set the first time status becomes `running`.
@@ -824,43 +831,43 @@ stored — it is derived on read from the state of associated tasks via
   THEN that task is excluded from the deliverable count.
 - AC-10: GIVEN `missions.status = 'paused'` WHEN the cron schedule fires THEN
   no new task is created for that mission.
-- AC-10b: GIVEN an `active` mission with `activeHoursStart/End` set and the
+- AC-57: GIVEN an `active` mission with `activeHoursStart/End` set and the
   current time is outside the configured window WHEN the heartbeat fires THEN
   no new task is created. The mission remains `active` — `activeHours` is a
   firing gate, not a status transition.
 - AC-11: GIVEN a mission with `requiresReview = true` WHEN a task PR is created
   THEN auto-merge is suppressed and human review is required before merging.
-- AC-11o: GIVEN two tasks under the same mission WHEN each opens a PR THEN the
+- AC-58: GIVEN two tasks under the same mission WHEN each opens a PR THEN the
   two PRs carry different head refs and different PR numbers — neither shape
   produces one PR for the mission's task work.
-- AC-11p: GIVEN a mission with `workingBranch` set WHEN a task PR based on that
+- AC-59: GIVEN a mission with `workingBranch` set WHEN a task PR based on that
   `workingBranch` is registered THEN `missions.primaryPrNumber` is NOT written
   and the rejection is recorded with the base ref that was seen; GIVEN the same
   registration with a base ref of the workspace trunk and `primaryPrNumber`
   still null THEN the slot is claimed.
 
-- AC-11u: GIVEN an opted-in mission with zero open task PRs and one deliverable
+- AC-60: GIVEN an opted-in mission with zero open task PRs and one deliverable
   task still `pending` WHEN the mission PR merge is attempted at any of the
   three merge call sites THEN it is refused, naming that task and its status;
   GIVEN the same mission with that task `cancelled` THEN the merge proceeds.
-- AC-11v: GIVEN an opted-in mission whose only non-terminal rows are
+- AC-61: GIVEN an opted-in mission whose only non-terminal rows are
   bookkeeping, `attempt` or planning tasks WHEN the mission PR merge is
   attempted THEN it proceeds.
-- AC-11w: GIVEN a task whose mission has an integration base that is absent
+- AC-62: GIVEN a task whose mission has an integration base that is absent
   from the remote WHEN `create_pr` runs THEN the branch is re-cut from trunk,
   a mission note records it, and the PR opens against the integration branch;
   GIVEN the branch cannot be created either THEN the PR opens against trunk, a
   mission note records the breach, and the call does NOT fail.
-- AC-11x: GIVEN any task WHEN the runner builds its Git Workflow prompt and
+- AC-63: GIVEN any task WHEN the runner builds its Git Workflow prompt and
   `create_pr` derives the PR base THEN both report the same base, because both
   call `resolveTaskPrBase` with the same mission and task.
-- AC-11y: GIVEN a PR whose latest review round ended `request-changes` (or
+- AC-64: GIVEN a PR whose latest review round ended `request-changes` (or
   `escalate`) at the PR's current head SHA WHEN a merge is attempted at any
   door — `merge_pr`, the unattended auto-merge path, the dashboard route, or
   release promotion — THEN it is refused, the refusal names the verdict and
   what would clear it, and a `review_verdict` row is written to the gate
   ledger. This holds under `auto-threshold` as well as `agent-review`.
-- AC-11z: GIVEN the same PR after a push moves its head SHA WHEN a merge is
+- AC-65: GIVEN the same PR after a push moves its head SHA WHEN a merge is
   attempted THEN it is STILL refused — a push is no longer, by itself, treated
   as proof the finding was addressed. GIVEN the workspace's effective policy
   for that PR is `agent-review` THEN the `synchronize` webhook dispatches
@@ -878,7 +885,7 @@ stored — it is derived on read from the state of associated tasks via
   sends one delta re-review per PR head — UNLESS the PR diff at the merged
   head is identical to the diff at the approved head, in which case the
   approval carries forward and the merge proceeds once CI is green.
-- AC-11za: GIVEN a blocking verdict WHEN a human merges from the dashboard with
+- AC-66: GIVEN a blocking verdict WHEN a human merges from the dashboard with
   `override: true` THEN the merge proceeds and is recorded as a `bypassed`
   ledger row naming the overridden verdict and the person; GIVEN the same
   verdict on the unattended path THEN there is no override and the merge is
@@ -888,7 +895,7 @@ stored — it is derived on read from the state of associated tasks via
 The contract is in `workflow-state-kernel.md` §13.13, which carries the full merge
 door inventory (D1–D13) and AC-20 to AC-37. Its implementation is pending. It is
 repeated here only where it changes mission rules:
-- AC-11y names four doors, and that list is not all of them. The release executors,
+- The door list in AC-64 names four doors, and that list is not all of them. The release executors,
   compose release, `merge_pr` with admin `force`, a policy-rule merge, and a manual
   merge on GitHub do not consult this gate today (§13.13 D5, D8–D12).
 - A mission integration PR is owned by a `bookkeeping` task that does no work
@@ -902,13 +909,13 @@ repeated here only where it changes mission rules:
   The open findings stay attached, and one follow-up fix task against trunk is filed
   (§13.13 rule 10).
 
-- AC-11zb: GIVEN a request-changes verdict on a mission integration PR owned by a
+- AC-67: GIVEN a request-changes verdict on a mission integration PR owned by a
   `bookkeeping` task WHEN the fix task is created THEN its description lists the
   findings, does not contain "performs no work", and its context carries
   `repairTarget` for the integration branch head. Implementation pending.
-- AC-11zc: GIVEN that fix task ends with zero diff THEN completion is refused and the
+- AC-68: GIVEN that fix task ends with zero diff THEN completion is refused and the
   verdict still blocks every door. Implementation pending.
-- AC-11zd: GIVEN a mission integration PR merged on GitHub by a person while findings
+- AC-69: GIVEN a mission integration PR merged on GitHub by a person while findings
   are open THEN the mission's PR is recorded merged over open findings, a fix task
   against trunk is filed under the mission, and `canCompleteMission` does not treat
   the findings as resolved. Implementation pending.
@@ -1191,19 +1198,19 @@ Refusal order (first failure is the reported `code`): `mission_not_found` →
   with an admin API key.
 
 **Acceptance criteria**:
-- AC-11a: GIVEN a heartbeat planning task with `result.missionComplete = true`
+- AC-70: GIVEN a heartbeat planning task with `result.missionComplete = true`
   and one deliverable task in `pending` WHEN the mission loop runs THEN the
   mission status remains `active` and a `Mission awaiting verification` note
   names the pending count.
-- AC-11b: GIVEN all deliverables terminal and `goalCriteriaState.overall` absent
+- AC-71: GIVEN all deliverables terminal and `goalCriteriaState.overall` absent
   WHEN completion is attempted THEN criteria evaluation is invoked, and if it
   still yields no passing verdict the mission remains `active` with
   `code = 'criteria_unverified'`.
-- AC-11c: GIVEN all deliverables terminal and every criterion `pass` WHEN
+- AC-72: GIVEN all deliverables terminal and every criterion `pass` WHEN
   completion is attempted THEN `missions.status` becomes `completed`, the linked
   schedule is disabled, and the `on_mission_complete` release trigger also
   passes its own check.
-- AC-11d: GIVEN a mission with a `description` criterion whose grader resolves
+- AC-73: GIVEN a mission with a `description` criterion whose grader resolves
   to `runner` (explicitly, or `auto` with no API key) and a connected agent
   backend credential WHEN criteria are evaluated THEN one `analysis` verification
   task is dispatched for that criterion, no inference call is made, the
@@ -1211,91 +1218,91 @@ Refusal order (first failure is the reported `code`): `mission_not_found` →
   and WHEN that task completes with `{ verdict: 'pass', reason }` THEN the
   verdict lands on the criterion, `overall` is re-folded, and completion is
   re-attempted in the same request.
-- AC-11d2: GIVEN a `description` criterion with `grader: 'api'` and no API key
+- AC-74: GIVEN a `description` criterion with `grader: 'api'` and no API key
   WHEN criteria are evaluated THEN no task is dispatched and the criterion reads
   `NOT_EVALUATED` with evidence naming the missing key.
-- AC-11e: GIVEN the same mission with NO agent backend credential connected WHEN
+- AC-75: GIVEN the same mission with NO agent backend credential connected WHEN
   criteria are evaluated THEN no task is dispatched and the criterion reads
   `NOT_EVALUATED` with evidence naming Settings → Models.
-- AC-11d: GIVEN a `command` criterion WHEN a verdict is owed THEN a verification
+- AC-76: GIVEN a `command` criterion WHEN a verdict is owed THEN a verification
   task is dispatched, the criterion reads `PENDING` with its `workerTaskId`, and
   the mission does NOT complete until that task's evidence resolves it.
-- AC-11e: GIVEN `POST /api/missions` with
+- AC-77: GIVEN `POST /api/missions` with
   `goalCriteria: [{ type: 'description', description: '...' }]` and no
   `notMechanizableReason` THEN the request is rejected with HTTP 400 naming
   `notMechanizableReason`.
-- AC-11f: GIVEN an `active` mission with all tasks completed, no enabled
+- AC-78: GIVEN an `active` mission with all tasks completed, no enabled
   schedule, 24h of quiet, and a stated criterion whose verdict is not `pass`
   WHEN the archive sweep runs THEN the mission is NOT archived.
-- AC-11g: GIVEN a mission with one completed deliverable and one `pending` task
+- AC-79: GIVEN a mission with one completed deliverable and one `pending` task
   of `taskClass = 'attempt'` (a CI retry) WHEN completion is attempted THEN it is
   refused with `pending_deliverables`.
-- AC-11h: GIVEN a mission whose only rows are housekeeping (a monitoring mission)
+- AC-80: GIVEN a mission whose only rows are housekeeping (a monitoring mission)
   WHEN a heartbeat proposes completion and criteria pass THEN the mission
   completes; WHEN dormancy checks the same mission THEN it is refused with
   `no_deliverables`.
-- AC-11i: GIVEN a completed `command` verification task carrying no record that
+- AC-81: GIVEN a completed `command` verification task carrying no record that
   the command ran WHEN its outcome is handed back THEN the criterion is NOT set
   to `pass`.
-- AC-11o: GIVEN a mission with one `completed` deliverable whose latest worker
+- AC-82: GIVEN a mission with one `completed` deliverable whose latest worker
   has `prUrl` set and `mergedAt` null, and no `goalCriteria` stated (the M4
   shape) WHEN dormancy OR the heartbeat attempts completion THEN the mission
   stays `active` with `code = 'awaiting_merge'`, the reason and
   `awaitingMergeDetails` name the task title and PR number, and a feed note
   posts even though nothing "proposed" completion.
-- AC-11p: GIVEN the same mission WHEN the PR merges (`mergedAt` set) THEN a
+- AC-83: GIVEN the same mission WHEN the PR merges (`mergedAt` set) THEN a
   subsequent completion attempt with no other blockers succeeds.
-- AC-11q: GIVEN a mission with a `completed` deliverable whose PR was closed
+- AC-84: GIVEN a mission with a `completed` deliverable whose PR was closed
   without merging (`prLifecycleStatus = 'closed'`, `mergedAt` null) and no
   supersession edge recorded WHEN completion is attempted THEN it is refused
   with `code = 'awaiting_merge'`, and `awaitingMergeDetails[].
   closedUnsuperseded = true` with `reason` naming "no supersession recorded" —
-  a closed-unmerged PR is not a passing outcome either, unless AC-11qs-2 below
+  a closed-unmerged PR is not a passing outcome either, unless AC-86 below
   applies.
-- AC-11qs-1: GIVEN a task whose PR is closed and unmerged WHEN
+- AC-85: GIVEN a task whose PR is closed and unmerged WHEN
   `record_pr_supersession` (or `recordPrSupersession`) is called with a
   `supersedingPrNumber` that is unmerged, or does not exist in the same repo,
   or with a blank `reason` THEN the write is rejected (400/404/409) naming
   which check failed, and no edge is written.
-- AC-11qs-2: GIVEN the same task WHEN `record_pr_supersession` is called with a
+- AC-86: GIVEN the same task WHEN `record_pr_supersession` is called with a
   `supersedingPrNumber` that IS merged in the same repo and a non-blank
   `reason` THEN `workers.supersededByPrNumber` (+ `supersededByPrUrl`,
   `supersededReason`, `supersededRecordedBy`, `supersededAt`) is written, and a
   subsequent `canCompleteMission` no longer counts that deliverable in
   `awaitingMerge` — it is reported in `supersededCount`/`supersededDetails`
   instead, and completion succeeds if nothing else blocks.
-- AC-11qs-3 (regression): GIVEN the M4 shape — one completed deliverable, PR
+- AC-87 (regression): GIVEN the M4 shape, one completed deliverable, PR
   OPEN with a reviewer's "changes requested" verdict, no supersession edge —
   WHEN completion is attempted THEN it is still refused with
   `code = 'awaiting_merge'` and `closedUnsuperseded` is NOT set (the PR is
   open, not closed) — supersession never substitutes for a merge on a PR that
   could still merge.
-- AC-11qs-4: GIVEN a superseded deliverable WHEN mission progress is computed
+- AC-88: GIVEN a superseded deliverable WHEN mission progress is computed
   (`computeMissionProgress`) THEN its segment state is `solid` (counted in
   `completedTasks`, not `awaitingMerge`), and `CondensedTimeline`'s task row
   names the successor PR rather than rendering "closed — not merged".
-- AC-11qs-6: GIVEN a mission with an `all_prs_merged` criterion WHEN every
+- AC-89: GIVEN a mission with an `all_prs_merged` criterion WHEN every
   unmerged PR is closed and carries a supersession edge to a merged PR
   (recorded, or derived from its own attempt lineage) THEN the criterion
   passes, and `canCompleteMission` does not report `awaiting_merge` — the two
   agree on the same fixture. A closed PR with no edge fails the criterion with
   evidence naming it under "closed, no supersession recorded"; an open PR
   (the M4 shape) still fails, listed under "open".
-- AC-11qs-5: GIVEN a completed deliverable whose PR has been closed-unmerged
+- AC-90: GIVEN a completed deliverable whose PR has been closed-unmerged
   with no supersession edge for more than 24h WHEN the hourly mission-invariant
   sweep runs THEN `unresolved_pr_supersession` reports it (report-only, not
   filed as a task).
-- AC-11r: GIVEN a mission with a `description` criterion WHEN a reviewer task is
+- AC-91: GIVEN a mission with a `description` criterion WHEN a reviewer task is
   dispatched for one of its task PRs THEN the reviewer prompt carries that
   criterion with its index, the reviewer task's `context.missionCriteria` carries
   its fingerprint, and the prompt states the criteria do not change the verdict —
   and GIVEN a task in no mission, the assembled prompt is byte-identical to the
   pre-criteria one.
-- AC-11s: GIVEN that reviewer completes with
+- AC-92: GIVEN that reviewer completes with
   `criteriaFindings: [{ index, finding: 'supports', reason }]` and its PR
   subsequently merges WHEN criteria are evaluated THEN the criterion reads `pass`
   with evidence citing `PR #<n>`, and NO prose grading task is dispatched.
-- AC-11t: GIVEN the same shape with `finding: 'contradicts'` on a merged PR THEN
+- AC-93: GIVEN the same shape with `finding: 'contradicts'` on a merged PR THEN
   the criterion reads `fail`; GIVEN `supports` on a PR that never merged, or
   `not_applicable` from every reviewer, THEN the criterion is untouched and the
   standalone evaluator is dispatched as before.
@@ -1401,33 +1408,33 @@ Four missions sat in that state, one for ~40 cycles, each finished by hand.
   from a live re-check on every queue build rather than a persisted flag.
 
 **Acceptance criteria**:
-- AC-11j: GIVEN a heartbeat mission with every deliverable terminal and
+- AC-94: GIVEN a heartbeat mission with every deliverable terminal and
   `overall = fail` WHEN the cron tick runs THEN one planning task is created for
   the mission and its context carries `criteriaRearm` with the non-passing
   criterion lines — not a bare deferral.
-- AC-11k: GIVEN the same mission on a later tick with the verdict shape unchanged
+- AC-95: GIVEN the same mission on a later tick with the verdict shape unchanged
   and no task filed since the last re-arm WHEN the tick runs THEN no cycle is
   created, a `Goal criteria blocked — owner decision needed` note is posted, and
   the heartbeat schedule is disabled with
   `lastDeferralReason = 'criteria_escalated'`.
-- AC-11l: GIVEN an escalated, still-`active`/`paused` mission WHEN its
+- AC-96: GIVEN an escalated, still-`active`/`paused` mission WHEN its
   `goalCriteria` is edited via `PATCH /api/missions/[id]` THEN
   `resolveCriteriaEscalation()` clears `criteriaEscalatedAt`, closes the open
   question note as `answered`, and re-enables the heartbeat schedule — making a
   later tick reachable again, rather than a tick itself clearing the flag (no
   tick can run while the schedule it would need is the very thing escalation
   disabled).
-- AC-11m: GIVEN a completion refused for a non-criteria reason (e.g.
+- AC-97: GIVEN a completion refused for a non-criteria reason (e.g.
   `infra_stalled`) WHEN the tick runs THEN no re-arm is attempted.
-- AC-11n: GIVEN a re-arm cycle WHEN the schedule row is written THEN
+- AC-98: GIVEN a re-arm cycle WHEN the schedule row is written THEN
   `lastHeartbeatStateHash` is not among the written columns.
-- AC-11o: GIVEN a **previously escalated** mission WHEN its status is set to
+- AC-99: GIVEN a **previously escalated** mission WHEN its status is set to
   `completed` or `archived` via `PATCH /api/missions/[id]` THEN
   `resolveCriteriaEscalation()` clears `criteriaEscalatedAt` and closes the
   open question note, even though the schedule row itself is deleted (not
   re-enabled) by the same request — a terminal mission has nothing left to
   re-arm.
-- AC-11o′: GIVEN a mission that was NEVER escalated (the heartbeat's N-cycle
+- AC-100: GIVEN a mission that was NEVER escalated (the heartbeat's N-cycle
   budget never ran — e.g. it is force-completed immediately) WHEN its status is
   set to `completed` or `archived` via `PATCH /api/missions/[id]` WHILE its
   stored `goalCriteria` is non-empty and `goalCriteriaState.overall !== 'pass'`
@@ -1437,23 +1444,23 @@ Four missions sat in that state, one for ~40 cycles, each finished by hand.
   nothing is left open) — and `resolveCriteriaEscalation()` is NOT also called
   for this close, since there is nothing to resolve and doing so would
   immediately null the column this same request just stamped.
-- AC-11p: GIVEN a mission with `criteriaEscalatedAt` set WHILE `status` is
+- AC-101: GIVEN a mission with `criteriaEscalatedAt` set WHILE `status` is
   `completed`/`archived`, or WHILE `goalCriteriaState.overall = 'pass'` WHEN
   the hourly `mission-invariants` sweep runs THEN the row is resolved through
   `resolveCriteriaEscalation()` and counted as `stale_criteria_escalation` —
   not filed as a task, not notified — and a second run against the same
   (now-fixed) row finds nothing.
-- AC-11q: GIVEN a mission with `criteriaEscalatedAt` set and an open question
+- AC-102: GIVEN a mission with `criteriaEscalatedAt` set and an open question
   note WHEN it is either terminal (`completed`/`archived`) or its
   `goalCriteriaState.overall = 'pass'` THEN `buildDecideItems()` produces zero
   DECIDE items for it, regardless of the stored flag or note state.
-- AC-11r: GIVEN a task created with `missionId` set (any origin — dashboard,
+- AC-103: GIVEN a task created with `missionId` set (any origin, dashboard,
   API, MCP) WHEN `POST /api/tasks` succeeds THEN
   `resolveCriteriaEscalation(missionId, 'work_filed', actor)` is called —
   "file the work", the escalation note's first advertised exit, is reachable
   from ordinary task creation rather than requiring a bespoke endpoint. A
   no-op on a mission that was never escalated, per the helper's own contract.
-- AC-11s: GIVEN a **previously escalated** mission WHEN `PATCH
+- AC-104: GIVEN a **previously escalated** mission WHEN `PATCH
   /api/missions/[id]` sets `status` to `completed`/`archived` WHILE its stored
   `goalCriteria` is non-empty and `goalCriteriaState.overall !== 'pass'` THEN
   `resolveCriteriaEscalation()` is called with reason `'waived'`, not
@@ -1462,9 +1469,9 @@ Four missions sat in that state, one for ~40 cycles, each finished by hand.
   through the `'verdict_changed'` exit), and the "Goal criteria gate
   overridden" warning posted for the same condition is the audit trail that
   makes waiving safe to offer as a one-click exit on the mission-detail
-  decision sheet. See AC-11o′ for the same condition on a mission that was
+  decision sheet. See AC-100 for the same condition on a mission that was
   never escalated in the first place.
-- AC-11t: GIVEN an open `missionNotes` question row whose title is the
+- AC-105: GIVEN an open `missionNotes` question row whose title is the
   escalation note's title (`CRITERIA_ESCALATION_NOTE_TITLE`) WHEN
   `MissionFeed` renders it THEN no Reply/Skip affordance is shown. Both route
   through `POST /api/missions/[id]/notes/[noteId]/reply`, which only flips
@@ -1975,19 +1982,19 @@ unaffected and still runs as a backstop. Desktop-only concerns are out of scope.
   nothing.
 - AC-38: GIVEN the suggestion call fails, times out or is not confident THEN
   both actions render live with nothing pre-selected.
-- AC-38a: GIVEN a mission's pending `[surface audit]` WHEN one of its
+- AC-106: GIVEN a mission's pending `[surface audit]` WHEN one of its
   dependencies is unlinked or moved to another mission THEN that edge leaves the
   audit's `dependsOn`, and a dependency not in the audit's mission never blocks
   its claim, while an ordinary task keeps waiting on a dependency in another
   mission.
-- AC-38b: GIVEN the mission page WHEN a person waives the visual audit with a
+- AC-107: GIVEN the mission page WHEN a person waives the visual audit with a
   reason of at least 10 characters THEN the reason and the person are recorded
   on the mission; a task token's waiver is refused and records nothing.
-- AC-38c: GIVEN a finished mission whose only UI evidence is a trunk-refresh
+- AC-108: GIVEN a finished mission whose only UI evidence is a trunk-refresh
   task's manifest or PR, or whose UI-directory changes the classifier proves
   cannot render (comments, types, server-only code) THEN no audit is owed and
   the classifier's applicability record is on the decision.
-- AC-38d: GIVEN a mission that genuinely owes an audit under `automatic` or
+- AC-109: GIVEN a mission that genuinely owes an audit under `automatic` or
   `strict` WHEN completion is attempted THEN the `[surface audit]` task is filed
   automatically (once), the refusal names the system, not the owner, and the
   state view shows a wait; under `ask` the owner decision stays, and under
@@ -2187,3 +2194,83 @@ classifier's deterministic rules (see "Completion gate" above), but it does not
 read the canonical state yet, and the audit-creation hooks still read
 `autoSurfaceAudit`; moving them onto the canonical state is follow-up work. The waiver note does not yet store the policy in
 effect when it was written; the record shows the policy resolved now. The audit-creation hook (`ensureMissionSurfaceAudit`) honours only `autoSurfaceAudit = false`, so a workspace-level `off` does not stop it filing an audit at task creation; the scheduler and the merge gate do honour `off`.
+
+## Renumbered
+
+Letter-suffixed and prefixed ids were renumbered so each parses as its own
+criterion. Ids defined more than once (for example AC-11o in three sections)
+map in document order.
+
+| Old | New |
+| --- | --- |
+| AC-3a | AC-39 |
+| AC-3b | AC-40 |
+| AC-3c | AC-41 |
+| AC-3d | AC-42 |
+| AC-3e | AC-43 |
+| AC-3f | AC-44 |
+| AC-3g | AC-45 |
+| AC-3h | AC-46 |
+| AC-3i | AC-47 |
+| AC-3j | AC-48 |
+| AC-3j1 | AC-49 |
+| AC-3k | AC-50 |
+| AC-CG-1 | AC-51 |
+| AC-CG-2 | AC-52 |
+| AC-CG-3 | AC-53 |
+| AC-CG-4 | AC-54 |
+| AC-CG-5 | AC-55 |
+| AC-CG-6 | AC-56 |
+| AC-10b | AC-57 |
+| AC-11o | AC-58 |
+| AC-11p | AC-59 |
+| AC-11u | AC-60 |
+| AC-11v | AC-61 |
+| AC-11w | AC-62 |
+| AC-11x | AC-63 |
+| AC-11y | AC-64 |
+| AC-11z | AC-65 |
+| AC-11za | AC-66 |
+| AC-11zb | AC-67 |
+| AC-11zc | AC-68 |
+| AC-11zd | AC-69 |
+| AC-11a | AC-70 |
+| AC-11b | AC-71 |
+| AC-11c | AC-72 |
+| AC-11d | AC-73 |
+| AC-11d2 | AC-74 |
+| AC-11e | AC-75 |
+| AC-11d | AC-76 |
+| AC-11e | AC-77 |
+| AC-11f | AC-78 |
+| AC-11g | AC-79 |
+| AC-11h | AC-80 |
+| AC-11i | AC-81 |
+| AC-11o | AC-82 |
+| AC-11p | AC-83 |
+| AC-11q | AC-84 |
+| AC-11qs-1 | AC-85 |
+| AC-11qs-2 | AC-86 |
+| AC-11qs-3 | AC-87 |
+| AC-11qs-4 | AC-88 |
+| AC-11qs-6 | AC-89 |
+| AC-11qs-5 | AC-90 |
+| AC-11r | AC-91 |
+| AC-11s | AC-92 |
+| AC-11t | AC-93 |
+| AC-11j | AC-94 |
+| AC-11k | AC-95 |
+| AC-11l | AC-96 |
+| AC-11m | AC-97 |
+| AC-11n | AC-98 |
+| AC-11o | AC-99 |
+| AC-11o′ | AC-100 |
+| AC-11p | AC-101 |
+| AC-11q | AC-102 |
+| AC-11r | AC-103 |
+| AC-11s | AC-104 |
+| AC-11t | AC-105 |
+| AC-38a | AC-106 |
+| AC-38b | AC-107 |
+| AC-38c | AC-108 |
+| AC-38d | AC-109 |

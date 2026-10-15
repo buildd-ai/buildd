@@ -179,7 +179,7 @@ export async function approvePlan(
       id: true, workspaceId: true, missionId: true, context: true, pathManifest: true, mode: true,
       // Who the plan is for (resolveTaskRequesterUserId): its children are too.
       createdByUserId: true, parentTaskId: true, scheduleId: true,
-      // Rule P1-9: a re-plan raised inside a phase keeps its children in it.
+      // mission-legibility R-9: a re-plan raised inside a phase keeps its children in it.
       missionPhaseIndex: true, missionPhaseLabel: true,
     },
   });
