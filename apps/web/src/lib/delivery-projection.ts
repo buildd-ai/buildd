@@ -673,8 +673,31 @@ export function selectHomeMilestones(missions: readonly MissionDelivery[], limit
 }
 
 /** Open missions that are waiting or held: named on Home as "not listed, moves on its own". */
+const isQuiet = (m: MissionDelivery) => m.open && (m.kind === 'waiting' || m.kind === 'held' || m.kind === 'planning');
+
 export function countQuietMissions(missions: readonly MissionDelivery[]): number {
-  return missions.filter(m => m.open && (m.kind === 'waiting' || m.kind === 'held' || m.kind === 'planning')).length;
+  return missions.filter(isQuiet).length;
+}
+
+/** What one quiet mission waits on, as a predicate after "is"/"are" (spec 8e137fdb I-4). */
+export interface QuietMissionCause { cause: string; count: number }
+
+function quietCause(m: MissionDelivery): string {
+  if (m.kind === 'planning') return 'being planned';
+  if (m.kind === 'held') return 'held by their owner';
+  if (m.visualOpen) return 'waiting on visual review';
+  // `next` is the shared wait wording from describe(): read it, never re-derive it.
+  if (m.next.startsWith('After its dependencies')) return 'waiting on earlier work';
+  if (m.next.startsWith('Waiting for a local session')) return 'waiting for a local session';
+  if (m.next === 'Next in line for a runner') return 'next in line for a runner';
+  return 'waiting';
+}
+
+/** The quiet missions grouped by what each waits on, largest group first (ties keep first-seen order). */
+export function quietMissionCauses(missions: readonly MissionDelivery[]): QuietMissionCause[] {
+  const groups = new Map<string, number>();
+  for (const m of missions) if (isQuiet(m)) { const c = quietCause(m); groups.set(c, (groups.get(c) ?? 0) + 1); }
+  return [...groups].map(([cause, count]) => ({ cause, count })).sort((a, b) => b.count - a.count);
 }
 
 // ── Count contracts ─────────────────────────────────────────────────────────

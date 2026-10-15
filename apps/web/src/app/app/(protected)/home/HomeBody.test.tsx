@@ -1,7 +1,7 @@
 import { describe, expect, it, mock } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 mock.module('next/navigation', () => ({ useRouter: () => ({ refresh() {} }), usePathname: () => '/app/home', useSearchParams: () => new URLSearchParams() }));
-const { HomeBody } = await import('./HomeBody');
+const { HomeBody, quietMissionsLine } = await import('./HomeBody');
 const { deriveHomeAttention: derive } = await import('@/lib/home-attention');
 const { isActionableChip } = await import('@/lib/action-queue');
 const deriveHomeAttention = (input: Omit<Parameters<typeof derive>[0], 'isActionable'>) => derive({ ...input, isActionable: isActionableChip });
@@ -75,13 +75,14 @@ describe('Home inbox', () => {
     expect(html).not.toContain('See everything in motion');
     expect(html.match(/href="\/app\/tasks"/g)).toHaveLength(1);
     const also = html.match(/<p[^>]*data-testid="home-also"[\s\S]*?<\/p>/)?.[0] ?? '';
-    expect(also).toContain('2 more missions are waiting on capacity or another mission.');
+    expect(also).toContain('2 more missions are waiting.');
+    expect(also).not.toContain('capacity');
     expect(also).toContain('href="/app/tasks"');
   });
   it('names what is not listed when something does need you', () => {
     const html = render(deriveHomeAttention({ queue: [{ subjectKey: 'd', chip: 'DECIDE', missionId: 'mission-a', escalationReason: 'Keep the old route?' }], questions: [], held: [], missions: [] }));
     expect(html).not.toContain('home-all-clear');
-    expect(html).toContain('2 more missions are waiting on capacity or another mission.');
+    expect(html).toContain('2 more missions are waiting.');
     expect(html).not.toContain('Not listed here');
     expect(html).not.toContain('on their own');
   });
@@ -198,12 +199,12 @@ describe('one decisions list at every width', () => {
   });
 
   it('names the hidden missions plainly', () => {
-    expect(html).toContain('7 more missions are waiting on capacity or another mission.');
+    expect(html).toContain('7 more missions are waiting.');
   });
 
   it('one waiting mission reads in the singular', () => {
     const one = renderToStaticMarkup(<HomeBody items={items} ask={null} counts={counts} milestones={[]} quietMissions={1} />);
-    expect(one).toContain('1 more mission is waiting on capacity or another mission.');
+    expect(one).toContain('1 more mission is waiting.');
   });
 
   it('a merge card carries the MergeAdvice line', () => {
@@ -243,4 +244,27 @@ it('puts what needs the owner before the setup card', () => {
   const html = renderToStaticMarkup(<HomeBody items={items} ask={null} setup={<section data-testid="getting-started">Connect a runner</section>} runnerConnected={false} counts={counts} milestones={[]} quietMissions={0} />);
   expect(html.indexOf('home-waiting-on-you')).toBeGreaterThan(-1);
   expect(html.indexOf('home-waiting-on-you')).toBeLessThan(html.indexOf('getting-started'));
+});
+
+describe('quietMissionsLine names what the quiet missions wait on (spec 8e137fdb I-4)', () => {
+  it('one cause: says it for all of them', () => {
+    expect(quietMissionsLine(3, [{ cause: 'next in line for a runner', count: 3 }])).toBe('3 more missions are next in line for a runner.');
+    expect(quietMissionsLine(1, [{ cause: 'being planned', count: 1 }])).toBe('1 more mission is being planned.');
+  });
+  it('up to three causes: counts each in words', () => {
+    expect(quietMissionsLine(4, [
+      { cause: 'next in line for a runner', count: 2 },
+      { cause: 'waiting on visual review', count: 1 },
+      { cause: 'being planned', count: 1 },
+    ])).toBe('4 more missions: 2 are next in line for a runner, 1 is waiting on visual review, 1 is being planned.');
+  });
+  it('more than three causes, or none known: a neutral line with no invented cause', () => {
+    const four = [1, 2, 3, 4].map(i => ({ cause: `cause ${i}`, count: 1 }));
+    expect(quietMissionsLine(4, four)).toBe('4 more missions are waiting.');
+    expect(quietMissionsLine(2)).toBe('2 more missions are waiting.');
+  });
+  it('HomeBody renders the grouped line when causes are passed', () => {
+    const html = renderToStaticMarkup(<HomeBody items={[]} ask={null} counts={counts} milestones={[]} quietMissions={2} quietCauses={[{ cause: 'next in line for a runner', count: 2 }]} />);
+    expect(html).toContain('2 more missions are next in line for a runner.');
+  });
 });

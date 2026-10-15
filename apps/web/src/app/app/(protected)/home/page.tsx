@@ -74,7 +74,7 @@ import { resolveLandingOwnership, landingModeOf, resolveReviewerGate, resolveRev
 import type { ReviewerTaskStatus } from '@/lib/reviewer-gate';
 import { createReviewerStallFactsLoader } from '@/lib/reviewer-stall-facts';
 import { HomeBody } from './HomeBody';
-import { countQuietMissions, deliveryCounts, projectMissionDelivery, selectHomeMilestones, type MissionDelivery } from '@/lib/delivery-projection';
+import { countQuietMissions, deliveryCounts, quietMissionCauses, projectMissionDelivery, selectHomeMilestones, type MissionDelivery } from '@/lib/delivery-projection';
 import { deriveHomeNeedsYou } from '@/lib/home-needs-you';
 import type { HomeHeldMission, HomeQuestion } from './NeedsYouCards';
 import { HomeMissionsSummary, type HomeMissionRow } from './HomeMissionsSummary';
@@ -2059,6 +2059,7 @@ export default async function HomePage({
   const deliveries = missionDeliveries.map(d => d.delivery);
   const milestones = selectHomeMilestones(deliveries);
   const quietMissions = countQuietMissions(deliveries);
+  const quietCauses = quietMissionCauses(deliveries);
   // Chat is where work starts, and it has its own tab. On a phone a team with
   // chat keeps the composer under the headline; desktop gets one quiet link.
   // Chat setup (no key yet) lives on the Chat page: Home says so in one line.
@@ -2126,6 +2127,7 @@ export default async function HomePage({
           counts={counts}
           milestones={milestones}
           quietMissions={quietMissions}
+          quietCauses={quietCauses}
           inProgress={reviewsInProgress}
           agents={agentsModel ? <AgentsPanel model={agentsModel} occupancy={occupancy} idle={idleStretches} /> : null}
           landed={landedWeek.length > 0 ? <LandedThisWeek missions={landedWeek} timeZone={teamTz} /> : null}
@@ -2133,7 +2135,7 @@ export default async function HomePage({
             // Initiative scoping chips: they SCOPE the list, never group it.
             <div className="mb-3">
               <InitiativeFilterChips initiatives={actionQueueInitiatives} selectedId={initFilter ?? null} workspaceFilter={wsFilter ?? null} />
-              {filteredActionQueue.length === 0 && <p className="text-body text-text-muted">Nothing waiting for this initiative.</p>}
+              {initFilter && filteredActionQueue.length === 0 && <p className="text-body text-text-muted">Nothing waiting for this initiative.</p>}
             </div>
           )}
           foot={discrepancyOverflowCount > 0 && (
