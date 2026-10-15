@@ -473,3 +473,28 @@ describe('S5: the review loop never stalls (workflow-kernel-library.md §5)', ()
     expect(v.attempts.filter((a) => a.family === 'ci').map((a) => [a.status, a.outcome])).toEqual([['skipped', 'noop']]);
   });
 });
+
+describe('S5: a reviewer\'s deferral names its task by short id (workflow-kernel-library.md §5)', () => {
+  test('a short id resolves to the workspace\'s task; one that resolves to nothing closes nothing, and the verdict still lands on its round', async () => {
+    const { deliveryId, review } = await openAndHandOn();
+    await recordReviewVerdict({ reviewerTask: await reviewerTask(review.taskId), verdict: 'request-changes', effectiveVerdict: 'request-changes', headSha: 'H1', confidence: 0.9,
+      output: { findings: [{ path: 'a.ts', title: 'fix a' }, { path: 'b.ts', title: 'fix b' }] } }, deps);
+    const fix = dispatched.find((x) => x.kind === 'fix')!;
+    const t = await fixTask(fix.taskId);
+    await claimFix(t, deps);
+    gh.head = 'H2';
+    gh.ancestors = { H2: ['H1'] };
+    await attemptEnded({ task: t, workerId: await seedWorker(fix.taskId, { status: 'completed', lastCommitSha: 'H2' }), status: 'completed', localHeadSha: 'H2', commitCount: 1, source: 'runner' }, deps);
+    const review2 = dispatched.filter((x) => x.kind === 'review').at(-1)!;
+    const findings = (await loadView({ deliveryId })).findings!;
+    const [a, b] = [findings.find((f) => f.path === 'a.ts')!.id, findings.find((f) => f.path === 'b.ts')!.id];
+    const docs = await seedTask(workspaceId, { status: 'pending', title: 'docs slice' });
+    const r = await recordReviewVerdict({ reviewerTask: await reviewerTask(review2.taskId), verdict: 'request-changes', effectiveVerdict: 'request-changes', headSha: 'H2', confidence: 0.9,
+      output: { deferredFindings: [{ id: a, reason: 'docs slice', taskId: docs.slice(0, 8) }, { id: b, reason: 'later', taskId: 'ffffffff' }] } }, deps);
+    expect(r).toMatchObject({ handled: true, result: { result: 'applied' }, toState: 'CHANGES_REQUESTED' });
+    const after = (await loadView({ deliveryId })).findings!;
+    expect(after.find((f) => f.id === a)).toMatchObject({ status: 'deferred', deferredToTaskId: docs });
+    expect(after.find((f) => f.id === b)).toMatchObject({ status: 'open', deferredToTaskId: null });
+    expect((await rounds(deliveryId)).map((x) => x.status)).toEqual(['decided', 'decided']);
+  });
+});

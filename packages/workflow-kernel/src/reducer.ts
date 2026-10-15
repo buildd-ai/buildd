@@ -24,7 +24,7 @@ import type {
   LivePr,
   RoundOp,
 } from './commands';
-import { addressFindings, applyVerdictToFindings, describeFinding, openRequiredFindings } from './findings';
+import { addressFindings, applyVerdictToFindings, describeFinding, isTaskId, openRequiredFindings } from './findings';
 import {
   isHumanActor,
   isTerminal,
@@ -623,6 +623,8 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (!isHumanActor(cmd.actor)) return c.rejected('human_required');
       if (!cmd.reason.trim()) return c.rejected('reason_required');
       if (cmd.disposition === 'deferred' && !cmd.deferredToTaskId) return c.rejected('deferral_needs_task');
+      // The host resolves a short id to the task first; anything else is not a task this can name.
+      if (cmd.disposition === 'deferred' && !isTaskId(cmd.deferredToTaskId)) return c.rejected('deferral_task_unresolved');
       const f = (c.view.findings ?? []).find((x) => x.id === cmd.findingId);
       if (!f) return c.rejected('unknown_finding');
       if (f.status === cmd.disposition) return c.duplicate('finding_already_disposed');
@@ -1492,8 +1494,12 @@ function verdictDecided(
   };
   const key = `verdict:${round.id}`;
   const f = applyVerdictToFindings(c.view, round, cmd.effectiveVerdict, cmd, cmd.actor);
-  const findingsEvidence = (f.raised.length || f.resolved.length || f.restated.length || f.deferred.length)
-    ? { findings: { raised: f.raised, resolved: f.resolved, restated: f.restated, deferred: f.deferred, open: f.stillOpen.map((x) => x.id) } }
+  const findingsEvidence = (f.raised.length || f.resolved.length || f.restated.length || f.deferred.length || f.unresolvedDeferrals.length)
+    ? { findings: {
+        raised: f.raised, resolved: f.resolved, restated: f.restated, deferred: f.deferred, open: f.stillOpen.map((x) => x.id),
+        // A deferral that named no resolvable task closes nothing; recorded so it is visible why.
+        ...(f.unresolvedDeferrals.length ? { unresolvedDeferrals: f.unresolvedDeferrals } : {}),
+      } }
     : {};
   const common = {
     guardHead: true, guardRound: true, findings: f.ops,

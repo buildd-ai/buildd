@@ -44,13 +44,42 @@ describe('applyVerdictToFindings', () => {
     expect(out.stillOpen.map((f) => f.id)).toEqual(['r1:1']);
     expect(out.ops.find((o) => o.op === 'update' && o.findingId === 'r1:1')).toMatchObject({ set: { status: 'open', lastRound: 2, addressedBySha: null } });
   });
-  test('a deferral needs a reason; an unknown id is ignored; no finding is written twice', () => {
+  const TASK = ['8237cfa9', '0000', '4000', '8000', '000000000001'].join('-');
+  test('a deferral needs a reason and a resolved task; an unknown id is ignored; no finding is written twice', () => {
     const out = applyVerdictToFindings({ findings: [F()] }, round(), 'approve', {
-      resolvedFindings: ['r1:0', 'nope'], deferredFindings: [{ id: 'r1:0', reason: 'belongs to the docs task', taskId: 't9' }, { id: 'r1:0', reason: '' }],
+      resolvedFindings: ['r1:0', 'nope'], deferredFindings: [{ id: 'r1:0', reason: 'belongs to the docs task', taskId: TASK }, { id: 'r1:0', reason: '' }],
     }, 'reviewer');
     expect(out.deferred).toEqual(['r1:0']);
     expect(out.resolved).toEqual([]);
-    expect(out.ops).toHaveLength(1);
+    expect(out.ops).toEqual([expect.objectContaining({ findingId: 'r1:0', set: expect.objectContaining({ status: 'deferred', deferredToTaskId: TASK }) })]);
+  });
+  test('a deferral with no reason closes nothing', () => {
+    const out = applyVerdictToFindings({ findings: [F()] }, round(), 'request_changes', { deferredFindings: [{ id: 'r1:0', reason: '  ', taskId: TASK }] }, 'reviewer');
+    expect(out.deferred).toEqual([]);
+    expect(out.stillOpen.map((f) => f.id)).toEqual(['r1:0']);
+  });
+  test('a deferral naming no task, a short id or free text closes nothing and is recorded as unresolved', () => {
+    for (const taskId of [undefined, null, '8237cfa9', 'the docs task']) {
+      const out = applyVerdictToFindings({ findings: [F()] }, round(), 'request_changes', { deferredFindings: [{ id: 'r1:0', reason: 'docs', taskId }] }, 'reviewer');
+      expect(out.deferred).toEqual([]);
+      expect(out.unresolvedDeferrals).toEqual([{ id: 'r1:0', taskId: taskId ?? null }]);
+      expect(out.stillOpen.map((f) => f.id)).toEqual(['r1:0']);
+      expect(out.ops).toEqual([]);
+    }
+  });
+  test('the stand-in for a request with nothing structured is verified by an approval of a later head, or one that verified every structured finding', () => {
+    const standIn = F({ id: 'r1:0', path: null, title: ROUND_FINDING_TITLE, originHeadSha: 'H1' });
+    // A later head than the one asked to change: an unscoped approval with a per-finding report verifies it.
+    expect(applyVerdictToFindings({ findings: [standIn] }, round(), 'approve', { resolvedFindings: [] }, 'reviewer').resolved).toEqual(['r1:0']);
+    // The same head: only when every structured finding was verified too.
+    const same = { ...round(), headSha: 'H1' };
+    const other = F({ id: 'r1:1', path: 'b.ts' });
+    expect(applyVerdictToFindings({ findings: [standIn, other] }, same, 'approve', { resolvedFindings: ['r1:1'] }, 'reviewer').resolved.sort()).toEqual(['r1:0', 'r1:1']);
+    expect(applyVerdictToFindings({ findings: [standIn, other] }, same, 'approve', { resolvedFindings: [] }, 'reviewer').stillOpen.map((f) => f.id).sort()).toEqual(['r1:0', 'r1:1']);
+    // Never by a scoped round, never by a request for changes, and a restated one stays open.
+    expect(applyVerdictToFindings({ findings: [standIn] }, round({ scope: { composition: true } }), 'approve', {}, 'reviewer').resolved).toEqual([]);
+    expect(applyVerdictToFindings({ findings: [standIn] }, round(), 'request_changes', { resolvedFindings: [] }, 'reviewer').resolved).toEqual([]);
+    expect(applyVerdictToFindings({ findings: [standIn] }, round(), 'approve', { resolvedFindings: [], findings: [{ id: 'r1:0', title: 'still' }] }, 'reviewer').resolved).toEqual([]);
   });
 });
 

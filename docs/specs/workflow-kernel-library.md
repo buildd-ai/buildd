@@ -652,6 +652,17 @@ push, refresh, completion or owner change can make it disappear.
 - A request for changes raises the reviewer's `findings` (one per issue, with
   path and line). With none, one finding stands for the round ("the review
   asked for changes"), so a request for changes always leaves something open.
+  That stand-in has no id a reviewer is likely to report, so an unscoped
+  approval verifies it when it reviewed a later head than the one asked to
+  change, or when it verified every structured finding still open.
+- A deferral names a task by its full id. A reviewer's short id is resolved
+  by the host to the one task of the delivery's workspace it prefixes
+  (`resolveDeferralTasks`); a deferral whose task does not resolve, or that
+  names none, closes nothing and is recorded as `unresolvedDeferrals` on the
+  verdict's transition, which still applies. A person's deferral with a task
+  id that is not a full one is refused (`deferral_task_unresolved`). The
+  Postgres adapter never casts anything but a full id to a uuid column, so no
+  write can abort a verdict's transition.
 - The reviewer is briefed with every open finding and its id
   (`findingsBrief`, `findingsSection`) and reports `resolvedFindings`,
   restated `findings` and `deferredFindings`. A reviewer output with no
@@ -669,6 +680,12 @@ push, refresh, completion or owner change can make it disappear.
   repair's head and an own refresh never address anything (rule 5).
 - A person's `FindingDisposed` (waived, or deferred to a named task) closes
   one finding with who and why; an agent is refused.
+- Deviation: no door submits `FindingDisposed` yet (no command-API op, route
+  or dashboard action). The command and its rules are in the kernel; the door
+  is a person-only command-API op plus a route, left out of this slice because
+  the command API and its ledger are being changed by the control-plane
+  cutover work at the same time. Until then a person passes an open finding
+  through the landing override (rule 6).
 - The landing gate (`reviewGate`), T15, the policy-merge rule (D11) and
   `buildd/landing` read open required findings and name the first
   one. Only a person's verdict override or their own approval of the head

@@ -19,6 +19,7 @@
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { applyCommandOn } from '@buildd/workflow-kernel/command-runner';
+import { isTaskId } from '@buildd/workflow-kernel/findings';
 import type { CommandResult, DeliveryRef } from '@buildd/workflow-kernel/ports';
 import type { ApplyDecision, AttemptOp, Command, DeliveryPatch, FindingOp, RecordOnly, RoundOp } from './commands';
 import { postgresStore } from './postgres-store';
@@ -184,6 +185,8 @@ function attemptCtes(ops: AttemptOp[], src: string): SQL[] {
  * read in the statement's own snapshot. The reducer writes each finding at
  * most once per decision.
  */
+const asUuid = (v: string | null): string | null => (v && isTaskId(v) ? v : null);
+
 function findingCtes(ops: FindingOp[], src: string): SQL[] {
   const out: SQL[] = [];
   const inserts = ops.filter((o): o is Extract<FindingOp, { op: 'insert' }> => o.op === 'insert');
@@ -208,10 +211,12 @@ function findingCtes(ops: FindingOp[], src: string): SQL[] {
     if (v.title !== undefined) sets.push(sql`title = ${v.title}::text`);
     if (v.required !== undefined) sets.push(sql`required = ${v.required}::boolean`);
     if (v.addressedBySha !== undefined) sets.push(sql`addressed_by_sha = ${v.addressedBySha}::text`);
-    if (v.closedByRoundId !== undefined) sets.push(sql`closed_by_round_id = ${v.closedByRoundId}::uuid`);
+    // A uuid column only ever takes a full id: anything else would abort the whole transition (and with
+    // it the verdict), so it is written as NULL. The reducer refuses such a deferral before it gets here.
+    if (v.closedByRoundId !== undefined) sets.push(sql`closed_by_round_id = ${asUuid(v.closedByRoundId)}::uuid`);
     if (v.closedBy !== undefined) sets.push(sql`closed_by = ${v.closedBy}::text`);
     if (v.closedReason !== undefined) sets.push(sql`closed_reason = ${v.closedReason}::text`);
-    if (v.deferredToTaskId !== undefined) sets.push(sql`deferred_to_task_id = ${v.deferredToTaskId}::uuid`);
+    if (v.deferredToTaskId !== undefined) sets.push(sql`deferred_to_task_id = ${asUuid(v.deferredToTaskId)}::uuid`);
     out.push(sql`${sql.identifier(`f_upd_${i}`)} AS (
   UPDATE workflow_findings wf SET ${sql.join(sets, sql`, `)}
   FROM ${sql.identifier(src)} s

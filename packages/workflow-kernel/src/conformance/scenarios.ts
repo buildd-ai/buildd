@@ -1740,6 +1740,63 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
+    name: '§5: a deferral that names a short id or no task closes nothing, and the verdict it came with still applies on every store; a person\'s deferral needs a resolved task',
+    async run(host) {
+      const s = await new Delivery(host, 67).open();
+      await s.ownerPushed('H1');
+      await s.verdictWith('request_changes', { findings: [{ path: 'a.ts', title: 'fix a' }, { path: 'b.ts', title: 'fix b' }] });
+      const a = await s.findingId('a.ts');
+      const b = await s.findingId('b.ts');
+      const fix = await s.startFix();
+      await s.push('H2', { changedPaths: ['a.ts'] });
+      await s.fixEnded(fix, { localHeadSha: 'H2', commitCount: 1, live: s.live('H2'), proof: { liveContainsLocal: true } });
+      // A short id, as agents cite tasks, and no task at all: a uuid column never sees either.
+      const r = await s.verdictWith('request_changes', { resolvedFindings: [a], deferredFindings: [{ id: b, reason: 'belongs to the docs slice', taskId: '8237cfa9' }] });
+      applied(r, 'CHANGES_REQUESTED', 'the verdict is recorded, not lost');
+      eq(await s.findingStates(), { 'a.ts': 'resolved', 'b.ts': 'open' }, 'the unresolved deferral closed nothing');
+      eq(r.result === 'applied' && (r.decision.evidence.findings as { unresolvedDeferrals?: unknown }).unresolvedDeferrals, [{ id: b, taskId: '8237cfa9' }], 'and says why');
+      eq((await s.latestRound()).status, 'decided', 'the round is decided, not left reviewing');
+      notApplied(await s.submit({ type: 'FindingDisposed', actor: 'human:owner', findingId: b, disposition: 'deferred', reason: 'docs slice', deferredToTaskId: '8237cfa9' }), 'rejected', 'deferral_task_unresolved', 'a person\'s short id is refused too (the door resolves it first)');
+      // A full task id, as the host resolves one (the deferral column keeps no foreign key: the task may be filed later).
+      const task = ['00000000', '0000', '4000', '8000', '0000000000aa'].join('-');
+      applied(await s.submit({ type: 'FindingDisposed', actor: 'human:owner', findingId: b, disposition: 'deferred', reason: 'docs slice', deferredToTaskId: task }), 'CHANGES_REQUESTED', 'a resolved task');
+      eq(pick(((await s.view()).findings ?? []).find((f) => f.id === b), ['status', 'deferredToTaskId']), { status: 'deferred', deferredToTaskId: task }, 'deferred to it');
+    },
+  },
+  {
+    name: '§5: an approval held while a repair runs, that left a finding unverified, re-enters as a verification round when the repair ends, never as APPROVED',
+    async run(host) {
+      const s = await new Delivery(host, 68).open();
+      await s.ownerPushed('H1');
+      await s.verdictWith('request_changes', { findings: [{ path: 'a.ts', title: 'fix a' }] });
+      const fix = await s.startFix();
+      await s.push('H2', { changedPaths: ['z.ts'] });
+      applied(await s.fixEnded(fix, { localHeadSha: 'H2', commitCount: 1, live: s.live('H2'), proof: { liveContainsLocal: true } }), 'AWAITING_REVIEW', 're-review at H2');
+      applied(await s.ciRed('H2'), 'REPAIRING', 'CI red while the reviewer runs');
+      const round2 = await s.latestRound();
+      applied(await s.verdictWith('approve', { resolvedFindings: [] }, round2.id), 'REPAIRING', 'the approval is held, the finding unverified');
+      const ci = (await s.view()).attempts.find((x) => x.family === 'ci')!;
+      const r = await s.submit({ type: 'RepairNotNeeded', actor: 'claim', attemptId: ci.id, reason: 'ci_green', live: s.live('H2') });
+      applied(r, 'AWAITING_REVIEW', 'the repair ends: verification owed, not approval');
+      eq((await s.d()).approvedHeads, [], 'H2 is not approved');
+      eq(pick(await s.latestRound(), ['headSha', 'status', 'scope']), { headSha: 'H2', status: 'queued', scope: { verifyFindings: [await s.findingId('a.ts')] } }, 'a verification round at H2');
+    },
+  },
+  {
+    name: '§5: a request for changes that named nothing is verified by the next approval of the fixed head, even from a reviewer that reports per-finding resolution',
+    async run(host) {
+      const s = await new Delivery(host, 69).open({ maxRounds: 2 });
+      await s.ownerPushed('H1');
+      applied(await s.verdictWith('request_changes', {}), 'CHANGES_REQUESTED', 'nothing structured: one stand-in finding');
+      const fix = await s.startFix();
+      await s.push('H2', { changedPaths: ['a.ts'] });
+      await s.fixEnded(fix, { localHeadSha: 'H2', commitCount: 1, live: s.live('H2'), proof: { liveContainsLocal: true } });
+      // The last round, a reviewer on the new contract that never saw the stand-in's id.
+      applied(await s.verdictWith('approve', { resolvedFindings: [] }), 'APPROVED', 'approved, not a needless escalation at the limit');
+      eq(await s.findingStates(), { 'the review asked for changes': 'resolved' }, 'the stand-in is verified by it');
+    },
+  },
+  {
     name: 'AC-18: open findings survive an owner replacement, a base retarget and the platform\'s own refresh push touching their path',
     async run(host) {
       const s = await new Delivery(host, 64).open();
