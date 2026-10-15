@@ -7,7 +7,7 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { handleCommandRequest } from './command-api';
 import {
-  ControlPlaneUnavailableError, KernelCommandRefusedError, MODE_FRESH_MS, MODE_STALE_MS, controlPlaneUnavailableResponse,
+  ControlPlaneUnavailableError, KernelCommandRefusedError, MODE_FRESH_MS, MODE_RETRY_MS, MODE_STALE_MS, controlPlaneUnavailableResponse,
   kernelMode, resetKernelModeCache, submitKernelCommand, type ClientDeps,
 } from './kernel-client';
 import type { CommandLedger } from './command-ledger';
@@ -97,6 +97,30 @@ describe('the mode', () => {
     reported = null;
     resetKernelModeCache();
     expect(await kernelMode({ ...deps, readMode: async () => { throw new Error('down'); } })).toBe('own');
+  });
+});
+
+describe('the mode read under a sweep\'s load (incident 197552dc)', () => {
+  it('concurrent callers share one health read, and a failed read is not repeated for a few seconds', async () => {
+    let t = 0;
+    let reads = 0;
+    let answer: string | null = null;
+    let open!: () => void;
+    const gate = new Promise<void>((r) => { open = r; });
+    const deps: ClientDeps = { host: () => 'web', env: { VERCEL: '1', KERNEL_COMMAND_SECRET: 'k1:s3cret' }, now: () => t, readMode: async () => { reads++; await gate; return answer; } };
+    // Thirteen sweeps start at once on a cold cache: one read, not thirteen.
+    const all = Promise.all(Array.from({ length: 13 }, () => kernelMode(deps)));
+    open();
+    expect(await all).toEqual(Array(13).fill('own'));
+    expect(reads).toBe(1);
+    // The health did not answer: the next calls within the retry window do not wait on it again.
+    t += MODE_RETRY_MS - 1;
+    expect(await kernelMode(deps)).toBe('own');
+    expect(reads).toBe(1);
+    t += 2;
+    answer = 'shadow';
+    expect(await kernelMode(deps)).toBe('shadow');
+    expect(reads).toBe(2);
   });
 });
 
@@ -265,6 +289,7 @@ describe('the client and the endpoint agree', () => {
     const rows = new Map<string, { status: 'running' | 'done'; response: unknown; token: string; requestHash: string }>();
     const ledger: CommandLedger = {
       claim: async (p) => (rows.has(p.key) ? false : (rows.set(p.key, { status: 'running', response: null, token: p.token, requestHash: p.requestHash }), true)),
+      renew: async (p) => rows.get(p.key)?.token === p.token,
       complete: async (p) => { const r = rows.get(p.key)!; r.status = 'done'; r.response = p.response; return true; },
       release: async (p) => { rows.delete(p.key); },
       read: async (k) => { const r = rows.get(k); return r ? { key: k, op: 'land', principal: '', requestHash: r.requestHash, status: r.status, response: r.response as never, claimedAt: '' } : null; },
@@ -530,5 +555,110 @@ describe('a door\'s retry and time rules', () => {
     // The last request may start just before the deadline; nothing starts after it.
     expect(t).toBeLessThanOrEqual(DOOR_BUDGET_MS + 8_000 + 2_000);
     expect(calls).toBeLessThanOrEqual(4);
+  });
+});
+
+/**
+ * Incident 197552dc: after the kernel moved to the control plane, the hourly merge-state pass went
+ * from seconds to the 60 s function limit. Its sweeps call doors and inline drains one after
+ * another, each with a budget of its own (a door 20 s, a drain 10 s), so a control plane slow to
+ * answer cost the sum of every budget. A pass now spends at most its own budget on the control
+ * plane, however many calls it makes.
+ */
+describe('a pass\'s control-plane budget', () => {
+  /** A control plane that never answers: each request runs until the client's own timeout fires. */
+  function silentControlPlane(clock: { t: number }) {
+    const realTimeout = AbortSignal.timeout;
+    let lastTimeout = 0;
+    AbortSignal.timeout = ((ms: number) => { lastTimeout = ms; return realTimeout.call(AbortSignal, ms); }) as typeof AbortSignal.timeout;
+    const cp = {
+      calls: 0,
+      fetch: (async () => { cp.calls++; clock.t += lastTimeout; throw Object.assign(new Error('t'), { name: 'TimeoutError' }); }) as unknown as typeof fetch,
+      restore: () => { AbortSignal.timeout = realTimeout; },
+    };
+    return cp;
+  }
+  const deps = (clock: { t: number }, cp: { fetch: typeof fetch }): ClientDeps => ({
+    env: OWN, host: () => 'web', now: () => clock.t, sleep: async (ms) => { clock.t += ms; }, fetch: cp.fetch,
+    run: (async () => { throw new Error('ran locally'); }) as never,
+  });
+
+  it('reproduction: N door calls one after another cost N door budgets without a pass budget', async () => {
+    const { landThroughKernel, DOOR_BUDGET_MS } = await import('./kernel-client');
+    const clock = { t: 0 };
+    const cp = silentControlPlane(clock);
+    try {
+      for (let i = 0; i < 5; i++) await landThroughKernel(input, { principal, deps: deps(clock, cp) }).catch(() => null);
+    } finally { cp.restore(); }
+    // Five sweep candidates: well past a 60 s function limit.
+    expect(clock.t).toBeGreaterThanOrEqual(5 * DOOR_BUDGET_MS);
+  });
+
+  it('inside a pass, N door calls stop at the pass budget; the rest are refused unsent, retryable, nothing applied', async () => {
+    const { landThroughKernel, withControlPlaneBudget } = await import('./kernel-client');
+    const clock = { t: 0 };
+    const cp = silentControlPlane(clock);
+    const errors: unknown[] = [];
+    let report;
+    try {
+      ({ budget: report } = await withControlPlaneBudget('test-pass', 30_000, async () => {
+        for (let i = 0; i < 5; i++) await landThroughKernel(input, { principal, deps: deps(clock, cp) }).catch((e) => errors.push(e));
+      }, { now: () => clock.t }));
+    } finally { cp.restore(); }
+    // The pass budget, plus at most the back-off sleep after the last request.
+    expect(clock.t).toBeLessThanOrEqual(30_000 + 2_000);
+    expect(errors).toHaveLength(5);
+    for (const e of errors) expect(e).toBeInstanceOf(ControlPlaneUnavailableError);
+    const unsent = errors.filter((e) => (e as ControlPlaneUnavailableError).why.includes('spent its control-plane budget'));
+    expect(unsent.length).toBeGreaterThanOrEqual(3);
+    for (const e of unsent) expect((e as ControlPlaneUnavailableError).outcome).toBe('not_applied');
+    expect(report!.refused).toBe(unsent.length);
+    expect(report!.submitted).toBeGreaterThan(0);
+  });
+
+  it('inline drains in a pass wait briefly for their answer and are skipped once the budget is spent; outside a pass one waits its own budget', async () => {
+    const { drainOnControlPlane, withControlPlaneBudget, INLINE_DRAIN_BUDGET_MS, PASS_DRAIN_WAIT_MS } = await import('./kernel-client');
+    // Reproduction: twenty kernel-owned PRs in one sweep, each ending in an inline drain.
+    const solo = { t: 0 };
+    const cp1 = silentControlPlane(solo);
+    try {
+      for (let i = 0; i < 20; i++) expect(await drainOnControlPlane(DELIVERY, deps(solo, cp1))).toBeNull();
+    } finally { cp1.restore(); }
+    expect(solo.t).toBeGreaterThanOrEqual(20 * INLINE_DRAIN_BUDGET_MS);
+
+    const clock = { t: 0 };
+    const cp = silentControlPlane(clock);
+    let report;
+    try {
+      ({ budget: report } = await withControlPlaneBudget('test-pass', 30_000, async () => {
+        for (let i = 0; i < 20; i++) expect(await drainOnControlPlane(DELIVERY, deps(clock, cp))).toBeNull();
+      }, { now: () => clock.t }));
+    } finally { cp.restore(); }
+    expect(clock.t).toBeLessThanOrEqual(30_000 + 2_000);
+    // Each one waited at most the pass's drain wait (plus one back-off), never the request's 10 s.
+    expect(cp.calls).toBeGreaterThanOrEqual(Math.floor(30_000 / (PASS_DRAIN_WAIT_MS + 2_000)));
+    expect(report!.drainsSkipped).toBeGreaterThan(0);
+    expect(report!.drainsSkipped + report!.submitted).toBe(20);
+  });
+
+  it('nested passes keep the earlier deadline, and outside any pass nothing is budgeted', async () => {
+    const { withControlPlaneBudget, controlPlaneBudgetLeft } = await import('./kernel-client');
+    let t = 0;
+    expect(controlPlaneBudgetLeft()).toBeNull();
+    await withControlPlaneBudget('outer', 10_000, async () => {
+      t = 4_000;
+      await withControlPlaneBudget('inner', 30_000, async () => {
+        expect(controlPlaneBudgetLeft()).toBe(6_000);
+      }, { now: () => t });
+    }, { now: () => t });
+    expect(controlPlaneBudgetLeft()).toBeNull();
+  });
+
+  it('in shadow a pass sends nothing and its budget never binds: the command runs here', async () => {
+    const { withControlPlaneBudget, landThroughKernel } = await import('./kernel-client');
+    const l = local();
+    const { value, budget } = await withControlPlaneBudget('test-pass', 0, () => landThroughKernel(input, { principal, deps: { ...l.deps, env: { ...OWN, EXECUTION_MODE: 'shadow' } } }));
+    expect(value).toEqual({ merged: true, outcome: 'merged', where: 'here' } as never);
+    expect(budget).toMatchObject({ submitted: 0, refused: 0 });
   });
 });

@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts]
 related: [workflow-state-kernel, execution-control-plane, mission-branch-refresh, mission-task-lifecycle, living-specs]
 keywords: [workflow kernel, delivery state, single writer, single host, control plane, portable library, ports, adapters, conformance suite, merge door, landing authority, required status, durable findings, finding disposition, delivery epoch, mission delivery, refresh settlement, no-op completion, workflow-kernel package]
-verified_by: [packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/tests/db/kernel-command-host.test.ts]
+verified_by: [packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts]
 supersedes: []
 ---
 # Workflow Kernel Library and Single Host
@@ -361,10 +361,13 @@ the control plane, authenticated as the caller).
     and receives its stored answer with `replayed: true`; one still running
     past the wait answers 409 `in_progress` (retryable, same key). The same key
     with a different request is a 422. An operation that throws stores
-    nothing, so the key may be retried. A claim older than the lease (two
-    minutes) belongs to an isolate that died and is taken over; completion is
-    recorded only for the claim that still holds the key. Keys are kept seven
-    days.
+    nothing, so the key may be retried. A running command renews its claim
+    every ten seconds (`COMMAND_HEARTBEAT_MS`); a claim not renewed for the
+    lease (thirty seconds, `COMMAND_LEASE_MS`) belongs to a request that died
+    mid-command and is taken over by the next request with its key; completion
+    is recorded only for the claim that still holds the key. The Worker hands
+    every command it starts to `waitUntil`, so a caller that times out and
+    disconnects does not cancel it mid-way. Keys are kept seven days.
   - Answered with the operation's result and the delivery's version:
     `{ v, op, idempotencyKey, result, delivery: { id, version } | null, host, replayed }`.
   - Only the host applies. A process that is not the control plane in `own`
@@ -423,7 +426,8 @@ the control plane, authenticated as the caller).
   follows the Worker's health `kernel` field, which is `own` only when the
   Worker is in own mode and holds the command key (`mode` alone still says who
   answers the execution routes) (`/__control-plane/health`, read
-  with a short timeout and cached for 30 s; a reading up to five minutes old
+  with a short timeout and cached for 30 s; concurrent callers share one read,
+  and a failed read is not repeated for 5 s, `MODE_RETRY_MS`; a reading up to five minutes old
   stands in for a failed re-read; no reading at all counts as `own`, so a door
   fails retryably rather than applying a command the control plane may also be
   applying). A 503 `unconfigured` from the control plane is answered like
@@ -451,6 +455,20 @@ the control plane, authenticated as the caller).
   drained inline at the end of a Vercel request in own mode: the seam's inline
   drain becomes a `drain` command to the control plane, best effort, with the
   floor as the backstop.
+- A sweep's time on the control plane is bounded. `/api/cron/pr-reconcile`
+  runs each pass (merge-state, landing, red-PR) inside one control-plane
+  budget, `withControlPlaneBudget` (kernel-client.ts), of 30 s for all of its
+  sweeps together (`SWEEP_CONTROL_PLANE_BUDGET_MS`, well inside the route's
+  60 s). Every door call and inline drain in it is cut to what is left; an
+  inline drain waits at most 2.5 s for its answer (`PASS_DRAIN_WAIT_MS`), since
+  the control plane finishes it either way. Once the budget is spent nothing
+  more is sent: a door gets `ControlPlaneUnavailableError` with outcome
+  `not_applied` at once, so its work is retried next tick, and a drain is left
+  to the control plane. A sweep that used to call a door in-process now pays a
+  round trip per call, and its per-run caps were sized for the in-process
+  cost. Each step of a pass logs its time as it finishes, and the pass result
+  carries `timings` per step and `controlPlane` (calls sent, refused unsent,
+  drains skipped, time waited), so a slow run names the step it waited on.
 - Every transition row records the host that applied it
   (`workflow_transitions.host`: `control-plane` or `web`, null on rows written
   before the tag). The Worker's entry sets it in code (`kernel-host.ts`), never
@@ -511,6 +529,16 @@ the web host.
   unreachable WHEN a Vercel door
   submits a command THEN the door answers with a retryable error naming the
   control plane, and applies nothing itself (`kernel-client.test.ts`,
+  `kernel-command-host.test.ts`).
+- AC-13 (failure): GIVEN `EXECUTION_MODE=own` and a control plane slow to
+  answer WHEN a sweep makes door calls and inline drains one after another
+  THEN the pass waits on the control plane no longer than its budget, the
+  calls past it are refused unsent and retryable, and the pass reports each
+  step's time (`kernel-client.test.ts`, and `route.test.ts` beside
+  `apps/web/src/app/api/cron/pr-reconcile/route.ts`). GIVEN a command whose
+  request died mid-command WHEN the next request with its key arrives a lease
+  later THEN it takes the claim over and runs, while a live command's renewed
+  claim is never taken over (`command-api.test.ts`,
   `kernel-command-host.test.ts`).
 
 ## 4. One landing authority
