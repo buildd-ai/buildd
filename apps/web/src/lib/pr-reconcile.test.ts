@@ -1248,6 +1248,31 @@ describe('sweepMissionIntegrationPrs', () => {
     expect(logs).toEqual([]);
   });
 
+  // §6 delivery reconcile under #4805's rule: only an outage defers.
+  it('a delivery reconcile the control plane could not take is deferred, silently; any other failure is an error', async () => {
+    const { ControlPlaneUnavailableError, KernelCommandRefusedError } = await import('@/lib/workflow/kernel-client');
+    mockMissionsFindMany.mockResolvedValue([{ id: 'm1' }]);
+    mockFindMissionPrOwner.mockResolvedValue({ taskId: 't', workerId: 'w', prNumber: 9, prUrl: 'u', mergedAt: null, state: 'open' });
+    const logs: unknown[][] = [];
+    const origErr = console.error;
+    console.error = (...a: unknown[]) => { logs.push(a); };
+    try {
+      mockReconcileMissionDeliveries.mockImplementationOnce(() => Promise.reject(new ControlPlaneUnavailableError('budget spent')));
+      const deferred = await sweepMissionIntegrationPrs();
+      expect(deferred).toMatchObject({ deliveriesDeferred: 1, alreadyOpen: 1 });
+      expect(deferred.deliveryErrors).toBeUndefined();
+      expect(logs).toEqual([]);
+
+      mockReconcileMissionDeliveries.mockImplementationOnce(() => Promise.reject(new KernelCommandRefusedError(403, { code: 'forbidden' })));
+      const refused = await sweepMissionIntegrationPrs();
+      expect(refused).toMatchObject({ deliveryErrors: 1, alreadyOpen: 1 });
+      expect(refused.deliveriesDeferred).toBeUndefined();
+      expect(logs).toHaveLength(1);
+    } finally {
+      console.error = origErr;
+    }
+  });
+
   it('never reopens a mission PR a human closed, and says nothing about it', async () => {
     mockMissionsFindMany.mockResolvedValue([{ id: 'm1' }]);
     mockFindMissionPrOwner.mockResolvedValue({

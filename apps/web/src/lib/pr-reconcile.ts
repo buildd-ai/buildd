@@ -634,6 +634,13 @@ export interface MissionPrSweepResult {
   alreadyShipped: number;
   /** Opener threw, or reported an API failure. Retried next run. */
   errors: number;
+  /**
+   * §6 delivery reconcile (workflow-kernel-library.md): passes the control plane
+   * could not take (an outage, or this pass's budget spent), deferred to the
+   * next tick; and passes that failed for any other reason. Absent when zero.
+   */
+  deliveriesDeferred?: number;
+  deliveryErrors?: number;
 }
 
 /**
@@ -734,8 +741,19 @@ export async function sweepMissionIntegrationPrs(): Promise<MissionPrSweepResult
     try {
       // §6 backstop: finish whatever a delivery transition left owed (a lost
       // merge, a successor branch not yet cut, PRs left on a merged branch).
-      await Promise.resolve().then(() => reconcileMissionDeliveries(mission.id))
-        .catch((err) => console.error(`[pr-reconcile] mission ${mission.id} delivery reconcile failed:`, err));
+      // Only an outage defers (ControlPlaneUnavailableError, which this pass's
+      // control-plane budget also raises once spent): the next tick retries. A
+      // refusal or the command's own failure is an error, counted as one.
+      const deliveryFailure = await Promise.resolve().then(() => reconcileMissionDeliveries(mission.id)).then(() => null, (err: unknown) => err);
+      if (deliveryFailure) {
+        const { ControlPlaneUnavailableError } = await import('@/lib/workflow/kernel-client');
+        if (deliveryFailure instanceof ControlPlaneUnavailableError) {
+          result.deliveriesDeferred = (result.deliveriesDeferred ?? 0) + 1;
+        } else {
+          result.deliveryErrors = (result.deliveryErrors ?? 0) + 1;
+          console.error(`[pr-reconcile] mission ${mission.id} delivery reconcile failed:`, deliveryFailure);
+        }
+      }
       const owner = await findMissionPrOwner(mission.id);
       // A live gate: this is the normal answer for a mission mid-review.
       if (owner?.state === 'open') {

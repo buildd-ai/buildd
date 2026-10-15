@@ -10,6 +10,7 @@ const ghCalls: string[] = [];
 const recordCalls: any[] = [];
 let recordResult: any = { ok: true };
 const gateEvents: any[] = [];
+let sweepRows: Array<{ id: string; prUrl: string }> = [];
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -18,6 +19,11 @@ mock.module('@buildd/core/db', () => ({
       tasks: { findMany: mock(() => Promise.resolve(siblingTasks)) },
     },
     update: () => ({ set: (set: any) => ({ where: () => { scanWrites.push(set); return Promise.resolve(); } }) }),
+    // The sweep's candidate query: from → innerJoin → where → orderBy → limit.
+    select: () => {
+      const chain: any = { from: () => chain, innerJoin: () => chain, where: () => chain, orderBy: () => chain, limit: () => Promise.resolve(sweepRows) };
+      return chain;
+    },
   },
 }));
 mock.module('@/lib/github', () => ({
@@ -43,7 +49,7 @@ mock.module('@/lib/gate-ledger', () => ({
   fireGateEvent: mock((e: any) => { gateEvents.push(e); return 'id'; }),
 }));
 
-import { detectPrSupersession } from './pr-supersession-detect';
+import { detectPrSupersession, sweepClosedUnsupersededPrs } from './pr-supersession-detect';
 
 const DOC_LINES = [
   '# Strategy notes',
@@ -180,6 +186,77 @@ describe('detectPrSupersession', () => {
     gh['org/kb/issues/6/comments'] = [{ body: 'superseded by #9' }];
     mergedPr('org/kb', 9, [{ filename: 'buildd/design/strategy.md', status: 'added', patch: patch(...DOC_LINES) }]);
     const r = await detectPrSupersession({ workerId: 'w-6', via: 'webhook' });
+    expect(r.outcome).toBe('suggested');
+  });
+});
+
+/**
+ * Incident 197552dc review: a verified candidate whose record the kernel's host did not take (the
+ * control plane did not answer, or the sweep's control-plane budget was spent) was filed as a
+ * suggestion "short of the bar" and stamped scanned, so the PR waited out the rescan window with
+ * its mission's completion blocked.
+ */
+describe('a verified record the control plane did not answer is deferred, bounded; a refusal or a failed command is not', () => {
+  const answer = (code: string, status: number) => ({ ok: false, error: `door said ${code}`, status, door: { body: { code }, headers: {} } });
+  const outage = answer('control_plane_unavailable', 503);
+  const verified = () => {
+    gh['org/kb/issues/6/comments'] = [{ body: 'superseded by #9' }];
+    mergedPr('org/kb', 9, [{ filename: 'buildd/design/strategy.md', status: 'added', patch: patch(...DOC_LINES) }]);
+  };
+
+  it('an outage: outcome deferred, counted on the scan, NOT stamped scanned, no suggestion, no gate event', async () => {
+    verified();
+    recordResult = outage;
+    const r = await detectPrSupersession({ workerId: 'w-6', via: 'sweep' });
+    expect(r).toMatchObject({ outcome: 'deferred' });
+    expect(scanWrites).toHaveLength(1);
+    expect(scanWrites[0].supersessionScannedAt).toBeUndefined();
+    expect(scanWrites[0].supersessionScan.deferral).toMatchObject({ count: 1 });
+    expect(scanWrites[0].supersessionScan.suggestion).toBeNull();
+    expect(gateEvents).toEqual([]);
+  });
+
+  it('the sweep counts an outage deferred, and the row stays unstamped for the next tick', async () => {
+    verified();
+    recordResult = outage;
+    sweepRows = [{ id: 'w-6', prUrl: 'https://github.com/org/kb/pull/6' }];
+    const r = await sweepClosedUnsupersededPrs(new Date('2026-10-14T23:10:00Z'));
+    expect(r).toMatchObject({ candidates: 1, deferred: 1, suggested: 0, skipped: 0 });
+    expect(scanWrites.some((w) => 'supersessionScannedAt' in w)).toBe(false);
+    sweepRows = [];
+  });
+
+  for (const [what, res] of [['a refusal (403 control_plane_refused)', answer('control_plane_refused', 403)], ['the command failing there (500 command_failed)', answer('command_failed', 500)]] as const) {
+    it(`${what} is deterministic: suggested and stamped, as before, never deferred`, async () => {
+      verified();
+      recordResult = res;
+      const r = await detectPrSupersession({ workerId: 'w-6', via: 'sweep' });
+      expect(r.outcome).toBe('suggested');
+      expect(scanWrites.at(-1).supersessionScannedAt).toBeInstanceOf(Date);
+      expect(scanWrites.at(-1).supersessionScan.deferral).toBeUndefined();
+    });
+  }
+
+  it('past the cap the deferral is settled: stamped, suggested with why, and a stranded gate event a person sees', async () => {
+    verified();
+    recordResult = outage;
+    workerRow = { ...workerRow, supersessionScan: { scannedAt: '2026-10-14T00:00:00Z', candidatesChecked: 1, suggestion: null, deferral: { firstAt: '2026-10-14T00:10:00Z', count: 23, reason: 'cp down' } } };
+    const r = await detectPrSupersession({ workerId: 'w-6', via: 'sweep', now: new Date('2026-10-14T23:10:00Z') });
+    expect(r.outcome).toBe('suggested');
+    const w = scanWrites.at(-1);
+    expect(w.supersessionScannedAt).toBeInstanceOf(Date);
+    expect(w.supersessionScan.deferral).toBeUndefined();
+    expect(w.supersessionScan.deferralExhausted).toMatchObject({ count: 24, firstAt: '2026-10-14T00:10:00Z' });
+    expect(w.supersessionScan.suggestion).toMatchObject({ prNumber: 9 });
+    expect(w.supersessionScan.suggestion.why).toContain('did not take the record');
+    expect(gateEvents).toHaveLength(1);
+    expect(gateEvents[0]).toMatchObject({ outcome: 'stranded', detail: expect.objectContaining({ kind: 'control_plane_deferral_exhausted' }) });
+  });
+
+  it('a refusal on the merits (not a door error) still falls back to a suggestion', async () => {
+    verified();
+    recordResult = { ok: false, error: 'outside mission', status: 403 };
+    const r = await detectPrSupersession({ workerId: 'w-6', via: 'sweep' });
     expect(r.outcome).toBe('suggested');
   });
 });

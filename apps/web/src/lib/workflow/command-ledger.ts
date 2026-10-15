@@ -9,6 +9,8 @@
  * neon-http driver has no interactive transactions):
  *  - `claim` inserts the key as `running`, or takes over a `running` row whose
  *    claim is older than the lease (the isolate that held it died);
+ *  - `renew` is the running claim's heartbeat: a live command keeps its lease
+ *    fresh, so the lease can be short and a dead one is taken over promptly;
  *  - `complete` stores the answer, only for the claim that still holds the key
  *    (its `claim_token`), so an isolate whose claim was taken over writes nothing;
  *  - `release` drops a claim that threw, so the same key may be tried again;
@@ -20,8 +22,14 @@ import type { Exec } from './kernel';
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
-/** A claim older than this is presumed dead and may be taken over. Longer than any one command runs. */
-export const COMMAND_LEASE_MS = 120_000;
+/**
+ * A claim not renewed for this long is presumed dead and may be taken over. A running command
+ * renews it every `COMMAND_HEARTBEAT_MS` (command-api.ts), so this bounds how long a dead claim
+ * (a Worker request cancelled or killed mid-command) holds its key, not how long a command may run.
+ */
+export const COMMAND_LEASE_MS = 30_000;
+/** How often a running command renews its claim: three renewals per lease. */
+export const COMMAND_HEARTBEAT_MS = COMMAND_LEASE_MS / 3;
 /** Completed keys are kept this long; a retry after that is a new command. */
 export const COMMAND_RETENTION_DAYS = 7;
 
@@ -43,6 +51,8 @@ export interface LedgerRow {
 export interface CommandLedger {
   /** True when this caller now holds the key and must run the command. */
   claim(p: { key: string; op: string; principal: string; requestHash: string; host: string; token: string }): Promise<boolean>;
+  /** The running claim's heartbeat; false when this claim no longer holds the key (taken over or gone). */
+  renew(p: { key: string; token: string }): Promise<boolean>;
   complete(p: { key: string; token: string; response: StoredAnswer; deliveryId: string | null; deliveryVersion: number | null }): Promise<boolean>;
   release(p: { key: string; token: string }): Promise<void>;
   read(key: string): Promise<LedgerRow | null>;
@@ -72,6 +82,13 @@ WITH ins AS (
   RETURNING 1 AS ok
 )
 SELECT ok FROM ins UNION ALL SELECT ok FROM takeover`));
+      return rows.length > 0;
+    },
+    async renew(p) {
+      const rows = rowsOf(await exec(sql`-- workflow:command_renew
+UPDATE workflow_commands SET claimed_at = clock_timestamp()
+WHERE idempotency_key = ${p.key}::text AND status = 'running' AND claim_token = ${p.token}::text
+RETURNING 1 AS ok`));
       return rows.length > 0;
     },
     async complete(p) {

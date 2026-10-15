@@ -82,6 +82,8 @@ export const supersessionLifecycle: Pick<Lifecycle, 'projectResolution' | 'scanS
     if (!w) return null;
     const { detectPrSupersession } = await import('@/lib/pr-supersession-detect');
     const r = await detectPrSupersession({ workerId: w.id, via: 'kernel', delivery: { state: d.state } });
+    // Verified but not recorded: a failed attempt, so the drain retries it with back-off.
+    if (r.outcome === 'deferred') throw new Error(`supersession record deferred: ${r.reason}`);
     return r.outcome;
   },
 };

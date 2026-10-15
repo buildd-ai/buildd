@@ -94,7 +94,7 @@ mock.module('@/lib/workflow/seam', () => ({
 // The command ledger's retention prune rides the same kernel pass (lib/workflow/kernel-floor.ts).
 const mockPrune = mock(async () => 0);
 mock.module('@/lib/workflow/command-ledger', () => ({
-  postgresCommandLedger: () => ({ prune: mockPrune }), COMMAND_LEASE_MS: 120_000, COMMAND_RETENTION_DAYS: 7,
+  postgresCommandLedger: () => ({ prune: mockPrune }), COMMAND_LEASE_MS: 30_000, COMMAND_HEARTBEAT_MS: 10_000, COMMAND_RETENTION_DAYS: 7,
 }));
 
 // When the control plane's floor last ran (its `kernel-floor` cron run): the liveness fallback's input.
@@ -125,7 +125,8 @@ mock.module('@buildd/core/db', () => ({
   }),
 }));
 
-import { GET } from './route';
+import { GET, SWEEP_CONTROL_PLANE_BUDGET_MS } from './route';
+import { controlPlaneBudgetLeft } from '@/lib/workflow/kernel-client';
 
 function makeRequest(token?: string, query = '') {
   return new NextRequest(`http://localhost/api/cron/pr-reconcile${query}`, {
@@ -183,6 +184,54 @@ describe('GET /api/cron/pr-reconcile', () => {
     expect((await hourly.json()).heldReleases).toMatchObject({ scanned: 2, completed: 1, retried: 1 });
     await GET(makeRequest('test-secret'));
     expect(mockHeldReleases).toHaveBeenCalledTimes(2);
+  });
+
+  // Incident 197552dc: a run that hit the function limit logged nothing after its first seconds, and a
+  // run that finished logged every step at the end, so nobody could tell which step was slow.
+  it('times every step of the merge-state pass, logs each as it finishes, and reports the slowest', async () => {
+    mockClosedPrSweep.mockImplementationOnce(async () => { await new Promise((r) => setTimeout(r, 40)); return CLOSED_ZERO; });
+    const lines: string[] = [];
+    const realLog = console.log;
+    console.log = (...a: unknown[]) => { lines.push(a.map(String).join(' ')); };
+    let body: Record<string, any>;
+    try {
+      body = await (await GET(makeRequest('test-secret', '?scope=merge-state'))).json();
+    } finally {
+      console.log = realLog;
+    }
+    for (const step of ['reconcile', 'missionPrs', 'branchRefresh', 'stranded', 'specRecheck', 'lineagePrs', 'landing', 'refreshRedrive', 'ciRed', 'closedPrs', 'earlyRelease', 'hourlySubscribers', 'heldReleases']) {
+      expect(typeof body.timings[step]).toBe('number');
+      expect(lines.some((l) => l.startsWith(`[PrReconcile] step=${step} ms=`))).toBe(true);
+    }
+    expect(body.timings.closedPrs).toBeGreaterThanOrEqual(30);
+    expect(lines.find((l) => l.startsWith('[PrReconcile] timings='))).toContain('slowest=closedPrs:');
+    // A step's own line comes before the pass's summary, so a run cut off mid-pass still shows what finished.
+    expect(lines.findIndex((l) => l.startsWith('[PrReconcile] step=reconcile'))).toBeLessThan(lines.findIndex((l) => l.startsWith('[PrReconcile] timings=')));
+    expect(body.controlPlane).toMatchObject({ label: 'pr-reconcile:merge-state', budgetMs: SWEEP_CONTROL_PLANE_BUDGET_MS });
+  });
+
+  it('every sweep of a pass runs inside one control-plane budget, well inside the function limit', async () => {
+    const seen: Array<number | null> = [];
+    const probe = <T,>(v: T) => async () => { seen.push(controlPlaneBudgetLeft()); return v; };
+    mockLandingSweep.mockImplementationOnce(probe(LANDING_ZERO));
+    mockCiRedSweep.mockImplementationOnce(probe(CI_RED_ZERO));
+    mockClosedPrSweep.mockImplementationOnce(probe(CLOSED_ZERO));
+    mockHeldReleases.mockImplementationOnce(probe(HELD_ZERO));
+    await GET(makeRequest('test-secret', '?scope=merge-state'));
+    expect(seen).toHaveLength(4);
+    for (const left of seen) {
+      expect(left).not.toBeNull();
+      expect(left!).toBeLessThanOrEqual(SWEEP_CONTROL_PLANE_BUDGET_MS);
+    }
+    expect(SWEEP_CONTROL_PLANE_BUDGET_MS).toBeLessThanOrEqual(40_000);
+    // The landing and red-PR ticks too.
+    seen.length = 0;
+    mockLandingSweep.mockImplementationOnce(probe(LANDING_ZERO));
+    await GET(makeRequest('test-secret', '?scope=landing'));
+    mockCiRedSweep.mockImplementationOnce(probe(CI_RED_ZERO));
+    await GET(makeRequest('test-secret', '?scope=ci-red'));
+    expect(seen).toHaveLength(2);
+    for (const left of seen) expect(left).not.toBeNull();
   });
 
   it('returns 401 when no authorization header', async () => {

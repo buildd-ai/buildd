@@ -72,7 +72,10 @@ export default {
     // The kernel command API: the Worker's own hostname only.
     if (isCommandRequest(request.method, url.pathname, ownHost)) {
       const { handleCommandRequest } = await import('@/lib/workflow/command-api');
-      const res = await runInRequest(p => ctx.waitUntil(p), () => handleCommandRequest(request, { env: envOf(env) }));
+      // waitUntil: a command keeps running to its end (and its claim completes or is released) when the
+      // caller times out and disconnects, which would otherwise cancel it mid-command.
+      const waitUntil = (p: Promise<unknown>) => ctx.waitUntil(p);
+      const res = await runInRequest(waitUntil, () => handleCommandRequest(request, { env: envOf(env), waitUntil }));
       return tag(res, 'control-plane');
     }
     const hit = matchRoute(request.method, url.pathname);

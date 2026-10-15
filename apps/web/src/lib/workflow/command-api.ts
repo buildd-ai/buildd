@@ -36,7 +36,7 @@ import { verifyRequest } from '@buildd/dispatch-contract';
 import { commandKeyRing } from './command-keys';
 import type { DrainSummary } from './effects';
 import { kernelHost } from './kernel-host';
-import { postgresCommandLedger, type CommandLedger, type StoredAnswer } from './command-ledger';
+import { COMMAND_HEARTBEAT_MS, postgresCommandLedger, type CommandLedger, type StoredAnswer } from './command-ledger';
 
 export const COMMAND_API_VERSION = 1;
 export const COMMAND_PATH = '/v1/commands';
@@ -222,7 +222,19 @@ export interface CommandServerDeps {
   /** How long a second caller waits for the first to finish before answering `in_progress`. */
   waitMs?: number;
   now?: () => number;
+  /**
+   * The Worker's `ctx.waitUntil`: a command that started runs to the end, and its claim completes
+   * or is released, even when the caller gives up and disconnects (which cancels the request).
+   */
+  waitUntil?: (p: Promise<unknown>) => void;
+  /** Runs `fn` every `ms` until the returned stop is called: the claim's heartbeat. */
+  every?: (ms: number, fn: () => void) => () => void;
 }
+
+const everyInterval = (ms: number, fn: () => void): (() => void) => {
+  const t = setInterval(fn, ms);
+  return () => clearInterval(t);
+};
 
 const NO_STORE = { 'Cache-Control': 'no-store' };
 const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
@@ -296,7 +308,16 @@ export async function handleCommandRequest(req: Request, deps: CommandServerDeps
   const cmd = body as CommandRequest;
   const workspaceId = cmd.op === 'drain' ? null : String((cmd.input as { workspaceId: string }).workspaceId);
   if (cmd.op === 'drain' && cmd.principal.kind !== 'system') return refuse(403, 'forbidden', 'drain is a system operation');
-  if (!(await (deps.reaches ?? principalReaches)(cmd.principal, workspaceId).catch(() => false))) {
+  // A reach check that could not be made (the database did not answer) is not a refusal: nothing ran,
+  // retry. Only an answered "no" is a 403.
+  const reaches = await (deps.reaches ?? principalReaches)(cmd.principal, workspaceId).catch((err: unknown) => {
+    console.error(`[kernel-command] ${cmd.op} ${cmd.idempotencyKey}: the reach check did not answer:`, err);
+    return null;
+  });
+  if (reaches === null) {
+    return refuse(503, 'reach_unavailable', 'Whether the principal reaches the workspace could not be read; nothing was run. Retry with the same key.', { retryable: true, applied: false });
+  }
+  if (!reaches) {
     return refuse(403, 'forbidden', `${principalKey(cmd.principal)} does not reach this workspace`);
   }
 
@@ -307,10 +328,27 @@ export async function handleCommandRequest(req: Request, deps: CommandServerDeps
   const deadline = now() + (deps.waitMs ?? 20_000);
   const claim = { key: cmd.idempotencyKey, op: cmd.op, principal: principalKey(cmd.principal), requestHash: hash, host };
 
+  // The ledger unreadable before this request holds the key: nothing ran under it. Answered, never
+  // thrown: an uncaught throw is a bare 500 from the Workers runtime, which a caller cannot tell from a
+  // command that may have run, so it retries for its whole budget and leaves no ledger row behind.
+  const ledgerDown = (err: unknown) => {
+    console.error(`[kernel-command] ${cmd.op} ${cmd.idempotencyKey}: the command ledger did not answer before the claim:`, err);
+    return refuse(503, 'ledger_unavailable', 'The command ledger did not answer; nothing was run. Retry with the same key.', { retryable: true, applied: false });
+  };
+
   for (;;) {
     const token = (deps.newToken ?? (() => crypto.randomUUID()))();
-    if (await ledger.claim({ ...claim, token })) return execute(cmd, token, ledger, deps, host);
-    const row = await ledger.read(cmd.idempotencyKey);
+    let claimed: boolean;
+    try { claimed = await ledger.claim({ ...claim, token }); } catch (err) { return ledgerDown(err); }
+    if (claimed) {
+      const run = execute(cmd, token, ledger, deps, host);
+      // A caller that times out disconnects, and a Worker cancels a request whose client is gone:
+      // without this the command stops mid-way and its claim stays `running` until the lease runs out.
+      deps.waitUntil?.(run);
+      return run;
+    }
+    let row: Awaited<ReturnType<CommandLedger['read']>>;
+    try { row = await ledger.read(cmd.idempotencyKey); } catch (err) { return ledgerDown(err); }
     if (row && row.requestHash !== hash) {
       return refuse(422, 'idempotency_key_reused', 'This idempotency key was used for a different request.');
     }
@@ -326,7 +364,31 @@ export async function handleCommandRequest(req: Request, deps: CommandServerDeps
   }
 }
 
+/** Keeps the claim's lease fresh while the command runs; stops on its own once the claim is no longer this one's. */
+function heartbeat(cmd: CommandRequest, token: string, ledger: CommandLedger, deps: CommandServerDeps): () => void {
+  let stopped = false;
+  const stop = (deps.every ?? everyInterval)(COMMAND_HEARTBEAT_MS, () => {
+    if (stopped) return;
+    ledger.renew({ key: cmd.idempotencyKey, token }).then((held) => {
+      if (held || stopped) return;
+      stopped = true;
+      stop();
+      console.warn(`[kernel-command] ${cmd.idempotencyKey}: the claim was taken over while running`);
+    }, (err) => console.error(`[kernel-command] renewing ${cmd.idempotencyKey} failed:`, err));
+  });
+  return () => { stopped = true; stop(); };
+}
+
 async function execute(cmd: CommandRequest, token: string, ledger: CommandLedger, deps: CommandServerDeps, host: 'control-plane' | 'web'): Promise<Response> {
+  const stopHeartbeat = heartbeat(cmd, token, ledger, deps);
+  try {
+    return await executeHeld(cmd, token, ledger, deps, host);
+  } finally {
+    stopHeartbeat();
+  }
+}
+
+async function executeHeld(cmd: CommandRequest, token: string, ledger: CommandLedger, deps: CommandServerDeps, host: 'control-plane' | 'web'): Promise<Response> {
   let result: unknown;
   try {
     result = await (deps.run ?? runKernelOp)(cmd.op, cmd.input as never);

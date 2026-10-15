@@ -71,8 +71,11 @@ export async function recordMissionPrMerged(
     if (r.action !== 'merged') return { recorded: false, reason: 'unexpected_answer' };
     return { recorded: r.result === 'applied' || r.result === 'noop', reason: r.reason };
   } catch (err) {
-    console.error(`[mission-epochs] recording mission ${missionId}'s merged PR failed (the hourly reconcile retries):`, err);
-    return { recorded: false, reason: 'error' };
+    // Only an outage is a deferral: the hourly reconcile retries it. Anything else is an error.
+    const { ControlPlaneUnavailableError } = await import('@/lib/workflow/kernel-client');
+    const deferred = err instanceof ControlPlaneUnavailableError;
+    console.error(`[mission-epochs] recording mission ${missionId}'s merged PR ${deferred ? 'deferred (control plane unavailable; the hourly reconcile retries)' : 'failed'}:`, err);
+    return { recorded: false, reason: deferred ? 'deferred' : 'error' };
   }
 }
 
