@@ -835,7 +835,7 @@ describe('create_task — kind/complexity routing inputs', () => {
 
   it('documents kind and complexity in the create_task params description', () => {
     const description = buildParamsDescription(['create_task']);
-    // `kind` deliberately carries NO `?` marker (mission-legibility Rule K2-12).
+    // `kind` deliberately carries NO `?` marker (mission-legibility R-24).
     // It stays optional in the schema — nothing 400s on its absence — but the
     // description stops presenting it as an afterthought, because it is the
     // only thing any surface draws a task's glyph from and nothing infers it

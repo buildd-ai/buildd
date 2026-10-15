@@ -133,7 +133,7 @@ export interface MissionBoardInput {
   fleetCapacity?: number | null;
   /**
    * Dependencies outside this mission's rows, loaded by id (`loadDependencyRows`):
-   * the claim gate judges them, so the Board does too (strip spec ST-2).
+   * the claim gate judges them, so the Board does too (strip spec R-7).
    */
   externalDeps?: readonly BoardExternalDepInput[];
   /**

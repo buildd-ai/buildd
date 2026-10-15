@@ -2,7 +2,7 @@
 title: Release Flow
 status: active
 owner: max
-last_verified: 2026-10-12
+last_verified: 2026-10-15
 summary: The release system MUST resolve a workspace's declared release strategy, execute it through the matching dispatcher, verify the resulting deploy, and record the outcome while leaving prodBranch deployable.
 domain: releases
 surfaces: [apps/web/src/lib/release-executor.ts, packages/core/release-strategy.ts, apps/web/src/app/api/releases/trigger/route.ts, apps/web/src/app/api/releases/status/route.ts]
@@ -48,7 +48,7 @@ supersedes: []
 **Capability statement**: The buildd release system MUST resolve a workspace's
 declared release strategy, execute it via the appropriate dispatcher (GitHub
 workflow dispatch, branch merge, or script), verify the resulting deploy, and
-record the outcome — leaving `main` (or the configured `prodBranch`) always in a
+record the outcome, leaving `main` (or the configured `prodBranch`) always in a
 deployable state.
 
 ---
@@ -60,11 +60,11 @@ deployable state.
   resolve to `not_configured` / `disabled` and never attempt a release.
 - Strategy defaults to `branch_merge` when `releaseConfig.strategy` is absent
   (legacy workspaces).
-- `workflow_dispatch` requires both `workflowFile` and `ref` — missing either
+- `workflow_dispatch` requires both `workflowFile` and `ref`; missing either
   MUST produce `reason: 'invalid'` from `resolveReleaseStrategy`.
-- `branch_merge` requires `prodBranch` — missing it MUST produce
+- `branch_merge` requires `prodBranch`; missing it MUST produce
   `reason: 'invalid'`.
-- `script` strategy requires `command` — missing it MUST produce
+- `script` strategy requires `command`; missing it MUST produce
   `reason: 'invalid'`.
 - Per-call overrides (`ref`, `workflowFile`, `inputs`) refine the workspace
   config; they MUST NOT introduce a strategy of their own.
@@ -84,9 +84,9 @@ deployable state.
   carries `ref: 'hotfix'`, not the config's default ref.
 
 **Code surface**:
-- Resolver: `packages/core/release-strategy.ts` — `resolveReleaseStrategy()`,
+- Resolver: `packages/core/release-strategy.ts`: `resolveReleaseStrategy()`,
   `effectiveStrategy()`
-- Schema types: `packages/core/db/schema.ts` — `WorkspaceReleaseConfig`,
+- Schema types: `packages/core/db/schema.ts`: `WorkspaceReleaseConfig`,
   `ReleaseStrategy`
 
 ---
@@ -100,7 +100,7 @@ and URL.
 **Invariants**:
 - The dispatch uses the buildd GitHub App installation token (not a personal
   token).
-- Dispatching opens the release PR — it does NOT itself deploy. Production ships
+- Dispatching opens the release PR; it does NOT itself deploy. Production ships
   only when that PR passes CI and merges.
 - `force: true` folds into `inputs.force = 'true'`; it bypasses the empty-commit
   check, NOT CI.
@@ -185,22 +185,22 @@ path escalation or the migration inspector.
   `ref`.
 
 **Acceptance criteria**:
-- AC-C1: GIVEN `candidate.branches = ['release/v*']` WHEN `github-actions[bot]`
+- AC-12: GIVEN `candidate.branches = ['release/v*']` WHEN `github-actions[bot]`
   opens `release/v1.2.3` → `main` with metadata naming its head THEN
   `classifyReleasePr` returns `kind: 'candidate'` with constituent base
   `sourceBranch`.
-- AC-C2: GIVEN the same PR opened by another account, from a fork, without
+- AC-13: GIVEN the same PR opened by another account, from a fork, without
   metadata, or after a push moved its head THEN it is `kind: 'none'` and gets
   the full review and the aggregate size cap.
-- AC-C3: GIVEN a candidate whose every commit is an approved dev PR plus the
+- AC-14: GIVEN a candidate whose every commit is an approved dev PR plus the
   version commit THEN its head is covered by composition and no aggregate
   reviewer is dispatched; a migration still meets the migration inspector at
   merge.
 
 **Code surface**:
-- Policy and classifier: `packages/core/release-candidate.ts` —
+- Policy and classifier: `packages/core/release-candidate.ts`:
   `classifyReleasePr()`, `releaseCandidatePolicy()`, `hasReleasePrShape()`
-- Composition: `apps/web/src/lib/workflow/review-composition.ts` —
+- Composition: `apps/web/src/lib/workflow/review-composition.ts`:
   `compositionConstituentBase()`; write site `review-effects.ts`
 - Merge gate: `apps/web/src/lib/auto-merge.ts`
 - Tracking: `packages/core/release-archetype.ts`,
@@ -244,16 +244,16 @@ deployed SHA that is, or descends from, the candidate's merge commit.
   applies.
 
 **Acceptance criteria**:
-- AC-F1: GIVEN PRs on dev from two missions and one with no mission THEN
+- AC-15: GIVEN PRs on dev from two missions and one with no mission THEN
   Compose shows two "on dev" missions and one "other change", all selected,
   and an approved green mission PR as "ready", unselected.
-- AC-F2: GIVEN a ready mission WHEN the owner presses Include THEN the mission
+- AC-16: GIVEN a ready mission WHEN the owner presses Include THEN the mission
   PR goes through `POST /api/prs/[n]/merge` and no other merge is attempted.
-- AC-F3: GIVEN an open candidate WHEN the owner leaves a mission out THEN the
+- AC-17: GIVEN an open candidate WHEN the owner leaves a mission out THEN the
   candidate branch gets a new SHA without that mission's changes, `dev` is
   unchanged, approvals on the old SHA are dismissed, and an approval or check
   on the old SHA no longer enables Release.
-- AC-F4: GIVEN a merged candidate WHEN production reports a SHA that does not
+- AC-18: GIVEN a merged candidate WHEN production reports a SHA that does not
   contain the merge commit (or none) THEN "Mark released" is refused and
   recorded as refused.
 
@@ -279,12 +279,17 @@ hooks, and record the full outcome in `tasks.releaseResult`.
   handles auth.
 - Vercel polling MUST use a 5-minute timeout with 10-second intervals; states
   `READY`, `ERROR`, and `CANCELED` are terminal.
-- Post-deploy hook failures do NOT roll back the release — the outcome records
+- Post-deploy hook failures do NOT roll back the release; the outcome records
   each hook's success/error.
 - `tasks.releaseResult` MUST be written on every terminal path
-  (`completed | failed | skipped | not_configured`).
-- `main` (prodBranch) MUST be deployable after a `completed` release: only
-  fast-forward merges are performed (GitHub API rejects non-FF merges by default).
+  (`completed | failed | skipped | not_configured`). A release PR whose CI is
+  not green yet records `pending_ci`, and the webhook completes or fails the
+  task later.
+- `main` (prodBranch) MUST be deployable after a `completed` release. A
+  worker PR is squash-merged pinned to its head (`mergeReleasePrPinned`).
+  With no PR, the branch merges through `POST /repos/{repo}/merges`, which
+  creates a merge commit and is refused with a 409 on a conflict, leaving
+  `prodBranch` unchanged.
 
 **Acceptance criteria**:
 - AC-8: GIVEN a successful `branch_merge` release WHEN the executor completes
@@ -296,13 +301,13 @@ hooks, and record the full outcome in `tasks.releaseResult`.
   AND `status` reflects overall release success (hook failures do not flip
   `status` to `failed` alone).
 - AC-11: GIVEN a workspace with no `releaseConfig` WHEN `executeRelease` is
-  called THEN it returns immediately with `status: 'not_configured'` — the task
+  called THEN it returns immediately with `status: 'not_configured'`; the task
   still completes normally.
 
 **Code surface**:
 - Executor: `apps/web/src/lib/release-executor.ts`
 - Vercel polling: `pollVercelDeployment()` in the same file
-- Schema: `packages/core/db/schema.ts` — `ReleaseResult`, `WorkspaceReleaseConfig`
+- Schema: `packages/core/db/schema.ts`: `ReleaseResult`, `WorkspaceReleaseConfig`
 
 ---
 
@@ -311,10 +316,16 @@ hooks, and record the full outcome in `tasks.releaseResult`.
 **Invariants**:
 - No direct commits to `main` outside the release path (convention enforced by
   branch protection, not code).
-- A release failure MUST NOT leave `main` in a partial state — the GitHub API
+- A release failure MUST NOT leave `main` in a partial state: the GitHub API
   merge is atomic; if it fails the branch is unchanged.
 - `release_status` MUST be callable at any time without side effects (read-only).
 
-**Out of scope**: The `script` strategy execution (not yet implemented as of
-2026-06-24). Version bumping and changelog generation (handled by the repo's own
+**Out of scope**: The `script` strategy execution (resolved and validated by
+`resolveReleaseStrategy`, but `trigger_release` answers 501 "not yet
+implemented"). Version bumping and changelog generation (handled by the repo's own
 release workflow, not buildd). Rollback mechanics.
+
+## Renumbered
+
+Release candidate criteria AC-C1 to AC-C3 became AC-12 to AC-14. Owner
+release flow criteria AC-F1 to AC-F4 became AC-15 to AC-18.

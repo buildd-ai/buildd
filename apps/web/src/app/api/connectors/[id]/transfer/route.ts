@@ -99,7 +99,7 @@ export async function POST(
   }
 
   try {
-    // (teamId, name) uniqueness would be violated in the target team (§1 AC-4).
+    // (teamId, name) uniqueness would be violated in the target team (AC-4).
     const collision = await db.query.connectors.findFirst({
       where: sqlWhere(and(eq(connectors.teamId, targetTeamId), eq(connectors.name, connector.name))),
     });
