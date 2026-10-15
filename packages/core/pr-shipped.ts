@@ -133,6 +133,11 @@ export interface SupersessionScan {
   deferral?: { firstAt: string; count: number; reason: string };
   /** The deferral ran out: recorded as a suggestion a person settles, with why. */
   deferralExhausted?: { firstAt: string; count: number; reason: string };
+  /**
+   * Merged candidates already content-checked, and their verdicts. A run inside the rescan window
+   * reuses them instead of reading GitHub again (apps/web/src/lib/pr-supersession-detect.ts).
+   */
+  judged?: Array<{ repo: string; prNumber: number; prUrl: string; verified: boolean; method?: 'patch-id' | 'content'; confidence: number; at: string }>;
 }
 
 /** True when the row has a PR and that PR's work shipped (merged or superseded). */

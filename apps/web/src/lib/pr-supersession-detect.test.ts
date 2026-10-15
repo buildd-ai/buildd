@@ -11,11 +11,15 @@ const recordCalls: any[] = [];
 let recordResult: any = { ok: true };
 const gateEvents: any[] = [];
 let sweepRows: Array<{ id: string; prUrl: string }> = [];
+/** Worker rows findFirst hands out in order (one per detect run), before falling back to `workerRow`. */
+let workerQueue: any[] = [];
+/** A GitHub path that never answers: it settles only when the caller's AbortSignal fires. */
+const STALL = Symbol('stall');
 
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
-      workers: { findFirst: mock(() => Promise.resolve(workerRow)) },
+      workers: { findFirst: mock(() => Promise.resolve(workerQueue.length ? workerQueue.shift() : workerRow)) },
       tasks: { findMany: mock(() => Promise.resolve(siblingTasks)) },
     },
     update: () => ({ set: (set: any) => ({ where: () => { scanWrites.push(set); return Promise.resolve(); } }) }),
@@ -27,12 +31,21 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 mock.module('@/lib/github', () => ({
-  githubApi: mock((_inst: number, path: string) => {
+  githubApi: mock((_inst: number, path: string, options: RequestInit = {}) => {
     ghCalls.push(path);
     const m = path.match(/^\/repos\/([^/]+\/[^/]+)(\/.*)$/);
     const repo = m?.[1] ?? '';
     const rest = (m?.[2] ?? '').replace(/\?.*$/, '');
     const v = gh[`${repo}${rest}`];
+    if (v === STALL) {
+      // Like fetch: pending until the signal aborts, then rejected with its reason. No signal, no end.
+      return new Promise((_resolve, reject) => {
+        const sig = options.signal;
+        if (!sig) return;
+        if (sig.aborted) return reject(sig.reason);
+        sig.addEventListener('abort', () => reject(sig.reason), { once: true });
+      });
+    }
     if (v === undefined) return Promise.reject(new Error(`GitHub API error: 404 ${path}`));
     return Promise.resolve(v);
   }),
@@ -49,7 +62,7 @@ mock.module('@/lib/gate-ledger', () => ({
   fireGateEvent: mock((e: any) => { gateEvents.push(e); return 'id'; }),
 }));
 
-import { detectPrSupersession, sweepClosedUnsupersededPrs } from './pr-supersession-detect';
+import { detectPrSupersession, sweepClosedUnsupersededPrs, RESCAN_AFTER_MS } from './pr-supersession-detect';
 
 const DOC_LINES = [
   '# Strategy notes',
@@ -80,6 +93,8 @@ beforeEach(() => {
   gateEvents.length = 0;
   recordResult = { ok: true };
   siblingTasks = [];
+  workerQueue = [];
+  sweepRows = [];
   workerRow = {
     id: 'w-6', taskId: 't-6', workspaceId: 'ws-1',
     prUrl: 'https://github.com/org/kb/pull/6', prNumber: 6,
@@ -258,5 +273,127 @@ describe('a verified record the control plane did not answer is deferred, bounde
     recordResult = { ok: false, error: 'outside mission', status: 403 };
     const r = await detectPrSupersession({ workerId: 'w-6', via: 'sweep' });
     expect(r.outcome).toBe('suggested');
+  });
+});
+
+/**
+ * Task 9f4d3339: the hourly pass was killed at the function limit inside this sweep. Every GitHub call
+ * it made could wait forever, the sweep had no clock of its own, and the row in flight when the
+ * function died was never stamped, so it came first again the next hour.
+ */
+describe('the sweep is bounded: a stalled GitHub call times out, the pass stops at its budget, and neither writes a verdict', () => {
+  const unrelated = (n: number) => mergedPr('org/kb', n, [{ filename: 'apps/web/src/lib/unrelated.ts', status: 'modified', patch: patch('export const unrelatedFix = true;', 'export function other() { return 1; }') }]);
+  const claims = (...ns: number[]) => { gh['org/kb/issues/6/comments'] = ns.map(n => ({ body: `superseded by #${n}` })); };
+  const stamped = () => scanWrites.filter(w => 'supersessionScannedAt' in w);
+
+  it('a stalled call is abandoned within the request timeout; the row defers: counted, NOT stamped, no suggestion', async () => {
+    claims(9, 10);
+    unrelated(9);
+    unrelated(10);
+    gh['org/kb/pulls/10/files'] = STALL;
+    const t0 = Date.now();
+    const r = await detectPrSupersession({ workerId: 'w-6', via: 'sweep', limits: { requestTimeoutMs: 40 } });
+    expect(Date.now() - t0).toBeLessThan(1_000);
+    expect(r).toMatchObject({ outcome: 'deferred' });
+    expect(stamped()).toEqual([]);
+    expect(recordCalls).toEqual([]);
+    expect(gateEvents).toEqual([]);
+    const scan = scanWrites.at(-1).supersessionScan;
+    expect(scan.suggestion ?? null).toBeNull();
+    expect(scan.deferral).toMatchObject({ count: 1 });
+    expect(scan.deferral.reason).toContain('GitHub');
+    // The candidate judged before the stall is kept, so the next tick does not pay for it again.
+    expect(scan.judged.map((j: any) => j.prNumber)).toEqual([9]);
+  });
+
+  it('a timeout while reading the closed PR itself defers too: it is not a "skipped" the sweep would stamp', async () => {
+    gh['org/kb/pulls/6/files'] = STALL;
+    const r = await detectPrSupersession({ workerId: 'w-6', via: 'sweep', limits: { requestTimeoutMs: 40 } });
+    expect(r.outcome).toBe('deferred');
+    expect(stamped()).toEqual([]);
+  });
+
+  it('past the deferral cap a timing-out row is settled: stamped, its earlier suggestion kept, no new one, and a stranded gate event', async () => {
+    claims(9);
+    gh['org/kb/pulls/9'] = STALL;
+    const earlier = { repo: 'org/kb', prNumber: 4, prUrl: 'https://github.com/org/kb/pull/4', signal: 'claim', why: 'earlier', score: 0.9 };
+    workerRow = { ...workerRow, supersessionScan: { scannedAt: '2026-10-10T00:00:00Z', candidatesChecked: 1, suggestion: earlier, deferral: { firstAt: '2026-10-14T00:10:00Z', count: 23, reason: 'GitHub slow' } } };
+    const r = await detectPrSupersession({ workerId: 'w-6', via: 'sweep', now: new Date('2026-10-14T23:10:00Z'), limits: { requestTimeoutMs: 40 } });
+    expect(r.outcome).toBe('skipped');
+    const w = scanWrites.at(-1);
+    expect(w.supersessionScannedAt).toBeInstanceOf(Date);
+    expect(w.supersessionScan.suggestion).toEqual(earlier);
+    expect(w.supersessionScan.deferral).toBeUndefined();
+    expect(w.supersessionScan.deferralExhausted).toMatchObject({ count: 24 });
+    expect(gateEvents).toHaveLength(1);
+    expect(gateEvents[0]).toMatchObject({ outcome: 'stranded', detail: expect.objectContaining({ kind: 'github_timeout_deferral_exhausted' }) });
+  });
+
+  it('the sweep stops at its own budget: the row in flight defers, the rest are left untouched for the next tick, oldest first', async () => {
+    claims(9);
+    gh['org/kb/pulls/9'] = STALL;
+    sweepRows = [
+      { id: 'w-6', prUrl: 'https://github.com/org/kb/pull/6' },
+      { id: 'w-7', prUrl: 'https://github.com/org/kb/pull/7' },
+    ];
+    const t0 = Date.now();
+    const r = await sweepClosedUnsupersededPrs(new Date('2026-10-15T08:10:00Z'), { budgetMs: 60, requestTimeoutMs: 10_000 });
+    expect(Date.now() - t0).toBeLessThan(1_000);
+    expect(r).toMatchObject({ candidates: 2, deferred: 1, budgetStopped: 1, suggested: 0, none: 0, skipped: 0 });
+    expect(stamped()).toEqual([]);
+    // Nothing is counted against the row: running out of pass time is not that PR's fault.
+    expect(scanWrites.every(w => w.supersessionScan?.deferral == null)).toBe(true);
+    // Per-PR timing: the slow one is named.
+    expect(r.prs).toHaveLength(1);
+    expect(r.prs[0]).toMatchObject({ pr: 'org/kb#6', outcome: 'deferred' });
+    expect(r.prs[0].ms).toBeGreaterThanOrEqual(50);
+  });
+
+  it('a request timeout is not a budget stop: the sweep moves on to the next row', async () => {
+    claims(9);
+    gh['org/kb/pulls/9'] = STALL;
+    closedPr('org/kb', 7);
+    gh['org/kb/pulls/7/files'] = [{ filename: 'x.md', status: 'added', patch: patch('nothing') }];
+    workerQueue = [workerRow, { ...workerRow, id: 'w-7', prUrl: 'https://github.com/org/kb/pull/7', prNumber: 7 }];
+    sweepRows = [
+      { id: 'w-6', prUrl: 'https://github.com/org/kb/pull/6' },
+      { id: 'w-7', prUrl: 'https://github.com/org/kb/pull/7' },
+    ];
+    const r = await sweepClosedUnsupersededPrs(new Date('2026-10-15T08:10:00Z'), { budgetMs: 5_000, requestTimeoutMs: 40 });
+    expect(r).toMatchObject({ candidates: 2, deferred: 1, none: 1, budgetStopped: 0 });
+    expect(r.prs.map((p: any) => `${p.pr}:${p.outcome}`)).toEqual(['org/kb#6:deferred', 'org/kb#7:none']);
+  });
+});
+
+describe('a candidate pair judged within the rescan window is not verified again', () => {
+  const now = new Date('2026-10-15T08:10:00Z');
+  const judged = (at: Date) => ({ repo: 'org/kb', prNumber: 2558, prUrl: 'https://github.com/org/kb/pull/2558', verified: false, confidence: 0.4, at: at.toISOString() });
+
+  it('reuses the stored verdict: no GitHub reads for that candidate, and the same suggestion', async () => {
+    gh['org/kb/issues/6/comments'] = [{ body: 'superseded by #2558' }];
+    // Not on the fake GitHub at all: a read would 404 and drop the candidate.
+    workerRow = { ...workerRow, supersessionScan: { scannedAt: 'x', candidatesChecked: 1, suggestion: null, judged: [judged(new Date(now.getTime() - 60 * 60_000))] } };
+    const r = await detectPrSupersession({ workerId: 'w-6', via: 'sweep', now });
+    expect(r.outcome).toBe('suggested');
+    expect(ghCalls.some(p => p.startsWith('/repos/org/kb/pulls/2558'))).toBe(false);
+    expect(scanWrites.at(-1).supersessionScan.suggestion).toMatchObject({ prNumber: 2558 });
+    expect(scanWrites.at(-1).supersessionScan.suggestion.why).toContain('40%');
+  });
+
+  it('a verdict older than the window is verified again', async () => {
+    gh['org/kb/issues/6/comments'] = [{ body: 'superseded by #2558' }];
+    mergedPr('org/kb', 2558, [{ filename: 'x.ts', status: 'added', patch: patch('nothing in common here') }]);
+    workerRow = { ...workerRow, supersessionScan: { scannedAt: 'x', candidatesChecked: 1, suggestion: null, judged: [judged(new Date(now.getTime() - RESCAN_AFTER_MS - 60_000))] } };
+    await detectPrSupersession({ workerId: 'w-6', via: 'sweep', now });
+    expect(ghCalls).toContain('/repos/org/kb/pulls/2558');
+  });
+
+  it('a finished scan stores what it judged, so the next pass inside the window can reuse it', async () => {
+    gh['org/kb/issues/6/comments'] = [{ body: 'superseded by #2558' }];
+    mergedPr('org/kb', 2558, [{ filename: 'x.ts', status: 'added', patch: patch('nothing in common here') }]);
+    await detectPrSupersession({ workerId: 'w-6', via: 'sweep', now });
+    expect(scanWrites.at(-1).supersessionScan.judged).toEqual([
+      expect.objectContaining({ repo: 'org/kb', prNumber: 2558, verified: false, at: now.toISOString() }),
+    ]);
   });
 });
