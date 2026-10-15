@@ -75,6 +75,20 @@ export function landingHandlers(ports: KernelPorts): EffectHandlers {
       const r = await need(ports, 'ingest', e.kind).ingest({ kind: 'head_observed', ...subject }, pinned);
       return { outcome: `skipped:head_moved:${r.result}` };
     }
+    // Deploy skew (one release): a merge_call queued by the reducer before this one carries no
+    // `fromState`; its T15 already trusted the door's rails and nothing else asked again. Such a
+    // row merges as it would have, after the fresh read above, rather than meet a gate its
+    // landing was never shaped for (a person's override would read as a missing review).
+    // TODO(S3b follow-up): remove with the `rails: { passed: true }` door compatibility.
+    if (!('fromState' in e.payload)) {
+      const method0 = (e.payload.mergeMethod as 'merge' | 'squash' | 'rebase' | undefined) ?? 'squash';
+      const ans0 = await writes.mergeAtHead({ repoFullName: d.repoFullName, prNumber: d.prNumber, headSha, method: method0 });
+      const r0 = await apply(d.id, {
+        type: 'MergeCallResult', actor: 'effect:merge_call', headSha, outcome: ans0.outcome, detail: ans0.detail,
+        ...lv, ...(ans0.retryAt ? { retryAt: ans0.retryAt } : {}),
+      });
+      return { outcome: `ok:${ans0.outcome}:${r0.result}:pre_gate_row` };
+    }
     const ov = e.payload.override;
     const override = ov && typeof ov === 'object' && !Array.isArray(ov)
       ? {

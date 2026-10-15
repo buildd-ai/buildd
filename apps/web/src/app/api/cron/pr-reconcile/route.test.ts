@@ -175,12 +175,14 @@ describe('GET /api/cron/pr-reconcile', () => {
     expect(dbTouches).toEqual([]);
   });
 
-  it('runs the held-release backstop on the hourly tick and reports it', async () => {
+  it('runs the held-release backstop on the hourly merge-state scope (and the daily full pass) and reports it', async () => {
     mockHeldReleases.mockClear();
     mockHeldReleases.mockResolvedValueOnce({ ...HELD_ZERO, scanned: 2, completed: 1, retried: 1 });
-    const res = await GET(makeRequest('test-secret'));
+    const hourly = await GET(makeRequest('test-secret', '?scope=merge-state'));
     expect(mockHeldReleases).toHaveBeenCalledTimes(1);
-    expect((await res.json()).heldReleases).toMatchObject({ scanned: 2, completed: 1, retried: 1 });
+    expect((await hourly.json()).heldReleases).toMatchObject({ scanned: 2, completed: 1, retried: 1 });
+    await GET(makeRequest('test-secret'));
+    expect(mockHeldReleases).toHaveBeenCalledTimes(2);
   });
 
   it('returns 401 when no authorization header', async () => {

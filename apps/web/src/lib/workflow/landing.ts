@@ -277,9 +277,14 @@ export async function landThroughKernel(p: LandingInput, deps: LandingDeps): Pro
     door: p.door,
     headSha: p.headSha,
     live: live as LivePr,
-    // No rail reading from the door (workflow-kernel-library.md §4): the merge
-    // effect reads CI, protected paths, size and the holds itself, against a
-    // fresh read, when it runs. The door's own rails stay as an early answer.
+    // The kernel no longer trusts this (workflow-kernel-library.md §4): the merge effect reads
+    // CI, protected paths, size and the holds itself, against a fresh read, when it runs; a
+    // passing reading is ignored, a failing one still refuses. It is still sent because the
+    // control plane deploys after the web host, and a Worker on the release before this one
+    // reads `cmd.rails.redCi` unguarded: without it every landing would throw there.
+    // TODO(S3b follow-up): stop sending it in the release after the one that ships S3b (#4786),
+    // once both hosts run a reducer that reads `rails` as optional.
+    rails: { passed: true },
     ...(p.override ? { override: p.override } : {}),
     ...(p.mergeMethod ? { mergeMethod: p.mergeMethod } : {}),
     ...(p.expectedVersion !== undefined ? { expectedVersion: p.expectedVersion } : {}),

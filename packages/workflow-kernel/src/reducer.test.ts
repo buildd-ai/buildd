@@ -1055,6 +1055,13 @@ describe('T15 LandingRequested / T16 MergeCallResult (S10)', () => {
     const size = applied(run(ap(), { type: 'LandingRequested', actor: 'human:owner', door: 'merge_pr', headSha: 'H1', live: live('H1'), override: { reason: 'big', kinds: ['size'] } }));
     expect(size.effects.find((e) => e.kind === 'merge_call')!.payload.override).toEqual({ verdict: false, kinds: ['size'] });
   });
+  test('deploy skew: a landing shaped for the reducer before S3b (a door\'s passing rails) still parses and lands', () => {
+    const old = applied(run(ap(), { type: 'LandingRequested', actor: 'system:auto_merge', door: 'auto_merge', headSha: 'H1', live: live('H1'), rails: { passed: true } }));
+    expect(old.toState).toBe('LANDING');
+    expect(old.effects.find((e) => e.kind === 'merge_call')!.payload).toMatchObject({ headSha: 'H1', fromState: 'APPROVED' });
+    // A failing reading still refuses, as it did.
+    expectResult(run(ap(), { type: 'LandingRequested', actor: 'kernel', door: 'auto', headSha: 'H1', live: live('H1'), rails: { passed: false, redCi: true } }), 'rejected', 'rail_not_overridable');
+  });
   test('§4: the gate refusing at merge time: a rail leaves the approval standing; the review half, or no approval to stand, is a person\'s', () => {
     const gate = (v: KernelView, half: 'review' | 'rails') => run(v, { type: 'MergeCallResult', actor: 'effect:merge_call', headSha: 'H1', outcome: 'gate_refused', gate: { half, reasons: ['CI red'] }, landingVersion: 6 });
     const l = V(D({ state: 'LANDING', approvedHeads: ['H1'], approvalBasis: 'verdict' }));

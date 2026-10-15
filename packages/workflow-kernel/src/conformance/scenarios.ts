@@ -748,6 +748,32 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
+    name: 'deploy skew: a merge_call queued by the reducer before S3b (no fromState) merges as it would have, after the fresh read',
+    async run(host) {
+      const s = await (await new Delivery(host, 42).open()).approvedAt('H1');
+      applied(await s.land('H1'), 'LANDING', 'landing');
+      const f = fakePorts(host);
+      f.github.setPr(s.repo, s.prNumber, s.live('H1'));
+      f.rails.reading = { passed: false, lasting: true, reasons: ['would refuse'] };
+      const row = (await host.effects(s.deliveryId)).find((e) => e.kind === 'merge_call')!;
+      const { fromState: _f, ...oldPayload } = row.payload;
+      const out = await kernelEffectHandlers(f.ports).merge_call!({ ...(await direct(host, s, 'merge_call')), payload: oldPayload });
+      eq(out, { outcome: 'ok:merged:applied:pre_gate_row' }, 'merged without the gate it was never shaped for');
+      eq(f.rails.calls, [], 'no rails asked');
+      eq(f.github.merges.map((m) => m.headSha), ['H1'], 'one pinned merge');
+      // Still behind the fresh read: an old row for a head that moved merges nothing.
+      const m = await (await new Delivery(host, 43).open()).approvedAt('H1');
+      applied(await m.land('H1'), 'LANDING', 'landing');
+      const fm = fakePorts(host);
+      fm.github.setPr(m.repo, m.prNumber, m.live('H2'));
+      const mrow = (await host.effects(m.deliveryId)).find((e) => e.kind === 'merge_call')!;
+      const { fromState: _g, ...oldM } = mrow.payload;
+      const outM = await kernelEffectHandlers(fm.ports).merge_call!({ ...(await direct(host, m, 'merge_call')), payload: oldM });
+      ok(String(outM?.outcome).startsWith('skipped:head_moved'), `head moved: ${outM?.outcome}`);
+      eq(fm.github.merges, [], 'nothing merged');
+    },
+  },
+  {
     name: 'gate at merge time: a base retarget under the call is recorded like a moved head, and nothing merges',
     async run(host) {
       const s = await (await new Delivery(host, 39).open()).approvedAt('H1');

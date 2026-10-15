@@ -16,7 +16,28 @@ mock.module('../../src/lib/notify', () => ({ ...realNotify, notifyTeamOf: async 
 const realOutcome = await import('../../src/lib/task-outcome-event');
 mock.module('../../src/lib/task-outcome-event', () => ({ ...realOutcome, emitHeldReleaseOutcome: async (taskId: string, failure: unknown) => { outcomes.push({ taskId, failure }); } }));
 
-const { settleHeldReleaseTask, settleHeldReleasesOnClose, sweepHeldReleases } = await import('../../src/lib/held-pr-tasks');
+// GitHub as the release-on-green door sees it: one PR per number, merged by the first pinned merge.
+const gh = { merged: new Set<number>(), mergeCalls: [] as Array<{ prNumber: number; method: string }> };
+const realGithub = await import('../../src/lib/github');
+mock.module('../../src/lib/github', () => ({
+  ...realGithub,
+  githubApi: async (_i: number, path: string) => {
+    const n = Number(/pulls\/(\d+)$/.exec(path)?.[1]);
+    return Number.isFinite(n) ? { number: n, state: gh.merged.has(n) ? 'closed' : 'open', merged: gh.merged.has(n), head: { sha: 'G1' } } : null;
+  },
+  allCheckSuitesPassed: async () => true,
+  mergePullRequest: async (_i: number, _r: string, prNumber: number, method: string) => {
+    gh.mergeCalls.push({ prNumber, method });
+    // Both doors read the PR open; the second call finds it merged under it.
+    await new Promise((r) => setTimeout(r, 5));
+    if (gh.merged.has(prNumber)) return { merged: false, message: 'Pull Request is not mergeable' };
+    gh.merged.add(prNumber);
+    return { merged: true, message: 'Pull Request successfully merged' };
+  },
+}));
+mock.module('../../src/lib/review-verdict-gate', () => ({ guardReviewVerdict: async () => ({ blocks: false }) }));
+
+const { handleReleasePrCiSuccess, settleHeldReleaseTask, settleHeldReleasesOnClose, sweepHeldReleases } = await import('../../src/lib/held-pr-tasks');
 
 beforeAll(() => { assertDbConfigured(); });
 
@@ -65,6 +86,39 @@ describe('held releases', () => {
     expect(await settleHeldReleaseTask(t, { merged: false, prNumber: h.prNumber, repoFullName: REPO, reason: 'late close', title: 'Release PR closed' })).toBe(false);
     expect((await row(h.taskId)).status).toBe('completed');
     expect(outcomes.filter((x) => x.taskId === h.taskId)).toHaveLength(1);
+  });
+
+  test('race: the release-on-green door and the close-settle on one held task settle it once, one outcome', async () => {
+    const h = await held();
+    await Promise.all([
+      handleReleasePrCiSuccess(h.prNumber, 1, REPO, 'G1', { repoFor }),
+      settleHeldReleasesOnClose({ repoFullName: REPO, prNumber: h.prNumber, merged: true }, repoFor),
+    ]);
+    expect((await row(h.taskId)).status).toBe('completed');
+    expect(outcomes.filter((x) => x.taskId === h.taskId)).toHaveLength(1);
+  });
+
+  test('race: the sweep\'s retry and a check_suite webhook both merge; the loser finds it merged, and nothing is failed or paged', async () => {
+    const h = await held({ method: 'squash' });
+    const before = notified.length;
+    await Promise.all([
+      handleReleasePrCiSuccess(h.prNumber, 1, REPO, 'G1', { repoFor }),
+      handleReleasePrCiSuccess(h.prNumber, 1, REPO, 'G1', { repoFor }),
+    ]);
+    const r = await row(h.taskId);
+    expect({ status: r.status, rs: r.release_result?.status }).toEqual({ status: 'completed', rs: 'completed' });
+    expect(gh.mergeCalls.filter((c) => c.prNumber === h.prNumber).map((c) => c.method)).toEqual(['squash', 'squash']);
+    expect(notified.slice(before).filter((t) => t.startsWith('Release merge failed'))).toEqual([]);
+    expect(outcomes.filter((x) => x.taskId === h.taskId)).toEqual([{ taskId: h.taskId, failure: null }]);
+  });
+
+  test('the release-on-green door is repo-scoped: a task held on the same number in another repo is not touched', async () => {
+    const h = await held();
+    const otherRepo = async () => ({ installationId: 1, repoFullName: 'acme/other', gitConfig: null }) as never;
+    await handleReleasePrCiSuccess(h.prNumber, 1, REPO, 'G1', { repoFor: otherRepo });
+    expect(gh.mergeCalls.some((c) => c.prNumber === h.prNumber)).toBe(false);
+    expect((await row(h.taskId)).context.releasePrPending).toBe(true);
+    await q(sql`UPDATE tasks SET context = context - 'releasePrPending' WHERE id = ${h.taskId}::uuid`);
   });
 
   test('a PR in another repo with the same number settles nothing', async () => {

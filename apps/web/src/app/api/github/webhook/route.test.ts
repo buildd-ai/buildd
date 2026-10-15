@@ -644,6 +644,11 @@ mock.module('@/lib/workflow/seam', () => ({
   observeCiFailure: mock(async () => ({ handled: false })),
   policyFindingFor: (p: any) => ({ outcome: 'human', reason: p.reason, destructive: false }),
 }));
+// The repo a held release task's workspace is linked to (lib/held-pr-tasks.ts scopes a held task
+// to its own repo's PR): the fixture repo unless a test says otherwise.
+import * as realGithubFacts from '@/lib/workflow/github-facts';
+let heldTaskRepo = 'test-org/test-repo';
+mock.module('@/lib/workflow/github-facts', () => ({ ...realGithubFacts, workspaceRepo: async () => ({ installationId: 5000, repoFullName: heldTaskRepo, gitConfig: null }) }));
 // Held release tasks are settled by their PR's close (lib/held-pr-tasks.ts, real-SQL cases in
 // tests/db/held-release.test.ts); here, that every close delivery hands it over.
 import * as realHeld from '@/lib/held-pr-tasks';
@@ -6407,6 +6412,35 @@ describe('release PR CI success pins the live head', () => {
     mockGithubApi.mockResolvedValue({ head: { sha: 'a'.repeat(40) } });
     await deliverSuccess();
     expect(mockMergePullRequest).toHaveBeenCalledWith(5000, 'test-org/test-repo', 42, 'squash', 'a'.repeat(40));
+  });
+
+  it('D7 is repo-scoped: a task held on the same PR number in another repo is not merged or settled', async () => {
+    heldTaskRepo = 'other-org/other-repo';
+    try {
+      mockGithubApi.mockResolvedValue({ head: { sha: 'a'.repeat(40) } });
+      await deliverSuccess();
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+      expect(updateCalls.filter(c => c.table === schemaMock.tasks)).toHaveLength(0);
+    } finally { heldTaskRepo = 'test-org/test-repo'; }
+  });
+
+  it('D7 lost the merge race (the sweep, or a person, merged it first): the release completes, it is never failed', async () => {
+    mockGithubApi.mockImplementation(async (_i: number, path: string) => (String(path).endsWith('/pulls/42') ? { head: { sha: 'a'.repeat(40) }, merged: mockMergePullRequest.mock.calls.length > 0 } : null));
+    mockMergePullRequest.mockResolvedValueOnce({ merged: false, message: 'Pull Request is not mergeable' } as any);
+    await deliverSuccess();
+    const writes = updateCalls.filter(c => c.table === schemaMock.tasks).map(c => c.setValues.status);
+    expect(writes).toEqual(['completed']);
+    expect(mockNotifyTeam.mock.calls.some((c: any[]) => String(c[2]?.title ?? '').startsWith('Release merge failed'))).toBe(false);
+  });
+
+  it('D7 never re-settles a task the close already settled (the guarded write found nothing held)', async () => {
+    mockGithubApi.mockResolvedValue({ head: { sha: 'a'.repeat(40) } });
+    updateReturningByStatus.completed = [];
+    try {
+      mockRecordEvent.mockClear();
+      await deliverSuccess();
+      expect(mockRecordEvent.mock.calls.map(c => c[0]).filter((e: any) => e.type?.startsWith('task.'))).toEqual([]);
+    } finally { delete updateReturningByStatus.completed; }
   });
 
   it('D7: a release PR the kernel does not own never reaches the kernel; it merges pinned as before', async () => {

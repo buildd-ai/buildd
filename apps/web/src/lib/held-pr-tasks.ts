@@ -52,19 +52,10 @@ export async function handleReleasePrCiSuccess(
   installationId: number,
   repoFullName: string,
   headSha: string,
+  deps: { repoFor?: typeof workspaceRepo } = {},
 ): Promise<void> {
-  // Find tasks waiting on this exact release PR (context.releasePrPending = true
-  // and context.releasePrNumber = prNumber).
-  const pendingReleaseTasks = await db
-    .select({ id: tasks.id, title: tasks.title, context: tasks.context, workspaceId: tasks.workspaceId })
-    .from(tasks)
-    .where(
-      and(
-        sql`(${tasks.context}->>'releasePrPending')::boolean = true`,
-        sql`(${tasks.context}->>'releasePrNumber')::int = ${prNumber}`,
-      ),
-    )
-    .limit(5);
+  // The tasks held on this exact PR of this repo: the same number in another repo is another PR.
+  const pendingReleaseTasks = await heldReleaseTasksForPr(repoFullName, prNumber, deps.repoFor);
 
   if (pendingReleaseTasks.length === 0) return;
 
@@ -142,61 +133,26 @@ export async function handleReleasePrCiSuccess(
     ? { merged: kernelLanding.merged, message: kernelLanding.message }
     : await mergePullRequest(installationId, repoFullName, prNumber, heldMethod, headSha);
 
+  // A merge call that lost (a concurrent door, the sweep, a person merged it first) is not a
+  // failed release: ask GitHub before saying it failed.
+  let merged = mergeResult.merged;
+  if (!merged) {
+    const after = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`).catch(() => null);
+    merged = after?.merged === true;
+  }
+  // Every write goes through the guarded settle: a task the close-settle or the other door
+  // already settled is not settled (or announced) again.
   for (const task of pendingReleaseTasks) {
-    const ctx = (task.context ?? {}) as Record<string, unknown>;
-    const prUrl = ctx.releasePrUrl as string | undefined;
-
-    if (mergeResult.merged) {
-      const releaseResult = {
-        status: 'completed' as const,
-        message: `Release: completed — PR #${prNumber} merged to ${repoFullName}`,
-        mergedAt: new Date().toISOString(), // pr-fact-guard: not a workers write (release task result)
-        releasePrNumber: prNumber,
-        releasePrUrl: prUrl,
-      };
-      await db
-        .update(tasks)
-        .set({
-          status: 'completed',
-          releaseResult,
-          context: { ...ctx, releasePrPending: false },
-          updatedAt: new Date(),
-        })
-        .where(eq(tasks.id, task.id));
-      console.log(`[release-pr] Task ${task.id} completed after PR #${prNumber} merged on ${repoFullName}`);
-      await emitHeldReleaseOutcome(task.id, null);
+    if (merged) {
+      await settleHeldReleaseTask(task, { merged: true, prNumber, repoFullName, via: 'merged on green CI' });
     } else {
-      const errMsg = mergeResult.message;
-      const releaseResult = {
-        status: 'failed' as const,
-        message: `Release: FAILED — could not merge PR #${prNumber}: ${errMsg}`,
-        error: errMsg,
-        releasePrNumber: prNumber,
-        releasePrUrl: prUrl,
-      };
-      await db
-        .update(tasks)
-        .set({
-          status: 'failed',
-          releaseResult,
-          context: { ...ctx, releasePrPending: false },
-          updatedAt: new Date(),
-        })
-        .where(eq(tasks.id, task.id));
-
-      void notifyTeamOf({ taskId: task.id }, 'needsAttention', {
-        title: `Release merge failed — ${repoFullName}#${prNumber}`,
-        message: errMsg,
-        priority: 1,
-        url: prUrl || `https://github.com/${repoFullName}/pull/${prNumber}`,
-        urlTitle: 'Open PR',
+      await settleHeldReleaseTask(task, {
+        merged: false, prNumber, repoFullName, reason: mergeResult.message,
+        title: 'Release merge failed', label: 'Release merge failed',
       });
-      console.error(`[release-pr] Task ${task.id} FAILED: merge of PR #${prNumber} rejected: ${errMsg}`);
-      await emitHeldReleaseOutcome(task.id, { slot: 'release', label: 'Release merge failed', reason: errMsg });
     }
   }
 }
-
 
 /** How many hourly sweeps a held release is retried before it fails with the reason. */
 export const MAX_HELD_RELEASE_SWEEPS = 24;
@@ -208,7 +164,8 @@ const ctxOf = (t: HeldReleaseTask): Record<string, unknown> => (t.context && typ
 /** Settle one held release task, once: only while it is still held (a redelivery settles nothing twice). */
 export async function settleHeldReleaseTask(
   task: HeldReleaseTask,
-  o: { merged: true; prNumber: number; repoFullName: string; via: string } | { merged: false; prNumber: number; repoFullName: string; reason: string; title: string },
+  o: { merged: true; prNumber: number; repoFullName: string; via: string }
+    | { merged: false; prNumber: number; repoFullName: string; reason: string; title: string; label?: 'Release failed' | 'Release merge failed' },
 ): Promise<boolean> {
   const ctx = ctxOf(task);
   const prUrl = ctx.releasePrUrl as string | undefined;
@@ -229,7 +186,7 @@ export async function settleHeldReleaseTask(
       url: prUrl || `https://github.com/${o.repoFullName}/pull/${o.prNumber}`, urlTitle: 'Open PR',
     });
     console.error(`[release-pr] Task ${task.id} FAILED: ${o.reason}`);
-    await emitHeldReleaseOutcome(task.id, { slot: 'release', label: 'Release failed', reason: o.reason });
+    await emitHeldReleaseOutcome(task.id, { slot: 'release', label: o.label ?? 'Release failed', reason: o.reason });
   }
   return true;
 }

@@ -576,8 +576,8 @@ recorded as such, never as an approval.
   reaches the kernel. A lost GitHub answer is indeterminate, not a refusal.
   A held release task records its PR and merge method (a held worker PR
   squashes) and is settled by the PR: completed when it merges by any door,
-  failed with the reason when it closes unmerged. The hourly pr-reconcile tick
-  sweeps held tasks (`apps/web/src/lib/held-pr-tasks.ts`): a merged or closed
+  failed with the reason when it closes unmerged. The hourly pr-reconcile
+  merge-state pass (and the daily full pass) sweeps held tasks (`apps/web/src/lib/held-pr-tasks.ts`): a merged or closed
   PR settles, a green open one is retried through the release-on-green door,
   and a task still held after 24 sweeps fails with the reason.
 - Release doors D7–D10 go through `apps/web/src/lib/release/pinned-merge.ts`

@@ -217,8 +217,9 @@ export async function GET(req: NextRequest) {
     ]);
     // Held release tasks (lib/held-pr-tasks.ts): a release that could not land when its task
     // finished and whose PR event never came (CI already green, the control plane down, landed by
-    // another path). Rides this hourly tick, so no wake window of its own; bounded per task. Isolated.
-    const heldReleases = mergeStateOnly ? null : await sweepHeldReleases().catch((err): { error: string } => ({
+    // another path). Runs on both scopes: the hourly merge-state pass (which already wakes the
+    // database every hour) and the daily full one. No wake window of its own; bounded per task. Isolated.
+    const heldReleases = await sweepHeldReleases().catch((err): { error: string } => ({
       error: err instanceof Error ? err.message : String(err),
     }));
     if (heldReleases && 'error' in heldReleases) console.error('[HeldReleaseSweep] error:', heldReleases.error);
