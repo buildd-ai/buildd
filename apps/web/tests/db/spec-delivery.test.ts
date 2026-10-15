@@ -234,7 +234,7 @@ describe('missions that selected the spec (R-61, R-62, AC-45, AC-46)', () => {
     expect(by.get(direct.taskId)!.href).toBe(`/app/tasks/${direct.taskId}`);
   });
 
-  test('AC-46: a mission completed and verified on revision 1 reads delivered on 1 and not verified yet against 2', async () => {
+  test('AC-46: a mission completed and verified on revision 1 reads delivered on 1 and not verified against 2', async () => {
     const { specId, version } = await approvedSpec();
     const m = await selectingMission(specId, 1, { status: 'completed' });
     const ids = await Promise.all(['R-1', 'AC-1'].map((c) => missionVerdict(m.missionId, m.criterion.specRevisionId, c, 'pass')));
@@ -247,10 +247,10 @@ describe('missions that selected the spec (R-61, R-62, AC-45, AC-46)', () => {
     await approveNext(specId, version, '- AC-2: A USD cart shows the dollar sign.\n');
     e = (await read(specId))!.entries.find((x) => x.id === m.missionId)!;
     expect(e.delivered).toBe(true);
-    expect(e.standing).toEqual({ tone: 'muted', text: 'Not verified yet against revision 2.' });
+    expect(e.standing).toEqual({ tone: 'muted', text: 'Not verified against revision 2.' });
   });
 
-  test('a completed mission with no evaluation is delivered and not verified yet; a stale or failing one never reads passed', async () => {
+  test('a completed mission with no evaluation is delivered and not verified; a stale or failing one never reads passed', async () => {
     const { specId } = await approvedSpec();
     const quiet = await selectingMission(specId, 1, { status: 'completed' });
     const stale = await selectingMission(specId, 1);
@@ -258,9 +258,9 @@ describe('missions that selected the spec (R-61, R-62, AC-45, AC-46)', () => {
     const failing = await selectingMission(specId, 1);
     await evaluated(failing.missionId, specId, 1, 'fail', [{ criterionId: 'R-1', standing: 'fail' }, { criterionId: 'AC-1', standing: 'pass' }]);
     const by = new Map((await read(specId))!.entries.map((e) => [e.id, e]));
-    expect(by.get(quiet.missionId)!.standing.text).toBe('Not verified yet against revision 1.');
+    expect(by.get(quiet.missionId)!.standing.text).toBe('Not verified against revision 1.');
     expect(by.get(quiet.missionId)!.criteria.map((c) => c.mark)).toEqual(['none', 'none']);
-    expect(by.get(stale.missionId)!.standing.text).toBe('Passed on an older commit. Not verified yet against revision 1.');
+    expect(by.get(stale.missionId)!.standing.text).toBe('Passed on an older commit. Not verified against revision 1.');
     expect(by.get(failing.missionId)!.standing).toEqual({ tone: 'error', text: 'R-1 fails against revision 1.' });
   });
 
