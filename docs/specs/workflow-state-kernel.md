@@ -2410,9 +2410,12 @@ type".
    - `repairTarget: { prNumber, headRef, headSha, baseRef }` (§13.11 rule 1), so it
      resumes the PR head even when that head is a mission branch far ahead of trunk.
 
-   *Today:* both paths copy `owner.description` (`review-effects.ts` `fixWork`, filed by `dispatch_fix`,
-   `workers/[id]/route.ts`). Neither stamps `repairTarget`, and the fix inherits the
-   owner's null role.
+   *As built (S5):* the kernel's review fix (`fixWork`) and CI fix (`ciFixWork`) are builders
+   (role `builder` when the owner has none or is coordination-only), stamp `repairTarget`
+   from the PR head GitHub reports, and never copy a coordination or bookkeeping owner's
+   description (`workflow-kernel-library.md` §5, "As built"). *Today* (legacy, a PR with no
+   delivery): the `workers/[id]/route.ts` reviewer-outcome fix still copies the owner's
+   description and inherits its role.
 4. **Completion evidence has three separate states.** A task ending is not a repair
    published, and a repair published is not a finding resolved. A review fix completes
    only on one of these:
@@ -2424,9 +2427,13 @@ type".
    A zero diff, a diff that touches none of the findings' paths, or a head that moved
    only because of a refresh or someone else's push keeps the blocker. The task fails
    and spends the attempt budget. Reporting success does not stop that.
-   *Today:* the kernel's `fixCompletionGate` refuses only an unmoved head, and any
-   moved head passes, including a trunk refresh credited to the fix by §6.9. Legacy
-   review fixes have no completion gate.
+   *As built (S5):* the kernel's `fixCompletionGate` refuses an unmoved head without a
+   verified no-op claim, and a moved head whose diff changes nothing near any open
+   finding nor any path the feedback names (the library's §5 "As built" says what "near"
+   is and why it is wide). A no-op claim ends the attempt "no change" and owes a
+   verification round; a fix that ends with the head unmoved is "no change" too.
+   *Today:* legacy review fixes (a PR with no delivery) have no completion gate, and a
+   refresh push credited to a running fix by §6.9 is not told apart from the fix's own.
 5. **A refresh push is not a fix.** A push whose only new content is a merge of the
    base, or the platform's own `refresh_branch`, starts a delta round scoped to what
    the merge decided (§5.9 refresh). It never counts as the fix attempt's output and

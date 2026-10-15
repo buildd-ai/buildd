@@ -745,6 +745,8 @@ mock.module('@/lib/workflow/seam', () => ({
   fixCompletionGate: mockFixCompletionGate,
   recordReviewVerdict: mockRecordReviewVerdict,
   adoptReviewVerdict: mockAdoptReviewVerdict,
+  noopEvidenceOf: (o: any) => (o?.noopEvidence?.findingIds?.length && o?.noopEvidence?.evidence ? o.noopEvidence : null),
+  fixedElsewhereOf: (o: any) => (o?.fixedElsewhere?.findingIds?.length ? o.fixedElsewhere : null),
   isKernelReviewRound: mockIsKernelReviewRound,
   isRepairRole: (r: string | null | undefined) => r === 'fix' || r === 'ci_fix',
   recordLocalHead: mockRecordLocalHead,
@@ -3908,6 +3910,24 @@ describe('PATCH /api/workers/[id]', () => {
         task: { id: 'fix-task-1', deliveryId: 'delivery-1', deliveryRole: 'fix' },
         workerId: (await mockParams).id, status: 'completed', localHeadSha: 'pushed-l2', commitCount: 1,
       });
+    });
+
+    it('§13.13 rule 4: a fix\'s no-op and fixed-elsewhere claims reach the completion gate, and the no-op claim reaches T4', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue(fixWorker);
+      mockTasksFindFirst.mockResolvedValue(fixTaskRow);
+      mockFixCompletionGate.mockReset();
+      mockFixCompletionGate.mockResolvedValue(null);
+      mockWorkflowAttemptEnded.mockReset();
+      mockWorkflowAttemptEnded.mockResolvedValue({ handled: true });
+      mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ ...fixWorker, status: 'completed' }]) })) })) });
+      mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+      const noopEvidence = { findingIds: ['r1:0'], evidence: 'already returns early' };
+      const fixedElsewhere = { findingIds: ['r1:1'], files: ['lib/z.ts'], reason: 'read there' };
+      const res = await PATCH(createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body: { status: 'completed', structuredOutput: { noopEvidence, fixedElsewhere } } }), { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(mockFixCompletionGate.mock.calls[0][0]).toMatchObject({ noopEvidence, fixedElsewhere });
+      expect(mockWorkflowAttemptEnded.mock.calls[0][0]).toMatchObject({ noopEvidence });
     });
 
     const failKernelAttempt = async (body: Record<string, unknown>, taskRow: Record<string, unknown> = fixTaskRow) => {

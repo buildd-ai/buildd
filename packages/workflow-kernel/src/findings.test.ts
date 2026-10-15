@@ -3,7 +3,7 @@
  * §5, workflow-state-kernel.md §13.13 rules 2 and 4).
  */
 import { describe, expect, test } from 'bun:test';
-import { addressFindings, applyVerdictToFindings, diffTouchesFindings, findingId, openRequiredFindings, ROUND_FINDING_TITLE } from './findings';
+import { addressFindings, applyVerdictToFindings, diffTouchesFindings, findingId, openRequiredFindings, pathsNamedIn, ROUND_FINDING_TITLE } from './findings';
 import type { FindingSnapshot } from './types';
 
 const F = (o: Partial<FindingSnapshot> = {}): FindingSnapshot => ({
@@ -90,12 +90,23 @@ describe('addressFindings / diffTouchesFindings (rule 4)', () => {
     expect(addressFindings(view, 'H3', null)).toEqual([]);
     expect(addressFindings(view, 'H3', ['migration.sql'])).toEqual([]);
   });
-  test('a diff answers the findings when it touches one of their paths, or when none has a path', () => {
-    expect(diffTouchesFindings({ findings: [F()] }, ['a.ts'])).toBe(true);
-    expect(diffTouchesFindings({ findings: [F()] }, ['b.ts'])).toBe(false);
-    expect(diffTouchesFindings({ findings: [F()] }, [])).toBe(false);
-    expect(diffTouchesFindings({ findings: [F({ path: null })] }, ['b.ts'])).toBe(true);
-    expect(diffTouchesFindings({ findings: [F()] }, null)).toBeNull();
+  test('rule 4: a diff answers the findings when it changes anything near one of them; it is refused only when every one has a path and nothing near any changed', () => {
+    const at = (path: string | null) => ({ findings: [F({ path })] });
+    expect(diffTouchesFindings(at('src/a.ts'), ['src/a.ts'])).toBe(true);
+    expect(diffTouchesFindings(at('src/a.ts'), ['src/b.ts']), 'a sibling or caller in the same directory').toBe(true);
+    expect(diffTouchesFindings(at('src/a.ts'), ['src/util/c.ts']), 'below it').toBe(true);
+    expect(diffTouchesFindings(at('src/a.ts'), ['tests/a.test.ts']), 'its test, wherever it lives').toBe(true);
+    expect(diffTouchesFindings(at('src/a.ts'), ['lib/z.ts'], ['lib/z.ts']), 'a path the feedback names').toBe(true);
+    expect(diffTouchesFindings(at('src/a.ts'), ['lib/z.ts']), 'nothing near it').toBe(false);
+    expect(diffTouchesFindings(at('src/a.ts'), ['packages/core/drizzle/x/migration.sql'])).toBe(false);
+    expect(diffTouchesFindings(at('src/a.ts'), [])).toBe(false);
+    expect(diffTouchesFindings(at('src/a.ts'), null)).toBeNull();
+    // An open required finding with no path: nothing to compare, the reviewer decides.
+    expect(diffTouchesFindings({ findings: [F({ path: 'src/a.ts' }), F({ id: 'r1:1', path: null })] }, ['lib/z.ts'])).toBe(true);
     expect(openRequiredFindings({ findings: [F({ required: false })] })).toEqual([]);
+  });
+  test('pathsNamedIn reads the repo paths a reviewer\'s feedback names', () => {
+    expect(pathsNamedIn('Fix `apps/web/src/x.tsx:12` and see tests/x.test.ts; not v1.2 or e.g.')).toEqual(['apps/web/src/x.tsx', 'tests/x.test.ts']);
+    expect(pathsNamedIn(null)).toEqual([]);
   });
 });

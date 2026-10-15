@@ -303,7 +303,8 @@ describe('S7/S8/S25 — fix dispatch races, budget, claim-time revalidation', ()
     const after = await loadView({ deliveryId });
     expect(after.delivery!.state).toBe('CHANGES_REQUESTED');
     const fixes = after.attempts.filter((a) => a.family === 'review_fix').sort((a, b) => a.attemptNo - b.attemptNo);
-    expect(fixes.map((a) => [a.attemptNo, a.status, a.outcome])).toEqual([[1, 'ended', 'failed'], [2, 'queued', null]]);
+    // AC-19: the PR head never moved: "no change", and it counted.
+    expect(fixes.map((a) => [a.attemptNo, a.status, a.outcome])).toEqual([[1, 'ended', 'noop'], [2, 'queued', null]]);
     expect(dispatched.filter((x) => x.kind === 'fix').length).toBe(2);
   });
 
@@ -571,5 +572,24 @@ describe('S5 re-review: the red-PR sweep ends a CI repair only on every check pa
     green = true;
     await observeCiFailure({ workspaceId, repoFullName: REPO, prNumber, installationId: 1, headSha: 'H1', signature: 'ci:db', maxAttempts: 3, source: 'sweep:red-prs' }, deps);
     expect((await loadView({ deliveryId })).delivery!.state).toBe('APPROVED');
+  });
+});
+
+describe('S5 part 3: a verified no-op through the seam (§13.13 rule 4)', () => {
+  test('a fix that pushed nothing and claims, with evidence, that an open finding is already fixed ends "no change" and owes a verification round at the same head', async () => {
+    const { deliveryId, review } = await openAndHandOn();
+    await recordReviewVerdict({ reviewerTask: await reviewerTask(review.taskId), verdict: 'request-changes', effectiveVerdict: 'request-changes', headSha: 'H1', confidence: 0.9,
+      output: { findings: [{ path: 'src/a.ts', title: 'guard the null' }] } }, deps);
+    const fix = dispatched.find((x) => x.kind === 'fix')!;
+    const t = await fixTask(fix.taskId);
+    await claimFix(t, deps);
+    const id = (await loadView({ deliveryId })).findings![0]!.id;
+    const workerId = await seedWorker(fix.taskId, { status: 'completed' });
+    await attemptEnded({ task: t, workerId, status: 'completed', localHeadSha: null, commitCount: 0, source: 'runner', noopEvidence: { findingIds: [id], evidence: 'src/a.ts already returns early on null' } }, deps);
+    const v = await loadView({ deliveryId });
+    expect(v.delivery!.state).toBe('AWAITING_REVIEW');
+    expect(v.attempts.find((a) => a.family === 'review_fix')!.outcome).toBe('noop');
+    expect((await rounds(deliveryId)).map((r) => [r.round, r.head_sha, r.status])).toEqual([[1, 'H1', 'decided'], [2, 'H1', 'queued']]);
+    expect(v.findings![0]!.status).toBe('open');
   });
 });

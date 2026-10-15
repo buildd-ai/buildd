@@ -750,6 +750,43 @@ push, refresh, completion or owner change can make it disappear.
 - Deviation: a finding of a PR that closes unmerged is not moved to the
   superseding PR yet; it stays on the closed delivery.
 
+**As built (S5, pinned repair builders and completion evidence):**
+- A review fix (`fixWork`) is a builder: its role is `builder` when the owner
+  has none or is coordination-only, its kind `engineering`. Its description is
+  the open findings with their ids, then the reviewer's feedback, then where to
+  push and how completion is judged (`pinnedFixDescription`); the owner's
+  description is background only and a coordination or bookkeeping owner's is
+  never copied. Its `repairTarget` is the PR head GitHub reports. A kernel CI
+  fix takes the same role rule and `repairTarget`.
+- Completion (`fixCompletionGate`, role `fix`), a moved head: refused
+  (`repair_unrelated_diff`) only when the diff plainly cannot answer the
+  findings (`diffTouchesFindings`): every open required finding names a path,
+  and the push changes nothing in any finding's directory or below it,
+  nothing with the same stem as a finding's file (its test), and no path the
+  reviewer's feedback names. A rename counts under its old name. The check is
+  deliberately wide: a fix often lands beside the line the reviewer pointed at
+  (a test, a caller, a callee), and refusing a real fix costs a whole attempt,
+  while letting an unrelated push through costs one re-review that finds the
+  finding still open. It is skipped when an open finding has no path (nothing
+  to compare), for a person's applied fix (T23), and for an explicit claim
+  `structuredOutput.fixedElsewhere { findingIds, files, reason }` naming open
+  findings, which the re-review verifies like any fix. An unread compare is
+  not evidence either way.
+- Completion, an unmoved head: refused unless the fix claims a verified
+  no-op (`structuredOutput.noopEvidence { findingIds, evidence }` naming an
+  open finding). A no-op claim on a moved head excuses nothing.
+- Remaining rule-4 deviations: a fix in another directory than the
+  finding's, with nothing the feedback names, needs the `fixedElsewhere`
+  claim; a finding on a file at the repository root accepts any change (its
+  directory is the root); the gate does not tell a refresh push credited to a
+  running fix (§6.9) from the fix's own; legacy review fixes have no gate.
+- A no-op claim never resolves anything: the attempt ends `noop` (it spends
+  the budget) and a verification round at the same head checks the named
+  findings. A fix that ends with the head where it was bound (read live; an
+  unread head is a failure) ends `noop` too,
+  and the next attempt is owed. Every surface reads `noop` (and `unproven`) as
+  "no change" (`task-checks.ts`).
+
 **As built (S5, the review loop never stalls):**
 - A verdict is never dropped because the builder is still open (00d288fd). A
   reviewer that ran outside the kernel's rounds (filed by a door before the

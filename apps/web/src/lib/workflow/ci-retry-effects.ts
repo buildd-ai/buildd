@@ -28,6 +28,8 @@ import { captureCiJobLogEvidence } from '@/lib/ci-job-log-evidence';
 import { escalateCiRedHead } from '@/lib/ci-failure-retry';
 import { prWorkerWhere } from './pr-worker-where';
 import { workspaceRepo } from './github-facts';
+import { githubApi } from '@/lib/github';
+import { isCoordinationOwner, REPAIR_BUILDER_ROLE } from './repair-builder';
 import type { WorkBuilder } from './kernel-ports';
 
 async function prWorker(workspaceId: string, repoFullName: string, prNumber: number) {
@@ -60,7 +62,13 @@ export const ciFixWork: WorkBuilder = async (req) => {
   const attemptNo = Number(detail.attemptNo ?? 1);
   const maxAttempts = Number(detail.maxAttempts ?? attemptNo);
   const branch = prw?.branch ?? '';
-  const identity = await inheritAttemptIdentity(owner.id);
+  const inherited = await inheritAttemptIdentity(owner.id);
+  // §13.13 rule 3: a CI repair is an executable builder pinned to the PR's own head, never a copy of a
+  // coordination owner's brief or its missing role.
+  const coordinationOwner = isCoordinationOwner(owner as { kind?: string | null; category?: string | null });
+  const identity = { ...inherited, roleSlug: !inherited.roleSlug || coordinationOwner ? REPAIR_BUILDER_ROLE : inherited.roleSlug, ...(coordinationOwner ? { kind: 'engineering' as const } : {}) };
+  const pull = await githubApi(repo.installationId, `/repos/${repoFullName}/pulls/${prNumber}`).catch(() => null) as { head?: { ref?: string }; base?: { ref?: string } } | null;
+  const prRefs = pull?.head?.ref ? { headRef: pull.head.ref, baseRef: pull.base?.ref ?? null } : null;
   const kernelContext = { workflowAttemptId: req.lineage.attemptId, prNumber, headSha };
   const drift = isSchemaDriftFailure(ciLogs.failedJobNames);
 
@@ -71,10 +79,11 @@ export const ciFixWork: WorkBuilder = async (req) => {
     })
     : buildCIRetryTask({
       originalTask: {
-        id: owner.id, title: owner.title, description: owner.description, workspaceId: owner.workspaceId,
+        id: owner.id, title: owner.title, description: coordinationOwner ? null : owner.description, workspaceId: owner.workspaceId,
         context: (owner.context as Record<string, unknown> | null) ?? {}, missionId: owner.missionId ?? null,
       },
       worker: { id: prw?.id ?? '', branch, prNumber },
+      prRefs,
       failureContext,
       repoFullName,
       ciRunId: ciLogs.runId,

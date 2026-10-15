@@ -22,7 +22,7 @@ export type CheckState = 'passed' | 'failed' | 'running' | 'pending' | 'blocked'
 export interface CheckRepair {
   /** "CI fix 1 of 3" */
   label: string;
-  status: 'queued' | 'running' | 'completed' | 'failed' | 'ended' | 'cancelled';
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'ended' | 'cancelled' | 'no_change';
   taskId: string | null;
 }
 
@@ -64,7 +64,8 @@ function repairStatus(a: AttemptSnapshot): CheckRepair['status'] {
     case 'running': return 'running';
     case 'skipped':
     case 'cancelled': return 'cancelled';
-    case 'ended': return a.outcome === 'delivered' ? 'completed' : a.outcome === 'failed' ? 'failed' : 'ended';
+    // AC-19: an attempt that changed nothing on the PR reads "no change", never "completed".
+    case 'ended': return a.outcome === 'delivered' ? 'completed' : a.outcome === 'failed' ? 'failed' : a.outcome === 'noop' || a.outcome === 'unproven' ? 'no_change' : 'ended';
   }
 }
 
