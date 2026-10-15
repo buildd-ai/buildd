@@ -1,3 +1,5 @@
+import { formatTaskEstimate } from '@buildd/shared';
+import { taskEstimatePayload } from '@buildd/core/task-estimate-rollout';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { pauseRefusal, requestWorkerPause } from '@/lib/worker-pause';
 import { parseCancellation } from '@/lib/task-cancellation';
@@ -221,14 +223,13 @@ export async function GET(
         .then(m => m.readTaskEstimate(id))
         .catch(() => null);
       if (estimate) {
+        const payload = taskEstimatePayload(estimate);
+        const display = formatTaskEstimate(payload);
         response.estimate = {
-          estimatorVersion: estimate.estimatorVersion,
-          p50Minutes: estimate.p50Minutes,
-          p80Minutes: estimate.p80Minutes,
-          p50Tokens: estimate.p50Tokens,
-          p80Tokens: estimate.p80Tokens,
-          expectedRepairs: estimate.expectedRepairs,
-          summary: estimate.explanation?.summary ?? null,
+          ...payload,
+          // Legacy clients receive the same range; structured consumers ignore prose.
+          summary: `${display.headline}. ${display.provenance}`,
+          display,
           createdAt: estimate.createdAt,
         };
       }

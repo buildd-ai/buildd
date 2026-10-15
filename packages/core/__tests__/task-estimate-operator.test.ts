@@ -181,3 +181,21 @@ describe('coverage and runtime', () => {
     expect(r).toMatchObject({ schemaVersion: 1, truncated: true, rowLimit: 10, runningVersion: 'v1', minScoredForRate: 10 });
   });
 });
+
+
+describe('frozen selection diagnostics', () => {
+  it('exposes own-team evidence and weights with version calibration; never another tenant detail', () => {
+    const own = row();
+    own.explanation = { ...own.explanation, evidence: {
+      cutoff: '2026-01-01T00:00:00.000Z', history: { total: 20, completedWork: 12, eligible: 8, excluded: { missing_session_actuals: 4 } },
+      neighbours: { retrieved: 3, used: 2, reason: null }, clusters: { available: 2, used: 5, reason: null }, unavailable: [],
+    } };
+    const foreign = row({ teamId: OTHER, taskId: 'private-task', explanation: { ...own.explanation, clusterLabel: 'private-path' } });
+    const report = buildOperatorEstimatesReport(input([own, foreign, row()]));
+    expect(report.selection).toHaveLength(2);
+    expect(report.selection[0]).toMatchObject({ taskId: own.taskId, estimatorVersion: 'v1', calibration: 'failed', evidence: own.explanation.evidence, sources: own.explanation.sources });
+    expect(report.selection[1].evidence).toBeNull();
+    expect(JSON.stringify(report.selection)).not.toContain('private-task');
+    expect(JSON.stringify(report.selection)).not.toContain('private-path');
+  });
+});

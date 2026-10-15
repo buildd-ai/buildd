@@ -1,3 +1,4 @@
+import { formatTaskEstimate, type TaskEstimatePayload } from '@buildd/shared';
 import { hasTokenScope, requiredScopeForAction } from './token-scopes';
 import { SUB_ACTIONS, subActionQuoted as quotedSubs } from './mcp-sub-actions';
 import { guidanceTopicReply, guidanceTopicsText } from './guidance-topics';
@@ -509,11 +510,16 @@ export function formatTaskEstimateLine(estimate: unknown): string | null {
   const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null);
   const p50m = num(e.p50Minutes), p80m = num(e.p80Minutes), p50t = num(e.p50Tokens), p80t = num(e.p80Tokens);
   if (p50m === null || p80m === null || p50t === null || p80t === null) return null;
-  const mins = (m: number) => Math.max(1, Math.round(m));
-  const k = (t: number) => `${Math.max(1, Math.round(t / 1000))}k`;
-  const version = typeof e.estimatorVersion === 'string' ? e.estimatorVersion : 'unknown';
-  const summary = typeof e.summary === 'string' && e.summary.trim() ? ` · ${truncate(e.summary.trim(), 300)}` : '';
-  return `**Estimate (${version}):** ${mins(p50m)}-${mins(Math.max(p80m, p50m))}m · ${k(p50t)}-${k(Math.max(p80t, p50t))} tokens${summary}`;
+  const explanation = e.explanation as TaskEstimatePayload['explanation'] | undefined;
+  const payload: TaskEstimatePayload = {
+    estimatorVersion: typeof e.estimatorVersion === 'string' ? e.estimatorVersion : 'unknown',
+    p50Minutes: p50m, p80Minutes: p80m, p50Tokens: p50t, p80Tokens: p80t,
+    expectedRepairs: num(e.expectedRepairs) ?? 0,
+    explanation: explanation && Array.isArray(explanation.sources) ? explanation : { sources: [], priorWeight: 1, clusterLabel: null, summary: '' },
+    calibration: e.calibration === 'passed' || e.calibration === 'failed' ? e.calibration : 'unknown',
+  };
+  const d = formatTaskEstimate(payload);
+  return `**Estimate (${d.estimatorVersion}):** ${d.headline} · ${d.provenance}`;
 }
 
 function requireFullUuid(id: unknown, paramName: string): string {

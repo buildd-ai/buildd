@@ -189,7 +189,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   When a workspace opts in, a PR touching a serialized surface MUST wait behind an earlier open PR on the same surface and base branch, and MUST merge inside an atomic per-surface reservation.
 - [Task Dispatch Authority](./task-dispatch-authority.md) · @max — verified 2026-10-11
   Every state change that may make a task runnable MUST leave a durable dispatch intent, delivered at least once through one authority, while the claim route stays the only scheduling decision.
-- [Task Estimates (Rollout and Team Switch)](./task-estimates.md) · @max — verified 2026-10-12
+- [Task Estimates (Rollout and Team Switch)](./task-estimates.md) · @max — verified 2026-10-15
   Estimates follow the team's switch or a default gated on measured quality, never order work; teams see one plain accuracy line, the platform owner the calibration and gate detail.
 
 ## Draft (12)

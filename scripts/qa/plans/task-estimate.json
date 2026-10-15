@@ -1,0 +1,16 @@
+[
+  {
+    "route": "/app/tasks/:id",
+    "states": [
+      {
+        "key": "estimate-breakdown",
+        "steps": [
+          { "action": "click", "selector": "role:button[name=Estimate breakdown]" },
+          { "action": "waitFor", "selector": "text:Calibration below target" },
+          { "action": "assertLayout", "selector": "css:body" }
+        ]
+      }
+    ]
+  },
+  { "route": "/app/health/estimates?state=enabled-limited-history", "states": [] }
+]

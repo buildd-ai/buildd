@@ -300,12 +300,39 @@ describe('neighbourEvidenceFrom (pure)', () => {
     expect(e).toEqual({ n: 3, p50Minutes: 40, p80Minutes: 60, p50Tokens: 400, p80Tokens: 600 });
   });
 
+  it('requires positive token actuals as well as durations for comparable samples', () => {
+    const e = src.neighbourEvidenceFrom(['a', 'b', 'c'], [s('a', 10, 10, 0), s('b', 10, 40, 0), s('c', 10, 60)], { cutoff });
+    expect(e).toBeNull();
+  });
+
   it('a session ending at/after the cutoff and a neighbour created after it are the future', () => {
     const late = { taskId: 'a', startedAt: before(1), completedAt: new Date(cutoff.getTime() + 60_000), inputTokens: 1, outputTokens: 1 };
     const e = src.neighbourEvidenceFrom(['a', 'b', 'c'], [late, s('b', 10, 40), s('c', 10, 60)], {
       cutoff, createdAtById: new Map([['c', new Date(cutoff.getTime() + 1)]]),
     });
     expect(e).toBeNull(); // only b is left; one neighbour is not evidence
+  });
+});
+
+describe('frozen evidence availability', () => {
+  it('reports the older cutoff of a reused model separately from the task cutoff', async () => {
+    const older = new Date('2026-09-30T23:59:00Z');
+    await src.loadPriorTable(older);
+    const result = await src.loadEstimateInputs(taskRow(), {
+      storeFactory: async () => { throw new Error('UnavailableStore'); },
+    });
+    expect(result.evidence?.cutoff).toBe('2026-10-01T00:00:00.000Z');
+    expect(result.evidence?.modelCutoffs).toEqual({ prior: older.toISOString(), clusters: null });
+  });
+  it('records unavailable reads rather than claiming the workspace has no history', async () => {
+    const result = await src.loadEstimateInputs(taskRow(), {
+      storeFactory: async () => { throw new Error('UnavailableStore'); },
+    });
+    expect(result.evidence?.history).toBeNull();
+    expect(result.evidence?.unavailable).toContain('history');
+    expect(result.evidence?.unavailable).toContain('neighbour retrieval');
+    expect(result.evidence?.neighbours).toEqual({ retrieved: 0, used: 0, reason: 'unavailable' });
+    expect(result.evidence?.cutoff).toBe('2026-10-01T00:00:00.000Z');
   });
 });
 
