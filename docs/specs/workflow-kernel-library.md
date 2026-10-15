@@ -699,10 +699,11 @@ push, refresh, completion or owner change can make it disappear.
   That stand-in has no id a reviewer is likely to report, so an unscoped
   approval verifies it when it reviewed a later head than the one asked to
   change, or when it verified every structured finding still open.
-- A deferral names a task by its full id. A reviewer's short id is resolved
-  by the host to the one task of the delivery's workspace it prefixes
-  (`resolveDeferralTasks`); a deferral whose task does not resolve, or that
-  names none, closes nothing and is recorded as `unresolvedDeferrals` on the
+- A deferral names a task by its full id. The host resolves a reviewer's id
+  against the delivery's workspace (`resolveDeferralTasks`): a full id must be
+  a task there, a short id must prefix exactly one. A deferral whose task does
+  not resolve (none, another workspace's, an ambiguous prefix), or that names
+  none, closes nothing and is recorded as `unresolvedDeferrals` on the
   verdict's transition, which still applies. A person's deferral with a task
   id that is not a full one is refused (`deferral_task_unresolved`). The
   Postgres adapter never casts anything but a full id to a uuid column, so no
