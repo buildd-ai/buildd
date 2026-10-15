@@ -58,7 +58,9 @@ beforeEach(() => {
   row = {
     id: SWITCH, teamId: TEAM, kind: 'buildd.orchestration_claim_hold', cause: 'optimizer', fromRoute: null, toRoute: CLEF,
     evalRunId: 'run-1', beforeScore: 0.4, afterScore: 0.6, bar: 0.9, n: 80, status: 'active',
-    pinnedUntil: null, endedAt: null, endedBy: null, createdAt: new Date(),
+    pinnedUntil: null, endedAt: null, endedBy: null,
+    // Whole second: a live timestamp can contain "0.6" (e.g. ":40.612Z") and trip the no-scores check below.
+    createdAt: new Date(Math.floor(Date.now() / 1000) * 1000),
   };
   writes.length = 0;
   ended.length = 0;
