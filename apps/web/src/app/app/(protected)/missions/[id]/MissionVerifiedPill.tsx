@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState, Suspense } from 'react';
 import { useSearchParams, useRouter, usePathname } from 'next/navigation';
 import type { GoalCriterion, GoalCriteriaState } from '@buildd/shared';
+import type { BoardCriterionState } from '@/lib/mission-board';
 import { criterionFingerprint, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS } from '@buildd/core/mission-helpers';
 import SideSheet from '@/components/SideSheet';
 import MissionGoalCriteria from './MissionGoalCriteria';
@@ -63,6 +64,8 @@ interface Props {
    * Needs verification and names the reason.
    */
   hold?: string | null;
+  /** Each criterion's live board state, by index, for the criteria sheet's rows. */
+  liveStates?: readonly BoardCriterionState[] | null;
   /**
    * No pill, only the sheet: a terminal mission shows no "Needs verification"
    * beside COMPLETE (D2), but the band's goal links still open the criteria.
@@ -91,6 +94,7 @@ function MissionVerifiedPillInner({
   overall,
   sheetOnly = false,
   hold = null,
+  liveStates = null,
 }: Props) {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -137,6 +141,8 @@ function MissionVerifiedPillInner({
           readonly={readonly}
           failingCiPrNumbers={failingCiPrNumbers}
           missionPrCount={missionPrCount}
+          hold={hold}
+          liveStates={liveStates}
         />
       </SideSheet>
     );
@@ -162,6 +168,8 @@ function MissionVerifiedPillInner({
             readonly={readonly}
             failingCiPrNumbers={failingCiPrNumbers}
           missionPrCount={missionPrCount}
+          hold={hold}
+          liveStates={liveStates}
           />
         </SideSheet>
       </>
@@ -221,6 +229,8 @@ function MissionVerifiedPillInner({
           readonly={readonly}
           failingCiPrNumbers={failingCiPrNumbers}
           missionPrCount={missionPrCount}
+          hold={hold}
+          liveStates={liveStates}
         />
       </SideSheet>
     </>

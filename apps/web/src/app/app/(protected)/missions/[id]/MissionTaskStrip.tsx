@@ -250,7 +250,7 @@ export function stripReason(t: BoardTask, executor: MissionExecutor | null): str
     case 'ready':
       return executor === 'local'
         ? 'Ready to start. Claim it from a local session.'
-        : 'Ready · next free slot.';
+        : 'Next in line for a runner.';
   }
 }
 

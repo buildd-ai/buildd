@@ -1220,6 +1220,7 @@ export default async function MissionDetailPage({
   const verifiedPill = (
     <MissionVerifiedPill
       hold={verifiedHoldReason}
+      liveStates={boardModel.criteria.map(c => c.state)}
       sheetOnly={!showVerifiedPill}
       missionId={id}
       criteria={goalCriteria}
