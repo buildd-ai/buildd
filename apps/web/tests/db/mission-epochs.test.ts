@@ -698,3 +698,44 @@ describe('review round 3: a PR is closed only at the head that was checked', () 
     expect((await epochRows())[0]!.retired_at).toBeNull();
   });
 });
+
+// ── Review round 4 of #4806 (optional pins) ────────────────────────────────
+
+describe('review round 4: adoption and close fail closed', () => {
+  test('adoption that cannot resolve the repo keeps the branch live', async () => {
+    legacyMergedMission('at_merged_head');
+    work = { unfinishedTasks: 0, openTaskPrs: 0 };
+    const r = await epochs.bindEpochPr({ missionId, prNumber: 30, repoFullName: REPO, ownerTaskId: null, headRef: ROOT, actor: 'test' }, { ...legacyMerged(72), repoOf: async () => null });
+    expect(r.result).toBe('applied');
+    expect((await epochRows()).map((e) => [e.epoch, e.state, e.pr_number])).toEqual([[1, 'merged', 7], [2, 'open', 30]]);
+  });
+
+  test('adoption whose branch read throws keeps the branch live', async () => {
+    legacyMergedMission('at_merged_head');
+    work = { unfinishedTasks: 0, openTaskPrs: 0 };
+    const throwing: epochs.GithubApi = (inst, path, init) => {
+      if (path.endsWith(`/git/ref/heads/${ROOT}`)) throw new Error('socket hang up');
+      return gh.api(inst, path, init);
+    };
+    const r = await epochs.bindEpochPr({ missionId, prNumber: 30, repoFullName: REPO, ownerTaskId: null, headRef: ROOT, actor: 'test' }, { ...legacyMerged(72), api: throwing });
+    expect(r.result).toBe('applied');
+    expect((await epochRows()).map((e) => [e.epoch, e.state])).toEqual([[1, 'merged'], [2, 'open']]);
+  });
+
+  test('a failed re-read right before closing holds the PR', async () => {
+    await inFlight();
+    gh.commit('r5', ['b1', 't0']);
+    gh.sameTree.add('r5');
+    gh.prs.set(5, { number: 5, state: 'open', base: ROOT, headSha: 'r5' });
+    refreshPrs = new Set([5]);
+    work = { unfinishedTasks: 0, openTaskPrs: 0 };
+    // The content check passes; the next read of the PR (the re-read before close) fails.
+    gh.onMerge = () => { gh.failNext.push({ method: 'GET', path: /\/pulls\/5$/ }); gh.onMerge = null; };
+    await epochs.epochMerged(mergedInput(gh.mergeEpochPr(10)), deps());
+    expect(gh.prs.get(5)!.state).toBe('open');
+    expect(superseded).toEqual([]);
+    const [e1] = await epochRows();
+    expect((e1!.settlement?.held as Array<{ prNumber: number }> | undefined)?.map((p) => p.prNumber)).toEqual([5]);
+    expect(e1!.retired_at).toBeNull();
+  });
+});
