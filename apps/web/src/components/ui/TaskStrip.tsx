@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, type CSSProperties, type KeyboardEvent } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type RefObject } from 'react';
 import { STATES, type StateKey } from './states';
 import { stripKeyTarget, stripRunColumns, stripRunLabel, stripRuns, tickOf, type StripMark } from './task-strip';
 
@@ -138,43 +138,75 @@ function outlineEdge(grouped: ReturnType<typeof groupedColumns> | null): { edge:
   return { edge, pad: `${start ? 'pl-[5px]' : ''} ${end ? 'pr-[5px]' : ''}`.trim() };
 }
 
-// Below md a grouped cell is a fixed 44px tap target (spec f7f67f1a R-4): a
-// short strip stays compact boxes, a long one scrolls inside the strip rather
-// than shrinking its cells. From md the cells share the column as before.
-const GROUPED_BASE = '[--group-gap:6px] [--cell:44px] md:[--group-gap:12px]';
+// Below md a grouped cell shares the width up to a 44px box (spec f7f67f1a R-4,
+// R-38): a short strip stays compact boxes, a long one shrinks its cells to
+// STRIP_MIN_CELL and then wraps onto another row. It never scrolls sideways.
+// From md the cells share the column as before, capped at 56px.
+const GROUPED_BASE = '[--group-gap:6px] [--cell:minmax(0,44px)] md:[--group-gap:12px]';
 const GROUPED_VARS = `${GROUPED_BASE} md:[--cell:minmax(0,1fr)]`;
 const GROUPED_VARS_CAPPED = `${GROUPED_BASE} md:[--cell:minmax(0,56px)]`;
-/** Below md: scrolls a long grouped strip sideways; py keeps the 5px outline from being clipped. */
-const GROUPED_SCROLL = '-my-[5px] overflow-x-auto py-[5px] md:my-0 md:overflow-x-visible md:py-0';
+
+/** The narrowest a phone cell gets before the strip wraps (R-38). */
+export const STRIP_MIN_CELL = 28;
+const CELL_GAP = 4;
+const GROUP_GAP = 6;
+
+/** How many cells fit on one phone row of `width` px, given the group gaps a row may hold. */
+export function stripRowCapacity(width: number, groupCount: number): number {
+  const usable = width + CELL_GAP - Math.max(0, groupCount - 1) * (GROUP_GAP + CELL_GAP);
+  return Math.max(1, Math.floor(usable / (STRIP_MIN_CELL + CELL_GAP)));
+}
+
+/**
+ * Splits the groups into rows of at most `perRow` cells, in order. A group
+ * that spans a row break continues on the next row with its outline.
+ */
+export function wrapStripGroups(groups: readonly TaskStripGroup[], perRow: number): TaskStripGroup[][] {
+  const rows: TaskStripGroup[][] = [];
+  let row: TaskStripGroup[] = [];
+  let used = 0;
+  for (const g of groups) {
+    let rest = g.ids;
+    while (rest.length > 0) {
+      if (used >= perRow) { rows.push(row); row = []; used = 0; }
+      const take = rest.slice(0, perRow - used);
+      row.push({ ...g, ids: take });
+      used += take.length;
+      rest = rest.slice(take.length);
+    }
+  }
+  if (row.length > 0) rows.push(row);
+  return rows;
+}
+
+/** Cells per phone row, measured; unlimited from md and before the first measure. */
+function useRowCapacity(box: RefObject<HTMLDivElement | null>, groupCount: number, enabled: boolean): number {
+  const [perRow, setPerRow] = useState(Number.POSITIVE_INFINITY);
+  useEffect(() => {
+    const el = box.current;
+    if (!enabled || !el || typeof ResizeObserver === 'undefined') return;
+    const desktop = typeof window !== 'undefined' && typeof window.matchMedia === 'function' ? window.matchMedia('(min-width: 768px)') : null;
+    const measure = () => setPerRow(desktop?.matches ? Number.POSITIVE_INFINITY : stripRowCapacity(el.clientWidth, groupCount));
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    desktop?.addEventListener?.('change', measure);
+    return () => { ro.disconnect(); desktop?.removeEventListener?.('change', measure); };
+  }, [box, groupCount, enabled]);
+  return perRow;
+}
 
 function LargeStrip({ cells, selectedId, onSelect, marks, capped = true, label = 'Tasks', className = '', groups }: TaskStripProps) {
   const ref = useRef<HTMLDivElement>(null);
   const n = cells.length;
-  const grouped = groups && groups.length > 0 ? groupedColumns(groups) : null;
-  const columns = grouped ? (capped ? GROUPED_VARS_CAPPED : GROUPED_VARS) : capped ? LG_COLUMNS_CAPPED : LG_COLUMNS;
-  const style = (grouped ? { gridTemplateColumns: grouped.template } : { '--n': n }) as CSSProperties;
-  const place = (id: string): CSSProperties | undefined => (grouped ? { gridColumn: grouped.col.get(id), gridRow: 1 } : undefined);
+  const isGrouped = !!groups && groups.length > 0;
+  const nonEmpty = isGrouped ? groups!.filter(g => g.ids.length > 0) : [];
+  const perRow = useRowCapacity(ref, nonEmpty.length, isGrouped);
   const selIndex = cells.findIndex(c => c.id === selectedId);
   const focusIndex = selIndex === -1 ? 0 : selIndex;
   const numbered = n <= MAX_NUMBERED_TICKS;
-  const outline = outlineEdge(grouped);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const width = grouped ? 'w-max md:w-auto' : '';
-
-  // Keep the selected cell in view when a long strip scrolls (phone width).
-  useEffect(() => {
-    const box = scrollRef.current;
-    if (!box || !selectedId || box.scrollWidth <= box.clientWidth) return;
-    const cell = Array.from(box.querySelectorAll<HTMLButtonElement>('button[data-id]')).find(b => b.dataset.id === selectedId);
-    if (!cell) return;
-    // 8px of slack keeps the 5px group outline inside the view; an off-screen
-    // cell is centred so its neighbours in the group show too.
-    const left = cell.offsetLeft - box.offsetLeft - 8;
-    const right = cell.offsetLeft - box.offsetLeft + cell.offsetWidth + 8;
-    if (left < box.scrollLeft || right > box.scrollLeft + box.clientWidth) {
-      box.scrollLeft = Math.max(0, (left + right) / 2 - box.clientWidth / 2);
-    }
-  }, [selectedId]);
+  const indexOf = new Map(cells.map((c, i) => [c.id, i]));
+  const byId = new Map(cells.map(c => [c.id, c]));
 
   function onKeyDown(e: KeyboardEvent<HTMLDivElement>) {
     const from = cells.findIndex(c => c.id === (e.target as HTMLElement).dataset.id);
@@ -185,82 +217,101 @@ function LargeStrip({ cells, selectedId, onSelect, marks, capped = true, label =
     ref.current?.querySelectorAll<HTMLButtonElement>('button[data-id]')[to]?.focus();
   }
 
-  const rows = (
-    <>
-      <div ref={ref} role="toolbar" aria-label={label} onKeyDown={onKeyDown} data-outline-edge={outline.edge} className={`grid gap-1 ${columns} ${width} ${outline.pad}`} style={style}>
-        {grouped?.spans.map(sp => (
-          // The group outline: one accent frame round the work in progress (spec f7f67f1a R-3).
-          <span
-            key={`outline-${sp.key}`}
-            aria-hidden="true"
-            data-testid="task-strip-group-outline"
-            data-group={sp.key}
-            className="pointer-events-none -m-[5px] rounded-[var(--radius-card)] border border-accent"
-            style={{ gridColumn: `${sp.from} / ${sp.to}`, gridRow: 1 }}
-          />
-        ))}
-        {cells.map((c, i) => {
-          const s = STATES[c.state];
-          const tick = c.tick ?? tickOf(i);
-          const selected = c.id === selectedId;
-          return (
-            <button
-              key={c.id}
-              type="button"
-              data-id={c.id}
-              data-state={c.state}
-              data-tone={s.tone}
-              data-pattern={s.pattern}
-              data-frame={s.frame}
-              data-wait={c.wait}
-              style={place(c.id)}
-              aria-pressed={selected}
-              aria-label={`${tick} ${c.word ?? s.word}${c.title ? `: ${c.title}` : ''}`}
-              title={c.title}
-              tabIndex={i === focusIndex ? 0 : -1}
-              onClick={() => onSelect?.(c.id)}
-              className="flex h-11 min-w-0 cursor-pointer flex-col justify-end gap-[3px] rounded-[var(--radius-cell)] md:h-16 md:gap-0"
-            >
-              {/* Below md the cell is a slim bar in a full-height tap target; the
-                  selection is a separate ink marker above it, not a frame. */}
-              <span aria-hidden="true" data-testid="task-strip-marker" className={`h-[3px] w-full shrink-0 rounded-full md:hidden ${selected ? 'bg-text-primary' : ''}`} />
-              <span
-                aria-hidden="true"
-                data-testid="task-strip-fill"
+  /** One grid of cells plus its tick row: the whole strip, or one wrapped row of it. */
+  const renderRow = (rowCells: readonly TaskStripCell[], rowGroups: readonly TaskStripGroup[] | null, key: string) => {
+    const grouped = rowGroups ? groupedColumns(rowGroups) : null;
+    const columns = grouped ? (capped ? GROUPED_VARS_CAPPED : GROUPED_VARS) : capped ? LG_COLUMNS_CAPPED : LG_COLUMNS;
+    const style = (grouped ? { gridTemplateColumns: grouped.template } : { '--n': n }) as CSSProperties;
+    const place = (id: string): CSSProperties | undefined => (grouped ? { gridColumn: grouped.col.get(id), gridRow: 1 } : undefined);
+    const outline = outlineEdge(grouped);
+    return (
+      <div key={key} data-testid="task-strip-row" className="flex flex-col gap-1.5">
+        <div data-testid="task-strip-cells" data-outline-edge={outline.edge} className={`grid gap-1 ${columns} ${outline.pad}`} style={style}>
+          {grouped?.spans.map(sp => (
+            // The group outline: one accent frame round the work in progress (spec f7f67f1a R-3).
+            <span
+              key={`outline-${sp.key}`}
+              aria-hidden="true"
+              data-testid="task-strip-group-outline"
+              data-group={sp.key}
+              className="pointer-events-none -m-[5px] rounded-[var(--radius-card)] border border-accent"
+              style={{ gridColumn: `${sp.from} / ${sp.to}`, gridRow: 1 }}
+            />
+          ))}
+          {rowCells.map(c => {
+            const i = indexOf.get(c.id) ?? 0;
+            const s = STATES[c.state];
+            const tick = c.tick ?? tickOf(i);
+            const selected = c.id === selectedId;
+            return (
+              <button
+                key={c.id}
+                type="button"
+                data-id={c.id}
+                data-state={c.state}
                 data-tone={s.tone}
                 data-pattern={s.pattern}
                 data-frame={s.frame}
                 data-wait={c.wait}
-                className={`state-cell flex h-4 w-full shrink-0 items-center justify-center rounded-[var(--radius-cell)] font-mono text-chip font-semibold leading-none md:h-full ${selected ? 'md:[outline:2px_solid_var(--text-primary)] md:[outline-offset:2px]' : ''}`}
+                style={place(c.id)}
+                aria-pressed={selected}
+                aria-label={`${tick} ${c.word ?? s.word}${c.title ? `: ${c.title}` : ''}`}
+                title={c.title}
+                tabIndex={i === focusIndex ? 0 : -1}
+                onClick={() => onSelect?.(c.id)}
+                className="flex h-11 min-w-0 cursor-pointer flex-col justify-end gap-[3px] rounded-[var(--radius-cell)] md:h-16 md:gap-0"
               >
-                {c.wait && c.wait !== 'closed' ? null : s.cellGlyph ? s.glyph : null}
+                {/* Below md the cell is a slim bar in a full-height tap target; the
+                    selection is a separate ink marker above it, not a frame. */}
+                <span aria-hidden="true" data-testid="task-strip-marker" className={`h-[3px] w-full shrink-0 rounded-full md:hidden ${selected ? 'bg-text-primary' : ''}`} />
+                <span
+                  aria-hidden="true"
+                  data-testid="task-strip-fill"
+                  data-tone={s.tone}
+                  data-pattern={s.pattern}
+                  data-frame={s.frame}
+                  data-wait={c.wait}
+                  className={`state-cell flex h-4 w-full shrink-0 items-center justify-center rounded-[var(--radius-cell)] font-mono text-chip font-semibold leading-none md:h-full ${selected ? 'md:[outline:2px_solid_var(--text-primary)] md:[outline-offset:2px]' : ''}`}
+                >
+                  {c.wait && c.wait !== 'closed' ? null : s.cellGlyph ? s.glyph : null}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+        <div aria-hidden="true" data-testid="task-strip-ticks" className={`grid gap-1 text-center font-mono text-chip ${columns} ${outline.pad}`} style={style}>
+          {rowCells.map(c => {
+            const i = indexOf.get(c.id) ?? 0;
+            const selected = c.id === selectedId;
+            // MK-3: the selected tick is never marked and always keeps its number.
+            const mark = selected ? null : markOf(marks, c.id);
+            return (
+              <span key={c.id} data-mark={mark ?? undefined} style={place(c.id)} className={tickClass(mark, selected, c.state, numbered)}>
+                {numbered || selected ? (c.tick ?? tickOf(i)) : null}
               </span>
-            </button>
-          );
-        })}
+            );
+          })}
+        </div>
       </div>
-      <div aria-hidden="true" data-testid="task-strip-ticks" className={`grid gap-1 text-center font-mono text-chip ${columns} ${width} ${outline.pad}`} style={style}>
-        {cells.map((c, i) => {
-          const selected = c.id === selectedId;
-          // MK-3: the selected tick is never marked and always keeps its number.
-          const mark = selected ? null : markOf(marks, c.id);
-          return (
-            <span key={c.id} data-mark={mark ?? undefined} style={place(c.id)} className={tickClass(mark, selected, c.state, numbered)}>
-              {numbered || selected ? (c.tick ?? tickOf(i)) : null}
-            </span>
-          );
-        })}
-      </div>
-    </>
-  );
+    );
+  };
+
+  const rows = isGrouped
+    ? wrapStripGroups(nonEmpty, perRow).map((rg, r) => renderRow(rg.flatMap(g => g.ids.map(id => byId.get(id)).filter((c): c is TaskStripCell => !!c)), rg, `row-${r}`))
+    : [renderRow(cells, null, 'row-0')];
 
   return (
-    <div className={`flex flex-col gap-1.5 ${className}`} data-testid="task-strip" data-size="lg">
-      {grouped ? (
-        <div ref={scrollRef} data-testid="task-strip-scroll" className={`flex flex-col gap-1.5 ${GROUPED_SCROLL}`}>
-          {rows}
-        </div>
-      ) : rows}
+    <div
+      ref={ref}
+      role="toolbar"
+      aria-label={label}
+      onKeyDown={onKeyDown}
+      data-testid="task-strip"
+      data-size="lg"
+      data-rows={rows.length}
+      className={`flex flex-col gap-3 ${className}`}
+    >
+      {rows}
     </div>
   );
 }

@@ -20,15 +20,22 @@
  * review ask, the mission PR): a row says who acts next, it adds no second
  * Approve or Merge button (R-21).
  */
-import type { ReactNode } from 'react';
+import { createContext, useContext, useId, useState, type ReactNode } from 'react';
+import { useRouter } from 'next/navigation';
 import Card from '@/components/ui/Card';
-import type { CheckRow, CheckStatus, RailStep } from '@/lib/mission-checks';
+import { SURFACE_AUDIT_WAIVER_MIN_REASON_LENGTH } from '@buildd/core/surface-audit';
+import { saveSurfaceAuditWaiver, useSurfaceAuditWaiver } from './MissionSurfaceAuditWaiver';
+import type { CheckRow, CheckStatus, OutcomeSpecLine, RailStep } from '@/lib/mission-checks';
 
+// The active stage is live work, so it takes the running hue, never ink beside
+// green (R-35): ink and green merge in low light. It is also thicker, so the
+// stages read apart in greyscale.
 const RAIL_BAR: Record<RailStep['state'], string> = {
   done: 'bg-status-success',
-  now: 'bg-text-primary',
+  now: 'bg-status-running',
   part: 'bg-[linear-gradient(90deg,var(--status-success)_0_50%,var(--border-strong)_50%)]',
-  held: 'bg-status-error',
+  // Held is dashed as well as red, so in greyscale it never reads as the active stage.
+  held: 'bg-[repeating-linear-gradient(90deg,var(--status-error)_0_6px,transparent_6px_10px)]',
   todo: 'bg-border-strong',
 };
 
@@ -38,12 +45,29 @@ export function CheckRail({ steps }: { steps: readonly RailStep[] }) {
     <ol data-testid="mission-check-rail" aria-label="Mission checkpoints" className="grid grid-cols-3 gap-2.5">
       {steps.map(s => (
         <li key={s.key} data-step={s.key} data-state={s.state} aria-current={s.state === 'now' || s.state === 'held' ? 'step' : undefined} className="min-w-0">
-          <span aria-hidden="true" className={`mb-2 block h-[3px] rounded-full ${RAIL_BAR[s.state]}`} />
+          <span aria-hidden="true" data-testid="mission-check-rail-bar" className={`mb-2 block rounded-full ${s.state === 'now' || s.state === 'held' ? 'h-[6px]' : 'mt-[3px] h-[3px]'} ${RAIL_BAR[s.state]}`} />
           <span className={`block text-title font-medium ${s.state === 'todo' ? 'text-text-muted' : 'text-text-primary'}`}>{s.label}</span>
           <span className="block font-mono text-meta leading-snug text-text-muted [overflow-wrap:anywhere]">{s.text}</span>
         </li>
       ))}
     </ol>
+  );
+}
+
+/** The selected outcome spec, one line under the rail (R-40): title, revision, status, link. */
+export function OutcomeSpecLines({ lines }: { lines: readonly OutcomeSpecLine[] }) {
+  if (lines.length === 0) return null;
+  return (
+    <ul data-testid="mission-outcome-spec" aria-label="Outcome spec" className="flex flex-col gap-1">
+      {lines.map(l => (
+        // One line at every width: the title truncates, the revision and status never wrap.
+        <li key={l.specId} data-testid="mission-outcome-spec-line" className="flex min-w-0 items-baseline gap-x-2 whitespace-nowrap text-body">
+          <span className="shrink-0 text-text-muted">Spec</span>
+          <a href={l.href} title={l.title} className="min-w-0 truncate font-medium text-text-primary underline-offset-4 hover:underline">{l.title}</a>
+          <span className="shrink-0 font-mono text-meta text-text-muted">{l.revision} · {l.status}</span>
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -109,8 +133,10 @@ const LIVE: ReadonlySet<CheckStatus> = new Set(['running', 'finding', 'owner', '
 
 /** The checks that apply, one row each (R-16). */
 export function ChecksCard({ rows, onOpenTask }: { rows: readonly CheckRow[]; onOpenTask?: (id: string) => void }) {
+  const [skipping, setSkipping] = useState<string | null>(null);
   if (rows.length === 0) return null;
   return (
+    <SkipContext.Provider value={{ skipping, setSkipping }}>
     <section data-testid="mission-checks" aria-labelledby="mission-checks-title" className="flex flex-col gap-2">
       <h2 id="mission-checks-title" className="text-meta text-text-muted">Checks</h2>
       <ul className="overflow-hidden rounded-[var(--radius-card)] border border-border-default bg-card">
@@ -129,11 +155,15 @@ export function ChecksCard({ rows, onOpenTask }: { rows: readonly CheckRow[]; on
               <span className="font-medium text-text-primary">{r.label}</span>
               {r.chip && <span className="ml-2 inline-block rounded px-1.5 align-[1px] font-mono text-chip text-text-muted [background:var(--q-tint)]">{r.chip}</span>}
             </span>
-            <span data-testid="mission-check-state" className={`font-mono text-meta md:text-right ${STATE_TONE[r.status]}`}>
-              {r.state}
-              {r.commit && <span className="ml-2 text-text-muted">{r.commit}</span>}
+            <span className="flex flex-wrap items-baseline gap-x-3 md:justify-end">
+              <span data-testid="mission-check-state" className={`font-mono text-meta ${STATE_TONE[r.status]}`}>
+                {r.state}
+                {r.commit && <span className="ml-2 text-text-muted">{r.commit}</span>}
+              </span>
+              {r.waivable && <CheckSkip.Trigger row={r.key} />}
             </span>
             {r.detail && <span className="col-start-2 text-body text-text-secondary md:col-[2/4]">{r.detail}</span>}
+            {r.waivable && <CheckSkip.Form row={r.key} />}
             {(r.repairs.length > 0 || r.evidence.length > 0) && (
               <div className="col-start-2 mt-1 flex flex-col gap-2 md:col-[2/4]">
                 {r.repairs.length > 0 && (
@@ -162,5 +192,83 @@ export function ChecksCard({ rows, onOpenTask }: { rows: readonly CheckRow[]; on
         ))}
       </ul>
     </section>
+    </SkipContext.Provider>
   );
 }
+
+// ── Skip (R-34) ──────────────────────────────────────────────────────────────
+
+const SkipContext = createContext<{ skipping: string | null; setSkipping: (key: string | null) => void }>({ skipping: null, setSkipping: () => {} });
+
+/**
+ * Skip on a check a person may waive: one word beside the status, then one
+ * reason field in place. It records the existing visual-audit waiver
+ * (PATCH surfaceAuditWaiver); the row then reads waived, never passed.
+ * Offered only on a mission page, to a person, while the mission is open.
+ */
+const CheckSkip = {
+  Trigger({ row }: { row: string }) {
+    const ctx = useSurfaceAuditWaiver();
+    const { skipping, setSkipping } = useContext(SkipContext);
+    if (!ctx || ctx.readonly || ctx.waiver) return null;
+    const open = skipping === row;
+    return (
+      <button
+        type="button"
+        data-testid="mission-check-skip"
+        aria-expanded={open}
+        onClick={() => setSkipping(open ? null : row)}
+        className="inline-flex min-h-11 items-center font-mono text-meta text-text-secondary underline underline-offset-4 hover:text-text-primary md:min-h-0"
+      >
+        Skip
+      </button>
+    );
+  },
+  Form({ row }: { row: string }) {
+    const ctx = useSurfaceAuditWaiver();
+    const { skipping, setSkipping } = useContext(SkipContext);
+    const router = useRouter();
+    const id = useId();
+    const [reason, setReason] = useState('');
+    const [saving, setSaving] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    if (!ctx || ctx.readonly || ctx.waiver || skipping !== row) return null;
+    async function submit() {
+      setSaving(true);
+      setError(null);
+      const out = await saveSurfaceAuditWaiver(ctx!.missionId, reason);
+      setSaving(false);
+      if (!out.ok) { setError(out.error); return; }
+      setSkipping(null);
+      router.refresh();
+    }
+    return (
+      <form
+        data-testid="mission-check-skip-form"
+        className="col-start-2 mt-1 flex flex-col gap-2 md:col-[2/4]"
+        onSubmit={e => { e.preventDefault(); void submit(); }}
+      >
+        <label htmlFor={id} className="text-meta text-text-secondary">Why skip it?</label>
+        <div className="flex flex-col gap-2 md:flex-row md:items-center">
+          <input
+            id={id}
+            autoFocus
+            value={reason}
+            onChange={e => { setReason(e.target.value); if (error) setError(null); }}
+            minLength={SURFACE_AUDIT_WAIVER_MIN_REASON_LENGTH}
+            required
+            aria-invalid={error ? true : undefined}
+            data-testid="mission-check-skip-reason"
+            placeholder="No screens changed for users"
+            className="min-h-11 min-w-0 flex-1 bg-surface-1 px-2 text-body text-text-primary md:min-h-9"
+          />
+          <span className="flex gap-2">
+            <button type="submit" disabled={saving} data-testid="mission-check-skip-confirm" className="btn btn-primary h-11 md:h-9">{saving ? 'Skipping…' : 'Skip review'}</button>
+            <button type="button" disabled={saving} onClick={() => setSkipping(null)} className="btn btn-quiet h-11 md:h-9">Cancel</button>
+          </span>
+        </div>
+        {error && <p role="alert" className="font-mono text-meta text-status-error [overflow-wrap:anywhere]">{error}</p>}
+      </form>
+    );
+  },
+};

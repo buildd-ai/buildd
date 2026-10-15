@@ -27,7 +27,7 @@ import FocusCard from '@/components/ui/FocusCard';
 import TaskStrip from '@/components/ui/TaskStrip';
 import { MissionStripContext, createMissionStripStore, type MissionStripValue } from '@/components/missions/mission-strip-context';
 import { BOARD_LANDED, boardNeedsYouCount, type MissionBoardModel } from '@/lib/mission-board';
-import { buildEstimate, missionChecks, type CheckStatus, type MissionChecksInput } from '@/lib/mission-checks';
+import { buildEstimate, missionChecks, outcomeSpecLines, type CheckStatus, type MissionChecksInput } from '@/lib/mission-checks';
 import { isClosedUnshipped, overviewCellState, overviewCells, overviewDefaultSelection, overviewLayout, overviewLegend, overviewSelection, overviewWaitLine, railLines, type OverviewLegendEntry } from '@/lib/mission-overview';
 import { stepIndex, stripOrder, stripState } from '@/lib/mission-task-strip';
 import { STATES, type StateKey } from '@/components/ui/states';
@@ -39,7 +39,7 @@ import CriteriaCheckNow from './CriteriaCheckNow';
 import { MissionVisualAsk, WithMissionVisualReview, type MissionVisualReviewValue } from './MissionVisualReview';
 import type { TaskDeliveryDetail } from '@/lib/activity-delivery';
 import type { PlanTask } from '@/lib/mission-plan';
-import { BuildCompleteBar, CheckRail, ChecksCard } from './MissionChecks';
+import { BuildCompleteBar, CheckRail, ChecksCard, OutcomeSpecLines } from './MissionChecks';
 
 /** What the page knows about the checks; the build counts and repairs come from the live board. */
 export type MissionChecksSource = Omit<MissionChecksInput, 'build' | 'repairs'>;
@@ -61,6 +61,8 @@ export interface MissionOverviewProps extends BoardLinkContext {
   planTasks?: readonly PlanTask[] | null;
   /** A hold or empty budget: no time promise (R-24). */
   held?: boolean;
+  /** Titles of the selected outcome specs, by spec id, for the line under the rail (R-40). */
+  outcomeSpecTitles?: Readonly<Record<string, string>> | null;
 }
 
 /** Checks already at work before the build ends (R-13) are shown under the strip. */
@@ -77,7 +79,7 @@ export default function MissionOverview(props: MissionOverviewProps) {
 function OverviewView({
   model: serverModel, completionText = null, notice, visual: _visual, review,
   workspaceId = null, executor = null, stripFocus = null, deliveries = null,
-  checks: checksSource = null, planTasks = null, held = false, ...link
+  checks: checksSource = null, planTasks = null, held = false, outcomeSpecTitles = null, ...link
 }: MissionOverviewProps & { review: MissionVisualReviewValue | null }) {
   const model = useLiveBoard(serverModel);
   const now = useNow(model.now, 15_000, !model.complete);
@@ -128,9 +130,10 @@ function OverviewView({
 
   return (
     <MissionStripContext.Provider value={stripValue}>
-      <div data-testid="mission-overview" className="mt-4 grid gap-x-10 gap-y-6 min-[900px]:grid-cols-[minmax(0,720px)_minmax(240px,300px)]">
+      <div data-testid="mission-overview" className="mt-6 grid gap-x-10 gap-y-6 min-[900px]:grid-cols-[minmax(0,720px)_minmax(240px,300px)]">
         <div className="flex min-w-0 flex-col gap-4">
           {handoff && <CheckRail steps={handoff.rail} />}
+          {handoff && checksSource && <OutcomeSpecLines lines={outcomeSpecLines(checksSource.criteria, handoff.rows, outcomeSpecTitles ?? {})} />}
           {/* Build counts only: criteria are the header's Verified pill and the rail's list. */}
           {!handoff?.buildComplete && <Legend entries={legend} />}
           {notice}
