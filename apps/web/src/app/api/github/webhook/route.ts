@@ -37,7 +37,6 @@ import { readPrReviewStatus } from '@/lib/pr-review-request';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
 import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
 import { landPr, resolveLandingMode } from '@/lib/pr-landing';
-import { guardReviewVerdict } from '@/lib/review-verdict-gate';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { recordPrReverts } from '@/lib/pr-reverts';
 import { recordPrFact } from '@buildd/core/pr-facts';
