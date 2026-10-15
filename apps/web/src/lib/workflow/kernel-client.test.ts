@@ -100,6 +100,31 @@ describe('the mode', () => {
   });
 });
 
+describe('the mode read under a sweep\'s load (incident 197552dc)', () => {
+  it('concurrent callers share one health read, and a failed read is not repeated for a few seconds', async () => {
+    let t = 0;
+    let reads = 0;
+    let answer: string | null = null;
+    let open!: () => void;
+    const gate = new Promise<void>((r) => { open = r; });
+    const deps: ClientDeps = { host: () => 'web', env: { VERCEL: '1', KERNEL_COMMAND_SECRET: 'k1:s3cret' }, now: () => t, readMode: async () => { reads++; await gate; return answer; } };
+    // Thirteen sweeps start at once on a cold cache: one read, not thirteen.
+    const all = Promise.all(Array.from({ length: 13 }, () => kernelMode(deps)));
+    open();
+    expect(await all).toEqual(Array(13).fill('own'));
+    expect(reads).toBe(1);
+    // The health did not answer: the next calls within the retry window do not wait on it again.
+    // Literals, not the constant: the window is pinned at 5 s.
+    t += 4_999;
+    expect(await kernelMode(deps)).toBe('own');
+    expect(reads).toBe(1);
+    t += 2;
+    answer = 'shadow';
+    expect(await kernelMode(deps)).toBe('shadow');
+    expect(reads).toBe(2);
+  });
+});
+
 describe('in shadow the web host runs the package itself, as before', () => {
   it('no request to the control plane', async () => {
     const l = local();
@@ -265,6 +290,7 @@ describe('the client and the endpoint agree', () => {
     const rows = new Map<string, { status: 'running' | 'done'; response: unknown; token: string; requestHash: string }>();
     const ledger: CommandLedger = {
       claim: async (p) => (rows.has(p.key) ? false : (rows.set(p.key, { status: 'running', response: null, token: p.token, requestHash: p.requestHash }), true)),
+      renew: async (p) => rows.get(p.key)?.token === p.token,
       complete: async (p) => { const r = rows.get(p.key)!; r.status = 'done'; r.response = p.response; return true; },
       release: async (p) => { rows.delete(p.key); },
       read: async (k) => { const r = rows.get(k); return r ? { key: k, op: 'land', principal: '', requestHash: r.requestHash, status: r.status, response: r.response as never, claimedAt: '' } : null; },
@@ -530,5 +556,227 @@ describe('a door\'s retry and time rules', () => {
     // The last request may start just before the deadline; nothing starts after it.
     expect(t).toBeLessThanOrEqual(DOOR_BUDGET_MS + 8_000 + 2_000);
     expect(calls).toBeLessThanOrEqual(4);
+  });
+});
+
+/**
+ * Incident 197552dc: after the kernel moved to the control plane, the hourly merge-state pass went
+ * from seconds to the 60 s function limit. Its sweeps call doors and inline drains one after
+ * another, each with a budget of its own (a door 20 s, a drain 10 s), so a control plane slow to
+ * answer cost the sum of every budget. A pass now spends at most its own budget on the control
+ * plane, however many calls it makes.
+ */
+describe('a pass\'s control-plane budget', () => {
+  /** A control plane that never answers: each request runs until the client's own timeout fires. */
+  function silentControlPlane(clock: { t: number }) {
+    const realTimeout = AbortSignal.timeout;
+    let lastTimeout = 0;
+    AbortSignal.timeout = ((ms: number) => { lastTimeout = ms; return realTimeout.call(AbortSignal, ms); }) as typeof AbortSignal.timeout;
+    const cp = {
+      calls: 0,
+      timeouts: [] as number[],
+      fetch: (async () => { cp.calls++; cp.timeouts.push(lastTimeout); clock.t += lastTimeout; throw Object.assign(new Error('t'), { name: 'TimeoutError' }); }) as unknown as typeof fetch,
+      restore: () => { AbortSignal.timeout = realTimeout; },
+    };
+    return cp;
+  }
+  const deps = (clock: { t: number }, cp: { fetch: typeof fetch }): ClientDeps => ({
+    env: OWN, host: () => 'web', now: () => clock.t, sleep: async (ms) => { clock.t += ms; }, fetch: cp.fetch,
+    run: (async () => { throw new Error('ran locally'); }) as never,
+  });
+
+  it('reproduction: N door calls one after another cost N door budgets without a pass budget', async () => {
+    const { landThroughKernel, DOOR_BUDGET_MS } = await import('./kernel-client');
+    const clock = { t: 0 };
+    const cp = silentControlPlane(clock);
+    try {
+      for (let i = 0; i < 5; i++) await landThroughKernel(input, { principal, deps: deps(clock, cp) }).catch(() => null);
+    } finally { cp.restore(); }
+    // Five sweep candidates: well past a 60 s function limit.
+    expect(clock.t).toBeGreaterThanOrEqual(5 * DOOR_BUDGET_MS);
+  });
+
+  it('inside a pass, N door calls stop at the pass budget; the rest are refused unsent, retryable, nothing applied', async () => {
+    const { landThroughKernel, withControlPlaneBudget } = await import('./kernel-client');
+    const clock = { t: 0 };
+    const cp = silentControlPlane(clock);
+    const errors: unknown[] = [];
+    let report;
+    try {
+      ({ budget: report } = await withControlPlaneBudget('test-pass', 30_000, async () => {
+        for (let i = 0; i < 5; i++) await landThroughKernel(input, { principal, deps: deps(clock, cp) }).catch((e) => errors.push(e));
+      }, { now: () => clock.t }));
+    } finally { cp.restore(); }
+    // The pass budget, plus at most the back-off sleep after the last request.
+    expect(clock.t).toBeLessThanOrEqual(30_000 + 2_000);
+    expect(errors).toHaveLength(5);
+    for (const e of errors) expect(e).toBeInstanceOf(ControlPlaneUnavailableError);
+    const unsent = errors.filter((e) => (e as ControlPlaneUnavailableError).why.includes('spent its control-plane budget'));
+    expect(unsent.length).toBeGreaterThanOrEqual(3);
+    for (const e of unsent) expect((e as ControlPlaneUnavailableError).outcome).toBe('not_applied');
+    expect(report!.refused).toBe(unsent.length);
+    expect(report!.submitted).toBeGreaterThan(0);
+  });
+
+  it('inline drains in a pass wait briefly for their answer and are skipped once the budget is spent; outside a pass one waits its own budget', async () => {
+    const { drainOnControlPlane, withControlPlaneBudget, INLINE_DRAIN_BUDGET_MS, PASS_DRAIN_WAIT_MS } = await import('./kernel-client');
+    // Reproduction: twenty kernel-owned PRs in one sweep, each ending in an inline drain.
+    const solo = { t: 0 };
+    const cp1 = silentControlPlane(solo);
+    try {
+      for (let i = 0; i < 20; i++) expect(await drainOnControlPlane(DELIVERY, deps(solo, cp1))).toBeNull();
+    } finally { cp1.restore(); }
+    expect(solo.t).toBeGreaterThanOrEqual(20 * INLINE_DRAIN_BUDGET_MS);
+
+    const clock = { t: 0 };
+    const cp = silentControlPlane(clock);
+    let report;
+    try {
+      ({ budget: report } = await withControlPlaneBudget('test-pass', 30_000, async () => {
+        for (let i = 0; i < 20; i++) expect(await drainOnControlPlane(DELIVERY, deps(clock, cp))).toBeNull();
+      }, { now: () => clock.t }));
+    } finally { cp.restore(); }
+    expect(clock.t).toBeLessThanOrEqual(30_000 + 2_000);
+    // Each one waited at most 2.5 s (a literal: the pass's drain wait), never the request's 10 s.
+    expect(Math.max(...cp.timeouts)).toBeLessThanOrEqual(2_500);
+    expect(cp.calls).toBeGreaterThanOrEqual(10);
+    expect(PASS_DRAIN_WAIT_MS).toBe(2_500);
+    expect(report!.drainsSkipped).toBeGreaterThan(0);
+    expect(report!.drainsSkipped + report!.submitted).toBe(20);
+  });
+
+  it('a submission inside a pass is cut to what is left of it, whatever budget its caller asked for', async () => {
+    const { withControlPlaneBudget } = await import('./kernel-client');
+    const clock = { t: 0 };
+    const cp = silentControlPlane(clock);
+    let errs: unknown[] = [];
+    try {
+      await withControlPlaneBudget('test-pass', 5_000, async () => {
+        // The caller asks for 20 s; the pass has 5 s.
+        errs.push(await submitKernelCommand('land', input, { principal, budgetMs: 20_000, deps: deps(clock, cp) }).catch((e) => e));
+        expect(clock.t).toBeLessThanOrEqual(5_000 + 2_000);
+        const before = cp.calls;
+        errs.push(await submitKernelCommand('land', input, { principal, budgetMs: 20_000, deps: deps(clock, cp) }).catch((e) => e));
+        // Spent: refused without a request.
+        expect(cp.calls).toBe(before);
+      }, { now: () => clock.t });
+    } finally { cp.restore(); }
+    expect((errs[1] as ControlPlaneUnavailableError).why).toContain('spent its control-plane budget');
+    expect((errs[1] as ControlPlaneUnavailableError).outcome).toBe('not_applied');
+  });
+
+  it('nested passes keep the earlier deadline, and outside any pass nothing is budgeted', async () => {
+    const { withControlPlaneBudget, controlPlaneBudgetLeft } = await import('./kernel-client');
+    let t = 0;
+    expect(controlPlaneBudgetLeft()).toBeNull();
+    await withControlPlaneBudget('outer', 10_000, async () => {
+      t = 4_000;
+      await withControlPlaneBudget('inner', 30_000, async () => {
+        expect(controlPlaneBudgetLeft()).toBe(6_000);
+      }, { now: () => t });
+    }, { now: () => t });
+    expect(controlPlaneBudgetLeft()).toBeNull();
+  });
+
+  it('in shadow a pass sends nothing and its budget never binds: the command runs here', async () => {
+    const { withControlPlaneBudget, landThroughKernel } = await import('./kernel-client');
+    const l = local();
+    const { value, budget } = await withControlPlaneBudget('test-pass', 0, () => landThroughKernel(input, { principal, deps: { ...l.deps, env: { ...OWN, EXECUTION_MODE: 'shadow' } } }));
+    expect(value).toEqual({ merged: true, outcome: 'merged', where: 'here' } as never);
+    expect(budget).toMatchObject({ submitted: 0, refused: 0 });
+  });
+});
+
+/**
+ * Incident 197552dc, the ledger's side: the cutover hours hold only a few `drain` rows, so the time
+ * went on requests that never reached the claim. A request the control plane answers with a bare 5xx
+ * before claiming (the Workers runtime's answer to an uncaught throw, or Cloudflare's own error page)
+ * reads as "may have run": the client retries it for its whole budget, the door re-submits it, and no
+ * ledger row is ever written.
+ */
+describe('time spent before the ledger claim', () => {
+  const PASS_INPUT = { ...input, door: 'sweep', actor: 'system:test-sweep' };
+  const system = { kind: 'system' as const, id: 'test-sweep' };
+
+  /** The real endpoint whose ledger cannot be reached, behind the Workers runtime: an uncaught throw is a bare 500. */
+  function controlPlane(clock: { t: number }) {
+    const rows = new Set<string>();
+    const ledger: CommandLedger = {
+      claim: async () => { throw new Error('ledger unreachable'); },
+      renew: async () => false, complete: async () => false, release: async () => {},
+      read: async () => { throw new Error('ledger unreachable'); }, prune: async () => 0,
+    };
+    let requests = 0;
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      requests++;
+      clock.t += 300;
+      try {
+        return await handleCommandRequest(new Request(url, init), { env: OWN, host: () => 'control-plane', ledger, reaches: async () => true, sleep: async () => {} });
+      } catch {
+        return new Response('error code: 1101', { status: 500 });
+      }
+    }) as unknown as typeof fetch;
+    return { rows, fetchImpl, get requests() { return requests; } };
+  }
+  const depsOf = (clock: { t: number }, f: typeof fetch): ClientDeps => ({
+    env: OWN, host: () => 'web', now: () => clock.t, sleep: async (ms) => { clock.t += ms; }, fetch: f,
+    run: (async () => { throw new Error('ran locally'); }) as never,
+  });
+
+  it('reproduction: a pre-claim bare 500 costs two door calls and a drain about 45 s, with no ledger row', async () => {
+    const { landThroughKernel, drainOnControlPlane } = await import('./kernel-client');
+    const clock = { t: 0 };
+    let requests = 0;
+    const bare500 = (async () => { requests++; clock.t += 300; return new Response('error code: 1101', { status: 500 }); }) as unknown as typeof fetch;
+    const d = depsOf(clock, bare500);
+    for (let i = 0; i < 2; i++) {
+      const err = await landThroughKernel(PASS_INPUT, { principal: system, deps: d }).catch((e) => e);
+      expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+      expect(err.outcome).toBe('unknown');
+    }
+    expect(await drainOnControlPlane(DELIVERY, d)).toBeNull();
+    expect(clock.t).toBeGreaterThanOrEqual(45_000);
+    expect(requests).toBeGreaterThan(20);
+  });
+
+  it('a ledger that does not answer before the claim is a 503 saying nothing ran: the door fails not_applied in about a second and is not re-submitted', async () => {
+    const { landThroughKernel, drainOnControlPlane } = await import('./kernel-client');
+    const clock = { t: 0 };
+    const cp = controlPlane(clock);
+    const d = depsOf(clock, cp.fetchImpl);
+    for (let i = 0; i < 2; i++) {
+      const err = await landThroughKernel(PASS_INPUT, { principal: system, deps: d }).catch((e) => e);
+      expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+      expect([err.outcome, err.why]).toEqual(['not_applied', 'answered 503 ledger_unavailable']);
+    }
+    expect(await drainOnControlPlane(DELIVERY, d)).toBeNull();
+    // Two requests per call (one retry), three calls; about a second each.
+    expect(cp.requests).toBe(6);
+    expect(clock.t).toBeLessThan(3_000);
+  });
+});
+
+describe('a reach check the control plane could not make', () => {
+  it('is answered 503 reach_unavailable; the client retries once and fails not_applied, and the door does not re-submit', async () => {
+    const { landThroughKernel } = await import('./kernel-client');
+    const clock = { t: 0 };
+    let requests = 0;
+    const ledger: CommandLedger = {
+      claim: async () => { throw new Error('the reach check should come first'); },
+      renew: async () => false, complete: async () => false, release: async () => {}, read: async () => null, prune: async () => 0,
+    };
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      requests++;
+      clock.t += 300;
+      return handleCommandRequest(new Request(url, init), { env: OWN, host: () => 'control-plane', ledger, reaches: async () => { throw new Error('db down'); }, sleep: async () => {} });
+    }) as unknown as typeof fetch;
+    const err = await landThroughKernel(input, {
+      principal,
+      deps: { env: OWN, host: () => 'web', now: () => clock.t, sleep: async (ms) => { clock.t += ms; }, fetch: fetchImpl, run: (async () => { throw new Error('ran locally'); }) as never },
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+    expect([err.outcome, err.why]).toEqual(['not_applied', 'answered 503 reach_unavailable']);
+    expect(requests).toBe(2);
+    expect(clock.t).toBeLessThan(1_000);
   });
 });
