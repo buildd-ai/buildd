@@ -1,12 +1,12 @@
 [
   {
-    "route": "/app/tasks/:id",
+    "route": "/app/dev/estimate-fixtures",
     "states": [
       {
         "key": "estimate-breakdown",
         "steps": [
-          { "action": "click", "selector": "role:button[name=Estimate breakdown]" },
-          { "action": "waitFor", "selector": "text:Calibration below target" },
+          { "action": "click", "selector": "css:[data-testid=estimate-no-comparable] button" },
+          { "action": "waitFor", "selector": "text:1.64M–7M tokens" },
           { "action": "assertLayout", "selector": "css:body" }
         ]
       }

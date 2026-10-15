@@ -1,5 +1,5 @@
 import { taskEstimatePayload } from '@buildd/core/task-estimate-rollout';
-import Disclosure from '@/components/ui/Disclosure';
+import TaskTimeRow from '@/components/TaskTimeRow';
 import { getWorkerDeliverableArtifactCount } from '@/lib/worker-deliverables';
 import { cancellationLine } from '@/lib/task-cancellation';
 import { taskRecoverySentence } from '@/lib/task-recovery-hold';
@@ -1021,13 +1021,7 @@ export default async function TaskDetailPage({
           key: 'time',
           label: 'Time',
           value: (
-            <div className="space-y-0.5">
-              <div className={timeRow.overUpper ? 'text-status-warning' : 'text-text-primary'}>{timeRow.text}</div>
-              {timeRow.explanation && <div className="text-meta text-text-muted">{timeRow.explanation}</div>}
-              {timeRow.breakdown && <Disclosure summary="Estimate breakdown">
-                <div className="text-meta text-text-muted">{timeRow.breakdown}</div>
-              </Disclosure>}
-            </div>
+            <TaskTimeRow view={timeRow} />
           ),
         }]
       : []),
