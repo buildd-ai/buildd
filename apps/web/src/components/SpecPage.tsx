@@ -203,7 +203,8 @@ export default function SpecPage({ view }: { view: Ok }) {
       </section>
     ) : (
       <Card as="article" className="md:p-8" data-testid="spec-page-body" aria-label={`Revision ${view.reading.revision} of the spec`}>
-        <MarkdownContent content={withoutRepeatedTitle(view.body, spec.title)} images="link" surface="spec" attachments={view.attachmentSources ?? {}} />
+        <MarkdownContent content={withoutRepeatedTitle(view.body, spec.title)} images="link" surface="spec" attachments={view.attachmentSources ?? {}}
+          criterionVerdicts={(view.delivery?.entries ?? []).filter(e => e.builtTo === view.reading.revision).flatMap(e => e.criteria.map(c => ({ criterionId: c.criterionId, mark: c.mark, title: e.title, href: e.href })))} />
       </Card>
     )
   );

@@ -3,6 +3,9 @@
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import MermaidBlock from '@/components/MermaidBlock';
+import Chip from '@/components/ui/Chip';
+import specCriterionMarkdown from './spec-criterion-markdown';
+import { criterionWords, type CriterionMark } from '@/lib/specs/delivery-words';
 
 interface MarkdownContentProps {
   content: string;
@@ -34,6 +37,8 @@ interface MarkdownContentProps {
    * follows `images`.
    */
   attachments?: Record<string, { src: string; alt: string | null; image: boolean }>;
+  /** Work-specific marks for the revision being read, never an aggregate verdict. */
+  criterionVerdicts?: Array<{ criterionId: string; mark: CriterionMark; title: string; href: string }>;
 }
 
 export const ATTACHMENT_SCHEME = 'attachment:';
@@ -55,7 +60,7 @@ export function mermaidSource(node: HastNode | undefined): string | null {
   return text(code!).replace(/\n$/, '');
 }
 
-export default function MarkdownContent({ content, className = '', variant = 'default', images = 'render', surface = 'default', attachments }: MarkdownContentProps) {
+export default function MarkdownContent({ content, className = '', variant = 'default', images = 'render', surface = 'default', attachments, criterionVerdicts = [] }: MarkdownContentProps) {
   const compact = variant === 'compact';
   const spec = surface === 'spec';
   return (
@@ -63,9 +68,27 @@ export default function MarkdownContent({ content, className = '', variant = 'de
       <ReactMarkdown
         // GFM: tables, strikethrough, task lists, autolinks. Agent output leans on
         // tables; without this they rendered as raw `| a | b |` rows.
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={spec ? [remarkGfm, specCriterionMarkdown] : [remarkGfm]}
         urlTransform={specUrlTransform}
         components={{
+          // Definition rows stay L1: no card frame or new colour.
+          div: ({ children, node, ...props }) => {
+            const id = node?.properties?.['data-criterion-id'];
+            if (typeof id !== 'string') return <div {...props}>{children}</div>;
+            return (
+              <div id={id} data-testid="spec-criterion" className="not-prose flex scroll-mt-6 items-start gap-3 py-3 [&+div[data-testid=spec-criterion]]:border-t [&+div[data-testid=spec-criterion]]:border-[var(--line-soft)]">
+                <div className="flex max-w-32 shrink-0 flex-col items-start gap-1">
+                  <a href={`#${id}`} aria-label={`Link to ${id}`} className="inline-flex min-h-11 items-center text-text-primary hover:underline md:min-h-0">
+                    <Chip tone="muted" dot={false}>{id}</Chip>
+                  </a>
+                  {criterionVerdicts.filter(v => v.criterionId === id).map(v => (
+                    <a key={v.href} href={v.href} title={v.title} data-testid="spec-criterion-verdict" className="inline-flex min-h-11 items-center text-meta text-text-secondary underline md:min-h-0">{criterionWords(v.mark).label}</a>
+                  ))}
+                </div>
+                <div className="min-w-0 text-body text-text-primary [overflow-wrap:anywhere]">{children}</div>
+              </div>
+            );
+          },
           // Style overrides for better integration
           h1: ({ children }) => (
             <h1 className={compact ? 'text-[14px] font-semibold text-text-primary mt-3 mb-1' : 'text-xl font-bold mt-4 mb-2'}>{children}</h1>
@@ -78,7 +101,7 @@ export default function MarkdownContent({ content, className = '', variant = 'de
           ),
           p: ({ children }) => <p className={compact ? 'my-1.5' : 'my-2'}>{children}</p>,
           ul: ({ children }) => <ul className="list-disc list-inside my-2 space-y-1">{children}</ul>,
-          ol: ({ children }) => <ol className="list-decimal list-inside my-2 space-y-1">{children}</ol>,
+          ol: ({ children, start }) => <ol start={start} className="list-decimal list-inside my-2 space-y-1">{children}</ol>,
           li: ({ children }) => <li className="ml-2">{children}</li>,
           code: ({ children, className }) => {
             const isInline = !className;

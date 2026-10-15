@@ -344,6 +344,14 @@ describe('Delivery and verification (Slice 13, R-61, AC-48)', () => {
     expect(q('spec-delivery')).toBeNull();
   });
 
+  it('shows revision-matched criterion verdicts beside body chips, with their work context', () => {
+    act(() => root.render(<SpecPage view={{ ...base, delivery: { entries: [entry], next: null } }} />));
+    expect(container.querySelector('#R-1 [data-testid="spec-criterion-verdict"]')?.textContent).toContain('Passes');
+    expect(container.querySelector('#R-1 [data-testid="spec-criterion-verdict"]')?.getAttribute('title')).toContain(entry.title);
+    act(() => root.render(<SpecPage view={{ ...base, reading: { revision: 2, approved: false, isHead: true }, delivery: { entries: [entry], next: null } }} />));
+    expect(container.querySelector('#R-1 [data-testid="spec-criterion-verdict"]')).toBeNull();
+  });
+
   it('lists each entry once, linking to its task, with delivery and standing on separate lines', () => {
     act(() => root.render(<SpecPage view={{ ...base, delivery: { entries: [entry], next: null } }} />));
     expect(container.querySelectorAll('[data-testid="spec-delivery-entry"]')).toHaveLength(1);

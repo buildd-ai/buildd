@@ -96,7 +96,7 @@ describe('mermaid on a spec surface', () => {
 });
 
 describe('tables on a spec surface', () => {
-  const TABLE = '| ID | Requirement | Check | Owner | Area | Notes |\n|---|---|---|---|---|---|\n| AC-1 | Empty cart shows the empty state | unit | max | cart | a long note that makes the row wide |\n| AC-2 | Totals in the shopper currency | unit | max | cart | another note |\n';
+  const TABLE = '| ID | Requirement | Check | Owner | Area | Notes |\n|---|---|---|---|---|---|\n| Cart | Empty cart shows the empty state | unit | max | cart | a long note that makes the row wide |\n| Currency | Totals in the shopper currency | unit | max | cart | another note |\n';
   it('sit in a box that scrolls sideways, with ruled cells', () => {
     act(() => root.render(<MarkdownContent content={TABLE} surface="spec" />));
     const box = q('spec-table')!;
