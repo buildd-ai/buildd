@@ -20,6 +20,7 @@
  *   counts as live, on Home and the list alike.
  * - chip: `deriveMissionStateView(...).chip`, the detail header's accessor.
  */
+import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
 import { OPEN_TASK_STATUSES } from '@buildd/shared';
 import {
   deriveCriteriaGatePresentation,
@@ -526,7 +527,10 @@ function deriveCardState(
       .map(t => ({
         id: t.id, status: t.status, title: t.title,
         ...(t.status === 'pending' ? { waitingOnTaskIds: unmetDependencyIds(t, byId), waitingOnPrs: unmetDependencyPrs(t, byId) } : {}),
+        surfaceAudit: isSurfaceAuditTask(t.title ?? ''),
       })),
+    // Same reading as `explain`: a merged mission PR with only the visual review open is a check, not a stall.
+    missionPrMerged: integrationPr?.state === 'merged',
     localStrand: strand ? { ...strand, flipBlockedReason: continueOnRunnerBlockedReason({ status: row.status, workspaceId: row.workspaceId }) } : null,
     // The same classifier `explain` and the heartbeat run: when every open row
     // is on a self-resolving wait (an infrastructure retry with a backoff, a

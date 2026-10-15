@@ -103,6 +103,7 @@ import type { SupersessionSuggestion } from '@buildd/core/pr-shipped';
 import { isRepeatedlyDeferred, SURFACE_DEFERRAL_MS } from './claim-deferral-thresholds';
 import { quietLabel } from './local-strand';
 import type { LandingBlocker, LandingBlockCause } from './landing-blocker';
+import { BROWSER_RUNNER_MISSING, claimHoldPhrase } from './claim-hold-phrase';
 
 // ─── Provenance ───────────────────────────────────────────────────────────────
 
@@ -192,6 +193,24 @@ export type WaitingOnDescriptor =
        * Nothing here is the owner's to do.
        */
       blockedBy?: { prNumbers: number[]; unfinished: number };
+      /**
+       * The claim loop's hold on every claimable open row, in words
+       * (`claimHoldPhrase`): the honest cause instead of "nothing is running".
+       */
+      hold?: string;
+      /**
+       * The mission PR has merged and only the visual review is left (spec
+       * f7f67f1a R-32): the mission is waiting on a check, not stalled.
+       */
+      visualQueued?: true;
+      /** With `visualQueued`: the visual review state says it cannot run (`hold` names why). */
+      visualBlocked?: true;
+      /** With `visualQueued`: the visual review is capturing now. */
+      visualRunning?: true;
+      /** Every open row is queued and nothing holds it: next in line for a runner. */
+      nextInLine?: true;
+      /** Every open row is queued for reasons with no wording, or for different ones: waiting, no cause named. */
+      waitingNoCause?: true;
     }
   /** A deliverable failed. `infra` distinguishes "failed on infrastructure" from "failed on its merits". */
   | { kind: 'task_failed'; tone: WaitingOnTone; label: string; infra: boolean; taskIds: string[]; titles: string[] }
@@ -544,7 +563,31 @@ export interface MissionStateInput {
     title?: string | null;
     waitingOnTaskIds?: string[];
     waitingOnPrs?: Record<string, number>;
+    /** A `[surface audit]` row: the visual review, not build work. */
+    surfaceAudit?: boolean;
+    /** The claim loop's newest refusal reason for this row (gate_events), when known. */
+    holdReason?: string | null;
+    /** A visual-auditor row no online browser runner can take: that is its one cause. */
+    missingBrowser?: boolean;
   }>;
+  /**
+   * The canonical visual review state (`getMissionVisualReviewState`), when the
+   * caller read it: the header follows it rather than the audit task row, so a
+   * waiver or a blocked review reads the same here as on the check row.
+   */
+  visualReview?: { status: string; blockedDetail?: string | null } | null;
+  /**
+   * Required goal criteria the Checks rail shows as not yet passed, the
+   * selected outcome spec included (`openCriteriaChecks`). Names what is left
+   * when nothing else is outstanding, instead of "nothing is waiting".
+   */
+  openChecks?: Array<{ label: string; state: string }>;
+  /**
+   * The mission's integration PR merged into trunk. Unlike `missionPr`, which
+   * collapses a merged PR to null, this keeps the fact so an open check is read
+   * as what is left, never as a stall.
+   */
+  missionPrMerged?: boolean;
   /**
    * Tasks whose worker is parked on a question for a person
    * (`missionOpenQuestions`, lib/open-ask.ts). Such a worker still counts in
@@ -709,6 +752,8 @@ export interface MissionSituation {
   /** Everything outstanding other than `focus`, in rank order. */
   readonly alsoOutstanding: readonly WaitingOnDescriptor[];
   readonly derivedFrom: MissionStateSource;
+  /** With nothing else outstanding: the required checks still open, by name (`openChecks`). */
+  readonly openChecks?: readonly string[];
 }
 
 // ─── Factory ──────────────────────────────────────────────────────────────────
@@ -737,9 +782,20 @@ export function deriveMissionStateView(input: MissionStateInput): MissionStateVi
 
   // A self-resolving wait resumes by itself: say so, rather than the generic
   // AUTO every `active` state shares. Same tone as that state.
-  const chip = resolved.waitingOn?.kind === 'self_resolving_wait'
-    ? { ...getMissionStateChip(resolved.displayState), label: /retry/i.test(resolved.waitingOn.reason) ? 'WAITING TO RETRY' : 'WAITING' }
-    : getMissionStateChip(resolved.displayState);
+  const w = resolved.waitingOn;
+  const chip = w?.kind === 'self_resolving_wait'
+    ? { ...getMissionStateChip(resolved.displayState), label: /retry/i.test(w.reason) ? 'WAITING TO RETRY' : 'WAITING' }
+    : w?.kind === 'task' && w.visualQueued
+      ? { ...getMissionStateChip(resolved.displayState), label: w.visualBlocked ? 'VISUAL REVIEW UNABLE TO RUN' : w.visualRunning ? 'VISUAL REVIEW RUNNING' : 'VISUAL REVIEW QUEUED' }
+      // All clear: the mission can complete, nothing is under review. A
+      // required check still open is named instead (spec 8e137fdb AC-7).
+      : resolved.kind === 'idle' && resolved.displayState === 'review'
+        ? { ...getMissionStateChip(resolved.displayState), label: (input.openChecks?.length ?? 0) > 0 ? 'CHECK PENDING' : 'READY TO COMPLETE' }
+      : w?.kind === 'task' && w.nextInLine
+        ? { ...getMissionStateChip(resolved.displayState), label: 'NEXT IN LINE' }
+      : w?.kind === 'task' && (w.hold || w.waitingNoCause)
+        ? { ...getMissionStateChip(resolved.displayState), label: 'WAITING' }
+        : getMissionStateChip(resolved.displayState);
   const criteriaBlockingReason =
     resolved.waitingOn?.kind === 'criterion_failing' || resolved.waitingOn?.kind === 'criterion_unverified'
       ? resolved.waitingOn.label
@@ -1392,10 +1448,17 @@ function mergeFact(input: MissionStateInput): Resolution | null {
  * `blocked`; with a worker running they are simply not finished yet, which is
  * still something the header owes the reader and is deliberately quiet.
  */
+/** Visual review states in which an open audit row is no longer outstanding work. */
+const VISUAL_SETTLED = new Set(['waived', 'passed', 'not_applicable', 'optional']);
+
 function openTaskFact(input: MissionStateInput, live: boolean): Resolution | null {
   const { completion } = input;
-  const openTasks = input.openTasks ?? [];
-  const pendingCount = completion?.pendingDeliverables ?? openTasks.length;
+  const allOpen = input.openTasks ?? [];
+  // A waived or passed review leaves its audit row open; it is not what holds the mission.
+  const settled = !!input.visualReview && VISUAL_SETTLED.has(input.visualReview.status);
+  const openTasks = settled ? allOpen.filter(t => !t.surfaceAudit) : allOpen;
+  if (settled && allOpen.length > 0 && openTasks.length === 0) return null;
+  const pendingCount = settled ? openTasks.length : completion?.pendingDeliverables ?? openTasks.length;
   // Every open row waiting on its dependencies is a fact whatever the health
   // signal says (it reads NOMINAL for exactly this case), so a card with no
   // completion decision names the wait the same way `explain` does.
@@ -1441,6 +1504,66 @@ function openTaskFact(input: MissionStateInput, live: boolean): Resolution | nul
     };
   }
   const citedIds = (live ? openTasks : claimable).map(t => t.id);
+
+  // R-32 / R-33: with nothing live, say what the open rows actually wait on.
+  if (!live && claimable.length > 0) {
+    // One cause per row: a missing browser runner outranks a claim-loop hold,
+    // because the hold lifting would still leave nothing able to run it.
+    const holds = claimable.map(t => (t.missingBrowser ? BROWSER_RUNNER_MISSING : claimHoldPhrase(t.holdReason)));
+    const hold = holds.every(h => h && h === holds[0]) ? holds[0]! : undefined;
+    const base = { kind: 'task' as const, count: pendingCount, taskIds: citedIds, byStatus, ...(isLocal(input) ? { local: true as const } : {}) };
+    if (input.missionPrMerged && claimable.every(t => t.surfaceAudit)) {
+      const vr = input.visualReview?.status;
+      if (vr === 'blocked') {
+        const why = input.visualReview?.blockedDetail ?? null;
+        return {
+          kind: 'awaiting_verification',
+          waitingOn: { ...base, tone: 'warning', label: why ? `Visual review unable to run: ${why}` : 'Visual review unable to run', visualQueued: true, visualBlocked: true, ...(why ? { hold: why } : {}) },
+          displayState: 'awaiting_verification',
+          source: completion?.code === 'pending_deliverables' ? 'canCompleteMission' : 'deriveTaskHealthSignal',
+        };
+      }
+      if (vr === 'running') {
+        return {
+          kind: 'awaiting_verification',
+          waitingOn: { ...base, tone: 'neutral', label: 'Visual review running', visualQueued: true, visualRunning: true },
+          displayState: 'awaiting_verification',
+          source: completion?.code === 'pending_deliverables' ? 'canCompleteMission' : 'deriveTaskHealthSignal',
+        };
+      }
+      return {
+        kind: 'awaiting_verification',
+        waitingOn: { ...base, tone: 'neutral', label: hold ? `Visual review queued: ${hold}` : 'Visual review queued', visualQueued: true, ...(hold ? { hold } : {}) },
+        displayState: 'awaiting_verification',
+        source: completion?.code === 'pending_deliverables' ? 'canCompleteMission' : 'deriveTaskHealthSignal',
+      };
+    }
+    if (hold) {
+      return {
+        kind: 'waiting',
+        waitingOn: { ...base, tone: 'warning', label: `${pendingCount === 1 ? 'The open task is' : `${pendingCount} open tasks are`} queued: ${hold}`, hold },
+        displayState: 'active',
+        source: completion?.code === 'pending_deliverables' ? 'canCompleteMission' : 'deriveTaskHealthSignal',
+      };
+    }
+    // Spec 8e137fdb I-4: queued rows nothing holds are next in line; a reason
+    // the derivation does not know (or several different ones) reads as
+    // waiting, with no invented cause (AC-9). Either way, not a stall: only a
+    // started row with nothing running it is one. A local mission keeps its own
+    // local-session reading.
+    if (!isLocal(input) && claimable.every(t => t.status === 'pending')) {
+      const subject = pendingCount === 1 ? 'The open task is' : `${pendingCount} open tasks are`;
+      const nothingHolds = claimable.every(t => !t.holdReason && !t.missingBrowser);
+      return {
+        kind: 'waiting',
+        waitingOn: nothingHolds
+          ? { ...base, tone: 'neutral', label: `${subject} next in line for a runner`, nextInLine: true }
+          : { ...base, tone: 'neutral', label: `${subject} waiting`, waitingNoCause: true },
+        displayState: 'active',
+        source: completion?.code === 'pending_deliverables' ? 'canCompleteMission' : 'deriveTaskHealthSignal',
+      };
+    }
+  }
 
   return {
     kind: live ? 'running' : 'blocked',
@@ -1789,6 +1912,12 @@ function situationPhrase(d: WaitingOnDescriptor, opts: { running?: boolean } = {
       if (d.blockedBy) {
         return `${d.count === 1 ? '1 task is' : `${d.count} tasks are`} waiting on ${unblocksWhen(d.blockedBy, 'phrase')}`;
       }
+      if (d.visualBlocked) return d.hold ? `visual review unable to run: ${d.hold}` : 'visual review unable to run';
+      if (d.visualRunning) return 'visual review running';
+      if (d.visualQueued) return d.hold ? `visual review queued: ${d.hold}` : 'visual review queued';
+      if (d.hold) return `${d.count === 1 ? 'the open task is' : `${d.count} open tasks are`} queued: ${d.hold}`;
+      if (d.nextInLine) return `${d.count === 1 ? 'the open task is' : `${d.count} open tasks are`} next in line for a runner`;
+      if (d.waitingNoCause) return `${d.count === 1 ? 'the open task is' : `${d.count} open tasks are`} waiting`;
       // `neutral` is open work with something live on the mission; `warning`
       // is the stall, where nothing is.
       if (d.tone === 'warning') {
@@ -1905,9 +2034,15 @@ function deriveSituation(
   if (!focus || !lead) {
     // Every source that could contradict this was consulted and had nothing to
     // say. Say THAT, rather than falling back to a row of buttons.
+    const checks = input.openChecks ?? [];
+    const allLanded = !input.hasPendingDeliverableWork && input.progress !== undefined && input.progress >= 100;
     const headline = resolved.kind === 'running'
       ? `${runningLead(input)}.`
-      : 'Nothing is waiting.';
+      : checks.length === 1
+        ? `Waiting on ${checks[0].label}: ${checks[0].state}.`
+        : checks.length > 1
+          ? `Waiting on ${checks.length} checks: ${checks.map(c => c.label).join(', ')}.`
+          : allLanded ? 'Ready to complete.' : 'Nothing is waiting.';
     return {
       headline,
       tone: 'neutral',
@@ -1915,6 +2050,7 @@ function deriveSituation(
       nextAction: null,
       alsoOutstanding: [],
       derivedFrom: resolved.source,
+      ...(checks.length > 0 && resolved.kind !== 'running' ? { openChecks: checks.map(c => c.label) } : {}),
     };
   }
 
@@ -2023,6 +2159,16 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
       if (waitingOn.blockedBy) {
         return `Unblocks when ${unblocksWhen(waitingOn.blockedBy, 'action')}.`;
       }
+      if (waitingOn.nextInLine) return 'It starts when a runner picks it up. Cancel it if you no longer want the work.';
+      if (waitingOn.waitingNoCause) return 'It starts when what holds it clears. Cancel it if you no longer want the work.';
+      if (waitingOn.visualBlocked) return 'A person can skip the visual review, or fix what keeps it from running.';
+      if (waitingOn.visualRunning) return 'Nothing to do: the visual review is taking its screenshots.';
+      if (waitingOn.hold && !waitingOn.local) {
+        return waitingOn.visualQueued
+          ? 'It starts when the hold lifts. A person can skip the visual review instead.'
+          : 'It starts when the hold lifts. Cancel it if you no longer want the work.';
+      }
+      if (waitingOn.visualQueued && !waitingOn.local) return 'It starts when a browser runner picks it up. A person can skip the visual review instead.';
       if (waitingOn.local) {
         return waitingOn.count === 1
           ? 'Start it from a local session with claim_task {taskId}, or cancel it if you no longer want the work.'
