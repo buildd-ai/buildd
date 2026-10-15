@@ -203,5 +203,6 @@ describe('revision 2 (R-17, R-19, R-21, AC-6)', () => {
     expect(t).toContain('w');
     expect(t).toMatch(/only the workspaces this runner serves/i);
     expect(t).toMatch(/o opens this runner's page on buildd/i);
+    expect(t).toContain('buildd login --workspaces');
   });
 });

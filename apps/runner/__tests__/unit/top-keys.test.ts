@@ -179,6 +179,18 @@ describe('revision 2 keys (R-19, R-20)', () => {
     expect(s.status?.text).toBe('Showing all 2 workspaces.');
   });
 
+  test('w names the team when the workspaces span several (R-7)', () => {
+    const named = reduce(fixtureState(), {
+      type: 'workspaces',
+      workspaces: [
+        { id: 'ws-aaaa-0000', name: 'alpha', teamId: 'team-1', teamName: 'Team One' },
+        { id: 'ws-bbbb-0000', name: 'bravo', teamId: 'team-2', teamName: 'Team Two' },
+      ],
+    });
+    const { s } = press(named, 'w');
+    expect(s.status?.text).toBe('Showing alpha (Team One). w for the next workspace.');
+  });
+
   test('w with nothing to switch to says so', () => {
     const { s } = press(fixtureState(), 'w');
     expect(s.selectedWorkspace).toBeNull();

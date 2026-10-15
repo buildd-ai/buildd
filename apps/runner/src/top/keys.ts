@@ -4,7 +4,7 @@
  * Pure, so every key is unit-tested (top-keys.test.ts).
  */
 import {
-  currentMission, currentWorkspace, cycleWorkspace, missionRows, selectedRow, taskRows, workspaceList,
+  currentMission, currentWorkspace, cycleWorkspace, missionRows, selectedRow, taskRows, teamCount, workspaceList,
   type TaskRow, type TopState,
 } from './state';
 
@@ -314,7 +314,9 @@ function switchWorkspace(state: TopState): TopState {
   if (list.length < 2) return info(state, 'This runner serves one workspace, so there is nothing to switch to.');
   const next = cycleWorkspace(state);
   const ws = currentWorkspace(next);
-  return info(next, ws ? `Showing ${ws.name}. w for the next workspace.` : `Showing all ${list.length} workspaces.`);
+  // With several teams, say whose workspace this is (R-7).
+  const team = ws && teamCount(next) > 1 && ws.teamName ? ` (${ws.teamName})` : '';
+  return info(next, ws ? `Showing ${ws.name}${team}. w for the next workspace.` : `Showing all ${list.length} workspaces.`);
 }
 
 const fromOf = (state: TopState): 'detail' | undefined => (state.mode.kind === 'detail' ? 'detail' : undefined);

@@ -165,6 +165,7 @@ SPARSE
 write_client_sparse_checkout() {
   cat > .git/info/sparse-checkout << 'CLIENT_SPARSE'
 apps/runner/src/login.ts
+apps/runner/src/login-workspaces.ts
 apps/runner/src/agent-plugin-install.ts
 apps/runner/src/buildd-home.ts
 apps/runner/src/claude-json-mcp.ts
@@ -434,6 +435,7 @@ case "${1:-}" in
 Usage: buildd <command>   (client-only install: no runner)
 
   buildd login [--device]    Sign in and save your key to ~/.buildd/config.json
+  buildd login --workspaces  Choose which workspaces this machine's key serves (same key)
   buildd logout              Remove the saved key
   buildd status              Show whether you are signed in
   buildd install --global    Turn buildd on in Claude Code for your workspace folders,
