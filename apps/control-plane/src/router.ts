@@ -45,7 +45,17 @@ export function matchRoute(method: string, pathname: string): { route: Route; pa
   return null;
 }
 
-export interface Env { EXECUTION_MODE?: string; CONTROL_PLANE_HOST?: string; CRON_SECRET?: string; GIT_SHA?: string }
+export interface Env { EXECUTION_MODE?: string; CONTROL_PLANE_HOST?: string; CRON_SECRET?: string; GIT_SHA?: string; KERNEL_COMMAND_SECRET?: string }
+
+/**
+ * The kernel command API (docs/specs/workflow-kernel-library.md §3): served on
+ * the Worker's own hostname only, never on a buildd.dev route, and not one of
+ * the web app's handlers (so not in ROUTES). The handler itself refuses unless
+ * this Worker is in `own` mode.
+ */
+export const COMMAND_ROUTE = { method: 'POST', pathname: '/v1/commands' } as const;
+export const isCommandRequest = (method: string, pathname: string, ownHost: boolean): boolean =>
+  ownHost && pathname === COMMAND_ROUTE.pathname && method === COMMAND_ROUTE.method;
 
 /**
  * Deep health makes outbound calls (GitHub, Pusher, storage, Redis) on every

@@ -1213,3 +1213,144 @@ describe('POST /api/workers/heartbeat — model auth source (docs/specs/runner-m
     }
   });
 });
+
+describe('POST /api/workers/heartbeat — runner display name (buildd name)', () => {
+  let capturedValues: any;
+  let capturedConflict: any;
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockHeartbeatsFindFirst.mockReset();
+    mockHeartbeatsInsert.mockReset();
+    mockHeartbeatsFindFirst.mockResolvedValue({ viewerToken: 'existing-token', updateAvailable: null, updateAvailableSince: null });
+    mockGetLatestVersion.mockResolvedValue({ latestCommit: 'abc123', latestTag: null, updatedAt: '2026-01-01T00:00:00.000Z' });
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3 });
+    leaseRenewedRows = [];
+    leaseUpdateThrows = null;
+    capturedValues = null;
+    capturedConflict = null;
+    mockHeartbeatsInsert.mockReturnValue({
+      values: mock((vals: any) => {
+        capturedValues = vals;
+        return { onConflictDoUpdate: mock((opts: any) => { capturedConflict = opts; return Promise.resolve(); }) };
+      }),
+    });
+  });
+  const environment = (labels: Record<string, string>) => ({ tools: [], envKeys: [], mcp: [], labels, scannedAt: '2026-01-01T00:00:00.000Z' });
+  const beat = (labels: Record<string, string>) => POST(createMockRequest({
+    headers: { Authorization: 'Bearer bld_test' },
+    body: { localUiUrl: 'http://localhost:8766', environment: environment(labels) },
+  }));
+
+  it('a renamed runner upserts the same heartbeat row: same key, same viewer token, name stored as a label', async () => {
+    const before = await beat({ type: 'local', hostname: 'laptop-1234' });
+    const beforeKey = { url: capturedValues.localUiUrl, target: capturedConflict.target };
+    const after = await beat({ type: 'local', hostname: 'laptop-1234', name: 'atlas' });
+
+    expect(before.status).toBe(200);
+    expect(after.status).toBe(200);
+    // The identity key is (account, localUiUrl): renaming touches neither.
+    expect(capturedValues.accountId).toBe('account-1');
+    expect(capturedValues.localUiUrl).toBe(beforeKey.url);
+    expect(capturedConflict.target).toEqual(beforeKey.target);
+    expect((await after.json()).viewerToken).toBe('existing-token');
+    expect(capturedConflict.set.environment.labels).toEqual({ type: 'local', hostname: 'laptop-1234', name: 'atlas' });
+  });
+
+  it('stores the name tidied and capped, and drops one with nothing printable', async () => {
+    await beat({ hostname: 'laptop-1234', name: `  atlas\n${'x'.repeat(200)}  ` });
+    const stored = capturedValues.environment.labels.name as string;
+    expect(stored.startsWith('atlas x')).toBe(true);
+    expect(stored.length).toBe(48);
+
+    await beat({ hostname: 'laptop-1234', name: '\u0007 ' });
+    expect(capturedValues.environment.labels).toEqual({ hostname: 'laptop-1234' });
+  });
+
+  it('applies the same rule as buildd name: invisible characters stripped, a letter or digit required', async () => {
+    await beat({ hostname: 'laptop-1234', name: '\u202Eat\u200Blas\uFEFF' });
+    expect(capturedValues.environment.labels.name).toBe('atlas');
+
+    await beat({ hostname: 'laptop-1234', name: '!!!' });
+    expect(capturedValues.environment.labels).toEqual({ hostname: 'laptop-1234' });
+
+    await beat({ hostname: 'laptop-1234', name: '\u200B\u2066' });
+    expect(capturedValues.environment.labels).toEqual({ hostname: 'laptop-1234' });
+  });
+});
+
+describe('POST /api/workers/heartbeat — Codex auth source (docs/specs/runner-model-auth-source.md AC-12)', () => {
+  function captureUpsert() {
+    const captured: { values: any; set: any } = { values: null, set: null };
+    mockHeartbeatsInsert.mockReturnValue({
+      values: mock((vals: any) => {
+        captured.values = vals;
+        return {
+          onConflictDoUpdate: mock((opts: any) => {
+            captured.set = opts.set;
+            return Promise.resolve();
+          }),
+        };
+      }),
+    });
+    return captured;
+  }
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockHeartbeatsFindFirst.mockReset();
+    mockHeartbeatsInsert.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3 });
+    mockHeartbeatsFindFirst.mockResolvedValue({ viewerToken: 'existing-token' });
+  });
+
+  it('AC-12: stores machine_login on insert and on update', async () => {
+    const captured = captureUpsert();
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { localUiUrl: 'http://localhost:8766', codexAuthSource: 'machine_login' },
+    }));
+    expect(res.status).toBe(200);
+    expect(captured.values.codexAuthSource).toBe('machine_login');
+    expect(captured.set.codexAuthSource).toBe('machine_login');
+  });
+
+  it('AC-12: a later beat without the field leaves the stored value alone', async () => {
+    const captured = captureUpsert();
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { localUiUrl: 'http://localhost:8766', modelAuthSource: 'machine_login' },
+    }));
+    expect(res.status).toBe(200);
+    expect('codexAuthSource' in captured.set).toBe(false);
+    expect(captured.values.codexAuthSource).toBeNull();
+  });
+
+  it('AC-12: a token-shaped or unknown value stores nothing and the beat still succeeds', async () => {
+    for (const bad of ['sk-proj-' + 'x'.repeat(40), 'machine_token', { evil: true }]) {
+      const captured = captureUpsert();
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { localUiUrl: 'http://localhost:8766', codexAuthSource: bad },
+      }));
+      expect(res.status).toBe(200);
+      expect(captured.values.codexAuthSource).toBeNull();
+      expect('codexAuthSource' in captured.set).toBe(false);
+      if (typeof bad === 'string' && bad.startsWith('sk-')) {
+        expect(JSON.stringify(captured.values)).not.toContain(bad);
+        expect(JSON.stringify(captured.set)).not.toContain(bad);
+      }
+    }
+  });
+
+  it('accepts every listed Codex source', async () => {
+    for (const source of ['machine_login', 'api_key', 'none']) {
+      const captured = captureUpsert();
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { localUiUrl: 'http://localhost:8766', codexAuthSource: source },
+      }));
+      expect(res.status).toBe(200);
+      expect(captured.set.codexAuthSource).toBe(source);
+    }
+  });
+});

@@ -24,7 +24,7 @@ import { runEffects, type DrainSummary, type EffectHandlers } from './effects';
 import { settleLanes } from './landing-lane';
 import { withPrFactEffects } from './pr-fact-effects';
 import { headCoverage, ledgerBudget } from './reducer';
-import { claimLegacyHandoffSql, kernelDeliveryById, kernelDeliveryForPr, kernelEnabled, releaseToLegacy, resolveOwnerDelivery, unclaimLegacyHandoffSql } from './authority';
+import { kernelDeliveryById, kernelDeliveryForPr, kernelEnabled, releaseToLegacy, resolveOwnerDelivery } from './authority';
 import { githubReader, workspaceRepo } from './github-facts';
 import { policyValue } from '@/lib/policy-overrides';
 import { preflightMissOf } from './preflight-miss';
@@ -41,6 +41,7 @@ import {
   resolveIncidentSql, trunkExplains, trunkRecovered, unresolvedIncidentsSql, type TrunkClassification,
 } from './trunk';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import { hostsKernelHere, submitKernelCommand } from './kernel-client';
 
 const seamExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
@@ -79,6 +80,9 @@ async function effectHandlers(): Promise<EffectHandlers> {
 
 export async function drainDelivery(deliveryId: string, deps: SeamDeps = {}): Promise<DrainSummary | null> {
   if (deps.drain) return deps.drain(deliveryId);
+  // workflow-kernel-library.md §3: in own mode the web host never drains an effect inline;
+  // it asks the control plane to drain this delivery, and the control plane's floor is the backstop.
+  if (!(await hostsKernelHere())) return drainOnControlPlane(deliveryId);
   try {
     const kernelEffectHandlers = await effectHandlers();
     // Effects can enqueue follow-ups for the same delivery; a few passes settle it.
@@ -102,6 +106,17 @@ export async function drainDelivery(deliveryId: string, deps: SeamDeps = {}): Pr
   } catch (err) {
     // The effect rows are durable; the cron drain picks up whatever this missed.
     console.error(`[workflow] inline drain for delivery ${deliveryId} failed:`, err);
+    return null;
+  }
+}
+
+/** The web host's inline drain in own mode: one `drain` command, best effort (the rows are durable). */
+async function drainOnControlPlane(deliveryId: string): Promise<DrainSummary | null> {
+  try {
+    const answer = await submitKernelCommand('drain', { deliveryId }, { principal: { kind: 'system', id: 'inline-drain' }, budgetMs: 10_000 });
+    return answer.result;
+  } catch (err) {
+    console.warn(`[workflow] control-plane drain for delivery ${deliveryId} not confirmed; the floor drains it:`, err instanceof Error ? err.message : err);
     return null;
   }
 }
@@ -194,8 +209,9 @@ export async function openKernelDelivery(p: OpenInput, deps: SeamDeps = {}): Pro
   const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, p.workspaceId)), columns: { id: true, gitConfig: true } });
   if (!ws || !kernelEnabled(ws.gitConfig)) return { owned: false, reason: 'kernel_off' };
 
+  // The owner task must be the workspace's own: a command names both, and they are checked together.
   const task = await db.query.tasks.findFirst({
-    where: sqlWhere(eq(tasks.id, p.ownerTaskId)),
+    where: sqlWhere(and(eq(tasks.id, p.ownerTaskId), eq(tasks.workspaceId, p.workspaceId))),
     columns: { id: true, status: true, category: true, kind: true, deliveryId: true, deliveryRole: true },
   });
   if (!task) return { owned: false, reason: 'no_task' };
@@ -541,42 +557,25 @@ export async function attemptEnded(p: {
 /**
  * A delivery the kill switch released before its first round was queued is
  * legacy's, and legacy files a PR's first review only when the PR opens, a
- * moment that has passed. Run legacy's first review now (the
- * `LEGACY_FIRST_REVIEW` slot), once per owner task, for an open PR in a
- * workspace whose switch is still off. A delivery released for any other
- * reason (switch on) was handed over by a legacy decision that already
- * answered it. Never throws: answers what it did.
+ * moment that has passed. The package's `handOffToLegacyOn` decides (released,
+ * never reviewed, switch still off, PR open, once per owner task) and the
+ * reviews module's `HandOff` port files legacy's first review. The switch is
+ * read as this workspace's repo row has it (`deps.repoFor`). Never throws:
+ * answers what it did.
  */
 export async function handOffToLegacy(deliveryId: string, deps: SeamDeps = {}): Promise<string> {
-  const exec = deps.exec ?? seamExec;
-  let claimedFor: string | null = null;
   try {
-    const view = await loadView({ deliveryId }, deps.exec);
-    const d = view.delivery;
-    if (!d || d.authority !== 'legacy') return 'not_released';
-    if (!d.repoFullName || d.prNumber == null) return 'no_pr';
-    if (d.currentRound > 0 || view.rounds.length > 0) return 'already_reviewed';
-    if (RESOLVED_OR_CLOSED.has(d.state)) return 'closed';
-    const repo = await (deps.repoFor ?? workspaceRepo)(d.workspaceId);
-    if (!repo) return 'no_repo';
-    if (kernelEnabled(repo.gitConfig)) return 'switch_on';
-    if (((await exec(claimLegacyHandoffSql(d.ownerTaskId, deliveryId))).rows ?? []).length === 0) return 'already_handed_off';
-    claimedFor = d.ownerTaskId;
-    const live = await readerFor(deps, repo.installationId).readPr(d.repoFullName, d.prNumber);
-    if (!live) throw new Error('live_read_failed');
-    if (live.state !== 'open' || live.merged) return 'pr_not_open';
-    const { LEGACY_FIRST_REVIEW } = await import('@/modules');
-    const r = await LEGACY_FIRST_REVIEW({
-      workspaceId: d.workspaceId, deliveryId, ownerTaskId: d.ownerTaskId, repoFullName: d.repoFullName, prNumber: d.prNumber,
-      installationId: repo.installationId, headSha: live.headSha, baseRef: live.baseRef ?? d.baseRef,
-      htmlUrl: `https://github.com/${d.repoFullName}/pull/${d.prNumber}`,
-      policyEvidence: d.policyEvidence ? { headSha: d.policyEvidence.headSha, outcome: d.policyEvidence.outcome, reason: d.policyEvidence.reason } : null,
+    const [{ builddKernelPorts }, { policyFromGitConfig }, { handOffToLegacyOn }, m] = await Promise.all([
+      import('./kernel-ports'), import('./kernel-policy'), import('@buildd/workflow-kernel/handlers/hand-off'), import('@/modules'),
+    ]);
+    const repoFor = deps.repoFor ?? workspaceRepo;
+    const ports = builddKernelPorts(m.workflowKernelHooks({ exec: deps.exec, repoFor }), {
+      exec: deps.exec,
+      githubFor: async (ws) => { const repo = await repoFor(ws); return repo ? readerFor(deps, repo.installationId) : null; },
+      policy: { forWorkspace: async (ws) => policyFromGitConfig((await repoFor(ws))?.gitConfig ?? null) },
     });
-    console.log(`[workflow] delivery ${deliveryId} handed to legacy after switch-off: ${r.outcome}`);
-    return r.outcome;
+    return await handOffToLegacyOn(ports, deliveryId, (msg, err) => console.error(msg, err));
   } catch (err) {
-    // Let the next owner end try again rather than lose the review.
-    if (claimedFor) await exec(unclaimLegacyHandoffSql(claimedFor)).catch(() => {});
     console.error(`[workflow] legacy hand-off of delivery ${deliveryId} failed:`, err);
     return 'error';
   }

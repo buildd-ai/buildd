@@ -13,6 +13,10 @@ import { AREA_GONE_STATUSES } from './areas';
  * area also keeps there the `domains` it covers, and a spec matched to a repo
  * file on import its `repo_provenance`.
  *
+ * Any spec or area also keeps its `publication` mark there (Slice 14, R-66):
+ * private, public, or absent to follow the policy. Only a person marks one
+ * public or lifts a private mark.
+ *
  * Anyone with write access to the workspace's specs changes it, an agent or CI
  * included, with a reason. One statement writes the block (only while it is
  * still what the writer read) and one change row per field with who, why and
@@ -21,7 +25,7 @@ import { AREA_GONE_STATUSES } from './areas';
  * in a workspace that opted in gets its generated PR updated (R-15).
  */
 
-export const METADATA_KEYS = ['owner', 'last_verified', 'surfaces', 'verified_by', 'assertions', 'domains', 'repo_provenance'] as const;
+export const METADATA_KEYS = ['owner', 'last_verified', 'surfaces', 'verified_by', 'assertions', 'domains', 'repo_provenance', 'publication'] as const;
 type Key = (typeof METADATA_KEYS)[number];
 /** The fields a repo spec file states, and so the ones an import writes and clears. */
 export const FILE_METADATA_KEYS = ['owner', 'last_verified', 'surfaces', 'verified_by', 'assertions'] as const;
@@ -54,6 +58,10 @@ function parseField(key: Key, raw: unknown): { value: SpecMetadataBlock[Key] | n
       if (!list || !list.every((d) => DOMAIN_VALUE.test(d))) return { error: 'domains is a list of up to 20 domain values, lowercase words joined by hyphens (e.g. ["tasks", "missions"])' };
       return { value: list };
     }
+    case 'publication':
+      // R-66: "policy" (follow the workspace's publication policy) is the default, stored as no mark.
+      if (raw === 'policy') return { value: null };
+      return raw === 'private' || raw === 'public' ? { value: raw } : { error: 'publication is private, public or policy (follow the publication policy)' };
     case 'repo_provenance': {
       const p = raw as Record<string, unknown>;
       const ok = !!p && typeof p === 'object' && !Array.isArray(p) && typeof p.path === 'string' && /^docs\/specs\/[^/]+\.md$/.test(p.path)
@@ -100,6 +108,11 @@ export async function updateSpecMetadata(caller: SpecCaller, specId: string, inp
   }
   const [spec] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
   if (!spec || !(await reach(caller, spec.workspaceId, true))) return fail(404, 'Spec not found');
+  // R-66: an agent may only make a spec more private. Opening one to the repo
+  // past the policy (public), or lifting a private mark, is a person's mark.
+  if ('publication' in parsed && caller.kind !== 'user' && parsed.publication !== 'private') {
+    return fail(403, 'Only a person marks a spec public or lifts its private mark; an agent may mark it private.');
+  }
   if (parsed.domains) {
     // Only an area covers domains, and each value names one area: placement and the repo copy must not have to choose.
     if (spec.scope !== 'domain') return fail(400, 'domains is set on an area (a spec with scope domain), not on a feature or product spec');

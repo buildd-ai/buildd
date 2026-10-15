@@ -25,10 +25,11 @@ const PATTERNS = [
 const ALLOWED: Record<string, string> = {
   'apps/web/src/lib/open-workspaces.ts': 'the helper itself',
   'apps/web/src/lib/workspace-reach.ts': 'the pure rule; compares workspace.teamId to account.teamId',
-  'apps/web/src/lib/team-access.ts': 'verifyAccountWorkspaceAccess decides through accountReachesWorkspace',
   'apps/web/src/lib/workspace-access.ts': 'query ANDs eq(teamId, account.teamId); pinned in workspace-access.test.ts',
   'apps/web/src/app/api/workers/claim/route.ts': 'both queries AND the account team; pinned in claim/route.test.ts',
   'apps/web/src/lib/subscriptions.ts': 'raw SQL joins the owner to w."team_id" before the open arm',
+  'apps/web/src/lib/granted-links.ts': 'the open arm sits behind the granting person\'s membership of the workspace\'s own team; pinned in granted-links.test.ts and tests/db/runner-picks-reach.test.ts',
+  'apps/web/src/lib/runner-picks.ts': 'listRunnerKeys: the open arm needs the person\'s role in the workspace\'s own team (display only)',
   'apps/web/src/app/app/(protected)/settings/workspaces/new/page.tsx': 'form radio state',
 };
 

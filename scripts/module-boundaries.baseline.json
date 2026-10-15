@@ -6,12 +6,6 @@
     "apps/web/src/app/api/accounts/route.ts": {
       "apps/web/src/lib/personal-workspace-links.ts": "notifications"
     },
-    "apps/web/src/app/api/auth/cli/route.ts": {
-      "apps/web/src/lib/personal-workspace-links.ts": "notifications"
-    },
-    "apps/web/src/app/api/auth/device/approve/route.ts": {
-      "apps/web/src/lib/personal-workspace-links.ts": "notifications"
-    },
     "apps/web/src/app/api/cron/codex-token-refresh/route.ts": {
       "apps/web/src/lib/mcp-connector-refresh.ts": "connectors",
       "apps/web/src/lib/notify.ts": "notifications"
@@ -364,6 +358,7 @@
       "apps/web/src/lib/reviewer.ts": "reviews-merge",
       "apps/web/src/lib/spec-area-decision.ts": "jev-decisions",
       "apps/web/src/lib/spec-duplicate-decision.ts": "jev-decisions",
+      "apps/web/src/lib/spec-publication-decision.ts": "jev-decisions",
       "apps/web/src/lib/spec-taxonomy-decision.ts": "jev-decisions",
       "apps/web/src/lib/strand-choice-decision.ts": "jev-decisions",
       "apps/web/src/lib/surface-audit-advice.ts": "visual-qa",

@@ -4,7 +4,7 @@
  *
  * Every passing case drives the functions the routes and sweeps call (seam.ts)
  * through the real CAS statements on real Postgres, and drains the outbox
- * through the real review-loop effect handlers (review-effects.ts). Only
+ * through the real effect handlers (the package's, on buildd's ports). Only
  * GitHub and the side-effect leaves (posting a review, the PR activity
  * comment, notifications, the dispatch wake, the reviewer prompt) are faked:
  * the decisions under test are the kernel's.
@@ -1018,7 +1018,7 @@ describe('S9–S15', () => {
       return Number(n) === o.prNumber ? { number: o.prNumber, merged: false, body: null } : mergedPr(Number(n));
     };
     const workerId = await prWorkerOf(o);
-    const record = (n: number) => recordPrSupersession({ workerId, supersedingPrNumber: n, reason: 'landed under a fresh PR', recordedBy: `agent:${caller}` });
+    const record = (n: number) => recordPrSupersession({ workerId, supersedingPrNumber: n, reason: 'landed under a fresh PR', recordedBy: `agent:${caller}`, caller: {} });
 
     // Open: the kernel refuses, and no column is written.
     expect(await record(4242)).toMatchObject({ ok: false, status: 409 });
@@ -1084,7 +1084,7 @@ describe('S9–S15', () => {
     await q(sql`UPDATE workflow_effects SET status = 'delivering', lease_until = now() - interval '1 second' WHERE id = ${df.id}::uuid`);
     await drain(o.deliveryId);
     [df] = await effects(o.deliveryId, 'dispatch_fix');
-    expect(df).toMatchObject({ status: 'done', outcome: 'ok:task_exists', attempt_count: 3 });
+    expect(df).toMatchObject({ status: 'done', outcome: 'ok:task_rewoken', attempt_count: 3 });
     expect((await tasksOf(o.deliveryId, 'fix')).length).toBe(1);
     expect((await loadView({ deliveryId: o.deliveryId })).attempts.length).toBe(1);
   });
@@ -1272,7 +1272,7 @@ describe('S16–S21', () => {
     const blocked = await canCompleteMission(m2, { evaluateCriteria: false });
     expect(blocked).toMatchObject({ ok: false, code: 'awaiting_merge' });
     expect(blocked.awaitingMergeDetails[0].closedUnsuperseded).toBe(true);
-    expect(await recordPrAbandonment({ workerId: await prWorkerOf(closed), reason: 'plan changed', recordedBy: 'owner@example.com', actor: 'human:owner@example.com' })).toEqual({ ok: true });
+    expect(await recordPrAbandonment({ workerId: await prWorkerOf(closed), reason: 'plan changed', recordedBy: 'owner@example.com', actor: 'human:owner@example.com', caller: {} })).toEqual({ ok: true });
     expect(await delivery(closed.deliveryId)).toMatchObject({ state: 'ABANDONED', stateReason: 'plan changed' });
     expect((await transitions(closed.deliveryId)).at(-1)!.evidence.actor).toBe('human:owner@example.com');
     expect((await prRows(closed)).every((r) => r.abandoned_reason === 'plan changed' && r.abandoned_recorded_by === 'owner@example.com')).toBe(true);
@@ -1605,7 +1605,7 @@ describe('S16–S21', () => {
     gh.state = 'closed'; gh.updatedAt = 'u-closed';
     await stampPrUrl(o);
     ghApi = (path) => path === `/repos/${REPO}/pulls/5151` ? mergedPr(5151) : undefined;
-    expect(await recordPrSupersession({ workerId: await prWorkerOf(o), supersedingPrNumber: 5151, reason: 'shipped elsewhere', recordedBy: `agent:${names}` })).toMatchObject({ ok: true });
+    expect(await recordPrSupersession({ workerId: await prWorkerOf(o), supersedingPrNumber: 5151, reason: 'shipped elsewhere', recordedBy: `agent:${names}`, caller: {} })).toMatchObject({ ok: true });
     expect((await transitions(o.deliveryId)).filter((x) => x.command === 'SupersessionRecorded').map((x) => x.evidence.actor)).toEqual([`agent:${names}`]);
   });
 });

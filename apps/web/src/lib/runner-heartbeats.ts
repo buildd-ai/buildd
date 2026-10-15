@@ -13,6 +13,7 @@ import {
 import { heartbeatAccountIds, type RunnerHeartbeatLike, type RunnerWorkerLike } from './runner-display';
 import { RUNNER_STALE_CUTOFF_MS, resolveWorkspaceExecutor, runnerFleetIdentity } from '@buildd/shared';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import { liveLinkCondition } from './granted-links';
 
 // Pure helpers and types live in ./runner-heartbeats-shared so client
 // components can import them without pulling `@buildd/core/db` (and its
@@ -59,6 +60,7 @@ export async function getRunnerHeartbeats(
       .where(and(
         inArray(accountWorkspaces.accountId, hbAccountIds),
         inArray(accountWorkspaces.workspaceId, workspaceIds),
+        liveLinkCondition(),
       )),
     db
       .selectDistinct({ accountId: workers.accountId })
@@ -165,7 +167,7 @@ export async function loadBrowserRunnerHeartbeats(
     const links = await db
       .select({ accountId: accountWorkspaces.accountId, canClaim: accountWorkspaces.canClaim, canCreate: accountWorkspaces.canCreate })
       .from(accountWorkspaces)
-      .where(and(inArray(accountWorkspaces.accountId, accountIds), eq(accountWorkspaces.workspaceId, workspace.id)));
+      .where(and(inArray(accountWorkspaces.accountId, accountIds), eq(accountWorkspaces.workspaceId, workspace.id), liveLinkCondition()));
     const linkOf = new Map(links.map(l => [l.accountId, l]));
     return hbs.map(h => ({
       accountId: h.accountId,

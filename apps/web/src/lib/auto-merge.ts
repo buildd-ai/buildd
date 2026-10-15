@@ -878,11 +878,11 @@ export async function tryAutoMergeWorkerPr(params: {
   // kernel lands it (LandingRequested → merge_call → MergeCallResult) and owns
   // what follows — the post-merge work, and the refresh or conflict repair a
   // refusal is owed. Any other PR merges here as before.
-  const kernelLand = params.landThroughKernel ?? (await import('@/lib/workflow/seam')).landThroughKernel;
+  const kernelLand = params.landThroughKernel ?? (await import('@/lib/workflow/kernel-client')).landThroughKernel;
   const landingWorkspaceId = await workspaceIdOnce();
   const slotted = await mergeInSurfaceSlot(surfaceOrder, async () => {
     const kernel = landingWorkspaceId
-      ? await kernelLand({ workspaceId: landingWorkspaceId, installationId, repoFullName, prNumber, headSha, door: 'auto_merge', actor: 'system:auto_merge', mergeMethod })
+      ? await kernelLand({ workspaceId: landingWorkspaceId, installationId, repoFullName, prNumber, headSha, door: 'auto_merge', actor: 'system:auto_merge', mergeMethod }, { principal: { kind: 'system', id: 'system:auto_merge' } })
       : null;
     return kernel ? { kernel } : { legacy: await mergePullRequest(installationId, repoFullName, prNumber, mergeMethod, headSha) };
   });

@@ -48,7 +48,7 @@ describe('POST /api/tasks/[id]/closed-pr', () => {
     const res = await call({ action: 'abandon', reason: ' throwaway test ' });
     expect(res.status).toBe(200);
     expect(mockAbandon).toHaveBeenCalledWith({
-      workerId: 'w-1', reason: 'throwaway test', recordedBy: 'owner@example.com', actor: 'human:u-1',
+      workerId: 'w-1', reason: 'throwaway test', recordedBy: 'owner@example.com', actor: 'human:u-1', caller: { person: 'u-1', account: null },
     });
   });
 

@@ -34,10 +34,18 @@ describe('GithubWrites over @/lib/github', () => {
     const review = async (p: unknown) => { reviews.push(p); return { posted: true, reviewId: 42 }; };
     const { api, calls } = fakeApi({ 'POST /repos/acme/widgets/pulls/3/reviews': { id: 9 } });
     const w = builddGithubWrites(7, mergeAnswerOf, { api, review: review as never });
-    expect(await w.postReview({ repoFullName: 'acme/widgets', prNumber: 3, commitId: 'H1', event: 'APPROVE', body: 'ok' })).toEqual({ id: '42' });
+    expect(await w.postReview({ repoFullName: 'acme/widgets', prNumber: 3, commitId: 'H1', event: 'APPROVE', body: 'ok' })).toEqual({ id: '42', posted: true });
     expect(reviews).toEqual([{ installationId: 7, repoFullName: 'acme/widgets', prNumber: 3, headSha: 'H1', event: 'APPROVE', body: 'ok' }]);
-    expect(await w.postReview({ repoFullName: 'acme/widgets', prNumber: 3, commitId: 'H1', event: 'COMMENT', body: 'fyi' })).toEqual({ id: '9' });
+    expect(await w.postReview({ repoFullName: 'acme/widgets', prNumber: 3, commitId: 'H1', event: 'COMMENT', body: 'fyi' })).toEqual({ id: '9', posted: true });
     expect(calls).toEqual([{ path: '/repos/acme/widgets/pulls/3/reviews', method: 'POST', body: { commit_id: 'H1', event: 'COMMENT', body: 'fyi' } }]);
+  });
+
+  test('postReview says when a verdict did not go up, and when it went up as a comment on the host\'s own PR', async () => {
+    const refused = builddGithubWrites(7, mergeAnswerOf, { review: (async () => ({ posted: false, reason: 'a matching review already exists for this commit' })) as never });
+    expect(await refused.postReview({ repoFullName: 'acme/widgets', prNumber: 3, commitId: 'H1', event: 'APPROVE', body: 'ok' }))
+      .toEqual({ id: null, posted: false, reason: 'a matching review already exists for this commit' });
+    const own = builddGithubWrites(7, mergeAnswerOf, { review: (async () => ({ posted: true, reviewId: 5, commentedOwnPr: true })) as never });
+    expect(await own.postReview({ repoFullName: 'acme/widgets', prNumber: 3, commitId: 'H1', event: 'APPROVE', body: 'ok' })).toEqual({ id: '5', posted: true, commentedOwnPr: true });
   });
 
   test('upsertComment edits the oldest comment carrying the marker, else creates one', async () => {
@@ -77,16 +85,23 @@ describe('GitHub per workspace', () => {
 test('the composed ports carry every port the package handlers reach', () => {
   const ports = builddKernelPorts({
     mergeAnswerOf, notify: { activity: async () => {}, team: async () => {} }, lifecycle: {} as never, work: {}, escalate: {} as never, evidence: {} as never,
+    reviews: {} as never, conflicts: {} as never, handOff: {} as never, decide: {} as never,
   });
-  expect(Object.keys(ports).sort()).toEqual(['clock', 'escalate', 'evidence', 'githubFor', 'ingest', 'lifecycle', 'notify', 'store', 'trunk', 'work']);
+  expect(Object.keys(ports).sort()).toEqual([
+    'clock', 'conflicts', 'decide', 'escalate', 'evidence', 'githubFor', 'handOff', 'ingest', 'lifecycle', 'notify', 'policy', 'reviews', 'store', 'trunk', 'work',
+  ]);
 });
 
 describe('builddWork', () => {
-  const req = { role: 'ci_fix', workspaceId: 'w', taskId: 't', target: { repoFullName: 'acme/x', prNumber: 1 }, lineage: { deliveryId: 'd' }, dedupeKey: 'k' };
+  // Neither case reaches the task insert, so neither touches the database.
+  const req = { role: 'ci_fix', workspaceId: 'w', target: { repoFullName: 'acme/x', prNumber: 1 }, lineage: { deliveryId: 'd' }, dedupeKey: 'k' };
   test('a role with no builder is an error, so the effect backs off instead of filing nothing', async () => {
     await expect(builddWork({}).file(req)).rejects.toThrow('no task builder for role ci_fix');
   });
   test('a builder that cannot file now answers skipped, and nothing is inserted', async () => {
     expect(await builddWork({ ci_fix: async () => ({ skipped: 'missing_context' }) }).file(req)).toEqual({ taskId: null, created: false, skipped: 'missing_context' });
+  });
+  test('a role that files through its own path (the reviewer) answers what that path filed', async () => {
+    expect(await builddWork({ review: async () => ({ filed: { taskId: 'r1', created: false } }) }).file({ ...req, role: 'review' })).toEqual({ taskId: 'r1', created: false });
   });
 });

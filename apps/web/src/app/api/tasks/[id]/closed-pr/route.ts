@@ -76,8 +76,8 @@ export async function POST(
     if (!worker?.prUrl) return NextResponse.json({ error: 'Task has no PR' }, { status: 404 });
 
     const recordedBy = user?.email ?? apiAccount?.name ?? 'unknown';
-    const result = await recordPrAbandonment({ workerId: worker.id, reason, recordedBy, actor: `human:${person}` });
-    if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
+    const result = await recordPrAbandonment({ workerId: worker.id, reason, recordedBy, actor: `human:${person}`, caller: { person, account: apiAccount } });
+    if (!result.ok) return NextResponse.json(result.door?.body ?? { error: result.error }, { status: result.status, headers: result.door?.headers });
     return NextResponse.json({ ok: true, action: 'abandon' });
   } catch (error) {
     console.error('Task closed PR abandon error:', error);

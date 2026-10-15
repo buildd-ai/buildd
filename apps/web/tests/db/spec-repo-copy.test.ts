@@ -37,7 +37,7 @@ let nextPr = 100;
 /** A repo name per run, so a re-run against the same database never finds an earlier run's PR. */
 const GH = `acme/app-${rand()}`;
 /** A fake GitHub: the base branch, docs/specs as the repo has it, and a record of every write. */
-function fakeGitHub(opts: { specFiles?: Record<string, string> } = {}) {
+function fakeGitHub(opts: { specFiles?: Record<string, string>; private?: boolean; decide?: any } = {}) {
   const calls: Array<{ method: string; path: string; body: any }> = [];
   const PR = nextPr++;
   let commits = 0;
@@ -56,7 +56,8 @@ function fakeGitHub(opts: { specFiles?: Record<string, string> } = {}) {
     const method = init?.method ?? 'GET';
     const body = init?.body ? JSON.parse(String(init.body)) : null;
     calls.push({ method, path, body });
-    if (method === 'GET' && path === `/repos/${GH}`) return { default_branch: 'dev' };
+    // Private by default: the repo-copy tests below publish under the private-repo rule (Slice 14).
+    if (method === 'GET' && path === `/repos/${GH}`) return { default_branch: 'dev', private: opts.private ?? true };
     if (method === 'GET' && path === `/repos/${GH}/git/ref/heads/dev`) return { object: { sha: 'base000' } };
     if (method === 'GET' && path === `/repos/${GH}/git/commits/base000`) return { tree: { sha: 'tree000' } };
     if (path === '/graphql') {
@@ -74,6 +75,7 @@ function fakeGitHub(opts: { specFiles?: Record<string, string> } = {}) {
     }
     if (method === 'POST' && path === `/repos/${GH}/git/refs`) { prHead = body.sha; return {}; }
     if (method === 'GET' && path.startsWith(`/repos/${GH}/pulls?`)) return prOpen ? [{ number: PR }] : [];
+    if (method === 'POST' && path === `/repos/${GH}/pulls` && String(body?.head ?? '').startsWith('buildd/spec-copy-removal-')) return { number: PR + 5000 };
     if (method === 'POST' && path === `/repos/${GH}/pulls`) { prOpen = true; return { number: PR }; }
     if (method === 'GET' && path === `/repos/${GH}/pulls/${PR}`) return { state: prOpen ? 'open' : 'closed', head: { sha: prHead } };
     if (method === 'PATCH' && path === `/repos/${GH}/pulls/${PR}`) return {};
@@ -84,7 +86,8 @@ function fakeGitHub(opts: { specFiles?: Record<string, string> } = {}) {
   };
   return {
     calls, state, PR,
-    deps: { api, repo: async () => ({ fullName: GH, installationId: 1 }), now: () => new Date('2026-10-13T12:00:00Z') },
+    specFiles,
+    deps: { api, repo: async () => ({ fullName: GH, installationId: 1 }), now: () => new Date('2026-10-13T12:00:00Z'), decide: opts.decide },
     writes: () => calls.filter((c) => c.method !== 'GET' && c.path !== '/graphql'),
     lastTree: () => [...calls].reverse().find((c) => c.method === 'POST' && c.path === `/repos/${GH}/git/trees`)?.body.tree as Array<{ path: string; content: string }>,
   };
@@ -106,7 +109,31 @@ beforeAll(async () => {
   member = await person(teamA, 'member');
   outsider = await person(teamB, 'admin');
   specApprovalDeps.afterResponse = (task) => { queued.push(task); };
+  // Slice 14: wsOn has an approved publication policy (D-21), on its product spec.
+  await productPolicy(wsOn);
 });
+
+const POLICY = `# Shop
+
+## Publication
+
+May be published:
+
+- How a feature behaves for the people who use it.
+
+Stays in buildd:
+
+- Operator-only tooling and how the platform is run day to day.
+`;
+
+/** An approved product spec carrying a Publication section; its approval's after-work is dropped. */
+async function productPolicy(ws: string, body = POLICY) {
+  const r = await createSpecDraft(user(member), { workspaceId: ws, title: `Shop ${rand()}`, scope: 'product', body }, { duplicates: false });
+  if (!r.ok) throw new Error(r.error);
+  await approve(r.spec.id);
+  queued.length = 0;
+  return r.spec;
+}
 
 const ACCOUNT = '00000000-0000-4000-8000-0000000000a2';
 const agentToken = (ws: string) => ({ kind: 'account' as const, account: { id: ACCOUNT, teamId: teamA, workspaceIds: null, taskScope: { taskId: '00000000-0000-4000-8000-0000000000f2', workspaceId: ws } } as any });
@@ -319,12 +346,13 @@ describe('repo checks before approval (R-34, AC-96)', () => {
   test('a would-be copy that fails specs:lint shows the failure, and Approve still approves', async () => {
     const gh = fakeGitHub();
     Object.assign(repoCopy.defaultRepoCopyDeps, gh.deps);
-    const spec = await filedSpec(wsOn, { body: '# No Summary\n\n- AC-1: GIVEN x WHEN y THEN z.\n' });
+    // A summary written as a list: the copy always carries a summary now, so a malformed one is the failure.
+    const spec = await filedSpec(wsOn, { body: '---\nsummary: [one, two]\n---\n# List Summary\n\n- AC-1: GIVEN x WHEN y THEN z.\n' });
     const p = await repoCopy.repoCopyPreflight(spec, 1, gh.deps);
     if (p.state !== 'ran') throw new Error(`preflight did not run: ${p.state}`);
     const lint = p.checks.find((c) => c.name === 'specs:lint')!;
     expect(lint.ok).toBe(false);
-    expect(lint.messages.join('\n')).toContain('frontmatter missing `summary`');
+    expect(lint.messages.join('\n')).toContain('`summary` must be a single sentence, not a list');
     expect(p.checks.find((c) => c.name === 'public-docs:check')!.ok).toBe(true);
     expect(p.checks.find((c) => c.name === 'no-prod-data')).toMatchObject({ ok: true });
     expect(p.checks.find((c) => c.name === 'no-prod-data')!.note).toContain('only in CI');
@@ -345,5 +373,195 @@ describe('repo checks before approval (R-34, AC-96)', () => {
   test('off in a workspace that has not opted in', async () => {
     const spec = await filedSpec(wsOff);
     expect(await repoCopy.repoCopyPreflight(spec, 1, fakeGitHub().deps)).toEqual({ state: 'off' });
+  });
+});
+
+
+// ── Slice 14: which specs leave buildd ──────────────────────────────────────
+
+const { decidePublication, specPublicationKind } = await import('../../src/lib/spec-publication-decision');
+const { runDecisionKind } = await import('@builddai/ai-kit/decide');
+
+/** A decision model that always gives this answer, through the real kind (rules first, then the model). */
+function modelSays(answer: string, p: number, line = 'line_1', bar?: number) {
+  const asked: unknown[] = [];
+  const route = {
+    provider: 'test', model: 'typesafe/jev-1.13',
+    invoke: async (req: { state: unknown }) => {
+      asked.push(req.state);
+      return {
+        ok: true, model: 'typesafe/jev-1.13', usage: { inputTokens: 1, outputTokens: 1, costUsd: null }, latencyMs: 1, attempts: 1,
+        answers: {
+          publication: { type: 'choice', choice: answer, confidence: p, probabilities: { [answer]: p } },
+          line: { type: 'choice', choice: line, confidence: 1, probabilities: { [line]: 1 } },
+        },
+      };
+    },
+  };
+  const decide = (input: any) => decidePublication(input, {
+    teamOf: async () => teamA,
+    ...(bar === undefined ? {} : { bar }),
+    judge: async (request) => ({ response: await runDecisionKind(specPublicationKind, request as any, { mode: 'live', cheap: route as any }) as any, recordId: null }),
+  });
+  return { decide, asked };
+}
+
+describe('publication (Slice 14, AC-49 to AC-53)', () => {
+  test('AC-49: with no approved policy, approving writes nothing to GitHub and the page says there is no policy yet', async () => {
+    const { workspaceId: ws } = await seedWorkspace();
+    await q(sql`UPDATE workspaces SET team_id = ${teamA}::uuid, access_mode = 'open', git_config = coalesce(git_config, '{}'::jsonb) || ${JSON.stringify({ livingSpecs: { nativeSource: true } })}::jsonb WHERE id = ${ws}::uuid`);
+    const { decide, asked } = modelSays('publish', 1);
+    const gh = fakeGitHub({ private: false, decide });
+    Object.assign(repoCopy.defaultRepoCopyDeps, gh.deps);
+    const spec = await filedSpec(ws);
+    await approve(spec.id);
+    await runQueued();
+    expect(gh.writes()).toEqual([]);
+    expect(asked).toEqual([]);
+    const rc = (await specRow(spec.id)).repo_copy;
+    expect(rc).toMatchObject({ state: 'private', publication: { publish: false, source: 'rule', reasonCode: 'rule_no_policy', revision: 1 } });
+    expect(repoCopy.repoCopyLine(true, rc, true)!.copy).toContain('no publication policy yet');
+  });
+
+  test('AC-52 and AC-51: a public repo and a model answer below the bar: the scan and decision run first, no write, recorded as a fallback', async () => {
+    const { decide, asked } = modelSays('publish', 0.97, 'line_1');
+    const gh = fakeGitHub({ private: false, decide });
+    Object.assign(repoCopy.defaultRepoCopyDeps, gh.deps);
+    const spec = await filedSpec(wsOn);
+    await approve(spec.id);
+    await runQueued();
+    expect(asked).toHaveLength(1);
+    expect(String(asked[0])).toContain('Operator-only tooling');
+    expect(gh.writes()).toEqual([]);
+    expect(gh.calls.every((c) => c.method === 'GET')).toBe(true);
+    const rc = (await specRow(spec.id)).repo_copy;
+    expect(rc).toMatchObject({ state: 'private', publication: { publish: false, source: 'fallback', reasonCode: 'below_bar', confidence: 0.97, line: 'How a feature behaves for the people who use it.' } });
+    expect(rc.publication.policyVersion).toMatch(/^[0-9a-f]{8}-r1$/);
+    const line = repoCopy.repoCopyLine(true, rc, true)!;
+    expect(line.copy).toContain('Not published:');
+    expect(line.publishAnyway).toBe(true);
+  });
+
+  test('AC-51: with no decision model for the team, a spec the rules leave open stays private as a fallback', async () => {
+    const gh = fakeGitHub({ private: false });
+    Object.assign(repoCopy.defaultRepoCopyDeps, gh.deps);
+    const spec = await filedSpec(wsOn);
+    await approve(spec.id);
+    await runQueued();
+    expect(gh.writes()).toEqual([]);
+    const rc = (await specRow(spec.id)).repo_copy;
+    expect(rc).toMatchObject({ state: 'private', publication: { publish: false, source: 'fallback' } });
+    // R-69: the decision is on the ledger with the policy version in its replay; "Publish anyway" labels it (R-68).
+    const recordId = rc.publication.decisionRecordId;
+    expect(recordId).toBeTruthy();
+    const r = await repoCopy.publishSpecAnyway(user(admin), spec.id, gh.deps);
+    expect(r.ok).toBe(true);
+    const [row] = await q<{ capability: string; human_override: any; overridden_by: string }>(sql`SELECT capability, human_override, overridden_by FROM decision_records WHERE id = ${recordId}::uuid`);
+    expect(row).toMatchObject({ capability: 'buildd.spec_publication', human_override: { decision: 'publish', reason: 'published_anyway', revision: 1 }, overridden_by: admin });
+  });
+
+  test('AC-50: a spec a person marked private is never written, whatever the model answers, in a private repo too; an area mark is inherited', async () => {
+    const { decide, asked } = modelSays('publish', 1, 'line_1', 0.5);
+    const gh = fakeGitHub({ private: true, decide });
+    Object.assign(repoCopy.defaultRepoCopyDeps, gh.deps);
+    const spec = await filedSpec(wsOn);
+    const m = await updateSpecMetadata(user(member), spec.id, { changes: { publication: 'private' }, reason: 'operator-only tooling' });
+    expect(m.ok).toBe(true);
+    await approve(spec.id);
+    await runQueued();
+    expect(gh.writes()).toEqual([]);
+    expect(asked).toEqual([]);
+    const rc = (await specRow(spec.id)).repo_copy;
+    expect(rc.publication).toMatchObject({ reasonCode: 'rule_marked_private' });
+    expect(repoCopy.repoCopyLine(true, rc, true)).toMatchObject({ copy: 'Not published: a person marked this spec private.', publishAnyway: false });
+
+    const member2 = await filedSpec(wsOn);
+    const [{ parent_spec_id: areaId }] = await q<{ parent_spec_id: string }>(sql`SELECT parent_spec_id FROM specs WHERE id = ${member2.id}::uuid`);
+    expect((await updateSpecMetadata(user(member), areaId, { changes: { publication: 'private' }, reason: 'the whole area is operator tooling' })).ok).toBe(true);
+    await approve(member2.id);
+    await runQueued();
+    expect((await specRow(member2.id)).repo_copy.publication.reason).toBe('Not published: its area is marked private.');
+    expect(gh.writes()).toEqual([]);
+  });
+
+  test('AC-50: a spec marked public whose text has a production-data hit is not written, and the page names the hit', async () => {
+    const gh = fakeGitHub({ private: false });
+    Object.assign(repoCopy.defaultRepoCopyDeps, gh.deps);
+    const spec = await filedSpec(wsOn, { body: `${BODY}\nFirst seen on spec 1a2b3c4d-0000-4000-8000-00000000abcd.\n` });
+    expect((await updateSpecMetadata(user(member), spec.id, { changes: { publication: 'public' }, reason: 'reviewed for the repo' })).ok).toBe(true);
+    await approve(spec.id);
+    await runQueued();
+    expect(gh.writes()).toEqual([]);
+    const rc = (await specRow(spec.id)).repo_copy;
+    expect(rc.publication).toMatchObject({ reasonCode: 'rule_prod_data' });
+    expect(repoCopy.repoCopyLine(true, rc, true)!.copy).toMatch(/production data \(line \d+: a UUID/);
+  });
+
+  test('R-66: an agent may mark a spec private but not public', async () => {
+    const spec = await filedSpec(wsOn);
+    expect(await updateSpecMetadata(agentToken(wsOn), spec.id, { changes: { publication: 'public' }, reason: 'publish it' })).toMatchObject({ ok: false, status: 403 });
+    expect((await updateSpecMetadata(agentToken(wsOn), spec.id, { changes: { publication: 'private' }, reason: 'keep it in' })).ok).toBe(true);
+    expect((await specRow(spec.id)).metadata.publication).toBe('private');
+    expect(await updateSpecMetadata(agentToken(wsOn), spec.id, { changes: { publication: 'policy' }, reason: 'lift it' })).toMatchObject({ ok: false, status: 403 });
+    expect((await updateSpecMetadata(user(member), spec.id, { changes: { publication: 'policy' }, reason: 'follow the policy again' })).ok).toBe(true);
+    expect((await specRow(spec.id)).metadata.publication).toBeUndefined();
+  });
+
+  test('R-68: a person who may approve publishes a kept-private spec anyway; a member cannot', async () => {
+    const { decide } = modelSays('unsure', 0.6);
+    const gh = fakeGitHub({ private: false, decide });
+    Object.assign(repoCopy.defaultRepoCopyDeps, gh.deps);
+    const spec = await filedSpec(wsOn);
+    await approve(spec.id);
+    await runQueued();
+    expect(gh.writes()).toEqual([]);
+    expect(await repoCopy.publishSpecAnyway(user(member), spec.id, gh.deps)).toMatchObject({ ok: false, status: 403 });
+    const r = await repoCopy.publishSpecAnyway(user(admin), spec.id, gh.deps);
+    expect(r.ok && r.repoCopy).toMatchObject({ state: 'open', publication: { publish: true, source: 'person' }, publishAnyway: { by: `user:${admin}`, revision: 1 } });
+    expect(gh.calls.filter((c) => c.method === 'POST' && c.path === `/repos/${GH}/pulls`)).toHaveLength(1);
+  });
+
+  test('AC-53: a policy revision that makes a published spec private lists it with a removal PR and changes nothing until a person merges it', async () => {
+    const { workspaceId: ws } = await seedWorkspace();
+    await q(sql`UPDATE workspaces SET team_id = ${teamA}::uuid, access_mode = 'open', git_config = coalesce(git_config, '{}'::jsonb) || ${JSON.stringify({ livingSpecs: { nativeSource: true } })}::jsonb WHERE id = ${ws}::uuid`);
+    const product = await productPolicy(ws);
+    // Published under a public mark, then landed.
+    const gh = fakeGitHub({ private: false, decide: modelSays('keep_private', 0.99, 'line_2').decide });
+    Object.assign(repoCopy.defaultRepoCopyDeps, gh.deps);
+    const spec = await filedSpec(ws);
+    expect((await updateSpecMetadata(user(member), spec.id, { changes: { publication: 'public' }, reason: 'reviewed for the repo' })).ok).toBe(true);
+    await approve(spec.id);
+    await runQueued();
+    const opened = (await specRow(spec.id)).repo_copy;
+    expect(opened.state).toBe('open');
+    expect(await repoCopy.landSpecRepoCopy({ repoFullName: GH, prNumber: gh.PR, headSha: opened.headSha, conclusion: 'success', installationId: 1 }, gh.deps)).toMatchObject({ outcome: 'merged' });
+    const file = opened.path.slice('docs/specs/'.length);
+    gh.specFiles[file] = gh.lastTree().find((f) => f.path === opened.path)!.content;
+
+    // The mark is lifted (its after-work dropped), then a new policy revision is approved.
+    queued.length = 0;
+    expect((await updateSpecMetadata(user(member), spec.id, { changes: { publication: 'policy' }, reason: 'follow the policy' })).ok).toBe(true);
+    queued.length = 0;
+    const r2 = await reviseSpecDraft(user(member), product.id, { expectedVersion: (await specRow(product.id)).version, body: `${POLICY}- Widget exports, until they ship.\n` });
+    if (!r2.ok) throw new Error(r2.error);
+    const before = gh.calls.length;
+    await approve(product.id, 2, (await specRow(product.id)).version);
+    await runQueued();
+
+    const writes = gh.calls.slice(before).filter((c) => c.method !== 'GET' && c.path !== '/graphql');
+    const removalTree = writes.find((c) => c.path === `/repos/${GH}/git/trees`)!.body.tree;
+    expect(removalTree).toContainEqual({ path: opened.path, mode: '100644', type: 'blob', sha: null });
+    const prs = writes.filter((c) => c.method === 'POST' && c.path === `/repos/${GH}/pulls`);
+    expect(prs).toHaveLength(1);
+    expect(prs[0].body.head).toMatch(/^buildd\/spec-copy-removal-/);
+    expect(prs[0].body.body).toContain('does not erase it from the repo\'s history');
+    // Nothing merged, no base branch moved: the removal waits for a person.
+    expect(writes.filter((c) => c.method === 'PUT' || c.method === 'PATCH')).toEqual([]);
+
+    const rc = (await specRow(spec.id)).repo_copy;
+    expect(rc).toMatchObject({ state: 'private', removal: { path: opened.path, prNumber: gh.PR + 5000 }, publication: { policyVersion: expect.stringMatching(/-r2$/) } });
+    expect(repoCopy.repoCopyLine(true, rc, true)!.copy).toContain(`PR #${gh.PR + 5000} removes it once a person merges it`);
+    // The old copy PR's head cannot land under the exception any more.
+    expect(await repoCopy.landSpecRepoCopy({ repoFullName: GH, prNumber: gh.PR, headSha: opened.headSha, conclusion: 'success', installationId: 1 }, gh.deps)).toEqual({ specId: spec.id, outcome: 'kept_private' });
   });
 });

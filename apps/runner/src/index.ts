@@ -29,6 +29,8 @@ import { emitHeartbeatTick } from './heartbeat-log';
 import { sweepStaleSessionPromptFiles } from './session-prompt-files';
 import { heartbeatState, withClaimHealthCheck } from './claim-budget-signals';
 import { authorizeLocalRequest, escapeHtml, injectLocalToken, isLoopbackAddress, loadOrCreateLocalToken, resolveBindHost } from './local-server-auth';
+import { bannerPalette, renderBanner } from './banner';
+import { checkSingleInstance, decideStart, probeRunnerSocket, matchWorkerAction, relayWorkerAction, runnerSocketPath, serveRunnerSocket, type RunnerIdentity, type RunnerSocketServer } from './runner-socket';
 
 const PORT = parseInt(process.env.PORT || '8766');
 // Entrypoint: resolving once at load is fine here (see buildd-home.ts).
@@ -49,6 +51,25 @@ if (CLI.kind === 'help') {
 if (CLI.kind === 'unknown') {
   console.error(`Unknown argument: ${CLI.arg}\n\n${RUNNER_USAGE}`);
   process.exit(EXIT_CLI_USAGE);
+}
+
+// `buildd name [<name>|--clear]`: read or set the display name, then exit. It
+// never starts a runner; a running one picks the new name up on its next
+// heartbeat (runner-name.ts).
+if (CLI.kind === 'name') {
+  const { runNameCommand } = await import('./runner-name');
+  const r = runNameCommand(CLI.args, { configFile: CONFIG_FILE });
+  if (r.stdout) console.log(r.stdout);
+  if (r.stderr) console.error(r.stderr);
+  process.exit(r.code);
+}
+
+// `buildd web`: open the running runner's web UI, or say in one line how to
+// turn it on. It never starts or restarts a runner (runner-web.ts).
+if (CLI.kind === 'web') {
+  const { runWebCommand } = await import('./runner-web');
+  const { runnerSocketPath: socketPathFor } = await import('./runner-socket');
+  process.exit(await runWebCommand({ socketPath: socketPathFor(BUILDD_DIR) }));
 }
 
 // --version: print and exit. Deliberately after every static import above, so a
@@ -132,6 +153,71 @@ const DEBUG_MODE = ONCE_TASK_ID === null && (process.argv.includes('--debug') ||
 // interface (e.g. a Tailscale address for remote viewing).
 const BIND_HOST = resolveBindHost(process.env as Record<string, string | undefined>);
 const BIND_IS_LOOPBACK = isLoopbackAddress(BIND_HOST) || BIND_HOST === 'localhost';
+
+// ── One runner per machine (runner-socket.ts) ───────────────────────────────
+// Before anything with side effects (worker restore, Pusher, the broker, the
+// claim loop): if a runner already answers on this home's socket, start
+// nothing. Then claim the socket straight away, so a second start that races
+// this one finds it. Until the request handler below exists the socket answers
+// only GET /api/runner; everything else gets 503 "starting".
+// --once is a one-shot task run (cloud and run-once) and neither probes nor
+// serves the socket.
+const RUNNER_SOCKET = runnerSocketPath(BUILDD_DIR);
+const RUNNER_STARTED_AT = new Date().toISOString();
+let socketHandler: ((req: Request) => Promise<Response>) | null = null;
+
+function runnerIdentity(): RunnerIdentity {
+  return {
+    pid: process.pid,
+    version: PKG_VERSION,
+    startedAt: RUNNER_STARTED_AT,
+    socket: RUNNER_SOCKET,
+    httpPort: DEBUG_MODE ? PORT : null,
+  };
+}
+
+function exitAlreadyRunning(decision: { code: number; message: string; stream: 'stdout' | 'stderr' }): never {
+  (decision.stream === 'stdout' ? console.log : console.error)(decision.message);
+  process.exit(decision.code);
+}
+
+/** Open `buildd top` on the runner holding the socket, then exit with its code. */
+async function attachTop(missionId: string | null, notice?: string, workspace: string | null = null): Promise<never> {
+  const { runTop } = await import('./top/run');
+  process.exit(await runTop({ socketPath: RUNNER_SOCKET, missionId, workspace, notice }));
+}
+
+// `buildd top`: watch the runner already running on this machine. Never starts one.
+if (CLI.kind === 'top') {
+  await attachTop(CLI.missionId, undefined, CLI.workspace);
+}
+
+let runnerSocket: RunnerSocketServer | null = null;
+if (ONCE_TASK_ID === null) {
+  const foreground = process.argv.includes('--foreground');
+  // `top` needs both ends of the terminal (raw keys in, frames out).
+  const isTTY = !!process.stdout.isTTY && !!process.stdin.isTTY;
+  const { decision } = await checkSingleInstance({ socketPath: RUNNER_SOCKET, isTTY, foreground, log: (m) => console.log(m) });
+  if (decision.action === 'exit') exitAlreadyRunning(decision);
+  if (decision.action === 'attach') await attachTop(null, decision.message);
+  try {
+    mkdirSync(BUILDD_DIR, { recursive: true });
+    runnerSocket = serveRunnerSocket(RUNNER_SOCKET, (req) => {
+      if (new URL(req.url).pathname === '/api/runner' && req.method === 'GET') {
+        return Response.json(runnerIdentity());
+      }
+      return socketHandler ? socketHandler(req) : Response.json({ error: 'starting' }, { status: 503 });
+    }, { error: (err) => localServerError(err) });
+  } catch (err: any) {
+    // Lost a race with another start that bound first: that one is the runner.
+    // serveRunnerSocket never unlinks an existing file, so the bind fails here
+    // rather than stealing the other runner's socket.
+    const again = decideStart({ probe: await probeRunnerSocket(RUNNER_SOCKET), isTTY, foreground, socketPath: RUNNER_SOCKET });
+    if (again.action === 'attach') await attachTop(null, again.message);
+    if (again.action === 'exit') exitAlreadyRunning(again);
+    console.warn(`[runner-socket] could not serve ${RUNNER_SOCKET} (${err?.message ?? err}); continuing without it — buildd top will not find this runner`);
+  }
+}
 
 // Non-blocking git command helper using Bun.spawn
 async function gitAsync(args: string[], cwd = BUILDD_DIR, timeout = 10_000): Promise<string> {
@@ -284,11 +370,6 @@ function loadSavedConfig(): SavedConfig {
   return {};
 }
 
-// Create clickable terminal link using OSC 8 escape sequence
-function terminalLink(url: string, text?: string): string {
-  const displayText = text || url;
-  return `\x1b]8;;${url}\x07${displayText}\x1b]8;;\x07`;
-}
 
 // Prompt user for yes/no input
 async function promptYesNo(question: string): Promise<boolean> {
@@ -1212,11 +1293,9 @@ async function parseBody(req: Request) {
   }
 }
 
-// Handle requests — HTTP server only starts in --debug mode
-if (!DEBUG_MODE) {
-  // Headless mode: no HTTP server, no UI. Runner operates purely as a background daemon.
-  // Tasks are claimed from and reported to the buildd server; the dashboard is the only UI.
-}
+// Handle requests. The TCP server (and its web UI) only starts in --debug mode;
+// the owner-only runner socket serves the same handler in every mode, so a
+// headless runner can still be watched from this machine (`buildd top`).
 
 // Local token for state-changing requests to the local UI server. Written to
 // the runner's config dir (mode 0600) so local tools can read it; the runner's
@@ -1231,12 +1310,18 @@ function builddServerOrigin(): string | null {
   try { return config.builddServer ? new URL(config.builddServer).origin : null; } catch { return null; }
 }
 
-const server = DEBUG_MODE ? Bun.serve({
-  port: PORT,
-  hostname: BIND_HOST,
-  development: false, // Disable Bun's HTML error overlay; we handle errors in JSON
-  idleTimeout: 120, // 2 minutes for long-running requests
-  async fetch(req, srv) {
+/**
+ * Who sent a request to the local handler. The TCP server (--debug) knows the
+ * peer's address and authorizes it with the local token; the unix socket's
+ * peer is always this machine's owner (the socket is 0600), so it skips that.
+ */
+interface LocalPeer {
+  remoteAddr: string | null;
+  viaSocket: boolean;
+}
+
+// One handler for both the --debug HTTP server and the runner socket.
+async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Response> {
     const url = new URL(req.url);
     const path = url.pathname;
 
@@ -1257,11 +1342,11 @@ const server = DEBUG_MODE ? Bun.serve({
     }
 
     // Local peer = socket remote address, never the Host/Origin headers.
-    const remoteAddr = srv.requestIP(req)?.address ?? null;
+    const remoteAddr = peer.remoteAddr;
     const ownOrigins = [`http://localhost:${PORT}`, `http://127.0.0.1:${PORT}`, `http://[::1]:${PORT}`];
     if (!BIND_IS_LOOPBACK) ownOrigins.push(`http://${BIND_HOST}:${PORT}`);
     try { if (config.localUiUrl) ownOrigins.push(new URL(config.localUiUrl).origin); } catch { /* ignore */ }
-    const denial = authorizeLocalRequest({
+    const denial = peer.viaSocket ? null : authorizeLocalRequest({
       method: req.method,
       path,
       headers: req.headers,
@@ -1275,7 +1360,7 @@ const server = DEBUG_MODE ? Bun.serve({
     if (denial) {
       return Response.json({ error: denial.error }, { status: denial.status, headers: corsHeaders });
     }
-    const isLocalPeer = isLoopbackAddress(remoteAddr);
+    const isLocalPeer = peer.viaSocket || isLoopbackAddress(remoteAddr);
 
     // Health check for browser-side capacity pings
     if (path === '/health' && req.method === 'GET') {
@@ -1923,6 +2008,22 @@ const server = DEBUG_MODE ? Bun.serve({
         }
         return Response.json({ error: err.message || 'Failed to take over task' }, { status: 400, headers: corsHeaders });
       }
+    }
+
+    // Worker actions for `buildd top` (runner-socket.ts WORKER_ACTIONS):
+    // answer / message / pause / stop, each relayed to the buildd server route
+    // the dashboard uses for the same button, so the result (or the server's
+    // refusal reason) is exactly what the dashboard would get.
+    const workerAction = req.method === 'POST' ? matchWorkerAction(path) : null;
+    if (workerAction) {
+      if (!buildd) {
+        return Response.json({ error: 'Not configured', needsSetup: true }, { status: 401, headers: corsHeaders });
+      }
+      const body = await parseBody(req);
+      const client = buildd;
+      const result = await relayWorkerAction(workerAction.workerId, workerAction.action, body, (endpoint, payload) =>
+        client.relayDashboardAction(endpoint, payload));
+      return Response.json(result.body, { status: result.status, headers: corsHeaders });
     }
 
     // Send message to running worker session
@@ -2609,7 +2710,7 @@ const server = DEBUG_MODE ? Bun.serve({
       try {
         const raw = readFileSync(debugHtml, 'utf8');
         // Only a local peer receives the local token; a remote viewer gets the read-only page.
-        const content = isLocalPeer ? injectLocalToken(raw, localToken!.token) : raw;
+        const content = isLocalPeer && localToken ? injectLocalToken(raw, localToken.token) : raw;
         return new Response(content, {
           headers: { 'Content-Type': 'text/html', 'Cache-Control': 'no-cache' },
         });
@@ -2624,82 +2725,58 @@ const server = DEBUG_MODE ? Bun.serve({
     }
 
     return new Response('Not found', { status: 404 });
-  },
-  error(err) {
-    // Return JSON errors instead of Bun's HTML error overlay
-    console.error('Unhandled server error:', err.message);
-    return Response.json(
-      { error: err.message || 'Internal server error' },
-      { status: 500 },
-    );
-  },
+}
+
+function localServerError(err: Error): Response {
+  // Return JSON errors instead of Bun's HTML error overlay
+  console.error('Unhandled server error:', err.message);
+  return Response.json(
+    { error: err.message || 'Internal server error' },
+    { status: 500 },
+  );
+}
+
+const server = DEBUG_MODE ? Bun.serve({
+  port: PORT,
+  hostname: BIND_HOST,
+  development: false, // Disable Bun's HTML error overlay; we handle errors in JSON
+  idleTimeout: 120, // 2 minutes for long-running requests
+  fetch: (req, srv) => handleLocalRequest(req, { remoteAddr: srv.requestIP(req)?.address ?? null, viaSocket: false }),
+  error: localServerError,
 }) : null;
+
+// The runner socket (bound at startup, above) now answers everything the
+// --debug server does, in headless mode too.
+socketHandler = (req) => handleLocalRequest(req, { remoteAddr: null, viaSocket: true });
 
 const localUrl = `http://localhost:${PORT}`;
 
 // ── Startup banner ──────────────────────────────────────────────────────────
 
-const DIM = '\x1b[2m';
-const RESET = '\x1b[0m';
-const BOLD = '\x1b[1m';
-const AMBER = '\x1b[38;2;200;149;106m';   // warm charcoal accent #c8956a
-const WARM = '\x1b[38;2;138;132;128m';     // muted warm gray
-const GREEN = '\x1b[38;2;52;211;153m';     // status-success
-const RED = '\x1b[38;2;248;113;113m';      // status-error
-
-const commitShort = updateState.currentCommit ? updateState.currentCommit.slice(0, 7) : '';
-
-// Amber gradient hero — each line subtly shifts warmth
-const A1 = '\x1b[38;2;210;160;110m';
-const A2 = '\x1b[38;2;200;149;106m';
-const A3 = '\x1b[38;2;185;138;100m';
-const A4 = '\x1b[38;2;168;126;92m';
-const A5 = '\x1b[38;2;148;112;82m';
-
-console.log('');
-console.log(`${A1}   ██████╗  ██╗   ██╗ ██╗ ██╗     ██████╗  ██████╗ ${RESET}`);
-console.log(`${A2}   ██╔══██╗ ██║   ██║ ██║ ██║     ██╔══██╗ ██╔══██╗${RESET}`);
-console.log(`${A3}   ██████╔╝ ██║   ██║ ██║ ██║     ██║  ██║ ██║  ██║${RESET}`);
-console.log(`${A4}   ██╔══██╗ ██║   ██║ ██║ ██║     ██║  ██║ ██║  ██║${RESET}`);
-console.log(`${A5}   ██████╔╝ ╚██████╔╝ ██║ ███████╗██████╔╝ ██████╔╝${RESET}`);
-console.log(`${DIM}   ╚═════╝   ╚═════╝  ╚═╝ ╚══════╝╚═════╝  ╚═════╝ ${RESET}`);
-console.log('');
-console.log(`   ${WARM}runner${RESET} ${DIM}v${PKG_VERSION}${commitShort ? ` · ${commitShort}` : ''}${RESET}`);
-console.log(`${DIM}   ${'─'.repeat(48)}${RESET}`);
-
-// Status lines
-const modeLabel = DEBUG_MODE ? `${AMBER}debug${RESET}` : `${GREEN}headless${RESET}`;
-const modeHint = DEBUG_MODE ? ` ${DIM}:${PORT}${RESET}` : '';
-console.log(`   ${WARM}mode${RESET}     ${modeLabel}${modeHint}`);
-console.log(`   ${WARM}server${RESET}   ${DIM}${config.builddServer}${RESET}`);
-const keyDisplay = config.apiKey
-  ? `${GREEN}bld_···${config.apiKey.slice(-4)}${RESET}`
-  : `${RED}not set${RESET}`;
-console.log(`   ${WARM}key${RESET}      ${keyDisplay}`);
-if (DEBUG_MODE) {
-  console.log(`   ${WARM}url${RESET}      ${terminalLink(localUrl)}`);
-  if (config.localUiUrl && config.localUiUrl !== localUrl) {
-    console.log(`   ${WARM}remote${RESET}   ${terminalLink(config.localUiUrl)}`);
-  }
-  console.log(`   ${WARM}bind${RESET}     ${DIM}${BIND_HOST}:${PORT}${RESET}`);
-  if (localToken) {
-    console.log(`   ${WARM}token${RESET}    ${DIM}${localToken.path} (send as X-Buildd-Local-Token for POST/DELETE)${RESET}`);
-  }
-}
-
+// Colours come from the shared terminal palette (terminal-palette.ts), themed
+// from the environment only (BUILDD_THEME, COLORFGBG, else Night). The banner
+// never queries the terminal: a runner started with `buildd &` would be
+// stopped by the shell for touching the TTY. Values are the terminal's own
+// foreground (R-17). NO_COLOR or a non-TTY drops every colour.
+const PAL = bannerPalette();
 const repos = getRepos(); // Use cached, will scan only if no cache
-console.log('');
-console.log(`   ${DIM}${repos.length} repo${repos.length !== 1 ? 's' : ''}${reposLoadedFromCache ? ' · cached' : ''} · ${projectRoots.length} root${projectRoots.length !== 1 ? 's' : ''}${RESET}`);
-
-if (!config.apiKey && !config.serverless) {
-  console.log('');
-  if (DEBUG_MODE) {
-    console.log(`   ${RED}▸${RESET} No API key — visit ${terminalLink(localUrl)} to set up`);
-  } else {
-    console.log(`   ${RED}▸${RESET} Not logged in — run ${BOLD}buildd login${RESET} (or set ${BOLD}BUILDD_API_KEY${RESET}), then start buildd again`);
-  }
-}
-console.log('');
+for (const line of renderBanner({
+  version: PKG_VERSION,
+  commit: updateState.currentCommit ? updateState.currentCommit.slice(0, 7) : '',
+  debug: DEBUG_MODE,
+  port: PORT,
+  server: config.builddServer,
+  apiKey: config.apiKey || '',
+  socketPath: runnerSocket?.path ?? null,
+  localUrl,
+  remoteUrl: config.localUiUrl || null,
+  bindHost: BIND_HOST,
+  tokenPath: localToken?.path ?? null,
+  repos: repos.length,
+  reposCached: reposLoadedFromCache,
+  roots: projectRoots.length,
+  serverless: !!config.serverless,
+}, PAL)) console.log(line);
 
 // Auto-install HTTP MCP for onboarded repos (non-blocking)
 async function autoInstallMcp() {

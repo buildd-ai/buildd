@@ -33,7 +33,8 @@ import { landPr, resolveLandingMode, type LandingOutcome } from '@/lib/pr-landin
 import { resolveMergeMethod } from '@/lib/integration-refresh';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { latestRunPerName } from '@/lib/auto-merge-bound';
-import { kernelLandingView, landThroughKernel, type KernelLanding } from '@/lib/workflow/seam';
+import { kernelLandingView, type KernelLanding } from '@/lib/workflow/seam';
+import { doorErrorResponse, isDoorError, idempotencyKeyOf, landThroughKernel } from '@/lib/workflow/kernel-client';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
@@ -444,6 +445,8 @@ export async function POST(
             }
           : {}),
       },
+      // A dashboard session: the person, checked by membership on both hosts.
+      principal: { kind: 'user', id: user.id },
       mode: landingMode,
       policy,
       owner: { taskId: worker.taskId ?? null, workerId: worker.id },
@@ -631,6 +634,9 @@ export async function POST(
         kinds: kernelKinds,
       }
     : null;
+  // A kernel-owned PR's merge is a landing command, applied where the kernel is hosted
+  // (workflow-kernel-library.md §3): the control plane in own mode. Unreachable = 503, nothing merged.
+  const idempotencyKey = idempotencyKeyOf(req);
   const slotted = await mergeInSurfaceSlot(surfaceOrder, async () => {
     const kernel = kernelOwned
       ? await landThroughKernel({
@@ -638,10 +644,11 @@ export async function POST(
           door: 'dashboard', actor: `human:${user.id}`, mergeMethod,
           ...(kernelOverride ? { override: kernelOverride } : {}),
           ...(expectedVersion !== undefined ? { expectedVersion } : {}),
-        })
+        }, { principal: { kind: 'user', id: user.id }, idempotencyKey })
       : null;
     return kernel ? { kernel } : { legacy: await mergePullRequest(installationId, repoFullName, prNumber, mergeMethod, liveHeadSha!) };
-  });
+  }).catch((err: unknown) => (isDoorError(err) ? err : Promise.reject(err)));
+  if (isDoorError(slotted)) return doorErrorResponse(slotted) as NextResponse;
   if ('refused' in slotted) {
     return NextResponse.json({ error: `Merge deferred: ${slotted.refused}`, surfaceOrderBlocked: true }, { status: 409 });
   }

@@ -323,10 +323,16 @@ export async function POST(req: NextRequest) {
         )),
       });
 
-      // Get cached account→workspace permissions (avoids DB hit on every claim)
-      const allPermissions = await getAccountWorkspacePermissions(account.id);
+      // Get cached account→workspace permissions (avoids DB hit on every claim).
+      // A workspace a person picked for this key (granted_by_user_id) is
+      // re-checked live on every call: their membership and role in its team
+      // and its access mode now (lib/granted-links.ts). A pick that no longer
+      // holds comes back `revoked` and is kept out below, even where the open
+      // arm would reach it.
+      const allPermissions = await getAccountWorkspacePermissions(account.id, { includeRevoked: true });
+      const revokedIds = new Set(allPermissions.filter((p) => p.revoked).map((p) => p.workspaceId));
       const claimablePermissions = allPermissions
-        .filter((p) => p.canClaim)
+        .filter((p) => p.canClaim && !p.revoked)
         .filter((p) => !workspaceId || p.workspaceId === workspaceId);
 
       // Resolve which linked workspaces still exist. An explicit canClaim link
@@ -349,6 +355,7 @@ export async function POST(req: NextRequest) {
       // the team's open workspaces or canClaim links would otherwise allow.
       // Every candidate and taskId lookup below is bounded by this list.
       return [...new Set([...openIds, ...restrictedIds])]
+        .filter((id) => !revokedIds.has(id))
         .filter((id) => tokenWorkspaceAllowed(account.workspaceIds, id));
     })();
     return claimableWorkspaceIdsMemo;

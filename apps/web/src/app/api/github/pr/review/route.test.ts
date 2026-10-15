@@ -506,6 +506,57 @@ describe('POST /api/github/pr/review — idempotency', () => {
     const current = { state: 'AWAITING_REVIEW', version: 3, head: 'h', round: 1 };
     afterEach(() => { mockRequestKernelReview.mockReset(); mockRequestKernelReview.mockResolvedValue({ handled: false }); });
 
+    describe('cut over to the control plane (workflow-kernel-library §3)', () => {
+      let cp: ReturnType<typeof import('@/lib/workflow/testing/cut-over').cutOver> | null = null;
+      afterEach(() => { cp?.restore(); cp = null; });
+
+      it('the control plane unreachable: 503 naming it, and no legacy reviewer is created in its place', async () => {
+        const { cutOver } = await import('@/lib/workflow/testing/cut-over');
+        cp = cutOver();
+        mockRequestKernelReview.mockClear();
+        mockCreateReviewerTask.mockClear();
+        const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+        expect(res.status).toBe(503);
+        expect(await res.json()).toMatchObject({ code: 'control_plane_unavailable', controlPlane: true, retryable: true, idempotencyKey: expect.stringMatching(/^request_review:/) });
+        expect(cp.calls.map((c) => c.op)).toContain('request_review');
+        expect(mockRequestKernelReview).not.toHaveBeenCalled();
+        expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+      });
+
+      // The control plane re-checks the caller with the web host's rule: the door submits the session it judged.
+      const principalSent = async (account: Record<string, unknown>) => {
+        const { cutOver } = await import('@/lib/workflow/testing/cut-over');
+        cp = cutOver();
+        mockAuthenticateApiKey.mockReturnValue(account);
+        await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+        return cp.calls.filter((c) => c.op === 'request_review').map((c) => c.body?.principal);
+      };
+
+      it('a grant session is submitted as its grant with its workspace list, a person behind it or not', async () => {
+        const grant = { ...ACCOUNT, oauthGrantId: 'g-1', grantScopes: ['read', 'write'], workspaceIds: ['ws-1'] };
+        const asGrant = { kind: 'grant', id: 'account-1', grantId: 'g-1', workspaceIds: ['ws-1'], scopes: ['read', 'write'] };
+        expect(await principalSent(grant)).toEqual([asGrant]);
+        cp?.restore();
+        expect(await principalSent({ ...grant, sessionUserId: 'user-7' })).toEqual([{ ...asGrant, userId: 'user-7' }]);
+      });
+
+      it('a person is submitted as the user; a plain API account as an account that is not a grant', async () => {
+        expect(await principalSent({ ...ACCOUNT, sessionUserId: 'user-7' })).toEqual([{ kind: 'user', id: 'user-7' }]);
+        cp?.restore();
+        expect(await principalSent(ACCOUNT)).toEqual([{ kind: 'account', id: 'account-1', grant: null }]);
+      });
+
+      it('the control plane refuses the command: 403, not a 500, and no legacy reviewer', async () => {
+        const { cutOver, refusedByControlPlane } = await import('@/lib/workflow/testing/cut-over');
+        cp = cutOver({ reply: refusedByControlPlane });
+        mockCreateReviewerTask.mockClear();
+        const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+        expect(res.status).toBe(403);
+        expect(await res.json()).toMatchObject({ code: 'control_plane_refused' });
+        expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+      });
+    });
+
     it('is T5 on the live head and never creates a legacy reviewer', async () => {
       mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'applied', transitionId: 't', deliveryId: 'd', version: 4, decision: {} } });
       const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));

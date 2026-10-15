@@ -165,6 +165,7 @@ SPARSE
 write_client_sparse_checkout() {
   cat > .git/info/sparse-checkout << 'CLIENT_SPARSE'
 apps/runner/src/login.ts
+apps/runner/src/login-workspaces.ts
 apps/runner/src/agent-plugin-install.ts
 apps/runner/src/buildd-home.ts
 apps/runner/src/claude-json-mcp.ts
@@ -434,6 +435,7 @@ case "${1:-}" in
 Usage: buildd <command>   (client-only install: no runner)
 
   buildd login [--device]    Sign in and save your key to ~/.buildd/config.json
+  buildd login --workspaces  Choose which workspaces this machine's key serves (same key)
   buildd logout              Remove the saved key
   buildd status              Show whether you are signed in
   buildd install --global    Turn buildd on in Claude Code for your workspace folders,
@@ -671,6 +673,10 @@ print_next_steps() {
     echo "  buildd service status    the runner is already running in the background"
   elif [ "$service" = "1" ]; then
     echo "  buildd service install   restart the background service with your account"
+  fi
+  if [ "$service" = "1" ]; then
+    echo "  buildd top               watch the runner and act on its work"
+    echo "  buildd web               open it in your browser"
   else
     echo "  buildd                   start the runner in this terminal"
     echo "                           (or buildd service install to keep it running in the background)"
@@ -771,7 +777,7 @@ fi
 
 SERVICE_INSTALLED=0
 if [ "$INSTALL_SERVICE" = "1" ]; then
-  if "$BIN_DIR/buildd" service install; then
+  if BUILDD_INSTALLER=1 "$BIN_DIR/buildd" service install; then
     SERVICE_INSTALLED=1
   else
     echo -e "${YELLOW}Could not install the background service — run 'buildd service install' to retry, or 'buildd' to run it in the foreground.${NC}"

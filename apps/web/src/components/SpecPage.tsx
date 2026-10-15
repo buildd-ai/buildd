@@ -20,6 +20,8 @@ import Segmented from '@/components/ui/Segmented';
 import { neighbourGraph } from '@/lib/specs/index-view';
 import SpecFiling from '@/components/SpecFiling';
 import SpecRepoChecks from '@/components/SpecRepoChecks';
+import SpecDelivery from '@/components/SpecDelivery';
+import SpecRetire from '@/components/SpecRetire';
 import { useHideAskButton } from '@/lib/ask-button-hidden';
 import type { SpecPageView } from '@/lib/specs/page-view';
 
@@ -85,6 +87,33 @@ function Approve({ specId, revision, expectedVersion }: { specId: string; revisi
           </PrimaryAction>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/** Slice 14, R-68: publish a revision the policy kept private. A person's call, recorded as an override. */
+function PublishAnyway({ specId }: { specId: string }) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ tone: 'ok' | 'warn' | 'err'; text: string } | null>(null);
+  const publish = async () => {
+    setBusy(true);
+    const res = await fetch(`/api/specs/${encodeURIComponent(specId)}/publish`, { method: 'POST' });
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    setBusy(false);
+    if (res.ok) { setResult({ tone: 'ok', text: 'Publishing it: the repo copy is on its way.' }); router.refresh(); return; }
+    setResult({ tone: res.status === 409 ? 'warn' : 'err', text: body.error ?? 'Could not publish it. Try again.' });
+  };
+  return (
+    <div className="flex flex-col gap-2">
+      {result ? <Notice tone={result.tone} data-testid="spec-page-publish-result">{result.text}</Notice> : null}
+      {result?.tone === 'ok' ? null : (
+        <div>
+          <button type="button" className="btn btn-sm h-11 md:h-8" onClick={publish} disabled={busy} data-testid="spec-page-publish-anyway">
+            Publish anyway
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -338,7 +367,9 @@ export default function SpecPage({ view }: { view: Ok }) {
     </Section>
   );
 
+  const hasDelivery = !!view.delivery?.entries.length;
   const jumps = [
+    hasDelivery ? { href: '#delivery', label: 'Delivery' } : null,
     hasRelated ? { href: '#related', label: 'Related' } : null,
     { href: '#comments', label: 'Comments' },
     { href: '#revisions', label: 'Revisions' },
@@ -356,11 +387,14 @@ export default function SpecPage({ view }: { view: Ok }) {
         {view.source ? <p className="text-meta text-text-muted [overflow-wrap:anywhere]" data-testid="spec-page-source">{view.source.source}</p> : null}
       </header>
 
+      {view.retirement ? <SpecRetire specId={spec.id} retirement={view.retirement} canRetire={!!view.canRetire} /> : null}
+
       {view.source?.copy ? (
         view.source.behind
           ? <Notice tone="warn" data-testid="spec-page-repo-copy">{view.source.copy}</Notice>
           : <p className="text-meta text-text-muted" data-testid="spec-page-repo-copy">{view.source.copy}</p>
       ) : null}
+      {view.canPublishAnyway ? <PublishAnyway specId={spec.id} /> : null}
 
       {line ? <Lede><span data-testid="spec-page-reading">{line}</span></Lede> : null}
 
@@ -381,12 +415,15 @@ export default function SpecPage({ view }: { view: Ok }) {
       <div className="flex flex-col gap-4 lg:grid lg:grid-cols-[minmax(0,1fr)_20rem] lg:items-start lg:gap-10">
         <div className="flex min-w-0 flex-col gap-4">
           {main}
+          <SpecDelivery specId={spec.id} delivery={view.delivery} />
           {related}
           {comments}
         </div>
         <aside aria-label="Revisions and files" className="flex min-w-0 flex-col lg:border-l lg:border-[var(--line-soft)] lg:pl-6">
           {revisions}
           {files}
+          {/* Secondary, never the Approve corner (§22 R-54). */}
+          {!view.retirement && view.canRetire ? <SpecRetire specId={spec.id} retirement={null} canRetire targets={view.retireTargets ?? []} /> : null}
         </aside>
       </div>
     </div>

@@ -373,6 +373,20 @@ export const accountWorkspaces = pgTable('account_workspaces', {
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
   canClaim: boolean('can_claim').default(true).notNull(),
   canCreate: boolean('can_create').default(false).notNull(),
+  // The person who picked this workspace for the key on the runner consent
+  // page (lib/runner-picks.ts). NULL = a link an admin made, or one written
+  // before picks existed; those behave as they always have. A non-NULL row is
+  // re-checked on every claim against the person's current membership and
+  // role in the workspace's team and the workspace's access mode.
+  grantedByUserId: uuid('granted_by_user_id').references(() => users.id, { onDelete: 'cascade' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  // A team admin took this pick off the workspace (Settings > Connected apps).
+  // The row stays as a tombstone so the key's owner cannot put it back through
+  // Edit; a removed pick reaches nothing (lib/granted-links.ts). `removed_at`
+  // is the marker: who removed it is kept for display and goes NULL if that
+  // admin's user row is deleted, which never brings the pick back.
+  removedByUserId: uuid('removed_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  removedAt: timestamp('removed_at', { withTimezone: true }),
 }, (t) => ({
   pk: primaryKey({ columns: [t.accountId, t.workspaceId] }),
 }));
@@ -2803,6 +2817,33 @@ export interface SpecMetadataBlock {
   domains?: string[];
   /** The repo file a spec that already existed in buildd was matched to on import (attachProvenance). */
   repo_provenance?: { path: string; commitSha: string; blobSha: string | null; prNumber: number | null };
+  /**
+   * Living Specs R-66: a person's publication mark. `private` never leaves
+   * buildd, `public` is published once the production-data scan clears it.
+   * Absent: follow the workspace's publication policy. On an area, every member
+   * without a mark of its own inherits it.
+   */
+  publication?: 'private' | 'public';
+}
+
+/**
+ * How the publication decision (R-67, `buildd.spec_publication`) went for one
+ * approved revision. `source`: a fixed rule, the model, or the fallback (no
+ * model, below the bar). `reason` is the one sentence the spec page shows
+ * (R-68); `line` the policy line relied on, quoted.
+ */
+export interface SpecPublicationDecision {
+  publish: boolean;
+  source: 'rule' | 'model' | 'fallback' | 'person';
+  reasonCode: string;
+  reason: string;
+  line?: string;
+  policyVersion: string | null;
+  confidence?: number | null;
+  model?: string | null;
+  decisionRecordId?: string | null;
+  revision: number;
+  decidedAt: string;
 }
 
 /**
@@ -2813,7 +2854,8 @@ export interface SpecMetadataBlock {
  * nothing is generated (R-32). `failed`: the PR could not be written (`error`).
  */
 export interface SpecRepoCopyState {
-  state: 'open' | 'merged' | 'behind' | 'refused' | 'unfiled' | 'failed';
+  /** `private`: the publication decision kept this revision out of the repo (R-68); nothing was written. */
+  state: 'open' | 'merged' | 'behind' | 'refused' | 'unfiled' | 'failed' | 'private';
   path?: string;
   branch?: string;
   prNumber?: number;
@@ -2825,6 +2867,15 @@ export interface SpecRepoCopyState {
   metadataHash?: string;
   failingCheck?: string;
   error?: string;
+  /** The last publication decision (R-67, R-69). */
+  publication?: SpecPublicationDecision;
+  /** A person published this approved revision anyway (R-68): who, when, which revision. */
+  publishAnyway?: { by: string; at: string; revision: number };
+  /**
+   * Kept private while an earlier copy is in the repo (R-70): the PR that
+   * removes it, which only a person merges. buildd never deletes the file itself.
+   */
+  removal?: { path: string; prNumber?: number; branch?: string; error?: string; listedAt: string };
   updatedAt: string;
 }
 
@@ -3432,6 +3483,9 @@ export const workerHeartbeats = pgTable('worker_heartbeats', {
   // a credential; null = not reported (older runner).
   modelAuthSource: text('model_auth_source').$type<'machine_token' | 'machine_login' | 'api_key' | 'none'>(),
   modelAuthMode: text('model_auth_mode').$type<'auto' | 'prefer' | 'off'>(),
+  // Which Codex login this runner's Codex agents use (same spec, R-10..R-13).
+  // A label from a fixed list, never a credential; null = not reported.
+  codexAuthSource: text('codex_auth_source').$type<'machine_login' | 'api_key' | 'none'>(),
   lastHeartbeatAt: timestamp('last_heartbeat_at', { withTimezone: true }).defaultNow().notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -5493,6 +5547,9 @@ export const workflowTransitions = pgTable('workflow_transitions', {
   actor: text('actor').notNull(),
   evidence: jsonb('evidence').$type<Record<string, unknown>>().default({}).notNull(),
   bypass: jsonb('bypass').$type<Record<string, unknown>>(),
+  // Which host applied it (docs/specs/workflow-kernel-library.md §3, AC-9):
+  // 'control-plane' or 'web'. Null on rows written before the tag existed.
+  host: text('host').$type<'control-plane' | 'web'>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   idempotencyUnique: uniqueIndex('workflow_transitions_idempotency_unique').on(t.deliveryId, t.idempotencyKey),
@@ -5500,6 +5557,34 @@ export const workflowTransitions = pgTable('workflow_transitions', {
 }));
 
 export type WorkflowTransitionRow = typeof workflowTransitions.$inferSelect;
+
+// §3 of docs/specs/workflow-kernel-library.md — the command API's idempotency
+// ledger: one row per caller-supplied key, so a command submitted twice with one
+// key is applied once and both callers get the stored answer. Lives in Postgres,
+// never in Worker memory (a Worker isolate is not durable and not shared).
+export const workflowCommands = pgTable('workflow_commands', {
+  idempotencyKey: text('idempotency_key').primaryKey(),
+  op: text('op').notNull(),
+  /** `user:<id>`, `account:<id>` or `system:<name>`: who the web host vouched for. */
+  principal: text('principal').notNull(),
+  /** sha256 of the op, input and principal: one key never answers a different request. */
+  requestHash: text('request_hash').notNull(),
+  status: text('status').default('running').notNull().$type<'running' | 'done'>(),
+  /** The stored answer: `{ status, body }`, replayed verbatim to every caller with the key. */
+  response: jsonb('response').$type<Record<string, unknown>>(),
+  deliveryId: uuid('delivery_id'),
+  deliveryVersion: bigint('delivery_version', { mode: 'number' }),
+  host: text('host').notNull(),
+  /** The current claim: completion and release apply only for the claim that still holds the key. */
+  claimToken: text('claim_token').notNull(),
+  claimedAt: timestamp('claimed_at', { withTimezone: true }).defaultNow().notNull(),
+  completedAt: timestamp('completed_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  createdIdx: index('workflow_commands_created_idx').on(t.createdAt),
+}));
+
+export type WorkflowCommandRow = typeof workflowCommands.$inferSelect;
 
 // §5.5 — transactional outbox: inserted by the statement that applied the
 // transition, drained at least once by apps/web/src/lib/workflow/effects.ts.

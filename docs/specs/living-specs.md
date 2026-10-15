@@ -2,13 +2,13 @@
 title: Living Specs
 status: draft
 owner: max
-last_verified: 2026-10-13
+last_verified: 2026-10-14
 summary: Every Living Spec revision MUST stay immutable and no writer silently overwrites another; a person approves one revision, and work reads verified only when it passes that revision on its current head.
 domain: knowledge
 surfaces: [apps/web/src/lib/specs/store.ts, apps/web/src/lib/specs/provisional.ts, apps/web/src/lib/specs/approval.ts, apps/web/src/lib/specs/pin.ts, apps/web/src/app/api/specs/[specId]/route.ts]
 related: [artifacts-and-sharing, knowledge-ingest-pipeline]
-keywords: [living spec, spec_taxonomy, cold-start taxonomy, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs, recall, knowledge graph, living_spec, area, taxonomy, spec_area, filed by buildd, backfill, generated repo copy, generated_from, spec import, spec index, provisional pin, build ahead of approval, attach_provisional, re-grade, confirm_import, import confirmation, repo_source, spec attachment, attachment:, binding attachment, reference attachment, changed since approval, Files]
-verified_by: [apps/web/tests/db/specs.test.ts, apps/web/src/lib/spec-taxonomy-decision.test.ts, apps/web/tests/db/spec-provisional-pin.test.ts, apps/web/src/lib/specs/provisional-text.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecIndex.dom.test.tsx, apps/web/src/lib/specs/hub.test.ts, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts, apps/web/tests/db/spec-neighbours.test.ts, apps/web/src/lib/specs/neighbours.test.ts, apps/web/tests/db/spec-duplicates.test.ts, apps/web/src/lib/spec-duplicate-decision.test.ts, apps/web/src/components/MarkdownContent.spec-surface.dom.test.tsx, apps/web/tests/db/spec-comments.test.ts, apps/web/src/components/SpecComments.dom.test.tsx, packages/spec-contract/src/repo-copy.test.ts, apps/web/tests/db/spec-repo-copy.test.ts, scripts/check-generated-specs.test.ts, apps/web/src/lib/specs/no-prod-data-scan.test.ts, apps/web/tests/db/spec-organize.test.ts, apps/web/src/lib/spec-area-decision.test.ts, apps/web/src/lib/specs/areas.test.ts, apps/web/src/app/app/dev/fixtures/spec-index-fixtures.test.ts, apps/web/tests/db/spec-import.test.ts, packages/spec-contract/src/repo-import.test.ts, apps/web/src/app/api/specs/import/route.test.ts, apps/web/src/lib/specs/index-view-imported.test.ts, apps/web/tests/db/spec-attachments.test.ts, apps/web/src/components/MarkdownContent.attachments.dom.test.tsx, packages/core/__tests__/mcp-specs-attachments.test.ts, apps/web/src/app/api/specs/[specId]/attachments/[name]/route.test.ts, apps/web/src/components/SpecAttachments.dom.test.tsx]
+keywords: [living spec, spec_taxonomy, cold-start taxonomy, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs, recall, knowledge graph, living_spec, area, taxonomy, spec_area, filed by buildd, backfill, generated repo copy, generated_from, spec import, spec index, provisional pin, build ahead of approval, attach_provisional, re-grade, confirm_import, import confirmation, repo_source, spec attachment, attachment:, binding attachment, reference attachment, changed since approval, Files, retire, retired, superseded, restore, publication policy, spec_publication, publish anyway, removal PR]
+verified_by: [apps/web/tests/db/specs.test.ts, apps/web/src/lib/spec-taxonomy-decision.test.ts, apps/web/tests/db/spec-provisional-pin.test.ts, apps/web/src/lib/specs/provisional-text.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecIndex.dom.test.tsx, apps/web/src/lib/specs/hub.test.ts, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts, apps/web/tests/db/spec-neighbours.test.ts, apps/web/src/lib/specs/neighbours.test.ts, apps/web/tests/db/spec-duplicates.test.ts, apps/web/src/lib/spec-duplicate-decision.test.ts, apps/web/src/components/MarkdownContent.spec-surface.dom.test.tsx, apps/web/tests/db/spec-comments.test.ts, apps/web/src/components/SpecComments.dom.test.tsx, packages/spec-contract/src/repo-copy.test.ts, apps/web/tests/db/spec-repo-copy.test.ts, scripts/check-generated-specs.test.ts, apps/web/src/lib/specs/no-prod-data-scan.test.ts, apps/web/tests/db/spec-organize.test.ts, apps/web/src/lib/spec-area-decision.test.ts, apps/web/src/lib/specs/areas.test.ts, apps/web/src/app/app/dev/fixtures/spec-index-fixtures.test.ts, apps/web/tests/db/spec-import.test.ts, packages/spec-contract/src/repo-import.test.ts, apps/web/src/app/api/specs/import/route.test.ts, apps/web/src/lib/specs/index-view-imported.test.ts, apps/web/tests/db/spec-attachments.test.ts, apps/web/src/components/MarkdownContent.attachments.dom.test.tsx, packages/core/__tests__/mcp-specs-attachments.test.ts, apps/web/src/app/api/specs/[specId]/attachments/[name]/route.test.ts, apps/web/src/components/SpecAttachments.dom.test.tsx, apps/web/tests/db/spec-retire.test.ts, apps/web/src/app/api/specs/[specId]/retire/route.test.ts, packages/core/__tests__/mcp-specs-retire.test.ts, apps/web/src/components/SpecRetire.dom.test.tsx, apps/web/src/lib/spec-publication-decision.test.ts]
 supersedes: []
 assertions:
   - id: approve-spec-revision
@@ -1366,10 +1366,12 @@ at any time.
   overwritten. A repo change before confirmation re-imports it as a new
   imported revision. It is placed by the area classifier (R-5 to R-7), shown
   every area with the file's `domain:` and each area's declared `domains` as
-  a hint: a confident answer files it, any other answer leaves it Unfiled
-  with the suggestion recorded and shown. Only when the classifier does not
-  run does the `domain:` map to the area that declares it in `domains`, else
-  to the area whose title slug it is, labelled as that fallback. A file
+  a hint: a confident answer files it. Any other answer files it under the
+  area that declares its `domain:` in `domains`, labelled as filed by domain,
+  because a person made that mapping; with no declaring area it stays
+  Unfiled with the suggestion recorded and shown. When the classifier does
+  not run, the `domain:` maps to the area that declares it, else to the area
+  whose title slug it is, labelled as that fallback. A file
   already in buildd (a native spec that recorded its path as provenance, or
   with its exact title) is reported as existing, never created again; the
   caller may record the path and commit on that spec's metadata instead. A
@@ -1760,3 +1762,152 @@ and the spec MUST say when one changed since.
 - The Files list shows a binding attachment's change, not the two versions
   side by side.
 - A spec's generated repo copy (§18) does not carry its attachments.
+
+## 22. Retiring a spec
+
+**Capability statement**: A person MUST be able to take a spec out of force
+without deleting it, retired or superseded by another spec, and put it back;
+an agent MUST NOT.
+
+**Decision**:
+- D-17: Retiring is a status, never a delete (2026-10-14), like a repo spec's
+  `status: superseded`. Who and why are a row in the metadata change log
+  (`spec_metadata_changes`, field `status`), so it needs no new column.
+
+**Invariants**:
+- R-50: `retire { specId, reason, supersededBy? }` sets the status to
+  `superseded` when `supersededBy` names a live spec in the same workspace
+  (not the spec itself, not retired or superseded), else `retired`. `reason`
+  is 10 to 500 characters. One statement moves the status, only while it is
+  what was read, bumps the version (a pending approval link goes stale) and
+  writes the change row with the previous status, the replacement, the
+  reason and the person.
+- R-51: Only a person with approval rights (§6: an owner or admin of the
+  workspace's team, or a delegated approver) retires or restores, from a
+  dashboard session or their own OAuth session. An agent run or API key gets
+  a 403 and nothing changes. Unlike approve, an OAuth session acts directly:
+  restore undoes it.
+- R-52: A retired or superseded spec leaves the index counts and the import
+  confirm list (an unconfirmed import included, which `confirm_import` then
+  skips as `retired`), and is no longer revised, approved or attached to.
+- R-53: `restore { specId, reason? }` puts back the status the newest
+  retirement row recorded (else `approved` when a revision is approved, else
+  `draft`), with its own change row.
+- R-54: The spec page shows a retired spec as "Retired: <reason>" or
+  "Replaced by <spec>", with Restore for a person who may; for a live spec
+  that person gets Retire among the page's secondary actions, never in the
+  Approve corner, with a reason and an optional replacement.
+
+**Acceptance criteria**:
+- AC-109: GIVEN an agent token, an API key or a plain member WHEN it retires
+  a spec THEN it gets a 403 and the status is unchanged; an admin's
+  dashboard or OAuth session retires it and the change log names them
+  (`apps/web/tests/db/spec-retire.test.ts`,
+  `apps/web/src/app/api/specs/[specId]/retire/route.test.ts`).
+- AC-110: GIVEN an imported spec WHEN a person retires it THEN it leaves the
+  index counts and the confirm list, and restoring brings both back
+  (`apps/web/tests/db/spec-retire.test.ts`).
+- AC-111: GIVEN `supersededBy` naming the spec itself, another workspace's
+  spec or a retired one WHEN retiring THEN it is a 400; a live replacement
+  makes it superseded and the page links it
+  (`apps/web/tests/db/spec-retire.test.ts`,
+  `packages/core/__tests__/mcp-specs-retire.test.ts`,
+  `apps/web/src/components/SpecRetire.dom.test.tsx`).
+
+**Code surface**:
+- `apps/web/src/lib/specs/retire.ts` — `retireSpec`, `restoreSpec`, `specRetirement`
+- `apps/web/src/app/api/specs/[specId]/retire/route.ts` — `POST`, `DELETE`
+- `apps/web/src/components/SpecRetire.tsx` — `SpecRetire`
+
+**Not yet**:
+- Retiring does not close the generated repo copy (§18) of a native spec.
+
+## 23. Which specs leave buildd: the publication policy
+
+**Status: built.** Slice 14 of the native Living Specs spec (there D-21,
+D-22, R-66 to R-70 and AC-49 to AC-53). Only runs where native spec homes are
+on (§18, R-12).
+
+**Capability statement**: An approved spec MUST reach the repo only when a
+written publication policy, applied by a decision kind, allows it; every
+doubt MUST keep it in buildd, and nothing MUST reach GitHub before the
+production-data scan and the decision have both cleared the exact text.
+
+**Decision**:
+- D-18: The policy is plain text a person approves: the Publication section
+  of the workspace's product spec (the spec's nearest product ancestor, else
+  the workspace's one product spec). Its approved revision is the policy
+  version, recorded as `<short id>-r<revision>`. Without an approved policy
+  nothing is published.
+- D-19: The kind `buildd.spec_publication` (capability `spec_publication`,
+  built in, mode live) applies it. Fixed rules answer first and a model never
+  overrules them; its fallback for every cause is keep private, so its worst
+  case is publication off. Its input is general (a text, where it is going,
+  the policy) so other ways text leaves buildd can use it later.
+
+**Invariants**:
+- R-55: A spec, or an area for all its members, carries `publication:
+  private | public` in its metadata block (§18, R-14), set through the
+  metadata route or `manage_specs action=metadata` with a reason; `policy`
+  clears it (the default, follow the policy). It creates no revision. An
+  agent may only set `private`; marking a spec public or lifting a private
+  mark is a person's.
+- R-56: Before any GitHub write, the decision runs on the copy's exact text,
+  in this order: a production-data hit keeps it private and names the hit; no
+  approved policy keeps it private; a private mark keeps it private and a
+  public mark publishes; a private repo publishes; a text too long to read
+  whole stays private; otherwise the model reads the numbered policy lines and
+  the text, answers publish, keep private or unsure, and names the line it
+  relied on. A model `publish` applies only at the measured bar; until an
+  offline eval of a workspace's own specs, labelled by a person, sets it, the
+  bar is unmeasured and nothing the rules leave open is published.
+- R-57: A revision kept private gets no copy and no GitHub write. The spec
+  page says why in one sentence, naming the rule or the policy line, and a
+  person who may approve specs here can publish it anyway, which labels the
+  decision as a human override. Publish anyway never passes a
+  production-data hit, a missing policy or a private mark. An earlier copy
+  PR of a spec now kept private never lands under the generated-copy
+  exception.
+- R-58: Every decision is on the decision ledger (subject the spec) with its
+  features, which carry the policy version, the answer, its confidence and
+  the line; the spec's repo copy state keeps the last decision for the page.
+- R-59: Approving a new revision of the product spec re-decides every
+  approved spec in the workspace. A spec the policy now allows is published
+  on its next approval. Specs whose copies are in the repo and are now kept
+  private are listed on their pages with one PR that removes the copies and
+  updates the index; buildd never removes a file on its own, and the PR and
+  the page say that removal does not erase the repo's history.
+
+**Acceptance criteria**:
+- AC-112: GIVEN no approved policy WHEN a spec is approved with spec homes on
+  THEN nothing is written to GitHub and the page says the workspace has no
+  publication policy yet (`apps/web/tests/db/spec-repo-copy.test.ts`).
+- AC-113: GIVEN a spec marked private WHEN it is approved THEN it is never
+  written, whatever the model answers and even in a private repo; GIVEN a
+  spec marked public whose text has a production-data hit THEN it is not
+  written and the page names the hit
+  (`apps/web/tests/db/spec-repo-copy.test.ts`,
+  `apps/web/src/lib/spec-publication-decision.test.ts`).
+- AC-114: GIVEN no decision model, or an answer below the bar, WHEN the rules
+  leave a spec open THEN it is kept private and recorded as a fallback
+  (`apps/web/tests/db/spec-repo-copy.test.ts`,
+  `apps/web/src/lib/spec-publication-decision.test.ts`).
+- AC-115: GIVEN a fake GitHub that records every call WHEN a kept-private
+  revision is approved THEN it receives reads only, no write
+  (`apps/web/tests/db/spec-repo-copy.test.ts`).
+- AC-116: GIVEN a published spec WHEN a policy revision keeps it private THEN
+  it is listed with a removal PR and nothing in the repo changes until a
+  person merges it (`apps/web/tests/db/spec-repo-copy.test.ts`).
+
+**Code surface**:
+- `apps/web/src/lib/specs/publication.ts` — `parsePublicationSection`, `readPublicationPolicy`, `publicationMark`, `publicationReason`
+- `apps/web/src/lib/spec-publication-decision.ts` — `specPublicationKind`, `publicationOverride`, `decidePublication`, `recordPublicationOverride`
+- `apps/web/src/lib/specs/repo-copy.ts` — `decideSpecPublication`, `openRemovalPr`, `redecidePublication`, `publishSpecAnyway`
+- `apps/web/src/app/api/specs/[specId]/publish/route.ts` — `POST`
+
+**Not yet**:
+- The bar is unmeasured: the offline eval over a workspace's own specs,
+  labelled by a person, is still to run, so only the fixed rules and a
+  person's mark or override publish.
+- The same policy and kind for PR bodies, commit messages and the docs site.
+- A removal PR a person merged is not read back: the page keeps naming it.

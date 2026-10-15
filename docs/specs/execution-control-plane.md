@@ -2,7 +2,7 @@
 title: Execution Control Plane
 status: draft
 owner: max
-last_verified: 2026-10-11
+last_verified: 2026-10-14
 summary: Authorized execution (claims, heartbeats, results, webhooks, Dispatch callbacks) MUST keep moving while the web app is down, served by a separate Worker running the same handlers.
 domain: tasks
 surfaces: [apps/control-plane/src/index.ts, apps/control-plane/src/router.ts, apps/control-plane/src/next-server-shim.ts, apps/control-plane/wrangler.jsonc]
@@ -47,7 +47,17 @@ rewrite, and the two cannot drift.
 **Invariants**:
 - The Worker imports apps/web's own handlers for `POST /api/workers/claim`,
   `GET|PATCH /api/workers/[id]`, `POST /api/github/webhook`, and
-  `POST /api/dispatch/v1/resolve|receipts|relay` (the three Dispatch callbacks). No other route is served.
+  `POST /api/dispatch/v1/resolve|receipts|relay` (the three Dispatch callbacks). No other web-app route is served.
+- On its own hostname only, the Worker also serves the kernel command API,
+  `POST /v1/commands` (`workflow-kernel-library.md` §3,
+  `apps/web/src/lib/workflow/command-api.ts`). It is not a web-app handler and
+  is never on a `buildd.dev` route; it refuses with `not_host` unless
+  `EXECUTION_MODE=own`, and every request while `KERNEL_COMMAND_SECRET` is
+  unset (`index.test.ts`).
+- Its `scheduled` handler is the kernel's drain and floor
+  (`apps/web/src/lib/workflow/kernel-floor.ts`), on the cron trigger in
+  `wrangler.jsonc`; a no-op in shadow or without `KERNEL_COMMAND_SECRET`. The Worker's entry tags itself as the
+  kernel's `control-plane` host, so every transition it applies says so.
 - `next/server` resolves to a shim: `NextRequest` (Request plus `nextUrl`),
   `NextResponse` (`json`, `redirect`), `after()` (the request's
   `ctx.waitUntil`, and a throw outside a request, as in Next).
@@ -105,7 +115,10 @@ runs, so the execution handlers never differ between the two hosts.
   so after its migrations, and fails unless `/__control-plane/health?deep=1`
   then reports that SHA with every dependency healthy.
 - It ships code with `wrangler versions upload` + `versions deploy`, never
-  `wrangler deploy`. Its token (`CF_DISPATCH_API_TOKEN`) can upload and deploy
+  `wrangler deploy`. Cron triggers are script settings, not version settings,
+  so a change to `triggers.crons` is not applied by this workflow; it takes
+  `wrangler triggers deploy` (or `wrangler deploy`) from an account login,
+  like routes. Its token (`CF_DISPATCH_API_TOKEN`) can upload and deploy
   Worker versions but cannot reach the zone's Workers Routes. That was verified
   on 2026-10-10: `wrangler deploy` with the token uploaded the script, then
   failed on `/zones/<id>/workers/routes` with "No access". A versions upload

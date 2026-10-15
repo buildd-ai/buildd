@@ -124,29 +124,40 @@ export const ciFixWork: WorkBuilder = async (req) => {
   };
 };
 
+export interface CiEvidenceDeps {
+  repoFor?: typeof workspaceRepo;
+  capture?: typeof captureCiJobLogEvidence;
+}
+
 /** `Evidence` for the CI fix's failed job log (the payload `ciFixWork` owed, plus the task). */
-export const ciEvidence: Evidence = {
-  async capture(p) {
-    if (p.kind !== 'ci_job_log') return { status: 'skipped', record: { reason: `no capture for ${p.kind}` } };
-    const repo = await workspaceRepo(p.workspaceId);
-    if (!repo) return { status: 'skipped', record: { reason: 'no GitHub installation for the workspace' } };
-    const x = p.payload;
-    const r = await captureCiJobLogEvidence({
-      installationId: repo.installationId,
-      repoFullName: String(x.repoFullName ?? ''),
-      failedJobId: typeof x.failedJobId === 'number' ? x.failedJobId : null,
-      workspaceId: p.workspaceId,
-      retryTaskId: String(x.taskId ?? ''),
-      parentTaskId: String(x.parentTaskId ?? ''),
-      workerId: String(x.workerId ?? ''),
-      prNumber: typeof x.prNumber === 'number' ? x.prNumber : null,
-      // One object per fix task and failed job: a retried effect overwrites it instead of writing another.
-      ...(typeof x.failedJobId === 'number' ? { objectName: `${String(x.taskId ?? '')}-${x.failedJobId}` } : {}),
-    });
-    if (r.status === 'stored') return { status: 'stored', record: { objectKey: r.objectKey, bytes: r.bytes } };
-    return { status: r.status, record: r.status === 'failed' ? { error: r.error } : { reason: r.reason } };
-  },
-};
+export function ciEvidenceOf(deps: CiEvidenceDeps = {}): Evidence {
+  const repoFor = deps.repoFor ?? workspaceRepo;
+  const captureLog = deps.capture ?? captureCiJobLogEvidence;
+  return {
+    async capture(p) {
+      if (p.kind !== 'ci_job_log') return { status: 'skipped', record: { reason: `no capture for ${p.kind}` } };
+      const repo = await repoFor(p.workspaceId);
+      if (!repo) return { status: 'skipped', record: { reason: 'no GitHub installation for the workspace' } };
+      const x = p.payload;
+      const r = await captureLog({
+        installationId: repo.installationId,
+        repoFullName: String(x.repoFullName ?? ''),
+        failedJobId: typeof x.failedJobId === 'number' ? x.failedJobId : null,
+        workspaceId: p.workspaceId,
+        retryTaskId: String(x.taskId ?? ''),
+        parentTaskId: String(x.parentTaskId ?? ''),
+        workerId: String(x.workerId ?? ''),
+        prNumber: typeof x.prNumber === 'number' ? x.prNumber : null,
+        // One object per fix task and failed job: a retried effect overwrites it instead of writing another.
+        ...(typeof x.failedJobId === 'number' ? { objectName: `${String(x.taskId ?? '')}-${x.failedJobId}` } : {}),
+      });
+      if (r.status === 'stored') return { status: 'stored', record: { objectKey: r.objectKey, bytes: r.bytes } };
+      return { status: r.status, record: r.status === 'failed' ? { error: r.error } : { reason: r.reason } };
+    },
+  };
+}
+
+export const ciEvidence: Evidence = ciEvidenceOf();
 
 /** `Escalate` for family `ci`: the owner task, a notice and a mission note (`escalateCiRedHead`). */
 export const ciEscalate: Escalate = {

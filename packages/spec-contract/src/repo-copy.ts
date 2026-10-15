@@ -8,7 +8,9 @@
  * `supersedes`). Only it is approved and only it is hashed (`content_hash`).
  * The mechanical fields (`status`, `owner`, `last_verified`, `domain`,
  * `surfaces`, `verified_by`, `assertions`) are the metadata block, written
- * after a marker line and hashed on their own (`metadata_hash`). Three
+ * after a marker line and hashed on their own (`metadata_hash`). `title` and
+ * `summary`, which specs:lint requires, join the metadata block when the body
+ * states neither (summary: the metadata's, else the first prose sentence). Three
  * generated lines close the frontmatter. A copy is laid out so the approved
  * text can be cut back out of it byte for byte:
  *
@@ -25,6 +27,7 @@
  * The full spec id is never written: only its 8-character short id.
  */
 import { contentHash } from './hash';
+import { SUMMARY_MAX } from './repo-spec';
 
 export const INTENT_FIELDS = ['title', 'summary', 'related', 'keywords', 'supersedes'] as const;
 /** Mechanical fields a body may not carry: they live in the metadata block (R-14). */
@@ -38,6 +41,8 @@ export type AssertionValue = string | number | boolean;
 /** The metadata block of a spec (R-14): updatable without a revision (R-31). */
 export interface SpecMetadata {
   owner?: string;
+  /** The copy's `summary` when the body's own frontmatter states none; else its first prose sentence. */
+  summary?: string;
   last_verified?: string;
   surfaces?: string[];
   verified_by?: string[];
@@ -94,8 +99,44 @@ function list(items: readonly string[] | undefined): string {
   return `[${(items ?? []).join(', ')}]`;
 }
 
+/**
+ * The first sentence of a body's opening prose paragraph (headings, list
+ * items, tables, quotes and code skipped, as specCard reads a spec), on one
+ * line and at most SUMMARY_MAX characters. Empty when the body has no prose.
+ */
+export function firstProseSentence(body: string): string {
+  const { rest } = splitBodyFrontmatter(body);
+  const para: string[] = [];
+  let fenced = false;
+  for (const raw of rest.split('\n')) {
+    const line = raw.trim();
+    if (/^(```|~~~)/.test(line)) { fenced = !fenced; if (para.length) break; continue; }
+    if (fenced) continue;
+    const prose = line && !/^(#|[-*+]\s|\d+\.\s|\||>|<!--)/.test(line);
+    if (prose) para.push(line);
+    else if (para.length) break;
+  }
+  const text = para.join(' ').replace(/\s+/g, ' ').trim();
+  const sentence = /^.+?[.!?](?=\s|$)/.exec(text)?.[0] ?? text;
+  if (sentence.length <= SUMMARY_MAX) return sentence;
+  const cut = sentence.slice(0, SUMMARY_MAX - 1);
+  return `${cut.slice(0, cut.lastIndexOf(' ') > 0 ? cut.lastIndexOf(' ') : cut.length).trimEnd()}…`;
+}
+
+/**
+ * A free-text scalar as a quoted YAML string: single-quoted (no escapes) when
+ * it has no apostrophe, else double-quoted when that needs no escape either,
+ * else single-quoted with the apostrophes doubled. Always quoted, so a value
+ * opening with `[` is never read as a list and `: ` or ` #` never splits it.
+ */
+function quoted(s: string): string {
+  if (!s.includes("'")) return `'${s}'`;
+  if (!/["\\]/.test(s)) return `"${s}"`;
+  return `'${s.replace(/'/g, "''")}'`;
+}
+
 /** The metadata block lines, in their fixed order. */
-export function metadataBlock(input: Pick<RepoCopyInput, 'metadata' | 'domain' | 'status' | 'defaultOwner' | 'defaultLastVerified' | 'title'>, skip: ReadonlySet<string>): string[] {
+export function metadataBlock(input: Pick<RepoCopyInput, 'metadata' | 'domain' | 'status' | 'defaultOwner' | 'defaultLastVerified' | 'title' | 'body'>, skip: ReadonlySet<string>): string[] {
   const m = input.metadata;
   const one = (s: string, what: string) => {
     if (/\n/.test(s) || !s.trim()) throw new Error(`${what} must be one non-empty line`);
@@ -104,6 +145,11 @@ export function metadataBlock(input: Pick<RepoCopyInput, 'metadata' | 'domain' |
   const lines = [`status: ${input.status}`];
   if (!skip.has('owner')) lines.push(`owner: ${one(m.owner ?? input.defaultOwner, 'owner')}`);
   if (!skip.has('title')) lines.push(`title: ${one(input.title, 'title')}`);
+  // specs:lint requires a summary; a native body rarely states one in its own frontmatter.
+  if (!skip.has('summary')) {
+    const summary = m.summary?.trim() || firstProseSentence(input.body) || input.title.trim();
+    lines.push(`summary: ${quoted(one(summary.replace(/\s+/g, ' '), 'summary'))}`);
+  }
   lines.push(`last_verified: ${one(m.last_verified ?? input.defaultLastVerified, 'last_verified')}`);
   lines.push(`domain: ${one(input.domain, 'domain')}`);
   lines.push(`surfaces: ${list(m.surfaces)}`);
