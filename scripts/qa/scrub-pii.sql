@@ -338,6 +338,8 @@ DELETE FROM workflow_facts;
 DELETE FROM workflow_review_rounds;
 DELETE FROM workflow_attempts;
 DELETE FROM workflow_deliveries;
+-- Mission delivery epochs: branch names, repo names, merge SHAs, settlement proofs.
+DELETE FROM workflow_mission_epochs;
 DELETE FROM trunk_incidents;
 DELETE FROM watcher_events;
 -- Watches and their ledger: payloads carry task/PR titles and repo names.

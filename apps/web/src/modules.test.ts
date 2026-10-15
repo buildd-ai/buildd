@@ -53,7 +53,7 @@ describe('composition root', () => {
   });
 
   it('task.created: the category look is scheduled before the mission chain starts', () => {
-    expect(byEvent('task.created')).toEqual(['jev-decisions:task-category-look', 'missions:task-created-mission-feed']);
+    expect(byEvent('task.created')).toEqual(['jev-decisions:task-category-look', 'missions:open-writable-mission-delivery', 'missions:task-created-mission-feed']);
   });
 
   it('the rest', () => {
@@ -83,6 +83,8 @@ describe('composition root', () => {
     ]);
     // The verdict is measured before the reviewer is superseded.
     expect(byEvent('pr.closed')).toEqual([
+      // A mission PR merged on GitHub is still a merged delivery (workflow-kernel-library §6).
+      'missions:record-mission-delivery-merged',
       'missions:settle-surface-intents',
       'reviews:merge-review-telemetry',
       'reviews:supersession-detect-on-close',

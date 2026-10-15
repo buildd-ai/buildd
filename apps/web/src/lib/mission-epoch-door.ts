@@ -67,8 +67,9 @@ export async function recordMissionPrMerged(
       mergedAt: typeof pr?.merged_at === 'string' ? pr.merged_at : new Date().toISOString(),
       actor: 'system:mission_pr_merged',
     }, { principal: SYSTEM, withDelivery: false });
-    const r = answer.result as { result?: string; reason?: string };
-    return { recorded: r.result === 'applied' || r.result === 'noop', reason: r.reason ?? 'unknown' };
+    const r = answer.result;
+    if (r.action !== 'merged') return { recorded: false, reason: 'unexpected_answer' };
+    return { recorded: r.result === 'applied' || r.result === 'noop', reason: r.reason };
   } catch (err) {
     console.error(`[mission-epochs] recording mission ${missionId}'s merged PR failed (the hourly reconcile retries):`, err);
     return { recorded: false, reason: 'error' };
@@ -92,8 +93,8 @@ export async function ensureMissionWritableBranch(missionId: string, reason: str
     const answer = await submitKernelCommand('mission_epoch', {
       action: 'ensure_writable', workspaceId, missionId, reason, actor: `system:${reason}`,
     }, { principal: SYSTEM, withDelivery: false });
-    const r = answer.result as { branch?: string | null };
-    return r.branch ?? null;
+    const r = answer.result;
+    return r.action === 'ensure_writable' ? r.branch : null;
   } catch (err) {
     console.error(`[mission-epochs] could not open a writable delivery for mission ${missionId}:`, err);
     return null;
@@ -116,5 +117,6 @@ export async function reconcileMissionDeliveries(missionId: string): Promise<str
   const workspaceId = await repoWorkspace(missionId);
   if (!workspaceId) return [];
   const answer = await submitKernelCommand('mission_epoch', { action: 'reconcile', workspaceId, missionId }, { principal: SYSTEM, withDelivery: false });
-  return (answer.result as { steps?: string[] }).steps ?? [];
+  const r = answer.result;
+  return r.action === 'reconcile' ? r.steps : [];
 }

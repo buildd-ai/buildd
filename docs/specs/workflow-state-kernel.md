@@ -2508,6 +2508,10 @@ Branch-to-branch merges that do not go through a PR (`release-executor.ts` `POST
 /merges`, `mission-branch-refresh.ts`, `scripts/sync-dev.sh`, `release-refresh.yml`)
 are not landing doors. They move a base, and §5.9 refresh composition reviews what that
 merge decided.
+The mission delivery settlement's tree probe (`workflow/delivery-epochs.ts`,
+`workflow-kernel-library.md` §6) is not a door either: it test-merges a PR head into a
+scratch ref cut at the delivery's merge commit, reads the tree, and deletes the ref in
+the same step. Nothing it writes is ever a base or a branch anything reads.
 
 **Which already use the kernel gate:** D1 (as T15), D2 and D3 for a kernel-owned PR,
 D4–D6 via T15 for a kernel-owned PR after their own legacy gate, and D11 (but it
