@@ -14,7 +14,7 @@ Signing happens through the CLA Assistant check on Your first pull request. It r
 
 ## 1. Copyright license
 
-You retain ownership of the copyright in Your Contributions. You grant Licensor and recipients of software distributed by Licensor a perpetual, worldwide, non-exclusive, no-charge, royalty-free, irrevocable copyright license to reproduce, prepare derivative works of, publicly display, publicly perform, sublicense and distribute Your Contributions and such derivative works, in source or object form, and to relicense them under any terms, including terms that are not open source or source-available.
+You retain ownership of the copyright in Your Contributions. You grant Licensor and recipients of software distributed by Licensor a perpetual, worldwide, non-exclusive, no-charge, royalty-free, irrevocable copyright license to reproduce, prepare derivative works of, publicly display, publicly perform, sublicense and distribute Your Contributions and such derivative works, in source or object form. You further grant Licensor alone the right to license Your Contributions under any terms, including terms that are not open source or source-available.
 
 ## 2. Patent license
 
