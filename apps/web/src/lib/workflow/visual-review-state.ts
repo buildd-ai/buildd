@@ -14,7 +14,7 @@
  * writes. Surfaces consume it through `getMissionVisualReviewState`
  * (`visual-review-state-load.ts`) so none re-derives status from `phase`.
  */
-import type { VisualReviewPhase } from '@buildd/shared';
+import { OPEN_TASK_STATUSES, type VisualReviewPhase } from '@buildd/shared';
 import type { ResolvedVisualReviewPolicy } from './visual-review-policy';
 
 export const MISSION_VISUAL_REVIEW_STATUSES = [
@@ -102,7 +102,7 @@ export interface MissionVisualReviewState {
 const t = (s: string | null | undefined): number => (s ? new Date(s).getTime() : 0);
 
 /** Audit task statuses that are still to run or running. */
-const OPEN_AUDIT: ReadonlySet<string> = new Set(['pending', 'assigned', 'in_progress']);
+const OPEN_AUDIT: ReadonlySet<string> = new Set(OPEN_TASK_STATUSES);
 
 function classifyBlocked(
   phase: VisualReviewPhase,
