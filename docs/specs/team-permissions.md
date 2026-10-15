@@ -2,7 +2,7 @@
 title: Team Permissions
 status: active
 owner: max
-last_verified: 2026-10-11
+last_verified: 2026-10-15
 summary: Every team-scoped permission decision MUST resolve through one named-permission registry that maps each permission to its team roles and minimum API-key level, failing closed.
 domain: auth
 surfaces: [apps/web/src/lib/permissions.ts, apps/web/src/lib/permission-registry.ts, apps/web/src/lib/team-access.ts, apps/web/src/lib/key-level-policy.ts]
@@ -143,17 +143,17 @@ revokes a key; a key with no recorded creator is never clamped. A member MAY
 delete a key they created without `manage_team_keys`.
 
 **Acceptance criteria**:
-- AC-R1: GIVEN an `admin` caller WHEN they PATCH a `member` to `admin` THEN the
+- AC-9: GIVEN an `admin` caller WHEN they PATCH a `member` to `admin` THEN the
   role is written; WHEN they PATCH anyone to or from `owner` THEN it is a 403
   and nothing is written.
-- AC-R2: GIVEN the team's only owner WHEN anyone (themselves included) demotes
+- AC-10: GIVEN the team's only owner WHEN anyone (themselves included) demotes
   or removes them THEN it is a 400 and nothing is written.
-- AC-R3: GIVEN an owner WHEN they transfer ownership to a member THEN that
+- AC-11: GIVEN an owner WHEN they transfer ownership to a member THEN that
   member is owner and the caller is admin, and the team never had zero owners.
-- AC-R4: GIVEN an admin who minted an admin-level key WHEN they are demoted to
+- AC-12: GIVEN an admin who minted an admin-level key WHEN they are demoted to
   member THEN that key becomes worker-level; a key in the team with no
   recorded creator is unchanged.
-- AC-R5: GIVEN an invitation sent to one address WHEN a user signed in with a
+- AC-13: GIVEN an invitation sent to one address WHEN a user signed in with a
   different email accepts it THEN it is a 403 and no membership is written.
 
 ## Named permission registry
@@ -255,10 +255,10 @@ in every team.
   `levelForTeamRole`).
 
 **Acceptance criteria**:
-- AC-G1: GIVEN two teams WHEN `roleHas` is asked for the same role and
+- AC-14: GIVEN two teams WHEN `roleHas` is asked for the same role and
   permission THEN both answers are the same, whatever is stored on either
   team row.
-- AC-G2: GIVEN any member of a non-personal team WHEN they open Settings →
+- AC-15: GIVEN any member of a non-personal team WHEN they open Settings →
   Members THEN no permission grant table is rendered.
 
 ## Platform operator
@@ -316,23 +316,23 @@ its account and level. Both lists unset: nobody is an operator.
   means the platform operator only.
 
 **Acceptance criteria**:
-- AC-P1: GIVEN a team owner or admin (session, OAuth or admin-level team key)
+- AC-16: GIVEN a team owner or admin (session, OAuth or admin-level team key)
   who is not an operator WHEN they create, start or change an experiment THEN
   it is a 403 (a 404 for an operator-only one) and nothing is written; GIVEN
   an operator THEN it succeeds.
-- AC-P2: GIVEN a team owner or admin who is not an operator WHEN they grade
+- AC-17: GIVEN a team owner or admin who is not an operator WHEN they grade
   a decision on their own team, or read it for grading, THEN it is a 403 and
   nothing is read or written; GIVEN an operator THEN it is served.
-- AC-P2b: GIVEN a team admin key (or a member session) that is not an
+- AC-18: GIVEN a team admin key (or a member session) that is not an
   operator WHEN it reads its own team's decision ledger THEN it is served;
   WHEN it names another team's workspace THEN it is a 404 and nothing is
   read.
-- AC-P3: GIVEN a team owner or admin WHEN they PATCH `/api/teams/[id]` with
+- AC-19: GIVEN a team owner or admin WHEN they PATCH `/api/teams/[id]` with
   `enabledDecisionShadows` or `inferenceFeatureModes` THEN it is a 403 and
   nothing is written; GIVEN the platform admin key WHEN it PATCHes
   `/api/admin/teams/[id]/experiment-flags` with them THEN they are written and
   audited.
-- AC-P4: GIVEN an OAuth bearer whose team's shared session account is in
+- AC-20: GIVEN an OAuth bearer whose team's shared session account is in
   `BUILDD_PLATFORM_ADMIN_ACCOUNT_IDS` WHEN the person behind it is not an
   operator THEN it is not one.
 
@@ -415,169 +415,169 @@ Storage, delivery and the per-policy table: `docs/credentials-architecture.md`
 
 Every team-role permission decision. "Session" lists the team roles allowed by
 default; "Key" lists the minimum API-key level, or "—" when the route is
-session-only or rejects keys. Line numbers are as of this spec's
-`last_verified` date.
+session-only or rejects keys. Each row names the file and the function that
+makes the decision.
 
 ### Team membership
 
 | Site | Gates | Session | Key | Permission |
 |---|---|---|---|---|
-| `apps/web/src/app/api/teams/[id]/members/route.ts:85` | add a member | owner, admin | — | `manage_team_members` |
-| `apps/web/src/app/api/teams/[id]/members/route.ts:100` | add a member as owner | owner | — | `assign_team_owner` |
-| `apps/web/src/app/api/teams/[id]/members/route.ts:105` | add a member as admin | owner, admin | — | `assign_team_roles` |
-| `apps/web/src/app/api/teams/[id]/members/[userId]/route.ts:53` | change a role between member and admin | owner, admin | — | `assign_team_roles` |
-| `apps/web/src/app/api/teams/[id]/members/[userId]/route.ts:78` | change a role to or from owner | owner | — | `assign_team_owner` |
-| `apps/web/src/app/api/teams/[id]/members/[userId]/route.ts:157` | remove a member | owner, admin | — | `manage_team_members` |
-| `apps/web/src/app/api/teams/[id]/members/[userId]/route.ts:175` | remove an owner | owner | — | `assign_team_owner` |
-| `apps/web/src/app/api/teams/[id]/ownership/route.ts:41` | transfer ownership | owner | — | `assign_team_owner` |
-| `apps/web/src/app/api/teams/[id]/invitations/route.ts:29` | list invitations | owner, admin | — | `manage_team_members` |
-| `apps/web/src/app/api/teams/[id]/invitations/route.ts:73` | invite | owner, admin | — | `manage_team_members` |
-| `apps/web/src/app/api/teams/[id]/invitations/route.ts:90` | invite as admin | owner, admin | — | `assign_team_roles` |
-| `apps/web/src/app/api/teams/[id]/invitations/[invitationId]/route.ts:34` | revoke an invitation | owner, admin | — | `manage_team_members` |
-| `apps/web/src/app/app/(protected)/settings/team/TeamDetailClient.tsx:78` | UI: edit team button | owner, admin | — | `manage_team_settings` |
-| `apps/web/src/app/app/(protected)/settings/team/TeamDetailClient.tsx:80` | UI: owner in the role picker, transfer ownership, remove an owner | owner | — | `assign_team_owner` |
-| `apps/web/src/app/app/(protected)/settings/team/TeamDetailClient.tsx:81` | UI: role picker (member/admin, not on owner rows), invite as admin | owner, admin | — | `assign_team_roles` |
-| `apps/web/src/app/app/(protected)/settings/team/page.tsx:126` | UI: manage members | owner, admin | — | `manage_team_members` |
+| `apps/web/src/app/api/teams/[id]/members/route.ts` (`POST`) | add a member | owner, admin | — | `manage_team_members` |
+| `apps/web/src/app/api/teams/[id]/members/route.ts` (`POST`) | add a member as owner | owner | — | `assign_team_owner` |
+| `apps/web/src/app/api/teams/[id]/members/route.ts` (`POST`) | add a member as admin | owner, admin | — | `assign_team_roles` |
+| `apps/web/src/app/api/teams/[id]/members/[userId]/route.ts` (`PATCH`) | change a role between member and admin | owner, admin | — | `assign_team_roles` |
+| `apps/web/src/app/api/teams/[id]/members/[userId]/route.ts` (`PATCH`) | change a role to or from owner | owner | — | `assign_team_owner` |
+| `apps/web/src/app/api/teams/[id]/members/[userId]/route.ts` (`DELETE`) | remove a member | owner, admin | — | `manage_team_members` |
+| `apps/web/src/app/api/teams/[id]/members/[userId]/route.ts` (`DELETE`) | remove an owner | owner | — | `assign_team_owner` |
+| `apps/web/src/app/api/teams/[id]/ownership/route.ts` (`POST`) | transfer ownership | owner | — | `assign_team_owner` |
+| `apps/web/src/app/api/teams/[id]/invitations/route.ts` (`GET`) | list invitations | owner, admin | — | `manage_team_members` |
+| `apps/web/src/app/api/teams/[id]/invitations/route.ts` (`POST`) | invite | owner, admin | — | `manage_team_members` |
+| `apps/web/src/app/api/teams/[id]/invitations/route.ts` (`POST`) | invite as admin | owner, admin | — | `assign_team_roles` |
+| `apps/web/src/app/api/teams/[id]/invitations/[invitationId]/route.ts` (`DELETE`) | revoke an invitation | owner, admin | — | `manage_team_members` |
+| `apps/web/src/app/app/(protected)/settings/team/TeamDetailClient.tsx` (`TeamDetailClient`) | UI: edit team button | owner, admin | — | `manage_team_settings` |
+| `apps/web/src/app/app/(protected)/settings/team/TeamDetailClient.tsx` (`TeamDetailClient`) | UI: owner in the role picker, transfer ownership, remove an owner | owner | — | `assign_team_owner` |
+| `apps/web/src/app/app/(protected)/settings/team/TeamDetailClient.tsx` (`TeamDetailClient`) | UI: role picker (member/admin, not on owner rows), invite as admin | owner, admin | — | `assign_team_roles` |
+| `apps/web/src/app/app/(protected)/settings/team/page.tsx` (`TeamSettingsPage`) | UI: manage members | owner, admin | — | `manage_team_members` |
 
 ### Team settings
 
 | Site | Gates | Session | Key | Permission |
 |---|---|---|---|---|
-| `apps/web/src/app/api/teams/[id]/route.ts:167` | PATCH team name, slug, provider routing, coding policy, chat budgets and default tier, credential policy, task estimates, timezone (`enabledDecisionShadows` / `inferenceFeatureModes` refused, `:177`: see Platform operator) | owner, admin | — | `manage_team_settings` |
-| `apps/web/src/app/api/teams/[id]/route.ts:365` | DELETE team | owner | — | `delete_team` |
-| `apps/web/src/app/app/(protected)/settings/team/TeamDetailClient.tsx:79` | UI: delete team button | owner | — | `delete_team` |
-| `apps/web/src/app/app/(protected)/settings/TimezoneSection.tsx:63` | UI: edit team timezone | owner, admin | — | `manage_team_settings` |
-| `apps/web/src/app/app/(protected)/settings/_lib/settings-permissions.ts:21` | UI: every settings control, one flag per permission | per permission, personal team | — | all |
-| `apps/web/src/lib/team-timezone.ts:79` | own timezone change seeds owned teams | owner | — | `seed_team_timezone` |
-| `apps/web/src/app/api/teams/[id]/notifications/route.ts:30` | PUT team notification settings (GET open to members, booleans only) | owner, admin | — | `manage_team_notifications` |
-| `apps/web/src/app/app/(protected)/home/home-view.ts:118` | UI: the team admin layout of Home (`admin` audience) | owner, admin | — | `view_team_usage` |
-| `apps/web/src/app/api/insights/flow/route.ts:42` | team flow insights | owner, admin | — | `view_team_usage` |
-| `apps/web/src/app/app/(protected)/health/insights/page.tsx:45` | UI: insights | owner, admin | — | `view_team_usage` |
-| `apps/web/src/app/app/(protected)/health/layout.tsx:16` | UI: the Insights item in the Health sub-nav | owner, admin | — | `view_team_usage` |
-| `apps/web/src/app/app/(protected)/settings/billing/page.tsx:77` | UI: the team's hosted runner month | owner, admin | — | `view_team_usage` |
-| `apps/web/src/app/app/(protected)/settings/billing/page.tsx:102` | UI: per-person spend | owner, admin | — | `view_team_usage` |
-| `apps/web/src/lib/billing/team-billing-access.ts:63` | open Checkout / the billing portal / change seats | owner, admin | — | `manage_billing` |
-| `apps/web/src/app/app/(protected)/settings/billing/page.tsx:81` | UI: billing actions | owner, admin, personal team | — | `manage_billing` |
+| `apps/web/src/app/api/teams/[id]/route.ts` (`PATCH`) | PATCH team name, slug, provider routing, coding policy, chat budgets and default tier, credential policy, task estimates, timezone (`enabledDecisionShadows` / `inferenceFeatureModes` refused: see Platform operator) | owner, admin | — | `manage_team_settings` |
+| `apps/web/src/app/api/teams/[id]/route.ts` (`DELETE`) | DELETE team | owner | — | `delete_team` |
+| `apps/web/src/app/app/(protected)/settings/team/TeamDetailClient.tsx` (`TeamDetailClient`) | UI: delete team button | owner | — | `delete_team` |
+| `apps/web/src/app/app/(protected)/settings/TimezoneSection.tsx` (`TimezoneSection`) | UI: edit team timezone | owner, admin | — | `manage_team_settings` |
+| `apps/web/src/app/app/(protected)/settings/_lib/settings-permissions.ts` (`settingsPermissions`) | UI: every settings control, one flag per permission | per permission, personal team | — | all |
+| `apps/web/src/lib/team-timezone.ts` (`getViewerTimezone`) | own timezone change seeds owned teams | owner | — | `seed_team_timezone` |
+| `apps/web/src/app/api/teams/[id]/notifications/route.ts` (`authorize`) | PUT team notification settings (GET open to members, booleans only) | owner, admin | — | `manage_team_notifications` |
+| `apps/web/src/app/app/(protected)/home/home-view.ts` (`homeAudience`) | UI: the team admin layout of Home (`admin` audience) | owner, admin | — | `view_team_usage` |
+| `apps/web/src/app/api/insights/flow/route.ts` (`GET`) | team flow insights | owner, admin | — | `view_team_usage` |
+| `apps/web/src/app/app/(protected)/health/insights/page.tsx` (`InsightsPage`) | UI: insights | owner, admin | — | `view_team_usage` |
+| `apps/web/src/app/app/(protected)/health/layout.tsx` (`healthViewer`) | UI: the Insights item in the Health sub-nav | owner, admin | — | `view_team_usage` |
+| `apps/web/src/app/app/(protected)/settings/billing/page.tsx` (`BillingSettingsPage`) | UI: the team's hosted runner month | owner, admin | — | `view_team_usage` |
+| `apps/web/src/app/app/(protected)/settings/billing/page.tsx` (`BillingSettingsPage`) | UI: per-person spend | owner, admin | — | `view_team_usage` |
+| `apps/web/src/lib/billing/team-billing-access.ts` (`requireBillingManager`) | open Checkout / the billing portal / change seats | owner, admin | — | `manage_billing` |
+| `apps/web/src/app/app/(protected)/settings/billing/page.tsx` (`BillingSettingsPage`) | UI: billing actions | owner, admin, personal team | — | `manage_billing` |
 
 ### API keys and runners
 
 | Site | Gates | Session | Key | Permission |
 |---|---|---|---|---|
-| `apps/web/src/app/api/accounts/[id]/route.ts:84` | delete someone else's key (a key you created is yours to delete) | owner, admin | — | `manage_team_keys` |
-| `apps/web/src/app/api/accounts/[id]/route.ts:143` | change a key's concurrent-worker cap | owner, admin | — | `manage_team_keys` |
-| `apps/web/src/app/api/accounts/[id]/regenerate-key/route.ts:55` | regenerate a key | owner, admin | — | `manage_team_keys` |
-| `apps/web/src/app/api/accounts/[id]/host-runner/route.ts:51` | flag a host-runner key | owner, admin | — | `manage_team_keys` |
-| `apps/web/src/app/api/accounts/route.ts:110` | mint an admin-level key | owner, admin | — | `manage_team_keys` |
-| `apps/web/src/app/api/accounts/route.ts:114` | grant admin scopes on a token | owner, admin | — | `manage_team_keys` |
-| `apps/web/src/app/api/accounts/route.ts:126` | link a new token to a restricted workspace | owner, admin | — | `manage_team_keys` |
-| `apps/web/src/app/api/workspaces/[id]/accounts/route.ts:77` | link a key to a workspace | owner, admin | — | `manage_team_keys` |
-| `apps/web/src/app/api/workspaces/[id]/accounts/route.ts:172` | unlink a key from a workspace | owner, admin | — | `manage_team_keys` |
-| `apps/web/src/app/api/auth/cli/route.ts:116` | CLI login key level (clamped) | owner, admin get admin | — | `manage_team_keys` |
-| `apps/web/src/app/api/auth/device/approve/route.ts:96` | device-flow key level (clamped) | owner, admin get admin | — | `manage_team_keys` |
+| `apps/web/src/app/api/accounts/[id]/route.ts` (`DELETE`) | delete someone else's key (a key you created is yours to delete) | owner, admin | — | `manage_team_keys` |
+| `apps/web/src/app/api/accounts/[id]/route.ts` (`PATCH`) | change a key's concurrent-worker cap | owner, admin | — | `manage_team_keys` |
+| `apps/web/src/app/api/accounts/[id]/regenerate-key/route.ts` (`POST`) | regenerate a key | owner, admin | — | `manage_team_keys` |
+| `apps/web/src/app/api/accounts/[id]/host-runner/route.ts` (`PUT`) | flag a host-runner key | owner, admin | — | `manage_team_keys` |
+| `apps/web/src/app/api/accounts/route.ts` (`POST`) | mint an admin-level key | owner, admin | — | `manage_team_keys` |
+| `apps/web/src/app/api/accounts/route.ts` (`POST`) | grant admin scopes on a token | owner, admin | — | `manage_team_keys` |
+| `apps/web/src/app/api/accounts/route.ts` (`POST`) | link a new token to a restricted workspace | owner, admin | — | `manage_team_keys` |
+| `apps/web/src/app/api/workspaces/[id]/accounts/route.ts` (`POST`) | link a key to a workspace | owner, admin | — | `manage_team_keys` |
+| `apps/web/src/app/api/workspaces/[id]/accounts/route.ts` (`DELETE`) | unlink a key from a workspace | owner, admin | — | `manage_team_keys` |
+| `apps/web/src/app/api/auth/cli/route.ts` (`GET`) | CLI login key level (clamped) | owner, admin get admin | — | `manage_team_keys` |
+| `apps/web/src/app/api/auth/device/approve/route.ts` (`POST`) | device-flow key level (clamped) | owner, admin get admin | — | `manage_team_keys` |
 | `apps/web/src/app/api/teams/[id]/members/[userId]/route.ts` | clamp the target's keys after a role change, removal or leave | follows the new role | — | `manage_team_keys` |
 | `apps/web/src/app/api/teams/[id]/ownership/route.ts` | clamp the former owner's keys to admin | follows the new role | — | `manage_team_keys` |
-| `apps/web/src/lib/oauth/session-level.ts:10` | OAuth session acts at admin (fixed) | owner, admin | — | — |
-| `apps/web/src/lib/key-level-policy.ts:47` | `canAdministerTeamKeys` | owner, admin | — | `manage_team_keys` |
-| `apps/web/src/app/app/(protected)/settings/runners/NewRunnerTokenSheet.tsx:42` | UI: admin scope selectable | owner, admin | — | `manage_team_keys` |
-| `apps/web/src/app/app/(protected)/settings/runners/page.tsx:53` | UI: host-runner toggle | owner, admin, personal team | — | `manage_team_keys` |
+| `apps/web/src/lib/oauth/session-level.ts` (`levelForTeamRole`) | OAuth session acts at admin (fixed) | owner, admin | — | — |
+| `apps/web/src/lib/key-level-policy.ts` (`canAdministerTeamKeys`) | `canAdministerTeamKeys` | owner, admin | — | `manage_team_keys` |
+| `apps/web/src/app/app/(protected)/settings/runners/NewRunnerTokenSheet.tsx` (`NewRunnerTokenSheet`) | UI: admin scope selectable | owner, admin | — | `manage_team_keys` |
+| `apps/web/src/app/app/(protected)/settings/runners/page.tsx` (`RunnersSettingsPage`) | UI: host-runner toggle | owner, admin, personal team | — | `manage_team_keys` |
 
 ### Model access and spend
 
 | Site | Gates | Session | Key | Permission |
 |---|---|---|---|---|
-| `apps/web/src/app/api/secrets/route.ts:112` | team model key, decision key, Cloudflare token | owner, admin, personal team | admin | `manage_team_model_keys` |
-| `apps/web/src/app/api/secrets/route.ts:112` | an Anthropic or OpenAI key in canonical storage (`inference_key` + provider label; agent runs read it) | owner, admin, personal team | admin | `manage_team_model_keys` and `manage_team_credentials` |
-| `apps/web/src/app/api/secrets/route.ts:112` | any other team-, workspace- or account-wide secret | owner, admin, personal team | admin | `manage_team_credentials` |
-| `apps/web/src/app/api/providers/route.ts:73` | set/delete a team or workspace provider credential stored as a chat-only key (`inference_key`, `decision_key`) | owner, admin, personal team | admin | `manage_team_model_keys` |
-| `apps/web/src/app/api/providers/route.ts:73` | set/delete a team or workspace Anthropic or OpenAI key (canonical storage, read by chat and agent runs) | owner, admin, personal team | admin | `manage_team_model_keys` and `manage_team_credentials` |
-| `apps/web/src/app/api/providers/route.ts:73` | set/delete a team or workspace agent credential (`anthropic_api_key`, `openai_api_key`, `oauth_token`) | owner, admin, personal team | admin | `manage_team_credentials` |
-| `apps/web/src/app/api/providers/route.ts:73` | set/delete the LiteLLM gateway or a custom endpoint | owner, admin, personal team | — | `manage_inference_providers` |
-| `apps/web/src/app/api/providers/route.ts:207` | set the team credential policy (as PATCH /api/teams/[id]) | owner, admin, personal team | — | `manage_team_settings` |
-| `apps/web/src/lib/team-credential-access.ts:13` | connect, replace or delete a workspace Claude/Codex credential (refresh and verify stay open to members) | owner, admin, personal team | — | `manage_team_credentials` |
-| `apps/web/src/app/app/(protected)/settings/models/page.tsx:56` | UI: runner sign-ins | owner, admin, personal team | — | `manage_team_credentials` |
-| `apps/web/src/app/app/(protected)/settings/runners/page.tsx:54` | UI: Cloudflare token | owner, admin, personal team | — | `manage_team_model_keys` |
-| `apps/web/src/app/app/(protected)/settings/integrations/page.tsx:31` | UI: Vercel and other team credentials | owner, admin, personal team | — | `manage_team_credentials` |
-| `apps/web/src/app/api/inference-keys/route.ts:76` | team-scope chat-only inference keys (OpenRouter) | owner, admin, personal team | — | `manage_inference_providers` |
-| `apps/web/src/app/api/inference-keys/route.ts:76` | team-scope Anthropic or OpenAI key (agent runs read it) | owner, admin, personal team | — | `manage_team_model_keys` and `manage_team_credentials` |
-| `apps/web/src/app/api/inference-keys/verify/route.ts:31` | verify a team-scope key | owner, admin, personal team | — | `manage_inference_providers` |
-| `apps/web/src/app/api/inference-keys/openrouter/start/route.ts:38` | start OpenRouter link | owner, admin, personal team | — | `manage_inference_providers` |
-| `apps/web/src/app/api/inference-keys/openrouter/callback/[state]/route.ts:41` | finish OpenRouter link | owner, admin, personal team | — | `manage_inference_providers` |
-| `apps/web/src/app/api/teams/[id]/agent-endpoint/route.ts:34` | agent endpoint writes | owner, admin, personal team | — | `manage_inference_providers` |
-| `apps/web/src/app/api/teams/[id]/agent-endpoint/models/route.ts:28` | agent endpoint model list | owner, admin, personal team | — | `manage_inference_providers` |
-| `apps/web/src/app/api/teams/[id]/agent-endpoint/models/suggest/route.ts:25` | agent endpoint model suggest | owner, admin, personal team | — | `manage_inference_providers` |
-| `apps/web/src/app/api/teams/[id]/litellm-gateway/route.ts:23` | LiteLLM gateway writes | owner, admin, personal team | — | `manage_inference_providers` |
-| `apps/web/src/lib/chat-availability.ts:48` | UI: may set up chat keys | owner, admin | — | `manage_inference_providers` |
-| `apps/web/src/lib/model-tier-access.ts:88` | write a tier's primary model and the upgrade policy (Automatic or Manual) | owner, admin | admin (route policy) | `manage_model_tiers` |
-| `apps/web/src/app/app/(protected)/settings/models/page.tsx:68` | UI: pick a tier's primary model | owner, admin, personal team | — | `manage_model_tiers` |
-| `apps/web/src/app/api/accounts/[id]/ai-budget/route.ts:24` | app account daily AI cap | owner, admin, personal team | admin | `manage_ai_budget` |
-| `apps/web/src/lib/chat/turn.ts:516` | chat admin tool group | owner, admin | — | `use_chat_admin_tools` |
+| `apps/web/src/app/api/secrets/route.ts` (`permissionsFor`) | team model key, decision key, Cloudflare token | owner, admin, personal team | admin | `manage_team_model_keys` |
+| `apps/web/src/app/api/secrets/route.ts` (`permissionsFor`) | an Anthropic or OpenAI key in canonical storage (`inference_key` + provider label; agent runs read it) | owner, admin, personal team | admin | `manage_team_model_keys` and `manage_team_credentials` |
+| `apps/web/src/app/api/secrets/route.ts` (`permissionsFor`) | any other team-, workspace- or account-wide secret | owner, admin, personal team | admin | `manage_team_credentials` |
+| `apps/web/src/app/api/providers/route.ts` (`authorizeWrite`) | set/delete a team or workspace provider credential stored as a chat-only key (`inference_key`, `decision_key`) | owner, admin, personal team | admin | `manage_team_model_keys` |
+| `apps/web/src/app/api/providers/route.ts` (`authorizeWrite`) | set/delete a team or workspace Anthropic or OpenAI key (canonical storage, read by chat and agent runs) | owner, admin, personal team | admin | `manage_team_model_keys` and `manage_team_credentials` |
+| `apps/web/src/app/api/providers/route.ts` (`authorizeWrite`) | set/delete a team or workspace agent credential (`anthropic_api_key`, `openai_api_key`, `oauth_token`) | owner, admin, personal team | admin | `manage_team_credentials` |
+| `apps/web/src/app/api/providers/route.ts` (`authorizeWrite`) | set/delete the LiteLLM gateway or a custom endpoint | owner, admin, personal team | — | `manage_inference_providers` |
+| `apps/web/src/app/api/providers/route.ts` (`PATCH`) | set the team credential policy (as PATCH /api/teams/[id]) | owner, admin, personal team | — | `manage_team_settings` |
+| `apps/web/src/lib/team-credential-access.ts` (`refuseWithoutTeamCredentialAccess`) | connect, replace or delete a workspace Claude/Codex credential (refresh and verify stay open to members) | owner, admin, personal team | — | `manage_team_credentials` |
+| `apps/web/src/app/app/(protected)/settings/models/page.tsx` (`ModelsSettingsPage`) | UI: runner sign-ins | owner, admin, personal team | — | `manage_team_credentials` |
+| `apps/web/src/app/app/(protected)/settings/runners/page.tsx` (`RunnersSettingsPage`) | UI: Cloudflare token | owner, admin, personal team | — | `manage_team_model_keys` |
+| `apps/web/src/app/app/(protected)/settings/integrations/page.tsx` (`IntegrationsSettingsPage`) | UI: Vercel and other team credentials | owner, admin, personal team | — | `manage_team_credentials` |
+| `apps/web/src/app/api/inference-keys/route.ts` (`mayManageTeamKey`) | team-scope chat-only inference keys (OpenRouter) | owner, admin, personal team | — | `manage_inference_providers` |
+| `apps/web/src/app/api/inference-keys/route.ts` (`mayManageTeamKey`) | team-scope Anthropic or OpenAI key (agent runs read it) | owner, admin, personal team | — | `manage_team_model_keys` and `manage_team_credentials` |
+| `apps/web/src/app/api/inference-keys/verify/route.ts` (`POST`) | verify a team-scope key | owner, admin, personal team | — | `manage_inference_providers` |
+| `apps/web/src/app/api/inference-keys/openrouter/start/route.ts` (`GET`) | start OpenRouter link | owner, admin, personal team | — | `manage_inference_providers` |
+| `apps/web/src/app/api/inference-keys/openrouter/callback/[state]/route.ts` (`GET`) | finish OpenRouter link | owner, admin, personal team | — | `manage_inference_providers` |
+| `apps/web/src/app/api/teams/[id]/agent-endpoint/route.ts` (`caller`) | agent endpoint writes | owner, admin, personal team | — | `manage_inference_providers` |
+| `apps/web/src/app/api/teams/[id]/agent-endpoint/models/route.ts` (`POST`) | agent endpoint model list | owner, admin, personal team | — | `manage_inference_providers` |
+| `apps/web/src/app/api/teams/[id]/agent-endpoint/models/suggest/route.ts` (`POST`) | agent endpoint model suggest | owner, admin, personal team | — | `manage_inference_providers` |
+| `apps/web/src/app/api/teams/[id]/litellm-gateway/route.ts` (`caller`) | LiteLLM gateway writes | owner, admin, personal team | — | `manage_inference_providers` |
+| `apps/web/src/lib/chat-availability.ts` (`computeChatAvailability`) | UI: may set up chat keys | owner, admin | — | `manage_inference_providers` |
+| `apps/web/src/lib/model-tier-access.ts` (`resolveTeam`) | write a tier's primary model and the upgrade policy (Automatic or Manual) | owner, admin | admin (route policy) | `manage_model_tiers` |
+| `apps/web/src/app/app/(protected)/settings/models/page.tsx` (`ModelsSettingsPage`) | UI: pick a tier's primary model | owner, admin, personal team | — | `manage_model_tiers` |
+| `apps/web/src/app/api/accounts/[id]/ai-budget/route.ts` (`callerTeamIds`) | app account daily AI cap | owner, admin, personal team | admin | `manage_ai_budget` |
+| `apps/web/src/lib/chat/turn.ts` (`runChatTurn`) | chat admin tool group | owner, admin | — | `use_chat_admin_tools` |
 
 ### Workspaces
 
 | Site | Gates | Session | Key | Permission |
 |---|---|---|---|---|
-| `apps/web/src/app/api/workspaces/[id]/config/route.ts:148` | write workspace config | owner, admin | admin | `manage_workspace_settings` |
-| `apps/web/src/app/api/workspaces/[id]/route.ts:221` | PATCH git config (incl. merge policy, member repo access), access mode, data class, connector gate, webhook, concurrency cap | owner, admin | admin (route policy) | `manage_workspace_settings` |
-| `apps/web/src/app/api/workspaces/[id]/settings/route.ts:53` | PATCH work tracker config | owner, admin | admin | `manage_workspace_settings` |
-| `apps/web/src/app/api/tasks/[id]/start/route.ts:119` | `canRaiseCap` on a `workspace_cap_reached` refusal: whether the task's "raise the workspace limit" control shows | owner, admin | admin (route policy) | `manage_workspace_settings` |
-| `apps/web/src/app/api/workspaces/[id]/pause-starts/route.ts:35` | pause or resume new starts (the control is on the workspace's settings page, Where work runs; Health › Runners only shows a pause) | owner, admin | admin (route policy) | `manage_workspace_settings` |
-| `apps/web/src/app/api/workspaces/[id]/github-access/route.ts:48` | POST re-check the GitHub App's repo access and link the repo (GET open to members) | owner, admin | admin (route policy) | `manage_workspace_settings` |
-| `apps/web/src/app/api/workspaces/route.ts:217` | POST create a workspace in the target team (a member is refused, not moved to their personal team) | owner, admin, personal team | admin | `create_workspace` |
-| `apps/web/src/app/api/workspaces/[id]/route.ts:560` | DELETE workspace | owner | — | `delete_workspace` |
-| `apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/page.tsx:97` | UI: workspace settings (readiness, git config, merge policy, delivery, repeat work, concurrency cap, pause new starts) | owner, admin | — | `manage_workspace_settings` |
-| `apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/page.tsx:334` | UI: delete workspace | owner | — | `delete_workspace` |
-| `apps/web/src/app/app/(protected)/workspaces/[id]/page.tsx:157` | UI: connect a repo | owner, admin | — | `manage_workspace_settings` |
-| `apps/web/src/app/app/(protected)/settings/workspaces/page.tsx:23` | UI: New workspace | owner, admin, personal team | — | `create_workspace` |
-| `apps/web/src/app/app/(protected)/settings/workspaces/rows.ts:93` | UI: teams a workspace can move to | owner, admin, personal team | — | `migrate_workspace` |
-| `apps/web/src/lib/migrate-access.ts:47` | migrate a workspace (both teams) | owner, admin, personal team | admin (route policy) | `migrate_workspace` |
-| `apps/web/src/app/api/github/installations/[id]/route.ts:40` | disconnect a GitHub installation | via the line below | — | `manage_github_installation` |
-| `apps/web/src/lib/github-installation-access.ts:62` | manage a GitHub installation | owner, admin, personal team, or the installer | — | `manage_github_installation` |
-| `apps/web/src/app/api/workspaces/[id]/schedules/[scheduleId]/route.ts:65` | set or clear a schedule's delegation | owner, admin | admin | `delegate_schedule_access` |
-| `apps/web/src/app/api/workspaces/[id]/memory/[memoryId]/route.ts:79` | review memories | owner, admin | admin, or `admin`/`knowledge:admin` scope (`:81`) | `review_memory` |
-| `apps/web/src/app/app/(protected)/workspaces/[id]/memory/page.tsx:109` | UI: memory review | owner, admin | — | `review_memory` |
+| `apps/web/src/app/api/workspaces/[id]/config/route.ts` (`resolveWriteAuth`) | write workspace config | owner, admin | admin | `manage_workspace_settings` |
+| `apps/web/src/app/api/workspaces/[id]/route.ts` (`PATCH`) | PATCH git config (incl. merge policy, member repo access), access mode, data class, connector gate, webhook, concurrency cap | owner, admin | admin (route policy) | `manage_workspace_settings` |
+| `apps/web/src/app/api/workspaces/[id]/settings/route.ts` (`verifyWriteAccess`) | PATCH work tracker config | owner, admin | admin | `manage_workspace_settings` |
+| `apps/web/src/app/api/tasks/[id]/start/route.ts` (`POST`) | `canRaiseCap` on a `workspace_cap_reached` refusal: whether the task's "raise the workspace limit" control shows | owner, admin | admin (route policy) | `manage_workspace_settings` |
+| `apps/web/src/app/api/workspaces/[id]/pause-starts/route.ts` (`access`) | pause or resume new starts (the control is on the workspace's settings page, Where work runs; Health › Runners only shows a pause) | owner, admin | admin (route policy) | `manage_workspace_settings` |
+| `apps/web/src/app/api/workspaces/[id]/github-access/route.ts` (`authorize`) | POST re-check the GitHub App's repo access and link the repo (GET open to members) | owner, admin | admin (route policy) | `manage_workspace_settings` |
+| `apps/web/src/app/api/workspaces/route.ts` (`POST`) | POST create a workspace in the target team (a member is refused, not moved to their personal team) | owner, admin, personal team | admin | `create_workspace` |
+| `apps/web/src/app/api/workspaces/[id]/route.ts` (`DELETE`) | DELETE workspace | owner | — | `delete_workspace` |
+| `apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/page.tsx` (`WorkspaceSettingsPage`) | UI: workspace settings (readiness, git config, merge policy, delivery, repeat work, concurrency cap, pause new starts) | owner, admin | — | `manage_workspace_settings` |
+| `apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/page.tsx` (`WorkspaceSettingsPage`) | UI: delete workspace | owner | — | `delete_workspace` |
+| `apps/web/src/app/app/(protected)/workspaces/[id]/page.tsx` (`WorkspaceDetailPage`) | UI: connect a repo | owner, admin | — | `manage_workspace_settings` |
+| `apps/web/src/app/app/(protected)/settings/workspaces/page.tsx` (`WorkspacesSettingsPage`) | UI: New workspace | owner, admin, personal team | — | `create_workspace` |
+| `apps/web/src/app/app/(protected)/settings/workspaces/rows.ts` (`buildWorkspaceRows`) | UI: teams a workspace can move to | owner, admin, personal team | — | `migrate_workspace` |
+| `apps/web/src/lib/migrate-access.ts` (`isTeamAdmin`) | migrate a workspace (both teams) | owner, admin, personal team | admin (route policy) | `migrate_workspace` |
+| `apps/web/src/app/api/github/installations/[id]/route.ts` (`DELETE`) | disconnect a GitHub installation | via the line below | — | `manage_github_installation` |
+| `apps/web/src/lib/github-installation-access.ts` (`getInstallationAccessForUser`) | manage a GitHub installation | owner, admin, personal team, or the installer | — | `manage_github_installation` |
+| `apps/web/src/app/api/workspaces/[id]/schedules/[scheduleId]/route.ts` (`resolveDelegationWrite`) | set or clear a schedule's delegation | owner, admin | admin | `delegate_schedule_access` |
+| `apps/web/src/app/api/workspaces/[id]/memory/[memoryId]/route.ts` (`isTeamAdmin`) | review memories | owner, admin | admin, or `admin`/`knowledge:admin` scope | `review_memory` |
+| `apps/web/src/app/app/(protected)/workspaces/[id]/memory/page.tsx` (`WorkspaceMemoryPage`) | UI: memory review | owner, admin | — | `review_memory` |
 
 ### Work in flight
 
 | Site | Gates | Session | Key | Permission |
 |---|---|---|---|---|
-| `apps/web/src/app/api/workers/[id]/instruct/route.ts:80` | instruct a worker | owner, admin | admin (`workers:admin`) | `steer_workers` |
-| `apps/web/src/app/api/tasks/[id]/messages/route.ts:70` | UI: may send steering message | owner, admin | admin (`workers:admin`) | `steer_workers` |
-| `apps/web/src/app/api/tasks/[id]/reassign/route.ts:70` | force-reassign a task | owner, admin | any key with workspace access (oddity 2) | `force_reassign_task` |
-| `apps/web/src/app/api/workers/[id]/release-slot/route.ts:60` | release an interactive worker's slot | owner, admin | — | `force_reassign_task` |
-| `apps/web/src/app/api/releases/trigger/route.ts:58` | trigger a release | owner, admin, personal team | admin (`:53`) | `manage_releases` |
-| `apps/web/src/app/api/releases/status/route.ts:35` | release preflight | owner, admin, personal team | admin (`:31`) | `manage_releases` |
-| `apps/web/src/lib/specs/approval.ts:26` | `specApprover`: submit and approve a Living Spec revision | owner, admin, or a delegated approver (`gitConfig.livingSpecs.approverUserIds`) | — (a person only; an OAuth session counts as its person) | `approve_specs` |
+| `apps/web/src/app/api/workers/[id]/instruct/route.ts` (`POST`) | instruct a worker | owner, admin | admin (`workers:admin`) | `steer_workers` |
+| `apps/web/src/app/api/tasks/[id]/messages/route.ts` (`GET`) | UI: may send steering message | owner, admin | admin (`workers:admin`) | `steer_workers` |
+| `apps/web/src/app/api/tasks/[id]/reassign/route.ts` (`POST`) | force-reassign a task | owner, admin | any key with workspace access (oddity 2) | `force_reassign_task` |
+| `apps/web/src/app/api/workers/[id]/release-slot/route.ts` (`POST`) | release an interactive worker's slot | owner, admin | — | `force_reassign_task` |
+| `apps/web/src/app/api/releases/trigger/route.ts` (`resolveAuth`) | trigger a release | owner, admin, personal team | admin | `manage_releases` |
+| `apps/web/src/app/api/releases/status/route.ts` (`resolveAdminTeamIds`) | release preflight | owner, admin, personal team | admin | `manage_releases` |
+| `apps/web/src/lib/specs/approval.ts` (`specApprover`) | `specApprover`: submit and approve a Living Spec revision | owner, admin, or a delegated approver (`gitConfig.livingSpecs.approverUserIds`) | — (a person only; an OAuth session counts as its person) | `approve_specs` |
 
 ### Team infrastructure
 
 | Site | Gates | Session | Key | Permission |
 |---|---|---|---|---|
-| `apps/web/src/lib/connector-team-auth.ts:49` | `canManageTeamConnectors`: every connector session gate below | owner, admin, personal team | — | `manage_connectors` |
-| `apps/web/src/lib/connector-team-auth.ts:65` | `canWriteTeamConnectors`: own team only, asked at admin after route policy (oddity 1) | — | admin | `manage_connectors` |
-| `apps/web/src/app/api/connectors/route.ts:162` | create a connector | owner, admin | admin (route policy) | `manage_connectors` |
-| `apps/web/src/app/api/connectors/[id]/route.ts:101` | edit a connector (incl. its header credential) | owner, admin | admin | `manage_connectors` |
-| `apps/web/src/app/api/connectors/[id]/route.ts:207` | delete a connector | owner, admin | admin | `manage_connectors` |
-| `apps/web/src/app/api/connectors/[id]/connect/route.ts:71` | connect (writes the team-wide credential) | owner, admin | admin (route policy) | `manage_connectors` |
-| `apps/web/src/app/api/connectors/callback/route.ts:89` | finish a connector OAuth connect | owner, admin | — | `manage_connectors` |
-| `apps/web/src/app/api/connectors/[id]/disconnect/route.ts:66` | disconnect | owner, admin | admin | `manage_connectors` |
-| `apps/web/src/app/api/connectors/[id]/shares/route.ts:65` | manage connector shares (owner team; target team `:153`) | owner, admin | admin (route policy) | `manage_connectors` |
-| `apps/web/src/app/api/connectors/[id]/transfer/route.ts:73` | transfer a connector (source; target `:96`) | owner, admin | admin (route policy) | `manage_connectors` |
-| `apps/web/src/app/api/workspaces/[id]/connectors/route.ts:136` | enable or disable a connector in a workspace | owner, admin | admin (in-route) | `manage_connectors` |
+| `apps/web/src/lib/connector-team-auth.ts` (`canManageTeamConnectors`) | `canManageTeamConnectors`: every connector session gate below | owner, admin, personal team | — | `manage_connectors` |
+| `apps/web/src/lib/connector-team-auth.ts` (`canWriteTeamConnectors`) | `canWriteTeamConnectors`: own team only, asked at admin after route policy (oddity 1) | — | admin | `manage_connectors` |
+| `apps/web/src/app/api/connectors/route.ts` (`POST`) | create a connector | owner, admin | admin (route policy) | `manage_connectors` |
+| `apps/web/src/app/api/connectors/[id]/route.ts` (`PATCH`) | edit a connector (incl. its header credential) | owner, admin | admin | `manage_connectors` |
+| `apps/web/src/app/api/connectors/[id]/route.ts` (`PATCH`) | delete a connector | owner, admin | admin | `manage_connectors` |
+| `apps/web/src/app/api/connectors/[id]/connect/route.ts` (`POST`) | connect (writes the team-wide credential) | owner, admin | admin (route policy) | `manage_connectors` |
+| `apps/web/src/app/api/connectors/callback/route.ts` (`GET`) | finish a connector OAuth connect | owner, admin | — | `manage_connectors` |
+| `apps/web/src/app/api/connectors/[id]/disconnect/route.ts` (`POST`) | disconnect | owner, admin | admin | `manage_connectors` |
+| `apps/web/src/app/api/connectors/[id]/shares/route.ts` (`requireOwnerAdmin`) | manage connector shares (owner team and target team) | owner, admin | admin (route policy) | `manage_connectors` |
+| `apps/web/src/app/api/connectors/[id]/transfer/route.ts` (`POST`) | transfer a connector (source and target) | owner, admin | admin (route policy) | `manage_connectors` |
+| `apps/web/src/app/api/workspaces/[id]/connectors/route.ts` (`PATCH`) | enable or disable a connector in a workspace | owner, admin | admin (in-route) | `manage_connectors` |
 | `apps/web/src/lib/settings-nav.ts` | UI: Settings › Team › Apps (team apps and agent access; a member reads both and can request an app) | owner, admin, personal team | — | `manage_connectors` |
-| `apps/web/src/app/api/roles/route.ts:185` | create a team-level role | owner, admin, personal team | — (session only) | `manage_agent_roles` |
-| `apps/web/src/app/api/roles/[id]/route.ts:55` | edit or delete a team role (incl. its operator grant), or make a skill one | owner, admin, personal team | — (session only) | `manage_agent_roles` |
-| `apps/web/src/app/api/roles/[id]/overrides/route.ts:94` | write a role's workspace override | owner, admin, personal team | — (session only) | `manage_agent_roles` |
-| `apps/web/src/app/api/workspaces/[id]/skills/route.ts:57` | create or upsert a workspace role (skill CRUD, `isRole`) | owner, admin | admin (in-route) | `manage_agent_roles` |
-| `apps/web/src/app/api/workspaces/[id]/skills/[skillId]/route.ts:55` | edit or delete a workspace role, or make a skill one | owner, admin | admin (in-route) | `manage_agent_roles` |
-| `apps/web/src/app/api/roles/route.ts:177` | create a personal role (`personal: true`) | owner, admin, member | — (session only) | `create_personal_roles` |
-| `apps/web/src/lib/personal-roles.ts:66` | edit, delete or re-share another member's **shared** personal role | owner, admin, personal team | — (session only) | `manage_agent_roles` |
-| `apps/web/src/app/api/roles/[id]/promote/route.ts:34` | promote a shared personal role to a team role | owner, admin, personal team | — (session only) | `manage_agent_roles` |
-| `apps/web/src/app/app/(protected)/settings/agents/page.tsx:95` | UI: New role (personal; team role `:96`) | per permission | — | `create_personal_roles` |
-| `apps/web/src/app/app/(protected)/settings/agents/[slug]/edit/page.tsx:162` | UI: team role editor and Deploy access (anyone else sees one line naming where the agent can deploy) | owner, admin | — | `manage_agent_roles` |
-| `apps/web/src/app/api/evidence-backends/route.ts:51` | create a backend | owner, admin | admin | `manage_evidence_backends` |
-| `apps/web/src/app/api/evidence-backends/[id]/route.ts:56` | edit a backend | owner, admin | admin | `manage_evidence_backends` |
-| `apps/web/src/app/api/evidence-backends/[id]/route.ts:99` | delete a backend | owner, admin | admin | `manage_evidence_backends` |
-| `apps/web/src/app/api/evidence-backends/[id]/verify/route.ts:35` | verify a backend | owner, admin | admin | `manage_evidence_backends` |
+| `apps/web/src/app/api/roles/route.ts` (`POST`) | create a team-level role | owner, admin, personal team | — (session only) | `manage_agent_roles` |
+| `apps/web/src/app/api/roles/[id]/route.ts` (`mayManageRole`) | edit or delete a team role (incl. its operator grant), or make a skill one | owner, admin, personal team | — (session only) | `manage_agent_roles` |
+| `apps/web/src/app/api/roles/[id]/overrides/route.ts` (`POST`) | write a role's workspace override | owner, admin, personal team | — (session only) | `manage_agent_roles` |
+| `apps/web/src/app/api/workspaces/[id]/skills/route.ts` (`sessionMayManageRole`) | create or upsert a workspace role (skill CRUD, `isRole`) | owner, admin | admin (in-route) | `manage_agent_roles` |
+| `apps/web/src/app/api/workspaces/[id]/skills/[skillId]/route.ts` (`sessionMayManageRole`) | edit or delete a workspace role, or make a skill one | owner, admin | admin (in-route) | `manage_agent_roles` |
+| `apps/web/src/app/api/roles/route.ts` (`POST`) | create a personal role (`personal: true`) | owner, admin, member | — (session only) | `create_personal_roles` |
+| `apps/web/src/lib/personal-roles.ts` (`mayEditPersonalRole`) | edit, delete or re-share another member's **shared** personal role | owner, admin, personal team | — (session only) | `manage_agent_roles` |
+| `apps/web/src/app/api/roles/[id]/promote/route.ts` (`POST`) | promote a shared personal role to a team role | owner, admin, personal team | — (session only) | `manage_agent_roles` |
+| `apps/web/src/app/app/(protected)/settings/agents/page.tsx` (`RolesPage`) | UI: New role (personal, or a team role) | per permission | — | `create_personal_roles` |
+| `apps/web/src/app/app/(protected)/settings/agents/[slug]/edit/page.tsx` (`TeamRoleSettingsPage`) | UI: team role editor and Deploy access (anyone else sees one line naming where the agent can deploy) | owner, admin | — | `manage_agent_roles` |
+| `apps/web/src/app/api/evidence-backends/route.ts` (`POST`) | create a backend | owner, admin | admin | `manage_evidence_backends` |
+| `apps/web/src/app/api/evidence-backends/[id]/route.ts` (`PATCH`) | edit a backend | owner, admin | admin | `manage_evidence_backends` |
+| `apps/web/src/app/api/evidence-backends/[id]/route.ts` (`DELETE`) | delete a backend | owner, admin | admin | `manage_evidence_backends` |
+| `apps/web/src/app/api/evidence-backends/[id]/verify/route.ts` (`POST`) | verify a backend | owner, admin | admin | `manage_evidence_backends` |
 
 ### Platform operator gates (not team permissions)
 
@@ -586,18 +586,18 @@ path. See Platform operator.
 
 | Site | Gates | Session | Key | Gate |
 |---|---|---|---|---|
-| `apps/web/src/lib/experiments.ts:69` | `isExperimentOperator`: create, edit, start, pause, conclude; see operator-only (`canViewExperiment`, `:73`) | operator | admin key of a platform admin account; OAuth by its person (`apps/web/src/lib/experiment-access.ts:78`, `:82`) | platform operator |
-| `apps/web/src/app/api/experiments/route.ts:65` | POST create an experiment | operator | as above | platform operator |
-| `apps/web/src/app/api/experiments/[id]/route.ts:65` | PATCH an experiment | operator | as above | platform operator |
-| `apps/web/src/lib/decision-audit-access.ts:42` | read a decision for grading, grade it (MCP `get_decision`, `label_decision`; session `:46`) | operator | admin key of a platform admin account (no per-task token); OAuth by its person | platform operator |
-| `apps/web/src/app/api/admin/teams/[id]/experiment-flags/route.ts:30` | write `enabledDecisionShadows`, `inferenceFeatureModes`, `chatRetro` | — | admin key of a platform admin account (`requirePlatformOwner`) | platform admin |
-| `apps/web/src/app/app/(protected)/health/_lib/render-health.tsx:32` | UI: experiment controls on Health → Operator | operator | — | platform operator |
-| `apps/web/src/lib/tier-pool-access.ts:28` | write model traffic pools (alternates, dial, split, explore, weights; session only) | operator, in the team | — | platform operator |
-| `apps/web/src/app/api/model-tiers/policy/route.ts:103` | set the `soak` upgrade mode | operator | admin key of a platform admin account; OAuth by its person | platform operator |
-| `apps/web/src/lib/model-ceilings-api.ts:118` | set `overCapAuto` | operator | as above | platform operator |
-| `apps/web/src/app/api/teams/[id]/route.ts:221` | PATCH `decisionModel` | operator | — (session only) | platform operator |
-| `apps/web/src/lib/decision-health-needs-you.ts:194` | UI: "Decisions are failing" Home card | operator, in the team | — | platform operator |
-| `apps/web/src/app/app/(protected)/settings/models/page.tsx:35` | UI: traffic pools in the cell editor, tier History, the decision model | operator | — | platform operator |
+| `apps/web/src/lib/experiments.ts` (`isExperimentOperator`) | `isExperimentOperator`: create, edit, start, pause, conclude; see operator-only (`canViewExperiment`) | operator | admin key of a platform admin account; OAuth by its person (`apps/web/src/lib/experiment-access.ts` `resolveExperimentViewer`) | platform operator |
+| `apps/web/src/app/api/experiments/route.ts` (`POST`) | POST create an experiment | operator | as above | platform operator |
+| `apps/web/src/app/api/experiments/[id]/route.ts` (`PATCH`) | PATCH an experiment | operator | as above | platform operator |
+| `apps/web/src/lib/decision-audit-access.ts` (`refuseDecisionAudit`) | read a decision for grading, grade it (MCP `get_decision`, `label_decision`; session too) | operator | admin key of a platform admin account (no per-task token); OAuth by its person | platform operator |
+| `apps/web/src/app/api/admin/teams/[id]/experiment-flags/route.ts` (`load`) | write `enabledDecisionShadows`, `inferenceFeatureModes`, `chatRetro` | — | admin key of a platform admin account (`requirePlatformOwner`) | platform admin |
+| `apps/web/src/app/app/(protected)/health/_lib/render-health.tsx` (`renderHealthPage`) | UI: experiment controls on Health → Operator | operator | — | platform operator |
+| `apps/web/src/lib/tier-pool-access.ts` (`tierPoolAccess`) | write model traffic pools (alternates, dial, split, explore, weights; session only) | operator, in the team | — | platform operator |
+| `apps/web/src/app/api/model-tiers/policy/route.ts` (`PUT`) | set the `soak` upgrade mode | operator | admin key of a platform admin account; OAuth by its person | platform operator |
+| `apps/web/src/lib/model-ceilings-api.ts` (`handlePutTeamCeilings`) | set `overCapAuto` | operator | as above | platform operator |
+| `apps/web/src/app/api/teams/[id]/route.ts` (`PATCH`) | PATCH `decisionModel` | operator | — (session only) | platform operator |
+| `apps/web/src/lib/decision-health-needs-you.ts` (`loadDecisionHealthNeedsYou`) | UI: "Decisions are failing" Home card | operator, in the team | — | platform operator |
+| `apps/web/src/app/app/(protected)/settings/models/page.tsx` (`ModelsSettingsPage`) | UI: traffic pools in the cell editor, tier History, the decision model | operator | — | platform operator |
 
 ### Oddities, reproduced not fixed
 
@@ -614,7 +614,7 @@ path. See Platform operator.
    personal team as owned; sites that read the membership row directly (team
    settings, members, invitations, evidence backends) do not. Harmless while a personal team's owner has an owner row.
 4. **Artifacts widen an API key to its team owner's teams.**
-   `apps/web/src/app/api/artifacts/route.ts:31` lists artifacts across every
+   `apps/web/src/app/api/artifacts/route.ts` (`GET`) lists artifacts across every
    team the API key's team owner belongs to. That is reach, not a permission,
    so it is not in the registry; noted because it reads `role = 'owner'`.
 5. **Writes with no role gate.** For a session, these need only membership:
@@ -632,3 +632,7 @@ path. See Platform operator.
 8. **Keys with no recorded creator are never clamped.** A key minted before
    creators were recorded, or by the shared OAuth session account, keeps its
    level when any person's role changes.
+
+## Renumbered
+
+Renumbered on 2026-10-15 so every criterion parses and ids are unique: AC-R1 to AC-9, AC-R2 to AC-10, AC-R3 to AC-11, AC-R4 to AC-12, AC-R5 to AC-13, AC-G1 to AC-14, AC-G2 to AC-15, AC-P1 to AC-16, AC-P2 to AC-17, AC-P2b to AC-18, AC-P3 to AC-19, AC-P4 to AC-20. AC-1 to AC-8 are unchanged.

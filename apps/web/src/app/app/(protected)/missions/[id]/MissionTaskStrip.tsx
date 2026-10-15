@@ -104,7 +104,7 @@ export function LandedStrip({ model, compact, link, workspaceId, executor, focus
   const focusNonce = useSyncExternalStore(subscribe, () => strip?.store.getFocusNonce() ?? 0, () => 0);
   const selectedId = chosen && slots.some(s => s.id === chosen) ? chosen : defaultStripSelection(slots, focus?.taskId);
   const select = useCallback((id: string) => strip?.store.select(id), [strip]);
-  // Marks depend on the selected task only (SEL-1): the tick row re-renders as one unit.
+  // Marks depend on the selected task only (strip R-11): the tick row re-renders as one unit.
   const selection = useMemo(() => (selectedId ? stripMarks(model, selectedId) : null), [model, selectedId]);
 
   const drawerRef = useRef<HTMLDivElement>(null);
@@ -125,9 +125,9 @@ export function LandedStrip({ model, compact, link, workspaceId, executor, focus
     return s.kind === 'fold' ? `+${s.taskIds.length}` : stripTick(i);
   };
   const marks = slotMarks(slots, selection.marks, sel);
-  // Next open cycles through open cells only (NX-1): held ones are skipped,
+  // Next open cycles through open cells only (strip R-32): held ones are skipped,
   // and so are failed ones. Failed is its own bucket (TONE-1): "N open" never
-  // counts a failed cell, so the cycle must not visit one either (NX-2).
+  // counts a failed cell, so the cycle must not visit one either (strip R-33).
   const open = openIndices(slots);
   const failedAt = errorIndices(slots);
   const counts = stripSlotCounts(slots);
@@ -318,7 +318,7 @@ export function StripTaskActions({ task: t, state, link, workspaceId, executor, 
   const router = useRouter();
   const onChanged = useCallback(() => router.refresh(), [router]);
   const landed = state === 'landed';
-  // |blockers(T)|, off-strip included: every one of them is marked or named (SEL-3).
+  // |blockers(T)|, off-strip included: every one of them is marked or named (strip R-13).
   const blockedByCount = stripBlockerCount(t);
   const { phase, isBlocked } = taskActionPhase({
     taskStatus: t.taskStatus,
@@ -450,7 +450,7 @@ export function DrawerDelivery({ delivery, stages = true }: { delivery: TaskDeli
 }
 
 /**
- * A summary cell's drawer (CAP-3): how many tasks it holds and where to see
+ * A summary cell's drawer (strip R-27): how many tasks it holds and where to see
  * them. No task actions — it is not one task.
  */
 const FoldDrawer = memo(function FoldDrawer({ ref, slot, index, tone, caret, link }: {

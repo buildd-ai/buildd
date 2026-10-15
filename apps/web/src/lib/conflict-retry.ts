@@ -1319,7 +1319,7 @@ export async function dispatchConflictRetry(
     softOverlaps = split.soft;
   }
 
-  // An attempt inherits the backend, role, routing kind and phase (Rule P1-7)
+  // An attempt inherits the backend, role, routing kind and phase (mission-legibility R-7)
   // of the task it re-attempts.
   const identity = await inheritAttemptIdentity(retryTask.parentTaskId);
 

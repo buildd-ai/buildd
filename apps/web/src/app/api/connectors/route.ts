@@ -239,8 +239,8 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    // (teamId, name) uniqueness (spec §1 AC-4). Registry install passes
-    // reuseIfExists to adopt the existing row instead of erroring (spec §5 AC-3).
+    // (teamId, name) uniqueness (spec AC-4). Registry install passes
+    // reuseIfExists to adopt the existing row instead of erroring (spec AC-26).
     const existing = await db.query.connectors.findFirst({
       where: sqlWhere(and(eq(connectors.teamId, teamId), eq(connectors.name, name))),
     });

@@ -24,7 +24,7 @@ const mockWorkspacesFindMany = mock(() => [] as any[]);
 const mockGetTeamWorkspaceIds = mock(() => [] as string[]);
 /**
  * `db.update(...).set(...).where(...)` — awaited by most callers, but the
- * guarded `kind` stamp (mission-legibility Rule K2-16) needs `.returning()` as
+ * guarded `kind` stamp (mission-legibility R-28) needs `.returning()` as
  * its did-anything-change signal, so the fake WHERE is a thenable that also
  * carries one.
  */
@@ -3345,7 +3345,7 @@ describe('POST /api/github/pr', () => {
     });
 
     it('creates the review pass EXACTLY once — the PR-open hook is the only trigger', async () => {
-      // mission-legibility.md Rule R3-4: the programmatic review pass for a
+      // mission-legibility.md R-36: the programmatic review pass for a
       // builder task that opens a PR is the existing agent-review tier fired
       // here. No second trigger is designed, and none is needed — any new one
       // would race this through the same dedupe.
@@ -3374,7 +3374,7 @@ describe('POST /api/github/pr', () => {
       expect(mockWakeTask).toHaveBeenCalledWith((mockAnnounceTaskCreated.mock.calls[0] as any[])[0].id, 'task.created');
     });
 
-    it('Rule K2-19: opening a PR stamps kind=engineering, guarded on kind IS NULL', async () => {
+    it('mission-legibility R-31: opening a PR stamps kind=engineering, guarded on kind IS NULL', async () => {
       mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
       mockWorkersFindFirst.mockResolvedValue(taskWorker());
       mockGithubReposFindFirst.mockResolvedValue(REPO);
