@@ -29,6 +29,7 @@ import {
   getLastBrowserDetection,
   browserProbeArgs,
   resetBrowserCapabilityCache,
+  playwrightDirs,
   setBrowserProbeTimeoutForTests,
   SYSTEM_PLAYWRIGHT_DIR,
   FAILURE_BACKOFF_MS,
@@ -172,6 +173,65 @@ describe('detectBrowser', () => {
 
     process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
     expect(detectBrowser().searched).toEqual([]);
+  });
+
+  it('searches ~/Library/Caches/ms-playwright on macOS, where Playwright installs by default', () => {
+    const macDir = '/Users/u/Library/Caches/ms-playwright';
+    const macShell = `${macDir}/chromium_headless_shell-1200/chrome-headless-shell-mac-arm64/chrome-headless-shell`;
+    install({ dirs: [macDir] });
+    expect(playwrightDirs('darwin', '/Users/u')).toEqual([macDir]);
+
+    // End to end: a Mac runner with only that build installed advertises a browser.
+    // Whatever the home directory is, its Library/Caches/ms-playwright is the one that exists.
+    const prevPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { value: 'darwin' });
+    try {
+      const isMacDir = (p: string) => p.endsWith('/Library/Caches/ms-playwright');
+      mockExistsSync.mockImplementation(isMacDir);
+      let root = '';
+      mockExecSync.mockImplementation((cmd: string) => {
+        if (cmd.startsWith('find ')) {
+          root = cmd.match(/'([^']*\/Library\/Caches\/ms-playwright)'/)?.[1] ?? '';
+          return Buffer.from(root ? macShell.replace(macDir, root) : '');
+        }
+        throw execError(1, '');
+      });
+      mockExecFileSync.mockImplementation((file: string) => {
+        if (root && file === macShell.replace(macDir, root)) return Buffer.from(HTML);
+        throw execError(1, 'unexpected launch');
+      });
+      const d = detectBrowser();
+      expect(root).not.toBe('');
+      expect(d.available).toBe(true);
+      expect(d.path).toBe(macShell.replace(macDir, root));
+      expect(d.browsersRoot).toBe(root);
+    } finally {
+      Object.defineProperty(process, 'platform', prevPlatform);
+    }
+  });
+
+  it('searches %LOCALAPPDATA%\\ms-playwright on Windows', () => {
+    const prev = process.env.LOCALAPPDATA;
+    process.env.LOCALAPPDATA = 'C:/Users/u/AppData/Local';
+    try {
+      install({ dirs: ['C:/Users/u/AppData/Local/ms-playwright'] });
+      expect(playwrightDirs('win32', 'C:/Users/u')).toEqual(['C:/Users/u/AppData/Local/ms-playwright']);
+    } finally {
+      if (prev === undefined) delete process.env.LOCALAPPDATA; else process.env.LOCALAPPDATA = prev;
+    }
+  });
+
+  it('keeps the Linux search list unchanged', () => {
+    const all = ['/home/u/.cache/ms-playwright', SYSTEM_PLAYWRIGHT_DIR, '/home/u/Library/Caches/ms-playwright'];
+    install({ dirs: all });
+    expect(playwrightDirs('linux', '/home/u')).toEqual(['/home/u/.cache/ms-playwright', SYSTEM_PLAYWRIGHT_DIR]);
+  });
+
+  it('runs find with -H so a symlinked search root is descended into (BSD find skips it otherwise)', () => {
+    install({ dirs: [SYSTEM_PLAYWRIGHT_DIR], found: [SHELL], launch: { [SHELL]: () => Buffer.from(HTML) } });
+    detectBrowser();
+    const findCmd = mockExecSync.mock.calls.map(c => String(c[0])).find(c => c.startsWith('find '))!;
+    expect(findCmd.startsWith(`find -H '${SYSTEM_PLAYWRIGHT_DIR}'`)).toBe(true);
   });
 
   it('launches a full Chromium with --headless=new and the probe flags', () => {
