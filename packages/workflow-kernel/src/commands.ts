@@ -255,6 +255,12 @@ export type Command =
       type: 'CiGreenObserved';
       headSha: string;
       liveChecks: { complete: boolean; failing: string[] };
+      /**
+       * The host read every check suite on the head as passed (an allow-list of passing
+       * conclusions), not merely "nothing failed": a cancelled, stale or action-required
+       * run is not green. Absent or false is refused.
+       */
+      allPassing?: boolean;
     })
   | (Base & {
       type: 'ConflictObserved';
@@ -444,6 +450,8 @@ export type Command =
        * itself could not serve the round (no reviewer was ever asked).
        */
       reviewerTaskId?: string;
+      /** How long the re-queued round waits before its dispatch runs again (a reviewer that could not be filed). Absent = at once. */
+      retryDelayMs?: number;
     })
   | (Base & {
       /**

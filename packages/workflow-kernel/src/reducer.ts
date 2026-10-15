@@ -775,7 +775,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
     case 'CiGreenObserved': {
       const dd = d!;
       if (cmd.headSha !== dd.currentHeadSha) return c.stale('head_not_current');
-      if (!cmd.liveChecks.complete || cmd.liveChecks.failing.length > 0) return c.rejected('ci_not_green');
+      if (cmd.allPassing !== true || !cmd.liveChecks.complete || cmd.liveChecks.failing.length > 0) return c.rejected('ci_not_green');
       const a = c.attempt(dd.boundAttemptId);
       if (dd.state !== 'REPAIRING' || dd.stateReason !== 'ci' || !a || a.family !== 'ci') return c.stale('no_ci_repair');
       if (!OPEN_ATTEMPT.has(a.status)) return c.stale('attempt_not_open');
@@ -1397,7 +1397,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         return c.apply(key, 'AWAITING_REVIEW', {
           guardRound: true,
           rounds: [{ op: 'update', roundId: round.id, whenStatus: ['queued', 'reviewing'], set: { status: 'queued', failureCount: n, clearReviewer: true } }],
-          effects: [{ kind: 'dispatch_review', dedupeKey: `dispatch_review:${dd.id}:${round.round}:retry${n}`, payload: { roundId: round.id, round: round.round, headSha: round.headSha, kind: round.kind, retry: n } }, gate],
+          effects: [{ kind: 'dispatch_review', dedupeKey: `dispatch_review:${dd.id}:${round.round}:retry${n}`, payload: { roundId: round.id, round: round.round, headSha: round.headSha, kind: round.kind, retry: n }, ...(cmd.retryDelayMs ? { delayMs: cmd.retryDelayMs * n } : {}) }, gate],
           evidence: ev,
         });
       }
@@ -1746,7 +1746,7 @@ function headObservedInner(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' 
         ? [{ op: 'update', attemptId: a.id, whenStatus: [a.status], set: { status: 'skipped', outcome: 'noop', ended: true } }]
         : [];
       const effects: EffectSpec[] = a && moot
-        ? [{ kind: 'cancel_open_attempts', dedupeKey: `cancel_open_attempts:${d.id}:head:${h}`, payload: { families: [a.family], reason: 'head_moved' } }]
+        ? [{ kind: 'cancel_open_attempts', dedupeKey: `cancel_open_attempts:${d.id}:head:${h}`, payload: { families: [a.family], reason: 'head_moved', ...(a.taskId ? { taskIds: [a.taskId] } : {}) } }]
         : [];
       const ev = { ...evidence, foreignPush: true, repairSkipped: attempts.length > 0 };
       if (d.approvalBasis === 'policy') {
@@ -1760,11 +1760,16 @@ function headObservedInner(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' 
     }
     case 'AWAITING_REVIEW':
       return toReview();
-    case 'CHANGES_REQUESTED':
+    case 'CHANGES_REQUESTED': {
+      // The fix tasks this head makes moot, named, so the cancellation never reaches a later one.
+      // A row not yet linked to its task (filed, link pending) leaves the role-wide cancel, as before.
+      const open = c.view.attempts.filter((x) => x.family === 'review_fix' && OPEN_ATTEMPT.has(x.status));
+      const taskIds = open.every((x) => x.taskId) ? open.map((x) => x.taskId!) : undefined;
       return toReview({
         attempts: [{ op: 'cancel_open', families: ['review_fix'], status: 'cancelled' }],
-        effects: [{ kind: 'cancel_open_attempts', dedupeKey: `cancel_open_attempts:${d.id}:head:${h}`, payload: { families: ['review_fix'], reason: 'head_moved' } }],
+        effects: [{ kind: 'cancel_open_attempts', dedupeKey: `cancel_open_attempts:${d.id}:head:${h}`, payload: { families: ['review_fix'], reason: 'head_moved', ...(taskIds ? { taskIds } : {}) } }],
       });
+    }
     case 'FIXING': {
       // Mid-fix pushes are normal; the round advances at AttemptEnded. A push
       // the running attempt can claim is recorded as its provenance (§6.9).
@@ -1848,7 +1853,10 @@ function attemptEndedInner(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' 
       // e9f1674b: a CI failure hint that arrived while the owner worked was refused by T10
       // (state_not_allowed). The hand-off is where the platform takes the move, so a head the
       // live read shows red goes to REPAIRING(ci) through T10's ledger, never to a reviewer.
-      if (cmd.ci && cmd.ci.liveChecks.failing.length > 0 && !c.decidedAt(h) && !c.openAttempt(['ci'])) {
+      // A verdict kept while the owner worked (an adopted round, the only decided round a WORKING
+      // delivery can hold) does not skip the repair: a red head is repaired first, and leaving the
+      // repair re-enters that verdict (resumeAfterRepair).
+      if (cmd.ci && cmd.ci.liveChecks.failing.length > 0 && !c.openAttempt(['ci'])) {
         return ciRepairAtHandOff(c, key, h, cmd.ci, cmd.reviewRequired === false ? { approvalBasis: 'policy' } : {}, evidence);
       }
       if (cmd.reviewRequired === false) {

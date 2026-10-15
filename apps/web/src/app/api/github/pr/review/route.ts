@@ -287,7 +287,8 @@ export async function POST(req: NextRequest) {
     }
     const kernelPolicy = await resolveEffectivePolicy(workspace, null);
     // 1bd26ae7: never "already under review" with nothing behind it. A round with no reviewer task
-    // yet says so, with the round and head, and the kernel has re-queued its dispatch (T5 re-arm).
+    // yet says so, with the live head it is for; the seam has re-queued its dispatch when every
+    // earlier one finished without filing a reviewer.
     const noReviewer = !latest
       ? { state: 'queued' as const, headSha: (pr.head?.sha as string | undefined) ?? null, reason: r.result === 'applied'
           ? 'a review round is queued at this head; buildd is filing its reviewer now'
