@@ -156,6 +156,13 @@ export interface ClaimOutcome {
   deferrals?: Record<string, number>;
   status?: number;
   refusal?: string;
+  /**
+   * The server's `updatedAt` for the task when top first saw it after this
+   * outcome (for the broad claim: the newest `updatedAt` in the list), so
+   * "has the task moved since" compares server time with server time, never
+   * with this machine's clock.
+   */
+  seenUpdatedAt?: string;
 }
 
 export const NO_MISSION = '(none)';
@@ -253,7 +260,7 @@ export function reduce(state: TopState, event: TopEvent): TopState {
       let next: TopState = { ...state, workers: mergeWorkers(state.workers, e.workers ?? []) };
       if (e.claimOutcomes && typeof e.claimOutcomes === 'object') {
         const tasks = e.claimOutcomes.tasks && typeof e.claimOutcomes.tasks === 'object' ? e.claimOutcomes.tasks : {};
-        next = { ...next, claimOutcomes: { tasks: pruneMovedOutcomes(tasks, next.tasks), broad: e.claimOutcomes.broad ?? null } };
+        next = { ...next, claimOutcomes: { tasks: pruneMovedOutcomes(tasks, next.tasks), broad: e.claimOutcomes.broad ? stampBroad(e.claimOutcomes.broad, next.tasks) : null } };
       }
       if (e.config) next = reduce(next, { type: 'config', maxConcurrent: e.config.maxConcurrent, builddServer: e.config.builddServer });
       return { ...next, runner: { ...next.runner, online: true } };
@@ -276,7 +283,7 @@ export function reduce(state: TopState, event: TopEvent): TopState {
     case 'claim_outcome': {
       const e = event as Extract<TopEvent, { type: 'claim_outcome' }>;
       if (!e.outcome || typeof e.outcome.reason !== 'string') return state;
-      if (!e.taskId) return { ...state, claimOutcomes: { ...state.claimOutcomes, broad: e.outcome } };
+      if (!e.taskId) return { ...state, claimOutcomes: { ...state.claimOutcomes, broad: stampBroad(carryWalls(state.claimOutcomes.broad, e.outcome), state.tasks) } };
       const tasks = { ...state.claimOutcomes.tasks };
       if (e.outcome.reason === 'claimed') delete tasks[e.taskId];
       else tasks[e.taskId] = e.outcome;
@@ -602,11 +609,42 @@ function pruneMovedOutcomes(outcomes: Record<string, ClaimOutcome>, tasks: TopTa
   const next: Record<string, ClaimOutcome> = {};
   for (const [id, o] of Object.entries(outcomes)) {
     const t = byId.get(id);
-    const updated = isoMs(t?.updatedAt);
-    if (t && (t.status !== 'pending' || (updated !== null && updated > o.at))) { changed = true; continue; }
+    if (!t) { next[id] = o; continue; }
+    if (t.status !== 'pending') { changed = true; continue; }
+    // Server time against server time: the first list after the outcome fixes
+    // what "unchanged" means; a later `updatedAt` retires it.
+    const seen = isoMs(o.seenUpdatedAt);
+    const updated = isoMs(t.updatedAt) ?? 0;
+    if (seen === null) { next[id] = { ...o, seenUpdatedAt: new Date(updated).toISOString() }; changed = true; continue; }
+    if (updated > seen) { changed = true; continue; }
     next[id] = o;
   }
   return changed ? next : outcomes;
+}
+
+/** The newest server `updatedAt` in the list: what the broad claim had in view. */
+function stampBroad(o: ClaimOutcome, tasks: TopTask[]): ClaimOutcome {
+  if (o.seenUpdatedAt) return o;
+  let max: number | null = null;
+  for (const t of tasks) {
+    const u = isoMs(t.updatedAt);
+    if (u !== null && (max === null || u > max)) max = u;
+  }
+  return max === null ? o : { ...o, seenUpdatedAt: new Date(max).toISOString() };
+}
+
+/** Same rule as the runner's store (claim-outcomes.ts), for a runner that sends the frame as it got it. */
+function carryWalls(prev: ClaimOutcome | null, next: ClaimOutcome): ClaimOutcome {
+  if (!prev?.walls?.length) return next;
+  const silent = next.reason === 'claimed' || next.reason === 'refused' || next.reason === 'context_paused';
+  if (!silent && !next.walls?.length) return next;
+  const have = new Set((next.walls ?? []).map(w => w.backend));
+  const kept = prev.walls.filter(w => {
+    const t = isoMs(w.resetsAt);
+    return !have.has(w.backend) && t !== null && t > next.at;
+  });
+  if (kept.length === 0) return next;
+  return { ...next, walls: [...(next.walls ?? []), ...kept], summary: next.summary ?? prev.summary };
 }
 
 /** The walls of an outcome that still hold at `now`; a wall with no known reset holds while the outcome is fresh. */
@@ -630,8 +668,9 @@ function outcomeLive(o: ClaimOutcome, now: number): boolean {
 function liveTaskOutcome(task: TopTask, state: TopState, now: number): ClaimOutcome | null {
   const o = state.claimOutcomes.tasks[task.id];
   if (!o || task.status !== 'pending') return null;
+  const seen = isoMs(o.seenUpdatedAt);
   const updated = isoMs(task.updatedAt);
-  if (updated !== null && updated > o.at) return null;
+  if (seen !== null && updated !== null && updated > seen) return null;
   return outcomeLive(o, now) ? o : null;
 }
 
@@ -806,7 +845,7 @@ function outcomeWords(o: ClaimOutcome, task: TopTask, state: TopState, holds: Pr
     }
     if (code === 'budget_paused') return 'held by a usage limit';
     if (EXCLUSION_WORDS[code]) return EXCLUSION_WORDS[code];
-    return o.detail ? firstSentence(o.detail) : code.replace(/_/g, ' ');
+    return o.detail ? firstSentence(o.detail) : codeWords(code);
   }
   if (o.reason === 'race_lost') return 'another runner took it';
   if (o.reason === 'deps_blocked') return dependencyWords(task, state) ?? 'waits on a dependency';
@@ -815,12 +854,39 @@ function outcomeWords(o: ClaimOutcome, task: TopTask, state: TopState, holds: Pr
   return null;
 }
 
-/** Deferral reasons a broad claim reported, as the one a person would hear first. */
+/** Deferral reasons the server counts on a broad claim, in words. */
+const DEFERRAL_WORDS: Record<string, string> = {
+  ...EXCLUSION_WORDS,
+  budget_paused: 'held by a usage limit',
+  oauth_parallelism: 'the plan allows only a few sessions at once',
+  duplicate_worker: 'a worker already has it',
+  sibling_retry_open: 'a retry of it is already open',
+  fix_not_needed: 'its fix is no longer needed',
+  runner_capability: 'needs something this runner lacks',
+  role_env_unsatisfied: 'its role needs settings this runner lacks',
+  managed_concurrency: 'managed runs are at their limit',
+  managed_runner_hours: 'managed runner hours are used up',
+  hosted_runner_hours: 'hosted runner hours are used up',
+  no_personal_credential: 'needs a personal login that is not set up',
+  provider_not_allowed: 'its model provider is not allowed here',
+  tier_policy: 'its model tier is not allowed here',
+};
+
+/** Words for a deferral or exclusion code; a code this view has no words for never prints raw. */
+function codeWords(code: string): string {
+  return DEFERRAL_WORDS[code] ?? 'held by the server';
+}
+
+/**
+ * A broad claim reports deferral counts by reason, not which task each one
+ * was. So it is a runner-wide reason, said as one only when a single reason
+ * accounts for every deferral; with several, no one is pinned on this row.
+ */
 function broadDeferralWords(o: ClaimOutcome): string | null {
-  const entries = Object.entries(o.deferrals ?? {}).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]);
+  const entries = Object.entries(o.deferrals ?? {}).filter(([, n]) => n > 0);
   if (entries.length === 0) return null;
-  const words = EXCLUSION_WORDS[entries[0][0]] ?? entries[0][0].replace(/_/g, ' ');
-  return `held at the last claim: ${words}`;
+  if (entries.length === 1) return `held at the last claim (runner-wide): ${codeWords(entries[0][0])}`;
+  return 'held at the last claim, for reasons it did not tie to this task';
 }
 
 /**
@@ -838,7 +904,8 @@ export function waitingReason(task: TopTask, state: TopState, now: number, holds
   }
   const broad = liveBroad(state, now);
   const updated = isoMs(task.updatedAt);
-  const broadSawIt = broad && (updated === null || updated <= broad.at);
+  const broadSeen = isoMs(broad?.seenUpdatedAt);
+  const broadSawIt = !!broad && (updated === null || broadSeen === null || updated <= broadSeen);
   if (broad && broadSawIt && broad.walls?.length) {
     const words = wallFor(broad, taskBackend(task), now) ? wallWords(broad, task, holds, now) : null;
     if (words) return words;
@@ -852,11 +919,16 @@ export function waitingReason(task: TopTask, state: TopState, now: number, holds
   }
   const busy = busySlots(state);
   if (busy >= state.runner.maxConcurrent) return `runner is full (${busy} of ${state.runner.maxConcurrent} busy)`;
-  if (broad && broadSawIt && broad.reason === 'all_candidates_deferred') {
-    const words = broadDeferralWords(broad);
-    if (words) return words;
+  if (broad && broadSawIt && broad.reason !== 'claimed') {
+    if (broad.reason === 'all_candidates_deferred') {
+      const words = broadDeferralWords(broad);
+      if (words) return words;
+    }
+    // The claim ran and took nothing, and named nothing holding this task.
+    if (!own) return 'the server skipped it at the last claim';
   }
-  return 'ready, next claim picks it up';
+  // Only a claim of this very task that found nothing holding it says ready.
+  return own ? 'ready, next claim picks it up' : 'not tried yet';
 }
 
 function lastToolLabel(w: TopWorker): string | undefined {

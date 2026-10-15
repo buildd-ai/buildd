@@ -151,7 +151,7 @@ describe('rows (R-3)', () => {
   test('a full runner, and room to start', () => {
     const s = fixtureState();
     const loose = TASKS.find(t => t.id === 't-loose')!;
-    expect(waitingReason(loose, s, NOW)).toBe('ready, next claim picks it up');
+    expect(waitingReason(loose, s, NOW)).toBe('not tried yet');
     const full = reduce(s, { type: 'config', maxConcurrent: 2 });
     expect(waitingReason(loose, full, NOW)).toBe('runner is full (2 of 2 busy)');
   });

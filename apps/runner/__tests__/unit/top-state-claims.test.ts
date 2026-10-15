@@ -65,15 +65,15 @@ describe('waiting reasons from the last claim (R-25)', () => {
   });
 
   test('ready only when the last claim saw nothing holding it', () => {
-    expect(waitingReason(loose(), fixtureState(), NOW)).toBe('ready, next claim picks it up');
     expect(waitingReason(loose(), withOutcome({ reason: 'no_pending_tasks' }), NOW)).toBe('ready, next claim picks it up');
   });
 
   test('a stale outcome expires once the task moves, or its hold has passed', () => {
     // The task changed on the server after the claim was refused.
     let s = withOutcome({ exclusion: 'mission_local' });
+    s = reduce(s, { type: 'tasks', tasks: TASKS });
     s = reduce(s, { type: 'tasks', tasks: TASKS.map(t => t.id === 't-loose' ? { ...t, updatedAt: new Date(NOW).toISOString() } : t) });
-    expect(waitingReason(loose(), s, NOW)).toBe('ready, next claim picks it up');
+    expect(waitingReason(s.tasks.find(t => t.id === 't-loose')!, s, NOW)).toBe('not tried yet');
     expect(s.claimOutcomes.tasks['t-loose']).toBeUndefined();
     // A task no longer pending drops its outcome.
     s = withOutcome({ exclusion: 'mission_local' });
@@ -81,10 +81,10 @@ describe('waiting reasons from the last claim (R-25)', () => {
     expect(s.claimOutcomes.tasks['t-loose']).toBeUndefined();
     // A cooldown is a minute long.
     s = withOutcome({ exclusion: 'runner_cooldown' });
-    expect(waitingReason(loose(), s, NOW + 90_000)).toBe('ready, next claim picks it up');
+    expect(waitingReason(loose(), s, NOW + 90_000)).toBe('not tried yet');
     // A wall that has lifted holds nothing.
     s = withOutcome({ reason: 'budget_exhausted', walls: [{ kind: 'account_seat', backend: 'claude', resetsAt: new Date(NOW - 1000).toISOString() }] });
-    expect(waitingReason(loose(), s, NOW)).toBe('ready, next claim picks it up');
+    expect(waitingReason(loose(), s, NOW)).toBe('not tried yet');
     // A worker starting on it clears it.
     s = withOutcome({ exclusion: 'mission_local' });
     s = reduce(s, { type: 'worker_update', worker: { id: 'w9', taskId: 't-loose', taskTitle: 'fix flaky test', status: 'working', startedAt: NOW } });
@@ -129,7 +129,7 @@ describe('one provider limit, said once (R-25, AC-11)', () => {
 
   test('a Codex task is not held by the Claude limit', () => {
     const s = reduce(walled(), { type: 'tasks', tasks: TASKS.map(t => t.id === 't-loose' ? { ...t, backend: 'codex' } : t) });
-    expect(waitingReason(s.tasks.find(t => t.id === 't-loose')!, s, NOW)).toBe('ready, next claim picks it up');
+    expect(waitingReason(s.tasks.find(t => t.id === 't-loose')!, s, NOW)).toBe('the server skipped it at the last claim');
   });
 
   test('the hold ends when its reset passes', () => {
@@ -154,5 +154,66 @@ describe('a runner view, not an inbox (R-27)', () => {
     const running = taskRows(fixtureState(), NOW).filter(r => r.group === 'running');
     expect(running[0].kind).not.toBe('asking');
     expect(running.find(r => r.kind === 'asking')!.question).toBe('Print the URL or open the browser?');
+  });
+});
+
+describe('what the last claim did not see (R-25, AC-11)', () => {
+  const walledOutcome = { at: NOW - 5_000, reason: 'budget_exhausted', walls: [{ kind: 'account_seat', backend: 'claude', resetsAt: reset }] };
+  const broad = (s: ReturnType<typeof fixtureState>, o: Partial<ClaimOutcome>) =>
+    reduce(s, { type: 'claim_outcome', outcome: { at: NOW - 1_000, reason: 'no_pending_tasks', ...o } });
+
+  test('a broad claim that takes some other task does not erase a Claude limit that has not lifted', () => {
+    const s = broad(broad(fixtureState(), walledOutcome), { reason: 'claimed' });
+    expect(providerHolds(s, NOW)).toEqual([{ backend: 'claude', provider: 'Claude', word: 'plan limit', resetsAt: reset }]);
+    expect(waitingReason(loose(), s, NOW)).toBe('plan limit');
+  });
+
+  test('the kept limit still ends at its lift time', () => {
+    const s = broad(broad(fixtureState(), walledOutcome), { reason: 'claimed' });
+    expect(providerHolds(s, NOW + 10 * 3_600_000)).toEqual([]);
+  });
+
+  test('a task the last broad claim never offered is not called ready', () => {
+    const s = broad(fixtureState(), { reason: 'no_pending_tasks' });
+    expect(waitingReason(loose(), s, NOW)).toBe('the server skipped it at the last claim');
+  });
+
+  test('a task no claim has tried is not called ready', () => {
+    expect(waitingReason(loose(), fixtureState(), NOW)).toBe('not tried yet');
+  });
+
+  test('a task newer than the last broad claim has not been tried yet', () => {
+    const s0 = broad(fixtureState(), { reason: 'no_pending_tasks' });
+    const s = reduce(s0, { type: 'tasks', tasks: TASKS.map(t => t.id === 't-loose' ? { ...t, updatedAt: new Date(NOW + 3_600_000).toISOString() } : t) });
+    expect(waitingReason(s.tasks.find(t => t.id === 't-loose')!, s, NOW)).toBe('not tried yet');
+  });
+
+  test('deferral codes are said in words, never as the raw code', () => {
+    for (const code of ['budget_paused', 'oauth_parallelism', 'duplicate_worker', 'sibling_retry_open', 'fix_not_needed', 'a_code_from_the_future']) {
+      const s = broad(fixtureState(), { reason: 'all_candidates_deferred', deferrals: { [code]: 3 } });
+      const got = waitingReason(loose(), s, NOW);
+      expect(got).not.toContain('_');
+      expect(got).not.toMatch(/budget paused|oauth parallelism|duplicate worker|sibling retry/);
+    }
+    const s = broad(fixtureState(), { reason: 'all_candidates_deferred', deferrals: { budget_paused: 3 } });
+    expect(waitingReason(loose(), s, NOW)).toBe('held at the last claim (runner-wide): held by a usage limit');
+  });
+
+  test('a row keeps its own reason, and a mixed deferral is not pinned on a row it may not describe', () => {
+    let s = broad(fixtureState(), { reason: 'all_candidates_deferred', deferrals: { budget_paused: 5, workspace_cap: 1 } });
+    expect(waitingReason(loose(), s, NOW)).toBe('held at the last claim, for reasons it did not tie to this task');
+    s = reduce(s, { type: 'claim_outcome', taskId: 't-loose', outcome: { at: NOW - 500, reason: 'no_pending_tasks', exclusion: 'mission_local' } });
+    expect(waitingReason(loose(), s, NOW)).toBe('local session');
+  });
+
+  test('a server clock ahead of this machine does not drop a fresh outcome', () => {
+    const ahead = new Date(NOW + 3_600_000).toISOString();
+    let s = reduce(fixtureState(), { type: 'tasks', tasks: TASKS.map(t => t.id === 't-loose' ? { ...t, updatedAt: ahead } : t) });
+    s = withOutcome({ exclusion: 'mission_local' }, 't-loose', s);
+    s = reduce(s, { type: 'tasks', tasks: s.tasks });
+    expect(waitingReason(s.tasks.find(t => t.id === 't-loose')!, s, NOW)).toBe('local session');
+    // A later change on the server still retires it.
+    s = reduce(s, { type: 'tasks', tasks: s.tasks.map(t => t.id === 't-loose' ? { ...t, updatedAt: new Date(NOW + 7_200_000).toISOString() } : t) });
+    expect(s.claimOutcomes.tasks['t-loose']).toBeUndefined();
   });
 });

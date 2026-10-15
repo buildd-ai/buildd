@@ -1058,7 +1058,7 @@ export class WorkerManager {
       if (outcome.reason === 'claimed') this.claimOutcomes.clearTask(taskId);
       else this.claimOutcomes.recordTask(taskId, outcome);
     } else {
-      this.claimOutcomes.recordBroad(outcome);
+      outcome = this.claimOutcomes.recordBroad(outcome);
     }
     this.emit({ type: 'claim_outcome', ...(taskId ? { taskId } : {}), outcome });
   }

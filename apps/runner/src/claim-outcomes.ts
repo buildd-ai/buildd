@@ -58,6 +58,29 @@ export function outcomeFromDiagnostics(diagnostics: ClaimDiagnostics | null | un
   return o;
 }
 
+/**
+ * The provider limits a new broad outcome should still carry: the previous
+ * ones that have not lifted. The server reports limits only on a claim that
+ * takes nothing, so a claim that took some task (a Codex one, say) says
+ * nothing about a Claude limit; only an empty claim that names no wall means
+ * the wall lifted (R-25, AC-11).
+ */
+export function carryBroadWalls(prev: ClaimOutcome | null | undefined, next: ClaimOutcome): ClaimOutcome {
+  if (!prev?.walls?.length) return next;
+  const silent = next.reason === 'claimed' || next.reason === 'refused' || next.reason === 'context_paused';
+  if (!silent && !next.walls?.length) return next;
+  const have = new Set((next.walls ?? []).map(w => w.backend));
+  const kept = prev.walls.filter(w => {
+    if (have.has(w.backend)) return false;
+    const t = w.resetsAt ? Date.parse(w.resetsAt) : NaN;
+    return !Number.isNaN(t) && t > next.at;
+  });
+  if (kept.length === 0) return next;
+  const out: ClaimOutcome = { ...next, walls: [...(next.walls ?? []), ...kept] };
+  if (!out.summary && prev.summary) out.summary = prev.summary;
+  return out;
+}
+
 export function outcomeFromRefusal(status: number, refusal: string, now: number): ClaimOutcome {
   return { at: now, reason: 'refused', status, refusal };
 }
@@ -93,8 +116,10 @@ export class ClaimOutcomeStore {
     }
   }
 
-  recordBroad(outcome: ClaimOutcome): void {
-    this.broad = outcome;
+  /** Keep the broad outcome (with any provider limit that has not lifted) and return what was kept. */
+  recordBroad(outcome: ClaimOutcome): ClaimOutcome {
+    this.broad = carryBroadWalls(this.broad, outcome);
+    return this.broad;
   }
 
   /** A worker started on it: nothing holds it any more. */

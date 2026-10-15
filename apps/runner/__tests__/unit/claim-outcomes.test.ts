@@ -71,3 +71,32 @@ describe('ClaimOutcomeStore', () => {
     expect(snap.broad).not.toBeNull();
   });
 });
+
+describe('a broad claim keeps the provider limits that have not lifted', () => {
+  const wall = { kind: 'account_seat', backend: 'claude', resetsAt: new Date(NOW + 3_600_000).toISOString() };
+  test('a claim that took something does not erase them', () => {
+    const store = new ClaimOutcomeStore();
+    store.recordBroad({ at: NOW - 2000, reason: 'budget_exhausted', walls: [wall], summary: 'Claude plan limit' });
+    store.recordBroad({ at: NOW - 1000, reason: 'claimed' });
+    const broad = store.snapshot(NOW).broad!;
+    expect(broad.reason).toBe('claimed');
+    expect(broad.walls).toEqual([wall]);
+  });
+  test('an empty claim that names no wall means it lifted', () => {
+    const store = new ClaimOutcomeStore();
+    store.recordBroad({ at: NOW - 2000, reason: 'budget_exhausted', walls: [wall] });
+    store.recordBroad({ at: NOW - 1000, reason: 'no_pending_tasks' });
+    expect(store.snapshot(NOW).broad?.walls).toBeUndefined();
+  });
+  test('a lifted wall is not carried', () => {
+    const store = new ClaimOutcomeStore();
+    store.recordBroad({ at: NOW - 7_200_000, reason: 'budget_exhausted', walls: [{ ...wall, resetsAt: new Date(NOW - 3_600_000).toISOString() }] });
+    store.recordBroad({ at: NOW, reason: 'claimed' });
+    expect(store.snapshot(NOW).broad?.walls).toBeUndefined();
+  });
+  test('the stored outcome is returned so the frame sent to top carries the kept walls', () => {
+    const store = new ClaimOutcomeStore();
+    store.recordBroad({ at: NOW - 2000, reason: 'budget_exhausted', walls: [wall] });
+    expect(store.recordBroad({ at: NOW, reason: 'claimed' }).walls).toEqual([wall]);
+  });
+});
