@@ -67,3 +67,17 @@ it('renders a definition in the first row of a valid GFM table', () => {
   render('| R-10 | A header definition |\n|---|---|\n| AC-11 | A body definition |');
   expect(rows().map(r => r.id)).toEqual(['R-10', 'AC-11']);
 });
+
+it('renders indented definition lines counted by the shared parser, retaining surrounding code', () => {
+  const body = '    const before = 1;\n    R-14: Indented definition\n    AC-15: Another definition\n    const after = 2;';
+  render(body);
+  expect(rows().map(r => r.id)).toEqual(requirementIds(body).map(r => r.id));
+  expect([...container.querySelectorAll('pre')].map(n => n.textContent?.trim())).toEqual(['const before = 1;', 'const after = 2;']);
+});
+
+
+it('keeps parser definitions visible inside otherwise hidden Markdown wrappers', () => {
+  const body = '<section>\nR-16: Wrapped definition\n</section>\n\n[^unused]: Note\n    AC-17: Footnote definition';
+  render(body);
+  expect(rows().map(r => r.id)).toEqual(requirementIds(body).map(r => r.id));
+});

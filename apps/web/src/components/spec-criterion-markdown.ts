@@ -37,17 +37,6 @@ export default function specCriterionMarkdown(this: Processor) {
       const end = node.position?.end.line ?? 0;
       const hits = [...definitions.keys()].filter(line => line >= start && line <= end);
       if (!hits.length) return [node];
-      if (node.type === 'paragraph' || node.type === 'heading') {
-        const out: Block[] = [];
-        let from = start;
-        for (const line of hits) {
-          if (line > from) out.push(...parse(lines.slice(from - 1, line - 1).join('\n')));
-          out.push(criterion(line));
-          from = line + 1;
-        }
-        if (from <= end) out.push(...parse(lines.slice(from - 1, end).join('\n')));
-        return out;
-      }
       if (node.type === 'table') {
         const out: Block[] = [];
         const originalHeader = node.children[0]!;
@@ -95,7 +84,16 @@ export default function specCriterionMarkdown(this: Processor) {
         return out;
       }
       if (node.type === 'blockquote') return [{ ...node, children: node.children.flatMap(child => transform(child)) }];
-      return [node];
+      // Even indented code or hidden wrappers can define ids in the shared parser.
+      const out: Block[] = [];
+      let from = start;
+      for (const line of hits) {
+        if (line > from) out.push(...parse(lines.slice(from - 1, line - 1).join('\n')));
+        out.push(criterion(line));
+        from = line + 1;
+      }
+      if (from <= end) out.push(...parse(lines.slice(from - 1, end).join('\n')));
+      return out;
     };
     tree.children = tree.children.flatMap(node => transform(node as Block));
   };
