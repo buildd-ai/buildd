@@ -63,8 +63,8 @@ shipped header, explain's state chain, history and `because[]`, and the chat
 tile, dock and PR object all read `getDeliveryView`, and the duplicate PR-state
 maps are deleted (§13.9). What each slice landed and its deviations (§13.1 to
 §13.10) is in `knowledge-base: buildd/reports/workflow-state-kernel-history.md`; §14
-is the cutover and the kill switch. **§13.13** holds review composition (AC-20 to
-AC-23, here) and the findings, repair and landing rules written against PR #4686,
+is the cutover and the kill switch. **§13.13** holds review composition (its
+criteria AC-20 through AC-23 stay here) and the findings, repair and landing rules written against PR #4686,
 whose criteria and shipped status now live in the native spec "Workflow kernel"
 (fa62b865, `workflow-kernel-library.md`).
 
