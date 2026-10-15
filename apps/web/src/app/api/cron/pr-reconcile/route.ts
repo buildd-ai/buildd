@@ -87,6 +87,10 @@ import { PR_LANDING_DUE_QUEUE, type LandingSweepResult } from '@/lib/pr-landing-
 import { sweepCiRedPrs } from '@/lib/ci-red-sweep-deps';
 import { controlPlaneFloorStale, kernelFloorOutcome, lastControlPlaneFloorAt, logKernelFloor, runKernelFloor, type KernelFloorResult } from '@/lib/workflow/kernel-floor';
 import { hostsKernelHere, withControlPlaneBudget } from '@/lib/workflow/kernel-client';
+import { timedSteps } from '@/lib/cron-step-timing';
+
+// One name per step of the pass below, in order: each logs its time as it settles.
+const PR_RECONCILE_STEPS = ['reconcile', 'deadZone', 'missionPrs', 'branchRefresh', 'stranded', 'specRecheck', 'lineagePrs', 'landing', 'refreshRedrive', 'ciRed', 'closedPrs', 'earlyRelease', 'kernel', 'hourlySubscribers'] as const;
 import type { CiRedSweepResult } from '@/lib/ci-red-sweep';
 import { CI_RED_DUE_QUEUE } from '@/lib/ci-red-queue';
 import { gateOnDueQueue } from '@/lib/cron-due-queue';
@@ -99,22 +103,9 @@ export const maxDuration = 60;
 /**
  * How long one run's sweeps may wait on the control plane, all of them together (kernel-client.ts
  * `withControlPlaneBudget`): door calls and inline drains are cut to what is left of it, and once it
- * is spent nothing more is sent (a door's work is retried next tick; effects are drained by the
- * control plane). Well inside `maxDuration`, so the database work of the pass still has room.
+ * is spent nothing more is sent. Well inside `maxDuration`, so the database work of the pass still has room.
  */
 export const SWEEP_CONTROL_PLANE_BUDGET_MS = 30_000;
-
-/**
- * One step of a pass, timed. Each step logs as it finishes, so a run that hits the function limit
- * still shows which steps had finished and which one had not.
- */
-function timed<T>(timings: Record<string, number>, step: string, run: () => Promise<T>): Promise<T> {
-  const started = Date.now();
-  return Promise.resolve().then(run).finally(() => {
-    timings[step] = Date.now() - started;
-    console.log(`[PrReconcile] step=${step} ms=${timings[step]}`);
-  });
-}
 
 /** What one landing sweep adds to a run's `changed`: PRs it actually moved. */
 const landingChanged = (r: LandingSweepResult) => r.merged + r.updatingBranch + r.needsFix;
@@ -149,16 +140,21 @@ export async function GET(req: NextRequest) {
       : controlPlaneFloorStale(await lastControlPlaneFloorAt().catch(() => null));
     const kernelHere = kernelShadow || controlPlaneStale;
     const kernelReason = kernelShadow ? 'shadow' : controlPlaneStale ? 'control_plane_floor_stale' : null;
+    // Each step's time, as timedSteps logs it, also kept for the run's result.
     const timings: Record<string, number> = {};
-    const t = <T>(step: string, run: () => Promise<T>) => timed(timings, step, run);
+    const log = (line: string) => {
+      console.log(line);
+      const m = /\bstep=(\w+) ms=(\d+)/.exec(line);
+      if (m) timings[m[1]] = Number(m[2]);
+    };
     const { value: [[reconcile, deadZone, missionPrs, branchRefresh, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, earlyRelease, kernel], heldReleases], budget: controlPlane } = await withControlPlaneBudget(job, SWEEP_CONTROL_PLANE_BUDGET_MS, async () => {
-      const steps = await Promise.all([
-        t('reconcile', () => reconcileStalePrWorkers()),
-        mergeStateOnly ? Promise.resolve(null) : t('deadZone', () => sweepDeadZonePrs()),
+      const steps = await Promise.all(timedSteps('PrReconcile', PR_RECONCILE_STEPS, [
+        reconcileStalePrWorkers(),
+        mergeStateOnly ? Promise.resolve(null) : sweepDeadZonePrs(),
         // Isolated, unlike the other two: healing merge state is the time-critical
         // half of this route, and a mission-sweep failure must not throw away
         // reconcile work that already landed in the database.
-        t('missionPrs', () => sweepMissionIntegrationPrs()
+        sweepMissionIntegrationPrs()
           .then(async res => {
             // Manual direct missions the integration sweep never selects: a lost
             // merge webhook leaves their criteria stale. Best effort, never fails
@@ -170,81 +166,81 @@ export async function GET(req: NextRequest) {
           })
           .catch(err => ({
             error: err instanceof Error ? err.message : String(err),
-          }))),
+          })),
         // The backstop half of keeping mission branches current with dev
         // (lib/mission-branch-refresh.ts) — covers a lost webhook delivery.
         // Hourly, like merge-state healing: a mission branch left stale for a
         // full day is exactly the failure mode this exists to close. Isolated.
-        t('branchRefresh', () => sweepMissionBranchRefresh().catch((err): { error: string } => ({
+        sweepMissionBranchRefresh().catch((err): { error: string } => ({
           error: err instanceof Error ? err.message : String(err),
-        }))),
+        })),
         // Stranded-task detection has nothing to do with PRs — it rides this
         // route's hourly cadence (the merge-state scope) rather than a new cron.
         // Isolated for the same reason as the mission sweep above.
-        t('stranded', () => sweepStrandedTasks().catch(err => ({
+        sweepStrandedTasks().catch(err => ({
           error: err instanceof Error ? err.message : String(err),
-        }))),
+        })),
         // Merged doc fixes whose ledger rows were never rechecked get a forced
         // re-run; rechecked-and-still-open ones get their one follow-up
         // (lib/spec-recheck.ts). Hourly, like merge state — it acts on merges.
-        t('specRecheck', () => sweepSpecDiscrepancyRechecks().catch(err => ({
+        sweepSpecDiscrepancyRechecks().catch(err => ({
           error: err instanceof Error ? err.message : String(err),
-        }))),
+        })),
         // Two open PRs in one retry lineage: create_pr closes the parent's PR when
         // a retry opens a fresh one, and this is the retry for the closes that did
         // not happen (lib/retry-pr-supersession.ts). Hourly — a duplicate PR is
         // one merge click from shipping a rejected attempt.
-        t('lineagePrs', () => sweepDuplicateLineagePrs().catch(err => ({
+        sweepDuplicateLineagePrs().catch(err => ({
           error: err instanceof Error ? err.message : String(err),
-        }))),
+        })),
         // The landing backstop's floor pass: enumerates from Postgres and re-seeds
         // the due-queue the gated tick reads. Isolated — a landing failure must not
         // discard merge-state healing, and the reverse. Hourly, like the rest.
-        t('landing', () => sweepLandingPrs({ source: 'floor' }).catch(err => ({
+        sweepLandingPrs({ source: 'floor' }).catch(err => ({
           error: err instanceof Error ? err.message : String(err),
-        }))),
+        })),
         // Behind PRs whose branch refresh was deferred by an operational failure
         // outside landing `enforce`: no event is coming, so this re-enters the
         // normal merge door, bounded per head (lib/refresh-redrive.ts). Hourly,
         // on this tick, so it opens no extra Neon wake window; isolated.
-        t('refreshRedrive', () => redriveDeferredRefreshes().catch((err): { error: string } => ({
+        redriveDeferredRefreshes().catch((err): { error: string } => ({
           error: err instanceof Error ? err.message : String(err),
-        }))),
+        })),
         // The red-PR sweep's floor pass: open buildd PRs whose lifecycle is
         // ci_failed, re-seeding the queue the gated tick reads. Isolated.
-        t('ciRed', () => sweepCiRedPrs({ source: 'floor' }).catch((err): { error: string } => ({
+        sweepCiRedPrs({ source: 'floor' }).catch((err): { error: string } => ({
           error: err instanceof Error ? err.message : String(err),
-        }))),
+        })),
         // Closed-unmerged mission PRs with no supersession edge: look for where
         // the work landed and record it only if the content verifies, else leave
         // a suggestion (lib/pr-supersession-detect.ts). Backfill for webhook
         // misses and PRs closed before the webhook door existed. Isolated.
-        t('closedPrs', () => sweepClosedUnsupersededPrs().catch((err): { error: string } => ({
+        sweepClosedUnsupersededPrs().catch((err): { error: string } => ({
           error: err instanceof Error ? err.message : String(err),
-        }))),
+        })),
         // Re-checks every non-revoked early-release decision against the
         // upstream PR's current state (lib/early-release-reconciler.ts).
         // Isolated — a reconciler failure must not discard the rest of the sweep.
-        t('earlyRelease', () => reconcileEarlyReleases().catch((err): { error: string } => ({
+        reconcileEarlyReleases().catch((err): { error: string } => ({
           error: err instanceof Error ? err.message : String(err),
-        }))),
+        })),
         // The workflow kernel's drain and floor (lib/workflow/kernel-floor.ts): the outbox floor
         // drain (workflow-state-kernel.md §10.3), the trunk breaker's recovery (§6.10, T26), the
         // reconciliation floor (§11), the S15 treadmill restart, the command ledger's pruning.
         // Each step isolated. Null when the control plane hosts them.
-        kernelHere ? t('kernel', () => runKernelFloor()) : Promise.resolve(null),
+        kernelHere ? runKernelFloor() : Promise.resolve(null),
         // Module backstops for lossy webhooks (e.g. merge readiness outcome
         // labels). Core only emits; modules.ts lists who reacts. Each
         // subscriber is isolated by emit().
-        t('hourlySubscribers', () => emit({ type: 'sweep.pr_hourly', at: new Date() })),
-      ] as const);
+        emit({ type: 'sweep.pr_hourly', at: new Date() }),
+      ] as const, { log }));
       // Held release tasks (lib/held-pr-tasks.ts): a release that could not land when its task
       // finished and whose PR event never came (CI already green, the control plane down, landed by
       // another path). Runs on both scopes: the hourly merge-state pass (which already wakes the
       // database every hour) and the daily full one. No wake window of its own; bounded per task. Isolated.
-      const held = await t('heldReleases', () => sweepHeldReleases().catch((err): { error: string } => ({
+      const [held] = await Promise.all(timedSteps('PrReconcile', ['heldReleases'], [sweepHeldReleases().catch((err): { error: string } => ({
         error: err instanceof Error ? err.message : String(err),
-      })));
+      }))] as const, { log }));
       return [steps, held] as const;
     });
     // Which step a slow run waited on, and how much of it was the control plane.

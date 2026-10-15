@@ -191,11 +191,29 @@ export function renderRunnerConsentPage(args: {
   action: string;
   error?: string | null;
 }): string {
+  const { userId, ...rest } = args;
+  return renderRunnerConsentHtml({ ...rest, csrfToken: createRunnerConsentToken(userId, args.flow) });
+}
+
+/**
+ * The page itself, given the form's consent token. The routes go through
+ * renderRunnerConsentPage, which mints the token for the signed-in person;
+ * the dev fixture (/app/dev/runner-consent) passes a placeholder, so it
+ * renders the same HTML with no session and no signing secret.
+ */
+export function renderRunnerConsentHtml(args: {
+  flow: RunnerConsentFlow;
+  csrfToken: string;
+  teams: ConsentTeam[];
+  state: ConsentState;
+  action: string;
+  error?: string | null;
+}): string {
   const wording = runnerWording(args.flow);
   return renderAccountConsentPage({
     clientName: wording.title,
     redirectHost: wording.returnsTo,
-    hidden: [...flowFields(args.flow), ['csrf_token', createRunnerConsentToken(args.userId, args.flow)]],
+    hidden: [...flowFields(args.flow), ['csrf_token', args.csrfToken]],
     teams: args.teams,
     state: args.state,
     requested: RUNNER_REQUESTED,

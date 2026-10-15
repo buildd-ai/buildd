@@ -19,6 +19,8 @@ let executeRows: unknown[] = [];
 const inserted: any[] = [];
 const notes: any[] = [];
 let existingTask: { id: string } | null = null;
+/** The status of the task a status-only read finds (an adopted reviewer). */
+let adoptedStatus: string | null = 'running';
 let missionRow: any = null;
 let ownerRow: any = { id: 'owner-1', title: 'Fix the thing', description: 'd', missionId: 'm1', pathManifest: ['a.ts'], backend: 'claude', context: {} };
 let reviewerResult: any = { structuredOutput: { verdict: 'request-changes', confidence: 0.9, summary: 's', feedback: 'check the caller task' } };
@@ -42,6 +44,7 @@ mock.module('@buildd/core/db', () => ({
           const cols = Object.keys(o?.columns ?? {});
           if (cols.length === 1 && cols[0] === 'result') return { result: reviewerResult };
           if (cols.length === 1 && cols[0] === 'id') return existingTask;
+          if (cols.length === 1 && cols[0] === 'status') return adoptedStatus === null ? null : { status: adoptedStatus };
           if (cols.length === 1 && cols[0] === 'missionId') return { missionId: ownerRow.missionId };
           return ownerRow;
         },
@@ -116,7 +119,7 @@ const reviewReq = (detail: Record<string, unknown> = {}, headSha = 'H2') => ({
 beforeEach(() => {
   executeRows = [];
   ingested.length = 0; executed.length = 0; inserted.length = 0; notes.length = 0;
-  existingTask = null; missionRow = null; livePr = { state: 'open', merged: false, headSha: 'H1', headRepoFullName: 'acme/w', baseRef: 'dev' };
+  existingTask = null; adoptedStatus = 'running'; missionRow = null; livePr = { state: 'open', merged: false, headSha: 'H1', headRepoFullName: 'acme/w', baseRef: 'dev' };
   roles = [{ slug: 'reviewer' }]; created = { id: 'reviewer-2' }; postResult = { posted: true };
   ghApi = (path) => { throw new Error(`no fake GitHub for ${path}`); }; workspaceReleaseConfig = null; ghCalls.length = 0;
   ownerRow = { id: 'owner-1', title: 'Fix the thing', description: 'd', missionId: 'm1', pathManifest: ['a.ts'], backend: 'claude', context: {} };
@@ -192,6 +195,13 @@ describe('reviewWork (Work, role review)', () => {
   test('a live reviewer another door filed for the head is adopted as the round\'s, not announced again', async () => {
     created = { id: 'reviewer-live', deduplicated: true };
     expect(await reviewWork(reviewReq() as any)).toEqual({ filed: { taskId: 'reviewer-live', created: false } });
+    expect(mockAppend).not.toHaveBeenCalled();
+  });
+
+  test('an adopted reviewer nobody has claimed yet is answered unclaimed, so the kernel wakes it', async () => {
+    created = { id: 'reviewer-orphan', deduplicated: true };
+    adoptedStatus = 'pending';
+    expect(await reviewWork(reviewReq() as any)).toEqual({ filed: { taskId: 'reviewer-orphan', created: false, unclaimed: true } });
     expect(mockAppend).not.toHaveBeenCalled();
   });
 });
