@@ -36,6 +36,7 @@
  *   revisions, gates and repair rounds: attempts and review runs are evidence
  *   inside their task's drawer, never cells or cards of their own.
  */
+import { CLAIM_ROW_BTN } from '@/components/tasks/ClaimTaskHint';
 import { displayTaskTitle } from '@/lib/task-title';
 import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
 import { SurfaceAuditWaiverTile } from './MissionSurfaceAuditWaiver';
@@ -349,6 +350,11 @@ export function StripTaskActions({ task: t, state, link, workspaceId, executor, 
             framed={false}
             taskTitle={t.title}
             onChanged={onChanged}
+            trailing={
+              <a href={taskSheetHref(link, t.id)} data-task-id={t.id} data-testid="landed-strip-drawer-open" className={CLAIM_ROW_BTN}>
+                Task →
+              </a>
+            }
           />
         )}
         {/* The audit has not started: a person may waive it here (and, on a
@@ -372,14 +378,17 @@ export function StripTaskActions({ task: t, state, link, workspaceId, executor, 
               {`PR #${t.pr.number} ↗`}
             </a>
           )}
-          <a
-            href={taskSheetHref(link, t.id)}
-            data-task-id={t.id}
-            data-testid="landed-strip-drawer-open"
-            className="inline-flex h-11 items-center justify-center border-[1.5px] border-border-strong px-3.5 font-mono text-body font-semibold text-text-primary hover:bg-surface-3"
-          >
-            Task →
-          </a>
+          {/* An open task's Task link rides in the action zone's row (R-39). */}
+          {landed && (
+            <a
+              href={taskSheetHref(link, t.id)}
+              data-task-id={t.id}
+              data-testid="landed-strip-drawer-open"
+              className="inline-flex h-11 items-center justify-center border-[1.5px] border-border-strong px-3.5 font-mono text-body font-semibold text-text-primary hover:bg-surface-3"
+            >
+              Task →
+            </a>
+          )}
         </div>
       </div>
   );

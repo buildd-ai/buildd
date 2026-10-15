@@ -1,7 +1,7 @@
 import { db } from '@buildd/core/db';
 import { after } from 'next/server';
 import { loadBuildEstimateRows } from '@/lib/mission-build-estimates';
-import { missions, workspaces, workspaceSkills, missionNotes, workers, tasks, initiatives, artifacts, orchestrationManifestPredictions, specs } from '@buildd/core/db/schema';
+import { missions, workspaces, workspaceSkills, missionNotes, workers, tasks, initiatives, artifacts, orchestrationManifestPredictions, specs, users } from '@buildd/core/db/schema';
 import { eq, and, or, inArray, desc, isNotNull, isNull, ne } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
@@ -73,7 +73,9 @@ import { MissionVisualReviewProvider } from './MissionVisualReview';
 import { MissionSurfaceAuditWaiverProvider } from './MissionSurfaceAuditWaiver';
 import { loadSurfaceAuditWaiver } from '@/lib/mission-surface-audit-gate';
 import MissionVisualReviewSetting from './MissionVisualReviewSetting';
-import MissionBranchPanel, { branchPanelHasAction } from './MissionBranchPanel';
+import MissionBranchPanel from './MissionBranchPanel';
+import { branchPanelHasAction } from '@/lib/mission-branch-panel';
+import { waiverActorEmails, waiverActorName } from '@/lib/mission-checks';
 import MissionVisualRecord from './MissionVisualRecord';
 import { getMissionVisualReviewState } from '@/lib/workflow/visual-review-state-load';
 import { presentVisualReview } from '@/lib/workflow/visual-review-presentation';
@@ -706,6 +708,17 @@ export default async function MissionDetailPage({
       return [];
     }),
   ]);
+  // A waiver's actor reads as "You" or the person's name, never a raw email.
+  const waiverLabels = [surfaceAuditWaiver?.actorLabel, visualReviewState?.waiver?.actorLabel];
+  const waiverEmails = waiverActorEmails(waiverLabels);
+  const waiverNames: Record<string, string> = waiverEmails.length > 0
+    ? Object.fromEntries((await db.select({ email: users.email, name: users.name }).from(users)
+        .where(inArray(users.email, [...new Set([...waiverEmails, ...waiverLabels.filter((l): l is string => !!l)])]))
+        .catch(() => [] as { email: string; name: string | null }[]))
+        .flatMap(r => (r.name ? [[r.email.toLowerCase(), r.name]] : [])))
+    : {};
+  if (surfaceAuditWaiver) surfaceAuditWaiver.actorLabel = waiverActorName(surfaceAuditWaiver.actorLabel, user?.email, waiverNames);
+  if (visualReviewState?.waiver) visualReviewState.waiver.actorLabel = waiverActorName(visualReviewState.waiver.actorLabel, user?.email, waiverNames);
   const shippedView = mission.status === 'completed'
     ? buildShippedHeaderView((shippedRow?.metadata as { shipped?: unknown } | null)?.shipped, (mission as any).completedAt)
     : null;

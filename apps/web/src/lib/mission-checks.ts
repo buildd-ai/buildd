@@ -332,6 +332,28 @@ export function missionChecks(input: MissionChecksInput): MissionChecks {
   return { rows, rail: [buildStep, verifyStep, deliverStep], buildComplete, delivered: deliverDone, checkpoint };
 }
 
+// ── Who skipped it ───────────────────────────────────────────────────────────
+
+const EMAIL = /^[^\s@]+@[^\s@]+$/;
+
+/**
+ * A waiver's actor as people read it: "You" for the viewer, else the
+ * person's display name. A stored email is never shown raw; with no name on
+ * file it falls back to the part before the @. Other labels pass through.
+ */
+export function waiverActorName(label: string | null, viewerEmail: string | null | undefined, names: Readonly<Record<string, string>>): string | null {
+  if (!label) return null;
+  if (!EMAIL.test(label)) return label;
+  const key = label.toLowerCase();
+  if (viewerEmail && viewerEmail.toLowerCase() === key) return 'You';
+  return names[key] ?? label.slice(0, label.indexOf('@'));
+}
+
+/** The emails among waiver actor labels, lowercased, for one name lookup. */
+export function waiverActorEmails(labels: readonly (string | null | undefined)[]): string[] {
+  return [...new Set(labels.filter((l): l is string => !!l && EMAIL.test(l)).map(l => l.toLowerCase()))];
+}
+
 // ── The selected outcome spec, as one line (R-40) ────────────────────────────
 
 export interface OutcomeSpecLine { specId: string; title: string; revision: string; status: string; href: string }
@@ -349,7 +371,7 @@ export function outcomeSpecLines(criteria: readonly GoalCriterion[], rows: reado
     out.push({
       specId: c.specId,
       title: titles[c.specId] ?? 'Outcome spec',
-      revision: `revision ${c.revision}${c.provisional ? ', proposed' : ''}`,
+      revision: `rev ${c.revision}${c.provisional ? ', proposed' : ''}`,
       status: row?.state ?? 'not checked',
       href: `/app/specs/${c.specId}`,
     });

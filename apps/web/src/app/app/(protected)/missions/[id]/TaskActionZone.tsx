@@ -16,14 +16,14 @@
  * Self-contained: it owns the in-flight action and its error, and calls
  * `onChanged` after a successful action so the host can refetch.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import TaskQuestion from '@/components/tasks/TaskQuestion';
 import type { QuestionNoteLike } from '@/app/app/(protected)/tasks/[id]/question-hero';
 import AnswerRecorded from '@/components/AnswerRecorded';
 import { useAnswerSubmit } from '@/app/app/(protected)/tasks/[id]/respond/use-answer-submit';
 import Spinner from '@/components/Spinner';
-import ClaimTaskHint from '@/components/tasks/ClaimTaskHint';
+import ClaimTaskHint, { CLAIM_ROW_BTN } from '@/components/tasks/ClaimTaskHint';
 import RunnerPicker from '@/components/tasks/RunnerPicker';
 import Disclosure from '@/components/ui/Disclosure';
 import type { TaskFailureKind } from '@/lib/task-failure-kind';
@@ -114,6 +114,12 @@ export interface TaskActionZoneProps {
    * drop their own boxes.
    */
   framed?: boolean;
+  /**
+   * A way into the task (the strip's Task link). It joins the Run now row, at
+   * that row's button size, so a local task's actions read as one row (R-39);
+   * with no Run now row it closes the zone on its own row.
+   */
+  trailing?: ReactNode;
 }
 
 const SECONDARY_BTN = 'inline-flex min-h-11 items-center justify-center gap-1.5 border-2 border-border-strong px-3 font-mono text-meta font-medium text-text-primary hover:bg-surface-3 disabled:opacity-50';
@@ -140,6 +146,7 @@ export default function TaskActionZone({
   taskTitle = null,
   onChanged,
   framed = true,
+  trailing = null,
 }: TaskActionZoneProps) {
   const displayTz = useDisplayTimezone();
   const [retrying, setRetrying] = useState<'same' | 'switch' | null>(null);
@@ -385,19 +392,26 @@ export default function TaskActionZone({
               ? 'Ready to start. Claim it from a local session.'
               : 'Waiting for a runner to claim it.'}
           </p>}
-          {has('claim_hint') && <ClaimTaskHint taskId={taskId} />}
           {runnerPicker && workspaceId && (
             <RunnerPicker workspaceId={workspaceId} value={target} onChange={setTarget} disabled={starting} />
           )}
-          <button
-            type="button"
-            data-action="run_now"
-            onClick={() => start.start({ targetLocalUiUrl: target || undefined })}
-            disabled={starting}
-            className={local ? SECONDARY_BTN : 'btn btn-primary min-h-11 shrink-0'}
-          >
-            {start.pending === 'start' ? 'Starting…' : 'Run now'}
-          </button>
+          {(() => {
+            const runNow = (
+              <button
+                type="button"
+                data-action="run_now"
+                onClick={() => start.start({ targetLocalUiUrl: target || undefined })}
+                disabled={starting}
+                className={local ? CLAIM_ROW_BTN : 'btn btn-primary min-h-11 shrink-0 md:min-h-9'}
+              >
+                {start.pending === 'start' ? 'Starting…' : 'Run now'}
+              </button>
+            );
+            // A local task: Copy, Run now and Task are one row at one size (R-39).
+            return has('claim_hint')
+              ? <ClaimTaskHint taskId={taskId} actions={<>{runNow}{trailing}</>} />
+              : <div className="flex flex-wrap items-center gap-2">{runNow}{trailing}</div>;
+          })()}
         </div>
       )}
 
@@ -526,6 +540,8 @@ export default function TaskActionZone({
           </div>
         </div>
       )}
+
+      {!showRunNow && trailing && <div className="flex flex-wrap items-center gap-2">{trailing}</div>}
 
       {start.status === 'failed' && start.error && (
         <div className="flex flex-wrap items-center gap-2">

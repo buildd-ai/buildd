@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import type { GoalCriteriaState, GoalCriterion } from '@buildd/shared';
 import { criterionFingerprint } from '@buildd/core/mission-helpers';
-import { buildEstimate, criteriaChecks, missionChecks, outcomeSpecLines, missionPrCheck, releaseCheck, visualCheck, type MissionChecksInput } from './mission-checks';
+import { buildEstimate, criteriaChecks, missionChecks, outcomeSpecLines, waiverActorEmails, waiverActorName, missionPrCheck, releaseCheck, visualCheck, type MissionChecksInput } from './mission-checks';
 import type { MissionVisualReviewState } from './workflow/visual-review-state';
 import { planMissions, type PlanTask } from './mission-plan';
 
@@ -363,12 +363,26 @@ describe('outcomeSpecLines (spec f7f67f1a R-40)', () => {
   it('one line per selected spec: title, pinned revision, the Verify row\'s status and a link', () => {
     const { rows } = missionChecks(input({ criteria: [unitTests, spec] }));
     const lines = outcomeSpecLines([unitTests, spec], rows, { 'spec-1': 'Mission Overview' });
-    expect(lines).toEqual([{ specId: 'spec-1', title: 'Mission Overview', revision: 'revision 8', status: rows.find(r => r.key === 'criterion-1')!.state, href: '/app/specs/spec-1' }]);
+    expect(lines).toEqual([{ specId: 'spec-1', title: 'Mission Overview', revision: 'rev 8', status: rows.find(r => r.key === 'criterion-1')!.state, href: '/app/specs/spec-1' }]);
   });
 
   it('no selected spec, no line; an unreadable title still names the revision', () => {
     expect(outcomeSpecLines([unitTests], [], {})).toEqual([]);
     const [line] = outcomeSpecLines([{ ...spec, provisional: true } as GoalCriterion], [], {});
-    expect(line).toMatchObject({ title: 'Outcome spec', revision: 'revision 8, proposed', status: 'not checked' });
+    expect(line).toMatchObject({ title: 'Outcome spec', revision: 'rev 8, proposed', status: 'not checked' });
+  });
+});
+
+describe('waiverActorName: a skip never shows a raw email (visual review round 1)', () => {
+  it('the viewer reads "You"; another person reads their display name; with no name, the part before the @', () => {
+    expect(waiverActorName('Maya@Example.test', 'maya@example.test', {})).toBe('You');
+    expect(waiverActorName('maya@example.test', 'sam@example.test', { 'maya@example.test': 'Maya Ortiz' })).toBe('Maya Ortiz');
+    expect(waiverActorName('maya@example.test', null, {})).toBe('maya');
+  });
+
+  it('a non-email label passes through; null stays null', () => {
+    expect(waiverActorName('surface audit round cap (3)', 'a@b.c', {})).toBe('surface audit round cap (3)');
+    expect(waiverActorName(null, 'a@b.c', {})).toBeNull();
+    expect(waiverActorEmails(['A@b.c', 'a@b.c', 'label', null])).toEqual(['a@b.c']);
   });
 });

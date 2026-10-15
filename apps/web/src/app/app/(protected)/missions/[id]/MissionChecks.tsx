@@ -34,7 +34,8 @@ const RAIL_BAR: Record<RailStep['state'], string> = {
   done: 'bg-status-success',
   now: 'bg-status-running',
   part: 'bg-[linear-gradient(90deg,var(--status-success)_0_50%,var(--border-strong)_50%)]',
-  held: 'bg-status-error',
+  // Held is dashed as well as red, so in greyscale it never reads as the active stage.
+  held: 'bg-[repeating-linear-gradient(90deg,var(--status-error)_0_6px,transparent_6px_10px)]',
   todo: 'bg-border-strong',
 };
 
@@ -59,10 +60,11 @@ export function OutcomeSpecLines({ lines }: { lines: readonly OutcomeSpecLine[] 
   return (
     <ul data-testid="mission-outcome-spec" aria-label="Outcome spec" className="flex flex-col gap-1">
       {lines.map(l => (
-        <li key={l.specId} className="flex min-w-0 flex-wrap items-baseline gap-x-2 text-body">
-          <span className="text-text-muted">Spec</span>
-          <a href={l.href} className="min-w-0 font-medium text-text-primary underline-offset-4 hover:underline [overflow-wrap:anywhere]">{l.title}</a>
-          <span className="font-mono text-meta text-text-muted">{l.revision} · {l.status}</span>
+        // One line at every width: the title truncates, the revision and status never wrap.
+        <li key={l.specId} data-testid="mission-outcome-spec-line" className="flex min-w-0 items-baseline gap-x-2 whitespace-nowrap text-body">
+          <span className="shrink-0 text-text-muted">Spec</span>
+          <a href={l.href} title={l.title} className="min-w-0 truncate font-medium text-text-primary underline-offset-4 hover:underline">{l.title}</a>
+          <span className="shrink-0 font-mono text-meta text-text-muted">{l.revision} · {l.status}</span>
         </li>
       ))}
     </ul>

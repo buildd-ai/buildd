@@ -15,6 +15,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { requestMissionVisualReview } from '@/lib/mission-visual-review-request';
 import type { VisualReviewPresentation, VisualReviewTone } from '@/lib/workflow/visual-review-presentation';
+import { branchPanelFacts } from '@/lib/mission-branch-panel';
 
 const TONE_TEXT: Record<VisualReviewTone, string> = {
   neutral: 'text-text-secondary',
@@ -33,27 +34,6 @@ export interface MissionBranchPanelProps {
   /** Where the preview setup lives, for a workspace-owned problem. */
   workspaceSettingsHref?: string | null;
   readonly?: boolean;
-}
-
-/**
- * The branch, PR and commit line. A base branch alone says nothing the row
- * above it does not, so it is never a line on its own (spec f7f67f1a R-37).
- */
-export function branchPanelFacts(p: VisualReviewPresentation): string {
-  const { branch } = p;
-  const pr = branch.integrationPr ? `PR #${branch.integrationPr.number}` : null;
-  const sha = branch.headSha ? branch.headSha.slice(0, 7) : null;
-  if (!pr && !sha) return '';
-  return [branch.base ? `into ${branch.base}` : null, pr, sha].filter(Boolean).join(' · ');
-}
-
-/**
- * Whether the panel has something of its own to offer: a person's action or
- * the problem report. Without one, its state line repeats the Screens row and
- * the checks, so the mission footer leaves it out (R-37).
- */
-export function branchPanelHasAction(p: VisualReviewPresentation, readonly = false): boolean {
-  return p.showPanel && !readonly && (!!p.owner || !!p.report);
 }
 
 export default function MissionBranchPanel({ missionId, presentation: p, prUrl = null, workspaceSettingsHref = null, readonly = false }: MissionBranchPanelProps) {

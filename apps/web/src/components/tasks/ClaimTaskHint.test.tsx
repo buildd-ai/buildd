@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import ClaimTaskHint from './ClaimTaskHint';
+import ClaimTaskHint, { CLAIM_ROW_BTN } from './ClaimTaskHint';
 
 // Spec f7f67f1a R-39, AC-20: the card prints the short id; Copy is secondary.
 describe('ClaimTaskHint', () => {
@@ -17,5 +17,12 @@ describe('ClaimTaskHint', () => {
     const button = html.match(/<button[^>]*data-testid="claim-task-copy"[^>]*>/)![0];
     expect(button).toContain('class="btn ');
     expect(button).not.toMatch(/bg-primary|btn-primary|text-white/);
+  });
+
+  it('Run now and Task join Copy in one row, at one button size', () => {
+    const row = renderToStaticMarkup(<ClaimTaskHint taskId={id} actions={<><button className={CLAIM_ROW_BTN}>Run now</button><a className={CLAIM_ROW_BTN}>Task →</a></>} />);
+    const actions = row.slice(row.indexOf('data-testid="claim-task-actions"'));
+    expect(actions.match(/class="btn min-h-11 md:min-h-9"/g)).toHaveLength(3);
+    expect(actions).toContain('flex-wrap items-center');
   });
 });

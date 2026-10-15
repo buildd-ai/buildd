@@ -16,7 +16,8 @@ mock.module('next/navigation', () => ({
 
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
-const { default: MissionBranchPanel, branchPanelFacts, branchPanelHasAction } = await import('./MissionBranchPanel');
+const { default: MissionBranchPanel } = await import('./MissionBranchPanel');
+const { branchPanelFacts, branchPanelHasAction } = await import('@/lib/mission-branch-panel');
 const { resolveVisualReviewPolicy } = await import('@/lib/workflow/visual-review-policy');
 const { deriveMissionVisualReview } = await import('@/lib/workflow/visual-review-state');
 const { presentVisualReview } = await import('@/lib/workflow/visual-review-presentation');

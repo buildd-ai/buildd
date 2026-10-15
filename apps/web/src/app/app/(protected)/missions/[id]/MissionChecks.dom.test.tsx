@@ -22,7 +22,7 @@ mock.module('next/navigation', () => ({
 
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
-const { ChecksCard, CheckRail } = await import('./MissionChecks');
+const { ChecksCard, CheckRail, OutcomeSpecLines } = await import('./MissionChecks');
 const { MissionSurfaceAuditWaiverProvider } = await import('./MissionSurfaceAuditWaiver');
 import type { CheckRow } from '@/lib/mission-checks';
 
@@ -122,5 +122,27 @@ describe('the stage rail (R-35, AC-18)', () => {
     expect(bars[1]).toContain('h-[6px]');
     expect(bars[0]).toContain('h-[3px]');
     expect(bars.join(' ')).not.toContain('bg-text-primary');
+  });
+
+  it('held is dashed, so it differs from the active stage by shape, not only hue', () => {
+    act(() => root.render(<CheckRail steps={[
+      { key: 'build', label: 'Build', state: 'done', text: '5 of 5' },
+      { key: 'verify', label: 'Verify', state: 'held', text: 'unable to run' },
+      { key: 'deliver', label: 'Deliver', state: 'now', text: 'merging' },
+    ]} />));
+    const [, held, now] = Array.from(document.querySelectorAll('[data-testid="mission-check-rail-bar"]')).map(b => b.className);
+    expect(held).toContain('repeating-linear-gradient');
+    expect(now).not.toContain('repeating-linear-gradient');
+  });
+});
+
+describe('the outcome spec line (R-40)', () => {
+  it('stays on one line: the title truncates, the revision and status never wrap', () => {
+    act(() => root.render(<OutcomeSpecLines lines={[{ specId: 's1', title: 'Mission Overview: progress waves, verification handoff and honest delivery', revision: 'rev 8', status: 'not checked', href: '/app/specs/s1' }]} />));
+    const li = q('[data-testid="mission-outcome-spec-line"]')!;
+    expect(li.className).toContain('whitespace-nowrap');
+    expect(li.className).not.toContain('flex-wrap');
+    expect(li.querySelector('a')!.className).toContain('truncate');
+    expect(li.querySelector('a')!.getAttribute('href')).toBe('/app/specs/s1');
   });
 });
