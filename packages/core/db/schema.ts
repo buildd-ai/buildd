@@ -5647,6 +5647,12 @@ export const workflowMissionEpochs = pgTable('workflow_mission_epochs', {
   settlement: jsonb('settlement').$type<Record<string, unknown>>(),
   settledAt: timestamp('settled_at', { withTimezone: true }),
   retiredAt: timestamp('retired_at', { withTimezone: true }),
+  // PRs GitHub moved off this epoch's branch (the retarget webhook's `from`):
+  // the only trunk-based PRs settlement may touch.
+  movedPrs: integer('moved_prs').array().default(sql`'{}'::integer[]`).notNull(),
+  // Single-flight settlement of this epoch's branch (one caller reads and acts on its PRs at a time).
+  settleLeaseToken: text('settle_lease_token'),
+  settleLeaseUntil: timestamp('settle_lease_until', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({

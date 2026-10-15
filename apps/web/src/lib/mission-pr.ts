@@ -1225,18 +1225,18 @@ function nameHolders(labels: string[]): string {
 export async function guardMissionPrMerge(
   task: { id?: string | null; title?: string | null; taskClass?: string | null; missionId?: string | null; context?: unknown } | null | undefined,
 ): Promise<MissionPrMergeGate> {
-  // A refresh PR lands on the branch it was filed for, which must still be the
-  // mission's writable delivery, or nowhere (a11abc4b R-3, AC-5): every merge
-  // door asks this, so a refresh retargeted to trunk never ships implicitly.
+  // A PR lands only where its work can still reach trunk (a11abc4b R-3, AC-5;
+  // workflow-kernel-library §6): a refresh on the delivery it was filed for, and
+  // no task PR on a delivery branch that already shipped. Every merge door asks this.
   // An unreadable answer adds no hold: every other rail still applies, and this
   // one did not exist before delivery records (it is logged, never silent).
-  const refreshHold = task && !isMissionPrTask(task)
-    ? await refreshTargetHold(task).catch((err) => {
-        console.warn('[mission-pr] refresh target identity unreadable:', err instanceof Error ? err.message : err);
+  const targetHold = task && !isMissionPrTask(task)
+    ? await deliveryTargetHold(task).catch((err) => {
+        console.warn('[mission-pr] delivery target unreadable:', err instanceof Error ? err.message : err);
         return null;
       })
     : null;
-  if (refreshHold) return { blocks: true, reason: refreshHold, codes: ['refresh_target_mismatch'], nextActor: 'owner' };
+  if (targetHold) return { blocks: true, reason: targetHold.reason, codes: [targetHold.code], nextActor: targetHold.code === 'delivery_shipped' ? 'system' : 'owner' };
   if (!task || !isMissionPrTask(task) || !task.missionId) return { blocks: false };
   const work = await evaluateMissionWorkState(task.missionId);
 
@@ -1286,37 +1286,55 @@ export async function guardMissionPrMerge(
 }
 
 /**
- * Why a refresh PR may not merge, or null. A refresh (`integrationRefreshOf`)
- * exists to merge trunk into ONE branch, the delivery it was filed for
- * (`context.baseBranch`). It may land only there, and only while that branch
- * is still the mission's writable delivery. GitHub retargets a PR to trunk
- * when its base is deleted on merge, so the recorded base is read too.
+ * Why this task's PR may not merge because of where it is based, or null.
+ *
+ *  - A refresh (`integrationRefreshOf`) exists to merge trunk into ONE branch,
+ *    the delivery it was filed for (`context.baseBranch`). It may land only
+ *    there, and only while that branch is still the writable delivery's.
+ *    GitHub retargets a PR to trunk when its base is deleted on merge, so the
+ *    recorded base is read too (`refresh_target_mismatch`).
+ *  - Any task PR based on a delivery branch that already reached trunk: its
+ *    work would merge into a branch nothing will ship again. Settlement moves
+ *    it to the current delivery; until then no door merges it (`delivery_shipped`).
  */
-async function refreshTargetHold(
+async function deliveryTargetHold(
   task: { id?: string | null; missionId?: string | null; context?: unknown } | null | undefined,
-): Promise<string | null> {
+): Promise<{ code: 'refresh_target_mismatch' | 'delivery_shipped'; reason: string } | null> {
   if (!task?.id || !task.missionId) return null;
-  let context = task.context;
-  if (context === undefined) {
-    context = (await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, task.id)), columns: { context: true } }))?.context;
-  }
-  const { integrationRefreshOf } = await import('@/lib/integration-refresh');
-  if (!integrationRefreshOf(context)) return null;
-  const filedFor = (context as Record<string, unknown>).baseBranch;
-  if (typeof filedFor !== 'string' || !filedFor) return null;
   const rows = ((await db.query.workers.findMany({
     where: sqlWhere(and(eq(workers.taskId, task.id), isNotNull(workers.prNumber))),
     columns: { prBaseRef: true, startedAt: true, createdAt: true, taskId: true, prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true },
   })) ?? []) as WorkerRow[];
   const prBase = latestWorkerByTask(rows).get(task.id)?.prBaseRef ?? null;
-  if (prBase && prBase !== filedFor) {
-    return `This refresh PR now targets \`${prBase}\`, not the mission branch it was filed for (\`${filedFor}\`). `
-      + `A refresh only ever lands on that branch; close it, or retarget it there if that delivery is still open.`;
-  }
-  const { missionEpochsOf, writableEpoch } = await import('@/lib/workflow/delivery-ship');
+  const { missionEpochsOf, writableEpoch, shippedEpochOf } = await import('@/lib/workflow/delivery-ship');
   const epochs = await missionEpochsOf(task.missionId);
-  if (epochs.length > 0 && writableEpoch({ epochs })?.branch !== filedFor) {
-    return `The delivery this refresh was for (\`${filedFor}\`) already shipped, so there is nothing left for it to refresh. Close it.`;
+
+  let context = task.context;
+  if (context === undefined) {
+    context = (await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, task.id)), columns: { context: true } }))?.context;
+  }
+  const { integrationRefreshOf } = await import('@/lib/integration-refresh');
+  const filedFor = integrationRefreshOf(context) ? (context as Record<string, unknown>).baseBranch : null;
+  if (typeof filedFor === 'string' && filedFor) {
+    if (prBase && prBase !== filedFor) {
+      return {
+        code: 'refresh_target_mismatch',
+        reason: `This refresh PR now targets \`${prBase}\`, not the mission branch it was filed for (\`${filedFor}\`). `
+          + `A refresh only ever lands on that branch; close it, or retarget it there if that delivery is still open.`,
+      };
+    }
+    if (epochs.length > 0 && writableEpoch({ epochs })?.branch !== filedFor) {
+      return { code: 'refresh_target_mismatch', reason: `The delivery this refresh was for (\`${filedFor}\`) already shipped, so there is nothing left for it to refresh. Close it.` };
+    }
+  }
+  const shipped = epochs.length > 0 ? shippedEpochOf({ epochs }, prBase) : null;
+  if (shipped) {
+    const current = writableEpoch({ epochs });
+    return {
+      code: 'delivery_shipped',
+      reason: `This PR is based on delivery ${shipped.epoch}'s branch (\`${shipped.branch}\`), which already reached trunk, so merging it there would ship nothing. `
+        + (current ? `buildd moves it to delivery ${current.epoch} (\`${current.branch}\`); merge it there.` : `Close it, or file the work again so it goes out in a new delivery.`),
+    };
   }
   return null;
 }

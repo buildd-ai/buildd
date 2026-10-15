@@ -19,6 +19,9 @@ CREATE TABLE "workflow_mission_epochs" (
 	"settlement" jsonb,
 	"settled_at" timestamp with time zone,
 	"retired_at" timestamp with time zone,
+	"moved_prs" integer[] DEFAULT '{}'::integer[] NOT NULL,
+	"settle_lease_token" text,
+	"settle_lease_until" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );

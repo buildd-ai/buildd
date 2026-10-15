@@ -683,8 +683,11 @@ later work and nothing refreshes or re-ships a branch that already landed.
   successor from the merge commit, as one transition. A merged epoch is terminal
   and immutable (branch, PR, merge commit, merged head, timestamps, the scope
   version it carried); the mission is not. A successor gets a name no epoch used
-  (`<branch>-delivery-<n>`), so GitHub's delete-branch-on-merge of a merged
-  branch can never take later work with it.
+  (`<branch>-delivery-<n>`, from epoch 1's name exactly, never stripped), so
+  GitHub's delete-branch-on-merge of a merged branch can never take later work
+  with it. A transition that moves `missions.workingBranch` applies only while
+  the mission still names the branch it read; otherwise nothing is written and
+  it is re-read.
 - Work filed or a task PR opened after the newest epoch merged with nothing left
   (`EnsureWritable`): the kernel cuts one successor from trunk's head. A
   completed or archived mission is never given one.
@@ -694,6 +697,10 @@ later work and nothing refreshes or re-ships a branch that already landed.
   through the reducer, by the merge's own door, the kernel's `finalize_mission_pr`
   effect, or the hourly reconcile, whichever comes first; a crash between a step
   and its record redoes the step.
+  Each delivery's steps run independently, so a held delivery blocks only
+  itself. The hourly reconcile adopts a mission with no delivery rows, so a
+  merge whose record failed is retried (a mission PR merged in the last 48
+  hours is adopted as the merge being recorded).
 - The doors: every mission-PR merge door and the merge webhook record the merge
   through `kernel-client` (`mission_epoch`, action `merged`); the branch is no
   longer deleted at merge (`finalizeMissionPrMerge`). A task filed into the
@@ -721,7 +728,9 @@ later work and nothing refreshes or re-ships a branch that already landed.
   trunk head). If it finds the branch already contains trunk it completes as
   a verified no-op with the ancestry as evidence, no PR required.
 - Before an epoch's branch is deleted, the kernel settles every open PR still on
-  it and every mission task PR GitHub moved to trunk when it deleted the branch
+  it and every PR recorded as moved off it by a retarget (`movedPrs`, from the
+  `pull_request.edited` webhook), one settlement per branch at a time (a
+  lease), each content probe on a scratch ref of its own
   (`classifySettlement`, task a11abc4b): proven redundant (its head is in the
   merge commit, or a scratch test merge leaves the tree unchanged) is closed
   with the epoch PR recorded on its delivery; task work is retargeted to the
@@ -729,8 +738,10 @@ later work and nothing refreshes or re-ships a branch that already landed.
   branch and asks a person once. The branch retires only when nothing is held
   and a fresh read shows nothing open on it.
 - Mission completion reads delivery and epoch state, never `workers.mergedAt`:
-  it is held while the writable epoch carries landed work that has not reached
-  trunk (`epochCompletionHold`), then the mission's criteria decide.
+  it is held while a shipped delivery's branch still has PRs to settle, or the
+  writable epoch carries landed work that has not reached trunk
+  (`epochCompletionHold`), then the mission's criteria decide. No merge door
+  lands a task PR on a shipped delivery's branch (`delivery_shipped`).
 
 **Acceptance criteria**:
 - AC-20: GIVEN a mission whose epoch 1 merges while tasks remain WHEN the merge

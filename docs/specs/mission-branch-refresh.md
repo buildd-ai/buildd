@@ -464,9 +464,11 @@ ancestry. This spec is the authority on both.
 > Folded in from Living Spec amendment `mission-refresh-settlement-spec` (task `a11abc4b`, the #4663 / #4670 regression). Implemented by the kernel's mission delivery steps (`apps/web/src/lib/workflow/delivery-epochs.ts`, the package's `classifySettlement` and `pendingEpochSteps`).
 
 A merged delivery's branch is not deleted when its PR merges. The kernel first
-settles every PR still based on it, plus every mission task PR GitHub moved to
-trunk when it deleted the branch on merge (delete-branch-on-merge retargets a
-deleted base's open PRs to that PR's base). Each is classified from a fresh read:
+settles every PR still based on it, plus every PR recorded as moved off it
+(delete-branch-on-merge retargets a deleted base's open PRs to that PR's base;
+the `pull_request.edited` webhook's `from` is recorded on the delivery,
+`movedPrs`). A PR that was always on trunk, or that belongs to another repo, is
+never touched. Each is classified from a fresh read:
 
 | Read | Task PR | Refresh PR |
 | --- | --- | --- |
@@ -474,8 +476,26 @@ deleted base's open PRs to that PR's base). Each is classified from a fresh read
 | It carries work of its own | moved onto the successor delivery, never left on trunk | held: kept open, never closed or retargeted automatically, a person decides |
 | The read failed, or GitHub refused the close or retarget | held, retried on the next pass | held |
 
-The test merge runs on a scratch ref (`buildd-settle/…`) that is deleted in the
-same step, never on a branch anything else reads.
+The test merge runs on a scratch ref of its own (`buildd-settle/…-<random>`;
+a name already taken is unknown, never reused) that is deleted in the same step.
+Only a merge commit whose parents are exactly the merge commit and the PR head
+is read; GitHub's "nothing to merge" is unknown, never "contained" (ancestry
+already answered no). One caller settles a delivery's branch at a time
+(`settle_lease_*` on the delivery row): both the merge door and the merge
+webhook run settlement, and two interleaved settlements must never act on the
+same PRs.
+
+Each delivery's steps are independent: a delivery held for a person, or one
+whose read failed, blocks only its own retirement, never a later delivery's
+settlement. An adopted re-cut that merges again shares its branch with the
+earlier delivery record; the later delivery owns that branch's settlement and
+retirement.
+
+A PR moved onto the successor of a squash-merged delivery shows the earlier
+delivery's changes in its diff until it is rebased onto the successor, because
+the squash left no ancestry. Its content is unchanged; a reviewer reads the
+effective delta against trunk (`integration-refresh.ts`), not the PR's file
+list.
 
 **Invariants**:
 - R-1. A refresh whose trunk sha the branch already contains completes without a
@@ -489,7 +509,10 @@ same step, never on a branch anything else reads.
 - R-3. A refresh PR lands only on the branch it was filed for, and only while that
   branch is the writable delivery's. Every merge door asks this through
   `guardMissionPrMerge` (`refresh_target_mismatch`): a refresh retargeted to
-  trunk is never merged as an implicit mission-shipping PR.
+  trunk is never merged as an implicit mission-shipping PR. No task PR merges
+  into a delivery branch that already shipped (`delivery_shipped`): its work
+  would reach nothing. Settlement moves it to the current delivery, and
+  completion is held while a shipped delivery's branch still has PRs to settle.
 - R-4. Shipping, settlement and retirement are ordered and recoverable: each is a
   step derived from the delivery rows (`pendingEpochSteps`), recorded through the
   reducer after it succeeds, so a replayed webhook, a concurrent landing or a

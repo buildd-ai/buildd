@@ -86,7 +86,7 @@ class FakeGithub {
       const sha = `merge-${++this.seq}`;
       this.commit(sha, [base, head], this.sameTree.has(head) ? this.trees.get(base) : `tree-${sha}`);
       this.refs.set(body.base, sha);
-      return { sha, commit: { tree: { sha: this.trees.get(sha) } } };
+      return { sha, parents: [{ sha: base }, { sha: head }], commit: { tree: { sha: this.trees.get(sha) } } };
     }
     if ((m = /^\/pulls\?(.*)$/.exec(p))) {
       const params = new URLSearchParams(m[1]);
@@ -130,7 +130,6 @@ let missionId: string;
 let workspaceId: string;
 let work = { unfinishedTasks: 1, openTaskPrs: 0 };
 let refreshPrs = new Set<number>();
-let taskPrs: Array<{ prNumber: number; recordedBase: string | null; refresh: boolean }> = [];
 let superseded: Array<{ prNumber: number; satisfiedBy: number }> = [];
 let notes: string[] = [];
 
@@ -140,7 +139,6 @@ const deps = (): Deps => ({
   legacyPrOf: async () => null,
   repoOf: async () => ({ workspaceId, installationId: 1, repoFullName: REPO, trunk: TRUNK }),
   refreshPrsOf: async () => refreshPrs,
-  missionTaskPrsOf: async () => taskPrs,
   recordSupersession: async (p) => { superseded.push({ prNumber: p.prNumber, satisfiedBy: p.satisfiedBy.prNumber }); },
   noteHeld: async (_m, title) => { notes.push(title); },
   obsoleteRefreshTasksOf: async () => [],
@@ -175,7 +173,6 @@ beforeEach(async () => {
   gh = new FakeGithub();
   work = { unfinishedTasks: 1, openTaskPrs: 0 };
   refreshPrs = new Set();
-  taskPrs = [];
   superseded = [];
   notes = [];
   const ws = await seedWorkspace();
@@ -234,10 +231,11 @@ describe('scenario 2: GitHub deletes the branch on merge and moves its PRs to tr
     await inFlight();
     gh.commit('w11', ['b1']);
     gh.prs.set(11, { number: 11, state: 'open', base: ROOT, headSha: 'w11', headRef: 'buildd/task-11' });
-    taskPrs = [{ prNumber: 11, recordedBase: ROOT, refresh: false }];
     work = { unfinishedTasks: 0, openTaskPrs: 1 };
     const m = gh.mergeEpochPr(10, { deleteBranch: true });
     expect(gh.prs.get(11)!.base).toBe(TRUNK);
+    // The retarget webhook (from = the delivery branch) records the move.
+    await epochs.applyMissionEpochCommand(missionId, { type: 'PrMovedOff', actor: 'test', at: '2026-10-14T12:00:00.000Z', branch: ROOT, prNumber: 11 }, deps());
 
     await epochs.epochMerged(mergedInput(m), deps());
     expect(gh.prs.get(11)!.base).toBe(`${ROOT}-delivery-2`);
@@ -245,6 +243,96 @@ describe('scenario 2: GitHub deletes the branch on merge and moves its PRs to tr
     const [e1] = await epochRows();
     expect(e1!.settlement?.settled?.map((p) => [p.prNumber, p.disposition])).toEqual([[11, 'retarget']]);
     expect(e1!.retired_at).not.toBeNull();
+  });
+});
+
+describe('review of #4806: only PRs that were on the delivery branch are touched', () => {
+  test('a mission PR that was always on trunk, and one in another repo, are never moved or closed', async () => {
+    await inFlight();
+    gh.commit('w20', ['t0']);
+    gh.prs.set(20, { number: 20, state: 'open', base: TRUNK, headSha: 'w20', headRef: 'buildd/always-trunk' });
+    work = { unfinishedTasks: 0, openTaskPrs: 1 };
+    const m = gh.mergeEpochPr(10, { deleteBranch: true });
+    await epochs.epochMerged(mergedInput(m), deps());
+    expect(gh.prs.get(20)!).toMatchObject({ state: 'open', base: TRUNK });
+    expect(gh.calls.some((c) => c.path.endsWith('/pulls/20') && c.method === 'PATCH')).toBe(false);
+  });
+
+  test('the default refresh-PR lookup is scoped to the mission repo', async () => {
+    const t = (await q<{ id: string }>(sql`INSERT INTO tasks (workspace_id, mission_id, title, status, context) VALUES (${workspaceId}::uuid, ${missionId}::uuid, 'refresh', 'completed', '{"requireMergeCommit": true}'::jsonb) RETURNING id`))[0]!;
+    await q(sql`INSERT INTO workers (workspace_id, task_id, name, runner, branch, status, pr_number, pr_url) VALUES (${workspaceId}::uuid, ${t.id}::uuid, 'w', 'test', 'b5', 'completed', 5, 'https://github.com/acme/app/pull/5'),
+      (${workspaceId}::uuid, ${t.id}::uuid, 'w2', 'test', 'b6', 'completed', 6, 'https://github.com/acme/other/pull/6')`);
+    await inFlight();
+    gh.commit('r5', ['b1', 't0']);
+    gh.commit('r6', ['b1', 't0']);
+    gh.sameTree.add('r5'); gh.sameTree.add('r6');
+    gh.prs.set(5, { number: 5, state: 'open', base: ROOT, headSha: 'r5' });
+    gh.prs.set(6, { number: 6, state: 'open', base: ROOT, headSha: 'r6' });
+    work = { unfinishedTasks: 0, openTaskPrs: 0 };
+    const { refreshPrsOf: _r, ...withDefault } = deps();
+    await epochs.epochMerged(mergedInput(gh.mergeEpochPr(10)), withDefault);
+    const [e1] = await epochRows();
+    // #5 is this repo's refresh; #6 belongs to another repo, so here it is an ordinary task PR.
+    expect(e1!.settlement?.settled?.map((p) => [p.prNumber, (p as { kind?: string }).kind])).toEqual([[5, 'refresh'], [6, 'task']]);
+  });
+});
+
+describe('review of #4806: settlement races', () => {
+  test('two settlements at once never close a PR whose work did not reach trunk', async () => {
+    await inFlight();
+    // A refresh PR with work of its own: its test merge produces a new tree.
+    gh.commit('r7', ['b1', 't0']);
+    gh.prs.set(7, { number: 7, state: 'open', base: ROOT, headSha: 'r7' });
+    refreshPrs = new Set([7]);
+    work = { unfinishedTasks: 0, openTaskPrs: 0 };
+    const m = gh.mergeEpochPr(10);
+    await Promise.all([
+      epochs.epochMerged(mergedInput(m), deps()),
+      epochs.reconcileMissionEpochs(missionId, deps()),
+      epochs.reconcileMissionEpochs(missionId, deps()),
+    ]);
+    expect(gh.prs.get(7)!.state).toBe('open');
+    expect(superseded).toEqual([]);
+    expect(gh.refs.has(ROOT)).toBe(true);
+    // Every probe used a ref of its own.
+    const probes = gh.calls.filter((c) => c.path.endsWith('/git/refs') && c.method === 'POST' && String((c.body as { ref?: string })?.ref).includes('buildd-settle/')).map((c) => (c.body as { ref: string }).ref);
+    expect(new Set(probes).size).toBe(probes.length);
+  });
+
+  test('the settle lease admits one caller at a time', async () => {
+    await inFlight();
+    work = { unfinishedTasks: 0, openTaskPrs: 0 };
+    await epochs.applyMissionEpochCommand(missionId, { ...mergedInput('m1'), type: 'Merged', at: '2026-10-14T12:00:00.000Z' } as never, deps());
+    const [e1] = await q<{ id: string }>(sql`SELECT id FROM workflow_mission_epochs WHERE mission_id = ${missionId}::uuid AND epoch = 1`);
+    expect(await q(epochs.settleLeaseSql(e1!.id, 'a', 60_000))).toHaveLength(1);
+    expect(await q(epochs.settleLeaseSql(e1!.id, 'b', 60_000))).toHaveLength(0);
+    await q(epochs.settleReleaseSql(e1!.id, 'b'));
+    expect(await q(epochs.settleLeaseSql(e1!.id, 'c', 60_000))).toHaveLength(0);
+    await q(epochs.settleReleaseSql(e1!.id, 'a'));
+    expect(await q(epochs.settleLeaseSql(e1!.id, 'c', 60_000))).toHaveLength(1);
+  });
+});
+
+describe('review of #4806: an adopted re-cut that merges again', () => {
+  test('without delete-on-merge, the later delivery settles and retires; the earlier record never deadlocks it', async () => {
+    gh.commit('t0', []);
+    gh.refs.set(TRUNK, 't0');
+    gh.commit('b1', ['t0']);
+    gh.refs.set(ROOT, 'b1');
+    work = { unfinishedTasks: 1, openTaskPrs: 0 };
+    const legacy: Deps = { ...deps(), legacyPrOf: async () => ({ prNumber: 7, repoFullName: REPO, ownerTaskId: null, state: 'merged', mergedAt: '2026-09-01T00:00:00.000Z' }) };
+    await epochs.applyMissionEpochCommand(missionId, { type: 'Adopt', actor: 'test', at: '2026-10-14T11:00:00.000Z' }, legacy);
+    gh.prs.set(8, { number: 8, state: 'open', base: TRUNK, headSha: 'b1', headRef: ROOT });
+    await epochs.bindEpochPr({ missionId, prNumber: 8, repoFullName: REPO, ownerTaskId: null, headRef: ROOT, actor: 'test' }, legacy);
+    gh.commit('w9', ['b1']);
+    gh.prs.set(9, { number: 9, state: 'open', base: ROOT, headSha: 'w9' });
+    const m = gh.mergeEpochPr(8);
+    await epochs.epochMerged({ ...mergedInput(m), prNumber: 8 }, legacy);
+    const rows = await epochRows();
+    expect(rows.map((e) => [e.epoch, e.state])).toEqual([[1, 'merged'], [2, 'merged'], [3, 'open']]);
+    expect(gh.prs.get(9)!.base).toBe(`${ROOT}-delivery-3`);
+    expect(rows[1]!.retired_at).not.toBeNull();
+    expect(rows[0]!.settlement?.held ?? []).toEqual([]);
   });
 });
 
@@ -320,10 +408,8 @@ describe('retirement reads GitHub fresh', () => {
         return [];
       },
     };
+    // One pass: retirement reads the branch fresh, finds the newcomer, settles it, then retires.
     await epochs.epochMerged(mergedInput(m), racing);
-    expect(gh.refs.has(ROOT)).toBe(true);
-    expect((await epochRows())[0]!.retired_at).toBeNull();
-    await epochs.reconcileMissionEpochs(missionId, racing);
     expect(gh.prs.get(12)!.base).toBe(`${ROOT}-delivery-2`);
     expect((await epochRows())[0]!.retired_at).not.toBeNull();
     expect(gh.refs.has(ROOT)).toBe(false);

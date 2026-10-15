@@ -72,7 +72,7 @@ export async function deliveryShipsForPrs(
 
 export type { EpochSnapshot } from '@buildd/workflow-kernel/delivery-epochs';
 export type { MissionEpochHooks } from './delivery-epochs';
-export { epochCompletionHold, writableEpoch, latestEpoch, isPriorEpochBranch } from '@buildd/workflow-kernel/delivery-epochs';
+export { epochCompletionHold, writableEpoch, latestEpoch, isPriorEpochBranch, shippedEpochOf, unsettledEpochs } from '@buildd/workflow-kernel/delivery-epochs';
 
 /**
  * A mission's delivery epochs, ordered (empty for a mission that predates

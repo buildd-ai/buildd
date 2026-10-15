@@ -649,6 +649,18 @@ export async function canCompleteMission(
     if (epochs.length > 0) {
       const hold = epochCompletionHold({ epochs }, (branch, after) =>
         work.landedOnIntegration.filter(l => l.baseRef === branch && (!after || (!!l.mergedAt && l.mergedAt > after))).length);
+      if (hold.holds && hold.reason === 'unsettled') {
+        const e = hold.epoch;
+        const held = (e.settlement?.held ?? []).map((h) => `#${h.prNumber}`);
+        return {
+          ...base,
+          ok: false,
+          code: 'awaiting_mission_pr',
+          reason: held.length > 0
+            ? `Delivery ${e.epoch} reached trunk, but ${held.join(', ')} still ${held.length === 1 ? 'sits' : 'sit'} on its branch \`${e.branch}\` waiting for a decision. That work has not reached trunk.`
+            : `Delivery ${e.epoch} reached trunk, and the PRs left on its branch \`${e.branch}\` are still being moved to the next delivery.`,
+        };
+      }
       if (hold.holds) {
         const e = hold.epoch;
         const owner = e.prNumber != null ? await findMissionPrOwner(missionId) : null;

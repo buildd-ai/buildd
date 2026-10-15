@@ -1427,13 +1427,15 @@ export type MissionEpochInput =
   | { action: 'merged'; workspaceId: string; missionId: string; prNumber: number; repoFullName: string; headRef: string | null; mergeCommitSha: string | null; mergedHeadSha: string | null; mergedAt: string; actor: string }
   | { action: 'ensure_writable'; workspaceId: string; missionId: string; reason: string; actor: string }
   | { action: 'bind_pr'; workspaceId: string; missionId: string; prNumber: number; repoFullName: string; ownerTaskId: string | null; headRef: string | null; actor: string }
-  | { action: 'reconcile'; workspaceId: string; missionId: string };
+  | { action: 'reconcile'; workspaceId: string; missionId: string }
+  | { action: 'pr_moved'; workspaceId: string; missionId: string; branch: string; prNumber: number; actor: string };
 
 export type MissionEpochAnswer =
   | { action: 'merged'; result: string; reason: string; steps: string[] }
   | { action: 'ensure_writable'; branch: string | null; rotated: boolean; ready: boolean; reason: string }
   | { action: 'bind_pr'; result: string; reason: string }
-  | { action: 'reconcile'; steps: string[] };
+  | { action: 'reconcile'; steps: string[] }
+  | { action: 'pr_moved'; result: string; reason: string };
 
 export async function missionEpochCommand(p: MissionEpochInput): Promise<MissionEpochAnswer> {
   const epochs = await import('./delivery-epochs');
@@ -1452,5 +1454,9 @@ export async function missionEpochCommand(p: MissionEpochInput): Promise<Mission
       return { action: 'bind_pr', ...(await epochs.bindEpochPr(p)) };
     case 'reconcile':
       return { action: 'reconcile', steps: stepsOf(await epochs.reconcileMissionEpochs(p.missionId)) };
+    case 'pr_moved': {
+      const r = await epochs.applyMissionEpochCommand(p.missionId, { type: 'PrMovedOff', actor: p.actor, at: new Date().toISOString(), branch: p.branch, prNumber: p.prNumber });
+      return { action: 'pr_moved', result: r.result, reason: r.reason };
+    }
   }
 }

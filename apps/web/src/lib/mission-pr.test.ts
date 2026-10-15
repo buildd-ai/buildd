@@ -42,9 +42,11 @@ let githubThrows: Record<string, string> = {};
 const mockRecordMissionPrMerged = mock(async (..._args: any[]) => ({ recorded: true, reason: 'merged' }));
 const mockBindMissionDeliveryPr = mock(async (_p: any) => {});
 let missionEpochRows: any[] = [];
+const realEpochs = await import('@buildd/workflow-kernel/delivery-epochs');
 mock.module('@/lib/workflow/delivery-ship', () => ({
   missionEpochsOf: async () => missionEpochRows,
-  writableEpoch: (v: { epochs: Array<{ state: string }> }) => v.epochs.find((e) => e.state === 'open') ?? null,
+  writableEpoch: realEpochs.writableEpoch,
+  shippedEpochOf: realEpochs.shippedEpochOf,
 }));
 mock.module('@/lib/mission-epoch-door', () => ({
   recordMissionPrMerged: (...args: any[]) => mockRecordMissionPrMerged(...args),
@@ -433,6 +435,23 @@ describe('guardMissionPrMerge — a refresh PR lands only on the delivery it was
     workerRowsByTask['r-1'] = [worker({ taskId: 'r-1', id: 'w-r', prUrl: 'u', prNumber: 4670, prBaseRef: BRANCH, prLifecycleStatus: 'pr_open' })];
     missionEpochRows = [{ epoch: 1, branch: BRANCH, state: 'open' }];
     expect((await guardMissionPrMerge(refreshTask())).blocks).toBe(false);
+  });
+
+  it('review of #4806: a task PR still on a shipped delivery branch is refused at every door, naming where it goes', async () => {
+    workerRowsByTask['t-8'] = [worker({ taskId: 't-8', id: 'w-8', prUrl: 'u', prNumber: 8, prBaseRef: BRANCH, prLifecycleStatus: 'pr_open' })];
+    missionEpochRows = [{ epoch: 1, branch: BRANCH, state: 'merged' }, { epoch: 2, branch: `${BRANCH}-delivery-2`, state: 'open' }];
+    const gate = await guardMissionPrMerge({ id: 't-8', missionId: MISSION_ID, title: 'x', taskClass: 'work', context: {} });
+    expect(gate).toMatchObject({ blocks: true, codes: ['delivery_shipped'] });
+    expect((gate as { reason: string }).reason).toContain(`delivery 2 (\`${BRANCH}-delivery-2\`)`);
+    // The same PR on the writable delivery merges as before.
+    workerRowsByTask['t-8'] = [worker({ taskId: 't-8', id: 'w-8', prUrl: 'u', prNumber: 8, prBaseRef: `${BRANCH}-delivery-2`, prLifecycleStatus: 'pr_open' })];
+    expect((await guardMissionPrMerge({ id: 't-8', missionId: MISSION_ID, title: 'x', taskClass: 'work', context: {} })).blocks).toBe(false);
+  });
+
+  it('an adopted re-cut still using the shipped name is not refused', async () => {
+    workerRowsByTask['t-8'] = [worker({ taskId: 't-8', id: 'w-8', prUrl: 'u', prNumber: 8, prBaseRef: BRANCH, prLifecycleStatus: 'pr_open' })];
+    missionEpochRows = [{ epoch: 1, branch: BRANCH, state: 'merged' }, { epoch: 2, branch: BRANCH, state: 'open' }];
+    expect((await guardMissionPrMerge({ id: 't-8', missionId: MISSION_ID, title: 'x', taskClass: 'work', context: {} })).blocks).toBe(false);
   });
 
   it('an ordinary task PR is never asked', async () => {

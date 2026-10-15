@@ -26,8 +26,8 @@
  * runs after. Each step is isolated by the emitter, and pages under its label.
  */
 import { db } from '@buildd/core/db';
-import { tasks } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
+import { tasks, workers } from '@buildd/core/db/schema';
+import { and, eq } from 'drizzle-orm';
 import { after } from 'next/server';
 import { refreshMissionBranchesBeforeStart } from '@/lib/mission-branch-refresh';
 import { subscriber, type AnySubscriber } from '@/lib/core-events';
@@ -207,6 +207,20 @@ export const missionSubscribers: readonly AnySubscriber[] = [
   }),
   // A retarget leaves the PR's change-intent rows naming the OLD base. Move its
   // open intents to where the PR now lands and re-wake the head of both lanes.
+  // §6: GitHub moved a mission PR off a delivery branch (delete-on-merge
+  // retargets it to trunk). Recorded on the delivery, so settlement moves only
+  // PRs that were really on it.
+  subscriber('missions', 'pr.base_changed', 'record-pr-moved-off-delivery', async e => {
+    const [row] = await db
+      .select({ missionId: tasks.missionId })
+      .from(workers)
+      .innerJoin(tasks, eq(tasks.id, workers.taskId))
+      .where(and(eq(workers.workspaceId, e.workspaceId), eq(workers.prNumber, e.prNumber)))
+      .limit(1);
+    if (!row?.missionId) return;
+    const { recordPrMovedOffDelivery } = await import('@/lib/mission-epoch-door');
+    await recordPrMovedOffDelivery({ missionId: row.missionId, prNumber: e.prNumber, fromBase: e.fromBase });
+  }),
   subscriber('missions', 'pr.base_changed', 'retarget-surface-intents', async e => {
     const retarget = () => import('@/lib/surface-ordering')
       .then((m) => m.retargetSurfaceIntents({ workspaceId: e.workspaceId, prNumber: e.prNumber, fromBase: e.fromBase, toBase: e.toBase }))

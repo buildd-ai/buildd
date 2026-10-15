@@ -112,11 +112,33 @@ export async function bindMissionDeliveryPr(p: { missionId: string; workspaceId:
 
 /** The hourly backstop: finish whatever a delivery transition left owed. */
 export async function reconcileMissionDeliveries(missionId: string): Promise<string[]> {
-  const epochs = await missionEpochsOf(missionId);
-  if (epochs.length === 0) return [];
+  // A mission with no delivery rows is reconciled too: the kernel adopts it, so a
+  // merge whose record failed is retried here rather than never.
+  const m = await db.query.missions.findFirst({ where: sqlWhere(eq(missions.id, missionId)), columns: { workingBranch: true, integrationBranchEnabled: true } });
+  if (!missionIntegrationBase(m)) return [];
   const workspaceId = await repoWorkspace(missionId);
   if (!workspaceId) return [];
   const answer = await submitKernelCommand('mission_epoch', { action: 'reconcile', workspaceId, missionId }, { principal: SYSTEM, withDelivery: false });
   const r = answer.result;
   return r.action === 'reconcile' ? r.steps : [];
+}
+
+/**
+ * GitHub moved a mission PR off a branch (the `pull_request.edited` retarget).
+ * When that branch is one of the mission's deliveries, the move is recorded on
+ * it, so settlement knows the PR was on the delivery and moves it on. A PR that
+ * was always on trunk is never recorded and never touched. Best effort.
+ */
+export async function recordPrMovedOffDelivery(p: { missionId: string; prNumber: number; fromBase: string }): Promise<void> {
+  try {
+    const epochs = await missionEpochsOf(p.missionId);
+    if (!epochs.some((e) => e.branch === p.fromBase)) return;
+    const workspaceId = await repoWorkspace(p.missionId);
+    if (!workspaceId) return;
+    await submitKernelCommand('mission_epoch', {
+      action: 'pr_moved', workspaceId, missionId: p.missionId, branch: p.fromBase, prNumber: p.prNumber, actor: 'webhook:pull_request.edited',
+    }, { principal: SYSTEM, withDelivery: false });
+  } catch (err) {
+    console.error(`[mission-epochs] recording PR #${p.prNumber} moved off ${p.fromBase} failed:`, err);
+  }
 }

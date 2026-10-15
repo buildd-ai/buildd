@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { applyEpochOpsSql, missionEpochsSql } from './delivery-epochs';
+import { applyEpochOpsSql, contentContained, missionEpochsSql, type GithubApi } from './delivery-epochs';
 
 const dialect = new PgDialect();
 const render = (q: Parameters<PgDialect['sqlToQuery']>[0]) => dialect.sqlToQuery(q);
@@ -65,5 +65,52 @@ describe('applyEpochOpsSql', () => {
       { op: 'update', epochId: 'a', expectVersion: 0, set: { retiredAt: 'x' } },
       { op: 'update', epochId: 'b', expectVersion: 0, set: { retiredAt: 'x' } },
     ])).toThrow('at most one epoch');
+  });
+});
+
+// Review of #4806, blocking 1: a content check can only say "contained" from
+// ancestry or from the tree of a merge it made itself on a ref of its own.
+describe('contentContained', () => {
+  const repo = { workspaceId: 'w', installationId: 1, repoFullName: 'o/r', trunk: 'dev' };
+  function fake(mergeAnswer: () => unknown, opts: { refExists?: boolean } = {}) {
+    const refs: string[] = [];
+    const api: GithubApi = async (_i, path, init) => {
+      const method = init?.method ?? 'GET';
+      if (path.includes('/compare/')) return { status: 'diverged' };
+      if (path.endsWith('/git/refs') && method === 'POST') {
+        if (opts.refExists) throw new Error('GitHub API error: 422 Reference already exists');
+        refs.push(JSON.parse(String(init!.body)).ref);
+        return {};
+      }
+      if (path.endsWith('/merges')) return mergeAnswer();
+      if (path.includes('/git/commits/')) return { tree: { sha: 'T-into' } };
+      return null;
+    };
+    return { api, refs };
+  }
+
+  it('"nothing to merge" (204) is unknown, never contained: ancestry already said no', async () => {
+    expect(await contentContained(fake(() => null).api, repo, 'head', 'into', 'buildd-settle/x')).toBeNull();
+  });
+
+  it('a merge whose parents are not exactly (into, head) is unknown', async () => {
+    const other = () => ({ parents: [{ sha: 'someone-else' }, { sha: 'head' }], commit: { tree: { sha: 'T-into' } } });
+    expect(await contentContained(fake(other).api, repo, 'head', 'into', 'buildd-settle/x')).toBeNull();
+  });
+
+  it('a ref name already taken is unknown, never reused', async () => {
+    const mine = () => ({ parents: [{ sha: 'into' }, { sha: 'head' }], commit: { tree: { sha: 'T-into' } } });
+    expect(await contentContained(fake(mine, { refExists: true }).api, repo, 'head', 'into', 'buildd-settle/x')).toBeNull();
+  });
+
+  it('its own merge with an unchanged tree is contained; two checks never share a ref', async () => {
+    const mine = () => ({ parents: [{ sha: 'into' }, { sha: 'head' }], commit: { tree: { sha: 'T-into' } } });
+    const f = fake(mine);
+    const [a, b] = await Promise.all([
+      contentContained(f.api, repo, 'head', 'into', 'buildd-settle/x'),
+      contentContained(f.api, repo, 'head', 'into', 'buildd-settle/x'),
+    ]);
+    expect([a, b]).toEqual([true, true]);
+    expect(new Set(f.refs).size).toBe(2);
   });
 });

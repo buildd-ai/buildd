@@ -42,7 +42,7 @@ export class EpochWriteConflict extends Error {
 
 const EPOCH_COLUMNS = sql`id, mission_id, epoch, branch, state, version, origin, cut_from_sha, branch_ready_at, predecessor_id,
   scope_version, repo_full_name, pr_number, owner_task_id, merged_at, merge_commit_sha, merged_head_sha,
-  settlement, settled_at, retired_at`;
+  settlement, settled_at, retired_at, moved_prs`;
 
 export function missionEpochsSql(missionIds: string[]): SQL {
   return sql`-- workflow:mission_epochs
@@ -66,6 +66,7 @@ export function toEpochSnapshot(r: Record<string, unknown>): EpochSnapshot {
     mergedHeadSha: str(r.merged_head_sha),
     settlement: (r.settlement ?? null) as EpochSettlement | null,
     settledAt: iso(r.settled_at), retiredAt: iso(r.retired_at),
+    movedPrs: Array.isArray(r.moved_prs) ? (r.moved_prs as unknown[]).map(Number) : [],
   };
 }
 
@@ -143,7 +144,7 @@ async function defaultLegacyPrOf(missionId: string): Promise<LegacyMissionPr | n
 
 // ── The one write statement ─────────────────────────────────────────────────
 
-const PATCH_COLUMNS: Record<keyof EpochPatch, [string, 'text' | 'int' | 'uuid' | 'timestamptz' | 'jsonb']> = {
+const PATCH_COLUMNS: Record<keyof EpochPatch, [string, 'text' | 'int' | 'uuid' | 'timestamptz' | 'jsonb' | 'int[]']> = {
   state: ['state', 'text'],
   repoFullName: ['repo_full_name', 'text'],
   prNumber: ['pr_number', 'int'],
@@ -155,6 +156,7 @@ const PATCH_COLUMNS: Record<keyof EpochPatch, [string, 'text' | 'int' | 'uuid' |
   settlement: ['settlement', 'jsonb'],
   settledAt: ['settled_at', 'timestamptz'],
   retiredAt: ['retired_at', 'timestamptz'],
+  movedPrs: ['moved_prs', 'int[]'],
 };
 
 function value(v: unknown, cast: string): SQL {
@@ -164,6 +166,7 @@ function value(v: unknown, cast: string): SQL {
     case 'uuid': return sql`${String(v)}::uuid`;
     case 'timestamptz': return sql`${String(v)}::timestamptz`;
     case 'jsonb': return sql`${JSON.stringify(v)}::jsonb`;
+    case 'int[]': return sql`ARRAY(SELECT (jsonb_array_elements_text(${JSON.stringify(v)}::jsonb))::int)::int[]`;
     default: return sql`${String(v)}::text`;
   }
 }
@@ -181,6 +184,12 @@ export function applyEpochOpsSql(ops: EpochOp[]): SQL {
   if (updates.length > 1) throw new Error('a mission epoch transition updates at most one epoch');
   const ctes: SQL[] = [];
   const u = updates[0];
+  // A branch projection that would match nothing (the mission's branch moved
+  // since the read) writes nothing at all: the caller re-reads, never a
+  // transition that reports success with the mission still on the old branch.
+  const branchOk = projects.length > 0
+    ? sql.join(projects.map((p) => sql`EXISTS (SELECT 1 FROM missions WHERE id = ${p.missionId}::uuid AND working_branch IS NOT DISTINCT FROM ${value(p.fromBranch, 'text')})`), sql` AND `)
+    : null;
   if (u) {
     const sets = Object.entries(u.set).map(([k, v]) => {
       const [col, cast] = PATCH_COLUMNS[k as keyof EpochPatch];
@@ -188,10 +197,10 @@ export function applyEpochOpsSql(ops: EpochOp[]): SQL {
     });
     ctes.push(sql`u AS (
   UPDATE workflow_mission_epochs SET ${sql.join([...sets, sql`version = version + 1`, sql`updated_at = now()`], sql`, `)}
-  WHERE id = ${u.epochId}::uuid AND version = ${u.expectVersion}
+  WHERE id = ${u.epochId}::uuid AND version = ${u.expectVersion}${branchOk ? sql` AND ${branchOk}` : sql``}
   RETURNING id)`);
   }
-  const gate = u ? sql`EXISTS (SELECT 1 FROM u)` : sql`true`;
+  const gate = u ? sql`EXISTS (SELECT 1 FROM u)` : (branchOk ?? sql`true`);
   inserts.forEach((ins, i) => {
     const e = ins.epoch;
     const prior = e.predecessorEpoch != null ? inserts.findIndex((x) => x.epoch.epoch === e.predecessorEpoch) : -1;
@@ -241,14 +250,14 @@ export interface EpochDeps {
   recordSupersession?: (p: { workspaceId: string; repoFullName: string; prNumber: number; installationId: number; satisfiedBy: { prNumber: number; url: string | null }; reason: string }) => Promise<void>;
   /** A person decides about the held PRs (a mission note). */
   noteHeld?: (missionId: string, title: string, body: string) => Promise<void>;
-  /** Refresh-task PRs of the mission, for settlement classification. */
-  refreshPrsOf?: (missionId: string) => Promise<Set<number>>;
+  /** Refresh-task PRs of the mission in this repo, for settlement classification. */
+  refreshPrsOf?: (missionId: string, repoFullName: string) => Promise<Set<number>>;
+  /** Scratch-ref suffixes (tests); default a random UUID. */
+  newId?: () => string;
   /** Refresh tasks filed for `branch` that never started (no worker yet): their premise is gone. */
   obsoleteRefreshTasksOf?: (missionId: string, branch: string) => Promise<string[]>;
   /** Cancel a task that never started (the kernel's Work port). */
   cancelTask?: (taskId: string, reason: string) => Promise<void>;
-  /** Mission task PRs (open, not the mission PR) with the base buildd recorded, for PRs GitHub moved to trunk. */
-  missionTaskPrsOf?: (missionId: string) => Promise<Array<{ prNumber: number; recordedBase: string | null; refresh: boolean }>>;
 }
 
 export interface MissionRepo {
@@ -335,27 +344,32 @@ async function isAncestor(api: GithubApi, repo: MissionRepo, sha: string, head: 
 }
 
 /**
- * Is everything `headSha` carries already in `intoSha`'s tree? Ancestry first;
- * then a test merge on a scratch ref (a squash-merged delivery leaves no
- * ancestry, so only the tree can prove it): GitHub answers 204 (nothing to
- * merge), a merge commit whose tree equals `intoSha`'s (contained), a
- * different tree (not contained) or 409 (conflicts: not contained). The
- * scratch ref is always deleted. null when any read failed.
+ * Is everything `headSha` carries already in `intoSha`'s tree? Ancestry first
+ * (the common, cheap and exact answer). Then a test merge on a scratch ref of
+ * this check's own (a squash-merged delivery leaves no ancestry, so only the
+ * tree can prove it), read back only when GitHub's answer is the merge of
+ * exactly `intoSha` and `headSha`:
+ *  - a merge commit with those two parents whose tree equals `intoSha`'s: contained;
+ *  - a different tree, or 409 (conflicts): not contained;
+ *  - anything else is unknown (null), and an unknown never closes a PR. That
+ *    includes GitHub's "nothing to merge" (204): ancestry already said no, so
+ *    a 204 can only mean the scratch ref is not the ref this check cut.
+ * The scratch ref is never shared: its name carries a random suffix, a name
+ * already taken is unknown rather than reused, and it is deleted in the same step.
  */
-export async function contentContained(api: GithubApi, repo: MissionRepo, headSha: string, intoSha: string, scratch: string): Promise<boolean | null> {
+export async function contentContained(api: GithubApi, repo: MissionRepo, headSha: string, intoSha: string, scratchPrefix: string, newId: () => string = () => crypto.randomUUID()): Promise<boolean | null> {
   const anc = await isAncestor(api, repo, headSha, intoSha);
   if (anc === true) return true;
   if (anc === null) return null;
+  const scratch = `${scratchPrefix}-${newId().replace(/-/g, '').slice(0, 12)}`;
   const refPath = `/repos/${repo.repoFullName}/git/refs/heads/${encodeRef(scratch)}`;
   try {
     await api(repo.installationId, `/repos/${repo.repoFullName}/git/refs`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ref: `refs/heads/${scratch}`, sha: intoSha }),
     });
-  } catch (err) {
-    if (githubStatus(err) !== 422) return null;
-    try {
-      await api(repo.installationId, refPath, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sha: intoSha, force: true }) });
-    } catch { return null; }
+  } catch {
+    // Taken (or refused): never write onto a ref this check did not cut.
+    return null;
   }
   try {
     let merged: any;
@@ -367,7 +381,9 @@ export async function contentContained(api: GithubApi, repo: MissionRepo, headSh
     } catch (err) {
       return githubStatus(err) === 409 ? false : null;
     }
-    if (!merged) return true;
+    if (!merged) return null;
+    const parents = Array.isArray(merged?.parents) ? merged.parents.map((p: { sha?: string }) => p?.sha) : null;
+    if (!parents || parents.length !== 2 || parents[0] !== intoSha || parents[1] !== headSha) return null;
     const probeTree = merged?.commit?.tree?.sha;
     const into = await api(repo.installationId, `/repos/${repo.repoFullName}/git/commits/${intoSha}`).catch(() => null);
     const intoTree = into?.tree?.sha;
@@ -391,12 +407,27 @@ export interface ReconcileOutcome {
  */
 export async function reconcileMissionEpochs(missionId: string, deps: EpochDeps = {}): Promise<ReconcileOutcome> {
   const api: GithubApi = deps.api ?? (await import('@/lib/github')).githubApi;
-  const now = () => (deps.now ?? (() => new Date()))().toISOString();
+  const nowDate = () => (deps.now ?? (() => new Date()))();
+  const now = () => nowDate().toISOString();
   const out: ReconcileOutcome = { missionId, steps: [] };
-  const loaded = await loadMissionEpochView(missionId, deps);
-  if (!loaded || loaded.view.epochs.length === 0) return out;
+  let loaded = await loadMissionEpochView(missionId, deps);
+  if (!loaded || !loaded.view.integrationBranch && loaded.view.epochs.length === 0) return out;
   const repo = await (deps.repoOf ?? defaultRepoOf)(loaded.mission);
   if (!repo) return out;
+
+  // A mission with no delivery rows yet (a merge whose record failed, or one
+  // that predates delivery records): adopt it here, so the backstop retries
+  // what the door could not. A mission PR that merged within the catch-up
+  // window is the merge being recorded now, not a past delivery.
+  if (loaded.view.epochs.length === 0) {
+    const legacy = loaded.view.legacyPr ?? null;
+    const recent = legacy?.state === 'merged' && legacy.mergedAt != null
+      && nowDate().getTime() - Date.parse(legacy.mergedAt) < MERGE_CATCH_UP_MS;
+    const r = await applyMissionEpochCommand(missionId, { type: 'Adopt', actor: 'kernel:mission_epochs_reconcile', at: now(), mergingPr: recent ? legacy!.prNumber : null }, deps);
+    out.steps.push({ step: 'adopt', epoch: 0, outcome: `${r.result}:${r.reason}` });
+    loaded = await loadMissionEpochView(missionId, deps);
+    if (!loaded || loaded.view.epochs.length === 0) return out;
+  }
 
   // A merge no door recorded (a lost webhook): the open delivery's PR, read live.
   const open = writableEpoch(loaded.view);
@@ -412,12 +443,16 @@ export async function reconcileMissionEpochs(missionId: string, deps: EpochDeps 
     }
   }
 
-  for (let guard = 0; guard < 8; guard++) {
+  // Each epoch's steps are independent: one that cannot finish (held, unreadable,
+  // in flight elsewhere) blocks only its own later steps, never another epoch's.
+  const blocked = new Set<string>();
+  for (let guard = 0; guard < 16; guard++) {
     const current = await loadMissionEpochView(missionId, deps);
     if (!current) return out;
-    const step = pendingEpochSteps(current.view)[0];
+    const step = pendingEpochSteps(current.view).find((s) => !blocked.has(s.epochId));
     if (!step) return out;
     const epoch = current.view.epochs.find((e) => e.id === step.epochId)!;
+    const stop = (outcome: string) => { out.steps.push({ step: step.step, epoch: epoch.epoch, outcome }); blocked.add(epoch.id); };
     const record = async (cmd: MissionEpochCommand, label: string) => {
       const r = await applyMissionEpochCommand(missionId, cmd, deps);
       out.steps.push({ step: step.step, epoch: epoch.epoch, outcome: `${label}:${r.result}:${r.reason}` });
@@ -426,51 +461,86 @@ export async function reconcileMissionEpochs(missionId: string, deps: EpochDeps 
 
     if (step.step === 'cut_branch') {
       const ready = await cutBranch(api, repo, step.branch, step.fromSha);
-      if (!ready) { out.steps.push({ step: step.step, epoch: epoch.epoch, outcome: 'failed' }); return out; }
+      if (!ready) { stop('failed'); continue; }
       await record({ type: 'BranchReady', actor: 'kernel:mission_epochs', at: now(), epochId: step.epochId }, ready);
       continue;
     }
 
     if (step.step === 'settle') {
-      const settlement = await settle(api, repo, current.view, epoch, step.successorBranch, deps);
-      if (!settlement) { out.steps.push({ step: step.step, epoch: epoch.epoch, outcome: 'unreadable' }); return out; }
-      const r = await record({ type: 'Settled', actor: 'kernel:mission_epochs', at: now(), epochId: epoch.id, settlement }, 'settled');
-      if (settlement.held.length > 0) {
-        if (r.result === 'applied') await noteHeld(missionId, epoch, settlement, deps);
-        return out;
+      // One settlement of a branch at a time: two callers reading and acting on
+      // the same PRs is how a probe and a close interleave.
+      const token = crypto.randomUUID();
+      const lease = ((await (deps.exec ?? dbExec)(settleLeaseSql(epoch.id, token, SETTLE_LEASE_MS))).rows ?? [])[0];
+      if (!lease) { stop('in_flight'); continue; }
+      try {
+        const fresh = (await loadMissionEpochView(missionId, deps))?.view.epochs.find((e) => e.id === epoch.id) ?? epoch;
+        const settlement = await settle(api, repo, current.view, fresh, step.successorBranch, deps);
+        if (!settlement) { stop('unreadable'); continue; }
+        const r = await record({ type: 'Settled', actor: 'kernel:mission_epochs', at: now(), epochId: epoch.id, settlement }, 'settled');
+        if (settlement.held.length > 0) {
+          if (r.result === 'applied') await noteHeld(missionId, fresh, settlement, deps);
+          blocked.add(epoch.id);
+        }
+      } finally {
+        await (deps.exec ?? dbExec)(settleReleaseSql(epoch.id, token)).catch(() => {});
       }
       continue;
     }
 
     // retire: only once nothing open is still based on the branch, read fresh.
     const stillOpen = await openPrsOn(api, repo, step.branch);
-    if (stillOpen === null || stillOpen.length > 0) {
-      out.steps.push({ step: step.step, epoch: epoch.epoch, outcome: stillOpen === null ? 'unreadable' : `held_by_${stillOpen.length}` });
-      if (stillOpen && stillOpen.length > 0) {
-        // Something new landed on the branch after settlement: settle again.
-        await record({ type: 'Settled', actor: 'kernel:mission_epochs', at: now(), epochId: epoch.id, settlement: {
-          settled: epoch.settlement?.settled ?? [], held: stillOpen.map((n) => ({ prNumber: n, kind: 'task' as const, disposition: 'hold' as const, reason: 'opened on this branch after it merged', proof: { headSha: null, mergeCommitSha: epoch.mergeCommitSha, contained: null } })),
-          satisfiedByPr: epoch.prNumber,
-        } }, 'reheld');
-      }
-      return out;
+    if (stillOpen === null) { stop('unreadable'); continue; }
+    if (stillOpen.length > 0) {
+      // Something reached the branch after settlement: it is settled again on its own read.
+      await record({ type: 'Settled', actor: 'kernel:mission_epochs', at: now(), epochId: epoch.id, settlement: {
+        settled: epoch.settlement?.settled ?? [], held: stillOpen.map((n) => ({ prNumber: n, kind: 'task' as const, disposition: 'hold' as const, reason: 'opened on this branch after it merged', proof: { headSha: null, mergeCommitSha: epoch.mergeCommitSha, contained: null } })),
+        satisfiedByPr: epoch.prNumber,
+      } }, 'reheld');
+      continue;
     }
     try {
       await api(repo.installationId, `/repos/${repo.repoFullName}/git/refs/heads/${encodeRef(step.branch)}`, { method: 'DELETE' });
     } catch (err) {
       const s = githubStatus(err);
       // 404 / 422: GitHub already deleted it (delete-branch-on-merge). The post-condition holds.
-      if (s !== 404 && s !== 422) { out.steps.push({ step: step.step, epoch: epoch.epoch, outcome: `failed:${s ?? 'error'}` }); return out; }
+      if (s !== 404 && s !== 422) { stop(`failed:${s ?? 'error'}`); continue; }
     }
     await record({ type: 'Retired', actor: 'kernel:mission_epochs', at: now(), epochId: epoch.id }, 'retired');
   }
   return out;
 }
 
+/** A merged mission PR with no delivery record this recent is the merge whose record failed. */
+export const MERGE_CATCH_UP_MS = 48 * 60 * 60 * 1000;
+/** How long one caller may hold a branch's settlement. */
+export const SETTLE_LEASE_MS = 5 * 60 * 1000;
+
+export function settleLeaseSql(epochId: string, token: string, ms: number): SQL {
+  return sql`-- workflow:mission_epoch_settle_lease
+UPDATE workflow_mission_epochs SET settle_lease_token = ${token}::text, settle_lease_until = now() + (${ms}::int * interval '1 millisecond')
+WHERE id = ${epochId}::uuid AND (settle_lease_until IS NULL OR settle_lease_until < now())
+RETURNING id`;
+}
+
+export function settleReleaseSql(epochId: string, token: string): SQL {
+  return sql`-- workflow:mission_epoch_settle_release
+UPDATE workflow_mission_epochs SET settle_lease_token = NULL, settle_lease_until = NULL
+WHERE id = ${epochId}::uuid AND settle_lease_token = ${token}::text`;
+}
+
+/**
+ * Create the successor's branch at `fromSha`, or accept one already there only
+ * if it starts from that commit (a stray branch under the name is not ours).
+ */
 async function cutBranch(api: GithubApi, repo: MissionRepo, branch: string, fromSha: string | null): Promise<string | null> {
+  const found = async (): Promise<string | null> => {
+    const ref = await api(repo.installationId, `/repos/${repo.repoFullName}/git/ref/heads/${encodeRef(branch)}`);
+    const sha = str(ref?.object?.sha);
+    if (!fromSha || !sha) return sha ? 'found' : null;
+    return sha === fromSha || (await isAncestor(api, repo, fromSha, sha)) === true ? 'found' : null;
+  };
   try {
-    await api(repo.installationId, `/repos/${repo.repoFullName}/git/ref/heads/${encodeRef(branch)}`);
-    return 'found';
+    return await found();
   } catch (err) {
     if (githubStatus(err) !== 404) return null;
   }
@@ -481,7 +551,10 @@ async function cutBranch(api: GithubApi, repo: MissionRepo, branch: string, from
     });
     return 'created';
   } catch (err) {
-    return githubStatus(err) === 422 && /reference already exists/i.test(err instanceof Error ? err.message : String(err)) ? 'found' : null;
+    if (githubStatus(err) === 422 && /reference already exists/i.test(err instanceof Error ? err.message : String(err))) {
+      return found().catch(() => null);
+    }
+    return null;
   }
 }
 
@@ -508,28 +581,28 @@ async function settle(api: GithubApi, repo: MissionRepo, view: MissionEpochView,
     } catch { return null; }
   })();
   if (onBranch === null) return null;
-  const refreshPrs = await (deps.refreshPrsOf ?? defaultRefreshPrsOf)(view.missionId);
+  const refreshPrs = await (deps.refreshPrsOf ?? defaultRefreshPrsOf)(view.missionId, repo.repoFullName);
   const candidates: Array<{ prNumber: number; headSha: string | null; baseRef: string; refresh: boolean }> = onBranch
     .filter((p) => p.number !== epoch.prNumber)
     .map((p) => ({ prNumber: p.number, headSha: p.head?.sha ?? null, baseRef: p.base?.ref ?? epoch.branch, refresh: refreshPrs.has(p.number) }));
 
-  // GitHub retargets the open PRs of a branch it deletes on merge to that PR's base (trunk).
-  for (const t of await (deps.missionTaskPrsOf ?? defaultMissionTaskPrsOf)(view.missionId)) {
-    if (t.prNumber === epoch.prNumber || candidates.some((c) => c.prNumber === t.prNumber)) continue;
-    if (t.recordedBase !== epoch.branch && t.recordedBase !== repo.trunk) continue;
-    try {
-      const pr = await api(repo.installationId, `/repos/${repo.repoFullName}/pulls/${t.prNumber}`);
-      if (pr?.state === 'open' && pr?.base?.ref === repo.trunk) {
-        candidates.push({ prNumber: t.prNumber, headSha: pr?.head?.sha ?? null, baseRef: repo.trunk, refresh: t.refresh });
-      }
-    } catch { return null; }
+  // GitHub retargets the open PRs of a branch it deletes on merge to that PR's
+  // base (trunk). Only the ones recorded as moved off THIS branch (the retarget
+  // webhook's `from`) are touched: a PR that was always on trunk never is.
+  for (const n of epoch.movedPrs ?? []) {
+    if (n === epoch.prNumber || candidates.some((c) => c.prNumber === n)) continue;
+    let pr: any;
+    try { pr = await api(repo.installationId, `/repos/${repo.repoFullName}/pulls/${n}`); } catch { return null; }
+    if (pr?.state === 'open' && pr?.base?.ref === repo.trunk) {
+      candidates.push({ prNumber: n, headSha: pr?.head?.sha ?? null, baseRef: repo.trunk, refresh: refreshPrs.has(n) });
+    }
   }
 
   const into = epoch.mergeCommitSha;
   const classified: SettlementCandidate[] = [];
   for (const c of candidates) {
     const contained = c.headSha && into
-      ? await contentContained(api, repo, c.headSha, into, `buildd-settle/${epoch.id.slice(0, 8)}-${c.prNumber}`)
+      ? await contentContained(api, repo, c.headSha, into, `buildd-settle/${epoch.id.slice(0, 8)}-${c.prNumber}`, deps.newId)
       : null;
     classified.push({ prNumber: c.prNumber, kind: c.refresh ? 'refresh' : 'task', baseRef: c.baseRef, headSha: c.headSha, contained });
   }
@@ -577,22 +650,12 @@ async function settle(api: GithubApi, repo: MissionRepo, view: MissionEpochView,
   return { settled: [...prior, ...settled], held, satisfiedByPr: epoch.prNumber };
 }
 
-async function defaultRefreshPrsOf(missionId: string): Promise<Set<number>> {
+async function defaultRefreshPrsOf(missionId: string, repoFullName: string): Promise<Set<number>> {
   const rows = ((await dbExec(sql`-- workflow:mission_refresh_prs
 SELECT DISTINCT w.pr_number FROM tasks t JOIN workers w ON w.task_id = t.id
-WHERE t.mission_id = ${missionId}::uuid AND w.pr_number IS NOT NULL AND (t.context->>'requireMergeCommit')::boolean IS TRUE`)).rows ?? []) as Array<{ pr_number: unknown }>;
+WHERE t.mission_id = ${missionId}::uuid AND w.pr_number IS NOT NULL AND (t.context->>'requireMergeCommit')::boolean IS TRUE
+  AND lower(w.pr_url) LIKE ${`https://github.com/${repoFullName.toLowerCase()}/pull/%`}::text`)).rows ?? []) as Array<{ pr_number: unknown }>;
   return new Set(rows.map((r) => Number(r.pr_number)));
-}
-
-async function defaultMissionTaskPrsOf(missionId: string): Promise<Array<{ prNumber: number; recordedBase: string | null; refresh: boolean }>> {
-  const rows = ((await dbExec(sql`-- workflow:mission_task_prs
-SELECT DISTINCT ON (w.pr_number) w.pr_number, w.pr_base_ref, (t.context->>'requireMergeCommit')::boolean IS TRUE AS refresh
-FROM tasks t JOIN workers w ON w.task_id = t.id
-WHERE t.mission_id = ${missionId}::uuid AND w.pr_number IS NOT NULL AND w.merged_at IS NULL
-  AND COALESCE(w.pr_lifecycle_status, '') NOT IN ('closed', 'merged', 'unresolvable')
-  AND NOT (t.task_class = 'bookkeeping' AND t.title LIKE 'Ship mission: %')
-ORDER BY w.pr_number, w.created_at DESC`)).rows ?? []) as Array<Record<string, unknown>>;
-  return rows.map((r) => ({ prNumber: Number(r.pr_number), recordedBase: str(r.pr_base_ref), refresh: r.refresh === true || r.refresh === 't' }));
 }
 
 async function defaultObsoleteRefreshTasksOf(missionId: string, branch: string): Promise<string[]> {

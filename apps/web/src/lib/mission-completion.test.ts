@@ -1419,7 +1419,10 @@ describe('canCompleteMission — Option A′: the mission integration PR is the 
       id: `e${n}`, missionId: 'm1', epoch: n, branch: n === 1 ? OPTED_IN.workingBranch : `${OPTED_IN.workingBranch}-delivery-${n}`,
       state: 'open', version: 0, origin: n === 1 ? 'adopted' : 'cut', cutFromSha: null, branchReadyAt: null,
       predecessorId: n === 1 ? null : `e${n - 1}`, scopeVersion: 1, repoFullName: 'acme/app', prNumber: null, ownerTaskId: null,
-      mergedAt: null, mergeCommitSha: null, mergedHeadSha: null, settlement: null, settledAt: null, retiredAt: null, ...o,
+      mergedAt: null, mergeCommitSha: null, mergedHeadSha: null, settlement: null, settledAt: null, retiredAt: null,
+      // A shipped delivery is settled and retired unless a test says otherwise.
+      ...(o.state === 'merged' ? { settledAt: '2026-10-14T10:05:00.000Z', retiredAt: '2026-10-14T10:06:00.000Z' } : {}),
+      ...o,
     };
   }
 
@@ -1460,6 +1463,23 @@ describe('canCompleteMission — Option A′: the mission integration PR is the 
 
     const d = await canCompleteMission('m1', { path: 'dormancy' });
     expect(d.code).not.toBe('awaiting_mission_pr');
+  });
+
+  it('review of #4806: a shipped delivery with PRs still on its branch holds completion, naming them', async () => {
+    activeMission(OPTED_IN);
+    taskRows = [mergedWork()];
+    landedOnIntegration();
+    missionEpochs = [
+      epoch(1, { state: 'merged', prNumber: 42, retiredAt: null, settlement: { settled: [], held: [{ prNumber: 77, kind: 'refresh', disposition: 'hold', reason: 'r', proof: {} }], satisfiedByPr: 42 } }),
+      epoch(2),
+    ];
+    missionWorkState = { ...missionWorkState, landedOnIntegration: [] };
+    const d = await canCompleteMission('m1', { path: 'dormancy' });
+    expect(d.code).toBe('awaiting_mission_pr');
+    expect(d.reason).toContain('#77');
+    // Not yet settled at all: held too.
+    missionEpochs = [epoch(1, { state: 'merged', prNumber: 42, settledAt: null, retiredAt: null }), epoch(2)];
+    expect((await canCompleteMission('m1', { path: 'dormancy' })).code).toBe('awaiting_mission_pr');
   });
 
   it('an open delivery with nothing landed on it (just cut) does not hold completion', async () => {
