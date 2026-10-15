@@ -164,7 +164,7 @@ export function describeHostSeat(seat: HostSeat): string {
     : "this machine's own login (claude login on the runner host)";
 }
 
-// ─── The one model-auth detector (docs/specs/runner-model-auth-source.md) ───
+// ─── The one model-auth detector (docs/specs/runner-model-login-detect-say-report.md) ───
 
 /**
  * Which kind of credential this runner's Claude agent authenticates with for a

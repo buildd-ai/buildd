@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { modelAuthLabel, codexAuthLabel } from './model-auth-label';
 
-describe('modelAuthLabel (docs/specs/runner-model-auth-source.md AC-7)', () => {
+describe('modelAuthLabel (docs/specs/runner-model-login-detect-say-report.md R-7, AC-8)', () => {
   it('names each reported source in words', () => {
     expect(modelAuthLabel('machine_token')).toEqual({ text: 'Uses a Claude token set on this machine', warning: false });
     expect(modelAuthLabel('machine_login')).toEqual({ text: "Uses this machine's Claude login", warning: false });
@@ -22,7 +22,7 @@ describe('modelAuthLabel (docs/specs/runner-model-auth-source.md AC-7)', () => {
   });
 });
 
-describe('codexAuthLabel (docs/specs/runner-model-auth-source.md R-13, AC-13)', () => {
+describe('codexAuthLabel (docs/specs/runner-model-login-detect-say-report.md R-13, AC-13)', () => {
   it('names a reported Codex login in words', () => {
     expect(codexAuthLabel('machine_login')).toBe("Codex: uses this machine's Codex login");
     expect(codexAuthLabel('api_key')).toBe('Codex: uses an OpenAI API key (billed per token)');

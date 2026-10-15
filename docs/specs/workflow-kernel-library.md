@@ -48,7 +48,7 @@ carries since slice S5.
 | `workflow-state-kernel.md` | behavioural contract the library implements. §10.3 drain hosting, §11 floor hosting, §13.12 "server-side (`apps/web`)", AC-7 and §14 are amended by §1 and §3 here. §13.13 rule 2 is amended by §5 (stable id, `addressed`, `deferred`). §13.13 rule 6, rule 7, rule 10 and its D1–D13 inventory are the landing authority of §4. |
 | `execution-control-plane.md` | §1 "same handlers, second host" and the seven-route limit are amended by §3; §3's kernel path becomes the package path. |
 | `mission-branch-refresh.md` | keeps the `branchRefresh*` columns; the refresh becomes a kernel effect of a mission delivery (§6). Its "does not model epochs" note is answered by §6. |
-| `mission-task-lifecycle.md` | AC-11y's door list is replaced by §4; mission completion reads delivery state (§6). |
+| `mission-task-lifecycle.md` | AC-64's door list (was AC-11y) is replaced by §4; mission completion reads delivery state (§6). |
 | `pr-lifecycle-reconciliation.md` | I-3's per-render write-through is retired by §1 (renders never write). |
 | `living-specs.md` §10 | the pattern this package follows. |
 
@@ -1057,11 +1057,9 @@ column outside the kernel; S3 and S4 remove or route each one.
 
 ## 10. Open questions
 
-- Q1: the package's license. `@buildd/spec-contract` is Apache-2.0 while the
-  repo is FSL-1.1-ALv2. Recommendation: the kernel package stays under the
-  repo's FSL, so embedding is free and a competing hosted service is not
-  during the FSL window; the conformance suite and port types carry Apache-2.0
-  so an adopter's adapter code is unencumbered. Owner decides.
+- Q1 (answered 2026-10-15): the package's license. The kernel package is
+  Apache-2.0, like the other contract packages, so adopters can embed it. The
+  product and `@buildd/core` stay FSL-1.1-ALv2.
 - Q2 (answered 2026-10-13, §3): the command endpoint is a route on the
   control plane's own host, signed by the calling host and re-checked as the
   principal it names.

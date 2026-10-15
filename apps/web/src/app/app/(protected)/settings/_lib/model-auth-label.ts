@@ -12,7 +12,7 @@ const NOT_REPORTED: ModelAuthLabel = { text: 'Model login: not reported', warnin
 
 /**
  * The words a runner row shows for the model login its runner reported on
- * its heartbeat (docs/specs/runner-model-auth-source.md). Null is an older
+ * its heartbeat (docs/specs/runner-model-login-detect-say-report.md). Null is an older
  * runner that never sends the field, which is not the same as `none`.
  */
 export function modelAuthLabel(source: RunnerModelAuthSource | null | undefined): ModelAuthLabel {
@@ -26,7 +26,7 @@ export function modelAuthLabel(source: RunnerModelAuthSource | null | undefined)
 }
 
 /**
- * The Codex line for a runner row (docs/specs/runner-model-auth-source.md
+ * The Codex line for a runner row (docs/specs/runner-model-login-detect-say-report.md
  * R-13). Null for `none` and for not reported: Codex is optional, so a
  * Claude-only runner shows no Codex line at all.
  */

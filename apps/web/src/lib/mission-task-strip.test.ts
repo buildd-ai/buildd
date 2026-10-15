@@ -215,7 +215,7 @@ describe('cycles (§7.9, AC-17)', () => {
     const order = names(spec, model);
     expect([...order].sort()).toEqual(['A', 'B', 'C', 'R']);
   });
-  it('a held cycle member still marks a blocker (CYC-3)', () => {
+  it('a held cycle member still marks a blocker (strip R-24)', () => {
     expect(Object.keys(select(spec, model, 'A').marks)).toContain('B');
   });
   it('unreleased tasks sit after every released task of their component', () => {
@@ -272,7 +272,7 @@ describe('Next open and the default selection (§9)', () => {
     expect(defaultStripSelection(done)).toBe(done[1].id);
     expect(defaultStripSelection([])).toBeNull();
   });
-  it('NX-2: the Next-open cycle set is exactly the set the header counts as "open" (states fixture)', () => {
+  it('strip R-33: the Next-open cycle set is exactly the set the header counts as "open" (states fixture)', () => {
     const slots = stripSlots(missionTaskStripFixture('states').model);
     const label = stripCountsLabel(stripSlotCounts(slots));
     const counted = Number(/(\d+) open/.exec(label)?.[1] ?? 0);
@@ -402,7 +402,7 @@ describe('the 8-node mission: one projection for every surface', () => {
   });
 });
 
-describe('strip order is stable under state changes (ORD-3, stepping)', () => {
+describe('strip order is stable under state changes (strip R-3, stepping)', () => {
   const peers: DagSpec = { tasks: ['A', 'B', 'C', 'D', 'E'], states: {} };
   const before = dagBoard(peers);
   const after = dagBoard({ ...peers, states: { A: 'failed', B: 'running', C: 'landed', D: 'review', E: 'pending' } });

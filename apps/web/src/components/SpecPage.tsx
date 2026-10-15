@@ -395,6 +395,7 @@ export default function SpecPage({ view }: { view: Ok }) {
           : <p className="text-meta text-text-muted" data-testid="spec-page-repo-copy">{view.source.copy}</p>
       ) : null}
       {view.canPublishAnyway ? <PublishAnyway specId={spec.id} /> : null}
+      {view.criteriaUnread ? <Notice tone="warn" data-testid="spec-page-criteria-unread">{view.criteriaUnread}</Notice> : null}
 
       {line ? <Lede><span data-testid="spec-page-reading">{line}</span></Lede> : null}
 

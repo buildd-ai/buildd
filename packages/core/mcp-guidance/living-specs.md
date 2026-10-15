@@ -268,8 +268,12 @@ changed it recorded.
   imported). `ref` reads another branch or commit; `paths` limits it.
 - Write:
   `buildd action=manage_specs params={ action: "import", dryRun: false }`.
-  Revision 1 is imported, not approved; the mechanical frontmatter goes to
-  the metadata block. Running it again with no repo change imports nothing;
+  Revision 1 is imported, not approved; the frontmatter leaves the body, its
+  mechanical fields and summary going to the metadata block. Per file the
+  reply lists the criterion ids the parser could not read (AC-3a, AC-AQR-1,
+  INV-2) and ids defined more than once; the import goes ahead and records
+  them on the spec, whose page and `get` say how many could not be read. Fix
+  the file and import again. Running it again with no repo change imports nothing;
   a changed file becomes a new imported revision. A duplicate is skipped
   unless you name it in `allowDuplicates` after reading the spec it
   duplicates.

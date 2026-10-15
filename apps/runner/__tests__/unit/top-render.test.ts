@@ -198,9 +198,9 @@ describe('revision 2 (R-17, R-19, R-21, AC-6)', () => {
       expect(row).toContain('verifying');
       expect(row).not.toContain('2/8');
       // A cut heading ends in … and keeps a space before the counts.
-      expect(lines[2]).toContain(cols >= 120 ? 'Runner TUI · verifying: 2 checks left' : 'Runner TUI · verifying');
-      expect(lines[2]).toMatch(/\s\d+ running/);
-      expect(lines[2]).not.toMatch(/…\d/);
+      expect(lines[3]).toContain(cols >= 120 ? 'Runner TUI · verifying: 2 checks left' : 'Runner TUI · verifying');
+      expect(lines[3]).toMatch(/\s\d+ running/);
+      expect(lines[3]).not.toMatch(/…\d/);
       for (const l of lines) expect(textWidth(l)).toBeLessThanOrEqual(cols);
     }
   });
@@ -208,7 +208,7 @@ describe('revision 2 (R-17, R-19, R-21, AC-6)', () => {
   test('without a stage the row shows done/total only', () => {
     const lines = text(frame(fixtureState(), 80, 24)).split('\n');
     expect(lines.find(l => l.includes('▸'))!).toContain('2/8');
-    expect(lines[2]).not.toMatch(/building|verifying|delivering|delivered|on hold/);
+    expect(lines[3]).not.toMatch(/building|verifying|delivering|delivered|on hold/);
   });
 
   test('a selected workspace is named in the heading', () => {
@@ -216,7 +216,7 @@ describe('revision 2 (R-17, R-19, R-21, AC-6)', () => {
       type: 'tasks', tasks: TASKS.map(t => ({ ...t, workspaceId: 'ws-a' })),
     });
     const t = text(frame({ ...s, selectedWorkspace: 'ws-a' }, 80, 24));
-    expect(t.split('\n')[2]).toContain('alpha · Runner TUI');
+    expect(t.split('\n')[3]).toContain('alpha · Runner TUI');
   });
 
   test('help says what top cannot see and how to change it (R-20)', () => {
@@ -241,7 +241,7 @@ describe('a provider limit, said once in the header (R-25, AC-11)', () => {
     const lines = frame(walled(), 80, 24);
     expectExactSize(lines, 80, 24);
     const t = text(lines).split('\n');
-    expect(t[1]).toContain(`Claude work waits for the plan limit: resumes ${localLiftTime(new Date(resetMs).toISOString(), NOW)} (in 9h)`);
+    expect(t[2]).toContain(`Claude work waits for the plan limit: resumes ${localLiftTime(new Date(resetMs).toISOString(), NOW)} (in 9h)`);
     const row = t.find(l => l.includes('fix flaky test'))!;
     expect(row).toContain('plan limit');
     expect(row).not.toContain('resumes');
@@ -252,6 +252,6 @@ describe('a provider limit, said once in the header (R-25, AC-11)', () => {
 
   test('no limit, no extra line', () => {
     const t = text(frame(fixtureState(), 80, 24)).split('\n');
-    expect(t[1]).toMatch(/^─+$/);
+    expect(t[2]).toMatch(/^─+$/);
   });
 });

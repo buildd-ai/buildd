@@ -692,7 +692,7 @@ describe('approvePlan — mission phase stamping', () => {
     expect(insertedValues.map(v => v.missionPhaseLabel)).toEqual([null, null]);
   });
 
-  it('Rule P1-9: a re-plan raised inside a phase keeps its children in that phase', async () => {
+  it('mission-legibility R-9: a re-plan raised inside a phase keeps its children in that phase', async () => {
     planningTaskRow.missionPhaseIndex = 3;
     planningTaskRow.missionPhaseLabel = 'Rendering';
     await approvePlan(PLANNING_TASK_ID, [

@@ -85,7 +85,7 @@ export async function resolveMcpConnectorsForTask(
   const workspaceTeamId = task?.workspace?.teamId as string | undefined;
   if (!workspaceTeamId) return [];
 
-  // Resolve the task's role → connectorRefs. No role slug → no opt-in (§2 AC-3).
+  // Resolve the task's role → connectorRefs. No role slug → no opt-in (AC-13).
   const roleSlug = task?.roleSlug as string | null;
   if (!roleSlug) return [];
 
@@ -139,8 +139,8 @@ export async function resolveMcpConnectorsForTask(
   // Cross-team sharing (§1b): visibility = owned ∪ shared-in. Fetch the
   // share grants for this team first, then keep only referenced connectors
   // that are owned by the task's team OR shared to it. A revoked share
-  // (row absent) drops the connector here — no orphaned injection (§1b AC-5).
-  // A dangling ref (deleted / invisible connector) simply drops out (§2 AC-4).
+  // (row absent) drops the connector here — no orphaned injection (AC-10).
+  // A dangling ref (deleted / invisible connector) simply drops out (AC-14).
   const shareRows = await db.query.connectorShares.findMany({
     where: sqlWhere(and(
       eq(connectorShares.sharedWithTeamId, workspaceTeamId),
@@ -240,7 +240,7 @@ export async function resolveMcpConnectorsForTask(
     claimedNames.add(name);
 
     // stdio transport: spawn a local process; env resolved from envMapping.
-    // No headers, no url. Omit if a mapped secret is missing (AC-4 parity).
+    // No headers, no url. Omit if a mapped secret is missing (AC-18 parity).
     if (connector.transport === 'stdio') {
       if (!connector.command) continue;
       const mapping = (connector.envMapping as Record<string, string> | null) ?? {};
@@ -287,7 +287,7 @@ export async function resolveMcpConnectorsForTask(
     }
 
     const secretInfo = connectorSecretMap.get(connector.id);
-    if (!secretInfo) continue; // missing credential → omit (AC-4)
+    if (!secretInfo) continue; // missing credential → omit (AC-18)
 
     // Brokered: the credential stays on the server; nothing is decrypted here.
     if (usesGateway(connector, slugOf(connector), mode)) {
@@ -296,7 +296,7 @@ export async function resolveMcpConnectorsForTask(
     }
 
     if (connector.authMode === 'oauth') {
-      // Refresh an expired access token at claim time; omit on unrecoverable failure (AC-3).
+      // Refresh an expired access token at claim time; omit on unrecoverable failure (AC-17).
       if (secretInfo.tokenExpiresAt && new Date(secretInfo.tokenExpiresAt) < now) {
         const result = await refreshMcpConnectorCredential(secretInfo.id);
         if (result !== 'refreshed' && result !== 'locked') continue;

@@ -26,12 +26,12 @@ assertions:
 ---
 # Work-tracker integration
 
-> **Status: partially shipped — this doc makes it first-class + multi-provider.**
->
-> **What already exists** (`dev`): workspace `workTrackerConfig`, mission-create
-> note, PR-merge → Linear comment/transition (github webhook →
-> `postLinearCompletionComment`), `externalIssueId`/`externalIssueUrl` on tasks +
-> missions, and (PR #1195) the ability to set those via task/mission PATCH.
+> **Status: shipped on `dev`.** Outbound updates for Linear and GitHub go
+> through one dispatch function, `postWorkTrackerCompletionUpdate` in
+> `apps/web/src/lib/work-tracker.ts`. Inbound webhooks exist for GitHub (the
+> `labeled` and `closed` issue events in the GitHub webhook route) and Linear
+> (`apps/web/src/lib/linear-webhook.ts` behind the per-workspace route). The
+> workspace config UI is `WorkTrackerSection.tsx`.
 >
 > **Decisions (locked, from product 2026-07-12):**
 > 1. **GitHub uses the existing GitHub App installation** (`workspaces.githubInstallationId`),
@@ -44,12 +44,12 @@ assertions:
 > abstraction). Step 2 = **inbound** webhooks + config/status UI.
 >
 > **Sources of truth read first:**
-> - `apps/web/src/lib/work-tracker.ts` — current Linear-only outbound helpers
-> - `apps/web/src/app/api/github/webhook/route.ts` — `maybePostWorkTrackerIssueUpdate`
->   (Linear-only dispatch), `verifyWebhookSignature`, issue/PR event handling
-> - `apps/web/src/lib/github.ts` — `githubApi(installationId, path, opts)`,
+> - `apps/web/src/lib/work-tracker.ts`: outbound helpers for both providers
+> - `apps/web/src/app/api/github/webhook/route.ts`: calls `maybePostWorkTrackerIssueUpdate`
+>   (defined in `apps/web/src/lib/pr-merged-work.ts`), `verifyWebhookSignature`, issue/PR event handling
+> - `apps/web/src/lib/github.ts`: `githubApi(installationId, path, opts)`,
 >   `getInstallationToken`, `verifyWebhookSignature`
-> - `packages/core/db/schema.ts` — `WorkspaceWorkTrackerConfig` (366),
+> - `packages/core/db/schema.ts`: `WorkspaceWorkTrackerConfig`,
 >   `workspaces.githubInstallationId`, `tasks/missions.externalIssueId/Url`
 
 ---
@@ -84,13 +84,15 @@ provider before it is stored.
 
 ## 2. Provider abstraction (Step 1 — outbound)
 
-**Capability statement**: Outbound tracker updates MUST route through a single
-`WorkTrackerProvider` interface dispatched by `workTrackerConfig.provider`; adding
-a provider MUST NOT touch the webhook or task/mission lifecycle code.
+**Capability statement**: Outbound tracker updates MUST route through one
+dispatch function, `postWorkTrackerCompletionUpdate`, which picks the provider
+from `workTrackerConfig.provider`. Adding a provider MUST NOT touch the webhook
+or task/mission lifecycle code. There is no `WorkTrackerProvider` type: each
+provider is a function (`postLinearCompletionComment`,
+`postGitHubCompletionUpdate`) called from that one switch.
 
 **Invariants**:
-- The interface exposes at least `postCompletionUpdate({ issueRef, prUrl, merged })`
-  — posts a comment and transitions/closes the linked issue.
+- Each provider posts a comment and transitions or closes the linked issue.
 - `linear` provider: sources the OAuth token from its connector
   (`mcp_connector_credential`, owner-team keyed) and calls the Linear GraphQL API
   (existing `postLinearCompletionComment` logic, moved behind the interface).
@@ -104,19 +106,20 @@ a provider MUST NOT touch the webhook or task/mission lifecycle code.
   re-thrown into the webhook path.
 
 **Acceptance criteria**:
-- AC-1: GIVEN a merged PR whose task has `externalIssueUrl` on a GitHub-tracked
+- AC-5: GIVEN a merged PR whose task has `externalIssueUrl` on a GitHub-tracked
   workspace WHEN the webhook fires THEN a comment is posted and the issue is
   closed via `githubApi`, using the workspace installation (no connector token).
-- AC-2: GIVEN a Linear-tracked workspace WHEN a PR merges THEN behaviour is
+- AC-6: GIVEN a Linear-tracked workspace WHEN a PR merges THEN behaviour is
   unchanged from today (comment + transition to Done).
-- AC-3: GIVEN a GitHub-tracked task whose `externalIssueUrl` is unparseable WHEN
+- AC-7: GIVEN a GitHub-tracked task whose `externalIssueUrl` is unparseable WHEN
   the webhook fires THEN no API call is made and the webhook returns normally.
-- AC-4: GIVEN the provider API returns an error WHEN the webhook fires THEN the
+- AC-8: GIVEN the provider API returns an error WHEN the webhook fires THEN the
   webhook still completes (error swallowed + logged).
 
 **Code surface**: `apps/web/src/lib/work-tracker.ts` (provider interface +
 `linear`/`github` impls); `apps/web/src/app/api/github/webhook/route.ts`
-(`maybePostWorkTrackerIssueUpdate` → dispatch by provider).
+(calls `maybePostWorkTrackerIssueUpdate` from `apps/web/src/lib/pr-merged-work.ts`,
+which dispatches by provider).
 
 **Out of scope (Step 1)**: creating issues from tasks; mission→project linking
 beyond the existing note; providers other than linear/github.
@@ -146,12 +149,12 @@ cancel the linked task (if still open).
 - `closed`/canceled issue → the linked task is cancelled only if not terminal.
 
 **Acceptance criteria**:
-- AC-1: GIVEN a GitHub issue labeled `buildd` in a github-tracked workspace WHEN
+- AC-9: GIVEN a GitHub issue labeled `buildd` in a github-tracked workspace WHEN
   the webhook fires THEN one task is created, linked to the issue.
-- AC-2: GIVEN the same labeled event delivered twice THEN exactly one task exists.
-- AC-3: GIVEN a linked issue is closed WHEN the webhook fires THEN the open linked
+- AC-10: GIVEN the same labeled event delivered twice THEN exactly one task exists.
+- AC-11: GIVEN a linked issue is closed WHEN the webhook fires THEN the open linked
   task is cancelled; a completed task is left unchanged.
-- AC-4: GIVEN an invalid webhook signature THEN `401` and no task mutation.
+- AC-12: GIVEN an invalid webhook signature THEN `401` and no task mutation.
 
 **Code surface**: `apps/web/src/app/api/github/webhook/route.ts` (issues events);
 `apps/web/src/app/api/webhooks/linear/[workspaceId]/route.ts`; workspace config UI
@@ -159,3 +162,11 @@ cancel the linked task (if still open).
 
 **Out of scope**: syncing arbitrary field edits; comment mirroring; providers
 beyond linear/github.
+
+---
+
+## Renumbered
+
+Criteria ids repeated in each section and collapsed into four. They are now
+unique across the file. Old to new: §1 AC-1..AC-4 unchanged; §2 AC-1..AC-4
+to AC-5..AC-8; §3 AC-1..AC-4 to AC-9..AC-12.

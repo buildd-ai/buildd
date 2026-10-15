@@ -412,6 +412,31 @@ client_only_runner() {
   exit 3
 }
 
+# Packages: apps/runner/node_modules/* are symlinks into the root node_modules, so
+# one missing folder leaves every package dangling and bun dies with a raw ENOENT
+# before the runner starts. Repair once (bounded), else say the one command.
+RUNNER_PKG_DIR="$HOME/.buildd/apps/runner"
+packages_missing() {
+  [ -f "$RUNNER_PKG_DIR/package.json" ] || return 1
+  for dep in pusher-js zod marked; do
+    [ -e "$RUNNER_PKG_DIR/node_modules/$dep/package.json" ] || [ -e "$HOME/.buildd/node_modules/$dep/package.json" ] || return 0
+  done
+  return 1
+}
+ensure_packages() {
+  packages_missing || return 0
+  local marker="$HOME/.buildd/.buildd-package-repair" limit
+  if [ -z "$(find "$marker" -mmin -10 2>/dev/null)" ]; then
+    date +%s000 > "$marker" 2>/dev/null
+    echo "buildd: packages are missing from ~/.buildd; running bun install..." >&2
+    limit="$(command -v timeout || command -v gtimeout)"
+    ( cd "$HOME/.buildd" && ${limit:+$limit 600} bun install --frozen-lockfile >&2 )
+    packages_missing || { rm -f "$marker"; return 0; }
+  fi
+  echo "buildd: packages are missing from ~/.buildd. Fix: cd ~/.buildd && bun install" >&2
+  exit 78
+}
+
 # Auto-detect project roots if not set
 if [ -z "$PROJECTS_ROOT" ]; then
   ROOTS=""
@@ -450,6 +475,7 @@ CLIENTUSAGE
       exit 0
     fi
     # Answered by the runner's own usage text (cli-args.ts) without starting it.
+    ensure_packages
     exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/index.ts" --help
     ;;
 
@@ -605,6 +631,7 @@ MCPEOF
 
   service)
     [ "$CLIENT_ONLY" = "1" ] && client_only_runner
+    ensure_packages
     shift
     exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/service.ts" "$@"
     ;;
@@ -614,6 +641,7 @@ esac
 
 # Run with restart loop (exit code 75 = update applied, restart)
 while true; do
+  ensure_packages
   bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/index.ts" "$@"
   EXIT_CODE=$?
   if [ "$EXIT_CODE" -ne 75 ]; then exit $EXIT_CODE; fi

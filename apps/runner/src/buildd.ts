@@ -7,7 +7,7 @@ import type { PromptCompositionEvent } from './memory-digest-policy';
 import type { Outbox } from './outbox';
 import type { PromptBundlesPayload } from './session-prompt-bundles';
 import type { ClaimHandoffSnapshot } from './claim-handoff';
-import type { WorkspaceSkill, WorkerEnvironment, ClaimDiagnostics, DerivedFileRule, MissionStage } from '@buildd/shared';
+import type { WorkspaceSkill, WorkerEnvironment, ClaimDiagnostics, DerivedFileRule, MissionStage, RecentMission } from '@buildd/shared';
 import { CLOUD_EXECUTOR, stripClaimCredentials } from '@buildd/shared';
 import { BuilddTransport } from '@buildd/core/buildd-transport';
 import { createRedactionInterceptor } from '@buildd/core/redaction';
@@ -156,6 +156,12 @@ export class BuilddClient {
     if (missionIds.length === 0) return {};
     const data = await this.fetch(`/api/missions/stages?ids=${missionIds.map(encodeURIComponent).join(',')}`);
     return data?.stages && typeof data.stages === 'object' ? data.stages : {};
+  }
+
+  /** Open missions and those delivered in the last 7 days across the key's workspaces (R-24), from GET /api/missions/recent. */
+  async listRecentMissions(): Promise<RecentMission[]> {
+    const data = await this.fetch('/api/missions/recent');
+    return Array.isArray(data?.missions) ? data.missions : [];
   }
 
   async getTask(id: string): Promise<BuilddTask | null> {

@@ -3,7 +3,7 @@
  *
  * `kind` is written AT MOST ONCE, by whichever of filer → worker → PR-open
  * reaches it first with a non-null value, and is never overwritten by any of
- * them afterwards (docs/specs/mission-legibility.md Rule K2-20). There is no
+ * them afterwards (docs/specs/mission-legibility.md R-32). There is no
  * automated code path that changes a non-null `kind`.
  *
  * That invariant is what lets three independent late signals compose without a

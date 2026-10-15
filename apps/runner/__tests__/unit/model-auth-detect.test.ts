@@ -1,5 +1,5 @@
 /**
- * One model-auth detector (docs/specs/runner-model-auth-source.md): the startup
+ * One model-auth detector (docs/specs/runner-model-login-detect-say-report.md): the startup
  * line, the local /api/config and the heartbeat label all come from
  * `detectModelAuthSource`. The label names the kind of credential, never its
  * value.

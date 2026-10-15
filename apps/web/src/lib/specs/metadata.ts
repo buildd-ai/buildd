@@ -25,10 +25,17 @@ import { AREA_GONE_STATUSES } from './areas';
  * in a workspace that opted in gets its generated PR updated (R-15).
  */
 
-export const METADATA_KEYS = ['owner', 'last_verified', 'surfaces', 'verified_by', 'assertions', 'domains', 'repo_provenance', 'publication'] as const;
+export const METADATA_KEYS = ['owner', 'summary', 'last_verified', 'surfaces', 'verified_by', 'assertions', 'domains', 'repo_provenance', 'publication', 'criteria_unread'] as const;
 type Key = (typeof METADATA_KEYS)[number];
-/** The fields a repo spec file states, and so the ones an import writes and clears. */
-export const FILE_METADATA_KEYS = ['owner', 'last_verified', 'surfaces', 'verified_by', 'assertions'] as const;
+/**
+ * The fields a repo spec file states, and so the ones an import writes and
+ * clears; `criteria_unread` is what the import could not read of its criteria.
+ */
+export const FILE_METADATA_KEYS = ['owner', 'summary', 'last_verified', 'surfaces', 'verified_by', 'assertions', 'criteria_unread'] as const;
+
+const CRITERION_TOKEN = /^[A-Za-z][A-Za-z0-9-]{0,39}$/;
+const lineNo = (n: unknown) => typeof n === 'number' && Number.isInteger(n) && n > 0;
+
 
 /** A `domain:` value: lowercase words joined by hyphens, like the repo's DOMAINS list. */
 export const DOMAIN_VALUE = /^[a-z0-9][a-z0-9-]{0,39}$/;
@@ -41,6 +48,19 @@ function parseField(key: Key, raw: unknown): { value: SpecMetadataBlock[Key] | n
   switch (key) {
     case 'owner':
       return typeof raw === 'string' && /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/.test(raw) ? { value: raw } : { error: 'owner is a GitHub handle, without @' };
+    case 'summary':
+      return typeof raw === 'string' && raw.trim() && raw.length <= 500 && !raw.includes('\n') ? { value: raw.trim() } : { error: 'summary is one line of at most 500 characters' };
+    case 'criteria_unread': {
+      const c = raw as Record<string, unknown>;
+      const ok = !!c && typeof c === 'object' && !Array.isArray(c)
+        && Array.isArray(c.unreadable) && c.unreadable.length <= 200
+        && c.unreadable.every((u) => u && typeof u === 'object' && typeof u.id === 'string' && CRITERION_TOKEN.test(u.id) && lineNo(u.line))
+        && Array.isArray(c.duplicates) && c.duplicates.length <= 200
+        && c.duplicates.every((d) => d && typeof d === 'object' && typeof d.id === 'string' && CRITERION_TOKEN.test(d.id) && Array.isArray(d.lines) && d.lines.length >= 2 && d.lines.length <= 50 && d.lines.every(lineNo));
+      return ok
+        ? { value: { unreadable: (c.unreadable as Array<{ id: string; line: number }>).map((u) => ({ id: u.id, line: u.line })), duplicates: (c.duplicates as Array<{ id: string; lines: number[] }>).map((d) => ({ id: d.id, lines: [...d.lines] })) } }
+        : { error: 'criteria_unread is { unreadable: [{ id, line }], duplicates: [{ id, lines }] }' };
+    }
     case 'last_verified':
       return typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw) && !Number.isNaN(Date.parse(raw)) ? { value: raw } : { error: 'last_verified is a date, YYYY-MM-DD' };
     case 'surfaces':

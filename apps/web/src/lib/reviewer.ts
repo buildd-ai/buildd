@@ -836,7 +836,7 @@ export async function createReviewerTask(
 
   const title = reviewerTitle(prNumber, originalTask.title);
 
-  // Rule P1-7: an attempt inherits its parent's phase. The rail collapses
+  // mission-legibility R-7: an attempt inherits its parent's phase. The rail collapses
   // attempts under the parent row they belong to, so a review pass carrying a
   // different phase than the task it reviews would have to render inside a band
   // it is not a member of.

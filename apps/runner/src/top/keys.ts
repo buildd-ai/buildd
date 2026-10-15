@@ -4,7 +4,7 @@
  * Pure, so every key is unit-tested (top-keys.test.ts).
  */
 import {
-  currentMission, currentWorkspace, cycleWorkspace, missionRows, selectedRow, taskRows, teamCount, workspaceList,
+  currentMission, currentTeam, currentWorkspace, cycleTeam, cycleWorkspace, missionRows, scopedWorkspaces, selectedRow, taskRows, teamCount, teamList, workspaceList,
   type TaskRow, type TopState,
 } from './state';
 
@@ -170,9 +170,9 @@ function targetRow(state: TopState, now: number): TaskRow | null {
   return state.focus === 'tasks' ? selectedRow(state, now) : null;
 }
 
-function moveMission(state: TopState, delta: number): TopState {
-  const rows = missionRows(state);
-  const cur = rows.findIndex(r => r.key === currentMission(state).key);
+function moveMission(state: TopState, delta: number, now: number): TopState {
+  const rows = missionRows(state, now);
+  const cur = rows.findIndex(r => r.key === currentMission(state, now).key);
   const idx = Math.max(0, Math.min(rows.length - 1, cur + delta));
   return { ...state, missionCursor: idx, selectedMission: rows[idx].key, rowCursor: 0 };
 }
@@ -283,9 +283,9 @@ export function handleKey(state: TopState, key: Key, now: number): KeyResult {
   const cleared = { ...state, status: null };
   switch (key.name) {
     case 'up':
-      return { state: state.focus === 'missions' ? moveMission(cleared, -1) : moveRow(cleared, -1, now), effects: [] };
+      return { state: state.focus === 'missions' ? moveMission(cleared, -1, now) : moveRow(cleared, -1, now), effects: [] };
     case 'down':
-      return { state: state.focus === 'missions' ? moveMission(cleared, 1) : moveRow(cleared, 1, now), effects: [] };
+      return { state: state.focus === 'missions' ? moveMission(cleared, 1, now) : moveRow(cleared, 1, now), effects: [] };
     case 'left':
       return { state: { ...cleared, focus: 'missions' }, effects: [] };
     case 'right':
@@ -299,24 +299,39 @@ export function handleKey(state: TopState, key: Key, now: number): KeyResult {
       return { state: { ...cleared, mode: { kind: 'detail', taskId: row.taskId } }, effects: [] };
     }
     case 'char':
-      if (key.ch === 'k') return { state: state.focus === 'missions' ? moveMission(cleared, -1) : moveRow(cleared, -1, now), effects: [] };
-      if (key.ch === 'j') return { state: state.focus === 'missions' ? moveMission(cleared, 1) : moveRow(cleared, 1, now), effects: [] };
+      if (key.ch === 'k') return { state: state.focus === 'missions' ? moveMission(cleared, -1, now) : moveRow(cleared, -1, now), effects: [] };
+      if (key.ch === 'j') return { state: state.focus === 'missions' ? moveMission(cleared, 1, now) : moveRow(cleared, 1, now), effects: [] };
       if (key.ch === 'w') return { state: switchWorkspace(cleared), effects: [] };
+      if (key.ch === 't') return { state: switchTeam(cleared), effects: [] };
       if (key.ch === '/') return { state: { ...cleared, mode: { kind: 'input', purpose: 'filter', text: state.filter } }, effects: [] };
       return { state, effects: [] };
   }
   return { state, effects: [] };
 }
 
-/** `w` (R-19): the next workspace, then all of them again. */
+/** `w` (R-19): the next workspace of the team in view, then all of them again. */
 function switchWorkspace(state: TopState): TopState {
-  const list = workspaceList(state);
-  if (list.length < 2) return info(state, 'This runner serves one workspace, so there is nothing to switch to.');
+  const list = scopedWorkspaces(state);
+  const team = currentTeam(state);
+  if (list.length < 2) {
+    return info(state, team ? `${team.name} has one workspace here, so there is nothing to switch to.` : 'This runner serves one workspace, so there is nothing to switch to.');
+  }
   const next = cycleWorkspace(state);
   const ws = currentWorkspace(next);
   // With several teams, say whose workspace this is (R-7).
-  const team = ws && teamCount(next) > 1 && ws.teamName ? ` (${ws.teamName})` : '';
-  return info(next, ws ? `Showing ${ws.name}${team}. w for the next workspace.` : `Showing all ${list.length} workspaces.`);
+  const owner = ws && teamCount(next) > 1 && ws.teamName ? ` (${ws.teamName})` : '';
+  if (ws) return info(next, `Showing ${ws.name}${owner}. w for the next workspace.`);
+  return info(next, team ? `Showing all ${list.length} workspaces of ${team.name}.` : `Showing all ${list.length} workspaces.`);
+}
+
+/** `t` (R-23): the next team, then all of them again. */
+function switchTeam(state: TopState): TopState {
+  const teams = teamList(state);
+  if (teams.length < 2) return info(state, 'This runner serves one team, so there is nothing to switch to.');
+  const next = cycleTeam(state);
+  const team = currentTeam(next);
+  if (team) return info(next, `Showing ${team.name}. t for the next team.`);
+  return info(next, `Showing all ${workspaceList(next).length} workspaces in ${teams.length} teams.`);
 }
 
 const fromOf = (state: TopState): 'detail' | undefined => (state.mode.kind === 'detail' ? 'detail' : undefined);

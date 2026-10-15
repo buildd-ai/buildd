@@ -1409,7 +1409,7 @@ export interface RunnerUpdateSnapshot {
 
 /**
  * Which model login a runner's agents use, as the runner detects it on its own
- * machine (docs/specs/runner-model-auth-source.md). A label only: the runner
+ * machine (docs/specs/runner-model-login-detect-say-report.md). A label only: the runner
  * never sends the credential, and the server stores nothing but one of these
  * words. Sent on every heartbeat as `modelAuthSource`.
  */
@@ -1430,7 +1430,7 @@ export function isRunnerModelAuthMode(value: unknown): value is RunnerModelAuthM
 
 /**
  * Which Codex login a runner's Codex agents use, detected by the same rules as
- * the Claude label (docs/specs/runner-model-auth-source.md R-10..R-13). A label
+ * the Claude label (docs/specs/runner-model-login-detect-say-report.md R-10..R-13). A label
  * only, sent on every heartbeat as `codexAuthSource`.
  */
 export const RUNNER_CODEX_AUTH_SOURCES = ['machine_login', 'api_key', 'none'] as const;
@@ -3237,6 +3237,22 @@ export type MissionStageStep = 'building' | 'verifying' | 'delivering' | 'delive
 export interface MissionStage {
   step: MissionStageStep;
   waitingOn: string | null;
+}
+
+/**
+ * One mission as `GET /api/missions/recent` sends it (spec c7410e76 R-24):
+ * open missions and those finished in the last 7 days, in the caller's
+ * reachable workspaces. `completedAt` is set only on a finished mission.
+ */
+export interface RecentMission {
+  id: string;
+  title: string;
+  workspaceId: string;
+  status: string;
+  isHeld: boolean;
+  executor: 'runner' | 'local' | string;
+  completedAt: string | null;
+  stage: MissionStage | null;
 }
 
 export interface GoalCriteriaState {

@@ -90,6 +90,25 @@ describe('manage_specs', () => {
     expect(r).toContain('expectedVersion 2');
   });
 
+  it('get and import say how many criteria an import could not read, and which', async () => {
+    const criteria = { unreadable: [{ id: 'AC-3a', line: 4 }], duplicates: [{ id: 'AC-1', lines: [3, 7] }] };
+    api.mockResolvedValueOnce({ spec: { ...spec, metadata: { criteria_unread: criteria } }, revision: { revision: 2, artifactRevision: 3, contentHash: 'abc' }, body: '# Checkout\nAC-1: x', requirements: [{ id: 'AC-1' }], revisions: [] });
+    const got = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'get', specId: SPEC }, ctx()));
+    expect(got).toContain('2 criteria could not be read; not read: AC-3a (line 4); defined more than once, only the first is read: AC-1 (lines 3, 7).');
+
+    api.mockResolvedValueOnce({
+      dryRun: true, repo: 'acme/app', commitSha: 'a'.repeat(40), counts: { create: 1, reimport: 0, skip: 0 },
+      byArea: [{ area: 'Unfiled', areaSpecId: null, proposed: false, count: 1 }],
+      files: [{ path: 'docs/specs/messy.md', action: 'create', spec: { title: 'Messy' }, area: null, criteria }],
+    });
+    const imp = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'import' }, ctx()));
+    expect(imp).toContain('create: Messy from docs/specs/messy.md');
+    expect(imp).toContain('2 criteria could not be read; not read: AC-3a (line 4)');
+
+    api.mockResolvedValueOnce({ spec, revision: { revision: 2, artifactRevision: 3, contentHash: 'abc' }, body: '# Checkout\nR-1: x', requirements: [{ id: 'R-1' }], revisions: [] });
+    expect(out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'get', specId: SPEC }, ctx()))).not.toContain('could not be read');
+  });
+
   it('get points a long body at bounded artifact reads instead of inlining it', async () => {
     const body = 'x'.repeat(SPEC_INLINE_BODY_MAX + 1);
     api.mockResolvedValueOnce({ spec, revision: { revision: 2, artifactRevision: 3, contentHash: 'abc' }, body, requirements: [], revisions: [] });

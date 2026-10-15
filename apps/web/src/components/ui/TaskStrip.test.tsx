@@ -101,7 +101,7 @@ describe('TaskStrip lg', () => {
     expect(tags[2]).toContain('aria-label="03 Auditing: Task 3"');
   });
 
-  it('marks live on the tick row only; a marked cell renders exactly as unmarked (MK-4)', () => {
+  it('marks live on the tick row only; a marked cell renders exactly as unmarked (strip R-17)', () => {
     const plain = renderToStaticMarkup(<TaskStrip cells={cells} selectedId="t4" />);
     const marked = renderToStaticMarkup(<TaskStrip cells={cells} selectedId="t4" marks={{ t5: 'direct', t6: 'transitive' }} />);
     expect(cellTags(marked)).toEqual(cellTags(plain));
@@ -111,14 +111,14 @@ describe('TaskStrip lg', () => {
     expect(row[6]).not.toContain('data-mark');
   });
 
-  it('direct and transitive differ in shape, not only colour (MK-2)', () => {
+  it('direct and transitive differ in shape, not only colour (strip R-15)', () => {
     const row = ticks(renderToStaticMarkup(<TaskStrip cells={cells} selectedId="t4" marks={new Map([['t5', 'direct'], ['t6', 'transitive']])} />));
     expect(row[4]).toContain('bg-accent');
     expect(row[5]).toContain('border-b-2');
     expect(row[5]).not.toContain('bg-accent');
   });
 
-  it('the selected tick is never marked and keeps its number (MK-3)', () => {
+  it('the selected tick is never marked and keeps its number (strip R-16)', () => {
     const row = ticks(renderToStaticMarkup(<TaskStrip cells={cells} selectedId="t4" marks={{ t4: 'direct' }} />));
     expect(row[3]).not.toContain('data-mark');
     expect(row[3]).toContain('>04<');

@@ -1258,7 +1258,7 @@ export async function POST(req: NextRequest) {
       })
       .where(eq(workers.id, workerId));
 
-    // Rule K2-19 — the late signal. "This task opened a PR, so it changed code"
+    // mission-legibility R-31 — the late signal. "This task opened a PR, so it changed code"
     // is a fact LEARNED LATE, not a presentation concern, so it goes in the
     // column where every consumer sees it (usage stats, exports, the model
     // router on a retry) rather than into a render-time derivation only the UI

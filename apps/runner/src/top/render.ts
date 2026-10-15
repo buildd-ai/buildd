@@ -7,9 +7,9 @@
  */
 import type { Palette, PaletteToken } from '../terminal-palette';
 import {
-  busySlots, currentMission, currentWorkspace, describeToolCall, formatDuration, missionRows, missionStageLine, missionStageWord, planOf,
+  busySlots, currentMission, currentWorkspace, deliveredDay, describeToolCall, filterLine, formatDuration, missionMeta, missionRows, missionStageLine, missionStageWord, planOf,
   providerHoldLine, providerHolds, selectedRow,
-  taskRows, workerForTask, workspaceSummary, type RowKind, type TaskRow, type TopState,
+  NO_MISSION, taskRows, workerForTask, workspaceSummary, type MissionRow, type RowKind, type TaskRow, type TopState,
 } from './state';
 
 export interface FrameOptions {
@@ -167,11 +167,11 @@ function rule(cols: number, p: Palette): string {
   return p.fg('faint', '─'.repeat(cols));
 }
 
-const HINTS_LIST = ['↑↓ move', '⏎ open', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 'o web', 'w workspace', '/ filter', '? help', 'q quit'];
+const HINTS_LIST = ['↑↓ move', '⏎ open', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 'o web', 't team', 'w workspace', '/ filter', '? help', 'q quit'];
 const HINTS_HELP = ['o open this runner on buildd', 'any key back', 'q quit'];
 const HINTS_DETAIL = ['esc back', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 'o web', 'q quit'];
 
-/** Dropped first when the footer is too narrow; `? help`, `w` and `q quit` always stay. */
+/** Dropped first when the footer is too narrow; `? help`, `t`, `w` and `q quit` always stay. */
 const HINT_DROP_ORDER = ['/ filter', 'o web', '⏎ open', '↑↓ move', 'm message', 'c claim', 'p pause', 'x stop', 'a answer', 'esc back'];
 
 function fitHints(hints: string[], cols: number): string {
@@ -217,34 +217,71 @@ function leftWidth(cols: number): number {
   return cols >= 110 ? 28 : cols >= 90 ? 24 : 22;
 }
 
+/**
+ * The missions pane (R-24): a heading row per team, then that team's open
+ * missions (building and verifying first, then on hold), then the ones
+ * delivered in the last 7 days, dimmed. A second, dimmed line carries "local
+ * session" or "delivered Oct 14"; when the pane is too short those lines go
+ * first (except the selected mission's), then the pane scrolls to keep the
+ * selected mission in view.
+ */
+function leftPane(missions: MissionRow[], current: MissionRow, focused: boolean, lw: number, height: number, p: Palette): string[] {
+  const hasTeams = missions.some(m => m.team !== null);
+  const build = (withMeta: boolean) => {
+    const lines: string[] = [];
+    let selected = 0;
+    missions.forEach((m, i) => {
+      if (hasTeams && (i === 0 || m.team !== missions[i - 1].team)) {
+        lines.push(m.team === null ? ' '.repeat(lw) : p.fg('muted', fit(' ' + m.team, lw)));
+      }
+      const isCurrent = m.key === current.key;
+      const delivered = m.deliveredAt !== undefined;
+      const count = delivered ? '' : missionStageWord(m) ?? (m.key === NO_MISSION || m.total > 0 ? `${m.done}/${m.total}` : m.held ? 'on hold' : '');
+      const marker = isCurrent ? '▸' : ' ';
+      const titleW = lw - 3 - (count ? count.length + 2 : 1);
+      const title = p.fg(delivered ? 'muted' : 'text', fit(m.title, titleW));
+      const line = ` ${p.fg(isCurrent ? 'accent' : 'faint', marker)} ${title}${count ? ' ' + p.fg(m.running > 0 ? 'accent' : 'muted', count) : ''} `;
+      if (isCurrent) selected = lines.length;
+      lines.push(isCurrent && focused ? p.selectedBg(line) : line);
+      const meta = missionMeta(m);
+      if (meta && (withMeta || isCurrent)) lines.push(p.fg('muted', fit('   ' + meta, lw)));
+    });
+    // Without team headings the pane keeps its MISSIONS label.
+    if (!hasTeams) return { lines: [p.fg('muted', fit(' MISSIONS', lw)), ...lines], selected: selected + 1 };
+    return { lines, selected };
+  };
+  let built = build(true);
+  if (built.lines.length > height) built = build(false);
+  let lines = built.lines;
+  if (lines.length > height) {
+    const offset = Math.min(Math.max(0, built.selected - height + 1), lines.length - height);
+    lines = lines.slice(offset, offset + height);
+  }
+  return lines;
+}
+
 function listBody(state: TopState, cols: number, height: number, now: number, p: Palette): string[] {
   const lw = leftWidth(cols);
   const rw = cols - lw - 1;
-  const missions = missionRows(state);
-  const mission = currentMission(state);
+  const missions = missionRows(state, now);
+  const mission = currentMission(state, now);
   const rows = taskRows(state, now);
   const sel = selectedRow(state, now);
 
   // Left pane.
-  const left: string[] = [p.fg('muted', fit(' MISSIONS', lw))];
-  for (const m of missions) {
-    const isCurrent = m.key === mission.key;
-    // The stage in words when the server sent one (R-18), else done/total.
-    const count = missionStageWord(m) ?? `${m.done}/${m.total}`;
-    const marker = isCurrent ? '▸' : ' ';
-    const titleW = lw - 3 - count.length - 2;
-    const line = ` ${p.fg(isCurrent ? 'accent' : 'faint', marker)} ${p.fg('text', fit(m.title, titleW))} ${p.fg(m.running > 0 ? 'accent' : 'muted', count)} `;
-    left.push(isCurrent && state.focus === 'missions' ? p.selectedBg(line) : line);
-  }
+  const left = leftPane(missions, mission, state.focus === 'missions', lw, height, p);
 
   // Right pane.
   const right: string[] = [];
   const nRunning = rows.filter(r => r.group === 'running').length;
   const nWaiting = rows.filter(r => r.group === 'waiting').length;
-  const counts = `${nRunning} running · ${nWaiting} waiting `;
+  // A mission with no rows has nothing to count; its heading gets the room.
+  const counts = rows.length === 0 && mission.key !== NO_MISSION ? '' : `${nRunning} running · ${nWaiting} waiting `;
   const filterNote = state.filter ? ` (filter: ${state.filter})` : '';
   const ws = currentWorkspace(state);
-  const heading = (ws ? `${ws.name} · ` : '') + mission.title + (missionStageLine(mission) ? ` · ${missionStageLine(mission)}` : mission.planning ? ' · planning' : '') + filterNote;
+  const meta = missionMeta(mission);
+  const status = mission.deliveredAt !== undefined && meta ? ` · ${meta}` : missionStageLine(mission) ? ` · ${missionStageLine(mission)}` : mission.planning ? ' · planning' : meta ? ` · ${meta}` : '';
+  const heading = (ws ? `${ws.name} · ` : '') + mission.title + status + filterNote;
   const titleW = rw - textWidth(counts) - 1;
   // One space always separates a cut heading from the counts (R-21).
   right.push(' ' + p.fg('text', fit(heading, titleW - 1)) + ' ' + p.fg(nRunning > 0 ? 'accent' : 'muted', counts));
@@ -265,7 +302,11 @@ function listBody(state: TopState, cols: number, height: number, now: number, p:
     }
   }
   if (rows.length === 0) {
-    lines.push({ text: p.fg('muted', fit(state.filter ? ' Nothing matches the filter.' : ' Nothing here yet. Work this runner takes shows up as it happens.', rw)) });
+    const empty = state.filter ? ' Nothing matches the filter.'
+      : mission.deliveredAt !== undefined ? ` Delivered ${deliveredDay(mission.deliveredAt)}. Its finished work is not listed here.`
+      : mission.local ? ' A person runs this mission from their own session.'
+      : ' Nothing here yet. Work this runner takes shows up as it happens.';
+    lines.push({ text: p.fg('muted', fit(empty, rw)) });
   }
 
   // Scroll so the selected row stays in view.
@@ -371,7 +412,8 @@ const HELP_KEYS: Array<[string, string]> = [
   ['x', 'stop a running agent (asks first)'],
   ['c', 'claim a waiting task onto this runner'],
   ['o', 'open the task on buildd'],
-  ['w', 'show the next workspace, then all of them'],
+  ['t', 'show the next team, then all of them'],
+  ['w', 'show the next workspace of that team, then all of them'],
   ['/', 'filter by title; esc clears it'],
   ['q', 'quit (the runner keeps running)'],
 ];
@@ -399,11 +441,13 @@ export function renderFrame(state: TopState, opts: FrameOptions): string[] {
   const holdLines = providerHolds(state, now)
     .slice(0, 2)
     .map(h => p.fg('warning', fit(' ' + providerHoldLine(h, now), cols)));
-  const bodyH = Math.max(1, rows - 4 - holdLines.length);
+  // The line under the header always names what is shown and the keys that change it (R-23).
+  const filterRow = p.fg('muted', fit(' ' + filterLine(state), cols));
+  const bodyH = Math.max(1, rows - 5 - holdLines.length);
   const body = state.mode.kind === 'detail'
     ? detailBody(state, state.mode.taskId, cols, bodyH, now, p)
     : state.mode.kind === 'help'
       ? helpBody(state, cols, bodyH, p)
       : listBody(state, cols, bodyH, now, p);
-  return [header(state, cols, p), ...holdLines, rule(cols, p), ...body, rule(cols, p), footer(state, cols, p)];
+  return [header(state, cols, p), filterRow, ...holdLines, rule(cols, p), ...body, rule(cols, p), footer(state, cols, p)];
 }

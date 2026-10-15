@@ -338,7 +338,8 @@ describe('runCanaryTrip — rollback mechanics', () => {
       bunInstall: async () => { installed = true; },
     };
     const install = join(dir, 'install');
-    const { d } = deps({ rollbackTo: (sha) => rollbackTo(sha, install, { rmSync: () => {} } as any, exec) });
+    require('fs').mkdirSync(install, { recursive: true });
+    const { d } = deps({ rollbackTo: (sha) => rollbackTo(sha, install, require('fs'), exec) });
     await runCanaryTrip(c, trip, d);
     expect(gitCalls).toContainEqual(['reset', '--hard', GOOD]);
     expect(installed).toBe(true);
