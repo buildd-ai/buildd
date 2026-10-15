@@ -1799,7 +1799,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
-    name: '00d288fd: a request for changes from outside the rounds while the owner works raises its findings, and the hand-off owes the fix, not a second review',
+    name: '00d288fd: a request for changes from outside the rounds while the owner works raises its findings, and the hand-off owes the fix, not a second review; the kernel\'s own open round is never answered from outside',
     async run(host) {
       const s = await new Delivery(host, 71).open();
       await s.push('H1');
@@ -1809,13 +1809,13 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       eq(await s.count('dispatch_fix'), 1, 'the fix is owed');
       eq(await s.count('dispatch_review'), 0, 'no reviewer filed');
       eq(await s.findingStates(), { 'a.ts': 'open' }, 'its finding is open');
-      // While the kernel's own round waits for its reviewer, an outside verdict answers that round.
+      eq(await s.count('post_review'), 0, 'a verdict from outside the kernel\'s rounds is never posted to GitHub as a review');
+      // While the kernel's own round at that head waits for its reviewer, that round is the review that counts.
       const t = await new Delivery(host, 72).open();
       await t.ownerPushed('H1');
       const outside = host.newTaskId ? await host.newTaskId(t.workspaceId) : host.newId();
-      applied(await t.submit({ type: 'ReviewVerdictAdopted', actor: 'reviewer', reviewerTaskId: outside, verdict: 'approve', effectiveVerdict: 'approve', headBound: 'H1' }), 'APPROVED', 'decides the open round');
-      eq((await t.view()).rounds.map((r) => r.status), ['decided'], 'one round');
-      notApplied(await t.verdict('request_changes', (await t.view()).rounds[0]!.id), 'duplicate', 'idempotency_key_seen', 'the kernel reviewer\'s late verdict changes nothing');
+      notApplied(await t.submit({ type: 'ReviewVerdictAdopted', actor: 'reviewer', reviewerTaskId: outside, verdict: 'approve', effectiveVerdict: 'approve', headBound: 'H1' }), 'stale', 'round_in_flight', 'the kernel\'s own round answers');
+      eq((await t.view()).rounds.map((r) => r.status), ['queued'], 'its round is untouched');
     },
   },
   {

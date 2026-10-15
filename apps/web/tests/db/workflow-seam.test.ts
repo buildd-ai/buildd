@@ -451,7 +451,7 @@ describe('S5: the review loop never stalls (workflow-kernel-library.md §5)', ()
     const legacyReviewer = await seedTask(workspaceId, { status: 'completed', title: 'legacy review' });
     const kept = await adoptReviewVerdict({ deliveryId: opened.deliveryId!, reviewerTaskId: legacyReviewer, verdict: 'approve', effectiveVerdict: 'approve', headSha: 'H1', confidence: 0.9 }, deps);
     expect(kept).toMatchObject({ result: 'applied', decision: { toState: 'WORKING' } });
-    expect(posted).toEqual([{ commitId: 'H1', event: 'APPROVE' }]);
+    expect(posted).toEqual([]);
     const workerId = await seedWorker(ownerTaskId, { status: 'completed', lastCommitSha: 'H1', prNumber });
     await attemptEnded({ task: { id: ownerTaskId, workspaceId, deliveryId: opened.deliveryId!, deliveryRole: 'owner', context: null }, workerId, status: 'completed', localHeadSha: 'H1', commitCount: 1, source: 'runner' }, deps);
     expect((await loadView({ deliveryId: opened.deliveryId! })).delivery).toMatchObject({ state: 'APPROVED', approvedHeads: ['H1'] });
