@@ -271,6 +271,8 @@ export interface OpenAttemptInfo {
   iteration: number | null;
   maxIterations: number | null;
   claimed: boolean;
+  /** 00d288fd: a reviewer is a review, never a fix (its `iteration` is the round, not a fix attempt). */
+  kind?: 'review' | 'fix';
 }
 
 /**
@@ -294,6 +296,7 @@ function deriveOpenAttempt(attempts: LoadedTask[]): OpenAttemptInfo | null {
     status: openAttemptRow.status,
     iteration: typeof attemptCtx.iteration === 'number' ? attemptCtx.iteration : null,
     maxIterations: typeof attemptCtx.maxIterations === 'number' ? attemptCtx.maxIterations : null,
+    kind: openAttemptRow.category === 'review' ? 'review' : 'fix',
     claimed:
       openAttemptRow.status !== 'pending' ||
       (openAttemptRow.workers ?? []).some(w => LIVE_WORKER_STATUSES.has(w.status)),

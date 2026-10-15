@@ -35,7 +35,7 @@ import { floorCandidatesSql, strandedMechanicalRepair, treadmillCycleCandidatesS
 // The worker PATCH's reading of a terminal report (S30), exported here because routes reach the kernel only through the seam.
 export { attemptEndFromPatch, taskRetryCoversAttemptEnd } from './hand-off';
 import type { MigrationSafety } from '@/lib/migration-safety';
-import type { PolicyOutcome, Verdict } from './types';
+import type { KernelView, PolicyOutcome, Verdict } from './types';
 import {
   UNKNOWN_CI_SIGNATURE, blockedOnResolvedSql, classifyCiFailure, openOrJoinIncidentSql, repairingCiOnBaseSql,
   resolveIncidentSql, trunkExplains, trunkRecovered, unresolvedIncidentsSql, type TrunkClassification,
@@ -482,7 +482,7 @@ export async function attemptEnded(p: {
   const d = view.delivery;
   if (!d) return { handled: false };
   let live: LivePr | null = null;
-  let proof: { liveContainsLocal: boolean } | undefined;
+  let proof: { liveContainsLocal: boolean; contentDiffChanged?: boolean } | undefined;
   let ci: Extract<Command, { type: 'AttemptEnded' }>['ci'] = null;
   let trunk: TrunkClassification | null = null;
   if (d.repoFullName && d.prNumber != null) {
@@ -517,6 +517,16 @@ export async function attemptEnded(p: {
     const repo = await (deps.repoFor ?? workspaceRepo)(p.task.workspaceId);
     const reader = repo ? readerFor(deps, repo.installationId) : null;
     changedPaths = reader?.changedPaths ? await reader.changedPaths(d.repoFullName, boundHead, live.headSha).catch(() => null) : null;
+  }
+  // 1bd26ae7: a repair that pushed from somewhere the runner cannot see (an interactive session, another
+  // checkout) reports no local head. Its proof is §9's "L unknown" rule: the PR head moved off the head the
+  // repair was bound to and descends from it. The re-review that follows decides whether it fixed anything.
+  const reported = attemptId ? view.attempts.find((a) => a.id === attemptId)?.reportedShas.length ?? 0 : 0;
+  // Only an end with nothing local to lose (AC-10): an unproven end that reported commits is not proof.
+  if ((p.status === 'completed' || p.commitCount === 0) && !p.localHeadSha && !proof && reported === 0 && boundHead && live && live.state === 'open' && !live.merged && live.headSha !== boundHead && d.repoFullName) {
+    const repo = await (deps.repoFor ?? workspaceRepo)(p.task.workspaceId);
+    const reader = repo ? readerFor(deps, repo.installationId) : null;
+    if (reader?.contains) proof = { liveContainsLocal: false, contentDiffChanged: await reader.contains(d.repoFullName, boundHead, live.headSha).catch(() => false) };
   }
   const cmd: Command = {
     type: 'AttemptEnded',
@@ -732,21 +742,57 @@ export async function recordReviewVerdict(p: {
 }
 
 /**
+ * 00d288fd: a reviewer that ran outside the kernel's rounds (filed by a door
+ * before the delivery opened) judged a PR the kernel owns. Its verdict at the
+ * current head is the kernel's to keep: recorded as a decided round while the
+ * owner still works, and applied when the owner ends, so the same head is not
+ * reviewed a second time. A verdict for another head is stale and does nothing.
+ */
+export async function adoptReviewVerdict(p: {
+  deliveryId: string;
+  reviewerTaskId: string;
+  verdict: string;
+  effectiveVerdict: string;
+  headSha: string;
+  confidence: number | null;
+  output?: unknown;
+}, deps: SeamDeps = {}): Promise<CommandResult | null> {
+  const deliveryId = await kernelDeliveryById(p.deliveryId, deps.exec);
+  if (!deliveryId) return null;
+  const result = await applyCommand({
+    type: 'ReviewVerdictAdopted',
+    actor: `reviewer:${p.reviewerTaskId}`,
+    reviewerTaskId: p.reviewerTaskId,
+    verdict: toKernelVerdict(p.verdict),
+    effectiveVerdict: toKernelVerdict(p.effectiveVerdict),
+    headBound: p.headSha,
+    confidence: p.confidence,
+    ...(await resolveDeferralTasks(verdictFindingsOf(p.output), deliveryId, deps.exec ?? seamExec)),
+  }, { ref: { deliveryId }, exec: deps.exec });
+  await drainDelivery(deliveryId, deps);
+  return result;
+}
+
+/**
  * A deferral names its task the way agents cite tasks: often by its short id. The kernel
- * takes only a full id, so a short one is resolved here to the one task of the delivery's
- * workspace it prefixes. One that resolves to no task (or to several) is left as written:
+ * takes only a full id of a task in the delivery's own workspace, so every id is resolved
+ * here: a full one must be such a task, a short one must prefix exactly one. Anything else
+ * (no task, a task of another workspace, a prefix shared by several) is marked unresolved:
  * the kernel then refuses that deferral and the finding stays open, recorded as unresolved.
  */
 export async function resolveDeferralTasks(v: VerdictFindings, deliveryId: string, exec: Exec): Promise<VerdictFindings> {
   if (!v.deferredFindings?.length) return v;
   const deferredFindings = await Promise.all(v.deferredFindings.map(async (d) => {
-    const id = d.taskId?.trim();
-    if (!id || isTaskId(id) || !/^[0-9a-f]{8,}$/i.test(id) || id.length > 36) return d;
+    const id = d.taskId?.trim().toLowerCase();
+    if (!id) return d;
+    const unresolved = { ...d, taskId: `unresolved:${id.slice(0, 36)}` };
+    if (!/^[0-9a-f-]{8,36}$/.test(id)) return unresolved;
+    const match = isTaskId(id) ? sql`t.id = ${id}::uuid` : sql`t.id::text LIKE ${`${id}%`}`;
     const rows = ((await exec(sql`-- workflow:resolve_deferral_task
 SELECT t.id FROM tasks t JOIN workflow_deliveries d ON d.workspace_id = t.workspace_id
-WHERE d.id = ${deliveryId}::uuid AND t.id::text LIKE ${`${id.toLowerCase()}%`}
+WHERE d.id = ${deliveryId}::uuid AND ${match}
 LIMIT 2`)).rows ?? []) as Array<{ id: string }>;
-    return rows.length === 1 ? { ...d, taskId: String(rows[0]!.id) } : d;
+    return rows.length === 1 ? { ...d, taskId: String(rows[0]!.id) } : unresolved;
   }));
   return { ...v, deferredFindings };
 }
@@ -927,6 +973,11 @@ export async function requestReview(p: {
     { type: 'ReviewRequested', actor: p.actor, headSha: live.headSha, live, forced: p.forced },
     { ref: { deliveryId }, exec: deps.exec },
   );
+  if (result.result === 'rejected' && result.reason === 'review_in_flight' && !(await roundReviewerAt(deliveryId, live.headSha, deps.exec))) {
+    // 1bd26ae7: an open round with no reviewer is not a review in flight. When every dispatch it had
+    // finished without filing one, the dispatch is owed again (the floor's rule, run now for the asker).
+    await reenqueueOwedEffects(deliveryId, await loadView({ deliveryId }, deps.exec), deps.exec ?? seamExec, 'review request');
+  }
   await drainDelivery(deliveryId, deps);
   return { handled: true, result, reviewTaskId: await roundReviewerAt(deliveryId, live.headSha, deps.exec) };
 }
@@ -1052,12 +1103,45 @@ export async function observeCiFailure(p: {
     { ref: { deliveryId }, exec: deps.exec },
   );
   if (preflightMiss) console.log(`[workflow] preflight_miss on ${p.repoFullName}#${p.prNumber} @ ${p.headSha}: ${preflightMiss}`);
+  // 38442d17: the hint was red but the head reads green now (a re-run passed): a CI repair bound to it ends.
+  // Not failing is not passing (a cancelled or stale run): only GitHub's every-suite-passed allow-list ends it.
+  if (notRed && liveChecks?.complete && d?.state === 'REPAIRING' && d.stateReason === 'ci' && d.currentHeadSha === p.headSha
+    && reader.ciGreen && (await reader.ciGreen(p.repoFullName, p.headSha).catch(() => null)) === true) {
+    await applyCommand({ type: 'CiGreenObserved', actor: `${p.source}:ci_green`, headSha: p.headSha, liveChecks, allPassing: true }, { ref: { deliveryId }, exec: deps.exec });
+  }
   await drainDelivery(deliveryId, deps);
   if (incident?.opened && d) await joinRepairingDeliveries({ incident, workspaceId: p.workspaceId, repoFullName: p.repoFullName, baseRef: live.baseRef ?? d.baseRef ?? '', excludeDeliveryId: deliveryId }, deps);
   return { handled: true, result, attemptTaskId: await attemptTaskOf(deliveryId, result, deps.exec) };
 }
 
 const TRUNK_SOURCE_STATES: ReadonlySet<string> = new Set(['AWAITING_REVIEW', 'APPROVED', 'LANDING']);
+
+/**
+ * 38442d17: CI went green on a kernel-owned PR's head (the `check_suite`
+ * success webhook, or a red-PR sweep that read it green). Read live (R2): only
+ * a head whose check runs all completed with none failing AND whose every check
+ * suite passed (GitHub's passing allow-list) ends a CI repair bound to it.
+ * `handled: false` = not the kernel's PR.
+ */
+export async function observeCiGreen(p: {
+  workspaceId: string; repoFullName: string; prNumber: number; installationId: number; headSha: string; source: string;
+}, deps: SeamDeps = {}): Promise<{ handled: false } | { handled: true; result: CommandResult | null }> {
+  const deliveryId = await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber, deps.exec);
+  if (!deliveryId) return { handled: false };
+  const d = (await loadView({ deliveryId }, deps.exec)).delivery;
+  // Only a CI repair at this head is answered by a green; anything else needs no command.
+  if (!d || d.state !== 'REPAIRING' || d.stateReason !== 'ci' || d.currentHeadSha !== p.headSha) return { handled: true, result: null };
+  const reader = readerFor(deps, p.installationId);
+  const liveChecks = reader.checkRuns ? await reader.checkRuns(p.repoFullName, p.headSha).catch(() => null) : null;
+  if (!liveChecks) return { handled: true, result: null };
+  // The check runs say nothing failed; only GitHub's passing allow-list (every suite completed
+  // and passed) says everything passed. A cancelled or stale run is not green.
+  const allPassing = reader.ciGreen ? (await reader.ciGreen(p.repoFullName, p.headSha).catch(() => null)) === true : false;
+  if (!allPassing) return { handled: true, result: null };
+  const result = await applyCommand({ type: 'CiGreenObserved', actor: p.source, headSha: p.headSha, liveChecks, allPassing }, { ref: { deliveryId }, exec: deps.exec });
+  await drainDelivery(deliveryId, deps);
+  return { handled: true, result };
+}
 
 /**
  * A newly opened incident also takes the deliveries already repairing the same
@@ -1217,17 +1301,9 @@ export async function reconcileKernelDeliveries(
         }
       }
       if (view.delivery) {
-        const held = ((await exec(existingEffectsSql(deliveryId))).rows ?? []) as Array<{ dedupe_key: string; status?: string }>;
-        const existing = new Set(held.map((e) => String(e.dedupe_key)));
-        const status = new Map(held.map((e) => [String(e.dedupe_key), String(e.status ?? '')]));
-        for (const e of enqueueMissingEffects(view, existing, status)) {
-          const ins = ((await exec(enqueueEffectSql(deliveryId, view.delivery.version, e))).rows ?? []).length;
-          if (ins > 0) {
-            enqueued++;
-            s.enqueued++;
-            console.log(`[workflow] floor re-enqueued ${e.kind} for ${repoFullName}#${prNumber} (${e.dedupeKey})`);
-          }
-        }
+        const n = await reenqueueOwedEffects(deliveryId, view, exec, `floor ${repoFullName}#${prNumber}`);
+        enqueued += n;
+        s.enqueued += n;
       }
       if (fact || enqueued) await drainDelivery(deliveryId, deps);
     } catch (err) {
@@ -1236,6 +1312,27 @@ export async function reconcileKernelDeliveries(
     }
   }
   return s;
+}
+
+/**
+ * §11 operation 2 for one delivery: insert each effect its state owes and its
+ * outbox does not hold (`enqueueMissingEffects`, keyed by the reducer's own
+ * dedupe keys, so nothing is ever owed twice). Answers how many it inserted.
+ */
+async function reenqueueOwedEffects(deliveryId: string, view: KernelView, exec: Exec, label: string): Promise<number> {
+  if (!view.delivery) return 0;
+  const held = ((await exec(existingEffectsSql(deliveryId))).rows ?? []) as Array<{ dedupe_key: string; status?: string }>;
+  const existing = new Set(held.map((e) => String(e.dedupe_key)));
+  const status = new Map(held.map((e) => [String(e.dedupe_key), String(e.status ?? '')]));
+  let n = 0;
+  for (const e of enqueueMissingEffects(view, existing, status)) {
+    const ins = ((await exec(enqueueEffectSql(deliveryId, view.delivery.version, e))).rows ?? []).length;
+    if (ins > 0) {
+      n++;
+      console.log(`[workflow] ${label} re-enqueued ${e.kind} (${e.dedupeKey})`);
+    }
+  }
+  return n;
 }
 
 export interface TreadmillCycleSummary {

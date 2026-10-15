@@ -395,8 +395,9 @@ describe('T4 AttemptEnded by outcome (§6.5)', () => {
     expect(green.evidence).toMatchObject({ liveChecks: { complete: false, failing: [] } });
     // No read: exactly the previous decision.
     expect(applied(end(V(D()), { ci: null })).evidence).not.toHaveProperty('liveChecks');
-    // A verdict already decided at the head is honoured first.
-    expect(applied(end(V(D(), [R({ status: 'decided', verdict: 'approve' })]), { ci: red })).toState).not.toBe('REPAIRING');
+    // S5 re-review: a verdict kept while the owner worked (an adopted round) does not skip the CI
+    // repair of a red head; leaving the repair re-enters it.
+    expect(applied(end(V(D(), [R({ status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' })]), { ci: red })).toState).toBe('REPAIRING');
   });
   test('WORKING success: an open round already at the head is reused', () => {
     const dec = applied(end(V(D(), [R()]), {}));
@@ -1527,7 +1528,7 @@ describe('CI family (S23, S25, S28, AC-13/14/16)', () => {
     const dec = applied(head(repairing([ciAttempt({ status: 'queued' })]), 'HUMAN1', { attribution: { descendsFromBound: true } }));
     expect(dec.toState).toBe('AWAITING_REVIEW');
     expect(dec.attempts).toEqual([{ op: 'update', attemptId: 'c1', whenStatus: ['queued'], set: { status: 'skipped', outcome: 'noop', ended: true } }]);
-    expect(dec.effects.find((e) => e.kind === 'cancel_open_attempts')?.payload).toEqual({ families: ['ci'], reason: 'head_moved' });
+    expect(dec.effects.find((e) => e.kind === 'cancel_open_attempts')?.payload).toEqual({ families: ['ci'], reason: 'head_moved', taskIds: ['ft1'] }); // only the task this head made moot
     expect(dec.evidence).toMatchObject({ foreignPush: true, repairSkipped: true });
     expect(dec.patch.boundAttemptId).toBeNull();
     const ap = applied(head(repairing([ciAttempt()], { approvedHeads: ['H1'], approvalBasis: 'verdict' }), 'H2', { carryForward: 'content_equivalent' }));
@@ -2107,5 +2108,26 @@ describe('S5 (workflow-kernel-library.md §5): rules no other path reaches', () 
     expect(dec.rounds.find((r) => r.op === 'insert')).toMatchObject({ headSha: 'H2', scope: { verifyFindings: ['r1:0'] } });
     // With nothing open it re-enters the approval, as before.
     expect(applied(run({ ...v, findings: [finding({ status: 'resolved' })] }, { type: 'RepairNotNeeded', actor: 'claim', attemptId: 'c1', reason: 'ci_green' })).toState).toBe('APPROVED');
+  });
+});
+
+describe('S5 re-review: guards the scenarios cannot reach by commands alone', () => {
+  test('CiGreenObserved: a CI repair whose bound attempt already ended is not ended again', () => {
+    const v = V(D({ state: 'REPAIRING', stateReason: 'ci', currentRound: 1, boundAttemptId: 'c1', approvedHeads: ['H1'], approvalBasis: 'verdict' }), [],
+      [A({ id: 'c1', family: 'ci', triggerReason: 'sig', status: 'ended', outcome: 'failed' })]);
+    expectResult(run(v, { type: 'CiGreenObserved', actor: 'webhook', headSha: 'H1', liveChecks: { complete: true, failing: [] }, allPassing: true }), 'stale', 'attempt_not_open');
+  });
+
+  test('ReviewVerdictAdopted is guarded on the head and round it read, so a move in between writes nothing', () => {
+    const dec = applied(run(V(D({ state: 'WORKING', currentRound: 0 })), { type: 'ReviewVerdictAdopted', actor: 'reviewer', reviewerTaskId: 'rv9', verdict: 'approve', effectiveVerdict: 'approve', headBound: 'H1' }));
+    expect(dec.guard).toMatchObject({ headSha: 'H1', round: 0, states: ['WORKING'] });
+    expect(dec.patch.currentRound).toBe(1);
+  });
+
+  test('ReviewVerdictAdopted keeps the verdict while a repair or a red trunk holds the head, as in WORKING', () => {
+    for (const state of ['REPAIRING', 'BLOCKED_ON_TRUNK', 'AWAITING_PUSH'] as const) {
+      const dec = run(V(D({ state, stateReason: state === 'REPAIRING' ? 'ci' : null })), { type: 'ReviewVerdictAdopted', actor: 'reviewer', reviewerTaskId: 'rv9', verdict: 'approve', effectiveVerdict: 'approve', headBound: 'H1' });
+      expect(dec.result === 'apply' && dec.toState).toBe(state);
+    }
   });
 });

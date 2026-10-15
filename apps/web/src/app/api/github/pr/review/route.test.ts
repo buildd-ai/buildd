@@ -580,6 +580,15 @@ describe('POST /api/github/pr/review — idempotency', () => {
       mockFindReviewTaskForPr.mockReturnValue(null);
     });
 
+    it('1bd26ae7: a round with no reviewer task is never "already under review" with nothing behind it: it says what is queued', async () => {
+      mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'rejected', reason: 'review_in_flight', current }, reviewTaskId: null });
+      const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+      expect(res.status).toBe(200);
+      const json = await res.json();
+      expect(json).toMatchObject({ ok: true, kernel: true, reviewTaskId: null, queued: { state: 'queued', reason: 'no reviewer task exists for this head yet (review_in_flight)' } });
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+    });
+
     it('a reviewTaskId whose row is missing falls through to queueing a review, never a null status', async () => {
       mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'rejected', reason: 'review_in_flight', current }, reviewTaskId: 'ghost-task' });
       mockTasksFindFirst.mockImplementation(async () => null);

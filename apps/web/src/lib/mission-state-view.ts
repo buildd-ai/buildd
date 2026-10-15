@@ -174,7 +174,7 @@ export type WaitingOnDescriptor =
        * PR (builder-after-review, CI retry). `claimed` separates "queued" from
        * "a worker has it" — the two read very differently to someone waiting.
        */
-      attempt?: { iteration: number | null; maxIterations: number | null; claimed: boolean };
+      attempt?: { iteration: number | null; maxIterations: number | null; claimed: boolean; kind?: 'review' | 'fix' };
       /**
        * The mission runs in a local session (`executor: 'local'`): the open rows
        * are the session's to claim, so "dispatch a worker" is the wrong advice.
@@ -627,6 +627,8 @@ export interface MissionStateInput {
     maxIterations: number | null;
     /** A worker has picked it up (task left `pending`, or a live worker is on it). */
     claimed: boolean;
+    /** A reviewer reads as a review, never "Fix 0 of 3" (00d288fd). Absent = a fix. */
+    kind?: 'review' | 'fix';
   } | null;
 }
 
@@ -1106,14 +1108,16 @@ function attemptFact(input: MissionStateInput): Resolution | null {
       count: 1,
       taskIds: [a.taskId],
       byStatus: { [a.status]: 1 },
-      attempt: { iteration: a.iteration, maxIterations: a.maxIterations, claimed: a.claimed },
+      attempt: { iteration: a.iteration, maxIterations: a.maxIterations, claimed: a.claimed, ...(a.kind === 'review' ? { kind: 'review' as const } : {}) },
     },
     displayState: 'active',
     source: 'tasks.parentTaskId + tasks.taskClass',
   };
 }
 
-function fixLabel(a: { iteration: number | null; maxIterations: number | null }): string {
+function fixLabel(a: { iteration: number | null; maxIterations: number | null; kind?: 'review' | 'fix' }): string {
+  // A reviewer's iteration counts review rounds, not fixes: it is "Review", never "Fix 0 of 3".
+  if (a.kind === 'review') return 'Review';
   if (a.iteration == null) return 'Fix';
   return a.maxIterations != null ? `Fix ${a.iteration} of ${a.maxIterations}` : `Fix ${a.iteration}`;
 }
