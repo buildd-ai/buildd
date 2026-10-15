@@ -227,6 +227,22 @@ export const KNOWN_EVOLUTIONS: KnownEvolution[] = [
       return { transition: { ...p, evidence }, effects };
     },
   },
+  {
+    // S5 (workflow-kernel-library.md §5): a verdict and a push record what they did to the
+    // delivery's findings (`findings`, `addressedFindings`, `unverifiedFindings`; `openFindings`
+    // on an external merge). A recording from before findings existed carries none: on the same
+    // decision the replay may drop exactly those evidence keys, and nothing else.
+    id: 'findings evidence (S5, workflow-kernel-library.md §5)',
+    apply(recorded, replayed) {
+      const p = replayed.transition;
+      const r = recorded.transition;
+      if (!p || !r || !sameDecision(recorded, replayed) || !isObj(p.evidence) || !isObj(r.evidence)) return null;
+      const keys = ['findings', 'addressedFindings', 'unverifiedFindings', 'openFindings'].filter((k) => k in (p.evidence as J) && !(k in (r.evidence as J)));
+      if (keys.length === 0) return null;
+      const evidence = Object.fromEntries(Object.entries(p.evidence).filter(([k]) => !keys.includes(k)));
+      return { ...replayed, transition: { ...p, evidence } };
+    },
+  },
 ];
 
 /**

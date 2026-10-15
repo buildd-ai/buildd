@@ -309,7 +309,7 @@ export async function POST(
       await recordPrFact({ workerId: worker.id }, { kind: 'merged', mergedAt: new Date() });
       // landPr finalizes the mission PR itself when it merged.
       if (!opts.missionFinalized) {
-        await finalizeMissionPrMerge(worker.task ?? null, installationId, repoFullName);
+        await finalizeMissionPrMerge(worker.task ?? null, installationId, repoFullName, prNumber);
       }
     }
 

@@ -5,10 +5,10 @@ owner: max
 last_verified: 2026-10-14
 summary: Delivery state MUST have one writer, the workflow kernel, packaged as a library with no buildd imports and run in production only by the execution control plane.
 domain: tasks
-surfaces: [apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts]
+surfaces: [apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
 related: [workflow-state-kernel, execution-control-plane, mission-branch-refresh, mission-task-lifecycle, living-specs]
-keywords: [workflow kernel, delivery state, single writer, single host, control plane, portable library, ports, adapters, conformance suite, merge door, landing authority, required status, durable findings, finding disposition, delivery epoch, mission delivery, refresh settlement, no-op completion, workflow-kernel package]
-verified_by: [packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/tests/db/kernel-command-host.test.ts]
+keywords: [scope amendment, mission scope version, workflow kernel, delivery state, single writer, single host, control plane, portable library, ports, adapters, conformance suite, merge door, landing authority, required status, durable findings, finding disposition, delivery epoch, mission delivery, refresh settlement, no-op completion, workflow-kernel package]
+verified_by: [packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts]
 supersedes: []
 ---
 # Workflow Kernel Library and Single Host
@@ -39,11 +39,13 @@ It does not restate the state machine. States, transitions T1–T29, CAS,
 exact-head review, the push invariant, the outbox and the floor stay in
 `workflow-state-kernel.md` §4–§11, and the review-composition, findings,
 repair and completion-evidence rules stay in its §13.13 rules 1–5 and 9. This
-spec amends where those run and who else may write.
+spec amends where those run and who else may write, and §5 adds three things
+to rule 2 (a stable finding id, `addressed`, `deferred`), which §13.13 rule 2
+carries since slice S5.
 
 | Spec | Relationship |
 |---|---|
-| `workflow-state-kernel.md` | behavioural contract the library implements. §10.3 drain hosting, §11 floor hosting, §13.12 "server-side (`apps/web`)", AC-7 and §14 are amended by §1 and §3 here. §13.13 rule 6, rule 7, rule 10 and its D1–D13 inventory are the landing authority of §4. |
+| `workflow-state-kernel.md` | behavioural contract the library implements. §10.3 drain hosting, §11 floor hosting, §13.12 "server-side (`apps/web`)", AC-7 and §14 are amended by §1 and §3 here. §13.13 rule 2 is amended by §5 (stable id, `addressed`, `deferred`). §13.13 rule 6, rule 7, rule 10 and its D1–D13 inventory are the landing authority of §4. |
 | `execution-control-plane.md` | §1 "same handlers, second host" and the seven-route limit are amended by §3; §3's kernel path becomes the package path. |
 | `mission-branch-refresh.md` | keeps the `branchRefresh*` columns; the refresh becomes a kernel effect of a mission delivery (§6). Its "does not model epochs" note is answered by §6. |
 | `mission-task-lifecycle.md` | AC-11y's door list is replaced by §4; mission completion reads delivery state (§6). |
@@ -60,7 +62,7 @@ work" and no code path can advance or contradict it on its own.
 - Delivery state is: the kernel tables (`workflow_deliveries`,
   `workflow_review_rounds`, `workflow_facts`, `workflow_transitions`,
   `workflow_effects`, `landing_lanes`, `workflow_attempts`,
-  `trunk_incidents`); and, for any task that has a delivery, the lifecycle
+  `workflow_mission_epochs`, `trunk_incidents`); and, for any task that has a delivery, the lifecycle
   columns people read: `tasks.status` and `tasks.result` delivery fields
   (`prUrl`, `prNumber`, merged/shipped), `workers.prUrl`, `workers.prNumber`,
   `workers.mergedAt`, `workers.prLifecycleStatus`, and mission completion.
@@ -252,7 +254,9 @@ GitHub or Next.js.
   directly, past the drain's guards, so the handler's own guard is what it
   tests). The host's `policy` is part of the `ConformanceHost`: the drain
   reads the kill switch from it on both stores. NOT IMPLEMENTED: the rest of
-  the §16 matrix, §15 replay, and the #3787 and #4663/#4670 sequences.
+  the §16 matrix, §15 replay, and the #3787 and #4663/#4670 sequences as
+  conformance scenarios (they run today as the epoch reducer's package tests
+  and the Postgres epoch suite, §6).
 - No model calls, prompts or decision policies in the package. Model-backed
   judgment stays possible through the Decide port:
   - Where the kernel needs a judgment (a reviewer verdict, whether a conflict
@@ -336,7 +340,10 @@ the control plane, authenticated as the caller).
   - Operations are the seam's door functions, unchanged: `land`,
     `apply_recommendation`, `policy_merge`, `request_review`,
     `request_ci_retry`, `record_supersession`, `abandon`, `open_delivery`, and
-    `drain` (one delivery's due effects, `system` principals only). The same
+    `drain` (one delivery's due effects, `system` principals only), and
+    `mission_epoch` (§6: a mission delivery merged, ensure a writable one, bind
+    its PR, reconcile what is owed; re-checked against the mission's repo
+    workspace). The same
     code runs on the web host in shadow, so the two modes cannot drift.
   - Authenticated. The request is signed: HMAC-SHA256 over timestamp, method,
     path and body (the scheme Dispatch callbacks use, `@buildd/dispatch-contract`)
@@ -361,10 +368,18 @@ the control plane, authenticated as the caller).
     and receives its stored answer with `replayed: true`; one still running
     past the wait answers 409 `in_progress` (retryable, same key). The same key
     with a different request is a 422. An operation that throws stores
-    nothing, so the key may be retried. A claim older than the lease (two
-    minutes) belongs to an isolate that died and is taken over; completion is
-    recorded only for the claim that still holds the key. Keys are kept seven
-    days.
+    nothing, so the key may be retried. A running command renews its claim
+    every ten seconds (`COMMAND_HEARTBEAT_MS`); a claim not renewed for the
+    lease (thirty seconds, `COMMAND_LEASE_MS`) belongs to a request that died
+    mid-command and is taken over by the next request with its key; completion
+    is recorded only for the claim that still holds the key. The Worker hands
+    every command it starts to `waitUntil`, so a caller that times out and
+    disconnects does not cancel it mid-way. A ledger that does not answer
+    before the claim is a 503 `ledger_unavailable`, and a reach check that
+    could not be made is a 503 `reach_unavailable` (nothing ran, `applied:
+    false`; only an answered "no" is a 403), never an uncaught throw, which the Workers runtime turns into a
+    bare 500 the caller must read as "may have run"; the client retries it
+    once and then answers `not_applied`. Keys are kept seven days.
   - Answered with the operation's result and the delivery's version:
     `{ v, op, idempotencyKey, result, delivery: { id, version } | null, host, replayed }`.
   - Only the host applies. A process that is not the control plane in `own`
@@ -423,7 +438,8 @@ the control plane, authenticated as the caller).
   follows the Worker's health `kernel` field, which is `own` only when the
   Worker is in own mode and holds the command key (`mode` alone still says who
   answers the execution routes) (`/__control-plane/health`, read
-  with a short timeout and cached for 30 s; a reading up to five minutes old
+  with a short timeout and cached for 30 s; concurrent callers share one read,
+  and a failed read is not repeated for 5 s, `MODE_RETRY_MS`; a reading up to five minutes old
   stands in for a failed re-read; no reading at all counts as `own`, so a door
   fails retryably rather than applying a command the control plane may also be
   applying). A 503 `unconfigured` from the control plane is answered like
@@ -451,6 +467,31 @@ the control plane, authenticated as the caller).
   drained inline at the end of a Vercel request in own mode: the seam's inline
   drain becomes a `drain` command to the control plane, best effort, with the
   floor as the backstop.
+- A sweep's time on the control plane is bounded. `/api/cron/pr-reconcile`
+  runs each pass (merge-state, landing, red-PR) inside one control-plane
+  budget, `withControlPlaneBudget` (kernel-client.ts), of 30 s for all of its
+  sweeps together (`SWEEP_CONTROL_PLANE_BUDGET_MS`, well inside the route's
+  60 s). Every door call and inline drain in it is cut to what is left; an
+  inline drain waits at most 2.5 s for its answer (`PASS_DRAIN_WAIT_MS`), since
+  the control plane finishes it either way. Once the budget is spent nothing
+  more is sent: a door gets `ControlPlaneUnavailableError` with outcome
+  `not_applied` at once, and a drain is left to the control plane. A sweep
+  defers only an outage (`ControlPlaneUnavailableError`, retryable), never as a
+  judgement on the PR: the closed-PR supersession scan stamps nothing and
+  suggests nothing (outcome `deferred`), the superseded-refresh retirement
+  records no stranded event and tries no second successor, and the escalation
+  dispatcher gives its claim back and counts it, so the next tick retries each.
+  A refusal (`KernelCommandRefusedError`) or the command's own failure
+  (`KernelCommandFailedError`) is deterministic and is settled as before
+  (suggested and stamped, kept as stranded, settled skipped). A deferral is
+  bounded (`control-plane-deferral.ts`: 24 deferrals or 24 hours from the
+  first): past it the scan is stamped with a suggestion saying why, the
+  retirement stops retrying, and each records a `stranded` gate event
+  (`control_plane_deferral_exhausted`); the escalation dispatcher settles an
+  outage `skipped` with its cause in the last hour of its 6 h window. Landing,
+  held releases and the pinned release merge already leave the work pending. Each step of a pass logs its time as it finishes, and the pass result
+  carries `timings` per step and `controlPlane` (calls sent, refused unsent,
+  drains skipped, time waited), so a slow run names the step it waited on.
 - Every transition row records the host that applied it
   (`workflow_transitions.host`: `control-plane` or `web`, null on rows written
   before the tag). The Worker's entry sets it in code (`kernel-host.ts`), never
@@ -512,6 +553,16 @@ the web host.
   submits a command THEN the door answers with a retryable error naming the
   control plane, and applies nothing itself (`kernel-client.test.ts`,
   `kernel-command-host.test.ts`).
+- AC-13 (failure): GIVEN `EXECUTION_MODE=own` and a control plane slow to
+  answer WHEN a sweep makes door calls and inline drains one after another
+  THEN the pass waits on the control plane no longer than its budget, the
+  calls past it are refused unsent and retryable, and the pass reports each
+  step's time (`kernel-client.test.ts`, and `route.test.ts` beside
+  `apps/web/src/app/api/cron/pr-reconcile/route.ts`). GIVEN a command whose
+  request died mid-command WHEN the next request with its key arrives a lease
+  later THEN it takes the claim over and runs, while a live command's renewed
+  claim is never taken over (`command-api.test.ts`,
+  `kernel-command-host.test.ts`).
 
 ## 4. One landing authority
 
@@ -550,8 +601,9 @@ recorded as such, never as an approval.
   nor a verdict on an older head). It is never projected as
   "approved". `measureMergeAgainstReview` keeps recording the bypass.
   Every buildd door lands a kernel PR through `LANDING`, so "external" is a
-  `PrMerged` from any other state. Until S5's findings model, an open finding
-  is the newest decided review round asking for changes or escalating.
+  `PrMerged` from any other state. An open finding is an open required
+  finding of §5; the newest decided review round asking for changes or
+  escalating still counts as an open verdict beside it.
 
 **As built (S3b):**
 - The gate is `reviewGate` (`packages/workflow-kernel/src/landing-gate.ts`)
@@ -630,14 +682,145 @@ push, refresh, completion or owner change can make it disappear.
   target is the delivery's branch, head and base (`repairTarget`), and it
   never inherits a coordination owner's instructions (§13.13 rule 3).
 - Completion evidence is §13.13 rule 4: a repair completes only on a push
-  that touches a finding's path or on a verified no-op (a live read at the
-  current head showing the finding's condition is already absent, recorded
-  as evidence). A zero or unrelated diff is refused, the attempt counts
-  against the round limit, and every surface shows it as "no change", never
-  "fix finished".
+  to the PR head that changes at least one path named by an open finding (or
+  a path the reviewer's feedback names), or on a verified no-op (a live read
+  at the current head showing the finding's condition is already absent,
+  recorded as evidence). A zero diff, a diff that touches none of the
+  findings' paths, or a head that moved only because of a refresh or someone
+  else's push is refused, the attempt counts against the round limit, and
+  every surface shows it as "no change", never "fix finished".
 - The activity comment and `get_pr` / `get_pr_review` list findings with their
   disposition, the commit that addressed each, and the round that verified it.
   "Fix attempt n of m" counts attempts, never findings.
+
+**As built (S5, findings half):**
+- Findings live in `workflow_findings`, written only by the transition
+  statement (`FindingOp`, `packages/workflow-kernel/src/findings.ts`). The id
+  is `<originating round id>:<ordinal>`; a round that restates a finding names
+  that id and the row is updated, never duplicated.
+- A request for changes raises the reviewer's `findings` (one per issue, with
+  path and line). With none, one finding stands for the round ("the review
+  asked for changes"), so a request for changes always leaves something open.
+  That stand-in has no id a reviewer is likely to report, so an unscoped
+  approval verifies it when it reviewed a later head than the one asked to
+  change, or when it verified every structured finding still open.
+- A deferral names a task by its full id. The host resolves a reviewer's id
+  against the delivery's workspace (`resolveDeferralTasks`): a full id must be
+  a task there, a short id must prefix exactly one. A deferral whose task does
+  not resolve (none, another workspace's, an ambiguous prefix), or that names
+  none, closes nothing and is recorded as `unresolvedDeferrals` on the
+  verdict's transition, which still applies. A person's deferral with a task
+  id that is not a full one is refused (`deferral_task_unresolved`). The
+  Postgres adapter never casts anything but a full id to a uuid column, so no
+  write can abort a verdict's transition.
+- The reviewer is briefed with every open finding and its id
+  (`findingsBrief`, `findingsSection`) and reports `resolvedFindings`,
+  restated `findings` and `deferredFindings`. A reviewer output with no
+  `resolvedFindings` key (an older reviewer) approving an unscoped round
+  verifies every open finding, since all of them were in its brief. A scoped
+  round (a composition's novel paths, a refresh) verifies only what it names.
+- An approval that leaves a required finding unverified does not approve the
+  head: the round is decided as the reviewer said and a verification round at
+  the same head (scope `verifyFindings`) is queued, or `review_exhausted` at
+  the round limit. `reenterVerdict` applies the same rule when a held or
+  earlier verdict is re-entered.
+- `addressed`: a push observed by T3, or a repair's delivered head at T4,
+  whose compare against the previous (or bound) head lists a finding's path.
+  The compare is read only when an open finding names a path. A mechanical
+  repair's head and an own refresh never address anything (rule 5).
+- A person's `FindingDisposed` (waived, or deferred to a named task) closes
+  one finding with who and why; an agent is refused.
+- Deviation: no door submits `FindingDisposed` yet (no command-API op, route
+  or dashboard action). The command and its rules are in the kernel; the door
+  is a person-only command-API op plus a route, left out of this slice because
+  the command API and its ledger are being changed by the control-plane
+  cutover work at the same time. Until then a person passes an open finding
+  through the landing override (rule 6).
+- The landing gate (`reviewGate`), T15, the policy-merge rule (D11) and
+  `buildd/landing` read open required findings and name the first
+  one. Only a person's verdict override or their own approval of the head
+  passes one. An external merge records `merged_over_open_findings` for an
+  open finding even when the newest round approved, and the trunk fix names
+  the findings.
+- The activity comment lists every finding with its disposition, the commit
+  that addressed it and the round that verified it (`renderFindingsSummary`);
+  `DeliveryView` carries `findings` and `openFindings` for S7.
+- Existing deliveries have no findings: their open verdicts keep blocking
+  through the newest decided round, as before.
+- Deviation: a finding of a PR that closes unmerged is not moved to the
+  superseding PR yet; it stays on the closed delivery.
+
+**As built (S5, pinned repair builders and completion evidence):**
+- A review fix (`fixWork`) is a builder: its role is `builder` when the owner
+  has none or is coordination-only, its kind `engineering`. Its description is
+  the open findings with their ids, then the reviewer's feedback, then where to
+  push and how completion is judged (`pinnedFixDescription`); the owner's
+  description is background only and a coordination or bookkeeping owner's is
+  never copied. Its `repairTarget` is the PR head GitHub reports. A kernel CI
+  fix takes the same role rule and `repairTarget`.
+- Completion (`fixCompletionGate`, role `fix`), a moved head: refused
+  (`repair_unrelated_diff`) only when the diff plainly cannot answer the
+  findings (`diffTouchesFindings`): every open required finding names a path,
+  and the push changes nothing in any finding's directory or below it,
+  nothing with the same stem as a finding's file (its test), and no path the
+  reviewer's feedback names. A rename counts under its old name. The check is
+  deliberately wide: a fix often lands beside the line the reviewer pointed at
+  (a test, a caller, a callee), and refusing a real fix costs a whole attempt,
+  while letting an unrelated push through costs one re-review that finds the
+  finding still open. It is skipped when an open finding has no path (nothing
+  to compare), for a person's applied fix (T23), and for an explicit claim
+  `structuredOutput.fixedElsewhere { findingIds, files, reason }` naming open
+  findings, which the re-review verifies like any fix. An unread compare is
+  not evidence either way.
+- Completion, an unmoved head: refused unless the fix claims a verified
+  no-op (`structuredOutput.noopEvidence { findingIds, evidence }` naming an
+  open finding). A no-op claim on a moved head excuses nothing.
+- Remaining rule-4 deviations: a fix in another directory than the
+  finding's, with nothing the feedback names, needs the `fixedElsewhere`
+  claim; a finding on a file at the repository root accepts any change (its
+  directory is the root); the gate does not tell a refresh push credited to a
+  running fix (§6.9) from the fix's own; legacy review fixes have no gate.
+- A no-op claim never resolves anything: the attempt ends `noop` (it spends
+  the budget) and a verification round at the same head checks the named
+  findings. A fix that ends with the head where it was bound (read live; an
+  unread head is a failure) ends `noop` too,
+  and the next attempt is owed. Every surface reads `noop` (and `unproven`) as
+  "no change" (`task-checks.ts`).
+
+**As built (S5, the review loop never stalls):**
+- A verdict is never dropped because the builder is still open (00d288fd). A
+  reviewer that ran outside the kernel's rounds (filed by a door before the
+  delivery opened) is adopted at the head it judged (`ReviewVerdictAdopted`):
+  while the owner works, a repair holds or trunk is red, and the kernel has
+  asked no reviewer of its own, it is kept as a decided round and the
+  hand-off applies it. It is never posted to GitHub as a review. The kept
+  round is a round like any other: it uses one of the delivery's `maxRounds`.
+  It does not skip a CI repair: an owner hand-off on a red head goes to
+  `REPAIRING(ci)` first, and leaving the repair re-enters the kept verdict. The kernel's
+  own open round at that head is never answered from outside (its reviewer
+  does), and a verdict on another head is stale. The same head is never reviewed twice for it, and `explain`
+  calls an open reviewer a review, never "Fix 0 of 3".
+- Completing a fix arms a delta re-review at the new head (1bd26ae7). A fix
+  that pushed from somewhere the runner cannot see reports no local head; its
+  proof is §9's "L unknown" rule (the head moved off the bound head and
+  descends from it), only when nothing local can be lost: a completed end or
+  one with no commits (AC-10). An unproven end with commits waits for its push. A `dispatch_review` that cannot file a reviewer fails its
+  round (T27, re-queued twice with a backoff, then `review_unavailable`)
+  instead of leaving it open with nobody on it.
+- `request_pr_review` never claims a review exists when none does: an open
+  round with no reviewer task whose dispatches all finished gets its dispatch
+  again (the floor's rule, run for the asker), and the answer says what is
+  queued (`queued`) rather than "already under review" with no state.
+- A green CI observation at the head that went red ends the CI repair bound
+  to it (38442d17, `CiGreenObserved`, from the `check_suite` success webhook
+  and the red-PR sweep, read live). Green means every check suite on the
+  head passed (GitHub's passing allow-list, `ciGreen`) and its check runs all
+  completed with none failing; a cancelled, stale or action-required run is
+  not green. A queued attempt is skipped (it spent nothing), a running one is
+  cancelled and exactly its task told to stop, and the
+  delivery returns to what the head was owed before (`APPROVED` for an
+  approved head). Classifying a pre-test infrastructure failure so no CI fix
+  is dispatched at all is not built: the green re-run is what clears it.
 
 **Acceptance criteria**:
 - AC-17: GIVEN two findings at head A WHEN a fix push touches one finding's
@@ -653,39 +836,121 @@ push, refresh, completion or owner change can make it disappear.
 
 ## 6. Mission deliveries and epochs
 
-**Capability statement**: A mission-branch mission MUST be a kernel delivery
-with ordered epochs, so shipping one epoch never strands the mission's later
-work and nothing refreshes or re-ships a branch that already landed.
+**Capability statement**: A mission-branch mission MUST be a sequence of
+kernel-owned delivery epochs, so shipping one epoch never strands the mission's
+later work and nothing refreshes or re-ships a branch that already landed.
 
 **Invariants**:
 - A mission's integration PR is a delivery of role mission, opened when the
   branch is cut (today `openMissionIntegrationPr`). #4686 is the case of a
   mission PR with none.
-- Epochs: the mission delivery has an ordered sequence of epochs, each one
-  integration branch and PR. At most one epoch is writable. When an epoch
-  merges, the kernel rotates idempotently: it settles the shipped epoch, and
-  if the mission has unshipped work it cuts the next epoch from trunk and
-  retargets that work, as one transition keyed on the merged head (task
-  f3bda4e1). A merged epoch is terminal; the mission is not.
-- Scope amendments: adding a task to a mission whose current epoch is in
-  review or landing is an explicit amendment recorded on the mission (version,
-  actor, reason) and goes to the next epoch unless the amendment says
-  otherwise.
-- Refresh is a kernel effect of the writable epoch, and it reads "shipped"
-  from delivery state. It never runs for a merged epoch. This replaces the
-  `findMissionPrOwner` / `workers.mergedAt` check in
-  `refreshMissionIntegrationBranch` and the unchecked `reserved` path.
+- Epochs (task f3bda4e1): `workflow_mission_epochs`, one row per epoch (one
+  integration branch and, once its work is in, one PR into trunk), written only
+  by the kernel. The transition table is the package's
+  (`packages/workflow-kernel/src/delivery-epochs.ts`, `reduceMissionEpochs`);
+  the host applies each transition as one statement
+  (`apps/web/src/lib/workflow/delivery-epochs.ts`, `applyEpochOpsSql`): a
+  version-guarded UPDATE of the epoch row, any successor INSERT and the
+  projection of the writable branch onto `missions.workingBranch`, chained as
+  CTEs. Unique indexes hold the shape: one epoch per (mission, number), one
+  successor per predecessor, one open epoch per mission. A lost race re-reads
+  and reduces again, so a replayed or concurrent merge is a `noop`.
+- At most one epoch is writable (`open`). When an epoch merges (`Merged`, from
+  GitHub's values), the kernel records it terminal and, if the mission has
+  unshipped work (unfinished deliverable tasks or open task PRs), cuts exactly one
+  successor from the merge commit, as one transition. A merged epoch is terminal
+  and immutable (branch, PR, merge commit, merged head, timestamps, the scope
+  version it carried); the mission is not. A successor gets a name no epoch used
+  (`<branch>-delivery-<n>`, from epoch 1's name exactly, never stripped), so
+  GitHub's delete-branch-on-merge of a merged branch can never take later work
+  with it. A transition that moves `missions.workingBranch` applies only while
+  the mission still names the branch it read; otherwise nothing is written and
+  it is re-read.
+- Work filed or a task PR opened after the newest epoch merged with nothing left
+  (`EnsureWritable`): the kernel cuts one successor from trunk's head. A
+  completed or archived mission is never given one.
+- What a transition leaves owed is derived from the rows
+  (`pendingEpochSteps`): cut the successor's branch, settle the merged branch,
+  retire it, in that order. Each is performed against GitHub and recorded back
+  through the reducer, by the merge's own door, the kernel's `finalize_mission_pr`
+  effect, or the hourly reconcile, whichever comes first; a crash between a step
+  and its record redoes the step.
+  Each delivery's steps run independently, so a held delivery blocks only
+  itself. The hourly reconcile adopts a mission with no delivery rows, so a
+  merge whose record failed is retried: a mission PR merged in the last 48
+  hours is adopted as the merge being recorded only when the branch is gone or
+  still sits at the head that merged (`adoptionFacts`). A branch that moved on
+  is the live delivery (an adopted re-cut), never settled or deleted as the
+  merged one.
+- No branch is deleted with work on it: the last read before a delete requires
+  the branch to sit at the merged head or be contained in trunk. Otherwise the
+  branch is kept (`settlement.unshippedHead`), one mission note asks a person,
+  completion stays held, and the next pass retires it once trunk has the
+  commits or a person removes them.
+- The doors: every mission-PR merge door and the merge webhook record the merge
+  through `kernel-client` (`mission_epoch`, action `merged`); the branch is no
+  longer deleted at merge (`finalizeMissionPrMerge`). A task filed into the
+  mission and `create_pr` ask for a writable epoch first. A task filed under an
+  earlier epoch is claimed onto the writable branch (`isPriorEpochBranch` at the
+  claim); a refresh keeps the branch it was filed for.
+- Compatibility: a mission that predates epochs is adopted on its first epoch
+  command, from its recorded mission PR (`adoptionOf`): no PR, or an open one, is
+  epoch 1 open; a merged PR with no work left is epoch 1 merged and retired; a
+  merged PR with work left (the live re-cut under the same name) is epoch 1
+  merged plus epoch 2 open on that same branch, which is never deleted while the
+  open epoch uses it. Until adopted, a mission's readers keep the pre-epoch
+  answers. History before adoption is not reconstructed.
+- Scope amendments (S6b): a deliverable task added to a mission (not the
+  organizer decomposing its own brief) gets one scope decision at the Decide
+  point `mission_scope` (`in_scope | amend_scope | ask`, decision kind
+  `buildd.mission_scope`), recorded with `decideAndRecord`, so a replay reads
+  it and never asks again. The package's `planScope` turns it into what is
+  written, in one statement (`apps/web/src/lib/workflow/scope-amendments.ts`,
+  `workflow_scope_amendments`):
+  - `in_scope`: the decision row only. No description churn, no prompt.
+  - `amend_scope`: the row with the mission's description and goal criteria
+    before and after, the reason and the source task; the mission's
+    `scopeVersion` moves by one (compare-and-set on the version the plan read,
+    so two amendments at once each get their own version), and the open
+    delivery takes it when it has no PR yet. A delivery already in review keeps
+    the version it was reviewed under, and the next one is cut with the new
+    version. The amendment is the filer's proposal (`context.missionScope`) or,
+    by default, one scope line naming the task appended to the description.
+  - `ask`, or any amendment that would remove a criterion, change a command,
+    turn a mechanical criterion into prose or clear the list
+    (`criteriaWeakening`): held. The task gets the claim gate's single-task
+    hold, and one mission note asks a person; the contract is unchanged.
+  - The default (no decider, an error, a timeout, an invalid or low-confidence
+    answer) is `in_scope`, or `amend_scope` when the filer proposed one, so
+    ordinary filing never waits on a person, and the default is recorded with
+    its reason. NOT IMPLEMENTED: recording the person's resolution of a held
+    decision when the task is resumed (the hold is lifted by the normal Resume),
+    and the decision for a task moved into a mission by `link_task`.
+- Refresh reads "shipped" from delivery state: a refresh acts on the writable
+  epoch's branch only, and never runs for a merged epoch
+  (`mission-branch-refresh.md`, Eligibility). NOT IMPLEMENTED: the refresh as
+  an outbox effect of the epoch; it still runs from the start trigger and the
+  backstop, gated on epoch state.
 - A clean refresh merge is a recorded fact on the delivery (head moved by
   refresh, not a fix, §13.13 rule 5).
 - A conflicted refresh files one pinned builder (single-flight per epoch and
   trunk head). If it finds the branch already contains trunk it completes as
   a verified no-op with the ancestry as evidence, no PR required.
-- Before an epoch's branch is deleted, the kernel settles every open refresh
-  PR against it: proven redundant (its tree is contained in the merged
-  epoch) is closed with the satisfying PR recorded; unique work is retargeted
-  to the next epoch; ambiguous work escalates (task a11abc4b).
-- Mission completion reads delivery and epoch state, never
-  `workers.mergedAt`.
+- Before an epoch's branch is deleted, the kernel settles every open PR still on
+  it and every PR recorded as moved off it by a retarget (`movedPrs`, from the
+  `pull_request.edited` webhook), one settlement per branch at a time (a
+  lease), each content probe on a scratch ref of its own
+  (`classifySettlement`, task a11abc4b): proven redundant (its head is in the
+  merge commit, or a scratch test merge leaves the tree unchanged) is closed
+  with the epoch PR recorded on its delivery; task work is retargeted to the
+  successor; a refresh with work of its own, or anything unreadable, holds the
+  branch and asks a person once. The branch retires only when nothing is held
+  and a fresh read shows nothing open on it.
+- Mission completion reads delivery and epoch state, never `workers.mergedAt`:
+  it is held while a shipped delivery's branch still has PRs to settle, or the
+  writable epoch carries landed work that has not reached trunk
+  (`epochCompletionHold`), then the mission's criteria decide. No merge door
+  lands a task PR on a shipped delivery's branch (`delivery_shipped`).
 
 **Acceptance criteria**:
 - AC-20: GIVEN a mission whose epoch 1 merges while tasks remain WHEN the merge
@@ -699,6 +964,15 @@ work and nothing refreshes or re-ships a branch that already landed.
 - AC-23 (failure): GIVEN an open refresh PR with unique commits WHEN its epoch
   merges THEN the branch is not deleted until that PR is retargeted or
   escalated, and nothing retargets it to trunk silently (the #4670 sequence).
+
+| AC | Test |
+| --- | --- |
+| AC-20 | `packages/workflow-kernel/src/delivery-epochs.test.ts` › "AC-20 / scenario 1 and 3"; `apps/web/tests/db/mission-epochs.test.ts` › "AC-20", "scenario 2" |
+| AC-21 | `apps/web/src/lib/mission-branch-refresh.test.ts` › "mission delivery records (AC-21)" |
+| AC-22 | `apps/web/src/app/api/workers/[id]/route.test.ts` › "mission-branch refresh already on the branch" |
+| AC-23 | `apps/web/tests/db/mission-epochs.test.ts` › "AC-23 / a11abc4b"; `apps/web/src/lib/mission-pr.test.ts` › "a refresh PR lands only on the delivery it was filed for" |
+| Scope decisions (task f3bda4e1 scenarios 5–7) | `packages/workflow-kernel/src/scope-amendments.test.ts`; `apps/web/tests/db/scope-amendments.test.ts` |
+| Completion reads epochs (task f3bda4e1 scenarios 1, 4) | `apps/web/src/lib/mission-completion.test.ts` › "scenario 1", "scenario 4" |
 
 ## 7. Projections
 
@@ -777,9 +1051,9 @@ column outside the kernel; S3 and S4 remove or route each one.
   and the legacy arm of the dashboard merge, `PUT /api/github/pr`, the landing
   lane and auto-merge.
 - Refresh: the clean-merge write to the mission branch and
-  `dispatchBranchRefreshConflictTask`, both outside the kernel, deciding
-  shipped from `workers.mergedAt`; the completion gate's "refresh already
-  landed" arm uses `isAncestor`, which reads null once the branch is deleted.
+  `dispatchBranchRefreshConflictTask`, both outside the kernel. They read
+  "shipped" from epoch state for a mission with epochs (S6), and from
+  `workers.mergedAt` for one that predates them.
 
 ## 10. Open questions
 

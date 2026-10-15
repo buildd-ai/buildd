@@ -308,4 +308,17 @@ describe('dismissSupersessionSuggestion', () => {
     expect((await dismissSupersessionSuggestion({ workerId: 'w-1', candidatePrUrl: url })).ok).toBe(true);
     expect(updates[0].set.supersessionScan).toMatchObject({ suggestion: null, dismissed: [url] });
   });
+
+  // Review of #4822: rebuilding the scan without these reset the deferral cap and threw away
+  // the verdicts the sweep had already paid for.
+  it('keeps the scan\'s deferral, judged verdicts and last attempt', async () => {
+    const url = 'https://github.com/org/kb/pull/9';
+    const deferral = { firstAt: '2026-10-15T00:10:00Z', count: 5, reason: 'GitHub slow' };
+    const judged = [{ repo: 'org/kb', prNumber: 12, prUrl: 'https://github.com/org/kb/pull/12', verified: false, confidence: 0.2, at: '2026-10-15T00:10:00Z' }];
+    workerRow = closedWorker({
+      supersessionScan: { scannedAt: '2026-10-01T00:00:00Z', candidatesChecked: 1, suggestion: { prUrl: url, prNumber: 9 }, deferral, judged, lastAttemptAt: '2026-10-15T00:10:00Z' },
+    });
+    await dismissSupersessionSuggestion({ workerId: 'w-1', candidatePrUrl: url });
+    expect(updates[0].set.supersessionScan).toMatchObject({ suggestion: null, deferral, judged, lastAttemptAt: '2026-10-15T00:10:00Z' });
+  });
 });

@@ -1,4 +1,5 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
+import { cancelWaivedSurfaceAudits } from '@/lib/surface-audit-waiver-cancel';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
 import { missions, tasks, taskSchedules, initiatives, workspaces } from '@buildd/core/db/schema';
@@ -842,6 +843,13 @@ export async function PATCH(
         body: surfaceWaiverReason,
         actor,
       });
+      // The waived review's queued audit is retired, not left pending beside
+      // "nothing is waiting". One an agent already started is left alone.
+      try {
+        await cancelWaivedSurfaceAudits(id, surfaceWaiverReason, user ? `user:${user.id}` : `account:${apiAccount?.id ?? 'unknown'}`);
+      } catch (err) {
+        console.error('[missions PATCH] cancelling the waived audit failed', err);
+      }
     }
 
     const [updated] = await db

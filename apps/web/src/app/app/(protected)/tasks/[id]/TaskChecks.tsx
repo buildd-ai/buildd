@@ -24,7 +24,7 @@ const GLYPH: Record<CheckState, { glyph: string; cls: string; label: string }> =
 const taskPageHref = ({ taskId }: { taskId: string }) => `/app/tasks/${encodeURIComponent(taskId)}`;
 
 const REPAIR_WORD: Record<CheckRepair['status'], string> = {
-  queued: 'queued', running: 'fixing', completed: 'completed', failed: 'failed', ended: 'ended', cancelled: 'cancelled',
+  queued: 'queued', running: 'fixing', completed: 'completed', failed: 'failed', ended: 'ended', cancelled: 'cancelled', no_change: 'no change',
 };
 
 type Findings = Map<string, ReviewFindings>;

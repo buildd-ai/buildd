@@ -39,7 +39,7 @@ describe('buildStateBecause', () => {
     expect(chain[0].refs.taskId).toBe('task-a');
     expect(chain[0].derivedFrom).toBe('tasks.status + workers.status');
     // Last link is the conclusion.
-    expect(chain[1].claim).toContain('State is blocked');
+    expect(chain[1].claim).toContain('next in line for a runner');
     for (const l of chain) {
       expect(l.refs.missionId).toBe('mission-1');
       expect(l.derivedFrom).toBeTruthy();
@@ -70,7 +70,15 @@ describe('buildStateBecause', () => {
       // The row without a worker is still named as such, and leads the chain —
       // it is the one worth a reader's attention.
       expect(chain[0].refs.taskId).toBe('task-queued');
-      expect(chain[0].claim).toBe('"Write the docs" is waiting for a runner.');
+      expect(chain[0].claim).toBe('"Write the docs" is next in line for a runner.');
+    });
+
+    it('names the claim loop hold instead of "waiting for a runner" (spec f7f67f1a R-33)', () => {
+      const rows = [{ id: 'task-queued', title: 'Write the docs', status: 'pending', live: false, holdReason: 'budget_paused' }];
+      const view = deriveMissionStateView({ ...base, health: 'STALLED', openTasks: rows.map(({ id, title, status, holdReason }) => ({ id, title, status, holdReason })) });
+      const chain = buildStateBecause(view, { missionId: 'm' }, { openTasks: rows });
+      const row = chain.find(l => l.refs.taskId === 'task-queued');
+      expect(row?.claim).toBe('"Write the docs" is queued: runners paused new work until the model budget resets.');
     });
 
     it('does not claim "no live worker" when per-task liveness is unknown and agents are running', () => {
@@ -186,7 +194,7 @@ describe('buildStateBecause', () => {
     const view = deriveMissionStateView(base);
     const chain = buildStateBecause(view, { missionId: 'm' });
     expect(chain).toHaveLength(1);
-    expect(chain[0].claim).toContain('No source reports outstanding work');
+    expect(chain[0].claim).toBe('No task, PR, check or decision is open.');
   });
 });
 

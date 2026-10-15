@@ -88,6 +88,8 @@ export interface MissionVisualReviewState {
   blocked?: { cause: VisualReviewBlockedCause; causeOwner: 'buildd' | 'workspace' | 'unknown'; autoRetriesLeft: number };
   waiver?: { reason: string; actorLabel: string | null; at: string; supersededBy: string | null };
   auditTaskId: string | null;
+  /** The claim loop's newest refusal reason for a queued audit (gate_events), when the loader read one. */
+  holdReason?: string | null;
   branch: {
     headSha: string | null;
     base: string | null;

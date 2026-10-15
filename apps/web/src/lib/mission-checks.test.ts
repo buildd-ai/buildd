@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import type { GoalCriteriaState, GoalCriterion } from '@buildd/shared';
 import { criterionFingerprint } from '@buildd/core/mission-helpers';
-import { buildEstimate, criteriaChecks, missionChecks, missionPrCheck, releaseCheck, visualCheck, type MissionChecksInput } from './mission-checks';
+import { buildEstimate, criteriaChecks, missionChecks, outcomeSpecLines, verifiedHold, waiverActorEmails, waiverActorName, missionPrCheck, releaseCheck, visualCheck, type MissionChecksInput } from './mission-checks';
 import type { MissionVisualReviewState } from './workflow/visual-review-state';
 import { planMissions, type PlanTask } from './mission-plan';
 
@@ -108,6 +108,34 @@ describe('visualCheck (R-17, R-18, AC-7, AC-8)', () => {
     expect(finding.repairs.map(r => r.id)).toEqual(['fix-1']);
     const failed = visualCheck(visual({ status: 'blocked', nextActor: 'system', blocked: { cause: 'app_boot_failed', causeOwner: 'unknown', autoRetriesLeft: 1 } }), opts);
     expect(failed).toMatchObject({ status: 'unable', problem: 'system' });
+  });
+});
+
+describe('visualCheck: Skip (spec f7f67f1a R-34, AC-17)', () => {
+  const opts = { mergeTier: 'agent-review' as const };
+  const strict = { mode: 'strict', origin: 'workspace', waiverAllowed: false, locked: true } as MissionVisualReviewState['policy'];
+
+  it('a queued, running or stuck review a person may waive offers Skip', () => {
+    for (const status of ['queued', 'running', 'blocked', 'findings'] as const) {
+      const r = visualCheck(visual({ status, findings: status === 'findings' ? { issues: 1, fixesOpen: 1 } as never : undefined }), opts);
+      expect([status, r.waivable]).toEqual([status, true]);
+    }
+  });
+
+  it('strict policy, a pass, a waiver, off and not needed never offer Skip', () => {
+    const rows = [
+      visualCheck(visual({ status: 'queued', policy: strict }), opts),
+      visualCheck(visual({ status: 'passed' }), opts),
+      visualCheck(visual({ status: 'waived', waiver: { reason: 'Copy only', actorLabel: 'Owner', at: '2026-10-14T00:00:00Z', supersededBy: null } }), opts),
+      visualCheck(visual({ status: 'optional', blocksMerge: false, blocksCompletion: false, policy: { mode: 'off', origin: 'workspace', waiverAllowed: true, locked: false } as MissionVisualReviewState['policy'] }), opts),
+      visualCheck(visual({ status: 'not_applicable', blocksMerge: false, blocksCompletion: false }), opts),
+    ];
+    expect(rows.map(r => r.waivable)).toEqual([false, false, false, false, false]);
+  });
+
+  it('only the visual row can be skipped', () => {
+    const { rows } = missionChecks(input({ release: 'waiting' }));
+    expect(rows.filter(r => r.waivable).map(r => r.kind)).toEqual(['visual']);
   });
 });
 
@@ -326,5 +354,57 @@ describe('buildEstimate (R-23, R-24, R-25, AC-10)', () => {
     expect(buildEstimate(tasks, now, true)).toBeNull();
     expect(buildEstimate([], now, false)).toBeNull();
     expect(buildEstimate([t('x', { p50Minutes: null, p80Minutes: null })], now, false)).toBeNull();
+  });
+});
+
+describe('outcomeSpecLines (spec f7f67f1a R-40)', () => {
+  const spec: GoalCriterion = { type: 'living_spec', specId: 'spec-1', specRevisionId: 'rev-8', revision: 8, contentHash: 'h' } as GoalCriterion;
+
+  it('one line per selected spec: title, pinned revision, the Verify row\'s status and a link', () => {
+    const { rows } = missionChecks(input({ criteria: [unitTests, spec] }));
+    const lines = outcomeSpecLines([unitTests, spec], rows, { 'spec-1': 'Mission Overview' });
+    expect(lines).toEqual([{ specId: 'spec-1', title: 'Mission Overview', revision: 'rev 8', status: rows.find(r => r.key === 'criterion-1')!.state, href: '/app/specs/spec-1' }]);
+  });
+
+  it('no selected spec, no line; an unreadable title still names the revision', () => {
+    expect(outcomeSpecLines([unitTests], [], {})).toEqual([]);
+    const [line] = outcomeSpecLines([{ ...spec, provisional: true } as GoalCriterion], [], {});
+    expect(line).toMatchObject({ title: 'Outcome spec', revision: 'rev 8, proposed', status: 'not checked' });
+  });
+});
+
+describe('waiverActorName: a skip never shows a raw email (visual review round 1)', () => {
+  it('the viewer reads "You"; another person reads their display name; with no name, the part before the @', () => {
+    expect(waiverActorName('Maya@Example.test', 'maya@example.test', {})).toBe('You');
+    expect(waiverActorName('maya@example.test', 'sam@example.test', { 'maya@example.test': 'Maya Ortiz' })).toBe('Maya Ortiz');
+    expect(waiverActorName('maya@example.test', null, {})).toBe('maya');
+  });
+
+  it('a non-email label passes through; null stays null', () => {
+    expect(waiverActorName('surface audit round cap (3)', 'a@b.c', {})).toBe('surface audit round cap (3)');
+    expect(waiverActorName(null, 'a@b.c', {})).toBeNull();
+    expect(waiverActorEmails(['A@b.c', 'a@b.c', 'label', null])).toEqual(['a@b.c']);
+  });
+});
+
+describe('verifiedHold: Verified needs current verdicts and clear blocking checks (Mission checks I-3, AC-3, AC-8)', () => {
+  const ok = [{ label: 'PRs merged', state: 'pass' as const }, { label: 'open tasks', state: 'pass' as const }];
+
+  it('every criterion passing now and no blocking check open: nothing holds it', () => {
+    expect(verifiedHold({ criteria: ok, visual: null })).toBeNull();
+    expect(verifiedHold({ criteria: ok, visual: visualCheck(visual({ status: 'passed' }), { mergeTier: 'agent-review' }) })).toBeNull();
+    expect(verifiedHold({ criteria: ok, visual: visualCheck(visual({ status: 'not_applicable', blocksMerge: false, blocksCompletion: false }), { mergeTier: 'agent-review' }) })).toBeNull();
+  });
+
+  it('a criterion not passing now holds it, whatever the stored overall says', () => {
+    expect(verifiedHold({ criteria: [ok[0], { label: 'open tasks', state: 'partial' }], visual: null })).toBe('open tasks not met');
+    expect(verifiedHold({ criteria: [{ label: 'Spec revision 8', state: 'unchecked' }], visual: null })).toBe('Spec revision 8 not checked');
+  });
+
+  it('a blocking visual review that is not clear holds it; an advisory one does not', () => {
+    const blocked = visualCheck(visual({ status: 'blocked', blocksMerge: false, blocksCompletion: true }), { mergeTier: 'agent-review' });
+    expect(verifiedHold({ criteria: ok, visual: blocked })).toBe(`Visual review: ${blocked.state}`);
+    const advisory = visualCheck(visual({ status: 'running', blocksMerge: false, blocksCompletion: false }), { mergeTier: 'agent-review' });
+    expect(verifiedHold({ criteria: ok, visual: advisory })).toBeNull();
   });
 });

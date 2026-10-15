@@ -69,13 +69,13 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 ### missions (4)
 
-- [Mission Branch Refresh](./mission-branch-refresh.md) · @max — verified 2026-10-13
+- [Mission Branch Refresh](./mission-branch-refresh.md) · @max — verified 2026-10-14
   A mission's integration branch MUST be refreshed from trunk on task start or a daily backstop, never per trunk merge; every writer is fenced, owned and reconciled.
 - [Mission Goal Criteria Quality (Advisory Verdict)](./mission-goal-criteria-quality.md) · @max — verified 2026-10-03
   A mission's goal criteria MUST be graded advisorily on write (noticeable outcome, checkable proof) without ever blocking, rewriting or changing the stored goal; fails open; surfaces an advisory by default.
 - [Mission Heartbeat Schedule Lifecycle](./mission-heartbeat-schedule-lifecycle.md) · @max — verified 2026-09-28
   A mission heartbeat MUST be treated as mission state, not a user schedule, and its owning `task_schedule` row MUST NOT outlive or out-tick the mission it drives.
-- [Mission & Task Lifecycle](./mission-task-lifecycle.md) · @max — verified 2026-10-13
+- [Mission & Task Lifecycle](./mission-task-lifecycle.md) · @max — verified 2026-10-14
   The coordination layer MUST allow only documented task/worker/mission transitions, name every claim gate, refuse completion without passing criteria, and refuse any merge that outruns an outstanding review verdict.
 
 ### releases (4)
@@ -103,7 +103,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Two live workers whose touches share a file MUST be trial-merged on a runner, and a real conflict MUST reach both workers once per pair, naming files, hunks and who rebases.
 - [Local Agent Presence](./local-agent-presence.md) · @max — verified 2026-10-12
   A local coding session with the buildd plugin MUST show as seat-free presence, bind only to the worker its own verified claim_task minted, and release it exactly once on exit without completing work.
-- [Provider Failover](./provider-failover.md) · @max — verified 2026-10-14
+- [Provider Failover](./provider-failover.md) · @max — verified 2026-10-04
   When a task's agent backend hits a budget or rate-limit wall or has its credential rejected, the system MUST re-queue that task on another enabled, un-walled backend, or park it until the earliest provider reset.
 - [Runner Liveness](./runner-liveness.md) · @max — verified 2026-10-10
   The coordination layer MUST detect a runner or worker that has gone silent, reclaim or permanently fail its task, and alert ops on systematic failure without ever blocking the claim path.
@@ -192,7 +192,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Task Estimates (Rollout and Team Switch)](./task-estimates.md) · @max — verified 2026-10-12
   Estimates follow the team's switch or a default gated on measured quality, never order work; teams see one plain accuracy line, the platform owner the calibration and gate detail.
 
-## Draft (11)
+## Draft (12)
 
 - [Bug Intake and Quality](./bug-intake-and-quality.md) · @max — verified 2026-10-11
   Every defect report MUST land as one report on one failure incident, every incident above noise MUST have exactly one owner, and every resolved defect MUST trace to the change, release and agent that introduced it.
@@ -210,6 +210,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   The knowledge store MUST split a buildd-owned ranking pipeline from a swappable index backend, keep pgvector the default until measured triggers fire, and never export sensitive-workspace content.
 - [Real and Virtual Cost](./real-and-virtual-cost.md) · @max — verified 2026-10-07
   Every worker's tokens and cost MUST carry a basis, real (charged per token) or virtual (list-price value of plan usage), and every rollup MUST report the two separately rather than as one sum.
+- [Runner model login: detect, say, report](./runner-model-login-detect-say-report.md) · @buildd — verified 2026-10-14
+  Context: a runner already uses its machine's own Claude login when the claim brings no credential (`host-seat.ts`), and its own `codex login` for Codex tasks (`decideCodexSeat`).
 - [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-09-19
   A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
 - [Workflow Kernel Library and Single Host](./workflow-kernel-library.md) · @max — verified 2026-10-14

@@ -1,10 +1,12 @@
 import { db } from '@buildd/core/db';
-import { specOutcomeVerdicts, specs, tasks } from '@buildd/core/db/schema';
+import { missions, specOutcomeVerdicts, specs, tasks, users } from '@buildd/core/db/schema';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 import { readGovernedOutcome, type OutcomeView } from './outcome';
 import { reach, type SpecCaller } from './store';
+import { livingSpecCriteriaOf, selectedScope } from './selected-scope';
+import type { GoalCriteriaState, LivingSpecCriterionStanding } from '@buildd/shared';
 import {
   deliveredSentence, markOf, standingSentence,
   type CriterionMark, type DeliveryOutcome, type DeliveryTone,
@@ -21,6 +23,10 @@ import {
  *    delivery, so they never add an entry. A task in a mission that selected
  *    this spec as its outcome spec is that mission's work and is listed under
  *    the mission, not again on its own (AC-45).
+ *  - A mission that selected the spec as its outcome spec (a `living_spec`
+ *    goal criterion, Slice 12). Its standing is the evaluator's stored
+ *    reading of the integrated result (`goalCriteriaState`), with waived
+ *    criteria said as waived and by whom; nothing here calls GitHub.
  *  - A text mention of the spec (a description, a comment, repoRefs) is not a
  *    link and creates no entry (AC-47).
  *
@@ -188,6 +194,84 @@ async function taskEntries(rows: Awaited<ReturnType<typeof pinnedTaskRows>>, app
   }));
 }
 
+/** The missions in `workspaceId` that selected `specId` as their outcome spec, newest first. */
+export async function selectingMissionRows(workspaceId: string, specId: string, opts: { limit: number; cursor?: Cursor | null }) {
+  return db.select({
+    id: missions.id, title: missions.title, status: missions.status, goalCriteria: missions.goalCriteria,
+    goalCriteriaState: missions.goalCriteriaState, createdAt: missions.createdAt,
+  })
+    .from(missions)
+    .where(and(
+      eq(missions.workspaceId, workspaceId),
+      sql`${missions.goalCriteria} @> ${JSON.stringify([{ type: 'living_spec', specId }])}::jsonb`,
+      opts.cursor ? sql`(${missions.createdAt}, ${missions.id}) < (${opts.cursor.at}::timestamptz, ${opts.cursor.id}::uuid)` : undefined,
+    ))
+    .orderBy(desc(missions.createdAt), desc(missions.id))
+    .limit(opts.limit);
+}
+
+const personId = (by: string) => (by.startsWith('user:') ? by.slice(5) : null);
+
+async function personNames(ids: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const want = [...new Set(ids.filter(isUuid))];
+  if (!want.length) return out;
+  for (const u of await db.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, want))) if (u.name) out.set(u.id, u.name);
+  return out;
+}
+
+/** A mission standing as a mark. A stale verdict keeps what it was: a stale inconclusive is not a stale pass. */
+function missionMark(s: LivingSpecCriterionStanding | undefined, verdict: string | undefined): CriterionMark {
+  if (!s || s.standing === 'missing') return 'none';
+  if (s.standing === 'stale') return verdict && verdict !== 'pass' ? (verdict as CriterionMark) : 'stale';
+  return s.standing;
+}
+
+async function missionEntries(rows: Awaited<ReturnType<typeof selectingMissionRows>>, specId: string, approved: number | null): Promise<DeliveryEntry[]> {
+  const picked = rows.map((r) => {
+    const criterion = livingSpecCriteriaOf(r.goalCriteria).find((c) => c.specId === specId)!;
+    const state = (r.goalCriteriaState as GoalCriteriaState | null)?.criteria
+      ?.find((e) => e.type === 'living_spec' && e.spec?.specId === specId && e.spec.revision === criterion.revision) ?? null;
+    return { r, criterion, state };
+  });
+  const verdictIds = picked.flatMap((p) => (p.state?.spec?.standings ?? []).map((s) => s.verdictId).filter((v): v is string => !!v && isUuid(v)));
+  const verdicts = new Map<string, { verdict: string; evidence: unknown }>();
+  if (verdictIds.length) {
+    for (const v of await db.select({ id: specOutcomeVerdicts.id, verdict: specOutcomeVerdicts.verdict, evidence: specOutcomeVerdicts.evidence })
+      .from(specOutcomeVerdicts).where(inArray(specOutcomeVerdicts.id, verdictIds)).catch(() => [])) verdicts.set(v.id, v);
+  }
+  const names = await personNames(picked.flatMap((p) => (p.criterion.waived ?? []).map((w) => personId(w.by) ?? ''))).catch(() => new Map<string, string>());
+
+  return Promise.all(picked.map(async ({ r, criterion, state }): Promise<DeliveryEntry> => {
+    const scope = await selectedScope(criterion).catch(() => null);
+    const refs = scope && scope.ok ? scope.criteria : (state?.spec?.standings ?? []).map((s) => ({ id: s.criterionId, text: '' }));
+    const standings = new Map((state?.spec?.standings ?? []).map((s) => [s.criterionId, s]));
+    const waived = new Set((criterion.waived ?? []).map((w) => w.criterionId));
+    const criteria: DeliveryCriterion[] = refs.map((ref) => {
+      const s = standings.get(ref.id);
+      const v = s?.verdictId ? verdicts.get(s.verdictId) : undefined;
+      return {
+        criterionId: ref.id, text: ref.text,
+        mark: waived.has(ref.id) ? 'waived' : missionMark(s, v?.verdict),
+        evidence: evidenceLinks(v?.evidence),
+      };
+    });
+    const outcome: DeliveryOutcome = state?.verdict === 'pass' ? 'verified' : state?.verdict === 'fail' ? 'fail' : 'unverified';
+    const waivedBy = (criterion.waived ?? []).map((w) => ({ criterionId: w.criterionId, by: names.get(personId(w.by) ?? '') ?? 'a person' }));
+    const delivered = r.status === 'completed';
+    const links: DeliveryEvidence[] = state?.workerTaskId && isUuid(state.workerTaskId)
+      ? [{ label: 'Final verification', href: `/app/tasks/${state.workerTaskId}` }]
+      : [];
+    return {
+      kind: 'mission', id: r.id, title: r.title, href: `/app/missions/${r.id}`,
+      builtTo: criterion.revision, provisional: !!criterion.provisional, delivered,
+      deliveredText: deliveredSentence({ builtTo: criterion.revision, provisional: !!criterion.provisional, delivered }),
+      standing: standingSentence({ builtTo: criterion.revision, approved, outcome, criteria, waivedBy }),
+      criteria, links, at: new Date(r.createdAt).toISOString(),
+    };
+  }));
+}
+
 /**
  * The Delivery and verification entries of one spec, one page. Null when the
  * spec is not there or the reader does not reach its workspace (the page then
@@ -201,11 +285,23 @@ export async function readSpecDelivery(caller: SpecCaller, specId: string, opts:
   const limit = Math.min(Math.max(opts.limit ?? DELIVERY_PAGE, 1), 50);
   const cursor = decodeCursor(opts.cursor);
 
-  const taskRows = await pinnedTaskRows(spec.workspaceId, spec.id, { limit: limit + 1, cursor });
-  const merged = taskRows.map((r) => ({ at: new Date(r.createdAt).toISOString(), id: r.id }));
+  const [taskRows, missionRows] = await Promise.all([
+    pinnedTaskRows(spec.workspaceId, spec.id, { limit: limit + 1, cursor }),
+    selectingMissionRows(spec.workspaceId, spec.id, { limit: limit + 1, cursor }),
+  ]);
+  // One newest-first order over both, by the same (created, id) key the cursor uses.
+  const merged = [
+    ...taskRows.map((r) => ({ kind: 'task' as const, at: new Date(r.createdAt).toISOString(), id: r.id })),
+    ...missionRows.map((r) => ({ kind: 'mission' as const, at: new Date(r.createdAt).toISOString(), id: r.id })),
+  ].sort((a, b) => (a.at === b.at ? (a.id < b.id ? 1 : -1) : a.at < b.at ? 1 : -1));
   const page = merged.slice(0, limit);
-  const keep = new Set(page.map((p) => p.id));
-  const entries = await taskEntries(taskRows.filter((r) => keep.has(r.id)), spec.approvedRevision);
+  const keep = new Set(page.map((p) => `${p.kind}:${p.id}`));
+  const [t, m] = await Promise.all([
+    taskEntries(taskRows.filter((r) => keep.has(`task:${r.id}`)), spec.approvedRevision),
+    missionEntries(missionRows.filter((r) => keep.has(`mission:${r.id}`)), spec.id, spec.approvedRevision),
+  ]);
+  const byKey = new Map([...t, ...m].map((e) => [`${e.kind}:${e.id}`, e]));
+  const entries = page.map((p) => byKey.get(`${p.kind}:${p.id}`)!).filter(Boolean);
   const last = page[page.length - 1];
   return { entries, next: merged.length > limit && last ? encodeCursor(last) : null };
 }

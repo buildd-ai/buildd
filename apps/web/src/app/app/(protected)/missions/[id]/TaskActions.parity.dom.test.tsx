@@ -181,7 +181,9 @@ describe('task actions: sheet, page and drawer agree', () => {
     it(`${s}: a local mission's refused start offers Force start, which posts forceOverride once`, async () => {
       startReply = { status: 422, body: { gateReason: 'mission_local', canForce: true, blockClass: 'policy' } };
       await mount(s, CASES[1]);
-      expect(container.querySelector('[data-testid="claim-task-hint"]')?.textContent).toContain(`claim_task {taskId: "${CASES[1].taskId}"}`);
+      // The card prints the short id; the full command is what Copy takes (spec f7f67f1a R-39).
+      expect(container.querySelector('[data-testid="claim-task-hint"]')?.textContent).toContain(`claim_task {taskId: "${CASES[1].taskId.slice(0, 8)}…"}`);
+      expect(container.querySelector('[data-testid="claim-task-hint"] code')?.getAttribute('title')).toBe(`claim_task {taskId: "${CASES[1].taskId}"}`);
       await press('run_now');
       await press('force_start');
       const url = `/api/tasks/${CASES[1].taskId}/start`;

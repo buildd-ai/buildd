@@ -77,7 +77,7 @@ import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { announceFixEnded } from '@/lib/pr-activity-fix-claimed';
 import { legacyRepairCompletionGate, type LegacyRepairGateDeps } from '@/lib/repair-completion';
-import { attemptEnded as workflowAttemptEnded, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, recordLocalHead, recordReviewVerdict, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
+import { adoptReviewVerdict, fixedElsewhereOf, noopEvidenceOf, attemptEnded as workflowAttemptEnded, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, recordLocalHead, recordReviewVerdict, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { siblingProbeHeartbeat } from '@/lib/sibling-conflict-probe-store';
 import { derivedMergeGateEvent } from '@/lib/derived-merge-gate';
@@ -1900,6 +1900,8 @@ export async function PATCH(
           context: terminalTaskRow[0].context,
         },
         localHeadSha: lastCommitSha ?? worker.lastCommitSha ?? null,
+        noopEvidence: noopEvidenceOf(body.structuredOutput),
+        fixedElsewhere: fixedElsewhereOf(body.structuredOutput),
       }).catch((err) => {
         console.error(`[workflow] completion gate check failed for worker ${worker.id} (allowing; AttemptEnded decides):`, err);
         return null;
@@ -2244,7 +2246,7 @@ export async function PATCH(
               workspaceId: worker.workspaceId,
               installationId: repoWithInstallation.installation.installationId,
               repoFullName: repoWithInstallation.fullName,
-            }).catch(() => null);
+            }, refreshBranch).catch(() => null);
             if (shipped) refreshAlreadyLanded = { ...landed, evidence: 'mission_pr_merged', missionPrNumber: shipped.prNumber };
           }
         }
@@ -4530,6 +4532,7 @@ export async function PATCH(
           source: 'runner',
           taskRetryBudgetLeft: shouldAutoRetry && !loopHold,
           ...(kernelReviewFailure ? { reviewFailure: kernelReviewFailure } : {}),
+          ...(noopEvidenceOf(body.structuredOutput) ? { noopEvidence: noopEvidenceOf(body.structuredOutput) } : {}),
         });
       });
 
@@ -5759,6 +5762,7 @@ async function handleReviewerOutcomeIfNeeded(
       effectiveVerdict,
       headSha,
       confidence: output.confidence,
+      output,
     }).catch((err) => {
       console.error(`[reviewer] workflow kernel could not record the verdict for PR #${prNumber}:`, err);
       void reportOps({ source: 'workflow-kernel:verdict', severity: 'error', message: `verdict not recorded for PR #${prNumber}`, detail: err instanceof Error ? err.message : String(err) });
@@ -5786,7 +5790,15 @@ async function handleReviewerOutcomeIfNeeded(
       return;
     }
     if (authority.deliveryId) {
-      console.log(`[reviewer] PR #${prNumber}: the workflow kernel owns this PR (delivery ${authority.deliveryId}); a verdict outside its rounds is not acted on`);
+      // 00d288fd: not dropped. The kernel keeps a verdict at its current head as that head's
+      // review (applied when the owner ends, never asked for again); any other head's is stale.
+      const adopted = await adoptReviewVerdict({
+        deliveryId: authority.deliveryId, reviewerTaskId, verdict: output.verdict, effectiveVerdict, headSha, confidence: output.confidence, output,
+      }).catch((err: unknown) => {
+        console.error(`[reviewer] PR #${prNumber}: the workflow kernel could not adopt the verdict:`, err);
+        return null;
+      });
+      console.log(`[reviewer] PR #${prNumber}: verdict from outside the kernel's rounds ${adopted ? `${adopted.result}${'reason' in adopted ? ` (${adopted.reason})` : ''}` : 'not recorded'} (delivery ${authority.deliveryId})`);
       return;
     }
   }

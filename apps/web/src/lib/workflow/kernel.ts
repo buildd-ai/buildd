@@ -19,8 +19,9 @@
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { applyCommandOn } from '@buildd/workflow-kernel/command-runner';
+import { isTaskId } from '@buildd/workflow-kernel/findings';
 import type { CommandResult, DeliveryRef } from '@buildd/workflow-kernel/ports';
-import type { ApplyDecision, AttemptOp, Command, DeliveryPatch, RecordOnly, RoundOp } from './commands';
+import type { ApplyDecision, AttemptOp, Command, DeliveryPatch, FindingOp, RecordOnly, RoundOp } from './commands';
 import { postgresStore } from './postgres-store';
 import { kernelHost } from './kernel-host';
 import type {
@@ -28,6 +29,7 @@ import type {
   AttemptSnapshot,
   DeliverySnapshot,
   DeliveryState,
+  FindingSnapshot,
   KernelView,
   RoundSnapshot,
 } from './types';
@@ -95,11 +97,16 @@ function roundCtes(ops: RoundOp[], src: string): SQL[] {
   const out: SQL[] = [];
   const inserts = ops.filter((o): o is Extract<RoundOp, { op: 'insert' }> => o.op === 'insert');
   if (inserts.length) {
-    const rows = inserts.map((o) => ({ id: o.id, round: o.round, head_sha: o.headSha, kind: o.kind, prior_round: o.priorRound, scope: o.scope ?? null }));
+    const rows = inserts.map((o) => ({
+      id: o.id, round: o.round, head_sha: o.headSha, kind: o.kind, prior_round: o.priorRound, scope: o.scope ?? null,
+      status: o.decided ? 'decided' : 'queued', verdict: o.decided?.verdict ?? null, effective_verdict: o.decided?.effectiveVerdict ?? null,
+      confidence: o.decided?.confidence ?? null, reviewer_task_id: o.decided?.reviewerTaskId ?? null, decided: !!o.decided,
+    }));
     out.push(sql`r_ins AS (
-  INSERT INTO workflow_review_rounds (id, delivery_id, round, head_sha, kind, prior_round, scope)
-  SELECT x.id, s.delivery_id, x.round, x.head_sha, x.kind, x.prior_round, x.scope
-  FROM ${sql.identifier(src)} s, jsonb_to_recordset(${jsonb(rows)}) AS x(id uuid, round int, head_sha text, kind text, prior_round int, scope jsonb)
+  INSERT INTO workflow_review_rounds (id, delivery_id, round, head_sha, kind, prior_round, scope, status, verdict, effective_verdict, confidence, reviewer_task_id, decided_at)
+  SELECT x.id, s.delivery_id, x.round, x.head_sha, x.kind, x.prior_round, x.scope, x.status, x.verdict, x.effective_verdict, x.confidence, x.reviewer_task_id,
+    CASE WHEN x.decided THEN now() END
+  FROM ${sql.identifier(src)} s, jsonb_to_recordset(${jsonb(rows)}) AS x(id uuid, round int, head_sha text, kind text, prior_round int, scope jsonb, status text, verdict text, effective_verdict text, confidence real, reviewer_task_id uuid, decided boolean)
   RETURNING id
 )`);
   }
@@ -167,6 +174,56 @@ function attemptCtes(ops: AttemptOp[], src: string): SQL[] {
   RETURNING wa.id
 )`);
     }
+  });
+  return out;
+}
+
+/**
+ * §5 finding writes. An insert lands under the finding's stable id (a replay
+ * is a primary-key violation, which aborts the statement like any replayed
+ * key). An update applies only while the finding is in one of `whenStatus`,
+ * read in the statement's own snapshot. The reducer writes each finding at
+ * most once per decision.
+ */
+const asUuid = (v: string | null): string | null => (v && isTaskId(v) ? v : null);
+
+function findingCtes(ops: FindingOp[], src: string): SQL[] {
+  const out: SQL[] = [];
+  const inserts = ops.filter((o): o is Extract<FindingOp, { op: 'insert' }> => o.op === 'insert');
+  if (inserts.length) {
+    const rows = inserts.map((o) => ({
+      id: o.id, origin_round_id: o.originRoundId, origin_round: o.originRound, origin_head_sha: o.originHeadSha, ordinal: o.ordinal,
+      path: o.path, line: o.line, title: o.title, required: o.required,
+    }));
+    out.push(sql`f_ins AS (
+  INSERT INTO workflow_findings (id, delivery_id, origin_round_id, origin_round, origin_head_sha, ordinal, path, line, title, required, status, last_round)
+  SELECT x.id, s.delivery_id, x.origin_round_id, x.origin_round, x.origin_head_sha, x.ordinal, x.path, x.line, x.title, x.required, 'open', x.origin_round
+  FROM ${sql.identifier(src)} s, jsonb_to_recordset(${jsonb(rows)}) AS x(id text, origin_round_id uuid, origin_round int, origin_head_sha text, ordinal int, path text, line int, title text, required boolean)
+  RETURNING id
+)`);
+  }
+  ops.forEach((o, i) => {
+    if (o.op !== 'update') return;
+    const sets: SQL[] = [sql`updated_at = now()`];
+    const v = o.set;
+    if (v.status !== undefined) sets.push(sql`status = ${v.status}::text`);
+    if (v.lastRound !== undefined) sets.push(sql`last_round = ${v.lastRound}::int`);
+    if (v.title !== undefined) sets.push(sql`title = ${v.title}::text`);
+    if (v.required !== undefined) sets.push(sql`required = ${v.required}::boolean`);
+    if (v.addressedBySha !== undefined) sets.push(sql`addressed_by_sha = ${v.addressedBySha}::text`);
+    // A uuid column only ever takes a full id: anything else would abort the whole transition (and with
+    // it the verdict), so it is written as NULL. The reducer refuses such a deferral before it gets here.
+    if (v.closedByRoundId !== undefined) sets.push(sql`closed_by_round_id = ${asUuid(v.closedByRoundId)}::uuid`);
+    if (v.closedBy !== undefined) sets.push(sql`closed_by = ${v.closedBy}::text`);
+    if (v.closedReason !== undefined) sets.push(sql`closed_reason = ${v.closedReason}::text`);
+    if (v.deferredToTaskId !== undefined) sets.push(sql`deferred_to_task_id = ${asUuid(v.deferredToTaskId)}::uuid`);
+    out.push(sql`${sql.identifier(`f_upd_${i}`)} AS (
+  UPDATE workflow_findings wf SET ${sql.join(sets, sql`, `)}
+  FROM ${sql.identifier(src)} s
+  WHERE wf.id = ${o.findingId}::text AND wf.delivery_id = s.delivery_id
+    AND wf.status IN (SELECT jsonb_array_elements_text(${jsonb(o.whenStatus)}))
+  RETURNING wf.id
+)`);
   });
   return out;
 }
@@ -242,6 +299,7 @@ export function transitionSql(decision: ApplyDecision, ref: { deliveryId?: strin
 
   ctes.push(...roundCtes(d.rounds, 't'));
   ctes.push(...attemptCtes(d.attempts, 't'));
+  ctes.push(...findingCtes(d.findings ?? [], 't'));
 
   if (ref.factId) {
     ctes.push(sql`f AS (
@@ -258,7 +316,7 @@ SELECT t.id AS transition_id, t.delivery_id, t.to_version AS version FROM t`;
 
 /** Writes kept for audit when no transition applies (a stale verdict, a skipped fix). */
 export function recordOnlySql(deliveryId: string, record: RecordOnly): SQL | null {
-  const ctes = [...roundCtes(record.rounds, 'src'), ...attemptCtes(record.attempts, 'src')];
+  const ctes = [...roundCtes(record.rounds, 'src'), ...attemptCtes(record.attempts, 'src'), ...findingCtes(record.findings ?? [], 'src')];
   if (ctes.length === 0) return null;
   return sql`-- workflow:record
 WITH src AS (SELECT ${deliveryId}::uuid AS delivery_id),
@@ -285,7 +343,8 @@ SELECT to_jsonb(d.*) || jsonb_build_object('push_pending_local_head', (
     SELECT max(t.to_version) FROM workflow_transitions t
     WHERE t.delivery_id = d.id AND t.to_state = 'AWAITING_PUSH' AND t.from_state IS DISTINCT FROM 'AWAITING_PUSH')) AS delivery,
   COALESCE((SELECT jsonb_agg(to_jsonb(r.*) ORDER BY r.round) FROM workflow_review_rounds r WHERE r.delivery_id = d.id), '[]'::jsonb) AS rounds,
-  COALESCE((SELECT jsonb_agg(to_jsonb(a.*) ORDER BY a.family, a.mode, a.attempt_no) FROM workflow_attempts a WHERE a.delivery_id = d.id), '[]'::jsonb) AS attempts
+  COALESCE((SELECT jsonb_agg(to_jsonb(a.*) ORDER BY a.family, a.mode, a.attempt_no) FROM workflow_attempts a WHERE a.delivery_id = d.id), '[]'::jsonb) AS attempts,
+  COALESCE((SELECT jsonb_agg(to_jsonb(f.*) ORDER BY f.origin_round, f.ordinal, f.created_at) FROM workflow_findings f WHERE f.delivery_id = d.id), '[]'::jsonb) AS findings
 FROM workflow_deliveries d
 WHERE ${where}
 LIMIT 1`;
@@ -349,6 +408,15 @@ export function toRoundSnapshot(r: J): RoundSnapshot {
     effectiveVerdict: (r.effective_verdict ?? null) as RoundSnapshot['effectiveVerdict'], failureCount: n(r.failure_count),
     reviewerTaskId: s(r.reviewer_task_id),
     scope: (r.scope as Record<string, unknown> | null) ?? null,
+  };
+}
+
+export function toFindingSnapshot(r: J): FindingSnapshot {
+  return {
+    id: String(r.id), originRoundId: String(r.origin_round_id), originRound: n(r.origin_round), originHeadSha: String(r.origin_head_sha),
+    ordinal: n(r.ordinal), path: s(r.path), line: r.line == null ? null : Number(r.line), title: String(r.title), required: r.required !== false,
+    status: r.status as FindingSnapshot['status'], lastRound: n(r.last_round), addressedBySha: s(r.addressed_by_sha),
+    closedByRoundId: s(r.closed_by_round_id), closedBy: s(r.closed_by), closedReason: s(r.closed_reason), deferredToTaskId: s(r.deferred_to_task_id),
   };
 }
 

@@ -49,6 +49,8 @@ export interface CheckRow {
   /** Repair tasks shown inside the check (R-14), never in the build count. */
   repairs: CheckRepair[];
   evidence: { label: string; href: string }[];
+  /** A person may skip this check with a reason (R-34): visual review only, never under strict policy or once settled. */
+  waivable?: boolean;
 }
 
 export type RailKey = 'build' | 'verify' | 'deliver';
@@ -112,10 +114,12 @@ export function visualCheck(state: MissionVisualReviewState, opts: { mergeTier: 
     problem: p.problem, findings: p.findings, repairs: [...(opts.repairs ?? [])], evidence: [...(opts.evidence ?? [])],
   };
   const actor: CheckActor = p.needsYou ? 'owner' : state.nextActor === 'jev' ? 'reviewer' : state.nextActor === 'none' ? 'none' : 'system';
-  const row = (status: CheckStatus, text: string, detail: string | null, who: CheckActor = actor): CheckRow => ({ ...base, status, state: text, detail, actor: who });
+  // Skip (R-34): the policy lets a person waive it and nothing has settled it yet.
+  const waivable = state.policy.waiverAllowed && state.policy.mode !== 'off' && !['passed', 'waived', 'not_applicable', 'optional'].includes(state.status);
+  const row = (status: CheckStatus, text: string, detail: string | null, who: CheckActor = actor): CheckRow => ({ ...base, status, state: text, detail, actor: who, waivable: waivable && !SETTLED.has(status) });
 
   // Off or not needed: there are no screens to open, and the state says it once.
-  const idle = (text: string, detail: string): CheckRow => ({ ...row('not_applicable', text, detail, 'none'), chip: null, evidence: [] });
+  const idle = (text: string, detail: string): CheckRow => ({ ...row('not_applicable', text, detail, 'none'), chip: null, evidence: [], waivable: false });
 
   if (state.status === 'waived') return row('waived', 'waived', p.detail, 'none');
   if (state.status === 'not_applicable') return idle('not needed', 'No screens changed, so there was nothing to check.');
@@ -326,6 +330,73 @@ export function missionChecks(input: MissionChecksInput): MissionChecks {
         : 'verify';
 
   return { rows, rail: [buildStep, verifyStep, deliverStep], buildComplete, delivered: deliverDone, checkpoint };
+}
+
+// ── What keeps the header from saying Verified ───────────────────────────────
+
+/**
+ * Why the mission header must not say Verified now, or null when nothing
+ * stops it. A stored `overall: pass` can predate the tasks that reopened or
+ * the spec selected since, so this reads the current per-criterion states
+ * (the board's live criteria) and the visual review row: any criterion not
+ * passing, or a blocking visual review that is not settled, holds it.
+ */
+export function verifiedHold(input: { criteria: readonly { label: string; state: string }[]; visual: CheckRow | null }): string | null {
+  const open = input.criteria.find(c => c.state !== 'pass');
+  if (open) {
+    const word = open.state === 'running' ? 'being checked' : open.state === 'unchecked' || open.state === 'pending' ? 'not checked' : 'not met';
+    return `${open.label} ${word}`;
+  }
+  const v = input.visual;
+  if (v && v.blocks && !SETTLED.has(v.status)) return `${v.label}: ${v.state}`;
+  return null;
+}
+
+// ── Who skipped it ───────────────────────────────────────────────────────────
+
+const EMAIL = /^[^\s@]+@[^\s@]+$/;
+
+/**
+ * A waiver's actor as people read it: "You" for the viewer, else the
+ * person's display name. A stored email is never shown raw; with no name on
+ * file it falls back to the part before the @. Other labels pass through.
+ */
+export function waiverActorName(label: string | null, viewerEmail: string | null | undefined, names: Readonly<Record<string, string>>): string | null {
+  if (!label) return null;
+  if (!EMAIL.test(label)) return label;
+  const key = label.toLowerCase();
+  if (viewerEmail && viewerEmail.toLowerCase() === key) return 'You';
+  return names[key] ?? label.slice(0, label.indexOf('@'));
+}
+
+/** The emails among waiver actor labels, lowercased, for one name lookup. */
+export function waiverActorEmails(labels: readonly (string | null | undefined)[]): string[] {
+  return [...new Set(labels.filter((l): l is string => !!l && EMAIL.test(l)).map(l => l.toLowerCase()))];
+}
+
+// ── The selected outcome spec, as one line (R-40) ────────────────────────────
+
+export interface OutcomeSpecLine { specId: string; title: string; revision: string; status: string; href: string }
+
+/**
+ * One line per selected outcome spec, under the stage rail: its title, the
+ * revision it is pinned to and the same status its Verify row shows. A spec
+ * whose title could not be read still gets its line, named by revision.
+ */
+export function outcomeSpecLines(criteria: readonly GoalCriterion[], rows: readonly CheckRow[], titles: Readonly<Record<string, string>>): OutcomeSpecLine[] {
+  const out: OutcomeSpecLine[] = [];
+  criteria.forEach((c, i) => {
+    if (c.type !== 'living_spec') return;
+    const row = rows.find(r => r.key === `criterion-${i}`);
+    out.push({
+      specId: c.specId,
+      title: titles[c.specId] ?? 'Outcome spec',
+      revision: `rev ${c.revision}${c.provisional ? ', proposed' : ''}`,
+      status: row?.state ?? 'not checked',
+      href: `/app/specs/${c.specId}`,
+    });
+  });
+  return out;
 }
 
 // ── Build-only estimate (R-23, R-24) ─────────────────────────────────────────

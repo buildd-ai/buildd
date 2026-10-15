@@ -19,9 +19,11 @@ import GoalCriteriaFixture from './GoalCriteriaFixture';
 import SpecSurfaceFixture from './SpecSurfaceFixture';
 import SpecIndexFixture from './SpecIndexFixture';
 import SpecAttachmentsFixture from './SpecAttachmentsFixture';
+import SpecDeliveryFixture from './SpecDeliveryFixture';
 import OnboardingFixture, { ONBOARDING_FIXTURE_VIEWS, type OnboardingFixtureView } from './OnboardingFixture';
 import EvidenceStorageFixture from './EvidenceStorageFixture';
 import ConnectionsFixture from './ConnectionsFixture';
+import RunnerKeysFixture from './RunnerKeysFixture';
 import OperatorAccessFixture from './OperatorAccessFixture';
 import ModelProvidersFixture from './ModelProvidersFixture';
 import TaskEvidenceFilesFixture from './TaskEvidenceFilesFixture';
@@ -79,6 +81,8 @@ import {
     SPEC_SURFACE_FIXTURE_STATE,
     SPEC_INDEX_FIXTURE_STATE,
     SPEC_ATTACHMENTS_FIXTURE_STATE,
+    SPEC_DELIVERY_FIXTURE_STATE,
+    RUNNER_KEYS_FIXTURE_STATE,
     TASK_SHIPPED_FIXTURE_STATE,
     COMMIT_CHECKS_FIXTURE_STATE,
     TASK_PAGE_FIXTURE_STATE,
@@ -174,6 +178,10 @@ export default function DevFixturesPage() {
         return <SpecAttachmentsFixture />;
     }
 
+    if (state === SPEC_DELIVERY_FIXTURE_STATE) {
+        return <SpecDeliveryFixture />;
+    }
+
     if (state === TASK_ERROR_EVIDENCE_FIXTURE_STATE) {
         return <TaskErrorEvidenceFixture />;
     }
@@ -232,6 +240,9 @@ export default function DevFixturesPage() {
     }
     if (state === MCP_CONNECTIONS_FIXTURE_STATE) {
         return <ConnectionsFixture />;
+    }
+    if (state === RUNNER_KEYS_FIXTURE_STATE) {
+        return <RunnerKeysFixture />;
     }
     if (state === INTERACTIVE_SESSIONS_FIXTURE_STATE) {
         return <InteractiveSessionsFixture />;

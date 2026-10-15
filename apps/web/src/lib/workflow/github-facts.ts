@@ -147,6 +147,15 @@ export function githubReader(installationId: number, api: typeof githubApi = git
         return false;
       }
     },
+    async changedPaths(repoFullName, fromSha, toSha) {
+      const cmp = await api(installationId, `/repos/${repoFullName}/compare/${fromSha}...${toSha}`).catch(() => null) as { files?: unknown } | null;
+      const files = names(cmp?.files);
+      // A list at the compare cap may be cut: unread, not "these and no others".
+      if (!files || files.length >= COMPARE_FILE_LIMIT) return null;
+      // A renamed file counts under its old name too: a finding was anchored on that one.
+      const previous = (cmp!.files as Array<{ previous_filename?: unknown }>).map((f) => f?.previous_filename).filter((n): n is string => typeof n === 'string');
+      return [...new Set([...files, ...previous])];
+    },
     async baseDelta(repoFullName, prNumber, headSha, baseRef) {
       return readBaseDelta((path) => api(installationId, path), repoFullName, prNumber, headSha, baseRef);
     },

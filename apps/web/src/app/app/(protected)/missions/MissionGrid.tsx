@@ -16,7 +16,7 @@ import Link from 'next/link';
 import Disclosure from '@/components/ui/Disclosure';
 import MissionRow from '@/components/ui/MissionRow';
 import Segmented from '@/components/ui/Segmented';
-import { DELIVERY_KIND } from '@/lib/delivery-projection';
+import { DELIVERY_KIND, type MissionRemaining } from '@/lib/delivery-projection';
 import { stateOfDelivery, buildMissionSections, type MissionSection } from '@/lib/mission-sections';
 import {
   COUNTER_DEFINITIONS,
@@ -144,7 +144,7 @@ export function MissionGrid({
                 <span className="flex flex-wrap items-baseline gap-x-2">
                   <span className="text-title font-semibold text-text-primary">{onDev.label}</span>
                   <span data-testid="mission-section-count" className="font-mono text-meta text-text-secondary">{onDev.rows.length}</span>
-                  <span className="text-meta text-text-muted">A goal criterion hasn&rsquo;t passed.</span>
+                  <span data-testid="mission-section-left" className="text-meta text-text-muted">{landedLeft(onDev.rows)}</span>
                 </span>
               }
             >
@@ -231,10 +231,31 @@ function Headline({ open, counts, slots }: { open: number; counts: Record<Portfo
   );
 }
 
-function ago(ms: number | null, now: number): string {
+/** "just now" under a minute, else "<duration> ago". Exported for its test. */
+export function ago(ms: number | null, now: number): string {
   if (ms == null) return '';
   const d = now - ms;
-  return d < 60_000 ? 'now' : shortDuration(d);
+  return d < 60_000 ? 'just now' : `${shortDuration(d)} ago`;
+}
+
+const LEFT_WORDS: Record<MissionRemaining, { one: string; part: string }> = {
+  visual: { one: 'The visual review is what’s left.', part: 'visual review' },
+  criteria: { one: 'A goal criterion hasn’t passed.', part: 'goal criteria' },
+  release: { one: 'Waiting on the release.', part: 'release' },
+  completion: { one: 'Ready to complete.', part: 'ready to complete' },
+};
+
+/** The Landed group's subtitle: what is actually left on its missions (spec f7f67f1a R-32). */
+export function landedLeft(rows: readonly PortfolioRow[]): string {
+  const counts = new Map<MissionRemaining, number>();
+  for (const r of rows) {
+    const k = r.delivery.remaining ?? 'completion';
+    counts.set(k, (counts.get(k) ?? 0) + 1);
+  }
+  const order: MissionRemaining[] = ['visual', 'criteria', 'release', 'completion'];
+  const present = order.filter(k => counts.has(k));
+  if (present.length === 1) return LEFT_WORDS[present[0]].one;
+  return `Left: ${present.map(k => `${LEFT_WORDS[k].part} (${counts.get(k)})`).join(', ')}.`;
 }
 
 function nextLine(r: PortfolioRow): string {
@@ -250,7 +271,7 @@ function PortfolioRowView({ row, now, showWorkspace }: { row: PortfolioRow; now:
   const aside = [
     row.liveAgents > 0 ? `${row.liveAgents} agent${row.liveAgents === 1 ? '' : 's'}` : null,
     showWorkspace ? row.workspaceName : null,
-    age ? `${age} ago` : null,
+    age || null,
   ].filter(Boolean).join(' · ');
   return (
     <div data-testid="portfolio-row" data-mission-id={d.id} data-kind={d.kind}>

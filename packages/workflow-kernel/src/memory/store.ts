@@ -21,13 +21,13 @@
  *
  * Time is the injected clock. Ids come from the injected generator.
  */
-import type { ApplyDecision, AttemptOp, Command, EffectKind, RecordOnly, RoundOp } from '../commands';
+import type { ApplyDecision, AttemptOp, Command, EffectKind, FindingOp, RecordOnly, RoundOp } from '../commands';
 import { effectRetry } from '../effects';
 import { holdsLane, LANE_PARKED_OUTCOME } from '../landing-lane';
 import type {
   ClaimedEffect, DeliveryRef, EffectAuthority, EffectSnapshot, FactInsert, FollowupEffect, LaneKey, Store, StoredFact, TransitionWrite,
 } from '../ports';
-import type { AttemptSnapshot, DeliverySnapshot, DeliveryState, KernelView, RoundSnapshot } from '../types';
+import type { AttemptSnapshot, DeliverySnapshot, DeliveryState, FindingSnapshot, KernelView, RoundSnapshot } from '../types';
 import type { ControllableClock } from './clock';
 
 export interface TransitionRecord {
@@ -92,6 +92,7 @@ export class MemoryStore implements Store {
   readonly deliveries = new Map<string, StoredDelivery>();
   readonly rounds: Array<RoundSnapshot & { deliveryId: string }> = [];
   readonly attempts: Array<StoredAttempt & { deliveryId: string }> = [];
+  readonly findings: Array<FindingSnapshot & { deliveryId: string; seq: number }> = [];
   readonly transitionLog: TransitionRecord[] = [];
   readonly effectLog: EffectRecord[] = [];
   readonly facts: FactRecord[] = [];
@@ -114,7 +115,7 @@ export class MemoryStore implements Store {
   /** `loadViewSql`: the delivery with its push-entry readings, rounds by number, attempts by (family, mode, no). */
   viewSync(ref: DeliveryRef): KernelView {
     const d = this.find(ref);
-    if (!d) return { delivery: null, rounds: [], attempts: [] };
+    if (!d) return { delivery: null, rounds: [], attempts: [], findings: [] };
     const entries = this.transitionLog
       .filter((t) => t.deliveryId === d.id && t.toState === 'AWAITING_PUSH' && t.fromState !== 'AWAITING_PUSH')
       .sort((a, b) => a.toVersion - b.toVersion);
@@ -132,7 +133,12 @@ export class MemoryStore implements Store {
       .filter((a) => a.deliveryId === d.id)
       .sort((a, b) => cmp(a.family, b.family) || cmp(a.mode, b.mode) || a.attemptNo - b.attemptNo)
       .map(({ deliveryId: _, pushedHeadSha: __, ...a }) => structuredClone(a));
-    return { delivery, rounds, attempts };
+    // Oldest first: the round that raised it, then its position there.
+    const findings = this.findings
+      .filter((f) => f.deliveryId === d.id)
+      .sort((a, b) => a.originRound - b.originRound || a.ordinal - b.ordinal || a.seq - b.seq)
+      .map(({ deliveryId: _, seq: __, ...f }) => structuredClone(f));
+    return { delivery, rounds, attempts, findings };
   }
 
   async loadView(ref: DeliveryRef): Promise<KernelView> { return this.viewSync(ref); }
@@ -173,6 +179,7 @@ export class MemoryStore implements Store {
     const deliveries = new Map([...this.deliveries].map(([k, v]) => [k, structuredClone(v)]));
     const rounds = structuredClone(this.rounds);
     const attempts = structuredClone(this.attempts);
+    const findings = structuredClone(this.findings);
     const transitions = [...this.transitionLog];
     const effects = [...this.effectLog];
     const now = this.clock.now();
@@ -228,11 +235,13 @@ export class MemoryStore implements Store {
     }
     applyRoundOps(rounds, d.id, dec.rounds);
     applyAttemptOps(attempts, d.id, dec.attempts);
+    applyFindingOps(findings, d.id, dec.findings ?? [], () => ++this.seq);
 
     this.deliveries.clear();
     for (const [k, v] of deliveries) this.deliveries.set(k, v);
     this.rounds.splice(0, this.rounds.length, ...rounds);
     this.attempts.splice(0, this.attempts.length, ...attempts);
+    this.findings.splice(0, this.findings.length, ...findings);
     this.transitionLog.splice(0, this.transitionLog.length, ...transitions);
     this.effectLog.splice(0, this.effectLog.length, ...effects);
     if (factId) {
@@ -245,10 +254,13 @@ export class MemoryStore implements Store {
   async recordOnly(deliveryId: string, record: RecordOnly): Promise<void> {
     const rounds = structuredClone(this.rounds);
     const attempts = structuredClone(this.attempts);
+    const findings = structuredClone(this.findings);
     applyRoundOps(rounds, deliveryId, record.rounds);
     applyAttemptOps(attempts, deliveryId, record.attempts);
+    applyFindingOps(findings, deliveryId, record.findings ?? [], () => ++this.seq);
     this.rounds.splice(0, this.rounds.length, ...rounds);
     this.attempts.splice(0, this.attempts.length, ...attempts);
+    this.findings.splice(0, this.findings.length, ...findings);
   }
 
   // ── Facts ────────────────────────────────────────────────────────────────
@@ -440,8 +452,9 @@ function applyRoundOps(rounds: Array<RoundSnapshot & { deliveryId: string }>, de
         throw new UniqueViolation('workflow_review_rounds_open_per_head');
       }
       rounds.push({
-        deliveryId, id: o.id, round: o.round, headSha: o.headSha, kind: o.kind, status: 'queued', verdict: null,
-        effectiveVerdict: null, failureCount: 0, reviewerTaskId: null, scope: o.scope ?? null,
+        deliveryId, id: o.id, round: o.round, headSha: o.headSha, kind: o.kind, status: o.decided ? 'decided' : 'queued',
+        verdict: o.decided?.verdict ?? null, effectiveVerdict: o.decided?.effectiveVerdict ?? null, failureCount: 0,
+        reviewerTaskId: o.decided?.reviewerTaskId ?? null, scope: o.scope ?? null,
       });
       continue;
     }
@@ -482,5 +495,30 @@ function applyAttemptOps(attempts: Array<StoredAttempt & { deliveryId: string }>
         a.outcome = 'noop';
       }
     }
+  }
+}
+
+/**
+ * `workflow_findings` writes, as the Postgres CTEs make them: an insert under
+ * the finding's stable id (the primary key: a replay is a unique violation),
+ * an update only while the finding is in one of `whenStatus`, read before any
+ * op of the same statement ran (a statement's CTEs share one snapshot).
+ */
+function applyFindingOps(findings: Array<FindingSnapshot & { deliveryId: string; seq: number }>, deliveryId: string, ops: FindingOp[], seq: () => number): void {
+  const before = new Map(findings.filter((f) => f.deliveryId === deliveryId).map((f) => [f.id, f.status]));
+  for (const o of ops) {
+    if (o.op === 'insert') {
+      if (findings.some((f) => f.id === o.id)) throw new UniqueViolation('workflow_findings_pkey');
+      findings.push({
+        deliveryId, seq: seq(), id: o.id, originRoundId: o.originRoundId, originRound: o.originRound, originHeadSha: o.originHeadSha,
+        ordinal: o.ordinal, path: o.path, line: o.line, title: o.title, required: o.required, status: 'open', lastRound: o.originRound,
+        addressedBySha: null, closedByRoundId: null, closedBy: null, closedReason: null, deferredToTaskId: null,
+      });
+      continue;
+    }
+    const was = before.get(o.findingId);
+    const f = findings.find((x) => x.deliveryId === deliveryId && x.id === o.findingId);
+    if (!f || !was || !o.whenStatus.includes(was)) continue;
+    assignDefined(f, o.set);
   }
 }

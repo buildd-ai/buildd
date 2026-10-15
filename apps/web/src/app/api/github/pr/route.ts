@@ -13,7 +13,7 @@ import { rankPrComments } from '@/lib/pr-comments';
 // One implementation of the primary-PR claim and of "what counts as trunk",
 // shared with the mission-PR opener. Two copies of a base-ref rule is how
 // the branch-name generator drifted (P8).
-import { claimMissionPrimaryPr, trunkBranches, MISSION_PR_TASK_PREFIX, guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
+import { claimMissionPrimaryPr, trunkBranches, MISSION_PR_TASK_PREFIX, guardMissionPrMerge, finalizeMissionPrMerge, ensureMissionWritableBranch } from '@/lib/mission-pr';
 import { buildMissionBaseGuard } from '@/lib/mission-base-guard';
 import { ensureIntegrationBaseForTaskPr, reportMissionBranchUnresolved } from '@/lib/mission-integration-branch';
 import { looksLikeMissionIntegrationBranch, resolveTaskPrBase } from '@buildd/core/mission-integration';
@@ -345,6 +345,10 @@ export async function POST(req: NextRequest) {
     // checks at PR creation. `missionIntegrationBase` returns null for a mission
     // that has not opted in, which is what makes every check below inert for
     // such a mission (and for a task with no mission at all).
+    // §6 mission deliveries: if the mission's newest delivery already merged,
+    // the kernel opens its successor first, so the mission read below names a
+    // live branch, never the merged one. One read for every other mission.
+    if (worker.task?.missionId) await ensureMissionWritableBranch(worker.task.missionId, 'task_pr_opening');
     const mission = worker.task?.missionId
       ? await db.query.missions.findFirst({
           where: sqlWhere(eq(missions.id, worker.task.missionId)),
@@ -2337,7 +2341,7 @@ export async function PUT(req: NextRequest) {
     if (result.merged) {
       // Through the fact funnel (terminal wins); Slice C moves this door to T16.
       await recordPrFact({ workerId: worker.id }, { kind: 'merged', mergedAt: new Date() });
-      await finalizeMissionPrMerge(mergingTask, repo.installation.installationId, repo.fullName);
+      await finalizeMissionPrMerge(mergingTask, repo.installation.installationId, repo.fullName, prNumber);
       // The merge made a live reviewer and any open fix obsolete. The
       // pull_request.closed webhook fires the same event; the CAS keeps it to
       // one cancellation per task whichever door gets there first.

@@ -395,8 +395,9 @@ describe('T4 AttemptEnded by outcome (§6.5)', () => {
     expect(green.evidence).toMatchObject({ liveChecks: { complete: false, failing: [] } });
     // No read: exactly the previous decision.
     expect(applied(end(V(D()), { ci: null })).evidence).not.toHaveProperty('liveChecks');
-    // A verdict already decided at the head is honoured first.
-    expect(applied(end(V(D(), [R({ status: 'decided', verdict: 'approve' })]), { ci: red })).toState).not.toBe('REPAIRING');
+    // S5 re-review: a verdict kept while the owner worked (an adopted round) does not skip the CI
+    // repair of a red head; leaving the repair re-enters it.
+    expect(applied(end(V(D(), [R({ status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' })]), { ci: red })).toState).toBe('REPAIRING');
   });
   test('WORKING success: an open round already at the head is reused', () => {
     const dec = applied(end(V(D(), [R()]), {}));
@@ -516,7 +517,7 @@ describe('T4 AttemptEnded by outcome (§6.5)', () => {
     const dec = applied(end(fixing(), { attemptId: 'a1', outcome: 'lost' }));
     expect(dec.toState).toBe('CHANGES_REQUESTED');
     expect(dec.effects.find((e) => e.kind === 'dispatch_fix')).toMatchObject({ payload: { attemptNo: 2 } });
-    expect(dec.attempts[0]).toMatchObject({ set: { status: 'ended', outcome: 'failed' } });
+    expect(dec.attempts[0]).toMatchObject({ set: { status: 'ended', outcome: 'noop' } }); // AC-19: the head never moved, so it is "no change"
     const ex = applied(end(fixing({ attemptNo: 3 }), { attemptId: 'a1', outcome: 'failed' }));
     expect(ex.toState).toBe('ESCALATED');
     expect(ex.patch.stateReason).toBe('review_exhausted');
@@ -1527,7 +1528,7 @@ describe('CI family (S23, S25, S28, AC-13/14/16)', () => {
     const dec = applied(head(repairing([ciAttempt({ status: 'queued' })]), 'HUMAN1', { attribution: { descendsFromBound: true } }));
     expect(dec.toState).toBe('AWAITING_REVIEW');
     expect(dec.attempts).toEqual([{ op: 'update', attemptId: 'c1', whenStatus: ['queued'], set: { status: 'skipped', outcome: 'noop', ended: true } }]);
-    expect(dec.effects.find((e) => e.kind === 'cancel_open_attempts')?.payload).toEqual({ families: ['ci'], reason: 'head_moved' });
+    expect(dec.effects.find((e) => e.kind === 'cancel_open_attempts')?.payload).toEqual({ families: ['ci'], reason: 'head_moved', taskIds: ['ft1'] }); // only the task this head made moot
     expect(dec.evidence).toMatchObject({ foreignPush: true, repairSkipped: true });
     expect(dec.patch.boundAttemptId).toBeNull();
     const ap = applied(head(repairing([ciAttempt()], { approvedHeads: ['H1'], approvalBasis: 'verdict' }), 'H2', { carryForward: 'content_equivalent' }));
@@ -2063,5 +2064,100 @@ describe('review, refresh and landing while a coordination owner keeps running (
     const v = V(D({ state: 'REPAIRING', stateReason: 'behind', boundAttemptId: 'm1', currentRound: 1 }), [],
       [A({ id: 'm1', family: 'conflict', mode: 'mechanical', triggerReason: 'behind', taskId: null })]);
     expect(applied(run(v, { type: 'PrMerged', actor: 'floor', live: live('H1', { state: 'closed', merged: true }) })).toState).toBe('MERGED');
+  });
+});
+
+describe('S5 (workflow-kernel-library.md §5): rules no other path reaches', () => {
+  const finding = (o: Partial<import('./types').FindingSnapshot> = {}): import('./types').FindingSnapshot => ({
+    id: 'r1:0', originRoundId: 'r1', originRound: 1, originHeadSha: 'H1', ordinal: 0, path: 'src/a.ts', line: 3, title: 'rename the flag',
+    required: true, status: 'open', lastRound: 1, addressedBySha: null, closedByRoundId: null, closedBy: null, closedReason: null, deferredToTaskId: null, ...o,
+  });
+  const approvedWith = (findings: import('./types').FindingSnapshot[], o: Partial<DeliverySnapshot> = {}): KernelView => ({
+    ...V(D({ state: 'APPROVED', currentRound: 1, approvedHeads: ['H1'], approvalBasis: 'verdict', ...o }), [R({ status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' })]),
+    findings,
+  });
+  const land = (v: KernelView, o: Partial<Extract<Command, { type: 'LandingRequested' }>> = {}) =>
+    run(v, { type: 'LandingRequested', actor: 'kernel', door: 'auto', headSha: 'H1', live: live('H1'), ...o });
+
+  test('T15 refuses an approved, covered head while a required finding is open, naming it (AC-13)', () => {
+    const dec = land(approvedWith([finding()]));
+    expectResult(dec, 'rejected', 'open_finding');
+    expect((dec as { missing?: string[] }).missing).toEqual(['src/a.ts:3: rename the flag']);
+    // Closed or optional findings never refuse; the same head lands.
+    for (const f of [finding({ status: 'resolved' }), finding({ status: 'waived' }), finding({ required: false })]) expect(land(approvedWith([f])).result).toBe('apply');
+  });
+
+  test('T15 lets a person pass it: their verdict override, or their own approval of this head; a freshness-only grant does not', () => {
+    const v = approvedWith([finding()]);
+    expect(land(v, { actor: 'human:owner', door: 'dashboard_override', override: { reason: 'accepted' } }).result).toBe('apply');
+    expect(land(approvedWith([finding()], { approvalBasis: 'human' })).result).toBe('apply');
+    expectResult(land(v, { actor: 'human:owner', door: 'dashboard_override', override: { reason: 'stale base', kinds: ['freshness'] } }), 'rejected', 'open_finding');
+  });
+
+  test('reenterVerdict: a decided approval never re-enters as APPROVED over an open required finding; it owes a verification round', () => {
+    // A repair held the head while the approval arrived; the repair turns out not to be needed.
+    const v: KernelView = {
+      ...V(D({ state: 'REPAIRING', stateReason: 'ci', currentRound: 2, boundAttemptId: 'c1', currentHeadSha: 'H2' }),
+        [R({ id: 'r1', round: 1, status: 'decided', verdict: 'request_changes', effectiveVerdict: 'request_changes' }), R({ id: 'r2', round: 2, headSha: 'H2', kind: 'delta', status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' })],
+        [A({ id: 'c1', family: 'ci', boundHeadSha: 'H2', triggerReason: 'ci:unit', taskId: null, status: 'queued' })]),
+      findings: [finding()],
+    };
+    const dec = applied(run(v, { type: 'RepairNotNeeded', actor: 'claim', attemptId: 'c1', reason: 'ci_green' }));
+    expect(dec.toState).toBe('AWAITING_REVIEW');
+    expect(dec.patch.approvedHeads).toBeUndefined();
+    expect(dec.rounds.find((r) => r.op === 'insert')).toMatchObject({ headSha: 'H2', scope: { verifyFindings: ['r1:0'] } });
+    // With nothing open it re-enters the approval, as before.
+    expect(applied(run({ ...v, findings: [finding({ status: 'resolved' })] }, { type: 'RepairNotNeeded', actor: 'claim', attemptId: 'c1', reason: 'ci_green' })).toState).toBe('APPROVED');
+  });
+});
+
+describe('S5 re-review: guards the scenarios cannot reach by commands alone', () => {
+  test('CiGreenObserved: a CI repair whose bound attempt already ended is not ended again', () => {
+    const v = V(D({ state: 'REPAIRING', stateReason: 'ci', currentRound: 1, boundAttemptId: 'c1', approvedHeads: ['H1'], approvalBasis: 'verdict' }), [],
+      [A({ id: 'c1', family: 'ci', triggerReason: 'sig', status: 'ended', outcome: 'failed' })]);
+    expectResult(run(v, { type: 'CiGreenObserved', actor: 'webhook', headSha: 'H1', liveChecks: { complete: true, failing: [] }, allPassing: true }), 'stale', 'attempt_not_open');
+  });
+
+  test('ReviewVerdictAdopted is guarded on the head and round it read, so a move in between writes nothing', () => {
+    const dec = applied(run(V(D({ state: 'WORKING', currentRound: 0 })), { type: 'ReviewVerdictAdopted', actor: 'reviewer', reviewerTaskId: 'rv9', verdict: 'approve', effectiveVerdict: 'approve', headBound: 'H1' }));
+    expect(dec.guard).toMatchObject({ headSha: 'H1', round: 0, states: ['WORKING'] });
+    expect(dec.patch.currentRound).toBe(1);
+  });
+
+  test('ReviewVerdictAdopted keeps the verdict while a repair or a red trunk holds the head, as in WORKING', () => {
+    for (const state of ['REPAIRING', 'BLOCKED_ON_TRUNK', 'AWAITING_PUSH'] as const) {
+      const dec = run(V(D({ state, stateReason: state === 'REPAIRING' ? 'ci' : null })), { type: 'ReviewVerdictAdopted', actor: 'reviewer', reviewerTaskId: 'rv9', verdict: 'approve', effectiveVerdict: 'approve', headBound: 'H1' });
+      expect(dec.result === 'apply' && dec.toState).toBe(state);
+    }
+  });
+});
+
+describe('S5 part 3 review: completion evidence edges', () => {
+  const fixingWith = (findings: import('./types').FindingSnapshot[] = []): KernelView => ({
+    ...V(D({ state: 'FIXING', currentRound: 1, boundAttemptId: 'a1' }), [R({ status: 'decided', verdict: 'request_changes', effectiveVerdict: 'request_changes' })], [A({ status: 'running' })]),
+    findings,
+  });
+  const f0: import('./types').FindingSnapshot = {
+    id: 'r1:0', originRoundId: 'r1', originRound: 1, originHeadSha: 'H1', ordinal: 0, path: 'src/a.ts', line: null, title: 'x', required: true,
+    status: 'open', lastRound: 1, addressedBySha: null, closedByRoundId: null, closedBy: null, closedReason: null, deferredToTaskId: null,
+  };
+  const endFix = (v: KernelView, o: Partial<Extract<Command, { type: 'AttemptEnded' }>>) =>
+    run(v, { type: 'AttemptEnded', actor: 'runner', workerId: 'w9', attemptId: 'a1', outcome: 'success', localHeadSha: null, commitCount: 0, live: live('H1'), ...o });
+
+  test('a fix that ended with GitHub unread (a crash) is a failure, never evidence of "no change"', () => {
+    expect(applied(endFix(fixingWith(), { outcome: 'lost', live: null })).attempts[0]).toMatchObject({ set: { outcome: 'failed' } });
+    expect(applied(endFix(fixingWith(), { outcome: 'lost', live: live('H1') })).attempts[0]).toMatchObject({ set: { outcome: 'noop' } });
+  });
+
+  test('a no-op claim is only a no-op at the head the fix was bound to: on a moved head it is an ordinary delivered fix, re-reviewed at that head', () => {
+    const noopEvidence = { findingIds: ['r1:0'], evidence: 'already absent' };
+    const unmoved = applied(endFix(fixingWith([f0]), { noopEvidence }));
+    expect(unmoved.toState).toBe('AWAITING_REVIEW');
+    expect(unmoved.attempts[0]).toMatchObject({ set: { outcome: 'noop' } });
+    expect(unmoved.rounds.find((r) => r.op === 'insert')).toMatchObject({ headSha: 'H1', scope: { verifyFindings: ['r1:0'] } });
+    const moved = applied(endFix(fixingWith([f0]), { noopEvidence, live: live('H2'), proof: { liveContainsLocal: false, contentDiffChanged: true } }));
+    expect(moved.attempts[0]).toMatchObject({ set: { outcome: 'delivered' } });
+    expect(moved.rounds.find((r) => r.op === 'insert')).toMatchObject({ headSha: 'H2', scope: null });
+    expect(moved.evidence.noopEvidence).toBeUndefined();
   });
 });

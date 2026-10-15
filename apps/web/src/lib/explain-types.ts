@@ -84,6 +84,7 @@ export type CausalLinkSource =
   | 'tasks.context.cancellation'
   | 'tasks.pathDeclaration.softOverlaps + gate_events'
   | 'gate_events.detail'
+  | 'gate_events.reason'
   | 'DeliveryView.lastTransition'
   | 'artifacts.metadata.qa (replacedAudits)';
 

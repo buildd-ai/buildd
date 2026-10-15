@@ -25,10 +25,16 @@ import type { Command } from '../commands';
 import type { EffectHandler, EffectHandlers } from '../effects';
 import { githubOf, NO_ROLE, type ClaimedEffect, type KernelPorts, type PostedReview, type ReviewOutput } from '../ports';
 import { PUSH_RECOVERY_BACKOFF_MS } from '../reducer';
-import type { DeliverySnapshot, RoundSnapshot } from '../types';
+import { openFindings } from '../findings';
+import type { DeliverySnapshot, KernelView, RoundSnapshot } from '../types';
 import { hasPr, need, type WithPr } from './ports-of';
 
 const NO_INSTALLATION = 'no GitHub installation for the workspace';
+
+/** How many times a round whose reviewer could not be filed is re-queued before it is a person's (T27). */
+export const REVIEW_DISPATCH_RETRIES = 2;
+/** The wait before the n-th re-queued dispatch of such a round runs (n times this), so a retry is not spent in the same drain. */
+export const REVIEW_DISPATCH_BACKOFF_MS = 60_000;
 
 /**
  * The GitHub review body. A composition delta round (§5.9, S33) reviewed only
@@ -74,6 +80,17 @@ function compositionScopeOf(round: RoundSnapshot): { novelDeltaPaths: string[] }
   return { novelDeltaPaths: (sc.novelDeltaPaths as unknown[]).map(String) };
 }
 
+/** What the reviewer is told about the delivery's open findings (§5); `verify`: a verification round's own list. */
+export function findingsBriefOf(view: Pick<KernelView, 'findings'>, round: Pick<RoundSnapshot, 'scope'>): {
+  open: Array<{ id: string; path: string | null; line: number | null; title: string; status: string }>; verify?: string[];
+} {
+  const verify = Array.isArray(round.scope?.verifyFindings) ? (round.scope!.verifyFindings as unknown[]).map(String) : undefined;
+  return {
+    open: openFindings(view).map((f) => ({ id: f.id, path: f.path, line: f.line, title: f.title, status: f.status })),
+    ...(verify ? { verify } : {}),
+  };
+}
+
 const prUrl = (d: WithPr) => `https://github.com/${d.repoFullName}/pull/${d.prNumber}`;
 
 const DEAD_EFFECT_COPY: Record<string, string> = {
@@ -106,7 +123,13 @@ export function reviewHandlers(ports: KernelPorts): EffectHandlers {
     // §5.9: once per round that is not itself the composition's delta round.
     if (!round.scope?.composition) {
       const composed = await reviews.attestComposition(d, round);
-      if (composed) return { outcome: composed };
+      if (composed?.startsWith('ok')) return { outcome: composed };
+      if (composed) {
+        // 1bd26ae7: a delta the attestation found is reviewed in the round it started, which supersedes
+        // this one. If none was started (the attestation was already spent), this round still needs its reviewer.
+        const after = (await ports.store.loadView({ deliveryId: d.id })).rounds.find((r) => r.id === round.id);
+        if (!after || (after.status !== 'queued' && after.status !== 'reviewing')) return { outcome: composed };
+      }
     }
 
     // A delta round reviews the change since the last decided verdict.
@@ -134,6 +157,8 @@ export function reviewHandlers(ports: KernelPorts): EffectHandlers {
       detail: {
         roundId: round.id, round: round.round, maxRounds: d.maxRounds,
         ...(priorVerdict ? { priorVerdict } : {}), ...(compositionScopeOf(round) ? { compositionScope: compositionScopeOf(round) } : {}),
+        // §5: the findings still open, each with its id, for the reviewer to verify, restate or defer.
+        findingsBrief: findingsBriefOf(view, round),
       },
     });
     if (filed.skipped === NO_ROLE) {
@@ -141,11 +166,24 @@ export function reviewHandlers(ports: KernelPorts): EffectHandlers {
       await apply(d.id, { type: 'ReviewRoundFailed', actor: 'kernel', roundId, reason: 'infra', maxContractRetries: 0 });
       return { outcome: 'skipped:no_reviewer_role' };
     }
-    if (filed.skipped || !filed.taskId) return { outcome: `skipped:${filed.skipped ?? 'dispatch_refused'}` };
+    if (filed.skipped || !filed.taskId) {
+      // 1bd26ae7: a round left open with no reviewer is a stall nobody sees. The round fails as a
+      // reviewer that never started would (T27): re-queued with a fresh dispatch, then a person's
+      // (review_unavailable) once the contract retries are spent.
+      const why = filed.skipped ?? 'dispatch_refused';
+      await apply(d.id, { type: 'ReviewRoundFailed', actor: 'kernel', roundId, reason: 'infra', maxContractRetries: REVIEW_DISPATCH_RETRIES, retryDelayMs: REVIEW_DISPATCH_BACKOFF_MS });
+      return { outcome: `skipped:${why}:round_failed` };
+    }
     await ports.store.linkRoundReviewer(round.id, filed.taskId);
     await work.cancelPending({ deliveryId: d.id, role: 'review', keepTaskId: filed.taskId, ...superseded(`round ${round.round} superseded it`) });
-    // Not created: another door's live reviewer already covers this head, and the host adopted it as the round's.
-    if (!filed.created) return { outcome: 'ok:adopted_live_reviewer' };
+    // Not created: a reviewer already covers this head (another door's, or one an earlier run filed and
+    // died before linking), and the host adopted it as the round's. Still unclaimed, it may never have
+    // been woken: wake it again, as `ok:task_rewoken` does for a fix. The wake coalesces while it is pending.
+    if (!filed.created) {
+      if (filed.unclaimed !== true) return { outcome: 'ok:adopted_live_reviewer' };
+      await work.wake(filed.taskId, 'task.created');
+      return { outcome: 'ok:task_rewoken' };
+    }
     await work.wake(filed.taskId, 'task.created');
     return { outcome: 'ok' };
   };
@@ -199,6 +237,8 @@ export function reviewHandlers(ports: KernelPorts): EffectHandlers {
       dedupeKey: `fix:${attempt.id}`,
       detail: {
         roundId: round.id, reviewerTaskId: round.reviewerTaskId ?? null, attemptNo: attempt.attemptNo, maxAttempts: attempt.maxAttempts, firstAtHead,
+        // §5 / rule 3: the repair is pinned to the round and head, and its task is the open findings.
+        round: round.round, findings: openFindings(view).map((f) => ({ id: f.id, path: f.path, line: f.line, title: f.title, status: f.status })),
         ...(human ? { trigger: 'human', humanInstructions, actor: humanActor } : {}),
       },
     });
@@ -325,9 +365,17 @@ export async function cancelReviewAttempts(ports: KernelPorts, e: ClaimedEffect)
   if (!hasPr(d)) return { outcome: 'skipped:no_pr' };
   const reason = e.payload.reason;
   if (reason === 'head_moved') {
+    const work = need(ports, 'work', e.kind);
+    // The transition names the tasks it made moot: only those are cancelled, never a newer one the
+    // same role filed since (a retried effect runs after it). An effect from before carries none.
+    if (Array.isArray(e.payload.taskIds)) {
+      const ids = (e.payload.taskIds as unknown[]).filter((x): x is string => typeof x === 'string');
+      for (const id of ids) await work.cancel(id, 'the PR head moved before the fix started');
+      return { outcome: `ok:cancelled_${ids.length}` };
+    }
     const families = Array.isArray(e.payload.families) ? (e.payload.families as string[]) : ['review_fix'];
     const role = families.includes('ci') ? 'ci_fix' : families.includes('conflict') || families.includes('migration') ? 'conflict_fix' : 'fix';
-    const n = await need(ports, 'work', e.kind).cancelPending({ deliveryId: d.id, role, ...superseded('the PR head moved before the fix started') });
+    const n = await work.cancelPending({ deliveryId: d.id, role, ...superseded('the PR head moved before the fix started') });
     return { outcome: `ok:cancelled_${n}` };
   }
   if (reason === 'approved') {
@@ -335,6 +383,20 @@ export async function cancelReviewAttempts(ports: KernelPorts, e: ClaimedEffect)
     await need(ports, 'reviews', e.kind).supersedeFixOnApproval(d);
     await need(ports, 'work', e.kind).cancelPending({ deliveryId: d.id, role: 'fix', ...superseded('the PR was approved') });
     return { outcome: 'ok' };
+  }
+  if (reason === 'ci_green') {
+    // 38442d17: CI on the head the repair was filed for went green (a re-run of an infrastructure
+    // failure). A fix nobody picked up is cancelled; one already running is told to stop.
+    // Exactly the repair this green ended: a newer CI fix filed since is not this one.
+    const work = need(ports, 'work', e.kind);
+    const taskId = typeof e.payload.taskId === 'string' ? e.payload.taskId : null;
+    if (!taskId) return { outcome: 'skipped:no_task' };
+    await work.cancel(taskId, 'CI went green on the same head before the fix started');
+    await work.steer(taskId, {
+      marker: `ci-green:${String(e.payload.attemptId ?? taskId)}`,
+      note: `CI on PR #${d.prNumber} is green again on the head this fix was filed for: the failure was not in the code. Stop and complete without changes; there is nothing to fix.`,
+    });
+    return { outcome: 'ok:cancelled' };
   }
   // Merge / close cancellations: the legacy supersession rules still run them.
   return { outcome: 'skipped:legacy_owns' };

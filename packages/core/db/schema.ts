@@ -1393,6 +1393,10 @@ export const missions = pgTable('missions', {
   // null = no criteria (completion driven by task progress alone).
   // Max 20 criteria; empty array treated as null (no gate).
   goalCriteria: jsonb('goal_criteria').$type<import('@buildd/shared').GoalCriterion[] | null>(),
+  // The mission contract's version (docs/specs/workflow-kernel-library.md §6
+  // "Scope amendments"): 1 as filed, +1 per applied amendment
+  // (workflow_scope_amendments). Each delivery epoch records the version it carried.
+  scopeVersion: integer('scope_version').default(1).notNull(),
   // Last evaluation result, persisted by evaluateGoalCriteria callers.
   goalCriteriaState: jsonb('goal_criteria_state').$type<import('@buildd/shared').GoalCriteriaState | null>(),
   // When false, organizer never auto-evaluates criteria; on-demand still works.
@@ -5522,6 +5526,37 @@ export const workflowReviewRounds = pgTable('workflow_review_rounds', {
 
 export type WorkflowReviewRoundRow = typeof workflowReviewRounds.$inferSelect;
 
+// workflow-kernel-library.md §5 — review findings that survive until a round
+// verifies them, a person waives them or a deferral names the task that owns
+// them. The id is stable across rounds (`<origin round id>:<ordinal>`), so a
+// later round restating a finding updates this row rather than adding one.
+// Written only by the kernel's transition statement (workflow-write-sites).
+export const workflowFindings = pgTable('workflow_findings', {
+  id: text('id').primaryKey(),
+  deliveryId: uuid('delivery_id').references(() => workflowDeliveries.id, { onDelete: 'cascade' }).notNull(),
+  originRoundId: uuid('origin_round_id').notNull(),
+  originRound: integer('origin_round').notNull(),
+  originHeadSha: text('origin_head_sha').notNull(),
+  ordinal: integer('ordinal').notNull(),
+  path: text('path'),
+  line: integer('line'),
+  title: text('title').notNull(),
+  required: boolean('required').default(true).notNull(),
+  status: text('status').default('open').notNull().$type<'open' | 'addressed' | 'resolved' | 'waived' | 'deferred'>(),
+  lastRound: integer('last_round').notNull(),
+  addressedBySha: text('addressed_by_sha'),
+  closedByRoundId: uuid('closed_by_round_id'),
+  closedBy: text('closed_by'),
+  closedReason: text('closed_reason'),
+  deferredToTaskId: uuid('deferred_to_task_id'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  deliveryIdx: index('workflow_findings_delivery_idx').on(t.deliveryId, t.originRound, t.ordinal),
+}));
+
+export type WorkflowFindingRow = typeof workflowFindings.$inferSelect;
+
 // §5.3 — append-only observations. A duplicate fact_key is a no-op that
 // returns the first application's result. payload holds normalised fields the
 // reducer read, never a raw webhook body.
@@ -5623,6 +5658,87 @@ export const workflowEffects = pgTable('workflow_effects', {
 }));
 
 export type WorkflowEffectRow = typeof workflowEffects.$inferSelect;
+
+// Mission deliveries (docs/specs/workflow-kernel-library.md §6): one row per
+// epoch of a mission-branch mission, each one integration branch and its PR
+// into trunk. Written only by the kernel (apps/web/src/lib/workflow/
+// delivery-epochs.ts, one compare-and-set statement per transition of
+// packages/workflow-kernel/src/delivery-epochs.ts). A merged row is the
+// immutable record of what that delivery shipped; rows are never deleted.
+export const workflowMissionEpochs = pgTable('workflow_mission_epochs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'cascade' }).notNull(),
+  epoch: integer('epoch').notNull(),
+  branch: text('branch').notNull(),
+  // 'open' (the one writable epoch) | 'merged' (terminal).
+  state: text('state').notNull().$type<'open' | 'merged'>(),
+  version: bigint('version', { mode: 'number' }).default(0).notNull(),
+  // 'cut' (rotated by the kernel) | 'adopted' | 'adopted_recut' (a mission predating epochs).
+  origin: text('origin').notNull().$type<'cut' | 'adopted' | 'adopted_recut'>(),
+  cutFromSha: text('cut_from_sha'),
+  branchReadyAt: timestamp('branch_ready_at', { withTimezone: true }),
+  predecessorId: uuid('predecessor_id'),
+  scopeVersion: integer('scope_version').default(1).notNull(),
+  repoFullName: text('repo_full_name'),
+  prNumber: integer('pr_number'),
+  ownerTaskId: uuid('owner_task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  // GitHub's values, never receipt time.
+  mergedAt: timestamp('merged_at', { withTimezone: true }),
+  mergeCommitSha: text('merge_commit_sha'),
+  mergedHeadSha: text('merged_head_sha'),
+  settlement: jsonb('settlement').$type<Record<string, unknown>>(),
+  settledAt: timestamp('settled_at', { withTimezone: true }),
+  retiredAt: timestamp('retired_at', { withTimezone: true }),
+  // PRs GitHub moved off this epoch's branch (the retarget webhook's `from`):
+  // the only trunk-based PRs settlement may touch.
+  movedPrs: integer('moved_prs').array().default(sql`'{}'::integer[]`).notNull(),
+  // Single-flight settlement of this epoch's branch (one caller reads and acts on its PRs at a time).
+  settleLeaseToken: text('settle_lease_token'),
+  settleLeaseUntil: timestamp('settle_lease_until', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  epochUnique: uniqueIndex('workflow_mission_epochs_epoch_unique').on(t.missionId, t.epoch),
+  // One successor per predecessor: a replayed or racing merge cannot cut two.
+  successorUnique: uniqueIndex('workflow_mission_epochs_successor_unique').on(t.predecessorId).where(sql`${t.predecessorId} IS NOT NULL`),
+  // At most one writable epoch per mission.
+  openUnique: uniqueIndex('workflow_mission_epochs_open_unique').on(t.missionId).where(sql`${t.state} = 'open'`),
+}));
+
+export type WorkflowMissionEpochRow = typeof workflowMissionEpochs.$inferSelect;
+
+// Mission scope amendments (docs/specs/workflow-kernel-library.md §6): one row
+// per task added to a mission, the recorded scope decision and what it did to
+// the mission's contract. Written only by the kernel (apps/web/src/lib/workflow/
+// scope-amendments.ts), in the same statement as the contract change.
+export const workflowScopeAmendments = pgTable('workflow_scope_amendments', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'cascade' }).notNull(),
+  sourceTaskId: uuid('source_task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  // 'in_scope' | 'amend_scope' | 'ask'
+  decision: text('decision').notNull().$type<'in_scope' | 'amend_scope' | 'ask'>(),
+  // 'recorded' (nothing changed) | 'applied' | 'held' (a person decides) | 'resolved'
+  status: text('status').notNull().$type<'recorded' | 'applied' | 'held' | 'resolved'>(),
+  scopeVersionBefore: integer('scope_version_before').notNull(),
+  scopeVersionAfter: integer('scope_version_after'),
+  before: jsonb('before').$type<Record<string, unknown>>(),
+  after: jsonb('after').$type<Record<string, unknown>>(),
+  weakens: jsonb('weakens').$type<Array<Record<string, unknown>>>(),
+  reason: text('reason'),
+  // The recorded decision (workflow_facts, kind decision): decider, verdict, confidence, fallback.
+  decisionFactId: uuid('decision_fact_id'),
+  deciderId: text('decider_id'),
+  confidence: real('confidence'),
+  fallback: text('fallback'),
+  actor: text('actor'),
+  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+  resolvedBy: text('resolved_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  // One decision per task added: a replay reads it and never asks again.
+  taskUnique: uniqueIndex('workflow_scope_amendments_task_unique').on(t.missionId, t.sourceTaskId),
+  missionIdx: index('workflow_scope_amendments_mission_idx').on(t.missionId, t.createdAt),
+}));
 
 // The landing lane (lib/workflow/landing-lane.ts): one row per repo + base
 // whose delivery is the one behind-refresh in flight there. A row whose

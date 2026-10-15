@@ -220,6 +220,12 @@ export interface GithubFactReader {
    * read or listed in full is null; never read as "nothing changed".
    */
   baseDelta?(repoFullName: string, prNumber: number, headSha: string, baseRef: string): Promise<BaseDeltaFact | null>;
+  /**
+   * §5: the paths changed from `fromSha` to `toSha` (compare). A finding on one
+   * of them is `addressed`. null = unreadable or possibly cut; never read as
+   * "nothing changed".
+   */
+  changedPaths?(repoFullName: string, fromSha: string, toSha: string): Promise<string[] | null>;
 }
 
 /** GitHub's answer to a pinned merge call, read as the T16 outcome it is (`MergeCallResult`). */
@@ -304,6 +310,12 @@ export interface WorkFiled {
   taskId: string | null;
   /** false = a task already existed under the id or key (a redelivery, or the host adopted a live one), or `skipped`. */
   created: boolean;
+  /**
+   * With `created` false: true while nobody has claimed the task that already existed, so it may
+   * never have been woken (the run that filed it died first) and the kernel wakes it. Absent = the
+   * host cannot tell, or someone has it; the kernel then leaves it alone.
+   */
+  unclaimed?: boolean;
   /** Nothing filed and nothing owed now (the host lacks what the task needs): why. `NO_ROLE` is the one reason the kernel acts on. */
   skipped?: string;
   /** Which shape the host filed, when it has more than one (`diagnose` for a CI fix that only diagnoses). */

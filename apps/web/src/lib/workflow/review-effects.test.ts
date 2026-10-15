@@ -19,6 +19,8 @@ let executeRows: unknown[] = [];
 const inserted: any[] = [];
 const notes: any[] = [];
 let existingTask: { id: string } | null = null;
+/** The status of the task a status-only read finds (an adopted reviewer). */
+let adoptedStatus: string | null = 'running';
 let missionRow: any = null;
 let ownerRow: any = { id: 'owner-1', title: 'Fix the thing', description: 'd', missionId: 'm1', pathManifest: ['a.ts'], backend: 'claude', context: {} };
 let reviewerResult: any = { structuredOutput: { verdict: 'request-changes', confidence: 0.9, summary: 's', feedback: 'check the caller task' } };
@@ -42,6 +44,7 @@ mock.module('@buildd/core/db', () => ({
           const cols = Object.keys(o?.columns ?? {});
           if (cols.length === 1 && cols[0] === 'result') return { result: reviewerResult };
           if (cols.length === 1 && cols[0] === 'id') return existingTask;
+          if (cols.length === 1 && cols[0] === 'status') return adoptedStatus === null ? null : { status: adoptedStatus };
           if (cols.length === 1 && cols[0] === 'missionId') return { missionId: ownerRow.missionId };
           return ownerRow;
         },
@@ -88,7 +91,7 @@ mock.module('@/lib/reviewer', () => ({ createReviewerTask: mockCreateReviewer, s
 const mockEscalateExhaustion = mock(async (..._a: any[]) => undefined);
 mock.module('@/lib/auto-merge', () => ({ escalateReviewerExhaustion: mockEscalateExhaustion }));
 
-const { fixWork, humanFixDescription, reviewEscalate, reviewsHost, reviewWork } = await import('./review-effects');
+const { fixWork, reviewEscalate, reviewsHost, reviewWork } = await import('./review-effects');
 const { pushRecoveryFollowupKey } = await import('@buildd/workflow-kernel/handlers/review');
 
 const D = (o: any = {}) => ({
@@ -116,7 +119,7 @@ const reviewReq = (detail: Record<string, unknown> = {}, headSha = 'H2') => ({
 beforeEach(() => {
   executeRows = [];
   ingested.length = 0; executed.length = 0; inserted.length = 0; notes.length = 0;
-  existingTask = null; missionRow = null; livePr = { state: 'open', merged: false, headSha: 'H1', headRepoFullName: 'acme/w', baseRef: 'dev' };
+  existingTask = null; adoptedStatus = 'running'; missionRow = null; livePr = { state: 'open', merged: false, headSha: 'H1', headRepoFullName: 'acme/w', baseRef: 'dev' };
   roles = [{ slug: 'reviewer' }]; created = { id: 'reviewer-2' }; postResult = { posted: true };
   ghApi = (path) => { throw new Error(`no fake GitHub for ${path}`); }; workspaceReleaseConfig = null; ghCalls.length = 0;
   ownerRow = { id: 'owner-1', title: 'Fix the thing', description: 'd', missionId: 'm1', pathManifest: ['a.ts'], backend: 'claude', context: {} };
@@ -160,8 +163,24 @@ describe('fixWork (Work, role fix)', () => {
 
   test("a person's apply puts their instructions first and the reviewer's words below", async () => {
     const b = await fixWork(fixReq({ trigger: 'human', humanInstructions: 'rename it', actor: 'human:u' }) as any) as any;
-    expect(b.values.description).toBe(humanFixDescription('d', 'rename it', 'check the caller task'));
+    const d: string = b.values.description;
+    // One brief, not nested: the person's instructions lead, the reviewer's words follow once under their own heading.
+    expect(d.indexOf('## Instructions from the person who applied this (authoritative)')).toBeLessThan(d.indexOf("## Reviewer's feedback (context"));
+    expect(d.split('rename it').length - 1).toBe(1);
+    expect(d.split('check the caller task').length - 1).toBe(1);
+    expect(d).not.toContain('## Original task');
+    expect(d.indexOf("## Reviewer's feedback (context")).toBeLessThan(d.indexOf('## Where to push'));
     expect(b.values).toMatchObject({ creationSource: 'dashboard', context: { trigger: 'human', appliedBy: 'human:u', humanInstructions: 'rename it' } });
+  });
+
+  test('§13.13 rule 3: a pinned builder: the findings as its task, a builder role, and the PR head GitHub reports as its repair target', async () => {
+    ghApi = (path) => (path === '/repos/acme/w/pulls/7' ? { head: { ref: 'mission/m-1' }, base: { ref: 'dev' } } : null);
+    ownerRow = { ...ownerRow, description: 'It performs no work of its own.', kind: 'coordination', roleSlug: null };
+    const b = await fixWork(fixReq({ round: 1, findings: [{ id: 'r1:0', path: 'a.ts', line: 2, title: 'fix the copy', status: 'open' }] }) as any) as any;
+    expect(b.values).toMatchObject({ roleSlug: 'builder', kind: 'engineering' });
+    expect(b.values.description).toContain('- `r1:0` `a.ts:2`: fix the copy');
+    expect(b.values.description).not.toContain('performs no work');
+    expect(b.values.context).toMatchObject({ resumeBranch: 'mission/m-1', repairTarget: { prNumber: 7, headRef: 'mission/m-1', headSha: 'H1', baseRef: 'dev' } });
   });
 
   test('a dependency bot\'s PR gets no fix, only a note on the PR', async () => {
@@ -192,6 +211,13 @@ describe('reviewWork (Work, role review)', () => {
   test('a live reviewer another door filed for the head is adopted as the round\'s, not announced again', async () => {
     created = { id: 'reviewer-live', deduplicated: true };
     expect(await reviewWork(reviewReq() as any)).toEqual({ filed: { taskId: 'reviewer-live', created: false } });
+    expect(mockAppend).not.toHaveBeenCalled();
+  });
+
+  test('an adopted reviewer nobody has claimed yet is answered unclaimed, so the kernel wakes it', async () => {
+    created = { id: 'reviewer-orphan', deduplicated: true };
+    adoptedStatus = 'pending';
+    expect(await reviewWork(reviewReq() as any)).toEqual({ filed: { taskId: 'reviewer-orphan', created: false, unclaimed: true } });
     expect(mockAppend).not.toHaveBeenCalled();
   });
 });

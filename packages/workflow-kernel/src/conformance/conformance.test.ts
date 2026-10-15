@@ -142,8 +142,7 @@ describe('#4686: a review fix that changes nothing', () => {
     expect(s.d).toMatchObject({ mergedAt: '2026-01-01T01:00:00.000Z', mergeCommitSha: 'M1' });
   });
 
-  test.todo('AC-19: a repair that ends with zero diff and no evidence keeps its findings open and its attempt reads "no change"');
-  test.todo('AC-18: open findings on a mission PR survive a coordination owner replacement and a branch refresh');
+  // AC-19 is a shared scenario (./scenarios), so it runs on Postgres too.
 });
 
 describe('#4679: a second push before re-review', () => {
@@ -174,7 +173,7 @@ describe('#4679: a second push before re-review', () => {
     expect(s.k.effects(s.d.id, 'post_review').map((e) => e.payload.event)).toEqual(['REQUEST_CHANGES']);
   });
 
-  test.todo('AC-17: a fix push that touches one finding marks it addressed and a migration-only push leaves the other open; approval needs a review verifying the addressed one');
+  // AC-17 and AC-18 are shared scenarios (./scenarios), so they run on Postgres too.
 });
 
 describe('the scenarios can fail', () => {
