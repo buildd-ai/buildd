@@ -12,6 +12,7 @@ const mockExecSync = mock(() => 'oldsha\n');
 mock.module('child_process', () => ({ execSync: mockExecSync }));
 
 const { applyUpdate, rollbackTo, UPDATE_FAILURE_FILE } = await import('../../src/updater');
+const { INSTALL_LOCK_FILE, recoverInterruptedSwap } = await import('../../src/package-tree');
 import type { UpdateExecOps } from '../../src/updater';
 
 const ROOT_NM = join(HOME, 'node_modules');
@@ -139,6 +140,64 @@ describe('an update killed mid-install', () => {
     const o = ops({ bunVersion: mock(async () => { throw new Error('bun: command not found'); }) });
     await applyUpdate(HOME, nodeFs, o);
     expect(nodeFs.existsSync(ROOT_NM)).toBe(true);
+    expect(linkResolves()).toBe(true);
+  });
+});
+
+describe('the install lock', () => {
+  const lockPath = () => join(HOME, INSTALL_LOCK_FILE);
+
+  test('is held for the whole install and removed after success', async () => {
+    let during: any = null;
+    const o = ops({ bunInstall: mock(async () => { during = JSON.parse(nodeFs.readFileSync(lockPath(), 'utf-8')); }) });
+    const r = await applyUpdate(HOME, nodeFs, o);
+    expect(r.success).toBe(true);
+    expect(during?.pid).toBe(process.pid);
+    expect(typeof during?.startedAt).toBe('number');
+    expect(nodeFs.existsSync(lockPath())).toBe(false);
+  });
+
+  test('is removed after a failed install too', async () => {
+    const o = ops({ bunInstall: mock(async () => { throw new Error('boom'); }) });
+    await applyUpdate(HOME, nodeFs, o);
+    expect(nodeFs.existsSync(lockPath())).toBe(false);
+  });
+
+  test('a recovery pass from another process during the install leaves both trees alone', async () => {
+    let restoredByOther: string[] | null = null;
+    let asideAfter = false;
+    const o = ops({ bunInstall: mock(async () => {
+      // the half-built tree: links dangle, aside copy present
+      nodeFs.mkdirSync(join(ROOT_NM, '.bun'), { recursive: true });
+      // a second launch's preflight, seen from a different pid
+      const lock = JSON.parse(nodeFs.readFileSync(lockPath(), 'utf-8'));
+      nodeFs.writeFileSync(lockPath(), JSON.stringify({ ...lock, pid: 1 }));
+      restoredByOther = recoverInterruptedSwap(HOME, nodeFs, { isAlive: () => true });
+      asideAfter = nodeFs.existsSync(ROOT_NM + '.buildd-prev');
+      heal();
+    }) });
+    const heal = () => {
+      nodeFs.mkdirSync(join(ROOT_NM, '.bun', 'pusher-js@8', 'node_modules', 'pusher-js'), { recursive: true });
+      nodeFs.writeFileSync(join(ROOT_NM, '.bun', 'pusher-js@8', 'node_modules', 'pusher-js', 'package.json'), '{}');
+      nodeFs.mkdirSync(RUNNER_NM, { recursive: true });
+      nodeFs.symlinkSync('../../../node_modules/.bun/pusher-js@8/node_modules/pusher-js', join(RUNNER_NM, 'pusher-js'));
+    };
+    const r = await applyUpdate(HOME, nodeFs, o);
+    expect(restoredByOther).toEqual([]);
+    expect(asideAfter).toBe(true);
+    expect(r.success).toBe(true);
+    expect(linkResolves()).toBe(true);
+  });
+
+  test('a live install by another process refuses a second one without touching the tree', async () => {
+    nodeFs.writeFileSync(lockPath(), JSON.stringify({ pid: 1, startedAt: Date.now() }));
+    const o = ops();
+    // pid 1 (init/launchd) is always alive
+    const r = await applyUpdate(HOME, nodeFs, o);
+    expect(r.success).toBe(false);
+    expect(r.error).toContain('another package install is running');
+    expect((o.bunInstall as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+    expect(nodeFs.existsSync(ROOT_NM + '.buildd-prev')).toBe(false);
     expect(linkResolves()).toBe(true);
   });
 });

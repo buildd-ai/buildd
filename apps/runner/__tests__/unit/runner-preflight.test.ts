@@ -8,7 +8,8 @@ import { join } from 'path';
 const nodeFs = require('fs') as typeof import('fs');
 const HOME: string = nodeFs.mkdtempSync(join(require('os').tmpdir(), 'preflight-'));
 const { runPreflight, fixLine, PREFLIGHT_INSTALL_TIMEOUT_MS, PREFLIGHT_RETRY_COOLDOWN_MS } = await import('../../src/preflight');
-const { findMissingPackages } = await import('../../src/package-tree');
+const { findMissingPackages, INSTALL_LOCK_FILE, INSTALL_LOCK_MAX_AGE_MS } = await import('../../src/package-tree');
+const { busyLine } = await import('../../src/preflight');
 
 const RUNNER = join(HOME, 'apps', 'runner');
 
@@ -103,6 +104,58 @@ describe('runPreflight', () => {
     expect(r.ok).toBe(true);
     expect(installs).toBe(0);
     expect(findMissingPackages(HOME)).toEqual([]);
+  });
+});
+
+describe('runPreflight while an auto-update is installing (second launch)', () => {
+  const OTHER_PID = 424242;
+  const T0 = 2_000_000_000;
+  /** Mid-install: previous tree aside, half-built live tree whose links dangle. */
+  function midInstall(lockAgeMs: number): void {
+    seed({ dangling: false });
+    nodeFs.renameSync(join(HOME, 'node_modules'), join(HOME, 'node_modules.buildd-prev'));
+    nodeFs.mkdirSync(join(HOME, 'node_modules', '.bun'), { recursive: true }); // the install has started writing
+    nodeFs.writeFileSync(join(HOME, INSTALL_LOCK_FILE), JSON.stringify({ pid: OTHER_PID, startedAt: T0 - lockAgeMs }));
+  }
+
+  test('a live, fresh lock: the in-flight tree is left alone and no repair install starts', () => {
+    midInstall(60_000);
+    let installs = 0;
+    const r = runPreflight(HOME, { log, now: () => T0, isAlive: () => true, install: () => { installs++; return { status: 0 }; } });
+    expect(installs).toBe(0);
+    expect(r.ok).toBe(false);
+    expect(r.message).toBe(busyLine(HOME));
+    // nothing moved: the aside copy is still where the updater expects it
+    expect(nodeFs.existsSync(join(HOME, 'node_modules.buildd-prev'))).toBe(true);
+    expect(nodeFs.existsSync(join(HOME, 'node_modules', '.bun'))).toBe(true);
+  });
+
+  test('the lock names a dead process: recovery runs and restores the previous tree', () => {
+    midInstall(60_000);
+    let installs = 0;
+    const r = runPreflight(HOME, { log, now: () => T0, isAlive: () => false, install: () => { installs++; return { status: 0 }; } });
+    expect(r.ok).toBe(true);
+    expect(installs).toBe(0);
+    expect(nodeFs.existsSync(join(HOME, 'node_modules.buildd-prev'))).toBe(false);
+    expect(findMissingPackages(HOME)).toEqual([]);
+  });
+
+  test('the lock is older than the install bound: treated as stale even if the pid is alive (pid reuse)', () => {
+    midInstall(INSTALL_LOCK_MAX_AGE_MS + 1);
+    const r = runPreflight(HOME, { log, now: () => T0, isAlive: () => true, install: () => ({ status: 0 }) });
+    expect(r.ok).toBe(true);
+    expect(findMissingPackages(HOME)).toEqual([]);
+  });
+
+  test('the repair install holds the lock while it runs and drops it after', () => {
+    seed({ dangling: true });
+    let lockDuring: any = null;
+    runPreflight(HOME, { log, install: () => {
+      lockDuring = JSON.parse(nodeFs.readFileSync(join(HOME, INSTALL_LOCK_FILE), 'utf-8'));
+      heal(); return { status: 0 };
+    } });
+    expect(lockDuring?.pid).toBe(process.pid);
+    expect(nodeFs.existsSync(join(HOME, INSTALL_LOCK_FILE))).toBe(false);
   });
 });
 

@@ -10,7 +10,12 @@ import { execSync } from 'child_process';
 import * as fs from 'fs';
 import { isTestRuntime, resolveBuilddHome } from './buildd-home';
 import { join } from 'path';
-import { stageAside, restoreAside, discardAside, recoverInterruptedSwap, type TreeFs, type StagedTree } from './package-tree';
+import {
+  stageAside, restoreAside, discardAside, recoverInterruptedSwap, installInProgress, acquireInstallLock, releaseInstallLock,
+  INSTALL_TIMEOUT_MS, type TreeFs, type StagedTree,
+} from './package-tree';
+
+export { INSTALL_TIMEOUT_MS };
 import { readFileSync } from 'fs';
 import type { RunnerUpdateSnapshot } from '@buildd/shared';
 
@@ -278,9 +283,6 @@ async function bunVersionAsync(cwd: string, timeoutMs = 10_000): Promise<void> {
   }
 }
 
-/** Bound on one dependency install. A cold cache on a slow link needs minutes, a hang needs an end. */
-export const INSTALL_TIMEOUT_MS = 10 * 60_000;
-
 async function bunInstallAsync(cwd: string, timeoutMs = INSTALL_TIMEOUT_MS): Promise<void> {
   const proc = Bun.spawn(['bun', 'install', '--frozen-lockfile'], { cwd, stdout: 'pipe', stderr: 'pipe' });
   let timedOut = false;
@@ -340,7 +342,7 @@ const defaultExecOps: UpdateExecOps = {
 };
 
 /** What the update path needs from `fs`: the package-tree moves plus the failure record. */
-export type UpdateFsOps = TreeFs & Pick<typeof fs, 'writeFileSync'>;
+export type UpdateFsOps = TreeFs;
 
 /** Where the last failed update says why (read by an operator, never by code). */
 export const UPDATE_FAILURE_FILE = '.buildd-update-failure.json';
@@ -388,11 +390,19 @@ async function cleanReinstall(
   fsOps: UpdateFsOps,
   execOps: UpdateExecOps,
 ): Promise<{ success: boolean; error?: string; packagesRestored?: boolean }> {
+  const other = installInProgress(installDir, fsOps);
+  if (other !== null) {
+    // Two installs into one tree corrupt each other; the tree is untouched.
+    return { success: false, error: `another package install is running (pid ${other})`, packagesRestored: true };
+  }
   let staged: StagedTree[] = [];
   try {
     // A previous update killed mid-install: put its packages back before judging this one.
     recoverInterruptedSwap(installDir, fsOps);
     await execOps.bunVersion(installDir);
+    // Held from before the move until after restore/discard, so a concurrent
+    // launch's preflight never mistakes this install for an interrupted one.
+    acquireInstallLock(installDir, fsOps);
     staged = stageAside(installDir, fsOps);
     await execOps.bunInstall(installDir);
   } catch (err: any) {
@@ -400,9 +410,11 @@ async function cleanReinstall(
     if (staged.length > 0) {
       try { restoreAside(staged, fsOps); packagesRestored = true; } catch { /* reported by the caller */ }
     }
+    releaseInstallLock(installDir, fsOps);
     return { success: false, error: err.message || 'Update failed', packagesRestored };
   }
   discardAside(staged, fsOps);
+  releaseInstallLock(installDir, fsOps);
   // A Playwright bump arrives through this reinstall, and its Chromium build
   // with it. Best-effort: a host that cannot download a browser still runs,
   // it just reports browser: no, which the self-check logs with the repair.
