@@ -8,6 +8,7 @@ import { appBaseUrl } from '@/lib/app-url';
 import { requestingPerson } from '@/lib/request-person';
 import { repoSpecForImport } from '@buildd/spec-contract/repo-import';
 import type { SpecMetadata } from '@buildd/spec-contract/repo-copy';
+import type { CriterionIdProblems } from '@buildd/spec-contract/requirements';
 import type { DuplicateCheckDeps } from '@/lib/spec-duplicate-decision';
 import type { DuplicateCandidate } from './duplicates';
 import { linkedRepo } from './repo-source';
@@ -217,6 +218,12 @@ export interface ImportFileRow {
   metadata: SpecMetadata;
   /** Mechanical fields that could not be read and are not imported. */
   unread: string[];
+  /**
+   * Criterion ids the body defines that the parser does not read (AC-3a,
+   * AC-AQR-1, INV-2), and ids it defines more than once. Reported, never a
+   * reason to skip; a real run records them on the metadata (`criteria_unread`).
+   */
+  criteria: CriterionIdProblems;
   duplicates: DuplicateCandidate[];
   /** Why the duplicate check did not run, when it did not. */
   duplicateCheck: string | null;
@@ -399,9 +406,9 @@ export async function importRepoSpecs(caller: SpecCaller, input: ImportInput, de
 
   const one = async ({ f, p }: (typeof parsed)[number]): Promise<ImportFileRow> => {
     const provenance = { path: f.path, commitSha, blobSha: f.blobSha, prNumber: prs.get(f.path) ?? null };
-    const base = { path: f.path, provenance, metadata: {}, unread: [], duplicates: [], duplicateCheck: null, area: null } satisfies Omit<ImportFileRow, 'action'>;
+    const base = { path: f.path, provenance, metadata: {}, unread: [], criteria: { unreadable: [], duplicates: [] }, duplicates: [], duplicateCheck: null, area: null } satisfies Omit<ImportFileRow, 'action'>;
     if (!p.ok) return { ...base, action: 'skip', reason: p.reason, message: p.message };
-    const row: ImportFileRow = { ...base, metadata: p.metadata, unread: p.unread, action: 'create', spec: { title: p.title, scope: 'feature', body: p.body } };
+    const row: ImportFileRow = { ...base, metadata: p.metadata, unread: p.unread, criteria: p.criteria, action: 'create', spec: { title: p.title, scope: 'feature', body: p.body } };
     const prior = byPath.get(f.path);
     if (prior?.repoSource?.state === 'confirmed') return { ...row, action: 'skip', reason: 'confirmed', message: `${f.path} was imported and confirmed; buildd is its source now`, specId: prior.id };
     if (prior && prior.repoSource!.blobSha === f.blobSha) return { ...row, action: 'skip', reason: 'already_imported', message: `${f.path} is imported at this blob already`, specId: prior.id };

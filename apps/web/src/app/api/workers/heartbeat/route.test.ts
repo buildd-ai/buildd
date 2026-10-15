@@ -1135,7 +1135,7 @@ describe('POST /api/workers/heartbeat — claim handoff acknowledgement', () => 
   });
 });
 
-describe('POST /api/workers/heartbeat — model auth source (docs/specs/runner-model-auth-source.md)', () => {
+describe('POST /api/workers/heartbeat — model auth source (docs/specs/runner-model-login-detect-say-report.md)', () => {
   function captureUpsert() {
     const captured: { values: any; set: any } = { values: null, set: null };
     mockHeartbeatsInsert.mockReturnValue({
@@ -1278,7 +1278,7 @@ describe('POST /api/workers/heartbeat — runner display name (buildd name)', ()
   });
 });
 
-describe('POST /api/workers/heartbeat — Codex auth source (docs/specs/runner-model-auth-source.md AC-12)', () => {
+describe('POST /api/workers/heartbeat — Codex auth source (docs/specs/runner-model-login-detect-say-report.md AC-12)', () => {
   function captureUpsert() {
     const captured: { values: any; set: any } = { values: null, set: null };
     mockHeartbeatsInsert.mockReturnValue({

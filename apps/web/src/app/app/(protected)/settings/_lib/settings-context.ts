@@ -193,7 +193,7 @@ export interface AccountModelAuth {
 
 /**
  * The model logins (Claude and Codex) each runner token's most recent
- * heartbeat reported (docs/specs/runner-model-auth-source.md). Null when that
+ * heartbeat reported (docs/specs/runner-model-login-detect-say-report.md). Null when that
  * runner never sends the field (older build), so the row says "not reported"
  * (Claude) or shows no Codex line, instead of guessing. Degrades to empty on
  * failure.

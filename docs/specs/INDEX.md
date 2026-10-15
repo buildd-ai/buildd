@@ -4,7 +4,7 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (78)
+## Active (77)
 
 ### auth (9)
 
@@ -89,7 +89,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Release Flow](./release-flow.md) · @max — verified 2026-10-15
   The release system MUST resolve a workspace's declared release strategy, execute it through the matching dispatcher, verify the resulting deploy, and record the outcome while leaving prodBranch deployable.
 
-### runners (13)
+### runners (12)
 
 - [Answered-Question Resume](./answered-question-resume.md) · @max — verified 2026-10-15
   Answering a parked worker's question MUST resume that worker's own session when the runner still holds it, and MUST fall back to a cold continuation only for a recorded, owner-visible reason.
@@ -107,8 +107,6 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   When a task's agent backend hits a budget or rate-limit wall or has its credential rejected, the system MUST re-queue that task on another enabled, un-walled backend, or park it until the earliest provider reset.
 - [Runner Liveness](./runner-liveness.md) · @max — verified 2026-10-15
   The coordination layer MUST detect a runner or worker that has gone silent, reclaim or permanently fail its task, and alert ops on systematic failure without ever blocking the claim path.
-- [Runner Model Auth Source](./runner-model-auth-source.md) · @max — verified 2026-10-14
-  A runner MUST detect the model login on its own machine, use it with no setup, say which one it uses, and report that label (never the value) to the server.
 - [Runner Pre-Merge, Derived Files and Mergiraf](./runner-pre-merge.md) · @max — verified 2026-10-10
   Before a conflict agent starts, the runner MUST merge the right base with derived-file and mergiraf drivers, MUST record every file mergiraf resolved, and MUST NOT push mergiraf's work without an agent.
 - [Terminal Question Redirect](./terminal-question-redirect.md) · @max — verified 2026-10-12
@@ -219,11 +217,13 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Workflow State Kernel](./workflow-state-kernel.md) · @max — verified 2026-10-13
   One kernel MUST own each task-to-PR-to-review-to-merge delivery's state, advance it only by version-checked transitions citing GitHub-confirmed evidence, and leave other lifecycle columns fact caches or projections.
 
-## Superseded (3)
+## Superseded (4)
 
 - [Mission Structure View](./mission-structure-view.md) · @builder — verified 2026-10-09
   The mission detail Structure tab MUST render the full dependency DAG as a stable left-to-right layered graph, collapsing chains via the shared identifyChains helper, on desktop only. → replaced by `mission-flow-timeline`
 - [Missions Tab — Initiative Triage Surface](./missions-tab-triage.md) · @builder — verified 2026-08-13
   The initiative triage surface MUST rank initiatives by pending-action counts with 14-day effort sparklines and a task-weighted progress percentage computed over all of an initiative's tasks, uncapped. → replaced by `surface-ia-home-missions-initiatives`
+- [Runner Model Auth Source](./runner-model-auth-source.md) · @max — verified 2026-10-14
+  A runner MUST detect the model login on its own machine, use it with no setup, say which one it uses, and report that label (never the value) to the server. → replaced by `runner-model-login-detect-say-report`
 - [Mobile Timeline Rail](./timeline-mobile-rail.md) · @builder — verified 2026-09-23
   Below the md breakpoint, the mission Timeline MUST render as one continuous vertical rail from chain heads to the goal root, in which every disclosure is in-place and only a row standing for exactly one task navigates. → replaced by `mission-feed`

@@ -53,6 +53,7 @@ import {
   SPEC_META_FILES,
   type SpecFrontmatter,
 } from '../packages/spec-contract/src/repo-spec';
+import { criterionIdProblems } from '../packages/spec-contract/src/requirements';
 
 // The per-file rules, the parser and the index builder live in
 // packages/spec-contract/src/repo-spec.ts so buildd runs the same functions on a
@@ -116,6 +117,50 @@ export const VERIFIED_BY_DEBT = new Set([
   'webhook-dataflow',
   'work-tracker-integration',
 ]);
+
+/**
+ * Specs that define a criterion id more than once (`AC-1` on two lines). The
+ * spec parser reads only the first, so the second criterion is never graded
+ * and a verdict on the id means the first one.
+ *
+ * A ratchet like VERIFIED_BY_DEBT: these specs did it when the lint landed and
+ * only warn; any other spec that does it fails. The list only shrinks. A slug
+ * whose file is fixed, renamed or deleted may drop out at any time (other
+ * changes fix these files in parallel), and a fixed one on the list only warns
+ * that it can come off.
+ */
+export const DUPLICATE_CRITERIA_DEBT = new Set([
+  'artifacts-and-sharing',
+  'credential-isolation',
+  'living-specs',
+  'local-agent-presence',
+  'mcp-connectors-and-roles',
+  'mission-branch-refresh',
+  'mission-task-lifecycle',
+  'runner-liveness',
+  'settings-models',
+  'team-namespace-scoping',
+  'team-workspace-mission-onboarding',
+  'timeline-mobile-rail',
+  'usage-and-cost-accounting',
+  'webhook-dataflow',
+  'work-tracker-integration',
+  'workflow-kernel-library',
+]);
+
+/** Criterion ids a spec file defines more than once: an error, or a warning for a spec on the baseline. */
+export function duplicateCriteriaFindings(slug: string, text: string, debt: ReadonlySet<string>): { errors: string[]; warnings: string[] } {
+  const { duplicates } = criterionIdProblems(text);
+  const onDebt = debt.has(slug);
+  if (!duplicates.length) {
+    return { errors: [], warnings: onDebt ? ['defines each criterion id once now; remove it from DUPLICATE_CRITERIA_DEBT in scripts/check-specs.ts'] : [] };
+  }
+  if (onDebt) {
+    // One line per file: the baseline is known debt, being paid off elsewhere.
+    return { errors: [], warnings: [`defines ${duplicates.length} criterion id(s) more than once (${duplicates.map((d) => d.id).join(', ')}); only the first of each is read. On the DUPLICATE_CRITERIA_DEBT baseline`] };
+  }
+  return { errors: duplicates.map((d) => `defines criterion id ${d.id} more than once (lines ${d.lines.join(', ')}); only the first is read. Renumber so each id is defined once`), warnings: [] };
+}
 
 /**
  * Symbol-liveness heuristics.
@@ -447,6 +492,12 @@ function loadSpecs(): SpecFile[] {
       exists: (p) => existsSync(join(ROOT, p)),
       verifiedByDebt: VERIFIED_BY_DEBT,
     });
+    // Superseded specs are history; their criteria are not read.
+    if (fm?.status !== 'superseded') {
+      const dup = duplicateCriteriaFindings(slug, raw, DUPLICATE_CRITERIA_DEBT);
+      errors.push(...dup.errors);
+      warnings.push(...dup.warnings);
+    }
     return { file, slug, fm: fm ?? {}, body, errors, warnings };
   });
 }
