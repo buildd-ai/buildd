@@ -22,6 +22,7 @@ export const RUNNER_USAGE = [
   '                             (--mission <id> opens on one mission, --workspace <name or id>',
   '                             on one workspace; w switches workspace, ? shows the keys)',
   '  buildd login [--device]    Sign in and save an API key to ~/.buildd/config.json',
+  '  buildd login --workspaces  Choose which workspaces this runner serves; the key stays the same',
   '  buildd logout              Remove the saved API key',
   '  buildd status              Show whether you are signed in',
   '  buildd service <cmd>       Run in the background: install | status | logs | uninstall',

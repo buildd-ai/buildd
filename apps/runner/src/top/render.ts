@@ -381,7 +381,8 @@ function helpBody(state: TopState, cols: number, height: number, p: Palette): st
   out.push(' '.repeat(cols));
   const served = workspaceSummary(state);
   out.push(p.fg('text', fit(` This view shows only the workspaces this runner serves${served ? ` (${served})` : ''}.`, cols)));
-  out.push(p.fg('muted', fit(" Work elsewhere is not shown here. o opens this runner's page on buildd, where its workspaces are set.", cols)));
+  out.push(p.fg('muted', fit(" Work elsewhere is not shown here. o opens this runner's page on buildd.", cols)));
+  out.push(p.fg('muted', fit(' To change its workspaces, run buildd login --workspaces (same key).', cols)));
   const lines = out.slice(0, height);
   while (lines.length < height) lines.push(' '.repeat(cols));
   return lines;

@@ -83,7 +83,7 @@ describe('classifyCliArgs', () => {
   });
 
   test('usage names help, login, service and the flags', () => {
-    for (const s of ['buildd login', 'buildd service', '--debug', '--foreground', '--once', '--version', '--help']) {
+    for (const s of ['buildd login', 'buildd login --workspaces', 'buildd service', '--debug', '--foreground', '--once', '--version', '--help']) {
       expect(RUNNER_USAGE).toContain(s);
     }
   });

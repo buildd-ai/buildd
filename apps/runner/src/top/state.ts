@@ -318,9 +318,14 @@ function taskWorkspaceId(t: TopTask): string | undefined {
 
 // ── Workspaces (R-19) ───────────────────────────────────────────────────────
 
-/** The workspaces this runner serves: the server's list, else the ones its tasks name. */
+/**
+ * The workspaces this runner serves: the server's list, else the ones its tasks
+ * name. When they span several teams they come grouped by team (R-7), teams in
+ * the order the list first names them, so `w` steps through one team's
+ * workspaces before the next. Without team ids it is one group, in list order.
+ */
 export function workspaceList(state: TopState): TopWorkspace[] {
-  if (state.workspaces.length > 0) return state.workspaces;
+  if (state.workspaces.length > 0) return groupByTeam(state.workspaces);
   const seen = new Map<string, TopWorkspace>();
   for (const t of state.tasks) {
     const id = taskWorkspaceId(t);
@@ -328,6 +333,28 @@ export function workspaceList(state: TopState): TopWorkspace[] {
     seen.set(id, { id, name: t.workspace?.name || id.slice(0, 8) });
   }
   return [...seen.values()];
+}
+
+/** The team a workspace is grouped under, or null when the server did not say. */
+function teamKey(w: TopWorkspace): string | null {
+  return w.teamId || w.teamName || null;
+}
+
+/** Stable grouping by team; a list with fewer than two teams is returned as is. */
+export function groupByTeam(list: TopWorkspace[]): TopWorkspace[] {
+  const groups = new Map<string | null, TopWorkspace[]>();
+  for (const w of list) {
+    const k = teamKey(w);
+    const g = groups.get(k);
+    if (g) g.push(w); else groups.set(k, [w]);
+  }
+  if ([...groups.keys()].filter(k => k !== null).length < 2) return list;
+  return [...groups.values()].flat();
+}
+
+/** How many teams the runner's workspaces span (0 when the server sends no team ids). */
+export function teamCount(state: TopState): number {
+  return new Set(workspaceList(state).map(teamKey).filter(Boolean)).size;
 }
 
 /** The workspace the view is narrowed to, or null for all of them. */
@@ -356,8 +383,8 @@ export function workspaceSummary(state: TopState): string {
   const list = workspaceList(state);
   if (list.length === 0) return '';
   const count = `${list.length} workspace${list.length === 1 ? '' : 's'}`;
-  const teams = new Set(list.map(w => w.teamId).filter(Boolean));
-  if (teams.size > 1) return `${count} · ${teams.size} teams`;
+  const teams = teamCount(state);
+  if (teams > 1) return `${count} · ${teams} teams`;
   const teamName = list.find(w => w.teamName)?.teamName;
   return teamName ? `${count} · ${teamName}` : count;
 }
