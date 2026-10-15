@@ -11,6 +11,7 @@ import {
   buildFlowTimeline, criticalPath, criticalPathLine, defaultFlowSelection, flowAxisTicks, flowEdgePaths, flowEdges, flowLit,
   FLOW_AUDIT_WAIT_MS, FLOW_DEFAULT_TASK_MS, FLOW_FOLD_ABOVE, FLOW_ROW_UNITS, FLOW_X_UNITS, layoutFlowTimeline, shouldFoldMerged,
   type FlowTask,
+  flowTickNearNow,
 } from './flow-timeline';
 import { stripMarks, stripOrder } from './mission-task-strip';
 
@@ -262,5 +263,14 @@ describe('rows never grow horizontally (W-1)', () => {
       expect(ticks[0]).toEqual({ at: 0, label: '0' });
       for (const t of ticks) expect(t.at).toBeLessThanOrEqual(100);
     }
+  });
+});
+
+describe('flowTickNearNow: an axis tick never runs into "now" (visual review round 2, "10dnow")', () => {
+  it('hides a tick on top of now, hides it only on a phone when close, shows the rest', () => {
+    expect(flowTickNearNow(100, 98)).toBe('hide');
+    expect(flowTickNearNow(80, 92)).toBe('phone');
+    expect(flowTickNearNow(40, 92)).toBe('show');
+    expect(flowTickNearNow(100, null)).toBe('show');
   });
 });

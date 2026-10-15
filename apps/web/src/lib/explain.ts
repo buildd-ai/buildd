@@ -47,7 +47,9 @@ import { deriveMissionStateView, type MissionStateInput, type MissionStateView }
 import { computeSupersededFailedTasks } from '@/lib/mission-task-superseded';
 import { getDeliveryViewsForTasks, kernelReplacedFailedTaskIds, replacedFailedTaskIds } from '@/lib/workflow/delivery-view';
 import { attemptLine } from '@/lib/workflow/projections';
-import { loadMissionClaimDeferrals } from '@/lib/mission-claim-deferrals';
+import { loadClaimHoldReasons, loadMissionClaimDeferrals } from '@/lib/mission-claim-deferrals';
+import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
+import { openCriteriaChecks, summarizeVisualReview } from '@/lib/mission-open-checks';
 import { deriveMissionIntegrationPr } from '@/lib/mission-integration-pr';
 import { missionCardProgress, ownerUnmergedPrs, type MissionCardTaskRow } from '@/lib/mission-card-view';
 import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
@@ -486,12 +488,16 @@ async function viewForMission(missionId: string): Promise<{
   const completion = await canCompleteMission(missionId, { evaluateCriteria: false });
   // A missing visual review is the owner's to run only when the policy asks. Read
   // the canonical state only then, so every other explain stays one query lighter.
-  const visualReviewActor = completion.code === 'surface_audit_missing'
+  // An open audit row also needs it: the header follows the visual review state
+  // (waived, blocked, running), not the audit task row (spec 8e137fdb I-1, I-5).
+  const openAudit = loaded.some(t => OPEN_TASK_STATUSES.has(t.status) && isSurfaceAuditTask(t.title ?? ''));
+  const visualReviewState = completion.code === 'surface_audit_missing' || openAudit
     ? await import('@/lib/workflow/visual-review-state-load')
         .then(m => m.getMissionVisualReviewState(missionId))
-        .then(v => v?.nextActor ?? null)
         .catch(() => null)
     : null;
+  const visualReviewActor = completion.code === 'surface_audit_missing' ? visualReviewState?.nextActor ?? null : null;
+  const visualReview = summarizeVisualReview(visualReviewState);
 
   const wait = classifyMissionWait(loaded as unknown as WaitClassifiableTask[]);
 
@@ -512,7 +518,12 @@ async function viewForMission(missionId: string): Promise<{
   // already loaded above is the current answer to "did it leave pending" and
   // costs nothing extra to consult.
   const pendingTaskIds = new Set(loaded.filter(t => t.status === 'pending').map(t => t.id));
-  const deferrals = (await loadMissionClaimDeferrals(missionId)).filter(d => pendingTaskIds.has(d.taskId));
+  const [deferralRows, holdReasons] = await Promise.all([
+    loadMissionClaimDeferrals(missionId),
+    // R-33: the newest refusal names why a pending task has not started.
+    loadClaimHoldReasons([...pendingTaskIds]),
+  ]);
+  const deferrals = deferralRows.filter(d => pendingTaskIds.has(d.taskId));
 
   // `canCompleteMission` knows the mission PR has not merged; only the task
   // rows know where it is. Supplying it turns "the mission PR has not merged"
@@ -551,6 +562,7 @@ async function viewForMission(missionId: string): Promise<{
     .filter(t => supersededMap.has(t.id))
     .map(t => ({ task: t, superseded: supersededMap.get(t.id)! }));
 
+  const missingBrowser = await missingBrowserFor(openTasks, m.workspaceId ?? null, m.executor === 'local');
   const input: MissionStateInput = {
     status: String(m.status),
     isHeld: m.isHeld === true,
@@ -573,7 +585,18 @@ async function viewForMission(missionId: string): Promise<{
     openTasks: openTasks.map(t => ({
       id: t.id, status: t.status, title: t.title, waitingOnTaskIds: waitingOnOf(t),
       ...(t.status === 'pending' ? { waitingOnPrs: unmetDependencyPrs(t, loadedById) } : {}),
+      surfaceAudit: isSurfaceAuditTask(t.title ?? ''),
+      holdReason: t.status === 'pending' ? holdReasons.get(t.id) ?? null : null,
+      missingBrowser: missingBrowser && t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG,
     })),
+    visualReview,
+    // AC-7: what is left when nothing else is outstanding, the rail's own reading.
+    openChecks: openCriteriaChecks(m.goalCriteria, m.goalCriteriaState, {
+      branch: m.integrationBranchEnabled ? 'mission-branch' : 'direct',
+      prMerged: integrationPr?.state === 'merged',
+      buildComplete: progress !== undefined && progress >= 100,
+    }),
+    missionPrMerged: integrationPr?.state === 'merged',
     openQuestions: missionOpenQuestions(loaded),
     localStrand: strand
       ? { ...strand, flipBlockedReason: continueOnRunnerBlockedReason({ status: String(m.status), workspaceId: (m.workspaceId as string | null) ?? null }) }
@@ -598,7 +621,6 @@ async function viewForMission(missionId: string): Promise<{
     ),
   };
 
-  const missingBrowser = await missingBrowserFor(openTasks, m.workspaceId ?? null, m.executor === 'local');
   return {
     view: deriveMissionStateView(input),
     mission: m,
@@ -612,6 +634,7 @@ async function viewForMission(missionId: string): Promise<{
         waiting: hasOpenAsk(t),
         runnerClaimable: !!(t.context as Record<string, unknown> | null)?.reviewerFor,
         missingBrowser: missingBrowser && t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG,
+        holdReason: t.status === 'pending' ? holdReasons.get(t.id) ?? null : null,
         waitingOn: waitingOnOf(t).map(id => ({ id, title: loadedById.get(id)?.title ?? null })),
       })),
       failedTasks: failedTasks.map(t => ({

@@ -91,8 +91,12 @@ describe('deriveMissionStateView — blocked by task', () => {
     ]);
     expect(health).toBe('STALLED');
 
+    // A queued row nothing holds is next in line, not a stall (spec 8e137fdb I-4);
+    // a started row with nothing running it is.
     const view = deriveMissionStateView({ ...base, health, openTasks: [{ id: 't1', status: 'pending' }] });
-    expect(view.kind).toBe('blocked');
+    expect(view.kind).toBe('waiting');
+    expect(view.chip.label).toBe('NEXT IN LINE');
+    expect(deriveMissionStateView({ ...base, health, openTasks: [{ id: 't1', status: 'assigned' }] }).kind).toBe('blocked');
   });
 });
 
@@ -535,7 +539,7 @@ describe('deriveMissionStateView — precedence chain', () => {
       health: 'STALLED',
       openTasks: [{ id: 'task-e', status: 'pending' }],
     });
-    expect(view.kind).toBe('blocked');
+    expect(view.kind).toBe('waiting');
   });
 
   it('held outranks everything but a closed row', () => {
@@ -802,7 +806,8 @@ describe('deriveMissionStateView — local executor', () => {
     expect(view.situation.headline).not.toMatch(/no live worker/);
     expect(view.situation.nextAction ?? '').not.toMatch(/Dispatch a worker/);
     // The same input on runners is the genuine stall.
-    expect(deriveMissionStateView({ ...local, executor: 'runner' }).displayState).toBe('stalled');
+    // The same input on runners is next in line for one (spec 8e137fdb I-4).
+    expect(deriveMissionStateView({ ...local, executor: 'runner' }).chip.label).toBe('NEXT IN LINE');
   });
 
   it('between claims (a row past pending, nothing live) it reads as in progress in a local session', () => {

@@ -8,7 +8,7 @@ import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import * as missionHelpers from '@buildd/core/mission-helpers';
 import { projectMissionDelivery, type MissionTaskRow } from '@/lib/delivery-projection';
-import { DoneRow, MissionGrid, type PortfolioRow } from './MissionGrid';
+import { DoneRow, MissionGrid, ago, landedLeft, type PortfolioRow } from './MissionGrid';
 
 const NOW = Date.UTC(2026, 9, 8, 12);
 const PR = 'https://github.com/o/r/pull/1';
@@ -99,11 +99,28 @@ describe('MissionGrid portfolio', () => {
     expect(ids('waiting').indexOf('m04')).toBeLessThan(ids('waiting').indexOf('m05')); // waiting before held
   });
 
+  it('an update under a minute old reads "just now", never "now ago"', () => {
+    expect(ago(NOW - 5_000, NOW)).toBe('just now');
+    expect(ago(NOW - 120_000, NOW)).toMatch(/ ago$/);
+    expect(ago(null, NOW)).toBe('');
+    const out = renderToStaticMarkup(<MissionGrid rows={[row('j1', 'Fresh', [landed('a'), task('b')], { lastAdvancedAt: NOW - 1_000 })]} slots={{ live: 0, max: 4 }} now={NOW} />);
+    expect(out).toContain('just now');
+    expect(out).not.toContain('now ago');
+  });
+
+  it('the Landed subtitle counts what is left on its missions', () => {
+    const withLeft = (r: PortfolioRow, remaining: NonNullable<PortfolioRow['delivery']['remaining']>): PortfolioRow => ({ ...r, delivery: { ...r.delivery, remaining } });
+    const a = row('x1', 'A', [landed('a')]);
+    expect(landedLeft([withLeft(a, 'criteria')])).toBe('A goal criterion hasn’t passed.');
+    expect(landedLeft([withLeft(a, 'visual'), withLeft(a, 'visual'), withLeft(a, 'criteria')])).toBe('Left: visual review (2), goal criteria (1).');
+  });
+
   it('folds missions whose every task landed into one collapsed Landed, checks pending group', () => {
     const group = html.match(/<section[^>]*data-section="landed"[\s\S]*?<\/section>/)![0];
     expect(group).toContain('Landed, checks pending');
     expect(group).toContain('aria-expanded="false"');
-    expect(group).toContain('A goal criterion');
+    // The subtitle names what is actually left (spec f7f67f1a R-32), not a fixed line.
+    expect(group).toContain('Ready to complete.');
     // Collapsed: its rows mount only when opened.
     expect(group).not.toContain('data-mission-id="m12"');
   });
