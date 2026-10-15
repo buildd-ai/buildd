@@ -144,8 +144,14 @@ export function reviewHandlers(ports: KernelPorts): EffectHandlers {
     if (filed.skipped || !filed.taskId) return { outcome: `skipped:${filed.skipped ?? 'dispatch_refused'}` };
     await ports.store.linkRoundReviewer(round.id, filed.taskId);
     await work.cancelPending({ deliveryId: d.id, role: 'review', keepTaskId: filed.taskId, ...superseded(`round ${round.round} superseded it`) });
-    // Not created: another door's live reviewer already covers this head, and the host adopted it as the round's.
-    if (!filed.created) return { outcome: 'ok:adopted_live_reviewer' };
+    // Not created: a reviewer already covers this head (another door's, or one an earlier run filed and
+    // died before linking), and the host adopted it as the round's. Still unclaimed, it may never have
+    // been woken: wake it again, as `ok:task_rewoken` does for a fix. The wake coalesces while it is pending.
+    if (!filed.created) {
+      if (filed.unclaimed !== true) return { outcome: 'ok:adopted_live_reviewer' };
+      await work.wake(filed.taskId, 'task.created');
+      return { outcome: 'ok:task_rewoken' };
+    }
     await work.wake(filed.taskId, 'task.created');
     return { outcome: 'ok' };
   };
