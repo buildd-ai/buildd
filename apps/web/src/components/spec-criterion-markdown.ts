@@ -1,6 +1,8 @@
-import type { Root, RootContent, Paragraph, PhrasingContent } from 'mdast';
+import type { Root, BlockContent, DefinitionContent, Paragraph, PhrasingContent } from 'mdast';
 import type { Processor } from 'unified';
 import { requirementIds, tableRowId } from '@buildd/spec-contract/requirements';
+
+type Block = BlockContent | DefinitionContent;
 
 /** Recognition and first-definition wins come exclusively from the grading parser.
  * Transform the Markdown tree, retaining ordinary Markdown nodes and inline styles.
@@ -12,7 +14,8 @@ export default function specCriterionMarkdown(this: Processor) {
     const lines = source.split('\n');
     const definitions = new Map(requirementIds(source).map(ref => [ref.line, ref]));
     if (!definitions.size) return;
-    const parse = (text: string) => (processor.parse(text) as Root).children;
+    const parse = (text: string) => (processor.parse(text) as Root).children as Block[];
+    const criterionNodes = new WeakSet<Block>();
     const inline = (text: string): PhrasingContent[] => {
       const first = parse(text)[0];
       return first && 'children' in first ? first.children as PhrasingContent[] : [];
@@ -22,18 +25,20 @@ export default function specCriterionMarkdown(this: Processor) {
       // Strip presentation only AFTER the shared parser identified the definition.
       const raw = lines[line - 1]!;
       const text = tableRowId(raw)?.text ?? raw.replace(/^.*?(?:R|AC|D|I)-\d+\s*(?:\*\*|__)?\s*[:.)—–-]?\s*/, '');
-      return {
+      const node: Paragraph = {
         type: 'paragraph', children: children ?? inline(text),
         data: { hName: 'div', hProperties: { 'data-criterion-id': ref.id } },
       };
+      criterionNodes.add(node);
+      return node;
     };
-    const transform = (node: RootContent): RootContent[] => {
+    const transform = (node: Block): Block[] => {
       const start = node.position?.start.line ?? 0;
       const end = node.position?.end.line ?? 0;
       const hits = [...definitions.keys()].filter(line => line >= start && line <= end);
       if (!hits.length) return [node];
       if (node.type === 'paragraph' || node.type === 'heading') {
-        const out: RootContent[] = [];
+        const out: Block[] = [];
         let from = start;
         for (const line of hits) {
           if (line > from) out.push(...parse(lines.slice(from - 1, line - 1).join('\n')));
@@ -44,7 +49,7 @@ export default function specCriterionMarkdown(this: Processor) {
         return out;
       }
       if (node.type === 'table') {
-        const out: RootContent[] = [];
+        const out: Block[] = [];
         const originalHeader = node.children[0]!;
         const headerIsCriterion = definitions.has(originalHeader.position?.start.line ?? 0);
         const header = headerIsCriterion
@@ -71,7 +76,7 @@ export default function specCriterionMarkdown(this: Processor) {
         return out;
       }
       if (node.type === 'list') {
-        const out: RootContent[] = [];
+        const out: Block[] = [];
         let ordinary: typeof node.children = [];
         let index = 0;
         const flush = () => {
@@ -80,7 +85,7 @@ export default function specCriterionMarkdown(this: Processor) {
         };
         for (const item of node.children) {
           const changed = item.children.flatMap(child => transform(child));
-          if (changed.some(child => child.data?.hProperties?.['data-criterion-id'])) {
+          if (changed.some(child => criterionNodes.has(child))) {
             flush();
             out.push(...changed);
           } else ordinary.push(item);
@@ -92,6 +97,6 @@ export default function specCriterionMarkdown(this: Processor) {
       if (node.type === 'blockquote') return [{ ...node, children: node.children.flatMap(child => transform(child)) }];
       return [node];
     };
-    tree.children = tree.children.flatMap(transform);
+    tree.children = tree.children.flatMap(node => transform(node as Block));
   };
 }
