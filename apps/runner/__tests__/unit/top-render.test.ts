@@ -6,7 +6,7 @@
 import { describe, expect, test } from 'bun:test';
 import { createPalette, stripAnsi } from '../../src/terminal-palette';
 import { columnsFor, fit, renderFrame, textWidth } from '../../src/top/render';
-import { reduce, type TopState } from '../../src/top/state';
+import { NO_MISSION, localLiftTime, reduce, type TopState } from '../../src/top/state';
 import { NOW, TASKS, fixtureState } from './top-fixture';
 
 const plain = createPalette('night', 'none');
@@ -227,5 +227,31 @@ describe('revision 2 (R-17, R-19, R-21, AC-6)', () => {
     expect(t).toMatch(/only the workspaces this runner serves/i);
     expect(t).toMatch(/o opens this runner's page on buildd/i);
     expect(t).toContain('buildd login --workspaces');
+  });
+});
+
+describe('a provider limit, said once in the header (R-25, AC-11)', () => {
+  const resetMs = NOW + 9 * 3_600_000;
+  const walled = () => reduce({ ...fixtureState(), selectedMission: NO_MISSION }, {
+    type: 'claim_outcome',
+    outcome: { at: NOW - 5_000, reason: 'budget_exhausted', walls: [{ kind: 'account_seat', backend: 'claude', resetsAt: new Date(resetMs).toISOString() }] },
+  });
+
+  test('one header line names the limit and the local time it lifts; rows stay short; 80x24 still fits', () => {
+    const lines = frame(walled(), 80, 24);
+    expectExactSize(lines, 80, 24);
+    const t = text(lines).split('\n');
+    expect(t[1]).toContain(`Claude work waits for the plan limit: resumes ${localLiftTime(new Date(resetMs).toISOString(), NOW)} (in 9h)`);
+    const row = t.find(l => l.includes('fix flaky test'))!;
+    expect(row).toContain('plan limit');
+    expect(row).not.toContain('resumes');
+    expect(text(lines)).not.toContain('ready, next claim');
+    // Said once.
+    expect(text(lines).match(/waits for the plan limit/g)!.length).toBe(1);
+  });
+
+  test('no limit, no extra line', () => {
+    const t = text(frame(fixtureState(), 80, 24)).split('\n');
+    expect(t[1]).toMatch(/^─+$/);
   });
 });

@@ -74,6 +74,10 @@ export interface KernelOps {
   open_delivery: { input: Parameters<Seam['openKernelDelivery']>[0]; result: Awaited<ReturnType<Seam['openKernelDelivery']>> };
   /** Drain one delivery's due effects: what a web-host caller asks for instead of draining inline. */
   drain: { input: { deliveryId: string }; result: DrainSummary | null };
+  /** A mission delivery epoch transition (§6): merged, ensure_writable, bind_pr, reconcile. */
+  mission_epoch: { input: Parameters<Seam['missionEpochCommand']>[0]; result: Awaited<ReturnType<Seam['missionEpochCommand']>> };
+  /** A task added to a mission: its scope decision, recorded once (§6 scope amendments). */
+  mission_scope: { input: Parameters<Seam['missionScopeCommand']>[0]; result: Awaited<ReturnType<Seam['missionScopeCommand']>> };
 }
 export type KernelOp = keyof KernelOps;
 
@@ -87,6 +91,8 @@ const RUN: { [K in KernelOp]: (seam: Seam, input: KernelOps[K]['input']) => Prom
   abandon: (s, i) => s.abandonDelivery(i),
   open_delivery: (s, i) => s.openKernelDelivery(i),
   drain: (s, i) => s.drainDelivery(i.deliveryId),
+  mission_epoch: (s, i) => s.missionEpochCommand(i),
+  mission_scope: (s, i) => s.missionScopeCommand(i),
 };
 
 export const KERNEL_OPS = Object.keys(RUN) as KernelOp[];

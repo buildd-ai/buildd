@@ -216,17 +216,42 @@ export function addressFindings(view: Pick<KernelView, 'findings'>, head: string
     .map((f) => ({ op: 'update', findingId: f.id, whenStatus: ['open'], set: { status: 'addressed', addressedBySha: head } }));
 }
 
+/** The directory of a repo path ('' for the root). */
+const dirOf = (p: string): string => (p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '');
+/** A file's stem without test or spec markers: `src/a.test.ts` and `tests/a.spec.tsx` are both `a`. */
+const stemOf = (p: string): string => (p.split('/').pop() ?? p).replace(/\.[^.]*$/, '').replace(/\.(test|spec)$/, '').replace(/^test_|_test$/, '');
+const within = (path: string, dir: string): boolean => dir === '' || path === dir || path.startsWith(`${dir}/`);
+
 /**
- * §13.13 rule 4: does a repair's diff answer the findings it was filed for?
- * True when it changed a path an open required finding names, or when no open
- * required finding names a path (then any change is a candidate fix for the
- * reviewer to verify). Unread paths are not evidence either way: null.
+ * §13.13 rule 4: could a repair's diff answer the findings it was filed for? The check only
+ * refuses a diff that plainly cannot: every open required finding names a path, and the push
+ * changes nothing near any of them. "Near" is deliberately wide, because a fix often lands
+ * beside the line the reviewer pointed at:
+ *  - the finding's own directory, or anywhere below it (a caller, a sibling module);
+ *  - a file with the same stem anywhere (its test: `a.ts` and `tests/a.test.ts`);
+ *  - a path the reviewer's feedback names (`extraPaths`), or its directory.
+ * `changedPaths` should include a renamed file's previous name. With an open required finding
+ * that has no path, there is nothing to compare: any change may be the fix, and the reviewer
+ * decides. Unread paths are not evidence either way: null.
  */
-export function diffTouchesFindings(view: Pick<KernelView, 'findings'>, changedPaths: string[] | null | undefined): boolean | null {
+export function diffTouchesFindings(
+  view: Pick<KernelView, 'findings'>, changedPaths: string[] | null | undefined, extraPaths: string[] = [],
+): boolean | null {
   if (changedPaths == null) return null;
   if (changedPaths.length === 0) return false;
-  const withPath = openRequiredFindings(view).filter((f) => f.path);
-  if (withPath.length === 0) return true;
-  const changed = new Set(changedPaths);
-  return withPath.some((f) => changed.has(f.path!));
+  const open = openRequiredFindings(view);
+  if (open.length === 0 || open.some((f) => !f.path)) return true;
+  const anchors = [...open.map((f) => f.path!), ...extraPaths.filter((x) => x && x.trim())];
+  const dirs = new Set(anchors.map(dirOf));
+  const stems = new Set(anchors.map(stemOf));
+  const exact = new Set(anchors);
+  return changedPaths.some((c) => exact.has(c) || stems.has(stemOf(c)) || [...dirs].some((d) => within(c, d)));
+}
+
+/** Repo paths a reviewer's feedback names (`src/a.ts`, `apps/web/x.tsx:12`): what rule 4 lets a fix touch besides the findings' own. */
+export function pathsNamedIn(text: string | null | undefined): string[] {
+  if (!text) return [];
+  const out = new Set<string>();
+  for (const m of text.matchAll(/(?:^|[\s`'"(\[])((?:[\w.-]+\/)+[\w.-]+\.[A-Za-z0-9]+)(?::\d+)?/g)) out.add(m[1]!);
+  return [...out].slice(0, 50);
 }

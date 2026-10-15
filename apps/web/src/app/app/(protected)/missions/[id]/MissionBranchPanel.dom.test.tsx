@@ -17,6 +17,7 @@ mock.module('next/navigation', () => ({
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: MissionBranchPanel } = await import('./MissionBranchPanel');
+const { branchPanelFacts, branchPanelHasAction } = await import('@/lib/mission-branch-panel');
 const { resolveVisualReviewPolicy } = await import('@/lib/workflow/visual-review-policy');
 const { deriveMissionVisualReview } = await import('@/lib/workflow/visual-review-state');
 const { presentVisualReview } = await import('@/lib/workflow/visual-review-presentation');
@@ -107,5 +108,20 @@ describe('MissionBranchPanel', () => {
   it('a closed mission shows the state without actions', async () => {
     await mount(presentation({ policy: resolveVisualReviewPolicy({ workspace: 'ask' }) }), { readonly: true });
     expect(container.querySelector('button, a')).toBeNull();
+  });
+
+  it('never shows a facts line holding only the base branch (R-37)', async () => {
+    const p = presentation({ branch: { headSha: null, base: 'dev', workLanded: true, integrationPr: null } });
+    expect(branchPanelFacts(p)).toBe('');
+    await mount(p);
+    expect(container.querySelector('[data-testid="mission-branch-panel-facts"]')).toBeNull();
+  });
+
+  it('the footer keeps it only for an action or the report, never as a repeat of the state (R-37)', () => {
+    const verifying = presentation({ audit, review: review({ phase: 'capturing' }) });
+    expect(branchPanelHasAction(verifying)).toBe(false);
+    const failed = presentation({ audit: { ...audit, errorType: 'capture_failed' } });
+    expect(branchPanelHasAction(failed)).toBe(!!failed.report || !!failed.owner);
+    expect(branchPanelHasAction(failed, true)).toBe(false);
   });
 });

@@ -15,6 +15,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { requestMissionVisualReview } from '@/lib/mission-visual-review-request';
 import type { VisualReviewPresentation, VisualReviewTone } from '@/lib/workflow/visual-review-presentation';
+import { branchPanelFacts } from '@/lib/mission-branch-panel';
 
 const TONE_TEXT: Record<VisualReviewTone, string> = {
   neutral: 'text-text-secondary',
@@ -42,12 +43,7 @@ export default function MissionBranchPanel({ missionId, presentation: p, prUrl =
   const [error, setError] = useState<string | null>(null);
   if (!p.showPanel) return null;
 
-  const { branch } = p;
-  const facts = [
-    branch.base ? `into ${branch.base}` : null,
-    branch.integrationPr ? `PR #${branch.integrationPr.number}` : null,
-    branch.headSha ? branch.headSha.slice(0, 7) : null,
-  ].filter(Boolean).join(' · ');
+  const facts = branchPanelFacts(p);
 
   async function runReview() {
     setBusy(true);

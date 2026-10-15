@@ -67,14 +67,14 @@ import {
   type MissionCardSummary,
   type MissionCardView,
 } from '@/lib/mission-card-view';
-import { loadMissionCardViews, MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH, MISSION_TASK_REFRESH_EXTRAS } from '@/lib/mission-card-views';
+import { loadCardVisualReviews, loadMissionCardViews, missionDeliveryFacts, MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH, MISSION_TASK_REFRESH_EXTRAS } from '@/lib/mission-card-views';
 import type { HomeMissionSummary } from './HomeMissions';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
 import { resolveLandingOwnership, landingModeOf, resolveReviewerGate, resolveReviewInFlight, deriveStoredVerdictFallback, gateReachesActionQueue } from '@/lib/reviewer-gate';
 import type { ReviewerTaskStatus } from '@/lib/reviewer-gate';
 import { createReviewerStallFactsLoader } from '@/lib/reviewer-stall-facts';
 import { HomeBody } from './HomeBody';
-import { countQuietMissions, deliveryCounts, projectMissionDelivery, selectHomeMilestones, type MissionDelivery } from '@/lib/delivery-projection';
+import { countQuietMissions, deliveryCounts, quietMissionCauses, projectMissionDelivery, selectHomeMilestones, type MissionDelivery } from '@/lib/delivery-projection';
 import { deriveHomeNeedsYou } from '@/lib/home-needs-you';
 import type { HomeHeldMission, HomeQuestion } from './NeedsYouCards';
 import { HomeMissionsSummary, type HomeMissionRow } from './HomeMissionsSummary';
@@ -576,6 +576,10 @@ export default async function HomePage({
           // the same builder the missions list uses (AC-14, D8).
           // The nested workers are capped per task, so live workers are an
           // exact batched count, not a count of the loaded rows.
+          // The visual review the mission page reads, for missions whose audit is
+          // still open, so a Home card names the same state and cause as the
+          // mission header (spec 8e137fdb I-1). Runs beside the live count.
+          const visualReviewsLoad = loadCardVisualReviews(allMissions as Parameters<typeof loadCardVisualReviews>[0]);
           const liveWorkerCounts = new Map<string, number>();
           if (allMissions.length > 0) {
             const liveRows = await db
@@ -589,12 +593,16 @@ export default async function HomePage({
               .groupBy(tasks.missionId);
             for (const r of liveRows) if (r.missionId) liveWorkerCounts.set(r.missionId, r.n);
           }
+          const visualReviews = await visualReviewsLoad;
+          const factsNow = Date.now();
 
           missionDeliveries = allMissions.map(m => ({
             delivery: projectMissionDelivery({
               id: m.id, title: m.title, status: m.status, href: `/app/missions/${m.id}`,
               isHeld: m.isHeld, integrationBranch: m.integrationBranchEnabled === true,
               tasks: m.tasks as unknown as Parameters<typeof projectMissionDelivery>[0]['tasks'],
+              // The same facts the missions list reads, so both cards agree.
+              ...missionDeliveryFacts(m as Parameters<typeof missionDeliveryFacts>[0], visualReviews.get(m.id), factsNow),
             }, missionHelpers),
             status: m.status,
             liveAgents: liveWorkerCounts.get(m.id) ?? 0,
@@ -608,6 +616,7 @@ export default async function HomePage({
           for (const m of allMissions) {
             summaries.set(m.id, summarizeMissionForCard(m as MissionCardRow, {
               now: nowMs, liveWorkers: liveWorkerCounts.get(m.id) ?? 0, deliveryViews: missionDeliveryViews,
+              visualReview: visualReviews.get(m.id) ?? null,
             }));
           }
           missions = allMissions.map(m => ({
@@ -2050,6 +2059,7 @@ export default async function HomePage({
   const deliveries = missionDeliveries.map(d => d.delivery);
   const milestones = selectHomeMilestones(deliveries);
   const quietMissions = countQuietMissions(deliveries);
+  const quietCauses = quietMissionCauses(deliveries);
   // Chat is where work starts, and it has its own tab. On a phone a team with
   // chat keeps the composer under the headline; desktop gets one quiet link.
   // Chat setup (no key yet) lives on the Chat page: Home says so in one line.
@@ -2117,6 +2127,7 @@ export default async function HomePage({
           counts={counts}
           milestones={milestones}
           quietMissions={quietMissions}
+          quietCauses={quietCauses}
           inProgress={reviewsInProgress}
           agents={agentsModel ? <AgentsPanel model={agentsModel} occupancy={occupancy} idle={idleStretches} /> : null}
           landed={landedWeek.length > 0 ? <LandedThisWeek missions={landedWeek} timeZone={teamTz} /> : null}
@@ -2124,7 +2135,7 @@ export default async function HomePage({
             // Initiative scoping chips: they SCOPE the list, never group it.
             <div className="mb-3">
               <InitiativeFilterChips initiatives={actionQueueInitiatives} selectedId={initFilter ?? null} workspaceFilter={wsFilter ?? null} />
-              {filteredActionQueue.length === 0 && <p className="text-body text-text-muted">Nothing waiting for this initiative.</p>}
+              {initFilter && filteredActionQueue.length === 0 && <p className="text-body text-text-muted">Nothing waiting for this initiative.</p>}
             </div>
           )}
           foot={discrepancyOverflowCount > 0 && (

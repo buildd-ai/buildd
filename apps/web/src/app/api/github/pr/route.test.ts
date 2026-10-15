@@ -66,6 +66,16 @@ const mockLandThroughKernel = mock(async (..._a: any[]): Promise<any> => null);
 const mockKernelLandingView = mock(async (..._a: any[]): Promise<any> => null);
 // The visual review half of the mission-PR gate (lib/ready-to-merge.ts). Default: passed on this head.
 let visualReviewOwed = false;
+// §6 mission deliveries: a mission PR merge is recorded with the kernel, which
+// rotates, settles and only then retires the branch. The door just records it.
+const mockRecordMissionPrMerged = mock((..._args: any[]) => Promise.resolve({ recorded: true, reason: 'merged' }));
+mock.module('@/lib/mission-epoch-door', () => ({
+  recordMissionPrMerged: (...args: any[]) => mockRecordMissionPrMerged(...args),
+  ensureMissionWritableBranch: async () => null,
+  bindMissionDeliveryPr: async () => {},
+  reconcileMissionDeliveries: async () => [],
+}));
+
 mock.module('@/lib/workflow/visual-review-state-load', () => ({
   getMissionVisualReviewState: async () => visualReviewOwed
     ? { status: 'needed', pendingVerification: true, staleEvidence: false, nextActor: 'system', branch: { headSha: 'abc12345', integrationPr: { number: 9, stage: 'ready' } } }
@@ -5366,7 +5376,7 @@ describe('PUT /api/github/pr', () => {
       }
     });
 
-    it('merges the mission PR and deletes the integration branch once every task PR has landed', async () => {
+    it('merges the mission PR and records the merged delivery with the kernel, which retires the branch after settlement', async () => {
       missionPrWorkerOk();
       mockTasksFindMany.mockResolvedValue([
         { id: 't-2', title: 'Task 2', status: 'completed', mode: 'execution', taskClass: 'work' },
@@ -5379,7 +5389,9 @@ describe('PUT /api/github/pr', () => {
 
       expect(res.status).toBe(200);
       expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
-      expect(mockGithubApi).toHaveBeenCalledWith(
+      // The merge is recorded with the kernel; the branch is retired only after settlement.
+      expect(mockRecordMissionPrMerged).toHaveBeenCalledWith(expect.objectContaining({ missionId: 'mission-1' }), expect.anything(), 'owner/repo', expect.any(Number));
+      expect(mockGithubApi).not.toHaveBeenCalledWith(
         expect.anything(),
         `/repos/owner/repo/git/refs/heads/${encodeURIComponent(BRANCH)}`,
         expect.objectContaining({ method: 'DELETE' }),

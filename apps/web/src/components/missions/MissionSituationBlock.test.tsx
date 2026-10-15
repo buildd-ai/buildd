@@ -105,7 +105,8 @@ describe('mission header — genuinely mid-flight, nothing outstanding', () => {
   it('says nothing-to-do plainly when idle', () => {
     const { html } = render(base);
 
-    expect(html).toContain('No source reports outstanding work.');
+    expect(html).toContain('No task, PR, check or decision is open.');
+    expect(html).not.toContain('State is idle');
     expect(html).not.toContain('data-testid="mission-primary-action"');
   });
 });

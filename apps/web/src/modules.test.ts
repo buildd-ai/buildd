@@ -53,7 +53,7 @@ describe('composition root', () => {
   });
 
   it('task.created: the category look is scheduled before the mission chain starts', () => {
-    expect(byEvent('task.created')).toEqual(['jev-decisions:task-category-look', 'missions:task-created-mission-feed']);
+    expect(byEvent('task.created')).toEqual(['jev-decisions:task-category-look', 'missions:open-writable-mission-delivery', 'missions:task-created-mission-feed']);
   });
 
   it('the rest', () => {
@@ -83,6 +83,8 @@ describe('composition root', () => {
     ]);
     // The verdict is measured before the reviewer is superseded.
     expect(byEvent('pr.closed')).toEqual([
+      // A mission PR merged on GitHub is still a merged delivery (workflow-kernel-library §6).
+      'missions:record-mission-delivery-merged',
       'missions:settle-surface-intents',
       'reviews:merge-review-telemetry',
       'reviews:supersession-detect-on-close',
@@ -96,7 +98,7 @@ describe('composition root', () => {
     expect(byEvent('sweep.pr_hourly')).toEqual(['jev-decisions:merge-readiness-outcome-sweep', 'jev-decisions:escalation-dispatch-sweep', 'reviews:superseded-refresh-sweep']);
     expect(byEvent('pr.review_submitted')).toEqual(['reviews:capture-review-feedback', 'reviews:github-verdict-mission-note']);
     expect(byEvent('pr.review_comment_created')).toEqual(['reviews:capture-review-comment']);
-    expect(byEvent('pr.base_changed')).toEqual(['missions:retarget-surface-intents']);
+    expect(byEvent('pr.base_changed')).toEqual(['missions:record-pr-moved-off-delivery', 'missions:retarget-surface-intents']);
     expect(byEvent('pr.needs_human')).toEqual(['missions:notify-mission-pr-ready']);
     expect(byEvent('workflow_run.completed')).toEqual(['releases:release-workflow-run-readback']);
     // The ledger records the red head before the CI-fix retry is asked.

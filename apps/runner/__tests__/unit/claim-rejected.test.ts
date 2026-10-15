@@ -434,6 +434,37 @@ describe('idle claim polls', () => {
     expect(err.claimTaskExclusionCode).toBe('workspace_cap');
   });
 
+  // `buildd top` reads these (spec c7410e76 R-25): the latest outcome per task
+  // and of the broad claim, in the init frame and as claim_outcome events.
+  test('an explicit refusal is kept per task and sent to top as claim_outcome', async () => {
+    mockClaimTask.mockImplementation(async () => ({
+      workers: [],
+      diagnostics: { reason: 'no_pending_tasks', taskExclusion: { code: 'runner_cooldown', detail: 'A worker from this runner failed.' } },
+    }));
+    manager = new WorkerManager(makeConfig());
+    const events = collectEvents(manager);
+    await manager.claimAndStart(makeTask()).catch(() => {});
+    const ev = events.find(e => e.type === 'claim_outcome');
+    expect(ev).toMatchObject({ taskId: 'task-42', outcome: { reason: 'no_pending_tasks', exclusion: 'runner_cooldown' } });
+    expect(manager.getClaimOutcomes().tasks['task-42']).toMatchObject({ exclusion: 'runner_cooldown' });
+  });
+
+  test('a broad claim held by a plan limit keeps the wall and its reset', async () => {
+    const resetsAt = new Date(Date.now() + 3_600_000).toISOString();
+    mockClaimTask.mockImplementation(async () => ({
+      workers: [],
+      budgetResetsAt: resetsAt,
+      diagnostics: { reason: 'budget_exhausted', budgetBlock: { walls: [{ kind: 'account_seat', backend: 'claude', resetsAt }], summary: 'Claude work waits.' } },
+    }));
+    manager = new WorkerManager(makeConfig());
+    const events = collectEvents(manager);
+    await manager.claimPendingTasks();
+    const ev = events.find(e => e.type === 'claim_outcome');
+    expect(ev?.taskId).toBeUndefined();
+    expect(ev?.outcome.walls).toEqual([{ kind: 'account_seat', backend: 'claude', resetsAt }]);
+    expect(manager.getClaimOutcomes().broad?.reason).toBe('budget_exhausted');
+  });
+
   test('no taskExclusion on the response → no claimTaskExclusionCode on the error', async () => {
     mockClaimTask.mockImplementation(async () => ({ workers: [], diagnostics: { reason: 'no_pending_tasks' } }));
     manager = new WorkerManager(makeConfig());

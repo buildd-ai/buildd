@@ -132,7 +132,7 @@ describe('dependency-blocked work is not an ask', () => {
     expect(view.nextAction).toBe('Unblocks when #12 merges and 1 upstream task finishes.');
   });
 
-  it('a claimable sibling still reads as the stall it is', () => {
+  it('a claimable sibling is next in line, not a dependency wait', () => {
     const view = deriveMissionStateView({
       ...base,
       health: 'STALLED',
@@ -141,8 +141,9 @@ describe('dependency-blocked work is not an ask', () => {
         { id: 'y', status: 'pending' },
       ],
     });
-    expect(view.kind).toBe('blocked');
-    expect(view.nextAction).toContain('Dispatch a worker');
+    expect(view.kind).toBe('waiting');
+    expect(view.situation.headline).toContain('next in line for a runner');
+    expect(view.nextAction).toContain('runner picks it up');
   });
 
   it('a stranded local mission whose only work is dep-blocked is not stranded (nothing is claimable)', () => {

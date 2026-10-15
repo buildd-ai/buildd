@@ -11,6 +11,16 @@ const mockNotifySubject = mock((_subject: unknown, _event: unknown) => {});
 // delivery, so every legacy merge case below runs unchanged.
 const mockLandThroughKernel = mock(async (..._a: any[]): Promise<any> => null);
 const mockKernelLandingView = mock(async (..._a: any[]): Promise<any> => null);
+// §6 mission deliveries: a mission PR merge is recorded with the kernel, which
+// rotates, settles and only then retires the branch. The door just records it.
+const mockRecordMissionPrMerged = mock((..._args: any[]) => Promise.resolve({ recorded: true, reason: 'merged' }));
+mock.module('@/lib/mission-epoch-door', () => ({
+  recordMissionPrMerged: (...args: any[]) => mockRecordMissionPrMerged(...args),
+  ensureMissionWritableBranch: async () => null,
+  bindMissionDeliveryPr: async () => {},
+  reconcileMissionDeliveries: async () => [],
+}));
+
 mock.module('@/lib/workflow/landing', () => ({
   landThroughKernel: mockLandThroughKernel,
   kernelLandingView: mockKernelLandingView,
@@ -1888,7 +1898,7 @@ describe('tryAutoMergeWorkerPr — mission-PR branch-lifecycle gate (P3)', () =>
     expect(mockMergePullRequest).not.toHaveBeenCalled();
   });
 
-  it('merges the mission PR and deletes the integration branch once every task PR has landed', async () => {
+  it('merges the mission PR and records the merged delivery with the kernel, which retires the branch after settlement', async () => {
     mockFindFirst = mock(() => missionPrTask) as any;
     mockGithubApi
       .mockResolvedValueOnce({ check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] })
@@ -1910,7 +1920,9 @@ describe('tryAutoMergeWorkerPr — mission-PR branch-lifecycle gate (P3)', () =>
     });
 
     expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
-    expect(mockGithubApi).toHaveBeenCalledWith(
+    // The merge is recorded with the kernel; the branch is retired only after settlement.
+    expect(mockRecordMissionPrMerged).toHaveBeenCalledWith(expect.anything(), 1, 'buildd-ai/buildd', 42);
+    expect(mockGithubApi).not.toHaveBeenCalledWith(
       1,
       `/repos/buildd-ai/buildd/git/refs/heads/${encodeURIComponent(MISSION_BRANCH)}`,
       expect.objectContaining({ method: 'DELETE' }),

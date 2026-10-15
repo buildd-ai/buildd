@@ -63,6 +63,14 @@ describe('deriveTaskChecks', () => {
     ]);
   });
 
+  test('AC-19 (workflow-kernel-library.md §5): a repair that changed nothing reads "no change", never "completed"', () => {
+    const r1 = R({ id: 'r1', round: 1, headSha: 'HEADA000', status: 'decided', verdict: 'request_changes', effectiveVerdict: 'request_changes', reviewerTaskId: 'rev1' });
+    for (const outcome of ['noop', 'unproven'] as const) {
+      const c = deriveTaskChecks(V({ state: 'CHANGES_REQUESTED', headSha: 'HEADA000', rounds: [r1], ledger: [A({ status: 'ended', outcome })] }));
+      expect(row(c, 'review')?.repair).toMatchObject({ label: 'Review fix 1 of 3', status: 'no_change' });
+    }
+  });
+
   test('AC-6: an approval of an older head is history, not the current review', () => {
     const old = R({ headSha: 'HEADA000', status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' });
     const c = deriveTaskChecks(V({ state: 'AWAITING_REVIEW', rounds: [old], approvedCurrentHead: false }));

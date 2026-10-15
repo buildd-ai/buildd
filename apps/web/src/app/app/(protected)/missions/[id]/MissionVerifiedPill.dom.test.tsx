@@ -58,6 +58,7 @@ mock.module('./MissionGoalCriteria', () => ({
 
 // Mock other dependencies
 mock.module('@buildd/core/mission-helpers', () => ({
+  criterionFingerprint: (c: any) => `fp:${c.type}:${c.label ?? ''}`,
   deriveCriteriaGatePresentation: (opts: any) => ({
     state: opts.overall === 'pass' ? 'clear' : opts.overall === 'fail' ? 'failing' : 'unverified',
     tone: opts.overall === 'pass' ? 'success' : opts.overall === 'fail' ? 'error' : 'warning',
