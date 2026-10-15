@@ -117,6 +117,17 @@ describe('projectTaskDelivery: today\'s worker/PR fields', () => {
     expect(sug.confirmPrNumber).toBe(42);
   });
 
+  // Review of #4822: a scan the sweep deferred (a GitHub timeout, the control plane down) has not
+  // finished, so the PR must not read as "did not land" while it waits for the next tick.
+  it('a closed PR whose scan is deferred is still reconciling; once the deferral is exhausted it is not', () => {
+    const w = (supersessionScan: any) => [{ status: 'completed', prUrl: PR, prLifecycleStatus: 'closed', supersessionScan }];
+    const deferral = { firstAt: '2026-10-15T07:10:00Z', count: 2, reason: 'GitHub slow' };
+    expect(projectTaskDelivery({ status: 'completed', workers: w({ scannedAt: '2026-10-12T00:00:00Z', suggestion: null, deferral }) }).reconciling).toBe(true);
+    const settled = projectTaskDelivery({ status: 'completed', workers: w({ scannedAt: '2026-10-15T08:10:00Z', suggestion: null, deferralExhausted: deferral }) });
+    expect(settled.reconciling).toBe(false);
+    expect(settled.kind).toBe('notlanded');
+  });
+
   it('a closed PR is reconciling; an abandoned PR and a failed task are not', () => {
     const closedPr = projectTaskDelivery({ status: 'completed', workers: [{ status: 'completed', prUrl: PR, prLifecycleStatus: 'closed' }] });
     expect(closedPr.reconciling).toBe(true);

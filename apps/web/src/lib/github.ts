@@ -45,7 +45,9 @@ export function getGitHubAppConfig() {
 export { generateAppJWT, getInstallationToken } from '@buildd/core/github-installation-auth';
 import { getInstallationToken } from '@buildd/core/github-installation-auth';
 
-// GitHub API client for a specific installation
+// GitHub API client for a specific installation.
+// No timeout by default. A caller that must not wait forever passes `options.signal`
+// (e.g. `AbortSignal.timeout(ms)`): fetch and the body read are both abandoned when it fires.
 export async function githubApi(installationId: number, path: string, options: RequestInit = {}) {
   const token = await getInstallationToken(installationId);
 

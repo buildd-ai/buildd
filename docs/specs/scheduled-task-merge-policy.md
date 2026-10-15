@@ -275,7 +275,7 @@ offending field.
 
 ## Migration: CHANGELOG schedule
 
-The "Auto Changelog" schedule (ID `79aa99bf-f490-49df-b7ca-83dfa82ac933`) is the
+The "Auto Changelog" schedule is the
 first consumer. Its `taskTemplate` MUST be updated to:
 
 ```json
