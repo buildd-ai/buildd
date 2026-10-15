@@ -35,6 +35,27 @@ export interface MissionBranchPanelProps {
   readonly?: boolean;
 }
 
+/**
+ * The branch, PR and commit line. A base branch alone says nothing the row
+ * above it does not, so it is never a line on its own (spec f7f67f1a R-37).
+ */
+export function branchPanelFacts(p: VisualReviewPresentation): string {
+  const { branch } = p;
+  const pr = branch.integrationPr ? `PR #${branch.integrationPr.number}` : null;
+  const sha = branch.headSha ? branch.headSha.slice(0, 7) : null;
+  if (!pr && !sha) return '';
+  return [branch.base ? `into ${branch.base}` : null, pr, sha].filter(Boolean).join(' · ');
+}
+
+/**
+ * Whether the panel has something of its own to offer: a person's action or
+ * the problem report. Without one, its state line repeats the Screens row and
+ * the checks, so the mission footer leaves it out (R-37).
+ */
+export function branchPanelHasAction(p: VisualReviewPresentation, readonly = false): boolean {
+  return p.showPanel && !readonly && (!!p.owner || !!p.report);
+}
+
 export default function MissionBranchPanel({ missionId, presentation: p, prUrl = null, workspaceSettingsHref = null, readonly = false }: MissionBranchPanelProps) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -42,12 +63,7 @@ export default function MissionBranchPanel({ missionId, presentation: p, prUrl =
   const [error, setError] = useState<string | null>(null);
   if (!p.showPanel) return null;
 
-  const { branch } = p;
-  const facts = [
-    branch.base ? `into ${branch.base}` : null,
-    branch.integrationPr ? `PR #${branch.integrationPr.number}` : null,
-    branch.headSha ? branch.headSha.slice(0, 7) : null,
-  ].filter(Boolean).join(' · ');
+  const facts = branchPanelFacts(p);
 
   async function runReview() {
     setBusy(true);

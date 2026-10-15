@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import type { GoalCriteriaState, GoalCriterion } from '@buildd/shared';
 import { criterionFingerprint } from '@buildd/core/mission-helpers';
-import { buildEstimate, criteriaChecks, missionChecks, missionPrCheck, releaseCheck, visualCheck, type MissionChecksInput } from './mission-checks';
+import { buildEstimate, criteriaChecks, missionChecks, outcomeSpecLines, missionPrCheck, releaseCheck, visualCheck, type MissionChecksInput } from './mission-checks';
 import type { MissionVisualReviewState } from './workflow/visual-review-state';
 import { planMissions, type PlanTask } from './mission-plan';
 
@@ -108,6 +108,34 @@ describe('visualCheck (R-17, R-18, AC-7, AC-8)', () => {
     expect(finding.repairs.map(r => r.id)).toEqual(['fix-1']);
     const failed = visualCheck(visual({ status: 'blocked', nextActor: 'system', blocked: { cause: 'app_boot_failed', causeOwner: 'unknown', autoRetriesLeft: 1 } }), opts);
     expect(failed).toMatchObject({ status: 'unable', problem: 'system' });
+  });
+});
+
+describe('visualCheck: Skip (spec f7f67f1a R-34, AC-17)', () => {
+  const opts = { mergeTier: 'agent-review' as const };
+  const strict = { mode: 'strict', origin: 'workspace', waiverAllowed: false, locked: true } as MissionVisualReviewState['policy'];
+
+  it('a queued, running or stuck review a person may waive offers Skip', () => {
+    for (const status of ['queued', 'running', 'blocked', 'findings'] as const) {
+      const r = visualCheck(visual({ status, findings: status === 'findings' ? { issues: 1, fixesOpen: 1 } as never : undefined }), opts);
+      expect([status, r.waivable]).toEqual([status, true]);
+    }
+  });
+
+  it('strict policy, a pass, a waiver, off and not needed never offer Skip', () => {
+    const rows = [
+      visualCheck(visual({ status: 'queued', policy: strict }), opts),
+      visualCheck(visual({ status: 'passed' }), opts),
+      visualCheck(visual({ status: 'waived', waiver: { reason: 'Copy only', actorLabel: 'Owner', at: '2026-10-14T00:00:00Z', supersededBy: null } }), opts),
+      visualCheck(visual({ status: 'optional', blocksMerge: false, blocksCompletion: false, policy: { mode: 'off', origin: 'workspace', waiverAllowed: true, locked: false } as MissionVisualReviewState['policy'] }), opts),
+      visualCheck(visual({ status: 'not_applicable', blocksMerge: false, blocksCompletion: false }), opts),
+    ];
+    expect(rows.map(r => r.waivable)).toEqual([false, false, false, false, false]);
+  });
+
+  it('only the visual row can be skipped', () => {
+    const { rows } = missionChecks(input({ release: 'waiting' }));
+    expect(rows.filter(r => r.waivable).map(r => r.kind)).toEqual(['visual']);
   });
 });
 
@@ -326,5 +354,21 @@ describe('buildEstimate (R-23, R-24, R-25, AC-10)', () => {
     expect(buildEstimate(tasks, now, true)).toBeNull();
     expect(buildEstimate([], now, false)).toBeNull();
     expect(buildEstimate([t('x', { p50Minutes: null, p80Minutes: null })], now, false)).toBeNull();
+  });
+});
+
+describe('outcomeSpecLines (spec f7f67f1a R-40)', () => {
+  const spec: GoalCriterion = { type: 'living_spec', specId: 'spec-1', specRevisionId: 'rev-8', revision: 8, contentHash: 'h' } as GoalCriterion;
+
+  it('one line per selected spec: title, pinned revision, the Verify row\'s status and a link', () => {
+    const { rows } = missionChecks(input({ criteria: [unitTests, spec] }));
+    const lines = outcomeSpecLines([unitTests, spec], rows, { 'spec-1': 'Mission Overview' });
+    expect(lines).toEqual([{ specId: 'spec-1', title: 'Mission Overview', revision: 'revision 8', status: rows.find(r => r.key === 'criterion-1')!.state, href: '/app/specs/spec-1' }]);
+  });
+
+  it('no selected spec, no line; an unreadable title still names the revision', () => {
+    expect(outcomeSpecLines([unitTests], [], {})).toEqual([]);
+    const [line] = outcomeSpecLines([{ ...spec, provisional: true } as GoalCriterion], [], {});
+    expect(line).toMatchObject({ title: 'Outcome spec', revision: 'revision 8, proposed', status: 'not checked' });
   });
 });

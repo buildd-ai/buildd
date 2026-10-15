@@ -1,7 +1,7 @@
 import { db } from '@buildd/core/db';
 import { after } from 'next/server';
 import { loadBuildEstimateRows } from '@/lib/mission-build-estimates';
-import { missions, workspaces, workspaceSkills, missionNotes, workers, tasks, initiatives, artifacts, orchestrationManifestPredictions } from '@buildd/core/db/schema';
+import { missions, workspaces, workspaceSkills, missionNotes, workers, tasks, initiatives, artifacts, orchestrationManifestPredictions, specs } from '@buildd/core/db/schema';
 import { eq, and, or, inArray, desc, isNotNull, isNull, ne } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
@@ -73,7 +73,7 @@ import { MissionVisualReviewProvider } from './MissionVisualReview';
 import { MissionSurfaceAuditWaiverProvider } from './MissionSurfaceAuditWaiver';
 import { loadSurfaceAuditWaiver } from '@/lib/mission-surface-audit-gate';
 import MissionVisualReviewSetting from './MissionVisualReviewSetting';
-import MissionBranchPanel from './MissionBranchPanel';
+import MissionBranchPanel, { branchPanelHasAction } from './MissionBranchPanel';
 import MissionVisualRecord from './MissionVisualRecord';
 import { getMissionVisualReviewState } from '@/lib/workflow/visual-review-state-load';
 import { presentVisualReview } from '@/lib/workflow/visual-review-presentation';
@@ -799,6 +799,14 @@ export default async function MissionDetailPage({
     mergedAt: missionMergedAt,
     releasedAt: releasedAtRaw ? new Date(releasedAtRaw).toISOString() : null,
   });
+  // The selected outcome specs' titles, for the line under the rail (R-40). Scoped to the
+  // mission's workspace; a failed read only costs the titles, the lines still show.
+  const outcomeSpecIds = goalCriteria.flatMap(c => (c.type === 'living_spec' ? [c.specId] : []));
+  const outcomeSpecTitles: Record<string, string> = outcomeSpecIds.length > 0 && mission.workspaceId
+    ? Object.fromEntries((await db.select({ id: specs.id, title: specs.title }).from(specs)
+        .where(and(inArray(specs.id, outcomeSpecIds), eq(specs.workspaceId, mission.workspaceId)))
+        .catch(() => [] as { id: string; title: string }[])).map(r => [r.id, r.title]))
+    : {};
   // Overview's checks after the build (spec f7f67f1a R-11 to R-22): a projection over the
   // same visual review state, criteria, mission PR and release status this page already reads.
   const trunkName = (workspaceForPolicy?.gitConfig as { defaultBranch?: unknown } | null)?.defaultBranch;
@@ -1147,7 +1155,8 @@ export default async function MissionDetailPage({
   // The band says running / needs-you / done by itself. Anything else the
   // mission is waiting on (a decision gate, a block, a stall) still gets its
   // one sentence and its one action above the columns.
-  // The integration PR card and the review summary ride along on every layout.
+  // The situation, the integration PR card and the review summary live on
+  // Overview only (spec f7f67f1a R-37): History is the timeline, not a second copy.
   const quietState = ['running', 'active', 'complete'].includes(displayState);
   const budgetExhausted = budgetUsd != null && mission.status === 'budget_exhausted';
   const boardNotice = quietState && !missionPrCard && !reviewSummary && recoveryItems.length === 0 ? null : (
@@ -1253,7 +1262,9 @@ export default async function MissionDetailPage({
       {/* The visual review, live: opens the review deck (or, before any
           screen, the phase and its actions). Any audit phase shows it. */}
       {boardVisual && <MissionScreensRow missionId={id} step={visualStep} />}
-      {visualPresentation && (
+      {/* Only when it carries a person's action or the report: its state line
+          alone repeats the Screens row and the checks (spec f7f67f1a R-37). */}
+      {visualPresentation && branchPanelHasAction(visualPresentation, isTerminal) && (
         <MissionBranchPanel
           missionId={id}
           presentation={visualPresentation}
@@ -1322,14 +1333,13 @@ export default async function MissionDetailPage({
       <MissionSurfaceAuditWaiverProvider {...auditWaiverProps}>
       <MissionLayoutShell
         initial={parseMissionLayout(layoutParam, listViewParam)}
-        board={boardHeader(<MissionOverview model={boardModel} completionText={completionText} notice={boardNotice} visual={boardVisual} checks={overviewChecks} planTasks={buildPlanTasks} held={isHeld || waitsOnMission || mission.status === 'budget_exhausted'} {...boardLink} {...boardStrip} />)}
+        board={boardHeader(<MissionOverview model={boardModel} completionText={completionText} notice={boardNotice} visual={boardVisual} checks={overviewChecks} outcomeSpecTitles={outcomeSpecTitles} planTasks={buildPlanTasks} held={isHeld || waitsOnMission || mission.status === 'budget_exhausted'} {...boardLink} {...boardStrip} />)}
         flow={boardHeader(<FlowTimeline model={boardModel} sameFiles={flowSameFiles} expectedMinutes={flowExpectedMinutes} {...boardLink} />)}
         feed={boardHeader(
           <MissionFeedLayout
             model={boardModel}
             notes={feedNotes}
             completionText={completionText}
-            notice={boardNotice}
             visual={boardVisual}
             notesEntry={<MissionNotesSheet missionId={id} />}
             {...boardLink}
