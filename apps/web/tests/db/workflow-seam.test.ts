@@ -12,8 +12,11 @@ import { runEffects, type EffectHandler } from '../../src/lib/workflow/effects';
 import type { GithubFactReader } from '../../src/lib/workflow/facts';
 import type { LivePr } from '../../src/lib/workflow/commands';
 import {
+  adoptReviewVerdict,
   attemptEnded,
   claimFix,
+  observeCiFailure,
+  observeCiGreen,
   kernelDeliveryOfPr,
   fixCompletionGate,
   observeHead,
@@ -34,8 +37,12 @@ let prSeq = 500;
 interface FakePr { head: string; state: 'open' | 'closed'; merged: boolean; updatedAt: string; ancestors: Record<string, string[]>; equivalent?: Array<[string, string]> }
 let gh: FakePr;
 const live = (): LivePr => ({ state: gh.state, merged: gh.merged, headSha: gh.head, headRepoFullName: REPO, baseRef: 'dev', updatedAt: gh.updatedAt, mergedAt: gh.merged ? '2026-10-06T00:00:00Z' : null });
+let checks: { complete: boolean; failing: string[] } | null = null;
+let green: boolean | null = null;
 const reader: GithubFactReader = {
   readPr: async () => live(),
+  checkRuns: async () => checks,
+  ciGreen: async () => green,
   contains: async (_repo, ancestor, head) => ancestor === head || (gh.ancestors[head] ?? []).includes(ancestor),
   contentEquivalent: async (_repo, _base, from, to) => (gh.equivalent ?? []).some(([f, t]) => f === from && t === to),
 };
@@ -84,6 +91,8 @@ beforeAll(async () => {
 });
 beforeEach(() => {
   gh = { head: 'H1', state: 'open', merged: false, updatedAt: 'u0', ancestors: {} };
+  checks = null;
+  green = null;
   dispatched = [];
   posted = [];
 });
@@ -410,6 +419,70 @@ describe('§14 cutover and the kill switch', () => {
   });
 });
 
+describe('S5: the review loop never stalls (workflow-kernel-library.md §5)', () => {
+  test('1bd26ae7: a round whose dispatch filed no reviewer is re-armed when someone asks, and answers with the reviewer it filed', async () => {
+    const { deliveryId, prNumber } = await openAndHandOn();
+    // The dispatch ran and left no reviewer on the round (the stall seen on a single-PR delivery).
+    await q(sql`UPDATE workflow_review_rounds SET reviewer_task_id = NULL WHERE delivery_id = ${deliveryId}::uuid`);
+    dispatched = [];
+    const r = await requestReview({ workspaceId, repoFullName: REPO, prNumber, installationId: 1, forced: false, actor: 'agent:test' }, deps);
+    expect(r).toMatchObject({ handled: true, result: { result: 'rejected', reason: 'review_in_flight' } });
+    expect(dispatched.map((x) => x.kind)).toEqual(['review']);
+    expect((r as { reviewTaskId: string | null }).reviewTaskId).toBe(dispatched[0]!.taskId);
+    expect((await rounds(deliveryId)).length).toBe(1);
+  });
+
+  test('1bd26ae7: a fix that pushed from elsewhere (no local head reported) arms a delta re-review at the new head', async () => {
+    const { deliveryId, review } = await openAndHandOn();
+    await requestChanges(deliveryId, review);
+    const fix = dispatched.find((x) => x.kind === 'fix')!;
+    const t = await fixTask(fix.taskId);
+    await claimFix(t, deps);
+    gh.head = 'H2';
+    gh.ancestors = { H2: ['H1'] };
+    const workerId = await seedWorker(fix.taskId, { status: 'completed' });
+    await attemptEnded({ task: t, workerId, status: 'completed', localHeadSha: null, commitCount: 0, source: 'runner' }, deps);
+    const d = (await loadView({ deliveryId })).delivery!;
+    expect(d).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'H2' });
+    expect((await rounds(deliveryId)).map((r) => [r.round, r.head_sha, r.kind, r.status])).toEqual([[1, 'H1', 'full', 'decided'], [2, 'H2', 'delta', 'queued']]);
+    expect(dispatched.filter((x) => x.kind === 'review').map((x) => x.head)).toEqual(['H1', 'H2']);
+  });
+
+  test('00d288fd: a reviewer from outside the rounds approves while the owner works; the owner\'s end applies it, no second review', async () => {
+    const ownerTaskId = await seedTask(workspaceId, { status: 'in_progress' });
+    const prNumber = prSeq++;
+    const opened = await openKernelDelivery({ workspaceId, ownerTaskId, repoFullName: REPO, prNumber, installationId: 1, source: 'webhook:opened' }, deps);
+    const legacyReviewer = await seedTask(workspaceId, { status: 'completed', title: 'legacy review' });
+    const kept = await adoptReviewVerdict({ deliveryId: opened.deliveryId!, reviewerTaskId: legacyReviewer, verdict: 'approve', effectiveVerdict: 'approve', headSha: 'H1', confidence: 0.9 }, deps);
+    expect(kept).toMatchObject({ result: 'applied', decision: { toState: 'WORKING' } });
+    expect(posted).toEqual([]);
+    const workerId = await seedWorker(ownerTaskId, { status: 'completed', lastCommitSha: 'H1', prNumber });
+    await attemptEnded({ task: { id: ownerTaskId, workspaceId, deliveryId: opened.deliveryId!, deliveryRole: 'owner', context: null }, workerId, status: 'completed', localHeadSha: 'H1', commitCount: 1, source: 'runner' }, deps);
+    expect((await loadView({ deliveryId: opened.deliveryId! })).delivery).toMatchObject({ state: 'APPROVED', approvedHeads: ['H1'] });
+    expect(dispatched.filter((x) => x.kind === 'review')).toEqual([]);
+  });
+
+  test('38442d17: a green re-run on the head CI repair was filed for returns the approved PR to APPROVED', async () => {
+    const { deliveryId, prNumber, review } = await openAndHandOn();
+    await recordReviewVerdict({ reviewerTask: await reviewerTask(review.taskId), verdict: 'approve', effectiveVerdict: 'approve', headSha: 'H1', confidence: 0.95 }, deps);
+    await applyCommand({ type: 'CiFailedObserved', actor: 'webhook', headSha: 'H1', signature: 'ci:db', maxAttempts: 3 }, { ref: { deliveryId } });
+    expect((await loadView({ deliveryId })).delivery!.state).toBe('REPAIRING');
+    checks = { complete: false, failing: [] };
+    await observeCiGreen({ workspaceId, repoFullName: REPO, prNumber, installationId: 1, headSha: 'H1', source: 'webhook:check_suite' }, deps);
+    expect((await loadView({ deliveryId })).delivery!.state).toBe('REPAIRING');
+    // Every check run done, none failing, but a suite was cancelled: not green (38442d17 re-review).
+    checks = { complete: true, failing: [] };
+    green = false;
+    await observeCiGreen({ workspaceId, repoFullName: REPO, prNumber, installationId: 1, headSha: 'H1', source: 'webhook:check_suite' }, deps);
+    expect((await loadView({ deliveryId })).delivery!.state).toBe('REPAIRING');
+    green = true;
+    const r = await observeCiGreen({ workspaceId, repoFullName: REPO, prNumber, installationId: 1, headSha: 'H1', source: 'webhook:check_suite' }, deps);
+    expect(r).toMatchObject({ handled: true, result: { result: 'applied', decision: { toState: 'APPROVED' } } });
+    const v = await loadView({ deliveryId });
+    expect(v.attempts.filter((a) => a.family === 'ci').map((a) => [a.status, a.outcome])).toEqual([['skipped', 'noop']]);
+  });
+});
+
 describe('S5: a reviewer\'s deferral names its task by short id (workflow-kernel-library.md §5)', () => {
   test('a short id resolves to the workspace\'s task; one that resolves to nothing closes nothing, and the verdict still lands on its round', async () => {
     const { deliveryId, review } = await openAndHandOn();
@@ -432,5 +505,71 @@ describe('S5: a reviewer\'s deferral names its task by short id (workflow-kernel
     expect(after.find((f) => f.id === a)).toMatchObject({ status: 'deferred', deferredToTaskId: docs });
     expect(after.find((f) => f.id === b)).toMatchObject({ status: 'open', deferredToTaskId: null });
     expect((await rounds(deliveryId)).map((x) => x.status)).toEqual(['decided', 'decided']);
+  });
+
+  test('a short id that prefixes two tasks resolves to neither; another workspace\'s task never resolves, by short id or full id', async () => {
+    const { deliveryId, review } = await openAndHandOn();
+    await recordReviewVerdict({ reviewerTask: await reviewerTask(review.taskId), verdict: 'request-changes', effectiveVerdict: 'request-changes', headSha: 'H1', confidence: 0.9,
+      output: { findings: [{ path: 'a.ts', title: 'fix a' }, { path: 'b.ts', title: 'fix b' }, { path: 'c.ts', title: 'fix c' }] } }, deps);
+    const fix = dispatched.find((x) => x.kind === 'fix')!;
+    const t = await fixTask(fix.taskId);
+    await claimFix(t, deps);
+    gh.head = 'H2';
+    gh.ancestors = { H2: ['H1'] };
+    await attemptEnded({ task: t, workerId: await seedWorker(fix.taskId, { status: 'completed', lastCommitSha: 'H2' }), status: 'completed', localHeadSha: 'H2', commitCount: 1, source: 'runner' }, deps);
+    const review2 = dispatched.filter((x) => x.kind === 'review').at(-1)!;
+    const findings = (await loadView({ deliveryId })).findings!;
+    const id = (path: string) => findings.find((f) => f.path === path)!.id;
+    // Two tasks of this workspace sharing an 8-character prefix, and one task of another workspace.
+    const prefix = Array.from({ length: 8 }, () => '0123456789abcdef'[Math.floor(Math.random() * 16)]).join('');
+    const full = (tail: string) => [prefix, '0000', '4000', '8000', tail].join('-');
+    for (const tail of ['00000000000a', '00000000000b']) {
+      await q(sql`INSERT INTO tasks (id, workspace_id, title, status) VALUES (${full(tail)}::uuid, ${workspaceId}::uuid, 'twin', 'pending')`);
+    }
+    const { workspaceId: other } = await seedWorkspace();
+    const foreign = await seedTask(other, { title: 'another workspace' });
+    const r = await recordReviewVerdict({ reviewerTask: await reviewerTask(review2.taskId), verdict: 'request-changes', effectiveVerdict: 'request-changes', headSha: 'H2', confidence: 0.9,
+      output: { deferredFindings: [
+        { id: id('a.ts'), reason: 'ambiguous', taskId: prefix },
+        { id: id('b.ts'), reason: 'foreign by short id', taskId: foreign.slice(0, 8) },
+        { id: id('c.ts'), reason: 'foreign by full id', taskId: foreign },
+      ] } }, deps);
+    expect(r).toMatchObject({ handled: true, result: { result: 'applied' }, toState: 'CHANGES_REQUESTED' });
+    const after = (await loadView({ deliveryId })).findings!;
+    for (const path of ['a.ts', 'b.ts', 'c.ts']) expect(after.find((f) => f.path === path)).toMatchObject({ status: 'open', deferredToTaskId: null });
+    const ev = (r as { result: { decision: { evidence: { findings: { unresolvedDeferrals: Array<{ id: string }> } } } } }).result.decision.evidence.findings.unresolvedDeferrals;
+    expect(ev.map((x) => x.id).sort()).toEqual([id('a.ts'), id('b.ts'), id('c.ts')].sort());
+  });
+});
+
+describe('S5 re-review: unpushed commits are never delivery (AC-10)', () => {
+  test('a fix that ended unproven with commits it never reported, while someone else pushed a descendant, waits for its push', async () => {
+    const { deliveryId, review } = await openAndHandOn();
+    await requestChanges(deliveryId, review);
+    const fix = dispatched.find((x) => x.kind === 'fix')!;
+    const t = await fixTask(fix.taskId);
+    await claimFix(t, deps);
+    gh.head = 'H2';
+    gh.ancestors = { H2: ['H1'] };
+    const workerId = await seedWorker(fix.taskId, { status: 'failed' });
+    await attemptEnded({ task: t, workerId, status: 'unproven', localHeadSha: null, commitCount: 2, source: 'runner' }, deps);
+    const d = (await loadView({ deliveryId })).delivery!;
+    expect(d.state).not.toBe('AWAITING_REVIEW');
+    expect(d.state).toBe('AWAITING_PUSH');
+  });
+});
+
+describe('S5 re-review: the red-PR sweep ends a CI repair only on every check passing', () => {
+  test('a cancelled re-run that leaves nothing failing does not cancel the CI fix', async () => {
+    const { deliveryId, prNumber, review } = await openAndHandOn();
+    await recordReviewVerdict({ reviewerTask: await reviewerTask(review.taskId), verdict: 'approve', effectiveVerdict: 'approve', headSha: 'H1', confidence: 0.95 }, deps);
+    await applyCommand({ type: 'CiFailedObserved', actor: 'webhook', headSha: 'H1', signature: 'ci:db', maxAttempts: 3 }, { ref: { deliveryId } });
+    checks = { complete: true, failing: [] };
+    green = false;
+    await observeCiFailure({ workspaceId, repoFullName: REPO, prNumber, installationId: 1, headSha: 'H1', signature: 'ci:db', maxAttempts: 3, source: 'sweep:red-prs' }, deps);
+    expect((await loadView({ deliveryId })).delivery!.state).toBe('REPAIRING');
+    green = true;
+    await observeCiFailure({ workspaceId, repoFullName: REPO, prNumber, installationId: 1, headSha: 'H1', signature: 'ci:db', maxAttempts: 3, source: 'sweep:red-prs' }, deps);
+    expect((await loadView({ deliveryId })).delivery!.state).toBe('APPROVED');
   });
 });

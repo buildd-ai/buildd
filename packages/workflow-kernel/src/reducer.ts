@@ -263,6 +263,7 @@ export function stableIdempotencyKey(cmd: Command, d: DeliverySnapshot | null): 
     // The target is part of the key: a second, different target must reach the reducer and be refused (edge_exists).
     case 'SupersessionRecorded': return pr ? `supersede:${pr}:${cmd.target.repoFullName}#${cmd.target.prNumber}` : null;
     case 'RepairNotNeeded': return `notneeded:${cmd.attemptId}`;
+    case 'CiGreenObserved': return d?.boundAttemptId ? `cigreen:${d.boundAttemptId}` : null;
     case 'MechanicalRepairFailed': return `mechfail:${cmd.attemptId}`;
     case 'TreadmillCycleRestarted': return d ? `treadmill:${d.id}:v${d.version}` : null;
     case 'EffectDead': return `effectdead:${cmd.effectId}`;
@@ -582,6 +583,40 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       }
       return verdictDecided(c, round, cmd, { held });
     }
+
+    // 00d288fd: a verdict from a reviewer outside the kernel's rounds, at the current head.
+    case 'ReviewVerdictAdopted': {
+      const dd = d!;
+      const head = cmd.headBound;
+      if (head !== dd.currentHeadSha) return c.stale('verdict_head_not_current');
+      const mine = c.view.rounds.find((r) => r.reviewerTaskId === cmd.reviewerTaskId && r.headSha === head);
+      if (mine?.status === 'decided') return c.duplicate('verdict_already_recorded');
+      if (c.decidedAt(head)) return c.stale('head_already_reviewed');
+      // The kernel's own round at this head is the review that counts: its reviewer answers it.
+      if (c.openRoundAt(head)) return c.stale('round_in_flight');
+      // The owner is still working (or a repair or a red trunk holds the head) and the kernel has asked
+      // nobody yet: the verdict is kept as a decided round at this head, and the hand-off (T4,
+      // resumeAfterRepair, T26) applies it rather than asking for a second review of the same content.
+      const keeps: DeliveryState[] = ['WORKING', 'AWAITING_PUSH', 'REPAIRING', 'BLOCKED_ON_TRUNK'];
+      if (!keeps.includes(dd.state)) return c.stale('state_not_allowed');
+      const id = c.newId();
+      const n = dd.currentRound + 1;
+      const last = c.lastDecided();
+      const round: RoundSnapshot = { id, round: n, headSha: head, kind: 'full', status: 'decided', verdict: cmd.verdict, effectiveVerdict: cmd.effectiveVerdict, failureCount: 0, reviewerTaskId: cmd.reviewerTaskId, scope: null };
+      const f = applyVerdictToFindings(c.view, round, cmd.effectiveVerdict, cmd, cmd.actor);
+      // Nothing is posted to GitHub and nothing lands here: the hand-off applies the verdict, and only a
+      // kernel round's verdict is ever posted as a review.
+      return c.apply(`adopt:${dd.id}:${cmd.reviewerTaskId}`, dd.state, {
+        guardHead: true, guardRound: true,
+        patch: { currentRound: n },
+        rounds: [{
+          op: 'insert', id, round: n, headSha: head, kind: 'full', priorRound: last?.round ?? null,
+          decided: { verdict: cmd.verdict, effectiveVerdict: cmd.effectiveVerdict, confidence: cmd.confidence ?? null, reviewerTaskId: cmd.reviewerTaskId },
+        }],
+        findings: f.ops,
+        evidence: { adopted: true, reviewerTaskId: cmd.reviewerTaskId, roundId: id, headSha: head, verdict: cmd.verdict, effectiveVerdict: cmd.effectiveVerdict, heldBy: dd.state, ...(f.raised.length ? { findings: { raised: f.raised } } : {}) },
+      });
+    }
     // §5: a person waives a finding, or defers it to a named task.
     case 'FindingDisposed': {
       const dd = d!;
@@ -734,6 +769,27 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         effects: [{ kind: 'dispatch_ci_fix', dedupeKey: `dispatch_ci_fix:${dd.id}:${cmd.headSha}:${n}`, payload: { attemptId: id, attemptNo: n, maxAttempts: max, headSha: cmd.headSha, signature: cmd.signature, trigger: human ? 'human' : 'automatic' } }],
         evidence: { signature: cmd.signature, attemptNo: n, spent: spent + 1, max, ...miss },
       });
+    }
+
+    // 38442d17: the head that went red is green again.
+    case 'CiGreenObserved': {
+      const dd = d!;
+      if (cmd.headSha !== dd.currentHeadSha) return c.stale('head_not_current');
+      if (cmd.allPassing !== true || !cmd.liveChecks.complete || cmd.liveChecks.failing.length > 0) return c.rejected('ci_not_green');
+      const a = c.attempt(dd.boundAttemptId);
+      if (dd.state !== 'REPAIRING' || dd.stateReason !== 'ci' || !a || a.family !== 'ci') return c.stale('no_ci_repair');
+      if (!OPEN_ATTEMPT.has(a.status)) return c.stale('attempt_not_open');
+      if (a.boundHeadSha !== cmd.headSha) return c.stale('repair_at_other_head');
+      // A repair that never started spent nothing (skipped); one an agent picked up is cancelled,
+      // and its task is stopped by the cancellation effect.
+      const end: AttemptOp = { op: 'update', attemptId: a.id, whenStatus: [a.status], set: a.status === 'queued' ? { status: 'skipped', outcome: 'noop', ended: true } : { status: 'cancelled', outcome: 'noop', ended: true } };
+      const r = resumeAfterRepair(c, `cigreen:${a.id}`, cmd.headSha, {
+        attempts: [end],
+        patch: { ci: 'green', ciHeadSha: cmd.headSha },
+        evidence: { attemptId: a.id, family: 'ci', skipped: 'ci_green', attemptStatus: a.status, liveChecks: cmd.liveChecks },
+      });
+      if (r.result !== 'apply') return r;
+      return { ...r, effects: [...r.effects, { kind: 'cancel_open_attempts', dedupeKey: `cancel_open_attempts:${dd.id}:ci_green:${a.id}`, payload: { families: ['ci'], reason: 'ci_green', attemptId: a.id, taskId: a.taskId } }] };
     }
 
     // §5.7 rule 5 / AC-14
@@ -1341,7 +1397,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         return c.apply(key, 'AWAITING_REVIEW', {
           guardRound: true,
           rounds: [{ op: 'update', roundId: round.id, whenStatus: ['queued', 'reviewing'], set: { status: 'queued', failureCount: n, clearReviewer: true } }],
-          effects: [{ kind: 'dispatch_review', dedupeKey: `dispatch_review:${dd.id}:${round.round}:retry${n}`, payload: { roundId: round.id, round: round.round, headSha: round.headSha, kind: round.kind, retry: n } }, gate],
+          effects: [{ kind: 'dispatch_review', dedupeKey: `dispatch_review:${dd.id}:${round.round}:retry${n}`, payload: { roundId: round.id, round: round.round, headSha: round.headSha, kind: round.kind, retry: n }, ...(cmd.retryDelayMs ? { delayMs: cmd.retryDelayMs * n } : {}) }, gate],
           evidence: ev,
         });
       }
@@ -1690,7 +1746,7 @@ function headObservedInner(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' 
         ? [{ op: 'update', attemptId: a.id, whenStatus: [a.status], set: { status: 'skipped', outcome: 'noop', ended: true } }]
         : [];
       const effects: EffectSpec[] = a && moot
-        ? [{ kind: 'cancel_open_attempts', dedupeKey: `cancel_open_attempts:${d.id}:head:${h}`, payload: { families: [a.family], reason: 'head_moved' } }]
+        ? [{ kind: 'cancel_open_attempts', dedupeKey: `cancel_open_attempts:${d.id}:head:${h}`, payload: { families: [a.family], reason: 'head_moved', ...(a.taskId ? { taskIds: [a.taskId] } : {}) } }]
         : [];
       const ev = { ...evidence, foreignPush: true, repairSkipped: attempts.length > 0 };
       if (d.approvalBasis === 'policy') {
@@ -1704,11 +1760,16 @@ function headObservedInner(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' 
     }
     case 'AWAITING_REVIEW':
       return toReview();
-    case 'CHANGES_REQUESTED':
+    case 'CHANGES_REQUESTED': {
+      // The fix tasks this head makes moot, named, so the cancellation never reaches a later one.
+      // A row not yet linked to its task (filed, link pending) leaves the role-wide cancel, as before.
+      const open = c.view.attempts.filter((x) => x.family === 'review_fix' && OPEN_ATTEMPT.has(x.status));
+      const taskIds = open.every((x) => x.taskId) ? open.map((x) => x.taskId!) : undefined;
       return toReview({
         attempts: [{ op: 'cancel_open', families: ['review_fix'], status: 'cancelled' }],
-        effects: [{ kind: 'cancel_open_attempts', dedupeKey: `cancel_open_attempts:${d.id}:head:${h}`, payload: { families: ['review_fix'], reason: 'head_moved' } }],
+        effects: [{ kind: 'cancel_open_attempts', dedupeKey: `cancel_open_attempts:${d.id}:head:${h}`, payload: { families: ['review_fix'], reason: 'head_moved', ...(taskIds ? { taskIds } : {}) } }],
       });
+    }
     case 'FIXING': {
       // Mid-fix pushes are normal; the round advances at AttemptEnded. A push
       // the running attempt can claim is recorded as its provenance (§6.9).
@@ -1792,7 +1853,10 @@ function attemptEndedInner(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' 
       // e9f1674b: a CI failure hint that arrived while the owner worked was refused by T10
       // (state_not_allowed). The hand-off is where the platform takes the move, so a head the
       // live read shows red goes to REPAIRING(ci) through T10's ledger, never to a reviewer.
-      if (cmd.ci && cmd.ci.liveChecks.failing.length > 0 && !c.decidedAt(h) && !c.openAttempt(['ci'])) {
+      // A verdict kept while the owner worked (an adopted round, the only decided round a WORKING
+      // delivery can hold) does not skip the repair: a red head is repaired first, and leaving the
+      // repair re-enters that verdict (resumeAfterRepair).
+      if (cmd.ci && cmd.ci.liveChecks.failing.length > 0 && !c.openAttempt(['ci'])) {
         return ciRepairAtHandOff(c, key, h, cmd.ci, cmd.reviewRequired === false ? { approvalBasis: 'policy' } : {}, evidence);
       }
       if (cmd.reviewRequired === false) {

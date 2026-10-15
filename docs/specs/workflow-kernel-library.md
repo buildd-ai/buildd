@@ -704,10 +704,11 @@ push, refresh, completion or owner change can make it disappear.
   That stand-in has no id a reviewer is likely to report, so an unscoped
   approval verifies it when it reviewed a later head than the one asked to
   change, or when it verified every structured finding still open.
-- A deferral names a task by its full id. A reviewer's short id is resolved
-  by the host to the one task of the delivery's workspace it prefixes
-  (`resolveDeferralTasks`); a deferral whose task does not resolve, or that
-  names none, closes nothing and is recorded as `unresolvedDeferrals` on the
+- A deferral names a task by its full id. The host resolves a reviewer's id
+  against the delivery's workspace (`resolveDeferralTasks`): a full id must be
+  a task there, a short id must prefix exactly one. A deferral whose task does
+  not resolve (none, another workspace's, an ambiguous prefix), or that names
+  none, closes nothing and is recorded as `unresolvedDeferrals` on the
   verdict's transition, which still applies. A person's deferral with a task
   id that is not a full one is refused (`deferral_task_unresolved`). The
   Postgres adapter never casts anything but a full id to a uuid column, so no
@@ -748,6 +749,41 @@ push, refresh, completion or owner change can make it disappear.
   through the newest decided round, as before.
 - Deviation: a finding of a PR that closes unmerged is not moved to the
   superseding PR yet; it stays on the closed delivery.
+
+**As built (S5, the review loop never stalls):**
+- A verdict is never dropped because the builder is still open (00d288fd). A
+  reviewer that ran outside the kernel's rounds (filed by a door before the
+  delivery opened) is adopted at the head it judged (`ReviewVerdictAdopted`):
+  while the owner works, a repair holds or trunk is red, and the kernel has
+  asked no reviewer of its own, it is kept as a decided round and the
+  hand-off applies it. It is never posted to GitHub as a review. The kept
+  round is a round like any other: it uses one of the delivery's `maxRounds`.
+  It does not skip a CI repair: an owner hand-off on a red head goes to
+  `REPAIRING(ci)` first, and leaving the repair re-enters the kept verdict. The kernel's
+  own open round at that head is never answered from outside (its reviewer
+  does), and a verdict on another head is stale. The same head is never reviewed twice for it, and `explain`
+  calls an open reviewer a review, never "Fix 0 of 3".
+- Completing a fix arms a delta re-review at the new head (1bd26ae7). A fix
+  that pushed from somewhere the runner cannot see reports no local head; its
+  proof is §9's "L unknown" rule (the head moved off the bound head and
+  descends from it), only when nothing local can be lost: a completed end or
+  one with no commits (AC-10). An unproven end with commits waits for its push. A `dispatch_review` that cannot file a reviewer fails its
+  round (T27, re-queued twice with a backoff, then `review_unavailable`)
+  instead of leaving it open with nobody on it.
+- `request_pr_review` never claims a review exists when none does: an open
+  round with no reviewer task whose dispatches all finished gets its dispatch
+  again (the floor's rule, run for the asker), and the answer says what is
+  queued (`queued`) rather than "already under review" with no state.
+- A green CI observation at the head that went red ends the CI repair bound
+  to it (38442d17, `CiGreenObserved`, from the `check_suite` success webhook
+  and the red-PR sweep, read live). Green means every check suite on the
+  head passed (GitHub's passing allow-list, `ciGreen`) and its check runs all
+  completed with none failing; a cancelled, stale or action-required run is
+  not green. A queued attempt is skipped (it spent nothing), a running one is
+  cancelled and exactly its task told to stop, and the
+  delivery returns to what the head was owed before (`APPROVED` for an
+  approved head). Classifying a pre-test infrastructure failure so no CI fix
+  is dispatched at all is not built: the green re-run is what clears it.
 
 **Acceptance criteria**:
 - AC-17: GIVEN two findings at head A WHEN a fix push touches one finding's

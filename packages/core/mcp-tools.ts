@@ -3435,8 +3435,15 @@ export async function handleBuilddAction(
             ...(params.callbackOn != null ? { callbackOn: params.callbackOn } : {}),
           }),
         });
+        // 1bd26ae7: no review task means no review yet; say what is queued, never "under review (undefined)".
+        if (!review.reviewTaskId) {
+          return text(
+            `${created}\n\n**Review requested** — ${review.queued?.reason ?? 'a review round is queued; no reviewer task is filed yet'}.\n` +
+            `Wait for the verdict: action=get_pr_review { prNumber: ${data.pr.number}, waitSeconds: 45 }.`,
+          );
+        }
         const state = review.alreadyRequested
-          ? `already under review (${review.status?.state})`
+          ? `already under review (${review.status?.state ?? 'queued'})`
           : `reviewer role \`${review.reviewerRole}\``;
         return text(
           `${created}\n\n**Review requested** — ${state}, review task ${review.reviewTaskId}.\n` +
@@ -3704,9 +3711,16 @@ export async function handleBuilddAction(
         );
       }
 
+      // 1bd26ae7: a round with no reviewer task is not a review in flight; say exactly that.
+      if (data.kernel && !data.reviewTaskId) {
+        return text(
+          `PR #${data.prNumber}: ${data.queued?.reason ?? 'a review round is queued; no reviewer task is filed yet'}.${waitHint}`,
+        );
+      }
+
       if (data.alreadyRequested) {
         return text(
-          `PR #${data.prNumber} is already under review — state: **${data.status?.state}** ` +
+          `PR #${data.prNumber} is already under review — state: **${data.status?.state ?? 'queued'}** ` +
           `(review task ${data.reviewTaskId}). Pass force=true to re-review a finished review.${waitHint}`,
         );
       }

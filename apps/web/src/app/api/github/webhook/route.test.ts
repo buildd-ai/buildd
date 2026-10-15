@@ -636,7 +636,9 @@ const mockObserveHead = mock(async (_p: any): Promise<boolean> => false);
 const mockObservePrState = mock(async (_p: any): Promise<boolean> => false);
 const mockObserveBase = mock(async (_p: any): Promise<boolean> => false);
 const mockReleaseKernelDeliveryForPr = mock(async (..._a: any[]) => undefined);
+const mockObserveCiGreen = mock(async (_p: any): Promise<any> => ({ handled: false }));
 mock.module('@/lib/workflow/seam', () => ({
+  observeCiGreen: mockObserveCiGreen,
   openKernelDelivery: mockOpenKernelDelivery,
   observeHead: mockObserveHead,
   observePrState: mockObservePrState,
@@ -2450,6 +2452,17 @@ describe('POST /api/github/webhook', () => {
 
       const opts = (mockResolvePolicy.mock.calls[0] as any[])[3];
       expect(opts.baseRef).toBe('dev');
+    });
+
+    it('38442d17: a green head is reported to the kernel, which ends a CI repair bound to it', async () => {
+      withSuccessWorkerPr();
+      mockObserveCiGreen.mockClear();
+      const res = await POST(
+        createWebhookRequest('check_suite', makeCheckSuitePayload({ check_suite: { conclusion: 'success' } }))
+      );
+      expect(res.status).toBe(200);
+      expect(mockObserveCiGreen).toHaveBeenCalledTimes(1);
+      expect(mockObserveCiGreen.mock.calls[0][0]).toMatchObject({ source: 'webhook:check_suite' });
     });
 
     it('holds PR and notifies when resolvePolicy returns tier=human', async () => {

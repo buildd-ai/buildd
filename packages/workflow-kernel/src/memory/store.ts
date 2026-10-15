@@ -452,8 +452,9 @@ function applyRoundOps(rounds: Array<RoundSnapshot & { deliveryId: string }>, de
         throw new UniqueViolation('workflow_review_rounds_open_per_head');
       }
       rounds.push({
-        deliveryId, id: o.id, round: o.round, headSha: o.headSha, kind: o.kind, status: 'queued', verdict: null,
-        effectiveVerdict: null, failureCount: 0, reviewerTaskId: null, scope: o.scope ?? null,
+        deliveryId, id: o.id, round: o.round, headSha: o.headSha, kind: o.kind, status: o.decided ? 'decided' : 'queued',
+        verdict: o.decided?.verdict ?? null, effectiveVerdict: o.decided?.effectiveVerdict ?? null, failureCount: 0,
+        reviewerTaskId: o.decided?.reviewerTaskId ?? null, scope: o.scope ?? null,
       });
       continue;
     }

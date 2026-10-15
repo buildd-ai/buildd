@@ -45,7 +45,7 @@ import { changedFilesForCompare, changedFilesForPr, isReleaseRollupPr, runBaseAd
 import { promptEvalRefForPush } from '@/lib/prompt-evals/push-trigger';
 import { runPromptEval } from '@/lib/prompt-evals/run';
 import { promptEvalDeps } from '@/lib/prompt-evals/store';
-import { observeBase, observePrState } from '@/lib/workflow/seam';
+import { observeBase, observeCiGreen, observePrState } from '@/lib/workflow/seam';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 // A push to the prompts repo runs the prompt eval in after() (up to ~240s).
@@ -498,6 +498,12 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
           console.log(`Not all check suites passed for ${repository.full_name}#${pr.number}, waiting`);
           continue;
         }
+
+        // 38442d17: a green head ends a kernel CI repair bound to it (an infrastructure failure re-run green).
+        await observeCiGreen({
+          workspaceId: workspace.id, repoFullName: repository.full_name, prNumber: pr.number, installationId: installation.id,
+          headSha, source: 'webhook:check_suite',
+        }).catch((err) => console.error(`[workflow] CiGreenObserved ${repository.full_name}#${pr.number} failed:`, err));
 
         // Mark CI as green — used by pr_checks_green loop exit condition evaluation.
         // Skip if the PR is already in a terminal state (merged/closed wins).

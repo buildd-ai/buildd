@@ -2467,6 +2467,10 @@ type".
    delivery is `ESCALATED(review_exhausted)` with the open findings attached, and a
    person is notified. Nothing merges it unattended (rule 6). A replay of any effect
    at the same head and version is a no-op.
+   *As built (S5):* `workflow-kernel-library.md` §5, "the review loop never stalls":
+   an outside reviewer's verdict at the current head is adopted, never dropped; a round
+   whose reviewer could not be filed fails (T27) rather than staying open; a green CI
+   run at the head a CI repair was bound to ends that repair without spending it.
 10. **An external merge records the truth and approves nothing.** When GitHub reports
     a merge buildd did not make while findings were open, the delivery becomes
     `MERGED` (T17 accepts any non-terminal state). The record says `merged over open
