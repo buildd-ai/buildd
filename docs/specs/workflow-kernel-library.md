@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts]
 related: [workflow-state-kernel, execution-control-plane, mission-branch-refresh, mission-task-lifecycle, living-specs]
 keywords: [workflow kernel, delivery state, single writer, single host, control plane, portable library, ports, adapters, conformance suite, merge door, landing authority, required status, durable findings, finding disposition, delivery epoch, mission delivery, refresh settlement, no-op completion, workflow-kernel package]
-verified_by: [packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts]
+verified_by: [packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts]
 supersedes: []
 ---
 # Workflow Kernel Library and Single Host
@@ -39,11 +39,13 @@ It does not restate the state machine. States, transitions T1–T29, CAS,
 exact-head review, the push invariant, the outbox and the floor stay in
 `workflow-state-kernel.md` §4–§11, and the review-composition, findings,
 repair and completion-evidence rules stay in its §13.13 rules 1–5 and 9. This
-spec amends where those run and who else may write.
+spec amends where those run and who else may write, and §5 adds three things
+to rule 2 (a stable finding id, `addressed`, `deferred`), which §13.13 rule 2
+carries since slice S5.
 
 | Spec | Relationship |
 |---|---|
-| `workflow-state-kernel.md` | behavioural contract the library implements. §10.3 drain hosting, §11 floor hosting, §13.12 "server-side (`apps/web`)", AC-7 and §14 are amended by §1 and §3 here. §13.13 rule 6, rule 7, rule 10 and its D1–D13 inventory are the landing authority of §4. |
+| `workflow-state-kernel.md` | behavioural contract the library implements. §10.3 drain hosting, §11 floor hosting, §13.12 "server-side (`apps/web`)", AC-7 and §14 are amended by §1 and §3 here. §13.13 rule 2 is amended by §5 (stable id, `addressed`, `deferred`). §13.13 rule 6, rule 7, rule 10 and its D1–D13 inventory are the landing authority of §4. |
 | `execution-control-plane.md` | §1 "same handlers, second host" and the seven-route limit are amended by §3; §3's kernel path becomes the package path. |
 | `mission-branch-refresh.md` | keeps the `branchRefresh*` columns; the refresh becomes a kernel effect of a mission delivery (§6). Its "does not model epochs" note is answered by §6. |
 | `mission-task-lifecycle.md` | AC-11y's door list is replaced by §4; mission completion reads delivery state (§6). |
@@ -594,8 +596,9 @@ recorded as such, never as an approval.
   nor a verdict on an older head). It is never projected as
   "approved". `measureMergeAgainstReview` keeps recording the bypass.
   Every buildd door lands a kernel PR through `LANDING`, so "external" is a
-  `PrMerged` from any other state. Until S5's findings model, an open finding
-  is the newest decided review round asking for changes or escalating.
+  `PrMerged` from any other state. An open finding is an open required
+  finding of §5; the newest decided review round asking for changes or
+  escalating still counts as an open verdict beside it.
 
 **As built (S3b):**
 - The gate is `reviewGate` (`packages/workflow-kernel/src/landing-gate.ts`)
@@ -674,14 +677,72 @@ push, refresh, completion or owner change can make it disappear.
   target is the delivery's branch, head and base (`repairTarget`), and it
   never inherits a coordination owner's instructions (§13.13 rule 3).
 - Completion evidence is §13.13 rule 4: a repair completes only on a push
-  that touches a finding's path or on a verified no-op (a live read at the
-  current head showing the finding's condition is already absent, recorded
-  as evidence). A zero or unrelated diff is refused, the attempt counts
-  against the round limit, and every surface shows it as "no change", never
-  "fix finished".
+  to the PR head that changes at least one path named by an open finding (or
+  a path the reviewer's feedback names), or on a verified no-op (a live read
+  at the current head showing the finding's condition is already absent,
+  recorded as evidence). A zero diff, a diff that touches none of the
+  findings' paths, or a head that moved only because of a refresh or someone
+  else's push is refused, the attempt counts against the round limit, and
+  every surface shows it as "no change", never "fix finished".
 - The activity comment and `get_pr` / `get_pr_review` list findings with their
   disposition, the commit that addressed each, and the round that verified it.
   "Fix attempt n of m" counts attempts, never findings.
+
+**As built (S5, findings half):**
+- Findings live in `workflow_findings`, written only by the transition
+  statement (`FindingOp`, `packages/workflow-kernel/src/findings.ts`). The id
+  is `<originating round id>:<ordinal>`; a round that restates a finding names
+  that id and the row is updated, never duplicated.
+- A request for changes raises the reviewer's `findings` (one per issue, with
+  path and line). With none, one finding stands for the round ("the review
+  asked for changes"), so a request for changes always leaves something open.
+  That stand-in has no id a reviewer is likely to report, so an unscoped
+  approval verifies it when it reviewed a later head than the one asked to
+  change, or when it verified every structured finding still open.
+- A deferral names a task by its full id. A reviewer's short id is resolved
+  by the host to the one task of the delivery's workspace it prefixes
+  (`resolveDeferralTasks`); a deferral whose task does not resolve, or that
+  names none, closes nothing and is recorded as `unresolvedDeferrals` on the
+  verdict's transition, which still applies. A person's deferral with a task
+  id that is not a full one is refused (`deferral_task_unresolved`). The
+  Postgres adapter never casts anything but a full id to a uuid column, so no
+  write can abort a verdict's transition.
+- The reviewer is briefed with every open finding and its id
+  (`findingsBrief`, `findingsSection`) and reports `resolvedFindings`,
+  restated `findings` and `deferredFindings`. A reviewer output with no
+  `resolvedFindings` key (an older reviewer) approving an unscoped round
+  verifies every open finding, since all of them were in its brief. A scoped
+  round (a composition's novel paths, a refresh) verifies only what it names.
+- An approval that leaves a required finding unverified does not approve the
+  head: the round is decided as the reviewer said and a verification round at
+  the same head (scope `verifyFindings`) is queued, or `review_exhausted` at
+  the round limit. `reenterVerdict` applies the same rule when a held or
+  earlier verdict is re-entered.
+- `addressed`: a push observed by T3, or a repair's delivered head at T4,
+  whose compare against the previous (or bound) head lists a finding's path.
+  The compare is read only when an open finding names a path. A mechanical
+  repair's head and an own refresh never address anything (rule 5).
+- A person's `FindingDisposed` (waived, or deferred to a named task) closes
+  one finding with who and why; an agent is refused.
+- Deviation: no door submits `FindingDisposed` yet (no command-API op, route
+  or dashboard action). The command and its rules are in the kernel; the door
+  is a person-only command-API op plus a route, left out of this slice because
+  the command API and its ledger are being changed by the control-plane
+  cutover work at the same time. Until then a person passes an open finding
+  through the landing override (rule 6).
+- The landing gate (`reviewGate`), T15, the policy-merge rule (D11) and
+  `buildd/landing` read open required findings and name the first
+  one. Only a person's verdict override or their own approval of the head
+  passes one. An external merge records `merged_over_open_findings` for an
+  open finding even when the newest round approved, and the trunk fix names
+  the findings.
+- The activity comment lists every finding with its disposition, the commit
+  that addressed it and the round that verified it (`renderFindingsSummary`);
+  `DeliveryView` carries `findings` and `openFindings` for S7.
+- Existing deliveries have no findings: their open verdicts keep blocking
+  through the newest decided round, as before.
+- Deviation: a finding of a PR that closes unmerged is not moved to the
+  superseding PR yet; it stays on the closed delivery.
 
 **Acceptance criteria**:
 - AC-17: GIVEN two findings at head A WHEN a fix push touches one finding's

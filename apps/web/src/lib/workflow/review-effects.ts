@@ -115,6 +115,7 @@ export const reviewWork: WorkBuilder = async (req) => {
     baseRef,
     priorVerdict: (detail.priorVerdict as import('@/lib/reviewer').PriorVerdict | undefined) ?? undefined,
     compositionScope: (detail.compositionScope as { novelDeltaPaths: string[] } | undefined) ?? undefined,
+    findingsBrief: (detail.findingsBrief as import('@/lib/reviewer').FindingsBrief | undefined) ?? undefined,
     workflowRound: { deliveryId: req.lineage.deliveryId, roundId, round },
   });
   if (!created) return { skipped: 'dispatch_refused' };

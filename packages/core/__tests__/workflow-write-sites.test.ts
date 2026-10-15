@@ -69,8 +69,8 @@ const COMPOSITION_ROOT = 'apps/web/src/modules.ts';
 // root (`@buildd/workflow-kernel`, every module at once) reads as `index`, which is no entry point.
 const KERNEL_IMPORT = /(?:from\s+|import\()\s*['"](?:(?:@\/lib\/workflow|(?:\.\.?\/)+(?:lib\/)?workflow|@buildd\/workflow-kernel)\/([a-z][a-z/-]*)|@buildd\/workflow-kernel()(?=['"]))['"]/g;
 
-const TABLES = 'workflow_deliveries|workflow_review_rounds|workflow_facts|workflow_transitions|workflow_effects|workflow_attempts|workflow_commands|trunk_incidents';
-const SYMBOLS = 'workflowDeliveries|workflowReviewRounds|workflowFacts|workflowTransitions|workflowEffects|workflowAttempts|workflowCommands|trunkIncidents';
+const TABLES = 'workflow_deliveries|workflow_review_rounds|workflow_findings|workflow_facts|workflow_transitions|workflow_effects|workflow_attempts|workflow_commands|trunk_incidents';
+const SYMBOLS = 'workflowDeliveries|workflowReviewRounds|workflowFindings|workflowFacts|workflowTransitions|workflowEffects|workflowAttempts|workflowCommands|trunkIncidents';
 /** Raw SQL that reads or writes a kernel table: FROM, JOIN, INSERT INTO, UPDATE, DELETE FROM, TRUNCATE, ALTER/DROP TABLE. */
 const SQL_ACCESS = new RegExp(`\\b(?:FROM|JOIN|INTO|UPDATE|TRUNCATE|TABLE)\\s+(?:ONLY\\s+)?(?:(?:"?public"?)\\.)?"?(?:${TABLES})\\b`, 'i');
 /** A Drizzle query builder over a kernel table object: db.insert/update/delete/select…from/join(t), db.query.t. */

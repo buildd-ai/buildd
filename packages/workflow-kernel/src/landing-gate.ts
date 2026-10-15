@@ -6,14 +6,16 @@
  * read when it runs, and the `buildd/landing` commit status publishes its
  * answer onto the head, so GitHub can enforce what the kernel decided.
  *
- * Until the findings model lands (S5), an "open required verdict" is the
- * newest decided review round asking for changes (or escalating): a later
- * round that approves closes it, nothing else does. A person's recorded
- * approval or override passes it (rule 6); the policy-merge rule passes an
- * escalation, never a request for changes.
+ * What stands against a head (§5, rule 2): an open required finding (raised
+ * by a request for changes, closed only by a round that verifies it, a
+ * person's waiver or a deferral), and the newest decided round when it asked
+ * for changes or escalated. A person's recorded approval or override passes
+ * both (rule 6); the policy-merge rule passes an escalation, never a finding
+ * or a request for changes.
  */
+import { describeFinding, openRequiredFindings } from './findings';
 import { headCoverage, openVerdict } from './reducer';
-import type { DeliverySnapshot, KernelView, RoundSnapshot } from './types';
+import type { DeliverySnapshot, FindingSnapshot, KernelView, RoundSnapshot } from './types';
 
 /** The commit status context the kernel publishes on every kernel-owned PR head. */
 export const LANDING_STATUS_CONTEXT = 'buildd/landing';
@@ -24,11 +26,18 @@ const MAX_DESCRIPTION = 140;
 const short = (sha: string | null | undefined): string => (sha ? sha.slice(0, 7) : 'unknown');
 
 export type GateBlocker =
-  | 'no_delivery' | 'no_pr' | 'head_unknown' | 'head_moved' | 'not_approved' | 'review_missing' | 'open_verdict';
+  | 'no_delivery' | 'no_pr' | 'head_unknown' | 'head_moved' | 'not_approved' | 'review_missing' | 'open_verdict' | 'open_finding';
 
 export type ReviewGate =
   | { ok: true; coverage: ReturnType<typeof headCoverage>; overridden: boolean }
-  | { ok: false; blocker: GateBlocker; reason: string; round?: RoundSnapshot };
+  | { ok: false; blocker: GateBlocker; reason: string; round?: RoundSnapshot; findings?: FindingSnapshot[] };
+
+/** "finding src/a.ts:3: rename the flag", plus how many more, for a status line or a refusal. */
+export function openFindingsReason(open: FindingSnapshot[]): string {
+  if (open.length === 0) return 'no open finding';
+  const more = open.length > 1 ? ` (and ${open.length - 1} more)` : '';
+  return `open finding ${describeFinding(open[0]!)}${more}`;
+}
 
 export interface ReviewGateOptions {
   /** The head that would merge; default the delivery's current head. */
@@ -47,9 +56,14 @@ export function reviewGate(view: KernelView, o: ReviewGateOptions = {}): ReviewG
   const head = o.headSha === undefined ? d.currentHeadSha : o.headSha;
   if (!head || !d.currentHeadSha) return { ok: false, blocker: 'head_unknown', reason: 'the PR head is not known yet' };
   if (head !== d.currentHeadSha) return { ok: false, blocker: 'head_moved', reason: `the head moved to ${short(d.currentHeadSha)}` };
+  const override = o.verdictOverride === true;
+  // AC-13: an open required finding is named whatever state the delivery is in; only a person passes it.
+  const findings = openRequiredFindings(view);
+  if (findings.length && !override && headCoverage(d, head) !== 'human') {
+    return { ok: false, blocker: 'open_finding', reason: openFindingsReason(findings), findings };
+  }
   const states = o.states ?? ['APPROVED', 'LANDING'];
   if (!states.includes(d.state)) return { ok: false, blocker: 'not_approved', reason: notApprovedReason(d) };
-  const override = o.verdictOverride === true;
   const coverage = headCoverage(d, head);
   if (coverage === 'none' && !override) return { ok: false, blocker: 'review_missing', reason: `no review covers ${short(head)}` };
   const open = openVerdict(view);

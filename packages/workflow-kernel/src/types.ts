@@ -151,10 +151,48 @@ export interface AttemptSnapshot {
   trigger?: 'automatic' | 'human';
 }
 
+/**
+ * A review finding's disposition (docs/specs/workflow-kernel-library.md §5,
+ * workflow-state-kernel.md §13.13 rule 2). `open` and `addressed` block
+ * landing when the finding is required; `addressed` only says a push touched
+ * its path and still needs a round that verifies it. `resolved` (a later round
+ * verified it), `waived` (a person) and `deferred` (to a named task, by a
+ * reviewer or a person) are its closures.
+ */
+export type FindingStatus = 'open' | 'addressed' | 'resolved' | 'waived' | 'deferred';
+export const OPEN_FINDING_STATUSES: ReadonlySet<FindingStatus> = new Set(['open', 'addressed']);
+
+export interface FindingSnapshot {
+  /** Stable across rounds: derived from the originating round and the finding's position in it. */
+  id: string;
+  originRoundId: string;
+  originRound: number;
+  originHeadSha: string;
+  ordinal: number;
+  path: string | null;
+  line: number | null;
+  title: string;
+  /** A required finding blocks landing while open; an optional one is advice. */
+  required: boolean;
+  status: FindingStatus;
+  /** The newest round that raised or restated it. */
+  lastRound: number;
+  /** The head whose push touched its path (`addressed`). */
+  addressedBySha: string | null;
+  /** The round that resolved it (`resolved`) or the reviewer round that deferred it. */
+  closedByRoundId: string | null;
+  /** Who waived or deferred it, and why. */
+  closedBy: string | null;
+  closedReason: string | null;
+  deferredToTaskId: string | null;
+}
+
 export interface KernelView {
   delivery: DeliverySnapshot | null;
   rounds: RoundSnapshot[];
   attempts: AttemptSnapshot[];
+  /** §5 findings of the delivery, oldest first. Absent (a fixture, a store from before S5) reads as none. */
+  findings?: FindingSnapshot[];
 }
 
 // ── Actors ──────────────────────────────────────────────────────────────────
