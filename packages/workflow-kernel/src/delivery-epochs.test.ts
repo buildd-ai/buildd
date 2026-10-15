@@ -5,6 +5,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import {
+  shippedEpochOf, unsettledEpochs,
   adoptionOf, classifySettlement, epochBranchName, epochCompletionHold, isPriorEpochBranch, pendingEpochSteps,
   reduceMissionEpochs, writableEpoch, type MissionEpochCommand, type MissionEpochView,
 } from './delivery-epochs';
@@ -45,7 +46,8 @@ describe('epoch naming', () => {
   it('epoch 1 keeps the mission branch; a successor gets a name no epoch used', () => {
     expect(epochBranchName(ROOT, 1)).toBe(ROOT);
     expect(epochBranchName(ROOT, 2)).toBe(`${ROOT}-delivery-2`);
-    expect(epochBranchName(`${ROOT}-delivery-2`, 3)).toBe(`${ROOT}-delivery-3`);
+    // A mission branch that already ends in -delivery-N never gets its own name back.
+    expect(epochBranchName(`${ROOT}-delivery-2`, 2)).toBe(`${ROOT}-delivery-2-delivery-2`);
   });
   it('a stale base the task was filed under is recognised as a prior epoch, nothing else is', () => {
     expect(isPriorEpochBranch(ROOT, `${ROOT}-delivery-2`)).toBe(true);
@@ -199,6 +201,7 @@ describe('scenario 4 and later work: an epoch merges with nothing left', () => {
     const h = harness();
     h.run({ ...base, type: 'Adopt' });
     h.run(merged(10, { headRef: ROOT }));
+    h.run({ ...base, type: 'Settled', epochId: h.view().epochs[0]!.id, settlement: { settled: [], held: [], satisfiedByPr: 10 } });
     const v = h.view();
     expect(epochCompletionHold(v, () => 0)).toEqual({ holds: false });
     const held = epochCompletionHold(v, (b) => (b === `${ROOT}-delivery-2` ? 2 : 0));
@@ -257,5 +260,68 @@ describe('AC-23 / a11abc4b: settlement before a branch is retired', () => {
     h.run({ ...base, type: 'Adopt' });
     h.run(merged(10));
     expect(pendingEpochSteps(h.view()).map((s) => s.step)).toEqual(['cut_branch']);
+  });
+});
+
+describe('review of #4806: settlement order and shipped branches', () => {
+  it('an adopted re-cut that merges again: the later delivery settles and retires; the earlier one, sharing its branch, never blocks it', () => {
+    const h = harness({ legacyPr: { prNumber: 7, repoFullName: 'o/r', ownerTaskId: 't', state: 'merged', mergedAt: AT } });
+    h.run({ ...base, type: 'Adopt' });
+    h.run({ ...base, type: 'PrBound', prNumber: 8, repoFullName: 'o/r', ownerTaskId: 'o2', headRef: ROOT });
+    h.run(merged(8, { mergeCommitSha: 'm8' }));
+    const [e1, e2, e3] = h.view().epochs;
+    expect([e1!.state, e2!.state, e3!.state]).toEqual(['merged', 'merged', 'open']);
+    h.run({ ...base, type: 'BranchReady', epochId: e3!.id });
+    // Epoch 1 owes nothing: no retire of the branch epoch 2 still has to settle.
+    expect(pendingEpochSteps(h.view())).toEqual([{ step: 'settle', epochId: e2!.id, branch: ROOT, successorBranch: e3!.branch }]);
+    h.run({ ...base, type: 'Settled', epochId: e2!.id, settlement: { settled: [], held: [], satisfiedByPr: 8 } });
+    expect(pendingEpochSteps(h.view())).toEqual([{ step: 'retire', epochId: e2!.id, branch: ROOT }]);
+  });
+
+  it('a held earlier delivery still lists the later delivery\'s steps', () => {
+    const h = harness();
+    h.run({ ...base, type: 'Adopt' });
+    h.run(merged(10));
+    const [e1, e2] = h.view().epochs;
+    h.run({ ...base, type: 'BranchReady', epochId: e2!.id });
+    h.run({ ...base, type: 'Settled', epochId: e1!.id, settlement: { settled: [], held: classifySettlement([{ prNumber: 5, kind: 'refresh', baseRef: ROOT, headSha: 'h', contained: null }], { mergeCommitSha: 'm1', successorBranch: e2!.branch }), satisfiedByPr: 10 } });
+    h.run({ ...base, type: 'PrBound', prNumber: 11, repoFullName: 'o/r', ownerTaskId: 'o2', headRef: e2!.branch });
+    h.run(merged(11, { headRef: e2!.branch, mergeCommitSha: 'm2' }));
+    const e3 = h.view().epochs[2]!;
+    h.run({ ...base, type: 'BranchReady', epochId: e3.id });
+    const steps = pendingEpochSteps(h.view()).map((s) => `${s.step}:${h.view().epochs.find((e) => e.id === s.epochId)!.epoch}`);
+    expect(steps).toEqual(['settle:1', 'settle:2']);
+  });
+
+  it('completion is held while a shipped delivery still has PRs to settle', () => {
+    const h = harness();
+    h.run({ ...base, type: 'Adopt' });
+    h.run(merged(10));
+    expect(epochCompletionHold(h.view(), () => 0)).toMatchObject({ holds: true, reason: 'unsettled' });
+    expect(unsettledEpochs(h.view())).toHaveLength(1);
+    const [e1] = h.view().epochs;
+    h.run({ ...base, type: 'Settled', epochId: e1!.id, settlement: { settled: [], held: [], satisfiedByPr: 10 } });
+    expect(epochCompletionHold(h.view(), () => 0)).toEqual({ holds: false });
+  });
+
+  it('a branch is "shipped" only when its delivery merged and no open delivery still uses it', () => {
+    const h = harness({ legacyPr: { prNumber: 7, repoFullName: 'o/r', ownerTaskId: 't', state: 'merged', mergedAt: AT } });
+    h.run({ ...base, type: 'Adopt' });
+    expect(shippedEpochOf(h.view(), ROOT)).toBeNull(); // the re-cut still uses it
+    const h2 = harness();
+    h2.run({ ...base, type: 'Adopt' });
+    h2.run(merged(10));
+    expect(shippedEpochOf(h2.view(), ROOT)?.epoch).toBe(1);
+    expect(shippedEpochOf(h2.view(), `${ROOT}-delivery-2`)).toBeNull();
+    expect(shippedEpochOf(h2.view(), 'dev')).toBeNull();
+  });
+
+  it('a retarget off a delivery branch is recorded once, on the newest epoch with that branch', () => {
+    const h = harness();
+    h.run({ ...base, type: 'Adopt' });
+    expect(h.run({ ...base, type: 'PrMovedOff', branch: ROOT, prNumber: 11 }).result).toBe('applied');
+    expect(h.run({ ...base, type: 'PrMovedOff', branch: ROOT, prNumber: 11 }).result).toBe('noop');
+    expect(h.run({ ...base, type: 'PrMovedOff', branch: 'mission/other', prNumber: 12 }).reason).toBe('unknown_epoch');
+    expect(h.view().epochs[0]!.movedPrs).toEqual([11]);
   });
 });

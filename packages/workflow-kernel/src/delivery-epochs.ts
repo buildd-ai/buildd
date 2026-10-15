@@ -73,6 +73,12 @@ export interface EpochSnapshot {
   settledAt: string | null;
   /** When the merged branch was confirmed gone from the remote. */
   retiredAt: string | null;
+  /**
+   * PRs GitHub moved off this epoch's branch (a retarget recorded from the
+   * `pull_request.edited` webhook, `from` = this branch), so settlement knows
+   * they were on it. A PR that was always on trunk is never in this list.
+   */
+  movedPrs?: number[];
 }
 
 /** The legacy mission-PR record, read once when a mission predating epochs is adopted. */
@@ -109,14 +115,15 @@ export interface MissionEpochView {
 const SUCCESSOR_SUFFIX = /-delivery-\d+$/;
 
 /**
- * Epoch n's branch. Epoch 1 keeps the mission's own name; a successor gets
- * `<root>-delivery-<n>`, a name no other epoch used, so a merged epoch's
- * branch is never written again and GitHub's delete-on-merge of it can never
- * take a later epoch's work with it.
+ * Epoch n's branch. Epoch 1 keeps the mission's own name (`root`, exactly as
+ * it is); a successor gets `<root>-delivery-<n>`, a name no other epoch used,
+ * so a merged epoch's branch is never written again and GitHub's
+ * delete-on-merge of it can never take a later epoch's work with it. The root
+ * is never stripped: a mission branch that already ends in `-delivery-2` gets
+ * `…-delivery-2-delivery-2` for its second epoch, never its own name back.
  */
 export function epochBranchName(root: string, epoch: number): string {
-  const base = root.replace(SUCCESSOR_SUFFIX, '');
-  return epoch <= 1 ? base : `${base}-delivery-${epoch}`;
+  return epoch <= 1 ? root : `${root}-delivery-${epoch}`;
 }
 
 /**
@@ -241,7 +248,9 @@ export type MissionEpochCommand =
   /** A merged epoch's PRs were settled (or re-settled while some are held). */
   | (Base & { type: 'Settled'; epochId: string; settlement: EpochSettlement })
   /** A merged, settled epoch's branch is confirmed gone from the remote. */
-  | (Base & { type: 'Retired'; epochId: string });
+  | (Base & { type: 'Retired'; epochId: string })
+  /** GitHub moved a PR off an epoch's branch (the retarget webhook's `from`). */
+  | (Base & { type: 'PrMovedOff'; branch: string; prNumber: number });
 
 export interface NewEpoch {
   missionId: string;
@@ -266,7 +275,7 @@ export interface NewEpoch {
 }
 
 export type EpochPatch = Partial<Pick<EpochSnapshot,
-  'state' | 'repoFullName' | 'prNumber' | 'ownerTaskId' | 'mergedAt' | 'mergeCommitSha' | 'mergedHeadSha' | 'branchReadyAt' | 'settlement' | 'settledAt' | 'retiredAt'>>;
+  'state' | 'repoFullName' | 'prNumber' | 'ownerTaskId' | 'mergedAt' | 'mergeCommitSha' | 'mergedHeadSha' | 'branchReadyAt' | 'settlement' | 'settledAt' | 'retiredAt' | 'movedPrs'>>;
 
 export type EpochOp =
   | { op: 'insert'; epoch: NewEpoch }
@@ -428,6 +437,15 @@ export function reduceMissionEpochs(v: MissionEpochView, cmd: MissionEpochComman
       }]);
     }
 
+    case 'PrMovedOff': {
+      // The newest epoch on that branch: an adopted re-cut shares its name with epoch 1.
+      const e = [...v.epochs].sort((a, b) => b.epoch - a.epoch).find((x) => x.branch === cmd.branch) ?? null;
+      if (!e) return rejected('unknown_epoch');
+      if (e.retiredAt) return noop('already_retired');
+      if ((e.movedPrs ?? []).includes(cmd.prNumber)) return noop('already_recorded');
+      return applied('pr_moved_recorded', [{ op: 'update', epochId: e.id, expectVersion: e.version, set: { movedPrs: [...(e.movedPrs ?? []), cmd.prNumber] } }]);
+    }
+
     case 'Retired': {
       const e = byId(cmd.epochId);
       if (!e) return rejected('unknown_epoch');
@@ -449,6 +467,27 @@ function sameSettlement(a: EpochSettlement | null, b: EpochSettlement): boolean 
 }
 
 // ── What is still owed ──────────────────────────────────────────────────────
+
+/** Does a later epoch use this epoch's branch (an adopted re-cut under the same name)? */
+export const sharesBranchWithLater = (v: Pick<MissionEpochView, 'epochs'>, e: EpochSnapshot): boolean =>
+  v.epochs.some((o) => o.epoch > e.epoch && o.branch === e.branch);
+
+/** A merged epoch whose branch still has PRs to settle (or held ones). */
+export const unsettledEpochs = (v: Pick<MissionEpochView, 'epochs'>): EpochSnapshot[] =>
+  v.epochs.filter((e) => e.state === 'merged' && !e.retiredAt && !sharesBranchWithLater(v, e)
+    && (!e.settledAt || (e.settlement?.held.length ?? 0) > 0));
+
+/**
+ * Is `ref` the branch of an epoch that already reached trunk and that no open
+ * epoch still uses? A PR based there can never reach trunk by merging: every
+ * merge door refuses it and settlement moves it.
+ */
+export function shippedEpochOf(v: Pick<MissionEpochView, 'epochs'>, ref: string | null | undefined): EpochSnapshot | null {
+  const r = ref?.trim();
+  if (!r) return null;
+  if (v.epochs.some((e) => e.state === 'open' && e.branch === r)) return null;
+  return [...v.epochs].sort((a, b) => b.epoch - a.epoch).find((e) => e.state === 'merged' && e.branch === r) ?? null;
+}
 
 export type EpochStep =
   /** Create the open epoch's branch at `cutFromSha` (or confirm it is there). */
@@ -473,14 +512,15 @@ export function pendingEpochSteps(v: Pick<MissionEpochView, 'epochs'>): EpochSte
   const openReady = !open || open.origin !== 'cut' || !!open.branchReadyAt;
   for (const e of [...v.epochs].sort((a, b) => a.epoch - b.epoch)) {
     if (e.state !== 'merged' || e.retiredAt) continue;
+    // An earlier epoch whose branch a later one reuses has nothing of its own left to settle.
+    if (sharesBranchWithLater(v, e) && e.settledAt) continue;
     const successor = v.epochs.find((s) => s.predecessorId === e.id) ?? null;
     const held = (e.settlement?.held.length ?? 0) > 0;
     if ((!e.settledAt || held) && openReady) {
       out.push({ step: 'settle', epochId: e.id, branch: e.branch, successorBranch: successor?.branch ?? null });
     }
-    // The branch is shared with the live epoch (an adopted re-cut): never delete it.
-    const sharedWithOpen = open && open.branch === e.branch;
-    if (e.settledAt && !held && !sharedWithOpen) out.push({ step: 'retire', epochId: e.id, branch: e.branch });
+    // A later epoch on the same branch (an adopted re-cut) owns its retirement: never delete it here.
+    if (e.settledAt && !held && !sharesBranchWithLater(v, e)) out.push({ step: 'retire', epochId: e.id, branch: e.branch });
   }
   return out;
 }
@@ -496,12 +536,15 @@ export function pendingEpochSteps(v: Pick<MissionEpochView, 'epochs'>): EpochSte
 export function epochCompletionHold(
   v: Pick<MissionEpochView, 'epochs'>,
   landedOnBranch: (branch: string, after: string | null) => number,
-): { holds: false } | { holds: true; epoch: EpochSnapshot; landed: number } {
+): { holds: false } | { holds: true; epoch: EpochSnapshot; landed: number; reason: 'unshipped_work' | 'unsettled' } {
+  // A shipped delivery whose branch still has PRs to settle: their work has not reached trunk.
+  const unsettled = unsettledEpochs(v)[0];
+  if (unsettled) return { holds: true, epoch: unsettled, landed: 0, reason: 'unsettled' };
   const open = writableEpoch(v);
   if (!open) return { holds: false };
   const pred = open.predecessorId ? v.epochs.find((e) => e.id === open.predecessorId) ?? null : null;
   // A re-cut under the same name: only work that landed after the predecessor merged belongs to it.
   const after = pred && pred.branch === open.branch ? pred.mergedAt : null;
   const landed = landedOnBranch(open.branch, after);
-  return landed > 0 ? { holds: true, epoch: open, landed } : { holds: false };
+  return landed > 0 ? { holds: true, epoch: open, landed, reason: 'unshipped_work' } : { holds: false };
 }
