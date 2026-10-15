@@ -58,6 +58,12 @@ function memoryLedger(now: () => number = Date.now): CommandLedger & { rows: Map
   };
 }
 
+/** Until the condition holds: the endpoint verifies a signature (async crypto) before it claims, so one tick is not enough under load. */
+async function until(cond: () => boolean, tries = 500): Promise<void> {
+  for (let i = 0; i < tries && !cond(); i++) await new Promise((r) => setTimeout(r, 1));
+  expect(cond()).toBe(true);
+}
+
 const landInput = { workspaceId: WS, installationId: 1, repoFullName: 'acme/w', prNumber: 7, headSha: 'H1', door: 'dashboard', actor: `human:${USER}` };
 
 function body(o: Record<string, unknown> = {}) {
@@ -383,8 +389,7 @@ describe('a dead claim recovers promptly, a live one is never taken over', () =>
       sleep: async (ms) => { const before = Math.floor(t / COMMAND_HEARTBEAT_MS); t += ms; if (Math.floor(t / COMMAND_HEARTBEAT_MS) > before) for (const b of [...beats]) b(); await new Promise((r) => setTimeout(r, 0)); },
     }, () => t);
     const first = s.call(await signed(body()));
-    await new Promise((r) => setTimeout(r, 0));
-    expect(beats).toHaveLength(1);
+    await until(() => beats.length === 1);
     // Long past the lease since the claim was taken, but renewed all along.
     t = 25_000;
     beats[0]();
@@ -411,11 +416,10 @@ describe('a dead claim recovers promptly, a live one is never taken over', () =>
     });
     s.ledger.renew = async () => { renews++; return false; };
     const pending = s.call(await signed(body()));
-    await new Promise((r) => setTimeout(r, 0));
+    await until(() => beats.length === 1);
     beats[0]();
-    await new Promise((r) => setTimeout(r, 0));
+    await until(() => stopped === 1);
     expect(renews).toBe(1);
-    expect(stopped).toBe(1);
     // A later tick (the interval had already queued it) renews nothing.
     beats[0]();
     await new Promise((r) => setTimeout(r, 0));
@@ -430,8 +434,7 @@ describe('a dead claim recovers promptly, a live one is never taken over', () =>
     const gate = new Promise<void>((r) => { finish = r; });
     const s = server({ waitUntil: (p) => { handed.push(p); }, run: (async () => { await gate; return { merged: true }; }) as CommandServerDeps['run'] });
     const pending = s.call(await signed(body()));
-    await new Promise((r) => setTimeout(r, 0));
-    expect(handed).toHaveLength(1);
+    await until(() => handed.length === 1);
     finish();
     const res = (await handed[0]) as Response;
     expect(res.status).toBe(200);
