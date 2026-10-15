@@ -67,18 +67,24 @@ export const missionSubscribers: readonly AnySubscriber[] = [
   // scope, a recorded amendment, or a hold for a person), and, when the
   // mission's newest delivery already merged, a writable successor delivery,
   // so the claim hands its worker a live branch.
-  subscriber('missions', 'task.created', 'open-writable-mission-delivery', async e => {
+  // After the response, like the merge and retarget subscribers below: the scope decision is a
+  // model call that can run to its timeout, and filing a task must never wait on it. A late
+  // branch is safe: the claim swaps a stale filed base for the live one.
+  subscriber('missions', 'task.created', 'open-writable-mission-delivery', e => {
     if (!e.missionId) return;
-    const [task] = await db
-      .select({ taskClass: tasks.taskClass, mode: tasks.mode })
-      .from(tasks)
-      .where(eq(tasks.id, e.taskId))
-      .limit(1);
-    if (task?.taskClass !== 'work' || task.mode === 'planning') return;
-    const { decideMissionTaskScope, ensureMissionWritableBranch } = await import('@/lib/mission-epoch-door');
-    // The scope decision first: an amended contract is the version the next delivery carries.
-    await decideMissionTaskScope({ taskId: e.taskId, workspaceId: e.workspaceId });
-    await ensureMissionWritableBranch(e.missionId, 'task_filed');
+    const missionId = e.missionId;
+    after(() => (async () => {
+      const [task] = await db
+        .select({ taskClass: tasks.taskClass, mode: tasks.mode })
+        .from(tasks)
+        .where(eq(tasks.id, e.taskId))
+        .limit(1);
+      if (task?.taskClass !== 'work' || task.mode === 'planning') return;
+      const { decideMissionTaskScope, ensureMissionWritableBranch } = await import('@/lib/mission-epoch-door');
+      // The scope decision first: an amended contract is the version the next delivery carries.
+      await decideMissionTaskScope({ taskId: e.taskId, workspaceId: e.workspaceId });
+      await ensureMissionWritableBranch(missionId, 'task_filed');
+    })().catch(err => console.error('[task-create] mission scope/delivery failed:', err)));
   }),
   subscriber('missions', 'task.created', 'task-created-mission-feed', e => {
     if (!e.missionId) return;
