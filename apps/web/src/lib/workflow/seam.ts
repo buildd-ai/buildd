@@ -17,7 +17,7 @@
 import { and, desc, eq, or, sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces } from '@buildd/core/db/schema';
-import type { Command, CurrentView, LivePr } from './commands';
+import type { Command, CurrentView, LivePr, VerdictFindings } from './commands';
 import { applyCommand, loadView, type CommandResult, type Exec } from './kernel';
 import { catchUpBase, ingestFact, type GithubFactReader } from './facts';
 import { runEffects, type DrainSummary, type EffectHandlers } from './effects';
@@ -42,6 +42,7 @@ import {
 } from './trunk';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { hostsKernelHere, submitKernelCommand } from './kernel-client';
+import { openFindings } from '@buildd/workflow-kernel/findings';
 
 const seamExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
@@ -520,6 +521,14 @@ export async function attemptEnded(p: {
     }
   }
   const attemptId = isRepairRole(attemptKind) ? (ctxOf(p.task).workflowAttemptId as string | undefined) : undefined;
+  // §5: what the repair changed since the head it was bound to, read only when an open finding names a path.
+  let changedPaths: string[] | null = null;
+  const boundHead = attemptId ? view.attempts.find((a) => a.id === attemptId)?.boundHeadSha ?? null : null;
+  if (boundHead && live && live.headSha !== boundHead && d.repoFullName && openFindings(view).some((f) => f.status === 'open' && f.path)) {
+    const repo = await (deps.repoFor ?? workspaceRepo)(p.task.workspaceId);
+    const reader = repo ? readerFor(deps, repo.installationId) : null;
+    changedPaths = reader?.changedPaths ? await reader.changedPaths(d.repoFullName, boundHead, live.headSha).catch(() => null) : null;
+  }
   const cmd: Command = {
     type: 'AttemptEnded',
     actor: p.source,
@@ -534,6 +543,7 @@ export async function attemptEnded(p: {
     // The kernel owns only deliveries whose policy dispatched a review (§14 Slice A).
     reviewRequired: true,
     ...(ci ? { ci } : {}),
+    ...(changedPaths ? { changedPaths } : {}),
   };
   const result = await applyCommand(cmd, { ref: { deliveryId }, exec: deps.exec });
   if (result.result !== 'applied' && result.result !== 'duplicate') {
@@ -711,6 +721,8 @@ export async function recordReviewVerdict(p: {
   effectiveVerdict: string;
   headSha: string;
   confidence: number | null;
+  /** What the reviewer said about findings (§5): its structured output, read defensively. */
+  output?: unknown;
 }, deps: SeamDeps = {}): Promise<{ handled: false } | { handled: true; result: CommandResult; toState: string | null }> {
   const roundId = ctxOf(p.reviewerTask).workflowRoundId as string | undefined;
   if (!p.reviewerTask.deliveryId || !roundId) return { handled: false };
@@ -724,9 +736,43 @@ export async function recordReviewVerdict(p: {
     effectiveVerdict: toKernelVerdict(p.effectiveVerdict),
     headBound: p.headSha,
     confidence: p.confidence,
+    ...verdictFindingsOf(p.output),
   }, { ref: { deliveryId }, exec: deps.exec });
   await drainDelivery(deliveryId, deps);
   return { handled: true, result, toState: result.result === 'applied' ? result.decision.toState : null };
+}
+
+/**
+ * The §5 half of a reviewer's structured output, as the kernel reads it. An
+ * output with no `resolvedFindings` key leaves it absent (an older reviewer:
+ * its approval of an unscoped round verifies every open finding); malformed
+ * entries are dropped, never guessed at.
+ */
+export function verdictFindingsOf(output: unknown): VerdictFindings {
+  const o = (output && typeof output === 'object' ? output : {}) as Record<string, unknown>;
+  const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null);
+  const out: VerdictFindings = {};
+  if (Array.isArray(o.findings)) {
+    out.findings = o.findings.flatMap((f) => {
+      const r = (f && typeof f === 'object' ? f : {}) as Record<string, unknown>;
+      const title = str(r.title);
+      if (!title) return [];
+      return [{
+        ...(str(r.id) ? { id: str(r.id) } : {}),
+        path: str(r.path), line: typeof r.line === 'number' && Number.isFinite(r.line) ? Math.trunc(r.line) : null, title,
+        ...(r.required === false ? { required: false } : {}),
+      }];
+    });
+  }
+  if (Array.isArray(o.resolvedFindings)) out.resolvedFindings = o.resolvedFindings.map(str).filter((x): x is string => !!x);
+  if (Array.isArray(o.deferredFindings)) {
+    out.deferredFindings = o.deferredFindings.flatMap((f) => {
+      const r = (f && typeof f === 'object' ? f : {}) as Record<string, unknown>;
+      const id = str(r.id); const reason = str(r.reason);
+      return id && reason ? [{ id, reason, taskId: str(r.taskId) }] : [];
+    });
+  }
+  return out;
 }
 
 // ── T3: the PR head moved (webhook `synchronize`) ───────────────────────────

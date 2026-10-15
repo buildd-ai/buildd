@@ -16,7 +16,7 @@ import type { ClaimedEffect, EffectSnapshot, Store, StoredFact } from '@buildd/w
 import type { EffectKind } from './commands';
 import type { DeliveryState } from './types';
 import {
-  findTransitionSql, loadViewSql, recordOnlySql, toAttemptSnapshot, toDeliverySnapshot, toRoundSnapshot, transitionSql, type Exec,
+  findTransitionSql, loadViewSql, recordOnlySql, toAttemptSnapshot, toDeliverySnapshot, toFindingSnapshot, toRoundSnapshot, transitionSql, type Exec,
 } from './kernel';
 import {
   ackEffectSql, claimDueEffectsSql, failEffectSql, insertFollowupEffectSql, parkEffectSql, renewEffectLeaseSql,
@@ -91,12 +91,13 @@ WHERE id = ${roundId}::uuid AND reviewer_task_id IS NULL`;
 export function postgresStore(exec: Exec): Store {
   return {
     async loadView(ref) {
-      const row = (await rows(exec, loadViewSql(ref)))[0] as { delivery: Row; rounds: Row[]; attempts: Row[] } | undefined;
-      if (!row) return { delivery: null, rounds: [], attempts: [] };
+      const row = (await rows(exec, loadViewSql(ref)))[0] as { delivery: Row; rounds: Row[]; attempts: Row[]; findings?: Row[] } | undefined;
+      if (!row) return { delivery: null, rounds: [], attempts: [], findings: [] };
       return {
         delivery: toDeliverySnapshot(row.delivery),
         rounds: (row.rounds ?? []).map(toRoundSnapshot),
         attempts: (row.attempts ?? []).map(toAttemptSnapshot),
+        findings: (row.findings ?? []).map(toFindingSnapshot),
       };
     },
 

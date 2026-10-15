@@ -17,6 +17,7 @@ import type {
   PolicyEvidence,
   ConstituentEvidence,
   DeliveryState,
+  FindingStatus,
   RoundKind,
   RoundStatus,
   Verdict,
@@ -40,6 +41,36 @@ export interface LivePr {
   draft?: boolean;
   /** Who GitHub says merged it (`merged_by.login`), when it is merged and GitHub said. */
   mergedBy?: string | null;
+}
+
+/**
+ * One finding as a reviewer states it (docs/specs/workflow-kernel-library.md §5).
+ * `id` names a finding an earlier round raised that this round restates (it
+ * keeps its identity and is open again); without one it is new.
+ */
+export interface FindingInput {
+  id?: string | null;
+  path?: string | null;
+  line?: number | null;
+  title: string;
+  /** Default true: a request for changes blocks landing. */
+  required?: boolean;
+}
+
+/** What a verdict says about the delivery's findings, beside the verdict itself. */
+export interface VerdictFindings {
+  /** The findings this round raises or restates. A request for changes with none is one finding naming the round. */
+  findings?: FindingInput[];
+  /**
+   * The open findings this round verified as resolved at its head. Absent (a
+   * reviewer that does not report findings) on an approval of an unscoped
+   * round: every open finding was in its brief, so the approval verifies them
+   * all. Present: exactly these, and an approval that leaves a required
+   * finding unverified is not an approval of the head.
+   */
+  resolvedFindings?: string[];
+  /** Open findings this round defers to a named task, with why. */
+  deferredFindings?: Array<{ id: string; taskId?: string | null; reason: string }>;
 }
 
 interface Base {
@@ -79,6 +110,12 @@ export type Command =
        * reported_shas and its running status, never with a commit author.
        */
       attribution?: { descendsFromBound: boolean };
+      /**
+       * §5: the paths the PR's diff changed between the head the delivery held
+       * and this one (a compare read). A finding whose path is among them is
+       * `addressed`. Absent or null (unread) addresses nothing.
+       */
+      changedPaths?: string[] | null;
     })
   | (Base & {
       type: 'AttemptEnded';
@@ -104,6 +141,8 @@ export type Command =
        * Absent or null (unreadable) hands on exactly as before.
        */
       ci?: { liveChecks: { complete: boolean; failing: string[] }; signature: string; maxAttempts: number } | null;
+      /** §5: the paths changed between the repair's bound head and the live head (a compare read); absent = unread. */
+      changedPaths?: string[] | null;
     })
   | (Base & { type: 'ReviewRequested'; headSha: string; live: LivePr; forced?: boolean })
   | (Base & {
@@ -114,6 +153,17 @@ export type Command =
       effectiveVerdict: Verdict;
       headBound: string;
       confidence?: number | null;
+    } & VerdictFindings)
+  | (Base & {
+      /**
+       * §5: a person waives a finding, or defers it to a named task. Recorded with
+       * who and why; it closes the finding and nothing else.
+       */
+      type: 'FindingDisposed';
+      findingId: string;
+      disposition: 'waived' | 'deferred';
+      reason: string;
+      deferredToTaskId?: string | null;
     })
   | (Base & { type: 'ReviewBudgetExhausted' })
   | (Base & {
@@ -479,6 +529,37 @@ export type AttemptOp =
     }
   | { op: 'cancel_open'; families: AttemptFamily[]; status: 'cancelled' | 'skipped'; headSha?: string | null };
 
+/** §5 finding writes, applied in the transition's statement. At most one op per finding per decision. */
+export type FindingOp =
+  | {
+      op: 'insert';
+      id: string;
+      originRoundId: string;
+      originRound: number;
+      originHeadSha: string;
+      ordinal: number;
+      path: string | null;
+      line: number | null;
+      title: string;
+      required: boolean;
+    }
+  | {
+      op: 'update';
+      findingId: string;
+      whenStatus: FindingStatus[];
+      set: {
+        status?: FindingStatus;
+        lastRound?: number;
+        title?: string;
+        required?: boolean;
+        addressedBySha?: string | null;
+        closedByRoundId?: string | null;
+        closedBy?: string | null;
+        closedReason?: string | null;
+        deferredToTaskId?: string | null;
+      };
+    };
+
 export interface CurrentView {
   state: DeliveryState | null;
   version: number;
@@ -490,6 +571,7 @@ export interface CurrentView {
 export interface RecordOnly {
   rounds: RoundOp[];
   attempts: AttemptOp[];
+  findings?: FindingOp[];
 }
 
 export interface CreateSpec {
@@ -510,6 +592,8 @@ export interface ApplyDecision {
   patch: DeliveryPatch;
   rounds: RoundOp[];
   attempts: AttemptOp[];
+  /** §5 finding writes (absent = none). */
+  findings?: FindingOp[];
   effects: EffectSpec[];
   evidence: Record<string, unknown>;
   bypass?: Record<string, unknown> | null;
