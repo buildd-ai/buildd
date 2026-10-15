@@ -235,6 +235,8 @@ export function reviewHandlers(ports: KernelPorts): EffectHandlers {
       dedupeKey: `fix:${attempt.id}`,
       detail: {
         roundId: round.id, reviewerTaskId: round.reviewerTaskId ?? null, attemptNo: attempt.attemptNo, maxAttempts: attempt.maxAttempts, firstAtHead,
+        // §5 / rule 3: the repair is pinned to the round and head, and its task is the open findings.
+        round: round.round, findings: openFindings(view).map((f) => ({ id: f.id, path: f.path, line: f.line, title: f.title, status: f.status })),
         ...(human ? { trigger: 'human', humanInstructions, actor: humanActor } : {}),
       },
     });

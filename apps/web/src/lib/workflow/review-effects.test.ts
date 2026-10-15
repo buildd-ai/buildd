@@ -163,8 +163,19 @@ describe('fixWork (Work, role fix)', () => {
 
   test("a person's apply puts their instructions first and the reviewer's words below", async () => {
     const b = await fixWork(fixReq({ trigger: 'human', humanInstructions: 'rename it', actor: 'human:u' }) as any) as any;
-    expect(b.values.description).toBe(humanFixDescription('d', 'rename it', 'check the caller task'));
+    expect(b.values.description.startsWith(humanFixDescription('', 'rename it', 'check the caller task').split('## Original task')[0]!)).toBe(true);
+    expect(b.values.description).toContain('## Fix the review findings on PR #7');
     expect(b.values).toMatchObject({ creationSource: 'dashboard', context: { trigger: 'human', appliedBy: 'human:u', humanInstructions: 'rename it' } });
+  });
+
+  test('§13.13 rule 3: a pinned builder: the findings as its task, a builder role, and the PR head GitHub reports as its repair target', async () => {
+    ghApi = (path) => (path === '/repos/acme/w/pulls/7' ? { head: { ref: 'mission/m-1' }, base: { ref: 'dev' } } : null);
+    ownerRow = { ...ownerRow, description: 'It performs no work of its own.', kind: 'coordination', roleSlug: null };
+    const b = await fixWork(fixReq({ round: 1, findings: [{ id: 'r1:0', path: 'a.ts', line: 2, title: 'fix the copy', status: 'open' }] }) as any) as any;
+    expect(b.values).toMatchObject({ roleSlug: 'builder', kind: 'engineering' });
+    expect(b.values.description).toContain('- `r1:0` `a.ts:2`: fix the copy');
+    expect(b.values.description).not.toContain('performs no work');
+    expect(b.values.context).toMatchObject({ resumeBranch: 'mission/m-1', repairTarget: { prNumber: 7, headRef: 'mission/m-1', headSha: 'H1', baseRef: 'dev' } });
   });
 
   test('a dependency bot\'s PR gets no fix, only a note on the PR', async () => {

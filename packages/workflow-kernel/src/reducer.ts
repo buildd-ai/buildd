@@ -1887,10 +1887,26 @@ function attemptEndedInner(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' 
   // FIXING / REPAIRING: the bound repair attempt.
   const a = c.attempt(cmd.attemptId);
   if (!a || a.id !== d.boundAttemptId) return unbound();
-  const end = (outcome: 'delivered' | 'unproven' | 'failed', pushed?: string | null): AttemptOp => ({
+  const end = (outcome: 'delivered' | 'unproven' | 'failed' | 'noop', pushed?: string | null): AttemptOp => ({
     op: 'update', attemptId: a.id, whenStatus: ['queued', 'running'],
     set: { status: 'ended', outcome, ended: true, ...(pushed ? { pushedHeadSha: pushed } : {}), ...(L ? { appendReportedSha: L } : {}) },
   });
+
+  // §13.13 rule 4, verified no-op: a review fix that read the findings' condition as already absent
+  // at the bound head and pushed nothing. The claim is evidence, never a resolution: the attempt ends
+  // "no change" (it spends the budget) and a round at the same head verifies the named findings.
+  const noop = cmd.noopEvidence;
+  if (d.state === 'FIXING' && cmd.outcome === 'success' && noop && noop.evidence.trim() && livePrOpen(live) && live!.headSha === a.boundHeadSha) {
+    const open = (c.view.findings ?? []).filter((f) => (f.status === 'open' || f.status === 'addressed') && noop.findingIds.includes(f.id));
+    if (open.length > 0) {
+      const round = c.currentRound();
+      return verificationRound(c, key, round ?? { id: 'none', headSha: live!.headSha, kind: 'full' }, open, {
+        patch: { boundAttemptId: null },
+        attempts: [end('noop')],
+        evidence: { ...evidence, noopEvidence: { findingIds: open.map((f) => f.id), evidence: noop.evidence.slice(0, 2000) } },
+      });
+    }
+  }
 
   if (cmd.outcome === 'success' || (cmd.outcome === 'unproven' && cmd.commitCount > 0)) {
     // abe42d1b: an agent that pushed from its own session leaves the runner nothing local to
@@ -1956,20 +1972,23 @@ function attemptEndedInner(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' 
         rounds: r.rounds, attempts: [end('failed')], effects: r.effects, evidence: ev,
       });
     }
+    // AC-19: a fix that ends with the PR head where it was bound changed nothing; it is shown as
+    // "no change" and still spends its attempt.
+    const ended: 'failed' | 'noop' = d.currentHeadSha === a.boundHeadSha && (!live || live.headSha === a.boundHeadSha) ? 'noop' : 'failed';
     if (exhausted) {
       return c.apply(key, 'ESCALATED', {
-        patch: { stateReason: 'review_exhausted', boundAttemptId: null }, attempts: [end('failed')],
+        patch: { stateReason: 'review_exhausted', boundAttemptId: null }, attempts: [end(ended)],
         effects: [{ kind: 'escalate_exhaustion', dedupeKey: `exhaust:${d.id}:review_fix:${a.attemptNo}`, payload: { family: 'review_fix', attempts: a.attemptNo } }],
         evidence,
       });
     }
     return c.apply(key, 'CHANGES_REQUESTED', {
-      patch: { boundAttemptId: null }, attempts: [end('failed')],
+      patch: { boundAttemptId: null }, attempts: [end(ended)],
+      evidence: { ...evidence, ...(ended === 'noop' ? { noChange: true } : {}) },
       effects: [{
         kind: 'dispatch_fix', dedupeKey: `dispatch_fix:${d.id}:${round?.id ?? 'none'}:${a.attemptNo + 1}`,
         payload: { roundId: round?.id ?? null, round: d.currentRound, headSha: a.boundHeadSha, attemptNo: a.attemptNo + 1 },
       }],
-      evidence,
     });
   }
   // REPAIRING: the family's ledger decides, counting every dispatched row (§5.7 rule 1).

@@ -54,3 +54,48 @@ describe('fixCompletionGate unchanged head', () => {
     expect((await run('fix', true))?.code).toBe('delivery_not_advanced');
   });
 });
+
+describe('fixCompletionGate for a review fix (workflow-state-kernel.md §13.13 rule 4, AC-19)', () => {
+  const finding = (o: Record<string, unknown> = {}) => ({
+    id: 'r1:0', origin_round_id: 'r1', origin_round: 1, origin_head_sha: 'H1', ordinal: 0, path: 'src/a.ts', line: 3,
+    title: 'rename the flag', required: true, status: 'open', last_round: 1, ...o,
+  });
+  const execWith = (findings: unknown[]): Exec => async (q) => {
+    const t = text(q);
+    if (t.includes('workflow:resolve_authority')) return { rows: [{ delivery_id: 'd1', authority: 'kernel', released: false }] };
+    if (t.includes('workflow:load_view')) {
+      return { rows: [{
+        delivery: { id: 'd1', workspace_id: 'w1', owner_task_id: 't1', repo_full_name: 'acme/widgets', pr_number: 7, base_ref: 'dev', state: 'FIXING', version: 4, current_head_sha: 'H1', current_round: 1, max_rounds: 3, authority: 'kernel' },
+        rounds: [], findings,
+        attempts: [{ id: 'a1', family: 'review_fix', attempt_no: 1, mode: 'agent', bound_head_sha: 'H1', task_id: 't9', status: 'running', max_attempts: 3 }],
+      }] };
+    }
+    return { rows: [] };
+  };
+  const gate = (o: { head: string; changed?: string[] | null; findings?: unknown[]; noop?: { findingIds: string[]; evidence: string } | null }) =>
+    fixCompletionGate(
+      { task: { id: 't9', workspaceId: 'w1', deliveryId: 'd1', deliveryRole: 'fix', context: { workflowAttemptId: 'a1' } }, localHeadSha: o.head, noopEvidence: o.noop ?? null },
+      {
+        exec: execWith(o.findings ?? [finding()]),
+        repoFor: async () => ({ installationId: 1, repoFullName: 'acme/widgets', gitConfig: null }),
+        reader: () => ({ readPr: async () => ({ state: 'open', merged: false, headSha: o.head }), changedPaths: async () => o.changed ?? null }) as never,
+      },
+    );
+
+  test('a push that touches a finding\'s file completes', async () => {
+    expect(await gate({ head: 'H2', changed: ['src/a.ts', 'README.md'] })).toBeNull();
+  });
+  test('a push that touches none of the findings\' files is refused, naming them', async () => {
+    const r = await gate({ head: 'H2', changed: ['packages/core/drizzle/x/migration.sql'] });
+    expect(r?.code).toBe('repair_unrelated_diff');
+    expect(r?.error).toContain('src/a.ts');
+  });
+  test('an unread diff is not evidence either way: it completes, and the re-review decides', async () => {
+    expect(await gate({ head: 'H2', changed: null })).toBeNull();
+  });
+  test('a zero diff is refused unless the fix claims, with evidence, that a named open finding is already fixed', async () => {
+    expect((await gate({ head: 'H1' }))?.code).toBe('delivery_not_advanced');
+    expect(await gate({ head: 'H1', noop: { findingIds: ['r1:0'], evidence: 'src/a.ts:3 already reads the flag' } })).toBeNull();
+    expect((await gate({ head: 'H1', noop: { findingIds: ['someone-else:0'], evidence: 'x' } }))?.code).toBe('delivery_not_advanced');
+  });
+});

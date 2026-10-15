@@ -42,6 +42,7 @@ import type { Exec } from './kernel';
 import { ingestFact } from './facts';
 import { collectComposition, compositionConstituentBase } from './review-composition';
 import { workspaceRepo } from './github-facts';
+import { repairBranchContext } from '@buildd/core/repair-target';
 import { prWorkerWhere } from './pr-worker-where';
 import type { WorkBuilder } from './kernel-ports';
 
@@ -160,6 +161,50 @@ export function humanFixDescription(original: string | null, instructions: strin
   return sections.join('\n');
 }
 
+export interface FixFinding { id: string; path: string | null; line: number | null; title: string; status: string }
+
+/** The default builder role a repair runs as when its owner has none, or is coordination-only (rule 3). */
+export const REPAIR_BUILDER_ROLE = 'builder';
+
+/** An owner whose deliverable is action taken elsewhere: its description is no brief for a code fix. */
+export function isCoordinationOwner(owner: { kind?: string | null; category?: string | null }): boolean {
+  return owner.kind === 'coordination' || owner.category === 'bookkeeping';
+}
+
+/**
+ * §13.13 rule 3: a review fix is an executable builder pinned to the exact target. Its task is the
+ * open findings, verbatim, then the reviewer's feedback; the owner's description is background
+ * only, and a coordination owner's ("performs no work of its own") is never copied. It names the
+ * PR head it must push to and how completion is judged (rule 4).
+ */
+export function pinnedFixDescription(p: {
+  prNumber: number; round: number | null; headRef: string | null; headSha: string | null; baseRef: string | null;
+  findings: FixFinding[]; feedback: string | null; owner: { description: string | null; kind?: string | null; category?: string | null };
+}): string {
+  const lines: string[] = [];
+  lines.push(`## Fix the review findings on PR #${p.prNumber}${p.round != null ? ` (round ${p.round})` : ''}`, '');
+  if (p.findings.length) {
+    lines.push('These findings are open. Each stays open until a later review verifies it, whatever is pushed:', '');
+    for (const f of p.findings) lines.push(`- \`${f.id}\` ${f.path ? `\`${f.path}${f.line != null ? `:${f.line}` : ''}\`: ` : ''}${f.title}${f.status === 'addressed' ? ' (a push touched its file; check it is really fixed)' : ''}`);
+    lines.push('');
+  }
+  if (p.feedback) lines.push("## Reviewer's feedback", '', p.feedback, '');
+  lines.push(
+    '## Where to push',
+    '',
+    `Push to the PR's own head branch${p.headRef ? ` \`${p.headRef}\`` : ''}${p.headSha ? `, currently at \`${p.headSha.slice(0, 12)}\`` : ''}${p.baseRef ? ` (base \`${p.baseRef}\`)` : ''}. Never to another worker's branch or to the base branch.`,
+    '',
+    '## When it is done',
+    '',
+    'Completion needs a push to that branch that changes the files the findings name. A push that changes none of them is refused.',
+    "If a finding's condition is already absent at the head, push nothing and complete with `structuredOutput.noopEvidence` `{ findingIds, evidence }` naming what you read; a review verifies it.",
+    STOP_AND_REPORT,
+    '',
+  );
+  if (!isCoordinationOwner(p.owner) && p.owner.description) lines.push('## Background: the original task', '', p.owner.description);
+  return lines.join('\n');
+}
+
 export const fixWork: WorkBuilder = async (req) => {
   const { repoFullName } = req.target;
   const prNumber = req.target.prNumber;
@@ -175,7 +220,7 @@ export const fixWork: WorkBuilder = async (req) => {
     where: sqlWhere(eq(tasks.id, ownerTaskId)),
     columns: {
       id: true, title: true, description: true, missionId: true, pathManifest: true, backend: true, roleSlug: true,
-      kind: true, complexity: true, missionPhaseIndex: true, missionPhaseLabel: true, context: true,
+      kind: true, complexity: true, missionPhaseIndex: true, missionPhaseLabel: true, context: true, category: true,
     },
   });
   if (!owner) return { skipped: 'no_owner' };
@@ -193,15 +238,28 @@ export const fixWork: WorkBuilder = async (req) => {
   const prUrl = prw?.prUrl ?? `https://github.com/${repoFullName}/pull/${prNumber}`;
   const attemptNo = Number(detail.attemptNo ?? 1);
   const maxAttempts = Number(detail.maxAttempts ?? attemptNo);
+  const findings = Array.isArray(detail.findings) ? (detail.findings as FixFinding[]) : [];
+  // Rule 3: the PR's head branch as GitHub reports it, so the repair resumes there even when it is a
+  // mission branch far ahead of trunk. Unreadable: the legacy fields stay the worker's branch.
+  const pull = await githubApi(repo.installationId, `/repos/${repoFullName}/pulls/${prNumber}`).catch(() => null) as { head?: { ref?: string } ; base?: { ref?: string } } | null;
+  const target = repairBranchContext({ prNumber, workerBranch: branch, headRef: pull?.head?.ref ?? null, headSha, baseRef: pull?.base?.ref ?? prw?.prBaseRef ?? req.target.baseRef ?? null });
+  const identity = attemptIdentityFrom(owner);
+  const pinned = pinnedFixDescription({
+    prNumber, round: typeof detail.round === 'number' ? detail.round : null, headRef: target.repairTarget?.headRef ?? (branch || null), headSha,
+    baseRef: target.repairTarget?.baseRef ?? prw?.prBaseRef ?? req.target.baseRef ?? null, findings, feedback, owner,
+  });
   return {
     values: {
       workspaceId: req.workspaceId,
       title: formatAttemptTitle('builder', owner.title, { reason: 'after review', iteration: attemptNo }),
-      description: human ? humanFixDescription(owner.description, humanInstructions, reviewerFeedback) : owner.description,
+      description: human ? humanFixDescription(pinned, humanInstructions, reviewerFeedback) : pinned,
       missionId: owner.missionId,
       parentTaskId: owner.id,
       taskClass: 'attempt',
-      ...attemptIdentityFrom(owner),
+      ...identity,
+      // Rule 3: an executable builder, whatever the owner was (a coordination owner has no builder role).
+      roleSlug: !identity.roleSlug || isCoordinationOwner(owner) ? REPAIR_BUILDER_ROLE : identity.roleSlug,
+      kind: 'engineering',
       reviewerRetryPrNumber: prNumber,
       // The (workspace, PR, head) dedupe index allows one row per head; the ledger dedupes a second attempt.
       reviewerRetryHeadSha: detail.firstAtHead ? headSha : null,
@@ -211,8 +269,9 @@ export const fixWork: WorkBuilder = async (req) => {
         // Display only (attempt N of M): the budget is the ledger row.
         iteration: attemptNo,
         maxIterations: maxAttempts,
-        baseBranch: prw?.prBaseRef ?? req.target.baseRef ?? branch,
-        resumeBranch: branch,
+        baseBranch: target.repairTarget ? target.baseBranch : prw?.prBaseRef ?? req.target.baseRef ?? branch,
+        resumeBranch: target.resumeBranch,
+        ...(target.repairTarget ? { repairTarget: target.repairTarget } : {}),
         ...(lastCommitSha ? { lastCommitSha } : {}),
         failureContext: { summary: feedback, errorType: human ? 'reviewer_escalation_applied' : 'reviewer_request_changes', ...(lastCommitSha ? { commitSha: lastCommitSha } : {}) },
         ...(human ? { trigger: 'human', appliedBy: humanActor, humanInstructions, recommendation: reviewerFeedback } : {}),

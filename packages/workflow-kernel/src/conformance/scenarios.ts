@@ -393,7 +393,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       applied(await s.verdict('request_changes'), 'CHANGES_REQUESTED', 'request changes');
       const fix = await s.startFix();
       applied(await s.fixEnded(fix, { outcome: 'unproven', localHeadSha: null, commitCount: 0 }), 'CHANGES_REQUESTED', 'fix ended with nothing');
-      eq(pick((await s.view()).attempts.find((a) => a.id === fix)!, ['status', 'outcome']), { status: 'ended', outcome: 'failed' }, 'attempt failed');
+      eq(pick((await s.view()).attempts.find((a) => a.id === fix)!, ['status', 'outcome']), { status: 'ended', outcome: 'noop' }, 'AC-19: the attempt ended with no change, and it counted');
       eq((await host.effects(s.deliveryId)).filter((e) => e.kind === 'dispatch_fix').map((e) => e.payload.attemptNo).sort(), [1, 2], 'next attempt owed');
       const v = await s.view();
       eq(v.rounds.map((r) => pick(r, ['headSha', 'verdict'])), [{ headSha: 'H1', verdict: 'request_changes' }], 'the verdict still stands');
@@ -1875,6 +1875,39 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       f.github.setPr(t.repo, t.prNumber, t.live('H1'));
       const row = (await host.effects(t.deliveryId)).find((e) => e.kind === 'cancel_open_attempts' && e.payload.reason === 'ci_green')!;
       eq(row.payload.taskId, b.taskId, 'names the repair task');
+    },
+  },
+  // ── S5: completion evidence (§13.13 rule 4) ─────────────────────────────────
+  {
+    name: 'AC-19: a repair that ends with zero diff and no verified no-op evidence keeps its findings open, counts against the limit and reads "no change"',
+    async run(host) {
+      const s = await new Delivery(host, 80).open();
+      await s.ownerPushed('H1');
+      await s.verdictWith('request_changes', { findings: [{ path: 'a.ts', title: 'fix a' }] });
+      const fix = await s.startFix();
+      // Its completion was refused (the head never moved), so the attempt ends without success.
+      applied(await s.fixEnded(fix, { outcome: 'failed', localHeadSha: null, commitCount: 0, live: s.live('H1') }), 'CHANGES_REQUESTED', 'the blocker stays');
+      eq(pick((await s.view()).attempts.find((a) => a.id === fix), ['status', 'outcome']), { status: 'ended', outcome: 'noop' }, 'shown as no change');
+      eq(await s.findingStates(), { 'a.ts': 'open' }, 'the finding stays open');
+      eq((await host.effects(s.deliveryId)).filter((e) => e.kind === 'dispatch_fix').map((e) => e.payload.attemptNo).sort(), [1, 2], 'the next attempt is owed: this one counted');
+      eq(deriveDeliveryView({ view: await s.view() })?.openFindings, 1, 'the read model says one finding is open');
+    },
+  },
+  {
+    name: '§13.13 rule 4: a verified no-op (the condition already absent, with what was read) ends "no change" and a round at the same head verifies it; nothing self-certifies',
+    async run(host) {
+      const s = await new Delivery(host, 81).open();
+      await s.ownerPushed('H1');
+      await s.verdictWith('request_changes', { findings: [{ path: 'a.ts', title: 'guard the null' }] });
+      const id = await s.findingId('a.ts');
+      const fix = await s.startFix();
+      const r = await s.fixEnded(fix, { outcome: 'success', localHeadSha: null, commitCount: 0, live: s.live('H1'), noopEvidence: { findingIds: [id], evidence: 'a.ts:12 already returns early on null' } });
+      applied(r, 'AWAITING_REVIEW', 'a verification round, not an approval');
+      eq(pick((await s.view()).attempts.find((a) => a.id === fix), ['status', 'outcome']), { status: 'ended', outcome: 'noop' }, 'no change, and it counted');
+      eq(pick(await s.latestRound(), ['headSha', 'status', 'scope']), { headSha: 'H1', status: 'queued', scope: { verifyFindings: [id] } }, 'the same head, to verify the named finding');
+      eq(await s.findingStates(), { 'a.ts': 'open' }, 'still open until verified');
+      applied(await s.verdictWith('approve', { resolvedFindings: [id] }), 'APPROVED', 'the reviewer verifies it');
+      eq(await s.findingStates(), { 'a.ts': 'resolved' }, 'resolved by the round');
     },
   },
   {

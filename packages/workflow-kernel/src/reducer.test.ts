@@ -516,7 +516,7 @@ describe('T4 AttemptEnded by outcome (§6.5)', () => {
     const dec = applied(end(fixing(), { attemptId: 'a1', outcome: 'lost' }));
     expect(dec.toState).toBe('CHANGES_REQUESTED');
     expect(dec.effects.find((e) => e.kind === 'dispatch_fix')).toMatchObject({ payload: { attemptNo: 2 } });
-    expect(dec.attempts[0]).toMatchObject({ set: { status: 'ended', outcome: 'failed' } });
+    expect(dec.attempts[0]).toMatchObject({ set: { status: 'ended', outcome: 'noop' } }); // AC-19: the head never moved, so it is "no change"
     const ex = applied(end(fixing({ attemptNo: 3 }), { attemptId: 'a1', outcome: 'failed' }));
     expect(ex.toState).toBe('ESCALATED');
     expect(ex.patch.stateReason).toBe('review_exhausted');

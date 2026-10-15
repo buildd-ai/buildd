@@ -745,6 +745,7 @@ mock.module('@/lib/workflow/seam', () => ({
   fixCompletionGate: mockFixCompletionGate,
   recordReviewVerdict: mockRecordReviewVerdict,
   adoptReviewVerdict: mockAdoptReviewVerdict,
+  noopEvidenceOf: (o: any) => (o?.noopEvidence?.findingIds?.length && o?.noopEvidence?.evidence ? o.noopEvidence : null),
   isKernelReviewRound: mockIsKernelReviewRound,
   isRepairRole: (r: string | null | undefined) => r === 'fix' || r === 'ci_fix',
   recordLocalHead: mockRecordLocalHead,
