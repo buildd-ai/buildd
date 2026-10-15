@@ -26,8 +26,8 @@
  * runs after. Each step is isolated by the emitter, and pages under its label.
  */
 import { db } from '@buildd/core/db';
-import { tasks } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
+import { tasks, workers } from '@buildd/core/db/schema';
+import { and, eq } from 'drizzle-orm';
 import { after } from 'next/server';
 import { refreshMissionBranchesBeforeStart } from '@/lib/mission-branch-refresh';
 import { subscriber, type AnySubscriber } from '@/lib/core-events';
@@ -62,6 +62,20 @@ export const missionSubscribers: readonly AnySubscriber[] = [
     await refreshMissionBranchesBeforeStart(e.tasks, {
       keepAlive: pending => after(() => pending.then(() => {})),
     });
+  }),
+  // §6: deliverable work filed into a mission whose newest delivery already
+  // merged gets a writable successor delivery now, so the claim hands its
+  // worker a live branch. A no-op (one read) for every other mission.
+  subscriber('missions', 'task.created', 'open-writable-mission-delivery', async e => {
+    if (!e.missionId) return;
+    const [task] = await db
+      .select({ taskClass: tasks.taskClass, mode: tasks.mode })
+      .from(tasks)
+      .where(eq(tasks.id, e.taskId))
+      .limit(1);
+    if (task?.taskClass !== 'work' || task.mode === 'planning') return;
+    const { ensureMissionWritableBranch } = await import('@/lib/mission-epoch-door');
+    await ensureMissionWritableBranch(e.missionId, 'task_filed');
   }),
   subscriber('missions', 'task.created', 'task-created-mission-feed', e => {
     if (!e.missionId) return;
@@ -166,6 +180,21 @@ export const missionSubscribers: readonly AnySubscriber[] = [
       ),
     );
   }),
+  // §6 (workflow-kernel-library.md): a mission PR merged on GitHub itself
+  // (no buildd door ran) is still a merged delivery. Every door records it
+  // too; the kernel's transition is idempotent, so the second is a noop.
+  subscriber('missions', 'pr.closed', 'record-mission-delivery-merged', async e => {
+    if (!e.merged || !e.taskId || e.installationId == null) return;
+    const [task] = await db
+      .select({ title: tasks.title, taskClass: tasks.taskClass, missionId: tasks.missionId })
+      .from(tasks)
+      .where(eq(tasks.id, e.taskId))
+      .limit(1);
+    const { isMissionPrTask } = await import('@buildd/core/mission-integration');
+    if (!task?.missionId || !isMissionPrTask(task)) return;
+    const { recordMissionPrMerged } = await import('@/lib/mission-epoch-door');
+    await recordMissionPrMerged(task, e.installationId, e.repoFullName, e.prNumber);
+  }),
   subscriber('missions', 'pr.closed', 'settle-surface-intents', async e => {
     const settle = () => import('@/lib/surface-ordering')
       .then((m) => m.settleSurfaceIntentsOnClose({ workspaceId: e.workspaceId, prNumber: e.prNumber }))
@@ -178,6 +207,20 @@ export const missionSubscribers: readonly AnySubscriber[] = [
   }),
   // A retarget leaves the PR's change-intent rows naming the OLD base. Move its
   // open intents to where the PR now lands and re-wake the head of both lanes.
+  // §6: GitHub moved a mission PR off a delivery branch (delete-on-merge
+  // retargets it to trunk). Recorded on the delivery, so settlement moves only
+  // PRs that were really on it.
+  subscriber('missions', 'pr.base_changed', 'record-pr-moved-off-delivery', async e => {
+    const [row] = await db
+      .select({ missionId: tasks.missionId })
+      .from(workers)
+      .innerJoin(tasks, eq(tasks.id, workers.taskId))
+      .where(and(eq(workers.workspaceId, e.workspaceId), eq(workers.prNumber, e.prNumber)))
+      .limit(1);
+    if (!row?.missionId) return;
+    const { recordPrMovedOffDelivery } = await import('@/lib/mission-epoch-door');
+    await recordPrMovedOffDelivery({ missionId: row.missionId, prNumber: e.prNumber, fromBase: e.fromBase });
+  }),
   subscriber('missions', 'pr.base_changed', 'retarget-surface-intents', async e => {
     const retarget = () => import('@/lib/surface-ordering')
       .then((m) => m.retargetSurfaceIntents({ workspaceId: e.workspaceId, prNumber: e.prNumber, fromBase: e.fromBase, toBase: e.toBase }))

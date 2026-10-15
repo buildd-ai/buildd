@@ -20,6 +20,7 @@
 import { githubApi } from '@/lib/github';
 import { findMissionPrOwner } from '@/lib/mission-pr';
 import { deliveryPrStates } from '@/lib/workflow/delivery-view';
+import { latestEpoch, missionEpochsOf, writableEpoch } from '@/lib/workflow/delivery-ship';
 
 export interface MissionPrMerged {
   /** The shipping PR's number, when known. */
@@ -44,7 +45,16 @@ function prNumberOf(owner: { prNumber: number | null; prUrl: string | null }, re
   return Number(m[2]);
 }
 
-export async function missionShippingPrMerged(missionId: string, repo?: MissionPrRepo | null): Promise<MissionPrMerged | null> {
+export async function missionShippingPrMerged(missionId: string, repo?: MissionPrRepo | null, branch?: string | null): Promise<MissionPrMerged | null> {
+  // With delivery records (workflow-kernel-library.md §6) the question is per
+  // delivery: did the one for `branch` ship? Without a branch: has the
+  // mission's newest delivery shipped with nothing writable after it?
+  const epochs = await missionEpochsOf(missionId);
+  if (epochs.length > 0) {
+    const e = branch ? epochs.find((x) => x.branch === branch && x.state === 'merged') ?? null
+      : (!writableEpoch({ epochs }) ? latestEpoch({ epochs }) : null);
+    return e && e.state === 'merged' ? { prNumber: e.prNumber, via: 'delivery' } : null;
+  }
   const owner = await findMissionPrOwner(missionId);
   if (!owner) return null;
   const prNumber = prNumberOf(owner, repo?.repoFullName);

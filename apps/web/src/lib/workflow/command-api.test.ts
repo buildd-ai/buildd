@@ -158,6 +158,9 @@ describe('the v1 request shape', () => {
     expect(commandProblem(body({ input: { ...landInput, workspaceId: 'w' } }))).toContain('workspaceId');
     expect(commandProblem(body({ input: { ...landInput, prNumber: -1 } }))).toContain('prNumber');
     expect(commandProblem(body({ op: 'drain', input: { deliveryId: DELIVERY }, principal: { kind: 'system', id: 'inline-drain' } }))).toBeNull();
+    // §6 mission deliveries: one op, re-checked against the mission's repo workspace like any other.
+    expect(commandProblem(body({ op: 'mission_epoch', input: { action: 'reconcile', workspaceId: landInput.workspaceId, missionId: DELIVERY } as never }))).toBeNull();
+    expect(commandProblem(body({ op: 'mission_epoch', input: { action: 'reconcile', workspaceId: 'w', missionId: DELIVERY } as never }))).toContain('workspaceId');
   });
 
   it('a malformed request is 400 and runs nothing', async () => {

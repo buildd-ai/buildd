@@ -2243,7 +2243,7 @@ export async function PATCH(
               workspaceId: worker.workspaceId,
               installationId: repoWithInstallation.installation.installationId,
               repoFullName: repoWithInstallation.fullName,
-            }).catch(() => null);
+            }, refreshBranch).catch(() => null);
             if (shipped) refreshAlreadyLanded = { ...landed, evidence: 'mission_pr_merged', missionPrNumber: shipped.prNumber };
           }
         }

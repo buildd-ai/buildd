@@ -37,6 +37,8 @@ export type MergeMethod = 'merge' | 'squash' | 'rebase';
 export type ShippingPrMergedReader = (
   missionId: string,
   repo?: { workspaceId: string; installationId: number; repoFullName: string } | null,
+  /** The branch the refresh was for: with delivery records, did THAT delivery ship? */
+  branch?: string | null,
 ) => Promise<{ prNumber: number | null; via: 'worker' | 'delivery' | 'github' } | null>;
 
 /** What a refresh task records about itself (task context). */

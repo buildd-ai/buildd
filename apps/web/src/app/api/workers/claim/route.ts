@@ -94,6 +94,7 @@ import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 import { guardClaimedRetry } from '@/lib/supersession';
 import { repinSpecAtClaim, type ClaimPin } from '@/lib/specs/claim-pin';
 import { cancelSkippedTask, claimFix as claimKernelFix, isRepairRole } from '@/lib/workflow/seam';
+import { isPriorEpochBranch } from '@/lib/workflow/delivery-ship';
 import { notifyConnectorBlocked } from './connector-block-notify';
 import { effectiveBudgetResetAt, isBudgetExhausted } from '@/lib/budget-errors';
 import { BudgetWalls, accountLimitRefusal, describeBudgetWalls, isoOrNull } from './claim-limits';
@@ -2779,6 +2780,21 @@ export async function POST(req: NextRequest) {
     if (claimPin.specSource) {
       (patchedContext as Record<string, unknown>).specSource = claimPin.specSource;
       console.log(`[claim] task ${task.id}: ${claimPin.reason}`);
+    }
+
+    // A task filed under an earlier mission delivery names that delivery's
+    // branch as its base. It merged (and is retired once settled), so the task
+    // builds on the mission's writable branch instead, never the merged one
+    // (docs/specs/workflow-kernel-library.md §6).
+    {
+      const claimMission = taskMissionId ? missionClaimMap.get(taskMissionId) : null;
+      const filedBase = (patchedContext as Record<string, unknown>).baseBranch;
+      // A refresh is the one task that is FOR a specific branch: the delivery settlement retires it instead.
+      if (claimMission?.integrationBranchEnabled && claimMission.workingBranch
+        && (patchedContext as Record<string, unknown>).requireMergeCommit !== true
+        && isPriorEpochBranch(typeof filedBase === 'string' ? filedBase : null, claimMission.workingBranch)) {
+        (patchedContext as Record<string, unknown>).baseBranch = claimMission.workingBranch;
+      }
     }
 
     // Gated START only (never as shipped): the relaxed overlap's declared
