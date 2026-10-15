@@ -524,7 +524,8 @@ export async function attemptEnded(p: {
   // checkout) reports no local head. Its proof is §9's "L unknown" rule: the PR head moved off the head the
   // repair was bound to and descends from it. The re-review that follows decides whether it fixed anything.
   const reported = attemptId ? view.attempts.find((a) => a.id === attemptId)?.reportedShas.length ?? 0 : 0;
-  if (!p.localHeadSha && !proof && reported === 0 && boundHead && live && live.state === 'open' && !live.merged && live.headSha !== boundHead && d.repoFullName) {
+  // Only an end with nothing local to lose (AC-10): an unproven end that reported commits is not proof.
+  if ((p.status === 'completed' || p.commitCount === 0) && !p.localHeadSha && !proof && reported === 0 && boundHead && live && live.state === 'open' && !live.merged && live.headSha !== boundHead && d.repoFullName) {
     const repo = await (deps.repoFor ?? workspaceRepo)(p.task.workspaceId);
     const reader = repo ? readerFor(deps, repo.installationId) : null;
     if (reader?.contains) proof = { liveContainsLocal: false, contentDiffChanged: await reader.contains(d.repoFullName, boundHead, live.headSha).catch(() => false) };
@@ -1137,8 +1138,10 @@ export async function observeCiFailure(p: {
   );
   if (preflightMiss) console.log(`[workflow] preflight_miss on ${p.repoFullName}#${p.prNumber} @ ${p.headSha}: ${preflightMiss}`);
   // 38442d17: the hint was red but the head reads green now (a re-run passed): a CI repair bound to it ends.
-  if (notRed && liveChecks?.complete && d?.state === 'REPAIRING' && d.stateReason === 'ci' && d.currentHeadSha === p.headSha) {
-    await applyCommand({ type: 'CiGreenObserved', actor: `${p.source}:ci_green`, headSha: p.headSha, liveChecks }, { ref: { deliveryId }, exec: deps.exec });
+  // Not failing is not passing (a cancelled or stale run): only GitHub's every-suite-passed allow-list ends it.
+  if (notRed && liveChecks?.complete && d?.state === 'REPAIRING' && d.stateReason === 'ci' && d.currentHeadSha === p.headSha
+    && reader.ciGreen && (await reader.ciGreen(p.repoFullName, p.headSha).catch(() => null)) === true) {
+    await applyCommand({ type: 'CiGreenObserved', actor: `${p.source}:ci_green`, headSha: p.headSha, liveChecks, allPassing: true }, { ref: { deliveryId }, exec: deps.exec });
   }
   await drainDelivery(deliveryId, deps);
   if (incident?.opened && d) await joinRepairingDeliveries({ incident, workspaceId: p.workspaceId, repoFullName: p.repoFullName, baseRef: live.baseRef ?? d.baseRef ?? '', excludeDeliveryId: deliveryId }, deps);
@@ -1150,8 +1153,9 @@ const TRUNK_SOURCE_STATES: ReadonlySet<string> = new Set(['AWAITING_REVIEW', 'AP
 /**
  * 38442d17: CI went green on a kernel-owned PR's head (the `check_suite`
  * success webhook, or a red-PR sweep that read it green). Read live (R2): only
- * a head whose every check completed with none failing ends a CI repair bound
- * to it. `handled: false` = not the kernel's PR.
+ * a head whose check runs all completed with none failing AND whose every check
+ * suite passed (GitHub's passing allow-list) ends a CI repair bound to it.
+ * `handled: false` = not the kernel's PR.
  */
 export async function observeCiGreen(p: {
   workspaceId: string; repoFullName: string; prNumber: number; installationId: number; headSha: string; source: string;
@@ -1164,7 +1168,11 @@ export async function observeCiGreen(p: {
   const reader = readerFor(deps, p.installationId);
   const liveChecks = reader.checkRuns ? await reader.checkRuns(p.repoFullName, p.headSha).catch(() => null) : null;
   if (!liveChecks) return { handled: true, result: null };
-  const result = await applyCommand({ type: 'CiGreenObserved', actor: p.source, headSha: p.headSha, liveChecks }, { ref: { deliveryId }, exec: deps.exec });
+  // The check runs say nothing failed; only GitHub's passing allow-list (every suite completed
+  // and passed) says everything passed. A cancelled or stale run is not green.
+  const allPassing = reader.ciGreen ? (await reader.ciGreen(p.repoFullName, p.headSha).catch(() => null)) === true : false;
+  if (!allPassing) return { handled: true, result: null };
+  const result = await applyCommand({ type: 'CiGreenObserved', actor: p.source, headSha: p.headSha, liveChecks, allPassing }, { ref: { deliveryId }, exec: deps.exec });
   await drainDelivery(deliveryId, deps);
   return { handled: true, result };
 }

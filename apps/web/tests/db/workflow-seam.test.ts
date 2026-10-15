@@ -15,6 +15,7 @@ import {
   adoptReviewVerdict,
   attemptEnded,
   claimFix,
+  observeCiFailure,
   observeCiGreen,
   kernelDeliveryOfPr,
   fixCompletionGate,
@@ -37,9 +38,11 @@ interface FakePr { head: string; state: 'open' | 'closed'; merged: boolean; upda
 let gh: FakePr;
 const live = (): LivePr => ({ state: gh.state, merged: gh.merged, headSha: gh.head, headRepoFullName: REPO, baseRef: 'dev', updatedAt: gh.updatedAt, mergedAt: gh.merged ? '2026-10-06T00:00:00Z' : null });
 let checks: { complete: boolean; failing: string[] } | null = null;
+let green: boolean | null = null;
 const reader: GithubFactReader = {
   readPr: async () => live(),
   checkRuns: async () => checks,
+  ciGreen: async () => green,
   contains: async (_repo, ancestor, head) => ancestor === head || (gh.ancestors[head] ?? []).includes(ancestor),
   contentEquivalent: async (_repo, _base, from, to) => (gh.equivalent ?? []).some(([f, t]) => f === from && t === to),
 };
@@ -89,6 +92,7 @@ beforeAll(async () => {
 beforeEach(() => {
   gh = { head: 'H1', state: 'open', merged: false, updatedAt: 'u0', ancestors: {} };
   checks = null;
+  green = null;
   dispatched = [];
   posted = [];
 });
@@ -467,7 +471,12 @@ describe('S5: the review loop never stalls (workflow-kernel-library.md §5)', ()
     checks = { complete: false, failing: [] };
     await observeCiGreen({ workspaceId, repoFullName: REPO, prNumber, installationId: 1, headSha: 'H1', source: 'webhook:check_suite' }, deps);
     expect((await loadView({ deliveryId })).delivery!.state).toBe('REPAIRING');
+    // Every check run done, none failing, but a suite was cancelled: not green (38442d17 re-review).
     checks = { complete: true, failing: [] };
+    green = false;
+    await observeCiGreen({ workspaceId, repoFullName: REPO, prNumber, installationId: 1, headSha: 'H1', source: 'webhook:check_suite' }, deps);
+    expect((await loadView({ deliveryId })).delivery!.state).toBe('REPAIRING');
+    green = true;
     const r = await observeCiGreen({ workspaceId, repoFullName: REPO, prNumber, installationId: 1, headSha: 'H1', source: 'webhook:check_suite' }, deps);
     expect(r).toMatchObject({ handled: true, result: { result: 'applied', decision: { toState: 'APPROVED' } } });
     const v = await loadView({ deliveryId });
@@ -531,5 +540,37 @@ describe('S5: a reviewer\'s deferral names its task by short id (workflow-kernel
     for (const path of ['a.ts', 'b.ts', 'c.ts']) expect(after.find((f) => f.path === path)).toMatchObject({ status: 'open', deferredToTaskId: null });
     const ev = (r as { result: { decision: { evidence: { findings: { unresolvedDeferrals: Array<{ id: string }> } } } } }).result.decision.evidence.findings.unresolvedDeferrals;
     expect(ev.map((x) => x.id).sort()).toEqual([id('a.ts'), id('b.ts'), id('c.ts')].sort());
+  });
+});
+
+describe('S5 re-review: unpushed commits are never delivery (AC-10)', () => {
+  test('a fix that ended unproven with commits it never reported, while someone else pushed a descendant, waits for its push', async () => {
+    const { deliveryId, review } = await openAndHandOn();
+    await requestChanges(deliveryId, review);
+    const fix = dispatched.find((x) => x.kind === 'fix')!;
+    const t = await fixTask(fix.taskId);
+    await claimFix(t, deps);
+    gh.head = 'H2';
+    gh.ancestors = { H2: ['H1'] };
+    const workerId = await seedWorker(fix.taskId, { status: 'failed' });
+    await attemptEnded({ task: t, workerId, status: 'unproven', localHeadSha: null, commitCount: 2, source: 'runner' }, deps);
+    const d = (await loadView({ deliveryId })).delivery!;
+    expect(d.state).not.toBe('AWAITING_REVIEW');
+    expect(d.state).toBe('AWAITING_PUSH');
+  });
+});
+
+describe('S5 re-review: the red-PR sweep ends a CI repair only on every check passing', () => {
+  test('a cancelled re-run that leaves nothing failing does not cancel the CI fix', async () => {
+    const { deliveryId, prNumber, review } = await openAndHandOn();
+    await recordReviewVerdict({ reviewerTask: await reviewerTask(review.taskId), verdict: 'approve', effectiveVerdict: 'approve', headSha: 'H1', confidence: 0.95 }, deps);
+    await applyCommand({ type: 'CiFailedObserved', actor: 'webhook', headSha: 'H1', signature: 'ci:db', maxAttempts: 3 }, { ref: { deliveryId } });
+    checks = { complete: true, failing: [] };
+    green = false;
+    await observeCiFailure({ workspaceId, repoFullName: REPO, prNumber, installationId: 1, headSha: 'H1', signature: 'ci:db', maxAttempts: 3, source: 'sweep:red-prs' }, deps);
+    expect((await loadView({ deliveryId })).delivery!.state).toBe('REPAIRING');
+    green = true;
+    await observeCiFailure({ workspaceId, repoFullName: REPO, prNumber, installationId: 1, headSha: 'H1', signature: 'ci:db', maxAttempts: 3, source: 'sweep:red-prs' }, deps);
+    expect((await loadView({ deliveryId })).delivery!.state).toBe('APPROVED');
   });
 });

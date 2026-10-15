@@ -33,6 +33,8 @@ const NO_INSTALLATION = 'no GitHub installation for the workspace';
 
 /** How many times a round whose reviewer could not be filed is re-queued before it is a person's (T27). */
 export const REVIEW_DISPATCH_RETRIES = 2;
+/** The wait before the n-th re-queued dispatch of such a round runs (n times this), so a retry is not spent in the same drain. */
+export const REVIEW_DISPATCH_BACKOFF_MS = 60_000;
 
 /**
  * The GitHub review body. A composition delta round (§5.9, S33) reviewed only
@@ -169,7 +171,7 @@ export function reviewHandlers(ports: KernelPorts): EffectHandlers {
       // reviewer that never started would (T27): re-queued with a fresh dispatch, then a person's
       // (review_unavailable) once the contract retries are spent.
       const why = filed.skipped ?? 'dispatch_refused';
-      await apply(d.id, { type: 'ReviewRoundFailed', actor: 'kernel', roundId, reason: 'infra', maxContractRetries: REVIEW_DISPATCH_RETRIES });
+      await apply(d.id, { type: 'ReviewRoundFailed', actor: 'kernel', roundId, reason: 'infra', maxContractRetries: REVIEW_DISPATCH_RETRIES, retryDelayMs: REVIEW_DISPATCH_BACKOFF_MS });
       return { outcome: `skipped:${why}:round_failed` };
     }
     await ports.store.linkRoundReviewer(round.id, filed.taskId);
@@ -363,9 +365,17 @@ export async function cancelReviewAttempts(ports: KernelPorts, e: ClaimedEffect)
   if (!hasPr(d)) return { outcome: 'skipped:no_pr' };
   const reason = e.payload.reason;
   if (reason === 'head_moved') {
+    const work = need(ports, 'work', e.kind);
+    // The transition names the tasks it made moot: only those are cancelled, never a newer one the
+    // same role filed since (a retried effect runs after it). An effect from before carries none.
+    if (Array.isArray(e.payload.taskIds)) {
+      const ids = (e.payload.taskIds as unknown[]).filter((x): x is string => typeof x === 'string');
+      for (const id of ids) await work.cancel(id, 'the PR head moved before the fix started');
+      return { outcome: `ok:cancelled_${ids.length}` };
+    }
     const families = Array.isArray(e.payload.families) ? (e.payload.families as string[]) : ['review_fix'];
     const role = families.includes('ci') ? 'ci_fix' : families.includes('conflict') || families.includes('migration') ? 'conflict_fix' : 'fix';
-    const n = await need(ports, 'work', e.kind).cancelPending({ deliveryId: d.id, role, ...superseded('the PR head moved before the fix started') });
+    const n = await work.cancelPending({ deliveryId: d.id, role, ...superseded('the PR head moved before the fix started') });
     return { outcome: `ok:cancelled_${n}` };
   }
   if (reason === 'approved') {
@@ -377,16 +387,16 @@ export async function cancelReviewAttempts(ports: KernelPorts, e: ClaimedEffect)
   if (reason === 'ci_green') {
     // 38442d17: CI on the head the repair was filed for went green (a re-run of an infrastructure
     // failure). A fix nobody picked up is cancelled; one already running is told to stop.
+    // Exactly the repair this green ended: a newer CI fix filed since is not this one.
     const work = need(ports, 'work', e.kind);
-    const n = await work.cancelPending({ deliveryId: d.id, role: 'ci_fix', ...superseded('CI went green on the same head before the fix started') });
     const taskId = typeof e.payload.taskId === 'string' ? e.payload.taskId : null;
-    if (taskId) {
-      await work.steer(taskId, {
-        marker: `ci-green:${String(e.payload.attemptId ?? taskId)}`,
-        note: `CI on PR #${d.prNumber} is green again on the head this fix was filed for: the failure was not in the code. Stop and complete without changes; there is nothing to fix.`,
-      });
-    }
-    return { outcome: `ok:cancelled_${n}` };
+    if (!taskId) return { outcome: 'skipped:no_task' };
+    await work.cancel(taskId, 'CI went green on the same head before the fix started');
+    await work.steer(taskId, {
+      marker: `ci-green:${String(e.payload.attemptId ?? taskId)}`,
+      note: `CI on PR #${d.prNumber} is green again on the head this fix was filed for: the failure was not in the code. Stop and complete without changes; there is nothing to fix.`,
+    });
+    return { outcome: 'ok:cancelled' };
   }
   // Merge / close cancellations: the legacy supersession rules still run them.
   return { outcome: 'skipped:legacy_owns' };
