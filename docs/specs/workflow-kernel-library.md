@@ -687,10 +687,11 @@ push, refresh, completion or owner change can make it disappear.
 - A verdict is never dropped because the builder is still open (00d288fd). A
   reviewer that ran outside the kernel's rounds (filed by a door before the
   delivery opened) is adopted at the head it judged (`ReviewVerdictAdopted`):
-  while the owner works, a repair holds or trunk is red, it is kept as a
-  decided round and the hand-off applies it; while the kernel's own round at
-  that head is still waiting, it answers that round. A verdict on another
-  head is stale. The same head is never reviewed twice for it, and `explain`
+  while the owner works, a repair holds or trunk is red, and the kernel has
+  asked no reviewer of its own, it is kept as a decided round and the
+  hand-off applies it. It is never posted to GitHub as a review. The kernel's
+  own open round at that head is never answered from outside (its reviewer
+  does), and a verdict on another head is stale. The same head is never reviewed twice for it, and `explain`
   calls an open reviewer a review, never "Fix 0 of 3".
 - Completing a fix arms a delta re-review at the new head (1bd26ae7). A fix
   that pushed from somewhere the runner cannot see reports no local head; its

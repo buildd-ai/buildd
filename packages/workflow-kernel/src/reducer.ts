@@ -592,23 +592,20 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       const mine = c.view.rounds.find((r) => r.reviewerTaskId === cmd.reviewerTaskId && r.headSha === head);
       if (mine?.status === 'decided') return c.duplicate('verdict_already_recorded');
       if (c.decidedAt(head)) return c.stale('head_already_reviewed');
-      const { reviewerTaskId: _r, headBound: _h, type: _t, ...rest } = cmd;
-      const open = c.openRoundAt(head);
-      if (open && dd.state === 'AWAITING_REVIEW' && open.round === dd.currentRound) {
-        // The kernel's own round at this head was still waiting for its reviewer: this verdict answers it.
-        return verdictDecided(c, open, { ...rest, type: 'ReviewVerdictRecorded', roundId: open.id, headBound: head }, { held: false });
-      }
-      // The owner is still working (or a repair or a red trunk holds the head): the verdict is kept as a
-      // decided round at this head, and the hand-off (T4, resumeAfterRepair, T26) applies it rather than
-      // asking for a second review of the same content.
+      // The kernel's own round at this head is the review that counts: its reviewer answers it.
+      if (c.openRoundAt(head)) return c.stale('round_in_flight');
+      // The owner is still working (or a repair or a red trunk holds the head) and the kernel has asked
+      // nobody yet: the verdict is kept as a decided round at this head, and the hand-off (T4,
+      // resumeAfterRepair, T26) applies it rather than asking for a second review of the same content.
       const keeps: DeliveryState[] = ['WORKING', 'AWAITING_PUSH', 'REPAIRING', 'BLOCKED_ON_TRUNK'];
-      if (!keeps.includes(dd.state) || open) return c.stale('state_not_allowed');
+      if (!keeps.includes(dd.state)) return c.stale('state_not_allowed');
       const id = c.newId();
       const n = dd.currentRound + 1;
       const last = c.lastDecided();
       const round: RoundSnapshot = { id, round: n, headSha: head, kind: 'full', status: 'decided', verdict: cmd.verdict, effectiveVerdict: cmd.effectiveVerdict, failureCount: 0, reviewerTaskId: cmd.reviewerTaskId, scope: null };
       const f = applyVerdictToFindings(c.view, round, cmd.effectiveVerdict, cmd, cmd.actor);
-      const event = cmd.effectiveVerdict === 'approve' && f.stillOpen.length === 0 ? 'APPROVE' : cmd.effectiveVerdict === 'request_changes' ? 'REQUEST_CHANGES' : null;
+      // Nothing is posted to GitHub and nothing lands here: the hand-off applies the verdict, and only a
+      // kernel round's verdict is ever posted as a review.
       return c.apply(`adopt:${dd.id}:${cmd.reviewerTaskId}`, dd.state, {
         guardHead: true, guardRound: true,
         patch: { currentRound: n },
@@ -617,7 +614,6 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
           decided: { verdict: cmd.verdict, effectiveVerdict: cmd.effectiveVerdict, confidence: cmd.confidence ?? null, reviewerTaskId: cmd.reviewerTaskId },
         }],
         findings: f.ops,
-        effects: event ? [{ kind: 'post_review', dedupeKey: `post_review:${dd.id}:${id}`, payload: { commitId: head, event, roundId: id } }] : [],
         evidence: { adopted: true, reviewerTaskId: cmd.reviewerTaskId, roundId: id, headSha: head, verdict: cmd.verdict, effectiveVerdict: cmd.effectiveVerdict, heldBy: dd.state, ...(f.raised.length ? { findings: { raised: f.raised } } : {}) },
       });
     }
