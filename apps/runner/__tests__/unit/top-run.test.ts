@@ -18,6 +18,8 @@ let sock: string;
 let server: RunnerSocketServer | null = null;
 let sse: ReadableStreamDefaultController<Uint8Array> | null = null;
 const posts: Array<{ path: string; body: any }> = [];
+let missionFetches = 0;
+let serveMissions = false;
 
 function push(event: unknown) {
   sse?.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`));
@@ -27,6 +29,8 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'top-'));
   sock = join(dir, 'runner.sock');
   posts.length = 0;
+  missionFetches = 0;
+  serveMissions = false;
   sse = null;
 });
 
@@ -51,9 +55,14 @@ function serveFakeRunner() {
       case '/api/workers': return Response.json({ workers: WORKERS });
       case '/api/tasks': return Response.json({ tasks: TASKS });
       case '/api/workspaces': return Response.json({ workspaces: [
-        { id: 'ws-a', name: 'alpha', teamId: 'team-1' },
-        { id: 'ws-b', name: 'bravo', teamId: 'team-1' },
+        { id: 'ws-a', name: 'alpha', teamId: 'team-1', teamName: 'Team One' },
+        { id: 'ws-b', name: 'bravo', teamId: 'team-2', teamName: 'Team Two' },
       ] });
+      case '/api/missions/recent':
+        missionFetches++;
+        return Response.json({ missions: !serveMissions ? [] : [
+          { id: 'm-quiet', title: 'Quiet mission', workspaceId: 'ws-b', status: 'active', isHeld: false, executor: 'runner', completedAt: null, stage: { step: 'building', waitingOn: null } },
+        ] });
       case '/api/events':
         return new Response(new ReadableStream<Uint8Array>({
           start(c) {
@@ -214,9 +223,45 @@ describe('runTop', () => {
     const done = runTop({ socketPath: sock, terminal: t.term, hostname: 'h', palette: createPalette('night', 'none'), processHooks: false });
     await until(() => t.screen().includes('2 workspaces'));
     t.type('w');
-    await until(() => t.screen().includes('Showing alpha.'));
+    await until(() => t.screen().includes('Showing alpha (Team One).'));
     t.type('q');
     await done;
+  });
+
+  test('lists the missions the server names, and never fetches them faster than once a minute (R-24)', async () => {
+    serveMissions = true;
+    serveFakeRunner();
+    const t = fakeTerminal();
+    const done = runTop({ socketPath: sock, terminal: t.term, hostname: 'h', palette: createPalette('night', 'none'), processHooks: false });
+    await until(() => t.screen().includes('Quiet mission'));
+    expect(t.screen()).toContain('Team Two');
+    expect(missionFetches).toBe(1);
+    // A burst of queue events refetches the task list, not the missions.
+    for (let i = 0; i < 3; i++) { push({ type: 'task_assigned' }); await Bun.sleep(300); }
+    expect(missionFetches).toBe(1);
+    t.type('q');
+    await done;
+  });
+
+  test('t narrows to a team, and --team opens on one (R-23)', async () => {
+    serveMissions = true;
+    serveFakeRunner();
+    const t = fakeTerminal();
+    const done = runTop({ socketPath: sock, terminal: t.term, hostname: 'h', palette: createPalette('night', 'none'), processHooks: false });
+    await until(() => t.screen().includes('t team: all · w workspace: all'));
+    t.type('t');
+    await until(() => t.screen().includes('t team: Team One · w workspace: all'));
+    t.type('q');
+    await done;
+
+    server?.stop();
+    serveFakeRunner();
+    const t2 = fakeTerminal();
+    const done2 = runTop({ socketPath: sock, terminal: t2.term, hostname: 'h', team: 'team two', palette: createPalette('night', 'none'), processHooks: false });
+    await until(() => t2.screen().includes('t team: Team Two · w workspace: all'));
+    expect(t2.screen()).toContain('Quiet mission');
+    t2.type('q');
+    await done2;
   });
 
   test('ctrl-c restores the terminal too', async () => {

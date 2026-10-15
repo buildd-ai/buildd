@@ -186,14 +186,14 @@ function exitAlreadyRunning(decision: { code: number; message: string; stream: '
 }
 
 /** Open `buildd top` on the runner holding the socket, then exit with its code. */
-async function attachTop(missionId: string | null, notice?: string, workspace: string | null = null): Promise<never> {
+async function attachTop(missionId: string | null, notice?: string, workspace: string | null = null, team: string | null = null): Promise<never> {
   const { runTop } = await import('./top/run');
-  process.exit(await runTop({ socketPath: RUNNER_SOCKET, missionId, workspace, notice }));
+  process.exit(await runTop({ socketPath: RUNNER_SOCKET, missionId, workspace, team, notice }));
 }
 
 // `buildd top`: watch the runner already running on this machine. Never starts one.
 if (CLI.kind === 'top') {
-  await attachTop(CLI.missionId, undefined, CLI.workspace);
+  await attachTop(CLI.missionId, undefined, CLI.workspace, CLI.team);
 }
 
 let runnerSocket: RunnerSocketServer | null = null;
@@ -1835,11 +1835,11 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
         // Allow combined-workspaces and local-repos in serverless
         if (path === '/api/combined-workspaces' || path === '/api/local-repos') {
           // Will be handled below
-        } else if (['/api/tasks', '/api/workspaces', '/api/workers', '/api/claim', '/api/abort', '/api/retry', '/api/done', '/api/read'].some(p => path.startsWith(p))) {
+        } else if (['/api/tasks', '/api/workspaces', '/api/missions/recent', '/api/workers', '/api/claim', '/api/abort', '/api/retry', '/api/done', '/api/read'].some(p => path.startsWith(p))) {
           return Response.json({ error: 'Server features not available in local-only mode', serverless: true }, { status: 400, headers: corsHeaders });
         }
       } else {
-        if (['/api/tasks', '/api/workspaces', '/api/workers', '/api/claim', '/api/abort', '/api/retry', '/api/done', '/api/read'].some(p => path.startsWith(p))) {
+        if (['/api/tasks', '/api/workspaces', '/api/missions/recent', '/api/workers', '/api/claim', '/api/abort', '/api/retry', '/api/done', '/api/read'].some(p => path.startsWith(p))) {
           return Response.json({ error: 'Not configured. Set API key first.', needsSetup: true }, { status: 401, headers: corsHeaders });
         }
       }
@@ -1873,6 +1873,17 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
       } catch (err: any) {
         console.error('Failed to list workspaces:', err.message);
         return Response.json({ error: err.message || 'Failed to load workspaces', workspaces: [] }, { status: 502, headers: corsHeaders });
+      }
+    }
+
+    // The missions `buildd top` lists (R-24): open, and delivered in the last 7 days.
+    if (path === '/api/missions/recent' && req.method === 'GET') {
+      try {
+        const missions = await buildd!.listRecentMissions();
+        return Response.json({ missions }, { headers: corsHeaders });
+      } catch (err: any) {
+        console.error('Failed to list missions:', err.message);
+        return Response.json({ error: err.message || 'Failed to load missions', missions: [] }, { status: 502, headers: corsHeaders });
       }
     }
 

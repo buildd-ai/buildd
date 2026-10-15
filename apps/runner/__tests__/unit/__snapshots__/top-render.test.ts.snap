@@ -2,6 +2,7 @@
 
 exports[`list view 80x24 1`] = `
 " buildd · laptop-1234                   2 of 3 slots busy · ● online · v0.340.0 
+ t team: all · w workspace: all                                                 
 ────────────────────────────────────────────────────────────────────────────────
  MISSIONS             │ Runner TUI                        3 running · 3 waiting 
  ▸ Runner TUI     2/8 │─────────────────────────────────────────────────────────
@@ -22,13 +23,13 @@ exports[`list view 80x24 1`] = `
                       │                                                         
                       │                                                         
                       │                                                         
-                      │                                                         
 ────────────────────────────────────────────────────────────────────────────────
- ↑↓ move a answer m message p pause x stop c claim w workspace ? help q quit    "
+ a answer m message p pause x stop c claim t team w workspace ? help q quit     "
 `;
 
 exports[`list view 120x40 1`] = `
 " buildd · laptop-1234                                                           2 of 3 slots busy · ● online · v0.340.0 
+ t team: all · w workspace: all                                                                                         
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  MISSIONS                   │ Runner TUI                                                          3 running · 3 waiting 
  ▸ Runner TUI           2/8 │───────────────────────────────────────────────────────────────────────────────────────────
@@ -65,13 +66,13 @@ exports[`list view 120x40 1`] = `
                             │                                                                                           
                             │                                                                                           
                             │                                                                                           
-                            │                                                                                           
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- ↑↓ move  ⏎ open  a answer  m message  p pause  x stop  c claim  o web  w workspace  / filter  ? help  q quit           "
+ ↑↓ move  ⏎ open  a answer  m message  p pause  x stop  c claim  o web  t team  w workspace  / filter  ? help  q quit   "
 `;
 
 exports[`list view 80x24 in colour (night, truecolor) keeps the same text 1`] = `
 " \x1B[38;2;245;155;78mbuildd\x1B[39m\x1B[38;2;168;159;150m · laptop-1234\x1B[39m                   \x1B[38;2;168;159;150m2 of 3 slots busy · \x1B[39m\x1B[38;2;245;155;78m● online\x1B[39m\x1B[38;2;168;159;150m · v0.340.0 \x1B[39m
+\x1B[38;2;168;159;150m t team: all · w workspace: all                                                 \x1B[39m
 \x1B[38;2;122;114;105m────────────────────────────────────────────────────────────────────────────────\x1B[39m
 \x1B[38;2;168;159;150m MISSIONS             \x1B[39m\x1B[38;2;122;114;105m│\x1B[39m \x1B[39mRunner TUI                       \x1B[39m \x1B[38;2;245;155;78m3 running · 3 waiting \x1B[39m
  \x1B[38;2;245;155;78m▸\x1B[39m \x1B[39mRunner TUI    \x1B[39m \x1B[38;2;245;155;78m2/8\x1B[39m \x1B[38;2;122;114;105m│\x1B[39m\x1B[38;2;122;114;105m─────────────────────────────────────────────────────────\x1B[39m
@@ -92,13 +93,13 @@ exports[`list view 80x24 in colour (night, truecolor) keeps the same text 1`] = 
                       \x1B[38;2;122;114;105m│\x1B[39m                                                         
                       \x1B[38;2;122;114;105m│\x1B[39m                                                         
                       \x1B[38;2;122;114;105m│\x1B[39m                                                         
-                      \x1B[38;2;122;114;105m│\x1B[39m                                                         
 \x1B[38;2;122;114;105m────────────────────────────────────────────────────────────────────────────────\x1B[39m
-\x1B[38;2;168;159;150m ↑↓ move a answer m message p pause x stop c claim w workspace ? help q quit    \x1B[39m"
+\x1B[38;2;168;159;150m a answer m message p pause x stop c claim t team w workspace ? help q quit     \x1B[39m"
 `;
 
 exports[`detail view (R-5) 80x24: plan, milestones, tool calls and the PR link 1`] = `
 " buildd · laptop-1234                   2 of 3 slots busy · ● online · v0.340.0 
+ t team: all · w workspace: all                                                 
 ────────────────────────────────────────────────────────────────────────────────
  ● name override                                      Builder · 12m · Runner TUI
  PR https://github.com/example/repo/pull/12                                     
@@ -117,7 +118,6 @@ exports[`detail view (R-5) 80x24: plan, milestones, tool calls and the PR link 1
   14:49 TodoWrite                                                               
   14:50 Read config.ts                                                          
   14:59 Edit config.ts                                                          
-                                                                                
                                                                                 
                                                                                 
 ────────────────────────────────────────────────────────────────────────────────

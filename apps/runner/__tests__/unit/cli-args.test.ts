@@ -101,17 +101,22 @@ describe('classifyCliArgs', () => {
 
 describe('buildd top', () => {
   test('top on its own', () => {
-    expect(classifyCliArgs(argv('top'))).toEqual({ kind: 'top', missionId: null, workspace: null });
+    expect(classifyCliArgs(argv('top'))).toEqual({ kind: 'top', missionId: null, workspace: null, team: null });
   });
   test('--mission <id> and --mission=<id>', () => {
-    expect(classifyCliArgs(argv('top', '--mission', 'abc123'))).toEqual({ kind: 'top', missionId: 'abc123', workspace: null });
-    expect(classifyCliArgs(argv('top', '--mission=abc123'))).toEqual({ kind: 'top', missionId: 'abc123', workspace: null });
+    expect(classifyCliArgs(argv('top', '--mission', 'abc123'))).toEqual({ kind: 'top', missionId: 'abc123', workspace: null, team: null });
+    expect(classifyCliArgs(argv('top', '--mission=abc123'))).toEqual({ kind: 'top', missionId: 'abc123', workspace: null, team: null });
   });
   test('--workspace <name or id> (R-19), alone or with --mission', () => {
-    expect(classifyCliArgs(argv('top', '--workspace', 'alpha'))).toEqual({ kind: 'top', missionId: null, workspace: 'alpha' });
-    expect(classifyCliArgs(argv('top', '--workspace=ws-1', '--mission', 'm1'))).toEqual({ kind: 'top', missionId: 'm1', workspace: 'ws-1' });
+    expect(classifyCliArgs(argv('top', '--workspace', 'alpha'))).toEqual({ kind: 'top', missionId: null, workspace: 'alpha', team: null });
+    expect(classifyCliArgs(argv('top', '--workspace=ws-1', '--mission', 'm1'))).toEqual({ kind: 'top', missionId: 'm1', workspace: 'ws-1', team: null });
     expect(classifyCliArgs(argv('top', '--workspace'))).toEqual({ kind: 'unknown', arg: '--workspace' });
     expect(classifyCliArgs(argv('top', '--workspace='))).toEqual({ kind: 'unknown', arg: '--workspace=' });
+  });
+  test('--team <name> (R-23), alone or with --workspace', () => {
+    expect(classifyCliArgs(argv('top', '--team', 'TWC'))).toEqual({ kind: 'top', missionId: null, workspace: null, team: 'TWC' });
+    expect(classifyCliArgs(argv('top', '--team=TWC', '--workspace', 'a'))).toEqual({ kind: 'top', missionId: null, workspace: 'a', team: 'TWC' });
+    expect(classifyCliArgs(argv('top', '--team'))).toEqual({ kind: 'unknown', arg: '--team' });
   });
   test('anything else after top is refused, not ignored', () => {
     expect(classifyCliArgs(argv('top', '--debug'))).toEqual({ kind: 'unknown', arg: '--debug' });

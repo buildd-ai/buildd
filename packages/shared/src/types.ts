@@ -3239,6 +3239,22 @@ export interface MissionStage {
   waitingOn: string | null;
 }
 
+/**
+ * One mission as `GET /api/missions/recent` sends it (spec c7410e76 R-24):
+ * open missions and those finished in the last 7 days, in the caller's
+ * reachable workspaces. `completedAt` is set only on a finished mission.
+ */
+export interface RecentMission {
+  id: string;
+  title: string;
+  workspaceId: string;
+  status: string;
+  isHeld: boolean;
+  executor: 'runner' | 'local' | string;
+  completedAt: string | null;
+  stage: MissionStage | null;
+}
+
 export interface GoalCriteriaState {
   evaluatedAt: string;
   evaluatedBy: 'auto' | 'manual' | 'mcp';
