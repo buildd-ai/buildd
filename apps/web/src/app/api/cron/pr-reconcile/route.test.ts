@@ -462,6 +462,25 @@ describe('GET /api/cron/pr-reconcile', () => {
     expect((await res.json()).closedPrs).toEqual({ candidates: 2, recorded: 1, suggested: 1, none: 0, skipped: 0 });
   });
 
+  // Task 9f4d3339: the pass died inside this sweep and its one summary line could not say which PR was slow.
+  it('logs the closed-PR sweep per PR, slowest first, with what stopped it', async () => {
+    mockClosedPrSweep.mockResolvedValue({
+      candidates: 3, recorded: 0, suggested: 1, none: 0, skipped: 0, deferred: 1, budgetStopped: 1,
+      prs: [{ pr: 'org/a#1', ms: 120, outcome: 'suggested' }, { pr: 'org/a#2', ms: 19_000, outcome: 'deferred' }],
+    });
+    const lines: string[] = [];
+    const realLog = console.log;
+    console.log = (...a: unknown[]) => { lines.push(a.map(String).join(' ')); };
+    try {
+      await GET(makeRequest('test-secret', '?scope=merge-state'));
+    } finally {
+      console.log = realLog;
+    }
+    const line = lines.find((l) => l.startsWith('[ClosedPrSupersession]'));
+    expect(line).toContain('budgetStopped=1');
+    expect(line).toContain('prs=org/a#2:19000ms:deferred,org/a#1:120ms:suggested');
+  });
+
   it('a closed-PR backfill failure does not fail the run', async () => {
     mockClosedPrSweep.mockRejectedValue(new Error('detect failed'));
     const res = await GET(makeRequest('test-secret', '?scope=merge-state'));
