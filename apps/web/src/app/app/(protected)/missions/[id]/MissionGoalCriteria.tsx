@@ -576,7 +576,7 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
     <div className="card p-4">
       {hold && (
         <p data-testid="criteria-hold" className="mb-3 text-body text-status-warning [overflow-wrap:anywhere]">
-          Not verified yet: {hold}.
+          {hold.charAt(0).toUpperCase() + hold.slice(1)}.
         </p>
       )}
       {/* Header row */}
