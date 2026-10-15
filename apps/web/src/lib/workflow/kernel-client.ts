@@ -25,6 +25,7 @@
  * Vercel with nothing set the web host runs the package itself, since there is
  * no control plane to follow.
  */
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { signRequest, signingKey } from '@buildd/dispatch-contract';
 import { kernelHost, type KernelHost } from './kernel-host';
 import {
@@ -135,10 +136,19 @@ export const MODE_FRESH_MS = 30_000;
 /** A reading may stand in for a failed re-read this long. Past it, no answer reads as `own`. */
 export const MODE_STALE_MS = 5 * 60_000;
 
+/**
+ * A failed read is not repeated sooner than this. Within it the answer is the failed read's (a recent
+ * reading, else `own`), so a sweep's many calls do not each wait out the health timeout again.
+ */
+export const MODE_RETRY_MS = 5_000;
+
 let cached: { mode: KernelMode; at: number } | null = null;
+let failedAt: number | null = null;
+/** The read in flight: concurrent callers share it rather than each fetching the health. */
+let reading: Promise<string | null> | null = null;
 
 /** Tests. */
-export function resetKernelModeCache(): void { cached = null; }
+export function resetKernelModeCache(): void { cached = null; failedAt = null; reading = null; }
 
 /**
  * The Worker's mode from its public shallow health, the same read `/api/deploy-identity`
@@ -173,11 +183,18 @@ export async function kernelMode(deps: ClientDeps = {}): Promise<KernelMode> {
   if (!env.VERCEL) return 'shadow';
   const now = (deps.now ?? Date.now)();
   if (cached && now - cached.at < MODE_FRESH_MS) return cached.mode;
-  const read = await (deps.readMode ?? (() => readWorkerMode(env)))().catch(() => null);
+  const recentlyFailed = failedAt !== null && now - failedAt < MODE_RETRY_MS;
+  let read: string | null = null;
+  if (!recentlyFailed) {
+    const mine = reading ?? (reading = (deps.readMode ?? (() => readWorkerMode(env)))().catch(() => null));
+    try { read = await mine; } finally { if (reading === mine) reading = null; }
+  }
   if (read !== null) {
     cached = { mode: executionModeOf(read), at: now };
+    failedAt = null;
     return cached.mode;
   }
+  if (!recentlyFailed) failedAt = now;
   if (cached && now - cached.at < MODE_STALE_MS) return cached.mode;
   return 'own';
 }
@@ -190,6 +207,65 @@ export async function kernelMode(deps: ClientDeps = {}): Promise<KernelMode> {
 export async function hostsKernelHere(deps: ClientDeps = {}): Promise<boolean> {
   if ((deps.host ?? kernelHost)() === 'control-plane') return true;
   return (await kernelMode(deps)) === 'shadow';
+}
+
+// ── A pass's control-plane budget ───────────────────────────────────────────
+//
+// A sweep (the hourly merge-state pass, the landing and red-PR ticks) may call many doors and
+// inline drains, each with a budget of its own (20 s a door, 10 s a drain). Summed one after
+// another they outlast the route's function limit, which is how the first passes after the
+// kernel moved to the control plane timed out. Inside `withControlPlaneBudget` every submission
+// is cut to what is left of the pass's budget, a drain waits only briefly for its answer (the
+// control plane finishes it either way), and once the budget is spent nothing more is sent: a
+// door gets `ControlPlaneUnavailableError` at once (retryable; nothing was applied, the next
+// tick does it) and a drain is left to the control plane's floor.
+
+interface BudgetScope {
+  label: string;
+  deadline: number;
+  now: () => number;
+  submitted: number;
+  refused: number;
+  drainsSkipped: number;
+  waitedMs: number;
+}
+
+const budgetScope = new AsyncLocalStorage<BudgetScope>();
+
+export interface ControlPlaneBudgetReport {
+  label: string;
+  budgetMs: number;
+  /** Requests sent to the control plane inside the pass. */
+  submitted: number;
+  /** Door calls refused unsent because the budget was spent. */
+  refused: number;
+  /** Inline drains left to the floor because the budget was spent. */
+  drainsSkipped: number;
+  /** Time spent waiting on the control plane, summed over every call (concurrent calls overlap). */
+  waitedMs: number;
+}
+
+/**
+ * Run `fn` (a sweep) with at most `budgetMs` of control-plane time from now. Nested scopes keep the
+ * earlier deadline. On the web host in shadow, and on the control plane, nothing is submitted and the
+ * budget never binds.
+ */
+export async function withControlPlaneBudget<T>(label: string, budgetMs: number, fn: () => Promise<T>, o: { now?: () => number } = {}): Promise<{ value: T; budget: ControlPlaneBudgetReport }> {
+  const now = o.now ?? Date.now;
+  const outer = budgetScope.getStore();
+  const own = now() + budgetMs;
+  const scope: BudgetScope = {
+    label, now, submitted: 0, refused: 0, drainsSkipped: 0, waitedMs: 0,
+    deadline: outer ? Math.min(own, outer.deadline - outer.now() + now()) : own,
+  };
+  const value = await budgetScope.run(scope, fn);
+  return { value, budget: { label, budgetMs, submitted: scope.submitted, refused: scope.refused, drainsSkipped: scope.drainsSkipped, waitedMs: scope.waitedMs } };
+}
+
+/** What is left of the current pass's control-plane budget, in ms; null outside a pass. */
+export function controlPlaneBudgetLeft(): number | null {
+  const s = budgetScope.getStore();
+  return s ? Math.max(0, s.deadline - s.now()) : null;
 }
 
 // ── Submitting ──────────────────────────────────────────────────────────────
@@ -261,13 +337,39 @@ async function submitRemote<K extends KernelOp>(op: K, input: KernelOps[K]['inpu
   const base = (env.CONTROL_PLANE_URL || CONTROL_PLANE_URL).replace(/\/+$/, '');
   const url = new URL(COMMAND_PATH, base);
   const body = JSON.stringify({ v: COMMAND_API_VERSION, op, input, principal: opts.principal, idempotencyKey: opts.idempotencyKey } satisfies CommandRequest<K>);
-  const doFetch = deps.fetch ?? fetch;
   const now = deps.now ?? Date.now;
-  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
-  const deadline = now() + (opts.budgetMs ?? (Number(env.KERNEL_COMMAND_BUDGET_MS) || 45_000));
+  let deadline = now() + (opts.budgetMs ?? (Number(env.KERNEL_COMMAND_BUDGET_MS) || 45_000));
   let why = 'no attempt';
   // Once any request may have reached the control plane, a failure's outcome is unknown.
   let mayHaveApplied = opts.priorUnknown === true;
+  // Inside a pass, never past what is left of its budget; once it is spent, nothing is sent.
+  const scope = budgetScope.getStore();
+  if (scope) {
+    const left = scope.deadline - scope.now();
+    if (left <= 0) {
+      scope.refused++;
+      throw new ControlPlaneUnavailableError(`the ${scope.label} pass spent its control-plane budget`, mayHaveApplied ? 'unknown' : 'not_applied', opts.idempotencyKey);
+    }
+    deadline = Math.min(deadline, now() + left);
+    scope.submitted++;
+  }
+  const started = now();
+  try {
+    return await submitUntil(op, input, opts, deps, { url, body, key, deadline, why, mayHaveApplied });
+  } finally {
+    if (scope) scope.waitedMs += now() - started;
+  }
+}
+
+async function submitUntil<K extends KernelOp>(
+  op: K, input: KernelOps[K]['input'], opts: SubmitOptions & { idempotencyKey: string }, deps: ClientDeps,
+  s: { url: URL; body: string; key: { keyId: string; secret: string }; deadline: number; why: string; mayHaveApplied: boolean },
+): Promise<KernelAnswer<K>> {
+  const { url, body, key, deadline } = s;
+  let { why, mayHaveApplied } = s;
+  const doFetch = deps.fetch ?? fetch;
+  const now = deps.now ?? Date.now;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
 
   for (let attempt = 0; ; attempt++) {
     const left = deadline - now();
@@ -311,6 +413,14 @@ async function submitRemote<K extends KernelOp>(op: K, input: KernelOps[K]['inpu
       // The command itself threw there (the key was released): the real error, not an outage. Not retried.
       throw new KernelCommandFailedError(String(answer.error ?? 'unknown error'), opts.idempotencyKey);
     }
+    if (res.status === 503 && (answer?.code === 'ledger_unavailable' || answer?.code === 'reach_unavailable')) {
+      // Refused before the claim: this request ran nothing (earlier ones may have; mayHaveApplied keeps that).
+      // One more try, then the answer: a database that is down now is not back within a door's budget.
+      why = `answered 503 ${String(answer.code)}`;
+      if (attempt >= 1) throw new ControlPlaneUnavailableError(why, mayHaveApplied ? 'unknown' : 'not_applied', opts.idempotencyKey);
+      await sleep(Math.min(250 * 2 ** attempt, 2_000));
+      continue;
+    }
     if (RETRYABLE_STATUS.has(res.status) || (res.status === 409 && answer?.code === 'in_progress')) {
       why = `answered ${res.status}${answer?.code ? ` ${String(answer.code)}` : ''}`;
       // in_progress: it is running there. Any other 5xx: it may have run. Only a 429 refused before running.
@@ -319,6 +429,39 @@ async function submitRemote<K extends KernelOp>(op: K, input: KernelOps[K]['inpu
       continue;
     }
     throw new KernelCommandRefusedError(res.status, answer ?? {});
+  }
+}
+
+// ── The inline drain ────────────────────────────────────────────────────────
+
+/** How long a web-host request waits for the control plane's answer to an inline drain. */
+export const INLINE_DRAIN_BUDGET_MS = 10_000;
+/**
+ * Inside a pass (a sweep), how long an inline drain waits for that answer. Not answering in time is
+ * not a failure: the control plane runs the drain to its end even after this caller stops waiting
+ * (command-api.ts hands it to the Worker's waitUntil), and its floor drains whatever is left.
+ */
+export const PASS_DRAIN_WAIT_MS = 2_500;
+
+/**
+ * The web host's inline drain in own mode: one `drain` command, best effort (the effect rows are
+ * durable). Null when it was not confirmed: not answered in time, or skipped because the pass it
+ * runs in spent its control-plane budget.
+ */
+export async function drainOnControlPlane(deliveryId: string, deps: ClientDeps = {}): Promise<KernelOps['drain']['result']> {
+  const scope = budgetScope.getStore();
+  const passLeft = controlPlaneBudgetLeft();
+  if (scope && passLeft !== null && passLeft <= 0) {
+    scope.drainsSkipped++;
+    return null;
+  }
+  const budgetMs = passLeft === null ? INLINE_DRAIN_BUDGET_MS : Math.min(PASS_DRAIN_WAIT_MS, passLeft);
+  try {
+    const answer = await submitKernelCommand('drain', { deliveryId }, { principal: { kind: 'system', id: 'inline-drain' }, budgetMs, withDelivery: false, deps });
+    return answer.result;
+  } catch (err) {
+    console.warn(`[workflow] control-plane drain for delivery ${deliveryId} not confirmed; the control plane finishes it or its floor drains it:`, err instanceof Error ? err.message : err);
+    return null;
   }
 }
 
@@ -356,7 +499,9 @@ async function door<K extends KernelOp>(op: K, input: KernelOps[K]['input'], c: 
   const principal = c.principal;
   const now = c.deps?.now ?? Date.now;
   const env = c.deps?.env ?? process.env;
-  const deadline = now() + (Number(env.KERNEL_DOOR_BUDGET_MS) || DOOR_BUDGET_MS);
+  // Inside a pass, the door's budget is also cut to what is left of the pass's (submitRemote refuses once it is spent).
+  const passLeft = controlPlaneBudgetLeft();
+  const deadline = now() + Math.min(Number(env.KERNEL_DOOR_BUDGET_MS) || DOOR_BUDGET_MS, passLeft ?? Infinity);
   let priorUnknown = false;
   for (let attempt = 0; ; attempt++) {
     try {

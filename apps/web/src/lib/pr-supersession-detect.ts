@@ -38,6 +38,7 @@ import { and, asc, eq, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-o
 import { githubApi } from '@/lib/github';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { recordPrSupersession, supersessionRepoScope } from '@/lib/pr-supersession';
+import { deferralOf, isOutageAnswer, nextDeferral } from '@/lib/control-plane-deferral';
 import { verifyByContent, verifyByPatchId, mapPath, parseSupersessionClaims, significantAddedLines, type DiffFile } from '@/lib/pr-supersession-verify';
 import { normalizeRepoFullName, prUrlFor, repoFullNameFromPrUrl } from '@/lib/repo-scope';
 import { installationIdForRepo } from '@/lib/workspace-installation';
@@ -52,7 +53,13 @@ export type DetectResult =
   | { outcome: 'skipped'; reason: string }
   | { outcome: 'recorded'; repo: string; prNumber: number; method: SupersessionMethod; confidence: number }
   | { outcome: 'suggested'; suggestion: SupersessionSuggestion; candidatesChecked: number }
-  | { outcome: 'none'; candidatesChecked: number };
+  | { outcome: 'none'; candidatesChecked: number }
+  /**
+   * A candidate verified, but the control plane did not answer the record (a retryable outage, the
+   * pass's budget spent). Not stamped, no suggestion: the content DID verify, so the next sweep
+   * tries again, up to the deferral cap. A refusal or a failed command is not deferred.
+   */
+  | { outcome: 'deferred'; reason: string; candidatesChecked: number };
 
 /** Actor label on an auto-recorded edge — distinguishes it from a person's. */
 export const AUTO_SUPERSESSION_ACTOR = 'system:auto-supersession';
@@ -304,6 +311,39 @@ export async function detectPrSupersession(opts: {
   const merged: Array<Candidate & { prUrl: string; confidence: number }> = [];
   let checked = 0;
 
+  // A verified candidate the control plane did not take: deferred to the next sweep (nothing stamped),
+  // until the deferral runs out; then it is filed as a suggestion with why, and a stranded gate event.
+  const scanRows = or(eq(workers.id, worker.id), and(eq(workers.prUrl, worker.prUrl!), isNull(workers.mergedAt)));
+  const deferOrExhaust = async (cand: Candidate, candUrl: string, reason: string): Promise<DetectResult> => {
+    const { state, exhausted } = nextDeferral(deferralOf(prevScan?.deferral), reason, now);
+    const base: SupersessionScan = prevScan ?? { scannedAt: now.toISOString(), candidatesChecked: checked, suggestion: null };
+    if (!exhausted) {
+      await db.update(workers).set({ supersessionScan: { ...base, deferral: state } }).where(scanRows);
+      return { outcome: 'deferred', reason, candidatesChecked: checked };
+    }
+    const suggestion: SupersessionSuggestion = {
+      repo: cand.repo, prNumber: cand.prNumber, prUrl: candUrl, signal: cand.signal,
+      why: `${cand.why}; its content verified, but the control plane did not take the record for ${state.count} sweep(s) since ${state.firstAt} (${reason})`,
+      score: Math.round(cand.score * 100) / 100,
+    };
+    const { deferral: _done, ...rest } = base;
+    await db.update(workers)
+      .set({ supersessionScan: { ...rest, scannedAt: now.toISOString(), candidatesChecked: checked, suggestion, deferralExhausted: state }, supersessionScannedAt: now })
+      .where(scanRows);
+    fireGateEvent({
+      gate: GATE_SLUGS.AUTO_PR_SUPERSESSION,
+      surface: SURFACE[opts.via],
+      outcome: 'stranded',
+      reason: `supersession content verified but never recorded: the control plane did not answer for ${state.count} sweep(s); suggested for a person instead`,
+      workspaceId: worker.workspaceId ?? null,
+      taskId: worker.taskId ?? null,
+      workerId: worker.id,
+      detail: { kind: 'control_plane_deferral_exhausted', prNumber, repo: closedRepo, candidate: { repo: cand.repo, prNumber: cand.prNumber }, deferral: state },
+      callerOrigin: 'system',
+    });
+    return { outcome: 'suggested', suggestion, candidatesChecked: checked };
+  };
+
   const tryAll = async (list: Candidate[]): Promise<DetectResult | null> => {
     for (const cand of list) {
       if (checked >= DETECT_LIMITS.maxVerify) break;
@@ -319,6 +359,7 @@ export async function detectPrSupersession(opts: {
       merged.push({ ...cand, prUrl: v.prUrl!, confidence: v.confidence });
       if (!v.verified) continue;
       const recorded = await recordVerified({ workerId: worker.id, workspaceId: worker.workspaceId, taskId: worker.taskId, closedRepo, prNumber, cand, method: v.method!, confidence: v.confidence, via: opts.via });
+      if (recorded?.outcome === 'deferred') return deferOrExhaust(cand, v.prUrl!, recorded.reason);
       if (recorded) return recorded;
     }
     return null;
@@ -407,6 +448,12 @@ async function recordVerified(opts: {
     recordedBy: AUTO_SUPERSESSION_ACTOR,
     caller: 'system',
   });
+  if (!result.ok && isOutageAnswer(result.door?.body)) {
+    // The control plane did not answer: not a judgement on the candidate. Deferred, never a suggestion.
+    // A refusal or the command's own failure is deterministic and falls through to a suggestion below.
+    console.warn(`[pr-supersession-detect] verified ${refOf(cand, closedRepo)}; recording deferred, the control plane did not answer: ${result.error}`);
+    return { outcome: 'deferred', reason: result.error, candidatesChecked: 0 };
+  }
   if (!result.ok) {
     // Proven content but the write refused (repo outside the mission, say):
     // fall through and treat it as a suggestion a person can judge.
@@ -483,6 +530,8 @@ export interface ClosedPrSweepResult {
   suggested: number;
   none: number;
   skipped: number;
+  /** Verified but not recorded (the kernel's host did not take it): left unstamped for the next tick. */
+  deferred: number;
 }
 
 /**
@@ -491,7 +540,7 @@ export interface ClosedPrSweepResult {
  * backlog that predates the webhook door.
  */
 export async function sweepClosedUnsupersededPrs(now: Date = new Date()): Promise<ClosedPrSweepResult> {
-  const result: ClosedPrSweepResult = { candidates: 0, recorded: 0, suggested: 0, none: 0, skipped: 0 };
+  const result: ClosedPrSweepResult = { candidates: 0, recorded: 0, suggested: 0, none: 0, skipped: 0, deferred: 0 };
   const cutoff = new Date(now.getTime() - RESCAN_AFTER_MS);
   const rows = await db
     .select({ id: workers.id, prUrl: workers.prUrl })

@@ -179,6 +179,23 @@ describe('retireSupersededRefreshPr', () => {
     expect(mockRecord).toHaveBeenCalledTimes(1);
   });
 
+  // Incident 197552dc review: a record the kernel's host did not take is not a stranded PR.
+  it('an outage on the record is deferred: no stranded event, and the PR stays retryable', async () => {
+    mockRecord.mockImplementation(async () => ({ ok: false, status: 503, error: 'the pass spent its control-plane budget', door: { body: { code: 'control_plane_unavailable', outcome: 'not_applied' }, headers: {} } }));
+    const out = await retireSupersededRefreshPr({ installationId: 1, older: OLDER, newer: NEWER, api });
+    expect(out.outcome).toBe('deferred');
+    expect(events('stranded')).toHaveLength(0);
+  });
+
+  for (const [what, code, status] of [['a refusal', 'control_plane_refused', 403], ['the command failing there', 'command_failed', 500]] as const) {
+    it(`${what} (${status} ${code}) is deterministic: kept with a stranded event, as before, never deferred`, async () => {
+      mockRecord.mockImplementation(async () => ({ ok: false, status, error: `door said ${code}`, door: { body: { code }, headers: {} } }));
+      const out = await retireSupersededRefreshPr({ installationId: 1, older: OLDER, newer: NEWER, api });
+      expect(out.outcome).toBe('kept');
+      expect(events('stranded')).toHaveLength(1);
+    });
+  }
+
   it('treats an already-recorded edge (409) as done, not as a failure', async () => {
     mockRecord.mockImplementation(async () => ({ ok: false, status: 409, error: 'already recorded' }));
     const out = await retireSupersededRefreshPr({ installationId: 1, older: OLDER, newer: NEWER, api });
@@ -193,7 +210,7 @@ describe('sweepSupersededRefreshPrs', () => {
 
   it('retires the older open refresh when a higher-numbered one merged in the same mission', async () => {
     const r = await run([OLDER], [NEWER]);
-    expect(r).toEqual({ candidates: 1, retired: 1, kept: 0, skipped: 0 });
+    expect(r).toEqual({ candidates: 1, retired: 1, kept: 0, skipped: 0, deferred: 0, deferralExhausted: 0 });
   });
 
   it('leaves unrelated PRs alone: other mission, lower-numbered merged refresh, or no successor', async () => {
@@ -208,7 +225,7 @@ describe('sweepSupersededRefreshPrs', () => {
   it('counts a candidate whose verification fails as kept, not retired', async () => {
     w.olderDelta!.push(file('apps/web/src/lib/only-here.ts', 'blobC', lines('export const uniqueWork = 1;', 'export const moreWork = 2;', 'export function doIt() {}')));
     const r = await run([OLDER], [NEWER]);
-    expect(r).toEqual({ candidates: 1, retired: 0, kept: 1, skipped: 0 });
+    expect(r).toEqual({ candidates: 1, retired: 0, kept: 1, skipped: 0, deferred: 0, deferralExhausted: 0 });
     expect(mutations()).toEqual([]);
   });
 
@@ -220,8 +237,33 @@ describe('sweepSupersededRefreshPrs', () => {
     expect(mockRecord).not.toHaveBeenCalled();
   });
 
+  it('a deferred record stops at the first successor: the next one would only wait on the control plane again', async () => {
+    mockRecord.mockImplementation(async () => ({ ok: false, status: 503, error: 'control plane did not answer', door: { body: { code: 'control_plane_unavailable' }, headers: {} } }));
+    const r = await run([OLDER], [NEWER, pr(4310, { refresh: refresh('trunk4310', 'missionhead') })]);
+    expect(r).toMatchObject({ candidates: 1, retired: 0, kept: 0, deferred: 1 });
+    expect(mockRecord).toHaveBeenCalledTimes(1);
+  });
+
+  it('a deferral is kept on the task each tick, and past the cap it stops with a stranded event a person sees', async () => {
+    mockRecord.mockImplementation(async () => ({ ok: false, status: 503, error: 'control plane did not answer', door: { body: { code: 'control_plane_unavailable' }, headers: {} } }));
+    const saved: Array<{ taskId: string; count: number; exhausted: boolean }> = [];
+    const saveDeferral = async (taskId: string, state: { count: number }, exhausted: boolean) => { saved.push({ taskId, count: state.count, exhausted }); };
+    const now = new Date('2026-10-14T23:10:00Z');
+    const first = await sweepSupersededRefreshPrs(now, { load: async () => ({ open: [OLDER], merged: [NEWER] }), installation: async () => 1, api, saveDeferral });
+    expect(first).toMatchObject({ deferred: 1, deferralExhausted: 0 });
+    expect(saved).toEqual([{ taskId: 't4275', count: 1, exhausted: false }]);
+    expect(events('stranded')).toHaveLength(0);
+
+    const late = { ...OLDER, deferral: { firstAt: '2026-10-14T00:10:00Z', count: 23, reason: 'cp down' } };
+    const last = await sweepSupersededRefreshPrs(now, { load: async () => ({ open: [late], merged: [NEWER] }), installation: async () => 1, api, saveDeferral });
+    expect(last).toMatchObject({ deferred: 1, deferralExhausted: 1 });
+    expect(saved.at(-1)).toEqual({ taskId: 't4275', count: 24, exhausted: true });
+    expect(events('stranded')).toHaveLength(1);
+    expect(mockFireGateEvent.mock.calls.at(-1)![0]).toMatchObject({ outcome: 'stranded', detail: expect.objectContaining({ kind: 'control_plane_deferral_exhausted' }) });
+  });
+
   it('skips a repo with no installation', async () => {
     const r = await sweepSupersededRefreshPrs(new Date(), { load: async () => ({ open: [OLDER], merged: [NEWER] }), installation: async () => null, api });
-    expect(r).toEqual({ candidates: 1, retired: 0, kept: 0, skipped: 1 });
+    expect(r).toEqual({ candidates: 1, retired: 0, kept: 0, skipped: 1, deferred: 0, deferralExhausted: 0 });
   });
 });
