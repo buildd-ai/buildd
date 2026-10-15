@@ -30,9 +30,13 @@ export interface BrowserOpenInput {
   now: number;
 }
 
-/** Set by a service manager that started this process, not by a person. */
+/**
+ * Set by systemd for a unit it started, never by a person's shell. There is no
+ * launchd equivalent to test: macOS also sets XPC_SERVICE_NAME in terminals
+ * opened from the Dock, so launchd starts are caught by the TTY check instead.
+ */
 function startedByServiceManager(env: Record<string, string | undefined>): boolean {
-  return !!env.INVOCATION_ID || !!env.JOURNAL_STREAM || (!!env.XPC_SERVICE_NAME && env.XPC_SERVICE_NAME !== '0');
+  return !!env.INVOCATION_ID || !!env.JOURNAL_STREAM;
 }
 
 export function shouldAutoOpenBrowser(i: BrowserOpenInput): boolean {

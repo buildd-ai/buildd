@@ -28,8 +28,13 @@ describe('shouldAutoOpenBrowser', () => {
   });
   test('does not open when a service manager started it', () => {
     expect(shouldAutoOpenBrowser({ ...base, env: { INVOCATION_ID: 'x' } })).toBe(false);
-    expect(shouldAutoOpenBrowser({ ...base, env: { XPC_SERVICE_NAME: 'dev.buildd.runner' } })).toBe(false);
-    expect(shouldAutoOpenBrowser({ ...base, env: { XPC_SERVICE_NAME: '0' } })).toBe(true);
+    expect(shouldAutoOpenBrowser({ ...base, env: { JOURNAL_STREAM: '8:1234' } })).toBe(false);
+  });
+  test('opens from a macOS terminal opened from the Dock, which sets XPC_SERVICE_NAME', () => {
+    expect(shouldAutoOpenBrowser({ ...base, env: { XPC_SERVICE_NAME: 'application.com.apple.Terminal.1234' } })).toBe(true);
+  });
+  test('a launchd start has no terminal, so it never opens', () => {
+    expect(shouldAutoOpenBrowser({ ...base, isTTY: false, env: { XPC_SERVICE_NAME: 'dev.buildd.runner' } })).toBe(false);
   });
   test('still debounces a quick second start', () => {
     expect(shouldAutoOpenBrowser({ ...base, lastOpenAt: base.now - 5_000 })).toBe(false);
