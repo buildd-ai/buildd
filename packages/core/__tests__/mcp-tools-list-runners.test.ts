@@ -93,6 +93,52 @@ describe('list_runners', () => {
     expect(out).toContain('last heartbeat 2026-09-27T00:00:00.000Z');
   });
 
+  describe('workspaces named by team (spec bd009650 R-7)', () => {
+    const row = { accountName: 'Runner A', localUiUrl: 'http://localhost:8766', activeWorkers: 0, maxConcurrent: 1, lastUpdated: '2026-09-27T00:00:00.000Z' };
+    const render = async (r: Record<string, unknown>) => {
+      mockApi.mockResolvedValueOnce({ activeLocalUis: [{ ...row, ...r }] });
+      return (await handleBuilddAction(mockApi as unknown as ApiFn, 'list_runners', {}, ctx())).content[0].text;
+    };
+
+    it('groups workspaces by team when a runner spans more than one', async () => {
+      const out = await render({
+        workspaceIds: ['a1', 'b1', 'a2'],
+        workspaceNames: ['alpha', 'beta', 'gamma'],
+        workspaceTeamNames: ['Team A', 'Team B', 'Team A'],
+      });
+      expect(out).toContain('workspaces: Team A: alpha, gamma · Team B: beta · last heartbeat');
+    });
+
+    it('keeps the plain line when every workspace is in one team', async () => {
+      const out = await render({
+        workspaceIds: ['a1', 'a2'],
+        workspaceNames: ['alpha', 'gamma'],
+        workspaceTeamNames: ['Team A', 'Team A'],
+      });
+      expect(out).toContain('workspaces: alpha, gamma · last heartbeat');
+      expect(out).not.toContain('Team A');
+    });
+
+    it('keeps the plain line for a server that sends no team names', async () => {
+      const out = await render({ workspaceIds: ['a1', 'b1'], workspaceNames: ['alpha', 'beta'] });
+      expect(out).toContain('workspaces: alpha, beta · last heartbeat');
+    });
+
+    it('says when a workspace\'s team is not known, rather than filing it under another team', async () => {
+      const out = await render({
+        workspaceIds: ['a1', 'x1'],
+        workspaceNames: ['alpha', 'mystery'],
+        workspaceTeamNames: ['Team A', null],
+      });
+      expect(out).toContain('workspaces: Team A: alpha · team unknown: mystery · last heartbeat');
+    });
+
+    it('ignores team names that do not line up with the workspace names', async () => {
+      const out = await render({ workspaceIds: ['a1', 'b1'], workspaceNames: ['alpha', 'beta'], workspaceTeamNames: ['Team A'] });
+      expect(out).toContain('workspaces: alpha, beta · last heartbeat');
+    });
+  });
+
   it('names the model login each runner reported, or not_reported', async () => {
     const row = { accountName: 'Runner A', activeWorkers: 0, maxConcurrent: 1, workspaceNames: [], lastUpdated: '2026-09-27T00:00:00.000Z' };
     mockApi.mockResolvedValueOnce({

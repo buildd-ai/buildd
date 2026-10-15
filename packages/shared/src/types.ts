@@ -1375,6 +1375,17 @@ export interface RunnerUpdateCanaryReport {
 }
 
 /**
+ * The workspaces one runner row of `GET /api/workers/active` serves, as the
+ * caller can see them. The three arrays run index for index. A team name is
+ * null when the team is unknown; older servers omit `workspaceTeamNames`.
+ */
+export interface ActiveRunnerWorkspaces {
+  workspaceIds: string[];
+  workspaceNames: string[];
+  workspaceTeamNames?: Array<string | null>;
+}
+
+/**
  * The runner's own live update-state — the same fields it reports on its
  * local, unauthenticated-off-box `/api/version` endpoint
  * (`apps/runner/src/index.ts`) — now also sent on every heartbeat (see
@@ -3207,6 +3218,18 @@ export interface GoalCriteriaEvidenceRef {
   type: 'artifact' | 'task';
   id: string;
   title?: string;
+}
+
+/**
+ * A mission's stage as `GET /api/missions/stages` sends it, keyed by mission
+ * id; the runner puts it on each listed task's mission as `mission.stage`.
+ * The current step of the mission page's Build / Verify / Deliver rail in words, and what that step waits on in the rail's own words.
+ * Absent when the server could not derive it; clients then show done/total.
+ */
+export type MissionStageStep = 'building' | 'verifying' | 'delivering' | 'delivered' | 'on_hold' | 'planning';
+export interface MissionStage {
+  step: MissionStageStep;
+  waitingOn: string | null;
 }
 
 export interface GoalCriteriaState {

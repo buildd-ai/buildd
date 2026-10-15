@@ -11,6 +11,7 @@ const mockWorkersFindMany = mock(() => [] as any[]);
 const mockGetUserWorkspaceIds = mock(() => Promise.resolve([] as string[]));
 const mockGetUserTeamIds = mock(() => Promise.resolve(['team-1']));
 const mockWorkspacesFindFirst = mock(() => null as any);
+const mockTeamsFindMany = mock(async (..._args: any[]) => [] as any[]);
 const mockLoadBrowserRunnerHeartbeats = mock(async (..._args: any[]) => null as any);
 
 mock.module('@/lib/runner-heartbeats', () => ({
@@ -44,6 +45,7 @@ mock.module('@buildd/core/db', () => ({
       workspaces: { findMany: mockWorkspacesFindMany, findFirst: mockWorkspacesFindFirst },
       workerHeartbeats: { findMany: mockHeartbeatsFindMany },
       workers: { findMany: mockWorkersFindMany },
+      teams: { findMany: mockTeamsFindMany },
     },
   },
 }));
@@ -61,6 +63,7 @@ mock.module('@buildd/core/db/schema', () => ({
   workers: { accountId: 'accountId', status: 'status' },
   workspaces: { id: 'id', teamId: 'teamId', accessMode: 'accessMode' },
   workerHeartbeats: { lastHeartbeatAt: 'lastHeartbeatAt' },
+  teams: { id: 'id' },
 }));
 
 import { GET } from './route';
@@ -85,6 +88,8 @@ describe('GET /api/workers/active', () => {
     mockWorkersFindMany.mockReset();
     mockGetUserWorkspaceIds.mockReset();
     mockGetUserTeamIds.mockReset();
+    mockTeamsFindMany.mockReset();
+    mockTeamsFindMany.mockResolvedValue([]);
 
     // Default mocks
     mockAuthenticateApiKey.mockResolvedValue(null);
@@ -694,6 +699,57 @@ describe('GET /api/workers/active', () => {
       expect(res.status).toBe(404);
       const own = await GET(new NextRequest('http://localhost:3000/api/workers/active?workspaceId=ws-a-open'));
       expect(own.status).toBe(200);
+    });
+  });
+
+  describe('each workspace\'s team (list_runners groups by it)', () => {
+    const runner = {
+      localUiUrl: 'http://multi', viewerToken: 't', accountId: 'acct-1',
+      maxConcurrentWorkers: 3, activeWorkerCount: 0, lastHeartbeatAt: new Date(),
+      account: { id: 'acct-1', name: 'Runner', maxConcurrentWorkers: 3, teamId: 'team-a' },
+    };
+    const teamTable = [
+      { id: 'team-a', name: 'Team A' },
+      { id: 'team-b', name: 'Team B' },
+      { id: 'team-c', name: 'Team C' },
+    ];
+
+    beforeEach(() => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockGetUserWorkspaceIds.mockResolvedValue(['ws-a1', 'ws-b1', 'ws-a2']);
+      mockWorkspacesFindMany.mockResolvedValue([
+        { id: 'ws-a1', name: 'alpha', teamId: 'team-a', accessMode: 'restricted' },
+        { id: 'ws-b1', name: 'beta', teamId: 'team-b', accessMode: 'restricted' },
+        { id: 'ws-a2', name: 'gamma', teamId: 'team-a', accessMode: 'restricted' },
+      ]);
+      mockGetAccountWorkspacePermissions.mockResolvedValue([
+        { workspaceId: 'ws-a1' }, { workspaceId: 'ws-b1' }, { workspaceId: 'ws-a2' },
+      ]);
+      mockHeartbeatsFindMany.mockResolvedValue([runner]);
+      mockTeamsFindMany.mockImplementation(async (args: any) =>
+        teamTable.filter(t => args?.where?.type === 'inArray' && args.where.values.includes(t.id)));
+    });
+
+    it('sends the team name for every listed workspace, in the same order', async () => {
+      const data = await (await GET(createMockRequest())).json();
+      const r = data.activeLocalUis[0];
+      expect(r.workspaceIds).toEqual(['ws-a1', 'ws-b1', 'ws-a2']);
+      expect(r.workspaceNames).toEqual(['alpha', 'beta', 'gamma']);
+      expect(r.workspaceTeamNames).toEqual(['Team A', 'Team B', 'Team A']);
+    });
+
+    it('reads only the teams of workspaces the caller can already see', async () => {
+      await GET(createMockRequest());
+      expect(mockTeamsFindMany).toHaveBeenCalledTimes(1);
+      const where = (mockTeamsFindMany.mock.calls[0][0] as any).where;
+      expect([...where.values].sort()).toEqual(['team-a', 'team-b']);
+      expect((mockTeamsFindMany.mock.calls[0][0] as any).columns).toEqual({ id: true, name: true });
+    });
+
+    it('a workspace whose team is unknown gets null, not another team\'s name', async () => {
+      mockTeamsFindMany.mockResolvedValue([{ id: 'team-a', name: 'Team A' }]);
+      const data = await (await GET(createMockRequest())).json();
+      expect(data.activeLocalUis[0].workspaceTeamNames).toEqual(['Team A', null, 'Team A']);
     });
   });
 

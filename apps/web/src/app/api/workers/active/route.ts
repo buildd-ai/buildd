@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, workerHeartbeats, workspaces } from '@buildd/core/db/schema';
+import { workers, workerHeartbeats, workspaces, teams } from '@buildd/core/db/schema';
 import { eq, gt, inArray, and } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
@@ -32,6 +32,8 @@ const HEARTBEAT_STALE_MS = RUNNER_STALE_CUTOFF_MS;
  * - maxConcurrent: Maximum concurrent workers allowed
  * - capacity: Remaining capacity (maxConcurrent - activeWorkers)
  * - workspaceIds: Workspaces this runner can work on
+ * - workspaceNames / workspaceTeamNames: their names and their teams' names,
+ *   index for index with workspaceIds (ActiveRunnerWorkspaces in @buildd/shared)
  * - browser: the heartbeat advertises the `browser` capability (envKeys)
  * - browserOnline: `browser`, a heartbeat within `onlineWindowMs`, and (with
  *   `?workspaceId=`) claim reach there: the same rule as `browserRunnerOnline`
@@ -113,6 +115,21 @@ export async function GET(req: NextRequest) {
     const userWorkspaces = await getWorkspaceIdsAndNames(auth);
     const workspaceIds = userWorkspaces.map(w => w.id);
     const workspaceNameMap = new Map(userWorkspaces.map(w => [w.id, w.name]));
+    // Each listed workspace's team name (spec bd009650 R-7, list_runners
+    // groups by it). Only the teams that own a workspace the caller already
+    // sees: nothing here widens what a caller can read.
+    const visibleTeamIds = [...new Set(userWorkspaces.map(w => w.teamId).filter((t): t is string => !!t))];
+    const teamNameById = new Map<string, string>(
+      visibleTeamIds.length > 0
+        ? ((await db.query.teams.findMany({
+            where: sqlWhere(inArray(teams.id, visibleTeamIds)),
+            columns: { id: true, name: true },
+          })) as Array<{ id: string; name: string | null }>)
+            .filter(t => !!t.name)
+            .map(t => [t.id, t.name!] as [string, string])
+        : [],
+    );
+    const workspaceTeamName = new Map(userWorkspaces.map(w => [w.id, (w.teamId && teamNameById.get(w.teamId)) || null]));
 
     const askedWorkspaceId = new URL(req.url).searchParams.get('workspaceId');
     if (askedWorkspaceId && !workspaceIds.includes(askedWorkspaceId)) {
@@ -221,6 +238,8 @@ export async function GET(req: NextRequest) {
           fleet: fleet.ephemeral ? fleet : null,
           workspaceIds: overlapping,
           workspaceNames: overlapping.map(id => workspaceNameMap.get(id) || 'Unknown'),
+          // Parallel to workspaceIds: the owning team's name, null when unknown.
+          workspaceTeamNames: overlapping.map(id => workspaceTeamName.get(id) ?? null),
           environment: hb.environment || null,
           browser: Array.isArray(envKeys) && envKeys.includes(CAPABILITY_BROWSER),
           runnerCommit: hb.runnerCommit || null,

@@ -5,7 +5,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   NO_MISSION, currentWorkspace, cycleWorkspace, eventChangesQueue, failureReason, isOrganizerTask, missionRows,
-  planOf, reduce, taskRows, teamCount, waitingReason, workspaceList, workspaceSummary, type TopState, type TopTask,
+  missionStageLine, missionStageWord, planOf, reduce, taskRows, teamCount, waitingReason, workspaceList, workspaceSummary, type TopState, type TopTask,
 } from '../../src/top/state';
 import { NOW, TASKS, WORKERS, fixtureState } from './top-fixture';
 
@@ -79,6 +79,28 @@ describe('missions pane (R-2)', () => {
     expect(missionRows(s).find(r => r.key === mission.id)).toMatchObject({ done: 7, total: 9 });
     // A server without the field: the local count stands.
     expect(missionRows(s).find(r => r.title === 'Runner TUI')).toMatchObject({ done: 2, total: 8 });
+  });
+
+  test('a mission carries the server\'s stage (R-18); without it there is none', () => {
+    const stage = { step: 'verifying' as const, waitingOn: 'Unit tests pass: not checked' };
+    const mission = { id: 'm-stage-0000-0000', title: 'Staged', isHeld: false, executor: 'runner', stage };
+    const s = reduce(fixtureState(), { type: 'tasks', tasks: [...TASKS, { id: 't-s1', title: 'staged a', status: 'pending', missionId: mission.id, mission }] });
+    const row = missionRows(s).find(r => r.key === mission.id)!;
+    expect(row.stage).toEqual(stage);
+    expect(missionStageWord(row)).toBe('verifying');
+    expect(missionStageLine(row)).toBe('verifying: Unit tests pass: not checked');
+    const plain = missionRows(s).find(r => r.title === 'Runner TUI')!;
+    expect(plain.stage ?? null).toBeNull();
+    expect(missionStageWord(plain)).toBeNull();
+    expect(missionStageLine(plain)).toBeNull();
+  });
+
+  test('stage words are the rail\'s: on hold in two words, no waiting-on line when there is none', () => {
+    const row = (step: any, waitingOn: string | null = null) => ({ key: 'm', title: 'M', done: 0, total: 0, running: 0, planning: false, stage: { step, waitingOn } });
+    expect(missionStageWord(row('on_hold'))).toBe('on hold');
+    expect(missionStageLine(row('delivered'))).toBe('delivered');
+    expect(missionStageLine(row('delivering', 'approve the mission PR'))).toBe('delivering: approve the mission PR');
+    expect(missionStageLine(row('building', '3 of 5 landed'))).toBe('building: 3 of 5 landed');
   });
 
   test('(no mission) is there even with no loose tasks', () => {
