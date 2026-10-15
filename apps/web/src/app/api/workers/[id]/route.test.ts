@@ -729,6 +729,7 @@ const mockWorkflowAttemptEnded = mock(async (_p: any) => ({ handled: false }));
 const mockFixCompletionGate = mock(async (_p: any): Promise<any> => null);
 const mockRecordLocalHead = mock(async (_taskId: string, _sha: string) => undefined);
 const mockRecordReviewVerdict = mock(async (_p: any): Promise<any> => ({ handled: false }));
+const mockAdoptReviewVerdict = mock(async (_p: any): Promise<any> => ({ result: 'applied' }));
 const mockIsKernelReviewRound = mock(async (_t: any): Promise<boolean> => false);
 // The legacy conflict/migration repair gate (lib/repair-completion.ts) has its
 // own unit suite; here: that the route refuses on its verdict.
@@ -743,6 +744,7 @@ mock.module('@/lib/workflow/seam', () => ({
   taskRetryCoversAttemptEnd: realHandOff.taskRetryCoversAttemptEnd,
   fixCompletionGate: mockFixCompletionGate,
   recordReviewVerdict: mockRecordReviewVerdict,
+  adoptReviewVerdict: mockAdoptReviewVerdict,
   isKernelReviewRound: mockIsKernelReviewRound,
   isRepairRole: (r: string | null | undefined) => r === 'fix' || r === 'ci_fix',
   recordLocalHead: mockRecordLocalHead,
@@ -9284,14 +9286,18 @@ describe('PATCH /api/workers/[id]', () => {
       expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
     });
 
-    it('approve: a legacy reviewer for a PR the kernel owns posts no review and merges nothing', async () => {
+    it('approve: a legacy reviewer for a PR the kernel owns posts no review and merges nothing; the kernel adopts its verdict (00d288fd)', async () => {
       setupReviewerTaskCompletion('approve');
       mockKernelDeliveryForPr.mockImplementationOnce(async () => 'delivery-9');
+      mockAdoptReviewVerdict.mockClear();
 
       await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
 
       expect(mockPostPrReview).not.toHaveBeenCalled();
       expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+      // Not dropped: the kernel keeps it as the head's review (applied when the owner ends).
+      expect(mockAdoptReviewVerdict).toHaveBeenCalledTimes(1);
+      expect(mockAdoptReviewVerdict.mock.calls[0][0]).toMatchObject({ deliveryId: 'delivery-9', verdict: 'approve' });
     });
 
     it('approve: an unreadable delivery authority posts no review and merges nothing', async () => {

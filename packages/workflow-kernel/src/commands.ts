@@ -156,6 +156,20 @@ export type Command =
     } & VerdictFindings)
   | (Base & {
       /**
+       * 00d288fd: the verdict of a reviewer that ran outside the kernel's rounds (filed
+       * before the delivery opened, by a door that raced it) on a PR the kernel owns. It is
+       * the verdict on `headBound` when that is the current head: kept while the owner
+       * still works and applied when it ends, so the same head is never reviewed twice.
+       */
+      type: 'ReviewVerdictAdopted';
+      reviewerTaskId: string;
+      verdict: Verdict;
+      effectiveVerdict: Verdict;
+      headBound: string;
+      confidence?: number | null;
+    } & VerdictFindings)
+  | (Base & {
+      /**
        * §5: a person waives a finding, or defers it to a named task. Recorded with
        * who and why; it closes the finding and nothing else.
        */
@@ -230,6 +244,17 @@ export type Command =
        * null (unreadable) fails toward doing the work.
        */
       liveChecks?: { complete: boolean; failing: string[] } | null;
+    })
+  | (Base & {
+      /**
+       * 38442d17: CI went green on `headSha` (every check completed, none failing), read
+       * live. A CI repair bound to that same head has nothing left to fix (a re-run of an
+       * infrastructure failure passed): its attempt is cancelled, spending nothing when it
+       * never started, and the delivery returns to what the head was owed before.
+       */
+      type: 'CiGreenObserved';
+      headSha: string;
+      liveChecks: { complete: boolean; failing: string[] };
     })
   | (Base & {
       type: 'ConflictObserved';
@@ -489,7 +514,11 @@ export interface DeliveryPatch {
 }
 
 export type RoundOp =
-  | { op: 'insert'; id: string; round: number; headSha: string; kind: RoundKind; priorRound: number | null; scope?: Record<string, unknown> | null }
+  | {
+      op: 'insert'; id: string; round: number; headSha: string; kind: RoundKind; priorRound: number | null; scope?: Record<string, unknown> | null;
+      /** 00d288fd: a round inserted already decided (a reviewer outside the kernel's rounds, adopted at the head it judged). */
+      decided?: { verdict: Verdict; effectiveVerdict: Verdict; confidence: number | null; reviewerTaskId: string };
+    }
   | {
       op: 'update';
       roundId: string;

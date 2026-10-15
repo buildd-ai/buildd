@@ -286,10 +286,18 @@ export async function POST(req: NextRequest) {
         .where(eq(tasks.id, latest.id));
     }
     const kernelPolicy = await resolveEffectivePolicy(workspace, null);
+    // 1bd26ae7: never "already under review" with nothing behind it. A round with no reviewer task
+    // yet says so, with the round and head, and the kernel has re-queued its dispatch (T5 re-arm).
+    const noReviewer = !latest
+      ? { state: 'queued' as const, headSha: (pr.head?.sha as string | undefined) ?? null, reason: r.result === 'applied'
+          ? 'a review round is queued at this head; buildd is filing its reviewer now'
+          : `no reviewer task exists for this head yet (${r.reason})` }
+      : null;
     return NextResponse.json({
       ok: true,
       kernel: true,
       alreadyRequested: r.result !== 'applied',
+      ...(noReviewer ? { queued: noReviewer } : {}),
       ...(r.result === 'rejected' && r.reason === 'head_already_reviewed'
         ? { hint: person ? 'this head already has a verdict; pass force to re-review' : 'this head already has a verdict; a new round starts when the PR head moves (a forced re-review is a person\'s call)' }
         : {}),

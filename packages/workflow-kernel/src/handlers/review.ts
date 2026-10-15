@@ -31,6 +31,9 @@ import { hasPr, need, type WithPr } from './ports-of';
 
 const NO_INSTALLATION = 'no GitHub installation for the workspace';
 
+/** How many times a round whose reviewer could not be filed is re-queued before it is a person's (T27). */
+export const REVIEW_DISPATCH_RETRIES = 2;
+
 /**
  * The GitHub review body. A composition delta round (§5.9, S33) reviewed only
  * the paths new to the composed PR (a release's own changes, or what a mission
@@ -118,7 +121,13 @@ export function reviewHandlers(ports: KernelPorts): EffectHandlers {
     // §5.9: once per round that is not itself the composition's delta round.
     if (!round.scope?.composition) {
       const composed = await reviews.attestComposition(d, round);
-      if (composed) return { outcome: composed };
+      if (composed?.startsWith('ok')) return { outcome: composed };
+      if (composed) {
+        // 1bd26ae7: a delta the attestation found is reviewed in the round it started, which supersedes
+        // this one. If none was started (the attestation was already spent), this round still needs its reviewer.
+        const after = (await ports.store.loadView({ deliveryId: d.id })).rounds.find((r) => r.id === round.id);
+        if (!after || (after.status !== 'queued' && after.status !== 'reviewing')) return { outcome: composed };
+      }
     }
 
     // A delta round reviews the change since the last decided verdict.
@@ -155,7 +164,14 @@ export function reviewHandlers(ports: KernelPorts): EffectHandlers {
       await apply(d.id, { type: 'ReviewRoundFailed', actor: 'kernel', roundId, reason: 'infra', maxContractRetries: 0 });
       return { outcome: 'skipped:no_reviewer_role' };
     }
-    if (filed.skipped || !filed.taskId) return { outcome: `skipped:${filed.skipped ?? 'dispatch_refused'}` };
+    if (filed.skipped || !filed.taskId) {
+      // 1bd26ae7: a round left open with no reviewer is a stall nobody sees. The round fails as a
+      // reviewer that never started would (T27): re-queued with a fresh dispatch, then a person's
+      // (review_unavailable) once the contract retries are spent.
+      const why = filed.skipped ?? 'dispatch_refused';
+      await apply(d.id, { type: 'ReviewRoundFailed', actor: 'kernel', roundId, reason: 'infra', maxContractRetries: REVIEW_DISPATCH_RETRIES });
+      return { outcome: `skipped:${why}:round_failed` };
+    }
     await ports.store.linkRoundReviewer(round.id, filed.taskId);
     await work.cancelPending({ deliveryId: d.id, role: 'review', keepTaskId: filed.taskId, ...superseded(`round ${round.round} superseded it`) });
     // Not created: a reviewer already covers this head (another door's, or one an earlier run filed and
@@ -355,6 +371,20 @@ export async function cancelReviewAttempts(ports: KernelPorts, e: ClaimedEffect)
     await need(ports, 'reviews', e.kind).supersedeFixOnApproval(d);
     await need(ports, 'work', e.kind).cancelPending({ deliveryId: d.id, role: 'fix', ...superseded('the PR was approved') });
     return { outcome: 'ok' };
+  }
+  if (reason === 'ci_green') {
+    // 38442d17: CI on the head the repair was filed for went green (a re-run of an infrastructure
+    // failure). A fix nobody picked up is cancelled; one already running is told to stop.
+    const work = need(ports, 'work', e.kind);
+    const n = await work.cancelPending({ deliveryId: d.id, role: 'ci_fix', ...superseded('CI went green on the same head before the fix started') });
+    const taskId = typeof e.payload.taskId === 'string' ? e.payload.taskId : null;
+    if (taskId) {
+      await work.steer(taskId, {
+        marker: `ci-green:${String(e.payload.attemptId ?? taskId)}`,
+        note: `CI on PR #${d.prNumber} is green again on the head this fix was filed for: the failure was not in the code. Stop and complete without changes; there is nothing to fix.`,
+      });
+    }
+    return { outcome: `ok:cancelled_${n}` };
   }
   // Merge / close cancellations: the legacy supersession rules still run them.
   return { outcome: 'skipped:legacy_owns' };

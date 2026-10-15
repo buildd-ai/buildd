@@ -683,6 +683,33 @@ push, refresh, completion or owner change can make it disappear.
 - Deviation: a finding of a PR that closes unmerged is not moved to the
   superseding PR yet; it stays on the closed delivery.
 
+**As built (S5, the review loop never stalls):**
+- A verdict is never dropped because the builder is still open (00d288fd). A
+  reviewer that ran outside the kernel's rounds (filed by a door before the
+  delivery opened) is adopted at the head it judged (`ReviewVerdictAdopted`):
+  while the owner works, a repair holds or trunk is red, it is kept as a
+  decided round and the hand-off applies it; while the kernel's own round at
+  that head is still waiting, it answers that round. A verdict on another
+  head is stale. The same head is never reviewed twice for it, and `explain`
+  calls an open reviewer a review, never "Fix 0 of 3".
+- Completing a fix arms a delta re-review at the new head (1bd26ae7). A fix
+  that pushed from somewhere the runner cannot see reports no local head; its
+  proof is §9's "L unknown" rule (the head moved off the bound head and
+  descends from it). A `dispatch_review` that cannot file a reviewer fails its
+  round (T27, re-queued twice, then `review_unavailable`) instead of leaving
+  it open with nobody on it.
+- `request_pr_review` never claims a review exists when none does: an open
+  round with no reviewer task whose dispatches all finished gets its dispatch
+  again (the floor's rule, run for the asker), and the answer says what is
+  queued (`queued`) rather than "already under review" with no state.
+- A green CI observation at the head that went red ends the CI repair bound
+  to it (38442d17, `CiGreenObserved`, from the `check_suite` success webhook
+  and the red-PR sweep, read live): a queued attempt is skipped (it spent
+  nothing), a running one is cancelled and its task told to stop, and the
+  delivery returns to what the head was owed before (`APPROVED` for an
+  approved head). Classifying a pre-test infrastructure failure so no CI fix
+  is dispatched at all is not built: the green re-run is what clears it.
+
 **Acceptance criteria**:
 - AC-17: GIVEN two findings at head A WHEN a fix push touches one finding's
   path and a migration-only push follows THEN one finding is `addressed`, the
