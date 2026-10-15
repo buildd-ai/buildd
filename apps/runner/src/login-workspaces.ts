@@ -14,8 +14,10 @@
  * without `bun install`).
  */
 
+import { resolveBuilddServer } from './server-url';
+export { DEFAULT_SERVER } from './server-url';
+
 export const PICKS_EDIT_PATH = '/api/auth/runner-picks';
-export const DEFAULT_SERVER = 'https://buildd.dev';
 
 /** The edit page URL for one key. */
 export function picksEditUrl(server: string, accountId: string): string {
@@ -31,8 +33,9 @@ export interface CurrentKey {
 
 /**
  * The key the runner on this machine uses: BUILDD_API_KEY when set (it
- * overrides config.json for the runner too), else the saved one. `--server`
- * wins for the server; otherwise the one that goes with the key.
+ * overrides config.json for the runner too), else the saved one. The server
+ * is the runner's own pick (resolveBuilddServer: `--server`, BUILDD_SERVER,
+ * the saved one, buildd.dev), whichever place the key came from.
  */
 export function currentKey(
   config: Record<string, unknown>,
@@ -44,10 +47,7 @@ export function currentKey(
   const apiKey = envKey || saved;
   if (!apiKey) return null;
   const source = envKey ? 'env' : 'config';
-  const savedServer = typeof config.builddServer === 'string' ? config.builddServer : '';
-  const server = serverFlag
-    || (source === 'env' ? env.BUILDD_SERVER?.trim() || savedServer : savedServer)
-    || DEFAULT_SERVER;
+  const server = resolveBuilddServer({ flag: serverFlag, env, saved: config.builddServer });
   return { apiKey, server, source };
 }
 
