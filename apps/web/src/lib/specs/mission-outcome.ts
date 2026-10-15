@@ -5,15 +5,15 @@ import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { missionIntegrationBase } from '@buildd/core/mission-integration';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
 import { VERIFICATION_VERDICTS, boundEvidenceRefs, type VerificationVerdict } from '@buildd/core/verification-check';
-import type { GoalCriterion, LivingSpecGoalCriterion } from '@buildd/shared';
-import { specCriteria, type RequirementRef } from '@buildd/spec-contract/requirements';
+import type { LivingSpecGoalCriterion } from '@buildd/shared';
+import type { RequirementRef } from '@buildd/spec-contract/requirements';
 import { githubApi } from '@/lib/github';
 import { encodeRef, isAncestor } from '@/lib/integration-refresh';
 import { resolveMissionRepoWorkspaceId } from '@/lib/mission-repo-workspace';
 import { requestingPerson } from '@/lib/request-person';
 import { mergedDeliveryCommits } from '@/lib/workflow/delivery-view';
 import { isUuid } from '@/lib/uuid';
-import { readPinnedSpecRevision } from './pin';
+import { livingSpecCriteriaOf, selectedScope } from './selected-scope';
 import { foldMissionSpec, verdictIsCurrent, type MissionSpecFold, type MissionTarget, type MissionVerdictRow } from './mission-outcome-fold';
 import { fail, reach, type SpecCaller, type SpecError } from './store';
 
@@ -49,17 +49,7 @@ async function loadMission(missionId: string): Promise<MissionRow | null> {
   return (m as MissionRow | undefined) ?? null;
 }
 
-export const livingSpecCriteriaOf = (goalCriteria: unknown): LivingSpecGoalCriterion[] =>
-  (Array.isArray(goalCriteria) ? (goalCriteria as GoalCriterion[]) : []).filter((c): c is LivingSpecGoalCriterion => c?.type === 'living_spec');
-
-/** In-scope criteria of a selected revision: the narrowed set, else every R-n/AC-n. */
-export async function selectedScope(c: LivingSpecGoalCriterion): Promise<{ ok: true; criteria: RequirementRef[]; title: string } | { ok: false; reason: string }> {
-  const read = await readPinnedSpecRevision({ specId: c.specId, specRevisionId: c.specRevisionId, contentHash: c.contentHash });
-  if (!read.ok) return { ok: false, reason: read.reason };
-  const all = specCriteria(read.body);
-  const narrowed = c.criteria && c.criteria.length > 0 ? new Set(c.criteria) : null;
-  return { ok: true, criteria: narrowed ? all.filter((r) => narrowed.has(r.id)) : all, title: read.title };
-}
+export { livingSpecCriteriaOf, selectedScope };
 
 async function missionRepo(mission: MissionRow): Promise<{ installationId: number; fullName: string } | { error: string }> {
   const resolved = await resolveMissionRepoWorkspaceId({ missionId: mission.id, missionWorkspaceId: mission.workspaceId });

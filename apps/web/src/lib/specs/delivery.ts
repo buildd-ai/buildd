@@ -5,7 +5,7 @@ import { isUuid } from '@/lib/uuid';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 import { readGovernedOutcome, type OutcomeView } from './outcome';
 import { reach, type SpecCaller } from './store';
-import { livingSpecCriteriaOf, selectedScope } from './mission-outcome';
+import { livingSpecCriteriaOf, selectedScope } from './selected-scope';
 import type { GoalCriteriaState, LivingSpecCriterionStanding } from '@buildd/shared';
 import {
   deliveredSentence, markOf, standingSentence,
