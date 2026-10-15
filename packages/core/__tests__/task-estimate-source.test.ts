@@ -315,6 +315,14 @@ describe('neighbourEvidenceFrom (pure)', () => {
 });
 
 describe('frozen evidence availability', () => {
+  it('reports each model read cutoff even when concurrent reads replace the cache', async () => {
+    const older = new Date('2026-09-29T00:00:00Z');
+    const newer = new Date('2026-09-30T00:00:00Z');
+    const seen: string[] = [];
+    await Promise.all([src.loadPriorTable(older, at => seen.push(at.toISOString())), src.loadPriorTable(newer, at => seen.push(at.toISOString()))]);
+    expect(seen.sort()).toEqual([older.toISOString(), newer.toISOString()]);
+  });
+
   it('reports the older cutoff of a reused model separately from the task cutoff', async () => {
     const older = new Date('2026-09-30T23:59:00Z');
     await src.loadPriorTable(older);

@@ -353,20 +353,27 @@ export function resetTaskEstimateCaches(): void {
 const fresh = (c: { at: number; cutoff: number } | null | undefined, cutoff: Date) =>
   !!c && c.cutoff <= cutoff.getTime() && Date.now() - c.at < MODEL_TTL_MS;
 
-export async function loadPriorTable(cutoff: Date): Promise<PriorTable> {
-  if (fresh(priorCache, cutoff)) return priorCache!.table;
+export async function loadPriorTable(cutoff: Date, onCutoff?: (at: Date) => void): Promise<PriorTable> {
+  if (fresh(priorCache, cutoff)) {
+    onCutoff?.(new Date(priorCache!.cutoff));
+    return priorCache!.table;
+  }
   const result = await db.execute(priorAggregateQuery(cutoff));
   const table = buildPriorTable((result.rows ?? []) as Array<Record<string, unknown>>);
   priorCache = { at: Date.now(), cutoff: cutoff.getTime(), table };
+  onCutoff?.(cutoff);
   return table;
 }
 
 // ── Workspace-local loaders ──────────────────────────────────────────────────
 
 /** Completed work tasks in one workspace created before the cutoff, with their pre-cutoff sessions, as a cluster model. */
-export async function loadClusterModel(workspaceId: string, cutoff: Date): Promise<ClusterModel> {
+export async function loadClusterModel(workspaceId: string, cutoff: Date, onCutoff?: (at: Date) => void): Promise<ClusterModel> {
   const hit = clusterCache.get(workspaceId);
-  if (fresh(hit, cutoff)) return hit!.model;
+  if (fresh(hit, cutoff)) {
+    onCutoff?.(new Date(hit!.cutoff));
+    return hit!.model;
+  }
   const rows = await db
     .select({ id: tasks.id, workspaceId: tasks.workspaceId, createdAt: tasks.createdAt, kind: tasks.kind, complexity: tasks.complexity })
     .from(tasks)
@@ -387,6 +394,7 @@ export async function loadClusterModel(workspaceId: string, cutoff: Date): Promi
   const [files, repairs] = await Promise.all([loadDiffFiles(history), loadRepairCounts(history.map(t => t.id))]);
   const model = deriveClusters(buildClusterTasks(history, sessions, files, repairs, { asOf: cutoff }), { asOf: cutoff });
   clusterCache.set(workspaceId, { at: Date.now(), cutoff: cutoff.getTime(), model });
+  onCutoff?.(cutoff);
   return model;
 }
 
@@ -491,8 +499,7 @@ export async function loadEstimateInputs(task: EstimateTask, deps: LoadEstimateI
   evidence.neighbours.used = neighbours?.n ?? 0;
 
   const clusters = await read('cluster evidence', async () => {
-    const model = await loadClusterModel(task.workspaceId, cutoff);
-    evidence.modelCutoffs!.clusters = new Date(clusterCache.get(task.workspaceId)!.cutoff).toISOString();
+    const model = await loadClusterModel(task.workspaceId, cutoff, at => { evidence.modelCutoffs!.clusters = at.toISOString(); });
     evidence.clusters.available = model.clusters.length;
     if (model.clusters.length === 0) { evidence.clusters.reason = 'no_supported_area_clusters'; return null; }
     const manifest = Array.isArray(task.pathManifest) ? task.pathManifest : [];
@@ -511,11 +518,10 @@ export async function loadEstimateInputs(task: EstimateTask, deps: LoadEstimateI
 
   const [bucket, prior, k0] = await Promise.all([
     read('recorded bucket', () => loadRecordedBucket(task.id), null),
-    read('prior', () => loadPriorTable(cutoff), {} as PriorTable),
+    read('prior', () => loadPriorTable(cutoff, at => { evidence.modelCutoffs!.prior = at.toISOString(); }), {} as PriorTable),
     loadTaskEstimateK0(),
   ]);
 
-  evidence.modelCutoffs!.prior = priorCache && !evidence.unavailable.includes('prior') ? new Date(priorCache.cutoff).toISOString() : null;
   if (evidence.unavailable.includes('neighbour retrieval') || evidence.unavailable.includes('neighbour sessions')) evidence.neighbours.reason = 'unavailable';
   if (evidence.unavailable.includes('cluster evidence')) evidence.clusters.reason = 'unavailable';
   return { kind, bucket, neighbours, clusters, prior, k0, evidence };

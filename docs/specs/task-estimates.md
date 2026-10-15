@@ -3,7 +3,7 @@ title: Task Estimates (Rollout and Team Switch)
 status: active
 owner: max
 last_verified: 2026-10-15
-summary: Estimates follow the team's switch or a default gated on measured quality, never order work; teams see one plain accuracy line, the platform owner the calibration and gate detail.
+summary: Frozen forecasts use shared evidence-aware display and auditable sample selection; estimates follow the team's switch or a quality-gated default and never order work.
 domain: tasks
 surfaces: [packages/core/task-estimate-rollout.ts, packages/core/task-estimate-source.ts, apps/web/src/app/app/(protected)/settings/features/page.tsx, apps/web/src/app/app/(protected)/health/estimates/page.tsx]
 related: [claim-ordering, bug-intake-and-quality]
@@ -266,9 +266,9 @@ Score = { n, scored, sufficient: boolean, withinP80, medianRatio, medianAbsLogEr
   when it is, estimation stays its own section (it scores forecasts, not
   defects).
 
-**Not changed by this contract**: the estimator, its version, the gate's bars,
-the current no-go verdict, the default, the team switch, and the claim route,
-scheduler and planner (which still do not read estimates).
+**Forecast policy**: the evidence/display revision below advances selection to
+`blend-v2`. The gate bars, no-go verdict, default, team switch, claim route,
+scheduler and planner retain their existing behavior; forecasts never order work.
 
 **Acceptance criteria**:
 
