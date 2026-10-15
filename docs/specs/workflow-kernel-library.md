@@ -1057,11 +1057,9 @@ column outside the kernel; S3 and S4 remove or route each one.
 
 ## 10. Open questions
 
-- Q1: the package's license. `@buildd/spec-contract` is Apache-2.0 while the
-  repo is FSL-1.1-ALv2. Recommendation: the kernel package stays under the
-  repo's FSL, so embedding is free and a competing hosted service is not
-  during the FSL window; the conformance suite and port types carry Apache-2.0
-  so an adopter's adapter code is unencumbered. Owner decides.
+- Q1 (answered 2026-10-15): the package's license. The kernel package is
+  Apache-2.0, like the other contract packages, so adopters can embed it. The
+  product and `@buildd/core` stay FSL-1.1-ALv2.
 - Q2 (answered 2026-10-13, §3): the command endpoint is a route on the
   control plane's own host, signed by the calling host and re-checked as the
   principal it names.

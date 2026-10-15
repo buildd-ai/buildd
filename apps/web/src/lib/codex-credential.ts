@@ -270,14 +270,20 @@ export async function resolveCodexCredential(opts: {
   // Skip permanently-dead credentials — revoked credentials cannot be recovered via
   // refresh (the refresh_token family was invalidated by the provider). Filtering here
   // prevents the claim route from handing a dead token to the runner.
-  const liveRows = rows.filter((r) => (r.healthStatus as string) !== 'revoked');
+  //
+  // Expired credentials are skipped too (model credentials spec R-3 / AC-2): a
+  // claim never carries a credential that has already expired. Handing one over
+  // killed the worker seconds after the claim and the task retried forever; with
+  // it left out the runner uses its own login, or the claim's Codex capability
+  // filter (hasCodexCredential deliverableOnly) keeps the task for a runner that
+  // has one. A less specific live row still wins over a more specific dead one.
+  const liveRows = rows.filter((r) => (r.healthStatus as string) !== 'revoked' && credentialUsable(r));
   if (liveRows.length === 0) return null;
 
   // Specificity: workspace match (2) outranks account match (1) outranks team-wide (0).
   const score = (r: { accountId: string | null; workspaceId: string | null }) =>
     (r.workspaceId && r.workspaceId === opts.workspaceId ? 2 : 0) +
     (r.accountId && r.accountId === opts.accountId ? 1 : 0);
-  // Expired credentials are still returned — the claim gate attempts refresh before use.
   const best = liveRows.reduce((a, b) => (score(b) > score(a) ? b : a));
 
   let blob: CodexBlob;
@@ -316,6 +322,12 @@ export async function hasCodexCredential(opts: {
    */
   accountId?: string | null | 'any';
   workspaceId?: string | null;
+  /**
+   * Count only a credential the claim would actually deliver: not revoked and
+   * not expired (resolveCodexCredential's filter). The claim's Codex capability
+   * filter asks this form; readiness reporting keeps the default.
+   */
+  deliverableOnly?: boolean;
 }): Promise<boolean> {
   const anyAccount = opts.accountId === 'any';
   const rows = await db.query.secrets.findMany({
@@ -329,11 +341,12 @@ export async function hasCodexCredential(opts: {
     )),
     columns: { tokenExpiresAt: true, healthStatus: true },
   });
-  // Expired credentials still count — the CLI refreshes via refresh_token. Revoked
+  // Expired credentials still count by default (readiness reporting); the claim
+  // passes deliverableOnly, because it never delivers an expired one. Revoked
   // credentials cannot be refreshed (the refresh_token family was invalidated by the
   // provider), so exclude them to prevent tryFlipToCodex from routing tasks to a
   // disconnected backend that resolveCodexCredential will then return null for.
-  return rows.some((r) => (r.healthStatus as string) !== 'revoked');
+  return rows.some((r) => (r.healthStatus as string) !== 'revoked' && (!opts.deliverableOnly || credentialUsable(r)));
 }
 
 /** Connection status (no token values) for the credential stored at an exact scope. */
