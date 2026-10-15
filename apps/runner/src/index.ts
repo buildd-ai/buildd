@@ -33,6 +33,8 @@ import { authorizeLocalRequest, escapeHtml, injectLocalToken, isLoopbackAddress,
 import { bannerPalette, renderBanner } from './banner';
 import { checkSingleInstance, decideStart, probeRunnerSocket, matchWorkerAction, relayWorkerAction, runnerSocketPath, serveRunnerSocket, type RunnerIdentity, type RunnerSocketServer } from './runner-socket';
 import { withMissionStages } from './mission-stages';
+import { consumeRestartMarker, shouldAutoOpenBrowser, writeRestartMarker } from './browser-open';
+import { claimEntryWords } from './claim-words';
 
 const PORT = parseInt(process.env.PORT || '8766');
 // Entrypoint: resolving once at load is fine here (see buildd-home.ts).
@@ -1154,6 +1156,8 @@ async function runHealthProbeInner(): Promise<{ ok: boolean; detail: string }> {
 function scheduleGracefulRestart(reason: string) {
   console.log(`[restart] scheduling graceful restart (${reason})`);
   setUpdating(true);
+  // So the start that follows knows it is a restart and does not open a browser.
+  writeRestartMarker(BUILDD_DIR);
   const failsafe = setTimeout(() => {
     console.error(`[restart] graceful restart did not complete within 20s (${reason}) — forcing exit`);
     process.exit(75);
@@ -2689,7 +2693,8 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
 
     // Debug claims — recent claim log entries
     if (path === '/api/debug/claims' && req.method === 'GET') {
-      const entries = readClaimLogs(50);
+      const now = Date.now();
+      const entries = readClaimLogs(50).map(e => ({ ...e, words: claimEntryWords(e, now) }));
       return Response.json({ entries }, { headers: corsHeaders });
     }
 
@@ -2855,15 +2860,26 @@ async function autoInstallMcp() {
 
 autoInstallMcp();
 
-// Handle browser auto-open preference (debounce to avoid re-opening on crash-restart)
+// Browser auto-open: first interactive start only (browser-open.ts). The
+// restart marker is read at boot, before anything can write a new one.
+const STARTED_AFTER_RESTART = consumeRestartMarker(BUILDD_DIR);
+
 function shouldOpenBrowser(): boolean {
+  let lastOpenAt: number | null = null;
   try {
     if (existsSync(BROWSER_OPEN_FILE)) {
-      const lastOpen = parseInt(readFileSync(BROWSER_OPEN_FILE, 'utf-8').trim(), 10);
-      if (Date.now() - lastOpen < 60_000) return false; // Skip if opened within last 60s
+      const t = parseInt(readFileSync(BROWSER_OPEN_FILE, 'utf-8').trim(), 10);
+      if (!Number.isNaN(t)) lastOpenAt = t;
     }
   } catch {}
-  return true;
+  return shouldAutoOpenBrowser({
+    preference: true,
+    isTTY: process.stdin.isTTY ?? false,
+    env: process.env as Record<string, string | undefined>,
+    restartMarkerPresent: STARTED_AFTER_RESTART,
+    lastOpenAt,
+    now: Date.now(),
+  });
 }
 
 function markBrowserOpened() {
