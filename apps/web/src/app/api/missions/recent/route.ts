@@ -6,23 +6,17 @@
  * team (a runner serves workspaces of several teams) and carries every task
  * of every mission.
  *
+ * The read and what "delivered" means: lib/missions-recent.ts.
+ *
  * A runner key or a signed-in user; per-task tokens are not accepted.
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@buildd/core/db';
-import { missions } from '@buildd/core/db/schema';
-import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
-import { and, desc, gte, inArray, or } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { listReachableWorkspaceIds } from '@/lib/workspace-access';
 import { loadMissionStages } from '@/lib/mission-stage-load';
+import { loadRecentMissions } from '@/lib/missions-recent';
 import type { RecentMission } from '@buildd/shared';
-
-export const RECENT_DAYS = 7;
-/** A bound on the read; no team keeps this many missions open or finishing in a week. */
-const MAX_MISSIONS = 300;
-const OPEN_STATUSES = ['active', 'paused', 'budget_exhausted'] as const;
 
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -37,31 +31,9 @@ export async function GET(req: NextRequest) {
     const workspaceIds = await listReachableWorkspaceIds(apiAccount ? { account: apiAccount } : { userId: user!.id });
     if (workspaceIds.length === 0) return NextResponse.json({ missions: [] });
 
-    const since = new Date(Date.now() - RECENT_DAYS * 86_400_000);
-    const rows = await db.query.missions.findMany({
-      where: sqlWhere(and(
-        inArray(missions.workspaceId, workspaceIds),
-        or(
-          inArray(missions.status, [...OPEN_STATUSES]),
-          and(inArray(missions.status, ['completed']), gte(missions.completedAt, since)),
-        ),
-      )),
-      columns: { id: true, title: true, workspaceId: true, status: true, isHeld: true, executor: true, completedAt: true, updatedAt: true },
-      orderBy: sqlOrderBy([desc(missions.updatedAt)]),
-      limit: MAX_MISSIONS,
-    });
-
+    const rows = await loadRecentMissions(workspaceIds);
     const stages = await loadMissionStages(rows.map(r => r.id), workspaceIds);
-    const out: RecentMission[] = rows.map(r => ({
-      id: r.id,
-      title: r.title,
-      workspaceId: r.workspaceId as string,
-      status: r.status,
-      isHeld: !!r.isHeld,
-      executor: r.executor,
-      completedAt: r.status === 'completed' ? (r.completedAt ?? r.updatedAt)?.toISOString() ?? null : null,
-      stage: stages.get(r.id) ?? null,
-    }));
+    const out: RecentMission[] = rows.map(r => ({ ...r, stage: stages.get(r.id) ?? null }));
     return NextResponse.json({ missions: out });
   } catch (err) {
     console.error('[missions/recent] failed:', err);
