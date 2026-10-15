@@ -87,11 +87,12 @@ export interface MissionRow {
   status: string;
   workingBranch: string | null;
   integrationBranchEnabled: boolean;
+  scopeVersion: number;
 }
 
 function missionRowSql(missionId: string): SQL {
   return sql`-- workflow:mission_epoch_mission
-SELECT id, workspace_id, status, working_branch, integration_branch_enabled FROM missions WHERE id = ${missionId}::uuid`;
+SELECT id, workspace_id, status, working_branch, integration_branch_enabled, scope_version FROM missions WHERE id = ${missionId}::uuid`;
 }
 
 /** Everything the reducer reads for one mission. The host's work counts come from `evaluateMissionWorkState`. */
@@ -102,6 +103,7 @@ export async function loadMissionEpochView(missionId: string, deps: EpochDeps = 
   const mission: MissionRow = {
     id: String(m.id), workspaceId: str(m.workspace_id), status: String(m.status),
     workingBranch: str(m.working_branch), integrationBranchEnabled: m.integration_branch_enabled === true,
+    scopeVersion: Number(m.scope_version ?? 1),
   };
   const epochs = (await epochsForMissions([missionId], exec)).get(missionId) ?? [];
   const work = await (deps.workOf ?? defaultWorkOf)(missionId);
@@ -111,7 +113,7 @@ export async function loadMissionEpochView(missionId: string, deps: EpochDeps = 
     mission,
     view: {
       missionId, integrationBranch: branch, terminal: mission.status === 'completed' || mission.status === 'archived',
-      scopeVersion: 1, epochs, work, legacyPr,
+      scopeVersion: mission.scopeVersion, epochs, work, legacyPr,
     },
   };
 }

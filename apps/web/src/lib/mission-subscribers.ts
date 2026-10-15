@@ -63,9 +63,10 @@ export const missionSubscribers: readonly AnySubscriber[] = [
       keepAlive: pending => after(() => pending.then(() => {})),
     });
   }),
-  // §6: deliverable work filed into a mission whose newest delivery already
-  // merged gets a writable successor delivery now, so the claim hands its
-  // worker a live branch. A no-op (one read) for every other mission.
+  // §6: deliverable work filed into a mission gets its scope decision (in
+  // scope, a recorded amendment, or a hold for a person), and, when the
+  // mission's newest delivery already merged, a writable successor delivery,
+  // so the claim hands its worker a live branch.
   subscriber('missions', 'task.created', 'open-writable-mission-delivery', async e => {
     if (!e.missionId) return;
     const [task] = await db
@@ -74,7 +75,9 @@ export const missionSubscribers: readonly AnySubscriber[] = [
       .where(eq(tasks.id, e.taskId))
       .limit(1);
     if (task?.taskClass !== 'work' || task.mode === 'planning') return;
-    const { ensureMissionWritableBranch } = await import('@/lib/mission-epoch-door');
+    const { decideMissionTaskScope, ensureMissionWritableBranch } = await import('@/lib/mission-epoch-door');
+    // The scope decision first: an amended contract is the version the next delivery carries.
+    await decideMissionTaskScope({ taskId: e.taskId, workspaceId: e.workspaceId });
     await ensureMissionWritableBranch(e.missionId, 'task_filed');
   }),
   subscriber('missions', 'task.created', 'task-created-mission-feed', e => {

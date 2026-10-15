@@ -143,5 +143,18 @@ export async function recordPrMovedOffDelivery(p: { missionId: string; prNumber:
     }, { principal: SYSTEM, withDelivery: false });
   } catch (err) {
     console.error(`[mission-epochs] recording PR #${p.prNumber} moved off ${p.fromBase} failed:`, err);
+
+ * A deliverable task was added to the mission: ask its scope decision once
+ * (in scope, an amendment, or a hold for a person). Best effort: a failure
+ * leaves the task as filed, which is the decision's own default.
+ */
+export async function decideMissionTaskScope(p: { taskId: string; workspaceId: string }): Promise<{ decision: string; status: string } | null> {
+  try {
+    const answer = await submitKernelCommand('mission_scope', { workspaceId: p.workspaceId, taskId: p.taskId, actor: 'system:task_filed' }, { principal: SYSTEM, withDelivery: false });
+    const r = answer.result;
+    return r.decided ? { decision: r.decision, status: r.status } : null;
+  } catch (err) {
+    console.error(`[mission-scope] scope decision for task ${p.taskId} failed (the task stays as filed):`, err);
+    return null;
   }
 }

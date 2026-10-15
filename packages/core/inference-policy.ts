@@ -49,6 +49,7 @@ export type InferenceCapability =
   | 'post_session_triage'
   | 'failure_incident_triage'
   | 'visual_impact'
+  | 'mission_scope'
   | 'task_verdict'
   | 'early_release'
   | 'merge_readiness'
@@ -255,6 +256,16 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     label: 'Visual impact',
     description: 'When a change touches UI-adjacent files and the rules cannot tell whether anything on screen moved, a decision model reads bounded facts about the diff (file kinds and change counts, never code) and says whether a visual review is needed. When unsure it asks for the review.',
     costHint: '~$0.00005 per ambiguous change',
+  },
+  // Mission scope (packages/core/decision-kind-mission-scope.ts). Asked once per
+  // task added to a mission under way. Its fallback files the task as filed; an
+  // amendment that would weaken a completion criterion is held for a person.
+  mission_scope: {
+    id: 'mission_scope',
+    kind: 'built_in',
+    label: 'Mission scope',
+    description: 'When a task is added to a mission under way, a decision model reads the mission\'s goal and the task and says whether the task fits it, changes what the mission delivers (recorded as a scope update), or needs you to decide. Unsure means it fits.',
+    costHint: '~$0.0001 per task added',
   },
   // Task verdict (apps/web/src/lib/task-verdict-decision.ts). Runs on a task
   // state change only (CI result, attempt end, PR event, worker terminal),

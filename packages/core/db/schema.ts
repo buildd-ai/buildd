@@ -1393,6 +1393,10 @@ export const missions = pgTable('missions', {
   // null = no criteria (completion driven by task progress alone).
   // Max 20 criteria; empty array treated as null (no gate).
   goalCriteria: jsonb('goal_criteria').$type<import('@buildd/shared').GoalCriterion[] | null>(),
+  // The mission contract's version (docs/specs/workflow-kernel-library.md §6
+  // "Scope amendments"): 1 as filed, +1 per applied amendment
+  // (workflow_scope_amendments). Each delivery epoch records the version it carried.
+  scopeVersion: integer('scope_version').default(1).notNull(),
   // Last evaluation result, persisted by evaluateGoalCriteria callers.
   goalCriteriaState: jsonb('goal_criteria_state').$type<import('@buildd/shared').GoalCriteriaState | null>(),
   // When false, organizer never auto-evaluates criteria; on-demand still works.
@@ -5695,6 +5699,39 @@ export const workflowMissionEpochs = pgTable('workflow_mission_epochs', {
 }));
 
 export type WorkflowMissionEpochRow = typeof workflowMissionEpochs.$inferSelect;
+
+// Mission scope amendments (docs/specs/workflow-kernel-library.md §6): one row
+// per task added to a mission, the recorded scope decision and what it did to
+// the mission's contract. Written only by the kernel (apps/web/src/lib/workflow/
+// scope-amendments.ts), in the same statement as the contract change.
+export const workflowScopeAmendments = pgTable('workflow_scope_amendments', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'cascade' }).notNull(),
+  sourceTaskId: uuid('source_task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  // 'in_scope' | 'amend_scope' | 'ask'
+  decision: text('decision').notNull().$type<'in_scope' | 'amend_scope' | 'ask'>(),
+  // 'recorded' (nothing changed) | 'applied' | 'held' (a person decides) | 'resolved'
+  status: text('status').notNull().$type<'recorded' | 'applied' | 'held' | 'resolved'>(),
+  scopeVersionBefore: integer('scope_version_before').notNull(),
+  scopeVersionAfter: integer('scope_version_after'),
+  before: jsonb('before').$type<Record<string, unknown>>(),
+  after: jsonb('after').$type<Record<string, unknown>>(),
+  weakens: jsonb('weakens').$type<Array<Record<string, unknown>>>(),
+  reason: text('reason'),
+  // The recorded decision (workflow_facts, kind decision): decider, verdict, confidence, fallback.
+  decisionFactId: uuid('decision_fact_id'),
+  deciderId: text('decider_id'),
+  confidence: real('confidence'),
+  fallback: text('fallback'),
+  actor: text('actor'),
+  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+  resolvedBy: text('resolved_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  // One decision per task added: a replay reads it and never asks again.
+  taskUnique: uniqueIndex('workflow_scope_amendments_task_unique').on(t.missionId, t.sourceTaskId),
+  missionIdx: index('workflow_scope_amendments_mission_idx').on(t.missionId, t.createdAt),
+}));
 
 // The landing lane (lib/workflow/landing-lane.ts): one row per repo + base
 // whose delivery is the one behind-refresh in flight there. A row whose

@@ -1515,3 +1515,12 @@ export async function missionEpochCommand(p: MissionEpochInput): Promise<Mission
     }
   }
 }
+
+/**
+ * §6 scope amendments: the scope decision for a task added to a mission,
+ * recorded once (workflow/scope-amendments.ts). `workspaceId` is the task's.
+ */
+export async function missionScopeCommand(p: { workspaceId: string; taskId: string; actor: string }) {
+  const { decideTaskScope } = await import('./scope-amendments');
+  return decideTaskScope({ taskId: p.taskId, actor: p.actor });
+}
