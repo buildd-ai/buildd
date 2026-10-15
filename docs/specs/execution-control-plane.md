@@ -38,7 +38,7 @@ machine. This supersedes the earlier "one control plane inside Next.js" default
 
 ## 1. Same handlers, second host
 
-> Amended 2026-10-13 by `workflow-kernel-library.md` §3: the Worker becomes the only host of kernel commands, the effect drain and the floor; Vercel doors submit commands to it.
+> Amended 2026-10-13 by the native spec "Workflow kernel" (fa62b865; repo copy `workflow-kernel-library.md`) §3: the Worker becomes the only host of kernel commands, the effect drain and the floor; Vercel doors submit commands to it.
 
 **Capability statement**: The execution path MUST be served by the same route
 handlers on both hosts, so the control plane is a deployment boundary, not a

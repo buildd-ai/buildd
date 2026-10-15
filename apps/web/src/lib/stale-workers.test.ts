@@ -2943,7 +2943,7 @@ describe('cleanupUnresumedAnswers', () => {
     } as any);
   });
 
-  // AC-AQR-16
+  // AC-16
   it('creates a continuation carrying the queued answer and supersedes the worker', async () => {
     mockWorkersFindMany.mockReturnValue([parkedWithQueuedAnswer()] as any);
 
@@ -3002,7 +3002,7 @@ describe('cleanupUnresumedAnswers', () => {
     expect(capturedWorkerUpdates).toHaveLength(0);
   });
 
-  // AC-AQR-17 — one pass flips the recorded path, so a second pass skips it.
+  // AC-17 — one pass flips the recorded path, so a second pass skips it.
   it('does not degrade an answer it has already degraded', async () => {
     mockWorkersFindMany.mockReturnValue([
       parkedWithQueuedAnswer({ path: 'cold_continuation', reasonCode: 'resume_not_acknowledged' }),
@@ -3013,7 +3013,7 @@ describe('cleanupUnresumedAnswers', () => {
     expect(result.degraded).toBe(0);
   });
 
-  // AC-AQR-18 — an acknowledged answer clears the queue; the SQL predicate
+  // AC-18 — an acknowledged answer clears the queue; the SQL predicate
   // already excludes it, and the JS guard agrees.
   it('ignores a worker with nothing queued', async () => {
     const worker = parkedWithQueuedAnswer();
@@ -3071,7 +3071,7 @@ describe('cleanupUnresumedAnswers', () => {
     expect(capturedAccountsSet).toBeNull();
   });
 
-  // AC-AQR-19 — no transactions on neon-http: the worker is superseded and the
+  // AC-19 — no transactions on neon-http: the worker is superseded and the
   // continuation is inserted as two separate writes. If the insert throws, the
   // worker must not be left permanently superseded with the answer discarded —
   // it has to go back to waiting_input so a later sweep can still recover it.
@@ -3094,7 +3094,7 @@ describe('cleanupUnresumedAnswers', () => {
     expect(capturedAccountsSet).toBeNull();
   });
 
-  // AC-AQR-26 — once the Continue: task insert has succeeded, the answer is
+  // AC-26 — once the Continue: task insert has succeeded, the answer is
   // durably recoverable, so the two remaining writes (context stamp, feed
   // note) are best-effort: a throw there must not abort the sweep for the
   // rest of the account's candidates.

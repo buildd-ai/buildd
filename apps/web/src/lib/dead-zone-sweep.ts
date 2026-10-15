@@ -406,7 +406,7 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
           continue;
         }
 
-        // An attempt inherits the backend, role, routing kind and phase (Rule P1-7)
+        // An attempt inherits the backend, role, routing kind and phase (mission-legibility R-7)
         // of the task it re-attempts — same as conflict-retry.ts's own insert.
         const identity = await inheritAttemptIdentity(retryTask.parentTaskId);
 

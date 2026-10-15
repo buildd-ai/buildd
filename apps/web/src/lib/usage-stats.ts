@@ -821,7 +821,7 @@ export function describeScan(
 
 /**
  * Attribution by a task's own dimension, separated from cost attribution
- * (Rule R3-2).
+ * (mission-legibility R-34).
  *
  * `aggregateByTask` folds an attempt's workers into the PARENT's bucket, which
  * is correct for cost — "tokens per task" must be the cost of getting the task

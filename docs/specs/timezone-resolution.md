@@ -2,8 +2,8 @@
 title: Timezone Resolution
 status: active
 owner: max
-last_verified: 2026-09-02
-summary: buildd MUST store exactly two timezones — one detected per user and one canonical per team — and MUST resolve every rendered or scheduled wall clock from that pair with a UTC fallback, never from a workspace.
+last_verified: 2026-10-15
+summary: buildd MUST store exactly two timezones, one detected per user and one canonical per team, and MUST resolve every rendered or scheduled wall clock from that pair with a UTC fallback, never from a workspace.
 domain: surfaces
 surfaces: [packages/core/timezone.ts, apps/web/src/lib/team-timezone.ts, apps/web/src/app/api/me/timezone/route.ts]
 verified_by: [packages/core/__tests__/timezone.test.ts, apps/web/src/lib/team-timezone.test.ts, apps/web/src/app/api/me/timezone/route.test.ts, apps/web/src/lib/pr-activity-comment.test.ts, apps/web/src/app/api/teams/[id]/route.test.ts, apps/web/src/app/api/missions/[id]/route.test.ts, packages/core/__tests__/mcp-tools-create-schedule-timezone.test.ts]
@@ -31,8 +31,8 @@ supersedes: []
 # Timezone Resolution
 
 **Capability statement**: Every wall clock buildd renders or schedules against
-MUST resolve to an explicit IANA zone drawn from a two-field model — the
-viewer's own detected zone, or the owning team's canonical zone — falling back
+MUST resolve to an explicit IANA zone drawn from a two-field model (the
+viewer's own detected zone, or the owning team's canonical zone), falling back
 to UTC. No feature may assume UTC silently.
 
 ---
@@ -66,7 +66,7 @@ There are exactly two stored zones, and there is no override chain:
   written can be dropped from a future ICU release; an unrecognised zone
   degrades to UTC rather than throwing.
 - Validation MUST be by construction (`new Intl.DateTimeFormat(_, { timeZone })`),
-  never against a curated list — browsers report hundreds of zones and a
+  never against a curated list: browsers report hundreds of zones and a
   shortlist silently rejects most real users.
 - Rendered stamps MUST carry a zone label. A shared artifact is read by people
   in other zones, and a bare `10:03` misleads all of them.
@@ -97,23 +97,25 @@ There are exactly two stored zones, and there is no override chain:
   UTC and no error is raised.
 
 **Code surface**:
-- Validation + rendering: `packages/core/timezone.ts` — `isValidTimezone`,
+- Validation + rendering: `packages/core/timezone.ts`: `isValidTimezone`,
   `resolveTimezone`, `formatStamp`, `DEFAULT_TIMEZONE`
-- Lookups + seeding: `apps/web/src/lib/team-timezone.ts` — `getTeamTimezone`,
+- Lookups + seeding: `apps/web/src/lib/team-timezone.ts`: `getTeamTimezone`,
   `getWorkspaceTimezone`, `getViewerTimezone`, `recordUserTimezone`
 - Detection route: `apps/web/src/app/api/me/timezone/route.ts`
 - Detection client: `apps/web/src/components/TimezoneSync.tsx`, mounted in
   `apps/web/src/app/app/(protected)/layout.tsx`
 - Team setting: `apps/web/src/app/api/teams/[id]/route.ts` (PATCH),
   `apps/web/src/app/app/(protected)/settings/TimezoneSection.tsx`
-- Schema: `packages/core/db/schema.ts` — `users.timezone`, `teams.timezone`,
+- Schema: `packages/core/db/schema.ts`: `users.timezone`, `teams.timezone`,
   `taskSchedules.timezone`
 - Consumers: `apps/web/src/lib/pr-activity-comment.ts`,
   `apps/web/src/app/api/workspaces/[id]/schedules/route.ts`,
   `apps/web/src/app/api/missions/route.ts`
 
 **Out of scope**: Client-side rendering of timestamps already handled per-viewer
-by the browser (`apps/web/src/app/app/(protected)/tasks/LocalTime.tsx`) — those
-need no stored zone. Mission active-hours semantics (covered in
+by the browser (`apps/web/src/app/app/(protected)/tasks/LocalTime.tsx`); those
+need no stored zone. The platform's own cron triggers (`cron-manifest.json`,
+evaluated in its top-level zone, see `external-cron-triggers.md`) are buildd's
+operating schedule, not a team's wall clock, and do not use this model. Mission active-hours semantics (covered in
 `mission-task-lifecycle.md`); this spec only fixes which zone they default to.
 DST-boundary cron behaviour, which belongs to the cron evaluator.

@@ -767,7 +767,7 @@ describe('describeScan', () => {
 
 // ─── Role attribution vs cost attribution (mission-legibility.md §3.2) ────────
 
-describe('role histogram — separated from the cost rollup (Rule R3-2)', () => {
+describe('role histogram — separated from the cost rollup (mission-legibility R-34)', () => {
   /** A builder task with one reviewer attempt folded under it. */
   const parentAndReview = () => [
     row({ workerId: 'w-parent', taskId: 'task-b', roleSlug: 'builder', inputTokens: 8000, costUsd: '1.00' }),
@@ -989,7 +989,7 @@ describe('creationSource histogram', () => {
 
   test('an attempt with its own creationSource contributes to its own group, same as role', () => {
     // A CI-retry attempt is filed with creationSource='webhook' even though its
-    // cost still folds into the parent task's bucket (Rule R3-2) — grouping by
+    // cost still folds into the parent task's bucket (mission-legibility R-34) — grouping by
     // each worker's OWN task creationSource is what makes that origin visible
     // at all, mirroring why the role histogram groups this way.
     const stats = computeUsageStats([

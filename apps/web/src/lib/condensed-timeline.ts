@@ -137,7 +137,7 @@ export type MissionAdjacency = {
  *   release, force start, bypass, ...). Default: none, the status arm only.
  *
  * O(N + E). Cycles terminate: their members get the component's released
- * depth + 1 (Rule CYC-1).
+ * depth + 1 (strip spec R-22).
  */
 export function buildMissionAdjacency(
   tasks: readonly AdjacencyTask[],
@@ -648,7 +648,7 @@ export type RailLabel = { kind: 'label'; id: string; text: 'has a question' | 'r
 export type RailGoal = { total: number; passed: number | null };
 
 /**
- * A mission-phase header row (docs/specs/mission-legibility.md Rule R4-1).
+ * A mission-phase header row (docs/specs/mission-legibility.md R-38).
  * `kind: 'phase'` is the row discriminator — it is not a work-kind, and no
  * rail row type ever carries a work-kind field (§4.4 of the spec).
  */
@@ -657,12 +657,12 @@ export type RailPhase = {
   id: string;
   index: number;
   label: string;
-  /** One segment per member task, in rail order (Rule P1-10). */
+  /** One segment per member task, in rail order (mission-legibility R-10). */
   segments: Array<{ taskId: string; state: SegmentState }>;
-  /** Count of `filled` segments only — `half` counts toward `total`, not this (Rule P1-11). */
+  /** Count of `filled` segments only — `half` counts toward `total`, not this (mission-legibility R-11). */
   filled: number;
   total: number;
-  /** 'complete': every member filled/skipped. 'live': lowest incomplete phase with an active member (Rule P1-12). */
+  /** 'complete': every member filled/skipped. 'live': lowest incomplete phase with an active member (mission-legibility R-12). */
   state: 'complete' | 'live' | 'upcoming';
 };
 
@@ -807,7 +807,7 @@ export function buildRail<T extends RailTaskLike>(
   // Walk the SAME ordered sequence, flattening each node's ordinal members plus
   // its Lane-2 fan-out siblings (shown and fork-hidden) — every task that gets
   // its own row somewhere on the rail. Retry lineage is deliberately excluded:
-  // a retry inherits its parent's phase (Rule P1-7) but is rendered as an
+  // a retry inherits its parent's phase (mission-legibility R-7) but is rendered as an
   // attempt annotation on the parent, not as an independent unit of progress,
   // so counting it would double a phase's own segment for one logical step.
   type PhaseAccum = {
@@ -846,7 +846,7 @@ export function buildRail<T extends RailTaskLike>(
         // than silently resolved by picking one.
         throw new Error(
           `Mission phase ${index} has divergent labels: "${accum.label}" vs "${label}" ` +
-          `(docs/specs/mission-legibility.md Rule P1-2)`,
+          `(docs/specs/mission-legibility.md R-2)`,
         );
       }
       accum.segments.push({ taskId: member.id, state: phaseSegmentState(member) });
@@ -854,7 +854,7 @@ export function buildRail<T extends RailTaskLike>(
     }
   }
 
-  // Rule P1-12: the live phase is the lowest incomplete index with an active
+  // mission-legibility R-12: the live phase is the lowest incomplete index with an active
   // member. At most one phase is live; when every phase is complete, none is.
   let livePhaseIndex: number | null = null;
   for (const index of [...phaseByIndex.keys()].sort((a, b) => a - b)) {
@@ -878,7 +878,7 @@ export function buildRail<T extends RailTaskLike>(
       state: complete ? 'complete' : index === livePhaseIndex ? 'live' : 'upcoming',
     });
   }
-  // Rule R4-8: a phase header and a day tick are both full-width separators —
+  // mission-legibility R-45: a phase header and a day tick are both full-width separators —
   // when phases exist, day ticks are suppressed entirely and only `now` survives.
   const suppressDayTicks = phaseRowAt.size > 0;
 
@@ -938,7 +938,7 @@ export function buildRail<T extends RailTaskLike>(
       });
     }
 
-    // Rule R4-10: when the `now` boundary and a phase boundary coincide, `now`
+    // mission-legibility R-47: when the `now` boundary and a phase boundary coincide, `now`
     // renders first (pushed above) and the phase header follows — never the
     // reverse, and no day tick can join them (suppressed whenever any phase exists).
     const phaseRow = phaseRowAt.get(i);

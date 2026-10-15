@@ -11,7 +11,7 @@ type Glyph = MissionSegmentState | 'skipped' | 'ring' | 'dashed';
 export type RailGlyphState = Glyph;
 /**
  * Node outline. Circles are tasks; squares mark non-task rail elements — the
- * mission's goal root and, since mission-legibility.md Rule R4-6, the phase
+ * mission's goal root and, since mission-legibility.md R-43, the phase
  * header. Never ambiguous: the goal root is always the rail's last row and
  * always carries `Goal:` text; a phase header is never last and never does.
  */

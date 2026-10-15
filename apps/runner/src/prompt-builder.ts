@@ -556,7 +556,7 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
     worker.claudeAiArtifacts ?? 'off',
   ));
 
-  // Rule K2-17: asked ONLY when the task has no recorded kind. `task.kind` is
+  // mission-legibility R-29: asked ONLY when the task has no recorded kind. `task.kind` is
   // already on the BuilddTask the runner holds, so the condition costs no query,
   // and a task that was filed with a kind never sees this line at all.
   addSection(

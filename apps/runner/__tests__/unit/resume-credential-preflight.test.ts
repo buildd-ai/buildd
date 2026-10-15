@@ -8,7 +8,7 @@ import { staleResumeCredentialError } from '../../src/claude-auth';
  * question waits. Resuming on the claim-time token then produced a session that
  * died "not logged in" after the human had already answered.
  *
- * AC-AQR-24 in docs/specs/answered-question-resume.md.
+ * AC-24 in docs/specs/answered-question-resume.md.
  */
 describe('staleResumeCredentialError', () => {
   const NOW = Date.UTC(2026, 0, 1, 12, 0, 0);

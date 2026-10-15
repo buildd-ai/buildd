@@ -161,7 +161,7 @@ function boundValues(node: unknown, seen = new Set<unknown>()): string[] {
   return out;
 }
 
-describe('can: no per-team grants (AC-G1)', () => {
+describe('can: no per-team grants (AC-14)', () => {
   const caller = { kind: 'user' as const, userId: 'u1' };
 
   it('a role holds the same permissions in every team, whatever a team row stores', async () => {

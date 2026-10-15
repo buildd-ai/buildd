@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 
 /**
  * `tasks.kind` is written at most once, by whichever of filer → worker → PR-open
- * reaches it first (Rule K2-20). The guard is a single atomic
+ * reaches it first (mission-legibility R-32). The guard is a single atomic
  * `UPDATE ... WHERE id = $1 AND kind IS NULL`, not a read-then-write, so the
  * invariant holds across the three sources without a clobber rule between them.
  */

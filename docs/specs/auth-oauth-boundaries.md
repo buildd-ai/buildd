@@ -2,7 +2,7 @@
 title: Auth & OAuth Boundaries
 status: active
 owner: max
-last_verified: 2026-10-12
+last_verified: 2026-10-15
 summary: The buildd API MUST authenticate every request as either an api-key or an OAuth token, apply only that auth type's billing and concurrency limits, and reject ambiguous multi-workspace OAuth claims.
 domain: auth
 surfaces: [apps/web/src/lib/api-auth.ts, apps/web/src/lib/mcp-grants.ts, apps/web/src/app/api/mcp/route.ts, apps/web/src/lib/oauth/account-consent.ts, apps/web/src/app/api/oauth/token/route.ts]
@@ -56,32 +56,47 @@ assertions:
 ---
 # Auth & OAuth Boundaries
 
-**Capability statement**: The buildd API MUST authenticate every request using
-either an `api`-type key (`bld_xxx`) or an `oauth`-type token, enforce the
-correct billing and concurrency limits per auth type, and prevent ambiguous
-multi-workspace routing for OAuth tokens that have access to more than one
-workspace.
+**Capability statement**: The buildd API MUST authenticate every request to
+one `accounts` row (a `bld_xxx` key, or an OAuth 2.1 access token buildd
+issued to an MCP client), apply the claim limits that match how the account's
+**model** usage is paid (`authType`), and refuse ambiguous multi-workspace
+routing for OAuth tokens that reach more than one workspace.
 
 ---
 
 ## Dual Auth Model
 
-| Auth type | Credential format | Billing | Primary limits |
-|-----------|------------------|---------|----------------|
-| `api` | `bld_xxx` API key | Pay-per-token | `maxCostPerDay`, team monthly budget (`monthlyBudgetUsd`) |
-| `oauth` | JWT in `secrets` table (`purpose = 'oauth_token'`) | Seat-based | `maxConcurrentSessions`, `budgetExhaustedAt`/`budgetResetsAt` |
+`accounts.authType` says how a runner account's model usage is paid, and so
+which claim limits apply. It does not say how the account authenticates to
+buildd: both types authenticate with a `bld_xxx` key, which is unrelated to
+model billing. buildd coordinates the agent; it does not provide model access.
+
+| Auth type | What pays for the model | Billing | Primary limits |
+|-----------|-------------------------|---------|----------------|
+| `api` | An API key (the team's, from buildd's `secrets` table, or the runner's own) | Pay-per-token | `maxCostPerDay`, team monthly budget (`monthlyBudgetUsd`) |
+| `oauth` | A subscription login on the runner's **own machine** (`claude login` or `CLAUDE_CODE_OAUTH_TOKEN`; `codex login`) | Plan-based | `maxConcurrentSessions`, `budgetExhaustedAt`/`budgetResetsAt` |
 
 **Invariants**:
 - Every authenticated request resolves to exactly one `accounts` row via
   `authenticateApiKey()`. No request proceeds without a valid row.
-- `accounts.authType` MUST be checked before applying any limit — applying
-  `maxCostPerDay` to an OAuth account or `maxConcurrentSessions` to an API
+- `accounts.authType` MUST be checked before applying any limit. Applying
+  `maxCostPerDay` to an `oauth` account or `maxConcurrentSessions` to an `api`
   account MUST NOT occur.
 - `accounts.level` (`trigger | worker | admin`) gates the MCP action set and
   some API routes independently of `authType`.
-- `accounts.oauthToken` (the old plaintext column) is deprecated. New OAuth
-  tokens are stored encrypted in `secrets` (`purpose = 'oauth_token'`). Both
-  paths must authenticate correctly during the transition.
+- A subscription login stays on the machine or interactive session that owns
+  it. Who supplies a task's model credential, in what order, is the approved
+  spec "Model credentials: the runner's own login first, API keys from buildd"
+  (a8d1eb82): the machine's own login first, then an API key buildd delivers
+  on the claim, then nothing. buildd never stores a new subscription login,
+  never refreshes, leases or writes one back, and a claim delivers only API
+  keys (and a team agent model endpoint where one is set).
+- Server-stored subscription credentials (`secrets` purposes `oauth_token`,
+  `claude_credential`, `codex_credential`, and the old plaintext
+  `accounts.oauthToken` column) are legacy. They are being removed under
+  a8d1eb82 (R-2, R-8): the claim stops reading them first, and the rows are
+  deleted only in a later, owner-approved step. No new code may read, refresh
+  or hand them out.
 
 **Acceptance criteria**:
 - AC-1: WHEN a request carries an unknown Bearer token THEN `authenticateApiKey`
@@ -96,12 +111,13 @@ workspace.
   `error: "Trigger tokens cannot claim tasks"`.
 
 **Code surface**:
-- Auth helper: `apps/web/src/lib/api-auth.ts` — `authenticateApiKey()`
-- Claim route: `apps/web/src/app/api/workers/claim/route.ts` (limit checks,
-  lines ~80–119)
-- Schema: `packages/core/db/schema.ts` — `accounts` table, `authType`,
+- Auth helper: `apps/web/src/lib/api-auth.ts`: `authenticateApiKey()`
+- Claim route: `apps/web/src/app/api/workers/claim/route.ts` (the per-`authType`
+  limit checks) and `claim-limits.ts` (`accountLimitRefusal`, which writes the
+  `daily_cost_limit` and `max_concurrent_sessions` refusals)
+- Schema: `packages/core/db/schema.ts`: `accounts` table, `authType`,
   `level`, `maxCostPerDay`, `maxConcurrentSessions`
-- Secrets: `packages/core/secrets/` — `getSecretsProvider()`, `oauth-token.ts`
+- Credential order on the runner: a8d1eb82 and its build task
 
 ---
 
@@ -117,9 +133,11 @@ workspace.
 - The MCP server filters the exposed action list at server-creation time based on
   `accountLevel`; no level-downgrade is possible mid-request.
 - An OAuth JWT session's level MUST come from the caller's current
-  `team_members.role` on the token's workspace team: `owner`/`admin` →
-  `admin`, `member` → `worker`, and any other or missing role → `worker`
-  (`levelForTeamRole()`). A caller with no membership row MUST NOT
+  `team_members.role` in the team the request acts in: the team of the
+  workspace the request is bound to for a grant token (one granted team, or
+  the workspace the request names), the token's workspace team for a legacy
+  token. `owner`/`admin` give `admin`, `member` gives `worker`, and any other
+  or missing role gives `worker` (`levelForTeamRole()`). A caller with no membership row MUST NOT
   authenticate. Both `/api/mcp` and `/api/mcp-oauth/[workspace]` act at that
   level, and so do the `/api/*` self-calls they make with the same bearer.
 - The OAuth session cache MUST bound how long a role change or membership
@@ -133,19 +151,19 @@ workspace.
   is NOT in the `action` enum.
 - AC-7: GIVEN a `worker` token WHEN `send_agent_message` is called THEN the
   response contains `isError: true` (admin-only action).
-- AC-7a: GIVEN an OAuth JWT for a user whose team role is `member` WHEN
+- AC-70: GIVEN an OAuth JWT for a user whose team role is `member` WHEN
   `authenticateApiKey` resolves it THEN `level` is `worker`; for `owner` or
   `admin` it is `admin`; with no membership row it returns `null`.
-- AC-7b: GIVEN a member's OAuth session WHEN an admin-only action is called on
+- AC-71: GIVEN a member's OAuth session WHEN an admin-only action is called on
   `/api/mcp-oauth/[workspace]` THEN the result is `{"error":"forbidden",
   "requiredLevel":"admin"}`.
 
 **Code surface**:
-- Action lists: `packages/core/mcp-tools.ts` — `triggerActions`, `workerActions`,
+- Action lists: `packages/core/mcp-tools.ts`: `triggerActions`, `workerActions`,
   `adminActions`
-- Level resolution: `apps/web/src/app/api/mcp/route.ts` —
+- Level resolution: `apps/web/src/app/api/mcp/route.ts`:
   `getAccountLevel()`, `createMcpServer()`
-- OAuth role → level: `apps/web/src/lib/oauth/session-level.ts` —
+- OAuth role → level: `apps/web/src/lib/oauth/session-level.ts`:
   `levelForTeamRole()`; applied in `apps/web/src/lib/api-auth.ts`
   (`authenticateOauthJwt()`)
 
@@ -173,8 +191,9 @@ workspace.
   is bypassed and claiming proceeds.
 
 **Code surface**:
-- Claim guard: `apps/web/src/app/api/workers/claim/route.ts` lines ~121–155
-- MCP memory guard: `apps/web/src/app/api/mcp/route.ts` — `buildd_memory`
+- Claim guard: `apps/web/src/app/api/workers/claim/route.ts`, `POST` (the
+  `claimAcrossAccessible` check, `isGrantSession` first, then `authType === 'oauth'`)
+- MCP memory guard: `apps/web/src/app/api/mcp/route.ts`: `buildd_memory`
   handler, `getWorkspaceId()` check
 
 ---
@@ -195,18 +214,21 @@ workspace.
   claiming proceeds normally.
 
 **Code surface**:
-- Auto-clear: `apps/web/src/app/api/workers/claim/route.ts` lines ~107–118
-- Schema: `packages/core/db/schema.ts` — `accounts.budgetExhaustedAt`,
+- Auto-clear: `apps/web/src/app/api/workers/claim/route.ts`, `POST` (the
+  `budgetExhaustedAt` branch, using `isBudgetExhausted` from `lib/budget-errors.ts`)
+- Schema: `packages/core/db/schema.ts`: `accounts.budgetExhaustedAt`,
   `budgetResetsAt`
 
 ---
 
 ## OAuth 2.1 PKCE (MCP Clients)
 
-**Capability statement**: The buildd OAuth 2.1 server MUST issue
-workspace-scoped access tokens to MCP clients (e.g. claude.ai) using the
-authorization code + PKCE flow, and the `/api/mcp-oauth/[workspace]` endpoint
-MUST reject tokens whose `workspaceId` claim does not match the URL path.
+**Capability statement**: The buildd OAuth 2.1 server MUST issue access
+tokens to MCP clients (e.g. claude.ai) using the authorization code + PKCE
+flow. A new sign-in issues an account-level token that carries a `grant_id`
+(see "Account-level MCP grants"); a legacy token carries one `workspace_id`,
+and the `/api/mcp-oauth/[workspace]` endpoint MUST reject a legacy token whose
+`workspaceId` claim does not match the URL path.
 
 **Invariants**:
 - Authorization codes MUST be single-use: redemption is one conditional
@@ -218,8 +240,9 @@ MUST reject tokens whose `workspaceId` claim does not match the URL path.
 - Both grants MUST re-check that the user is still a member of the
   workspace's team. On refresh, a non-member gets `invalid_grant` and every
   outstanding refresh token for that user and workspace is revoked.
-- Access tokens carry `workspaceId` in the JWT claim; the workspace-scoped MCP
-  endpoint rejects tokens for the wrong workspace.
+- A legacy access token carries `workspaceId` in the JWT claim, and the
+  workspace-scoped MCP endpoint rejects it for the wrong workspace. A grant
+  token carries `grant_id` instead and reaches the grant's workspaces.
 - A refresh token's `expiresAt` is the sooner of its sliding TTL and its
   family's absolute lifetime (below).
 
@@ -275,14 +298,14 @@ MUST reject tokens whose `workspaceId` claim does not match the URL path.
   client can still refresh with it.
 
 **Code surface**:
-- OAuth routes: `apps/web/src/app/api/oauth/` — `authorize`, `token`, `register`
-- Refresh-token storage: `apps/web/src/lib/oauth/storage.ts` —
+- OAuth routes: `apps/web/src/app/api/oauth/`: `authorize`, `token`, `register`
+- Refresh-token storage: `apps/web/src/lib/oauth/storage.ts`:
   `hashRefreshToken()`, `createRefreshToken()`, `consumeRefreshToken()`;
   lifetimes in `apps/web/src/lib/oauth/config.ts`
 - Tests: `apps/web/tests/db/oauth-refresh-families.test.ts` (real Postgres),
   `apps/web/src/lib/oauth/storage.test.ts`
 - Workspace-scoped endpoint: `apps/web/src/app/api/mcp-oauth/[workspace]/route.ts`
-- Schema: `packages/core/db/schema.ts` — `oauthClients`, `oauthCodes`,
+- Schema: `packages/core/db/schema.ts`: `oauthClients`, `oauthCodes`,
   `oauthRefreshTokens`
 
 ---
@@ -363,13 +386,13 @@ workspaces; what it reaches is decided server-side on every request.
   a workspace-bound pair.
 
 **Code surface**:
-- Resolver: `apps/web/src/lib/mcp-grants.ts` — `createGrant()`,
+- Resolver: `apps/web/src/lib/mcp-grants.ts`: `createGrant()`,
   `resolveGrantedWorkspaces()`, `resolveGrant()`, `resolveTokenGrant()`,
   `grantPrincipal()`, `revokeGrant()`
-- Tokens: `apps/web/src/lib/oauth/tokens.ts` — `signGrantAccessToken()`,
+- Tokens: `apps/web/src/lib/oauth/tokens.ts`: `signGrantAccessToken()`,
   `verifyAccessTokenAnyAudience()`; storage bindings in
   `apps/web/src/lib/oauth/storage.ts`
-- Per-request auth: `apps/web/src/lib/api-auth.ts` — `authenticateOauthJwt()`
+- Per-request auth: `apps/web/src/lib/api-auth.ts`: `authenticateOauthJwt()`
 - Token endpoint: `apps/web/src/app/api/oauth/token/route.ts`
 - Tests: `apps/web/tests/db/mcp-oauth-grants.test.ts` (real Postgres)
 
@@ -488,7 +511,7 @@ registration (`/api/oauth/register`).
   are in the grant.
 
 **Code surface**:
-- Consent logic and page: `apps/web/src/lib/oauth/account-consent.ts` —
+- Consent logic and page: `apps/web/src/lib/oauth/account-consent.ts`:
   `parseRequestedAccess()`, `initialConsentState()`, `applyNav()`,
   `validateApproval()`, `renderAccountConsentPage()`
 - Authorize endpoint: `apps/web/src/app/api/oauth/authorize/route.ts`
@@ -591,10 +614,10 @@ same origin as the issuer only):
   with any other redirect THEN it is unverified and shows the return host.
 
 **Code surface**:
-- `apps/web/src/lib/oauth/account-consent.ts` — `classifyResource()`,
+- `apps/web/src/lib/oauth/account-consent.ts`: `classifyResource()`,
   `clientIdentity()`, `pickerTeams()`, `workspaceDetail()`,
   `renderLegacyConsentPage()`
-- `apps/web/src/lib/oauth/resource-binding.ts` — `resourceMatchesBinding()`
+- `apps/web/src/lib/oauth/resource-binding.ts`: `resourceMatchesBinding()`
 - Authorize and token endpoints: `apps/web/src/app/api/oauth/authorize/route.ts`,
   `apps/web/src/app/api/oauth/token/route.ts`
 - Tests: `apps/web/src/lib/oauth/account-consent.test.ts`,
@@ -705,14 +728,14 @@ deprecated.
   the request's host is never used.
 
 **Code surface**:
-- Transport: `apps/web/src/app/api/mcp/route.ts` — `handleGrantMcpRequest()`
-- Resolution: `apps/web/src/lib/mcp-grants.ts` — `describeGrantWorkspaces()`,
+- Transport: `apps/web/src/app/api/mcp/route.ts`: `handleGrantMcpRequest()`
+- Resolution: `apps/web/src/lib/mcp-grants.ts`: `describeGrantWorkspaces()`,
   `resolveGrantWorkspaceRef()`, `grantTokenScopes()`
 - Refusals and deprecation: `apps/web/src/lib/mcp-grant-session.ts`
-- Binding: `apps/web/src/lib/api-auth.ts` — `authenticateGrantSession()`,
+- Binding: `apps/web/src/lib/api-auth.ts`: `authenticateGrantSession()`,
   `GRANT_WORKSPACE_HEADER`
-- Action: `packages/core/mcp-tools.ts` — `list_workspaces`
-- Self-call origin: `apps/web/src/lib/self-origin.ts` — `resolveSelfOrigin()`
+- Action: `packages/core/mcp-tools.ts`: `list_workspaces`
+- Self-call origin: `apps/web/src/lib/self-origin.ts`: `resolveSelfOrigin()`
 - Tests: `apps/web/tests/db/mcp-canonical-transport.test.ts` (real Postgres),
   `apps/web/src/lib/mcp-grant-session.test.ts`,
   `apps/web/src/app/api/mcp/transport-parity.test.ts`,
@@ -833,14 +856,14 @@ team's other workspaces would otherwise allow.
   worker and B (in person or through B's agent connection) does not.
 
 **Code surface**:
-- Ownership: `apps/web/src/lib/worker-owner.ts` — `claimingUserId()`,
+- Ownership: `apps/web/src/lib/worker-owner.ts`: `claimingUserId()`,
   `agentConnectionUserId()`, `callerOwnsWorker()`;
-  `apps/web/src/lib/worker-park.ts` — `ownedByCaller()`;
-  `apps/web/src/lib/agent-capabilities/worker-pr.ts` —
+  `apps/web/src/lib/worker-park.ts`: `ownedByCaller()`;
+  `apps/web/src/lib/agent-capabilities/worker-pr.ts`:
   `notThisAgentsWorker()`; `apps/web/src/app/api/workers/mine/route.ts`
-- Rule: `apps/web/src/lib/grant-scope.ts` — `assertGrantedWorkspace()`,
+- Rule: `apps/web/src/lib/grant-scope.ts`: `assertGrantedWorkspace()`,
   `constrainToGranted()`, `isGrantSession()`
-- Route confinement: `apps/web/src/lib/token-route-policy.ts` —
+- Route confinement: `apps/web/src/lib/token-route-policy.ts`:
   `canAccessTokenRoute()`
 - Reach: `apps/web/src/lib/workspace-reach.ts`, `apps/web/src/lib/team-access.ts`
   (`verifyAccountWorkspaceAccess`), `apps/web/src/lib/workspace-access.ts`
@@ -944,14 +967,14 @@ Settings › Connected apps. Every change applies on the app's next request.
 **Code surface**:
 - API: `apps/web/src/app/api/mcp-grants/route.ts`,
   `apps/web/src/app/api/mcp-grants/[id]/route.ts`
-- Library: `apps/web/src/lib/mcp-grant-admin.ts` — `listUserConnections()`,
+- Library: `apps/web/src/lib/mcp-grant-admin.ts`: `listUserConnections()`,
   `updateUserGrant()`, `consentTeamsForUser()`;
-  `apps/web/src/lib/mcp-grant-patch.ts` — `parseGrantPatch()`;
-  `apps/web/src/lib/mcp-grants.ts` — `revokeGrant()`
+  `apps/web/src/lib/mcp-grant-patch.ts`: `parseGrantPatch()`;
+  `apps/web/src/lib/mcp-grants.ts`: `revokeGrant()`
 - Session account provisioning: `apps/web/src/lib/oauth/ensure-session-account.ts`
-  — `ensureTeamSessionAccount()` (also used by `apps/web/src/app/api/oauth/token/route.ts`
+  `ensureTeamSessionAccount()` (also used by `apps/web/src/app/api/oauth/token/route.ts`
   and `apps/web/src/app/api/mcp/route.ts`)
-- UI: `apps/web/src/app/app/(protected)/settings/connections/` —
+- UI: `apps/web/src/app/app/(protected)/settings/connections/`:
   `ConnectionsSection.tsx`, `WorkspacePicker.tsx`; dev fixture
   `/app/dev/fixtures?state=mcp-connections`
 - Tests: `apps/web/tests/db/mcp-grant-management.test.ts` (real Postgres),
@@ -997,9 +1020,13 @@ approves in the dashboard.
   (key cleared).
 
 **Code surface**:
-- Routes: `apps/web/src/app/api/auth/device/` — `code`, `approve`, `token`
-- Schema: `packages/core/db/schema.ts` — `deviceCodes` table
+- Routes: `apps/web/src/app/api/auth/device/`: `code`, `approve`, `token`
+- Schema: `packages/core/db/schema.ts`: `deviceCodes` table
 
 **Out of scope**: Per-team `notificationPreferences` (a related auth-adjacent
 concept). Worker-level concurrency limits beyond `maxConcurrentWorkers` (covered
 in `runner-liveness.md`).
+
+## Renumbered
+
+Renumbered on 2026-10-15 so every criterion parses: AC-7a to AC-70, AC-7b to AC-71.
