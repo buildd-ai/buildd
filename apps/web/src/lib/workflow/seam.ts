@@ -41,7 +41,7 @@ import {
   resolveIncidentSql, trunkExplains, trunkRecovered, unresolvedIncidentsSql, type TrunkClassification,
 } from './trunk';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
-import { hostsKernelHere, submitKernelCommand } from './kernel-client';
+import { drainOnControlPlane, hostsKernelHere } from './kernel-client';
 import { diffTouchesFindings, isTaskId, openFindings, openRequiredFindings } from '@buildd/workflow-kernel/findings';
 
 const seamExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
@@ -107,17 +107,6 @@ export async function drainDelivery(deliveryId: string, deps: SeamDeps = {}): Pr
   } catch (err) {
     // The effect rows are durable; the cron drain picks up whatever this missed.
     console.error(`[workflow] inline drain for delivery ${deliveryId} failed:`, err);
-    return null;
-  }
-}
-
-/** The web host's inline drain in own mode: one `drain` command, best effort (the rows are durable). */
-async function drainOnControlPlane(deliveryId: string): Promise<DrainSummary | null> {
-  try {
-    const answer = await submitKernelCommand('drain', { deliveryId }, { principal: { kind: 'system', id: 'inline-drain' }, budgetMs: 10_000 });
-    return answer.result;
-  } catch (err) {
-    console.warn(`[workflow] control-plane drain for delivery ${deliveryId} not confirmed; the floor drains it:`, err instanceof Error ? err.message : err);
     return null;
   }
 }
