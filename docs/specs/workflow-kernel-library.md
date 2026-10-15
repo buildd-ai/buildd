@@ -743,8 +743,16 @@ later work and nothing refreshes or re-ships a branch that already landed.
   and its record redoes the step.
   Each delivery's steps run independently, so a held delivery blocks only
   itself. The hourly reconcile adopts a mission with no delivery rows, so a
-  merge whose record failed is retried (a mission PR merged in the last 48
-  hours is adopted as the merge being recorded).
+  merge whose record failed is retried: a mission PR merged in the last 48
+  hours is adopted as the merge being recorded only when the branch is gone or
+  still sits at the head that merged (`adoptionFacts`). A branch that moved on
+  is the live delivery (an adopted re-cut), never settled or deleted as the
+  merged one.
+- No branch is deleted with work on it: the last read before a delete requires
+  the branch to sit at the merged head or be contained in trunk. Otherwise the
+  branch is kept (`settlement.unshippedHead`), one mission note asks a person,
+  completion stays held, and the next pass retires it once trunk has the
+  commits or a person removes them.
 - The doors: every mission-PR merge door and the merge webhook record the merge
   through `kernel-client` (`mission_epoch`, action `merged`); the branch is no
   longer deleted at merge (`finalizeMissionPrMerge`). A task filed into the

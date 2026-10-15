@@ -252,6 +252,8 @@ export interface EpochDeps {
   noteHeld?: (missionId: string, title: string, body: string) => Promise<void>;
   /** Refresh-task PRs of the mission in this repo, for settlement classification. */
   refreshPrsOf?: (missionId: string, repoFullName: string) => Promise<Set<number>>;
+  /** Mission PRs in this repo whose recorded base is still `branch` (the lost-webhook fallback). */
+  recordedOnBranchOf?: (missionId: string, repoFullName: string, branch: string) => Promise<number[]>;
   /** Scratch-ref suffixes (tests); default a random UUID. */
   newId?: () => string;
   /** Refresh tasks filed for `branch` that never started (no worker yet): their premise is gone. */
@@ -420,11 +422,11 @@ export async function reconcileMissionEpochs(missionId: string, deps: EpochDeps 
   // what the door could not. A mission PR that merged within the catch-up
   // window is the merge being recorded now, not a past delivery.
   if (loaded.view.epochs.length === 0) {
-    const legacy = loaded.view.legacyPr ?? null;
-    const recent = legacy?.state === 'merged' && legacy.mergedAt != null
-      && nowDate().getTime() - Date.parse(legacy.mergedAt) < MERGE_CATCH_UP_MS;
-    const r = await applyMissionEpochCommand(missionId, { type: 'Adopt', actor: 'kernel:mission_epochs_reconcile', at: now(), mergingPr: recent ? legacy!.prNumber : null }, deps);
-    out.steps.push({ step: 'adopt', epoch: 0, outcome: `${r.result}:${r.reason}` });
+    const facts = await adoptionFacts(api, repo, loaded.view, nowDate());
+    const r = await applyMissionEpochCommand(missionId, {
+      type: 'Adopt', actor: 'kernel:mission_epochs_reconcile', at: now(), mergingPr: facts.mergingPr, liveBranchAhead: facts.liveBranchAhead,
+    }, deps);
+    out.steps.push({ step: 'adopt', epoch: 0, outcome: `${r.result}:${r.reason}${facts.mergingPr != null ? ':merging' : ''}${facts.liveBranchAhead ? ':branch_ahead' : ''}` });
     loaded = await loadMissionEpochView(missionId, deps);
     if (!loaded || loaded.view.epochs.length === 0) return out;
   }
@@ -476,11 +478,15 @@ export async function reconcileMissionEpochs(missionId: string, deps: EpochDeps 
         const fresh = (await loadMissionEpochView(missionId, deps))?.view.epochs.find((e) => e.id === epoch.id) ?? epoch;
         const settlement = await settle(api, repo, current.view, fresh, step.successorBranch, deps);
         if (!settlement) { stop('unreadable'); continue; }
-        const r = await record({ type: 'Settled', actor: 'kernel:mission_epochs', at: now(), epochId: epoch.id, settlement }, 'settled');
-        if (settlement.held.length > 0) {
-          if (r.result === 'applied') await noteHeld(missionId, fresh, settlement, deps);
-          blocked.add(epoch.id);
+        // A branch kept for unshipped commits stays kept until a fresh read says otherwise.
+        if (fresh.settlement?.unshippedHead) {
+          const u = await unshippedHeadOf(api, repo, fresh.branch, fresh.mergedHeadSha);
+          if (u === undefined) { stop('unreadable'); continue; }
+          if (u) settlement.unshippedHead = u;
         }
+        const r = await record({ type: 'Settled', actor: 'kernel:mission_epochs', at: now(), epochId: epoch.id, settlement }, 'settled');
+        if (settlement.held.length > 0 && r.result === 'applied') await noteHeld(missionId, fresh, settlement, deps);
+        if (settlement.held.length > 0 || settlement.unshippedHead) blocked.add(epoch.id);
       } finally {
         await (deps.exec ?? dbExec)(settleReleaseSql(epoch.id, token)).catch(() => {});
       }
@@ -498,6 +504,18 @@ export async function reconcileMissionEpochs(missionId: string, deps: EpochDeps 
       } }, 'reheld');
       continue;
     }
+    // The last check before a delete: the branch must sit at the head that
+    // merged, or be wholly in trunk. Anything else is work that never shipped;
+    // the branch is kept and a person is asked, whatever settlement concluded.
+    const unshipped = await unshippedHeadOf(api, repo, step.branch, epoch.mergedHeadSha);
+    if (unshipped === undefined) { stop('unreadable'); continue; }
+    if (unshipped) {
+      const settlement = { ...(epoch.settlement ?? { settled: [], held: [], satisfiedByPr: epoch.prNumber }), unshippedHead: unshipped };
+      const r = await record({ type: 'Settled', actor: 'kernel:mission_epochs', at: now(), epochId: epoch.id, settlement }, 'branch_kept');
+      if (r.result === 'applied') await noteUnshipped(missionId, epoch, unshipped, deps);
+      blocked.add(epoch.id);
+      continue;
+    }
     try {
       await api(repo.installationId, `/repos/${repo.repoFullName}/git/refs/heads/${encodeRef(step.branch)}`, { method: 'DELETE' });
     } catch (err) {
@@ -508,6 +526,31 @@ export async function reconcileMissionEpochs(missionId: string, deps: EpochDeps 
     await record({ type: 'Retired', actor: 'kernel:mission_epochs', at: now(), epochId: epoch.id }, 'retired');
   }
   return out;
+}
+
+/**
+ * What adoption may assume about a mission with no delivery rows. A recorded
+ * mission PR that merged within `MERGE_CATCH_UP_MS` is the merge whose record
+ * failed ("merging now": rotate and settle it) only when the branch is gone or
+ * still sits exactly at the head that merged. A branch that moved on carries
+ * work after that merge: it is the live delivery (an adopted re-cut), and it
+ * is never settled or deleted as the merged one.
+ */
+export async function adoptionFacts(api: GithubApi, repo: MissionRepo, view: MissionEpochView, now: Date): Promise<{ mergingPr: number | null; liveBranchAhead: boolean }> {
+  const legacy = view.legacyPr ?? null;
+  const branch = view.integrationBranch;
+  if (!branch || legacy?.state !== 'merged' || legacy.prNumber == null) return { mergingPr: null, liveBranchAhead: false };
+  const head = await api(repo.installationId, `/repos/${repo.repoFullName}/git/ref/heads/${encodeRef(branch)}`)
+    .then((r) => ({ sha: str(r?.object?.sha), gone: false }), (err) => ({ sha: null, gone: githubStatus(err) === 404 }));
+  const recent = legacy.mergedAt != null && now.getTime() - Date.parse(legacy.mergedAt) < MERGE_CATCH_UP_MS;
+  if (head.gone) return { mergingPr: recent ? legacy.prNumber : null, liveBranchAhead: false };
+  if (!head.sha) return { mergingPr: null, liveBranchAhead: true }; // unreadable: keep the branch live, never retire it
+  const pr = await api(repo.installationId, `/repos/${repo.repoFullName}/pulls/${legacy.prNumber}`).catch(() => null);
+  const mergedHead = str(pr?.head?.sha);
+  if (mergedHead && mergedHead === head.sha) return { mergingPr: recent ? legacy.prNumber : null, liveBranchAhead: false };
+  const trunkHead = await api(repo.installationId, `/repos/${repo.repoFullName}/git/ref/heads/${encodeRef(repo.trunk)}`).then((r) => str(r?.object?.sha)).catch(() => null);
+  const inTrunk = trunkHead ? await isAncestor(api, repo, head.sha, trunkHead) : null;
+  return { mergingPr: null, liveBranchAhead: inTrunk !== true };
 }
 
 /** A merged mission PR with no delivery record this recent is the merge whose record failed. */
@@ -532,6 +575,43 @@ WHERE id = ${epochId}::uuid AND settle_lease_token = ${token}::text`;
  * Create the successor's branch at `fromSha`, or accept one already there only
  * if it starts from that commit (a stray branch under the name is not ours).
  */
+/**
+ * The branch's live head when it carries commits trunk lacks; null when it is
+ * gone, at `mergedHead`, or contained in trunk; undefined when unreadable.
+ */
+async function unshippedHeadOf(api: GithubApi, repo: MissionRepo, branch: string, mergedHead: string | null): Promise<string | null | undefined> {
+  let head: string | null;
+  try {
+    head = str((await api(repo.installationId, `/repos/${repo.repoFullName}/git/ref/heads/${encodeRef(branch)}`))?.object?.sha);
+  } catch (err) {
+    return githubStatus(err) === 404 ? null : undefined;
+  }
+  if (!head) return undefined;
+  if (mergedHead && head === mergedHead) return null;
+  let trunkHead: string | null;
+  try {
+    trunkHead = str((await api(repo.installationId, `/repos/${repo.repoFullName}/git/ref/heads/${encodeRef(repo.trunk)}`))?.object?.sha);
+  } catch { return undefined; }
+  if (!trunkHead) return undefined;
+  const inTrunk = await isAncestor(api, repo, head, trunkHead);
+  if (inTrunk === null) return undefined;
+  return inTrunk ? null : head;
+}
+
+async function noteUnshipped(missionId: string, epoch: EpochSnapshot, head: string, deps: EpochDeps): Promise<void> {
+  const title = `Delivery ${epoch.epoch}'s branch has commits that never reached trunk`;
+  const body = [
+    `Delivery ${epoch.epoch} merged${epoch.prNumber ? ` (#${epoch.prNumber})` : ''}, but its branch \`${epoch.branch}\` has moved on to ${head.slice(0, 7)}, which trunk does not contain.`,
+    '',
+    'buildd keeps the branch and will not delete it. Open a PR from it into the current delivery to ship that work, or delete the branch yourself if it does not matter.',
+  ].join('\n');
+  try {
+    await (deps.noteHeld ?? defaultNoteHeld)(missionId, title, body);
+  } catch (err) {
+    console.warn('[delivery-epochs] unshipped-branch note not posted:', err instanceof Error ? err.message : err);
+  }
+}
+
 async function cutBranch(api: GithubApi, repo: MissionRepo, branch: string, fromSha: string | null): Promise<string | null> {
   const found = async (): Promise<string | null> => {
     const ref = await api(repo.installationId, `/repos/${repo.repoFullName}/git/ref/heads/${encodeRef(branch)}`);
@@ -589,7 +669,10 @@ async function settle(api: GithubApi, repo: MissionRepo, view: MissionEpochView,
   // GitHub retargets the open PRs of a branch it deletes on merge to that PR's
   // base (trunk). Only the ones recorded as moved off THIS branch (the retarget
   // webhook's `from`) are touched: a PR that was always on trunk never is.
-  for (const n of epoch.movedPrs ?? []) {
+  // Fallback for a lost retarget webhook: a mission PR buildd still records as
+  // based on this branch, whose live base is now trunk, was moved off it too.
+  const recordedOnBranch = await (deps.recordedOnBranchOf ?? defaultRecordedOnBranchOf)(view.missionId, repo.repoFullName, epoch.branch);
+  for (const n of [...new Set([...(epoch.movedPrs ?? []), ...recordedOnBranch])]) {
     if (n === epoch.prNumber || candidates.some((c) => c.prNumber === n)) continue;
     let pr: any;
     try { pr = await api(repo.installationId, `/repos/${repo.repoFullName}/pulls/${n}`); } catch { return null; }
@@ -656,6 +739,16 @@ SELECT DISTINCT w.pr_number FROM tasks t JOIN workers w ON w.task_id = t.id
 WHERE t.mission_id = ${missionId}::uuid AND w.pr_number IS NOT NULL AND (t.context->>'requireMergeCommit')::boolean IS TRUE
   AND lower(w.pr_url) LIKE ${`https://github.com/${repoFullName.toLowerCase()}/pull/%`}::text`)).rows ?? []) as Array<{ pr_number: unknown }>;
   return new Set(rows.map((r) => Number(r.pr_number)));
+}
+
+async function defaultRecordedOnBranchOf(missionId: string, repoFullName: string, branch: string): Promise<number[]> {
+  const rows = ((await dbExec(sql`-- workflow:mission_prs_recorded_on_branch
+SELECT DISTINCT w.pr_number FROM tasks t JOIN workers w ON w.task_id = t.id
+WHERE t.mission_id = ${missionId}::uuid AND w.pr_number IS NOT NULL AND w.merged_at IS NULL
+  AND COALESCE(w.pr_lifecycle_status, '') NOT IN ('closed', 'merged', 'unresolvable')
+  AND w.pr_base_ref = ${branch}::text
+  AND lower(w.pr_url) LIKE ${`https://github.com/${repoFullName.toLowerCase()}/pull/%`}::text`)).rows ?? []) as Array<{ pr_number: unknown }>;
+  return rows.map((r) => Number(r.pr_number));
 }
 
 async function defaultObsoleteRefreshTasksOf(missionId: string, branch: string): Promise<string[]> {

@@ -503,7 +503,9 @@ list.
   shipped" is read from that delivery's record (`missionShippingPrMerged` with
   the refresh's branch), never from the mission's newest PR.
 - R-2. The branch is retired only after settlement, with nothing held, and only
-  when a fresh read shows no open PR still based on it. A PR opened on it after
+  when a fresh read shows no open PR still based on it and its live head is the
+  merged head or contained in trunk (a branch that moved on is kept, with one
+  note, never deleted). A PR opened on it after
   settlement is settled on the next pass. Unique or ambiguous work keeps the
   branch and posts one mission note naming each PR and what to do.
 - R-3. A refresh PR lands only on the branch it was filed for, and only while that

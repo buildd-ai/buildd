@@ -108,6 +108,12 @@ export interface MissionEpochView {
   work: { unfinishedTasks: number; openTaskPrs: number };
   /** Read only for adoption; null when the mission never had a mission PR. */
   legacyPr?: LegacyMissionPr | null;
+  /**
+   * Read only for adoption: the integration branch exists and carries commits
+   * trunk lacks. A merged mission PR then cannot be the whole story: the branch
+   * is the live delivery (an adopted re-cut), never a record to retire.
+   */
+  liveBranchAhead?: boolean;
 }
 
 // ── Branch naming ───────────────────────────────────────────────────────────
@@ -190,7 +196,17 @@ export interface EpochSettlement {
   held: SettledPr[];
   /** The epoch PR the redundant ones are recorded as satisfied by. */
   satisfiedByPr: number | null;
+  /**
+   * The branch's live head carries commits that never reached trunk (it is
+   * neither the merged head nor contained in trunk): the branch is kept, a
+   * person is asked, and nothing deletes it. The head read, when one was.
+   */
+  unshippedHead?: string | null;
 }
+
+/** Does this settlement keep the branch (held PRs, or unshipped commits on it)? */
+export const settlementHolds = (s: EpochSettlement | null | undefined): boolean =>
+  (s?.held.length ?? 0) > 0 || !!s?.unshippedHead;
 
 /**
  * The settlement rule (a11abc4b R-2, R-3; §6 AC-23). Pure: the host read
@@ -236,7 +252,7 @@ export type MissionEpochCommand =
    * mission PR) as epochs. `mergingPr`: adoption is happening because that PR
    * is merging now, so it is the open epoch's PR, not a past delivery.
    */
-  | (Base & { type: 'Adopt'; mergingPr?: number | null })
+  | (Base & { type: 'Adopt'; mergingPr?: number | null; liveBranchAhead?: boolean })
   /** The mission PR for the open epoch was opened (or adopted). */
   | (Base & { type: 'PrBound'; prNumber: number; repoFullName: string; ownerTaskId: string | null; headRef: string | null })
   /** An epoch's PR merged (GitHub's values). Idempotent on replay. */
@@ -345,9 +361,9 @@ export function adoptionOf(v: MissionEpochView, at: string, opts: { mergingPr?: 
     mergedAt: pr.mergedAt ?? at,
     // A legacy merge was never settled by this reducer, and its branch was
     // deleted on merge by design: record both as done rather than invent work.
-    settledAt: at, retiredAt: hasWork(v) ? null : at,
+    settledAt: at, retiredAt: hasWork(v) || v.liveBranchAhead ? null : at,
   };
-  if (!hasWork(v)) return [first];
+  if (!hasWork(v) && !v.liveBranchAhead) return [first];
   return [first, {
     ...blank, epoch: 2, branch, state: 'open', origin: 'adopted_recut', predecessorEpoch: 1, branchReadyAt: null,
     repoFullName: null, prNumber: null, ownerTaskId: null, mergedAt: null,
@@ -362,7 +378,7 @@ export function reduceMissionEpochs(v: MissionEpochView, cmd: MissionEpochComman
   if (cmd.type === 'Adopt') {
     if (!v.integrationBranch) return rejected('not_opted_in');
     if (v.epochs.length > 0) return noop('already_adopted');
-    return applied('adopted', adoptionOf(v, cmd.at, { mergingPr: cmd.mergingPr }).map((epoch) => ({ op: 'insert' as const, epoch })));
+    return applied('adopted', adoptionOf(cmd.liveBranchAhead !== undefined ? { ...v, liveBranchAhead: cmd.liveBranchAhead } : v, cmd.at, { mergingPr: cmd.mergingPr }).map((epoch) => ({ op: 'insert' as const, epoch })));
   }
   if (v.epochs.length === 0) return rejected('not_adopted');
   const byId = (id: string) => v.epochs.find((e) => e.id === id) ?? null;
@@ -452,7 +468,7 @@ export function reduceMissionEpochs(v: MissionEpochView, cmd: MissionEpochComman
       if (e.state !== 'merged') return rejected('epoch_not_merged');
       if (e.retiredAt) return noop('already_retired');
       if (!e.settledAt) return rejected('not_settled');
-      if ((e.settlement?.held.length ?? 0) > 0) return rejected('settlement_held');
+      if (settlementHolds(e.settlement)) return rejected('settlement_held');
       return applied('retired', [{ op: 'update', epochId: e.id, expectVersion: e.version, set: { retiredAt: cmd.at } }]);
     }
   }
@@ -462,6 +478,7 @@ function sameSettlement(a: EpochSettlement | null, b: EpochSettlement): boolean 
   const key = (s: EpochSettlement | null) => JSON.stringify({
     settled: (s?.settled ?? []).map((p) => [p.prNumber, p.disposition]).sort(),
     held: (s?.held ?? []).map((p) => [p.prNumber, p.disposition]).sort(),
+    unshippedHead: s?.unshippedHead ?? null,
   });
   return key(a) === key(b);
 }
@@ -475,7 +492,7 @@ export const sharesBranchWithLater = (v: Pick<MissionEpochView, 'epochs'>, e: Ep
 /** A merged epoch whose branch still has PRs to settle (or held ones). */
 export const unsettledEpochs = (v: Pick<MissionEpochView, 'epochs'>): EpochSnapshot[] =>
   v.epochs.filter((e) => e.state === 'merged' && !e.retiredAt && !sharesBranchWithLater(v, e)
-    && (!e.settledAt || (e.settlement?.held.length ?? 0) > 0));
+    && (!e.settledAt || settlementHolds(e.settlement)));
 
 /**
  * Is `ref` the branch of an epoch that already reached trunk and that no open
@@ -512,15 +529,15 @@ export function pendingEpochSteps(v: Pick<MissionEpochView, 'epochs'>): EpochSte
   const openReady = !open || open.origin !== 'cut' || !!open.branchReadyAt;
   for (const e of [...v.epochs].sort((a, b) => a.epoch - b.epoch)) {
     if (e.state !== 'merged' || e.retiredAt) continue;
-    // An earlier epoch whose branch a later one reuses has nothing of its own left to settle.
-    if (sharesBranchWithLater(v, e) && e.settledAt) continue;
+    // A later epoch on the same branch (an adopted re-cut) owns that branch:
+    // its settlement and its retirement. The earlier record owes nothing.
+    if (sharesBranchWithLater(v, e)) continue;
     const successor = v.epochs.find((s) => s.predecessorId === e.id) ?? null;
-    const held = (e.settlement?.held.length ?? 0) > 0;
+    const held = settlementHolds(e.settlement);
     if ((!e.settledAt || held) && openReady) {
       out.push({ step: 'settle', epochId: e.id, branch: e.branch, successorBranch: successor?.branch ?? null });
     }
-    // A later epoch on the same branch (an adopted re-cut) owns its retirement: never delete it here.
-    if (e.settledAt && !held && !sharesBranchWithLater(v, e)) out.push({ step: 'retire', epochId: e.id, branch: e.branch });
+    if (e.settledAt && !held) out.push({ step: 'retire', epochId: e.id, branch: e.branch });
   }
   return out;
 }

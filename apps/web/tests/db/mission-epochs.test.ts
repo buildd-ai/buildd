@@ -460,3 +460,155 @@ describe('a lost merge webhook', () => {
     expect((await epochRows()).map((e) => e.state)).toEqual(['merged', 'open']);
   });
 });
+
+// ── Review round 2 of #4806 ────────────────────────────────────────────────
+
+const HOUR = 60 * 60 * 1000;
+const NOW = new Date('2026-10-15T12:00:00.000Z');
+const legacyMerged = (hoursAgo: number): Deps => ({
+  ...deps(),
+  now: () => NOW,
+  legacyPrOf: async () => ({ prNumber: 7, repoFullName: REPO, ownerTaskId: null, state: 'merged', mergedAt: new Date(NOW.getTime() - hoursAgo * HOUR).toISOString() }),
+});
+
+/** A mission predating delivery records whose mission PR #7 merged at m7 (head b1). */
+function legacyMergedMission(branch: 'gone' | 'at_merged_head' | 'moved_on') {
+  gh.commit('t0', []);
+  gh.commit('b1', ['t0']);
+  const m7 = gh.commit('m7', ['t0', 'b1']);
+  gh.refs.set(TRUNK, m7);
+  gh.prs.set(7, { number: 7, state: 'closed', merged: true, base: TRUNK, headSha: 'b1', headRef: ROOT, mergeCommitSha: m7 });
+  if (branch === 'at_merged_head') gh.refs.set(ROOT, 'b1');
+  if (branch === 'moved_on') { gh.commit('x1', ['b1']); gh.refs.set(ROOT, 'x1'); }
+  return m7;
+}
+
+describe('review round 2, blocking 1: adoption never treats a moved-on branch as the merge being recorded', () => {
+  test('(a)/(b) merged 2 h ago, branch re-created or still taking work: adopted as the live delivery; nothing rotates, nothing is deleted', async () => {
+    legacyMergedMission('moved_on');
+    work = { unfinishedTasks: 0, openTaskPrs: 0 };
+    await epochs.reconcileMissionEpochs(missionId, legacyMerged(2));
+    const rows = await epochRows();
+    expect(rows.map((e) => [e.epoch, e.state, e.branch])).toEqual([[1, 'merged', ROOT], [2, 'open', ROOT]]);
+    expect(gh.refs.get(ROOT)).toBe('x1');
+    expect(await workingBranch()).toBe(ROOT);
+  });
+
+  test('merged 2 h ago and the branch is gone: that merge is recorded now, so the work left rotates to a successor', async () => {
+    const m7 = legacyMergedMission('gone');
+    work = { unfinishedTasks: 1, openTaskPrs: 0 };
+    await epochs.reconcileMissionEpochs(missionId, legacyMerged(2));
+    const rows = await epochRows();
+    expect(rows.map((e) => [e.epoch, e.state, e.branch, e.cut_from_sha])).toEqual([[1, 'merged', ROOT, null], [2, 'open', `${ROOT}-delivery-2`, m7]]);
+  });
+
+  test('merged 2 h ago and the branch still at the merged head: recorded now, settled, and the branch retired', async () => {
+    legacyMergedMission('at_merged_head');
+    work = { unfinishedTasks: 0, openTaskPrs: 0 };
+    await epochs.reconcileMissionEpochs(missionId, legacyMerged(2));
+    const [e1] = await epochRows();
+    expect(e1!.retired_at).not.toBeNull();
+    expect(gh.refs.has(ROOT)).toBe(false);
+  });
+
+  test('the catch-up window is pinned: a merge 3 days old is history, not a merge being recorded', async () => {
+    legacyMergedMission('gone');
+    work = { unfinishedTasks: 1, openTaskPrs: 0 };
+    await epochs.reconcileMissionEpochs(missionId, legacyMerged(72));
+    const rows = await epochRows();
+    // Adopted as a past delivery with a live re-cut, never rotated from the old merge commit.
+    expect(rows.map((e) => [e.epoch, e.state, e.branch])).toEqual([[1, 'merged', ROOT], [2, 'open', ROOT]]);
+    expect(epochs.MERGE_CATCH_UP_MS).toBe(48 * HOUR);
+  });
+});
+
+describe('review round 2, blocking 2: no branch is deleted with work that never reached trunk', () => {
+  test('a merged delivery whose branch moved on after settlement is kept, a person is asked once, completion stays held; once trunk has it, it retires', async () => {
+    await inFlight();
+    work = { unfinishedTasks: 0, openTaskPrs: 0 };
+    const m = gh.mergeEpochPr(10);
+    let pushed = false;
+    const racing: Deps = {
+      ...deps(),
+      // Inside the settle step: a commit lands on the merged branch.
+      obsoleteRefreshTasksOf: async () => {
+        if (!pushed) { pushed = true; gh.commit('late', ['b1']); gh.refs.set(ROOT, 'late'); }
+        return [];
+      },
+    };
+    await epochs.epochMerged(mergedInput(m), racing);
+    expect(gh.refs.get(ROOT)).toBe('late');
+    const [e1] = await epochRows();
+    expect(e1!.retired_at).toBeNull();
+    expect((e1!.settlement as { unshippedHead?: string } | null)?.unshippedHead).toBe('late');
+    expect(notes).toEqual(["Delivery 1's branch has commits that never reached trunk"]);
+    await epochs.reconcileMissionEpochs(missionId, racing);
+    expect(notes).toHaveLength(1);
+    expect(gh.refs.has(ROOT)).toBe(true);
+
+    // Trunk takes the commit: the next pass retires the branch.
+    gh.refs.set(TRUNK, gh.commit('t2', [m, 'late']));
+    await epochs.reconcileMissionEpochs(missionId, racing);
+    expect((await epochRows())[0]!.retired_at).not.toBeNull();
+    expect(gh.refs.has(ROOT)).toBe(false);
+  });
+});
+
+describe('review round 2: pins', () => {
+  test('reconcile honours the settle lease: a branch another caller is settling is not touched', async () => {
+    await inFlight();
+    gh.commit('r7', ['b1', 't0']);
+    gh.sameTree.add('r7');
+    gh.prs.set(7, { number: 7, state: 'open', base: ROOT, headSha: 'r7' });
+    refreshPrs = new Set([7]);
+    work = { unfinishedTasks: 0, openTaskPrs: 0 };
+    await epochs.applyMissionEpochCommand(missionId, { ...mergedInput(gh.mergeEpochPr(10)), type: 'Merged', at: '2026-10-14T12:00:00.000Z' } as never, deps());
+    const [e1] = await q<{ id: string }>(sql`SELECT id FROM workflow_mission_epochs WHERE mission_id = ${missionId}::uuid AND epoch = 1`);
+    await q(epochs.settleLeaseSql(e1!.id, 'someone-else', 60_000));
+    const out = await epochs.reconcileMissionEpochs(missionId, deps());
+    expect(out.steps.some((s) => s.step === 'settle' && s.outcome === 'in_flight')).toBe(true);
+    expect(gh.prs.get(7)!.state).toBe('open');
+    expect((await epochRows())[0]!.settled_at).toBeNull();
+  });
+
+  test('an existing successor branch that does not start from the cut commit is never taken as ready', async () => {
+    await inFlight();
+    work = { unfinishedTasks: 1, openTaskPrs: 0 };
+    gh.commit('stray', ['t0']);
+    gh.refs.set(`${ROOT}-delivery-2`, 'stray');
+    await epochs.epochMerged(mergedInput(gh.mergeEpochPr(10)), deps());
+    const [, e2] = await q<{ branch_ready_at: string | null }>(sql`SELECT branch_ready_at FROM workflow_mission_epochs WHERE mission_id = ${missionId}::uuid ORDER BY epoch`);
+    expect(e2!.branch_ready_at).toBeNull();
+    expect(gh.refs.get(`${ROOT}-delivery-2`)).toBe('stray');
+    expect((await epochRows())[0]!.settled_at).toBeNull();
+  });
+
+  test('a transition whose branch move would match nothing writes nothing', async () => {
+    await inFlight();
+    const [e1] = await q<{ id: string; version: number }>(sql`SELECT id, version FROM workflow_mission_epochs WHERE mission_id = ${missionId}::uuid`);
+    await q(sql`UPDATE missions SET working_branch = 'mission/moved-elsewhere' WHERE id = ${missionId}::uuid`);
+    const [r] = await q<{ applied: boolean }>(epochs.applyEpochOpsSql([
+      { op: 'update', epochId: e1!.id, expectVersion: Number(e1!.version), set: { state: 'merged', mergeCommitSha: 'm1' } },
+      { op: 'insert', epoch: { missionId, epoch: 2, branch: `${ROOT}-delivery-2`, state: 'open', origin: 'cut', cutFromSha: 'm1', predecessorId: e1!.id, scopeVersion: 1,
+        repoFullName: null, prNumber: null, ownerTaskId: null, mergedAt: null, mergeCommitSha: null, mergedHeadSha: null, branchReadyAt: null, settledAt: null, retiredAt: null } },
+      { op: 'project_branch', missionId, fromBranch: ROOT, branch: `${ROOT}-delivery-2` },
+    ]));
+    expect(r!.applied).toBe(false);
+    expect((await epochRows()).map((e) => [e.epoch, e.state])).toEqual([[1, 'open']]);
+    expect(await workingBranch()).toBe('mission/moved-elsewhere');
+  });
+
+  test('a lost retarget webhook: a PR still recorded on the delivery branch but live on trunk is moved too', async () => {
+    const t = (await q<{ id: string }>(sql`INSERT INTO tasks (workspace_id, mission_id, title, status, task_class) VALUES (${workspaceId}::uuid, ${missionId}::uuid, 'task 11', 'completed', 'work') RETURNING id`))[0]!;
+    await q(sql`INSERT INTO workers (workspace_id, task_id, name, runner, branch, status, pr_number, pr_url, pr_base_ref)
+      VALUES (${workspaceId}::uuid, ${t.id}::uuid, 'w', 'test', 'buildd/task-11', 'completed', 11, 'https://github.com/acme/app/pull/11', ${ROOT})`);
+    await inFlight();
+    gh.commit('w11', ['b1']);
+    gh.prs.set(11, { number: 11, state: 'open', base: ROOT, headSha: 'w11', headRef: 'buildd/task-11' });
+    work = { unfinishedTasks: 0, openTaskPrs: 1 };
+    const m = gh.mergeEpochPr(10, { deleteBranch: true });
+    // No PrMovedOff: the webhook never arrived. The default recorded-base lookup finds it.
+    await epochs.epochMerged(mergedInput(m), deps());
+    expect(gh.prs.get(11)!.base).toBe(`${ROOT}-delivery-2`);
+  });
+});
