@@ -3755,8 +3755,7 @@ export class WorkerManager {
         }
       }
       // The machine's own Claude login (host-seat.ts): used when the claim
-      // delivers no stored seat, or over one under BUILDD_HOST_SEAT=prefer.
-      // With a stored seat under the default, the env is the pre-passthrough one.
+      // delivers no stored seat, or over one (BUILDD_HOST_SEAT=off opts out).
       // credentialDecision.runnerLocalAllowed=false (the requester's own key
       // under personal_only): the machine's seat, login and provider must not
       // displace it. Absent on older servers and teams without a policy.
@@ -3850,7 +3849,7 @@ export class WorkerManager {
         sessionLog(worker.id, 'info', 'claude_seat_source', `source=machine-${hostSeat}${skipped ? ' server_seat=skipped' : ''}`, task.id);
       } else if (modelEnv.injected.includes('serverOauthToken') || shouldUseClaudeCredential(modelEnv, worker)) {
         if (seatDecision.deferredTo === 'server' && seatDecision.detected) {
-          console.log(`[Worker ${worker.id}] Claude seat: the seat stored in buildd; ${describeHostSeat(seatDecision.detected)} is present but not used (set BUILDD_HOST_SEAT=prefer once it is known to work)`);
+          console.log(`[Worker ${worker.id}] Claude seat: the seat stored in buildd; ${describeHostSeat(seatDecision.detected)} is present but not used`);
         }
         sessionLog(worker.id, 'info', 'claude_seat_source', `source=server-managed${seatDecision.deferredTo ? ` machine_seat=${seatDecision.detected}` : ''}`, task.id);
       }
@@ -3911,9 +3910,8 @@ export class WorkerManager {
           : undefined;
 
         // Whose Codex login (host-seat.ts decideCodexSeat): the machine's own
-        // `codex login` ($CODEX_HOME, else ~/.codex) when the claim delivers no
-        // Codex credential, or over a delivered ChatGPT login under
-        // BUILDD_HOST_SEAT=prefer. A delivered API key is still used.
+        // `codex login` ($CODEX_HOME, else ~/.codex), also over a delivered
+        // ChatGPT login (BUILDD_HOST_SEAT=off opts out). A delivered API key is still used.
         const machineCodexAuth = localCodexAuthPath();
         const codexSeat = decideCodexSeat({
           mode: hostSeatMode(),
@@ -3951,7 +3949,7 @@ export class WorkerManager {
           _ch = ensureStableCodexHome(worker.id, codexIsolatedPath).codexHome;
         }
         if (codexSeat === 'server' && machineCodexAuth && worker.codexCredential?.credentialType === 'oauth') {
-          console.log(`[Worker ${worker.id}] Codex login: the one stored in buildd; this machine's own is present but not used (set BUILDD_HOST_SEAT=prefer once it is known to work)`);
+          console.log(`[Worker ${worker.id}] Codex login: the one stored in buildd; this machine's own is present but not used`);
         }
         cleanEnv.CODEX_HOME = _ch;
         if (!cloudCostBasis(process.env)) {

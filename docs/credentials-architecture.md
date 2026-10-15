@@ -306,26 +306,29 @@ count. Detection and precedence: `applyHostSeatPolicy` in
 `apps/runner/src/host-seat.ts`, then `applyModelEnv` /
 `shouldUseClaudeCredential` in `apps/runner/src/agent-model-env.ts`.
 
-Against a subscription seat delivered on the claim (`oauth_token`,
-`claude_credential`), `BUILDD_HOST_SEAT` on the runner decides:
+The machine's own login comes first, with no setting needed. Against a
+subscription seat delivered on the claim (`oauth_token`, `claude_credential`),
+`BUILDD_HOST_SEAT` on the runner only opts out:
 
-- unset / `auto`: the machine's login when the claim delivers no stored seat;
-  otherwise the stored seat, with the agent env exactly as it was before the
-  passthrough existed.
-- `prefer`: the machine's login wins.
-- `off`: the machine's env token never reaches the agent.
+- unset / `auto` / `prefer` (the same): the machine's login wins over a stored
+  seat. A runner with no machine login uses a delivered seat.
+- `off`: the machine's env token never reaches the agent; a stored seat is
+  used.
 
 In every mode:
 
+- A claim whose credential decision forbids the runner's own credentials
+  (`runnerLocalAllowed: false`, the requester's own key under a personal-only
+  policy) never uses the machine's login, and its env token is removed.
 - A delivered metered key (`anthropic_api_key`) still fills an unset
   `ANTHROPIC_API_KEY`.
 - A team agent model endpoint or a non-Anthropic base URL replaces the login;
   a seat never goes to a third-party host.
-- Codex tasks follow the same modes with the machine's `codex login`
+- Codex tasks follow the same rule with the machine's `codex login`
   (`$CODEX_HOME`, else `~/.codex`; `decideCodexSeat` in `host-seat.ts`). The
   per-worker Codex home links `auth.json` to it (`linkMachineCodexAuth` in
   `codex-auth.ts`), and a delivered credential is never written through the
-  link. `prefer` beats a stored ChatGPT login, never a team `openai_api_key`.
+  link. The login beats a stored ChatGPT login, never a team `openai_api_key`.
   No tokens are written back to buildd from a machine-login session.
 - The value is never logged and is exact-value redacted from worker output.
 

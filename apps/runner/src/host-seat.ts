@@ -2,7 +2,7 @@
  * The runner machine's own Claude subscription login ("host seat").
  *
  * A runner whose machine is configured with its own model login gives that
- * login to its agents (when it wins over a seat stored in buildd: see
+ * login to its agents (it wins over a seat stored in buildd: see
  * "Precedence" below). Two shapes count:
  *
  * - `env`: `CLAUDE_CODE_OAUTH_TOKEN` is set in the runner's environment (a
@@ -18,12 +18,9 @@
  *
  * Precedence, set by `BUILDD_HOST_SEAT` on the runner:
  *
- * - unset / `auto` (default): the machine's seat is used whenever the claim
- *   delivers no stored seat. When the claim does deliver one, the stored seat
- *   is used and the agent env is exactly what it was before this module
- *   existed, so a runner that relies on a stored seat sees no change.
- * - `prefer`: the machine's seat wins over a stored seat. Set it once the
- *   machine's login is known to work (run one real `claude -p` with it).
+ * - unset / `auto` (default) and `prefer` (same meaning, kept so existing
+ *   setups still read): the machine's own login wins over a stored seat, with
+ *   no setting needed. A runner with no machine login uses a delivered seat.
  * - `off`: the machine's env token is never given to the agent; a stored seat
  *   is used as before.
  *
@@ -116,7 +113,7 @@ export function detectHostSeat(probe: HostSeatProbe = {}): HostSeat | null {
 export interface HostSeatDecision {
   /** The machine's seat, when it is the one the agent gets. Pass to applyModelEnv. */
   hostSeat: HostSeat | null;
-  /** The machine has a seat but a stored seat was used instead (mode `auto`). */
+  /** The machine has a seat but a stored seat was used instead. No longer set by the policy; kept for callers. */
   deferredTo: 'server' | null;
   /** The machine's seat that was detected, used or not. */
   detected: HostSeat | null;
@@ -126,8 +123,7 @@ export interface HostSeatDecision {
 /**
  * Decide whose Claude seat the agent gets, and make the agent env match.
  * Mutates `env` (built from the passthrough): the machine's env token is
- * removed unless the machine's seat is the one being used, so with a stored
- * seat under `auto` the env is identical to the pre-passthrough one.
+ * removed unless the machine's seat is the one being used.
  */
 export function applyHostSeatPolicy(
   env: Record<string, string>,
@@ -147,11 +143,11 @@ export function applyHostSeatPolicy(
   const mode = hostSeatMode(runnerEnv);
   const detected = mode === 'off' ? null : detectHostSeat(opts.probe ?? {});
   const localAllowed = opts.runnerLocalAllowed !== false;
-  const use = localAllowed && !opts.isCodexTask && !!detected && (mode === 'prefer' || !opts.serverSeatDelivered);
+  const use = localAllowed && !opts.isCodexTask && !!detected;
   if (!use && (mode === 'off' || opts.serverSeatDelivered || !localAllowed)) delete env[HOST_SEAT_TOKEN_VAR];
   return {
     hostSeat: use ? detected : null,
-    deferredTo: !use && localAllowed && detected && opts.serverSeatDelivered && !opts.isCodexTask ? 'server' : null,
+    deferredTo: null,
     detected,
     mode,
   };
@@ -260,11 +256,9 @@ export type CodexSeatChoice = 'machine' | 'server' | 'none';
 
 /**
  * Whose Codex login a Codex task gets. Same modes as the Claude seat:
- * - `auto`: the machine's login when the claim delivers no Codex credential;
- *   a delivered credential is used as before.
- * - `prefer`: the machine's login also beats a delivered ChatGPT (OAuth)
- *   credential. A delivered API key is metered usage the team chose, and is
- *   still used.
+ * - `auto` (default) and `prefer` (same meaning): the machine's login, also
+ *   over a delivered ChatGPT (OAuth) credential. A delivered API key is
+ *   metered usage the team chose, and is still used.
  * - `off`: the old behaviour: the machine's login only through an explicitly
  *   set `CODEX_HOME`, and only with no delivered credential.
  */
@@ -279,7 +273,7 @@ export function decideCodexSeat(opts: {
   const { mode, serverCredentialType, localAuthPath } = opts;
   const machineAvailable = opts.runnerLocalAllowed !== false && !!localAuthPath && (mode !== 'off' || opts.explicitCodexHome);
   if (!serverCredentialType) return machineAvailable ? 'machine' : 'none';
-  if (mode === 'prefer' && serverCredentialType === 'oauth' && machineAvailable) return 'machine';
+  if (mode !== 'off' && serverCredentialType === 'oauth' && machineAvailable) return 'machine';
   return 'server';
 }
 

@@ -138,13 +138,14 @@ one up, both as the user the runner runs as:
   `CLAUDE_CODE_OAUTH_TOKEN`. It is a long-lived token with no refresh, so it
   suits servers and containers.
 
-Which seat an agent gets is set by `BUILDD_HOST_SEAT` in the runner's
-environment:
+The machine's own login is used first, with nothing to configure, even when
+the team also stores a subscription seat in buildd. The same goes for Codex
+(`codex login`): it beats a stored ChatGPT login, though not a team OpenAI API
+key. `BUILDD_HOST_SEAT` in the runner's environment only opts out:
 
 | Value | Agent gets |
 |---|---|
-| unset or `auto` | The machine's login, unless the team also stores a subscription seat in buildd Settings. Then the stored seat is used, exactly as before. |
-| `prefer` | The machine's login, even when a seat is stored in buildd. |
+| unset, `auto` or `prefer` | The machine's login, even when a seat is stored in buildd. With no machine login, the stored seat. |
 | `off` | Never the machine's env token; a stored seat as before. |
 
 `BUILDD_MODEL_AUTH_SOURCE=runner` ("runner-managed", no automatic paid
@@ -177,8 +178,8 @@ Per setup:
 |---|---|
 | Your own Mac or Linux box, in a terminal | `claude login`, then start `buildd`. Or `export CLAUDE_CODE_OAUTH_TOKEN=...` in the shell that starts it. |
 | macOS service (`buildd service install`) | `claude login` as the same user; the LaunchAgent runs as you and sees the keychain login. |
-| Linux service (`systemd --user`) | `claude login` as the same user, or put the token in a file only you can read and point the unit at it: `install -m 600 /dev/null ~/.config/buildd/seat.env`, write `CLAUDE_CODE_OAUTH_TOKEN=...` into it, then `systemctl --user edit buildd-runner` and add `[Service]` / `EnvironmentFile=%h/.config/buildd/seat.env`, then `systemctl --user restart buildd-runner`. Add `Environment=BUILDD_HOST_SEAT=prefer` the same way if a seat is also stored in buildd. |
-| Coder, Docker or a similar container | Set `CLAUDE_CODE_OAUTH_TOKEN` (and `BUILDD_HOST_SEAT=prefer` if a seat is also stored in buildd) in the container or workspace environment the runner process inherits (a workspace parameter or secret, not a file baked into the image), and restart the runner. |
+| Linux service (`systemd --user`) | `claude login` as the same user, or put the token in a file only you can read and point the unit at it: `install -m 600 /dev/null ~/.config/buildd/seat.env`, write `CLAUDE_CODE_OAUTH_TOKEN=...` into it, then `systemctl --user edit buildd-runner` and add `[Service]` / `EnvironmentFile=%h/.config/buildd/seat.env`, then `systemctl --user restart buildd-runner`. |
+| Coder, Docker or a similar container | Set `CLAUDE_CODE_OAUTH_TOKEN` in the container or workspace environment the runner process inherits (a workspace parameter or secret, not a file baked into the image), and restart the runner. |
 
 Check which one a worker used in its log: `Claude seat: this machine's own
 login (...)` means the machine's login; `Claude seat: the seat stored in

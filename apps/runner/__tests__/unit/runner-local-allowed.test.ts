@@ -38,6 +38,13 @@ describe('host seat refused when runnerLocalAllowed=false', () => {
     }
   });
 
+  test('a stored seat delivered with the machine login present: machine login still refused, token removed', () => {
+    const env: Record<string, string> = { CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN };
+    const d = applyHostSeatPolicy(env, { serverSeatDelivered: true, runnerLocalAllowed: false, probe: { env: { CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN }, home: loginHome(), platform: 'linux' } });
+    expect(d.hostSeat).toBeNull();
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+  });
+
   test('login seat: not used', () => {
     const d = applyHostSeatPolicy({}, { serverSeatDelivered: false, runnerLocalAllowed: false, probe: { env: {}, home: loginHome(), platform: 'linux' } });
     expect(d.detected).toBe('login');

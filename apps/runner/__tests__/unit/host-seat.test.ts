@@ -53,16 +53,25 @@ describe('applyHostSeatPolicy: whose seat the agent gets', () => {
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe(HOST_TOKEN);
   });
 
-  test('auto, stored seat delivered: the stored seat wins and the env matches the pre-passthrough env', () => {
+  test('unset mode, stored seat delivered: the machine login wins with no setting', () => {
     const env: Record<string, string> = { CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN };
     const d = applyHostSeatPolicy(env, { serverSeatDelivered: true, probe: probe({ CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN }) });
+    expect(d.mode).toBe('auto');
+    expect(d.hostSeat).toBe('env');
+    expect(d.deferredTo).toBeNull();
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe(HOST_TOKEN);
+    const r = applyModelEnv(env, { isCodexTask: false, hostSeat: d.hostSeat, serverOauthToken: SERVER_OAUTH });
+    expect(r.env.CLAUDE_CODE_OAUTH_TOKEN).toBe(HOST_TOKEN);
+    expect(r.hostSeatUsed).toBe(true);
+  });
+
+  test('no machine login, stored seat delivered: the stored seat is used', () => {
+    const env: Record<string, string> = {};
+    const d = applyHostSeatPolicy(env, { serverSeatDelivered: true, probe: probe({}) });
     expect(d.hostSeat).toBeNull();
-    expect(d.deferredTo).toBe('server');
-    expect(d.detected).toBe('env');
-    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+    expect(d.detected).toBeNull();
     const r = applyModelEnv(env, { isCodexTask: false, hostSeat: d.hostSeat, serverOauthToken: SERVER_OAUTH });
     expect(r.env.CLAUDE_CODE_OAUTH_TOKEN).toBe(SERVER_OAUTH);
-    expect(r.hostSeatUsed).toBeUndefined();
   });
 
   test('prefer: the machine seat wins over a stored seat', () => {
@@ -90,12 +99,12 @@ describe('applyHostSeatPolicy: whose seat the agent gets', () => {
     expect(d.deferredTo).toBeNull();
   });
 
-  test('auto, stored seat, host claude login: stored seat used; prefer flips it', () => {
+  test('stored seat, host claude login: the login wins unset and under prefer (same meaning)', () => {
     const loginHome = tmpHome({ claudeAiOauth: { accessToken: 'a' } });
     try {
       const auto = applyHostSeatPolicy({}, { serverSeatDelivered: true, probe: { env: {}, home: loginHome, platform: 'linux' } });
-      expect(auto.hostSeat).toBeNull();
-      expect(auto.deferredTo).toBe('server');
+      expect(auto.hostSeat).toBe('login');
+      expect(auto.deferredTo).toBeNull();
       const pref = applyHostSeatPolicy({}, { serverSeatDelivered: true, probe: { env: { BUILDD_HOST_SEAT: 'prefer' }, home: loginHome, platform: 'linux' } });
       expect(pref.hostSeat).toBe('login');
     } finally { rmSync(loginHome, { recursive: true, force: true }); }

@@ -2,8 +2,8 @@
  * A Codex / ChatGPT login on the runner's own machine (`codex login`) is used
  * as-is: found at $CODEX_HOME or, with no env var, the user's ~/.codex; linked
  * into the per-worker Codex home so refreshes land in the real file; never
- * overwritten by a server credential; and it beats a stored ChatGPT login only
- * under BUILDD_HOST_SEAT=prefer.
+ * overwritten by a server credential; and it beats a stored ChatGPT login unless
+ * BUILDD_HOST_SEAT=off.
  */
 import { describe, test, expect } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, lstatSync, rmSync, existsSync } from 'fs';
@@ -47,8 +47,8 @@ describe('decideCodexSeat', () => {
     expect(decideCodexSeat({ mode: 'auto', serverCredentialType: null, localAuthPath: local, explicitCodexHome: false })).toBe('machine');
     expect(decideCodexSeat({ mode: 'auto', serverCredentialType: null, localAuthPath: null, explicitCodexHome: false })).toBe('none');
   });
-  test('auto: a delivered credential is used as before', () => {
-    expect(decideCodexSeat({ mode: 'auto', serverCredentialType: 'oauth', localAuthPath: local, explicitCodexHome: false })).toBe('server');
+  test('auto: the machine login beats a delivered ChatGPT login, never a delivered API key', () => {
+    expect(decideCodexSeat({ mode: 'auto', serverCredentialType: 'oauth', localAuthPath: local, explicitCodexHome: false })).toBe('machine');
     expect(decideCodexSeat({ mode: 'auto', serverCredentialType: 'api_key', localAuthPath: local, explicitCodexHome: false })).toBe('server');
   });
   test('prefer: the machine login beats a stored ChatGPT login, not a team API key', () => {
