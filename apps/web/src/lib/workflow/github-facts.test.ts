@@ -54,3 +54,13 @@ describe('toLivePr: the merger', () => {
     expect(open && 'mergedBy' in open).toBe(false);
   });
 });
+
+describe('changedPaths (§13.13 rule 4)', () => {
+  const reader = (files: unknown) => githubReader(1, (async () => ({ files })) as never);
+  test('a renamed file counts under its old name too, since a finding was anchored on that one', async () => {
+    expect(await reader([{ filename: 'src/b.ts', previous_filename: 'src/a.ts' }, { filename: 'README.md' }]).changedPaths!('o/r', 'A', 'B')).toEqual(['src/b.ts', 'README.md', 'src/a.ts']);
+  });
+  test('a list at the compare cap may be cut: unread', async () => {
+    expect(await reader(Array.from({ length: 300 }, (_, i) => ({ filename: `f${i}.ts` }))).changedPaths!('o/r', 'A', 'B')).toBeNull();
+  });
+});

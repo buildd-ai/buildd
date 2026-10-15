@@ -315,8 +315,10 @@ export async function GET(req: NextRequest) {
     if ('error' in closedPrs) {
       console.error('[ClosedPrSupersession] error:', closedPrs.error);
     } else {
+      // Per PR, slowest first, so the next slow candidate is named in the log.
+      const prs = [...(closedPrs.prs ?? [])].sort((x, y) => y.ms - x.ms).map(p => `${p.pr}:${p.ms}ms:${p.outcome}`).join(',');
       console.log(
-        `[ClosedPrSupersession] candidates=${closedPrs.candidates} recorded=${closedPrs.recorded} suggested=${closedPrs.suggested} none=${closedPrs.none} skipped=${closedPrs.skipped} deferred=${closedPrs.deferred ?? 0}`,
+        `[ClosedPrSupersession] candidates=${closedPrs.candidates} recorded=${closedPrs.recorded} suggested=${closedPrs.suggested} none=${closedPrs.none} skipped=${closedPrs.skipped} deferred=${closedPrs.deferred ?? 0} budgetStopped=${closedPrs.budgetStopped ?? 0}${prs ? ` prs=${prs}` : ''}`,
       );
     }
     if ('error' in earlyRelease) {

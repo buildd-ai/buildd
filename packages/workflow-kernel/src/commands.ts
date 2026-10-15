@@ -143,6 +143,12 @@ export type Command =
       ci?: { liveChecks: { complete: boolean; failing: string[] }; signature: string; maxAttempts: number } | null;
       /** §5: the paths changed between the repair's bound head and the live head (a compare read); absent = unread. */
       changedPaths?: string[] | null;
+      /**
+       * §13.13 rule 4: a review fix that changed nothing because the findings' condition is
+       * already absent at the head, with what it read. Never a resolution on its own: a
+       * verification round at the same head decides.
+       */
+      noopEvidence?: { findingIds: string[]; evidence: string } | null;
     })
   | (Base & { type: 'ReviewRequested'; headSha: string; live: LivePr; forced?: boolean })
   | (Base & {
@@ -150,6 +156,20 @@ export type Command =
       roundId: string;
       verdict: Verdict;
       /** Server escalation rules (file list, confidence) applied by the caller. */
+      effectiveVerdict: Verdict;
+      headBound: string;
+      confidence?: number | null;
+    } & VerdictFindings)
+  | (Base & {
+      /**
+       * 00d288fd: the verdict of a reviewer that ran outside the kernel's rounds (filed
+       * before the delivery opened, by a door that raced it) on a PR the kernel owns. It is
+       * the verdict on `headBound` when that is the current head: kept while the owner
+       * still works and applied when it ends, so the same head is never reviewed twice.
+       */
+      type: 'ReviewVerdictAdopted';
+      reviewerTaskId: string;
+      verdict: Verdict;
       effectiveVerdict: Verdict;
       headBound: string;
       confidence?: number | null;
@@ -230,6 +250,23 @@ export type Command =
        * null (unreadable) fails toward doing the work.
        */
       liveChecks?: { complete: boolean; failing: string[] } | null;
+    })
+  | (Base & {
+      /**
+       * 38442d17: CI went green on `headSha` (every check completed, none failing), read
+       * live. A CI repair bound to that same head has nothing left to fix (a re-run of an
+       * infrastructure failure passed): its attempt is cancelled, spending nothing when it
+       * never started, and the delivery returns to what the head was owed before.
+       */
+      type: 'CiGreenObserved';
+      headSha: string;
+      liveChecks: { complete: boolean; failing: string[] };
+      /**
+       * The host read every check suite on the head as passed (an allow-list of passing
+       * conclusions), not merely "nothing failed": a cancelled, stale or action-required
+       * run is not green. Absent or false is refused.
+       */
+      allPassing?: boolean;
     })
   | (Base & {
       type: 'ConflictObserved';
@@ -419,6 +456,8 @@ export type Command =
        * itself could not serve the round (no reviewer was ever asked).
        */
       reviewerTaskId?: string;
+      /** How long the re-queued round waits before its dispatch runs again (a reviewer that could not be filed). Absent = at once. */
+      retryDelayMs?: number;
     })
   | (Base & {
       /**
@@ -489,7 +528,11 @@ export interface DeliveryPatch {
 }
 
 export type RoundOp =
-  | { op: 'insert'; id: string; round: number; headSha: string; kind: RoundKind; priorRound: number | null; scope?: Record<string, unknown> | null }
+  | {
+      op: 'insert'; id: string; round: number; headSha: string; kind: RoundKind; priorRound: number | null; scope?: Record<string, unknown> | null;
+      /** 00d288fd: a round inserted already decided (a reviewer outside the kernel's rounds, adopted at the head it judged). */
+      decided?: { verdict: Verdict; effectiveVerdict: Verdict; confidence: number | null; reviewerTaskId: string };
+    }
   | {
       op: 'update';
       roundId: string;

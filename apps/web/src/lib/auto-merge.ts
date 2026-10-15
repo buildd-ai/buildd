@@ -930,7 +930,7 @@ export async function tryAutoMergeWorkerPr(params: {
   const result = slotted.result.legacy;
   if (result.merged) {
     console.log(`Auto-merged PR #${prNumber} on ${repoFullName} for worker ${worker.id}`);
-    await finalizeMissionPrMerge(mergingTask, installationId, repoFullName);
+    await finalizeMissionPrMerge(mergingTask, installationId, repoFullName, prNumber);
     return { merged: true };
   }
 

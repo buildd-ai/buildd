@@ -387,7 +387,10 @@ export async function dismissSupersessionSuggestion(params: {
   if (!worker?.prUrl) return { ok: false, error: 'Worker not found', status: 404 };
   const prev: SupersessionScan | null = worker.supersessionScan ?? null;
   const dismissed = [...new Set([...(prev?.dismissed ?? []), params.candidatePrUrl])];
+  // Keep the rest of the scan (deferral count, judged verdicts, last attempt): dismissing one
+  // candidate must not reset the deferral cap or throw away verdicts already paid for.
   const next: SupersessionScan = {
+    ...(prev ?? {}),
     scannedAt: prev?.scannedAt ?? new Date().toISOString(),
     candidatesChecked: prev?.candidatesChecked ?? 0,
     suggestion: prev?.suggestion?.prUrl === params.candidatePrUrl ? null : (prev?.suggestion ?? null),

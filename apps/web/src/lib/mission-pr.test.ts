@@ -38,6 +38,23 @@ const githubCalls: Array<{ path: string; method: string; body?: any }> = [];
 let githubResponses: Record<string, any> = {};
 let githubThrows: Record<string, string> = {};
 
+// §6 mission deliveries: recorded with the kernel through the epoch door.
+const mockRecordMissionPrMerged = mock(async (..._args: any[]) => ({ recorded: true, reason: 'merged' }));
+const mockBindMissionDeliveryPr = mock(async (_p: any) => {});
+let missionEpochRows: any[] = [];
+const realEpochs = await import('@buildd/workflow-kernel/delivery-epochs');
+mock.module('@/lib/workflow/delivery-ship', () => ({
+  missionEpochsOf: async () => missionEpochRows,
+  writableEpoch: realEpochs.writableEpoch,
+  shippedEpochOf: realEpochs.shippedEpochOf,
+}));
+mock.module('@/lib/mission-epoch-door', () => ({
+  recordMissionPrMerged: (...args: any[]) => mockRecordMissionPrMerged(...args),
+  bindMissionDeliveryPr: (p: any) => mockBindMissionDeliveryPr(p),
+  ensureMissionWritableBranch: async () => null,
+  reconcileMissionDeliveries: async () => [],
+}));
+
 mock.module('drizzle-orm', () => ({
   eq: (col: any, val: any) => ({ _op: 'eq', col, val }),
   ne: (col: any, val: any) => ({ _op: 'ne', col, val }),
@@ -219,6 +236,9 @@ function worker(over: Partial<Record<string, any>> = {}) {
 }
 
 beforeEach(() => {
+  mockRecordMissionPrMerged.mockClear();
+  mockBindMissionDeliveryPr.mockClear();
+  missionEpochRows = [];
   visualState = passedVisual();
   visualStateThrows = false;
   scheduledMissions.length = 0;
@@ -389,6 +409,56 @@ describe('evaluateMissionWorkState', () => {
 // them. guardMissionPrMerge is the merge-time counterpart; finalizeMissionPrMerge
 // is buildd taking over the deletion itself instead of trusting the repo's
 // delete-branch-on-merge setting to sequence it correctly.
+
+describe('guardMissionPrMerge — a refresh PR lands only on the delivery it was filed for (a11abc4b R-3, AC-5)', () => {
+  const refreshTask = (o: Record<string, unknown> = {}) => ({
+    id: 'r-1', missionId: MISSION_ID, title: 'Merge dev into the mission branch', taskClass: 'work',
+    context: { requireMergeCommit: true, baseBranch: BRANCH, refreshTrunk: 'dev', refreshTrunkSha: 'd1' }, ...o,
+  });
+
+  it('a refresh retargeted to trunk (its base was deleted on merge) is refused at every door', async () => {
+    workerRowsByTask['r-1'] = [worker({ taskId: 'r-1', id: 'w-r', prUrl: 'u', prNumber: 4670, prBaseRef: 'dev', prLifecycleStatus: 'pr_open' })];
+    const gate = await guardMissionPrMerge(refreshTask());
+    expect(gate).toMatchObject({ blocks: true, codes: ['refresh_target_mismatch'] });
+    expect((gate as { reason: string }).reason).toContain('`dev`');
+  });
+
+  it('a refresh for a delivery that already shipped is refused, even on its own base', async () => {
+    workerRowsByTask['r-1'] = [worker({ taskId: 'r-1', id: 'w-r', prUrl: 'u', prNumber: 4670, prBaseRef: BRANCH, prLifecycleStatus: 'pr_open' })];
+    missionEpochRows = [{ epoch: 1, branch: BRANCH, state: 'merged' }, { epoch: 2, branch: `${BRANCH}-delivery-2`, state: 'open' }];
+    const gate = await guardMissionPrMerge(refreshTask());
+    expect(gate).toMatchObject({ blocks: true, codes: ['refresh_target_mismatch'] });
+    expect((gate as { reason: string }).reason).toContain('already shipped');
+  });
+
+  it('a refresh on the writable delivery is not held', async () => {
+    workerRowsByTask['r-1'] = [worker({ taskId: 'r-1', id: 'w-r', prUrl: 'u', prNumber: 4670, prBaseRef: BRANCH, prLifecycleStatus: 'pr_open' })];
+    missionEpochRows = [{ epoch: 1, branch: BRANCH, state: 'open' }];
+    expect((await guardMissionPrMerge(refreshTask())).blocks).toBe(false);
+  });
+
+  it('review of #4806: a task PR still on a shipped delivery branch is refused at every door, naming where it goes', async () => {
+    workerRowsByTask['t-8'] = [worker({ taskId: 't-8', id: 'w-8', prUrl: 'u', prNumber: 8, prBaseRef: BRANCH, prLifecycleStatus: 'pr_open' })];
+    missionEpochRows = [{ epoch: 1, branch: BRANCH, state: 'merged' }, { epoch: 2, branch: `${BRANCH}-delivery-2`, state: 'open' }];
+    const gate = await guardMissionPrMerge({ id: 't-8', missionId: MISSION_ID, title: 'x', taskClass: 'work', context: {} });
+    expect(gate).toMatchObject({ blocks: true, codes: ['delivery_shipped'] });
+    expect((gate as { reason: string }).reason).toContain(`delivery 2 (\`${BRANCH}-delivery-2\`)`);
+    // The same PR on the writable delivery merges as before.
+    workerRowsByTask['t-8'] = [worker({ taskId: 't-8', id: 'w-8', prUrl: 'u', prNumber: 8, prBaseRef: `${BRANCH}-delivery-2`, prLifecycleStatus: 'pr_open' })];
+    expect((await guardMissionPrMerge({ id: 't-8', missionId: MISSION_ID, title: 'x', taskClass: 'work', context: {} })).blocks).toBe(false);
+  });
+
+  it('an adopted re-cut still using the shipped name is not refused', async () => {
+    workerRowsByTask['t-8'] = [worker({ taskId: 't-8', id: 'w-8', prUrl: 'u', prNumber: 8, prBaseRef: BRANCH, prLifecycleStatus: 'pr_open' })];
+    missionEpochRows = [{ epoch: 1, branch: BRANCH, state: 'merged' }, { epoch: 2, branch: BRANCH, state: 'open' }];
+    expect((await guardMissionPrMerge({ id: 't-8', missionId: MISSION_ID, title: 'x', taskClass: 'work', context: {} })).blocks).toBe(false);
+  });
+
+  it('an ordinary task PR is never asked', async () => {
+    workerRowsByTask['t-9'] = [worker({ taskId: 't-9', id: 'w-9', prUrl: 'u', prNumber: 9, prBaseRef: 'dev', prLifecycleStatus: 'pr_open' })];
+    expect((await guardMissionPrMerge({ id: 't-9', missionId: MISSION_ID, title: 'x', taskClass: 'work', context: {} })).blocks).toBe(false);
+  });
+});
 
 describe('guardMissionPrMerge', () => {
   it('refuses while a task PR based on the integration branch is still open', async () => {
@@ -630,26 +700,24 @@ describe('evaluateMissionWorkState — unfinished work is enumerated, not just c
 });
 
 describe('finalizeMissionPrMerge', () => {
-  it('deletes the integration branch after the mission PR merges', async () => {
-    await finalizeMissionPrMerge(ownerTask(), 42, 'example/demo-app');
-    expect(githubCalls).toEqual([
-      { path: `/repos/example/demo-app/git/refs/heads/${encodeURIComponent(BRANCH)}`, method: 'DELETE', body: undefined },
-    ]);
+  // Before delivery records this deleted the branch at once, stranding later
+  // task PRs and leaving refresh PRs to be retargeted to trunk. Now the merge
+  // is recorded with the kernel (workflow-kernel-library.md §6), which rotates,
+  // settles and only then retires the branch.
+  it('records the merged delivery with the kernel and deletes nothing itself', async () => {
+    await finalizeMissionPrMerge(ownerTask(), 42, 'example/demo-app', 9);
+    expect(mockRecordMissionPrMerged).toHaveBeenCalledWith(expect.objectContaining({ missionId: MISSION_ID }), 42, 'example/demo-app', 9);
+    expect(githubCalls.filter((c) => c.method === 'DELETE')).toEqual([]);
   });
 
   it('does nothing for an ordinary task PR', async () => {
     await finalizeMissionPrMerge(workTask('t-1', 'completed'), 42, 'example/demo-app');
+    expect(mockRecordMissionPrMerged).not.toHaveBeenCalled();
     expect(githubCalls).toEqual([]);
   });
 
-  it('does nothing when the mission has no integration base', async () => {
-    missionRow = { ...missionRow, integrationBranchEnabled: false };
-    await finalizeMissionPrMerge(ownerTask(), 42, 'example/demo-app');
-    expect(githubCalls).toEqual([]);
-  });
-
-  it('swallows a failed delete rather than throwing', async () => {
-    githubThrows['/git/refs/heads/'] = 'branch already gone';
+  it('never throws when recording fails', async () => {
+    mockRecordMissionPrMerged.mockImplementationOnce(async () => ({ recorded: false, reason: 'error' }));
     await expect(finalizeMissionPrMerge(ownerTask(), 42, 'example/demo-app')).resolves.toBeUndefined();
   });
 });

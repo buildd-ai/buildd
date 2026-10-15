@@ -97,11 +97,16 @@ function roundCtes(ops: RoundOp[], src: string): SQL[] {
   const out: SQL[] = [];
   const inserts = ops.filter((o): o is Extract<RoundOp, { op: 'insert' }> => o.op === 'insert');
   if (inserts.length) {
-    const rows = inserts.map((o) => ({ id: o.id, round: o.round, head_sha: o.headSha, kind: o.kind, prior_round: o.priorRound, scope: o.scope ?? null }));
+    const rows = inserts.map((o) => ({
+      id: o.id, round: o.round, head_sha: o.headSha, kind: o.kind, prior_round: o.priorRound, scope: o.scope ?? null,
+      status: o.decided ? 'decided' : 'queued', verdict: o.decided?.verdict ?? null, effective_verdict: o.decided?.effectiveVerdict ?? null,
+      confidence: o.decided?.confidence ?? null, reviewer_task_id: o.decided?.reviewerTaskId ?? null, decided: !!o.decided,
+    }));
     out.push(sql`r_ins AS (
-  INSERT INTO workflow_review_rounds (id, delivery_id, round, head_sha, kind, prior_round, scope)
-  SELECT x.id, s.delivery_id, x.round, x.head_sha, x.kind, x.prior_round, x.scope
-  FROM ${sql.identifier(src)} s, jsonb_to_recordset(${jsonb(rows)}) AS x(id uuid, round int, head_sha text, kind text, prior_round int, scope jsonb)
+  INSERT INTO workflow_review_rounds (id, delivery_id, round, head_sha, kind, prior_round, scope, status, verdict, effective_verdict, confidence, reviewer_task_id, decided_at)
+  SELECT x.id, s.delivery_id, x.round, x.head_sha, x.kind, x.prior_round, x.scope, x.status, x.verdict, x.effective_verdict, x.confidence, x.reviewer_task_id,
+    CASE WHEN x.decided THEN now() END
+  FROM ${sql.identifier(src)} s, jsonb_to_recordset(${jsonb(rows)}) AS x(id uuid, round int, head_sha text, kind text, prior_round int, scope jsonb, status text, verdict text, effective_verdict text, confidence real, reviewer_task_id uuid, decided boolean)
   RETURNING id
 )`);
   }

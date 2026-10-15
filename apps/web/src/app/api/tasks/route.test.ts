@@ -421,6 +421,8 @@ describe('GET /api/tasks', () => {
     const query = (mockTasksFindMany.mock.calls[0] as any[])[0];
     expect(query.columns.roleSlug).toBe(true);
     expect(query.columns.missionId).toBe(true);
+    // Which provider's limit holds a waiting task (spec c7410e76 R-25).
+    expect(query.columns.backend).toBe(true);
     expect(query.with.mission.columns).toEqual({ id: true, title: true, isHeld: true, executor: true });
   });
 

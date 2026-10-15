@@ -318,6 +318,8 @@ export async function GET(req: NextRequest) {
             missionId: true,
             dependsOn: true,
             roleSlug: true,
+            // `buildd top` tells which provider's limit holds a waiting task.
+            backend: true,
             createdAt: true,
             updatedAt: true,
           },

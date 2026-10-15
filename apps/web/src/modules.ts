@@ -53,6 +53,8 @@ import type { QuestionCheckDeps } from '@/lib/question-gate-check';
 import { fileRecoverableBlockerRepair } from '@/lib/recoverable-blocker-repair';
 import type { ShippingPrMergedReader } from '@/lib/integration-refresh';
 import { missionShippingPrMerged } from '@/lib/mission-shipping-pr';
+import { missionEpochHooks } from '@/lib/mission-epoch-hooks';
+import type { MissionEpochHooks } from '@/lib/workflow/delivery-epochs';
 import { escalationGateDeps, escalationGateReadDeps } from '@/lib/escalation-decision';
 import { releaseSubscribers } from '@/lib/release/subscribers';
 import { earlyReleaseSubscribers } from '@/lib/early-release-subscribers';
@@ -218,7 +220,14 @@ export const RECOVERABLE_BLOCKER_REPAIR: NonNullable<QuestionCheckDeps['fileRepa
  * module says whether a mission's shipping PR merged, so a refresh task with
  * nothing left to ship can complete on that evidence.
  */
-export const MISSION_SHIPPING_PR_MERGED: ShippingPrMergedReader = (missionId, repo) => missionShippingPrMerged(missionId, repo);
+export const MISSION_SHIPPING_PR_MERGED: ShippingPrMergedReader = (missionId, repo, branch) => missionShippingPrMerged(missionId, repo, branch);
+
+/**
+ * The kernel's mission epoch slot (lib/workflow/delivery-epochs.ts): the
+ * missions module answers the mission's open work, the mission PR it recorded
+ * before epochs, and which workspace's repo holds its branches.
+ */
+export const MISSION_EPOCH_HOOKS: MissionEpochHooks = missionEpochHooks;
 
 /**
  * The escalation gate's slots (lib/escalation-gate-check.ts): Jev, the ledger
