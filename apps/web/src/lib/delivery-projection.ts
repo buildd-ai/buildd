@@ -312,6 +312,8 @@ export interface MissionDeliveryInput {
   visualReview?: { status: string; blockedDetail: string | null; holdReason: string | null } | null;
   /** Goal criteria that have not passed (outcome spec included), when the caller read them. */
   criteriaPending?: number | null;
+  /** With one pending: its name as the Checks rail shows it, so Next names it. */
+  criteriaPendingLabel?: string | null;
   /** Local-executor missions: `deriveLocalStrand`'s reading, when the caller has it. */
   localStrand?: { stranded: boolean; quietMs: number } | null;
   tasks: readonly MissionTaskRow[];
@@ -565,7 +567,7 @@ export function projectMissionDelivery(input: MissionDeliveryInput, rules: Missi
   const next = visual && (kind === 'landed' || kind === 'landing')
     ? visual.next
     : remaining === 'visual' && visualOpen ? (visualOpen.hold ? `${visualOpen.text}: ${visualOpen.hold}` : visualOpen.text)
-    : remaining === 'criteria' ? (criteriaPending === 1 ? 'A goal criterion passes' : `${criteriaPending} goal criteria pass`)
+    : remaining === 'criteria' ? (criteriaPending === 1 ? (input.criteriaPendingLabel ? `${input.criteriaPendingLabel} passes` : 'A goal criterion passes') : `${criteriaPending} goal criteria pass`)
     : described.next;
 
   return {

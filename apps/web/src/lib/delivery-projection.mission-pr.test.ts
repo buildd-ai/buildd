@@ -115,6 +115,12 @@ describe('visual review round 1: what is left reads the waiver, criteria and a l
     expect(m.remaining).toBe('criteria');
     expect(on({ criteriaPending: 3, tasks: [merged('One')] }).next).toBe('3 goal criteria pass');
   });
+  it('one open check is named, the way the header names it (b4ea396b follow-up 5)', () => {
+    const m = on({ criteriaPending: 1, criteriaPendingLabel: 'Admin audit log spec', tasks: [merged('One'), shipTask('2026-10-12T00:00:00Z')] });
+    expect(m.next).toBe('Admin audit log spec passes');
+    // Several still read as a count.
+    expect(on({ criteriaPending: 2, criteriaPendingLabel: 'Admin audit log spec', tasks: [merged('One')] }).next).toBe('2 goal criteria pass');
+  });
   it('an open visual review leads, then criteria', () => {
     expect(on({ criteriaPending: 1, tasks: [merged('One'), audit()] }).remaining).toBe('visual');
   });
