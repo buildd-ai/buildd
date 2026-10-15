@@ -268,3 +268,10 @@ describe('quietMissionsLine names what the quiet missions wait on (spec 8e137fdb
     expect(html).toContain('2 more missions are next in line for a runner.');
   });
 });
+
+describe('quietMissionsLine agrees in number', () => {
+  it('a held mission reads in the singular and plural alike', () => {
+    expect(quietMissionsLine(1, [{ cause: 'on hold', count: 1 }])).toBe('1 more mission is on hold.');
+    expect(quietMissionsLine(2, [{ cause: 'on hold', count: 2 }])).toBe('2 more missions are on hold.');
+  });
+});

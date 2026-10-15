@@ -684,9 +684,13 @@ export interface QuietMissionCause { cause: string; count: number }
 
 function quietCause(m: MissionDelivery): string {
   if (m.kind === 'planning') return 'being planned';
-  if (m.kind === 'held') return 'held by their owner';
-  if (m.visualOpen) return 'waiting on visual review';
-  // `next` is the shared wait wording from describe(): read it, never re-derive it.
+  if (m.kind === 'held') return 'on hold';
+  // `next` is the line the mission's card shows: read it, never re-derive it, so
+  // Home and the card name the same cause (spec 8e137fdb I-1). A visual review is
+  // the cause only when the card says so, and then with its hold (I-4).
+  if (m.visualOpen && m.next.startsWith(m.visualOpen.text)) {
+    return m.visualOpen.hold ? `waiting on visual review (${m.visualOpen.hold})` : 'waiting on visual review';
+  }
   if (m.next.startsWith('After its dependencies')) return 'waiting on earlier work';
   if (m.next.startsWith('Waiting for a local session')) return 'waiting for a local session';
   if (m.next === 'Next in line for a runner') return 'next in line for a runner';

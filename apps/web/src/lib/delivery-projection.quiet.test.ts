@@ -14,14 +14,30 @@ describe('quietMissionCauses', () => {
     const causes = quietMissionCauses([
       m({ id: 'a' }),
       m({ id: 'b' }),
-      m({ id: 'c', visualOpen: { text: 'Visual review unable to run', hold: 'it needs a runner with a browser' } }),
+      m({ id: 'c', next: 'Visual review unable to run: it needs a runner with a browser', visualOpen: { text: 'Visual review unable to run', hold: 'it needs a runner with a browser' } }),
       m({ id: 'd', kind: 'planning', next: 'A plan' }),
     ]);
     expect(causes).toEqual([
       { cause: 'next in line for a runner', count: 2 },
-      { cause: 'waiting on visual review', count: 1 },
+      { cause: 'waiting on visual review (it needs a runner with a browser)', count: 1 },
       { cause: 'being planned', count: 1 },
     ]);
+  });
+
+  it('follows the card: an open review the card does not name is not the cause (I-1)', () => {
+    const review = { text: 'Visual review queued', hold: null };
+    const causes = quietMissionCauses([
+      m({ id: 'a', visualOpen: review }),
+      m({ id: 'b', next: 'After its dependencies land', visualOpen: review }),
+    ]).map(c => c.cause);
+    expect(causes).toEqual(['next in line for a runner', 'waiting on earlier work']);
+  });
+
+  it('a visual review with no known hold is named plainly', () => {
+    const causes = quietMissionCauses([
+      m({ next: 'Visual review queued', visualOpen: { text: 'Visual review queued', hold: null } }),
+    ]).map(c => c.cause);
+    expect(causes).toEqual(['waiting on visual review']);
   });
 
   it('names dependency, local-session and held waits by their own cause', () => {
@@ -30,7 +46,7 @@ describe('quietMissionCauses', () => {
       m({ id: 'b', next: 'Waiting for a local session (none for 33h)' }),
       m({ id: 'c', kind: 'held', next: 'Starts when armed' }),
     ]).map(c => c.cause);
-    expect(causes).toEqual(['waiting on earlier work', 'waiting for a local session', 'held by their owner']);
+    expect(causes).toEqual(['waiting on earlier work', 'waiting for a local session', 'on hold']);
   });
 
   it('never says capacity or another mission', () => {
