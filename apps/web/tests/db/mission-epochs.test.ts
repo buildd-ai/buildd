@@ -33,6 +33,8 @@ class FakeGithub {
   sameTree = new Set<string>();
   /** Fail the next N calls whose method+path matches. */
   failNext: Array<{ method: string; path: RegExp }> = [];
+  /** Called on each test merge, before it answers (e.g. a push racing the content check). */
+  onMerge: (() => void) | null = null;
   calls: Array<{ method: string; path: string; body?: unknown }> = [];
   private seq = 0;
 
@@ -79,6 +81,7 @@ class FakeGithub {
       return { status: 'diverged' };
     }
     if (p === '/merges' && method === 'POST') {
+      this.onMerge?.();
       const base = this.refs.get(body.base)!;
       const head = body.head as string;
       if (head === base || this.ancestors.get(base)?.has(head)) return null;
@@ -542,6 +545,10 @@ describe('review round 2, blocking 2: no branch is deleted with work that never 
     expect(e1!.retired_at).toBeNull();
     expect((e1!.settlement as { unshippedHead?: string } | null)?.unshippedHead).toBe('late');
     expect(notes).toEqual(["Delivery 1's branch has commits that never reached trunk"]);
+    // Completion reads the kept branch as unshipped work.
+    const { epochCompletionHold } = await import('@buildd/workflow-kernel/delivery-epochs');
+    const loaded = (await epochs.epochsForMissions([missionId])).get(missionId)!;
+    expect(epochCompletionHold({ epochs: loaded }, () => 0)).toMatchObject({ holds: true, reason: 'unsettled' });
     await epochs.reconcileMissionEpochs(missionId, racing);
     expect(notes).toHaveLength(1);
     expect(gh.refs.has(ROOT)).toBe(true);
@@ -610,5 +617,84 @@ describe('review round 2: pins', () => {
     // No PrMovedOff: the webhook never arrived. The default recorded-base lookup finds it.
     await epochs.epochMerged(mergedInput(m), deps());
     expect(gh.prs.get(11)!.base).toBe(`${ROOT}-delivery-2`);
+  });
+});
+
+// ── Review round 3 of #4806 ────────────────────────────────────────────────
+
+describe('review round 3: adoption from any command reads the branch', () => {
+  test('a mission with a past merged mission PR and its follow-up merged on the branch: binding a new PR adopts a live delivery, and the bind lands on it', async () => {
+    legacyMergedMission('moved_on');
+    work = { unfinishedTasks: 0, openTaskPrs: 0 };
+    gh.prs.set(30, { number: 30, state: 'open', base: TRUNK, headSha: 'x1', headRef: ROOT });
+    const r = await epochs.bindEpochPr({ missionId, prNumber: 30, repoFullName: REPO, ownerTaskId: null, headRef: ROOT, actor: 'test' }, legacyMerged(72));
+    expect(r.result).toBe('applied');
+    const rows = await epochRows();
+    expect(rows.map((e) => [e.epoch, e.state, e.pr_number])).toEqual([[1, 'merged', 7], [2, 'open', 30]]);
+  });
+
+  test('an unreadable branch head at adoption keeps the branch live', async () => {
+    legacyMergedMission('at_merged_head');
+    work = { unfinishedTasks: 0, openTaskPrs: 0 };
+    gh.failNext.push({ method: 'GET', path: new RegExp(`/git/ref/heads/${ROOT}$`) });
+    await epochs.reconcileMissionEpochs(missionId, legacyMerged(72));
+    const rows = await epochRows();
+    expect(rows.map((e) => [e.epoch, e.state])).toEqual([[1, 'merged'], [2, 'open']]);
+    expect(gh.refs.has(ROOT)).toBe(true);
+  });
+});
+
+describe('review round 3: the last read before a delete fails closed', () => {
+  /** Merge with nothing left; mid-settlement the branch moves to a commit trunk also takes, then arm a failure for the retire read. */
+  async function setup(fail: RegExp | null) {
+    await inFlight();
+    work = { unfinishedTasks: 0, openTaskPrs: 0 };
+    const m = gh.mergeEpochPr(10);
+    let armed = false;
+    const d: Deps = {
+      ...deps(),
+      obsoleteRefreshTasksOf: async () => {
+        if (!armed) {
+          armed = true;
+          gh.commit('late', ['b1']);
+          gh.refs.set(ROOT, 'late');
+          gh.refs.set(TRUNK, gh.commit('t2', [m, 'late']));
+          if (fail) gh.failNext.push({ method: 'GET', path: fail });
+        }
+        return [];
+      },
+    };
+    await epochs.epochMerged(mergedInput(m), d);
+  }
+
+  test('control: the branch at a head trunk contains is retired', async () => {
+    await setup(null);
+    expect(gh.refs.has(ROOT)).toBe(false);
+  });
+
+  test.each([
+    ['the branch head (a non-404 error)', new RegExp(`/git/ref/heads/${ROOT}$`)],
+    ['trunk\'s head', new RegExp(`/git/ref/heads/${TRUNK}$`)],
+    ['the ancestry compare', /\/compare\/late\.\.\./],
+  ])('an unreadable %s keeps the branch', async (_l, fail) => {
+    await setup(fail);
+    expect(gh.refs.has(ROOT)).toBe(true);
+    expect((await epochRows())[0]!.retired_at).toBeNull();
+  });
+});
+
+describe('review round 3: a PR is closed only at the head that was checked', () => {
+  test('a push during the content check leaves the PR open and held', async () => {
+    await inFlight();
+    gh.commit('r5', ['b1', 't0']);
+    gh.sameTree.add('r5');
+    gh.prs.set(5, { number: 5, state: 'open', base: ROOT, headSha: 'r5' });
+    refreshPrs = new Set([5]);
+    work = { unfinishedTasks: 0, openTaskPrs: 0 };
+    gh.onMerge = () => { gh.prs.get(5)!.headSha = 'r5b'; gh.onMerge = null; };
+    await epochs.epochMerged(mergedInput(gh.mergeEpochPr(10)), deps());
+    expect(gh.prs.get(5)!.state).toBe('open');
+    expect(superseded).toEqual([]);
+    expect((await epochRows())[0]!.retired_at).toBeNull();
   });
 });

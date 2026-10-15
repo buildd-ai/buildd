@@ -325,3 +325,30 @@ describe('review of #4806: settlement order and shipped branches', () => {
     expect(h.view().epochs[0]!.movedPrs).toEqual([11]);
   });
 });
+
+describe('review round 3', () => {
+  it('adoption with the branch ahead of trunk and no work left keeps a live delivery: a new PR binds, its merge is recorded, completion holds while work sits on it', () => {
+    const h = harness({ work: { unfinishedTasks: 0, openTaskPrs: 0 }, legacyPr: { prNumber: 7, repoFullName: 'o/r', ownerTaskId: 't', state: 'merged', mergedAt: AT } });
+    h.run({ ...base, type: 'Adopt', liveBranchAhead: true });
+    const [e1, e2] = h.view().epochs;
+    expect([e1!.state, e2!.state, e2!.branch]).toEqual(['merged', 'open', ROOT]);
+    expect(epochCompletionHold(h.view(), (b, after) => (b === ROOT && after === AT ? 1 : 0))).toMatchObject({ holds: true, reason: 'unshipped_work' });
+    expect(h.run({ ...base, type: 'PrBound', prNumber: 30, repoFullName: 'o/r', ownerTaskId: 'o', headRef: ROOT }).result).toBe('applied');
+    expect(h.run(merged(30)).result).toBe('applied');
+    // Without the branch read, the same mission folds into one retired record: the bind has nowhere to go.
+    const h2 = harness({ work: { unfinishedTasks: 0, openTaskPrs: 0 }, legacyPr: { prNumber: 7, repoFullName: 'o/r', ownerTaskId: 't', state: 'merged', mergedAt: AT } });
+    h2.run({ ...base, type: 'Adopt', liveBranchAhead: false });
+    expect(h2.run({ ...base, type: 'PrBound', prNumber: 30, repoFullName: 'o/r', ownerTaskId: 'o', headRef: ROOT }).reason).toBe('no_writable_epoch');
+  });
+
+  it('a branch kept for unshipped commits holds completion, and the kernel refuses to retire it', () => {
+    const h = harness();
+    h.run({ ...base, type: 'Adopt' });
+    h.run(merged(10));
+    const [e1] = h.view().epochs;
+    h.run({ ...base, type: 'Settled', epochId: e1!.id, settlement: { settled: [], held: [], satisfiedByPr: 10, unshippedHead: 'late' } });
+    expect(epochCompletionHold(h.view(), () => 0)).toMatchObject({ holds: true, reason: 'unsettled' });
+    expect(h.run({ ...base, type: 'Retired', epochId: e1!.id }).reason).toBe('settlement_held');
+    expect(pendingEpochSteps(h.view()).map((s) => s.step)).not.toContain('retire');
+  });
+});

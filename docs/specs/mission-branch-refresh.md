@@ -505,7 +505,12 @@ list.
 - R-2. The branch is retired only after settlement, with nothing held, and only
   when a fresh read shows no open PR still based on it and its live head is the
   merged head or contained in trunk (a branch that moved on is kept, with one
-  note, never deleted). A PR opened on it after
+  note, never deleted). Any read that fails keeps the branch. A redundant PR is
+  closed only at the head its content check read. The gap between that last
+  read and GitHub's delete cannot be closed: GitHub has no compare-and-delete
+  for a ref. A commit pushed straight to the merged branch inside that gap goes
+  with it (task work arrives through PRs from other branches, which a delete of
+  the base does not lose: GitHub moves them and the next pass settles them). A PR opened on it after
   settlement is settled on the next pass. Unique or ambiguous work keeps the
   branch and posts one mission note naming each PR and what to do.
 - R-3. A refresh PR lands only on the branch it was filed for, and only while that

@@ -280,8 +280,20 @@ export async function applyMissionEpochCommand(missionId: string, cmd: MissionEp
     const loaded = await loadMissionEpochView(missionId, deps);
     if (!loaded) return { result: 'rejected', ops: [], reason: 'mission_not_found', view: null };
     let { view } = loaded;
-    if (view.epochs.length === 0 && view.integrationBranch && cmd.type !== 'Adopt') {
-      const adopt = reduceMissionEpochs(view, { type: 'Adopt', actor: cmd.actor, at: cmd.at, mergingPr: cmd.type === 'Merged' ? cmd.prNumber : null });
+    // Every adoption reads the branch the same way (`adoptionFacts`): whichever
+    // command triggers it, a branch that moved on past a merged mission PR is
+    // the live delivery, never folded into the merged record.
+    if (view.epochs.length === 0 && view.integrationBranch && (cmd.type !== 'Adopt' || cmd.liveBranchAhead === undefined)) {
+      const facts = cmd.type === 'Adopt' && cmd.mergingPr != null
+        ? { mergingPr: cmd.mergingPr, liveBranchAhead: false }
+        : await adoptionFactsFor(loaded, deps);
+      const mergingPr = cmd.type === 'Merged' ? cmd.prNumber : facts.mergingPr;
+      const adopt = reduceMissionEpochs(view, { type: 'Adopt', actor: cmd.actor, at: cmd.at, mergingPr, liveBranchAhead: mergingPr != null ? false : facts.liveBranchAhead });
+      if (cmd.type === 'Adopt') {
+        if (adopt.result !== 'applied') return { ...adopt, view };
+        try { await run(exec, adopt.ops); } catch (err) { if (!(err instanceof EpochWriteConflict)) throw err; continue; }
+        return { ...adopt, view: (await loadMissionEpochView(missionId, deps))?.view ?? view };
+      }
       if (adopt.result === 'applied') {
         try { await run(exec, adopt.ops); } catch (err) { if (!(err instanceof EpochWriteConflict)) throw err; }
         continue;
@@ -553,6 +565,23 @@ export async function adoptionFacts(api: GithubApi, repo: MissionRepo, view: Mis
   return { mergingPr: null, liveBranchAhead: inTrunk !== true };
 }
 
+/**
+ * `adoptionFacts` for a loaded mission, resolving its repo and the GitHub
+ * client. Unresolvable or unreadable reads keep the branch live (never fold it
+ * into a merged record), the direction that can only hold, never lose work.
+ */
+async function adoptionFactsFor(loaded: { view: MissionEpochView; mission: MissionRow }, deps: EpochDeps): Promise<{ mergingPr: number | null; liveBranchAhead: boolean }> {
+  if (loaded.view.legacyPr?.state !== 'merged') return { mergingPr: null, liveBranchAhead: false };
+  try {
+    const repo = await (deps.repoOf ?? defaultRepoOf)(loaded.mission);
+    if (!repo) return { mergingPr: null, liveBranchAhead: true };
+    const api: GithubApi = deps.api ?? (await import('@/lib/github')).githubApi;
+    return await adoptionFacts(api, repo, loaded.view, (deps.now ?? (() => new Date()))());
+  } catch {
+    return { mergingPr: null, liveBranchAhead: true };
+  }
+}
+
 /** A merged mission PR with no delivery record this recent is the merge whose record failed. */
 export const MERGE_CATCH_UP_MS = 48 * 60 * 60 * 1000;
 /** How long one caller may hold a branch's settlement. */
@@ -702,6 +731,12 @@ async function settle(api: GithubApi, repo: MissionRepo, view: MissionEpochView,
           method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ base: d.target }),
         });
       } else {
+        // The content check read one head: a push since then is unchecked work, so it is not closed.
+        const live = await api(repo.installationId, `/repos/${repo.repoFullName}/pulls/${d.prNumber}`).catch(() => null);
+        if (live?.state !== 'open' || str(live?.head?.sha) !== d.proof.headSha) {
+          held.push({ ...d, disposition: 'hold', reason: live?.state === 'open' ? 'it moved since it was checked; checked again on the next pass' : 'could not re-read it before closing' });
+          continue;
+        }
         await api(repo.installationId, `/repos/${repo.repoFullName}/issues/${d.prNumber}/comments`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ body: `Closing: every change on this PR already reached \`${repo.trunk}\` with delivery ${epoch.epoch} of this mission${epoch.prNumber ? ` (#${epoch.prNumber})` : ''}. Checked against \`${(into ?? '').slice(0, 7)}\`.` }),
