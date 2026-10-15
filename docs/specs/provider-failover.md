@@ -5,7 +5,7 @@ owner: max
 last_verified: 2026-10-14
 summary: When a task's agent backend hits a budget or rate-limit wall or has its credential rejected, the system MUST re-queue that task on another enabled, un-walled backend, or park it until the earliest provider reset.
 domain: runners
-surfaces: [packages/core/backend-policy.ts, apps/web/src/lib/backend-failover.ts, apps/web/src/lib/runner-seat-wall.ts, apps/web/src/app/api/workers/claim/route.ts, apps/web/src/app/api/workers/[id]/route.ts]
+surfaces: [packages/core/backend-policy.ts, apps/web/src/lib/backend-failover.ts, apps/web/src/app/api/workers/claim/route.ts, apps/web/src/app/api/workers/[id]/route.ts]
 related: [codex-backend-spec, credential-isolation, runner-liveness]
 keywords: [backend_pauses, budget_exhausted_at, failoverpriority, rate limit, openrouter, oauth budget]
 assertions:
