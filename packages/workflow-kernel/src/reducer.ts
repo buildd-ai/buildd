@@ -20,9 +20,11 @@ import type {
   Decision,
   DeliveryPatch,
   EffectSpec,
+  FindingOp,
   LivePr,
   RoundOp,
 } from './commands';
+import { addressFindings, applyVerdictToFindings, describeFinding, isTaskId, openRequiredFindings } from './findings';
 import {
   isHumanActor,
   isTerminal,
@@ -247,6 +249,7 @@ export function stableIdempotencyKey(cmd: Command, d: DeliverySnapshot | null): 
     case 'AttemptEnded': return `end:${cmd.workerId}`;
     case 'ReviewVerdictRecorded': return `verdict:${cmd.roundId}`;
     case 'FixClaimed': return `claim:${cmd.attemptId}`;
+    case 'FindingDisposed': return `dispose:${cmd.findingId}:${cmd.disposition}`;
     case 'HumanApproved': return pr ? `approve:${pr}:${cmd.reviewId}` : null;
     case 'PolicyMergeApproved': return pr ? `policymerge:${pr}:${cmd.headSha}` : null;
     // One landing request per (head, version): a replay is a duplicate, while a person re-landing
@@ -408,6 +411,7 @@ class Ctx {
   apply(key: string, toState: DeliveryState, o: {
     states?: DeliveryState[]; guardHead?: boolean; guardRound?: boolean;
     patch?: DeliveryPatch; rounds?: RoundOp[]; attempts?: AttemptOp[]; effects?: EffectSpec[];
+    findings?: FindingOp[];
     evidence?: Record<string, unknown>; bypass?: Record<string, unknown> | null;
     create?: ApplyDecision['create'];
     /** What the `buildd/landing` status should name for this version (a lasting rail's refusal). */
@@ -443,6 +447,7 @@ class Ctx {
       patch,
       rounds: o.rounds ?? [],
       attempts: o.attempts ?? [],
+      ...(o.findings && o.findings.length ? { findings: o.findings } : {}),
       effects,
       evidence: { actor: this.cmd.actor, ...(o.evidence ?? {}) },
       bypass: o.bypass ?? null,
@@ -569,87 +574,33 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         op: 'update', roundId: round.id, whenStatus: ['queued', 'reviewing'],
         set: { status: 'superseded', verdict: cmd.verdict, effectiveVerdict: cmd.effectiveVerdict, confidence: cmd.confidence ?? null, decided: true },
       };
-      const decide: RoundOp = {
-        op: 'update', roundId: round.id, whenStatus: ['queued', 'reviewing'],
-        set: { status: 'decided', verdict: cmd.verdict, effectiveVerdict: cmd.effectiveVerdict, confidence: cmd.confidence ?? null, decided: true },
-      };
-      const key = `verdict:${round.id}`;
-      const common = { guardHead: true, guardRound: true, evidence: { roundId: round.id, headSha: round.headSha, verdict: cmd.verdict, effectiveVerdict: cmd.effectiveVerdict } };
-      const postReview = (event: 'APPROVE' | 'REQUEST_CHANGES'): EffectSpec => ({
-        kind: 'post_review', dedupeKey: `post_review:${dd.id}:${round.id}`, payload: { commitId: round.headSha, event, roundId: round.id },
-      });
       const current = round.headSha === dd.currentHeadSha && round.round === dd.currentRound;
-      if (current && (dd.state === 'REPAIRING' || dd.state === 'BLOCKED_ON_TRUNK')) {
-        // b666505e: a verdict for the CURRENT head while a repair or a red trunk holds the
-        // delivery. It is the verdict on this head: the round is decided now, the state does
-        // not move, and leaving the hold re-enters it (resumeAfterRepair / T26 / T4 via
-        // reenterVerdict). A head move before then supersedes it like any other verdict.
-        // Never superseded here, or the resume would start a second round at the same head.
-        const ev = cmd.effectiveVerdict === 'approve' ? 'APPROVE' : cmd.effectiveVerdict === 'request_changes' ? 'REQUEST_CHANGES' : null;
-        return c.apply(key, dd.state, {
-          ...common,
-          evidence: { ...common.evidence, heldBy: dd.state, deferred: true },
-          rounds: [decide],
-          // The GitHub review is the reviewer's word on this commit; the kernel still gates landing.
-          effects: ev && round.scope?.composition !== true ? [postReview(ev)] : [],
-        });
-      }
-      if (dd.state !== 'AWAITING_REVIEW' || !current) {
-        // A verdict for a superseded head/round: kept for audit, never applied.
+      const held = current && (dd.state === 'REPAIRING' || dd.state === 'BLOCKED_ON_TRUNK');
+      if (!held && (dd.state !== 'AWAITING_REVIEW' || !current)) {
+        // A verdict for a superseded head/round: kept for audit, never applied (nor its findings).
         return c.stale('round_superseded', { rounds: [keep], attempts: [] });
       }
-      if (cmd.effectiveVerdict === 'approve' && round.scope?.composition === true) {
-        // §5.9 / S33: the delta round of a composition reviewed only the novel
-        // paths; every other change rests on its own constituent's verdict. The
-        // approval stays a composition one (head in composition_heads, never in
-        // approved_heads), and its GitHub review says it covers the delta only.
-        const paths = Array.isArray(round.scope.novelDeltaPaths) ? (round.scope.novelDeltaPaths as unknown[]).map(String) : [];
-        const scope = { compositionDelta: true, paths };
-        return c.apply(key, 'APPROVED', {
-          ...common,
-          evidence: { ...common.evidence, compositionDelta: { roundId: round.id, paths } },
-          patch: {
-            compositionHeads: dd.compositionHeads.includes(round.headSha) ? dd.compositionHeads : [...dd.compositionHeads, round.headSha],
-            approvalBasis: 'composition', stateReason: null,
-          },
-          rounds: [decide],
-          attempts: [{ op: 'cancel_open', families: ['review_fix'], status: 'cancelled' }],
-          effects: [{ ...postReview('APPROVE'), payload: { ...postReview('APPROVE').payload, scope } }, { kind: 'cancel_open_attempts', dedupeKey: `cancel_open_attempts:${dd.id}:${round.id}`, payload: { families: ['review_fix'], reason: 'approved' } }],
-        });
-      }
-      if (cmd.effectiveVerdict === 'approve') {
-        return c.apply(key, 'APPROVED', {
-          ...common,
-          patch: { approvedHeads: [round.headSha], approvalBasis: 'verdict', stateReason: null },
-          rounds: [decide],
-          attempts: [{ op: 'cancel_open', families: ['review_fix'], status: 'cancelled' }],
-          effects: [postReview('APPROVE'), { kind: 'cancel_open_attempts', dedupeKey: `cancel_open_attempts:${dd.id}:${round.id}`, payload: { families: ['review_fix'], reason: 'approved' } }],
-        });
-      }
-      if (cmd.effectiveVerdict === 'escalate') {
-        return c.apply(key, 'ESCALATED', {
-          ...common,
-          patch: { stateReason: 'review_escalated' },
-          rounds: [decide],
-          effects: [{ kind: 'mission_note', dedupeKey: `mission_note:${dd.id}:${round.id}`, payload: { reason: 'review_escalated', roundId: round.id } }],
-        });
-      }
-      if (dd.currentRound >= dd.maxRounds) {
-        return c.apply(key, 'ESCALATED', {
-          ...common,
-          patch: { stateReason: 'review_exhausted' },
-          rounds: [decide],
-          effects: [postReview('REQUEST_CHANGES'), { kind: 'escalate_exhaustion', dedupeKey: `exhaust:${dd.id}:${round.headSha}@v${dd.version}`, payload: { family: 'review_fix', rounds: dd.currentRound } }],
-        });
-      }
-      return c.apply(key, 'CHANGES_REQUESTED', {
-        ...common,
-        patch: { stateReason: null },
-        rounds: [decide],
-        effects: [postReview('REQUEST_CHANGES'), {
-          kind: 'dispatch_fix', dedupeKey: `dispatch_fix:${dd.id}:${round.id}:${c.nextNo('review_fix', 'agent')}`,
-          payload: { roundId: round.id, round: round.round, headSha: round.headSha, attemptNo: c.nextNo('review_fix', 'agent') },
+      return verdictDecided(c, round, cmd, { held });
+    }
+    // §5: a person waives a finding, or defers it to a named task.
+    case 'FindingDisposed': {
+      const dd = d!;
+      if (!isHumanActor(cmd.actor)) return c.rejected('human_required');
+      if (!cmd.reason.trim()) return c.rejected('reason_required');
+      if (cmd.disposition === 'deferred' && !cmd.deferredToTaskId) return c.rejected('deferral_needs_task');
+      // The host resolves a short id to the task first; anything else is not a task this can name.
+      if (cmd.disposition === 'deferred' && !isTaskId(cmd.deferredToTaskId)) return c.rejected('deferral_task_unresolved');
+      const f = (c.view.findings ?? []).find((x) => x.id === cmd.findingId);
+      if (!f) return c.rejected('unknown_finding');
+      if (f.status === cmd.disposition) return c.duplicate('finding_already_disposed');
+      if (f.status !== 'open' && f.status !== 'addressed') return c.rejected('finding_closed');
+      return c.apply(`dispose:${f.id}:${cmd.disposition}`, dd.state, {
+        findings: [{
+          op: 'update', findingId: f.id, whenStatus: ['open', 'addressed'],
+          set: { status: cmd.disposition, closedBy: cmd.actor, closedReason: cmd.reason.trim(), deferredToTaskId: cmd.deferredToTaskId ?? null },
         }],
+        evidence: { findingId: f.id, disposition: cmd.disposition, reason: cmd.reason.trim(), ...(cmd.deferredToTaskId ? { deferredToTaskId: cmd.deferredToTaskId } : {}) },
+        bypass: { finding: f.id, disposition: cmd.disposition, actor: cmd.actor, reason: cmd.reason.trim() },
       });
     }
 
@@ -914,6 +865,9 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (cmd.headSha !== dd.currentHeadSha) return c.stale('head_not_current');
       // A destructive migration is a person's whatever the paths say.
       if (dd.policyEvidence?.destructive) return c.rejected('destructive_migration');
+      // §13.13 rule 6: a rule never lifts a required finding; only a person's waiver or a verifying round does.
+      const blocking = openRequiredFindings(c.view);
+      if (blocking.length) return c.rejected('open_findings', { missing: blocking.map(describeFinding) });
       return c.apply(`policymerge:${c.prKey}:${cmd.headSha}`, 'APPROVED', {
         guardHead: true,
         patch: { approvedHeads: [...dd.approvedHeads.filter((h) => h !== cmd.headSha), cmd.headSha], approvalBasis: 'policy_rule', stateReason: null },
@@ -954,6 +908,10 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (rails && !rails.passed && !overrideDoor) return c.rejected('rails_failed', { missing: rails.reasons });
       const coverage = headCoverage(dd, cmd.headSha);
       if (dd.state === 'APPROVED' && coverage === 'none' && !overrideDoor) return c.rejected('head_not_approved');
+      // AC-13: an open required finding refuses every door, named; a person's verdict override or their own approval passes it.
+      const verdictOverride = overrideDoor && (!ov?.kinds || ov.kinds.includes('verdict'));
+      const blocking = openRequiredFindings(c.view);
+      if (blocking.length && !verdictOverride && coverage !== 'human') return c.rejected('open_finding', { missing: blocking.map(describeFinding) });
       // S15: a door landing a head that is behind its base, under the disjoint-delta rule. The base
       // delta was read now, so the rule is checked again at merge time; a freshness override skips it.
       let freshness: Record<string, unknown> | null = null;
@@ -1055,14 +1013,19 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       // over is owed a fix against the base, filed once.
       const external = dd.state !== 'LANDING';
       const open = external ? openVerdict(c.view) : null;
-      const mergedOverOpenFindings = !!open;
+      // §5: the findings still open at the merge stay open and attached to the merged PR.
+      const openFindings = external ? openRequiredFindings(c.view) : [];
+      const mergedOverOpenFindings = !!open || openFindings.length > 0;
       // The fix is owed only for changes asked of the head that merged: an escalation a person
       // resolved by merging is their decision, and a verdict on an older head was not about it.
       const owesFix = !!open && (open.effectiveVerdict ?? open.verdict) === 'request_changes' && open.headSha === mergedHead;
       const externalEffects: EffectSpec[] = owesFix && open
         ? [{
             kind: 'dispatch_external_merge_fix', dedupeKey: `dispatch_external_merge_fix:${dd.id}:merged`,
-            payload: { roundId: open.id, round: open.round, reviewedHeadSha: open.headSha, mergedHeadSha: mergedHead, mergeCommitSha: cmd.live.mergeCommitSha ?? null, mergedBy: cmd.live.mergedBy ?? null },
+            payload: {
+              roundId: open.id, round: open.round, reviewedHeadSha: open.headSha, mergedHeadSha: mergedHead, mergeCommitSha: cmd.live.mergeCommitSha ?? null, mergedBy: cmd.live.mergedBy ?? null,
+              ...(openFindings.length ? { findings: openFindings.map((x) => ({ id: x.id, path: x.path, line: x.line, title: x.title })) } : {}),
+            },
           }]
         : [];
       return c.apply(`merged:${c.prKey}`, 'MERGED', {
@@ -1077,6 +1040,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
           live: cmd.live, reviewClass,
           ...(external ? { external: true, mergedBy: cmd.live.mergedBy ?? null, mergedHead, fromState: dd.state, merged_over_open_findings: mergedOverOpenFindings } : {}),
           ...(open ? { openVerdict: { roundId: open.id, round: open.round, headSha: open.headSha, verdict: open.effectiveVerdict ?? open.verdict } } : {}),
+          ...(openFindings.length ? { openFindings: openFindings.map((x) => x.id) } : {}),
         },
       });
     }
@@ -1448,9 +1412,180 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
   }
 }
 
+// ── T6: a decided round's verdict, with its findings (§5) ───────────────────
+
+/**
+ * Decide `round` with `cmd`'s verdict and apply what it means. `held`: a repair
+ * or a red trunk holds the delivery at this head (b666505e), so the round is
+ * decided now and leaving the hold re-enters it (reenterVerdict); the state
+ * does not move. Every path writes the verdict's findings in the same
+ * statement: what it raised, restated, resolved and deferred.
+ *
+ * An approval that leaves a required finding unverified is not an approval of
+ * the head (§5, rule 2): the round is decided as the reviewer said, and a
+ * verification round at the same head is owed instead, while rounds remain.
+ */
+function verdictDecided(
+  c: Ctx,
+  round: RoundSnapshot,
+  cmd: Extract<Command, { type: 'ReviewVerdictRecorded' }>,
+  o: { held: boolean },
+): Decision {
+  const dd = c.d!;
+  const decide: RoundOp = {
+    op: 'update', roundId: round.id, whenStatus: ['queued', 'reviewing'],
+    set: { status: 'decided', verdict: cmd.verdict, effectiveVerdict: cmd.effectiveVerdict, confidence: cmd.confidence ?? null, decided: true },
+  };
+  const key = `verdict:${round.id}`;
+  const f = applyVerdictToFindings(c.view, round, cmd.effectiveVerdict, cmd, cmd.actor);
+  const findingsEvidence = (f.raised.length || f.resolved.length || f.restated.length || f.deferred.length || f.unresolvedDeferrals.length)
+    ? { findings: {
+        raised: f.raised, resolved: f.resolved, restated: f.restated, deferred: f.deferred, open: f.stillOpen.map((x) => x.id),
+        // A deferral that named no resolvable task closes nothing; recorded so it is visible why.
+        ...(f.unresolvedDeferrals.length ? { unresolvedDeferrals: f.unresolvedDeferrals } : {}),
+      } }
+    : {};
+  const common = {
+    guardHead: true, guardRound: true, findings: f.ops,
+    evidence: { roundId: round.id, headSha: round.headSha, verdict: cmd.verdict, effectiveVerdict: cmd.effectiveVerdict, ...findingsEvidence },
+  };
+  const postReview = (event: 'APPROVE' | 'REQUEST_CHANGES'): EffectSpec => ({
+    kind: 'post_review', dedupeKey: `post_review:${dd.id}:${round.id}`, payload: { commitId: round.headSha, event, roundId: round.id },
+  });
+  const unverified = cmd.effectiveVerdict === 'approve' && f.stillOpen.length > 0;
+  if (o.held) {
+    // The GitHub review is the reviewer's word on this commit; the kernel still gates landing.
+    const ev = cmd.effectiveVerdict === 'approve' && !unverified ? 'APPROVE' : cmd.effectiveVerdict === 'request_changes' ? 'REQUEST_CHANGES' : null;
+    return c.apply(key, dd.state, {
+      ...common,
+      evidence: { ...common.evidence, heldBy: dd.state, deferred: true },
+      rounds: [decide],
+      effects: ev && round.scope?.composition !== true ? [postReview(ev)] : [],
+    });
+  }
+  if (unverified) return verificationRound(c, key, round, f.stillOpen, { ...common, rounds: [decide] });
+  if (cmd.effectiveVerdict === 'approve' && round.scope?.composition === true) {
+    // §5.9 / S33: the delta round of a composition reviewed only the novel
+    // paths; every other change rests on its own constituent's verdict. The
+    // approval stays a composition one (head in composition_heads, never in
+    // approved_heads), and its GitHub review says it covers the delta only.
+    const paths = Array.isArray(round.scope.novelDeltaPaths) ? (round.scope.novelDeltaPaths as unknown[]).map(String) : [];
+    const scope = { compositionDelta: true, paths };
+    return c.apply(key, 'APPROVED', {
+      ...common,
+      evidence: { ...common.evidence, compositionDelta: { roundId: round.id, paths } },
+      patch: {
+        compositionHeads: dd.compositionHeads.includes(round.headSha) ? dd.compositionHeads : [...dd.compositionHeads, round.headSha],
+        approvalBasis: 'composition', stateReason: null,
+      },
+      rounds: [decide],
+      attempts: [{ op: 'cancel_open', families: ['review_fix'], status: 'cancelled' }],
+      effects: [{ ...postReview('APPROVE'), payload: { ...postReview('APPROVE').payload, scope } }, { kind: 'cancel_open_attempts', dedupeKey: `cancel_open_attempts:${dd.id}:${round.id}`, payload: { families: ['review_fix'], reason: 'approved' } }],
+    });
+  }
+  if (cmd.effectiveVerdict === 'approve') {
+    return c.apply(key, 'APPROVED', {
+      ...common,
+      patch: { approvedHeads: [round.headSha], approvalBasis: 'verdict', stateReason: null },
+      rounds: [decide],
+      attempts: [{ op: 'cancel_open', families: ['review_fix'], status: 'cancelled' }],
+      effects: [postReview('APPROVE'), { kind: 'cancel_open_attempts', dedupeKey: `cancel_open_attempts:${dd.id}:${round.id}`, payload: { families: ['review_fix'], reason: 'approved' } }],
+    });
+  }
+  if (cmd.effectiveVerdict === 'escalate') {
+    return c.apply(key, 'ESCALATED', {
+      ...common,
+      patch: { stateReason: 'review_escalated' },
+      rounds: [decide],
+      effects: [{ kind: 'mission_note', dedupeKey: `mission_note:${dd.id}:${round.id}`, payload: { reason: 'review_escalated', roundId: round.id } }],
+    });
+  }
+  if (dd.currentRound >= dd.maxRounds) {
+    // Rule 9: at the limit a repeated request for changes stays blocking, with its findings attached.
+    return c.apply(key, 'ESCALATED', {
+      ...common,
+      patch: { stateReason: 'review_exhausted' },
+      rounds: [decide],
+      effects: [postReview('REQUEST_CHANGES'), { kind: 'escalate_exhaustion', dedupeKey: `exhaust:${dd.id}:${round.headSha}@v${dd.version}`, payload: { family: 'review_fix', rounds: dd.currentRound, findings: f.stillOpen.map((x) => x.id) } }],
+    });
+  }
+  return c.apply(key, 'CHANGES_REQUESTED', {
+    ...common,
+    patch: { stateReason: null },
+    rounds: [decide],
+    effects: [postReview('REQUEST_CHANGES'), {
+      kind: 'dispatch_fix', dedupeKey: `dispatch_fix:${dd.id}:${round.id}:${c.nextNo('review_fix', 'agent')}`,
+      payload: { roundId: round.id, round: round.round, headSha: round.headSha, attemptNo: c.nextNo('review_fix', 'agent') },
+    }],
+  });
+}
+
+/**
+ * §5: an approval at `head` that left required findings unverified. A round at
+ * the same head is owed, scoped to verifying exactly those findings, while the
+ * round budget lasts; past it the delivery is a person's (review_exhausted),
+ * with the findings attached. Nothing approves the head meanwhile.
+ */
+function verificationRound(
+  c: Ctx, key: string, decided: Pick<RoundSnapshot, 'id' | 'headSha' | 'kind'>, open: Array<{ id: string }>,
+  o: { rounds?: RoundOp[]; findings?: FindingOp[]; evidence?: Record<string, unknown>; patch?: DeliveryPatch; attempts?: AttemptOp[]; effects?: EffectSpec[]; guardHead?: boolean; guardRound?: boolean },
+): Decision {
+  const dd = c.d!;
+  const head = decided.headSha;
+  const ids = open.map((x) => x.id);
+  const evidence = { ...(o.evidence ?? {}), unverifiedFindings: ids };
+  if (dd.currentRound >= dd.maxRounds) {
+    return c.apply(key, 'ESCALATED', {
+      ...o, evidence,
+      patch: { ...(o.patch ?? {}), stateReason: 'review_exhausted' },
+      effects: [...(o.effects ?? []), { kind: 'escalate_exhaustion', dedupeKey: `exhaust:${dd.id}:${head}@v${dd.version}`, payload: { family: 'review_fix', rounds: dd.currentRound, findings: ids } }],
+    });
+  }
+  // The other kind than the round it follows at this head: one open round per (head, kind) is a
+  // unique index, and the decided round leaves it in the same statement. A round at a head that
+  // already has a decided one reviews in full whatever its kind (no prior verdict at another head).
+  const r = c.startRound(head, { kind: decided.kind === 'full' ? 'delta' : 'full', scope: { verifyFindings: ids } });
+  // The round being decided is written once, by the caller's op, never superseded by the new one.
+  const written = new Set((o.rounds ?? []).filter((x) => x.op === 'update').map((x) => (x as { roundId: string }).roundId));
+  const fresh = r.rounds.filter((x) => x.op !== 'update' || !written.has(x.roundId));
+  return c.apply(key, 'AWAITING_REVIEW', {
+    ...o, evidence,
+    patch: { ...(o.patch ?? {}), ...r.patch, stateReason: null },
+    rounds: [...(o.rounds ?? []), ...fresh],
+    effects: [...(o.effects ?? []), ...r.effects],
+  });
+}
+
 // ── T3 ──────────────────────────────────────────────────────────────────────
 
+/**
+ * T3, then §5: a push whose diff touched an open finding's path marks it
+ * `addressed` by the new head, in the same statement. Not the platform's own
+ * refresh (rule 5: a refresh push is never a fix).
+ */
 function headObserved(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' }>): Decision {
+  const d = c.d!;
+  // A head a mechanical repair (the base merged in, a migration renumbered) is bound to is the
+  // platform's own write, never a fix, whoever's push it turns out to be.
+  const mechanical = d.state === 'REPAIRING' && c.attempt(d.boundAttemptId)?.mode === 'mechanical';
+  const dec = headObservedInner(c, cmd);
+  if (dec.result !== 'apply' || mechanical || dec.evidence.carryForward === 'own_refresh') return dec;
+  return withAddressed(c, dec, cmd.live.headSha, cmd.changedPaths);
+}
+
+/** `dec` plus the `addressed` marks a push of `changedPaths` at `head` makes (no finding is written twice). */
+function withAddressed(c: Ctx, dec: ApplyDecision, head: string, changedPaths: string[] | null | undefined): ApplyDecision {
+  const written = new Set((dec.findings ?? []).map((f) => (f.op === 'insert' ? f.id : f.findingId)));
+  const addr = addressFindings(c.view, head, changedPaths).filter((f) => f.op === 'update' && !written.has(f.findingId));
+  if (addr.length === 0) return dec;
+  return {
+    ...dec,
+    findings: [...(dec.findings ?? []), ...addr],
+    evidence: { ...dec.evidence, addressedFindings: addr.map((f) => (f as { findingId: string }).findingId) },
+  };
+}
+
+function headObservedInner(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' }>): Decision {
   const d = c.d!;
   if (isTerminal(d.state)) return c.stale('terminal');
   if (d.prNumber == null) return c.rejected('pr_not_bound');
@@ -1612,7 +1747,16 @@ function headObserved(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' }>): 
 
 // ── T4 ──────────────────────────────────────────────────────────────────────
 
+/** T4, then §5: a repair whose delivered head changed an open finding's path marks it `addressed`. */
 function attemptEnded(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' }>): Decision {
+  const fromState = c.d!.state;
+  const dec = attemptEndedInner(c, cmd);
+  if (dec.result !== 'apply' || (fromState !== 'FIXING' && fromState !== 'REPAIRING') || !cmd.live || dec.toState === 'AWAITING_PUSH') return dec;
+  if (dec.patch.currentHeadSha !== cmd.live.headSha) return dec;
+  return withAddressed(c, dec, cmd.live.headSha, cmd.changedPaths);
+}
+
+function attemptEndedInner(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' }>): Decision {
   const d = c.d!;
   const key = `end:${cmd.workerId}`;
   // An attempt the delivery has moved past (its head was delivered, the PR merged) still ends:
@@ -1870,6 +2014,12 @@ function reenterVerdict(c: Ctx, key: string, round: RoundSnapshot, h: string, ev
   const d = c.d!;
   const ev = { ...evidence, note: 'head_already_reviewed', roundId: round.id, verdict: round.effectiveVerdict };
   const base: DeliveryPatch = { currentHeadSha: h, currentRound: Math.max(d.currentRound, round.round) };
+  // §5: an approval never stands over a required finding it did not verify (one raised or restated
+  // since, or one it left open). The head is owed the verification round instead.
+  const open = openRequiredFindings(c.view);
+  if (round.effectiveVerdict === 'approve' && open.length > 0) {
+    return verificationRound(c, key, round, open, { patch: { currentHeadSha: h }, evidence: ev });
+  }
   if (round.effectiveVerdict === 'approve' && round.scope?.composition === true) {
     // A composition delta approve never becomes a whole-head verdict (§5.9, S33).
     const heads = d.compositionHeads.includes(h) ? d.compositionHeads : [...d.compositionHeads, h];

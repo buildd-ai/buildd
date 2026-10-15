@@ -143,7 +143,6 @@ describe('#4686: a review fix that changes nothing', () => {
   });
 
   test.todo('AC-19: a repair that ends with zero diff and no evidence keeps its findings open and its attempt reads "no change"');
-  test.todo('AC-18: open findings on a mission PR survive a coordination owner replacement and a branch refresh');
 });
 
 describe('#4679: a second push before re-review', () => {
@@ -174,7 +173,7 @@ describe('#4679: a second push before re-review', () => {
     expect(s.k.effects(s.d.id, 'post_review').map((e) => e.payload.event)).toEqual(['REQUEST_CHANGES']);
   });
 
-  test.todo('AC-17: a fix push that touches one finding marks it addressed and a migration-only push leaves the other open; approval needs a review verifying the addressed one');
+  // AC-17 and AC-18 are shared scenarios (./scenarios), so they run on Postgres too.
 });
 
 describe('the scenarios can fail', () => {

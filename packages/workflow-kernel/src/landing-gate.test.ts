@@ -89,3 +89,31 @@ describe('landingStatusOf: the buildd/landing status (§4)', () => {
     expect(landingStatusUnknown('abcdef1234')).toEqual({ state: 'failure', sha: 'abcdef1234', description: 'buildd could not confirm abcdef1 can land; ask for a review again or retry the merge' });
   });
 });
+
+describe('reviewGate with findings (workflow-kernel-library.md §5, AC-13)', () => {
+  const F = (o: Partial<import('./types').FindingSnapshot> = {}): import('./types').FindingSnapshot => ({
+    id: 'r1:0', originRoundId: 'r1', originRound: 1, originHeadSha: 'abcdef1234', ordinal: 0, path: 'src/a.ts', line: 4,
+    title: 'rename the flag', required: true, status: 'open', lastRound: 1, addressedBySha: null, closedByRoundId: null,
+    closedBy: null, closedReason: null, deferredToTaskId: null, ...o,
+  });
+  const VF = (d: DeliverySnapshot, findings: import('./types').FindingSnapshot[]): KernelView => ({ delivery: d, rounds: [R(1, 'approve')], attempts: [], findings });
+
+  test('an open or addressed required finding blocks a covered, approved head, named, whatever the state', () => {
+    expect(reviewGate(VF(D(), [F()]))).toMatchObject({ ok: false, blocker: 'open_finding', reason: 'open finding src/a.ts:4: rename the flag' });
+    expect(reviewGate(VF(D(), [F({ status: 'addressed' }), F({ id: 'r1:1', path: null, title: 'add a test' })]))).toMatchObject({ ok: false, blocker: 'open_finding', reason: 'open finding src/a.ts:4: rename the flag (and 1 more)' });
+    expect(reviewGate(VF(D({ state: 'AWAITING_REVIEW' }), [F()]))).toMatchObject({ blocker: 'open_finding' });
+  });
+  test('a closed or optional finding never blocks', () => {
+    for (const status of ['resolved', 'waived', 'deferred'] as const) expect(reviewGate(VF(D(), [F({ status })])).ok).toBe(true);
+    expect(reviewGate(VF(D(), [F({ required: false })])).ok).toBe(true);
+  });
+  test('only a person passes it: their verdict override, or their own approval of this head; never the policy rule', () => {
+    expect(reviewGate(VF(D(), [F()]), { verdictOverride: true }).ok).toBe(true);
+    expect(reviewGate(VF(D({ approvalBasis: 'human' }), [F()])).ok).toBe(true);
+    expect(reviewGate(VF(D({ approvalBasis: 'human', approvedHeads: ['older'] }), [F()]))).toMatchObject({ blocker: 'open_finding' });
+    expect(reviewGate(VF(D({ approvalBasis: 'policy_rule' }), [F()]))).toMatchObject({ blocker: 'open_finding' });
+  });
+  test('buildd/landing is failure at the head, naming the finding', () => {
+    expect(landingStatusOf(VF(D(), [F()]))).toEqual({ state: 'failure', sha: 'abcdef1234', description: 'buildd will not land abcdef1: open finding src/a.ts:4: rename the flag' });
+  });
+});

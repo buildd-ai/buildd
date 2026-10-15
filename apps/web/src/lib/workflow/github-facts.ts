@@ -147,6 +147,12 @@ export function githubReader(installationId: number, api: typeof githubApi = git
         return false;
       }
     },
+    async changedPaths(repoFullName, fromSha, toSha) {
+      const cmp = await api(installationId, `/repos/${repoFullName}/compare/${fromSha}...${toSha}`).catch(() => null) as { files?: unknown } | null;
+      const files = names(cmp?.files);
+      // A list at the compare cap may be cut: unread, not "these and no others".
+      return files && files.length < COMPARE_FILE_LIMIT ? files : null;
+    },
     async baseDelta(repoFullName, prNumber, headSha, baseRef) {
       return readBaseDelta((path) => api(installationId, path), repoFullName, prNumber, headSha, baseRef);
     },
