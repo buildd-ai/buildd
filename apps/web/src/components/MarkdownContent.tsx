@@ -4,7 +4,7 @@ import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import MermaidBlock from '@/components/MermaidBlock';
 import Chip from '@/components/ui/Chip';
-import specCriterionMarkdown from './spec-criterion-markdown';
+import specCriterionMarkdown from './markdown-criteria';
 import { criterionWords, type CriterionMark } from '@/lib/specs/delivery-words';
 
 interface MarkdownContentProps {
