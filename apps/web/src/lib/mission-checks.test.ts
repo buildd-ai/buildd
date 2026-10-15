@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import type { GoalCriteriaState, GoalCriterion } from '@buildd/shared';
 import { criterionFingerprint } from '@buildd/core/mission-helpers';
-import { buildEstimate, criteriaChecks, missionChecks, outcomeSpecLines, waiverActorEmails, waiverActorName, missionPrCheck, releaseCheck, visualCheck, type MissionChecksInput } from './mission-checks';
+import { buildEstimate, criteriaChecks, missionChecks, outcomeSpecLines, verifiedHold, waiverActorEmails, waiverActorName, missionPrCheck, releaseCheck, visualCheck, type MissionChecksInput } from './mission-checks';
 import type { MissionVisualReviewState } from './workflow/visual-review-state';
 import { planMissions, type PlanTask } from './mission-plan';
 
@@ -384,5 +384,27 @@ describe('waiverActorName: a skip never shows a raw email (visual review round 1
     expect(waiverActorName('surface audit round cap (3)', 'a@b.c', {})).toBe('surface audit round cap (3)');
     expect(waiverActorName(null, 'a@b.c', {})).toBeNull();
     expect(waiverActorEmails(['A@b.c', 'a@b.c', 'label', null])).toEqual(['a@b.c']);
+  });
+});
+
+describe('verifiedHold: Verified needs current verdicts and clear blocking checks (Mission checks I-3, AC-3, AC-8)', () => {
+  const ok = [{ label: 'PRs merged', state: 'pass' as const }, { label: 'open tasks', state: 'pass' as const }];
+
+  it('every criterion passing now and no blocking check open: nothing holds it', () => {
+    expect(verifiedHold({ criteria: ok, visual: null })).toBeNull();
+    expect(verifiedHold({ criteria: ok, visual: visualCheck(visual({ status: 'passed' }), { mergeTier: 'agent-review' }) })).toBeNull();
+    expect(verifiedHold({ criteria: ok, visual: visualCheck(visual({ status: 'not_applicable', blocksMerge: false, blocksCompletion: false }), { mergeTier: 'agent-review' }) })).toBeNull();
+  });
+
+  it('a criterion not passing now holds it, whatever the stored overall says', () => {
+    expect(verifiedHold({ criteria: [ok[0], { label: 'open tasks', state: 'partial' }], visual: null })).toBe('open tasks not met');
+    expect(verifiedHold({ criteria: [{ label: 'Spec revision 8', state: 'unchecked' }], visual: null })).toBe('Spec revision 8 not checked');
+  });
+
+  it('a blocking visual review that is not clear holds it; an advisory one does not', () => {
+    const blocked = visualCheck(visual({ status: 'blocked', blocksMerge: false, blocksCompletion: true }), { mergeTier: 'agent-review' });
+    expect(verifiedHold({ criteria: ok, visual: blocked })).toBe(`Visual review: ${blocked.state}`);
+    const advisory = visualCheck(visual({ status: 'running', blocksMerge: false, blocksCompletion: false }), { mergeTier: 'agent-review' });
+    expect(verifiedHold({ criteria: ok, visual: advisory })).toBeNull();
   });
 });

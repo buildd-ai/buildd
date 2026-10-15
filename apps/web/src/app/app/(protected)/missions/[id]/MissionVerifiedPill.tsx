@@ -58,6 +58,12 @@ interface Props {
   missionPrCount?: number;
   overall: 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | 'PENDING' | null;
   /**
+   * Why it must not read Verified now (`verifiedHold`): a criterion not passing
+   * on the live counts, or a blocking check not clear. Turns a stored pass into
+   * Needs verification and names the reason.
+   */
+  hold?: string | null;
+  /**
    * No pill, only the sheet: a terminal mission shows no "Needs verification"
    * beside COMPLETE (D2), but the band's goal links still open the criteria.
    */
@@ -84,6 +90,7 @@ function MissionVerifiedPillInner({
   missionPrCount,
   overall,
   sheetOnly = false,
+  hold = null,
 }: Props) {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -184,12 +191,12 @@ function MissionVerifiedPillInner({
     toneClass = 'text-text-muted/70 border-border-default/70';
   } else {
     // A pass the per-criterion verdicts do not back reads as unverified.
-    const effective = overall === 'pass' && !everyCriterionPassed(criteria, criteriaState) ? 'UNVERIFIED' : overall;
+    const effective = overall === 'pass' && (hold || !everyCriterionPassed(criteria, criteriaState)) ? 'UNVERIFIED' : overall;
     const gate = deriveCriteriaGatePresentation({ criteriaCount, overall: effective });
     if (gate) {
       icon = gate.state === 'clear' ? '✓' : gate.state === 'failing' ? '✗' : '?';
       text = gate.state === 'clear' ? 'Verified' : gate.state === 'failing' ? 'Not met' : 'Needs verification';
-      title = gate.state === 'clear' ? 'All goal criteria verified' : gate.state === 'failing' ? 'Goal criteria not met' : 'Goal criteria unverified';
+      title = gate.state === 'clear' ? 'All goal criteria verified' : gate.state === 'failing' ? 'Goal criteria not met' : hold ?? 'Goal criteria unverified';
       toneClass = CRITERIA_GATE_TONE_CLASS[gate.tone];
     }
   }

@@ -75,7 +75,7 @@ import { loadSurfaceAuditWaiver } from '@/lib/mission-surface-audit-gate';
 import MissionVisualReviewSetting from './MissionVisualReviewSetting';
 import MissionBranchPanel from './MissionBranchPanel';
 import { branchPanelHasAction } from '@/lib/mission-branch-panel';
-import { waiverActorEmails, waiverActorName } from '@/lib/mission-checks';
+import { verifiedHold, visualCheck, waiverActorEmails, waiverActorName, type MergeTier } from '@/lib/mission-checks';
 import MissionVisualRecord from './MissionVisualRecord';
 import { getMissionVisualReviewState } from '@/lib/workflow/visual-review-state-load';
 import { presentVisualReview } from '@/lib/workflow/visual-review-presentation';
@@ -1211,8 +1211,15 @@ export default async function MissionDetailPage({
       : null,
     deliveries: taskDeliveries,
   };
+  // Verified reads current verdicts, never a stale stored overall: a criterion not
+  // passing on the board's live counts, or a blocking visual review not clear, holds it.
+  const verifiedHoldReason = verifiedHold({
+    criteria: boardModel.criteria,
+    visual: visualReviewState ? visualCheck(visualReviewState, { mergeTier: effectivePolicy.tier as MergeTier }) : null,
+  });
   const verifiedPill = (
     <MissionVerifiedPill
+      hold={verifiedHoldReason}
       sheetOnly={!showVerifiedPill}
       missionId={id}
       criteria={goalCriteria}

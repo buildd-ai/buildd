@@ -164,4 +164,12 @@ describe('MissionVerifiedPill — sheet only (terminal mission, no pill)', () =>
       expect(tag).toContain('after:-inset-y-[13px]');
     }
   });
+
+  it('a hold from the live criteria or a blocking check turns a stored pass into Needs verification, naming why', () => {
+    const passState = { overall: 'pass', criteria: [{ index: 0, label: 'All PRs merged', verdict: 'pass', type: 'all_prs_merged' }] } as GoalCriteriaState;
+    const html = renderPill({ overall: 'pass', criteriaState: passState, hold: 'Visual review: unable to run' });
+    expect(html).not.toContain('Verified');
+    expect(html).toContain('Needs verification');
+    expect(html).toContain('title="Visual review: unable to run"');
+  });
 });

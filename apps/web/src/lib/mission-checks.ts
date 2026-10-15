@@ -332,6 +332,26 @@ export function missionChecks(input: MissionChecksInput): MissionChecks {
   return { rows, rail: [buildStep, verifyStep, deliverStep], buildComplete, delivered: deliverDone, checkpoint };
 }
 
+// ── What keeps the header from saying Verified ───────────────────────────────
+
+/**
+ * Why the mission header must not say Verified now, or null when nothing
+ * stops it. A stored `overall: pass` can predate the tasks that reopened or
+ * the spec selected since, so this reads the current per-criterion states
+ * (the board's live criteria) and the visual review row: any criterion not
+ * passing, or a blocking visual review that is not settled, holds it.
+ */
+export function verifiedHold(input: { criteria: readonly { label: string; state: string }[]; visual: CheckRow | null }): string | null {
+  const open = input.criteria.find(c => c.state !== 'pass');
+  if (open) {
+    const word = open.state === 'running' ? 'being checked' : open.state === 'unchecked' || open.state === 'pending' ? 'not checked' : 'not met';
+    return `${open.label} ${word}`;
+  }
+  const v = input.visual;
+  if (v && v.blocks && !SETTLED.has(v.status)) return `${v.label}: ${v.state}`;
+  return null;
+}
+
 // ── Who skipped it ───────────────────────────────────────────────────────────
 
 const EMAIL = /^[^\s@]+@[^\s@]+$/;
