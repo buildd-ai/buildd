@@ -633,7 +633,15 @@ export default async function MissionDetailPage({
 
   // The breadcrumb initiative, the initiative-selector options, the release
   // footer and the completion note are mutually independent.
-  const [initiativeName, teamInitiativeOptions, releaseFooterData, completionNote, carryingReleaseId, feedNoteRows, shippedRow, surfaceAuditWaiver, visualReviewState, estimateRows] = await Promise.all([
+  const waiverLoad = loadSurfaceAuditWaiver(id).catch(() => null);
+  const visualReviewLoad = getMissionVisualReviewState(id).catch((err) => {
+    console.error('[mission-page] visual review state load failed', err);
+    return null;
+  });
+  // The selected outcome specs' titles, for the line under the rail (R-40). Scoped to the
+  // mission's workspace; a failed read only costs the titles, the lines still show.
+  const outcomeSpecIds = goalCriteria.flatMap(c => (c.type === 'living_spec' ? [c.specId] : []));
+  const [initiativeName, teamInitiativeOptions, releaseFooterData, completionNote, carryingReleaseId, feedNoteRows, shippedRow, surfaceAuditWaiver, visualReviewState, estimateRows, outcomeSpecTitles, waiverNames] = await Promise.all([
     // Breadcrumb: URL param takes priority, DB-stored initiative is the fallback
     // so users see the parent initiative even when navigating directly to the mission.
     (from === 'initiative' && initiativeId)
@@ -695,28 +703,32 @@ export default async function MissionDetailPage({
       : Promise.resolve(null),
     // The person-set "Waive visual audit" record, if any. A failed read only
     // costs the record line; the waiver action stays.
-    loadSurfaceAuditWaiver(id).catch(() => null),
+    waiverLoad,
     // The one canonical visual-review state; every visual-review surface on this page reads it.
-    getMissionVisualReviewState(id).catch((err) => {
-      console.error('[mission-page] visual review state load failed', err);
-      return null;
-    }),
+    visualReviewLoad,
     // The build-only estimate reads the same frozen estimates as the Plan page (spec f7f67f1a R-23).
     // Only for a team with the task-estimates switch on, the Plan page's gate.
     loadBuildEstimateRows({ teamId: mission.teamId, taskIds: allMissionTaskIds, finished: isTerminal }).catch((err) => {
       console.error('[mission-page] estimate load failed', err);
       return [];
     }),
+    outcomeSpecIds.length > 0 && mission.workspaceId
+      ? db.select({ id: specs.id, title: specs.title }).from(specs)
+          .where(and(inArray(specs.id, outcomeSpecIds), eq(specs.workspaceId, mission.workspaceId)))
+          .then(rows => Object.fromEntries(rows.map(r => [r.id, r.title])) as Record<string, string>, () => ({} as Record<string, string>))
+      : Promise.resolve({} as Record<string, string>),
+    // A waiver's actor reads as "You" or the person's name, never a raw email: one
+    // name lookup chained on the two waiver sources, inside this same wait.
+    Promise.all([waiverLoad, visualReviewLoad]).then(async ([w, v]): Promise<Record<string, string>> => {
+      const labels = [w?.actorLabel, v?.waiver?.actorLabel];
+      const emails = waiverActorEmails(labels);
+      if (emails.length === 0) return {};
+      const rows = await db.select({ email: users.email, name: users.name }).from(users)
+        .where(inArray(users.email, [...new Set([...emails, ...labels.filter((l): l is string => !!l)])]))
+        .catch(() => [] as { email: string; name: string | null }[]);
+      return Object.fromEntries(rows.flatMap(r => (r.name ? [[r.email.toLowerCase(), r.name]] : [])));
+    }),
   ]);
-  // A waiver's actor reads as "You" or the person's name, never a raw email.
-  const waiverLabels = [surfaceAuditWaiver?.actorLabel, visualReviewState?.waiver?.actorLabel];
-  const waiverEmails = waiverActorEmails(waiverLabels);
-  const waiverNames: Record<string, string> = waiverEmails.length > 0
-    ? Object.fromEntries((await db.select({ email: users.email, name: users.name }).from(users)
-        .where(inArray(users.email, [...new Set([...waiverEmails, ...waiverLabels.filter((l): l is string => !!l)])]))
-        .catch(() => [] as { email: string; name: string | null }[]))
-        .flatMap(r => (r.name ? [[r.email.toLowerCase(), r.name]] : [])))
-    : {};
   if (surfaceAuditWaiver) surfaceAuditWaiver.actorLabel = waiverActorName(surfaceAuditWaiver.actorLabel, user?.email, waiverNames);
   if (visualReviewState?.waiver) visualReviewState.waiver.actorLabel = waiverActorName(visualReviewState.waiver.actorLabel, user?.email, waiverNames);
   const shippedView = mission.status === 'completed'
@@ -812,14 +824,6 @@ export default async function MissionDetailPage({
     mergedAt: missionMergedAt,
     releasedAt: releasedAtRaw ? new Date(releasedAtRaw).toISOString() : null,
   });
-  // The selected outcome specs' titles, for the line under the rail (R-40). Scoped to the
-  // mission's workspace; a failed read only costs the titles, the lines still show.
-  const outcomeSpecIds = goalCriteria.flatMap(c => (c.type === 'living_spec' ? [c.specId] : []));
-  const outcomeSpecTitles: Record<string, string> = outcomeSpecIds.length > 0 && mission.workspaceId
-    ? Object.fromEntries((await db.select({ id: specs.id, title: specs.title }).from(specs)
-        .where(and(inArray(specs.id, outcomeSpecIds), eq(specs.workspaceId, mission.workspaceId)))
-        .catch(() => [] as { id: string; title: string }[])).map(r => [r.id, r.title]))
-    : {};
   // Overview's checks after the build (spec f7f67f1a R-11 to R-22): a projection over the
   // same visual review state, criteria, mission PR and release status this page already reads.
   const trunkName = (workspaceForPolicy?.gitConfig as { defaultBranch?: unknown } | null)?.defaultBranch;
