@@ -749,7 +749,9 @@ UPDATE path_claim_waiters SET
   blocked_path = pg_temp.qa_hash('path/', blocked_path);
 
 UPDATE backend_pauses SET
-  reason = pg_temp.qa_str(reason);
+  reason = pg_temp.qa_str(reason),
+  -- Already an opaque hash of a runner id; re-hashed so equal keys stay equal.
+  seat_key = pg_temp.qa_hash('runner:', seat_key);
 
 UPDATE migration_log SET
   error = pg_temp.qa_text(error),
