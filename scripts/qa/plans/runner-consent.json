@@ -1,0 +1,17 @@
+[
+  {
+    "route": "/app/dev/runner-consent?state=cli"
+  },
+  {
+    "route": "/app/dev/runner-consent?state=single"
+  },
+  {
+    "route": "/app/dev/runner-consent?state=device"
+  },
+  {
+    "route": "/app/dev/runner-consent?state=edit"
+  },
+  {
+    "route": "/app/dev/runner-consent?state=error"
+  }
+]
