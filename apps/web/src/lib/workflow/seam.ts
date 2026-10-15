@@ -42,7 +42,7 @@ import {
 } from './trunk';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { drainOnControlPlane, hostsKernelHere } from './kernel-client';
-import { diffTouchesFindings, isTaskId, openFindings, openRequiredFindings } from '@buildd/workflow-kernel/findings';
+import { diffTouchesFindings, isTaskId, openFindings, openRequiredFindings, pathsNamedIn } from '@buildd/workflow-kernel/findings';
 
 const seamExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
@@ -622,7 +622,27 @@ export function noopEvidenceOf(output: unknown): { findingIds: string[]; evidenc
   return ids.length && evidence ? { findingIds: ids, evidence } : null;
 }
 
-export async function fixCompletionGate(p: { task: AttemptTask; localHeadSha: string | null; noopEvidence?: { findingIds: string[]; evidence: string } | null }, deps: SeamDeps = {}): Promise<GateRefusal | null> {
+/**
+ * §13.13 rule 4: a review fix's explicit claim that its push fixes the findings it names
+ * somewhere the completion check does not look (another package, generated code), read off
+ * `structuredOutput.fixedElsewhere`: `{ findingIds, files, reason }`. All three are required.
+ * Never a resolution: the re-review at the new head verifies it like any fix.
+ */
+export function fixedElsewhereOf(output: unknown): { findingIds: string[]; files: string[]; reason: string } | null {
+  const o = (output && typeof output === 'object' ? (output as Record<string, unknown>).fixedElsewhere : null) as Record<string, unknown> | null | undefined;
+  if (!o || typeof o !== 'object') return null;
+  const strs = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && !!x.trim()).map((x) => x.trim()) : []);
+  const findingIds = strs(o.findingIds);
+  const files = strs(o.files);
+  const reason = typeof o.reason === 'string' ? o.reason.trim() : '';
+  return findingIds.length && files.length && reason ? { findingIds, files, reason } : null;
+}
+
+export async function fixCompletionGate(p: {
+  task: AttemptTask; localHeadSha: string | null;
+  noopEvidence?: { findingIds: string[]; evidence: string } | null;
+  fixedElsewhere?: { findingIds: string[]; files: string[]; reason: string } | null;
+}, deps: SeamDeps = {}): Promise<GateRefusal | null> {
   if (!p.task.deliveryId || !isRepairRole(p.task.deliveryRole)) return null;
   const deliveryId = await kernelDeliveryById(p.task.deliveryId, deps.exec);
   if (!deliveryId) return null;
@@ -648,17 +668,24 @@ export async function fixCompletionGate(p: { task: AttemptTask; localHeadSha: st
       return { code: v.code, error: v.error, hint: v.hint, boundHeadSha: attempt.boundHeadSha, liveHeadSha: live.headSha, localHeadSha: p.localHeadSha };
     }
   } else if (live.headSha !== attempt.boundHeadSha) {
-    // §13.13 rule 4: a review fix's push must touch what the findings name. A diff that changes none
-    // of their paths keeps the blocker (unless the fix claims, with evidence, that nothing was needed).
-    if (p.task.deliveryRole === 'fix' && !p.noopEvidence && attempt.boundHeadSha) {
+    // §13.13 rule 4: a review fix's push has to be able to answer the findings. Refused only when it
+    // plainly cannot (diffTouchesFindings: every open finding has a path and nothing near any of them,
+    // nor any path the reviewer's feedback names, changed). A person's fix (T23) is theirs to judge,
+    // and an explicit `fixedElsewhere` claim naming open findings, the files and why passes to the
+    // re-review, which verifies it like any fix.
+    const ctx = ctxOf(p.task);
+    const human = ctx.trigger === 'human';
+    const claim = p.fixedElsewhere && openFindings(view).some((f) => p.fixedElsewhere!.findingIds.includes(f.id)) ? p.fixedElsewhere : null;
+    if (p.task.deliveryRole === 'fix' && !human && !claim && attempt.boundHeadSha) {
       const reader = readerFor(deps, repo.installationId);
       const changed = reader.changedPaths ? await reader.changedPaths(d.repoFullName, attempt.boundHeadSha, live.headSha).catch(() => null) : null;
-      if (diffTouchesFindings(view, changed) === false) {
+      const feedback = (ctx.failureContext as { summary?: unknown } | undefined)?.summary;
+      if (diffTouchesFindings(view, changed, pathsNamedIn(typeof feedback === 'string' ? feedback : null)) === false) {
         const named = openRequiredFindings(view).filter((f) => f.path).map((f) => f.path!);
         return {
           code: 'repair_unrelated_diff',
-          error: `Your push to PR #${d.prNumber} changes none of the files the open review findings name (${[...new Set(named)].slice(0, 5).join(', ')}).`,
-          hint: 'Fix the findings in those files and push, or, if their condition is already absent at the head, complete with structuredOutput.noopEvidence { findingIds, evidence } so a review can verify it.',
+          error: `Your push to PR #${d.prNumber} changes nothing near the files the open review findings name (${[...new Set(named)].slice(0, 5).join(', ')}), nor anything the review's feedback names.`,
+          hint: 'Fix the findings and push. If the fix belongs somewhere else, complete with structuredOutput.fixedElsewhere { findingIds, files, reason } naming the findings, the files you changed and why; the re-review verifies it.',
           boundHeadSha: attempt.boundHeadSha, liveHeadSha: live.headSha, localHeadSha: p.localHeadSha,
         };
       }

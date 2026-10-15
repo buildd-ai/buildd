@@ -2073,6 +2073,20 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
+    name: 'S5 part 3: dispatch_fix files the repair with the open findings as its brief, pinned to the round',
+    async run(host) {
+      const s = await new Delivery(host, 89).open();
+      await s.ownerPushed('H1');
+      const f = fakePorts(host);
+      f.github.setPr(s.repo, s.prNumber, s.live('H1'));
+      await drainKernel(host, s, f.ports);
+      applied(await s.verdictWith('request_changes', { findings: [{ path: 'src/a.ts', line: 3, title: 'rename the flag' }] }), 'CHANGES_REQUESTED', 'a finding');
+      await drainKernel(host, s, f.ports);
+      const fix = f.work.requested.find((r) => r.role === 'fix')!;
+      eq(pick(fix.detail as Record<string, unknown>, ['round', 'findings']), { round: 1, findings: [{ id: await s.findingId('src/a.ts'), path: 'src/a.ts', line: 3, title: 'rename the flag', status: 'open' }] }, 'the findings and the round reach the builder');
+    },
+  },
+  {
     name: 'handlers: a port the host did not supply fails the effect loudly instead of acking it',
     async run(host) {
       const s = await new Delivery(host, 51).open();

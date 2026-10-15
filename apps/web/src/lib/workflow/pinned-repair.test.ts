@@ -19,7 +19,8 @@ describe('pinnedFixDescription', () => {
     expect(d).toContain('- `r1:0` `src/a.ts:3`: rename the flag (a push touched its file; check it is really fixed)');
     expect(d).toContain('- `r1:1` add a test');
     expect(d).toContain("Push to the PR's own head branch `mission/kernel-abc`, currently at `0123456789ab` (base `dev`)");
-    expect(d).toContain('A push that changes none of them is refused.');
+    expect(d).toContain('A push that changes nothing near them is refused.');
+    expect(d).toContain('structuredOutput.fixedElsewhere');
     expect(d).toContain('structuredOutput.noopEvidence');
     expect(d.indexOf('## Background: the original task')).toBeGreaterThan(d.indexOf('## When it is done'));
   });

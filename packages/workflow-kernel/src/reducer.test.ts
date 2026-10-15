@@ -2131,3 +2131,33 @@ describe('S5 re-review: guards the scenarios cannot reach by commands alone', ()
     }
   });
 });
+
+describe('S5 part 3 review: completion evidence edges', () => {
+  const fixingWith = (findings: import('./types').FindingSnapshot[] = []): KernelView => ({
+    ...V(D({ state: 'FIXING', currentRound: 1, boundAttemptId: 'a1' }), [R({ status: 'decided', verdict: 'request_changes', effectiveVerdict: 'request_changes' })], [A({ status: 'running' })]),
+    findings,
+  });
+  const f0: import('./types').FindingSnapshot = {
+    id: 'r1:0', originRoundId: 'r1', originRound: 1, originHeadSha: 'H1', ordinal: 0, path: 'src/a.ts', line: null, title: 'x', required: true,
+    status: 'open', lastRound: 1, addressedBySha: null, closedByRoundId: null, closedBy: null, closedReason: null, deferredToTaskId: null,
+  };
+  const endFix = (v: KernelView, o: Partial<Extract<Command, { type: 'AttemptEnded' }>>) =>
+    run(v, { type: 'AttemptEnded', actor: 'runner', workerId: 'w9', attemptId: 'a1', outcome: 'success', localHeadSha: null, commitCount: 0, live: live('H1'), ...o });
+
+  test('a fix that ended with GitHub unread (a crash) is a failure, never evidence of "no change"', () => {
+    expect(applied(endFix(fixingWith(), { outcome: 'lost', live: null })).attempts[0]).toMatchObject({ set: { outcome: 'failed' } });
+    expect(applied(endFix(fixingWith(), { outcome: 'lost', live: live('H1') })).attempts[0]).toMatchObject({ set: { outcome: 'noop' } });
+  });
+
+  test('a no-op claim is only a no-op at the head the fix was bound to: on a moved head it is an ordinary delivered fix, re-reviewed at that head', () => {
+    const noopEvidence = { findingIds: ['r1:0'], evidence: 'already absent' };
+    const unmoved = applied(endFix(fixingWith([f0]), { noopEvidence }));
+    expect(unmoved.toState).toBe('AWAITING_REVIEW');
+    expect(unmoved.attempts[0]).toMatchObject({ set: { outcome: 'noop' } });
+    expect(unmoved.rounds.find((r) => r.op === 'insert')).toMatchObject({ headSha: 'H1', scope: { verifyFindings: ['r1:0'] } });
+    const moved = applied(endFix(fixingWith([f0]), { noopEvidence, live: live('H2'), proof: { liveContainsLocal: false, contentDiffChanged: true } }));
+    expect(moved.attempts[0]).toMatchObject({ set: { outcome: 'delivered' } });
+    expect(moved.rounds.find((r) => r.op === 'insert')).toMatchObject({ headSha: 'H2', scope: null });
+    expect(moved.evidence.noopEvidence).toBeUndefined();
+  });
+});

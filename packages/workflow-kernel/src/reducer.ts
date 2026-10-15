@@ -1984,7 +1984,8 @@ function attemptEndedInner(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' 
     }
     // AC-19: a fix that ends with the PR head where it was bound changed nothing; it is shown as
     // "no change" and still spends its attempt.
-    const ended: 'failed' | 'noop' = d.currentHeadSha === a.boundHeadSha && (!live || live.headSha === a.boundHeadSha) ? 'noop' : 'failed';
+    // Only a live read of the unmoved head is evidence: an unread one (a crash, GitHub down) is a failure.
+    const ended: 'failed' | 'noop' = d.currentHeadSha === a.boundHeadSha && !!live && live.headSha === a.boundHeadSha ? 'noop' : 'failed';
     if (exhausted) {
       return c.apply(key, 'ESCALATED', {
         patch: { stateReason: 'review_exhausted', boundAttemptId: null }, attempts: [end(ended)],

@@ -7,7 +7,7 @@ import { describe, expect, test } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 import type { Exec } from './kernel';
-import { fixCompletionGate } from './seam';
+import { fixCompletionGate, fixedElsewhereOf } from './seam';
 
 const dialect = new PgDialect();
 const text = (q: SQL) => dialect.sqlToQuery(q).sql;
@@ -72,9 +72,12 @@ describe('fixCompletionGate for a review fix (workflow-state-kernel.md §13.13 r
     }
     return { rows: [] };
   };
-  const gate = (o: { head: string; changed?: string[] | null; findings?: unknown[]; noop?: { findingIds: string[]; evidence: string } | null }) =>
+  const gate = (o: {
+    head: string; changed?: string[] | null; findings?: unknown[]; noop?: { findingIds: string[]; evidence: string } | null;
+    elsewhere?: { findingIds: string[]; files: string[]; reason: string } | null; context?: Record<string, unknown>;
+  }) =>
     fixCompletionGate(
-      { task: { id: 't9', workspaceId: 'w1', deliveryId: 'd1', deliveryRole: 'fix', context: { workflowAttemptId: 'a1' } }, localHeadSha: o.head, noopEvidence: o.noop ?? null },
+      { task: { id: 't9', workspaceId: 'w1', deliveryId: 'd1', deliveryRole: 'fix', context: { workflowAttemptId: 'a1', ...(o.context ?? {}) } }, localHeadSha: o.head, noopEvidence: o.noop ?? null, fixedElsewhere: o.elsewhere ?? null },
       {
         exec: execWith(o.findings ?? [finding()]),
         repoFor: async () => ({ installationId: 1, repoFullName: 'acme/widgets', gitConfig: null }),
@@ -85,10 +88,27 @@ describe('fixCompletionGate for a review fix (workflow-state-kernel.md §13.13 r
   test('a push that touches a finding\'s file completes', async () => {
     expect(await gate({ head: 'H2', changed: ['src/a.ts', 'README.md'] })).toBeNull();
   });
-  test('a push that touches none of the findings\' files is refused, naming them', async () => {
+  test('a push that changes nothing near the findings\' files is refused, naming them', async () => {
     const r = await gate({ head: 'H2', changed: ['packages/core/drizzle/x/migration.sql'] });
     expect(r?.code).toBe('repair_unrelated_diff');
     expect(r?.error).toContain('src/a.ts');
+    expect(r?.hint).toContain('structuredOutput.fixedElsewhere');
+  });
+  test('a fix beside the finding completes: its test, a caller in the same directory, a file the feedback names, a renamed file under its old name', async () => {
+    expect(await gate({ head: 'H2', changed: ['tests/a.test.ts'] })).toBeNull();
+    expect(await gate({ head: 'H2', changed: ['src/caller.ts'] })).toBeNull();
+    expect(await gate({ head: 'H2', changed: ['lib/z.ts'], context: { failureContext: { summary: 'the bug is really in `lib/z.ts:4`' } } })).toBeNull();
+    // github-facts adds a rename's previous_filename to the changed paths.
+    expect(await gate({ head: 'H2', changed: ['lib/renamed.ts', 'src/a.ts'] })).toBeNull();
+  });
+  test('an open finding with no path, or a person\'s applied fix (T23), is not checked: the review decides', async () => {
+    expect(await gate({ head: 'H2', changed: ['lib/z.ts'], findings: [finding(), finding({ id: 'r1:1', path: null, title: 'add a test' })] })).toBeNull();
+    expect(await gate({ head: 'H2', changed: ['lib/z.ts'], context: { trigger: 'human' } })).toBeNull();
+  });
+  test('a fixed-elsewhere claim passes only when it names an open finding, the files and why; a no-op claim never excuses a moved head', async () => {
+    expect(await gate({ head: 'H2', changed: ['lib/z.ts'], elsewhere: { findingIds: ['r1:0'], files: ['lib/z.ts'], reason: 'the flag is read there' } })).toBeNull();
+    expect((await gate({ head: 'H2', changed: ['lib/z.ts'], elsewhere: { findingIds: ['someone-else:0'], files: ['lib/z.ts'], reason: 'x' } }))?.code).toBe('repair_unrelated_diff');
+    expect((await gate({ head: 'H2', changed: ['lib/z.ts'], noop: { findingIds: ['r1:0'], evidence: 'absent' } }))?.code).toBe('repair_unrelated_diff');
   });
   test('an unread diff is not evidence either way: it completes, and the re-review decides', async () => {
     expect(await gate({ head: 'H2', changed: null })).toBeNull();
@@ -97,5 +117,14 @@ describe('fixCompletionGate for a review fix (workflow-state-kernel.md §13.13 r
     expect((await gate({ head: 'H1' }))?.code).toBe('delivery_not_advanced');
     expect(await gate({ head: 'H1', noop: { findingIds: ['r1:0'], evidence: 'src/a.ts:3 already reads the flag' } })).toBeNull();
     expect((await gate({ head: 'H1', noop: { findingIds: ['someone-else:0'], evidence: 'x' } }))?.code).toBe('delivery_not_advanced');
+  });
+});
+
+describe('fixedElsewhereOf', () => {
+  test('a claim needs finding ids, files and a reason', () => {
+    expect(fixedElsewhereOf({ fixedElsewhere: { findingIds: ['r1:0'], files: [' lib/z.ts '], reason: ' read there ' } })).toEqual({ findingIds: ['r1:0'], files: ['lib/z.ts'], reason: 'read there' });
+    expect(fixedElsewhereOf({ fixedElsewhere: { findingIds: ['r1:0'], files: [], reason: 'x' } })).toBeNull();
+    expect(fixedElsewhereOf({ fixedElsewhere: { findingIds: ['r1:0'], files: ['a'] } })).toBeNull();
+    expect(fixedElsewhereOf({})).toBeNull();
   });
 });

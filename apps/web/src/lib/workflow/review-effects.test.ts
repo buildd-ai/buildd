@@ -91,7 +91,7 @@ mock.module('@/lib/reviewer', () => ({ createReviewerTask: mockCreateReviewer, s
 const mockEscalateExhaustion = mock(async (..._a: any[]) => undefined);
 mock.module('@/lib/auto-merge', () => ({ escalateReviewerExhaustion: mockEscalateExhaustion }));
 
-const { fixWork, humanFixDescription, reviewEscalate, reviewsHost, reviewWork } = await import('./review-effects');
+const { fixWork, reviewEscalate, reviewsHost, reviewWork } = await import('./review-effects');
 const { pushRecoveryFollowupKey } = await import('@buildd/workflow-kernel/handlers/review');
 
 const D = (o: any = {}) => ({
@@ -163,8 +163,13 @@ describe('fixWork (Work, role fix)', () => {
 
   test("a person's apply puts their instructions first and the reviewer's words below", async () => {
     const b = await fixWork(fixReq({ trigger: 'human', humanInstructions: 'rename it', actor: 'human:u' }) as any) as any;
-    expect(b.values.description.startsWith(humanFixDescription('', 'rename it', 'check the caller task').split('## Original task')[0]!)).toBe(true);
-    expect(b.values.description).toContain('## Fix the review findings on PR #7');
+    const d: string = b.values.description;
+    // One brief, not nested: the person's instructions lead, the reviewer's words follow once under their own heading.
+    expect(d.indexOf('## Instructions from the person who applied this (authoritative)')).toBeLessThan(d.indexOf("## Reviewer's feedback (context"));
+    expect(d.split('rename it').length - 1).toBe(1);
+    expect(d.split('check the caller task').length - 1).toBe(1);
+    expect(d).not.toContain('## Original task');
+    expect(d.indexOf("## Reviewer's feedback (context")).toBeLessThan(d.indexOf('## Where to push'));
     expect(b.values).toMatchObject({ creationSource: 'dashboard', context: { trigger: 'human', appliedBy: 'human:u', humanInstructions: 'rename it' } });
   });
 

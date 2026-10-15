@@ -29,7 +29,7 @@ import { escalateCiRedHead } from '@/lib/ci-failure-retry';
 import { prWorkerWhere } from './pr-worker-where';
 import { workspaceRepo } from './github-facts';
 import { githubApi } from '@/lib/github';
-import { isCoordinationOwner, REPAIR_BUILDER_ROLE } from './review-effects';
+import { isCoordinationOwner, REPAIR_BUILDER_ROLE } from './repair-builder';
 import type { WorkBuilder } from './kernel-ports';
 
 async function prWorker(workspaceId: string, repoFullName: string, prNumber: number) {
