@@ -1,6 +1,8 @@
 /** Frozen selection evidence. Counts describe tasks at creation, not today's repo. */
 export interface TaskEstimateEvidence {
   cutoff: string;
+  /** Normalized prior kind when the estimate froze, before later task edits. */
+  kind?: string | null;
   history: { total: number; completedWork: number; eligible: number; excluded: Record<string, number> } | null;
   neighbours: { retrieved: number; used: number; reason: string | null };
   clusters: { available: number; used: number; reason: string | null };

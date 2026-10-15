@@ -331,6 +331,7 @@ describe('frozen evidence availability', () => {
       storeFactory: async () => { throw new Error('UnavailableStore'); },
     });
     expect(result.evidence?.cutoff).toBe('2026-10-01T00:00:00.000Z');
+    expect(result.evidence?.kind).toBe('engineering');
     expect(result.evidence?.modelCutoffs).toEqual({ prior: older.toISOString(), clusters: null });
   });
   it('records unavailable reads rather than claiming the workspace has no history', async () => {

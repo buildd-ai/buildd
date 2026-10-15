@@ -448,7 +448,7 @@ export async function loadEstimateInputs(task: EstimateTask, deps: LoadEstimateI
   const seedText = [task.title ?? '', task.description ?? ''].filter(Boolean).join('\n');
 
   const evidence: TaskEstimateEvidence = {
-    cutoff: cutoff.toISOString(), history: null,
+    cutoff: cutoff.toISOString(), kind, history: null,
     neighbours: { retrieved: 0, used: 0, reason: null },
     clusters: { available: 0, used: 0, reason: null }, unavailable: [],
     modelCutoffs: { prior: null, clusters: null },

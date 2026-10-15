@@ -368,7 +368,8 @@ tasks, eligible tasks with usable completed-session actuals, exclusions, retriev
 neighbours, contributing neighbours, available clusters, contributing cluster
 sample count, source failures, sources/weights and actual cached model cutoffs
 (which may precede the task cutoff by the model cache TTL). The current task
-size decision is read at estimate freeze and labeled that way; historical
+size decision is read at estimate freeze and labeled that way; the normalized
+kind is also frozen so a later task edit cannot obscure a global prior fallback; historical
 size decisions and repair attempts are bounded by the history cutoff. Diff
 ingestion is read when evidence loads, not replayed from a historical index
 snapshot, so a later reconstruction must disclose that limitation. Neighbour and cluster counts
