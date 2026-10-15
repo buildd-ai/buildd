@@ -942,6 +942,14 @@ describe('POST /api/prs/[prNumber]/merge — red CI and the landing function', (
     expect(mockLandPr.mock.calls[0]![0].actor).toEqual({ kind: 'human', userId: 'u-1' });
   });
 
+  it('enforce: the door submits as the signed-in person, never as the system', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue(enforceWorkspace);
+    const [req, ctx] = makeRequest('42');
+    await POST(req, ctx);
+    // The principal is what both hosts check membership against: a system principal would skip that.
+    expect(mockLandPr.mock.calls[0]![0].principal).toEqual({ kind: 'user', id: 'u-1' });
+  });
+
   it('shadow/off: red CI on the live head is refused even with override (no door is exempt)', async () => {
     for (const gitConfig of [{}, { landing: { mode: 'off' } }]) {
       mockWorkspacesFindFirst.mockResolvedValue({ ...workspace, gitConfig });

@@ -1186,7 +1186,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
-    name: 'handlers/review: changes requested are posted at the round\'s own commit; the fix is allocated (T8), filed under its row and woken once; the next round carries the prior verdict',
+    name: 'handlers/review: changes requested are posted at the round\'s own commit; the fix is allocated (T8), filed under its row and woken once; the next round carries the prior verdict; a fix someone claimed is never woken again',
     async run(host) {
       const s = await new Delivery(host, 84).open();
       applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
@@ -1217,6 +1217,27 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       const before = f.github.written.length;
       eq(await kernelEffectHandlers(f.ports).post_review!(await direct(host, s, 'post_review', { roundId: r1.id, event: 'REQUEST_CHANGES' })), { outcome: 'ok' }, 'posted');
       eq(f.github.written.slice(before).filter((w) => w.op === 'postReview').map((w) => w.commitId), ['H1'], 'at the round head, with the PR now at H2');
+
+      // A fix someone already claimed is never woken again. Posting the review went dead while the
+      // fix ran (ESCALATED, the attempt still running) and a person asked for changes again: the
+      // delivery is back in CHANGES_REQUESTED, and the dispatch that owes finds the running fix.
+      const t = await new Delivery(host, 85).open();
+      applied(await t.ownerPushed('H1'), 'AWAITING_REVIEW', 't pushed');
+      const ft = fakePorts(host);
+      await drainKernel(host, t, ft.ports);
+      applied(await t.verdict('request_changes'), 'CHANGES_REQUESTED', 't changes requested');
+      ft.github.setPr(t.repo, t.prNumber, t.live('H1'));
+      await drainKernel(host, t, ft.ports);
+      const running = (await t.view()).attempts.find((a) => a.family === 'review_fix')!;
+      applied(await t.submit({ type: 'FixClaimed', actor: 'runner', attemptId: running.id, revalidation: { live: t.live('H1'), approved: false } }), 'FIXING', 't fix claimed');
+      const posted = (await host.effects(t.deliveryId)).find((e) => e.kind === 'post_review')!;
+      applied(await t.submit({ type: 'EffectDead', actor: 'kernel', effectId: host.newId(), effectKind: 'post_review', dedupeKey: posted.dedupeKey }), 'ESCALATED', 'posting the review went dead');
+      applied(await t.submit({ type: 'HumanResolve', actor: 'human:u', choice: 'request_changes', expectedVersion: (await t.d()).version }), 'CHANGES_REQUESTED', 'a person asks for changes');
+      eq((await t.view()).attempts.find((a) => a.id === running.id)?.status, 'running', 'the claimed fix is still running');
+      const humanFix = (await host.effects(t.deliveryId)).find((e) => e.kind === 'dispatch_fix' && e.payload.trigger === 'human')!;
+      const wakesBefore = ft.work.woken.length;
+      eq(await kernelEffectHandlers(ft.ports).dispatch_fix!(await direct(host, t, 'dispatch_fix', humanFix.payload)), { outcome: 'ok:task_exists' }, 'the running fix is found, not filed again');
+      eq({ fixes: ft.work.filed.filter((w) => w.role === 'fix').length, wakes: ft.work.woken.length - wakesBefore }, { fixes: 1, wakes: 0 }, 'and not woken: someone has it');
     },
   },
   {
@@ -1534,6 +1555,35 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       eq((await s.submit({ type: 'FixClaimed', actor: 'runner', attemptId: attempt.id, revalidation: { live: s.live('H1'), approved: false } })).result, 'applied', 'claimed');
       eq(await kernelEffectHandlers(f.ports).dispatch_ci_fix!(await direct(host, s, 'dispatch_ci_fix')), { outcome: 'ok:task_exists' }, 'a redelivery once claimed');
       eq(f.work.woken.length, 1, 'is not woken again');
+    },
+  },
+  {
+    name: 'handlers/review: a reviewer filed by a run that died before linking it is adopted and woken while nobody claimed it; a claimed one is adopted and left alone',
+    async run(host) {
+      const filedEarlier = async (s: Delivery, f: FakePorts): Promise<string> => {
+        applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+        const round = await s.latestRound();
+        // The earlier run: filed the round's reviewer, then died before linking or waking it.
+        const filed = await f.work.file({ role: 'review', workspaceId: s.workspaceId, target: { repoFullName: s.repo, prNumber: s.prNumber, headSha: 'H1' }, lineage: { deliveryId: s.deliveryId, parentTaskId: s.ownerTaskId }, dedupeKey: `review:${round.id}` });
+        return filed.taskId!;
+      };
+
+      const s = await new Delivery(host, 111).open();
+      const f = fakePorts(host);
+      const reviewer = await filedEarlier(s, f);
+      await drainKernel(host, s, f.ports);
+      eq(await outcomesOf(host, s, 'dispatch_review'), ['ok:task_rewoken'], 'the next run adopts it and wakes it');
+      eq((await s.latestRound()).reviewerTaskId, reviewer, 'linked to its round');
+      eq({ woken: f.work.woken, filed: f.work.filed.length }, { woken: [{ taskId: reviewer, reason: 'task.created' }], filed: 1 }, 'woken, not filed again');
+
+      const b = await new Delivery(host, 112).open();
+      const fb = fakePorts(host);
+      const claimed = await filedEarlier(b, fb);
+      fb.work.claimed.add(claimed);
+      await drainKernel(host, b, fb.ports);
+      eq(await outcomesOf(host, b, 'dispatch_review'), ['ok:adopted_live_reviewer'], 'a claimed reviewer is adopted');
+      eq((await b.latestRound()).reviewerTaskId, claimed, 'linked to its round');
+      eq({ woken: fb.work.woken, filed: fb.work.filed.length }, { woken: [], filed: 1 }, 'and not woken: someone has it');
     },
   },
   {

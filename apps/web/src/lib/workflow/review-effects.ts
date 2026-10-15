@@ -126,7 +126,9 @@ export const reviewWork: WorkBuilder = async (req) => {
         context: sql`COALESCE(${tasks.context}, '{}'::jsonb) || jsonb_build_object('workflowRoundId', ${roundId}::text)`,
       })
       .where(and(eq(tasks.id, created.id), sql`${tasks.deliveryId} IS NULL`));
-    return { filed: { taskId: created.id, created: false } };
+    // Nobody has it yet: maybe never woken (the run that filed it died before linking it), so the kernel wakes it.
+    const adopted = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, created.id)), columns: { status: true } });
+    return { filed: { taskId: created.id, created: false, ...(adopted?.status === 'pending' ? { unclaimed: true } : {}) } };
   }
   await announceTaskCreated({
     id: created.id, title: reviewerTitle(prNumber, owner.title), description: null, workspaceId: req.workspaceId,
