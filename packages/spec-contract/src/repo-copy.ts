@@ -47,6 +47,17 @@ export interface SpecMetadata {
   surfaces?: string[];
   verified_by?: string[];
   assertions?: Array<Record<string, AssertionValue>>;
+  /**
+   * Set on import: criterion ids the body defines that the parser does not
+   * read (AC-3a, AC-AQR-1, INV-2), and ids it defines more than once. Not
+   * written to the repo copy.
+   */
+  criteria_unread?: CriteriaUnread;
+}
+
+export interface CriteriaUnread {
+  unreadable: Array<{ id: string; line: number }>;
+  duplicates: Array<{ id: string; lines: number[] }>;
 }
 
 export interface RepoCopyInput {

@@ -7,7 +7,7 @@ import type { HubWorkspace } from './hub';
 import { isUuid } from '@/lib/uuid';
 import { getSpec, listSpecs, reach, type SpecCaller, type SpecRow } from './store';
 import { listSpecComments, type CommentView } from './comments';
-import { specCriteria } from '@buildd/spec-contract/requirements';
+import { criteriaUnreadText, specCriteria } from '@buildd/spec-contract/requirements';
 import { outlineOf } from '@buildd/core/artifact-read';
 import { specApprover } from './approval';
 import { diffSpecHunks, diffSpecRevisions, type DiffHunk } from './diff';
@@ -277,6 +277,8 @@ export type SpecPageView =
     source?: { source: string; copy: string | null; behind: boolean; publishAnyway?: boolean } | null;
     /** Slice 14, R-68: the reader may publish a kept-private revision anyway (a person who may approve here). */
     canPublishAnyway?: boolean;
+    /** An imported spec's criteria the parser could not read, in words ("N criteria could not be read; ..."); null when none. */
+    criteriaUnread?: string | null;
     /** With `review`: the repo checks on the would-be copy (R-34). Warns, never blocks. */
     preflight?: RepoCopyPreflight | null;
     /** Delivery and verification (Slice 13): the work that answered to this spec, one page. Null when it cannot be read. */
@@ -432,6 +434,7 @@ export async function specPageView(userId: string, specId: string, opts: { revis
     state: 'ok',
     source,
     canPublishAnyway,
+    criteriaUnread: criteriaUnreadText(spec.metadata?.criteria_unread) || null,
     preflight,
     delivery,
     spec: { id: spec.id, title: spec.title, scope: spec.scope, status: spec.status, workspaceId: spec.workspaceId, workspaceName: ws?.name ?? '', version: spec.version, headRevision: spec.headRevision, approvedRevision: spec.approvedRevision },

@@ -31,27 +31,21 @@ assertions:
 - AC-1: GIVEN a widget WHEN exported THEN one file is written.
 `;
 
-describe('repoSpecForImport (R-18): the file minus its mechanical fields', () => {
-  it('keeps the intent frontmatter and the text byte for byte, and lifts the mechanical fields into the metadata block', () => {
+describe('repoSpecForImport (R-18): the file minus its frontmatter', () => {
+  it('drops the frontmatter block from the body, keeps the text after it byte for byte, and lifts the mechanical fields and the summary into the metadata block', () => {
     const r = repoSpecForImport('docs/specs/widget-exports.md', FILE);
     if (!r.ok) throw new Error(r.message);
     expect(r.title).toBe('Widget Exports');
     expect(r.domain).toBe('knowledge');
     expect(r.status).toBe('active');
     expect(r.unread).toEqual([]);
-    expect(r.body).toBe(`---
-title: Widget Exports
-summary: A widget export MUST write one file per widget.
-related: [release-flow]
-keywords: [widget, export]
-supersedes: []
----
-# Widget Exports
+    expect(r.body).toBe(`# Widget Exports
 
 - AC-1: GIVEN a widget WHEN exported THEN one file is written.
 `);
     expect(r.metadata).toEqual({
       owner: 'someone',
+      summary: 'A widget export MUST write one file per widget.',
       last_verified: '2026-10-01',
       surfaces: ['apps/web/src/lib/widget.ts'],
       verified_by: ['apps/web/src/lib/widget.test.ts', 'apps/web/tests/db/widget.test.ts'],
@@ -71,6 +65,7 @@ supersedes: []
     expect(v.generated && v.ok).toBe(true);
     const { fm } = parseSpecFrontmatter(copy.text);
     expect(fm?.title).toBe('Widget Exports');
+    expect(fm?.summary).toBe('A widget export MUST write one file per widget.');
     expect(fm?.owner).toBe('someone');
     expect(fm?.domain).toBe('knowledge');
     expect(fm?.verified_by).toEqual(['apps/web/src/lib/widget.test.ts', 'apps/web/tests/db/widget.test.ts']);
@@ -100,7 +95,36 @@ supersedes: []
       if (!r.ok) { expect(r.message.length).toBeGreaterThan(0); continue; }
       const { fm } = parseSpecFrontmatter(r.body);
       for (const k of ['status', 'owner', 'last_verified', 'domain', 'surfaces', 'verified_by', 'assertions']) expect(fm && k in fm).toBeFalsy();
+      expect(r.body.startsWith('---\n')).toBe(false);
+      expect(r.body).not.toContain('# Structural conformance');
       expect(r.unread).toEqual([]);
     }
+  });
+
+  it('drops a YAML comment in the frontmatter, so it never becomes the first heading of the body', () => {
+    const file = '---\ntitle: Commented\nstatus: active\n# Structural conformance only; passing does not certify every prose invariant.\nassertions:\n  - id: a\n    type: symbol\n    name: thing\n---\n# Commented\n\nR-1: x\n';
+    const r = repoSpecForImport('docs/specs/commented.md', file);
+    if (!r.ok) throw new Error(r.message);
+    expect(r.body).toBe('# Commented\n\nR-1: x\n');
+    expect(r.metadata.assertions).toEqual([{ id: 'a', type: 'symbol', name: 'thing' }]);
+  });
+
+  it('reports the criterion ids it could not read and the ids defined twice, and records them on the metadata', () => {
+    const file = '---\ntitle: Messy\nstatus: draft\n---\n# Messy\n\n- AC-1: one\n- AC-3a: suffixed\n- AC-AQR-1: prefixed\n- INV-1: invariant\n- AC-1: again\n';
+    const r = repoSpecForImport('docs/specs/messy.md', file);
+    if (!r.ok) throw new Error(r.message);
+    const expected = {
+      unreadable: [{ id: 'AC-3a', line: 4 }, { id: 'AC-AQR-1', line: 5 }, { id: 'INV-1', line: 6 }],
+      duplicates: [{ id: 'AC-1', lines: [3, 7] }],
+    };
+    expect(r.criteria).toEqual(expected);
+    expect(r.metadata.criteria_unread).toEqual(expected);
+  });
+
+  it('a body with clean criteria records nothing about them', () => {
+    const r = repoSpecForImport('docs/specs/widget-exports.md', FILE);
+    if (!r.ok) throw new Error(r.message);
+    expect(r.criteria).toEqual({ unreadable: [], duplicates: [] });
+    expect('criteria_unread' in r.metadata).toBe(false);
   });
 });
