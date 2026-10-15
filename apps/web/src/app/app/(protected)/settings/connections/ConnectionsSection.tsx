@@ -21,6 +21,7 @@ import Segmented from '@/components/ui/Segmented';
 import Section from '@/components/ui/Section';
 import type { ConsentTeam } from '@/lib/oauth/account-consent';
 import type { ConnectionAccess, ConnectionSummary, LegacyConnectionSummary } from '@/lib/mcp-grant-patch';
+import InlineConfirm from './InlineConfirm';
 import WorkspacePicker from './WorkspacePicker';
 import { ACCESS_LABEL, KIND_LABEL, byTeam, connectionMeta, lastActive, selectionChange } from './connections-view';
 
@@ -306,13 +307,17 @@ function ConnectionItem({
 
       <div className="border-t border-[var(--line-soft)] pt-3">
         {confirm === 'revoke' ? (
-          <div className="flex flex-wrap items-center gap-2" data-testid="connection-revoke-confirm">
-            <span className="text-body text-text-primary">Revoke {c.clientName}? It stops working on its next request, and signing in again starts over.</span>
-            <button type="button" className="btn btn-sm h-11 md:h-8" onClick={() => setConfirm(null)} disabled={busy !== null}>Keep it</button>
-            <button type="button" data-testid="connection-revoke-yes" className="btn btn-danger btn-sm h-11 md:h-8" onClick={() => void revoke()} disabled={busy !== null}>
-              {busy === 'revoke' ? 'Revoking…' : 'Revoke'}
-            </button>
-          </div>
+          <InlineConfirm
+            testId="connection-revoke-confirm"
+            confirmTestId="connection-revoke-yes"
+            question={`Revoke ${c.clientName}? It stops working on its next request, and signing in again starts over.`}
+            confirmLabel="Revoke"
+            busyLabel="Revoking…"
+            busy={busy === 'revoke'}
+            disabled={busy !== null}
+            onKeep={() => setConfirm(null)}
+            onConfirm={() => void revoke()}
+          />
         ) : (
           <button type="button" data-testid="connection-revoke" className="btn btn-danger btn-sm h-11 md:h-8" onClick={() => setConfirm('revoke')} disabled={busy !== null}>
             Revoke
