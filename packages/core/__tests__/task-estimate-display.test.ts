@@ -52,6 +52,13 @@ describe('canonical estimate display', () => {
     expect(formatTaskEstimate(r).provenance).toContain('unavailable');
     expect(formatTaskEstimate(r).provenance).not.toContain('builds history');
   });
+  test('a failed local loader does not claim the repo lacks comparable history', () => {
+    const r = estimate();
+    r.explanation.evidence = { ...evidence(80), unavailable: ['neighbour retrieval'] };
+    const d = formatTaskEstimate(r);
+    expect(d.provenance).toContain('unavailable');
+    expect(d.provenance).not.toContain('limited comparable history');
+  });
   test('no sources, too few samples, invalid or uselessly wide ranges suppress numbers', () => {
     const none = estimate(); none.explanation.sources = [];
     const sparse = estimate(); sparse.explanation.sources[0].n = 1;

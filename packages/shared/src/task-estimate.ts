@@ -59,10 +59,14 @@ export function formatTaskEstimate(r: TaskEstimatePayload): TaskEstimateDisplay 
   const upperMinutes = Math.max(lowerMinutes + step, Math.ceil((r.p80Minutes - 1e-6) / step) * step);
   const range = supported ? { lowerMinutes, upperMinutes } : null;
   const headline = !range ? 'Estimate unavailable' : lowerMinutes === 0 ? `Up to ${upperMinutes} min` : `About ${lowerMinutes}–${upperMinutes} min`;
-  const h = r.explanation.evidence?.history;
+  const evidence = r.explanation.evidence;
+  const h = evidence?.history;
+  const localUnavailable = evidence?.unavailable.some(s => s.startsWith('neighbour') || s === 'cluster evidence') ||
+    evidence?.neighbours.reason === 'unavailable' || evidence?.clusters.reason === 'unavailable';
   const provenance = !supported ? 'Not enough comparable evidence for a useful range.' : local.length > 0 ?
     (localN < 10 ? 'Based on limited comparable tasks in this repo.' : 'Based on comparable tasks in this repo.') :
     h?.completedWork === 0 ? 'Based on similar tasks across Buildd. Estimates will improve as this repo builds history.' :
+    localUnavailable ? 'Based on similar tasks across Buildd; comparable repo evidence was unavailable.' :
     h && h.completedWork > 0 ? 'Based on similar tasks across Buildd; limited comparable history in this repo.' :
     'Based on similar tasks across Buildd; comparable repo history is unavailable.';
   const tokens = supported && Number.isFinite(r.p50Tokens) && Number.isFinite(r.p80Tokens) && r.p50Tokens > 0 && r.p80Tokens >= r.p50Tokens ?

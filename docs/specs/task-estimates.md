@@ -355,7 +355,7 @@ summary strings are not a second source of display truth.
 | At least ten local samples and passed calibration | A rounded range; preserve the same range in expanded detail. |
 | Confirmed zero completed work tasks at cutoff | Similar tasks across Buildd; estimates improve as this repo builds history. |
 | Existing completed tasks but few comparable samples | Similar tasks across Buildd; limited comparable history in this repo. |
-| Legacy record or failed history query | History availability unknown; never infer zero from missing sources. |
+| Legacy record, failed history query or unavailable local source | Say comparable evidence is unavailable; never infer zero history or a lack of matching work from a read failure. |
 
 AC-20: The collapsed time row and expanded breakdown read one canonical display
 payload, including range, units, formatting version and estimator version. A
