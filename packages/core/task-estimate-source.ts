@@ -8,8 +8,9 @@
  * (`writeTaskEstimate`, scheduled by apps/web/src/lib/task-estimate-hook.ts).
  * Insert-only: a re-estimate is a new estimator version, never an update.
  *
- * Evidence, all cut off at the task's `createdAt` so nothing the task could
- * not have known at creation counts:
+ * Historical outcome evidence is cut off at the task's `createdAt`.
+ * The current task's recorded size decision is read at estimate freeze; diff
+ * paths come from the current ingestion corpus, not a historical snapshot:
  *
  * - neighbours: the completed tasks most similar to this one in the same
  *   workspace (`findNeighbourTasks`, the task-size estimate's retrieval), sized
@@ -25,7 +26,7 @@
  * Size bucket: the Jev S/M/L size-bucket decision is an inference call that
  * writes ledger rows, so it is never called from here. Its recorded verdict
  * (`orchestration_manifest_predictions.expected_size`, source 'jev') is read
- * when it exists; otherwise the bucket is null and the estimator falls back.
+ * when it exists at estimate freeze; otherwise the bucket is null and the estimator falls back.
  * History without a recorded bucket counts as 'M', the decision's own rule
  * verdict (the same floor the estimate backtest replays with).
  *
@@ -246,6 +247,7 @@ export function priorAggregateQuery(cutoff: Date): SQL {
                SELECT p.expected_size->>'bucket'
                  FROM orchestration_manifest_predictions p
                 WHERE p.task_id = t.id AND p.expected_size->>'source' = 'jev'
+                  AND p.created_at < ${at}::timestamptz
                 ORDER BY p.created_at DESC
                 LIMIT 1
              ), 'M') AS bucket
@@ -391,14 +393,14 @@ export async function loadClusterModel(workspaceId: string, cutoff: Date, onCuto
       .where(and(inArray(workers.taskId, ids), eq(workers.status, 'completed'), isNotNull(workers.startedAt), lt(workers.completedAt, cutoff)));
     sessions.push(...(part as ReplaySession[]));
   }
-  const [files, repairs] = await Promise.all([loadDiffFiles(history), loadRepairCounts(history.map(t => t.id))]);
+  const [files, repairs] = await Promise.all([loadDiffFiles(history), loadRepairCounts(history.map(t => t.id), { asOf: cutoff })]);
   const model = deriveClusters(buildClusterTasks(history, sessions, files, repairs, { asOf: cutoff }), { asOf: cutoff });
   clusterCache.set(workspaceId, { at: Date.now(), cutoff: cutoff.getTime(), model });
   onCutoff?.(cutoff);
   return model;
 }
 
-/** The size-bucket decision's recorded verdict for this task, if one exists yet. Never calls the decision. */
+/** The current task's verdict available at estimate freeze (not historical outcome evidence). Never calls the decision. */
 async function loadRecordedBucket(taskId: string): Promise<SizeBucket | null> {
   const rows = await db
     .select({ expectedSize: orchestrationManifestPredictions.expectedSize })
@@ -522,6 +524,7 @@ export async function loadEstimateInputs(task: EstimateTask, deps: LoadEstimateI
     loadTaskEstimateK0(),
   ]);
 
+  evidence.bucket = { value: bucket, timing: 'estimate_freeze' };
   if (evidence.unavailable.includes('neighbour retrieval') || evidence.unavailable.includes('neighbour sessions')) evidence.neighbours.reason = 'unavailable';
   if (evidence.unavailable.includes('cluster evidence')) evidence.clusters.reason = 'unavailable';
   return { kind, bucket, neighbours, clusters, prior, k0, evidence };

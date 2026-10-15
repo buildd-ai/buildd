@@ -352,7 +352,7 @@ summary strings are not a second source of display truth.
 | --- | --- |
 | No usable source, invalid quantiles, fewer than three contributing samples, or a spread above 20x | No numeric forecast; say that there is insufficient comparable evidence. |
 | Prior only, sparse local evidence, or calibration not passed for this version | About a broad range rounded outward in steps of at least five minutes; no point estimate. |
-| Sufficient local evidence and passed calibration | A rounded range; preserve the same range in expanded detail. |
+| At least ten local samples and passed calibration | A rounded range; preserve the same range in expanded detail. |
 | Confirmed zero completed work tasks at cutoff | Similar tasks across Buildd; estimates improve as this repo builds history. |
 | Existing completed tasks but few comparable samples | Similar tasks across Buildd; limited comparable history in this repo. |
 | Legacy record or failed history query | History availability unknown; never infer zero from missing sources. |
@@ -367,7 +367,11 @@ AC-21: Freeze evidence at task creation: total earlier repo tasks, completed wor
 tasks, eligible tasks with usable completed-session actuals, exclusions, retrieved
 neighbours, contributing neighbours, available clusters, contributing cluster
 sample count, source failures, sources/weights and actual cached model cutoffs
-(which may precede the task cutoff by the model cache TTL). Neighbour and cluster counts
+(which may precede the task cutoff by the model cache TTL). The current task
+size decision is read at estimate freeze and labeled that way; historical
+size decisions and repair attempts are bounded by the history cutoff. Diff
+ingestion is read when evidence loads, not replayed from a historical index
+snapshot, so a later reconstruction must disclose that limitation. Neighbour and cluster counts
 can overlap and must not be added as a unique task count. No role, model or
 recency filter is implied when none exists. Legacy diagnostics are unknown,
 not retroactively reconstructed as if frozen. Test: task-estimate-source.test.ts.

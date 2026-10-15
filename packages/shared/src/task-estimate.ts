@@ -6,6 +6,7 @@ export interface TaskEstimateEvidence {
   clusters: { available: number; used: number; reason: string | null };
   unavailable: string[];
   modelCutoffs?: { prior: string | null; clusters: string | null };
+  bucket?: { value: string | null; timing: 'estimate_freeze' };
 }
 export interface TaskEstimateExplanationPayload {
   sources: Array<{ source: 'neighbours' | 'clusters' | 'prior'; n: number; weight: number }>;
