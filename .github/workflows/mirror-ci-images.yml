@@ -23,9 +23,10 @@ name: Mirror CI images
 # Tags match the upstream tags the jobs used before (postgres:17, ubuntu:26.04),
 # refreshed weekly so the mirror tracks upstream patch releases. Each copy is a
 # server-side manifest copy (docker buildx imagetools create): every platform,
-# same digests as upstream. Sources are tried in order, ECR Public then Docker
-# Hub, so one registry being limited does not stop the refresh. A failed refresh
-# leaves the previous mirror tag in place.
+# with the same per-platform manifests and layers as upstream (the top-level
+# index digest differs, because the copy adds a source annotation). Sources are
+# tried in order, ECR Public then Docker Hub, so one registry being limited does
+# not stop the refresh. A failed refresh leaves the previous mirror tag in place.
 #
 # Adding an image: add a matrix row here, then point the job at
 # ghcr.io/buildd-ai/ci-mirror/<name>:<tag>. scripts/ci/pull-image.test.ts checks
@@ -35,9 +36,11 @@ on:
   schedule:
     - cron: '17 4 * * 1' # weekly, Monday 04:17 UTC
   workflow_dispatch:
-  # Seeds the mirror from the branch that changes this file, before the jobs
-  # that read it need it (workflow_dispatch only works once the file is on dev).
+  # Re-seeds the mirror when this file changes on dev. Only dev: a push from any
+  # other branch would run that branch's copy of this file with packages: write
+  # and could overwrite the shared tags every other job pulls.
   push:
+    branches: [dev]
     paths:
       - '.github/workflows/mirror-ci-images.yml'
 

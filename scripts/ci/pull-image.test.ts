@@ -127,4 +127,11 @@ describe('workflows use the GHCR mirror', () => {
     expect(targets).toContain(GHCR);
     expect(targets).toContain('ghcr.io/buildd-ai/ci-mirror/ubuntu:26.04');
   });
+
+  test('only dev can push-trigger the mirror, so no other branch can overwrite the shared tags', () => {
+    // It runs with packages: write. A push from any other branch would run that branch's own copy.
+    expect(mirror.on.push?.branches).toEqual(['dev']);
+    expect('pull_request' in mirror.on).toBe(false);
+    expect('pull_request_target' in mirror.on).toBe(false);
+  });
 });
