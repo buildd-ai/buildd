@@ -15,6 +15,11 @@ let sweepRows: Array<{ id: string; prUrl: string }> = [];
 let workerQueue: any[] = [];
 /** A GitHub path that never answers: it settles only when the caller's AbortSignal fires. */
 const STALL = Symbol('stall');
+/** A GitHub answer that takes `ms` to arrive (and is abandoned like fetch if the signal fires first). */
+const slow = (ms: number, value: any) => ({ [SLOW]: ms, value });
+const SLOW = Symbol('slow');
+/** When each GitHub call was made, for "nothing runs after the scan returned". */
+const ghCallTimes: number[] = [];
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -33,6 +38,7 @@ mock.module('@buildd/core/db', () => ({
 mock.module('@/lib/github', () => ({
   githubApi: mock((_inst: number, path: string, options: RequestInit = {}) => {
     ghCalls.push(path);
+    ghCallTimes.push(Date.now());
     const m = path.match(/^\/repos\/([^/]+\/[^/]+)(\/.*)$/);
     const repo = m?.[1] ?? '';
     const rest = (m?.[2] ?? '').replace(/\?.*$/, '');
@@ -44,6 +50,14 @@ mock.module('@/lib/github', () => ({
         if (!sig) return;
         if (sig.aborted) return reject(sig.reason);
         sig.addEventListener('abort', () => reject(sig.reason), { once: true });
+      });
+    }
+    if (v && typeof v === 'object' && SLOW in v) {
+      return new Promise((resolve, reject) => {
+        const sig = options.signal;
+        const t = setTimeout(() => resolve(v.value), v[SLOW]);
+        if (sig?.aborted) { clearTimeout(t); return reject(sig.reason); }
+        sig?.addEventListener('abort', () => { clearTimeout(t); reject(sig.reason); }, { once: true });
       });
     }
     if (v === undefined) return Promise.reject(new Error(`GitHub API error: 404 ${path}`));
@@ -73,7 +87,7 @@ const DOC_LINES = [
 const patch = (...lines: string[]) => ['@@ -0,0 +1 @@', ...lines.map(l => `+${l}`)].join('\n');
 
 function closedPr(repo: string, n: number, over: Record<string, any> = {}) {
-  gh[`${repo}/pulls/${n}`] = { number: n, merged: false, state: 'closed', body: '', created_at: '2026-09-01T00:00:00Z', commits: 2, ...over };
+  gh[`${repo}/pulls/${n}`] = { number: n, merged: false, state: 'closed', body: '', created_at: '2026-09-01T00:00:00Z', commits: 2, head: { sha: `head${n}` }, ...over };
   gh[`${repo}/issues/${n}/comments`] = [];
   gh[`${repo}/issues/${n}/timeline`] = [];
 }
@@ -88,6 +102,7 @@ function mergedPr(repo: string, n: number, files: any[], over: Record<string, an
 beforeEach(() => {
   gh = {};
   ghCalls.length = 0;
+  ghCallTimes.length = 0;
   scanWrites.length = 0;
   recordCalls.length = 0;
   gateEvents.length = 0;
@@ -329,7 +344,7 @@ describe('the sweep is bounded: a stalled GitHub call times out, the pass stops 
     expect(gateEvents[0]).toMatchObject({ outcome: 'stranded', detail: expect.objectContaining({ kind: 'github_timeout_deferral_exhausted' }) });
   });
 
-  it('the sweep stops at its own budget: the row in flight defers, the rest are left untouched for the next tick, oldest first', async () => {
+  it('the sweep stops at its own budget: the row in flight defers, the rest are left untouched for the next tick', async () => {
     claims(9);
     gh['org/kb/pulls/9'] = STALL;
     sweepRows = [
@@ -341,8 +356,8 @@ describe('the sweep is bounded: a stalled GitHub call times out, the pass stops 
     expect(Date.now() - t0).toBeLessThan(1_000);
     expect(r).toMatchObject({ candidates: 2, deferred: 1, budgetStopped: 1, suggested: 0, none: 0, skipped: 0 });
     expect(stamped()).toEqual([]);
-    // Nothing is counted against the row: running out of pass time is not that PR's fault.
-    expect(scanWrites.every(w => w.supersessionScan?.deferral == null)).toBe(true);
+    // Only the row in flight was written; the one never started is untouched.
+    expect(scanWrites).toHaveLength(1);
     // Per-PR timing: the slow one is named.
     expect(r.prs).toHaveLength(1);
     expect(r.prs[0]).toMatchObject({ pr: 'org/kb#6', outcome: 'deferred' });
@@ -367,15 +382,17 @@ describe('the sweep is bounded: a stalled GitHub call times out, the pass stops 
 
 describe('a candidate pair judged within the rescan window is not verified again', () => {
   const now = new Date('2026-10-15T08:10:00Z');
-  const judged = (at: Date) => ({ repo: 'org/kb', prNumber: 2558, prUrl: 'https://github.com/org/kb/pull/2558', verified: false, confidence: 0.4, at: at.toISOString() });
+  const judged = (at: Date, over: Record<string, unknown> = {}) => ({ repo: 'org/kb', prNumber: 2558, prUrl: 'https://github.com/org/kb/pull/2558', verified: false, confidence: 0.4, at: at.toISOString(), closedHeadSha: 'head6', mergeCommitSha: 'sha2558', ...over });
+  const recent = () => new Date(now.getTime() - 60 * 60_000);
 
-  it('reuses the stored verdict: no GitHub reads for that candidate, and the same suggestion', async () => {
+  it('reuses the stored verdict: only the candidate PR is read (to check its merge commit), and the same suggestion', async () => {
     gh['org/kb/issues/6/comments'] = [{ body: 'superseded by #2558' }];
-    // Not on the fake GitHub at all: a read would 404 and drop the candidate.
-    workerRow = { ...workerRow, supersessionScan: { scannedAt: 'x', candidatesChecked: 1, suggestion: null, judged: [judged(new Date(now.getTime() - 60 * 60_000))] } };
+    // The PR itself, but not its files: a files read would 404 and the content check would score 0.
+    gh['org/kb/pulls/2558'] = { number: 2558, merged: true, merge_commit_sha: 'sha2558', html_url: 'https://github.com/org/kb/pull/2558', commits: 50 };
+    workerRow = { ...workerRow, supersessionScan: { scannedAt: 'x', candidatesChecked: 1, suggestion: null, judged: [judged(recent())] } };
     const r = await detectPrSupersession({ workerId: 'w-6', via: 'sweep', now });
     expect(r.outcome).toBe('suggested');
-    expect(ghCalls.some(p => p.startsWith('/repos/org/kb/pulls/2558'))).toBe(false);
+    expect(ghCalls.filter(p => p.startsWith('/repos/org/kb/pulls/2558'))).toEqual(['/repos/org/kb/pulls/2558']);
     expect(scanWrites.at(-1).supersessionScan.suggestion).toMatchObject({ prNumber: 2558 });
     expect(scanWrites.at(-1).supersessionScan.suggestion.why).toContain('40%');
   });
@@ -385,15 +402,132 @@ describe('a candidate pair judged within the rescan window is not verified again
     mergedPr('org/kb', 2558, [{ filename: 'x.ts', status: 'added', patch: patch('nothing in common here') }]);
     workerRow = { ...workerRow, supersessionScan: { scannedAt: 'x', candidatesChecked: 1, suggestion: null, judged: [judged(new Date(now.getTime() - RESCAN_AFTER_MS - 60_000))] } };
     await detectPrSupersession({ workerId: 'w-6', via: 'sweep', now });
-    expect(ghCalls).toContain('/repos/org/kb/pulls/2558');
+    expect(ghCalls).toContain('/repos/org/kb/pulls/2558/files?per_page=100');
   });
+
+  for (const [what, over] of [['the closed PR was pushed to since', { closedHeadSha: 'older-head' }], ['the candidate\'s merge commit differs', { mergeCommitSha: 'other' }]] as const) {
+    it(`a stored verdict is not reused when ${what}`, async () => {
+      gh['org/kb/issues/6/comments'] = [{ body: 'superseded by #2558' }];
+      mergedPr('org/kb', 2558, [{ filename: 'x.ts', status: 'added', patch: patch('nothing in common here') }]);
+      workerRow = { ...workerRow, supersessionScan: { scannedAt: 'x', candidatesChecked: 1, suggestion: null, judged: [judged(recent(), over)] } };
+      await detectPrSupersession({ workerId: 'w-6', via: 'sweep', now });
+      expect(ghCalls).toContain('/repos/org/kb/pulls/2558/files?per_page=100');
+    });
+  }
 
   it('a finished scan stores what it judged, so the next pass inside the window can reuse it', async () => {
     gh['org/kb/issues/6/comments'] = [{ body: 'superseded by #2558' }];
     mergedPr('org/kb', 2558, [{ filename: 'x.ts', status: 'added', patch: patch('nothing in common here') }]);
     await detectPrSupersession({ workerId: 'w-6', via: 'sweep', now });
     expect(scanWrites.at(-1).supersessionScan.judged).toEqual([
-      expect.objectContaining({ repo: 'org/kb', prNumber: 2558, verified: false, at: now.toISOString() }),
+      expect.objectContaining({ repo: 'org/kb', prNumber: 2558, verified: false, at: now.toISOString(), closedHeadSha: 'head6', mergeCommitSha: 'sha2558' }),
     ]);
+  });
+});
+
+/** Review of #4822: what the first round of this fix still let through. */
+describe('review findings: the queue rotates, a timeout stays a timeout, nothing runs after return', () => {
+  const claims = (...ns: number[]) => { gh['org/kb/issues/6/comments'] = ns.map(n => ({ body: `superseded by #${n}` })); };
+  const stamped = () => scanWrites.filter(w => 'supersessionScannedAt' in w);
+
+  it('the first row of a sweep that alone spent the budget counts toward the cap: it had the whole budget', async () => {
+    claims(9);
+    gh['org/kb/pulls/9'] = STALL;
+    sweepRows = [{ id: 'w-6', prUrl: 'https://github.com/org/kb/pull/6' }];
+    const now = new Date('2026-10-15T08:10:00Z');
+    await sweepClosedUnsupersededPrs(now, { budgetMs: 60, requestTimeoutMs: 10_000 });
+    expect(stamped()).toEqual([]);
+    const scan = scanWrites.at(-1).supersessionScan;
+    expect(scan.deferral).toMatchObject({ count: 1 });
+    expect(scan.deferral.reason).toContain('time budget');
+    expect(scan.lastAttemptAt).toBe(now.toISOString());
+  });
+
+  it('a later row the budget cut off is not counted, but its attempt is recorded so the queue rotates past it', async () => {
+    closedPr('org/kb', 7);
+    gh['org/kb/pulls/7/files'] = [{ filename: 'x.md', status: 'added', patch: patch('nothing') }];
+    gh['org/kb/pulls/7'] = slow(10, gh['org/kb/pulls/7']);
+    claims(9);
+    gh['org/kb/pulls/9'] = STALL;
+    workerQueue = [{ ...workerRow, id: 'w-7', prUrl: 'https://github.com/org/kb/pull/7', prNumber: 7 }, workerRow];
+    sweepRows = [
+      { id: 'w-7', prUrl: 'https://github.com/org/kb/pull/7' },
+      { id: 'w-6', prUrl: 'https://github.com/org/kb/pull/6' },
+    ];
+    const now = new Date('2026-10-15T08:10:00Z');
+    const r = await sweepClosedUnsupersededPrs(now, { budgetMs: 80, requestTimeoutMs: 10_000 });
+    expect(r.prs.map((p: any) => `${p.pr}:${p.outcome}`)).toEqual(['org/kb#7:none', 'org/kb#6:deferred']);
+    const w6 = scanWrites.at(-1).supersessionScan;
+    expect(w6.deferral ?? null).toBeNull();
+    expect(w6.lastAttemptAt).toBe(now.toISOString());
+  });
+
+  it('a timeout is not relabelled a budget stop: no GitHub call after it, and it counts toward the cap', async () => {
+    claims(9);
+    mergedPr('org/kb', 9, [], { commits: 3 });
+    gh['org/kb/pulls/9/files'] = STALL;
+    gh['org/kb/pulls/6/commits'] = STALL;
+    gh['org/kb/pulls/9/commits'] = STALL;
+    const r = await detectPrSupersession({ workerId: 'w-6', via: 'sweep', limits: { requestTimeoutMs: 40, budget: AbortSignal.timeout(70) } });
+    expect(r.outcome).toBe('deferred');
+    expect(ghCalls.some(p => p.includes('/commits'))).toBe(false);
+    expect(scanWrites.at(-1).supersessionScan.deferral).toMatchObject({ count: 1 });
+    expect(scanWrites.at(-1).supersessionScan.deferral.reason).toContain('GitHub request');
+  });
+
+  it('no GitHub call is made after the scan returns: the other side of the patch-id read is abandoned too', async () => {
+    claims(9);
+    mergedPr('org/kb', 9, [{ filename: 'apps/x.ts', status: 'modified', patch: patch('unrelated line here') }], { commits: 3 });
+    const shas = ['a', 'b', 'c', 'd', 'e', 'f'];
+    gh['org/kb/pulls/6/commits'] = shas.map(sha => ({ sha, parents: [{ sha: 'p' }] }));
+    for (const sha of shas) gh[`org/kb/commits/${sha}`] = slow(30, { files: [] });
+    gh['org/kb/pulls/9/commits'] = STALL;
+    await detectPrSupersession({ workerId: 'w-6', via: 'sweep', limits: { requestTimeoutMs: 40 } });
+    const returnedAt = Date.now();
+    await new Promise(res => setTimeout(res, 250));
+    expect(ghCallTimes.filter(t => t > returnedAt)).toEqual([]);
+  });
+
+  it('with no limits at all (the webhook door), a read still running when the scan returns is abandoned', async () => {
+    claims(9);
+    mergedPr('org/kb', 9, [{ filename: 'apps/x.ts', status: 'modified', patch: patch('unrelated line here') }], { commits: 3 });
+    const shas = ['a', 'b', 'c', 'd', 'e', 'f'];
+    gh['org/kb/pulls/6/commits'] = shas.map(sha => ({ sha, parents: [{ sha: 'p' }] }));
+    for (const sha of shas) gh[`org/kb/commits/${sha}`] = slow(30, { files: [] });
+    // The candidate's side fails outright (not a timeout): Promise.all rejects, the closed side's loop is left running.
+    const r = await detectPrSupersession({ workerId: 'w-6', via: 'webhook' });
+    expect(r.outcome).toBe('suggested');
+    const returnedAt = Date.now();
+    await new Promise(res => setTimeout(res, 250));
+    expect(ghCallTimes.filter(t => t > returnedAt)).toEqual([]);
+  });
+
+  it('a first scan cut short leaves no finished-scan time, so the PR still reads as reconciling', async () => {
+    claims(9);
+    gh['org/kb/pulls/9'] = STALL;
+    await detectPrSupersession({ workerId: 'w-6', via: 'sweep', limits: { requestTimeoutMs: 40 } });
+    expect(scanWrites.at(-1).supersessionScan.scannedAt || null).toBeNull();
+  });
+
+  it('a comments read timing out with no other candidate defers: never marked none', async () => {
+    gh['org/kb/issues/6/comments'] = STALL;
+    const r = await detectPrSupersession({ workerId: 'w-6', via: 'sweep', limits: { requestTimeoutMs: 40 } });
+    expect(r.outcome).toBe('deferred');
+    expect(stamped()).toEqual([]);
+  });
+
+  it('an overlap read timing out defers: never marked none', async () => {
+    gh['org/kb/pulls'] = STALL;
+    const r = await detectPrSupersession({ workerId: 'w-6', via: 'sweep', limits: { requestTimeoutMs: 40 } });
+    expect(r.outcome).toBe('deferred');
+    expect(stamped()).toEqual([]);
+  });
+
+  it('an overlap file-list read timing out defers: never marked none', async () => {
+    gh['org/kb/pulls'] = [{ number: 20, merged_at: '2026-09-05T00:00:00Z' }];
+    gh['org/kb/pulls/20/files'] = STALL;
+    const r = await detectPrSupersession({ workerId: 'w-6', via: 'sweep', limits: { requestTimeoutMs: 40 } });
+    expect(r.outcome).toBe('deferred');
+    expect(stamped()).toEqual([]);
   });
 });

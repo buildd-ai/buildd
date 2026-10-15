@@ -121,6 +121,7 @@ export interface SupersessionSuggestion {
  * verified one is written as a real edge instead and never lands here.
  */
 export interface SupersessionScan {
+  /** When a scan last finished. Empty while the first scan has been deferred and never finished. */
   scannedAt: string;
   candidatesChecked: number;
   suggestion: SupersessionSuggestion | null;
@@ -137,7 +138,9 @@ export interface SupersessionScan {
    * Merged candidates already content-checked, and their verdicts. A run inside the rescan window
    * reuses them instead of reading GitHub again (apps/web/src/lib/pr-supersession-detect.ts).
    */
-  judged?: Array<{ repo: string; prNumber: number; prUrl: string; verified: boolean; method?: 'patch-id' | 'content'; confidence: number; at: string }>;
+  judged?: Array<{ repo: string; prNumber: number; prUrl: string; verified: boolean; method?: 'patch-id' | 'content'; confidence: number; at: string; closedHeadSha?: string; mergeCommitSha?: string }>;
+  /** When a scan last started and did not finish (deferred): orders the sweep's queue. */
+  lastAttemptAt?: string;
 }
 
 /** True when the row has a PR and that PR's work shipped (merged or superseded). */
