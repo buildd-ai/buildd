@@ -2493,6 +2493,16 @@ workflow `gh pr merge` exists.
 | D11 | Policy-rule merge | `workflow/seam.ts` `policyMergeThroughKernel` → `PolicyMergeApproved` → D3/D1 | escalation gate `policy_merge` (`packages/core/escalation-gate.ts`, `merge-policy-rule-executor.ts`) | creates the approval. Lifts `review_exhausted`. Mission ship PRs are excluded |
 | D12 | Manual merge on GitHub | — | a person's account, UI or CLI | **none: nothing buildd publishes is required** (rule 7). This is the #4686 door |
 | D13 | Agent self-merge | — | local runner Bash (only `gh pr merge` denied, `apps/runner/src/pr-mutation-enforcement.ts`), cloud runner egress (REST and GraphQL merge blocked, `apps/cloud-runner/src/outbound.ts`) | deny lists, not a gate |
+| D14 | Living Spec generated repo copy | `lib/specs/repo-copy.ts` `landSpecRepoCopy` (pinned with `sha`) | `check_suite` success on a spec's generated PR | only the generator's own commit at the approved revision (living-specs R-35); not a kernel delivery |
+
+**S3b (workflow-kernel-library.md §4):** D1 now asks the gate when it runs (fresh read,
+review half, rails port; AC-14); D4 refuses with no workspace; D5 `force` keeps the
+review verdict; D7 lands a kernel PR through the kernel; D8–D10 take the review gate and
+merge only the verified head (`release/pinned-merge.ts`, AC-16); D11's policy-rule
+approval passes an escalation, never an open request for changes, at merge time; D12 is
+recorded as an external merge with a trunk fix filed once (AC-15) and is what
+`buildd/landing` exists to stop once trunk requires it; D13 is unchanged (deny lists).
+The inventory is held to the code by `apps/web/src/lib/workflow/merge-door-inventory.test.ts`.
 
 Branch-to-branch merges that do not go through a PR (`release-executor.ts` `POST
 /merges`, `mission-branch-refresh.ts`, `scripts/sync-dev.sh`, `release-refresh.yml`)

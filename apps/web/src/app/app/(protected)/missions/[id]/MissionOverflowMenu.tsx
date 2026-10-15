@@ -5,6 +5,7 @@ import SideSheet from '@/components/SideSheet';
 import MissionSettings, { type CompletionDecisionInfo } from './MissionSettings';
 import { VisualReviewSheetBody } from './MissionVisualReviewAction';
 import type { MissionDisplayState } from '@/lib/mission-helpers';
+import type { LivingSpecGoalCriterion } from '@buildd/shared';
 
 interface Props {
   missionId: string;
@@ -18,6 +19,8 @@ interface Props {
   displayState: MissionDisplayState;
   hasPrimaryAction?: boolean;
   executor?: 'runner' | 'local' | null;
+  /** The mission's selected outcome specs; null hides the picker. */
+  outcomeSpecs?: LivingSpecGoalCriterion[] | null;
   /** What Complete needs decided first (visual audit, unmet criteria); null on a finished mission. */
   completionDecision?: CompletionDecisionInfo | null;
   /** The mission's settings (workspace, schedule, backend, merge policy…), below the actions. */

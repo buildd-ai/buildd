@@ -30,6 +30,7 @@ import {
 } from '@/lib/auto-merge-bound';
 import {
   isPassingCheckRun,
+  isFailingCheckRun,
   isPassingStatus,
   listAllCheckRuns,
   listAllCommitStatuses,
@@ -41,6 +42,7 @@ import {
 import { classifyReleasePr } from '@buildd/core/release-candidate';
 import type { WorkspaceReleaseConfig } from '@buildd/core/db/schema';
 import { guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
+import { LANDING_STATUS_CONTEXT } from '@buildd/workflow-kernel/landing-gate';
 import { guardReviewVerdict } from '@/lib/review-verdict-gate';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
@@ -203,6 +205,13 @@ export async function evaluateAutoMergeSafety(
      */
     skipBaseFreshness?: boolean;
     /**
+     * A person's own merge, read again at merge time (the kernel's `merge_call` for a person's
+     * door): only the rails a person has always merged under apply, CI and protected paths and
+     * the PR's own state. The semantic hold, the migration inspector and the size cap are the
+     * unattended merge's stand-ins for judgment, and a person is the judgment.
+     */
+    personDecides?: boolean;
+    /**
      * The workspace gitConfig, for the post-refresh semantic hold
      * (base-refresh.ts `checkBaseRefreshHold`). Every merge door passes it;
      * omitted, or with `semanticRefresh` off, the hold makes no read.
@@ -235,7 +244,9 @@ export async function evaluateAutoMergeSafety(
       };
     }
 
-    const pendingOrFailed = checkRuns.filter((r) => !isPassingCheckRun(r));
+    // A person may merge on pending CI (the dashboard always could), never on red: for a
+    // person's merge only a finished, failing run refuses here.
+    const pendingOrFailed = checkRuns.filter((r) => (opts?.personDecides ? isFailingCheckRun(r) : !isPassingCheckRun(r)));
     if (pendingOrFailed.length > 0) {
       return {
         ok: false,
@@ -248,7 +259,10 @@ export async function evaluateAutoMergeSafety(
     // CI that reports through the Statuses API (Jenkins, CircleCI, Buildkite,
     // Vercel contexts) never creates check runs.
     const statuses = await listAllCommitStatuses(githubApi, installationId, repoFullName, headSha);
-    const notPassing = statuses.items.filter((st) => !isPassingStatus(st));
+    // buildd's own `buildd/landing` status is the kernel's verdict, published from
+    // what this merge decides (workflow-kernel-library.md §4): never CI to wait on.
+    const notPassing = statuses.items.filter((st) => st.context !== LANDING_STATUS_CONTEXT
+      && (opts?.personDecides ? st.state === 'failure' || st.state === 'error' : !isPassingStatus(st)));
     if (!statuses.complete || notPassing.length > 0) {
       return {
         ok: false,
@@ -290,7 +304,7 @@ export async function evaluateAutoMergeSafety(
   // can merge in base commits that landed after its semantic verdict. Under
   // enforce the PR waits here until that arrived range is re-verified. Only
   // consulted once CI is green, and makes no read when the check is off.
-  const hold = await checkBaseRefreshHold({
+  const hold = opts?.personDecides ? { blocks: false as const, reason: '' } : await checkBaseRefreshHold({
     installationId,
     repoFullName,
     prNumber,
@@ -365,7 +379,7 @@ export async function evaluateAutoMergeSafety(
   const hasMigrationOrSchema = files.some(
     (f) => isGeneratedMigrationPath(f.filename) || f.filename === 'packages/core/db/schema.ts',
   );
-  if (hasMigrationOrSchema) {
+  if (hasMigrationOrSchema && !opts?.personDecides) {
     const migrationSafety = await inspectPullRequestMigrations({
       installationId,
       repoFullName,
@@ -416,7 +430,7 @@ export async function evaluateAutoMergeSafety(
   // doc comment). `agent-review` and `human` never reach this block, so a
   // workspace on either tier cannot inherit the 800-line default just
   // because `policy.threshold` happened to be unset.
-  if (policy.tier === 'auto-threshold') {
+  if (policy.tier === 'auto-threshold' && !opts?.personDecides) {
     // Is this a task PR into its own mission's integration branch
     // (task branch → integration branch)?
     //
@@ -784,7 +798,25 @@ export async function tryAutoMergeWorkerPr(params: {
   // No override here by construction: nothing unattended may bypass a verdict.
   // A human override lives on the dashboard route, where a person is present.
   const reviewWorkspaceId = await workspaceIdOnce();
-  if (reviewWorkspaceId) {
+  if (!reviewWorkspaceId) {
+    // D4 (workflow-kernel-library.md §4): the review gate is never skipped. With no
+    // workspace to read the verdict in, there is no verdict to rely on: nothing merges.
+    const reason = 'no workspace resolves for this PR, so its review verdict cannot be read; nothing was merged';
+    console.log(`Auto-merge blocked for ${repoFullName}#${prNumber}: ${reason}`);
+    fireGateEvent({
+      gate: GATE_SLUGS.REVIEW_VERDICT,
+      surface: 'auto-merge',
+      outcome: 'rejected',
+      reason,
+      workspaceId: null,
+      taskId: worker.taskId ?? null,
+      workerId: worker.id ?? null,
+      callerOrigin: 'system',
+      detail: { prNumber, headSha, repoFullName, reasonClass: 'no_workspace' },
+    });
+    return { merged: false, reason };
+  }
+  {
     const reviewGate = await guardReviewVerdict({
       workspaceId: reviewWorkspaceId,
       prNumber,

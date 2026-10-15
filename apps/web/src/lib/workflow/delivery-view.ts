@@ -189,6 +189,29 @@ WHERE d.authority = 'kernel' AND ${workspaceKernelOnSql(sql`d.workspace_id`)}
 }
 
 /**
+ * The merge commit of each merged delivery the given tasks own, for a
+ * mission's integrated target on a direct mission (lib/specs/mission-outcome.ts:
+ * a verdict holds only at a commit containing every one). Any authority: a
+ * merge recorded on a legacy-owned delivery is still a merge. A null
+ * `mergeCommitSha` is returned as null, never dropped: the caller must not
+ * read an unknown merge as contained. A SELECT; throws on a read failure.
+ */
+export async function mergedDeliveryCommits(
+  taskIds: string[],
+  exec: Exec = dbExec,
+): Promise<Array<{ ownerTaskId: string; mergeCommitSha: string | null }>> {
+  const ids = [...new Set(taskIds.filter(Boolean))];
+  if (ids.length === 0) return [];
+  const res = await exec(sql`-- workflow:merged_delivery_commits
+SELECT d.owner_task_id AS "ownerTaskId", d.merge_commit_sha AS "mergeCommitSha"
+FROM workflow_deliveries d
+WHERE d.state = 'MERGED'
+  AND d.owner_task_id IN (SELECT x::uuid FROM jsonb_array_elements_text(${JSON.stringify(ids)}::jsonb) x)`);
+  return ((res.rows ?? []) as Array<{ ownerTaskId: unknown; mergeCommitSha: unknown }>).flatMap(r =>
+    typeof r.ownerTaskId === 'string' ? [{ ownerTaskId: r.ownerTaskId, mergeCommitSha: typeof r.mergeCommitSha === 'string' && r.mergeCommitSha ? r.mergeCommitSha : null }] : []);
+}
+
+/**
  * Each workspace PR's delivery state and merge time, for the path-overlap
  * incident reconcile (lib/failure-pattern-sweep.ts): has the blocker landed?
  * Any authority: a merge recorded on a legacy-owned delivery is still a merge.

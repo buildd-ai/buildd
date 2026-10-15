@@ -5,7 +5,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   NO_MISSION, currentWorkspace, cycleWorkspace, eventChangesQueue, failureReason, isOrganizerTask, missionRows,
-  planOf, reduce, taskRows, waitingReason, workspaceSummary, type TopState, type TopTask,
+  missionStageLine, missionStageWord, planOf, reduce, taskRows, teamCount, waitingReason, workspaceList, workspaceSummary, type TopState, type TopTask,
 } from '../../src/top/state';
 import { NOW, TASKS, WORKERS, fixtureState } from './top-fixture';
 
@@ -79,6 +79,28 @@ describe('missions pane (R-2)', () => {
     expect(missionRows(s).find(r => r.key === mission.id)).toMatchObject({ done: 7, total: 9 });
     // A server without the field: the local count stands.
     expect(missionRows(s).find(r => r.title === 'Runner TUI')).toMatchObject({ done: 2, total: 8 });
+  });
+
+  test('a mission carries the server\'s stage (R-18); without it there is none', () => {
+    const stage = { step: 'verifying' as const, waitingOn: 'Unit tests pass: not checked' };
+    const mission = { id: 'm-stage-0000-0000', title: 'Staged', isHeld: false, executor: 'runner', stage };
+    const s = reduce(fixtureState(), { type: 'tasks', tasks: [...TASKS, { id: 't-s1', title: 'staged a', status: 'pending', missionId: mission.id, mission }] });
+    const row = missionRows(s).find(r => r.key === mission.id)!;
+    expect(row.stage).toEqual(stage);
+    expect(missionStageWord(row)).toBe('verifying');
+    expect(missionStageLine(row)).toBe('verifying: Unit tests pass: not checked');
+    const plain = missionRows(s).find(r => r.title === 'Runner TUI')!;
+    expect(plain.stage ?? null).toBeNull();
+    expect(missionStageWord(plain)).toBeNull();
+    expect(missionStageLine(plain)).toBeNull();
+  });
+
+  test('stage words are the rail\'s: on hold in two words, no waiting-on line when there is none', () => {
+    const row = (step: any, waitingOn: string | null = null) => ({ key: 'm', title: 'M', done: 0, total: 0, running: 0, planning: false, stage: { step, waitingOn } });
+    expect(missionStageWord(row('on_hold'))).toBe('on hold');
+    expect(missionStageLine(row('delivered'))).toBe('delivered');
+    expect(missionStageLine(row('delivering', 'approve the mission PR'))).toBe('delivering: approve the mission PR');
+    expect(missionStageLine(row('building', '3 of 5 landed'))).toBe('building: 3 of 5 landed');
   });
 
   test('(no mission) is there even with no loose tasks', () => {
@@ -253,6 +275,52 @@ describe('workspaces (R-19, AC-8)', () => {
     });
     expect(workspaceSummary(s)).toBe('3 workspaces');
     expect(currentWorkspace(cycleWorkspace(s))?.name).toBe('alpha');
+  });
+});
+
+describe('workspaces across teams (spec "One runner for every team you run", R-7)', () => {
+  // The server lists newest first, so one team's workspaces can be interleaved with another's.
+  const MIXED = [
+    { id: 'ws-1', name: 'one', teamId: 'team-a', teamName: 'Team A' },
+    { id: 'ws-2', name: 'two', teamId: 'team-b', teamName: 'Team B' },
+    { id: 'ws-3', name: 'three', teamId: 'team-a', teamName: 'Team A' },
+    { id: 'ws-4', name: 'four', teamId: 'team-b', teamName: 'Team B' },
+  ];
+  const mixed = (list: Array<Record<string, unknown>> = MIXED) => reduce(wsState(), { type: 'workspaces', workspaces: list as any });
+
+  test('the header counts teams when there are several', () => {
+    expect(workspaceSummary(mixed())).toBe('4 workspaces · 2 teams');
+    expect(teamCount(mixed())).toBe(2);
+  });
+
+  test('w steps through them grouped by team, teams in first-listed order', () => {
+    let s = mixed();
+    const seen: Array<string | null> = [];
+    for (let i = 0; i < 5; i++) {
+      s = cycleWorkspace(s);
+      seen.push(currentWorkspace(s)?.name ?? null);
+    }
+    expect(seen).toEqual(['one', 'three', 'two', 'four', null]);
+  });
+
+  test('a team name alone still groups and counts', () => {
+    const named = MIXED.map(({ teamId, ...w }) => w);
+    expect(workspaceSummary(mixed(named))).toBe('4 workspaces · 2 teams');
+    expect(workspaceList(mixed(named)).map(w => w.name)).toEqual(['one', 'three', 'two', 'four']);
+  });
+
+  test('without any team from the server: one group in list order and no team count, as before', () => {
+    const bare = MIXED.map(({ teamId, teamName, ...w }) => w);
+    const s = mixed(bare);
+    expect(workspaceSummary(s)).toBe('4 workspaces');
+    expect(teamCount(s)).toBe(0);
+    expect(workspaceList(s).map(w => w.name)).toEqual(['one', 'two', 'three', 'four']);
+  });
+
+  test('one team: list order is kept and the team is named', () => {
+    const one = MIXED.filter(w => w.teamId === 'team-a');
+    expect(workspaceList(mixed(one)).map(w => w.name)).toEqual(['one', 'three']);
+    expect(workspaceSummary(mixed(one))).toBe('2 workspaces · Team A');
   });
 });
 

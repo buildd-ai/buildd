@@ -1,7 +1,7 @@
 import { cache } from 'react';
 import { assertGrantedWorkspace, isGrantSession, type GrantScopedAccount } from './grant-scope';
 import { db } from '@buildd/core/db';
-import { teamMembers, workspaces, accountWorkspaces, teams, accounts } from '@buildd/core/db/schema';
+import { teamMembers, workspaces, teams, accounts } from '@buildd/core/db/schema';
 import { eq, and, or, inArray, sql } from 'drizzle-orm';
 import { QueryBuilder } from 'drizzle-orm/pg-core';
 import { isValidTimezone } from '@buildd/core/timezone';
@@ -10,6 +10,7 @@ import { isUuid } from './uuid';
 import { accountReachesWorkspace } from './workspace-reach';
 import { roleHas, type Permission, type TeamScopeCaller } from './permissions';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { readReachLink } from './granted-links';
 
 /**
  * Builds the two scope subqueries below without a db handle, so the predicate
@@ -119,21 +120,16 @@ export const verifyAccountWorkspaceAccess = cache(async (
   if (!workspace) return false;
 
   // The shared rule (lib/workspace-reach.ts): an open workspace of the
-  // account's own team, or an explicit link with the permission. Only an open
-  // workspace needs the account's team, so the account row is read only then.
-  if (workspace.accessMode === 'open') {
-    if (scopeAccount && accountReachesWorkspace(scopeAccount, workspace, null, permission)) return true;
-  }
-
-  const link = await db.query.accountWorkspaces.findFirst({
-    where: sqlWhere(and(
-      eq(accountWorkspaces.accountId, accountId),
-      eq(accountWorkspaces.workspaceId, workspaceId)
-    )),
-  });
-
-  // No team passed: arm 2 was settled above, so only the link can decide here.
-  return accountReachesWorkspace({ teamId: '' }, { teamId: workspace.teamId, accessMode: null }, link, permission);
+  // account's own team, or an explicit link with the permission. The link is
+  // read first: a person's pick whose grant no longer holds comes back
+  // `revoked` and is a deny even where the open arm would reach it.
+  const link = await readReachLink(accountId, workspaceId);
+  return accountReachesWorkspace(
+    { teamId: scopeAccount?.teamId ?? '', workspaceIds: scopeAccount?.workspaceIds ?? null },
+    workspace,
+    link,
+    permission,
+  );
 });
 
 export type { TeamScopeCaller };

@@ -1428,6 +1428,23 @@ describe('POST /api/tasks', () => {
     });
   });
 
+  // Living Specs Slice 12: the outcome-spec markers are the server's to write.
+  describe('outcome-spec markers (context.finalVerification, context.specRepair)', () => {
+    it('a person\'s or an API key\'s copy of either marker is dropped', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockAccountsFindFirst.mockResolvedValue(null);
+      mockResolveCreatorContext.mockResolvedValue({ createdByAccountId: 'user-account-123', createdByWorkerId: null, creationSource: 'dashboard', parentTaskId: null });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+      const seen: { values?: any } = {};
+      mockTasksInsert.mockReturnValue({ values: mock((values: any) => { seen.values = values; return { returning: mock(() => [{ id: 'task-m', workspaceId: 'ws-1', title: 't' }]) }; }) });
+      const res = await POST(createMockRequest({ method: 'POST', body: { workspaceId: 'ws-1', title: 'Grade the mission', context: { finalVerification: { missionId: 'm-1' }, specRepair: { missionId: 'm-1' }, keep: 1 } } }));
+      expect(res.status).toBe(200);
+      expect(seen.values.context).not.toHaveProperty('finalVerification');
+      expect(seen.values.context).not.toHaveProperty('specRepair');
+      expect(seen.values.context.keep).toBe(1);
+    });
+  });
+
   it('creates task with session auth', async () => {
     const createdTask = {
       id: 'task-123',

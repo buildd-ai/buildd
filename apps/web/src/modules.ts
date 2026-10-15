@@ -39,7 +39,9 @@ import type { BuilddKernelHooks } from '@/lib/workflow/kernel-ports';
 import type { Escalate } from '@buildd/workflow-kernel/ports';
 import { fixWork, reviewEscalate, reviewsHost, reviewWork } from '@/lib/workflow/review-effects';
 import { ciEscalate, ciEvidence, ciFixWork } from '@/lib/workflow/ci-retry-effects';
-import { trunkFixWork } from '@/lib/workflow/ci-red-trunk-effects';
+import { externalMergeFixWork, trunkFixWork } from '@/lib/workflow/ci-red-trunk-effects';
+import { guardMissionPrMerge } from '@/lib/mission-pr';
+import { builddLandingRails } from '@/lib/workflow/auto-merge-rails';
 import { conflictEscalate, conflictFixWork, conflictsHost } from '@/lib/workflow/conflict-retry-effects';
 import { builddDecide } from '@/lib/workflow/decision-port';
 import { landingLifecycle, mergeAnswerOf } from '@/lib/workflow/pr-landing-effects';
@@ -187,7 +189,7 @@ export function workflowKernelHooks(opts: { exec?: Parameters<typeof handOffHost
       },
     },
     lifecycle: { ...supersessionLifecycle, ...landingLifecycle },
-    work: { review: reviewWork, fix: fixWork, ci_fix: ciFixWork, conflict_fix: conflictFixWork, trunk_fix: trunkFixWork },
+    work: { review: reviewWork, fix: fixWork, ci_fix: ciFixWork, conflict_fix: conflictFixWork, trunk_fix: trunkFixWork, external_merge_fix: externalMergeFixWork },
     escalate: {
       exhausted: (d, n) => {
         const e = ESCALATE_BY_FAMILY[n.family];
@@ -200,6 +202,8 @@ export function workflowKernelHooks(opts: { exec?: Parameters<typeof handOffHost
     conflicts: conflictsHost,
     handOff: handOffHost(opts.exec, opts.repoFor),
     decide: builddDecide,
+    // The merge rails the merge effect reads at merge time; the mission-PR hold is the missions module's.
+    rails: builddLandingRails({ missionGate: (task) => guardMissionPrMerge(task) }),
   };
 }
 

@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts]
 related: [workflow-state-kernel, execution-control-plane, mission-branch-refresh, mission-task-lifecycle, living-specs]
 keywords: [workflow kernel, delivery state, single writer, single host, control plane, portable library, ports, adapters, conformance suite, merge door, landing authority, required status, durable findings, finding disposition, delivery epoch, mission delivery, refresh settlement, no-op completion, workflow-kernel package]
-verified_by: [apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/tests/db/kernel-command-host.test.ts]
+verified_by: [packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/tests/db/kernel-command-host.test.ts]
 supersedes: []
 ---
 # Workflow Kernel Library and Single Host
@@ -532,16 +532,64 @@ recorded as such, never as an approval.
   gates a door may skip.
 - A PR with no delivery is not merged by a buildd door. A door asked to merge
   one opens (or adopts) its delivery first; "legacy" merges end at slice S3.
-- GitHub enforces the verdict: on every kernel-owned PR head the control plane
-  publishes a commit status (NOT IMPLEMENTED: context `buildd/landing`)
-  that is `success` only when the kernel would land that head, and `failure`
-  while a required finding is open or review is missing. The status is a
-  required check on the workspace's trunk once every open PR carries it.
+- GitHub enforces the verdict: on every kernel-owned PR head the kernel's
+  `publish_landing_status` effect publishes the commit status `buildd/landing`.
+  It is `success` only when the kernel would land that head (approved or
+  landing, covered, no open verdict), and `failure` while a required finding is
+  open or review is missing. One effect per delivery version; only the newest
+  version's effect publishes, so a late or duplicate effect never overwrites a
+  newer answer, and an effect that runs out of retries publishes `failure`,
+  never leaves a success standing. CI is not part of it: CI has its own checks,
+  and the merge rails never read `buildd/landing` as CI. Making it a required
+  check on trunk is an owner decision, taken once every open PR carries it.
 - A merge observed by webhook that no buildd door made is recorded as an
   external merge: `MERGED` with the merger, the head, and
   `merged_over_open_findings` when any were open, plus a fix task against
-  trunk for those findings (§13.13 rule 10). It is never projected as
+  trunk for those findings (§13.13 rule 10): filed only for changes asked of
+  the head that merged (not for an escalation a person resolved by merging,
+  nor a verdict on an older head). It is never projected as
   "approved". `measureMergeAgainstReview` keeps recording the bypass.
+  Every buildd door lands a kernel PR through `LANDING`, so "external" is a
+  `PrMerged` from any other state. Until S5's findings model, an open finding
+  is the newest decided review round asking for changes or escalating.
+
+**As built (S3b):**
+- The gate is `reviewGate` (`packages/workflow-kernel/src/landing-gate.ts`)
+  plus the `Rails` port (`apps/web/src/lib/workflow/auto-merge-rails.ts`:
+  `evaluateAutoMergeSafety` with freshness left to T15, and the mission-PR
+  hold). `merge_call` reads the PR live first: merged or closed goes to the
+  funnel, a moved head is recorded and nothing merges (AC-14), then review,
+  base (a retarget is recorded like a moved head) and rails. Only a human
+  actor's own landing is a person's: it is held to red CI and protected paths,
+  and may merge on pending CI but never on red; the unattended rails (size cap,
+  migration inspector, semantic hold) apply to every other landing. An agent
+  acting under a person's grant is not a person: the grant lifts only the rail
+  it names (freshness at T15, size in the size check).
+  A refusal is T16 `gate_refused`: a rail that clears by waiting (pending CI, a
+  hold) leaves the approval standing (`APPROVED`); a lasting one (protected
+  path, migration, size) and the review half are `ESCALATED(landing_needs_human)`,
+  notified, with the rail named on `buildd/landing`. The status is written only
+  when GitHub does not already show it, and re-checked after writing so the
+  newest version wins across drains.
+- Release doors hold, never fail or throw, when a kernel-owned PR is not landed
+  yet or the control plane does not answer; a PR the kernel does not own never
+  reaches the kernel. A lost GitHub answer is indeterminate, not a refusal.
+  A held release task records its PR and merge method (a held worker PR
+  squashes) and is settled by the PR: completed when it merges by any door,
+  failed with the reason when it closes unmerged. The hourly pr-reconcile
+  merge-state pass (and the daily full pass) sweeps held tasks (`apps/web/src/lib/held-pr-tasks.ts`): a merged or closed
+  PR settles, a green open one is retried through the release-on-green door,
+  and a task still held after 24 sweeps fails with the reason.
+- Release doors D7–D10 go through `apps/web/src/lib/release/pinned-merge.ts`
+  (or the kernel, for a PR it owns): live read, refuse a head other than the
+  verified one (AC-16), `guardReviewVerdict` at that head, GitHub's `sha` pin.
+- D4 refuses when no workspace resolves; D5 `force` no longer skips the review
+  verdict. `apps/web/src/lib/workflow/merge-door-inventory.test.ts` fails on
+  any merge call not in the inventory.
+- Deviation: a PR with no delivery is still merged by its door's legacy arm
+  (worker doors under their own review gate; release PRs under the release
+  gate above). Adopting the delivery first is the follow-up slice; release
+  PRs need an owner decision, since their bookkeeping lives outside the kernel.
 
 **Acceptance criteria**:
 - AC-13: GIVEN a PR with an open required finding WHEN any of D1–D11 is asked

@@ -188,6 +188,29 @@ describe('revision 2 (R-17, R-19, R-21, AC-6)', () => {
     }
   });
 
+  test('the mission row and heading say the stage in words (R-18, AC-7)', () => {
+    const stage = { step: 'verifying' as const, waitingOn: '2 checks left' };
+    const mission = { ...TASKS[0].mission!, stage };
+    const s = reduce(fixtureState(), { type: 'tasks', tasks: TASKS.map(t => (t.missionId === mission.id ? { ...t, mission } : t)) });
+    for (const cols of [80, 120]) {
+      const lines = text(frame(s, cols, 24)).split('\n');
+      const row = lines.find(l => l.includes('▸'))!;
+      expect(row).toContain('verifying');
+      expect(row).not.toContain('2/8');
+      // A cut heading ends in … and keeps a space before the counts.
+      expect(lines[2]).toContain(cols >= 120 ? 'Runner TUI · verifying: 2 checks left' : 'Runner TUI · verifying');
+      expect(lines[2]).toMatch(/\s\d+ running/);
+      expect(lines[2]).not.toMatch(/…\d/);
+      for (const l of lines) expect(textWidth(l)).toBeLessThanOrEqual(cols);
+    }
+  });
+
+  test('without a stage the row shows done/total only', () => {
+    const lines = text(frame(fixtureState(), 80, 24)).split('\n');
+    expect(lines.find(l => l.includes('▸'))!).toContain('2/8');
+    expect(lines[2]).not.toMatch(/building|verifying|delivering|delivered|on hold/);
+  });
+
   test('a selected workspace is named in the heading', () => {
     const s = reduce(reduce(fixtureState(), { type: 'workspaces', workspaces: [{ id: 'ws-a', name: 'alpha' }, { id: 'ws-b', name: 'bravo' }] }), {
       type: 'tasks', tasks: TASKS.map(t => ({ ...t, workspaceId: 'ws-a' })),
@@ -203,5 +226,6 @@ describe('revision 2 (R-17, R-19, R-21, AC-6)', () => {
     expect(t).toContain('w');
     expect(t).toMatch(/only the workspaces this runner serves/i);
     expect(t).toMatch(/o opens this runner's page on buildd/i);
+    expect(t).toContain('buildd login --workspaces');
   });
 });

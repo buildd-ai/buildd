@@ -7,7 +7,7 @@ import type { PromptCompositionEvent } from './memory-digest-policy';
 import type { Outbox } from './outbox';
 import type { PromptBundlesPayload } from './session-prompt-bundles';
 import type { ClaimHandoffSnapshot } from './claim-handoff';
-import type { WorkspaceSkill, WorkerEnvironment, ClaimDiagnostics, DerivedFileRule } from '@buildd/shared';
+import type { WorkspaceSkill, WorkerEnvironment, ClaimDiagnostics, DerivedFileRule, MissionStage } from '@buildd/shared';
 import { CLOUD_EXECUTOR, stripClaimCredentials } from '@buildd/shared';
 import { BuilddTransport } from '@buildd/core/buildd-transport';
 import { createRedactionInterceptor } from '@buildd/core/redaction';
@@ -145,6 +145,17 @@ export class BuilddClient {
   async listTasks(): Promise<BuilddTask[]> {
     const data = await this.fetch('/api/tasks');
     return data.tasks || [];
+  }
+
+  /**
+   * Each named mission's stage (spec c7410e76 R-18), from the missions
+   * module's GET /api/missions/stages. Keyed by mission id; a mission the
+   * server could not place is absent.
+   */
+  async listMissionStages(missionIds: string[]): Promise<Record<string, MissionStage>> {
+    if (missionIds.length === 0) return {};
+    const data = await this.fetch(`/api/missions/stages?ids=${missionIds.map(encodeURIComponent).join(',')}`);
+    return data?.stages && typeof data.stages === 'object' ? data.stages : {};
   }
 
   async getTask(id: string): Promise<BuilddTask | null> {

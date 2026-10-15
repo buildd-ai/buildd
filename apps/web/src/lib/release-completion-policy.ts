@@ -18,7 +18,7 @@ export const releasePolicy: ReleasePolicy = {
       return { kind: 'fail', record: r, summary: r.message, reason: r.error ?? r.message, prUrl: r.releasePrUrl };
     }
     if (r.status === 'pending_ci') {
-      return { kind: 'hold', until: 'ci', record: r, summary: r.message, prNumber: r.releasePrNumber, prUrl: r.releasePrUrl };
+      return { kind: 'hold', until: 'ci', record: r, summary: r.message, prNumber: r.releasePrNumber, prUrl: r.releasePrUrl, ...(r.releaseMergeMethod ? { mergeMethod: r.releaseMergeMethod } : {}) };
     }
     return { kind: 'pass', record: r, summary: r.message };
   },

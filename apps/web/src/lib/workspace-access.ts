@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { workspaces, accountWorkspaces } from '@buildd/core/db/schema';
+import { workspaces } from '@buildd/core/db/schema';
 import { and, eq } from 'drizzle-orm';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
@@ -9,6 +9,7 @@ import { isUuid } from '@/lib/uuid';
 import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
 import { assertGrantedWorkspace, isGrantSession, type GrantScopedAccount } from '@/lib/grant-scope';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { readReachLink } from '@/lib/granted-links';
 
 /**
  * Workspace reach, shared by every surface that lists workspaces or acts on one
@@ -50,7 +51,7 @@ export async function listReachableWorkspaceIds(
     return (account.workspaceIds ?? []).filter(id => assertGrantedWorkspace(account, id, permission ? 'write' : 'read'));
   }
   const [links, ownOpen] = await Promise.all([
-    getAccountWorkspacePermissions(account.id),
+    getAccountWorkspacePermissions(account.id, { includeRevoked: true }),
     db.query.workspaces.findMany({
       where: sqlWhere(and(eq(workspaces.teamId, account.teamId), eq(workspaces.accessMode, 'open'))),
       columns: { id: true, teamId: true, accessMode: true },
@@ -58,13 +59,15 @@ export async function listReachableWorkspaceIds(
   ]);
 
   const ids = new Set<string>();
+  const linkOf = new Map(links.map((l) => [l.workspaceId, l]));
   for (const l of links) {
-    if (!permission || l[permission]) ids.add(l.workspaceId);
+    if (accountReachesWorkspace(account, { id: l.workspaceId, teamId: '', accessMode: null }, l, permission)) ids.add(l.workspaceId);
   }
   // The query is already team-scoped; the rule is re-applied so this list can
-  // never disagree with what resolveWorkspaceAccess would allow.
+  // never disagree with what resolveWorkspaceAccess would allow (a revoked
+  // pick of an open home-team workspace is a deny there, and so here).
   for (const ws of ownOpen) {
-    if (accountReachesWorkspace(account, ws, null, permission)) ids.add(ws.id);
+    if (accountReachesWorkspace(account, ws, linkOf.get(ws.id) ?? null, permission)) ids.add(ws.id);
   }
   // A workspace-restricted token reaches its own list and nothing else.
   return [...ids].filter(id => tokenWorkspaceAllowed(account.workspaceIds, id));
@@ -124,13 +127,8 @@ export async function resolveWorkspaceAccess(
     if (isGrantSession(caller.account)) {
       return assertGrantedWorkspace(caller.account, found.id, permission ? 'write' : 'read') ? { ok: true, workspace: found } : noAccess();
     }
-    const link = await db.query.accountWorkspaces.findFirst({
-      where: sqlWhere(and(
-        eq(accountWorkspaces.accountId, caller.account.id),
-        eq(accountWorkspaces.workspaceId, found.id),
-      )),
-      columns: { canClaim: true, canCreate: true },
-    });
+    // A revoked pick is a deny before the open rule (granted-links.ts).
+    const link = await readReachLink(caller.account.id, found.id);
     return accountReachesWorkspace(caller.account, found, link, permission)
       ? { ok: true, workspace: found }
       : noAccess();

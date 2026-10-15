@@ -124,3 +124,13 @@ describe('applyPrMutationDeny', () => {
     expect(result).toContain('mcp__another-connector__delete_project');
   });
 });
+
+// D13 (docs/specs/workflow-state-kernel.md §13.13): an agent's own merge. The deny list
+// closes the easy paths; what an agent still reaches (gh api, raw HTTP) lands as an
+// external merge, which the kernel records and never counts as an approval (AC-15).
+describe('D13: an agent cannot merge a PR from its own session through the easy paths', () => {
+  test('`gh pr merge` and the GitHub MCP merge tool are denied', () => {
+    expect(PR_MUTATION_BASH_DENY).toContain('Bash(gh pr merge:*)');
+    expect(GITHUB_MCP_PR_WRITE_TOOLS).toContain('merge_pull_request');
+  });
+});

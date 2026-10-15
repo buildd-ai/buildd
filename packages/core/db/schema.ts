@@ -373,6 +373,20 @@ export const accountWorkspaces = pgTable('account_workspaces', {
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
   canClaim: boolean('can_claim').default(true).notNull(),
   canCreate: boolean('can_create').default(false).notNull(),
+  // The person who picked this workspace for the key on the runner consent
+  // page (lib/runner-picks.ts). NULL = a link an admin made, or one written
+  // before picks existed; those behave as they always have. A non-NULL row is
+  // re-checked on every claim against the person's current membership and
+  // role in the workspace's team and the workspace's access mode.
+  grantedByUserId: uuid('granted_by_user_id').references(() => users.id, { onDelete: 'cascade' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  // A team admin took this pick off the workspace (Settings > Connected apps).
+  // The row stays as a tombstone so the key's owner cannot put it back through
+  // Edit; a removed pick reaches nothing (lib/granted-links.ts). `removed_at`
+  // is the marker: who removed it is kept for display and goes NULL if that
+  // admin's user row is deleted, which never brings the pick back.
+  removedByUserId: uuid('removed_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  removedAt: timestamp('removed_at', { withTimezone: true }),
 }, (t) => ({
   pk: primaryKey({ columns: [t.accountId, t.workspaceId] }),
 }));
@@ -3110,17 +3124,21 @@ export const specAttachments = pgTable('spec_attachments', {
 
 /**
  * One verdict on one acceptance criterion of an approved spec revision, for
- * one task's outcome (Living Specs V1, D-5). Append-only: a re-check adds a
- * row, and the outcome reads the newest row per criterion. A verdict is bound
- * to the PR head it judged and the references it actually read, so a verdict
- * on an older head never speaks for the current one. Distinct from task and PR
- * state: a task can complete and its PR merge while its governed outcome
- * reads fail.
+ * one task's outcome (Living Specs V1, D-5) or for a mission's integrated
+ * result (Slice 12: the mission's selected outcome spec). Exactly one of
+ * `taskId` and `missionId` is set. Append-only: a re-check adds a row, and the
+ * outcome reads the newest row per criterion. A verdict is bound to the head
+ * it judged (a task's PR head, or the mission's integrated target) and the
+ * references it actually read, so a verdict on an older head never speaks
+ * for the current one. Distinct from task and PR state: a task can complete
+ * and its PR merge while its governed outcome reads fail.
  */
 export const specOutcomeVerdicts = pgTable('spec_outcome_verdicts', {
   id: uuid('id').primaryKey().defaultRandom(),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
-  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }),
+  // Slice 12: a verdict about the mission's integrated target, not one task's PR.
+  missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'cascade' }),
   specRevisionId: uuid('spec_revision_id').references(() => specRevisions.id, { onDelete: 'cascade' }).notNull(),
   criterionId: text('criterion_id').notNull(),
   verdict: text('verdict').notNull().$type<'pass' | 'fail' | 'inconclusive' | 'unsupported'>(),
@@ -3130,6 +3148,8 @@ export const specOutcomeVerdicts = pgTable('spec_outcome_verdicts', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   taskCriterionIdx: index('spec_outcome_verdicts_task_idx').on(t.taskId, t.specRevisionId, t.criterionId, t.createdAt),
+  missionCriterionIdx: index('spec_outcome_verdicts_mission_idx').on(t.missionId, t.specRevisionId, t.criterionId, t.createdAt).where(sql`mission_id IS NOT NULL`),
+  oneSubject: check('spec_outcome_verdicts_one_subject', sql`(${t.taskId} IS NULL) <> (${t.missionId} IS NULL)`),
 }));
 
 /**

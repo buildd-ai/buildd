@@ -3,7 +3,8 @@
  *
  * One Playwright version needs exactly one Chromium build, and
  * `playwright install` run from any other version garbage-collects every build
- * it does not own from the shared browsers directory (~/.cache/ms-playwright or
+ * it does not own from the shared browsers directory (the platform default —
+ * ~/.cache/ms-playwright on Linux, ~/Library/Caches/ms-playwright on macOS — or
  * PLAYWRIGHT_BROWSERS_PATH). So every install path on a runner — install.sh,
  * the updater, the runner image in the infrastructure repo — must go through
  * the repo's own pinned package (`bun run browser:install` in apps/runner),

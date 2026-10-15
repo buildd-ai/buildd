@@ -99,6 +99,14 @@ export interface KnownEvolution {
 
 const isObj = (v: unknown): v is J => !!v && typeof v === 'object' && !Array.isArray(v);
 
+/** The same transition (command, states, key) on both sides, or none on both: an evolution may only add to the same decision. */
+function sameDecision(recorded: StepDecision, replayed: StepDecision): boolean {
+  const r = recorded.transition;
+  const p = replayed.transition;
+  if (!r || !p) return !r && !p;
+  return r.command === p.command && r.toState === p.toState && (r.fromState ?? null) === (p.fromState ?? null) && r.idempotencyKey === p.idempotencyKey;
+}
+
 export const KNOWN_EVOLUTIONS: KnownEvolution[] = [
   {
     // #4072 (S15 cycles): a spent treadmill's ESCALATED(landing_needs_human) evidence
@@ -158,6 +166,65 @@ export const KNOWN_EVOLUTIONS: KnownEvolution[] = [
       const effects = replayed.effects.map((e) => (e.kind === 'notify' && isObj(e.payload) && e.payload.reason === 'review_unavailable'
         ? { ...e, payload: { ...e.payload, reason: 'effect_dead' } } : e));
       return { transition: { ...p, evidence: { ...p.evidence, reason: 'effect_dead' } }, effects };
+    },
+  },
+  {
+    // S3b (workflow-kernel-library.md §4): every version of a PR delivery owes the
+    // `buildd/landing` status effect. A recording from before has none: the replay may
+    // drop exactly the publish_landing_status effects the recording lacks, nothing else.
+    id: 'buildd/landing status effect (S3b, workflow-kernel-library.md §4)',
+    apply(recorded, replayed) {
+      if (!sameDecision(recorded, replayed)) return null;
+      const recordedKeys = new Set(recorded.effects.map((e) => e.dedupeKey));
+      const effects = replayed.effects.filter((e) => e.kind !== 'publish_landing_status' || recordedKeys.has(e.dedupeKey));
+      return effects.length !== replayed.effects.length ? { ...replayed, effects } : null;
+    },
+  },
+  {
+    // S3b: T15 carries the state it landed from (and a person's override kinds) to the
+    // merge effect, which asks the landing gate again; and a door no longer vouches for
+    // rails (`rails: { passed: true }` in a recording's evidence). The replay may put the
+    // recording's form back on exactly the merge_call payload and the T15 evidence.
+    id: 'gate at merge time (S3b, workflow-kernel-library.md §4)',
+    apply(recorded, replayed) {
+      const p = replayed.transition;
+      const r = recorded.transition;
+      if (!p || p.command !== 'LandingRequested' || !sameDecision(recorded, replayed)) return null;
+      let changed = false;
+      const rec = new Map(recorded.effects.map((e) => [e.dedupeKey, e]));
+      const effects = replayed.effects.map((e) => {
+        const was = rec.get(e.dedupeKey);
+        if (e.kind !== 'merge_call' || !isObj(e.payload) || !was || !isObj(was.payload)) return e;
+        if ('fromState' in was.payload || !('fromState' in e.payload)) return e;
+        const { fromState: _f, override: _o, ...rest } = e.payload;
+        if ('override' in was.payload) (rest as J).override = was.payload.override;
+        changed = true;
+        return { ...e, payload: rest };
+      });
+      let transition = p;
+      if (r && isObj(r.evidence) && isObj(p.evidence) && 'rails' in r.evidence && !('rails' in p.evidence)) {
+        transition = { ...p, evidence: { ...p.evidence, rails: r.evidence.rails } };
+        changed = true;
+      }
+      return changed ? { transition, effects } : null;
+    },
+  },
+  {
+    // S3b (§13.13 rule 10, AC-15): a merge from outside LANDING is recorded as external,
+    // with who merged it, the head, and whether it went over an open verdict, and owes a
+    // fix when it did. A recording from before carries none of it: the replay may drop
+    // exactly those evidence keys and that one effect from PrMerged, nothing else.
+    id: 'external merge record (S3b, workflow-state-kernel.md §13.13 rule 10)',
+    apply(recorded, replayed) {
+      const p = replayed.transition;
+      const r = recorded.transition;
+      if (!p || !r || p.command !== 'PrMerged' || !sameDecision(recorded, replayed) || !isObj(p.evidence) || !isObj(r.evidence) || 'external' in r.evidence) return null;
+      const extra = ['external', 'mergedBy', 'mergedHead', 'fromState', 'merged_over_open_findings', 'openVerdict'];
+      if (!extra.some((k) => k in (p.evidence as J))) return null;
+      const evidence = Object.fromEntries(Object.entries(p.evidence).filter(([k]) => !extra.includes(k)));
+      const recordedKeys = new Set(recorded.effects.map((e) => e.dedupeKey));
+      const effects = replayed.effects.filter((e) => e.kind !== 'dispatch_external_merge_fix' || recordedKeys.has(e.dedupeKey));
+      return { transition: { ...p, evidence }, effects };
     },
   },
 ];

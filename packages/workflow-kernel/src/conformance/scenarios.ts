@@ -13,13 +13,13 @@
 import { applyCommandOn } from '../command-runner';
 import type { Command, EffectKind, LivePr } from '../commands';
 import { decideAndRecord, decideAt, decisionFactKey, invalidRecordFactKey, VISUAL_IMPACT_POINT } from '../decide';
-import { drainEffects, type EffectHandlers } from '../effects';
+import { drainEffects, EFFECT_MAX_ATTEMPTS, type EffectHandlers } from '../effects';
 import { BLOCKED_ON_TRUNK_SUMMARY } from '../handlers/trunk';
 import { ciEvidenceFactKey, handOffToLegacyOn, kernelEffectHandlers } from '../handlers/index';
 import { acquireLaneOn, settleLanesOn } from '../landing-lane';
 import {
   FakeGithub, RecordingConflicts, RecordingEscalate, RecordingEvidence, RecordingHandOff, RecordingIngest, RecordingLifecycle, RecordingNotify,
-  RecordingReviews, RecordingTrunk, RecordingWork, type WorkAnswer,
+  RecordingRails, RecordingReviews, RecordingTrunk, RecordingWork, type WorkAnswer,
 } from '../memory/ports';
 import { NO_ROLE, type ClaimedEffect, type CommandResult, type Decide, type DeliveryRef, type KernelPorts, type Policy, type Store } from '../ports';
 import { deriveDeliveryView } from '../projections';
@@ -126,10 +126,10 @@ export class Delivery {
   async effectKinds(): Promise<string[]> { return (await this.host.effects(this.deliveryId)).map((e) => e.kind).sort(); }
   async count(kind: EffectKind): Promise<number> { return (await this.host.effects(this.deliveryId)).filter((e) => e.kind === kind).length; }
 
-  async open(): Promise<this> {
+  async open(o0: { maxRounds?: number } = {}): Promise<this> {
     ({ workspaceId: this.workspaceId, ownerTaskId: this.ownerTaskId } = await this.host.seedOwner());
     this.ref = { workspaceId: this.workspaceId, ownerTaskId: this.ownerTaskId };
-    const o = await applyCommandOn(this.host.store, { type: 'DeliveryOpened', actor: 'runner', workspaceId: this.workspaceId, ownerTaskId: this.ownerTaskId, requiresPr: true }, { newId: () => this.host.newId() });
+    const o = await applyCommandOn(this.host.store, { type: 'DeliveryOpened', actor: 'runner', workspaceId: this.workspaceId, ownerTaskId: this.ownerTaskId, requiresPr: true, ...(o0.maxRounds ? { maxRounds: o0.maxRounds } : {}) }, { newId: () => this.host.newId() });
     applied(o, 'WORKING', 'DeliveryOpened');
     this.deliveryId = (o as Extract<CommandResult, { result: 'applied' }>).deliveryId;
     this.ref = { deliveryId: this.deliveryId };
@@ -139,7 +139,7 @@ export class Delivery {
   ownerPushed(head = 'H1'): Promise<CommandResult> {
     return this.submit({ type: 'AttemptEnded', actor: 'runner', workerId: `wk${++this.worker}`, taskId: this.ownerTaskId, outcome: 'success', localHeadSha: head, commitCount: 1, live: this.live(head) });
   }
-  async verdict(verdict: 'approve' | 'request_changes', roundId?: string, headBound?: string): Promise<CommandResult> {
+  async verdict(verdict: 'approve' | 'request_changes' | 'escalate', roundId?: string, headBound?: string): Promise<CommandResult> {
     const rounds = (await this.view()).rounds;
     const r = roundId ? rounds.find((x) => x.id === roundId)! : rounds.at(-1)!;
     return this.submit({ type: 'ReviewVerdictRecorded', actor: 'reviewer', roundId: r.id, verdict, effectiveVerdict: verdict, headBound: headBound ?? r.headSha });
@@ -169,7 +169,8 @@ export class Delivery {
     return this.submit({ type: 'TrunkRedObserved', actor: 'kernel', incidentId, signature, headSha: head, thresholdMet: true });
   }
   land(head: string): Promise<CommandResult> {
-    return this.submit({ type: 'LandingRequested', actor: 'kernel', door: 'auto', headSha: head, live: this.live(head), rails: { passed: true } });
+    // No rail reading from the door: the merge effect reads the rails itself (§4).
+    return this.submit({ type: 'LandingRequested', actor: 'kernel', door: 'auto', headSha: head, live: this.live(head) });
   }
   merged(head: string): Promise<CommandResult> {
     return this.submit({ type: 'PrMerged', actor: 'webhook', live: this.mergedLive(head) });
@@ -187,6 +188,7 @@ function recordingHandlers(ran: string[], override: EffectHandlers = {}): Effect
     'render_activity', 'stamp_pr_rows', 'notify', 'mission_note', 'wake_mission', 'release_attribution', 'finalize_mission_pr',
     'emit_pr_merged', 'verify_merge', 'cancel_open_attempts', 'scan_supersession', 'project_supersession', 'post_review',
     'escalate_exhaustion', 'gate_event', 'dispatch_review', 'dispatch_fix', 'merge_call', 'refresh_branch', 'renumber_migration', 'push_recovery',
+    'publish_landing_status', 'dispatch_external_merge_fix',
   ];
   const out: EffectHandlers = {};
   for (const k of kinds) out[k] = async () => { ran.push(k); return { outcome: 'ok' }; };
@@ -198,7 +200,7 @@ function recordingHandlers(ran: string[], override: EffectHandlers = {}): Effect
 interface FakePorts {
   ports: KernelPorts; github: FakeGithub; lifecycle: RecordingLifecycle; notify: RecordingNotify; ingest: RecordingIngest;
   work: RecordingWork; trunk: RecordingTrunk; escalate: RecordingEscalate; evidence: RecordingEvidence;
-  reviews: RecordingReviews; conflicts: RecordingConflicts; handOff: RecordingHandOff;
+  reviews: RecordingReviews; conflicts: RecordingConflicts; handOff: RecordingHandOff; rails: RecordingRails;
 }
 
 /** The handlers' ports over the host's store, with a fake GitHub and recording Work-side ports. */
@@ -217,12 +219,13 @@ function fakePorts(host: ConformanceHost, o: {
   const reviews = new RecordingReviews();
   const conflicts = new RecordingConflicts();
   const handOff = new RecordingHandOff();
+  const rails = new RecordingRails();
   const ports: KernelPorts = {
     store: host.store, github, clock: { now: () => new Date().toISOString() }, newId: () => host.newId(), policy: host.policy,
-    notify, ingest, lifecycle, work, trunk, escalate, evidence, reviews, conflicts, handOff,
+    notify, ingest, lifecycle, work, trunk, escalate, evidence, reviews, conflicts, handOff, rails,
   };
   for (const k of o.omit ?? []) delete ports[k];
-  return { ports, github, lifecycle, notify, ingest, work, trunk, escalate, evidence, reviews, conflicts, handOff };
+  return { ports, github, lifecycle, notify, ingest, work, trunk, escalate, evidence, reviews, conflicts, handOff, rails };
 }
 
 /** One of the delivery's outbox rows as a drain would hand it over, to run a handler directly (past the drain's own guards). */
@@ -555,9 +558,10 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       const s = await (await new Delivery(host).open()).approvedAt('H1');
       applied(await s.land('H1'), 'LANDING', 'landing');
       const f = fakePorts(host, { ingest: new RecordingIngest(async (fact) => ({ result: fact.kind === 'pr_closed' ? (await s.merged('H1')).result : 'ignored' })) });
-      f.github.setPr(s.repo, s.prNumber, s.mergedLive('H1'));
+      f.github.setPr(s.repo, s.prNumber, s.live('H1'));
       await drainKernel(host, s, f.ports);
       eq(f.github.merges, [{ repoFullName: s.repo, prNumber: s.prNumber, headSha: 'H1', method: 'squash' }], 'one merge call, pinned to H1');
+      eq(f.rails.calls.map((x) => x.headSha), ['H1'], 'the rails were read at merge time, at H1');
       eq(await outcomesOf(host, s, 'merge_call'), ['ok:merged:applied'], 'merge answer applied as T16');
       eq(await outcomesOf(host, s, 'verify_merge'), ['ok:merged:applied'], 'verified by the live read');
       eq(f.ingest.facts.map((x) => pick(x, ['kind', 'source', 'prNumber'])), [{ kind: 'pr_closed', source: 'effect:verify_merge', prNumber: s.prNumber }], 'the merged fact goes through the funnel');
@@ -584,7 +588,9 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       applied(await b.land('H1'), 'LANDING', 'landing b');
       const fb = fakePorts(host);
       fb.github.mergeAnswer = { outcome: 'indeterminate' };
-      fb.github.setPr(b.repo, b.prNumber, b.live('H2'));
+      fb.github.setPr(b.repo, b.prNumber, b.live('H1'));
+      // The head moves under the merge call (a push GitHub took first): the verify read sees it.
+      fb.github.onMerge = () => fb.github.setPr(b.repo, b.prNumber, b.live('H2'));
       await drainKernel(host, b, fb.ports);
       eq(await outcomesOf(host, b, 'verify_merge'), ['ok:head_moved'], 'a moved head is observed');
       eq(fb.ingest.facts.map((x) => x.kind), ['head_observed'], 'through the funnel, from the same read');
@@ -593,6 +599,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       applied(await c.land('H1'), 'LANDING', 'landing c');
       const fc = fakePorts(host);
       fc.github.mergeAnswer = { outcome: 'behind', detail: 'Head branch is out of date' };
+      fc.github.setPr(c.repo, c.prNumber, c.live('H1'));
       await drainKernel(host, c, fc.ports);
       eq(await outcomesOf(host, c, 'merge_call'), ['ok:behind:applied'], 'behind applied as T16');
       eq(await c.count('verify_merge'), 0, 'nothing to verify');
@@ -623,6 +630,298 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       applied(await s.push('H2'), 'AWAITING_REVIEW', 'head moved');
       eq(await h.merge_call!(await direct(host, s, 'merge_call', { headSha: 'H1' })), { outcome: 'skipped:state_AWAITING_REVIEW' }, 'no longer landing');
       eq(f.github.merges, [], 'no merge call');
+    },
+  },
+  // ── S3b: one landing authority (workflow-kernel-library.md §4) ─────────────
+  {
+    name: 'AC-14: approved at A, B pushed before the merge effect runs: the effect re-reads, records B and does not merge',
+    async run(host) {
+      const s = await (await new Delivery(host, 25).open()).approvedAt('H1');
+      applied(await s.land('H1'), 'LANDING', 'landing at H1');
+      // B is on GitHub; its webhook has not arrived, so the delivery still says LANDING at A.
+      const f = fakePorts(host, { ingest: new RecordingIngest(async (fact) => ({ result: fact.kind === 'head_observed' ? (await s.push('H2')).result : 'ignored' })) });
+      f.github.setPr(s.repo, s.prNumber, s.live('H2'));
+      await drainKernel(host, s, f.ports);
+      eq(f.github.merges, [], 'no merge call');
+      eq(f.rails.calls, [], 'no rail read for a head that is not the one landing');
+      eq(await outcomesOf(host, s, 'merge_call'), ['skipped:head_moved:applied'], 'the effect re-read and recorded B');
+      eq(f.ingest.facts.map((x) => pick(x, ['kind', 'source'])), [{ kind: 'head_observed', source: 'effect:merge_call' }], 'B through the funnel, from the same read');
+      const d = await s.d();
+      eq({ state: d.state, head: d.currentHeadSha, approved: d.approvedHeads.includes('H2') }, { state: 'AWAITING_REVIEW', head: 'H2', approved: false }, 'B is owed its own review');
+    },
+  },
+  {
+    name: 'gate at merge time: the door says nothing about rails; a rail that refuses when the effect runs stops the merge and the approval stands',
+    async run(host) {
+      const s = await (await new Delivery(host, 26).open()).approvedAt('H1');
+      applied(await s.land('H1'), 'LANDING', 'landing with no rail reading from the door');
+      const f = fakePorts(host);
+      f.github.setPr(s.repo, s.prNumber, s.live('H1'));
+      f.rails.reading = { passed: false, redCi: true, reasons: ['CI red on H1: unit'] };
+      await drainKernel(host, s, f.ports);
+      eq(f.github.merges, [], 'no merge call');
+      eq(f.rails.calls.map((x) => pick(x, ['headSha', 'door'])), [{ headSha: 'H1', door: 'auto' }], 'the rails were read once, at the landing head');
+      eq(await outcomesOf(host, s, 'merge_call'), ['ok:gate_refused:rails:applied'], 'refused by the gate');
+      eq(pick(await s.d(), ['state', 'approvedHeads']), { state: 'APPROVED', approvedHeads: ['H1'] }, 'the approval stands');
+      f.rails.reading = { passed: true, reasons: [] };
+      applied(await s.land('H1'), 'LANDING', 'landing again once the rail passes');
+      await drainKernel(host, s, f.ports);
+      eq(f.github.merges.map((m) => m.headSha), ['H1'], 'merged once, pinned to H1');
+    },
+  },
+  {
+    name: 'gate at merge time: a person\'s verdict override passes a missing review, never a refusing rail',
+    async run(host) {
+      const ask = async (s: Delivery) => {
+        await s.ownerPushed('H1');
+        applied(await s.verdict('request_changes'), 'CHANGES_REQUESTED', 'changes asked');
+        applied(await s.submit({ type: 'LandingRequested', actor: 'human:owner', door: 'dashboard_override', headSha: 'H1', live: s.live('H1'), override: { reason: 'owner call' } }), 'LANDING', 'override landing');
+      };
+      const a = await new Delivery(host, 27).open();
+      await ask(a);
+      const fa = fakePorts(host);
+      fa.github.setPr(a.repo, a.prNumber, a.live('H1'));
+      fa.rails.reading = { passed: false, denyPaths: true, reasons: ['touches protected path (infra/x)'] };
+      await drainKernel(host, a, fa.ports);
+      eq(fa.github.merges, [], 'a refusing rail is never overridden');
+      eq(pick(await a.d(), ['state', 'stateReason']), { state: 'ESCALATED', stateReason: 'landing_needs_human' }, 'no approval to fall back on: a person looks again');
+
+      const b = await new Delivery(host, 28).open();
+      await ask(b);
+      const fb = fakePorts(host);
+      fb.github.setPr(b.repo, b.prNumber, b.live('H1'));
+      await drainKernel(host, b, fb.ports);
+      eq(fb.github.merges.map((m) => m.headSha), ['H1'], 'the person\'s override passes the open verdict');
+      eq(fb.rails.calls.map((x) => (x.override as { verdict?: boolean } | null)?.verdict ?? null), [true], 'the rails were told it is an override');
+    },
+  },
+  {
+    name: 'gate at merge time: a lasting rail (a migration, a protected path) is a person\'s, named on buildd/landing; a person\'s own merge is held only to a person\'s rails',
+    async run(host) {
+      const s = await (await new Delivery(host, 37).open()).approvedAt('H1');
+      applied(await s.land('H1'), 'LANDING', 'an automatic landing');
+      const f = fakePorts(host);
+      f.github.setPr(s.repo, s.prNumber, s.live('H1'));
+      f.rails.reading = { passed: false, lasting: true, reasons: ['destructive migration: DROP COLUMN'] };
+      f.rails.personReading = { passed: true, reasons: [] };
+      await drainKernel(host, s, f.ports);
+      eq(f.github.merges, [], 'the automatic door does not merge it');
+      eq(await outcomesOf(host, s, 'merge_call'), ['ok:gate_refused:rails:lasting:applied'], 'refused as lasting');
+      eq(pick(await s.d(), ['state', 'stateReason']), { state: 'ESCALATED', stateReason: 'landing_needs_human' }, 'a person is asked, not the sweep');
+      const last = f.github.written.filter((w) => w.op === 'publishStatus').at(-1)!;
+      eq(last.state, 'failure', 'buildd/landing says no');
+      ok(String(last.description).includes('destructive migration'), `names the rail: ${String(last.description)}`);
+      ok((await s.count('notify')) >= 1, 'a person is notified');
+      // The person merges it ("Merge anyway"): their door is held to their rails, and it lands.
+      applied(await s.submit({ type: 'LandingRequested', actor: 'human:owner', door: 'dashboard', headSha: 'H1', live: s.live('H1'), override: { reason: 'migration reviewed by the owner', kinds: ['verdict'] } }), 'LANDING', 'the person\'s landing');
+      await drainKernel(host, s, f.ports);
+      eq(f.rails.calls.map((c) => c.person), [false, true], 'the second read was a person\'s');
+      eq(f.github.merges.map((m) => m.headSha), ['H1'], 'the person merged it');
+
+      // A rail that clears by waiting (pending CI) leaves the approval standing.
+      const w = await (await new Delivery(host, 38).open()).approvedAt('H1');
+      applied(await w.land('H1'), 'LANDING', 'landing');
+      const fw = fakePorts(host);
+      fw.github.setPr(w.repo, w.prNumber, w.live('H1'));
+      fw.rails.reading = { passed: false, reasons: ['CI checks still pending or failed: unit (in_progress)'] };
+      await drainKernel(host, w, fw.ports);
+      eq((await w.d()).state, 'APPROVED', 'it waits');
+    },
+  },
+  {
+    name: 'gate at merge time: an agent under a person\'s freshness grant is not a person: a destructive migration still escalates',
+    async run(host) {
+      const s = await (await new Delivery(host, 41).open()).approvedAt('H1');
+      applied(await s.land('H1'), 'LANDING', 'an automatic landing');
+      const f = fakePorts(host);
+      f.github.setPr(s.repo, s.prNumber, s.live('H1'));
+      f.rails.reading = { passed: false, lasting: true, reasons: ['destructive migration: DROP COLUMN'] };
+      f.rails.personReading = { passed: true, reasons: [] };
+      await drainKernel(host, s, f.ports);
+      eq((await s.d()).stateReason, 'landing_needs_human', 'escalated on the migration');
+      // merge_pr with force (an admin token) and a freshness-only grant a person put on the agent's task.
+      applied(await s.submit({ type: 'LandingRequested', actor: 'agent:w1', door: 'merge_pr_force', headSha: 'H1', live: s.live('H1'), override: { reason: 'base keeps moving', kinds: ['freshness'], grantedBy: 'human:owner' } }), 'LANDING', 'the agent\'s landing');
+      await drainKernel(host, s, f.ports);
+      eq(f.rails.calls.map((c) => c.person), [false, false], 'the agent was never read as a person');
+      eq(f.github.merges, [], 'the destructive migration did not merge');
+      eq(pick(await s.d(), ['state', 'stateReason']), { state: 'ESCALATED', stateReason: 'landing_needs_human' }, 'still a person\'s');
+    },
+  },
+  {
+    name: 'deploy skew: a merge_call queued by the reducer before S3b (no fromState) merges as it would have, after the fresh read',
+    async run(host) {
+      const s = await (await new Delivery(host, 42).open()).approvedAt('H1');
+      applied(await s.land('H1'), 'LANDING', 'landing');
+      const f = fakePorts(host);
+      f.github.setPr(s.repo, s.prNumber, s.live('H1'));
+      f.rails.reading = { passed: false, lasting: true, reasons: ['would refuse'] };
+      const row = (await host.effects(s.deliveryId)).find((e) => e.kind === 'merge_call')!;
+      const { fromState: _f, ...oldPayload } = row.payload;
+      const out = await kernelEffectHandlers(f.ports).merge_call!({ ...(await direct(host, s, 'merge_call')), payload: oldPayload });
+      eq(out, { outcome: 'ok:merged:applied:pre_gate_row' }, 'merged without the gate it was never shaped for');
+      eq(f.rails.calls, [], 'no rails asked');
+      eq(f.github.merges.map((m) => m.headSha), ['H1'], 'one pinned merge');
+      // Still behind the fresh read: an old row for a head that moved merges nothing.
+      const m = await (await new Delivery(host, 43).open()).approvedAt('H1');
+      applied(await m.land('H1'), 'LANDING', 'landing');
+      const fm = fakePorts(host);
+      fm.github.setPr(m.repo, m.prNumber, m.live('H2'));
+      const mrow = (await host.effects(m.deliveryId)).find((e) => e.kind === 'merge_call')!;
+      const { fromState: _g, ...oldM } = mrow.payload;
+      const outM = await kernelEffectHandlers(fm.ports).merge_call!({ ...(await direct(host, m, 'merge_call')), payload: oldM });
+      ok(String(outM?.outcome).startsWith('skipped:head_moved'), `head moved: ${outM?.outcome}`);
+      eq(fm.github.merges, [], 'nothing merged');
+    },
+  },
+  {
+    name: 'gate at merge time: a base retarget under the call is recorded like a moved head, and nothing merges',
+    async run(host) {
+      const s = await (await new Delivery(host, 39).open()).approvedAt('H1');
+      applied(await s.land('H1'), 'LANDING', 'landing');
+      const f = fakePorts(host, { ingest: new RecordingIngest(async (fact) => ({ result: fact.kind === 'base_changed' ? (await s.submit({ type: 'BaseChanged', actor: 'webhook', live: s.live('H1', { baseRef: 'release' }) })).result : 'ignored' })) });
+      f.github.setPr(s.repo, s.prNumber, s.live('H1', { baseRef: 'release' }));
+      await drainKernel(host, s, f.ports);
+      eq(f.github.merges, [], 'no merge');
+      eq(f.ingest.facts.map((x) => x.kind), ['base_changed'], 'the retarget through the funnel');
+      eq(await outcomesOf(host, s, 'merge_call'), ['skipped:base_moved:applied'], 'recorded');
+      ok((await s.d()).state !== 'LANDING' && !(await s.d()).approvedHeads.includes('H1'), 'the approval of the old diff is dropped');
+    },
+  },
+  {
+    name: 'D11: the policy-merge rule\'s approval lands past an escalation, never past a request for changes the review loop ran out on',
+    async run(host) {
+      const policyMerge = (s: Delivery) => s.submit({ type: 'PolicyMergeApproved', actor: 'rule:policy_merge', headSha: 'H1', reason: 'policy-only escalation, CI green' });
+      const esc = await new Delivery(host, 35).open();
+      await esc.ownerPushed('H1');
+      applied(await esc.verdict('escalate'), 'ESCALATED', 'the reviewer escalated');
+      applied(await policyMerge(esc), 'APPROVED', 'the rule approved H1');
+      applied(await esc.land('H1'), 'LANDING', 'landing');
+      const fe = fakePorts(host);
+      fe.github.setPr(esc.repo, esc.prNumber, esc.live('H1'));
+      await drainKernel(host, esc, fe.ports);
+      eq(fe.github.merges.map((m) => m.headSha), ['H1'], 'an escalation the rule lifted lands');
+
+      const rc = await new Delivery(host, 36).open({ maxRounds: 1 });
+      await rc.ownerPushed('H1');
+      applied(await rc.verdict('request_changes'), 'ESCALATED', 'the review loop ran out with changes asked');
+      eq((await rc.d()).stateReason, 'review_exhausted', 'review_exhausted');
+      applied(await policyMerge(rc), 'APPROVED', 'the rule approved H1 anyway');
+      applied(await rc.land('H1'), 'LANDING', 'landing');
+      const fr = fakePorts(host);
+      fr.github.setPr(rc.repo, rc.prNumber, rc.live('H1'));
+      await drainKernel(host, rc, fr.ports);
+      eq(fr.github.merges, [], 'the open request for changes holds at merge time');
+      eq(await outcomesOf(host, rc, 'merge_call'), ['ok:gate_refused:review:applied'], 'the review half refused');
+      eq(pick(await rc.d(), ['state', 'stateReason']), { state: 'ESCALATED', stateReason: 'landing_needs_human' }, 'a person decides');
+    },
+  },
+  {
+    name: 'buildd/landing: failure while review is pending, success once approved, failure again on a new head; an older or duplicate effect never overwrites the newer answer',
+    async run(host) {
+      const s = await new Delivery(host, 29).open();
+      const f = fakePorts(host);
+      const published = () => f.github.written.filter((w) => w.op === 'publishStatus').map((w) => ({ sha: w.sha, state: w.state, context: w.context }));
+      const lastDesc = () => String(f.github.written.filter((w) => w.op === 'publishStatus').at(-1)?.description ?? '');
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      await drainKernel(host, s, f.ports);
+      eq(published().at(-1), { sha: 'H1', state: 'failure', context: 'buildd/landing' }, 'review missing: failure');
+      ok(lastDesc().includes('review of H1 is pending'), `names the wait: ${lastDesc()}`);
+      applied(await s.verdict('request_changes'), 'CHANGES_REQUESTED', 'changes asked');
+      await drainKernel(host, s, f.ports);
+      eq(published().at(-1), { sha: 'H1', state: 'failure', context: 'buildd/landing' }, 'changes asked: failure');
+      const fix = await s.startFix();
+      applied(await s.push('H2', { attribution: { descendsFromBound: true } }), 'FIXING', 'fix pushed');
+      applied(await s.fixEnded(fix, { localHeadSha: 'H2', commitCount: 1, live: s.live('H2'), proof: { liveContainsLocal: true } }), 'AWAITING_REVIEW', 'fix ended');
+      applied(await s.verdict('approve'), 'APPROVED', 'approved at H2');
+      await drainKernel(host, s, f.ports);
+      eq(published().at(-1), { sha: 'H2', state: 'success', context: 'buildd/landing' }, 'approved: success at H2');
+      ok(!published().some((x) => x.sha === 'H1' && x.state === 'success'), 'H1 was never given success');
+      const count = published().length;
+      // Every version owes one effect, and only the newest publishes: no older answer was written after a newer one.
+      const versions = (await host.effects(s.deliveryId)).filter((e) => e.kind === 'publish_landing_status');
+      eq(versions.length, (await host.transitions(s.deliveryId)).length - 1, 'one status effect per version once the PR is bound');
+      const now = (await s.d()).version;
+      const older = versions.filter((e) => Number(e.payload.version) < now).at(-1)!;
+      const h = kernelEffectHandlers(f.ports);
+      eq(await h.publish_landing_status!({ ...(await direct(host, s, 'publish_landing_status')), payload: older.payload, dedupeKey: older.dedupeKey }), { outcome: 'skipped:older_version' }, 'a late older effect publishes nothing');
+      eq(await h.publish_landing_status!(await direct(host, s, 'publish_landing_status')), { outcome: 'ok:unchanged:success' }, 'a duplicate of the newest finds GitHub already showing it');
+      eq(published().length, count, 'no second write of the same answer');
+      eq(published().at(-1), { sha: 'H2', state: 'success', context: 'buildd/landing' }, 'still success at H2');
+      applied(await s.push('H3'), 'AWAITING_REVIEW', 'a new head');
+      await drainKernel(host, s, f.ports);
+      eq(published().at(-1), { sha: 'H3', state: 'failure', context: 'buildd/landing' }, 'a new head starts at failure');
+    },
+  },
+  {
+    name: 'buildd/landing: a drain holding an older read is never the last write (newest wins across drains)',
+    async run(host) {
+      const s = await new Delivery(host, 40).open();
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'under review');
+      const f = fakePorts(host);
+      let moved = false;
+      // While this drain publishes "review pending", the review approves (another drain's version).
+      f.github.onStatus = async () => { if (moved) return; moved = true; applied(await s.verdict('approve'), 'APPROVED', 'approved mid-publish'); };
+      const h = kernelEffectHandlers(f.ports);
+      const rows = (await host.effects(s.deliveryId)).filter((e) => e.kind === 'publish_landing_status');
+      const mine = rows.at(-1)!;
+      await h.publish_landing_status!({ ...(await direct(host, s, 'publish_landing_status')), payload: mine.payload, dedupeKey: mine.dedupeKey });
+      const last = f.github.written.filter((w) => w.op === 'publishStatus').at(-1)!;
+      eq({ sha: last.sha, state: last.state }, { sha: 'H1', state: 'success' }, 'the newer answer is the last write');
+    },
+  },
+  {
+    name: 'buildd/landing: an effect that runs out of retries never leaves a success it could not re-confirm',
+    async run(host) {
+      const s = await (await new Delivery(host, 30).open()).approvedAt('H1');
+      const f = fakePorts(host);
+      const writes = f.github.writes;
+      let calls = 0;
+      const real = writes.publishStatus;
+      writes.publishStatus = async (p) => { calls++; if (calls === 1) throw new Error('GitHub 502'); return real(p); };
+      const e = { ...(await direct(host, s, 'publish_landing_status')), attemptCount: EFFECT_MAX_ATTEMPTS };
+      let threw = false;
+      try { await kernelEffectHandlers(f.ports).publish_landing_status!(e); } catch { threw = true; }
+      ok(threw, 'the effect still fails (and goes dead)');
+      const last = f.github.written.filter((w) => w.op === 'publishStatus').at(-1) as { state: string; description: string } | undefined;
+      eq(last?.state, 'failure', 'exhaustion publishes failure');
+      ok(String(last?.description).includes('could not confirm'), `actionable: ${last?.description}`);
+    },
+  },
+  {
+    name: 'AC-15: a person merges on GitHub over an open verdict: MERGED, merged over open findings, one trunk fix filed and none on replay; nothing approved',
+    async run(host) {
+      const s = await new Delivery(host, 33).open();
+      await s.ownerPushed('H1');
+      applied(await s.verdict('request_changes'), 'CHANGES_REQUESTED', 'changes asked');
+      const round = await s.latestRound();
+      const r = await s.submit({ type: 'PrMerged', actor: 'webhook', live: { ...s.mergedLive('H1'), mergedBy: 'a-person' } });
+      applied(r, 'MERGED', 'merged on GitHub');
+      const ev = (r as Extract<CommandResult, { result: 'applied' }>).decision.evidence;
+      eq(pick(ev as Record<string, unknown>, ['external', 'mergedBy', 'mergedHead', 'merged_over_open_findings', 'reviewClass']),
+        { external: true, mergedBy: 'a-person', mergedHead: 'H1', merged_over_open_findings: true, reviewClass: 'merged_over_verdict' }, 'recorded as it happened');
+      const f = fakePorts(host);
+      f.reviews.outputs.set(round.id, { verdict: 'request_changes', feedback: 'the header copy says "Needs you"' });
+      await drainKernel(host, s, f.ports);
+      const fixes = () => f.work.filed.filter((w) => w.role === 'external_merge_fix');
+      eq(fixes().length, 1, 'one fix filed');
+      eq(pick(fixes()[0]!.target, ['repoFullName', 'prNumber', 'baseRef']), { repoFullName: s.repo, prNumber: null, baseRef: 'dev' }, 'against the base, not the PR');
+      ok(fixes()[0]!.description!.includes('Needs you'), 'carries what the review asked');
+      notApplied(await s.submit({ type: 'PrMerged', actor: 'webhook', live: { ...s.mergedLive('H1'), mergedBy: 'a-person' } }), 'duplicate', 'idempotency_key_seen', 'webhook replayed');
+      await drainKernel(host, s, f.ports);
+      eq(await kernelEffectHandlers(f.ports).dispatch_external_merge_fix!(await direct(host, s, 'dispatch_external_merge_fix')), { outcome: 'ok:task_exists' }, 'a redelivered effect files nothing');
+      eq(fixes().length, 1, 'still one fix');
+      const d = await s.d();
+      eq(pick(d, ['state', 'approvedHeads', 'approvalBasis']), { state: 'MERGED', approvedHeads: [], approvalBasis: null }, 'nothing approved');
+      eq(deriveDeliveryView({ view: await s.view() })!.headline, 'Merged', 'shown as merged, never approved');
+
+      // A buildd door's merge (through LANDING) is not external and owes no fix.
+      const b = await (await new Delivery(host, 34).open()).approvedAt('H1');
+      applied(await b.land('H1'), 'LANDING', 'landing');
+      applied(await b.submit({ type: 'MergeCallResult', actor: 'kernel', headSha: 'H1', outcome: 'merged' }), 'LANDING', 'merge answer');
+      const rb = await b.merged('H1');
+      applied(rb, 'MERGED', 'merged by the kernel');
+      eq((rb as Extract<CommandResult, { result: 'applied' }>).decision.evidence.external ?? null, null, 'not external');
+      eq(await b.count('dispatch_external_merge_fix'), 0, 'no fix owed');
     },
   },
   {
@@ -917,7 +1216,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       // §8.4: a review owed for a round is posted at that round's commit, not at the head the PR shows now.
       const before = f.github.written.length;
       eq(await kernelEffectHandlers(f.ports).post_review!(await direct(host, s, 'post_review', { roundId: r1.id, event: 'REQUEST_CHANGES' })), { outcome: 'ok' }, 'posted');
-      eq(f.github.written.slice(before).map((w) => w.commitId), ['H1'], 'at the round head, with the PR now at H2');
+      eq(f.github.written.slice(before).filter((w) => w.op === 'postReview').map((w) => w.commitId), ['H1'], 'at the round head, with the PR now at H2');
     },
   },
   {

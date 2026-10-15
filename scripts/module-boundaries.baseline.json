@@ -6,12 +6,6 @@
     "apps/web/src/app/api/accounts/route.ts": {
       "apps/web/src/lib/personal-workspace-links.ts": "notifications"
     },
-    "apps/web/src/app/api/auth/cli/route.ts": {
-      "apps/web/src/lib/personal-workspace-links.ts": "notifications"
-    },
-    "apps/web/src/app/api/auth/device/approve/route.ts": {
-      "apps/web/src/lib/personal-workspace-links.ts": "notifications"
-    },
     "apps/web/src/app/api/cron/codex-token-refresh/route.ts": {
       "apps/web/src/lib/mcp-connector-refresh.ts": "connectors",
       "apps/web/src/lib/notify.ts": "notifications"
@@ -81,7 +75,6 @@
       "apps/web/src/lib/prompt-evals/run.ts": "experiments",
       "apps/web/src/lib/prompt-evals/store.ts": "experiments",
       "apps/web/src/lib/pushover.ts": "notifications",
-      "apps/web/src/lib/review-verdict-gate.ts": "reviews-merge",
       "apps/web/src/lib/spec-recheck.ts": "spec-conformance",
       "packages/core/mission-integration.ts": "missions"
     },
@@ -322,6 +315,10 @@
     },
     "apps/web/src/lib/github.ts": {
       "apps/web/src/lib/ci-lifecycle.ts": "reviews-merge"
+    },
+    "apps/web/src/lib/held-pr-tasks.ts": {
+      "apps/web/src/lib/notify.ts": "notifications",
+      "apps/web/src/lib/review-verdict-gate.ts": "reviews-merge"
     },
     "apps/web/src/lib/home-fleet.ts": {
       "apps/web/src/lib/fleet-view.ts": "health-quality"

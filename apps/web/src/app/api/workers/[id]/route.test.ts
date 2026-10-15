@@ -17834,6 +17834,13 @@ describe('PATCH /api/workers/[id] — completion verdicts (characterization)', (
     mockLoadVisualAuditEvidence.mockResolvedValue(okEvidence as any);
   });
 
+  it('a held worker PR records the method it merges with on the task context', async () => {
+    setup();
+    releaseReturns({ status: 'pending_ci', message: 'Waiting', releasePrNumber: 12, releaseMergeMethod: 'squash' });
+    await patch({ status: 'completed', summary: 'Done.', summarySource: 'agent' });
+    expect(releaseSets()[0]).toMatchObject({ context: { releasePrPending: true, releasePrNumber: 12, releaseMergeMethod: 'squash' } });
+  });
+
   it('release held for CI: no task.completed, no push and no chat post until the CI settles it', async () => {
     setup();
     releaseReturns({ status: 'pending_ci', message: 'Waiting on CI', releasePrNumber: 9, releasePrUrl: 'https://example.test/pr/9' });

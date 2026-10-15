@@ -145,7 +145,8 @@ async function newestEvidence(pins: Array<{ taskId: string; specRevisionId: stri
     .orderBy(desc(specOutcomeVerdicts.createdAt));
   const want = new Map(pins.map((p) => [p.taskId, p.specRevisionId]));
   for (const r of rows) {
-    if (want.get(r.taskId) !== r.specRevisionId) continue;
+    // A mission-subject verdict has no task; it is not a task's delivery evidence.
+    if (!r.taskId || want.get(r.taskId) !== r.specRevisionId) continue;
     const k = `${r.taskId}:${r.criterionId}`;
     if (!out.has(k)) out.set(k, r.evidence);
   }

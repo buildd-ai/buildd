@@ -2,6 +2,7 @@ import { OPEN_TASK_STATUSES } from '@buildd/shared';
 import { withoutLandingOverrideGrant } from '@/lib/landing-override-grant';
 import { withoutPrReachGrant } from '@/lib/pr-reach-grant';
 import { withoutReviewDispatchContext } from '@/lib/verdict-provenance';
+import { withoutMissionVerificationMarkers } from '@/lib/server-context-markers';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
 import { taskSchedules, tasks, workspaces, missions, workers, accounts, accountWorkspaces } from '@buildd/core/db/schema';
@@ -38,6 +39,7 @@ import { withCronRun, type CronReport } from '@/lib/cron-run';
 import { resolveEffectiveRoleSlugs } from '@/lib/effective-roles';
 import { assertScheduleSkillsAvailable, fileMissingSkillFriction, MissingScheduleSkillError } from '@/lib/schedule-skill-preflight';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { liveLinkCondition } from '@/lib/granted-links';
 
 const SCHEDULE_TIERS: ReadonlySet<string> = new Set(['premium-plus', 'premium', 'standard', 'budget']);
 
@@ -191,6 +193,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
           where: sqlWhere(and(
             inArray(accountWorkspaces.workspaceId, scheduleWorkspaceIds),
             eq(accountWorkspaces.canClaim, true),
+            liveLinkCondition(),
           )),
           columns: { accountId: true, workspaceId: true },
         })
@@ -377,7 +380,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
         const template = schedule.taskTemplate;
         const taskContext: Record<string, unknown> = {
           // A landing grant is a person's call on one task, never a template's (landing-override-grant.ts).
-          ...withoutPrReachGrant(withoutReviewDispatchContext(withoutLandingOverrideGrant(template.context || {}))),
+          ...withoutMissionVerificationMarkers(withoutPrReachGrant(withoutReviewDispatchContext(withoutLandingOverrideGrant(template.context || {})))),
           scheduleId: schedule.id,
           scheduleName: schedule.name,
         };

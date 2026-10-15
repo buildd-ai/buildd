@@ -1,6 +1,7 @@
 /**
- * The confirm component approves only on an explicit click: rendering it
- * sends nothing, and the click's request carries confirm: true via POST.
+ * The confirm component never approves: rendering it sends nothing, and its
+ * one action is a link to the runner consent page for this code, where only
+ * an explicit Connect runner approves (spec "One runner for every team you run", R-1).
  */
 import { describe, it, expect, afterEach } from 'bun:test';
 import { readFileSync } from 'node:fs';
@@ -30,17 +31,17 @@ describe('DeviceConfirm', () => {
     expect(calls).toBe(0);
   });
 
-  it('approves only from the button handler, by POST with confirm: true', () => {
+  it('never approves itself: no effect, no request, only a link to the consent page', () => {
     const src = readFileSync(join(import.meta.dir, 'DeviceConfirm.tsx'), 'utf8');
-    expect(src).not.toMatch(/useEffect|setTimeout|useLayoutEffect/);
-    expect(src).toMatch(/onClick=\{approve\}/);
-    expect(src).toMatch(/method: 'POST'/);
-    expect(src).toMatch(/confirm: true/);
+    expect(src).not.toMatch(/useEffect|setTimeout|useLayoutEffect|fetch\(/);
+    const html = renderToStaticMarkup(<DeviceConfirm details={details} />);
+    expect(html).toMatch(/data-testid="device-confirm-approve"/);
+    expect(html).toContain('href="/api/auth/device/consent?code=ABCD-1234"');
   });
 
-  it('just now reads as just now, and a team with no email still names the team', () => {
+  it('just now reads as just now, and no email reads as your account', () => {
     const html = renderToStaticMarkup(<DeviceConfirm details={details} />);
     expect(html).toContain('just now');
-    expect(html).toMatch(/data-testid="device-confirm-target"[^>]*>Solo</);
+    expect(html).toMatch(/data-testid="device-confirm-target"[^>]*>your account</);
   });
 });

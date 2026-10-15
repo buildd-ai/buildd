@@ -31,6 +31,7 @@ import { heartbeatState, withClaimHealthCheck } from './claim-budget-signals';
 import { authorizeLocalRequest, escapeHtml, injectLocalToken, isLoopbackAddress, loadOrCreateLocalToken, resolveBindHost } from './local-server-auth';
 import { bannerPalette, renderBanner } from './banner';
 import { checkSingleInstance, decideStart, probeRunnerSocket, matchWorkerAction, relayWorkerAction, runnerSocketPath, serveRunnerSocket, type RunnerIdentity, type RunnerSocketServer } from './runner-socket';
+import { withMissionStages } from './mission-stages';
 
 const PORT = parseInt(process.env.PORT || '8766');
 // Entrypoint: resolving once at load is fine here (see buildd-home.ts).
@@ -1839,7 +1840,8 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
 
     if (path === '/api/tasks' && req.method === 'GET') {
       try {
-        const tasks = await buildd!.listTasks();
+        // mission.stage comes from the missions module's own endpoint (R-18), best effort.
+        const tasks = await withMissionStages(await buildd!.listTasks(), ids => buildd!.listMissionStages(ids));
         return Response.json({ tasks }, { headers: corsHeaders });
       } catch (err: any) {
         // If 401, API key is invalid - clear and show setup

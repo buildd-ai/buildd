@@ -798,6 +798,25 @@ describe('buildMissionAdjacency', () => {
     expect(adj.offSetBlockersOf.get('a')).toEqual(['z']);
   });
 
+  it('an edge the claim gate released by another arm is satisfied and says which arm', () => {
+    const releasedBy = (dependent: string, dep: string) => (dependent === 'b' && dep === 'a' ? 'early_release' as const : undefined);
+    const adj = buildMissionAdjacency([t('a', null, 'in_progress'), t('b', ['a']), t('c', ['a'])], { releasedBy });
+    expect(adj.blockersOf.get('b')).toEqual([{ id: 'a', satisfied: true, releasedBy: 'early_release' }]);
+    expect(adj.blockersOf.get('c')).toEqual([{ id: 'a', satisfied: false }]);
+    expect(adj.dependentsOf.get('a')).toEqual([{ id: 'b', satisfied: true, releasedBy: 'early_release' }, { id: 'c', satisfied: false }]);
+  });
+
+  it('a released off-set dependency is not an off-strip blocker', () => {
+    const lookup = (id: string) => (id === 'z' ? { status: 'in_progress', workers: [] } : undefined);
+    const adj = buildMissionAdjacency([t('a', ['z'])], { lookup, releasedBy: () => 'surface_audit_scope' });
+    expect(adj.offSetBlockersOf.get('a')).toEqual([]);
+  });
+
+  it('a status-satisfied edge carries no releasedBy even when another arm also holds', () => {
+    const adj = buildMissionAdjacency([t('a', null, 'cancelled'), t('b', ['a'])], { releasedBy: () => 'early_release' });
+    expect(adj.blockersOf.get('b')).toEqual([{ id: 'a', satisfied: true }]);
+  });
+
   it('folds raw ids onto their cell', () => {
     const adj = buildMissionAdjacency([t('row', null), t('b', ['attempt'])], {
       resolveId: id => (id === 'attempt' ? 'row' : id),

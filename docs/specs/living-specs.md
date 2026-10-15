@@ -5,10 +5,10 @@ owner: max
 last_verified: 2026-10-14
 summary: Every Living Spec revision MUST stay immutable and no writer silently overwrites another; a person approves one revision, and work reads verified only when it passes that revision on its current head.
 domain: knowledge
-surfaces: [apps/web/src/lib/specs/store.ts, apps/web/src/lib/specs/provisional.ts, apps/web/src/lib/specs/approval.ts, apps/web/src/lib/specs/pin.ts, apps/web/src/app/api/specs/[specId]/route.ts]
+surfaces: [apps/web/src/lib/specs/store.ts, apps/web/src/lib/specs/mission-outcome.ts, apps/web/src/lib/specs/mission-selection.ts, apps/web/src/lib/specs/provisional.ts, apps/web/src/lib/specs/approval.ts, apps/web/src/lib/specs/pin.ts, apps/web/src/app/api/specs/[specId]/route.ts]
 related: [artifacts-and-sharing, knowledge-ingest-pipeline]
-keywords: [living spec, spec_taxonomy, cold-start taxonomy, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs, recall, knowledge graph, living_spec, area, taxonomy, spec_area, filed by buildd, backfill, generated repo copy, generated_from, spec import, spec index, provisional pin, build ahead of approval, attach_provisional, re-grade, confirm_import, import confirmation, repo_source, spec attachment, attachment:, binding attachment, reference attachment, changed since approval, Files, retire, retired, superseded, restore, publication policy, spec_publication, publish anyway, removal PR]
-verified_by: [apps/web/tests/db/specs.test.ts, apps/web/src/lib/spec-taxonomy-decision.test.ts, apps/web/tests/db/spec-provisional-pin.test.ts, apps/web/src/lib/specs/provisional-text.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecIndex.dom.test.tsx, apps/web/src/lib/specs/hub.test.ts, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts, apps/web/tests/db/spec-neighbours.test.ts, apps/web/src/lib/specs/neighbours.test.ts, apps/web/tests/db/spec-duplicates.test.ts, apps/web/src/lib/spec-duplicate-decision.test.ts, apps/web/src/components/MarkdownContent.spec-surface.dom.test.tsx, apps/web/tests/db/spec-comments.test.ts, apps/web/src/components/SpecComments.dom.test.tsx, packages/spec-contract/src/repo-copy.test.ts, apps/web/tests/db/spec-repo-copy.test.ts, scripts/check-generated-specs.test.ts, apps/web/src/lib/specs/no-prod-data-scan.test.ts, apps/web/tests/db/spec-organize.test.ts, apps/web/src/lib/spec-area-decision.test.ts, apps/web/src/lib/specs/areas.test.ts, apps/web/src/app/app/dev/fixtures/spec-index-fixtures.test.ts, apps/web/tests/db/spec-import.test.ts, packages/spec-contract/src/repo-import.test.ts, apps/web/src/app/api/specs/import/route.test.ts, apps/web/src/lib/specs/index-view-imported.test.ts, apps/web/tests/db/spec-attachments.test.ts, apps/web/src/components/MarkdownContent.attachments.dom.test.tsx, packages/core/__tests__/mcp-specs-attachments.test.ts, apps/web/src/app/api/specs/[specId]/attachments/[name]/route.test.ts, apps/web/src/components/SpecAttachments.dom.test.tsx, apps/web/tests/db/spec-retire.test.ts, apps/web/src/app/api/specs/[specId]/retire/route.test.ts, packages/core/__tests__/mcp-specs-retire.test.ts, apps/web/src/components/SpecRetire.dom.test.tsx, apps/web/src/lib/spec-publication-decision.test.ts]
+keywords: [living spec, spec_taxonomy, cold-start taxonomy, repo spec reference, repoRefs, read_ref, commit sha, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs, recall, knowledge graph, living_spec, area, taxonomy, spec_area, filed by buildd, backfill, generated repo copy, generated_from, spec import, spec index, provisional pin, build ahead of approval, attach_provisional, re-grade, confirm_import, import confirmation, repo_source, spec attachment, attachment:, binding attachment, reference attachment, changed since approval, Files, retire, retired, superseded, restore, publication policy, spec_publication, publish anyway, removal PR, outcome spec, outcomeSpec, final verification, integrated target, mission-level verdict, spec repair]
+verified_by: [apps/web/tests/db/specs.test.ts, apps/web/src/lib/spec-taxonomy-decision.test.ts, apps/web/tests/db/spec-provisional-pin.test.ts, apps/web/src/lib/specs/provisional-text.test.ts, apps/web/tests/db/spec-section-revise.test.ts, apps/web/tests/db/spec-repo-refs.test.ts, apps/web/src/lib/specs/repo-refs.test.ts, apps/web/src/lib/specs/repo-source.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/tests/db/spec-approval-confirm.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/components/SpecApprovalRequest.dom.test.tsx, apps/web/tests/db/spec-approval-view.test.ts, apps/web/src/lib/specs/diff.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, packages/spec-contract/src/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts, apps/web/tests/db/spec-knowledge.test.ts, packages/core/__tests__/living-spec-knowledge.test.ts, apps/web/tests/db/spec-pages.test.ts, apps/web/src/lib/specs/page-view.test.ts, apps/web/src/components/SpecIndex.dom.test.tsx, apps/web/src/lib/specs/hub.test.ts, apps/web/src/components/SpecPage.dom.test.tsx, apps/web/tests/db/spec-pin-at-claim.test.ts, packages/spec-contract/src/scope.test.ts, apps/web/src/components/SpecSourceBlock.test.tsx, packages/spec-contract/src/check-lines.test.ts, apps/web/src/lib/specs/approval.test.ts, packages/spec-contract/src/contract.test.ts, packages/spec-contract/src/no-buildd-imports.test.ts, packages/spec-contract/src/confluence.test.ts, apps/web/tests/db/spec-visual-verdict.test.ts, apps/web/src/app/api/workers/claim/visual-audit-spec-criteria.test.ts, packages/spec-contract/src/design.test.ts, apps/web/tests/db/spec-design.test.ts, apps/web/tests/db/spec-neighbours.test.ts, apps/web/src/lib/specs/neighbours.test.ts, apps/web/tests/db/spec-duplicates.test.ts, apps/web/src/lib/spec-duplicate-decision.test.ts, apps/web/src/components/MarkdownContent.spec-surface.dom.test.tsx, apps/web/tests/db/spec-comments.test.ts, apps/web/src/components/SpecComments.dom.test.tsx, packages/spec-contract/src/repo-copy.test.ts, apps/web/tests/db/spec-repo-copy.test.ts, scripts/check-generated-specs.test.ts, apps/web/src/lib/specs/no-prod-data-scan.test.ts, apps/web/tests/db/spec-organize.test.ts, apps/web/src/lib/spec-area-decision.test.ts, apps/web/src/lib/specs/areas.test.ts, apps/web/src/app/app/dev/fixtures/spec-index-fixtures.test.ts, apps/web/tests/db/spec-import.test.ts, packages/spec-contract/src/repo-import.test.ts, apps/web/src/app/api/specs/import/route.test.ts, apps/web/src/lib/specs/index-view-imported.test.ts, apps/web/tests/db/spec-attachments.test.ts, apps/web/src/components/MarkdownContent.attachments.dom.test.tsx, packages/core/__tests__/mcp-specs-attachments.test.ts, apps/web/src/app/api/specs/[specId]/attachments/[name]/route.test.ts, apps/web/src/components/SpecAttachments.dom.test.tsx, apps/web/tests/db/spec-retire.test.ts, apps/web/src/app/api/specs/[specId]/retire/route.test.ts, packages/core/__tests__/mcp-specs-retire.test.ts, apps/web/src/components/SpecRetire.dom.test.tsx, apps/web/src/lib/spec-publication-decision.test.ts, apps/web/src/lib/specs/mission-outcome-fold.test.ts, apps/web/src/lib/specs/mission-selection.test.ts, apps/web/src/lib/specs/mission-verdict-authority.test.ts, packages/core/__tests__/goal-criteria-living-spec.test.ts]
 supersedes: []
 assertions:
   - id: approve-spec-revision
@@ -1911,3 +1911,105 @@ production-data scan and the decision have both cleared the exact text.
   person's mark or override publish.
 - The same policy and kind for PR bodies, commit messages and the docs site.
 - A removal PR a person merged is not read back: the page keeps naming it.
+
+## 24. A mission's selected outcome spec
+
+**Capability statement**: A mission that explicitly selects an outcome spec
+MUST complete only when every in-scope criterion of the pinned revision passes
+on the mission's integrated target, read from verdicts about the mission
+itself. Every task PR review passing MUST NOT stand in for that audit. A
+mission that selects no spec MUST behave exactly as before.
+
+**Decision**:
+- D-23 (native Slice 12 D-19): Selection is explicit and typed (2026-10-14). Selecting a spec adds one
+  required `living_spec` goal criterion, pinned by the server, so the existing
+  completion gate (`canCompleteMission` refuses unless every goal criterion
+  passes) is the only gate. Mentioning a spec, citing it in `repoRefs` or
+  pinning tasks to it never selects it, and no existing mission is migrated.
+- D-24 (native Slice 12 D-20): The scoped exception to D-4/D-5. A task's governed outcome stays
+  advisory (§7). Only a mission's selected outcome spec blocks, and only that
+  mission's completion, never a task or a merge.
+
+**Invariants**:
+- One write path: `selectMissionSpec` (`apps/web/src/lib/specs/mission-selection.ts`),
+  behind PATCH `/api/missions/[id]` `outcomeSpec` and MCP `manage_missions update outcomeSpec`.
+  The revision id, number and hash come from the database (`pinSpecSource`),
+  never from the caller; a `living_spec` row written straight into
+  `goalCriteria` is refused unless it is the stored row unchanged. Selecting
+  the same spec, revision and scope again is a no-op that keeps every verdict.
+  The pin moves only when a revision is named: a newer draft or a later
+  approval never repins a mission by itself.
+- Scope is every `R-n`/`AC-n` of the revision unless narrowed; a narrowed
+  scope needs a reason. Waiving one criterion and removing the selection are a
+  person's acts with a reason, each leaving a decision note; a waived
+  criterion reads waived, never passed. The criterion's fingerprint covers the
+  revision, hash, scope and waivers, so no verdict carries across a change.
+- Mission-level verdicts are rows in `spec_outcome_verdicts` with `mission_id`
+  set and `task_id` null (a check constraint requires exactly one). They are
+  recorded by a person or the mission's final verification task
+  (`recordMissionSpecVerdict`); a builder, fix, review-round or any other task
+  token of the mission is refused (403). A commit that is not the current
+  target is refused (409). Task-subject rows are never read for the mission.
+- The integrated target is read from GitHub, never from a runner: on a
+  mission-branch mission, the integration branch's head, and any new commit
+  makes every verdict stale; on a direct mission, a verdict holds while its
+  commit contains every merged mission deliverable. Unknown ancestry or an
+  unreadable branch is never a pass (`resolveMissionTarget`).
+- The fold (`foldMissionSpec`, pure) passes only when every in-scope, unwaived
+  criterion's newest verdict is `pass` on the current target; a `fail` fails;
+  `inconclusive`, `unsupported`, a missing verdict, a stale pass or no target
+  reads unverified.
+- Once the build work is done and the criterion is not verified at the target,
+  one `[final verification]` task is filed (bookkeeping, outside build counts,
+  deduped by criterion fingerprint and target). It runs where the mission
+  runs: a local-executor mission's tasks are claimed only from a person's
+  session. A failed criterion is repaired by an explicit `[spec repair]` task;
+  when it lands the target moves and the verification runs again. A criterion
+  the new commits did not touch is re-affirmed with a new verdict that cites
+  the earlier one (`reaffirms`); nothing carries silently.
+- A `goalCriteria` write that drops or changes a stored `living_spec` entry,
+  `null` included, is refused (`outcomeSpecWriteRefusal`); it leaves only
+  through `outcomeSpec { remove: true, reason }`.
+- `context.finalVerification` and `context.specRepair` are the server's to
+  write: a caller's copy is dropped on every create path and template
+  (`withoutMissionVerificationMarkers`), and a repair is marked only when the
+  mission's own final verification files it (`specRepairStamp`).
+- The final verification is filed once per integrated target (the integration
+  head, or on a direct mission the set of merged mission PRs): a completed run
+  is not repeated at the same target, and a run that ended without one is
+  retried once (`decideFinalVerification`).
+- PR reviews and visual evidence may inform a verdict; only a mission-level
+  verdict decides it.
+  (`apps/web/src/lib/specs/mission-outcome-fold.test.ts`,
+  `apps/web/src/lib/specs/mission-selection.test.ts`,
+  `apps/web/src/lib/specs/mission-verdict-authority.test.ts`,
+  `apps/web/src/lib/server-context-markers.test.ts`,
+  `apps/web/src/lib/specs/mission-verification.test.ts`,
+  `apps/web/src/app/api/missions/[id]/route.test.ts`,
+  `apps/web/src/lib/mission-criteria-eval.test.ts`,
+  `packages/core/__tests__/goal-criteria-living-spec.test.ts`,
+  `packages/core/__tests__/mcp-tools-specs.test.ts`).
+
+**Code surface**:
+- `apps/web/src/lib/specs/mission-selection.ts` — `selectMissionSpec`, `mergeSelection`
+- `apps/web/src/lib/specs/mission-outcome.ts` — `recordMissionSpecVerdict`, `recordMissionVerdictServer`, `readMissionSpecStanding`, `resolveMissionTarget`, `missionVerdictAuthority`
+- `apps/web/src/lib/specs/mission-outcome-fold.ts` — `foldMissionSpec`, `verdictIsCurrent`
+- `apps/web/src/lib/specs/mission-verification.ts` — `ensureFinalVerification`, `decideFinalVerification`, `targetKey`
+- `apps/web/src/lib/server-context-markers.ts` — `withoutMissionVerificationMarkers`, `specRepairStamp`
+- `apps/web/src/app/api/specs/mission-outcomes/[missionId]/route.ts` — `GET`, `POST`
+- `apps/web/src/lib/mission-outcome-spec-view.ts` — `outcomeSpecView`
+
+**Dashboard**: the mission settings choose the outcome spec (spec, revision,
+an optional narrowed scope with its reason) through the same `outcomeSpec`
+write. The goal criteria row reads its pinned revision, coverage on the
+integrated result in words, the open requirements by standing and the waived
+ones as waived, never as passed; waiving and removing take a reason there. The
+Overview shows it as one Verify row read from the same evaluated state
+(`apps/web/src/lib/mission-outcome-spec-view.test.ts`,
+`apps/web/src/app/app/(protected)/missions/[id]/OutcomeSpecCriterion.dom.test.tsx`,
+`apps/web/src/app/app/(protected)/missions/[id]/OutcomeSpecPicker.dom.test.tsx`).
+
+**Not yet**:
+- A criterion's `check:` line and the visual audit do not yet record
+  mission-level verdicts on their own (`recordMissionVerdictServer` is the
+  entry point they will use); the final verification records them.

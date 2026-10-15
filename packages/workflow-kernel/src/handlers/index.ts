@@ -24,7 +24,7 @@ export { activityHandlers } from './activity';
 export { ciEvidenceFactKey, ciHandlers } from './ci';
 export { conflictHandlers } from './conflict';
 export { handOffToLegacyOn } from './hand-off';
-export { landingHandlers } from './landing';
+export { externalMergeFixDescription, externalMergeFixTitle, landingHandlers } from './landing';
 export { postReviewBody, pushRecoveryFollowupKey, reviewHandlers } from './review';
 export { supersessionHandlers } from './supersession';
 export { trunkFixDescription, trunkFixTitle, trunkHandlers, trunkSteerNote } from './trunk';
@@ -33,7 +33,7 @@ export { trunkFixDescription, trunkFixTitle, trunkHandlers, trunkSteerNote } fro
 export const KERNEL_HANDLED_EFFECTS: readonly EffectKind[] = [
   'scan_supersession', 'project_supersession', 'wake_mission',
   'render_activity',
-  'merge_call', 'verify_merge', 'emit_pr_merged', 'finalize_mission_pr',
+  'merge_call', 'verify_merge', 'emit_pr_merged', 'finalize_mission_pr', 'publish_landing_status', 'dispatch_external_merge_fix',
   'dispatch_ci_fix', 'capture_ci_evidence', 'dispatch_trunk_fix',
   'dispatch_review', 'dispatch_fix', 'post_review', 'mission_note', 'notify', 'push_recovery', 'release_attribution', 'gate_event',
   'refresh_branch', 'renumber_migration', 'dispatch_conflict_fix',

@@ -37,3 +37,36 @@ export const trunkFixWork: WorkBuilder = async (req) => {
     },
   };
 };
+
+/**
+ * §13.13 rule 10 (AC-15): the fix owed when a PR was merged outside buildd over
+ * a review verdict still open. The kernel words it (the review's ask, against
+ * the base) and files it under its effect's id, once; this builder adds what a
+ * task row needs. Like a trunk fix, it is work on the base branch, not the PR.
+ */
+export const externalMergeFixWork: WorkBuilder = async (req) => {
+  const workspace = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, req.workspaceId)) });
+  if (!workspace) return { skipped: 'no_workspace' };
+  const detail = req.detail ?? {};
+  return {
+    workspace,
+    values: {
+      workspaceId: req.workspaceId,
+      title: req.title,
+      description: req.description,
+      category: 'bug',
+      kind: 'engineering',
+      creationSource: 'webhook',
+      outputRequirement: 'pr_required',
+      status: 'pending',
+      priority: 7,
+      context: {
+        externalMergeFix: true,
+        mergedPrNumber: detail.prNumber ?? null,
+        reviewRoundId: detail.roundId ?? null,
+        baseBranch: req.target.baseRef ?? null,
+        mergeCommitSha: req.target.headSha ?? null,
+      },
+    },
+  };
+};
