@@ -1778,6 +1778,8 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
         type: 'init',
         configured: !!config.apiKey,
         workers: toPublicWorkers(activeWorkers),
+        // What held the last claims, so `buildd top` says why work waits (spec c7410e76 R-25).
+        claimOutcomes: workerManager?.getClaimOutcomes() ?? { tasks: {}, broad: null },
         config: {
           projectRoots: config.projectRoots,
           builddServer: config.builddServer,

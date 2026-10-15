@@ -7,7 +7,8 @@
  */
 import type { Palette, PaletteToken } from '../terminal-palette';
 import {
-  busySlots, currentMission, currentWorkspace, describeToolCall, formatDuration, missionRows, missionStageLine, missionStageWord, planOf, selectedRow,
+  busySlots, currentMission, currentWorkspace, describeToolCall, formatDuration, missionRows, missionStageLine, missionStageWord, planOf,
+  providerHoldLine, providerHolds, selectedRow,
   taskRows, workerForTask, workspaceSummary, type RowKind, type TaskRow, type TopState,
 } from './state';
 
@@ -393,11 +394,16 @@ function helpBody(state: TopState, cols: number, height: number, p: Palette): st
 /** The whole screen as `rows` lines, each `cols` wide. */
 export function renderFrame(state: TopState, opts: FrameOptions): string[] {
   const { cols, rows, now, palette: p } = opts;
-  const bodyH = Math.max(1, rows - 4);
+  // A provider limit that holds all of that provider's work is said once, on
+  // its own line under the header, instead of on every row (R-25, AC-11).
+  const holdLines = providerHolds(state, now)
+    .slice(0, 2)
+    .map(h => p.fg('warning', fit(' ' + providerHoldLine(h, now), cols)));
+  const bodyH = Math.max(1, rows - 4 - holdLines.length);
   const body = state.mode.kind === 'detail'
     ? detailBody(state, state.mode.taskId, cols, bodyH, now, p)
     : state.mode.kind === 'help'
       ? helpBody(state, cols, bodyH, p)
       : listBody(state, cols, bodyH, now, p);
-  return [header(state, cols, p), rule(cols, p), ...body, rule(cols, p), footer(state, cols, p)];
+  return [header(state, cols, p), ...holdLines, rule(cols, p), ...body, rule(cols, p), footer(state, cols, p)];
 }

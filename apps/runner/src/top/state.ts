@@ -16,6 +16,9 @@
  *   - capacity: maxConcurrent from GET /api/config.
  *   - workspaces: GET /api/workspaces, the workspaces this runner's key reaches
  *     (the `w` switcher and the header count, R-19).
+ *   - claim outcomes: what the server said about the runner's last claim of
+ *     each task and its last broad claim (R-25), in the `init` frame, then
+ *     `claim_outcome` frames. They say what really holds a waiting task.
  */
 import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
 
@@ -62,6 +65,8 @@ export interface TopTask {
   startAt?: string | null;
   claimedBy?: string | null;
   roleSlug?: string | null;
+  /** The agent provider that runs it (claude | codex); absent from older servers, read as claude. */
+  backend?: string | null;
   mode?: string | null;
   kind?: string | null;
   workspace?: { id: string; name: string } | null;
@@ -120,8 +125,12 @@ export interface TopState {
   workspaces: TopWorkspace[];
   /** A workspace id, or the name / id prefix `--workspace` was given; null = all. */
   selectedWorkspace: string | null;
-  /** taskId -> the server's reason this runner's claim was refused. */
-  claimRefusals: Record<string, string>;
+  /**
+   * What the server said about the runner's last claim of each task, and of its
+   * last broad claim (R-25). Kept by the runner (claim-outcomes.ts) and sent
+   * over the socket: in `init`, then one `claim_outcome` frame per claim.
+   */
+  claimOutcomes: { tasks: Record<string, ClaimOutcome>; broad: ClaimOutcome | null };
   /** Mission key: a mission id, or NO_MISSION. */
   selectedMission: string | null;
   focus: 'missions' | 'tasks';
@@ -130,6 +139,23 @@ export interface TopState {
   filter: string;
   mode: Mode;
   status: StatusLine | null;
+}
+
+/**
+ * One claim outcome as the runner keeps it (apps/runner/src/claim-outcomes.ts):
+ * the server's structured reason, exclusion code and lift times.
+ */
+export interface ClaimOutcome {
+  at: number;
+  reason: string;
+  exclusion?: string;
+  detail?: string;
+  until?: string | null;
+  walls?: Array<{ kind: string; backend: string; resetsAt: string | null }>;
+  summary?: string;
+  deferrals?: Record<string, number>;
+  status?: number;
+  refusal?: string;
 }
 
 export const NO_MISSION = '(none)';
@@ -141,7 +167,7 @@ export function initialState(opts: { hostname: string; missionId?: string | null
     tasks: [],
     workspaces: [],
     selectedWorkspace: opts.workspace ?? null,
-    claimRefusals: {},
+    claimOutcomes: { tasks: {}, broad: null },
     selectedMission: opts.missionId ?? null,
     focus: 'tasks',
     missionCursor: 0,
@@ -163,7 +189,8 @@ export type TopEvent =
   | { type: 'connection'; online: boolean }
   | { type: 'status'; status: StatusLine | null }
   // Frames from the socket's /api/events, as the runner sends them.
-  | { type: 'init'; workers?: TopWorker[]; config?: { maxConcurrent?: number; builddServer?: string } }
+  | { type: 'init'; workers?: TopWorker[]; config?: { maxConcurrent?: number; builddServer?: string }; claimOutcomes?: { tasks?: Record<string, ClaimOutcome>; broad?: ClaimOutcome | null } }
+  | { type: 'claim_outcome'; taskId?: string; outcome: ClaimOutcome }
   | { type: 'worker_update'; worker: TopWorker }
   | { type: 'claim_rejected'; taskId?: string; status?: number; reason?: string }
   | { type: string; [k: string]: unknown };
@@ -193,8 +220,11 @@ export function reduce(state: TopState, event: TopEvent): TopState {
     }
     case 'workers':
       return { ...state, workers: mergeWorkers({}, (event as any).workers ?? []) };
-    case 'tasks':
-      return { ...state, tasks: Array.isArray((event as any).tasks) ? (event as any).tasks : state.tasks };
+    case 'tasks': {
+      if (!Array.isArray((event as any).tasks)) return state;
+      const tasks: TopTask[] = (event as any).tasks;
+      return { ...state, tasks, claimOutcomes: { ...state.claimOutcomes, tasks: pruneMovedOutcomes(state.claimOutcomes.tasks, tasks) } };
+    }
     case 'workspaces': {
       const list = (event as any).workspaces;
       if (!Array.isArray(list)) return state;
@@ -221,20 +251,36 @@ export function reduce(state: TopState, event: TopEvent): TopState {
     case 'init': {
       const e = event as Extract<TopEvent, { type: 'init' }>;
       let next: TopState = { ...state, workers: mergeWorkers(state.workers, e.workers ?? []) };
+      if (e.claimOutcomes && typeof e.claimOutcomes === 'object') {
+        const tasks = e.claimOutcomes.tasks && typeof e.claimOutcomes.tasks === 'object' ? e.claimOutcomes.tasks : {};
+        next = { ...next, claimOutcomes: { tasks: pruneMovedOutcomes(tasks, next.tasks), broad: e.claimOutcomes.broad ?? null } };
+      }
       if (e.config) next = reduce(next, { type: 'config', maxConcurrent: e.config.maxConcurrent, builddServer: e.config.builddServer });
       return { ...next, runner: { ...next.runner, online: true } };
     }
     case 'worker_update': {
       const w = (event as any).worker as TopWorker | undefined;
       if (!w?.id) return state;
-      const claimRefusals = { ...state.claimRefusals };
-      delete claimRefusals[w.taskId];
-      return { ...state, workers: { ...state.workers, [w.id]: w }, claimRefusals };
+      if (!state.claimOutcomes.tasks[w.taskId]) return { ...state, workers: { ...state.workers, [w.id]: w } };
+      const tasks = { ...state.claimOutcomes.tasks };
+      delete tasks[w.taskId];
+      return { ...state, workers: { ...state.workers, [w.id]: w }, claimOutcomes: { ...state.claimOutcomes, tasks } };
     }
     case 'claim_rejected': {
+      // The refusal as text. A current runner also sends claim_outcome.
       const e = event as Extract<TopEvent, { type: 'claim_rejected' }>;
       if (!e.taskId) return state;
-      return { ...state, claimRefusals: { ...state.claimRefusals, [e.taskId]: e.reason || `HTTP ${e.status ?? '?'}` } };
+      const outcome: ClaimOutcome = { at: Date.now(), reason: 'refused', status: e.status, refusal: e.reason || `HTTP ${e.status ?? '?'}` };
+      return { ...state, claimOutcomes: { ...state.claimOutcomes, tasks: { ...state.claimOutcomes.tasks, [e.taskId]: outcome } } };
+    }
+    case 'claim_outcome': {
+      const e = event as Extract<TopEvent, { type: 'claim_outcome' }>;
+      if (!e.outcome || typeof e.outcome.reason !== 'string') return state;
+      if (!e.taskId) return { ...state, claimOutcomes: { ...state.claimOutcomes, broad: e.outcome } };
+      const tasks = { ...state.claimOutcomes.tasks };
+      if (e.outcome.reason === 'claimed') delete tasks[e.taskId];
+      else tasks[e.taskId] = e.outcome;
+      return { ...state, claimOutcomes: { ...state.claimOutcomes, tasks } };
     }
     default:
       return state;
@@ -247,7 +293,7 @@ export function reduce(state: TopState, event: TopEvent): TopState {
  * (claim_rejected) and from its own workers starting or finishing.
  */
 export function eventChangesQueue(state: TopState, event: TopEvent): boolean {
-  if (event.type === 'task_assigned' || event.type === 'claim_rejected') return true;
+  if (event.type === 'task_assigned' || event.type === 'claim_rejected' || event.type === 'claim_outcome') return true;
   if (event.type === 'worker_update') {
     const w = (event as any).worker as TopWorker | undefined;
     if (!w?.id) return false;
@@ -532,28 +578,284 @@ function roleLabel(slug: string | null | undefined): string | undefined {
   return slug.split(/[-_]/).map(p => (p ? p[0].toUpperCase() + p.slice(1) : p)).join(' ');
 }
 
+// ── Claim outcomes (R-25) ───────────────────────────────────────────────────
+
+/** The server's per-runner cooldown after a failed worker (claim route CLAIM_COOLDOWN_MS). */
+const RUNNER_COOLDOWN_MS = 60_000;
+/** An outcome with no end time of its own describes the queue for this long. */
+const OUTCOME_TTL_MS = 15 * 60_000;
+
+function isoMs(iso: string | null | undefined): number | null {
+  if (!iso) return null;
+  const t = Date.parse(iso);
+  return Number.isNaN(t) ? null : t;
+}
+
 /**
- * Why a task this runner does not hold is waiting, in words. Order matters:
- * the first true one is what a person would want to hear.
+ * Drop the outcomes of tasks that moved since the claim: no longer pending, or
+ * changed on the server after the runner heard back. A task missing from the
+ * list keeps its outcome (the list is windowed).
  */
-export function waitingReason(task: TopTask, state: TopState, now: number): string {
-  const refused = state.claimRefusals[task.id];
-  if (refused) return `refused: ${refused}`;
-  if (task.status === 'assigned' || task.status === 'in_progress') return 'another runner has it';
-  if (task.mission?.isHeld) return 'mission is on hold';
+function pruneMovedOutcomes(outcomes: Record<string, ClaimOutcome>, tasks: TopTask[]): Record<string, ClaimOutcome> {
+  const byId = new Map(tasks.map(t => [t.id, t]));
+  let changed = false;
+  const next: Record<string, ClaimOutcome> = {};
+  for (const [id, o] of Object.entries(outcomes)) {
+    const t = byId.get(id);
+    const updated = isoMs(t?.updatedAt);
+    if (t && (t.status !== 'pending' || (updated !== null && updated > o.at))) { changed = true; continue; }
+    next[id] = o;
+  }
+  return changed ? next : outcomes;
+}
+
+/** The walls of an outcome that still hold at `now`; a wall with no known reset holds while the outcome is fresh. */
+function activeWalls(o: ClaimOutcome, now: number): NonNullable<ClaimOutcome['walls']> {
+  return (o.walls ?? []).filter(w => {
+    const reset = isoMs(w.resetsAt);
+    return reset === null ? now - o.at <= OUTCOME_TTL_MS : reset > now;
+  });
+}
+
+/** Is this outcome still a true account of the task? */
+function outcomeLive(o: ClaimOutcome, now: number): boolean {
+  if (o.walls && o.walls.length > 0) return activeWalls(o, now).length > 0;
+  if (o.exclusion === 'runner_cooldown') return now - o.at < RUNNER_COOLDOWN_MS;
+  const until = isoMs(o.until);
+  if (until !== null) return until > now;
+  return now - o.at <= OUTCOME_TTL_MS;
+}
+
+/** The task's last claim outcome, when it still holds and the task has not moved since. */
+function liveTaskOutcome(task: TopTask, state: TopState, now: number): ClaimOutcome | null {
+  const o = state.claimOutcomes.tasks[task.id];
+  if (!o || task.status !== 'pending') return null;
+  const updated = isoMs(task.updatedAt);
+  if (updated !== null && updated > o.at) return null;
+  return outcomeLive(o, now) ? o : null;
+}
+
+function liveBroad(state: TopState, now: number): ClaimOutcome | null {
+  const o = state.claimOutcomes.broad;
+  return o && outcomeLive(o, now) ? o : null;
+}
+
+function taskBackend(t: TopTask): string {
+  return t.backend || 'claude';
+}
+
+const PROVIDER_NAME: Record<string, string> = { claude: 'Claude', codex: 'Codex' };
+const WALL_WORD: Record<string, string> = { account_seat: 'plan limit', provider_pause: 'rate limit', tenant_budget: 'tenant budget' };
+
+function wallWord(kind: string): string {
+  return WALL_WORD[kind] ?? 'usage limit';
+}
+
+const WEEKDAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const MONTH = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** A lift time in this machine's local time: `18:30` today, `Thu 00:00` this week, `Oct 16 04:00` later. */
+export function localLiftTime(iso: string, now: number): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const clock = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  const n = new Date(now);
+  if (d.toDateString() === n.toDateString()) return clock;
+  if (d.getTime() - now < 6 * 24 * 3_600_000 && d.getTime() > now) return `${WEEKDAY[d.getDay()]} ${clock}`;
+  return `${MONTH[d.getMonth()]} ${d.getDate()} ${clock}`;
+}
+
+export interface ProviderHold {
+  backend: string;
+  provider: string;
+  /** `plan limit`, `rate limit`, ... */
+  word: string;
+  /** When it lifts (ISO), or null when the server did not say. */
+  resetsAt: string | null;
+}
+
+/** The wall on `backend` an outcome names, the soonest to lift first. */
+function wallFor(o: ClaimOutcome, backend: string, now: number) {
+  const walls = activeWalls(o, now).filter(w => w.backend === backend);
+  walls.sort((a, b) => (isoMs(a.resetsAt) ?? Infinity) - (isoMs(b.resetsAt) ?? Infinity));
+  return walls[0] ?? null;
+}
+
+/**
+ * The provider limits that hold all of a provider's work (R-25, AC-11): the
+ * last broad claim was held by that provider's wall, or every pending task of
+ * that provider in view was held by it on its own claim. Said once, in the
+ * header, instead of on every row.
+ */
+export function providerHolds(state: TopState, now: number): ProviderHold[] {
+  const out = new Map<string, ProviderHold>();
+  const add = (w: { kind: string; backend: string; resetsAt: string | null }) => {
+    const prev = out.get(w.backend);
+    if (prev && (isoMs(prev.resetsAt) ?? Infinity) <= (isoMs(w.resetsAt) ?? Infinity)) return;
+    out.set(w.backend, { backend: w.backend, provider: PROVIDER_NAME[w.backend] ?? w.backend, word: wallWord(w.kind), resetsAt: w.resetsAt ?? null });
+  };
+  const broad = liveBroad(state, now);
+  if (broad) for (const w of activeWalls(broad, now)) add(w);
+
+  const workers = workerByTask(state);
+  const pending = relevantTasks(state, workers).filter(t => t.status === 'pending' && !workers.has(t.id));
+  const backends = new Set(pending.map(taskBackend));
+  for (const b of backends) {
+    if (out.has(b)) continue;
+    const mine = pending.filter(t => taskBackend(t) === b);
+    const walls = mine.map(t => {
+      const o = liveTaskOutcome(t, state, now);
+      return o ? wallFor(o, b, now) : null;
+    });
+    if (walls.length > 0 && walls.every(Boolean)) for (const w of walls) add(w!);
+  }
+  return [...out.values()];
+}
+
+/** `Claude work waits for the plan limit: resumes Thu 00:00 (in 17h)`. */
+export function providerHoldLine(h: ProviderHold, now: number): string {
+  const head = `${h.provider} work waits for the ${h.word}`;
+  const reset = isoMs(h.resetsAt);
+  if (reset === null || reset <= now) return `${head}.`;
+  return `${head}: resumes ${localLiftTime(h.resetsAt!, now)} (in ${untilWords(reset - now)})`;
+}
+
+/** Exclusion codes in words; a code missing here reads as the server's first sentence. */
+const EXCLUSION_WORDS: Record<string, string> = {
+  mission_local: 'local session',
+  mission_held: 'mission is on hold',
+  task_held: 'held by a person',
+  task_reserved: 'reserved by a local session',
+  already_claimed: 'another runner has it',
+  active_worker: 'another runner has it',
+  workspace_cap: 'workspace is at its task limit',
+  mission_concurrent: 'mission is at its task limit',
+  mission_paced: 'mission is paced',
+  mission_budget: 'mission budget is spent',
+  codex_single_flight: 'one Codex run per workspace at a time',
+  path_overlap: 'waits for work on the same files',
+  soft_overlap: 'waits for work on the same files',
+  advisory_manifest: 'waits for work on the same files',
+  ordered_behind: 'waits for work on the same files',
+  role_mismatch: 'needs a role this runner lacks',
+  runner_preference: 'for another kind of runner',
+  workspace_executor: 'its workspace runs work elsewhere',
+  capability_mismatch: 'needs Codex, which this runner lacks',
+  subject_dead: 'its PR is closed',
+  connector_mismatch: 'needs a connector this runner lacks',
+  provider_unavailable: 'its model provider is off',
+  routing_paused: 'routing is paused',
+  account_cap: 'account is at its worker limit',
+  rate_limited: 'claimed too recently, retry soon',
+  delegation_unmet: 'needs access a person has not granted',
+};
+
+/** Codes that only say the task moved; the list catches up on its own. */
+const MOVED_CODES = new Set(['not_found', 'not_pending', 'state_changed', 'duplicate_worker', 'sibling_retry_open']);
+
+function firstSentence(s: string): string {
+  const m = s.match(/^.*?[.!?](?=\s|$)/);
+  return (m ? m[0] : s).replace(/[.!?]$/, '').trim();
+}
+
+/** Why the task's dependencies hold it, by title when the list has them. */
+function dependencyWords(task: TopTask, state: TopState): string | null {
   const deps = (task.dependsOn ?? [])
     .map(id => state.tasks.find(t => t.id === id))
     .filter((t): t is TopTask => !!t && !TERMINAL.has(t.status));
-  if (deps.length > 0) {
-    const more = deps.length > 1 ? ` and ${deps.length - 1} more` : '';
-    return `waits on: ${deps[0].title}${more}`;
+  if (deps.length === 0) return null;
+  const more = deps.length > 1 ? ` and ${deps.length - 1} more` : '';
+  return `waits on: ${deps[0].title}${more}`;
+}
+
+/** A plan or rate limit on this task's provider, short when the header says it already. */
+function wallWords(o: ClaimOutcome, task: TopTask, holds: ProviderHold[], now: number): string | null {
+  const b = taskBackend(task);
+  const w = wallFor(o, b, now) ?? activeWalls(o, now)[0] ?? null;
+  if (!w) return null;
+  const word = wallWord(w.kind);
+  if (holds.some(h => h.backend === w.backend)) return word;
+  return w.resetsAt && (isoMs(w.resetsAt) ?? 0) > now ? `${word}, ${localLiftTime(w.resetsAt, now)}` : word;
+}
+
+/** What a live claim outcome says holds the task, in words; null when it saw nothing holding it. */
+function outcomeWords(o: ClaimOutcome, task: TopTask, state: TopState, holds: ProviderHold[], now: number): string | null {
+  if (o.walls && o.walls.length > 0) {
+    const w = wallWords(o, task, holds, now);
+    if (w) return w;
   }
+  if (o.reason === 'refused') return `refused: ${o.refusal || `HTTP ${o.status ?? '?'}`}`;
+  if (o.reason === 'context_paused') {
+    const until = isoMs(o.until);
+    return until !== null && until > now ? `paused after repeated failures, ${untilWords(until - now)}` : 'paused after repeated failures';
+  }
+  const code = o.exclusion;
+  if (code) {
+    if (MOVED_CODES.has(code)) return null;
+    if (code === 'runner_cooldown') {
+      const left = Math.max(1, Math.ceil((o.at + RUNNER_COOLDOWN_MS - now) / 60_000));
+      return `cooldown, ${left} min`;
+    }
+    if (code === 'deps_blocked') return dependencyWords(task, state) ?? 'waits on a dependency';
+    if (code === 'deferred') {
+      const until = isoMs(o.until) ?? isoMs(task.startAt);
+      return until !== null && until > now ? `starts in ${untilWords(until - now)}` : 'starts later';
+    }
+    if (code === 'workspace_paused') {
+      return o.until && (isoMs(o.until) ?? 0) > now ? `workspace paused until ${localLiftTime(o.until, now)}` : 'workspace paused';
+    }
+    if (code === 'budget_paused') return 'held by a usage limit';
+    if (EXCLUSION_WORDS[code]) return EXCLUSION_WORDS[code];
+    return o.detail ? firstSentence(o.detail) : code.replace(/_/g, ' ');
+  }
+  if (o.reason === 'race_lost') return 'another runner took it';
+  if (o.reason === 'deps_blocked') return dependencyWords(task, state) ?? 'waits on a dependency';
+  if (o.reason === 'capability_mismatch') return EXCLUSION_WORDS.capability_mismatch;
+  if (o.reason === 'path_overlap_blocked' || o.reason === 'repo_busy') return 'waits for work on the same files';
+  return null;
+}
+
+/** Deferral reasons a broad claim reported, as the one a person would hear first. */
+function broadDeferralWords(o: ClaimOutcome): string | null {
+  const entries = Object.entries(o.deferrals ?? {}).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]);
+  if (entries.length === 0) return null;
+  const words = EXCLUSION_WORDS[entries[0][0]] ?? entries[0][0].replace(/_/g, ' ');
+  return `held at the last claim: ${words}`;
+}
+
+/**
+ * Why a task this runner does not hold is waiting, in words (R-25). The
+ * server's answer to the runner's last claim comes first, since it is what
+ * actually held the task; then what the list itself shows. "Ready" only when
+ * the last claim saw nothing holding it.
+ */
+export function waitingReason(task: TopTask, state: TopState, now: number, holds: ProviderHold[] = providerHolds(state, now)): string {
+  if (task.status === 'assigned' || task.status === 'in_progress') return 'another runner has it';
+  const own = liveTaskOutcome(task, state, now);
+  if (own) {
+    const words = outcomeWords(own, task, state, holds, now);
+    if (words) return words;
+  }
+  const broad = liveBroad(state, now);
+  const updated = isoMs(task.updatedAt);
+  const broadSawIt = broad && (updated === null || updated <= broad.at);
+  if (broad && broadSawIt && broad.walls?.length) {
+    const words = wallFor(broad, taskBackend(task), now) ? wallWords(broad, task, holds, now) : null;
+    if (words) return words;
+  }
+  if (task.mission?.isHeld) return 'mission is on hold';
+  const deps = dependencyWords(task, state);
+  if (deps) return deps;
   if (task.startAt) {
     const at = new Date(task.startAt).getTime();
     if (!Number.isNaN(at) && at > now) return `starts in ${untilWords(at - now)}`;
   }
   const busy = busySlots(state);
   if (busy >= state.runner.maxConcurrent) return `runner is full (${busy} of ${state.runner.maxConcurrent} busy)`;
+  if (broad && broadSawIt && broad.reason === 'all_candidates_deferred') {
+    const words = broadDeferralWords(broad);
+    if (words) return words;
+  }
   return 'ready, next claim picks it up';
 }
 
@@ -582,6 +884,7 @@ export function taskRows(state: TopState, now: number): TaskRow[] {
   const running: TaskRow[] = [];
   const waiting: TaskRow[] = [];
   const done: TaskRow[] = [];
+  const holds = providerHolds(state, now);
 
   for (const t of tasks) {
     if (!matchesFilter(t.title, state.filter)) continue;
@@ -623,7 +926,7 @@ export function taskRows(state: TopState, now: number): TaskRow[] {
       continue;
     }
 
-    waiting.push({ ...base, group: 'waiting', kind: 'waiting', reason: waitingReason(t, state, now) });
+    waiting.push({ ...base, group: 'waiting', kind: 'waiting', reason: waitingReason(t, state, now, holds) });
   }
 
   running.sort((a, b) => (b.elapsedMs ?? 0) - (a.elapsedMs ?? 0));

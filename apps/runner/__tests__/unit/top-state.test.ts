@@ -38,7 +38,7 @@ describe('reducer', () => {
     s = { ...s, selectedMission: NO_MISSION };
     expect(rowsByTitle(s)['fix flaky test'].reason).toBe('refused: path overlap with another task');
     s = reduce(s, { type: 'worker_update', worker: { id: 'w2', taskId: 't-loose', taskTitle: 'fix flaky test', status: 'working', startedAt: NOW } });
-    expect(s.claimRefusals['t-loose']).toBeUndefined();
+    expect(s.claimOutcomes.tasks['t-loose']).toBeUndefined();
   });
 
   test('which events refetch the task list', () => {

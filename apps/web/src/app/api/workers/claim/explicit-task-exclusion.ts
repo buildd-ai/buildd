@@ -107,14 +107,14 @@ export function classifyExplicitTaskExclusion(probe: ExplicitTaskProbe | null, n
   }
   const startAt = toDate(probe.startAt);
   if (startAt && startAt > now) {
-    return { code: 'deferred', detail: `The task is deferred until ${startAt.toISOString()}. ${FORCE_HINT}` };
+    return { code: 'deferred', detail: `The task is deferred until ${startAt.toISOString()}. ${FORCE_HINT}`, until: startAt.toISOString() };
   }
   for (const [gate, code, detail] of GATE_ORDER) {
     const v = probe.gates[gate];
     if ((v === false || v === null) && gate === 'workspacePaused') {
       const until = toDate(probe.workspacePausedUntil ?? null);
       if (until && until > now) {
-        return { code, detail: `New starts in this workspace are paused until ${until.toISOString()}. Running work carries on. Resume early from Health > Runners, claim it from your own session, or ${FORCE_HINT.charAt(0).toLowerCase()}${FORCE_HINT.slice(1)}` };
+        return { code, detail: `New starts in this workspace are paused until ${until.toISOString()}. Running work carries on. Resume early from Health > Runners, claim it from your own session, or ${FORCE_HINT.charAt(0).toLowerCase()}${FORCE_HINT.slice(1)}`, until: until.toISOString() };
       }
     }
     if (v === false || v === null) return { code, detail: gate === 'role' && probe.roleSlug === VISUAL_AUDITOR_ROLE_SLUG

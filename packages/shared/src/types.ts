@@ -1728,6 +1728,13 @@ export interface ClaimTaskExclusion {
   code: ClaimTaskExclusionCode;
   /** One human sentence, including the override when there is one. */
   detail: string;
+  /**
+   * When this exclusion lifts on its own (ISO), when the gate knows it: a
+   * deferred task's startAt, a workspace pause's end. The same time `detail`
+   * names in prose, so a caller (`buildd top`) can show it in local time
+   * without parsing the sentence. Absent when there is no known end.
+   */
+  until?: string;
 }
 
 export interface ClaimDiagnostics {
