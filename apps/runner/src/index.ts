@@ -3054,6 +3054,9 @@ setInterval(async () => {
     // try/finally — not the watchdog, which only limits the damage of a wedge
     // rather than preventing one.
     let restartScheduled = false;
+    // applyUpdate already put code and packages back (task c08b35ae): a second
+    // rollback would reinstall for nothing.
+    let alreadyRolledBack = false;
     try {
       await gitAsync(['fetch', 'origin', BRANCH], BUILDD_DIR, 30_000);
 
@@ -3078,6 +3081,7 @@ setInterval(async () => {
       // and idempotent — then resets to origin/$BRANCH and reinstalls).
       const applied = await applyUpdate();
       if (!applied.success) {
+        alreadyRolledBack = applied.rolledBack === true;
         throw new Error(applied.error || 'Update failed');
       }
       const newCommit = applied.newCommit ?? null;
@@ -3130,7 +3134,7 @@ setInterval(async () => {
       restartScheduled = true;
       scheduleGracefulRestart('idle auto-update');
     } catch (err: any) {
-      if (prevCommit) {
+      if (prevCommit && !alreadyRolledBack) {
         try {
           await rollbackTo(prevCommit);
         } catch { /* best effort */ }
