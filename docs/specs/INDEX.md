@@ -178,7 +178,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Model Routing and Tiers](./model-routing-and-tiers.md) · @max — verified 2026-10-11
   A claimed task MUST resolve to one model id at claim time under a fixed precedence — pin, task tier, role pin, then kind×complexity under budget gates and role floor — recorded on tasks.predicted_model.
 - [Orchestration Decisions (Shadow and Promotion Guard)](./orchestration-decisions-shadow.md) · @max — verified 2026-10-08
-  Creation-manifest decisions MUST stay record-only without a committed promotion; claim hold/start MAY apply a confident START from a measured model to its three advisory gates only; both MUST fall back to the rule on failure.
+  Creation-manifest decisions MUST stay record-only without a committed promotion; claim hold/start MAY apply a measured model's confident START to its three advisory gates; both fall back to the rule.
 - [Path Claim Ownership](./path-claim-ownership.md) · @max — verified 2026-10-11
   Edit leases MUST be held exclusively per workspace, kept equal to a task's current owned file set by a delta/ACK protocol, proven complete before any ship (fail closed), and handed to the open PR when the worker ends.
 - [PR Lifecycle Reconciliation](./pr-lifecycle-reconciliation.md) · @max — verified 2026-10-07

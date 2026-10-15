@@ -3,7 +3,7 @@ title: Orchestration Decisions (Shadow and Promotion Guard)
 status: active
 owner: max
 last_verified: 2026-10-08
-summary: Creation-manifest decisions MUST stay record-only without a committed promotion; claim hold/start MAY apply a confident START from a measured model to its three advisory gates only; both MUST fall back to the rule on failure.
+summary: Creation-manifest decisions MUST stay record-only without a committed promotion; claim hold/start MAY apply a measured model's confident START to its three advisory gates; both fall back to the rule.
 domain: tasks
 surfaces: [packages/core/orchestration-decision.ts, packages/core/orchestration-promotion.ts, packages/core/orchestration-readout.ts, apps/web/src/app/api/workers/claim/hold-start-shadow.ts]
 related: [model-routing-and-tiers, mission-task-lifecycle, live-sibling-conflict-probe]
