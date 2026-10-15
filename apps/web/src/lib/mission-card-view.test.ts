@@ -84,9 +84,10 @@ describe('D8: a paused mission that is waiting on you is grouped, and counted, a
   const done = () => [task('a', { status: 'completed' }), task('b', { status: 'completed' })];
   const view = (row: MissionCardRow) => buildMissionCardView(row, { from: 'missions', now: NOW });
 
-  it('work done, chip READY FOR REVIEW → review, not PAUSED / HELD', () => {
+  it('work done, chip READY TO COMPLETE → review group, not PAUSED / HELD', () => {
     const v = view(mission({ status: 'paused', tasks: done() }));
-    expect(v.chip.label).toBe('READY FOR REVIEW');
+    // All clear: the one phrase every surface uses (spec 8e137fdb I-1).
+    expect(v.chip.label).toBe('READY TO COMPLETE');
     expect(v.group).toBe('review');
     expect(countActiveMissions([v.group])).toBe(1);
   });
@@ -189,8 +190,14 @@ describe('buildMissionCardView', () => {
     expect(view.situation.headline).toBe(detail.situation.headline);
   });
 
-  it('a stalled mission reads STALLED on the card', () => {
+  it('a queued task nothing holds reads next in line on the card (spec 8e137fdb I-4)', () => {
     const row = mission({ tasks: [task('a', { status: 'pending' })] });
+    const view = buildMissionCardView(row, { from: 'missions', now: NOW });
+    expect(view.chip.label).toBe('NEXT IN LINE');
+  });
+
+  it('a started task with nothing running it reads STALLED on the card', () => {
+    const row = mission({ tasks: [task('a', { status: 'assigned' })] });
     const view = buildMissionCardView(row, { from: 'missions', now: NOW });
     expect(view.chip.label).toBe('STALLED');
   });

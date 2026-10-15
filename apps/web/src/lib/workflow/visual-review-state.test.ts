@@ -26,6 +26,20 @@ describe('deriveMissionVisualReview status', () => {
   it('optional when the diff is unreadable and nothing ran', () => {
     expect(deriveMissionVisualReview(base({ uiChange: { state: 'unknown', source: null, uiFiles: 0 } })).status).toBe('optional');
   });
+  it('an open audit is queued even when the UI impact could not be read (c9353c11)', () => {
+    const unknown = { state: 'unknown' as const, source: null, uiFiles: 0 };
+    // No review model for it (phase off / not loaded): the open audit still holds the mission.
+    for (const r of [null, review({ phase: 'off' })]) {
+      const s = deriveMissionVisualReview(base({ uiChange: unknown, audit: audit({ status: 'pending' }), review: r }));
+      expect(s).toMatchObject({ status: 'queued', blocksCompletion: true, nextActor: 'system' });
+    }
+    // A finished audit with no review model is not held open.
+    expect(deriveMissionVisualReview(base({ uiChange: unknown, audit: audit({ status: 'completed' }), review: null })).status).toBe('optional');
+  });
+  it('records the UI impact it read, so off and could-not-tell read apart', () => {
+    expect(deriveMissionVisualReview(base({ uiChange: { state: 'unknown', source: null, uiFiles: 0 } })).scope.impact).toBe('unknown');
+    expect(deriveMissionVisualReview(base()).scope.impact).toBe('yes');
+  });
   it('optional (not blocking) when policy is off and UI changed', () => {
     const s = deriveMissionVisualReview(base({ policy: resolveVisualReviewPolicy({ workspace: 'off' }) }));
     expect(s).toMatchObject({ status: 'optional', blocksCompletion: false, nextActor: 'none' });
