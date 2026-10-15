@@ -2348,6 +2348,87 @@ describe('POST /api/workers/claim', () => {
     }
   });
 
+  // Model credentials spec R-3 / R-5 / AC-2 / AC-5. A stored Codex login whose
+  // expiry has passed is never delivered, so it must not carry a Codex task
+  // past the capability filter on a runner with no Codex login of its own:
+  // that runner started a worker which died on "Codex credential expired" and
+  // the task retried forever. The task stays pending for a runner that can run it.
+  it('asks only for a DELIVERABLE (unexpired) team Codex login, and excludes the task when there is none', async () => {
+    const origKey = process.env.ENCRYPTION_KEY;
+    process.env.ENCRYPTION_KEY = 'test-encryption-key';
+    try {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3, type: 'user', authType: 'api' });
+      mockWorkersFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+      mockAccountWorkspacesFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValue([
+        { id: 'task-1', workspaceId: 'ws-1', title: 'Codex task', backend: 'codex', requiredCapabilities: [], workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' }, teamId: 'team-1' } },
+      ]);
+      mockHasCodexCredential.mockReset();
+      // The only stored login has expired: with deliverableOnly it does not count.
+      mockHasCodexCredential.mockImplementation(async (opts: any) => opts?.deliverableOnly !== true);
+      mockHasOpenAiApiKey.mockResolvedValue(false);
+      mockHasOpenAiCompatibleAgentEndpoint.mockResolvedValue(false);
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          runner: 'test-runner',
+          // codexAuth=none: backend:codex but no CODEX_HOME / OPENAI_API_KEY.
+          environment: { tools: [], envKeys: ['backend:codex'], mcp: [], labels: { type: 'local', os: 'darwin', arch: 'arm64', hostname: 'test' }, scannedAt: '2026-01-01T00:00:00.000Z' },
+        },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.workers ?? []).toHaveLength(0);
+      expect(data.diagnostics.reason).toBe('capability_mismatch');
+      expect(mockHasCodexCredential).toHaveBeenCalled();
+      for (const call of mockHasCodexCredential.mock.calls) {
+        expect((call as any[])[0]).toMatchObject({ teamId: 'team-1', workspaceId: 'ws-1', deliverableOnly: true });
+      }
+    } finally {
+      if (origKey === undefined) delete process.env.ENCRYPTION_KEY;
+      else process.env.ENCRYPTION_KEY = origKey;
+    }
+  });
+
+  it('a runner with its own Codex login still claims a Codex task whose stored login has expired', async () => {
+    const origKey = process.env.ENCRYPTION_KEY;
+    process.env.ENCRYPTION_KEY = 'test-encryption-key';
+    try {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3, type: 'user', authType: 'api' });
+      mockWorkersFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+      mockAccountWorkspacesFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValue([
+        { id: 'task-1', workspaceId: 'ws-1', title: 'Codex task', backend: 'codex', requiredCapabilities: [], workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' }, teamId: 'team-1' } },
+      ]);
+      mockHasCodexCredential.mockReset();
+      mockHasCodexCredential.mockImplementation(async (opts: any) => opts?.deliverableOnly !== true);
+      mockHasOpenAiApiKey.mockResolvedValue(false);
+      mockDbExecute.mockReturnValue(Promise.resolve({ rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }] }));
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          runner: 'test-runner',
+          // codexAuth=machine_login: the runner advertises its own Codex home.
+          environment: { tools: [], envKeys: ['backend:codex', 'CODEX_HOME'], mcp: [], labels: { type: 'local', os: 'darwin', arch: 'arm64', hostname: 'test' }, scannedAt: '2026-01-01T00:00:00.000Z' },
+        },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.workers.length).toBe(1);
+    } finally {
+      if (origKey === undefined) delete process.env.ENCRYPTION_KEY;
+      else process.env.ENCRYPTION_KEY = origKey;
+    }
+  });
+
   it('never returns the workspace dispatch token in a claimed task', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3, type: 'user', authType: 'api' });
     mockWorkersFindMany.mockResolvedValueOnce([]);
