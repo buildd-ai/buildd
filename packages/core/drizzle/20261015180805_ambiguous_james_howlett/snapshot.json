@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "c50014f5-0aba-47e3-b4cf-a337c91c3e39",
+  "id": "17c42073-ef3a-49e6-b748-ab74c6290939",
   "prevIds": [
-    "018c8494-31c0-4070-b64e-8c55e0130a36"
+    "75a60cf2-710b-4c74-a8bc-1cf8a940f734"
   ],
   "ddl": [
     {
@@ -931,7 +931,25 @@
     },
     {
       "isRlsEnabled": false,
+      "name": "workflow_findings",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "workflow_mission_epochs",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
       "name": "workflow_review_rounds",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "workflow_scope_amendments",
       "entityType": "tables",
       "schema": "public"
     },
@@ -13016,6 +13034,19 @@
       "generated": null,
       "identity": null,
       "name": "goal_criteria",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "missions"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "1",
+      "generated": null,
+      "identity": null,
+      "name": "scope_version",
       "entityType": "columns",
       "schema": "public",
       "table": "missions"
@@ -29830,6 +29861,578 @@
       "table": "workflow_facts"
     },
     {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "delivery_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "origin_round_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "origin_round",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "origin_head_sha",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "ordinal",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "path",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "line",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "title",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "true",
+      "generated": null,
+      "identity": null,
+      "name": "required",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'open'",
+      "generated": null,
+      "identity": null,
+      "name": "status",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "last_round",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "addressed_by_sha",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "closed_by_round_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "closed_by",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "closed_reason",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "deferred_to_task_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "updated_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "gen_random_uuid()",
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "mission_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "epoch",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "branch",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "state",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "version",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "origin",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "cut_from_sha",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "branch_ready_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "predecessor_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "1",
+      "generated": null,
+      "identity": null,
+      "name": "scope_version",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "repo_full_name",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "pr_number",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "owner_task_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "merged_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "merge_commit_sha",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "merged_head_sha",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "settlement",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "settled_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "retired_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 1,
+      "default": "'{}'",
+      "generated": null,
+      "identity": null,
+      "name": "moved_prs",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "settle_lease_token",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "settle_lease_until",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "updated_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
       "type": "uuid",
       "typeSchema": null,
       "notNull": true,
@@ -30036,6 +30639,253 @@
       "entityType": "columns",
       "schema": "public",
       "table": "workflow_review_rounds"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "gen_random_uuid()",
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "mission_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "source_task_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "decision",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "status",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "scope_version_before",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "scope_version_after",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "before",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "after",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "weakens",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "reason",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "decision_fact_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "decider_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "real",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "confidence",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "fallback",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "actor",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "resolved_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "resolved_by",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
     },
     {
       "type": "uuid",
@@ -40499,6 +41349,111 @@
           "opclass": null
         },
         {
+          "value": "origin_round",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "ordinal",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "workflow_findings_delivery_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "mission_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "epoch",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "workflow_mission_epochs_epoch_unique",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "predecessor_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": true,
+      "where": "\"predecessor_id\" IS NOT NULL",
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "workflow_mission_epochs_successor_unique",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "mission_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": true,
+      "where": "\"state\" = 'open'",
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "workflow_mission_epochs_open_unique",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "delivery_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
           "value": "round",
           "isExpression": false,
           "asc": true,
@@ -40550,6 +41505,62 @@
       "entityType": "indexes",
       "schema": "public",
       "table": "workflow_review_rounds"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "mission_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "source_task_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "workflow_scope_amendments_task_unique",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "mission_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "created_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "workflow_scope_amendments_mission_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
     },
     {
       "nameExplicit": true,
@@ -46263,6 +47274,57 @@
       ],
       "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
+      "name": "workflow_findings_delivery_id_workflow_deliveries_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "workflow_findings"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "mission_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "missions",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "workflow_mission_epochs_mission_id_missions_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "owner_task_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "tasks",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "SET NULL",
+      "name": "workflow_mission_epochs_owner_task_id_tasks_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "delivery_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "workflow_deliveries",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
       "name": "workflow_review_rounds_delivery_id_workflow_deliveries_id_fk",
       "entityType": "fks",
       "schema": "public",
@@ -46284,6 +47346,40 @@
       "entityType": "fks",
       "schema": "public",
       "table": "workflow_review_rounds"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "mission_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "missions",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "workflow_scope_amendments_mission_id_missions_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "source_task_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "tasks",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "SET NULL",
+      "name": "workflow_scope_amendments_source_task_id_tasks_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "workflow_scope_amendments"
     },
     {
       "nameExplicit": false,
@@ -47896,9 +48992,39 @@
         "id"
       ],
       "nameExplicit": false,
+      "name": "workflow_findings_pkey",
+      "schema": "public",
+      "table": "workflow_findings",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "workflow_mission_epochs_pkey",
+      "schema": "public",
+      "table": "workflow_mission_epochs",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
       "name": "workflow_review_rounds_pkey",
       "schema": "public",
       "table": "workflow_review_rounds",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "workflow_scope_amendments_pkey",
+      "schema": "public",
+      "table": "workflow_scope_amendments",
       "entityType": "pks"
     },
     {
