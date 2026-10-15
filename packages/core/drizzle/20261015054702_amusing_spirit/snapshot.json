@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "907274e0-f380-4871-a8a7-da70a74ca62c",
+  "id": "cb00926f-6008-4245-b07e-a30b3bc63807",
   "prevIds": [
-    "f7be5334-5460-4347-beb0-429755995510"
+    "13fb4b8e-16c9-42c0-8570-66508e4cce60"
   ],
   "ddl": [
     {
@@ -30097,6 +30097,45 @@
       "generated": null,
       "identity": null,
       "name": "retired_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 1,
+      "default": "'{}'",
+      "generated": null,
+      "identity": null,
+      "name": "moved_prs",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "settle_lease_token",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_mission_epochs"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "settle_lease_until",
       "entityType": "columns",
       "schema": "public",
       "table": "workflow_mission_epochs"

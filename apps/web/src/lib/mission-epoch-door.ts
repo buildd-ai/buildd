@@ -143,7 +143,10 @@ export async function recordPrMovedOffDelivery(p: { missionId: string; prNumber:
     }, { principal: SYSTEM, withDelivery: false });
   } catch (err) {
     console.error(`[mission-epochs] recording PR #${p.prNumber} moved off ${p.fromBase} failed:`, err);
+  }
+}
 
+/**
  * A deliverable task was added to the mission: ask its scope decision once
  * (in scope, an amendment, or a hold for a person). Best effort: a failure
  * leaves the task as filed, which is the decision's own default.
