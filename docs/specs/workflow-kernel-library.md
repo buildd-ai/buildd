@@ -367,7 +367,11 @@ the control plane, authenticated as the caller).
     mid-command and is taken over by the next request with its key; completion
     is recorded only for the claim that still holds the key. The Worker hands
     every command it starts to `waitUntil`, so a caller that times out and
-    disconnects does not cancel it mid-way. Keys are kept seven days.
+    disconnects does not cancel it mid-way. A ledger that does not answer
+    before the claim is a 503 `ledger_unavailable` (nothing ran, `applied:
+    false`), never an uncaught throw, which the Workers runtime turns into a
+    bare 500 the caller must read as "may have run"; the client retries it
+    once and then answers `not_applied`. Keys are kept seven days.
   - Answered with the operation's result and the delivery's version:
     `{ v, op, idempotencyKey, result, delivery: { id, version } | null, host, replayed }`.
   - Only the host applies. A process that is not the control plane in `own`

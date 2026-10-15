@@ -418,3 +418,20 @@ describe('a dead claim recovers promptly, a live one is never taken over', () =>
     expect(handed).toHaveLength(1);
   });
 });
+
+describe('a ledger that does not answer before the claim', () => {
+  it('is answered 503 ledger_unavailable (nothing ran), never thrown as a bare 500', async () => {
+    for (const broken of ['claim', 'read'] as const) {
+      const s = server();
+      if (broken === 'claim') s.ledger.claim = async () => { throw new Error('ledger unreachable'); };
+      else {
+        s.ledger.claim = async () => false;
+        s.ledger.read = async () => { throw new Error('ledger unreachable'); };
+      }
+      const res = await s.call(await signed(body()));
+      expect(res.status).toBe(503);
+      expect(await res.json()).toMatchObject({ code: 'ledger_unavailable', retryable: true, applied: false });
+      expect(s.ran).toEqual([]);
+    }
+  });
+});

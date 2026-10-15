@@ -662,3 +662,72 @@ describe('a pass\'s control-plane budget', () => {
     expect(budget).toMatchObject({ submitted: 0, refused: 0 });
   });
 });
+
+/**
+ * Incident 197552dc, the ledger's side: the cutover hours hold only a few `drain` rows, so the time
+ * went on requests that never reached the claim. A request the control plane answers with a bare 5xx
+ * before claiming (the Workers runtime's answer to an uncaught throw, or Cloudflare's own error page)
+ * reads as "may have run": the client retries it for its whole budget, the door re-submits it, and no
+ * ledger row is ever written.
+ */
+describe('time spent before the ledger claim', () => {
+  const PASS_INPUT = { ...input, door: 'sweep', actor: 'system:test-sweep' };
+  const system = { kind: 'system' as const, id: 'test-sweep' };
+
+  /** The real endpoint whose ledger cannot be reached, behind the Workers runtime: an uncaught throw is a bare 500. */
+  function controlPlane(clock: { t: number }) {
+    const rows = new Set<string>();
+    const ledger: CommandLedger = {
+      claim: async () => { throw new Error('ledger unreachable'); },
+      renew: async () => false, complete: async () => false, release: async () => {},
+      read: async () => { throw new Error('ledger unreachable'); }, prune: async () => 0,
+    };
+    let requests = 0;
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      requests++;
+      clock.t += 300;
+      try {
+        return await handleCommandRequest(new Request(url, init), { env: OWN, host: () => 'control-plane', ledger, reaches: async () => true, sleep: async () => {} });
+      } catch {
+        return new Response('error code: 1101', { status: 500 });
+      }
+    }) as unknown as typeof fetch;
+    return { rows, fetchImpl, get requests() { return requests; } };
+  }
+  const depsOf = (clock: { t: number }, f: typeof fetch): ClientDeps => ({
+    env: OWN, host: () => 'web', now: () => clock.t, sleep: async (ms) => { clock.t += ms; }, fetch: f,
+    run: (async () => { throw new Error('ran locally'); }) as never,
+  });
+
+  it('reproduction: a pre-claim bare 500 costs two door calls and a drain about 45 s, with no ledger row', async () => {
+    const { landThroughKernel, drainOnControlPlane } = await import('./kernel-client');
+    const clock = { t: 0 };
+    let requests = 0;
+    const bare500 = (async () => { requests++; clock.t += 300; return new Response('error code: 1101', { status: 500 }); }) as unknown as typeof fetch;
+    const d = depsOf(clock, bare500);
+    for (let i = 0; i < 2; i++) {
+      const err = await landThroughKernel(PASS_INPUT, { principal: system, deps: d }).catch((e) => e);
+      expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+      expect(err.outcome).toBe('unknown');
+    }
+    expect(await drainOnControlPlane(DELIVERY, d)).toBeNull();
+    expect(clock.t).toBeGreaterThanOrEqual(45_000);
+    expect(requests).toBeGreaterThan(20);
+  });
+
+  it('a ledger that does not answer before the claim is a 503 saying nothing ran: the door fails not_applied in about a second and is not re-submitted', async () => {
+    const { landThroughKernel, drainOnControlPlane } = await import('./kernel-client');
+    const clock = { t: 0 };
+    const cp = controlPlane(clock);
+    const d = depsOf(clock, cp.fetchImpl);
+    for (let i = 0; i < 2; i++) {
+      const err = await landThroughKernel(PASS_INPUT, { principal: system, deps: d }).catch((e) => e);
+      expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+      expect([err.outcome, err.why]).toEqual(['not_applied', 'answered 503 ledger_unavailable']);
+    }
+    expect(await drainOnControlPlane(DELIVERY, d)).toBeNull();
+    // Two requests per call (one retry), three calls; about a second each.
+    expect(cp.requests).toBe(6);
+    expect(clock.t).toBeLessThan(3_000);
+  });
+});

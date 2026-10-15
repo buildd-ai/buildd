@@ -316,16 +316,27 @@ export async function handleCommandRequest(req: Request, deps: CommandServerDeps
   const deadline = now() + (deps.waitMs ?? 20_000);
   const claim = { key: cmd.idempotencyKey, op: cmd.op, principal: principalKey(cmd.principal), requestHash: hash, host };
 
+  // The ledger unreadable before this request holds the key: nothing ran under it. Answered, never
+  // thrown: an uncaught throw is a bare 500 from the Workers runtime, which a caller cannot tell from a
+  // command that may have run, so it retries for its whole budget and leaves no ledger row behind.
+  const ledgerDown = (err: unknown) => {
+    console.error(`[kernel-command] ${cmd.op} ${cmd.idempotencyKey}: the command ledger did not answer before the claim:`, err);
+    return refuse(503, 'ledger_unavailable', 'The command ledger did not answer; nothing was run. Retry with the same key.', { retryable: true, applied: false });
+  };
+
   for (;;) {
     const token = (deps.newToken ?? (() => crypto.randomUUID()))();
-    if (await ledger.claim({ ...claim, token })) {
+    let claimed: boolean;
+    try { claimed = await ledger.claim({ ...claim, token }); } catch (err) { return ledgerDown(err); }
+    if (claimed) {
       const run = execute(cmd, token, ledger, deps, host);
       // A caller that times out disconnects, and a Worker cancels a request whose client is gone:
       // without this the command stops mid-way and its claim stays `running` until the lease runs out.
       deps.waitUntil?.(run);
       return run;
     }
-    const row = await ledger.read(cmd.idempotencyKey);
+    let row: Awaited<ReturnType<CommandLedger['read']>>;
+    try { row = await ledger.read(cmd.idempotencyKey); } catch (err) { return ledgerDown(err); }
     if (row && row.requestHash !== hash) {
       return refuse(422, 'idempotency_key_reused', 'This idempotency key was used for a different request.');
     }
