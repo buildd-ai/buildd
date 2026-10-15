@@ -68,6 +68,6 @@ export const decisionSubscribers: readonly AnySubscriber[] = [
   subscriber('jev-decisions', 'sweep.pr_hourly', 'escalation-dispatch-sweep', async () => {
     const { sweepUndispatchedEscalations } = await import('@/lib/pr-landing-verdict-dispatch');
     const r = await sweepUndispatchedEscalations();
-    console.log(`[EscalationDispatch] candidates=${r.candidates} dispatched=${r.dispatched} queued=${r.queued} skipped=${r.skipped} errors=${r.errors}`);
+    console.log(`[EscalationDispatch] candidates=${r.candidates} dispatched=${r.dispatched} queued=${r.queued} skipped=${r.skipped} deferred=${r.deferred} errors=${r.errors}`);
   }),
 ];

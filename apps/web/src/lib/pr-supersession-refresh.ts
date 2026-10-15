@@ -38,11 +38,12 @@
 import { db } from '@buildd/core/db';
 import { tasks, workers } from '@buildd/core/db/schema';
 import { MISSION_BRANCH_PREFIX } from '@buildd/core/mission-integration';
-import { and, desc, eq, gte, isNotNull, isNull } from 'drizzle-orm';
+import { and, desc, eq, gte, isNotNull, isNull, sql } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { effectiveDeltaFiles, integrationRefreshOf, verifyRefreshLanded, type DeltaFile, type IntegrationRefreshContext } from '@/lib/integration-refresh';
 import { recordPrSupersession } from '@/lib/pr-supersession';
+import { deferralOf, isOutageAnswer, nextDeferral, type DeferralState } from '@/lib/control-plane-deferral';
 import { verifyByContent, type DiffFile } from '@/lib/pr-supersession-verify';
 import { repoFullNameFromPrUrl } from '@/lib/repo-scope';
 import { installationIdForRepo } from '@/lib/workspace-installation';
@@ -64,7 +65,14 @@ export interface RefreshPr {
   repo: string;
   prNumber: number;
   refresh: IntegrationRefreshContext;
+  /** Earlier deferrals of this PR's retirement (the control plane did not answer the record). */
+  deferral?: DeferralState | null;
 }
+
+/** Where a refresh PR's retirement deferrals are kept: its task's context. */
+export const REFRESH_DEFERRAL_KEY = 'refreshRetireDeferral';
+/** Set once the deferral ran out: the sweep stops retrying and a person was told (a stranded gate event). */
+export const REFRESH_DEFERRAL_EXHAUSTED_KEY = 'refreshRetireDeferralExhausted';
 
 export type RefreshSupersessionVerdict =
   | { ok: true; branch: string; trunk: string; filesChecked: number; migrationsMatched: number; closedOnGitHub: boolean }
@@ -223,10 +231,11 @@ export async function retireSupersededRefreshPr(opts: {
       recordedBy: REFRESH_SUPERSESSION_ACTOR,
       caller: 'system',
     });
-    // The kernel's host did not take it (the control plane did not answer, the pass spent its budget):
-    // not stranded, deferred. The PR stays in the sweep's set (no edge yet), so the next tick retries.
-    if (!recorded.ok && recorded.door) {
-      console.warn(`[pr-supersession-refresh] #${older.prNumber}: record deferred, the kernel's host did not take it: ${recorded.error}`);
+    // The control plane did not answer (a retryable outage, or the pass spent its budget): not stranded,
+    // deferred. The PR stays in the sweep's set (no edge yet), so the next tick retries, up to the cap.
+    // A refusal or the command's own failure is deterministic: it throws below and is kept, as before.
+    if (!recorded.ok && isOutageAnswer(recorded.door?.body)) {
+      console.warn(`[pr-supersession-refresh] #${older.prNumber}: record deferred, the control plane did not answer: ${recorded.error}`);
       return { outcome: 'deferred', prNumber: older.prNumber, reason: recorded.error };
     }
     // 409 = an edge (or a merge) is already there: a prior run finished the job.
@@ -267,8 +276,10 @@ export interface RefreshSupersessionSweepResult {
   retired: number;
   kept: number;
   skipped: number;
-  /** Verified, record not taken by the kernel's host this tick; retried next tick. */
+  /** Verified, record not answered by the control plane this tick; retried next tick. */
   deferred: number;
+  /** Of those, deferrals that ran out this tick: no longer retried, reported as stranded. */
+  deferralExhausted: number;
 }
 
 /** Open (or closed-without-an-edge) and merged refresh PRs, from our own rows. */
@@ -297,7 +308,10 @@ async function loadRefreshPrs(now: Date): Promise<{ open: RefreshPr[]; merged: R
     const refresh = integrationRefreshOf(r.context);
     const repo = repoFullNameFromPrUrl(r.prUrl);
     if (!refresh || !repo || !r.missionId || typeof r.prNumber !== 'number') continue;
-    const pr: RefreshPr = { workerId: r.workerId, taskId: r.taskId, workspaceId: r.workspaceId, missionId: r.missionId, repo, prNumber: r.prNumber, refresh };
+    const ctx = (r.context ?? {}) as Record<string, unknown>;
+    // A retirement whose deferral ran out is a person's now; the sweep does not retry it.
+    if (ctx[REFRESH_DEFERRAL_EXHAUSTED_KEY]) continue;
+    const pr: RefreshPr = { workerId: r.workerId, taskId: r.taskId, workspaceId: r.workspaceId, missionId: r.missionId, repo, prNumber: r.prNumber, refresh, deferral: deferralOf(ctx[REFRESH_DEFERRAL_KEY]) };
     if (r.mergedAt) merged.push(pr);
     else if (r.supersededBy == null && !r.abandonedAt && r.lifecycle !== 'unresolvable') open.push(pr);
   }
@@ -311,9 +325,14 @@ async function loadRefreshPrs(now: Date): Promise<{ open: RefreshPr[]; merged: R
  */
 export async function sweepSupersededRefreshPrs(
   now: Date = new Date(),
-  deps: { load?: typeof loadRefreshPrs; installation?: (repo: string) => Promise<number | null>; api?: Api } = {},
+  deps: {
+    load?: typeof loadRefreshPrs; installation?: (repo: string) => Promise<number | null>; api?: Api;
+    /** Keep a PR's deferral on its task (and, once it ran out, the flag that stops the sweep retrying). */
+    saveDeferral?: (taskId: string, state: DeferralState, exhausted: boolean) => Promise<void>;
+  } = {},
 ): Promise<RefreshSupersessionSweepResult> {
-  const result: RefreshSupersessionSweepResult = { candidates: 0, retired: 0, kept: 0, skipped: 0, deferred: 0 };
+  const result: RefreshSupersessionSweepResult = { candidates: 0, retired: 0, kept: 0, skipped: 0, deferred: 0, deferralExhausted: 0 };
+  const saveDeferral = deps.saveDeferral ?? saveRefreshDeferral;
   const { open, merged } = await (deps.load ?? loadRefreshPrs)(now);
   const installation = deps.installation ?? ((repo: string) => installationIdForRepo(repo).catch(() => null));
   const cache = new Map<string, number | null>();
@@ -339,9 +358,33 @@ export async function sweepSupersededRefreshPrs(
       });
       if (out.outcome === 'retired') { result.retired++; done = true; break; }
       // The control plane is not taking records now: another successor would only wait on it again.
-      if (out.outcome === 'deferred') { result.deferred++; done = true; break; }
+      if (out.outcome === 'deferred') {
+        result.deferred++;
+        done = true;
+        const { state, exhausted } = nextDeferral(older.deferral, out.reason, now);
+        if (older.taskId) await saveDeferral(older.taskId, state, exhausted).catch((err) => console.error(`[pr-supersession-refresh] #${older.prNumber}: could not keep its deferral:`, err));
+        if (exhausted) {
+          result.deferralExhausted++;
+          fireGateEvent({
+            gate: GATE_SLUGS.RETRY_PR_SUPERSESSION,
+            surface: 'cron pr-reconcile',
+            outcome: 'stranded',
+            reason: `superseded refresh PR verified but never recorded: the control plane did not answer for ${state.count} sweep(s); no longer retried`,
+            workspaceId: older.workspaceId, taskId: older.taskId, workerId: older.workerId,
+            detail: { kind: 'control_plane_deferral_exhausted', prNumber: older.prNumber, newerPrNumber: newer.prNumber, repo: older.repo, deferral: state },
+            callerOrigin: 'system',
+          });
+        }
+        break;
+      }
     }
     if (!done) result.kept++;
   }
   return result;
+}
+
+/** The default `saveDeferral`: merged into the task's context, one atomic statement. */
+async function saveRefreshDeferral(taskId: string, state: DeferralState, exhausted: boolean): Promise<void> {
+  const patch = JSON.stringify({ [REFRESH_DEFERRAL_KEY]: state, ...(exhausted ? { [REFRESH_DEFERRAL_EXHAUSTED_KEY]: true } : {}) });
+  await db.update(tasks).set({ context: sql`coalesce(${tasks.context}, '{}'::jsonb) || ${patch}::jsonb` }).where(eq(tasks.id, taskId));
 }

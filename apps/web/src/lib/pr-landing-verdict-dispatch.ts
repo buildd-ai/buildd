@@ -53,6 +53,16 @@ import { collisionFromReason } from '@/lib/pr-landing-fix-dispatch';
 export const SWEEP_MIN_AGE_MS = 10 * 60_000;
 /** How far back the sweep looks: past the gate's own stuck ceiling a verdict is the person's anyway. */
 export const SWEEP_WINDOW_MS = 6 * 60 * 60_000;
+/**
+ * A dispatch the control plane did not answer is given back for the next sweep, unless its verdict is
+ * this close to leaving the sweep's window: then it is settled `skipped` with the cause, so the
+ * person sees it instead of the verdict dropping out of the window unreported.
+ */
+export const DEFER_SETTLE_MARGIN_MS = 60 * 60_000;
+export const CONTROL_PLANE_UNAVAILABLE_CAUSE = 'control_plane_unavailable';
+
+/** What one dispatch came to: a stored result, or deferred (the claim given back, nothing stored). */
+export type DispatchOutcome = DispatchResult | { kind: 'deferred'; cause: string };
 
 export interface DispatchTarget {
   /** The decision record of the verdict: the claim is keyed on it. */
@@ -64,6 +74,8 @@ export interface DispatchTarget {
   action: EscalationAction;
   /** The escalation's own words, a fallback for the collision when no gate event names it. */
   detail?: string | null;
+  /** When the verdict was filed: how long a deferral may wait before it is settled for the person. */
+  createdAt?: Date;
 }
 
 export interface DispatchDeps {
@@ -72,6 +84,7 @@ export interface DispatchDeps {
   settle(recordId: string, result: DispatchResult): Promise<void>;
   /** Give the verdict's one dispatch back, so a later sweep can start it: nothing was started. */
   unclaim?(recordId: string): Promise<void>;
+  now?(): number;
   resolve(workspaceId: string, prNumber: number): Promise<CiRedResolution>;
   peek(target: CiRedTarget): Promise<CiRedPeek>;
   retryCi(input: CiFailureInput): Promise<CiRetryOutcome>;
@@ -150,7 +163,7 @@ async function run(t: DispatchTarget, deps: DispatchDeps): Promise<DispatchResul
  * Null when there is nothing to start (a wait, a hold) or another caller
  * already started it. Never throws.
  */
-export async function dispatchVerdictAction(t: DispatchTarget, deps: DispatchDeps = defaultDispatchDeps()): Promise<DispatchResult | null> {
+export async function dispatchVerdictAction(t: DispatchTarget, deps: DispatchDeps = defaultDispatchDeps()): Promise<DispatchOutcome | null> {
   if (!DISPATCHABLE_ACTIONS.has(t.action)) return null;
   try {
     if (!(await deps.claim(t.recordId, t.teamId))) return null;
@@ -162,14 +175,23 @@ export async function dispatchVerdictAction(t: DispatchTarget, deps: DispatchDep
   try {
     result = await run(t, deps);
   } catch (err) {
-    // The kernel's host did not take the command (the control plane did not answer, or the sweep's
-    // control-plane budget was spent): nothing was decided, so the claim goes back for the next sweep
-    // instead of being settled as skipped for good.
-    const { isDoorError } = await import('@/lib/workflow/kernel-client');
-    if (isDoorError(err) && deps.unclaim) {
-      console.warn(`[verdict-dispatch] ${t.action} for PR #${t.prNumber} deferred, the kernel's host did not take it:`, err.message);
-      await deps.unclaim(t.recordId).catch(() => {});
-      return null;
+    // The control plane did not answer (a retryable outage, or the sweep's control-plane budget was
+    // spent): nothing was decided, so the claim goes back for the next sweep, while the verdict has
+    // time left in the sweep's window. Near the window's end it is settled below, with the cause, so
+    // the person sees it. A refusal or the command's own failure is deterministic: settled as before.
+    const { ControlPlaneUnavailableError } = await import('@/lib/workflow/kernel-client');
+    if (err instanceof ControlPlaneUnavailableError) {
+      const now = (deps.now ?? Date.now)();
+      const timeLeft = t.createdAt ? t.createdAt.getTime() + SWEEP_WINDOW_MS - now : Infinity;
+      if (deps.unclaim && timeLeft > DEFER_SETTLE_MARGIN_MS) {
+        console.warn(`[verdict-dispatch] ${t.action} for PR #${t.prNumber} deferred, the control plane did not answer:`, err.message);
+        await deps.unclaim(t.recordId).catch(() => {});
+        return { kind: 'deferred', cause: CONTROL_PLANE_UNAVAILABLE_CAUSE };
+      }
+      console.warn(`[verdict-dispatch] ${t.action} for PR #${t.prNumber}: the control plane did not answer before the verdict left the sweep's window; settled for the person`);
+      result = skipped(CONTROL_PLANE_UNAVAILABLE_CAUSE);
+      await deps.settle(t.recordId, result).catch(() => {});
+      return result;
     }
     console.warn(`[verdict-dispatch] ${t.action} for PR #${t.prNumber} failed:`, (err as Error)?.message ?? err);
     result = skipped('dispatch_error');
@@ -195,7 +217,7 @@ export interface SweepDeps {
   listRecent(sinceMs: number, limit: number): Promise<SweepRow[]>;
   /** The record ids among these that already have a dispatch row. */
   dispatchedIds(ids: string[]): Promise<Set<string>>;
-  dispatch(t: DispatchTarget): Promise<DispatchResult | null>;
+  dispatch(t: DispatchTarget): Promise<DispatchOutcome | null>;
   now(): number;
 }
 
@@ -204,6 +226,8 @@ export interface SweepResult {
   dispatched: number;
   queued: number;
   skipped: number;
+  /** Given back because the control plane did not answer; the next sweep tries again. */
+  deferred: number;
   errors: number;
 }
 
@@ -217,7 +241,7 @@ export async function sweepUndispatchedEscalations(
   deps: SweepDeps = defaultSweepDeps(),
   opts: { limit?: number; maxDispatch?: number } = {},
 ): Promise<SweepResult> {
-  const res: SweepResult = { candidates: 0, dispatched: 0, queued: 0, skipped: 0, errors: 0 };
+  const res: SweepResult = { candidates: 0, dispatched: 0, queued: 0, skipped: 0, deferred: 0, errors: 0 };
   const nowMs = deps.now();
   const rows = await deps.listRecent(nowMs - SWEEP_WINDOW_MS, opts.limit ?? 500);
   const newest = new Map<string, SweepRow>();
@@ -230,7 +254,7 @@ export async function sweepUndispatchedEscalations(
     if (nowMs - row.createdAt.getTime() < SWEEP_MIN_AGE_MS) continue;
     const m = PR_KEY.exec(row.subjectId ?? '');
     if (!m || !row.workspaceId) continue;
-    due.push({ row, target: { recordId: row.id, teamId: row.teamId, workspaceId: row.workspaceId, prNumber: Number(m[2]), taskId: row.taskId, action: v.action } });
+    due.push({ row, target: { recordId: row.id, teamId: row.teamId, workspaceId: row.workspaceId, prNumber: Number(m[2]), taskId: row.taskId, action: v.action, createdAt: row.createdAt } });
   }
   if (due.length === 0) return res;
   const done = await deps.dispatchedIds(due.map(d => d.row.id));
@@ -242,6 +266,7 @@ export async function sweepUndispatchedEscalations(
       if (!out) continue;
       if (out.kind === 'dispatched') res.dispatched += 1;
       else if (out.kind === 'queued') res.queued += 1;
+      else if (out.kind === 'deferred') res.deferred += 1;
       else res.skipped += 1;
     } catch {
       res.errors += 1;

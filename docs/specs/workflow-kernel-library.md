@@ -469,12 +469,20 @@ the control plane, authenticated as the caller).
   the control plane finishes it either way. Once the budget is spent nothing
   more is sent: a door gets `ControlPlaneUnavailableError` with outcome
   `not_applied` at once, and a drain is left to the control plane. A sweep
-  treats a door error as deferred, never as a judgement on the PR: the closed-PR
-  supersession scan stamps nothing and suggests nothing (outcome `deferred`),
-  the superseded-refresh retirement records no stranded event and tries no
-  second successor, and the escalation dispatcher gives its claim back, so the
-  next tick retries each; landing, held releases and the pinned release merge
-  already leave the work pending. Each step of a pass logs its time as it finishes, and the pass result
+  defers only an outage (`ControlPlaneUnavailableError`, retryable), never as a
+  judgement on the PR: the closed-PR supersession scan stamps nothing and
+  suggests nothing (outcome `deferred`), the superseded-refresh retirement
+  records no stranded event and tries no second successor, and the escalation
+  dispatcher gives its claim back and counts it, so the next tick retries each.
+  A refusal (`KernelCommandRefusedError`) or the command's own failure
+  (`KernelCommandFailedError`) is deterministic and is settled as before
+  (suggested and stamped, kept as stranded, settled skipped). A deferral is
+  bounded (`control-plane-deferral.ts`: 24 deferrals or 24 hours from the
+  first): past it the scan is stamped with a suggestion saying why, the
+  retirement stops retrying, and each records a `stranded` gate event
+  (`control_plane_deferral_exhausted`); the escalation dispatcher settles an
+  outage `skipped` with its cause in the last hour of its 6 h window. Landing,
+  held releases and the pinned release merge already leave the work pending. Each step of a pass logs its time as it finishes, and the pass result
   carries `timings` per step and `controlPlane` (calls sent, refused unsent,
   drains skipped, time waited), so a slow run names the step it waited on.
 - Every transition row records the host that applied it

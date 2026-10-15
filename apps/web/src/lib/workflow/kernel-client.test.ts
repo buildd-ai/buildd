@@ -755,3 +755,28 @@ describe('time spent before the ledger claim', () => {
     expect(clock.t).toBeLessThan(3_000);
   });
 });
+
+describe('a reach check the control plane could not make', () => {
+  it('is answered 503 reach_unavailable; the client retries once and fails not_applied, and the door does not re-submit', async () => {
+    const { landThroughKernel } = await import('./kernel-client');
+    const clock = { t: 0 };
+    let requests = 0;
+    const ledger: CommandLedger = {
+      claim: async () => { throw new Error('the reach check should come first'); },
+      renew: async () => false, complete: async () => false, release: async () => {}, read: async () => null, prune: async () => 0,
+    };
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      requests++;
+      clock.t += 300;
+      return handleCommandRequest(new Request(url, init), { env: OWN, host: () => 'control-plane', ledger, reaches: async () => { throw new Error('db down'); }, sleep: async () => {} });
+    }) as unknown as typeof fetch;
+    const err = await landThroughKernel(input, {
+      principal,
+      deps: { env: OWN, host: () => 'web', now: () => clock.t, sleep: async (ms) => { clock.t += ms; }, fetch: fetchImpl, run: (async () => { throw new Error('ran locally'); }) as never },
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(ControlPlaneUnavailableError);
+    expect([err.outcome, err.why]).toEqual(['not_applied', 'answered 503 reach_unavailable']);
+    expect(requests).toBe(2);
+    expect(clock.t).toBeLessThan(1_000);
+  });
+});
