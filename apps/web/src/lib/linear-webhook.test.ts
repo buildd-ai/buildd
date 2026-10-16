@@ -162,7 +162,7 @@ describe('handleLinearIssueEvent — label (create + idempotency)', () => {
     expect(db.calls.delete).toBeNull();
   });
 
-  it('does not create a second task when a task link already exists (AC-2)', async () => {
+  it('does not create a second task when a task link already exists (AC-10)', async () => {
     const db = makeDb();
     const findLink = mock(async () => ({ builddEntityId: 'task-existing', builddEntityType: 'task' }) as any);
     const linkExternal = mock(async () => ({}) as any);
@@ -209,7 +209,7 @@ describe('handleLinearIssueEvent — close (guarded cancel)', () => {
     expect(db.calls.update.set).toMatchObject({ status: 'cancelled' });
   });
 
-  it('leaves an already-terminal task unchanged — 0 rows updated (AC-3)', async () => {
+  it('leaves an already-terminal task unchanged — 0 rows updated (AC-11)', async () => {
     const db = makeDb({ updateReturning: [] });
     const findLink = mock(async () => ({ builddEntityId: 'task-done', builddEntityType: 'task' }) as any);
     const res = await handleLinearIssueEvent(

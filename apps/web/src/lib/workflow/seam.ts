@@ -19,7 +19,8 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces } from '@buildd/core/db/schema';
 import type { Command, CurrentView, LivePr, VerdictFindings } from './commands';
 import { applyCommand, loadView, type CommandResult, type Exec } from './kernel';
-import { catchUpBase, ingestFact, type GithubFactReader } from './facts';
+import { catchUpBase, ingestFact, readDeltaForApproval, type GithubFactReader } from './facts';
+import { deltaApprovalSource, type DeltaReading } from '@buildd/workflow-kernel/delta-approval';
 import { runEffects, type DrainSummary, type EffectHandlers } from './effects';
 import { settleLanes } from './landing-lane';
 import { withPrFactEffects } from './pr-fact-effects';
@@ -30,7 +31,7 @@ import { policyValue } from '@/lib/policy-overrides';
 import { preflightMissOf } from './preflight-miss';
 import { landThroughKernel as landThroughKernelImpl, type KernelLanding, type LandingInput } from './landing';
 import { enqueueEffectSql, enqueueMissingEffects, existingEffectsSql } from './enqueue-missing';
-import { floorCandidatesSql, strandedMechanicalRepair, treadmillCycleCandidatesSql, type FloorCandidate, type TreadmillCycleCandidate } from './reconcile';
+import { floorCandidatesSql, floorCheckedSql, strandedMechanicalRepair, treadmillCycleCandidatesSql, type FloorCandidate, type TreadmillCycleCandidate } from './reconcile';
 
 // The worker PATCH's reading of a terminal report (S30), exported here because routes reach the kernel only through the seam.
 export { attemptEndFromPatch, taskRetryCoversAttemptEnd } from './hand-off';
@@ -42,6 +43,8 @@ import {
 } from './trunk';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { drainOnControlPlane, hostsKernelHere } from './kernel-client';
+import { recordPrStateObserved } from './render-observation';
+import { scheduleKernelHeal } from './kernel-heal';
 import { diffTouchesFindings, isTaskId, openFindings, openRequiredFindings, pathsNamedIn } from '@buildd/workflow-kernel/findings';
 
 const seamExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
@@ -512,6 +515,24 @@ export async function attemptEnded(p: {
     }
   }
   const attemptId = isRepairRole(attemptKind) ? (ctxOf(p.task).workflowAttemptId as string | undefined) : undefined;
+  // A CI repair that ended without a push (cancelled by a person, lost, failed) while the head it was
+  // bound to reads green now (an infrastructure failure re-run green) is not a failed attempt to retry:
+  // CI is fixed, so the repair ends and the delivery resumes (38442d17). Otherwise the ledger would queue
+  // another fix task that, on a mission no runner serves, nobody claims.
+  const ciAttempt = attemptId ? view.attempts.find((a) => a.id === attemptId) : undefined;
+  if (p.status !== 'completed' && ciAttempt?.family === 'ci' && d.state === 'REPAIRING' && d.boundAttemptId === ciAttempt.id
+    && live && live.state === 'open' && !live.merged && live.headSha === ciAttempt.boundHeadSha && d.currentHeadSha === live.headSha && d.repoFullName) {
+    const repo = await (deps.repoFor ?? workspaceRepo)(p.task.workspaceId);
+    const reader = repo ? readerFor(deps, repo.installationId) : null;
+    const liveChecks = reader?.checkRuns ? await reader.checkRuns(d.repoFullName, live.headSha).catch(() => null) : null;
+    if (reader?.ciGreen && liveChecks && (await reader.ciGreen(d.repoFullName, live.headSha).catch(() => null)) === true) {
+      const green = await applyCommand({ type: 'CiGreenObserved', actor: `${p.source}:ci_green`, headSha: live.headSha, liveChecks, allPassing: true }, { ref: { deliveryId }, exec: deps.exec });
+      if (green.result === 'applied') {
+        await drainDelivery(deliveryId, deps);
+        return { handled: true, result: green };
+      }
+    }
+  }
   // §5: what the repair changed since the head it was bound to, read only when an open finding names a path.
   let changedPaths: string[] | null = null;
   const boundHead = attemptId ? view.attempts.find((a) => a.id === attemptId)?.boundHeadSha ?? null : null;
@@ -530,6 +551,13 @@ export async function attemptEnded(p: {
     const reader = repo ? readerFor(deps, repo.installationId) : null;
     if (reader?.contains) proof = { liveContainsLocal: false, contentDiffChanged: await reader.contains(d.repoFullName, boundHead, live.headSha).catch(() => false) };
   }
+  // 58c8961e: a repair's head on an approved delivery may be reviewed as a delta of the approval.
+  let delta: DeltaReading | null = null;
+  if (attemptKind !== 'owner' && live && live.state === 'open' && !live.merged && d.repoFullName && deltaApprovalSource(view)) {
+    const repo = await (deps.repoFor ?? workspaceRepo)(p.task.workspaceId);
+    const reader = repo ? readerFor(deps, repo.installationId) : undefined;
+    delta = await readDeltaForApproval(view, d.repoFullName, live, reader);
+  }
   const cmd: Command = {
     type: 'AttemptEnded',
     actor: p.source,
@@ -545,6 +573,7 @@ export async function attemptEnded(p: {
     reviewRequired: true,
     ...(ci ? { ci } : {}),
     ...(changedPaths ? { changedPaths } : {}),
+    ...(delta ? { delta } : {}),
     ...(p.noopEvidence && attemptKind === 'fix' ? { noopEvidence: p.noopEvidence } : {}),
   };
   const result = await applyCommand(cmd, { ref: { deliveryId }, exec: deps.exec });
@@ -943,14 +972,43 @@ export async function observeBase(p: {
   return true;
 }
 
-/** Webhook `closed` / `reopened`: T17 / T18 / T19 from a live read. Legacy keeps its post-merge work (Slice C). */
+// AC-3 (workflow-kernel-library.md §1): a page render, MCP read or explain records at most a fact.
+export { deliveryOwnedWorkers, recordPrStateObserved } from './render-observation';
+
+/**
+ * A kernel-owned PR whose close or merge the kernel could not take in (S4a): its own live read
+ * of GitHub failed, so no transition ran. A fast heal is scheduled (kernel-heal.ts); the caller
+ * must not take a legacy path for the PR (the kernel still owns it) and must not report success.
+ */
+export class KernelObservationFailed extends Error {
+  constructor(readonly deliveryId: string, readonly reason: string) {
+    super(`kernel could not observe the PR of delivery ${deliveryId}: ${reason}`);
+    this.name = 'KernelObservationFailed';
+  }
+}
+
+/**
+ * Webhook `closed` / `reopened`: T17 / T18 / T19 from a live read. Legacy keeps its post-merge work (Slice C).
+ * False: the kernel does not own the PR (legacy decides). True: the fact reached the reducer.
+ * Throws `KernelObservationFailed` when the kernel owns the PR but its live read failed: the
+ * caller's own observation (`pull`, GitHub's pull object, when it has one) is recorded as an
+ * unapplied fact and a fast heal is scheduled, so the merge lands in minutes, not on the floor.
+ */
 export async function observePrState(p: {
-  workspaceId: string; repoFullName: string; prNumber: number; installationId: number; source: string;
+  workspaceId: string; repoFullName: string; prNumber: number; installationId: number; source: string; pull?: unknown;
 }, deps: SeamDeps = {}): Promise<boolean> {
   const deliveryId = await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber, deps.exec);
   if (!deliveryId) return false;
-  await ingestFact({ kind: 'pr_closed', workspaceId: p.workspaceId, source: p.source, repoFullName: p.repoFullName, prNumber: p.prNumber },
+  const r = await ingestFact({ kind: 'pr_closed', workspaceId: p.workspaceId, source: p.source, repoFullName: p.repoFullName, prNumber: p.prNumber },
     { exec: deps.exec, github: readerFor(deps, p.installationId) });
+  if (r.result === 'rejected' && r.factId === null) {
+    if (p.pull) {
+      await recordPrStateObserved({ workspaceId: p.workspaceId, repoFullName: p.repoFullName, prNumber: p.prNumber, pull: p.pull, source: p.source }, deps.exec)
+        .catch((err) => console.error(`[workflow] could not record the observed close of ${p.repoFullName}#${p.prNumber}:`, err));
+    }
+    await scheduleKernelHeal(deliveryId);
+    throw new KernelObservationFailed(deliveryId, r.reason);
+  }
   await drainDelivery(deliveryId, deps);
   return true;
 }
@@ -1370,6 +1428,10 @@ export async function reconcileKernelDeliveries(
     } catch (err) {
       s.errors++;
       console.error(`[workflow] floor reconcile of ${repoFullName}#${prNumber} failed:`, err);
+    } finally {
+      // S4a: this delivery had its turn (read, skipped or failed); the next pass starts with ones
+      // checked longer ago, so a row that keeps failing never starves the rest of the queue.
+      await exec(floorCheckedSql([String(row.id)])).catch((err) => console.warn(`[workflow] floor_checked_at for ${row.id} failed:`, err));
     }
   }
   return s;

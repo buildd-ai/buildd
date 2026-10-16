@@ -3,13 +3,19 @@
  * R-18, R-20). Pure: given a file's path and text, what the import would make
  * of it, or why it is skipped.
  *
- * The imported body is the file as read minus its mechanical frontmatter
- * fields (R-14): `status`, `owner`, `last_verified`, `domain`, `surfaces`,
- * `verified_by` and `assertions` leave the frontmatter and become the metadata
- * block; the intent fields (`title`, `summary`, `related`, `keywords`,
- * `supersedes`) and everything after the frontmatter stay byte for byte. So a
- * confirmed import's generated copy (repo-copy.ts) renders the same intent the
- * file stated, with the metadata block where its mechanical fields were.
+ * The imported body is the file as read minus its frontmatter block: the
+ * mechanical fields (R-14: `status`, `owner`, `last_verified`, `domain`,
+ * `surfaces`, `verified_by`, `assertions`) and the `summary` become the
+ * metadata block, the `title` the spec's title, and everything after the
+ * frontmatter stays byte for byte. YAML comments in the frontmatter (such as
+ * `# Structural conformance only...`) go with it, so they never read as the
+ * body's first heading. A confirmed import's generated copy (repo-copy.ts)
+ * writes the title, summary and metadata block back as its frontmatter.
+ *
+ * The import also says which criterion-like ids the body defines that the
+ * parser does not read (AC-3a, AC-AQR-1, INV-2) and which it defines more than
+ * once, and records them on the metadata (`criteria_unread`). It never refuses
+ * a file for them.
  *
  * Skipped, never imported: the format and the generated index (SPEC-FORMAT.md,
  * INDEX.md and the other meta files, R-20), a superseded spec, and a file that
@@ -18,6 +24,7 @@
 import type { AssertionValue, SpecMetadata } from './repo-copy';
 import { GENERATED_FIELDS, METADATA_FIELDS } from './repo-copy';
 import { parseSpecFrontmatter, SPEC_META_FILES } from './repo-spec';
+import { criterionIdProblems, type CriterionIdProblems } from './requirements';
 
 /** Frontmatter keys an import moves out of the body: the metadata fields and `owner`. */
 export const IMPORT_MECHANICAL_FIELDS: readonly string[] = [...METADATA_FIELDS, 'owner'];
@@ -38,6 +45,8 @@ export type RepoSpecImport =
     status: string | null;
     /** Mechanical values that could not be read, by field; the rest import. */
     unread: string[];
+    /** Criterion ids the body defines that the parser does not read, and ids it defines twice. */
+    criteria: CriterionIdProblems;
   }
   | { ok: false; reason: ImportSkipReason; message: string };
 
@@ -124,7 +133,7 @@ export function repoSpecForImport(path: string, text: string): RepoSpecImport {
   const hasFm = open && (close !== -1 || closeAtEnd);
   const inner = hasFm ? normalized.slice(4, close === -1 ? normalized.length - 4 : close) : '';
   const rest = hasFm ? (close === -1 ? '' : normalized.slice(close + 5)) : normalized;
-  const { kept, mechanical } = hasFm ? splitFrontmatter(inner) : { kept: [] as string[], mechanical: new Map<string, { value: string; block: string[] }>() };
+  const { mechanical } = hasFm ? splitFrontmatter(inner) : { mechanical: new Map<string, { value: string; block: string[] }>() };
 
   if (mechanical.has('generated_from')) return { ok: false, reason: 'generated_copy', message: `${path} is a generated copy of a native spec; it is edited in buildd already` };
   const status = fm?.status ? String(fm.status) : null;
@@ -158,8 +167,14 @@ export function repoSpecForImport(path: string, text: string): RepoSpecImport {
     }
   }
 
-  // The body keeps the intent frontmatter exactly; with none left, no frontmatter at all.
-  const body = kept.some((l) => l.trim()) ? `---\n${kept.join('\n')}\n---\n${rest}` : rest.replace(/^\n+/, '');
+  // The summary is the one intent field the metadata block carries; the title is the spec's own.
+  const summary = typeof fm?.summary === 'string' ? fm.summary.replace(/\s+/g, ' ').trim() : '';
+  if (summary) metadata.summary = summary;
+
+  // The body is what follows the frontmatter; the block itself is in the title and metadata now.
+  const body = rest.replace(/^\n+/, '');
+  const criteria = criterionIdProblems(body);
+  if (criteria.unreadable.length || criteria.duplicates.length) metadata.criteria_unread = criteria;
   const domain = mechanical.get('domain')?.value ? unquote(mechanical.get('domain')!.value).toLowerCase() : null;
-  return { ok: true, title: title.slice(0, 200), body, metadata, domain: domain || null, status, unread };
+  return { ok: true, title: title.slice(0, 200), body, metadata, domain: domain || null, status, unread, criteria };
 }

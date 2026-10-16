@@ -51,6 +51,8 @@ interface FakePr {
   checks?: Record<string, string[]>; baseHead?: string | null; running?: string[];
   /** §8.3: `[from, to]` head pairs whose PR diff the compare API reports unchanged. */
   equivalent?: Array<[string, string]>;
+  /** 58c8961e: the delta read from an approved head, keyed `from->to` (absent = unread). */
+  deltas?: Record<string, { prFilesAtFrom: string[]; files: Array<{ path: string; status: string; additions: number; deletions: number }> }>;
 }
 let gh: FakePr;
 const live = (): LivePr => ({
@@ -67,6 +69,10 @@ const reader: GithubFactReader = {
   failingChecks: async () => gh.failing ?? null,
   branchExists: async () => gh.baseExists ?? null,
   contentEquivalent: async (_repo, _base, from, to) => (gh.equivalent ?? []).some(([f, t]) => f === from && t === to),
+  reviewedDelta: async (_repo, _base, from, to) => {
+    const d = gh.deltas?.[`${from}->${to}`];
+    return d ? { fromHeadSha: from, toHeadSha: to, ...d } : null;
+  },
 };
 const repoFor = async () => ({ installationId: 1, repoFullName: REPO, gitConfig: null });
 
@@ -198,6 +204,7 @@ const seam = await import('../../src/lib/workflow/seam');
 const { withPrFactEffects } = await import('../../src/lib/workflow/pr-fact-effects');
 const { workflowKernel } = await import('../../src/lib/workflow/kernel-ports');
 const { recordPrFact } = await import('@buildd/core/pr-facts');
+const { factFunnelScope } = await import('../../src/lib/workflow/pr-fact-scope');
 /** Production's set, as seam.ts composes it: the package's handlers on buildd's ports, the families still in apps/web, and the fact-cache projection. */
 const reviewEffectHandlers = withPrFactEffects((await workflowKernel()).handlers);
 const { runEffects } = await import('../../src/lib/workflow/effects');
@@ -531,15 +538,42 @@ describe('S1 — fix ends with a local commit, GitHub head unchanged (#3754)', (
 });
 
 describe('S2 — approve at H0, non-equivalent push to H1', () => {
-  test('APPROVED → AWAITING_REVIEW with a delta round dispatched on the push, never at merge time; the old approval covers only its own head', async () => {
+  test('APPROVED → AWAITING_REVIEW with a new round dispatched on the push, never at merge time; the old approval covers only its own head', async () => {
     const o = await openAndHandOn();
     expect(await verdict(o, 'approve')).toMatchObject({ handled: true, toState: 'APPROVED' });
     expect(posted).toEqual([{ commitId: 'H1', event: 'APPROVE' }]);
     await push(o, 'H2');
     const d = await delivery(o.deliveryId);
     expect(d).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'H2', currentRound: 2, approvedHeads: ['H1'] });
-    expect((await rounds(o.deliveryId)).map((r) => [r.round, r.kind, r.status])).toEqual([[1, 'full', 'decided'], [2, 'delta', 'queued']]);
+    // 58c8961e: no read of the delta (this fake reader has none), so the round after the approval is a full review.
+    expect((await rounds(o.deliveryId)).map((r) => [r.round, r.kind, r.status])).toEqual([[1, 'full', 'decided'], [2, 'full', 'queued']]);
     expect(reviewersCreated.map((r) => r.head)).toEqual(['H1', 'H2']);
+  });
+});
+
+describe('58c8961e: an approval carried across a reviewed delta; every round says why it started', () => {
+  const scopeOf = (deliveryId: string) => q<{ round: number; kind: string; status: string; scope: Record<string, unknown> | null }>(
+    sql`SELECT round, kind, status, scope FROM workflow_review_rounds WHERE delivery_id = ${deliveryId}::uuid ORDER BY round`);
+  test('a small push inside the PR after an approval is a delta round; its approve covers the new head; trigger and supersession persist', async () => {
+    const o = await openAndHandOn();
+    expect(await verdict(o, 'approve')).toMatchObject({ handled: true, toState: 'APPROVED' });
+    gh.deltas = { 'H1->H2': { prFilesAtFrom: ['src/a.ts', 'src/a.test.ts'], files: [{ path: 'src/a.test.ts', status: 'modified', additions: 2, deletions: 1 }] } };
+    await push(o, 'H2');
+    let rs = await scopeOf(o.deliveryId);
+    expect(rs.map((r) => [r.round, r.kind, r.status, r.scope?.trigger ?? null])).toEqual([[1, 'full', 'decided', 'first_pass'], [2, 'delta', 'queued', 'new_commits']]);
+    expect((rs[1]!.scope?.deltaApproval as { eligible?: boolean })?.eligible).toBe(true);
+    const v = await loadView({ deliveryId: o.deliveryId });
+    expect(v.rounds.map((r) => r.trigger)).toEqual(['first_pass', 'new_commits']);
+    expect(v.rounds[0]!.scope).toBeNull();
+    // A newer push while round 2 is open: round 2 ends superseded, saying why; H3 reads outside the PR, so round 3 is full.
+    gh.deltas!['H1->H3'] = { prFilesAtFrom: ['src/a.ts'], files: [{ path: 'src/new.ts', status: 'added', additions: 5, deletions: 0 }] };
+    await push(o, 'H3', { ancestors: ['H2', 'H1'] });
+    rs = await scopeOf(o.deliveryId);
+    expect(rs.map((r) => [r.round, r.kind, r.status, r.scope?.trigger ?? null, r.scope?.endReason ?? null])).toEqual([
+      [1, 'full', 'decided', 'first_pass', null], [2, 'delta', 'superseded', 'new_commits', 'superseded_by_push'], [3, 'full', 'queued', 'superseded_by_push', null],
+    ]);
+    const after = await loadView({ deliveryId: o.deliveryId });
+    expect(after.rounds.map((r) => [r.status, r.endReason ?? null])).toEqual([['decided', null], ['superseded', 'superseded_by_push'], ['queued', null]]);
   });
 });
 
@@ -724,11 +758,12 @@ describe('S6 — out of order: closed(merged), then late synchronize / opened / 
     sql`SELECT id, pr_lifecycle_status, merged_at FROM workers WHERE pr_number = ${o.prNumber}::int AND workspace_id = ${workspaceId}::uuid ORDER BY created_at, id`);
   const prUrl = (o: Delivery) => `https://github.com/${REPO}/pull/${o.prNumber}`;
 
-  test('S6: the merge reaches every worker row through stamp_pr_rows; late open-state and CI facts leave them as the merge set them', async () => {
+  test('S6: the merge reaches every worker row in T17\'s own statement; late open-state and CI facts leave them as the merge set them', async () => {
     const o = await openAndHandOn();
     await q(sql`UPDATE workers SET pr_url = ${prUrl(o)}, pr_lifecycle_status = 'ci_green' WHERE pr_number = ${o.prNumber}::int AND workspace_id = ${workspaceId}::uuid`);
     await closeOrMerge(o, true);
-    expect((await effects(o.deliveryId, 'stamp_pr_rows')).map((e) => [e.status, e.outcome])).toEqual([['done', 'ok:merged_2']]);
+    // S4a: T17 wrote both rows in its own statement; the effect, the backstop, finds nothing left.
+    expect((await effects(o.deliveryId, 'stamp_pr_rows')).map((e) => [e.status, e.outcome])).toEqual([['done', 'ok:merged_0']]);
     const merged = await prRows(o);
     expect(merged.length).toBe(2);
     for (const r of merged) {
@@ -742,8 +777,8 @@ describe('S6 — out of order: closed(merged), then late synchronize / opened / 
     expect(await recordPrFact(target, { kind: 'open' })).toEqual([]); // late synchronize / opened
     expect(await recordPrFact(target, { kind: 'open', reopened: true })).toEqual([]);
     expect(await recordPrFact(target, { kind: 'ci', status: 'ci_failed', headSha: 'H1', currentHeadSha: 'H1' })).toEqual([]); // late check_suite
-    expect(await recordPrFact(target, { kind: 'closed' })).toEqual([]);
-    expect(await recordPrFact(target, { kind: 'merged', mergedAt: new Date() })).toEqual([]); // a merge door's receipt time
+    expect(await recordPrFact(target, { kind: 'closed' }, { scope: factFunnelScope })).toEqual([]);
+    expect(await recordPrFact(target, { kind: 'merged', mergedAt: new Date() }, { scope: factFunnelScope })).toEqual([]); // a merge door's receipt time
     // …and the kernel's own late CI fact files nothing on a merged delivery.
     expect(await ciFail(o, { head: 'H1' })).toMatchObject({ handled: true, result: { result: 'stale' } });
     expect(await tasksOf(o.deliveryId, 'ci_fix')).toEqual([]);
@@ -2493,7 +2528,7 @@ describe('AWAITING_PUSH — an owner delivery leaves on a push (§6.4, §9)', ()
 describe('§11 — the reconciliation floor re-imports what a lost webhook never delivered (ddcbe113)', () => {
   const floor = (o: Delivery) => seam.reconcileKernelDeliveries(deps, { only: [o.deliveryId], minQuietMs: 0 });
 
-  test('a missed synchronize: APPROVED at H1 while GitHub is at H2 → the floor imports the head and a delta round at H2 starts', async () => {
+  test('a missed synchronize: APPROVED at H1 while GitHub is at H2 → the floor imports the head and a round at H2 starts', async () => {
     const o = await openAndHandOn();
     await verdict(o, 'approve');
     expect(await delivery(o.deliveryId)).toMatchObject({ state: 'APPROVED', currentHeadSha: 'H1' });
@@ -2504,7 +2539,8 @@ describe('§11 — the reconciliation floor re-imports what a lost webhook never
     const s = await floor(o);
     expect(s).toMatchObject({ checked: 1, imported: 1, errors: 0 });
     expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'H2', currentRound: 2 });
-    expect((await rounds(o.deliveryId)).at(-1)).toMatchObject({ round: 2, head_sha: 'H2', kind: 'delta' });
+    // 58c8961e: the round after an approval is a full review unless the delta was read and eligible.
+    expect((await rounds(o.deliveryId)).at(-1)).toMatchObject({ round: 2, head_sha: 'H2', kind: 'full' });
     expect(reviewersCreated.slice(before).map((r) => [r.round, r.head])).toEqual([[2, 'H2']]);
     const t = (await transitions(o.deliveryId)).at(-1)!;
     expect(t.command).toBe('HeadObserved');

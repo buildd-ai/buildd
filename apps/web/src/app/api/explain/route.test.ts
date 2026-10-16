@@ -454,3 +454,22 @@ describe('GET /api/explain — per-task token', () => {
     expect(res.status).toBe(200);
   });
 });
+
+describe('GET /api/explain — per-task token', () => {
+  const OWN_WS = '44444444-4444-4444-4444-444444444444';
+
+  it('resolves its own workspace even when the team list does not contain it', async () => {
+    mockAuthenticateApiKey.mockImplementation(async () => ({
+      id: 'acct-1', teamId: 'team-1', level: 'worker',
+      taskScope: { taskId: TASK, workspaceId: OWN_WS, expiresAt: Date.now() + 60_000 },
+    }));
+    mockGetTeamWorkspaceIds.mockImplementation(async () => [WS]);
+    mockResolveWorkerByPrNumberInWorkspaces.mockImplementation(async () => ({
+      id: 'w', taskId: 't', workspaceId: OWN_WS, prNumber: 7, status: 'completed',
+    }));
+    const res = await GET(req('prNumber=7'));
+    expect(res.status).toBe(200);
+    expect(mockResolveWorkerByPrNumberInWorkspaces.mock.calls[0] as unknown[]).toEqual([[OWN_WS], 7, null]);
+    expect(mockExplainPr).toHaveBeenCalledTimes(1);
+  });
+});

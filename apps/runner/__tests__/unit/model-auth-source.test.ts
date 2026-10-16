@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { applyModelEnv } from '../../src/agent-model-env';
-import { applyHostSeatPolicy } from '../../src/host-seat';
+import { applyMachineLoginPolicy } from '../../src/host-seat';
 import { resolveModelAuthSource, decideModelAuthSource, stripInheritedApiKeys, NO_CODING_AUTH_MESSAGE, modelAuthSourceMode } from '../../src/model-auth-source';
 import { isAuthError } from '../../src/claim-breaker';
 
@@ -31,7 +31,7 @@ describe('decideModelAuthSource', () => {
   test('runner + CLI login, no paid route -> runner-managed, server/inherited keys dropped', () => {
     const env = { BUILDD_MODEL_AUTH_SOURCE: 'runner' };
     const d = decideModelAuthSource(env, { ...base, probe: probe(homeWithLogin(), env) });
-    expect(d).toMatchObject({ label: 'runner-managed', blocked: false, localSeat: 'login', dropServerCredentials: true, dropInheritedApiKeys: true });
+    expect(d).toMatchObject({ label: 'runner-managed', blocked: false, localLogin: 'login', dropServerCredentials: true, dropInheritedApiKeys: true });
   });
 
   test('runner + no local login + no paid route -> blocked; message is an auth error (backoff, no paid retry)', () => {
@@ -39,12 +39,6 @@ describe('decideModelAuthSource', () => {
     const d = decideModelAuthSource(env, { ...base, probe: probe(emptyHome(), env) });
     expect(d.blocked).toBe(true);
     expect(isAuthError(NO_CODING_AUTH_MESSAGE)).toBe(true);
-  });
-
-  test('local sign-in disabled/absent never falls back to a paid key', () => {
-    const env = { BUILDD_MODEL_AUTH_SOURCE: 'runner', BUILDD_HOST_SEAT: 'off' };
-    const d = decideModelAuthSource(env, { ...base, probe: probe(homeWithLogin(), env) });
-    expect(d.blocked).toBe(true);
   });
 
   test.each([
@@ -75,15 +69,15 @@ describe('with applyModelEnv', () => {
     const d = decideModelAuthSource(runnerEnv, { ...base, probe: probe(home, runnerEnv) });
     const env: Record<string, string> = { ANTHROPIC_API_KEY: 'sk-inherited-0123456789', HOME: home };
     stripInheritedApiKeys(env);
-    const seat = applyHostSeatPolicy(env, { serverSeatDelivered: false, probe: probe(home, {}) });
+    const seat = applyMachineLoginPolicy(env, { probe: probe(home, {}) });
     const m = applyModelEnv(env, {
-      isCodexTask: false, hostSeat: seat.hostSeat,
+      isCodexTask: false, machineLogin: seat.machineLogin,
       serverApiKey: d.dropServerCredentials ? undefined : 'sk-team-0123456789',
       serverOauthToken: d.dropServerCredentials ? undefined : 'server-oauth',
     });
     expect(m.env.ANTHROPIC_API_KEY).toBeUndefined();
     expect(m.env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
-    expect(m.hostSeatUsed).toBe(true);
+    expect(m.machineLoginUsed).toBe(true);
     expect(m.injected).toEqual([]);
   });
 

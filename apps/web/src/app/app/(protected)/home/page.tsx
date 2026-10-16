@@ -28,6 +28,7 @@ import { workerNotDependencyBotPr } from '@/lib/dependency-bot-pr';
 import { guardMissionPrMerge } from '@/lib/mission-pr';
 import { isMissionPrTask } from '@buildd/core/mission-integration';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
+import { overlayDeliveryLifecycle } from '@/lib/delivery-overlay';
 import { classifyConflictFix } from '@/lib/conflict-fix-liveness';
 import { isActionableChip, kernelInboxMembership, missionPrRoleOf, reviewMachineActing, buildActionQueue, buildDecideItems, buildDiscrepancyItems, buildFailedTaskItems, summariseActionQueueAge } from '@/lib/action-queue';
 import { describeConflictReason } from '@/lib/merge-blocker';
@@ -61,20 +62,19 @@ import { loadMissionVerdicts } from '@buildd/core/mission-verdicts';
 export const dynamic = 'force-dynamic';
 import { LIVE_WORKER_STATUSES, LIVE_TASK_STATUSES } from '@/lib/task-presentation';
 import {
-  failedDeliverableTaskIds,
   summarizeMissionForCard,
   type MissionCardRow,
   type MissionCardSummary,
   type MissionCardView,
 } from '@/lib/mission-card-view';
-import { loadMissionCardViews, MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH, MISSION_TASK_REFRESH_EXTRAS } from '@/lib/mission-card-views';
+import { loadCardVisualReviews, loadMissionCardViews, missionDeliveryFacts, MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH, MISSION_TASK_REFRESH_EXTRAS } from '@/lib/mission-card-views';
 import type { HomeMissionSummary } from './HomeMissions';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
 import { resolveLandingOwnership, landingModeOf, resolveReviewerGate, resolveReviewInFlight, deriveStoredVerdictFallback, gateReachesActionQueue } from '@/lib/reviewer-gate';
 import type { ReviewerTaskStatus } from '@/lib/reviewer-gate';
 import { createReviewerStallFactsLoader } from '@/lib/reviewer-stall-facts';
 import { HomeBody } from './HomeBody';
-import { countQuietMissions, deliveryCounts, projectMissionDelivery, selectHomeMilestones, type MissionDelivery } from '@/lib/delivery-projection';
+import { countQuietMissions, deliveryCounts, quietMissionCauses, projectMissionDelivery, selectHomeMilestones, type MissionDelivery } from '@/lib/delivery-projection';
 import { deriveHomeNeedsYou } from '@/lib/home-needs-you';
 import type { HomeHeldMission, HomeQuestion } from './NeedsYouCards';
 import { HomeMissionsSummary, type HomeMissionRow } from './HomeMissionsSummary';
@@ -576,6 +576,10 @@ export default async function HomePage({
           // the same builder the missions list uses (AC-14, D8).
           // The nested workers are capped per task, so live workers are an
           // exact batched count, not a count of the loaded rows.
+          // The visual review the mission page reads, for missions whose audit is
+          // still open, so a Home card names the same state and cause as the
+          // mission header (spec 8e137fdb I-1). Runs beside the live count.
+          const visualReviewsLoad = loadCardVisualReviews(allMissions as Parameters<typeof loadCardVisualReviews>[0]);
           const liveWorkerCounts = new Map<string, number>();
           if (allMissions.length > 0) {
             const liveRows = await db
@@ -589,25 +593,35 @@ export default async function HomePage({
               .groupBy(tasks.missionId);
             for (const r of liveRows) if (r.missionId) liveWorkerCounts.set(r.missionId, r.n);
           }
+          // One DeliveryView load for every task of these missions, beside the
+          // visual reviews: S35's failure reading (a failed attempt the kernel
+          // already replaced does not read FAILED) and §7's lifecycle, where a
+          // delivery-owned task's PR reads as its delivery says, derived on read.
+          const [visualReviews, missionDeliveryViews] = await Promise.all([
+            visualReviewsLoad,
+            getDeliveryViewsForTasks(allMissions.flatMap(m => (m.tasks ?? []).map(t => t.id))),
+          ]);
+          const factsNow = Date.now();
+          const lifecycleMissions = allMissions.map(m => ({ ...m, tasks: overlayDeliveryLifecycle(m.tasks ?? [], missionDeliveryViews) }));
 
-          missionDeliveries = allMissions.map(m => ({
+          missionDeliveries = lifecycleMissions.map(m => ({
             delivery: projectMissionDelivery({
               id: m.id, title: m.title, status: m.status, href: `/app/missions/${m.id}`,
               isHeld: m.isHeld, integrationBranch: m.integrationBranchEnabled === true,
               tasks: m.tasks as unknown as Parameters<typeof projectMissionDelivery>[0]['tasks'],
+              // The same facts the missions list reads, so both cards agree.
+              ...missionDeliveryFacts(m as Parameters<typeof missionDeliveryFacts>[0], visualReviews.get(m.id), factsNow),
             }, missionHelpers),
             status: m.status,
             liveAgents: liveWorkerCounts.get(m.id) ?? 0,
           }));
 
-          // S35: one DeliveryView load for every failed deliverable, so a
-          // failed attempt the kernel already replaced does not read FAILED.
-          const missionDeliveryViews = await getDeliveryViewsForTasks(failedDeliverableTaskIds(allMissions as MissionCardRow[]));
           const nowMs = Date.now();
           const summaries = new Map<string, MissionCardSummary>();
-          for (const m of allMissions) {
+          for (const m of lifecycleMissions) {
             summaries.set(m.id, summarizeMissionForCard(m as MissionCardRow, {
               now: nowMs, liveWorkers: liveWorkerCounts.get(m.id) ?? 0, deliveryViews: missionDeliveryViews,
+              visualReview: visualReviews.get(m.id) ?? null,
             }));
           }
           missions = allMissions.map(m => ({
@@ -1475,17 +1489,29 @@ export default async function HomePage({
                 pendingWithDeps.map(t => t.missionId).filter(Boolean) as string[]
               )];
               const downstreamMissionMap = new Map<string, string>();
-              if (downstreamMissionIds.length > 0) {
-                const missionRows = await db
-                  .select({ id: missionsTable.id, title: missionsTable.title })
-                  .from(missionsTable)
-                  .where(inArray(missionsTable.id, downstreamMissionIds));
-                for (const m of missionRows) downstreamMissionMap.set(m.id, m.title);
-              }
+              // §7: an upstream PR the kernel owns reads as its delivery says,
+              // loaded beside the mission titles (no extra round trip).
+              const [missionRows, upstreamViews] = await Promise.all([
+                downstreamMissionIds.length > 0
+                  ? db
+                    .select({ id: missionsTable.id, title: missionsTable.title })
+                    .from(missionsTable)
+                    .where(inArray(missionsTable.id, downstreamMissionIds))
+                  : Promise.resolve([] as Array<{ id: string; title: string }>),
+                getDeliveryViewsForTasks(upstreamTasks.map(t => t.id)),
+              ]);
+              for (const m of missionRows) downstreamMissionMap.set(m.id, m.title);
 
               for (const upstream of upstreamTasks) {
                 const w = (upstream.workers as any[])[0];
                 if (!w?.prNumber) continue;
+                // A kernel-owned PR is a merge for you only when its delivery
+                // says so (approved, and the policy leaves the merge to a
+                // person); merged, in review or being fixed, it is not, whatever
+                // the worker row says.
+                const uv = upstreamViews.get(upstream.id);
+                const kernelOwned = !!uv && uv.ownerTaskId === upstream.id && uv.prNumber === w.prNumber;
+                if (kernelOwned && !(uv!.state === 'APPROVED' && uv!.needsYou)) continue;
 
                 const blockedTasks = pendingWithDeps.filter(t =>
                   ((t.dependsOn as string[]) ?? []).includes(upstream.id)
@@ -2050,6 +2076,7 @@ export default async function HomePage({
   const deliveries = missionDeliveries.map(d => d.delivery);
   const milestones = selectHomeMilestones(deliveries);
   const quietMissions = countQuietMissions(deliveries);
+  const quietCauses = quietMissionCauses(deliveries);
   // Chat is where work starts, and it has its own tab. On a phone a team with
   // chat keeps the composer under the headline; desktop gets one quiet link.
   // Chat setup (no key yet) lives on the Chat page: Home says so in one line.
@@ -2117,6 +2144,7 @@ export default async function HomePage({
           counts={counts}
           milestones={milestones}
           quietMissions={quietMissions}
+          quietCauses={quietCauses}
           inProgress={reviewsInProgress}
           agents={agentsModel ? <AgentsPanel model={agentsModel} occupancy={occupancy} idle={idleStretches} /> : null}
           landed={landedWeek.length > 0 ? <LandedThisWeek missions={landedWeek} timeZone={teamTz} /> : null}
@@ -2124,7 +2152,7 @@ export default async function HomePage({
             // Initiative scoping chips: they SCOPE the list, never group it.
             <div className="mb-3">
               <InitiativeFilterChips initiatives={actionQueueInitiatives} selectedId={initFilter ?? null} workspaceFilter={wsFilter ?? null} />
-              {filteredActionQueue.length === 0 && <p className="text-body text-text-muted">Nothing waiting for this initiative.</p>}
+              {initFilter && filteredActionQueue.length === 0 && <p className="text-body text-text-muted">Nothing waiting for this initiative.</p>}
             </div>
           )}
           foot={discrepancyOverflowCount > 0 && (

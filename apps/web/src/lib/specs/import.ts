@@ -8,6 +8,7 @@ import { appBaseUrl } from '@/lib/app-url';
 import { requestingPerson } from '@/lib/request-person';
 import { repoSpecForImport } from '@buildd/spec-contract/repo-import';
 import type { SpecMetadata } from '@buildd/spec-contract/repo-copy';
+import type { CriterionIdProblems } from '@buildd/spec-contract/requirements';
 import type { DuplicateCheckDeps } from '@/lib/spec-duplicate-decision';
 import type { DuplicateCandidate } from './duplicates';
 import { linkedRepo } from './repo-source';
@@ -217,7 +218,14 @@ export interface ImportFileRow {
   metadata: SpecMetadata;
   /** Mechanical fields that could not be read and are not imported. */
   unread: string[];
-  duplicates: DuplicateCandidate[];
+  /**
+   * Criterion ids the body defines that the parser does not read (AC-3a,
+   * AC-AQR-1, INV-2), and ids it defines more than once. Reported, never a
+   * reason to skip; a real run records them on the metadata (`criteria_unread`).
+   */
+  criteria: CriterionIdProblems;
+  /** `blocks`: a real run skips the file unless it is in allowDuplicates; otherwise it is an overlap warning and the file is created. */
+  duplicates: Array<DuplicateCandidate & { blocks: boolean }>;
   /** Why the duplicate check did not run, when it did not. */
   duplicateCheck: string | null;
 }
@@ -399,11 +407,12 @@ export async function importRepoSpecs(caller: SpecCaller, input: ImportInput, de
 
   const one = async ({ f, p }: (typeof parsed)[number]): Promise<ImportFileRow> => {
     const provenance = { path: f.path, commitSha, blobSha: f.blobSha, prNumber: prs.get(f.path) ?? null };
-    const base = { path: f.path, provenance, metadata: {}, unread: [], duplicates: [], duplicateCheck: null, area: null } satisfies Omit<ImportFileRow, 'action'>;
+    const base = { path: f.path, provenance, metadata: {}, unread: [], criteria: { unreadable: [], duplicates: [] }, duplicates: [], duplicateCheck: null, area: null } satisfies Omit<ImportFileRow, 'action'>;
     if (!p.ok) return { ...base, action: 'skip', reason: p.reason, message: p.message };
-    const row: ImportFileRow = { ...base, metadata: p.metadata, unread: p.unread, action: 'create', spec: { title: p.title, scope: 'feature', body: p.body } };
+    const row: ImportFileRow = { ...base, metadata: p.metadata, unread: p.unread, criteria: p.criteria, action: 'create', spec: { title: p.title, scope: 'feature', body: p.body } };
     const prior = byPath.get(f.path);
     if (prior?.repoSource?.state === 'confirmed') return { ...row, action: 'skip', reason: 'confirmed', message: `${f.path} was imported and confirmed; buildd is its source now`, specId: prior.id };
+    if (prior && (prior.status === 'retired' || prior.status === 'superseded')) return { ...row, action: 'skip', reason: 'superseded', message: `${f.path} was imported as "${prior.title}" (${prior.id}), which is now ${prior.status}; restore it first to re-import`, specId: prior.id };
     if (prior && prior.repoSource!.blobSha === f.blobSha) return { ...row, action: 'skip', reason: 'already_imported', message: `${f.path} is imported at this blob already`, specId: prior.id };
     if (!prior) {
       // Already in buildd as the same spec: never a second one, at most its provenance.
@@ -438,7 +447,7 @@ export async function importRepoSpecs(caller: SpecCaller, input: ImportInput, de
     } else {
       // §13: an imported spec is checked like a new draft, against the approved ones.
       const d = deps.duplicates === false ? null : await SPEC_DUPLICATE_CHECK({ workspaceId, title: p.title, body: p.body, ...('userId' in ids ? { userId: ids.userId } : { accountId: ids.accountId }) }, deps.duplicates ?? {});
-      if (d && d.ran) row.duplicates = [...d.blocking, ...d.warnings];
+      if (d && d.ran) row.duplicates = [...d.blocking.map((x) => ({ ...x, blocks: true })), ...d.warnings.map((x) => ({ ...x, blocks: false }))];
       else if (d) row.duplicateCheck = d.reason;
       if (d?.ran && d.blocking.length && !allow.has(f.path)) {
         row.message = `looks like a duplicate of ${d.blocking.map((x) => `"${x.title}" (${x.specId})`).join(', ')}`;

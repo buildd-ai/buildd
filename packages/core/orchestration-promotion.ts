@@ -22,8 +22,9 @@
  * small cohort a reviewer approved with the readout.
  *
  * The guard decides the cohort only. `runOrchestrationDecision` still applies
- * an answer solely when the kit's policy passes AND `isJevModel` passes, so a
- * non-Jev team model stays record-only even inside a granted cohort.
+ * an answer only when the kit's policy passes and the answering model is
+ * measured for that decision kind. An unmeasured model stays record-only
+ * even inside a granted cohort.
  *
  * `ORCHESTRATION_PROMOTIONS` is the reviewed, committed record of promotions.
  * It is empty: no readout over deployed evidence exists yet (see the design

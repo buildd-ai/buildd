@@ -2,7 +2,7 @@
 title: Local Agent Presence
 status: active
 owner: max
-last_verified: 2026-10-12
+last_verified: 2026-10-15
 summary: A local coding session with the buildd plugin MUST show as seat-free presence, bind only to the worker its own verified claim_task minted, and release it exactly once on exit without completing work.
 domain: runners
 surfaces: [apps/web/src/lib/local-session.ts, apps/web/src/app/api/workers/local-sessions/route.ts, packages/shared/src/local-session.ts, apps/runner/plugin/scripts/buildd-hook.mjs]
@@ -95,52 +95,34 @@ become tracked work only through that session's own verified `claim_task`.
 - A presence may hold several workers: Claude Code subagents share the parent's `session_id` and their tool calls fire the parent's hooks, so each subagent's `claim_task` binds to the same presence (`local_session_workers`, one row per worker). One worker is bound to at most one presence, ever (primary key on `local_session_workers.worker_id`). A presence bound before multi-claim keeps its single worker through the legacy `local_sessions.bound_worker_id` column, which is read (never written) and also guards that worker against other sessions.
 - The hook keeps, on the person's machine only, which subagent made which claim (`agent_id` from the subagent's PostToolUse payload); it is never sent.
 - A hook `touch` refreshes `workers.updated_at` only for the presence's own held workers, each under the same once-a-minute guard as the MCP touch. Another session's hooks never touch them.
-- A `touch` may carry `busy`: `true` from `UserPromptSubmit` and `PreToolUse` (a turn or a tool is starting), `false` from `Stop`. The server writes `local_sessions.busy_since` only when the mark changes, never throttled, with `last_seen_at`; a `start` clears it. A long command fires no hook until it returns, so this is what tells the interactive reaper the client is still working (see [runner-liveness](runner-liveness.md)). Client side, a flip is sent at once and an unchanged mark is throttled like any touch; `PreToolUse` is async on Claude Code, reads no tool input and no transcript, and a racing write never drops a recorded claim (claims are merged with the state file at write time).
+- A `touch` may carry `busy`: `true` from `UserPromptSubmit` and `PreToolUse` (a turn or a tool is starting), `false` from `Stop`. The server writes `local_sessions.busy_since` only when the mark changes, never throttled, with `last_seen_at`; a `start` clears it. A long command fires no hook until it returns, so this is what tells the interactive reaper the client is still working (see Interactive worker reaper, below). Client side, a flip is sent at once and an unchanged mark is throttled like any touch; `PreToolUse` is async on Claude Code, reads no tool input and no transcript, and a racing write never drops a recorded claim (claims are merged with the state file at write time).
 - The hook binds deterministically: its post-tool hook reads the worker id from buildd's own `claim_task` reply. It reads no other tool output.
 
 **Acceptance criteria**:
 - AC-4: WHEN `start` is posted THEN one presence row exists and no worker or seat was created.
 - AC-5: GIVEN a verified interactive claim WHEN its session posts `bind` THEN that presence holds that worker; a second session's `bind` of the same worker answers 409 `bound_elsewhere`.
-- AC-5b: GIVEN two verified claims from one session (e.g. two subagents) WHEN both bind THEN the presence holds both.
+- AC-12: GIVEN two verified claims from one session (e.g. two subagents) WHEN both bind THEN the presence holds both.
 - AC-6: WHEN `bind` names a runner worker or an `mcp-unverified` one THEN 409 `not_interactive`.
 
 **Code surface**: `local_sessions` and `local_session_workers` tables (`packages/core/db/schema.ts`), `bindInsertSql`, `boundWorkerTouchWhere`, `presenceTouchWhere` (`apps/web/src/lib/local-session.ts`).
 
 ## Reserving a waiting task
 
-A session that wants to run a dependency-blocked task itself MUST be able to
-reserve it, so a runner cannot take it the moment it frees.
+The reservation rule (a session reserves one waiting task so runners skip it,
+the 20-minute lapse, `claim_task { taskId, waitSeconds }` and
+`create_task { claim: true }`) lives in the session-reservation spec, native
+spec 7cff5034 ("Session reservation of a waiting task"). Its AC-1 to AC-5
+replace this file's AC-RV1 to AC-RV5. One rule it does not state yet stays
+here:
 
-- `update_task { taskId, reserve: true }` writes `context.reservedBy`
-  (`{ accountId, at, expiresAt }`, 20 minutes). Reserving again by the same
-  account renews it; `reserve: false` releases it. Another account's live
-  reservation is refused (409), a lapsed one is taken over. Only a **verified
-  interactive session** can hold one (the signed marker the MCP route adds, the same
-  check the claim route's pass-through uses): a request without it, a dashboard user
-  or a task token is refused 403, and `POST /api/tasks` with `reserve: true` is refused
-  before anything is filed, so a non-interactive caller cannot park a task from every claimer.
-- While live, runners and every other account skip the task; only the reserving
-  account's explicit `claim_task {taskId}` passes. Dependencies, holds and the
-  other claim gates still apply to that claim.
-- `claim_task { taskId, waitSeconds }` (at most 45) reserves the task, then
-  retries while the only blocker is `deps_blocked`, renewing the reservation
-  each poll. It returns the claim the moment the task frees, or the server's
-  reason with a note that the task is still reserved. The session is "told" by
-  that call returning: no hook or push delivers it, so a session wanting it
-  in the background runs the call as a background task.
-- `create_task { claim: true }` files the task already reserved
-  (`reserve: true` on `POST /api/tasks`; a `reservedBy` in the caller's own
-  `context` is dropped) and claims it by id in the same call, so no runner wins
-  the gap between create and claim.
-- Silence is the lapse rule: nothing renews a reservation but this session, so a
-  closed or quiet session returns the task to the runners within 20 minutes.
+- Only a **verified interactive session** can hold a reservation (the signed
+  marker the MCP route adds, the same check the claim route's pass-through
+  uses). A request without it, a dashboard user or a task token is refused
+  403, and `POST /api/tasks` with `reserve: true` is refused before anything
+  is filed, so a non-interactive caller cannot park a task from every claimer.
 
 Acceptance criteria:
-- AC-RV1: GIVEN a live reservation by account A WHEN a runner or account B claims the task THEN it is refused as `task_reserved`; WHEN A claims it THEN the claim proceeds.
-- AC-RV2: GIVEN a reservation whose `expiresAt` has passed THEN any claimant passes the gate.
-- AC-RV3: WHEN a reserved task is claimed THEN `reservedBy` is absent from the claimed task's context.
-- AC-RV4: WHEN `create_task` carries `claim: true` from a verified interactive session THEN the insert already carries the caller's reservation, and the claim follows by id; from any other caller it is refused 403 and nothing is filed.
-- AC-RV5: WHEN `claim_task` carries `waitSeconds` and the task is blocked only by dependencies THEN the call retries until it frees or the wait ends, and gives up at once on any other exclusion.
+- AC-13: WHEN `update_task { reserve: true }` or `create_task { claim: true }` comes from any caller other than a verified interactive session THEN it is refused 403 and nothing is reserved or filed.
 
 ## Session end
 
@@ -157,10 +139,87 @@ and exactly once, and MUST never complete unfinished work or rewrite a finished 
 **Acceptance criteria**:
 - AC-7: GIVEN a bound worker on an `in_progress` task WHEN `end` (exit) arrives THEN the task is `pending`, not `completed`.
 - AC-8: GIVEN a bound worker whose task is `completed` WHEN `end` arrives three times THEN the task stays `completed` and the seat is released once.
-- AC-8b: GIVEN a presence holding two live workers WHEN `end` (exit) arrives THEN both tasks go back to `pending` and each seat is released exactly once; a replayed `end` changes nothing.
-- AC-8c: GIVEN a presence holding a live worker WHEN it ends with `clear` and the continuing session's `start` names it THEN the new presence holds the worker, nothing is released, and the new session's touches keep it alive; a `start` naming a session that exited, or another account's, moves nothing.
+- AC-14: GIVEN a presence holding two live workers WHEN `end` (exit) arrives THEN both tasks go back to `pending` and each seat is released exactly once; a replayed `end` changes nothing.
+- AC-15: GIVEN a presence holding a live worker WHEN it ends with `clear` and the continuing session's `start` names it THEN the new presence holds the worker, nothing is released, and the new session's touches keep it alive; a `start` naming a session that exited, or another account's, moves nothing.
 
 **Code surface**: `handleLocalSessionEvent` `end` branch, `detachInteractiveWorker` (`apps/web/src/lib/interactive-detach.ts`).
+
+## Interactive worker reaper
+
+This section is the home of the interactive reaper; it moved here from
+[runner-liveness](runner-liveness.md), which keeps only the rule that no
+runner liveness rule applies to these workers.
+
+A worker minted by an MCP `claim_task` has `runner = 'mcp'`. A person's own
+session (or its local agents) does the work; no runner ever starts a session
+for the row, syncs tokens or turns, or sends a heartbeat for it.
+
+`runner = 'mcp'` is recorded only for a claim carrying the server-signed
+interactive session marker the MCP routes add to their internal calls
+(`apps/web/src/lib/interactive-session.ts`). A client that sends
+`runner: 'mcp'` without it is recorded as `mcp-unverified`, an ordinary runner
+id, and every runner rule applies to its workers.
+
+**Invariants**:
+- No runner liveness rule applies to an interactive worker: the generic stale,
+  idle, silent-start and never-started arms of `cleanupStaleWorkers`, the
+  runner-heartbeat rule, and the cleanup route's 1h stalled and local-UI
+  heartbeat rules all exclude `runner = 'mcp'`.
+- Any MCP request from a `worker` or `admin` session (either transport) bumps
+  `updatedAt` on that session's interactive workers in `idle`, `running` or
+  `starting`, at most once a minute, after the response is sent. When the
+  session carries a user (OAuth `sub`), only workers whose task records that
+  user as the interactive claimer (`context.interactiveClaimUserId`) are
+  touched; a token with no user covers the account's interactive workers.
+  Trigger-level tokens touch nothing. `update_progress` bumps it as before.
+- An interactive worker with no MCP or hook activity for
+  `INTERACTIVE_WORKER_IDLE_TTL_MS` (2 hours) is reaped by an account-scoped arm,
+  booked with its own error text, and does not consume a retry attempt. MCP
+  silence, client presence, a running command and the claim are separate
+  signals, so the arm spares a worker while (a) an open plugin presence holding
+  it was heard from within the TTL, or marked itself inside a turn
+  (`local_sessions.busy_since`, set by `UserPromptSubmit`/`PreToolUse`, cleared
+  by `Stop`) and was heard from within `INTERACTIVE_WORKER_BUSY_MAX_MS`
+  (8 hours); or (b) the worker was itself active within 8 hours and an open
+  presence of its claimant (the claiming account, the person the claim
+  recorded, or when it recorded nobody a member of the claiming account's
+  team) in its workspace was heard from within the TTL. 8 hours is the hard
+  backstop: a client that died mid-turn, or a person whose session merely
+  stays open, never holds a claim past it.
+- The release text names the signal that expired: `INTERACTIVE_ABANDONED_ERROR`
+  (2 hours with no touch and no live presence) or `INTERACTIVE_BACKSTOP_ERROR`
+  (8 hours with no touch, whatever the presence says).
+- A reaped interactive worker's task is never completed from its deliverables
+  (a PR opened mid-work is not the work done) and is never charged an infra
+  retry or backoff: an open task goes straight back to `pending`, so the same
+  client can claim it again at once; a terminal task keeps its status.
+- `waiting_input` interactive workers stay governed by the waiting_input timeout.
+- The buildd agent plugin's hooks can also keep an interactive worker alive,
+  but only the one bound to that hook's own session presence, under the same
+  once-a-minute `updatedAt` guard (so a hook touch and an MCP touch coalesce).
+  A presence without a bound worker holds no seat.
+
+**Acceptance criteria**:
+- AC-18: GIVEN an interactive worker in `idle` with `updatedAt` 10 minutes ago
+  WHEN `cleanupStaleWorkers` runs THEN it is left untouched.
+- AC-19: GIVEN an interactive worker whose account made no MCP call for over 2
+  hours WHEN `cleanupStaleWorkers` runs THEN it is marked `failed` with
+  `INTERACTIVE_ABANDONED_ERROR` and its open task goes back to `pending` with no
+  backoff, never `completed`, even with a PR on the worker.
+- AC-20: GIVEN an interactive worker last touched 3 hours ago, held by an open
+  presence whose `busy_since` is set and that was last heard from 3 hours ago
+  (one long command) WHEN `cleanupStaleWorkers` runs THEN it is left untouched;
+  GIVEN the same presence last heard from 9 hours ago (the client died
+  mid-turn) THEN it is reaped with `INTERACTIVE_BACKSTOP_ERROR`.
+
+**Code surface**:
+- `apps/web/src/lib/interactive-worker-liveness.ts`: `touchInteractiveWorkers()`,
+  `interactiveAbandonedScope()`, `runnerWorkerOnly()`
+- `apps/web/src/lib/stale-workers.ts`: `staleWorkerScope()`
+- `apps/web/src/lib/interactive-worker-liveness.ts`: `heldByLivePresence()`,
+  `claimantPresenceAlive()`
+- Constants: `INTERACTIVE_WORKER_RUNNER`, `INTERACTIVE_WORKER_IDLE_TTL_MS`,
+  `INTERACTIVE_WORKER_BUSY_MAX_MS` in `packages/shared/src/runner-liveness.ts`
 
 ## Session usage
 
@@ -191,8 +250,8 @@ is, from numbers the client already wrote locally, and MUST never move content.
 - Buildd → session reuses the instruction queue. `send_agent_message`/instruct queues into `workers.pending_instructions` for an interactive worker even for `priority: urgent` (no runner listens on Pusher for it). On an interactive worker the agent is the queue's only consumer: the dedicated `receive_messages` action returns the text once and acknowledges it delivered and read by id in one PATCH; `update_progress` still does the same for older prompts, but nothing depends on it. The hook's `touch` answer carries only a `pendingInstructions` flag. On Claude Code and Codex the hook turns that flag into a nudge naming `receive_messages` at every turn boundary the client exposes: `UserPromptSubmit` and `PostToolUse` add one line of context, and `Stop` blocks once (`decision: 'block'`, never while `stop_hook_active`, so it cannot loop). `Stop` touches are never throttled; `PostToolUse` touches are (one a minute). The message text never travels through a hook.
 
 **Acceptance criteria**:
-- AC-9: GIVEN `pendingInstructions: true` WHEN a Claude Code or Codex `PostToolUse` hook runs THEN stdout is `additionalContext` naming `receive_messages`; WHEN `Stop` runs THEN `decision: 'block'` once, and nothing while `stop_hook_active`; GIVEN `false` THEN stdout is empty on every event; the message text appears in no hook output.
-- AC-10: WHEN `receive_messages` is called with a message queued THEN it returns the text once and acknowledges it by id; a second call returns nothing.
+- AC-16: GIVEN `pendingInstructions: true` WHEN a Claude Code or Codex `PostToolUse` hook runs THEN stdout is `additionalContext` naming `receive_messages`; WHEN `Stop` runs THEN `decision: 'block'` once, and nothing while `stop_hook_active`; GIVEN `false` THEN stdout is empty on every event; the message text appears in no hook output.
+- AC-17: WHEN `receive_messages` is called with a message queued THEN it returns the text once and acknowledges it by id; a second call returns nothing.
 
 ## Surfaces
 
@@ -225,3 +284,19 @@ installable from the repo's marketplace (`.claude-plugin/marketplace.json`).
 | Without hooks | MCP-only: works as before; buildd sees the session once it claims, and MCP calls keep the claim alive | same | same |
 
 `BUILDD_HOOKS_DISABLED=1` forces MCP-only mode on any client.
+
+## Renumbered
+
+Ids changed on 2026-10-15 so every criterion in this file is unique and
+parses. Old to new:
+
+- Old AC-5b to AC-12.
+- Old AC-RV1, AC-RV2, AC-RV3, AC-RV5 moved to the session-reservation spec
+  (native 7cff5034) as its AC-1, AC-2, AC-3, AC-5. AC-RV4's first half (the
+  reservation is on the task from insertion) is its AC-4; the second half (any
+  other caller is refused 403) stays here as AC-13.
+- Old AC-8b to AC-14, AC-8c to AC-15.
+- Old AC-9, AC-10 (the Reporting and steering copies) to AC-16, AC-17. Session
+  usage keeps AC-9 and AC-10.
+- New here: AC-18, AC-19, AC-20, moved from runner-liveness, where they
+  were AC-9a, AC-9b, AC-9c in its Interactive (MCP-claimed) Workers section.

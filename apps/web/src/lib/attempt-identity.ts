@@ -14,7 +14,7 @@
  *     parent was granted past.
  *
  * One read, one shape, spread into every attempt insert. The phase half is
- * the same rule as `inheritPhaseFromParent` (Rule P1-7).
+ * the same rule as `inheritPhaseFromParent` (mission-legibility R-7).
  */
 
 import { db } from '@buildd/core/db';

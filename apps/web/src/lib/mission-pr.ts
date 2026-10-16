@@ -42,6 +42,7 @@ import {
 import { and, eq, gte, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import { recordPrFact } from '@buildd/core/pr-facts';
+import { factFunnelScope } from '@/lib/workflow/pr-fact-scope';
 import { fetchSplitPrStats } from '@/lib/supersession-check';
 import { resolveMissionRepoWorkspaceId } from '@/lib/mission-repo-workspace';
 import { decideReadyToMerge, readyToMergeReason } from '@/lib/ready-to-merge';
@@ -871,7 +872,7 @@ async function adoptMergedMissionPr(args: {
       updatedAt: new Date(),
     })
     .where(eq(workers.id, ownerWorker.id));
-  await recordPrFact({ workerId: ownerWorker.id }, { kind: 'merged', mergedAt });
+  await recordPrFact({ workerId: ownerWorker.id }, { kind: 'merged', mergedAt }, { scope: factFunnelScope });
 
   await claimMissionPrimaryPr(missionId, pr.number, pr.html_url, {
     baseRef: recordedBaseRef,

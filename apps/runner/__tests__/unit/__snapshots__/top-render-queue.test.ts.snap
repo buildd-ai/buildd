@@ -1,0 +1,71 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`Queue view (R-26) 80x24: the tab line, both teams in claim order, est. dropped first, never wrapped 1`] = `
+" buildd · laptop-1234 · 2 workspaces · 2 teams     2 of 3 slots busy · ● online 
+ Missions  [ Queue ]   t team: all · w workspace: all                           
+────────────────────────────────────────────────────────────────────────────────
+ Team One · next for this runner     workspace    mission          starts       
+› 1 fix(kernel): review composition  alpha        Workflow kernel  Thu 00:00    
+  2 feat(intake): one intake door    alpha        Bug intake       after 1      
+  3 chore(web): cache /fonts         alpha        (no mission)     after 2      
+  4 docs: kernel commands            alpha        Workflow kernel  after 3      
+ Held, each on its own                                                          
+    chore: rotate the logs           alpha        starts at its s… 17:00        
+ Not for this runner                                                            
+    Runner terminal: round 3 audit   alpha        local session    -            
+    fix(supersession): close the ol… alpha        another runner   -            
+    design: the queue tab            alpha        needs Designer   -            
+ Team Two · next for this runner     workspace    mission          starts       
+  1 fix(billing): round half up      bravo        (no mission)     next         
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+────────────────────────────────────────────────────────────────────────────────
+ ↑↓ move c claim o web tab missions t team w workspace / filter ? help q quit   "
+`;
+
+exports[`Queue view (R-26) 120x40: est. shows for the team that has estimates on, and not for the one that does not 1`] = `
+" buildd · laptop-1234 · 2 workspaces · 2 teams                                  2 of 3 slots busy · ● online · v0.340.0 
+ Missions  [ Queue ]   t team: all · w workspace: all                                                                   
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Team One · next for this runner                                       workspace    mission          est.  starts       
+› 1 fix(kernel): review composition                                    alpha        Workflow kernel  40m   Thu 00:00    
+  2 feat(intake): one intake door                                      alpha        Bug intake       1h    after 1      
+  3 chore(web): cache /fonts                                           alpha        (no mission)     15m   after 2      
+  4 docs: kernel commands                                              alpha        Workflow kernel  -     after 3      
+ Held, each on its own                                                                                                  
+    chore: rotate the logs                                             alpha        starts at its s… -     17:00        
+ Not for this runner                                                                                                    
+    Runner terminal: round 3 audit                                     alpha        local session    -     -            
+    fix(supersession): close the old PR                                alpha        another runner   -     -            
+    design: the queue tab                                              alpha        needs Designer   -     -            
+ Team Two · next for this runner                                             workspace    mission          starts       
+  1 fix(billing): round half up                                              bravo        (no mission)     next         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ↑↓ move  c claim  h hold  o web  tab missions  t team  w workspace  / filter  ? help  q quit                           "
+`;

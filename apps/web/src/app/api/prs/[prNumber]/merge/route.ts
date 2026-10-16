@@ -22,6 +22,7 @@ import { checkDependsOnResolved } from '@/lib/task-dependencies';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
 import { recordPrFact } from '@buildd/core/pr-facts';
+import { factFunnelScope } from '@/lib/workflow/pr-fact-scope';
 import { escalateConflictExhaustion } from '@/lib/auto-merge';
 import { reconcileSubjectEvent } from '@/lib/supersession';
 import { guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
@@ -306,7 +307,7 @@ export async function POST(
     // wins). A kernel-owned PR's merge, its stamp and everything it owes are the
     // kernel's post-merge effects (PrMerged from a live read), never this door's.
     if (!kernelOwned) {
-      await recordPrFact({ workerId: worker.id }, { kind: 'merged', mergedAt: new Date() });
+      await recordPrFact({ workerId: worker.id }, { kind: 'merged', mergedAt: new Date() }, { scope: factFunnelScope });
       // landPr finalizes the mission PR itself when it merged.
       if (!opts.missionFinalized) {
         await finalizeMissionPrMerge(worker.task ?? null, installationId, repoFullName, prNumber);

@@ -1,5 +1,5 @@
 /**
- * One model-auth detector (docs/specs/runner-model-auth-source.md): the startup
+ * One model-auth detector (docs/specs/runner-model-login-detect-say-report.md): the startup
  * line, the local /api/config and the heartbeat label all come from
  * `detectModelAuthSource`. The label names the kind of credential, never its
  * value.
@@ -10,7 +10,7 @@ import { describe, test, expect, afterEach } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { detectModelAuthSource, describeModelAuthSource, detectCodexAuthSource, describeCodexAuthSource } from '../../src/host-seat';
+import { detectModelAuthSource, describeModelAuthSource, detectCodexAuthSource, describeCodexAuthSource, reportIgnoredLoginSetting, applyMachineLoginPolicy, decideCodexLogin } from '../../src/host-seat';
 import { BuilddClient } from '../../src/buildd';
 import type { LocalUIConfig } from '../../src/types';
 
@@ -48,7 +48,7 @@ const linux = { platform: 'linux' as const, macKeychainHasLogin: noKeychain };
 describe('detectModelAuthSource', () => {
   test('a stub oauthAccount in ~/.claude.json is not a login (AC-3)', () => {
     const home = tmpHome({ claudeJson: { oauthAccount: { accountUuid: 'stub-account' } } });
-    expect(detectModelAuthSource({ env: {}, home, ...linux })).toEqual({ source: 'none', mode: 'auto' });
+    expect(detectModelAuthSource({ env: {}, home, ...linux })).toEqual({ source: 'none' });
   });
 
   test('a credentials file with only MCP OAuth entries is not a login', () => {
@@ -84,20 +84,6 @@ describe('detectModelAuthSource', () => {
     expect(detectModelAuthSource({ env: { ANTHROPIC_API_KEY: FAKE_KEY }, home, ...linux }).source).toBe('machine_login');
   });
 
-  test('BUILDD_HOST_SEAT=off still reports a claude login: it reaches the agent through HOME (AC-4)', () => {
-    const home = tmpHome({ credentials: login });
-    const r = detectModelAuthSource({ env: { BUILDD_HOST_SEAT: 'off', CLAUDE_CODE_OAUTH_TOKEN: FAKE_TOKEN }, home, ...linux });
-    expect(r).toEqual({ source: 'machine_login', mode: 'off' });
-    const mac = detectModelAuthSource({ env: { BUILDD_HOST_SEAT: 'off' }, home: tmpHome(), platform: 'darwin', macKeychainHasLogin: () => true });
-    expect(mac).toEqual({ source: 'machine_login', mode: 'off' });
-  });
-
-  test('BUILDD_HOST_SEAT=off also stops the env token from counting', () => {
-    const home = tmpHome();
-    const r = detectModelAuthSource({ env: { BUILDD_HOST_SEAT: 'off', CLAUDE_CODE_OAUTH_TOKEN: FAKE_TOKEN }, home, ...linux });
-    expect(r.source).toBe('none');
-  });
-
   test('an API key alone is api_key; ANTHROPIC_AUTH_TOKEN counts too; blank does not', () => {
     const home = tmpHome();
     expect(detectModelAuthSource({ env: { ANTHROPIC_API_KEY: FAKE_KEY }, home, ...linux }).source).toBe('api_key');
@@ -113,9 +99,9 @@ describe('detectModelAuthSource', () => {
     expect(detectModelAuthSource({ env: { ...env, ANTHROPIC_BASE_URL: 'https://gw.example' }, home, ...linux }).source).toBe('api_key');
   });
 
-  test('the mode is reported next to the label', () => {
+  test('only the label is reported', () => {
     const home = tmpHome({ credentials: login });
-    expect(detectModelAuthSource({ env: { BUILDD_HOST_SEAT: 'prefer' }, home, ...linux })).toEqual({ source: 'machine_login', mode: 'prefer' });
+    expect(detectModelAuthSource({ env: { }, home, ...linux })).toEqual({ source: 'machine_login' });
   });
 
   test('the result never carries a credential value', () => {
@@ -153,17 +139,6 @@ describe('detectCodexAuthSource', () => {
     expect(detectCodexAuthSource({ env: {}, home })).toBe('machine_login');
   });
 
-  test('under BUILDD_HOST_SEAT=off the ~/.codex login does not count (AC-10)', () => {
-    const home = codexHome(chatgptLogin);
-    expect(detectCodexAuthSource({ env: { BUILDD_HOST_SEAT: 'off' }, home })).toBe('none');
-  });
-
-  test('under off, an explicit CODEX_HOME pointing at it counts again (AC-10)', () => {
-    const home = codexHome(chatgptLogin);
-    const env = { BUILDD_HOST_SEAT: 'off', CODEX_HOME: join(home, '.codex') };
-    expect(detectCodexAuthSource({ env, home: tmpHome() })).toBe('machine_login');
-  });
-
   test('CODEX_HOME wins over ~/.codex', () => {
     const home = codexHome(chatgptLogin);
     const other = mkdtempSync(join(tmpdir(), 'codex-empty-'));
@@ -192,11 +167,6 @@ describe('detectCodexAuthSource', () => {
   test('a ChatGPT login in the file wins over OPENAI_API_KEY in the env', () => {
     const home = codexHome(chatgptLogin);
     expect(detectCodexAuthSource({ env: { OPENAI_API_KEY: FAKE_OPENAI_KEY }, home })).toBe('machine_login');
-  });
-
-  test('a file the agent would not get (off, no CODEX_HOME) falls through to the env key', () => {
-    const home = codexHome(chatgptLogin);
-    expect(detectCodexAuthSource({ env: { BUILDD_HOST_SEAT: 'off', OPENAI_API_KEY: FAKE_OPENAI_KEY }, home })).toBe('api_key');
   });
 
   test('an unreadable or empty auth.json is not a login', () => {
@@ -254,16 +224,16 @@ describe('heartbeat payload', () => {
     return { body: () => sent };
   }
 
-  test('carries modelAuthSource and modelAuthMode, and no token value', async () => {
+  test('carries only modelAuthSource, and no mode or token value', async () => {
     const home = tmpHome({ credentials: login });
     const report = detectModelAuthSource({
-      env: { CLAUDE_CODE_OAUTH_TOKEN: FAKE_TOKEN, ANTHROPIC_API_KEY: FAKE_KEY, BUILDD_HOST_SEAT: 'prefer' }, home, ...linux,
+      env: { CLAUDE_CODE_OAUTH_TOKEN: FAKE_TOKEN, ANTHROPIC_API_KEY: FAKE_KEY }, home, ...linux,
     });
     const cap = captureBody();
     await client().sendHeartbeat('http://localhost:8766', 0, undefined, undefined, null, null, [], null, null, null, undefined, report);
     const payload = JSON.parse(cap.body());
     expect(payload.modelAuthSource).toBe('machine_token');
-    expect(payload.modelAuthMode).toBe('prefer');
+    expect('modelAuthMode' in payload).toBe(false);
     expect(cap.body()).not.toContain(FAKE_TOKEN);
     expect(cap.body()).not.toContain(FAKE_KEY);
   });
@@ -282,7 +252,7 @@ describe('heartbeat payload', () => {
 
   test('omits codexAuthSource when the report has no Codex label', async () => {
     const cap = captureBody();
-    await client().sendHeartbeat('http://localhost:8766', 0, undefined, undefined, null, null, [], null, null, null, undefined, { source: 'none', mode: 'auto' });
+    await client().sendHeartbeat('http://localhost:8766', 0, undefined, undefined, null, null, [], null, null, null, undefined, { source: 'none' });
     const payload = JSON.parse(cap.body());
     expect(payload.modelAuthSource).toBe('none');
     expect('codexAuthSource' in payload).toBe(false);
@@ -315,11 +285,33 @@ describe('one detector', () => {
     expect(start).toBeGreaterThan(-1);
     const block = src.slice(start, src.indexOf('});', start));
     expect(block).toContain('modelAuthSource:');
-    expect(block).toContain('modelAuthMode:');
+    expect(block).not.toContain('modelAuthMode:');
     expect(block).toContain('codexAuthSource:');
   });
 
   test('the runner page derives "no credentials" from the label', () => {
     expect(read('ui/app.js')).toContain("modelAuthSource === 'none'");
+  });
+});
+
+
+describe('obsolete login setting', () => {
+  test('BUILDD_HOST_SEAT is ignored with one startup notice, including off', () => {
+    const home = codexHome(chatgptLogin);
+    const lines: string[] = [];
+    reportIgnoredLoginSetting({}, line => lines.push(line));
+    expect(lines).toEqual([]);
+    for (const value of ['off', 'prefer', 'auto', '', 'unknown']) {
+      const env = { BUILDD_HOST_SEAT: value, CLAUDE_CODE_OAUTH_TOKEN: FAKE_TOKEN };
+      lines.length = 0;
+      expect(() => reportIgnoredLoginSetting(env, line => lines.push(line))).not.toThrow();
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain('no longer does anything');
+      expect(lines[0]).not.toContain(FAKE_TOKEN);
+      expect(detectModelAuthSource({ env, home, ...linux })).toEqual({ source: 'machine_token' });
+      expect(detectCodexAuthSource({ env, home })).toBe('machine_login');
+      expect(applyMachineLoginPolicy({ ...env }, { probe: { env, home, ...linux } }).machineLogin).toBe('env');
+      expect(decideCodexLogin({ localAuthPath: join(home, '.codex/auth.json') })).toBe('machine');
+    }
   });
 });

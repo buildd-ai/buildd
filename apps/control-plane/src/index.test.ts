@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'bun:test';
+import { readdirSync } from 'fs';
+import { join } from 'path';
 import worker from './index';
 import * as mainModule from './index';
 import { anonymousGithubProbe, executionMode, matchRoute, ROUTES, SERVED_BY } from './router';
@@ -24,6 +26,19 @@ describe('the execution routes the control plane serves', () => {
     }
     expect(matchRoute('POST', '/api/dispatch/v1/relay')).not.toBeNull();
     expect(ROUTES).toHaveLength(7);
+  });
+
+  it('leaves the static siblings of /api/workers/[id] to the web app, as Next routing does', () => {
+    // Next serves a static segment before a dynamic one; `:id` matching
+    // `queue`, `mine` or `active` answered them with "Worker not found".
+    const siblings = readdirSync(join(import.meta.dir, '../../web/src/app/api/workers'), { withFileTypes: true })
+      .filter(d => d.isDirectory() && !d.name.startsWith('['))
+      .map(d => d.name);
+    expect(siblings).toContain('queue');
+    for (const name of siblings) {
+      for (const m of ['GET', 'PATCH']) expect(matchRoute(m, `/api/workers/${name}`)).toBeNull();
+    }
+    expect(matchRoute('GET', '/api/workers/w-1')?.params).toEqual({ id: 'w-1' });
   });
 });
 

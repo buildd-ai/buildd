@@ -76,7 +76,7 @@ describe('R-33: a queued audit names the claim gate hold', () => {
     const m = projectMissionDelivery(mission({
       missionPrMerged: true,
       tasks: [merged('One'), shipTask('2026-10-12T00:00:00Z'), audit()],
-      holdReasons: new Map([['audit1', 'budget_paused']]),
+      visualReview: { status: 'queued', blockedDetail: null, holdReason: 'budget_paused' },
     }));
     expect(m.next).toBe('Visual review queued: runners paused new work until the model budget resets');
     expect(m.exception?.text).toBe('Visual review queued: runners paused new work until the model budget resets');
@@ -87,7 +87,7 @@ describe('R-33: a queued audit names the claim gate hold', () => {
     const m = projectMissionDelivery(mission({
       missionPrMerged: true,
       tasks: [merged('One'), shipTask('2026-10-12T00:00:00Z'), audit()],
-      holdReasons: new Map([['audit1', 'something_new']]),
+      visualReview: { status: 'queued', blockedDetail: null, holdReason: 'something_new' },
     }));
     expect(m.exception).toBeNull();
   });
@@ -104,7 +104,7 @@ describe('R-33: a queued audit names the claim gate hold', () => {
 describe('visual review round 1: what is left reads the waiver, criteria and a local strand', () => {
   const on = (over: Partial<MissionDeliveryInput>) => projectMissionDelivery(mission({ missionPrMerged: true, ...over }));
   it('a waived visual review is not what is left', () => {
-    const m = on({ visualReview: { status: 'waived', blockedDetail: null, holdReason: null }, released: true, tasks: [merged('One'), shipTask('2026-10-12T00:00:00Z'), audit()], holdReasons: new Map([['audit1', 'budget_paused']]) });
+    const m = on({ visualReview: { status: 'waived', blockedDetail: null, holdReason: null }, released: true, tasks: [merged('One'), shipTask('2026-10-12T00:00:00Z'), audit()] });
     expect(m.next).toBe('Mission completes');
     expect(m.exception).toBeNull();
     expect(m.remaining).toBe('completion');
@@ -114,6 +114,12 @@ describe('visual review round 1: what is left reads the waiver, criteria and a l
     expect(m.next).toBe('A goal criterion passes');
     expect(m.remaining).toBe('criteria');
     expect(on({ criteriaPending: 3, tasks: [merged('One')] }).next).toBe('3 goal criteria pass');
+  });
+  it('one open check is named, the way the header names it (b4ea396b follow-up 5)', () => {
+    const m = on({ criteriaPending: 1, criteriaPendingLabel: 'Admin audit log spec', tasks: [merged('One'), shipTask('2026-10-12T00:00:00Z')] });
+    expect(m.next).toBe('Admin audit log spec passes');
+    // Several still read as a count.
+    expect(on({ criteriaPending: 2, criteriaPendingLabel: 'Admin audit log spec', tasks: [merged('One')] }).next).toBe('2 goal criteria pass');
   });
   it('an open visual review leads, then criteria', () => {
     expect(on({ criteriaPending: 1, tasks: [merged('One'), audit()] }).remaining).toBe('visual');
@@ -140,7 +146,7 @@ describe('visual review round 2: the card names the review state\'s one cause', 
   const on = (over: Partial<MissionDeliveryInput>) => projectMissionDelivery(mission({ missionPrMerged: true, ...over }));
   const tasks = [merged('One'), shipTask('2026-10-12T00:00:00Z'), audit()];
   it('blocked on a browser: the card says what the page says, not the budget record', () => {
-    const m = on({ tasks, holdReasons: new Map([['audit1', 'budget_paused']]), visualReview: { status: 'blocked', blockedDetail: 'it needs a runner with a browser', holdReason: null } });
+    const m = on({ tasks, visualReview: { status: 'blocked', blockedDetail: 'it needs a runner with a browser', holdReason: null } });
     expect(m.next).toBe('Visual review unable to run: it needs a runner with a browser');
     expect(m.next).not.toContain('budget');
   });
@@ -151,5 +157,14 @@ describe('visual review round 2: the card names the review state\'s one cause', 
   it('a task with no hold is next in line for a runner, never "a slot frees up"', () => {
     const m = projectMissionDelivery(mission({ integrationBranch: false, tasks: [merged('One'), task({ title: 'Two' })] }));
     expect(m.next).toBe('Next in line for a runner');
+  });
+});
+
+describe('c9353c11: a review that could not be read does not hide a queued audit', () => {
+  const on = (over: Partial<MissionDeliveryInput>) => projectMissionDelivery(mission({ missionPrMerged: true, ...over }));
+  it('optional with an open audit still reads the audit as queued', () => {
+    const m = on({ visualReview: { status: 'optional', blockedDetail: null, holdReason: null }, tasks: [merged('One'), shipTask('2026-10-12T00:00:00Z'), audit()] });
+    expect(m.remaining).toBe('visual');
+    expect(m.next).toBe('Visual review queued');
   });
 });

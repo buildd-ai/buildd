@@ -41,7 +41,7 @@ describe('stripRuns (small strip aggregation)', () => {
   });
 });
 
-describe('reasonLine (SEL-2)', () => {
+describe('reasonLine (strip R-12)', () => {
   it('names at most two and tails the rest upstream', () => {
     expect(reasonLine('upstream', ['03 Projection', '04 List', '05 Activity'], 5)).toEqual({
       lead: 'After',

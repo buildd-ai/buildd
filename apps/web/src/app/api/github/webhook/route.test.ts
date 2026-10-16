@@ -738,6 +738,9 @@ import { MISSION_PR_TASK_PREFIX } from '@buildd/core/mission-integration';
 // route hands to GitHub, so they build fixtures with the same code path.
 import { renderPrActivityComment, SPINNER_PATH } from '@/lib/pr-activity-comment';
 
+/** A terminal fact goes to the funnel under the kernel's scope (S4a, pr-fact-scope.ts). */
+const FUNNEL_OPTS = { scope: expect.objectContaining({ where: expect.any(Function) }) };
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 function createWebhookRequest(event: string, payload: any, validSig = true): NextRequest {
   mockVerifyWebhookSignature.mockReturnValue(Promise.resolve(validSig));
@@ -1951,8 +1954,10 @@ describe('POST /api/github/webhook', () => {
         const [e] = skipEvents();
         expect(e.detail.skipReason).toBe('head_already_retried');
         expect(e.detail.priorAttemptTaskId).toBe('c1');
+        // Only the infra probe reads runs (no re-run POST, no failure-digest fetch).
         const runsCalls = (mockGithubApi.mock.calls as any[]).filter(c => String(c[1]).includes('/actions/runs'));
-        expect(runsCalls).toEqual([]);
+        expect(runsCalls.filter(c => c[2]?.method === 'POST')).toEqual([]);
+        expect(runsCalls.filter(c => String(c[1]).endsWith('/jobs'))).toEqual([]);
         expect(mockScheduleCiRedLook).toHaveBeenCalledTimes(1);
       });
 
@@ -2463,6 +2468,17 @@ describe('POST /api/github/webhook', () => {
       expect(res.status).toBe(200);
       expect(mockObserveCiGreen).toHaveBeenCalledTimes(1);
       expect(mockObserveCiGreen.mock.calls[0][0]).toMatchObject({ source: 'webhook:check_suite' });
+    });
+
+    it('a green head reaches the kernel even when no worker row owns the PR (local mission)', async () => {
+      withSuccessWorkerPr();
+      mockWorkersFindFirst.mockReturnValue(null);
+      mockObserveCiGreen.mockClear();
+      const res = await POST(
+        createWebhookRequest('check_suite', makeCheckSuitePayload({ check_suite: { conclusion: 'success' } }))
+      );
+      expect(res.status).toBe(200);
+      expect(mockObserveCiGreen).toHaveBeenCalledTimes(1);
     });
 
     it('holds PR and notifies when resolvePolicy returns tier=human', async () => {
@@ -4287,7 +4303,7 @@ describe('POST /api/github/webhook', () => {
         }));
 
         expect(factsOfKind('closed')).toEqual([
-          { target: { prUrl: 'https://github.com/test-org/test-repo/pull/62', prNumber: 62 }, fact: { kind: 'closed' }, opts: undefined },
+          { target: { prUrl: 'https://github.com/test-org/test-repo/pull/62', prNumber: 62 }, fact: { kind: 'closed' }, opts: FUNNEL_OPTS },
         ]);
       });
 
@@ -4792,6 +4808,24 @@ describe('POST /api/github/webhook', () => {
 
       expect(res.status).toBe(200);
       expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+    });
+
+    // Task 2ded4e88: the round budget is the PR's, not one reviewer task's. A request for changes at
+    // the cap escalated the PR; the push that follows is recorded and reviewed by nobody.
+    it('does not re-dispatch once the review budget is spent: the PR stays with a person', async () => {
+      withAgentReviewWorkspaceAndWorker();
+      mockReadPrReviewStatus.mockResolvedValue({
+        state: 'changes_requested', terminal: true, reviewTaskId: 'review-3', adoptedTaskId: 'task-1',
+        verdict: 'request-changes', confidence: 0.9, summary: 'still wrong', feedback: 'fix the null check',
+        escalationReason: null, iteration: 3, maxIterations: 3, reviewHeadSha: OLD_SHA,
+        prState: 'open', merged: false, mergeBlocked: null,
+      } as any);
+
+      const res = await POST(createWebhookRequest('pull_request', makeSynchronizePayload()));
+
+      expect(res.status).toBe(200);
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+      expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
     });
 
     it('does not re-dispatch on an approved verdict — the gate handles a stale approval, not this path', async () => {

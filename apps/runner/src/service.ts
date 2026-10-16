@@ -93,6 +93,14 @@ export interface ServiceRunOptions {
   debug?: boolean;
 }
 
+/**
+ * How long the service manager waits after its stop signal before it kills
+ * the runner (launchd ExitTimeOut, systemd TimeoutStopSec). The runner pauses
+ * its running agents in that window and exits on its own well inside it
+ * (restart-resume.ts SHUTDOWN_DEADLINE_MS); this is the margin above that.
+ */
+export const SERVICE_STOP_TIMEOUT_S = 30;
+
 /** macOS LaunchAgent plist. KeepAlive + RunAtLoad cover both reboot survival and crash restart. */
 export function generateLaunchdPlist(paths: ServicePaths, opts: ServiceRunOptions = {}): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -111,6 +119,8 @@ export function generateLaunchdPlist(paths: ServicePaths, opts: ServiceRunOption
 	<true/>
 	<key>ProcessType</key>
 	<string>Background</string>
+	<key>ExitTimeOut</key>
+	<integer>${SERVICE_STOP_TIMEOUT_S}</integer>
 	<key>WorkingDirectory</key>
 	<string>${escapeXml(paths.home)}</string>
 	<key>StandardOutPath</key>
@@ -142,6 +152,14 @@ ExecStart=${paths.builddBin}${opts.debug ? ' --debug' : ''}
 WorkingDirectory=${paths.home}
 Restart=always
 RestartSec=5
+# The stop signal goes to the launcher (the main process) only, which hands it
+# to the runner; the runner pauses its agents and exits, and the launcher exits
+# with it. Once the main process has exited, systemd SIGKILLs whatever is left
+# in the unit (and everything at TimeoutStopSec if it has not). The default,
+# control-group, signals every agent process at once, so each died before the
+# runner could pause it.
+KillMode=mixed
+TimeoutStopSec=${SERVICE_STOP_TIMEOUT_S}
 Environment=PATH=${paths.pathEnv}
 Environment=HOME=${paths.home}
 StandardOutput=append:${paths.stdoutLog}
@@ -263,10 +281,25 @@ export function installService(
 export function installedServiceDebug(paths: ServicePaths, platform: ServicePlatform): boolean {
   const file = platform === 'darwin' ? launchdPlistPath(paths) : platform === 'linux' ? systemdUnitPath(paths) : null;
   if (!file || !existsSync(file)) return false;
-  const text = readFileSync(file, 'utf-8');
-  return platform === 'darwin'
-    ? text.includes('<string>--debug</string>')
-    : /^ExecStart=.* --debug$/m.test(text);
+  try {
+    const text = readFileSync(file, 'utf-8');
+    return platform === 'darwin'
+      ? text.includes('<string>--debug</string>')
+      : /^ExecStart=.* --debug$/m.test(text);
+  } catch {
+    console.warn(`Failed to read service file ${file}`);
+    return false;
+  }
+}
+
+/** Handles the `buildd service install` subcommand: preserves --debug flag if not specified. For testing. */
+export function handleInstallCommand(paths: ServicePaths, platform: ServicePlatform, runner: CommandRunner, args: string[]): CommandResult {
+  const parsed = parseInstallArgs(args, installedServiceDebug(paths, platform));
+  if ('error' in parsed) return { ok: false, message: `${parsed.error}\n${USAGE}` };
+  return installService(paths, platform, runner, {
+    debug: parsed.debug,
+    watchHint: process.env.BUILDD_INSTALLER !== '1',
+  });
 }
 
 /** `buildd service install [--debug|--no-debug]`: with neither, keep what the installed service does. */
@@ -355,16 +388,7 @@ async function main(): Promise<void> {
 
   switch (sub) {
     case 'install': {
-      const parsed = parseInstallArgs(Bun.argv.slice(3), installedServiceDebug(paths, platform));
-      if ('error' in parsed) {
-        console.error(`${parsed.error}\n${USAGE}`);
-        process.exit(64);
-      }
-      // install.sh prints the watch lines in its own Next block.
-      const result = installService(paths, platform, runSync, {
-        debug: parsed.debug,
-        watchHint: process.env.BUILDD_INSTALLER !== '1',
-      });
+      const result = handleInstallCommand(paths, platform, runSync, Bun.argv.slice(3));
       console.log(result.message);
       process.exit(result.ok ? 0 : 1);
     }

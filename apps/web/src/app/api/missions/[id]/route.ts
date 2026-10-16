@@ -48,6 +48,8 @@ import {
 import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 import { selectMissionSpec, type OutcomeSpecInput, type OutcomeSpecRemoval } from '@/lib/specs/mission-selection';
 import type { SpecCaller } from '@/lib/specs/store';
+import { missionStatusNoteBody, MISSION_STATUS_CHANGE_TITLES } from '@/lib/mission-status-note';
+import { missionEpochsOf, scopeAmendmentsOf } from '@/lib/workflow/delivery-ship';
 
 const resolveTeamIds = resolveAccountTeamIds;
 
@@ -199,8 +201,21 @@ export async function GET(
       }
     }
 
+    // Delivery records and scope decisions (workflow-kernel-library.md §6): the
+    // mission's state and its deliveries' states are separate facts.
+    const [deliveryRows, scopeRows] = await Promise.all([missionEpochsOf(id), scopeAmendmentsOf(id)]);
+    const deliveries = deliveryRows.map((e) => ({
+      delivery: e.epoch, branch: e.branch, state: e.state, prNumber: e.prNumber, mergedAt: e.mergedAt,
+      scopeVersion: e.scopeVersion, retired: e.retiredAt != null, held: e.settlement?.held?.map((h) => h.prNumber) ?? [],
+    }));
+    const scopeUpdates = scopeRows.filter((r) => r.status !== 'recorded').map((r) => ({
+      taskId: r.sourceTaskId, decision: r.decision, status: r.status, scopeVersion: r.scopeVersionAfter, reason: r.reason, at: r.createdAt,
+    }));
+
     return NextResponse.json({
       ...mission,
+      deliveries,
+      scopeUpdates,
       totalTasks,
       completedTasks,
       progress,
@@ -950,8 +965,8 @@ export async function PATCH(
       await postMissionFeedEvent({
         missionId: id,
         type: 'update',
-        title: isReopen ? 'Mission reopened' : 'Mission status changed',
-        body: `${existing.status} → ${status}`,
+        title: isReopen ? MISSION_STATUS_CHANGE_TITLES[1] : MISSION_STATUS_CHANGE_TITLES[0],
+        body: missionStatusNoteBody(existing.status, status),
         actor,
       }).catch(e => console.error('[missions/patch] Failed to emit status-change note:', e));
 

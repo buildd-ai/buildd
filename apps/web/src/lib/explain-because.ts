@@ -26,6 +26,8 @@ import { ENTITLEMENT_BLOCK_CONTEXT_KEY, parseEntitlementBlock } from '@buildd/sh
 import { taskRecoverySentence } from './task-recovery-hold';
 import { cancellationLine } from './task-cancellation';
 import { claimHoldPhrase } from './claim-hold-phrase';
+import type { DeliveryDisagreement } from './delivery-overlay';
+import { roundTriggerSentence, type DeliveryRound } from '@buildd/workflow-kernel/projections';
 
 const repoOf = (url: string | null | undefined) => url?.match(/github\.com\/([^/]+\/[^/]+)\/pull\/\d+/)?.[1] ?? null;
 
@@ -657,6 +659,65 @@ export function deliveryTransitionLink(
   const detail = d.detail ? `; ${d.detail}` : '';
   const attempts = d.attemptLine ? ` (${d.attemptLine})` : '';
   return link(`Delivery is ${d.state} (${d.headline}${detail})${attempts}: ${t.command} moved it ${moved} at ${t.createdAt}.`, 'DeliveryView.lastTransition', refs);
+}
+
+/**
+ * 58c8961e: why the delivery's latest review round started, whether it is a
+ * delta review that carries an approval (or, after one, why it is full), and
+ * how it ended if a push superseded it. Null for a round recorded before
+ * rounds carried a trigger.
+ */
+export function reviewRoundLink(
+  d: { prNumber: number | null; rounds: DeliveryRound[] } | null | undefined,
+  subject: BecauseSubjectRefs,
+): Link | null {
+  const r = d?.rounds?.length ? [...d.rounds].sort((a, b) => b.round - a.round)[0] : null;
+  const claim = r ? roundTriggerSentence(r) : null;
+  if (!claim) return null;
+  const refs: ExplainRefs = {
+    ...(subject.taskId ? { taskId: subject.taskId } : {}),
+    ...(subject.workspaceId ? { workspaceId: subject.workspaceId } : {}),
+    ...(d!.prNumber != null ? { prNumber: d!.prNumber } : {}),
+  };
+  return link(claim, 'DeliveryView.rounds', refs);
+}
+
+const ROW_WORDS: Record<DeliveryDisagreement['worker'], string> = { merged: 'merged', open: 'still open', closed: 'closed' };
+
+/** Where the PR stands, in words a person reads (never the state's name). */
+const PR_STATE_WORDS: Record<DeliveryDisagreement['delivery'], string> = {
+  WORKING: 'still being built',
+  AWAITING_PUSH: 'waiting for a push to reach GitHub',
+  AWAITING_REVIEW: 'in review',
+  CHANGES_REQUESTED: 'waiting on requested changes',
+  FIXING: 'being fixed after review',
+  REPAIRING: 'being repaired',
+  BLOCKED_ON_TRUNK: 'held by a red base branch',
+  APPROVED: 'approved and not yet merged',
+  LANDING: 'merging',
+  ESCALATED: 'waiting on a person',
+  MERGED: 'merged',
+  CLOSED_UNMERGED: 'closed without merging',
+  SUPERSEDED: 'shipped in another PR',
+  ABANDONED: 'abandoned',
+  FAILED: 'stopped after its attempts failed',
+};
+
+/**
+ * workflow-kernel-library.md §7 / AC-26: a worker row whose merge columns say
+ * something other than the PR's review state (its delivery). The answer
+ * follows the review state; the row is named so the disagreement is visible.
+ */
+export function deliveryDisagreementLink(d: DeliveryDisagreement, subject: BecauseSubjectRefs): Link {
+  const refs: ExplainRefs = {
+    taskId: d.taskId,
+    ...(subject.missionId ? { missionId: subject.missionId } : {}),
+    ...(subject.workspaceId ? { workspaceId: subject.workspaceId } : {}),
+    prNumber: d.prNumber,
+  };
+  return link(
+    `PR #${d.prNumber} is ${PR_STATE_WORDS[d.delivery]} (${d.headline}), but the worker's own record says ${ROW_WORDS[d.worker]}. This answer follows the PR's review state.`,
+    'DeliveryView.state vs workers.mergedAt', refs);
 }
 
 /**

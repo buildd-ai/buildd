@@ -272,6 +272,18 @@ export function isApprovalSelfMergeable(
 const REVIEWER_ROLE_PREFERENCE = ['reviewer', 'spec-validator', 'builder'];
 
 /**
+ * Task 2ded4e88, for a PR the workflow kernel does not own: the review round budget is spent.
+ * The newest review asked for changes at the request-changes cap the reviewer outcome handler
+ * escalates on (apps/web/src/app/api/workers/[id]/route.ts: `iteration >= maxIterations`,
+ * default 3). A push after that is a person's to judge, not a reason for another round: a
+ * re-dispatch inherits the same iteration and escalates again, and the PR ping-pongs.
+ */
+export function isReviewBudgetSpent(status: Pick<PrReviewStatus, 'verdict' | 'iteration' | 'maxIterations'>): boolean {
+  if (status.verdict !== 'request-changes') return false;
+  return (status.iteration ?? 0) >= (status.maxIterations ?? 3);
+}
+
+/**
  * Choose the role the reviewer agent runs as.
  *
  * An explicitly requested role that the workspace does not have is an error

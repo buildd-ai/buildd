@@ -2,7 +2,7 @@
 title: DB Migration Operation-Class Gate
 status: active
 owner: builder
-last_verified: 2026-10-12
+last_verified: 2026-10-15
 summary: Every generated Drizzle migration in a PR MUST be classified EXPAND or CONTRACT, and that verdict MUST gate auto-merge unconditionally, independent of any workspace path configuration.
 domain: releases
 surfaces: [apps/web/src/lib/migration-safety.ts, apps/web/src/lib/migration-inspector.ts, apps/web/src/lib/auto-merge.ts, packages/core/db/schema.ts]
@@ -41,7 +41,7 @@ assertions:
 
 ## DB Migration Operation-Class Gate
 
-**Capability statement**: The system MUST classify every generated Drizzle migration SQL file in a PR as `EXPAND` (additive, auto-mergeable) or `CONTRACT` (destructive, escalates to human), and MUST enforce this verdict unconditionally — independent of any workspace `escalateToPaths` or `denyPaths` configuration.
+**Capability statement**: The system MUST classify every generated Drizzle migration SQL file in a PR as `EXPAND` (additive, auto-mergeable) or `CONTRACT` (destructive, escalates to human), and MUST enforce this verdict unconditionally, independent of any workspace `escalateToPaths` or `denyPaths` configuration.
 
 ---
 
@@ -60,7 +60,7 @@ assertions:
 | `ALTER COLUMN ... TYPE` | CONTRACT | Rewrites column data |
 | `ALTER COLUMN ... SET NOT NULL` | CONTRACT | Locks table; fails on null rows |
 | `ADD COLUMN ... NOT NULL` (no DEFAULT) | CONTRACT | Locks table; fails on existing rows |
-| `INSERT/UPDATE/DELETE/MERGE` | CONTRACT (`kind: 'data'`) | Data migration — irreversible; see the data-migration policy below |
+| `INSERT/UPDATE/DELETE/MERGE` | CONTRACT (`kind: 'data'`) | Data migration, irreversible; see the data-migration policy below |
 | Any other statement | CONTRACT | Fail-closed |
 
 **Invariants**
@@ -103,15 +103,15 @@ assertions:
 
 EXPAND migrations do not require human review, but CI MUST prove they are safe before auto-merge fires:
 
-1. **Operation-class classifier** — `classifyMigrationSql` must return `{ safe: true, operationClass: 'EXPAND' }`. This is enforced in `evaluateAutoMergeSafety` before any merge attempt.
-2. **Migrate test** — `bun db:migrate` against a test database MUST succeed. Verifies the migration applies cleanly. (Currently validated by Vercel preview deploy; a dedicated shadow-DB step is a planned enhancement.)
-3. **Lock contention** — Future: wrap migrations in `SET lock_timeout = '3s'` and fail if ACCESS EXCLUSIVE is held longer than the threshold.
+1. **Operation-class classifier**: `classifyMigrationSql` must return `{ safe: true, operationClass: 'EXPAND' }`. This is enforced in `evaluateAutoMergeSafety` before any merge attempt.
+2. **Migrate test**: `bun db:migrate` against a test database MUST succeed. Verifies the migration applies cleanly. The `db-architecture` job in `.github/workflows/build.yml` runs it against a real Postgres on every PR and push (step "Migrate"), then the DB architecture tests (`bun run test:db`). It is a fresh database, not a clone of production; a shadow-DB apply against production's shape is a planned enhancement.
+3. **Lock contention** (future): wrap migrations in `SET lock_timeout = '3s'` and fail if ACCESS EXCLUSIVE is held longer than the threshold.
 
 CONTRACT migrations always escalate to human review. The human confirms the timing (low-traffic window, PITR verified) before merging.
 
 **PITR backstop**
 
-Neon PITR is enabled. Recovery path for an EXPAND migration that causes data problems: restore to the snapshot taken immediately before the migration applied (typically within the 24-hour window). This is a backstop, not a design intention — EXPAND migrations should never need it.
+Neon PITR is enabled. Recovery path for an EXPAND migration that causes data problems: restore to the snapshot taken immediately before the migration applied (typically within the 24-hour window). This is a backstop, not a design intention: EXPAND migrations should never need it.
 
 **Code surface**
 
@@ -131,4 +131,4 @@ Neon PITR is enabled. Recovery path for an EXPAND migration that causes data pro
 - Schema validation against live database (that is `db:migrate` / Drizzle Kit's job).
 - Shadow-DB apply + rollback in CI (planned enhancement; requires dedicated Neon branch per PR).
 - `squawk` / `eugene` linter integration (planned; classifier already covers the highest-risk patterns).
-- Policy for which migration classes trigger a reviewer vs. merge gate — that is `mergePolicy` in `gitConfig`, not this classifier.
+- Policy for which migration classes trigger a reviewer vs. merge gate: that is `mergePolicy` in `gitConfig`, not this classifier.

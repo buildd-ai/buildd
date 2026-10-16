@@ -23,7 +23,26 @@ import type { DecisionOutcomeLabels } from './orchestration-outcomes';
 /** A pending task held this long with no start counts as stranded. */
 export const CLAIM_HOLD_STRANDED_AFTER_MS = 24 * 60 * 60_000;
 
-export interface ClaimDecisionForReadout {
+export type ClaimReadoutActor = 'jev_start' | 'jev_hold' | 'deterministic_hold' | 'human_force' | 'rule_start_overlap' | 'rule_start_clean';
+export type ClaimReadoutArea = 'core/db' | 'other' | 'unknown';
+export interface ClaimCalibrationEvidence {
+  actor?: ClaimReadoutActor;
+  gate?: string;
+  areaClass?: ClaimReadoutArea;
+  staleBlocker?: boolean;
+  landed?: boolean;
+  confidence?: number | null;
+  receipt?: Record<string, unknown> | null;
+  candidateDigest?: string;
+  /** Null/absent means attribution is unknown, never safe. */
+  attributableUnsafe?: boolean | null;
+}
+export const claimReadoutActor = (d: ClaimDecisionForReadout): ClaimReadoutActor => d.actor
+  ?? (d.decisionId === 'buildd.human_force_start' ? 'human_force'
+    : d.applied && d.effective === 'START' ? 'jev_start'
+      : d.model && d.suggested === 'HOLD' ? 'jev_hold' : 'deterministic_hold');
+
+export interface ClaimDecisionForReadout extends ClaimCalibrationEvidence {
   id: string;
   taskId: string | null;
   workspaceId: string;
@@ -31,7 +50,7 @@ export interface ClaimDecisionForReadout {
   fingerprint: string;
   candidatePolicyVersion: string;
   model: string | null;
-  experimentArm: 'apply' | 'observe';
+  experimentArm: 'apply' | 'observe' | 'human';
   propensity: number;
   applied: boolean;
   effective: string | null;
@@ -109,11 +128,18 @@ export function labelClaimHoldDecisions(input: Pick<ClaimHoldReadoutInput, 'deci
 }
 
 export interface ClaimHoldGroupSummary {
+  actor: ClaimReadoutActor;
+  gate: string;
+  areaClass: ClaimReadoutArea;
+  attributableUnsafeRate: number | null;
+  baseUnsafeRate: number | null;
+  overlapControlUnsafeRate: number | null;
+  calibration: { observedUnsafe: number; observedSafe: number; excludedStale: number; missingAttribution: number };
   decisionId: string;
   fingerprint: string;
   candidatePolicyVersion: string;
   model: string | null;
-  experimentArm: 'apply' | 'observe';
+  experimentArm: 'apply' | 'observe' | 'human';
   decisions: number;
   tasks: number;
   suggestions: { HOLD: number; START: number; none: number };
@@ -150,6 +176,7 @@ const TERMINAL: ReadonlySet<string> = new Set<string>(TERMINAL_TASK_STATUSES);
 export function summarizeClaimHoldReadout(input: ClaimHoldReadoutInput): ClaimHoldGroupSummary[] {
   const strandedAfter = input.strandedAfterMs ?? CLAIM_HOLD_STRANDED_AFTER_MS;
   const labels = new Map(labelClaimHoldDecisions(input).map(l => [l.decisionId, l]));
+  const outcomeLabels = new Map(input.labels.map(l => [l.decisionId, l]));
   const taskStatus = new Map(input.tasks.map(t => [t.id, t.status]));
   const startsByTask = new Map<string, Date[]>();
   for (const s of input.starts) {
@@ -160,7 +187,7 @@ export function summarizeClaimHoldReadout(input: ClaimHoldReadoutInput): ClaimHo
 
   const groups = new Map<string, ClaimDecisionForReadout[]>();
   for (const d of input.decisions) {
-    const key = [d.decisionId, d.fingerprint, d.candidatePolicyVersion, d.model ?? '', d.experimentArm].join('\u0000');
+    const key = [d.decisionId, d.fingerprint, d.candidatePolicyVersion, d.model ?? '', d.experimentArm, claimReadoutActor(d), d.gate ?? 'unknown', d.areaClass ?? 'unknown'].join('\u0000');
     const list = groups.get(key) ?? [];
     list.push(d);
     groups.set(key, list);
@@ -173,6 +200,7 @@ export function summarizeClaimHoldReadout(input: ClaimHoldReadoutInput): ClaimHo
     const outcomes: Record<string, number> = {};
     const safety = { observedUnsafe: 0, observedSafe: 0, censored: 0, missing: 0 };
     const separate = { conflictCreated: 0, collision: 0, mergeBaseRefusal: 0 };
+    const calibration = { observedUnsafe: 0, observedSafe: 0, excludedStale: 0, missingAttribution: 0 };
     let appliedStarts = 0;
     let propensitySum = 0;
     for (const d of rows) {
@@ -184,6 +212,15 @@ export function summarizeClaimHoldReadout(input: ClaimHoldReadoutInput): ClaimHo
       const l = labels.get(d.id)!;
       if (l.startedAtDecision) appliedStarts++;
       const s = l.startSafety;
+      if (d.staleBlocker) calibration.excludedStale++;
+      else if (s.status === 'observed') {
+        const outcome = outcomeLabels.get(d.id);
+        const landed = d.landed === true || (outcome?.touched.status === 'observed' && outcome.touched.value.landed);
+        if (!s.value && !landed) calibration.missingAttribution++;
+        else if (typeof d.attributableUnsafe !== 'boolean') calibration.missingAttribution++;
+        else if (d.attributableUnsafe) calibration.observedUnsafe++;
+        else calibration.observedSafe++;
+      }
       if (s.status === 'observed') s.value ? safety.observedUnsafe++ : safety.observedSafe++;
       else if (s.status === 'missing') safety.missing++;
       else safety.censored++;
@@ -226,6 +263,10 @@ export function summarizeClaimHoldReadout(input: ClaimHoldReadoutInput): ClaimHo
     const spanDays = Number.isFinite(earliest) ? (input.windowEnd.getTime() - earliest) / 86_400_000 : 0;
 
     out.push({
+      actor: claimReadoutActor(first), gate: first.gate ?? 'unknown', areaClass: first.areaClass ?? 'unknown',
+      calibration,
+      attributableUnsafeRate: calibration.observedUnsafe + calibration.observedSafe > 0 ? calibration.observedUnsafe / (calibration.observedUnsafe + calibration.observedSafe) : null,
+      baseUnsafeRate: null, overlapControlUnsafeRate: null,
       decisionId: first.decisionId,
       fingerprint: first.fingerprint,
       candidatePolicyVersion: first.candidatePolicyVersion,
@@ -246,6 +287,25 @@ export function summarizeClaimHoldReadout(input: ClaimHoldReadoutInput): ClaimHo
       censoredShare: rows.length ? safety.censored / rows.length : 0,
       missingShare: rows.length ? safety.missing / rows.length : 0,
     });
+  }
+  for (const group of out) {
+    const rate = (actor: ClaimReadoutActor) => {
+      const controls = input.decisions.filter(d => claimReadoutActor(d) === actor && !d.staleBlocker
+        && (d.gate ?? 'unknown') === group.gate && (d.areaClass ?? 'unknown') === group.areaClass);
+      let unsafe = 0;
+      let observed = 0;
+      for (const d of controls) {
+        const safety = labels.get(d.id)?.startSafety;
+        const outcome = outcomeLabels.get(d.id);
+        const landed = d.landed === true || (outcome?.touched.status === 'observed' && outcome.touched.value.landed);
+        if (safety?.status !== 'observed' || (!safety.value && !landed)) continue;
+        observed++;
+        if (safety.value) unsafe++;
+      }
+      return observed ? unsafe / observed : null;
+    };
+    group.baseUnsafeRate = rate('rule_start_clean');
+    group.overlapControlUnsafeRate = rate('rule_start_overlap');
   }
   return out;
 }

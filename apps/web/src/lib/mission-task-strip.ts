@@ -107,7 +107,7 @@ export function errorIndices(slots: readonly StripSlot[]): number[] {
 /**
  * Component (by its earliest member), then level, phase, createdAt, id. Every
  * on-strip edge raises the level, so dependencies sit left of dependents
- * (ORD-1). No key reads runtime state: a status change never moves a cell,
+ * (strip R-1). No key reads runtime state: a status change never moves a cell,
  * so ‹ / › and the arrow keys always step to the adjacent rendered cell.
  */
 export function stripOrder(model: StripModel): string[] {
@@ -293,7 +293,7 @@ export function stripSelectionReason(
   return `After ${named.join(', ')}${rest > 0 ? ` (+${rest} upstream)` : ''}.`;
 }
 
-/** |blockers(T)|, off-strip included: the "waiting on N" count (SEL-3). */
+/** |blockers(T)|, off-strip included: the "waiting on N" count (strip R-13). */
 export const stripBlockerCount = (t: Pick<BoardTask, 'blockers' | 'offStrip'>) => t.blockers.length + t.offStrip.length;
 
 // ── Ordinal (§4) ────────────────────────────────────────────────────────────
@@ -311,7 +311,7 @@ export function activeIndices(slots: readonly StripSlot[]): number[] {
 }
 
 /**
- * The Next-open cycle set (NX-1, NX-2): active cells that have not failed, in
+ * The Next-open cycle set (strip R-32, R-33): active cells that have not failed, in
  * strip order. It is exactly the set `stripCountsLabel` counts as "N open", so
  * the button never walks into a failed cell the header does not call open.
  */
@@ -375,5 +375,5 @@ export function stripCaretLeft(i: number, n: number): string {
 /** `07`: the tick under a cell and the drawer's position. */
 export const stripTick = (i: number) => String(i + 1).padStart(2, '0');
 
-/** Past this many cells the gap tightens to 1px (W-1). */
+/** Past this many cells the gap tightens to 1px (strip R-28). */
 export const DENSE_STRIP_CELLS = 24;

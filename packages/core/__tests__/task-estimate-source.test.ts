@@ -261,17 +261,18 @@ describe('priorAggregateQuery (rendered)', () => {
   it('reads completed work tasks only, created and finished before the cutoff', () => {
     expect(text).toContain("t.task_class = 'work'");
     expect(text).toContain("t.status = 'completed'");
-    expect(text).toContain('t.created_at < $1::timestamptz');
-    expect(text).toContain('w.completed_at < $3::timestamptz');
+    expect(text).toContain('p.created_at < $1::timestamptz');
+    expect(text).toContain('t.created_at < $2::timestamptz');
+    expect(text).toContain('w.completed_at < $4::timestamptz');
     expect(text).toContain("a.task_class = 'attempt'");
-    expect(q.params).toEqual(Array(4).fill(cutoff.toISOString()));
+    expect(q.params).toEqual(Array(5).fill(cutoff.toISOString()));
   });
 
   it('sizes tasks as the backtest does: completed sessions summed, whole tasks only, unrecorded tokens excluded', () => {
     expect(text).toContain("w.status = 'completed'");
     expect(text).toContain('sum(extract(epoch from (w.completed_at - w.started_at)) / 60.0) as minutes');
     expect(text).toContain('sum(coalesce(w.input_tokens, 0) + coalesce(w.output_tokens, 0)) as tokens');
-    expect(text).toContain('not exists ( select 1 from workers wf where wf.task_id = t.id and wf.completed_at >= $2::timestamptz )');
+    expect(text).toContain('not exists ( select 1 from workers wf where wf.task_id = t.id and wf.completed_at >= $3::timestamptz )');
     expect(text).toContain('order by s.tokens) filter (where s.tokens > 0)');
   });
 
@@ -300,12 +301,48 @@ describe('neighbourEvidenceFrom (pure)', () => {
     expect(e).toEqual({ n: 3, p50Minutes: 40, p80Minutes: 60, p50Tokens: 400, p80Tokens: 600 });
   });
 
+  it('requires positive token actuals as well as durations for comparable samples', () => {
+    const e = src.neighbourEvidenceFrom(['a', 'b', 'c'], [s('a', 10, 10, 0), s('b', 10, 40, 0), s('c', 10, 60)], { cutoff });
+    expect(e).toBeNull();
+  });
+
   it('a session ending at/after the cutoff and a neighbour created after it are the future', () => {
     const late = { taskId: 'a', startedAt: before(1), completedAt: new Date(cutoff.getTime() + 60_000), inputTokens: 1, outputTokens: 1 };
     const e = src.neighbourEvidenceFrom(['a', 'b', 'c'], [late, s('b', 10, 40), s('c', 10, 60)], {
       cutoff, createdAtById: new Map([['c', new Date(cutoff.getTime() + 1)]]),
     });
     expect(e).toBeNull(); // only b is left; one neighbour is not evidence
+  });
+});
+
+describe('frozen evidence availability', () => {
+  it('reports each model read cutoff even when concurrent reads replace the cache', async () => {
+    const older = new Date('2026-09-29T00:00:00Z');
+    const newer = new Date('2026-09-30T00:00:00Z');
+    const seen: string[] = [];
+    await Promise.all([src.loadPriorTable(older, at => seen.push(at.toISOString())), src.loadPriorTable(newer, at => seen.push(at.toISOString()))]);
+    expect(seen.sort()).toEqual([older.toISOString(), newer.toISOString()]);
+  });
+
+  it('reports the older cutoff of a reused model separately from the task cutoff', async () => {
+    const older = new Date('2026-09-30T23:59:00Z');
+    await src.loadPriorTable(older);
+    const result = await src.loadEstimateInputs(taskRow(), {
+      storeFactory: async () => { throw new Error('UnavailableStore'); },
+    });
+    expect(result.evidence?.cutoff).toBe('2026-10-01T00:00:00.000Z');
+    expect(result.evidence?.kind).toBe('engineering');
+    expect(result.evidence?.modelCutoffs).toEqual({ prior: older.toISOString(), clusters: null });
+  });
+  it('records unavailable reads rather than claiming the workspace has no history', async () => {
+    const result = await src.loadEstimateInputs(taskRow(), {
+      storeFactory: async () => { throw new Error('UnavailableStore'); },
+    });
+    expect(result.evidence?.history).toBeNull();
+    expect(result.evidence?.unavailable).toContain('history');
+    expect(result.evidence?.unavailable).toContain('neighbour retrieval');
+    expect(result.evidence?.neighbours).toEqual({ retrieved: 0, used: 0, reason: 'unavailable' });
+    expect(result.evidence?.cutoff).toBe('2026-10-01T00:00:00.000Z');
   });
 });
 

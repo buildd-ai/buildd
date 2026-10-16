@@ -2042,8 +2042,8 @@ export const workers = pgTable('workers', {
   // account-owned (NULL) one.
   claimedByUserId: uuid('claimed_by_user_id'),
   // Set at claim when a cloud container claimed this worker (executor 'cloud' or a
-  // task-token claim). There the task token is the runner's own credential, so its
-  // verification evidence counts as the runner's (lib/verification-provenance.ts).
+  // task-token claim). Read by the seat-wall attribution; verification evidence on a
+  // task token counts as the agent's either way (lib/verification-provenance.ts).
   claimedByCloud: boolean('claimed_by_cloud').default(false).notNull(),
   name: text('name').notNull(),
   runner: text('runner').notNull(),
@@ -2809,6 +2809,8 @@ export type SpecStatus = (typeof SPEC_STATUSES)[number];
 /** A spec's metadata block (living-specs.md §18, R-14). `domain` is derived from the filed area, never stored. */
 export interface SpecMetadataBlock {
   owner?: string;
+  /** The repo copy's `summary`, from an imported file's frontmatter. */
+  summary?: string;
   last_verified?: string;
   surfaces?: string[];
   verified_by?: string[];
@@ -2828,6 +2830,12 @@ export interface SpecMetadataBlock {
    * without a mark of its own inherits it.
    */
   publication?: 'private' | 'public';
+  /**
+   * Set by import: criterion ids the imported body defines that the parser
+   * does not read (AC-3a, AC-AQR-1, INV-2), and ids it defines more than once.
+   * Cleared by a re-import that finds none.
+   */
+  criteria_unread?: { unreadable: Array<{ id: string; line: number }>; duplicates: Array<{ id: string; lines: number[] }> };
 }
 
 /**
@@ -3484,12 +3492,17 @@ export const workerHeartbeats = pgTable('worker_heartbeats', {
   // stops being true — so "how long has it been behind" is measured from this
   // column instead of inferred from boot age or heartbeat cadence.
   updateAvailableSince: timestamp('update_available_since', { withTimezone: true }),
+  // Present while the runner has halted claims to drain busy workers before a
+  // self-update (update-drain.ts): ISO `since`, ISO `endsAt` (window expiry),
+  // and `busy` workers still running. Null/absent = claiming normally. Lets
+  // list_runners explain free slots + no claims without SSH.
+  updateDrain: jsonb('update_drain').$type<{ since: string; endsAt: string; busy: number } | null>(),
   // The branch this install tracks (BUILDD_BRANCH) — already sent on every
   // heartbeat to resolve latestCommit (see the heartbeat route), but not
   // persisted until now, so GET /api/workers/active can show it per runner.
   trackedBranch: text('tracked_branch'),
   // Which model login this runner's agents use, as the runner reports it
-  // (docs/specs/runner-model-auth-source.md). A label from a fixed list, never
+  // (docs/specs/runner-model-login-detect-say-report.md). A label from a fixed list, never
   // a credential; null = not reported (older runner).
   modelAuthSource: text('model_auth_source').$type<'machine_token' | 'machine_login' | 'api_key' | 'none'>(),
   modelAuthMode: text('model_auth_mode').$type<'auto' | 'prefer' | 'off'>(),
@@ -4661,6 +4674,13 @@ export const backendPauses = pgTable('backend_pauses', {
   reason: text('reason').notNull().default('budget'),
   resetsAt: timestamp('resets_at', { withTimezone: true }).notNull(),
   sourceWorkerId: uuid('source_worker_id').references(() => workers.id, { onDelete: 'set null' }),
+  // Which login the wall belongs to, when it is one runner's own machine login
+  // rather than a pool the team shares: an opaque key derived from the runner
+  // id (apps/web/src/lib/runner-seat-wall.ts), never a credential. The wall
+  // then holds only claims from that runner. NULL = a shared wall (a team
+  // credential, an API-key limit, or a login nobody could identify): it holds
+  // every claim for the team, as every row did before this column.
+  seatKey: text('seat_key'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   activeIdx: index('backend_pauses_team_backend_resets_idx').on(t.teamId, t.backend, t.resetsAt),
@@ -5483,6 +5503,9 @@ export const workflowDeliveries = pgTable('workflow_deliveries', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   lastTransitionAt: timestamp('last_transition_at', { withTimezone: true }),
+  // When the reconciliation floor last read this delivery's PR (§11). Bookkeeping, not
+  // delivery state: it rotates the floor's queue so a checked delivery yields to the next.
+  floorCheckedAt: timestamp('floor_checked_at', { withTimezone: true }),
 }, (t) => ({
   ownerUnique: uniqueIndex('workflow_deliveries_owner_unique').on(t.workspaceId, t.ownerTaskId),
   prUnique: uniqueIndex('workflow_deliveries_pr_unique').on(t.workspaceId, t.repoFullName, t.prNumber).where(sql`${t.prNumber} IS NOT NULL`),
@@ -6292,6 +6315,10 @@ export const decisionModelMeasurements = pgTable('decision_model_measurements', 
   calibration: jsonb('calibration').$type<{ x: number[]; y: number[] }>(),
   // Act on these labels only, each at its own threshold; null = every label at `threshold`.
   labelThresholds: jsonb('label_thresholds').$type<Record<string, number>>(),
+  // What the threshold was derived from: 'collected' (replayed decisions graded by
+  // outcome) or 'labelled' (a labelled or synthetic set). A labelled row is a
+  // placeholder: a later collected score replaces it, never the other way round.
+  caseSource: text('case_source').notNull().default('collected').$type<'collected' | 'labelled'>(),
 }, (t) => ({
   kindModelIdx: uniqueIndex('decision_model_measurements_kind_model_idx').on(t.kind, t.model),
 }));

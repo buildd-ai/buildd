@@ -8,8 +8,9 @@
  *
  * Updates are pushed: /api/events streams worker changes the moment the runner
  * has them, and a queue change the runner learns of (a task assigned over
- * Pusher, a refused claim, a worker starting or finishing) refetches the task
- * list. The only timer that fetches is the once-a-minute task list refresh.
+ * Pusher, a task claimed in one of its workspaces, a refused claim, a worker
+ * starting or finishing) refetches the task list, and the queue while the
+ * Queue view is open. Timers fetch at most once a minute.
  */
 import { hostname as osHostname } from 'os';
 import { queryTerminalBackground, terminalPalette, type Palette } from '../terminal-palette';
@@ -24,6 +25,10 @@ export const EXIT_NOT_A_TERMINAL = 64;
 
 /** Never fetch the task list on a timer faster than this (R-4). */
 export const TASK_REFRESH_MS = 60_000;
+/** Never fetch the missions list faster than this (R-24). */
+export const MISSION_REFRESH_MS = 60_000;
+/** The Queue view's timer refresh (R-26); pushed queue events refetch it sooner. */
+export const QUEUE_REFRESH_MS = 60_000;
 /** Coalesce a burst of queue events into one refetch. */
 const QUEUE_DEBOUNCE_MS = 250;
 /** How long a lone ESC waits for the rest of a sequence before it counts as the escape key. */
@@ -46,6 +51,8 @@ export interface RunTopOptions {
   missionId?: string | null;
   /** `--workspace <name or id>` (R-19). */
   workspace?: string | null;
+  /** `--team <name>`: open on one team (R-23). */
+  team?: string | null;
   /** Printed above nothing, before the view opens (the R-12 hand-off line). */
   notice?: string;
   terminal?: TopTerminal;
@@ -84,7 +91,7 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
   const openUrl = opts.openUrl ?? defaultOpenUrl;
   let palette: Palette = opts.palette ?? terminalPalette(opts.env ?? process.env, true);
 
-  let state: TopState = initialState({ hostname: opts.hostname ?? osHostname(), missionId: opts.missionId, workspace: opts.workspace });
+  let state: TopState = initialState({ hostname: opts.hostname ?? osHostname(), missionId: opts.missionId, workspace: opts.workspace, team: opts.team });
   if (opts.notice) state = { ...state, status: { text: opts.notice, tone: 'info' } };
   let restored = false;
   let renderTimer: ReturnType<typeof setTimeout> | null = null;
@@ -120,23 +127,65 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
       else if (r.body?.error) dispatch({ type: 'status', status: { text: `Could not load the task list: ${r.body.error}`, tone: 'error' } });
     } catch { /* the stream's reconnect reports a dead socket */ }
   };
+  // The open and recently delivered missions of the runner's workspaces (R-24):
+  // Event-triggered reads are throttled; the minute timer is its own cadence.
+  let missionsAt = 0;
+  const refreshMissions = async (timerTick = false) => {
+    if (!timerTick && Date.now() - missionsAt < MISSION_REFRESH_MS) return;
+    missionsAt = Date.now();
+    try {
+      const r = await client.get<{ missions?: any[] }>('/api/missions/recent');
+      if (r.status === 200 && Array.isArray(r.body?.missions)) dispatch({ type: 'missions', missions: r.body.missions });
+    } catch { /* the pane keeps the missions the task list names */ }
+  };
+  // The claim order for this runner (R-26), read only while the Queue view is open.
+  const refreshQueue = async () => {
+    try {
+      const r = await client.get<{ teams?: any[]; truncated?: boolean; error?: string }>('/api/queue');
+      if (r.status === 200 && Array.isArray(r.body?.teams)) dispatch({ type: 'queue', queue: { teams: r.body.teams, truncated: !!r.body.truncated } });
+      else if (state.view === 'queue' && r.body?.error) dispatch({ type: 'status', status: { text: `Could not load the queue: ${r.body.error}`, tone: 'error' } });
+    } catch { /* the stream's reconnect reports a dead socket */ }
+  };
+  // Capacity, and the routes this machine's credentials give (R-39). Local
+  // only (the runner answers from memory), so a finished run re-reads it: a
+  // login that just failed shows as expired in the header.
+  const configEvent = (body: any): TopEvent => ({
+    type: 'config', maxConcurrent: body.maxConcurrent, builddServer: body.builddServer, routes: body.routes, routeProblems: body.routeProblems,
+  });
+  const refreshConfig = async () => {
+    try {
+      const r = await client.get('/api/config');
+      if (r.status === 200 && r.body) dispatch(configEvent(r.body));
+    } catch { /* the stream's reconnect reports a dead socket */ }
+  };
   const queueChanged = () => {
     if (queueTimer) return;
-    queueTimer = setTimeout(() => { queueTimer = null; void refreshTasks(); }, QUEUE_DEBOUNCE_MS);
+    queueTimer = setTimeout(() => {
+      queueTimer = null;
+      void refreshConfig();
+      if (state.view === 'missions') {
+        void refreshTasks();
+        void refreshMissions();
+      } else if (state.view === 'queue') {
+        void refreshQueue();
+      }
+    }, QUEUE_DEBOUNCE_MS);
   };
 
   const loadSnapshot = async () => {
     const [runner, config, workers, workspaces] = await Promise.all([
       client.get('/api/runner').catch(() => null),
       client.get('/api/config').catch(() => null),
-      client.get('/api/workers').catch(() => null),
+      // What top draws (live + recent, no output or tool payloads); an older
+      // runner ignores the param and returns the full list, which still works.
+      client.get('/api/workers?view=top').catch(() => null),
       client.get('/api/workspaces').catch(() => null),
     ]);
     if (workspaces?.status === 200 && Array.isArray(workspaces.body?.workspaces)) dispatch({ type: 'workspaces', workspaces: workspaces.body.workspaces });
     if (runner?.body) dispatch({ type: 'runner', pid: runner.body.pid, version: runner.body.version });
-    if (config?.body) dispatch({ type: 'config', maxConcurrent: config.body.maxConcurrent, builddServer: config.body.builddServer });
+    if (config?.body) dispatch(configEvent(config.body));
     if (workers?.status === 200 && Array.isArray(workers.body?.workers)) dispatch({ type: 'workers', workers: workers.body.workers });
-    await refreshTasks();
+    await Promise.all([refreshTasks(), refreshMissions()]);
   };
 
   const stream = async () => {
@@ -161,6 +210,7 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
   // ── effects ─────────────────────────────────────────────────────────────
   const runEffect = async (effect: Effect) => {
     if (effect.type === 'quit') { finish(0); return; }
+    if (effect.type === 'refreshQueue') { await refreshQueue(); return; }
     if (effect.type === 'open' || effect.type === 'openRunner') {
       const server = state.runner.builddServer || 'https://buildd.dev';
       // The runner's page is where its workspaces are set (R-20).
@@ -171,7 +221,14 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
     }
     let result: { status: number; body: unknown };
     try {
-      if (effect.type === 'claim') {
+      if (effect.type === 'hold') {
+        result = await client.post(effect.on ? '/api/hold' : '/api/resume', {});
+        // The header changes now, not only when the runner's frame arrives (AC-17).
+        const b = result.body as { hold?: unknown } | null;
+        if (result.status >= 200 && result.status < 300 && b && typeof b === 'object' && 'hold' in b) {
+          dispatch({ type: 'runner_hold', hold: (b.hold ?? null) as any });
+        }
+      } else if (effect.type === 'claim') {
         result = await client.post('/api/claim', { taskId: effect.taskId });
       } else {
         const body = effect.message !== undefined ? { message: effect.message } : {};
@@ -181,7 +238,7 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
       result = { status: 0, body: { error: `the runner did not answer (${err?.message ?? err})` } };
     }
     dispatch({ type: 'status', status: actionResultText(effect, result) });
-    if (effect.type === 'claim') queueChanged();
+    if (effect.type === 'claim' || effect.type === 'hold') queueChanged();
   };
 
   // ── terminal ────────────────────────────────────────────────────────────
@@ -264,6 +321,8 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
   // Elapsed times move without any event; redraw (no fetch) once a second.
   timers.push(setInterval(scheduleDraw, 1_000));
   timers.push(setInterval(() => void refreshTasks(), TASK_REFRESH_MS));
+  timers.push(setInterval(() => void refreshMissions(true), MISSION_REFRESH_MS));
+  timers.push(setInterval(() => { if (state.view === 'queue') void refreshQueue(); }, QUEUE_REFRESH_MS));
   void loadSnapshot().then(() => stream());
 
   return done;

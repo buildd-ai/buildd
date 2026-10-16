@@ -162,3 +162,78 @@ export async function isBaseDiffEquivalent(params: {
   }
   return { equivalent: true, reason: 'PR diff unchanged' };
 }
+
+/** One file of a reviewed delta (the kernel's `DeltaFile`). */
+export interface ReviewedDeltaFile {
+  path: string;
+  previousPath: string | null;
+  status: string;
+  additions: number;
+  deletions: number;
+}
+
+/**
+ * 58c8961e: what the PR itself changed between an approved head `fromSha` and
+ * `toSha`, for deciding whether the next review may be a delta review that
+ * carries the approval (the kernel's `deltaApprovalEligibility`).
+ *
+ * The set of files is bounded against `baseRef` at both ends, like the delta
+ * reviewer's own bound (`reviewer.ts` `boundDeltaFilenames`): a file whose
+ * blob or status differs between `base...fromSha` and `base...toSha`, so a
+ * file the base moved on its own (a merge of the base into the branch) never
+ * counts. Line counts come from the direct `fromSha...toSha` compare.
+ * `prFilesAtFrom` is the PR's own file list at `fromSha`.
+ *
+ * `fromSha` must be an ancestor of `toSha` (compare status `ahead`). The
+ * three-dot compare diffs from the merge base, so after a force-push that
+ * dropped a reviewed commit (A = base+c1+c2, B = base+c1+c3) it would show
+ * only c3 and hide that c2 is gone. Diverged, behind or identical is null.
+ *
+ * Fails closed: a failed read, a list that may be cut, a head that is not a
+ * descendant, or a changed file the direct compare does not list is null
+ * (unread), never a partial delta.
+ */
+export async function readReviewedDelta(params: {
+  installationId: number;
+  repoFullName: string;
+  baseRef: string;
+  fromSha: string;
+  toSha: string;
+  api?: Api;
+}): Promise<{ fromHeadSha: string; toHeadSha: string; prFilesAtFrom: string[]; files: ReviewedDeltaFile[] } | null> {
+  const api = params.api ?? githubApi;
+  try {
+    const read = (sha: string) =>
+      compareAgainstBase({ installationId: params.installationId, repoFullName: params.repoFullName, baseRef: params.baseRef, sha, api });
+    const [from, to, direct] = await Promise.all([
+      read(params.fromSha),
+      read(params.toSha),
+      api(params.installationId, `/repos/${params.repoFullName}/compare/${params.fromSha}...${params.toSha}`) as Promise<{ files?: unknown; status?: unknown } | null>,
+    ]);
+    if (direct?.status !== 'ahead') return null;
+    const directFiles = Array.isArray(direct?.files) ? (direct!.files as Array<CompareFile & { additions?: unknown; deletions?: unknown }>) : null;
+    if (!from || !to || !directFiles) return null;
+    if (from.length >= COMPARE_FILE_LIMIT || to.length >= COMPARE_FILE_LIMIT || directFiles.length >= COMPARE_FILE_LIMIT) return null;
+
+    const fromByName = new Map(from.map((f) => [f.filename, f]));
+    const toByName = new Map(to.map((f) => [f.filename, f]));
+    const changed: string[] = [];
+    for (const [name, f] of toByName) {
+      const prior = fromByName.get(name);
+      if (!prior || prior.sha !== f.sha || prior.status !== f.status) changed.push(name);
+    }
+    for (const name of fromByName.keys()) if (!toByName.has(name)) changed.push(name);
+
+    const directByName = new Map(directFiles.map((f) => [f.filename, f]));
+    const files: ReviewedDeltaFile[] = [];
+    for (const name of changed) {
+      const d = directByName.get(name);
+      if (!d || typeof d.additions !== 'number' || typeof d.deletions !== 'number') return null;
+      files.push({ path: name, previousPath: d.previous_filename ?? null, status: d.status, additions: d.additions, deletions: d.deletions });
+    }
+    const prFilesAtFrom = [...new Set(from.flatMap((f) => [f.filename, ...(f.previous_filename ? [f.previous_filename] : [])]))];
+    return { fromHeadSha: params.fromSha, toHeadSha: params.toSha, prFilesAtFrom, files };
+  } catch {
+    return null;
+  }
+}

@@ -90,6 +90,25 @@ describe('manage_specs', () => {
     expect(r).toContain('expectedVersion 2');
   });
 
+  it('get and import say how many criteria an import could not read, and which', async () => {
+    const criteria = { unreadable: [{ id: 'AC-3a', line: 4 }], duplicates: [{ id: 'AC-1', lines: [3, 7] }] };
+    api.mockResolvedValueOnce({ spec: { ...spec, metadata: { criteria_unread: criteria } }, revision: { revision: 2, artifactRevision: 3, contentHash: 'abc' }, body: '# Checkout\nAC-1: x', requirements: [{ id: 'AC-1' }], revisions: [] });
+    const got = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'get', specId: SPEC }, ctx()));
+    expect(got).toContain('2 criteria could not be read; not read: AC-3a (line 4); defined more than once, only the first is read: AC-1 (lines 3, 7).');
+
+    api.mockResolvedValueOnce({
+      dryRun: true, repo: 'acme/app', commitSha: 'a'.repeat(40), counts: { create: 1, reimport: 0, skip: 0 },
+      byArea: [{ area: 'Unfiled', areaSpecId: null, proposed: false, count: 1 }],
+      files: [{ path: 'docs/specs/messy.md', action: 'create', spec: { title: 'Messy' }, area: null, criteria }],
+    });
+    const imp = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'import' }, ctx()));
+    expect(imp).toContain('create: Messy from docs/specs/messy.md');
+    expect(imp).toContain('2 criteria could not be read; not read: AC-3a (line 4)');
+
+    api.mockResolvedValueOnce({ spec, revision: { revision: 2, artifactRevision: 3, contentHash: 'abc' }, body: '# Checkout\nR-1: x', requirements: [{ id: 'R-1' }], revisions: [] });
+    expect(out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'get', specId: SPEC }, ctx()))).not.toContain('could not be read');
+  });
+
   it('get points a long body at bounded artifact reads instead of inlining it', async () => {
     const body = 'x'.repeat(SPEC_INLINE_BODY_MAX + 1);
     api.mockResolvedValueOnce({ spec, revision: { revision: 2, artifactRevision: 3, contentHash: 'abc' }, body, requirements: [], revisions: [] });
@@ -324,7 +343,7 @@ describe('manage_specs', () => {
       dryRun: true, repo: 'acme/app', commitSha: 'a'.repeat(40), counts: { create: 1, reimport: 0, skip: 1 },
       byArea: [{ area: 'Billing', areaSpecId: SPEC, proposed: false, count: 1 }],
       files: [
-        { path: 'docs/specs/invoices.md', action: 'create', spec: { title: 'Invoices' }, area: { specId: SPEC, title: 'Billing', proposed: false }, provenance: { commitSha: 'a'.repeat(40), prNumber: 12 }, duplicates: [{ specId: 'x1', title: 'Old invoices', relation: 'duplicate', p: 0.95 }] },
+        { path: 'docs/specs/invoices.md', action: 'create', spec: { title: 'Invoices' }, area: { specId: SPEC, title: 'Billing', proposed: false }, provenance: { commitSha: 'a'.repeat(40), prNumber: 12 }, duplicates: [{ specId: 'x1', title: 'Old invoices', relation: 'duplicate', p: 0.95, blocks: true }, { specId: 'x2', title: 'Runner login', relation: 'duplicate', p: 0.54, blocks: false }] },
         { path: 'docs/specs/INDEX.md', action: 'skip', reason: 'meta_file', message: 'INDEX.md is generated', area: null },
       ],
     });
@@ -332,7 +351,8 @@ describe('manage_specs', () => {
     expect([api.mock.calls[0][0], JSON.parse(api.mock.calls[0][1].body)]).toEqual(['/api/specs/import', { workspaceId: WS }]);
     expect(r).toContain('Dry run (nothing written) from acme/app@aaaaaaa');
     expect(r).toContain('create: Invoices from docs/specs/invoices.md, last changed in #12');
-    expect(r).toContain('possible duplicate of "Old invoices"');
+    expect(r).toContain('duplicate of "Old invoices" (x1, duplicate p 0.95); a real run skips it unless docs/specs/invoices.md is in allowDuplicates');
+    expect(r).toContain('overlaps "Runner login" (x2, duplicate p 0.54); a real run still creates it');
     expect(r).toContain('docs/specs/INDEX.md: meta_file');
 
     api.mockResolvedValueOnce({ dryRun: false, files: [], counts: { create: 0, reimport: 0, skip: 0 }, byArea: [] });

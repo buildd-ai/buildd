@@ -48,6 +48,7 @@ import {
 } from '@/lib/workspace-installation';
 import { resolvePrRepo } from '@/lib/repo-scope';
 import { recordPrFact } from '@buildd/core/pr-facts';
+import { factFunnelScope } from '@/lib/workflow/pr-fact-scope';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 // ── Pure predicates ───────────────────────────────────────────────────────────
@@ -276,6 +277,7 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
           await recordPrFact(
             { workerId: worker.id },
             pr.merged && pr.merged_at ? { kind: 'merged', mergedAt: pr.merged_at } : { kind: 'closed' },
+            { scope: factFunnelScope },
           );
           await db.update(workers).set({ prLastCheckedAt: now, updatedAt: now }).where(eq(workers.id, worker.id));
           result.skipped++;
@@ -406,7 +408,7 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
           continue;
         }
 
-        // An attempt inherits the backend, role, routing kind and phase (Rule P1-7)
+        // An attempt inherits the backend, role, routing kind and phase (mission-legibility R-7)
         // of the task it re-attempts — same as conflict-retry.ts's own insert.
         const identity = await inheritAttemptIdentity(retryTask.parentTaskId);
 

@@ -7,7 +7,7 @@ import type { PromptCompositionEvent } from './memory-digest-policy';
 import type { Outbox } from './outbox';
 import type { PromptBundlesPayload } from './session-prompt-bundles';
 import type { ClaimHandoffSnapshot } from './claim-handoff';
-import type { WorkspaceSkill, WorkerEnvironment, ClaimDiagnostics, DerivedFileRule, MissionStage } from '@buildd/shared';
+import type { WorkspaceSkill, WorkerEnvironment, ClaimDiagnostics, DerivedFileRule, MissionStage, RecentMission, RunnerQueueResponse } from '@buildd/shared';
 import { CLOUD_EXECUTOR, stripClaimCredentials } from '@buildd/shared';
 import { BuilddTransport } from '@buildd/core/buildd-transport';
 import { createRedactionInterceptor } from '@buildd/core/redaction';
@@ -156,6 +156,21 @@ export class BuilddClient {
     if (missionIds.length === 0) return {};
     const data = await this.fetch(`/api/missions/stages?ids=${missionIds.map(encodeURIComponent).join(',')}`);
     return data?.stages && typeof data.stages === 'object' ? data.stages : {};
+  }
+
+  /** Open missions and those delivered in the last 7 days across the key's workspaces (R-24), from GET /api/missions/recent. */
+  async listRecentMissions(): Promise<RecentMission[]> {
+    const data = await this.fetch('/api/missions/recent');
+    return Array.isArray(data?.missions) ? data.missions : [];
+  }
+
+  /** Per team, the order this runner's claims take waiting work (R-26), from GET /api/workers/queue. */
+  async listQueue(q: { runner?: string; skills?: string[] }): Promise<RunnerQueueResponse> {
+    const p = new URLSearchParams({ executor: process.env.BUILDD_EXECUTOR || 'host' });
+    if (q.runner) p.set('runner', q.runner);
+    if (q.skills?.length) p.set('skills', q.skills.join(','));
+    const data = await this.fetch(`/api/workers/queue?${p}`);
+    return { teams: Array.isArray(data?.teams) ? data.teams : [], truncated: !!data?.truncated };
   }
 
   async getTask(id: string): Promise<BuilddTask | null> {
@@ -357,6 +372,8 @@ export class BuilddClient {
     crashReconciled?: boolean;
     /** The workspace clone was throttled by GitHub (git-clone.ts): the server books infra_failure and requeues with backoff. */
     githubThrottled?: boolean;
+    /** A Claude run refused before spawn for want of any model credential (host-seat.ts claudeModelAuthMissing): the server books infra_failure and requeues with backoff. */
+    modelAuthMissing?: boolean;
     /**
      * The server REFUSED a mutation for this session (a 4xx, or an unqueueable
      * 5xx) rather than the session crashing. Chargeability is the SERVER's
@@ -1071,8 +1088,8 @@ export class BuilddClient {
      */
     claimHandoff?: ClaimHandoffSnapshot,
     /**
-     * Which kind of model credential this runner's agents use, and the
-     * BUILDD_HOST_SEAT mode (host-seat.ts detectModelAuthSource), plus the
+     * Which kind of model credential this runner's agents use: the
+     * machine login label (host-seat.ts detectModelAuthSource), plus the
      * Codex label (detectCodexAuthSource). Labels, never a value. Omitted by older callers; the server keeps the stored
      * label when the field is absent.
      */
@@ -1113,11 +1130,11 @@ export class BuilddClient {
       payload.commitDrift = updateSnapshot.commitDrift;
       payload.updating = updateSnapshot.updating;
       payload.updateAvailable = updateSnapshot.updateAvailable;
+      payload.updateDrain = updateSnapshot.updateDrain ?? null;
       payload.trackedBranch = updateSnapshot.trackedBranch;
     }
     if (modelAuth) {
       payload.modelAuthSource = modelAuth.source;
-      payload.modelAuthMode = modelAuth.mode;
       if (modelAuth.codexSource) payload.codexAuthSource = modelAuth.codexSource;
     }
     const data = await this.fetch('/api/workers/heartbeat', {

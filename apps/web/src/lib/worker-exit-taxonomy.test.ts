@@ -17,6 +17,15 @@ import {
   STALE_EXPIRED_ERROR,
 } from './worker-exit-taxonomy';
 
+describe('stale expiry diagnostic', () => {
+  it('reports the configured reaper window and preserves the historical signature', async () => {
+    const { WORKER_STALE_REAP_MS } = await import('@buildd/shared');
+    const { normalizeErrorSignature } = await import('@buildd/core/error-signature');
+    expect(STALE_EXPIRED_ERROR).toBe(`Stale worker expired (no update for ${WORKER_STALE_REAP_MS / 60000}+ minutes)`);
+    expect(normalizeErrorSignature(STALE_EXPIRED_ERROR)).toBe(normalizeErrorSignature('Stale worker expired (no update for 15+ minutes)'));
+  });
+});
+
 describe('classifyReportedFailure', () => {
   it('prioritises budget over everything else', () => {
     expect(classifyReportedFailure({ budgetLimited: true, sandboxMountGap: true })).toBe('budget_limited');
@@ -314,6 +323,14 @@ describe('GitHub-throttled clones', () => {
 
   it('a cancelled task still wins', () => {
     expect(classifyReportedFailure({ budgetLimited: false, sandboxMountGap: false, githubThrottled: true, taskCancelled: true })).toBe('task_cancelled');
+  });
+});
+
+describe('Claude run refused for want of a model login', () => {
+  it('books it as infra_failure, which does not consume a retry', () => {
+    const cause = classifyReportedFailure({ budgetLimited: false, sandboxMountGap: false, modelAuthMissing: true });
+    expect(cause).toBe('infra_failure');
+    expect(consumesRetryAttempt(cause)).toBe(false);
   });
 });
 

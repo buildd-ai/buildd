@@ -24,7 +24,7 @@ const mockWorkspacesFindMany = mock(() => [] as any[]);
 const mockGetTeamWorkspaceIds = mock(() => [] as string[]);
 /**
  * `db.update(...).set(...).where(...)` — awaited by most callers, but the
- * guarded `kind` stamp (mission-legibility Rule K2-16) needs `.returning()` as
+ * guarded `kind` stamp (mission-legibility R-28) needs `.returning()` as
  * its did-anything-change signal, so the fake WHERE is a thenable that also
  * carries one.
  */
@@ -1428,8 +1428,8 @@ describe('POST /api/github/pr', () => {
 
     // Regression (mission 6341fe61): a task with NO missionId whose context
     // still carries the mission branch as baseBranch. The integration guard
-    // never runs, the base resolves from task context to a ref that was never
-    // created, and GitHub's bare 422 used to come back as a 500.
+    // never runs; the fix ignores the stale mission/... ref in context and
+    // falls through to the workspace default, avoiding a GitHub rejection.
     it('turns a non-existent base into an actionable 400 and traces a missing mission branch', async () => {
       mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
       mockWorkersFindFirst.mockResolvedValue(taskWorker({
@@ -1440,23 +1440,19 @@ describe('POST /api/github/pr', () => {
       mockMissionsFindFirst.mockResolvedValue(null);
       mockReportMissionBranchUnresolved.mockClear();
       noExistingPr();
-      mockGithubApi.mockImplementationOnce((() => Promise.reject(new Error(
-        'GitHub API error: 422 {"message":"Validation Failed","errors":[{"resource":"PullRequest","field":"base","code":"invalid"}]}',
-      ))) as any);
+      mockGithubApi.mockResolvedValueOnce({ number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'open', title: 'My PR' });
 
       const res = await POST(createMockRequest({
         headers: { Authorization: 'Bearer bld_test' },
         body: { workerId: 'w-1', title: 'My PR', head: WORKER_BRANCH },
       }));
 
-      expect(res.status).toBe(400);
-      const data = await res.json();
-      expect(data.error).toContain(`'${INTEGRATION_BRANCH}' does not exist`);
-      expect(data.hint).toContain("base='dev'");
-      expect(mockReportMissionBranchUnresolved).toHaveBeenCalledTimes(1);
-      expect((mockReportMissionBranchUnresolved.mock.calls[0] as any[])[0]).toMatchObject({
-        branch: INTEGRATION_BRANCH, where: 'create_pr', cause: 'missing', workerId: 'w-1',
-      });
+      expect(res.status).toBe(200);
+      const createCall = mockGithubApi.mock.calls.find((c: any[]) => c[2]?.method === 'POST');
+      expect(createCall).toBeDefined();
+      const body = JSON.parse((createCall as any[])[2].body);
+      expect(body.base).toBe('dev');
+      expect(mockReportMissionBranchUnresolved).not.toHaveBeenCalled();
     });
 
     it('refuses a caller-supplied head that disagrees with the worker’s own branch', async () => {
@@ -3345,7 +3341,7 @@ describe('POST /api/github/pr', () => {
     });
 
     it('creates the review pass EXACTLY once — the PR-open hook is the only trigger', async () => {
-      // mission-legibility.md Rule R3-4: the programmatic review pass for a
+      // mission-legibility.md R-36: the programmatic review pass for a
       // builder task that opens a PR is the existing agent-review tier fired
       // here. No second trigger is designed, and none is needed — any new one
       // would race this through the same dedupe.
@@ -3374,7 +3370,7 @@ describe('POST /api/github/pr', () => {
       expect(mockWakeTask).toHaveBeenCalledWith((mockAnnounceTaskCreated.mock.calls[0] as any[])[0].id, 'task.created');
     });
 
-    it('Rule K2-19: opening a PR stamps kind=engineering, guarded on kind IS NULL', async () => {
+    it('mission-legibility R-31: opening a PR stamps kind=engineering, guarded on kind IS NULL', async () => {
       mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
       mockWorkersFindFirst.mockResolvedValue(taskWorker());
       mockGithubReposFindFirst.mockResolvedValue(REPO);
@@ -6186,11 +6182,48 @@ describe('GET /api/github/pr', () => {
     mockGithubApi.mockResolvedValueOnce([]);
 
     const data = await (await GET(createGetRequest('w-k', 778))).json();
-    expect(mockGetDeliveryViewsForTasks).toHaveBeenCalledWith(['task-k']);
+    expect(mockGetDeliveryViewsForTasks.mock.calls.at(-1)?.[0]).toEqual(['task-k']);
     // The column's 'merged' would have read merged; the delivery says superseded, so closed-unmerged.
     expect(data.pr.state).toBe('closed_unmerged');
     expect(data.pr.supersededByPrNumber).toBe(790);
     expect(data.pr.supersededReason).toBe('reopened on a fresh branch');
+  });
+
+  // workflow-kernel-library.md §7 / AC-24, AC-26: rounds from the delivery, and its state over a stale worker row.
+  it('a kernel-owned PR reports its review rounds and standing from the delivery, even when the worker row says merged', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-r', accountId: 'account-1', taskId: 'task-r', prNumber: 779,
+      prUrl: 'https://github.com/owner/repo/pull/779',
+      mergedAt: new Date('2026-10-01T00:00:00Z'), prLifecycleStatus: 'merged',
+      lastCommitSha: null, workspace: WORKSPACE_OK,
+    });
+    const round = (n: number, verdict: string | null, status = 'decided') => ({ id: `r${n}`, round: n, headSha: `H${n}`, kind: 'full', status, verdict, effectiveVerdict: verdict, failureCount: 0 });
+    mockGetDeliveryViewsForTasks.mockResolvedValueOnce(new Map([['task-r', {
+      prNumber: 779, state: 'AWAITING_REVIEW', mergedAt: null, supersededBy: null, headline: 'Review queued', detail: 'round 2 at H2', needsYou: false,
+      headSha: 'H2', prState: 'ci_passed',
+      rounds: [round(1, 'request_changes'), round(2, 'request_changes')],
+      findings: [{ id: 'r1:0', status: 'open', required: true }, { id: 'r2:0', status: 'resolved', required: true }],
+      ledger: [{ id: 'a1', family: 'review_fix', attemptNo: 1, mode: 'agent', boundHeadSha: 'H1', triggerReason: 'r1', taskId: 'fx', status: 'ended', outcome: 'delivered', maxAttempts: 3, reportedShas: ['H2'], pushedHeadSha: 'H2' }],
+    }]]));
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockResolvedValueOnce({
+      number: 779, title: 'feat: x', body: null, state: 'open', merged: false, merged_at: null,
+      html_url: 'https://github.com/owner/repo/pull/779', head: { sha: 'H2' }, base: { ref: 'dev' }, additions: 1, deletions: 1, changed_files: 1,
+    });
+    mockGithubApi.mockResolvedValueOnce({ check_runs: [] });
+    mockGithubApi.mockResolvedValueOnce([]); // no GitHub reviews: buildd's reviewer records rounds
+
+    const data = await (await GET(createGetRequest('w-r', 779))).json();
+    // get_pr is one of the three readers that asks for findings (§7 review).
+    expect(mockGetDeliveryViewsForTasks.mock.calls.at(-1)?.[3]).toEqual({ withFindings: true });
+    expect(data.pr.state).toBe('open');
+    expect(data.reviews).toMatchObject({ approved: 0, changesRequested: 0 });
+    expect(data.delivery).toMatchObject({
+      state: 'AWAITING_REVIEW', headline: 'Review queued',
+      review: { rounds: 2, latestVerdict: 'request_changes', openFindings: 1, line: '2 rounds · latest: changes requested · 1 open finding' },
+      repairs: [{ label: 'Review fix 1 of 3', phase: 'pushed', taskId: 'fx' }],
+    });
   });
 
   it('merged PR by prNumber (no workerId) returns 200 with merged state', async () => {

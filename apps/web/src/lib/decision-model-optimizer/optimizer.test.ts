@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { setDecisionModelForKind } from '@buildd/core/decision-model-store';
 import { readDecisionModel, readDecisionModelOverrides, type DecisionModelRoute } from '@buildd/core/decision-model';
-import type { StoredMeasurement } from '@buildd/core/decision-model-measurements';
+import { calibrate, type StoredMeasurement } from '@buildd/core/decision-model-measurements';
 import type { DecisionLedgerInput } from '@buildd/core/decision-ledger';
 import type { ModelComparisonInput, ModelComparisonOutcome } from '../prompt-evals/compare-run';
 import type { PromptEvalResultRow } from '../prompt-evals/run';
@@ -36,7 +36,7 @@ type Derived = {
 } | null;
 
 /** One comparison result row as compare-run stores it. */
-function row(model: string, via: string, derived: Derived, opts: { labelled?: number; notRun?: number; status?: 'scored' | 'no_key'; kind?: string } = {}): PromptEvalResultRow {
+function row(model: string, via: string, derived: Derived, opts: { labelled?: number; notRun?: number; status?: 'scored' | 'no_key'; kind?: string; source?: 'collected' | 'labelled'; origin?: string } = {}): PromptEvalResultRow {
   const d = derived ? {
     source: derived.source ?? 'top_p', threshold: derived.threshold ?? 0.7, coverage: derived.coverage, precision: derived.precision, wilsonLower: 0.91,
     ...(derived.calibration !== undefined ? { calibration: derived.calibration } : {}),
@@ -44,7 +44,8 @@ function row(model: string, via: string, derived: Derived, opts: { labelled?: nu
   return {
     runId: 'run-1', benchmarkSet: opts.kind ?? KIND, promptId: opts.kind ?? KIND, promptSource: 'replay', promptRowVersion: null,
     promptHash: 'h', promptVersion: 'v', model, status: 'scored', cases: 100, accuracy: 0.9, baselineAccuracy: 0.8,
-    coverageAt90: null, accuracyAt90: null, errors: 0, notRun: opts.notRun ?? 0, costUsd: 0, caseSource: 'collected', caseOrigin: 'replay',
+    coverageAt90: null, accuracyAt90: null, errors: 0, notRun: opts.notRun ?? 0, costUsd: 0,
+    caseSource: opts.source ?? 'collected', caseOrigin: opts.origin ?? (opts.source === 'labelled' ? 'prompts-repo' : 'replay'),
     metrics: {
       via, status: opts.status ?? 'scored', target: { target: 0.9, minLabelled: 50 }, labelled: opts.labelled ?? 100,
       derived: d, thresholds: { confidence: { bar: 0.9 }, top_p: { bar: 0.9 }, margin: { bar: 0.9 }, calibrated_top_p: { bar: 0.9 } },
@@ -68,7 +69,10 @@ interface World {
   now: { t: number };
 }
 
-function world(opts: { rows?: PromptEvalResultRow[]; optedIn?: boolean; preflightFails?: boolean; aborted?: 'call_cap' | null; problems?: string[]; stored?: unknown } = {}): World {
+function world(opts: {
+  rows?: PromptEvalResultRow[]; labelledRows?: PromptEvalResultRow[]; labelledKinds?: string[];
+  optedIn?: boolean; preflightFails?: boolean; aborted?: 'call_cap' | null; problems?: string[]; stored?: unknown;
+} = {}): World {
   const w: World = {
     stored: { value: opts.stored ?? null },
     optedIn: new Set(opts.optedIn === false ? [] : [TEAM]),
@@ -83,12 +87,19 @@ function world(opts: { rows?: PromptEvalResultRow[]; optedIn?: boolean; prefligh
     readDecisionModel: async () => w.stored.value,
     compare: async input => {
       w.compared.push(input);
-      const out: ModelComparisonOutcome = {
-        status: 'passed', runId: 'run-1', prodModel: JEV_ID, models: [], source: 'collected',
-        problems: opts.problems ?? [], costUsd: 0, rows: opts.rows ?? [], aborted: opts.aborted ?? null,
-      };
+      const labelled = input.source === 'labelled';
+      const out: ModelComparisonOutcome = labelled
+        ? {
+          status: 'passed', runId: 'run-2', prodModel: JEV_ID, models: [], source: 'labelled',
+          problems: [], costUsd: 0, rows: (opts.labelledRows ?? []).filter(r => input.kinds?.includes(r.benchmarkSet)), aborted: null,
+        }
+        : {
+          status: 'passed', runId: 'run-1', prodModel: JEV_ID, models: [], source: 'collected',
+          problems: opts.problems ?? [], costUsd: 0, rows: opts.rows ?? [], aborted: opts.aborted ?? null,
+        };
       return out;
     },
+    labelledKinds: async () => opts.labelledKinds ?? [KIND],
     preflight: async route => {
       w.preflights.push(route);
       return opts.preflightFails ? { ok: false, error: 'Cloudflare rejected a test decision: HTTP 403' } : { ok: true };
@@ -356,6 +367,198 @@ describe('optimizeTeam', () => {
     expect(w.switches).toHaveLength(0);
     expect(out.status === 'ran' && out.kinds[0]).toMatchObject({ kind: KIND, action: 'keep', reason: 'measurement_other_signal' });
   });
+
+  it('never switches to a measurement with cutoff above 1, and keeps the kind on its current model', async () => {
+    // A stored measurement with a calibration threshold above its map's maximum
+    // has an infinite cutoff and acts on no decisions. The kind should stay on
+    // its current model with the measurement_never_acts keep reason.
+    const calibration = { x: [0.5, 0.9], y: [0.5, 0.9] };
+    const w = world({ rows: [
+      row(JEV_ID, 'openrouter', { coverage: 0.5, precision: 0.95, source: 'calibrated_top_p', calibration }),
+      row('clef', 'cloudflare', { coverage: 0.85, precision: 0.96, threshold: 0.65, source: 'calibrated_top_p', calibration }),
+    ] });
+    w.measurements.push({
+      kind: KIND, model: 'clef', threshold: 0.99, precisionLower: 0.96, coverage: 0.85, n: 150, evalRunId: 'older', measuredFingerprint: 'fp-1',
+      status: 'active', setByAccountId: null, setAt: new Date(NOW - DAY), reason: null, confidenceSource: 'calibrated_top_p',
+      calibration,
+    });
+    const out = await optimizeTeam(TEAM, {}, w.deps);
+    expect(w.written).toHaveLength(0);
+    expect(readDecisionModelOverrides(w.stored.value)[KIND]).toBeUndefined();
+    expect(w.switches).toHaveLength(0);
+    expect(out.status === 'ran' && out.kinds[0]).toMatchObject({ kind: KIND, action: 'keep', reason: 'measurement_never_acts' });
+  });
+});
+
+// Below the minimum of graded collected cases, a kind is scored on its labelled
+// set instead: its own rows, never pooled with collected, and a measurement it
+// writes is marked so a collected one later replaces it.
+const FEW_COLLECTED = [
+  row(JEV_ID, 'openrouter', null, { labelled: 20 }),
+  row('clef', 'cloudflare', { coverage: 0.9, precision: 1 }, { labelled: 20 }),
+];
+const lrow = (model: string, via: string, derived: Derived, opts: { labelled?: number; notRun?: number; kind?: string; origin?: string } = {}) =>
+  row(model, via, derived, { ...opts, source: 'labelled' });
+const LABELLED_WIN = [
+  lrow(JEV_ID, 'openrouter', { coverage: 0.5, precision: 0.95 }),
+  lrow('clef', 'cloudflare', { coverage: 0.85, precision: 0.96, threshold: 0.66 }),
+];
+const measurement = (over: Partial<StoredMeasurement>): StoredMeasurement => ({
+  kind: KIND, model: 'clef', threshold: 0.8, precisionLower: 0.93, coverage: 0.5, n: 200, evalRunId: 'older', measuredFingerprint: 'fp-1',
+  status: 'active', setByAccountId: null, setAt: new Date(NOW - DAY), reason: null, confidenceSource: 'top_p', ...over,
+});
+
+describe('optimizeTeam on labelled sets', () => {
+  it('scores a kind below the collected minimum on its labelled set, and marks the measurement labelled', async () => {
+    const w = world({ rows: FEW_COLLECTED, labelledRows: LABELLED_WIN });
+    const out = await optimizeTeam(TEAM, { callCap: 1000 }, w.deps);
+
+    expect(w.compared.map(c => c.source)).toEqual(['collected', 'labelled']);
+    expect(w.compared[1]).toMatchObject({ teamId: TEAM, kinds: [KIND] });
+    // The labelled run gets what the collected run left of the cap: 2 rows x 100 cases were asked.
+    expect(w.compared[1].callCap).toBe(800);
+    expect(w.written).toEqual([expect.objectContaining({ kind: KIND, model: 'clef', threshold: 0.66, caseSource: 'labelled', evalRunId: 'run-2', n: 100 })]);
+    expect(w.written[0].reason).toContain('labelled');
+    expect(readDecisionModelOverrides(w.stored.value)[KIND]).toEqual(CLEF);
+    expect(w.switches[0]).toMatchObject({ evalRunId: 'run-2', toRoute: CLEF });
+    expect(w.ledger[0].reason).toContain('source=labelled');
+    expect(out.status === 'ran' && out.kinds).toEqual([expect.objectContaining({ kind: KIND, action: 'switch', source: 'labelled' })]);
+  });
+
+  it('never asks the labelled set of a kind with enough collected cases, and never pools the two', async () => {
+    // Collected keeps the current model; a labelled row that would win is ignored.
+    const w = world({
+      rows: [row(JEV_ID, 'openrouter', { coverage: 0.6, precision: 0.95 }), row('clef', 'cloudflare', { coverage: 0.63, precision: 0.95 }), ...LABELLED_WIN],
+      labelledRows: LABELLED_WIN,
+    });
+    const out = await optimizeTeam(TEAM, {}, w.deps);
+    expect(w.compared.map(c => c.source)).toEqual(['collected']);
+    expect(out.status === 'ran' && out.kinds).toEqual([expect.objectContaining({ kind: KIND, action: 'keep', reason: 'within_margin', source: 'collected' })]);
+    expect(w.written).toHaveLength(0);
+  });
+
+  it('leaves a kind with no labelled set on too_few_graded, and asks only kinds that have one', async () => {
+    const none = world({ rows: FEW_COLLECTED, labelledRows: LABELLED_WIN, labelledKinds: [] });
+    const out = await optimizeTeam(TEAM, {}, none.deps);
+    expect(none.compared).toHaveLength(1);
+    expect(out.status === 'ran' && out.kinds).toEqual([expect.objectContaining({ kind: KIND, action: 'keep', reason: 'too_few_graded', source: 'collected' })]);
+
+    // Role pick has a set and no collected case; this kind has neither enough nor a set.
+    const other = world({ rows: FEW_COLLECTED, labelledRows: LABELLED_WIN, labelledKinds: ['task_role'] });
+    await optimizeTeam(TEAM, {}, other.deps);
+    expect(other.compared[1]).toMatchObject({ source: 'labelled', kinds: ['task_role'] });
+  });
+
+  it('a pinned kind gets no labelled run', async () => {
+    const w = world({ rows: FEW_COLLECTED, labelledRows: LABELLED_WIN });
+    w.switches.push({
+      id: 'sw-0', teamId: TEAM, kind: KIND, cause: 'optimizer', fromRoute: null, toRoute: CLEF, evalRunId: 'r', beforeScore: 0, afterScore: 0,
+      bar: 0.9, n: 1, status: 'undone', pinnedUntil: new Date(NOW + DAY), endedAt: new Date(NOW), endedBy: 'u', createdAt: new Date(NOW - DAY),
+    });
+    const out = await optimizeTeam(TEAM, {}, w.deps);
+    expect(w.compared).toHaveLength(1);
+    expect(out.status === 'ran' && out.kinds[0]).toMatchObject({ kind: KIND, reason: 'pinned' });
+  });
+
+  it('scores a kind with no collected cases at all on its labelled set', async () => {
+    const w = world({ rows: [], labelledRows: LABELLED_WIN });
+    const out = await optimizeTeam(TEAM, {}, w.deps);
+    expect(w.compared[1]).toMatchObject({ source: 'labelled', kinds: [KIND] });
+    expect(out.status === 'ran' && out.kinds[0]).toMatchObject({ kind: KIND, action: 'switch', source: 'labelled' });
+  });
+
+  it('a labelled set below the minimum keeps the kind too_few_graded', async () => {
+    const w = world({ rows: FEW_COLLECTED, labelledRows: [lrow(JEV_ID, 'openrouter', null, { labelled: 30 }), lrow('clef', 'cloudflare', { coverage: 0.9, precision: 1 }, { labelled: 30 })] });
+    const out = await optimizeTeam(TEAM, {}, w.deps);
+    expect(out.status === 'ran' && out.kinds[0]).toMatchObject({ kind: KIND, action: 'keep', reason: 'too_few_graded', source: 'labelled' });
+    expect(w.written).toHaveLength(0);
+  });
+
+  it('two labelled origins are never pooled: the one with the most graded cases decides', async () => {
+    const w = world({
+      rows: FEW_COLLECTED,
+      labelledRows: [
+        // A small dataset where Clef wins, and the larger repo set where it does not.
+        lrow(JEV_ID, 'openrouter', { coverage: 0.5, precision: 0.95 }, { labelled: 60, origin: 'dataset:post-session/v1' }),
+        lrow('clef', 'cloudflare', { coverage: 0.9, precision: 0.96 }, { labelled: 60, origin: 'dataset:post-session/v1' }),
+        lrow(JEV_ID, 'openrouter', { coverage: 0.6, precision: 0.95 }, { labelled: 120 }),
+        lrow('clef', 'cloudflare', { coverage: 0.61, precision: 0.95 }, { labelled: 120 }),
+      ],
+    });
+    const out = await optimizeTeam(TEAM, {}, w.deps);
+    expect(out.status === 'ran' && out.kinds[0]).toMatchObject({ kind: KIND, action: 'keep', reason: 'within_margin', source: 'labelled' });
+  });
+
+  it('no labelled run once the collected run has used the call cap, or stopped short', async () => {
+    const spent = world({ rows: FEW_COLLECTED, labelledRows: LABELLED_WIN });
+    await optimizeTeam(TEAM, { callCap: 200 }, spent.deps);
+    expect(spent.compared).toHaveLength(1);
+
+    const cut = world({ rows: FEW_COLLECTED, labelledRows: LABELLED_WIN, aborted: 'call_cap' });
+    await optimizeTeam(TEAM, {}, cut.deps);
+    expect(cut.compared).toHaveLength(1);
+  });
+
+  it('a labelled win never overrides a collected measurement in force: the kind switches on it, unwritten', async () => {
+    const w = world({ rows: FEW_COLLECTED, labelledRows: LABELLED_WIN });
+    // Looser than the labelled threshold (0.66): it still stands, being collected.
+    w.measurements.push(measurement({ threshold: 0.5 }));
+    await optimizeTeam(TEAM, {}, w.deps);
+    expect(w.written).toHaveLength(0);
+    expect(readDecisionModelOverrides(w.stored.value)[KIND]).toEqual(CLEF);
+  });
+
+  it('a labelled win keeps the shared guards: a retired row or one on another signal leaves the kind alone', async () => {
+    for (const [m, reason] of [[measurement({ status: 'retired' }), 'measurement_retired'], [measurement({ confidenceSource: 'confidence' }), 'measurement_other_signal']] as const) {
+      const w = world({ rows: FEW_COLLECTED, labelledRows: LABELLED_WIN });
+      w.measurements.push(m);
+      const out = await optimizeTeam(TEAM, {}, w.deps);
+      expect(w.written).toHaveLength(0);
+      expect(w.stored.value).toBeNull();
+      expect(out.status === 'ran' && out.kinds[0]).toMatchObject({ action: 'keep', reason, source: 'labelled' });
+    }
+  });
+
+  it('a collected win replaces a labelled measurement, even a stricter one or one on another signal', async () => {
+    for (const m of [measurement({ threshold: 0.95, caseSource: 'labelled' }), measurement({ confidenceSource: 'margin', caseSource: 'labelled' })]) {
+      const w = world({ rows: CLEAR_WIN });
+      w.measurements.push(m);
+      await optimizeTeam(TEAM, {}, w.deps);
+      expect(w.written).toEqual([expect.objectContaining({ model: 'clef', threshold: 0.65, confidenceSource: 'top_p', caseSource: 'collected' })]);
+    }
+  });
+});
+
+describe('measurementPlan by case source', () => {
+  const derivedTopP = (threshold: number) => ({ source: 'top_p' as const, threshold, coverage: 0.8, precision: 0.95, wilsonLower: 0.92, calibration: null });
+
+  it('collected over labelled: write, whatever the strictness or signal', () => {
+    expect(measurementPlan([measurement({ threshold: 0.95, caseSource: 'labelled' })], KIND, 'clef', 'fp-1', derivedTopP(0.6), 'collected')).toBe('write');
+    expect(measurementPlan([measurement({ confidenceSource: 'margin', caseSource: 'labelled' })], KIND, 'clef', 'fp-1', derivedTopP(0.6), 'collected')).toBe('write');
+    expect(measurementPlan([measurement({ labelThresholds: { START: 0.7 }, caseSource: 'labelled' })], KIND, 'clef', 'fp-1', derivedTopP(0.6), 'collected')).toBe('write');
+  });
+
+  it('labelled over collected: keep, whatever the strictness; another signal is still refused', () => {
+    expect(measurementPlan([measurement({ threshold: 0.5 })], KIND, 'clef', 'fp-1', derivedTopP(0.9), 'labelled')).toBe('keep');
+    // A row written before the column existed is collected.
+    expect(measurementPlan([measurement({ threshold: 0.5, caseSource: undefined })], KIND, 'clef', 'fp-1', derivedTopP(0.9), 'labelled')).toBe('keep');
+    expect(measurementPlan([measurement({ confidenceSource: 'margin' })], KIND, 'clef', 'fp-1', derivedTopP(0.9), 'labelled')).toBe('measurement_other_signal');
+  });
+
+  it('labelled over labelled: never loosen, as collected over collected', () => {
+    expect(measurementPlan([measurement({ threshold: 0.8, caseSource: 'labelled' })], KIND, 'clef', 'fp-1', derivedTopP(0.7), 'labelled')).toBe('keep');
+    expect(measurementPlan([measurement({ threshold: 0.6, caseSource: 'labelled' })], KIND, 'clef', 'fp-1', derivedTopP(0.7), 'labelled')).toBe('write');
+  });
+
+  it('a retired row is never revived, from either source', () => {
+    for (const src of ['collected', 'labelled'] as const) {
+      expect(measurementPlan([measurement({ status: 'retired', caseSource: 'labelled' })], KIND, 'clef', 'fp-1', derivedTopP(0.7), src)).toBe('measurement_retired');
+    }
+  });
+
+  it('a row measured on an older fingerprint is not in force: either source writes over it', () => {
+    expect(measurementPlan([measurement({ measuredFingerprint: 'fp-0' })], KIND, 'clef', 'fp-1', derivedTopP(0.7), 'labelled')).toBe('write');
+  });
 });
 
 // A calibrated top p threshold is compared after the map: calibrate(p, C) >= t.
@@ -390,6 +593,42 @@ describe('measurementPlan on calibrated top p', () => {
     expect(calibratedCutoff(0.8, { x: [0.2, 0.6, 0.6, 1], y: [0.1, 0.3, 0.9, 0.95] })).toBe(0.6);
     expect(calibratedCutoff(0.99, { x: [0.5, 0.9], y: [0.5, 0.9] })).toBeGreaterThan(1);
     expect(calibratedCutoff(0.9, null)).toBeGreaterThan(1);
+  });
+
+  // The decision: comparing cutoffs is exact, not an approximation. calibrate is
+  // non-decreasing, so a row acts on exactly { p : p >= cutoff }, and the row
+  // with the higher cutoff acts on a subset of the other's top p values.
+  it('the cutoff is exactly where the map starts to act', () => {
+    const maps = [
+      { x: [0.5, 0.9], y: [0.5, 0.9] },
+      { x: [0.5, 0.6], y: [0.5, 0.95] },
+      { x: [0.2, 0.6, 0.6, 1], y: [0.1, 0.3, 0.9, 0.95] },
+      { x: [0.3, 0.5, 0.7, 0.9], y: [0.4, 0.4, 0.8, 0.8] },
+    ];
+    for (const cal of maps) {
+      for (const t of [0.3, 0.4, 0.6, 0.8, 0.9, 0.95]) {
+        const cut = calibratedCutoff(t, cal);
+        for (let i = 0; i <= 1000; i++) {
+          const p = i / 1000;
+          // Within float noise of the cutoff itself, either side is fine.
+          if (Math.abs(p - cut) < 1e-9) continue;
+          expect(calibrate(p, cal) >= t - 1e-12).toBe(p > cut);
+        }
+      }
+    }
+  });
+
+  it('a stored calibrated row without a usable map is the strictest: kept, never loosened', () => {
+    const rows: StoredMeasurement[] = [{ ...stored(0.9, { x: [0.5, 0.9], y: [0.5, 0.9] }), calibration: null }];
+    expect(measurementPlan(rows, KIND, 'clef', 'fp-1', derived(0.5, { x: [0.5, 0.9], y: [0.5, 0.9] }))).toBe('measurement_never_acts');
+  });
+
+  it('a stored calibrated row with a threshold above its map acts never: prevented from switching', () => {
+    // The stored threshold 0.99 is above the maximum of the map [0.5, 0.9],
+    // so its cutoff is Infinity and it never acts. The optimizer should not
+    // switch to any model when the existing measurement never acts.
+    const rows: StoredMeasurement[] = [stored(0.99, { x: [0.5, 0.9], y: [0.5, 0.9] })];
+    expect(measurementPlan(rows, KIND, 'clef', 'fp-1', derived(0.5, { x: [0.5, 0.9], y: [0.5, 0.9] }))).toBe('measurement_never_acts');
   });
 
   it('a switch past a looser stored row stores the new, stricter map', async () => {

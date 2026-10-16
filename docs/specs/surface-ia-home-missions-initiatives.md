@@ -2,7 +2,7 @@
 title: Surface IA — Home, Missions, Initiatives
 status: active
 owner: max
-last_verified: 2026-09-26
+last_verified: 2026-10-15
 summary: Home, Missions and Initiatives MUST each answer one question (what needs me, what state is each mission in, what do an initiative's missions need) and MUST place release state per §8-10.
 domain: surfaces
 surfaces: [apps/web/src/app/app/(protected)/home/page.tsx, apps/web/src/app/app/(protected)/missions/page.tsx, apps/web/src/lib/initiative-view.ts]
@@ -34,7 +34,8 @@ it does not answer.
 the 14-day effort sparkline and the Home pulse line) was removed. Initiatives
 are containers with a human-set status; their list and page are specified in
 [`initiatives.md`](initiatives.md). §2 and §4-§7 below are replaced by pointers.
-§0 is kept as history. §3 and §8-§10 are unchanged.
+§0 is kept as history. §3 and §8-§10 are unchanged, except §8.5, rewritten on
+2026-10-15 for `MissionReleaseSection`, and the drift notes in §3.1 and §8.2.
 
 **Invariants**
 
@@ -79,12 +80,12 @@ is `—` there.
 | Derived initiative verdict, pulse line, effort sparkline | MUST NOT | MUST NOT | MUST NOT | MUST NOT | — | — |
 | Initiative status + missions-done bar (`initiatives.md`) | MUST NOT | MUST NOT | MUST (one card each) | MUST | — | — |
 | Progress headline (milestone crossing) | MUST | MUST NOT | MUST NOT | MUST NOT | — | — |
-| Mission-state groups (`GROUP_ORDER`) | active subset only | MUST | MUST NOT | MUST NOT | — | — |
-| Workspace grouping header | MUST NOT | conditional (§3.3) | MUST NOT | MUST NOT | — | — |
+| Mission-state groups | active subset only | portfolio sections (§3) | MUST NOT | MUST NOT | — | — |
+| Workspace grouping header | MUST NOT | MUST NOT | MUST NOT | MUST NOT | — | — |
 | Mission facts that need you, as links | MUST NOT | MUST NOT | MUST | MUST | — | — |
 | Artifacts | MUST NOT | MUST NOT | MUST NOT | MUST | — | — |
-| Release ledger status (§8.1) | MUST (exception only, §8.2) | MUST (card footer, §8.3) | MUST NOT (§8.4) | MUST NOT (§8.4) | this mission's Shipped line only (§8.5) | — |
-| Release trigger action (`Release now`, §10.1) | MUST (§10.2) | MUST NOT (§10.2) | MUST NOT (§10.2) | MUST NOT (§10.2) | MUST NOT (§10.2) | MUST NOT (§10.2) |
+| Release ledger status (§8.1) | MUST NOT (§8.2) | MUST NOT (§8.3) | MUST NOT (§8.4) | MUST NOT (§8.4) | this mission's Shipped row only (`MissionReleaseSection`, §8.5) | — |
+| Release trigger action (`Release now`, §10.1) | MUST NOT (§10.2) | MUST NOT (§10.2) | MUST NOT (§10.2) | MUST NOT (§10.2) | MUST NOT (§10.2) | MUST NOT (§10.2) |
 | Task-level ship badge (§10.3) | MUST NOT | MUST NOT | MUST NOT | MUST NOT | MUST (per task row, §10.3) | MUST (§10.3) |
 | Fifth task-rail segment for release (§10.4) | MUST NOT | MUST NOT | MUST NOT | MUST NOT | MUST NOT | MUST NOT |
 
@@ -101,62 +102,46 @@ removed; see `initiatives.md`.
 
 ---
 
-## 3. Missions — organised by mission, nothing else
+## 3. Missions portfolio
 
-### 3.1 Composition
+### Composition and scope
 
-The Missions tab renders, in order and nothing else: the page header (title,
-active count, seats chip, workspace filter, `+ New Mission`), the filter tab bar
-(`all` / `active` / `scheduled` / `completed`), then mission sections in
-`GROUP_ORDER` order using `SECTION_DISPLAY` labels.
+The Missions portfolio renders compact `MissionRow` rows. Open work is
+sectioned by `buildMissionSections`: Waiting on you, In motion, Waiting, then
+Landed, checks pending. Empty sections are omitted. Recently completed work
+appears separately; older completed work is progressively revealed.
 
-`InitiativeTriage` MUST NOT be mounted on this page, and the page module MUST NOT
-contain a token-aggregation query.
+The status filters in `PORTFOLIO_STATUS_FILTERS` are All, Waiting on you,
+In motion, Waiting and Landed. Search narrows the displayed rows and filter
+counts; headline counts continue to describe the selected portfolio group.
+`portfolioGroups` supplies an optional group picker. A selected group is
+reflected in `?group=`; an unknown group falls back to all groups.
 
-### 3.2 Initiative representation
+The shell workspace switcher supplies `?workspace=`. The server scopes reads
+to the active team; a workspace selection includes that workspace's missions
+and team-level missions. Workspace scope does not create bucket headers:
+when several workspaces are represented, rows carry workspace context.
+No initiative triage or token aggregation belongs to this page.
 
-An initiative appears on this surface only as a per-card label linking to
-`/app/initiatives/<id>` (already implemented on both `FullMissionCard` and
-`CompactMissionCard`). The initiative-grouping path formerly in `MissionGrid` —
-initiativeGroups, InitiativeGroupData, InitiativeGroupSection,
-groupMissionsByInitiative — was dead (no caller passed the prop) and has been
-deleted along with its test file (§7 migration step 4). None of those four
-names resolve in the tree today; they are named here as history, not as a live
-code surface.
+### Acceptance criteria
 
-### 3.3 Workspace headers
+- AC-7: GIVEN active initiatives WHEN the Missions page renders THEN no
+  initiative triage row is mounted.
+- AC-8: GIVEN missions from multiple workspaces WHEN the portfolio renders
+  THEN no workspace bucket header is emitted.
+- AC-9: GIVEN a selected workspace WHEN the server loads the portfolio THEN
+  it includes that workspace's missions and team-level missions in the active team.
+- AC-10: GIVEN open missions in different delivery states WHEN the portfolio
+  renders THEN nonempty sections follow Waiting on you, In motion, Waiting,
+  Landed, checks pending order.
+- AC-11: GIVEN a group filter naming no available group WHEN the portfolio
+  initializes THEN it falls back to all groups.
+- AC-12: GIVEN a search query WHEN portfolio results narrow THEN filter counts
+  follow the query and headline counts retain the selected group's totals.
 
-Let `N` = the number of named workspace buckets holding ≥1 mission visible under
-the active filter, and `U` = true when the team-level bucket (`workspaceId IS
-NULL`) holds ≥1 visible mission.
-
-- `N ≥ 2` → every bucket renders a header; the team-level bucket is labelled
-  `Team-level`.
-- `N = 1` and `U` → the named bucket's header is suppressed; the team-level
-  bucket renders a `Team-level` header.
-- `N = 1` and not `U` → no workspace header at all.
-- `N = 0` → no workspace header at all.
-
-This kills the lone `BUILDD 47` header on a single-workspace team while keeping
-team-level missions distinguishable when they coexist with workspace missions.
-
-### 3.4 Acceptance criteria
-
-- **AC-7**: GIVEN a team with 3 active initiatives, WHEN `/app/missions` renders,
-  THEN no sparkline SVG and no initiative triage row are present in the DOM.
-- **AC-8**: GIVEN all 47 visible missions belong to one workspace and none is
-  team-level, WHEN the grid renders, THEN no workspace header is present.
-- **AC-9**: GIVEN 47 missions in workspace `buildd` and 3 team-level missions,
-  WHEN the grid renders, THEN exactly one workspace header is present and its
-  label is `Team-level`.
-- **AC-10**: GIVEN missions in two named workspaces, WHEN the grid renders, THEN
-  each named bucket renders its own header.
-- **AC-11**: GIVEN a mission with `initiativeId` set, WHEN its card renders, THEN
-  the card shows the initiative title linking to `/app/initiatives/<id>` and the
-  mission is grouped by `healthToGroup`, not by initiative.
-- **AC-12**: WHEN the Missions page module is loaded, THEN it exports no
-  reference to groupMissionsByInitiative and issues no `SUM(input_tokens +
-  output_tokens)` query.
+**Code surface**: `apps/web/src/app/app/(protected)/missions/page.tsx`,
+`apps/web/src/app/app/(protected)/missions/MissionGrid.tsx`,
+`apps/web/src/lib/mission-portfolio.ts`, `apps/web/src/lib/mission-sections.ts`.
 
 ---
 
@@ -174,13 +159,11 @@ exist.
 
 `docs/design/release-management-ui.md` and the initiative artifact "Spec:
 release as a first-class object" were both written and shipped (M1-M3, PR
-#1845-#1924) without ever being reconciled against this document. The result
-is four mounts with no host: `MissionReleaseFooter` on mission-list cards,
+#1845-#1924) without ever being reconciled against this document. The original implementation had four mounts with no host: `MissionReleaseFooter` on mission-list cards,
 `ReleaseWidget` on Home, a `Release now` button on
 `/app/workspaces/[id]/config`, and an orphan `/app/releases/[id]` with no
-index and no nav entry. This section is that reconciliation — it does not
-change what those components render, except where §8.5 and §10 explicitly say
-so.
+index and no nav entry. This section describes the current release surfaces; Home and portfolio
+mounts have since been removed (§8.2–8.3).
 
 ### 8.1 Release ledger status
 
@@ -190,17 +173,12 @@ continuous workspace, the last deploy state; for `none` archetype, nothing
 (§9.1 formalizes this as the `none` empty state). This is a *read*, never an
 action — the trigger lives in a separate row (§10.1).
 
-### 8.2 Home
+### 8.2 Home and 8.3 Missions portfolio
 
-`ReleaseWidget` (already shipped, PR #1877/#1905) is correct as built: it
-renders only the exception — queue depth over threshold **and** CI green on
-the source ref — never a standing "release available" card, per §9 of the
-release spec. This matrix entry formalizes that shipped behavior; no change.
-
-### 8.3 Missions
-
-`MissionReleaseFooter` on the mission-list card (already shipped, PR #1856) is
-correct as built. No change.
+Neither Home nor the Missions portfolio mounts a release widget or a
+mission-list release footer. Release state is rendered on mission detail
+(§8.5) and in workspace release settings. The old Home exception widget and
+list footer are retained components, not contracts for a mounted surface.
 
 ### 8.4 Initiatives list and detail — MUST NOT
 
@@ -209,47 +187,49 @@ already show: each mission line reads its own done state from the Missions card
 model, and release state belongs to the mission (§8.5), not to the container
 above it.
 
-### 8.5 Mission detail — MUST (new)
+### 8.5 Mission detail: MUST
 
-Mission detail today has **zero** release surface — `MissionReleaseFooter` is
-mounted only on the list-card grid (`MissionGrid.tsx`), never on
-`/app/missions/[id]/page.tsx`. This is the actual gap: mission detail is the
-page whose entire subject is "is this mission done," and it currently cannot
-answer whether the mission's merged work has shipped.
+Mission detail answers one release question for **this mission only**: has
+its merged work shipped? Before this section was built, mission detail had no
+release surface at all. It now has one row,
+`MissionReleaseSection` (`missions/[id]/MissionReleaseSection.tsx`), mounted
+in the mission page's footer rows (`footerRows` in `missions/[id]/page.tsx`).
 
-Mission detail answers the question for **this mission only**: the Delivery
-stepper's Shipped step (`buildDeliverySteps`, which reads the mission's own
-trunk merges against the release baseline from the same loader as the card
-footer) renders as one line — `Released`, `Partly released` or `Waiting for next release` —
-linking to the release detail page, or to the workspace's releases while the
-release that will carry it does not exist yet
-(`missions/[id]/MissionReleaseSection.tsx`). The workspace queue ("N
-unshipped") and the trigger action are workspace facts, not this mission's,
-and do not render here (§10.1). `none` archetype, or nothing of the mission
-merged yet, renders nothing (§9.1).
+- **What it reads.** The Delivery model's Shipped step (`buildDeliverySteps`,
+  which compares the mission's own trunk merges with the workspace release
+  baseline from the shared release loader) plus the mission's release
+  status (`missionReleaseStatus` in `lib/mission-delivery.ts`). The row is
+  chosen by `missionReleaseRow`.
+- **What it says.** The step label (`Shipped`), then one status:
+  `Released` (only for a healthy deploy), `Partly released`, `Waiting for next
+  release`, `Release dispatched`, `Deploying`, `Deploy failed` or `Health not
+  reported`. The release status adds the dispatched, deploying, failed and
+  unknown states, which show even when the Shipped step is hidden.
+- **Where it links.** The whole row is a link, ending in `Release ›` (the
+  word `Release` is hidden at phone width, the `›` stays). It opens the
+  release that carries the work (`loadMissionCarryingReleaseId`), or the
+  workspace's releases (`/app/releases?workspace=...`) while that release does
+  not exist yet (`missionShippedHref`).
+- **What it never shows.** The workspace queue ("N unshipped") and the
+  `Release now` trigger are workspace facts, not this mission's, and do not
+  render here (§10.1).
+- **When it is absent.** A `none` archetype or a workspace with no release
+  flow (`not_configured`), or nothing of the mission merged yet, renders no
+  row (§9.1).
 
 ### 8.6 Acceptance criteria
 
-- **AC-38**: GIVEN a gated workspace with 3 unshipped merges and CI green on
-  the source ref, WHEN Home renders, THEN the release widget is present;
-  GIVEN CI failing on the same ref, THEN the widget renders the CI-blocking
-  state, not the release link.
 - **AC-39**: GIVEN an initiative whose child missions have shipped 2 releases
   this week, WHEN `/app/initiatives` and the initiative detail page render,
   THEN neither page renders a release-ledger row — only the existing
   `shippedThisWeek` clause/chip carries the count.
 - **AC-40**: GIVEN a gated mission whose merged work is after the last
-  release, WHEN `/app/missions/[id]` renders, THEN its Delivery Shipped line
-  reads `Waiting for next release` and shows no workspace queue depth; GIVEN
-  all of it is in a release, THEN it reads `Released` and links to the
-  release; GIVEN the mission's archetype is `none`, THEN no Shipped line is
-  present in the DOM.
-- **AC-41**: GIVEN the same mission on both the missions-list card and its own
-  detail page in one request cycle, THEN both read the same release loader:
-  the card shows the workspace queue depth and age, and mission detail shows
-  only this mission's Shipped line (no queue depth), so the two cannot
-  disagree about the release baseline.
-
+  release, WHEN `/app/missions/[id]` renders, THEN its Delivery Shipped row
+  reads `Waiting for next release`, links to the workspace's releases and
+  shows no workspace queue depth; GIVEN all of it is in a release whose deploy
+  is healthy, THEN it reads `Released` and links to that release; GIVEN the
+  mission's archetype is `none`, THEN no Shipped row
+  (`data-testid="mission-shipped-status"`) is present in the DOM.
 ---
 
 ## 9. Release — empty-state doctrine
@@ -311,47 +291,20 @@ the fix generalized here.
 
 ## 10. Release — action placement and task-level ship state
 
-### 10.1 Where the `Release now` action lives
+### 10.1 Release actions
 
-**Decision: the Home readiness widget. Not mission detail, not workspace
-config, not the missions list, not task detail.**
+The former placement proposal put a Release now action in a Home readiness
+widget. Home no longer mounts that widget. Neither Home nor the Missions
+portfolio exposes a release trigger; mission detail continues to show only
+this mission's shipped state. Release execution is defined in `release-flow.md`,
+including the `trigger_release` MCP action.
 
-### 10.2 Reasoning
+### 10.2 Current placement
 
-The release initiative spec's own §1 names the failure this whole effort
-exists to fix: *"a mission can reach 'all tasks complete, all PRs merged' and
-still not be shipped. Mission completion overstates reality."* That failure
-is a property of a **mission**, observed at the moment someone is looking at
-that mission. The affordance to fix it — fire the release — therefore
-belongs next to the work whose completeness it corrects, not three clicks
-away in workspace settings where nothing about *this mission's* unshipped
-state is visible.
-
-Concretely:
-
-- **Mission detail — MUST NOT.** A release ships the whole workspace queue,
-  not one mission, so a mission page offering it — next to a workspace-wide
-  "N unshipped" count — read as a claim about the mission that it was not.
-  Mission detail keeps only its own Shipped line (§8.5), which links to the
-  release.
-- **Home — MUST.** The readiness widget already computes "queue depth over
-  threshold AND CI green" (§8.2) — the exact precondition for a safe release.
-  Surfacing the action where that precondition is already evaluated avoids a
-  second click through to a page that re-derives it. The widget gains the
-  button; it does not gain a second, competing surface.
-- **Missions list, Initiatives (list/detail), Task detail — MUST NOT.** List
-  surfaces render summaries, not side-effecting controls (§3.1's "nothing
-  else" doctrine for Missions applies equally here); an initiative spans many
-  missions so "release" has no single target; a task cannot release on its
-  own (§10.3).
-- **Workspace config — configuration only.** `ReleaseSection.tsx` on
-  `/app/settings/workspace/[id]` keeps the strategy selector, branch pickers,
-  trigger-policy selector, and read-only Vercel-token status — everything
-  that decides *how* a release runs. The `Release now` button that currently
-  lives there is **removed from that surface** and relocated to Home. Configuration and action were conflated in one card;
-  §5.2's own AC-13 ("Release now fires the release") never specified *where*
-  the button must live, so this is a relocation, not a spec violation of the
-  original design doc.
+Workspace release settings configure strategy, branches, trigger policy and
+token status. They expose no Release now button. The historical Home relocation
+is not a requirement to mount a new control. Mission, initiative and task
+surfaces retain their read-only release state as specified below.
 
 ### 10.3 Task-level ship state: badge only, no fifth rail segment
 
@@ -402,8 +355,7 @@ detail get the same component, not two implementations to keep in sync.
 
 - **AC-46**: GIVEN a mission with unshipped merges, WHEN mission detail
   renders, THEN no `Release now` button (or other trigger control) and no
-  workspace queue depth is present; the Home readiness widget carries the
-  trigger (§10.2).
+  workspace queue depth is present.
 - **AC-47**: WHEN `/app/settings/workspace/[id]` renders the release section,
   THEN no `Release now` button (or equivalent trigger control) is present in
   the DOM — only strategy, branch, trigger-policy, and read-only token-status
@@ -430,8 +382,8 @@ detail get the same component, not two implementations to keep in sync.
   and the progress headline (§2). Mounts no initiative rail or status line.
 - `apps/web/src/app/app/(protected)/missions/page.tsx` — Missions; no longer
   mounts triage or loads effort (#1710).
-- `apps/web/src/app/app/(protected)/missions/MissionGrid.tsx` — mission grouping,
-  workspace buckets, the dead initiative-group path.
+- `apps/web/src/app/app/(protected)/missions/MissionGrid.tsx` — portfolio sections,
+  status/search/group filters and compact mission rows.
 - `apps/web/src/lib/initiative-list.ts` — `loadInitiativeList`,
   `InitiativeListItem`; feeds Home's progress headline and `GET /api/initiatives`.
 - Initiatives list and page: see `initiatives.md`.
@@ -440,12 +392,11 @@ detail get the same component, not two implementations to keep in sync.
   `SECTION_DISPLAY`, `healthToGroup`.
 - `packages/core/mission-helpers.ts` — `computeMissionProgress`,
   `computeInitiativeProgress`, `computeInitiativeSegments`, `crossedMilestone`.
-- `apps/web/src/components/MissionReleaseFooter.tsx` — mission-list card
-  footer (§8.3); the empty-state ladder (§9.1-9.2) becomes its shared
-  dependency rather than an inline COALESCE.
+- `apps/web/src/components/MissionReleaseFooter.tsx` — retained, unmounted list footer;
+  it is historical context, not the portfolio rendering contract.
 - `apps/web/src/app/app/(protected)/home/ReleaseWidget.tsx` and
-  `apps/web/src/lib/release-readiness.ts` — Home exception widget (§8.2);
-  gains the trigger action (§10.2, AC-46).
+  `apps/web/src/lib/release-readiness.ts` — retained, unmounted Home exception
+  widget and its readiness helper (§8.2).
 - `apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/ReleaseSection.tsx`
   — loses the `Release now` button (§10.2, AC-47); keeps strategy/branch/
   trigger-policy/token-status fields.
@@ -476,8 +427,8 @@ detail get the same component, not two implementations to keep in sync.
 - Archiving, deleting, or reordering initiatives from any surface.
 - The `GroupSection` / `MissionProgressBar` convergence tracked by PR #1699.
 - A releases index page (`/app/releases`) or a nav entry for it. §8-10 give
-  `/app/releases/[id]` inbound links from Home, mission cards, and mission
-  detail; a standalone list of every release across every workspace answers a
+  `/app/releases/[id]` inbound links from mission
+  detail and task ship badges; a standalone list of every release across every workspace answers a
   different question than any of the three primary surfaces (§0) and is not
   scoped here.
 - Implementing §8-10 — this document only places the release object and

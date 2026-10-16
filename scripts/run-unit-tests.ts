@@ -1,5 +1,5 @@
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'fs';
-import { homedir, tmpdir } from 'os';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs';
+import { cpus, homedir, loadavg, tmpdir } from 'os';
 import { join } from 'path';
 
 // Anything matching one of these prefixes and ending in .test.ts(x) is run.
@@ -464,6 +464,35 @@ export function attributeStoreReaches(
     .sort();
 }
 
+/** How often a non-TTY run prints a progress line. */
+export const HEARTBEAT_INTERVAL_MS = 30_000;
+
+/**
+ * One progress line for a run whose stdout is a log file. A silent multi-minute
+ * run is indistinguishable from a hung one; this says how far along it is, the
+ * host load (a loaded shared host is the usual reason a run is slow), and the
+ * expected remaining time from the duration hints (`null` hints => no ETA).
+ */
+export function formatHeartbeat(opts: {
+  done: number;
+  total: number;
+  failed: number;
+  running: string[];
+  elapsedMs: number;
+  load1: number;
+  cpus: number;
+  remainingHintMs: number | null;
+}): string {
+  const parts = [
+    `[progress] ${opts.done}/${opts.total} files done (${opts.failed} failed)`,
+    `${Math.round(opts.elapsedMs / 1000)}s elapsed`,
+    `load ${opts.load1.toFixed(1)} on ${opts.cpus} cpus${opts.load1 > opts.cpus * 1.5 ? ' (host oversubscribed; expect slower than documented)' : ''}`,
+  ];
+  if (opts.remainingHintMs !== null) parts.push(`~${Math.round(opts.remainingHintMs / 1000)}s of hinted work left`);
+  if (opts.running.length > 0) parts.push(`running: ${opts.running.slice(0, 3).join(', ')}`);
+  return parts.join(' | ');
+}
+
 export async function runTestFile(
   file: string,
   spawn: SpawnTestProcess = (command, options) => Bun.spawn(command, options),
@@ -829,14 +858,51 @@ async function main(): Promise<void> {
   const timings: Array<{ file: string; durationMs: number }> = [];
   const runStartedAt = performance.now();
 
+  const running = new Set<string>();
+  const heartbeat = process.stdout.isTTY
+    ? null
+    : setInterval(() => {
+        const finished = new Set(timings.map(t => t.file));
+        const remaining = files.filter(f => !finished.has(f));
+        const known = remaining.every(f => hints[f] !== undefined);
+        console.log(formatHeartbeat({
+          done: passed + failures.length,
+          total: files.length,
+          failed: failures.length,
+          running: [...running],
+          elapsedMs: performance.now() - runStartedAt,
+          load1: loadavg()[0],
+          cpus: cpus().length,
+          remainingHintMs: known ? remaining.reduce((s, f) => s + (hints[f] ?? 0), 0) : null,
+        }));
+      }, HEARTBEAT_INTERVAL_MS);
+  heartbeat?.unref?.();
+
+  // A killed run keeps its partial result: failures so far go to the log and the
+  // message names what was still running.
+  const onKill = (signal: NodeJS.Signals): void => {
+    console.error(`\n${signal} received before the run finished: ${passed + failures.length}/${files.length} files done (${failures.length} failed); still running: ${[...running].join(', ') || 'none'}`);
+    for (const failure of failures) console.error(`  failed so far: ${failure.file}`);
+    try {
+      const partial = failures.map(f => `--- ${f.file} ---\n${f.output.trim()}\n`).join('\n');
+      writeFileSync(process.env.BUILDD_TEST_LOG ?? '.test-report.log', `INCOMPLETE RUN (${signal})\n\n${partial}`);
+    } catch {}
+    process.exit(signal === 'SIGINT' ? 130 : 143);
+  };
+  process.once('SIGTERM', onKill);
+  process.once('SIGINT', onKill);
+
   await runWithConcurrency(files, concurrency, async file => {
+    running.add(file);
     const result = await runTestFile(file);
+    running.delete(file);
     timings.push({ file, durationMs: result.durationMs });
     if (result.output.includes(STORE_REACH_MARKER)) storeReaches.push(file);
     if (result.exitCode === 0) {
       passed++;
     } else {
       failures.push(result);
+      if (!process.stdout.isTTY) console.log(`[failed] ${file}`);
     }
     // Carriage-return progress is unreadable once redirected to a file, and the
     // log is what agents grep. Only animate on a TTY.
@@ -844,7 +910,10 @@ async function main(): Promise<void> {
       process.stdout.write(`\rUnit test files: ${passed} passed, ${failures.length} failed, ${files.length - passed - failures.length} remaining`);
     }
   });
+  if (heartbeat) clearInterval(heartbeat);
   if (process.stdout.isTTY) process.stdout.write('\n');
+  process.off('SIGTERM', onKill);
+  process.off('SIGINT', onKill);
   const wallMs = performance.now() - runStartedAt;
 
   // Files finish out of order under concurrency; sort so the failure section of

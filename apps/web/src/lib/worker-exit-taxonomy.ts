@@ -1,4 +1,4 @@
-import { INTERACTIVE_WORKER_BUSY_MAX_MS, INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
+import { WORKER_STALE_REAP_MS, INTERACTIVE_WORKER_BUSY_MAX_MS, INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
 
 export type WorkerExitCause =
   | 'code_failure'
@@ -160,7 +160,7 @@ export const SILENT_START_ERROR =
   'Worker started but produced no output (0 assistant turns, $0 spend) — the agent session died before its first real turn; check the runner log for this worker id';
 
 /** Error text for the generic staleness kill (a worker that did real work, then went quiet). */
-export const STALE_EXPIRED_ERROR = 'Stale worker expired (no update for 15+ minutes)';
+export const STALE_EXPIRED_ERROR = `Stale worker expired (no update for ${WORKER_STALE_REAP_MS / 60000}+ minutes)`;
 
 /**
  * A session with at most this many turns and zero spend never really produced
@@ -224,6 +224,8 @@ export function classifyReportedFailure(input: {
    * retries. Nothing ran; a later attempt, after a backoff, can succeed. Infra.
    */
   githubThrottled?: boolean;
+  /** The runner refused a Claude run before spawn: no model login or key on the machine, none delivered. */
+  modelAuthMissing?: boolean;
   /**
    * The session died on the CLI's model version gate (see
    * isUnrecognizedModelError): the runner cannot serve the model the task was
@@ -249,6 +251,7 @@ export function classifyReportedFailure(input: {
   if (input.sandboxMountGap) return 'sandbox_mount_gap';
   if (input.crashReconciled) return 'infra_failure';
   if (input.githubThrottled) return 'infra_failure';
+  if (input.modelAuthMissing) return 'infra_failure';
   if (input.unrecognizedModel) return 'infra_failure';
   // Steering-delivery crashes are infra failures — the CLI rejected a malformed
   // invocation, not a code defect. Must not consume a retry attempt.

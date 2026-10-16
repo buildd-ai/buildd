@@ -67,6 +67,13 @@ describe('OccupancySparkline', () => {
       expect(out).toMatch(/occupancy-shade[^>]*width="1"/);
     });
 
+    it('a day with no runner work draws no plot even with shade: a flat line says nothing', () => {
+      const idle = buildOccupancySeries({ window: '24h', now: NOW, workers: [] });
+      const out = shaded([{ from: NOW - 10 * H, to: NOW - 8 * H }], idle);
+      expect(out).not.toContain('<svg');
+      expect(out).toContain('No runner work in the past 24h');
+    });
+
     it('no shade renders no rect', () => {
       expect(shaded([])).not.toContain('occupancy-shade');
     });

@@ -11,6 +11,7 @@ import { formatCompletionRecord, situationRepeatsCompletion } from '@/lib/missio
 import { computeSupersededFailedTasks } from '@/lib/mission-task-superseded';
 import { getDeliveryViewsForTasks, replacedFailedTaskIds } from '@/lib/workflow/delivery-view';
 import { ownerDeliveryDisplays } from '@/lib/workflow/delivery-display';
+import { overlayDeliveryLifecycle } from '@/lib/delivery-overlay';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
 import { deriveTaskHealthSignal, foreignDependencyIds, formatNextRun, selectMissionCompletionSummary, MISSION_COMPLETED_NOTE_TITLE } from '@/lib/mission-helpers';
 import { computeMissionProgress, deriveMissionProgressMetric, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, hasPendingDeliverableWork as computeHasPendingDeliverableWork, computeMissionAuthorshipHealth } from '@buildd/core/mission-helpers';
@@ -96,7 +97,7 @@ import { SwipeProvider } from '@/components/SwipeableRow';
 import { DisplayTimezoneProvider } from '@/components/DisplayTimezone';
 import { getTeamTimezoneSetting } from '@/lib/team-timezone';
 import { displayTaskTitle } from '@/lib/task-title';
-import { refreshWorkerMergeStateIfStale } from '@/lib/pr-reconcile';
+import { observeMergeStateOnRender } from '@/lib/pr-state-refresh';
 import { loadReleaseFooterData } from '@/lib/release-footer';
 import { loadMissionCarryingReleaseId } from '@/lib/mission-carrying-release';
 import type { WorkspaceReleaseConfig, WorkspaceGitConfig } from '@buildd/core/db/schema';
@@ -106,8 +107,10 @@ import { countOf } from '@/lib/plural';
 import {
   deriveMissionIntegrationPr,
   shouldRenderMissionPrBlock,
-  MISSION_PR_STATE_LABEL,
 } from '@/lib/mission-integration-pr';
+import { MissionPrLine, MissionScopeUpdates } from './MissionPrLine';
+import { missionEpochsOf, scopeAmendmentsOf } from '@/lib/workflow/delivery-ship';
+import { describeScopeUpdates } from '@/lib/mission-scope-view';
 import { explainMission } from '@/lib/explain';
 import { deriveMissionStateView } from '@/lib/mission-state-view';
 import { missionOpenQuestions } from '@/lib/open-ask';
@@ -161,7 +164,8 @@ export default async function MissionDetailPage({
       if (t.status !== 'completed') return [];
       const w = (t.workers as any[])?.[0];
       if (!w?.prNumber || w?.mergedAt || !w?.prUrl) return [];
-      return [{ id: w.id as string, prNumber: w.prNumber as number, prUrl: w.prUrl as string }];
+      // Each worker's own workspace: a mission's tasks can live in several.
+      return [{ id: w.id as string, prNumber: w.prNumber as number, prUrl: w.prUrl as string, workspaceId: (w.workspaceId as string | undefined) ?? mission.workspaceId! }];
     });
     if (staleWorkers.length > 0) {
       const wsWithInstall = await db.query.workspaces.findFirst({
@@ -173,7 +177,8 @@ export default async function MissionDetailPage({
       if (installId) {
         // Enqueued after the response, never written during the render (spec
         // workflow-state-kernel §11): this render shows what is stored.
-        after(() => Promise.all(staleWorkers.map(w => refreshWorkerMergeStateIfStale(w, installId)))
+        // AC-3: a delivery-owned task records at most a fact here; no lifecycle write.
+        after(() => observeMergeStateOnRender(staleWorkers, installId)
           .catch((err) => console.error('[mission-page] PR fact import failed (non-fatal):', err)));
       }
     }
@@ -196,6 +201,7 @@ export default async function MissionDetailPage({
     fleetCapacity,
     quickAddRoles,
     visualModel,
+    deliveryViews,
   ] = await Promise.all([
     // Roles and workspaces for this user. getUserWorkspaceIds is React
     // cache()-wrapped, so the protected layout has normally already resolved
@@ -289,7 +295,17 @@ export default async function MissionDetailPage({
           return null;
         })
       : Promise.resolve(null as VisualReviewModel | null),
+    // One DeliveryView load for the page (§17.5): the failure reading, the
+    // board/strip, the timeline cards, the structure view, and (§7) every
+    // worker-row lifecycle reading below.
+    getDeliveryViewsForTasks(allMissionTaskIds),
   ]);
+
+  // workflow-kernel-library.md §7: a delivery-owned task's PR reads as its
+  // delivery says (merged, open, closed), derived on read and never written,
+  // so progress, "awaiting merge", blockers and the feed agree with the kernel.
+  // A task with no delivery keeps its worker rows.
+  (mission as { tasks?: unknown }).tasks = overlayDeliveryLifecycle(mission.tasks ?? [], deliveryViews);
 
   const { roles, teamWorkspaces } = scopeResult;
 
@@ -317,10 +333,6 @@ export default async function MissionDetailPage({
   // deliverable tasks only, and `awaitingMerge` counts task PRs, which for an
   // opted-in mission have all merged into `mission/<slug>` while none of the
   // mission's diff is on trunk. Null for every mission that has not opted in.
-  const missionIntegrationPr = deriveMissionIntegrationPr({
-    mission: mission as { workingBranch?: string | null; integrationBranchEnabled?: boolean | null },
-    tasks: (mission.tasks ?? []) as Array<{ id: string; title: string | null; taskClass: string | null; workers?: Array<{ prUrl?: string | null; prNumber?: number | null; mergedAt?: string | Date | null; prLifecycleStatus?: string | null }> | null }>,
-  });
   const progressMetric = deriveMissionProgressMetric(mission.tasks || []);
   const progress = progressMetric.kind === 'value' ? progressMetric.value : undefined;
 
@@ -362,16 +374,15 @@ export default async function MissionDetailPage({
   // shipped under another task/PR, or that the kernel already replaced, must
   // not drive this fallback reading to FAILING.
   const failedDeliverableRows = (mission.tasks || []).filter((t) => isDeliverableTask(t as never) && t.status === 'failed');
-  const [foreignDeps, supersededMap, deliveryViews, gateFacts] = await Promise.all([
+  // Delivery records and scope decisions (workflow-kernel-library.md §6): the
+  // mission page projects them, so a merged delivery never reads as the mission.
+  const [foreignDeps, supersededMap, gateFacts, missionDeliveries, scopeRows] = await Promise.all([
     loadDependencyRows(foreignDependencyIds(mission.tasks || [])),
     computeSupersededFailedTasks(
       mission.id,
       (mission.workspaceId as string | null) ?? null,
       failedDeliverableRows.map((t) => ({ id: t.id, title: t.title, subjectPrNumber: (t as { subjectPrNumber?: number | null }).subjectPrNumber ?? null, createdAt: t.createdAt, roleSlug: t.roleSlug })),
     ).catch(() => new Map()),
-    // One DeliveryView load for the page (§17.5): the failure reading, the
-    // board/strip, the timeline cards and the structure view all read it.
-    getDeliveryViewsForTasks((mission.tasks || []).map((t) => t.id)),
     // Which claim-gate arm released each dependency, and why each queued task
     // waits, from the claim's own SQL (spec f7f67f1a P-1). Never throws.
     loadMissionGateFacts(mission.id, {
@@ -379,7 +390,15 @@ export default async function MissionDetailPage({
       local: (mission as any).executor === 'local',
       budgetExhausted: mission.status === 'budget_exhausted',
     }),
+    (mission as { integrationBranchEnabled?: boolean | null }).integrationBranchEnabled === true ? missionEpochsOf(id) : Promise.resolve([]),
+    scopeAmendmentsOf(id),
   ]);
+  const scopeUpdates = describeScopeUpdates(scopeRows, (taskId) => (mission.tasks ?? []).find(t => t.id === taskId)?.title ?? null);
+  const missionIntegrationPr = deriveMissionIntegrationPr({
+    deliveries: missionDeliveries,
+    mission: mission as { workingBranch?: string | null; integrationBranchEnabled?: boolean | null },
+    tasks: (mission.tasks ?? []) as Array<{ id: string; title: string | null; taskClass: string | null; workers?: Array<{ prUrl?: string | null; prNumber?: number | null; mergedAt?: string | Date | null; prLifecycleStatus?: string | null }> | null }>,
+  });
   const kernelReplaced = replacedFailedTaskIds(deliveryViews, failedDeliverableRows.map((t) => t.id));
   const deliveryDisplays = ownerDeliveryDisplays(deliveryViews);
   const healthState = deriveTaskHealthSignal(
@@ -848,36 +867,14 @@ export default async function MissionDetailPage({
   // Waiting on another mission is an outside wait: no time promise (R-24).
   const waitsOnMission = !!(mission as { dependsOnMissionId?: string | null }).dependsOnMissionId;
   const visualStep = deliverySteps.find(s => s.key === 'visual') ?? null;
-  const missionPrCard = shouldRenderMissionPrBlock(missionIntegrationPr, { workLanded: feedCounts.total > 0 && feedCounts.done >= feedCounts.total }) && missionIntegrationPr ? (
+  const missionPrCard = (shouldRenderMissionPrBlock(missionIntegrationPr, { workLanded: feedCounts.total > 0 && feedCounts.done >= feedCounts.total })
+    || (missionIntegrationPr?.shippedDeliveries?.length ?? 0) > 0) && missionIntegrationPr
     // Mission integration PR (Option A′): the mission's review gate, and a
-    // different object from the task PRs that fed the branch. One line.
-    <div data-testid="mission-pr-line" className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-      <p className="min-w-0 text-body text-text-secondary">
-        <span className="font-semibold text-text-primary">Mission PR</span>
-        <span className={`ml-2 font-mono text-meta ${missionIntegrationPr.state === 'merged' ? 'text-status-success' : missionIntegrationPr.state === 'closed' ? 'text-status-error' : 'text-text-muted'}`}>
-          {MISSION_PR_STATE_LABEL[missionIntegrationPr.state]}
-        </span>
-        <span className="ml-2 font-mono text-meta text-text-muted [overflow-wrap:anywhere]">{missionIntegrationPr.branch}</span>
-        <span className="mt-0.5 block">
-          {missionIntegrationPr.state === 'not_opened'
-            ? 'Task PRs merge into the integration branch. No PR to the target branch is open, so none of this work has shipped.'
-            : missionIntegrationPr.state === 'merged'
-              ? "This mission's work reached the target branch through one PR from its integration branch."
-              : "All of this mission's work ships in this one PR."}
-        </span>
-      </p>
-      {missionIntegrationPr.prUrl && (
-        <a
-          href={missionIntegrationPr.prUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="shrink-0 font-mono text-meta text-text-secondary hover:text-text-primary"
-        >
-          #{missionIntegrationPr.prNumber} →
-        </a>
-      )}
-    </div>
-  ) : null;
+    // different object from the task PRs that fed the branch. With delivery
+    // records it is the current delivery; a shipped one is named beside it.
+    ? <MissionPrLine pr={missionIntegrationPr} />
+    : null;
+  const scopeUpdatesBlock = scopeUpdates.length > 0 ? <MissionScopeUpdates lines={scopeUpdates} /> : null;
 
   const reviewSummary = displayState === 'review' ? (
     <MissionReviewSummary
@@ -1176,7 +1173,7 @@ export default async function MissionDetailPage({
   // Overview only (spec f7f67f1a R-37): History is the timeline, not a second copy.
   const quietState = ['running', 'active', 'complete'].includes(displayState);
   const budgetExhausted = budgetUsd != null && mission.status === 'budget_exhausted';
-  const boardNotice = quietState && !missionPrCard && !reviewSummary && recoveryItems.length === 0 ? null : (
+  const boardNotice = quietState && !missionPrCard && !scopeUpdatesBlock && !reviewSummary && recoveryItems.length === 0 ? null : (
     <MissionNoticeSlot
       needsYou={!quietState && noticeNeedsPerson({
         displayState,
@@ -1196,6 +1193,7 @@ export default async function MissionDetailPage({
       {!quietState && budgetExhausted && budgetDetail}
       {recoveryItems.length > 0 && <MissionRecoveryNotice items={recoveryItems} />}
       {missionPrCard}
+      {scopeUpdatesBlock}
       {reviewSummary}
     </MissionNoticeSlot>
   );

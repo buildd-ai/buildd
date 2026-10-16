@@ -139,20 +139,6 @@ export function normalizeCodexAuthJson(parsed: unknown): { ok: true; value: Code
   return { ok: true, value };
 }
 
-export interface CodexCredential {
-  credentialType: 'oauth' | 'api_key';
-  // OAuth fields — present when credentialType === 'oauth'
-  accessToken?: string;
-  refreshToken?: string;
-  accountId?: string;
-  // id_token — REQUIRED by codex-cli's auth.json parser (delivered to the runner).
-  idToken?: string;
-  // API key — present when credentialType === 'api_key'
-  apiKey?: string;
-  tokenExpiresAt: Date | null;
-  lastRefreshedAt: Date | null;
-}
-
 /**
  * Identifies where a Codex credential is stored. `accountId`/`workspaceId` left
  * undefined (or null) means team-wide — shared by every workspace in the team.
@@ -195,11 +181,6 @@ function codexOAuthClientId(): string {
     throw new Error('CODEX_OAUTH_CLIENT_ID is not configured');
   }
   return clientId;
-}
-
-function credentialUsable(row: { tokenExpiresAt: Date | string | null }): boolean {
-  if (!row.tokenExpiresAt) return true;
-  return new Date(row.tokenExpiresAt).getTime() > Date.now();
 }
 
 /** Exact-scope match (NULL-aware) for accountId + workspaceId. */
@@ -248,75 +229,25 @@ export async function storeCodexCredential(scope: CodexScope, authJson: CodexAut
 }
 
 /**
- * Resolve the most-specific Codex credential visible to a task: workspace-scoped
+ * Resolve the most-specific Codex API key visible to a task: workspace-scoped
  * beats account-scoped beats team-wide. Used at claim time.
+ *
+ * Only an API key stored in a `codex_credential` row (`{api_key}` blob) is
+ * returned. A stored ChatGPT/OAuth login never is: a claim carries no
+ * subscription login (model credentials spec R-2 / AC-3); the runner uses its
+ * own `codex login`. A login row does not hide a less specific API-key row, and
+ * revoked rows and rows that do not decrypt are skipped.
  */
-export async function resolveCodexCredential(opts: {
-  teamId: string;
-  accountId?: string | null;
-  workspaceId?: string | null;
-}): Promise<CodexCredential | null> {
-  const rows = await db.query.secrets.findMany({
-    where: sqlWhere(and(
-      eq(secrets.teamId, opts.teamId),
-      eq(secrets.purpose, PURPOSE),
-      or(isNull(secrets.accountId), opts.accountId ? eq(secrets.accountId, opts.accountId) : sql`false`),
-      or(isNull(secrets.workspaceId), opts.workspaceId ? eq(secrets.workspaceId, opts.workspaceId) : sql`false`),
-    )),
-    columns: { encryptedValue: true, accountId: true, workspaceId: true, tokenExpiresAt: true, lastRefreshedAt: true, healthStatus: true },
-  });
-  if (rows.length === 0) return null;
-
-  // Skip permanently-dead credentials — revoked credentials cannot be recovered via
-  // refresh (the refresh_token family was invalidated by the provider). Filtering here
-  // prevents the claim route from handing a dead token to the runner.
-  const liveRows = rows.filter((r) => (r.healthStatus as string) !== 'revoked');
-  if (liveRows.length === 0) return null;
-
-  // Specificity: workspace match (2) outranks account match (1) outranks team-wide (0).
-  const score = (r: { accountId: string | null; workspaceId: string | null }) =>
-    (r.workspaceId && r.workspaceId === opts.workspaceId ? 2 : 0) +
-    (r.accountId && r.accountId === opts.accountId ? 1 : 0);
-  // Expired credentials are still returned — the claim gate attempts refresh before use.
-  const best = liveRows.reduce((a, b) => (score(b) > score(a) ? b : a));
-
-  let blob: CodexBlob;
-  try {
-    blob = decodeBlob(best.encryptedValue);
-  } catch (err) {
-    console.warn('[Codex] Failed to decrypt credential in resolveCodexCredential:', err instanceof Error ? err.message : 'unknown');
-    return null;
-  }
-
-  const isApiKey = typeof blob.api_key === 'string' && blob.api_key.length > 0;
-  return {
-    credentialType: isApiKey ? 'api_key' : 'oauth',
-    ...(isApiKey
-      ? { apiKey: blob.api_key }
-      : {
-          accessToken: blob.access_token,
-          refreshToken: blob.refresh_token,
-          accountId: blob.account_id,
-          idToken: blob.id_token,
-        }),
-    tokenExpiresAt: best.tokenExpiresAt ?? null,
-    lastRefreshedAt: best.lastRefreshedAt ?? null,
-  };
-}
-
-/** True when a live (non-revoked) Codex credential exists for this task scope. Does not decrypt token values. */
-export async function hasCodexCredential(opts: {
+export async function resolveCodexApiKey(opts: {
   teamId: string;
   /**
-   * The account that would use the credential, or `'any'` to ignore account
-   * scoping entirely — "could ANY runner in this team run Codex?". Read-only
-   * reporting (backend readiness, the queue-stall watchdog) asks the `'any'`
-   * form: it has no claiming account in hand, and treating an account-scoped
-   * credential as absent would report a working team as stranded.
+   * `'any'` ignores account scoping: "could ANY runner in this team be handed
+   * an API key?". Read-only readiness reporting (backend failover) asks that
+   * form; a claim always passes its own account.
    */
   accountId?: string | null | 'any';
   workspaceId?: string | null;
-}): Promise<boolean> {
+}): Promise<{ apiKey: string } | null> {
   const anyAccount = opts.accountId === 'any';
   const rows = await db.query.secrets.findMany({
     where: sqlWhere(and(
@@ -327,13 +258,28 @@ export async function hasCodexCredential(opts: {
         : [or(isNull(secrets.accountId), opts.accountId ? eq(secrets.accountId, opts.accountId) : sql`false`)]),
       or(isNull(secrets.workspaceId), opts.workspaceId ? eq(secrets.workspaceId, opts.workspaceId) : sql`false`),
     )),
-    columns: { tokenExpiresAt: true, healthStatus: true },
+    columns: { encryptedValue: true, accountId: true, workspaceId: true, healthStatus: true },
   });
-  // Expired credentials still count — the CLI refreshes via refresh_token. Revoked
-  // credentials cannot be refreshed (the refresh_token family was invalidated by the
-  // provider), so exclude them to prevent tryFlipToCodex from routing tasks to a
-  // disconnected backend that resolveCodexCredential will then return null for.
-  return rows.some((r) => (r.healthStatus as string) !== 'revoked');
+
+  // Specificity: workspace match (2) outranks account match (1) outranks team-wide (0).
+  const score = (r: { accountId: string | null; workspaceId: string | null }) =>
+    (r.workspaceId && r.workspaceId === opts.workspaceId ? 2 : 0) +
+    (r.accountId && r.accountId === opts.accountId ? 1 : 0);
+  const ranked = rows
+    .filter((r) => (r.healthStatus as string) !== 'revoked')
+    .sort((a, b) => score(b) - score(a));
+
+  for (const row of ranked) {
+    let blob: CodexBlob;
+    try {
+      blob = decodeBlob(row.encryptedValue);
+    } catch (err) {
+      console.warn('[Codex] Failed to decrypt credential in resolveCodexApiKey:', err instanceof Error ? err.message : 'unknown');
+      continue;
+    }
+    if (typeof blob.api_key === 'string' && blob.api_key.length > 0) return { apiKey: blob.api_key };
+  }
+  return null;
 }
 
 /** Connection status (no token values) for the credential stored at an exact scope. */
@@ -518,8 +464,8 @@ export async function refreshCodexCredential(secretId: string): Promise<RefreshR
 
       if (res.status === 400 || res.status === 401) {
         // 400/401 = permanent revocation (invalid_grant or session terminated by OpenAI).
-        // Mark healthStatus='revoked' immediately so resolveCodexCredential skips this
-        // credential and the claim route fails fast. Release the lock (refreshLockedAt)
+        // Mark healthStatus='revoked' immediately so hasCodexCredential skips this
+        // credential in readiness reporting. Release the lock (refreshLockedAt)
         // so the cron does not hold a 60-minute lock on a dead credential; lastRefreshedAt
         // is left alone because it now records the last refresh that actually worked.
         // The outcome is known, so the rotation is resolved, not lost.

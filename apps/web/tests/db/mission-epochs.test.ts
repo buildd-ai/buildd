@@ -135,6 +135,8 @@ let work = { unfinishedTasks: 1, openTaskPrs: 0 };
 let refreshPrs = new Set<number>();
 let superseded: Array<{ prNumber: number; satisfiedBy: number }> = [];
 let notes: string[] = [];
+/** S4b review: what each reconcile told the missions module (`mission.delivery_settled`). */
+let settledSignals: string[][] = [];
 
 const deps = (): Deps => ({
   api: gh.api,
@@ -146,6 +148,7 @@ const deps = (): Deps => ({
   noteHeld: async (_m, title) => { notes.push(title); },
   obsoleteRefreshTasksOf: async () => [],
   cancelTask: async () => {},
+  settled: async (_m, steps) => { settledSignals.push(steps.map((x) => `${x.step}#${x.epoch}`)); },
 });
 
 async function epochRows() {
@@ -173,6 +176,7 @@ const mergedInput = (sha: string) => ({
 });
 
 beforeEach(async () => {
+  settledSignals = [];
   gh = new FakeGithub();
   work = { unfinishedTasks: 1, openTaskPrs: 0 };
   refreshPrs = new Set();
@@ -198,6 +202,23 @@ describe('AC-20: an epoch merges while work remains (the #3787 sequence)', () =>
     // Nothing else on the old branch: settled and retired.
     expect(rows[0]!.retired_at).not.toBeNull();
     expect(gh.refs.has(ROOT)).toBe(false);
+    // S4b review: the reconcile that settled and retired it tells the completion writer, once.
+    expect(settledSignals).toHaveLength(1);
+    expect(settledSignals[0]).toEqual(expect.arrayContaining(['settle#1', 'retire#1']));
+  });
+
+  test('S4b review: the reconcile inside ensureWritableEpoch also signals a settlement or retirement', async () => {
+    await inFlight();
+    work = { unfinishedTasks: 0, openTaskPrs: 0 };
+    const m = gh.mergeEpochPr(10);
+    // The merge recorded with no reconcile after it (a door that died): settlement is still owed.
+    await epochs.applyMissionEpochCommand(missionId, { type: 'Merged', at: '2026-10-14T12:00:00.000Z', ...mergedInput(m) }, deps());
+    expect(settledSignals).toEqual([]);
+    work = { unfinishedTasks: 1, openTaskPrs: 0 };
+    gh.commit('t9', [m]);
+    gh.refs.set(TRUNK, 't9');
+    await epochs.ensureWritableEpoch({ missionId, reason: 'task_filed', actor: 'test' }, deps());
+    expect(settledSignals.flat()).toContain('retire#1');
   });
 
   test('the merge ingested twice, and twice concurrently, creates one successor', async () => {

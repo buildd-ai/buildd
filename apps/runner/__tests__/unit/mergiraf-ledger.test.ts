@@ -82,22 +82,22 @@ function agentMerge(d: string) {
 }
 
 describe('mergiraf ledger (real git, fake mergiraf)', () => {
-  test('the driver is wrapped, and still passes every argument to mergiraf', () => {
+  test('the driver is wrapped, and still passes every argument to mergiraf', async () => {
     const plan = planMergeDrivers([], { mergiraf: true, mergirafPath: '/usr/local/bin/mergiraf' });
     const driver = plan.config.find(([k]) => k === 'merge.mergiraf.driver')?.[1] ?? '';
     expect(driver).toContain(MERGIRAF_LEDGER);
     expect(driver).toContain('/usr/local/bin/mergiraf merge --git %O %A %B -s %S -x %X -y %Y -p %P -l %L');
   });
 
-  test('a mergiraf path that is not shell-safe is never registered', () => {
+  test('a mergiraf path that is not shell-safe is never registered', async () => {
     const plan = planMergeDrivers([], { mergiraf: true, mergirafPath: "/opt/my bin/mergiraf'" });
     expect(plan.config.some(([k]) => k.startsWith('merge.mergiraf'))).toBe(false);
     expect(plan.attributes.some(l => l.includes('mergiraf'))).toBe(false);
   });
 
-  test('every merge appends exact repo-relative paths: resolved, conflict, and clean (a line merge would not have conflicted)', () => {
+  test('every merge appends exact repo-relative paths: resolved, conflict, and clean (a line merge would not have conflicted)', async () => {
     dir = repo();
-    registerMergeDrivers(dir, [], { mergiraf: true, mergirafPath: fakeMergiraf() });
+    await registerMergeDrivers(dir, [], { mergiraf: true, mergirafPath: fakeMergiraf() });
     agentMerge(dir);
     const { entries } = readMergirafLedger(dir, 0);
     const byPath = Object.fromEntries(entries.map(e => [e.path, e.status]));
@@ -112,29 +112,29 @@ describe('mergiraf ledger (real git, fake mergiraf)', () => {
     expect(existsSync(join(git(dir, 'rev-parse', '--absolute-git-dir'), MERGIRAF_LEDGER))).toBe(true);
   });
 
-  test('the pre-merge reports exactly the files mergiraf resolved; same basename in different dirs is not ambiguous', () => {
+  test('the pre-merge reports exactly the files mergiraf resolved; same basename in different dirs is not ambiguous', async () => {
     dir = repo();
-    registerMergeDrivers(dir, [], { mergiraf: true, mergirafPath: fakeMergiraf() });
-    const result = mergeBaseWithDerivedFiles(dir, 'main', []);
+    await registerMergeDrivers(dir, [], { mergiraf: true, mergirafPath: fakeMergiraf() });
+    const result = await mergeBaseWithDerivedFiles(dir, 'main', []);
     expect(result.status).toBe('conflicts');
     expect(result.conflicted).toEqual(['fail/x.ts']);
     expect(result.structurallyResolved).toEqual(['a/x.ts', 'src/deep/x.ts']);
   });
 
-  test('the pre-merge counts only its own merge, not entries an earlier merge left in the ledger', () => {
+  test('the pre-merge counts only its own merge, not entries an earlier merge left in the ledger', async () => {
     dir = repo();
-    registerMergeDrivers(dir, [], { mergiraf: true, mergirafPath: fakeMergiraf() });
+    await registerMergeDrivers(dir, [], { mergiraf: true, mergirafPath: fakeMergiraf() });
     agentMerge(dir);
     git(dir, 'merge', '--abort');
     // A fresh conflict-free merge: nothing new for mergiraf to resolve.
     git(dir, 'checkout', '-qb', 'side', 'main');
-    const result = mergeBaseWithDerivedFiles(dir, 'main', []);
+    const result = await mergeBaseWithDerivedFiles(dir, 'main', []);
     expect(result.structurallyResolved).toEqual([]);
   });
 
-  test('an agent merge yields milestones and a review instruction, once', () => {
+  test('an agent merge yields milestones and a review instruction, once', async () => {
     dir = repo();
-    registerMergeDrivers(dir, [], { mergiraf: true, mergirafPath: fakeMergiraf() });
+    await registerMergeDrivers(dir, [], { mergiraf: true, mergirafPath: fakeMergiraf() });
     agentMerge(dir);
     const first = collectAgentMergeReport(dir, 0);
     expect(first.milestones).toEqual([
@@ -151,7 +151,7 @@ describe('mergiraf ledger (real git, fake mergiraf)', () => {
     expect(again.offset).toBe(first.offset);
   });
 
-  test('no ledger yet: an empty report at offset 0', () => {
+  test('no ledger yet: an empty report at offset 0', async () => {
     dir = repo();
     expect(collectAgentMergeReport(dir, 0)).toEqual({ offset: 0, milestones: [], context: null });
   });
@@ -167,7 +167,7 @@ function realMergiraf(): string | null {
 
 describe('mergiraf ledger (real git, real mergiraf)', () => {
   // Skipped where the binary is not installed.
-  test.skipIf(!realMergiraf())('a conflict only mergiraf can merge is logged as resolved, with its path', () => {
+  test.skipIf(!realMergiraf())('a conflict only mergiraf can merge is logged as resolved, with its path', async () => {
     dir = mkdtempSync(join(tmpdir(), 'merge-ledger-real-'));
     git(dir, 'init', '-q', '-b', 'main');
     git(dir, 'config', 'user.email', 't@example.com');
@@ -183,7 +183,7 @@ describe('mergiraf ledger (real git, real mergiraf)', () => {
     write(dir, 'src/a.ts', "import { a } from 'a';\nimport { t } from 't';\n\nexport const x = a;\n");
     git(dir, 'commit', '-qam', 'main');
     git(dir, 'checkout', '-q', 'feature');
-    registerMergeDrivers(dir, [], { mergiraf: true, mergirafPath: realMergiraf() });
+    await registerMergeDrivers(dir, [], { mergiraf: true, mergirafPath: realMergiraf() });
     agentMerge(dir);
     expect(readMergirafLedger(dir, 0).entries).toEqual([{ status: 'resolved', path: 'src/a.ts' }]);
     expect(git(dir, 'diff', '--name-only', '--diff-filter=U')).toBe('');
@@ -204,7 +204,7 @@ describe('createMergeLedgerHook (PostToolUse after the agent merges)', () => {
 
   test('a merge the agent ran: milestones recorded, review instruction returned as additionalContext, once', async () => {
     dir = repo();
-    registerMergeDrivers(dir, [], { mergiraf: true, mergirafPath: fakeMergiraf() });
+    await registerMergeDrivers(dir, [], { mergiraf: true, mergirafPath: fakeMergiraf() });
     const worker: any = { id: 'w1', worktreePath: dir, mergirafLedgerOffset: 0 };
     const labels: string[] = [];
     const hook = factory(labels).createMergeLedgerHook(worker);
@@ -223,7 +223,7 @@ describe('createMergeLedgerHook (PostToolUse after the agent merges)', () => {
 
   test('a non-merge command, or a worker without drivers, returns nothing', async () => {
     dir = repo();
-    registerMergeDrivers(dir, [], { mergiraf: true, mergirafPath: fakeMergiraf() });
+    await registerMergeDrivers(dir, [], { mergiraf: true, mergirafPath: fakeMergiraf() });
     agentMerge(dir);
     const labels: string[] = [];
     const withDrivers: any = { id: 'w1', worktreePath: dir, mergirafLedgerOffset: 0 };
@@ -235,18 +235,18 @@ describe('createMergeLedgerHook (PostToolUse after the agent merges)', () => {
 });
 
 describe('agent-merge formatting and detection', () => {
-  test('milestones cap the file list at 10 and say how many more', () => {
+  test('milestones cap the file list at 10 and say how many more', async () => {
     const paths = Array.from({ length: 13 }, (_, i) => `f${String(i).padStart(2, '0')}.ts`);
     const [m] = formatAgentMergeMilestones(paths.map(path => ({ status: 'resolved' as const, path })));
     expect(m).toBe(`Merge: mergiraf resolved 13 file(s): ${paths.slice(0, 10).join(', ')} +3 more`);
   });
 
-  test('clean entries are not mergiraf work and produce nothing', () => {
+  test('clean entries are not mergiraf work and produce nothing', async () => {
     expect(formatAgentMergeMilestones([{ status: 'clean', path: 'a.ts' }])).toEqual([]);
     expect(formatAgentMergeContext([])).toBeNull();
   });
 
-  test('merge-shaped git commands are recognised; others are not', () => {
+  test('merge-shaped git commands are recognised; others are not', async () => {
     for (const c of ['git merge origin/dev', 'git pull --no-rebase origin dev', 'cd x && git rebase origin/dev',
       'git cherry-pick abc123', 'git am < p.patch', 'git stash pop', 'git -C repo merge main', 'git revert HEAD']) {
       expect(looksLikeMergeCommand(c)).toBe(true);
@@ -260,21 +260,21 @@ describe('agent-merge formatting and detection', () => {
 describe('planPreMerge prefers the server-stated PR base (context.prBase)', () => {
   const conflict = { errorType: 'merge_conflict' };
 
-  test('used for an ordinary retry and for a ship-PR retry', () => {
+  test('used for an ordinary retry and for a ship-PR retry', async () => {
     expect(planPreMerge({ resumeBranch: 'buildd/a', prBase: 'release', failureContext: conflict }, 'origin/dev', 'dev'))
       .toEqual({ ref: 'origin/release', kind: 'retry', mayFinishWithoutAgent: true });
     expect(planPreMerge({ resumeBranch: 'mission/x', prBase: 'dev', failureContext: conflict }, 'origin/mission/x', 'main'))
       .toEqual({ ref: 'origin/dev', kind: 'retry', mayFinishWithoutAgent: true });
   });
 
-  test('an invalid prBase is ignored and the old rule applies', () => {
+  test('an invalid prBase is ignored and the old rule applies', async () => {
     expect(planPreMerge({ resumeBranch: 'buildd/a', prBase: '--upload-pack=x', failureContext: conflict }, 'origin/dev', 'dev'))
       .toEqual({ ref: 'origin/dev', kind: 'retry', mayFinishWithoutAgent: true });
     expect(planPreMerge({ resumeBranch: 'mission/x', prBase: 42, failureContext: conflict }, 'origin/mission/x', 'dev'))
       .toEqual({ ref: 'origin/dev', kind: 'mission_pr_retry', mayFinishWithoutAgent: true });
   });
 
-  test('a mission refresh still merges refreshTrunk', () => {
+  test('a mission refresh still merges refreshTrunk', async () => {
     expect(planPreMerge({ refreshTrunk: 'dev', prBase: 'mission/x', failureContext: conflict }, 'origin/mission/x', 'dev'))
       .toEqual({ ref: 'origin/dev', kind: 'mission_refresh', mayFinishWithoutAgent: false });
   });

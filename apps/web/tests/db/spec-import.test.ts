@@ -140,8 +140,12 @@ describe('import: the dry run (R-18)', () => {
     expect(inv.action).toBe('create');
     expect(inv.spec).toMatchObject({ title: 'Invoices', scope: 'feature' });
     expect(inv.spec!.body).not.toContain('verified_by');
-    expect(inv.spec!.body).toContain('summary: Invoices MUST hold.');
+    // The frontmatter block leaves the body: its summary is in the metadata, its title the spec's.
+    expect(inv.spec!.body.startsWith('# Invoices\n')).toBe(true);
+    expect(inv.spec!.body).not.toContain('summary:');
+    expect(inv.metadata.summary).toBe('Invoices MUST hold.');
     expect(inv.metadata.verified_by).toEqual(['apps/web/src/lib/invoices.test.ts']);
+    expect(inv.criteria).toEqual({ unreadable: [], duplicates: [] });
     expect(inv.area).toMatchObject({ specId: billing, title: 'Billing', proposed: false });
     expect(inv.provenance).toMatchObject({ path: 'docs/specs/invoices.md', commitSha: gh.state.commit, prNumber: 4242 });
     expect(by.get('docs/specs/refunds.md')!.area).toMatchObject({ specId: null, title: 'Payments Ops', proposed: true });
@@ -174,6 +178,46 @@ describe('import: writing it (R-18, AC-76)', () => {
     expect(rev.imported).toMatchObject({ path: 'docs/specs/invoices.md', commitSha: gh.state.commit });
     const [filing] = await q<any>(sql`SELECT * FROM spec_filings WHERE spec_id = ${row.specId!}::uuid`);
     expect(filing).toMatchObject({ kind: 'filed', status: 'applied', parent_spec_id: billing, source: 'domain' });
+  });
+
+  test('a file whose criteria the parser cannot all read is imported, not refused; the report and the metadata say which ids', async () => {
+    const w = (await seedWorkspace()).workspaceId;
+    await q(sql`UPDATE workspaces SET team_id = ${teamA}::uuid, access_mode = 'open' WHERE id = ${w}::uuid`);
+    const messy = spec('Messy', 'ops', '# Structural conformance only; passing does not certify every prose invariant.\nassertions:\n  - id: messy\n    type: symbol\n    name: messyThing\n')
+      + '- AC-3a: a letter suffix.\n- AC-AQR-1: a prefix.\n- INV-2: an invariant.\n- R-1: defined twice.\n';
+    const gh = fakeGitHub({ 'messy.md': messy });
+    const criteria = {
+      unreadable: [{ id: 'AC-3a', line: 4 }, { id: 'AC-AQR-1', line: 5 }, { id: 'INV-2', line: 6 }],
+      duplicates: [{ id: 'R-1', lines: [3, 7] }],
+    };
+
+    const dry = await importRepoSpecs(user(member), { workspaceId: w }, gh.deps);
+    if (!dry.ok) throw new Error(dry.error);
+    const d = dry.result.files.find((f) => f.path === 'docs/specs/messy.md')!;
+    expect(d.action).toBe('create');
+    expect(d.criteria).toEqual(criteria);
+    // The YAML comment went with the frontmatter: it is not the body's first heading.
+    expect(d.spec!.body.split('\n')[0]).toBe('# Messy');
+    expect(d.spec!.body).not.toContain('Structural conformance');
+
+    const real = await importRepoSpecs(user(member), { workspaceId: w, dryRun: false }, gh.deps);
+    if (!real.ok) throw new Error(real.error);
+    const row = real.result.files.find((f) => f.path === 'docs/specs/messy.md')!;
+    expect(row).toMatchObject({ action: 'create', revision: 1, criteria, unread: [] });
+    const [s] = await q<any>(sql`SELECT metadata FROM specs WHERE id = ${row.specId!}::uuid`);
+    expect(s.metadata.criteria_unread).toEqual(criteria);
+    expect(s.metadata.summary).toBe('Messy MUST hold.');
+    expect(s.metadata.assertions).toEqual([{ id: 'messy', type: 'symbol', name: 'messyThing' }]);
+    const [stored] = await q<any>(sql`SELECT a.content FROM specs s JOIN artifacts a ON a.id = s.body_artifact_id WHERE s.id = ${row.specId!}::uuid`);
+    expect(String(stored.content).startsWith('# Messy\n')).toBe(true);
+
+    // The file is fixed: a re-import clears what it could not read.
+    gh.edit('messy.md', spec('Messy', 'ops'));
+    const fixed = await importRepoSpecs(user(member), { workspaceId: w, dryRun: false }, gh.deps);
+    if (!fixed.ok) throw new Error(fixed.error);
+    expect(fixed.result.files.find((f) => f.path === 'docs/specs/messy.md')).toMatchObject({ action: 'reimport', criteria: { unreadable: [], duplicates: [] } });
+    const [after] = await q<any>(sql`SELECT metadata FROM specs WHERE id = ${row.specId!}::uuid`);
+    expect(after.metadata).not.toHaveProperty('criteria_unread');
   });
 
   test('is idempotent: a second run with no repo change imports nothing; a changed file becomes a new imported revision', async () => {
@@ -644,5 +688,46 @@ describe('import: placement through the area classifier (§17)', () => {
     expect(maxInFlight).toBeGreaterThan(1);
     expect(pages).toBeGreaterThan(1);
     expect(seen).toEqual(names.map((n) => `docs/specs/${n}`));
+  });
+});
+
+describe('import: a retired imported spec is skipped', () => {
+  test('a retired spec is skipped on re-import even if the file changes', async () => {
+    const w = await freshWs();
+    const gh = fakeGitHub({ 'living-specs.md': spec('Living Specs', 'ops') });
+    const first = await ok(importRepoSpecs(user(member), { workspaceId: w, dryRun: false }, gh.deps));
+    const id = first.files[0]!.specId!;
+    expect(first.files[0]).toMatchObject({ action: 'create' });
+
+    const [row] = await q<any>(sql`SELECT * FROM specs WHERE id = ${id}::uuid`);
+    expect(row.status).toBe('draft');
+    await q(sql`UPDATE specs SET status = 'retired' WHERE id = ${id}::uuid`);
+
+    gh.edit('living-specs.md', spec('Living Specs', 'ops').replace('every widget', 'every widget, changed'));
+    const dry = await ok(importRepoSpecs(user(member), { workspaceId: w }, gh.deps));
+    expect(dry.files[0]).toMatchObject({ action: 'skip', reason: 'superseded', specId: id });
+    expect(dry.files[0]!.message).toContain('retired');
+
+    const real = await ok(importRepoSpecs(user(member), { workspaceId: w, dryRun: false }, gh.deps));
+    expect(real.files[0]).toMatchObject({ action: 'skip', reason: 'superseded', specId: id });
+    const [after] = await q<any>(sql`SELECT head_revision FROM specs WHERE id = ${id}::uuid`);
+    expect(after.head_revision).toBe(1);
+  });
+
+  test('a superseded spec is skipped on re-import', async () => {
+    const w = await freshWs();
+    const gh = fakeGitHub({ 'workflow-kernel-library.md': spec('Workflow Kernel Library', 'ops') });
+    const first = await ok(importRepoSpecs(user(member), { workspaceId: w, dryRun: false }, gh.deps));
+    const id = first.files[0]!.specId!;
+
+    await q(sql`UPDATE specs SET status = 'superseded' WHERE id = ${id}::uuid`);
+
+    gh.edit('workflow-kernel-library.md', spec('Workflow Kernel Library', 'ops').replace('every widget', 'modified'));
+    const dry = await ok(importRepoSpecs(user(member), { workspaceId: w }, gh.deps));
+    expect(dry.files[0]).toMatchObject({ action: 'skip', reason: 'superseded', specId: id });
+    expect(dry.files[0]!.message).toContain('superseded');
+
+    const real = await ok(importRepoSpecs(user(member), { workspaceId: w, dryRun: false }, gh.deps));
+    expect(real.files[0]).toMatchObject({ action: 'skip', reason: 'superseded' });
   });
 });

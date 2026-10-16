@@ -277,7 +277,7 @@ export async function POST(
   // second Apply call for the same (PR, headSha) is a true double-tap, not a
   // legitimate second dispatch.
   // The fix re-attempts the escalated task, so it carries that task's backend,
-  // role, routing kind and phase (Rule P1-7).
+  // role, routing kind and phase (mission-legibility R-7).
   const identity = await inheritAttemptIdentity(originalTask.id);
 
   const [applyTask] = await db

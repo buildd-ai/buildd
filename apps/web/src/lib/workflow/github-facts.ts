@@ -7,7 +7,7 @@ import { eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { workspaces } from '@buildd/core/db/schema';
 import { githubApi } from '@/lib/github';
-import { isBaseDiffEquivalent, isContentEquivalentHead } from '@/lib/pr-content-equivalence';
+import { isBaseDiffEquivalent, isContentEquivalentHead, readReviewedDelta } from '@/lib/pr-content-equivalence';
 import { FAILING_CONCLUSIONS, PASSING_CONCLUSIONS, listAllCheckRuns } from '@/lib/ci-verdict';
 import type { LivePr } from './commands';
 import type { GithubFactReader } from './facts';
@@ -73,7 +73,16 @@ export function failingNames(rows: Array<{ name?: string | null; conclusion?: st
   return [...new Set(rows.filter((r) => FAILING.has(String(r.conclusion ?? '')) && r.name).map((r) => String(r.name)))];
 }
 
-export function githubReader(installationId: number, api: typeof githubApi = githubApi): GithubFactReader {
+/**
+ * The kernel's GitHub reader. `timeoutMs` bounds every call it makes (an AbortSignal on each
+ * request): a caller with a budget, like the fast heal (kernel-heal.ts), never waits on a slow
+ * GitHub past it. A timed-out read reads as failed (null), like any other failed read.
+ */
+export function githubReader(installationId: number, rawApi: typeof githubApi = githubApi, opts: { timeoutMs?: number } = {}): GithubFactReader {
+  const timeoutMs = opts.timeoutMs;
+  const api: typeof githubApi = timeoutMs
+    ? (id, path, init = {}) => rawApi(id, path, { ...init, signal: AbortSignal.timeout(timeoutMs) })
+    : rawApi;
   return {
     async readPr(repoFullName, prNumber) {
       try {
@@ -163,6 +172,10 @@ export function githubReader(installationId: number, api: typeof githubApi = git
       // isContentEquivalentHead fails closed: an unreadable compare is "not equivalent".
       const r = await isContentEquivalentHead({ installationId, repoFullName, baseRef, fromSha, toSha, api });
       return r.equivalent;
+    },
+    async reviewedDelta(repoFullName, baseRef, fromSha, toSha) {
+      // readReviewedDelta fails closed: unreadable or possibly cut is null, and the round is a full review.
+      return readReviewedDelta({ installationId, repoFullName, baseRef, fromSha, toSha, api });
     },
     async baseDiffEquivalent(repoFullName, fromBase, toBase, headSha) {
       const r = await isBaseDiffEquivalent({ installationId, repoFullName, fromBase, toBase, sha: headSha, api });

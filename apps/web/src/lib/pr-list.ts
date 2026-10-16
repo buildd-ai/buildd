@@ -19,7 +19,7 @@ import type { PrListState as SharedPrListState } from '@buildd/shared';
 import { isMissionIntegrationBase } from '@buildd/core/mission-integration';
 import { loadPrAttention } from '@/lib/pr-attention';
 import { prListStatus, type PrListStatus } from '@/lib/pr-presentation';
-import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
+import { getDeliveryViewsForTasks, kernelDeliveryForWorkerSql } from '@/lib/workflow/delivery-view';
 import type { DeliveryView } from '@/lib/workflow/projections';
 
 export const PR_LIST_STATES = ['open', 'attention', 'conflict', 'ci_failed', 'merged'] as const satisfies readonly SharedPrListState[];
@@ -46,15 +46,27 @@ export function parsePrListState(raw: string | null | undefined): { state: PrLis
 export function buildPrListWhere(opts: { workspaceIds: string[]; state: PrListState; since?: Date }): SQL {
   const base = [inArray(workers.workspaceId, opts.workspaceIds), isNotNull(workers.prUrl)];
   if (opts.state === 'merged') {
-    base.push(isNotNull(workers.mergedAt), gte(workers.mergedAt, opts.since ?? new Date(0)));
+    const since = opts.since ?? new Date(0);
+    base.push(or(
+      and(isNotNull(workers.mergedAt), gte(workers.mergedAt, since)),
+      kernelDeliveryExists(sql`kd.state = 'MERGED' AND kd.merged_at >= ${since.toISOString()}::timestamptz`),
+    )!);
   } else {
     // Every open PR: attention ("waiting on you"), conflict and ci_failed are
     // decided after the collapse, a kernel-owned PR's from its delivery
     // (Slice F), so the column never narrows the candidates.
-    base.push(isNull(workers.mergedAt));
-    base.push(or(isNull(workers.prLifecycleStatus), notInArray(workers.prLifecycleStatus, TERMINAL))!);
+    base.push(or(
+      and(isNull(workers.mergedAt), or(isNull(workers.prLifecycleStatus), notInArray(workers.prLifecycleStatus, TERMINAL))),
+      // §7 / AC-26: a live delivery is open whatever the worker row says.
+      kernelDeliveryExists(sql`kd.state NOT IN ('MERGED', 'SUPERSEDED', 'ABANDONED', 'CLOSED_UNMERGED', 'FAILED')`),
+    )!);
   }
   return and(...base)!;
+}
+
+/** The row's PR has a kernel-owned delivery matching `where` (the kernel's reader owns the SQL). */
+function kernelDeliveryExists(where: SQL): SQL {
+  return kernelDeliveryForWorkerSql(workers.taskId, workers.prNumber, workers.prUrl, where);
 }
 
 /** What a kernel-owned delivery says about its PR, in the list's own words. */
@@ -69,10 +81,18 @@ export interface KernelPr {
  * or attempt) of a kernel-owned delivery. A legacy or PR-less task is absent
  * and its rows keep the fact-cache columns.
  */
-export function kernelPrStatuses(views: ReadonlyMap<string, Pick<DeliveryView, 'prNumber' | 'prState' | 'mergedAt'>>): Map<string, KernelPr> {
+const SETTLED_DELIVERY = new Set(['MERGED', 'SUPERSEDED', 'ABANDONED', 'CLOSED_UNMERGED', 'FAILED']);
+
+export function kernelPrStatuses(views: ReadonlyMap<string, Pick<DeliveryView, 'prNumber' | 'prState' | 'mergedAt'> & { state?: DeliveryView['state'] }>): Map<string, KernelPr> {
   const out = new Map<string, KernelPr>();
   for (const [taskId, v] of views) {
-    if (v.prNumber == null || v.prState == null) continue;
+    if (v.prNumber == null) continue;
+    if (v.prState == null) {
+      // §7: a live delivery with no display state yet is an open PR. Skipping it
+      // would let a stale merged worker row drop a PR the SQL kept as live.
+      if (v.state && !SETTLED_DELIVERY.has(v.state)) out.set(taskId, { prNumber: v.prNumber, status: 'pr_open', mergedAt: null });
+      continue;
+    }
     out.set(taskId, { prNumber: v.prNumber, status: prListStatus(v.prState), mergedAt: v.mergedAt ? new Date(v.mergedAt) : null });
   }
   return out;

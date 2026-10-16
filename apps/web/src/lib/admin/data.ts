@@ -746,3 +746,9 @@ export async function loadRecoveryCause(opts: RecoveryReadOpts & { causeKey: str
     },
   });
 }
+
+/** Scoped evidence with global owner policy; the operator route returns null on read failure. */
+export async function loadClaimLearningPanel(opts: { workspaceIds: string[]; platformWide: boolean; window: '24h' | '7d' | '30d'; now?: Date }) {
+  const source = await import('@buildd/core/orchestration-claim-learning-source');
+  return source.loadClaimLearningPanel(opts);
+}

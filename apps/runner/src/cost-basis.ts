@@ -20,14 +20,20 @@ export const CLOUD_MODEL_AUTH_ENV = 'BUILDD_CLOUD_MODEL_AUTH';
 
 const CLOUD_PROVIDER_SWITCHES = ['CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY'] as const;
 
-const set = (v: string | undefined) => typeof v === 'string' && v.length > 0;
+/**
+ * Whether a credential variable counts as set. The one predicate for the cost
+ * basis and the run route (run-route.ts), so the two can never disagree about
+ * the same env (a whitespace-only key counts, as it does here).
+ */
+export const isCredentialSet = (v: string | undefined): boolean => typeof v === 'string' && v.length > 0;
+const set = isCredentialSet;
 
 /**
  * A Claude run. Precedence mirrors Claude Code's own: an API key or auth token
  * in the env beats a subscription token, so it decides first.
  */
 export function claudeCostBasis(
-  modelEnv: Pick<ModelEnvResult, 'env' | 'endpoint' | 'hostSeatUsed'>,
+  modelEnv: Pick<ModelEnvResult, 'env' | 'endpoint' | 'machineLoginUsed'>,
   opts: { claudeCredentialUsed: boolean },
 ): RunnerCostBasis {
   const env = modelEnv.env;
@@ -35,7 +41,7 @@ export function claudeCostBasis(
   if (modelEnv.endpoint === 'team' || modelEnv.endpoint === 'custom') return 'real';
   if (CLOUD_PROVIDER_SWITCHES.some(k => set(env[k]) && env[k] !== '0')) return 'real';
   if (set(env.ANTHROPIC_AUTH_TOKEN) || set(env.ANTHROPIC_API_KEY)) return 'real';
-  if (set(env.CLAUDE_CODE_OAUTH_TOKEN) || modelEnv.hostSeatUsed || opts.claudeCredentialUsed) return 'virtual';
+  if (set(env.CLAUDE_CODE_OAUTH_TOKEN) || modelEnv.machineLoginUsed || opts.claudeCredentialUsed) return 'virtual';
   return 'unknown';
 }
 

@@ -42,6 +42,7 @@
  * unified line diff of them.
  */
 import type { ApiFn, ToolResult } from './mcp-tools';
+import { criteriaUnreadText, type CriterionIdProblems } from '@buildd/spec-contract/requirements';
 import { SUB_ACTIONS } from './mcp-sub-actions';
 
 const text = (t: string): ToolResult => ({ content: [{ type: 'text' as const, text: t }] });
@@ -114,7 +115,8 @@ const need = (v: unknown, name: string): string => {
   return v.trim();
 };
 
-type SpecRow = { id: string; title: string; scope: string; status: string; version: number; headRevision: number; approvedRevision?: number | null; parentSpecId?: string | null; bodyArtifactId: string; updatedAt?: string };
+type SpecRow = { id: string; title: string; scope: string; status: string; version: number; headRevision: number; approvedRevision?: number | null; parentSpecId?: string | null; bodyArtifactId: string; updatedAt?: string; metadata?: { criteria_unread?: CriterionIdProblems } | null };
+
 
 const line = (s: SpecRow) =>
   `- ${s.title} (${s.scope}, ${s.status}) · version ${s.version}, revision ${s.headRevision}${s.approvedRevision ? `, approved revision ${s.approvedRevision}` : ''}${s.parentSpecId ? ` · parent ${s.parentSpecId}` : ''}\n  id: ${s.id}`;
@@ -180,8 +182,9 @@ type ImportRow = {
   placement?: { by: AreaBy; reason?: string; p?: number };
   suggestion?: { specId: string | null; title: string; answer: string; p: number };
   related?: Array<{ specId: string; title: string; url: string }>;
-  provenance?: { commitSha: string; prNumber: number | null }; duplicates?: Array<{ specId: string; title: string; relation: string; p: number }>;
+  provenance?: { commitSha: string; prNumber: number | null }; duplicates?: Array<{ specId: string; title: string; relation: string; p: number; blocks?: boolean }>;
   existing?: { specId: string; title: string; url: string; matchedBy: string }; provenanceAttached?: boolean;
+  criteria?: CriterionIdProblems;
 };
 type ImportReply = { dryRun?: boolean; repo?: string; commitSha?: string; files?: ImportRow[]; counts?: { create: number; reimport: number; exists?: number; skip: number }; byArea?: Array<{ area: string; areaSpecId: string | null; proposed: boolean; count: number; by?: AreaBy | null }>; limit?: number; remaining?: number; nextCursor?: string | null };
 
@@ -192,7 +195,13 @@ const MATCHED_BY: Record<string, string> = { provenance: 'its recorded provenanc
 /** One create / re-import line, with what a person should see under it: duplicates, the suggestion, related specs. */
 function importRowText(f: ImportRow): string {
   const lines = [`  ${f.action === 'reimport' ? 're-import' : 'create'}: ${f.spec?.title ?? f.path} from ${f.path}${f.provenance?.prNumber ? `, last changed in #${f.provenance.prNumber}` : ''}${f.specId ? ` → ${f.specId}${f.revision ? ` r${f.revision}` : ''}` : ''}${f.area?.by === 'classifier' && typeof f.area.p === 'number' ? ` (classifier p ${f.area.p.toFixed(2)})` : ''}`];
-  if (f.duplicates?.length) lines.push(`    possible duplicate of ${f.duplicates.map((d) => `"${d.title}" (${d.specId}, ${d.relation} p ${d.p.toFixed(2)})`).join(', ')}`);
+  const fmtDup = (d: NonNullable<ImportRow['duplicates']>[number]) => `"${d.title}" (${d.specId}, ${d.relation} p ${d.p.toFixed(2)})`;
+  const blocking = (f.duplicates ?? []).filter((d) => d.blocks !== false);
+  const overlaps = (f.duplicates ?? []).filter((d) => d.blocks === false);
+  if (blocking.length) lines.push(`    duplicate of ${blocking.map(fmtDup).join(', ')}; a real run skips it unless ${f.path} is in allowDuplicates`);
+  if (overlaps.length) lines.push(`    overlaps ${overlaps.map(fmtDup).join(', ')}; a real run still creates it`);
+  const unread = criteriaUnreadText(f.criteria);
+  if (unread) lines.push(`    ${unread}`);
   if (f.suggestion) lines.push(`    suggested: ${f.suggestion.title}${f.suggestion.specId ? ` (${f.suggestion.specId})` : ''} (p ${f.suggestion.p.toFixed(2)}), below the filing bar, so it stays Unfiled`);
   for (const r of f.related ?? []) {
     lines.push(`    related: "${r.title}" (${r.specId}) cites this path; it is still created as its own spec. If a person says this file IS that spec, pass attach_to: { "${f.path}": "${r.specId}" } to record it there instead`);
@@ -295,6 +304,7 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
         `Spec URL: ${specUrl(s.id)}`,
         `Showing revision ${view.revision.revision} (sha256 ${view.revision.contentHash}). Revise with expectedVersion ${s.version}.`,
         reqs.length ? `Requirement ids: ${reqs.join(', ')}` : 'Requirement ids: none',
+        ...(criteriaUnreadText(s.metadata?.criteria_unread) ? [`Imported: ${criteriaUnreadText(s.metadata?.criteria_unread)}`] : []),
         `Revisions:\n${history}`,
         ...(view.revision.design
           ? [`Design: ${view.revision.design.kind} ${view.revision.design.ref} at version ${view.revision.design.version}${view.revision.design.screens?.length ? ` (screens: ${view.revision.design.screens.map((x: { id: string }) => x.id).join(', ')})` : ''}${view.revision.design.kind === 'artifact' ? `; read it with get_artifact { artifactId: "${view.revision.design.ref}", revision: ${view.revision.design.version} }` : ''}`]
@@ -392,6 +402,7 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
             checker: 'visual', criterionId: need(params.criterionId, 'criterionId'), verdict: need(params.verdict, 'verdict'), capturedSha: need(params.capturedSha, 'capturedSha'),
             ...(params.screenshotIds !== undefined ? { screenshotIds: params.screenshotIds } : {}),
             ...(params.designShotIds !== undefined ? { designShotIds: params.designShotIds } : {}),
+            ...(params.workerId !== undefined ? { workerId: params.workerId } : {}),
             ...(params.observed !== undefined ? { observed: params.observed } : {}),
           }) })
           : await api(path, { method: 'POST', body: JSON.stringify({

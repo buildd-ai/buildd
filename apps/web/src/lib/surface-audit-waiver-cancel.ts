@@ -42,6 +42,26 @@ export async function cancelWaivedSurfaceAudits(missionId: string, reason: strin
       updatedAt: new Date(),
     })
     .where(waivableAuditWhere(missionId))
-    .returning({ id: tasks.id });
+    .returning({ id: tasks.id, workspaceId: tasks.workspaceId, missionId: tasks.missionId });
+  if (rows.length > 0) {
+    const { emitTaskUpdated } = await import('./task-cancel');
+    await announceCancelledAudits(rows, emitTaskUpdated);
+  }
   return rows.map(r => r.id);
+}
+
+type CancelledAudit = { id: string; workspaceId: string; missionId: string | null };
+
+/** Tell open dashboards each audit is cancelled, the same TASK_UPDATED every cancel sends. Best-effort. */
+export async function announceCancelledAudits(
+  rows: readonly CancelledAudit[],
+  emit: (task: CancelledAudit & { status: string }) => Promise<void>,
+): Promise<void> {
+  for (const r of rows) {
+    try {
+      await emit({ ...r, status: 'cancelled' });
+    } catch (err) {
+      console.error(`[surface-audit-waiver] TASK_UPDATED push failed for ${r.id}:`, err);
+    }
+  }
 }

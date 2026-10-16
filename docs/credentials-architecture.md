@@ -63,9 +63,8 @@ Then pick the **most specific** match:
 3. `accountId IS NULL`, `workspaceId IS NULL` (team-wide)
 
 For single-valued credentials (one Codex or Claude login per scope) the resolver returns the
-single most-specific row. Every agent-credential read — `anthropic_api_key` / `oauth_token` /
-`mcp_credential` in the claim route, `claude_credential` and `codex_credential` in their
-resolvers — applies the filter above plus the same pick: a live row before a revoked one, then
+single most-specific row. Every agent-credential read — `anthropic_api_key` /
+`mcp_credential` in the claim route, `codex_credential` in its resolver — applies the filter above plus the same pick: a live row before a revoked one, then
 the most specific scope, then the newest `updatedAt` within that scope. Recency never beats
 scope: a newer team-wide row does not shadow an older workspace row. `mcp_credential` is many
 rows (one per env-var `label`), so the pick runs per label. The pick is
@@ -191,8 +190,9 @@ one is only given to a runner declaring the `agent_endpoint_headers` feature;
 the cloud egress adds it to each forwarded call. A Codex task gets an OpenAI
 route only through an OpenRouter upstream with no gateway token.
 `resolveAgentModelRoute` in `packages/core/agent-endpoint.ts` ranks it against
-`anthropic_api_key` / `oauth_token` / `claude_credential`: workspace > account >
-team, a tie to the endpoint, only the winner delivered. The key policy does not
+the team's Anthropic API key (`anthropic_api_key` / `inference_key`): workspace >
+account > team, a tie to the endpoint, only the winner delivered. A stored
+subscription login does not compete. The key policy does not
 bind it. Design: `docs/design/agent-model-endpoint.md`.
 
 **Protocol capabilities** ride on the same blob: `"capabilities": {
@@ -221,7 +221,7 @@ no OpenAI-format route to guess at. `resolveEndpointFromBlob` computes this as
 kinds).
 
 Ranking for a Codex task calls `resolveAgentModelRoute({ ..., backend: 'codex'
-})`, which competes the endpoint against `openai_api_key` / `codex_credential`
+})`, which competes the endpoint against `openai_api_key`
 instead of the Anthropic purposes — the credentials a Codex run would
 otherwise use, same shape (most specific scope wins, tie to the endpoint). The
 claim (`attachAgentEndpoints`) attaches `modelEndpoint` to a Codex worker the
@@ -302,31 +302,41 @@ A self-hosted runner whose machine has its own Claude login gives that login to
 its agents. "Its own login" means `CLAUDE_CODE_OAUTH_TOKEN` in the runner's
 environment (on `RUNNER_ENV_PASSTHROUGH`, `apps/runner/src/agent-env.ts`) or a
 `claude login` under the runner user's `$HOME`; a stub `~/.claude.json` does not
-count. Detection and precedence: `applyHostSeatPolicy` in
+count. Detection and precedence: `applyMachineLoginPolicy` in
 `apps/runner/src/host-seat.ts`, then `applyModelEnv` /
 `shouldUseClaudeCredential` in `apps/runner/src/agent-model-env.ts`.
 
-Against a subscription seat delivered on the claim (`oauth_token`,
-`claude_credential`), `BUILDD_HOST_SEAT` on the runner decides:
+The machine's own login is used when present, with no switch. The
+`personal_only` rule (`runnerLocalAllowed: false`) separately prevents local
+credentials from displacing the requester's key.
 
-- unset / `auto`: the machine's login when the claim delivers no stored seat;
-  otherwise the stored seat, with the agent env exactly as it was before the
-  passthrough existed.
-- `prefer`: the machine's login wins.
-- `off`: the machine's env token never reaches the agent.
+### Subscription logins stay on the machine
 
-In every mode:
+Living spec "Model credentials: the runner's own login first, API keys from
+buildd". For a task's model a runner uses, in order: the machine's own login,
+then an API key the claim delivers, then nothing. A claim never carries a
+subscription (OAuth) login: stored `oauth_token`, `claude_credential` and
+ChatGPT `codex_credential` rows are ignored by the claim
+(`apps/web/src/app/api/workers/claim/credential-injection.ts`), and no claimed
+worker is wired to a stored login, so a task causes no refresh, lease or
+write-back call. Those rows are deleted only in a later step an owner approves.
 
 - A delivered metered key (`anthropic_api_key`) still fills an unset
   `ANTHROPIC_API_KEY`.
 - A team agent model endpoint or a non-Anthropic base URL replaces the login;
-  a seat never goes to a third-party host.
-- Codex tasks follow the same modes with the machine's `codex login`
-  (`$CODEX_HOME`, else `~/.codex`; `decideCodexSeat` in `host-seat.ts`). The
-  per-worker Codex home links `auth.json` to it (`linkMachineCodexAuth` in
+  a login never goes to a third-party host.
+- Codex uses the machine's `codex login` (`$CODEX_HOME`, else `~/.codex`;
+  `decideCodexLogin` in `host-seat.ts`) first, then a delivered API key.
+  The per-worker Codex home links `auth.json` to it (`linkMachineCodexAuth` in
   `codex-auth.ts`), and a delivered credential is never written through the
-  link. `prefer` beats a stored ChatGPT login, never a team `openai_api_key`.
-  No tokens are written back to buildd from a machine-login session.
+  link. No tokens are written back to buildd from a machine-login session.
+- A Codex task never reaches a runner without a `codex login` or a team
+  OpenAI key: the claim's capability filter keeps it for another runner. A
+  Claude run with no login and no key is refused before spawn and requeued
+  for a runner with model access.
+- Startup, local config and heartbeat report only the login label
+  (`machine_token`, `machine_login`, `api_key`, `none`), with no mode.
+  The heartbeat ignores the obsolete mode field from older runners.
 - The value is never logged and is exact-value redacted from worker output.
 
 Setup per environment (local, service, container): `apps/runner/README.md`,
@@ -462,17 +472,18 @@ exactly like `anthropic_api_key`. This is **not** the same credential as
   quote-stripping and `REQUIRED_PREFIXES` sanity check as `anthropic_api_key`.
 
 **Resolution order:** `attachCodexCredentials` (claim route) tries
-`resolveCodexCredential` (`codex_credential`) first — an existing ChatGPT
-connect, OAuth or legacy API-key blob, wins if present — and falls back to
-`resolveOpenAiApiKey` (`inference_key`/`openai`, then `openai_api_key`) only when nothing resolves there.
+`resolveCodexApiKey` (an API key stored in `codex_credential`) first and falls
+back to `resolveOpenAiApiKey` (`inference_key`/`openai`, then `openai_api_key`)
+only when nothing resolves there. A stored ChatGPT/OAuth login is never
+delivered (see "Subscription logins stay on the machine").
 Either one is synthesized into the exact same `codexCredential: { credentialType:
 'api_key', apiKey }` wire shape the runner already materializes into
 `auth.json` (`writeCodexApiKeyToHome` in `apps/runner/src/codex-auth.ts`) — so
-the runner needed **no changes** to accept it. `hasCodexCredential` (capability
-gating, budget failover, dashboard readiness) is likewise paired with
-`hasOpenAiApiKey` at every call site (`apps/web/src/app/api/workers/claim/route.ts`,
-`apps/web/src/lib/backend-failover.ts`): either credential is enough to make
-Codex configured for a team/workspace. See `apps/web/src/lib/openai-credential.ts`.
+the runner needed **no changes** to accept it. The claim's Codex capability
+filter (`apps/web/src/app/api/workers/claim/route.ts`) asks the same two: an API
+key from either is what lets a Codex task reach a runner with no `codex login`.
+`hasCodexCredential` (budget failover, dashboard readiness,
+`apps/web/src/lib/backend-failover.ts`) is paired with `hasOpenAiApiKey`. See `apps/web/src/lib/openai-credential.ts`.
 
 **Cloud-runner support is out of scope** — `attachCodexCredentials` only feeds
 the self-hosted-runner claim path; `apps/cloud-runner` has no Codex execution

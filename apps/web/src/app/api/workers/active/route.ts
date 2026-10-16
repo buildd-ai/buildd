@@ -255,10 +255,11 @@ export async function GET(req: NextRequest) {
           // up to date. Makes "how long has it been behind" a measured value
           // instead of something inferred from boot age.
           updateAvailableSince: hb.updateAvailableSince ?? null,
+          updateDrain: hb.updateDrain ?? null,
           trackedBranch: hb.trackedBranch || null,
           // Which model login the runner reported (a label, never a credential).
           modelAuthSource: hb.modelAuthSource ?? null,
-          // And its Codex login, same rule (docs/specs/runner-model-auth-source.md R-12).
+          // And its Codex login, same rule (docs/specs/runner-model-login-detect-say-report.md R-12).
           codexAuthSource: hb.codexAuthSource ?? null,
           // Only meaningful for a `main`-tracking runner (Vercel deploys from
           // `main` only) with both sides known; otherwise null, not a guess.

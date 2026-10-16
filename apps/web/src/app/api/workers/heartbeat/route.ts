@@ -6,8 +6,8 @@ import {
   WORKER_LEASE_TTL_MS,
   runnerFleetIdentity,
   storedHeartbeatEnvironment,
+  withNormalizedRunnerHold,
   isRunnerModelAuthSource,
-  isRunnerModelAuthMode,
   isRunnerCodexAuthSource,
 } from '@buildd/shared';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
@@ -72,6 +72,7 @@ export async function POST(req: NextRequest) {
       commitDrift = undefined,
       updating = undefined,
       updateAvailable = undefined,
+      updateDrain = undefined,
       trackedBranch = undefined,
       /**
        * The claim → session-start acknowledgement (lib/lost-claim.ts): workers
@@ -82,18 +83,17 @@ export async function POST(req: NextRequest) {
       claimHandoff = undefined,
       /**
        * Which model login this runner's agents use, and the runner's setting
-       * for it (docs/specs/runner-model-auth-source.md). Labels from a fixed
+       * for it (docs/specs/runner-model-login-detect-say-report.md). Labels from a fixed
        * list; anything else (a typo, a newer label, a credential pasted by
        * mistake) is dropped here so it never reaches the table, and the beat
        * still succeeds.
        */
+      // Old runners may still send a mode; it is ignored.
       modelAuthSource: rawModelAuthSource = undefined,
-      modelAuthMode: rawModelAuthMode = undefined,
       /** The runner's Codex login label (same spec, R-12), under the same rules. */
       codexAuthSource: rawCodexAuthSource = undefined,
     } = body;
     const modelAuthSource = isRunnerModelAuthSource(rawModelAuthSource) ? rawModelAuthSource : null;
-    const modelAuthMode = isRunnerModelAuthMode(rawModelAuthMode) ? rawModelAuthMode : null;
     const codexAuthSource = isRunnerCodexAuthSource(rawCodexAuthSource) ? rawCodexAuthSource : null;
     // Presence of the bundle is keyed on one field rather than requiring all
     // six, since `undefined` only ever appears here when the runner omitted
@@ -119,7 +119,9 @@ export async function POST(req: NextRequest) {
     // long-lived runner's environment is stored exactly as sent, minus any
     // `fleet` it claims (it cannot report itself out of the fleet).
     const fleet = runnerFleetIdentity({ localUiUrl: String(localUiUrl), environment });
-    const storedEnvironment = storedHeartbeatEnvironment(environment, fleet);
+    // `hold` (a person's `buildd hold`, R-35) is kept only as a valid
+    // { since, until }; a lifted (null) or malformed one is dropped.
+    const storedEnvironment = withNormalizedRunnerHold(storedHeartbeatEnvironment(environment, fleet));
     const maxConcurrentWorkers = fleet.ephemeral ? 1 : account.maxConcurrentWorkers;
 
     const now = new Date();
@@ -149,6 +151,14 @@ export async function POST(req: NextRequest) {
       ? (existing?.updateAvailable === true ? existing.updateAvailableSince ?? now : now)
       : null;
 
+    // Runner sends epoch ms; stored as ISO strings. Malformed input -> null.
+    const drainIn = updateDrain as { since?: unknown; endsAt?: unknown; busy?: unknown } | null | undefined;
+    const sinceD = typeof drainIn?.since === 'number' ? new Date(drainIn.since) : null;
+    const endsD = typeof drainIn?.endsAt === 'number' ? new Date(drainIn.endsAt) : null;
+    const storedUpdateDrain = sinceD && endsD && !isNaN(sinceD.getTime()) && !isNaN(endsD.getTime())
+      ? { since: sinceD.toISOString(), endsAt: endsD.toISOString(), busy: typeof drainIn?.busy === 'number' ? drainIn.busy : 0 }
+      : null;
+
     // Atomic upsert using unique index on (accountId, localUiUrl)
     // Only update timestamp and worker count - workspaces resolved on-demand
     await db.insert(workerHeartbeats)
@@ -170,9 +180,9 @@ export async function POST(req: NextRequest) {
         updating: (updating ?? null) as boolean | null,
         updateAvailable: newUpdateAvailable,
         updateAvailableSince,
+        updateDrain: storedUpdateDrain,
         trackedBranch: (trackedBranch ?? null) as string | null,
         modelAuthSource,
-        modelAuthMode,
         codexAuthSource,
         lastHeartbeatAt: now,
       })
@@ -196,12 +206,12 @@ export async function POST(req: NextRequest) {
             updating: (updating ?? null) as boolean | null,
             updateAvailable: newUpdateAvailable,
             updateAvailableSince,
+            updateDrain: storedUpdateDrain,
             trackedBranch: (trackedBranch ?? null) as string | null,
           } : {}),
           // Omitted when not sent (or not a listed label), so an older runner
           // or a garbled beat keeps the last good value — runnerVersion's rule.
           ...(modelAuthSource !== null ? { modelAuthSource } : {}),
-          ...(modelAuthMode !== null ? { modelAuthMode } : {}),
           ...(codexAuthSource !== null ? { codexAuthSource } : {}),
           lastHeartbeatAt: now,
           updatedAt: now,

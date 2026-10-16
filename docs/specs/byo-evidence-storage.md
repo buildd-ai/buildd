@@ -2,7 +2,7 @@
 title: BYO Evidence Storage
 status: active
 owner: max
-last_verified: 2026-10-06
+last_verified: 2026-10-15
 summary: Buildd MUST write each task's run evidence to a team-configured S3-compatible bucket, keep only pointers in Postgres, and index the error-bearing parts into a searchable `evidence` corpus read through the reach guard.
 domain: knowledge
 surfaces: [apps/web/src/lib/evidence-backend.ts, apps/runner/src/evidence-writer.ts, apps/web/src/app/api/workers/[id]/evidence-upload-url/route.ts, apps/web/src/lib/evidence-read.ts]

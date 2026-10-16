@@ -95,13 +95,17 @@ Run the unit tests with `bun run test`, not `bun test`. The script runs each tes
 
 ## License
 
-Licensing is per directory. Check the `license` field in each `package.json`.
+The product is **source-available** under the Functional Source License (FSL-1.1-ALv2), sometimes called Fair Source. The contract packages are Apache-2.0.
 
 | Path | License |
 |---|---|
-| `apps/runner`, `packages/shared`, `packages/ai-kit`, `packages/dispatch-contract` | [Apache-2.0](apps/runner/LICENSE) |
-| Everything else, including the server (`apps/web`) and `packages/core` | [FSL-1.1-ALv2](LICENSE) |
+| `apps/web`, `apps/control-plane`, `apps/dispatch`, `apps/cloud-runner`, `apps/model-policy`, `apps/responder`, `packages/core` | [FSL-1.1-ALv2](LICENSE) |
+| `apps/runner`, `packages/shared`, `packages/ai-kit`, `packages/dispatch-contract`, `packages/spec-contract`, `packages/workflow-kernel` | [Apache-2.0](packages/shared/LICENSE) |
 
-The Functional Source License lets you read, modify, self-host and use the server for anything except a competing product or service. Each release becomes Apache-2.0 two years after it ships.
+The FSL code is free to use, modify and self-host for anything except offering a competing commercial product or service. Each release converts to Apache-2.0 two years after it ships. The Apache-2.0 packages can be embedded in anything, no strings attached. Each package carries its own license and `license` field in `package.json`.
 
-These are the current licenses and are not changing. A separately licensed Enterprise module is a proposal only; see [docs/specs/commercial-licensing.md](docs/specs/commercial-licensing.md). The offline license check in `packages/core/license` is an entitlement signal for such future modules, not protection for this source-available code.
+The buildd name and logo are not licensed. The licenses above cover the code, not the brand.
+
+Contributing code requires signing a Contributor License Agreement; see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+A separately licensed Enterprise module is a proposal only; see [docs/specs/commercial-licensing.md](docs/specs/commercial-licensing.md). The offline license check in `packages/core/license` is an entitlement signal for such future modules, not protection for this source-available code.

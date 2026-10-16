@@ -995,6 +995,8 @@ describe('checkDependsOnResolved — mergedAt gate', () => {
     expect(mockRefreshWorkerMergeState).toHaveBeenCalledWith(
       { id: 'w-abc', prNumber: 55, prUrl: 'https://github.com/o/r/pull/55' },
       42,
+      // S4a review: the workspace rides along so a kernel-owned dependency's merge goes through T17.
+      { workspaceId: 'ws-1', observeOnly: undefined },
     );
     expect(mockTriggerEvent).toHaveBeenCalledWith(
       'workspace-ws-1',

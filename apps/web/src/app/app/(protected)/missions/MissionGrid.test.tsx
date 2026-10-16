@@ -130,15 +130,52 @@ describe('MissionGrid portfolio', () => {
     expect(html).not.toContain('landing on trunk');
   });
 
-  it('heads the page with one open count and one breakdown line, not a boxed counter grid', () => {
+  it('heads the page with one open count and the agent slots, not a boxed counter grid', () => {
     expect(html).not.toContain('portfolio-counters');
     expect(html).toMatch(/data-testid="portfolio-open"[^>]*>12</);
     const line = html.match(/<p[^>]*data-testid="portfolio-breakdown"[^>]*>([\s\S]*?)<\/p>/)![1];
-    expect(line).toContain('1 waiting on you');
-    expect(line).toContain('in motion');
-    expect(line).toContain('waiting');
-    expect(line).toContain('1 landed, checks pending');
     expect(line).toContain('1 of 4 agent slots');
+  });
+
+  it('the headline does not repeat the status counts the filter and the sections already show', () => {
+    const headline = html.slice(0, html.indexOf('data-testid="portfolio-tools"'));
+    for (const word of ['waiting on you', 'in motion', 'waiting', 'landed']) expect(headline.toLowerCase()).not.toContain(word);
+    // The count, its word and the slots share one line.
+    expect(headline).not.toContain('space-y-1');
+  });
+
+  it('says nothing about agent slots when the team has none', () => {
+    const out = renderToStaticMarkup(<MissionGrid rows={open} slots={{ live: 0, max: 0 }} now={NOW} />);
+    expect(out).not.toContain('data-testid="portfolio-breakdown"');
+  });
+
+  it('phone tools take at most two rows: the strip with a 44px search button, then group and search', () => {
+    const tools = html.match(/<div[^>]*data-testid="portfolio-tools"[\s\S]*$/)![0];
+    // Row 1: the status strip and the search toggle side by side.
+    const first = tools.match(/<div[^>]*data-testid="portfolio-tools-primary"[^>]*>/)![0];
+    expect(first).toMatch(/\bflex\b/);
+    expect(first).not.toMatch(/\bflex-col\b/);
+    const toggle = tools.match(/<button[^>]*data-testid="portfolio-search-toggle"[^>]*>/)![0];
+    expect(toggle).toContain('aria-expanded="false"');
+    expect(toggle).toContain('aria-label="Search missions"');
+    expect(toggle).toMatch(/\bh-11\b/);
+    expect(toggle).toMatch(/\bw-11\b/);
+    expect(toggle).toContain('md:hidden');
+    // Search starts collapsed on phones and always shows from md.
+    const input = tools.match(/<input[^>]*data-testid="portfolio-search"[^>]*>/)![0];
+    expect(input).toMatch(/(^|\s|")hidden\s/);
+    expect(input).toContain('md:block');
+    // Row 2: the group selector and the (opened) search share one row, never stacked.
+    const second = tools.match(/<div[^>]*data-testid="portfolio-tools-secondary"[^>]*>/)![0];
+    expect(second).not.toMatch(/\bflex-col\b/);
+  });
+
+  it('the group selector sits on the second row with search when missions have groups', () => {
+    const grouped = open.map((r, i) => ({ ...r, groupId: i % 2 ? 'g1' : 'g2', groupName: i % 2 ? 'Mobile' : 'Billing' }));
+    const out = renderToStaticMarkup(<MissionGrid rows={grouped} slots={{ live: 1, max: 4 }} now={NOW} />);
+    const second = out.match(/<div[^>]*data-testid="portfolio-tools-secondary"[\s\S]*$/)![0];
+    expect(second).toContain('data-testid="portfolio-group"');
+    expect(second).toContain('data-testid="portfolio-search"');
   });
 
   it('has no glossary footer, and never names a branch the reader may not have', () => {

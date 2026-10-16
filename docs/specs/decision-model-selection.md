@@ -2,7 +2,7 @@
 title: Decision Model Selection (Per-Decision Model, Measured Thresholds, Signal Collection)
 status: draft
 owner: max
-last_verified: 2026-10-13
+last_verified: 2026-10-16
 summary: A decision kind MUST act only at a threshold measured for its model on graded cases, MAY switch model when a challenger measurably wins, and MUST collect every grading signal it can.
 domain: tasks
 surfaces: [packages/core/decision-model.ts, apps/web/src/lib/prompt-evals/compare-run.ts, apps/web/src/lib/decision-model-optimizer/optimizer.ts, apps/web/src/app/api/cron/decision-model-optimizer/route.ts]
@@ -86,8 +86,13 @@ and what has to be collected so the choice can be made on evidence.
   threshold (coverage x precision); it has one only where that threshold
   clears the bar above. The best model replaces the current one only when it
   wins by at least 5 points on the same cases and its test decision passes.
-  Ties keep the current model; a kind with too few graded cases, or whose
-  current model was not asked every case, is left alone. A switch stores the
+  Ties keep the current model; a kind whose current model was not asked every
+  case is left alone. A kind with too few graded collected cases (or none) is
+  scored on its labelled set instead, if it has one, in a second comparison
+  that gets what the call cap has left: its own rows, never pooled with
+  collected, one origin at a time (the origin with the most graded cases
+  decides), under the same bar, margin and minimum. A kind with too few graded
+  cases on either is left alone. A switch stores the
   winner's measurement (never loosening a stricter one for the same signal;
   for calibrated top p, stricter means acting only at a higher top p once
   each threshold is read through its own map)
@@ -99,7 +104,10 @@ and what has to be collected so the choice can be made on evidence.
   row that every other team already using that model for that kind also acts
   on. One team's run therefore never revives a retired measurement and never
   replaces one in force on another signal; it leaves that kind on its current
-  model instead. Every switch is
+  model instead. When a stored calibrated top p measurement has no usable
+  calibration or has a threshold above its map's maximum (either way, cutoff
+  above 1 and acts on no decisions), the kind is not switched to that model
+  (`measurement_never_acts` keep reason). Every switch is
   a decision-ledger event (`decision_model_switch`) with the eval run id and
   both scores. `optimizeTeam` is the entry point; a platform admin can run it
   now (`POST /api/admin/decision-model-optimizer`).
@@ -118,10 +126,13 @@ and what has to be collected so the choice can be made on evidence.
   unknown prompt id, a missing template variable) is skipped with its reason,
   and the run completes on the rest. The result lists every set as ran or
   skipped, so a missing set is never read as a missing difference.
-- **Synthetic sets are marked.** A threshold derived only from synthetic cases
-  is stored as synthetic and is derived again once collected cases for that
-  kind reach the minimum. A synthetic result never retires a measurement from
-  collected cases.
+- **Synthetic sets are marked.** A threshold derived only from labelled or
+  synthetic cases is stored as such (`case_source = labelled`) and is derived
+  again once collected cases for that kind reach the minimum: a collected
+  result replaces it, whatever its signal or strictness. A labelled result
+  never retires or overrides a measurement from collected cases: on the same
+  signal the collected row stays and the kind may still switch, on another
+  signal the kind is left alone. A retired row stays retired for both.
 - **Weighed by how often a kind fires.** Every comparison reports each kind's
   recent volume and the share of it the current model acted on, so a gain is
   read as decisions changed per day, not only as accuracy. The same pair
@@ -221,6 +232,8 @@ Until then they describe the code as it is:
 - AC-15: GIVEN a switched kind with at least 20 live graded decisions and acted precision below its bar WHEN the daily check runs THEN the previous model is restored.
 - AC-16: GIVEN a comparison that reaches its call cap WHEN it stops THEN it names the limit and no kind it cut short is switched.
 - AC-17: GIVEN a winning challenger whose shared measurement for that kind is retired, or in force on another signal WHEN the scheduled comparison runs THEN no measurement is written and the kind keeps its current model.
+- AC-18: GIVEN a kind below its minimum of graded collected cases with a labelled set WHEN the scheduled comparison runs THEN the kind is scored on that set alone, and a measurement it writes is marked labelled.
+- AC-19: GIVEN a stored labelled measurement WHEN a collected comparison wins for that model THEN the collected measurement replaces it; GIVEN a stored collected measurement WHEN a labelled comparison wins THEN the collected one is kept.
 
 ## Out of scope
 

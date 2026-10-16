@@ -152,7 +152,7 @@ describe('POST /api/connectors/[id]/shares', () => {
     expect(res.status).toBe(401);
   });
 
-  // §1b AC-4: only an admin of the OWNER team may create a share.
+  // AC-9: only an admin of the OWNER team may create a share.
   it('returns 403 when the actor is a non-admin member of the owner team', async () => {
     mockTeamMembersFindFirst.mockResolvedValue({ role: 'member' });
     const res = await POST(makeReq('POST', { teamId: 'team-2' }), { params: PARAMS });
@@ -239,7 +239,7 @@ describe('DELETE /api/connectors/[id]/shares', () => {
     expect(res.status).toBe(401);
   });
 
-  // §1b AC-4: only an admin of the OWNER team may revoke a share.
+  // AC-9: only an admin of the OWNER team may revoke a share.
   it('returns 403 when the actor is a non-admin member of the owner team', async () => {
     mockTeamMembersFindFirst.mockResolvedValue({ role: 'member' });
     const res = await DELETE(makeReq('DELETE', { teamId: 'team-2' }), { params: PARAMS });

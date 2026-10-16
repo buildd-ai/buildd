@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
 related: [workflow-state-kernel, execution-control-plane, mission-branch-refresh, mission-task-lifecycle, living-specs]
 keywords: [scope amendment, mission scope version, workflow kernel, delivery state, single writer, single host, control plane, portable library, ports, adapters, conformance suite, merge door, landing authority, required status, durable findings, finding disposition, delivery epoch, mission delivery, refresh settlement, no-op completion, workflow-kernel package]
-verified_by: [packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts]
+verified_by: [packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts]
 supersedes: []
 ---
 # Workflow Kernel Library and Single Host
@@ -48,7 +48,7 @@ carries since slice S5.
 | `workflow-state-kernel.md` | behavioural contract the library implements. §10.3 drain hosting, §11 floor hosting, §13.12 "server-side (`apps/web`)", AC-7 and §14 are amended by §1 and §3 here. §13.13 rule 2 is amended by §5 (stable id, `addressed`, `deferred`). §13.13 rule 6, rule 7, rule 10 and its D1–D13 inventory are the landing authority of §4. |
 | `execution-control-plane.md` | §1 "same handlers, second host" and the seven-route limit are amended by §3; §3's kernel path becomes the package path. |
 | `mission-branch-refresh.md` | keeps the `branchRefresh*` columns; the refresh becomes a kernel effect of a mission delivery (§6). Its "does not model epochs" note is answered by §6. |
-| `mission-task-lifecycle.md` | AC-11y's door list is replaced by §4; mission completion reads delivery state (§6). |
+| `mission-task-lifecycle.md` | AC-64's door list (was AC-11y) is replaced by §4; mission completion reads delivery state (§6). |
 | `pr-lifecycle-reconciliation.md` | I-3's per-render write-through is retired by §1 (renders never write). |
 | `living-specs.md` §10 | the pattern this package follows. |
 
@@ -76,9 +76,9 @@ work" and no code path can advance or contradict it on its own.
 - Page renders, MCP reads and `explain` never write delivery state, including
   in `after()`.
 - Every write site outside the package for the columns above is listed in §9
-  and burns down to zero by slice S4. A guard test
-  (NOT IMPLEMENTED: the delivery-columns write-site test, extending
-  `workflow-write-sites.test.ts`) fails on a new one.
+  and burns down to zero by slice S4. A guard test (the S4a block of
+  `packages/core/__tests__/workflow-write-sites.test.ts`) fails on a new one,
+  naming the file, and lists each remaining site with its reason.
 
 **Acceptance criteria**:
 - AC-1: GIVEN a delivery-owned task WHEN any module outside the kernel package
@@ -946,6 +946,12 @@ later work and nothing refreshes or re-ships a branch that already landed.
   successor; a refresh with work of its own, or anything unreadable, holds the
   branch and asks a person once. The branch retires only when nothing is held
   and a fresh read shows nothing open on it.
+- Projection (S6c): the mission page and `manage_missions get` read the
+  delivery records. The mission-PR line is the current delivery ("Delivery 2"),
+  with shipped deliveries named beside it ("Delivery 1 merged (#n)"), never a
+  merged mission PR standing for the mission (`deriveMissionIntegrationPr` with
+  `deliveries`). Recorded scope amendments and holds show as one line each, in
+  words. The mission's own state still comes from its tasks and criteria.
 - Mission completion reads delivery and epoch state, never `workers.mergedAt`:
   it is held while a shipped delivery's branch still has PRs to settle, or the
   writable epoch carries landed work that has not reached trunk
@@ -972,6 +978,7 @@ later work and nothing refreshes or re-ships a branch that already landed.
 | AC-22 | `apps/web/src/app/api/workers/[id]/route.test.ts` › "mission-branch refresh already on the branch" |
 | AC-23 | `apps/web/tests/db/mission-epochs.test.ts` › "AC-23 / a11abc4b"; `apps/web/src/lib/mission-pr.test.ts` › "a refresh PR lands only on the delivery it was filed for" |
 | Scope decisions (task f3bda4e1 scenarios 5–7) | `packages/workflow-kernel/src/scope-amendments.test.ts`; `apps/web/tests/db/scope-amendments.test.ts` |
+| Mission page and API distinguish the mission from its deliveries (scenario 8) | `apps/web/src/lib/mission-integration-pr.test.ts` › "with delivery records"; `apps/web/src/lib/mission-scope-view.test.ts` |
 | Completion reads epochs (task f3bda4e1 scenarios 1, 4) | `apps/web/src/lib/mission-completion.test.ts` › "scenario 1", "scenario 4" |
 
 ## 7. Projections
@@ -998,6 +1005,25 @@ derive it from the delivery, so the task page, mission page, Home, `get_pr`,
 - AC-26 (failure): GIVEN a worker row that says merged and a delivery that says
   in review WHEN any surface renders THEN it shows the delivery's state and
   flags the disagreement in `explain`.
+
+How (S7, task c16eb202). The review line ("2 rounds · latest: changes
+requested · 1 open finding") and a repair's phase are pure readings in the
+package (`reviewSummaryOf`, `repairPhaseOf`); `get_pr`, the task page's checks
+list and PR card, and the activity comment all print the first, and `get_pr`
+and the checks list the second. Surfaces that derive merged, open or closed
+from worker rows (mission progress, unmerged PRs, mission health, the mission
+PR line, Home's mission cards and upstream merge cards) read those rows with
+the delivery's lifecycle laid over them on read (`overlayDeliveryLifecycle`),
+so they need no rewrite and write nothing; a task with no delivery keeps its
+rows. `list_prs` keeps a PR whose delivery is live, or merged in the window,
+as a candidate whatever its worker row says.
+
+| AC | Test |
+| --- | --- |
+| AC-24 | `apps/web/src/lib/projections-agree.test.tsx`; `apps/web/src/app/api/github/pr/route.test.ts` › "review rounds and standing from the delivery" |
+| AC-25 | `apps/web/src/lib/explain.delivery.test.ts` › "AC-25" |
+| AC-26 | `apps/web/src/lib/explain.delivery.test.ts` › "AC-26"; `apps/web/src/lib/delivery-overlay.test.ts`; `apps/web/src/lib/pr-list.test.ts` › "a kernel delivery still live" |
+| Repair phases | `packages/workflow-kernel/src/delivery-summary.test.ts`; `apps/web/src/lib/task-checks.test.ts` › "repair phase (§7)" |
 
 ## 8. Order of work
 
@@ -1028,7 +1054,20 @@ column outside the kernel; S3 and S4 remove or route each one.
   dashboard merge route, `PUT /api/github/pr`, `mission-pr.ts`,
   `pr-state-refresh.ts` (render read-through), `pr-reconcile.ts`,
   `dead-zone-sweep.ts`, the admin backfill, `pr-review-request.ts`,
-  `dead-pr-shutdown.ts`. Becomes a fact funnel only.
+  `dead-pr-shutdown.ts`. Becomes a fact funnel only. S4a: T17 / T18 write
+  both columns on every worker row of the delivery's PR in the transition's
+  own statement; a terminal fact (merged, closed) from any of these callers
+  carries the kernel's scope (`pr-fact-scope.ts`), so a delivery-owned row
+  takes only what its delivery already says. Their non-terminal facts
+  (`pr_open`, CI, conflict, unresolvable) stay with S4b. "Delivery-owned" has
+  one definition (`kernelOwnedRowSql`: a kernel-authority delivery, kill switch
+  on, owns the row's PR), shared by the funnel and the render read-through. A
+  merge the kernel saw but could not apply (its live read failed, a render
+  recorded it) is queued for a fast heal on the per-minute dispatch tick
+  (`kernel-heal.ts`), and the floor reads unapplied terminal facts first and
+  rotates by `floor_checked_at`. A merge after ABANDONED or SUPERSEDED has no
+  edge: it is recorded on the fact as a contradiction, notified, and shown on
+  the delivery's view.
 - `workers.prUrl` / `prNumber`: `create_pr` route, `mission-pr.ts`, worker
   PATCH, `register-local-pr`.
 - `workers.status`: worker PATCH, claim, reassign, cleanup, interrupt,
@@ -1042,10 +1081,60 @@ column outside the kernel; S3 and S4 remove or route each one.
   reassign, `correct_task_result`, interrupt, webhook ingest, Linear webhook,
   quality-scout, credential recovery, repo access, `stale-workers.ts`,
   supersession, visual review decisions, surface audit, recovery hold,
-  evidence and shipped stores.
+  evidence and shipped stores. S4b: a merge of a kernel-owned PR completes
+  the owner task in the T17 statement itself (`task-projection.ts`, beside
+  `w_proj`), with the rule `runMergedPrWork` applied (already completed stays,
+  a local session or another open PR on the task keeps it open), and tells
+  the `emit_pr_merged` effect what it did; `runMergedPrWork` writes no task.
+  "Delivery-owned" for a task has one definition (`deliveryOwnedTaskSql`).
+  Writers that infer where a PR went (the branch-name merge match, the
+  stale-failure archive, the dependency-failure cascade) skip a
+  delivery-owned task in their own WHERE. The rest stay, each listed in the
+  guard with its reason: the end or requeue of a worker's own attempt (for an
+  owner task `tasks.status` is the attempt's lifecycle, which the kernel
+  reads, so these cannot move without stranding it), a person's act, a task
+  that provably has no delivery, or a `result` key that is not a delivery
+  field. Every attempt writer that can move a task away from completed carries
+  `notKernelMergedTaskSql` in its WHERE, so a completed task whose delivery
+  MERGED is never failed, requeued or reactivated by a late worker report, a
+  stale release check or the reaper (a requeue would build it twice); the
+  guard pins how many statements per file carry it (a person's follow-up that
+  reactivates the worker of a shipped task leaves the task completed). Only
+  the merge's work-tracker comment runs behind a context once-marker; the
+  `task.completed` fan-out (deduped by its key) and `resolveCompletedTask`
+  (each step guarded on its rows) re-run on every retry of `emit_pr_merged`,
+  so a function killed mid-way loses nothing. Legacy merge writers skip a task
+  only for the PR its delivery is bound to: another PR of the same task (a
+  stacked series, a follow-up after the delivery's PR was abandoned) still
+  completes it.
+  NOT IMPLEMENTED (the rest of AC-1 for `tasks.status`): while a delivery is
+  live, the attempt writers (worker PATCH, claim, cleanup, the reaper,
+  interactive detach, credential and repo-access recovery, the recovery hold,
+  conflict and CI retries, loop exits) still set the owner task's status
+  directly, because the kernel reads that status as the attempt's end
+  (`forwardOwnerEnd`, T4) and has no attempt-to-task projection to replace
+  them; person writers (task PATCH, bulk, reassign, attach-PR, visual-review
+  decisions, waivers, tracker webhooks) still write it as a person's act. Also
+  not implemented: `tasks.result.prUrl` / `prNumber` derived on read (the
+  worker PATCH still copies them from the worker row).
 - Mission completion: `completeMissionIfVerified` from subscribers,
   `pr-reconcile.ts`, the schedules cron, evaluate, mission loop; plus mission
-  PATCH, archive, circuit breaker, budget.
+  PATCH, archive, circuit breaker, budget. S4b: the automated paths share one
+  writer (`mission-completion-write.ts`), compare-and-set on the mission's
+  delivery records: the decision fingerprints the epochs (id, version, state)
+  before it reads them, and the write lands only if they are unchanged, so no
+  caller completes a mission over epoch state it did not see. Every epoch
+  transition touches its mission row in its own statement, and the write
+  requires the row version it read (`xmin`), so an epoch write still in flight
+  is seen too. After a miss on a mission still active, unchanged records mean
+  another write held the row and it claims once more (`completion_contended`
+  on a second miss); moved records are decided once more on a fresh read
+  (`deliveries_moved` on a second miss). A
+  mission with no delivery records has no fingerprint and completes as before.
+  Every epoch reconcile that settles or retires a delivery (the merge door's,
+  `ensureWritableEpoch`'s, the hourly one) emits `mission.delivery_settled`,
+  and the missions module asks the writer to decide. The person paths (mission
+  PATCH, archive) stay.
 - Merge doors outside the kernel: release PR on CI green (webhook), release
   executor (two unpinned merges and a branch-to-prod merge), release compose,
   and the legacy arm of the dashboard merge, `PUT /api/github/pr`, the landing
@@ -1057,11 +1146,9 @@ column outside the kernel; S3 and S4 remove or route each one.
 
 ## 10. Open questions
 
-- Q1: the package's license. `@buildd/spec-contract` is Apache-2.0 while the
-  repo is FSL-1.1-ALv2. Recommendation: the kernel package stays under the
-  repo's FSL, so embedding is free and a competing hosted service is not
-  during the FSL window; the conformance suite and port types carry Apache-2.0
-  so an adopter's adapter code is unencumbered. Owner decides.
+- Q1 (answered 2026-10-15): the package's license. The kernel package is
+  Apache-2.0, like the other contract packages, so adopters can embed it. The
+  product and `@buildd/core` stay FSL-1.1-ALv2.
 - Q2 (answered 2026-10-13, §3): the command endpoint is a route on the
   control plane's own host, signed by the calling host and re-checked as the
   principal it names.
@@ -1077,6 +1164,7 @@ column outside the kernel; S3 and S4 remove or route each one.
 - `apps/web/src/lib/mission-branch-refresh.ts`, `mission-pr.ts` (S6)
 - `apps/web/src/lib/release-executor.ts`, `release/compose-actions.ts` (S3)
 - `packages/core/pr-facts.ts` (S4)
+- `packages/workflow-kernel/src/delivery-summary.ts`, `apps/web/src/lib/delivery-overlay.ts`, `apps/web/src/lib/pr-delivery-report.ts` (S7)
 - `packages/core/__tests__/workflow-write-sites.test.ts`,
   `state-ownership.test.ts` (kernel path changes in S1)
 

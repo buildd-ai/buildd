@@ -171,6 +171,8 @@ const INFRA_PATTERNS: RegExp[] = [
   /never started/i,
   /process restarted/i,
   /terminated by server/i,
+  // The server's abort reason when a runner reports on a worker it already settled.
+  /^worker already (failed|completed|cancell?ed|aborted)\b/i,
   /worker state changed concurrently/i,
   /no longer exists on remote server/i,
   /cancelled on remote server/i,

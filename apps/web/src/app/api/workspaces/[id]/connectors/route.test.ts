@@ -147,7 +147,7 @@ describe('PATCH /api/workspaces/[id]/connectors', () => {
     expect(res.status).toBe(400);
   });
 
-  // §1b AC-2: a connector that is neither owned by nor shared to the workspace's
+  // AC-7: a connector that is neither owned by nor shared to the workspace's
   // team is not visible — enabling it is rejected 404.
   it('returns 404 when connector does not exist', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });

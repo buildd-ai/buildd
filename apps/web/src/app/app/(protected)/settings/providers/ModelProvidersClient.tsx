@@ -14,6 +14,7 @@ import AgentBackendsSection, { type SignInSlots } from '../AgentBackendsSection'
 import AgentEndpointSection, { type EndpointWorkspace } from './AgentEndpointSection';
 import { connectedProviders, groupProviders, keyRuleLine, providersTitle, storedPolicyLine, usesTeamLine } from './providers-view';
 import UsedForSection from './UsedForSection';
+import type { DecisionsQaFixture } from '../models/qa-state';
 
 /**
  * The model keys, one scope per page. `scope="team"` is Settings › Team ›
@@ -46,12 +47,14 @@ import UsedForSection from './UsedForSection';
  * operator only, editable when they also hold the `manage_team_settings` its
  * route checks.
  */
-export default function ModelProvidersClient({ teamId, isAdmin, operator = false, workspaces = [], signIns, scope = 'team', workspaceId: fixedWorkspaceId = null }: {
+export default function ModelProvidersClient({ teamId, isAdmin, operator = false, qaDecisions = null, workspaces = [], signIns, scope = 'team', workspaceId: fixedWorkspaceId = null }: {
   teamId: string;
   /** Fallback for the Routing section until the list loads. */
   isAdmin: boolean;
   /** A platform operator: the decision model row renders. */
   operator?: boolean;
+  /** `?state=decisions` (dev only): sample overrides and switch lines in the decision model row. */
+  qaDecisions?: DecisionsQaFixture | null;
   /** The team's workspaces, for Workspace keys and the agent endpoint. */
   workspaces?: EndpointWorkspace[];
   /** Props for the sign-ins folded into the Claude and OpenAI rows. Omitted: the rows hold keys only. */
@@ -197,7 +200,7 @@ export default function ModelProvidersClient({ teamId, isAdmin, operator = false
           teamId={teamId}
           data={data}
           canManage={data.caller.can.manage_team_settings}
-          decisions={operator ? <DecisionModelPicker teamId={teamId} canManage={data.caller.can.manage_team_settings} rev={gatewayRev} embedded /> : undefined}
+          decisions={operator ? <DecisionModelPicker teamId={teamId} canManage={data.caller.can.manage_team_settings} rev={gatewayRev} embedded fixture={qaDecisions} /> : undefined}
           extra={slots && bothBackends(data) ? <div className="border-y border-border-default">{slots.routing}</div> : null}
         />
       )}

@@ -19,7 +19,7 @@ describe('observed git progress', () => {
       const updates: any[] = [];
       const worker: any = { id: 'test-worker', status: 'working', milestones: [], subagentTasks: [], worktreePath: root, prBaseRef: base, branch: 'work', checkpointEvents: new Set() };
       const sync = new WorkerSync({ config: {}, buildd: { updateWorker: async (_id: string, update: any) => { updates.push(update); return {}; } }, workers: new Map(), dirtyForDisk: new Set(), emit: () => {} } as any);
-      expect(observeGitProgress(root, base, 'work')).toMatchObject({ commitCount: 0, pushed: false });
+      expect(await observeGitProgress(root, base, 'work')).toMatchObject({ commitCount: 0, pushed: false });
       writeFileSync(join(root, 'file'), 'change');
       git('add', 'file');
       git('commit', '-m', 'change');
@@ -29,11 +29,11 @@ describe('observed git progress', () => {
       expect(updates[0].milestones).toContainEqual(expect.objectContaining({ type: 'checkpoint', event: 'first_commit' }));
       await sync.syncWorkerToServer(worker);
       expect(updates[1].lastCommitSha).toBeUndefined();
-      expect(observeGitProgress(root, base, 'work')).toEqual({ lastCommitSha: head, commitCount: 1, pushed: false });
+      expect(await observeGitProgress(root, base, 'work')).toEqual({ lastCommitSha: head, commitCount: 1, pushed: false });
       git('init', '--bare', join(root, 'remote.git'));
       git('remote', 'add', 'origin', join(root, 'remote.git'));
       git('push', 'origin', 'work');
-      expect(observeGitProgress(root, base, 'work')?.pushed).toBe(true);
+      expect((await observeGitProgress(root, base, "work"))?.pushed).toBe(true);
       // A push changes the remote ref without changing HEAD; the next observation window picks it up.
       (sync as any).gitObservations.get(worker.id).at = 0;
       await sync.syncWorkerToServer(worker);
@@ -41,8 +41,8 @@ describe('observed git progress', () => {
       git('commit', '--allow-empty', '-m', 'next');
       git('push', 'origin', 'work');
       git('reset', '--hard', head);
-      expect(observeGitProgress(root, base, 'work')?.pushed).toBe(true);
-      expect(observeGitProgress(root, 'missing-base', 'work')).toBeNull();
+      expect((await observeGitProgress(root, base, "work"))?.pushed).toBe(true);
+      expect(await observeGitProgress(root, 'missing-base', 'work')).toBeNull();
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   test('command narration cannot fire first_commit', () => {

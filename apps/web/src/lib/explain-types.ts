@@ -86,6 +86,9 @@ export type CausalLinkSource =
   | 'gate_events.detail'
   | 'gate_events.reason'
   | 'DeliveryView.lastTransition'
+  | 'DeliveryView.rounds'
+  /** workflow-kernel-library.md §7 / AC-26: the worker row's merge columns disagree with the delivery. */
+  | 'DeliveryView.state vs workers.mergedAt'
   | 'artifacts.metadata.qa (replacedAudits)';
 
 export interface CausalLink {

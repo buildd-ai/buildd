@@ -64,7 +64,8 @@ export interface PusherManagerCallbacks {
   recover: (workerId: string, mode: 'diagnose' | 'complete' | 'restart') => Promise<void>;
   sendHeartbeat: () => void;
   claimPendingTasks: () => Promise<void>;
-  claimAndStart: (task: BuilddTask) => Promise<LocalWorker | null>;
+  /** `byPerson`: the assignment named this runner (a person's Start), so a hold does not stop it. */
+  claimAndStart: (task: BuilddTask, opts?: { byPerson?: boolean }) => Promise<LocalWorker | null>;
   getProbedWorkers: () => Set<string>;
 }
 
@@ -182,6 +183,7 @@ export class PusherManager {
           channel.bind('task:assigned', (data: { task: BuilddTask; targetLocalUiUrl?: string | null }) => {
             this.handleTaskAssignment(data);
           });
+          channel.bind('task:claimed', (data: { task?: { id?: string; workspaceId?: string } }) => this.handleTaskClaimed(data));
           this.workspaceChannels.set(channelName, channel);
           console.log(`Subscribed to ${channelName} for task assignments`);
         }
@@ -195,9 +197,20 @@ export class PusherManager {
     // Unsubscribe from workspace channels
     for (const [channelName, channel] of this.workspaceChannels) {
       channel.unbind('task:assigned');
+      channel.unbind('task:claimed');
       this.pusher?.unsubscribe(channelName);
     }
     this.workspaceChannels.clear();
+  }
+
+  /**
+   * A task in one of this runner's workspaces was claimed, here or by another
+   * runner: `buildd top`'s Queue view rereads its order (spec c7410e76 AC-12).
+   */
+  handleTaskClaimed(data: { task?: { id?: string; workspaceId?: string } } | null | undefined) {
+    const taskId = data?.task?.id;
+    if (typeof taskId !== 'string') return;
+    this.callbacks.emit({ type: 'task_claimed', taskId, workspaceId: data?.task?.workspaceId ?? null });
   }
 
   async handleTaskAssignment(data: { task: BuilddTask; targetLocalUiUrl?: string | null }) {
@@ -238,7 +251,9 @@ export class PusherManager {
 
     // Auto-claim and start the task
     try {
-      const worker = await this.callbacks.claimAndStart(task);
+      // An assignment aimed at this runner is a person's Start (or a task filed
+      // onto it): a hold does not stop it. A broadcast one is held (runner-hold.ts).
+      const worker = await this.callbacks.claimAndStart(task, { byPerson: !!targetLocalUiUrl });
       if (worker) {
         console.log(`Successfully started assigned task: ${worker.taskTitle || task.title || task.id}`);
       }

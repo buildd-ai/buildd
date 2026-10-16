@@ -127,6 +127,9 @@ mock.module('@buildd/core/pr-facts', () => ({
 
 import { sweepDeadZonePrs } from './dead-zone-sweep';
 
+/** A terminal fact goes to the funnel under the kernel's scope (S4a, pr-fact-scope.ts). */
+const FUNNEL_OPTS = { scope: expect.objectContaining({ where: expect.any(Function) }) };
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /** A worker with an open PR whose originating task is terminal. */
@@ -359,7 +362,7 @@ describe('sweepDeadZonePrs PR facts', () => {
     expect(recordedFacts).toEqual([{
       target: { workerId: 'w1' },
       fact: { kind: 'merged', mergedAt: '2026-01-02T03:04:05Z' },
-      opts: undefined,
+      opts: FUNNEL_OPTS,
     }]);
     expect(result.skipped).toBe(1);
     expect(mockBuildConflictRetryTask).not.toHaveBeenCalled();
@@ -373,7 +376,7 @@ describe('sweepDeadZonePrs PR facts', () => {
 
     await sweepDeadZonePrs();
 
-    expect(recordedFacts).toEqual([{ target: { workerId: 'w1' }, fact: { kind: 'closed' }, opts: undefined }]);
+    expect(recordedFacts).toEqual([{ target: { workerId: 'w1' }, fact: { kind: 'closed' }, opts: FUNNEL_OPTS }]);
   });
 
   it('records no fact for a clean open PR', async () => {

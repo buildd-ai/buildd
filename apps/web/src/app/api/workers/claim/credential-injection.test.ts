@@ -3,9 +3,9 @@ import { describe, it, expect, mock, beforeEach, afterAll } from 'bun:test';
 /**
  * Coverage note — why this file exists.
  *
- * These four blocks lived inside the 2600-line claim route. `route.test.ts`
- * covers `attachServerManagedSecrets` well (24 assertions), but had ZERO
- * coverage for the other three: flipping the codex-backend filter from `!==`
+ * These blocks lived inside the 2600-line claim route. `route.test.ts`
+ * covers `attachServerManagedSecrets` well, but had ZERO coverage for the
+ * others: flipping the codex-backend filter from `!==`
  * to `===` — which hands Codex tokens to Claude tasks and withholds them from
  * Codex ones — kept the whole suite green. Extracting them made them reachable
  * without building a full claim request, so they get real tests here.
@@ -13,7 +13,6 @@ import { describe, it, expect, mock, beforeEach, afterAll } from 'bun:test';
 
 const mockSecretsFindMany = mock(async (_args?: any) => [] as any[]);
 const mockResolveCodex = mock(async (_scope?: any) => null as any);
-const mockResolveClaude = mock(async (_scope?: any) => null as any);
 const mockResolveOpenAiApiKey = mock(async (_scope?: any) => null as any);
 const mockProviderGet = mock(async (_id: string) => null as string | null);
 
@@ -43,11 +42,7 @@ mock.module('@buildd/core/db', () => ({
   db: { query: { secrets: { findMany: mockSecretsFindMany } } },
 }));
 mock.module('@/lib/codex-credential', () => ({
-  resolveCodexCredential: mockResolveCodex,
-  hasCodexCredential: mock(async () => false),
-}));
-mock.module('@/lib/claude-credential', () => ({
-  resolveClaudeCredential: mockResolveClaude,
+  resolveCodexApiKey: mockResolveCodex,
 }));
 mock.module('@/lib/openai-credential', () => ({
   resolveOpenAiApiKey: mockResolveOpenAiApiKey,
@@ -59,8 +54,6 @@ mock.module('@buildd/core/secrets', () => ({
 const {
   attachServerManagedSecrets,
   attachCodexCredentials,
-  attachClaudeCredentials,
-  attachPendingCredentialRefreshes,
   resolveAccountCredentialRefreshes,
 } = await import('./credential-injection');
 
@@ -87,8 +80,6 @@ beforeEach(() => {
   mockSecretsFindMany.mockResolvedValue([]);
   mockResolveCodex.mockReset();
   mockResolveCodex.mockResolvedValue(null);
-  mockResolveClaude.mockReset();
-  mockResolveClaude.mockResolvedValue(null);
   mockResolveOpenAiApiKey.mockReset();
   mockResolveOpenAiApiKey.mockResolvedValue(null);
   mockProviderGet.mockReset();
@@ -136,7 +127,10 @@ describe('attachServerManagedSecrets', () => {
     healthStatus: 'ok', updatedAt: new Date('2026-09-01T00:00:00.000Z'), ...extra,
   });
 
-  it('attaches the decrypted api key and oauth token', async () => {
+  // Model credentials spec R-2 / AC-3: a claim never carries a subscription
+  // login. A stored oauth_token (setup token) is neither queried nor delivered,
+  // live or expired; the API key still is.
+  it('attaches the decrypted api key and never an oauth token', async () => {
     mockSecretsFindMany.mockResolvedValue([
       secretRow({ id: 'sec-key', purpose: 'anthropic_api_key' }),
       secretRow({ id: 'sec-oauth', purpose: 'oauth_token' }),
@@ -148,7 +142,9 @@ describe('attachServerManagedSecrets', () => {
     await attachServerManagedSecrets(workers, 'acct-1');
 
     expect(workers[0].serverApiKey).toBe('sk-ant-key');
-    expect(workers[0].serverOauthToken).toBe('oauth-tok');
+    expect(workers[0].serverOauthToken).toBeUndefined();
+    expect(mockProviderGet).not.toHaveBeenCalledWith('sec-oauth');
+    expect(predicate(mockSecretsFindMany.mock.calls[0]?.[0], 'inArray', 'purpose').values).not.toContain('oauth_token');
   });
 
   // The cross-backend boundary. Codex tasks run the OpenAI CLI; an Anthropic
@@ -224,8 +220,6 @@ describe('attachServerManagedSecrets', () => {
 
   it('an account row beats a newer team-wide row, and a workspace row beats both', async () => {
     mockSecretsFindMany.mockResolvedValue([
-      secretRow({ id: 'sec-team', purpose: 'oauth_token', updatedAt: new Date('2026-09-05T00:00:00.000Z') }),
-      secretRow({ id: 'sec-acct', purpose: 'oauth_token', accountId: 'acct-1', updatedAt: new Date('2026-09-01T00:00:00.000Z') }),
       secretRow({ id: 'sec-team-key', purpose: 'anthropic_api_key', updatedAt: new Date('2026-09-05T00:00:00.000Z') }),
       secretRow({ id: 'sec-acct-key', purpose: 'anthropic_api_key', accountId: 'acct-1', updatedAt: new Date('2026-09-04T00:00:00.000Z') }),
       secretRow({ id: 'sec-ws-key', purpose: 'anthropic_api_key', workspaceId: 'ws-t1', updatedAt: new Date('2026-09-01T00:00:00.000Z') }),
@@ -235,8 +229,16 @@ describe('attachServerManagedSecrets', () => {
 
     await attachServerManagedSecrets(workers, 'acct-1');
 
-    expect(workers[0].serverOauthToken).toBe('val:sec-acct');
     expect(workers[0].serverApiKey).toBe('val:sec-ws-key');
+
+    // Without the workspace row, the account row beats the newer team-wide one.
+    mockSecretsFindMany.mockResolvedValue([
+      secretRow({ id: 'sec-team-key', purpose: 'anthropic_api_key', updatedAt: new Date('2026-09-05T00:00:00.000Z') }),
+      secretRow({ id: 'sec-acct-key', purpose: 'anthropic_api_key', accountId: 'acct-1', updatedAt: new Date('2026-09-04T00:00:00.000Z') }),
+    ]);
+    const others = [swWorker('t2')];
+    await attachServerManagedSecrets(others, 'acct-1');
+    expect(others[0].serverApiKey).toBe('val:sec-acct-key');
   });
 
   it('never picks a personal row', async () => {
@@ -271,20 +273,6 @@ describe('attachServerManagedSecrets', () => {
     expect(workers[0].mcpSecrets).toEqual({ CUE_API_KEY: 'val:sec-ws-key', CUE_TENANT_ID: 'val:sec-team-tenant' });
   });
 
-  it('picks per purpose — a revoked api key does not affect the oauth pick', async () => {
-    mockSecretsFindMany.mockResolvedValue([
-      secretRow({ id: 'sec-key-revoked', purpose: 'anthropic_api_key', healthStatus: 'revoked' }),
-      secretRow({ id: 'sec-oauth', purpose: 'oauth_token' }),
-    ]);
-    mockProviderGet.mockImplementation(async (id: string) =>
-      id === 'sec-oauth' ? 'oauth-tok' : 'revoked-key');
-    const workers = [swWorker('t1')];
-
-    await attachServerManagedSecrets(workers, 'acct-1');
-
-    expect(workers[0].serverOauthToken).toBe('oauth-tok');
-  });
-
   // Team/account/workspace scoping lives ONLY in this WHERE clause — `db` is
   // mocked, so dropping any of these three filters is otherwise unobservable.
   // The team filter is the cross-team leak guard.
@@ -296,7 +284,7 @@ describe('attachServerManagedSecrets', () => {
     // `inference_key` is the Anthropic key's canonical storage (provider parity);
     // `anthropic_api_key` its legacy alias.
     expect(predicate(args, 'inArray', 'purpose').values)
-      .toEqual(['inference_key', 'anthropic_api_key', 'oauth_token', 'mcp_credential']);
+      .toEqual(['inference_key', 'anthropic_api_key', 'mcp_credential']);
     // Account-scoped rows are visible only to their own account; team-wide rows
     // (accountId NULL) to everyone on the team.
     expect(orBranches(args, 'accountId')).toEqual([
@@ -399,55 +387,32 @@ describe('attachServerManagedSecrets', () => {
 });
 
 describe('attachCodexCredentials', () => {
-  it('attaches an oauth Codex credential to a codex-backend task', async () => {
-    const expiresAt = new Date('2026-09-03T12:00:00.000Z');
-    mockResolveCodex.mockResolvedValue({
-      credentialType: 'oauth',
-      accessToken: 'codex-access',
-      refreshToken: 'codex-refresh',
-      accountId: 'codex-acct',
-      idToken: 'codex-id',
-      tokenExpiresAt: expiresAt,
-    });
+  it('attaches a codex_credential API key to a codex-backend task', async () => {
+    mockResolveCodex.mockResolvedValue({ apiKey: 'sk-codex' });
     const workers = [worker('t1')];
 
     await attachCodexCredentials(workers, [task('t1', 'codex')], 'acct-1');
 
-    expect(workers[0].codexCredential).toEqual({
-      credentialType: 'oauth',
-      accessToken: 'codex-access',
-      refreshToken: 'codex-refresh',
-      accountId: 'codex-acct',
-      idToken: 'codex-id',
-      expiresAt: expiresAt,
-    });
+    expect(workers[0].codexCredential).toEqual({ credentialType: 'api_key', apiKey: 'sk-codex', expiresAt: null });
   });
 
-  it('attaches only apiKey for an api_key credential — no oauth fields leak', async () => {
-    mockResolveCodex.mockResolvedValue({
-      credentialType: 'api_key',
-      apiKey: 'sk-codex',
-      accessToken: 'should-not-appear',
-      refreshToken: 'should-not-appear',
-      tokenExpiresAt: null,
-    });
+  // Model credentials spec R-2 / AC-3: a stored ChatGPT/OAuth login never
+  // resolves (resolveCodexApiKey returns API keys only), so nothing is attached
+  // and the runner uses its own `codex login`.
+  it('attaches nothing when the team has only a stored Codex login', async () => {
+    mockResolveCodex.mockResolvedValue(null);
+    mockResolveOpenAiApiKey.mockResolvedValue(null);
     const workers = [worker('t1')];
 
     await attachCodexCredentials(workers, [task('t1', 'codex')], 'acct-1');
 
-    expect(workers[0].codexCredential).toEqual({
-      credentialType: 'api_key',
-      apiKey: 'sk-codex',
-      expiresAt: null,
-    });
-    expect(workers[0].codexCredential.accessToken).toBeUndefined();
-    expect(workers[0].codexCredential.refreshToken).toBeUndefined();
+    expect(workers[0].codexCredential).toBeUndefined();
   });
 
-  // The token-exposure boundary. A `!==` → `===` slip here ships Codex tokens
+  // The token-exposure boundary. A `!==` → `===` slip here ships Codex keys
   // to every Claude worker, and route.test.ts did not catch it.
   it('does NOT attach a Codex credential to a claude-backend task', async () => {
-    mockResolveCodex.mockResolvedValue({ credentialType: 'api_key', apiKey: 'sk-codex', tokenExpiresAt: null });
+    mockResolveCodex.mockResolvedValue({ apiKey: 'sk-codex' });
     const workers = [worker('t1')];
 
     await attachCodexCredentials(workers, [task('t1', 'claude')], 'acct-1');
@@ -476,7 +441,7 @@ describe('attachCodexCredentials', () => {
   it('leaves other workers enriched when one resolve throws', async () => {
     mockResolveCodex.mockImplementation(async (scope: any) => {
       if (scope.workspaceId === 'ws-t1') throw new Error('vault down');
-      return { credentialType: 'api_key', apiKey: 'sk-ok', tokenExpiresAt: null };
+      return { apiKey: 'sk-ok' };
     });
     const workers = [worker('t1'), worker('t2')];
 
@@ -497,10 +462,9 @@ describe('attachCodexCredentials', () => {
   });
 
   // The plain OpenAI API key fallback — this is what makes "a stored team
-  // OpenAI key reaches a codex task" true. No ChatGPT/OAuth connect
-  // (codex_credential) exists, so the simpler sibling purpose wins.
+  // OpenAI key reaches a codex task" true.
   describe('falling back to a plain openai_api_key', () => {
-    it('attaches it as an api_key codexCredential when no codex_credential resolves', async () => {
+    it('attaches it as an api_key codexCredential when no codex_credential key resolves', async () => {
       mockResolveCodex.mockResolvedValue(null);
       mockResolveOpenAiApiKey.mockResolvedValue({ apiKey: 'sk-team-openai', secretId: 'sec-openai' });
       const workers = [worker('t1')];
@@ -514,8 +478,8 @@ describe('attachCodexCredentials', () => {
       });
     });
 
-    it('prefers an existing codex_credential over the openai_api_key fallback', async () => {
-      mockResolveCodex.mockResolvedValue({ credentialType: 'api_key', apiKey: 'sk-codex-cred', tokenExpiresAt: null });
+    it('prefers a codex_credential API key over the openai_api_key fallback', async () => {
+      mockResolveCodex.mockResolvedValue({ apiKey: 'sk-codex-cred' });
       mockResolveOpenAiApiKey.mockResolvedValue({ apiKey: 'sk-team-openai', secretId: 'sec-openai' });
       const workers = [worker('t1')];
 
@@ -523,16 +487,6 @@ describe('attachCodexCredentials', () => {
 
       expect(workers[0].codexCredential.apiKey).toBe('sk-codex-cred');
       expect(mockResolveOpenAiApiKey).not.toHaveBeenCalled();
-    });
-
-    it('attaches nothing when neither credential resolves', async () => {
-      mockResolveCodex.mockResolvedValue(null);
-      mockResolveOpenAiApiKey.mockResolvedValue(null);
-      const workers = [worker('t1')];
-
-      await attachCodexCredentials(workers, [task('t1', 'codex')], 'acct-1');
-
-      expect(workers[0].codexCredential).toBeUndefined();
     });
 
     it('does not fall back for a claude-backend task', async () => {
@@ -559,214 +513,10 @@ describe('attachCodexCredentials', () => {
   });
 });
 
-describe('attachClaudeCredentials', () => {
-  it('attaches the access token and an ISO expiry for a claude-backend task', async () => {
-    mockResolveClaude.mockResolvedValue({
-      accessToken: 'claude-access',
-      tokenExpiresAt: new Date('2026-09-03T12:00:00.000Z'),
-    });
-    const workers = [worker('t1')];
-
-    await attachClaudeCredentials(workers, [task('t1', 'claude')], 'acct-1');
-
-    expect(workers[0].claudeAccessToken).toBe('claude-access');
-    expect(workers[0].claudeTokenExpiresAt).toBe('2026-09-03T12:00:00.000Z');
-  });
-
-  it('passes the recorded scopes through, and nothing when none were recorded', async () => {
-    mockResolveClaude.mockResolvedValue({ accessToken: 'claude-access', tokenExpiresAt: null, scopes: ['user:inference', 'user:mcp_servers'] });
-    const withScopes = [worker('t1')];
-    await attachClaudeCredentials(withScopes, [task('t1', 'claude')], 'acct-1');
-    expect(withScopes[0].claudeTokenScopes).toEqual(['user:inference', 'user:mcp_servers']);
-
-    mockResolveClaude.mockResolvedValue({ accessToken: 'claude-access', tokenExpiresAt: null, scopes: null });
-    const without = [worker('t1')];
-    await attachClaudeCredentials(without, [task('t1', 'claude')], 'acct-1');
-    expect(without[0].claudeTokenScopes).toBeUndefined();
-  });
-
-  // Workers must never receive a refresh_token: with one in the credentials
-  // file the SDK rotates in-session and triggers token-family revocation.
-  it('never attaches a refresh token', async () => {
-    mockResolveClaude.mockResolvedValue({
-      accessToken: 'claude-access',
-      refreshToken: 'claude-refresh',
-      tokenExpiresAt: null,
-    });
-    const workers = [worker('t1')];
-
-    await attachClaudeCredentials(workers, [task('t1', 'claude')], 'acct-1');
-
-    expect(JSON.stringify(workers[0])).not.toContain('claude-refresh');
-  });
-
-  it('nulls the expiry when the credential has none', async () => {
-    mockResolveClaude.mockResolvedValue({ accessToken: 'claude-access', tokenExpiresAt: null });
-    const workers = [worker('t1')];
-
-    await attachClaudeCredentials(workers, [task('t1', 'claude')], 'acct-1');
-
-    expect(workers[0].claudeTokenExpiresAt).toBeNull();
-  });
-
-  it('does NOT attach a Claude credential to a codex-backend task', async () => {
-    mockResolveClaude.mockResolvedValue({ accessToken: 'claude-access', tokenExpiresAt: null });
-    const workers = [worker('t1')];
-
-    await attachClaudeCredentials(workers, [task('t1', 'codex')], 'acct-1');
-
-    expect(workers[0].claudeAccessToken).toBeUndefined();
-    expect(mockResolveClaude).not.toHaveBeenCalled();
-  });
-
-  // Scope was asserted for Codex but not for Claude: dropping `workspaceId`
-  // here widens resolution to team-wide and can hand a worker a credential
-  // scoped to a different workspace. Nothing caught that.
-  it('resolves with the task team and the task workspace', async () => {
-    mockResolveClaude.mockResolvedValue(null);
-
-    await attachClaudeCredentials([worker('t1')], [task('t1', 'claude', 'team-9')], 'acct-7');
-
-    expect(mockResolveClaude).toHaveBeenCalledWith({ teamId: 'team-9', accountId: 'acct-7', workspaceId: 'ws-t1' });
-  });
-
-  it('resolves each worker against its own workspace', async () => {
-    mockResolveClaude.mockResolvedValue(null);
-
-    await attachClaudeCredentials(
-      [worker('t1'), worker('t2')],
-      [task('t1', 'claude', 'team-a'), task('t2', 'claude', 'team-b')],
-      'acct-1',
-    );
-
-    expect(mockResolveClaude.mock.calls[0][0]).toEqual({ teamId: 'team-a', accountId: 'acct-1', workspaceId: 'ws-t1' });
-    expect(mockResolveClaude.mock.calls[1][0]).toEqual({ teamId: 'team-b', accountId: 'acct-1', workspaceId: 'ws-t2' });
-  });
-
-  it('treats a task with no backend set as Claude', async () => {
-    mockResolveClaude.mockResolvedValue({ accessToken: 'claude-access', tokenExpiresAt: null });
-    const workers = [worker('t1')];
-
-    await attachClaudeCredentials(workers, [task('t1', null)], 'acct-1');
-
-    expect(workers[0].claudeAccessToken).toBe('claude-access');
-  });
-
-  it('swallows a resolve failure so the claim still succeeds', async () => {
-    mockResolveClaude.mockRejectedValue(new Error('vault down'));
-    const workers = [worker('t1')];
-
-    await attachClaudeCredentials(workers, [task('t1', 'claude')], 'acct-1');
-
-    expect(workers[0].claudeAccessToken).toBeUndefined();
-  });
-
-  it('is a no-op without ENCRYPTION_KEY', async () => {
-    delete process.env.ENCRYPTION_KEY;
-    const workers = [worker('t1')];
-
-    await attachClaudeCredentials(workers, [task('t1', 'claude')], 'acct-1');
-
-    expect(mockResolveClaude).not.toHaveBeenCalled();
-  });
-});
-
 /**
- * The per-worker list. It is deliberately retained alongside the top-level
- * `resolveAccountCredentialRefreshes` below: the runner reads the
- * claude_credential secretId off this entry to wire a specific worker to the
- * broker at spawn time, and a claim may serve a workspace whose team is not the
- * authenticated account's own. So these assertions keep their meaning.
- */
-describe('attachPendingCredentialRefreshes (per claimed worker)', () => {
-  it('maps expiring rows to the runner pre-refresh list', async () => {
-    mockSecretsFindMany.mockResolvedValue([
-      { id: 'sec-1', purpose: 'claude_credential', tokenExpiresAt: new Date('2026-09-03T10:00:00.000Z') },
-      { id: 'sec-2', purpose: 'codex_credential', tokenExpiresAt: new Date('2026-09-03T11:00:00.000Z') },
-    ]);
-    const workers = [worker('t1')];
-
-    await attachPendingCredentialRefreshes(workers, [task('t1', 'claude')]);
-
-    expect(workers[0].pendingCredentialRefreshes).toEqual([
-      { secretId: 'sec-1', purpose: 'claude_credential', expiresAt: '2026-09-03T10:00:00.000Z' },
-      { secretId: 'sec-2', purpose: 'codex_credential', expiresAt: '2026-09-03T11:00:00.000Z' },
-    ]);
-  });
-
-  it('attaches nothing when no credential is near expiry', async () => {
-    mockSecretsFindMany.mockResolvedValue([]);
-    const workers = [worker('t1')];
-
-    await attachPendingCredentialRefreshes(workers, [task('t1', 'claude')]);
-
-    expect(workers[0].pendingCredentialRefreshes).toBeUndefined();
-  });
-
-  // Both backends are pre-refreshed, so this runs regardless of task.backend.
-  it('runs for codex-backend tasks too', async () => {
-    mockSecretsFindMany.mockResolvedValue([
-      { id: 'sec-1', purpose: 'codex_credential', tokenExpiresAt: new Date('2026-09-03T10:00:00.000Z') },
-    ]);
-    const workers = [worker('t1')];
-
-    await attachPendingCredentialRefreshes(workers, [task('t1', 'codex')]);
-
-    expect(workers[0].pendingCredentialRefreshes).toHaveLength(1);
-  });
-
-  it('skips a task whose workspace has no team', async () => {
-    await attachPendingCredentialRefreshes([worker('t1')], [task('t1', 'claude', null)]);
-    expect(mockSecretsFindMany).not.toHaveBeenCalled();
-  });
-
-  // This list is a set of secret IDs the runner may then ask the server to
-  // refresh, so its scoping matters as much as the credential injection above.
-  // Every filter here is invisible with a mocked `db` unless asserted.
-  it('scopes the lookup to the task team, the task workspace, live rows and near expiry', async () => {
-    await attachPendingCredentialRefreshes([worker('t1')], [task('t1', 'claude', 'team-9')]);
-
-    const args = mockSecretsFindMany.mock.calls[0]?.[0] as any;
-    expect(predicate(args, 'eq', 'teamId')).toEqual({ field: 'teamId', value: 'team-9', type: 'eq' });
-    expect(predicate(args, 'inArray', 'purpose').values).toEqual(['claude_credential', 'codex_credential']);
-    // A revoked credential is unrecoverable by refresh — never nominate it.
-    const notNode = (args.where.args as any[]).find(n => n?.type === 'not');
-    expect(notNode.value).toEqual({ field: 'healthStatus', value: 'revoked', type: 'eq' });
-    // Only rows that actually expire, and only those expiring within 2 hours.
-    expect(predicate(args, 'isNotNull', 'tokenExpiresAt')).toBeDefined();
-    const ltNode = predicate(args, 'lt', 'tokenExpiresAt');
-    expect(ltNode.value.strings.join('')).toContain("NOW() + INTERVAL '2 hours'");
-    // Workspace-scoped rows never cross into another workspace.
-    expect(orBranches(args, 'workspaceId')).toEqual([
-      { field: 'workspaceId', type: 'isNull' },
-      { field: 'workspaceId', value: 'ws-t1', type: 'eq' },
-    ]);
-  });
-
-  it('swallows a query failure so the claim still succeeds', async () => {
-    mockSecretsFindMany.mockRejectedValue(new Error('db down'));
-    const workers = [worker('t1')];
-
-    await attachPendingCredentialRefreshes(workers, [task('t1', 'claude')]);
-
-    expect(workers[0].pendingCredentialRefreshes).toBeUndefined();
-  });
-
-  it('is a no-op without ENCRYPTION_KEY', async () => {
-    delete process.env.ENCRYPTION_KEY;
-
-    await attachPendingCredentialRefreshes([worker('t1')], [task('t1', 'claude')]);
-
-    expect(mockSecretsFindMany).not.toHaveBeenCalled();
-  });
-});
-
-/**
- * The account-scoped counterpart. `attachPendingCredentialRefreshes` above can
- * only speak when a task was claimed, so an idle runner's broker learned about
- * nothing and refreshed nothing. This resolves the same list from the
- * authenticated account alone — no task, no workspace — for the top-level
- * `pendingCredentialRefreshes` the claim route returns on every poll.
+ * The idle broker's list, resolved from the authenticated account alone — no
+ * task, no workspace — for the top-level `pendingCredentialRefreshes` the
+ * claim route returns on every poll. No claimed worker carries one.
  */
 describe('resolveAccountCredentialRefreshes', () => {
   const account = (extra: Record<string, unknown> = {}) =>
@@ -839,7 +589,7 @@ describe('resolveAccountCredentialRefreshes', () => {
  * whose endpoint won the ranking, no Anthropic credential of any kind.
  */
 describe('endpointWorkers: the endpoint is the only model credential', () => {
-  it('attachServerManagedSecrets: no key or seat, MCP secrets still delivered', async () => {
+  it('attachServerManagedSecrets: no key, MCP secrets still delivered', async () => {
     mockSecretsFindMany.mockResolvedValue([
       { id: 'k', purpose: 'anthropic_api_key', label: null },
       { id: 'o', purpose: 'oauth_token', label: null },
@@ -853,24 +603,8 @@ describe('endpointWorkers: the endpoint is the only model credential', () => {
     expect(workers[0].mcpSecrets).toEqual({ SOME_KEY: 'decrypted' });
   });
 
-  it('attachClaudeCredentials: no Claude token', async () => {
-    mockResolveClaude.mockResolvedValue({ accessToken: 'claude-access', tokenExpiresAt: null });
-    const workers = [worker('t1'), worker('t2')];
-    await attachClaudeCredentials(workers, [task('t1', 'claude'), task('t2', 'claude')], 'acct-1', new Set(['w-t1']));
-    expect(workers[0].claudeAccessToken).toBeUndefined();
-    expect(workers[1].claudeAccessToken).toBe('claude-access');
-  });
-
-  it('attachPendingCredentialRefreshes: no per-worker list', async () => {
-    mockSecretsFindMany.mockResolvedValue([{ id: 'sec-1', purpose: 'claude_credential', tokenExpiresAt: new Date('2026-09-03T10:00:00.000Z') }]);
-    const workers = [worker('t1'), worker('t2')];
-    await attachPendingCredentialRefreshes(workers, [task('t1', 'claude'), task('t2', 'claude')], new Set(['w-t1']));
-    expect(workers[0].pendingCredentialRefreshes).toBeUndefined();
-    expect(workers[1].pendingCredentialRefreshes).toHaveLength(1);
-  });
-
   it('attachCodexCredentials: no Codex credential — a team OpenAI-compatible agent endpoint won instead', async () => {
-    mockResolveCodex.mockResolvedValue({ credentialType: 'api_key', apiKey: 'sk-codex', tokenExpiresAt: null });
+    mockResolveCodex.mockResolvedValue({ apiKey: 'sk-codex' });
     const workers = [worker('t1'), worker('t2')];
     await attachCodexCredentials(workers, [task('t1', 'codex'), task('t2', 'codex')], 'acct-1', new Set(['w-t1']));
     expect(workers[0].codexCredential).toBeUndefined();
@@ -901,7 +635,8 @@ describe('attachServerManagedSecrets: canonical and legacy Anthropic key storage
   });
 
   // The safety property of this change: a team that has only the legacy row
-  // gets exactly the claim payload it got before canonical storage was read.
+  // gets exactly the claim payload it got before canonical storage was read
+  // (less the subscription login, which no claim carries: spec R-2).
   it('a team with only a legacy row gets a byte-identical claim payload', async () => {
     mockSecretsFindMany.mockResolvedValue([
       row({ id: 'sec-legacy' }),
@@ -917,7 +652,6 @@ describe('attachServerManagedSecrets: canonical and legacy Anthropic key storage
       taskId: 't1',
       task: { id: 't1', workspaceId: 'ws-t1', backend: 'claude', workspace: { teamId: 'team-1' } },
       serverApiKey: 'val:sec-legacy',
-      serverOauthToken: 'val:sec-oauth',
       mcpSecrets: { CUE_API_KEY: 'val:sec-mcp' },
     }));
   });
@@ -996,6 +730,6 @@ describe('attachServerManagedSecrets: canonical and legacy Anthropic key storage
     const args = mockSecretsFindMany.mock.calls[0]?.[0] as any;
     expect(predicate(args, 'isNull', 'userId')).toEqual({ field: 'userId', type: 'isNull' });
     expect(predicate(args, 'inArray', 'purpose').values)
-      .toEqual(['inference_key', 'anthropic_api_key', 'oauth_token', 'mcp_credential']);
+      .toEqual(['inference_key', 'anthropic_api_key', 'mcp_credential']);
   });
 });

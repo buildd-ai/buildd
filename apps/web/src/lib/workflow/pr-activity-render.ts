@@ -16,9 +16,11 @@
  *    render older than the marker already on GitHub is skipped by the handler.
  */
 import { renderPrActivityComment, taskActivityUrl, type PrActivityEntry, type PrActivityKind, type ActivityHeader } from '@/lib/pr-activity-comment';
-import { deriveDeliveryView } from './projections';
+import { deriveDeliveryView, reviewSummaryLine, reviewSummaryOf } from './projections';
 import { signatureChecks } from './trunk-signature';
 import type { AttemptSnapshot, DeliveryState, KernelView, RoundSnapshot } from './types';
+import { ROUND_TRIGGER_COPY } from '@buildd/workflow-kernel/delta-approval';
+import { deltaApprovalOf } from '@buildd/workflow-kernel/reducer';
 
 export interface ActivityTransition {
   command: string;
@@ -59,6 +61,18 @@ const shortSha = (v: unknown): string | null => (typeof v === 'string' && v ? v.
 function liveHead(ev: Record<string, unknown>): string | null {
   const live = ev.live as { headSha?: unknown } | null | undefined;
   return typeof live?.headSha === 'string' ? live.headSha : null;
+}
+
+/**
+ * 58c8961e: "round N", then why it started, whether it is a delta review that
+ * carries an approval, and, for a round that ended without a verdict, what ended it.
+ */
+export function roundLabel(r: RoundSnapshot): string {
+  const parts = [`round ${r.round}`];
+  if (r.trigger && ROUND_TRIGGER_COPY[r.trigger]) parts.push(ROUND_TRIGGER_COPY[r.trigger]);
+  if (deltaApprovalOf(r)) parts.push('delta review of the approval');
+  if (r.status === 'superseded') parts.push(r.endReason === 'superseded_by_push' ? 'replaced by a newer push' : 'superseded');
+  return parts.join(' · ');
 }
 
 /** Map the transition log to timeline entries, oldest first. */
@@ -102,7 +116,12 @@ export function transitionsToActivityEntries(
           // §5.9 / S33: the delta round covers only the novel paths, never the whole PR.
           const paths = Array.isArray(delta.paths) ? delta.paths.map(String) : [];
           push({ kind: 'composition_delta_approved', note: paths.length ? paths.join('\n') : null, ...(url ? { taskUrl: url } : {}) });
-        } else if (t.toState === 'APPROVED') push({ kind: 'review_approved', ...(url ? { taskUrl: url } : {}) });
+        } else if (t.toState === 'APPROVED') {
+          // 58c8961e: a delta round's approve carries the approval it followed to this head.
+          const carried = ev.deltaApproval as { fromHeadSha?: unknown } | undefined;
+          const from = shortSha(carried?.fromHeadSha);
+          push({ kind: 'review_approved', ...(from ? { detail: `carries the approval at \`${from}\`` } : {}), ...(url ? { taskUrl: url } : {}) });
+        }
         else if (t.toState === 'CHANGES_REQUESTED') {
           const next = attempts.filter((a) => a.family === 'review_fix' && a.triggerReason === round?.id).sort((a, b) => b.attemptNo - a.attemptNo)[0];
           push({ kind: 'review_changes_requested', iteration: next?.attemptNo ?? (attempts.filter((a) => a.family === 'review_fix').length + 1), maxIterations: next?.maxAttempts ?? null, ...(url ? { taskUrl: url } : {}) });
@@ -133,7 +152,8 @@ export function transitionsToActivityEntries(
         } else if (t.toState === 'AWAITING_PUSH') {
           push({ kind: 'push_pending' });
         }
-        if (t.toState === 'ESCALATED') push({ kind: 'push_undeliverable' });
+        // 2ded4e88: a repair out of a spent review budget ends back at the person, not unpushed.
+        if (t.toState === 'ESCALATED') push(ev.reviewBudgetSpent ? { kind: 'review_escalated', detail: 'review budget spent' } : { kind: 'push_undeliverable' });
         break;
       }
       case 'PushRecoveryExhausted':
@@ -155,6 +175,7 @@ export function transitionsToActivityEntries(
       }
       case 'TrunkRecovered':
         push({ kind: 'trunk_recovered' });
+        if (t.toState === 'ESCALATED' && ev.reviewBudgetSpent) push({ kind: 'review_escalated', detail: 'review budget spent' });
         break;
       case 'PrMerged':
         push({ kind: 'merged' });
@@ -168,7 +189,7 @@ export function transitionsToActivityEntries(
         break;
       }
       default:
-        if (t.toState === 'ESCALATED' && t.fromState !== 'ESCALATED') push({ kind: 'review_escalated', detail: str(ev.reason) });
+        if (t.toState === 'ESCALATED' && t.fromState !== 'ESCALATED') push({ kind: 'review_escalated', detail: ev.reviewBudgetSpent ? 'review budget spent' : str(ev.reason) });
     }
 
     // A round was queued by this transition.
@@ -177,7 +198,7 @@ export function transitionsToActivityEntries(
     if (t.toState === 'AWAITING_REVIEW' && ROUND_STARTERS.has(t.command) && roundIdx < roundsByNo.length) {
       const r = roundsByNo[roundIdx++];
       const url = reviewUrl(r);
-      push({ kind: 'review_queued', detail: `round ${r.round}`, ...(url ? { taskUrl: url } : {}) });
+      push({ kind: 'review_queued', detail: roundLabel(r), ...(url ? { taskUrl: url } : {}) });
     }
   }
   return out;
@@ -236,8 +257,11 @@ export function renderDeliveryActivity(p: {
     status: dv?.detail && dv.detail.length <= 80 ? dv.detail : undefined,
   };
   const body = renderPrActivityComment(entries, p.timezone, { header, stateBlock: false });
+  // §7 / AC-24: the same review line get_pr and the task page print.
+  const review = reviewSummaryOf(p.view);
+  const reviewLine = review ? `Review: ${reviewSummaryLine(review)}` : '';
   const findings = renderFindingsSummary(p.view);
-  return `${body}\n${findings ? `${findings}\n` : ''}${renderVersionMarker(d.version)}`;
+  return `${body}\n${reviewLine ? `\n${reviewLine}\n` : ''}${findings ? `${findings}\n` : ''}${renderVersionMarker(d.version)}`;
 }
 
 /**

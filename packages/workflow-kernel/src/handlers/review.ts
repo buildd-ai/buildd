@@ -24,7 +24,7 @@ import { applyCommandOn } from '../command-runner';
 import type { Command } from '../commands';
 import type { EffectHandler, EffectHandlers } from '../effects';
 import { githubOf, NO_ROLE, type ClaimedEffect, type KernelPorts, type PostedReview, type ReviewOutput } from '../ports';
-import { PUSH_RECOVERY_BACKOFF_MS } from '../reducer';
+import { deltaApprovalOf, PUSH_RECOVERY_BACKOFF_MS } from '../reducer';
 import { openFindings } from '../findings';
 import type { DeliverySnapshot, KernelView, RoundSnapshot } from '../types';
 import { hasPr, need, type WithPr } from './ports-of';
@@ -139,8 +139,11 @@ export function reviewHandlers(ports: KernelPorts): EffectHandlers {
       if (prior && prior.headSha !== round.headSha) {
         const out = await reviews.output(prior);
         if (out.verdict === 'request-changes' || out.verdict === 'escalate' || out.verdict === 'approve') {
+          // 58c8961e: a delta that carries an approval is reviewed over exactly the range the rule
+          // measured (from the last full review's approved head), never a narrower one.
+          const carried = out.verdict === 'approve' ? deltaApprovalOf(round) : null;
           priorVerdict = {
-            headSha: prior.headSha, verdict: out.verdict, confidence: out.confidence ?? 0,
+            headSha: carried?.fromHeadSha ?? prior.headSha, verdict: out.verdict, confidence: out.confidence ?? 0,
             summary: out.summary ?? '', feedback: out.feedback ?? null, escalationReason: out.escalationReason ?? null,
           };
         }
@@ -156,6 +159,12 @@ export function reviewHandlers(ports: KernelPorts): EffectHandlers {
       dedupeKey: `review:${round.id}`,
       detail: {
         roundId: round.id, round: round.round, maxRounds: d.maxRounds,
+        // 58c8961e: why the round started, and whether it is a delta review carrying an approval
+        // (the reviewer then checks the delta for weakened tests, on a cheaper tier).
+        ...(round.trigger ? { trigger: round.trigger } : {}),
+        ...(priorVerdict && priorVerdict.verdict === 'approve' && deltaApprovalOf(round)
+          ? { deltaApproval: true, deltaFromHeadSha: deltaApprovalOf(round)!.fromHeadSha }
+          : {}),
         ...(priorVerdict ? { priorVerdict } : {}), ...(compositionScopeOf(round) ? { compositionScope: compositionScopeOf(round) } : {}),
         // §5: the findings still open, each with its id, for the reviewer to verify, restate or defer.
         findingsBrief: findingsBriefOf(view, round),
@@ -290,9 +299,17 @@ export function reviewHandlers(ports: KernelPorts): EffectHandlers {
 
   const notify: EffectHandler = async (e) => {
     const event = e.payload.event;
-    if (event !== 'policy_human' && event !== 'push_undeliverable' && event !== 'effect_dead' && event !== 'landing_needs_human') return { outcome: 'skipped:no_channel' };
+    if (event !== 'policy_human' && event !== 'push_undeliverable' && event !== 'effect_dead' && event !== 'landing_needs_human' && event !== 'merged_after_resolution') return { outcome: 'skipped:no_channel' };
     const d = (await ports.store.loadView({ deliveryId: e.deliveryId })).delivery;
     if (!hasPr(d)) return { outcome: 'skipped:no_pr' };
+    if (event === 'merged_after_resolution') {
+      // AC-4: GitHub merged a PR the delivery had already resolved without a merge. Nothing is
+      // applied (no edge leaves ABANDONED / SUPERSEDED); a person decides what the merge means.
+      const was = e.payload.state === 'SUPERSEDED' ? 'superseded' : 'abandoned';
+      await needsAttention(ports, e.kind, d, `PR #${d.prNumber} merged after it was ${was}`,
+        `GitHub reports PR #${d.prNumber} merged, but buildd had already recorded it as ${was}, so the merge was not applied: its task, dependents and mission still treat the work as not shipped. Check whether the work landed and record it.`);
+      return { outcome: 'ok' };
+    }
     if (event === 'policy_human') {
       // T28: the one admission point for a pre-flight finding. The delivery is ESCALATED(policy_human)
       // at this head, so Home (needsYou) and this notice agree; a finding for an older head never gets here.

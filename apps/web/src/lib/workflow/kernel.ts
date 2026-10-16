@@ -20,9 +20,13 @@ import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { applyCommandOn } from '@buildd/workflow-kernel/command-runner';
 import { isTaskId } from '@buildd/workflow-kernel/findings';
+import { isRoundTrigger } from '@buildd/workflow-kernel/delta-approval';
 import type { CommandResult, DeliveryRef } from '@buildd/workflow-kernel/ports';
 import type { ApplyDecision, AttemptOp, Command, DeliveryPatch, FindingOp, RecordOnly, RoundOp } from './commands';
 import { postgresStore } from './postgres-store';
+import { prFactProjectionSql } from '@buildd/core/pr-fact-sql';
+import { prRowOfDeliverySql } from './pr-fact-scope';
+import { mergeTaskPayloadSql, mergeTaskProjectionCtes } from './task-projection';
 import { kernelHost } from './kernel-host';
 import type {
   ApprovalBasis,
@@ -98,7 +102,9 @@ function roundCtes(ops: RoundOp[], src: string): SQL[] {
   const inserts = ops.filter((o): o is Extract<RoundOp, { op: 'insert' }> => o.op === 'insert');
   if (inserts.length) {
     const rows = inserts.map((o) => ({
-      id: o.id, round: o.round, head_sha: o.headSha, kind: o.kind, prior_round: o.priorRound, scope: o.scope ?? null,
+      // 58c8961e: the trigger is kept in the round's scope (no column of its own); toRoundSnapshot reads it back out.
+      id: o.id, round: o.round, head_sha: o.headSha, kind: o.kind, prior_round: o.priorRound,
+      scope: o.trigger ? { ...(o.scope ?? {}), [ROUND_TRIGGER_KEY]: o.trigger } : o.scope ?? null,
       status: o.decided ? 'decided' : 'queued', verdict: o.decided?.verdict ?? null, effective_verdict: o.decided?.effectiveVerdict ?? null,
       confidence: o.decided?.confidence ?? null, reviewer_task_id: o.decided?.reviewerTaskId ?? null, decided: !!o.decided,
     }));
@@ -120,6 +126,9 @@ function roundCtes(ops: RoundOp[], src: string): SQL[] {
     if (o.set.decided) sets.push(sql`decided_at = now()`);
     if (o.set.failureCount !== undefined) sets.push(sql`failure_count = ${o.set.failureCount}::int`);
     if (o.set.clearReviewer) sets.push(sql`reviewer_task_id = NULL`);
+    if (o.set.endReason !== undefined) {
+      sets.push(sql`scope = COALESCE(rr.scope, '{}'::jsonb) || jsonb_build_object(${ROUND_END_REASON_KEY}::text, ${o.set.endReason}::text)`);
+    }
     out.push(sql`${sql.identifier(`r_upd_${i}`)} AS (
   UPDATE workflow_review_rounds rr SET ${sql.join(sets, sql`, `)}
   FROM ${sql.identifier(src)} s
@@ -239,6 +248,9 @@ export function transitionSql(decision: ApplyDecision, ref: { deliveryId?: strin
   const d = decision;
   const ctes: SQL[] = [];
   const patch = patchEntries(d.patch);
+  const projected = prRowProjection(d);
+  // The projection reads the PR identity and merge instant from the delivery row it just wrote.
+  const returning = projected ? sql`RETURNING id, version, workspace_id, repo_full_name, pr_number, merged_at` : sql`RETURNING id, version`;
 
   if (d.create) {
     const cols: SQL[] = [sql`workspace_id`, sql`owner_task_id`, sql`state`, sql`version`, sql`max_rounds`, sql`last_transition_at`];
@@ -251,7 +263,7 @@ export function transitionSql(decision: ApplyDecision, ref: { deliveryId?: strin
   INSERT INTO workflow_deliveries (${sql.join(cols, sql`, `)})
   VALUES (${sql.join(vals, sql`, `)})
   ON CONFLICT (workspace_id, owner_task_id) DO NOTHING
-  RETURNING id, version
+  ${returning}
 )`);
   } else {
     if (!ref.deliveryId) throw new Error('transitionSql: deliveryId required for a non-creating transition');
@@ -274,9 +286,14 @@ export function transitionSql(decision: ApplyDecision, ref: { deliveryId?: strin
     ctes.push(sql`d AS (
   UPDATE workflow_deliveries SET ${sql.join(sets, sql`, `)}
   WHERE ${sql.join(where, sql` AND `)}
-  RETURNING id, version
+  ${returning}
 )`);
   }
+
+  // S4b (AC-2): T17 completes the owner task in this statement too, and tells the post-merge
+  // effect what it did (task-projection.ts), so runMergedPrWork performs only side effects.
+  const projectsTask = projected === 'merged';
+  if (projectsTask) ctes.push(...mergeTaskProjectionCtes('d'));
 
   ctes.push(sql`t AS (
   INSERT INTO workflow_transitions (delivery_id, from_version, to_version, from_state, to_state, command, idempotency_key, actor, evidence, bypass, host)
@@ -290,7 +307,9 @@ export function transitionSql(decision: ApplyDecision, ref: { deliveryId?: strin
     const rows = d.effects.map((e) => ({ kind: e.kind, dedupe_key: e.dedupeKey, payload: e.payload, delay_ms: e.delayMs ?? 0 }));
     ctes.push(sql`e AS (
   INSERT INTO workflow_effects (delivery_id, transition_id, kind, dedupe_key, payload, not_before)
-  SELECT t.delivery_id, t.id, x.kind, x.dedupe_key, x.payload, now() + make_interval(secs => x.delay_ms / 1000.0)
+  SELECT t.delivery_id, t.id, x.kind, x.dedupe_key,
+    ${projectsTask ? sql`CASE WHEN x.kind = 'emit_pr_merged' THEN COALESCE(x.payload, '{}'::jsonb) || ${mergeTaskPayloadSql()} ELSE x.payload END` : sql`x.payload`},
+    now() + make_interval(secs => x.delay_ms / 1000.0)
   FROM t, jsonb_to_recordset(${jsonb(rows)}) AS x(kind text, dedupe_key text, payload jsonb, delay_ms bigint)
   ON CONFLICT (dedupe_key) DO NOTHING
   RETURNING id
@@ -300,6 +319,13 @@ export function transitionSql(decision: ApplyDecision, ref: { deliveryId?: strin
   ctes.push(...roundCtes(d.rounds, 't'));
   ctes.push(...attemptCtes(d.attempts, 't'));
   ctes.push(...findingCtes(d.findings ?? [], 't'));
+
+  // S4a (workflow-kernel-library.md §1): the worker rows of the PR are a projection of this
+  // transition, written in its own statement. They move only if the delivery did (the CTE reads
+  // `d`, which is empty on a CAS miss), and with the funnel's terminal-wins guard.
+  if (projected) {
+    ctes.push(sql`w_proj AS (\n${prFactProjectionSql({ kind: projected }, { from: sql`d`, where: prRowOfDeliverySql('d'), mergedAt: sql`d.merged_at` })}\n)`);
+  }
 
   if (ref.factId) {
     ctes.push(sql`f AS (
@@ -312,6 +338,19 @@ export function transitionSql(decision: ApplyDecision, ref: { deliveryId?: strin
   return sql`-- workflow:transition
 WITH ${sql.join(ctes, sql`,\n`)}
 SELECT t.id AS transition_id, t.delivery_id, t.to_version AS version FROM t`;
+}
+
+/**
+ * Which terminal fact a transition projects onto the worker rows of its PR: the reducer's
+ * `stamp_pr_rows` (T17 merged, T18 closed) names the transitions that change them, and the
+ * target state says which. The effect stays as a replay-safe backstop (a row that adopts the PR
+ * between the statement and the drain); after the statement it finds nothing left to write.
+ */
+function prRowProjection(d: ApplyDecision): 'merged' | 'closed' | null {
+  if (!d.effects.some((e) => e.kind === 'stamp_pr_rows')) return null;
+  if (d.toState === 'MERGED') return 'merged';
+  if (d.toState === 'CLOSED_UNMERGED') return 'closed';
+  return null;
 }
 
 /** Writes kept for audit when no transition applies (a stale verdict, a skipped fix). */
@@ -401,13 +440,22 @@ export function toDeliverySnapshot(r: J): DeliverySnapshot {
   };
 }
 
+/** Where a round's trigger and end reason live inside `workflow_review_rounds.scope` (58c8961e). */
+export const ROUND_TRIGGER_KEY = 'trigger';
+export const ROUND_END_REASON_KEY = 'endReason';
+
 export function toRoundSnapshot(r: J): RoundSnapshot {
+  const raw = (r.scope as Record<string, unknown> | null) ?? null;
+  const { [ROUND_TRIGGER_KEY]: trigger, [ROUND_END_REASON_KEY]: endReason, ...rest } = raw ?? {};
+  const scope = raw && Object.keys(rest).length > 0 ? rest : null;
   return {
     id: String(r.id), round: n(r.round), headSha: String(r.head_sha), kind: r.kind as RoundSnapshot['kind'],
     status: r.status as RoundSnapshot['status'], verdict: (r.verdict ?? null) as RoundSnapshot['verdict'],
     effectiveVerdict: (r.effective_verdict ?? null) as RoundSnapshot['effectiveVerdict'], failureCount: n(r.failure_count),
     reviewerTaskId: s(r.reviewer_task_id),
-    scope: (r.scope as Record<string, unknown> | null) ?? null,
+    scope,
+    ...(isRoundTrigger(trigger) ? { trigger } : {}),
+    ...(typeof endReason === 'string' ? { endReason } : {}),
   };
 }
 

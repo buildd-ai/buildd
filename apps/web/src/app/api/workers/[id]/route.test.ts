@@ -56,9 +56,9 @@ const mockTeamsFindFirst = mock(() => Promise.resolve(null));
 const mockSecretsFindMany = mock(() => Promise.resolve([] as any[]));
 const mockSecretsFindFirst = mock(() => Promise.resolve(null as any));
 const mockWorkerErrorTracesFindMany = mock(() => Promise.resolve([] as any[]));
-// Direct mock for hasCodexCredential — Bun 1.4.0+ uses per-file module registries
+// Direct mock for resolveCodexApiKey — Bun 1.4.0+ uses per-file module registries
 // so transitive @buildd/core/db mocks may not reach codex-credential.ts.
-const mockHasCodexCredential = mock(() => Promise.resolve(false));
+const mockResolveCodexApiKey = mock(() => Promise.resolve(null as { apiKey: string } | null));
 const mockDecrypt = mock((value: string) => value);
 const mockGetMissionSpendUsd = mock(() => Promise.resolve(0));
 const mockExhaustMissionBudget = mock(() => Promise.resolve());
@@ -343,7 +343,7 @@ mock.module('@/lib/task-dependencies', () => ({
 }));
 
 mock.module('@/lib/codex-credential', () => ({
-  hasCodexCredential: mockHasCodexCredential,
+  resolveCodexApiKey: mockResolveCodexApiKey,
 }));
 
 // Handoff gate's dependents lookup. Mocked as its own question rather than
@@ -535,6 +535,17 @@ mock.module('@/lib/dispatch-authority', () => ({
   reseedDispatchTimer: mock(() => Promise.resolve()),
   DISPATCH_DUE_QUEUE: 'dispatch',
   DRAIN_BATCH: 25,
+}));
+// Whether a Claude wall belongs to one runner's own machine login (task
+// e68327a1). Its decision is unit-tested in lib/runner-seat-wall.test.ts;
+// here it is pinned so the route's wiring can be asserted. Default: shared,
+// which is the pre-existing behaviour every other test expects.
+const mockResolveRunnerSeatWallKey = mock((..._args: unknown[]) =>
+  Promise.resolve({ seatKey: null as string | null, reason: 'test default' }));
+mock.module('@/lib/runner-seat-wall', () => ({
+  resolveRunnerSeatWallKey: mockResolveRunnerSeatWallKey,
+  runnerSeatKey: (runner: string | null | undefined) => (runner ? `runner:${runner}` : null),
+  isMachineLoginWallError: () => true,
 }));
 /** Causes wakeTask was called with for one task, in call order. */
 const wakeCausesFor = (taskId: string) =>
@@ -7589,6 +7600,79 @@ describe('PATCH /api/workers/[id]', () => {
       expect(mockAccountsUpdate).toHaveBeenCalled();
     });
 
+    // Task e68327a1: one of two runners on a shared runner account hit the
+    // weekly limit of its OWN machine login. The wall is that runner's, so the
+    // account flag (which holds every runner) is not written, the pause carries
+    // the runner's seat key, and the task is claimable now by another runner.
+    describe("a wall on a runner's own machine login", () => {
+      const WEEKLY = "You've hit your weekly limit · resets Oct 16, 4am (UTC)";
+      function setup() {
+        mockBackendPausesInsert.mockClear();
+        mockBackendPausesFindMany.mockResolvedValue([]);
+        mockAccountsFindFirst.mockResolvedValue(null);
+        mockWakeTask.mockClear();
+        accountsUpdateSets = [];
+        lastBackendPauseValues = null;
+        mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'oauth', teamId: 'team-1', seatId: 'seat-1' });
+        mockWorkersFindFirst.mockResolvedValue({
+          id: 'worker-1', taskId: 'task-1', workspaceId: 'ws-1', accountId: 'account-1',
+          status: 'running', milestones: [], runner: 'headless://box-a', claimedByCloud: false,
+        });
+        mockTasksFindFirst.mockResolvedValue({
+          id: 'task-1', context: {}, workspaceId: 'ws-1', backend: 'claude', status: 'in_progress',
+          workspace: { teamId: 'team-1' },
+        });
+        const taskSets: any[] = [];
+        mockTasksUpdate.mockImplementation(() => ({
+          set: mock((vals: any) => { taskSets.push(vals); return { where: mock(() => Promise.resolve()) }; }),
+        }));
+        return { taskSets };
+      }
+      afterEach(() => {
+        mockResolveRunnerSeatWallKey.mockReset();
+        mockResolveRunnerSeatWallKey.mockImplementation(() => Promise.resolve({ seatKey: null, reason: 'test default' }));
+      });
+      const report = () => PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: WEEKLY, budgetExhausted: true },
+      }), { params: mockParams });
+
+      it('records the wall for that runner only and leaves the task claimable now', async () => {
+        const { taskSets } = setup();
+        mockResolveRunnerSeatWallKey.mockImplementation(() => Promise.resolve({ seatKey: 'runner:box-a', reason: 'machine login' }));
+
+        const res = await report();
+        expect(res.status).toBe(200);
+
+        expect(mockResolveRunnerSeatWallKey).toHaveBeenCalledWith(expect.objectContaining({
+          backend: 'claude', runner: 'headless://box-a', accountId: 'account-1', teamId: 'team-1', workspaceId: 'ws-1',
+        }));
+        expect(lastBackendPauseValues).toMatchObject({ backend: 'claude', reason: 'budget', seatKey: 'runner:box-a' });
+        // The account-wide flag would hold every runner on the account.
+        expect(accountsUpdateSets.some((s: any) => s?.budgetExhaustedAt)).toBe(false);
+        // Re-queued with no start floor and no "budget paused" banner: another
+        // runner can take it now; the walled runner's own claims defer it.
+        const requeue = taskSets.find((s: any) => s?.status === 'pending');
+        expect(requeue).toBeTruthy();
+        expect(requeue.startAt ?? null).toBeNull();
+        expect(requeue.backend).toBeUndefined();
+        expect(requeue.context?.budgetExhausted).toBeUndefined();
+        expect(wakeCausesFor('task-1')).toContain('task.requeued');
+      });
+
+      it('keeps the account-wide wall when the login identity is unknown', async () => {
+        const { taskSets } = setup();
+        // default mock: seatKey null
+        await report();
+        expect(lastBackendPauseValues?.seatKey ?? null).toBeNull();
+        expect(accountsUpdateSets.some((s: any) => s?.budgetExhaustedAt)).toBe(true);
+        const requeue = taskSets.find((s: any) => s?.status === 'pending');
+        expect(requeue?.context?.budgetExhausted).toBe(true);
+        expect(requeue?.startAt).toBeInstanceOf(Date);
+      });
+    });
+
     // A per-session dollar cap (the SDK's maxBudgetUsd) is THIS task's own
     // ceiling. It used to be read as a provider wall: the team's Claude backend
     // was paused, every seat flagged exhausted for a session window, a fake
@@ -10891,6 +10975,28 @@ describe('PATCH /api/workers/[id]', () => {
         expect(taskSetCalls).toHaveLength(0);
       });
 
+      it.each([
+        ['structuredOutput absent, verdict only in summary', { status: 'completed', viaCompleteTask: true, summary: 'approve, 0.75' }],
+        ['structuredOutput null', { status: 'completed', viaCompleteTask: true, summary: 'approve, 0.75', structuredOutput: null }],
+      ])('complete_task with %s: 400 naming the fields, worker not failed', async (_label, body) => {
+        setupReviewerTaskCompletion('approve');
+        const taskSetCalls = captureTaskSets();
+
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body,
+        }), { params: mockParams });
+
+        expect(res.status).toBe(400);
+        const json = await res.json();
+        expect(json.error).toContain('verdict');
+        expect(json.error).toContain('confidence');
+        expect(json.error).toContain('summary');
+        expect(taskSetCalls).toHaveLength(0);
+        expect(mockWorkersUpdate).not.toHaveBeenCalled();
+      });
+
       it('runner-reported completion (no viaCompleteTask) keeps the requeue contract, not a 400', async () => {
         setupReviewerTaskCompletion('approve');
         captureTaskSets();
@@ -13071,6 +13177,34 @@ describe('PATCH /api/workers/[id]', () => {
         });
       });
 
+      // The runner refused a Claude run before spawn: its machine has no model
+      // login or key and the claim delivered none. The machine's setup, not
+      // the task: back to the queue for a runner that has a login.
+      describe('Claude run refused for want of a model login', () => {
+        const refusedBody = {
+          status: 'failed',
+          error: '[runner:no_model_auth] No model login for this Claude run',
+          modelAuthMissing: true,
+        };
+
+        it('requeues on the infra budget and books infra_failure', async () => {
+          const { taskSetCalls, workerSetCalls } = setupCrashReconcile({});
+          const res = await PATCH(createMockRequest({
+            method: 'PATCH',
+            headers: { Authorization: 'Bearer bld_test' },
+            body: refusedBody,
+          }), { params: mockParams });
+
+          expect(res.status).toBe(200);
+          const requeue = taskSetCalls.find((c: any) => c.status === 'pending');
+          expect(requeue).toBeDefined();
+          expect(requeue.context.infraRetryCount).toBe(1);
+          expect(requeue.context.retryCount).toBeUndefined();
+          expect(taskSetCalls.some((c: any) => c.status === 'failed')).toBe(false);
+          expect(workerSetCalls.find((u: any) => u.exitCause).exitCause).toBe('infra_failure');
+        });
+      });
+
       // The cloud runner's supervisor (apps/cloud-runner/src/supervisor.ts)
       // reports a container that died under the runner with the same flag. It
       // used to send a bare {failed, error}, which booked code_failure and left
@@ -14039,9 +14173,11 @@ describe('PATCH /api/workers/[id]', () => {
         expect(lateRunnerEvidenceCalls).toEqual([{ workerId: 'worker-1', taskId: 'task-1', evidence: failed }]);
       });
 
-      // A cloud container runs its whole runner on a task token, so on a worker
-      // the claim route recorded as cloud-claimed that token is the runner.
-      it('counts a task-token copy as the runner on a worker a cloud container claimed', async () => {
+      // A cloud container's runner and agent share one task token, so on a
+      // cloud-claimed worker that token is the agent too. The runner's own
+      // report comes from the cloud Worker on its runner key, which never
+      // enters the container (apps/cloud-runner/src/runner-verification.ts).
+      it('stamps a task-token copy as the agent on a worker a cloud container claimed', async () => {
         asTaskToken();
         const workerSetCalls: any[] = [];
         mockWorkersUpdate.mockReturnValue({
@@ -14056,10 +14192,10 @@ describe('PATCH /api/workers/[id]', () => {
         }), { params: mockParams });
 
         expect(res.status).toBe(200);
-        expect(workerSetCalls.find((u: any) => u.verificationEvidence)?.verificationEvidence).toEqual({ ...ok, reportedVia: 'runner' });
+        expect(workerSetCalls.find((u: any) => u.verificationEvidence)?.verificationEvidence).toEqual({ ...ok, reportedVia: 'task_token' });
       });
 
-      it('hands a cloud runner late report on its task token to the late evidence path', async () => {
+      it('ignores a late task-token report on a terminal cloud-claimed worker', async () => {
         asTaskToken();
         lateRunnerEvidenceCalls.length = 0;
         mockWorkersFindFirst.mockResolvedValue(makeLoopWorker({ status: 'completed', claimedByCloud: true }));
@@ -14071,7 +14207,7 @@ describe('PATCH /api/workers/[id]', () => {
         }), { params: mockParams });
 
         expect(res.status).toBe(409);
-        expect(lateRunnerEvidenceCalls).toEqual([{ workerId: 'worker-1', taskId: 'task-1', evidence: failed }]);
+        expect(lateRunnerEvidenceCalls).toEqual([]);
       });
 
       it('ignores a late task-token report on a terminal worker', async () => {
@@ -14144,7 +14280,7 @@ describe('PATCH /api/workers/[id]', () => {
       mockWorkersUpdate.mockReturnValue({
         set: mock(() => ({ where: mock(() => ({ returning: mock(() => [updatedWorker]) })) })),
       });
-      mockHasCodexCredential.mockResolvedValue(false);
+      mockResolveCodexApiKey.mockResolvedValue(null);
       mockHoldTaskForCredential.mockClear();
       mockResolveCredentialIdentity.mockClear();
     });
@@ -14163,7 +14299,7 @@ describe('PATCH /api/workers/[id]', () => {
       mockTasksFindFirst.mockResolvedValue(makeClaudeTask());
 
       // Codex credential present
-      mockHasCodexCredential.mockResolvedValue(true);
+      mockResolveCodexApiKey.mockResolvedValue({ apiKey: "sk-test" });
 
       const req = createMockRequest({
         method: 'PATCH',
@@ -14202,7 +14338,7 @@ describe('PATCH /api/workers/[id]', () => {
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'api_key', teamId: 'team-1' });
       mockWorkersFindFirst.mockResolvedValue(makeAuthFailWorker());
       mockTasksFindFirst.mockResolvedValue(makeClaudeTask({ backendPinned: true }));
-      mockHasCodexCredential.mockResolvedValue(true);
+      mockResolveCodexApiKey.mockResolvedValue({ apiKey: "sk-test" });
 
       const res = await PATCH(createMockRequest({
         method: 'PATCH',
@@ -14230,7 +14366,7 @@ describe('PATCH /api/workers/[id]', () => {
       mockTasksFindFirst.mockResolvedValue(makeClaudeTask());
 
       // No Codex credential (default is false, but be explicit)
-      mockHasCodexCredential.mockResolvedValue(false);
+      mockResolveCodexApiKey.mockResolvedValue(null);
 
       const req = createMockRequest({
         method: 'PATCH',
@@ -14313,7 +14449,7 @@ describe('PATCH /api/workers/[id]', () => {
       mockTasksFindFirst.mockResolvedValue(makeClaudeTask());
 
       // Codex credential present — but error is not auth-related
-      mockHasCodexCredential.mockResolvedValue(true);
+      mockResolveCodexApiKey.mockResolvedValue({ apiKey: "sk-test" });
 
       const req = createMockRequest({
         method: 'PATCH',
@@ -14354,7 +14490,7 @@ describe('PATCH /api/workers/[id]', () => {
       }));
 
       // Codex credential present — but guard must prevent re-flip
-      mockHasCodexCredential.mockResolvedValue(true);
+      mockResolveCodexApiKey.mockResolvedValue({ apiKey: "sk-test" });
 
       const req = createMockRequest({
         method: 'PATCH',

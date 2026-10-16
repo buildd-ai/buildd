@@ -40,8 +40,8 @@ type OwnerAdminContext = {
 };
 
 /**
- * Shares are managed only by an ADMIN of the connector's OWNER team (spec §1b
- * AC-4). A connector outside the actor's teams is invisible → 404 (not 403),
+ * Shares are managed only by an ADMIN of the connector's OWNER team (spec
+ * AC-9). A connector outside the actor's teams is invisible → 404 (not 403),
  * mirroring the [id] route's non-leaking resolution.
  */
 async function requireOwnerAdmin(
@@ -62,7 +62,7 @@ async function requireOwnerAdmin(
     return { error: NextResponse.json({ error: 'Connector not found' }, { status: 404 }) };
   }
 
-  // §1b AC-4: grantees / plain members can never manage shares.
+  // AC-9: grantees / plain members can never manage shares.
   if (auth.type === 'session' && !(await canManageTeamConnectors(auth.user.id, connector.teamId))) {
     return { error: NextResponse.json({ error: 'Forbidden' }, { status: 403 }) };
   }
@@ -208,7 +208,7 @@ export async function DELETE(
   }
 
   try {
-    // Revocation removes claim-time mounting automatically (§1b AC-5):
+    // Revocation removes claim-time mounting automatically (AC-10):
     // visibility is computed per claim, so no worker-side cleanup is needed.
     const deleted = await db.delete(connectorShares)
       .where(and(

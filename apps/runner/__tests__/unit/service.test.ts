@@ -5,8 +5,8 @@
  * against a throwaway temp directory with a fake CommandRunner so no real
  * launchctl/systemctl call is ever made.
  */
-import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'fs';
+import { describe, test, expect, beforeEach, afterEach, skip, mock } from 'bun:test';
+import { mkdtempSync, rmSync, existsSync, readFileSync, chmodSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -22,9 +22,12 @@ import {
   serviceStatus,
   installedServiceDebug,
   parseInstallArgs,
+  handleInstallCommand,
+  SERVICE_STOP_TIMEOUT_S,
   type CommandResult,
   type CommandRunner,
 } from '../../src/service';
+import { SHUTDOWN_DEADLINE_MS } from '../../src/restart-resume';
 
 describe('detectServicePlatform', () => {
   test('darwin', () => expect(detectServicePlatform('darwin')).toBe('darwin'));
@@ -68,6 +71,17 @@ describe('launchdPlistPath / systemdUnitPath', () => {
 
   test('unit lives under ~/.config/systemd/user', () => {
     expect(systemdUnitPath(paths)).toBe('/home/alice/.config/systemd/user/buildd-runner.service');
+  });
+});
+
+describe('generateLaunchdPlist: the stop window (R-37)', () => {
+  test('ExitTimeOut leaves the runner time to pause its agents before launchd kills it', () => {
+    const plist = generateLaunchdPlist(resolveServicePaths({ home: '/Users/alice', builddHome: '/Users/alice/.buildd' }));
+    expect(plist).toMatch(new RegExp(`<key>ExitTimeOut</key>\\s*<integer>${SERVICE_STOP_TIMEOUT_S}</integer>`));
+  });
+
+  test('the runner exits on its own inside launchd\'s default ExitTimeOut too (an install from before this setting)', () => {
+    expect(SHUTDOWN_DEADLINE_MS).toBeLessThan(20_000);
   });
 });
 
@@ -118,6 +132,14 @@ describe('generateLaunchdPlist', () => {
 describe('generateSystemdUnit', () => {
   const paths = resolveServicePaths({ home: '/home/alice', builddHome: '/home/alice/.buildd' });
   const unit = generateSystemdUnit(paths);
+
+  test('R-37: a stop signals the launcher only and waits longer than the runner takes to pause its agents', () => {
+    // control-group (the default) signals every agent process at once, so each
+    // died before the runner could pause it.
+    expect(unit).toContain('KillMode=mixed');
+    expect(unit).toContain(`TimeoutStopSec=${SERVICE_STOP_TIMEOUT_S}`);
+    expect(SERVICE_STOP_TIMEOUT_S * 1000).toBeGreaterThan(SHUTDOWN_DEADLINE_MS + 5_000);
+  });
 
   test('runs the launcher binary as ExecStart', () => {
     expect(unit).toContain(`ExecStart=${paths.builddBin}`);
@@ -432,6 +454,28 @@ describe('--debug is kept across reinstalls', () => {
       installService(paths, platform, fakeRunner(0).run, { debug: false });
       expect(installedServiceDebug(paths, platform)).toBe(false);
     });
+
+    test.skipIf(process.getuid?.() === 0)(`${platform}: returns false if the service file is unreadable`, () => {
+      const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd') });
+      installService(paths, platform, fakeRunner(0).run, { debug: true });
+      const file = platform === 'darwin' ? launchdPlistPath(paths) : systemdUnitPath(paths);
+      // Make file unreadable by changing its mode to write-only (fails for root, hence skipIf above)
+      chmodSync(file, 0o200);
+      const originalWarn = console.warn;
+      let warnCalled = false;
+      let warnMessage = '';
+      console.warn = ((msg: string) => {
+        warnCalled = true;
+        warnMessage = msg;
+      }) as any;
+      try {
+        expect(installedServiceDebug(paths, platform)).toBe(false);
+        expect(warnCalled).toBe(true);
+        expect(warnMessage).toContain(file);
+      } finally {
+        console.warn = originalWarn;
+      }
+    });
   }
 
   test('a plain install keeps what is installed; --debug turns it on, --no-debug off', () => {
@@ -444,5 +488,26 @@ describe('--debug is kept across reinstalls', () => {
   test('unknown or conflicting arguments are refused', () => {
     expect(parseInstallArgs(['--verbose'], false)).toEqual({ error: 'Unknown argument: --verbose' });
     expect('error' in parseInstallArgs(['--debug', '--no-debug'], false)).toBe(true);
+  });
+
+  test('handleInstallCommand wires installedServiceDebug into parseInstallArgs: reinstall without args preserves --debug', () => {
+    const testHome = mkdtempSync(join(tmpdir(), 'buildd-service-test-main-wiring-'));
+    try {
+      for (const platform of ['darwin', 'linux'] as const) {
+        const paths = resolveServicePaths({ home: testHome, builddHome: join(testHome, '.buildd') });
+        // First install with --debug
+        const firstResult = installService(paths, platform, fakeRunner(0).run, { debug: true });
+        expect(firstResult.ok).toBe(true);
+        // Verify installed with debug
+        expect(installedServiceDebug(paths, platform)).toBe(true);
+        // Reinstall with no args through handleInstallCommand verifies the wiring
+        const handleResult = handleInstallCommand(paths, platform, fakeRunner(0).run, []);
+        expect(handleResult.ok).toBe(true);
+        // Verify it preserved the debug flag
+        expect(installedServiceDebug(paths, platform)).toBe(true);
+      }
+    } finally {
+      rmSync(testHome, { recursive: true, force: true });
+    }
   });
 });

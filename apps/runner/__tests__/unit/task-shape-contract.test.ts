@@ -217,7 +217,10 @@ mock.module('../../src/env-scan', () => ({
 }));
 
 const { OutputRequirement, TaskMode } = await import('../../../../packages/shared/src/types');
-const { WorkerManager } = await import('../../src/workers');
+const { WorkerManager, __setModelAuthPreflightForTest } = await import('../../src/workers');
+// Sessions here run a mocked SDK with no model credential: skip the
+// pre-spawn model-auth refusal (claude-model-auth-preflight.test.ts covers it).
+__setModelAuthPreflightForTest(() => null);
 
 // ─── The contract table ──────────────────────────────────────────────────────
 
@@ -530,7 +533,17 @@ async function runShape(manager: InstanceType<typeof WorkerManager>, shape: Shap
     // The session runs detached from claimAndStart; wait for the local worker
     // to reach a terminal state, then give trailing PATCHes a beat to land.
     await waitFor(() => ['done', 'error'].includes(manager.getWorker(workerId)?.status ?? ''));
-    await new Promise(r => setTimeout(r, 50));
+    // The terminal PATCH follows async git (stats, cleanup), so it can land
+    // well after the local status; a late one would leak into the next test's
+    // server state. Wait for the server to record an outcome, then for the
+    // trailing PATCHes to go quiet.
+    await waitFor(() => server.status !== null, 5000);
+    const deadline = Date.now() + 3000;
+    let seen = -1;
+    while (seen !== mockUpdateWorker.mock.calls.length && Date.now() < deadline) {
+      seen = mockUpdateWorker.mock.calls.length;
+      await new Promise(r => setTimeout(r, 400));
+    }
   } finally {
     if (shape.codex) {
       if (priorKey === undefined) delete process.env.OPENAI_API_KEY;

@@ -4,9 +4,10 @@
  * Pure, so every key is unit-tested (top-keys.test.ts).
  */
 import {
-  currentMission, currentWorkspace, cycleWorkspace, missionRows, selectedRow, taskRows, teamCount, workspaceList,
+  currentMission, currentTeam, heldNow, holdRunningWords, currentWorkspace, cycleTeam, cycleWorkspace, missionRows, scopedWorkspaces, selectedRow, taskRows, teamCount, teamList, workspaceList,
   type TaskRow, type TopState,
 } from './state';
+import { queueRowList, selectedQueueRow } from './queue';
 
 export type Key =
   | { name: 'up' | 'down' | 'left' | 'right' | 'enter' | 'escape' | 'backspace' | 'tab' | 'ctrl-c' }
@@ -150,6 +151,10 @@ export type Effect =
   | { type: 'open'; taskId: string }
   /** The runner's page on buildd.dev, where its workspaces are set (R-20). */
   | { type: 'openRunner' }
+  /** `h`: hold this runner (`on`) or resume it (R-33). */
+  | { type: 'hold'; on: boolean }
+  /** Read the queue now: the Queue view just opened (R-26). */
+  | { type: 'refreshQueue' }
   | { type: 'quit' };
 
 export interface KeyResult {
@@ -170,9 +175,9 @@ function targetRow(state: TopState, now: number): TaskRow | null {
   return state.focus === 'tasks' ? selectedRow(state, now) : null;
 }
 
-function moveMission(state: TopState, delta: number): TopState {
-  const rows = missionRows(state);
-  const cur = rows.findIndex(r => r.key === currentMission(state).key);
+function moveMission(state: TopState, delta: number, now: number): TopState {
+  const rows = missionRows(state, now);
+  const cur = rows.findIndex(r => r.key === currentMission(state, now).key);
   const idx = Math.max(0, Math.min(rows.length - 1, cur + delta));
   return { ...state, missionCursor: idx, selectedMission: rows[idx].key, rowCursor: 0 };
 }
@@ -275,6 +280,18 @@ export function handleKey(state: TopState, key: Key, now: number): KeyResult {
     if (state.filter) return { state: { ...state, filter: '', rowCursor: 0, status: null }, effects: [] };
     return { state: { ...state, status: null }, effects: [] };
   }
+  // `h` (R-33): hold or resume, no confirmation, from any list or detail view.
+  if (key.name === 'char' && key.ch === 'h') {
+    const on = !heldNow(state, now);
+    return {
+      state: info(state, on ? 'Holding: nothing new starts, running agents finish…' : 'Resuming: this runner takes new work again…'),
+      effects: [{ type: 'hold', on }],
+    };
+  }
+  if (mode.kind === 'list' && state.view === 'queue') {
+    const q = queueKey({ ...state, status: null }, key, now);
+    if (q) return q;
+  }
   if (key.name === 'char' && 'ampxco'.includes(key.ch)) return actOnRow({ ...state, status: null }, key.ch, now);
 
   if (mode.kind === 'detail') return { state, effects: [] };
@@ -283,15 +300,16 @@ export function handleKey(state: TopState, key: Key, now: number): KeyResult {
   const cleared = { ...state, status: null };
   switch (key.name) {
     case 'up':
-      return { state: state.focus === 'missions' ? moveMission(cleared, -1) : moveRow(cleared, -1, now), effects: [] };
+      return { state: state.focus === 'missions' ? moveMission(cleared, -1, now) : moveRow(cleared, -1, now), effects: [] };
     case 'down':
-      return { state: state.focus === 'missions' ? moveMission(cleared, 1) : moveRow(cleared, 1, now), effects: [] };
+      return { state: state.focus === 'missions' ? moveMission(cleared, 1, now) : moveRow(cleared, 1, now), effects: [] };
     case 'left':
       return { state: { ...cleared, focus: 'missions' }, effects: [] };
     case 'right':
       return { state: { ...cleared, focus: 'tasks' }, effects: [] };
     case 'tab':
-      return { state: { ...cleared, focus: state.focus === 'missions' ? 'tasks' : 'missions' }, effects: [] };
+      // R-26: Tab switches Missions <-> Queue; ← → still move between the panes.
+      return { state: { ...cleared, view: 'queue', queueCursor: 0 }, effects: [{ type: 'refreshQueue' }] };
     case 'enter': {
       if (state.focus === 'missions') return { state: { ...cleared, focus: 'tasks', rowCursor: 0 }, effects: [] };
       const row = selectedRow(state, now);
@@ -299,24 +317,64 @@ export function handleKey(state: TopState, key: Key, now: number): KeyResult {
       return { state: { ...cleared, mode: { kind: 'detail', taskId: row.taskId } }, effects: [] };
     }
     case 'char':
-      if (key.ch === 'k') return { state: state.focus === 'missions' ? moveMission(cleared, -1) : moveRow(cleared, -1, now), effects: [] };
-      if (key.ch === 'j') return { state: state.focus === 'missions' ? moveMission(cleared, 1) : moveRow(cleared, 1, now), effects: [] };
+      if (key.ch === 'k') return { state: state.focus === 'missions' ? moveMission(cleared, -1, now) : moveRow(cleared, -1, now), effects: [] };
+      if (key.ch === 'j') return { state: state.focus === 'missions' ? moveMission(cleared, 1, now) : moveRow(cleared, 1, now), effects: [] };
       if (key.ch === 'w') return { state: switchWorkspace(cleared), effects: [] };
+      if (key.ch === 't') return { state: switchTeam(cleared), effects: [] };
       if (key.ch === '/') return { state: { ...cleared, mode: { kind: 'input', purpose: 'filter', text: state.filter } }, effects: [] };
       return { state, effects: [] };
   }
   return { state, effects: [] };
 }
 
-/** `w` (R-19): the next workspace, then all of them again. */
+/** `w` (R-19): the next workspace of the team in view, then all of them again. */
 function switchWorkspace(state: TopState): TopState {
-  const list = workspaceList(state);
-  if (list.length < 2) return info(state, 'This runner serves one workspace, so there is nothing to switch to.');
+  const list = scopedWorkspaces(state);
+  const team = currentTeam(state);
+  if (list.length < 2) {
+    return info(state, team ? `${team.name} has one workspace here, so there is nothing to switch to.` : 'This runner serves one workspace, so there is nothing to switch to.');
+  }
   const next = cycleWorkspace(state);
   const ws = currentWorkspace(next);
   // With several teams, say whose workspace this is (R-7).
-  const team = ws && teamCount(next) > 1 && ws.teamName ? ` (${ws.teamName})` : '';
-  return info(next, ws ? `Showing ${ws.name}${team}. w for the next workspace.` : `Showing all ${list.length} workspaces.`);
+  const owner = ws && teamCount(next) > 1 && ws.teamName ? ` (${ws.teamName})` : '';
+  if (ws) return info(next, `Showing ${ws.name}${owner}. w for the next workspace.`);
+  return info(next, team ? `Showing all ${list.length} workspaces of ${team.name}.` : `Showing all ${list.length} workspaces.`);
+}
+
+/** `t` (R-23): the next team, then all of them again. */
+function switchTeam(state: TopState): TopState {
+  const teams = teamList(state);
+  if (teams.length < 2) return info(state, 'This runner serves one team, so there is nothing to switch to.');
+  const next = cycleTeam(state);
+  const team = currentTeam(next);
+  if (team) return info(next, `Showing ${team.name}. t for the next team.`);
+  return info(next, `Showing all ${workspaceList(next).length} workspaces in ${teams.length} teams.`);
+}
+
+/**
+ * Keys the Queue view handles itself (R-26): ↑↓ over its rows, `c` claims the
+ * selected row through the same claim path as the Missions view, `o` opens it,
+ * Tab goes back to Missions. Null: the key is handled as in the Missions view
+ * (t, w, /, ?, q, esc).
+ */
+function queueKey(state: TopState, key: Key, now: number): KeyResult | null {
+  const n = queueRowList(state, now).length;
+  const move = (d: number) => ({ state: n === 0 ? state : { ...state, queueCursor: Math.max(0, Math.min(n - 1, Math.min(state.queueCursor, n - 1) + d)) }, effects: [] });
+  if (key.name === 'tab') return { state: { ...state, view: 'missions' }, effects: [] };
+  if (key.name === 'up' || (key.name === 'char' && key.ch === 'k')) return move(-1);
+  if (key.name === 'down' || (key.name === 'char' && key.ch === 'j')) return move(1);
+  if (key.name === 'left' || key.name === 'right' || key.name === 'enter') return { state, effects: [] };
+  if (key.name !== 'char') return null;
+  if (key.ch === 'c' || key.ch === 'o') {
+    const row = selectedQueueRow(state, now);
+    if (!row) return { state: refuse(state, 'Nothing in the queue to pick.'), effects: [] };
+    if (key.ch === 'o') return { state: info(state, `Opening "${row.title}" on buildd…`), effects: [{ type: 'open', taskId: row.taskId }] };
+    if (row.position === null && !row.held) return { state: refuse(state, `"${row.title}" is not for this runner: ${row.reason}.`), effects: [] };
+    return { state: info(state, `Claiming "${row.title}" onto this runner…`), effects: [{ type: 'claim', taskId: row.taskId, title: row.title }] };
+  }
+  if ('ampx'.includes(key.ch)) return { state: info(state, 'Tab back to Missions to act on running work.'), effects: [] };
+  return null;
 }
 
 const fromOf = (state: TopState): 'detail' | undefined => (state.mode.kind === 'detail' ? 'detail' : undefined);
@@ -333,6 +391,13 @@ function backTo(mode: TopState['mode']): TopState['mode'] {
  */
 export function actionResultText(effect: Effect, result: { status: number; body: unknown }): { text: string; tone: 'ok' | 'error' } {
   const ok = result.status >= 200 && result.status < 300;
+  if (effect.type === 'hold') {
+    if (!ok) return { text: `${effect.on ? 'Hold' : 'Resume'} refused: ${refusalReason(result)}`, tone: 'error' };
+    const running = typeof (result.body as any)?.running === 'number' ? (result.body as any).running : 0;
+    return effect.on
+      ? { text: `On hold: nothing new starts, ${holdRunningWords(running)}. h resumes.`, tone: 'ok' }
+      : { text: 'Resumed: this runner takes new work again.', tone: 'ok' };
+  }
   const title = 'title' in effect ? effect.title : '';
   const done: Record<string, string> = {
     answer: `Answer sent to "${title}". The agent picks it up from here.`,

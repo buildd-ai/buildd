@@ -181,7 +181,7 @@ function Sparkline({ data, tier }: { data: number[]; tier: IntensityTier }) {
  * taskType is not set.
  *
  * The priority: attempt type → work kind (docs/specs/mission-legibility.md
- * Rule K2-4). No local re-derivation of work kind.
+ * mission-legibility R-16). No local re-derivation of work kind.
  */
 const ATTEMPT_TYPE_BADGE: Record<string, { glyph: string; label: string }> = {
   retry:          { glyph: '↻', label: 'CI Retry' },
@@ -358,7 +358,7 @@ export function TaskCard({
           </div>
         )}
 
-        {/* Work-kind glyph column (mission-legibility.md Rule R4-20 — desktop
+        {/* Work-kind glyph column (mission-legibility.md R-57 — desktop
             Timeline gains this and nothing else). No wrapper element: when
             TaskTypeBadge resolves to no glyph it renders null, so a glyph-less
             row consumes no gap-2 slot (matches row/full density). */}
