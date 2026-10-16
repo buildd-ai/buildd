@@ -65,6 +65,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   toolInFlight: true,
   pauseRequestedAt: true, // a timestamp, no content
   killedByRestart: true,
+  resumeOnStart: true, // shutdown or crash, no content
   completedAt: true,
   milestones: true,
   currentAction: true,

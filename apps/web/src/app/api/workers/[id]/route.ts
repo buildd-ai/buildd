@@ -617,7 +617,8 @@ async function recordPostSupersessionError(
 
 // GET /api/workers/[id] - Get worker details
 /** The `waitingFor` fields a sensitive workspace keeps: no prose, only what Needs You admission and hold resurfacing read. */
-const SENSITIVE_PARK_FIELDS: ReadonlySet<string> = new Set(['disposition', 'dispositionBy', 'gateOutcome', 'rail', 'repairTaskId']);
+// `since`: when a pause began (a timestamp, not prose), for "Paused for 40m" (R-38).
+const SENSITIVE_PARK_FIELDS: ReadonlySet<string> = new Set(['disposition', 'dispositionBy', 'gateOutcome', 'rail', 'repairTaskId', 'since']);
 
 export async function GET(
   req: NextRequest,

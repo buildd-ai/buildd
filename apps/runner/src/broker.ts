@@ -98,8 +98,14 @@ class CredentialBroker {
     if (cfg.baseUrl) this.baseUrl = cfg.baseUrl;
   }
 
-  /** Start heartbeat and refresh loops; register SIGTERM/SIGINT handlers. */
-  start(cfg?: BrokerConfig): void {
+  /**
+   * Start heartbeat and refresh loops; register SIGTERM/SIGINT handlers unless
+   * `signalHandlers: false`. The runner passes false: its own shutdown
+   * (restart-resume.ts installRunnerShutdown) owns the exit, pauses the agents
+   * first and calls shutdown() after, so this handler's exit(0) cannot cut the
+   * pause short. Anything else that starts the broker keeps the default.
+   */
+  start(cfg?: BrokerConfig, opts: { signalHandlers?: boolean } = {}): void {
     if (cfg) this.configure(cfg);
     if (!this.apiKey) {
       // Every control-plane call would 401. The credential path is inert either
@@ -149,8 +155,10 @@ class CredentialBroker {
         .catch((err) => console.error(`[broker] ${signal} shutdown failed: ${err?.message ?? err}`))
         .finally(() => { clearTimeout(failsafe); process.exit(0); });
     };
-    process.on('SIGTERM', () => exitAfterShutdown('SIGTERM'));
-    process.on('SIGINT', () => exitAfterShutdown('SIGINT'));
+    if (opts.signalHandlers !== false) {
+      process.on('SIGTERM', () => exitAfterShutdown('SIGTERM'));
+      process.on('SIGINT', () => exitAfterShutdown('SIGINT'));
+    }
     console.log(`[broker] started runnerId=${this.runnerId} controlPlane=${this.baseUrl} auth=${this.apiKey ? 'ok' : 'MISSING'}`);
   }
 

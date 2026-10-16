@@ -261,3 +261,122 @@ describe('WorkerSync.restoreWorkersFromDisk — already-terminal records are lef
     expect([...ctx.workers.keys()].sort()).toEqual(['w-killed-1', 'w-waiting-1']);
   });
 });
+
+// ─── R-37 / R-38: a restart continues what it can, and says what it could not ──
+
+describe('WorkerSync.restoreWorkersFromDisk — paused, not failed, when the session survived', () => {
+  beforeEach(() => {
+    mockUpdateWorker.mockClear();
+    diskWorkers = [];
+  });
+
+  /** Everything on disk except what `gone` names. */
+  function probe(gone: { worktree?: boolean; session?: boolean; codex?: boolean } = {}) {
+    return {
+      worktreeExists: () => !gone.worktree,
+      claudeSessionExists: () => !gone.session,
+      codexThreadExists: () => !gone.codex,
+    };
+  }
+
+  function syncWith(p: ReturnType<typeof probe>) {
+    const made = makeSync();
+    made.ctx.resumeProbe = p;
+    return made;
+  }
+
+  const crashed = (o: Partial<any> = {}) => restartKilledFromDisk({
+    id: 'w-crash',
+    taskId: 'task-crash',
+    sessionId: 'sess-crash-1',
+    worktreePath: '/tmp/wt-crash',
+    ...o,
+  });
+
+  test('a crash (no grace) with the worktree and the session file still there restores it as paused, to be continued', () => {
+    diskWorkers = [crashed()];
+    const { sync, ctx } = syncWith(probe());
+
+    sync.restoreWorkersFromDisk();
+
+    const w = ctx.workers.get('w-crash')!;
+    expect(w.status).toBe('waiting');
+    expect(w.waitingFor?.type).toBe('pause');
+    expect(w.resumeOnStart).toBe('crash');
+    expect(w.sessionId).toBe('sess-crash-1');
+    expect(w.killedByRestart).toBeUndefined();
+    // Never "Process restarted": nothing is reported failed.
+    expect(mockUpdateWorker.mock.calls.some((c: any[]) => c[1]?.status === 'failed')).toBe(false);
+  });
+
+  test('a Codex run needs its thread, not a Claude session', () => {
+    diskWorkers = [crashed({ taskBackend: 'codex', sessionId: undefined, codexThreadId: 'thread-abc123' })];
+    const { sync, ctx } = syncWith(probe({ session: true }));
+    sync.restoreWorkersFromDisk();
+    expect(ctx.workers.get('w-crash')!.status).toBe('waiting');
+  });
+
+  test('its session file gone: a new attempt, and the reason names the session file', () => {
+    diskWorkers = [crashed()];
+    const { sync, ctx } = syncWith(probe({ session: true }));
+
+    sync.restoreWorkersFromDisk();
+
+    const w = ctx.workers.get('w-crash')!;
+    expect(w.status).toBe('error');
+    expect(w.error).toMatch(/^Process restarted: its session file is gone/);
+    expect(w.error).toMatch(/new attempt from its last pushed commit/);
+    const [, update] = mockUpdateWorker.mock.calls[0] as any[];
+    expect(update.status).toBe('failed');
+    expect(update.error).toContain('its session file');
+    expect(update.crashReconciled).toBe(true);
+  });
+
+  test('its worktree and session both gone: the reason names both', () => {
+    diskWorkers = [crashed()];
+    const { sync } = syncWith(probe({ worktree: true, session: true }));
+    sync.restoreWorkersFromDisk();
+    const [, update] = mockUpdateWorker.mock.calls[0] as any[];
+    expect(update.error).toContain('its worktree and its session file are gone');
+  });
+
+  test('a worker paused by a stop keeps waiting, ready to continue', () => {
+    diskWorkers = [crashed({
+      status: 'waiting', killedByRestart: undefined, error: 'paused: by the runner',
+      waitingFor: { type: 'pause', prompt: 'Paused' }, resumeOnStart: 'shutdown',
+    })];
+    const { sync, ctx } = syncWith(probe());
+    sync.restoreWorkersFromDisk();
+    expect(ctx.workers.get('w-crash')!.status).toBe('waiting');
+    expect(ctx.workers.get('w-crash')!.resumeOnStart).toBe('shutdown');
+    expect(mockUpdateWorker).not.toHaveBeenCalled();
+  });
+
+  test('R-38: a paused worker whose worktree is gone starts again as a new attempt, saying so', () => {
+    diskWorkers = [crashed({
+      status: 'waiting', killedByRestart: undefined,
+      waitingFor: { type: 'pause', prompt: 'Paused' }, resumeOnStart: 'shutdown',
+    })];
+    const { sync, ctx } = syncWith(probe({ worktree: true }));
+
+    sync.restoreWorkersFromDisk();
+
+    const w = ctx.workers.get('w-crash')!;
+    expect(w.status).toBe('error');
+    expect(w.waitingFor).toBeUndefined();
+    const [, update] = mockUpdateWorker.mock.calls[0] as any[];
+    expect(update.status).toBe('failed');
+    expect(update.error).toContain('its worktree is gone');
+  });
+
+  test('a worker waiting on a question is left alone', () => {
+    diskWorkers = [crashed({
+      status: 'waiting', killedByRestart: undefined,
+      waitingFor: { type: 'question', prompt: 'Which one?' },
+    })];
+    const { sync, ctx } = syncWith(probe({ worktree: true, session: true }));
+    sync.restoreWorkersFromDisk();
+    expect(ctx.workers.get('w-crash')!.status).toBe('waiting');
+    expect(mockUpdateWorker).not.toHaveBeenCalled();
+  });
+});

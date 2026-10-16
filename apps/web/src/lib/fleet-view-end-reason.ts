@@ -10,6 +10,7 @@
  */
 import { LIVE_WORKER_STATUSES } from './task-presentation';
 import { classifyFailure } from './failure-classifier';
+import { formatDuration } from './mission-duration';
 
 export interface RunEndInput {
   status: string;
@@ -19,13 +20,21 @@ export interface RunEndInput {
   mergedAt?: string | Date | null;
   /** A PR of the same task that merged, from this run or a later one. */
   taskMergedPr?: number | null;
-  waitingFor?: { type?: string | null } | null;
+  /** A pause carries `since` (ISO): when it was paused (R-38). */
+  waitingFor?: { type?: string | null; since?: string | null } | null;
+  /** For "Paused for 40m". Defaults to the current time. */
+  now?: number;
+}
+
+function pausedWords(since: string | null | undefined, now: number): string {
+  const at = since ? Date.parse(since) : NaN;
+  return Number.isFinite(at) && now >= at ? `Paused for ${formatDuration(now - at)}` : 'Paused';
 }
 
 const LIVE = new Set<string>(LIVE_WORKER_STATUSES);
 
 export function runEndReason(r: RunEndInput): string {
-  if (r.status === 'waiting_input') return r.waitingFor?.type === 'pause' ? 'Paused' : 'Has a question';
+  if (r.status === 'waiting_input') return r.waitingFor?.type === 'pause' ? pausedWords(r.waitingFor.since, r.now ?? Date.now()) : 'Has a question';
   if (LIVE.has(r.status)) return 'Working';
   if (r.status === 'paused') return 'Paused';
   if (r.status === 'cancelled') return 'Cancelled';

@@ -57,7 +57,7 @@ export interface TopWorker {
   toolCalls?: TopToolCall[];
   prUrl?: string;
   error?: string | null;
-  waitingFor?: { type: 'question' | 'permission' | 'pause'; prompt: string; options?: Array<{ label: string }> };
+  waitingFor?: { type: 'question' | 'permission' | 'pause'; prompt: string; options?: Array<{ label: string }>; since?: string };
   tokenTally?: { inputTokens: number; outputTokens: number };
   /** Which route the run reached its model by (run-route.ts); absent from older runners. */
   route?: RunRoute | null;
@@ -1207,7 +1207,9 @@ export function taskRows(state: TopState, now: number): TaskRow[] {
       const dollars = rowDollars(workerSpend(w)) ?? undefined;
       const money = { ...(route ? { route } : {}), ...(dollars ? { dollars } : {}) };
       if (w.status === 'waiting' && w.waitingFor?.type === 'pause') {
-        running.push({ ...base, workerId: w.id, group: 'running', kind: 'paused', elapsedMs, reason: 'paused, a resumes it', tokens, ...money });
+        // R-38: paused with since when.
+        const since = w.waitingFor.since && Number.isFinite(Date.parse(w.waitingFor.since)) ? ` since ${localLiftTime(w.waitingFor.since, now)}` : '';
+        running.push({ ...base, workerId: w.id, group: 'running', kind: 'paused', elapsedMs, reason: `paused${since}, a resumes it`, tokens, ...money });
       } else if (w.status === 'waiting' && w.waitingFor) {
         running.push({ ...base, workerId: w.id, group: 'running', kind: 'asking', elapsedMs, question: w.waitingFor.prompt, tokens, ...money });
       } else {
