@@ -11,6 +11,7 @@ import { formatCompletionRecord, situationRepeatsCompletion } from '@/lib/missio
 import { computeSupersededFailedTasks } from '@/lib/mission-task-superseded';
 import { getDeliveryViewsForTasks, replacedFailedTaskIds } from '@/lib/workflow/delivery-view';
 import { ownerDeliveryDisplays } from '@/lib/workflow/delivery-display';
+import { overlayDeliveryLifecycle } from '@/lib/delivery-overlay';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
 import { deriveTaskHealthSignal, foreignDependencyIds, formatNextRun, selectMissionCompletionSummary, MISSION_COMPLETED_NOTE_TITLE } from '@/lib/mission-helpers';
 import { computeMissionProgress, deriveMissionProgressMetric, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, hasPendingDeliverableWork as computeHasPendingDeliverableWork, computeMissionAuthorshipHealth } from '@buildd/core/mission-helpers';
@@ -200,6 +201,7 @@ export default async function MissionDetailPage({
     fleetCapacity,
     quickAddRoles,
     visualModel,
+    deliveryViews,
   ] = await Promise.all([
     // Roles and workspaces for this user. getUserWorkspaceIds is React
     // cache()-wrapped, so the protected layout has normally already resolved
@@ -293,7 +295,17 @@ export default async function MissionDetailPage({
           return null;
         })
       : Promise.resolve(null as VisualReviewModel | null),
+    // One DeliveryView load for the page (§17.5): the failure reading, the
+    // board/strip, the timeline cards, the structure view, and (§7) every
+    // worker-row lifecycle reading below.
+    getDeliveryViewsForTasks(allMissionTaskIds),
   ]);
+
+  // workflow-kernel-library.md §7: a delivery-owned task's PR reads as its
+  // delivery says (merged, open, closed), derived on read and never written,
+  // so progress, "awaiting merge", blockers and the feed agree with the kernel.
+  // A task with no delivery keeps its worker rows.
+  (mission as { tasks?: unknown }).tasks = overlayDeliveryLifecycle(mission.tasks ?? [], deliveryViews);
 
   const { roles, teamWorkspaces } = scopeResult;
 
@@ -364,16 +376,13 @@ export default async function MissionDetailPage({
   const failedDeliverableRows = (mission.tasks || []).filter((t) => isDeliverableTask(t as never) && t.status === 'failed');
   // Delivery records and scope decisions (workflow-kernel-library.md §6): the
   // mission page projects them, so a merged delivery never reads as the mission.
-  const [foreignDeps, supersededMap, deliveryViews, gateFacts, missionDeliveries, scopeRows] = await Promise.all([
+  const [foreignDeps, supersededMap, gateFacts, missionDeliveries, scopeRows] = await Promise.all([
     loadDependencyRows(foreignDependencyIds(mission.tasks || [])),
     computeSupersededFailedTasks(
       mission.id,
       (mission.workspaceId as string | null) ?? null,
       failedDeliverableRows.map((t) => ({ id: t.id, title: t.title, subjectPrNumber: (t as { subjectPrNumber?: number | null }).subjectPrNumber ?? null, createdAt: t.createdAt, roleSlug: t.roleSlug })),
     ).catch(() => new Map()),
-    // One DeliveryView load for the page (§17.5): the failure reading, the
-    // board/strip, the timeline cards and the structure view all read it.
-    getDeliveryViewsForTasks((mission.tasks || []).map((t) => t.id)),
     // Which claim-gate arm released each dependency, and why each queued task
     // waits, from the claim's own SQL (spec f7f67f1a P-1). Never throws.
     loadMissionGateFacts(mission.id, {
