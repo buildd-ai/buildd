@@ -121,6 +121,7 @@ describe('the visual audit grades the criteria of the tasks it reviews', () => {
   test('on an executor=local mission, the audit worker claimed from the caller\'s own session records; elsewhere it does not', async () => {
     const [acct] = await q<{ id: string }>(sql`
       INSERT INTO accounts (type, name, api_key, team_id, auth_type) VALUES ('user', ${`sess-${rand()}`}, ${`k-${rand()}`}, ${teamA}::uuid, 'oauth') RETURNING id`);
+    await q(sql`INSERT INTO account_workspaces (account_id, workspace_id, can_claim, can_create) VALUES (${acct.id}::uuid, ${wsA}::uuid, true, true)`);
     const session = (id = acct.id) => ({ kind: 'account' as const, account: { id, teamId: teamA, workspaceIds: null } as any });
     const claimed = async (taskId: string, accountId: string) => (await q<{ id: string }>(sql`
       INSERT INTO workers (workspace_id, task_id, account_id, name, runner, branch, status) VALUES (${wsA}::uuid, ${taskId}::uuid, ${accountId}::uuid, 'c', 'test', ${`c-${rand()}`}, 'completed') RETURNING id`))[0].id;
