@@ -8,7 +8,7 @@ import { describe, expect, test } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { sql as sqlTag } from 'drizzle-orm';
 import { recordPrFactSql } from '@buildd/core/pr-facts';
-import { deliveryOwnedTaskSql, factFunnelScope, kernelOwnedRowSql, kernelProjectionScope, prRowOfDeliverySql } from './pr-fact-scope';
+import { deliveryOwnedTaskSql, notKernelMergedTaskSql, factFunnelScope, kernelOwnedRowSql, kernelProjectionScope, prRowOfDeliverySql } from './pr-fact-scope';
 
 const render = (q: Parameters<PgDialect['sqlToQuery']>[0]) => new PgDialect().sqlToQuery(q);
 
@@ -55,16 +55,23 @@ describe('factFunnelScope: a delivery-owned row takes only what its delivery alr
 
 describe('deliveryOwnedTaskSql (S4b): the task-side definition of delivery-owned', () => {
   test('the owner of a kernel-authority delivery bound to a PR, kill switch on', () => {
-    const { sql } = render(deliveryOwnedTaskSql(sqlTag`t.id`));
+    const { sql } = render(deliveryOwnedTaskSql({ id: sqlTag`t.id`, workspaceId: sqlTag`t.workspace_id` }));
     expect(sql).toContain('EXISTS (SELECT 1 FROM workflow_deliveries kd JOIN workspaces kw ON kw.id = kd.workspace_id');
-    expect(sql).toContain("kd.owner_task_id = t.id AND kd.authority = 'kernel' AND kd.pr_number IS NOT NULL");
+    expect(sql).toContain("kd.workspace_id = t.workspace_id AND kd.owner_task_id = t.id AND kd.authority = 'kernel' AND kd.pr_number IS NOT NULL");
     expect(sql).toContain("(COALESCE((kw.git_config)->>'workflowKernel', 'true') IN ('true', 'on'))");
     expect(sql).not.toContain('kd.state');
   });
 
   test('live: only while the delivery has not reached a terminal state', () => {
-    const { sql, params } = render(deliveryOwnedTaskSql(sqlTag`t.id`, { live: true }));
+    const { sql, params } = render(deliveryOwnedTaskSql({ id: sqlTag`t.id`, workspaceId: sqlTag`t.workspace_id` }, { live: true }));
     expect(sql).toContain('AND kd.state NOT IN (SELECT jsonb_array_elements_text($1::jsonb))');
     expect(JSON.parse(params[0] as string).sort()).toEqual(['ABANDONED', 'FAILED', 'MERGED', 'SUPERSEDED']);
+  });
+
+  test('notKernelMergedTaskSql: an attempt writer cannot move a completed task whose delivery MERGED', () => {
+    const { sql, params } = render(notKernelMergedTaskSql({ id: sqlTag`t.id`, workspaceId: sqlTag`t.workspace_id`, status: sqlTag`t.status` }));
+    expect(sql).toMatch(/^NOT \(t\.status = 'completed' AND EXISTS \(SELECT 1 FROM workflow_deliveries kd/);
+    expect(sql).toContain('AND kd.state IN (SELECT jsonb_array_elements_text($1::jsonb))');
+    expect(params).toEqual([JSON.stringify(['MERGED'])]);
   });
 });

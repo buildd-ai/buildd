@@ -37,7 +37,12 @@ export type CompletionDecisionCode =
    * tasks' declared paths) and no surface audit completed. Cleared by a
    * completed audit, or by a human waiver with a recorded reason.
    */
-  | 'surface_audit_missing';
+  | 'surface_audit_missing'
+  /**
+   * S4b: the mission's delivery records moved between the decision and the write, twice (the
+   * completion write is compare-and-set on them). Still active; the next trigger decides again.
+   */
+  | 'deliveries_moved';
 
 /**
  * Refusals that mean "the goal criteria did not clear". Exported so callers can

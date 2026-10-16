@@ -11,6 +11,15 @@
  * mission loop, the epoch reconcile itself) is therefore a request into the same writer, never
  * a second one, and none of them can complete a mission over epoch state it did not see.
  *
+ * The fingerprint is read in the statement's snapshot, so an epoch write still in flight when it
+ * starts is invisible to it. Every epoch transition therefore touches its mission row in its own
+ * statement (delivery-epochs.ts `applyEpochOpsSql`, `m_touch`; scope amendments write the row
+ * already), and this UPDATE also requires the row version it read (`xmin`) to be the one it
+ * updates: if an epoch writer holds the row, the UPDATE waits, Postgres re-checks the condition
+ * against the row that writer committed, its xmin differs, and nothing is written. No lock is
+ * taken beyond the row lock the UPDATE takes anyway. (Chosen over a separate version column: no
+ * migration, one extra row write per epoch transition, which are rare.)
+ *
  * A mission with no delivery records has no fingerprint (NULL), and the statement is the
  * active-to-completed CAS it always was, with one addition: if epochs were adopted after the
  * read, the NULL no longer matches and nothing is written.
@@ -36,6 +45,7 @@ export function completeMissionSql(missionId: string, epochFingerprint: string |
   return sql`UPDATE missions m SET status = 'completed', completed_at = ${at}::timestamptz, updated_at = ${at}::timestamptz
 WHERE m.id = ${missionId}::uuid AND m.status = 'active'
   AND ${missionEpochFingerprintSql(sql`m.id`)} IS NOT DISTINCT FROM ${epochFingerprint}::text
+  AND m.xmin::text = (SELECT xmin::text FROM missions WHERE id = ${missionId}::uuid)
 RETURNING m.id, m.schedule_id`;
 }
 

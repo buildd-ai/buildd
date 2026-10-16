@@ -25,7 +25,7 @@ export async function archiveStaleFailedTasks(staleAfter: string): Promise<numbe
         WHERE dependent.status IN ('pending', 'assigned', 'in_progress')
           AND dependent.depends_on::jsonb ? tasks.id::text
       )
-      AND NOT ${deliveryOwnedTaskSql(sql`tasks.id`, { live: true })}
+      AND NOT ${deliveryOwnedTaskSql({ id: sql`tasks.id`, workspaceId: sql`tasks.workspace_id` }, { live: true })}
     RETURNING id
   `);
   const rows = (result as { rows?: unknown[] })?.rows ?? result ?? [];

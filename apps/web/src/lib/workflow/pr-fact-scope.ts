@@ -20,6 +20,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import { PR_FACT_SCOPE, type PrFactScope, type TerminalPrFactKind } from '@buildd/core/pr-fact-sql';
 import { kernelOnSql } from './kill-switch';
 import { TERMINAL_STATES } from '@buildd/workflow-kernel/types';
+import { tasks } from '@buildd/core/db/schema';
 
 /**
  * The one reading of "this worker row carries that delivery's PR", for both the transition's
@@ -64,15 +65,31 @@ export const kernelProjectionScope: PrFactScope = { [PR_FACT_SCOPE]: 'kernel_pro
 /**
  * S4b: the one definition of "delivery-owned" for a task (§1), the task-side twin of
  * `kernelOwnedRowSql`: the task owns a kernel-authority delivery bound to a PR, in a workspace
- * whose kill switch is on. `task` is the task's id column (`tasks.id`, or an alias's).
+ * whose kill switch is on. `task` names the task's id and workspace columns (`tasks.id` /
+ * `tasks.workspace_id`, or an alias's); the workspace makes the lookup the
+ * (workspace_id, owner_task_id) unique index.
  *
  * `live: true` narrows it to a delivery that has not reached a terminal state (MERGED, SUPERSEDED,
  * ABANDONED, FAILED): the window in which the kernel, not a legacy writer, decides where the
- * task's PR goes. A writer that infers delivery (a merge seen by branch name, an issue closing,
- * a sweep) skips a delivery-owned task and leaves its lifecycle to the kernel's transitions.
+ * task's PR goes. `states` narrows it to deliveries in exactly those states.
  */
-export function deliveryOwnedTaskSql(task: SQL, opts: { live?: boolean } = {}): SQL {
+export function deliveryOwnedTaskSql(task: { id: SQL; workspaceId: SQL }, opts: { live?: boolean; states?: readonly string[] } = {}): SQL {
   return sql`EXISTS (SELECT 1 FROM workflow_deliveries kd JOIN workspaces kw ON kw.id = kd.workspace_id
-    WHERE kd.owner_task_id = ${task} AND kd.authority = 'kernel' AND kd.pr_number IS NOT NULL AND ${kernelOnSql(sql`kw.git_config`)}${
-      opts.live ? sql` AND kd.state NOT IN (SELECT jsonb_array_elements_text(${JSON.stringify([...TERMINAL_STATES])}::jsonb))` : sql``})`;
+    WHERE kd.workspace_id = ${task.workspaceId} AND kd.owner_task_id = ${task.id} AND kd.authority = 'kernel' AND kd.pr_number IS NOT NULL AND ${kernelOnSql(sql`kw.git_config`)}${
+      opts.live ? sql` AND kd.state NOT IN (SELECT jsonb_array_elements_text(${JSON.stringify([...TERMINAL_STATES])}::jsonb))` : sql``}${
+      opts.states ? sql` AND kd.state IN (SELECT jsonb_array_elements_text(${JSON.stringify([...opts.states])}::jsonb))` : sql``})`;
+}
+
+/** The `tasks` table's own columns, for a Drizzle statement over `tasks` (built per call: modules mocked in tests load this file). */
+export const taskCols = () => ({ id: sql`${tasks.id}`, workspaceId: sql`${tasks.workspaceId}`, status: sql`${tasks.status}` });
+
+/**
+ * S4b review: an attempt writer (a worker failing, a requeue, the reaper) may not move a task the
+ * kernel has already finished: a completed task whose delivery MERGED. Its lifecycle ended in T17;
+ * a late failure, retry or release check would turn completed into failed or pending, and a
+ * pending one is claimed and built a second time. Every attempt writer that can move a task away
+ * from completed carries this in its WHERE. `t` defaults to the `tasks` table's columns.
+ */
+export function notKernelMergedTaskSql(t: { id: SQL; workspaceId: SQL; status: SQL } = taskCols()): SQL {
+  return sql`NOT (${t.status} = 'completed' AND ${deliveryOwnedTaskSql(t, { states: ['MERGED'] })})`;
 }

@@ -1685,21 +1685,6 @@ export type MissionEpochAnswer =
   | { action: 'reconcile'; steps: string[] }
   | { action: 'pr_moved'; result: string; reason: string };
 
-/**
- * After the kernel's epoch path settles or retires a delivery, it tells the missions module, whose
- * one completion writer decides (S4b): core reaches modules through events, never imports.
- * Never throws: completion is a request, and the next trigger decides again.
- */
-async function completeAfterEpochSteps(
-  missionId: string,
-  steps: Array<{ step: string; epoch: number; outcome: string }>,
-  mayComplete: (s: Array<{ step: string; epoch: number; outcome: string }>) => boolean,
-): Promise<void> {
-  if (!mayComplete(steps)) return;
-  const { emit } = await import('@/lib/core-emit');
-  await emit({ type: 'mission.delivery_settled', missionId, steps: steps.map((s) => `${s.step}#${s.epoch}`) });
-}
-
 export async function missionEpochCommand(p: MissionEpochInput): Promise<MissionEpochAnswer> {
   const epochs = await import('./delivery-epochs');
   const stepsOf = (r: { steps: Array<{ step: string; epoch: number; outcome: string }> }) => r.steps.map((s) => `${s.step}#${s.epoch}:${s.outcome}`);
@@ -1709,18 +1694,14 @@ export async function missionEpochCommand(p: MissionEpochInput): Promise<Mission
         missionId: p.missionId, prNumber: p.prNumber, repoFullName: p.repoFullName, headRef: p.headRef,
         mergeCommitSha: p.mergeCommitSha, mergedHeadSha: p.mergedHeadSha, mergedAt: p.mergedAt, actor: p.actor,
       });
-      await completeAfterEpochSteps(p.missionId, r.reconcile.steps, epochs.epochStepsMayComplete);
       return { action: 'merged', result: r.result, reason: r.reason, steps: stepsOf(r.reconcile) };
     }
     case 'ensure_writable':
       return { action: 'ensure_writable', ...(await epochs.ensureWritableEpoch({ missionId: p.missionId, reason: p.reason, actor: p.actor })) };
     case 'bind_pr':
       return { action: 'bind_pr', ...(await epochs.bindEpochPr(p)) };
-    case 'reconcile': {
-      const r = await epochs.reconcileMissionEpochs(p.missionId);
-      await completeAfterEpochSteps(p.missionId, r.steps, epochs.epochStepsMayComplete);
-      return { action: 'reconcile', steps: stepsOf(r) };
-    }
+    case 'reconcile':
+      return { action: 'reconcile', steps: stepsOf(await epochs.reconcileMissionEpochs(p.missionId)) };
     case 'pr_moved': {
       const r = await epochs.applyMissionEpochCommand(p.missionId, { type: 'PrMovedOff', actor: p.actor, at: new Date().toISOString(), branch: p.branch, prNumber: p.prNumber });
       return { action: 'pr_moved', result: r.result, reason: r.reason };

@@ -71,14 +71,20 @@ mock.module('@buildd/core/db/schema', () => ({
 // pinned on real Postgres in tests/db/mission-completion-writer.test.ts. Here it records like the
 // update it replaced, and the fingerprint the decision reads is what `epochFingerprint` says.
 let epochFingerprint: string | null = null;
+/** Later fingerprint reads (after a miss), in order; empty = the same as the first. */
+let laterFingerprints: Array<string | null> = [];
+/** Per-claim answers, in order (true = won); empty = `missionUpdateReturning` decides. */
+let claimAnswers: boolean[] = [];
+let fingerprintReads = 0;
 const claimCalls: Array<{ missionId: string; fingerprint: string | null }> = [];
 mock.module('@/lib/workflow/mission-completion-write', () => ({
-  readMissionEpochFingerprint: async () => epochFingerprint,
+  readMissionEpochFingerprint: async () => (fingerprintReads++ === 0 ? epochFingerprint : (laterFingerprints.shift() ?? epochFingerprint)),
   claimMissionCompletion: async (missionId: string, fingerprint: string | null) => {
     claimCalls.push({ missionId, fingerprint });
     updateCalls.push({ table: 'missions', data: { status: 'completed' } });
-    const row = missionUpdateReturning[0];
-    return row ? { id: row.id, scheduleId: row.scheduleId ?? null } : null;
+    const won = claimAnswers.length ? claimAnswers.shift()! : missionUpdateReturning.length > 0;
+    const row = missionUpdateReturning[0] ?? { id: missionId, scheduleId: null };
+    return won ? { id: row.id, scheduleId: row.scheduleId ?? null } : null;
   },
 }));
 mock.module('@buildd/core/db', () => ({
@@ -239,6 +245,9 @@ function reset() {
   updateCalls.length = 0;
   claimCalls.length = 0;
   epochFingerprint = null;
+  laterFingerprints = [];
+  claimAnswers = [];
+  fingerprintReads = 0;
   insertedRows.length = 0;
   mockTriggerEvent.mockReset();
   mockTriggerEvent.mockImplementation(() => Promise.resolve());
@@ -1091,14 +1100,36 @@ describe('completeMissionIfVerified — allowed', () => {
     expect(claimCalls).toEqual([{ missionId: 'm1', fingerprint: 'e1:3:retired' }]);
   });
 
-  it('S4b: deliveries that moved under the decision leave the mission active, said so', async () => {
+  it('S4b review: deliveries that moved during the decision are decided once more on a fresh read', async () => {
     activeMission();
     taskRows = [work('completed')];
     epochFingerprint = 'e1:2:merged';
-    missionUpdateReturning = [];
+    laterFingerprints = ['e1:3:retired'];
+    claimAnswers = [false, true];
+    const result = await completeMissionIfVerified('m1', { path: 'dormancy' });
+    expect(result.completed).toBe(true);
+    expect(claimCalls.map((c) => c.fingerprint)).toEqual(['e1:2:merged', 'e1:3:retired']);
+  });
+
+  it('S4b review: a second miss on moved deliveries is reported as such, not as a lost race', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    epochFingerprint = 'e1:2:merged';
+    laterFingerprints = ['e1:3:retired'];
+    claimAnswers = [false, false];
     const result = await completeMissionIfVerified('m1', { path: 'dormancy' });
     expect(result.completed).toBe(false);
-    expect(result.decision.reason).toContain('deliveries moved');
+    expect(result.decision.code).toBe('deliveries_moved');
+  });
+
+  it('S4b review: a miss with the deliveries unchanged is the active-state race, decided once', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    epochFingerprint = 'e1:3:retired';
+    claimAnswers = [false];
+    const result = await completeMissionIfVerified('m1', { path: 'dormancy' });
+    expect(result.decision.code).toBe('mission_not_active');
+    expect(claimCalls.length).toBe(1);
   });
 
   it('asks the release trigger to reconsider once the mission closes', async () => {

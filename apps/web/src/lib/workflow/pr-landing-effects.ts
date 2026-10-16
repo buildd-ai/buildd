@@ -139,7 +139,7 @@ export const landingLifecycle: Pick<Lifecycle, 'merged' | 'finalizeMerge'> = {
       // stamp_pr_rows owns the fact-cache stamp.
       stamp: false,
       taskTransition: decided?.taskTransition
-        ?? legacyCompleteTaskOnMerge({ prUrl: prUrlOf(d.repoFullName, d.prNumber), prNumber: d.prNumber, runner: owner.runner }),
+        ?? legacyCompleteTaskOnMerge({ prUrl: prUrlOf(d.repoFullName, d.prNumber), prNumber: d.prNumber, runner: owner.runner, kernelEffect: true }),
     });
     return true;
   },

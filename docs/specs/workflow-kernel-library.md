@@ -1094,18 +1094,40 @@ column outside the kernel; S3 and S4 remove or route each one.
   owner task `tasks.status` is the attempt's lifecycle, which the kernel
   reads, so these cannot move without stranding it), a person's act, a task
   that provably has no delivery, or a `result` key that is not a delivery
-  field. NOT IMPLEMENTED: `tasks.result.prUrl` / `prNumber` derived on read
-  (the worker PATCH still copies them from the worker row).
+  field. Every attempt writer that can move a task away from completed carries
+  `notKernelMergedTaskSql` in its WHERE, so a completed task whose delivery
+  MERGED is never failed, requeued or reactivated by a late worker report, a
+  stale release check or the reaper (a requeue would build it twice); the
+  guard pins how many statements per file carry it. The merge's one-shot
+  completion steps (the `task.completed` fan-out, the work-tracker comment,
+  `resolveCompletedTask`) run behind a context once-marker, so a retried
+  `emit_pr_merged` effect does not repeat them.
+  NOT IMPLEMENTED (the rest of AC-1 for `tasks.status`): while a delivery is
+  live, the attempt writers (worker PATCH, claim, cleanup, the reaper,
+  interactive detach, credential and repo-access recovery, the recovery hold,
+  conflict and CI retries, loop exits) still set the owner task's status
+  directly, because the kernel reads that status as the attempt's end
+  (`forwardOwnerEnd`, T4) and has no attempt-to-task projection to replace
+  them; person writers (task PATCH, bulk, reassign, attach-PR, visual-review
+  decisions, waivers, tracker webhooks) still write it as a person's act. Also
+  not implemented: `tasks.result.prUrl` / `prNumber` derived on read (the
+  worker PATCH still copies them from the worker row).
 - Mission completion: `completeMissionIfVerified` from subscribers,
   `pr-reconcile.ts`, the schedules cron, evaluate, mission loop; plus mission
   PATCH, archive, circuit breaker, budget. S4b: the automated paths share one
   writer (`mission-completion-write.ts`), compare-and-set on the mission's
   delivery records: the decision fingerprints the epochs (id, version, state)
   before it reads them, and the write lands only if they are unchanged, so no
-  caller completes a mission over epoch state it did not see. A mission with no
-  delivery records has no fingerprint and completes as before. The kernel's
-  epoch path asks for the decision itself after it settles or retires a
-  delivery. The person paths (mission PATCH, archive) stay.
+  caller completes a mission over epoch state it did not see. Every epoch
+  transition touches its mission row in its own statement, and the write
+  requires the row version it read (`xmin`), so an epoch write still in flight
+  is seen too. A miss on the delivery records alone is decided once more on a
+  fresh read and, if it misses again, reported as `deliveries_moved`. A
+  mission with no delivery records has no fingerprint and completes as before.
+  Every epoch reconcile that settles or retires a delivery (the merge door's,
+  `ensureWritableEpoch`'s, the hourly one) emits `mission.delivery_settled`,
+  and the missions module asks the writer to decide. The person paths (mission
+  PATCH, archive) stay.
 - Merge doors outside the kernel: release PR on CI green (webhook), release
   executor (two unpinned merges and a branch-to-prod merge), release compose,
   and the legacy arm of the dashboard merge, `PUT /api/github/pr`, the landing

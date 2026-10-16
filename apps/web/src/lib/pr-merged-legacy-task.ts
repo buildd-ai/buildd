@@ -18,10 +18,18 @@ import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
 import { INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
 import { otherOpenPrsOfTask } from '@/lib/task-open-prs';
-import { deliveryOwnedTaskSql } from '@/lib/workflow/pr-fact-scope';
+import { deliveryOwnedTaskSql, taskCols } from '@/lib/workflow/pr-fact-scope';
 import type { MergedPrTask, MergeTaskTransition } from '@/lib/pr-merged-work';
 
-export function legacyCompleteTaskOnMerge(p: { prUrl: string; prNumber: number; runner?: string | null }) {
+export function legacyCompleteTaskOnMerge(p: {
+  prUrl: string; prNumber: number; runner?: string | null;
+  /**
+   * The caller is the kernel's own emit_pr_merged effect, queued before S4b (its T17 did not
+   * project the task). Otherwise (the webhook's legacy path) a delivery-owned task is skipped: if
+   * the kernel's observation threw, its floor applies T17, which completes the task itself.
+   */
+  kernelEffect?: boolean;
+}) {
   return async (task: MergedPrTask): Promise<MergeTaskTransition> => {
     if (task.status === 'completed') return 'already_completed';
     if (p.runner === INTERACTIVE_WORKER_RUNNER) {
@@ -36,7 +44,7 @@ export function legacyCompleteTaskOnMerge(p: { prUrl: string; prNumber: number; 
     const [flipped] = await db
       .update(tasks)
       .set({ status: 'completed', updatedAt: new Date() })
-      .where(and(eq(tasks.id, task.id), ne(tasks.status, 'completed')))
+      .where(and(eq(tasks.id, task.id), ne(tasks.status, 'completed'), ...(p.kernelEffect ? [] : [sql`NOT ${deliveryOwnedTaskSql(taskCols())}`])))
       .returning({ id: tasks.id });
     return flipped ? 'flipped' : 'not_flipped';
   };
@@ -52,7 +60,7 @@ export async function completeTaskOnBranchMatchMerge(taskId: string): Promise<bo
   const [flipped] = await db
     .update(tasks)
     .set({ status: 'completed', updatedAt: new Date() })
-    .where(and(eq(tasks.id, taskId), ne(tasks.status, 'completed'), sql`NOT ${deliveryOwnedTaskSql(sql`${tasks.id}`)}`))
+    .where(and(eq(tasks.id, taskId), ne(tasks.status, 'completed'), sql`NOT ${deliveryOwnedTaskSql(taskCols())}`))
     .returning({ id: tasks.id });
   return !!flipped;
 }

@@ -955,9 +955,32 @@ export async function completeMissionIfVerified(
   // Atomic active → completed. Concurrent callers race here; exactly one wins,
   // and only the winner disables the schedule and announces completion.
   // For a mission with delivery records, also CAS on those records (§6): a merge, settlement or
-  // retirement recorded since the decision leaves it active for the next trigger to decide again.
-  const completedAt = new Date();
-  const claimed = await claimMissionCompletion(missionId, epochFingerprint, completedAt);
+  // retirement recorded since the decision leaves it active. The decision can take a while (it may
+  // grade criteria), so a miss on the records alone is decided once more on a fresh read, with the
+  // verdict it already has; a second miss is reported as such, never as a lost race.
+  let completedAt = new Date();
+  let claimed = await claimMissionCompletion(missionId, epochFingerprint, completedAt);
+  let finalDecision = decision;
+  if (!claimed) {
+    const fresh = await readMissionEpochFingerprint(missionId);
+    const stillActive = (await db.query.missions.findFirst({ where: sqlWhere(eq(missions.id, missionId)), columns: { status: true } }))?.status === 'active';
+    if (stillActive && fresh !== epochFingerprint) {
+      const again = await canCompleteMission(missionId, { path: opts.path, evaluateCriteria: false, proposed: opts.proposed });
+      if (!again.ok) {
+        console.log(`[mission-completion] ${missionId} via ${opts.path}: deliveries moved during the decision; now BLOCKED (${again.code})`);
+        return { completed: false, decision: again };
+      }
+      finalDecision = again;
+      completedAt = new Date();
+      claimed = await claimMissionCompletion(missionId, fresh, completedAt);
+      if (!claimed) {
+        return {
+          completed: false,
+          decision: { ...again, ok: false, code: 'deliveries_moved', reason: 'The mission\'s deliveries moved while completion was being decided, twice. It stays active; the next change decides again.' },
+        };
+      }
+    }
+  }
 
   if (!claimed) {
     return {
@@ -966,9 +989,7 @@ export async function completeMissionIfVerified(
         ...decision,
         ok: false,
         code: 'mission_not_active',
-        reason: epochFingerprint
-          ? 'Mission left active state, or its deliveries moved, concurrently'
-          : 'Mission left active state concurrently',
+        reason: 'Mission left active state concurrently',
       },
     };
   }
@@ -1016,7 +1037,7 @@ export async function completeMissionIfVerified(
   // §4): a criterion warned weak, kept, and now passing on a clean completion
   // stops being warned on. Same scheduling as the shipped report; it never
   // throws and can never un-complete the mission.
-  if (decision.criteriaVerdict.kind === 'value' && decision.criteriaVerdict.value === 'pass') {
+  if (finalDecision.criteriaVerdict.kind === 'value' && finalDecision.criteriaVerdict.value === 'pass') {
     const storeAccepted = () => import('@/lib/goal-criteria-accepted')
       .then(m => m.recordAcceptedGoalCriteriaPatterns(missionId))
       .catch(e => console.error(`[mission-completion] accepted patterns failed for ${missionId}:`, e));
@@ -1027,19 +1048,19 @@ export async function completeMissionIfVerified(
     }
   }
 
-  const statusSummary = Object.entries(decision.deliverableStatusCounts).map(([s, n]) => `${s}: ${n}`).join(', ');
+  const statusSummary = Object.entries(finalDecision.deliverableStatusCounts).map(([s, n]) => `${s}: ${n}`).join(', ');
   await postMissionFeedEvent({
     missionId,
     type: 'update',
     title: MISSION_COMPLETED_NOTE_TITLE,
     body:
       `Deliverables: ${statusSummary || 'none'}\n` +
-      `Goal criteria: ${decision.criteriaVerdict.kind === 'value' ? decision.criteriaVerdict.value : `unavailable (${decision.criteriaVerdict.reason})`}` +
-      (decision.criteriaEvaluatedAt ? ` (evaluated ${decision.criteriaEvaluatedAt})` : '') +
+      `Goal criteria: ${finalDecision.criteriaVerdict.kind === 'value' ? finalDecision.criteriaVerdict.value : `unavailable (${finalDecision.criteriaVerdict.reason})`}` +
+      (finalDecision.criteriaEvaluatedAt ? ` (evaluated ${finalDecision.criteriaEvaluatedAt})` : '') +
       (opts.predicate ? `\nSignal: ${opts.predicate}` : ''),
     // System is only ever right here because nothing external claimed this —
     // the label names the exact predicate that fired, not just "the engine did it".
-    actor: systemActor(`completion predicate (${opts.path}): ${decision.reason}`),
+    actor: systemActor(`completion predicate (${opts.path}): ${finalDecision.reason}`),
   }).catch(e => console.error(`[mission-completion] completion note failed for ${missionId}:`, e));
 
   await checkAndUnblockDependentMissions(missionId, 'completed').catch(e =>
@@ -1049,8 +1070,8 @@ export async function completeMissionIfVerified(
   await triggerEvent(channels.mission(missionId), events.MISSION_LOOP_COMPLETED, {
     missionId,
     reason: `${opts.path}_complete`,
-    taskStatusCounts: decision.deliverableStatusCounts,
-    criteriaVerdict: decision.criteriaVerdict,
+    taskStatusCounts: finalDecision.deliverableStatusCounts,
+    criteriaVerdict: finalDecision.criteriaVerdict,
   }).catch(e => console.error(`[mission-completion] completed event failed for ${missionId}:`, e));
 
   // A mission clearing the gate is the moment an `on_mission_complete` release
@@ -1064,7 +1085,7 @@ export async function completeMissionIfVerified(
     console.error(`[mission-completion] release attempt failed for ${missionId}:`, e)
   );
 
-  return { completed: true, decision };
+  return { completed: true, decision: finalDecision };
 }
 
 /**

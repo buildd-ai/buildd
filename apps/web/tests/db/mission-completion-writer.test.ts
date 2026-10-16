@@ -4,9 +4,12 @@
  */
 import { beforeAll, describe, expect, test } from 'bun:test';
 import { sql } from 'drizzle-orm';
+import pg from 'pg';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { assertDbConfigured, q, seedMission, seedWorkspace } from './harness';
 
 const { claimMissionCompletion, readMissionEpochFingerprint } = await import('../../src/lib/workflow/mission-completion-write');
+const { applyEpochOpsSql } = await import('../../src/lib/workflow/delivery-epochs');
 
 let teamId: string;
 let workspaceId: string;
@@ -53,5 +56,41 @@ describe('one writer for mission completion', () => {
     await epoch(m, 1, 'open');
     expect(await claimMissionCompletion(m, fp, new Date())).toBeNull();
     expect(await status(m)).toBe('active');
+  });
+});
+
+/**
+ * S4b review finding 4: the CAS takes no lock, so an epoch write in flight when the completion
+ * runs must still be seen. Epoch transitions touch the mission row in their own statement, and the
+ * completion's UPDATE of that row then waits for them and re-checks against the row they wrote.
+ */
+describe('a concurrent epoch write is seen by the completion CAS', () => {
+  const render = (q: Parameters<PgDialect['sqlToQuery']>[0]) => new PgDialect().sqlToQuery(q);
+
+  test('an epoch transition committed while the completion waits leaves the mission active', async () => {
+    const m = await seedMission(teamId, workspaceId);
+    const [e] = await epoch(m, 1, 'open');
+    const fp = await readMissionEpochFingerprint(m);
+
+    const other = new pg.Client({ connectionString: process.env.DATABASE_URL });
+    await other.connect();
+    try {
+      await other.query('BEGIN');
+      // The epoch merges in another transaction that has not committed yet.
+      const t = render(applyEpochOpsSql([{ op: 'update', epochId: e.id, expectVersion: 1, set: { state: 'merged' } as never }]));
+      await other.query(t.sql, t.params as unknown[]);
+      const completing = claimMissionCompletion(m, fp, new Date());
+      await new Promise((r) => setTimeout(r, 300));
+      await other.query('COMMIT');
+      expect(await completing).toBeNull();
+      expect(await status(m)).toBe('active');
+    } finally {
+      await other.end();
+    }
+  });
+
+  test('every epoch transition touches its mission row: update, insert and branch projection alike', () => {
+    const upd = render(applyEpochOpsSql([{ op: 'update', epochId: '00000000-0000-4000-8000-000000000001', expectVersion: 1, set: { state: 'merged' } as never }])).sql;
+    expect(upd).toContain('UPDATE missions SET updated_at = now()');
   });
 });

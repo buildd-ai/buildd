@@ -225,6 +225,16 @@ export function applyEpochOpsSql(ops: EpochOp[]): SQL {
   RETURNING id)`);
   });
   const applied = u ? sql`EXISTS (SELECT 1 FROM u)` : inserts.length > 0 ? sql`EXISTS (SELECT 1 FROM i0)` : sql`true`;
+  // S4b review: an applied transition touches its mission's row in the same statement (a branch
+  // projection already does), so the completion write, compare-and-set on the mission row, waits
+  // for it and then sees the row it wrote (mission-completion-write.ts).
+  if (projects.length === 0 && (u || inserts.length > 0)) {
+    const mission = u ? sql`(SELECT mission_id FROM workflow_mission_epochs WHERE id = ${u.epochId}::uuid)` : sql`${inserts[0]!.epoch.missionId}::uuid`;
+    ctes.push(sql`m_touch AS (
+  UPDATE missions SET updated_at = now()
+  WHERE id = ${mission} AND ${applied}
+  RETURNING id)`);
+  }
   return sql`-- workflow:mission_epoch_transition
 WITH ${sql.join(ctes, sql`,\n`)}
 SELECT ${applied} AS applied`;
@@ -262,6 +272,8 @@ export interface EpochDeps {
   obsoleteRefreshTasksOf?: (missionId: string, branch: string) => Promise<string[]>;
   /** Cancel a task that never started (the kernel's Work port). */
   cancelTask?: (taskId: string, reason: string) => Promise<void>;
+  /** A reconcile recorded a settlement or retirement. Default: the `mission.delivery_settled` core event. */
+  settled?: (missionId: string, steps: ReconcileOutcome['steps']) => Promise<void>;
 }
 
 export interface MissionRepo {
@@ -432,6 +444,23 @@ export interface ReconcileOutcome {
  * caller); never throws for a GitHub outcome.
  */
 export async function reconcileMissionEpochs(missionId: string, deps: EpochDeps = {}): Promise<ReconcileOutcome> {
+  const out = await reconcileMissionEpochSteps(missionId, deps);
+  // S4b: a settlement or retirement can release a held completion. Every reconcile says so (the
+  // merge door's, ensureWritableEpoch's, the hourly one), and the missions module decides.
+  if (epochStepsMayComplete(out.steps)) {
+    await (deps.settled ?? emitDeliverySettled)(missionId, out.steps)
+      .catch((err) => console.error(`[mission-epochs] delivery-settled signal failed for ${missionId}:`, err));
+  }
+  return out;
+}
+
+/** The default `settled` signal: the core event the missions module's completion writer hears. */
+async function emitDeliverySettled(missionId: string, steps: ReconcileOutcome['steps']): Promise<void> {
+  const { emit } = await import('@/lib/core-emit');
+  await emit({ type: 'mission.delivery_settled', missionId, steps: steps.map((s) => `${s.step}#${s.epoch}`) });
+}
+
+async function reconcileMissionEpochSteps(missionId: string, deps: EpochDeps): Promise<ReconcileOutcome> {
   const api: GithubApi = deps.api ?? (await import('@/lib/github')).githubApi;
   const nowDate = () => (deps.now ?? (() => new Date()))();
   const now = () => nowDate().toISOString();

@@ -27,9 +27,9 @@
  * effect runs once per merge by its dedupe key.
  */
 import { after } from 'next/server';
-import { eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
-import { workspaces } from '@buildd/core/db/schema';
+import { tasks, workspaces } from '@buildd/core/db/schema';
 import { emit } from '@/lib/core-emit';
 import { reportTaskPolicyOutcome } from '@/lib/model-policy-outcomes';
 import { checkDependsOnResolved, resolveCompletedTask } from '@/lib/task-dependencies';
@@ -123,6 +123,21 @@ export async function loadMergedPrOwner(repoFullName: string, prNumber: number) 
   });
 }
 
+/**
+ * Claim the one-shot completion steps of a merge (the task.completed fan-out, the work-tracker
+ * comment, resolveCompletedTask) for `taskId`, once: a context marker set by compare-and-set.
+ * True for the caller that set it. Claimed before the steps run, so a crash between the claim
+ * and a step loses that step rather than repeating a comment a person sees.
+ */
+export async function claimMergeCompletionOnce(taskId: string, prNumber: number): Promise<boolean> {
+  const rows = await db
+    .update(tasks)
+    .set({ context: sql`COALESCE(${tasks.context}, '{}'::jsonb) || jsonb_build_object('mergeCompletionAnnounced', jsonb_build_object('prNumber', ${prNumber}::int, 'at', now()))` })
+    .where(and(eq(tasks.id, taskId), sql`NOT (COALESCE(${tasks.context}, '{}'::jsonb) ? 'mergeCompletionAnnounced')`))
+    .returning({ id: tasks.id });
+  return rows.length > 0;
+}
+
 export async function runMergedPrWork(p: MergedPrWorkInput): Promise<void> {
   const { worker, task } = p;
   if (p.stamp) {
@@ -182,8 +197,13 @@ export async function runMergedPrWork(p: MergedPrWorkInput): Promise<void> {
   // `tasks.status = 'completed'` belongs to the TRANSITION (this merge
   // finished the task); everything after it belongs to the MERGE, and is true
   // whatever the task row already said.
-  const transition: MergeTaskTransition = typeof p.taskTransition === 'function' ? await p.taskTransition(task) : p.taskTransition;
-  if (transition === 'flipped') {
+  const decided = typeof p.taskTransition !== 'function';
+  const transition: MergeTaskTransition = decided ? p.taskTransition as MergeTaskTransition : await (p.taskTransition as (t: MergedPrTask) => Promise<MergeTaskTransition>)(task);
+  // The kernel's value is stored on the effect, which is at-least-once: a retry after a throw
+  // further down would see 'flipped' again. The completion's one-shot steps run behind a durable
+  // once-marker instead (S4b review). The legacy writer's own row guard already makes it once.
+  const announce = transition === 'flipped' && (!decided || await claimMergeCompletionOnce(task.id, p.prNumber));
+  if (announce) {
     console.log(`Auto-completed task ${task.id} via merged PR #${p.prNumber} on ${p.repoFullName}`);
     // Same fact as the worker route's completion, same dedupe key: one row.
     await emit({ type: 'task.completed', via: 'merge', taskId: task.id, workerId: worker.id, workspaceId: worker.workspaceId });

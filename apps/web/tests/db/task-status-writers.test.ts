@@ -8,9 +8,13 @@ import { beforeAll, describe, expect, test } from 'bun:test';
 import { sql } from 'drizzle-orm';
 import { assertDbConfigured, q, seedTask, seedWorkspace } from './harness';
 
-const { completeTaskOnBranchMatchMerge } = await import('../../src/lib/pr-merged-legacy-task');
+const { completeTaskOnBranchMatchMerge, legacyCompleteTaskOnMerge } = await import('../../src/lib/pr-merged-legacy-task');
 const { archiveStaleFailedTasks } = await import('../../src/lib/task-archive');
 const { cascadeDependencyFailure } = await import('../../src/lib/task-dependencies');
+const { notKernelMergedTaskSql } = await import('../../src/lib/workflow/pr-fact-scope');
+const { db } = await import('@buildd/core/db');
+const { tasks } = await import('@buildd/core/db/schema');
+const { and, eq } = await import('drizzle-orm');
 
 let workspaceId: string;
 let prSeq = 200_000 + Math.floor(Math.random() * 700_000);
@@ -84,5 +88,94 @@ describe('dependency failure cascade', () => {
     await cascadeDependencyFailure(dep);
     expect(await status(plain)).toBe('failed');
     expect(await status(owner)).toBe('in_progress');
+  });
+});
+
+/**
+ * S4b review finding 1: an attempt writer (worker PATCH, cleanup, the reaper, recovery hold, CI
+ * escalation) carries `notKernelMergedTaskSql()` in its WHERE. Each case is that writer's own
+ * statement shape over the real tasks table.
+ */
+describe('attempt writers cannot move a task the kernel finished (completed, delivery MERGED)', () => {
+  const merged = async () => {
+    const t = await seedTask(workspaceId, { status: 'completed' });
+    await deliver(t, 'MERGED');
+    await q(sql`UPDATE tasks SET result = '{"summary":"shipped","prNumber":7}'::jsonb WHERE id = ${t}::uuid`);
+    return t;
+  };
+  const result = async (t: string) => (await q<{ result: Record<string, unknown> }>(sql`SELECT result FROM tasks WHERE id = ${t}::uuid`))[0].result;
+  /** The worker PATCH's terminal write, with the route's own guards. */
+  const patchTerminal = (t: string, set: Record<string, unknown>) => db.update(tasks).set(set as never)
+    .where(and(eq(tasks.id, t), sql`${tasks.status} <> 'cancelled'`, notKernelMergedTaskSql())).returning({ id: tasks.id });
+
+  test('a worker failing after the merge leaves it completed', async () => {
+    const t = await merged();
+    expect(await patchTerminal(t, { status: 'failed', updatedAt: new Date() })).toEqual([]);
+    expect(await status(t)).toBe('completed');
+  });
+
+  test('a failure with auto-retry cannot requeue it to pending (it would be built twice)', async () => {
+    const t = await merged();
+    expect(await patchTerminal(t, { status: 'pending', claimedBy: null, claimedAt: null, updatedAt: new Date() })).toEqual([]);
+    expect(await status(t)).toBe('completed');
+  });
+
+  test('a stale "no PR found" release check neither fails it nor overwrites its result', async () => {
+    const t = await merged();
+    await db.update(tasks).set({ status: 'failed', result: { releaseSummary: 'no PR found' } as never, updatedAt: new Date() })
+      .where(and(eq(tasks.id, t), notKernelMergedTaskSql()));
+    expect(await status(t)).toBe('completed');
+    expect(await result(t)).toEqual({ summary: 'shipped', prNumber: 7 });
+  });
+
+  test('the reaper\'s plain id writes (silent start, retry cap, unanswered question) and a reactivation do nothing', async () => {
+    const t = await merged();
+    for (const set of [{ status: 'failed', result: { error: 'reaped' } }, { status: 'assigned' }]) {
+      await db.update(tasks).set({ ...set, updatedAt: new Date() } as never).where(and(eq(tasks.id, t), notKernelMergedTaskSql()));
+    }
+    expect(await status(t)).toBe('completed');
+    expect(await result(t)).toEqual({ summary: 'shipped', prNumber: 7 });
+  });
+
+  test('everything else moves as before: no delivery, a live delivery, a merged delivery whose task is still open', async () => {
+    const plain = await seedTask(workspaceId, { status: 'completed' });
+    const live = await seedTask(workspaceId, { status: 'completed' });
+    await deliver(live, 'IN_REVIEW');
+    const open = await seedTask(workspaceId, { status: 'in_progress' });
+    await deliver(open, 'MERGED');
+    for (const t of [plain, live, open]) expect((await patchTerminal(t, { status: 'failed', updatedAt: new Date() })).length).toBe(1);
+    expect([await status(plain), await status(live), await status(open)]).toEqual(['failed', 'failed', 'failed']);
+  });
+});
+
+describe('the legacy merge writer (S4b review finding 5)', () => {
+  const task = (id: string, st = 'in_progress') => ({ id, status: st, workspaceId, missionId: null, taskClass: null, release: null, loopState: null });
+
+  test('the webhook\'s fallback never completes a delivery-owned task (T17 does)', async () => {
+    const t = await seedTask(workspaceId, { status: 'in_progress' });
+    await deliver(t, 'IN_REVIEW');
+    expect(await legacyCompleteTaskOnMerge({ prUrl: 'https://github.com/acme/writers/pull/1', prNumber: 1, runner: 'r' })(task(t))).toBe('not_flipped');
+    expect(await status(t)).toBe('in_progress');
+  });
+
+  test('a task with no delivery completes as before; an effect queued before S4b still completes its owner', async () => {
+    const plain = await seedTask(workspaceId, { status: 'in_progress' });
+    expect(await legacyCompleteTaskOnMerge({ prUrl: 'https://github.com/acme/writers/pull/2', prNumber: 2, runner: 'r' })(task(plain))).toBe('flipped');
+    const owned = await seedTask(workspaceId, { status: 'in_progress' });
+    await deliver(owned, 'MERGED');
+    expect(await legacyCompleteTaskOnMerge({ prUrl: 'https://github.com/acme/writers/pull/3', prNumber: 3, runner: 'r', kernelEffect: true })(task(owned))).toBe('flipped');
+  });
+});
+
+describe('the merge completion runs its one-shot steps once (S4b review finding 2)', () => {
+  test('the first claim wins, a retried effect gets false, and the task context keeps what it had', async () => {
+    const { claimMergeCompletionOnce } = await import('../../src/lib/pr-merged-work');
+    const t = await seedTask(workspaceId, { status: 'completed' });
+    await q(sql`UPDATE tasks SET context = '{"keep":1}'::jsonb WHERE id = ${t}::uuid`);
+    expect(await claimMergeCompletionOnce(t, 41)).toBe(true);
+    expect(await claimMergeCompletionOnce(t, 41)).toBe(false);
+    const [row] = await q<{ context: Record<string, any> }>(sql`SELECT context FROM tasks WHERE id = ${t}::uuid`);
+    expect(row.context.keep).toBe(1);
+    expect(row.context.mergeCompletionAnnounced.prNumber).toBe(41);
   });
 });

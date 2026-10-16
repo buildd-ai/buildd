@@ -363,6 +363,25 @@ const TASK_STATUS_WRITERS: Record<string, string> = {
   // An operator script scrubbing leaked secrets out of task results.
   'packages/core/scripts/scrub-exposed-secrets.ts': 'NOT_LIFECYCLE: an operator script redacting leaked secrets in result text, run by hand',
 };
+/**
+ * S4b review: no ATTEMPT writer may move a task the kernel finished (completed, its delivery MERGED).
+ * A number is how many of the file's statements carry `notKernelMergedTaskSql()` (each statement
+ * that can move a task away from completed); a string is why the file's writes cannot.
+ */
+const ATTEMPT_MERGED_GUARD: Record<string, number | string> = {
+  'apps/web/src/app/api/workers/[id]/route.ts': 9,
+  'apps/web/src/lib/stale-workers.ts': 8,
+  'apps/web/src/app/api/tasks/cleanup/route.ts': 2,
+  'apps/web/src/lib/task-recovery-hold.ts': 1,
+  'apps/web/src/lib/ci-failure-retry.ts': 1,
+  'apps/web/src/app/api/workers/claim/route.ts': "moves only a pending task (WHERE status = 'pending') or rolls back its own assigned claim",
+  'apps/web/src/lib/interactive-detach.ts': 'WHERE the task is not terminal: never a completed one',
+  'apps/web/src/lib/credential-recovery.ts': "WHERE status = 'failed'",
+  'apps/web/src/lib/github-repo-access-store.ts': "WHERE status = 'failed'",
+  'apps/web/src/lib/conflict-retry.ts': 'the conflict-fix attempt task, WHERE its status is still the live one it read',
+  'apps/web/src/lib/loop-webhook.ts': 'writes completed only',
+};
+
 /** The GUARDED writers: each must still carry the delivery-owned predicate. */
 const GUARDED_WRITERS = Object.entries(TASK_STATUS_WRITERS).filter(([, why]) => why.startsWith('GUARDED')).map(([f]) => f);
 
@@ -424,6 +443,16 @@ describe('S4a: the delivery columns (workers.merged_at, workers.pr_lifecycle_sta
     expect(Object.keys(TASK_STATUS_WRITERS).filter((f) => !writers.includes(f))).toEqual([]);
     // No entry is left as debt without a reason.
     expect(Object.entries(TASK_STATUS_WRITERS).filter(([, why]) => !/^(GUARDED|ATTEMPT|PERSON|NON_DELIVERY|NOT_LIFECYCLE): /.test(why) || /TODO S4b/.test(why))).toEqual([]);
+  });
+
+  it('S4b review: every ATTEMPT writer is covered: it carries notKernelMergedTaskSql, or says why it cannot move a completed task', () => {
+    const attempt = Object.entries(TASK_STATUS_WRITERS).filter(([, why]) => why.startsWith('ATTEMPT')).map(([f]) => f).sort();
+    expect(Object.keys(ATTEMPT_MERGED_GUARD).sort()).toEqual(attempt);
+    for (const [f, want] of Object.entries(ATTEMPT_MERGED_GUARD)) {
+      const n = (code(f).match(/\bnotKernelMergedTaskSql\(\)/g) ?? []).length;
+      if (typeof want === 'number') expect(`${f}: ${n}`).toBe(`${f}: ${want}`);
+      else expect(want.length).toBeGreaterThan(10);
+    }
   });
 
   it('S4b: a GUARDED writer still skips a delivery-owned task in its own statement', () => {

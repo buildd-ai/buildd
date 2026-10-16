@@ -15,7 +15,7 @@ import { refreshWorkerMergeStateIfStale } from './pr-reconcile';
 import { isBookkeeping } from '@buildd/core/mission-helpers';
 import type { PathDeclaration } from '@buildd/shared';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
-import { deliveryOwnedTaskSql } from '@/lib/workflow/pr-fact-scope';
+import { deliveryOwnedTaskSql, taskCols } from '@/lib/workflow/pr-fact-scope';
 
 /**
  * Result of interpreting `structuredOutput.plan`. Organizer heartbeats
@@ -748,7 +748,7 @@ export async function cascadeDependencyFailure(
         sql`${tasks.status} NOT IN ('completed', 'failed', 'cancelled')`,
         // S4b (workflow-kernel-library.md §1): a task whose PR a live kernel delivery carries is the
         // kernel's to settle. Failing it here would contradict a delivery in review or landing.
-        sql`NOT ${deliveryOwnedTaskSql(sql`${tasks.id}`, { live: true })}`,
+        sql`NOT ${deliveryOwnedTaskSql(taskCols(), { live: true })}`,
       )
     );
 

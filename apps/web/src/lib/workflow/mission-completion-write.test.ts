@@ -23,7 +23,9 @@ describe('mission completion write', () => {
     expect(q).toContain("WHERE m.id = $3::uuid AND m.status = 'active'");
     expect(q).toContain('IS NOT DISTINCT FROM $4::text');
     expect(q).toContain('RETURNING m.id, m.schedule_id');
-    expect(params).toEqual([at.toISOString(), at.toISOString(), 'm-1', 'e:1:retired']);
+    // A concurrent writer of the row (every epoch transition touches it) makes this re-check fail.
+    expect(q).toContain('AND m.xmin::text = (SELECT xmin::text FROM missions WHERE id = $5::uuid)');
+    expect(params).toEqual([at.toISOString(), at.toISOString(), 'm-1', 'e:1:retired', 'm-1']);
     // No delivery records: NULL, which matches only a mission that still has none.
     expect(render(completeMissionSql('m-1', null, at)).params[3]).toBeNull();
   });
