@@ -61,8 +61,12 @@ export function attributeClaimOutcome(d: DecisionForJoin, receipt: ClaimReceipt,
       // Collisions need either path or counterparty; a base refusal needs both.
       if (gate === 'path_claim' ? partyMatches || pathMatches : partyMatches && pathMatches)
         return true;
-      if (gate === 'path_claim' ? !paths.length && !counterparty : !paths.length || !counterparty)
-        unknown = true;
+      const partyKnown = receipt.blockerTaskIds.length > 0 && typeof counterparty === 'string';
+      const pathsKnown = receipt.paths.length > 0 && paths.length > 0;
+      const provenUnrelated = gate === 'path_claim'
+        ? partyKnown && pathsKnown
+        : (partyKnown && !partyMatches) || (pathsKnown && !pathMatches);
+      if (!provenUnrelated) unknown = true;
     }
   }
   // Existing conflict-retry rows do not carry conflicting files + merging

@@ -9,6 +9,7 @@ describe('claim outcome attribution', () => {
     expect(attributeClaimOutcome(decision, receipt, label, [event({ blockingTaskId: 'holder' })])).toBe(true);
     expect(attributeClaimOutcome(decision, receipt, label, [event({ blockingTaskId: 'stranger', path: 'src/other.ts' })])).toBe(false);
     expect(attributeClaimOutcome(decision, receipt, label, [event({})])).toBeNull();
+    expect(attributeClaimOutcome(decision, {paths:[],blockerTaskIds:[],staleBlocker:false}, label, [event({blockingTaskId:'stranger',path:'src/other.ts'})])).toBeNull();
   });
   it('never guesses missing conflict-file attribution or unlanded safety', () => {
     expect(attributeClaimOutcome(decision, receipt, { ...label, conflictCreated: { status: 'observed', value: true } }, [event({ blockingTaskId: 'stranger', path: 'src/other.ts' })])).toBeNull();

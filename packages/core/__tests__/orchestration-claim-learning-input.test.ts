@@ -13,6 +13,7 @@ it('uses actual matching successful claims and keeps clean baseline separate', (
   const result = assembleClaimLearningWorkspace(input, [event], [], [{ ...label, attributableUnsafe: false }]);
   expect(result.outcomes[0]).toMatchObject({ actor: 'jev_start', attributableUnsafe: false, waitMs: 1000 });
   expect(result.outcomes.some(r => r.actor === 'rule_start_clean')).toBe(false);
+  expect(assembleClaimLearningWorkspace({...input, decisions:[{...decision,attributableUnsafe:false}]}, [event], [], [{...label,attributableUnsafe:null}]).outcomes[0].attributableUnsafe).toBeNull();
 });
 it('a human safe force only becomes false-hold candidate with the same blocker evidence', () => {
   const hold = { ...decision, applied: false, effective: 'HOLD', suggested: 'HOLD', actor: 'jev_hold' };

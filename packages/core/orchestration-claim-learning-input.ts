@@ -44,7 +44,7 @@ export function assembleClaimLearningWorkspace(input: ClaimHoldReadoutInput, eve
     const actor = claimReadoutActor(d), receipt = claimReceipt(d.receipt);
     const accepted = actor === 'jev_start' ? events.find(e => matches(d, e)) : undefined;
     const label = byLabel.get(d.id);
-    const attributableUnsafe = actor === 'jev_start' && !accepted ? null : label?.attributableUnsafe ?? d.attributableUnsafe ?? null;
+    const attributableUnsafe = actor === 'jev_start' && !accepted ? null : label ? label.attributableUnsafe ?? null : d.attributableUnsafe ?? null;
     let matchedJevLabel: 'HOLD' | 'START' | undefined;
     if (actor === 'human_force') {
       const previous = input.decisions.filter(p => p.taskId === d.taskId && p.workspaceId === d.workspaceId && p.createdAt < d.createdAt && p.gate === d.gate && p.areaClass === d.areaClass && p.model
