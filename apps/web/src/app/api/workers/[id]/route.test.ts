@@ -10823,7 +10823,7 @@ describe('PATCH /api/workers/[id]', () => {
       });
     });
 
-    it('structuredOutput without a verdict key: returns 400 early validation error', async () => {
+    it('structuredOutput without a verdict key: also treated as a contract violation', async () => {
       setupReviewerTaskCompletion('approve');
       const taskSetCalls: any[] = [];
       mockTasksUpdate.mockReturnValue({
@@ -10843,13 +10843,10 @@ describe('PATCH /api/workers/[id]', () => {
       });
       const res = await PATCH(req, { params: mockParams });
 
-      // Early validation catches missing verdict and returns 400
-      expect(res.status).toBe(400);
-      const json = await res.json();
-      expect(json.error).toContain('Review verdict not recorded');
-      expect(json.error).toContain('verdict');
+      expect(res.status).toBe(200);
       expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
-      expect(taskSetCalls).toHaveLength(0);
+      expect(taskSetCalls.some((u: any) => u.status === 'completed')).toBe(false);
+      expect(taskSetCalls.some((u: any) => u.status === 'pending')).toBe(true);
     });
 
     // The guard used to check only that `verdict` was truthy. An out-of-enum
@@ -10875,7 +10872,7 @@ describe('PATCH /api/workers/[id]', () => {
       ];
 
       for (const [label, structuredOutput, reasonWord] of cases) {
-        it(`${label}: returns 400 early validation error, keeping worker live for retry`, async () => {
+        it(`${label}: requeues the review with the reason, and never reviews or merges`, async () => {
           setupReviewerTaskCompletion('approve');
           const taskSetCalls = captureTaskSets();
 
@@ -10885,15 +10882,14 @@ describe('PATCH /api/workers/[id]', () => {
             body: { status: 'completed', structuredOutput },
           }), { params: mockParams });
 
-          // Early validation now returns 400 instead of accepting and requeuing downstream
-          expect(res.status).toBe(400);
-          const json = await res.json();
-          expect(json.error).toContain('Review verdict not recorded');
-          expect(json.error).toContain(reasonWord);
-          // No task state changes when validation fails
-          expect(taskSetCalls).toHaveLength(0);
+          expect(res.status).toBe(200);
           expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
           expect(mockPostPrReview).not.toHaveBeenCalled();
+          expect(taskSetCalls.some((u: any) => u.status === 'completed')).toBe(false);
+          const requeue = taskSetCalls.find((u: any) => u.status === 'pending');
+          expect(requeue).toBeDefined();
+          expect(requeue.context.reviewContractRetryCount).toBe(1);
+          expect(String(requeue.context.failureContext)).toContain(reasonWord);
         });
       }
     });
@@ -10979,18 +10975,39 @@ describe('PATCH /api/workers/[id]', () => {
         expect(taskSetCalls).toHaveLength(0);
       });
 
-      it('runner-reported completion with valid verdict passes validation (not a 400)', async () => {
+      it.each([
+        ['structuredOutput absent, verdict only in summary', { status: 'completed', viaCompleteTask: true, summary: 'approve, 0.75' }],
+        ['structuredOutput null', { status: 'completed', viaCompleteTask: true, summary: 'approve, 0.75', structuredOutput: null }],
+      ])('complete_task with %s: 400 naming the fields, worker not failed', async (_label, body) => {
+        setupReviewerTaskCompletion('approve');
+        const taskSetCalls = captureTaskSets();
+
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body,
+        }), { params: mockParams });
+
+        expect(res.status).toBe(400);
+        const json = await res.json();
+        expect(json.error).toContain('verdict');
+        expect(json.error).toContain('confidence');
+        expect(json.error).toContain('summary');
+        expect(taskSetCalls).toHaveLength(0);
+        expect(mockWorkersUpdate).not.toHaveBeenCalled();
+      });
+
+      it('runner-reported completion (no viaCompleteTask) keeps the requeue contract, not a 400', async () => {
         setupReviewerTaskCompletion('approve');
         captureTaskSets();
 
         const res = await PATCH(createMockRequest({
           method: 'PATCH',
           headers: { Authorization: 'Bearer bld_test' },
-          body: { status: 'completed', structuredOutput: { verdict: 'approve', confidence: 0.93, summary: 'Looks good' } },
+          body: { status: 'completed', structuredOutput: { verdict: 'approve', confidence: 0.93 } },
         }), { params: mockParams });
 
-        // Valid verdict passes early validation and returns 200
-        expect(res.status).toBe(200);
+        expect(res.status).not.toBe(400);
       });
     });
 

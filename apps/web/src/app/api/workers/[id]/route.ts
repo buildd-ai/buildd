@@ -1872,16 +1872,22 @@ export async function PATCH(
     const isReviewerTask = terminalTaskRow[0]?.category === 'review'
       && Boolean((terminalTaskRow[0]?.context as Record<string, unknown> | undefined)?.reviewerFor);
 
-    // Reviewer verdict validation for all completion types. Previously only
-    // applied to MCP workers (those with an active agent turn), but runner
-    // end-of-session completions also need early validation: without it, a
-    // malformed verdict goes through the downstream review-contract guard which
-    // marks the worker failed, terminating it before any retry attempt. Early
-    // validation returns 400 instead, keeping the worker retraiable.
-    // See #4828: reviewer task with verdict in prose instead of structured output.
-    if (isReviewerTask && status === 'completed') {
+    // A reviewer calling the MCP complete_task tool itself (any interactive
+    // claim_task worker, or a runner-hosted agent mid-session — the tool marks
+    // that PATCH viaCompleteTask) can still read the response, so refuse a
+    // malformed verdict here with the allowed values instead of accepting the
+    // call and failing the worker afterwards: a runner reviewer that left out
+    // `summary` once lost a review it corrected on its very next call. A
+    // runner-reported end-of-session completion has no agent turn left to read
+    // a refusal, so it keeps the requeue-once contract guard further down.
+    if (isReviewerTask && (worker.runner === 'mcp' || body.viaCompleteTask === true)) {
+      // Absent or null structuredOutput (verdict only in the summary prose) is
+      // refused too: parseReviewerOutput rejects it, and the worker stays live.
+      // Only an explicit complete_task call is refused for omitting it: other
+      // interactive completions keep the server-side prose-verdict extraction.
       const submitted = body.structuredOutput as { verdict?: unknown } | null | undefined;
-      if (submitted !== undefined) {
+      const omitted = submitted === undefined || submitted === null;
+      if (!omitted || body.viaCompleteTask === true) {
         const parsed = parseReviewerOutput(submitted);
         if (!parsed.ok) {
           return NextResponse.json({
