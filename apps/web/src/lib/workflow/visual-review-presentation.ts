@@ -178,7 +178,7 @@ export function presentVisualReview(state: MissionVisualReviewState, opts: Prese
         detail: 'Automatic fixes did not settle these. It needs your call.',
       };
       return {
-        ...quiet, ...common, stage: 'judgment', tone: 'warning', label: `${plural(Math.max(f.issues, 1), 'screen')} still look wrong`,
+        ...quiet, ...common, stage: 'judgment', tone: 'warning', label: f.issues === 1 ? '1 screen still looks wrong' : `${Math.max(f.issues, 1)} screens still look wrong`,
         detail: owner.detail, showPanel: true, owner, needsYou: true, canWaive: state.policy.waiverAllowed, problem: 'product', findings,
       };
     }
