@@ -738,6 +738,9 @@ import { MISSION_PR_TASK_PREFIX } from '@buildd/core/mission-integration';
 // route hands to GitHub, so they build fixtures with the same code path.
 import { renderPrActivityComment, SPINNER_PATH } from '@/lib/pr-activity-comment';
 
+/** A terminal fact goes to the funnel under the kernel's scope (S4a, pr-fact-scope.ts). */
+const FUNNEL_OPTS = { scope: expect.objectContaining({ where: expect.any(Function) }) };
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 function createWebhookRequest(event: string, payload: any, validSig = true): NextRequest {
   mockVerifyWebhookSignature.mockReturnValue(Promise.resolve(validSig));
@@ -4287,7 +4290,7 @@ describe('POST /api/github/webhook', () => {
         }));
 
         expect(factsOfKind('closed')).toEqual([
-          { target: { prUrl: 'https://github.com/test-org/test-repo/pull/62', prNumber: 62 }, fact: { kind: 'closed' }, opts: undefined },
+          { target: { prUrl: 'https://github.com/test-org/test-repo/pull/62', prNumber: 62 }, fact: { kind: 'closed' }, opts: FUNNEL_OPTS },
         ]);
       });
 

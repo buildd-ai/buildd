@@ -73,7 +73,16 @@ export function failingNames(rows: Array<{ name?: string | null; conclusion?: st
   return [...new Set(rows.filter((r) => FAILING.has(String(r.conclusion ?? '')) && r.name).map((r) => String(r.name)))];
 }
 
-export function githubReader(installationId: number, api: typeof githubApi = githubApi): GithubFactReader {
+/**
+ * The kernel's GitHub reader. `timeoutMs` bounds every call it makes (an AbortSignal on each
+ * request): a caller with a budget, like the fast heal (kernel-heal.ts), never waits on a slow
+ * GitHub past it. A timed-out read reads as failed (null), like any other failed read.
+ */
+export function githubReader(installationId: number, rawApi: typeof githubApi = githubApi, opts: { timeoutMs?: number } = {}): GithubFactReader {
+  const timeoutMs = opts.timeoutMs;
+  const api: typeof githubApi = timeoutMs
+    ? (id, path, init = {}) => rawApi(id, path, { ...init, signal: AbortSignal.timeout(timeoutMs) })
+    : rawApi;
   return {
     async readPr(repoFullName, prNumber) {
       try {

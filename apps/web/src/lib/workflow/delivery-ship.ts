@@ -101,3 +101,14 @@ export async function missionEpochsFor(missionIds: string[], exec: Exec = dbExec
     return new Map();
   }
 }
+
+/** A mission's recorded scope decisions (§6 scope amendments), oldest first. Never throws. */
+export async function scopeAmendmentsOf(missionId: string, exec: Exec = dbExec): Promise<import('./scope-amendments').ScopeAmendmentRow[]> {
+  try {
+    const { scopeAmendmentsFor } = await import('./scope-amendments');
+    return (await scopeAmendmentsFor([missionId], exec)).get(missionId) ?? [];
+  } catch (err) {
+    console.warn('[workflow] scope amendments unavailable:', err instanceof Error ? err.message : err);
+    return [];
+  }
+}

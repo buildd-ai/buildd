@@ -198,6 +198,7 @@ const seam = await import('../../src/lib/workflow/seam');
 const { withPrFactEffects } = await import('../../src/lib/workflow/pr-fact-effects');
 const { workflowKernel } = await import('../../src/lib/workflow/kernel-ports');
 const { recordPrFact } = await import('@buildd/core/pr-facts');
+const { factFunnelScope } = await import('../../src/lib/workflow/pr-fact-scope');
 /** Production's set, as seam.ts composes it: the package's handlers on buildd's ports, the families still in apps/web, and the fact-cache projection. */
 const reviewEffectHandlers = withPrFactEffects((await workflowKernel()).handlers);
 const { runEffects } = await import('../../src/lib/workflow/effects');
@@ -724,11 +725,12 @@ describe('S6 — out of order: closed(merged), then late synchronize / opened / 
     sql`SELECT id, pr_lifecycle_status, merged_at FROM workers WHERE pr_number = ${o.prNumber}::int AND workspace_id = ${workspaceId}::uuid ORDER BY created_at, id`);
   const prUrl = (o: Delivery) => `https://github.com/${REPO}/pull/${o.prNumber}`;
 
-  test('S6: the merge reaches every worker row through stamp_pr_rows; late open-state and CI facts leave them as the merge set them', async () => {
+  test('S6: the merge reaches every worker row in T17\'s own statement; late open-state and CI facts leave them as the merge set them', async () => {
     const o = await openAndHandOn();
     await q(sql`UPDATE workers SET pr_url = ${prUrl(o)}, pr_lifecycle_status = 'ci_green' WHERE pr_number = ${o.prNumber}::int AND workspace_id = ${workspaceId}::uuid`);
     await closeOrMerge(o, true);
-    expect((await effects(o.deliveryId, 'stamp_pr_rows')).map((e) => [e.status, e.outcome])).toEqual([['done', 'ok:merged_2']]);
+    // S4a: T17 wrote both rows in its own statement; the effect, the backstop, finds nothing left.
+    expect((await effects(o.deliveryId, 'stamp_pr_rows')).map((e) => [e.status, e.outcome])).toEqual([['done', 'ok:merged_0']]);
     const merged = await prRows(o);
     expect(merged.length).toBe(2);
     for (const r of merged) {
@@ -742,8 +744,8 @@ describe('S6 — out of order: closed(merged), then late synchronize / opened / 
     expect(await recordPrFact(target, { kind: 'open' })).toEqual([]); // late synchronize / opened
     expect(await recordPrFact(target, { kind: 'open', reopened: true })).toEqual([]);
     expect(await recordPrFact(target, { kind: 'ci', status: 'ci_failed', headSha: 'H1', currentHeadSha: 'H1' })).toEqual([]); // late check_suite
-    expect(await recordPrFact(target, { kind: 'closed' })).toEqual([]);
-    expect(await recordPrFact(target, { kind: 'merged', mergedAt: new Date() })).toEqual([]); // a merge door's receipt time
+    expect(await recordPrFact(target, { kind: 'closed' }, { scope: factFunnelScope })).toEqual([]);
+    expect(await recordPrFact(target, { kind: 'merged', mergedAt: new Date() }, { scope: factFunnelScope })).toEqual([]); // a merge door's receipt time
     // …and the kernel's own late CI fact files nothing on a merged delivery.
     expect(await ciFail(o, { head: 'H1' })).toMatchObject({ handled: true, result: { result: 'stale' } });
     expect(await tasksOf(o.deliveryId, 'ci_fix')).toEqual([]);

@@ -4,7 +4,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { deliveryViewsSql, getDeliveryViewsForTasks, laneWaitFrom, remediationFrom, rowToDeliveryView } from './delivery-view';
+import { deliveryViewsSql, getDeliveryViewsForTasks, laneWaitFrom, remediationFrom, rowToDeliveryView, withMergeContradiction } from './delivery-view';
 
 const dialect = new PgDialect();
 const NOW = Date.parse('2026-10-06T12:00:00Z');
@@ -100,5 +100,30 @@ describe('the approved-merge slot: who merges an APPROVED delivery', () => {
   test('the loader applies the rule it is given', async () => {
     const map = await getDeliveryViewsForTasks(['t1'], async () => ({ rows: [row] }), () => false);
     expect(map.get('t1')).toMatchObject({ owner: 'landing', needsYou: false });
+  });
+});
+
+/** AC-4 (S4a review): a merge GitHub reports after the delivery was abandoned or superseded is shown, not swallowed. */
+describe('a merge contradiction on the delivery view', () => {
+  const base = {
+    delivery: { id: 'd1', workspace_id: 'w1', owner_task_id: 't1', repo_full_name: 'acme/r', pr_number: 7, state: 'ABANDONED', version: 6, current_head_sha: 'H1', current_round: 1, max_rounds: 3, approved_heads: [], composition_heads: [] },
+    rounds: [], attempts: [], attempt_tasks: [], remediation: null,
+    last_transition: { command: 'Abandon', from_state: 'CLOSED_UNMERGED', to_state: 'ABANDONED', evidence: {}, created_at: minutesAgo(5) },
+  };
+  test('the loader reads the newest contradicted fact of the PR', () => {
+    const { sql } = new PgDialect().sqlToQuery(deliveryViewsSql(['t1']));
+    expect(sql).toContain("f.kind = 'pr_closed' AND f.payload ? 'contradiction'");
+    expect(sql).toContain('AS merge_contradiction');
+  });
+  test('an ABANDONED delivery GitHub merged says so in its detail (what explain shows)', () => {
+    const v = rowToDeliveryView({ ...base, merge_contradiction: { reason: 'merged_after_abandoned', mergedAt: '2026-10-01T00:00:00Z' } }, NOW)!;
+    expect(v.detail).toContain('GitHub reports this PR merged at 2026-10-01T00:00:00Z after buildd recorded it as abandoned');
+    expect(v.detail).toContain('recorded but not applied');
+  });
+  test('no contradiction, or a delivery in another state: the view is unchanged', () => {
+    const plain = rowToDeliveryView(base, NOW)!;
+    expect(withMergeContradiction(plain, null)).toBe(plain);
+    const merged = rowToDeliveryView({ ...base, delivery: { ...base.delivery, state: 'MERGED' } }, NOW)!;
+    expect(withMergeContradiction(merged, { reason: 'x' })).toBe(merged);
   });
 });

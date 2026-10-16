@@ -56,7 +56,7 @@ import { VISUAL_AUDITOR_ROLE_SLUG } from '@/lib/mission-visual-review';
 import { loadVisualReview } from '@/lib/visual-review-load';
 import { visualReviewRoundOf } from '@/lib/visual-review-rounds';
 import { toTaskArtifactItem, taskVisibleArtifacts } from './task-artifact-items';
-import { refreshWorkerMergeStateIfStale } from '@/lib/pr-reconcile';
+import { observeMergeStateOnRender } from '@/lib/pr-state-refresh';
 import { getBackendAvailability, teamEnabledBackends } from '@/lib/backend-failover';
 import { backendLabel, failoverCandidates } from '@buildd/core/backend-policy';
 import { deriveTaskModel } from '@/lib/model-presentation';
@@ -301,8 +301,9 @@ export default async function TaskDetailPage({
       });
       const installId = wsWithInstall?.githubInstallation?.installationId;
       if (installId) {
-        const stale = { id: latestWorker.id, prNumber: latestWorker.prNumber, prUrl: latestWorker.prUrl };
-        after(() => refreshWorkerMergeStateIfStale(stale, installId).catch((err) =>
+        // AC-3: a delivery-owned task records at most a fact here; no lifecycle write.
+        const stale = { id: latestWorker.id, prNumber: latestWorker.prNumber, prUrl: latestWorker.prUrl, workspaceId: latestWorker.workspaceId ?? task.workspaceId };
+        after(() => observeMergeStateOnRender([stale], installId).catch((err) =>
           console.error('[task-page] PR fact import failed (non-fatal):', err)));
       }
     }

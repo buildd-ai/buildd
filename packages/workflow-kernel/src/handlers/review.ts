@@ -290,9 +290,17 @@ export function reviewHandlers(ports: KernelPorts): EffectHandlers {
 
   const notify: EffectHandler = async (e) => {
     const event = e.payload.event;
-    if (event !== 'policy_human' && event !== 'push_undeliverable' && event !== 'effect_dead' && event !== 'landing_needs_human') return { outcome: 'skipped:no_channel' };
+    if (event !== 'policy_human' && event !== 'push_undeliverable' && event !== 'effect_dead' && event !== 'landing_needs_human' && event !== 'merged_after_resolution') return { outcome: 'skipped:no_channel' };
     const d = (await ports.store.loadView({ deliveryId: e.deliveryId })).delivery;
     if (!hasPr(d)) return { outcome: 'skipped:no_pr' };
+    if (event === 'merged_after_resolution') {
+      // AC-4: GitHub merged a PR the delivery had already resolved without a merge. Nothing is
+      // applied (no edge leaves ABANDONED / SUPERSEDED); a person decides what the merge means.
+      const was = e.payload.state === 'SUPERSEDED' ? 'superseded' : 'abandoned';
+      await needsAttention(ports, e.kind, d, `PR #${d.prNumber} merged after it was ${was}`,
+        `GitHub reports PR #${d.prNumber} merged, but buildd had already recorded it as ${was}, so the merge was not applied: its task, dependents and mission still treat the work as not shipped. Check whether the work landed and record it.`);
+      return { outcome: 'ok' };
+    }
     if (event === 'policy_human') {
       // T28: the one admission point for a pre-flight finding. The delivery is ESCALATED(policy_human)
       // at this head, so Home (needsYou) and this notice agree; a finding for an older head never gets here.

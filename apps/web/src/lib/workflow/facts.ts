@@ -21,6 +21,7 @@ import { applyCommand, loadView, type CommandResult, type DeliveryRef, type Exec
 import { baseChangeKey, headCoverage, headObservationKey } from './reducer';
 import { openFindings } from '@buildd/workflow-kernel/findings';
 import type { CloseCause, CompositionAttestation, ConstituentEvidence, DeliverySnapshot, KernelView } from './types';
+import { isResolvedWithoutMerge, recordMergeContradiction } from './merge-contradiction';
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
@@ -76,6 +77,13 @@ JOIN workflow_transitions t ON t.id = f.applied_transition_id
 WHERE f.workspace_id = ${workspaceId}::uuid AND t.delivery_id = ${deliveryId}::uuid AND t.command = 'HeadObserved'
 ORDER BY t.to_version DESC
 LIMIT 1`;
+}
+
+/** An unapplied fact takes the applying read's payload and source; an applied one is never rewritten. */
+export function refreshUnappliedFactSql(f: { factId: string; source: string; payload: Record<string, unknown> }): SQL {
+  return sql`-- workflow:refresh_unapplied_fact
+UPDATE workflow_facts SET payload = ${JSON.stringify(f.payload)}::jsonb, source = ${f.source}::text
+WHERE id = ${f.factId}::uuid AND applied_transition_id IS NULL`;
 }
 
 export function findFactSql(workspaceId: string, factKey: string): SQL {
@@ -166,6 +174,11 @@ export async function ingestFact(fact: FactInput, deps: IngestDeps = {}): Promis
     const prior = ((await exec(findFactSql(fact.workspaceId, factKey))).rows ?? [])[0] as { id: string; applied_transition_id: string | null } | undefined;
     if (!prior) throw new Error(`ingestFact: fact ${factKey} neither inserted nor found`);
     factId = prior.id;
+    if (!prior.applied_transition_id) {
+      // Recorded earlier but never applied (a render's observation, or a crash between
+      // the two statements): the read applying it now is the one the record keeps.
+      await exec(refreshUnappliedFactSql({ factId, source: fact.source, payload }));
+    }
     if (prior.applied_transition_id) {
       const view = await loadView(ref, exec).catch(() => null);
       const d = view?.delivery;
@@ -185,6 +198,12 @@ export async function ingestFact(fact: FactInput, deps: IngestDeps = {}): Promis
     // committed T13, written after it and never ahead of it.
     await exec(projectEquivalentHeadSql(result.deliveryId, String(result.decision.evidence.previousHead ?? ''), command.live.headSha))
       .catch((err) => console.warn(`[workflow] equivalentHeadShas projection failed for ${result.deliveryId}:`, err));
+  }
+  // S4a review (AC-4): GitHub says merged, the delivery already resolved without a merge. No edge
+  // leaves those states, so nothing applies; the contradiction is recorded loudly instead.
+  if (fact.kind === 'pr_closed' && live?.merged && result.result === 'stale' && isResolvedWithoutMerge(result.current.state)) {
+    await recordMergeContradiction({ workspaceId: fact.workspaceId, repoFullName: fact.repoFullName, prNumber: fact.prNumber, factId, state: result.current.state, live }, exec)
+      .catch((err) => console.error(`[workflow] merge contradiction record for ${fact.repoFullName}#${fact.prNumber} failed:`, err));
   }
   return { factId, factKey, firstSeen, ...result };
 }

@@ -8,8 +8,9 @@
  *
  * Updates are pushed: /api/events streams worker changes the moment the runner
  * has them, and a queue change the runner learns of (a task assigned over
- * Pusher, a refused claim, a worker starting or finishing) refetches the task
- * list. The only timer that fetches is the once-a-minute task list refresh.
+ * Pusher, a task claimed in one of its workspaces, a refused claim, a worker
+ * starting or finishing) refetches the task list, and the queue while the
+ * Queue view is open. Timers fetch at most once a minute.
  */
 import { hostname as osHostname } from 'os';
 import { queryTerminalBackground, terminalPalette, type Palette } from '../terminal-palette';
@@ -26,6 +27,8 @@ export const EXIT_NOT_A_TERMINAL = 64;
 export const TASK_REFRESH_MS = 60_000;
 /** Never fetch the missions list faster than this (R-24). */
 export const MISSION_REFRESH_MS = 60_000;
+/** The Queue view's timer refresh (R-26); pushed queue events refetch it sooner. */
+export const QUEUE_REFRESH_MS = 60_000;
 /** Coalesce a burst of queue events into one refetch. */
 const QUEUE_DEBOUNCE_MS = 250;
 /** How long a lone ESC waits for the rest of a sequence before it counts as the escape key. */
@@ -135,9 +138,22 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
       if (r.status === 200 && Array.isArray(r.body?.missions)) dispatch({ type: 'missions', missions: r.body.missions });
     } catch { /* the pane keeps the missions the task list names */ }
   };
+  // The claim order for this runner (R-26), read only while the Queue view is open.
+  const refreshQueue = async () => {
+    try {
+      const r = await client.get<{ teams?: any[]; truncated?: boolean; error?: string }>('/api/queue');
+      if (r.status === 200 && Array.isArray(r.body?.teams)) dispatch({ type: 'queue', queue: { teams: r.body.teams, truncated: !!r.body.truncated } });
+      else if (state.view === 'queue' && r.body?.error) dispatch({ type: 'status', status: { text: `Could not load the queue: ${r.body.error}`, tone: 'error' } });
+    } catch { /* the stream's reconnect reports a dead socket */ }
+  };
   const queueChanged = () => {
     if (queueTimer) return;
-    queueTimer = setTimeout(() => { queueTimer = null; void refreshTasks(); void refreshMissions(); }, QUEUE_DEBOUNCE_MS);
+    queueTimer = setTimeout(() => {
+      queueTimer = null;
+      void refreshTasks();
+      void refreshMissions();
+      if (state.view === 'queue') void refreshQueue();
+    }, QUEUE_DEBOUNCE_MS);
   };
 
   const loadSnapshot = async () => {
@@ -176,6 +192,7 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
   // ── effects ─────────────────────────────────────────────────────────────
   const runEffect = async (effect: Effect) => {
     if (effect.type === 'quit') { finish(0); return; }
+    if (effect.type === 'refreshQueue') { await refreshQueue(); return; }
     if (effect.type === 'open' || effect.type === 'openRunner') {
       const server = state.runner.builddServer || 'https://buildd.dev';
       // The runner's page is where its workspaces are set (R-20).
@@ -280,6 +297,7 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
   timers.push(setInterval(scheduleDraw, 1_000));
   timers.push(setInterval(() => void refreshTasks(), TASK_REFRESH_MS));
   timers.push(setInterval(() => void refreshMissions(), MISSION_REFRESH_MS));
+  timers.push(setInterval(() => { if (state.view === 'queue') void refreshQueue(); }, QUEUE_REFRESH_MS));
   void loadSnapshot().then(() => stream());
 
   return done;

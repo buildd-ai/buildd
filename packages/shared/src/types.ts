@@ -1715,8 +1715,8 @@ export type ClaimTaskExclusionCode =
 
 /** A wall that held a claim: what it is, on which provider, and when it lifts (ISO, or null when unknown). */
 export interface ClaimBudgetWall {
-  /** account_seat: the account's own OAuth session or budget; provider_pause: a rate limit or budget wall a run recorded for the team; tenant_budget: the tenant's own budget. */
-  kind: 'account_seat' | 'provider_pause' | 'tenant_budget';
+  /** account_seat: the account's own OAuth session or budget; provider_pause: a rate limit or budget wall a run recorded for the team; runner_seat: this runner's own machine login hit its limit (other runners are not held); tenant_budget: the tenant's own budget. */
+  kind: 'account_seat' | 'provider_pause' | 'runner_seat' | 'tenant_budget';
   backend: AgentBackend;
   resetsAt: string | null;
 }
@@ -3237,6 +3237,23 @@ export type MissionStageStep = 'building' | 'verifying' | 'delivering' | 'delive
 export interface MissionStage {
   step: MissionStageStep;
   waitingOn: string | null;
+  /**
+   * One cell per task of the mission, in the mission page's Overview strip
+   * order and groups (done, in progress, waiting, then checks), from the same
+   * projection (`overviewProgress`, lib/mission-overview.ts). `buildd top`
+   * draws it as the selected mission's progress row (spec c7410e76 R-29).
+   * Organizer runs and cancelled tasks have no cell. Absent from older servers.
+   */
+  progress?: MissionProgressCell[];
+}
+
+/** The four groups of the mission page's Overview strip, in display order. */
+export type MissionProgressGroup = 'done' | 'active' | 'waiting' | 'checks';
+
+export interface MissionProgressCell {
+  /** The strip's display state (`StateKey` in components/ui/states.ts): landed, running, failed, ready, blocked... */
+  state: string;
+  group: MissionProgressGroup;
 }
 
 /**
@@ -3253,6 +3270,66 @@ export interface RecentMission {
   executor: 'runner' | 'local' | string;
   completedAt: string | null;
   stage: MissionStage | null;
+}
+
+/**
+ * A claim gate that holds a task for now: the runner takes it once the hold
+ * lifts (spec c7410e76 R-26). `deferred` is a future startAt.
+ */
+export type RunnerQueueHold =
+  | 'deferred'
+  | 'deps_blocked'
+  | 'mission_held'
+  | 'task_held'
+  | 'workspace_paused'
+  | 'workspace_cap'
+  | 'runner_cooldown';
+
+/** Why waiting work is never this runner's to take (R-26 "Not for this runner"). */
+export type RunnerQueueExclusion =
+  | 'local_session'
+  | 'another_runner'
+  | 'role_missing'
+  | 'runner_type'
+  | 'workspace_executor'
+  | 'subject_dead';
+
+export interface RunnerQueueTask {
+  id: string;
+  title: string;
+  workspaceId: string;
+  workspaceName: string;
+  missionId: string | null;
+  missionTitle: string | null;
+  roleSlug: string | null;
+  backend: string | null;
+  priority: number;
+  createdAt: string;
+  dependsOn: string[];
+  /** The claim gates holding it now, in the claim's own check order; empty = claimable now. */
+  holds: RunnerQueueHold[];
+  /** When its timed hold lifts (a start time, a workspace pause), else null. */
+  holdUntil: string | null;
+  /** The task's frozen p50 estimate in minutes; null when the team has estimates off or none was made. */
+  estimateMinutes: number | null;
+}
+
+export interface RunnerQueueTeam {
+  teamId: string;
+  teamName: string;
+  /** The team has task estimates switched on (the est. column shows only then). */
+  estimatesOn: boolean;
+  /** In the claim route's order: what this runner takes next, first. */
+  queue: RunnerQueueTask[];
+  /** Waiting work it never takes, with the reason, in the same order. */
+  notForRunner: Array<RunnerQueueTask & { reason: RunnerQueueExclusion }>;
+}
+
+/** `GET /api/workers/queue`: per team, the order the calling runner's claims take work. */
+export interface RunnerQueueResponse {
+  teams: RunnerQueueTeam[];
+  /** Set when the read was cut at its row limit. */
+  truncated: boolean;
 }
 
 export interface GoalCriteriaState {

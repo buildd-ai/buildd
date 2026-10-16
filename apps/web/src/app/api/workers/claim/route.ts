@@ -1,7 +1,6 @@
 import { ownLineage } from '@/lib/attempt-lineage';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { constrainToGranted, isGrantSession } from '@/lib/grant-scope';
-import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { emit } from '@/lib/core-emit';
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
@@ -61,6 +60,7 @@ import { drawAgentPoolArm, applyAgentPoolArm, recordAgentPoolAssignment, type Ag
 import { BACKEND_ROUTING_KEY, claimedBackendOf, isBackendPinned, maskBackend, type AgentBackend, type ClaimBackendRouting, type ClaimRoutingReason } from '@buildd/core/backend-policy';
 import { generateTaskBranchName } from '@buildd/core/branch-names';
 import { getActiveBackendPauses, type ActivePause } from '@/lib/backend-failover';
+import { runnerSeatKey } from '@/lib/runner-seat-wall';
 import { findBlockingPr, declaresNoScope, intersectPaths, boundDeferralPaths, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import {
@@ -165,12 +165,7 @@ import { loadSoftOverlapHolders } from './soft-overlap-store';
 import { defaultPrDiffScopeDeps, prefetchPrDiffScopes } from '@/lib/claim-pr-diff-scope';
 import { loadPairProbeEvidence } from '@/lib/sibling-pair-probe';
 import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
-
-// Per-runner claim cooldown after a worker error. Matches the typical
-// client-side breaker minimum (5m for generic errors, 60s default here since
-// the dominant burn-loop cause is fast-fail budget/auth errors that bounce in
-// <1s). Scoped per-runner so healthy runners keep picking up tasks.
-const CLAIM_COOLDOWN_MS = 60_000;
+import { CLAIM_COOLDOWN_MS, activeWorkerGate, claimOrderBy, claimableWorkspaceIds, runnerCooldownGate, runnerPreferenceGate } from '@/lib/claim-order';
 
 // Candidate pages fetched past role-env-gapped tasks before the window is cut
 // anyway (at most 4 × candidateLimit rows). See the candidate fetch.
@@ -298,67 +293,20 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'runner is required' }, { status: 400 });
   }
   runner = resolveClaimRunner(runner, interactiveSession);
+  // Which login this caller's Claude runs draw on, as far as a wall is
+  // concerned (lib/runner-seat-wall.ts). A wall one runner's own machine login
+  // hit is recorded under that runner's key and holds only its claims. Null —
+  // a session on its own seat (exempt from walls anyway), a cloud run, or a
+  // caller that names no runner — reads every wall, seat-scoped ones included.
+  const callerSeatKey = runsOnCallersSeat || cloudExecutor ? null : runnerSeatKey(runner);
 
   // Workspaces this account can claim from. Memoized: the claim query needs it,
   // and so does the lastClaimAttempt stamp on an explicit claim, which can fire
   // from the no_slots exit before the query is built.
   let claimableWorkspaceIdsMemo: Promise<string[]> | null = null;
   const resolveClaimableWorkspaceIds = (): Promise<string[]> => {
-    claimableWorkspaceIdsMemo ??= (async () => {
-      // A grant session claims only inside its granted workspaces (grant ∩
-      // current membership, this request), whatever the shared team account's
-      // open workspaces or links would allow, and a restricted workspace it was
-      // granted is claimable without a link (lib/grant-scope.ts).
-      if (isGrantSession(account)) {
-        return constrainToGranted(account, account.workspaceIds ?? [], 'write')
-          .filter((id) => !workspaceId || id === workspaceId);
-      }
-      // Get workspaces this account can claim from
-      // 1. Open workspaces of the account's own team ("open" = open within the team)
-      // 2. Any workspace where the account has an explicit canClaim link
-      const openWorkspaces = await db.query.workspaces.findMany({
-        where: sqlWhere(and(
-          eq(workspaces.accessMode, 'open'),
-          eq(workspaces.teamId, account.teamId),
-          workspaceId ? eq(workspaces.id, workspaceId) : undefined
-        )),
-      });
-
-      // Get cached account→workspace permissions (avoids DB hit on every claim).
-      // A workspace a person picked for this key (granted_by_user_id) is
-      // re-checked live on every call: their membership and role in its team
-      // and its access mode now (lib/granted-links.ts). A pick that no longer
-      // holds comes back `revoked` and is kept out below, even where the open
-      // arm would reach it.
-      const allPermissions = await getAccountWorkspacePermissions(account.id, { includeRevoked: true });
-      const revokedIds = new Set(allPermissions.filter((p) => p.revoked).map((p) => p.workspaceId));
-      const claimablePermissions = allPermissions
-        .filter((p) => p.canClaim && !p.revoked)
-        .filter((p) => !workspaceId || p.workspaceId === workspaceId);
-
-      // Resolve which linked workspaces still exist. An explicit canClaim link
-      // grants access whatever the workspace's accessMode — it is how an account
-      // outside the owning team is given access to an open workspace.
-      const restrictedWsIds = claimablePermissions.map((p) => p.workspaceId);
-      let restrictedIds: string[] = [];
-      if (restrictedWsIds.length > 0) {
-        const restrictedWorkspaces = await db.query.workspaces.findMany({
-          where: sqlWhere(inArray(workspaces.id, restrictedWsIds)),
-          columns: { id: true },
-        });
-        restrictedIds = restrictedWorkspaces.map((ws) => ws.id);
-      }
-
-      // Combine: open workspace IDs + restricted workspaces with permission
-      const openIds = openWorkspaces.map((ws) => ws.id);
-
-      // A workspace-restricted token claims only inside its own list, whatever
-      // the team's open workspaces or canClaim links would otherwise allow.
-      // Every candidate and taskId lookup below is bounded by this list.
-      return [...new Set([...openIds, ...restrictedIds])]
-        .filter((id) => !revokedIds.has(id))
-        .filter((id) => tokenWorkspaceAllowed(account.workspaceIds, id));
-    })();
+    // The claim's reach, shared with the runner queue read (lib/claim-order.ts).
+    claimableWorkspaceIdsMemo ??= claimableWorkspaceIds(account, workspaceId);
     return claimableWorkspaceIdsMemo;
   };
 
@@ -659,17 +607,13 @@ export async function POST(req: NextRequest) {
   const explicitTaskGates: ExplicitTaskGates = {};
 
   if (account.type !== 'user') {
-    explicitTaskGates.runnerPreference = or(eq(tasks.runnerPreference, 'any'), eq(tasks.runnerPreference, account.type))!;
+    explicitTaskGates.runnerPreference = runnerPreferenceGate(account.type);
     claimableConditions.push(explicitTaskGates.runnerPreference);
   }
 
   // Exclude tasks that already have an active worker (prevents duplicate claims
   // when stale cleanup resets a task to pending while another worker is still active)
-  explicitTaskGates.activeWorker = sql`NOT EXISTS (
-      SELECT 1 FROM ${workers} w
-      WHERE w.task_id = ${tasks.id}
-      AND w.status IN ('running', 'starting', 'waiting_input', 'idle')
-    )`;
+  explicitTaskGates.activeWorker = activeWorkerGate();
   claimableConditions.push(explicitTaskGates.activeWorker);
 
   // Exclude tasks whose mission is held. A held mission gates ALL its tasks
@@ -782,13 +726,7 @@ export async function POST(req: NextRequest) {
   // person's reaped worker cooled the task down for everyone), and re-claiming
   // right after a worker was reaped is exactly what an organizer does.
   if (!(taskId && interactiveSession)) {
-    explicitTaskGates.runnerCooldown = sql`NOT EXISTS (
-        SELECT 1 FROM ${workers} w_cd
-        WHERE w_cd.task_id = ${tasks.id}
-        AND w_cd.runner = ${runner}
-        AND w_cd.status IN ('error', 'failed')
-        AND w_cd.updated_at > ${cooldownCutoff}
-      )`;
+    explicitTaskGates.runnerCooldown = runnerCooldownGate(runner, cooldownCutoff);
     claimableConditions.push(explicitTaskGates.runnerCooldown);
   }
 
@@ -830,7 +768,8 @@ export async function POST(req: NextRequest) {
   const candidateLimit = Math.min(Math.max(availableSlots * 5, 25), 100);
   const fetchCandidatePage = (offset: number) => db.query.tasks.findMany({
     where: sqlWhere(and(...claimableConditions)),
-    orderBy: sqlOrderByFn((tasks, { desc, asc }) => [desc(tasks.priority), asc(tasks.createdAt)]),
+    // The claim order, shared with the runner queue read (lib/claim-order.ts).
+    orderBy: sqlOrderByFn(claimOrderBy),
     limit: candidateLimit,
     offset,
     with: { workspace: true },
@@ -910,7 +849,7 @@ export async function POST(req: NextRequest) {
     if (!teamId) return new Map();
     const cached = teamPauseCache.get(teamId);
     if (cached) return cached;
-    const pauses = await getActiveBackendPauses({ teamId, accountId: account.id });
+    const pauses = await getActiveBackendPauses({ teamId, accountId: account.id, seatKey: callerSeatKey });
     teamPauseCache.set(teamId, pauses);
     return pauses;
   };
@@ -2226,9 +2165,12 @@ export async function POST(req: NextRequest) {
     // on its own credentials. Without this, a task whose runner just died on a
     // session limit could not be claimed (even with force) until the reset.
     const pauses = runsOnCallersSeat ? new Map<AgentBackend, ActivePause>() : await teamPauses(taskTeamId);
+    // A pause carrying a seat key is this runner's own login wall (only the
+    // caller's own seat-scoped pauses are read, see callerSeatKey).
     if (pauses.has('claude')) {
       claudePoolBlocked = true;
-      claudeWall ??= { kind: 'provider_pause', resetsAt: pauses.get('claude')!.resetsAt };
+      const claudePause = pauses.get('claude')!;
+      claudeWall ??= { kind: claudePause.seatKey ? 'runner_seat' : 'provider_pause', resetsAt: claudePause.resetsAt };
     }
 
     // Does a Claude run of THIS task draw on that walled pool? Only when its

@@ -25,11 +25,26 @@
  * applies; importers that must advance them regardless write them themselves
  * (they are not guarded columns).
  *
- * The write-site guard (`packages/core/__tests__/pr-fact-write-sites.test.ts`)
- * fails any other module that writes the guarded columns.
+ * **Delivery-owned rows (S4a, docs/specs/workflow-kernel-library.md §1).** For
+ * a task the workflow kernel owns, the columns are the kernel's projection:
+ * T17 / T18 write them in the transition's own statement (`prFactProjectionSql`,
+ * embedded by apps/web/src/lib/workflow/kernel.ts). A terminal fact (merged,
+ * closed) handed to this funnel therefore carries a `PrFactScope`, minted only
+ * in the kernel (`apps/web/src/lib/workflow/pr-fact-scope.ts`), whose predicate
+ * keeps a kernel-owned row out unless its delivery already says the same thing.
+ * The type requires the scope and the funnel refuses a terminal fact without
+ * one. Non-terminal facts (open, CI, conflict, unresolvable) are unscoped until
+ * S4b.
+ *
+ * The write-site guards (`packages/core/__tests__/pr-fact-write-sites.test.ts`,
+ * and the S4a block of `workflow-write-sites.test.ts`) fail any other module
+ * that writes the guarded columns, calls this funnel unlisted, or mints a scope.
  */
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from './db';
+import { CLOSED_OR_UNRESOLVABLE, PR_FACT_SCOPE, guardSql, setSql, type PrFactScope } from './pr-fact-sql';
+
+export { PR_FACT_SCOPE, prFactProjectionSql, unscopedPrFactScope, type PrFactScope, type TerminalPrFactKind } from './pr-fact-sql';
 
 export type PrCiStatus = 'ci_running' | 'ci_failed' | 'ci_green';
 
@@ -57,6 +72,11 @@ export type PrFact =
 
 export type PrFactKind = PrFact['kind'];
 
+/** The facts that end a PR's open life: for a delivery-owned row, the kernel's to decide. */
+export type TerminalPrFact = Extract<PrFact, { kind: 'merged' | 'closed' }>;
+export type NonTerminalPrFact = Exclude<PrFact, TerminalPrFact>;
+const isTerminal = (f: PrFact): f is TerminalPrFact => f.kind === 'merged' || f.kind === 'closed';
+
 /** Which worker rows the fact is about. A merge or close belongs to every row carrying the PR. */
 export type PrFactTarget =
   | { workerId: string }
@@ -78,9 +98,6 @@ export interface RecordedPrFactRow {
   /** The status the row held before this fact applied. */
   previousStatus: string | null;
 }
-
-/** Statuses after which no CI, conflict or open fact applies (the reconcile terminal set). */
-const CLOSED_OR_UNRESOLVABLE = ['merged', 'closed', 'unresolvable'] as const;
 
 /**
  * Pure mirror of the guard below, for callers and tests that reason about a
@@ -104,9 +121,6 @@ function staleCiFact(fact: PrFact): boolean {
   return fact.kind === 'ci' && !!fact.headSha && !!fact.currentHeadSha && fact.headSha !== fact.currentHeadSha;
 }
 
-const inList = (values: readonly string[]): SQL => sql.join(values.map((v) => sql`${v}::text`), sql`, `);
-const statusNotIn = (values: readonly string[]): SQL => sql`(w.pr_lifecycle_status IS NULL OR w.pr_lifecycle_status NOT IN (${inList(values)}))`;
-
 function targetSql(t: PrFactTarget): SQL | null {
   if ('workerId' in t) return t.workerId ? sql`w.id = ${t.workerId}::uuid` : null;
   if ('workerIds' in t) {
@@ -117,83 +131,55 @@ function targetSql(t: PrFactTarget): SQL | null {
   return sql`w.pr_url = ${t.prUrl}::text AND w.pr_number = ${t.prNumber}::int`;
 }
 
-/** Terminal-wins, in the WHERE clause (§12). */
-function guardSql(f: PrFact): SQL {
-  switch (f.kind) {
-    case 'merged':
-      return sql`(w.merged_at IS NULL OR w.pr_lifecycle_status IS DISTINCT FROM 'merged')`;
-    case 'closed':
-      return sql`w.merged_at IS NULL AND ${statusNotIn(['merged', 'closed'])}`;
-    case 'open':
-      return f.reopened
-        ? sql`w.merged_at IS NULL AND ${statusNotIn(['merged'])}`
-        : sql`w.merged_at IS NULL AND ${statusNotIn(['merged', 'closed'])}`;
-    case 'ci':
-      return sql`w.merged_at IS NULL AND ${statusNotIn([...CLOSED_OR_UNRESOLVABLE, f.status])}`;
-    case 'conflict':
-      return sql`w.merged_at IS NULL AND ${statusNotIn(CLOSED_OR_UNRESOLVABLE)}`;
-    case 'unresolvable':
-      return sql`w.merged_at IS NULL AND ${statusNotIn(['merged', 'closed', 'unresolvable'])}`;
-  }
-}
-
-function setSql(f: PrFact, b: PrFactBookkeeping): SQL {
-  const sets: SQL[] = [sql`updated_at = now()`];
-  switch (f.kind) {
-    case 'merged':
-      sets.push(sql`pr_lifecycle_status = 'merged'`, sql`merged_at = COALESCE(w.merged_at, ${new Date(f.mergedAt).toISOString()}::timestamptz)`);
-      break;
-    case 'closed': sets.push(sql`pr_lifecycle_status = 'closed'`); break;
-    case 'open': sets.push(sql`pr_lifecycle_status = 'pr_open'`); break;
-    case 'ci': sets.push(sql`pr_lifecycle_status = ${f.status}::text`); break;
-    case 'conflict':
-      sets.push(sql`pr_lifecycle_status = 'conflict'`, sql`conflict_detected_at = COALESCE(w.conflict_detected_at, now())`);
-      break;
-    case 'unresolvable':
-      sets.push(sql`pr_lifecycle_status = 'unresolvable'`, sql`pr_unresolvable_reason = ${f.reason}::text`);
-      break;
-  }
-  if (b.prLastCheckedAt) sets.push(sql`pr_last_checked_at = ${b.prLastCheckedAt.toISOString()}::timestamptz`);
-  if (b.prLastVerifiedAt) sets.push(sql`pr_last_verified_at = ${b.prLastVerifiedAt.toISOString()}::timestamptz`);
-  if (b.prCheckFailureCount !== undefined) sets.push(sql`pr_check_failure_count = ${b.prCheckFailureCount}::int`);
-  if (b.prIsDraft !== undefined) sets.push(sql`pr_is_draft = ${b.prIsDraft}::boolean`);
-  return sql.join(sets, sql`, `);
-}
-
 /**
  * One statement: apply `fact` to every targeted row the guard allows and
  * return those rows (with the status each held before). Null when the target
  * names no PR identity or the fact is about an old head: nothing to write.
  */
-export function recordPrFactSql(target: PrFactTarget, fact: PrFact, bookkeeping: PrFactBookkeeping = {}): SQL | null {
-  const where = targetSql(target);
-  if (!where || staleCiFact(fact)) return null;
+export function recordPrFactSql(target: PrFactTarget, fact: PrFact, bookkeeping: PrFactBookkeeping = {}, scope: SQL | null = null): SQL | null {
+  const target_ = targetSql(target);
+  if (!target_ || staleCiFact(fact)) return null;
+  // The scope sits in both the row lock and the UPDATE's own WHERE, like the guard.
+  const guard = scope ? sql`${guardSql(fact)} AND ${scope}` : guardSql(fact);
   return sql`-- pr-facts:record
 WITH prev AS (
   SELECT w.id, w.pr_lifecycle_status AS previous_status
   FROM workers w
-  WHERE ${where} AND ${guardSql(fact)}
+  WHERE ${target_} AND ${guard}
   FOR UPDATE
 )
 UPDATE workers w SET ${setSql(fact, bookkeeping)}
 FROM prev
-WHERE w.id = prev.id AND ${guardSql(fact)}
+WHERE w.id = prev.id AND ${guard}
 RETURNING w.id, w.task_id, w.workspace_id, prev.previous_status`;
 }
 
 export type PrFactExec = (q: SQL) => Promise<{ rows?: unknown[] } | unknown[]>;
 const dbExec: PrFactExec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
+export interface RecordPrFactOptions {
+  bookkeeping?: PrFactBookkeeping;
+  exec?: PrFactExec;
+  /** Required for a terminal fact (merged, closed); see `PrFactScope`. */
+  scope?: PrFactScope;
+}
+
 /**
  * Record a PR fact on the fact cache. Idempotent: a replay, or a fact the
  * cache already holds a terminal answer to, writes nothing and returns [].
+ * A terminal fact needs a scope (S4a): without one it is refused, not written.
  */
+export async function recordPrFact(target: PrFactTarget, fact: NonTerminalPrFact, opts?: RecordPrFactOptions): Promise<RecordedPrFactRow[]>;
+export async function recordPrFact(target: PrFactTarget, fact: PrFact, opts: RecordPrFactOptions & { scope: PrFactScope }): Promise<RecordedPrFactRow[]>;
 export async function recordPrFact(
   target: PrFactTarget,
   fact: PrFact,
-  opts: { bookkeeping?: PrFactBookkeeping; exec?: PrFactExec } = {},
+  opts: RecordPrFactOptions = {},
 ): Promise<RecordedPrFactRow[]> {
-  const q = recordPrFactSql(target, fact, opts.bookkeeping);
+  if (isTerminal(fact) && !opts.scope?.[PR_FACT_SCOPE]) {
+    throw new Error(`recordPrFact: a ${fact.kind} fact needs a scope (packages/core/pr-facts.ts PrFactScope, minted in apps/web/src/lib/workflow/pr-fact-scope.ts)`);
+  }
+  const q = recordPrFactSql(target, fact, opts.bookkeeping, isTerminal(fact) ? opts.scope!.where(fact.kind) : null);
   if (!q) return [];
   const res = await (opts.exec ?? dbExec)(q);
   const rows = (Array.isArray(res) ? res : (res as { rows?: unknown[] }).rows ?? []) as Array<Record<string, unknown>>;

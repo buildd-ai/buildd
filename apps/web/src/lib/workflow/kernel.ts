@@ -23,6 +23,8 @@ import { isTaskId } from '@buildd/workflow-kernel/findings';
 import type { CommandResult, DeliveryRef } from '@buildd/workflow-kernel/ports';
 import type { ApplyDecision, AttemptOp, Command, DeliveryPatch, FindingOp, RecordOnly, RoundOp } from './commands';
 import { postgresStore } from './postgres-store';
+import { prFactProjectionSql } from '@buildd/core/pr-fact-sql';
+import { prRowOfDeliverySql } from './pr-fact-scope';
 import { kernelHost } from './kernel-host';
 import type {
   ApprovalBasis,
@@ -239,6 +241,9 @@ export function transitionSql(decision: ApplyDecision, ref: { deliveryId?: strin
   const d = decision;
   const ctes: SQL[] = [];
   const patch = patchEntries(d.patch);
+  const projected = prRowProjection(d);
+  // The projection reads the PR identity and merge instant from the delivery row it just wrote.
+  const returning = projected ? sql`RETURNING id, version, workspace_id, repo_full_name, pr_number, merged_at` : sql`RETURNING id, version`;
 
   if (d.create) {
     const cols: SQL[] = [sql`workspace_id`, sql`owner_task_id`, sql`state`, sql`version`, sql`max_rounds`, sql`last_transition_at`];
@@ -251,7 +256,7 @@ export function transitionSql(decision: ApplyDecision, ref: { deliveryId?: strin
   INSERT INTO workflow_deliveries (${sql.join(cols, sql`, `)})
   VALUES (${sql.join(vals, sql`, `)})
   ON CONFLICT (workspace_id, owner_task_id) DO NOTHING
-  RETURNING id, version
+  ${returning}
 )`);
   } else {
     if (!ref.deliveryId) throw new Error('transitionSql: deliveryId required for a non-creating transition');
@@ -274,7 +279,7 @@ export function transitionSql(decision: ApplyDecision, ref: { deliveryId?: strin
     ctes.push(sql`d AS (
   UPDATE workflow_deliveries SET ${sql.join(sets, sql`, `)}
   WHERE ${sql.join(where, sql` AND `)}
-  RETURNING id, version
+  ${returning}
 )`);
   }
 
@@ -301,6 +306,13 @@ export function transitionSql(decision: ApplyDecision, ref: { deliveryId?: strin
   ctes.push(...attemptCtes(d.attempts, 't'));
   ctes.push(...findingCtes(d.findings ?? [], 't'));
 
+  // S4a (workflow-kernel-library.md §1): the worker rows of the PR are a projection of this
+  // transition, written in its own statement. They move only if the delivery did (the CTE reads
+  // `d`, which is empty on a CAS miss), and with the funnel's terminal-wins guard.
+  if (projected) {
+    ctes.push(sql`w_proj AS (\n${prFactProjectionSql({ kind: projected }, { from: sql`d`, where: prRowOfDeliverySql('d'), mergedAt: sql`d.merged_at` })}\n)`);
+  }
+
   if (ref.factId) {
     ctes.push(sql`f AS (
   UPDATE workflow_facts wf SET applied_transition_id = t.id, delivery_id = t.delivery_id
@@ -312,6 +324,19 @@ export function transitionSql(decision: ApplyDecision, ref: { deliveryId?: strin
   return sql`-- workflow:transition
 WITH ${sql.join(ctes, sql`,\n`)}
 SELECT t.id AS transition_id, t.delivery_id, t.to_version AS version FROM t`;
+}
+
+/**
+ * Which terminal fact a transition projects onto the worker rows of its PR: the reducer's
+ * `stamp_pr_rows` (T17 merged, T18 closed) names the transitions that change them, and the
+ * target state says which. The effect stays as a replay-safe backstop (a row that adopts the PR
+ * between the statement and the drain); after the statement it finds nothing left to write.
+ */
+function prRowProjection(d: ApplyDecision): 'merged' | 'closed' | null {
+  if (!d.effects.some((e) => e.kind === 'stamp_pr_rows')) return null;
+  if (d.toState === 'MERGED') return 'merged';
+  if (d.toState === 'CLOSED_UNMERGED') return 'closed';
+  return null;
 }
 
 /** Writes kept for audit when no transition applies (a stale verdict, a skipped fix). */

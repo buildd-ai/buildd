@@ -41,6 +41,7 @@ import { and, eq, inArray, isNotNull, ne, not, or, isNull } from 'drizzle-orm';
 import { resolveSubjectPolicy } from '@buildd/core/subject-anchor-observe';
 import { sweepSubjectAnchoredTasks } from './subject-sweep';
 import { recordPrFact } from '@buildd/core/pr-facts';
+import { factFunnelScope } from '@/lib/workflow/pr-fact-scope';
 import { isMissionPrTask } from '@buildd/core/mission-integration';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
@@ -400,7 +401,7 @@ async function closePrWithComment(
   // If the above throws, we do NOT stamp closed (let it propagate)
 
   // Step 4 of spec §5: stamp worker lifecycle
-  await recordPrFact({ workerId: loser.workerId }, { kind: 'closed' });
+  await recordPrFact({ workerId: loser.workerId }, { kind: 'closed' }, { scope: factFunnelScope });
 
   // Step 5 of spec §5: supersede open escalations
   await supersedePrEscalations(loser.taskId, successorPrNumber);
