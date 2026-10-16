@@ -38,6 +38,10 @@ let mockThrowOnAbort = false;
 const BLOCK_UNTIL_ABORT = Symbol('block-until-abort');
 // The SDK `resume` option of each query() call, in order (undefined = fresh session).
 let mockQueryResumes: (string | undefined)[] = [];
+// The SDK `cwd` option of each query() call, in order.
+let mockQueryCwds: (string | undefined)[] = [];
+// Paths the mocked fs reports as existing (default: none).
+const mockExistingPaths = new Set<string>();
 
 mock.module('@anthropic-ai/claude-agent-sdk', () => ({
   query: (opts: any) => {
@@ -45,6 +49,7 @@ mock.module('@anthropic-ai/claude-agent-sdk', () => ({
     // The prompt is one open stream: its first message is the task prompt.
     // Read it lazily so the stream is not consumed ahead of the runner.
     mockQueryResumes.push(opts?.options?.resume);
+    mockQueryCwds.push(opts?.options?.cwd);
     const slot = mockQueryPrompts.push('') - 1;
     if (typeof opts?.prompt === 'string') {
       mockQueryPrompts[slot] = opts.prompt;
@@ -151,7 +156,7 @@ mock.module('pusher-js', () => ({
 
 // Mock fs
 mock.module('fs', () => ({
-  existsSync: () => false,
+  existsSync: (p: string) => mockExistingPaths.has(p),
   readFileSync: () => '{}',
   writeFileSync: () => {},
   mkdirSync: () => {},
@@ -164,8 +169,10 @@ mock.module('fs', () => ({
   rmSync: () => {},
 }));
 
+// What reached disk, per worker, as saveWorker last saw it.
+const mockSavedRecords = new Map<string, any>();
 mock.module('../../src/worker-store', () => ({
-  saveWorker: () => {},
+  saveWorker: (w: any) => { mockSavedRecords.set(w.id, { status: w.status, resumeOnStart: w.resumeOnStart, sessionId: w.sessionId, waitingFor: w.waitingFor }); },
   loadAllWorkers: () => [],
   loadTerminalWorkersCached: () => [],
   __resetDiskWorkersCache: () => {},
@@ -192,6 +199,7 @@ mock.module('../../src/env-scan', () => ({
 
 // Import WorkerManager after all mocks
 const { WorkerManager, __setModelAuthPreflightForTest } = await import('../../src/workers');
+const { initRunnerHold } = await import('../../src/runner-hold');
 // Sessions here run a mocked SDK with no model credential: skip the
 // pre-spawn model-auth refusal (claude-model-auth-preflight.test.ts covers it).
 __setModelAuthPreflightForTest(() => null);
@@ -277,6 +285,8 @@ describe('WorkerManager — state transitions', () => {
     mockMessagesQueue = [];
     mockQueryPrompts = [];
     mockQueryResumes = [];
+    mockQueryCwds = [];
+    mockExistingPaths.clear();
     mockThrowOnAbort = false;
     mockCheckQuestion.mockClear();
     mockCheckQuestion.mockImplementation(async () => { throw new Error('question-check unreachable'); });
@@ -1041,6 +1051,140 @@ describe('WorkerManager — state transitions', () => {
       await waitFor(() => !manager.hasLiveSession('w-pause-tool'));
       expect(worker.status).toBe('waiting');
       expect(worker.waitingFor?.type).toBe('pause');
+    });
+
+    // ── R-37 / AC-21: a service stop or restart pauses, the next start continues ──
+
+    test('a service stop pauses a running agent, keeps its session, and nothing new starts', async () => {
+      liveSession('w-stop');
+      manager = new WorkerManager(makeConfig());
+      await manager.claimAndStart(makeTask());
+      await waitFor(() => manager.getWorker('w-stop')?.sessionId === 'sess-w-stop');
+
+      const report = await manager.pauseAllForShutdown({ safePointMs: 2_000, checkpointMs: 200, pollMs: 25 });
+
+      const worker = manager.getWorker('w-stop')!;
+      expect(report.paused).toEqual(['w-stop']);
+      expect(manager.hasLiveSession('w-stop')).toBe(false);
+      expect(worker.status).toBe('waiting');
+      expect(worker.waitingFor?.type).toBe('pause');
+      expect(worker.waitingFor?.since).toBeTruthy();
+      expect(worker.resumeOnStart).toBe('shutdown');
+      expect(worker.sessionId).toBe('sess-w-stop');
+      // Persisted as paused, so the next start finds it even if the exit is abrupt.
+      expect(mockSavedRecords.get('w-stop')).toMatchObject({ status: 'waiting', resumeOnStart: 'shutdown', sessionId: 'sess-w-stop', waitingFor: { type: 'pause' } });
+      const calls = mockUpdateWorker.mock.calls.filter((c: any[]) => c[0] === 'w-stop');
+      expect(calls.some((c: any[]) => c[1]?.status === 'failed')).toBe(false);
+      expect(calls.some((c: any[]) => c[1]?.status === 'waiting_input' && c[1]?.waitingFor?.type === 'pause')).toBe(true);
+      // Stopping: no new claim.
+      mockClaimTask.mockClear();
+      expect(manager.isShuttingDown()).toBe(true);
+      expect(await manager.claimPendingTasks()).toEqual([]);
+      expect(await manager.claimAndStart({ ...makeTask(), id: 'task-2' })).toBeNull();
+      expect(mockClaimTask).not.toHaveBeenCalled();
+    });
+
+    test('an agent still inside a tool at the end of the grace is stopped anyway, within the bound', async () => {
+      liveSession('w-stop-tool');
+      manager = new WorkerManager(makeConfig());
+      await manager.claimAndStart(makeTask());
+      await waitFor(() => manager.getWorker('w-stop-tool')?.sessionId === 'sess-w-stop-tool');
+      manager.getWorker('w-stop-tool')!.toolInFlight = true; // a hung tool: it never ends on its own
+
+      const started = Date.now();
+      await manager.pauseAllForShutdown({ safePointMs: 300, checkpointMs: 200, pollMs: 25 });
+      expect(Date.now() - started).toBeLessThan(3_000);
+
+      const worker = manager.getWorker('w-stop-tool')!;
+      expect(manager.hasLiveSession('w-stop-tool')).toBe(false);
+      expect(worker.status).toBe('waiting');
+      expect(worker.resumeOnStart).toBe('shutdown');
+      expect(worker.sessionId).toBe('sess-w-stop-tool');
+      expect(mockUpdateWorker.mock.calls.some((c: any[]) => c[0] === 'w-stop-tool' && c[1]?.status === 'failed')).toBe(false);
+    });
+
+    /** A worker as the next start restores it after a stop paused it. */
+    async function restoredPaused(id: string) {
+      liveSession(id);
+      manager = new WorkerManager(makeConfig());
+      await manager.claimAndStart(makeTask());
+      await waitFor(() => manager.getWorker(id)?.sessionId === `sess-${id}`);
+      await manager.pauseWorker(id);
+      await waitFor(() => manager.getWorker(id)?.status === 'waiting' && !manager.hasLiveSession(id));
+      const worker = manager.getWorker(id)!;
+      worker.resumeOnStart = 'shutdown';
+      worker.worktreePath = `/tmp/buildd-test-worktree-${id}`;
+      mockExistingPaths.add(worker.worktreePath);
+      mockMessages = [
+        { type: 'system', subtype: 'init', session_id: `sess-${id}` },
+        { type: 'result', subtype: 'success', session_id: `sess-${id}` },
+      ];
+      return worker;
+    }
+
+    test('the next start continues it in its own session, by session id, in its worktree', async () => {
+      const worker = await restoredPaused('w-cont');
+      const before = mockQueryResumes.length;
+
+      const out = await manager.continueRestoredAgents();
+
+      expect(out.continued).toEqual(['w-cont']);
+      await waitFor(() => mockQueryResumes.length > before);
+      expect(mockQueryResumes[before]).toBe('sess-w-cont');
+      expect(mockQueryCwds[before]).toBe(worker.worktreePath);
+      // Reported paused first, then running: never failed.
+      const calls = mockUpdateWorker.mock.calls.filter((c: any[]) => c[0] === 'w-cont').map((c: any[]) => c[1]?.status);
+      expect(calls).not.toContain('failed');
+      expect(calls.lastIndexOf('waiting_input')).toBeLessThan(calls.lastIndexOf('running'));
+      // Continued: a later pause is a person's, not the runner's.
+      expect(worker.resumeOnStart).toBeUndefined();
+    });
+
+    test('a held runner restores it as paused but does not continue it until the hold lifts', async () => {
+      const worker = await restoredPaused('w-held');
+      let saved: any = { since: new Date().toISOString(), until: null };
+      const hold = initRunnerHold({ io: { read: () => saved, write: (h) => { saved = h; } }, logger: { log: () => {}, warn: () => {} } })!;
+      try {
+        const before = mockQueryResumes.length;
+
+        const out = await manager.continueRestoredAgents();
+        expect(out.held).toEqual(['w-held']);
+        expect(out.continued).toEqual([]);
+        await new Promise(r => setTimeout(r, 100));
+        expect(mockQueryResumes.length).toBe(before);
+        expect(worker.status).toBe('waiting');
+        expect(worker.resumeOnStart).toBe('shutdown');
+
+        hold.resume();
+        const again = await manager.continueRestoredAgents();
+        expect(again.continued).toEqual(['w-held']);
+        await waitFor(() => mockQueryResumes.length > before);
+        expect(mockQueryResumes[before]).toBe('sess-w-held');
+      } finally {
+        initRunnerHold(null);
+      }
+    });
+
+    test('an agent the server ended while the runner was down is not continued', async () => {
+      const worker = await restoredPaused('w-ended');
+      mockUpdateWorker.mockImplementationOnce(async () => ({ abort: true, reason: 'Worker runner went offline (heartbeat expired)' }) as any);
+      const before = mockQueryResumes.length;
+
+      const out = await manager.continueRestoredAgents();
+
+      expect(out.ended).toEqual(['w-ended']);
+      expect(worker.status).toBe('error');
+      expect(worker.error).toMatch(/went offline/);
+      await new Promise(r => setTimeout(r, 100));
+      expect(mockQueryResumes.length).toBe(before);
+    });
+
+    test('an agent a person paused is not continued by a restart', async () => {
+      const worker = await restoredPaused('w-person');
+      worker.resumeOnStart = undefined;
+      const out = await manager.continueRestoredAgents();
+      expect(out).toEqual({ continued: [], held: [], ended: [] });
+      expect(worker.status).toBe('waiting');
     });
 
     test('a --once run without resumable runs refuses and keeps running', async () => {

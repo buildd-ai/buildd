@@ -85,6 +85,7 @@ import { getCurrentCommit as getRunnerCommit, PKG_VERSION as RUNNER_VERSION, get
 import { getUpdateCanary, classifyWorkerOutcome, canaryRoleOf } from './update-canary';
 import { claimsHaltedForUpdate } from './update-drain';
 import { claimsHeldByPerson, currentRunnerHold, withRunnerHold } from './runner-hold';
+import { RESTART_CONTINUE_MESSAGE, SHUTDOWN_CHECKPOINT_MS, SHUTDOWN_SAFE_POINT_MS, commitShutdownCheckpoint } from './restart-resume';
 import { collectLoopVerificationEvidence, VERIFICATION_COMMAND_TIMEOUT_MS } from './runner-verification';
 import { sessionLog, cleanupOldLogs, readSessionLogs, claimLog } from './session-logger';
 import { IdlePollTracker } from './idle-poll-tracker';
@@ -779,6 +780,8 @@ export class WorkerManager {
   // Circuit breaker: pause claims when quota exhausted or repeated rapid failures
   private consecutiveQuickFailures = 0;
   private claimsPaused = false;
+  // A stop or restart is pausing the agents (pauseAllForShutdown): nothing new starts.
+  private shuttingDown = false;
   private claimsPausedUntil = 0;
   // Per-auth-context breaker — scoped errors (quota, auth, billing) pause only
   // the affected account or tenant so other contexts keep claiming.
@@ -1599,6 +1602,152 @@ export class WorkerManager {
     this.sessions.get(worker.id)?.abortController.abort();
   }
 
+  /** True once a stop or restart began pausing agents: nothing new starts after that. */
+  isShuttingDown(): boolean {
+    return this.shuttingDown;
+  }
+
+  /**
+   * A service stop or restart (R-37, restart-resume.ts): pause every running
+   * agent the way `p` does, within a bounded grace, and leave each one on disk
+   * as paused with `resumeOnStart: 'shutdown'` so the next start continues it.
+   *
+   *  1. Claims stop at once (`shuttingDown`).
+   *  2. Each running agent is marked paused before anything else, so a session
+   *     that dies under the stop (Ctrl-C reaches the agent's process too) parks
+   *     as a pause instead of failing.
+   *  3. An agent between tool calls is stopped now; one inside a tool is
+   *     stopped when the tool ends, or at `safePointMs` whatever it is doing.
+   *  4. One stopped mid-tool gets its worktree changes committed to its own
+   *     branch, locally (commitShutdownCheckpoint), bounded by `checkpointMs`.
+   *
+   * Never throws and never waits past safePointMs + checkpointMs + a second.
+   */
+  async pauseAllForShutdown(opts: { safePointMs?: number; checkpointMs?: number; pollMs?: number } = {}): Promise<{ paused: string[]; checkpointed: string[] }> {
+    this.shuttingDown = true;
+    const safePointMs = opts.safePointMs ?? SHUTDOWN_SAFE_POINT_MS;
+    const checkpointMs = opts.checkpointMs ?? SHUTDOWN_CHECKPOINT_MS;
+    const pollMs = opts.pollMs ?? 200;
+    const targets = [...this.workers.values()].filter(w => w.status === 'working' || w.status === 'stale');
+    if (targets.length === 0) return { paused: [], checkpointed: [] };
+    console.log(`[shutdown] pausing ${targets.length} running agent(s)`);
+
+    const now = Date.now();
+    for (const w of targets) {
+      w.pauseRequestedAt = undefined;
+      w.error = PAUSED_ERROR;
+      w.waitingFor = pausedWaitingFor('shutdown', now);
+      w.resumeOnStart = 'shutdown';
+      w.currentAction = 'Pausing: the runner is stopping';
+      this.addMilestone(w, { type: 'status', label: 'Pausing: the runner is stopping', ts: now });
+      sessionLog(w.id, 'info', 'shutdown_pause', 'runner stopping; pausing at the next safe point', w.taskId);
+      try { storeSaveWorker(w); } catch { /* the next save, or the crash restore, covers it */ }
+    }
+
+    const stoppedAt = new Map<string, boolean>(); // id -> stopped at a safe point
+    const stop = (w: LocalWorker, safe: boolean) => {
+      if (stoppedAt.has(w.id)) return;
+      stoppedAt.set(w.id, safe);
+      try { this.sessions.get(w.id)?.abortController.abort(); } catch { /* already gone */ }
+    };
+    // A session's park runs before its teardown deletes it from `sessions`.
+    const settled = (w: LocalWorker) => !this.sessions.has(w.id);
+    const deadline = Date.now() + safePointMs;
+    for (;;) {
+      for (const w of targets) if (!stoppedAt.has(w.id) && (!w.toolInFlight || !this.sessions.has(w.id))) stop(w, true);
+      if (targets.every(w => stoppedAt.has(w.id) && settled(w))) break;
+      if (Date.now() >= deadline) break;
+      await new Promise(r => setTimeout(r, pollMs));
+    }
+    // Past the grace: stop the rest wherever they are, give each a moment to
+    // tear down, then save their edits.
+    const late = targets.filter(w => !stoppedAt.has(w.id));
+    for (const w of late) stop(w, false);
+    if (late.length > 0) {
+      const settleBy = Date.now() + 1_000;
+      while (Date.now() < settleBy && !late.every(settled)) await new Promise(r => setTimeout(r, Math.min(pollMs, 100)));
+    }
+    const checkpointed: string[] = [];
+    await Promise.all(late.map(async (w) => {
+      if (!w.worktreePath || !existsSync(w.worktreePath)) return;
+      const cp = await commitShutdownCheckpoint(w.worktreePath, w.id, checkpointMs);
+      if (cp.committed) {
+        checkpointed.push(w.id);
+        if (cp.sha) w.commits.push({ sha: cp.sha, message: 'wip: checkpoint before the runner stopped' });
+        this.addMilestone(w, { type: 'status', label: 'Checkpoint: uncommitted edits committed to the branch before the stop', ts: Date.now() });
+      } else if (cp.reason) {
+        console.warn(`[shutdown] checkpoint for ${w.id} not committed (${cp.reason}); the edits stay in its worktree`);
+      }
+    }));
+
+    // Whatever the session's own park managed, each one is paused on disk now.
+    const reports: Promise<unknown>[] = [];
+    for (const w of targets) {
+      if (w.status === 'done' || w.status === 'error') continue; // it finished on its own meanwhile
+      w.status = 'waiting';
+      w.error = PAUSED_ERROR;
+      w.waitingFor = w.waitingFor?.type === 'pause' ? w.waitingFor : pausedWaitingFor('shutdown', now);
+      w.resumeOnStart = 'shutdown';
+      w.currentAction = 'Paused';
+      try { storeSaveWorker(w); } catch (err) { console.warn(`[shutdown] could not save ${w.id}:`, err); }
+      this.emit({ type: 'worker_update', worker: w });
+      reports.push(this.buildd.updateWorker(w.id, {
+        status: 'waiting_input',
+        currentAction: 'Paused',
+        waitingFor: w.waitingFor as any,
+      }).catch(() => {}));
+    }
+    // The server hears it now when it can; the next start reports it again.
+    await Promise.race([Promise.all(reports), new Promise(r => setTimeout(r, 1_500))]);
+    const paused = targets.filter(w => w.status === 'waiting').map(w => w.id);
+    console.log(`[shutdown] paused ${paused.length} agent(s)${checkpointed.length ? `, ${checkpointed.length} with a checkpoint commit` : ''}`);
+    return { paused, checkpointed };
+  }
+
+  /**
+   * After a start (and when a hold lifts): report each agent the runner itself
+   * paused (a service stop, or a crash it recovered from) to the server as
+   * paused, then continue it in its own session unless the runner is on hold
+   * (R-37, R-34). An agent the server ended while the runner was down (its
+   * runner looked offline, a person stopped it) is not continued.
+   */
+  async continueRestoredAgents(): Promise<{ continued: string[]; held: string[]; ended: string[] }> {
+    const out = { continued: [] as string[], held: [] as string[], ended: [] as string[] };
+    if (this.shuttingDown || this.config?.singleTask) return out;
+    const due = [...this.workers.values()].filter(w => w.status === 'waiting' && w.waitingFor?.type === 'pause' && !!w.resumeOnStart);
+    for (const w of due) {
+      let res: any = null;
+      try {
+        res = await this.buildd.updateWorker(w.id, {
+          status: 'waiting_input',
+          currentAction: 'Paused',
+          waitingFor: w.waitingFor as any,
+        });
+      } catch { /* unreachable server: continue anyway, the session is ours */ }
+      if (res?.abort) {
+        const why = typeof res.reason === 'string' && res.reason ? res.reason : 'ended on the server';
+        w.status = 'error';
+        w.error = `Ended while the runner was stopped (${why}); not continued`;
+        w.currentAction = 'Ended while the runner was stopped';
+        w.waitingFor = undefined;
+        w.resumeOnStart = undefined;
+        w.completedAt = Date.now();
+        storeSaveWorker(w);
+        this.emit({ type: 'worker_update', worker: w });
+        out.ended.push(w.id);
+        continue;
+      }
+      if (claimsHeldByPerson()) {
+        out.held.push(w.id);
+        continue;
+      }
+      console.log(`[Worker ${w.id}] Continuing in its own session after the restart`);
+      if (await this.sendMessage(w.id, RESTART_CONTINUE_MESSAGE)) out.continued.push(w.id);
+    }
+    if (out.held.length > 0) console.log(`[runner-hold] ${out.held.length} paused agent(s) wait for buildd resume`);
+    return out;
+  }
+
   /** --once park: write this worker's record to disk now, so the park bundle carries its latest state. */
   persistWorker(id: string): void {
     const worker = this.workers.get(id);
@@ -1665,6 +1814,8 @@ export class WorkerManager {
     // A person's hold (`buildd hold`, runner-hold.ts): the same "nothing new
     // starts", but its own state, so a drain or breaker reset never lifts it.
     if (claimsHeldByPerson()) return [];
+    // Stopping or restarting: the agents are being paused (restart-resume.ts).
+    if (this.shuttingDown) return [];
     // NOTE: we intentionally do NOT gate on `hasCredentials` here. A runner with
     // zero local creds must still poll — server-managed credentials arrive inline
     // on the claim response and bootstrap it. The burn-loop guard below (auth-error
@@ -2105,6 +2256,10 @@ export class WorkerManager {
   async claimAndStart(task: BuilddTask, opts: { byPerson?: boolean } = {}): Promise<LocalWorker | null> {
     if (!opts.byPerson && !this.config?.singleTask && claimsHeldByPerson()) {
       console.log(`[WorkerManager] On hold — not claiming task ${task.id}`);
+      return null;
+    }
+    if (this.shuttingDown) {
+      console.log(`[WorkerManager] Stopping — not claiming task ${task.id}`);
       return null;
     }
     if (getUpdateCanary()?.claimsHalted()) {
@@ -7360,6 +7515,8 @@ export class WorkerManager {
       // Update worker status (clear any previous error)
       worker.status = 'working';
       worker.error = undefined;
+      // Continued now: a later pause is a person's, not the runner's.
+      worker.resumeOnStart = undefined;
       worker.currentAction = 'Processing follow-up...';
       worker.hasNewActivity = true;
       worker.lastActivity = Date.now();

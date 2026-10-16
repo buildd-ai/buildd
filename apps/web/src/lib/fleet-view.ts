@@ -51,7 +51,7 @@ export interface FleetWorkerRow {
   completedAt?: DateLike;
   updatedAt?: DateLike;
   prNumber?: number | null;
-  waitingFor?: { prompt?: string; type?: string | null } | null;
+  waitingFor?: { prompt?: string; type?: string | null; since?: string | null } | null;
   /** The worker's error text, only ever read for its class (lib/fleet-view-end-reason.ts), never shown. */
   error?: string | null;
   /** This run's own PR merged. */
@@ -211,6 +211,7 @@ export function buildFleetSnapshot(
       endReason: runEndReason({
         status: w.status, error: w.error ?? null, prNumber: w.prNumber ?? null,
         mergedAt: w.mergedAt ? new Date(w.mergedAt) : null, taskMergedPr: w.taskMergedPr ?? null, waitingFor: w.waitingFor ?? null,
+        now,
       }),
       href: t ? missionTaskHref({ missionId: t.missionId ?? null, taskId: t.id, from: 'home', mode: 'sheet' }) : null,
     });

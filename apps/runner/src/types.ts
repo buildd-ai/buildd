@@ -18,6 +18,8 @@ export interface WaitingFor {
   /** `pause`: the person paused the run (pause.ts); answering it resumes the same session. */
   type: 'question' | 'permission' | 'pause';
   prompt: string;
+  /** `pause`: when it was paused (ISO), for "paused since" in top and on the dashboard. */
+  since?: string;
   options?: Array<{
     label: string;
     description?: string;
@@ -183,6 +185,14 @@ export interface LocalWorker {
   // rather than re-deriving intent from the error string, keeps the two sides
   // from silently drifting the way the status check did.
   killedByRestart?: boolean;
+  /**
+   * Persisted: this worker was paused by the runner itself, not by a person,
+   * and continues in its own session when the runner next starts (unless it
+   * is on hold). `shutdown`: a service stop or restart paused it within the
+   * grace; `crash`: the runner died with it running and the next start found
+   * its worktree and session intact (restart-resume.ts, R-37).
+   */
+  resumeOnStart?: 'shutdown' | 'crash';
   completedAt?: number;  // When task completed/errored (for sorting)
   milestones: Milestone[];
   currentAction: string;

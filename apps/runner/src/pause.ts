@@ -70,11 +70,25 @@ export function decidePause(input: {
   return input.toolInFlight ? { action: 'defer' } : { action: 'apply' };
 }
 
-export function pausedWaitingFor(): WaitingFor {
+/**
+ * Who paused it: a person (`p` in top, Pause on the dashboard, `buildd stop`),
+ * or the runner itself when its service stopped or restarted (R-37), or when
+ * it came back from a crash with the run's worktree and session intact.
+ */
+export type PauseCause = 'person' | 'shutdown' | 'crash';
+
+const PAUSE_CONTEXT: Record<PauseCause, string> = {
+  person: 'You paused this run. Its worktree, uncommitted work and session are kept.',
+  shutdown: 'The runner stopped or restarted, so it paused this run. Its worktree, uncommitted work and session are kept.',
+  crash: 'The runner stopped without warning while this run was going. Its worktree and session were still there, so it is paused, not failed.',
+};
+
+export function pausedWaitingFor(cause: PauseCause = 'person', now: number = Date.now()): WaitingFor {
   return {
     type: 'pause',
     prompt: PAUSED_PROMPT,
-    context: 'You paused this run. Its worktree, uncommitted work and session are kept.',
+    since: new Date(now).toISOString(),
+    context: PAUSE_CONTEXT[cause],
     options: [{ label: 'Resume', recommended: true, consequence: 'The agent picks up in the same session, with everything it had worked out.' }],
   };
 }

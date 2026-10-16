@@ -26,6 +26,7 @@ import { evaluateManualUpdateGate, performManualUpdate, type ManualUpdateDeps } 
 import { initUpdateCanary, runCanaryTrip } from './update-canary';
 import { initUpdateDrain, getUpdateDrain } from './update-drain';
 import { initRunnerHold, currentRunnerHold } from './runner-hold';
+import { installShutdownSignals, SHUTDOWN_DEADLINE_MS } from './restart-resume';
 import { saveWorker } from './worker-store';
 import { initHistory, searchSessions, getSession, getArchivedData, getStats as getHistoryStats } from './history-store';
 import { readClaimLogs } from './session-logger';
@@ -691,8 +692,11 @@ runnerHold?.onChange((hold) => {
   broadcast({ type: 'runner_hold', hold });
   const wm = workerManager;
   if (!wm) return;
-  void wm.sendHeartbeatNow().catch(() => {}).then(() => {
-    if (!hold) wm.claimPendingTasks().catch(() => {});
+  void wm.sendHeartbeatNow().catch(() => {}).then(async () => {
+    if (hold) return;
+    // Agents a stop or restart paused while held continue now (R-37).
+    await wm.continueRestoredAgents().catch(() => {});
+    wm.claimPendingTasks().catch(() => {});
   });
 });
 
@@ -1030,6 +1034,7 @@ async function initializeClients() {
     attachOutbox(buildd);
     workerManager = new WorkerManager(config, resolver);
     workerManager.onEvent(broadcast);
+    void workerManager.continueRestoredAgents().catch(() => {});
     console.log('API key configured, clients initialized');
     await fetchAccountInfo();
     // Flush any queued mutations now that we're connected
@@ -1205,19 +1210,31 @@ async function runHealthProbeInner(): Promise<{ ok: boolean; detail: string }> {
 // Every step is defensive — a failure anywhere in the drain sequence still
 // falls through to process.exit(75) rather than leaving `updateState.updating`
 // stuck true with no restart ever happening (the exact "19 wedged attempts"
-// failure mode this replaces). A 20s failsafe forces the exit even if the
-// happy path never reaches its own process.exit call.
+// failure mode this replaces). A failsafe forces the exit even if the happy
+// path never reaches its own process.exit call.
+//
+// Running agents are paused first, the way a service stop pauses them (R-37,
+// restart-resume.ts), so the start that follows continues each in its own
+// session instead of failing it as "Process restarted". Bounded by
+// SHUTDOWN_DEADLINE_MS, inside the failsafe.
 function scheduleGracefulRestart(reason: string) {
   console.log(`[restart] scheduling graceful restart (${reason})`);
   setUpdating(true);
   // So the start that follows knows it is a restart and does not open a browser.
   writeRestartMarker(BUILDD_DIR);
+  const failsafeMs = SHUTDOWN_DEADLINE_MS + 5_000;
   const failsafe = setTimeout(() => {
-    console.error(`[restart] graceful restart did not complete within 20s (${reason}) — forcing exit`);
+    console.error(`[restart] graceful restart did not complete within ${Math.round(failsafeMs / 1000)}s (${reason}) — forcing exit`);
     process.exit(75);
-  }, 20_000);
+  }, failsafeMs);
   try {
-    setTimeout(() => {
+    const pausing: Promise<unknown> = Promise.race([
+      (workerManager?.pauseAllForShutdown() ?? Promise.resolve()).catch((err) => {
+        console.error(`[restart] pausing agents failed (${reason}): ${err?.message ?? err} — restarting anyway`);
+      }),
+      new Promise(r => setTimeout(r, SHUTDOWN_DEADLINE_MS)),
+    ]);
+    void pausing.then(() => setTimeout(() => {
       try {
         console.log('Graceful restart: draining connections...');
         for (const controller of sseClients) {
@@ -1234,7 +1251,7 @@ function scheduleGracefulRestart(reason: string) {
         console.error(`[restart] failed while draining connections (${reason}): ${err.message} — forcing exit anyway`);
         process.exit(75);
       }
-    }, 1000);
+    }, 1000));
   } catch (err: any) {
     clearTimeout(failsafe);
     console.error(`[restart] failed to schedule restart (${reason}): ${err.message}`);
@@ -1278,11 +1295,22 @@ if (workerManager) {
   // Authorization header, 401'd on every lease acquire, and silently never
   // refreshed a single credential.
   credentialBroker.start({ apiKey: config.apiKey, baseUrl: config.builddServer });
+  // R-37: agents the last stop paused (or a crash left with their worktree and
+  // session intact) continue in their own sessions, unless the runner is on hold.
+  void workerManager.continueRestoredAgents().catch((err) => console.warn('[restart] continuing paused agents failed:', err));
 } else if (config.serverless || !config.apiKey) {
   // In serverless mode, poll the public /api/version endpoint
   pollVersion();
   versionPollInterval = setInterval(pollVersion, 30 * 60_000);
 }
+
+// A service stop (SIGTERM from launchd or systemd), Ctrl-C on a foreground
+// runner (SIGINT): pause the running agents within a bounded grace, then exit
+// (R-37, restart-resume.ts). A second signal exits at once.
+installShutdownSignals({
+  pause: async () => { await workerManager?.pauseAllForShutdown(); },
+  exit: (code) => process.exit(code),
+});
 
 // Fetch account info on startup if already configured
 if (buildd) {
@@ -1535,6 +1563,7 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
         attachOutbox(buildd);
         workerManager = new WorkerManager(config, resolver);
         workerManager.onEvent(broadcast);
+        void workerManager.continueRestoredAgents().catch(() => {});
         console.log('Server connection restored');
         await fetchAccountInfo();
         // Flush any queued mutations from when server was unreachable
@@ -1570,6 +1599,7 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
         attachOutbox(buildd);
         workerManager = new WorkerManager(config, resolver);
         workerManager.onEvent(broadcast);
+        void workerManager.continueRestoredAgents().catch(() => {});
         fetchAccountInfo(); // fire-and-forget — don't block the response
         // Flush queued mutations to the new server
         if (outbox.count() > 0) {
@@ -1707,6 +1737,7 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
         workerManager.destroy();
         workerManager = new WorkerManager(config, resolver);
         workerManager.onEvent(broadcast);
+        void workerManager.continueRestoredAgents().catch(() => {});
       }
 
       return Response.json({
@@ -3139,9 +3170,9 @@ setInterval(async () => {
   });
   if (decision.action === 'apply') {
     if (decision.reason === 'timeout') {
-      // These sessions die with the process. Persist their latest state now so
-      // the next boot reports each one to the server as "Process restarted"
-      // (retryable, worktree kept) with everything it had accumulated.
+      // scheduleGracefulRestart pauses these first (R-37); persist their latest
+      // state now too, so even a restart the pause cannot finish leaves each on
+      // disk for the next boot to continue (or, with its session gone, retry).
       for (const w of drainBlocking) {
         console.warn(`[update-drain] restarting over in-flight worker ${w.id} (task ${w.taskId}: ${w.taskTitle})`);
         try { saveWorker(w); } catch { /* best effort — the last periodic save still stands */ }
