@@ -731,6 +731,19 @@ beforeEach(() => {
 });
 const factsOfKind = (kind: string) => recordedFacts.filter((r) => r.fact.kind === kind);
 
+// Core events emitter
+const emittedEvents: any[] = [];
+const mockEmit = mock((e: any) => {
+  emittedEvents.push(e);
+  return Promise.resolve();
+});
+mock.module('@/lib/core-emit', () => ({
+  emit: mockEmit,
+}));
+beforeEach(() => {
+  emittedEvents.length = 0;
+});
+
 // Import handler AFTER mocks
 import { POST } from './route';
 import { MISSION_PR_TASK_PREFIX } from '@buildd/core/mission-integration';
@@ -2518,9 +2531,6 @@ describe('POST /api/github/webhook', () => {
           tier: 'agent-review',
           agentReview: { reviewerRole: 'reviewer', maxConfidenceThreshold: 0.6 },
         });
-        mockCreateReviewerTask.mockClear();
-        mockAnnounceTaskCreated.mockClear();
-        mockWakeTask.mockClear();
       }
       const greenRequest = () =>
         createWebhookRequest('check_suite', makeCheckSuitePayload({ check_suite: { conclusion: 'success' } }));
@@ -2532,26 +2542,27 @@ describe('POST /api/github/webhook', () => {
         const res = await POST(greenRequest());
 
         expect(res.status).toBe(200);
-        expect(mockCreateReviewerTask).toHaveBeenCalledTimes(1);
-        expect(mockCreateReviewerTask.mock.calls[0][0]).toMatchObject({
+        // Check that emit was called with pr.review_needed_on_ci_green event
+        const ciGreenEvents = emittedEvents.filter((e) => e.type === 'pr.review_needed_on_ci_green');
+        expect(ciGreenEvents).toHaveLength(1);
+        expect(ciGreenEvents[0]).toMatchObject({
+          type: 'pr.review_needed_on_ci_green',
           prNumber: 42,
           headSha: 'abc123',
-          reviewerRole: 'reviewer',
-          originalTaskId: 't1',
+          taskId: 't1',
         });
-        expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
-        expect(mockWakeTask).toHaveBeenCalledWith('reviewer-task-1', 'task.created');
         expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
       });
 
       it('does not announce or wake when the reviewer task was deduplicated', async () => {
         agentReviewGreen();
         mockReadPrReviewStatus.mockResolvedValue({ state: 'not_requested' } as any);
-        mockCreateReviewerTask.mockReturnValue(Promise.resolve({ id: 'reviewer-existing', deduplicated: true } as any));
 
         await POST(greenRequest());
 
-        expect(mockCreateReviewerTask).toHaveBeenCalledTimes(1);
+        // Check that emit was called (the deduplication happens in the subscriber)
+        const ciGreenEvents = emittedEvents.filter((e) => e.type === 'pr.review_needed_on_ci_green');
+        expect(ciGreenEvents).toHaveLength(1);
         expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
         expect(mockWakeTask).not.toHaveBeenCalled();
       });
