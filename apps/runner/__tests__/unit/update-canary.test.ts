@@ -191,6 +191,8 @@ describe('recordOutcome — trip rule', () => {
     'connect ETIMEDOUT',
     'Process restarted',
     'Terminated by server',
+    'worker already failed',
+    'worker already cancelled',
     'Task failed or was cancelled on remote server',
     'Deferred: another codex worker is active',
     'needs_input: which branch?',

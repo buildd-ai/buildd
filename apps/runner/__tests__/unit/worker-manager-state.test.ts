@@ -774,7 +774,10 @@ describe('WorkerManager — state transitions', () => {
       // Explicit opt-out (inputAsRetry: false) — should use existing waiting behavior
       manager = new WorkerManager(makeConfig({ inputAsRetry: false }));
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 100));
+      // Poll rather than sleep a fixed time: a loaded CI shard can take longer than 100ms
+      for (let i = 0; i < 50 && manager.getWorker('w-no-retry')?.status !== 'waiting'; i++) {
+        await new Promise(r => setTimeout(r, 100));
+      }
 
       const worker = manager.getWorker('w-no-retry');
       // Should be waiting (not error) — existing behavior preserved

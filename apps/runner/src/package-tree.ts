@@ -18,7 +18,7 @@
 import * as nodeFs from 'fs';
 import { join } from 'path';
 
-export type TreeFs = Pick<typeof nodeFs, 'existsSync' | 'renameSync' | 'rmSync' | 'readdirSync' | 'readFileSync' | 'writeFileSync'>;
+export type TreeFs = Pick<typeof nodeFs, 'existsSync' | 'renameSync' | 'rmSync' | 'readdirSync' | 'readFileSync' | 'writeFileSync' | 'openSync' | 'writeSync' | 'closeSync'>;
 
 /** Suffix of the previous tree while a replacement install is in flight. */
 export const ASIDE_SUFFIX = '.buildd-prev';
@@ -79,9 +79,21 @@ function pidAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch (err: any) { return err?.code === 'EPERM'; }
 }
 
-/** Mark an install as running in this process. Best effort: a failed write only loses the guard. */
-export function acquireInstallLock(installDir: string, fs: TreeFs = nodeFs, now: () => number = Date.now, pid = process.pid): void {
-  try { fs.writeFileSync(join(installDir, INSTALL_LOCK_FILE), JSON.stringify({ pid, startedAt: now() })); } catch { /* guard only */ }
+/** Mark an install as running in this process. Use O_EXCL for atomicity. Best effort: a failed write only loses the guard. */
+export function acquireInstallLock(installDir: string, fs: TreeFs = nodeFs, now: () => number = Date.now, pid = process.pid, probe: LockProbe = {}): void {
+  const path = join(installDir, INSTALL_LOCK_FILE);
+  const data = JSON.stringify({ pid, startedAt: now() });
+  try {
+    const fd = fs.openSync(path, 'wx');
+    fs.writeSync(fd, data);
+    fs.closeSync(fd);
+  } catch (err: any) {
+    if (err?.code === 'EEXIST') {
+      const other = installInProgress(installDir, fs, { now, ...probe });
+      if (other !== null) return; // live lock exists, do not overwrite
+    }
+    try { fs.writeFileSync(path, data); } catch { /* guard only */ }
+  }
 }
 
 export function releaseInstallLock(installDir: string, fs: TreeFs = nodeFs): void {
