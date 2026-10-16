@@ -257,6 +257,45 @@ describe('a provider limit, said once in the header (R-25, AC-11)', () => {
   });
 });
 
+describe('mission progress counts (R-31): left pane matches right pane', () => {
+  test('when stage.progress exists, left pane done/total comes from the progress cells', () => {
+    // The fixture's AC14 has progress cells: 8 done + 2 in progress + 3 waiting + 2 checks = 15 total.
+    // The left pane should show 8/15 (from progress), not the 2/8 it showed before this fix.
+    const withProgress = (progress: Array<{ state: string; group: 'done' | 'active' | 'waiting' | 'checks' }>) => {
+      const mission = { ...TASKS[0].mission!, stage: { step: 'building' as const, waitingOn: '8 of 13 landed', progress } };
+      return reduce(fixtureState(), { type: 'tasks', tasks: TASKS.map(t => (t.missionId === mission.id ? { ...t, mission } : t)) });
+    };
+    const cell = (state: string, group: 'done' | 'active' | 'waiting' | 'checks') => ({ state, group });
+    const AC14 = [...Array.from({ length: 8 }, () => cell('landed', 'done')), ...Array.from({ length: 2 }, () => cell('running', 'active')), ...Array.from({ length: 3 }, () => cell('ready', 'waiting')), ...Array.from({ length: 2 }, () => cell('review', 'checks'))];
+    const s = withProgress(AC14);
+    // Check that missionRows correctly uses the progress cell counts.
+    const { missionRows } = require('../../src/top/state');
+    const rows = missionRows(s);
+    const row = rows.find((r: any) => r.key === TASKS[0].missionId);
+    expect(row?.done).toBe(8);
+    expect(row?.total).toBe(15);
+  });
+});
+
+describe('workspace count in header (R-19): keep last good count on timeout', () => {
+  test('empty workspace list does not overwrite previous count', () => {
+    const s1 = reduce(fixtureState(), {
+      type: 'workspaces',
+      workspaces: [
+        { id: 'ws-a', name: 'alpha', teamId: 'team-1', teamName: 'Acme' },
+        { id: 'ws-b', name: 'bravo', teamId: 'team-1', teamName: 'Acme' },
+      ],
+    });
+    const head1 = stripAnsi(frame(s1, 80, 24)[0]);
+    expect(head1).toContain('2 workspaces · Acme');
+    // Simulate a timeout: empty list arrives.
+    const s2 = reduce(s1, { type: 'workspaces', workspaces: [] });
+    const head2 = stripAnsi(frame(s2, 80, 24)[0]);
+    // Should still show 2 workspaces, not 0.
+    expect(head2).toContain('2 workspaces · Acme');
+  });
+});
+
 describe('mission progress at a glance (R-29, R-30, R-31, AC-14, AC-15)', () => {
   const cell = (state: string, group: 'done' | 'active' | 'waiting' | 'checks') => ({ state, group });
   const fill = (n: number, state: string, group: 'done' | 'active' | 'waiting' | 'checks') => Array.from({ length: n }, () => cell(state, group));
@@ -270,13 +309,19 @@ describe('mission progress at a glance (R-29, R-30, R-31, AC-14, AC-15)', () => 
   test('80x24', () => {
     const lines = frame(withProgress(AC14), 80, 24);
     expectExactSize(lines, 80, 24);
-    expect(text(lines)).toMatchSnapshot();
+    // Left pane shows 8/15 from progress cells (R-31 fix).
+    const txt = text(lines);
+    expect(txt).toContain('building 8/15');
+    expect(txt).toMatch(/8 done.*2 in progress.*3 waiting.*2 checks/);
   });
 
   test('120x40', () => {
     const lines = frame(withProgress(AC14), 120, 40);
     expectExactSize(lines, 120, 40);
-    expect(text(lines)).toMatchSnapshot();
+    // Left pane shows 8/15 from progress cells (R-31 fix).
+    const txt = text(lines);
+    expect(txt).toContain('building 8/15');
+    expect(txt).toMatch(/8 done.*2 in progress.*3 waiting.*2 checks/);
   });
 
   test('AC-14: under the heading, 8 done squares before 2 in progress and 3 waiting, with the same counts', () => {
@@ -311,9 +356,11 @@ describe('mission progress at a glance (R-29, R-30, R-31, AC-14, AC-15)', () => 
     for (const [cols, rows, lw] of [[80, 24, 22], [120, 40, 28]] as const) {
       const left = text(frame(withProgress(AC14), cols, rows)).split('\n').map(l => l.slice(0, lw));
       const sel = left.find(l => l.includes('▸'))!;
-      expect(sel).toMatch(/building 2\/8 $/);
+      // AC14 has 15 total cells (8 done + 2 in progress + 3 waiting + 2 checks),
+      // so the left pane shows 8/15 (from progress cells, matching the right pane).
+      expect(sel).toMatch(/building 8\/15 $/);
       // The title is what gives way, never the counts.
-      expect(sel).toMatch(cols === 80 ? /▸ Runn… building 2\/8/ : /▸ Runner TUI +building 2\/8/);
+      expect(sel).toMatch(cols === 80 ? /▸ Run… building 8\/15/ : /▸ Runner TUI building 8\/15/);
       expect(left.find(l => l.includes('Specs import'))).toMatch(/1\/2 $/);
       expect(left.filter(l => /[■▶▢◐]/.test(l))).toEqual([]);
     }

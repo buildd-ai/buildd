@@ -382,3 +382,38 @@ describe('failure reasons in plain words (R-22)', () => {
     expect(rowsByTitle(s)['single instance']).toMatchObject({ kind: 'failed', reason: 'failed: bun test exited 1' });
   });
 });
+
+describe('workspace count (R-19): keep last good count on timeout', () => {
+  test('empty workspace list does not overwrite previous count', () => {
+    let s = reduce(fixtureState(), {
+      type: 'workspaces',
+      workspaces: [
+        { id: 'ws-a', name: 'alpha', teamId: 'team-1', teamName: 'Acme' },
+        { id: 'ws-b', name: 'bravo', teamId: 'team-1', teamName: 'Acme' },
+      ],
+    });
+    expect(workspaceSummary(s)).toBe('2 workspaces · Acme');
+    // Simulate a timeout: empty list arrives (e.g., /api/workspaces read times out mid-stream).
+    const s2 = reduce(s, { type: 'workspaces', workspaces: [] });
+    // Should still show 2 workspaces, not 0.
+    expect(workspaceSummary(s2)).toBe('2 workspaces · Acme');
+  });
+  test('non-empty workspace list does replace the previous one', () => {
+    let s = reduce(fixtureState(), {
+      type: 'workspaces',
+      workspaces: [
+        { id: 'ws-a', name: 'alpha', teamId: 'team-1', teamName: 'Acme' },
+      ],
+    });
+    expect(workspaceSummary(s)).toBe('1 workspace · Acme');
+    // New non-empty list replaces the old one.
+    const s2 = reduce(s, {
+      type: 'workspaces',
+      workspaces: [
+        { id: 'ws-x', name: 'xray' },
+        { id: 'ws-y', name: 'yankee' },
+      ],
+    });
+    expect(workspaceSummary(s2)).toBe('2 workspaces');
+  });
+});

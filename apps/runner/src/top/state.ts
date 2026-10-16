@@ -267,6 +267,11 @@ export function reduce(state: TopState, event: TopEvent): TopState {
           teamId: w.teamId ?? null,
           teamName: w.teamName ?? w.team?.name ?? null,
         }));
+      // Keep the last good count rather than a partial one (R-19): if the fetch
+      // times out mid-read, an empty list overwrites the previous count and makes
+      // the header flicker or say "0 workspaces". Only update if non-empty or if
+      // we have no prior count.
+      if (workspaces.length === 0 && state.workspaces.length > 0) return state;
       let next = { ...state, workspaces };
       // `--team` naming no team this runner serves: open on all, and say so (R-23).
       const team = state.selectedTeam?.trim();
@@ -654,6 +659,16 @@ export function missionRows(state: TopState, now: number = Date.now()): MissionR
     const row = map.get(key)!;
     row.done = c.done;
     row.total = Math.max(c.total, row.total);
+  }
+  // Use progress cells' counts when available; they exclude organizer runs,
+  // retries and cancelled tasks, so the left pane matches the right pane (R-31).
+  for (const row of map.values()) {
+    if (row.stage?.progress) {
+      const progressDoneCount = row.stage.progress.filter(c => c.group === 'done').length;
+      const progressTotalCount = row.stage.progress.length;
+      row.done = progressDoneCount;
+      row.total = progressTotalCount;
+    }
   }
   // An organizer run in progress marks its mission as planning.
   for (const t of state.tasks) {

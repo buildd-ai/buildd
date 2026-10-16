@@ -67,6 +67,18 @@ function countsByGroup(cells: readonly ProgressCell[]): Array<{ group: ProgressG
   return GROUPS.map(group => ({ group, cells: cells.filter(c => c.group === group) })).filter(g => g.cells.length > 0);
 }
 
+/** The done count from progress cells (for the left pane to match the right pane). */
+export function progressDone(cells: readonly ProgressCell[] | undefined): number {
+  if (!cells) return 0;
+  return cells.filter(c => c.group === 'done').length;
+}
+
+/** The total count from progress cells (for the left pane to match the right pane). */
+export function progressTotal(cells: readonly ProgressCell[] | undefined): number {
+  if (!cells) return 0;
+  return cells.length;
+}
+
 /** One drawn piece of the row: a glyph run, or plain words. */
 export interface ProgressPiece {
   text: string;
