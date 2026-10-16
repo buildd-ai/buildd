@@ -64,7 +64,8 @@ export interface PusherManagerCallbacks {
   recover: (workerId: string, mode: 'diagnose' | 'complete' | 'restart') => Promise<void>;
   sendHeartbeat: () => void;
   claimPendingTasks: () => Promise<void>;
-  claimAndStart: (task: BuilddTask) => Promise<LocalWorker | null>;
+  /** `byPerson`: the assignment named this runner (a person's Start), so a hold does not stop it. */
+  claimAndStart: (task: BuilddTask, opts?: { byPerson?: boolean }) => Promise<LocalWorker | null>;
   getProbedWorkers: () => Set<string>;
 }
 
@@ -250,7 +251,9 @@ export class PusherManager {
 
     // Auto-claim and start the task
     try {
-      const worker = await this.callbacks.claimAndStart(task);
+      // An assignment aimed at this runner is a person's Start (or a task filed
+      // onto it): a hold does not stop it. A broadcast one is held (runner-hold.ts).
+      const worker = await this.callbacks.claimAndStart(task, { byPerson: !!targetLocalUiUrl });
       if (worker) {
         console.log(`Successfully started assigned task: ${worker.taskTitle || task.title || task.id}`);
       }

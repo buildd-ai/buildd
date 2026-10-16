@@ -208,7 +208,14 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
     }
     let result: { status: number; body: unknown };
     try {
-      if (effect.type === 'claim') {
+      if (effect.type === 'hold') {
+        result = await client.post(effect.on ? '/api/hold' : '/api/resume', {});
+        // The header changes now, not only when the runner's frame arrives (AC-17).
+        const b = result.body as { hold?: unknown } | null;
+        if (result.status >= 200 && result.status < 300 && b && typeof b === 'object' && 'hold' in b) {
+          dispatch({ type: 'runner_hold', hold: (b.hold ?? null) as any });
+        }
+      } else if (effect.type === 'claim') {
         result = await client.post('/api/claim', { taskId: effect.taskId });
       } else {
         const body = effect.message !== undefined ? { message: effect.message } : {};
@@ -218,7 +225,7 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
       result = { status: 0, body: { error: `the runner did not answer (${err?.message ?? err})` } };
     }
     dispatch({ type: 'status', status: actionResultText(effect, result) });
-    if (effect.type === 'claim') queueChanged();
+    if (effect.type === 'claim' || effect.type === 'hold') queueChanged();
   };
 
   // ── terminal ────────────────────────────────────────────────────────────

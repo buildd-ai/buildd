@@ -84,6 +84,7 @@ import { runProvisionGate } from './env-verify';
 import { getCurrentCommit as getRunnerCommit, PKG_VERSION as RUNNER_VERSION, getRunnerUpdateSnapshot } from './updater';
 import { getUpdateCanary, classifyWorkerOutcome, canaryRoleOf } from './update-canary';
 import { claimsHaltedForUpdate } from './update-drain';
+import { claimsHeldByPerson, currentRunnerHold, withRunnerHold } from './runner-hold';
 import { collectLoopVerificationEvidence, VERIFICATION_COMMAND_TIMEOUT_MS } from './runner-verification';
 import { sessionLog, cleanupOldLogs, readSessionLogs, claimLog } from './session-logger';
 import { IdlePollTracker } from './idle-poll-tracker';
@@ -846,7 +847,7 @@ export class WorkerManager {
       recover: (workerId, mode) => this.recover(workerId, mode),
       sendHeartbeat: () => this.sendHeartbeat(),
       claimPendingTasks: () => this.claimPendingTasks(),
-      claimAndStart: (task) => this.claimAndStart(task),
+      claimAndStart: (task, opts) => this.claimAndStart(task, opts),
       getProbedWorkers: () => this.probedWorkers,
     });
     this.hookFactory = new HookFactory({
@@ -1181,6 +1182,8 @@ export class WorkerManager {
     // The display name (`buildd name`), read fresh each beat so a rename needs
     // no restart. A label only: localUiUrl stays the identity.
     env = withRunnerName(env, heartbeatRunnerName());
+    // A person's hold (R-35): the server refuses broad claims and the dashboard shows it.
+    if (!this.config.singleTask) env = withRunnerHold(env, currentRunnerHold());
     return withFleetIdentity(env, this.config.fleetIdentity);
   }
 
@@ -1625,6 +1628,9 @@ export class WorkerManager {
     if (getUpdateCanary()?.claimsHalted()) return [];
     // Draining for a self-update: running work finishes, nothing new starts.
     if (claimsHaltedForUpdate()) return [];
+    // A person's hold (`buildd hold`, runner-hold.ts): the same "nothing new
+    // starts", but its own state, so a drain or breaker reset never lifts it.
+    if (claimsHeldByPerson()) return [];
     // NOTE: we intentionally do NOT gate on `hasCredentials` here. A runner with
     // zero local creds must still poll — server-managed credentials arrive inline
     // on the claim response and bootstrap it. The burn-loop guard below (auth-error
@@ -1664,7 +1670,7 @@ export class WorkerManager {
         }>;
       };
       try {
-        claimPollResult = await this.handoff().track(() => this.buildd.claimTask(slots, undefined, this.config.localUiUrl, undefined, advertisedRoleSlugs(this.environment), true, this.environment));
+        claimPollResult = await this.handoff().track(() => this.buildd.claimTask(slots, undefined, this.config.localUiUrl, undefined, advertisedRoleSlugs(this.environment), true, withRunnerHold(this.environment, currentRunnerHold())));
       } catch (err: any) {
         const { status, reason } = parseClaimError(err);
         claimLog({ event: 'claim_rejected', slotsRequested: slots, workersClaimed: 0, status, reason });
@@ -2057,7 +2063,16 @@ export class WorkerManager {
     this.emit({ type: 'circuit_breaker', paused: true, pausedUntil: until, reason: `Auth failure #${this.consecutiveAuthFailures} (${ctx})` });
   }
 
-  async claimAndStart(task: BuilddTask): Promise<LocalWorker | null> {
+  /**
+   * `byPerson`: a person chose this task for this runner (`c` in top, POST
+   * /api/claim, a dashboard Start aimed at this runner), so a hold does not
+   * stop it (R-34). A broadcast assignment is the runner choosing, and is held.
+   */
+  async claimAndStart(task: BuilddTask, opts: { byPerson?: boolean } = {}): Promise<LocalWorker | null> {
+    if (!opts.byPerson && !this.config?.singleTask && claimsHeldByPerson()) {
+      console.log(`[WorkerManager] On hold — not claiming task ${task.id}`);
+      return null;
+    }
     if (getUpdateCanary()?.claimsHalted()) {
       console.log(`[WorkerManager] Update canary tripped — not claiming task ${task.id}`);
       return null;

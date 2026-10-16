@@ -291,6 +291,35 @@ describe('POST /api/workers/heartbeat', () => {
     expect(capturedConflictSet.environment).toEqual(environment);
   });
 
+  // R-35: the runner's hold rides the stored environment, normalised; junk never reaches the table.
+  for (const [name, sent, stored] of [
+    ['a hold is stored as sent', { since: '2026-03-10T09:12:00.000Z', until: '2026-03-10T11:12:00.000Z' }, { since: '2026-03-10T09:12:00.000Z', until: '2026-03-10T11:12:00.000Z' }],
+    ['a lifted hold (null) is dropped from the stored environment', null, undefined],
+    ['a malformed hold is dropped', { since: 'yesterday' }, undefined],
+  ] as const) {
+    it(`hold: ${name}`, async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3 });
+      mockHeartbeatsFindFirst.mockResolvedValue(null);
+      let capturedValues: any = null;
+      let capturedConflictSet: any = null;
+      mockHeartbeatsInsert.mockReturnValue({
+        values: mock((vals: any) => {
+          capturedValues = vals;
+          return { onConflictDoUpdate: mock((opts: any) => { capturedConflictSet = opts.set; return Promise.resolve(); }) };
+        }),
+      });
+      const environment = { tools: [], envKeys: [], mcp: [], labels: { hostname: 'test' }, scannedAt: '2026-01-01T00:00:00.000Z', hold: sent };
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { localUiUrl: 'http://localhost:8766', activeWorkerCount: 1, environment },
+      }));
+      expect(res.status).toBe(200);
+      expect(capturedValues.environment.hold).toEqual(stored);
+      expect(capturedConflictSet.environment.hold).toEqual(stored);
+      expect(capturedConflictSet.environment.labels).toEqual({ hostname: 'test' });
+    });
+  }
+
   it('sets environment to null when not provided', async () => {
     mockAuthenticateApiKey.mockResolvedValue({
       id: 'account-1',

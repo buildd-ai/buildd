@@ -1,5 +1,6 @@
 import type { TaskStatusValue, WorkerStatusValue, MissionStatusValue } from './status';
 import type { RunnerFleetIdentity } from './runner-fleet';
+import type { RunnerHold } from './runner-hold';
 import type { ClaudeAiArtifactAccess } from './claude-ai-artifacts';
 
 // ============================================================================
@@ -1351,6 +1352,13 @@ export interface WorkerEnvironment {
    * BUILDD_SCOUT_UNSANDBOXED=1; absent with BUILDD_SCOUT_HOST=0.
    */
   scoutHost?: { repos: string[]; command?: boolean; capture?: boolean; appBoot?: boolean };
+  /**
+   * A person's hold on this runner (`buildd hold`, ./runner-hold): nothing new
+   * starts while it is in force; running work finishes. Null or absent = not
+   * held. The claim route gives a held runner's broad claim nothing, and the
+   * dashboard shows it as on hold instead of idle.
+   */
+  hold?: RunnerHold | null;
 }
 
 export interface RunnerUpdateCanaryReport {
@@ -1663,7 +1671,9 @@ export type ClaimDiagnosticReason =
   | 'context_paused'
   | 'path_overlap_blocked'
   /** An interactive session's explicit claim of this task came too soon after its last one. */
-  | 'rate_limited';
+  | 'rate_limited'
+  /** A broad claim from a runner a person put on hold (`buildd hold`); a named task still claims. */
+  | 'runner_held';
 
 /**
  * Which gate excluded an explicitly requested task (claim with `taskId`). The
@@ -4043,6 +4053,8 @@ export interface FleetRunner {
   /** Heartbeat id, or a synthetic key for workers on an unknown runner. */
   id: string;
   name: string;
+  /** Set while a person holds this runner (`buildd hold`): it starts nothing new. */
+  hold?: RunnerHold | null;
   /** Readable machine description ("Mac Studio", "macOS · arm64"), or null. */
   machine: string | null;
   maxSlots: number;
