@@ -263,10 +263,14 @@ export function installService(
 export function installedServiceDebug(paths: ServicePaths, platform: ServicePlatform): boolean {
   const file = platform === 'darwin' ? launchdPlistPath(paths) : platform === 'linux' ? systemdUnitPath(paths) : null;
   if (!file || !existsSync(file)) return false;
-  const text = readFileSync(file, 'utf-8');
-  return platform === 'darwin'
-    ? text.includes('<string>--debug</string>')
-    : /^ExecStart=.* --debug$/m.test(text);
+  try {
+    const text = readFileSync(file, 'utf-8');
+    return platform === 'darwin'
+      ? text.includes('<string>--debug</string>')
+      : /^ExecStart=.* --debug$/m.test(text);
+  } catch {
+    return false;
+  }
 }
 
 /** `buildd service install [--debug|--no-debug]`: with neither, keep what the installed service does. */

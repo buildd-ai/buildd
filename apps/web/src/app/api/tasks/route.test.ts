@@ -615,6 +615,30 @@ describe('GET /api/tasks', () => {
     expect(response.status).toBe(200);
     // Should still work without errors due to deduplication
   });
+
+  it('excludes cancelled tasks from mission done/total count', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true, canCreate: false }]);
+    mockWorkspacesFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValue([
+      { id: 't1', workspaceId: 'ws-1', status: 'pending', missionId: 'm1', mission: { id: 'm1', title: 'One', isHeld: false, executor: 'runner' } },
+    ]);
+    selectCalls = [];
+    selectRowsFor = (call) => call.table?.status === 'status' ? [{ missionId: 'm1', done: 2, total: 5 }] : [];
+
+    const res = await GET(createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' } }));
+    const data = await res.json();
+
+    // Verify the taskCounts are returned
+    expect(data.tasks[0].mission.taskCounts).toEqual({ done: 2, total: 5 });
+
+    // Verify that the total count excludes cancelled tasks by checking the SQL
+    const counts = selectCalls.find(c => c.table?.status === 'status')!;
+    expect(counts.fields).toBeDefined();
+    // The total field should have a filter that excludes cancelled tasks
+    expect(JSON.stringify(counts.fields)).toContain('!=');
+  });
 });
 
 // The POST suite's mock defaults; also used by the characterization below.
