@@ -10,7 +10,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 - [Agent Capabilities](./agent-capabilities.md) · @max — verified 2026-10-11
   An agent role MUST hold a platform capability (deploy, use a deploy credential, manage or reveal one) only through a named registry entry, a per-workspace opt-in, and a named target scope, failing closed.
-- [Auth & OAuth Boundaries](./auth-oauth-boundaries.md) · @max — verified 2026-10-15
+- [Auth & OAuth Boundaries](./auth-oauth-boundaries.md) · @max — verified 2026-10-16
   Inbound credentials MUST resolve to an account and apply claim limits according to how the runner pays for model usage.
 - [Capability Requests and Grants](./capability-requests.md) · @max — verified 2026-10-12
   An agent MUST get access it lacked at start only by asking for a semantic need, resolved by team policy into a task-scoped, revocable grant checked on every use; writes need a signed-in admin.

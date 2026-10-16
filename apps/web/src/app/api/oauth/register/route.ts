@@ -1,6 +1,12 @@
+import { createHash } from 'crypto';
+import { incrWindow } from '@/lib/redis';
+import { reservedNameAllowed } from '@/lib/oauth/client-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createClient, isSafeRedirectUri } from '@/lib/oauth/storage';
+
+const REGISTER_LIMIT = 10;
+const WINDOW_SECONDS = 3600;
 
 export const dynamic = 'force-dynamic';
 
@@ -14,7 +20,7 @@ const RegisterSchema = z.object({
         .string()
         .url()
         .refine(isSafeRedirectUri, {
-          message: 'redirect_uri scheme is not allowed, or the URI carries a fragment',
+          message: 'Use HTTPS or loopback HTTP without credentials or fragments',
         }),
     )
     .min(1),
@@ -25,6 +31,25 @@ const RegisterSchema = z.object({
 });
 
 export async function POST(req: NextRequest) {
+  // Vercel overwrites x-forwarded-for at the trusted ingress. Do not use
+  // caller-controlled real-ip headers as an alternative bucket identity.
+  const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown';
+  const window = Math.floor(Date.now() / (WINDOW_SECONDS * 1000));
+  const key = createHash('sha256').update(ip).digest('hex');
+  const count = await incrWindow(`oauth:register:${window}:${key}`, WINDOW_SECONDS);
+  // Open registration stays public, but must not bypass its shared limit
+  // during a Redis outage.
+  if (count === null) {
+    return NextResponse.json({ error: 'temporarily_unavailable' }, {
+      status: 503, headers: { 'Retry-After': '60' },
+    });
+  }
+  if (count > REGISTER_LIMIT) {
+    const retryAfter = WINDOW_SECONDS - Math.floor(Date.now() / 1000) % WINDOW_SECONDS;
+    return NextResponse.json({ error: 'rate_limit_exceeded' }, {
+      status: 429, headers: { 'Retry-After': String(Math.max(1, retryAfter)) },
+    });
+  }
   let body: unknown;
   try {
     body = await req.json();
@@ -34,9 +59,20 @@ export async function POST(req: NextRequest) {
   const parsed = RegisterSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json(
-      { error: 'invalid_client_metadata', error_description: parsed.error.message },
+      {
+        error: parsed.error.issues.some(issue => issue.path[0] === 'redirect_uris')
+          ? 'invalid_redirect_uri' : 'invalid_client_metadata',
+        error_description: parsed.error.message,
+      },
       { status: 400 },
     );
+  }
+
+  if (!reservedNameAllowed(parsed.data.client_name, parsed.data.redirect_uris)) {
+    return NextResponse.json({
+      error: 'invalid_client_metadata',
+      error_description: 'This app name is reserved for its known redirect hosts.',
+    }, { status: 400 });
   }
 
   const { clientId } = await createClient({

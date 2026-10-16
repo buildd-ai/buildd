@@ -4,6 +4,7 @@ import {
   applyNav,
   classifyResource,
   clientIdentity,
+  clientHeader,
   grantedScopeString,
   pickerTeams,
   renderLegacyConsentPage,
@@ -191,6 +192,7 @@ describe('resource classification', () => {
 describe('client identity', () => {
   it('names ChatGPT and Claude as verified only on their own redirect hosts', () => {
     expect(clientIdentity('ChatGPT connector 123', 'https://chatgpt.com/connector_platform_oauth_redirect')).toEqual({ name: 'ChatGPT', verified: true });
+    expect(clientIdentity('Any supplied name', 'https://buildd.dev/api/connectors/callback')).toEqual({ name: 'buildd', verified: true });
     expect(clientIdentity('claudeai', 'https://claude.ai/api/mcp/auth_callback')).toEqual({ name: 'Claude', verified: true });
   });
   it('keeps a registered name unverified elsewhere, even one that claims to be ChatGPT', () => {
@@ -198,14 +200,22 @@ describe('client identity', () => {
     expect(clientIdentity('ChatGPT', 'http://chatgpt.com/cb')).toEqual({ name: 'ChatGPT', verified: false });
     expect(clientIdentity('Claude Code', 'http://localhost:41776/callback')).toEqual({ name: 'Claude Code', verified: false });
   });
+  it('escapes both the destination and supplied name in the shared header', () => {
+    const header = clientHeader('<img src=x>', false, '<script>');
+    expect(header).toContain('Authorize &lt;script&gt;');
+    expect(header).toContain('&lt;img src=x&gt;');
+    expect(header).not.toContain('<script>');
+  });
   it('the page says Authorize <app>, marks verification, and shows where an unverified app returns', () => {
     const v = renderAccountConsentPage({ clientName: 'ChatGPT', clientVerified: true, redirectHost: 'chatgpt.com', hidden: [], teams, state: initialConsentState(teams, agentOnly, null), requested: agentOnly });
-    expect(v).toContain('<h1>Authorize ChatGPT</h1>');
+    expect(v).toContain('<h1>Authorize chatgpt.com</h1>');
     expect(v).toContain('Choose the teams and workspaces ChatGPT can access.');
     expect(v).toContain('data-client-verified="true"');
     const u = renderAccountConsentPage({ clientName: 'Some app', redirectHost: 'apps.example', hidden: [], teams, state: initialConsentState(teams, agentOnly, null), requested: agentOnly });
     expect(u).toContain('data-client-verified="false"');
-    expect(u).toContain('apps.example');
+    expect(u).toContain('<h1>Authorize apps.example</h1>');
+    expect(u).toContain('Unverified app');
+    expect(u).toContain('Name supplied by the app: Some app');
   });
 });
 
