@@ -15,7 +15,7 @@
  * safety and the merge tier decision.
  */
 import { db } from '@buildd/core/db';
-import { tasks, workspaces, missions, missionNotes } from '@buildd/core/db/schema';
+import { tasks, workspaces, missions, missionNotes, workers } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import { subscriber, type AnySubscriber } from '@/lib/core-events';
@@ -42,6 +42,7 @@ import { openKernelDelivery } from '@/lib/workflow/kernel-client';
 import { releaseKernelDeliveryForPr } from '@/lib/workflow/authority';
 import { agentReviewsDataMigrations } from '@buildd/shared';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { prUrlFor, workerOwnsPr, workspaceRepoMatches } from '@/lib/repo-scope';
 
 /** The webhook payload shape the dispatch functions read. */
 type WebhookPr = { number: number; head: { sha: string }; html_url: string; base?: { ref: string }; body?: string | null };
@@ -594,6 +595,73 @@ export const reviewerSubscribers: readonly AnySubscriber[] = [
     });
     if (kernelHandled || e.pr.draft || !e.worker.taskId) return;
     await maybeReDispatchReviewer(e.installationId, e.repoFullName, webhookPr(e.pr), { ...e.worker, taskId: e.worker.taskId });
+  }),
+  // A review is needed when CI passes but no review was previously
+  // requested (e.g. for integration branch PRs in local missions).
+  subscriber('reviews', 'pr.review_needed_on_ci_green', 'review-request-on-ci-green', async e => {
+    const task = await db.query.tasks.findFirst({
+      where: sqlWhere(eq(tasks.id, e.taskId)),
+      columns: { id: true, title: true, missionId: true },
+    });
+    if (!task) return;
+
+    const reviewerRole = await resolveReviewerRoleForDispatch(
+      { id: e.workspaceId, teamId: (await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, e.workspaceId)), columns: { teamId: true } }))?.teamId ?? '' },
+      null,
+      e.prNumber,
+    );
+    if (!reviewerRole) return;
+
+    const workspace = await db.query.workspaces.findFirst({
+      where: sqlWhere(eq(workspaces.id, e.workspaceId)),
+      columns: { id: true, teamId: true, gitConfig: true },
+    });
+    if (!workspace) return;
+
+    const worker = await db.query.workers.findFirst({
+      where: sqlWhere(eq(workers.id, e.workerId)),
+      columns: { branch: true },
+    });
+    if (!worker) return;
+
+    const { createReviewerTask } = await import('@/lib/reviewer');
+    const reviewerTask = await createReviewerTask({
+      workspaceId: e.workspaceId,
+      originalTaskId: e.taskId,
+      originalTask: {
+        title: task.title,
+        description: null,
+        backend: 'claude',
+        missionId: task.missionId,
+        pathManifest: null,
+      },
+      worker: { branch: worker.branch },
+      prNumber: e.prNumber,
+      prUrl: prUrlFor(e.repoFullName, e.prNumber),
+      headSha: e.headSha,
+      reviewerRole,
+      installationId: e.installationId,
+      repoFullName: e.repoFullName,
+    }).catch((err) => {
+      console.error(`[reviewer] Failed to create reviewer task for PR #${e.prNumber} on CI green:`, err);
+      return null;
+    });
+
+    if (reviewerTask?.id && !reviewerTask.deduplicated) {
+      await announceTaskCreated(
+        {
+          id: reviewerTask.id,
+          title: `Review PR #${e.prNumber}: ${task.title}`,
+          description: null,
+          workspaceId: e.workspaceId,
+          missionId: task.missionId,
+          backend: 'claude',
+          roleSlug: reviewerRole,
+        },
+        workspace as never,
+      ).catch((err) => console.error(`[reviewer] Failed to announce reviewer task for PR #${e.prNumber}:`, err));
+      await wakeTask(reviewerTask.id, 'task.created').catch((err) => console.error(`[reviewer] Failed to wake reviewer task for PR #${e.prNumber}:`, err));
+    }
   }),
   // CI went red: hand the PR to retryCiFailureForPr, which files a bounded
   // CI-fix task or records why not. The red-PR sweep (lib/ci-red-sweep.ts)

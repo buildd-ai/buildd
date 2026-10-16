@@ -351,6 +351,20 @@ export type CoreEvent =
       taskId: string | null;
     }
   /**
+   * A buildd PR needs review when CI passes, but no review was previously
+   * requested (e.g. for integration branch PRs in local missions).
+   */
+  | {
+      type: 'pr.review_needed_on_ci_green';
+      repoFullName: string;
+      prNumber: number;
+      headSha: string;
+      installationId: number;
+      workspaceId: string;
+      workerId: string;
+      taskId: string;
+    }
+  /**
    * A push (`synchronize`) to an open PR a buildd worker owns: every delivery,
    * redeliveries included. `worker` is the newest row owning the PR (a retry
    * continues on the same PR). Subscribers must be idempotent.
