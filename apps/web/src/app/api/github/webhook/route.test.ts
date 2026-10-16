@@ -2511,6 +2511,76 @@ describe('POST /api/github/webhook', () => {
       expect(mockNotifyMissionPrReady).not.toHaveBeenCalled();
     });
 
+    describe('requests a review on CI green when none was requested', () => {
+      function agentReviewGreen() {
+        withSuccessWorkerPr();
+        mockResolvePolicy.mockReturnValue({
+          tier: 'agent-review',
+          agentReview: { reviewerRole: 'reviewer', maxConfidenceThreshold: 0.6 },
+        });
+        mockCreateReviewerTask.mockClear();
+        mockAnnounceTaskCreated.mockClear();
+        mockWakeTask.mockClear();
+      }
+      const greenRequest = () =>
+        createWebhookRequest('check_suite', makeCheckSuitePayload({ check_suite: { conclusion: 'success' } }));
+
+      it('creates, announces and wakes one reviewer task when reviewStatus is not_requested', async () => {
+        agentReviewGreen();
+        mockReadPrReviewStatus.mockResolvedValue({ state: 'not_requested' } as any);
+
+        const res = await POST(greenRequest());
+
+        expect(res.status).toBe(200);
+        expect(mockCreateReviewerTask).toHaveBeenCalledTimes(1);
+        expect(mockCreateReviewerTask.mock.calls[0][0]).toMatchObject({
+          prNumber: 42,
+          headSha: 'abc123',
+          reviewerRole: 'reviewer',
+          originalTaskId: 't1',
+        });
+        expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
+        expect(mockWakeTask).toHaveBeenCalledWith('reviewer-task-1', 'task.created');
+        expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+      });
+
+      it('does not announce or wake when the reviewer task was deduplicated', async () => {
+        agentReviewGreen();
+        mockReadPrReviewStatus.mockResolvedValue({ state: 'not_requested' } as any);
+        mockCreateReviewerTask.mockReturnValue(Promise.resolve({ id: 'reviewer-existing', deduplicated: true } as any));
+
+        await POST(greenRequest());
+
+        expect(mockCreateReviewerTask).toHaveBeenCalledTimes(1);
+        expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+        expect(mockWakeTask).not.toHaveBeenCalled();
+      });
+
+      it('does not create a reviewer task when a review was already requested', async () => {
+        agentReviewGreen();
+        mockReadPrReviewStatus.mockResolvedValue({
+          state: 'pending', terminal: false, reviewTaskId: 'r1', verdict: null, confidence: null,
+          merged: false, prState: 'open', mergeBlocked: null,
+        } as any);
+
+        await POST(greenRequest());
+
+        expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+        expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+      });
+
+      it('does not create a reviewer task when no reviewer role resolves', async () => {
+        agentReviewGreen();
+        mockReadPrReviewStatus.mockResolvedValue({ state: 'not_requested' } as any);
+        mockListWorkspaceRoles.mockImplementation(() => Promise.resolve([]));
+
+        await POST(greenRequest());
+
+        expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+        expect(mockWakeTask).not.toHaveBeenCalled();
+      });
+    });
+
     it('retries the merge on CI-green when an unconsumed approve is on file for tier=agent-review', async () => {
       // The reviewer's own merge-on-approve is bounded to quarantined branches,
       // so an approved PR based on trunk can sit unconsumed forever with

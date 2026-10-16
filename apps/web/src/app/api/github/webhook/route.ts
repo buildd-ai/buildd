@@ -658,8 +658,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
                     repoFullName: repository.full_name,
                     baseRef: pr.base.ref,
                   });
-                  if (reviewerTask?.id) {
-                    const { announceTaskCreated, wakeTask } = await import('@/lib/dispatch-authority');
+                  if (reviewerTask?.id && !reviewerTask.deduplicated) {
                     await announceTaskCreated(
                       {
                         id: reviewerTask.id,
