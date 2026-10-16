@@ -5498,6 +5498,9 @@ export const workflowDeliveries = pgTable('workflow_deliveries', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   lastTransitionAt: timestamp('last_transition_at', { withTimezone: true }),
+  // When the reconciliation floor last read this delivery's PR (§11). Bookkeeping, not
+  // delivery state: it rotates the floor's queue so a checked delivery yields to the next.
+  floorCheckedAt: timestamp('floor_checked_at', { withTimezone: true }),
 }, (t) => ({
   ownerUnique: uniqueIndex('workflow_deliveries_owner_unique').on(t.workspaceId, t.ownerTaskId),
   prUnique: uniqueIndex('workflow_deliveries_pr_unique').on(t.workspaceId, t.repoFullName, t.prNumber).where(sql`${t.prNumber} IS NOT NULL`),

@@ -1,0 +1,1 @@
+ALTER TABLE "workflow_deliveries" ADD COLUMN "floor_checked_at" timestamp with time zone;

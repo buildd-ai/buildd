@@ -40,6 +40,7 @@ import { landPr, resolveLandingMode } from '@/lib/pr-landing';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { recordPrReverts } from '@/lib/pr-reverts';
 import { recordPrFact } from '@buildd/core/pr-facts';
+import { factFunnelScope } from '@/lib/workflow/pr-fact-scope';
 import { authorsFromPushCommits, changedFilesFromPush, isPossibleBaseRef, type BaseAdvanceInput, type BaseResolver } from '@/lib/base-advance-notice';
 import { changedFilesForCompare, changedFilesForPr, isReleaseRollupPr, runBaseAdvanceNotice } from '@/lib/base-advance-notice-store';
 import { promptEvalRefForPush } from '@/lib/prompt-evals/push-trigger';
@@ -899,7 +900,7 @@ async function handlePullRequestEvent(event: {
     if (event.installation && action === 'reopened' && openWorker?.workspaceId) {
       await observePrState({
         workspaceId: openWorker.workspaceId, repoFullName: repository.full_name, prNumber: pr.number,
-        installationId: event.installation.id, source: 'webhook:reopened',
+        installationId: event.installation.id, source: 'webhook:reopened', pull: pr,
       }).catch((err) => console.error(`[webhook] workflow kernel reopen fact failed for PR #${pr.number}:`, err));
     }
 
@@ -1034,8 +1035,15 @@ async function handlePullRequestEvent(event: {
   if (worker?.workspaceId && event.installation) {
     kernelOwned = await observePrState({
       workspaceId: worker.workspaceId, repoFullName: repository.full_name, prNumber: pr.number,
-      installationId: event.installation.id, source: 'webhook:closed',
+      installationId: event.installation.id, source: 'webhook:closed', pull: pr,
     }).catch((err) => {
+      // S4a: the kernel owns the PR but its live read failed. This payload is recorded as an
+      // unapplied fact and a fast heal applies it within minutes (kernel-heal.ts); the legacy
+      // path must not run for a PR the kernel owns (it would race the kernel's own merge work).
+      if ((err as { name?: string } | null)?.name === 'KernelObservationFailed') {
+        console.warn(`[webhook] kernel live read failed for PR #${pr.number}; fast heal scheduled:`, err);
+        return true;
+      }
       console.error(`[webhook] workflow kernel close fact failed for PR #${pr.number}:`, err);
       return false;
     });
@@ -1151,7 +1159,7 @@ async function handlePullRequestEvent(event: {
   if (worker && !pr.merged) {
     // PR closed without merge (abandoned/superseded): every row carrying the
     // PR, never over a merge (recordPrFact).
-    await recordPrFact({ prUrl: prUrlFor(repository.full_name, pr.number), prNumber: pr.number }, { kind: 'closed' });
+    await recordPrFact({ prUrl: prUrlFor(repository.full_name, pr.number), prNumber: pr.number }, { kind: 'closed' }, { scope: factFunnelScope });
     await triggerEvent(channels.workspace(worker.workspaceId), events.WORKER_PROGRESS, {
       taskId: worker.taskId,
     });

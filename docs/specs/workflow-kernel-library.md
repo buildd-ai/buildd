@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
 related: [workflow-state-kernel, execution-control-plane, mission-branch-refresh, mission-task-lifecycle, living-specs]
 keywords: [scope amendment, mission scope version, workflow kernel, delivery state, single writer, single host, control plane, portable library, ports, adapters, conformance suite, merge door, landing authority, required status, durable findings, finding disposition, delivery epoch, mission delivery, refresh settlement, no-op completion, workflow-kernel package]
-verified_by: [packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts]
+verified_by: [packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts]
 supersedes: []
 ---
 # Workflow Kernel Library and Single Host
@@ -76,9 +76,9 @@ work" and no code path can advance or contradict it on its own.
 - Page renders, MCP reads and `explain` never write delivery state, including
   in `after()`.
 - Every write site outside the package for the columns above is listed in §9
-  and burns down to zero by slice S4. A guard test
-  (NOT IMPLEMENTED: the delivery-columns write-site test, extending
-  `workflow-write-sites.test.ts`) fails on a new one.
+  and burns down to zero by slice S4. A guard test (the S4a block of
+  `packages/core/__tests__/workflow-write-sites.test.ts`) fails on a new one,
+  naming the file, and lists each remaining site with its reason.
 
 **Acceptance criteria**:
 - AC-1: GIVEN a delivery-owned task WHEN any module outside the kernel package
@@ -1035,7 +1035,20 @@ column outside the kernel; S3 and S4 remove or route each one.
   dashboard merge route, `PUT /api/github/pr`, `mission-pr.ts`,
   `pr-state-refresh.ts` (render read-through), `pr-reconcile.ts`,
   `dead-zone-sweep.ts`, the admin backfill, `pr-review-request.ts`,
-  `dead-pr-shutdown.ts`. Becomes a fact funnel only.
+  `dead-pr-shutdown.ts`. Becomes a fact funnel only. S4a: T17 / T18 write
+  both columns on every worker row of the delivery's PR in the transition's
+  own statement; a terminal fact (merged, closed) from any of these callers
+  carries the kernel's scope (`pr-fact-scope.ts`), so a delivery-owned row
+  takes only what its delivery already says. Their non-terminal facts
+  (`pr_open`, CI, conflict, unresolvable) stay with S4b. "Delivery-owned" has
+  one definition (`kernelOwnedRowSql`: a kernel-authority delivery, kill switch
+  on, owns the row's PR), shared by the funnel and the render read-through. A
+  merge the kernel saw but could not apply (its live read failed, a render
+  recorded it) is queued for a fast heal on the per-minute dispatch tick
+  (`kernel-heal.ts`), and the floor reads unapplied terminal facts first and
+  rotates by `floor_checked_at`. A merge after ABANDONED or SUPERSEDED has no
+  edge: it is recorded on the fact as a contradiction, notified, and shown on
+  the delivery's view.
 - `workers.prUrl` / `prNumber`: `create_pr` route, `mission-pr.ts`, worker
   PATCH, `register-local-pr`.
 - `workers.status`: worker PATCH, claim, reassign, cleanup, interrupt,

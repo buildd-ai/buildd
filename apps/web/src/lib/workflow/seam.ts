@@ -30,7 +30,7 @@ import { policyValue } from '@/lib/policy-overrides';
 import { preflightMissOf } from './preflight-miss';
 import { landThroughKernel as landThroughKernelImpl, type KernelLanding, type LandingInput } from './landing';
 import { enqueueEffectSql, enqueueMissingEffects, existingEffectsSql } from './enqueue-missing';
-import { floorCandidatesSql, strandedMechanicalRepair, treadmillCycleCandidatesSql, type FloorCandidate, type TreadmillCycleCandidate } from './reconcile';
+import { floorCandidatesSql, floorCheckedSql, strandedMechanicalRepair, treadmillCycleCandidatesSql, type FloorCandidate, type TreadmillCycleCandidate } from './reconcile';
 
 // The worker PATCH's reading of a terminal report (S30), exported here because routes reach the kernel only through the seam.
 export { attemptEndFromPatch, taskRetryCoversAttemptEnd } from './hand-off';
@@ -42,6 +42,8 @@ import {
 } from './trunk';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { drainOnControlPlane, hostsKernelHere } from './kernel-client';
+import { recordPrStateObserved } from './render-observation';
+import { scheduleKernelHeal } from './kernel-heal';
 import { diffTouchesFindings, isTaskId, openFindings, openRequiredFindings, pathsNamedIn } from '@buildd/workflow-kernel/findings';
 
 const seamExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
@@ -944,16 +946,42 @@ export async function observeBase(p: {
 }
 
 // AC-3 (workflow-kernel-library.md §1): a page render, MCP read or explain records at most a fact.
-export { deliveryOwnedWorkers, prHasDeliveryOwnedRow, recordPrStateObserved, type DeliveryOwnership } from './render-observation';
+export { deliveryOwnedWorkers, recordPrStateObserved } from './render-observation';
 
-/** Webhook `closed` / `reopened`: T17 / T18 / T19 from a live read. Legacy keeps its post-merge work (Slice C). */
+/**
+ * A kernel-owned PR whose close or merge the kernel could not take in (S4a): its own live read
+ * of GitHub failed, so no transition ran. A fast heal is scheduled (kernel-heal.ts); the caller
+ * must not take a legacy path for the PR (the kernel still owns it) and must not report success.
+ */
+export class KernelObservationFailed extends Error {
+  constructor(readonly deliveryId: string, readonly reason: string) {
+    super(`kernel could not observe the PR of delivery ${deliveryId}: ${reason}`);
+    this.name = 'KernelObservationFailed';
+  }
+}
+
+/**
+ * Webhook `closed` / `reopened`: T17 / T18 / T19 from a live read. Legacy keeps its post-merge work (Slice C).
+ * False: the kernel does not own the PR (legacy decides). True: the fact reached the reducer.
+ * Throws `KernelObservationFailed` when the kernel owns the PR but its live read failed: the
+ * caller's own observation (`pull`, GitHub's pull object, when it has one) is recorded as an
+ * unapplied fact and a fast heal is scheduled, so the merge lands in minutes, not on the floor.
+ */
 export async function observePrState(p: {
-  workspaceId: string; repoFullName: string; prNumber: number; installationId: number; source: string;
+  workspaceId: string; repoFullName: string; prNumber: number; installationId: number; source: string; pull?: unknown;
 }, deps: SeamDeps = {}): Promise<boolean> {
   const deliveryId = await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber, deps.exec);
   if (!deliveryId) return false;
-  await ingestFact({ kind: 'pr_closed', workspaceId: p.workspaceId, source: p.source, repoFullName: p.repoFullName, prNumber: p.prNumber },
+  const r = await ingestFact({ kind: 'pr_closed', workspaceId: p.workspaceId, source: p.source, repoFullName: p.repoFullName, prNumber: p.prNumber },
     { exec: deps.exec, github: readerFor(deps, p.installationId) });
+  if (r.result === 'rejected' && r.factId === null) {
+    if (p.pull) {
+      await recordPrStateObserved({ workspaceId: p.workspaceId, repoFullName: p.repoFullName, prNumber: p.prNumber, pull: p.pull, source: p.source }, deps.exec)
+        .catch((err) => console.error(`[workflow] could not record the observed close of ${p.repoFullName}#${p.prNumber}:`, err));
+    }
+    await scheduleKernelHeal(deliveryId);
+    throw new KernelObservationFailed(deliveryId, r.reason);
+  }
   await drainDelivery(deliveryId, deps);
   return true;
 }
@@ -1373,6 +1401,10 @@ export async function reconcileKernelDeliveries(
     } catch (err) {
       s.errors++;
       console.error(`[workflow] floor reconcile of ${repoFullName}#${prNumber} failed:`, err);
+    } finally {
+      // S4a: this delivery had its turn (read, skipped or failed); the next pass starts with ones
+      // checked longer ago, so a row that keeps failing never starves the rest of the queue.
+      await exec(floorCheckedSql([String(row.id)])).catch((err) => console.warn(`[workflow] floor_checked_at for ${row.id} failed:`, err));
     }
   }
   return s;

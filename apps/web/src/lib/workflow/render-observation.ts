@@ -6,77 +6,47 @@
  * `workers.prNumber`, during the request or in `after()`.
  *
  * Two statements, both reached through seam.ts:
- *  - `deliveryOwnedWorkers`: a SELECT that says which workers' rows belong to a
- *    delivery (any authority), so the read-through knows to keep its hands off;
+ *  - `deliveryOwnedWorkers`: a SELECT that says which workers' rows are
+ *    delivery-owned (pr-fact-scope.ts `kernelOwnedRowSql`, the one definition the
+ *    fact funnel uses too), so the read-through knows to keep its hands off;
  *  - `recordPrStateObserved`: an INSERT of the `pr_closed` fact under the same
  *    natural key `ingestFact` uses (facts.ts `factKeyFor`), recorded but not
- *    applied. No reducer pass, no effect, no drain: the webhook and the hourly
- *    pr-reconcile ingest the same fact (a duplicate whose first application
- *    never ran is applied then), and the reducer decides there.
+ *    applied. No reducer pass, no effect, no drain: it schedules the fast heal
+ *    (kernel-heal.ts), the webhook or the floor ingest the same fact (a duplicate
+ *    whose first application never ran is applied then), and the reducer decides there.
  */
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import type { Exec } from './kernel';
-import { workspaceKernelOnSql } from './authority';
 import { factKeyFor, insertFactSql } from './facts';
+import { kernelOwnedRowSql } from './pr-fact-scope';
+import { kernelDeliveryIdOfPr, scheduleKernelHeal } from './kernel-heal';
 import { toLivePr } from './github-facts';
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
-export interface DeliveryOwnership {
-  /** The kernel decides for this delivery (authority kernel, workspace switch on). */
-  kernel: boolean;
-}
-
 /**
- * A worker's row (`w`, its task `t`) is delivery-owned by `d` when its task owns
- * the delivery, its task is an attempt of it (`tasks.delivery_id`), or its PR
- * is the delivery's PR: same number AND same repo, read off the PR url (case
- * folded), so a task in another repo with the same PR number keeps healing.
+ * Which of `workerIds` are delivery-owned, by the one definition (pr-fact-scope.ts
+ * `kernelOwnedRowSql`): the row's PR belongs to a delivery with authority kernel in a workspace
+ * whose kill switch is on. A delivery released to legacy, or the switch off, is not owned: the
+ * read heals it as before. One SELECT.
  */
-const OWNS_WORKER = sql`(d.owner_task_id = w.task_id OR d.id = t.delivery_id
-    OR (w.pr_number IS NOT NULL AND d.pr_number = w.pr_number AND d.repo_full_name IS NOT NULL
-      AND lower(w.pr_url) = lower('https://github.com/' || d.repo_full_name || '/pull/' || d.pr_number::text)))`;
-
-/** One row per delivery-owned worker among `workerIds`, with whether the kernel decides for it. */
 export function deliveryOwnedWorkersSql(workerIds: string[]): SQL {
   return sql`-- workflow:delivery_owned_workers
-SELECT w.id AS "workerId",
-  bool_or(d.authority = 'kernel' AND ${workspaceKernelOnSql(sql`d.workspace_id`)}) AS kernel
+SELECT w.id AS "workerId"
 FROM workers w
-LEFT JOIN tasks t ON t.id = w.task_id
-JOIN workflow_deliveries d ON d.workspace_id = w.workspace_id
-  AND ${OWNS_WORKER}
 WHERE w.id IN (SELECT x::uuid FROM jsonb_array_elements_text(${JSON.stringify(workerIds)}::jsonb) x)
-GROUP BY w.id`;
-}
-
-/** Does any worker row carrying this PR (the merge stamp's own target) belong to a delivery? */
-export function prHasDeliveryOwnedRowSql(p: { prUrl: string; prNumber: number }): SQL {
-  return sql`-- workflow:pr_has_delivery_owned_row
-SELECT EXISTS (
-  SELECT 1 FROM workers w
-  LEFT JOIN tasks t ON t.id = w.task_id
-  JOIN workflow_deliveries d ON d.workspace_id = w.workspace_id
-    AND ${OWNS_WORKER}
-  WHERE w.pr_url = ${p.prUrl}::text AND w.pr_number = ${p.prNumber}::int
-) AS owned`;
-}
-
-/** Throws on a read failure: the caller fails closed (skips the stamp). */
-export async function prHasDeliveryOwnedRow(p: { prUrl: string; prNumber: number }, exec: Exec = dbExec): Promise<boolean> {
-  const row = ((await exec(prHasDeliveryOwnedRowSql(p))).rows ?? [])[0] as { owned?: unknown } | undefined;
-  return row?.owned === true;
+  AND w.pr_number IS NOT NULL AND ${kernelOwnedRowSql()}`;
 }
 
 /** Throws on a read failure: the caller fails closed (treats every row as delivery-owned). */
-export async function deliveryOwnedWorkers(workerIds: string[], exec: Exec = dbExec): Promise<Map<string, DeliveryOwnership>> {
+export async function deliveryOwnedWorkers(workerIds: string[], exec: Exec = dbExec): Promise<Set<string>> {
   const ids = [...new Set(workerIds.filter(Boolean))];
-  const out = new Map<string, DeliveryOwnership>();
+  const out = new Set<string>();
   if (ids.length === 0) return out;
   const res = await exec(deliveryOwnedWorkersSql(ids));
-  for (const r of (res.rows ?? []) as Array<{ workerId: unknown; kernel: unknown }>) {
-    if (typeof r.workerId === 'string') out.set(r.workerId, { kernel: r.kernel === true });
+  for (const r of (res.rows ?? []) as Array<{ workerId: unknown }>) {
+    if (typeof r.workerId === 'string') out.add(r.workerId);
   }
   return out;
 }
@@ -96,5 +66,9 @@ export async function recordPrStateObserved(p: {
     workspaceId: p.workspaceId, kind: 'pr_closed', factKey: factKeyFor(fact, live), source: p.source,
     repoFullName: p.repoFullName, prNumber: p.prNumber, payload: { live },
   }));
+  // S4a: the fact is the kernel's to apply, in minutes (kernel-heal.ts), not on the hourly floor.
+  // A Redis marker, not delivery state: the read still writes no lifecycle column.
+  const deliveryId = await kernelDeliveryIdOfPr({ workspaceId: p.workspaceId, repoFullName: p.repoFullName, prNumber: p.prNumber }, exec).catch(() => null);
+  if (deliveryId) await scheduleKernelHeal(deliveryId);
   return true;
 }

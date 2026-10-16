@@ -6,51 +6,37 @@
 import { describe, it, expect } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
-import { deliveryOwnedWorkers, deliveryOwnedWorkersSql, prHasDeliveryOwnedRow, prHasDeliveryOwnedRowSql, recordPrStateObserved } from './render-observation';
+import { deliveryOwnedWorkers, deliveryOwnedWorkersSql, recordPrStateObserved } from './render-observation';
 
 const dialect = new PgDialect();
 const render = (q: SQL) => dialect.sqlToQuery(q);
 const norm = (s: string) => s.replace(/\s+/g, ' ').trim();
 
 describe('deliveryOwnedWorkersSql', () => {
-  it('is one SELECT matching a delivery by owner task, attempt delivery id or PR number', () => {
+  it('is one SELECT by the one definition of delivery-owned: a kernel-authority delivery, switch on, owns the row\'s PR', () => {
     const { sql, params } = render(deliveryOwnedWorkersSql(['w1', 'w2']));
     const text = norm(sql);
     expect(text.startsWith('-- workflow:delivery_owned_workers SELECT')).toBe(true);
     expect(text).not.toMatch(/\b(UPDATE|INSERT|DELETE)\b/i);
-    expect(text).toContain('JOIN workflow_deliveries d ON d.workspace_id = w.workspace_id');
-    expect(text).toContain('d.owner_task_id = w.task_id OR d.id = t.delivery_id OR (w.pr_number IS NOT NULL AND d.pr_number = w.pr_number');
-    // The PR match is repo-aware: same number in another repo is not this delivery's PR.
-    expect(text).toContain("lower(w.pr_url) = lower('https://github.com/' || d.repo_full_name || '/pull/' || d.pr_number::text)");
-    // Kernel-decided only while the workspace switch reads on.
-    expect(text).toContain("d.authority = 'kernel' AND NOT EXISTS (SELECT 1 FROM workspaces kw");
-    expect(text).toContain('GROUP BY w.id');
+    // The same predicate the PR fact funnel's scope excludes (pr-fact-scope.ts kernelOwnedRowSql):
+    expect(text).toContain("EXISTS (SELECT 1 FROM workflow_deliveries kd JOIN workspaces kw ON kw.id = kd.workspace_id WHERE kd.authority = 'kernel'");
+    expect(text).toContain("(COALESCE((kw.git_config)->>'workflowKernel', 'true') IN ('true', 'on'))");
+    // Repo-aware and case folded: the same number in another repo is not this delivery's PR.
+    expect(text).toContain("w.workspace_id = kd.workspace_id AND w.pr_number = kd.pr_number AND lower(w.pr_url) = lower('https://github.com/' || kd.repo_full_name || '/pull/' || kd.pr_number::text)");
+    // A released delivery (authority legacy) is not owned, so it is no longer matched by owner task.
+    expect(text).not.toContain('owner_task_id');
     expect(params).toContain(JSON.stringify(['w1', 'w2']));
   });
 
-  it('maps rows to ownership and skips the statement for no ids', async () => {
+  it('maps rows to the owned set and skips the statement for no ids', async () => {
     const seen: string[] = [];
-    const exec = async (q: SQL) => { seen.push(render(q).sql); return { rows: [{ workerId: 'w1', kernel: true }, { workerId: 'w2', kernel: false }] }; };
-    expect(await deliveryOwnedWorkers([], exec)).toEqual(new Map());
+    const exec = async (q: SQL) => { seen.push(render(q).sql); return { rows: [{ workerId: 'w1' }] }; };
+    expect(await deliveryOwnedWorkers([], exec)).toEqual(new Set());
     expect(seen).toEqual([]);
     const owned = await deliveryOwnedWorkers(['w1', 'w2', 'w1'], exec);
-    expect(owned.get('w1')).toEqual({ kernel: true });
-    expect(owned.get('w2')).toEqual({ kernel: false });
+    expect(owned.has('w1')).toBe(true);
+    expect(owned.has('w2')).toBe(false);
     expect(seen).toHaveLength(1);
-  });
-});
-
-describe('prHasDeliveryOwnedRowSql', () => {
-  it('asks over every row the merge stamp would reach (same url and number), with the same ownership predicate', async () => {
-    const { sql, params } = render(prHasDeliveryOwnedRowSql({ prUrl: 'https://github.com/owner/repo/pull/42', prNumber: 42 }));
-    const text = norm(sql);
-    expect(text.startsWith('-- workflow:pr_has_delivery_owned_row SELECT EXISTS')).toBe(true);
-    expect(text).not.toMatch(/\b(UPDATE|INSERT|DELETE)\b/i);
-    expect(text).toContain('WHERE w.pr_url = $1::text AND w.pr_number = $2::int');
-    expect(text).toContain("lower(w.pr_url) = lower('https://github.com/' || d.repo_full_name");
-    expect(params).toEqual(['https://github.com/owner/repo/pull/42', 42]);
-    expect(await prHasDeliveryOwnedRow({ prUrl: 'u', prNumber: 1 }, async () => ({ rows: [{ owned: true }] }))).toBe(true);
-    expect(await prHasDeliveryOwnedRow({ prUrl: 'u', prNumber: 1 }, async () => ({ rows: [{ owned: false }] }))).toBe(false);
   });
 });
 
@@ -62,7 +48,9 @@ describe('recordPrStateObserved', () => {
     const exec = async (q: SQL) => { seen.push(render(q)); return { rows: [] }; };
     const ok = await recordPrStateObserved({ workspaceId: 'ws1', repoFullName: 'owner/repo', prNumber: 42, pull: pull({}), source: 'render:test' }, exec);
     expect(ok).toBe(true);
-    expect(seen).toHaveLength(1);
+    // The fact, then (S4a) a SELECT for the kernel delivery to schedule the fast heal for: no other write.
+    expect(seen).toHaveLength(2);
+    expect(norm(seen[1].sql)).toStartWith('-- workflow:kernel_delivery_of_pr SELECT');
     expect(norm(seen[0].sql)).toStartWith('-- workflow:insert_fact INSERT INTO workflow_facts');
     expect(seen[0].sql).toContain('ON CONFLICT (workspace_id, fact_key) DO NOTHING');
     expect(seen[0].params).toContain('pr_closed');
