@@ -75,6 +75,7 @@ import { ATTEMPT_FOOTER_PATTERN, checkFreshRetryPr, freshRetryPrRefusal, retryAt
 import { loadInlineEvidence } from '@/lib/evidence-inline';
 import { canActOnWorkerPr } from '@/lib/worker-pr-access';
 import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
+import { workerIdForNewPr, wouldDisplaceLivePr } from '@/lib/worker-pr-slot';
 import { findStackedReleaseForBase } from '@/lib/early-release-stacking';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
@@ -550,11 +551,13 @@ export async function POST(req: NextRequest) {
         accountId: account.id, principalVia: auditVia(account, worker), resource: prNumber ? `pr:${prNumber}` : null,
         sideEffect: prNumber ? { prNumber } : null,
       });
+      // A second PR from the same worker gets its own owner row; the first keeps this one.
+      const adoptRecordId = await workerIdForNewPr(worker, { number: prNumber, url: existingPrUrl, head: typeof head === 'string' ? head : null });
       await db.update(workers).set({
         prUrl: existingPrUrl,
         prNumber,
         updatedAt: new Date(),
-      }).where(eq(workers.id, workerId));
+      }).where(eq(workers.id, adoptRecordId));
       await stampTaskKindIfAbsent(worker.taskId, 'engineering');
       if (prNumber) {
         await claimMissionPrimaryPr(worker.task?.missionId, prNumber, existingPrUrl, {
@@ -619,6 +622,7 @@ export async function POST(req: NextRequest) {
       const siblingWorkerWithPr = await db.query.workers.findFirst({
         where: sqlWhere(and(
           eq(workers.taskId, worker.taskId),
+          eq(workers.branch, head),
           isNotNull(workers.prUrl),
           isNotNull(workers.prNumber),
         )),
@@ -630,6 +634,15 @@ export async function POST(req: NextRequest) {
         siblingWorkerWithPr.branch === head &&
         !isStoredPrStale(siblingWorkerWithPr)
       ) {
+        // A worker already holding a different live PR keeps it: this PR has its
+        // own owner row (the sibling), so there is nothing to mirror.
+        if (wouldDisplaceLivePr(worker, siblingWorkerWithPr.prNumber)) {
+          return NextResponse.json({
+            ok: true,
+            pr: { number: siblingWorkerWithPr.prNumber, url: siblingWorkerWithPr.prUrl, state: 'open', title },
+            deduplicated: true,
+          });
+        }
         // Mirror the PR onto this worker too so future calls hit the fast path.
         // The base ref is copied from the sibling because it is literally the same
         // PR — but only when the sibling actually has one recorded. A sibling from
@@ -782,7 +795,9 @@ export async function POST(req: NextRequest) {
           ? await fetchSplitPrStats(repo.installation.installationId, repo.fullName, existing.number)
           : null;
 
-        // Update worker with the existing PR info and diff stats
+        // Update worker with the existing PR info and diff stats. A second PR
+        // from the same worker gets its own owner row; the first keeps this one.
+        const dedupRecordId = await workerIdForNewPr(worker, { number: existing.number, url: existing.html_url, head });
         await db
           .update(workers)
           .set({
@@ -801,7 +816,7 @@ export async function POST(req: NextRequest) {
             // column here whose stale value removes a safety gate.
             updatedAt: new Date(),
           })
-          .where(eq(workers.id, workerId));
+          .where(eq(workers.id, dedupRecordId));
         await stampTaskKindIfAbsent(worker.taskId, 'engineering');
 
         // ── prBaseRef: BACKFILL only, never overwrite ────────────────────────
@@ -827,12 +842,12 @@ export async function POST(req: NextRequest) {
         const adoptedBaseRef = typeof adoptedBaseRefValue === 'string' && adoptedBaseRefValue
           ? adoptedBaseRefValue
           : null;
-        if (adoptedBaseRef && !worker.prBaseRef) {
+        if (adoptedBaseRef && (dedupRecordId !== workerId || !worker.prBaseRef)) {
           try {
             const filled = await db
               .update(workers)
               .set({ prBaseRef: adoptedBaseRef, updatedAt: new Date() })
-              .where(and(eq(workers.id, workerId), isNull(workers.prBaseRef)))
+              .where(and(eq(workers.id, dedupRecordId), isNull(workers.prBaseRef)))
               .returning({ id: workers.id });
             if (filled.length > 0) {
               console.log(
@@ -1237,7 +1252,9 @@ export async function POST(req: NextRequest) {
       accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prData.number}`,
       sideEffect: { prNumber: prData.number, head },
     });
-    // Update worker with PR info and diff stats from GitHub's response
+    // Update worker with PR info and diff stats from GitHub's response. A
+    // second PR from the same worker gets its own owner row; the first keeps this one.
+    const createdRecordId = await workerIdForNewPr(worker, { number: prData.number, url: prData.html_url, head });
     await db
       .update(workers)
       .set({
@@ -1257,7 +1274,7 @@ export async function POST(req: NextRequest) {
           : {}),
         updatedAt: new Date(),
       })
-      .where(eq(workers.id, workerId));
+      .where(eq(workers.id, createdRecordId));
 
     // mission-legibility R-31 — the late signal. "This task opened a PR, so it changed code"
     // is a fact LEARNED LATE, not a presentation concern, so it goes in the
