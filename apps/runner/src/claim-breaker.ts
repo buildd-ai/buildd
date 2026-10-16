@@ -134,6 +134,20 @@ function pauseUntilQuotedReset(err: string, now: Date, kind: string): number {
 }
 
 /**
+ * A Claude run refused before spawn because nothing could authenticate it
+ * (host-seat.ts `claudeModelAuthMissing`). Routed by the worker's flag, never
+ * by its text: the fix it names mentions "billing", which classifyClaimError
+ * would read as an hour-long billing pause. Not an auth failure either: there
+ * is no credential to invalidate. A short pause of this context's claims
+ * leaves the task to other runners, and a claim after it re-checks the machine.
+ */
+export const NO_MODEL_AUTH_PAUSE: ClaimErrorClassification = {
+  label: 'No model login on this runner',
+  pauseMs: 10 * 60 * 1000,
+  scope: 'context',
+};
+
+/**
  * Classify a worker error for circuit-breaker routing.
  * Returns null if the error is worker-specific (no breaker action).
  *

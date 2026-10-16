@@ -1,13 +1,19 @@
 /**
- * Credential injection — attaches decrypted agent-backend credentials to the
+ * Credential injection — attaches decrypted agent-backend API keys to the
  * claim response so the runner never needs DB access.
+ *
+ * A claim carries no subscription (OAuth) login (model credentials spec R-2 /
+ * AC-3): no `oauth_token`, `claude_credential` or ChatGPT `codex_credential`
+ * value. The runner uses its own machine login (`claude login`, `codex login`)
+ * first, then an API key delivered here, then refuses the task. Stored login
+ * rows are ignored, not yet deleted (R-8).
  *
  * Every function here is a no-op without ENCRYPTION_KEY, and every failure is
  * non-fatal: a claim must still succeed with no credentials attached (the
  * worker can fall back to local ones).
  *
  * Runner trust model: access is gated on the same API key auth used for all
- * claim requests. Any account-level API key can receive decrypted tokens for
+ * claim requests. Any account-level API key can receive decrypted API keys for
  * tasks in workspaces it can claim. There is no concept of a "public-repo
  * runner" in this architecture — runners are private processes that present a
  * buildd API key. If an API key is compromised, the attacker gains the same
@@ -18,32 +24,19 @@ import { secrets } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNotNull, isNull, lt, not, or, sql } from 'drizzle-orm';
 import type { ClaimTasksResponse, PendingCredentialRefresh } from '@buildd/shared';
 import { getSecretsProvider } from '@buildd/core/secrets';
-import { resolveCodexCredential } from '@/lib/codex-credential';
-import { resolveClaudeCredential } from '@/lib/claude-credential';
+import { resolveCodexApiKey } from '@/lib/codex-credential';
 import { resolveOpenAiApiKey } from '@/lib/openai-credential';
 import { pickMostSpecificCredential, pickTeamAgentApiKey, teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { agentKeyPurposes } from '@buildd/core/providers/agent-keys';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
-/**
- * True when a credential's recorded expiry has already passed. A claim never
- * carries such a credential (model credentials spec R-3 / AC-2): the worker
- * would die on it seconds after the claim and the task would retry forever.
- * Left out, the runner falls back to its own login. No recorded expiry (an API
- * key, a long-lived setup token) is never expired here.
- */
-export function credentialExpired(expiresAt: Date | string | null | undefined, now: number = Date.now()): boolean {
-  if (!expiresAt) return false;
-  const t = new Date(expiresAt).getTime();
-  return Number.isFinite(t) && t <= now;
-}
-
 /** The claim-candidate rows the credential blocks look tasks up in. */
 type ClaimedTask = { id: string; workspaceId: string };
 
 /**
- * Attach inline decrypted server-managed credentials (Anthropic API key and/or
- * OAuth token, plus flat mcp_credential values).
+ * Attach inline decrypted server-managed credentials: the Anthropic API key
+ * and flat mcp_credential values. A stored `oauth_token` (a subscription
+ * setup token) is never read or delivered.
  *
  * The Anthropic key is read from its canonical storage (`inference_key` /
  * `anthropic`, the key chat uses) and its legacy alias (`anthropic_api_key`);
@@ -56,7 +49,7 @@ type ClaimedTask = { id: string; workspaceId: string };
 export async function attachServerManagedSecrets(
   claimedWorkers: ClaimTasksResponse['workers'],
   accountId: string,
-  /** Workers whose agent model endpoint won (./agent-endpoint-injection): no Anthropic key or seat for them. */
+  /** Workers whose agent model endpoint won (./agent-endpoint-injection): no Anthropic key for them. */
   endpointWorkers: ReadonlySet<string> = new Set(),
 ): Promise<void> {
   if (claimedWorkers.length === 0 || !process.env.ENCRYPTION_KEY) return;
@@ -75,7 +68,7 @@ export async function attachServerManagedSecrets(
 
       const workerSecrets = await db.query.secrets.findMany({
         where: sqlWhere(teamCredentialWhere(
-          { teamId: workspaceTeamId, purpose: [...agentKeyPurposes('anthropic'), 'oauth_token', 'mcp_credential'] },
+          { teamId: workspaceTeamId, purpose: [...agentKeyPurposes('anthropic'), 'mcp_credential'] },
           or(
             isNull(secrets.accountId),
             eq(secrets.accountId, accountId),
@@ -87,7 +80,7 @@ export async function attachServerManagedSecrets(
         )),
         columns: {
           id: true, purpose: true, label: true, healthStatus: true, updatedAt: true,
-          accountId: true, workspaceId: true, userId: true, tokenExpiresAt: true,
+          accountId: true, workspaceId: true, userId: true,
         },
       });
 
@@ -105,25 +98,9 @@ export async function attachServerManagedSecrets(
       // below are not model credentials and are still delivered.
       const endpointWon = endpointWorkers.has(cw.id);
       const apiKeySecret = endpointWon ? undefined : pickTeamAgentApiKey(workerSecrets, scopeTarget, 'anthropic');
-      // An oauth_token whose recorded expiry has passed is never delivered, and
-      // never shadows a live one at a wider scope.
-      const oauthSecret = endpointWon
-        ? undefined
-        : pickMostSpecificCredential(
-            workerSecrets.filter(s => s.purpose === 'oauth_token' && !credentialExpired(s.tokenExpiresAt)),
-            scopeTarget,
-          );
-
-      const [decryptedApiKey, decryptedOauthToken] = await Promise.all([
-        apiKeySecret ? provider.get(apiKeySecret.id) : null,
-        oauthSecret ? provider.get(oauthSecret.id) : null,
-      ]);
-
+      const decryptedApiKey = apiKeySecret ? await provider.get(apiKeySecret.id) : null;
       if (decryptedApiKey) {
         (cw as any).serverApiKey = decryptedApiKey;
-      }
-      if (decryptedOauthToken) {
-        (cw as any).serverOauthToken = decryptedOauthToken;
       }
       // Inject mcp_credential secrets as flat mcpSecrets so the runner can resolve
       // ${VAR} references in .mcp.json HTTP headers. The connector system only
@@ -162,10 +139,12 @@ export async function attachServerManagedSecrets(
 }
 
 /**
- * Attach the Codex credential for codex-backend tasks only — never for other
- * backends, to limit token exposure.
+ * Attach a Codex API key for codex-backend tasks only — never for other
+ * backends, to limit key exposure.
  *
- * Refresh is runner-side (see `pendingCredentialRefreshes`); this only reads.
+ * Only API keys: one stored in a `codex_credential` row, else a plain
+ * `openai_api_key`. A stored ChatGPT/OAuth login is never delivered (spec
+ * R-2); the runner uses its own `codex login`.
  */
 export async function attachCodexCredentials(
   claimedWorkers: ClaimTasksResponse['workers'],
@@ -185,164 +164,18 @@ export async function attachCodexCredentials(
     if (!wsId || !teamId) continue;
 
     try {
-      // Resolve the most-specific credential: workspace > account > team-wide.
-      // Refresh is now runner-side (pendingCredentialRefreshes); we only read the DB here.
-      // The resolver already skips expired rows; this guard keeps a dead login
-      // off the wire even if it ever stops doing so (spec R-3 / AC-2).
-      const resolved = await resolveCodexCredential({ teamId, accountId, workspaceId: wsId });
-      const cred = resolved && !credentialExpired(resolved.tokenExpiresAt) ? resolved : null;
-      if (resolved && !cred) {
-        console.log(`[claim] Left out an expired Codex login for worker ${cw.id}; the runner uses its own login or an API key`);
-      }
-      if (cred) {
-        (cw as any).codexCredential = {
-          credentialType: cred.credentialType,
-          // OAuth fields (only set for OAuth credentials)
-          ...(cred.credentialType === 'oauth'
-            ? {
-                accessToken: cred.accessToken,
-                refreshToken: cred.refreshToken,
-                accountId: cred.accountId,
-                idToken: cred.idToken,
-              }
-            : {}),
-          // API key (only set for api_key credentials)
-          ...(cred.credentialType === 'api_key' ? { apiKey: cred.apiKey } : {}),
-          expiresAt: cred.tokenExpiresAt,
-        };
-      } else {
-        // No ChatGPT/OAuth connect (or legacy codex_credential api_key blob) —
-        // fall back to a plain team/workspace OpenAI API key (purpose
-        // `openai_api_key`, stored via Settings like `anthropic_api_key`). This
-        // reuses the exact `api_key` wire shape above, so the runner needs no
-        // changes: writeCodexApiKeyToHome already materializes it into auth.json.
-        // See docs/credentials-architecture.md for why these are two purposes.
-        const openAiKey = await resolveOpenAiApiKey({ teamId, accountId, workspaceId: wsId });
-        if (openAiKey) {
-          (cw as any).codexCredential = {
-            credentialType: 'api_key',
-            apiKey: openAiKey.apiKey,
-            expiresAt: null,
-          };
-        }
+      // Most specific first: workspace > account > team-wide. A codex_credential
+      // API key wins over a plain openai_api_key (purpose `openai_api_key`,
+      // stored via Settings like `anthropic_api_key`). Both use the one `api_key`
+      // wire shape, which writeCodexApiKeyToHome materializes into auth.json.
+      // See docs/credentials-architecture.md for why these are two purposes.
+      const scope = { teamId, accountId, workspaceId: wsId };
+      const apiKey = (await resolveCodexApiKey(scope))?.apiKey ?? (await resolveOpenAiApiKey(scope))?.apiKey;
+      if (apiKey) {
+        (cw as any).codexCredential = { credentialType: 'api_key', apiKey, expiresAt: null };
       }
     } catch (err) {
       console.warn(`[claim] Failed to fetch Codex credential for workspace ${wsId}:`, err);
-    }
-  }
-}
-
-/**
- * Attach the managed Claude OAuth credential (claude_credential) for
- * Claude-backend tasks.
- *
- * Workers receive ONLY the access_token — never the refresh_token. This
- * prevents in-session token rotation: with no refresh_token in the credentials
- * file the SDK cannot call Anthropic's token endpoint, which eliminates the
- * "token family revocation" cascade that occurs when multiple workers rotate
- * concurrently.
- *
- * Refresh is runner-side: the runner calls /api/runner/credential-refresh
- * before spawning its subprocess when pendingCredentialRefreshes is non-empty.
- * The cron job nudges runners proactively before tokens expire.
- */
-export async function attachClaudeCredentials(
-  claimedWorkers: ClaimTasksResponse['workers'],
-  claimedTasks: readonly ClaimedTask[],
-  /** The claiming account: an account-scoped credential outranks a team-wide one. */
-  accountId: string,
-  /** Workers whose agent model endpoint won: no Claude token for them. */
-  endpointWorkers: ReadonlySet<string> = new Set(),
-): Promise<void> {
-  if (!process.env.ENCRYPTION_KEY) return;
-  for (const cw of claimedWorkers) {
-    if (endpointWorkers.has(cw.id)) continue;
-    const task = claimedTasks.find(t => t.id === cw.taskId);
-    // Only inject for Claude-backend tasks; Codex tasks already handled above.
-    if ((task as any)?.backend === 'codex') continue;
-
-    const wsId = task?.workspaceId;
-    const teamId = (task as any)?.workspace?.teamId;
-    if (!wsId || !teamId) continue;
-
-    try {
-      // Refresh is now runner-side (pendingCredentialRefreshes); we only read the DB here.
-      // NOTE: credentials with healthStatus = 'revoked' (killed by prior Vercel IP-flip refreshes)
-      // cannot be recovered by this cutover — users must reconnect via the OAuth device-code flow.
-      // The first refresh after reconnect comes from the runner (workers.ts BUILDD_RUNNER_REFRESH gate).
-      // Resolve the most-specific credential: workspace > account > team-wide.
-      const cred = await resolveClaudeCredential({ teamId, accountId, workspaceId: wsId });
-      if (cred && credentialExpired(cred.tokenExpiresAt)) {
-        // Spec R-3 / AC-2: never deliver an expired login; the runner uses its own.
-        console.log(`[claim] Left out an expired claude_credential for worker ${cw.id}; the runner uses its own login`);
-      } else if (cred) {
-        (cw as any).claudeAccessToken = cred.accessToken;
-        (cw as any).claudeTokenExpiresAt = cred.tokenExpiresAt ? cred.tokenExpiresAt.toISOString() : null;
-        if (cred.scopes?.length) (cw as any).claudeTokenScopes = cred.scopes;
-        console.log(`[claim] Attached claude_credential access_token for workspace ${wsId}`);
-      }
-    } catch (err) {
-      console.warn(`[claim] Failed to fetch Claude credential for workspace ${wsId}:`, err);
-    }
-  }
-}
-
-/**
- * Populate `pendingCredentialRefreshes`: credentials expiring within 2 hours
- * that the runner should pre-refresh before spawning its subprocess. Both
- * claude_credential and codex_credential rows visible to each task's
- * workspace/team are included.
- *
- * Server-side claim-gate refresh has been removed; the runner is the sole
- * refresh origin.
- *
- * This is the PER-WORKER list and therefore only speaks when something was
- * claimed. `resolveAccountCredentialRefreshes` below is the top-level
- * counterpart that also fires on an empty claim, so an idle runner discovers
- * its credentials at all. Both are emitted; see the note there for why this one
- * is kept rather than replaced.
- */
-export async function attachPendingCredentialRefreshes(
-  claimedWorkers: ClaimTasksResponse['workers'],
-  claimedTasks: readonly ClaimedTask[],
-  /**
-   * Workers whose agent model endpoint won: no per-worker list, so the runner
-   * never wires them to a Claude credential. The top-level account list still
-   * announces the team's credentials for the broker to keep fresh.
-   */
-  endpointWorkers: ReadonlySet<string> = new Set(),
-): Promise<void> {
-  if (!process.env.ENCRYPTION_KEY) return;
-  for (const cw of claimedWorkers) {
-    if (endpointWorkers.has(cw.id)) continue;
-    const task = claimedTasks.find(t => t.id === cw.taskId);
-    const wsId = task?.workspaceId;
-    const teamId = (task as any)?.workspace?.teamId;
-    if (!wsId || !teamId) continue;
-
-    try {
-      const twoHoursFromNow = sql`NOW() + INTERVAL '2 hours'`;
-      const pendingRows = await db.query.secrets.findMany({
-        where: sqlWhere(and(
-          eq(secrets.teamId, teamId),
-          inArray(secrets.purpose, ['claude_credential', 'codex_credential']),
-          not(eq(secrets.healthStatus, 'revoked')),
-          isNotNull(secrets.tokenExpiresAt),
-          lt(secrets.tokenExpiresAt, twoHoursFromNow),
-          or(isNull(secrets.workspaceId), eq(secrets.workspaceId, wsId)),
-        )),
-        columns: { id: true, purpose: true, tokenExpiresAt: true },
-      });
-
-      if (pendingRows.length > 0) {
-        (cw as any).pendingCredentialRefreshes = pendingRows.map(row => ({
-          secretId: row.id,
-          purpose: row.purpose as 'claude_credential' | 'codex_credential',
-          expiresAt: row.tokenExpiresAt ? (row.tokenExpiresAt as Date).toISOString() : null,
-        }));
-      }
-    } catch (err) {
-      console.warn(`[claim] Failed to query pending credential refreshes for workspace ${wsId}:`, err);
     }
   }
 }
@@ -352,20 +185,17 @@ export async function attachPendingCredentialRefreshes(
  * task, no workspace — for the top-level `pendingCredentialRefreshes` the claim
  * route returns on every poll.
  *
- * Why this exists: `attachPendingCredentialRefreshes` above can only speak when
- * a worker was claimed. A runner that is online but idle claims nothing, so it
- * was told about nothing, its credential broker's managed set stayed empty, and
- * `refreshExpiring()` iterated over an empty map — the credentials it is
- * responsible for silently aged out. The claim call is the runner's heartbeat,
- * so announcing here is what makes an idle runner discover its own credentials.
+ * Why this exists: the claim call is the runner's heartbeat, so announcing here
+ * is how an idle runner's credential broker discovers the stored logins it
+ * keeps fresh for server-side readers. No claimed worker is wired to one any
+ * more (a claim carries no subscription login), so a task never causes a
+ * refresh (model credentials spec AC-6). The broker and this list go with the
+ * refresh machinery.
  *
- * SCOPE — the crux. The per-worker version keys off the claimed task's
- * `workspace.teamId` (see the note at the top of this file: deliberate, to stop
- * cross-team leakage). With no task there is no workspace to key off, so the
- * boundary is the account's OWN team — `accounts.teamId`, the team the
- * presented API key belongs to. Never wider than one team, and narrowed further
- * to team-wide rows plus this account's own: another account's personal
- * credential in the same team is not this runner's to manage.
+ * SCOPE: the account's OWN team — `accounts.teamId`, the team the presented API
+ * key belongs to. Never wider than one team, and narrowed further to team-wide
+ * rows plus this account's own: another account's personal credential in the
+ * same team is not this runner's to manage.
  *
  * The payload is metadata only (`secretId`, `purpose`, `expiresAt`) — no token
  * material ever crosses this boundary; the runner exchanges a secretId for a
