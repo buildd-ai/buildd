@@ -410,16 +410,20 @@ export async function buildClaimReadout(input: {
   /** Current definitions a recorded fingerprint may match (default: the shipped one). */
   definitions?: readonly Decision<DecisionQuestions>[];
 }): Promise<GroupReadout[]> {
+  // A human force is observational; it is never a model promotion arm.
+  type ModelClaimRow = ClaimReadoutRow & { experimentArm: 'apply' | 'observe' };
+  const modelRows = input.rows.filter((row): row is ModelClaimRow => row.experimentArm !== 'human'
+    && row.decisionId !== 'buildd.human_force_start' && row.actor !== 'human_force');
   const defs = input.definitions ?? [CLAIM_HOLD_DECISION as unknown as Decision<DecisionQuestions>];
-  const labels = new Map(labelClaimHoldDecisions({ decisions: [...input.rows], labels: input.hold.labels }).map(l => [l.decisionId, l]));
-  const split = splitWorkUnits(input.rows.map(r => ({
+  const labels = new Map(labelClaimHoldDecisions({ decisions: [...modelRows], labels: input.hold.labels }).map(l => [l.decisionId, l]));
+  const split = splitWorkUnits(modelRows.map(r => ({
     id: r.id,
     at: r.createdAt,
     links: r.taskId ? [`task:${r.taskId}`, ...(input.links.get(r.taskId) ?? [])] : [],
   })), input.plan);
 
-  const groups = new Map<string, ClaimReadoutRow[]>();
-  for (const r of input.rows) {
+  const groups = new Map<string, ModelClaimRow[]>();
+  for (const r of modelRows) {
     const k = [r.decisionId, r.fingerprint, r.model ?? '', r.candidatePolicyVersion, r.experimentArm].join('\u0000');
     groups.set(k, [...(groups.get(k) ?? []), r]);
   }
