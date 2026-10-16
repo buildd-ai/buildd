@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import { join } from 'path';
 
@@ -387,6 +387,34 @@ export function getTestConcurrency(configured: string | undefined): number {
  * fails, just later.
  */
 const DEFAULT_TEST_TIMEOUT_MS = 30_000;
+
+const PROGRESS_INTERVAL_MS = 30_000;
+
+/**
+ * One-line progress for non-TTY runs. The full digest is only printed when the
+ * run ends, so a caller that kills the run at its own cap (a tool timeout, a CI
+ * step limit) otherwise gets nothing at all. Emitted on an interval and on
+ * SIGTERM/SIGINT, it says how far the run got and which files were still in
+ * flight -- the ones to suspect when a run stalls.
+ */
+export function formatProgressLine(
+  passed: number,
+  failed: number,
+  total: number,
+  inFlight: ReadonlyMap<string, number>,
+  now: number,
+  maxShown = 5,
+): string {
+  const running = [...inFlight.entries()]
+    .sort((a, b) => a[1] - b[1])
+    .slice(0, maxShown)
+    .map(([file, startedAt]) => `${file} (${Math.round((now - startedAt) / 1000)}s)`);
+  const more = inFlight.size - running.length;
+  const tail = running.length
+    ? `; running: ${running.join(', ')}${more > 0 ? `, +${more} more` : ''}`
+    : '';
+  return `[progress] ${passed + failed}/${total} files done (${failed} failed)${tail}`;
+}
 
 export function getTestTimeoutMs(configured: string | undefined): number {
   const n = Number(configured);
@@ -829,14 +857,37 @@ async function main(): Promise<void> {
   const timings: Array<{ file: string; durationMs: number }> = [];
   const runStartedAt = performance.now();
 
+  const inFlight = new Map<string, number>();
+  const progress = (): string =>
+    formatProgressLine(passed, failures.length, files.length, inFlight, performance.now());
+  const heartbeat = process.stdout.isTTY
+    ? undefined
+    : setInterval(() => console.log(progress()), PROGRESS_INTERVAL_MS);
+  // A killed run keeps its partial result: failures so far go to the log and the
+  // progress line names what was still running.
+  const onKill = (signal: NodeJS.Signals): void => {
+    console.error(`\n${signal} received before the run finished. ${progress()}`);
+    for (const failure of failures) console.error(`  failed so far: ${failure.file}`);
+    try {
+      const partial = failures.map(f => `--- ${f.file} ---\n${f.output.trim()}\n`).join('\n');
+      writeFileSync(process.env.BUILDD_TEST_LOG ?? '.test-report.log', `INCOMPLETE RUN (${signal})\n${progress()}\n\n${partial}`);
+    } catch {}
+    process.exit(signal === 'SIGINT' ? 130 : 143);
+  };
+  process.once('SIGTERM', onKill);
+  process.once('SIGINT', onKill);
+
   await runWithConcurrency(files, concurrency, async file => {
+    inFlight.set(file, performance.now());
     const result = await runTestFile(file);
+    inFlight.delete(file);
     timings.push({ file, durationMs: result.durationMs });
     if (result.output.includes(STORE_REACH_MARKER)) storeReaches.push(file);
     if (result.exitCode === 0) {
       passed++;
     } else {
       failures.push(result);
+      if (!process.stdout.isTTY) console.log(`[failed] ${file}`);
     }
     // Carriage-return progress is unreadable once redirected to a file, and the
     // log is what agents grep. Only animate on a TTY.
@@ -845,6 +896,9 @@ async function main(): Promise<void> {
     }
   });
   if (process.stdout.isTTY) process.stdout.write('\n');
+  if (heartbeat) clearInterval(heartbeat);
+  process.off('SIGTERM', onKill);
+  process.off('SIGINT', onKill);
   const wallMs = performance.now() - runStartedAt;
 
   // Files finish out of order under concurrency; sort so the failure section of
