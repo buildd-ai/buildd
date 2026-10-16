@@ -19,6 +19,7 @@ beforeEach(() => {
 
 const {
   derivePrReviewStatus,
+  isReviewBudgetSpent,
   pickReviewerRole,
   firePrReviewCallback,
   REVIEW_CALLBACK_TIMEOUT_MS,
@@ -396,5 +397,19 @@ describe('isApprovalSelfMergeable', () => {
 
   it('refuses a verdict already consumed by a merge', () => {
     expect(isApprovalSelfMergeable({ verdict: 'approve', confidence: 0.9, merged: true }, 0.6)).toBe(false);
+  });
+});
+
+// Task 2ded4e88: a legacy PR's round budget, read off its newest review.
+describe('isReviewBudgetSpent', () => {
+  it('is spent when the newest review asked for changes at the cap', () => {
+    expect(isReviewBudgetSpent({ verdict: 'request-changes', iteration: 3, maxIterations: 3 })).toBe(true);
+    expect(isReviewBudgetSpent({ verdict: 'request-changes', iteration: 3, maxIterations: null })).toBe(true);
+  });
+  it('is not spent under the cap, or on another verdict', () => {
+    expect(isReviewBudgetSpent({ verdict: 'request-changes', iteration: 2, maxIterations: 3 })).toBe(false);
+    expect(isReviewBudgetSpent({ verdict: 'request-changes', iteration: null, maxIterations: null })).toBe(false);
+    expect(isReviewBudgetSpent({ verdict: 'escalate', iteration: 3, maxIterations: 3 })).toBe(false);
+    expect(isReviewBudgetSpent({ verdict: 'approve', iteration: 3, maxIterations: 3 })).toBe(false);
   });
 });

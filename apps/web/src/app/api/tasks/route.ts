@@ -407,7 +407,7 @@ async function withTaskListAggregates<T extends { id: string; status: string; mi
         ? db.select({
             missionId: tasks.missionId,
             done: sql<number>`count(*) filter (where ${tasks.status} = 'completed')::int`,
-            total: sql<number>`count(*)::int`,
+            total: sql<number>`count(*) filter (where ${tasks.status} != 'cancelled')::int`,
           })
             .from(tasks)
             .where(and(inArray(tasks.missionId, missionIds), inArray(tasks.workspaceId, workspaceIds)))

@@ -596,13 +596,13 @@ describe('get_task — include validation and scheduling view', () => {
     const a = api({
       estimate: {
         estimatorVersion: 'blend-v1', p50Minutes: 41.6, p80Minutes: 70.2, p50Tokens: 120_400, p80Tokens: 219_600,
-        expectedRepairs: 0.4, summary: '40m (25-70m), 120k tokens, from 6 similar tasks, plus typical engineering tasks.',
+        expectedRepairs: 0.4, summary: 'stale 40m (25-70m)', explanation: { sources: [{ source: 'neighbours', n: 6, weight: 1 }], clusterLabel: null, priorWeight: 0, summary: 'stale' },
       },
     });
     const out = await handleBuilddAction(a, 'get_task', { taskId: TASK_ID, include: ['workers', 'scheduling'] }, ctx());
     expect((a as any).mock.calls[0][0]).toBe(`/api/tasks/${TASK_ID}?include=${encodeURIComponent('workers,estimate')}`);
     expect(out.content[0].text).toContain(
-      '**Estimate (blend-v1):** 42-70m · 120k-220k tokens · 40m (25-70m), 120k tokens, from 6 similar tasks, plus typical engineering tasks.',
+      '**Estimate (blend-v1):** About 30–75 min · Based on limited comparable tasks in this repo.',
     );
   });
 

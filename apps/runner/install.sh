@@ -426,6 +426,27 @@ packages_missing() {
 ensure_packages() {
   packages_missing || return 0
   local marker="$HOME/.buildd/.buildd-package-repair" limit
+
+  # If a bun install is currently running (indicated by .buildd-install.lock with
+  # a fresh, live pid), do not start a second install. The lock is written atomically
+  # by the TypeScript preflight (apps/runner/src/package-tree.ts) and lives only
+  # during the install, so it is never stale by design.
+  if [ -f "$HOME/.buildd/.buildd-install.lock" ]; then
+    local lock_pid lock_started lock_age_ms now_ms install_timeout_ms
+    lock_pid=$(jq -r '.pid // empty' "$HOME/.buildd/.buildd-install.lock" 2>/dev/null)
+    lock_started=$(jq -r '.startedAt // empty' "$HOME/.buildd/.buildd-install.lock" 2>/dev/null)
+    if [ -n "$lock_pid" ] && [ -n "$lock_started" ]; then
+      now_ms=$(date +%s000)
+      lock_age_ms=$((now_ms - lock_started))
+      install_timeout_ms=$((10 * 60 * 1000))  # 10 minutes (PREFLIGHT_INSTALL_TIMEOUT_MS)
+      # If the process is alive and the lock is fresh (guard against backward clock), it's a live install in progress
+      if [ "$lock_age_ms" -ge 0 ] && [ "$lock_age_ms" -lt "$install_timeout_ms" ] && kill -0 "$lock_pid" 2>/dev/null; then
+        echo "buildd: an update is installing packages in ~/.buildd. Try again in a few minutes." >&2
+        return 1
+      fi
+    fi
+  fi
+
   if [ -z "$(find "$marker" -mmin -10 2>/dev/null)" ]; then
     date +%s000 > "$marker" 2>/dev/null
     echo "buildd: packages are missing from ~/.buildd; running bun install..." >&2

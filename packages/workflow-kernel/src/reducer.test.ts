@@ -242,8 +242,11 @@ describe('T3 HeadObserved by state (§6.4)', () => {
   test('LANDING: aborts landing to a new round when not equivalent', () => {
     expect(applied(h(V(D({ state: 'LANDING', approvedHeads: ['H1'] })))).toState).toBe('AWAITING_REVIEW');
   });
-  test('ESCALATED: review_* escalations re-review, others only record', () => {
-    expect(applied(h(V(D({ state: 'ESCALATED', stateReason: 'review_exhausted' })))).toState).toBe('AWAITING_REVIEW');
+  test('ESCALATED: a reviewer\'s escalation re-reviews; a spent review budget (2ded4e88) and the rest only record', () => {
+    expect(applied(h(V(D({ state: 'ESCALATED', stateReason: 'review_escalated' })))).toState).toBe('AWAITING_REVIEW');
+    const spent = applied(h(V(D({ state: 'ESCALATED', stateReason: 'review_exhausted', currentRound: 3 }))));
+    expect({ to: spent.toState, patch: spent.patch, rounds: spent.rounds, review: effectKinds(spent).includes('dispatch_review') })
+      .toEqual({ to: 'ESCALATED', patch: { currentHeadSha: 'H2' }, rounds: [], review: false });
     const rec = applied(h(V(D({ state: 'ESCALATED', stateReason: 'landing_needs_human' }))));
     expect(rec.toState).toBe('ESCALATED');
     expect(rec.rounds).toEqual([]);
@@ -658,7 +661,7 @@ describe('T5 ReviewRequested (AC-2)', () => {
   });
   test('from ESCALATED a non-human request is accepted only after a review escalation', () => {
     const at = (stateReason: string) => V(D({ state: 'ESCALATED', stateReason, currentRound: 1 }), []);
-    for (const reason of ['review_escalated', 'review_exhausted', 'review_unavailable'])
+    for (const reason of ['review_escalated', 'review_unavailable'])
       expect(applied(rq(at(reason), { actor: 'agent:t1' })).toState).toBe('AWAITING_REVIEW');
     for (const reason of ['push_undeliverable', 'policy_human', 'effect_dead', 'landing_needs_human', 'ci_exhausted', 'conflict_exhausted', 'unsafe_to_merge']) {
       expectResult(rq(at(reason), { actor: 'agent:t1' }), 'rejected', 'escalation_needs_human');
@@ -2159,5 +2162,109 @@ describe('S5 part 3 review: completion evidence edges', () => {
     expect(moved.attempts[0]).toMatchObject({ set: { outcome: 'delivered' } });
     expect(moved.rounds.find((r) => r.op === 'insert')).toMatchObject({ headSha: 'H2', scope: null });
     expect(moved.evidence.noopEvidence).toBeUndefined();
+  });
+});
+
+// Task 2ded4e88: PR #4882 escalated "review budget spent" and still queued a round after a push,
+// and another after a CI fix out of the escalation. A spent budget is the delivery's: only a
+// person acting asks for a review again.
+describe('2ded4e88: a spent review budget is final for the delivery until a person acts', () => {
+  const spent = (o: Partial<DeliverySnapshot> = {}) => D({ state: 'ESCALATED', stateReason: 'review_exhausted', currentRound: 3, ...o });
+  const decided3 = R({ id: 'r3', round: 3, status: 'decided', verdict: 'request_changes', effectiveVerdict: 'request_changes' });
+  const ci = (o: Partial<AttemptSnapshot> = {}) => A({ id: 'c1', family: 'ci', triggerReason: 'sig', status: 'running', ...o });
+  // A CI repair that started from the spent escalation (the hold rides in resumeState).
+  const repairing = (o: Partial<DeliverySnapshot> = {}) => D({ state: 'REPAIRING', stateReason: 'ci', currentRound: 3, boundAttemptId: 'c1', resumeState: 'ESCALATED', ...o });
+  const noReview = (dec: ApplyDecision) => {
+    expect(dec.toState).toBe('ESCALATED');
+    expect(dec.patch).toMatchObject({ stateReason: 'review_exhausted', resumeState: null });
+    expect(dec.patch.boundAttemptId ?? null).toBeNull();
+    expect(dec.patch.currentRound ?? 3).toBe(3); // the round counter does not advance
+    expect(dec.rounds.filter((r) => r.op === 'insert')).toEqual([]);
+    expect(effectKinds(dec)).not.toContain('dispatch_review');
+  };
+  const ended = (v: KernelView, o: Partial<Extract<Command, { type: 'AttemptEnded' }>> = {}) =>
+    run(v, { type: 'AttemptEnded', actor: 'runner', workerId: 'wf', taskId: 'ft1', attemptId: 'c1', outcome: 'success', localHeadSha: 'H2', commitCount: 1, live: live('H2'), proof: { liveContainsLocal: true }, ...o });
+
+  test('a request for review is refused unless a person forces it', () => {
+    const v = V(spent(), [decided3]);
+    for (const actor of ['agent:t1', 'kernel', 'webhook', 'human:u'])
+      expectResult(run(v, { type: 'ReviewRequested', actor, headSha: 'H1', live: live('H1') }), 'rejected', 'review_budget_spent');
+    const forced = applied(run(v, { type: 'ReviewRequested', actor: 'human:u', headSha: 'H1', live: live('H1'), forced: true }));
+    expect({ to: forced.toState, round: forced.patch.currentRound, review: effectKinds(forced).includes('dispatch_review') }).toEqual({ to: 'AWAITING_REVIEW', round: 4, review: true });
+  });
+
+  test('a CI or conflict repair out of the spent escalation carries the hold; one out of a reviewer\'s escalation does not', () => {
+    const red = (d: DeliverySnapshot) => applied(run(V(d), { type: 'CiFailedObserved', actor: 'webhook', headSha: 'H1', signature: 'sig', maxAttempts: 3 }));
+    expect(red(spent()).patch).toMatchObject({ stateReason: 'ci', resumeState: 'ESCALATED' });
+    expect(red(spent({ stateReason: 'review_escalated' })).patch.resumeState).toBeUndefined();
+    const dirty = applied(run(V(spent()), { type: 'ConflictObserved', actor: 'webhook', headSha: 'H1', mergeable: 'dirty', maxAgentAttempts: 3 }));
+    expect({ to: dirty.toState, resume: dirty.patch.resumeState }).toEqual({ to: 'REPAIRING', resume: 'ESCALATED' });
+  });
+
+  test('the repair\'s end hands the PR back to the person, with its head and its attempt recorded', () => {
+    const dec = applied(ended(V(repairing(), [decided3], [ci()])));
+    noReview(dec);
+    expect(dec.patch.currentHeadSha).toBe('H2');
+    expect(dec.attempts).toContainEqual(expect.objectContaining({ op: 'update', attemptId: 'c1', set: expect.objectContaining({ outcome: 'delivered', pushedHeadSha: 'H2' }) }));
+    expect(dec.evidence).toMatchObject({ reviewBudgetSpent: true, heldFrom: 'REPAIRING' });
+    // Without the hold the same end is reviewed, as before.
+    expect(applied(ended(V(repairing({ resumeState: null }), [decided3], [ci()]))).toState).toBe('AWAITING_REVIEW');
+  });
+
+  test('so do the repair\'s own push, and CI going green without it', () => {
+    noReview(applied(run(V(repairing(), [decided3], [ci()]), { type: 'HeadObserved', actor: 'webhook', live: live('H2'), attribution: { descendsFromBound: true }, proof: { liveContainsLocal: true, contentDiffChanged: true } })));
+    noReview(applied(run(V(repairing(), [decided3], [ci()]), { type: 'HeadObserved', actor: 'webhook', live: live('H2') })));
+    noReview(applied(run(V(repairing(), [decided3], [ci({ boundHeadSha: 'H1' })]), { type: 'CiGreenObserved', actor: 'webhook', headSha: 'H1', liveChecks: { complete: true, failing: [] }, allPassing: true })));
+  });
+
+  test('a red base during the repair resumes at the person', () => {
+    const blocked = applied(run(V(repairing(), [decided3], [ci()]), { type: 'TrunkRedObserved', actor: 'kernel', incidentId: 'i1', signature: 'ci:unit', headSha: 'H1', thresholdMet: true }));
+    expect({ to: blocked.toState, resume: blocked.patch.resumeState }).toEqual({ to: 'BLOCKED_ON_TRUNK', resume: 'ESCALATED' });
+    const back = applied(run(V(D({ state: 'BLOCKED_ON_TRUNK', stateReason: 'ci:unit', currentRound: 3, resumeState: 'ESCALATED', trunkIncidentId: 'i1', currentHeadSha: 'H2' }), [decided3]),
+      { type: 'TrunkRecovered', actor: 'kernel', incidentId: 'i1', baseStillRed: false, headPredatesFix: false }));
+    noReview(back);
+  });
+
+  test('a repair budget spent on top of it keeps the hold: a later clean head goes to the person, not a reviewer', () => {
+    const ciSpent = V(D({ state: 'ESCALATED', stateReason: 'ci_exhausted', currentRound: 3, resumeState: 'ESCALATED' }), [decided3]);
+    expect(applied(run(ciSpent, { type: 'HeadObserved', actor: 'webhook', live: live('H2') }))).toMatchObject({ toState: 'ESCALATED', patch: { currentHeadSha: 'H2' } });
+    const conflictSpent = V(D({ state: 'ESCALATED', stateReason: 'conflict_exhausted', currentRound: 3, resumeState: 'ESCALATED' }), [decided3]);
+    noReview(applied(run(conflictSpent, { type: 'HeadObserved', actor: 'webhook', live: live('H2', { mergeableState: 'clean' }) })));
+  });
+
+  test('a repair whose push GitHub does not show yet keeps the hold through AWAITING_PUSH and push_undeliverable', () => {
+    // The fix ends with a local head the live PR does not have (push lag, a failed push).
+    const unseen = applied(ended(V(repairing(), [decided3], [ci()]), { localHeadSha: 'H2', live: live('H1'), proof: { liveContainsLocal: false } }));
+    expect(unseen.toState).toBe('AWAITING_PUSH');
+    expect(unseen.patch.resumeState).toBeUndefined(); // the marker stays
+    const waiting = (o: Partial<DeliverySnapshot> = {}) => V(D({ state: 'AWAITING_PUSH', stateReason: null, currentRound: 3, boundAttemptId: 'c1', resumeState: 'ESCALATED', pushPendingLocalHead: 'H2', ...o }),
+      [decided3], [ci({ status: 'ended', outcome: 'unproven', reportedShas: ['H2'] })]);
+    const arrives = { type: 'HeadObserved' as const, actor: 'webhook', live: live('H2'), proof: { liveContainsLocal: true, contentDiffChanged: true } };
+    // The push arrives: back to the person, not round 4.
+    noReview(applied(run(waiting(), arrives)));
+    // Push recovery runs out: push_undeliverable keeps the marker, and the head that arrives later goes to the person.
+    const dead = applied(run(waiting(), { type: 'PushRecoveryExhausted', actor: 'kernel', localHeadSha: 'H2' }));
+    expect({ to: dead.toState, why: dead.patch.stateReason, resume: dead.patch.resumeState }).toEqual({ to: 'ESCALATED', why: 'push_undeliverable', resume: undefined });
+    noReview(applied(run(waiting({ state: 'ESCALATED', stateReason: 'push_undeliverable' }), arrives)));
+    // A person without force is still refused there; with force they get the round.
+    const esc = waiting({ state: 'ESCALATED', stateReason: 'push_undeliverable', currentHeadSha: 'H1' });
+    expectResult(run(esc, { type: 'ReviewRequested', actor: 'human:u', headSha: 'H1', live: live('H1') }), 'rejected', 'review_budget_spent');
+    expect(applied(run(esc, { type: 'ReviewRequested', actor: 'human:u', headSha: 'H1', live: live('H1'), forced: true })).toState).toBe('AWAITING_REVIEW');
+  });
+
+  test('a recovered base does not refresh a head that resumes at the person', () => {
+    const back = applied(run(V(D({ state: 'BLOCKED_ON_TRUNK', stateReason: 'ci:unit', currentRound: 3, resumeState: 'ESCALATED', trunkIncidentId: 'i1' }), [decided3]),
+      { type: 'TrunkRecovered', actor: 'kernel', incidentId: 'i1', baseStillRed: false, headPredatesFix: true }));
+    noReview(back);
+    expect(effectKinds(back)).not.toContain('refresh_branch');
+  });
+
+  test('a person\'s act ends the hold, and a stale marker outside a repair holds nothing', () => {
+    const v = V(D({ state: 'ESCALATED', stateReason: 'ci_exhausted', currentRound: 3, resumeState: 'ESCALATED' }), [decided3]);
+    const dismissed = applied(run(v, { type: 'HumanResolve', actor: 'human:u', choice: 'dismiss', reason: 'one more look', expectedVersion: 5 }));
+    expect({ to: dismissed.toState, resume: dismissed.patch.resumeState, review: effectKinds(dismissed).includes('dispatch_review') }).toEqual({ to: 'AWAITING_REVIEW', resume: null, review: true });
+    const approved = V(D({ state: 'APPROVED', currentRound: 3, resumeState: 'ESCALATED', approvedHeads: ['H1'], approvalBasis: 'verdict' }), [decided3]);
+    const pushed = applied(run(approved, { type: 'HeadObserved', actor: 'webhook', live: live('H2') }));
+    expect({ to: pushed.toState, resume: pushed.patch.resumeState }).toEqual({ to: 'AWAITING_REVIEW', resume: null });
   });
 });

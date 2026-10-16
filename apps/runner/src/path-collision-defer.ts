@@ -13,7 +13,7 @@
  * holds the task until the holder releases), and end the session. No agent
  * stays alive waiting for a lease.
  */
-import * as childProcess from 'child_process';
+import { gitArgsAsync } from './git-async';
 import type { BuilddClient } from './buildd';
 import type { LocalWorker, Milestone } from './types';
 import {
@@ -45,14 +45,12 @@ export interface CollisionCheckpoint {
   reason?: string;
 }
 
-function git(cwd: string, args: string[], timeout = 30_000): string {
-  // env must be passed explicitly: Bun's execFileSync snapshots process.env
-  // at process startup rather than reading it per call (unlike Node's), so a
-  // caller that mutates process.env at runtime (e.g. a test clearing git
-  // identity) would otherwise never reach this child process.
-  return String(childProcess.execFileSync('git', args, {
-    cwd, timeout, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], env: process.env,
-  }));
+// Async (git-async.ts): a checkpoint commit and push run on the runner's main
+// thread, and a 30s push must not freeze the local socket or the other workers.
+function git(cwd: string, args: string[], timeout = 30_000): Promise<string> {
+  // env passed explicitly (read per call): a caller that mutates process.env at
+  // runtime (e.g. a test clearing git identity) must reach this child process.
+  return gitArgsAsync(args, { cwd, timeoutMs: timeout, env: process.env });
 }
 
 /** Identity a checkpoint commit falls back to; same one park.ts uses for its WIP commit. */
@@ -65,11 +63,11 @@ export const CHECKPOINT_FALLBACK_IDENTITY = { name: 'buildd', email: 'checkpoint
  * the checkpoint commit, and the deferral would lose the work it exists to save.
  * A configured identity, including GIT_AUTHOR_* / GIT_COMMITTER_* env, is kept.
  */
-export function identityFallbackArgs(cwd: string): string[] {
-  const missing = (v: 'GIT_AUTHOR_IDENT' | 'GIT_COMMITTER_IDENT') => {
-    try { git(cwd, ['var', v], 5_000); return false; } catch { return true; }
+export async function identityFallbackArgs(cwd: string): Promise<string[]> {
+  const missing = async (v: 'GIT_AUTHOR_IDENT' | 'GIT_COMMITTER_IDENT') => {
+    try { await git(cwd, ['var', v], 5_000); return false; } catch { return true; }
   };
-  if (!missing('GIT_AUTHOR_IDENT') && !missing('GIT_COMMITTER_IDENT')) return [];
+  if (!(await missing('GIT_AUTHOR_IDENT')) && !(await missing('GIT_COMMITTER_IDENT'))) return [];
   return ['-c', `user.name=${CHECKPOINT_FALLBACK_IDENTITY.name}`, '-c', `user.email=${CHECKPOINT_FALLBACK_IDENTITY.email}`];
 }
 
@@ -78,19 +76,19 @@ export function identityFallbackArgs(cwd: string): string[] {
  * and, when `push`, push the task branch so a deferred retry on any runner can
  * resume from it. Hooks are skipped: this is a save, not a ship.
  */
-export function writeCollisionCheckpoint(
+export async function writeCollisionCheckpoint(
   cwd: string,
   branch: string | undefined,
   collision: PathCollision,
   opts: { push: boolean },
-): CollisionCheckpoint {
+): Promise<CollisionCheckpoint> {
   const out: CollisionCheckpoint = { committed: false, pushed: false };
   try {
-    const dirty = git(cwd, ['status', '--porcelain=v1', '-z', '--untracked-files=all']).length > 0;
+    const dirty = (await git(cwd, ['status', '--porcelain=v1', '-z', '--untracked-files=all'])).length > 0;
     if (dirty) {
-      git(cwd, ['add', '-A']);
-      git(cwd, [
-        ...identityFallbackArgs(cwd),
+      await git(cwd, ['add', '-A']);
+      await git(cwd, [
+        ...(await identityFallbackArgs(cwd)),
         '-c', 'commit.gpgsign=false',
         'commit', '--no-verify', '-q', '-m',
         `chore(checkpoint): defer on path collision with task ${shortTaskId(collision.blockingTaskId)}\n\n` +
@@ -98,7 +96,7 @@ export function writeCollisionCheckpoint(
       ]);
       out.committed = true;
     }
-    out.sha = git(cwd, ['rev-parse', 'HEAD']).trim();
+    out.sha = (await git(cwd, ['rev-parse', 'HEAD'])).trim();
   } catch (err) {
     out.reason = `commit failed: ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`;
     return out;
@@ -112,7 +110,7 @@ export function writeCollisionCheckpoint(
     return out;
   }
   try {
-    git(cwd, ['push', '--no-verify', '-q', 'origin', `HEAD:refs/heads/${branch}`]);
+    await git(cwd, ['push', '--no-verify', '-q', 'origin', `HEAD:refs/heads/${branch}`]);
     out.pushed = true;
   } catch (err) {
     out.reason = `push failed: ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`;
@@ -150,7 +148,7 @@ export async function deferOnPathCollision(
   deps.addMilestone(worker, { type: 'status', label: `Path collision on ${c.path}: checkpointing and deferring`, ts: Date.now() } as Milestone);
 
   const checkpoint: CollisionCheckpoint = worker.worktreePath
-    ? writeCollisionCheckpoint(worker.worktreePath, worker.branch, c, { push: !worker.prUrl })
+    ? await writeCollisionCheckpoint(worker.worktreePath, worker.branch, c, { push: !worker.prUrl })
     : { committed: false, pushed: false, reason: 'no worktree' };
   if (worker.prUrl && !checkpoint.reason?.startsWith('commit failed')) checkpoint.reason = 'open PR: checkpoint kept local';
 
