@@ -221,6 +221,16 @@ export function __resetBwrapSupportForTest(): void {
   _bwrapProbeAt = null;
   _mountIsolationBwrapSupported = null;
 }
+// The pre-spawn model-auth check (host-seat.ts claudeModelAuthMissing).
+let _modelAuthPreflight: typeof claudeModelAuthMissing = claudeModelAuthMissing;
+/**
+ * Test-only: replace the pre-spawn model-auth check; null restores it. For
+ * harnesses that spawn a mocked SDK session with no model credential, where
+ * the real check would refuse every run on a machine without a Claude login.
+ */
+export function __setModelAuthPreflightForTest(fn: typeof claudeModelAuthMissing | null): void {
+  _modelAuthPreflight = fn ?? claudeModelAuthMissing;
+}
 /** ISO timestamp of the last bwrap probe, or null if not yet probed. */
 export function getBwrapProbeAt(): string | null { return _bwrapProbeAt; }
 export function isBwrapSupported(): boolean {
@@ -3834,7 +3844,7 @@ export class WorkerManager {
       // Anthropic with no login and no key would only die inside the run on
       // Claude's own auth error. Refuse it here, flagged so the server hands
       // the task back to the queue and the breaker does not read it by text.
-      const missingModelAuth = claudeModelAuthMissing({
+      const missingModelAuth = _modelAuthPreflight({
         isCodexTask,
         modelEnv,
         env: cleanEnv,
