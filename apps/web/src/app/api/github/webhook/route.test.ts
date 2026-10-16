@@ -4810,6 +4810,24 @@ describe('POST /api/github/webhook', () => {
       expect(mockCreateReviewerTask).not.toHaveBeenCalled();
     });
 
+    // Task 2ded4e88: the round budget is the PR's, not one reviewer task's. A request for changes at
+    // the cap escalated the PR; the push that follows is recorded and reviewed by nobody.
+    it('does not re-dispatch once the review budget is spent: the PR stays with a person', async () => {
+      withAgentReviewWorkspaceAndWorker();
+      mockReadPrReviewStatus.mockResolvedValue({
+        state: 'changes_requested', terminal: true, reviewTaskId: 'review-3', adoptedTaskId: 'task-1',
+        verdict: 'request-changes', confidence: 0.9, summary: 'still wrong', feedback: 'fix the null check',
+        escalationReason: null, iteration: 3, maxIterations: 3, reviewHeadSha: OLD_SHA,
+        prState: 'open', merged: false, mergeBlocked: null,
+      } as any);
+
+      const res = await POST(createWebhookRequest('pull_request', makeSynchronizePayload()));
+
+      expect(res.status).toBe(200);
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+      expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+    });
+
     it('does not re-dispatch on an approved verdict — the gate handles a stale approval, not this path', async () => {
       withAgentReviewWorkspaceAndWorker();
       mockReadPrReviewStatus.mockResolvedValue({
