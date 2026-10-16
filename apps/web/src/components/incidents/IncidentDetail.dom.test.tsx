@@ -16,7 +16,7 @@ mock.module('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(window.location.search),
 }));
 
-const { default: IncidentStatesFixture, INCIDENT_FIXTURE_CASES } = await import('@/app/app/dev/fixtures/IncidentStatesFixture');
+const { default: IncidentStatesFixture, IncidentDetailFixture, INCIDENT_FIXTURE_CASES } = await import('@/app/app/dev/fixtures/IncidentStatesFixture');
 
 let root: Root | null = null;
 let host: HTMLElement | null = null;
@@ -43,4 +43,18 @@ describe('incident page states', () => {
       }
     });
   }
+});
+
+describe('?state=incident-detail&case=<case> (scripts/qa/plans/incident-detail.json)', () => {
+  test('renders the case the URL names, inside the testid the plan layout-checks', () => {
+    window.history.replaceState(null, '', '/app/dev/fixtures?state=incident-detail&case=retry-exhausted');
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() => root!.render(<IncidentDetailFixture />));
+    const wrap = host.querySelector('[data-testid="incident-detail-fixture"]');
+    expect(wrap?.getAttribute('data-case')).toBe('retry-exhausted');
+    expect(wrap?.querySelector('[data-testid="incident-recovery"]')).not.toBeNull();
+    expect(wrap?.querySelector('[data-testid="incident-states-fixture"]')?.getAttribute('data-case')).toBe('retry-exhausted');
+  });
 });
