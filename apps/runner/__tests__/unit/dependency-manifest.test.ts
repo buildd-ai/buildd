@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, mkdirSync, writeFileSync, linkSync, chmodSync, readFileSync, existsSync, rmSync, symlinkSync, unlinkSync, utimesSync, renameSync } from 'fs';
+import { mkdtempSync, mkdirSync, readdirSync, writeFileSync, linkSync, chmodSync, readFileSync, existsSync, rmSync, symlinkSync, unlinkSync, utimesSync, renameSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { createHash } from 'crypto';
@@ -62,7 +62,7 @@ test('real pnpm frozen install regenerates a deleted planted bin shim', () => {
   expect(report.fellBack, JSON.stringify(report)).toBe(false);
   expect(existsSync(shim)).toBe(false);
   expect(existsSync(join(repoRoot, 'node_modules/warm-fixture-bin/cli.js'))).toBe(true);
-  const retainedFiles = spawnSync('find', [storeDir, '-type', 'f', '-printf', '%P\n'], { encoding: 'utf8' }).stdout.trim();
+  const retainedFiles = readdirSync(storeDir, { recursive: true, withFileTypes: true }).filter(e => e.isFile());
   expect(retainedFiles.length).toBeGreaterThan(0);
   const repaired = install(true);
   expect(repaired.status, repaired.stdout + repaired.stderr).toBe(0);
