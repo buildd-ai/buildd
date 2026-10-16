@@ -6426,6 +6426,16 @@ export async function handleBuilddAction(
           const startInfo = data.startAt ? `\nStarts at: ${new Date(data.startAt).toISOString()} (${data.startResolution || 'resolved'})` : '';
           const heldInfo = data.isHeld ? '\nStart mode: HELD — tasks not claimable; use action=arm to release' : '';
           const executorInfo = `\nExecutor: ${data.executor === 'local' ? LOCAL_EXECUTOR : 'runner — background runners claim its tasks'}`;
+          // Deliveries (workflow-kernel-library §6): a merged delivery is a fact beside the mission's state, not its verdict.
+          const deliveriesArr: any[] = Array.isArray(data.deliveries) ? data.deliveries : [];
+          const deliveryInfo = deliveriesArr.length > 0
+            ? `\nDeliveries: ${deliveriesArr.map((d: any) => `${d.delivery} ${d.state === 'merged' ? `merged${d.prNumber ? ` (#${d.prNumber})` : ''}` : `open on ${d.branch}${d.prNumber ? `, PR #${d.prNumber}` : ''}`}${Array.isArray(d.held) && d.held.length > 0 ? `, branch kept for ${d.held.map((n: number) => `#${n}`).join(', ')}` : ''}`).join('; ')}`
+              + (typeof data.scopeVersion === 'number' && data.scopeVersion > 1 ? ` · scope version ${data.scopeVersion}` : '')
+            : '';
+          const scopeArr: any[] = Array.isArray(data.scopeUpdates) ? data.scopeUpdates : [];
+          const scopeInfo = scopeArr.length > 0
+            ? `\nScope updates: ${scopeArr.slice(-3).map((u: any) => u.status === 'held' ? `task ${String(u.taskId ?? '').slice(0, 8)} on hold for a decision (${u.reason ?? 'unclear'})` : `version ${u.scopeVersion} from task ${String(u.taskId ?? '').slice(0, 8)}`).join('; ')}`
+            : '';
 
           // goalCriteria + autoVerify + last evaluation state
           const criteriaArr = Array.isArray(data.goalCriteria) ? data.goalCriteria : [];
@@ -6457,7 +6467,7 @@ export async function handleBuilddAction(
             }
           }
 
-          return text(`**${data.title}** [${data.status}]${data.blocked ? ' [BLOCKED]' : ''}${data.isHeld ? ' [HELD]' : ''}${data.executor === 'local' ? ' [LOCAL]' : ''}\nID: ${data.id}\nProgress: ${data.progress}% (${data.completedTasks}/${data.totalTasks})\n${description ? `Description: ${description}\n` : ''}${modeInfo}${heldInfo}${executorInfo}${concurrentInfo}${depInfo}${budgetInfo}${pacingInfo}${startInfo}${criteriaInfo}${taskList ? `\nLinked tasks:\n${taskList}` : '\nNo linked tasks.'}`);
+          return text(`**${data.title}** [${data.status}]${data.blocked ? ' [BLOCKED]' : ''}${data.isHeld ? ' [HELD]' : ''}${data.executor === 'local' ? ' [LOCAL]' : ''}\nID: ${data.id}\nProgress: ${data.progress}% (${data.completedTasks}/${data.totalTasks})\n${description ? `Description: ${description}\n` : ''}${modeInfo}${heldInfo}${executorInfo}${deliveryInfo}${scopeInfo}${concurrentInfo}${depInfo}${budgetInfo}${pacingInfo}${startInfo}${criteriaInfo}${taskList ? `\nLinked tasks:\n${taskList}` : '\nNo linked tasks.'}`);
         }
         case 'update': {
           // No UUID missionId: the mission is FOUND by title (missionId, else
