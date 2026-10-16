@@ -68,8 +68,10 @@ describe('buildPrListWhere', () => {
   // candidate for the open list, and a delivery-merged PR for the merged list.
   it('open: a kernel delivery still live keeps the PR a candidate whatever the worker row says', () => {
     const q = render({ workspaceIds: ws, state: 'open' });
-    expect(q.sql).toMatch(/or \(exists \(select 1 from workflow_deliveries kd where kd\.owner_task_id = "workers"\."task_id" and kd\.pr_number = "workers"\."pr_number" and kd\.authority = 'kernel'/i);
+    expect(q.sql).toMatch(/or \(exists \(select 1 from workflow_deliveries kd where kd\.owner_task_id = "workers"\."task_id" and kd\.pr_number = "workers"\."pr_number" and .* and kd\.authority = 'kernel'/i);
     expect(q.sql).toContain("kd.state NOT IN ('MERGED', 'SUPERSEDED', 'ABANDONED', 'CLOSED_UNMERGED', 'FAILED')");
+    // Same repo only: a same-numbered PR in another repo is not this delivery.
+    expect(q.sql).toContain(`lower("workers"."pr_url") LIKE '%github.com/' || lower(kd.repo_full_name) || '/pull/%'`);
   });
   it('merged: a delivery merged in the window is a candidate even before the worker row is stamped', () => {
     const q = render({ workspaceIds: ws, state: 'merged', since: new Date('2026-09-01T00:00:00Z') });
@@ -175,6 +177,19 @@ describe('Slice F: a kernel-owned PR says what its delivery says', () => {
     expect(m.get('fix')?.status).toBe('pr_open');
     expect(m.get('done')?.mergedAt?.toISOString()).toBe('2026-10-01T00:00:00.000Z');
     expect(m.has('none')).toBe(false);
+  });
+
+  // §7 review: a live delivery with no display state yet reads open, so a stale
+  // merged worker row cannot drop it from the open list.
+  it('kernelPrStatuses: a live delivery with a null prState is pr_open; a settled one is not invented', () => {
+    const m = kernelPrStatuses(new Map([
+      ['live', { prNumber: 9, prState: null, mergedAt: null, state: 'AWAITING_REVIEW' as const }],
+      ['gone', { prNumber: 10, prState: null, mergedAt: null, state: 'CLOSED_UNMERGED' as const }],
+    ]));
+    expect(m.get('live')).toEqual({ prNumber: 9, status: 'pr_open', mergedAt: null });
+    expect(m.has('gone')).toBe(false);
+    const shaped = shapePrRows([row({ taskId: 'live', prNumber: 9, status: 'merged', mergedAt: new Date('2026-10-01T00:00:00Z') })], 'open', m);
+    expect(shaped.map(p => p.status)).toEqual(['pr_open']);
   });
 });
 

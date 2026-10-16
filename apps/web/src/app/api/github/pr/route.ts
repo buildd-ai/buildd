@@ -2653,7 +2653,8 @@ export async function GET(req: NextRequest) {
     // kernel-owned PR the record is the delivery (Slice F, §13.10), never the
     // worker columns; a legacy PR keeps the fact cache.
     const kernelView = worker.taskId
-      ? (await getDeliveryViewsForTasks([worker.taskId])).get(worker.taskId)
+      // Findings too: get_pr prints the open-finding count (§7).
+      ? (await getDeliveryViewsForTasks([worker.taskId], undefined, undefined, { withFindings: true })).get(worker.taskId)
       : undefined;
     const record = prRecord({
       delivery: kernelView && kernelView.prNumber === prNumber ? kernelView : null,

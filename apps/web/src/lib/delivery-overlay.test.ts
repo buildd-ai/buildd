@@ -23,6 +23,7 @@ describe('workerLifecycleOf', () => {
     expect(workerLifecycleOf(V({ state: 'REPAIRING', stateReason: 'conflict', prState: 'conflict' }))).toEqual({ mergedAt: null, prLifecycleStatus: 'conflict' });
     expect(workerLifecycleOf(V({ state: 'MERGED', prState: 'merged', mergedAt: MERGED_AT.toISOString() }))).toEqual({ mergedAt: MERGED_AT, prLifecycleStatus: 'merged' });
     expect(workerLifecycleOf(V({ state: 'CLOSED_UNMERGED', prState: 'closed' }))).toEqual({ mergedAt: null, prLifecycleStatus: 'closed' });
+    expect(workerLifecycleOf(V({ state: 'FAILED', prState: null }))).toEqual({ mergedAt: null, prLifecycleStatus: 'pr_open' });
   });
 });
 
@@ -47,6 +48,16 @@ describe('overlayDeliveryLifecycle', () => {
     expect(out[0]).toBe(legacy);
     expect(out[1]).toBe(attempt);
     expect(out[2]!.workers[0]).toMatchObject({ mergedAt: MERGED_AT, prLifecycleStatus: 'merged' });
+  });
+
+  test('a same-numbered PR in another repo does not take the delivery', () => {
+    const other = task([{ id: 'w1', prNumber: 7, prUrl: 'https://github.com/acme/other/pull/7', mergedAt: MERGED_AT, prLifecycleStatus: 'merged' }]);
+    const [t] = overlayDeliveryLifecycle([other], new Map([['t1', V()]]));
+    expect(t).toBe(other);
+    expect(deliveryDisagreements([other], new Map([['t1', V()]]))).toEqual([]);
+    // Same repo, different case in the URL: still the delivery's.
+    const same = task([{ id: 'w1', prNumber: 7, prUrl: 'https://github.com/Acme/App/pull/7', mergedAt: MERGED_AT, prLifecycleStatus: 'merged' }]);
+    expect(overlayDeliveryLifecycle([same], new Map([['t1', V()]]))[0]!.workers[0]).toMatchObject({ mergedAt: null });
   });
 
   test('never mutates its input', () => {
@@ -81,5 +92,6 @@ describe('prLifecycleFor (the task page)', () => {
     expect(prLifecycleFor(w, V({ ownerTaskId: 'other' }), 't1')).toEqual({ mergedAt: MERGED_AT, prLifecycleStatus: 'merged' });
     expect(prLifecycleFor({ ...w, prNumber: 8 }, V(), 't1')).toEqual({ mergedAt: MERGED_AT, prLifecycleStatus: 'merged' });
     expect(prLifecycleFor(null, V(), 't1')).toEqual({ mergedAt: null, prLifecycleStatus: null });
+    expect(prLifecycleFor({ ...w, prUrl: 'https://github.com/acme/other/pull/7' }, V(), 't1')).toEqual({ mergedAt: MERGED_AT, prLifecycleStatus: 'merged' });
   });
 });

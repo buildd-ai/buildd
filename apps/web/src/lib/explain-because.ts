@@ -662,10 +662,29 @@ export function deliveryTransitionLink(
 
 const ROW_WORDS: Record<DeliveryDisagreement['worker'], string> = { merged: 'merged', open: 'still open', closed: 'closed' };
 
+/** Where the PR stands, in words a person reads (never the state's name). */
+const PR_STATE_WORDS: Record<DeliveryDisagreement['delivery'], string> = {
+  WORKING: 'still being built',
+  AWAITING_PUSH: 'waiting for a push to reach GitHub',
+  AWAITING_REVIEW: 'in review',
+  CHANGES_REQUESTED: 'waiting on requested changes',
+  FIXING: 'being fixed after review',
+  REPAIRING: 'being repaired',
+  BLOCKED_ON_TRUNK: 'held by a red base branch',
+  APPROVED: 'approved and not yet merged',
+  LANDING: 'merging',
+  ESCALATED: 'waiting on a person',
+  MERGED: 'merged',
+  CLOSED_UNMERGED: 'closed without merging',
+  SUPERSEDED: 'shipped in another PR',
+  ABANDONED: 'abandoned',
+  FAILED: 'stopped after its attempts failed',
+};
+
 /**
  * workflow-kernel-library.md §7 / AC-26: a worker row whose merge columns say
- * something other than the delivery. The delivery is the record, so the answer
- * reads it; the row is named so the disagreement is visible, never hidden.
+ * something other than the PR's review state (its delivery). The answer
+ * follows the review state; the row is named so the disagreement is visible.
  */
 export function deliveryDisagreementLink(d: DeliveryDisagreement, subject: BecauseSubjectRefs): Link {
   const refs: ExplainRefs = {
@@ -675,7 +694,7 @@ export function deliveryDisagreementLink(d: DeliveryDisagreement, subject: Becau
     prNumber: d.prNumber,
   };
   return link(
-    `PR #${d.prNumber}: the worker record says ${ROW_WORDS[d.worker]}, but the delivery says ${d.delivery} (${d.headline}). This answer follows the delivery.`,
+    `PR #${d.prNumber} is ${PR_STATE_WORDS[d.delivery]} (${d.headline}), but the worker's own record says ${ROW_WORDS[d.worker]}. This answer follows the PR's review state.`,
     'DeliveryView.state vs workers.mergedAt', refs);
 }
 

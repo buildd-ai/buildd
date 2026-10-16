@@ -21,7 +21,20 @@ const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown
 
 type J = Record<string, unknown>;
 
-export function deliveryViewsSql(taskIds: string[]): SQL {
+export interface DeliveryViewsOptions {
+  /**
+   * Also read each delivery's review findings. Off by default: the aggregate
+   * has no cap, and only the readers that print findings ask for it (get_pr,
+   * the task page; the activity comment loads its own view). Without it
+   * `findings` is empty and `openFindings` 0, as before §7.
+   */
+  withFindings?: boolean;
+}
+
+export function deliveryViewsSql(taskIds: string[], opts: DeliveryViewsOptions = {}): SQL {
+  const findings = opts.withFindings
+    ? sql`COALESCE((SELECT jsonb_agg(to_jsonb(f.*) ORDER BY f.origin_round, f.ordinal, f.created_at) FROM workflow_findings f WHERE f.delivery_id = d.id), '[]'::jsonb)`
+    : sql`'[]'::jsonb`;
   return sql`-- workflow:delivery_views
 WITH ids AS (SELECT DISTINCT x::uuid AS id FROM jsonb_array_elements_text(${JSON.stringify(taskIds)}::jsonb) x),
 dl AS (
@@ -33,7 +46,7 @@ dl AS (
 SELECT to_jsonb(d.*) AS delivery,
   COALESCE((SELECT jsonb_agg(to_jsonb(r.*) ORDER BY r.round) FROM workflow_review_rounds r WHERE r.delivery_id = d.id), '[]'::jsonb) AS rounds,
   COALESCE((SELECT jsonb_agg(to_jsonb(a.*) ORDER BY a.family, a.mode, a.attempt_no) FROM workflow_attempts a WHERE a.delivery_id = d.id), '[]'::jsonb) AS attempts,
-  COALESCE((SELECT jsonb_agg(to_jsonb(f.*) ORDER BY f.origin_round, f.ordinal, f.created_at) FROM workflow_findings f WHERE f.delivery_id = d.id), '[]'::jsonb) AS findings,
+  ${findings} AS findings,
   (SELECT jsonb_build_object('command', tr.command, 'from_state', tr.from_state, 'to_state', tr.to_state, 'evidence', tr.evidence, 'created_at', tr.created_at)
      FROM workflow_transitions tr WHERE tr.delivery_id = d.id ORDER BY tr.to_version DESC LIMIT 1) AS last_transition,
   COALESCE((SELECT jsonb_agg(jsonb_build_object('id', t.id, 'role', COALESCE(t.delivery_role, CASE WHEN t.id = d.owner_task_id THEN 'owner' END), 'status', t.status, 'created_at', t.created_at) ORDER BY t.created_at)
@@ -67,8 +80,9 @@ FROM dl d`;
  * name `kd`. `list_prs` keeps such a PR a candidate whatever its worker row
  * says (workflow-kernel-library.md §7). A predicate; reads only.
  */
-export function kernelDeliveryForWorkerSql(taskIdCol: SQLWrapper, prNumberCol: SQLWrapper, where: SQL): SQL {
-  return sql`EXISTS (SELECT 1 FROM workflow_deliveries kd WHERE kd.owner_task_id = ${taskIdCol} AND kd.pr_number = ${prNumberCol} AND kd.authority = 'kernel' AND ${workspaceKernelOnSql(sql`kd.workspace_id`)} AND ${where})`;
+export function kernelDeliveryForWorkerSql(taskIdCol: SQLWrapper, prNumberCol: SQLWrapper, prUrlCol: SQLWrapper, where: SQL): SQL {
+  // Same repo too: a PR number alone does not name a PR (a same-numbered PR in another repo is not this delivery).
+  return sql`EXISTS (SELECT 1 FROM workflow_deliveries kd WHERE kd.owner_task_id = ${taskIdCol} AND kd.pr_number = ${prNumberCol} AND (kd.repo_full_name IS NULL OR lower(${prUrlCol}) LIKE '%github.com/' || lower(kd.repo_full_name) || '/pull/%') AND kd.authority = 'kernel' AND ${workspaceKernelOnSql(sql`kd.workspace_id`)} AND ${where})`;
 }
 
 const iso = (v: unknown): string => (v == null ? '' : new Date(String(v)).toISOString());
@@ -163,12 +177,12 @@ export function withMergeContradiction(v: DeliveryView, c: J | null | undefined)
  * to a kernel-owned delivery. Never throws: a projection read failing must
  * degrade the surface to its legacy projection, not break the page.
  */
-export async function getDeliveryViewsForTasks(taskIds: string[], exec: Exec = dbExec, rule?: ApprovedMergeRule): Promise<Map<string, DeliveryView>> {
+export async function getDeliveryViewsForTasks(taskIds: string[], exec: Exec = dbExec, rule?: ApprovedMergeRule, opts: DeliveryViewsOptions = {}): Promise<Map<string, DeliveryView>> {
   const out = new Map<string, DeliveryView>();
   const ids = [...new Set(taskIds.filter(Boolean))];
   if (ids.length === 0) return out;
   try {
-    const res = await exec(deliveryViewsSql(ids));
+    const res = await exec(deliveryViewsSql(ids, opts));
     const want = new Set(ids);
     const rows = (res.rows ?? []) as J[];
     const needsPerson = rule ?? (rows.some(r => (r.delivery as J | null)?.state === 'APPROVED') ? await approvedMergeRule() : PERSON_MERGES);

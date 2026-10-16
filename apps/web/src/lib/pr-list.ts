@@ -66,7 +66,7 @@ export function buildPrListWhere(opts: { workspaceIds: string[]; state: PrListSt
 
 /** The row's PR has a kernel-owned delivery matching `where` (the kernel's reader owns the SQL). */
 function kernelDeliveryExists(where: SQL): SQL {
-  return kernelDeliveryForWorkerSql(workers.taskId, workers.prNumber, where);
+  return kernelDeliveryForWorkerSql(workers.taskId, workers.prNumber, workers.prUrl, where);
 }
 
 /** What a kernel-owned delivery says about its PR, in the list's own words. */
@@ -81,10 +81,18 @@ export interface KernelPr {
  * or attempt) of a kernel-owned delivery. A legacy or PR-less task is absent
  * and its rows keep the fact-cache columns.
  */
-export function kernelPrStatuses(views: ReadonlyMap<string, Pick<DeliveryView, 'prNumber' | 'prState' | 'mergedAt'>>): Map<string, KernelPr> {
+const SETTLED_DELIVERY = new Set(['MERGED', 'SUPERSEDED', 'ABANDONED', 'CLOSED_UNMERGED', 'FAILED']);
+
+export function kernelPrStatuses(views: ReadonlyMap<string, Pick<DeliveryView, 'prNumber' | 'prState' | 'mergedAt'> & { state?: DeliveryView['state'] }>): Map<string, KernelPr> {
   const out = new Map<string, KernelPr>();
   for (const [taskId, v] of views) {
-    if (v.prNumber == null || v.prState == null) continue;
+    if (v.prNumber == null) continue;
+    if (v.prState == null) {
+      // §7: a live delivery with no display state yet is an open PR. Skipping it
+      // would let a stale merged worker row drop a PR the SQL kept as live.
+      if (v.state && !SETTLED_DELIVERY.has(v.state)) out.set(taskId, { prNumber: v.prNumber, status: 'pr_open', mergedAt: null });
+      continue;
+    }
     out.set(taskId, { prNumber: v.prNumber, status: prListStatus(v.prState), mergedAt: v.mergedAt ? new Date(v.mergedAt) : null });
   }
   return out;

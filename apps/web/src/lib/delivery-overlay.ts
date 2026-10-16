@@ -16,11 +16,12 @@
 import { prListStatus } from '@/lib/pr-presentation';
 import type { DeliveryView } from './workflow/projections';
 
-type LifecycleView = Pick<DeliveryView, 'ownerTaskId' | 'prNumber' | 'state' | 'prState' | 'mergedAt' | 'headline'>;
+type LifecycleView = Pick<DeliveryView, 'ownerTaskId' | 'prNumber' | 'state' | 'prState' | 'mergedAt' | 'headline'> & Partial<Pick<DeliveryView, 'repoFullName'>>;
 
 interface WorkerLike {
   id?: string;
   prNumber?: number | null;
+  prUrl?: string | null;
   mergedAt?: unknown;
   prLifecycleStatus?: string | null;
 }
@@ -38,13 +39,25 @@ const CLOSED = new Set(['SUPERSEDED', 'ABANDONED', 'CLOSED_UNMERGED']);
 export function workerLifecycleOf(v: Pick<DeliveryView, 'state' | 'prState' | 'mergedAt'>): { mergedAt: Date | null; prLifecycleStatus: string | null } {
   if (SHIPPED.has(v.state)) return { mergedAt: v.mergedAt ? new Date(v.mergedAt) : null, prLifecycleStatus: 'merged' };
   if (CLOSED.has(v.state)) return { mergedAt: null, prLifecycleStatus: 'closed' };
+  // Any other state is a PR still open on GitHub. That includes FAILED: the delivery
+  // gave up, but nothing closed the PR, and with a null prState (no PR state read
+  // on its head) the honest column word is pr_open, never merged or closed.
   return { mergedAt: null, prLifecycleStatus: v.prState ? (prListStatus(v.prState) ?? 'pr_open') : 'pr_open' };
+}
+
+/** `owner/repo`, lower-cased, from a GitHub PR URL; null when it is not one. */
+function repoOfPrUrl(url: string | null | undefined): string | null {
+  const m = url ? /github\.com\/([^/]+\/[^/]+)\/pull\/\d+/i.exec(url) : null;
+  return m ? m[1]!.toLowerCase() : null;
 }
 
 /** The owner's delivery, when it is bound to this worker's PR. */
 function deliveryFor(t: TaskLike, w: WorkerLike, views: ReadonlyMap<string, LifecycleView>): LifecycleView | null {
   const v = views.get(t.id);
   if (!v || v.ownerTaskId !== t.id || v.prNumber == null || w.prNumber !== v.prNumber) return null;
+  // A PR number alone does not name a PR: a same-numbered PR in another repo is not this delivery.
+  const repo = repoOfPrUrl(w.prUrl);
+  if (repo && v.repoFullName && repo !== v.repoFullName.toLowerCase()) return null;
   return v;
 }
 

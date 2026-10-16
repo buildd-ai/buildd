@@ -6186,7 +6186,7 @@ describe('GET /api/github/pr', () => {
     mockGithubApi.mockResolvedValueOnce([]);
 
     const data = await (await GET(createGetRequest('w-k', 778))).json();
-    expect(mockGetDeliveryViewsForTasks).toHaveBeenCalledWith(['task-k']);
+    expect(mockGetDeliveryViewsForTasks.mock.calls.at(-1)?.[0]).toEqual(['task-k']);
     // The column's 'merged' would have read merged; the delivery says superseded, so closed-unmerged.
     expect(data.pr.state).toBe('closed_unmerged');
     expect(data.pr.supersededByPrNumber).toBe(790);
@@ -6219,6 +6219,8 @@ describe('GET /api/github/pr', () => {
     mockGithubApi.mockResolvedValueOnce([]); // no GitHub reviews: buildd's reviewer records rounds
 
     const data = await (await GET(createGetRequest('w-r', 779))).json();
+    // get_pr is one of the three readers that asks for findings (§7 review).
+    expect(mockGetDeliveryViewsForTasks.mock.calls.at(-1)?.[3]).toEqual({ withFindings: true });
     expect(data.pr.state).toBe('open');
     expect(data.reviews).toMatchObject({ approved: 0, changesRequested: 0 });
     expect(data.delivery).toMatchObject({

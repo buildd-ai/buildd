@@ -164,8 +164,9 @@ describe('AC-26: a worker row that says merged, a delivery that says in review',
     const link = answer.because.find(b => b.derivedFrom === 'DeliveryView.state vs workers.mergedAt');
     expect(link).toBeDefined();
     expect(link!.claim).toContain('PR #7');
-    expect(link!.claim).toMatch(/worker record says merged/i);
-    expect(link!.claim).toMatch(/delivery says AWAITING_REVIEW/);
+    // Plain words: never the raw state name.
+    expect(link!.claim).toBe("PR #7 is in review (Review queued), but the worker's own record says merged. This answer follows the PR's review state.");
+    expect(link!.claim).not.toMatch(/AWAITING_REVIEW|delivery/);
     expect(link!.refs).toMatchObject({ taskId: 'task-1', prNumber: 7 });
   });
 

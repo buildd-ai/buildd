@@ -30,7 +30,8 @@ describe('deliveryViewsSql', () => {
 
 describe('kernelDeliveryForWorkerSql (list_prs, §7)', () => {
   test('a kernel-owned delivery of the row\'s owner task and PR, in a workspace with the kernel on, matching the caller\'s condition', () => {
-    const q = dialect.sqlToQuery(kernelDeliveryForWorkerSql(sql`w.task_id`, sql`w.pr_number`, sql`kd.state = ${'MERGED'}`));
+    const q = dialect.sqlToQuery(kernelDeliveryForWorkerSql(sql`w.task_id`, sql`w.pr_number`, sql`w.pr_url`, sql`kd.state = ${'MERGED'}`));
+    expect(q.sql).toContain("lower(w.pr_url) LIKE '%github.com/' || lower(kd.repo_full_name) || '/pull/%'");
     expect(q.sql).toContain('EXISTS (SELECT 1 FROM workflow_deliveries kd WHERE kd.owner_task_id = w.task_id AND kd.pr_number = w.pr_number');
     expect(q.sql).toContain("kd.authority = 'kernel'");
     expect(q.sql).toContain('kw.id = kd.workspace_id');
@@ -89,12 +90,24 @@ describe('rowToDeliveryView', () => {
     expect(v.findings?.map(f => f.id)).toEqual(['r1:0']);
     expect(v.openFindings).toBe(1);
     expect(v.ledger[0]!.pushedHeadSha).toBe('H1');
-    expect(dialect.sqlToQuery(deliveryViewsSql(['t1'])).sql).toContain('FROM workflow_findings f WHERE f.delivery_id = d.id');
+    // Findings are opt-in: only get_pr, the task page and the activity comment read them.
+    expect(dialect.sqlToQuery(deliveryViewsSql(['t1'], { withFindings: true })).sql).toContain('FROM workflow_findings f WHERE f.delivery_id = d.id');
+    const lean = dialect.sqlToQuery(deliveryViewsSql(['t1'])).sql;
+    expect(lean).not.toContain('workflow_findings');
+    expect(lean).toContain("'[]'::jsonb AS findings");
   });
   test('maps a row to a platform-owned view with its attempts', () => {
     const v = rowToDeliveryView(row, NOW)!;
     expect(v).toMatchObject({ state: 'AWAITING_PUSH', owner: 'platform', needsYou: false });
     expect(v.currentAttempt?.taskId).toBe('f1');
+  });
+  test('getDeliveryViewsForTasks reads findings only when asked', async () => {
+    const seen: string[] = [];
+    const exec = async (q: Parameters<typeof dialect.sqlToQuery>[0]) => { seen.push(dialect.sqlToQuery(q).sql); return { rows: [] }; };
+    await getDeliveryViewsForTasks(['t1'], exec as never);
+    await getDeliveryViewsForTasks(['t1'], exec as never, undefined, { withFindings: true });
+    expect(seen[0]).not.toContain('workflow_findings');
+    expect(seen[1]).toContain('workflow_findings');
   });
   test('getDeliveryViewsForTasks keys the view by every requested task of the delivery, and degrades to empty on error', async () => {
     const map = await getDeliveryViewsForTasks(['t1', 'f1', 'x'], async () => ({ rows: [row] }));
