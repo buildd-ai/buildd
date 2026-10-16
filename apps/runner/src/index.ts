@@ -11,7 +11,9 @@ import { BuilddClient, getLastServerContactAt } from './buildd';
 import { WorkerManager } from './workers';
 import { toPublicEvent, toPublicWorker, toPublicWorkers } from './public-worker';
 import { credentialBroker } from './broker';
-import { createWorkspaceResolver, parseProjectRoots, normalizeGitUrl, getGitRemote } from './workspace';
+import { createWorkspaceResolver, parseProjectRoots, normalizeGitUrl, getGitRemoteAsync } from './workspace';
+import { gitShellAsync } from './git-async';
+import { toTopWorkerSummaries } from './top-worker-summary';
 import { Outbox, createReplayHandler } from './outbox';
 import { parseOnceArgs, runOnceFromCli, ONCE_USAGE, EXIT_USAGE } from './run-once';
 import { classifyCliArgs, RUNNER_USAGE, EXIT_CLI_USAGE } from './cli-args';
@@ -508,7 +510,7 @@ function getRepoNameFromUrl(normalizedUrl: string | null): string | null {
 
 let reposLoadedFromCache = false;
 
-function getRepos(forceRescan = false): CachedRepo[] {
+async function getRepos(forceRescan = false): Promise<CachedRepo[]> {
   if (!forceRescan && cachedRepos) {
     return cachedRepos;
   }
@@ -522,9 +524,9 @@ function getRepos(forceRescan = false): CachedRepo[] {
     }
   }
 
-  // Scan fresh
+  // Scan fresh (async: the scan runs git in every directory under the roots)
   console.log('Scanning for git repositories...');
-  const scanned = resolver.scanGitRepos();
+  const scanned = await resolver.scanGitRepos({ maxAgeMs: forceRescan ? 0 : undefined });
   cachedRepos = scanned;
   reposLoadedFromCache = false;
   saveReposCache(scanned);
@@ -1900,6 +1902,11 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
     }
 
     if (path === '/api/workers' && req.method === 'GET') {
+      // `buildd top` asks for what it draws (top-worker-summary.ts); the full
+      // list stays the default for the local UI and scripts.
+      if (url.searchParams.get('view') === 'top') {
+        return Response.json({ workers: toTopWorkerSummaries(workerManager!.getWorkers()) }, { headers: corsHeaders });
+      }
       return Response.json({ workers: toPublicWorkers(workerManager!.getWorkers()) }, { headers: corsHeaders });
     }
 
@@ -2273,13 +2280,13 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
 
     // Rescan local repos
     if (path === '/api/rescan' && req.method === 'POST') {
-      const repos = getRepos(true); // Force rescan
+      const repos = await getRepos(true); // Force rescan
       return Response.json({ ok: true, count: repos.length }, { headers: corsHeaders });
     }
 
     // Combined workspaces endpoint - merges server workspaces with local repos
     if (path === '/api/combined-workspaces' && req.method === 'GET') {
-      const localRepos = getRepos(); // Use cached
+      const localRepos = await getRepos(); // Use cached
       let serverWorkspaces: any[] = [];
       let serverError: string | null = null;
       if (buildd) {
@@ -2402,11 +2409,9 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
       const clonePath = targetPath || `${config.projectRoots[0]}/${cloneUrl.split('/').pop()?.replace('.git', '')}`;
 
       try {
-        const { execSync } = require('child_process');
-
         // Check if the target directory already exists
         if (existsSync(clonePath)) {
-          const existingRemote = getGitRemote(clonePath);
+          const existingRemote = await getGitRemoteAsync(clonePath);
           if (existingRemote) {
             // Compare normalized URLs to see if it's the same repo
             const normalizedExisting = normalizeGitUrl(existingRemote);
@@ -2414,7 +2419,7 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
             if (normalizedExisting && normalizedRequested && normalizedExisting === normalizedRequested) {
               // Same repo already exists - invalidate caches so it's discoverable
               cachedRepos = null;
-              resolver.scanGitRepos();
+              await resolver.scanGitRepos({ maxAgeMs: 0 });
               return Response.json({ ok: true, path: clonePath, alreadyExists: true, message: 'Repository already exists at path' }, { headers: corsHeaders });
             } else {
               return Response.json({
@@ -2428,11 +2433,13 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
           }
         }
 
-        execSync(`git clone ${cloneUrl} "${clonePath}"`, { encoding: 'utf-8', timeout: 120000 });
+        // Async: a clone takes minutes at worst, and a sync one froze the runner.
+        // Same command line (through /bin/sh) and timeout as the execSync it replaces.
+        await gitShellAsync(`git clone ${cloneUrl} "${clonePath}"`, { cwd: process.cwd(), timeoutMs: 120000 });
 
         // Invalidate caches so the new repo is immediately discoverable
         cachedRepos = null;
-        resolver.scanGitRepos();
+        await resolver.scanGitRepos({ maxAgeMs: 0 });
 
         return Response.json({ ok: true, path: clonePath }, { headers: corsHeaders });
       } catch (err: any) {
@@ -2442,7 +2449,7 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
 
     // Discovered repos with server matching
     if (path === '/api/discovered-repos' && req.method === 'GET') {
-      const repos = getRepos(); // Use cached
+      const repos = await getRepos(); // Use cached
       if (!buildd) {
         // No server connection - return all local repos as unmatched
         return Response.json({
@@ -2484,7 +2491,7 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
 
     // Legacy local repos endpoint
     if (path === '/api/local-repos' && req.method === 'GET') {
-      const repos = getRepos(); // Use cached
+      const repos = await getRepos(); // Use cached
       return Response.json({ repos }, { headers: corsHeaders });
     }
 
@@ -2502,7 +2509,7 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
       }
 
       // Get git remote for this repo
-      const repos = resolver.scanGitRepos();
+      const repos = await resolver.scanGitRepos();
       const repo = repos.find(r => r.path === repoPath);
 
       if (!repo || !repo.remoteUrl) {
@@ -2669,7 +2676,7 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
         projectRoots: resolver.getProjectRoots(),
         directories: resolver.listLocalDirectories(),
         pathOverrides: resolver.getPathOverrides(),
-        gitRepos: resolver.scanGitRepos(),
+        gitRepos: await resolver.scanGitRepos({ maxAgeMs: 0 }),
       }, { headers: corsHeaders });
     }
 
@@ -2679,17 +2686,20 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
       if (!name) {
         return Response.json({ error: 'name is required' }, { status: 400, headers: corsHeaders });
       }
-      const debug = resolver.debugResolve({ id: id || '', name, repo });
+      const debug = await resolver.debugResolve({ id: id || '', name, repo });
       return Response.json(debug, { headers: corsHeaders });
     }
 
     if (path === '/api/debug/resolve-all' && req.method === 'GET') {
       // Fetch all workspaces from API and try to resolve each one
       const workspaces = buildd ? await buildd.listWorkspaces() : [];
-      const results = workspaces.map((ws: any) => ({
-        workspace: { id: ws.id, name: ws.name, repo: ws.repo },
-        ...resolver.debugResolve({ id: ws.id, name: ws.name, repo: ws.repo }),
-      }));
+      const results = [];
+      for (const ws of workspaces as any[]) {
+        results.push({
+          workspace: { id: ws.id, name: ws.name, repo: ws.repo },
+          ...(await resolver.debugResolve({ id: ws.id, name: ws.name, repo: ws.repo })),
+        });
+      }
       return Response.json({
         projectRoots: config.projectRoots,
         localDirectories: resolver.listLocalDirectories(),
@@ -2784,6 +2794,9 @@ socketHandler = (req) => handleLocalRequest(req, { remoteAddr: null, viaSocket: 
 
 const localUrl = `http://localhost:${PORT}`;
 
+// Repos for the banner count: the disk cache, or an async scan when there is none.
+const repos = await getRepos();
+
 // ── Startup banner ──────────────────────────────────────────────────────────
 
 // Colours come from the shared terminal palette (terminal-palette.ts), themed
@@ -2792,7 +2805,6 @@ const localUrl = `http://localhost:${PORT}`;
 // stopped by the shell for touching the TTY. Values are the terminal's own
 // foreground (R-17). NO_COLOR or a non-TTY drops every colour.
 const PAL = bannerPalette();
-const repos = getRepos(); // Use cached, will scan only if no cache
 for (const line of renderBanner({
   version: PKG_VERSION,
   commit: updateState.currentCommit ? updateState.currentCommit.slice(0, 7) : '',
