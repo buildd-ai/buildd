@@ -127,6 +127,16 @@ describe('classifyRunnerQueueRow', () => {
     expect(r.task.holdUntil).toBe('2026-03-11T00:00:00.000Z');
   });
 
+  it('a start time says what set it: retries after failures, a usage-limit reset, a credential probe, else a set time', () => {
+    const base = { g_startAt: false, startAt: '2026-03-11T00:00:00Z' };
+    const cause = (over: Record<string, unknown>) => classifyRunnerQueueRow(row({ ...base, ...over })).task.holdCause;
+    expect(cause({ ctxInfraRetryCount: '2' })).toBe('retry_after_failures');
+    expect(cause({ ctxBudgetExhausted: 'true' })).toBe('usage_limit_reset');
+    expect(cause({ ctxCredentialHold: true, ctxInfraRetryCount: '3' })).toBe('credential_probe');
+    expect(cause({})).toBe('scheduled');
+    expect(classifyRunnerQueueRow(row({})).task.holdCause).toBeNull();
+  });
+
   it('a workspace pause names when it resumes', () => {
     const r = classifyRunnerQueueRow(row({ g_workspacePaused: false, workspacePausedUntil: new Date('2026-03-10T18:00:00Z') }));
     expect(r.task.holds).toEqual(['workspace_paused']);
