@@ -8,6 +8,13 @@ import { BuilddClient } from './buildd';
 import type { Outbox } from './outbox';
 import { isServerRefusal, type ServerRefusalError } from './server-refusal';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
+
+/**
+ * The claim's freshness bar for the repo-scan snapshot (workspace.ts): a repo
+ * cloned by hand a minute ago is still found. Local, not imported: many unit
+ * tests stub ./workspace with only the resolver factory.
+ */
+const CLAIM_REPO_SCAN_MAX_AGE_MS = 60 * 1000;
 import { branchOfRemoteRef, cloneThrottledRecently, ensureRemoteBranch, isCloudExecutor } from './git-clone';
 import { DepsJob, createDepsGateHook, depsPrelude, DEPS_GATE_HOOK_TIMEOUT_S, type DepsGateStats } from './deps-gate';
 import { captureDependencyManifest, DEPENDENCY_MANIFEST_FILENAME } from './dependency-manifest';
@@ -955,6 +962,7 @@ export class WorkerManager {
     this.knowledgeIngestPoller = createKnowledgeIngestPoller({
       builddServer: config.builddServer,
       apiKey: config.apiKey,
+      // Async, TTL-cached (workspace.ts REPO_SCAN_TTL_MS): an idle poll no longer rescans every repo.
       scanRepos: () => this.resolver.scanGitRepos(),
     });
 
@@ -963,7 +971,9 @@ export class WorkerManager {
     this.scoutHostPoller = createScoutHostPoller({
       builddServer: config.builddServer,
       apiKey: config.apiKey,
-      scanRepos: () => this.resolver.scanGitRepos(),
+      // The heartbeat's Scout advert is sync and runs every beat: serve the last
+      // scan (refreshed in the background past its TTL), never a fresh one.
+      scanRepos: () => this.resolver.cachedGitRepos?.() ?? [],
       bwrapSupported: isMountIsolationBwrapSupported,
       // Busy = any worker that holds a slot, including one waiting for input.
       isBusy: () => Array.from(this.workers.values()).some(
@@ -1828,6 +1838,11 @@ export class WorkerManager {
   > {
     const task: BuilddTask | undefined = claimedWorker.task || fallbackTask;
     if (!task) return { kind: 'no_task' };
+
+    // resolve() is sync and matches against the repo-scan snapshot: bring that
+    // up to date here, async, so the claim never scans synchronously (one git
+    // child per directory under the project roots) on the event loop.
+    try { await this.resolver.warmGitCache?.({ maxAgeMs: CLAIM_REPO_SCAN_MAX_AGE_MS }); } catch { /* resolve() falls back */ }
 
     const workspacePath = this.resolver.resolve(
       {
