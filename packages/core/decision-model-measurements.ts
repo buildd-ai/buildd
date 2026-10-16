@@ -59,7 +59,15 @@ export interface StoredMeasurement {
   calibration?: Calibration | null;
   /** Act on these labels only, each at its own threshold. Null: every label, at `threshold`. */
   labelThresholds?: Record<string, number> | null;
+  /**
+   * What the threshold was derived from. Absent (a row written before it existed,
+   * or by an operator) is `collected`. A `labelled` row came from a labelled or
+   * synthetic set: it acts like any other, but a later collected score replaces it.
+   */
+  caseSource?: MeasurementCaseSource;
 }
+
+export type MeasurementCaseSource = 'collected' | 'labelled';
 
 export type MeasurementReason = 'jev_default' | 'measured' | 'not_measured' | 'fingerprint_changed' | 'retired';
 
@@ -233,6 +241,7 @@ export async function loadDecisionModelMeasurements(now: () => number = Date.now
     confidenceSource: r.confidenceSource,
     calibration: r.calibration,
     labelThresholds: r.labelThresholds,
+    caseSource: r.caseSource,
   }));
   cache = { at: t, rows };
   return rows;
@@ -267,6 +276,7 @@ export async function writeDecisionModelMeasurement(row: Omit<StoredMeasurement,
     confidenceSource: row.confidenceSource ?? 'confidence',
     calibration: row.calibration ?? null,
     labelThresholds: row.labelThresholds ?? null,
+    caseSource: row.caseSource ?? 'collected',
     setAt,
   };
   await db.insert(decisionModelMeasurements).values(values).onConflictDoUpdate({
@@ -285,6 +295,7 @@ export async function writeDecisionModelMeasurement(row: Omit<StoredMeasurement,
       confidenceSource: values.confidenceSource,
       calibration: values.calibration,
       labelThresholds: values.labelThresholds,
+      caseSource: values.caseSource,
     },
   });
   clearDecisionModelMeasurementCache();
