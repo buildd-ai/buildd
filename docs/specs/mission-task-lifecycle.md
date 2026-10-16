@@ -2203,74 +2203,74 @@ map in document order.
 
 | Old | New |
 | --- | --- |
-| AC-3a | AC-39 |
-| AC-3b | AC-40 |
-| AC-3c | AC-41 |
-| AC-3d | AC-42 |
-| AC-3e | AC-43 |
-| AC-3f | AC-44 |
-| AC-3g | AC-45 |
-| AC-3h | AC-46 |
-| AC-3i | AC-47 |
-| AC-3j | AC-48 |
-| AC-3j1 | AC-49 |
-| AC-3k | AC-50 |
-| AC-CG-1 | AC-51 |
-| AC-CG-2 | AC-52 |
-| AC-CG-3 | AC-53 |
-| AC-CG-4 | AC-54 |
-| AC-CG-5 | AC-55 |
-| AC-CG-6 | AC-56 |
-| AC-10b | AC-57 |
-| AC-11o | AC-58 |
-| AC-11p | AC-59 |
-| AC-11u | AC-60 |
-| AC-11v | AC-61 |
-| AC-11w | AC-62 |
-| AC-11x | AC-63 |
-| AC-11y | AC-64 |
-| AC-11z | AC-65 |
-| AC-11za | AC-66 |
-| AC-11zb | AC-67 |
-| AC-11zc | AC-68 |
-| AC-11zd | AC-69 |
-| AC-11a | AC-70 |
-| AC-11b | AC-71 |
-| AC-11c | AC-72 |
-| AC-11d | AC-73 |
-| AC-11d2 | AC-74 |
-| AC-11e | AC-75 |
-| AC-11d | AC-76 |
-| AC-11e | AC-77 |
-| AC-11f | AC-78 |
-| AC-11g | AC-79 |
-| AC-11h | AC-80 |
-| AC-11i | AC-81 |
-| AC-11o | AC-82 |
-| AC-11p | AC-83 |
-| AC-11q | AC-84 |
-| AC-11qs-1 | AC-85 |
-| AC-11qs-2 | AC-86 |
-| AC-11qs-3 | AC-87 |
-| AC-11qs-4 | AC-88 |
-| AC-11qs-6 | AC-89 |
-| AC-11qs-5 | AC-90 |
-| AC-11r | AC-91 |
-| AC-11s | AC-92 |
-| AC-11t | AC-93 |
-| AC-11j | AC-94 |
-| AC-11k | AC-95 |
-| AC-11l | AC-96 |
-| AC-11m | AC-97 |
-| AC-11n | AC-98 |
-| AC-11o | AC-99 |
-| AC-11o′ | AC-100 |
-| AC-11p | AC-101 |
-| AC-11q | AC-102 |
-| AC-11r | AC-103 |
-| AC-11s | AC-104 |
-| AC-11t | AC-105 |
-| AC-38a | AC-106 |
-| AC-38b | AC-107 |
-| AC-38c | AC-108 |
-| AC-38d | AC-109 |
+| was AC-3a | AC-39 |
+| was AC-3b | AC-40 |
+| was AC-3c | AC-41 |
+| was AC-3d | AC-42 |
+| was AC-3e | AC-43 |
+| was AC-3f | AC-44 |
+| was AC-3g | AC-45 |
+| was AC-3h | AC-46 |
+| was AC-3i | AC-47 |
+| was AC-3j | AC-48 |
+| was AC-3j1 | AC-49 |
+| was AC-3k | AC-50 |
+| was AC-CG-1 | AC-51 |
+| was AC-CG-2 | AC-52 |
+| was AC-CG-3 | AC-53 |
+| was AC-CG-4 | AC-54 |
+| was AC-CG-5 | AC-55 |
+| was AC-CG-6 | AC-56 |
+| was AC-10b | AC-57 |
+| was AC-11o | AC-58 |
+| was AC-11p | AC-59 |
+| was AC-11u | AC-60 |
+| was AC-11v | AC-61 |
+| was AC-11w | AC-62 |
+| was AC-11x | AC-63 |
+| was AC-11y | AC-64 |
+| was AC-11z | AC-65 |
+| was AC-11za | AC-66 |
+| was AC-11zb | AC-67 |
+| was AC-11zc | AC-68 |
+| was AC-11zd | AC-69 |
+| was AC-11a | AC-70 |
+| was AC-11b | AC-71 |
+| was AC-11c | AC-72 |
+| was AC-11d | AC-73 |
+| was AC-11d2 | AC-74 |
+| was AC-11e | AC-75 |
+| was AC-11d | AC-76 |
+| was AC-11e | AC-77 |
+| was AC-11f | AC-78 |
+| was AC-11g | AC-79 |
+| was AC-11h | AC-80 |
+| was AC-11i | AC-81 |
+| was AC-11o | AC-82 |
+| was AC-11p | AC-83 |
+| was AC-11q | AC-84 |
+| was AC-11qs-1 | AC-85 |
+| was AC-11qs-2 | AC-86 |
+| was AC-11qs-3 | AC-87 |
+| was AC-11qs-4 | AC-88 |
+| was AC-11qs-6 | AC-89 |
+| was AC-11qs-5 | AC-90 |
+| was AC-11r | AC-91 |
+| was AC-11s | AC-92 |
+| was AC-11t | AC-93 |
+| was AC-11j | AC-94 |
+| was AC-11k | AC-95 |
+| was AC-11l | AC-96 |
+| was AC-11m | AC-97 |
+| was AC-11n | AC-98 |
+| was AC-11o | AC-99 |
+| was AC-11o′ | AC-100 |
+| was AC-11p | AC-101 |
+| was AC-11q | AC-102 |
+| was AC-11r | AC-103 |
+| was AC-11s | AC-104 |
+| was AC-11t | AC-105 |
+| was AC-38a | AC-106 |
+| was AC-38b | AC-107 |
+| was AC-38c | AC-108 |
+| was AC-38d | AC-109 |
