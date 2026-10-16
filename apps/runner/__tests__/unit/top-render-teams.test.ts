@@ -44,7 +44,7 @@ describe('teams and missions (R-23, R-24)', () => {
     const lines = frame(teamed(), 80, 24);
     expectExactSize(lines, 80, 24);
     const t = text(lines);
-    expect(stripAnsi(lines[1]).trim()).toBe('t team: all · w workspace: all');
+    expect(stripAnsi(lines[1]).trim()).toBe('[ Missions ]  Queue   t team: all · w workspace: all');
     expect(t).toMatch(/^ Acme/m);
     expect(t).toMatch(/^ Initech/m);
     // The left pane is 22 columns, so a long title is cut; the order is what matters.
@@ -69,7 +69,7 @@ describe('teams and missions (R-23, R-24)', () => {
   test('the filter line names the team and workspace in view', () => {
     const s = { ...teamed(), selectedTeam: 'Initech', selectedWorkspace: 'bravo' };
     const lines = frame(s, 80, 24);
-    expect(stripAnsi(lines[1]).trim()).toBe('t team: Initech · w workspace: bravo');
+    expect(stripAnsi(lines[1]).trim()).toBe('[ Missions ]  Queue   t team: Initech · w workspace: bravo');
     expect(text(lines)).not.toContain('Ship the');
     expect(text(lines)).toContain('Billing cleanup');
   });

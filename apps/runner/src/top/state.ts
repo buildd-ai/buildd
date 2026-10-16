@@ -21,9 +21,11 @@
  *   - claim outcomes: what the server said about the runner's last claim of
  *     each task and its last broad claim (R-25), in the `init` frame, then
  *     `claim_outcome` frames. They say what really holds a waiting task.
+ *   - queue: GET /api/queue, the claim route's own order for this runner per
+ *     team (R-26), read while the Queue view is open (queue.ts derives it).
  */
 import type { ProgressCell } from './progress';
-import { TERMINAL_TASK_STATUSES, type RecentMission } from '@buildd/shared';
+import { TERMINAL_TASK_STATUSES, type RecentMission, type RunnerQueueResponse } from '@buildd/shared';
 
 export type WorkerStatus = 'idle' | 'working' | 'done' | 'error' | 'stale' | 'waiting';
 
@@ -142,6 +144,12 @@ export interface TopState {
   claimOutcomes: { tasks: Record<string, ClaimOutcome>; broad: ClaimOutcome | null };
   /** Mission key: a mission id, or NO_MISSION. */
   selectedMission: string | null;
+  /** `Tab` switches between the Missions view and the Queue view (R-26). */
+  view: 'missions' | 'queue';
+  /** The server's queue for this runner (GET /api/workers/queue via the socket); null until read. */
+  queue: RunnerQueueResponse | null;
+  /** The selected row in the Queue view, over its rows in drawn order. */
+  queueCursor: number;
   focus: 'missions' | 'tasks';
   missionCursor: number;
   rowCursor: number;
@@ -187,6 +195,9 @@ export function initialState(opts: { hostname: string; missionId?: string | null
     recentMissions: null,
     claimOutcomes: { tasks: {}, broad: null },
     selectedMission: opts.missionId ?? null,
+    view: 'missions',
+    queue: null,
+    queueCursor: 0,
     focus: 'tasks',
     missionCursor: 0,
     rowCursor: 0,
@@ -205,6 +216,7 @@ export type TopEvent =
   | { type: 'tasks'; tasks: TopTask[] }
   | { type: 'workspaces'; workspaces: TopWorkspace[] }
   | { type: 'missions'; missions: RecentMission[] }
+  | { type: 'queue'; queue: RunnerQueueResponse }
   | { type: 'connection'; online: boolean }
   | { type: 'status'; status: StatusLine | null }
   // Frames from the socket's /api/events, as the runner sends them.
@@ -273,6 +285,11 @@ export function reduce(state: TopState, event: TopEvent): TopState {
       if (!Array.isArray(list)) return state;
       return { ...state, recentMissions: list.filter((m: any) => m && typeof m.id === 'string') };
     }
+    case 'queue': {
+      const q = (event as any).queue;
+      if (!q || !Array.isArray(q.teams)) return state;
+      return { ...state, queue: q };
+    }
     case 'connection':
       return { ...state, runner: { ...state.runner, online: !!(event as any).online } };
     case 'status':
@@ -322,7 +339,8 @@ export function reduce(state: TopState, event: TopEvent): TopState {
  * (claim_rejected) and from its own workers starting or finishing.
  */
 export function eventChangesQueue(state: TopState, event: TopEvent): boolean {
-  if (event.type === 'task_assigned' || event.type === 'claim_rejected' || event.type === 'claim_outcome') return true;
+  // task_claimed: a task in one of its workspaces was claimed, by this runner or another (AC-12).
+  if (event.type === 'task_assigned' || event.type === 'task_claimed' || event.type === 'claim_rejected' || event.type === 'claim_outcome') return true;
   if (event.type === 'worker_update') {
     const w = (event as any).worker as TopWorker | undefined;
     if (!w?.id) return false;
@@ -494,7 +512,7 @@ export function scopedWorkspaces(state: TopState): TopWorkspace[] {
 }
 
 /** Which workspace ids the view shows: the selected workspace, else the selected team's, else any. */
-function inView(state: TopState): (workspaceId: string | undefined) => boolean {
+export function inView(state: TopState): (workspaceId: string | undefined) => boolean {
   const ws = currentWorkspace(state);
   if (ws) return id => id === ws.id;
   if (currentTeam(state)) {
@@ -511,7 +529,7 @@ export function cycleTeam(state: TopState): TopState {
   const cur = currentTeam(state);
   const idx = cur ? teams.findIndex(t => t.key === cur.key) : -1;
   const next = idx + 1 < teams.length ? teams[idx + 1] : null;
-  return { ...state, selectedTeam: next?.key ?? null, selectedWorkspace: null, selectedMission: null, missionCursor: 0, rowCursor: 0 };
+  return { ...state, selectedTeam: next?.key ?? null, selectedWorkspace: null, selectedMission: null, missionCursor: 0, rowCursor: 0, queueCursor: 0 };
 }
 
 /** The line under the header: what is shown, and the keys that change it. */
@@ -525,7 +543,7 @@ export function cycleWorkspace(state: TopState): TopState {
   const cur = currentWorkspace(state);
   const idx = cur ? list.findIndex(w => w.id === cur.id) : -1;
   const next = idx + 1 < list.length ? list[idx + 1] : null;
-  return { ...state, selectedWorkspace: next?.id ?? null, selectedMission: null, missionCursor: 0, rowCursor: 0 };
+  return { ...state, selectedWorkspace: next?.id ?? null, selectedMission: null, missionCursor: 0, rowCursor: 0, queueCursor: 0 };
 }
 
 /** "5 workspaces · TWC" with one team, "5 workspaces · 2 teams" with more. */
@@ -735,7 +753,7 @@ export function untilWords(ms: number): string {
   return `${Math.round(h / 24)}d`;
 }
 
-function roleLabel(slug: string | null | undefined): string | undefined {
+export function roleLabel(slug: string | null | undefined): string | undefined {
   if (!slug) return undefined;
   return slug.split(/[-_]/).map(p => (p ? p[0].toUpperCase() + p.slice(1) : p)).join(' ');
 }
@@ -820,7 +838,7 @@ function outcomeLive(o: ClaimOutcome, now: number): boolean {
 }
 
 /** The task's last claim outcome, when it still holds and the task has not moved since. */
-function liveTaskOutcome(task: TopTask, state: TopState, now: number): ClaimOutcome | null {
+export function liveTaskOutcome(task: TopTask, state: TopState, now: number): ClaimOutcome | null {
   const o = state.claimOutcomes.tasks[task.id];
   if (!o || task.status !== 'pending') return null;
   const seen = isoMs(o.seenUpdatedAt);
@@ -869,7 +887,7 @@ export interface ProviderHold {
 }
 
 /** The wall on `backend` an outcome names, the soonest to lift first. */
-function wallFor(o: ClaimOutcome, backend: string, now: number) {
+export function wallFor(o: ClaimOutcome, backend: string, now: number) {
   const walls = activeWalls(o, now).filter(w => w.backend === backend);
   walls.sort((a, b) => (isoMs(a.resetsAt) ?? Infinity) - (isoMs(b.resetsAt) ?? Infinity));
   return walls[0] ?? null;
@@ -1100,7 +1118,7 @@ export function describeToolCall(t: TopToolCall): string {
   return `${t.name} ${file ?? short}`.trim();
 }
 
-function matchesFilter(title: string, filter: string): boolean {
+export function matchesFilter(title: string, filter: string): boolean {
   return !filter || title.toLowerCase().includes(filter.toLowerCase());
 }
 

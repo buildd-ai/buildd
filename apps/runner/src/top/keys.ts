@@ -7,6 +7,7 @@ import {
   currentMission, currentTeam, currentWorkspace, cycleTeam, cycleWorkspace, missionRows, scopedWorkspaces, selectedRow, taskRows, teamCount, teamList, workspaceList,
   type TaskRow, type TopState,
 } from './state';
+import { queueRowList, selectedQueueRow } from './queue';
 
 export type Key =
   | { name: 'up' | 'down' | 'left' | 'right' | 'enter' | 'escape' | 'backspace' | 'tab' | 'ctrl-c' }
@@ -150,6 +151,8 @@ export type Effect =
   | { type: 'open'; taskId: string }
   /** The runner's page on buildd.dev, where its workspaces are set (R-20). */
   | { type: 'openRunner' }
+  /** Read the queue now: the Queue view just opened (R-26). */
+  | { type: 'refreshQueue' }
   | { type: 'quit' };
 
 export interface KeyResult {
@@ -275,6 +278,10 @@ export function handleKey(state: TopState, key: Key, now: number): KeyResult {
     if (state.filter) return { state: { ...state, filter: '', rowCursor: 0, status: null }, effects: [] };
     return { state: { ...state, status: null }, effects: [] };
   }
+  if (mode.kind === 'list' && state.view === 'queue') {
+    const q = queueKey({ ...state, status: null }, key, now);
+    if (q) return q;
+  }
   if (key.name === 'char' && 'ampxco'.includes(key.ch)) return actOnRow({ ...state, status: null }, key.ch, now);
 
   if (mode.kind === 'detail') return { state, effects: [] };
@@ -291,7 +298,8 @@ export function handleKey(state: TopState, key: Key, now: number): KeyResult {
     case 'right':
       return { state: { ...cleared, focus: 'tasks' }, effects: [] };
     case 'tab':
-      return { state: { ...cleared, focus: state.focus === 'missions' ? 'tasks' : 'missions' }, effects: [] };
+      // R-26: Tab switches Missions <-> Queue; ← → still move between the panes.
+      return { state: { ...cleared, view: 'queue', queueCursor: 0 }, effects: [{ type: 'refreshQueue' }] };
     case 'enter': {
       if (state.focus === 'missions') return { state: { ...cleared, focus: 'tasks', rowCursor: 0 }, effects: [] };
       const row = selectedRow(state, now);
@@ -332,6 +340,31 @@ function switchTeam(state: TopState): TopState {
   const team = currentTeam(next);
   if (team) return info(next, `Showing ${team.name}. t for the next team.`);
   return info(next, `Showing all ${workspaceList(next).length} workspaces in ${teams.length} teams.`);
+}
+
+/**
+ * Keys the Queue view handles itself (R-26): ↑↓ over its rows, `c` claims the
+ * selected row through the same claim path as the Missions view, `o` opens it,
+ * Tab goes back to Missions. Null: the key is handled as in the Missions view
+ * (t, w, /, ?, q, esc).
+ */
+function queueKey(state: TopState, key: Key, now: number): KeyResult | null {
+  const n = queueRowList(state, now).length;
+  const move = (d: number) => ({ state: n === 0 ? state : { ...state, queueCursor: Math.max(0, Math.min(n - 1, Math.min(state.queueCursor, n - 1) + d)) }, effects: [] });
+  if (key.name === 'tab') return { state: { ...state, view: 'missions' }, effects: [] };
+  if (key.name === 'up' || (key.name === 'char' && key.ch === 'k')) return move(-1);
+  if (key.name === 'down' || (key.name === 'char' && key.ch === 'j')) return move(1);
+  if (key.name === 'left' || key.name === 'right' || key.name === 'enter') return { state, effects: [] };
+  if (key.name !== 'char') return null;
+  if (key.ch === 'c' || key.ch === 'o') {
+    const row = selectedQueueRow(state, now);
+    if (!row) return { state: refuse(state, 'Nothing in the queue to pick.'), effects: [] };
+    if (key.ch === 'o') return { state: info(state, `Opening "${row.title}" on buildd…`), effects: [{ type: 'open', taskId: row.taskId }] };
+    if (row.position === null) return { state: refuse(state, `"${row.title}" is not for this runner: ${row.reason}.`), effects: [] };
+    return { state: info(state, `Claiming "${row.title}" onto this runner…`), effects: [{ type: 'claim', taskId: row.taskId, title: row.title }] };
+  }
+  if ('ampx'.includes(key.ch)) return { state: info(state, 'Tab back to Missions to act on running work.'), effects: [] };
+  return null;
 }
 
 const fromOf = (state: TopState): 'detail' | undefined => (state.mode.kind === 'detail' ? 'detail' : undefined);
