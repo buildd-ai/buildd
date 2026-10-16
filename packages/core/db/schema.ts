@@ -2809,6 +2809,8 @@ export type SpecStatus = (typeof SPEC_STATUSES)[number];
 /** A spec's metadata block (living-specs.md §18, R-14). `domain` is derived from the filed area, never stored. */
 export interface SpecMetadataBlock {
   owner?: string;
+  /** The repo copy's `summary`, from an imported file's frontmatter. */
+  summary?: string;
   last_verified?: string;
   surfaces?: string[];
   verified_by?: string[];
@@ -2828,6 +2830,12 @@ export interface SpecMetadataBlock {
    * without a mark of its own inherits it.
    */
   publication?: 'private' | 'public';
+  /**
+   * Set by import: criterion ids the imported body defines that the parser
+   * does not read (AC-3a, AC-AQR-1, INV-2), and ids it defines more than once.
+   * Cleared by a re-import that finds none.
+   */
+  criteria_unread?: { unreadable: Array<{ id: string; line: number }>; duplicates: Array<{ id: string; lines: number[] }> };
 }
 
 /**
@@ -3489,7 +3497,7 @@ export const workerHeartbeats = pgTable('worker_heartbeats', {
   // persisted until now, so GET /api/workers/active can show it per runner.
   trackedBranch: text('tracked_branch'),
   // Which model login this runner's agents use, as the runner reports it
-  // (docs/specs/runner-model-auth-source.md). A label from a fixed list, never
+  // (docs/specs/runner-model-login-detect-say-report.md). A label from a fixed list, never
   // a credential; null = not reported (older runner).
   modelAuthSource: text('model_auth_source').$type<'machine_token' | 'machine_login' | 'api_key' | 'none'>(),
   modelAuthMode: text('model_auth_mode').$type<'auto' | 'prefer' | 'off'>(),

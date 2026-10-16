@@ -154,7 +154,7 @@ const METER_CLASS: Record<BoardStatus, string> = {
 /**
  * The interactive band cells: landed work is solid, anything unfinished is
  * hatched or empty, each in its state's tone. Ready, blocked and queued differ
- * in texture (none / dense / sparse), so they read in greyscale (ST-3).
+ * in texture (none / dense / sparse), so they read in greyscale (strip R-8).
  */
 const STRIP_CELL_CLASS: Record<StripState, string> = {
   landed: 'border-2 border-status-success bg-status-success',

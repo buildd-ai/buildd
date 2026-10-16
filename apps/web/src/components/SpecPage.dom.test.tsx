@@ -120,6 +120,13 @@ describe('SpecPage', () => {
     expect(q('spec-page-approve')).toBeNull();
   });
 
+  it('says when an import could not read some criteria, and says nothing when it read them all', () => {
+    act(() => root.render(<SpecPage view={{ ...base, criteriaUnread: '1 criterion could not be read; not read: AC-3a (line 4). Use plain ids (R-n, AC-n), each defined once.' }} />));
+    expect(q('spec-page-criteria-unread')!.textContent).toContain('1 criterion could not be read; not read: AC-3a (line 4).');
+    act(() => root.render(<SpecPage view={base} />));
+    expect(q('spec-page-criteria-unread')).toBeNull();
+  });
+
   it('names the design the revision is built to, and says when it changed since approval', () => {
     const design = { label: 'Cart prototype', href: '/app/artifacts/a1', version: '3', screens: ['Empty cart'], changedSince: null };
     act(() => root.render(<SpecPage view={{ ...base, design }} />));

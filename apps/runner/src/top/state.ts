@@ -16,11 +16,16 @@
  *   - capacity: maxConcurrent from GET /api/config.
  *   - workspaces: GET /api/workspaces, the workspaces this runner's key reaches
  *     (the `w` switcher and the header count, R-19).
+ *   - missions: GET /api/missions/recent, the open missions of those workspaces
+ *     and the ones delivered in the last 7 days (R-24), at most once a minute.
  *   - claim outcomes: what the server said about the runner's last claim of
  *     each task and its last broad claim (R-25), in the `init` frame, then
  *     `claim_outcome` frames. They say what really holds a waiting task.
+ *   - queue: GET /api/queue, the claim route's own order for this runner per
+ *     team (R-26), read while the Queue view is open (queue.ts derives it).
  */
-import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
+import type { ProgressCell } from './progress';
+import { TERMINAL_TASK_STATUSES, type RecentMission, type RunnerQueueResponse } from '@buildd/shared';
 
 export type WorkerStatus = 'idle' | 'working' | 'done' | 'error' | 'stale' | 'waiting';
 
@@ -89,6 +94,8 @@ export type MissionStageStep = 'building' | 'verifying' | 'delivering' | 'delive
 export interface MissionStage {
   step: MissionStageStep;
   waitingOn: string | null;
+  /** The mission page's Overview strip as cells, done first (R-29). Absent from older servers. */
+  progress?: ProgressCell[];
 }
 
 export interface TopWorkspace {
@@ -125,6 +132,10 @@ export interface TopState {
   workspaces: TopWorkspace[];
   /** A workspace id, or the name / id prefix `--workspace` was given; null = all. */
   selectedWorkspace: string | null;
+  /** A team name or id (`--team`, or `t`); null = every team (R-23). */
+  selectedTeam: string | null;
+  /** Open and recently delivered missions from the server; null until the first answer. */
+  recentMissions: RecentMission[] | null;
   /**
    * What the server said about the runner's last claim of each task, and of its
    * last broad claim (R-25). Kept by the runner (claim-outcomes.ts) and sent
@@ -133,6 +144,12 @@ export interface TopState {
   claimOutcomes: { tasks: Record<string, ClaimOutcome>; broad: ClaimOutcome | null };
   /** Mission key: a mission id, or NO_MISSION. */
   selectedMission: string | null;
+  /** `Tab` switches between the Missions view and the Queue view (R-26). */
+  view: 'missions' | 'queue';
+  /** The server's queue for this runner (GET /api/workers/queue via the socket); null until read. */
+  queue: RunnerQueueResponse | null;
+  /** The selected row in the Queue view, over its rows in drawn order. */
+  queueCursor: number;
   focus: 'missions' | 'tasks';
   missionCursor: number;
   rowCursor: number;
@@ -167,15 +184,20 @@ export interface ClaimOutcome {
 
 export const NO_MISSION = '(none)';
 
-export function initialState(opts: { hostname: string; missionId?: string | null; workspace?: string | null }): TopState {
+export function initialState(opts: { hostname: string; missionId?: string | null; workspace?: string | null; team?: string | null }): TopState {
   return {
     runner: { hostname: opts.hostname, version: null, pid: null, maxConcurrent: 1, builddServer: null, online: false },
     workers: {},
     tasks: [],
     workspaces: [],
     selectedWorkspace: opts.workspace ?? null,
+    selectedTeam: opts.team ?? null,
+    recentMissions: null,
     claimOutcomes: { tasks: {}, broad: null },
     selectedMission: opts.missionId ?? null,
+    view: 'missions',
+    queue: null,
+    queueCursor: 0,
     focus: 'tasks',
     missionCursor: 0,
     rowCursor: 0,
@@ -193,6 +215,8 @@ export type TopEvent =
   | { type: 'workers'; workers: TopWorker[] }
   | { type: 'tasks'; tasks: TopTask[] }
   | { type: 'workspaces'; workspaces: TopWorkspace[] }
+  | { type: 'missions'; missions: RecentMission[] }
+  | { type: 'queue'; queue: RunnerQueueResponse }
   | { type: 'connection'; online: boolean }
   | { type: 'status'; status: StatusLine | null }
   // Frames from the socket's /api/events, as the runner sends them.
@@ -243,13 +267,28 @@ export function reduce(state: TopState, event: TopEvent): TopState {
           teamId: w.teamId ?? null,
           teamName: w.teamName ?? w.team?.name ?? null,
         }));
-      const next = { ...state, workspaces };
+      let next = { ...state, workspaces };
+      // `--team` naming no team this runner serves: open on all, and say so (R-23).
+      const team = state.selectedTeam?.trim();
+      if (team && workspaces.length > 0 && !currentTeam(next)) {
+        next = { ...next, selectedTeam: null, status: { text: `No team matches "${team}", so this shows all ${teamList(next).length} teams.`, tone: 'error' } };
+      }
       // `--workspace` naming nothing this runner serves: open on all, and say so (R-19).
       const sel = state.selectedWorkspace?.trim();
       if (sel && workspaces.length > 0 && !currentWorkspace(next)) {
         return { ...next, selectedWorkspace: null, status: { text: `No workspace matches "${sel}", so this shows all ${workspaces.length}.`, tone: 'error' } };
       }
       return next;
+    }
+    case 'missions': {
+      const list = (event as any).missions;
+      if (!Array.isArray(list)) return state;
+      return { ...state, recentMissions: list.filter((m: any) => m && typeof m.id === 'string') };
+    }
+    case 'queue': {
+      const q = (event as any).queue;
+      if (!q || !Array.isArray(q.teams)) return state;
+      return { ...state, queue: q };
     }
     case 'connection':
       return { ...state, runner: { ...state.runner, online: !!(event as any).online } };
@@ -300,7 +339,8 @@ export function reduce(state: TopState, event: TopEvent): TopState {
  * (claim_rejected) and from its own workers starting or finishing.
  */
 export function eventChangesQueue(state: TopState, event: TopEvent): boolean {
-  if (event.type === 'task_assigned' || event.type === 'claim_rejected' || event.type === 'claim_outcome') return true;
+  // task_claimed: a task in one of its workspaces was claimed, by this runner or another (AC-12).
+  if (event.type === 'task_assigned' || event.type === 'task_claimed' || event.type === 'claim_rejected' || event.type === 'claim_outcome') return true;
   if (event.type === 'worker_update') {
     const w = (event as any).worker as TopWorker | undefined;
     if (!w?.id) return false;
@@ -338,8 +378,7 @@ function workerByTask(state: TopState): Map<string, TopWorker> {
 function relevantTasks(state: TopState, workers: Map<string, TopWorker>): TopTask[] {
   const seen = new Set<string>();
   const out: TopTask[] = [];
-  const ws = currentWorkspace(state);
-  const inWorkspace = (id: string | undefined) => !ws || id === ws.id;
+  const inWorkspace = inView(state);
   for (const t of state.tasks) {
     if (seen.has(t.id)) continue;
     seen.add(t.id);
@@ -431,13 +470,80 @@ export function currentWorkspace(state: TopState): TopWorkspace | null {
     ?? null;
 }
 
+// ── Teams (R-23) ────────────────────────────────────────────────────────────
+
+export interface TopTeam {
+  key: string;
+  name: string;
+}
+
+function teamName(w: TopWorkspace): string | null {
+  return w.teamName || (w.teamId ? w.teamId.slice(0, 8) : null);
+}
+
+/** The teams the runner's workspaces span, in the order the list first names them. */
+export function teamList(state: TopState): TopTeam[] {
+  const seen = new Map<string, TopTeam>();
+  for (const w of workspaceList(state)) {
+    const key = teamKey(w);
+    if (!key || seen.has(key)) continue;
+    seen.set(key, { key, name: teamName(w) ?? key });
+  }
+  return [...seen.values()];
+}
+
+/** The team the view is narrowed to (by name, id or id prefix), or null for all of them. */
+export function currentTeam(state: TopState): TopTeam | null {
+  const sel = state.selectedTeam?.trim();
+  if (!sel) return null;
+  const list = teamList(state);
+  const lower = sel.toLowerCase();
+  return list.find(t => t.key === sel)
+    ?? list.find(t => t.name.toLowerCase() === lower)
+    ?? list.find(t => t.key.toLowerCase().startsWith(lower))
+    ?? null;
+}
+
+/** The workspaces `w` steps through: the team's, or every one. */
+export function scopedWorkspaces(state: TopState): TopWorkspace[] {
+  const team = currentTeam(state);
+  const list = workspaceList(state);
+  return team ? list.filter(w => teamKey(w) === team.key) : list;
+}
+
+/** Which workspace ids the view shows: the selected workspace, else the selected team's, else any. */
+export function inView(state: TopState): (workspaceId: string | undefined) => boolean {
+  const ws = currentWorkspace(state);
+  if (ws) return id => id === ws.id;
+  if (currentTeam(state)) {
+    const ids = new Set(scopedWorkspaces(state).map(w => w.id));
+    return id => !!id && ids.has(id);
+  }
+  return () => true;
+}
+
+/** `t`: the next team, and after the last one, all of them again. */
+export function cycleTeam(state: TopState): TopState {
+  const teams = teamList(state);
+  if (teams.length < 2) return state;
+  const cur = currentTeam(state);
+  const idx = cur ? teams.findIndex(t => t.key === cur.key) : -1;
+  const next = idx + 1 < teams.length ? teams[idx + 1] : null;
+  return { ...state, selectedTeam: next?.key ?? null, selectedWorkspace: null, selectedMission: null, missionCursor: 0, rowCursor: 0, queueCursor: 0 };
+}
+
+/** The line under the header: what is shown, and the keys that change it. */
+export function filterLine(state: TopState): string {
+  return `t team: ${currentTeam(state)?.name ?? 'all'} · w workspace: ${currentWorkspace(state)?.name ?? 'all'}`;
+}
+
 /** `w`: the next workspace, and after the last one, all of them again. */
 export function cycleWorkspace(state: TopState): TopState {
-  const list = workspaceList(state);
+  const list = scopedWorkspaces(state);
   const cur = currentWorkspace(state);
   const idx = cur ? list.findIndex(w => w.id === cur.id) : -1;
   const next = idx + 1 < list.length ? list[idx + 1] : null;
-  return { ...state, selectedWorkspace: next?.id ?? null, selectedMission: null, missionCursor: 0, rowCursor: 0 };
+  return { ...state, selectedWorkspace: next?.id ?? null, selectedMission: null, missionCursor: 0, rowCursor: 0, queueCursor: 0 };
 }
 
 /** "5 workspaces · TWC" with one team, "5 workspaces · 2 teams" with more. */
@@ -467,6 +573,31 @@ export interface MissionRow {
   planning: boolean;
   /** From the server, in the rail's words; absent means show done/total only. */
   stage?: MissionStage;
+  /** The team heading it sits under (R-24); null when the server names none. */
+  team: string | null;
+  workspaceId?: string;
+  /** A person runs it from their own session; no runner takes its tasks. */
+  local: boolean;
+  held: boolean;
+  /** Delivered: when, in ms; it is listed for 7 days after. */
+  deliveredAt?: number;
+}
+
+/** Delivered missions stay listed this long (R-24). */
+export const DELIVERED_DAYS = 7;
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** "Oct 14", in the reader's own time zone. */
+export function deliveredDay(ms: number): string {
+  const d = new Date(ms);
+  return `${MONTHS[d.getMonth()]} ${d.getDate()}`;
+}
+
+/** What a mission row says besides its title and stage: its delivered day, or that a person runs it. */
+export function missionMeta(row: Pick<MissionRow, 'deliveredAt' | 'local'>): string | null {
+  if (row.deliveredAt !== undefined) return `delivered ${deliveredDay(row.deliveredAt)}`;
+  if (row.local) return 'local session';
+  return null;
 }
 
 const STAGE_WORD: Record<MissionStageStep, string> = {
@@ -492,7 +623,11 @@ function sameLocalDay(iso: string | null | undefined, now: number): boolean {
   return d.toDateString() === new Date(now).toDateString();
 }
 
-export function missionRows(state: TopState): MissionRow[] {
+function emptyRow(key: string, title: string): MissionRow {
+  return { key, title, done: 0, total: 0, running: 0, planning: false, team: null, local: false, held: false };
+}
+
+export function missionRows(state: TopState, now: number = Date.now()): MissionRow[] {
   const workers = workerByTask(state);
   const map = new Map<string, MissionRow>();
   const serverCounts = new Map<string, { done: number; total: number }>();
@@ -500,7 +635,7 @@ export function missionRows(state: TopState): MissionRow[] {
     const key = t.missionId || NO_MISSION;
     let row = map.get(key);
     if (!row) {
-      row = { key, title: key === NO_MISSION ? '(no mission)' : t.mission?.title || `mission ${key.slice(0, 8)}`, done: 0, total: 0, running: 0, planning: false };
+      row = emptyRow(key, key === NO_MISSION ? '(no mission)' : t.mission?.title || `mission ${key.slice(0, 8)}`);
       map.set(key, row);
     }
     row.total++;
@@ -509,6 +644,9 @@ export function missionRows(state: TopState): MissionRow[] {
     if (w && (BUSY.includes(w.status) || w.status === 'waiting')) row.running++;
     if (t.mission?.taskCounts) serverCounts.set(key, t.mission.taskCounts);
     if (t.mission?.stage && STAGE_WORD[t.mission.stage.step]) row.stage = t.mission.stage;
+    if (t.mission?.isHeld) row.held = true;
+    if (t.mission?.executor === 'local') row.local = true;
+    row.workspaceId ??= taskWorkspaceId(t);
   }
   // The list holds active tasks and only a day of finished ones, so the local
   // tally undercounts a long mission; the server's count wins when it sent one.
@@ -525,16 +663,51 @@ export function missionRows(state: TopState): MissionRow[] {
     const w = workers.get(t.id);
     if ((w && BUSY.includes(w.status)) || (!w && t.status === 'in_progress')) row.planning = true;
   }
+
+  // Every open mission of the runner's workspaces, and those delivered in the
+  // last 7 days (R-24), even when this runner has no work in them.
+  const inWorkspace = inView(state);
+  for (const m of state.recentMissions ?? []) {
+    if (!inWorkspace(m.workspaceId)) continue;
+    const finished = m.status === 'completed';
+    const at = finished && m.completedAt ? Date.parse(m.completedAt) : NaN;
+    let row = map.get(m.id);
+    if (!row) {
+      // Not in the task list: listed only while open, or delivered inside the window.
+      if (finished && !(at >= now - DELIVERED_DAYS * 86_400_000)) continue;
+      row = emptyRow(m.id, m.title);
+      map.set(m.id, row);
+    }
+    row.workspaceId ??= m.workspaceId;
+    if (m.stage && STAGE_WORD[m.stage.step]) row.stage ??= m.stage;
+    if (m.isHeld) row.held = true;
+    if (m.executor === 'local') row.local = true;
+    if (finished && !Number.isNaN(at)) row.deliveredAt = at;
+  }
+
+  const wsById = new Map(workspaceList(state).map(w => [w.id, w]));
+  const teamOrder = new Map(teamList(state).map((t, i) => [t.name, i]));
+  for (const row of map.values()) {
+    const w = row.workspaceId ? wsById.get(row.workspaceId) : undefined;
+    row.team = w && teamKey(w) ? teamName(w) : null;
+  }
+
+  const rank = (r: MissionRow) => (r.deliveredAt !== undefined ? 2 : r.held || r.stage?.step === 'on_hold' ? 1 : 0);
+  const teamRank = (r: MissionRow) => (r.team === null ? Number.MAX_SAFE_INTEGER : teamOrder.get(r.team) ?? Number.MAX_SAFE_INTEGER - 1);
   const rows = [...map.values()].filter(r => r.key !== NO_MISSION);
-  rows.sort((a, b) => (b.running > 0 ? 1 : 0) - (a.running > 0 ? 1 : 0) || a.title.localeCompare(b.title));
+  rows.sort((a, b) =>
+    teamRank(a) - teamRank(b)
+    || rank(a) - rank(b)
+    || (rank(a) === 2 ? (b.deliveredAt ?? 0) - (a.deliveredAt ?? 0) : (b.running > 0 ? 1 : 0) - (a.running > 0 ? 1 : 0))
+    || a.title.localeCompare(b.title));
   // `(no mission)` is always there, last, so loose tasks have a home.
-  rows.push(map.get(NO_MISSION) ?? { key: NO_MISSION, title: '(no mission)', done: 0, total: 0, running: 0, planning: false });
+  rows.push(map.get(NO_MISSION) ?? emptyRow(NO_MISSION, '(no mission)'));
   return rows;
 }
 
 /** The mission the right pane shows: the selection if it still exists, else the first. */
-export function currentMission(state: TopState): MissionRow {
-  const rows = missionRows(state);
+export function currentMission(state: TopState, now: number = Date.now()): MissionRow {
+  const rows = missionRows(state, now);
   if (state.selectedMission) {
     const hit = rows.find(r => r.key === state.selectedMission) ?? rows.find(r => r.key.startsWith(state.selectedMission!));
     if (hit) return hit;
@@ -580,7 +753,7 @@ export function untilWords(ms: number): string {
   return `${Math.round(h / 24)}d`;
 }
 
-function roleLabel(slug: string | null | undefined): string | undefined {
+export function roleLabel(slug: string | null | undefined): string | undefined {
   if (!slug) return undefined;
   return slug.split(/[-_]/).map(p => (p ? p[0].toUpperCase() + p.slice(1) : p)).join(' ');
 }
@@ -665,7 +838,7 @@ function outcomeLive(o: ClaimOutcome, now: number): boolean {
 }
 
 /** The task's last claim outcome, when it still holds and the task has not moved since. */
-function liveTaskOutcome(task: TopTask, state: TopState, now: number): ClaimOutcome | null {
+export function liveTaskOutcome(task: TopTask, state: TopState, now: number): ClaimOutcome | null {
   const o = state.claimOutcomes.tasks[task.id];
   if (!o || task.status !== 'pending') return null;
   const seen = isoMs(o.seenUpdatedAt);
@@ -714,7 +887,7 @@ export interface ProviderHold {
 }
 
 /** The wall on `backend` an outcome names, the soonest to lift first. */
-function wallFor(o: ClaimOutcome, backend: string, now: number) {
+export function wallFor(o: ClaimOutcome, backend: string, now: number) {
   const walls = activeWalls(o, now).filter(w => w.backend === backend);
   walls.sort((a, b) => (isoMs(a.resetsAt) ?? Infinity) - (isoMs(b.resetsAt) ?? Infinity));
   return walls[0] ?? null;
@@ -945,13 +1118,13 @@ export function describeToolCall(t: TopToolCall): string {
   return `${t.name} ${file ?? short}`.trim();
 }
 
-function matchesFilter(title: string, filter: string): boolean {
+export function matchesFilter(title: string, filter: string): boolean {
   return !filter || title.toLowerCase().includes(filter.toLowerCase());
 }
 
 export function taskRows(state: TopState, now: number): TaskRow[] {
   const workers = workerByTask(state);
-  const mission = currentMission(state);
+  const mission = currentMission(state, now);
   const tasks = relevantTasks(state, workers).filter(t => (t.missionId || NO_MISSION) === mission.key);
   const running: TaskRow[] = [];
   const waiting: TaskRow[] = [];

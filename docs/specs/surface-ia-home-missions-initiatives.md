@@ -2,7 +2,7 @@
 title: Surface IA — Home, Missions, Initiatives
 status: active
 owner: max
-last_verified: 2026-09-26
+last_verified: 2026-10-15
 summary: Home, Missions and Initiatives MUST each answer one question (what needs me, what state is each mission in, what do an initiative's missions need) and MUST place release state per §8-10.
 domain: surfaces
 surfaces: [apps/web/src/app/app/(protected)/home/page.tsx, apps/web/src/app/app/(protected)/missions/page.tsx, apps/web/src/lib/initiative-view.ts]
@@ -34,7 +34,8 @@ it does not answer.
 the 14-day effort sparkline and the Home pulse line) was removed. Initiatives
 are containers with a human-set status; their list and page are specified in
 [`initiatives.md`](initiatives.md). §2 and §4-§7 below are replaced by pointers.
-§0 is kept as history. §3 and §8-§10 are unchanged.
+§0 is kept as history. §3 and §8-§10 are unchanged, except §8.5, rewritten on
+2026-10-15 for `MissionReleaseSection`, and the drift notes in §3.1 and §8.2.
 
 **Invariants**
 
@@ -83,7 +84,7 @@ is `—` there.
 | Workspace grouping header | MUST NOT | conditional (§3.3) | MUST NOT | MUST NOT | — | — |
 | Mission facts that need you, as links | MUST NOT | MUST NOT | MUST | MUST | — | — |
 | Artifacts | MUST NOT | MUST NOT | MUST NOT | MUST | — | — |
-| Release ledger status (§8.1) | MUST (exception only, §8.2) | MUST (card footer, §8.3) | MUST NOT (§8.4) | MUST NOT (§8.4) | this mission's Shipped line only (§8.5) | — |
+| Release ledger status (§8.1) | MUST (exception only, §8.2) | MUST (card footer, §8.3) | MUST NOT (§8.4) | MUST NOT (§8.4) | this mission's Shipped row only (`MissionReleaseSection`, §8.5) | — |
 | Release trigger action (`Release now`, §10.1) | MUST (§10.2) | MUST NOT (§10.2) | MUST NOT (§10.2) | MUST NOT (§10.2) | MUST NOT (§10.2) | MUST NOT (§10.2) |
 | Task-level ship badge (§10.3) | MUST NOT | MUST NOT | MUST NOT | MUST NOT | MUST (per task row, §10.3) | MUST (§10.3) |
 | Fifth task-rail segment for release (§10.4) | MUST NOT | MUST NOT | MUST NOT | MUST NOT | MUST NOT | MUST NOT |
@@ -104,6 +105,16 @@ removed; see `initiatives.md`.
 ## 3. Missions — organised by mission, nothing else
 
 ### 3.1 Composition
+
+> **Drift, checked 2026-10-15.** The Missions page was rebuilt as a portfolio
+> after this section was written. `MissionGrid` renders compact `MissionRow`
+> rows in sections from `buildMissionSections` (`lib/mission-sections.ts`:
+> Waiting on you, In motion, Waiting, Landed with checks pending), filtered by
+> `PORTFOLIO_STATUS_FILTERS` (All, Waiting on you, In motion, Waiting, Landed)
+> and grouped by `portfolioGroups`. Workspace scope comes from the shell's
+> switcher (`?workspace=`), and no workspace header is rendered. The rules
+> below (`GROUP_ORDER` sections, the filter bar, §3.3 headers) describe the
+> earlier page; whether they are retired or rewritten is the owner's call.
 
 The Missions tab renders, in order and nothing else: the page header (title,
 active count, seats chip, workspace filter, `+ New Mission`), the filter tab bar
@@ -192,6 +203,12 @@ action — the trigger lives in a separate row (§10.1).
 
 ### 8.2 Home
 
+> **Drift, checked 2026-10-15.** `ReleaseWidget` still exists
+> (`home/ReleaseWidget.tsx`) but nothing mounts it, and `MissionReleaseFooter`
+> (§8.3) is no longer rendered by the Missions portfolio either. Only §8.5 and
+> the workspace settings release section (`ReleaseSection`) render release
+> state today. AC-38 and AC-41 describe the earlier mounts.
+
 `ReleaseWidget` (already shipped, PR #1877/#1905) is correct as built: it
 renders only the exception — queue depth over threshold **and** CI green on
 the source ref — never a standing "release available" card, per §9 of the
@@ -209,24 +226,36 @@ already show: each mission line reads its own done state from the Missions card
 model, and release state belongs to the mission (§8.5), not to the container
 above it.
 
-### 8.5 Mission detail — MUST (new)
+### 8.5 Mission detail: MUST
 
-Mission detail today has **zero** release surface — `MissionReleaseFooter` is
-mounted only on the list-card grid (`MissionGrid.tsx`), never on
-`/app/missions/[id]/page.tsx`. This is the actual gap: mission detail is the
-page whose entire subject is "is this mission done," and it currently cannot
-answer whether the mission's merged work has shipped.
+Mission detail answers one release question for **this mission only**: has
+its merged work shipped? Before this section was built, mission detail had no
+release surface at all (`MissionReleaseFooter` is mounted only on the
+list-card grid, `MissionGrid.tsx`). It now has one row,
+`MissionReleaseSection` (`missions/[id]/MissionReleaseSection.tsx`), mounted
+in the mission page's footer rows (`footerRows` in `missions/[id]/page.tsx`).
 
-Mission detail answers the question for **this mission only**: the Delivery
-stepper's Shipped step (`buildDeliverySteps`, which reads the mission's own
-trunk merges against the release baseline from the same loader as the card
-footer) renders as one line — `Released`, `Partly released` or `Waiting for next release` —
-linking to the release detail page, or to the workspace's releases while the
-release that will carry it does not exist yet
-(`missions/[id]/MissionReleaseSection.tsx`). The workspace queue ("N
-unshipped") and the trigger action are workspace facts, not this mission's,
-and do not render here (§10.1). `none` archetype, or nothing of the mission
-merged yet, renders nothing (§9.1).
+- **What it reads.** The Delivery model's Shipped step (`buildDeliverySteps`,
+  which compares the mission's own trunk merges with the workspace release
+  baseline from the same loader as the card footer) plus the mission's release
+  status (`missionReleaseStatus` in `lib/mission-delivery.ts`). The row is
+  chosen by `missionReleaseRow`.
+- **What it says.** The step label (`Shipped`), then one status:
+  `Released` (only for a healthy deploy), `Partly released`, `Waiting for next
+  release`, `Release dispatched`, `Deploying`, `Deploy failed` or `Health not
+  reported`. The release status adds the dispatched, deploying, failed and
+  unknown states, which show even when the Shipped step is hidden.
+- **Where it links.** The whole row is a link, ending in `Release ›` (the
+  word `Release` is hidden at phone width, the `›` stays). It opens the
+  release that carries the work (`loadMissionCarryingReleaseId`), or the
+  workspace's releases (`/app/releases?workspace=...`) while that release does
+  not exist yet (`missionShippedHref`).
+- **What it never shows.** The workspace queue ("N unshipped") and the
+  `Release now` trigger are workspace facts, not this mission's, and do not
+  render here (§10.1).
+- **When it is absent.** A `none` archetype or a workspace with no release
+  flow (`not_configured`), or nothing of the mission merged yet, renders no
+  row (§9.1).
 
 ### 8.6 Acceptance criteria
 
@@ -239,15 +268,16 @@ merged yet, renders nothing (§9.1).
   THEN neither page renders a release-ledger row — only the existing
   `shippedThisWeek` clause/chip carries the count.
 - **AC-40**: GIVEN a gated mission whose merged work is after the last
-  release, WHEN `/app/missions/[id]` renders, THEN its Delivery Shipped line
-  reads `Waiting for next release` and shows no workspace queue depth; GIVEN
-  all of it is in a release, THEN it reads `Released` and links to the
-  release; GIVEN the mission's archetype is `none`, THEN no Shipped line is
-  present in the DOM.
+  release, WHEN `/app/missions/[id]` renders, THEN its Delivery Shipped row
+  reads `Waiting for next release`, links to the workspace's releases and
+  shows no workspace queue depth; GIVEN all of it is in a release whose deploy
+  is healthy, THEN it reads `Released` and links to that release; GIVEN the
+  mission's archetype is `none`, THEN no Shipped row
+  (`data-testid="mission-shipped-status"`) is present in the DOM.
 - **AC-41**: GIVEN the same mission on both the missions-list card and its own
   detail page in one request cycle, THEN both read the same release loader:
   the card shows the workspace queue depth and age, and mission detail shows
-  only this mission's Shipped line (no queue depth), so the two cannot
+  only this mission's Shipped row (no queue depth), so the two cannot
   disagree about the release baseline.
 
 ---
@@ -332,7 +362,7 @@ Concretely:
 - **Mission detail — MUST NOT.** A release ships the whole workspace queue,
   not one mission, so a mission page offering it — next to a workspace-wide
   "N unshipped" count — read as a claim about the mission that it was not.
-  Mission detail keeps only its own Shipped line (§8.5), which links to the
+  Mission detail keeps only its own Shipped row (§8.5), which links to the
   release.
 - **Home — MUST.** The readiness widget already computes "queue depth over
   threshold AND CI green" (§8.2) — the exact precondition for a safe release.

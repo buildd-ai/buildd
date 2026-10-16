@@ -2477,6 +2477,87 @@ describe('POST /api/workers/claim', () => {
     }
   });
 
+  // Model credentials spec R-3 / R-5 / AC-2 / AC-5. A stored Codex login whose
+  // expiry has passed is never delivered, so it must not carry a Codex task
+  // past the capability filter on a runner with no Codex login of its own:
+  // that runner started a worker which died on "Codex credential expired" and
+  // the task retried forever. The task stays pending for a runner that can run it.
+  it('asks only for a DELIVERABLE (unexpired) team Codex login, and excludes the task when there is none', async () => {
+    const origKey = process.env.ENCRYPTION_KEY;
+    process.env.ENCRYPTION_KEY = 'test-encryption-key';
+    try {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3, type: 'user', authType: 'api' });
+      mockWorkersFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+      mockAccountWorkspacesFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValue([
+        { id: 'task-1', workspaceId: 'ws-1', title: 'Codex task', backend: 'codex', requiredCapabilities: [], workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' }, teamId: 'team-1' } },
+      ]);
+      mockHasCodexCredential.mockReset();
+      // The only stored login has expired: with deliverableOnly it does not count.
+      mockHasCodexCredential.mockImplementation(async (opts: any) => opts?.deliverableOnly !== true);
+      mockHasOpenAiApiKey.mockResolvedValue(false);
+      mockHasOpenAiCompatibleAgentEndpoint.mockResolvedValue(false);
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          runner: 'test-runner',
+          // codexAuth=none: backend:codex but no CODEX_HOME / OPENAI_API_KEY.
+          environment: { tools: [], envKeys: ['backend:codex'], mcp: [], labels: { type: 'local', os: 'darwin', arch: 'arm64', hostname: 'test' }, scannedAt: '2026-01-01T00:00:00.000Z' },
+        },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.workers ?? []).toHaveLength(0);
+      expect(data.diagnostics.reason).toBe('capability_mismatch');
+      expect(mockHasCodexCredential).toHaveBeenCalled();
+      for (const call of mockHasCodexCredential.mock.calls) {
+        expect((call as any[])[0]).toMatchObject({ teamId: 'team-1', workspaceId: 'ws-1', deliverableOnly: true });
+      }
+    } finally {
+      if (origKey === undefined) delete process.env.ENCRYPTION_KEY;
+      else process.env.ENCRYPTION_KEY = origKey;
+    }
+  });
+
+  it('a runner with its own Codex login still claims a Codex task whose stored login has expired', async () => {
+    const origKey = process.env.ENCRYPTION_KEY;
+    process.env.ENCRYPTION_KEY = 'test-encryption-key';
+    try {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3, type: 'user', authType: 'api' });
+      mockWorkersFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+      mockAccountWorkspacesFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValue([
+        { id: 'task-1', workspaceId: 'ws-1', title: 'Codex task', backend: 'codex', requiredCapabilities: [], workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' }, teamId: 'team-1' } },
+      ]);
+      mockHasCodexCredential.mockReset();
+      mockHasCodexCredential.mockImplementation(async (opts: any) => opts?.deliverableOnly !== true);
+      mockHasOpenAiApiKey.mockResolvedValue(false);
+      mockDbExecute.mockReturnValue(Promise.resolve({ rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }] }));
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          runner: 'test-runner',
+          // codexAuth=machine_login: the runner advertises its own Codex home.
+          environment: { tools: [], envKeys: ['backend:codex', 'CODEX_HOME'], mcp: [], labels: { type: 'local', os: 'darwin', arch: 'arm64', hostname: 'test' }, scannedAt: '2026-01-01T00:00:00.000Z' },
+        },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.workers.length).toBe(1);
+    } finally {
+      if (origKey === undefined) delete process.env.ENCRYPTION_KEY;
+      else process.env.ENCRYPTION_KEY = origKey;
+    }
+  });
+
   it('never returns the workspace dispatch token in a claimed task', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3, type: 'user', authType: 'api' });
     mockWorkersFindMany.mockResolvedValueOnce([]);
@@ -5390,7 +5471,7 @@ describe('POST /api/workers/claim', () => {
       }
     });
 
-    // §2 AC-1: role refs [conn-1], workspace enables {conn-1, conn-2} → only conn-1 mounts.
+    // AC-11: role refs [conn-1], workspace enables {conn-1, conn-2} → only conn-1 mounts.
     it('mounts only role-referenced connectors even when the workspace enables more', async () => {
       setupConnectorClaim(['conn-1']);
       mockConnectorsFindMany.mockResolvedValue([
@@ -5410,7 +5491,7 @@ describe('POST /api/workers/claim', () => {
       ]);
     });
 
-    // §2 AC-2: role references conn-1 but the workspace has NOT enabled it → not mounted.
+    // AC-12: role references conn-1 but the workspace has NOT enabled it → not mounted.
     it('does not mount a referenced connector the workspace disabled', async () => {
       setupConnectorClaim(['conn-1']);
       mockConnectorsFindMany.mockResolvedValue([
@@ -5427,7 +5508,7 @@ describe('POST /api/workers/claim', () => {
       expect(data.workers[0].mcpConnectors).toBeUndefined();
     });
 
-    // §2 AC-3: a task with no roleSlug (unrouted) mounts no connectors.
+    // AC-13: a task with no roleSlug (unrouted) mounts no connectors.
     it('mounts nothing when the task has no role', async () => {
       setupConnectorClaim([], null);
       mockConnectorsFindMany.mockResolvedValue([
@@ -5444,7 +5525,7 @@ describe('POST /api/workers/claim', () => {
       expect(data.workers[0].mcpConnectors).toBeUndefined();
     });
 
-    // §2 AC-4: a dangling ref (deleted / other-team connector) is tolerated — the
+    // AC-14: a dangling ref (deleted / other-team connector) is tolerated — the
     // claim succeeds and mounts only the surviving valid refs (no 500).
     it('tolerates a dangling connector ref and mounts the remaining valid ones', async () => {
       setupConnectorClaim(['conn-1', 'conn-deleted']);
@@ -5484,7 +5565,7 @@ describe('POST /api/workers/claim', () => {
       ]);
     });
 
-    // §3 AC-4: header connector missing its secret row → omitted (not mounted empty).
+    // AC-18: header connector missing its secret row → omitted (not mounted empty).
     it('omits a header connector whose secret row is missing', async () => {
       setupConnectorClaim(['conn-hdr']);
       mockConnectorsFindMany.mockResolvedValue([
@@ -5526,7 +5607,7 @@ describe('POST /api/workers/claim', () => {
       ]);
     });
 
-    // §3 AC-3: expired oauth token whose refresh FAILS → connector omitted, claim 200.
+    // AC-17: expired oauth token whose refresh FAILS → connector omitted, claim 200.
     it('omits an oauth connector whose expired token cannot be refreshed', async () => {
       setupConnectorClaim(['conn-oauth']);
       mockConnectorsFindMany.mockResolvedValue([
@@ -5547,7 +5628,7 @@ describe('POST /api/workers/claim', () => {
       expect(data.workers[0].mcpConnectors).toBeUndefined();
     });
 
-    // §3 AC-2: expired oauth token whose refresh SUCCEEDS → refreshed token injected.
+    // AC-16: expired oauth token whose refresh SUCCEEDS → refreshed token injected.
     it('injects an oauth connector after a successful claim-time refresh', async () => {
       setupConnectorClaim(['conn-oauth']);
       mockConnectorsFindMany.mockResolvedValue([
@@ -5629,7 +5710,7 @@ describe('POST /api/workers/claim', () => {
 
     // --- §1b cross-team sharing ---
 
-    // §1b AC-1: a connector owned by another team but shared to this team mounts
+    // AC-6: a connector owned by another team but shared to this team mounts
     // using the OWNER team's credential — no grantee-team secret exists or is needed.
     it('mounts a shared-in connector using the owner-team credential', async () => {
       setupConnectorClaim(['conn-shared']);
@@ -5661,7 +5742,7 @@ describe('POST /api/workers/claim', () => {
       expect(teamFilter?.values).toEqual(['team-owner']);
     });
 
-    // §1b AC-3: owned wins on slug collision — when an owned and a shared-in
+    // AC-8: owned wins on slug collision — when an owned and a shared-in
     // connector slugify to the same key, only the owned one mounts.
     it('mounts only the owned connector when an owned and a shared-in connector collide on slug', async () => {
       setupConnectorClaim(['conn-own', 'conn-shared']);
@@ -5733,7 +5814,7 @@ describe('POST /api/workers/claim', () => {
       expect(shared?.env).toEqual({ API_TOKEN: 'owner-team-value' });
     });
 
-    // §1b AC-5: after a share is revoked (no share row), the next claim does NOT
+    // AC-10: after a share is revoked (no share row), the next claim does NOT
     // mount the other team's connector even if a dangling ref/enablement remains.
     it('does not mount another team connector when no share row exists (revoked)', async () => {
       setupConnectorClaim(['conn-shared']);

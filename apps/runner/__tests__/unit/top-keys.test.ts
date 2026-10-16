@@ -197,6 +197,36 @@ describe('revision 2 keys (R-19, R-20)', () => {
     expect(s.status?.text).toBe('This runner serves one workspace, so there is nothing to switch to.');
   });
 
+  test('t cycles the team and says which one; w then stays inside it (R-23)', () => {
+    const named = reduce(fixtureState(), {
+      type: 'workspaces',
+      workspaces: [
+        { id: 'ws-1', name: 'alpha', teamId: 'team-1', teamName: 'Team One' },
+        { id: 'ws-2', name: 'bravo', teamId: 'team-2', teamName: 'Team Two' },
+        { id: 'ws-3', name: 'charlie', teamId: 'team-2', teamName: 'Team Two' },
+      ],
+    });
+    let { s } = press(named, 't');
+    expect(s.selectedTeam).toBe('team-1');
+    expect(s.status?.text).toBe('Showing Team One. t for the next team.');
+    ({ s } = press(s, 't'));
+    expect(s.status?.text).toBe('Showing Team Two. t for the next team.');
+    ({ s } = press(s, 'w', 'w'));
+    expect(s.selectedWorkspace).toBe('ws-3');
+    expect(s.status?.text).toBe('Showing charlie (Team Two). w for the next workspace.');
+    ({ s } = press(s, 'w'));
+    expect(s.status?.text).toBe('Showing all 2 workspaces of Team Two.');
+    ({ s } = press(s, 't'));
+    expect(s.selectedTeam).toBeNull();
+    expect(s.status?.text).toBe('Showing all 3 workspaces in 2 teams.');
+  });
+
+  test('t with one team says there is nothing to switch to', () => {
+    const { s } = press(fixtureState(), 't');
+    expect(s.selectedTeam).toBeNull();
+    expect(s.status?.text).toBe('This runner serves one team, so there is nothing to switch to.');
+  });
+
   test('? opens help; o there opens the runner page; esc or ? closes it', () => {
     let { s, effects } = press(fixtureState(), '?');
     expect(s.mode).toEqual({ kind: 'help' });

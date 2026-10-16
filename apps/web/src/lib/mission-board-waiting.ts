@@ -17,7 +17,7 @@
  */
 import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
-import { sql, type SQL } from 'drizzle-orm';
+import { inArray, sql, type SQL } from 'drizzle-orm';
 import type { WaitingKind } from '@buildd/core/waiting-reason';
 import { DEP_EDGE_ARM_SQL, outsideSurfaceAuditMission } from '@/app/api/workers/claim/deps-gate';
 import { taskNotHeld } from '@/app/api/workers/claim/held-gate';
@@ -31,7 +31,7 @@ export type { MissionGateFacts, ReleasedEdge };
 export const EMPTY_GATE_FACTS: MissionGateFacts = { releasedEdges: [], waitingKinds: {} };
 
 /** One row of `edgeFactsSql`: every arm's verdict for one (dependent, dependency) edge. */
-export type EdgeFactsRow = { dependent_id: string; dependency_id: string; inferred: boolean | string | null }
+export type EdgeFactsRow = { dependent_id: string; dependency_id: string; mission_id?: string | null; inferred: boolean | string | null }
   & Record<`arm_${DepEdgeReleaseArm}` | 'arm_surface_audit_scope' | 'arm_bypass', boolean | string | null>;
 
 const truthy = (v: unknown) => v === true || v === 't' || v === 'true';
@@ -42,15 +42,28 @@ const truthy = (v: unknown) => v === true || v === 't' || v === 'true';
  * to the dependent row, exactly as in the claim query.
  */
 export function edgeFactsSql(missionId: string): SQL {
+  return edgeFactsWhere(sql`${tasks.missionId} = ${missionId}`);
+}
+
+/**
+ * The same edge facts for several missions in one read (a list: `buildd top`'s
+ * progress cells, spec c7410e76 R-29), each row naming its mission, and scoped
+ * to the caller's workspaces as well as the missions.
+ */
+export function missionsEdgeFactsSql(missionIds: readonly string[], workspaceIds: readonly string[]): SQL {
+  return edgeFactsWhere(sql`${inArray(tasks.missionId, [...missionIds])} AND ${inArray(tasks.workspaceId, [...workspaceIds])}`);
+}
+
+function edgeFactsWhere(scope: SQL): SQL {
   const dep = sql`dep_id::uuid`;
   const arms = DEP_EDGE_RELEASE_ARMS.map((arm) => sql`${DEP_EDGE_ARM_SQL[arm](dep)} AS ${sql.identifier(`arm_${arm}`)}`);
-  return sql`SELECT ${tasks.id} AS dependent_id, dep_id AS dependency_id,
+  return sql`SELECT ${tasks.id} AS dependent_id, dep_id AS dependency_id, ${tasks.missionId} AS mission_id,
     ${sql.join(arms, sql`, `)},
     ${outsideSurfaceAuditMission(dep)} AS arm_surface_audit_scope,
     ${bypassFlagCondition(tasks.context, BYPASS_DEPS_GATE_KEY)} AS arm_bypass,
     COALESCE(${tasks.pathDeclaration}->'inferredDependsOn' ? dep_id, FALSE) AS inferred
   FROM ${tasks}, jsonb_array_elements_text(COALESCE(${tasks.dependsOn}::jsonb, '[]'::jsonb)) AS dep_id
-  WHERE ${tasks.missionId} = ${missionId}
+  WHERE ${scope}
   AND ${tasks.status} NOT IN ('completed', 'cancelled')
   AND dep_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'`;
 }
@@ -178,4 +191,28 @@ export async function loadMissionGateFacts(missionId: string, mission: MissionHo
     console.warn(`[mission-board-waiting] mission ${missionId}: gate facts unavailable:`, (err as Error)?.message ?? err);
     return EMPTY_GATE_FACTS;
   }
+}
+
+/**
+ * Each listed mission's released edges (the part of the gate facts that moves
+ * a strip cell: an edge the claim gate released reads ready, not blocked), in
+ * one read for every mission. Waiting kinds are left out: they word a waiting
+ * cell's cause and never change its state or group. Never throws: a failed
+ * read releases by status alone, as the page does.
+ */
+export async function loadMissionsReleasedEdges(missionIds: readonly string[], workspaceIds: readonly string[]): Promise<Map<string, ReleasedEdge[]>> {
+  const out = new Map<string, ReleasedEdge[]>();
+  if (missionIds.length === 0 || workspaceIds.length === 0) return out;
+  try {
+    for (const row of await rows<EdgeFactsRow>(missionsEdgeFactsSql(missionIds, workspaceIds))) {
+      const arm = edgeReleaseArm(row);
+      if (!arm || !row.mission_id) continue;
+      const list = out.get(row.mission_id) ?? [];
+      list.push({ dependentId: row.dependent_id, dependencyId: row.dependency_id, arm });
+      out.set(row.mission_id, list);
+    }
+  } catch (err) {
+    console.warn('[mission-board-waiting] released edges unavailable:', (err as Error)?.message ?? err);
+  }
+  return out;
 }

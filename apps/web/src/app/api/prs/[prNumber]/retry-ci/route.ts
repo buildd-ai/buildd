@@ -177,7 +177,7 @@ export async function POST(
     `CI failing on ${repoFullName} PR #${prNumber} (SHA: ${headSha})`;
 
   // Both the diagnose task and the fix attempt below re-attempt the PR's owner
-  // task, so they carry its backend, role, routing kind and phase (Rule P1-7).
+  // task, so they carry its backend, role, routing kind and phase (mission-legibility R-7).
   // An adopted owner has no role, so neither does its attempt.
   const identity = await inheritAttemptIdentity(originalTask.id);
 

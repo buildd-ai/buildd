@@ -95,6 +95,15 @@ describe('visualCheck (R-17, R-18, AC-7, AC-8)', () => {
     expect(running.evidence).toEqual(evidence);
   });
 
+  it('a review that is on but could not tell whether screens changed never reads off (c9353c11)', () => {
+    const unknown = visualCheck(visual({ status: 'optional', blocksMerge: false, blocksCompletion: false, scope: { screens: null, uiFiles: 0, source: null, workLanded: true, impact: 'unknown' } }), opts);
+    expect(unknown.state).toBe('not checked');
+    expect(unknown.detail).toBe('Could not tell whether any screens changed, so nothing was captured.');
+    expect(unknown.detail).not.toMatch(/off/i);
+    const off = visualCheck(visual({ status: 'optional', blocksMerge: false, blocksCompletion: false, policy: { mode: 'off', origin: 'workspace', waiverAllowed: true, locked: false } as MissionVisualReviewState['policy'] }), opts);
+    expect(off.detail).toBe('Visual review is off for this mission.');
+  });
+
   it('is advisory when it gates neither the merge nor the finish', () => {
     const r = visualCheck(visual({ blocksMerge: false, blocksCompletion: false }), opts);
     expect(r).toMatchObject({ blocks: false, chip: 'advisory' });

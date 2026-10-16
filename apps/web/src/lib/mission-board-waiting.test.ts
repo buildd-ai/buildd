@@ -4,6 +4,7 @@ import {
   combineGateFacts,
   edgeFactsSql,
   edgeReleaseArm,
+  missionsEdgeFactsSql,
   pendingHoldsSql,
   waitingKindFor,
   type EdgeFactsRow,
@@ -113,6 +114,21 @@ describe('the loader queries', () => {
     expect(q.sql).toContain('"tasks"."mission_id" = $');
     expect(q.sql).toContain(`"tasks"."status" NOT IN ('completed', 'cancelled')`);
     expect(q.params).toContain(MISSION);
+  });
+
+  it('the list read covers several missions, scoped to the caller\'s workspaces, each row naming its mission', () => {
+    const q = render(missionsEdgeFactsSql([MISSION, 'm-2'], ['ws-1']));
+    expect(q.sql).toContain('"tasks"."mission_id" in ($');
+    expect(q.sql).toContain('"tasks"."workspace_id" in ($');
+    expect(q.sql).toContain('AS mission_id');
+    expect(q.sql).toContain(`"tasks"."status" NOT IN ('completed', 'cancelled')`);
+    expect(q.params).toEqual(expect.arrayContaining([MISSION, 'm-2', 'ws-1']));
+    // Same arms as the page's one-mission read.
+    const one = render(edgeFactsSql(MISSION)).sql;
+    for (const arm of ['arm_status', 'arm_early_release', 'arm_force_start', 'arm_surface_audit_scope', 'arm_bypass']) {
+      expect(one).toContain(arm);
+      expect(q.sql).toContain(arm);
+    }
   });
 
   it('pending holds read the task hold and a future start', () => {

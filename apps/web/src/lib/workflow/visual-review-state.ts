@@ -14,7 +14,7 @@
  * writes. Surfaces consume it through `getMissionVisualReviewState`
  * (`visual-review-state-load.ts`) so none re-derives status from `phase`.
  */
-import type { VisualReviewPhase } from '@buildd/shared';
+import { OPEN_TASK_STATUSES, type VisualReviewPhase } from '@buildd/shared';
 import type { ResolvedVisualReviewPolicy } from './visual-review-policy';
 
 export const MISSION_VISUAL_REVIEW_STATUSES = [
@@ -36,7 +36,7 @@ export interface VisualReviewStateInput {
   /** Did rendered UI change? `unknown` = the diff could not be read (fails open, never `no`). */
   uiChange: { state: 'yes' | 'no' | 'unknown'; source: 'manifest' | 'diff' | null; uiFiles: number };
   /** The latest visual-auditor task, null when none exists. */
-  audit: { id: string; createdAt: string | null; errorType: string | null } | null;
+  audit: { id: string; createdAt: string | null; errorType: string | null; status?: string } | null;
   /** The slice of `VisualReviewModel` this reads; null when no model was loaded. */
   review: {
     phase: VisualReviewPhase;
@@ -82,7 +82,7 @@ export interface MissionVisualReviewState {
   staleEvidence: boolean;
   nextActor: VisualReviewNextActor;
   policy: Pick<ResolvedVisualReviewPolicy, 'mode' | 'origin' | 'waiverAllowed' | 'locked'>;
-  scope: { screens: number | null; uiFiles: number; source: 'manifest' | 'diff' | null; workLanded: boolean };
+  scope: { screens: number | null; uiFiles: number; source: 'manifest' | 'diff' | null; workLanded: boolean; /** What the impact read said: `unknown` when the builders' files could not be read. */ impact?: 'yes' | 'no' | 'unknown' };
   progress?: { captured: number; expected: number | null };
   findings?: { issues: number; undecided: number; fixesOpen: number; stage: 'fixing' | 'needs_decision'; /** The automatic fix rounds ran out and the audit still finds issues: a person's call. */ exhausted: boolean };
   blocked?: { cause: VisualReviewBlockedCause; causeOwner: 'buildd' | 'workspace' | 'unknown'; autoRetriesLeft: number };
@@ -100,6 +100,9 @@ export interface MissionVisualReviewState {
 }
 
 const t = (s: string | null | undefined): number => (s ? new Date(s).getTime() : 0);
+
+/** Audit task statuses that are still to run or running. */
+const OPEN_AUDIT: ReadonlySet<string> = new Set(OPEN_TASK_STATUSES);
 
 function classifyBlocked(
   phase: VisualReviewPhase,
@@ -177,6 +180,11 @@ export function deriveMissionVisualReview(input: VisualReviewStateInput): Missio
     } else {
       status = 'passed';
     }
+  } else if (audit && audit.status && OPEN_AUDIT.has(audit.status)) {
+    // An audit still open holds the mission whatever the impact read said,
+    // including when the builders' files could not be read (c9353c11).
+    status = 'queued';
+    nextActor = 'system';
   } else if (input.uiChange.state === 'no') {
     status = 'not_applicable';
   } else if (input.uiChange.state === 'unknown' || !required) {
@@ -204,6 +212,7 @@ export function deriveMissionVisualReview(input: VisualReviewStateInput): Missio
       screens: review && review.screens > 0 ? review.screens : null,
       uiFiles: input.uiChange.uiFiles,
       source: input.uiChange.source,
+      impact: input.uiChange.state,
       workLanded: branch.workLanded,
     },
     ...(progress ? { progress } : {}),

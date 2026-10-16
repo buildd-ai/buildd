@@ -829,7 +829,7 @@ describe('buildRail — mission phase headers (§4.1–§4.3)', () => {
     expect(kinds.filter(k => k === 'tick')).toHaveLength(1); // only the now tick — no day tick anywhere
   });
 
-  it('marks a phase complete only when every member is filled or skipped (Rule P1-12)', () => {
+  it('marks a phase complete only when every member is filled or skipped (mission-legibility R-12)', () => {
     const filled = phased('f', 1, 'Storage', { taskUpdatedAt: '2026-09-11T09:00:00.000Z', latestWorker: { mergedAt: '2026-09-11T09:00:00.000Z' } });
     const skipped = phased('s', 1, 'Storage', { status: 'cancelled', taskUpdatedAt: '2026-09-11T09:00:00.000Z' });
     const model = buildRail({ ...EMPTY_GROUPS, done: [unit(filled)], failed: [unit(skipped)] }, { now });
@@ -837,7 +837,7 @@ describe('buildRail — mission phase headers (§4.1–§4.3)', () => {
     expect(header.state).toBe('complete');
   });
 
-  it('marks the lowest incomplete phase with an active member as live, never more than one (Rule P1-12)', () => {
+  it('marks the lowest incomplete phase with an active member as live, never more than one (mission-legibility R-12)', () => {
     const p1 = phased('a', 1, 'Storage', { taskUpdatedAt: '2026-09-11T09:00:00.000Z', latestWorker: { mergedAt: '2026-09-11T09:00:00.000Z' } });
     const p2 = phased('b', 2, 'Population', { status: 'pending', taskCreatedAt: '2026-09-13T09:00:00.000Z' });
     const p3 = phased('c', 3, 'Rendering', { status: 'pending', taskCreatedAt: '2026-09-13T09:00:00.000Z' });

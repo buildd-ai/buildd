@@ -5022,7 +5022,7 @@ export async function PATCH(
     recordShipCheckpointReports({ id, workspaceId: worker.workspaceId ?? null, taskId: worker.taskId }, shipReports);
   }
 
-  // Worker self-classification (Rule K2-15/K2-16).
+  // Worker self-classification (mission-legibility R-27/R-28).
   //
   // Reported on update_progress rather than complete_task: a kind learned at
   // completion is too late for the claim-time model router, too late for anyone

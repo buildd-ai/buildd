@@ -82,7 +82,7 @@ export async function POST(req: NextRequest) {
       claimHandoff = undefined,
       /**
        * Which model login this runner's agents use, and the runner's setting
-       * for it (docs/specs/runner-model-auth-source.md). Labels from a fixed
+       * for it (docs/specs/runner-model-login-detect-say-report.md). Labels from a fixed
        * list; anything else (a typo, a newer label, a credential pasted by
        * mistake) is dropped here so it never reaches the table, and the beat
        * still succeeds.

@@ -22,7 +22,18 @@ describe('ClaimTaskHint', () => {
   it('Run now and Task join Copy in one row, at one button size', () => {
     const row = renderToStaticMarkup(<ClaimTaskHint taskId={id} actions={<><button className={CLAIM_ROW_BTN}>Run now</button><a className={CLAIM_ROW_BTN}>Task →</a></>} />);
     const actions = row.slice(row.indexOf('data-testid="claim-task-actions"'));
-    expect(actions.match(/class="btn min-h-11 md:min-h-9"/g)).toHaveLength(3);
-    expect(actions).toContain('flex-wrap items-center');
+    expect(actions.split(`class="${CLAIM_ROW_BTN}"`)).toHaveLength(4);
+  });
+
+  it('on a phone the row is equal columns, so Task never wraps under the others (b4ea396b follow-up 5)', () => {
+    const row = renderToStaticMarkup(<ClaimTaskHint taskId={id} actions={<><button className={CLAIM_ROW_BTN}>Run now</button><a className={CLAIM_ROW_BTN}>Task →</a></>} />);
+    const wrap = row.match(/<div[^>]*data-testid="claim-task-actions"[^>]*>/)![0];
+    expect(wrap).toContain('grid grid-flow-col auto-cols-fr');
+    expect(wrap).toContain('md:flex');
+    expect(CLAIM_ROW_BTN).toContain('w-full');
+    // The command is on screen above, so the phone label is just Copy; the full label stays for screen readers and desktop.
+    const button = row.match(/<button[^>]*data-testid="claim-task-copy"[^>]*>[\s\S]*?<\/button>/)![0];
+    expect(button).toContain('aria-label="Copy claim command"');
+    expect(button).toContain('<span class="md:hidden">Copy</span>');
   });
 });

@@ -96,7 +96,7 @@ export async function getMissionVisualReviewState(
   const ledger = await loadMissionAuditLedger(missionId);
   const latestAudit = ledger.find(a => a.id === model.audit?.id) ?? null;
   const failedOnHead = headSha ? ledger.filter(a => a.status === 'failed' && a.headSha === headSha).length : 0;
-  const audit = model.audit ? { id: model.audit.id, createdAt: model.audit.createdAt, errorType: model.audit.errorType } : null;
+  const audit = model.audit ? { id: model.audit.id, createdAt: model.audit.createdAt, errorType: model.audit.errorType, status: model.audit.status } : null;
 
   // R-33: a queued audit names the claim loop's hold on it.
   const holdReason = latestAudit?.status === 'pending'

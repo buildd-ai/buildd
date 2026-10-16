@@ -193,15 +193,15 @@ is reused.
   set at the next claim (no orphaned injection).
 
 **Acceptance criteria**:
-- AC-1: GIVEN connector C owned by team A, shared to team B WHEN a workspace in B
+- AC-6: GIVEN connector C owned by team A, shared to team B WHEN a workspace in B
   enables C and a role opts in THEN a task in B mounts C using A's credential and
   no `secrets` row exists for team B.
-- AC-2: GIVEN C not shared to team B WHEN a workspace in B attempts to enable C
+- AC-7: GIVEN C not shared to team B WHEN a workspace in B attempts to enable C
   THEN the API rejects (`404`/`403` — not visible).
-- AC-3: GIVEN team B owns `github` AND team A's `github` is shared to B WHEN a
+- AC-8: GIVEN team B owns `github` AND team A's `github` is shared to B WHEN a
   role in B references both THEN only B's owned `github` mounts (owned wins).
-- AC-4: GIVEN a non-admin of the owner team WHEN `POST` a share THEN `403`.
-- AC-5: GIVEN C shared to B WHEN the owner revokes the share THEN a subsequent
+- AC-9: GIVEN a non-admin of the owner team WHEN `POST` a share THEN `403`.
+- AC-10: GIVEN C shared to B WHEN the owner revokes the share THEN a subsequent
   claim in B does NOT mount C.
 
 **Code surface**:
@@ -239,13 +239,13 @@ references it AND the connector is enabled for the task's workspace.
   ([capability-requests.md](capability-requests.md) §Connector gateway).
 
 **Acceptance criteria**:
-- AC-1: GIVEN role R with `connectorRefs=[c1]`, workspace enables `{c1,c2}`
+- AC-11: GIVEN role R with `connectorRefs=[c1]`, workspace enables `{c1,c2}`
   WHEN a task routed to R is claimed THEN the claim payload mounts only `c1`.
-- AC-2: GIVEN role R references `c1` but the workspace has NOT enabled `c1`
+- AC-12: GIVEN role R references `c1` but the workspace has NOT enabled `c1`
   WHEN a task routed to R is claimed THEN `c1` is NOT mounted.
-- AC-3: GIVEN a task with no `roleSlug` (unrouted) WHEN claimed THEN no
+- AC-13: GIVEN a task with no `roleSlug` (unrouted) WHEN claimed THEN no
   connectors are mounted (no role → no opt-in).
-- AC-4: GIVEN role R references a deleted connector id WHEN claimed THEN the
+- AC-14: GIVEN role R references a deleted connector id WHEN claimed THEN the
   claim succeeds and mounts the remaining valid refs (no `500`).
 
 **Code surface**:
@@ -287,18 +287,18 @@ a `mcpConnectors` array the runner merges verbatim into
   precedence (owned wins) — a Phase 2 concern.
 
 **Acceptance criteria**:
-- AC-1: GIVEN an `oauth` connector with a valid token, referenced+enabled WHEN
+- AC-15: GIVEN an `oauth` connector with a valid token, referenced+enabled WHEN
   claimed THEN payload entry has `headers.Authorization = 'Bearer …'` and no
   token appears in any DB read by the runner.
-- AC-2: GIVEN an `oauth` connector whose access token expired and whose refresh
+- AC-16: GIVEN an `oauth` connector whose access token expired and whose refresh
   succeeds WHEN claimed THEN the refreshed token is injected and `secrets` is
   updated (new `tokenExpiresAt`).
-- AC-3: GIVEN an `oauth` connector whose refresh FAILS (invalid_grant) WHEN
+- AC-17: GIVEN an `oauth` connector whose refresh FAILS (invalid_grant) WHEN
   claimed THEN the connector is omitted from the payload and the claim still
   returns `200`.
-- AC-4: GIVEN a `header` connector missing its secret row WHEN claimed THEN the
+- AC-18: GIVEN a `header` connector missing its secret row WHEN claimed THEN the
   connector is omitted (not mounted with an empty header).
-- AC-5: WHEN a task is claimed THEN the R2 role bundle for that role contains no
+- AC-19: WHEN a task is claimed THEN the R2 role bundle for that role contains no
   `mcpServers` key.
 
 **Code surface**:
@@ -345,18 +345,18 @@ a `mcpConnectors` array the runner merges verbatim into
 - The migration is idempotent (re-running creates no duplicates).
 
 **Acceptance criteria**:
-- AC-1: GIVEN a role with `mcpServers={ linear: {type:'http',url:'…'} }` WHEN the
+- AC-20: GIVEN a role with `mcpServers={ linear: {type:'http',url:'…'} }` WHEN the
   migration runs THEN a `connectors` row `linear` exists for the team and the
   role's `connectorRefs` contains its id.
-- AC-2: GIVEN two roles in the same team both referencing an identical `github`
+- AC-21: GIVEN two roles in the same team both referencing an identical `github`
   http server WHEN migrated THEN exactly one `github` connector exists and both
   roles reference it.
-- AC-3: GIVEN a role with legacy `mcpServers=["slack"]` WHEN migrated THEN a
+- AC-22: GIVEN a role with legacy `mcpServers=["slack"]` WHEN migrated THEN a
   `slack` connector with `authMode='none'`, `discoveredMetadata.needsReview=true`
   is created and referenced.
-- AC-4: WHEN the migration runs twice THEN the second run creates 0 new rows and
+- AC-23: WHEN the migration runs twice THEN the second run creates 0 new rows and
   changes 0 `connectorRefs`.
-- AC-5 (removed): auto reach-preservation for pre-existing team connectors was
+- Removed (was §4 AC-5): auto reach-preservation for pre-existing team connectors was
   considered and rejected — manual re-opt-in via the role picker is the accepted
   path. A post-deploy checklist item replaces the automated guarantee.
 
@@ -398,11 +398,11 @@ create (or reuse) a team `connectors` row and add its id to the role's
   reuses it (adds the ref) rather than erroring.
 
 **Acceptance criteria**:
-- AC-1: WHEN a user installs an http registry entry THEN a connector row is
+- AC-24: WHEN a user installs an http registry entry THEN a connector row is
   created for the team and returned to the editor, and `connectorRefs` gains it.
-- AC-2: WHEN a user installs an npm registry entry THEN a `stdio` connector with
+- AC-25: WHEN a user installs an npm registry entry THEN a `stdio` connector with
   `command` set and `envMapping` seeded from `environmentVariables` is created.
-- AC-3: GIVEN a connector already exists for the entry's `(teamId,name)` WHEN
+- AC-26: GIVEN a connector already exists for the entry's `(teamId,name)` WHEN
   installed again THEN no duplicate row is created (`409`-free reuse).
 
 **Code surface**:
@@ -456,18 +456,18 @@ custom URL uses. Every http connector SHOULD carry a display icon.
   a discovery throw with `422 discovery_failed` + `message`, never a bare 500.
 
 **Acceptance criteria**:
-- AC-1: WHEN an admin picks a catalog entry THEN the create body carries the
+- AC-27: WHEN an admin picks a catalog entry THEN the create body carries the
   entry's url and an OAuth entry goes straight to the connect redirect.
-- AC-2: GIVEN the team already has a connector at a catalog url WHEN the
+- AC-28: GIVEN the team already has a connector at a catalog url WHEN the
   catalog opens THEN that entry shows "Added" and is disabled.
-- AC-3: WHEN a custom url's MCP server returns `serverInfo.icons` THEN the
+- AC-29: WHEN a custom url's MCP server returns `serverInfo.icons` THEN the
   created connector's `iconUrl` is that icon.
-- AC-4: WHEN the url is `ttps://…` THEN the response is `400 invalid_url`
+- AC-30: WHEN the url is `ttps://…` THEN the response is `400 invalid_url`
   and the modal shows its message.
-- AC-5: GIVEN a connector with no inlined icon WHEN the connectors list loads
+- AC-31: GIVEN a connector with no inlined icon WHEN the connectors list loads
   THEN a lookup is scheduled after the response, and a remote icon that will
   not download is cleared rather than hotlinked.
-- AC-6: WHEN an icon URL or a redirect hop resolves to a private address THEN
+- AC-32: WHEN an icon URL or a redirect hop resolves to a private address THEN
   it is not fetched.
 
 **Code surface**:
@@ -603,17 +603,17 @@ approved client would be impersonation. Re-run the probe with
 `BUILDD_LIVE_PROVIDER_PROBE=1 bun test apps/web/tests/integration/mcp-provider-discovery.test.ts`.
 
 **Acceptance criteria**:
-- AC-1: GIVEN a connected Axiom connector in a role's `connectorRefs` WHEN the
+- AC-33: GIVEN a connected Axiom connector in a role's `connectorRefs` WHEN the
   team blocks `axiom` THEN the next claim holds the task with
   `blocked_by_policy` (or, advisory mode with other connectors healthy,
   claims without Axiom mounted) AND the credential row is unchanged.
-- AC-2: WHEN the owner team of a shared connector blocks it THEN grantee
+- AC-34: WHEN the owner team of a shared connector blocks it THEN grantee
   teams' tasks lose it too; WHEN an unrelated team blocks it THEN nothing changes.
-- AC-3: WHEN a member without `manage_connectors` calls connect THEN 403 and
+- AC-35: WHEN a member without `manage_connectors` calls connect THEN 403 and
   no state cookie.
-- AC-4: WHEN Vercel is added or preinstalled THEN `422 needs_approved_client`
+- AC-36: WHEN Vercel is added or preinstalled THEN `422 needs_approved_client`
   with no review link or vendor wording, and no connector row is created.
-- AC-5: GIVEN an entry with `clientSupport` WHEN Settings → Team → Apps
+- AC-37: GIVEN an entry with `clientSupport` WHEN Settings → Team → Apps
   renders it for an admin THEN the row reads "Not available" with no Connect
   and no details; a member does not see it.
 
@@ -687,7 +687,7 @@ This doc adds:
 |---|---|---|---|
 | `PATCH` | `/api/workspaces/[id]/skills/[skillId]` | Workspace member | now accepts `connectorRefs: string[]` |
 | `POST` | `/api/connectors` | Team admin | now accepts `transport`, `command`, `args`, `envMapping`; create-or-reuse by `(teamId,name)` |
-| `PATCH` | `/api/workspaces/[id]/connectors` | Workspace member | enable/disable one connector for one workspace; body `{ connectorId, enabled }`; upserts `connector_workspaces`; rejects `404` for a connector neither owned by nor shared to the caller's team (§1b AC-2) |
+| `PATCH` | `/api/workspaces/[id]/connectors` | Workspace member | enable/disable one connector for one workspace; body `{ connectorId, enabled }`; upserts `connector_workspaces`; rejects `404` for a connector neither owned by nor shared to the caller's team (AC-7) |
 
 **AC**: GIVEN a non-admin member WHEN `POST /api/connectors` THEN `403`.
 
@@ -722,7 +722,7 @@ being asserted as ABSENT must not carry them.
 
 A connector credential can go stale (`oauth` token expired, or refresh failed and
 the refresher nulled `tokenExpiresAt` while recording `lastVerificationError`).
-§3 AC-3 keeps the claim working by silently omitting the connector — correct for
+Criterion AC-17 keeps the claim working by silently omitting the connector: correct for
 the claim, wrong for the human.
 
 **Status derivation** is single-source in `apps/web/src/lib/connector-status.ts`:
@@ -780,15 +780,15 @@ reconnect. Approaching expiry is deliberately silent.
   where it would not fire.
 
 **Acceptance criteria**:
-- AC-1: GIVEN a credential with `lastVerificationError` set and
+- AC-38: GIVEN a credential with `lastVerificationError` set and
   `expiryNotifiedAt IS NULL` WHEN the notify cron runs THEN one alert is sent and
   `expiryNotifiedAt` is stamped.
-- AC-2: GIVEN the same credential on the next run THEN no alert is sent.
-- AC-3: GIVEN a credential expiring in 4h THEN no alert is sent.
-- AC-4: GIVEN a credential expired 1h ago (inside the sweep cycle) THEN no alert
+- AC-39: GIVEN the same credential on the next run THEN no alert is sent.
+- AC-40: GIVEN a credential expiring in 4h THEN no alert is sent.
+- AC-41: GIVEN a credential expired 1h ago (inside the sweep cycle) THEN no alert
   is sent; GIVEN one expired beyond a full cycle THEN an alert is sent.
-- AC-5: GIVEN no task is blocked THEN the expiry scan still runs.
-- AC-6: GIVEN the sweep cron's schedule changes THEN the lookahead re-derives and
+- AC-42: GIVEN no task is blocked THEN the expiry scan still runs.
+- AC-43: GIVEN the sweep cron's schedule changes THEN the lookahead re-derives and
   `cron-cadence.test.ts` fails until the mirrored constant matches the manifest.
 
 **Code surface**:
@@ -840,15 +840,15 @@ installing, enabling, granting and connecting stay admin/human acts.
   token reaches only its task's workspace and defaults `roleSlug` to its task's role.
 
 **Acceptance criteria**:
-- AC-1: GIVEN Axiom and Vercel both connected and mounted by the role WHEN
+- AC-44: GIVEN Axiom and Vercel both connected and mounted by the role WHEN
   `observability:query` is resolved THEN Axiom is first, `exact` and available,
   and Vercel is `partial` (logs only).
-- AC-2: GIVEN a role that does not mount a connector another role mounts THEN
+- AC-45: GIVEN a role that does not mount a connector another role mounts THEN
   the candidate is `auto_grant` naming that role; GIVEN no role mounts it THEN
   `ask_admin`.
-- AC-3: GIVEN a credential past the refresh grace, or with a failed refresh, or
+- AC-46: GIVEN a credential past the refresh grace, or with a failed refresh, or
   revoked THEN `reconnect`; GIVEN one just expired THEN not available.
-- AC-4: GIVEN nothing in the team or its catalog serves the need THEN
+- AC-47: GIVEN nothing in the team or its catalog serves the need THEN
   `candidates` is empty and the summary says so.
 
 **Code surface**:
@@ -865,3 +865,19 @@ installing, enabling, granting and connecting stay admin/human acts.
 - Mid-task 401 pause/resume — already specced, unchanged.
 - Per-account (personal) connector tokens — connectors stay team-shared.
 - SSE transport.
+
+## Renumbered
+
+Criteria ids were repeated in every section, so most of them collapsed into
+six. They are now unique across the file. Old to new, by section:
+
+- §1: AC-1..AC-5 unchanged.
+- §1b: AC-1..AC-5 to AC-6..AC-10.
+- §2: AC-1..AC-4 to AC-11..AC-14.
+- §3: AC-1..AC-5 to AC-15..AC-19.
+- §4: AC-1..AC-4 to AC-20..AC-23; the removed AC-5 is plain text.
+- §5: AC-1..AC-3 to AC-24..AC-26.
+- §5b: AC-1..AC-6 to AC-27..AC-32.
+- §5a: AC-1..AC-5 to AC-33..AC-37.
+- §6b: AC-1..AC-6 to AC-38..AC-43.
+- §6c: AC-1..AC-4 to AC-44..AC-47.

@@ -177,7 +177,7 @@ function FullBar({
 /**
  * State compaction: landed first, then half, ghost, notch, empty. Every
  * density here is an unaddressable histogram — no tick numbers, no ordinal,
- * no selection (mission-progress-strip-ordering.md ADDR-2) — so compacting it
+ * no selection (mission-progress-strip-ordering.md R-5) — so compacting it
  * is honest. The Landed strip, which is numbered, orders by dependency instead.
  */
 const SEGMENT_STATE_ORDER = { solid: 0, half: 1, ghost: 2, notch: 3, empty: 4 };

@@ -152,7 +152,7 @@ export async function PATCH(
     return NextResponse.json({ error: 'connectorId and enabled are required' }, { status: 400 });
   }
 
-  // Visibility check (spec §1b AC-2): a workspace may enable a connector its
+  // Visibility check (spec AC-7): a workspace may enable a connector its
   // team OWNS, or one SHARED to its team via connector_shares. Anything else
   // is not visible → 404.
   const connector = await db.query.connectors.findFirst({

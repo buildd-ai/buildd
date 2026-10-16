@@ -203,7 +203,7 @@ describe('RunnerTokensSection unlinked chip', () => {
   });
 });
 
-describe('RunnerTokensSection model login (docs/specs/runner-model-auth-source.md AC-7)', () => {
+describe('RunnerTokensSection model login (docs/specs/runner-model-login-detect-say-report.md R-7, AC-8)', () => {
   const seen = () => new Date(Date.now() - 60_000).toISOString();
   const line = () => host.querySelector<HTMLElement>('[data-testid="token-model-auth"]');
 
@@ -250,7 +250,7 @@ describe('RunnerTokensSection model login (docs/specs/runner-model-auth-source.m
   }
 });
 
-describe('RunnerTokensSection Codex login (docs/specs/runner-model-auth-source.md R-13, AC-13)', () => {
+describe('RunnerTokensSection Codex login (docs/specs/runner-model-login-detect-say-report.md R-13, AC-13)', () => {
   const seen = () => new Date(Date.now() - 60_000).toISOString();
   const codexLine = () => host.querySelector<HTMLElement>('[data-testid="token-codex-auth"]');
 

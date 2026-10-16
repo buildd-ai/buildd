@@ -3,6 +3,7 @@
 // task names the claim gate's hold instead of "nothing is running".
 import { describe, expect, it } from 'bun:test';
 import { deriveMissionStateView, type MissionStateInput } from './mission-state-view';
+import { getMissionStateChip } from './mission-helpers';
 
 const base: MissionStateInput = { status: 'active', isHeld: false, activeAgents: 0, health: 'STALLED' };
 const audit = { id: 'a1', status: 'pending', title: '[surface audit] Visual review', surfaceAudit: true };
@@ -119,9 +120,24 @@ describe('round 4: one all-clear phrase (spec 8e137fdb I-1)', () => {
   it('an open check is not ready to complete', () => {
     const v = deriveMissionStateView({ ...quiet, openChecks: [{ label: 'Spec revision 3', state: 'not checked' }] });
     expect(v.chip.label).toBe('CHECK PENDING');
+    // A pending check is not a success (c9353c11): waiting tone, never the green one.
+    expect(v.chip.cls).toBe(getMissionStateChip('awaiting_verification').cls);
+    expect(v.chip.cls).not.toBe(getMissionStateChip('review').cls);
   });
   it('a PR still awaiting merge keeps Ready for review', () => {
     const v = deriveMissionStateView({ ...quiet, missionPr: { state: 'open', prNumber: 7, prUrl: 'u' }, completion: { ok: false, code: 'mission_pr_unmerged', reason: '' } as never });
     expect(v.chip.label).not.toBe('READY TO COMPLETE');
+  });
+});
+
+describe('c9353c11: an open audit is never dropped as settled when the review could not be read', () => {
+  it('optional (impact unknown) keeps the queued audit as what the mission waits on', () => {
+    const v = deriveMissionStateView({ ...base, health: 'NOMINAL', progress: 100, missionPrMerged: true, openTasks: [audit], visualReview: { status: 'optional' }, completion: { ok: false, code: 'pending_deliverables', reason: '', pendingDeliverables: 1 } as never });
+    expect(v.chip.label).not.toBe('READY TO COMPLETE');
+    expect(v.situation?.headline ?? '').not.toMatch(/^Ready to complete|Nothing is waiting/);
+  });
+  it('waived still drops it', () => {
+    const v = deriveMissionStateView({ ...base, health: 'NOMINAL', progress: 100, missionPrMerged: true, openTasks: [audit], visualReview: { status: 'waived' } });
+    expect(v.chip.label).toBe('READY TO COMPLETE');
   });
 });

@@ -77,8 +77,9 @@ describe('applyUpdate', () => {
   test('widens the sparse checkout after the reset and before the reinstall', async () => {
     const { applyUpdate } = await import('../../src/updater');
     const order: string[] = [];
-    const home = process.env.BUILDD_HOME ?? mkdtempSync(join(tmpdir(), 'upd-home-'));
-    const result = await applyUpdate(home, { rmSync: () => {} } as any, {
+    // Always a throwaway dir: the real fs moves node_modules, never a real home's.
+    const home = mkdtempSync(join(tmpdir(), 'upd-home-'));
+    const result = await applyUpdate(home, require('fs'), {
       git: async (args: string[]) => {
         order.push(`git ${args[0]}${args[0] === 'sparse-checkout' ? ` ${args[1]}` : ''}`);
         if (args[0] === 'config') return 'true';

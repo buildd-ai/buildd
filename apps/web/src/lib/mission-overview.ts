@@ -179,6 +179,21 @@ export function overviewCells(model: Model, order: readonly string[] = stripOrde
   });
 }
 
+/** One square of a list's progress row: the strip cell's display state and the Overview group it sits in. */
+export interface OverviewProgressCell {
+  state: StateKey;
+  group: OverviewGroupKey;
+}
+
+/**
+ * The Overview strip as cells without ids or titles, for a list that draws the
+ * mission's progress in one row (`buildd top`, spec c7410e76 R-29): the same
+ * groups, order and cell states the page draws, so the two never disagree.
+ */
+export function overviewProgress(model: Model, order: readonly string[] = stripOrder(model)): OverviewProgressCell[] {
+  return overviewLayout(model, order).groups.flatMap(g => g.ids.map(id => ({ state: overviewCellState(model, id), group: g.key })));
+}
+
 /** What the selection marks on the tick row, and the focus card's reason line. */
 export function overviewSelection(model: Model, order: readonly string[], selectedId: string) {
   const t = model.tasks[selectedId];

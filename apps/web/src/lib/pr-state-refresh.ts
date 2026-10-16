@@ -16,6 +16,14 @@
  * Non-fatal: GitHub errors are logged; prLastCheckedAt is left unset (the
  * attempt clock and failure count belong to pr-reconcile). A failed row is held
  * out of this fast path, in-process, for FAILURE_BACKOFF_MS — see below.
+ *
+ * A delivery-owned row (its task has a workflow delivery, docs/specs/
+ * workflow-kernel-library.md §1 AC-3) is read but never healed here: a render,
+ * MCP read or explain records at most a fact (`recordPrStateObserved`, an
+ * unapplied `pr_closed` fact) and writes no lifecycle column, during the
+ * request or in after(). The webhook and the hourly pr-reconcile are its
+ * healers; a moved row keeps its clocks so pr-reconcile still sees it stale.
+ * Rows with no delivery keep the behaviour below unchanged.
  */
 
 import { emit } from '@/lib/core-emit';
@@ -222,8 +230,86 @@ interface _Candidate {
   prLifecycleStatus: string | null;
 }
 
+const RENDER_FACT_SOURCE = 'render:pr-state-refresh';
+
+/**
+ * Which candidates are delivery-owned. A failed read fails closed: every row
+ * is treated as owned (and not the kernel's, so no fact either), which only
+ * leaves this render's heal to the webhook and pr-reconcile.
+ */
+async function deliveryOwnership(workerIds: string[]): Promise<(id: string) => { kernel: boolean } | null> {
+  try {
+    const { deliveryOwnedWorkers } = await import('@/lib/workflow/seam');
+    const owned = await deliveryOwnedWorkers(workerIds);
+    return (id) => owned.get(id) ?? null;
+  } catch (err) {
+    console.error('[pr-state-refresh] delivery ownership read failed; leaving every row to the healers:', err);
+    return () => ({ kernel: false });
+  }
+}
+
+/** Is any row carrying this PR delivery-owned? A failed read answers yes (skip the stamp). */
+async function prHasOwnedSibling(prUrl: string | null | undefined, prNumber: number): Promise<boolean> {
+  if (!prUrl) return false; // the stamp targets nothing without a url
+  try {
+    const { prHasDeliveryOwnedRow } = await import('@/lib/workflow/seam');
+    return await prHasDeliveryOwnedRow({ prUrl, prNumber });
+  } catch (err) {
+    console.error(`[pr-state-refresh] sibling ownership read failed for PR #${prNumber}; skipping the merge stamp:`, err);
+    return true;
+  }
+}
+
+/** AC-3: a delivery-owned PR a read saw closed or merged becomes a fact, recorded and not applied. */
+async function recordObservedClosure(p: { workspaceId: string; repo: string; prNumber: number; pull: unknown }): Promise<void> {
+  try {
+    const { recordPrStateObserved } = await import('@/lib/workflow/seam');
+    await recordPrStateObserved({ workspaceId: p.workspaceId, repoFullName: p.repo, prNumber: p.prNumber, pull: p.pull, source: RENDER_FACT_SOURCE });
+  } catch (err) {
+    console.error(`[pr-state-refresh] fact record failed for PR #${p.prNumber}:`, err);
+  }
+}
+
+/**
+ * The task and mission pages' merge-state import (after the response). A row
+ * with no delivery runs `refreshWorkerMergeStateIfStale` as before; a
+ * delivery-owned row is read and, if GitHub says it closed, recorded as a fact
+ * only (AC-3).
+ */
+export async function observeMergeStateOnRender(
+  stale: Array<{ id: string; prNumber: number; prUrl: string; workspaceId: string }>,
+  installationId: number,
+): Promise<void> {
+  if (stale.length === 0) return;
+  const ownerOf = await deliveryOwnership(stale.map((w) => w.id));
+  for (const w of stale) {
+    const { workspaceId } = w;
+    const owned = ownerOf(w.id);
+    if (!owned) {
+      // Its merge stamp reaches every row on the PR, so it is left to the
+      // healers when any of them is delivery-owned.
+      if (await prHasOwnedSibling(w.prUrl, w.prNumber)) continue;
+      // Lazy: pr-reconcile's graph is large and only the page imports need it.
+      const { refreshWorkerMergeStateIfStale } = await import('@/lib/pr-reconcile');
+      await refreshWorkerMergeStateIfStale({ id: w.id, prNumber: w.prNumber, prUrl: w.prUrl }, installationId);
+      continue;
+    }
+    if (!owned.kernel) continue;
+    const repo = resolvePrRepo({ prUrl: w.prUrl, workspaceRepo: null });
+    if (!repo) continue;
+    try {
+      const pull = await githubApi(installationId, `/repos/${repo}/pulls/${w.prNumber}`) as { state?: string };
+      if (pull?.state === 'closed') await recordObservedClosure({ workspaceId, repo, prNumber: w.prNumber, pull });
+    } catch (err) {
+      console.warn(`[pr-state-refresh] read of delivery-owned PR #${w.prNumber} failed:`, err);
+    }
+  }
+}
+
 async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
   if (candidates.length === 0) return;
+
+  const ownerOf = await deliveryOwnership(candidates.map((c) => c.id));
 
   /** Repo → installation, memoized for the batch. See pr-reconcile.ts. */
   const installationByRepo = new Map<string, number | null>();
@@ -278,6 +364,31 @@ async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
           `/repos/${repo}/pulls/${worker.prNumber}`,
         ) as { state: string; merged: boolean; merged_at: string | null; head: { sha: string } };
 
+        const owned = ownerOf(worker.id);
+        if (owned) {
+          // AC-3: read, and record at most a fact. No lifecycle column, no
+          // dependency wake, no event: the webhook and pr-reconcile heal it.
+          let moved = pr.state === 'closed' || !!pr.merged;
+          if (moved) {
+            if (owned.kernel) await recordObservedClosure({ workspaceId, repo, prNumber: worker.prNumber, pull: pr });
+          } else if (CI_STATUSES.has(worker.prLifecycleStatus ?? '') && pr.head?.sha) {
+            const liveStatus = await fetchCiLifecycleStatus(installationId, repo, pr.head.sha);
+            moved = liveStatus !== null && liveStatus !== worker.prLifecycleStatus;
+          }
+          if (moved) {
+            // Clocks stay put so pr-reconcile still finds the row stale; the
+            // in-process backoff keeps renders from re-reading it meanwhile.
+            recordFailure(worker.id);
+          } else {
+            const now = new Date();
+            await db.update(workers)
+              .set({ prLastCheckedAt: now, prLastVerifiedAt: now, prCheckFailureCount: 0, updatedAt: now })
+              .where(eq(workers.id, worker.id));
+            failedAt.delete(worker.id);
+          }
+          continue;
+        }
+
         const now = new Date();
         // The PR resolved, so whatever failure streak this row had is over.
         // Reaching this line means the GitHub call above returned successfully
@@ -296,10 +407,14 @@ async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
           // The merge belongs to the PR: one fact stamps this row and every
           // other row carrying it (lib/pr-merge-stamp), GitHub's merged_at.
           await recordPrFact({ workerId: worker.id }, { kind: 'merged', mergedAt: pr.merged_at });
-          stamped = await stampPrMergedOnAllRows({ prUrl: worker.prUrl, prNumber: worker.prNumber, mergedAt: pr.merged_at }).catch(err => {
-            console.error(`[pr-state-refresh] merge stamp failed for PR #${worker.prNumber}:`, err);
-            return [] as Array<{ id: string; taskId: string | null }>;
-          });
+          // The stamp reaches every row on the PR; it is skipped when any of
+          // them is delivery-owned (AC-3: that row is the healers' to write).
+          if (!(await prHasOwnedSibling(worker.prUrl, worker.prNumber))) {
+            stamped = await stampPrMergedOnAllRows({ prUrl: worker.prUrl, prNumber: worker.prNumber, mergedAt: pr.merged_at }).catch(err => {
+              console.error(`[pr-state-refresh] merge stamp failed for PR #${worker.prNumber}:`, err);
+              return [] as Array<{ id: string; taskId: string | null }>;
+            });
+          }
           didMerge = true;
         } else if (pr.state === 'closed') {
           await recordPrFact({ workerId: worker.id }, { kind: 'closed' });
