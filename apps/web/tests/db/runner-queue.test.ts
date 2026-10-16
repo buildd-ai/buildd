@@ -7,13 +7,12 @@
  * and when another runner takes position 1, position 2 is first on the next read.
  */
 import { beforeAll, describe, expect, test } from 'bun:test';
-import { and, asc, desc, inArray } from 'drizzle-orm';
+import { and, inArray } from 'drizzle-orm';
 import { sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
 import { assertDbConfigured, q, seedMission, seedTask, seedWorkspace } from './harness';
-import { loadRunnerQueue, runnerQueueGates, runnerQueueWhere } from '../../src/lib/claim-order-queue';
-import { claimOrderBy } from '../../src/lib/claim-order';
+import { buildRunnerQueueQuery, loadRunnerQueue, runnerQueueGates, runnerQueueWhere } from '../../src/lib/claim-order-queue';
 
 beforeAll(() => { assertDbConfigured(); });
 
@@ -80,12 +79,11 @@ describe('runner queue', () => {
   test("what it lists as claimable now is exactly the claim WHERE + ORDER BY's own result", async () => {
     const now = new Date();
     const gates = runnerQueueGates(caller, now);
-    const claimRows = await db.select({ id: tasks.id }).from(tasks)
-      .where(and(runnerQueueWhere([ws]), ...Object.values(gates)))
-      .orderBy(...claimOrderBy(tasks, { desc, asc }));
+    // Use the claim route's actual candidate query, not a separate reconstruction.
+    const candidateRows = await buildRunnerQueueQuery(db, { workspaceIds: [ws], gates }) as unknown as Array<{ id: string }>;
     const out = await loadRunnerQueue({ workspaceIds: [ws], caller, now });
     const claimableNow = out.teams[0].queue.filter(t => t.holds.length === 0).map(t => t.id);
-    expect(claimableNow).toEqual(claimRows.map(r => r.id));
+    expect(claimableNow).toEqual(candidateRows.map(r => r.id));
     expect(claimableNow).toEqual([id.high, id.oldFive, id.newFive]);
   });
 

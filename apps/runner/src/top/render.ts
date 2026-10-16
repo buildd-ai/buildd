@@ -577,7 +577,7 @@ function queueBody(state: TopState, cols: number, height: number, now: number, p
       for (const r of section.notFor) lines.push({ text: queueRowLine(r, c, sel?.taskId === r.taskId, p), taskId: r.taskId });
     }
   }
-  if (state.queue?.truncated) lines.push({ text: p.fg('muted', fit(' The queue is longer than this; o opens the rest on buildd.', cols)) });
+  if (state.queue?.truncated) lines.push({ text: p.fg('muted', fit(' The queue is longer than this; see all at app/team/{team}/queue on buildd.', cols)) });
   // Scroll so the selected row stays in view.
   const selLine = lines.findIndex(l => l.taskId !== undefined && l.taskId === sel?.taskId);
   const offset = selLine >= height ? selLine - height + 1 : 0;
