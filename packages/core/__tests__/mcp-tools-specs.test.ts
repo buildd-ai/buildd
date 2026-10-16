@@ -343,7 +343,7 @@ describe('manage_specs', () => {
       dryRun: true, repo: 'acme/app', commitSha: 'a'.repeat(40), counts: { create: 1, reimport: 0, skip: 1 },
       byArea: [{ area: 'Billing', areaSpecId: SPEC, proposed: false, count: 1 }],
       files: [
-        { path: 'docs/specs/invoices.md', action: 'create', spec: { title: 'Invoices' }, area: { specId: SPEC, title: 'Billing', proposed: false }, provenance: { commitSha: 'a'.repeat(40), prNumber: 12 }, duplicates: [{ specId: 'x1', title: 'Old invoices', relation: 'duplicate', p: 0.95 }] },
+        { path: 'docs/specs/invoices.md', action: 'create', spec: { title: 'Invoices' }, area: { specId: SPEC, title: 'Billing', proposed: false }, provenance: { commitSha: 'a'.repeat(40), prNumber: 12 }, duplicates: [{ specId: 'x1', title: 'Old invoices', relation: 'duplicate', p: 0.95, blocks: true }, { specId: 'x2', title: 'Runner login', relation: 'duplicate', p: 0.54, blocks: false }] },
         { path: 'docs/specs/INDEX.md', action: 'skip', reason: 'meta_file', message: 'INDEX.md is generated', area: null },
       ],
     });
@@ -351,7 +351,8 @@ describe('manage_specs', () => {
     expect([api.mock.calls[0][0], JSON.parse(api.mock.calls[0][1].body)]).toEqual(['/api/specs/import', { workspaceId: WS }]);
     expect(r).toContain('Dry run (nothing written) from acme/app@aaaaaaa');
     expect(r).toContain('create: Invoices from docs/specs/invoices.md, last changed in #12');
-    expect(r).toContain('possible duplicate of "Old invoices"');
+    expect(r).toContain('duplicate of "Old invoices" (x1, duplicate p 0.95); a real run skips it unless docs/specs/invoices.md is in allowDuplicates');
+    expect(r).toContain('overlaps "Runner login" (x2, duplicate p 0.54); a real run still creates it');
     expect(r).toContain('docs/specs/INDEX.md: meta_file');
 
     api.mockResolvedValueOnce({ dryRun: false, files: [], counts: { create: 0, reimport: 0, skip: 0 }, byArea: [] });

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { db } from '@buildd/core/db';
-import { artifacts, tasks, workers } from '@buildd/core/db/schema';
+import { artifacts, missions, tasks, workers } from '@buildd/core/db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
 import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
@@ -17,7 +17,7 @@ import { criterionScreens } from '@buildd/spec-contract/check-lines';
 import { MAX_VISUAL_SHOTS, VISUAL_EVIDENCE_RETENTION_DAYS } from '@/lib/specs/visual-limits';
 
 export { MAX_VISUAL_SHOTS, VISUAL_EVIDENCE_RETENTION_DAYS };
-import { fail, type SpecCaller, type SpecError } from '@/lib/specs/store';
+import { fail, reach, type SpecCaller, type SpecError } from '@/lib/specs/store';
 
 /**
  * Visual verdicts on spec criteria (docs/specs/living-specs.md §11): the
@@ -51,6 +51,8 @@ export interface VisualVerdictInput {
   /** Screenshots of the pinned design rendered at the same state, for a criterion that names screens (§12). */
   designShotIds?: unknown;
   observed?: unknown;
+  /** The claimed worker of a local-executor mission's audit, for a caller with no task token. */
+  workerId?: unknown;
 }
 
 export interface VisualVerdictDeps {
@@ -108,13 +110,35 @@ async function ownShots(audit: TaskRow, ids: readonly string[]): Promise<Array<{
   return own.length === ids.length ? own.map((r) => ({ id: r.id, storageKey: r.storageKey as string })) : null;
 }
 
+/**
+ * The audit task whose run is recording: a task token's own task, or, on an
+ * executor=local mission, the task of the worker an interactive session
+ * claimed (claim_task) under the caller's own account. No runner token exists
+ * there, so the claimed worker is the run; auditorRefusal still decides whether
+ * that task may grade the subject.
+ */
+async function auditRunTaskId(caller: SpecCaller, workerId: unknown): Promise<string | undefined> {
+  if (caller.kind !== 'account') return undefined;
+  const scoped = (caller.account.taskScope as { taskId?: string } | undefined)?.taskId;
+  if (scoped) return scoped;
+  if (typeof workerId !== 'string' || !isUuid(workerId)) return undefined;
+  const [row] = await db.select({ taskId: workers.taskId, accountId: workers.accountId, workspaceId: tasks.workspaceId, executor: missions.executor })
+    .from(workers)
+    .innerJoin(tasks, eq(tasks.id, workers.taskId))
+    .innerJoin(missions, eq(missions.id, tasks.missionId))
+    .where(eq(workers.id, workerId)).limit(1);
+  if (!row || row.accountId !== caller.account.id || row.executor !== 'local' || !row.taskId) return undefined;
+  if (!(await reach(caller, row.workspaceId, true))) return undefined;
+  return row.taskId;
+}
+
 export async function recordVisualVerdict(
   caller: SpecCaller,
   subjectTaskId: unknown,
   input: VisualVerdictInput,
   deps: VisualVerdictDeps = defaultDeps,
 ): Promise<{ ok: true; verdictId: string; outcome: OutcomeView } | SpecError> {
-  const auditId = caller.kind === 'account' ? (caller.account.taskScope as { taskId?: string } | undefined)?.taskId : undefined;
+  const auditId = await auditRunTaskId(caller, input.workerId);
   if (!auditId || !isUuid(auditId)) return fail(403, 'Only a mission\'s visual audit, from its own run, records a visual verdict');
   if (typeof subjectTaskId !== 'string' || !isUuid(subjectTaskId)) return fail(404, 'Task not found');
   const [audit, subject] = await Promise.all([loadTask(auditId), loadTask(subjectTaskId)]);
