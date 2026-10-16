@@ -870,3 +870,81 @@ describe('bounded reads on GET /api/artifacts/[artifactId]', () => {
     expect(ledger).toHaveLength(0);
   });
 });
+
+describe('GET /api/artifacts/[artifactId] — 8-hex short id', () => {
+  const MINE_A = '11111111-aaaa-4111-8111-111111111111';
+  const MINE_B = '11111111-bbbb-4111-8111-111111111111';
+  const OTHER = '11111111-cccc-4111-8111-111111111111';
+  const shortParams = Promise.resolve({ artifactId: '11111111' });
+  const rowFor = (id: string, workspaceId: string) => ({
+    id, workerId: null, workspaceId, worker: null, type: 'doc', content: 'x', metadata: {}, currentRevision: 0,
+  });
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockArtifactsFindFirst.mockReset();
+    mockVerifyAccountWorkspaceAccess.mockReset();
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    // The caller reaches ws-mine only.
+    mockVerifyAccountWorkspaceAccess.mockImplementation(async (_a: unknown, ws: string) => ws === 'ws-mine');
+    mockArtifactsFindFirst.mockImplementation(async () => null);
+    selectRows = [];
+  });
+
+  // The where clause is an opaque closure, so lookups are answered in call
+  // order: first each prefix candidate (selectRows order), then the final read
+  // of whichever id resolved (the one the caller can reach).
+  const byId = (rows: Record<string, ReturnType<typeof rowFor>>) => {
+    let n = 0;
+    mockArtifactsFindFirst.mockImplementation(async () => {
+      const i = n++;
+      if (i < selectRows.length) return rows[selectRows[i]!.id as string] ?? null;
+      return Object.values(rows).find((r) => r.workspaceId === 'ws-mine') ?? null;
+    });
+  };
+
+  it('reads the one reachable artifact like its full id', async () => {
+    selectRows = [{ id: MINE_A }];
+    byId({ [MINE_A]: rowFor(MINE_A, 'ws-mine') });
+    const res = await GET(createMockGetRequest('bld_test'), { params: shortParams });
+    expect(res.status).toBe(200);
+    expect((await res.json()).artifact.id).toBe(MINE_A);
+  });
+
+  it('falls through to the 404 for a short id that matches nothing', async () => {
+    const res = await GET(createMockGetRequest('bld_test'), { params: shortParams });
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toContain('UUID');
+  });
+
+  it('returns 409 when two of the caller\'s own artifacts share the prefix', async () => {
+    selectRows = [{ id: MINE_A }, { id: MINE_B }];
+    byId({ [MINE_A]: rowFor(MINE_A, 'ws-mine'), [MINE_B]: rowFor(MINE_B, 'ws-mine') });
+    const res = await GET(createMockGetRequest('bld_test'), { params: shortParams });
+    expect(res.status).toBe(409);
+  });
+
+  it('ignores an artifact in an unreachable workspace: neither ambiguous nor revealed', async () => {
+    selectRows = [{ id: MINE_A }, { id: OTHER }];
+    byId({ [MINE_A]: rowFor(MINE_A, 'ws-mine'), [OTHER]: rowFor(OTHER, 'ws-theirs') });
+    const res = await GET(createMockGetRequest('bld_test'), { params: shortParams });
+    expect(res.status).toBe(200);
+    expect((await res.json()).artifact.id).toBe(MINE_A);
+  });
+
+  it('answers a prefix that only an unreachable artifact has like no match', async () => {
+    selectRows = [{ id: OTHER }];
+    byId({ [OTHER]: rowFor(OTHER, 'ws-theirs') });
+    const res = await GET(createMockGetRequest('bld_test'), { params: shortParams });
+    expect(res.status).toBe(404);
+    expect(JSON.stringify(await res.json())).not.toContain(OTHER);
+  });
+
+  it('401s before resolving anything when unauthenticated', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    selectRows = [{ id: MINE_A }, { id: MINE_B }];
+    const res = await GET(createMockGetRequest(), { params: shortParams });
+    expect(res.status).toBe(401);
+  });
+});

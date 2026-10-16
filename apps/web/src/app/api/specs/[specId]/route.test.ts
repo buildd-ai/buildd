@@ -14,6 +14,8 @@ mock.module('@/lib/specs/section-revise', () => ({
     return { ok: true, spec: { version: 2 }, revision: { revision: 2 }, unchanged: false };
   },
 }));
+let short: unknown = { state: 'none' };
+mock.module('@/lib/specs/short-id', () => ({ SHORT_ID: /^[0-9a-f]{8}$/, resolveSpecShortId: async () => short }));
 const { GET, PATCH } = await import('./route');
 const params = Promise.resolve({ specId: 's1' });
 
@@ -43,5 +45,16 @@ describe('/api/specs/[specId]', () => {
     expect((await GET(new NextRequest('http://l/api/specs/s1?revision=0'), { params })).status).toBe(400);
     caller = null;
     expect((await GET(new NextRequest('http://l/api/specs/s1'), { params })).status).toBe(401);
+  });
+
+  it('GET resolves an 8-hex short id; several matches are a 409 listing full ids', async () => {
+    caller = { kind: 'user', userId: 'u1' };
+    short = { state: 'one', id: 'full-id' };
+    const ok = await GET(new NextRequest('http://l/api/specs/abcdef12'), { params: Promise.resolve({ specId: 'abcdef12' }) });
+    expect(ok.status).toBe(200);
+    short = { state: 'many', specs: [{ id: 'a', title: 'A', workspaceName: 'w' }, { id: 'b', title: 'B', workspaceName: 'w' }] };
+    const res = await GET(new NextRequest('http://l/api/specs/abcdef12'), { params: Promise.resolve({ specId: 'abcdef12' }) });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'ambiguous_short_id', specs: [{ id: 'a' }, { id: 'b' }] });
   });
 });
