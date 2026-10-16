@@ -20,12 +20,16 @@
  *   reverted when their own runs slip. Hourly so a revert lands within
  *   the hour; a run with nothing to change writes no change row.
  *
- * `changed` = pools whose allocation this run changed: work done.
+ * - Every run also evaluates claim coordination learning cells, recording
+ *   their safety evidence, policy changes and reasons through the same dial.
+ *
+ * `changed` includes pool allocations and both model and claim dial changes.
  *
  * Auth: Bearer CRON_SECRET (via withCronRun).
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { TIER_POOLS_JOB, runTierPoolsDaily } from '@buildd/core/tier-pool-daily-source';
+import { runClaimLearningStep } from '@buildd/core/orchestration-claim-learning-source';
 import { runDialStep } from '@buildd/core/tier-dial-source';
 import { withCronRun } from '@/lib/cron-run';
 // Chat retro verdicts for chat dial cells (experiment; lib/chat-retro/REMOVAL.md).
@@ -38,11 +42,20 @@ export async function GET(req: NextRequest) {
     const now = new Date();
     const summary = await runTierPoolsDaily({ now });
     const dial = await runDialStep({ now, chatQuality: chatRetroQualitySource });
-    const result = { ...summary, dial };
+    // Claim cells reuse this hourly evaluation job and the existing dial mechanism.
+    // A failed evidence read changes no claim policy and remains visible in the cron verdict.
+    let claimReadErrors = 0;
+    const claimLearning = await runClaimLearningStep({ now }).catch(error => {
+      claimReadErrors++;
+      console.error('[tier-pools] claim learning evaluation failed', error instanceof Error ? error.message : error);
+      return null;
+    });
+    const claimCells = claimLearning?.cells ?? [];
+    const result = { ...summary, dial, claimLearning };
     report({
-      processed: summary.pools + dial.pools,
-      changed: summary.written + dial.transitions.length,
-      errors: summary.errors + dial.errors,
+      processed: summary.pools + dial.pools + claimCells.length,
+      changed: summary.written + dial.transitions.length + claimCells.filter(cell => cell.changed).length,
+      errors: summary.errors + dial.errors + claimReadErrors + claimCells.filter(cell => !cell.applied).length,
       result: result as unknown as Record<string, unknown>,
     });
     return NextResponse.json(result);

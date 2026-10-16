@@ -1,3 +1,4 @@
+import { summarizeClaimHoldReadout, type ClaimCalibrationEvidence, type ClaimHoldGroupSummary } from './orchestration-claim-readout';
 /**
  * Soft-overlap STARTs, graded by the same outcome labeller as Jev's
  * (knowledge-base: buildd/design/conflict-aware-orchestration.md §6).
@@ -24,7 +25,8 @@ import {
 
 export type SoftStartDecidedBy = 'rule' | 'jev';
 
-export interface SoftStartForReadout {
+export interface SoftStartForReadout extends ClaimCalibrationEvidence {
+  fingerprint?: string;
   /** The gate event's id. */
   id: string;
   taskId: string;
@@ -52,6 +54,7 @@ export interface SoftStartReadoutInput {
 }
 
 export interface SoftStartCohortSummary {
+  cells: ClaimHoldGroupSummary[];
   decidedBy: SoftStartDecidedBy;
   starts: number;
   startSafety: { observedUnsafe: number; observedSafe: number; censored: number; missing: number };
@@ -96,6 +99,18 @@ export function summarizeSoftStartReadout(input: SoftStartReadoutInput): SoftSta
   }));
   const labels = new Map(labelDecisionOutcomes({ ...input.outcome, decisions }).map(l => [l.decisionId, l]));
 
+  const cells = summarizeClaimHoldReadout({
+    decisions: input.starts.map(s => ({ ...s, decisionId: 'soft_overlap_start', fingerprint: s.fingerprint ?? 'unknown',
+      landed: s.landed ?? input.outcome.prs.some(p => p.taskId === s.taskId && p.workspaceId === s.workspaceId && p.mergedAt !== null),
+      candidatePolicyVersion: 'soft-start', model: s.decidedBy === 'jev' ? 'jev' : null,
+      experimentArm: 'apply', propensity: 1, applied: true, effective: 'START', suggested: 'START',
+      status: 'applied', reason: null, createdAt: s.startedAt,
+      actor: s.actor ?? (s.decidedBy === 'jev' ? 'jev_start' : 'rule_start_overlap'),
+    })),
+    labels: [...labels.values()], tasks: input.outcome.tasks,
+    starts: input.starts.map(s => ({ taskId: s.taskId, startedAt: s.startedAt })),
+    windowEnd: input.windowEnd ?? new Date(),
+  });
   return COHORTS.map((decidedBy) => {
     const rows = input.starts.filter(s => s.decidedBy === decidedBy);
     const safety = { observedUnsafe: 0, observedSafe: 0, censored: 0, missing: 0 };
@@ -118,6 +133,7 @@ export function summarizeSoftStartReadout(input: SoftStartReadoutInput): SoftSta
     const observed = safety.observedUnsafe + safety.observedSafe;
     return {
       decidedBy,
+      cells: cells.filter(c => rows.some(s => s.actor === c.actor || (!s.actor && (s.decidedBy === 'jev' ? 'jev_start' : 'rule_start_overlap') === c.actor))),
       starts: rows.length,
       startSafety: safety,
       unsafeStartRate: observed > 0 ? safety.observedUnsafe / observed : null,

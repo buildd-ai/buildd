@@ -23,9 +23,10 @@
  *     loses the atomic claim gives back the leases it took
  *     (`releaseGatedStartPaths`).
  *
- * The applying fraction is the committed `CLAIM_HOLD_APPLYING_FRACTION` (no
- * shadow-promotion gate, by owner decision, task 7eb191b9). Setting it to 0
- * is the single rollback switch back to deterministic HOLD.
+ * Each gate and area uses the persisted learning policy. Its applying fraction
+ * is the single rollback switch: zero returns the cell to deterministic HOLD.
+ * Every application rereads that policy and checks the current cohort and
+ * confidence threshold, so an older START cannot bypass a reverted cell.
  *
  * Every note carries a risk profile (packages/core/orchestration-claim-risk.ts).
  * Code decides what code can: a soft overlap whose holder never started, or
@@ -59,6 +60,7 @@ import {
 } from '@buildd/core/orchestration-claim-decision';
 import {
   runOrchestrationDecision,
+  assignApplyingArm,
   type OrchestrationDecisionDeps,
 } from '@buildd/core/orchestration-decision';
 import { intersectPaths, pathsOverlap, REPO_WIDE_SENTINEL, type ManifestOverlapKind } from '@buildd/core/path-overlap';
@@ -73,12 +75,16 @@ import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { resolveSerializedSurfaces } from '@/lib/surface-ordering-config';
 import { overlapIsHard, resolveHardOverlapSurfaces } from '@/lib/hard-overlap-surfaces';
 
+import { claimAreaClass } from '@buildd/core/orchestration-claim-learning-evidence';
+import type { ClaimLearningPolicy } from '@buildd/core/orchestration-claim-learning';
+
 type ClaimHoldDecision = Decision<typeof CLAIM_HOLD_QUESTIONS>;
 
 export interface ClaimHoldDeps {
+  loadLearningPolicy?: (gate: string, area: string) => Promise<ClaimLearningPolicy>;
   /** Override the definition (tests; Step I's readout of a candidate policy). */
   decision?: ClaimHoldDecision;
-  /** Override the applying fraction (tests; 0 = rolled back). Default `CLAIM_HOLD_APPLYING_FRACTION`. */
+  /** Override the persisted applying fraction in tests (0 = rolled back). */
   applyingFraction?: number;
   decide?: typeof runOrchestrationDecision;
   decisionDeps?: OrchestrationDecisionDeps;
@@ -475,6 +481,18 @@ const defaultLoadHolder: NonNullable<ClaimHoldDeps['loadHolder']> = async (opts)
 const defaultLoadEvidence: NonNullable<ClaimHoldDeps['loadEvidence']> = async (opts) =>
   (await import('@buildd/core/orchestration-claim-source')).loadSoftOverlapEvidence(opts);
 const defaultFindAppliedStart = async (k: ClaimDecisionKey) => (await import('@buildd/core/orchestration-claim-source')).findAppliedStart(k);
+const defaultLoadLearningPolicy: NonNullable<ClaimHoldDeps['loadLearningPolicy']> = async (gate, area) =>
+  (await import('@buildd/core/orchestration-claim-learning-source')).loadClaimLearningPolicy(gate, area);
+
+async function learningPolicyFor(note: ClaimHoldNote, deps: ClaimHoldDeps) {
+  const policy = await (deps.loadLearningPolicy ?? defaultLoadLearningPolicy)(note.candidate.gate, claimAreaClass(note.candidate.concretePaths));
+  return { ...policy, fraction: deps.applyingFraction ?? policy.fraction };
+}
+
+function withLearningThreshold(decision: ClaimHoldDecision, minConfidence: number): ClaimHoldDecision {
+  return { ...decision, policyOf: question => ({ ...decision.policyOf(question), minConfidence }) };
+}
+
 const defaultAcquire = async (input: AcquireInput) => (await import('@buildd/core/path-claim')).acquirePathClaims(input);
 
 /** Longest-waiting first: a task deferred for hours is asked before one deferred this minute. */
@@ -491,7 +509,7 @@ function byLongestWait(a: ClaimHoldNote, b: ClaimHoldNote): number {
  * held tasks can no longer starve every task queued behind them. Never throws.
  */
 export async function runClaimHoldShadow(notes: readonly ClaimHoldNote[], deps: ClaimHoldDeps = {}): Promise<void> {
-  const decision = deps.decision ?? CLAIM_HOLD_DECISION;
+  const baseDecision = deps.decision ?? CLAIM_HOLD_DECISION;
   const now = deps.now ?? (() => Date.now());
   const decide = deps.decide ?? runOrchestrationDecision;
   const resolveAccess = deps.decisionDeps?.resolveAccess ?? defaultResolveAccess;
@@ -501,6 +519,8 @@ export async function runClaimHoldShadow(notes: readonly ClaimHoldNote[], deps: 
     if (note.candidate.risk && note.candidate.risk.route !== 'ask_model') continue;
     try {
       const c = note.candidate;
+      const learning = await learningPolicyFor(note, deps);
+      const decision = withLearningThreshold(baseDecision, learning.minConfidence);
       const t = now();
       if ((disabledTeams.get(c.teamId) ?? 0) > t) continue;
       const memoKey = `${c.taskId}:${note.digest}:${decision.fingerprint}`;
@@ -563,9 +583,17 @@ export async function runClaimHoldShadow(notes: readonly ClaimHoldNote[], deps: 
           return buildClaimHoldState(c, holder, evidence, risk);
         },
         isValidAnswer: (v) => v === 'HOLD' || v === 'START',
-        cohort: { fraction: grantedFraction(deps, c.gate), unitId: c.taskId },
+        cohort: { fraction: learning.fraction, unitId: c.taskId },
         // The access just resolved is reused, so the adapter does not read the team again.
-        deps: { ...deps.decisionDeps, resolveAccess: async () => access },
+        deps: { ...deps.decisionDeps, resolveAccess: async () => access,
+          record: async (row, replay) => {
+            const record = deps.decisionDeps?.record ?? (await import('@buildd/core/orchestration-ledger-source')).recordOrchestrationDecision;
+            await record({ ...row, receipt: { ...row.receipt,
+              gate: c.gate, areaClass: claimAreaClass(c.concretePaths),
+              coordination: { paths: c.overlapPaths, blockerTaskIds: c.holder.taskId ? [c.holder.taskId] : [], staleBlocker: false },
+            } as typeof row.receipt }, replay);
+          },
+        },
       });
       if (outcome.reason === 'capability_disabled') {
         remember(disabledTeams, c.teamId, now() + DISABLED_TEAM_TTL_MS);
@@ -605,7 +633,8 @@ export function scheduleClaimHoldShadow(collector: ClaimHoldCollector, deps: Cla
 const GATES: readonly ClaimHoldCandidate['gate'][] = ['advisory_manifest', 'open_pr_overlap', 'soft_overlap'];
 
 /**
- * The applying fraction for a gate: the committed switch, clamped to [0, 1].
+ * Cheap reachability ceiling, clamped to [0, 1]; the persisted cell is checked
+ * asynchronously before any START applies.
  * Zero (or anything unusable) means rolled back: deterministic HOLD.
  */
 export function grantedFraction(deps: ClaimHoldDeps, _gate: ClaimHoldCandidate['gate']): number {
@@ -630,7 +659,10 @@ export async function gatedStartApplies(note: ClaimHoldNote | null, deps: ClaimH
   if (!isGatedStartReachable(decision, grantedFraction(deps, note.candidate.gate))) return false;
   const now = (deps.now ?? (() => Date.now()))();
   try {
-    return await (deps.findAppliedStart ?? defaultFindAppliedStart)(keyFor(note, decision, new Date(now - CLAIM_HOLD_START_TTL_MS)));
+    const learning = await learningPolicyFor(note, deps);
+    if (!isGatedStartReachable(decision, learning.fraction)) return false;
+    if (assignApplyingArm({ unitId: note.candidate.taskId, salt: decision.id, fraction: learning.fraction }).arm !== 'apply') return false;
+    return await (deps.findAppliedStart ?? defaultFindAppliedStart)({ ...keyFor(note, decision, new Date(now - CLAIM_HOLD_START_TTL_MS)), minConfidence: learning.minConfidence });
   } catch {
     return false;
   }

@@ -2,13 +2,13 @@
 title: Orchestration Decisions (Shadow and Promotion Guard)
 status: active
 owner: max
-last_verified: 2026-10-08
+last_verified: 2026-10-15
 summary: Creation-manifest decisions MUST stay record-only without a committed promotion; claim hold/start MAY apply a measured model's confident START to its three advisory gates; both fall back to the rule.
 domain: tasks
 surfaces: [packages/core/orchestration-decision.ts, packages/core/orchestration-promotion.ts, packages/core/orchestration-readout.ts, apps/web/src/app/api/workers/claim/hold-start-shadow.ts]
 related: [model-routing-and-tiers, mission-task-lifecycle, live-sibling-conflict-probe]
 keywords: [jev, shadow, gated, applying fraction, cohort, propensity, orchestration_decisions, orchestration_manifest, orchestration_claim, readout, insufficient_n, soft overlap, softOverlaps, partitionOverlapEdges, hold start]
-verified_by: [packages/core/__tests__/orchestration-claim-risk.test.ts, packages/core/__tests__/orchestration-claim-risk-eval.test.ts, apps/web/src/lib/hard-overlap-surfaces.test.ts, packages/core/__tests__/orchestration-decision.test.ts, packages/core/__tests__/orchestration-promotion.test.ts, packages/core/__tests__/orchestration-readout.test.ts, packages/core/__tests__/orchestration-claim-decision.test.ts, packages/core/__tests__/path-overlap-edges.test.ts, apps/web/src/app/api/workers/claim/hold-start-shadow.test.ts, apps/web/src/app/api/workers/claim/soft-overlap-gate.test.ts]
+verified_by: [packages/core/__tests__/orchestration-claim-learning.test.ts, packages/core/__tests__/orchestration-claim-learning-input.test.ts, packages/core/__tests__/orchestration-claim-learning-evidence.test.ts, packages/core/__tests__/orchestration-claim-learning-source.test.ts, apps/web/src/app/api/admin/operator/route.test.ts, packages/core/__tests__/orchestration-claim-risk.test.ts, packages/core/__tests__/orchestration-claim-risk-eval.test.ts, apps/web/src/lib/hard-overlap-surfaces.test.ts, packages/core/__tests__/orchestration-decision.test.ts, packages/core/__tests__/orchestration-promotion.test.ts, packages/core/__tests__/orchestration-readout.test.ts, packages/core/__tests__/orchestration-claim-decision.test.ts, packages/core/__tests__/path-overlap-edges.test.ts, apps/web/src/app/api/workers/claim/hold-start-shadow.test.ts, apps/web/src/app/api/workers/claim/soft-overlap-gate.test.ts]
 assertions:
   - id: "run-orchestration-decision"
     type: "symbol"
@@ -90,8 +90,9 @@ reversing the earlier "stays evidence-gated" exception: it ships `gated` at a
 conservative starting threshold (`CLAIM_HOLD_MIN_CONFIDENCE`) with every
 eligible deferral in the applying arm, and does not go through the promotion
 guard. Every call is logged so the threshold can be recalibrated from labelled
-outcomes. Rollback is one switch: `CLAIM_HOLD_APPLYING_FRACTION = 0` returns
-every advisory gate to deterministic HOLD.
+outcomes. Each gate × area cell now has one persisted applying fraction; zero returns
+that cell to deterministic HOLD. The committed fraction remains the bootstrap
+ceiling. The existing model-policy dial evaluates and records each cell hourly.
 
 **Hard vs soft path overlap**: a stored `dependsOn` edge blocks until the
 upstream completes and merges, and is never re-checked. At creation (and on a
@@ -134,11 +135,11 @@ current manifests.
   prompt version no longer matches, or a retired row, is recorded as a
   suggestion with reason `non_jev`, never applied, even inside a granted
   cohort. A measured answer below its threshold is `below_threshold`.
-- Claim hold/start applies at `CLAIM_HOLD_APPLYING_FRACTION` (1) through
-  `grantedFraction`, which clamps it to [0, 1]; zero or non-finite is rolled
-  back. Its definition is `gated` at `CLAIM_HOLD_MIN_CONFIDENCE`, so a START
-  below the threshold (the measured one, when the model has a row), from an
-  unmeasured model, or any fallback is the rule's HOLD.
+- Claim hold/start boots at `CLAIM_HOLD_APPLYING_FRACTION` (1) and 0.85,
+  then serves the persisted gate × area cell fraction and threshold. Unknown
+  scope or a failed policy read holds. Every lookup rechecks the current
+  fraction's deterministic assignment and current confidence threshold, so an
+  older applied START cannot escape a revert, reduced cohort or raised threshold.
 - The creation-manifest fraction (`MANIFEST_APPLYING_FRACTION`, zero) is
   never used raw. `resolveApplyingFraction` grants it only when `ORCHESTRATION_PROMOTIONS`
   holds `eligible_for_gated` evidence for the same decision id and candidate
@@ -243,6 +244,60 @@ current manifests.
   against the regex and neighbour-union baselines, reporting unknown scope as
   a covariate; it applies nothing.
 
+## Live claim learning
+
+The feedback loop follows private artifact `coordination-visibility-map`
+§8.1–8.3. Its readout separates `jev_start`, `jev_hold`,
+`deterministic_hold`, `human_force`, `rule_start_overlap` and `rule_start_clean`
+by gate, area (`core/db`, `other`, `unknown`) and prompt fingerprint. Holds are
+censored for safety and retain wait/stranded measurements. An applied model
+answer is on-policy evidence only when a successful claim records the same
+gate, blockers, overlap paths and fingerprint within the decision TTL. A task
+that runs later after its blocker clears does not retrospectively validate START.
+
+Every group shows raw risk, attributable unsafe rate, clean-start base rate and
+the overlap control separately. Clean deterministic starts are recorded at
+successful claims with known scope and no observed coordination blocker.
+Only landed runs can be labelled safe. A collision is attributable when its
+path or counterparty matches the start-time overlap; base refusal requires
+both. Existing conflict-retry records without conflicting file and counterparty
+evidence remain unknown, rather than counting every conflict against Jev.
+Human outcomes are observational; they never change confidence or allocation.
+Stale-blocker outcomes are excluded from learning and reported as ownership
+hygiene. Missing evidence, unlanded runs and censored outcomes never count safe.
+
+Cells reuse `decideDialCell`, its allocation steps, events, evidence boundary
+and revert cooldown. The policy records delta (default 0.05), minimum sample
+per arm (default 20), confidence, fraction, dial state and owner pin. Confidence
+is the lowest applied-cohort threshold whose attributable-unsafe Wilson upper
+95% bound is at most the clean base rate plus delta, with enough samples on
+both arms; below the sample bar it stays 0.85. Thresholds never pool human
+forces, stale blockers or different prompt fingerprints. A prompt revision
+resets calibration and records a new evidence boundary.
+
+An increase requires both that safety bound and a measured median wait or idle
+improvement against held controls with enough timing samples. These timing
+comparisons are observational, never causal claims. A safety-bound breach
+reverts the cell to fraction zero in one evaluation, including a pinned cell.
+The existing tier-pools cron runs this evaluation hourly; no scheduler is added.
+Every evaluation atomically records its policy revision, evidence summary and
+reason alongside the compare-and-set update. Partial reads never lower the
+threshold or raise the applying fraction. A failed read changes no policy.
+
+False-hold candidates require a safe human force and a prior Jev HOLD matching
+the task, gate, area and blocker/path evidence. False-start candidates require
+an attributable unsafe Jev START. Both are prompt-revision candidates only;
+neither automatically rewrites a prompt. Revised prompts must bump the prompt
+version, which changes the fingerprint and splits the next readout.
+
+The platform-owner operator API exposes this through `claimLearning=1`;
+a failed panel read is `claimLearning: null`, and non-owners receive 404.
+Owner `claim_learning_pin`, `claim_learning_revert` and
+`claim_learning_set_delta` actions require a revision and reason, use the
+existing owner-action audit path and write policy changes. A pin cannot
+bypass a safety revert or unknown-state rail. The companion screen belongs in
+buildd-admin; no member UI is added.
+
 **Acceptance criteria**:
 
 - AC-1: GIVEN a gated definition and a requested fraction of 1 WHEN
@@ -312,6 +367,19 @@ current manifests.
 - AC-10: GIVEN no recorded decisions in the window WHEN the readout runs THEN
   both decisions are `insufficient_n` and the promotion status is `blocked`.
 
+- AC-19: GIVEN human forces and Jev starts in the same window WHEN read out
+  THEN actors remain separate and only successful, attributable, non-stale Jev
+  starts calibrate confidence or applying fraction.
+- AC-20: GIVEN fewer than the minimum samples on either arm WHEN calibrated
+  THEN confidence remains 0.85; unknown attribution never supplies a safe label.
+- AC-21: GIVEN enough evidence WHEN both safety and timing improve THEN the
+  existing dial may raise one step; WHEN the upper safety bound breaches the
+  policy budget THEN fraction becomes zero in one evaluation, including a pin.
+- AC-22: GIVEN an owner read WHEN a panel dependency fails THEN claimLearning
+  is null; GIVEN a non-owner THEN the operator route returns 404.
+- AC-23: GIVEN a reverted cell or a raised threshold WHEN a previously applied
+  START is looked up THEN the current policy still determines whether it applies.
+
 **Code surface**:
 
 - `packages/core/orchestration-decision.ts`: `runOrchestrationDecision`,
@@ -349,6 +417,13 @@ current manifests.
   wired from `apps/web/src/app/api/workers/claim/route.ts`.
 - `packages/core/manifest-prediction.ts` and `manifest-prediction-source.ts`:
   `predictCreationManifest`, `prepareGatedManifest`, `labelManifestPrediction`.
+- `packages/core/orchestration-claim-learning.ts`: calibration and the shared dial adapter.
+- `packages/core/orchestration-claim-learning-evidence.ts`: conservative attribution.
+- `packages/core/orchestration-claim-learning-input.ts`: successful claim/control evidence.
+- `packages/core/orchestration-claim-learning-source.ts`: policy CAS, hourly step and operator readout.
+- `apps/web/src/lib/admin/data.ts`: owner panel loader; `apps/web/src/app/api/admin/operator/route.ts`: owner reads/actions.
+- `apps/web/src/lib/admin/claim-learning-actions.ts`: audited policy overrides.
+- `apps/web/src/app/api/cron/tier-pools/route.ts`: existing hourly dial step.
 - `packages/core/orchestration-outcomes.ts`: `labelDecisionOutcomes`.
 - `packages/core/orchestration-readout.ts`: `buildOrchestrationReadout`,
   `splitWorkUnits`, `replayDecisionEval`, `calibrateAndJudge`; loader

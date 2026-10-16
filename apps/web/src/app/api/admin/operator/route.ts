@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { RECOVERY_FILTERS, type RecoveryFilter } from '@buildd/shared';
 import { beginAdminRead } from '@/lib/admin/scope';
-import { loadRecoveryCause, loadRecoveryQueue } from '@/lib/admin/data';
+import { loadRecoveryCause, loadRecoveryQueue, loadClaimLearningPanel } from '@/lib/admin/data';
 import { viewOperator } from '@/lib/admin/tenant-privacy';
 import { requirePlatformOwner } from '@/lib/admin/owner-gate';
 
@@ -20,6 +20,7 @@ const CAUSE_KEY_RE = /^c1:[0-9a-f]{20}$/;
  *  - `recoveryInclude=recovered` adds causes recovered in the last 7 days.
  *  - `recoveryFilter=<metric>` narrows `recovery.causes` to one §10.3 metric.
  *  - `recoveryCause=<causeKey>` adds `recoveryCause`, the drill-down.
+ *  - `claimLearning=1` adds scoped claim outcomes and the global cell policy.
  * A team or workspace scope only ever reads that scope's incidents, so a
  * scoped read never names another team.
  */
@@ -43,12 +44,13 @@ export async function GET(req: NextRequest) {
     console.error(`[admin/operator] ${panel} read failed`, err instanceof Error ? err.message : err);
     return null;
   };
-  const [data, recovery, recoveryCause] = await Promise.all([
+  const [data, recovery, recoveryCause, claimLearning] = await Promise.all([
     viewOperator(read.viewer, scope.since),
     wantsRecovery || include || filter
       ? loadRecoveryQueue({ ...recoveryOpts, includeRecovered: include === 'recovered', filter: (filter ?? undefined) as RecoveryFilter | undefined }).catch(logged('recovery'))
       : Promise.resolve(undefined),
     causeKey ? loadRecoveryCause({ ...recoveryOpts, causeKey }).catch(logged('recoveryCause')) : Promise.resolve(undefined),
+    params.get('claimLearning') === '1' ? loadClaimLearningPanel(recoveryOpts).catch(logged('claimLearning')) : Promise.resolve(undefined),
   ]);
   return NextResponse.json({
     ...scope,
@@ -56,6 +58,7 @@ export async function GET(req: NextRequest) {
     ...data,
     ...(recovery !== undefined ? { recovery } : {}),
     ...(recoveryCause !== undefined ? { recoveryCause } : {}),
+    ...(claimLearning !== undefined ? { claimLearning } : {}),
   });
 }
 
@@ -65,6 +68,9 @@ export async function GET(req: NextRequest) {
  * `{ capability, target, evidenceRevision, params?, reason }`, header
  * `X-Admin-Operator: <login>` recorded as the operator label (never trusted
  * for authorization). 200 applied or duplicate; 409 stale, with the fresh row;
+ * Claim learning overrides use `{ capability: claim_learning_pin |
+ * claim_learning_revert | claim_learning_set_delta, gate, area, expectedRevision,
+ * reason, fraction?, delta? }` and the same owner audit intent/completion path.
  * 422 rejected (precondition, budget, paused, not_supported), with the fresh
  * row; 400 for anything outside the closed set.
  */
@@ -75,6 +81,19 @@ export async function POST(req: NextRequest) {
   const label = req.headers.get('x-admin-operator')?.trim() || null;
   const operatorLabel = label && /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/.test(label) ? label : null;
   try {
+    if (body && typeof body.capability === 'string' && body.capability.startsWith('claim_learning_')) {
+      const [{ handleClaimLearningAction }, audit, { changeClaimLearningPolicy }] = await Promise.all([
+        import('@/lib/admin/claim-learning-actions'), import('@/lib/admin/audit'), import('@buildd/core/orchestration-claim-learning-source'),
+      ]);
+      const out = await handleClaimLearningAction({
+        auditIntent: audit.recordPlatformAdminAuditIntent,
+        auditComplete: audit.completePlatformAdminAudit,
+        change: ({ capability, ...input }) => changeClaimLearningPolicy({ ...input,
+          operation: capability === 'claim_learning_pin' ? 'pin' : capability === 'claim_learning_revert' ? 'revert' : 'set_delta',
+        }),
+      }, { accountId: gate.account.id, operatorLabel }, body);
+      return NextResponse.json(out.body, { status: out.status });
+    }
     const [{ handleOperatorRecoveryAction }, { productionOperatorActionDeps }] = await Promise.all([
       import('./recovery-action'), import('./recovery-action-deps'),
     ]);
