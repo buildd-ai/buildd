@@ -66,6 +66,27 @@ describe('transitions → timeline', () => {
     expect(kinds(ts).slice(-2)).toEqual(['fix_started', 'push_pending']);
   });
 
+  // 2ded4e88: a push or a CI fix after the review budget ran out goes back to the person, and the
+  // timeline says so: the push, then "Escalated · review budget spent", never a new round.
+  test('a repair or push held by a spent review budget renders the escalation, not a queued round', () => {
+    const held = { reviewBudgetSpent: true, heldFrom: 'REPAIRING' };
+    const ts = [
+      T('HeadObserved', 'ESCALATED', 'ESCALATED', { live: live('H2'), previousHead: 'H1' }, 1),
+      T('CiFailedObserved', 'ESCALATED', 'REPAIRING', { signature: 'ci:unit' }, 2),
+      T('AttemptEnded', 'REPAIRING', 'ESCALATED', { outcome: 'success', live: live('H3'), ...held }, 3),
+      T('CiFailedObserved', 'ESCALATED', 'REPAIRING', { signature: 'ci:unit' }, 4),
+      T('HeadObserved', 'REPAIRING', 'ESCALATED', { live: live('H4'), previousHead: 'H3', ...held }, 5),
+      T('TrunkRecovered', 'BLOCKED_ON_TRUNK', 'ESCALATED', { incidentId: 'i1', reviewBudgetSpent: true }, 6),
+    ];
+    const entries = transitionsToActivityEntries(ts, [], []);
+    expect(entries.map((e) => [e.kind, e.detail ?? null])).toEqual([
+      ['changes_pushed', null],
+      ['changes_pushed', null], ['fix_ended', null], ['review_escalated', 'review budget spent'],
+      ['changes_pushed', null], ['review_escalated', 'review budget spent'],
+      ['trunk_recovered', null], ['review_escalated', 'review budget spent'],
+    ]);
+  });
+
   test('fix lines carry the 1-based ledger attempt', () => {
     const e = transitionsToActivityEntries(log, rounds, attempts).find((x) => x.kind === 'fix_started')!;
     expect({ iteration: e.iteration, maxIterations: e.maxIterations }).toEqual({ iteration: 1, maxIterations: 3 });

@@ -152,7 +152,8 @@ export function transitionsToActivityEntries(
         } else if (t.toState === 'AWAITING_PUSH') {
           push({ kind: 'push_pending' });
         }
-        if (t.toState === 'ESCALATED') push({ kind: 'push_undeliverable' });
+        // 2ded4e88: a repair out of a spent review budget ends back at the person, not unpushed.
+        if (t.toState === 'ESCALATED') push(ev.reviewBudgetSpent ? { kind: 'review_escalated', detail: 'review budget spent' } : { kind: 'push_undeliverable' });
         break;
       }
       case 'PushRecoveryExhausted':
@@ -174,6 +175,7 @@ export function transitionsToActivityEntries(
       }
       case 'TrunkRecovered':
         push({ kind: 'trunk_recovered' });
+        if (t.toState === 'ESCALATED' && ev.reviewBudgetSpent) push({ kind: 'review_escalated', detail: 'review budget spent' });
         break;
       case 'PrMerged':
         push({ kind: 'merged' });
@@ -187,7 +189,7 @@ export function transitionsToActivityEntries(
         break;
       }
       default:
-        if (t.toState === 'ESCALATED' && t.fromState !== 'ESCALATED') push({ kind: 'review_escalated', detail: str(ev.reason) });
+        if (t.toState === 'ESCALATED' && t.fromState !== 'ESCALATED') push({ kind: 'review_escalated', detail: ev.reviewBudgetSpent ? 'review budget spent' : str(ev.reason) });
     }
 
     // A round was queued by this transition.

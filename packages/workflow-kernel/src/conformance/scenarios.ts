@@ -2191,4 +2191,78 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       eq(pick((second.detail?.priorVerdict ?? {}) as Record<string, unknown>, ['headSha', 'verdict']), { headSha: 'H1', verdict: 'approve' }, 'and what it carries');
     },
   },
+  {
+    // Task 2ded4e88, the sequence PR #4882 ran: the review budget ran out and the PR escalated, then a
+    // push queued another round, and a CI fix out of the escalation queued one more after a red base.
+    name: '2ded4e88: a spent review budget is final for the delivery: a push, an agent request, a CI fix and a red base all leave it a person\'s; only a person\'s forced round reviews again',
+    async run(host) {
+      const s = await new Delivery(host, 113).open({ maxRounds: 1 });
+      const held = async (label: string) => {
+        eq(pick(await s.d(), ['state', 'stateReason', 'currentRound']), { state: 'ESCALATED', stateReason: 'review_exhausted', currentRound: 1 }, label);
+        eq({ rounds: (await s.view()).rounds.length, dispatched: await s.count('dispatch_review') }, { rounds: 1, dispatched: 1 }, `${label}: no new round, no reviewer`);
+      };
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      applied(await s.verdict('request_changes'), 'ESCALATED', 'the budget is spent');
+      await held('escalated');
+
+      // A push is recorded; it does not re-arm review.
+      applied(await s.push('H2'), 'ESCALATED', 'a push after the escalation');
+      eq((await s.d()).currentHeadSha, 'H2', 'the new head is recorded');
+      await held('after the push');
+
+      // Nobody but a person forcing it starts a round (an agent, the floor, a person without force).
+      for (const actor of ['agent:t1', 'webhook', 'human:u']) {
+        notApplied(await s.submit({ type: 'ReviewRequested', actor, headSha: 'H2', live: s.live('H2'), forced: false }), 'rejected', 'review_budget_spent', `${actor} asks again`);
+      }
+      notApplied(await s.submit({ type: 'ReviewRequested', actor: 'agent:t1', headSha: 'H2', live: s.live('H2'), forced: true }), 'rejected', 'force_requires_human', 'an agent forcing it');
+
+      // Red CI is still fixed first (a90fc99b), and the fix's push hands the PR back to the person.
+      applied(await s.ciRed('H2'), 'REPAIRING', 'CI red on the escalated PR');
+      const fix1 = (await s.view()).attempts.find((a) => a.family === 'ci' && a.status === 'queued')!;
+      applied(await s.push('H3', { attribution: { descendsFromBound: true }, proof: { liveContainsLocal: true, contentDiffChanged: true } }), 'ESCALATED', 'the CI fix pushed');
+      await held('after the CI fix pushed');
+      notApplied(await s.fixEnded(fix1.id, { localHeadSha: 'H3', commitCount: 1, live: s.live('H3'), proof: { liveContainsLocal: true } }), 'stale', 'attempt_not_bound', 'its late end moves nothing');
+      await held('after the CI fix ended');
+
+      // The same when the fix ends before its push is seen.
+      applied(await s.ciRed('H3'), 'REPAIRING', 'CI red again');
+      const fix2 = (await s.view()).attempts.find((a) => a.family === 'ci' && a.status === 'queued')!;
+      applied(await s.fixEnded(fix2.id, { localHeadSha: 'H4', commitCount: 1, live: s.live('H4'), proof: { liveContainsLocal: true } }), 'ESCALATED', 'the CI fix ended with its head on GitHub');
+      eq((await s.d()).currentHeadSha, 'H4', 'its head is recorded');
+      await held('after the second CI fix');
+
+      // A red base while the fix runs, then green again: back to the person, not to a reviewer.
+      applied(await s.ciRed('H4'), 'REPAIRING', 'CI red a third time');
+      const incident = host.newId();
+      applied(await s.trunkRed(incident, 'ci:unit', 'H4'), 'BLOCKED_ON_TRUNK', 'the base is red');
+      applied(await s.push('H5'), 'BLOCKED_ON_TRUNK', 'a push while blocked');
+      applied(await s.submit({ type: 'TrunkRecovered', actor: 'kernel', incidentId: incident, baseStillRed: false, headPredatesFix: false }), 'ESCALATED', 'the base is green again');
+      eq((await s.d()).currentHeadSha, 'H5', 'the head pushed while blocked is the one the person sees');
+      await held('after the base recovered');
+
+      // A person forcing one more round is the way back to review.
+      applied(await s.submit({ type: 'ReviewRequested', actor: 'human:u', headSha: 'H5', live: s.live('H5'), forced: true }), 'AWAITING_REVIEW', 'a person forces a round');
+      eq(pick(await s.latestRound(), ['round', 'headSha', 'status']), { round: 2, headSha: 'H5', status: 'queued' }, 'round 2 at the live head');
+      eq(await s.count('dispatch_review'), 2, 'one reviewer for it');
+      applied(await s.verdict('request_changes'), 'ESCALATED', 'it asks for changes again: still past the budget');
+      eq((await s.d()).stateReason, 'review_exhausted', 'and a person\'s again');
+    },
+  },
+  {
+    name: '2ded4e88: a CI fix out of a spent review budget whose push GitHub does not show yet keeps the hold through AWAITING_PUSH',
+    async run(host) {
+      const s = await new Delivery(host, 114).open({ maxRounds: 1 });
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      applied(await s.verdict('request_changes'), 'ESCALATED', 'the budget is spent');
+      applied(await s.ciRed('H1'), 'REPAIRING', 'CI red on the escalated PR');
+      const fix = (await s.view()).attempts.find((a) => a.family === 'ci' && a.status === 'queued')!;
+      // The fix ends with a local head GitHub does not have yet.
+      applied(await s.fixEnded(fix.id, { localHeadSha: 'H2', commitCount: 1, live: s.live('H1'), proof: { liveContainsLocal: false } }), 'AWAITING_PUSH', 'its push is not visible yet');
+      eq((await s.d()).resumeState, 'ESCALATED', 'the hold rides through AWAITING_PUSH');
+      // The push shows up: back to the person, no round 2.
+      applied(await s.push('H2', { proof: { liveContainsLocal: true, contentDiffChanged: true } }), 'ESCALATED', 'the push arrives');
+      eq(pick(await s.d(), ['state', 'stateReason', 'currentRound', 'currentHeadSha']), { state: 'ESCALATED', stateReason: 'review_exhausted', currentRound: 1, currentHeadSha: 'H2' }, 'a person\'s, at the new head');
+      eq({ rounds: (await s.view()).rounds.length, dispatched: await s.count('dispatch_review') }, { rounds: 1, dispatched: 1 }, 'no new round, no reviewer');
+    },
+  },
 ];
