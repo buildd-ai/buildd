@@ -189,7 +189,7 @@ describe('post-update canary', () => {
 
 describe('UpdateDrain.snapshot (reported on the heartbeat)', () => {
   test('null until a drain opens, then since/endsAt/busy, null again after reset', () => {
-    const d = new UpdateDrain({ windowMs: WINDOW }, capture());
+    const d = new UpdateDrain({ windowMs: WINDOW }, capture().logger);
     expect(d.snapshot()).toBeNull();
     d.tick({ eligible: true, busy: 3, now: 1000 });
     expect(d.snapshot()).toEqual({ since: 1000, endsAt: 1000 + WINDOW, busy: 3 });
