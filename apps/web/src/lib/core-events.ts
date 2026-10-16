@@ -385,7 +385,14 @@ export type CoreEvent =
    * the confirmation link's included. Once per approval. The knowledge module
    * indexes the approved text and its references (living-specs.md §8).
    */
-  | { type: 'spec.approved'; specId: string; workspaceId: string; revision: number };
+  | { type: 'spec.approved'; specId: string; workspaceId: string; revision: number }
+  /**
+   * The kernel's epoch path recorded a settlement or retirement of a mission delivery
+   * (workflow/seam.ts `missionEpochCommand`, S4b). The missions module asks its one completion
+   * writer to decide: a mission held only by its deliveries completes on the transition that
+   * releases it. At most once, like every event; the next task event or schedule tick decides too.
+   */
+  | { type: 'mission.delivery_settled'; missionId: string; steps: string[] };
 
 /** The worker that owns a PR, as the webhook resolved it. */
 export interface PrOwnerFact {

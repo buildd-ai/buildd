@@ -242,7 +242,13 @@ You are evaluating this mission's goal criteria. This is a **read-only verificat
 
 {{commandSection}}{{proseSection}}### Output
 Return one entry per criterion via your outputSchema using the SAME \`index\` values
-listed above. Keep your turn short — observe, judge, report.`;
+listed above. If your session does not enforce an outputSchema, put exactly this shape in
+\`structuredOutput\` when you complete the task — the field name \`criteriaVerdicts\` is required and
+any other key (e.g. \`criteria\`) is ignored, leaving every criterion NOT_EVALUATED:
+
+\`{"criteriaVerdicts":[{"index":0,"verdict":"pass|fail|UNVERIFIED","evidence":"one sentence"}]}\`
+
+Keep your turn short — observe, judge, report.`;
 
 export const WORKER_EVAL_COMMAND_SECTION = `### Command criteria ({{count}})
 For each command criterion:

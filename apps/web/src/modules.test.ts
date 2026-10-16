@@ -52,6 +52,10 @@ describe('composition root', () => {
     ]);
   });
 
+  it('mission.delivery_settled (S4b): the kernel\'s epoch path asks the one completion writer to decide', () => {
+    expect(byEvent('mission.delivery_settled')).toEqual(['missions:mission-completion-on-delivery-settled']);
+  });
+
   it('task.created: the category look is scheduled before the mission chain starts', () => {
     expect(byEvent('task.created')).toEqual(['jev-decisions:task-category-look', 'missions:open-writable-mission-delivery', 'missions:task-created-mission-feed']);
   });

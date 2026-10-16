@@ -210,6 +210,27 @@ export const KNOWN_EVOLUTIONS: KnownEvolution[] = [
     },
   },
   {
+    // S4b (workflow-kernel-library.md §1, AC-2): T17's statement completes the owner task and
+    // writes what it did onto the emit_pr_merged effect's payload (`taskTransition`,
+    // `ownerWorkerId`, task-projection.ts). A recording from before carries neither: the replay
+    // may drop exactly those two keys from exactly that effect, and only when the recording lacks them.
+    id: 'merge task projection on emit_pr_merged (S4b, workflow-kernel-library.md §1)',
+    apply(recorded, replayed) {
+      if (!sameDecision(recorded, replayed) || replayed.transition?.command !== 'PrMerged') return null;
+      const rec = new Map(recorded.effects.map((e) => [e.dedupeKey, e]));
+      let changed = false;
+      const effects = replayed.effects.map((e) => {
+        const was = rec.get(e.dedupeKey);
+        if (e.kind !== 'emit_pr_merged' || !isObj(e.payload) || !was || !isObj(was.payload)) return e;
+        if ('taskTransition' in was.payload || !('taskTransition' in e.payload)) return e;
+        const { taskTransition: _t, ownerWorkerId: _o, ...rest } = e.payload;
+        changed = true;
+        return { ...e, payload: rest };
+      });
+      return changed ? { ...replayed, effects } : null;
+    },
+  },
+  {
     // S3b (§13.13 rule 10, AC-15): a merge from outside LANDING is recorded as external,
     // with who merged it, the head, and whether it went over an open verdict, and owes a
     // fix when it did. A recording from before carries none of it: the replay may drop

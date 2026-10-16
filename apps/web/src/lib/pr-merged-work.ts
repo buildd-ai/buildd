@@ -13,13 +13,21 @@
  *    it durable: a request killed between the merge and this work no longer
  *    loses it (docs/specs/workflow-state-kernel.md §10.1).
  *
+ * The task's own transition (`tasks.status = 'completed'` when the merge finishes
+ * it) is not written here. For a kernel-owned PR the T17 statement writes it
+ * (lib/workflow/task-projection.ts) and the effect passes what it did as
+ * `taskTransition`; for a PR the kernel does not own the webhook passes
+ * `legacyCompleteTaskOnMerge` (pr-merged-legacy-task.ts), which writes it at the
+ * point this work used to. Either way this module performs only side effects
+ * (docs/specs/workflow-kernel-library.md §1, AC-2).
+ *
  * Every step is idempotent or guarded on the row, so an at-least-once replay
  * of the effect repeats nothing a person can see. `mergeIsNew` gates the
  * once-per-merge steps: the webhook knows it from `workers.mergedAt`; the
  * effect runs once per merge by its dedupe key.
  */
 import { after } from 'next/server';
-import { and, eq, ne } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { tasks, workspaces } from '@buildd/core/db/schema';
 import { emit } from '@/lib/core-emit';
@@ -31,9 +39,10 @@ import { postWorkTrackerCompletionUpdate } from '@/lib/work-tracker';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { stampPrMergedOnAllRows } from '@/lib/pr-merge-stamp';
 import { workerOwnsPr, workerOwnsPrUrl } from '@/lib/repo-scope';
-import { otherOpenPrsOfTask } from '@/lib/task-open-prs';
-import { INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+
+/** What the merge did to the task: the `task.pr_merged` event's `transition`. */
+export type MergeTaskTransition = 'flipped' | 'already_completed' | 'not_flipped';
 
 export interface MergedPrTask {
   id: string;
@@ -61,6 +70,11 @@ export interface MergedPrWorkInput {
   mergeIsNew: boolean;
   /** Stamp every row of the PR here. False when the kernel's `stamp_pr_rows` effect owns the stamp. */
   stamp: boolean;
+  /**
+   * What the merge did to the task. A kernel-owned PR: the value its T17 statement recorded. A PR
+   * the kernel does not own: the legacy writer, called at the point the transition belongs.
+   */
+  taskTransition: MergeTaskTransition | ((task: MergedPrTask) => Promise<MergeTaskTransition>);
 }
 
 /** Run inside `after()` when a request scope exists, inline otherwise (tests, the effect drain). */
@@ -107,6 +121,24 @@ export async function loadMergedPrOwner(repoFullName: string, prNumber: number) 
     where: sqlWhere(workerOwnsPr(repoFullName, prNumber)),
     with: { task: true },
   });
+}
+
+/**
+ * Claim the merge's completion comment on the linked work-tracker issue for `taskId`, once: a
+ * context marker set by compare-and-set. True for the caller that set it. Only the comment is
+ * behind it: a crash between the claim and the post loses that one comment rather than repeating
+ * it. The rest of the completion (task.completed, resolveCompletedTask) re-runs on every retry:
+ * task.completed is deduped by its key, and resolveCompletedTask's steps are each guarded on the
+ * rows they change (the parent rollup, the CAS cancel of superseded retries, the dependents and
+ * mission checks).
+ */
+export async function claimMergeCompletionOnce(taskId: string, prNumber: number): Promise<boolean> {
+  const rows = await db
+    .update(tasks)
+    .set({ context: sql`COALESCE(${tasks.context}, '{}'::jsonb) || jsonb_build_object('mergeCompletionAnnounced', jsonb_build_object('prNumber', ${prNumber}::int, 'at', now()))` })
+    .where(and(eq(tasks.id, taskId), sql`NOT (COALESCE(${tasks.context}, '{}'::jsonb) ? 'mergeCompletionAnnounced')`))
+    .returning({ id: tasks.id });
+  return rows.length > 0;
 }
 
 export async function runMergedPrWork(p: MergedPrWorkInput): Promise<void> {
@@ -168,40 +200,27 @@ export async function runMergedPrWork(p: MergedPrWorkInput): Promise<void> {
   // `tasks.status = 'completed'` belongs to the TRANSITION (this merge
   // finished the task); everything after it belongs to the MERGE, and is true
   // whatever the task row already said.
-  let transition: 'flipped' | 'already_completed' | 'not_flipped' = 'already_completed';
-  // A stacked series: the task owns more PRs than this one. Its first merge
-  // must not complete the task; the last one does.
-  const openSiblingPrs = task.status !== 'completed' ? await otherOpenPrsOfTask(task.id, { prUrl: p.prUrl }) : [];
-  if (task.status !== 'completed' && p.worker.runner === INTERACTIVE_WORKER_RUNNER) {
-    // A local session decides when it is done (it may still be planning PR B..D,
-    // which no open-PR check can see); only its complete_task ends the task.
-    transition = 'not_flipped';
-    console.log(`Task ${task.id} stays open after PR #${p.prNumber} merged: interactive session completes its own task`);
-  } else if (openSiblingPrs.length > 0) {
-    transition = 'not_flipped';
-    console.log(`Task ${task.id} stays open after PR #${p.prNumber} merged: ${openSiblingPrs.length} other PR(s) still open`);
-  } else if (task.status !== 'completed') {
-    // Guarded on the row: the worker's own completion can land between the
-    // read and this write, and only the writer that flips it resolves it.
-    const [flipped] = await db
-      .update(tasks)
-      .set({ status: 'completed', updatedAt: new Date() })
-      .where(and(eq(tasks.id, task.id), ne(tasks.status, 'completed')))
-      .returning({ id: tasks.id });
-    transition = flipped ? 'flipped' : 'not_flipped';
-    if (flipped) {
-      console.log(`Auto-completed task ${task.id} via merged PR #${p.prNumber} on ${p.repoFullName}`);
-      // Same fact as the worker route's completion, same dedupe key: one row.
-      await emit({ type: 'task.completed', via: 'merge', taskId: task.id, workerId: worker.id, workspaceId: worker.workspaceId });
-      // One-shot announcement on the linked issue, inside the transition guard.
+  const decided = typeof p.taskTransition !== 'function';
+  const transition: MergeTaskTransition = decided ? p.taskTransition as MergeTaskTransition : await (p.taskTransition as (t: MergedPrTask) => Promise<MergeTaskTransition>)(task);
+  if (transition === 'flipped') {
+    console.log(`Auto-completed task ${task.id} via merged PR #${p.prNumber} on ${p.repoFullName}`);
+    // Same fact as the worker route's completion, same dedupe key (`task:<id>:completed`): one
+    // ledger row however often it is emitted. The other subscribers skip a merge (push, chat,
+    // release paths) or recompute (estimate actuals, which task.pr_merged also runs on every merge).
+    await emit({ type: 'task.completed', via: 'merge', taskId: task.id, workerId: worker.id, workspaceId: worker.workspaceId });
+    // The one step a person would see twice: the comment on the linked issue. The kernel's value
+    // is stored on an at-least-once effect, so a retry sees 'flipped' again; the comment runs
+    // behind a durable once-marker (S4b review). The legacy writer's own row guard already makes
+    // it once. Everything else here re-runs on a retry, and is safe to.
+    if (!decided || await claimMergeCompletionOnce(task.id, p.prNumber)) {
       maybePostWorkTrackerIssueUpdate(p.prNumber, p.prHtmlUrl, true).catch(() => {});
-      // Parent rollup, dependents, mission completion and re-planning. A loop
-      // task waiting on this merge is resolved by its own loop advancement.
-      if (task.loopState !== 'condition_unmet') {
-        await resolveCompletedTask(task.id, task.workspaceId).catch((e) =>
-          console.error(`[pr-merged] resolveCompletedTask failed for task ${task.id}:`, e),
-        );
-      }
+    }
+    // Parent rollup, dependents, mission completion and re-planning. A loop
+    // task waiting on this merge is resolved by its own loop advancement.
+    if (task.loopState !== 'condition_unmet') {
+      await resolveCompletedTask(task.id, task.workspaceId).catch((e) =>
+        console.error(`[pr-merged] resolveCompletedTask failed for task ${task.id}:`, e),
+      );
     }
   }
 
