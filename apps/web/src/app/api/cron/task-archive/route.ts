@@ -32,6 +32,7 @@ import { agentCapabilityDecisions, watcherEvents, workerActionEvents } from '@bu
 import { lt, sql } from 'drizzle-orm';
 import { pruneDispatchOutbox } from '@buildd/core/dispatch-outbox';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
+import { archiveStaleFailedTasks } from '@/lib/task-archive';
 
 export const maxDuration = 60;
 
@@ -76,21 +77,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
   // Archive stale failed tasks that nothing live still depends on.
   // The `?` jsonb operator tests whether the task's id exists as an element of a
   // dependent's depends_on array.
-  const result = await db.execute(sql`
-    UPDATE tasks
-    SET status = 'cancelled', updated_at = now()
-    WHERE status = 'failed'
-      AND updated_at < now() - interval '${sql.raw(STALE_AFTER)}'
-      AND NOT EXISTS (
-        SELECT 1 FROM tasks dependent
-        WHERE dependent.status IN ('pending', 'assigned', 'in_progress')
-          AND dependent.depends_on::jsonb ? tasks.id::text
-      )
-    RETURNING id
-  `);
-
-  const rows = (result as any)?.rows ?? result ?? [];
-  const archived = Array.isArray(rows) ? rows.length : 0;
+  const archived = await archiveStaleFailedTasks(STALE_AFTER);
 
   console.log(`[TaskArchive] Archived ${archived} stale failed task(s) (>${STALE_AFTER})`);
 

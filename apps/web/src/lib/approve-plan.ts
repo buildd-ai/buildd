@@ -469,7 +469,8 @@ export async function approvePlan(
 
   // Second pass: resolve dependsOn refs and baseBranch to actual IDs/branch names
   for (const step of survivingPlan) {
-    const updates: Record<string, unknown> = { updatedAt: new Date() };
+    // Typed to the keys this pass writes (dependencies and base branch), never a task's status or result.
+    const updates: { updatedAt: Date; dependsOn?: string[]; context?: Record<string, unknown> } = { updatedAt: new Date() };
 
     if (step.dependsOn && step.dependsOn.length > 0) {
       const resolvedDeps = step.dependsOn
@@ -500,7 +501,7 @@ export async function approvePlan(
     if (Object.keys(updates).length > 1) { // more than just updatedAt
       await db
         .update(tasks)
-        .set(updates as any)
+        .set({ updatedAt: updates.updatedAt, dependsOn: updates.dependsOn, context: updates.context })
         .where(eq(tasks.id, refToId[step.ref]));
     }
   }
