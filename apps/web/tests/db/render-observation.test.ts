@@ -8,13 +8,14 @@
  *    read (its payload and source), not the render's.
  *  - Delivery ownership by PR matches the repo as well as the number, so a
  *    task in another repo with the same PR number keeps healing.
- *  - "Any row on this PR is delivery-owned" holds for a sibling row, so the
- *    legacy merge stamp can skip it.
+ *  - Ownership is the one definition the fact funnel uses (S4a,
+ *    pr-fact-scope.ts `kernelOwnedRowSql`): kernel authority, switch on. A
+ *    delivery released to legacy is not owned, so a read heals it as before.
  */
 import { beforeAll, describe, expect, test } from 'bun:test';
 import { sql } from 'drizzle-orm';
 import { ingestFact, type GithubFactReader } from '../../src/lib/workflow/facts';
-import { deliveryOwnedWorkers, prHasDeliveryOwnedRow, recordPrStateObserved } from '../../src/lib/workflow/render-observation';
+import { deliveryOwnedWorkers, recordPrStateObserved } from '../../src/lib/workflow/render-observation';
 import type { LivePr } from '../../src/lib/workflow/commands';
 import { assertDbConfigured, q, seedTask, seedWorkspace } from './harness';
 
@@ -98,28 +99,20 @@ describe('delivery ownership by PR matches the repo', () => {
 
     const owned = await deliveryOwnedWorkers([otherRepoWorker, sameRepoWorker]);
     expect(owned.has(otherRepoWorker)).toBe(false);
-    expect(owned.get(sameRepoWorker)).toEqual({ kernel: true });
+    expect(owned.has(sameRepoWorker)).toBe(true);
   });
 
-  test('a worker of the owner task is owned whatever its PR url says', async () => {
+  test('ownership is by PR: a worker of the owner task on another PR heals that PR as before', async () => {
     const { taskId, prNumber } = await openDelivery();
     const w = await seedWorker(taskId, prUrl(OTHER_REPO, prNumber + 9000), prNumber + 9000);
-    expect((await deliveryOwnedWorkers([w])).get(w)).toEqual({ kernel: true });
+    expect((await deliveryOwnedWorkers([w])).has(w)).toBe(false);
   });
-});
 
-describe('prHasDeliveryOwnedRow', () => {
-  test('true when a sibling row carrying the PR belongs to a delivery, false otherwise', async () => {
-    const { taskId, prNumber } = await openDelivery();
-    const url = prUrl(REPO, prNumber);
-    await seedWorker(taskId, url, prNumber);
-    const retryTask = await seedTask(workspaceId, { status: 'completed' });
-    await seedWorker(retryTask, url, prNumber);
-    expect(await prHasDeliveryOwnedRow({ prUrl: url, prNumber })).toBe(true);
-
-    const loneTask = await seedTask(workspaceId, { status: 'completed' });
-    const lonePr = prSeq++;
-    await seedWorker(loneTask, prUrl(OTHER_REPO, lonePr), lonePr);
-    expect(await prHasDeliveryOwnedRow({ prUrl: prUrl(OTHER_REPO, lonePr), prNumber: lonePr })).toBe(false);
+  test('a delivery released to legacy is not delivery-owned (S4a: one definition with the funnel)', async () => {
+    const { taskId, deliveryId, prNumber } = await openDelivery();
+    const w = await seedWorker(taskId, prUrl(REPO, prNumber), prNumber);
+    expect((await deliveryOwnedWorkers([w])).has(w)).toBe(true);
+    await q(sql`UPDATE workflow_deliveries SET authority = 'legacy' WHERE id = ${deliveryId}::uuid`);
+    expect((await deliveryOwnedWorkers([w])).has(w)).toBe(false);
   });
 });

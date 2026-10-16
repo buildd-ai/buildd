@@ -191,6 +191,10 @@ const passedVisual = (over: Record<string, unknown> = {}) => ({
 // tests/db/pr-facts.test.ts; here we assert the fact each write hands over.
 // Not spread from the real module: drizzle-orm above is a partial surface
 // (no `sql`), so the real pr-facts cannot load in this process.
+// drizzle-orm is stubbed above, so the kernel's real scope (a SQL predicate) cannot load; the
+// funnel's caller only hands it on (its SQL is pr-fact-scope.test.ts / tests/db).
+const FUNNEL_SCOPE = { where: () => null };
+mock.module('@/lib/workflow/pr-fact-scope', () => ({ factFunnelScope: FUNNEL_SCOPE }));
 const recordedFacts: Array<{ target: any; fact: any; opts?: unknown }> = [];
 mock.module('@buildd/core/pr-facts', () => ({
   recordPrFact: async (target: unknown, fact: unknown, opts?: unknown) => {
@@ -1005,6 +1009,7 @@ describe('openMissionIntegrationPr — owner state', () => {
     expect(stamped).not.toHaveProperty('mergedAt');
     expect(recordedFacts).toHaveLength(1);
     expect(recordedFacts[0].fact).toEqual({ kind: 'merged', mergedAt: new Date('2026-09-27T10:00:00Z') });
+    expect(recordedFacts[0].opts).toEqual({ scope: FUNNEL_SCOPE });
     expect(typeof recordedFacts[0].target.workerId).toBe('string');
     expect(inserts.some(i => i.values?.taskClass === 'bookkeeping')).toBe(true);
   });
