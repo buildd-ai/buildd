@@ -1166,6 +1166,19 @@ describe('WorkerManager — state transitions', () => {
       expect(worker.resumeOnStart).toBeUndefined();
     });
 
+    test('two passes at once send the carry-on once', async () => {
+      await restoredPaused('w-twice');
+      const before = mockQueryResumes.length;
+
+      const sends = mockQueryPrompts.length;
+      const [a, b] = await Promise.all([manager.continueRestoredAgents(), manager.continueRestoredAgents()]);
+
+      expect([...a.continued, ...b.continued]).toEqual(['w-twice']);
+      await waitFor(() => mockQueryResumes.length > before);
+      await new Promise(r => setTimeout(r, 100));
+      expect(mockQueryPrompts.slice(sends).filter(p => String(p).includes('stopped and started again'))).toHaveLength(1);
+    });
+
     test('a held runner restores it as paused but does not continue it until the hold lifts', async () => {
       const worker = await restoredPaused('w-held');
       let saved: any = { since: new Date().toISOString(), until: null };
