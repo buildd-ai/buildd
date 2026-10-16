@@ -4311,6 +4311,9 @@ export interface OrchestrationDecisionCounts {
   unlabelled: number;
 }
 export interface OrchestrationDecisionGroup extends OrchestrationDecisionCounts {
+  actor?: string;
+  gate?: string;
+  areaClass?: string;
   capability: string;
   decisionId: string;
   fingerprint: string;

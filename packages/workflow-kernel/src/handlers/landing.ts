@@ -260,7 +260,7 @@ export function landingHandlers(ports: KernelPorts): EffectHandlers {
     if (!hasPr(d)) return { outcome: 'skipped:no_pr' };
     if (d.state !== 'MERGED') return { outcome: `skipped:state_${d.state}` };
     // One effect per merge (its dedupe key): the once-per-merge work runs here.
-    if (!(await need(ports, 'lifecycle', e.kind).merged(d))) return { outcome: 'skipped:no_worker' };
+    if (!(await need(ports, 'lifecycle', e.kind).merged(d, e.payload))) return { outcome: 'skipped:no_worker' };
     return { outcome: 'ok' };
   };
 

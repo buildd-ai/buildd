@@ -1,3 +1,5 @@
+import { claimAreaClass } from '@buildd/core/orchestration-claim-learning-evidence';
+import { CLAIM_HOLD_DECISION } from '@buildd/core/orchestration-claim-decision';
 import type { RunProgressReaders } from '@/lib/run-progress-read';
 import { readPrReviewStatus } from '@/lib/pr-review-request';
 import { resolvePolicy } from '@/lib/merge-policy';
@@ -369,3 +371,11 @@ export const SPEC_SIMILARITY = async (): Promise<void> => {
  * a replayable copy of its input. Without it capture is a no-op.
  */
 export const DECISION_REPLAY_STORE = startDecisionReplayStore;
+
+/** Claim declares this policy slot; coordination owns its evidence and persistence. */
+export const CLAIM_LEARNING_HOOKS: import('@/app/api/workers/claim/learning-hooks').ClaimLearningHooks = {
+  areaClass: claimAreaClass,
+  get fingerprint() { return CLAIM_HOLD_DECISION.fingerprint; },
+  loadPolicy: async (gate, area) => (await import('@buildd/core/orchestration-claim-learning-source')).loadClaimLearningPolicy(gate, area),
+  record: async (row, replay) => (await import('@buildd/core/orchestration-ledger-source')).recordOrchestrationDecision(row, replay),
+};
