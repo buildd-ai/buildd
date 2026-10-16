@@ -14,7 +14,7 @@
  * else, so `explain` can flag the disagreement instead of hiding it (AC-26).
  */
 import { prListStatus } from '@/lib/pr-presentation';
-import type { DeliveryView } from './projections';
+import type { DeliveryView } from './workflow/projections';
 
 type LifecycleView = Pick<DeliveryView, 'ownerTaskId' | 'prNumber' | 'state' | 'prState' | 'mergedAt' | 'headline'>;
 

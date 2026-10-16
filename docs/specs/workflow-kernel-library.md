@@ -1022,7 +1022,7 @@ as a candidate whatever its worker row says.
 | --- | --- |
 | AC-24 | `apps/web/src/lib/projections-agree.test.tsx`; `apps/web/src/app/api/github/pr/route.test.ts` › "review rounds and standing from the delivery" |
 | AC-25 | `apps/web/src/lib/explain.delivery.test.ts` › "AC-25" |
-| AC-26 | `apps/web/src/lib/explain.delivery.test.ts` › "AC-26"; `apps/web/src/lib/workflow/delivery-overlay.test.ts`; `apps/web/src/lib/pr-list.test.ts` › "a kernel delivery still live" |
+| AC-26 | `apps/web/src/lib/explain.delivery.test.ts` › "AC-26"; `apps/web/src/lib/delivery-overlay.test.ts`; `apps/web/src/lib/pr-list.test.ts` › "a kernel delivery still live" |
 | Repair phases | `packages/workflow-kernel/src/delivery-summary.test.ts`; `apps/web/src/lib/task-checks.test.ts` › "repair phase (§7)" |
 
 ## 8. Order of work
@@ -1114,7 +1114,7 @@ column outside the kernel; S3 and S4 remove or route each one.
 - `apps/web/src/lib/mission-branch-refresh.ts`, `mission-pr.ts` (S6)
 - `apps/web/src/lib/release-executor.ts`, `release/compose-actions.ts` (S3)
 - `packages/core/pr-facts.ts` (S4)
-- `packages/workflow-kernel/src/delivery-summary.ts`, `apps/web/src/lib/workflow/delivery-overlay.ts`, `apps/web/src/lib/pr-delivery-report.ts` (S7)
+- `packages/workflow-kernel/src/delivery-summary.ts`, `apps/web/src/lib/delivery-overlay.ts`, `apps/web/src/lib/pr-delivery-report.ts` (S7)
 - `packages/core/__tests__/workflow-write-sites.test.ts`,
   `state-ownership.test.ts` (kernel path changes in S1)
 

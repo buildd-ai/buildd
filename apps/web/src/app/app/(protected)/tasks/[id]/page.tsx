@@ -101,7 +101,7 @@ import TaskSubjectLink from './TaskSubjectLink';
 import TaskTitle from './TaskTitle';
 import { taskSubjectOf } from '@/lib/task-checks';
 import { loadTaskDeliveryContext } from '@/lib/task-delivery-context';
-import { prLifecycleFor } from '@/lib/workflow/delivery-overlay';
+import { prLifecycleFor } from '@/lib/delivery-overlay';
 import { normaliseReviewVerdict, readableTaskResult } from '@/lib/task-result';
 import Lifecycle from '@/components/ui/Lifecycle';
 import { displayTaskTitle } from '@/lib/task-title';

@@ -28,7 +28,7 @@ import { workerNotDependencyBotPr } from '@/lib/dependency-bot-pr';
 import { guardMissionPrMerge } from '@/lib/mission-pr';
 import { isMissionPrTask } from '@buildd/core/mission-integration';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
-import { overlayDeliveryLifecycle } from '@/lib/workflow/delivery-overlay';
+import { overlayDeliveryLifecycle } from '@/lib/delivery-overlay';
 import { classifyConflictFix } from '@/lib/conflict-fix-liveness';
 import { isActionableChip, kernelInboxMembership, missionPrRoleOf, reviewMachineActing, buildActionQueue, buildDecideItems, buildDiscrepancyItems, buildFailedTaskItems, summariseActionQueueAge } from '@/lib/action-queue';
 import { describeConflictReason } from '@/lib/merge-blocker';

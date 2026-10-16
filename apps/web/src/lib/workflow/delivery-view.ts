@@ -8,7 +8,7 @@
  * surface keeps today's projection. A caller therefore never has to know the
  * kill switch exists.
  */
-import { sql, type SQL } from 'drizzle-orm';
+import { sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { classifyConflictFix } from '@/lib/conflict-fix-liveness';
 import { toAttemptSnapshot, toDeliverySnapshot, toFindingSnapshot, toRoundSnapshot, type Exec } from './kernel';
@@ -59,6 +59,16 @@ SELECT to_jsonb(d.*) AS delivery,
                         FROM missions m WHERE m.id = ot.mission_id))
      FROM tasks ot WHERE ot.id = d.owner_task_id) AS owner_task
 FROM dl d`;
+}
+
+/**
+ * A worker row's PR has a kernel-owned delivery (owner task and PR number, the
+ * same reading `getDeliveryViewsForTasks` loads) matching `where`, which may
+ * name `kd`. `list_prs` keeps such a PR a candidate whatever its worker row
+ * says (workflow-kernel-library.md §7). A predicate; reads only.
+ */
+export function kernelDeliveryForWorkerSql(taskIdCol: SQLWrapper, prNumberCol: SQLWrapper, where: SQL): SQL {
+  return sql`EXISTS (SELECT 1 FROM workflow_deliveries kd WHERE kd.owner_task_id = ${taskIdCol} AND kd.pr_number = ${prNumberCol} AND kd.authority = 'kernel' AND ${workspaceKernelOnSql(sql`kd.workspace_id`)} AND ${where})`;
 }
 
 const iso = (v: unknown): string => (v == null ? '' : new Date(String(v)).toISOString());

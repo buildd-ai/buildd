@@ -19,8 +19,7 @@ import type { PrListState as SharedPrListState } from '@buildd/shared';
 import { isMissionIntegrationBase } from '@buildd/core/mission-integration';
 import { loadPrAttention } from '@/lib/pr-attention';
 import { prListStatus, type PrListStatus } from '@/lib/pr-presentation';
-import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
-import { workspaceKernelOnSql } from '@/lib/workflow/authority';
+import { getDeliveryViewsForTasks, kernelDeliveryForWorkerSql } from '@/lib/workflow/delivery-view';
 import type { DeliveryView } from '@/lib/workflow/projections';
 
 export const PR_LIST_STATES = ['open', 'attention', 'conflict', 'ci_failed', 'merged'] as const satisfies readonly SharedPrListState[];
@@ -65,9 +64,9 @@ export function buildPrListWhere(opts: { workspaceIds: string[]; state: PrListSt
   return and(...base)!;
 }
 
-/** The row's PR has a kernel-owned delivery (the same reading `getDeliveryViewsForTasks` loads) matching `where`. */
+/** The row's PR has a kernel-owned delivery matching `where` (the kernel's reader owns the SQL). */
 function kernelDeliveryExists(where: SQL): SQL {
-  return sql`EXISTS (SELECT 1 FROM workflow_deliveries kd WHERE kd.owner_task_id = ${workers.taskId} AND kd.pr_number = ${workers.prNumber} AND kd.authority = 'kernel' AND ${workspaceKernelOnSql(sql`kd.workspace_id`)} AND ${where})`;
+  return kernelDeliveryForWorkerSql(workers.taskId, workers.prNumber, where);
 }
 
 /** What a kernel-owned delivery says about its PR, in the list's own words. */

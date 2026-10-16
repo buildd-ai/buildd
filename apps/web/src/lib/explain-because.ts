@@ -26,7 +26,7 @@ import { ENTITLEMENT_BLOCK_CONTEXT_KEY, parseEntitlementBlock } from '@buildd/sh
 import { taskRecoverySentence } from './task-recovery-hold';
 import { cancellationLine } from './task-cancellation';
 import { claimHoldPhrase } from './claim-hold-phrase';
-import type { DeliveryDisagreement } from './workflow/delivery-overlay';
+import type { DeliveryDisagreement } from './delivery-overlay';
 
 const repoOf = (url: string | null | undefined) => url?.match(/github\.com\/([^/]+\/[^/]+)\/pull\/\d+/)?.[1] ?? null;
 

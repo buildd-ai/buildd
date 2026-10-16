@@ -5,7 +5,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { deliveryDisagreements, overlayDeliveryLifecycle, prLifecycleFor, workerLifecycleOf } from './delivery-overlay';
-import type { DeliveryView } from './projections';
+import type { DeliveryView } from './workflow/projections';
 
 const V = (o: Partial<DeliveryView> = {}): DeliveryView => ({
   deliveryId: 'd1', ownerTaskId: 't1', repoFullName: 'acme/app', prNumber: 7, state: 'AWAITING_REVIEW', stateReason: null, version: 3,

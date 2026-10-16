@@ -11,7 +11,7 @@ import { formatCompletionRecord, situationRepeatsCompletion } from '@/lib/missio
 import { computeSupersededFailedTasks } from '@/lib/mission-task-superseded';
 import { getDeliveryViewsForTasks, replacedFailedTaskIds } from '@/lib/workflow/delivery-view';
 import { ownerDeliveryDisplays } from '@/lib/workflow/delivery-display';
-import { overlayDeliveryLifecycle } from '@/lib/workflow/delivery-overlay';
+import { overlayDeliveryLifecycle } from '@/lib/delivery-overlay';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
 import { deriveTaskHealthSignal, foreignDependencyIds, formatNextRun, selectMissionCompletionSummary, MISSION_COMPLETED_NOTE_TITLE } from '@/lib/mission-helpers';
 import { computeMissionProgress, deriveMissionProgressMetric, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, hasPendingDeliverableWork as computeHasPendingDeliverableWork, computeMissionAuthorshipHealth } from '@buildd/core/mission-helpers';

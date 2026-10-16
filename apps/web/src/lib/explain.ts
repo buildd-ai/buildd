@@ -47,7 +47,7 @@ import { deriveMissionStateView, type MissionStateInput, type MissionStateView }
 import { computeSupersededFailedTasks } from '@/lib/mission-task-superseded';
 import { getDeliveryViewsForTasks, replacedFailedTaskIds } from '@/lib/workflow/delivery-view';
 import { missionEpochsOf } from '@/lib/workflow/delivery-ship';
-import { deliveryDisagreements, overlayDeliveryLifecycle, type DeliveryDisagreement } from '@/lib/workflow/delivery-overlay';
+import { deliveryDisagreements, overlayDeliveryLifecycle, type DeliveryDisagreement } from '@/lib/delivery-overlay';
 import { attemptLine } from '@/lib/workflow/projections';
 import { loadClaimHoldReasons, loadMissionClaimDeferrals } from '@/lib/mission-claim-deferrals';
 import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
