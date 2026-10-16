@@ -65,6 +65,20 @@ describe('rowToDeliveryView', () => {
     expect(rowToDeliveryView(parked, NOW)).toMatchObject({ headline: 'Waiting to update branch', detail: 'PR #41 is landing on dev first' });
     expect(rowToDeliveryView({ ...parked, lane_wait: null }, NOW)?.headline).toBe('Updating branch');
   });
+  // §7 / AC-24: the reader carries the findings and each attempt's proven push head.
+  test('carries the delivery\'s findings and each attempt\'s pushed head', () => {
+    const v = rowToDeliveryView({
+      ...row,
+      delivery: { ...row.delivery, state: 'AWAITING_REVIEW' },
+      rounds: [{ id: 'r1', round: 1, head_sha: 'H0', kind: 'full', status: 'decided', verdict: 'request_changes', effective_verdict: 'request_changes', failure_count: 0 }],
+      attempts: [{ id: 'a1', family: 'review_fix', attempt_no: 1, mode: 'agent', status: 'ended', outcome: 'delivered', max_attempts: 3, reported_shas: ['H1'], pushed_head_sha: 'H1' }],
+      findings: [{ id: 'r1:0', origin_round_id: 'r1', origin_round: 1, origin_head_sha: 'H0', ordinal: 0, path: 'a.ts', line: 3, title: 'rename it', required: true, status: 'open', last_round: 1 }],
+    }, NOW)!;
+    expect(v.findings?.map(f => f.id)).toEqual(['r1:0']);
+    expect(v.openFindings).toBe(1);
+    expect(v.ledger[0]!.pushedHeadSha).toBe('H1');
+    expect(dialect.sqlToQuery(deliveryViewsSql(['t1'])).sql).toContain('FROM workflow_findings f WHERE f.delivery_id = d.id');
+  });
   test('maps a row to a platform-owned view with its attempts', () => {
     const v = rowToDeliveryView(row, NOW)!;
     expect(v).toMatchObject({ state: 'AWAITING_PUSH', owner: 'platform', needsYou: false });

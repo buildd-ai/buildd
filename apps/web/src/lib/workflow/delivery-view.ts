@@ -11,7 +11,7 @@
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { classifyConflictFix } from '@/lib/conflict-fix-liveness';
-import { toAttemptSnapshot, toDeliverySnapshot, toRoundSnapshot, type Exec } from './kernel';
+import { toAttemptSnapshot, toDeliverySnapshot, toFindingSnapshot, toRoundSnapshot, type Exec } from './kernel';
 import { workspaceKernelOnSql } from './authority';
 import { LANE_PARKED_OUTCOME } from './landing-lane';
 import { ownerDeliveryDisplays, replacedFailedTaskIds, type DeliveryDisplay } from './delivery-display';
@@ -33,6 +33,7 @@ dl AS (
 SELECT to_jsonb(d.*) AS delivery,
   COALESCE((SELECT jsonb_agg(to_jsonb(r.*) ORDER BY r.round) FROM workflow_review_rounds r WHERE r.delivery_id = d.id), '[]'::jsonb) AS rounds,
   COALESCE((SELECT jsonb_agg(to_jsonb(a.*) ORDER BY a.family, a.mode, a.attempt_no) FROM workflow_attempts a WHERE a.delivery_id = d.id), '[]'::jsonb) AS attempts,
+  COALESCE((SELECT jsonb_agg(to_jsonb(f.*) ORDER BY f.origin_round, f.ordinal, f.created_at) FROM workflow_findings f WHERE f.delivery_id = d.id), '[]'::jsonb) AS findings,
   (SELECT jsonb_build_object('command', tr.command, 'from_state', tr.from_state, 'to_state', tr.to_state, 'evidence', tr.evidence, 'created_at', tr.created_at)
      FROM workflow_transitions tr WHERE tr.delivery_id = d.id ORDER BY tr.to_version DESC LIMIT 1) AS last_transition,
   COALESCE((SELECT jsonb_agg(jsonb_build_object('id', t.id, 'role', COALESCE(t.delivery_role, CASE WHEN t.id = d.owner_task_id THEN 'owner' END), 'status', t.status, 'created_at', t.created_at) ORDER BY t.created_at)
@@ -110,7 +111,9 @@ export function laneWaitFrom(outcome: unknown): { behindPr: number | null } | nu
 export function rowToDeliveryView(row: J, now = Date.now(), approvedNeedsPerson: ApprovedMergeRule = PERSON_MERGES): DeliveryView | null {
   if (!row.delivery) return null;
   const rounds = ((row.rounds as J[]) ?? []).map(toRoundSnapshot);
-  const attempts = ((row.attempts as J[]) ?? []).map(toAttemptSnapshot);
+  // §7: the proven push head stays on the read model, so a repair can say "pushed · testing".
+  const attempts = ((row.attempts as J[]) ?? []).map((a) => ({ ...toAttemptSnapshot(a), pushedHeadSha: a.pushed_head_sha == null ? null : String(a.pushed_head_sha) }));
+  const findings = ((row.findings as J[] | null | undefined) ?? []).map(toFindingSnapshot);
   const lt = row.last_transition as J | null;
   const lastTransition: TransitionRef | null = lt ? {
     command: String(lt.command), fromState: lt.from_state == null ? null : String(lt.from_state), toState: String(lt.to_state),
@@ -120,7 +123,7 @@ export function rowToDeliveryView(row: J, now = Date.now(), approvedNeedsPerson:
     taskId: String(t.id), role: t.role == null ? 'attempt' : String(t.role), status: String(t.status), createdAt: iso(t.created_at),
   }));
   const view = deriveDeliveryView({
-    view: { delivery: toDeliverySnapshot(row.delivery as J), rounds, attempts },
+    view: { delivery: toDeliverySnapshot(row.delivery as J), rounds, attempts, findings },
     lastTransition,
     attemptTasks,
     remediation: remediationFrom(row.remediation as J | null, now),

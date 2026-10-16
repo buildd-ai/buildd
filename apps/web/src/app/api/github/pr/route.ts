@@ -55,6 +55,7 @@ import { kernelLandingView, type KernelLanding } from '@/lib/workflow/seam';
 import { doorErrorResponse, isDoorError, idempotencyKeyOf, landThroughKernel, openKernelDelivery, type KernelPrincipal } from '@/lib/workflow/kernel-client';
 import { kernelPrincipalOf } from '@/lib/workflow/kernel-client';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
+import { prDeliveryReport } from '@/lib/pr-delivery-report';
 import { canonicalPrState, prRecord } from '@/lib/pr-presentation';
 import { readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
@@ -2722,6 +2723,10 @@ export async function GET(req: NextRequest) {
       },
       checks: ciSummary,
       reviews: reviewSummary,
+      // §7 (workflow-kernel-library.md): a kernel-owned PR's standing, review
+      // rounds and repairs, from its delivery. GitHub's review counts above
+      // stay for a PR with no delivery.
+      ...(kernelView && kernelView.prNumber === prNumber ? { delivery: prDeliveryReport(kernelView) } : {}),
       ...(comments ? { comments } : {}),
       ...(ciFailures ? { ciFailures } : {}),
       ...(attempts.length > 0 ? { attempts } : {}),

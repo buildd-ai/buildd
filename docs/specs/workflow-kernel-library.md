@@ -1006,6 +1006,25 @@ derive it from the delivery, so the task page, mission page, Home, `get_pr`,
   in review WHEN any surface renders THEN it shows the delivery's state and
   flags the disagreement in `explain`.
 
+How (S7, task c16eb202). The review line ("2 rounds · latest: changes
+requested · 1 open finding") and a repair's phase are pure readings in the
+package (`reviewSummaryOf`, `repairPhaseOf`); `get_pr`, the task page's checks
+list and PR card, and the activity comment all print the first, and `get_pr`
+and the checks list the second. Surfaces that derive merged, open or closed
+from worker rows (mission progress, unmerged PRs, mission health, the mission
+PR line, Home's mission cards and upstream merge cards) read those rows with
+the delivery's lifecycle laid over them on read (`overlayDeliveryLifecycle`),
+so they need no rewrite and write nothing; a task with no delivery keeps its
+rows. `list_prs` keeps a PR whose delivery is live, or merged in the window,
+as a candidate whatever its worker row says.
+
+| AC | Test |
+| --- | --- |
+| AC-24 | `apps/web/src/lib/projections-agree.test.tsx`; `apps/web/src/app/api/github/pr/route.test.ts` › "review rounds and standing from the delivery" |
+| AC-25 | `apps/web/src/lib/explain.delivery.test.ts` › "AC-25" |
+| AC-26 | `apps/web/src/lib/explain.delivery.test.ts` › "AC-26"; `apps/web/src/lib/workflow/delivery-overlay.test.ts`; `apps/web/src/lib/pr-list.test.ts` › "a kernel delivery still live" |
+| Repair phases | `packages/workflow-kernel/src/delivery-summary.test.ts`; `apps/web/src/lib/task-checks.test.ts` › "repair phase (§7)" |
+
 ## 8. Order of work
 
 Each slice is one or more reviewed PRs to trunk, built locally (mission
@@ -1095,6 +1114,7 @@ column outside the kernel; S3 and S4 remove or route each one.
 - `apps/web/src/lib/mission-branch-refresh.ts`, `mission-pr.ts` (S6)
 - `apps/web/src/lib/release-executor.ts`, `release/compose-actions.ts` (S3)
 - `packages/core/pr-facts.ts` (S4)
+- `packages/workflow-kernel/src/delivery-summary.ts`, `apps/web/src/lib/workflow/delivery-overlay.ts`, `apps/web/src/lib/pr-delivery-report.ts` (S7)
 - `packages/core/__tests__/workflow-write-sites.test.ts`,
   `state-ownership.test.ts` (kernel path changes in S1)
 

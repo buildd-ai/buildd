@@ -20,6 +20,7 @@ import { isMissionIntegrationBase } from '@buildd/core/mission-integration';
 import { loadPrAttention } from '@/lib/pr-attention';
 import { prListStatus, type PrListStatus } from '@/lib/pr-presentation';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
+import { workspaceKernelOnSql } from '@/lib/workflow/authority';
 import type { DeliveryView } from '@/lib/workflow/projections';
 
 export const PR_LIST_STATES = ['open', 'attention', 'conflict', 'ci_failed', 'merged'] as const satisfies readonly SharedPrListState[];
@@ -46,15 +47,27 @@ export function parsePrListState(raw: string | null | undefined): { state: PrLis
 export function buildPrListWhere(opts: { workspaceIds: string[]; state: PrListState; since?: Date }): SQL {
   const base = [inArray(workers.workspaceId, opts.workspaceIds), isNotNull(workers.prUrl)];
   if (opts.state === 'merged') {
-    base.push(isNotNull(workers.mergedAt), gte(workers.mergedAt, opts.since ?? new Date(0)));
+    const since = opts.since ?? new Date(0);
+    base.push(or(
+      and(isNotNull(workers.mergedAt), gte(workers.mergedAt, since)),
+      kernelDeliveryExists(sql`kd.state = 'MERGED' AND kd.merged_at >= ${since.toISOString()}::timestamptz`),
+    )!);
   } else {
     // Every open PR: attention ("waiting on you"), conflict and ci_failed are
     // decided after the collapse, a kernel-owned PR's from its delivery
     // (Slice F), so the column never narrows the candidates.
-    base.push(isNull(workers.mergedAt));
-    base.push(or(isNull(workers.prLifecycleStatus), notInArray(workers.prLifecycleStatus, TERMINAL))!);
+    base.push(or(
+      and(isNull(workers.mergedAt), or(isNull(workers.prLifecycleStatus), notInArray(workers.prLifecycleStatus, TERMINAL))),
+      // §7 / AC-26: a live delivery is open whatever the worker row says.
+      kernelDeliveryExists(sql`kd.state NOT IN ('MERGED', 'SUPERSEDED', 'ABANDONED', 'CLOSED_UNMERGED', 'FAILED')`),
+    )!);
   }
   return and(...base)!;
+}
+
+/** The row's PR has a kernel-owned delivery (the same reading `getDeliveryViewsForTasks` loads) matching `where`. */
+function kernelDeliveryExists(where: SQL): SQL {
+  return sql`EXISTS (SELECT 1 FROM workflow_deliveries kd WHERE kd.owner_task_id = ${workers.taskId} AND kd.pr_number = ${workers.prNumber} AND kd.authority = 'kernel' AND ${workspaceKernelOnSql(sql`kd.workspace_id`)} AND ${where})`;
 }
 
 /** What a kernel-owned delivery says about its PR, in the list's own words. */

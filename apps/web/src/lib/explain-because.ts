@@ -26,6 +26,7 @@ import { ENTITLEMENT_BLOCK_CONTEXT_KEY, parseEntitlementBlock } from '@buildd/sh
 import { taskRecoverySentence } from './task-recovery-hold';
 import { cancellationLine } from './task-cancellation';
 import { claimHoldPhrase } from './claim-hold-phrase';
+import type { DeliveryDisagreement } from './workflow/delivery-overlay';
 
 const repoOf = (url: string | null | undefined) => url?.match(/github\.com\/([^/]+\/[^/]+)\/pull\/\d+/)?.[1] ?? null;
 
@@ -657,6 +658,25 @@ export function deliveryTransitionLink(
   const detail = d.detail ? `; ${d.detail}` : '';
   const attempts = d.attemptLine ? ` (${d.attemptLine})` : '';
   return link(`Delivery is ${d.state} (${d.headline}${detail})${attempts}: ${t.command} moved it ${moved} at ${t.createdAt}.`, 'DeliveryView.lastTransition', refs);
+}
+
+const ROW_WORDS: Record<DeliveryDisagreement['worker'], string> = { merged: 'merged', open: 'still open', closed: 'closed' };
+
+/**
+ * workflow-kernel-library.md §7 / AC-26: a worker row whose merge columns say
+ * something other than the delivery. The delivery is the record, so the answer
+ * reads it; the row is named so the disagreement is visible, never hidden.
+ */
+export function deliveryDisagreementLink(d: DeliveryDisagreement, subject: BecauseSubjectRefs): Link {
+  const refs: ExplainRefs = {
+    taskId: d.taskId,
+    ...(subject.missionId ? { missionId: subject.missionId } : {}),
+    ...(subject.workspaceId ? { workspaceId: subject.workspaceId } : {}),
+    prNumber: d.prNumber,
+  };
+  return link(
+    `PR #${d.prNumber}: the worker record says ${ROW_WORDS[d.worker]}, but the delivery says ${d.delivery} (${d.headline}). This answer follows the delivery.`,
+    'DeliveryView.state vs workers.mergedAt', refs);
 }
 
 /**

@@ -136,6 +136,36 @@ export function pageWorkspaceExplain(data: { subjects?: any[]; considered?: numb
 }
 
 /** `items` cut to `max`, with the count of what was left out. */
+/**
+ * get_pr's delivery lines (docs/specs/workflow-kernel-library.md §7). A
+ * kernel-owned PR reports where it stands, its review rounds and its repairs
+ * from the delivery (`data.delivery`, lib/pr-delivery-report.ts), so it never
+ * says "Reviews: none" while rounds exist. A PR with no delivery keeps
+ * GitHub's review counts.
+ */
+export function formatGetPrDelivery(data: {
+  reviews?: { approved?: number; changesRequested?: number } | null;
+  delivery?: {
+    headline: string; detail: string | null;
+    review: { line: string } | null;
+    repairs: Array<{ label: string; words: string }>;
+  } | null;
+}): { standingLine: string; reviewLine: string; repairsLine: string } {
+  const d = data.delivery;
+  const r = data.reviews ?? {};
+  const approved = r.approved ?? 0;
+  const changes = r.changesRequested ?? 0;
+  const github = approved > 0 || changes > 0
+    ? `Reviews: ${approved} approved${changes > 0 ? `, ${changes} changes requested` : ''}`
+    : 'Reviews: none';
+  if (!d) return { standingLine: '', reviewLine: github, repairsLine: '' };
+  return {
+    standingLine: `Where it stands: ${d.headline}${d.detail ? ` (${d.detail})` : ''}`,
+    reviewLine: d.review ? `Reviews: ${d.review.line}` : 'Reviews: no review round yet',
+    repairsLine: d.repairs.length > 0 ? `Repairs: ${d.repairs.map(x => `${x.label} · ${x.words}`).join('; ')}` : '',
+  };
+}
+
 function capList<T>(items: readonly T[], max: number, all: boolean): { shown: T[]; omitted: number } {
   if (all || items.length <= max) return { shown: [...items], omitted: 0 };
   return { shown: items.slice(0, max), omitted: items.length - max };
@@ -3585,9 +3615,7 @@ export async function handleBuilddAction(
         ? `Failing: ${shownFailing.map(c => (c.url ? `${c.name} (${c.url})` : c.name)).join(', ')}${omittedFailing > 0 ? ` (+${omittedFailing} more — all:true lists every one)` : ''}`
         : '';
 
-      const reviewLine = reviews.approved > 0 || reviews.changesRequested > 0
-        ? `Reviews: ${reviews.approved} approved${reviews.changesRequested > 0 ? `, ${reviews.changesRequested} changes requested` : ''}`
-        : 'Reviews: none';
+      const { standingLine, reviewLine, repairsLine } = formatGetPrDelivery(data);
 
       const mergeableLine = pr.mergeable === true ? 'Mergeable: yes'
         : pr.mergeable === false ? `Mergeable: no (${pr.mergeableState ?? 'blocked'})`
@@ -3672,9 +3700,11 @@ export async function handleBuilddAction(
       return text([
         `**PR #${pr.number}: ${pr.title ?? '(no title)'}**`,
         `State: ${pr.state} | ${mergeableLine}`,
+        standingLine,
         ciLine,
         failingLine,
         reviewLine,
+        repairsLine,
         statsLine,
         supersededLine,
         `URL: ${pr.url}`,

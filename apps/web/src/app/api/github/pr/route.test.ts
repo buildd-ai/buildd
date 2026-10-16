@@ -6193,6 +6193,41 @@ describe('GET /api/github/pr', () => {
     expect(data.pr.supersededReason).toBe('reopened on a fresh branch');
   });
 
+  // workflow-kernel-library.md §7 / AC-24, AC-26: rounds from the delivery, and its state over a stale worker row.
+  it('a kernel-owned PR reports its review rounds and standing from the delivery, even when the worker row says merged', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-r', accountId: 'account-1', taskId: 'task-r', prNumber: 779,
+      prUrl: 'https://github.com/owner/repo/pull/779',
+      mergedAt: new Date('2026-10-01T00:00:00Z'), prLifecycleStatus: 'merged',
+      lastCommitSha: null, workspace: WORKSPACE_OK,
+    });
+    const round = (n: number, verdict: string | null, status = 'decided') => ({ id: `r${n}`, round: n, headSha: `H${n}`, kind: 'full', status, verdict, effectiveVerdict: verdict, failureCount: 0 });
+    mockGetDeliveryViewsForTasks.mockResolvedValueOnce(new Map([['task-r', {
+      prNumber: 779, state: 'AWAITING_REVIEW', mergedAt: null, supersededBy: null, headline: 'Review queued', detail: 'round 2 at H2', needsYou: false,
+      headSha: 'H2', prState: 'ci_passed',
+      rounds: [round(1, 'request_changes'), round(2, 'request_changes')],
+      findings: [{ id: 'r1:0', status: 'open', required: true }, { id: 'r2:0', status: 'resolved', required: true }],
+      ledger: [{ id: 'a1', family: 'review_fix', attemptNo: 1, mode: 'agent', boundHeadSha: 'H1', triggerReason: 'r1', taskId: 'fx', status: 'ended', outcome: 'delivered', maxAttempts: 3, reportedShas: ['H2'], pushedHeadSha: 'H2' }],
+    }]]));
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockResolvedValueOnce({
+      number: 779, title: 'feat: x', body: null, state: 'open', merged: false, merged_at: null,
+      html_url: 'https://github.com/owner/repo/pull/779', head: { sha: 'H2' }, base: { ref: 'dev' }, additions: 1, deletions: 1, changed_files: 1,
+    });
+    mockGithubApi.mockResolvedValueOnce({ check_runs: [] });
+    mockGithubApi.mockResolvedValueOnce([]); // no GitHub reviews: buildd's reviewer records rounds
+
+    const data = await (await GET(createGetRequest('w-r', 779))).json();
+    expect(data.pr.state).toBe('open');
+    expect(data.reviews).toMatchObject({ approved: 0, changesRequested: 0 });
+    expect(data.delivery).toMatchObject({
+      state: 'AWAITING_REVIEW', headline: 'Review queued',
+      review: { rounds: 2, latestVerdict: 'request_changes', openFindings: 1, line: '2 rounds · latest: changes requested · 1 open finding' },
+      repairs: [{ label: 'Review fix 1 of 3', phase: 'pushed', taskId: 'fx' }],
+    });
+  });
+
   it('merged PR by prNumber (no workerId) returns 200 with merged state', async () => {
     mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockGetTeamWorkspaceIds.mockResolvedValue(['workspace-1']);

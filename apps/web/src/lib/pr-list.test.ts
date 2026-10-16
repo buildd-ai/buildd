@@ -62,6 +62,19 @@ describe('buildPrListWhere', () => {
     expect(q.sql).toContain('"workers"."merged_at" >=');
     expect(q.params).not.toContain('closed');
   });
+
+  // workflow-kernel-library.md §7 / AC-26: the delivery decides, so a PR whose
+  // worker row says merged while its delivery is still in review stays a
+  // candidate for the open list, and a delivery-merged PR for the merged list.
+  it('open: a kernel delivery still live keeps the PR a candidate whatever the worker row says', () => {
+    const q = render({ workspaceIds: ws, state: 'open' });
+    expect(q.sql).toMatch(/or \(exists \(select 1 from workflow_deliveries kd where kd\.owner_task_id = "workers"\."task_id" and kd\.pr_number = "workers"\."pr_number" and kd\.authority = 'kernel'/i);
+    expect(q.sql).toContain("kd.state NOT IN ('MERGED', 'SUPERSEDED', 'ABANDONED', 'CLOSED_UNMERGED', 'FAILED')");
+  });
+  it('merged: a delivery merged in the window is a candidate even before the worker row is stamped', () => {
+    const q = render({ workspaceIds: ws, state: 'merged', since: new Date('2026-09-01T00:00:00Z') });
+    expect(q.sql).toContain("kd.state = 'MERGED' AND kd.merged_at >=");
+  });
 });
 
 const row = (over: Partial<PrListRow>): PrListRow => ({
