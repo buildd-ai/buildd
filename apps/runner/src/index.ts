@@ -2794,6 +2794,9 @@ socketHandler = (req) => handleLocalRequest(req, { remoteAddr: null, viaSocket: 
 
 const localUrl = `http://localhost:${PORT}`;
 
+// Repos for the banner count: the disk cache, or an async scan when there is none.
+const repos = await getRepos();
+
 // ── Startup banner ──────────────────────────────────────────────────────────
 
 // Colours come from the shared terminal palette (terminal-palette.ts), themed
@@ -2802,7 +2805,6 @@ const localUrl = `http://localhost:${PORT}`;
 // stopped by the shell for touching the TTY. Values are the terminal's own
 // foreground (R-17). NO_COLOR or a non-TTY drops every colour.
 const PAL = bannerPalette();
-const repos = await getRepos(); // Use cached, will scan only if no cache
 for (const line of renderBanner({
   version: PKG_VERSION,
   commit: updateState.currentCommit ? updateState.currentCommit.slice(0, 7) : '',

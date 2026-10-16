@@ -27,12 +27,12 @@ mock.module('../../src/git-operations', () => ({
 mock.module('../../src/session-logger', () => ({ sessionLog: mock(() => {}) }));
 
 import { execFileSync, execSync } from 'child_process';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
+import { chmodSync, mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { createWorkspaceResolver, getGitRemote } from '../../src/workspace';
 import { WorkerSync, type WorkerSyncContext } from '../../src/worker-sync';
 import { gitArgsAsync } from '../../src/git-async';
+import { initTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 
 const SLEEP_S = 3;
 /** A request the event loop is free to answer comes back in a few ms. */
@@ -70,7 +70,7 @@ async function timeRequest(): Promise<number> {
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 beforeAll(() => {
-  tmp = mkdtempSync(join(tmpdir(), 'git-off-loop-'));
+  tmp = initTestWorkspace();
   binDir = join(tmp, 'bin');
   mkdirSync(binDir);
   gitLog = join(tmp, 'git-calls.log');
@@ -93,7 +93,7 @@ beforeAll(() => {
 afterAll(() => {
   process.env.PATH = ORIGINAL_PATH;
   server?.stop(true);
-  rmSync(tmp, { recursive: true, force: true });
+  cleanupTestWorkspace();
 });
 
 const gitCalls = (): string[] => {
