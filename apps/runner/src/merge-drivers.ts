@@ -19,11 +19,12 @@
  * often than it was right. Real text conflicts stay with the agent.
  */
 
-import { exec, execFileSync, execSync, spawnSync } from 'child_process';
+import { exec, execFileSync } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { dirname, isAbsolute, join } from 'path';
 import { promisify } from 'util';
 import type { NormalizedDerivedFileRule } from '@buildd/shared';
+import { gitArgsAsync, gitRunAsync } from './git-async';
 
 export { normalizeDerivedFiles, type NormalizedDerivedFileRule } from '@buildd/shared';
 
@@ -138,24 +139,39 @@ function git(cwd: string, args: string[], timeout = 30_000): string {
   return execFileSync('git', args, { cwd, encoding: 'utf-8', timeout, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
 }
 
-function tryGit(cwd: string, args: string[]): { ok: boolean; out: string } {
-  try {
-    return { ok: true, out: git(cwd, args) };
-  } catch (err) {
-    const e = err as { stdout?: string; stderr?: string; message?: string };
-    return { ok: false, out: `${e.stdout ?? ''}${e.stderr ?? ''}`.trim() || String(e.message ?? err) };
-  }
-}
-
 function gitPath(cwd: string, flag: '--git-dir' | '--git-common-dir'): string {
   const p = git(cwd, ['rev-parse', flag]);
   return isAbsolute(p) ? p : join(cwd, p);
 }
 
-function findMergiraf(): string | null {
+// Async twins of the three above. Driver registration and the pre-merge run at
+// task start on the runner's event loop; a sync git there froze the local
+// socket and the heartbeat for as long as git took (a base merge: minutes).
+const GIT_TIMEOUT_MS = 30_000;
+
+async function gitAsync(cwd: string, args: string[], timeout = GIT_TIMEOUT_MS): Promise<string> {
+  return (await gitArgsAsync(args, { cwd, timeoutMs: timeout })).trim();
+}
+
+async function tryGitAsync(cwd: string, args: string[], timeout = GIT_TIMEOUT_MS): Promise<{ ok: boolean; out: string }> {
+  const r = await gitRunAsync(args, { cwd, timeoutMs: timeout });
+  if (r.status === 0 && !r.error) return { ok: true, out: r.stdout.trim() };
+  const label = `Command failed: git ${args.join(' ')}`;
+  return {
+    ok: false,
+    out: `${r.stdout}${r.stderr}`.trim() || (r.timedOut ? `${label} (timed out after ${timeout}ms)` : r.error ? `${label} (${r.error.message})` : label),
+  };
+}
+
+async function gitPathAsync(cwd: string, flag: '--git-dir' | '--git-common-dir'): Promise<string> {
+  const p = await gitAsync(cwd, ['rev-parse', flag]);
+  return isAbsolute(p) ? p : join(cwd, p);
+}
+
+async function findMergiraf(): Promise<string | null> {
   try {
-    const p = execSync('command -v mergiraf', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], shell: '/bin/sh' }).trim();
-    return p || null;
+    const { stdout } = await pexec('command -v mergiraf', { encoding: 'utf-8', shell: '/bin/sh', timeout: GIT_TIMEOUT_MS });
+    return String(stdout).trim() || null;
   } catch {
     return null;
   }
@@ -179,13 +195,13 @@ function replaceManagedBlock(existing: string, lines: string[]): string {
  * rule list removes what an earlier registration added. Also turns on rerere so
  * a resolution recorded once replays on the next attempt.
  */
-export function registerMergeDrivers(
+export async function registerMergeDrivers(
   worktreePath: string,
   rules: NormalizedDerivedFileRule[],
   opts: MergeDriverOptions,
-): MergeDriverPlan {
+): Promise<MergeDriverPlan> {
   const mergirafPath = opts.mergiraf
-    ? (opts.mergirafPath === undefined ? findMergiraf() : opts.mergirafPath)
+    ? (opts.mergirafPath === undefined ? await findMergiraf() : opts.mergirafPath)
     : null;
   if (opts.mergiraf && !mergirafPath) {
     console.log('[merge-drivers] mergiraf enabled for this workspace but not installed — skipping it');
@@ -193,24 +209,26 @@ export function registerMergeDrivers(
   const plan = planMergeDrivers(rules, { mergiraf: opts.mergiraf, mergirafPath });
 
   // Drop drivers from an earlier registration whose index no longer exists.
-  const stale = tryGit(worktreePath, ['config', '--local', '--name-only', '--get-regexp', '^merge\\.buildd-derived-']);
+  const stale = await tryGitAsync(worktreePath, ['config', '--local', '--name-only', '--get-regexp', '^merge\\.buildd-derived-']);
   if (stale.ok) {
     for (const section of new Set(stale.out.split('\n').filter(Boolean).map(k => k.replace(/\.[^.]+$/, '')))) {
-      tryGit(worktreePath, ['config', '--local', '--remove-section', section]);
+      await tryGitAsync(worktreePath, ['config', '--local', '--remove-section', section]);
     }
   }
-  for (const [key, value] of plan.config) git(worktreePath, ['config', '--local', key, value]);
-  git(worktreePath, ['config', '--local', 'rerere.enabled', 'true']);
-  git(worktreePath, ['config', '--local', 'rerere.autoUpdate', 'true']);
+  // One at a time: concurrent `git config` writers race on config.lock.
+  for (const [key, value] of plan.config) await gitAsync(worktreePath, ['config', '--local', key, value]);
+  await gitAsync(worktreePath, ['config', '--local', 'rerere.enabled', 'true']);
+  await gitAsync(worktreePath, ['config', '--local', 'rerere.autoUpdate', 'true']);
 
   // git's own merge temp files: a merge killed mid-way (timeout) leaves them,
   // and a driver that outlives git can write one late. Never committable.
-  const excludePath = join(gitPath(worktreePath, '--git-common-dir'), 'info', 'exclude');
+  const commonDir = await gitPathAsync(worktreePath, '--git-common-dir');
+  const excludePath = join(commonDir, 'info', 'exclude');
   mkdirSync(dirname(excludePath), { recursive: true });
   const exclude = existsSync(excludePath) ? readFileSync(excludePath, 'utf-8') : '';
   writeFileSync(excludePath, replaceManagedBlock(exclude, plan.config.length > 0 ? ['.merge_file_*'] : []));
 
-  const attributesPath = join(gitPath(worktreePath, '--git-common-dir'), 'info', 'attributes');
+  const attributesPath = join(commonDir, 'info', 'attributes');
   mkdirSync(dirname(attributesPath), { recursive: true });
   const existing = existsSync(attributesPath) ? readFileSync(attributesPath, 'utf-8') : '';
   writeFileSync(attributesPath, replaceManagedBlock(existing, plan.attributes));
@@ -236,21 +254,22 @@ export interface DerivedMergeResult {
   error?: string;
 }
 
-function takePendingCommands(worktreePath: string, rules: NormalizedDerivedFileRule[]): string[] {
-  const file = join(gitPath(worktreePath, '--git-dir'), PENDING_FILE);
+/** `gitDir`: the worktree's own `git rev-parse --git-dir`, resolved once by the caller. */
+function takePendingCommands(gitDir: string, rules: NormalizedDerivedFileRule[]): string[] {
+  const file = join(gitDir, PENDING_FILE);
   if (!existsSync(file)) return [];
   const indices = new Set(readFileSync(file, 'utf-8').split('\n').map(s => Number.parseInt(s, 10)).filter(n => Number.isInteger(n)));
   rmSync(file, { force: true });
   return [...new Set([...indices].sort((a, b) => a - b).map(i => rules[i]?.regenerate).filter((c): c is string => !!c))];
 }
 
-function runRegenerate(worktreePath: string, command: string): void {
-  execSync(command, { cwd: worktreePath, encoding: 'utf-8', timeout: REGENERATE_TIMEOUT_MS, stdio: ['pipe', 'pipe', 'pipe'], shell: '/bin/sh' });
+async function runRegenerate(worktreePath: string, command: string): Promise<void> {
+  await pexec(command, { cwd: worktreePath, encoding: 'utf-8', timeout: REGENERATE_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024, shell: '/bin/sh' });
 }
 
 /** Delete git's merge temp files (`.merge_file_*`) a killed merge left in the tree. */
-function removeMergeTempFiles(worktreePath: string): void {
-  const left = tryGit(worktreePath, ['ls-files', '--others', '--ignored', '--exclude=.merge_file_*']);
+async function removeMergeTempFiles(worktreePath: string): Promise<void> {
+  const left = await tryGitAsync(worktreePath, ['ls-files', '--others', '--ignored', '--exclude=.merge_file_*']);
   for (const rel of left.ok ? left.out.split('\n').filter(Boolean) : []) {
     if (/(^|\/)\.merge_file_[^/]+$/.test(rel)) rmSync(join(worktreePath, rel), { force: true });
   }
@@ -266,9 +285,31 @@ export interface MergirafLedgerEntry {
  * next time. A missing ledger is empty. Malformed lines are skipped.
  */
 export function readMergirafLedger(worktreePath: string, fromLine: number): { entries: MergirafLedgerEntry[]; offset: number } {
+  let gitDir: string;
+  try {
+    gitDir = gitPath(worktreePath, '--git-dir');
+  } catch {
+    return { entries: [], offset: fromLine };
+  }
+  return readMergirafLedgerAt(gitDir, fromLine);
+}
+
+/** readMergirafLedger, with the git dir resolved off the event loop (task start). */
+export async function readMergirafLedgerAsync(worktreePath: string, fromLine: number): Promise<{ entries: MergirafLedgerEntry[]; offset: number }> {
+  let gitDir: string;
+  try {
+    gitDir = await gitPathAsync(worktreePath, '--git-dir');
+  } catch {
+    return { entries: [], offset: fromLine };
+  }
+  return readMergirafLedgerAt(gitDir, fromLine);
+}
+
+/** readMergirafLedger with the git dir already resolved (no git call). */
+export function readMergirafLedgerAt(gitDir: string, fromLine: number): { entries: MergirafLedgerEntry[]; offset: number } {
   let text = '';
   try {
-    const file = join(gitPath(worktreePath, '--git-dir'), MERGIRAF_LEDGER);
+    const file = join(gitDir, MERGIRAF_LEDGER);
     if (existsSync(file)) text = readFileSync(file, 'utf-8');
   } catch {
     return { entries: [], offset: fromLine };
@@ -336,40 +377,49 @@ function dedupeResolvedImports(worktreePath: string, paths: string[]): string[] 
  * pushes. On any unexpected failure the merge is aborted and the branch is left
  * exactly as it was, so the agent starts from today's state.
  */
-export function mergeBaseWithDerivedFiles(
+export async function mergeBaseWithDerivedFiles(
   worktreePath: string,
   baseRef: string,
   rules: NormalizedDerivedFileRule[],
   opts: { timeoutMs?: number } = {},
-): DerivedMergeResult {
+): Promise<DerivedMergeResult> {
   const result: DerivedMergeResult = { status: 'error', conflicted: [], regenerated: [], pendingRegenerate: [], structurallyResolved: [] };
-  const before = tryGit(worktreePath, ['rev-parse', 'HEAD']);
+  const before = await tryGitAsync(worktreePath, ['rev-parse', 'HEAD']);
   if (!before.ok) return { ...result, error: before.out };
+  let gitDir: string;
+  try {
+    gitDir = await gitPathAsync(worktreePath, '--git-dir');
+  } catch (err) {
+    return { ...result, error: err instanceof Error ? err.message : String(err) };
+  }
   // A leftover pending list from an unrelated earlier merge must not trigger commands now.
-  takePendingCommands(worktreePath, rules);
+  takePendingCommands(gitDir, rules);
   // Only this merge's ledger entries count.
-  const ledgerStart = readMergirafLedger(worktreePath, 0).offset;
+  const ledgerStart = readMergirafLedgerAt(gitDir, 0).offset;
 
   const timeoutMs = opts.timeoutMs ?? MERGE_TIMEOUT_MS;
-  const run = spawnSync('git', ['merge', '--no-edit', '--no-ff', baseRef], {
-    cwd: worktreePath, encoding: 'utf-8', timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024,
+  const run = await gitRunAsync(['merge', '--no-edit', '--no-ff', baseRef], {
+    cwd: worktreePath, timeoutMs, maxBuffer: 64 * 1024 * 1024,
+    // SIGTERM, as the sync spawn sent: git removes its index.lock on TERM, and
+    // the abort below needs the index.
+    killSignal: 'SIGTERM',
   });
-  const timedOut = run.error?.message.includes('ETIMEDOUT') || run.signal === 'SIGTERM';
+  const timedOut = run.timedOut;
   const merge = {
     ok: !run.error && run.status === 0,
     out: timedOut
       ? `git merge timed out after ${Math.round(timeoutMs / 1000)}s`
       : `${run.stdout ?? ''}${run.stderr ?? ''}`.trim() || String(run.error?.message ?? `exit ${run.status}`),
   };
-  const unmerged = tryGit(worktreePath, ['diff', '--name-only', '--diff-filter=U']);
+  const unmerged = await tryGitAsync(worktreePath, ['diff', '--name-only', '--diff-filter=U']);
   const conflicted = timedOut || !unmerged.ok ? [] : unmerged.out.split('\n').filter(Boolean);
-  const structurallyResolved = timedOut ? [] : ledgerPaths(readMergirafLedger(worktreePath, ledgerStart).entries, 'resolved');
+  const structurallyResolved = timedOut ? [] : ledgerPaths(readMergirafLedgerAt(gitDir, ledgerStart).entries, 'resolved');
 
-  const abort = (error: string): DerivedMergeResult => {
-    tryGit(worktreePath, ['merge', '--abort']);
-    tryGit(worktreePath, ['reset', '--hard', before.out]);
-    removeMergeTempFiles(worktreePath);
-    takePendingCommands(worktreePath, rules);
+  const abort = async (error: string): Promise<DerivedMergeResult> => {
+    await tryGitAsync(worktreePath, ['merge', '--abort']);
+    await tryGitAsync(worktreePath, ['reset', '--hard', before.out]);
+    await removeMergeTempFiles(worktreePath);
+    takePendingCommands(gitDir, rules);
     return { ...result, status: 'error', error };
   };
 
@@ -378,24 +428,24 @@ export function mergeBaseWithDerivedFiles(
   const dedupedImports = dedupeResolvedImports(worktreePath, structurallyResolved.filter(p => !conflicted.includes(p)));
 
   if (conflicted.length > 0) {
-    return { ...result, status: 'conflicts', conflicted, structurallyResolved, pendingRegenerate: takePendingCommands(worktreePath, rules) };
+    return { ...result, status: 'conflicts', conflicted, structurallyResolved, pendingRegenerate: takePendingCommands(gitDir, rules) };
   }
 
-  const after = tryGit(worktreePath, ['rev-parse', 'HEAD']);
+  const after = await tryGitAsync(worktreePath, ['rev-parse', 'HEAD']);
   if (after.ok && after.out === before.out) return { ...result, status: 'up_to_date' };
 
-  const commands = takePendingCommands(worktreePath, rules);
+  const commands = takePendingCommands(gitDir, rules);
   try {
-    for (const command of commands) runRegenerate(worktreePath, command);
+    for (const command of commands) await runRegenerate(worktreePath, command);
   } catch (err) {
     return abort(`regenerate failed: ${err instanceof Error ? err.message : String(err)}`);
   }
   if (commands.length > 0 || dedupedImports.length > 0) {
-    const add = tryGit(worktreePath, ['add', '-u']);
-    const dirty = tryGit(worktreePath, ['diff', '--cached', '--quiet']);
+    const add = await tryGitAsync(worktreePath, ['add', '-u']);
+    const dirty = await tryGitAsync(worktreePath, ['diff', '--cached', '--quiet']);
     if (add.ok && !dirty.ok) {
       // Fold the regenerated files into the merge commit itself.
-      const amend = tryGit(worktreePath, ['commit', '--amend', '--no-edit', '--no-verify']);
+      const amend = await tryGitAsync(worktreePath, ['commit', '--amend', '--no-edit', '--no-verify']);
       if (!amend.ok) return abort(`amend failed: ${amend.out}`);
     }
   }
@@ -449,15 +499,15 @@ export async function finishDerivedMerge(
       return { status: 'verify_failed', verification, error: out };
     }
     // What gets pushed must be what was verified.
-    const dirty = tryGit(worktreePath, ['status', '--porcelain', '--untracked-files=no']);
+    const dirty = await tryGitAsync(worktreePath, ['status', '--porcelain', '--untracked-files=no']);
     if (!dirty.ok || dirty.out) {
       return { status: 'verify_failed', verification, error: `verification changed tracked files: ${dirty.out}` };
     }
   }
-  const head = tryGit(worktreePath, ['rev-parse', 'HEAD']);
+  const head = await tryGitAsync(worktreePath, ['rev-parse', 'HEAD']);
   if (!head.ok) return { status: 'push_failed', verification, error: head.out };
   try {
-    git(worktreePath, ['push', '--no-verify', '-q', 'origin', `HEAD:refs/heads/${branch}`], PUSH_TIMEOUT_MS);
+    await gitAsync(worktreePath, ['push', '--no-verify', '-q', 'origin', `HEAD:refs/heads/${branch}`], PUSH_TIMEOUT_MS);
   } catch (err) {
     const e = err as { stderr?: string; message?: string };
     return { status: 'push_failed', verification, error: lastLines(e.stderr ?? '') || String(e.message ?? err) };

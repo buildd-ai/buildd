@@ -25,6 +25,8 @@ export interface GitAsyncOptions {
   env?: NodeJS.ProcessEnv;
   /** Reject (and kill the child) once stdout passes this many bytes. Default 16 MiB. */
   maxBuffer?: number;
+  /** gitRunAsync only: the signal a timeout sends the process group. Default SIGKILL. */
+  killSignal?: NodeJS.Signals;
 }
 
 export class GitAsyncError extends Error {
@@ -138,6 +140,79 @@ export function gitArgsAsync(args: string[], opts: GitAsyncOptions): Promise<str
  */
 export function gitShellAsync(command: string, opts: GitAsyncOptions): Promise<string> {
   return run('/bin/sh', ['-c', command], command, opts);
+}
+
+/** How a git child ended, for callers that read stdout and stderr on failure too. */
+export interface GitRunResult {
+  /** Exit code; null when killed (timeout, maxBuffer) or never started. */
+  status: number | null;
+  stdout: string;
+  stderr: string;
+  signal: NodeJS.Signals | null;
+  timedOut: boolean;
+  /** Set when the child could not be started at all. */
+  error?: Error;
+}
+
+/**
+ * `git <args...>` like spawnSync: resolves how it ended, never rejects. Same
+ * timeout kill and stdout cap as gitArgsAsync; stdout is kept on failure.
+ */
+export function gitRunAsync(args: string[], opts: GitAsyncOptions): Promise<GitRunResult> {
+  return new Promise<GitRunResult>((resolvePromise) => {
+    let child: childProcess.ChildProcess;
+    try {
+      child = childProcess.spawn('git', args, {
+        cwd: opts.cwd,
+        env: opts.env ?? process.env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        detached: true,
+      });
+    } catch (err) {
+      resolvePromise({ status: null, stdout: '', stderr: '', signal: null, timedOut: false, error: err as Error });
+      return;
+    }
+    const maxBuffer = opts.maxBuffer ?? DEFAULT_MAX_BUFFER;
+    const out: Buffer[] = [];
+    const errChunks: Buffer[] = [];
+    let outBytes = 0;
+    let settled = false;
+    let timedOut = false;
+    const text = (chunks: Buffer[]) => Buffer.concat(chunks).toString('utf-8');
+    const finish = (r: Omit<GitRunResult, 'stdout' | 'stderr' | 'timedOut'>) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolvePromise({ ...r, stdout: text(out), stderr: text(errChunks), timedOut });
+    };
+    const kill = (sig: NodeJS.Signals = 'SIGKILL') => {
+      try {
+        if (child.pid) process.kill(-child.pid, sig);
+        else child.kill(sig);
+      } catch {
+        try { child.kill(sig); } catch { /* already gone */ }
+      }
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      const sig = opts.killSignal ?? 'SIGKILL';
+      kill(sig);
+      finish({ status: null, signal: sig });
+    }, opts.timeoutMs);
+    (timer as { unref?: () => void }).unref?.();
+    child.stdout?.on('data', (chunk: Buffer) => {
+      outBytes += chunk.length;
+      if (outBytes > maxBuffer) {
+        kill();
+        finish({ status: null, signal: 'SIGKILL', error: new Error(`stdout exceeded maxBuffer (${maxBuffer} bytes)`) });
+        return;
+      }
+      out.push(chunk);
+    });
+    child.stderr?.on('data', (chunk: Buffer) => { errChunks.push(chunk); });
+    child.on('error', (err) => finish({ status: null, signal: null, error: err }));
+    child.on('close', (code, signal) => finish({ status: code, signal: signal as NodeJS.Signals | null }));
+  });
 }
 
 /**
