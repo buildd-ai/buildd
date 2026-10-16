@@ -2,7 +2,7 @@
 
 exports[`teams and missions (R-23, R-24) 80x24: the filter line, team headings, open missions, then delivered ones with their day 1`] = `
 " buildd · laptop-1234 · 2 workspaces · 2 teams     0 of 3 slots busy · ● online 
- t team: all · w workspace: all                                                 
+ [ Missions ]  Queue   t team: all · w workspace: all                           
 ────────────────────────────────────────────────────────────────────────────────
  Acme                 │ Pair on the parser · local session                      
  ▸ Pair on the parser │─────────────────────────────────────────────────────────

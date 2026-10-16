@@ -1835,11 +1835,11 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
         // Allow combined-workspaces and local-repos in serverless
         if (path === '/api/combined-workspaces' || path === '/api/local-repos') {
           // Will be handled below
-        } else if (['/api/tasks', '/api/workspaces', '/api/missions/recent', '/api/workers', '/api/claim', '/api/abort', '/api/retry', '/api/done', '/api/read'].some(p => path.startsWith(p))) {
+        } else if (['/api/tasks', '/api/workspaces', '/api/missions/recent', '/api/queue', '/api/workers', '/api/claim', '/api/abort', '/api/retry', '/api/done', '/api/read'].some(p => path.startsWith(p))) {
           return Response.json({ error: 'Server features not available in local-only mode', serverless: true }, { status: 400, headers: corsHeaders });
         }
       } else {
-        if (['/api/tasks', '/api/workspaces', '/api/missions/recent', '/api/workers', '/api/claim', '/api/abort', '/api/retry', '/api/done', '/api/read'].some(p => path.startsWith(p))) {
+        if (['/api/tasks', '/api/workspaces', '/api/missions/recent', '/api/queue', '/api/workers', '/api/claim', '/api/abort', '/api/retry', '/api/done', '/api/read'].some(p => path.startsWith(p))) {
           return Response.json({ error: 'Not configured. Set API key first.', needsSetup: true }, { status: 401, headers: corsHeaders });
         }
       }
@@ -1884,6 +1884,17 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
       } catch (err: any) {
         console.error('Failed to list missions:', err.message);
         return Response.json({ error: err.message || 'Failed to load missions', missions: [] }, { status: 502, headers: corsHeaders });
+      }
+    }
+
+    // `buildd top`'s Queue view (R-26): the claim route's order for this runner, per team.
+    if (path === '/api/queue' && req.method === 'GET') {
+      try {
+        const queue = await buildd!.listQueue(workerManager!.getClaimIdentity());
+        return Response.json(queue, { headers: corsHeaders });
+      } catch (err: any) {
+        console.error('Failed to read the queue:', err.message);
+        return Response.json({ error: err.message || 'Failed to read the queue', teams: [] }, { status: 502, headers: corsHeaders });
       }
     }
 

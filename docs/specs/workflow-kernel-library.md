@@ -946,6 +946,12 @@ later work and nothing refreshes or re-ships a branch that already landed.
   successor; a refresh with work of its own, or anything unreadable, holds the
   branch and asks a person once. The branch retires only when nothing is held
   and a fresh read shows nothing open on it.
+- Projection (S6c): the mission page and `manage_missions get` read the
+  delivery records. The mission-PR line is the current delivery ("Delivery 2"),
+  with shipped deliveries named beside it ("Delivery 1 merged (#n)"), never a
+  merged mission PR standing for the mission (`deriveMissionIntegrationPr` with
+  `deliveries`). Recorded scope amendments and holds show as one line each, in
+  words. The mission's own state still comes from its tasks and criteria.
 - Mission completion reads delivery and epoch state, never `workers.mergedAt`:
   it is held while a shipped delivery's branch still has PRs to settle, or the
   writable epoch carries landed work that has not reached trunk
@@ -972,6 +978,7 @@ later work and nothing refreshes or re-ships a branch that already landed.
 | AC-22 | `apps/web/src/app/api/workers/[id]/route.test.ts` › "mission-branch refresh already on the branch" |
 | AC-23 | `apps/web/tests/db/mission-epochs.test.ts` › "AC-23 / a11abc4b"; `apps/web/src/lib/mission-pr.test.ts` › "a refresh PR lands only on the delivery it was filed for" |
 | Scope decisions (task f3bda4e1 scenarios 5–7) | `packages/workflow-kernel/src/scope-amendments.test.ts`; `apps/web/tests/db/scope-amendments.test.ts` |
+| Mission page and API distinguish the mission from its deliveries (scenario 8) | `apps/web/src/lib/mission-integration-pr.test.ts` › "with delivery records"; `apps/web/src/lib/mission-scope-view.test.ts` |
 | Completion reads epochs (task f3bda4e1 scenarios 1, 4) | `apps/web/src/lib/mission-completion.test.ts` › "scenario 1", "scenario 4" |
 
 ## 7. Projections

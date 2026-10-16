@@ -182,6 +182,7 @@ export class PusherManager {
           channel.bind('task:assigned', (data: { task: BuilddTask; targetLocalUiUrl?: string | null }) => {
             this.handleTaskAssignment(data);
           });
+          channel.bind('task:claimed', (data: { task?: { id?: string; workspaceId?: string } }) => this.handleTaskClaimed(data));
           this.workspaceChannels.set(channelName, channel);
           console.log(`Subscribed to ${channelName} for task assignments`);
         }
@@ -195,9 +196,20 @@ export class PusherManager {
     // Unsubscribe from workspace channels
     for (const [channelName, channel] of this.workspaceChannels) {
       channel.unbind('task:assigned');
+      channel.unbind('task:claimed');
       this.pusher?.unsubscribe(channelName);
     }
     this.workspaceChannels.clear();
+  }
+
+  /**
+   * A task in one of this runner's workspaces was claimed, here or by another
+   * runner: `buildd top`'s Queue view rereads its order (spec c7410e76 AC-12).
+   */
+  handleTaskClaimed(data: { task?: { id?: string; workspaceId?: string } } | null | undefined) {
+    const taskId = data?.task?.id;
+    if (typeof taskId !== 'string') return;
+    this.callbacks.emit({ type: 'task_claimed', taskId, workspaceId: data?.task?.workspaceId ?? null });
   }
 
   async handleTaskAssignment(data: { task: BuilddTask; targetLocalUiUrl?: string | null }) {
