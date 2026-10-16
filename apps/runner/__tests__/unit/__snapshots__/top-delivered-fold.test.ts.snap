@@ -1,0 +1,211 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`frames (R-7, R-21, AC-10) 80x24 folded: one dimmed row per team instead of every delivered mission 1`] = `
+" buildd · laptop-1234 · 2 workspaces · 2 teams     0 of 3 slots busy · ● online 
+ [ Missions ]  Queue   t team: all · w workspace: all                           
+────────────────────────────────────────────────────────────────────────────────
+ Acme                 │ Pair on the parser · local session                      
+ ▸ Pair on the parser │─────────────────────────────────────────────────────────
+   local session      │ A person runs this mission from their own session.      
+   Ship the… building │                                                         
+   Docs refr… on hold │                                                         
+   Delivered · 4      │                                                         
+ Initech              │                                                         
+   Billing… verifying │                                                         
+   Delivered · 1      │                                                         
+                      │                                                         
+   (no mission)   0/0 │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+────────────────────────────────────────────────────────────────────────────────
+ ↑↓ move ⏎ open o web tab queue t team w workspace / filter ? help q quit       "
+`;
+
+exports[`frames (R-7, R-21, AC-10) 80x24 unfolded: each delivered mission on its own row with the day delivered 1`] = `
+" buildd · laptop-1234 · 2 workspaces · 2 teams     0 of 3 slots busy · ● online 
+ [ Missions ]  Queue   t team: all · w workspace: all                           
+────────────────────────────────────────────────────────────────────────────────
+ Acme                 │ Delivered this week · 4                                 
+   Pair on the parser │─────────────────────────────────────────────────────────
+   local session      │ Delivered in the last 7 days. ⏎ or Esc folds them.      
+   Ship the… building │                                                         
+   Docs refr… on hold │                                                         
+ ▸ Delivered · 4      │                                                         
+   Retire the … Mar 9 │                                                         
+   Billing exp… Mar 8 │                                                         
+   Search rank… Mar 6 │                                                         
+   Onboarding … Mar 4 │                                                         
+ Initech              │                                                         
+   Billing… verifying │                                                         
+   Delivered · 1      │                                                         
+                      │                                                         
+   (no mission)   0/0 │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+────────────────────────────────────────────────────────────────────────────────
+ ↑↓ move ⏎ open o web tab queue t team w workspace / filter ? help q quit       "
+`;
+
+exports[`frames (R-7, R-21, AC-10) 80x24 filtering: a delivered match shows with its day, the fold untouched 1`] = `
+" buildd · laptop-1234 · 2 workspaces · 2 teams     0 of 3 slots busy · ● online 
+ [ Missions ]  Queue   t team: all · w workspace: all                           
+────────────────────────────────────────────────────────────────────────────────
+ Acme                 │ Billing export · delivered Mar 8 (filter: billing)      
+ ▸ Billing exp… Mar 8 │─────────────────────────────────────────────────────────
+ Initech              │ Delivered Mar 8. Its finished work is not listed here.  
+   Billing… verifying │                                                         
+                      │                                                         
+   (no mission)   0/0 │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+────────────────────────────────────────────────────────────────────────────────
+ ↑↓ move ⏎ open o web tab queue t team w workspace / filter ? help q quit       "
+`;
+
+exports[`frames (R-7, R-21, AC-10) 120x40 folded: one dimmed row per team instead of every delivered mission 1`] = `
+" buildd · laptop-1234 · 2 workspaces · 2 teams                                  0 of 3 slots busy · ● online · v0.340.0 
+ [ Missions ]  Queue   t team: all · w workspace: all                                                                   
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Acme                       │ Pair on the parser · local session                                                        
+ ▸ Pair on the parser       │───────────────────────────────────────────────────────────────────────────────────────────
+   local session            │ A person runs this mission from their own session.                                        
+   Ship the impor… building │                                                                                           
+   Docs refresh     on hold │                                                                                           
+   Delivered this week · 4  │                                                                                           
+ Initech                    │                                                                                           
+   Billing clean… verifying │                                                                                           
+   Delivered this week · 1  │                                                                                           
+                            │                                                                                           
+   (no mission)         0/0 │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ↑↓ move ⏎ open a answer m message x stop c claim h hold o web tab queue t team w workspace / filter ? help q quit      "
+`;
+
+exports[`frames (R-7, R-21, AC-10) 120x40 unfolded: each delivered mission on its own row with the day delivered 1`] = `
+" buildd · laptop-1234 · 2 workspaces · 2 teams                                  0 of 3 slots busy · ● online · v0.340.0 
+ [ Missions ]  Queue   t team: all · w workspace: all                                                                   
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Acme                       │ Delivered this week · 4                                                                   
+   Pair on the parser       │───────────────────────────────────────────────────────────────────────────────────────────
+   local session            │ Delivered in the last 7 days. ⏎ or Esc folds them.                                        
+   Ship the impor… building │                                                                                           
+   Docs refresh     on hold │                                                                                           
+ ▸ Delivered this week · 4  │                                                                                           
+   Retire the old API Mar 9 │                                                                                           
+   Billing export     Mar 8 │                                                                                           
+   Search ranking     Mar 6 │                                                                                           
+   Onboarding copy    Mar 4 │                                                                                           
+ Initech                    │                                                                                           
+   Billing clean… verifying │                                                                                           
+   Delivered this week · 1  │                                                                                           
+                            │                                                                                           
+   (no mission)         0/0 │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ↑↓ move ⏎ open a answer m message x stop c claim h hold o web tab queue t team w workspace / filter ? help q quit      "
+`;
+
+exports[`frames (R-7, R-21, AC-10) 120x40 filtering: a delivered match shows with its day, the fold untouched 1`] = `
+" buildd · laptop-1234 · 2 workspaces · 2 teams                                  0 of 3 slots busy · ● online · v0.340.0 
+ [ Missions ]  Queue   t team: all · w workspace: all                                                                   
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Acme                       │ Billing export · delivered Mar 8 (filter: billing)                                        
+ ▸ Billing export     Mar 8 │───────────────────────────────────────────────────────────────────────────────────────────
+ Initech                    │ Delivered Mar 8. Its finished work is not listed here.                                    
+   Billing clean… verifying │                                                                                           
+                            │                                                                                           
+   (no mission)         0/0 │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ↑↓ move ⏎ open a answer m message x stop c claim h hold o web tab queue t team w workspace / filter ? help q quit      "
+`;
