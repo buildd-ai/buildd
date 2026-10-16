@@ -38,7 +38,7 @@ export interface OpenAiApiKeyCredential {
 /**
  * Resolve the most-specific OpenAI API key visible to a task: workspace-scoped
  * beats account-scoped beats team-wide; within one scope canonical storage
- * beats the legacy alias. Mirrors resolveCodexCredential's precedence, since
+ * beats the legacy alias. Mirrors resolveCodexApiKey's precedence, since
  * both feed the same claim-time injection point.
  */
 export async function resolveOpenAiApiKey(opts: {
@@ -56,7 +56,7 @@ export async function resolveOpenAiApiKey(opts: {
   })).filter(isTeamOpenAiKey);
   if (rows.length === 0) return null;
 
-  // A revoked row can't be the answer — same reasoning as resolveCodexCredential:
+  // A revoked row can't be the answer — same reasoning as resolveCodexApiKey:
   // skip permanently-dead credentials so the claim route never hands one out.
   const liveRows = rows.filter((r) => (r.healthStatus as string) !== 'revoked');
   if (liveRows.length === 0) return null;
