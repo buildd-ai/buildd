@@ -375,7 +375,7 @@ async function commandFor(fact: FactInput, live: LivePr | null, exec: Exec, gith
       return {
         command: { type: 'HeadObserved', actor, hintedHeadSha: fact.hintedHeadSha ?? null, live: live!, ...(proof ? { proof } : {}), ...(carryForward ? { carryForward } : {}), ...(diffChanged ? { diffChanged } : {}), ...(attribution ? { attribution } : {}), ...(changedPaths ? { changedPaths } : {}), ...(delta ? { delta } : {}) },
         ref,
-        payload: { hintedHeadSha: fact.hintedHeadSha ?? null, live, proof: proof ?? null, carryForward, ...(diffChanged ? { diffChanged } : {}), attribution: attribution ?? null, ...(changedPaths ? { changedPaths: changedPaths.slice(0, 50) } : {}) },
+        payload: { hintedHeadSha: fact.hintedHeadSha ?? null, live, proof: proof ?? null, carryForward, ...(diffChanged ? { diffChanged } : {}), attribution: attribution ?? null, ...(changedPaths ? { changedPaths: changedPaths.slice(0, 50) } : {}), ...(delta ? { delta } : {}) },
         repoFullName: fact.repoFullName, prNumber: fact.prNumber,
         held: d ? { deliveryId: d.id, headSha: d.currentHeadSha, version: d.version, state: d.state, round: d.currentRound } : null,
       };
