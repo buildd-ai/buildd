@@ -92,7 +92,7 @@ describe('stored subscription login notice', () => {
     expect(n).not.toBeNull();
     expect(n!.textContent).toContain('a Claude login and a ChatGPT (Codex) login');
     expect(n!.textContent).toContain('will be removed');
-    expect(n!.textContent).toContain('BUILDD_HOST_SEAT=prefer');
+    expect(n!.textContent).not.toContain('BUILDD_HOST_SEAT');
     expect(n!.querySelector('a')!.getAttribute('href')).toContain('apps/runner/README.md#model-login-on-the-runner-machine');
   });
 

@@ -197,11 +197,9 @@ keeps its own Codex home (config, sessions). Its `auth.json` is a link to your
 login, so the CLI's token refreshes land in your file and do not go stale in a
 copy. A credential buildd delivers is never written through that link.
 
-`BUILDD_HOST_SEAT` works the same way. Under `auto`, your login is used when
-the team stores no Codex credential in buildd. Under `prefer`, it also beats a
-stored ChatGPT login. A team OpenAI API key is metered usage the team chose,
-so it is still used under every mode. The log line `Codex login: this
-machine's own` confirms which login ran.
+Your login is used with no setting, including over a ChatGPT login stored in
+buildd. A team OpenAI API key is metered usage the team chose, so it is still
+used. The log line `Codex login: this machine's own` confirms which login ran.
 
 A ChatGPT login rotates its refresh token on every use. Several Codex workers
 refreshing at once can sign each other out. Keep the runner at one concurrent

@@ -45,7 +45,7 @@ export default function StoredSeatNotice({ kinds }: { kinds: StoredSeatKind[] })
       <p className="mt-2 text-xs text-text-secondary">
         Sign in on each runner ({kinds.map((k, i) => (
           <span key={k}>{i > 0 ? ' and ' : ''}<code>{k === 'claude' ? 'claude login' : 'codex login'}</code></span>
-        ))}), then set <code>BUILDD_HOST_SEAT=prefer</code>. API keys are not affected.
+        ))}). The runner uses it with no other setting. API keys are not affected.
       </p>
       <a href={RUNNER_LOGIN_DOCS_URL} target="_blank" rel="noreferrer" className="mt-2 inline-block text-xs underline hover:text-text-primary">
         How to set up a login on the runner
