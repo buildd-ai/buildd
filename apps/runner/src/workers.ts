@@ -1027,14 +1027,7 @@ export class WorkerManager {
         if (active < this.config.maxConcurrent) {
           this.claimPendingTasks().catch(() => {});
         }
-        // Idle runners pick up full knowledge-ingest jobs (fire-and-forget;
-        // the poller serializes itself and never throws).
-        if (active === 0 && !this.config.singleTask) {
-          this.knowledgeIngestPoller.poll().catch(() => {});
-          // Same gate for Scout runs: one at a time, no worker slot, re-checks busy before checkout.
-          this.scoutHostPoller.poll().catch(() => {});
-          this.modelProbePoller.poll().catch(() => {});
-        }
+        this.pollIdleJobs(active);
       }, RUNNER_HEARTBEAT_INTERVAL_MS);
 
       // Liveness ping: a pure "I'm alive" heartbeat every 60s, separate from the
@@ -1250,6 +1243,19 @@ export class WorkerManager {
   }
 
   // Send heartbeat to server announcing this runner instance is alive and ready
+  /**
+   * Idle runners pick up full knowledge-ingest jobs, Scout runs and model
+   * probes (fire-and-forget; each poller serializes itself and never throws).
+   * None starts while a person holds this runner: "nothing new starts" (R-32).
+   */
+  private pollIdleJobs(active: number): void {
+    if (active !== 0 || this.config.singleTask || claimsHeldByPerson()) return;
+    this.knowledgeIngestPoller.poll().catch(() => {});
+    // Same gate for Scout runs: one at a time, no worker slot, re-checks busy before checkout.
+    this.scoutHostPoller.poll().catch(() => {});
+    this.modelProbePoller.poll().catch(() => {});
+  }
+
   private async sendHeartbeat() {
     try {
       // A paused worker holds no slot (pause.ts); a question still does.
