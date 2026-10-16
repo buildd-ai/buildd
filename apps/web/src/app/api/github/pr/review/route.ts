@@ -487,14 +487,15 @@ export async function POST(req: NextRequest) {
     // Retry with a live-task-only lookup that doesn't require head SHA match.
     // This catches cases where the concurrent winner was created just after
     // our insert failed but before we found it. Only returns pending/assigned/in_progress
-    // tasks — never completed ones from prior heads.
-    for (let attempt = 0; attempt < 2; attempt++) {
+    // tasks — never completed ones from prior heads. Use exponential backoff matching
+    // the createReviewerTask retry logic to handle database replication delays.
+    for (let attempt = 0; attempt < 4; attempt++) {
       if (attempt > 0) {
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise(resolve => setTimeout(resolve, 50 * (attempt + 1)));
       }
       const fallback = await findLiveReviewTaskForPr(workspace.id, prNumber);
       if (fallback?.id) {
-        console.log(`[pr-review] Fallback lookup found live reviewer task ${fallback.id} for PR #${prNumber}`);
+        console.log(`[pr-review] Fallback lookup found live reviewer task ${fallback.id} for PR #${prNumber} on attempt ${attempt}`);
         const policy = await resolveEffectivePolicy(workspace, originalTask.missionId);
         return NextResponse.json(
           {

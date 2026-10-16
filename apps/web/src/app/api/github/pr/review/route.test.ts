@@ -772,6 +772,29 @@ describe('POST /api/github/pr/review — idempotency', () => {
     expect(mockFindLiveReviewTaskForPr).toHaveBeenCalled();
   });
 
+  it('retries fallback lookup when concurrent task is not immediately visible', async () => {
+    mockCreateReviewerTask.mockReturnValueOnce(null);
+    let callCount = 0;
+    mockFindLiveReviewTaskForPr.mockImplementation(() => {
+      callCount++;
+      // Task is visible on the 3rd attempt (after 100ms delay)
+      return callCount >= 3 ? { id: 'review-task-delayed' } : null;
+    });
+
+    const startTime = Date.now();
+    const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+    const duration = Date.now() - startTime;
+
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.ok).toBe(true);
+    expect(json.reviewTaskId).toBe('review-task-delayed');
+    // Should have retried at least 3 times
+    expect(mockFindLiveReviewTaskForPr.mock.calls.length).toBeGreaterThanOrEqual(3);
+    // Should have waited at least 50+100ms between retries
+    expect(duration).toBeGreaterThanOrEqual(100);
+  });
+
   it('does not adopt a completed review task when createReviewerTask returns null', async () => {
     mockCreateReviewerTask.mockReturnValueOnce(null);
     // findLiveReviewTaskForPr filters to live tasks, so it returns null for completed ones
