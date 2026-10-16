@@ -147,6 +147,8 @@ export interface AttemptSnapshot {
   outcome: AttemptOutcome | null;
   maxAttempts: number;
   reportedShas: string[];
+  /** The head GitHub showed when the attempt's push was proven (`delivered`); null before then. Read-only surfaces use it; the reducer does not. */
+  pushedHeadSha?: string | null;
   /** `human`: a manual retry ("Fix CI"); one past the cap is a BudgetExtended row. Absent = automatic. */
   trigger?: 'automatic' | 'human';
 }

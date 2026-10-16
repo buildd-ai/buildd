@@ -114,8 +114,8 @@ describe('buildd top', () => {
     expect(classifyCliArgs(argv('top', '--workspace='))).toEqual({ kind: 'unknown', arg: '--workspace=' });
   });
   test('--team <name> (R-23), alone or with --workspace', () => {
-    expect(classifyCliArgs(argv('top', '--team', 'TWC'))).toEqual({ kind: 'top', missionId: null, workspace: null, team: 'TWC' });
-    expect(classifyCliArgs(argv('top', '--team=TWC', '--workspace', 'a'))).toEqual({ kind: 'top', missionId: null, workspace: 'a', team: 'TWC' });
+    expect(classifyCliArgs(argv('top', '--team', 'Acme'))).toEqual({ kind: 'top', missionId: null, workspace: null, team: 'Acme' });
+    expect(classifyCliArgs(argv('top', '--team=Acme', '--workspace', 'a'))).toEqual({ kind: 'top', missionId: null, workspace: 'a', team: 'Acme' });
     expect(classifyCliArgs(argv('top', '--team'))).toEqual({ kind: 'unknown', arg: '--team' });
   });
   test('anything else after top is refused, not ignored', () => {

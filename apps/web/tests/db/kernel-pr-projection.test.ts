@@ -53,17 +53,17 @@ beforeAll(async () => {
 });
 beforeEach(() => { gh = { head: 'H1', state: 'open', merged: false, updatedAt: 'u0' }; });
 
-async function seedWorker(taskId: string, prNumber: number, status: string) {
+async function seedWorker(taskId: string, prNumber: number, status: string, runner = 'test', url = prUrl(prNumber)) {
   const [w] = await q<{ id: string }>(sql`INSERT INTO workers (workspace_id, task_id, name, runner, branch, status, last_commit_sha, pr_number, pr_url, pr_lifecycle_status)
-    VALUES (${workspaceId}::uuid, ${taskId}::uuid, 'w', 'test', 'feat/projection', ${status}, 'H1', ${prNumber}, ${prUrl(prNumber)}, 'ci_green') RETURNING id`);
+    VALUES (${workspaceId}::uuid, ${taskId}::uuid, 'w', ${runner}, 'feat/projection', ${status}, 'H1', ${prNumber}, ${url}, 'ci_green') RETURNING id`);
   return w.id;
 }
 
 /** A kernel-owned PR: the owner's worker row, plus a CI-retry attempt's row that adopted the PR. */
-async function open(): Promise<Delivery> {
-  const ownerTaskId = await seedTask(workspaceId, { status: 'in_progress', title: 'feat: projection owner' });
+async function open(o: { taskStatus?: string; ownerRunner?: string } = {}): Promise<Delivery> {
+  const ownerTaskId = await seedTask(workspaceId, { status: o.taskStatus ?? 'in_progress', title: 'feat: projection owner' });
   const prNumber = prSeq++;
-  const ownerWorkerId = await seedWorker(ownerTaskId, prNumber, 'running');
+  const ownerWorkerId = await seedWorker(ownerTaskId, prNumber, 'running', o.ownerRunner);
   const retryTaskId = await seedTask(workspaceId, { status: 'completed', title: 'fix: ci retry' });
   const retryWorkerId = await seedWorker(retryTaskId, prNumber, 'completed');
   const opened = await seam.openKernelDelivery({ workspaceId, ownerTaskId, repoFullName: REPO, prNumber, installationId: 1, source: 'webhook:opened' }, deps);
@@ -107,7 +107,80 @@ describe('AC-2: a merged webhook moves the delivery and every worker row of the 
     expect((await rows(o)).map((r) => [r.pr_lifecycle_status, r.merged_at])).toEqual([['closed', null], ['closed', null]]);
   });
 
-  test.todo('S4b: the same transition completes the owner task (tasks.status), not runMergedPrWork after it');
+});
+
+/** The owner task's status, and what the queued `emit_pr_merged` effect was told the transition did to it. */
+const taskStatus = async (taskId: string) => (await q<{ status: string }>(sql`SELECT status FROM tasks WHERE id = ${taskId}::uuid`))[0]?.status;
+const mergedEffect = (o: Delivery) => q<{ status: string; task_transition: string | null }>(
+  sql`SELECT status, payload->>'taskTransition' AS task_transition FROM workflow_effects WHERE delivery_id = ${o.deliveryId}::uuid AND kind = 'emit_pr_merged'`);
+const merge = async (o: Delivery, updatedAt: string) => {
+  gh = { ...gh, state: 'closed', merged: true, updatedAt };
+  return seam.observePrState({ workspaceId, repoFullName: REPO, prNumber: o.prNumber, installationId: 1, source: 'webhook:closed' }, deps);
+};
+
+describe('AC-2 (S4b): the merge transition completes the owner task in its own statement', () => {
+  test('T17 moves the delivery, every worker row and the owner task together; the post-merge effect is told it flipped', async () => {
+    const o = await open();
+    expect(await merge(o, 't1')).toBe(true);
+    expect((await loadView({ deliveryId: o.deliveryId })).delivery).toMatchObject({ state: 'MERGED' });
+    expect((await rows(o)).map((r) => r.pr_lifecycle_status)).toEqual(['merged', 'merged']);
+    // No effect has run: the task moved inside the transition statement, not in runMergedPrWork.
+    expect(await taskStatus(o.ownerTaskId)).toBe('completed');
+    expect(await mergedEffect(o)).toEqual([{ status: 'pending', task_transition: 'flipped' }]);
+  });
+
+  test('a task its worker already completed stays as it is, and the effect knows the merge did not flip it', async () => {
+    const o = await open({ taskStatus: 'completed' });
+    await merge(o, 't2');
+    expect(await taskStatus(o.ownerTaskId)).toBe('completed');
+    expect(await mergedEffect(o)).toEqual([{ status: 'pending', task_transition: 'already_completed' }]);
+  });
+
+  test('a local session completes its own task: the merge leaves it open', async () => {
+    const o = await open({ ownerRunner: 'mcp' });
+    await merge(o, 't3');
+    expect((await loadView({ deliveryId: o.deliveryId })).delivery).toMatchObject({ state: 'MERGED' });
+    expect(await taskStatus(o.ownerTaskId)).toBe('in_progress');
+    expect(await mergedEffect(o)).toEqual([{ status: 'pending', task_transition: 'not_flipped' }]);
+  });
+
+  test('a stacked series: another open PR on the task keeps it open until the last one merges', async () => {
+    const o = await open();
+    const other = prSeq++;
+    await seedWorker(o.ownerTaskId, other, 'completed');
+    await merge(o, 't4');
+    expect(await taskStatus(o.ownerTaskId)).toBe('in_progress');
+    expect(await mergedEffect(o)).toEqual([{ status: 'pending', task_transition: 'not_flipped' }]);
+  });
+
+  test('a sibling PR that already merged or closed does not hold the task', async () => {
+    const o = await open();
+    const other = prSeq++;
+    const w = await seedWorker(o.ownerTaskId, other, 'completed');
+    await q(sql`UPDATE workers SET pr_lifecycle_status = 'closed' WHERE id = ${w}::uuid`);
+    await merge(o, 't5');
+    expect(await taskStatus(o.ownerTaskId)).toBe('completed');
+  });
+
+  test('a replayed merge is a duplicate: no second transition, the task is not touched again', async () => {
+    const o = await open();
+    await merge(o, 't6');
+    await q(sql`UPDATE tasks SET status = 'in_progress' WHERE id = ${o.ownerTaskId}::uuid`);
+    await merge(o, 't6');
+    expect((await transitionsTo(o, 'MERGED')).length).toBe(1);
+    expect(await taskStatus(o.ownerTaskId)).toBe('in_progress');
+  });
+
+  test('AC-4: a merge for an ABANDONED delivery changes neither the task nor the worker rows', async () => {
+    const o = await open();
+    gh = { ...gh, state: 'closed', merged: false, updatedAt: 't7' };
+    await seam.abandonDelivery({ workspaceId, repoFullName: REPO, prNumber: o.prNumber, installationId: 1, actor: 'human:owner', reason: 'the work is dropped' }, deps);
+    const before = { task: await taskStatus(o.ownerTaskId), rows: await rows(o) };
+    await merge(o, 't8');
+    expect((await loadView({ deliveryId: o.deliveryId })).delivery).toMatchObject({ state: 'ABANDONED' });
+    expect({ task: await taskStatus(o.ownerTaskId), rows: await rows(o) }).toEqual(before);
+    expect(await mergedEffect(o)).toEqual([]);
+  });
 });
 
 describe('AC-1 / AC-4: outside the kernel the funnel records only what the delivery says', () => {

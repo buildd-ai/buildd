@@ -20,7 +20,7 @@ import { and, asc, desc, eq, inArray, isNull, lt, lte, or, sql, type SQL } from 
 import { taskEstimatesEnabled } from '@buildd/core/task-estimate-source';
 import { db } from '@buildd/core/db';
 import { missions, taskEstimates, tasks, teams, workspaces } from '@buildd/core/db/schema';
-import type { RunnerExecutor, RunnerQueueExclusion, RunnerQueueHold, RunnerQueueResponse, RunnerQueueTask, RunnerQueueTeam } from '@buildd/shared';
+import type { RunnerExecutor, RunnerQueueExclusion, RunnerQueueHold, RunnerQueueHoldCause, RunnerQueueResponse, RunnerQueueTask, RunnerQueueTeam } from '@buildd/shared';
 import { depsGate } from '@/app/api/workers/claim/deps-gate';
 import { missionNotHeld, missionNotLocal, taskNotHeld, taskNotReserved } from '@/app/api/workers/claim/held-gate';
 import { subjectLivenessCondition } from '@/app/api/workers/claim/subject-gate';
@@ -136,7 +136,20 @@ export interface RunnerQueueRow {
   startAt: Date | string | null;
   dependsOn: unknown;
   workspacePausedUntil: Date | string | null;
+  /** tasks.context flags that say what set `startAt` (read as text, not the whole context). */
+  ctxInfraRetryCount?: string | number | null;
+  ctxBudgetExhausted?: string | boolean | null;
+  ctxCredentialHold?: string | boolean | null;
   [gate: `g_${string}`]: unknown;
+}
+
+/** What set a task's start time, from the context flags the read carries. */
+export function holdCauseOf(row: RunnerQueueRow): RunnerQueueHoldCause {
+  const truthy = (v: unknown) => v === true || v === 't' || v === 'true';
+  if (truthy(row.ctxCredentialHold)) return 'credential_probe';
+  if (truthy(row.ctxBudgetExhausted)) return 'usage_limit_reset';
+  if (Number(row.ctxInfraRetryCount ?? 0) > 0) return 'retry_after_failures';
+  return 'scheduled';
 }
 
 /** One read row as a queue entry: its exclusion (never for this runner) or its holds. */
@@ -164,6 +177,7 @@ export function classifyRunnerQueueRow(row: RunnerQueueRow): { task: RunnerQueue
       dependsOn: Array.isArray(row.dependsOn) ? (row.dependsOn as string[]) : [],
       holds,
       holdUntil,
+      holdCause: holds.includes('deferred') ? holdCauseOf(row) : null,
       estimateMinutes: null,
     },
   };
@@ -209,6 +223,9 @@ export function buildRunnerQueueQuery(builder: { select: typeof db.select }, opt
       startAt: tasks.startAt,
       dependsOn: tasks.dependsOn,
       workspacePausedUntil: workspaces.newStartsPausedUntil,
+      ctxInfraRetryCount: sql<string | null>`${tasks.context}->>'infraRetryCount'`,
+      ctxBudgetExhausted: sql<string | null>`${tasks.context}->>'budgetExhausted'`,
+      ctxCredentialHold: sql<string | null>`${tasks.context}->'credentialHold' IS NOT NULL`,
       ...runnerQueueGateColumns(opts.gates),
     })
     .from(tasks)

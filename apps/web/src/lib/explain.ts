@@ -45,7 +45,9 @@ import { classifyMissionWait, type WaitClassifiableTask } from '@/lib/heartbeat-
 import { evaluateMissionWorkState } from '@/lib/mission-pr';
 import { deriveMissionStateView, type MissionStateInput, type MissionStateView } from '@/lib/mission-state-view';
 import { computeSupersededFailedTasks } from '@/lib/mission-task-superseded';
-import { getDeliveryViewsForTasks, kernelReplacedFailedTaskIds, replacedFailedTaskIds } from '@/lib/workflow/delivery-view';
+import { getDeliveryViewsForTasks, replacedFailedTaskIds } from '@/lib/workflow/delivery-view';
+import { missionEpochsOf } from '@/lib/workflow/delivery-ship';
+import { deliveryDisagreements, overlayDeliveryLifecycle, type DeliveryDisagreement } from '@/lib/delivery-overlay';
 import { attemptLine } from '@/lib/workflow/projections';
 import { loadClaimHoldReasons, loadMissionClaimDeferrals } from '@/lib/mission-claim-deferrals';
 import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
@@ -63,6 +65,7 @@ import {
   buildStateBecause,
   buildConflictBecause,
   deliveryTransitionLink,
+  deliveryDisagreementLink,
   dispatchWakeLink,
   withDispatchLink,
   entitlementHoldLink,
@@ -414,6 +417,9 @@ async function viewForMission(missionId: string): Promise<{
   mission: Record<string, unknown>;
   loaded: LoadedTask[];
   answerExtras: StateBecauseExtras;
+  /** Owner PR rows whose merge columns disagree with their delivery (AC-26). */
+  disagreements: DeliveryDisagreement[];
+  deliveries: Map<string, DeliveryView>;
 } | null> {
   const mission = await db.query.missions.findFirst({
     where: sqlWhere(eq(missions.id, missionId)),
@@ -421,7 +427,7 @@ async function viewForMission(missionId: string): Promise<{
   });
   if (!mission) return null;
 
-  const loaded = (await db.query.tasks.findMany({
+  const rawLoaded = (await db.query.tasks.findMany({
     where: sqlWhere(eq(tasks.missionId, missionId)),
     columns: TASK_COLUMNS,
     with: { workers: WORKER_WITH },
@@ -429,6 +435,16 @@ async function viewForMission(missionId: string): Promise<{
   })) as any as LoadedTask[];
 
   const m = mission as unknown as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  // §7 (workflow-kernel-library.md): where each delivery-owned task's PR
+  // stands is its delivery's, and a mission PR's is its delivery records'
+  // (§6). One load each; the worker rows below carry the delivery's lifecycle
+  // (derived on read, nothing written), and a row that disagrees is named.
+  const [deliveries, missionDeliveries] = await Promise.all([
+    getDeliveryViewsForTasks(rawLoaded.map(t => t.id)),
+    m.integrationBranchEnabled === true ? missionEpochsOf(missionId) : Promise.resolve([]),
+  ]);
+  const loaded = overlayDeliveryLifecycle(rawLoaded, deliveries);
+  const disagreements = deliveryDisagreements(rawLoaded, deliveries);
   const schedule = m.schedule as { lastDeferralReason?: string | null; nextRunAt?: Date | null } | null;
   // Same read the mission detail page does: a heartbeat that is deliberately
   // holding records its resume time on the schedule row.
@@ -454,7 +470,7 @@ async function viewForMission(missionId: string): Promise<{
 
   // S35: a failed attempt the kernel already replaced (its delivery is live or
   // shipped) is history too, read from the DeliveryView, not a title heuristic.
-  const kernelReplaced = await kernelReplacedFailedTaskIds(failedDeliverables.map(t => t.id));
+  const kernelReplaced = replacedFailedTaskIds(deliveries, failedDeliverables.map(t => t.id));
   const health = deriveTaskHealthSignal(
     { ...m, heartbeatWaitingUntil },
     loaded.map(t => ({ ...t, superseded: supersededMap.has(t.id) || kernelReplaced.has(t.id) })),
@@ -529,6 +545,7 @@ async function viewForMission(missionId: string): Promise<{
   // rows know where it is. Supplying it turns "the mission PR has not merged"
   // into an affordance with a destination.
   const integrationPr = deriveMissionIntegrationPr({
+    deliveries: missionDeliveries,
     mission: m as { workingBranch?: string | null; integrationBranchEnabled?: boolean | null },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     tasks: loaded as any,
@@ -625,6 +642,8 @@ async function viewForMission(missionId: string): Promise<{
     view: deriveMissionStateView(input),
     mission: m,
     loaded,
+    disagreements,
+    deliveries,
     answerExtras: {
       openTasks: openTasks.map(t => ({
         id: t.id,
@@ -690,7 +709,7 @@ function answerFrom(
 export async function explainMission(missionId: string): Promise<ExplainResult | null> {
   const loadedMission = await viewForMission(missionId);
   if (!loadedMission) return null;
-  const { view, mission, loaded, answerExtras } = loadedMission;
+  const { view, mission, loaded, answerExtras, disagreements, deliveries } = loadedMission;
 
   // Name the upstream mission rather than pointing at a UUID.
   if (view.waitingOn?.kind === 'dependency') {
@@ -711,13 +730,13 @@ export async function explainMission(missionId: string): Promise<ExplainResult |
     prNumber: null,
   };
 
-  const because = buildStateBecause(
+  const because = withDisagreements(buildStateBecause(
     view,
     { missionId, workspaceId: subject.workspaceId },
     answerExtras,
-  );
+  ), disagreements, { missionId, workspaceId: subject.workspaceId });
 
-  return { scope: 'mission', subjects: [answerFrom(view, subject, buildHistory(loaded), because)] };
+  return { scope: 'mission', subjects: [answerFrom(view, subject, buildHistory(loaded, deliveries), because)] };
 }
 
 // ─── Task scope ───────────────────────────────────────────────────────────────
@@ -742,6 +761,11 @@ function withBackendRouting(answer: ExplainAnswer, task: { context: Record<strin
         : 'tasks.context.failedOverFrom + tasks.backend',
     },
   };
+}
+
+/** AC-26: one because[] link per worker row that disagrees with its delivery. */
+function withDisagreements(chain: ExplainAnswer['because'], ds: readonly DeliveryDisagreement[], subject: { missionId?: string | null; workspaceId?: string | null }): ExplainAnswer['because'] {
+  return ds.reduce((c, d) => withDispatchLink(c, deliveryDisagreementLink(d, subject)), chain);
 }
 
 /** The delivery `taskId` owns, from a loaded map; null when it is an attempt or legacy. */
@@ -1057,10 +1081,10 @@ export async function explainTask(taskId: string, actor: EvidenceActor): Promise
   const holds = await loadCoordination(task as any, gateRows).catch(() => [] as CoordinationHold[]);
   const coordLink = coordinationLink(holds, { taskId, workspaceId });
   const recovery = taskRecoveryLink(task.status, task.context, { taskId, workspaceId });
-  const because = withDispatchLink(withDispatchLink(
+  const because = withDisagreements(withDispatchLink(withDispatchLink(
     withDispatchLink(withDispatchLink(withDispatchLink(buildStateBecause(view, { taskId, missionId, workspaceId }, answerExtras), transition), wake), hold),
     coordLink as Parameters<typeof withDispatchLink>[1],
-  ), recovery);
+  ), recovery), deliveryDisagreements([task], deliveries), { missionId, workspaceId });
   const evidenceObjects = workspaceId
     ? await loadInlineEvidence(workspaceId, taskId, { surface: 'explain', actor })
     : [];

@@ -447,8 +447,12 @@ export interface Lifecycle {
   scanSupersession(d: DeliverySnapshot): Promise<string | null>;
   /** Whatever coordinates the owner task may act now (in buildd: wake its mission). null = nothing coordinates it. */
   wakeCoordinator(d: DeliverySnapshot, reason: 'pr_resolved'): Promise<{ woken: boolean; reason?: string } | null>;
-  /** T17's once-per-merge work (the post-merge events). false = no record of the PR's author to run it for. */
-  merged(d: DeliverySnapshot): Promise<boolean>;
+  /**
+   * T17's once-per-merge work (the post-merge events). false = no record of the PR's author to run it for.
+   * `payload` is the `emit_pr_merged` effect's: a host that projects the owner task in the transition's
+   * statement says there what it did, so this work performs only side effects.
+   */
+  merged(d: DeliverySnapshot, payload?: Record<string, unknown>): Promise<boolean>;
   /** After a merge, tidy what the delivery leaves on the host (in buildd: delete a shipped mission branch). */
   finalizeMerge(d: DeliverySnapshot): Promise<void>;
 }

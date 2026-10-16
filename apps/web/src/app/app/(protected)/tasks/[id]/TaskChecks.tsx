@@ -9,6 +9,7 @@
 import type { ReactNode } from 'react';
 import Link from 'next/link';
 import MarkdownContent from '@/components/MarkdownContent';
+import { REPAIR_PHASE_WORDS } from '@/lib/workflow/projections';
 import { reviewDetailOf, type CheckRepair, type CheckRow, type CheckState, type ReviewDetail, type ReviewFindings, type TaskChecks as TaskChecksModel } from '@/lib/task-checks';
 
 const GLYPH: Record<CheckState, { glyph: string; cls: string; label: string }> = {
@@ -23,9 +24,8 @@ const GLYPH: Record<CheckState, { glyph: string; cls: string; label: string }> =
 
 const taskPageHref = ({ taskId }: { taskId: string }) => `/app/tasks/${encodeURIComponent(taskId)}`;
 
-const REPAIR_WORD: Record<CheckRepair['status'], string> = {
-  queued: 'queued', running: 'fixing', completed: 'completed', failed: 'failed', ended: 'ended', cancelled: 'cancelled', no_change: 'no change',
-};
+// One vocabulary for a repair's phase, shared with get_pr (workflow-kernel-library.md §7).
+const REPAIR_WORD: Record<CheckRepair['status'], string> = { ...REPAIR_PHASE_WORDS, running: 'fixing' };
 
 type Findings = Map<string, ReviewFindings>;
 
@@ -126,6 +126,9 @@ export default function TaskChecks({
           </span>
         )}
       </div>
+      {checks.review && (
+        <p data-testid="task-checks-review-summary" className="py-2 text-meta text-text-secondary">Review: {checks.review}</p>
+      )}
       <ul className="flex flex-col">
         {checks.current.map(row => {
           const detail = rowDetail(row, { findings, findingsUnavailable, prUrl, currentTaskId });

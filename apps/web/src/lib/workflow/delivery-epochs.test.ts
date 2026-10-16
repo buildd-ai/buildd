@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { applyEpochOpsSql, contentContained, missionEpochsSql, settleLeaseSql, settleReleaseSql, type GithubApi } from './delivery-epochs';
+import { applyEpochOpsSql, contentContained, epochStepsMayComplete, missionEpochsSql, settleLeaseSql, settleReleaseSql, type GithubApi } from './delivery-epochs';
 
 const dialect = new PgDialect();
 const render = (q: Parameters<PgDialect['sqlToQuery']>[0]) => dialect.sqlToQuery(q);
@@ -124,5 +124,18 @@ describe('settle lease SQL', () => {
     expect(take.params).toEqual(['tok', 60_000, 'e1']);
     const release = render(settleReleaseSql('e1', 'tok'));
     expect(release.sql).toMatch(/AND settle_lease_token = \$\d+::text/);
+  });
+});
+
+describe('epochStepsMayComplete (S4b): the epoch path asks the completion writer after a settlement or retirement', () => {
+  it('a recorded settlement or retirement may release a held completion', () => {
+    expect(epochStepsMayComplete([{ step: 'settle', epoch: 1, outcome: 'settled:applied:ok' }])).toBe(true);
+    expect(epochStepsMayComplete([{ step: 'retire', epoch: 1, outcome: 'retired:applied:ok' }])).toBe(true);
+  });
+  it('nothing recorded, a noop, a held branch or a cut asks nothing', () => {
+    expect(epochStepsMayComplete([])).toBe(false);
+    expect(epochStepsMayComplete([{ step: 'settle', epoch: 1, outcome: 'in_flight' }])).toBe(false);
+    expect(epochStepsMayComplete([{ step: 'retire', epoch: 1, outcome: 'retired:noop:already' }])).toBe(false);
+    expect(epochStepsMayComplete([{ step: 'cut_branch', epoch: 2, outcome: 'created:applied:ok' }])).toBe(false);
   });
 });
