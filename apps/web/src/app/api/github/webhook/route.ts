@@ -623,6 +623,63 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
             );
 
           if (!hasUnconsumedApprove) {
+            // If there's no review task at all for this PR, request one now that CI is green.
+            // This handles the case where a review wasn't auto-requested when the PR was created
+            // (e.g. for integration branch PRs in local missions).
+            if (reviewStatus.state === 'not_requested' && workerTask && worker.taskId && pr.base?.ref && pr.head?.sha) {
+              try {
+                const { listWorkspaceRoles } = await import('@/lib/pr-review-request');
+                const roles = await listWorkspaceRoles(workspace.id, workspace.teamId);
+                const { pickReviewerRole } = await import('@/lib/pr-review-status');
+                const picked = pickReviewerRole({
+                  requested: null,
+                  policyRole: policy.agentReview?.reviewerRole ?? null,
+                  available: roles,
+                });
+                if (picked.role) {
+                  const { createReviewerTask } = await import('@/lib/reviewer');
+                  const reviewerTask = await createReviewerTask({
+                    workspaceId: workspace.id,
+                    originalTaskId: worker.taskId,
+                    originalTask: {
+                      title: workerTask.title,
+                      description: null,
+                      backend: worker.backend ?? 'claude',
+                      missionId: workerTask.missionId,
+                      pathManifest: null,
+                    },
+                    worker: { branch: pr.head.ref },
+                    prNumber: pr.number,
+                    prUrl: pr.html_url,
+                    headSha: pr.head.sha,
+                    reviewerRole: picked.role,
+                    confidenceThreshold: policy.agentReview?.maxConfidenceThreshold,
+                    installationId: installation.id,
+                    repoFullName: repository.full_name,
+                    baseRef: pr.base.ref,
+                  });
+                  if (reviewerTask?.id) {
+                    const { announceTaskCreated, wakeTask } = await import('@/lib/dispatch-authority');
+                    await announceTaskCreated(
+                      {
+                        id: reviewerTask.id,
+                        title: `Review PR #${pr.number}: ${workerTask.title}`,
+                        description: null,
+                        workspaceId: workspace.id,
+                        missionId: workerTask.missionId,
+                        backend: worker.backend ?? 'claude',
+                        roleSlug: picked.role,
+                      },
+                      workspace as never,
+                    );
+                    await wakeTask(reviewerTask.id, 'task.created');
+                    console.log(`Requested agent review for PR #${pr.number} on ${repository.full_name} (CI green, review not previously requested)`);
+                  }
+                }
+              } catch (err) {
+                console.error(`Failed to auto-request review for PR #${pr.number} on CI green:`, err);
+              }
+            }
             console.log(`PR #${pr.number} on ${repository.full_name} awaiting agent review — deferring merge`);
             continue;
           }
