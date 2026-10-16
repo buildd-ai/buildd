@@ -25,6 +25,7 @@ import type { ApplyDecision, AttemptOp, Command, DeliveryPatch, FindingOp, Recor
 import { postgresStore } from './postgres-store';
 import { prFactProjectionSql } from '@buildd/core/pr-fact-sql';
 import { prRowOfDeliverySql } from './pr-fact-scope';
+import { mergeTaskPayloadSql, mergeTaskProjectionCtes } from './task-projection';
 import { kernelHost } from './kernel-host';
 import type {
   ApprovalBasis,
@@ -283,6 +284,11 @@ export function transitionSql(decision: ApplyDecision, ref: { deliveryId?: strin
 )`);
   }
 
+  // S4b (AC-2): T17 completes the owner task in this statement too, and tells the post-merge
+  // effect what it did (task-projection.ts), so runMergedPrWork performs only side effects.
+  const projectsTask = projected === 'merged';
+  if (projectsTask) ctes.push(...mergeTaskProjectionCtes('d'));
+
   ctes.push(sql`t AS (
   INSERT INTO workflow_transitions (delivery_id, from_version, to_version, from_state, to_state, command, idempotency_key, actor, evidence, bypass, host)
   SELECT d.id, d.version - 1, d.version, ${d.fromState}::text, ${d.toState}::text, ${d.command}::text, ${d.idempotencyKey}::text,
@@ -295,7 +301,9 @@ export function transitionSql(decision: ApplyDecision, ref: { deliveryId?: strin
     const rows = d.effects.map((e) => ({ kind: e.kind, dedupe_key: e.dedupeKey, payload: e.payload, delay_ms: e.delayMs ?? 0 }));
     ctes.push(sql`e AS (
   INSERT INTO workflow_effects (delivery_id, transition_id, kind, dedupe_key, payload, not_before)
-  SELECT t.delivery_id, t.id, x.kind, x.dedupe_key, x.payload, now() + make_interval(secs => x.delay_ms / 1000.0)
+  SELECT t.delivery_id, t.id, x.kind, x.dedupe_key,
+    ${projectsTask ? sql`CASE WHEN x.kind = 'emit_pr_merged' THEN COALESCE(x.payload, '{}'::jsonb) || ${mergeTaskPayloadSql()} ELSE x.payload END` : sql`x.payload`},
+    now() + make_interval(secs => x.delay_ms / 1000.0)
   FROM t, jsonb_to_recordset(${jsonb(rows)}) AS x(kind text, dedupe_key text, payload jsonb, delay_ms bigint)
   ON CONFLICT (dedupe_key) DO NOTHING
   RETURNING id

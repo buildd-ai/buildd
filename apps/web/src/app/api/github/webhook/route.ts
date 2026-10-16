@@ -29,6 +29,7 @@ import { handleReleasePrCiSuccess, settleHeldReleasesOnClose } from '@/lib/held-
 import { PR_OPENED_POLICY } from '@/modules';
 import type { PrOwnerFact } from '@/lib/core-events';
 import { maybePostWorkTrackerIssueUpdate, runMergedPrWork } from '@/lib/pr-merged-work';
+import { completeTaskOnBranchMatchMerge, legacyCompleteTaskOnMerge } from '@/lib/pr-merged-legacy-task';
 import { requestRecheckForMergedDocFix } from '@/lib/spec-recheck';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { schedulePrScopeReconcile } from '@/lib/pr-scope-reconcile-trigger';
@@ -476,6 +477,13 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
       });
 
       for (const workspace of linkedWorkspaces) {
+        // 38442d17: a green head ends a kernel CI repair bound to it (an infrastructure failure re-run green).
+        // Before the worker lookup: a kernel delivery needs no worker row (a local mission's PR may have none).
+        await observeCiGreen({
+          workspaceId: workspace.id, repoFullName: repository.full_name, prNumber: pr.number, installationId: installation.id,
+          headSha, source: 'webhook:check_suite',
+        }).catch((err) => console.error(`[workflow] CiGreenObserved ${repository.full_name}#${pr.number} failed:`, err));
+
         // Ensure this PR was created by a Buildd worker
         const worker = await db.query.workers.findFirst({
           where: sqlWhere(and(
@@ -499,12 +507,6 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
           console.log(`Not all check suites passed for ${repository.full_name}#${pr.number}, waiting`);
           continue;
         }
-
-        // 38442d17: a green head ends a kernel CI repair bound to it (an infrastructure failure re-run green).
-        await observeCiGreen({
-          workspaceId: workspace.id, repoFullName: repository.full_name, prNumber: pr.number, installationId: installation.id,
-          headSha, source: 'webhook:check_suite',
-        }).catch((err) => console.error(`[workflow] CiGreenObserved ${repository.full_name}#${pr.number} failed:`, err));
 
         // Mark CI as green — used by pr_checks_green loop exit condition evaluation.
         // Skip if the PR is already in a terminal state (merged/closed wins).
@@ -1150,6 +1152,8 @@ async function handlePullRequestEvent(event: {
         mergedAt: pr.merged_at ?? new Date(),
         mergeIsNew,
         stamp: true,
+        // Not the kernel's PR: the legacy writer makes the task's transition (pr-merged-legacy-task.ts).
+        taskTransition: legacyCompleteTaskOnMerge({ repoFullName: repository.full_name, prUrl: prUrlFor(repository.full_name, pr.number), prNumber: pr.number, runner: worker.runner }),
       });
     }
     // A worker row with no task falls through to the branch-name match below.
@@ -1218,13 +1222,8 @@ async function handlePullRequestEvent(event: {
       // Same rule as runMergedPrWork: a task with other open PRs is not done.
       const openSiblingPrs = await otherOpenPrsOfTask(matchingTask.id, { prUrl: prUrlFor(repository.full_name, pr.number) });
       if (openSiblingPrs.length > 0) return;
-      // Row-guarded for the same reason as the worker-match path above.
-      const [flipped] = await db
-        .update(tasks)
-        .set({ status: 'completed', updatedAt: new Date() })
-        .where(and(eq(tasks.id, matchingTask.id), ne(tasks.status, 'completed')))
-        .returning({ id: tasks.id });
-      if (!flipped) return;
+      // Row-guarded for the same reason as the worker-match path above; never a delivery-owned task.
+      if (!(await completeTaskOnBranchMatchMerge(matchingTask.id, { repoFullName: repository.full_name, prNumber: pr.number }))) return;
       console.log(`Auto-completed task ${matchingTask.id} via branch match on merged PR #${pr.number}`);
 
       await emit({
