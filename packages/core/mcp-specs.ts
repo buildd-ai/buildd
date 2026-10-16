@@ -402,6 +402,7 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
             checker: 'visual', criterionId: need(params.criterionId, 'criterionId'), verdict: need(params.verdict, 'verdict'), capturedSha: need(params.capturedSha, 'capturedSha'),
             ...(params.screenshotIds !== undefined ? { screenshotIds: params.screenshotIds } : {}),
             ...(params.designShotIds !== undefined ? { designShotIds: params.designShotIds } : {}),
+            ...(params.workerId !== undefined ? { workerId: params.workerId } : {}),
             ...(params.observed !== undefined ? { observed: params.observed } : {}),
           }) })
           : await api(path, { method: 'POST', body: JSON.stringify({
