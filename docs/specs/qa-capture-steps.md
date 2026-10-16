@@ -175,6 +175,8 @@ committing step MUST NOT run against a preview.
   warning-hue `none` line; `not_reported` also marks each token seen so the line renders. It never writes.
   `/app/settings/runners?state=model-auth-codex` (dev server only) shows every token on this
   machine's Claude login and its Codex login, so the separate Codex line renders. It never writes.
+  `/app/settings/models?state=decisions` (dev server only, with `viewer=operator`) shows sample
+  per-decision overrides and a switch line with Undo in the Decisions row. Save and Undo write nothing.
   `/app/dev/fixtures?state=team-members&viewer=owner|admin|member` renders the team detail
   page (`/app/teams/[id]`) with an owner, an admin and a member, seen as each: role selects,
   Remove, Transfer ownership, the last-owner Leave gate and admin-vs-member gating. No DB; it

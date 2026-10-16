@@ -94,8 +94,8 @@ const collision: PathCollision = {
 };
 
 describe('writeCollisionCheckpoint', () => {
-  test('commits the dirty worktree and pushes the task branch so a later attempt can resume', () => {
-    const cp = writeCollisionCheckpoint(work, 'buildd/task-1', collision, { push: true });
+  test('commits the dirty worktree and pushes the task branch so a later attempt can resume', async () => {
+    const cp = await writeCollisionCheckpoint(work, 'buildd/task-1', collision, { push: true });
     expect(cp.committed).toBe(true);
     expect(cp.sha).toMatch(/^[0-9a-f]{40}$/);
     expect(cp.pushed).toBe(true);
@@ -104,32 +104,32 @@ describe('writeCollisionCheckpoint', () => {
     expect(sh(work, 'git log -1 --format=%s')).toContain('checkpoint');
   });
 
-  test('push: false keeps the checkpoint local', () => {
-    const cp = writeCollisionCheckpoint(work, 'buildd/task-1', collision, { push: false });
+  test('push: false keeps the checkpoint local', async () => {
+    const cp = await writeCollisionCheckpoint(work, 'buildd/task-1', collision, { push: false });
     expect(cp.committed).toBe(true);
     expect(cp.pushed).toBe(false);
     expect(() => sh(origin, 'git rev-parse --verify --quiet refs/heads/buildd/task-1')).toThrow();
   });
 
-  test('with no git identity configured, the checkpoint still commits under a runner fallback identity', () => {
+  test('with no git identity configured, the checkpoint still commits under a runner fallback identity', async () => {
     // beforeAll removed every global identity; prove it, so this cannot pass vacuously.
     expect(() => sh(work, 'git var GIT_COMMITTER_IDENT')).toThrow();
-    const cp = writeCollisionCheckpoint(work, 'buildd/task-1', collision, { push: false });
+    const cp = await writeCollisionCheckpoint(work, 'buildd/task-1', collision, { push: false });
     expect(cp.reason).toBe('push skipped');
     expect(cp.committed).toBe(true);
     expect(sh(work, 'git log -1 --format=%an').trim()).toBe('buildd');
   });
 
-  test('a configured identity is kept, not overwritten by the fallback', () => {
+  test('a configured identity is kept, not overwritten by the fallback', async () => {
     sh(work, 'git config user.name "Repo Person" && git config user.email repo@example.com');
-    const cp = writeCollisionCheckpoint(work, 'buildd/task-1', collision, { push: false });
+    const cp = await writeCollisionCheckpoint(work, 'buildd/task-1', collision, { push: false });
     expect(cp.committed).toBe(true);
     expect(sh(work, 'git log -1 "--format=%an <%ae>"').trim()).toBe('Repo Person <repo@example.com>');
   });
 
-  test('a clean worktree commits nothing', () => {
+  test('a clean worktree commits nothing', async () => {
     rmSync(join(work, 'src/from-bash.ts'));
-    const cp = writeCollisionCheckpoint(work, 'buildd/task-1', collision, { push: false });
+    const cp = await writeCollisionCheckpoint(work, 'buildd/task-1', collision, { push: false });
     expect(cp.committed).toBe(false);
   });
 });

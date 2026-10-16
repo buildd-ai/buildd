@@ -41,6 +41,7 @@ import {
 } from '@/lib/pr-review-request';
 import {
   derivePrReviewStatus,
+  isReviewBudgetSpent,
   pickReviewerRole,
   MAX_REVIEW_WAIT_SECONDS,
   type PrReviewWaitFor,
@@ -50,6 +51,11 @@ import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 type Account = { id: string; teamId: string; taskScope?: TaskScope; sessionUserId?: string | null } & GrantScopedAccount;
 
+/**
+ * 2ded4e88: the review rounds are spent and the PR waits on a person. Says where a person acts
+ * rather than "pass force": an interactive session reading the hint would just retry with it.
+ */
+const REVIEW_BUDGET_SPENT_HINT = 'the review rounds for this PR are spent and it waits on a person; a person can request one more review from the PR\'s page, or approve it';
 const FORCE_NEEDS_PERSON = 'force re-reviews a head that already has a verdict, which is a person\'s call: ask the owner, or re-review from the dashboard. Without force, a review is requested once the PR head moves.';
 
 /**
@@ -277,6 +283,7 @@ export async function POST(req: NextRequest) {
         code: r.reason, current: r.current, kernel: true,
         ...(r.reason === 'force_requires_human' ? { hint: FORCE_NEEDS_PERSON } : {}),
         ...(r.reason === 'escalation_needs_human' ? { hint: 'this PR is escalated to a person for a reason another review does not answer; the owner resolves it from the dashboard' } : {}),
+        ...(r.reason === 'review_budget_spent' ? { hint: REVIEW_BUDGET_SPENT_HINT } : {}),
       });
     }
     const latest = kernelReviewTask;
@@ -324,6 +331,13 @@ export async function POST(req: NextRequest) {
     if (prior && prior.headSha === (pr.head?.sha ?? '')) {
       return bad('Review not requested: force_requires_human', 409, { code: 'force_requires_human', hint: FORCE_NEEDS_PERSON });
     }
+  }
+
+  // 2ded4e88: the round budget is the PR's. Spent, force does not file a reviewer from here, at the
+  // judged head or a moved one; a person asks from the PR's page (the dashboard re-review route).
+  if (force && !inFlight && existingReview
+    && isReviewBudgetSpent(derivePrReviewStatus({ reviewTask: existingReview, worker: existingWorker ?? null, autoMergeExpected: false }))) {
+    return bad('Review not requested: review_budget_spent', 409, { code: 'review_budget_spent', hint: REVIEW_BUDGET_SPENT_HINT });
   }
 
   // Idempotency: one reviewer per PR at a time. `force` re-reviews a finished

@@ -163,7 +163,9 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
     const [runner, config, workers, workspaces] = await Promise.all([
       client.get('/api/runner').catch(() => null),
       client.get('/api/config').catch(() => null),
-      client.get('/api/workers').catch(() => null),
+      // What top draws (live + recent, no output or tool payloads); an older
+      // runner ignores the param and returns the full list, which still works.
+      client.get('/api/workers?view=top').catch(() => null),
       client.get('/api/workspaces').catch(() => null),
     ]);
     if (workspaces?.status === 200 && Array.isArray(workspaces.body?.workspaces)) dispatch({ type: 'workspaces', workspaces: workspaces.body.workspaces });

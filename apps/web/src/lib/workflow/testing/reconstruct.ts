@@ -214,6 +214,8 @@ export function reconstructCommand(t: CorpusTransition, ctx: ReconstructCtx): Re
         outcome, localHeadSha: L, commitCount: num(E.commitCount) ?? 0, live,
         ...(proof ? { proof } : {}),
         ...(E.carryForward ? { carryForward: E.carryForward as 'content_equivalent' | 'own_refresh' } : {}),
+        // 58c8961e: the delta read the decision used (absent: none, which is a full review).
+        ...(E.delta ? { delta: E.delta as never } : {}),
         taskRetryBudgetLeft: requeue,
         reviewRequired: E.policy !== 'no_review',
         // e9f1674b: the hand-off's live check read; its budget is in the evidence only when it acted.

@@ -26,6 +26,7 @@ import * as childProcess from 'child_process';
 import * as fs from 'fs';
 import { isAbsolute, relative, resolve, sep } from 'path';
 import { branchOfRemoteRef, remoteBranchFetchArgs } from './git-clone';
+import { gitShellAsync } from './git-async';
 import {
   resolveTaskPrBase,
   missionIntegrationBase,
@@ -245,15 +246,18 @@ const GIT_TIMEOUT_MS = 5000;
 // agent `git add`/`git commit` in the same worktree. GIT_OPTIONAL_LOCKS=0
 // makes git skip that write-back; the read output this sweep actually uses
 // is identical either way.
-function git(cwd: string, args: string, timeout = GIT_TIMEOUT_MS): string {
-  return childProcess.execSync(`git ${args}`, {
+//
+// Async (git-async.ts): with several workers this ran per worker every tick on
+// the runner's main thread, and a `diff -M` on a big mission worktree held the
+// local socket, the heartbeat and every other worker's tick for seconds.
+// Same command line, same shell, same timeout; the child is killed on timeout.
+function git(cwd: string, args: string, timeout = GIT_TIMEOUT_MS): Promise<string> {
+  return gitShellAsync(`git ${args}`, {
     cwd,
-    timeout,
-    encoding: 'utf-8',
-    stdio: ['ignore', 'pipe', 'pipe'],
+    timeoutMs: timeout,
     maxBuffer: 16 * 1024 * 1024,
     env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
-  }) as unknown as string;
+  });
 }
 
 /** Shell-safe single-quoted argument (refs are user-ish data: branch names). */
@@ -268,16 +272,16 @@ export function shellQuote(arg: string): string {
  * This is what catches Bash and Codex writes, which never pass through a
  * pre-edit hook.
  */
-export function sweepWorktreeChanges(worktreePath: string, baseRef: string | null | undefined): WorktreeSweep {
+export async function sweepWorktreeChanges(worktreePath: string, baseRef: string | null | undefined): Promise<WorktreeSweep> {
   const result: WorktreeSweep = { paths: [], committed: [], uncommitted: [], baseRef: baseRef ?? null, baseResolved: false };
   const errors: string[] = [];
 
   if (baseRef) {
     try {
-      const mergeBase = String(git(worktreePath, `merge-base HEAD ${shellQuote(baseRef)}`)).trim();
+      const mergeBase = String(await git(worktreePath, `merge-base HEAD ${shellQuote(baseRef)}`)).trim();
       if (mergeBase) {
         result.baseResolved = true;
-        result.committed = parseNameStatusZ(String(git(worktreePath, `diff --name-status -z -M ${mergeBase} HEAD`)));
+        result.committed = parseNameStatusZ(String(await git(worktreePath, `diff --name-status -z -M ${mergeBase} HEAD`)));
       }
     } catch (err) {
       // An unresolvable base is reported, not papered over with a trunk guess.
@@ -286,7 +290,7 @@ export function sweepWorktreeChanges(worktreePath: string, baseRef: string | nul
   }
 
   try {
-    result.uncommitted = parsePorcelainZ(String(git(worktreePath, 'status --porcelain=v1 -z --untracked-files=all')));
+    result.uncommitted = parsePorcelainZ(String(await git(worktreePath, 'status --porcelain=v1 -z --untracked-files=all')));
   } catch (err) {
     errors.push(`status: ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`);
   }

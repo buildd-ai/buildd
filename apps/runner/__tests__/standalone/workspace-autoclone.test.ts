@@ -129,13 +129,13 @@ describe('Auto-Clone on Resolution Failure', () => {
     }
   });
 
-  test('debugResolve should show auto-clone attempt in attempts list', () => {
+  test('debugResolve should show auto-clone attempt in attempts list', async () => {
     const tmpRoot = makeTmpRoot('debug');
 
     try {
       const resolver = createWorkspaceResolver(tmpRoot);
 
-      const debug = resolver.debugResolve({
+      const debug = await resolver.debugResolve({
         id: 'ws-debug',
         name: 'test-repo',
         repo: bareRepoUrl,

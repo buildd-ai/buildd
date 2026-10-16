@@ -225,8 +225,8 @@ describe('sweepWorktreeChanges (real git)', () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  test('mission base: committed + staged + unstaged + untracked, renames both sides, deletes; no sibling history', () => {
-    const sweep = sweepWorktreeChanges(work, 'origin/mission/m-1');
+  test('mission base: committed + staged + unstaged + untracked, renames both sides, deletes; no sibling history', async () => {
+    const sweep = await sweepWorktreeChanges(work, 'origin/mission/m-1');
     expect(sweep.baseResolved).toBe(true);
     expect(sweep.error).toBeUndefined();
     expect(sweep.paths).toEqual([
@@ -245,14 +245,14 @@ describe('sweepWorktreeChanges (real git)', () => {
     expect(sweep.paths.some(p => p.startsWith('.buildd/'))).toBe(false);
   });
 
-  test('measuring against trunk instead would wrongly include the mission sibling', () => {
+  test('measuring against trunk instead would wrongly include the mission sibling', async () => {
     // The regression this replaces: origin/HEAD-or-dev observation.
-    const trunk = sweepWorktreeChanges(work, 'origin/dev');
+    const trunk = await sweepWorktreeChanges(work, 'origin/dev');
     expect(trunk.paths).toContain('src/mission-sibling.ts');
   });
 
-  test('unresolvable base: committed half is empty, never a silent trunk fallback', () => {
-    const sweep = sweepWorktreeChanges(work, 'origin/does-not-exist');
+  test('unresolvable base: committed half is empty, never a silent trunk fallback', async () => {
+    const sweep = await sweepWorktreeChanges(work, 'origin/does-not-exist');
     expect(sweep.baseResolved).toBe(false);
     expect(sweep.committed).toEqual([]);
     expect(sweep.paths).not.toContain('src/mission-sibling.ts');
@@ -261,15 +261,15 @@ describe('sweepWorktreeChanges (real git)', () => {
     expect(sweep.paths).toContain('src/bash wrote this.ts');
   });
 
-  test('no base at all behaves the same as an unresolvable one', () => {
-    const sweep = sweepWorktreeChanges(work, undefined);
+  test('no base at all behaves the same as an unresolvable one', async () => {
+    const sweep = await sweepWorktreeChanges(work, undefined);
     expect(sweep.baseResolved).toBe(false);
     expect(sweep.paths).toContain('src/keep.ts');
     expect(sweep.paths).not.toContain('src/mission-sibling.ts');
   });
 
-  test('a git failure is reported as incomplete, not as an empty sweep', () => {
-    const sweep = sweepWorktreeChanges(join(tmp, 'not-a-repo'), 'origin/dev');
+  test('a git failure is reported as incomplete, not as an empty sweep', async () => {
+    const sweep = await sweepWorktreeChanges(join(tmp, 'not-a-repo'), 'origin/dev');
     expect(sweep.error).toBeDefined();
     expect(sweep.paths).toEqual([]);
   });
@@ -282,13 +282,13 @@ describe('sweepWorktreeChanges (real git)', () => {
   // stat mismatch that triggers that rewrite, then prove the sweep's git
   // calls disable it (GIT_OPTIONAL_LOCKS=0) by asserting the index file
   // itself is untouched.
-  test('never rewrites the on-disk index, so it cannot take index.lock from a concurrent agent commit', () => {
+  test('never rewrites the on-disk index, so it cannot take index.lock from a concurrent agent commit', async () => {
     const indexPath = join(work, '.git', 'index');
     const before = statSync(indexPath).mtimeMs;
     const future = Date.now() / 1000 + 10;
     utimesSync(join(work, 'src/keep.ts'), future, future);
 
-    sweepWorktreeChanges(work, 'origin/mission/m-1');
+    await sweepWorktreeChanges(work, 'origin/mission/m-1');
 
     expect(statSync(indexPath).mtimeMs).toBe(before);
   });
@@ -303,7 +303,7 @@ describe('sweepWorktreeChanges (real git)', () => {
     expect(await refreshBaseRef(work, 'origin/mission/m-1')).toBe(true);
     sh(work, 'git reset -q'); // merge refuses a non-empty index
     sh(work, 'git -c user.email=t@example.com -c user.name=t -c commit.gpgsign=false merge -q --no-edit origin/mission/m-1');
-    const sweep = sweepWorktreeChanges(work, 'origin/mission/m-1');
+    const sweep = await sweepWorktreeChanges(work, 'origin/mission/m-1');
     expect(sweep.paths).not.toContain('src/landed-later.ts');
     expect(await refreshBaseRef(work, 'not-a-remote-ref')).toBe(false);
     expect(await refreshBaseRef(work, 'origin/no-such-branch')).toBe(false);
@@ -386,7 +386,7 @@ describe('resumed task sweep (real git)', () => {
   let tmp: string;
   afterEach(() => rmSync(tmp, { recursive: true, force: true }));
 
-  test('measured against the PR base, a resume keeps earlier attempts\' files and excludes the mission branch history', () => {
+  test('measured against the PR base, a resume keeps earlier attempts\' files and excludes the mission branch history', async () => {
     tmp = mkdtempSync(join(tmpdir(), 'pce-resume-'));
     const origin = join(tmp, 'origin.git');
     const work = join(tmp, 'work');
@@ -413,12 +413,12 @@ describe('resumed task sweep (real git)', () => {
       head: 'buildd/task-1', worktreeBase: 'origin/buildd/task-1', fallbacks: ['dev'],
     });
     expect(prBase).toBe('origin/mission/m-1');
-    const sweep = sweepWorktreeChanges(work, prBase);
+    const sweep = await sweepWorktreeChanges(work, prBase);
     expect(sweep.baseResolved).toBe(true);
     expect(sweep.paths).toEqual(['a.ts', 'b.ts']);
     expect(sweep.paths).not.toContain('sibling.ts');
 
     // The bug: measuring against the ref the worktree was cut from loses a.ts.
-    expect(sweepWorktreeChanges(work, 'origin/buildd/task-1').paths).toEqual(['b.ts']);
+    expect((await sweepWorktreeChanges(work, 'origin/buildd/task-1')).paths).toEqual(['b.ts']);
   });
 });
