@@ -27,8 +27,7 @@ import { taskRecoverySentence } from './task-recovery-hold';
 import { cancellationLine } from './task-cancellation';
 import { claimHoldPhrase } from './claim-hold-phrase';
 import type { DeliveryDisagreement } from './delivery-overlay';
-import type { RoundSnapshot } from '@buildd/workflow-kernel/types';
-import { ROUND_TRIGGER_COPY } from '@buildd/workflow-kernel/delta-approval';
+import { roundTriggerSentence, type DeliveryRound } from '@buildd/workflow-kernel/projections';
 
 const repoOf = (url: string | null | undefined) => url?.match(/github\.com\/([^/]+\/[^/]+)\/pull\/\d+/)?.[1] ?? null;
 
@@ -669,22 +668,18 @@ export function deliveryTransitionLink(
  * rounds carried a trigger.
  */
 export function reviewRoundLink(
-  d: { prNumber: number | null; rounds: RoundSnapshot[] } | null | undefined,
+  d: { prNumber: number | null; rounds: DeliveryRound[] } | null | undefined,
   subject: BecauseSubjectRefs,
 ): Link | null {
   const r = d?.rounds?.length ? [...d.rounds].sort((a, b) => b.round - a.round)[0] : null;
-  if (!r?.trigger || !ROUND_TRIGGER_COPY[r.trigger]) return null;
+  const claim = r ? roundTriggerSentence(r) : null;
+  if (!claim) return null;
   const refs: ExplainRefs = {
     ...(subject.taskId ? { taskId: subject.taskId } : {}),
     ...(subject.workspaceId ? { workspaceId: subject.workspaceId } : {}),
     ...(d!.prNumber != null ? { prNumber: d!.prNumber } : {}),
   };
-  const parts = [`Review round ${r.round} (at ${r.headSha.slice(0, 7)}) started ${ROUND_TRIGGER_COPY[r.trigger]}`];
-  const el = r.scope?.deltaApproval as { eligible?: unknown; fromHeadSha?: unknown; reason?: unknown } | undefined;
-  if (el?.eligible === true && r.kind === 'delta' && typeof el.fromHeadSha === 'string') parts.push(`a delta review that carries the approval at ${el.fromHeadSha.slice(0, 7)}`);
-  else if (el && el.eligible !== true && typeof el.reason === 'string') parts.push(`a full review because ${el.reason}`);
-  if (r.status === 'superseded') parts.push(r.endReason === 'superseded_by_push' ? 'it ended superseded by a newer push' : 'it ended superseded');
-  return link(`${parts.join('; ')}.`, 'DeliveryView.rounds', refs);
+  return link(claim, 'DeliveryView.rounds', refs);
 }
 
 const ROW_WORDS: Record<DeliveryDisagreement['worker'], string> = { merged: 'merged', open: 'still open', closed: 'closed' };

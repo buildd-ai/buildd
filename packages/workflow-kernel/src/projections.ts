@@ -20,6 +20,7 @@
  */
 import type { PrDisplayState, PrSupersededBy } from './pr-display';
 import { openRequiredFindings } from './findings';
+import { ROUND_TRIGGER_COPY } from './delta-approval';
 import { attemptView } from './reducer';
 import type { AttemptFamily, AttemptSnapshot, DeliverySnapshot, DeliveryState, FindingSnapshot, KernelView, RoundSnapshot } from './types';
 
@@ -449,4 +450,22 @@ export function attemptLine(attempts: DeliveryView['attempts']): string | null {
 export function attemptFailureCounts(view: DeliveryView, taskId: string): boolean {
   if (view.state === 'FAILED') return view.currentAttempt?.taskId === taskId || view.ownerTaskId === taskId;
   return false;
+}
+
+/** A review round as the read model lists it (`DeliveryView.rounds`). */
+export type DeliveryRound = RoundSnapshot;
+
+/**
+ * 58c8961e: one sentence on why a round started, whether it is a delta review
+ * that carries an approval (or, after one, why it is a full review), and how it
+ * ended if a push superseded it. Null for a round recorded before triggers.
+ */
+export function roundTriggerSentence(r: RoundSnapshot): string | null {
+  if (!r.trigger || !ROUND_TRIGGER_COPY[r.trigger]) return null;
+  const parts = [`Review round ${r.round} (at ${r.headSha.slice(0, 7)}) started ${ROUND_TRIGGER_COPY[r.trigger]}`];
+  const el = r.scope?.deltaApproval as { eligible?: unknown; fromHeadSha?: unknown; reason?: unknown } | undefined;
+  if (el?.eligible === true && r.kind === 'delta' && typeof el.fromHeadSha === 'string') parts.push(`a delta review that carries the approval at ${el.fromHeadSha.slice(0, 7)}`);
+  else if (el && el.eligible !== true && typeof el.reason === 'string') parts.push(`a full review because ${el.reason}`);
+  if (r.status === 'superseded') parts.push(r.endReason === 'superseded_by_push' ? 'it ended superseded by a newer push' : 'it ended superseded');
+  return `${parts.join('; ')}.`;
 }

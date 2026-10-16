@@ -10,6 +10,7 @@ mock.module('@buildd/core/db', () => ({
   db: { execute: async () => { if (throws) throw new Error('db down'); return { rows }; } },
 }));
 
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { computeReviewRoundMetrics, getReviewRoundMetrics, reviewRoundsOfMergedSql, type ReviewRoundRow } from './review-round-metrics';
 
 const R = (o: Partial<ReviewRoundRow>): ReviewRoundRow => ({ deliveryId: 'd1', trigger: 'first_pass', kind: 'full', status: 'decided', endReason: null, deltaApproval: false, ...o });
@@ -51,10 +52,11 @@ describe('getReviewRoundMetrics', () => {
     expect(await getReviewRoundMetrics(['ws-1'], '7d')).toBeNull();
     throws = false;
   });
-  it('the query reads only merged deliveries of the given workspaces', () => {
-    const q = reviewRoundsOfMergedSql(['ws-1'], new Date('2026-01-01T00:00:00Z'));
-    const text = (q as unknown as { queryChunks: unknown[] }).queryChunks.map((c) => (typeof c === 'object' && c && 'value' in c ? (c as { value: string[] }).value.join('') : '?')).join('');
+  it('the query renders through PgDialect and reads only merged deliveries of the given workspaces', () => {
+    const { sql: text, params } = new PgDialect().sqlToQuery(reviewRoundsOfMergedSql(['ws-1'], new Date('2026-01-01T00:00:00Z')));
     expect(text).toContain("d.state = 'MERGED'");
-    expect(text).toContain('d.workspace_id IN');
+    expect(text).toContain('d.workspace_id IN (SELECT jsonb_array_elements_text($1::jsonb)::uuid)');
+    expect(text).toContain("r.scope->>'trigger' AS trigger");
+    expect(params).toEqual(['["ws-1"]', '2026-01-01T00:00:00.000Z', 20000]);
   });
 });

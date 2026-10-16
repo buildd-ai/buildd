@@ -79,7 +79,7 @@ const mockGetLandingMetrics = mock(() => Promise.resolve(LANDING as any));
 mock.module('@/lib/pr-landing-metrics', () => ({ getLandingMetrics: mockGetLandingMetrics }));
 const REVIEW_ROUNDS = { window: '7d', mergedPrs: 2, rounds: 3, roundsPerMergedPr: 1.5, byTrigger: [{ trigger: 'first_pass', rounds: 2, perMergedPr: 1 }, { trigger: 'ci_fix', rounds: 1, perMergedPr: 0.5 }], deltaApprovalRounds: 1, supersededRounds: 0, supersededWithoutReason: 0, truncated: false };
 const mockGetReviewRoundMetrics = mock(() => Promise.resolve(REVIEW_ROUNDS as any));
-mock.module('@/lib/review-round-metrics', () => ({ getReviewRoundMetrics: mockGetReviewRoundMetrics }));
+mock.module('@/lib/workflow/review-round-metrics', () => ({ getReviewRoundMetrics: mockGetReviewRoundMetrics }));
 
 const mockGetStalledIngestReport = mock(async (_ws: string[]) => null as any);
 mock.module('@/lib/knowledge-ingest-stalls', () => ({ getStalledIngestReport: mockGetStalledIngestReport }));

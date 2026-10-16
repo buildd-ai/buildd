@@ -17,7 +17,7 @@ import {
 } from '@/lib/failure-analytics';
 import { getGateAnalytics, getGateReasonFamily } from '@/lib/gate-analytics-query';
 import { getLandingMetrics } from '@/lib/pr-landing-metrics';
-import { getReviewRoundMetrics } from '@/lib/review-round-metrics';
+import { getReviewRoundMetrics } from '@/lib/workflow/review-round-metrics';
 import { getStalledIngestReport } from '@/lib/knowledge-ingest-stalls';
 import { toFrictionSignature } from '@buildd/core/failure-friction-signature';
 import type {
