@@ -36,7 +36,7 @@
  */
 import { and, desc, eq, inArray, isNotNull, lt, sql, type SQL } from 'drizzle-orm';
 import { db } from './db/client';
-import { orchestrationManifestPredictions, systemCache, taskEstimates, tasks, teams, workers, type TaskEstimate } from './db/schema';
+import { orchestrationManifestPredictions, systemCache, taskEstimates, tasks, teams, workers, type TaskEstimate, type TaskEstimateDiagnostics } from './db/schema';
 import { buildClusterTasks, loadDiffFiles, loadRepairCounts } from './task-area-clusters-source';
 import type { ReplaySession, ReplayTask } from './estimate-backtest-source';
 import {
@@ -46,7 +46,7 @@ import {
 import { TASK_AREA_FALLBACK } from './task-area-prediction';
 import { fetchNeighbourPaths, findNeighbourTasks, type TaskAreaQuerier } from './task-area-prediction-source';
 import {
-  ESTIMATOR_VERSION, estimateTask,
+  ESTIMATOR_VERSION, estimateTask, lookupPrior,
   type ClusterEvidence, type EstimateInputs, type NeighbourEvidence, type PriorCell, type PriorTable, type SizeBucket,
   type TaskEstimateResult,
 } from './task-estimate';
@@ -421,10 +421,13 @@ export interface LoadEstimateInputsDeps {
   storeFactory?: () => Promise<TaskAreaQuerier>;
 }
 
-const bestEffort = async <T>(what: string, taskId: string, fn: () => Promise<T>, fallback: T): Promise<T> => {
+const bestEffort = async <T>(
+  what: string, taskId: string, fn: () => Promise<T>, fallback: T, onFail?: () => void,
+): Promise<T> => {
   try {
     return await fn();
   } catch (err) {
+    onFail?.();
     console.warn(`[task-estimate] ${what} unavailable for task ${taskId}: ${(err as Error)?.name ?? 'Error'}`);
     return fallback;
   }
@@ -435,6 +438,12 @@ export async function loadEstimateInputs(task: EstimateTask, deps: LoadEstimateI
   const kind = typeof task.kind === 'string' && PRIOR_KIND_SET.has(task.kind) && task.kind !== 'unknown' ? task.kind : null;
   const seedText = [task.title ?? '', task.description ?? ''].filter(Boolean).join('\n');
 
+  const diag: TaskEstimateDiagnostics = {
+    neighbours: { status: 'ok', candidates: 0, eligible: 0 },
+    clusters: { status: 'ok', clusterCount: 0, used: false },
+    prior: { status: 'ok', cellFound: false },
+  };
+
   const neighbourIds = await bestEffort('neighbour retrieval', task.id, async () => {
     const store = await (deps.storeFactory ?? defaultStore)();
     const found = await findNeighbourTasks(store, {
@@ -443,8 +452,10 @@ export async function loadEstimateInputs(task: EstimateTask, deps: LoadEstimateI
       seedText,
       config: { ...TASK_AREA_FALLBACK, topK: NEIGHBOUR_TOP_K },
     });
-    return found.filter(n => n.score >= TASK_AREA_FALLBACK.similarityFloor && n.taskId !== task.id).map(n => n.taskId);
-  }, [] as string[]);
+    const ids = found.filter(n => n.score >= TASK_AREA_FALLBACK.similarityFloor && n.taskId !== task.id).map(n => n.taskId);
+    diag.neighbours.candidates = ids.length;
+    return ids;
+  }, [] as string[], () => { diag.neighbours.status = 'failed'; });
 
   const neighbours = neighbourIds.length === 0 ? null : await bestEffort('neighbour sessions', task.id, async () => {
     const [sessions, created] = await Promise.all([
@@ -459,10 +470,12 @@ export async function loadEstimateInputs(task: EstimateTask, deps: LoadEstimateI
       cutoff,
       createdAtById: new Map((created as Array<{ id: string; createdAt: Date }>).map(r => [r.id, r.createdAt])),
     });
-  }, null);
+  }, null, () => { diag.neighbours.status = 'failed'; });
+  diag.neighbours.eligible = neighbours?.n ?? 0;
 
   const clusters = await bestEffort('cluster evidence', task.id, async () => {
     const model = await loadClusterModel(task.workspaceId, cutoff);
+    diag.clusters.clusterCount = model.clusters.length;
     if (model.clusters.length === 0) return null;
     const manifest = Array.isArray(task.pathManifest) ? task.pathManifest : [];
     let neighbourPaths: string[] = [];
@@ -472,15 +485,17 @@ export async function loadEstimateInputs(task: EstimateTask, deps: LoadEstimateI
     }
     const mapped = mapNewTaskToClusters({ pathManifest: manifest, neighbourPaths }, model);
     return mapped.source === 'none' ? null : clusterEvidenceFrom(mapped.clusters, model, { kind: task.kind, complexity: task.complexity });
-  }, null);
+  }, null, () => { diag.clusters.status = 'failed'; });
+  diag.clusters.used = clusters != null;
 
   const [bucket, prior, k0] = await Promise.all([
     bestEffort('recorded bucket', task.id, () => loadRecordedBucket(task.id), null),
-    bestEffort('prior', task.id, () => loadPriorTable(cutoff), {} as PriorTable),
+    bestEffort('prior', task.id, () => loadPriorTable(cutoff), {} as PriorTable, () => { diag.prior.status = 'failed'; }),
     loadTaskEstimateK0(),
   ]);
 
-  return { kind, bucket, neighbours, clusters, prior, k0 };
+  diag.prior.cellFound = lookupPrior(prior, kind, bucket) != null;
+  return { kind, bucket, neighbours, clusters, prior, k0, diagnostics: diag };
 }
 
 // ── Write / read ─────────────────────────────────────────────────────────────

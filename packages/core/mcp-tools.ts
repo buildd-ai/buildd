@@ -542,7 +542,9 @@ export function formatTaskEstimateLine(estimate: unknown): string | null {
   const mins = (m: number) => Math.max(1, Math.round(m));
   const k = (t: number) => `${Math.max(1, Math.round(t / 1000))}k`;
   const version = typeof e.estimatorVersion === 'string' ? e.estimatorVersion : 'unknown';
-  const summary = typeof e.summary === 'string' && e.summary.trim() ? ` · ${truncate(e.summary.trim(), 300)}` : '';
+  let summary = typeof e.summary === 'string' && e.summary.trim() ? ` · ${truncate(e.summary.trim(), 300)}` : '';
+  // A legacy row records no source diagnostics: its "no history" wording cannot tell an empty repo from an unread one.
+  if (e.historyKnown === false && Array.isArray(e.sources) && e.sources.length === 0) summary += ' · (history coverage not recorded for this estimate)';
   return `**Estimate (${version}):** ${mins(p50m)}-${mins(Math.max(p80m, p50m))}m · ${k(p50t)}-${k(Math.max(p80t, p50t))} tokens${summary}`;
 }
 

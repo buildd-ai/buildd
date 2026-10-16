@@ -14,7 +14,7 @@
  * The prior carries aggregates only (numbers keyed by enum values). It never
  * carries text from a workspace, so it is safe to share across tenants.
  */
-import type { TaskEstimateExplanation } from './db/schema';
+import type { TaskEstimateDiagnostics, TaskEstimateExplanation } from './db/schema';
 
 export const ESTIMATOR_VERSION = 'blend-v1';
 
@@ -36,6 +36,8 @@ export interface EstimateInputs {
   prior: PriorTable;
   /** Local evidence weight is n/(n+k0) against the prior. Config, not a constant. */
   k0: number;
+  /** What each source did while loading. Frozen into the explanation when present. */
+  diagnostics?: TaskEstimateDiagnostics;
 }
 export interface TaskEstimateResult {
   p50Minutes: number; p80Minutes: number; p50Tokens: number; p80Tokens: number; expectedRepairs: number;
@@ -132,7 +134,7 @@ export function estimateTask(inputs: EstimateInputs): TaskEstimateResult {
 
   if (locals.length === 0 && !prior) {
     const base = { ...DEFAULT_ESTIMATE };
-    const e = { sources: [], clusterLabel, priorWeight: 1 };
+    const e = { sources: [], clusterLabel, priorWeight: 1, ...(inputs.diagnostics ? { diagnostics: inputs.diagnostics } : {}) };
     return { ...base, explanation: { ...e, summary: formatEstimateSummary(base, e, inputs.kind) } };
   }
 
@@ -165,7 +167,7 @@ export function estimateTask(inputs: EstimateInputs): TaskEstimateResult {
   expectedRepairs = Math.max(0, expectedRepairs);
 
   const base = { ...quad, expectedRepairs };
-  const e = { sources, clusterLabel, priorWeight: wPrior };
+  const e = { sources, clusterLabel, priorWeight: wPrior, ...(inputs.diagnostics ? { diagnostics: inputs.diagnostics } : {}) };
   return { ...base, explanation: { ...e, summary: formatEstimateSummary(base, e, inputs.kind) } };
 }
 
@@ -189,6 +191,10 @@ export function formatEstimateSummary(
   const head = `${p50}m (${low}-${p80}m), ${roundTokensK(r.p50Tokens)} tokens`;
 
   if (e.sources.length === 0) {
+    const d = e.diagnostics;
+    if (d && (d.neighbours.status === 'failed' || d.clusters.status === 'failed' || d.prior.status === 'failed')) {
+      return `${head}, a default estimate; some history could not be read, so this says nothing about whether the repo has any.`;
+    }
     return `${head}, a default estimate; no history in this repo or in similar work yet.`;
   }
 
@@ -201,6 +207,10 @@ export function formatEstimateSummary(
   const hasPrior = e.sources.some((s) => s.source === 'prior');
 
   if (local.length === 0) {
+    const d = e.diagnostics;
+    if (d && (d.neighbours.status === 'failed' || d.clusters.status === 'failed')) {
+      return `${head}, from ${typical}; this repo's history could not be read.`;
+    }
     return `${head}, from ${typical}; no history in this repo yet.`;
   }
   const localText = nb ? local.join(' and ') : `from ${local[0]}`;

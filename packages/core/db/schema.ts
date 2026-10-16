@@ -6847,6 +6847,21 @@ export interface TaskEstimateExplanation {
   /** 0..1: how much the new-repo prior counted. Falls as local history grows. */
   priorWeight: number;
   summary: string;
+  /**
+   * What each evidence source did at estimate time, frozen with the row. Absent
+   * on rows written before this existed: those cannot tell "no similar tasks"
+   * from "the source could not be read", so readers must treat an empty
+   * `sources` there as unknown, never as an empty repo.
+   */
+  diagnostics?: TaskEstimateDiagnostics;
+}
+
+/** `ok`: read fine (possibly zero candidates). `failed`: the read threw. */
+export type EstimateSourceStatus = 'ok' | 'failed';
+export interface TaskEstimateDiagnostics {
+  neighbours: { status: EstimateSourceStatus; candidates: number; eligible: number };
+  clusters: { status: EstimateSourceStatus; clusterCount: number; used: boolean };
+  prior: { status: EstimateSourceStatus; cellFound: boolean };
 }
 
 /**

@@ -613,6 +613,8 @@ describe('GET /api/tasks/[id]', () => {
     expect(data.estimate).toEqual({
       estimatorVersion: 'blend-v1', p50Minutes: 40, p80Minutes: 70, p50Tokens: 120000, p80Tokens: 220000,
       expectedRepairs: 0.3, summary: '40m (25-70m), 120k tokens.', createdAt: '2026-10-04T12:00:00.000Z',
+      // A legacy row has no diagnostics: empty sources is unknown, not an empty repo.
+      sources: [], priorWeight: 1, diagnostics: null, historyKnown: false,
     });
 
     mockReadTaskEstimate.mockResolvedValueOnce(null);

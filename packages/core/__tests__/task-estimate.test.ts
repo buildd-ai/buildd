@@ -182,4 +182,27 @@ describe('task-estimate', () => {
     const { summary, ...e } = explanation;
     expect(formatEstimateSummary(rest, e, 'engineering')).toBe(summary);
   });
+
+  describe('diagnostics', () => {
+    const ok = { neighbours: { status: 'ok' as const, candidates: 0, eligible: 0 }, clusters: { status: 'ok' as const, clusterCount: 0, used: false }, prior: { status: 'ok' as const, cellFound: true } };
+
+    it('freezes the loader diagnostics into the explanation', () => {
+      expect(estimateTask(base({ diagnostics: ok })).explanation.diagnostics).toEqual(ok);
+      expect(estimateTask(base()).explanation.diagnostics).toBeUndefined();
+    });
+
+    it('does not claim an empty repo when a local source failed', () => {
+      const failed = { ...ok, neighbours: { status: 'failed' as const, candidates: 0, eligible: 0 } };
+      const withPrior = estimateTask(base({ diagnostics: failed })).explanation.summary;
+      expect(withPrior).toContain('could not be read');
+      expect(withPrior).not.toContain('no history in this repo');
+      const noPrior = estimateTask(base({ prior: {}, diagnostics: failed })).explanation.summary;
+      expect(noPrior).toContain('could not be read');
+      expect(noPrior).not.toContain('no history in this repo');
+    });
+
+    it('keeps the cold-start wording when every source read fine', () => {
+      expect(estimateTask(base({ diagnostics: ok })).explanation.summary).toContain('no history in this repo yet');
+    });
+  });
 });

@@ -229,6 +229,12 @@ export async function GET(
           p80Tokens: estimate.p80Tokens,
           expectedRepairs: estimate.expectedRepairs,
           summary: estimate.explanation?.summary ?? null,
+          // Frozen evidence behind the numbers. `diagnostics` is absent on rows
+          // written before it existed: empty `sources` there is unknown, not an empty repo.
+          sources: estimate.explanation?.sources ?? [],
+          priorWeight: estimate.explanation?.priorWeight ?? null,
+          diagnostics: estimate.explanation?.diagnostics ?? null,
+          historyKnown: estimate.explanation?.diagnostics != null,
           createdAt: estimate.createdAt,
         };
       }
