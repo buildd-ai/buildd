@@ -1,0 +1,626 @@
+---
+title: Human Answer Delivery
+status: active
+owner: max
+last_verified: 2026-10-15
+summary: An authorised human answer MUST reach a live session or create durable retry work, and MUST never be applied twice or silently dropped.
+domain: tasks
+surfaces: [apps/web/src/lib/worker-instructions.ts, apps/web/src/app/api/workers/[id]/respond/route.ts]
+related: [agent-question-protocol, worker-reclamation]
+verified_by: [apps/web/src/lib/worker-instructions.test.ts, apps/web/src/app/api/workers/[id]/respond/route.test.ts, apps/web/src/app/api/workers/[id]/instruct/route.test.ts]
+assertions:
+  - id: "respond-to-worker"
+    type: "route"
+    method: "POST"
+    path: "/api/workers/[id]/respond"
+    file: "apps/web/src/app/api/workers/[id]/respond/route.ts"
+  - id: "instruct-worker"
+    type: "route"
+    method: "POST"
+    path: "/api/workers/[id]/instruct"
+    file: "apps/web/src/app/api/workers/[id]/instruct/route.ts"
+  - id: "durable-answer-tests"
+    type: "test_file"
+    path: "apps/web/src/app/api/workers/[id]/respond/route.test.ts"
+  - id: guard-1
+    type: test_file
+    path: apps/web/src/lib/worker-instructions.test.ts
+  - id: guard-2
+    type: test_file
+    path: apps/web/src/app/api/workers/[id]/respond/route.test.ts
+  - id: guard-3
+    type: test_file
+    path: apps/web/src/app/api/workers/[id]/instruct/route.test.ts
+---
+# Human Answer Delivery
+
+**Capability statement**: An authorised human answer MUST reach a live session or create durable retry work, and MUST never be applied twice or silently dropped.
+
+## The two answer channels
+
+There are two mechanically different ways an answer reaches an agent, with
+different durability. Confusing them is the source of most reported "the agent
+ignored my answer" incidents.
+
+| | Channel A — retry | Channel B — steering |
+|---|---|---|
+| Endpoint | `POST /api/workers/[id]/respond` | `POST /api/workers/[id]/instruct` |
+| UI entry | needs-input banner, `/app/tasks/[id]?respond=1` (the reply box on the task page) | instruct form, `TaskQuestionFeed` reply |
+| MCP entry | none | `send_agent_message` (admin) |
+| Precondition | `workers.waitingFor` is non-null — **any** status | worker status not `completed`/`failed` |
+| Effect | resume the parked session, or a new `pending` task with the old worker `superseded` | message queued or pushed to the same session |
+| Durability | a DB row; survives a dead runner | at-most-once; no acknowledgement |
+| Session continuity | the SAME session when the runner still holds it, else a new session with `baseBranch` = old branch | same session, same context window |
+
+Channel A is the dashboard default. It is **no longer unconditionally a new
+worker**: `docs/specs/answered-question-resume.md` owns what happens to the
+session after an answer, and its cold-continuation path is the behaviour
+described below. Everything in this section about authorisation, the
+single-answer guard and the continuation's inherited fields applies to that
+path unchanged.
+
+---
+
+
+## Channel A — `/respond`: the durable answer
+
+**Invariants**:
+- `/respond` MUST be status-agnostic. It gates on `worker.waitingFor` being
+  non-null and on nothing else; a worker in `error`, `failed` or `waiting_input`
+  all accept an answer. This is not laxity — it is the contract that keeps the
+  `inputAsRetry` abort (above) from swallowing the question.
+- An answer that CANNOT resume the parked session (see
+  `docs/specs/answered-question-resume.md` for the five gates and the recorded
+  reason) MUST produce one new `pending` task titled
+  `Continue: <original title>` whose description carries the original task, the
+  recorded milestones, the question and the human answer verbatim, and whose
+  `context` carries `baseBranch` (the dead worker's branch), `userInput`,
+  `previousAttempt.workerId` and `iteration + 1`. Branch continuity is what
+  makes the answer resumable rather than a restart.
+- An answer that CAN resume it creates no task at all: the same worker row
+  receives the answer through the acknowledged instruction queue and continues.
+  The invariants below about superseding the worker apply to the cold path
+  only.
+- A COLD-path answering worker MUST be marked `superseded` (not `completed`, not
+  `failed`) with `waitingFor = null` — it did not finish its task, it was
+  replaced by the continuation task, so it must not count as either a success
+  or a failure. `superseded` is included in `IN_FLIGHT_WORKER_STATUSES`
+  (`apps/web/src/lib/failure-analytics.ts`) so it is excluded from both the
+  success and failure buckets of `get_failure_analytics` /
+  success-rate-by-role, and in `TERMINAL_WORKER_STATUSES`
+  (`apps/web/src/app/api/workers/[id]/route.ts`) so a late runner PATCH for the
+  same worker is rejected (409) rather than resurrecting or overwriting it.
+- The continuation task MUST inherit the fields that describe what the work
+  must deliver — `mode`, `taskClass`, `priority`, `outputRequirement`,
+  `outputSchema`, `category`, `pathManifest`, `backend` — since none of those
+  change because a question was asked. It MUST NOT inherit `dependsOn` (the
+  parent's prerequisites were already satisfied before the parent could run),
+  `subjectAnchor` (drives a dedup/supersession subsystem this path is not
+  part of), or `creationSource` (this row was created by whoever answered the
+  question via this route, not by the orchestrator — it always defaults to
+  `'api'` here). Copying `mode: 'planning'` is safe because the
+  planning-contract guard's `mode === 'planning'` clause fires unconditionally
+  on mode alone; it does not depend on `creationSource` or `scheduleId` (those
+  only gate the guard's separate orchestrator-fallback clause — see the
+  `mode`/`creationSource` distinction in the guard's own comment,
+  `apps/web/src/app/api/workers/[id]/route.ts`).
+- `context.baseBranch` is honoured by the runner's worktree setup only when
+  that branch already exists on the remote — i.e. the original worker had
+  already pushed (for example, a PR was already open). If the question was
+  asked before anything was pushed, the runner falls back to a fresh worktree
+  from the default branch; the server cannot detect at `/respond` time which
+  case applies, so "resumes the existing work" is not a guarantee.
+- An answer for a worker with no `waitingFor` MUST be refused with HTTP 400. This
+  refusal is the only defence against a second person answering the same prompt.
+- Authorisation: a session user with workspace access, or an API key whose
+  account **owns the worker** (`workers.accountId`). A key for another account
+  gets 403, not 404 — the worker exists, the caller may not act on it.
+- Known residual race: this route's claim write and an in-flight runner PATCH
+  for the same worker use independent, uncoordinated CAS predicates (this one
+  gates on `waitingFor`; the PATCH route's terminal-transition reservation
+  gates on `status`). A worker read fresh after this commits is correctly
+  rejected as terminal; a runner PATCH already mid-flight when this commits can
+  still land after it and overwrite `status`. Closing this fully needs a shared
+  reservation primitive between the two routes — not implemented here, because
+  the alternative (gating this claim on worker status) would break the
+  deliberate contract above that `error`/`failed` with `waitingFor` set must
+  still be accepted.
+
+**Acceptance criteria**:
+- AC-4: GIVEN a worker with `status: 'failed'`, `error: 'needs_input: …'`
+  and `waitingFor` set WHEN `POST /respond` is called THEN HTTP 200 with a new
+  `taskId`; the answer is NOT lost to the worker's terminal status.
+- AC-5: GIVEN a worker whose `waitingFor` is `null` WHEN `POST /respond` is
+  called THEN HTTP 400 `Worker is not waiting for input` and no task is created.
+- AC-6: GIVEN an API key whose account differs from `workers.accountId`
+  WHEN `POST /respond` is called THEN HTTP 403 and no task is created.
+- AC-7: GIVEN a successful `/respond` THEN the new task's
+  `context.baseBranch` equals the answered worker's `branch` and
+  `context.iteration` is the previous iteration + 1.
+- AC-29: GIVEN a successful `/respond` THEN the answered worker's `status`
+  is `superseded`, never `completed`.
+- AC-30: GIVEN a parent task with `priority`, `outputRequirement`,
+  `outputSchema`, `category`, `pathManifest`, `backend` set WHEN `/respond`
+  creates the continuation THEN all six are copied onto it, and `dependsOn`,
+  `subjectAnchor`, `creationSource` are NOT copied.
+- AC-31: GIVEN a task with `mode: 'execution'`, `creationSource:
+  'orchestrator'`, `scheduleId: null` (an auto-approved mission builder child
+  from `approve-plan.ts`, not a cron-dispatched organizer cycle) WHEN its
+  worker completes with a prose summary and no `structuredOutput` THEN the
+  planning-contract guard in `apps/web/src/app/api/workers/[id]/route.ts`
+  MUST NOT override it to `failed` — `scheduleId` (populated only by the cron
+  dispatcher) is the guard's orchestrator-fallback discriminator, not
+  `creationSource` alone, precisely because `approve-plan.ts` stamps every
+  auto-approved builder child with `creationSource: 'orchestrator'` too
+  (PR #2076).
+
+**Code surface**:
+- `apps/web/src/app/api/workers/[id]/respond/route.ts` `POST` (the
+  `waitingFor` gate), `respondByResume`, `respondToInteractiveSession`,
+  `respondByContinuation` (the `Continue:` task and the `superseded` write)
+- Client entry: `apps/web/src/app/app/(protected)/tasks/[id]/RealTimeWorkerView.tsx`
+  (an answer link, `?respond=1`, focuses its reply box; the old `/respond` page redirects there)
+
+---
+
+
+## Channel B — `/instruct`: steering a live session
+
+One queue, explicit ids, four states. A steering message reaches the agent at
+its **next turn boundary**, whether or not the agent ever reports progress.
+
+**Invariants**:
+- A message MUST be refused (HTTP 400) for a `completed` or `failed` worker, and
+  refused (409) for any other terminal status unless `priority: 'urgent'` (which
+  can still reach a session the runner holds in memory, and queues nothing).
+- `/instruct` and `/cmd { action: 'message' }` share ONE enqueue path,
+  `queueInstruction` (`apps/web/src/lib/worker-instructions.ts`): append to the
+  `pendingInstructions` queue (never replace) and append a history entry with a
+  server-generated `id`. `/cmd` is urgent priority.
+- Text rides Pusher only where the queue cannot carry it: a runner that cannot
+  acknowledge (`supportsInstructionAck = false`, urgent) or an urgent message to
+  a terminal worker. Everything queued instead fires a **text-free**
+  `worker:command { action: 'deliver_pending' }`, at every priority, and the
+  runner syncs that worker immediately.
+- Every message MUST be appended to `instructionHistory`, capped at 30 entries;
+  a `sensitive` workspace stores the envelope without the text.
+- **One consumer per worker.** On a runner-managed worker the runner's sync
+  (`consumeInstructions: true, consumer: 'runner'`) is the only consumer; a
+  PATCH declaring `consumer: 'agent'` (the agent's MCP `update_progress` /
+  `receive_messages`) is served nothing — not instructions, not note replies,
+  not worker→worker messages — and moves nothing. On an interactive worker
+  (`runner = 'mcp'`) the agent is the consumer. Two consumers of one queue raced
+  and could hand the model the same text twice.
+- The consumer is served `instructions`, `instructionsAck` (the queued text) and
+  `instructionIds` (history ids of the served entries, plus served mission-note
+  ids). The queue is cleared only by a compare-and-set on the echoed
+  `instructionsDelivered` text, never on serve.
+- **Four states, one derivation.** `messageDeliveryStatus(entry, workerStatus)`
+  is the only reader of the stored state; every surface (task page, Steer
+  canvas, `GET /api/tasks/[id]/messages`, `get_task_messages`) shows its result:
+  - **Queued** (`pending`): waits for the agent's next turn.
+  - **Delivered** (`delivered` + `deliveredAt`): the consumer echoed
+    `instructionIdsDelivered` (or, for an older runner, the text). In the
+    session, not read yet. Only a consumer's echo writes it.
+  - **Acknowledged** (`acknowledged` + `acknowledgedAt`): the consumer echoed
+    `instructionsAcknowledged: [id]`. Observed, never inferred: Claude — the
+    assistant frame whose `user_message_uuid(s)` names the injected message's
+    `uuid`; Codex — the backend took it as the next turn's prompt
+    (`input_consumed`); an AskUserQuestion answer or a resume prompt — the next
+    top-level assistant frame; an MCP consumer — the tool result carrying it
+    (delivered and acknowledged in one PATCH).
+  - **Undelivered** (derived, never stored): queued, or delivered by id
+    (`awaitsAck`), and the worker is terminal. A text-matched delivery from an
+    older runner never acknowledges and so never turns Undelivered.
+  No state is derived from `workers.turns` (it counts check-ins, not turns).
+- Mission-note replies and guidance served to an id-speaking consumer are
+  marked `deliveredTo` on its `instructionIdsDelivered` echo, not at serve time.
+  An older consumer (no `consumer` field) keeps serve-time marking.
+- The runner MUST apply an instruction as a user message on the existing
+  session, linked to the pending tool call when one exists
+  (`buildUserMessage` with `parentToolUseId`), so an answer to `AskUserQuestion`
+  resolves that tool call instead of starting an unrelated turn. Claude: the
+  message carries `uuid` and no `priority` (a queued user message already folds
+  into the running turn at its next boundary). Codex: only after
+  `turn.completed`; a message queued during a turn keeps the session alive for
+  one more turn instead of being dropped when that turn ends.
+- A runner-managed `working` worker that is not dirty is synced at least every
+  30s, so a missed `deliver_pending` still bounds delivery.
+- Delivering a message MUST NOT kill the session it steers. A resumed session
+  passes `resume` and MUST NOT also pass `sessionId` — the CLI rejects the pair
+  without `--fork-session`, which turned every steering message on a resumed
+  worker into a crash (PR #1794).
+- `send_agent_message` MUST resolve the target by **worker** status, never task
+  status (`tasks.status` stays `assigned` for the whole run), and MUST pick the
+  newest non-terminal worker. With no non-terminal worker it MUST fail loudly and
+  distinguish "still pending, never claimed" from "all workers terminal".
+
+**Acceptance criteria**:
+- AC-8: GIVEN an ack-capable worker WHEN `POST /instruct` (any priority) or
+  `POST /cmd { action: 'message' }` is called THEN `pendingInstructions` holds
+  the message, the history entry has an `id` and `deliveryState: 'pending'`, and
+  exactly one `worker:command { action: 'deliver_pending' }` is emitted with no
+  `text`.
+- AC-9: GIVEN a runner that cannot acknowledge WHEN `POST /instruct` is
+  urgent THEN the text goes over Pusher, `pendingInstructions` is untouched and
+  the entry reads `deliveryState: 'delivered'`.
+- AC-10: GIVEN a worker with `status: 'completed'` WHEN `POST /instruct` is
+  called THEN HTTP 400 `Cannot instruct completed or failed workers` and no row
+  is written.
+- AC-11: GIVEN a runner-managed worker WHEN a PATCH declares
+  `consumer: 'agent'` THEN no `instructions` are served and the queue and history
+  are untouched; GIVEN `runner = 'mcp'` THEN it is served with `instructionIds`.
+- AC-12: GIVEN a task whose only workers are `completed`/`failed` WHEN
+  `send_agent_message` is called THEN it throws naming "no active worker" and
+  never calls `/instruct`.
+- AC-13: GIVEN a `sensitive` workspace WHEN `POST /instruct` is called THEN
+  the stored history entry has no `message` field.
+- AC-47: GIVEN `instructionsAcknowledged: [id]` THEN exactly that entry is
+  `acknowledged` with `acknowledgedAt`, unknown ids are ignored, and the PATCH
+  does not count as a turn.
+- AC-48: `messageDeliveryStatus` maps `{pending, delivered (by id),
+  acknowledged} × {live, terminal}` to `queued / delivered / acknowledged /
+  undelivered`, and terminal + acknowledged stays acknowledged.
+- AC-49: GIVEN an id-speaking consumer served a note reply THEN `deliveredTo`
+  is written only on its `instructionIdsDelivered` echo.
+
+**Code surface**:
+- Enqueue: `apps/web/src/lib/worker-instructions.ts` (`queueInstruction`,
+  `messageDeliveryStatus`), `apps/web/src/lib/worker-instruction-push.ts`,
+  `apps/web/src/app/api/workers/[id]/instruct/route.ts`,
+  `apps/web/src/app/api/workers/[id]/cmd/route.ts`
+- Serve + settle: `apps/web/src/app/api/workers/[id]/route.ts` (consumer rule,
+  `instructionIds`, delivered/acknowledged, note `deliveredTo` on ack)
+- Runner: `apps/runner/src/worker-sync.ts` (consumer, inject by id, quiet-worker
+  sync, `requestSync`), `apps/runner/src/pusher-manager.ts` (`deliver_pending`),
+  `apps/runner/src/workers.ts` (`sendMessage` uuid, ack on assistant echo and
+  `input_consumed`), `apps/runner/src/instruction-acks.ts`,
+  `apps/runner/src/backends/codex-backend.ts` (`input_consumed`)
+- MCP: `packages/core/mcp-tools.ts` (`receive_messages`, `update_progress`,
+  `get_task_messages`, `send_agent_message`)
+- Read model: `apps/web/src/app/api/tasks/[id]/messages/route.ts` returns each
+  human message's derived `state`.
+
+---
+
+
+## Who may answer
+
+| Endpoint | Session user | API key | Extra gate |
+|---|---|---|---|
+| `POST /workers/[id]/respond` | workspace access | account owns the worker | none |
+| `POST /workers/[id]/instruct` | workspace access | **admin level only**, no workspace check | rejects terminal workers |
+| `POST /workers/[id]/cmd` | workspace access | account owns the worker | action in `pause,resume,abort,message,recover` |
+| `POST /workers/[id]/recover` | workspace access | account owns the worker | mode in `diagnose,complete,restart` |
+| `POST /workers/[id]/interrupt` | workspace access | **refused** | reviewer task only; `Content-Type: application/json` |
+| `POST /tasks/[id]/approve-plan` / `reject-plan` | workspace access | workspace access | planning task, `completed` |
+| `POST /tasks/[id]/notes/[noteId]/reply` | workspace access | workspace access | note is task-scoped |
+| `GET /tasks/waiting-input` | workspace access | **refused** | — |
+
+**Invariants**:
+- No interaction endpoint is anonymous: each resolves `getCurrentUser` or
+  `authenticateApiKey` and then re-checks scope with `verifyWorkspaceAccess`,
+  `verifyAccountWorkspaceAccess`, `getUserWorkspaceIds`, or an `accountId`
+  equality — presenting a valid credential for a different tenant is never
+  enough.
+- `/interrupt` MUST reject a request whose `Content-Type` is not
+  `application/json` (HTTP 415), so a cross-origin HTML form cannot trigger a
+  takeover; the same protection is not claimed for the other endpoints.
+- The HTTP route is the authorisation boundary. An MCP action's level
+  (`send_agent_message`, `approve_plan`, `reject_plan` are `adminActions`) is an
+  ADDITIONAL restriction on agents, never the only one — the route must hold on
+  its own.
+
+**Acceptance criteria**:
+- AC-14: GIVEN a non-admin API key WHEN `POST /instruct` is called THEN
+  HTTP 401 naming the admin-level requirement.
+- AC-15: GIVEN an authenticated session user with no membership in the
+  worker's workspace WHEN `POST /instruct` or `POST /respond` is called THEN
+  HTTP 404 (existence is not disclosed).
+- AC-16: GIVEN a form-encoded `POST /interrupt` THEN HTTP 415 and no
+  worker row is written.
+
+**Code surface**:
+- `apps/web/src/lib/auth-helpers.ts`, `apps/web/src/lib/api-auth.ts`,
+  `apps/web/src/lib/team-access.ts`
+- `apps/web/src/app/api/workers/[id]/interrupt/route.ts` `POST` (the
+  content-type gate, then the workspace check)
+- `packages/core/mcp-tools.ts` (`adminActions`)
+
+---
+
+
+## Takeover: interrupt, recover, cmd
+
+**Invariants**:
+- `/interrupt` is the only interaction write in this protocol that takes an
+  optimistic lease: it terminates the worker with
+  `UPDATE … WHERE id = ? AND status = <status it read>` and, on a 0-row result,
+  returns HTTP 409 and performs NO downstream effect. Completion and takeover
+  race for one lease and only the winner may fail the task, post the
+  `reviewer_escalated` note, and broadcast.
+- `/interrupt` is restricted to reviewer workers (`tasks.category === 'review'`)
+  and returns 409 for an already-terminal worker: an interrupt with no effect
+  MUST NOT report success.
+- `cancelQueued` is a best-effort Pusher hint sent AFTER the lease is won; the
+  DB outcome MUST NOT depend on it.
+- `/recover` is a Pusher-only command (`WORKER_COMMAND` `{ action: 'recover' }`)
+  and reaches nothing if no runner is subscribed. It refuses a `completed`
+  worker (409). It sets `status: 'running'` and clears `error` with a
+  compare-and-swap on the status it read, so a concurrent change gets 409.
+  It refuses a worker the server terminated (`isNonReactivatableError`) only
+  when `BUILDD_RECOVER_GUARD_TERMINATED=true`; by default a recover on a dead
+  runner still leaves a row that merely looks alive until
+  `cleanupStaleWorkers` reaps it again.
+- `/cmd { action: 'message' }` is Channel B at urgent priority: it queues and
+  records through `queueInstruction` like `/instruct` (see above). Its other
+  actions perform no state check and write no row.
+
+**Acceptance criteria**:
+- AC-17: GIVEN a live reviewer worker whose status changes between the read
+  and the write WHEN `POST /interrupt` runs THEN HTTP 409, the task is NOT
+  failed, and no `reviewer_escalated` note is inserted.
+- AC-18: GIVEN a worker on a non-reviewer task WHEN `POST /interrupt` is
+  called THEN HTTP 400 and the worker is untouched.
+- AC-19: GIVEN `cancelQueued: true` on a successful interrupt THEN a
+  `worker:command` `{ action: 'abort', cancelQueued: true }` event is emitted on
+  the worker channel; GIVEN the flag absent THEN no worker-channel event is
+  emitted.
+- AC-20: GIVEN `POST /recover` with an invalid mode THEN HTTP 400 and no
+  Pusher command is sent.
+
+**Code surface**:
+- `apps/web/src/app/api/workers/[id]/interrupt/route.ts` `POST` (the CAS,
+  `cancelQueued`, the `reviewer_escalated` note)
+- `apps/web/src/app/api/workers/[id]/recover/route.ts` `POST`
+- `apps/web/src/app/api/workers/[id]/cmd/route.ts` `POST`
+- Runner handlers: `apps/runner/src/pusher-manager.ts` (the `abort` case and
+  its terminal-state guard, the `recover` case)
+
+---
+
+
+## Plan approval and rejection
+
+**Invariants**:
+- `/approve-plan` and `/reject-plan` MUST both require `tasks.mode ===
+  'planning'` AND `tasks.status === 'completed'`, rejecting anything else with
+  HTTP 400: there is no plan to judge before the planner finishes.
+- Approval MUST be idempotent-by-refusal: `approvePlan` looks for any task whose
+  `parentTaskId` is the planning task and throws, surfaced as HTTP 409 `Plan
+  already approved`. This is the only guard against two approvers.
+- A plan with a dependency cycle MUST be rejected (HTTP 400) before any child
+  task is created — `detectCircularDeps` runs before the first insert.
+- Child tasks MUST inherit the planning task's `workspaceId` and `missionId`, and
+  `dependsOn` refs MUST be resolved to real task ids in a second pass.
+- **Human approval is usually an override, not a gate.** `resolveCompletedTask`
+  auto-approves a completed planning task's plan with `{ autoApproved: true }`
+  whenever `shouldAutoApprovePlan` allows it. It does not when the task's
+  `context.requiresPlanApproval` is true (set by `create_task` with
+  `emitsPlan`, and by doc-fix dispatch), or when
+  `BUILDD_REQUIRE_PLAN_APPROVAL=1` and the plan is not a mission's. Otherwise
+  the dashboard's review panel races the auto-approver, and its expected
+  outcome for a plan that already landed is the 409 above.
+- Rejection invalidates the plan. `/reject-plan` records
+  `context.planRejection` (feedback, time, who) on the original task with a
+  compare-and-swap, so a second rejection gets 409 `Plan already rejected`,
+  and `/approve-plan` refuses a rejected plan with 409. It then inserts a new
+  `planning` task carrying `context.planFeedback` and
+  `context.previousPlanTaskId`.
+
+**Acceptance criteria**:
+- AC-21: GIVEN a planning task that already has child tasks WHEN
+  `POST /approve-plan` is called THEN HTTP 409 `Plan already approved` and no
+  additional task is created.
+- AC-22: GIVEN a plan whose steps form a cycle WHEN `POST /approve-plan` is
+  called THEN HTTP 400 naming the cycle and ZERO child tasks exist afterwards.
+- AC-23: GIVEN a planning task with `status: 'in_progress'` WHEN either
+  endpoint is called THEN HTTP 400 `Planning task has not completed yet`.
+- AC-24: GIVEN `POST /reject-plan` with no `feedback` THEN HTTP 400 and no
+  revised task is created.
+
+**Code surface**:
+- `apps/web/src/app/api/tasks/[id]/approve-plan/route.ts` `POST`,
+  `apps/web/src/app/api/tasks/[id]/reject-plan/route.ts` `POST`
+- `apps/web/src/lib/approve-plan.ts` (`approvePlan`: the duplicate guard,
+  `detectCircularDeps`, then ref resolution)
+- Auto-approval: `apps/web/src/lib/task-dependencies.ts`
+  (`resolveCompletedTask`, `shouldAutoApprovePlan`)
+- UI: `apps/web/src/app/app/(protected)/tasks/[id]/PlanReviewPanel.tsx`
+- MCP: `packages/core/mcp-tools.ts` (`approve_plan`, `reject_plan`)
+
+---
+
+
+## A waiting worker's clock (interaction with `runner-liveness`)
+
+An unanswered question is the one legitimate reason a worker is idle, so the
+liveness machinery deliberately does not treat it as a fault. The consequence is
+that `waiting_input` has its own, much slower clock — and holds resources until
+it fires.
+
+**Invariants**:
+- `isStaleWorker` returns `false` for anything that is not `running`, so a
+  `waiting_input` worker MUST NOT be rendered as stale however long it waits.
+- `cleanupStaleWorkers`' per-worker rules cover `running`/`starting`/`idle` and
+  the silent-start case only. `waiting_input` appears there solely in
+  `LIVE_WORKER_STATUSES` — as a reason NOT to reset a task that has another live
+  worker — and in the runner-offline sweep, which additionally requires
+  `updatedAt` older than `HEARTBEAT_STALE_MS`. The runner re-syncs every waiting
+  worker on its 10s cycle, so while the runner lives that condition is never met.
+- The only clock that ends an unanswered question is therefore
+  `cleanupStuckWaitingInput`: `WAITING_INPUT_MISSION_STALE_MS` (4h) for a mission
+  task, `WAITING_INPUT_STALE_MS` (24h) otherwise. It is scoped to one account
+  (`accountId` is required). Two triggers run it: `POST /api/tasks/cleanup`,
+  driven by each runner's 30-minute cleanup timer, and the
+  `waiting-input-sweep` cron (`POST /api/cron/waiting-input-sweep`, declared in
+  `cron-manifest.json`), which runs hourly in daytime hours for every account
+  holding a candidate worker, so the timeout fires even when all of a team's
+  runners are down.
+- The timeout MUST fail the worker, fail the original task, and create ONE retry
+  task whose description ends with a directive not to ask for user input,
+  carrying `baseBranch` and an incremented `iteration`; it MUST release the OAuth
+  concurrency seat. The unanswered question is preserved as prose in the retry
+  description — it is not carried as a pending answer.
+- Until answered or timed out, a `waiting_input` worker holds its concurrency
+  seat and its path claims. This is the mechanism behind the `advisory_manifest`
+  soft deferral described in `docs/specs/mission-task-lifecycle.md`: a peer task
+  can be blocked for hours by a question nobody has seen.
+
+**Acceptance criteria**:
+- AC-25: GIVEN a `waiting_input` worker with `updatedAt` two hours old WHEN
+  `isStaleWorker` is evaluated for display THEN it returns `false`.
+- AC-26: GIVEN a `waiting_input` worker on a mission task older than 4h
+  WHEN `cleanupStuckWaitingInput` runs THEN the worker is `failed`, the task is
+  `failed`, and exactly one retry task exists whose description contains
+  "Do NOT ask for user input".
+- AC-27: GIVEN the same worker on a standalone task at 5h WHEN
+  `cleanupStuckWaitingInput` runs THEN nothing is changed (the 24h threshold
+  applies).
+- AC-28: GIVEN a reaped `waiting_input` worker on an OAuth account THEN
+  `accounts.activeSessions` is decremented exactly once for that worker.
+
+**Code surface**:
+- `apps/web/src/lib/task-presentation.ts` (`isStaleWorker`,
+  `LIVE_WORKER_STATUSES`)
+- `apps/web/src/lib/stale-workers.ts` (`WAITING_INPUT_STALE_MS`,
+  `WAITING_INPUT_MISSION_STALE_MS`, `cleanupStuckWaitingInput`, the
+  runner-offline sweep in `cleanupStaleWorkers`)
+- `apps/web/src/app/api/tasks/cleanup/route.ts` `POST`,
+  `apps/web/src/app/api/cron/waiting-input-sweep/route.ts` `POST`
+- `apps/runner/src/workers.ts` (the 10s sync and 30-minute cleanup timers),
+  `apps/runner/src/worker-sync.ts` (waiting workers always re-synced)
+- `cron-manifest.json` (`waiting-input-sweep`)
+
+---
+
+
+## Out of scope
+
+- **Agent-to-agent messaging**: `send_worker_message` and the ack-gated
+  `tasks.context.pendingWorkerMessages` queue served by the worker PATCH
+  (cleared only by `workerMessagesDelivered`, mirroring `instructionsDelivered`
+  below). Same plumbing, no human in the loop.
+- **Permission prompts**: `waitingFor.type === 'permission'` is resolved
+  locally by the runner's debug UI through `resolvePermission`; it never reaches
+  the coordination API as an answerable prompt.
+- **Reviewer agents**: automated approve / request-changes / escalate outcomes.
+  Only the human takeover of a reviewer (`/interrupt`) is specified here.
+- **Mission completion overrides** and the goal-criteria gate — see
+  `docs/specs/mission-task-lifecycle.md`.
+- **Notification transport** and per-team channel configuration. This spec
+  requires only that a question produce a notification carrying the respond
+  link.
+- **The runner's local debug UI** endpoints on port 8766, which can drive
+  `sendMessage` without any coordination-layer record.
+
+---
+
+
+## Verification gaps
+
+Each item is a claim this spec deliberately does NOT make as an invariant,
+because the code does not enforce it. They are the falsifiable list of things to
+fix or to test.
+
+1. ~~**An urgent answer can be lost with no trace but a lie.**~~ Closed: urgent
+   messages to an ack-capable consumer are queued and acknowledged (Channel B).
+   Historical text: `/instruct` with
+   `priority: 'urgent'` writes `deliveryState: 'delivered'` and stores nothing.
+   `triggerEvent` is not acknowledged; the runner's push handler
+   (`pusher-manager.ts`) and its sync (`worker-sync.ts`) both discarded the
+   boolean `sendMessage` returns. If the
+   runner is offline, mid-restart, or the worker is not in a state that accepts a
+   message, the answer is gone and the history says it was delivered. No test
+   asserts a retry or a re-queue, because there is none.
+2. ~~**A queued answer can be overwritten.**~~ Closed: the queue appends and
+   entries settle by id. Historical text: `pendingInstructions` is one `text`
+   column: two non-urgent messages before a sync and the first is lost. Only the
+   LAST `pending` history entry is flipped to `delivered` (`lastIndexOf`), so the
+   dropped one stays `pending` forever — that stale `pending` is the only signal,
+   and it is indistinguishable from "not yet checked in".
+3. ~~**`/respond` has no compare-and-swap.**~~ Closed: both answer paths claim
+   the answer with `WHERE id = ? AND waiting_for IS NOT NULL` before doing
+   anything else, so a second answerer gets HTTP 409 and leaves nothing behind.
+   Covered by the concurrency tests in
+   `apps/web/src/app/api/workers/[id]/respond/route.test.ts`.
+4. ~~**An answer after reassignment is accepted.**~~ Fixed:
+   `/api/tasks/[id]/reassign` now clears `waitingFor` when it fails the live
+   workers, and its error is `REASSIGNED_WORKER_ERROR`, listed in
+   `NON_REACTIVATABLE_ERROR_PHRASES` (`apps/web/src/lib/worker-termination.ts`),
+   so the worker can no longer be reactivated. Historical text:
+   `/api/tasks/[id]/reassign` fails
+   active workers with `error: 'Task was reassigned'` but does not clear
+   `waitingFor`, so the banner still renders and `/respond` still accepts —
+   spawning a `Continue:` task on the old branch while the reassigned task is
+   being re-claimed. Compounding it, `'Task was reassigned'` is absent from the
+   PATCH route's non-reactivatable error list, so the superseded worker can still
+   be reactivated with `reactivate: true`.
+5. ~~**`/instruct`'s terminal set is narrower than the PATCH route's.**~~ Fixed:
+   `/instruct` refuses a worker in any state `isUnreachableWorkerStatus` names,
+   `error` included (409 unless urgent), and `send_agent_message` picks its
+   target with `isTerminalWorkerStatus`. Historical text: The route
+   refuses only `completed` and `failed`; `TERMINAL_WORKER_STATUSES` in
+   `apps/web/src/app/api/workers/[id]/route.ts` also contains `error`, and
+   `finalWriteGuard` blocks writes to such rows. A message accepted for an
+   `error` worker can never be drained. `send_agent_message` shares the defect —
+   its liveness filter excludes only `completed`/`failed`, so it will select an
+   `error` worker as active.
+6. ~~**Mission-note replies have no delivered marker.**~~ Closed:
+   `mission_notes.delivered_to`, stamped on the consumer's id echo. Historical
+   text: The note-delivery block
+   re-selects every `user` reply to an `answered` question owned by this worker on
+   EVERY non-terminal PATCH, and `mission_notes` has no delivered-at column, so
+   the same human reply is re-injected into the session on each 10s sync. `type:
+   'guidance'` notes with `status: 'open'` repeat the same way.
+7. ~~**Task-scoped question replies are never delivered by the server.**~~
+   Fixed: the reply route finds the parent note by `(noteId, taskId)` and the
+   reply carries the parent's scope, and the PATCH note delivery addresses a
+   mission-less task's notes by `taskId` (`noteScope`). Historical text:
+   `/api/tasks/[id]/notes/[noteId]/reply` accepts only notes with `missionId IS
+   NULL`, while the PATCH delivery block requires the task to HAVE a `missionId`.
+   `TaskQuestionFeed` — which renders only for non-mission tasks — papers over
+   this by also POSTing an urgent `/instruct` when a live worker happens to
+   exist. With no live worker the reply is recorded and delivered to no one.
+8. **The needs-input notification has no dedupe and no transition guard.**
+   The PATCH handler's `needsAttention` notify fires on any PATCH whose payload
+   carries `waitingFor.type === 'question'` and is admitted (`parkAdmitted`),
+   and the runner's sync (`worker-sync.ts`) restates `waitingFor` on every 10s
+   sync while waiting. Only a re-sent hold that already surfaced is suppressed
+   (`hold.held === 'settled'`); `notifyTeamOf` has no dedupe key.
+9. **`/recover` can resurrect a server-terminated worker.** Partly fixed: it
+   now refuses a `completed` worker and writes with a compare-and-swap on the
+   status it read. The guard against reviving a server-terminated worker
+   (`isNonReactivatableError`) runs only with
+   `BUILDD_RECOVER_GUARD_TERMINATED=true`, so by default it still writes
+   `status: 'running'` first and only then pushes a command that may reach
+   nobody. `runner-liveness` already lists the Pusher recovery path as out of
+   scope; this endpoint is the human-facing half of the same unguarded path.
+10. ~~**`/cmd` messages are unaudited.**~~ Closed: `/cmd` messages queue and
+    record through `queueInstruction`. Historical text: A human message sent via
+    `{ action: 'message' }` bypasses `instructionHistory` entirely, so the
+    task's message list and `get_task_messages` under-report human input.
+11. ~~**Approve-after-reject is accepted.**~~ Fixed: `/reject-plan` records
+    `context.planRejection` on the original task and `/approve-plan` refuses a
+    rejected plan with 409. Historical text: `/reject-plan` recorded nothing on
+    the original task, so approving the rejected plan later succeeded whenever
+    the duplicate-child guard happened not to fire.
+12. ~~**The `waiting_input` timeout depends on an undeclared trigger.**~~ Fixed:
+    the `waiting-input-sweep` cron (`apps/web/src/app/api/cron/waiting-input-sweep/route.ts`)
+    runs the account-scoped sweep for every account holding a candidate, with
+    no runner involved. Historical text:
+    `cleanupStuckWaitingInput` runs only via `POST /api/tasks/cleanup`, which no
+    cron declares; it rides each runner's 30-minute timer and needs a session or
+    admin-level token, and the runner swallows the failure with a warning. If
+    every runner for a team is down — the case where a parked question matters
+    most — nothing fires it.
+13. **No test covers the cross-channel invariant** that a question answered
+    through Channel A cannot also be answered through Channel B (or the reverse):
+    `/respond` completes the worker while `/instruct` would have steered it, and
+    nothing links the two records. `send_agent_message` now refuses a worker
+    parked on a question and points to `answer_question`, but the HTTP
+    `/instruct` route does not.
+
+---
+
+**Out of scope**: The sibling contracts linked in the frontmatter.

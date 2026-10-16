@@ -457,7 +457,7 @@ async function resolveAbandonedInteractiveTask(
 /**
  * Clean up stale workers for a specific account.
  *
- * 1. Expire workers with no update for 15+ minutes
+ * 1. Expire running/starting workers after WORKER_STALE_REAP_MS without an update
  * 2. Expire workers whose runner's heartbeat is stale (10+ minutes)
  *
  * Extracted from the claim route so it can also be called from the
