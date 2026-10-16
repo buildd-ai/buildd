@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { AgentsPanel } from './AgentsPanel';
 import type { AgentsModel } from '@/lib/home-agents';
+import { buildOccupancySeries } from '@/lib/fleet-occupancy';
 
 const model: AgentsModel = {
   busy: 3, total: 4, squares: ['busy', 'waiting', 'busy', 'free'],
@@ -36,6 +37,44 @@ describe('AgentsPanel', () => {
     expect(marks).toEqual(['busy', 'waiting']);
     expect(html).not.toContain('▶');
     expect(html).toContain('waiting on you');
+  });
+
+  describe('idle', () => {
+    const NOW = Date.UTC(2026, 9, 8, 12, 0, 0);
+    const H = 3_600_000;
+    const idleModel: AgentsModel = { busy: 0, total: 4, squares: ['free', 'free', 'free', 'free'], lines: [] };
+    const quietDay = buildOccupancySeries({ window: '24h', now: NOW, workers: [] });
+    const busyDay = buildOccupancySeries({
+      window: '24h', now: NOW,
+      workers: [{ runner: 'http://r', status: 'completed', startedAt: NOW - 5 * H, completedAt: NOW - 3 * H, updatedAt: null }],
+    });
+    const stretch = [{ from: NOW - 10 * H, to: NOW - 8 * H, waited: 3 }];
+
+    test('a completely idle day is one quiet row: no plot, no second "nothing running" line', () => {
+      const html = renderToStaticMarkup(<AgentsPanel model={idleModel} occupancy={quietDay} />);
+      expect(html).toMatch(/<b[^>]*>0<\/b> of 4 busy/);
+      expect(html).not.toContain('<svg');
+      expect(html).not.toContain('occupancy-sparkline');
+      expect(html).toContain('No runner work in the past 24h');
+      expect(html).not.toContain('No agents running');
+      expect(html.match(/href="\/app\/health\/runners"/g)).toHaveLength(1);
+    });
+
+    test('an idle day where work waited keeps the queued-work fact, without the empty plot or its swatch', () => {
+      const html = renderToStaticMarkup(<AgentsPanel model={idleModel} occupancy={quietDay} idle={stretch} />);
+      expect(html).not.toContain('<svg');
+      expect(html).toContain('No runner work in the past 24h');
+      expect(html).toContain('idle 2h while 3 tasks waited');
+      expect(html).not.toContain('--q-tint');
+    });
+
+    test('idle now but busy earlier keeps the chart, and the count alone says nothing is running', () => {
+      const html = renderToStaticMarkup(<AgentsPanel model={idleModel} occupancy={busyDay} idle={stretch} />);
+      expect(html).toContain('<svg');
+      expect(html).toContain('Past 24h · Peak 1');
+      expect(html).toContain('idle 2h while 3 tasks waited');
+      expect(html).not.toContain('No agents running');
+    });
   });
 
   test('the count sits beside the squares; no runner says so plainly', () => {
