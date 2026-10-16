@@ -6,7 +6,8 @@
 import { describe, expect, test } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
-import { prFactApplies, prFactProjectionSql, recordPrFact, recordPrFactSql, unscopedPrFactScope, type PrFactScope } from '../pr-facts';
+import { prFactApplies, recordPrFact, recordPrFactSql, unscopedPrFactScope, type PrFactScope } from '../pr-facts';
+import { guardSql, prFactProjectionSql, setSql } from '../pr-fact-sql';
 
 const render = (q: Parameters<PgDialect['sqlToQuery']>[0]) => new PgDialect().sqlToQuery(q);
 
@@ -92,5 +93,20 @@ describe('terminal facts are scoped (S4a)', () => {
     const closed = render(prFactProjectionSql({ kind: 'closed' }, { from: sql.raw('d'), where: sql.raw('carries(d, w)') })).sql;
     expect(closed).toContain("pr_lifecycle_status = 'closed'");
     expect(closed).toContain('w.merged_at IS NULL AND (w.pr_lifecycle_status IS NULL OR w.pr_lifecycle_status NOT IN (');
+  });
+});
+
+describe('pr-fact-sql: the guard and the assignments render on their own', () => {
+  test('guardSql: a merge applies unless the row already holds one; a close never over a merge', () => {
+    expect(render(guardSql({ kind: 'merged', mergedAt: new Date() })).sql).toBe("(w.merged_at IS NULL OR w.pr_lifecycle_status IS DISTINCT FROM 'merged')");
+    const closed = render(guardSql({ kind: 'closed' }));
+    expect(closed.sql).toContain('w.merged_at IS NULL AND (w.pr_lifecycle_status IS NULL OR w.pr_lifecycle_status NOT IN ($1::text, $2::text))');
+    expect(closed.params).toEqual(['merged', 'closed']);
+  });
+
+  test('setSql: the merge keeps the first instant; bookkeeping rides along', () => {
+    const { sql: text, params } = render(setSql({ kind: 'merged', mergedAt: '2026-10-01T00:00:00Z' }, { prIsDraft: false }));
+    expect(text).toBe("updated_at = now(), pr_lifecycle_status = 'merged', merged_at = COALESCE(w.merged_at, $1::timestamptz), pr_is_draft = $2::boolean");
+    expect(params).toEqual(['2026-10-01T00:00:00.000Z', false]);
   });
 });
