@@ -100,7 +100,7 @@ describe('commitShutdownCheckpoint', () => {
   test('commits uncommitted and untracked edits to the agent\'s own branch, locally', async () => {
     const d = repo();
     writeFileSync(join(d, 'edited.ts'), 'export const x = 1;\n');
-    const cp = await commitShutdownCheckpoint(d, 'worker-12345678');
+    const cp = await commitShutdownCheckpoint(d, 'worker-12345678', 'buildd/task-branch');
     expect(cp.committed).toBe(true);
     expect(cp.sha).toBe(git(d, 'rev-parse', 'HEAD'));
     expect(git(d, 'status', '--porcelain')).toBe('');
@@ -114,12 +114,32 @@ describe('commitShutdownCheckpoint', () => {
   test('a clean worktree commits nothing', async () => {
     const d = repo();
     const head = git(d, 'rev-parse', 'HEAD');
-    expect(await commitShutdownCheckpoint(d, 'worker-12345678')).toEqual({ committed: false });
+    expect(await commitShutdownCheckpoint(d, 'worker-12345678', 'buildd/task-branch')).toEqual({ committed: false });
     expect(git(d, 'rev-parse', 'HEAD')).toBe(head);
   });
 
+  test('refuses a detached HEAD, another branch, or no branch on record: logs a reason, commits nothing', async () => {
+    const d = repo();
+    writeFileSync(join(d, 'edited.ts'), 'x\n');
+    const head = git(d, 'rev-parse', 'HEAD');
+
+    const other = await commitShutdownCheckpoint(d, 'worker-12345678', 'buildd/someone-else');
+    expect(other.committed).toBe(false);
+    expect(other.reason).toContain("not this worker's branch");
+
+    const none = await commitShutdownCheckpoint(d, 'worker-12345678', undefined);
+    expect(none.committed).toBe(false);
+
+    execFileSync('git', ['checkout', '-q', '--detach'], { cwd: d });
+    const detached = await commitShutdownCheckpoint(d, 'worker-12345678', 'buildd/task-branch');
+    expect(detached).toEqual({ committed: false, reason: 'HEAD is detached' });
+
+    expect(git(d, 'rev-parse', 'HEAD')).toBe(head);
+    expect(git(d, 'status', '--porcelain')).toContain('edited.ts'); // the edits stay in the worktree
+  });
+
   test('not a repository: no commit, a reason, and no throw', async () => {
-    const cp = await commitShutdownCheckpoint(tmp('rr-norepo-'), 'worker-12345678', 1_000);
+    const cp = await commitShutdownCheckpoint(tmp('rr-norepo-'), 'worker-12345678', 'buildd/task-branch', 1_000);
     expect(cp.committed).toBe(false);
     expect(cp.reason).toBeTruthy();
   });

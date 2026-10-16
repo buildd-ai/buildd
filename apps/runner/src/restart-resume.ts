@@ -174,20 +174,27 @@ export interface ShutdownCheckpoint {
 const CHECKPOINT_IDENTITY = ['-c', 'user.name=buildd-runner', '-c', 'user.email=runner@buildd.invalid', '-c', 'commit.gpgsign=false'];
 
 /**
- * Commit everything the worktree holds (gitignore respected) to its own
- * branch, locally. No push and no hooks: a save, not a ship. Bounded by
+ * Commit everything the worktree holds (gitignore respected) to the worker's
+ * own branch, locally, and only when that branch is what is checked out. No push and no hooks: a save, not a ship. Bounded by
  * `budgetMs` in total; a git that does not answer in time is killed and the
  * changes simply stay uncommitted in the worktree, which is kept.
  */
 export async function commitShutdownCheckpoint(
   worktreePath: string,
   workerId: string,
+  /** The worker record's own branch. Anything else checked out (or a detached HEAD) is refused. */
+  ownBranch: string | undefined,
   budgetMs: number = SHUTDOWN_CHECKPOINT_MS,
 ): Promise<ShutdownCheckpoint> {
   const deadline = Date.now() + budgetMs;
   const left = () => Math.max(250, deadline - Date.now());
   const git = (args: string[]) => gitArgsAsync(args, { cwd: worktreePath, timeoutMs: left(), env: process.env });
   try {
+    if (!ownBranch) return { committed: false, reason: 'the worker has no branch of its own on record' };
+    let head: string;
+    try { head = (await git(['symbolic-ref', '-q', '--short', 'HEAD'])).trim(); } catch { head = ''; }
+    if (!head) return { committed: false, reason: 'HEAD is detached' };
+    if (head !== ownBranch) return { committed: false, reason: `HEAD is on ${head}, not this worker's branch ${ownBranch}` };
     const dirty = (await git(['status', '--porcelain=v1', '-z', '--untracked-files=all'])).length > 0;
     if (!dirty) return { committed: false };
     await git(['add', '-A']);
@@ -205,6 +212,9 @@ export async function commitShutdownCheckpoint(
 }
 
 // ── the signal ──────────────────────────────────────────────────────────────
+
+/** How long a stop waits for the credential broker to release its leases (they expire by TTL anyway). */
+export const BROKER_RELEASE_MS = 3_000;
 
 export interface ShutdownSignalDeps {
   /** Pause the agents; resolves when done (or it gave up). */
@@ -252,3 +262,45 @@ export function installShutdownSignals(deps: ShutdownSignalDeps): (signal: NodeJ
   on('SIGINT', () => handle('SIGINT'));
   return handle;
 }
+
+export interface RunnerShutdownDeps {
+  /** WorkerManager.pauseAllForShutdown, or nothing when no manager runs. */
+  pauseAgents: () => Promise<unknown>;
+  /** CredentialBroker.shutdown: releases its leases. Runs after the pause. */
+  releaseBroker: () => Promise<void>;
+  exit: (code: number) => void;
+  log?: (line: string) => void;
+  deadlineMs?: number;
+  brokerReleaseMs?: number;
+  on?: ShutdownSignalDeps['on'];
+  setTimer?: ShutdownSignalDeps['setTimer'];
+}
+
+/**
+ * The runner's one stop handler: the only SIGTERM/SIGINT listener in the
+ * long-running process (the broker is started without its own, see
+ * broker.ts start). Pauses the agents, then lets the broker release its
+ * leases, then exits, all inside the one deadline.
+ */
+export function installRunnerShutdown(deps: RunnerShutdownDeps): (signal: NodeJS.Signals) => void {
+  const log = deps.log ?? ((l: string) => console.log(l));
+  const releaseMs = deps.brokerReleaseMs ?? BROKER_RELEASE_MS;
+  return installShutdownSignals({
+    pause: async () => {
+      try {
+        await deps.pauseAgents();
+      } finally {
+        await Promise.race([
+          deps.releaseBroker().catch((err) => log(`[shutdown] broker release failed: ${err instanceof Error ? err.message : String(err)}`)),
+          new Promise(r => setTimeout(r, releaseMs)),
+        ]);
+      }
+    },
+    exit: deps.exit,
+    log: deps.log,
+    deadlineMs: deps.deadlineMs,
+    on: deps.on,
+    setTimer: deps.setTimer,
+  });
+}
+

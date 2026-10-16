@@ -152,10 +152,12 @@ ExecStart=${paths.builddBin}${opts.debug ? ' --debug' : ''}
 WorkingDirectory=${paths.home}
 Restart=always
 RestartSec=5
-# The stop signal goes to the launcher only, which hands it to the runner; the
-# runner pauses its agents and exits on its own. Everything left is killed at
-# the timeout. The default (control-group) signals every agent process at once,
-# so each died before it could be paused.
+# The stop signal goes to the launcher (the main process) only, which hands it
+# to the runner; the runner pauses its agents and exits, and the launcher exits
+# with it. Once the main process has exited, systemd SIGKILLs whatever is left
+# in the unit (and everything at TimeoutStopSec if it has not). The default,
+# control-group, signals every agent process at once, so each died before the
+# runner could pause it.
 KillMode=mixed
 TimeoutStopSec=${SERVICE_STOP_TIMEOUT_S}
 Environment=PATH=${paths.pathEnv}

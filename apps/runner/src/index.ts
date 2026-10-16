@@ -26,7 +26,7 @@ import { evaluateManualUpdateGate, performManualUpdate, type ManualUpdateDeps } 
 import { initUpdateCanary, runCanaryTrip } from './update-canary';
 import { initUpdateDrain, getUpdateDrain } from './update-drain';
 import { initRunnerHold, currentRunnerHold } from './runner-hold';
-import { installShutdownSignals, SHUTDOWN_DEADLINE_MS } from './restart-resume';
+import { installRunnerShutdown, SHUTDOWN_DEADLINE_MS } from './restart-resume';
 import { saveWorker } from './worker-store';
 import { initHistory, searchSessions, getSession, getArchivedData, getStats as getHistoryStats } from './history-store';
 import { readClaimLogs } from './session-logger';
@@ -1276,6 +1276,9 @@ const manualUpdateDeps: ManualUpdateDeps = {
   isNoProgressUpdate,
 };
 
+// Whether this process started the credential broker (its shutdown removes the broker socket).
+let brokerStarted = false;
+
 // Subscribe to worker events (if configured)
 if (workerManager) {
   workerManager.onEvent(broadcast);
@@ -1294,7 +1297,11 @@ if (workerManager) {
   // document as "NOT recommended"). Left to the env alone the broker sent no
   // Authorization header, 401'd on every lease acquire, and silently never
   // refreshed a single credential.
-  credentialBroker.start({ apiKey: config.apiKey, baseUrl: config.builddServer });
+  //
+  // Without its own signal handlers: the runner's stop handler below owns the
+  // exit, and releases the broker's leases after pausing the agents (R-37).
+  credentialBroker.start({ apiKey: config.apiKey, baseUrl: config.builddServer }, { signalHandlers: false });
+  brokerStarted = true;
   // R-37: agents the last stop paused (or a crash left with their worktree and
   // session intact) continue in their own sessions, unless the runner is on hold.
   void workerManager.continueRestoredAgents().catch((err) => console.warn('[restart] continuing paused agents failed:', err));
@@ -1305,10 +1312,12 @@ if (workerManager) {
 }
 
 // A service stop (SIGTERM from launchd or systemd), Ctrl-C on a foreground
-// runner (SIGINT): pause the running agents within a bounded grace, then exit
-// (R-37, restart-resume.ts). A second signal exits at once.
-installShutdownSignals({
-  pause: async () => { await workerManager?.pauseAllForShutdown(); },
+// runner (SIGINT): pause the running agents within a bounded grace, release
+// the broker's leases, then exit (R-37, restart-resume.ts). The only
+// SIGTERM/SIGINT listener in this process. A second signal exits at once.
+installRunnerShutdown({
+  pauseAgents: async () => { await workerManager?.pauseAllForShutdown(); },
+  releaseBroker: async () => { if (brokerStarted) await credentialBroker.shutdown(); },
   exit: (code) => process.exit(code),
 });
 

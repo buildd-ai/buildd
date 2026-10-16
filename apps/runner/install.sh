@@ -690,6 +690,11 @@ while true; do
       wait "$RUNNER_PID"
       EXIT_CODE=$?
     done
+    # Once more, after it is gone: bash keeps an exited child's status, so this
+    # returns the runner's own code (75 = restart) even when the runner exited
+    # between an interrupted wait (128+signal) and the kill -0 above.
+    wait "$RUNNER_PID" 2>/dev/null
+    EXIT_CODE=$?
     RUNNER_PID=""
     trap - TERM INT HUP
   fi

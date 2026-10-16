@@ -1103,6 +1103,32 @@ describe('WorkerManager — state transitions', () => {
       expect(mockUpdateWorker.mock.calls.some((c: any[]) => c[0] === 'w-stop-tool' && c[1]?.status === 'failed')).toBe(false);
     });
 
+    test('a pause a person asked for while a tool ran stays the person\'s through a stop: not continued after the start', async () => {
+      liveSession('w-stop-person');
+      manager = new WorkerManager(makeConfig());
+      await manager.claimAndStart(makeTask());
+      await waitFor(() => manager.getWorker('w-stop-person')?.sessionId === 'sess-w-stop-person');
+      const worker = manager.getWorker('w-stop-person')!;
+      worker.toolInFlight = true;
+      expect(await manager.pauseWorker('w-stop-person')).toBe('defer'); // waits for the tool
+
+      await manager.pauseAllForShutdown({ safePointMs: 300, checkpointMs: 200, pollMs: 25 });
+
+      expect(worker.status).toBe('waiting');
+      expect(worker.waitingFor?.type).toBe('pause');
+      expect(worker.waitingFor?.context).toMatch(/^You paused this run/);
+      expect(worker.resumeOnStart).toBeUndefined();
+      expect(mockSavedRecords.get('w-stop-person')).toMatchObject({ status: 'waiting', resumeOnStart: undefined });
+
+      // The next start: a person's pause waits for a person.
+      (manager as any).shuttingDown = false;
+      const before = mockQueryResumes.length;
+      expect(await manager.continueRestoredAgents()).toEqual({ continued: [], held: [], ended: [] });
+      await new Promise(r => setTimeout(r, 100));
+      expect(mockQueryResumes.length).toBe(before);
+      expect(worker.status).toBe('waiting');
+    });
+
     /** A worker as the next start restores it after a stop paused it. */
     async function restoredPaused(id: string) {
       liveSession(id);

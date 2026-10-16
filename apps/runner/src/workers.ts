@@ -1633,11 +1633,15 @@ export class WorkerManager {
     console.log(`[shutdown] pausing ${targets.length} running agent(s)`);
 
     const now = Date.now();
+    // A pause a person already asked for (waiting on a tool, or being applied)
+    // stays theirs: paused for a person, never continued by the next start.
+    const byPerson = new Set(targets.filter(w => !!w.pauseRequestedAt || !!w.error?.startsWith(PAUSED_ERROR_PREFIX)).map(w => w.id));
+    const causeOf = (w: LocalWorker) => (byPerson.has(w.id) ? 'person' : 'shutdown') as 'person' | 'shutdown';
     for (const w of targets) {
       w.pauseRequestedAt = undefined;
       w.error = PAUSED_ERROR;
-      w.waitingFor = pausedWaitingFor('shutdown', now);
-      w.resumeOnStart = 'shutdown';
+      w.waitingFor = pausedWaitingFor(causeOf(w), now);
+      w.resumeOnStart = byPerson.has(w.id) ? undefined : 'shutdown';
       w.currentAction = 'Pausing: the runner is stopping';
       this.addMilestone(w, { type: 'status', label: 'Pausing: the runner is stopping', ts: now });
       sessionLog(w.id, 'info', 'shutdown_pause', 'runner stopping; pausing at the next safe point', w.taskId);
@@ -1670,7 +1674,7 @@ export class WorkerManager {
     const checkpointed: string[] = [];
     await Promise.all(late.map(async (w) => {
       if (!w.worktreePath || !existsSync(w.worktreePath)) return;
-      const cp = await commitShutdownCheckpoint(w.worktreePath, w.id, checkpointMs);
+      const cp = await commitShutdownCheckpoint(w.worktreePath, w.id, w.branch, checkpointMs);
       if (cp.committed) {
         checkpointed.push(w.id);
         if (cp.sha) w.commits.push({ sha: cp.sha, message: 'wip: checkpoint before the runner stopped' });
@@ -1686,8 +1690,8 @@ export class WorkerManager {
       if (w.status === 'done' || w.status === 'error') continue; // it finished on its own meanwhile
       w.status = 'waiting';
       w.error = PAUSED_ERROR;
-      w.waitingFor = w.waitingFor?.type === 'pause' ? w.waitingFor : pausedWaitingFor('shutdown', now);
-      w.resumeOnStart = 'shutdown';
+      w.waitingFor = w.waitingFor?.type === 'pause' ? w.waitingFor : pausedWaitingFor(causeOf(w), now);
+      w.resumeOnStart = byPerson.has(w.id) ? undefined : 'shutdown';
       w.currentAction = 'Paused';
       try { storeSaveWorker(w); } catch (err) { console.warn(`[shutdown] could not save ${w.id}:`, err); }
       this.emit({ type: 'worker_update', worker: w });
