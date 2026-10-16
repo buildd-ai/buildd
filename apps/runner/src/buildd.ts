@@ -372,6 +372,8 @@ export class BuilddClient {
     crashReconciled?: boolean;
     /** The workspace clone was throttled by GitHub (git-clone.ts): the server books infra_failure and requeues with backoff. */
     githubThrottled?: boolean;
+    /** A Claude run refused before spawn for want of any model credential (host-seat.ts claudeModelAuthMissing): the server books infra_failure and requeues with backoff. */
+    modelAuthMissing?: boolean;
     /**
      * The server REFUSED a mutation for this session (a 4xx, or an unqueueable
      * 5xx) rather than the session crashing. Chargeability is the SERVER's
