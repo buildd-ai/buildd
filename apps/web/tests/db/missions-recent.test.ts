@@ -25,7 +25,7 @@ async function mission(teamId: string, workspaceId: string, status: string, comp
 async function statusNote(missionId: string, from: string, to: string, at: Date): Promise<void> {
   await q(sql`
     INSERT INTO mission_notes (mission_id, author_type, type, title, body, created_at)
-    VALUES (${missionId}::uuid, 'user', 'update', 'Mission status changed', ${missionStatusNoteBody(from, to)}, ${at.toISOString()}::timestamptz)`);
+    VALUES (${missionId}::uuid, 'system', 'update', 'Mission status changed', ${missionStatusNoteBody(from, to)}, ${at.toISOString()}::timestamptz)`);
 }
 
 let ids: Record<string, string>;
