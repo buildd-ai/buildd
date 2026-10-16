@@ -24,7 +24,7 @@ import { applyCommandOn } from '../command-runner';
 import type { Command } from '../commands';
 import type { EffectHandler, EffectHandlers } from '../effects';
 import { githubOf, NO_ROLE, type ClaimedEffect, type KernelPorts, type PostedReview, type ReviewOutput } from '../ports';
-import { PUSH_RECOVERY_BACKOFF_MS } from '../reducer';
+import { deltaApprovalOf, PUSH_RECOVERY_BACKOFF_MS } from '../reducer';
 import { openFindings } from '../findings';
 import type { DeliverySnapshot, KernelView, RoundSnapshot } from '../types';
 import { hasPr, need, type WithPr } from './ports-of';
@@ -156,6 +156,10 @@ export function reviewHandlers(ports: KernelPorts): EffectHandlers {
       dedupeKey: `review:${round.id}`,
       detail: {
         roundId: round.id, round: round.round, maxRounds: d.maxRounds,
+        // 58c8961e: why the round started, and whether it is a delta review carrying an approval
+        // (the reviewer then checks the delta for weakened tests, on a cheaper tier).
+        ...(round.trigger ? { trigger: round.trigger } : {}),
+        ...(priorVerdict && priorVerdict.verdict === 'approve' && deltaApprovalOf(round) ? { deltaApproval: true } : {}),
         ...(priorVerdict ? { priorVerdict } : {}), ...(compositionScopeOf(round) ? { compositionScope: compositionScopeOf(round) } : {}),
         // §5: the findings still open, each with its id, for the reviewer to verify, restate or defer.
         findingsBrief: findingsBriefOf(view, round),

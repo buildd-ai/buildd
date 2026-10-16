@@ -455,6 +455,7 @@ function applyRoundOps(rounds: Array<RoundSnapshot & { deliveryId: string }>, de
         deliveryId, id: o.id, round: o.round, headSha: o.headSha, kind: o.kind, status: o.decided ? 'decided' : 'queued',
         verdict: o.decided?.verdict ?? null, effectiveVerdict: o.decided?.effectiveVerdict ?? null, failureCount: 0,
         reviewerTaskId: o.decided?.reviewerTaskId ?? null, scope: o.scope ?? null,
+        ...(o.trigger ? { trigger: o.trigger } : {}),
       });
       continue;
     }
@@ -465,6 +466,7 @@ function applyRoundOps(rounds: Array<RoundSnapshot & { deliveryId: string }>, de
     if (o.set.effectiveVerdict !== undefined) r.effectiveVerdict = o.set.effectiveVerdict;
     if (o.set.failureCount !== undefined) r.failureCount = o.set.failureCount;
     if (o.set.clearReviewer) r.reviewerTaskId = null;
+    if (o.set.endReason !== undefined) r.endReason = o.set.endReason;
   }
 }
 

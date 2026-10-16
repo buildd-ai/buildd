@@ -219,6 +219,7 @@ import {
   buildReviewerContext,
   buildDeltaReviewerContext,
   createReviewerTask,
+  DELTA_APPROVAL_REVIEW_TIER,
   enforceServerSideEscalation,
   preflightEscalationCheck,
   isSchemaTouchingFile,
@@ -1770,6 +1771,35 @@ describe('createReviewerTask — delta re-review', () => {
     const description = insertedTask?.description as string;
     expect(description).toContain('old-sha..new-sha');
     expect(description).not.toContain('## PR Files Changed');
+    // Not marked as carrying an approval: no tier pin, no deltaApproval flag.
+    expect((insertedTask as any).tier).toBeUndefined();
+    expect(ctx.deltaApproval).toBeUndefined();
+  });
+
+  it('58c8961e: a delta that carries an approval runs on the standard tier, records its trigger, and asks about weakened tests', async () => {
+    insertedTask = undefined;
+    await createReviewerTask({
+      workspaceId: 'ws-1',
+      originalTaskId: 'original-delta-2',
+      originalTask: { title: 'Original title', description: null, backend: 'claude', missionId: null },
+      worker: { branch: 'buildd/original' },
+      prNumber: 103,
+      prUrl: 'https://github.com/buildd-ai/buildd/pull/103',
+      headSha: 'new-sha',
+      reviewerRole: 'reviewer',
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      priorVerdict: { headSha: 'old-sha', verdict: 'approve', confidence: 0.9, summary: 'good', feedback: null, escalationReason: null },
+      deltaApproval: true,
+      reviewTrigger: 'ci_fix',
+      deltaFiles: [{ filename: 'a.test.ts', status: 'modified', additions: 1, deletions: 2, patch: null }],
+    });
+    expect((insertedTask as any).tier).toBe(DELTA_APPROVAL_REVIEW_TIER);
+    expect(DELTA_APPROVAL_REVIEW_TIER).toBe('standard');
+    const ctx = insertedTask?.context as any;
+    expect(ctx.deltaApproval).toBe(true);
+    expect(ctx.reviewTrigger).toBe('ci_fix');
+    expect(insertedTask?.description as string).toContain('## Weakened tests');
   });
 
   it('dispatches a normal full review when no priorVerdict is passed (unchanged behaviour)', async () => {

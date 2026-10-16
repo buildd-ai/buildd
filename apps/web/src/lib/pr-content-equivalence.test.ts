@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { normalizePatch, isContentEquivalentHead } from './pr-content-equivalence';
+import { normalizePatch, isContentEquivalentHead, readReviewedDelta } from './pr-content-equivalence';
 
 const file = (filename: string, patch: string | undefined, status = 'modified') => ({ filename, status, patch });
 
@@ -112,5 +112,58 @@ describe('isContentEquivalentHead', () => {
       [BASE.toSha]: { files: [file('logo.png', undefined)] },
     });
     expect((await isContentEquivalentHead({ ...BASE, api })).equivalent).toBe(false);
+  });
+});
+
+describe('readReviewedDelta (58c8961e)', () => {
+  const A = 'a'.repeat(40);
+  const B = 'b'.repeat(40);
+  const P = { installationId: 1, repoFullName: 'acme/app', baseRef: 'dev', fromSha: A, toSha: B };
+  const f = (filename: string, sha: string, o: Record<string, unknown> = {}) => ({ filename, status: 'modified', sha, ...o });
+  function api(routes: Record<string, unknown>) {
+    return async (_id: number, path: string) => {
+      const key = path.replace('/repos/acme/app/compare/', '');
+      if (!(key in routes)) throw new Error(`GitHub API error: 404 ${key}`);
+      return routes[key];
+    };
+  }
+
+  it('reads only what the PR itself changed between the two heads, with line counts', async () => {
+    const r = await readReviewedDelta({
+      ...P,
+      api: api({
+        [`dev...${A}`]: { files: [f('src/a.ts', 's1'), f('src/a.test.ts', 't1')] },
+        [`dev...${B}`]: { files: [f('src/a.ts', 's1'), f('src/a.test.ts', 't2')] },
+        // A merge of the base: the direct compare also lists a file the base moved on its own.
+        [`${A}...${B}`]: { files: [f('src/a.test.ts', 't2', { additions: 3, deletions: 1 }), f('docs/base-only.md', 'x', { additions: 40, deletions: 0 })] },
+      }),
+    });
+    expect(r).toEqual({
+      fromHeadSha: A, toHeadSha: B, prFilesAtFrom: ['src/a.ts', 'src/a.test.ts'],
+      files: [{ path: 'src/a.test.ts', previousPath: null, status: 'modified', additions: 3, deletions: 1 }],
+    });
+  });
+
+  it('names a file new to the PR', async () => {
+    const r = await readReviewedDelta({
+      ...P,
+      api: api({
+        [`dev...${A}`]: { files: [f('src/a.ts', 's1')] },
+        [`dev...${B}`]: { files: [f('src/a.ts', 's1'), f('src/b.ts', 'b1', { status: 'added' })] },
+        [`${A}...${B}`]: { files: [f('src/b.ts', 'b1', { status: 'added', additions: 5, deletions: 0 })] },
+      }),
+    });
+    expect(r?.files.map((x) => [x.path, x.status])).toEqual([['src/b.ts', 'added']]);
+    expect(r?.prFilesAtFrom).toEqual(['src/a.ts']);
+  });
+
+  it('is unread (null) when any side fails, may be cut, or a changed file has no line counts', async () => {
+    expect(await readReviewedDelta({ ...P, api: api({}) })).toBeNull();
+    const many = Array.from({ length: 300 }, (_, i) => f(`f${i}.ts`, 'x'));
+    expect(await readReviewedDelta({ ...P, api: api({ [`dev...${A}`]: { files: many }, [`dev...${B}`]: { files: [] }, [`${A}...${B}`]: { files: [] } }) })).toBeNull();
+    expect(await readReviewedDelta({
+      ...P,
+      api: api({ [`dev...${A}`]: { files: [f('src/a.ts', 's1')] }, [`dev...${B}`]: { files: [f('src/a.ts', 's2')] }, [`${A}...${B}`]: { files: [] } }),
+    })).toBeNull();
   });
 });

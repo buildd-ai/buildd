@@ -65,6 +65,7 @@ import {
   buildStateBecause,
   buildConflictBecause,
   deliveryTransitionLink,
+  reviewRoundLink,
   deliveryDisagreementLink,
   dispatchWakeLink,
   withDispatchLink,
@@ -1075,6 +1076,7 @@ export async function explainTask(taskId: string, actor: EvidenceActor): Promise
     : null;
   const dv = deliveries.get(taskId) ?? null;
   const transition = deliveryTransitionLink(dv ? { ...dv, attemptLine: attemptLine(dv.attempts) } : null, { taskId, workspaceId });
+  const roundWhy = reviewRoundLink(dv, { taskId, workspaceId });
   const hold = task.status === 'pending' ? entitlementHoldLink(task.context, { taskId, workspaceId }) : null;
   const gateRows = await loadGateRows(taskId);
   const gateHistory = gateRows.map(r => r.entry);
@@ -1082,7 +1084,7 @@ export async function explainTask(taskId: string, actor: EvidenceActor): Promise
   const coordLink = coordinationLink(holds, { taskId, workspaceId });
   const recovery = taskRecoveryLink(task.status, task.context, { taskId, workspaceId });
   const because = withDisagreements(withDispatchLink(withDispatchLink(
-    withDispatchLink(withDispatchLink(withDispatchLink(buildStateBecause(view, { taskId, missionId, workspaceId }, answerExtras), transition), wake), hold),
+    withDispatchLink(withDispatchLink(withDispatchLink(withDispatchLink(buildStateBecause(view, { taskId, missionId, workspaceId }, answerExtras), transition), roundWhy), wake), hold),
     coordLink as Parameters<typeof withDispatchLink>[1],
   ), recovery), deliveryDisagreements([task], deliveries), { missionId, workspaceId });
   const evidenceObjects = workspaceId

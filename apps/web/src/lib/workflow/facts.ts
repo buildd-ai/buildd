@@ -20,6 +20,7 @@ import type { Command, LivePr } from './commands';
 import { applyCommand, loadView, type CommandResult, type DeliveryRef, type Exec } from './kernel';
 import { baseChangeKey, headCoverage, headObservationKey } from './reducer';
 import { openFindings } from '@buildd/workflow-kernel/findings';
+import { deltaApprovalSource, type DeltaReading } from '@buildd/workflow-kernel/delta-approval';
 import type { CloseCause, CompositionAttestation, ConstituentEvidence, DeliverySnapshot, KernelView } from './types';
 import { isResolvedWithoutMerge, recordMergeContradiction } from './merge-contradiction';
 
@@ -268,6 +269,20 @@ export async function carryForwardReading(
   return { evidence: own ? 'own_refresh' : 'content_equivalent', diffChanged: false };
 }
 
+/**
+ * 58c8961e: the delta from the delivery's approved head to the live one, for
+ * the kernel's delta-approval rule. Read only when the round after this
+ * approval could be a delta review (`deltaApprovalSource`); null otherwise or
+ * when unreadable, and a null delta is a full review.
+ */
+export async function readDeltaForApproval(
+  view: KernelView, repoFullName: string, live: LivePr, github?: GithubFactReader,
+): Promise<DeltaReading | null> {
+  const from = deltaApprovalSource(view);
+  if (!from || from === live.headSha || !live.baseRef || !github?.reviewedDelta) return null;
+  return github.reviewedDelta(repoFullName, live.baseRef, from, live.headSha).catch(() => null);
+}
+
 /** A `refresh_branch` effect of this delivery, pinned to `headSha`, that updated (or is updating) the branch. */
 export function ownRefreshSql(deliveryId: string, headSha: string): SQL {
   return sql`-- workflow:own_refresh
@@ -355,8 +370,10 @@ async function commandFor(fact: FactInput, live: LivePr | null, exec: Exec, gith
       const changedPaths = live && d?.currentHeadSha && d.currentHeadSha !== live.headSha && openFindings(view).some((f) => f.status === 'open' && f.path) && github?.changedPaths
         ? await github.changedPaths(fact.repoFullName, d.currentHeadSha, live.headSha).catch(() => null)
         : null;
+      // 58c8961e: what changed since the approval, read only when the next round could be a delta review.
+      const delta = live && !carryForward ? await readDeltaForApproval(view, fact.repoFullName, live, github) : null;
       return {
-        command: { type: 'HeadObserved', actor, hintedHeadSha: fact.hintedHeadSha ?? null, live: live!, ...(proof ? { proof } : {}), ...(carryForward ? { carryForward } : {}), ...(diffChanged ? { diffChanged } : {}), ...(attribution ? { attribution } : {}), ...(changedPaths ? { changedPaths } : {}) },
+        command: { type: 'HeadObserved', actor, hintedHeadSha: fact.hintedHeadSha ?? null, live: live!, ...(proof ? { proof } : {}), ...(carryForward ? { carryForward } : {}), ...(diffChanged ? { diffChanged } : {}), ...(attribution ? { attribution } : {}), ...(changedPaths ? { changedPaths } : {}), ...(delta ? { delta } : {}) },
         ref,
         payload: { hintedHeadSha: fact.hintedHeadSha ?? null, live, proof: proof ?? null, carryForward, ...(diffChanged ? { diffChanged } : {}), attribution: attribution ?? null, ...(changedPaths ? { changedPaths: changedPaths.slice(0, 50) } : {}) },
         repoFullName: fact.repoFullName, prNumber: fact.prNumber,

@@ -17,6 +17,7 @@ import {
 } from '@/lib/failure-analytics';
 import { getGateAnalytics, getGateReasonFamily } from '@/lib/gate-analytics-query';
 import { getLandingMetrics } from '@/lib/pr-landing-metrics';
+import { getReviewRoundMetrics } from '@/lib/review-round-metrics';
 import { getStalledIngestReport } from '@/lib/knowledge-ingest-stalls';
 import { toFrictionSignature } from '@buildd/core/failure-friction-signature';
 import type {
@@ -26,6 +27,7 @@ import type {
   GateAnalytics,
   GateReasonFamily,
   LandingMetrics,
+  ReviewRoundMetrics,
 } from '@buildd/shared';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
@@ -255,6 +257,7 @@ export async function GET(req: NextRequest) {
         gates?: GateAnalytics;
         gateFamily?: GateReasonFamily;
         landing?: LandingMetrics;
+        reviewRounds?: ReviewRoundMetrics;
       } = { analytics };
       if (lookupInput) body.lookup = await lookupSignature(analytics, lookupInput, scopedWsIds, window);
       // `errorPrefix` means different things on the two families, so it is
@@ -268,8 +271,13 @@ export async function GET(req: NextRequest) {
         // overview; a prefix drill-down has no use for it. Null (read failed or
         // empty scope) is omitted rather than reported as zero landings.
         else {
-          const landing = await getLandingMetrics(scopedWsIds, window);
+          const [landing, reviewRounds] = await Promise.all([
+            getLandingMetrics(scopedWsIds, window),
+            // 58c8961e: review rounds per merged PR, by why each round started.
+            getReviewRoundMetrics(scopedWsIds, window),
+          ]);
           if (landing) body.landing = landing;
+          if (reviewRounds) body.reviewRounds = reviewRounds;
         }
       }
       return NextResponse.json(body);
