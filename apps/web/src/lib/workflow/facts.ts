@@ -78,6 +78,13 @@ ORDER BY t.to_version DESC
 LIMIT 1`;
 }
 
+/** An unapplied fact takes the applying read's payload and source; an applied one is never rewritten. */
+export function refreshUnappliedFactSql(f: { factId: string; source: string; payload: Record<string, unknown> }): SQL {
+  return sql`-- workflow:refresh_unapplied_fact
+UPDATE workflow_facts SET payload = ${JSON.stringify(f.payload)}::jsonb, source = ${f.source}::text
+WHERE id = ${f.factId}::uuid AND applied_transition_id IS NULL`;
+}
+
 export function findFactSql(workspaceId: string, factKey: string): SQL {
   return sql`-- workflow:find_fact
 SELECT id, applied_transition_id FROM workflow_facts
@@ -166,6 +173,11 @@ export async function ingestFact(fact: FactInput, deps: IngestDeps = {}): Promis
     const prior = ((await exec(findFactSql(fact.workspaceId, factKey))).rows ?? [])[0] as { id: string; applied_transition_id: string | null } | undefined;
     if (!prior) throw new Error(`ingestFact: fact ${factKey} neither inserted nor found`);
     factId = prior.id;
+    if (!prior.applied_transition_id) {
+      // Recorded earlier but never applied (a render's observation, or a crash between
+      // the two statements): the read applying it now is the one the record keeps.
+      await exec(refreshUnappliedFactSql({ factId, source: fact.source, payload }));
+    }
     if (prior.applied_transition_id) {
       const view = await loadView(ref, exec).catch(() => null);
       const d = view?.delivery;

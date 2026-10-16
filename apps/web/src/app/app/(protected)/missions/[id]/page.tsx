@@ -161,7 +161,8 @@ export default async function MissionDetailPage({
       if (t.status !== 'completed') return [];
       const w = (t.workers as any[])?.[0];
       if (!w?.prNumber || w?.mergedAt || !w?.prUrl) return [];
-      return [{ id: w.id as string, prNumber: w.prNumber as number, prUrl: w.prUrl as string }];
+      // Each worker's own workspace: a mission's tasks can live in several.
+      return [{ id: w.id as string, prNumber: w.prNumber as number, prUrl: w.prUrl as string, workspaceId: (w.workspaceId as string | undefined) ?? mission.workspaceId! }];
     });
     if (staleWorkers.length > 0) {
       const wsWithInstall = await db.query.workspaces.findFirst({
@@ -174,8 +175,7 @@ export default async function MissionDetailPage({
         // Enqueued after the response, never written during the render (spec
         // workflow-state-kernel §11): this render shows what is stored.
         // AC-3: a delivery-owned task records at most a fact here; no lifecycle write.
-        const missionWorkspaceId = mission.workspaceId;
-        after(() => observeMergeStateOnRender(staleWorkers, installId, missionWorkspaceId)
+        after(() => observeMergeStateOnRender(staleWorkers, installId)
           .catch((err) => console.error('[mission-page] PR fact import failed (non-fatal):', err)));
       }
     }

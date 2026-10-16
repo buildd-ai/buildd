@@ -18,6 +18,8 @@ const dialect = new PgDialect();
 const statements: string[] = [];
 let ownedRows: Array<{ workerId: string; kernel: boolean }> = [];
 let ownershipFails = false;
+let prOwnedRow = false;
+const params: unknown[][] = [];
 
 const mockWorkersFindMany = mock(async (_opts?: unknown) => [] as any[]);
 const mockWorkspacesFindFirst = mock(async (_opts?: unknown) => ({ repo: 'owner/repo', githubInstallation: { installationId: 123 } }) as any);
@@ -41,8 +43,11 @@ const db = {
     },
   }),
   execute: async (q: Parameters<PgDialect['sqlToQuery']>[0]) => {
-    const text = dialect.sqlToQuery(q).sql;
+    const rendered = dialect.sqlToQuery(q);
+    const text = rendered.sql;
     statements.push(text);
+    params.push(rendered.params);
+    if (text.includes('workflow:pr_has_delivery_owned_row')) return { rows: [{ owned: prOwnedRow }] };
     if (text.includes('workflow:delivery_owned_workers')) {
       if (ownershipFails) throw new Error('read failed');
       return { rows: ownedRows };
@@ -99,6 +104,8 @@ beforeEach(() => {
   statements.length = 0;
   ownedRows = [];
   ownershipFails = false;
+  prOwnedRow = false;
+  params.length = 0;
   _resetFailureBackoffForTests();
   for (const m of [mockWorkersFindMany, mockGithubApi, mockFetchCi, mockTriggerEvent, mockCheckDependsOnResolved, mockEmit, mockObservePrState, mockRefreshWorkerMergeState]) m.mockClear();
   mockWorkersFindMany.mockResolvedValue([worker]);
@@ -181,11 +188,14 @@ describe('read-through refresh of a delivery-owned task (AC-3)', () => {
     ownedRows = [{ workerId: 'w1', kernel: true }];
     mockGithubApi.mockResolvedValue(MERGED);
 
-    await observeMergeStateOnRender([{ id: 'w1', prNumber: 42, prUrl: worker.prUrl }], 123, 'ws1');
+    await observeMergeStateOnRender([{ id: 'w1', prNumber: 42, prUrl: worker.prUrl, workspaceId: 'ws-of-w1' }], 123);
 
     expect(mockRefreshWorkerMergeState).not.toHaveBeenCalled();
     expect(lifecycleUpdates()).toEqual([]);
     expect(factInserts()).toHaveLength(1);
+    // The fact is the worker's own workspace's, not the page's (a mission can span workspaces).
+    const insertParams = params[statements.findIndex((s) => s.includes('workflow:insert_fact'))];
+    expect(insertParams[0]).toBe('ws-of-w1');
   });
 });
 
@@ -197,17 +207,47 @@ describe('read-through refresh of a task with no delivery (unchanged)', () => {
 
     const writes = lifecycleUpdates();
     expect(writes.length).toBeGreaterThan(0);
+    // The merge stamp over every row carrying the PR still runs when none is delivery-owned.
+    expect(writes.some((s) => /w\.pr_url = \$\d+::text AND w\.pr_number/.test(s))).toBe(true);
     expect(writes.some((s) => /merged_at\s*=/.test(s) && /pr_lifecycle_status\s*=\s*'merged'/.test(s))).toBe(true);
     expect(mockCheckDependsOnResolved).toHaveBeenCalledWith('t1');
     expect(mockEmit).toHaveBeenCalled();
     expect(factInserts()).toEqual([]);
   });
 
-  it('the task and mission page import still runs the merge-state refresh', async () => {
-    const w = { id: 'w1', prNumber: 42, prUrl: worker.prUrl };
-    await observeMergeStateOnRender([w], 123, 'ws1');
+  it('a merged PR whose sibling row is delivery-owned heals this row but skips the stamp over every row', async () => {
+    prOwnedRow = true;
+    mockGithubApi.mockResolvedValue(MERGED);
 
-    expect(mockRefreshWorkerMergeState).toHaveBeenCalledWith(w, 123);
+    await refreshStaleWorkersForWorkspaces(['ws1']);
+
+    const writes = lifecycleUpdates();
+    // This row (no delivery) still heals by its own id...
+    expect(writes.some((s) => /w\.id = \$\d+::uuid/.test(s) && /merged_at\s*=/.test(s))).toBe(true);
+    // ...but nothing is stamped by PR url, which would reach the owned sibling.
+    expect(writes.some((s) => /w\.pr_url = /.test(s))).toBe(false);
+  });
+
+  it('the stamp is skipped too when the sibling check cannot be read', async () => {
+    mockGithubApi.mockResolvedValue(MERGED);
+    const original = db.execute;
+    db.execute = async (q) => {
+      if (dialect.sqlToQuery(q).sql.includes('workflow:pr_has_delivery_owned_row')) throw new Error('read failed');
+      return original(q);
+    };
+    try {
+      await refreshStaleWorkersForWorkspaces(['ws1']);
+    } finally {
+      db.execute = original;
+    }
+    expect(lifecycleUpdates().some((s) => /w\.pr_url = /.test(s))).toBe(false);
+  });
+
+  it('the task and mission page import still runs the merge-state refresh', async () => {
+    const w = { id: 'w1', prNumber: 42, prUrl: worker.prUrl, workspaceId: 'ws1' };
+    await observeMergeStateOnRender([w], 123);
+
+    expect(mockRefreshWorkerMergeState).toHaveBeenCalledWith({ id: 'w1', prNumber: 42, prUrl: worker.prUrl }, 123);
     expect(mockGithubApi).not.toHaveBeenCalled();
   });
 });

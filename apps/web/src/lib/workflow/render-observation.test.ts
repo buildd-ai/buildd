@@ -6,7 +6,7 @@
 import { describe, it, expect } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
-import { deliveryOwnedWorkers, deliveryOwnedWorkersSql, recordPrStateObserved } from './render-observation';
+import { deliveryOwnedWorkers, deliveryOwnedWorkersSql, prHasDeliveryOwnedRow, prHasDeliveryOwnedRowSql, recordPrStateObserved } from './render-observation';
 
 const dialect = new PgDialect();
 const render = (q: SQL) => dialect.sqlToQuery(q);
@@ -19,7 +19,9 @@ describe('deliveryOwnedWorkersSql', () => {
     expect(text.startsWith('-- workflow:delivery_owned_workers SELECT')).toBe(true);
     expect(text).not.toMatch(/\b(UPDATE|INSERT|DELETE)\b/i);
     expect(text).toContain('JOIN workflow_deliveries d ON d.workspace_id = w.workspace_id');
-    expect(text).toContain('d.owner_task_id = w.task_id OR d.id = t.delivery_id OR (w.pr_number IS NOT NULL AND d.pr_number = w.pr_number)');
+    expect(text).toContain('d.owner_task_id = w.task_id OR d.id = t.delivery_id OR (w.pr_number IS NOT NULL AND d.pr_number = w.pr_number');
+    // The PR match is repo-aware: same number in another repo is not this delivery's PR.
+    expect(text).toContain("lower(w.pr_url) = lower('https://github.com/' || d.repo_full_name || '/pull/' || d.pr_number::text)");
     // Kernel-decided only while the workspace switch reads on.
     expect(text).toContain("d.authority = 'kernel' AND NOT EXISTS (SELECT 1 FROM workspaces kw");
     expect(text).toContain('GROUP BY w.id');
@@ -35,6 +37,20 @@ describe('deliveryOwnedWorkersSql', () => {
     expect(owned.get('w1')).toEqual({ kernel: true });
     expect(owned.get('w2')).toEqual({ kernel: false });
     expect(seen).toHaveLength(1);
+  });
+});
+
+describe('prHasDeliveryOwnedRowSql', () => {
+  it('asks over every row the merge stamp would reach (same url and number), with the same ownership predicate', async () => {
+    const { sql, params } = render(prHasDeliveryOwnedRowSql({ prUrl: 'https://github.com/owner/repo/pull/42', prNumber: 42 }));
+    const text = norm(sql);
+    expect(text.startsWith('-- workflow:pr_has_delivery_owned_row SELECT EXISTS')).toBe(true);
+    expect(text).not.toMatch(/\b(UPDATE|INSERT|DELETE)\b/i);
+    expect(text).toContain('WHERE w.pr_url = $1::text AND w.pr_number = $2::int');
+    expect(text).toContain("lower(w.pr_url) = lower('https://github.com/' || d.repo_full_name");
+    expect(params).toEqual(['https://github.com/owner/repo/pull/42', 42]);
+    expect(await prHasDeliveryOwnedRow({ prUrl: 'u', prNumber: 1 }, async () => ({ rows: [{ owned: true }] }))).toBe(true);
+    expect(await prHasDeliveryOwnedRow({ prUrl: 'u', prNumber: 1 }, async () => ({ rows: [{ owned: false }] }))).toBe(false);
   });
 });
 

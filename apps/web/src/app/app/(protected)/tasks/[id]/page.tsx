@@ -301,10 +301,9 @@ export default async function TaskDetailPage({
       });
       const installId = wsWithInstall?.githubInstallation?.installationId;
       if (installId) {
-        const stale = { id: latestWorker.id, prNumber: latestWorker.prNumber, prUrl: latestWorker.prUrl };
         // AC-3: a delivery-owned task records at most a fact here; no lifecycle write.
-        const workspaceId = task.workspaceId;
-        after(() => observeMergeStateOnRender([stale], installId, workspaceId).catch((err) =>
+        const stale = { id: latestWorker.id, prNumber: latestWorker.prNumber, prUrl: latestWorker.prUrl, workspaceId: latestWorker.workspaceId ?? task.workspaceId };
+        after(() => observeMergeStateOnRender([stale], installId).catch((err) =>
           console.error('[task-page] PR fact import failed (non-fatal):', err)));
       }
     }

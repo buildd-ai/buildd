@@ -105,6 +105,7 @@ mock.module('@/lib/workflow/seam', () => ({
   observePrState: mockObservePrState,
   deliveryOwnedWorkers: async () => new Map(),
   recordPrStateObserved: async () => false,
+  prHasDeliveryOwnedRow: async () => false,
 }));
 
 beforeEach(() => {

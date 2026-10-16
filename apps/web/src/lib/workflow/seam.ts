@@ -944,7 +944,7 @@ export async function observeBase(p: {
 }
 
 // AC-3 (workflow-kernel-library.md §1): a page render, MCP read or explain records at most a fact.
-export { deliveryOwnedWorkers, recordPrStateObserved, type DeliveryOwnership } from './render-observation';
+export { deliveryOwnedWorkers, prHasDeliveryOwnedRow, recordPrStateObserved, type DeliveryOwnership } from './render-observation';
 
 /** Webhook `closed` / `reopened`: T17 / T18 / T19 from a live read. Legacy keeps its post-merge work (Slice C). */
 export async function observePrState(p: {

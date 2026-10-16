@@ -29,11 +29,16 @@ export interface DeliveryOwnership {
 }
 
 /**
- * A worker's row is delivery-owned when its task owns a delivery, its task is
- * an attempt of one (`tasks.delivery_id`), or its PR number is a delivery's PR
- * in the same workspace. The PR match ignores the repo on purpose: an
- * over-match only means a read leaves a row to the healers, never a wrong write.
+ * A worker's row (`w`, its task `t`) is delivery-owned by `d` when its task owns
+ * the delivery, its task is an attempt of it (`tasks.delivery_id`), or its PR
+ * is the delivery's PR: same number AND same repo, read off the PR url (case
+ * folded), so a task in another repo with the same PR number keeps healing.
  */
+const OWNS_WORKER = sql`(d.owner_task_id = w.task_id OR d.id = t.delivery_id
+    OR (w.pr_number IS NOT NULL AND d.pr_number = w.pr_number AND d.repo_full_name IS NOT NULL
+      AND lower(w.pr_url) = lower('https://github.com/' || d.repo_full_name || '/pull/' || d.pr_number::text)))`;
+
+/** One row per delivery-owned worker among `workerIds`, with whether the kernel decides for it. */
 export function deliveryOwnedWorkersSql(workerIds: string[]): SQL {
   return sql`-- workflow:delivery_owned_workers
 SELECT w.id AS "workerId",
@@ -41,9 +46,27 @@ SELECT w.id AS "workerId",
 FROM workers w
 LEFT JOIN tasks t ON t.id = w.task_id
 JOIN workflow_deliveries d ON d.workspace_id = w.workspace_id
-  AND (d.owner_task_id = w.task_id OR d.id = t.delivery_id OR (w.pr_number IS NOT NULL AND d.pr_number = w.pr_number))
+  AND ${OWNS_WORKER}
 WHERE w.id IN (SELECT x::uuid FROM jsonb_array_elements_text(${JSON.stringify(workerIds)}::jsonb) x)
 GROUP BY w.id`;
+}
+
+/** Does any worker row carrying this PR (the merge stamp's own target) belong to a delivery? */
+export function prHasDeliveryOwnedRowSql(p: { prUrl: string; prNumber: number }): SQL {
+  return sql`-- workflow:pr_has_delivery_owned_row
+SELECT EXISTS (
+  SELECT 1 FROM workers w
+  LEFT JOIN tasks t ON t.id = w.task_id
+  JOIN workflow_deliveries d ON d.workspace_id = w.workspace_id
+    AND ${OWNS_WORKER}
+  WHERE w.pr_url = ${p.prUrl}::text AND w.pr_number = ${p.prNumber}::int
+) AS owned`;
+}
+
+/** Throws on a read failure: the caller fails closed (skips the stamp). */
+export async function prHasDeliveryOwnedRow(p: { prUrl: string; prNumber: number }, exec: Exec = dbExec): Promise<boolean> {
+  const row = ((await exec(prHasDeliveryOwnedRowSql(p))).rows ?? [])[0] as { owned?: unknown } | undefined;
+  return row?.owned === true;
 }
 
 /** Throws on a read failure: the caller fails closed (treats every row as delivery-owned). */

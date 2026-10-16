@@ -248,6 +248,18 @@ async function deliveryOwnership(workerIds: string[]): Promise<(id: string) => {
   }
 }
 
+/** Is any row carrying this PR delivery-owned? A failed read answers yes (skip the stamp). */
+async function prHasOwnedSibling(prUrl: string | null | undefined, prNumber: number): Promise<boolean> {
+  if (!prUrl) return false; // the stamp targets nothing without a url
+  try {
+    const { prHasDeliveryOwnedRow } = await import('@/lib/workflow/seam');
+    return await prHasDeliveryOwnedRow({ prUrl, prNumber });
+  } catch (err) {
+    console.error(`[pr-state-refresh] sibling ownership read failed for PR #${prNumber}; skipping the merge stamp:`, err);
+    return true;
+  }
+}
+
 /** AC-3: a delivery-owned PR a read saw closed or merged becomes a fact, recorded and not applied. */
 async function recordObservedClosure(p: { workspaceId: string; repo: string; prNumber: number; pull: unknown }): Promise<void> {
   try {
@@ -265,18 +277,21 @@ async function recordObservedClosure(p: { workspaceId: string; repo: string; prN
  * only (AC-3).
  */
 export async function observeMergeStateOnRender(
-  stale: Array<{ id: string; prNumber: number; prUrl: string }>,
+  stale: Array<{ id: string; prNumber: number; prUrl: string; workspaceId: string }>,
   installationId: number,
-  workspaceId: string,
 ): Promise<void> {
   if (stale.length === 0) return;
   const ownerOf = await deliveryOwnership(stale.map((w) => w.id));
   for (const w of stale) {
+    const { workspaceId } = w;
     const owned = ownerOf(w.id);
     if (!owned) {
+      // Its merge stamp reaches every row on the PR, so it is left to the
+      // healers when any of them is delivery-owned.
+      if (await prHasOwnedSibling(w.prUrl, w.prNumber)) continue;
       // Lazy: pr-reconcile's graph is large and only the page imports need it.
       const { refreshWorkerMergeStateIfStale } = await import('@/lib/pr-reconcile');
-      await refreshWorkerMergeStateIfStale(w, installationId);
+      await refreshWorkerMergeStateIfStale({ id: w.id, prNumber: w.prNumber, prUrl: w.prUrl }, installationId);
       continue;
     }
     if (!owned.kernel) continue;
@@ -392,10 +407,14 @@ async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
           // The merge belongs to the PR: one fact stamps this row and every
           // other row carrying it (lib/pr-merge-stamp), GitHub's merged_at.
           await recordPrFact({ workerId: worker.id }, { kind: 'merged', mergedAt: pr.merged_at });
-          stamped = await stampPrMergedOnAllRows({ prUrl: worker.prUrl, prNumber: worker.prNumber, mergedAt: pr.merged_at }).catch(err => {
-            console.error(`[pr-state-refresh] merge stamp failed for PR #${worker.prNumber}:`, err);
-            return [] as Array<{ id: string; taskId: string | null }>;
-          });
+          // The stamp reaches every row on the PR; it is skipped when any of
+          // them is delivery-owned (AC-3: that row is the healers' to write).
+          if (!(await prHasOwnedSibling(worker.prUrl, worker.prNumber))) {
+            stamped = await stampPrMergedOnAllRows({ prUrl: worker.prUrl, prNumber: worker.prNumber, mergedAt: pr.merged_at }).catch(err => {
+              console.error(`[pr-state-refresh] merge stamp failed for PR #${worker.prNumber}:`, err);
+              return [] as Array<{ id: string; taskId: string | null }>;
+            });
+          }
           didMerge = true;
         } else if (pr.state === 'closed') {
           await recordPrFact({ workerId: worker.id }, { kind: 'closed' });
