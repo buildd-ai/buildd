@@ -8,6 +8,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { assertMemberRepoAccess, memberRepoAccessSubject } from '@/lib/member-repo-access';
 import { appBaseUrl } from '@/lib/app-url';
 import { isUuid } from '@/lib/uuid';
+import { resolveArtifactShortId } from '@/lib/artifact-short-id';
 import { isAuditStorageKey } from '@/lib/storage-keys';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
 import { triggerEvent, channels } from '@/lib/pusher';
@@ -27,6 +28,17 @@ export async function GET(
   { params }: { params: Promise<{ artifactId: string }> }
 ) {
   const { artifactId } = await params;
+  // An 8-hex short id (how briefs cite an artifact) resolves to the one artifact
+  // it prefixes; getArtifact's access checks still apply to that artifact. A
+  // prefix shared by several is refused without naming them.
+  const short = await resolveArtifactShortId(artifactId);
+  if (short.state === 'ambiguous') {
+    return NextResponse.json({ error: `Short id ${artifactId} is ambiguous; pass the full UUID.` }, { status: 409 });
+  }
+  return getArtifact(req, short.state === 'one' ? short.id : artifactId);
+}
+
+async function getArtifact(req: NextRequest, artifactId: string) {
 
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
