@@ -13,6 +13,8 @@ describe('floorCandidatesSql', () => {
     expect(q.sql).toContain("d.authority = 'kernel'");
     // S4a: a merge or close recorded but never applied (a lost webhook's live read, a render) jumps the queue…
     expect(q.sql).toContain("f.kind = 'pr_closed' AND f.applied_transition_id IS NULL");
+    // repo_full_name exactly, as kernelDeliveryForPr and stillOwedHeal compare it (both written from GitHub's full_name).
+    expect(q.sql).toContain('f.repo_full_name = d.repo_full_name');
     // Only news the delivery has not moved on since, and only recent: an answered fact holds no slot.
     expect(q.sql).toContain('AND f.observed_at > COALESCE(d.last_transition_at, d.created_at)');
     expect(q.sql).toContain("AND f.observed_at > now() - interval '1 day'");

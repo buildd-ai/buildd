@@ -23,7 +23,7 @@ mock.module('@/lib/cron-due-queue', () => ({
 const DRAIN_BATCH = 25;
 /** Each drain call shifts one result; empty queue = a drain that found nothing. */
 let drainResults: Array<{ claimed: number; delivered: number; skipped: number; failed: number }> = [];
-const drainDispatchOutbox = mock(async () => drainResults.shift() ?? { claimed: 0, delivered: 0, skipped: 0, failed: 0 });
+const drainDispatchOutbox = mock(async () => { order.push('drain'); return drainResults.shift() ?? { claimed: 0, delivered: 0, skipped: 0, failed: 0 }; });
 const reseedDispatchTimer = mock(async () => {});
 mock.module('@/lib/dispatch-authority', () => ({
   DISPATCH_DUE_QUEUE: 'dispatch',
@@ -72,8 +72,17 @@ const sweepEntitlementBlockedTasks = mock(async () => ({ teams: 0, woken: 0 }));
 mock.module('@/lib/entitlements/managed-runner', () => ({ sweepEntitlementBlockedTasks }));
 
 // S4a review: the kernel's fast heal rides the gated minute (kernel-heal.ts has its own tests).
-let healResult: { due: number; healed: unknown; rescheduled: number } | null = null;
-const runDueKernelHeals = mock(async () => healResult);
+let healResult: Record<string, unknown> | null = null;
+const order: string[] = [];
+const healBudgets: number[] = [];
+/** A heal that would hang forever, but (like the real one) stops at the budget it is given; scaled down so the test is fast. */
+let healHangs = false;
+const runDueKernelHeals = mock(async (o: { budgetMs: number }) => {
+  order.push('heal');
+  healBudgets.push(o.budgetMs);
+  if (healHangs) await new Promise((r) => setTimeout(r, Math.min(o.budgetMs, 50)));
+  return healResult;
+});
 mock.module('@/lib/workflow/kernel-heal', () => ({ runDueKernelHeals }));
 
 const { GET } = await import('./route');
@@ -88,6 +97,9 @@ beforeEach(() => {
   drainResults = [];
   health = { overdue: 0, stuck: 0, failed: 0, unacked: 0, orphaned: 0, unackedStale: 0 };
   healResult = null;
+  healHangs = false;
+  order.length = 0;
+  healBudgets.length = 0;
   runDueKernelHeals.mockClear();
   for (const m of [alertFloorRepair, publishPendingDispatches, reconcileOrphans, drainDispatchOutbox, reseedDispatchTimer, backfillStartAtWakes, settleDispatchTimer, markDispatchBacklog, repairDependencyWakes]) m.mockClear();
 });
@@ -105,6 +117,37 @@ describe('GET /api/cron/dispatch-drain', () => {
     expect(body).toMatchObject({ gated: true, kernelHeals: { due: 1 } });
     expect(drainDispatchOutbox).not.toHaveBeenCalled();
     expect(reports[0]).toMatchObject({ job: 'dispatch-drain:due', errors: 0 });
+  });
+
+  it('with dispatch work due, the drain runs first and the heal gets only the capped leftover', async () => {
+    dueCount = 3;
+    drainResults = [batch(4)];
+    healHangs = true;
+    healResult = { due: 1, healed: 0, rescheduled: 1, timedOut: 1, deferred: 0, gaveUp: 0 };
+    const started = Date.now();
+    const body = await (await call('?gate=due')).json();
+    // The drain ran, and ran before the heal: a slow GitHub under the heal cannot cost it anything.
+    expect(order).toEqual(['drain', 'heal']);
+    expect(body.drain).toMatchObject({ claimed: 4, delivered: 4 });
+    // The heal's share is capped well inside maxDuration (60 s) with headroom.
+    expect(healBudgets[0]).toBeLessThanOrEqual(10_000);
+    expect(healBudgets[0]).toBeLessThanOrEqual(60_000 - 5_000 - (Date.now() - started));
+    expect(body.kernelHeals).toMatchObject({ timedOut: 1 });
+  });
+
+  it('a heal is never started without a meaningful budget left (the ids stay queued)', async () => {
+    dueCount = 1;
+    drainResults = [batch(1)];
+    const realNow = Date.now;
+    let calls = 0;
+    // The tick started 58 s ago by the time the drain is done.
+    Date.now = () => { calls++; return calls === 1 ? realNow() - 58_000 : realNow(); };
+    try {
+      await call('?gate=due');
+    } finally {
+      Date.now = realNow;
+    }
+    expect(order).toEqual(['drain']);
   });
 
   it('the floor tick leaves heals to the kernel floor', async () => {

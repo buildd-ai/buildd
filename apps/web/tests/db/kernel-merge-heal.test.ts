@@ -59,11 +59,16 @@ const realEmit = await import('../../src/lib/core-emit');
 mock.module('../../src/lib/core-emit', () => ({ ...realEmit, emit: async () => {} }));
 /** Redis due-queues, in memory. */
 const dueQueues = new Map<string, Map<string, number>>();
+const redisKeys = new Map<string, unknown>();
 const queue = (job: string) => dueQueues.get(job) ?? dueQueues.set(job, new Map()).get(job)!;
 const realRedis = await import('../../src/lib/redis');
 mock.module('../../src/lib/redis', () => ({
   ...realRedis,
   markDue: async (job: string, member: string, at: number) => { queue(job).set(member, at); },
+  markDueEarliest: async (job: string, member: string, at: number) => { const p = queue(job).get(member); if (p === undefined || at < p) queue(job).set(member, at); },
+  getKey: async (k: string) => (redisKeys.has(k) ? redisKeys.get(k) : null),
+  setWithTtl: async (k: string, v: unknown) => { redisKeys.set(k, v); return true; },
+  delKey: async (k: string) => { redisKeys.delete(k); },
   clearDue: async (job: string, members: string | string[]) => { for (const m of [members].flat()) queue(job).delete(m); },
   countDue: async (job: string, now: number) => [...queue(job).values()].filter((t) => t <= now).length,
   listDue: async (job: string, now: number, limit: number) => [...queue(job).entries()].filter(([, t]) => t <= now).map(([m]) => m).slice(0, limit),
@@ -84,7 +89,7 @@ beforeAll(async () => {
   assertDbConfigured();
   ({ workspaceId } = await seedWorkspace());
 });
-beforeEach(() => { gh = { head: 'H1', state: 'open', merged: false, updatedAt: 'u0' }; readFails = false; dueQueues.clear(); });
+beforeEach(() => { gh = { head: 'H1', state: 'open', merged: false, updatedAt: 'u0' }; readFails = false; dueQueues.clear(); redisKeys.clear(); });
 
 async function open(): Promise<Delivery> {
   const ownerTaskId = await seedTask(workspaceId, { status: 'in_progress', title: 'feat: heal owner' });

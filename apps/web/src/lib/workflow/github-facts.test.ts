@@ -64,3 +64,24 @@ describe('changedPaths (§13.13 rule 4)', () => {
     expect(await reader(Array.from({ length: 300 }, (_, i) => ({ filename: `f${i}.ts` }))).changedPaths!('o/r', 'A', 'B')).toBeNull();
   });
 });
+
+describe('a bounded reader (S4a review: the fast heal reads GitHub under a budget)', () => {
+  test('every call carries an abort signal; a read GitHub never answers in time reads as failed', async () => {
+    const seen: Array<RequestInit | undefined> = [];
+    // Answers only when aborted, like fetch with a signal.
+    const hanging = (async (_i: number, _p: string, init?: RequestInit) => {
+      seen.push(init);
+      await new Promise((_r, reject) => init?.signal?.addEventListener('abort', () => reject(new Error('aborted'))));
+    }) as never;
+    const started = Date.now();
+    expect(await githubReader(1, hanging, { timeoutMs: 30 }).readPr('acme/app', 7)).toBeNull();
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(seen[0]?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  test('without a timeout nothing changes: no signal is added', async () => {
+    const seen: Array<RequestInit | undefined> = [];
+    await githubReader(1, (async (_i: number, _p: string, init?: RequestInit) => { seen.push(init); return null; }) as never).readPr('acme/app', 7);
+    expect(seen[0]?.signal).toBeUndefined();
+  });
+});
