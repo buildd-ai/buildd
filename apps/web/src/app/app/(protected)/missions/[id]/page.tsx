@@ -319,18 +319,6 @@ export default async function MissionDetailPage({
   // deliverable tasks only, and `awaitingMerge` counts task PRs, which for an
   // opted-in mission have all merged into `mission/<slug>` while none of the
   // mission's diff is on trunk. Null for every mission that has not opted in.
-  // Delivery records and scope decisions (workflow-kernel-library.md §6): the
-  // mission page projects them, so a merged delivery never reads as the mission.
-  const [missionDeliveries, scopeRows] = await Promise.all([
-    (mission as { integrationBranchEnabled?: boolean | null }).integrationBranchEnabled === true ? missionEpochsOf(id) : Promise.resolve([]),
-    scopeAmendmentsOf(id),
-  ]);
-  const scopeUpdates = describeScopeUpdates(scopeRows, (taskId) => (mission.tasks ?? []).find(t => t.id === taskId)?.title ?? null);
-  const missionIntegrationPr = deriveMissionIntegrationPr({
-    deliveries: missionDeliveries,
-    mission: mission as { workingBranch?: string | null; integrationBranchEnabled?: boolean | null },
-    tasks: (mission.tasks ?? []) as Array<{ id: string; title: string | null; taskClass: string | null; workers?: Array<{ prUrl?: string | null; prNumber?: number | null; mergedAt?: string | Date | null; prLifecycleStatus?: string | null }> | null }>,
-  });
   const progressMetric = deriveMissionProgressMetric(mission.tasks || []);
   const progress = progressMetric.kind === 'value' ? progressMetric.value : undefined;
 
@@ -372,7 +360,9 @@ export default async function MissionDetailPage({
   // shipped under another task/PR, or that the kernel already replaced, must
   // not drive this fallback reading to FAILING.
   const failedDeliverableRows = (mission.tasks || []).filter((t) => isDeliverableTask(t as never) && t.status === 'failed');
-  const [foreignDeps, supersededMap, deliveryViews, gateFacts] = await Promise.all([
+  // Delivery records and scope decisions (workflow-kernel-library.md §6): the
+  // mission page projects them, so a merged delivery never reads as the mission.
+  const [foreignDeps, supersededMap, deliveryViews, gateFacts, missionDeliveries, scopeRows] = await Promise.all([
     loadDependencyRows(foreignDependencyIds(mission.tasks || [])),
     computeSupersededFailedTasks(
       mission.id,
@@ -389,7 +379,15 @@ export default async function MissionDetailPage({
       local: (mission as any).executor === 'local',
       budgetExhausted: mission.status === 'budget_exhausted',
     }),
+    (mission as { integrationBranchEnabled?: boolean | null }).integrationBranchEnabled === true ? missionEpochsOf(id) : Promise.resolve([]),
+    scopeAmendmentsOf(id),
   ]);
+  const scopeUpdates = describeScopeUpdates(scopeRows, (taskId) => (mission.tasks ?? []).find(t => t.id === taskId)?.title ?? null);
+  const missionIntegrationPr = deriveMissionIntegrationPr({
+    deliveries: missionDeliveries,
+    mission: mission as { workingBranch?: string | null; integrationBranchEnabled?: boolean | null },
+    tasks: (mission.tasks ?? []) as Array<{ id: string; title: string | null; taskClass: string | null; workers?: Array<{ prUrl?: string | null; prNumber?: number | null; mergedAt?: string | Date | null; prLifecycleStatus?: string | null }> | null }>,
+  });
   const kernelReplaced = replacedFailedTaskIds(deliveryViews, failedDeliverableRows.map((t) => t.id));
   const deliveryDisplays = ownerDeliveryDisplays(deliveryViews);
   const healthState = deriveTaskHealthSignal(
