@@ -676,6 +676,8 @@ function makeClient(sdk: Sdk, apiKey: string, model: string, fetcher: Fetcher, h
     defaultModel: model,
     logLevel: 'warn',
     retry: { maxRetries: 0 },
+    // 0.7 zstd-compresses request bodies by default; send plain JSON as before.
+    compression: false,
     defaultHeaders: { ...headers },
     fetch: fetcher as unknown as Fetch,
   });
@@ -721,11 +723,27 @@ function mapSdkError(
   return { error: { kind: 'transport', message: e instanceof Error ? e.message : String(e) }, retryable: false };
 }
 
+/**
+ * SDK 0.7 buffers the response through a clone and then re-reads the original;
+ * under Bun a Response built from a string or Blob (what stub fetchers return)
+ * throws "Body already used" on that. A stream-bodied Response reads fine, so
+ * re-wrap the body as a stream. A network response already is one.
+ */
+function streamBodied(inner: Fetcher): Fetcher {
+  return (async (...args: Parameters<Fetcher>) => {
+    const res = await inner(...args);
+    if (!res.body) return res;
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    const body = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(bytes); c.close(); } });
+    return new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers });
+  }) as Fetcher;
+}
+
 /** Make one decision call. See the module docstring for the contract. */
 export async function decide<Q extends DecisionQuestions>(params: DecideParams<Q>): Promise<DecideResult<Q>> {
   const now = params.now ?? (() => Date.now());
   const started = params.startedAt ?? now();
-  const fetcher = params.fetch ?? fetch;
+  const fetcher = streamBodied(params.fetch ?? fetch);
   const sleep = params.sleep ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)));
   const timeoutMs = params.timeoutMs ?? DEFAULT_DECIDE_TIMEOUT_MS;
   const maxAttempts = Math.min(5, Math.max(1, Math.floor(params.maxAttempts ?? DEFAULT_MAX_ATTEMPTS)));
