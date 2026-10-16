@@ -8,6 +8,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { assertMemberRepoAccess, memberRepoAccessSubject } from '@/lib/member-repo-access';
 import { appBaseUrl } from '@/lib/app-url';
 import { isUuid } from '@/lib/uuid';
+import { resolveArtifactShortId } from '@/lib/artifact-short-id';
 import { isAuditStorageKey } from '@/lib/storage-keys';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
 import { triggerEvent, channels } from '@/lib/pusher';
@@ -21,13 +22,44 @@ import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // PATCH metadata semantics and the in-SQL merge: lib/artifact-metadata-merge.ts.
 
+type ArtifactRow = NonNullable<Awaited<ReturnType<typeof findArtifactWithWorker>>>;
+
+function findArtifactWithWorker(id: string) {
+  return db.query.artifacts.findFirst({ where: sqlWhere(eq(artifacts.id, id)), with: { worker: true } });
+}
+
+/** Whether the caller may read this artifact: 'notfound' hides it, 'forbidden' is the key path's existing 403. */
+async function readAccess(
+  artifact: ArtifactRow,
+  account: Awaited<ReturnType<typeof authenticateTaskScopedCaller>>,
+  sessionUser: { id: string } | null,
+): Promise<'ok' | 'notfound' | 'forbidden'> {
+  const workspaceId = artifact.workspaceId ?? artifact.worker?.workspaceId ?? null;
+  if (!account) {
+    // Session: membership of the artifact's workspace team, same as the
+    // dashboard. Outside it the artifact does not exist for this caller.
+    const access = workspaceId ? await verifyWorkspaceAccess(sessionUser!.id, workspaceId) : null;
+    return access ? 'ok' : 'notfound';
+  }
+  // Outside its own workspace an artifact does not exist for a task token,
+  // even one its minting account's worker produced elsewhere.
+  if (!taskScopeAllowsWorkspace(account, workspaceId)) return 'notfound';
+  // Key: owner of the worker, or workspace member
+  if (artifact.worker?.accountId === account.id) return 'ok';
+  if (artifact.workspaceId && await verifyAccountWorkspaceAccess(account, artifact.workspaceId)) return 'ok';
+  return 'forbidden';
+}
+
 // GET /api/artifacts/[artifactId] - Fetch a specific artifact by ID
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ artifactId: string }> }
 ) {
   const { artifactId } = await params;
+  return getArtifact(req, artifactId);
+}
 
+async function getArtifact(req: NextRequest, artifactId: string) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
   // A per-task token reads only artifacts in its own task's workspace.
@@ -43,45 +75,32 @@ export async function GET(
 
   // A non-UUID can never name an artifact; querying with one throws 22P02 (a 500).
   if (!isUuid(artifactId)) {
-    return NextResponse.json({ error: `Invalid artifact id: expected a UUID, got "${artifactId}". Pass the full UUID.` }, { status: 404 });
+    // An 8-hex short id (how briefs cite an artifact) resolves among the
+    // artifacts this caller can read, so another tenant's artifact neither
+    // collides with it nor shows through. Two or more of the caller's own are
+    // refused without naming them.
+    const short = await resolveArtifactShortId(artifactId, async (id) => {
+      const candidate = await findArtifactWithWorker(id);
+      return !!candidate && (await readAccess(candidate, account, sessionUser)) === 'ok';
+    });
+    if (short.state === 'ambiguous') {
+      return NextResponse.json({ error: `Short id ${artifactId} is ambiguous; pass the full UUID.` }, { status: 409 });
+    }
+    if (short.state === 'none') {
+      return NextResponse.json({ error: `Invalid artifact id: expected a UUID, got "${artifactId}". Pass the full UUID.` }, { status: 404 });
+    }
+    artifactId = short.id;
   }
 
-  const artifact = await db.query.artifacts.findFirst({
-    where: sqlWhere(eq(artifacts.id, artifactId)),
-    with: { worker: true },
-  });
+  const artifact = await findArtifactWithWorker(artifactId);
 
   if (!artifact) {
     return NextResponse.json({ error: 'Artifact not found' }, { status: 404 });
   }
 
-  if (!account) {
-    // Session: membership of the artifact's workspace team, same as the
-    // dashboard. Outside it the artifact does not exist for this caller.
-    const workspaceId = artifact.workspaceId ?? artifact.worker?.workspaceId ?? null;
-    const access = workspaceId ? await verifyWorkspaceAccess(sessionUser!.id, workspaceId) : null;
-    if (!access) {
-      return NextResponse.json({ error: 'Artifact not found' }, { status: 404 });
-    }
-  } else {
-    // Outside its own workspace an artifact does not exist for a task token,
-    // even one its minting account's worker produced elsewhere.
-    if (!taskScopeAllowsWorkspace(account, artifact.workspaceId ?? artifact.worker?.workspaceId ?? null)) {
-      return NextResponse.json({ error: 'Artifact not found' }, { status: 404 });
-    }
-    // Key: owner of the worker, or workspace member
-    const isOwner = artifact.worker?.accountId === account.id;
-    if (!isOwner) {
-      if (artifact.workspaceId) {
-        const hasAccess = await verifyAccountWorkspaceAccess(account, artifact.workspaceId);
-        if (!hasAccess) {
-          return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
-        }
-      } else {
-        return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
-      }
-    }
-  }
+  const access = await readAccess(artifact, account, sessionUser);
+  if (access === 'notfound') return NextResponse.json({ error: 'Artifact not found' }, { status: 404 });
+  if (access === 'forbidden') return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
 
   // A diff is repository code: with the workspace's opt-in GitHub check on, a
   // person must hold read on the repo (lib/member-repo-access.ts). Keys skip it.

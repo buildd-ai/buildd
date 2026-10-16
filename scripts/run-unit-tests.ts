@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs';
 import { cpus, homedir, loadavg, tmpdir } from 'os';
 import { join } from 'path';
 
@@ -878,6 +878,20 @@ async function main(): Promise<void> {
       }, HEARTBEAT_INTERVAL_MS);
   heartbeat?.unref?.();
 
+  // A killed run keeps its partial result: failures so far go to the log and the
+  // message names what was still running.
+  const onKill = (signal: NodeJS.Signals): void => {
+    console.error(`\n${signal} received before the run finished: ${passed + failures.length}/${files.length} files done (${failures.length} failed); still running: ${[...running].join(', ') || 'none'}`);
+    for (const failure of failures) console.error(`  failed so far: ${failure.file}`);
+    try {
+      const partial = failures.map(f => `--- ${f.file} ---\n${f.output.trim()}\n`).join('\n');
+      writeFileSync(process.env.BUILDD_TEST_LOG ?? '.test-report.log', `INCOMPLETE RUN (${signal})\n\n${partial}`);
+    } catch {}
+    process.exit(signal === 'SIGINT' ? 130 : 143);
+  };
+  process.once('SIGTERM', onKill);
+  process.once('SIGINT', onKill);
+
   await runWithConcurrency(files, concurrency, async file => {
     running.add(file);
     const result = await runTestFile(file);
@@ -888,6 +902,7 @@ async function main(): Promise<void> {
       passed++;
     } else {
       failures.push(result);
+      if (!process.stdout.isTTY) console.log(`[failed] ${file}`);
     }
     // Carriage-return progress is unreadable once redirected to a file, and the
     // log is what agents grep. Only animate on a TTY.
@@ -897,6 +912,8 @@ async function main(): Promise<void> {
   });
   if (heartbeat) clearInterval(heartbeat);
   if (process.stdout.isTTY) process.stdout.write('\n');
+  process.off('SIGTERM', onKill);
+  process.off('SIGINT', onKill);
   const wallMs = performance.now() - runStartedAt;
 
   // Files finish out of order under concurrency; sort so the failure section of

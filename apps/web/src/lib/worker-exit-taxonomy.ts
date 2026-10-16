@@ -1,4 +1,4 @@
-import { INTERACTIVE_WORKER_BUSY_MAX_MS, INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
+import { WORKER_STALE_REAP_MS, INTERACTIVE_WORKER_BUSY_MAX_MS, INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
 
 export type WorkerExitCause =
   | 'code_failure'
@@ -160,7 +160,7 @@ export const SILENT_START_ERROR =
   'Worker started but produced no output (0 assistant turns, $0 spend) — the agent session died before its first real turn; check the runner log for this worker id';
 
 /** Error text for the generic staleness kill (a worker that did real work, then went quiet). */
-export const STALE_EXPIRED_ERROR = 'Stale worker expired (no update for 15+ minutes)';
+export const STALE_EXPIRED_ERROR = `Stale worker expired (no update for ${WORKER_STALE_REAP_MS / 60000}+ minutes)`;
 
 /**
  * A session with at most this many turns and zero spend never really produced
