@@ -208,6 +208,43 @@ export const NO_MODEL_AUTH_FIX =
   'run `claude login` as the runner user, or set CLAUDE_CODE_OAUTH_TOKEN (`claude setup-token`) '
   + 'for a headless machine, or ANTHROPIC_API_KEY for metered billing';
 
+/** Stable prefix of the pre-spawn refusal below, so a failure list can group it. */
+export const NO_MODEL_AUTH_ERROR_CODE = '[runner:no_model_auth]';
+
+const MODEL_AUTH_VARS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', HOST_SEAT_TOKEN_VAR] as const;
+
+/**
+ * Pre-spawn check for a Claude run (model credentials spec R-5 / AC-5): the
+ * refusal text when nothing can authenticate it, else null. Only a run headed
+ * for Anthropic is judged; a team endpoint or a custom host decides its own
+ * auth. Anything counts: the machine's seat, a model variable left in the
+ * agent env (the machine's or one the claim delivered), the claim's Claude
+ * credential written into the session, or a `claude login` the CLI will find
+ * through the agent's HOME (it reaches the agent even under
+ * BUILDD_HOST_SEAT=off).
+ */
+export function claudeModelAuthMissing(input: {
+  isCodexTask: boolean;
+  /** applyModelEnv's result. */
+  modelEnv: { endpoint: string; hostSeatUsed?: boolean };
+  /** The agent env, after applyModelEnv. */
+  env: Record<string, string | undefined>;
+  /** shouldUseClaudeCredential for this run. */
+  claudeCredentialUsed: boolean;
+  /** Login probe; `home` defaults to the agent env's HOME. Injected in tests. */
+  probe?: Omit<HostSeatProbe, 'env'>;
+}): string | null {
+  if (input.isCodexTask) return null;
+  if (input.modelEnv.endpoint !== 'anthropic') return null;
+  if (input.modelEnv.hostSeatUsed || input.claudeCredentialUsed) return null;
+  if (MODEL_AUTH_VARS.some((k) => (input.env[k] ?? '').trim().length > 0)) return null;
+  const home = input.probe?.home ?? input.env.HOME;
+  if (detectHostSeat({ ...input.probe, ...(home ? { home } : {}), env: {} }) === 'login') return null;
+  return `${NO_MODEL_AUTH_ERROR_CODE} No model login for this Claude run: this runner has no Claude login `
+    + 'or API key of its own, and the claim delivered none. The task is left for a runner that has one. '
+    + `To fix: ${NO_MODEL_AUTH_FIX}`;
+}
+
 /** Human words for a model-auth label (the startup `Model auth: <words>` line). */
 export function describeModelAuthSource(source: ModelAuthSource): string {
   switch (source) {
