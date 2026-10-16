@@ -102,12 +102,19 @@ export function isReviewEscalation(reason: string | null | undefined): boolean {
  * acting lifts it: a forced round, a resolve, an approval.
  *
  * The repair carries the hold in `resumeState = 'ESCALATED'` (a value nothing else writes: T25
- * only ever resumes to AWAITING_REVIEW or APPROVED), because REPAIRING and BLOCKED_ON_TRUNK replace
- * `stateReason` with their own.
+ * only ever resumes to AWAITING_REVIEW or APPROVED), because REPAIRING, BLOCKED_ON_TRUNK and
+ * AWAITING_PUSH replace `stateReason` with their own.
  */
+/**
+ * States that keep a spent review budget's hold in `resumeState` while they run: the repair, a
+ * red base during it, a repair whose push GitHub does not show yet (AWAITING_PUSH, and the
+ * push_undeliverable escalation it can end in), and an escalation stacked on top of it.
+ */
+const HOLD_CARRIERS: ReadonlySet<DeliveryState> = new Set(['REPAIRING', 'BLOCKED_ON_TRUNK', 'AWAITING_PUSH', 'ESCALATED']);
+
 export function reviewBudgetHeld(d: Pick<DeliverySnapshot, 'state' | 'stateReason' | 'resumeState'>): boolean {
   if (d.state === 'ESCALATED' && d.stateReason === 'review_exhausted') return true;
-  return d.resumeState === 'ESCALATED' && (d.state === 'REPAIRING' || d.state === 'BLOCKED_ON_TRUNK' || d.state === 'ESCALATED');
+  return d.resumeState === 'ESCALATED' && HOLD_CARRIERS.has(d.state);
 }
 
 /** The person's acts that end a spent review budget's hold (2ded4e88). */
@@ -121,8 +128,6 @@ function holdThroughRepair(d: DeliverySnapshot): Pick<DeliveryPatch, 'resumeStat
   return d.state === 'ESCALATED' && d.stateReason === 'review_exhausted' ? { resumeState: 'ESCALATED' } : {};
 }
 
-/** States that keep a spent review budget's hold in `resumeState` while they run. */
-const HOLD_CARRIERS: ReadonlySet<DeliveryState> = new Set(['REPAIRING', 'BLOCKED_ON_TRUNK', 'ESCALATED']);
 
 /**
  * An escalation a machine repair may still move first (task a90fc99b): a
@@ -1408,7 +1413,8 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (cmd.baseStillRed) return c.rejected('trunk_still_red');
       const resume = dd.resumeState ?? 'AWAITING_REVIEW';
       const head = dd.currentHeadSha;
-      const effects: EffectSpec[] = cmd.headPredatesFix && head
+      // A head nothing will land (it resumes at a spent review budget's person) is not refreshed.
+      const effects: EffectSpec[] = cmd.headPredatesFix && head && resume !== 'ESCALATED'
         ? [{ kind: 'refresh_branch', dedupeKey: `refresh_branch:${dd.id}:${head}:trunk:${cmd.incidentId}`, payload: { headSha: head, reason: 'trunk_recovered' } }]
         : [];
       let patch: DeliveryPatch = { resumeState: null, trunkIncidentId: null, stateReason: null, ci: null, ciHeadSha: null };

@@ -2170,4 +2170,21 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       eq((await s.d()).stateReason, 'review_exhausted', 'and a person\'s again');
     },
   },
+  {
+    name: '2ded4e88: a CI fix out of a spent review budget whose push GitHub does not show yet keeps the hold through AWAITING_PUSH',
+    async run(host) {
+      const s = await new Delivery(host, 114).open({ maxRounds: 1 });
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      applied(await s.verdict('request_changes'), 'ESCALATED', 'the budget is spent');
+      applied(await s.ciRed('H1'), 'REPAIRING', 'CI red on the escalated PR');
+      const fix = (await s.view()).attempts.find((a) => a.family === 'ci' && a.status === 'queued')!;
+      // The fix ends with a local head GitHub does not have yet.
+      applied(await s.fixEnded(fix.id, { localHeadSha: 'H2', commitCount: 1, live: s.live('H1'), proof: { liveContainsLocal: false } }), 'AWAITING_PUSH', 'its push is not visible yet');
+      eq((await s.d()).resumeState, 'ESCALATED', 'the hold rides through AWAITING_PUSH');
+      // The push shows up: back to the person, no round 2.
+      applied(await s.push('H2', { proof: { liveContainsLocal: true, contentDiffChanged: true } }), 'ESCALATED', 'the push arrives');
+      eq(pick(await s.d(), ['state', 'stateReason', 'currentRound', 'currentHeadSha']), { state: 'ESCALATED', stateReason: 'review_exhausted', currentRound: 1, currentHeadSha: 'H2' }, 'a person\'s, at the new head');
+      eq({ rounds: (await s.view()).rounds.length, dispatched: await s.count('dispatch_review') }, { rounds: 1, dispatched: 1 }, 'no new round, no reviewer');
+    },
+  },
 ];
