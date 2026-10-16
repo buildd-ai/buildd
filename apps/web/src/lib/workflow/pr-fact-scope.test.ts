@@ -68,6 +68,12 @@ describe('deliveryOwnedTaskSql (S4b): the task-side definition of delivery-owned
     expect(JSON.parse(params[0] as string).sort()).toEqual(['ABANDONED', 'FAILED', 'MERGED', 'SUPERSEDED']);
   });
 
+  test('pr: only the delivery bound to that PR (repo case-folded); another PR of the task is not the kernel\'s', () => {
+    const { sql, params } = render(deliveryOwnedTaskSql({ id: sqlTag`t.id`, workspaceId: sqlTag`t.workspace_id` }, { pr: { repoFullName: 'Acme/Repo', prNumber: 12 } }));
+    expect(sql).toContain('AND kd.pr_number = $1::int AND lower(kd.repo_full_name) = lower($2::text)');
+    expect(params).toEqual([12, 'Acme/Repo']);
+  });
+
   test('notKernelMergedTaskSql: an attempt writer cannot move a completed task whose delivery MERGED', () => {
     const { sql, params } = render(notKernelMergedTaskSql({ id: sqlTag`t.id`, workspaceId: sqlTag`t.workspace_id`, status: sqlTag`t.status` }));
     expect(sql).toMatch(/^NOT \(t\.status = 'completed' AND EXISTS \(SELECT 1 FROM workflow_deliveries kd/);

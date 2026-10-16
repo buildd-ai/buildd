@@ -71,13 +71,19 @@ export const kernelProjectionScope: PrFactScope = { [PR_FACT_SCOPE]: 'kernel_pro
  *
  * `live: true` narrows it to a delivery that has not reached a terminal state (MERGED, SUPERSEDED,
  * ABANDONED, FAILED): the window in which the kernel, not a legacy writer, decides where the
- * task's PR goes. `states` narrows it to deliveries in exactly those states.
+ * task's PR goes. `states` narrows it to deliveries in exactly those states. `pr` narrows it to
+ * the delivery bound to that PR: a task can ship more than one PR (a stacked series, a follow-up
+ * after its first PR was abandoned), and only the delivery's own PR is the kernel's to decide.
  */
-export function deliveryOwnedTaskSql(task: { id: SQL; workspaceId: SQL }, opts: { live?: boolean; states?: readonly string[] } = {}): SQL {
+export function deliveryOwnedTaskSql(
+  task: { id: SQL; workspaceId: SQL },
+  opts: { live?: boolean; states?: readonly string[]; pr?: { repoFullName: string; prNumber: number } } = {},
+): SQL {
   return sql`EXISTS (SELECT 1 FROM workflow_deliveries kd JOIN workspaces kw ON kw.id = kd.workspace_id
     WHERE kd.workspace_id = ${task.workspaceId} AND kd.owner_task_id = ${task.id} AND kd.authority = 'kernel' AND kd.pr_number IS NOT NULL AND ${kernelOnSql(sql`kw.git_config`)}${
       opts.live ? sql` AND kd.state NOT IN (SELECT jsonb_array_elements_text(${JSON.stringify([...TERMINAL_STATES])}::jsonb))` : sql``}${
-      opts.states ? sql` AND kd.state IN (SELECT jsonb_array_elements_text(${JSON.stringify([...opts.states])}::jsonb))` : sql``})`;
+      opts.states ? sql` AND kd.state IN (SELECT jsonb_array_elements_text(${JSON.stringify([...opts.states])}::jsonb))` : sql``}${
+      opts.pr ? sql` AND kd.pr_number = ${opts.pr.prNumber}::int AND lower(kd.repo_full_name) = lower(${opts.pr.repoFullName}::text)` : sql``})`;
 }
 
 /** The `tasks` table's own columns, for a Drizzle statement over `tasks` (built per call: modules mocked in tests load this file). */

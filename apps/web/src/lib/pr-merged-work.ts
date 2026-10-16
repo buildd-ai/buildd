@@ -124,10 +124,13 @@ export async function loadMergedPrOwner(repoFullName: string, prNumber: number) 
 }
 
 /**
- * Claim the one-shot completion steps of a merge (the task.completed fan-out, the work-tracker
- * comment, resolveCompletedTask) for `taskId`, once: a context marker set by compare-and-set.
- * True for the caller that set it. Claimed before the steps run, so a crash between the claim
- * and a step loses that step rather than repeating a comment a person sees.
+ * Claim the merge's completion comment on the linked work-tracker issue for `taskId`, once: a
+ * context marker set by compare-and-set. True for the caller that set it. Only the comment is
+ * behind it: a crash between the claim and the post loses that one comment rather than repeating
+ * it. The rest of the completion (task.completed, resolveCompletedTask) re-runs on every retry:
+ * task.completed is deduped by its key, and resolveCompletedTask's steps are each guarded on the
+ * rows they change (the parent rollup, the CAS cancel of superseded retries, the dependents and
+ * mission checks).
  */
 export async function claimMergeCompletionOnce(taskId: string, prNumber: number): Promise<boolean> {
   const rows = await db
@@ -199,16 +202,19 @@ export async function runMergedPrWork(p: MergedPrWorkInput): Promise<void> {
   // whatever the task row already said.
   const decided = typeof p.taskTransition !== 'function';
   const transition: MergeTaskTransition = decided ? p.taskTransition as MergeTaskTransition : await (p.taskTransition as (t: MergedPrTask) => Promise<MergeTaskTransition>)(task);
-  // The kernel's value is stored on the effect, which is at-least-once: a retry after a throw
-  // further down would see 'flipped' again. The completion's one-shot steps run behind a durable
-  // once-marker instead (S4b review). The legacy writer's own row guard already makes it once.
-  const announce = transition === 'flipped' && (!decided || await claimMergeCompletionOnce(task.id, p.prNumber));
-  if (announce) {
+  if (transition === 'flipped') {
     console.log(`Auto-completed task ${task.id} via merged PR #${p.prNumber} on ${p.repoFullName}`);
-    // Same fact as the worker route's completion, same dedupe key: one row.
+    // Same fact as the worker route's completion, same dedupe key (`task:<id>:completed`): one
+    // ledger row however often it is emitted. The other subscribers skip a merge (push, chat,
+    // release paths) or recompute (estimate actuals, which task.pr_merged also runs on every merge).
     await emit({ type: 'task.completed', via: 'merge', taskId: task.id, workerId: worker.id, workspaceId: worker.workspaceId });
-    // One-shot announcement on the linked issue, inside the transition guard.
-    maybePostWorkTrackerIssueUpdate(p.prNumber, p.prHtmlUrl, true).catch(() => {});
+    // The one step a person would see twice: the comment on the linked issue. The kernel's value
+    // is stored on an at-least-once effect, so a retry sees 'flipped' again; the comment runs
+    // behind a durable once-marker (S4b review). The legacy writer's own row guard already makes
+    // it once. Everything else here re-runs on a retry, and is safe to.
+    if (!decided || await claimMergeCompletionOnce(task.id, p.prNumber)) {
+      maybePostWorkTrackerIssueUpdate(p.prNumber, p.prHtmlUrl, true).catch(() => {});
+    }
     // Parent rollup, dependents, mission completion and re-planning. A loop
     // task waiting on this merge is resolved by its own loop advancement.
     if (task.loopState !== 'condition_unmet') {

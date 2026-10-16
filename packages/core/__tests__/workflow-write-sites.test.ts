@@ -369,6 +369,9 @@ const TASK_STATUS_WRITERS: Record<string, string> = {
  * that can move a task away from completed); a string is why the file's writes cannot.
  */
 const ATTEMPT_MERGED_GUARD: Record<string, number | string> = {
+  // 9 includes the reactivation (worker resumes from completed): a person's follow-up on a shipped
+  // task runs the worker, but the task keeps completed. Kept guarded rather than exempted, so a
+  // follow-up that then fails or is requeued can never reopen work that already merged.
   'apps/web/src/app/api/workers/[id]/route.ts': 9,
   'apps/web/src/lib/stale-workers.ts': 8,
   'apps/web/src/app/api/tasks/cleanup/route.ts': 2,

@@ -1152,7 +1152,7 @@ async function handlePullRequestEvent(event: {
         mergeIsNew,
         stamp: true,
         // Not the kernel's PR: the legacy writer makes the task's transition (pr-merged-legacy-task.ts).
-        taskTransition: legacyCompleteTaskOnMerge({ prUrl: prUrlFor(repository.full_name, pr.number), prNumber: pr.number, runner: worker.runner }),
+        taskTransition: legacyCompleteTaskOnMerge({ repoFullName: repository.full_name, prUrl: prUrlFor(repository.full_name, pr.number), prNumber: pr.number, runner: worker.runner }),
       });
     }
     // A worker row with no task falls through to the branch-name match below.
@@ -1222,7 +1222,7 @@ async function handlePullRequestEvent(event: {
       const openSiblingPrs = await otherOpenPrsOfTask(matchingTask.id, { prUrl: prUrlFor(repository.full_name, pr.number) });
       if (openSiblingPrs.length > 0) return;
       // Row-guarded for the same reason as the worker-match path above; never a delivery-owned task.
-      if (!(await completeTaskOnBranchMatchMerge(matchingTask.id))) return;
+      if (!(await completeTaskOnBranchMatchMerge(matchingTask.id, { repoFullName: repository.full_name, prNumber: pr.number }))) return;
       console.log(`Auto-completed task ${matchingTask.id} via branch match on merged PR #${pr.number}`);
 
       await emit({

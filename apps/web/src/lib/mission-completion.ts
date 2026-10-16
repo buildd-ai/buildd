@@ -955,16 +955,29 @@ export async function completeMissionIfVerified(
   // Atomic active → completed. Concurrent callers race here; exactly one wins,
   // and only the winner disables the schedule and announces completion.
   // For a mission with delivery records, also CAS on those records (§6): a merge, settlement or
-  // retirement recorded since the decision leaves it active. The decision can take a while (it may
-  // grade criteria), so a miss on the records alone is decided once more on a fresh read, with the
-  // verdict it already has; a second miss is reported as such, never as a lost race.
+  // retirement recorded since the decision leaves it active, and so does any write holding the
+  // mission row (the xmin re-check). After a miss on a mission still active: records unchanged
+  // means another write held the row, so it claims once more; records moved means it decides once
+  // more on a fresh read, with the verdict it already has. A second miss is reported as such
+  // (completion_contended, deliveries_moved), never as a mission that left active.
   let completedAt = new Date();
   let claimed = await claimMissionCompletion(missionId, epochFingerprint, completedAt);
   let finalDecision = decision;
   if (!claimed) {
     const fresh = await readMissionEpochFingerprint(missionId);
     const stillActive = (await db.query.missions.findFirst({ where: sqlWhere(eq(missions.id, missionId)), columns: { status: true } }))?.status === 'active';
-    if (stillActive && fresh !== epochFingerprint) {
+    if (stillActive && fresh === epochFingerprint) {
+      // The deliveries did not move and the mission is still active: another write held the row
+      // (any edit makes the xmin re-check miss). Not a lost race; claim once more.
+      completedAt = new Date();
+      claimed = await claimMissionCompletion(missionId, fresh, completedAt);
+      if (!claimed) {
+        return {
+          completed: false,
+          decision: { ...decision, ok: false, code: 'completion_contended', reason: 'Another change to the mission landed while completion was being written, twice. It stays active; the next change decides again.' },
+        };
+      }
+    } else if (stillActive) {
       const again = await canCompleteMission(missionId, { path: opts.path, evaluateCriteria: false, proposed: opts.proposed });
       if (!again.ok) {
         console.log(`[mission-completion] ${missionId} via ${opts.path}: deliveries moved during the decision; now BLOCKED (${again.code})`);

@@ -1475,7 +1475,11 @@ export async function PATCH(
     updates.completedAt = null;
     updates.error = null;
 
-    // Reactivate the associated task
+    // Reactivate the associated task. Not one the kernel finished (completed, its delivery
+    // MERGED): a person's follow-up on a shipped task runs the worker again, but the task keeps
+    // the status its merge gave it. Its own completion PATCH records the result; a failure or
+    // requeue of the follow-up cannot reopen shipped work (S4b review: kept guarded, see the
+    // write-site guard's ATTEMPT_MERGED_GUARD).
     if (worker.taskId) {
       await db
         .update(tasks)

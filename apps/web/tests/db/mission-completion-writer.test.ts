@@ -94,3 +94,25 @@ describe('a concurrent epoch write is seen by the completion CAS', () => {
     expect(upd).toContain('UPDATE missions SET updated_at = now()');
   });
 });
+
+describe('an unrelated write holding the mission row (S4b delta review finding 3)', () => {
+  test('makes the claim miss with the deliveries unchanged; claiming again then wins', async () => {
+    const m = await seedMission(teamId, workspaceId);
+    const fp = await readMissionEpochFingerprint(m);
+    const other = new pg.Client({ connectionString: process.env.DATABASE_URL });
+    await other.connect();
+    try {
+      await other.query('BEGIN');
+      await other.query("UPDATE missions SET title = title || ' (edited)' WHERE id = $1", [m]);
+      const first = claimMissionCompletion(m, fp, new Date());
+      await new Promise((r) => setTimeout(r, 300));
+      await other.query('COMMIT');
+      expect(await first).toBeNull();
+      expect(await status(m)).toBe('active');
+      expect(await readMissionEpochFingerprint(m)).toBe(fp);
+      expect(await claimMissionCompletion(m, fp, new Date())).toMatchObject({ id: m });
+    } finally {
+      await other.end();
+    }
+  });
+});

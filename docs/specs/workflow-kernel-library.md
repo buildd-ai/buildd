@@ -1098,10 +1098,15 @@ column outside the kernel; S3 and S4 remove or route each one.
   `notKernelMergedTaskSql` in its WHERE, so a completed task whose delivery
   MERGED is never failed, requeued or reactivated by a late worker report, a
   stale release check or the reaper (a requeue would build it twice); the
-  guard pins how many statements per file carry it. The merge's one-shot
-  completion steps (the `task.completed` fan-out, the work-tracker comment,
-  `resolveCompletedTask`) run behind a context once-marker, so a retried
-  `emit_pr_merged` effect does not repeat them.
+  guard pins how many statements per file carry it (a person's follow-up that
+  reactivates the worker of a shipped task leaves the task completed). Only
+  the merge's work-tracker comment runs behind a context once-marker; the
+  `task.completed` fan-out (deduped by its key) and `resolveCompletedTask`
+  (each step guarded on its rows) re-run on every retry of `emit_pr_merged`,
+  so a function killed mid-way loses nothing. Legacy merge writers skip a task
+  only for the PR its delivery is bound to: another PR of the same task (a
+  stacked series, a follow-up after the delivery's PR was abandoned) still
+  completes it.
   NOT IMPLEMENTED (the rest of AC-1 for `tasks.status`): while a delivery is
   live, the attempt writers (worker PATCH, claim, cleanup, the reaper,
   interactive detach, credential and repo-access recovery, the recovery hold,
@@ -1121,8 +1126,10 @@ column outside the kernel; S3 and S4 remove or route each one.
   caller completes a mission over epoch state it did not see. Every epoch
   transition touches its mission row in its own statement, and the write
   requires the row version it read (`xmin`), so an epoch write still in flight
-  is seen too. A miss on the delivery records alone is decided once more on a
-  fresh read and, if it misses again, reported as `deliveries_moved`. A
+  is seen too. After a miss on a mission still active, unchanged records mean
+  another write held the row and it claims once more (`completion_contended`
+  on a second miss); moved records are decided once more on a fresh read
+  (`deliveries_moved` on a second miss). A
   mission with no delivery records has no fingerprint and completes as before.
   Every epoch reconcile that settles or retires a delivery (the merge door's,
   `ensureWritableEpoch`'s, the hourly one) emits `mission.delivery_settled`,

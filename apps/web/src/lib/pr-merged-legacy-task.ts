@@ -22,11 +22,13 @@ import { deliveryOwnedTaskSql, taskCols } from '@/lib/workflow/pr-fact-scope';
 import type { MergedPrTask, MergeTaskTransition } from '@/lib/pr-merged-work';
 
 export function legacyCompleteTaskOnMerge(p: {
-  prUrl: string; prNumber: number; runner?: string | null;
+  repoFullName: string; prUrl: string; prNumber: number; runner?: string | null;
   /**
    * The caller is the kernel's own emit_pr_merged effect, queued before S4b (its T17 did not
    * project the task). Otherwise (the webhook's legacy path) a delivery-owned task is skipped: if
-   * the kernel's observation threw, its floor applies T17, which completes the task itself.
+   * the kernel's observation threw, its floor applies T17, which completes the task itself. Only
+   * when THIS PR is the delivery's: another PR of the task (a stacked series, a follow-up after
+   * the delivery's PR was abandoned) is not the kernel's, and its merge completes the task here.
    */
   kernelEffect?: boolean;
 }) {
@@ -44,7 +46,7 @@ export function legacyCompleteTaskOnMerge(p: {
     const [flipped] = await db
       .update(tasks)
       .set({ status: 'completed', updatedAt: new Date() })
-      .where(and(eq(tasks.id, task.id), ne(tasks.status, 'completed'), ...(p.kernelEffect ? [] : [sql`NOT ${deliveryOwnedTaskSql(taskCols())}`])))
+      .where(and(eq(tasks.id, task.id), ne(tasks.status, 'completed'), ...(p.kernelEffect ? [] : [sql`NOT ${deliveryOwnedTaskSql(taskCols(), { pr: { repoFullName: p.repoFullName, prNumber: p.prNumber } })}`])))
       .returning({ id: tasks.id });
     return flipped ? 'flipped' : 'not_flipped';
   };
@@ -52,15 +54,15 @@ export function legacyCompleteTaskOnMerge(p: {
 
 /**
  * The branch-name match (`buildd/<id8>-…`) for a merged PR no worker row carries: completes the
- * task, guarded on the row. Never a delivery-owned task: a PR the kernel owns is merged by T17,
+ * task, guarded on the row. Never for the PR a task's delivery owns: that PR is merged by T17,
  * which completes its owner in its own statement, so a guess from the branch name must not race it.
  * Returns whether this write flipped the task.
  */
-export async function completeTaskOnBranchMatchMerge(taskId: string): Promise<boolean> {
+export async function completeTaskOnBranchMatchMerge(taskId: string, pr: { repoFullName: string; prNumber: number }): Promise<boolean> {
   const [flipped] = await db
     .update(tasks)
     .set({ status: 'completed', updatedAt: new Date() })
-    .where(and(eq(tasks.id, taskId), ne(tasks.status, 'completed'), sql`NOT ${deliveryOwnedTaskSql(taskCols())}`))
+    .where(and(eq(tasks.id, taskId), ne(tasks.status, 'completed'), sql`NOT ${deliveryOwnedTaskSql(taskCols(), { pr })}`))
     .returning({ id: tasks.id });
   return !!flipped;
 }

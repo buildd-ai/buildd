@@ -7,7 +7,11 @@ const updateSpy = mock(() => ({ set: (v: any) => { sets.push(v); return { where:
 const emit = mock(async (_e: any) => {});
 
 mock.module('next/server', () => ({ after: (fn: () => void) => fn() }));
-mock.module('@buildd/core/db', () => ({ db: { update: updateSpy, query: { workers: { findFirst: async () => null } } } }));
+/** The PR's worker carries a linked tracker issue, so the completion comment is observable. */
+mock.module('@buildd/core/db', () => ({ db: { update: updateSpy, query: {
+  workers: { findFirst: async () => ({ id: 'w1', task: { id: 't1', workspaceId: 'ws', externalIssueId: 'LIN-1', externalIssueUrl: null } }) },
+  workspaces: { findFirst: async () => ({ teamId: 'team', workTrackerConfig: { provider: 'linear' } }) },
+} } }));
 mock.module('@buildd/core/db/schema', () => ({ tasks: {}, workspaces: {} }));
 mock.module('drizzle-orm', () => {
   const sql: any = () => ({});
@@ -17,10 +21,12 @@ mock.module('drizzle-orm', () => {
 });
 mock.module('@/lib/core-emit', () => ({ emit }));
 mock.module('@/lib/model-policy-outcomes', () => ({ reportTaskPolicyOutcome: async () => {} }));
-mock.module('@/lib/task-dependencies', () => ({ checkDependsOnResolved: async () => {}, resolveCompletedTask: async () => {} }));
+const resolveCompletedTask = mock(async (_id: string, _ws: string) => {});
+mock.module('@/lib/task-dependencies', () => ({ checkDependsOnResolved: async () => {}, resolveCompletedTask }));
 mock.module('@/lib/interactive-detach', () => ({ detachInteractiveWorkersOfEndedTasks: async () => {} }));
 mock.module('@/lib/pusher', () => ({ triggerEvent: async () => {}, channels: { workspace: () => 'c' }, events: { WORKER_PROGRESS: 'p' } }));
-mock.module('@/lib/work-tracker', () => ({ postWorkTrackerCompletionUpdate: async () => {} }));
+const trackerPost = mock(async (_p: any) => {});
+mock.module('@/lib/work-tracker', () => ({ postWorkTrackerCompletionUpdate: trackerPost }));
 mock.module('@/lib/path-claim-release', () => ({ releaseAndNotify: async () => {} }));
 mock.module('@/lib/pr-merge-stamp', () => ({ stampPrMergedOnAllRows: async () => {} }));
 mock.module('@/lib/repo-scope', () => ({ workerOwnsPr: () => ({}), workerOwnsPrUrl: () => ({}) }));
@@ -34,12 +40,12 @@ const input = (runner: string, taskTransition?: any) => ({
   task: { id: 't1', status: 'in_progress', workspaceId: 'ws', missionId: null, taskClass: null, release: null, loopState: null },
   repoFullName: 'o/r', prNumber: 1, prUrl: 'u', prHtmlUrl: 'u', baseRef: 'dev', headSha: 's',
   installationId: null, mergedAt: new Date(), mergeIsNew: true, stamp: false,
-  taskTransition: taskTransition ?? legacyCompleteTaskOnMerge({ prUrl: 'u', prNumber: 1, runner }),
+  taskTransition: taskTransition ?? legacyCompleteTaskOnMerge({ repoFullName: 'o/r', prUrl: 'u', prNumber: 1, runner }),
 });
 const events = () => emit.mock.calls.map((c) => c[0] as any);
 
 describe('runMergedPrWork completion', () => {
-  beforeEach(() => { updateSpy.mockClear(); emit.mockClear(); sets.length = 0; returningRows = []; });
+  beforeEach(() => { updateSpy.mockClear(); emit.mockClear(); resolveCompletedTask.mockClear(); trackerPost.mockClear(); sets.length = 0; returningRows = []; });
 
   it('does not complete a task held by an interactive session', async () => {
     await runMergedPrWork(input('mcp'));
@@ -62,13 +68,24 @@ describe('runMergedPrWork completion', () => {
     expect(events().find((e) => e.type === 'task.pr_merged').transition).toBe('flipped');
   });
 
-  // S4b review finding 2: the effect is at-least-once. A retry after a throw past the completion
-  // block must not re-post the tracker comment or re-run resolveCompletedTask.
-  it('a retried effect whose completion already ran skips the one-shot block', async () => {
-    returningRows = [[]]; // the once-marker was claimed by the first attempt
+  // S4b review: the effect is at-least-once. Only the tracker comment (a person sees it twice) is
+  // behind the once-marker; the fan-out and resolveCompletedTask run on every attempt, because a
+  // function killed after the claim would otherwise lose them for good.
+  it('first attempt: the fan-out runs and the tracker comment is posted once', async () => {
     await runMergedPrWork(input('runner-1', 'flipped'));
-    expect(events().some((e) => e.type === 'task.completed')).toBe(false);
-    // The merge's own fan-out still runs (deduped downstream by its key).
+    await new Promise((r) => setTimeout(r, 0));
+    expect(events().some((e) => e.type === 'task.completed')).toBe(true);
+    expect(resolveCompletedTask).toHaveBeenCalledTimes(1);
+    expect(trackerPost).toHaveBeenCalledTimes(1);
+  });
+
+  it('a retry after a kill past the claim still runs the fan-out, and does not re-post the comment', async () => {
+    returningRows = [[]]; // the killed attempt already set the marker
+    await runMergedPrWork(input('runner-1', 'flipped'));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(events().find((e) => e.type === 'task.completed')).toMatchObject({ via: 'merge', taskId: 't1' });
+    expect(resolveCompletedTask).toHaveBeenCalledTimes(1);
+    expect(trackerPost).not.toHaveBeenCalled();
     expect(events().find((e) => e.type === 'task.pr_merged').transition).toBe('flipped');
   });
 
