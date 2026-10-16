@@ -93,7 +93,12 @@ export async function GET(req: NextRequest) {
     let teamWsIds: string[];
     if (account) {
       teamIds = [account.teamId];
-      teamWsIds = constrainToGranted(account, await getTeamWorkspaceIds(account.teamId)).filter(id => taskScopeAllowsWorkspace(account, id));
+      // A per-task token's reach is its own task's workspace, the same rule
+      // get_pr_review applies; deriving it from the team's workspace list
+      // instead 403s a token whose workspace that list does not contain.
+      teamWsIds = account.taskScope
+        ? [account.taskScope.workspaceId]
+        : constrainToGranted(account, await getTeamWorkspaceIds(account.teamId)).filter(id => taskScopeAllowsWorkspace(account, id));
     } else {
       const sessionTeamIds = await resolveSessionTeamIds(sessionUser!.id, searchParams.get('teamId'));
       if (!sessionTeamIds) {

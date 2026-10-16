@@ -8,6 +8,14 @@ describe('runEndReason', () => {
     expect(runEndReason({ status: 'waiting_input', waitingFor: { type: 'pause' } })).toBe('Paused');
   });
 
+  it('R-38: a paused run says since when it is paused', () => {
+    const now = Date.parse('2026-10-16T12:00:00Z');
+    expect(runEndReason({ status: 'waiting_input', waitingFor: { type: 'pause', since: '2026-10-16T11:20:00Z' }, now })).toBe('Paused for 40m');
+    expect(runEndReason({ status: 'waiting_input', waitingFor: { type: 'pause', since: '2026-10-16T09:00:00Z' }, now })).toBe('Paused for 3h');
+    // No since (an older runner), or an unreadable one: just Paused.
+    expect(runEndReason({ status: 'waiting_input', waitingFor: { type: 'pause', since: 'soon' }, now })).toBe('Paused');
+  });
+
   it('a finished run names its PR and whether it merged', () => {
     expect(runEndReason({ status: 'completed' })).toBe('Done');
     expect(runEndReason({ status: 'completed', prNumber: 12 })).toBe('Done · PR #12 open');

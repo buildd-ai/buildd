@@ -168,6 +168,13 @@ describe('rows (R-3)', () => {
     expect(rowsByTitle(s)['name override']).toMatchObject({ group: 'done', kind: 'review', reason: 'PR open example/repo/pull/12' });
   });
 
+  test('R-38: a paused worker says since when it is paused', () => {
+    const since = new Date(NOW - 20 * 60_000);
+    const clock = `${String(since.getHours()).padStart(2, '0')}:${String(since.getMinutes()).padStart(2, '0')}`;
+    const s = reduce(fixtureState(), { type: 'worker_update', worker: { ...WORKERS[1], status: 'waiting', waitingFor: { type: 'pause', prompt: 'Paused', since: since.toISOString() } } });
+    expect(rowsByTitle(s)['single instance'].reason).toMatch(new RegExp(`^paused since (\\w+ \\d+ )?${clock}, a resumes it$`));
+  });
+
   test('a finished task whose PR merged reads as merged, not as open', () => {
     let s = reduce(fixtureState(), { type: 'worker_update', worker: { ...WORKERS[0], status: 'done', completedAt: NOW - 60_000 } });
     s = reduce(s, { type: 'tasks', tasks: TASKS.map(t => t.id === 't-name' ? { ...t, status: 'completed', prMergedAt: new Date(NOW - 30_000).toISOString() } : t) });

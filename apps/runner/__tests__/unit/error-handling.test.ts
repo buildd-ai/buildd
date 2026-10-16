@@ -988,7 +988,8 @@ describe('Error Handling', () => {
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      // Completion runs async git (stats) off the event loop: wait for it.
+      for (let i = 0; i < 100 && !['done', 'error'].includes(manager.getWorker('w-obs-fail')?.status ?? ''); i++) await new Promise(r => setTimeout(r, 50));
 
       const worker = manager.getWorker('w-obs-fail');
       // Task should still be done, not error

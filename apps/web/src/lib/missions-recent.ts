@@ -20,8 +20,8 @@ import { missionStatusNoteIntoPattern, MISSION_STATUS_CHANGE_TITLES } from '@/li
 import type { RecentMission } from '@buildd/shared';
 
 export const RECENT_DAYS = 7;
-/** A bound on the read; no team keeps this many missions open or finishing in a week. */
-const MAX_MISSIONS = 300;
+/** Bound recent deliveries only; open missions must never be truncated. */
+const MAX_DELIVERED_MISSIONS = 300;
 const OPEN_STATUSES = ['active', 'paused', 'budget_exhausted'] as const;
 
 /** When the mission last became completed: the later of its stamp and its newest "→ completed" status note. */
@@ -58,18 +58,27 @@ export function recentMissionsWhere(workspaceIds: string[], since: Date) {
   );
 }
 
-/** The listed missions, newest activity first; `completedAt` is the delivered time, set only on a completed one. */
+/** The listed missions, open first, newest activity first within each set; `completedAt` is the delivered time, set only on a completed one. */
 export async function loadRecentMissions(workspaceIds: string[], now = Date.now()): Promise<Array<Omit<RecentMission, 'stage'>>> {
   if (workspaceIds.length === 0) return [];
   const since = new Date(now - RECENT_DAYS * 86_400_000);
-  const rows = await db.query.missions.findMany({
-    where: sqlWhere(recentMissionsWhere(workspaceIds, since)),
-    columns: { id: true, title: true, workspaceId: true, status: true, isHeld: true, executor: true },
+  const selection = {
+    columns: { id: true, title: true, workspaceId: true, status: true, isHeld: true, executor: true } as const,
     extras: sqlExtras({ deliveredAt: deliveredAtSqlFor(since) }),
     orderBy: sqlOrderBy([desc(missions.updatedAt)]),
-    limit: MAX_MISSIONS,
-  });
-  return rows.map(r => ({
+  };
+  const [open, delivered] = await Promise.all([
+    db.query.missions.findMany({
+      ...selection,
+      where: sqlWhere(and(inArray(missions.workspaceId, workspaceIds), inArray(missions.status, [...OPEN_STATUSES]))),
+    }),
+    db.query.missions.findMany({
+      ...selection,
+      where: sqlWhere(and(inArray(missions.workspaceId, workspaceIds), eq(missions.status, 'completed'), gte(deliveredAtSqlFor(since), since))),
+      limit: MAX_DELIVERED_MISSIONS,
+    }),
+  ]);
+  return [...open, ...delivered].map(r => ({
     id: r.id,
     title: r.title,
     workspaceId: r.workspaceId as string,

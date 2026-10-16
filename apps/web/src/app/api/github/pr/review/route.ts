@@ -67,6 +67,8 @@ const FORCE_NEEDS_PERSON = 'force re-reviews a head that already has a verdict, 
 interface TargetScope {
   teamIds: string[];
   workspaceIds: () => Promise<string[]>;
+  /** A per-task token's one workspace: a name or repo is matched against it directly. */
+  ownWorkspaceId?: string;
   foreignWorkspace: 'forbidden' | 'not_found';
 }
 
@@ -75,7 +77,7 @@ function accountScope(account: Account): TargetScope {
   // it as missing rather than forbidden.
   if (account.taskScope) {
     const workspaceId = account.taskScope.workspaceId;
-    return { teamIds: [account.teamId], workspaceIds: async () => [workspaceId], foreignWorkspace: 'not_found' };
+    return { teamIds: [account.teamId], workspaceIds: async () => [workspaceId], ownWorkspaceId: workspaceId, foreignWorkspace: 'not_found' };
   }
   return {
     teamIds: [account.teamId],
@@ -116,6 +118,19 @@ async function resolveTarget(
   workspaceIdInput: string | null,
 ): Promise<ResolvedTarget | { error: string; status: number; candidates?: string[] }> {
   if (workspaceIdInput) {
+    // A task token's workspace may not be owned by its team, so the team-wide
+    // lookup would miss it. Match the input against that one workspace instead.
+    if (scope.ownWorkspaceId) {
+      const own = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, scope.ownWorkspaceId)) });
+      const lower = workspaceIdInput.toLowerCase();
+      const matches = !!own && (
+        own.id === workspaceIdInput ||
+        own.name.toLowerCase() === lower ||
+        own.repo?.toLowerCase() === lower ||
+        !!own.repo?.toLowerCase().endsWith('/' + lower)
+      );
+      if (own && matches) return { workspace: own as ResolvedTarget['workspace'] };
+    }
     const ws = await resolveWorkspace(workspaceIdInput, { teamIds: scope.teamIds });
     if (!ws) return { error: `Workspace '${workspaceIdInput}' not found`, status: 404 };
     if (!scope.teamIds.includes(ws.teamId)) {

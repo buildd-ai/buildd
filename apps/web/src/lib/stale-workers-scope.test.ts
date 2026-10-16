@@ -391,3 +391,27 @@ describe('failWorkersOfOfflineRunners: the one offline-runner rule', () => {
     expect(dialect.sqlToQuery(workerLookups[0]).params).not.toContain('account-live');
   });
 });
+
+describe('R-38: a paused agent on a heartbeating runner is kept, not reaped', () => {
+  // A pause is `waiting_input` with `waitingFor.type = 'pause'`. The runner
+  // reports it on every sync while it runs, and continues it in its own
+  // session after a restart; the server must not take it away meanwhile.
+  it('no runner-evidence arm of the stale sweep reaches a waiting_input worker', () => {
+    const q = dialect.sqlToQuery(staleWorkerScope('account-1', THRESHOLD));
+    const text = q.sql.toLowerCase();
+    expect(q.params).not.toContain('waiting_input');
+    expect(text).not.toContain("'waiting_input'");
+  });
+
+  it('the offline-runner rule never runs while one runner on the account heartbeats', async () => {
+    heartbeatLookups.length = 0;
+    workerLookups.length = 0;
+    workerUpdates.length = 0;
+    freshHeartbeatFor = new Set(['account-1']);
+    orphanRows = [{ id: 'w-paused', taskId: 'task-paused', status: 'waiting_input', waitingFor: { type: 'pause' } }];
+
+    expect(await failWorkersOfOfflineRunners({ accountIds: ['account-1'] }, new Date())).toBe(0);
+    expect(workerLookups).toHaveLength(0);
+    expect(workerUpdates).toHaveLength(0);
+  });
+});

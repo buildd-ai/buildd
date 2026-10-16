@@ -292,7 +292,6 @@ describe('scanEnvironment', () => {
 
   it('advertises a plain codex login in ~/.codex as local Codex auth (no CODEX_HOME needed)', () => {
     const originalCodexHome = process.env.CODEX_HOME;
-    const originalSeat = process.env.BUILDD_HOST_SEAT;
     const originalImpl = mockExistsSync.getMockImplementation();
     delete process.env.CODEX_HOME;
     try {
@@ -301,12 +300,9 @@ describe('scanEnvironment', () => {
       mockExistsSync.mockImplementation(() => false);
       expect(scanEnvironment().envKeys).not.toContain('CODEX_HOME');
       mockExistsSync.mockImplementation((p: string) => String(p).endsWith('/.codex/auth.json'));
-      process.env.BUILDD_HOST_SEAT = 'off';
-      expect(scanEnvironment().envKeys).not.toContain('CODEX_HOME');
     } finally {
       if (originalImpl) mockExistsSync.mockImplementation(originalImpl);
       if (originalCodexHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = originalCodexHome;
-      if (originalSeat === undefined) delete process.env.BUILDD_HOST_SEAT; else process.env.BUILDD_HOST_SEAT = originalSeat;
     }
   });
 

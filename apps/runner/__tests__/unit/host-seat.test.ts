@@ -4,22 +4,24 @@
  * delivers on the claim. Its value never reaches a log line or evidence.
  */
 import { describe, test, expect } from 'bun:test';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { RUNNER_ENV_PASSTHROUGH, buildAgentBaseEnv } from '../../src/agent-env';
 import { applyModelEnv, shouldUseClaudeCredential } from '../../src/agent-model-env';
 import {
-  applyHostSeatPolicy, credentialsFileHasLogin, describeHostSeat, detectHostSeat, hostModelCredentialValues,
+  machineLoginStamp,
+  parseKeychainMdat,
+  applyMachineLoginPolicy, credentialsFileHasLogin, describeMachineLogin, detectMachineLogin, hostModelCredentialValues,
 } from '../../src/host-seat';
 import { createSecretRedactor } from '@buildd/core/redaction';
 
-const HOST_TOKEN = 'host-seat-token-value-0123456789';
+const HOST_TOKEN = 'machine-login-token-value-0123456789';
 const SERVER_OAUTH = 'server-oauth-value-abcdef';
 const SERVER_KEY = 'server-key-value-abcdef';
 
 function tmpHome(credentials?: unknown): string {
-  const home = mkdtempSync(join(tmpdir(), 'host-seat-'));
+  const home = mkdtempSync(join(tmpdir(), 'machine-login-'));
   if (credentials !== undefined) {
     mkdirSync(join(home, '.claude'), { recursive: true });
     writeFileSync(join(home, '.claude', '.credentials.json'), JSON.stringify(credentials));
@@ -42,79 +44,44 @@ describe('passthrough: the host env token reaches the agent', () => {
 
 });
 
-describe('applyHostSeatPolicy: whose seat the agent gets', () => {
+describe('applyMachineLoginPolicy: the machine login the agent gets', () => {
   const home = tmpHome();
   const probe = (env: Record<string, string>) => ({ env, home, platform: 'linux' as const });
 
-  test('auto, no stored seat: the machine env token is used', () => {
+  test('the machine env token is used', () => {
     const env = { CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN };
-    const d = applyHostSeatPolicy(env, { serverSeatDelivered: false, probe: probe({ CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN }) });
-    expect(d.hostSeat).toBe('env');
+    const d = applyMachineLoginPolicy(env, { probe: probe({ CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN }) });
+    expect(d.machineLogin).toBe('env');
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe(HOST_TOKEN);
-  });
-
-  test('auto, stored seat delivered: the stored seat wins and the env matches the pre-passthrough env', () => {
-    const env: Record<string, string> = { CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN };
-    const d = applyHostSeatPolicy(env, { serverSeatDelivered: true, probe: probe({ CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN }) });
-    expect(d.hostSeat).toBeNull();
-    expect(d.deferredTo).toBe('server');
-    expect(d.detected).toBe('env');
-    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
-    const r = applyModelEnv(env, { isCodexTask: false, hostSeat: d.hostSeat, serverOauthToken: SERVER_OAUTH });
-    expect(r.env.CLAUDE_CODE_OAUTH_TOKEN).toBe(SERVER_OAUTH);
-    expect(r.hostSeatUsed).toBeUndefined();
-  });
-
-  test('prefer: the machine seat wins over a stored seat', () => {
-    const runnerEnv = { CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN, BUILDD_HOST_SEAT: 'prefer' };
-    const env = { CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN };
-    const d = applyHostSeatPolicy(env, { serverSeatDelivered: true, probe: probe(runnerEnv) });
-    expect(d.hostSeat).toBe('env');
-    const r = applyModelEnv(env, { isCodexTask: false, hostSeat: d.hostSeat, serverOauthToken: SERVER_OAUTH });
-    expect(r.env.CLAUDE_CODE_OAUTH_TOKEN).toBe(HOST_TOKEN);
-  });
-
-  test('off: the env token never reaches the agent, stored seat or not', () => {
-    for (const serverSeatDelivered of [true, false]) {
-      const env: Record<string, string> = { CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN };
-      const d = applyHostSeatPolicy(env, { serverSeatDelivered, probe: probe({ CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN, BUILDD_HOST_SEAT: 'off' }) });
-      expect(d.hostSeat).toBeNull();
-      expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
-    }
   });
 
   test('Codex task: no Claude seat decision is made', () => {
     const env = { CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN };
-    const d = applyHostSeatPolicy(env, { serverSeatDelivered: false, isCodexTask: true, probe: probe({ CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN }) });
-    expect(d.hostSeat).toBeNull();
-    expect(d.deferredTo).toBeNull();
+    const d = applyMachineLoginPolicy(env, { isCodexTask: true, probe: probe({ CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN }) });
+    expect(d.machineLogin).toBeNull();
   });
 
-  test('auto, stored seat, host claude login: stored seat used; prefer flips it', () => {
+  test('a machine claude login is used without a setting', () => {
     const loginHome = tmpHome({ claudeAiOauth: { accessToken: 'a' } });
     try {
-      const auto = applyHostSeatPolicy({}, { serverSeatDelivered: true, probe: { env: {}, home: loginHome, platform: 'linux' } });
-      expect(auto.hostSeat).toBeNull();
-      expect(auto.deferredTo).toBe('server');
-      const pref = applyHostSeatPolicy({}, { serverSeatDelivered: true, probe: { env: { BUILDD_HOST_SEAT: 'prefer' }, home: loginHome, platform: 'linux' } });
-      expect(pref.hostSeat).toBe('login');
+      expect(applyMachineLoginPolicy({}, { probe: { env: {}, home: loginHome, platform: 'linux' } }).machineLogin).toBe('login');
     } finally { rmSync(loginHome, { recursive: true, force: true }); }
   });
 });
 
-describe('detectHostSeat', () => {
+describe('detectMachineLogin', () => {
   test('env token counts', () => {
-    expect(detectHostSeat({ env: { CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN }, home: tmpHome(), platform: 'linux' })).toBe('env');
+    expect(detectMachineLogin({ env: { CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN }, home: tmpHome(), platform: 'linux' })).toBe('env');
   });
 
   test('blank env token does not count', () => {
-    expect(detectHostSeat({ env: { CLAUDE_CODE_OAUTH_TOKEN: '  ' }, home: tmpHome(), platform: 'linux' })).toBeNull();
+    expect(detectMachineLogin({ env: { CLAUDE_CODE_OAUTH_TOKEN: '  ' }, home: tmpHome(), platform: 'linux' })).toBeNull();
   });
 
   test('a claude login credentials file counts', () => {
     const home = tmpHome({ claudeAiOauth: { accessToken: 'a', refreshToken: 'r' } });
     try {
-      expect(detectHostSeat({ env: {}, home, platform: 'linux' })).toBe('login');
+      expect(detectMachineLogin({ env: {}, home, platform: 'linux' })).toBe('login');
     } finally { rmSync(home, { recursive: true, force: true }); }
   });
 
@@ -122,7 +89,7 @@ describe('detectHostSeat', () => {
     const home = tmpHome({ mcpOAuth: { server: { accessToken: 'x' } } });
     try {
       expect(credentialsFileHasLogin(home)).toBe(false);
-      expect(detectHostSeat({ env: {}, home, platform: 'linux' })).toBeNull();
+      expect(detectMachineLogin({ env: {}, home, platform: 'linux' })).toBeNull();
     } finally { rmSync(home, { recursive: true, force: true }); }
   });
 
@@ -130,74 +97,67 @@ describe('detectHostSeat', () => {
     const home = tmpHome();
     writeFileSync(join(home, '.claude.json'), JSON.stringify({ oauthAccount: { accountUuid: 'stub' } }));
     try {
-      expect(detectHostSeat({ env: {}, home, platform: 'linux', macKeychainHasLogin: noKeychain })).toBeNull();
+      expect(detectMachineLogin({ env: {}, home, platform: 'linux', macKeychainHasLogin: noKeychain })).toBeNull();
     } finally { rmSync(home, { recursive: true, force: true }); }
   });
 
   test('macOS keychain login counts only on darwin', () => {
     const home = tmpHome();
-    expect(detectHostSeat({ env: {}, home, platform: 'darwin', macKeychainHasLogin: () => true })).toBe('login');
-    expect(detectHostSeat({ env: {}, home, platform: 'linux', macKeychainHasLogin: () => true })).toBeNull();
-    expect(detectHostSeat({ env: {}, home, platform: 'darwin', macKeychainHasLogin: noKeychain })).toBeNull();
-  });
-
-  test('BUILDD_HOST_SEAT=off disables detection', () => {
-    const home = tmpHome({ claudeAiOauth: { accessToken: 'a' } });
-    try {
-      expect(detectHostSeat({ env: { BUILDD_HOST_SEAT: 'off', CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN }, home, platform: 'linux' })).toBeNull();
-    } finally { rmSync(home, { recursive: true, force: true }); }
+    expect(detectMachineLogin({ env: {}, home, platform: 'darwin', macKeychainHasLogin: () => true })).toBe('login');
+    expect(detectMachineLogin({ env: {}, home, platform: 'linux', macKeychainHasLogin: () => true })).toBeNull();
+    expect(detectMachineLogin({ env: {}, home, platform: 'darwin', macKeychainHasLogin: noKeychain })).toBeNull();
   });
 });
 
-describe('precedence: the host seat beats a server-delivered seat', () => {
+describe('precedence: the machine login beats a server-delivered seat', () => {
   test('host env token is used; server oauth token is not injected', () => {
     const r = applyModelEnv({ CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN }, {
-      isCodexTask: false, hostSeat: 'env', serverOauthToken: SERVER_OAUTH,
+      isCodexTask: false, machineLogin: 'env', serverOauthToken: SERVER_OAUTH,
     });
     expect(r.env.CLAUDE_CODE_OAUTH_TOKEN).toBe(HOST_TOKEN);
     expect(r.injected).not.toContain('serverOauthToken');
-    expect(r.hostSeatUsed).toBe(true);
+    expect(r.machineLoginUsed).toBe(true);
   });
 
-  test('host env token wins even when hostSeat was not passed', () => {
+  test('host env token wins even when machineLogin was not passed', () => {
     const r = applyModelEnv({ CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN }, { isCodexTask: false, serverOauthToken: SERVER_OAUTH });
     expect(r.env.CLAUDE_CODE_OAUTH_TOKEN).toBe(HOST_TOKEN);
-    expect(r.hostSeatUsed).toBe(true);
+    expect(r.machineLoginUsed).toBe(true);
   });
 
   test('a host claude login wins: no server token lands in the env', () => {
-    const r = applyModelEnv({}, { isCodexTask: false, hostSeat: 'login', serverOauthToken: SERVER_OAUTH });
+    const r = applyModelEnv({}, { isCodexTask: false, machineLogin: 'login', serverOauthToken: SERVER_OAUTH });
     expect(r.env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
-    expect(r.hostSeatUsed).toBe(true);
+    expect(r.machineLoginUsed).toBe(true);
   });
 
-  test('the claim-delivered Claude credential is not materialized under a host seat', () => {
+  test('the claim-delivered Claude credential is not materialized under a machine login', () => {
     const worker = { claudeAccessToken: 'claude-access-value', claudeCredentialId: 'cred-1' };
-    const host = applyModelEnv({ CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN }, { isCodexTask: false, hostSeat: 'env' });
+    const host = applyModelEnv({ CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN }, { isCodexTask: false, machineLogin: 'env' });
     expect(shouldUseClaudeCredential(host, worker)).toBe(false);
-    const none = applyModelEnv({}, { isCodexTask: false, hostSeat: null });
+    const none = applyModelEnv({}, { isCodexTask: false, machineLogin: null });
     expect(shouldUseClaudeCredential(none, worker)).toBe(true);
   });
 
-  test('no host seat: the server seat still fills in (unchanged)', () => {
-    const r = applyModelEnv({}, { isCodexTask: false, hostSeat: null, serverOauthToken: SERVER_OAUTH });
+  test('no machine login: the server seat still fills in (unchanged)', () => {
+    const r = applyModelEnv({}, { isCodexTask: false, machineLogin: null, serverOauthToken: SERVER_OAUTH });
     expect(r.env.CLAUDE_CODE_OAUTH_TOKEN).toBe(SERVER_OAUTH);
     expect(r.injected).toContain('serverOauthToken');
-    expect(r.hostSeatUsed).toBeUndefined();
+    expect(r.machineLoginUsed).toBeUndefined();
   });
 
   test('a delivered metered key still fills an unset ANTHROPIC_API_KEY', () => {
-    const r = applyModelEnv({ CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN }, { isCodexTask: false, hostSeat: 'env', serverApiKey: SERVER_KEY });
+    const r = applyModelEnv({ CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN }, { isCodexTask: false, machineLogin: 'env', serverApiKey: SERVER_KEY });
     expect(r.env.ANTHROPIC_API_KEY).toBe(SERVER_KEY);
   });
 
-  test('the host seat never rides along to a non-Anthropic endpoint', () => {
+  test('the machine login never rides along to a non-Anthropic endpoint', () => {
     const r = applyModelEnv({ CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN, ANTHROPIC_BASE_URL: 'https://proxy.example.com' }, {
-      isCodexTask: false, hostSeat: 'env',
+      isCodexTask: false, machineLogin: 'env',
     });
     expect(r.env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
     const team = applyModelEnv({ CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN }, {
-      isCodexTask: false, hostSeat: 'env',
+      isCodexTask: false, machineLogin: 'env',
       modelEndpoint: { kind: 'gateway', baseUrl: 'https://gw.example.com', authToken: 'gw-key', authHeader: 'bearer' } as any,
     });
     expect(team.env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
@@ -205,8 +165,8 @@ describe('precedence: the host seat beats a server-delivered seat', () => {
 });
 
 describe('the token never appears in logs or evidence', () => {
-  test('describeHostSeat carries no value', () => {
-    for (const s of ['env', 'login'] as const) expect(describeHostSeat(s)).not.toContain(HOST_TOKEN);
+  test('describeMachineLogin carries no value', () => {
+    for (const s of ['env', 'login'] as const) expect(describeMachineLogin(s)).not.toContain(HOST_TOKEN);
   });
 
   test('the worker redactor scrubs the host token exactly', () => {
@@ -221,5 +181,47 @@ describe('the token never appears in logs or evidence', () => {
     const labels = hostModelCredentialValues({ CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN, ANTHROPIC_API_KEY: '', OPENAI_API_KEY: 'sk-openai-0123456789' })
       .map((v) => v.label);
     expect(labels).toEqual(['host:CLAUDE_CODE_OAUTH_TOKEN', 'host:OPENAI_API_KEY']);
+  });
+});
+
+describe('machineLoginStamp: noticing a fresh login without reading it', () => {
+  test('the keychain mdat attribute is read from the attribute listing', () => {
+    const listing = 'keychain: "/x"\nattributes:\n    "mdat"<timedate>=0x32303236313031363039333030305A00  "20261016093000Z\\000"\n';
+    expect(parseKeychainMdat(listing)).toBe('20261016093000Z\\000');
+    expect(parseKeychainMdat('attributes:\n')).toBeNull();
+  });
+
+  test('the Claude stamp moves when the credentials file or the keychain item changes', () => {
+    const home = mkdtempSync(join(tmpdir(), 'stamp-'));
+    try {
+      const linux = { home, platform: 'linux' as const, env: {} };
+      expect(machineLoginStamp('claude', linux)).toBeNull();
+      mkdirSync(join(home, '.claude'), { recursive: true });
+      const file = join(home, '.claude', '.credentials.json');
+      writeFileSync(file, '{}');
+      const first = machineLoginStamp('claude', linux);
+      expect(first).not.toBeNull();
+      utimesSync(file, new Date(2026, 0, 1), new Date(2026, 0, 2));
+      expect(machineLoginStamp('claude', linux)).not.toBe(first);
+      let mdat = 'a';
+      const mac = { home, platform: 'darwin' as const, env: {}, macKeychainStamp: () => mdat };
+      const before = machineLoginStamp('claude', mac);
+      mdat = 'b';
+      expect(machineLoginStamp('claude', mac)).not.toBe(before);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("the Codex stamp is its auth.json's", () => {
+    const home = mkdtempSync(join(tmpdir(), 'stamp-'));
+    try {
+      expect(machineLoginStamp('codex', { home, env: {} })).toBeNull();
+      mkdirSync(join(home, '.codex'), { recursive: true });
+      writeFileSync(join(home, '.codex', 'auth.json'), '{}');
+      expect(machineLoginStamp('codex', { home, env: {} })).not.toBeNull();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

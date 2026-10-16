@@ -14,6 +14,7 @@ import { credentialBroker } from './broker';
 import { createWorkspaceResolver, parseProjectRoots, normalizeGitUrl, getGitRemoteAsync } from './workspace';
 import { gitShellAsync } from './git-async';
 import { toTopWorkerSummaries } from './top-worker-summary';
+import { todayTotals } from './run-route';
 import { Outbox, createReplayHandler } from './outbox';
 import { parseOnceArgs, runOnceFromCli, ONCE_USAGE, EXIT_USAGE } from './run-once';
 import { classifyCliArgs, RUNNER_USAGE, EXIT_CLI_USAGE } from './cli-args';
@@ -24,6 +25,8 @@ import { getCurrentCommit as getDiskCommit, checkForUpdate, applyUpdate, rollbac
 import { evaluateManualUpdateGate, performManualUpdate, type ManualUpdateDeps } from './update-gate';
 import { initUpdateCanary, runCanaryTrip } from './update-canary';
 import { initUpdateDrain, getUpdateDrain } from './update-drain';
+import { initRunnerHold, currentRunnerHold } from './runner-hold';
+import { installRunnerShutdown, SHUTDOWN_DEADLINE_MS } from './restart-resume';
 import { saveWorker } from './worker-store';
 import { initHistory, searchSessions, getSession, getArchivedData, getStats as getHistoryStats } from './history-store';
 import { readClaimLogs } from './session-logger';
@@ -65,6 +68,33 @@ if (CLI.kind === 'unknown') {
 if (CLI.kind === 'name') {
   const { runNameCommand } = await import('./runner-name');
   const r = runNameCommand(CLI.args, { configFile: CONFIG_FILE });
+  if (r.stdout) console.log(r.stdout);
+  if (r.stderr) console.error(r.stderr);
+  process.exit(r.code);
+}
+
+// `buildd hold [--for <time>]` / `buildd resume`: ask the runner on this
+// machine to stop or resume taking new work; with none running, save it for
+// the next start (runner-hold.ts). Never starts a runner.
+if (CLI.kind === 'hold' || CLI.kind === 'resume') {
+  const { runHoldCommand } = await import('./runner-hold');
+  const { runnerSocketPath: socketPathFor } = await import('./runner-socket');
+  const r = await runHoldCommand(CLI.kind === 'hold' ? { kind: 'hold', forArg: CLI.forArg } : { kind: 'resume' }, {
+    configFile: CONFIG_FILE,
+    socketPath: socketPathFor(BUILDD_DIR),
+  });
+  if (r.stdout) console.log(r.stdout);
+  if (r.stderr) console.error(r.stderr);
+  process.exit(r.code);
+}
+
+// `buildd stop [--abort] [--yes]`: pause every running agent the way `p` in
+// top does (`--abort`: end them the way `x` does) and leave the runner on
+// hold (runner-hold.ts). Never starts a runner.
+if (CLI.kind === 'stop') {
+  const { runStopCommand } = await import('./runner-hold');
+  const { runnerSocketPath: socketPathFor } = await import('./runner-socket');
+  const r = await runStopCommand({ yes: CLI.yes, abort: CLI.abort }, { configFile: CONFIG_FILE, socketPath: socketPathFor(BUILDD_DIR) });
   if (r.stdout) console.log(r.stdout);
   if (r.stderr) console.error(r.stderr);
   process.exit(r.code);
@@ -650,6 +680,31 @@ if (ONCE_RUN) {
 let buildd: BuilddClient | null = config.apiKey ? new BuilddClient(config) : null;
 let workerManager: WorkerManager | null = config.apiKey ? new WorkerManager(config, resolver) : null;
 
+// A person's hold (`buildd hold`, runner-hold.ts), read from config.json so a
+// restart of any kind keeps it. `--once` runs one named task and has none.
+const runnerHold = ONCE_TASK_ID === null ? initRunnerHold({ configFile: CONFIG_FILE }) : null;
+if (runnerHold?.isHeld()) {
+  const h = runnerHold.current()!;
+  console.log(`[runner-hold] Started on hold since ${h.since}${h.until ? `, until ${h.until}` : ''}: nothing new starts until buildd resume`);
+}
+runnerHold?.onChange((hold) => {
+  // top's header, and the server, learn at once; a lifted hold claims straight away.
+  broadcast({ type: 'runner_hold', hold });
+  const wm = workerManager;
+  if (!wm) return;
+  void wm.sendHeartbeatNow().catch(() => {}).then(async () => {
+    if (hold) return;
+    // Agents a stop or restart paused while held continue now (R-37).
+    await wm.continueRestoredAgents().catch(() => {});
+    wm.claimPendingTasks().catch(() => {});
+  });
+});
+
+/** Agents the hold lets finish: the busy ones, the same count top's header uses. */
+function liveAgentCount(): number {
+  return (workerManager?.getWorkers() ?? []).filter((w: LocalWorker) => w.status === 'working' || w.status === 'stale').length;
+}
+
 // Offline outbox for queuing failed mutations (not used in permanent serverless)
 const outbox = new Outbox();
 
@@ -979,6 +1034,7 @@ async function initializeClients() {
     attachOutbox(buildd);
     workerManager = new WorkerManager(config, resolver);
     workerManager.onEvent(broadcast);
+    void workerManager.continueRestoredAgents().catch(() => {});
     console.log('API key configured, clients initialized');
     await fetchAccountInfo();
     // Flush any queued mutations now that we're connected
@@ -1154,19 +1210,31 @@ async function runHealthProbeInner(): Promise<{ ok: boolean; detail: string }> {
 // Every step is defensive — a failure anywhere in the drain sequence still
 // falls through to process.exit(75) rather than leaving `updateState.updating`
 // stuck true with no restart ever happening (the exact "19 wedged attempts"
-// failure mode this replaces). A 20s failsafe forces the exit even if the
-// happy path never reaches its own process.exit call.
+// failure mode this replaces). A failsafe forces the exit even if the happy
+// path never reaches its own process.exit call.
+//
+// Running agents are paused first, the way a service stop pauses them (R-37,
+// restart-resume.ts), so the start that follows continues each in its own
+// session instead of failing it as "Process restarted". Bounded by
+// SHUTDOWN_DEADLINE_MS, inside the failsafe.
 function scheduleGracefulRestart(reason: string) {
   console.log(`[restart] scheduling graceful restart (${reason})`);
   setUpdating(true);
   // So the start that follows knows it is a restart and does not open a browser.
   writeRestartMarker(BUILDD_DIR);
+  const failsafeMs = SHUTDOWN_DEADLINE_MS + 5_000;
   const failsafe = setTimeout(() => {
-    console.error(`[restart] graceful restart did not complete within 20s (${reason}) — forcing exit`);
+    console.error(`[restart] graceful restart did not complete within ${Math.round(failsafeMs / 1000)}s (${reason}) — forcing exit`);
     process.exit(75);
-  }, 20_000);
+  }, failsafeMs);
   try {
-    setTimeout(() => {
+    const pausing: Promise<unknown> = Promise.race([
+      (workerManager?.pauseAllForShutdown() ?? Promise.resolve()).catch((err) => {
+        console.error(`[restart] pausing agents failed (${reason}): ${err?.message ?? err} — restarting anyway`);
+      }),
+      new Promise(r => setTimeout(r, SHUTDOWN_DEADLINE_MS)),
+    ]);
+    void pausing.then(() => setTimeout(() => {
       try {
         console.log('Graceful restart: draining connections...');
         for (const controller of sseClients) {
@@ -1183,7 +1251,7 @@ function scheduleGracefulRestart(reason: string) {
         console.error(`[restart] failed while draining connections (${reason}): ${err.message} — forcing exit anyway`);
         process.exit(75);
       }
-    }, 1000);
+    }, 1000));
   } catch (err: any) {
     clearTimeout(failsafe);
     console.error(`[restart] failed to schedule restart (${reason}): ${err.message}`);
@@ -1208,6 +1276,9 @@ const manualUpdateDeps: ManualUpdateDeps = {
   isNoProgressUpdate,
 };
 
+// Whether this process started the credential broker (its shutdown removes the broker socket).
+let brokerStarted = false;
+
 // Subscribe to worker events (if configured)
 if (workerManager) {
   workerManager.onEvent(broadcast);
@@ -1226,12 +1297,29 @@ if (workerManager) {
   // document as "NOT recommended"). Left to the env alone the broker sent no
   // Authorization header, 401'd on every lease acquire, and silently never
   // refreshed a single credential.
-  credentialBroker.start({ apiKey: config.apiKey, baseUrl: config.builddServer });
+  //
+  // Without its own signal handlers: the runner's stop handler below owns the
+  // exit, and releases the broker's leases after pausing the agents (R-37).
+  credentialBroker.start({ apiKey: config.apiKey, baseUrl: config.builddServer }, { signalHandlers: false });
+  brokerStarted = true;
+  // R-37: agents the last stop paused (or a crash left with their worktree and
+  // session intact) continue in their own sessions, unless the runner is on hold.
+  void workerManager.continueRestoredAgents().catch((err) => console.warn('[restart] continuing paused agents failed:', err));
 } else if (config.serverless || !config.apiKey) {
   // In serverless mode, poll the public /api/version endpoint
   pollVersion();
   versionPollInterval = setInterval(pollVersion, 30 * 60_000);
 }
+
+// A service stop (SIGTERM from launchd or systemd), Ctrl-C on a foreground
+// runner (SIGINT): pause the running agents within a bounded grace, release
+// the broker's leases, then exit (R-37, restart-resume.ts). The only
+// SIGTERM/SIGINT listener in this process. A second signal exits at once.
+installRunnerShutdown({
+  pauseAgents: async () => { await workerManager?.pauseAllForShutdown(); },
+  releaseBroker: async () => { if (brokerStarted) await credentialBroker.shutdown(); },
+  exit: (code) => process.exit(code),
+});
 
 // Fetch account info on startup if already configured
 if (buildd) {
@@ -1425,17 +1513,24 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
 
     // Check if configured
     if (path === '/api/config' && req.method === 'GET') {
-      const authStatus = workerManager?.getAuthStatus() || { modelAuthSource: undefined, modelAuthMode: undefined, codexAuthSource: undefined };
+      const authStatus = workerManager?.getAuthStatus() || { modelAuthSource: undefined, codexAuthSource: undefined };
+      const routeStatus = workerManager ? (() => {
+        const { routes, problems } = workerManager.getRouteStatus();
+        return { routes, routeProblems: problems, spendToday: todayTotals(workerManager.getWorkers(), Date.now()) };
+      })() : {};
       return Response.json({
         configured: !!config.apiKey,
         serverless: config.serverless || false,
         builddServer: config.builddServer,
         projectRoots: config.projectRoots,
-        // Labels + mode only (host-seat.ts detectModelAuthSource /
+        // Labels only (host-seat.ts detectModelAuthSource /
         // detectCodexAuthSource), never a value.
         modelAuthSource: authStatus.modelAuthSource,
-        modelAuthMode: authStatus.modelAuthMode,
         codexAuthSource: authStatus.codexAuthSource,
+        // The routes this machine's own credentials give each backend, the
+        // ones that do not work, and today's dollars on this runner per
+        // bucket (run-route.ts). `buildd top`'s header reads these.
+        ...routeStatus,
         model: config.model,
         maxConcurrent: config.maxConcurrent,
         acceptRemoteTasks: config.acceptRemoteTasks !== false,
@@ -1477,6 +1572,7 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
         attachOutbox(buildd);
         workerManager = new WorkerManager(config, resolver);
         workerManager.onEvent(broadcast);
+        void workerManager.continueRestoredAgents().catch(() => {});
         console.log('Server connection restored');
         await fetchAccountInfo();
         // Flush any queued mutations from when server was unreachable
@@ -1512,6 +1608,7 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
         attachOutbox(buildd);
         workerManager = new WorkerManager(config, resolver);
         workerManager.onEvent(broadcast);
+        void workerManager.continueRestoredAgents().catch(() => {});
         fetchAccountInfo(); // fire-and-forget — don't block the response
         // Flush queued mutations to the new server
         if (outbox.count() > 0) {
@@ -1649,6 +1746,7 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
         workerManager.destroy();
         workerManager = new WorkerManager(config, resolver);
         workerManager.onEvent(broadcast);
+        void workerManager.continueRestoredAgents().catch(() => {});
       }
 
       return Response.json({
@@ -1787,6 +1885,8 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
         workers: toPublicWorkers(activeWorkers),
         // What held the last claims, so `buildd top` says why work waits (spec c7410e76 R-25).
         claimOutcomes: workerManager?.getClaimOutcomes() ?? { tasks: {}, broad: null },
+        // A person's hold, so top's header says "on hold" from its first frame (R-33).
+        hold: currentRunnerHold(),
         config: {
           projectRoots: config.projectRoots,
           builddServer: config.builddServer,
@@ -1910,6 +2010,23 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
       return Response.json({ workers: toPublicWorkers(workerManager!.getWorkers()) }, { headers: corsHeaders });
     }
 
+    // `buildd hold` / `buildd resume` / `h` in top (runner-hold.ts, R-32/R-33).
+    if (path === '/api/hold' && req.method === 'GET') {
+      return Response.json({ hold: currentRunnerHold(), running: liveAgentCount() }, { headers: corsHeaders });
+    }
+    if (path === '/api/hold' && req.method === 'POST') {
+      if (!runnerHold) return Response.json({ error: 'This runner runs one task and cannot be held.' }, { status: 409, headers: corsHeaders });
+      const body = await parseBody(req).catch(() => ({}));
+      const forMs = typeof body?.forMs === 'number' && Number.isFinite(body.forMs) && body.forMs > 0 ? body.forMs : null;
+      const hold = runnerHold.hold(forMs);
+      return Response.json({ hold, running: liveAgentCount() }, { headers: corsHeaders });
+    }
+    if (path === '/api/resume' && req.method === 'POST') {
+      if (!runnerHold) return Response.json({ error: 'This runner runs one task and cannot be held.' }, { status: 409, headers: corsHeaders });
+      const was = runnerHold.resume();
+      return Response.json({ hold: null, wasHeld: was !== null, running: liveAgentCount() }, { headers: corsHeaders });
+    }
+
     if (path === '/api/workers/purge' && req.method === 'POST') {
       const count = workerManager!.purgeCompleted();
       return Response.json({ purged: count }, { headers: corsHeaders });
@@ -1927,7 +2044,8 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
       }
 
       try {
-        const worker = await workerManager!.claimAndStart(task);
+        // A person picked this task (`c` in top, the local UI): a hold does not stop it (R-34).
+        const worker = await workerManager!.claimAndStart(task, { byPerson: true });
         if (!worker) {
           // claimAndStart returns null only when the auth context is paused (rate
           // limit) or a Codex sequential-enforcement deferral. The server-rejected
@@ -2029,7 +2147,7 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
           return Response.json({ error: 'Task not found after reassign' }, { status: 404, headers: corsHeaders });
         }
 
-        const worker = await workerManager!.claimAndStart(task);
+        const worker = await workerManager!.claimAndStart(task, { byPerson: true });
         if (!worker) {
           return Response.json({ error: 'Failed to claim task after reassign' }, { status: 400, headers: corsHeaders });
         }
@@ -3061,9 +3179,9 @@ setInterval(async () => {
   });
   if (decision.action === 'apply') {
     if (decision.reason === 'timeout') {
-      // These sessions die with the process. Persist their latest state now so
-      // the next boot reports each one to the server as "Process restarted"
-      // (retryable, worktree kept) with everything it had accumulated.
+      // scheduleGracefulRestart pauses these first (R-37); persist their latest
+      // state now too, so even a restart the pause cannot finish leaves each on
+      // disk for the next boot to continue (or, with its session gone, retry).
       for (const w of drainBlocking) {
         console.warn(`[update-drain] restarting over in-flight worker ${w.id} (task ${w.taskId}: ${w.taskTitle})`);
         try { saveWorker(w); } catch { /* best effort — the last periodic save still stands */ }

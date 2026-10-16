@@ -3,14 +3,16 @@
  * 80x24 and 120x40 is snapshot-tested (top-render.test.ts).
  *
  * Every line is exactly `cols` wide. Rows never wrap: at narrow widths the
- * cost column goes first, then the role column, and text is cut with "…".
+ * cost column goes first, then the route words, then the role column (R-7,
+ * R-41), and text is cut with "…".
  */
 import type { Palette, PaletteToken } from '../terminal-palette';
+import { detailDollars, runWords, workerSpend } from '../run-route';
 import { progressPieces } from './progress';
 import { queueSections, selectedQueueRow, type QueueRow, type QueueSection } from './queue';
 import {
-  busySlots, currentMission, currentWorkspace, deliveredDay, describeToolCall, filterLine, formatDuration, missionMeta, missionRows, missionStageLine, missionStageWord, planOf,
-  providerHoldLine, providerHolds, selectedRow,
+  busySlots, currentMission, currentWorkspace, deliveredDay, describeToolCall, filterLine, formatDuration, heldNow, holdLine, missionMeta, missionRows, missionStageLine, missionStageWord, planOf,
+  providerHoldLine, providerHolds, routeProblemLines, runsOn, selectedRow, spendTodayLine,
   NO_MISSION, taskRows, workerForTask, workspaceSummary, type MissionRow, type RowKind, type TaskRow, type TopState,
 } from './state';
 
@@ -73,10 +75,19 @@ const GLYPH: Record<RowKind, { ch: string; token: PaletteToken }> = {
 const ROLE_W = 10;
 const ELAPSED_W = 6;
 const COST_W = 9;
+/** "Codex · OpenRouter (team)" and a space. */
+const ROUTE_W = 26;
+/** The action column's floor when the route words take room from it. */
+const MIN_TAIL_W = 12;
 
-/** Which optional columns fit in a pane `width` wide. */
-export function columnsFor(width: number): { role: boolean; cost: boolean } {
-  return { cost: width >= 76, role: width >= 52 };
+/**
+ * Which optional columns fit in a pane `width` wide. The route words (R-40)
+ * only take a column when a running row has one; they go after cost and
+ * before role (R-41).
+ */
+export function columnsFor(width: number, withRoute = false): { role: boolean; cost: boolean; route: boolean } {
+  if (!withRoute) return { cost: width >= 76, role: width >= 52, route: false };
+  return { cost: width >= 88, route: width >= 72, role: width >= 52 };
 }
 
 function formatTokens(n: number | undefined): string {
@@ -86,22 +97,25 @@ function formatTokens(n: number | undefined): string {
   return `${(n / 1_000_000).toFixed(1)}M tok`;
 }
 
-function renderRow(row: TaskRow, width: number, selected: boolean, p: Palette): string {
-  const cols = columnsFor(width);
+function renderRow(row: TaskRow, width: number, selected: boolean, p: Palette, withRoute = false): string {
+  const cols = columnsFor(width, withRoute);
   const g = GLYPH[row.kind];
   // " ● " prefix = 3
   let rest = width - 3;
   const roleW = cols.role ? ROLE_W : 0;
   const elapsedW = ELAPSED_W;
   const costW = cols.cost ? COST_W : 0;
-  rest -= roleW + elapsedW + costW;
-  const titleW = Math.max(8, Math.min(28, Math.floor(rest * 0.45)));
+  const routeW = cols.route ? ROUTE_W : 0;
+  rest -= roleW + routeW + elapsedW + costW;
+  // With route words in the row the title keeps its room and the action gives way.
+  const titleW = Math.max(8, Math.min(28, cols.route ? rest - MIN_TAIL_W : Math.floor(rest * 0.45)));
   const tailW = Math.max(0, rest - titleW);
 
   // Title, role and status are separate columns (R-21): a cut title ends in
   // "…" and one space always follows it.
   const title = fit(row.title, titleW - 1) + ' ';
   const role = cols.role ? fit(row.role ?? '', ROLE_W - 1) + ' ' : '';
+  const route = cols.route ? fit(row.route ?? '', ROUTE_W - 1) + ' ' : '';
   const elapsed = row.elapsedMs !== undefined ? fit(formatDuration(row.elapsedMs), elapsedW - 1, 'right') + ' ' : ' '.repeat(elapsedW);
 
   let tail: string;
@@ -115,7 +129,8 @@ function renderRow(row: TaskRow, width: number, selected: boolean, p: Palette): 
   } else {
     tail = fit(row.reason ?? '', tailW);
   }
-  const cost = cols.cost ? fit(row.group === 'running' ? formatTokens(row.tokens) : '', COST_W, 'right') : '';
+  // Dollars on a per-token route (R-41); a plan run, or one with no result yet, shows its tokens.
+  const cost = cols.cost ? fit(row.group === 'running' ? row.dollars ?? formatTokens(row.tokens) : '', COST_W, 'right') : '';
 
   // The › marks the selection even with no colour at all (NO_COLOR). Primary
   // text is the terminal's own foreground (R-17); only the selected row, which
@@ -126,6 +141,7 @@ function renderRow(row: TaskRow, width: number, selected: boolean, p: Palette): 
     (selected ? p.fg('accent', '›') : ' ') + p.fg(g.token, g.ch) + ' ' +
     p.fg(primary, title) +
     p.fg('muted', role) +
+    (route ? p.fg('muted', route) : '') +
     p.fg('muted', elapsed) +
     p.fg(tailToken, tail) +
     p.fg('muted', cost);
@@ -134,12 +150,13 @@ function renderRow(row: TaskRow, width: number, selected: boolean, p: Palette): 
 
 // ── frame ───────────────────────────────────────────────────────────────────
 
-function header(state: TopState, cols: number, p: Palette): string {
+function header(state: TopState, cols: number, now: number, p: Palette): string {
   const host = state.runner.hostname;
   // R-19: which workspaces this runner serves, e.g. "5 workspaces · Acme".
   const served = workspaceSummary(state);
   const busy = busySlots(state);
-  const online = state.runner.online ? '● online' : '○ reconnecting';
+  // R-33: a held runner reads "on hold" where "online" would be.
+  const online = !state.runner.online ? '○ reconnecting' : heldNow(state, now) ? '● on hold' : '● online';
   const version = state.runner.version ? ` · v${state.runner.version}` : '';
   // Widest first; drop the version, then shorten the slots, then the hostname.
   const variants: Array<{ host: boolean; slots: string; version: string }> = [
@@ -169,13 +186,13 @@ function rule(cols: number, p: Palette): string {
   return p.fg('faint', '─'.repeat(cols));
 }
 
-const HINTS_LIST = ['↑↓ move', '⏎ open', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 'o web', 'tab queue', 't team', 'w workspace', '/ filter', '? help', 'q quit'];
-const HINTS_QUEUE = ['↑↓ move', 'c claim', 'o web', 'tab missions', 't team', 'w workspace', '/ filter', '? help', 'q quit'];
+const HINTS_LIST = ['↑↓ move', '⏎ open', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 'h hold', 'o web', 'tab queue', 't team', 'w workspace', '/ filter', '? help', 'q quit'];
+const HINTS_QUEUE = ['↑↓ move', 'c claim', 'h hold', 'o web', 'tab missions', 't team', 'w workspace', '/ filter', '? help', 'q quit'];
 const HINTS_HELP = ['o open this runner on buildd', 'any key back', 'q quit'];
 const HINTS_DETAIL = ['esc back', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 'o web', 'q quit'];
 
 /** Dropped first when the footer is too narrow; `? help`, `t`, `w` and `q quit` always stay. */
-const HINT_DROP_ORDER = ['/ filter', 'o web', '⏎ open', '↑↓ move', 'tab queue', 'm message', 'c claim', 'p pause', 'x stop', 'a answer', 'esc back'];
+const HINT_DROP_ORDER = ['p pause', 'x stop', 'h hold', 'm message', 'c claim', 'a answer', 'tab queue', 'o web', '/ filter', '↑↓ move', '⏎ open', 'esc back'];
 
 function fitHints(hints: string[], cols: number): string {
   for (const sep of ['  ', ' ']) {
@@ -308,12 +325,13 @@ function listBody(state: TopState, cols: number, height: number, now: number, p:
     { key: 'done', label: 'DONE TODAY' },
   ];
   const lines: Array<{ text: string; rowIndex?: number }> = [];
+  const withRoute = rows.some(r => !!r.route);
   for (const g of groups) {
     const inGroup = rows.map((r, i) => ({ r, i })).filter(x => x.r.group === g.key);
     if (inGroup.length === 0) continue;
     lines.push({ text: p.fg('muted', fit(' ' + g.label, rw)) });
     for (const { r, i } of inGroup) {
-      lines.push({ text: renderRow(r, rw, state.focus === 'tasks' && sel?.taskId === r.taskId, p), rowIndex: i });
+      lines.push({ text: renderRow(r, rw, state.focus === 'tasks' && sel?.taskId === r.taskId, p, withRoute), rowIndex: i });
     }
   }
   if (rows.length === 0) {
@@ -376,6 +394,13 @@ function detailBody(state: TopState, taskId: string, cols: number, height: numbe
   const titleW = Math.max(8, cols - 3 - textWidth(meta) - 3);
   push(' ' + p.fg(g.token, g.ch) + ' ' + p.fg('text', fit(title, titleW)) + p.fg('muted', fit('   ' + meta, Math.max(0, cols - 3 - titleW))));
 
+  // Backend and route, and the run's dollars in the words that say how it is paid (R-40, R-41).
+  if (w?.route) {
+    const served = w.resultMeta?.actualModel && w.sessionModel && w.resultMeta.actualModel !== w.sessionModel
+      ? `served ${w.resultMeta.actualModel} (asked for ${w.sessionModel})` : null;
+    const dollars = detailDollars(workerSpend(w), w.resultMeta?.actualModel ?? w.sessionModel);
+    line('muted', ' ' + [runWords(w.route.backend, w.route), served, dollars].filter(Boolean).join(' · '));
+  }
   if (w?.prUrl) line('info', ` PR ${w.prUrl}`);
   if (row?.kind === 'asking' && row.question) {
     line('warning', ` asks: "${row.question}"`);
@@ -444,6 +469,7 @@ const HELP_KEYS: Array<[string, string]> = [
   ['x', 'stop a running agent (asks first)'],
   ['c', 'claim a waiting task onto this runner'],
   ['tab', 'switch between Missions and Queue (what this runner takes next)'],
+  ['h', 'hold: running agents finish, nothing new starts; h again resumes'],
   ['o', 'open the task on buildd'],
   ['t', 'show the next team, then all of them'],
   ['w', 'show the next workspace of that team, then all of them'],
@@ -474,9 +500,22 @@ export function renderFrame(state: TopState, opts: FrameOptions): string[] {
   const holdLines = providerHolds(state, now)
     .slice(0, 2)
     .map(h => p.fg('warning', fit(' ' + providerHoldLine(h, now), cols)));
+  // A person's hold (R-33): its own line straight under the header, in the
+  // accent: a choice the person made, not a fault.
+  const ownLine = holdLine(state, now);
+  const ownHold = ownLine ? [p.fg('accent', fit(' ' + ownLine, cols))] : [];
   // The line under the header: Missions | Queue (R-26), then what is shown and the keys that change it (R-23).
   const filterRow = tabLine(state, cols, p);
-  const bodyH = Math.max(1, rows - 5 - holdLines.length);
+  // R-39, R-42: the routes this runner runs on, then today's dollars per bucket.
+  // A route that does not work is a warning on its own line, with where to fix it.
+  const runsOnText = runsOn(state, now);
+  const todayText = spendTodayLine(state, now);
+  const routeLines = [
+    ...(runsOnText ? [p.fg('muted', fit(' ' + runsOnText, cols))] : []),
+    ...routeProblemLines(state).map(l => p.fg('warning', fit(' ' + l, cols))),
+    ...(todayText ? [p.fg('muted', fit(' ' + todayText, cols))] : []),
+  ];
+  const bodyH = Math.max(1, rows - 5 - holdLines.length - ownHold.length - routeLines.length);
   const body = state.mode.kind === 'detail'
     ? detailBody(state, state.mode.taskId, cols, bodyH, now, p)
     : state.mode.kind === 'help'
@@ -484,7 +523,7 @@ export function renderFrame(state: TopState, opts: FrameOptions): string[] {
       : state.view === 'queue'
         ? queueBody(state, cols, bodyH, now, p)
         : listBody(state, cols, bodyH, now, p);
-  return [header(state, cols, p), filterRow, ...holdLines, rule(cols, p), ...body, rule(cols, p), footer(state, cols, p)];
+  return [header(state, cols, now, p), ...ownHold, ...routeLines, filterRow, ...holdLines, rule(cols, p), ...body, rule(cols, p), footer(state, cols, p)];
 }
 
 // ── Queue view (R-26) ───────────────────────────────────────────────────────

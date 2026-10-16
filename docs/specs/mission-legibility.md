@@ -8,7 +8,7 @@ domain: surfaces
 surfaces: [apps/web/src/lib/task-presentation.ts, apps/web/src/lib/approve-plan.ts, apps/web/src/lib/mission-feed-groups.ts, "apps/web/src/app/app/(protected)/missions/[id]/MissionFeedList.tsx"]
 related: [mission-feed, mission-structure-view, timeline-dependency-geometry, mission-task-lifecycle]
 keywords: [phase, work kind, role slug, glyph, reviewer role, unassigned, swimlane, phase header, approve_plan, usage stats]
-verified_by: [apps/web/src/lib/approve-plan.test.ts, apps/web/src/lib/task-presentation.test.ts, apps/web/src/components/TaskCard.test.tsx, apps/web/src/lib/condensed-timeline-rail.test.ts, "apps/web/src/app/app/(protected)/missions/[id]/MissionFeedList.test.tsx", "apps/web/src/components/missions/MissionTaskRow.test.tsx"]
+verified_by: [apps/web/src/lib/approve-plan.test.ts, apps/web/src/lib/task-presentation.test.ts, apps/web/src/components/TaskCard.test.tsx, "apps/web/src/app/app/(protected)/missions/[id]/MissionFeedList.test.tsx", "apps/web/src/components/missions/MissionTaskRow.test.tsx"]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 # 2026-09-23: §4's mobile surface moved from the retired rail to the mission
@@ -23,10 +23,6 @@ assertions:
     type: "symbol"
     name: "deriveWorkKind"
     path: "apps/web/src/lib/task-presentation.ts"
-  - id: "rail-phase-type"
-    type: "symbol"
-    name: "RailPhase"
-    path: "apps/web/src/lib/condensed-timeline.ts"
   - id: "rail-badge-reads-work-kind"
     type: "symbol_reachable"
     symbol: "deriveWorkKind"
@@ -38,9 +34,6 @@ assertions:
     type: "symbol_reachable"
     symbol: "deriveWorkKind"
     entry: "apps/web/src/components/missions/MissionTaskRow.tsx"
-  - id: "rail-phase-model-tests"
-    type: "test_file"
-    path: "apps/web/src/lib/condensed-timeline-rail.test.ts"
 ---
 
 # Mission Legibility
@@ -52,11 +45,6 @@ work-kind written at most once by whichever of filer, worker or PR-open gets
 there first — and every surface that draws either MUST read it through a single
 shared derivation that never sees a task's title.
 
-> **Promoted to `active`** by the §4 build PR (this one), which lands the
-> rail-model and render tests named in §5.3 into `verified_by`. §1–§3 landed
-> earlier in PR #2454; §4's rendering — phase header rows, the work-kind glyph
-> column on the rail and the Structure canvas, and `TaskTypeBadge`'s rewrite —
-> is what this PR adds.
 
 ---
 
@@ -121,7 +109,7 @@ A mission phase is an unrelated concept: a named stretch of a plan. Shipping a
 `task.phase` column beside a `deriveTaskPhase()` helper would put two different
 meanings of the same word one import apart.
 
-**R-1**: The stored fields are named `missionPhaseIndex` and
+- R-1: The stored fields are named `missionPhaseIndex` and
 `missionPhaseLabel`. No symbol introduced by this spec is called `phase`
 unqualified — the row-emission pass lives inside `buildRail` (§4.1) rather than
 in a second helper whose name would collide — and `deriveTaskPhase` is not
@@ -135,7 +123,7 @@ row type ever carries a work-kind field (§4.4).
 
 ### 1.2 Row, not table — decided against `mission_phases`
 
-**R-2**: A phase is stored as two nullable scalar columns on `tasks`:
+- R-2: A phase is stored as two nullable scalar columns on `tasks`:
 
 ```
 missionPhaseIndex  integer   -- 1-based, NULL when the task has no phase
@@ -183,7 +171,7 @@ agent emits structured steps, and `approvePlan`
 (`apps/web/src/lib/approve-plan.ts`) materializes them. So "explicit
 headings" has to be created before it can be read.
 
-**R-3**: `PlanStep` gains an optional `phase?: string` field, and
+- R-3: `PlanStep` gains an optional `phase?: string` field, and
 `planningOutputSchema` gains a matching property with this description:
 
 > `phase`: The named stretch of the mission this step belongs to, e.g.
@@ -193,7 +181,7 @@ headings" has to be created before it can be read.
 > a plan where every step has its own phase has no phases. Leave it off
 > entirely when the plan is a single stretch of work.
 
-**R-4**: `approvePlan` assigns phases in plan-array order, before the
+- R-4: `approvePlan` assigns phases in plan-array order, before the
 first insert pass:
 
 - The first step carrying a non-blank `phase` opens phase index 1.
@@ -206,7 +194,7 @@ first insert pass:
 - If **no** step in the plan carries a `phase`, nothing is written: every child
   task gets NULL/NULL and the mission has no phases (AC-1).
 
-**R-5**: `dependsOn` layers are **rejected** as a phase source. Three
+- R-5: `dependsOn` layers are **rejected** as a phase source. Three
 reasons, each independently sufficient:
 
 1. **A layer is already drawn.** Topological layering IS the rail's vertical
@@ -222,14 +210,14 @@ reasons, each independently sufficient:
    phases as unrelated tasks are filed. A stored fact must not be re-derivable
    into a different answer tomorrow.
 
-**R-6**: No phase is ever inferred from a task's title, description, or
+- R-6: No phase is ever inferred from a task's title, description, or
 any other prose, at any time, by any code path. This is the same doctrine
 `apps/web/src/lib/task-origin.ts` already states for task classification
 ("No title parsing").
 
 ### 1.4 Tasks created after approval
 
-**R-7**: A task with `taskClass = 'attempt'` and a `parentTaskId`
+- R-7: A task with `taskClass = 'attempt'` and a `parentTaskId`
 inherits `missionPhaseIndex` / `missionPhaseLabel` from its parent, copied at
 insert time. This covers reviewer tasks (`reviewer.ts`), CI retries and
 conflict retries — every attempt creation site. It is not a preference: the
@@ -237,7 +225,7 @@ rail collapses attempts under the parent row they belong to
 (`timeline-mobile-rail.md` §12), so an attempt with a different phase than its
 parent would have to render inside a band it is not a member of.
 
-**R-8**: Every other post-approval task (a human quick-add, a
+- R-8: Every other post-approval task (a human quick-add, a
 `[friction]` report, an auto-appended `[surface audit]` task, a heartbeat
 child) gets NULL/NULL.
 
@@ -254,13 +242,13 @@ task filed during phase 3 — is inside phase 3's stretch of the rail. The
 placement is positional and honest; the row simply claims no membership, and is
 excluded from every rollup.
 
-**R-9**: `approvePlan` invoked on a planning task that itself carries a
+- R-9: `approvePlan` invoked on a planning task that itself carries a
 phase, for a plan with no `phase` labels of its own, copies the planning task's
 phase onto every child. A re-plan inside a phase stays inside it.
 
 ### 1.5 Rollup — `SegmentStrip`, not a new bar
 
-**R-10**: A phase's rollup is a `SegmentStrip`
+- R-10: A phase's rollup is a `SegmentStrip`
 (`apps/web/src/components/SegmentStrip.tsx`) over its member tasks, one
 segment per member, ordered exactly as the rail orders them. Segment states are
 the chain-strip semantics `docs/design/task-presentation.md` already defines
@@ -279,11 +267,11 @@ looks finished and silently blocks everything downstream. A phase that reads
 "3/3 done" while one PR is unmerged would reintroduce exactly the failure the
 strip exists to catch.
 
-**R-11**: The printed count beside the strip is `{filled} / {total}`,
+- R-11: The printed count beside the strip is `{filled} / {total}`,
 filled only. A `half` member counts toward `total` and not toward the
 numerator. No new bar component, no new fill vocabulary, no fractional glyph.
 
-**R-12**: A phase is **complete** when every member is `filled` or
+- R-12: A phase is **complete** when every member is `filled` or
 `skipped`. A phase is **live** when it is the lowest `missionPhaseIndex` with
 at least one member that is not `completed`, `failed` or `cancelled`. At most
 one phase is live; when every phase is complete, none is.
@@ -294,7 +282,7 @@ one phase is live; when every phase is complete, none is.
 
 ### 2.1 One helper, three mounts
 
-**R-13**: The fallback chain is implemented exactly once, by a new
+- R-13: The fallback chain is implemented exactly once, by a new
 exported function `deriveWorkKind` in `apps/web/src/lib/task-presentation.ts` —
 the module `docs/design/task-presentation.md` designates as the one derivation
 module, and where `deriveTaskPhase`, `deriveChainPosition` and
@@ -308,7 +296,7 @@ deriveWorkKind(input: {
 }): { glyph: string; label: string; source: 'kind' | 'role' | 'type' } | null
 ```
 
-**R-14**: The input object has **no `title` field and no `description`
+- R-14: The input object has **no `title` field and no `description`
 field.** This is the enforcement mechanism for §1.6's no-prose rule, and it is
 mechanically checkable: the function cannot parse a title it is not given
 (AC-9).
@@ -318,7 +306,7 @@ only to match bracketed prefixes the platform itself writes via `reviewerTitle`
 — structured markers, not prose. Its output is passed **in**; the chain never
 calls it with a raw title of its own.
 
-**R-15**: Every surface that draws a work-kind calls `deriveWorkKind` and
+- R-15: Every surface that draws a work-kind calls `deriveWorkKind` and
 nothing else. The complete list of mounts:
 
 | Surface | File | Where |
@@ -326,7 +314,7 @@ nothing else. The complete list of mounts:
 | Mobile rail node | `apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.tsx` | glyph column, §4.4 |
 | Activity row | `apps/web/src/components/TaskCard.tsx` | `TaskTypeBadge`, mounted from `apps/web/src/app/app/(protected)/tasks/TaskGrid.tsx` |
 
-**R-16**: `TaskTypeBadge` (`TaskCard.tsx`) is rewritten as a thin
+- R-16: `TaskTypeBadge` (`TaskCard.tsx`) is rewritten as a thin
 renderer over `deriveWorkKind`'s return value, and the old three-entry glyph
 table it read (retry/review/review-retry) is retired — its distinct glyphs are
 not preserved; `review`/`review-retry` resolve through tier 3 to the analysis
@@ -338,7 +326,7 @@ inline; they do not import from `TaskCard.tsx`.
 
 ### 2.2 The chain, written once
 
-**R-17**: Strict precedence, first non-null wins, no blending:
+- R-17: Strict precedence, first non-null wins, no blending:
 
 1. **`tasks.kind`** — one of the seven values in `TASK_KINDS`
    (`apps/web/src/app/api/tasks/route.ts`), mirrored on the column
@@ -350,7 +338,7 @@ inline; they do not import from `TaskCard.tsx`.
 4. **none** — returns `null`. The surface renders no glyph and reserves no
    space for one (§4.5).
 
-**R-18**: Tier 3 deliberately drops `retry`. `TaskType` is a lineage
+- R-18: Tier 3 deliberately drops `retry`. `TaskType` is a lineage
 vocabulary, not a work vocabulary: `retry` says "this is a second attempt at
 whatever its parent was", which is information the rail already encodes as an
 outcome mark and an attempt disclosure (`timeline-mobile-rail.md` §6.4, §12).
@@ -385,7 +373,7 @@ Justification:
 4. **One glyph per row is mechanically checkable.** AC-8 asserts exactly one
    glyph node per rail row; "annotate" has no equally crisp assertion.
 
-**R-19**: The role→kind map, restricted to the seeded default roles:
+- R-19: The role→kind map, restricted to the seeded default roles:
 
 | `roleSlug` | Resolves to |
 |---|---|
@@ -398,14 +386,14 @@ Justification:
 | `spec-validator` | analysis |
 | anything else | nothing — falls through to tier 3 |
 
-**R-20**: The map is a literal table in `task-presentation.ts`, not a
+- R-20: The map is a literal table in `task-presentation.ts`, not a
 lookup against `workspaceSkills`. A workspace-defined role is not guessed at:
 it falls through. Reading the skills table here would put a database query
 inside a pure presentation helper that three surfaces call per row.
 
 ### 2.4 The glyph vocabulary
 
-**R-21**: Seven glyphs, one per kind. **No circles and no squares**: the
+- R-21: Seven glyphs, one per kind. **No circles and no squares**: the
 rail has already spent both: circles are task nodes in every fill state
 (`timeline-mobile-rail.md` §7), and squares are non-task rail elements (the
 goal root, and now the phase header, §4.2). A work-kind glyph that reused
@@ -438,7 +426,7 @@ established; this rule makes the check explicit rather than assuming it.
 
 ### 2.5 Population source (a) — `create_task`
 
-**R-24**: The `kind` clause in the `create_task` tool description
+- R-24: The `kind` clause in the `create_task` tool description
 (`packages/core/mcp-tools.ts`) is replaced. Current text:
 
 ```
@@ -454,7 +442,7 @@ kind (state it on every task — coordination|engineering|research|writing|desig
 The `?` is dropped from the parameter marker. The field stays optional in the
 schema; the description stops presenting it as an afterthought.
 
-**R-25**: `kind` does **NOT** become a hard 400 for mission tasks.
+- R-25: `kind` does **NOT** become a hard 400 for mission tasks.
 
 Justified against the `pathManifest` precedent the brief invokes. That gate
 (`apps/web/src/app/api/tasks/route.ts`) fires only when
@@ -467,7 +455,7 @@ trigger — `kind` is meaningful on every task — so it would fire on all of th
 including the `[friction]` filing an agent makes *while already failing*, which
 is the caller least able to absorb a rejection and retry.
 
-**R-26**: Instead, two levers that cost nothing on the failure path:
+- R-26: Instead, two levers that cost nothing on the failure path:
 
 1. **Required in the plan schema.** `kind` joins `ref`, `title` and
    `description` in `planningOutputSchema`'s `required` array
@@ -486,20 +474,20 @@ is the caller least able to absorb a rejection and retry.
 
 ### 2.6 Population source (b) — worker self-classification
 
-**R-27**: `update_progress` gains an optional `kind` parameter, same
+- R-27: `update_progress` gains an optional `kind` parameter, same
 closed vocabulary. Not `complete_task`: a kind learned at completion is too
 late for the claim-time model router (`packages/core/model-router.ts` reads
 `kind` × `complexity`), too late for anyone watching the rail while the task
 runs, and arrives after the row has already rendered unlabelled for its whole
 life. `update_progress` is the first call most workers make.
 
-**R-28**: The write is a single atomic guarded update. In Drizzle terms it is
+- R-28: The write is a single atomic guarded update. In Drizzle terms it is
 an `UPDATE tasks SET kind = $1 WHERE id = $2 AND kind IS NULL`, following the
 optimistic-lock pattern this codebase uses in place of interactive
 transactions. It never overwrites a non-null value, and a worker that reports a
 kind for an already-classified task gets a no-op, not an error (AC-13).
 
-**R-29**: The prompt asks for it **only when `tasks.kind IS NULL`.**
+- R-29: The prompt asks for it **only when `tasks.kind IS NULL`.**
 `buildPromptWithComposition` (`apps/runner/src/prompt-builder.ts`) already
 receives the task as `BuilddTask`, which carries `kind`
 (`apps/runner/src/types.ts`), so the condition is local and costs no
@@ -509,13 +497,13 @@ query. Text emitted only in that branch:
 > `kind` to the shape of the work you are actually doing — one of
 > coordination, engineering, research, writing, design, analysis, observation.
 
-**R-30**: The value is read at the next render of any surface in §2.1.
+- R-30: The value is read at the next render of any surface in §2.1.
 It is **not** re-read by the model router: the model was chosen at claim, and
 re-routing a running worker is not a thing this spec introduces.
 
 ### 2.7 Population source (c) — `create_pr` as a late signal
 
-**R-31**: `POST /api/github/pr`, the route backing the `create_pr` MCP
+- R-31: `POST /api/github/pr`, the route backing the `create_pr` MCP
 action (`packages/core/mcp-tools.ts`), writes `kind = 'engineering'`
 when the originating task's `kind IS NULL`, using the same guarded update
 as R-28, at the same point in the handler that stamps the worker's PR
@@ -581,12 +569,12 @@ accident for role.
 
 ### 3.2 What changes
 
-**R-33**: `createReviewerTask` additionally sets `kind: 'analysis'` on the
+- R-33: `createReviewerTask` additionally sets `kind: 'analysis'` on the
 reviewer task. Tier 1 of §2.2 then resolves for every reviewer row without
 falling through to role or type, and the reviewer's usage becomes groupable by
 work-kind independently of the role fix below.
 
-**R-34**: Role attribution is separated from cost attribution. The
+- R-34: Role attribution is separated from cost attribution. The
 per-task cost rollup in `aggregateByTask` is **unchanged** — an attempt's
 tokens still land in the parent's bucket. The role histogram instead groups
 each **worker row by its own task's `roleSlug`**, so one parent bucket can
@@ -594,14 +582,14 @@ contribute to two role groups: its own, and `reviewer` for the review pass it
 contains. Cost per task and work per role are different questions and stop
 sharing one grouping key.
 
-**R-35**: Neither change invents a role. `createReviewerTask` keeps
+- R-35: Neither change invents a role. `createReviewerTask` keeps
 reading the slug from the merge policy; nothing writes `roleSlug` by inference
 from `kind`, from a title, or from anything else. §3.4 explains why that
 restraint matters.
 
 ### 3.3 Builder-produces-PR implies review — the hook already exists
 
-**R-36**: The programmatic review pass for a builder task that opens a PR
+- R-36: The programmatic review pass for a builder task that opens a PR
 is the **existing `agent-review` merge-policy tier**, fired on PR open at
 `apps/web/src/app/api/github/pr/route.ts`, which calls
 `createReviewerTask` after `findLiveReviewerTaskForHead` dedupes against an
@@ -636,7 +624,7 @@ What remains unassigned, legitimately:
 | Human quick-adds and `[friction]` reports | Filed by a person or an agent mid-failure, with no role in mind |
 | `approvePlan` children whose `PlanStep.roleSlug` was absent | `approve-plan.ts` writes `step.roleSlug \|\| null` — the planner simply did not name one |
 
-**R-37**: The last row is the largest lever and this spec deliberately
+- R-37: The last row is the largest lever and this spec deliberately
 does **not** pull it. Making `roleSlug` required in `planningOutputSchema`, or
 deriving it from `kind`, would write a slug the workspace may not have
 registered — and the claim query filters `or(isNull(tasks.roleSlug),
@@ -649,179 +637,18 @@ legibility instead.
 
 ---
 
-## 4. Rendering rules for the mobile rail
+## 4. Current phase and kind rendering
 
-> **The rail is retired (2026-09-23).** Below md the mission page renders
-> `MissionFeedList` (`mission-feed.md`). What this section requires survives
-> there: one header row per stored phase, in phase order, labelled
-> `ordinal · LABEL` with its done/total rollup, no header for a mission with no
-> phased task, and the kind glyph from `deriveWorkKind` on every row
-> (`MissionTaskRow`). The rail-specific geometry below (gutter, square node,
-> ticks under phases, the 18px column reservation) no longer renders and is
-> kept as history.
->
-> **Checked 2026-10-15:** `buildRail` (`condensed-timeline.ts`) has no caller
-> outside its tests. R-38 to R-56 describe that retired rail. They keep their
-> ids so code comments still trace, but no surface renders them; grade only
-> what the note above says survives in `MissionFeedList` and `MissionTaskRow`.
-> Retiring R-38 to R-56 (or moving them into a history appendix) is the
-> owner's call.
-
-Everything in this section is scoped, like `timeline-mobile-rail.md`, to the
-render path below the `md` breakpoint (768px). Desktop Timeline is unchanged
-except for the glyph column (§4.6).
-
-### 4.1 The phase header row type
-
-**R-38**: `buildRail` emits a fourth row type into `RailRow<T>`:
-
-```ts
-type RailPhase = {
-  kind: 'phase';
-  id: string;
-  index: number;
-  label: string;
-  segments: Array<{ taskId: string; state: SegmentState }>;  // §1.5
-  filled: number;
-  total: number;
-  state: 'complete' | 'live' | 'upcoming';                    // R-12
-};
-```
-
-`buildRail` stays pure (`condensed-timeline.ts`): phases enter as data on
-the task objects, not as component state, and the header rows are computed in
-the same pass that inserts ticks.
-
-**R-39**: A phase header is emitted immediately **before the first node
-whose `missionPhaseIndex` opens that phase**, walking the ordered node list.
-Each index emits exactly one header, in ascending index order. A node with
-`missionPhaseIndex = NULL` never emits a header and never suppresses one
-(§4.4).
-
-### 4.2 Geometry
-
-**R-40**: 34px row height. Columns at a 360px viewport:
-
-```
-12px rail gutter │ 16px square node │ 6px │ label (flex, truncate)
-  │ 8px │ SegmentStrip maxWidth={72} height={4} │ 6px │ "{filled}/{total}" │ 12px pad
-```
-
-which leaves ~198px for the label — enough for `{index} · {label}` at IBM Plex
-Mono 12px before truncation.
-
-**R-41**: The node is a square, rendered by the existing
-`RailNodeGlyph` with `shape="square"`
-(`apps/web/src/components/SegmentStrip.tsx`) and the existing `RailGlyphState`
-values — no new glyph state:
-
-| Phase `state` | `RailGlyphState` |
-|---|---|
-| `complete` | `solid` |
-| `live` | `dashed` |
-| `upcoming` | `empty` |
-
-**R-42**: The label is exactly `{index} · {label}`. The index is always
-printed, including for a single-phase mission, so the header never reads as a
-bare section title.
-
-**R-43**: `SegmentShape`'s doc comment currently reads "the single square
-is the mission's goal root". The square vocabulary now means **"not a task"**
-and has two members: the phase header and the goal root. They are never
-ambiguous — the goal root is always the last row on the rail and always
-carries `Goal:` text; a phase header is never last and never does. This amends
-`timeline-mobile-rail.md` Rule D5-1's "one deliberate break" prose (§5.1).
-
-**R-44**: The phase header row is **inert**. It is not a link, not a
-button, has no `aria-expanded`, and carries no disclosure. It does not collapse
-its phase. This holds v3's rule — a tap leaves the page only from a row
-standing for exactly one task — without adding a control to argue about, and
-keeps AC-8's "exactly one glyph node per row" true of header rows too.
-
-### 4.3 Ticks under phases
-
-**R-45**: When the rendered row sequence contains **at least one phase
-header**, day ticks are suppressed entirely and only the `now` tick renders.
-
-Justified: a phase header and a day tick are both full-width separator rows. A
-four-phase mission spanning six days would emit ten separators over a dozen
-nodes, and the reader would be asked to hold two independent segmentations of
-the same list. Phases are the mission's own unit of progress and are stable;
-calendar days are incidental to it. When there are no phases, `timeline-mobile-rail.md`
-Rule D4-3/D4-4 applies unchanged and day ticks render exactly as today.
-
-**R-46**: The `now` tick always survives, because it encodes something no
-phase header does: the boundary between what has run and what has not
-(Rule D4-5 — nodes above are filled, below are hollow).
-
-**R-47**: When the `now` boundary and a phase-header boundary fall at the
-same position, the order is **`now` tick first, then the phase header**. The
-phase header belongs to the work below it; `now` separates past from future and
-must not be pushed inside a phase it does not belong to. This is the only case
-in which two separator rows render adjacently, and no third separator can join
-them (day ticks are suppressed whenever a header exists, R-45).
-
-### 4.4 The kind glyph column
-
-**R-48**: On a node row the glyph occupies 18px between the rail node and
-the title, filled from `deriveWorkKind` and nothing else.
-
-**R-49**: The glyph is **outside** every interactive control. It is a
-sibling of the title link and of the `▣N` disclosure button, never a
-descendant, and it is `aria-hidden` with the row's accessible name carried by
-the button or link text. This preserves v3's rule that the badge-plus-title
-button is the disclosure and the only thing a tap can resolve to; a glyph
-inside the button would widen the hit box with a target that means nothing.
-
-**R-50**: On a collapsed chain row, the glyph is the **chain head's**,
-because the title on that row is the head's title (`timeline-mobile-rail.md`
-§1.3) and a glyph disagreeing with the title beside it would be a lie about the
-same row. Note the resulting asymmetry with v3's Rule D1-5, where the *right*
-column names the **terminal** PR: left is identity, right is outcome. Stated
-here explicitly so a reader does not read it as an inconsistency.
-
-**R-51**: Glyph and `▣N` badge coexist, in this order:
-
-```
-{node}  {glyph}  [ ▣N  {title} ]  {right column}
-             └── inert ──┘ └─ one button (v3 §13.3) ─┘
-```
-
-A collapsed engineering chain therefore reads `◆ ▣3 {title}` — the shape of the
-work, then how many tasks it took.
-
-**R-52**: Expanded ordinal sub-rows each carry **their own** glyph, from
-their own task. A chain whose members differ in kind shows that difference the
-moment it is opened; that is the information the collapsed row necessarily
-compresses.
-
-### 4.5 Degraded renderings
-
-**R-53** (no phases): A mission where no task has a
-`missionPhaseIndex` renders **no phase headers**, and the rail is otherwise
-byte-for-byte what `timeline-mobile-rail.md` v3 produces, except for the glyph
-column. Day ticks render normally (R-45's condition is false). This is the
-majority case today and it MUST have an assertion, not an assumption (AC-1).
-
-**R-54** (phases, but a task with none): The node renders in its ordinary
-rail position. It emits no header, is excluded from every phase's `segments`,
-`filled` and `total`, and its position is not adjusted to sit near or away from
-any phase. A task filed during phase 3 therefore *appears* within phase 3's
-stretch, because that is where in time it happened — the rail states position,
-which is true, and never claims membership, which would not be.
-
-**R-55** (no kind, no role, no type): `deriveWorkKind` returns `null`, no
-glyph node is rendered, and no placeholder, dot, or spacer character is drawn.
-
-**R-56** (column reservation): The 18px column is reserved **per rail,
-not per row**: if at least one node in the rendered sequence has a glyph, every
-node row reserves 18px and titles stay aligned; if no node has one, the column
-is zero-width and no title is indented. A mission with no kinds at all — the
-current corpus — is not given a permanent empty gutter.
+The mission feed reads stored phases through `buildMissionFeedGroups` and
+renders them in `MissionFeedList`. A phase header carries its ordinal, label
+and done/total rollup. A feed containing only unphased open work has no phase
+header; a finished unphased group folds under a Tasks header. `MissionTaskRow` derives its work-kind glyph with `deriveWorkKind`.
+The retired rail's geometry, ticks and column reservation are historical
+reference only; see the appendix. They are not acceptance criteria.
 
 ### 4.6 Desktop
 
-**R-57**: Desktop Timeline gains the glyph column via
+- R-57: Desktop Timeline gains the glyph column via
 `TaskTypeBadge`'s rewrite (R-16) and **nothing else**. No phase headers,
 no rail. `timeline-mobile-rail.md` §9's justification carries over unchanged:
 desktop has the Flow tab for shape questions (it replaced the Structure tab),
@@ -836,153 +663,11 @@ when the Flow tab replaced it (`mission-flow-timeline.md`). Flow draws no
 work-kind glyph and no phase band; the rules here no longer apply to any
 surface.
 
-### 4.8 Reference layouts (360px)
-
-Glyph key, extending `timeline-mobile-rail.md` §11: `●` done, `◉` running,
-`○` queued, `◯` waiting-on-you, `▣N` collapsed chain badge, `▢` goal root,
-`┄┄` now tick, `─` day tick; phase header nodes `◼` complete, `◻` live
-(dashed in a real render), `□` upcoming; rollup segments `▪` filled, `▫` empty,
-`▪̶` half. Kind glyphs per §2.4. ASCII cannot encode dash or colour; the legend
-under each figure names what a real render carries.
-
-#### 4.8.1 Four-phase mission, phase 3 live
-
-```
-360px ─────────────────────────────────────────────
- ◼  1 · Storage                       ▪▪      2/2
- ● ◆ Add missionPhase columns      #2461 merged
- ● ◇ Audit plan shapes             #2459 merged
- ◼  2 · Population                   ▪▪▪      3/3
- ▣3 ◆ Stamp phases in approve_plan  #2470 merged
- ◻  3 · Rendering                    ▪▫▫      1/3
- ● ◆ Phase header row               #2474 merged
- ┄┄ now · Wed 16
- ◉ ◆ Glyph column on the rail          running 8m
- ○ ▲ Verify greyscale at 14px              queued
- □  4 · Rollout                      ▫▫       0/2
- ○ ≡ Update the spec index                 queued
- ○ ⇅ Announce in the mission feed          queued
- ▢  Goal: all PRs merged · specs green     2 / 3
-```
-
-Legend: phase 3's node is **dashed** (live, R-41); phases 1–2 are solid,
-phase 4 is an empty outline. No day ticks appear anywhere — suppressed by
-rule R-45 — and the `now` tick sits **above** the rows it precedes, inside phase 3,
-because phase 3 opened before now and is not re-opened by it. The rollup strips
-are `SegmentStrip` at `maxWidth={72} height={4}`; `1/3` counts filled only
-(R-11).
-
-#### 4.8.2 Mission with no phases (R-53 — the majority case)
-
-```
-360px ─────────────────────────────────────────────
- ◯ ⇅ Approve plan: ledger slice 3               plan
- ┄┄ now · Sun 13
- ◉ ◆ BUILD: slice 3 dedupe index        running 12m
- ├╮
- │ ○ ▲ REVIEW: slice 3 dedupe index          queued
- ├╯
- ─  Sat 12
- ▣3 ◆ Ledger slice 2                  #2295 merged
- ─  Fri 11
- ● ◆ Wire the §4 delta gate            #2289 merged
- ▢  Goal: all PRs merged · tests green        2 / 3
-```
-
-Legend: identical to `timeline-mobile-rail.md` §11.4 **except** the 18px glyph
-column. Day ticks `─ Sat 12` / `─ Fri 11` survive because no phase header
-exists (R-45's condition is false). The reviewer row draws `▲` from
-`kind: 'analysis'` (R-33).
-
-#### 4.8.3 A phase header immediately above a collapsed chain
-
-```
-360px ─────────────────────────────────────────────
- ◼  2 · Population                     ▪▪▪      3/3
- ▣3 ◆ Stamp phases in approve_plan    #2470 merged  ⌄
- ◻  3 · Rendering                      ▪▫▫      1/3
-```
-
-Expanded, with members of differing kind (R-52):
-
-```
-360px ─────────────────────────────────────────────
- ◼  2 · Population                     ▪▪▪      3/3
- ▣3 ◆ Stamp phases in approve_plan    #2470 merged  ⌃
- ├─● ◇ 1 SPEC                               #2462
- ├─● ◆ 2 BUILD                               #2468
- ├─● ▲ 3 REVIEW                              #2470
- ◻  3 · Rendering                      ▪▫▫      1/3
-```
-
-Legend: the header row is inert (R-44) — the only control on either
-figure is the chain's `▣3 {title}` button, which carries `⌄`/`⌃` per v3 §13.3
-and never changes `location`. The collapsed row's `◆` is the **head's** glyph
-(R-50) while its `#2470` is the **terminal** PR (v3 Rule D1-5); the
-expanded sub-rows show the head was actually a `◇` spec step.
-
-#### 4.8.4 A roleless reviewer row, before and after §3
-
-**Before** — `kind` NULL, `roleSlug = 'reviewer'` set but unmapped, chain
-reaches tier 3 via `deriveTaskType` on the `[reviewer #1]` prefix:
-
-```
-360px ─────────────────────────────────────────────
- ● ▲ [reviewer #1] Stamp phases…       #2470 merged
-```
-
-**After** §3 — `kind: 'analysis'` written at creation, chain resolves at tier 1:
-
-```
-360px ─────────────────────────────────────────────
- ● ▲ [reviewer #1] Stamp phases…       #2470 merged
-```
-
-Legend: **the rendering is identical, and that is the point.** The three tiers
-agree on this row, so the glyph does not move; what changes is that the value
-now comes from a stored column (`source: 'kind'`) instead of a title-prefix
-match (`source: 'type'`), so it survives a title rewrite, it groups in
-`get_usage_stats`, and it does not depend on `reviewerTitle`'s format. The
-visible change from §3 is in the role histogram (R-34), not on the rail.
-
----
-
 ## 5. Migration note
 
-### 5.1 `timeline-mobile-rail.md` rules this spec amends
-
-| Rule | Effect |
-|---|---|
-| D4-3 / D4-4 (day ticks) | **Narrowed.** Day ticks render only when the row sequence contains no phase header (R-45). Unchanged for every mission with no phases. |
-| D4-5 (`now` tick) | **Extended.** R-47 fixes ordering when the `now` boundary coincides with a phase boundary. The tick itself is unchanged. |
-| D5-1 (goal root is "the one deliberate break" from circles) | **Prose amended.** Squares now mark *non-task rail elements* and have two members: phase header and goal root, disambiguated by position and label (R-43). The goal root's own rendering is unchanged. |
-| §10.2 (element→implementation table) | **One row added:** phase header → `RailNodeGlyph shape="square"` + `SegmentStrip`, both existing. Still zero new component files. |
-| `RailRow<T>` (§4 row vocabulary) | **One variant added:** `kind: 'phase'` (R-38). `node`/`tick`/`label` unchanged. |
-
-### 5.2 `timeline-mobile-rail.md` acceptance criteria this spec touches
-
-Numbering below follows the v2 file (AC-1…AC-32) merged on the rail mission
-branch; v1 on trunk carries AC-1…AC-10 with the same meanings for the ACs named
-here.
-
-| AC | Status |
-|---|---|
-| TMR AC-5 (no `Today`/`Yesterday`/`Friday (2)` header; three tick rows instead) | **Split.** The negative half (no section headers, ever) survives unconditionally. The positive half (three tick rows) holds only for missions with no phases; a phased mission renders zero day ticks. AC-6 below is the phased counterpart. |
-| TMR AC-1, AC-2 (chain collapse, `▣N`) | **Survive.** The glyph column is additive and sits outside the disclosure button (R-49). |
-| TMR AC-8 (desktop unchanged) | **Narrowed.** Desktop gains the glyph column (R-57) and nothing else; every other clause survives verbatim. |
-| TMR AC-6, AC-7 (goal root present / absent) | **Survive.** Phase headers never render at the rail's bottom and never substitute for the root. |
-| TMR AC-3, AC-4, AC-9, AC-10 and all v2 criteria (AC-11…AC-32) | **Untouched.** |
-| v3 (PR #2449, open) AC-33…AC-47 | **Untouched.** This spec adds no control to any rail row and removes none; R-44 makes the one new row type inert. |
-
-### 5.3 Promotion to `active`
-
-Done: the spec is `active`, and its tests are listed in `verified_by`. It was
-promoted by the PR that landed tests for the ACs below. The expected guards are
-`apps/web/src/lib/task-presentation.test.ts` (the §2 chain), a phase test in
-`apps/web/src/lib/approve-plan.test.ts` (§1), and rail-model assertions in
-`apps/web/src/lib/condensed-timeline.test.ts` (§4).
-
----
+The rail migration is retained in the historical appendix. Current guards
+are the phase grouping, feed rendering, plan population and work-kind tests
+named in the frontmatter.
 
 ## Invariants
 
@@ -993,14 +678,10 @@ promoted by the PR that landed tests for the ACs below. The expected guards are
   updated after insert.
 - No code path infers a phase or a work-kind from a task's title or
   description. `deriveWorkKind`'s input type has no title field.
-- Exactly one glyph renders per rail row, or none — never two
-  (R-21, R-49).
+- Each mission task row derives at most one work-kind glyph (R-21).
 - A task with `missionPhaseIndex = NULL` contributes to no phase's rollup on
   any surface (R-54).
-- The rail, the Structure canvas and the Activity row draw work-kind from one
-  function; adding an eighth kind requires editing one table (R-15).
-- A phase header row is never interactive and never changes `location`
-  (R-44).
+- Current task-row surfaces draw work-kind from one function (R-15).
 - Phase rollup fill uses the chain-strip vocabulary and no other: `filled`
   requires completed **and** merged (R-10).
 
@@ -1008,119 +689,82 @@ promoted by the PR that landed tests for the ACs below. The expected guards are
 
 ## Acceptance criteria
 
-**AC-1 (rejection — the majority case)**: GIVEN a mission in which no task has
-a `missionPhaseIndex`, WHEN the Timeline renders below 768px, THEN NO phase
-header row is emitted, day ticks render per `timeline-mobile-rail.md` Rule
-D4-3, and the rail's row sequence is identical to the same mission's v3
-rendering except for the glyph column.
+- AC-1: GIVEN only unphased tasks with open work WHEN the mission feed renders THEN no phase
+  header is present.
+- AC-6: GIVEN stored named phase groups WHEN the mission feed renders THEN
+  each phase group has one header with its stored ordinal and label.
+- AC-8: GIVEN a task with a declared work kind WHEN its mission task row
+  renders THEN its kind glyph comes from the shared work-kind derivation.
 
-**AC-2**: GIVEN a planning task whose plan has four distinct `phase` strings
+
+- AC-2: GIVEN a planning task whose plan has four distinct `phase` strings
 across nine steps, WHEN it is approved, THEN the nine child tasks carry
 `missionPhaseIndex` values 1–4 assigned in plan-array order, and every step
 between two labelled steps carries the preceding label (R-4).
 
-**AC-3 (rejection)**: GIVEN a plan in which no step carries a `phase`, WHEN it
+- AC-3: GIVEN a plan in which no step carries a `phase`, WHEN it
 is approved, THEN every child task has `missionPhaseIndex IS NULL` and
 `missionPhaseLabel IS NULL`, and NO phase is derived from the plan's `dependsOn`
 layering, its step count, or its titles (R-5, R-6).
 
-**AC-4 (rejection)**: GIVEN a write that sets `missionPhaseIndex` without
+- AC-4: GIVEN a write that sets `missionPhaseIndex` without
 `missionPhaseLabel`, or the reverse, WHEN it is attempted, THEN it is rejected
 — the two columns are always both NULL or both set (R-2).
 
-**AC-5**: GIVEN two tasks in one mission with the same `missionPhaseIndex` and
-different `missionPhaseLabel` values, WHEN the rail builds, THEN exactly one
-header is emitted for that index and the divergence is surfaced as a build-time
-assertion failure, not silently resolved by picking one (R-2 note 3).
+- AC-7: GIVEN a phase with one completed-and-merged task and two unfinished
+  tasks WHEN its feed header renders THEN its done/total count reads 1/3.
 
-**AC-6**: GIVEN a mission with four phases spanning six calendar days, WHEN the
-Timeline renders below 768px, THEN exactly four phase header rows and exactly
-one `now` tick render, and ZERO day tick rows render (R-45).
-
-**AC-7**: GIVEN a phase of three tasks in which one is completed-and-merged,
-one is completed with an open PR, and one is pending, WHEN its header renders,
-THEN the `SegmentStrip` shows `filled`, `half`, `empty` in rail order and the
-printed count reads `1/3` — NOT `2/3` (R-10, R-11).
-
-**AC-8 (rejection)**: GIVEN any rail row of any type, WHEN it renders, THEN at
-most one work-kind glyph node is present in that row's subtree, and it is not a
-descendant of any `<a>` or `<button>` (R-21, R-49).
-
-**AC-9 (rejection — the title trap)**: GIVEN a task titled `BUILD: rewrite the
+- AC-9: GIVEN a task titled `BUILD: rewrite the
 claim loop` with `kind IS NULL`, `roleSlug IS NULL` and `deriveTaskType`
 returning `null`, WHEN it renders on any surface in §2.1, THEN NO glyph renders
 — specifically NOT the engineering glyph — and no spacer character is drawn in
 its place (R-14, R-55).
 
-**AC-10**: GIVEN each of the seven glyphs in §2.4 rendered at 14px in the app's
+- AC-10: GIVEN each of the seven glyphs in §2.4 rendered at 14px in the app's
 mono stack, WHEN measured, THEN each occupies the same advance width as the
 others and none falls back to a different-width glyph (R-23).
 
-**AC-11 (rejection)**: GIVEN a task whose `roleSlug` is a workspace-defined
+- AC-11: GIVEN a task whose `roleSlug` is a workspace-defined
 slug not in R-19's table and whose `kind IS NULL`, WHEN `deriveWorkKind`
 runs, THEN tier 2 returns nothing and the chain falls through to tier 3 — it
 does NOT guess a kind from the slug's text (R-20).
 
-**AC-12 (rejection)**: GIVEN a task with `kind = 'research'`, WHEN a PR is
+- AC-12: GIVEN a task with `kind = 'research'`, WHEN a PR is
 opened for it via `POST /api/github/pr`, THEN `tasks.kind` still reads
 `'research'` afterwards — the late `engineering` signal never overwrites a
 declared kind (R-31, R-32).
 
-**AC-13**: GIVEN a task with `kind IS NULL`, WHEN a worker calls
+- AC-13: GIVEN a task with `kind IS NULL`, WHEN a worker calls
 `update_progress` with `kind: 'analysis'` and then a second worker calls it
 with `kind: 'engineering'`, THEN `tasks.kind` reads `'analysis'` and the second
 call returns success without an error (R-28).
 
-**AC-14**: GIVEN a planning agent emitting a plan step with no `kind`, WHEN the
+- AC-14: GIVEN a planning agent emitting a plan step with no `kind`, WHEN the
 SDK validates against `planningOutputSchema`, THEN the output is rejected at
 generation time because `kind` is in the schema's `required` array
 (R-26).
 
-**AC-15 (rejection)**: GIVEN a mission task created through `POST /api/tasks`
+- AC-15: GIVEN a mission task created through `POST /api/tasks`
 with no `kind`, WHEN it is created, THEN the request succeeds with HTTP 200 and
 a `KIND_ABSENT` gate event with `outcome: 'warned'` is recorded — the request is
 NOT rejected with a 400 (R-25, R-26).
 
-**AC-16**: GIVEN a PR opened under a workspace whose merge policy tier is
+- AC-16: GIVEN a PR opened under a workspace whose merge policy tier is
 `agent-review`, WHEN `createReviewerTask` inserts the reviewer task, THEN that
 row carries `roleSlug` equal to the policy's `agentReview.reviewerRole` AND
 `kind = 'analysis'`, and its `missionPhaseIndex` equals its parent's
 (R-33, R-7).
 
-**AC-17**: GIVEN a 30-day window containing at least one reviewer run, WHEN
+- AC-17: GIVEN a 30-day window containing at least one reviewer run, WHEN
 `get_usage_stats groupBy=role` is called after R-34 lands, THEN a
 `reviewer` group is present with a non-zero task count, AND the per-task cost
 figures for the parent tasks are unchanged from before the change (R-34).
 
-**AC-18 (rejection)**: GIVEN any task in the system, WHEN `roleSlug` is
+- AC-18: GIVEN any task in the system, WHEN `roleSlug` is
 examined after creation, THEN no code path has written it by inference from
 `kind`, from a title, or from a role→kind map — only an explicit filer,
 `PlanStep.roleSlug`, or the merge policy's reviewer slug (R-35,
 rule R-37).
-
-**AC-19**: Retired with the Structure canvas (§4.7).
-
-**AC-20**: GIVEN a mission with phases in which one task has
-`missionPhaseIndex IS NULL`, WHEN the rail renders, THEN that task's node
-appears in its ordinary position, no header is emitted for it, and it appears
-in no phase's `segments` array (R-54).
-
-**AC-21**: GIVEN a phase whose boundary coincides with the `now` boundary, WHEN
-the rail renders, THEN the `now` tick row precedes the phase header row, and no
-day tick renders between or around them (R-47, R-45).
-
-**AC-22 (rejection)**: GIVEN a phase header row, WHEN a tap lands anywhere
-inside its 360px width, THEN `location` does not change, no sheet opens, and no
-`aria-expanded` attribute exists on any element in the row (R-44).
-
-**AC-23**: GIVEN a collapsed terminal chain whose head has `kind` engineering
-and whose third member has `kind` analysis, WHEN the row renders collapsed,
-THEN the glyph is `◆` (the head's); WHEN it is expanded, THEN sub-row 3 renders
-`▲` (its own) (R-50, R-52).
-
-**AC-24**: GIVEN a mission in which no task resolves to a glyph, WHEN the rail
-renders, THEN no node row reserves the 18px glyph column and every title begins
-at the same offset as in the pre-change rendering (R-56).
 
 ---
 
@@ -1192,3 +836,357 @@ role); R4-1..R4-20 to R-38..R-57 (§4, rendering). R4-21 and R4-22 (the
 Structure canvas) were retired before the renumbering and have no new id.
 The acceptance criteria AC-1..AC-24 are unchanged. D1-5, D4-3, D4-4, D4-5,
 D5-1 and D7-1 are rules of `timeline-mobile-rail.md`, not of this spec.
+
+## Appendix: retired rail reference (not criteria)
+
+The material below records the renderer retired in September 2026. Historical
+rule and check numbers identify the old text; they impose no live requirement.
+
+### 4.1 The phase header row type
+
+Historical rule 38: `buildRail` emits a fourth row type into `RailRow<T>`:
+
+```ts
+type RailPhase = {
+  kind: 'phase';
+  id: string;
+  index: number;
+  label: string;
+  segments: Array<{ taskId: string; state: SegmentState }>;  // §1.5
+  filled: number;
+  total: number;
+  state: 'complete' | 'live' | 'upcoming';                    // R-12
+};
+```
+
+`buildRail` stays pure (`condensed-timeline.ts`): phases enter as data on
+the task objects, not as component state, and the header rows are computed in
+the same pass that inserts ticks.
+
+Historical rule 39: A phase header is emitted immediately **before the first node
+whose `missionPhaseIndex` opens that phase**, walking the ordered node list.
+Each index emits exactly one header, in ascending index order. A node with
+`missionPhaseIndex = NULL` never emits a header and never suppresses one
+(§4.4).
+
+### 4.2 Geometry
+
+Historical rule 40: 34px row height. Columns at a 360px viewport:
+
+```
+12px rail gutter │ 16px square node │ 6px │ label (flex, truncate)
+  │ 8px │ SegmentStrip maxWidth={72} height={4} │ 6px │ "{filled}/{total}" │ 12px pad
+```
+
+which leaves ~198px for the label — enough for `{index} · {label}` at IBM Plex
+Mono 12px before truncation.
+
+Historical rule 41: The node is a square, rendered by the existing
+`RailNodeGlyph` with `shape="square"`
+(`apps/web/src/components/SegmentStrip.tsx`) and the existing `RailGlyphState`
+values — no new glyph state:
+
+| Phase `state` | `RailGlyphState` |
+|---|---|
+| `complete` | `solid` |
+| `live` | `dashed` |
+| `upcoming` | `empty` |
+
+Historical rule 42: The label is exactly `{index} · {label}`. The index is always
+printed, including for a single-phase mission, so the header never reads as a
+bare section title.
+
+Historical rule 43: `SegmentShape`'s doc comment currently reads "the single square
+is the mission's goal root". The square vocabulary now means **"not a task"**
+and has two members: the phase header and the goal root. They are never
+ambiguous — the goal root is always the last row on the rail and always
+carries `Goal:` text; a phase header is never last and never does. This amends
+`timeline-mobile-rail.md` Rule D5-1's "one deliberate break" prose (§5.1).
+
+Historical rule 44: The phase header row is **inert**. It is not a link, not a
+button, has no `aria-expanded`, and carries no disclosure. It does not collapse
+its phase. This holds v3's rule — a tap leaves the page only from a row
+standing for exactly one task — without adding a control to argue about, and
+keeps AC-8's "exactly one glyph node per row" true of header rows too.
+
+### 4.3 Ticks under phases
+
+Historical rule 45: When the rendered row sequence contains **at least one phase
+header**, day ticks are suppressed entirely and only the `now` tick renders.
+
+Justified: a phase header and a day tick are both full-width separator rows. A
+four-phase mission spanning six days would emit ten separators over a dozen
+nodes, and the reader would be asked to hold two independent segmentations of
+the same list. Phases are the mission's own unit of progress and are stable;
+calendar days are incidental to it. When there are no phases, `timeline-mobile-rail.md`
+Rule D4-3/D4-4 applies unchanged and day ticks render exactly as today.
+
+Historical rule 46: The `now` tick always survives, because it encodes something no
+phase header does: the boundary between what has run and what has not
+(Rule D4-5 — nodes above are filled, below are hollow).
+
+Historical rule 47: When the `now` boundary and a phase-header boundary fall at the
+same position, the order is **`now` tick first, then the phase header**. The
+phase header belongs to the work below it; `now` separates past from future and
+must not be pushed inside a phase it does not belong to. This is the only case
+in which two separator rows render adjacently, and no third separator can join
+them (day ticks are suppressed whenever a header exists, R-45).
+
+### 4.4 The kind glyph column
+
+Historical rule 48: On a node row the glyph occupies 18px between the rail node and
+the title, filled from `deriveWorkKind` and nothing else.
+
+Historical rule 49: The glyph is **outside** every interactive control. It is a
+sibling of the title link and of the `▣N` disclosure button, never a
+descendant, and it is `aria-hidden` with the row's accessible name carried by
+the button or link text. This preserves v3's rule that the badge-plus-title
+button is the disclosure and the only thing a tap can resolve to; a glyph
+inside the button would widen the hit box with a target that means nothing.
+
+Historical rule 50: On a collapsed chain row, the glyph is the **chain head's**,
+because the title on that row is the head's title (`timeline-mobile-rail.md`
+§1.3) and a glyph disagreeing with the title beside it would be a lie about the
+same row. Note the resulting asymmetry with v3's Rule D1-5, where the *right*
+column names the **terminal** PR: left is identity, right is outcome. Stated
+here explicitly so a reader does not read it as an inconsistency.
+
+Historical rule 51: Glyph and `▣N` badge coexist, in this order:
+
+```
+{node}  {glyph}  [ ▣N  {title} ]  {right column}
+             └── inert ──┘ └─ one button (v3 §13.3) ─┘
+```
+
+A collapsed engineering chain therefore reads `◆ ▣3 {title}` — the shape of the
+work, then how many tasks it took.
+
+Historical rule 52: Expanded ordinal sub-rows each carry **their own** glyph, from
+their own task. A chain whose members differ in kind shows that difference the
+moment it is opened; that is the information the collapsed row necessarily
+compresses.
+
+### 4.5 Degraded renderings
+
+Historical rule 53 (no phases): A mission where no task has a
+`missionPhaseIndex` renders **no phase headers**, and the rail is otherwise
+byte-for-byte what `timeline-mobile-rail.md` v3 produces, except for the glyph
+column. Day ticks render normally (R-45's condition is false). This is the
+majority case today and it MUST have an assertion, not an assumption (AC-1).
+
+Historical rule 54 (phases, but a task with none): The node renders in its ordinary
+rail position. It emits no header, is excluded from every phase's `segments`,
+`filled` and `total`, and its position is not adjusted to sit near or away from
+any phase. A task filed during phase 3 therefore *appears* within phase 3's
+stretch, because that is where in time it happened — the rail states position,
+which is true, and never claims membership, which would not be.
+
+Historical rule 55 (no kind, no role, no type): `deriveWorkKind` returns `null`, no
+glyph node is rendered, and no placeholder, dot, or spacer character is drawn.
+
+Historical rule 56 (column reservation): The 18px column is reserved **per rail,
+not per row**: if at least one node in the rendered sequence has a glyph, every
+node row reserves 18px and titles stay aligned; if no node has one, the column
+is zero-width and no title is indented. A mission with no kinds at all — the
+current corpus — is not given a permanent empty gutter.
+
+
+### 4.8 Reference layouts (360px)
+
+Glyph key, extending `timeline-mobile-rail.md` §11: `●` done, `◉` running,
+`○` queued, `◯` waiting-on-you, `▣N` collapsed chain badge, `▢` goal root,
+`┄┄` now tick, `─` day tick; phase header nodes `◼` complete, `◻` live
+(dashed in a real render), `□` upcoming; rollup segments `▪` filled, `▫` empty,
+`▪̶` half. Kind glyphs per §2.4. ASCII cannot encode dash or colour; the legend
+under each figure names what a real render carries.
+
+### 4.8.1 Four-phase mission, phase 3 live
+
+```
+360px ─────────────────────────────────────────────
+ ◼  1 · Storage                       ▪▪      2/2
+ ● ◆ Add missionPhase columns      #2461 merged
+ ● ◇ Audit plan shapes             #2459 merged
+ ◼  2 · Population                   ▪▪▪      3/3
+ ▣3 ◆ Stamp phases in approve_plan  #2470 merged
+ ◻  3 · Rendering                    ▪▫▫      1/3
+ ● ◆ Phase header row               #2474 merged
+ ┄┄ now · Wed 16
+ ◉ ◆ Glyph column on the rail          running 8m
+ ○ ▲ Verify greyscale at 14px              queued
+ □  4 · Rollout                      ▫▫       0/2
+ ○ ≡ Update the spec index                 queued
+ ○ ⇅ Announce in the mission feed          queued
+ ▢  Goal: all PRs merged · specs green     2 / 3
+```
+
+Legend: phase 3's node is **dashed** (live, R-41); phases 1–2 are solid,
+phase 4 is an empty outline. No day ticks appear anywhere — suppressed by
+rule R-45 — and the `now` tick sits **above** the rows it precedes, inside phase 3,
+because phase 3 opened before now and is not re-opened by it. The rollup strips
+are `SegmentStrip` at `maxWidth={72} height={4}`; `1/3` counts filled only
+(R-11).
+
+### 4.8.2 Mission with no phases (R-53 — the majority case)
+
+```
+360px ─────────────────────────────────────────────
+ ◯ ⇅ Approve plan: ledger slice 3               plan
+ ┄┄ now · Sun 13
+ ◉ ◆ BUILD: slice 3 dedupe index        running 12m
+ ├╮
+ │ ○ ▲ REVIEW: slice 3 dedupe index          queued
+ ├╯
+ ─  Sat 12
+ ▣3 ◆ Ledger slice 2                  #2295 merged
+ ─  Fri 11
+ ● ◆ Wire the §4 delta gate            #2289 merged
+ ▢  Goal: all PRs merged · tests green        2 / 3
+```
+
+Legend: identical to `timeline-mobile-rail.md` §11.4 **except** the 18px glyph
+column. Day ticks `─ Sat 12` / `─ Fri 11` survive because no phase header
+exists (R-45's condition is false). The reviewer row draws `▲` from
+`kind: 'analysis'` (R-33).
+
+### 4.8.3 A phase header immediately above a collapsed chain
+
+```
+360px ─────────────────────────────────────────────
+ ◼  2 · Population                     ▪▪▪      3/3
+ ▣3 ◆ Stamp phases in approve_plan    #2470 merged  ⌄
+ ◻  3 · Rendering                      ▪▫▫      1/3
+```
+
+Expanded, with members of differing kind (R-52):
+
+```
+360px ─────────────────────────────────────────────
+ ◼  2 · Population                     ▪▪▪      3/3
+ ▣3 ◆ Stamp phases in approve_plan    #2470 merged  ⌃
+ ├─● ◇ 1 SPEC                               #2462
+ ├─● ◆ 2 BUILD                               #2468
+ ├─● ▲ 3 REVIEW                              #2470
+ ◻  3 · Rendering                      ▪▫▫      1/3
+```
+
+Legend: the header row is inert (R-44) — the only control on either
+figure is the chain's `▣3 {title}` button, which carries `⌄`/`⌃` per v3 §13.3
+and never changes `location`. The collapsed row's `◆` is the **head's** glyph
+(R-50) while its `#2470` is the **terminal** PR (v3 Rule D1-5); the
+expanded sub-rows show the head was actually a `◇` spec step.
+
+### 4.8.4 A roleless reviewer row, before and after §3
+
+**Before** — `kind` NULL, `roleSlug = 'reviewer'` set but unmapped, chain
+reaches tier 3 via `deriveTaskType` on the `[reviewer #1]` prefix:
+
+```
+360px ─────────────────────────────────────────────
+ ● ▲ [reviewer #1] Stamp phases…       #2470 merged
+```
+
+**After** §3 — `kind: 'analysis'` written at creation, chain resolves at tier 1:
+
+```
+360px ─────────────────────────────────────────────
+ ● ▲ [reviewer #1] Stamp phases…       #2470 merged
+```
+
+Legend: **the rendering is identical, and that is the point.** The three tiers
+agree on this row, so the glyph does not move; what changes is that the value
+now comes from a stored column (`source: 'kind'`) instead of a title-prefix
+match (`source: 'type'`), so it survives a title rewrite, it groups in
+`get_usage_stats`, and it does not depend on `reviewerTitle`'s format. The
+visible change from §3 is in the role histogram (R-34), not on the rail.
+
+---
+
+
+### 5.1 `timeline-mobile-rail.md` rules this spec amends
+
+| Rule | Effect |
+|---|---|
+| D4-3 / D4-4 (day ticks) | **Narrowed.** Day ticks render only when the row sequence contains no phase header (R-45). Unchanged for every mission with no phases. |
+| D4-5 (`now` tick) | **Extended.** R-47 fixes ordering when the `now` boundary coincides with a phase boundary. The tick itself is unchanged. |
+| D5-1 (goal root is "the one deliberate break" from circles) | **Prose amended.** Squares now mark *non-task rail elements* and have two members: phase header and goal root, disambiguated by position and label (R-43). The goal root's own rendering is unchanged. |
+| §10.2 (element→implementation table) | **One row added:** phase header → `RailNodeGlyph shape="square"` + `SegmentStrip`, both existing. Still zero new component files. |
+| `RailRow<T>` (§4 row vocabulary) | **One variant added:** `kind: 'phase'` (R-38). `node`/`tick`/`label` unchanged. |
+
+### 5.2 `timeline-mobile-rail.md` acceptance criteria this spec touches
+
+Numbering below follows the v2 file (AC-1…AC-32) merged on the rail mission
+branch; v1 on trunk carries AC-1…AC-10 with the same meanings for the ACs named
+here.
+
+| AC | Status |
+|---|---|
+| TMR AC-5 (no `Today`/`Yesterday`/`Friday (2)` header; three tick rows instead) | **Split.** The negative half (no section headers, ever) survives unconditionally. The positive half (three tick rows) holds only for missions with no phases; a phased mission renders zero day ticks. AC-6 below is the phased counterpart. |
+| TMR AC-1, AC-2 (chain collapse, `▣N`) | **Survive.** The glyph column is additive and sits outside the disclosure button (R-49). |
+| TMR AC-8 (desktop unchanged) | **Narrowed.** Desktop gains the glyph column (R-57) and nothing else; every other clause survives verbatim. |
+| TMR AC-6, AC-7 (goal root present / absent) | **Survive.** Phase headers never render at the rail's bottom and never substitute for the root. |
+| TMR AC-3, AC-4, AC-9, AC-10 and all v2 criteria (AC-11…AC-32) | **Untouched.** |
+| v3 (PR #2449, open) AC-33…AC-47 | **Untouched.** This spec adds no control to any rail row and removes none; R-44 makes the one new row type inert. |
+
+### 5.3 Promotion to `active`
+
+Done: the spec is `active`, and its tests are listed in `verified_by`. It was
+promoted by the PR that landed tests for the ACs below. The expected guards are
+`apps/web/src/lib/task-presentation.test.ts` (the §2 chain), a phase test in
+`apps/web/src/lib/approve-plan.test.ts` (§1), and rail-model assertions in
+`apps/web/src/lib/condensed-timeline.test.ts` (§4).
+
+---
+
+
+Historical check 1 (rejection — the majority case): GIVEN a mission in which no task has
+a `missionPhaseIndex`, WHEN the Timeline renders below 768px, THEN NO phase
+header row is emitted, day ticks render per `timeline-mobile-rail.md` Rule
+D4-3, and the rail's row sequence is identical to the same mission's v3
+rendering except for the glyph column.
+
+
+Historical check 5: GIVEN two tasks in one mission with the same `missionPhaseIndex` and
+different `missionPhaseLabel` values, WHEN the rail builds, THEN exactly one
+header is emitted for that index and the divergence is surfaced as a build-time
+assertion failure, not silently resolved by picking one (R-2 note 3).
+
+
+Historical check 6: GIVEN a mission with four phases spanning six calendar days, WHEN the
+Timeline renders below 768px, THEN exactly four phase header rows and exactly
+one `now` tick render, and ZERO day tick rows render (R-45).
+
+
+Historical check 8 (rejection): GIVEN any rail row of any type, WHEN it renders, THEN at
+most one work-kind glyph node is present in that row's subtree, and it is not a
+descendant of any `<a>` or `<button>` (R-21, R-49).
+
+
+Historical check 19: Retired with the Structure canvas (§4.7).
+
+
+Historical check 20: GIVEN a mission with phases in which one task has
+`missionPhaseIndex IS NULL`, WHEN the rail renders, THEN that task's node
+appears in its ordinary position, no header is emitted for it, and it appears
+in no phase's `segments` array (R-54).
+
+
+Historical check 21: GIVEN a phase whose boundary coincides with the `now` boundary, WHEN
+the rail renders, THEN the `now` tick row precedes the phase header row, and no
+day tick renders between or around them (R-47, R-45).
+
+
+Historical check 22 (rejection): GIVEN a phase header row, WHEN a tap lands anywhere
+inside its 360px width, THEN `location` does not change, no sheet opens, and no
+`aria-expanded` attribute exists on any element in the row (R-44).
+
+
+Historical check 23: GIVEN a collapsed terminal chain whose head has `kind` engineering
+and whose third member has `kind` analysis, WHEN the row renders collapsed,
+THEN the glyph is `◆` (the head's); WHEN it is expanded, THEN sub-row 3 renders
+`▲` (its own) (R-50, R-52).
+
+
+Historical check 24: GIVEN a mission in which no task resolves to a glyph, WHEN the rail
+renders, THEN no node row reserves the 18px glyph column and every title begins
+at the same offset as in the pre-change rendering (R-56).
