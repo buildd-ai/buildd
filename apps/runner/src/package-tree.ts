@@ -76,6 +76,8 @@ export interface LockProbe {
 }
 
 function pidAlive(pid: number): boolean {
+  // Pid 1 (init in containers) cannot be killed, so treat it as always alive.
+  if (pid === 1) return true;
   try { process.kill(pid, 0); return true; } catch (err: any) { return err?.code === 'EPERM'; }
 }
 

@@ -108,6 +108,7 @@ describe('GET /api/missions/recent', () => {
         '(("missions"."workspace_id" in ($1, $2)) and ((("missions"."status" in ($3, $4, $5)) or ((("missions"."status" = $6) and '
         + '(greatest("missions"."completed_at", ( select max("mission_notes"."created_at") from "mission_notes" '
         + 'where "mission_notes"."mission_id" = "missions"."id" and "mission_notes"."type" = \'update\' '
+        + 'and "mission_notes"."author_type" = \'system\' and "mission_notes"."title" in (\'Mission status changed\', \'Mission reopened\') '
         + 'and "mission_notes"."body" like $7 )) >= $8))))))',
       );
       expect(rendered.params.slice(0, 7)).toEqual(['ws-1', 'ws-2', 'active', 'paused', 'budget_exhausted', 'completed', '% → completed']);

@@ -29,6 +29,8 @@ export const deliveredAtSql = sql<string | Date | null>`greatest(${missions.comp
   select max(${missionNotes.createdAt}) from ${missionNotes}
   where ${missionNotes.missionId} = ${missions.id}
     and ${missionNotes.type} = 'update'
+    and ${missionNotes.authorType} = 'system'
+    and ${missionNotes.title} in ('Mission status changed', 'Mission reopened')
     and ${missionNotes.body} like ${missionStatusNoteIntoPattern('completed')}
 ))`;
 
