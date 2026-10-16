@@ -133,7 +133,8 @@ describe('predicates are workspace- and task-scoped', () => {
     const r = render(src.claimDecisionsWhere({ workspaceId: WS, since: SINCE, until: new Date('2026-10-01T00:00:00Z') }));
     expect(r.sql).toContain('"orchestration_decisions"."workspace_id" = $1');
     expect(r.sql).toContain('"orchestration_decisions"."capability" = $2');
-    expect(r.sql).toContain('"orchestration_decisions"."decision_id" = $3');
+    expect(r.sql).toContain('"orchestration_decisions"."decision_id" in ($3, $4)');
+    expect(r.params[3]).toBe('buildd.human_force_start');
     expect(r.params.slice(0, 3)).toEqual([WS, 'orchestration_claim', 'buildd.orchestration_claim_hold']);
   });
 });
@@ -247,7 +248,7 @@ describe('loadClaimHoldReadoutInput', () => {
     expect(input.starts).toEqual([{ taskId: TASK, startedAt: new Date('2026-09-30T12:30:00Z') }]);
     expect(input.tasks).toEqual([{ id: TASK, status: 'completed' }]);
     expect(input.windowEnd).toBe(until);
-    expect(loadOutcomeCalls[0]).toMatchObject({ workspaceId: WS, decisionId: 'buildd.orchestration_claim_hold' });
+    expect(joinForCalls.at(-1).decisions.map((d: any) => d.id)).toEqual(['d1']);
     expect(fake.selects.map(s => s.table)).toEqual(['orchestration_decisions', 'workers']);
   });
 
@@ -288,4 +289,40 @@ describe('loadSoftOverlapEvidence: same-file history and predicted size', () => 
     fake.throwOnSelect = true;
     await expect(src.loadSoftOverlapEvidence({ workspaceId: WS, taskId: TASK, paths: ['a.ts'] })).rejects.toThrow('db down');
   });
+});
+
+it('loads human force metadata and labels the selected human row', async () => {
+  fake.rowsByTable.orchestration_decisions = [{ id: 'human', taskId: TASK, workspaceId: WS,
+    decisionId: 'buildd.human_force_start', effective: 'START', applied: true, createdAt: SINCE,
+    receipt: { coordination: { gate: 'overlap', paths: ['packages/core/db/schema.ts'], staleBlocker: true } }, confidence: 0.9 }];
+  const input = await src.loadClaimHoldReadoutInput({ workspaceId: WS, since: SINCE, until: new Date() });
+  expect(input.decisions[0]).toMatchObject({ actor: 'human_force', gate: 'overlap', areaClass: 'core/db', staleBlocker: true, confidence: 0.9 });
+  expect(joinForCalls.at(-1).decisions[0].id).toBe('human');
+  expect(input.labels[0].decisionId).toBe('human');
+});
+
+it('soft-start source preserves coordination cell and attribution metadata', async () => {
+  fake.rowsByTable.gate_events = [{ id: 'soft', taskId: TASK, workspaceId: WS, occurredAt: SINCE,
+    detail: { decidedBy: 'jev', fingerprint: 'policy-a', coordination: { gate: 'overlap', paths: ['apps/web/a.ts'], staleBlocker: true } } }];
+  const input = await src.loadSoftStartReadoutInput({ workspaceId: WS, since: SINCE, until: new Date() });
+  expect(input.starts[0]).toMatchObject({ actor: 'jev_start', fingerprint: 'policy-a', gate: 'overlap', areaClass: 'other', staleBlocker: true });
+});
+
+it('requires a previously applied START to meet the current confidence threshold', () => {
+  const query = render(src.appliedStartWhere({ ...KEY, minConfidence: 0.93 }));
+  expect(query.sql).toContain('"orchestration_decisions"."confidence" >=');
+  expect(query.params.at(-1)).toBe(0.93);
+  expect(render(src.appliedStartWhere(KEY)).sql).not.toContain('"orchestration_decisions"."confidence" >=');
+});
+
+it('recovers human force cells from deployed force receipts without coordination metadata', async () => {
+  const cases = [
+    ['soft_overlap', 'soft_overlap'], ['pr_overlap_ended', 'open_pr_overlap'],
+    ['pr_overlap_live', 'open_pr_overlap'], ['scope_undeclared_mutex', 'advisory_manifest'], ['unknown', 'unknown'],
+  ];
+  fake.rowsByTable.orchestration_decisions = cases.map(([kind], i) => ({ id: `human-${i}`, taskId: TASK, workspaceId: WS,
+    decisionId: 'buildd.human_force_start', effective: 'START', applied: true, createdAt: SINCE,
+    candidatePolicyVersion: `hf1.${kind}`, receipt: { kinds: [kind], blockers: [{ kind, type: 'task', id: HOLDER, sharedPaths: ['packages/core/db/schema.ts'] }] } }));
+  const input = await src.loadClaimHoldReadoutInput({ workspaceId: WS, since: SINCE, until: new Date() });
+  expect(input.decisions.map(d => d.gate)).toEqual(cases.map(c => c[1]));
 });

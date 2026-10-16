@@ -17,6 +17,7 @@
  * The planners and `taskRecoverySentence` are pure; DB access is lazy.
  */
 
+import { notKernelMergedTaskSql } from '@/lib/workflow/pr-fact-scope';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const CREDENTIAL_HOLD_PROBE_MINUTES = [15, 60, 240] as const;
@@ -204,7 +205,7 @@ export async function holdTaskForCredential(input: {
       context: plan.context,
       updatedAt: new Date(),
     })
-    .where(and(eq(tasks.id, input.taskId), not(eq(tasks.status, 'cancelled'))))
+    .where(and(eq(tasks.id, input.taskId), not(eq(tasks.status, 'cancelled')), notKernelMergedTaskSql()))
     .returning({ id: tasks.id });
   if (!updated?.length) return null;
   // An exhausted hold waits for a release, not a clock.

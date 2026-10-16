@@ -175,7 +175,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Every human answer to an agent MUST either reach a live session or become a durable retry task, and MUST NOT be accepted for a worker that can never act on it, applied twice, or reported as delivered when dropped.
 - [Model Routing and Tiers](./model-routing-and-tiers.md) · @max — verified 2026-10-15
   A claimed task MUST resolve to one model id at claim time under a fixed precedence — pin, task tier, role pin, then kind×complexity under budget gates and role floor — recorded on tasks.predicted_model.
-- [Orchestration Decisions (Shadow and Promotion Guard)](./orchestration-decisions-shadow.md) · @max — verified 2026-10-08
+- [Orchestration Decisions (Shadow and Promotion Guard)](./orchestration-decisions-shadow.md) · @max — verified 2026-10-15
   Creation-manifest decisions MUST stay record-only without a committed promotion; claim hold/start MAY apply a measured model's confident START to its three advisory gates; both fall back to the rule.
 - [Path Claim Ownership](./path-claim-ownership.md) · @max — verified 2026-10-11
   Edit leases MUST be held exclusively per workspace, kept equal to a task's current owned file set by a delta/ACK protocol, proven complete before any ship (fail closed), and handed to the open PR when the worker ends.

@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [apps/web/src/lib/workflow/kernel.ts, apps/web/src/lib/workflow/seam.ts, apps/web/src/lib/workflow/command-api.ts, apps/web/src/lib/workflow/kernel-client.ts, apps/web/src/lib/workflow/delivery-epochs.ts]
 related: [workflow-state-kernel, execution-control-plane, mission-branch-refresh, mission-task-lifecycle, living-specs]
 keywords: [scope amendment, mission scope version, workflow kernel, delivery state, single writer, single host, control plane, portable library, ports, adapters, conformance suite, merge door, landing authority, required status, durable findings, finding disposition, delivery epoch, mission delivery, refresh settlement, no-op completion, workflow-kernel package]
-verified_by: [packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts]
+verified_by: [packages/workflow-kernel/src/scope-amendments.test.ts, apps/web/tests/db/kernel-pr-projection.test.ts, apps/web/tests/db/task-status-writers.test.ts, apps/web/tests/db/mission-completion-writer.test.ts, apps/web/tests/db/kernel-merge-heal.test.ts, apps/web/src/lib/workflow/pr-fact-scope.test.ts, apps/web/tests/db/scope-amendments.test.ts, packages/workflow-kernel/src/delivery-epochs.test.ts, apps/web/tests/db/mission-epochs.test.ts, packages/workflow-kernel/src/landing-gate.test.ts, apps/web/src/lib/workflow/merge-door-inventory.test.ts, apps/web/src/lib/release/pinned-merge.test.ts, apps/web/src/lib/workflow/command-api.test.ts, apps/web/src/lib/workflow/kernel-client.test.ts, apps/web/src/lib/workflow/kernel-floor.test.ts, apps/web/tests/db/kernel-command-host.test.ts, apps/web/src/app/api/cron/pr-reconcile/route.test.ts, packages/workflow-kernel/src/findings.test.ts, packages/workflow-kernel/src/conformance/conformance.test.ts]
 supersedes: []
 ---
 # Workflow Kernel Library and Single Host
@@ -1081,10 +1081,60 @@ column outside the kernel; S3 and S4 remove or route each one.
   reassign, `correct_task_result`, interrupt, webhook ingest, Linear webhook,
   quality-scout, credential recovery, repo access, `stale-workers.ts`,
   supersession, visual review decisions, surface audit, recovery hold,
-  evidence and shipped stores.
+  evidence and shipped stores. S4b: a merge of a kernel-owned PR completes
+  the owner task in the T17 statement itself (`task-projection.ts`, beside
+  `w_proj`), with the rule `runMergedPrWork` applied (already completed stays,
+  a local session or another open PR on the task keeps it open), and tells
+  the `emit_pr_merged` effect what it did; `runMergedPrWork` writes no task.
+  "Delivery-owned" for a task has one definition (`deliveryOwnedTaskSql`).
+  Writers that infer where a PR went (the branch-name merge match, the
+  stale-failure archive, the dependency-failure cascade) skip a
+  delivery-owned task in their own WHERE. The rest stay, each listed in the
+  guard with its reason: the end or requeue of a worker's own attempt (for an
+  owner task `tasks.status` is the attempt's lifecycle, which the kernel
+  reads, so these cannot move without stranding it), a person's act, a task
+  that provably has no delivery, or a `result` key that is not a delivery
+  field. Every attempt writer that can move a task away from completed carries
+  `notKernelMergedTaskSql` in its WHERE, so a completed task whose delivery
+  MERGED is never failed, requeued or reactivated by a late worker report, a
+  stale release check or the reaper (a requeue would build it twice); the
+  guard pins how many statements per file carry it (a person's follow-up that
+  reactivates the worker of a shipped task leaves the task completed). Only
+  the merge's work-tracker comment runs behind a context once-marker; the
+  `task.completed` fan-out (deduped by its key) and `resolveCompletedTask`
+  (each step guarded on its rows) re-run on every retry of `emit_pr_merged`,
+  so a function killed mid-way loses nothing. Legacy merge writers skip a task
+  only for the PR its delivery is bound to: another PR of the same task (a
+  stacked series, a follow-up after the delivery's PR was abandoned) still
+  completes it.
+  NOT IMPLEMENTED (the rest of AC-1 for `tasks.status`): while a delivery is
+  live, the attempt writers (worker PATCH, claim, cleanup, the reaper,
+  interactive detach, credential and repo-access recovery, the recovery hold,
+  conflict and CI retries, loop exits) still set the owner task's status
+  directly, because the kernel reads that status as the attempt's end
+  (`forwardOwnerEnd`, T4) and has no attempt-to-task projection to replace
+  them; person writers (task PATCH, bulk, reassign, attach-PR, visual-review
+  decisions, waivers, tracker webhooks) still write it as a person's act. Also
+  not implemented: `tasks.result.prUrl` / `prNumber` derived on read (the
+  worker PATCH still copies them from the worker row).
 - Mission completion: `completeMissionIfVerified` from subscribers,
   `pr-reconcile.ts`, the schedules cron, evaluate, mission loop; plus mission
-  PATCH, archive, circuit breaker, budget.
+  PATCH, archive, circuit breaker, budget. S4b: the automated paths share one
+  writer (`mission-completion-write.ts`), compare-and-set on the mission's
+  delivery records: the decision fingerprints the epochs (id, version, state)
+  before it reads them, and the write lands only if they are unchanged, so no
+  caller completes a mission over epoch state it did not see. Every epoch
+  transition touches its mission row in its own statement, and the write
+  requires the row version it read (`xmin`), so an epoch write still in flight
+  is seen too. After a miss on a mission still active, unchanged records mean
+  another write held the row and it claims once more (`completion_contended`
+  on a second miss); moved records are decided once more on a fresh read
+  (`deliveries_moved` on a second miss). A
+  mission with no delivery records has no fingerprint and completes as before.
+  Every epoch reconcile that settles or retires a delivery (the merge door's,
+  `ensureWritableEpoch`'s, the hourly one) emits `mission.delivery_settled`,
+  and the missions module asks the writer to decide. The person paths (mission
+  PATCH, archive) stay.
 - Merge doors outside the kernel: release PR on CI green (webhook), release
   executor (two unpinned merges and a branch-to-prod merge), release compose,
   and the legacy arm of the dashboard merge, `PUT /api/github/pr`, the landing

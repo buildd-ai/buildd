@@ -15,6 +15,7 @@ import { refreshWorkerMergeStateIfStale } from './pr-reconcile';
 import { isBookkeeping } from '@buildd/core/mission-helpers';
 import type { PathDeclaration } from '@buildd/shared';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { deliveryOwnedTaskSql, taskCols } from '@/lib/workflow/pr-fact-scope';
 
 /**
  * Result of interpreting `structuredOutput.plan`. Organizer heartbeats
@@ -726,7 +727,7 @@ export async function checkDependsOnResolved(
  * started). A caller-declared edge to the same failed task still cascades
  * normally.
  */
-async function cascadeDependencyFailure(
+export async function cascadeDependencyFailure(
   failedTaskId: string
 ): Promise<void> {
   // Find all pending/assigned tasks where dependsOn contains the failed task ID
@@ -745,6 +746,9 @@ async function cascadeDependencyFailure(
         sql`${tasks.dependsOn}::jsonb @> ${JSON.stringify([failedTaskId])}::jsonb`,
         // Only cascade to non-terminal tasks
         sql`${tasks.status} NOT IN ('completed', 'failed', 'cancelled')`,
+        // S4b (workflow-kernel-library.md §1): a task whose PR a live kernel delivery carries is the
+        // kernel's to settle. Failing it here would contradict a delivery in review or landing.
+        sql`NOT ${deliveryOwnedTaskSql(taskCols(), { live: true })}`,
       )
     );
 
