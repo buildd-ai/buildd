@@ -12,7 +12,7 @@ import { sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
 import { assertDbConfigured, q, seedMission, seedTask, seedWorkspace } from './harness';
-import { buildRunnerQueueQuery, loadRunnerQueue, runnerQueueGates, runnerQueueWhere } from '../../src/lib/claim-order-queue';
+import { buildRunnerQueueQuery, loadRunnerQueue, runnerQueueGates, runnerQueueWhere, fetchBroadClaimCandidateIds } from '../../src/lib/claim-order-queue';
 
 beforeAll(() => { assertDbConfigured(); });
 
@@ -78,12 +78,11 @@ describe('runner queue', () => {
 
   test("what it lists as claimable now is exactly the claim WHERE + ORDER BY's own result", async () => {
     const now = new Date();
-    const gates = runnerQueueGates(caller, now);
-    // Use the claim route's actual candidate query, not a separate reconstruction.
-    const candidateRows = await buildRunnerQueueQuery(db, { workspaceIds: [ws], gates }) as unknown as Array<{ id: string }>;
+    // Use the claim route's actual candidate WHERE logic, not the queue's gate columns.
+    const candidateIds = await fetchBroadClaimCandidateIds(db, { workspaceIds: [ws], caller, now });
     const out = await loadRunnerQueue({ workspaceIds: [ws], caller, now });
     const claimableNow = out.teams[0].queue.filter(t => t.holds.length === 0).map(t => t.id);
-    expect(claimableNow).toEqual(candidateRows.map(r => r.id));
+    expect(claimableNow).toEqual(candidateIds);
     expect(claimableNow).toEqual([id.high, id.oldFive, id.newFive]);
   });
 
