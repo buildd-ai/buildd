@@ -40,7 +40,7 @@ const teamed = (): TopState => {
 };
 
 describe('teams and missions (R-23, R-24)', () => {
-  test('80x24: the filter line, team headings, open missions, then delivered ones with their day', () => {
+  test('80x24: the filter line, team headings, open missions, then the delivered ones folded into one row', () => {
     const lines = frame(teamed(), 80, 24);
     expectExactSize(lines, 80, 24);
     const t = text(lines);
@@ -50,17 +50,17 @@ describe('teams and missions (R-23, R-24)', () => {
     // The left pane is 22 columns, so a long title is cut; the order is what matters.
     const at = (s: string) => t.indexOf(s);
     expect(at('Ship the')).toBeLessThan(at('Docs ref'));
-    expect(at('Docs ref')).toBeLessThan(at('Retire the old API'));
-    expect(at('Retire the old API')).toBeLessThan(at('Billing'));
+    expect(at('Docs ref')).toBeLessThan(at('Delivered · 1'));
+    expect(at('Delivered · 1')).toBeLessThan(at('Billing'));
+    expect(t).not.toContain('Retire the old API');
     expect(t).toContain('local session');
-    expect(t).toMatch(/delivered [A-Z][a-z]{2} \d{1,2}/);
     expect(t).toContain('2 workspaces · 2 teams');
-    expect(t.replace(/delivered [A-Z][a-z]{2} \d{1,2}/, 'delivered <day>')).toMatchSnapshot();
+    expect(t).toMatchSnapshot();
   });
 
   test('the delivered mission is drawn dimmed, not in the primary colour', () => {
-    const lines = frame(teamed(), 80, 24, createPalette('night', 'truecolor'));
-    const done = lines.find(l => stripAnsi(l).includes('Retire the old API'))!;
+    const lines = frame({ ...teamed(), unfolded: ['fold:Acme'] }, 80, 24, createPalette('night', 'truecolor'));
+    const done = lines.find(l => stripAnsi(l).includes('Retire the'))!;
     const open = lines.find(l => stripAnsi(l).includes('Ship the'))!;
     // Same position, different colour: the title's escape sequence differs.
     expect(done.slice(0, done.indexOf('Retire'))).not.toBe(open.slice(0, open.indexOf('Ship')));
@@ -85,7 +85,7 @@ describe('teams and missions (R-23, R-24)', () => {
     expectExactSize(lines, 80, 14);
     const t = text(lines);
     expect(t).toContain('Pair on the parser');
-    expect(t).toContain('Retire the old API');
+    expect(t).toContain('Delivered · 1');
     expect(t).toContain('Billing');
     expect(t).not.toContain('delivered');
   });
