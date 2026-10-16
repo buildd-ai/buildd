@@ -36,7 +36,20 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
+// The page's own loads, by id: each records what it was asked for and answers from the test.
+let deliveries = new Map<string, any>();
+let depRows = new Map<string, any>();
+let released = new Map<string, any[]>();
+const mockDeliveries = mock(async (_ids: string[]) => deliveries);
+const mockDepRows = mock(async (_ids: readonly string[]) => depRows);
+const mockReleased = mock(async (_m: readonly string[], _w: readonly string[]) => released);
+mock.module('./workflow/delivery-view', () => ({ getOwnerDeliveryDisplays: mockDeliveries }));
+mock.module('./dependency-rows', () => ({ loadDependencyRows: mockDepRows }));
+mock.module('./mission-board-waiting', () => ({ loadMissionsReleasedEdges: mockReleased }));
+
 const { loadMissionStages } = await import('./mission-stage-load');
+const { buildMissionBoard, toBoardTaskInput } = await import('./mission-board');
+const { overviewProgress } = await import('./mission-overview');
 
 const ws = { name: 'buildd', gitConfig: { defaultBranch: 'dev' }, releaseConfig: null };
 const mission = (over: any = {}) => ({
@@ -56,6 +69,12 @@ beforeEach(() => {
   missionRows = [];
   taskRows = [];
   workerRows = [];
+  deliveries = new Map();
+  depRows = new Map();
+  released = new Map();
+  mockDeliveries.mockClear();
+  mockDepRows.mockClear();
+  mockReleased.mockClear();
 });
 
 describe('loadMissionStages', () => {
@@ -79,13 +98,17 @@ describe('loadMissionStages', () => {
     expect(selectCalls[0].where).toEqual({ type: 'inArray', field: 'workers.taskId', values: ['t1'] });
   });
 
-  it('is three reads however many missions are listed (no N+1)', async () => {
+  it('is a fixed number of reads however many missions are listed (no N+1)', async () => {
     missionRows = [mission({ id: 'a' }), mission({ id: 'b' }), mission({ id: 'c' })];
     taskRows = [task({ id: 'ta', missionId: 'a' }), task({ id: 'tb', missionId: 'b' }), task({ id: 'tc', missionId: 'c' })];
     const stages = await loadMissionStages(['a', 'b', 'c'], ['ws-1']);
     expect(missionsFindMany).toHaveBeenCalledTimes(1);
     expect(tasksFindMany).toHaveBeenCalledTimes(1);
     expect(selectCalls).toHaveLength(1);
+    // The page's own loads: one each for every mission together (no dependency to load here).
+    expect(mockDeliveries).toHaveBeenCalledTimes(1);
+    expect(mockReleased).toHaveBeenCalledTimes(1);
+    expect(mockDepRows).not.toHaveBeenCalled();
     expect([...stages.keys()].sort()).toEqual(['a', 'b', 'c']);
   });
 
@@ -147,6 +170,78 @@ describe('loadMissionStages', () => {
     const cols = tasksFindMany.mock.calls[0][0].columns;
     expect(cols.dependsOn).toBe(true);
     expect(cols.missionPhaseIndex).toBe(true);
+  });
+
+  describe('progress parity with the mission page (R-29)', () => {
+    const merged = { prUrl: 'https://example.test/pr/1', prNumber: 1, mergedAt: '2026-10-14T10:00:00.000Z', prLifecycleStatus: 'merged', status: 'completed' };
+    const closedPr = { prUrl: 'https://example.test/pr/2', prNumber: 2, mergedAt: null, prLifecycleStatus: 'closed', status: 'completed' };
+    const DEP = '00000000-0000-4000-8000-0000000000aa';
+    const at = (n: number) => `2026-10-14T09:0${n}:00.000Z`;
+
+    /** The page's board over the same rows and the same loaded inputs. */
+    function pageProgress(rows: any[], wk: any[], extra: { externalDeps?: any[]; releasedEdges?: any[] } = {}) {
+      const byTask = (id: string) => wk.filter(w => w.taskId === id);
+      const board = buildMissionBoard({
+        now: Date.parse('2026-10-14T12:00:00.000Z'), missionCreatedAt: 0, missionStatus: 'active',
+        tasks: rows.map(t => toBoardTaskInput({ ...t, workers: byTask(t.id), delivery: deliveries.get(t.id) ?? null })),
+        externalDeps: extra.externalDeps ?? [],
+        gateFacts: { releasedEdges: extra.releasedEdges ?? [], waitingKinds: {} },
+      });
+      return overviewProgress(board);
+    }
+
+    it('a closed, unmerged kernel delivery is a waiting not-landed cell, never a done square', async () => {
+      missionRows = [mission()];
+      taskRows = [task({ id: 't1', createdAt: at(1) }), task({ id: 't2', createdAt: at(2) })];
+      workerRows = [{ id: 'w1', taskId: 't1', ...closedPr }, { id: 'w2', taskId: 't2', ...merged }];
+      deliveries = new Map([['t1', { stage: 'closed', state: 'CLOSED_UNMERGED', headline: 'Closed', owner: 'system' }]]);
+      const progress = (await loadMissionStages(['m1'], ['ws-1'])).get('m1')!.progress!;
+      expect(mockDeliveries.mock.calls[0][0]).toEqual(['t1', 't2']);
+      expect(progress).toEqual([{ state: 'landed', group: 'done' }, { state: 'not_landed', group: 'waiting' }]);
+      expect(progress).toEqual(pageProgress(taskRows, workerRows));
+    });
+
+    it('a delivery that shipped under another PR stays done, as on the page', async () => {
+      missionRows = [mission()];
+      taskRows = [task({ id: 't1', createdAt: at(1) })];
+      workerRows = [{ id: 'w1', taskId: 't1', ...closedPr }];
+      deliveries = new Map([['t1', { stage: 'superseded', state: 'SUPERSEDED', headline: 'Shipped elsewhere', owner: 'system' }]]);
+      const progress = (await loadMissionStages(['m1'], ['ws-1'])).get('m1')!.progress!;
+      expect(progress).toEqual([{ state: 'landed', group: 'done' }]);
+      expect(progress).toEqual(pageProgress(taskRows, workerRows));
+    });
+
+    it('a dependency in another mission is loaded by id and judged, as the page judges it', async () => {
+      missionRows = [mission()];
+      taskRows = [task({ id: 't1', status: 'pending', dependsOn: [DEP], createdAt: at(1) })];
+      const ext = { id: DEP, title: 'other mission work', status: 'in_progress', workers: [] };
+      depRows = new Map([[DEP, ext]]);
+      const progress = (await loadMissionStages(['m1'], ['ws-1'])).get('m1')!.progress!;
+      expect(mockDepRows.mock.calls[0][0]).toEqual([DEP]);
+      expect(progress).toEqual([{ state: 'blocked', group: 'waiting' }]);
+      expect(progress).toEqual(pageProgress(taskRows, workerRows, { externalDeps: [ext] }));
+    });
+
+    it('an edge the claim gate released reads ready, as on the page; the read is one for every mission', async () => {
+      missionRows = [mission(), mission({ id: 'm2' })];
+      taskRows = [
+        task({ id: 't1', status: 'in_progress', createdAt: at(1) }),
+        task({ id: 't2', status: 'pending', dependsOn: ['t1'], createdAt: at(2) }),
+        task({ id: 'u1', missionId: 'm2', status: 'pending', createdAt: at(3) }),
+      ];
+      workerRows = [{ id: 'w1', taskId: 't1', status: 'running', prUrl: null }];
+      const edges = [{ dependentId: 't2', dependencyId: 't1', arm: 'early_release' }];
+      released = new Map([['m1', edges]]);
+      const stages = await loadMissionStages(['m1', 'm2'], ['ws-1']);
+      expect(mockReleased).toHaveBeenCalledTimes(1);
+      expect(mockReleased.mock.calls[0]).toEqual([['m1', 'm2'], ['ws-1']]);
+      const progress = stages.get('m1')!.progress!;
+      expect(progress).toEqual(pageProgress(taskRows.filter(t => t.missionId === 'm1'), workerRows, { releasedEdges: edges }));
+      expect(progress.find(c => c.group === 'waiting')!.state).toBe('ready');
+      // Without the release the same task is held behind its dependency.
+      released = new Map();
+      expect((await loadMissionStages(['m1'], ['ws-1'])).get('m1')!.progress!.find(c => c.group === 'waiting')!.state).toBe('blocked');
+    });
   });
 
   it('reads nothing with no missions or no workspaces', async () => {

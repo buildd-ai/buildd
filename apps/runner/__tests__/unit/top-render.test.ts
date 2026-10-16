@@ -196,7 +196,8 @@ describe('revision 2 (R-17, R-19, R-21, AC-6)', () => {
       const lines = text(frame(s, cols, 24)).split('\n');
       const row = lines.find(l => l.includes('▸'))!;
       expect(row).toContain('verifying');
-      expect(row).not.toContain('2/8');
+      // R-31: done over total stays beside the stage word.
+      expect(row.split('│')[0]).toMatch(/verifying 2\/8 $/);
       // A cut heading ends in … and keeps a space before the counts.
       expect(lines[3]).toContain(cols >= 120 ? 'Runner TUI · verifying: 2 checks left' : 'Runner TUI · verifying');
       expect(lines[3]).toMatch(/\s\d+ running/);
@@ -306,12 +307,16 @@ describe('mission progress at a glance (R-29, R-30, R-31, AC-14, AC-15)', () => 
     expect(frame(withProgress(cells), 120, 40).join('')).not.toMatch(/\x1b/);
   });
 
-  test('R-31: the missions pane is unchanged, and only the selected mission gets squares', () => {
-    const before = text(frame(fixtureState(), 80, 24)).split('\n').map(l => l.slice(0, 22));
-    const after = text(frame(withProgress(AC14), 80, 24)).split('\n').map(l => l.slice(0, 22));
-    // The left pane's rows are the same, only its stage word replaces done/total (R-18).
-    expect(after.filter(l => l.includes('■'))).toEqual([]);
-    expect(after.length).toBe(before.length);
+  test('R-31: with a stage, the missions pane keeps done over total beside it, and has no squares', () => {
+    for (const [cols, rows, lw] of [[80, 24, 22], [120, 40, 28]] as const) {
+      const left = text(frame(withProgress(AC14), cols, rows)).split('\n').map(l => l.slice(0, lw));
+      const sel = left.find(l => l.includes('▸'))!;
+      expect(sel).toMatch(/building 2\/8 $/);
+      // The title is what gives way, never the counts.
+      expect(sel).toMatch(cols === 80 ? /▸ Runn… building 2\/8/ : /▸ Runner TUI +building 2\/8/);
+      expect(left.find(l => l.includes('Specs import'))).toMatch(/1\/2 $/);
+      expect(left.filter(l => /[■▶▢◐]/.test(l))).toEqual([]);
+    }
   });
 
   test('no progress from the server, no row', () => {
