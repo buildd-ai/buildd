@@ -27,10 +27,10 @@ assertions:
     method: GET
     path: /api/workers/active
     file: apps/web/src/app/api/workers/active/route.ts
-supersedes: []
   - id: guard-1
     type: test_file
     path: apps/web/src/app/api/workers/heartbeat/route.test.ts
+supersedes: []
 ---
 # Runner Heartbeat and Version
 
