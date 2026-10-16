@@ -11,6 +11,8 @@ export type StoredPrFacts = {
   linesAdded?: number | null;
   linesRemoved?: number | null;
   filesChanged?: number | null;
+  /** The delivery's review rounds in words (AC-24); replaces GitHub's review counts when present. */
+  reviewRounds?: string | null;
   /** Task page outcome view (stored-state lineage); enriched here with check runs per commit. */
   outcome?: PrOutcome | null;
   /** The canonical open-fix-attempt fact (lib/explain.ts's loadOpenAttempt) — already live, never re-derived here. */
