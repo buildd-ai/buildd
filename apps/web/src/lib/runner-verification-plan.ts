@@ -1,4 +1,3 @@
-import { isCriteriaVerificationTask } from '@/lib/mission-criteria-verify';
 import { isCriterionCheckTask } from '@/lib/specs/criterion-checks';
 
 /**
@@ -31,4 +30,16 @@ export function verificationRunPlan(task: {
   const command = fromExit || (typeof fromContext === 'string' ? fromContext.trim() : '');
   if (!command) return { run: false, reason: 'no_command' };
   return { run: true, command, iteration: task.loopIteration ?? 0 };
+}
+
+/**
+ * True when this task is a mission criteria verification task (cheap context
+ * check on the `criteriaVerification` marker). Re-exported by
+ * lib/mission-criteria-verify.ts; defined here so core needs no import of it.
+ */
+export function isCriteriaVerificationTask(context: unknown): boolean {
+  const marker = (context as Record<string, unknown> | null)?.criteriaVerification as
+    | { missionId?: unknown; criterionIndex?: unknown }
+    | undefined;
+  return typeof marker?.missionId === 'string' && typeof marker.criterionIndex === 'number';
 }
