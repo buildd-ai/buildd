@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "e5da7fd3-4215-479a-bfe7-a6fe6abf28b8",
+  "id": "0d18575b-a063-4d23-b851-7a4599153fb5",
   "prevIds": [
-    "75a60cf2-710b-4c74-a8bc-1cf8a940f734"
+    "17c42073-ef3a-49e6-b748-ab74c6290939"
   ],
   "ddl": [
     {
@@ -2956,6 +2956,19 @@
       "generated": null,
       "identity": null,
       "name": "source_worker_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "backend_pauses"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "seat_key",
       "entityType": "columns",
       "schema": "public",
       "table": "backend_pauses"
