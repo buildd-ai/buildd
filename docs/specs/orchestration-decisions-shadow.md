@@ -277,7 +277,7 @@ resets calibration and records a new evidence boundary.
 
 An increase requires both that safety bound and a measured median wait or idle
 improvement against held controls with enough timing samples. These timing
-comparisons are observational, never causal claims. A safety-bound breach
+comparisons are observational, never causal claims. An observed attributable unsafe-rate breach with sufficient samples
 reverts the cell to fraction zero in one evaluation, including a pinned cell.
 The existing tier-pools cron runs this evaluation hourly; no scheduler is added.
 Every evaluation atomically records its policy revision, evidence summary and
@@ -296,7 +296,7 @@ Owner `claim_learning_pin`, `claim_learning_revert` and
 `claim_learning_set_delta` actions require a revision and reason, use the
 existing owner-action audit path and write policy changes. A pin cannot
 bypass a safety revert or unknown-state rail. The companion screen belongs in
-buildd-admin; no member UI is added.
+the platform admin application; no member UI is added.
 
 **Acceptance criteria**:
 
@@ -373,8 +373,8 @@ buildd-admin; no member UI is added.
 - AC-20: GIVEN fewer than the minimum samples on either arm WHEN calibrated
   THEN confidence remains 0.85; unknown attribution never supplies a safe label.
 - AC-21: GIVEN enough evidence WHEN both safety and timing improve THEN the
-  existing dial may raise one step; WHEN the upper safety bound breaches the
-  policy budget THEN fraction becomes zero in one evaluation, including a pin.
+  existing dial may raise one step; WHEN observed attributable unsafe exceeds the
+  policy budget with enough samples THEN fraction becomes zero in one evaluation, including a pin.
 - AC-22: GIVEN an owner read WHEN a panel dependency fails THEN claimLearning
   is null; GIVEN a non-owner THEN the operator route returns 404.
 - AC-23: GIVEN a reverted cell or a raised threshold WHEN a previously applied

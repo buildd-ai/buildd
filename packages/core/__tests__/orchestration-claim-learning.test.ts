@@ -114,6 +114,12 @@ describe('claim learning', () => {
     const outcomes = [...Array.from({length:400}, (_,i)=>({...safe(),taskId:`safe-${i}`,confidence:.9})), ...Array.from({length:50}, (_,i)=>[{...safe(),taskId:`unsafe-${i}`,confidence:.7},{...safe(),taskId:`unsafe-${i}`,confidence:.95,attributableUnsafe:true}]).flat()];
     expect(calibrateClaimConfidence(outcomes,baseline)).toBe(.85);
   });
+  test('a wide safety interval without observed harm does not revert the live bootstrap', () => {
+    const result = evaluateClaimLearningCell({...input,outcomes:Array.from({length:20},()=>safe())});
+    expect(result.safety.safetyOk).toBe(false);
+    expect(result.policy.fraction).toBe(1);
+    expect(result.policy.minConfidence).toBe(.85);
+  });
   test('censored deterministic HOLD is never the unsafe baseline', () => {
     expect(calibrateClaimConfidence(Array.from({ length: 400 }, () => safe()), Array.from({ length: 400 }, () => safe('deterministic_hold')))).toBe(.85);
   });

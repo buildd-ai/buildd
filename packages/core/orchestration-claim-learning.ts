@@ -130,10 +130,12 @@ export function evaluateClaimLearningCell(input: ClaimLearningCellInput) {
       }], primaryInCellSinceShift: evidence(base), gradedPerDay: 0
   };
   let decision: DialDecision;
+  // Like the shared dial, promotion needs a bound and reversion uses observed harm.
+  // A wide interval with no observed harm withholds an increase; it is not a breach.
   // Safety takes priority over an owner pin. Keep the shared reverted representation,
-  // evidence boundary and cooldown; the claim adapter's attributable bound is stricter.
-  if ((!validDelta || (enough && upper95! > baseRate! + delta)) && prior.record.state !== 'reverted') {
-    const reason = validDelta ? 'attributable unsafe upper 95% bound exceeded the matched base rate plus policy delta' : 'invalid policy delta: deterministic HOLD until a valid policy is recorded';
+  // evidence boundary and cooldown; the adapter supplies overlap-attributed evidence.
+  if ((!validDelta || (enough && unsafeRate! > baseRate! + delta)) && prior.record.state !== 'reverted') {
+    const reason = validDelta ? 'observed attributable unsafe rate exceeded the matched base rate plus policy delta' : 'invalid policy delta: deterministic HOLD until a valid policy is recorded';
     decision = {
       record: {
         state: 'reverted', since: now, revertedAt: now, evidenceSince: now, revertReason: reason, revertedFrom: 'Jev START', alternateArmId: null
