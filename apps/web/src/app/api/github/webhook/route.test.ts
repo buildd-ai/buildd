@@ -2468,6 +2468,17 @@ describe('POST /api/github/webhook', () => {
       expect(mockObserveCiGreen.mock.calls[0][0]).toMatchObject({ source: 'webhook:check_suite' });
     });
 
+    it('a green head reaches the kernel even when no worker row owns the PR (local mission)', async () => {
+      withSuccessWorkerPr();
+      mockWorkersFindFirst.mockReturnValue(null);
+      mockObserveCiGreen.mockClear();
+      const res = await POST(
+        createWebhookRequest('check_suite', makeCheckSuitePayload({ check_suite: { conclusion: 'success' } }))
+      );
+      expect(res.status).toBe(200);
+      expect(mockObserveCiGreen).toHaveBeenCalledTimes(1);
+    });
+
     it('holds PR and notifies when resolvePolicy returns tier=human', async () => {
       withSuccessWorkerPr();
       mockResolvePolicy.mockReturnValueOnce({ tier: 'human' });

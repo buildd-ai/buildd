@@ -519,6 +519,22 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
       resolvedKeys.add(c.key);
     }
   }
+  // A later round that re-shot a place (route, viewport, state) supersedes an
+  // earlier round's still-open cell there, whatever either shot was titled:
+  // the variant comes from the title, so a retitled recapture would otherwise
+  // leave the old issue standing. Only open cells are hidden; an ok one stays.
+  const roundOf = (c: VisualReviewCell) => c.history[c.history.length - 1].round;
+  for (const c of cells) {
+    if (resolvedKeys.has(c.key) || c.standing === 'fine') continue;
+    const siblings = byCellPlace.get(placeOf(c)) ?? [];
+    const later = siblings
+      .filter(s => s.key !== c.key && roundOf(s) > roundOf(c))
+      .sort((a, b) => roundOf(b) - roundOf(a))[0];
+    if (later) {
+      resolvedElsewhere.push({ key: c.key, route: c.route, viewport: c.viewport, variant: c.variant, resolvedBy: later.key });
+      resolvedKeys.add(c.key);
+    }
+  }
   const liveCells = resolvedKeys.size > 0 ? cells.filter(c => !resolvedKeys.has(c.key)) : cells;
 
   const queue = liveCells
@@ -547,7 +563,11 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
 
   // 4b. Failed audits a later completed audit replaced. Their failure is
   // history, not the mission's state, so they leave the phase below.
-  const replacedAudits = replacedFailedAudits(auditTasks, liveCells, requiredRoutesOf, openFixes, input.roundCapOpen === true);
+  // The cap note is a one-time record that the automatic rounds ran out. It
+  // stays a question only while a current screen is still not fine: once a
+  // later round re-shot everything ok, nothing is left to decide.
+  const capNoteOpen = input.roundCapOpen === true && liveCells.some(c => c.standing !== 'fine');
+  const replacedAudits = replacedFailedAudits(auditTasks, liveCells, requiredRoutesOf, openFixes, capNoteOpen);
   const replacedIds = new Set(replacedAudits.map(r => r.auditTaskId));
   const unreplaced = replacedIds.size > 0 ? tasks.filter(t => !replacedIds.has(t.id)) : tasks;
 
@@ -557,7 +577,7 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
   const bootFailed = auditBootFailed(unreplaced);
   const bootFailure = bootFailed ? bootFailureOf(unreplaced.filter(isAudit)) : null;
   const awaitingHuman = liveCells.filter(c => c.needsHuman).length;
-  const roundCapOpen = input.roundCapOpen === true;
+  const roundCapOpen = capNoteOpen;
   let phase: VisualReviewPhase;
   let progress: VisualReviewModel['progress'] = null;
   const question = latest ? pendingQuestionOf(latest) : null;
