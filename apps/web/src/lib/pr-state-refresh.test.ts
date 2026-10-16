@@ -99,7 +99,14 @@ mock.module('@buildd/core/pr-facts', () => ({
 
 // Kernel import on merge/close is best-effort; no real kernel code runs here.
 const mockObservePrState = mock(async (_input: any) => false);
-mock.module('@/lib/workflow/seam', () => ({ observePrState: mockObservePrState }));
+// No row here has a workflow delivery: these cases pin the legacy read-through
+// (delivery-owned rows: pr-state-refresh-delivery-owned.test.ts).
+mock.module('@/lib/workflow/seam', () => ({
+  observePrState: mockObservePrState,
+  deliveryOwnedWorkers: async () => new Map(),
+  recordPrStateObserved: async () => false,
+  prHasDeliveryOwnedRow: async () => false,
+}));
 
 beforeEach(() => {
   recordedFacts.length = 0;
