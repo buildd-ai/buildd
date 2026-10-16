@@ -85,7 +85,7 @@ describe('default roles through the prompts table', () => {
     installPrompts([prompt('# Builder (private)')]);
     const edited = seeded({ content: '# Our builder', contentHash: roleContentHash('# Our builder') });
     expect(await deliverSeededRoleContent(edited)).toBe('# Our builder');
-    expect(await deliverSeededRoleContent(seeded({ source: 'user' }))).toBe(builder.content);
+    expect(await deliverSeededRoleContent(seeded({ source: 'user', content: '# Ours', contentHash: roleContentHash('# Ours') }))).toBe('# Ours');
     await flush();
     expect(updates).toEqual([]);
   });

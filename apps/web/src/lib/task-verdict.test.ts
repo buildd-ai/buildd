@@ -6,6 +6,8 @@ import {
   parseStoredVerdictDecision,
   type StoredVerdictDecision,
   type VerdictInput,
+  verdictLinksPr,
+  verdictRepeatsOpenQuestion,
 } from './task-verdict';
 
 const PR = { url: 'https://github.com/acme/app/pull/12', number: 12, lifecycle: 'ci_failed', merged: false };
@@ -49,6 +51,17 @@ describe('deriveTaskVerdict', () => {
     const v = deriveTaskVerdict(input({ pr: { ...PR, lifecycle: 'merged', merged: true } }))!;
     expect(v.state).toBe('shipped');
     expect(v.headline).toBe('Shipped · PR #12 merged');
+  });
+
+  // Surface audit (task 3c538a39): a merged PR was stated three times. The
+  // status row is the one place that names it, so it also carries the time.
+  it('merged → the status row carries the claim-to-merge time, in words', () => {
+    const v = deriveTaskVerdict(input({ pr: { ...PR, lifecycle: 'merged', merged: true }, claimToMerge: '2h 14m' }))!;
+    expect(v.headline).toBe('Shipped · PR #12 merged');
+    expect(v.cause).toBe('2h 14m from claim to merge.');
+    expect(verdictLinksPr(v, PR.url)).toBe(true);
+    expect(verdictLinksPr(v, 'https://github.com/acme/app/pull/13')).toBe(false);
+    expect(verdictLinksPr(null, PR.url)).toBe(false);
   });
 
   it('a retry dispatched while CI is still red is still blocked, never "handled"', () => {
@@ -181,5 +194,27 @@ describe('a live run says its status once', () => {
   it('with a PR it names the PR, not the work', () => {
     const v = deriveTaskVerdict(input({ taskStatus: 'in_progress', live: running, pr: { ...PR, lifecycle: 'pr_open' } }))!;
     expect(v.headline).toBe('PR #12 open');
+  });
+});
+
+// Regression (owner report): the task page drew "Waiting on your answer. The
+// agent asked a question and is paused until it is answered. [Answer]" right
+// above the question card it pointed at. The card is the flow; the banner
+// only explained it.
+describe('verdictRepeatsOpenQuestion', () => {
+  const asking = deriveTaskVerdict(input({ taskStatus: 'in_progress', live: { status: 'waiting_input', waitingForInput: true } }))!;
+
+  it('the question verdict stands down while the question card is on the page', () => {
+    expect(asking.causeKey).toBe('needs_you:question');
+    expect(verdictRepeatsOpenQuestion(asking, { questionOnPage: true })).toBe(true);
+  });
+
+  it('it stays when the page shows no question card', () => {
+    expect(verdictRepeatsOpenQuestion(asking, { questionOnPage: false })).toBe(false);
+  });
+
+  it('any other verdict stays', () => {
+    const live = deriveTaskVerdict(input({ taskStatus: 'in_progress', live: { status: 'running', waitingForInput: false } }))!;
+    expect(verdictRepeatsOpenQuestion(live, { questionOnPage: true })).toBe(false);
   });
 });

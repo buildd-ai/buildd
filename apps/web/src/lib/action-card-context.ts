@@ -1,5 +1,5 @@
 import type { ActionQueueItem } from './action-queue';
-import { missionTaskHref, taskPageHref } from './mission-task-href';
+import { missionTaskHref, taskAnswerHref, taskPageHref } from './mission-task-href';
 
 export interface ActionCardContext {
   /** Which layer of the hierarchy the label describes. */
@@ -60,13 +60,16 @@ export function resolveActionCardContext(item: ActionQueueItem): ActionCardConte
  * `page: true` is for a task that is not a row in the mission feed — a retry
  * attempt, a plan to approve — which opens its full page, still carrying the
  * mission back-link. `taskId` overrides the card's own task (e.g. the retry).
+ * `answer: true` is a question: it opens the task page with the answer
+ * focused, the full answering experience, never the sheet.
  */
 export function actionCardTaskHref(
   item: Pick<ActionQueueItem, 'taskId' | 'missionId'>,
-  opts: { taskId?: string | null; page?: boolean } = {},
+  opts: { taskId?: string | null; page?: boolean; answer?: boolean } = {},
 ): string | null {
   const taskId = opts.taskId ?? item.taskId;
   if (!taskId) return null;
+  if (opts.answer) return taskAnswerHref({ taskId, missionId: item.missionId ?? null });
   if (opts.page) return taskPageHref({ taskId, missionId: item.missionId ?? null });
   return missionTaskHref({ missionId: item.missionId ?? null, taskId, from: 'home', mode: 'sheet' });
 }
@@ -78,7 +81,7 @@ export function actionCardTaskHref(
  */
 export function actionCardTaskLink(
   item: Pick<ActionQueueItem, 'taskId' | 'missionId'>,
-  opts: { taskId?: string | null; page?: boolean } = {},
+  opts: { taskId?: string | null; page?: boolean; answer?: boolean } = {},
 ): string {
   return actionCardTaskHref(item, opts)
     ?? (item.missionId ? `/app/missions/${encodeURIComponent(item.missionId)}?from=home` : '/app/tasks');

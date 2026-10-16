@@ -28,6 +28,7 @@ import { and, eq, isNull } from 'drizzle-orm';
 import { refreshClaudeCredential } from './claude-credential';
 import { refreshCodexCredential } from './codex-credential';
 import type { CredentialPreflightState } from './answer-resume';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * A token expiring inside this window is treated as already expired and a
@@ -90,22 +91,22 @@ async function resolveScopedSecret(
 
   if (workspaceId) {
     const scoped = await db.query.secrets.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(secrets.teamId, teamId),
         eq(secrets.purpose, purpose),
         eq(secrets.workspaceId, workspaceId),
-      ),
+      )),
       columns,
     });
     if (scoped) return scoped as SecretRow;
   }
 
   const teamWide = await db.query.secrets.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(secrets.teamId, teamId),
       eq(secrets.purpose, purpose),
       isNull(secrets.workspaceId),
-    ),
+    )),
     columns,
   });
   return (teamWide as SecretRow | undefined) ?? null;

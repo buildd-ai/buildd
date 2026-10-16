@@ -305,6 +305,50 @@ describe('recordPostSessionFindings — triage outcome label', () => {
   });
 });
 
+describe('recordPostSessionFindings — sampled skips', () => {
+  it('labels a sampled skip with the sample flag and rate, and files nothing from it', async () => {
+    const store = new FakeStore();
+    store.addRun({ id: 'run-1', sample: { rate: 0.03 } });
+    const labels: any[] = [];
+    const crit = finding({ severity: 'critical', signature: 'sig-crit', class: 'platform' });
+    const res = await recordPostSessionFindings('run-1', analysis([crit]), {
+      store, now: NOW, labelOutcome: async (l: any) => { labels.push(l); return { ok: true } as any; },
+    });
+    expect(res).toMatchObject({ status: 'recorded', runId: 'run-1', findings: [], sampled: true });
+    expect(labels).toEqual([{
+      teamId: 'team-1', capability: 'buildd.post_session_triage', subject: { type: 'post_session_run', id: 'run-1' },
+      source: 'post_session_analysis', label: 'actionable', observedAt: NOW,
+      metadata: { sampled: true, sampleRate: 0.03 },
+    }]);
+    // Measured, not acted on: no ledger fold, no task, no proposal, no warning.
+    expect(store.findings).toEqual([]);
+    expect(store.tasks.size).toBe(0);
+    expect(store.artifacts.size).toBe(0);
+    expect(store.notes).toEqual([]);
+    expect(store.runs.get('run-1')!.state).toBe('analysed');
+  });
+
+  it('a sampled skip with nothing found is labelled not_actionable', async () => {
+    const store = new FakeStore();
+    store.addRun({ id: 'run-1', sample: { rate: 0.03 } });
+    const labels: any[] = [];
+    await recordPostSessionFindings('run-1', analysis([]), { store, now: NOW, labelOutcome: async (l: any) => { labels.push(l); return { ok: true } as any; } });
+    expect(labels[0]).toMatchObject({ label: 'not_actionable', metadata: { sampled: true } });
+  });
+
+  it('recordTriagedRuns counts sampled runs apart and keeps them out of the act counts', async () => {
+    const store = new FakeStore();
+    store.addRun({ id: 'run-1' });
+    store.addRun({ id: 'run-2', sample: { rate: 0.03 } });
+    const crit = finding({ severity: 'critical', signature: 'sig-crit', class: 'platform' });
+    const summary = await recordTriagedRuns({
+      store, now: NOW,
+      analyse: async runId => ({ status: 'analysed', runId, analysis: analysis([crit]) }),
+    });
+    expect(summary).toMatchObject({ candidates: 2, recorded: 1, sampledLabelled: 1, actionable: 1, tasksFiled: 1 });
+  });
+});
+
 describe('recordPostSessionFindings — policy', () => {
   it('critical: files immediately, warns on the mission, and later occurrences update the task', async () => {
     const store = new FakeStore();

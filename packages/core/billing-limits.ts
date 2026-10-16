@@ -15,6 +15,7 @@
 // and route tests can inject their own deps.
 
 import { entitlements, isBillingEnforced, type Entitlements, type EntitlementTeam } from './entitlements';
+import { sqlWhere } from './db/relational-sql';
 
 type Env = Record<string, string | undefined>;
 
@@ -55,7 +56,7 @@ async function loadTeamPlanRow(teamId: string): Promise<EntitlementTeam | null> 
     import('./db'), import('./db/schema'), import('drizzle-orm'),
   ]);
   const row = await db.query.teams.findFirst({
-    where: eq(teams.id, teamId),
+    where: sqlWhere(eq(teams.id, teamId)),
     columns: { plan: true, paidSeats: true },
   });
   return row ?? null;

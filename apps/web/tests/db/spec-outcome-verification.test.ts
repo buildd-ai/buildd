@@ -51,11 +51,19 @@ async function governedTask() {
   if (!pinned.ok) throw new Error(pinned.error);
   const [task] = await q<{ id: string }>(sql`
     INSERT INTO tasks (workspace_id, title, status, context) VALUES (${wsA}::uuid, ${`build ${rand()}`}, 'completed', ${JSON.stringify(pinned.context)}::jsonb) RETURNING id`);
-  const [reviewer] = await q<{ id: string }>(sql`
-    INSERT INTO tasks (workspace_id, title, status, parent_task_id) VALUES (${wsA}::uuid, ${`review ${rand()}`}, 'in_progress', ${task.id}::uuid) RETURNING id`);
-  await q(sql`INSERT INTO workflow_deliveries (workspace_id, owner_task_id, state, authority, current_head_sha, merged_at)
-    VALUES (${wsA}::uuid, ${task.id}::uuid, 'MERGED', 'kernel', ${HEAD1}, now())`);
-  return { spec: d.spec, revision: a.revision, approvedVersion: a.spec.version, taskId: task.id, reviewerId: reviewer.id };
+  const [delivery] = await q<{ id: string }>(sql`INSERT INTO workflow_deliveries (workspace_id, owner_task_id, state, authority, current_head_sha, merged_at)
+    VALUES (${wsA}::uuid, ${task.id}::uuid, 'MERGED', 'kernel', ${HEAD1}, now()) RETURNING id`);
+  // The kernel's review round for this delivery: the shape reviewer.ts files.
+  const reviewerId = await child(task.id, delivery.id, 'review', `[reviewer] PR #1: review ${rand()}`);
+  return { spec: d.spec, revision: a.revision, approvedVersion: a.spec.version, taskId: task.id, reviewerId, deliveryId: delivery.id };
+}
+
+/** A child task of the subject, as the platform files it (attempt class, delivery role set server-side). */
+async function child(parentId: string, deliveryId: string | null, role: string | null, title: string) {
+  const [t] = await q<{ id: string }>(sql`
+    INSERT INTO tasks (workspace_id, title, status, parent_task_id, task_class, delivery_id, delivery_role)
+    VALUES (${wsA}::uuid, ${title}, 'in_progress', ${parentId}::uuid, 'attempt', ${deliveryId}::uuid, ${role}) RETURNING id`);
+  return t.id;
 }
 const moveHead = (taskId: string, head: string) => q(sql`UPDATE workflow_deliveries SET current_head_sha = ${head}, updated_at = now() WHERE owner_task_id = ${taskId}::uuid`);
 const outcomeOf = async (taskId: string) => {
@@ -122,6 +130,41 @@ describe('a violated requirement is never reported verified', () => {
   });
 });
 
+describe('a task answers for the criteria it names', () => {
+  async function scopedTask(criteria: unknown) {
+    const d = await createSpecDraft(user(admin), { workspaceId: wsA, title: `Checkout ${rand()}`, body: BODY });
+    if (!d.ok) throw new Error(d.error);
+    const a = await approveSpecRevision(user(admin), d.spec.id, { revision: 1, expectedVersion: 1 });
+    if (!a.ok) throw new Error(a.error);
+    return { specId: d.spec.id, pinned: await pinSpecSource(wsA, { specSource: { specId: d.spec.id, criteria } }) };
+  }
+
+  test('a slice that names AC-1 reads verified when AC-1 passes on the head, with R-1 out of its scope', async () => {
+    const s = await scopedTask(['AC-01']);
+    if (!s.pinned.ok) throw new Error(s.pinned.error);
+    expect((s.pinned.context as any).specSource.criteria).toEqual(['AC-1']);
+    const [task] = await q<{ id: string }>(sql`
+      INSERT INTO tasks (workspace_id, title, status, context) VALUES (${wsA}::uuid, ${`slice ${rand()}`}, 'completed', ${JSON.stringify(s.pinned.context)}::jsonb) RETURNING id`);
+    const [delivery] = await q<{ id: string }>(sql`INSERT INTO workflow_deliveries (workspace_id, owner_task_id, state, authority, current_head_sha, merged_at)
+      VALUES (${wsA}::uuid, ${task.id}::uuid, 'MERGED', 'kernel', ${HEAD1}, now()) RETURNING id`);
+    const reviewer = token(teamA, wsA, await child(task.id, delivery.id, 'review', `[reviewer] PR #2: review ${rand()}`));
+
+    expect((await outcomeOf(task.id)).criteria.map((c) => c.criterionId)).toEqual(['AC-1']);
+    expect(await recordSpecVerdict(reviewer, task.id, { criterionId: 'R-1', verdict: 'pass', headSha: HEAD1 })).toMatchObject({ ok: false, status: 400 });
+    await recordSpecVerdict(reviewer, task.id, { criterionId: 'AC-1', verdict: 'pass', headSha: HEAD1 });
+    expect((await outcomeOf(task.id)).outcome).toBe('verified');
+  });
+
+  test('a scope naming a criterion the revision lacks, a decision, or nothing is refused at filing', async () => {
+    for (const bad of [['AC-9'], ['D-1'], [], 'AC-1']) {
+      const s = await scopedTask(bad);
+      expect(s.pinned).toMatchObject({ ok: false, status: 400 });
+    }
+    const s = await scopedTask(['AC-9']);
+    expect(!s.pinned.ok && s.pinned.error).toContain('R-1, AC-1');
+  });
+});
+
 describe('a verdict is evidence bound to a head and to what was read', () => {
   test('a criterion the revision does not have, a verdict outside the vocabulary, or no head is refused, and nothing is written', async () => {
     const g = await governedTask();
@@ -166,6 +209,33 @@ describe('who records and who reads', () => {
     expect(await readGovernedOutcome(token(teamA, wsA, other.id), g.taskId)).toMatchObject({ ok: false, status: 404 });
     // A person with write access records.
     expect(await recordSpecVerdict(user(admin), g.taskId, { criterionId: 'R-1', verdict: 'pass', headSha: HEAD1 })).toMatchObject({ ok: true });
+  });
+
+  test('a builder fix attempt never grades the task it is fixing; only the kernel review round of its delivery records', async () => {
+    const g = await governedTask();
+    const fixers = [
+      await child(g.taskId, g.deliveryId, 'ci_fix', '[builder · after CI #1] build'),
+      await child(g.taskId, g.deliveryId, 'conflict_fix', '[builder · after conflict #1] build'),
+      await child(g.taskId, g.deliveryId, 'fix', '[builder · after review #1] build'),
+      // Filed by the subject's own token under itself: no delivery role.
+      await child(g.taskId, null, null, 'a verification task I filed myself'),
+    ];
+    for (const id of fixers) {
+      expect(await recordSpecVerdict(token(teamA, wsA, id), g.taskId, { criterionId: 'R-1', verdict: 'pass', headSha: HEAD1 })).toMatchObject({ ok: false, status: 403 });
+      expect(await recordSpecVerdict(token(teamA, wsA, id), g.taskId, { criterionId: 'AC-1', verdict: 'pass', headSha: HEAD1 })).toMatchObject({ ok: false, status: 403 });
+    }
+    // A review round of another delivery is not this task's reviewer.
+    const other = await governedTask();
+    const strayReview = await child(g.taskId, other.deliveryId, 'review', '[reviewer] PR #2');
+    expect(await recordSpecVerdict(token(teamA, wsA, strayReview), g.taskId, { criterionId: 'R-1', verdict: 'pass', headSha: HEAD1 })).toMatchObject({ ok: false, status: 403 });
+    const [{ n }] = await q<{ n: number }>(sql`SELECT count(*)::int AS n FROM spec_outcome_verdicts WHERE task_id = ${g.taskId}::uuid`);
+    expect(n).toBe(0);
+    expect((await outcomeOf(g.taskId)).outcome).not.toBe('verified');
+    // The review round records.
+    const reviewer = token(teamA, wsA, g.reviewerId);
+    expect(await recordSpecVerdict(reviewer, g.taskId, { criterionId: 'R-1', verdict: 'pass', headSha: HEAD1 })).toMatchObject({ ok: true });
+    expect(await recordSpecVerdict(reviewer, g.taskId, { criterionId: 'AC-1', verdict: 'pass', headSha: HEAD1 })).toMatchObject({ ok: true });
+    expect((await outcomeOf(g.taskId)).outcome).toBe('verified');
   });
 
   test('another workspace can neither record nor read a verdict', async () => {

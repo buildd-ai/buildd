@@ -5,7 +5,7 @@
  * provider-key limit is the only ceiling).
  *
  * Who may: whoever holds `manage_ai_budget` in the ACCOUNT'S team — by default
- * an owner or admin session (the team's permission overrides apply), or an
+ * an owner or admin session, or an
  * admin-level key of that team. Team permission,
  * never "the caller's account id equals this id": an app's own key cannot
  * raise its own cap unless it is an admin key. An account in a team the caller

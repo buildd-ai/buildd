@@ -134,12 +134,14 @@ describe('resolveProviderCredential end to end', () => {
     surface: 'agent-claude' as const, provider: 'anthropic' as const, ...over,
   });
 
-  test('agent, credential_policy NULL: team scopes only, even with a requester and inference policy own', async () => {
-    await setPolicy(f.teamId, null, 'own');
+  test('agent, credential_policy NULL (legacy column at its default): personal_first, team scopes with no requester', async () => {
+    await setPolicy(f.teamId, null, 'team');
     const r = await resolveProviderCredential(input());
-    expect(r.source?.secretId).toBe(f.ids.ws);
-    expect(r.credential?.value).toBe('WS');
+    expect(r.source?.secretId).toBe(f.ids.mine);
     expect(r.why.join('\n')).not.toMatch(/\b(WS|MINE|TEAM|ACCT)\b/);
+    const team = await resolveProviderCredential(input({ requesterUserId: null }));
+    expect(team.source?.secretId).toBe(f.ids.ws);
+    expect(team.credential?.value).toBe('WS');
   });
 
   test('agent, personal_first: the requester’s own credential; another requester falls back to the team’s', async () => {
@@ -158,13 +160,13 @@ describe('resolveProviderCredential end to end', () => {
     if (none.none) expect(none.reason).toBe('no_personal_credential');
   });
 
-  test('chat follows inference_key_policy while credential_policy is NULL', async () => {
+  test("chat with credential_policy NULL: the legacy column's default 'team' is no choice, 'own' still is", async () => {
     await setPolicy(f.teamId, null, 'team');
-    const team = await resolveProviderCredential(input({ surface: 'chat', accountId: null }));
-    expect(team.source?.secretId).toBe(f.ids.ws);
-    await setPolicy(f.teamId, null, 'team_or_own');
-    const own = await resolveProviderCredential(input({ surface: 'chat', accountId: null }));
-    expect(own.source?.secretId).toBe(f.ids.mine);
+    expect((await resolveProviderCredential(input({ surface: 'chat', accountId: null }))).source?.secretId).toBe(f.ids.mine);
+    await setPolicy(f.teamId, 'team');
+    expect((await resolveProviderCredential(input({ surface: 'chat', accountId: null }))).source?.secretId).toBe(f.ids.ws);
+    await setPolicy(f.teamId, null, 'own');
+    expect((await resolveProviderCredential(input({ surface: 'chat', accountId: null }))).source?.secretId).toBe(f.ids.mine);
   });
 
   test('another team’s row is never resolved', async () => {

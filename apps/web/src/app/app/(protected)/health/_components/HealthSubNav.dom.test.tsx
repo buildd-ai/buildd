@@ -20,7 +20,7 @@ it('scrolls the active mobile tab into view, centred horizontally', async () => 
   document.body.append(el);
   const root = createRoot(el);
   try {
-    act(() => root.render(<HealthSubNav isOperator />));
+    act(() => root.render(<HealthSubNav viewer={{ operator: true, teamAdmin: true }} />));
     expect(calls).toHaveLength(1);
     expect(calls[0].text).toBe('Insights');
     expect(calls[0].opts).toEqual({ inline: 'center', block: 'nearest' });

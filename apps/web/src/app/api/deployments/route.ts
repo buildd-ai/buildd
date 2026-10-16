@@ -24,6 +24,7 @@ import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { isUuid } from '@/lib/uuid';
 import { runDeploymentAction } from '@/lib/deployments/action';
 import { deploymentStore } from '@/lib/deployments/store';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -50,7 +51,7 @@ export async function POST(req: NextRequest) {
   const workspaceId = typeof body?.workspaceId === 'string' ? body.workspaceId : '';
   if (!isUuid(workspaceId)) return NextResponse.json({ error: 'workspaceId is required' }, { status: 400, headers: NO_STORE });
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     columns: { id: true, teamId: true },
   });
   if (!workspace || workspace.teamId !== account.teamId) {

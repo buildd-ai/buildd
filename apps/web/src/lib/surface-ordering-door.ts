@@ -13,6 +13,7 @@
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { resolveSurfaceOrderingMode } from '@/lib/surface-ordering-config';
 import type { GuardInput, SurfaceOrderingVerdict } from '@/lib/surface-ordering';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export type DoorGuardInput = Omit<GuardInput, 'gitConfig'> & {
   /** Pass it when the door has the workspace; `undefined` loads it (a failed load reads as off). */
@@ -28,7 +29,7 @@ async function loadGitConfig(workspaceId: string): Promise<WorkspaceGitConfig | 
       import('@buildd/core/db/schema'),
       import('drizzle-orm'),
     ]);
-    const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId), columns: { gitConfig: true } });
+    const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, workspaceId)), columns: { gitConfig: true } });
     return (ws?.gitConfig as WorkspaceGitConfig | null) ?? null;
   } catch {
     return null;

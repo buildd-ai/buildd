@@ -14,8 +14,8 @@ const TEAM = '11111111-1111-4111-8111-111111111111';
 let memberships: Record<string, { role: string } | undefined> = {};
 const updates: any[] = [];
 let deletes = 0;
-// The team row: its slug (personal or not) and its permission overrides.
-let team: { slug: string; permissionOverrides: unknown };
+// The team row: its slug (personal or not).
+let team: { slug: string };
 // When set, what the owner-count query returns instead of the owners in `memberships`.
 let ownerRows: { userId: string }[] | null = null;
 
@@ -29,7 +29,7 @@ mock.module('drizzle-orm', () => ({
   and: (...args: any[]) => ({ type: 'and', args }),
 }));
 
-mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id', permissionOverrides: 'teams.permission_overrides' },
+mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id' },
   teamMembers: { teamId: 'teamMembers.teamId', userId: 'teamMembers.userId', role: 'teamMembers.role' },
 }));
 
@@ -100,7 +100,7 @@ beforeEach(() => {
   memberships = {};
   updates.length = 0;
   deletes = 0;
-  team = { slug: 'acme', permissionOverrides: null };
+  team = { slug: 'acme' };
   ownerRows = null;
   writeMatches = true;
   clamps.length = 0;
@@ -156,28 +156,12 @@ describe('PATCH /api/teams/[id]/members/[userId] — change a role', () => {
     expect(updates).toHaveLength(0);
   });
 
-  it('403s a member whose team has not granted assign_team_roles', async () => {
+  it('403s a member: assign_team_roles is owner/admin only', async () => {
     memberships.caller = { role: 'member' };
     memberships.target = { role: 'member' };
     const res = await patch('target', { role: 'admin' });
     expect(res.status).toBe(403);
     expect((await res.json()).error).toContain('assign_team_roles');
-    expect(updates).toHaveLength(0);
-  });
-
-  it('honours a team that grants assign_team_roles to members', async () => {
-    team.permissionOverrides = { assign_team_roles: ['owner', 'admin', 'member'] };
-    memberships.caller = { role: 'member' };
-    memberships.target = { role: 'member' };
-    expect((await patch('target', { role: 'admin' })).status).toBe(200);
-    expect(updates).toEqual([{ role: 'admin' }]);
-  });
-
-  it('a team that narrows assign_team_roles to owners refuses admins', async () => {
-    team.permissionOverrides = { assign_team_roles: ['owner'] };
-    memberships.caller = { role: 'admin' };
-    memberships.target = { role: 'member' };
-    expect((await patch('target', { role: 'admin' })).status).toBe(403);
     expect(updates).toHaveLength(0);
   });
 

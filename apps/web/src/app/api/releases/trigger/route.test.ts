@@ -101,7 +101,7 @@ mock.module('@buildd/core/db', () => ({
     query: { teams: { findFirst: async () => null }, releases: { findFirst: mockReleaseFindFirst } },
   },
 }));
-mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id', permissionOverrides: 'teams.permission_overrides' }, releases: 'releases' }));
+mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id' }, releases: 'releases' }));
 mock.module('drizzle-orm', () => ({
   eq: (a: any, b: any) => ({ a, b, op: 'eq' }),
   and: (...args: any[]) => args,

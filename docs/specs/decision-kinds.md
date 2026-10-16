@@ -2,14 +2,22 @@
 title: Decision Kinds (First-Party Adapters and Migration Seam)
 status: active
 owner: max
-last_verified: 2026-10-07
+last_verified: 2026-10-11
 summary: A decision call site MUST target a typed decision kind that owns its features, override, fallback and objective, while routes, ledger rows, outcomes and the readout come from one shared substrate.
 domain: tasks
-surfaces: [packages/core/decision-kinds.ts, packages/core/decision-policy.ts, packages/core/decision-kind-post-session-triage.ts, packages/core/decision-kind-scout-probe-selection.ts]
+surfaces: [packages/core/decision-kinds.ts, packages/core/decision-policy.ts, packages/core/decision-kind-post-session-triage.ts, packages/core/decision-kind-scout-probe-selection.ts, packages/core/decision-kind-visual-impact.ts]
 related: [orchestration-decisions-shadow, mission-goal-criteria-quality, model-routing-and-tiers]
-keywords: [decision policy platform, decision kind, post_session_triage, scout_probe_selection, challenger, escalation, shadow, decision_records, decision_outcomes, readout, collection health]
-verified_by: [packages/core/__tests__/decision-kind-adapters.test.ts, packages/core/__tests__/decision-kinds-e2e.test.ts, packages/core/__tests__/decision-policy.test.ts, packages/core/__tests__/decision-readout.test.ts]
+keywords: [decision audit, agent_audit, feature health, decision policy platform, decision kind, post_session_triage, scout_probe_selection, challenger, escalation, shadow, decision_records, decision_outcomes, readout, collection health]
+verified_by: [packages/core/__tests__/decision-feature-health.test.ts, packages/core/__tests__/decision-kind-adapters.test.ts, packages/core/__tests__/decision-kinds-e2e.test.ts, packages/core/__tests__/decision-policy.test.ts, packages/core/__tests__/decision-readout.test.ts]
 assertions:
+  - id: "feature-health-readout"
+    type: "symbol"
+    name: "computeFeatureHealth"
+    path: "packages/core/decision-feature-health.ts"
+  - id: "agent-audit-objective"
+    type: "symbol"
+    name: "agentAuditObjective"
+    path: "packages/core/decision-feature-health.ts"
   - id: "post-session-triage-kind"
     type: "symbol"
     name: "postSessionTriageKind"
@@ -64,6 +72,11 @@ is the substrate's.
   and keys, runs `runDecisionKind` (rule → cheap model → escalation slot →
   the kind's fallback) and writes one `decision_records` row per decided call
   through `toDecisionLedgerInput`.
+- A model's answer is applied only when that model is measured for the kind
+  (`measuredRoute` in `decision-policy.ts`): an active stored measurement for
+  the kind and its current prompt fingerprint (`measurementFor`), a model the
+  binding lists in `measuredModels`, or Jev with no row. Any other model's
+  answer is recorded, never applied.
 - A bound challenger runs after the answer exists, out of band
   (`runBuilddChallenger`), and is recorded against that row. It never changes
   the applied answer.
@@ -72,10 +85,68 @@ is the substrate's.
   health before sample size, and scores quality only through the kind's
   objective.
 
+## Feature health and the agent audit
+
+Every decision feature (an inference capability, or a kind writing its own
+`buildd.<name>` id) gets one health readout (`computeFeatureHealth`), served
+on the platform owner's decision features list and on `get_decision_stats`
+(per capability, and `capability: "*"` for every feature in a workspace):
+
+- **Collection first, in plain words.** When every call fell back before a
+  model answered, the state is `not_collecting` (or `disabled` /
+  `misconfigured`) and the sentence names the cause and its fix, e.g.
+  "Not deciding: fewer than two roles say when to use them." Each fallback
+  reason the ledgers write has one sentence (`FALLBACK_REASON_SENTENCES`).
+- Then: calls, acted %, fallback % by reason, latency p50/p95, cost,
+  agent-graded accuracy right / (right + wrong) with a Wilson 95% interval
+  and n, the rule's accuracy on the same sample, and the human override rate.
+
+Grades come from a weekly scheduled researcher task (`decision-audit-schedule.ts`)
+that samples up to 20 decisions per feature, judges each from the subject's
+later evidence through `get_decision`, and writes it with `label_decision`:
+source `agent_audit` for the model's answer (or the answer in effect when it
+gave none) and `agent_audit_rule` for the rule's. Both are ordinary outcome
+labels: first label per source stands. `agentAuditObjective` scores them in
+the shared readout for any kind without an objective of its own. Only a
+buildd platform operator may read a decision for grading or grade it; no team
+role may, and a team owner or admin key is refused
+(`docs/specs/team-permissions.md` "Platform operator"). Another team's
+decision is not found. Reading the ledger itself (`GET /api/decisions`) stays
+open to the team's own members and keys: it is the team's own data.
+
+A feature that was asked over the last 24 hours and never once got a model
+answer raises one Home card for the platform operator (pulled, never pushed).
+
+- AC-9: GIVEN a week of rows all fallback `insufficient_candidates` WHEN the health is read THEN the state is `not_collecting` and the sentence starts "Not deciding: fewer than two roles say when to use them."
+- AC-10: GIVEN an admin key of team A WHEN it labels a decision of team B THEN the answer is 404 and nothing is written.
+- AC-11: GIVEN an admin key of team A that is not a platform admin account, or a signed-in owner of team A who is not a platform operator, WHEN it labels a decision of team A (or reads it for grading) THEN the answer is 403 and nothing is written; WHEN it reads team A's ledger THEN it is served.
+
 ## First-party kinds
 
-Two kinds ship as importable adapters. Their features, outputs and fallbacks
-differ on purpose; the request, response, ledger and readout are identical.
+Every kind below is defined with `defineBuilddDecisionKind` and asked
+through `runBuilddDecision`. Their features, outputs and fallbacks differ on
+purpose; the request, response, ledger and readout are identical.
+
+| Kind | Capability | Answers | Rollout | Asked from |
+|---|---|---|---|---|
+| `buildd.post_session_triage` | `post_session_triage` | `skip` \| `analyse` | `live` | `apps/web/src/lib/post-session-triage.ts` |
+| `buildd.scout_probe_selection` | `scout_probe_selection` | `run` \| `defer` \| `unsupported` | `live` | `packages/core/quality-scout/selector.ts` |
+| `buildd.failure_incident_triage` | `failure_incident_triage` | `known_noise` \| `monitor` \| `systemic_bug` \| `page_now` | `live` | `apps/web/src/lib/failure-incident-actions.ts` |
+| `buildd.visual_impact` | `visual_impact` | `review_required` \| `no_visual_impact` \| `insufficient_evidence` | `live` | `builddDecide` in `apps/web/src/lib/workflow/decision-port.ts` |
+| `buildd.mission_scope` | `mission_scope` | `in_scope` \| `amend_scope` \| `ask` | `live` | `builddDecide` in `apps/web/src/lib/workflow/decision-port.ts` |
+| `buildd.early_release` | `early_release` | `start_now` \| `wait` \| `start_stacked` | `live` | `apps/web/src/lib/early-release-dispatch.ts` |
+| `buildd.merge_readiness` | `merge_readiness` | `merge_now` \| `wait` \| `needs_human` \| `request_changes` | `shadow` (advisory, the rule's answer is in effect) | `apps/web/src/lib/merge-readiness-decision.ts` |
+| `buildd.operator_cause_merge` | `operator_recovery` | `merge` \| `separate` \| `unsure` | `live` | `apps/web/src/lib/operator-recovery-deps.ts` |
+| `buildd.operator_repair_suggestion` | `operator_recovery` | an allowed repair, `escalate` or `none` | `live` | `apps/web/src/lib/operator-recovery-deps.ts` |
+| `buildd.operator_priority_advice` | `operator_recovery` | `raise` \| `keep` \| `lower` | `live` | `apps/web/src/lib/operator-recovery-deps.ts` |
+| `buildd.spec_duplicate` | `spec_duplicate` | `duplicate` \| `overlap` \| `distinct` | `live` | `apps/web/src/lib/spec-duplicate-decision.ts` |
+| `buildd.spec_area` | `spec_area` | an area slot, `new_area` or `unsure` | `live` | `apps/web/src/lib/spec-area-decision.ts` |
+| `buildd.spec_taxonomy` | `spec_taxonomy` | a name slot or `unsure` | `live` | `apps/web/src/lib/spec-taxonomy-decision.ts` |
+| `buildd.spec_publication` | `spec_publication` | `publish` \| `keep_private` \| `unsure` | `live` | `apps/web/src/lib/spec-publication-decision.ts` |
+
+The kinds defined in `packages/core` are importable adapters; the ones defined
+next to their caller in `apps/web/src/lib` belong to that feature. The first
+two are described in detail here:
 
 | | `buildd.post_session_triage` | `buildd.scout_probe_selection` |
 |---|---|---|
@@ -94,7 +165,7 @@ execution; the kind owns only the decision contract. Adding an escalation
 model or a challenger after measuring is a binding change
 (`POST_SESSION_TRIAGE_BINDING` and its scout counterpart), not a caller change.
 
-A third kind, `buildd.failure_incident_triage`
+`buildd.failure_incident_triage`
 (`packages/core/decision-kind-failure-incident-triage.ts`), is wired from day
 one by the Failure Pattern Sentinel (`apps/web/src/lib/failure-incident-actions.ts`).
 It answers `known_noise` \| `monitor` \| `systemic_bug` \| `page_now` with a
@@ -103,6 +174,13 @@ It answers `known_noise` \| `monitor` \| `systemic_bug` \| `page_now` with a
 floor severity. The caller only ever raises severity from the answer, never
 lowers it. Capability `failure_incident_triage` (opt-in), rollout `live`, no
 escalation or outcome source yet.
+
+`buildd.visual_impact`
+(`packages/core/decision-kind-visual-impact.ts`), answers `review_required` \|
+`no_visual_impact` \| `insufficient_evidence` for the visual-review impact
+assessment on bounded diff counters. A protected hit is `review_required` by
+rule; every fallback is `review_required`, so not knowing never skips a
+review. Capability `visual_impact` (opt-in), rollout `live`.
 
 `packages/core/decision-shadow-harness.ts` gives a feature an in-memory
 ledger (`createSyntheticDecisionLedger`) wired the same way as the database
@@ -174,17 +252,25 @@ code anyway. The seam is the same for all of them:
 
 ## Code surface
 
-- `packages/core/decision-kinds.ts` — binding and registry
-- `packages/core/decision-policy.ts` — routes, plan, ledger write, challenger
-- `packages/core/decision-kind-post-session-triage.ts` — `postSessionTriageKind`, `POST_SESSION_TRIAGE_CONFIG`
-- `packages/core/decision-kind-scout-probe-selection.ts` — `scoutProbeSelectionKind`, `SCOUT_PROBE_SELECTION_CONFIG`
-- `packages/core/decision-kind-failure-incident-triage.ts` — `failureIncidentTriageKind`, `FAILURE_INCIDENT_TRIAGE_CONFIG`
-- `packages/core/decision-shadow-harness.ts` — synthetic ledger and comparison table
-- `packages/core/decision-outcomes.ts`, `packages/core/decision-readout.ts` — labels and readout
-- `packages/core/inference-policy.ts` — the `post_session_triage`, `scout_probe_selection` and `failure_incident_triage` capabilities
+- `packages/core/decision-kinds.ts`: binding and registry
+- `packages/core/decision-policy.ts`: routes, plan, ledger write, challenger
+- `packages/core/decision-kind-post-session-triage.ts`: `postSessionTriageKind`, `POST_SESSION_TRIAGE_CONFIG`
+- `packages/core/decision-kind-scout-probe-selection.ts`: `scoutProbeSelectionKind`, `SCOUT_PROBE_SELECTION_CONFIG`
+- `packages/core/decision-kind-failure-incident-triage.ts`: `failureIncidentTriageKind`, `FAILURE_INCIDENT_TRIAGE_CONFIG`
+- `packages/core/decision-kind-visual-impact.ts`, `packages/core/decision-kind-mission-scope.ts`: `visualImpactKind`, `missionScopeKind`, asked through the workflow kernel's Decide port (`builddDecide`)
+- `packages/core/decision-kind-operator-recovery.ts`: `operatorCauseMergeKind`, `operatorRepairSuggestionKind`, `operatorPriorityAdviceKind`
+- `packages/core/decision-model-measurements.ts`: `measurementFor`, which (kind, model) pairs may act and at what threshold
+- `packages/core/decision-shadow-harness.ts`: synthetic ledger and comparison table
+- `packages/core/decision-outcomes.ts`, `packages/core/decision-readout.ts`: labels and readout
+- `packages/core/decision-feature-health.ts`: per-feature health readout, fallback sentences, agent audit labels
+- `packages/core/decision-audit-schedule.ts`: the weekly audit's schedule fields and instructions
+- `packages/core/inference-policy.ts`: every kind's capability
 
 ## Out of scope
 
-- Wiring either kind into the post-session loop or the scout: those features import the adapters.
-- Thresholds measured on a held-out set; both kinds ship unmeasured placeholders.
-- Migrating any existing decision site.
+- Thresholds measured on a held-out set for each kind; until a measurement is stored, a kind's threshold is a placeholder.
+- Migrating the decision sites that still call a model directly (table above).
+
+## Renumbered
+
+- was AC-10b, now AC-11 (a suffixed id did not parse as its own criterion).

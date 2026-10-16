@@ -23,6 +23,7 @@ import MarkdownContent from '@/components/MarkdownContent';
 import ShotImage, { VIEWPORT_LABEL, viewportAspect } from '@/components/visual-review/ShotImage';
 import { thumbSrc } from '@/lib/mission-visual-review';
 import { TASK_SHIPPED_HEADER_ID, type TaskShippedView } from './task-shipped-header';
+import TaskTitle from './TaskTitle';
 
 const THUMB_WIDTH = { mobile: 'w-24', desktop: 'w-44' } as const;
 
@@ -30,7 +31,7 @@ export function TaskShippedTitle({ view, title }: { view: TaskShippedView; title
   return (
     <div data-testid="task-shipped-title">
       <Eyebrow as="p" tone="muted">{view.eyebrow}</Eyebrow>
-      <h1 className="mt-1.5 text-heading font-semibold tracking-[-0.2px] break-words max-w-[760px]">{title}</h1>
+      <TaskTitle title={title} className="mt-1.5" />
     </div>
   );
 }

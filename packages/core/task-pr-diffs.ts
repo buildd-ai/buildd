@@ -4,6 +4,7 @@ import { db } from './db/client';
 import { workspaces, githubRepos, githubInstallations } from './db/schema';
 import { getInstallationToken } from './github-installation-auth';
 import { readPinnedPrScope, type PrScopeRead } from './pr-scope-read';
+import { sqlWhere } from './db/relational-sql';
 
 export interface TaskPrReference { taskId: string | null; prNumber: number | null; prUrl?: string | null }
 export type TaskPrDiff = PrScopeRead & { prNumber: number };
@@ -19,14 +20,14 @@ export const loadTaskPrDiffs: LoadTaskPrDiffs = async (workspaceId, prs) => {
   let repo: string | null = null;
   let token: string | null = null;
   try {
-    const workspace = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId) });
+    const workspace = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, workspaceId)) });
     repo = workspace?.repo ?? null;
     if (workspace?.githubRepoId) {
-      const linked = await db.query.githubRepos.findFirst({ where: eq(githubRepos.id, workspace.githubRepoId) });
+      const linked = await db.query.githubRepos.findFirst({ where: sqlWhere(eq(githubRepos.id, workspace.githubRepoId)) });
       repo = linked?.fullName ?? repo;
     }
     if (workspace?.githubInstallationId) {
-      const installation = await db.query.githubInstallations.findFirst({ where: eq(githubInstallations.id, workspace.githubInstallationId) });
+      const installation = await db.query.githubInstallations.findFirst({ where: sqlWhere(eq(githubInstallations.id, workspace.githubInstallationId)) });
       if (installation) token = await getInstallationToken(installation.installationId);
     }
   } catch { /* Each PR below records unavailable data. */ }

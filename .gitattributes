@@ -5,3 +5,4 @@
 
 # Generated Drizzle ORM snapshot files — collapse in GitHub PR diff view
 packages/core/drizzle/meta/** linguist-generated=true
+packages/core/drizzle/*/snapshot.json linguist-generated=true

@@ -22,6 +22,7 @@ import { tasks, workers } from '@buildd/core/db/schema';
 import { subscriber, type AnySubscriber } from '@/lib/core-events';
 import { workerOwnsPr } from '@/lib/repo-scope';
 import { refreshTaskVerdict, type VerdictTrigger } from '@/lib/task-verdict-decision-refresh';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 type Schedule = (task: () => Promise<void>) => void;
 
@@ -48,14 +49,14 @@ function scheduleWith(schedule: Schedule = after): (fn: () => Promise<void>) => 
 /** Refresh a task and, when it is an attempt at another task, that task too. */
 export async function refreshWithParent(taskId: string, trigger: VerdictTrigger): Promise<void> {
   await refreshTaskVerdict(taskId, trigger);
-  const row = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId), columns: { parentTaskId: true } });
+  const row = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { parentTaskId: true } });
   if (row?.parentTaskId) await refreshTaskVerdict(row.parentTaskId, 'attempt_end');
 }
 
 async function taskOfPr(repoFullName: string, prNumber: number): Promise<string | null> {
   const w = await db.query.workers.findFirst({
-    where: workerOwnsPr(repoFullName, prNumber),
-    orderBy: desc(workers.createdAt),
+    where: sqlWhere(workerOwnsPr(repoFullName, prNumber)),
+    orderBy: sqlOrderBy(desc(workers.createdAt)),
     columns: { taskId: true },
   });
   return w?.taskId ?? null;

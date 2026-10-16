@@ -22,6 +22,7 @@ import {
   fetchActionEvents,
 } from '@/lib/action-events';
 import { buildActionBreakdownPanel, type ActionBreakdownPanel } from '@/lib/usage-drilldown';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const GROUP_DIMENSIONS: GroupDimension[] = ['role', 'workspace', 'creationSource', 'none', 'executor'];
 
@@ -91,7 +92,7 @@ export async function GET(req: NextRequest) {
   const teamIds = await resolveAccountTeamIds(user, apiAccount ?? null);
   const teamWorkspaces = teamIds.length > 0
     ? await db.query.workspaces.findMany({
-        where: inArray(workspaces.teamId, teamIds),
+        where: sqlWhere(inArray(workspaces.teamId, teamIds)),
         columns: { id: true, name: true },
       })
     : [];
@@ -179,11 +180,11 @@ async function groupLabels(
   const slugs = [...new Set(parsed.map(p => p.roleSlug).filter((s): s is string => !!s))];
   if (slugs.length === 0) return {};
   const skills = await db.query.workspaceSkills.findMany({
-    where: and(
+    where: sqlWhere(and(
       inArray(workspaceSkills.workspaceId, workspaceIds),
       eq(workspaceSkills.isRole, true),
       inArray(workspaceSkills.slug, slugs),
-    ),
+    )),
     columns: { slug: true, name: true },
   });
   const nameBySlug = new Map((skills as any[]).map(s => [s.slug as string, s.name as string]));

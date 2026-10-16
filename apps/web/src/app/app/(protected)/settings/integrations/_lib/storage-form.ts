@@ -156,8 +156,8 @@ export function validateForm(form: StorageForm, mode: 'create' | 'edit'): FormEr
   const id = form.accessKeyId.trim();
   const secret = form.secretAccessKey.trim();
   if (mode === 'create' || id || secret || form.sessionToken.trim()) {
-    if (!id) errors.accessKeyId = mode === 'create' ? 'Required' : 'Enter both halves to replace the credential';
-    if (!secret) errors.secretAccessKey = mode === 'create' ? 'Required' : 'Enter both halves to replace the credential';
+    if (!id) errors.accessKeyId = mode === 'create' ? 'Required' : 'Enter the access key ID to replace the credential';
+    if (!secret) errors.secretAccessKey = mode === 'create' ? 'Required' : 'Enter the secret access key to replace the credential';
   }
   return errors;
 }

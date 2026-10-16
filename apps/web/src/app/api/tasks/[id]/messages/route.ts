@@ -8,6 +8,7 @@ import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/ta
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess, holdsInWorkspace } from '@/lib/team-access';
 import { isUuid } from '@/lib/uuid';
 import { messageDeliveryStatus, type InstructionHistoryEntry } from '@/lib/worker-instructions';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 
 // GET /api/tasks/[id]/messages - Return instruction history for the task's latest worker
@@ -32,7 +33,7 @@ export async function GET(
 
   try {
     const task = await db.query.tasks.findFirst({
-      where: eq(tasks.id, id),
+      where: sqlWhere(eq(tasks.id, id)),
       with: { workspace: true },
     });
 
@@ -52,8 +53,8 @@ export async function GET(
     }
 
     const worker = await db.query.workers.findFirst({
-      where: eq(workers.taskId, id),
-      orderBy: desc(workers.createdAt),
+      where: sqlWhere(eq(workers.taskId, id)),
+      orderBy: sqlOrderBy(desc(workers.createdAt)),
       columns: { id: true, instructionHistory: true, status: true, runner: true },
     });
 

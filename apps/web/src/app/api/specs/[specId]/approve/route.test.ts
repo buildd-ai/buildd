@@ -7,9 +7,16 @@ mock.module('@/lib/specs/caller', () => ({ specCaller: async () => caller }));
 mock.module('@/lib/specs/approval', () => ({
   approveSpecRevision: async (c: unknown, _id: string, input: { revision: unknown; expectedVersion: unknown }) => {
     seen.push([c, input]);
+    const acct = (c as { account?: { sessionUserId?: string } }).account;
+    if (acct?.sessionUserId) return { ok: true, spec: { id: 's1', version: 3 }, pending: { confirmUrl: 'https://buildd.dev/app/specs/s1/approve?request=tok', revision: input.revision, expiresAt: '2026-10-12T00:00:00.000Z' } };
     if ((c as { kind: string }).kind === 'account') return { ok: false, status: 403, error: 'a person decides' };
     if (input.expectedVersion !== 3) return { ok: false, status: 409, error: 'stale', currentVersion: 3 };
     return { ok: true, spec: { id: 's1', approvedRevision: input.revision }, revision: { revision: input.revision } };
+  },
+  confirmSpecApproval: async (c: unknown, _id: string, token: unknown) => {
+    if ((c as { kind: string }).kind !== 'user') return { ok: false, status: 403, error: 'confirm on buildd.dev' };
+    if (token !== 'tok') return { ok: false, status: 400, error: 'not valid', code: 'request_invalid' };
+    return { ok: true, already: false, spec: { id: 's1', approvedRevision: 2 }, revision: { revision: 2 } };
   },
   submitSpecRevision: async (c: unknown) => ((c as { kind: string }).kind === 'account'
     ? { ok: false, status: 403, error: 'a person decides' }
@@ -17,6 +24,7 @@ mock.module('@/lib/specs/approval', () => ({
 }));
 const { POST: approve } = await import('./route');
 const { POST: submit } = await import('../submit/route');
+const { POST: confirm } = await import('./confirm/route');
 const params = Promise.resolve({ specId: 's1' });
 const req = (path: string, body: unknown) => new NextRequest(`http://l/api/specs/s1/${path}`, { method: 'POST', body: JSON.stringify(body) });
 
@@ -43,5 +51,22 @@ describe('POST /api/specs/[specId]/approve and /submit', () => {
     caller = { kind: 'user', userId: 'u1' };
     const res = await submit(req('submit', { expectedVersion: 3 }), { params });
     expect((await res.json()).spec.status).toBe('in_review');
+  });
+  it('an OAuth session gets 202 with the confirmation link, not an approval', async () => {
+    caller = { kind: 'account', account: { id: 'a1', sessionUserId: 'u1' } };
+    const res = await approve(req('approve', { revision: 2, expectedVersion: 3 }), { params });
+    const body = await res.json();
+    expect([res.status, body.pending.confirmUrl, body.revision]).toEqual([202, 'https://buildd.dev/app/specs/s1/approve?request=tok', undefined]);
+  });
+  it('confirm approves from a dashboard session, refuses any bearer, and passes a bad token\'s code through', async () => {
+    caller = { kind: 'user', userId: 'u1' };
+    const ok = await confirm(req('approve/confirm', { request: 'tok' }), { params });
+    expect([ok.status, (await ok.json()).spec.approvedRevision]).toEqual([200, 2]);
+    const bad = await confirm(req('approve/confirm', { request: 'x' }), { params });
+    expect([bad.status, (await bad.json()).code]).toEqual([400, 'request_invalid']);
+    caller = { kind: 'account', account: { id: 'a1', sessionUserId: 'u1' } };
+    expect((await confirm(req('approve/confirm', { request: 'tok' }), { params })).status).toBe(403);
+    caller = null;
+    expect((await confirm(req('approve/confirm', { request: 'tok' }), { params })).status).toBe(401);
   });
 });

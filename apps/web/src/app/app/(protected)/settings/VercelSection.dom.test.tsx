@@ -36,7 +36,7 @@ describe('VercelSection', () => {
     await mount();
     const intro = [...host.querySelectorAll('p')].find((p) => p.textContent?.includes('vercel.com/account/tokens'));
     expect(intro).not.toBeUndefined();
-    expect(intro!.textContent).toBe('Create a token at vercel.com/account/tokens for prod health alerts.');
+    expect(intro!.textContent).toBe('Create a token at vercel.com/account/tokens for production health alerts.');
   });
 
   it('has exactly one primary action', async () => {
@@ -50,7 +50,7 @@ describe('VercelSection', () => {
   });
 });
 
-/** A Vercel token is a team credential: manage_team_credentials, overrides applied. */
+/** A Vercel token is a team credential: manage_team_credentials. */
 describe('VercelSection: read-only without manage_team_credentials', () => {
   const withToken = () => {
     globalThis.fetch = mock(async () => new Response(JSON.stringify({

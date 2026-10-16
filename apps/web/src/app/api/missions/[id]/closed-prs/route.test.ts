@@ -80,6 +80,8 @@ describe('POST /api/missions/[id]/closed-prs', () => {
     expect(res.status).toBe(200);
     expect(mockRecord).toHaveBeenCalledWith({
       workerId: 'w-6', supersedingPrNumber: 3366, supersedingRepo: 'org/buildd', reason: 'confirmed by user', recordedBy: 'owner@example.com',
+      // The kernel command is for the person by id (the control plane checks their reach), never their email.
+      caller: { person: 'u-1', account: null }, actor: 'human:u-1',
     });
   });
 
@@ -87,6 +89,15 @@ describe('POST /api/missions/[id]/closed-prs', () => {
     taskRow.workers[0].supersessionScan = null;
     expect((await call({ taskId: TASK, action: 'confirm' })).status).toBe(409);
     expect(mockRecord).not.toHaveBeenCalled();
+  });
+
+  it('a control-plane answer is passed through whole: the 503 body with its key and Retry-After', async () => {
+    const door = { body: { error: 'The control plane did not answer', code: 'control_plane_unavailable', retryable: true, controlPlane: true, idempotencyKey: 'record_supersession:k' }, headers: { 'Retry-After': '5' } };
+    mockRecord.mockImplementationOnce(() => Promise.resolve({ ok: false, error: door.body.error, status: 503, door }));
+    const res = await call({ taskId: TASK, action: 'confirm' });
+    expect(res.status).toBe(503);
+    expect(res.headers.get('Retry-After')).toBe('5');
+    expect(await res.json()).toEqual(door.body);
   });
 
   it('surfaces the write-time refusal (e.g. target not merged)', async () => {
@@ -108,14 +119,15 @@ describe('POST /api/missions/[id]/closed-prs', () => {
 
   it('abandon from a dashboard session records the reason and the person who said so', async () => {
     expect((await call({ taskId: TASK, action: 'abandon', reason: 'plan changed' })).status).toBe(200);
-    expect(mockAbandon).toHaveBeenCalledWith({ workerId: 'w-6', reason: 'plan changed', recordedBy: 'owner@example.com', actor: 'human:u-1' });
+    expect(mockAbandon).toHaveBeenCalledWith({ workerId: 'w-6', reason: 'plan changed', recordedBy: 'owner@example.com', actor: 'human:u-1', caller: { person: 'u-1', account: null } });
   });
 
   it('abandon from the person\'s own OAuth session acts as that person', async () => {
     currentUser = null;
     apiAccountRow = { id: 'acct-team', name: 'team account', level: 'admin', sessionUserId: 'u-7' };
     expect((await call({ taskId: TASK, action: 'abandon', reason: 'plan changed' })).status).toBe(200);
-    expect(mockAbandon).toHaveBeenCalledWith({ workerId: 'w-6', reason: 'plan changed', recordedBy: 'team account', actor: 'human:u-7' });
+    // The session object, not its id: a grant session is judged by its grant at the control plane too.
+    expect(mockAbandon).toHaveBeenCalledWith({ workerId: 'w-6', reason: 'plan changed', recordedBy: 'team account', actor: 'human:u-7', caller: { person: 'u-7', account: expect.objectContaining({ name: 'team account' }) } });
   });
 
   it('abandon from an admin API key is refused: a key is not a person', async () => {

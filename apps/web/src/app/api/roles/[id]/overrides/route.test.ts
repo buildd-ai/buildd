@@ -25,7 +25,7 @@ mock.module('@/lib/team-access', () => ({
 // Existing cases run as the team owner.
 let teamRoles: Record<string, string> = { team1: 'owner' };
 const mockCan = mock(async (caller: any, permission: any, teamId: string) =>
-  caller.kind === 'user' && roleHas(teamRoles[teamId], permission, {}));
+  caller.kind === 'user' && roleHas(teamRoles[teamId], permission));
 mock.module('@/lib/permissions', () => ({ can: mockCan }));
 
 mock.module('@buildd/core/db', () => ({

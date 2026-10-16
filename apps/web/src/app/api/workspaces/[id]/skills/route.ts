@@ -14,7 +14,8 @@ import { packageRoleConfig, uploadRoleConfig } from '@/lib/role-config';
 import { isStorageConfigured } from '@/lib/storage';
 import { isReservedRoleSlug } from '@/lib/reserved-slugs';
 import { normalizeBackend } from '@/lib/normalize-backend';
-import { getTeamPermissionOverrides, roleHas } from '@/lib/permissions';
+import { roleHas } from '@/lib/permissions';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Coerce a defaultBackend value to the enum or null (null clears the role's preference). */
 async function authenticateRequest(req: NextRequest) {
@@ -54,7 +55,7 @@ async function sessionMayManageRole(
     touchesRole: boolean,
 ): Promise<boolean> {
     if (!access || !touchesRole) return true;
-    return roleHas(access.role, 'manage_agent_roles', await getTeamPermissionOverrides(access.teamId));
+    return roleHas(access.role, 'manage_agent_roles');
 }
 
 const ROLE_FORBIDDEN = { error: 'Managing agent roles requires team admin' };
@@ -93,7 +94,7 @@ export async function GET(
 
         // Resolve team for this workspace so we can include team-level rows.
         const ws = await db.query.workspaces.findFirst({
-            where: eq(workspaces.id, id),
+            where: sqlWhere(eq(workspaces.id, id)),
             columns: { teamId: true },
         });
 
@@ -206,11 +207,11 @@ export async function POST(
             );
         }
 
-        // `/app/settings/roles/new` is a static route, so a role with this slug could
+        // `/app/settings/agents/new` is a static route, so a role with this slug could
         // never reach its own detail page. See lib/reserved-slugs.ts.
         if (isReservedRoleSlug(slug)) {
             return NextResponse.json(
-                { error: `"${slug}" is reserved because /app/settings/roles/${slug} is a built-in page. Pick a different slug.` },
+                { error: `"${slug}" is reserved because /app/settings/agents/${slug} is a built-in page. Pick a different slug.` },
                 { status: 400 }
             );
         }
@@ -219,7 +220,7 @@ export async function POST(
 
         // Verify workspace exists
         const workspace = await db.query.workspaces.findFirst({
-            where: eq(workspaces.id, id),
+            where: sqlWhere(eq(workspaces.id, id)),
             columns: { id: true, teamId: true },
         });
         if (!workspace) {
@@ -228,7 +229,7 @@ export async function POST(
 
         // Upsert by (workspaceId, slug)
         const existing = await db.query.workspaceSkills.findFirst({
-            where: and(eq(workspaceSkills.workspaceId, id), eq(workspaceSkills.slug, slug)),
+            where: sqlWhere(and(eq(workspaceSkills.workspaceId, id), eq(workspaceSkills.slug, slug))),
         });
         if (!(await sessionMayManageRole(sessionAccess, isRole === true || Boolean(existing?.isRole)))) {
             return NextResponse.json(ROLE_FORBIDDEN, { status: 403 });

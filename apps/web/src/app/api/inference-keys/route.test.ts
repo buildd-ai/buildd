@@ -3,15 +3,14 @@ import { NextRequest } from 'next/server';
 
 const mockRequireSessionUser = mock(async () => ({ user: { id: 'u-1' } }) as any);
 const mockGetUserTeamIds = mock(async () => ['t-1'] as string[]);
-// The caller's team roles and the team's permission overrides, read by the
+// The caller's team roles, read by the
 // real permission check (lib/permissions.ts) through this db mock.
 let roles: Record<string, string> = {};
-let overrides: Record<string, unknown> | null = null;
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       teamMembers: { findMany: async () => Object.entries(roles).map(([teamId, role]) => ({ teamId, role })) },
-      teams: { findFirst: async () => ({ id: 'not-a-personal-team', permissionOverrides: overrides }) },
+      teams: { findFirst: async () => ({ id: 'not-a-personal-team' }) },
     },
   },
 }));
@@ -61,7 +60,7 @@ beforeEach(() => {
   mockRequireSessionUser.mockResolvedValue({ user: { id: 'u-1' } });
   mockGetUserTeamIds.mockReset();
   mockGetUserTeamIds.mockResolvedValue(['t-1']);
-  roles = {}; overrides = null;
+  roles = {};
   mockSet.mockClear();
   mockDelete.mockClear();
   mockList.mockClear();
@@ -196,28 +195,6 @@ describe('provider-symmetric authorization', () => {
       expect((await DELETE(req('DELETE', `/api/inference-keys?provider=${provider}&scope=team`))).status).toBe(200);
     });
   }
-  it('a chat-only team key follows the team permission overrides for manage_inference_providers', async () => {
-    const body = { teamId: 't-1', provider: 'openrouter', value: KEY.openrouter, scope: 'team' };
-    roles = { ['t-1']: 'admin' };
-    overrides = { manage_inference_providers: ['owner'] };
-    expect((await PUT(req('PUT', '/api/inference-keys', body))).status).toBe(403);
-    expect((await DELETE(req('DELETE', '/api/inference-keys?teamId=t-1&provider=openrouter&scope=team'))).status).toBe(403);
-    expect(mockSet).not.toHaveBeenCalled();
-    expect(mockDelete).not.toHaveBeenCalled();
-    await GET(req('GET', '/api/inference-keys?teamId=t-1'));
-    expect(mockList).toHaveBeenLastCalledWith('t-1', 'u-1', false);
-
-    roles = { ['t-1']: 'member' };
-    overrides = { manage_inference_providers: ['owner', 'admin', 'member'] };
-    expect((await PUT(req('PUT', '/api/inference-keys', body))).status).toBe(200);
-    expect(mockSet.mock.calls.at(-1)![0]).toMatchObject({ teamId: 't-1', scope: 'team' });
-    expect((await DELETE(req('DELETE', '/api/inference-keys?teamId=t-1&provider=openrouter&scope=team'))).status).toBe(200);
-    expect(mockDelete).toHaveBeenCalledWith({ teamId: 't-1', userId: 'u-1', provider: 'openrouter', scope: 'team' });
-    await GET(req('GET', '/api/inference-keys?teamId=t-1'));
-    expect(mockList).toHaveBeenLastCalledWith('t-1', 'u-1', true);
-    // A chat-only key is not an agent credential: nothing is re-queued.
-    expect(mockRequeue).not.toHaveBeenCalled();
-  });
 });
 
 // A team Anthropic or OpenAI key is read by agent runs as well as chat, so
@@ -226,9 +203,8 @@ describe('provider-symmetric authorization', () => {
 // prefix, and auth-failed tasks re-queued once it is stored.
 describe('a team key agent runs read', () => {
   for (const provider of ['anthropic', 'openai']) {
-    it(`${provider}: manage_inference_providers without manage_team_credentials is refused, and nothing is written`, async () => {
+    it(`${provider}: a member holds neither permission, so it is refused and nothing is written`, async () => {
       roles = { ['t-1']: 'member' };
-      overrides = { manage_inference_providers: ['owner', 'admin', 'member'], manage_team_model_keys: ['owner', 'admin', 'member'] };
       const body = { teamId: 't-1', provider, value: KEY[provider], scope: 'team' };
       expect((await PUT(req('PUT', '/api/inference-keys', body))).status).toBe(403);
       expect((await DELETE(req('DELETE', `/api/inference-keys?teamId=t-1&provider=${provider}&scope=team`))).status).toBe(403);
@@ -237,17 +213,8 @@ describe('a team key agent runs read', () => {
       expect(mockRequeue).not.toHaveBeenCalled();
     });
 
-    it(`${provider}: manage_team_credentials without manage_team_model_keys is refused too`, async () => {
-      roles = { ['t-1']: 'member' };
-      overrides = { manage_inference_providers: ['owner', 'admin', 'member'], manage_team_credentials: ['owner', 'admin', 'member'] };
-      const body = { teamId: 't-1', provider, value: KEY[provider], scope: 'team' };
-      expect((await PUT(req('PUT', '/api/inference-keys', body))).status).toBe(403);
-      expect(mockSet).not.toHaveBeenCalled();
-    });
-
-    it(`${provider}: both permissions write it and re-queue auth-failed tasks, without manage_inference_providers`, async () => {
-      roles = { ['t-1']: 'member' };
-      overrides = { manage_inference_providers: ['owner'], manage_team_model_keys: ['owner', 'admin', 'member'], manage_team_credentials: ['owner', 'admin', 'member'] };
+    it(`${provider}: an admin holds both, writes it and re-queues auth-failed tasks`, async () => {
+      roles = { ['t-1']: 'admin' };
       const body = { teamId: 't-1', provider, value: KEY[provider], scope: 'team' };
       const res = await PUT(req('PUT', '/api/inference-keys', body));
       expect(res.status).toBe(200);

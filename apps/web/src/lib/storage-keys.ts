@@ -139,6 +139,16 @@ function isTenantKeyForUpload(
     && !parts[3].includes('..');
 }
 
+/**
+ * Where the bytes of an upload to `key` are PUT: a sibling of `key` that the
+ * upload URL is signed for. Finalize verifies them, copies them to `key` and
+ * deletes this one, so `key` itself is written only by the server and never
+ * by anyone holding a signed URL (lib/artifact-upload.ts).
+ */
+export function uploadStagingKey(key: string): string {
+  return assertNormalizedObjectKey(`${key}.upload`);
+}
+
 /** `attachments/<workspaceId>/<uploadId>/<name>` */
 export function buildAttachmentKey(
   workspaceId: unknown,
@@ -266,6 +276,24 @@ export function buildScoutRunEvidenceObjectKey(
  * segment by segment instead.
  */
 export const EVIDENCE_PROBE_SEGMENT = '.buildd-probe';
+
+/** The segment every decision replay copy lives under, beside a backend's evidence. */
+export const DECISION_REPLAY_SEGMENT = 'decision-replay';
+
+/**
+ * `<prefix>/decision-replay/<teamId>/<capability>/<decisionId>.json.gz`
+ *
+ * A decision input kept for replay (`@buildd/core/decision-replay`). Keyed by
+ * the ledger row id alone (no day), so a copy written just after midnight is
+ * still found from its row.
+ */
+export function buildDecisionReplayKey(prefix: unknown, teamId: unknown, capability: unknown, decisionId: unknown): string {
+  const safePrefix = assertSafeKeySegment(prefix, 'prefix');
+  const team = assertSafeKeySegment(teamId, 'teamId');
+  const cap = assertSafeKeySegment(capability, 'capability');
+  const id = assertSafeKeySegment(decisionId, 'decisionId');
+  return assertNormalizedObjectKey(`${safePrefix}/${DECISION_REPLAY_SEGMENT}/${team}/${cap}/${id}.json.gz`);
+}
 
 export function buildEvidenceProbeKey(prefix: unknown, probeId: unknown): string {
   const safePrefix = assertSafeKeySegment(prefix, 'prefix');

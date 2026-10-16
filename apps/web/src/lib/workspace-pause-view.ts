@@ -1,3 +1,4 @@
+// @ui-copy: strings here render in the app; copy:check and the em-dash test scan them.
 /** Client-safe reads of a workspace's "pause new starts" state (no db). */
 export interface WorkspacePauseRow {
   id: string;

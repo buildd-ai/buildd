@@ -14,8 +14,14 @@ const history = Array.from({ length: 101 }, (_, i) => ({
 let listedReleases = history;
 let totalReleases = history.length;
 let successors: { id: string; version: string | null }[] = [];
+const CANDIDATE_CONFIG = {
+  enabled: true, strategy: 'workflow_dispatch', workflowFile: 'release.yml', ref: 'dev', prodBranch: 'main',
+  candidate: { branches: ['release/v*'], sourceBranch: 'dev', authors: ['release-bot[bot]'] },
+};
+let releaseConfig: Record<string, unknown> = { enabled: true };
+let manageTeams: string[] = [];
 const findMany = mock(async ({ limit }: { limit: number }) => listedReleases.slice(0, limit));
-beforeEach(() => { listedReleases = history; totalReleases = history.length; successors = []; });
+beforeEach(() => { listedReleases = history; totalReleases = history.length; successors = []; releaseConfig = { enabled: true }; manageTeams = []; });
 mock.module('@buildd/core/db', () => ({
   db: {
     select: (columns: { version?: unknown; total?: unknown }) => ({
@@ -24,7 +30,7 @@ mock.module('@buildd/core/db', () => ({
           ? [{ total: totalReleases }]
           : columns.version ? successors : [{
             id: 'demo-workspace', name: 'Demo',
-            releaseConfig: { enabled: true }, gitConfig: null,
+            releaseConfig, gitConfig: null,
           }],
       }),
     }),
@@ -37,6 +43,7 @@ mock.module('@/lib/team-access', () => ({
   resolveActiveTeamId: async () => 'demo-team',
 }));
 mock.module('next/headers', () => ({ cookies: async () => ({ get: () => undefined }) }));
+mock.module('@/lib/permissions', () => ({ teamIdsWhere: async () => manageTeams }));
 
 const { default: ReleasesPage } = await import('./page');
 
@@ -124,5 +131,79 @@ describe('ReleasesPage successor resolution', () => {
     expect(html).not.toContain('href="/app/releases/missing"');
     expect(html).not.toContain('superseded by release missing');
     expect(html).not.toContain('text-status-error');
+  });
+});
+
+describe('ReleasesPage release flow entry', () => {
+  it('the pending release card opens the release flow for an owner or admin of a candidate workspace', async () => {
+    releaseConfig = CANDIDATE_CONFIG;
+    manageTeams = ['demo-team'];
+    listedReleases = [{ ...history[0], state: 'pending_external' }, ...history.slice(1, 3)];
+    totalReleases = 3;
+    const html = await renderPage();
+    const card = html.slice(html.indexOf('data-testid="next-release"'));
+    expect(card).toContain('data-testid="next-release-compose"');
+    expect(card).toContain('href="/app/releases/compose?workspace=demo-workspace"');
+    expect(html).not.toContain('data-testid="releases-compose"');
+  });
+
+  it('with nothing pending, the header offers to compose the next release', async () => {
+    releaseConfig = CANDIDATE_CONFIG;
+    manageTeams = ['demo-team'];
+    listedReleases = history.slice(0, 3);
+    totalReleases = 3;
+    const html = await renderPage();
+    expect(html).toContain('data-testid="releases-compose"');
+    expect(html).toContain('Compose the next release');
+    expect(html).not.toContain('data-testid="next-release"');
+  });
+
+  it('a member, or a workspace without candidates, gets no release flow link', async () => {
+    releaseConfig = CANDIDATE_CONFIG;
+    listedReleases = [{ ...history[0], state: 'pending_external' }];
+    totalReleases = 1;
+    expect(await renderPage()).not.toContain('/app/releases/compose');
+    releaseConfig = { enabled: true };
+    manageTeams = ['demo-team'];
+    expect(await renderPage()).not.toContain('/app/releases/compose');
+  });
+});
+
+describe('ReleasesPage ?state= fixtures', () => {
+  const renderState = async (state: string, nodeEnv = 'development') => {
+    const prev = process.env.NODE_ENV;
+    (process.env as Record<string, string>).NODE_ENV = nodeEnv;
+    try {
+      return renderToStaticMarkup(await ReleasesPage({ searchParams: Promise.resolve({ state }) }));
+    } finally {
+      (process.env as Record<string, string>).NODE_ENV = prev!;
+    }
+  };
+
+  it('candidates: a pending candidate as the next release, with the flow link, above the history', async () => {
+    findMany.mockClear();
+    const html = await renderState('candidates');
+    expect(findMany).not.toHaveBeenCalled();
+    expect(html).toContain('data-testid="next-release"');
+    expect(html).toContain('data-testid="next-release-compose"');
+    expect(html).toContain('Superseded');
+    expect(html).toContain('Degraded');
+    expect(count(html, 'data-testid="release-row"')).toBe(6);
+  });
+
+  it('history: no next release, the compose link sits in the header', async () => {
+    const html = await renderState('history');
+    expect(html).not.toContain('data-testid="next-release"');
+    expect(html).toContain('data-testid="releases-compose"');
+  });
+
+  it('multi-workspace: rows name their workspace', async () => {
+    expect(await renderState('multi-workspace')).toContain('Sample mobile app');
+  });
+
+  it('is ignored outside a dev server', async () => {
+    findMany.mockClear();
+    await renderState('candidates', 'production');
+    expect(findMany).toHaveBeenCalled();
   });
 });

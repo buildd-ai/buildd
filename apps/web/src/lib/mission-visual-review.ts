@@ -226,7 +226,7 @@ export function selectLatestRun(shots: readonly VisualShot[]): VisualShot[] {
 
 /**
  * Does a recorded route satisfy a required one? Exact match, or a concrete
- * URL matching the pattern (`:x` = one segment, `:x*` = the rest). The
+ * URL matching the pattern (`:x` or `[x]` = one segment, `:x*` or `[...x]` = the rest). The
  * completion evidence check uses this too.
  */
 export function qaRouteSatisfies(required: string, recorded: string): boolean {
@@ -234,7 +234,9 @@ export function qaRouteSatisfies(required: string, recorded: string): boolean {
   const pattern = required
     .split('/')
     .map((seg) => {
+      if (/^\[\.\.\.[^\]]+\]$/.test(seg)) return '.+';
       if (/^:[^/]+\*$/.test(seg)) return '.+';
+      if (/^\[[^\]]+\]$/.test(seg)) return '[^/]+';
       if (seg.startsWith(':')) return '[^/]+';
       return seg.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     })

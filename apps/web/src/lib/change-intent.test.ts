@@ -193,7 +193,7 @@ describe('resolveAnchorInjections', () => {
 
 // ─── Schema-only trigger + NULL-safe exclusion (conflict-aware-orchestration §3) ─
 
-import { PgDialect } from 'drizzle-orm/pg-core';
+import { GroupingNormalisedPgDialect } from '@buildd/core/db/sql-grouping';
 import { conflictingIntentsWhere, intentInsertIfAbsentSql } from './change-intent';
 
 const NS_CONFIG = {
@@ -225,7 +225,7 @@ describe('resolveAnchorInjections — schema triggers', () => {
 });
 
 describe('conflictingIntentsWhere', () => {
-  const dialect = new PgDialect();
+  const dialect = new GroupingNormalisedPgDialect();
   test('excluding a task keeps rows whose task id is NULL (SQL <> drops NULL)', () => {
     const q = dialect.sqlToQuery(conflictingIntentsWhere('ws-1', ['s'], 'task-1'));
     expect(q.sql).toContain('"change_intents"."workspace_id" = $1');
@@ -241,7 +241,7 @@ describe('conflictingIntentsWhere', () => {
 
 describe('intentInsertIfAbsentSql', () => {
   test('one statement, guarded by NOT EXISTS on an open row for the same workspace, PR and surface', () => {
-    const q = new PgDialect().sqlToQuery(intentInsertIfAbsentSql({ workspaceId: 'ws-1', surface: 'lockfile', taskId: null, prNumber: 7, branch: 'b', headSha: 'h' }));
+    const q = new GroupingNormalisedPgDialect().sqlToQuery(intentInsertIfAbsentSql({ workspaceId: 'ws-1', surface: 'lockfile', taskId: null, prNumber: 7, branch: 'b', headSha: 'h' }));
     expect(q.sql).toMatch(/^INSERT INTO "change_intents"/);
     expect(q.sql).toMatch(/WHERE NOT EXISTS/);
     expect(q.sql).toMatch(/ci\.workspace_id = \$\d+::uuid AND ci\.pr_number = \$\d+::int\s+AND ci\.surface = \$\d+ AND ci\.closed_at IS NULL/);

@@ -6,15 +6,14 @@ const WS = '22222222-2222-4222-8222-222222222222';
 const KEY = 'sk-agent-example-1234';
 const mockRequireSessionUser = mock(async () => ({ user: { id: 'u-1' } }) as any);
 const mockGetUserTeamIds = mock(async () => [TEAM] as string[]);
-// The caller's team roles and the team's permission overrides, read by the
+// The caller's team roles, read by the
 // real permission check (lib/permissions.ts) through this db mock.
 let roles: Record<string, string> = {};
-let overrides: Record<string, unknown> | null = null;
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       teamMembers: { findMany: async () => Object.entries(roles).map(([teamId, role]) => ({ teamId, role })) },
-      teams: { findFirst: async () => ({ id: 'not-a-personal-team', permissionOverrides: overrides }) },
+      teams: { findFirst: async () => ({ id: 'not-a-personal-team' }) },
     },
   },
 }));
@@ -37,7 +36,7 @@ const body = { kind: 'anthropic-compatible', baseUrl: 'https://litellm.example.c
 
 beforeEach(() => {
   mockGetUserTeamIds.mockResolvedValue([TEAM]);
-  roles = {}; overrides = null;
+  roles = {};
   mockPreview.mockClear();
   mockSuggest.mockClear();
 });
@@ -98,27 +97,5 @@ describe('POST /api/teams/[id]/agent-endpoint/models/suggest', () => {
     roles = { [TEAM]: 'admin' };
     expect((await SUGGEST(req({ listed: 'a', models: [] }, 'models/suggest'), ctx())).status).toBe(400);
     expect((await SUGGEST(req({ listed: [], models: [], workspaceId: 'x' }, 'models/suggest'), ctx())).status).toBe(400);
-  });
-});
-
-describe('agent-endpoint models and suggest honour the team permission overrides', () => {
-  const suggestBody = { listed: ['a'], models: ['m'] };
-
-  it('an admin is refused once manage_inference_providers is owner-only; nothing is called', async () => {
-    roles = { [TEAM]: 'admin' };
-    overrides = { manage_inference_providers: ['owner'] };
-    expect((await POST(req(body), ctx())).status).toBe(403);
-    expect((await SUGGEST(req(suggestBody, 'models/suggest'), ctx())).status).toBe(403);
-    expect(mockPreview).not.toHaveBeenCalled();
-    expect(mockSuggest).not.toHaveBeenCalled();
-  });
-
-  it('a member is admitted once manage_inference_providers is granted to members', async () => {
-    roles = { [TEAM]: 'member' };
-    overrides = { manage_inference_providers: ['owner', 'admin', 'member'] };
-    expect((await POST(req(body), ctx())).status).toBe(200);
-    expect(mockPreview).toHaveBeenCalledTimes(1);
-    expect((await SUGGEST(req(suggestBody, 'models/suggest'), ctx())).status).toBe(200);
-    expect(mockSuggest).toHaveBeenCalledTimes(1);
   });
 });

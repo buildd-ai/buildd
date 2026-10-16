@@ -32,6 +32,7 @@ import { and, eq, inArray, isNull, lt, notInArray, sql } from 'drizzle-orm';
 import { CLAIM_RESPONSE_LOST_ERROR } from '@/lib/worker-exit-taxonomy';
 import { releaseConcurrencySeats } from '@/lib/interactive-detach';
 import { resolveTasksOfReapedWorkers } from '@/lib/stale-workers';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * How old an unstarted row must be before a heartbeat may release it. Well
@@ -84,14 +85,14 @@ export interface LostClaimDeps {
 const defaultDeps: LostClaimDeps = {
   async findCandidates({ accountId, runner, mintedBefore, held }) {
     return db.query.workers.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(workers.accountId, accountId),
         eq(workers.runner, runner),
         eq(workers.status, 'idle'),
         isNull(workers.startedAt),
         lt(workers.createdAt, mintedBefore),
         ...(held.length > 0 ? [notInArray(workers.id, held)] : []),
-      ),
+      )),
       columns: {
         id: true, taskId: true, accountId: true, createdAt: true,
         prUrl: true, prNumber: true, commitCount: true, branch: true, error: true,

@@ -1,6 +1,6 @@
 /**
  * Team notification settings are manage_team_notifications (the PUT route
- * refuses anyone else, with the team's overrides applied). A member sees which
+ * refuses anyone else). A member sees which
  * channels are set and which events fire, read-only.
  *
  * Runs in its own process (scripts/run-unit-tests.ts), so the DOM globals stay here.

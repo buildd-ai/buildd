@@ -13,9 +13,10 @@
  */
 import { db } from '@buildd/core/db';
 import { gateEvents } from '@buildd/core/db/schema';
-import { and, desc, eq, gt } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray } from 'drizzle-orm';
 import { GATE_SLUGS } from './gate-ledger';
 import type { MissionStateInput } from './mission-state-view';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * How recently the loop must have refused a task for the refusal to still be an
@@ -48,13 +49,13 @@ export type MissionDeferral = NonNullable<MissionStateInput['deferrals']>[number
 export async function loadMissionClaimDeferrals(missionId: string): Promise<MissionDeferral[]> {
   const since = new Date(Date.now() - DEFERRAL_FRESHNESS_MS);
   const rows = await db.query.gateEvents.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(gateEvents.missionId, missionId),
       eq(gateEvents.gate, GATE_SLUGS.CLAIM_LOOP_DEFERRAL),
       eq(gateEvents.outcome, 'deferred'),
       gt(gateEvents.occurredAt, since),
-    ),
-    orderBy: [desc(gateEvents.occurredAt)],
+    )),
+    orderBy: sqlOrderBy([desc(gateEvents.occurredAt)]),
     limit: DEFERRAL_ROW_LIMIT,
     columns: { taskId: true, reason: true, detail: true },
   });
@@ -87,4 +88,52 @@ export function summarizeDeferralRows(
     });
   }
   return [...byTask.values()].sort((a, b) => b.consecutiveDeferrals - a.consecutiveDeferrals);
+}
+
+/**
+ * How far back the newest claim-loop refusal still names why a pending task
+ * has not started (spec f7f67f1a R-33).
+ *
+ * Longer than `DEFERRAL_FRESHNESS_MS` on purpose. That window decides whether
+ * a refusal streak is happening right now; this one only picks the words for a
+ * task that is still pending, so it is never a claim that something is stuck.
+ * A held task is not asked for on every poll (a budget pause, for one, is
+ * re-recorded roughly once an hour), so fifteen minutes would blank the cause
+ * most of the time and fall back to "waiting for a runner".
+ */
+export const CLAIM_HOLD_WINDOW_MS = 6 * 60 * 60 * 1000;
+
+/** Pure: the newest reason per task. `rows` must be newest first. */
+export function latestHoldByTask(
+  rows: ReadonlyArray<{ taskId: string | null; reason: string }>,
+): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const r of rows) if (r.taskId && !out.has(r.taskId)) out.set(r.taskId, r.reason);
+  return out;
+}
+
+/**
+ * The claim loop's newest refusal reason for each of these tasks, within
+ * `CLAIM_HOLD_WINDOW_MS`. Pass only tasks that are still pending: gate_events
+ * never records that a hold cleared. A failed read returns an empty map, which
+ * reads as "queued" with no cause, never as a wrong one.
+ */
+export async function loadClaimHoldReasons(taskIds: readonly string[]): Promise<Map<string, string>> {
+  if (taskIds.length === 0) return new Map();
+  try {
+    const rows = await db.query.gateEvents.findMany({
+      where: sqlWhere(and(
+        inArray(gateEvents.taskId, [...taskIds]),
+        eq(gateEvents.gate, GATE_SLUGS.CLAIM_LOOP_DEFERRAL),
+        inArray(gateEvents.outcome, ['deferred', 'stranded']),
+        gt(gateEvents.occurredAt, new Date(Date.now() - CLAIM_HOLD_WINDOW_MS)),
+      )),
+      orderBy: sqlOrderBy([desc(gateEvents.occurredAt)]),
+      limit: Math.min(500, taskIds.length * 20),
+      columns: { taskId: true, reason: true },
+    });
+    return latestHoldByTask(rows);
+  } catch {
+    return new Map();
+  }
 }

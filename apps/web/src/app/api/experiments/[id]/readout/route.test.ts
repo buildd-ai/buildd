@@ -12,7 +12,7 @@ const mockResolveViewer = mock(async () => viewer);
 const mockGet = mock(async () => stored);
 const mockRun = mock(async (..._a: any[]) => ({ verdict: 'insufficient_n' }) as any);
 
-// The visibility check reads the team's permission overrides; none stored.
+// The personal-team lookup finds nothing.
 mock.module('@buildd/core/db', () => ({ db: { query: { teams: { findFirst: async () => null } } } }));
 mock.module('@/lib/experiment-access', () => ({
   resolveExperimentViewer: mockResolveViewer,
@@ -39,7 +39,9 @@ function row(over: Record<string, unknown> = {}) {
     startedAt: T0, concludedAt: null, createdAt: T0, updatedAt: T0, ...over,
   };
 }
-const as = (role: Role) => { viewer = { ok: true, viewer: { teamId: TEAM, role, userId: null } }; };
+/** A team role, or 'operator': a buildd platform operator (an owner of the team here). */
+type Who = Role | 'operator';
+const as = (who: Who) => { viewer = { ok: true, viewer: { teamId: TEAM, role: who === 'operator' ? 'owner' : who, userId: null, operator: who === 'operator' } }; };
 const get = (qs = '') => GET(new NextRequest(`http://localhost/api/experiments/${ID}/readout${qs}`), { params: Promise.resolve({ id: ID }) });
 
 beforeEach(() => {
@@ -52,11 +54,13 @@ beforeEach(() => {
 });
 
 describe('GET /api/experiments/[id]/readout', () => {
-  const cases: [Role, 'team' | 'admins', number][] = [
+  // 'admins' is the stored value for operator-only.
+  const cases: [Who, 'team' | 'admins', number][] = [
     ['member', 'team', 200],
     ['member', 'admins', 404],
-    ['admin', 'admins', 200],
-    ['owner', 'admins', 200],
+    ['admin', 'admins', 404],
+    ['owner', 'admins', 404],
+    ['operator', 'admins', 200],
   ];
   it.each(cases)('%s × %s → %d', async (role, visibility, status) => {
     as(role);
@@ -67,7 +71,7 @@ describe('GET /api/experiments/[id]/readout', () => {
   });
 
   it('a heartbeat_triage experiment gets its per-mission readout, not the task one', async () => {
-    as('admin');
+    as('operator');
     stored = row({ kind: 'heartbeat_triage', config: { minSamplePerArm: 7, waitMinConfidence: 0.95 } });
     const body = await (await get()).json();
     expect(body.readout.status).toBe('underpowered');
@@ -76,7 +80,7 @@ describe('GET /api/experiments/[id]/readout', () => {
   });
 
   it('a tier_pool experiment reads its own chat/agent assignment rows, never the task readout (which would be all zeros)', async () => {
-    as('admin');
+    as('operator');
     stored = row({ kind: 'tier_pool', key: 'tier-pool:chat:budget', config: {} });
     const res = await get();
     expect(res.status).toBe(200);
@@ -87,7 +91,7 @@ describe('GET /api/experiments/[id]/readout', () => {
   });
 
   it('a kind with no readout is refused out loud, not read as a task experiment', async () => {
-    as('admin');
+    as('operator');
     stored = row({ kind: 'something_new' });
     const res = await get();
     expect(res.status).toBe(422);
@@ -96,7 +100,7 @@ describe('GET /api/experiments/[id]/readout', () => {
   });
 
   it('reads the current policy version with the configured minimum sample', async () => {
-    as('admin');
+    as('operator');
     const body = await (await get()).json();
     expect(body.policyVersion).toBe(3);
     expect(body.readout.verdict).toBe('insufficient_n');
@@ -104,20 +108,20 @@ describe('GET /api/experiments/[id]/readout', () => {
   });
 
   it('?policyVersion reads an earlier version on its own', async () => {
-    as('admin');
+    as('operator');
     await get('?policyVersion=1');
     expect(mockRun).toHaveBeenCalledWith({ id: ID, policyVersion: 1 }, { minSamplePerArm: 12 });
   });
 
   it('rejects a policyVersion that never existed', async () => {
-    as('admin');
+    as('operator');
     expect((await get('?policyVersion=4')).status).toBe(400);
     expect((await get('?policyVersion=0')).status).toBe(400);
     expect(mockRun).not.toHaveBeenCalled();
   });
 
   it('carries the enrolment health findings of the running experiment', async () => {
-    as('admin');
+    as('operator');
     const finding = { code: 'arm_never_drawn', severity: 'critical', arm: 'treatment', detail: 'arm treatment has 0 units' };
     mockHealth.mockResolvedValue([finding]);
     const body = await (await get()).json();
@@ -126,7 +130,7 @@ describe('GET /api/experiments/[id]/readout', () => {
   });
 
   it('a failing health check does not fail the readout', async () => {
-    as('admin');
+    as('operator');
     mockHealth.mockRejectedValue(new Error('db down'));
     const res = await get();
     expect(res.status).toBe(200);

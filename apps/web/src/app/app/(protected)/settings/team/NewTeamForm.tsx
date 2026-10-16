@@ -39,14 +39,14 @@ export default function NewTeamForm() {
 
       if (!res.ok) {
         const err = await res.json();
-        throw new Error(err.error || 'Failed to create team');
+        throw new Error(err.error || "Could not create the team.");
       }
 
       const team = await res.json();
       router.push(`/app/settings/team?team=${encodeURIComponent(team.id)}`);
       router.refresh();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
+      setError(err instanceof Error ? err.message : "Could not create the team.");
     } finally {
       setLoading(false);
     }

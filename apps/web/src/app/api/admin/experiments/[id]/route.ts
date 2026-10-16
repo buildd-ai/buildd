@@ -4,13 +4,16 @@ import { planExperimentPatch, toExperimentDTO } from '@/lib/experiments';
 import { notFound, requirePlatformOwner } from '@/lib/admin/owner-gate';
 import { applyExperimentUpdate, findOtherRunning, getExperiment } from '@/lib/admin/data';
 import { recordPlatformAdminAudit } from '@/lib/admin/audit';
+import { loadAdminViewer } from '@/lib/admin/scope';
+import { viewExperiment } from '@/lib/admin/tenant-privacy';
 
 /**
  * PATCH /api/admin/experiments/[id] — platform owner only (404 otherwise).
  *
  * The team route's change rules (planExperimentPatch) on any team's
  * experiment: status moves, fraction, config, visibility, title. Audited with
- * the experiment before and after.
+ * the experiment before and after; the response shows another team's
+ * experiment without its team-written text, as the list does.
  */
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const gate = await requirePlatformOwner(req);
@@ -62,5 +65,6 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     before: before as unknown as Record<string, unknown>,
     after: after as unknown as Record<string, unknown>,
   });
-  return NextResponse.json({ experiment: { ...after, teamId: row.teamId }, policyVersionBumped: bumpedPolicyVersion });
+  const viewer = await loadAdminViewer(gate.account);
+  return NextResponse.json({ experiment: viewExperiment(viewer, updated), policyVersionBumped: bumpedPolicyVersion });
 }

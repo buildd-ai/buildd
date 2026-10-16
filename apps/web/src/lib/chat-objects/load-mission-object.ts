@@ -26,6 +26,7 @@ import { MISSION_DETAIL_WITH } from '@/app/app/(protected)/missions/[id]/mission
 import type { MissionObjectView } from '@/components/chat/objects/object-views';
 import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 import { loadVisualReview } from '@/lib/visual-review-load';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** The description's first paragraph as plain text — the mission page's `goalLine`. */
 export function missionGoalLine(description: string | null | undefined): string | null {
@@ -35,7 +36,7 @@ export function missionGoalLine(description: string | null | undefined): string 
 export async function loadMissionObject(missionId: string, userId: string): Promise<MissionObjectView | null> {
   const [teamIds, mission] = await Promise.all([
     getUserTeamIds(userId),
-    db.query.missions.findFirst({ where: eq(missions.id, missionId), with: MISSION_DETAIL_WITH }),
+    db.query.missions.findFirst({ where: sqlWhere(eq(missions.id, missionId)), with: MISSION_DETAIL_WITH }),
   ]);
   if (!mission || !teamIds.includes(mission.teamId)) return null;
 
@@ -52,20 +53,20 @@ export async function loadMissionObject(missionId: string, userId: string): Prom
       const wsIds = await getUserWorkspaceIds(userId);
       if (wsIds.length === 0) return [] as { slug: string; name: string; color: string }[];
       return db.query.workspaceSkills.findMany({
-        where: and(inArray(workspaceSkills.workspaceId, wsIds), eq(workspaceSkills.enabled, true)),
+        where: sqlWhere(and(inArray(workspaceSkills.workspaceId, wsIds), eq(workspaceSkills.enabled, true))),
         columns: { slug: true, name: true, color: true },
-        orderBy: [desc(workspaceSkills.createdAt)],
+        orderBy: sqlOrderBy([desc(workspaceSkills.createdAt)]),
       });
     })(),
     // Human touches: mission-scoped notes and task-scoped ones (written with
     // missionId null), as the mission page reads them.
     db.query.missionNotes.findMany({
-      where: and(
+      where: sqlWhere(and(
         taskIds.length > 0
           ? or(eq(missionNotes.missionId, missionId), inArray(missionNotes.taskId, taskIds))
           : eq(missionNotes.missionId, missionId),
         eq(missionNotes.authorType, 'user'),
-      ),
+      )),
       columns: { id: true, createdAt: true },
     }),
     loadRunnerHeartbeats((mission.tasks || []).flatMap(t => (t.workers ?? []) as Array<{ runner?: string | null; localUiUrl?: string | null; accountId?: string | null }>)),

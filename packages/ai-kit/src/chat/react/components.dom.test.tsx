@@ -946,3 +946,48 @@ describe('ChatComposer files (0.26.0)', () => {
     expect(opened).toEqual(['a1']);
   });
 });
+
+describe('attachment rows and the Attach button on a phone (0.27.1)', () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { readFileSync } = require('node:fs') as typeof import('node:fs');
+  const CSS = readFileSync(new URL('../styles.css', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  /** Every declaration block whose selector list names `selector` exactly. */
+  const rulesFor = (selector: string) => [...CSS.matchAll(/([^{}]+)\{([^}]*)\}/g)]
+    .filter(m => m[1]!.split(',').map(s => s.trim()).includes(selector))
+    .map(m => m[2]!);
+  const decl = (selector: string, prop: string) => {
+    let v: string | undefined;
+    for (const body of rulesFor(selector)) for (const d of body.split(';')) {
+      const [k, ...rest] = d.split(':');
+      if (k?.trim() === prop) v = rest.join(':').trim();
+    }
+    return v;
+  };
+
+  it('a failed upload shows its whole reason: the detail line wraps and the card grows, never an ellipsis', async () => {
+    const reason = 'Upload failed. Check your connection and retry.';
+    await render(h(kit.FileCard, { name: 'notes.pdf', mediaType: 'application/pdf', sizeBytes: 10, state: 'failed', error: reason, onRetry: () => {}, onRemove: () => {} }));
+    expect($('[data-testid="kit-file-state"]')!.textContent).toBe(reason);
+    const failed = '.kit-attachment[data-state="failed"] .kit-attachment-size';
+    expect(decl(failed, 'white-space')).toBe('normal');
+    expect(decl(failed, 'text-overflow')).not.toBe('ellipsis');
+    expect(decl('.kit-attachment[data-state="failed"]', 'height')).toBe('auto');
+    expect(decl('.kit-attachment[data-state="failed"]', 'min-height')).toBe('56px');
+  });
+
+  it('detail and count lines are prose, not tabular figures: the body font widens "," and "." to a digit under tnum', () => {
+    // "60,000 characters" rendered "60 , 000", "1.1 MB" rendered "1 . 1 MB".
+    expect(decl('.kit-attachment-size', 'font-variant-numeric')).toBeUndefined();
+    expect(decl('.kit-composer-count', 'font-variant-numeric')).toBeUndefined();
+  });
+
+  it('the Attach button fills its toolbar cell like Send, at least a 44px target', async () => {
+    await render(h(kit.ChatComposer, { onSend: () => {}, onUploadFile: () => new Promise(() => {}) }));
+    expect($('[data-testid="kit-attach"]')!.className).toBe('kit-attach');
+    expect(decl('.kit-attach', 'height')).toBeUndefined();
+    expect(decl('.kit-attach', 'align-self')).toBe('stretch');
+    expect(parseInt(decl('.kit-attach', 'min-height') ?? '0', 10)).toBeGreaterThanOrEqual(44);
+    expect(parseInt(decl('.kit-attach', 'min-width') ?? '0', 10)).toBeGreaterThanOrEqual(44);
+    expect(decl('.kit-attach', 'border')).toBe('0');
+  });
+});

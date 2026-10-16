@@ -1,3 +1,4 @@
+// @ui-copy: strings here render in the app; copy:check and the em-dash test scan them.
 /**
  * The initiative card model, shared by the Initiatives list and the initiative
  * page (docs/specs/initiatives.md).
@@ -12,6 +13,7 @@
  * model (lib/mission-list-card.ts), so a mission reads the same here as on the
  * Missions tab.
  */
+import { STATES } from '@/components/ui/states';
 import type { ListCardKind, ListPhase, ListQuestion, ListTone } from './mission-list-card';
 
 export type InitiativeStatus = 'planned' | 'active' | 'paused' | 'completed' | 'archived';
@@ -168,7 +170,7 @@ export function targetDateLabel(
 const isDone = (m: InitiativeMissionInput) => m.kind === 'done';
 /** A status word for work in flight — a local session's mission is running work too. */
 const isRunningLabel = (label: string) => label === 'Running' || label === 'In CI' || label === 'Local';
-const needsYou = (m: InitiativeMissionInput) => !isDone(m) && (m.question != null || m.ask != null || m.statusLabel === 'Needs you');
+const needsYou = (m: InitiativeMissionInput) => !isDone(m) && (m.question != null || m.ask != null || m.statusLabel === STATES.needs_you.word);
 const isHeld = (m: InitiativeMissionInput) => !isDone(m) && m.kind === 'held';
 
 /** "Merge: feat(x): thing" → "Merge". The ask labels always lead with their verb. */
@@ -250,7 +252,7 @@ export function buildInitiativeCard(input: InitiativeInput, opts: { now?: number
       const firstHref = first.question?.href ?? first.ask?.href ?? first.href;
       facts.push({
         key: 'needs_you',
-        text: `${asking.length} ${plural(asking.length, 'mission')} ${asking.length === 1 ? 'needs' : 'need'} you`,
+        text: `${asking.length} ${plural(asking.length, 'mission')} waiting on you`,
         href: firstHref,
       });
       action = {
@@ -269,7 +271,7 @@ export function buildInitiativeCard(input: InitiativeInput, opts: { now?: number
       action ??= { kind: 'mark_completed', label: 'Mark completed', href: null, missionId: null };
     }
     if (missions.length === 0) {
-      facts.push({ key: 'no_missions', text: 'No missions yet', href: null });
+      facts.push({ key: 'no_missions', text: 'No missions', href: null });
       action = { kind: 'add_mission', label: 'Add mission', href: `/app/missions?new=1&initiative=${encodeURIComponent(input.id)}`, missionId: null };
     }
     action ??= { kind: 'open', label: 'Open', href, missionId: null };
@@ -308,7 +310,7 @@ export function buildInitiativeCard(input: InitiativeInput, opts: { now?: number
 
 const SECTION_ORDER: readonly InitiativeSection[] = ['needs_you', 'active', 'planned', 'paused', 'completed'];
 export const SECTION_LABEL: Record<InitiativeSection, string> = {
-  needs_you: 'Needs you',
+  needs_you: 'Waiting on you',
   active: 'Active',
   planned: 'Planned',
   paused: 'Paused',
@@ -336,7 +338,7 @@ export function initiativesCountLine(groups: readonly InitiativeGroup[]): Array<
   return groups.map((g) => {
     const n = g.cards.length;
     return g.section === 'needs_you'
-      ? { text: `${n} ${n === 1 ? 'needs' : 'need'} you`, needsYou: true }
+      ? { text: `${n} waiting on you`, needsYou: true }
       : { text: `${n} ${g.label.toLowerCase()}`, needsYou: false };
   });
 }

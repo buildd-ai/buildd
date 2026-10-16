@@ -20,7 +20,7 @@ import Link from 'next/link';
 import { createPortal } from 'react-dom';
 import { MOBILE_TOP_BAR_SLOT_ID } from '@/components/MobileTopBar';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
-import type { ChatDraftAttachment, ChatTierName } from '@buildd/shared';
+import type { ChatDraftAttachment, ChatFileDraft, ChatTierName } from '@buildd/shared';
 import BottomSheet from '@/components/BottomSheet';
 import { refKey, type BuilddObjectRef, type ChatMessage } from './chat-contract';
 import { ChatActionsProvider, DEFAULT_CHAT_ACTIONS, type ChatActions, type OpenVisualReview } from './ChatActions';
@@ -50,6 +50,10 @@ export interface ChatWorkspaceProps {
   notice?: ReactNode;
   /** `attachments`: the long pastes the message carries (Living Specs C2). */
   onSend(text: string, attachments?: ChatDraftAttachment[]): void;
+  /** The draft's attachments on arrival (the dev fixtures' `draft-attachments`). */
+  initialAttachments?: ChatDraftAttachment[];
+  /** Override how the composer uploads an image or file (fixtures). Default: the uploads route. */
+  uploadFile?(file: File, signal: AbortSignal): Promise<ChatFileDraft>;
   onStop?: () => void;
   onApproval(approvalId: string, approved: boolean, reason?: string): void;
   /** Override how a question is answered (fixtures). Default: the respond route. */
@@ -208,7 +212,7 @@ function useMinWidth(px: number): boolean {
 
 export default function ChatWorkspace(props: ChatWorkspaceProps) {
   const {
-    messages, status, error, notice, onSend, onStop, onApproval, answerQuestion, reviewShots, undoReview, initialVisualReview = null, title, teamName,
+    messages, status, error, notice, onSend, initialAttachments, uploadFile, onStop, onApproval, answerQuestion, reviewShots, undoReview, initialVisualReview = null, title, teamName,
     agent, tier, teamId = null, conversationId = null, pinnedTier = null, onTierChange, costRefreshKey = 0, workspaces, workspaceId, onWorkspaceChange, viewerName, aside, focusRef = null,
     newChatHref = '/app/chat', emptyState, historyOpen = false, initialPaneClosed = false,
     composerPlaceholder, autoFocus = false, focusOpensSheet = true, entryIntent = null, pulse = null,
@@ -235,7 +239,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   const [ownDraft, setOwnDraft] = useState('');
   // The draft's long pastes (Living Specs C2), and what was last sent, so a
   // refused send puts the whole draft back, the same attachment ids included.
-  const [attachments, setAttachments] = useState<ChatDraftAttachment[]>([]);
+  const [attachments, setAttachments] = useState<ChatDraftAttachment[]>(() => initialAttachments ?? []);
   const lastSent = useRef<{ text: string; attachments: ChatDraftAttachment[] } | null>(null);
   const draft = props.draft ?? ownDraft;
   const setDraft = props.onDraftChange ?? setOwnDraft;
@@ -683,6 +687,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
             onSend={send}
             attachments={attachments}
             onAttachmentsChange={setAttachments}
+            uploadFile={uploadFile}
             onStop={onStop}
             busy={busy}
             placeholder={composerPlaceholder ?? (pin ? 'Ask about this, or anything else…' : messages.length === 0 ? canvasPlaceholder(suggestions) : undefined)}

@@ -120,6 +120,8 @@ export const MCP_ONLY_CLASS: Partial<Record<BuilddAction, 'read' | 'write'>> = {
   claim_task: 'write',
   update_progress: 'write',
   receive_messages: 'write',
+  ask_human: 'write',
+  await_answer: 'write',
   complete_task: 'write',
   create_pr: 'write',
   emit_event: 'write',
@@ -129,6 +131,8 @@ export const MCP_ONLY_CLASS: Partial<Record<BuilddAction, 'read' | 'write'>> = {
   record_pr_supersession: 'write',
   post_note: 'write',
   update_incident: 'write',
+  get_decision: 'read',
+  label_decision: 'write',
   suggest_schedule_update: 'write',
 };
 

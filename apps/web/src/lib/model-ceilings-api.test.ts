@@ -16,7 +16,7 @@ const OUTSIDER = { kind: 'user', userId: 'outsider' } as const;
 const KEY = { kind: 'account', accountId: 'acct-1', teamId: TEAM, level: 'admin' } as const;
 const FOREIGN_KEY = { kind: 'account', accountId: 'acct-2', teamId: 'team-2', level: 'admin' } as const;
 
-function fake(caller: TeamScopeCaller | null) {
+function fake(caller: TeamScopeCaller | null, operator = false) {
   let policy: TeamTierCeilingPolicy | null = null;
   const members: Record<string, MemberTierCeilings> = {};
   const writes: any[] = [];
@@ -24,6 +24,7 @@ function fake(caller: TeamScopeCaller | null) {
     caller: async () => caller,
     isMember: async (u) => u === 'admin-1' || u === 'member-1',
     canManage: async (c) => (c.kind === 'user' ? c.userId === 'admin-1' : c.level === 'admin'),
+    isOperator: async () => operator,
     loadPolicy: async () => policy,
     loadMember: async (_t, u) => members[u] ?? null,
     listMembers: async () => members,
@@ -51,12 +52,28 @@ describe('model-tier ceilings API', () => {
   });
 
   it('rejects unknown tiers, keys and fields instead of saving "no ceiling"', async () => {
-    const { deps, writes } = fake(ADMIN);
+    const { deps, writes } = fake(ADMIN, true);
     expect((await handlePutTeamCeilings(TEAM, { team: { all: 'premum' } }, deps)).status).toBe(400);
     expect((await handlePutTeamCeilings(TEAM, { team: { coding: 'premium' } }, deps)).status).toBe(400);
     expect((await handlePutTeamCeilings(TEAM, { teamCap: 'premium' }, deps)).status).toBe(400);
     expect((await handlePutTeamCeilings(TEAM, { overCapAuto: 'escalate' }, deps)).status).toBe(400);
     expect(writes).toHaveLength(0);
+  });
+
+  it('overCapAuto is a platform operator control: a team admin gets 403 and nothing is written', async () => {
+    const admin = fake(ADMIN);
+    const res = await handlePutTeamCeilings(TEAM, { overCapAuto: 'deny' }, admin.deps);
+    expect(res.status).toBe(403);
+    expect((await res.json()).code).toBe('operator_only');
+    // Bundled with a cap, the whole write is refused: nothing half-saves.
+    expect((await handlePutTeamCeilings(TEAM, { team: { all: 'premium' }, overCapAuto: 'downgrade' }, admin.deps)).status).toBe(403);
+    expect(admin.writes).toHaveLength(0);
+    // The team caps alone still save for the admin.
+    expect((await handlePutTeamCeilings(TEAM, { team: { all: 'premium' } }, admin.deps)).status).toBe(200);
+
+    const operator = fake(ADMIN, true);
+    expect((await handlePutTeamCeilings(TEAM, { overCapAuto: 'deny' }, operator.deps)).status).toBe(200);
+    expect(operator.writes[0].patch).toEqual({ overCapAuto: 'deny' });
   });
 
   it('an admin sets a member cap; the member cannot lift it by writing their own', async () => {

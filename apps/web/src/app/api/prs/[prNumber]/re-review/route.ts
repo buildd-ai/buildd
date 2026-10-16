@@ -31,8 +31,9 @@ import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
 import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
 import { resolveReReviewPlan } from '@/lib/pr-re-review';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
-import { requestReview as requestKernelReview } from '@/lib/workflow/seam';
+import { doorErrorResponse, isDoorError, requestReview as requestKernelReview } from '@/lib/workflow/kernel-client';
 import { workspaceRepo } from '@/lib/workflow/github-facts';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export async function POST(
   req: NextRequest,
@@ -92,10 +93,13 @@ export async function POST(
     const kernel = await requestKernelReview({
       workspaceId: worker.workspaceId, repoFullName: kernelRepo.repoFullName, prNumber,
       installationId: kernelRepo.installationId, forced: true, actor: `human:${user.id}`,
-    }).catch((err) => {
+    }, { principal: { kind: 'user', id: user.id } }).catch((err) => {
+      // An unreachable control plane is not a reason to queue a legacy review beside the kernel's.
+      if (isDoorError(err)) return err;
       console.error(`[re-review] workflow kernel review request failed for PR #${prNumber}:`, err);
       return null;
     });
+    if (isDoorError(kernel)) return doorErrorResponse(kernel) as NextResponse;
     if (kernel?.handled) {
       const r = kernel.result;
       if (r.result === 'applied') {
@@ -121,7 +125,7 @@ export async function POST(
   }
 
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, worker.workspaceId),
+    where: sqlWhere(eq(workspaces.id, worker.workspaceId)),
     with: { githubRepo: { with: { installation: true } } },
   });
   const installationId = (workspace as any)?.githubRepo?.installation?.installationId;
@@ -132,7 +136,7 @@ export async function POST(
 
   const mission = originalTask.missionId
     ? await db.query.missions.findFirst({
-        where: eq(missions.id, originalTask.missionId),
+        where: sqlWhere(eq(missions.id, originalTask.missionId)),
         columns: { mergePolicy: true, requiresReview: true, workingBranch: true, integrationBranchEnabled: true },
       })
     : null;

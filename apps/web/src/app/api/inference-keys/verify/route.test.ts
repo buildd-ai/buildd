@@ -2,15 +2,14 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
 const mockRequireSessionUser = mock(async () => ({ user: { id: 'u-1' } }) as any);
-// The caller's team roles and the team's permission overrides, read by the
+// The caller's team roles, read by the
 // real permission check (lib/permissions.ts) through this db mock.
 let roles: Record<string, string> = {};
-let overrides: Record<string, unknown> | null = null;
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       teamMembers: { findMany: async () => Object.entries(roles).map(([teamId, role]) => ({ teamId, role })) },
-      teams: { findFirst: async () => ({ id: 'not-a-personal-team', permissionOverrides: overrides }) },
+      teams: { findFirst: async () => ({ id: 'not-a-personal-team' }) },
     },
   },
 }));
@@ -33,7 +32,7 @@ const post = (body: unknown) => POST(new NextRequest('http://localhost:3000/api/
 
 beforeEach(() => {
   mockReverify.mockClear();
-  roles = {}; overrides = null;
+  roles = {};
 });
 
 describe('POST /api/inference-keys/verify', () => {
@@ -53,17 +52,6 @@ describe('POST /api/inference-keys/verify', () => {
     mockReverify.mockResolvedValueOnce(null);
     expect((await post({ teamId: 't-1', provider: 'openai', scope: 'user' })).status).toBe(404);
     expect((await post({ teamId: 't-x', provider: 'openai', scope: 'user' })).status).toBe(404);
-  });
-
-  it('team scope follows the team permission overrides for manage_inference_providers', async () => {
-    roles = { ['t-1']: 'admin' };
-    overrides = { manage_inference_providers: ['owner'] };
-    expect((await post({ teamId: 't-1', provider: 'openai', scope: 'team' })).status).toBe(403);
-    expect(mockReverify).not.toHaveBeenCalled();
-    roles = { ['t-1']: 'member' };
-    overrides = { manage_inference_providers: ['owner', 'admin', 'member'] };
-    expect((await post({ teamId: 't-1', provider: 'openai', scope: 'team' })).status).toBe(200);
-    expect(mockReverify).toHaveBeenCalledWith({ teamId: 't-1', userId: 'u-1', provider: 'openai', scope: 'team' });
   });
 
   it('rejects an unknown provider', async () => {

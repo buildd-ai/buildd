@@ -65,7 +65,7 @@ always wins.
 SSO identity (`googleId`, `githubId`, `email`). Belongs to teams via `team_members`
 (`owner | admin | member`). Invited via `team_invitations`; only the invited
 email may accept. Every team-role decision is a named permission in one
-registry with per-team overrides (`docs/specs/team-permissions.md`): admins move
+registry, the same in every team (`docs/specs/team-permissions.md`): admins move
 people between member and admin, only owners touch `owner` (assign, remove,
 transfer), any member may leave except the last owner, and a person's keys drop
 to what their new role may mint when their role drops or they leave. Members
@@ -97,14 +97,26 @@ by the token's list. An unrestricted token is auto-linked to open workspaces
 only; linking a token to a restricted workspace takes `manage_team_keys` (owner or admin by default). `account_workspaces` is the
 M2M grant of which workspaces an account `canClaim` / `canCreate` from.
 
-A per-task token (`bldt_`) is confined to its own task's workspace. The one
-exception is a **schedule delegation** (`task_schedules.delegation`,
-`packages/core/token-delegation.ts`): a holder of `delegate_schedule_access` (owner or admin by default) may grant the tasks
-one schedule spawns `analytics:read` (decision ledger, decision/coordination stats,
-gate ledger, workspace name resolution) and/or `tasks:create` (the normal create
-path, no mission, dependencies or foreign parent) on named workspaces of the same
-team. It is stored on the schedule, never the task, records who granted it and
-when, is re-read on every request, and never exceeds the minting account's reach.
+A per-task token (`bldt_`) is confined to its own task's workspace. The
+exception is a **delegation** (`packages/core/token-delegation.ts`): an explicit
+grant of `analytics:read` (decision ledger, decision/coordination stats, gate
+ledger, workspace name resolution) and/or `tasks:create` (the normal create
+path; a mission link and dependencies only within that same workspace, never a
+foreign parent) on named workspaces of the same team. It lives in two places,
+never in task context (caller-written, so forgeable):
+- `task_schedules.delegation`: set by a holder of `delegate_schedule_access`
+  (owner or admin by default), for every task the schedule spawns;
+- `tasks.delegation`: set by a **person** who reaches each target (dashboard or
+  OAuth session) when filing the task or with `update_task` before it is
+  claimed, or by a person approving the running task's `tasks:create`
+  capability request (`request_capability`, resource = target workspace).
+  A continuation or retry of the task copies it.
+Both record who granted it and when, are re-read on every request, and never
+exceed the minting key's reach. A task may declare `filingTargets` (workspaces it
+will file in): a need, not a grant. The claim pre-flight holds a task
+(`delegation_unmet`, not forceable) when a declared target is not granted, or a
+grant names a workspace the claiming account (which mints the token) cannot use
+— before any agent turn, instead of letting the run discover the wall.
 Analytics reads a reviewer depends on report `status` — `OK` / `NO_DATA` reached
 the data; `FORBIDDEN` / `UNAUTHORIZED` / `TOOL_UNAVAILABLE` did not and are never
 evidence of zero rows.
@@ -179,6 +191,17 @@ Notable fields:
   unfinished or unmerged. A `direct` mission (`integrationBranchEnabled` false) behaves as
   missions did before the integration branch existed: each task PR targets the workspace's
   trunk branch and nothing retargets it.
+  The integration branch is kept current with trunk on demand, never on every trunk
+  merge. It is refreshed when a mission task is claimed to cut its branch from it (the
+  `tasks.claimed` core event), when the mission PR is behind at landing (the kernel's
+  `refresh_branch`), and by a daily backstop while the mission is in use. A conflicting
+  refresh dispatches one conflict task per mission. That task runs `bun run
+  conflicts:generated` to regenerate generated files before resolving the rest, and its
+  PR is reviewed only on what the merge decided (§5.9 composition). A paused or held
+  mission gets no backstop refresh, and a mission state change mid-refresh stops it at
+  the commit boundary. The same contract maps every writer to the integration branch and
+  the mission PR, and how each unfinished refresh is reconciled. Contract:
+  `docs/specs/mission-branch-refresh.md`.
   `primaryPrNumber`/`primaryPrUrl` are reserved for a **trunk-based** PR under the
   mission, i.e. the mission integration PR where one exists; a PR based on the mission
   branch never claims the slot. Both fields stay null for workspace-less missions.
@@ -258,6 +281,29 @@ input/output tokens, `turns`, `milestones`, git stats (commits/files/lines),
 runner confirms the exact text it injected, and `supportsInstructionAck` records
 whether a runner speaks that protocol), `localUiUrl` (direct runner access),
 `currentAction`. Resumable: Claude via session id, Codex via thread id.
+
+**Interactive ask loop** (`docs/specs/answered-question-resume.md` § The
+interactive path). A worker minted by `claim_task` from a person's own MCP
+session (`runner = 'mcp'`) has no runner to park it, so it asks with
+`ask_human { question, options? }`: the worker goes `waiting_input` with
+`waitingFor` set, and the person gets the same Needs-you card and push as for a
+runner worker's `AskUserQuestion`. The reply carries `waitCommand`, a POSIX
+`sh` + `curl` script the session runs with `run_in_background` so waiting
+costs no turns. Its signed wait capability reveals only answered-or-not, never
+the answer or question text. It exits 0 once answered, and the session then
+reads and acks the answer with `await_answer { waitSeconds: 0 }`. A client
+without background commands loops on `await_answer` (≤45 s per call). The
+answer goes back to the same live session as an `answer` message on its own
+task, with no continuation task. Every poll stamps `waitingFor.sessionSeenAt`.
+A session that closes cleanly through the agent plugin withdraws its question
+and the task returns to pending. A session whose last poll is over 5 min old,
+or whose worker has otherwise ended, has its answer sent cold to a runner as a
+continuation task, with the reason recorded. An
+unanswered question expires with the normal park window (24 h, 4 h in a
+mission), and an expired interactive question files no retry unless its
+mission is `executor = 'local'`. `post_note` with `type=question` stays the
+non-blocking option. An operator MCP session answers any parked worker with
+`answer_question` (admin), which takes the dashboard's `/respond` path.
 
 ### Role / Skill (`workspace_skills`)
 A skill is a `SKILL.md` registered to a workspace. A **role** is a skill with
@@ -356,13 +402,19 @@ per-request form, so server-side calls **structurally cannot** use a seat.
   account row (no-account callers) → provider env var (only outside production, or
   `BUILDD_ALLOW_ENV_INFERENCE_KEYS=1` for self-hosting). OAuth rows are never read.
   Runners never use these keys.
-- **Key policy** — `teams.inferenceKeyPolicy` (default `team`; Settings → Model
-  providers → "Whose key": "Team key" / "Each person's own key") binds every
-  server-side call: `team` = team key for everyone, personal keys ignored;
-  `team_or_own` = a person's own key wins, team key covers the rest; `own` = own
-  key only, no fallback, so work with no person (grading, cron) finds no key and
-  takes its runner path. Personal keys are managed via `/api/inference-keys` (any
-  member) and never served to anyone else.
+- **Key policy** — `teams.credentialPolicy` (`team` | `personal_first` |
+  `personal_only`; NULL = not chosen, read as `personal_first`) binds every
+  server-side call (`effectiveKeyPolicy` in `packages/core/inference-key-policy.ts`):
+  `personal_first` (the default) = a person's own key wins, team key covers the
+  rest; `team` = team key for everyone, personal keys ignored; `personal_only` =
+  own key only, no fallback, so work with no person (grading, cron) finds no key
+  and takes its runner path. The legacy `teams.inferenceKeyPolicy` (`team` |
+  `team_or_own` | `own`) is read only when `credentialPolicy` is NULL, and its
+  NOT NULL default `team` reads as not chosen. Settings → Models offers no
+  selector: a team that stored `team` or `personal_only` sees one line with a
+  way back to the default (`docs/specs/team-permissions.md` → "Credential
+  policy"). Personal keys are managed via `/api/inference-keys` (any member) and
+  never served to anyone else.
 - **Which calls may spend** (`packages/core/inference-policy.ts`, `isInferenceAllowed`):
   - *Interactive* (chat and its per-turn routing): always on, no switch; it
     runs whenever a key resolves (`teams.chatDisabled` is deprecated and
@@ -380,7 +432,9 @@ per-request form, so server-side calls **structurally cannot** use a seat.
     `heartbeat_triage_looks` table and the experiment kind remain until a
     follow-up drops them. All default by billing
     model — a team key resolves → server-side, else the runner — with per-feature
-    overrides (`server` | `runner`) in `teams.inferenceFeatureModes`. buildd's own
+    overrides (`server` | `runner`) in `teams.inferenceFeatureModes`, set by the
+    platform operator only (`PATCH /api/admin/teams/[id]/experiment-flags`; team
+    settings refuse it, as they refuse `enabledDecisionShadows`). buildd's own
     CI visual QA judges on an OAuth seat via `claude-code-action`, not through this.
   - The old opt-in allowlist `teams.enabledInferenceCapabilities` is deprecated
     (nothing reads it).
@@ -434,6 +488,10 @@ per-request form, so server-side calls **structurally cannot** use a seat.
   with confidence from token logprobs (`@builddai/ai-kit/decide` chat endpoint).
   Thresholds were measured on Jev, so a call site that auto-applies (task
   category) records another model's pick without applying it.
+  A platform operator control, not a team setting (see "Platform operator"): only an operator
+  sees it under Settings › Models › Used
+  for or may PATCH `decisionModel`, and only an operator gets the "Decisions are
+  failing" Home card.
 - **Decision calls** (`decisionCall`) — fixed-label classifications. Chat uses them
   to pick each turn's tier and tool set, confidence-gated, defaulting to `standard`
   with all tools. The task-category check is shadow only
@@ -444,14 +502,17 @@ per-request form, so server-side calls **structurally cannot** use a seat.
 Callers ask for a **tier**, never a vendor model: `premium-plus` (opt-in only;
 nothing routes there on its own) · `premium` · `standard` · `budget`
 (`packages/core/model-tier-defaults.ts`). An admin maps tier → `(provider, model)` in
-`model_tier_registry` (Settings → Model tiers, or `manage_model_tiers`); provider ∈
+`model_tier_registry` (Settings › Models, or `manage_model_tiers`); provider ∈
 `anthropic | openai | openai-codex | openrouter`. Resolution (`resolveTierEntry`,
 60s cache): workspace row → team row → the catalog's newest in-band release →
 `TIER_DEFAULTS`. Agent runs resolve at **claim** time, so a remap applies to queued
 tasks. Chat and inference calls resolve per call; for chat, a tier on Anthropic or
 OpenAI with only an OpenRouter key is served through OpenRouter. An explicit `model` on a task or a
-role's full-ID pin bypasses tiers. **Tier model pools** (several models per tier with
-traffic splits) are proposed, not shipped (`knowledge-base: buildd/design/tier-model-pools.md`).
+role's full-ID pin bypasses tiers. A team admin picks each tier's primary model and an
+Automatic or Manual upgrade policy. **Tier model pools** (several models per tier, the
+Quality↔Savings dial, splits; `docs/specs/model-policy-cells.md`) and the soak upgrade mode
+are platform operator controls: their writes refuse a team admin and the page renders them
+only for an operator.
 
 ---
 
@@ -462,7 +523,8 @@ the route tree is authoritative.)
 
 - **Auth:** `auth/[...nextauth]`, `auth/cli`, `auth/device/{code,approve,token}`.
 - **OAuth 2.1 (MCP clients):** `oauth/{authorize,register,token}`,
-  `mcp-oauth/[workspace]` (workspace-scoped JWT enforcement).
+  `mcp-oauth/[workspace]` (deprecated per-workspace endpoint, workspace-scoped JWT
+  enforcement). New connections default to the account-level resource `/api/mcp`.
 - **Accounts:** `accounts`, `accounts/me`, `accounts/[id]`, `.../regenerate-key`,
   `.../ai-budget` (an app key's daily AI cap, owner/admin).
 - **Model plans for sibling apps** (`knowledge-base: buildd/design/shared-ai-kit.md` §2): `ai/plan`
@@ -596,7 +658,12 @@ is gated by explicit token scopes (legacy tokens use `trigger | worker | admin`)
 gated by the merge policy tier — see §4a), **`recall`** (read knowledge), **`learn`**
 (write knowledge), and **`buildd_memory`** (deprecated — superseded by
 recall/learn in #1944, still routed for compatibility). claude.ai and other MCP
-clients connect via workspace-scoped OAuth (`mcp-oauth/[workspace]`).
+clients connect with one account-level OAuth connection at `/api/mcp`; the
+per-workspace `mcp-oauth/[workspace]` addresses are deprecated
+(`docs/specs/auth-oauth-boundaries.md`, "Resource routing, older addresses and sunset").
+A session that claimed a task with `claim_task` asks its owner a blocking
+question through `ask_human` / `await_answer` (the interactive ask loop, §2
+Worker).
 
 ---
 
@@ -627,6 +694,21 @@ OAuth MCP session) must also hold read or higher on the linked repo on GitHub to
 create tasks, read diff artifacts, chat over the workspace or recall its `code`
 corpus. A person with no linked GitHub account, or whom GitHub cannot confirm,
 is refused. API keys and runners are unaffected (`lib/member-repo-access.ts`).
+
+**Platform operator.** Team roles (`owner` / `admin` / `member`, the fixed
+registry in `apps/web/src/lib/permission-registry.ts`) never reach buildd's own
+platform machinery: experiments (create, change, start, pause, conclude, and
+operator-only ones), grading decisions, decision shadows,
+per-feature inference modes, chat retro, and on Settings › Models the model
+traffic pools, the soak upgrade mode, `overCapAuto` and the decision model (a
+team admin picks only each tier's primary and Automatic or Manual upgrades).
+Those are gated on the platform
+operator: a signed-in person in `BUILDD_OPERATOR_USER_EMAILS`, the same person
+over OAuth, or an admin-level key of an account in
+`BUILDD_PLATFORM_ADMIN_ACCOUNT_IDS` (`lib/admin/platform-operator-caller.ts`,
+`/api/admin/*`). Team members still read `visibility: 'team'` experiments and their own team's
+decision ledger.
+Full rule: `docs/specs/team-permissions.md` "Platform operator".
 
 ---
 
@@ -681,6 +763,7 @@ brutalist UI.
 | `design/reviewer-evidence-and-verification.md` | Reviewer patch evidence, filters, verification | Partly shipped |
 | `design/cross-workspace-retrieval.md` | Team-scoped docs retrieval across workspaces | Proposed |
 | `design/mission-delivery-arc.md` | Mission integration branch (Option A′) | Implemented |
+| `specs/mission-branch-refresh.md` | Keeping an integration branch current with trunk | Live |
 | `design/inference-calls-primitive.md` | Server-side `inferenceCall`, capability policy | Partly shipped |
 | `design/decision-calls.md` | Fixed-label `decisionCall` (shadow) | Partly shipped |
 | `design/model-tiers.md` | Tier vocabulary + registry | Implemented |

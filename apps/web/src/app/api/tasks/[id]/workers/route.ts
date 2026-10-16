@@ -4,6 +4,7 @@ import { tasks, workers } from '@buildd/core/db/schema';
 import { eq, desc } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * GET /api/tasks/[id]/workers
@@ -25,7 +26,7 @@ export async function GET(
   try {
     // Get the task first to verify ownership
     const task = await db.query.tasks.findFirst({
-      where: eq(tasks.id, taskId),
+      where: sqlWhere(eq(tasks.id, taskId)),
       with: { workspace: true },
     });
 
@@ -41,8 +42,8 @@ export async function GET(
 
     // Get workers for this task
     const taskWorkers = await db.query.workers.findMany({
-      where: eq(workers.taskId, taskId),
-      orderBy: desc(workers.createdAt),
+      where: sqlWhere(eq(workers.taskId, taskId)),
+      orderBy: sqlOrderBy(desc(workers.createdAt)),
       columns: {
         id: true,
         name: true,

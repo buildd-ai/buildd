@@ -38,7 +38,7 @@ const LOSSES: Array<[string, string, string]> = [
   ['Secrets (workspace-scoped)', 'workspace secret removed', 'workspace secrets removed'],
   ['Account Access', 'runner account loses access', 'runner accounts lose access'],
   ['Mission dependency chains', 'mission dependency breaks', 'mission dependencies break'],
-  ['Role delegation chains', 'role delegation breaks', 'role delegations break'],
+  ['Role delegation chains', 'agent delegation breaks', 'agent delegations break'],
 ];
 
 /**

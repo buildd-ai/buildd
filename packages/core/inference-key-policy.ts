@@ -61,14 +61,25 @@ export function toInferenceKeyPolicy(policy: CredentialPolicy): InferenceKeyPoli
 }
 
 /**
+ * The policy when a team has chosen none: a person's own key first, the
+ * team's as the fallback. A team with no team key simply has no fallback.
+ */
+export const DEFAULT_CREDENTIAL_POLICY: CredentialPolicy = 'personal_first';
+export const DEFAULT_KEY_POLICY: InferenceKeyPolicy = 'team_or_own';
+
+/**
  * A team row's policy in the legacy vocabulary the resolvers still speak.
- * `null` when neither column holds a known value — each caller keeps its own
- * fallback for that, as before.
+ * `null` when the team has chosen none; callers then use
+ * `DEFAULT_KEY_POLICY`.
+ *
+ * `inferenceKeyPolicy` is NOT NULL with default `'team'`, so a `'team'` there
+ * cannot be told from "never chosen" and reads as unset. A team that wants
+ * team keys only stores `credentialPolicy = 'team'`.
  */
 export function effectiveKeyPolicy(row: { credentialPolicy?: unknown; inferenceKeyPolicy?: unknown } | null | undefined): InferenceKeyPolicy | null {
   if (!row) return null;
   if (isCredentialPolicy(row.credentialPolicy)) return toInferenceKeyPolicy(row.credentialPolicy);
-  if (isInferenceKeyPolicy(row.inferenceKeyPolicy)) return row.inferenceKeyPolicy;
+  if (isInferenceKeyPolicy(row.inferenceKeyPolicy) && row.inferenceKeyPolicy !== 'team') return row.inferenceKeyPolicy;
   return null;
 }
 

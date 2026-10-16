@@ -21,13 +21,14 @@ const fake = {
   conflictTargets: [] as any[],
   insertThrows: null as Error | null,
   taskThrows: null as Error | null,
+  teamThrows: null as Error | null,
 };
 
 mock.module('../db/client', () => ({
   db: {
     query: {
       tasks: { findFirst: async () => { if (fake.taskThrows) throw fake.taskThrows; return fake.task; } },
-      teams: { findFirst: async () => fake.team },
+      teams: { findFirst: async () => { if (fake.teamThrows) throw fake.teamThrows; return fake.team; } },
       systemCache: { findFirst: async () => null },
     },
     select: () => ({
@@ -83,6 +84,7 @@ beforeEach(() => {
   fake.conflictTargets = [];
   fake.insertThrows = null;
   fake.taskThrows = null;
+  fake.teamThrows = null;
   warnings = [];
   console.warn = (...a: unknown[]) => { warnings.push(a.map(String).join(' ')); };
   src.resetTaskEstimateCaches();
@@ -175,11 +177,31 @@ describe('writeTaskEstimate', () => {
 });
 
 describe('readTaskEstimatesSetting', () => {
-  it('only a literal enabled: true is on', () => {
+  it('while the gate is no-go, only a literal enabled: true is on', () => {
     expect(src.readTaskEstimatesSetting({ enabled: true })).toBe(true);
-    for (const v of [null, undefined, {}, { enabled: 1 }, { enabled: 'true' }, [true], 'enabled']) {
+    for (const v of [null, undefined, {}, { enabled: false }, { enabled: 1 }, { enabled: 'true' }, [true], 'enabled']) {
       expect(src.readTaskEstimatesSetting(v)).toBe(false);
     }
+  });
+
+  it('with the default on, a team that never chose is on and an explicit opt-out is off', () => {
+    expect(src.readTaskEstimatesSetting(null, true)).toBe(true);
+    expect(src.readTaskEstimatesSetting({ enabled: false }, true)).toBe(false);
+  });
+});
+
+describe('loadTaskEstimatesState', () => {
+  it('names who decided: the team, or the default for a team that never chose', async () => {
+    expect(await src.loadTaskEstimatesState(TEAM)).toMatchObject({ enabled: true, source: 'team' });
+    fake.team = { taskEstimates: null };
+    expect(await src.loadTaskEstimatesState(TEAM)).toMatchObject({ enabled: false, source: 'default', defaultOn: false });
+  });
+
+  it('a failed team read is off and flagged, so pages show an error rather than "off"', async () => {
+    fake.teamThrows = new Error('connection reset');
+    expect(await src.loadTaskEstimatesState(TEAM)).toMatchObject({ enabled: false, error: true });
+    expect(await src.taskEstimatesEnabled(TEAM)).toBe(false);
+    expect(await src.writeTaskEstimate(TASK, { loadInputs: async () => inputs() as any })).toBe('skipped');
   });
 });
 

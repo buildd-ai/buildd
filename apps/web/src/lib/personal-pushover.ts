@@ -24,6 +24,7 @@ import { db } from '@buildd/core/db';
 import { secrets } from '@buildd/core/db/schema';
 import { decrypt, getSecretsProvider } from '@buildd/core/secrets';
 import { sanitizePushoverUserKey } from './pushover-key-shape';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export { sanitizePushoverUserKey } from './pushover-key-shape';
 
@@ -166,7 +167,7 @@ export function ownScope(userId: string, teamId: string) {
 
 export async function getPersonalPushover(userId: string, teamId: string): Promise<PersonalPushoverStatus | null> {
   const row = await db.query.secrets.findFirst({
-    where: ownScope(userId, teamId),
+    where: sqlWhere(ownScope(userId, teamId)),
     columns: { id: true, encryptedValue: true, healthStatus: true, lastVerifiedAt: true, lastVerificationError: true, lastFailureMessage: true },
   });
   if (!row) return null;
@@ -224,7 +225,7 @@ export async function deletePersonalPushover(userId: string, teamId: string): Pr
 export async function testPersonalPushover(
   userId: string, teamId: string, deps: { fetch?: Fetch; token?: string | null } = {},
 ): Promise<{ ok: boolean; error: string | null }> {
-  const row = await db.query.secrets.findFirst({ where: ownScope(userId, teamId), columns: { id: true, encryptedValue: true } });
+  const row = await db.query.secrets.findFirst({ where: sqlWhere(ownScope(userId, teamId)), columns: { id: true, encryptedValue: true } });
   if (!row) return { ok: false, error: 'No Pushover key is set.' };
   const token = deps.token !== undefined ? deps.token : personalSenderToken();
   if (!token) return { ok: false, error: 'Pushover sending is not set up on this server.' };

@@ -201,12 +201,19 @@ describe('team key policy', () => {
     expect(view).not.toHaveProperty('chatDisabled');
   });
 
-  it("refuses a personal key when the team pays for everyone ('team')", async () => {
-    teamRow = { inferenceKeyPolicy: 'team', chatDisabled: false };
+  it("refuses a personal key when the team stored team keys only ('team')", async () => {
+    teamRow = { credentialPolicy: 'team', inferenceKeyPolicy: 'team', chatDisabled: false };
     replaceScoped.mockClear();
     const r = await setProviderKey({ teamId: 't-1', userId: 'u-1', provider: 'openrouter', scope: 'user', value: 'sk-or-v1-personal-key-0000' });
     expect(r).toMatchObject({ ok: false, status: 403 });
     expect(replaceScoped).not.toHaveBeenCalled();
+  });
+
+  it("accepts a personal key when only the legacy column holds its default 'team'", async () => {
+    teamRow = { inferenceKeyPolicy: 'team', chatDisabled: false };
+    replaceScoped.mockClear();
+    const r = await setProviderKey({ teamId: 't-1', userId: 'u-1', provider: 'openrouter', scope: 'user', value: 'sk-or-v1-personal-key-0000' });
+    expect(r.ok).toBe(true);
   });
 
   it('still lets an admin store the team key under any policy', async () => {

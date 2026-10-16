@@ -24,6 +24,7 @@
 import { db } from '@buildd/core/db';
 import { isOrchestrationTask } from '@buildd/shared';
 import { prNumbersNamedAtFiling, taskLinksPr, type PrReachGrant } from '@/lib/agent-capabilities/pr-links';
+import { sqlWhereFn } from '@buildd/core/db/relational-sql';
 
 export type PrReachFiler =
   | { kind: 'person'; personId: string }
@@ -80,7 +81,7 @@ export async function resolvePrReachGrant(
  */
 export async function taskReachesPr(taskId: string, workspaceId: string, prNumber: number): Promise<boolean> {
   const task = await db.query.tasks.findFirst({
-    where: (t, { eq }) => eq(t.id, taskId),
+    where: { RAW: sqlWhereFn((t, { eq }) => eq(t.id, taskId)) },
     columns: {
       id: true, workspaceId: true, missionId: true, roleSlug: true, mode: true, context: true,
       reviewerRetryPrNumber: true, ciRetryPrNumber: true, conflictRetryPrNumber: true,
@@ -89,7 +90,7 @@ export async function taskReachesPr(taskId: string, workspaceId: string, prNumbe
   if (!task || task.workspaceId !== workspaceId) return false;
   if (taskLinksPr(task, prNumber)) return true;
   const own = await db.query.workers.findFirst({
-    where: (w, { and, eq }) => and(eq(w.taskId, taskId), eq(w.workspaceId, workspaceId), eq(w.prNumber, prNumber)),
+    where: { RAW: sqlWhereFn((w, { and, eq }) => and(eq(w.taskId, taskId), eq(w.workspaceId, workspaceId), eq(w.prNumber, prNumber))) },
     columns: { id: true },
   });
   if (own) return true;

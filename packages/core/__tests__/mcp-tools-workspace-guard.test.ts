@@ -40,7 +40,7 @@ describe('multi-workspace guard — requireExplicitWorkspace', () => {
   it('rejects claim_task for OAuth tokens with >1 workspace and no pin', async () => {
     mockApi.mockResolvedValueOnce({
       workspaces: [
-        { id: WS_A, name: 'dispatch-family', repo: 'org/dispatch' },
+        { id: WS_A, name: 'acme-app', repo: 'org/dispatch' },
         { id: WS_B, name: 'sibling-app', repo: 'org/sibling-app' },
       ],
     });
@@ -55,7 +55,7 @@ describe('multi-workspace guard — requireExplicitWorkspace', () => {
     expect(result.isError).toBe(true);
     const text = result.content[0].text;
     expect(text).toMatch(/2 workspaces/);
-    expect(text).toMatch(/dispatch-family/);
+    expect(text).toMatch(/acme-app/);
     expect(text).toMatch(/sibling-app/);
     // Must NOT have fired the actual claim API
     expect(mockApi).toHaveBeenCalledTimes(1);

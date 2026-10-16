@@ -14,20 +14,37 @@
  *                         automatic repair, 35 held behind it. The drawer's
  *                         Build › Audit › Land row and its Audit and repair
  *                         disclosure (`missionTaskDeliveries`).
+ *   &variant=overview-2|overview-10|overview-20|overview-64
+ *                         the Overview tab's Done / In progress / Waiting groups
+ *                         (spec f7f67f1a R-1, R-5): mixed waiting causes, and a
+ *                         surface audit in the checks group from 10 tasks up
  *   &select=<letter>      a DAG variant opens with that task selected
+ *   &variant=outcome-spec-passing|open|narrowed|proposed|verifying
+ *                         the mission's selected outcome spec in Verify and
+ *                         in the goal criteria row
  *
  * Illustrative rows only (made-up ids and titles), built through the real
  * `buildMissionBoard`, so the strip reads exactly what the mission page reads.
  */
 import * as missionHelpers from '@buildd/core/mission-helpers';
-import { buildMissionBoard, type BoardTaskInput, type BoardWorkerInput, type MissionBoardModel } from '@/lib/mission-board';
+import { criterionFingerprint } from '@buildd/core/mission-helpers';
+import type { CriterionVerdict, GoalCriteriaState, GoalCriterion, LivingSpecCriterionStanding, LivingSpecGoalCriterion } from '@buildd/shared';
+import { SURFACE_AUDIT_TITLE_PREFIX } from '@buildd/core/surface-audit';
+import { buildMissionBoard, type BoardTaskInput, type BoardWorkerInput, type MissionBoardModel, type MissionGateFacts } from '@/lib/mission-board';
 import type { TaskDeliveryDetail } from '@/lib/activity-delivery';
 import { missionTaskDeliveries, type MissionDeliveryTaskRow } from '@/app/app/(protected)/missions/[id]/mission-task-delivery';
 import type { MissionExecutor } from '@/lib/task-actions';
+import type { MissionChecksSource } from '@/app/app/(protected)/missions/[id]/MissionOverview';
+import type { MissionVisualReviewState } from '@/lib/workflow/visual-review-state';
+import type { PlanTask } from '@/lib/mission-plan';
 import { MISSION_TASK_STRIP_FIXTURE_STATE } from './visual-review-fixtures';
 
 export const MISSION_TASK_STRIP_STATE = MISSION_TASK_STRIP_FIXTURE_STATE;
-export const MISSION_TASK_STRIP_VARIANTS = ['mid-open', 'all-landed', 'states', 'linear', 'fan-out', 'fan-in', 'field', 'wide', 'delivery'] as const;
+export const MISSION_TASK_STRIP_VARIANTS = [
+  'mid-open', 'all-landed', 'states', 'linear', 'fan-out', 'fan-in', 'field', 'wide', 'delivery', 'overview-2', 'overview-10', 'overview-20', 'overview-64',
+  'handoff-building', 'handoff-verifying', 'handoff-repairing', 'handoff-approval', 'handoff-reviewer', 'handoff-delivered', 'handoff-deploy-failed', 'handoff-budget', 'handoff-local',
+  'outcome-spec-passing', 'outcome-spec-open', 'outcome-spec-narrowed', 'outcome-spec-proposed', 'outcome-spec-verifying',
+] as const;
 export type MissionTaskStripVariant = (typeof MISSION_TASK_STRIP_VARIANTS)[number];
 
 export function parseMissionTaskStripVariant(q: URLSearchParams): MissionTaskStripVariant {
@@ -92,6 +109,11 @@ export interface MissionTaskStripFixture {
   executor: MissionExecutor;
   /** Per-task delivery, as the page builds it; absent on the older variants. */
   deliveries?: Record<string, TaskDeliveryDetail>;
+  /** The Overview's checks after the build (handoff variants). */
+  checks?: MissionChecksSource;
+  /** The build tasks as the Plan page schedules them, for the build-only estimate. */
+  planTasks?: PlanTask[];
+  held?: boolean;
 }
 
 export function missionTaskStripFixture(variant: MissionTaskStripVariant, now = min(60)): MissionTaskStripFixture {
@@ -103,6 +125,9 @@ export function missionTaskStripFixture(variant: MissionTaskStripVariant, now = 
     };
   }
   if (variant === 'delivery') return deliveryFixture(base);
+  if (isOverviewVariant(variant)) return { model: overviewWavesBoard(overviewSize(variant), now), executor: 'runner' };
+  if (isHandoffVariant(variant)) return handoffFixture(variant, base);
+  if (isOutcomeSpecVariant(variant)) return outcomeSpecFixture(variant, base);
   if (isDagVariant(variant)) {
     return { model: buildMissionBoard({ ...base, tasks: dagTasks(DAG_SPECS[variant]) }), executor: 'runner' };
   }
@@ -298,4 +323,199 @@ function deliveryFixture(base: { now: number; missionCreatedAt: number; missionS
     rules: missionHelpers,
   });
   return { model: buildMissionBoard({ ...base, tasks: rows }), executor: 'runner', deliveries };
+}
+
+// ── Overview groups (spec f7f67f1a R-1, R-5) ──────────────────────────────────
+
+export const OVERVIEW_SIZES = [2, 10, 20, 64] as const;
+export type OverviewVariant = `overview-${(typeof OVERVIEW_SIZES)[number]}`;
+export const isOverviewVariant = (v: string): v is OverviewVariant => v.startsWith('overview-');
+export const overviewSize = (v: OverviewVariant) => Number(v.slice('overview-'.length));
+
+/**
+ * `n` build tasks: about half landed, two building, and the rest waiting for
+ * each of the causes the Overview tells apart: on another task (`dep`), for a
+ * free runner (`slot`), on a hold (`hold`, a mission budget) and on a cause
+ * nobody recorded (`unknown`). From 10 tasks up, a surface audit sits in the
+ * checks group. `kinds` says which cause each waiting task was given.
+ */
+export function overviewWavesInput(n: number): { tasks: BoardTaskInput[]; gateFacts: MissionGateFacts; kinds: Record<string, 'dep' | 'slot' | 'hold' | 'unknown'> } {
+  const tasks: BoardTaskInput[] = [];
+  const kinds: Record<string, 'dep' | 'slot' | 'hold' | 'unknown'> = {};
+  const waitingKinds: Record<string, MissionGateFacts['waitingKinds'][string]> = {};
+  const running = n >= 4 ? 2 : 1;
+  const done = n <= 2 ? 1 : Math.floor(n / 2);
+  const title = (i: number) => `feat(reports): part ${String(i).padStart(2, '0')}`;
+  for (let i = 1; i <= done; i++) tasks.push(landed(i, title(i)));
+  for (let i = done + 1; i <= done + running; i++) {
+    tasks.push(task(i, title(i), { status: 'in_progress', workers: [worker(`w${i}`, { status: 'running', completedAt: null, currentAction: 'Editing files' })] }));
+  }
+  const firstRunning = stripFixtureId(done + 1);
+  const cycle = ['dep', 'slot', 'dep', 'hold', 'unknown'] as const;
+  for (let i = done + running + 1, k = 0; i <= n; i++, k++) {
+    const kind = cycle[k % cycle.length];
+    const id = stripFixtureId(i);
+    kinds[id] = kind;
+    if (kind === 'dep') {
+      tasks.push(task(i, title(i), { dependsOn: [firstRunning] }));
+      waitingKinds[id] = 'dep_declared';
+    } else {
+      tasks.push(task(i, title(i)));
+      if (kind === 'slot') waitingKinds[id] = 'workspace_cap';
+      if (kind === 'hold') waitingKinds[id] = 'mission_budget';
+      if (kind === 'unknown') waitingKinds[id] = 'unknown';
+    }
+  }
+  if (n >= 10) tasks.push(task(n + 1, `${SURFACE_AUDIT_TITLE_PREFIX}Reports`, { roleSlug: 'visual-auditor', outputRequirement: 'artifact_required', dependsOn: [firstRunning] }));
+  return { tasks, gateFacts: { releasedEdges: [], waitingKinds }, kinds };
+}
+
+export function overviewWavesBoard(n: number, now = min(60)): MissionBoardModel {
+  const { tasks, gateFacts } = overviewWavesInput(n);
+  return buildMissionBoard({ now, missionCreatedAt: T0, missionStatus: 'active', tasks, gateFacts });
+}
+
+// ── Handoff: Build complete, checks and delivery (spec f7f67f1a R-11 to R-24) ──
+
+export type HandoffVariant = Extract<MissionTaskStripVariant, `handoff-${string}`>;
+export const isHandoffVariant = (v: string): v is HandoffVariant => v.startsWith('handoff-');
+
+function visualState(over: Partial<MissionVisualReviewState>): MissionVisualReviewState {
+  return {
+    status: 'running', blocksCompletion: true, blocksMerge: true, pendingVerification: true, staleEvidence: false, nextActor: 'system',
+    policy: { mode: 'automatic', origin: 'workspace', waiverAllowed: true, locked: false },
+    scope: { screens: 8, uiFiles: 4, source: 'diff', workLanded: true },
+    progress: { captured: 6, expected: 8 },
+    auditTaskId: stripFixtureId(950),
+    branch: { headSha: 'a1b2c3d4e5f6a7b8', base: 'dev', integrationPr: { number: 128, stage: 'open' }, postMergeRecovery: false },
+    ...over,
+  };
+}
+
+/**
+ * Ten build tasks and the checks after them, one variant per prototype
+ * screen: building (with a build-only estimate), verifying, repairing (a
+ * visual fix inside the check), the final merge under each tier, delivered,
+ * a failed deploy, and the budget and local-session holds.
+ */
+export function handoffFixture(variant: HandoffVariant, base: { now: number; missionCreatedAt: number; missionStatus: 'active' }): MissionTaskStripFixture {
+  const building = variant === 'handoff-building' || variant === 'handoff-budget' || variant === 'handoff-local';
+  const tasks: BoardTaskInput[] = TITLES.map((t, i) => (building && i >= 6
+    ? task(i + 1, t, i === 6 ? { status: 'in_progress', workers: [worker(`w${i + 1}`, { status: 'running', completedAt: null, currentAction: 'Editing files' })] } : {})
+    : landed(i + 1, t)));
+  tasks.push(task(950, `${SURFACE_AUDIT_TITLE_PREFIX}Mission handoff`, building ? {} : { status: 'in_progress', workers: [worker('w950', { status: 'running', completedAt: null, currentAction: 'Capturing screens' })] }));
+  if (variant === 'handoff-repairing') {
+    tasks.push(task(951, '[surface fix] /app/reports: filter selection resets after a refresh', { status: 'in_progress', workers: [worker('w951', { status: 'running', completedAt: null, currentAction: 'Editing files' })] }));
+  }
+  const model = buildMissionBoard({ ...base, tasks, missionStatus: variant === 'handoff-budget' ? 'budget_exhausted' as 'active' : base.missionStatus });
+
+  const merged = variant === 'handoff-delivered' || variant === 'handoff-deploy-failed';
+  const ready = variant === 'handoff-approval' || variant === 'handoff-reviewer';
+  const prStage = merged ? 'merged' as const : ready ? 'ready' as const : 'open' as const;
+  const branch = { headSha: 'a1b2c3d4e5f6a7b8', base: 'dev', integrationPr: { number: 128, stage: prStage }, postMergeRecovery: false };
+  const visual: MissionVisualReviewState = building
+    ? visualState({ status: 'needed', progress: undefined, branch })
+    : variant === 'handoff-verifying'
+      ? visualState({ branch })
+      : variant === 'handoff-repairing'
+        ? visualState({ status: 'findings', findings: { issues: 1, undecided: 0, fixesOpen: 1, stage: 'fixing', exhausted: false }, branch })
+        : visualState({ status: 'passed', blocksMerge: false, blocksCompletion: false, pendingVerification: false, progress: undefined, branch });
+
+  const checks: MissionChecksSource = {
+    branch: 'mission-branch',
+    target: 'dev',
+    mergeTier: variant === 'handoff-approval' ? 'human' : 'agent-review',
+    visual,
+    criteria: [{ type: 'command', command: 'bun run test', label: 'Unit tests pass' }],
+    criteriaState: merged
+      ? { evaluatedAt: new Date(base.now).toISOString(), evaluatedBy: 'auto', overall: 'pass', criteria: [{ index: 0, type: 'command', verdict: 'pass', evidence: 'Passed on dev.' }] }
+      : null,
+    integrationPr: { branch: 'mission/billing-exports', state: merged ? 'merged' : 'open', prNumber: 128, prUrl: '#mission-pr', taskId: null },
+    release: variant === 'handoff-delivered' ? 'healthy' : variant === 'handoff-deploy-failed' ? 'failed' : merged ? 'deploying' : 'waiting',
+    releaseLabel: 'Release v0.42.0',
+  };
+  // Frozen estimates on the build tasks, as the Plan page reads them: p50 and p80 minutes.
+  const ESTIMATES: readonly [number, number][] = [[18, 30], [9, 15], [7, 12], [5, 9]];
+  const planTasks: PlanTask[] = tasks.slice(0, 10).map((t, i) => ({
+    id: t.id,
+    status: i < 6 || !building ? 'completed' : t.status,
+    dependsOn: [],
+    startedAt: t.workers?.[0]?.startedAt ? new Date(t.workers[0].startedAt).getTime() : null,
+    endedAt: i < 6 || !building ? base.now - (10 - i) * 60_000 : null,
+    p50Minutes: i >= 6 ? ESTIMATES[i - 6][0] : 10,
+    p80Minutes: i >= 6 ? ESTIMATES[i - 6][1] : 20,
+  }));
+  return {
+    model,
+    executor: variant === 'handoff-local' ? 'local' : 'runner',
+    checks,
+    planTasks,
+    held: variant === 'handoff-budget',
+  };
+}
+
+// ── Outcome spec: the mission's selected Living Spec (spec f7f67f1a R-29 to R-31) ──
+
+export const OUTCOME_SPEC_VARIANTS = ['outcome-spec-passing', 'outcome-spec-open', 'outcome-spec-narrowed', 'outcome-spec-proposed', 'outcome-spec-verifying'] as const;
+export type OutcomeSpecVariant = (typeof OUTCOME_SPEC_VARIANTS)[number];
+export const isOutcomeSpecVariant = (v: string): v is OutcomeSpecVariant => v.startsWith('outcome-spec-');
+
+const OUTCOME_SPEC_IDS = ['R-1', 'R-2', 'R-3', 'R-4', 'AC-1', 'AC-2'];
+const INTEGRATED_HEAD = 'c0ffee1234567890abcdef1234567890abcdef12';
+
+/**
+ * Build complete with the mission PR open, and the mission's outcome spec as
+ * a goal criterion, one variant per state the Verify row and the goal
+ * criteria row draw: all passing, open requirements (one could-not-tell, one
+ * out of date) beside a waiver, a narrowed scope, a proposed revision, and
+ * the final verification running. Rendered through the real
+ * `criteriaChecks` / `outcomeSpecView` paths; nothing here restates their words.
+ */
+export function outcomeSpecFixture(variant: OutcomeSpecVariant, base: { now: number; missionCreatedAt: number; missionStatus: 'active' }): MissionTaskStripFixture {
+  const handoff = handoffFixture('handoff-verifying', base);
+  const at = new Date(base.now).toISOString();
+  const criterion: LivingSpecGoalCriterion = {
+    type: 'living_spec',
+    specId: stripFixtureId(960),
+    specRevisionId: stripFixtureId(961),
+    revision: 4,
+    contentHash: 'f'.repeat(64),
+    label: 'Billing exports spec',
+    ...(variant === 'outcome-spec-proposed' ? { provisional: true as const } : {}),
+    ...(variant === 'outcome-spec-narrowed' ? { criteria: ['R-1', 'R-2', 'AC-1'], narrowedReason: 'The scheduled email ships in the next mission.' } : {}),
+    ...(variant === 'outcome-spec-open'
+      ? { waived: [{ criterionId: 'AC-2', reason: 'The bank sandbox is down this week; checked by hand.', by: 'owner', at }] }
+      : {}),
+  };
+  const inScope = criterion.criteria ?? OUTCOME_SPEC_IDS;
+  const standingOf = (id: string): LivingSpecCriterionStanding['standing'] => {
+    if (variant === 'outcome-spec-open') return id === 'R-3' ? 'inconclusive' : id === 'R-4' ? 'stale' : id === 'AC-2' ? 'waived' : 'pass';
+    if (variant === 'outcome-spec-verifying') return id === 'R-1' || id === 'R-2' ? 'pass' : 'missing';
+    if (variant === 'outcome-spec-proposed') return id === 'R-1' ? 'pass' : 'missing';
+    return 'pass';
+  };
+  const standings: LivingSpecCriterionStanding[] = inScope.map(id => ({ criterionId: id, standing: standingOf(id), headSha: standingOf(id) === 'missing' ? null : INTEGRATED_HEAD }));
+  const allPass = standings.every(s => s.standing === 'pass');
+  const verdict: CriterionVerdict = variant === 'outcome-spec-verifying' ? 'PENDING' : allPass ? 'pass' : 'UNVERIFIED';
+  const command = handoff.checks!.criteria[0];
+  const criteria: GoalCriterion[] = [command, criterion];
+  const criteriaState: GoalCriteriaState = {
+    evaluatedAt: at,
+    evaluatedBy: 'auto',
+    overall: allPass ? 'pass' : 'pending',
+    criteria: [
+      { index: 0, type: 'command', verdict: 'pass', evidence: 'Passed on the integration branch.', fingerprint: criterionFingerprint(command) },
+      {
+        index: 1,
+        type: 'living_spec',
+        verdict,
+        evidence: '',
+        fingerprint: criterionFingerprint(criterion),
+        ...(variant === 'outcome-spec-verifying' ? { workerTaskId: stripFixtureId(962) } : {}),
+        // Build complete: the stored state says so, as the evaluator writes it.
+        spec: { specId: criterion.specId, revision: criterion.revision, targetSha: INTEGRATED_HEAD, standings, buildDone: true },
+      },
+    ],
+  } as GoalCriteriaState;
+  return { ...handoff, checks: { ...handoff.checks!, criteria, criteriaState } };
 }

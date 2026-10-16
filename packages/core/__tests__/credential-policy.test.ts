@@ -17,7 +17,12 @@ describe('credential policy', () => {
 
   it('falls back to inferenceKeyPolicy when credentialPolicy is unset or unknown', () => {
     expect(effectiveKeyPolicy({ credentialPolicy: null, inferenceKeyPolicy: 'team_or_own' })).toBe('team_or_own');
-    expect(effectiveKeyPolicy({ credentialPolicy: 'bogus', inferenceKeyPolicy: 'team' })).toBe('team');
+    expect(effectiveKeyPolicy({ credentialPolicy: 'bogus', inferenceKeyPolicy: 'own' })).toBe('own');
+  });
+
+  it("reads the legacy column's NOT NULL default 'team' as unset: a choice and the default look the same", () => {
+    expect(effectiveKeyPolicy({ credentialPolicy: null, inferenceKeyPolicy: 'team' })).toBeNull();
+    expect(effectiveKeyPolicy({ credentialPolicy: 'team', inferenceKeyPolicy: 'team' })).toBe('team');
   });
 
   it('is null when neither column is known, so callers keep their own fallback', () => {

@@ -10,6 +10,7 @@ import { getSecretsProvider } from '@buildd/core/secrets';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { isUuid } from '@/lib/uuid';
 import { canWriteTeamConnectors } from '@/lib/connector-team-auth';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -53,7 +54,7 @@ export async function POST(
   const teamIds = auth.type === 'api' ? [auth.account.teamId] : await getUserTeamIds(auth.user.id);
 
   const connector = await db.query.connectors.findFirst({
-    where: eq(connectors.id, id),
+    where: sqlWhere(eq(connectors.id, id)),
     columns: { id: true, teamId: true },
   });
   if (!connector || !teamIds.includes(connector.teamId)) {
@@ -72,7 +73,7 @@ export async function POST(
 
   try {
     const secretRows = await db.query.secrets.findMany({
-      where: teamCredentialWhere({ teamId: connector.teamId, purpose: 'mcp_connector_credential', label: id }),
+      where: sqlWhere(teamCredentialWhere({ teamId: connector.teamId, purpose: 'mcp_connector_credential', label: id })),
       columns: { id: true },
     });
 

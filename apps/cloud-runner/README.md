@@ -117,7 +117,8 @@ and `versionChanged`: true is a Worker deploy, false is some other cause).
 | `WARM_MAX_BUNDLE_BYTES` | var | no | Largest warm bundle or (compressed) cache tarball, in bytes, for workspaces that set no cap of their own. Default 1 GiB. A workspace's `gitConfig.warmSnapshot.maxBytes` (bounded at 8 GiB by buildd, delivered with the GitHub grant) overrides it for that workspace. Passed to the container (which skips the upload past it) and enforced by the snapshot route |
 | `ALLOW_DEBUG_KILL` | var / secret | no | `1` enables `POST /tasks/:taskId/kill` (dispatch token required): destroys that task's container as an OOM kill or platform stop would, for recovery testing. Default off (the route is 404) |
 | `RESUMABLE_RUNS` | var | no | `1` turns on resumable runs (below). Default off. Needs the `SNAPSHOTS` R2 binding and a webhook that lists `task.resume` |
-| `CONTAINER_REUSE` | var | no | `1` turns on container reuse (below). Default off |
+| `CONTAINER_REUSE` | var | no | `1` turns on container reuse (below), in `repo` mode. Default off. The kill switch for both modes |
+| `CONTAINER_REUSE_DEPS` | var | no | `1`, with `CONTAINER_REUSE=1`, also keeps verified dependencies between tasks (`deps` mode). Default off |
 | `CONTAINER_REUSE_WINDOW_MS` | var | no | How long a lease keeps a container warm after a run. Default 5 min, clamped to 30 s to 30 min |
 | `CONTAINER_REUSE_SLOTS` | var | no | Leases per workspace and size. Default 2, never above the class's `max_instances` |
 | `SNAPSHOTS` | R2 binding | for warm repos / resumable runs | Bucket `buildd-cloud-runner-snapshots` (`wrangler.jsonc`); `deploy.ts` creates it and its lifecycle rule |
@@ -554,12 +555,17 @@ anything further is left to the sweep), and the agent wakes itself:
 
 ### Container reuse
 
-Off unless `CONTAINER_REUSE=1` and the team or workspace opts into warm
-handover. Workspace `gitConfig.warmHandover` overrides the team's setting;
-the default is `off` (fresh containers). `repo` keeps verified git packs and
-the scrubbed dependency cache. `deps` also keeps dependency files after
-verification against a runner manifest whose digest the Durable Object holds.
-The platform variable remains the kill switch for both reuse modes.
+Off unless `CONTAINER_REUSE=1`. Whoever deploys the Worker decides the mode,
+not the team: `repo` keeps verified git packs and the scrubbed dependency
+cache; `CONTAINER_REUSE_DEPS=1` raises it to `deps`, which also keeps
+dependency files after verification against a runner manifest whose digest the
+Durable Object holds. `deps` is only as safe as the container's user
+boundary: the agent runs unprivileged and cannot forge file change times, which
+is what the manifest check rests on. A container escape defeats it, as it
+defeats every other isolation here. buildd's runner-size answer can only lower
+the mode: a workspace that set `gitConfig.warmHandover: 'off'` (Settings →
+the workspace → Start every task from a clean copy) gets fresh containers, and a
+dispatch buildd did not answer runs fresh too.
 
 A task that follows another in the same
 workspace and size class (a reviewer right after its builder) runs in the

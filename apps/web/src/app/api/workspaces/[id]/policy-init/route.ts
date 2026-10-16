@@ -26,6 +26,7 @@ import { detectDerivedFiles } from '@buildd/core/derived-files-detect';
 import type { WorkspacePolicyPreset, WorkspacePolicyConfig } from '@/lib/workspace-policy';
 import { detectSpecConformanceRoots } from '@buildd/core/spec-conformance-detect';
 import { buildTier3ScheduleParams } from '@buildd/core/spec-conformance-schedule';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export async function POST(
   req: NextRequest,
@@ -54,7 +55,7 @@ export async function POST(
   // widen this: open means open within the owning team.
   if (apiAccount) {
     const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, id),
+      where: sqlWhere(eq(workspaces.id, id)),
       columns: { teamId: true },
     });
     if (!ws || ws.teamId !== apiAccount.teamId) {
@@ -76,7 +77,7 @@ export async function POST(
 
   // Load workspace with linked GitHub repo + installation
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, id),
+    where: sqlWhere(eq(workspaces.id, id)),
     with: {
       githubRepo: {
         with: { installation: true },

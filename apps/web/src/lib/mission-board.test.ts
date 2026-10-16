@@ -5,6 +5,7 @@ import {
   concurrencyBins,
   formatAge,
   formatClock,
+  releasedByOf,
   selectMilestones,
   toBoardTaskInput,
   type BoardTaskInput,
@@ -12,6 +13,7 @@ import {
   type MissionBoardInput,
 } from './mission-board';
 import { boardTaskLabel } from './mission-board-label';
+import { pickTaskView } from './task-view-pick';
 import { taskDisplayLabel } from '@buildd/core/task-label';
 import { WORK_KIND_GLYPHS } from './task-presentation';
 import { buildVisualReviewFixtureModel } from './visual-review-model.fixtures';
@@ -290,6 +292,42 @@ describe('buildMissionBoard — goal criteria with live counts', () => {
     expect(m.criteria[0].frac).toBe(0.5);
     expect(m.criteriaPassed).toBe(1);
   });
+
+  // A full live ratio with no verdict on record read as unmet (an empty or
+  // fully-filled box with no tick, an empty circle on the Overview) next to
+  // its own N/N. It is "not checked", which is neither met nor unmet.
+  it('a full count with no verdict reads as not checked, not unmet (task fc1f5a94)', () => {
+    const a = task('a', { outputRequirement: 'pr_required', status: 'completed', workers: [worker({ status: 'completed', completedAt: min(3), prNumber: 1, mergedAt: min(4) })] });
+    const b = task('b', { outputRequirement: 'pr_required', status: 'completed', workers: [worker({ status: 'completed', completedAt: min(5), prNumber: 2, mergedAt: min(6) })] });
+    const criteria = [{ type: 'all_prs_merged' }, { type: 'no_open_tasks' }];
+    for (const criteriaState of [[], [{ index: 0, verdict: 'UNVERIFIED' }, { index: 1, verdict: 'NOT_EVALUATED' }]]) {
+      const m = board([a, b], { criteria, criteriaState });
+      expect(m.criteria.map(c => [c.label, c.value, c.state])).toEqual([
+        ['PRs merged', '2/2', 'unchecked'],
+        ['open tasks', '0 open', 'unchecked'],
+      ]);
+      expect(m.criteriaPassed).toBe(0);
+    }
+  });
+
+  it('a stored pass never stands beside open tasks', () => {
+    const done = task('a', { outputRequirement: 'pr_required', status: 'completed', workers: [worker({ status: 'completed', completedAt: min(3), prNumber: 1, mergedAt: min(4) })] });
+    const open1 = task('b');
+    const open2 = task('c');
+    const m = board([done, open1, open2], { criteria: [{ type: 'no_open_tasks' }], criteriaState: [{ index: 0, verdict: 'pass' }] });
+    expect(m.criteria[0].value).toBe('2 open');
+    expect(m.criteria[0].state).not.toBe('pass');
+    expect(m.criteriaPassed).toBe(0);
+  });
+
+  it('a recorded fail on a full count stays a fail, and a partial count stays partial', () => {
+    const a = task('a', { outputRequirement: 'pr_required', status: 'completed', workers: [worker({ status: 'completed', completedAt: min(3), prNumber: 1, mergedAt: min(4) })] });
+    const failed = board([a], { criteria: [{ type: 'all_prs_merged' }], criteriaState: [{ index: 0, verdict: 'fail' }] });
+    expect(failed.criteria[0].state).toBe('fail');
+    const pending = task('b', { outputRequirement: 'pr_required' });
+    const partial = board([a, pending], { criteria: [{ type: 'all_prs_merged' }] });
+    expect(partial.criteria[0].state).toBe('partial');
+  });
 });
 
 describe('buildMissionBoard — ticker, clock and record', () => {
@@ -333,6 +371,27 @@ describe('helpers', () => {
     expect(t.workers[0].startedAt).toBe(min(1));
     expect(t.workers[0].waitingFor).toEqual({ prompt: 'q?', options: ['A', 'B'] });
     expect(t.worker?.status).toBe('waiting_input');
+  });
+
+  // The board, the mission sheet and the task page show one worker per task:
+  // pickTaskView's (lib/task-view.ts), never whichever the query returned first.
+  it('picks the worker the task page shows, whatever order the query returned', () => {
+    const live = { id: 'w-old', status: 'running', createdAt: new Date(T0 + min(1)), startedAt: new Date(T0 + min(9)) };
+    const done = { id: 'w-new', status: 'completed', createdAt: new Date(T0 + min(5)), startedAt: new Date(T0 + min(6)) };
+    const row = (workers: unknown[]) => ({ id: 'x', title: 'feat(x): y', status: 'in_progress', createdAt: new Date(T0).toISOString(), workers });
+    for (const order of [[done, live], [live, done]]) {
+      const t = toBoardTaskInput(row(order));
+      expect(t.worker?.status).toBe('running');
+      expect(t.workers[0].id).toBe(pickTaskView({ task: { status: 'in_progress' }, workers: order as never, openQuestions: [] }).shownWorker?.id);
+    }
+  });
+
+  it('drops a question a terminal task still carries, as the page does', () => {
+    const t = toBoardTaskInput({
+      id: 'x', title: 'feat(x): y', status: 'completed', createdAt: new Date(T0).toISOString(),
+      workers: [{ id: 'w', status: 'waiting_input', createdAt: new Date(T0 + min(1)), waitingFor: { prompt: 'q?' } }],
+    });
+    expect(t.workers[0].waitingFor).toBeNull();
   });
 
   it('formats clocks and ages', () => {
@@ -466,5 +525,77 @@ describe('buildMissionBoard: the kernel reason is one sentence', () => {
   it('a bare detail, or none, still ends in one period', () => {
     expect(withDelivery('confirm the boundary')).toBe('The reviewer escalated this PR: confirm the boundary.');
     expect(withDelivery(null)).toBe('The reviewer escalated this PR.');
+  });
+});
+
+describe('buildMissionBoard — claim-gate release arms (spec f7f67f1a P-1)', () => {
+  const upstream = () => task('api', { status: 'in_progress', workers: [worker({ runner: 'birch' })] });
+
+  it('an early-released dependent is ready, not blocked, while its upstream is still running', () => {
+    const m = board([upstream(), task('e2e', { dependsOn: ['api'] })], {
+      gateFacts: { releasedEdges: [{ dependentId: 'e2e', dependencyId: 'api', arm: 'early_release' }], waitingKinds: {} },
+    });
+    expect(m.tasks.e2e.status).toBe('ready');
+    expect(m.tasks.e2e.blockers).toEqual([]);
+    expect(m.tasks.e2e.deps).toEqual([expect.objectContaining({ id: 'api', satisfied: true, releasedBy: 'early_release' })]);
+    expect(m.tasks.api.status).toBe('running');
+  });
+
+  it('without a release row the dependent holds, exactly as before', () => {
+    const m = board([upstream(), task('e2e', { dependsOn: ['api'] })], { gateFacts: { releasedEdges: [], waitingKinds: {} } });
+    expect(m.tasks.e2e.status).toBe('blocked');
+    expect(m.tasks.e2e.deps[0]).not.toHaveProperty('releasedBy');
+  });
+
+  it('a released dependency on another mission is not an off-strip blocker', () => {
+    const m = board([task('e2e', { dependsOn: ['other'] })], {
+      externalDeps: [{ id: 'other', title: 'Elsewhere', status: 'in_progress' }],
+      gateFacts: { releasedEdges: [{ dependentId: 'e2e', dependencyId: 'other', arm: 'bypass' }], waitingKinds: {} },
+    });
+    expect(m.tasks.e2e.offStrip).toEqual([]);
+    expect(m.tasks.e2e.status).toBe('ready');
+  });
+
+  it('a queued task carries its waiting cause; a running one does not', () => {
+    const m = board([upstream(), task('docs')], { gateFacts: { releasedEdges: [], waitingKinds: { docs: 'workspace_cap', api: 'mission_local' } } });
+    expect(m.tasks.docs.waitingKind).toBe('workspace_cap');
+    expect(m.tasks.api).not.toHaveProperty('waitingKind');
+  });
+
+  it('a queued task with no known cause carries none', () => {
+    const m = board([task('docs')], { gateFacts: { releasedEdges: [], waitingKinds: {} } });
+    expect(m.tasks.docs).not.toHaveProperty('waitingKind');
+  });
+});
+
+describe('releasedByOf', () => {
+  it('looks an edge up by dependent and raw dependency id', () => {
+    const f = releasedByOf({ releasedEdges: [{ dependentId: 'b', dependencyId: 'a', arm: 'force_start' }], waitingKinds: {} });
+    expect(f('b', 'a')).toBe('force_start');
+    expect(f('a', 'b')).toBeUndefined();
+    expect(releasedByOf(null)('b', 'a')).toBeUndefined();
+  });
+});
+
+describe('buildMissionBoard — deliverable roles and closed PRs (spec f7f67f1a P-2, R-2, R-14)', () => {
+  it('audit, fix and refresh tiles carry their role and stay out of the landed count', () => {
+    const merged = task('db', { status: 'completed', workers: [worker({ status: 'completed', prNumber: 11, prUrl: 'u11', mergedAt: min(6), prLifecycleStatus: 'merged' })] });
+    const open = task('api');
+    const audit = task('au', { title: '[surface audit] Example mission', roleSlug: 'visual-auditor' });
+    const fix = task('fx', { title: '[surface fix] /app/x: tidy the header', status: 'completed', workers: [worker({ status: 'completed', prNumber: 12, prUrl: 'u12', mergedAt: min(7), prLifecycleStatus: 'merged' })] });
+    const refresh = task('rf', { title: 'chore(mission): merge dev into the Example integration branch', status: 'completed', context: { requireMergeCommit: true } });
+    const m = board([merged, open, audit, fix, refresh]);
+    expect([m.tasks.db.deliverableRole, m.tasks.api.deliverableRole, m.tasks.au.deliverableRole, m.tasks.fx.deliverableRole, m.tasks.rf.deliverableRole])
+      .toEqual(['build', 'build', 'verification', 'repair', 'maintenance']);
+    expect(m.landed).toEqual({ done: 1, total: 2 });
+    const phase = m.phases[0];
+    expect({ done: phase.done, total: phase.total }).toEqual({ done: 1, total: 2 });
+  });
+
+  it('a completed task whose PR closed with no supersession is not landed', () => {
+    const closed = task('cl', { status: 'completed', workers: [worker({ status: 'completed', prNumber: 21, prUrl: 'u21', prLifecycleStatus: 'closed' })] });
+    const m = board([closed]);
+    expect(m.tasks.cl.status).toBe('failed');
+    expect(m.landed).toEqual({ done: 0, total: 1 });
   });
 });

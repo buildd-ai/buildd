@@ -28,7 +28,6 @@ import { seam, world, type World } from './workflow-scenarios-world';
 
 const { runEffects, ackEffectSql, failEffectSql } = await import('../../src/lib/workflow/effects');
 const { withPrFactEffects } = await import('../../src/lib/workflow/pr-fact-effects');
-const modules = await import('../../src/modules');
 type Exec = import('../../src/lib/workflow/kernel').Exec;
 type EffectHandlers = import('../../src/lib/workflow/effects').EffectHandlers;
 type ClaimedEffect = import('../../src/lib/workflow/effects').ClaimedEffect;
@@ -47,7 +46,9 @@ const textOf = (query: SQL): string => dialect.sqlToQuery(query).sql;
 let w: World;
 afterEach(() => w?.dispose());
 
-const realHandlers = (): EffectHandlers => withPrFactEffects(modules.workflowEffectHandlers());
+const { workflowKernel } = await import('../../src/lib/workflow/kernel-ports');
+const composedHandlers = (await workflowKernel()).handlers;
+const realHandlers = (): EffectHandlers => withPrFactEffects(composedHandlers);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // FINDING 1: applyCommand gives up after one CAS retry and the callers drop it.

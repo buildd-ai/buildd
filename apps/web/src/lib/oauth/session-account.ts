@@ -1,6 +1,7 @@
 import { db } from '@buildd/core/db';
 import { accounts } from '@buildd/core/db/schema';
 import { and, asc, eq } from 'drizzle-orm';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * The account an OAuth session in `teamId` acts as: the team's oldest
@@ -20,8 +21,19 @@ import { and, asc, eq } from 'drizzle-orm';
  */
 export async function findTeamSessionAccount(teamId: string) {
   const account = await db.query.accounts.findFirst({
-    where: and(eq(accounts.teamId, teamId), eq(accounts.type, 'user')),
-    orderBy: [asc(accounts.createdAt), asc(accounts.id)],
+    where: sqlWhere(and(eq(accounts.teamId, teamId), eq(accounts.type, 'user'))),
+    orderBy: sqlOrderBy([asc(accounts.createdAt), asc(accounts.id)]),
   });
   return account ?? null;
+}
+
+/**
+ * True when `accountId` is the account its team's OAuth sessions act as (the pick above), so a
+ * grant session could be the caller behind it. The kernel command endpoint refuses such an
+ * account when the request does not say whether it is a grant (lib/workflow/command-api.ts).
+ */
+export async function isTeamSessionAccount(accountId: string): Promise<boolean> {
+  const row = await db.query.accounts.findFirst({ where: sqlWhere(eq(accounts.id, accountId)), columns: { teamId: true } });
+  if (!row?.teamId) return false;
+  return (await findTeamSessionAccount(row.teamId))?.id === accountId;
 }

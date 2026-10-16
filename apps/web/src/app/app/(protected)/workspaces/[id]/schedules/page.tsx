@@ -8,6 +8,7 @@ import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { ScheduleList } from './ScheduleList';
 import { ScheduleForm } from './ScheduleForm';
 import PrimaryAction from '@/components/ui/PrimaryAction';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export default async function SchedulesPage({
   params,
@@ -39,7 +40,7 @@ export default async function SchedulesPage({
   if (!access) notFound();
 
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, id),
+    where: sqlWhere(eq(workspaces.id, id)),
     columns: { id: true, name: true },
   });
 
@@ -48,8 +49,8 @@ export default async function SchedulesPage({
   }
 
   const schedules = await db.query.taskSchedules.findMany({
-    where: eq(taskSchedules.workspaceId, id),
-    orderBy: [desc(taskSchedules.createdAt)],
+    where: sqlWhere(eq(taskSchedules.workspaceId, id)),
+    orderBy: sqlOrderBy([desc(taskSchedules.createdAt)]),
   });
 
   return (

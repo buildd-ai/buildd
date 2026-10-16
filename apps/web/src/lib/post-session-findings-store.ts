@@ -25,10 +25,12 @@ import {
   workspaces,
 } from '@buildd/core/db/schema';
 import type { FindingLedgerAggregate } from '@buildd/core/post-session-findings';
+import { isSampledSkip, sampledSkipRate } from '@buildd/core/post-session-triage';
 import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { and, asc, eq, inArray, isNull, notInArray, sql } from 'drizzle-orm';
 import type { PostSessionFindingStore, StoredFinding } from './post-session-findings';
 import { WORKSPACE_NOT_OFF } from './post-session-mode-sql';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 type FindingRow = typeof postSessionFindings.$inferSelect;
 
@@ -91,12 +93,20 @@ export const postSessionFindingStore: PostSessionFindingStore = {
         policyVersion: postSessionRuns.policyVersion,
         mode: postSessionRuns.mode,
         gitConfig: workspaces.gitConfig,
+        triage: postSessionRuns.triage,
       })
       .from(postSessionRuns)
       .innerJoin(workspaces, eq(workspaces.id, postSessionRuns.workspaceId))
       .where(eq(postSessionRuns.id, runId))
       .limit(1);
-    return row ? { ...row, teamId: row.teamId ?? null, gitConfig: row.gitConfig ?? null } : null;
+    if (!row) return null;
+    const { triage, ...rest } = row;
+    return {
+      ...rest,
+      teamId: rest.teamId ?? null,
+      gitConfig: rest.gitConfig ?? null,
+      sample: isSampledSkip(triage) ? { rate: sampledSkipRate(triage) } : null,
+    };
   },
 
   async insertFinding({ workspaceId, signature, policyVersion, aggregate, now }) {
@@ -181,9 +191,9 @@ export const postSessionFindingStore: PostSessionFindingStore = {
   },
 
   async dispatchTask(taskId) {
-    const task = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId) });
+    const task = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)) });
     if (!task) return;
-    const workspace = await db.query.workspaces.findFirst({ where: eq(workspaces.id, task.workspaceId) });
+    const workspace = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, task.workspaceId)) });
     if (!workspace) return;
     const { announceTaskCreated, wakeTask } = await import('./dispatch-authority');
     await announceTaskCreated(task, workspace);

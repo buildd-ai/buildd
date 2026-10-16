@@ -5,6 +5,7 @@ import { encrypt } from '@buildd/core/secrets';
 import { discoverOAuthMetadata, registerClient, getCallbackUrl, ClientRegistrationRejectedError } from '@/lib/mcp-oauth';
 import { resolveConnectorIconData } from '@/lib/connector-icon';
 import { normalizeConnectorUrl, catalogEntryForUrl, type ResolvedCatalogEntry } from '@/lib/connector-catalog';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface OAuthSetup {
   /** What discovery concluded. 'none' = the server answered without auth. */
@@ -40,18 +41,24 @@ export async function discoverAndRegister(url: string, origin: string, existingC
 /**
  * The 422 body for a provider that refused to register buildd as a client
  * because it only admits clients it has approved; null for any other failure
- * (callers keep their generic discovery error). Names the vendor step, and
- * never suggests pasting a token from another client.
+ * (callers keep their generic discovery error). The person sees only that the
+ * provider is not available: the vendor's refusal, its client-review status
+ * and link stay internal, in the structured log line below and the platform
+ * catalog (`/api/admin/connector-catalog`). Never suggests pasting a token
+ * from another client.
  */
-export function registrationRefusalBody(err: unknown, url: string): { error: 'needs_approved_client'; message: string; actionUrl?: string } | null {
+export function registrationRefusalBody(err: unknown, url: string): { error: 'needs_approved_client'; message: string } | null {
   if (!(err instanceof ClientRegistrationRejectedError) || !err.needsApprovedClient) return null;
-  const support = catalogEntryForUrl(url)?.clientSupport;
-  if (support) return { error: 'needs_approved_client', message: support.detail, actionUrl: support.actionUrl };
+  const entry = catalogEntryForUrl(url);
   const host = (() => { try { return new URL(url).host; } catch { return url; } })();
-  return {
-    error: 'needs_approved_client',
-    message: `${host} only lets MCP clients it has approved sign in, and it refused buildd${err.description ? ` (${err.description})` : ''}. Ask the provider to approve buildd as an MCP client.`,
-  };
+  console.warn(JSON.stringify({
+    event: 'connector.registration_refused',
+    host,
+    catalogSlug: entry?.slug ?? null,
+    providerError: err.description ?? null,
+    clientReviewUrl: entry?.clientSupport?.actionUrl ?? null,
+  }));
+  return { error: 'needs_approved_client', message: `${entry?.name ?? host} isn't available to connect.` };
 }
 
 type ConnectorRow = typeof connectors.$inferSelect;
@@ -63,7 +70,7 @@ type ConnectorRow = typeof connectors.$inferSelect;
  * never makes a duplicate.
  */
 export async function ensureCatalogConnector(teamId: string, entry: ResolvedCatalogEntry, origin: string): Promise<ConnectorRow> {
-  const owned = await db.query.connectors.findMany({ where: eq(connectors.teamId, teamId) });
+  const owned = await db.query.connectors.findMany({ where: sqlWhere(eq(connectors.teamId, teamId)) });
   const target = normalizeConnectorUrl(entry.url);
   const existing = owned.find(c => normalizeConnectorUrl(c.url) === target) ?? owned.find(c => c.name === entry.name);
   if (existing) return existing;
@@ -89,7 +96,7 @@ export async function ensureCatalogConnector(teamId: string, entry: ResolvedCata
   }).onConflictDoNothing().returning();
   if (created) return created;
   // Lost a race on (teamId, name): the winner's row is the one to use.
-  const winner = await db.query.connectors.findFirst({ where: and(eq(connectors.teamId, teamId), eq(connectors.name, entry.name)) });
+  const winner = await db.query.connectors.findFirst({ where: sqlWhere(and(eq(connectors.teamId, teamId), eq(connectors.name, entry.name))) });
   if (!winner) throw new Error(`connector for catalog entry ${entry.slug} vanished`);
   return winner;
 }
@@ -108,7 +115,7 @@ export async function enableConnectorInWorkspaces(connectorId: string, workspace
 /** Preinstall one entry for a team: connector row + enabled in every team workspace. */
 export async function preinstallForTeam(teamId: string, entry: ResolvedCatalogEntry, origin: string): Promise<ConnectorRow> {
   const connector = await ensureCatalogConnector(teamId, entry, origin);
-  const teamWorkspaces = await db.query.workspaces.findMany({ where: eq(workspaces.teamId, teamId), columns: { id: true } });
+  const teamWorkspaces = await db.query.workspaces.findMany({ where: sqlWhere(eq(workspaces.teamId, teamId)), columns: { id: true } });
   await enableConnectorInWorkspaces(connector.id, teamWorkspaces.map(w => w.id));
   return connector;
 }

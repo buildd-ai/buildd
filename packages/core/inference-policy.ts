@@ -48,9 +48,16 @@ export type InferenceCapability =
   | 'escalation_gate'
   | 'post_session_triage'
   | 'failure_incident_triage'
+  | 'visual_impact'
+  | 'mission_scope'
   | 'task_verdict'
   | 'early_release'
   | 'merge_readiness'
+  | 'operator_recovery'
+  | 'spec_duplicate'
+  | 'spec_area'
+  | 'spec_taxonomy'
+  | 'spec_publication'
   | 'chat';
 
 export type CapabilityKind = 'interactive' | 'built_in' | 'opt_in' | 'server_feature';
@@ -240,6 +247,26 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     description: 'When a repeated failure pattern opens or grows, a decision model reads its counts (never logs or code) and says whether it is noise, worth watching, a bug to fix, or worth paging you. It can only raise the alert level.',
     costHint: '~$0.00003 per incident change',
   },
+  // Visual review applicability (packages/core/decision-kind-visual-impact.ts).
+  // Opt-in: asked only about a diff the deterministic rules cannot call. Its
+  // fallback runs the audit, so a team that leaves it off loses a skip, never a check.
+  visual_impact: {
+    id: 'visual_impact',
+    kind: 'opt_in',
+    label: 'Visual impact',
+    description: 'When a change touches UI-adjacent files and the rules cannot tell whether anything on screen moved, a decision model reads bounded facts about the diff (file kinds and change counts, never code) and says whether a visual review is needed. When unsure it asks for the review.',
+    costHint: '~$0.00005 per ambiguous change',
+  },
+  // Mission scope (packages/core/decision-kind-mission-scope.ts). Asked once per
+  // task added to a mission under way. Its fallback files the task as filed; an
+  // amendment that would weaken a completion criterion is held for a person.
+  mission_scope: {
+    id: 'mission_scope',
+    kind: 'built_in',
+    label: 'Mission scope',
+    description: 'When a task is added to a mission under way, a decision model reads the mission\'s goal and the task and says whether the task fits it, changes what the mission delivers (recorded as a scope update), or needs you to decide. Unsure means it fits.',
+    costHint: '~$0.0001 per task added',
+  },
   // Task verdict (apps/web/src/lib/task-verdict-decision.ts). Runs on a task
   // state change only (CI result, attempt end, PR event, worker terminal),
   // never on a page load, over the structured record (no transcripts).
@@ -269,6 +296,64 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     label: 'Merge readiness',
     description: 'On a review card, a decision model says whether the pull request looks safe to merge as-is, from its CI, review and policy. Only advice; you merge.',
     costHint: '~$0.00003 per tap',
+  },
+  // Operator recovery (packages/core/decision-kind-operator-recovery.ts). The
+  // platform owner's recovery queue: an ambiguous cause pair, a next repair with
+  // no runbook, priority advice. Bounded by the platform's own daily caps
+  // (operator-recovery §6.4), not a team switch.
+  operator_recovery: {
+    id: 'operator_recovery',
+    kind: 'built_in',
+    label: 'Operator recovery',
+    description: 'When a platform failure is ambiguous, a decision model reads its counts and redacted excerpts (never names) and says whether two problems are one, which allowed repair is next, or whether its priority looks off.',
+    costHint: '~$0.0001 per question, capped at $5 a day platform-wide',
+  },
+  // Spec duplicates (apps/web/src/lib/spec-duplicate-decision.ts). Asked when
+  // a spec is created or approved, once per shortlisted approved spec (at
+  // most 5). A duplicate at 0.9 is refused with an override; an overlap only
+  // warns. Built in for every team (owner, 2026-10-13): measured before launch,
+  // cheap, and every refusal carries its own override.
+  spec_duplicate: {
+    id: 'spec_duplicate',
+    kind: 'built_in',
+    label: 'Spec duplicates',
+    description: 'When a spec is created, a decision model compares it with the most similar approved specs. A clear duplicate is refused unless you say it replaces the old spec or why it is different; an overlap is only flagged.',
+    costHint: '~$0.00005 per new spec',
+  },
+  // Spec areas (apps/web/src/lib/spec-area-decision.ts, Living Specs §17).
+  // Asked once per new or unfiled spec, after the response. A confident answer
+  // from a measured model files the spec under that area, with undo; anything
+  // else is only a suggestion. Built in like spec_duplicate: measured before
+  // launch, one cheap call, every filing reversible.
+  spec_area: {
+    id: 'spec_area',
+    kind: 'built_in',
+    label: 'Spec areas',
+    description: 'When a spec has no parent, a decision model reads it and the workspace\'s areas and files it under the one it belongs in when it is sure, with undo. Otherwise it only suggests a place.',
+    costHint: '~$0.00005 per new spec',
+  },
+  // The cold-start taxonomy (apps/web/src/lib/spec-taxonomy-decision.ts,
+  // Living Specs §17 R-4). Asked once or twice per spec, only when a person
+  // runs organize on a workspace with no areas. Nothing is created until a
+  // person accepts the proposal, so it is built in like spec_area.
+  spec_taxonomy: {
+    id: 'spec_taxonomy',
+    kind: 'built_in',
+    label: 'Spec taxonomy',
+    description: 'When a workspace has specs but no areas yet, a decision model reads every spec and proposes a handful of areas with their specs. A person accepts, edits or rejects it; nothing is created before that.',
+    costHint: '~$0.0005 per spec, once',
+  },
+  // Spec publication (apps/web/src/lib/spec-publication-decision.ts, Living
+  // Specs Slice 14). Asked once per approved revision, only in a workspace with
+  // native spec homes on, when the fixed rules leave it open. Every doubt keeps
+  // the spec private and no model answer publishes until a measured bar exists,
+  // so it is built in: its worst case is publication off.
+  spec_publication: {
+    id: 'spec_publication',
+    kind: 'built_in',
+    label: 'Spec publication',
+    description: 'Before an approved spec is written to the repo, a decision model reads the workspace\'s publication policy and the spec and says whether it may be published. When in doubt the spec stays in buildd.',
+    costHint: '~$0.0001 per approved revision',
   },
   chat: {
     id: 'chat',

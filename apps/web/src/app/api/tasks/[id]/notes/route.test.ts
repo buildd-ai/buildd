@@ -53,6 +53,7 @@ mock.module('@buildd/core/db/schema', () => ({
 }));
 
 import { GET, POST } from './route';
+import { capturedWhere } from '@buildd/core/db/relational-sql';
 
 const params = Promise.resolve({ id: '55555555-5555-4555-8555-555555555555' });
 const req = () => new NextRequest('http://localhost:3000/api/tasks/55555555-5555-4555-8555-555555555555/notes');
@@ -106,7 +107,7 @@ describe('GET /api/tasks/[id]/notes', () => {
     expect(res.status).toBe(200);
     expect((await res.json()).notes).toEqual([note]);
 
-    const where = leaves(mockNotesFindMany.mock.calls[0][0].where);
+    const where = leaves(capturedWhere(mockNotesFindMany.mock.calls[0][0].where));
     expect(where).toContainEqual({ type: 'eq', field: 'missionNotes.taskId', value: '55555555-5555-4555-8555-555555555555' });
     expect(where.some(p => p.type === 'isNull' && p.field === 'missionNotes.missionId')).toBe(false);
   });

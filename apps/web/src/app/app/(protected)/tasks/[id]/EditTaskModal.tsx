@@ -168,7 +168,7 @@ export default function EditTaskModal({ task, onClose }: Props) {
                   );
                 })}
               </div>
-              <p className="text-xs text-text-muted mt-1">Auto uses the mission/role/workspace default.</p>
+              <p className="text-xs text-text-muted mt-1">Auto uses the mission, agent or workspace default.</p>
             </div>
 
             {/* Mode toggle — only when task is still pending */}
@@ -237,7 +237,7 @@ export default function EditTaskModal({ task, onClose }: Props) {
               disabled={loading || !title.trim()}
               className="w-full sm:w-auto px-3 py-2 sm:py-1.5 text-sm bg-primary text-white rounded hover:bg-primary-hover disabled:opacity-50"
             >
-              {loading ? 'Saving…' : 'Save Changes'}
+              {loading ? 'Saving…' : 'Save changes'}
             </button>
           </div>
         </form>

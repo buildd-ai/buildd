@@ -48,6 +48,7 @@ import type { LaneMission } from '@/components/fleet/runner-lanes';
 import { loadLaneMissions } from './lane-missions';
 import type { IdleStretch } from '@/lib/idle-while-queued';
 import { CLAUDE_CREDENTIAL_PURPOSES, isBackendHealthRow } from '@/lib/claude-credential-rows';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export type { BudgetForecast, FailureAnalytics, FailureWindow };
 export type { GateAnalytics } from '@buildd/shared';
@@ -247,10 +248,12 @@ export type HealthLoad = { kind: 'no-workspaces' } | { kind: 'ok'; data: HealthD
  * checked there is a user and a team).
  */
 export async function loadHealth({
-  page, userId, teamIds, searchParams,
+  page, userId, teamIds, searchParams, operator = false,
 }: {
   page: HealthPageKey;
   userId: string;
+  /** The viewer is a buildd platform operator: experiments are theirs to manage. */
+  operator?: boolean;
   teamIds: string[];
   searchParams: { workspace?: string; window?: string; failureWindow?: string };
 }): Promise<HealthLoad> {
@@ -321,11 +324,11 @@ export async function loadHealth({
       ? (async (): Promise<UsageStats | null> => {
       const windowStart = new Date(Date.now() - parseWindowMs(window));
       const recentTasks = await db.query.tasks.findMany({
-        where: and(
+        where: sqlWhere(and(
           inArray(tasks.workspaceId, scopedWsIds),
           sql`${tasks.createdAt} >= ${windowStart}`,
           isNull(tasks.parentTaskId),
-        ),
+        )),
         columns: { roleSlug: true, status: true, taskClass: true },
       });
 
@@ -376,13 +379,13 @@ export async function loadHealth({
       ? (async (): Promise<RecentFailure[]> => {
       const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
       const failedWorkers = await db.query.workers.findMany({
-        where: and(
+        where: sqlWhere(and(
           inArray(workers.workspaceId, scopedWsIds),
           eq(workers.status, 'failed'),
           sql`${workers.completedAt} >= ${cutoff}`,
-        ),
+        )),
         columns: { id: true, taskId: true, workspaceId: true, error: true, completedAt: true },
-        orderBy: [desc(workers.completedAt)],
+        orderBy: sqlOrderBy([desc(workers.completedAt)]),
         limit: 20,
       });
       if (failedWorkers.length === 0) return [];
@@ -390,7 +393,7 @@ export async function loadHealth({
       const taskIds = (failedWorkers as any[]).flatMap((w: any) => w.taskId ? [w.taskId as string] : []);
       const taskTitles = taskIds.length
         ? await db.query.tasks.findMany({
-            where: inArray(tasks.id, taskIds),
+            where: sqlWhere(inArray(tasks.id, taskIds)),
             columns: { id: true, title: true },
           })
         : [];
@@ -416,13 +419,13 @@ export async function loadHealth({
       // key's canonical `inference_key` row too), plus Codex. `inference_key`
       // also holds other providers' and personal keys: isBackendHealthRow drops them.
       const credRows = (await db.query.secrets.findMany({
-        where: and(
+        where: sqlWhere(and(
           eq(secrets.teamId, activeTeamId),
           or(
             ...CLAUDE_CREDENTIAL_PURPOSES.map((p) => eq(secrets.purpose, p)),
             eq(secrets.purpose, 'codex_credential'),
           ),
-        ),
+        )),
         columns: {
           id: true,
           purpose: true,
@@ -470,11 +473,11 @@ seesTeamSpend ? getBudgetForecast(activeTeamId, scopedWsIds).catch(() => null as
       const slugs = [...new Set(stats.groups.map(g => g.roleSlug).filter((k): k is string => !!k))];
       const roleRows = slugs.length > 0
         ? await db.query.workspaceSkills.findMany({
-            where: and(
+            where: sqlWhere(and(
               inArray(workspaceSkills.workspaceId, scopedWsIds),
               eq(workspaceSkills.isRole, true),
               inArray(workspaceSkills.slug, slugs),
-            ),
+            )),
             columns: { slug: true, name: true, color: true },
           })
         : [];
@@ -568,23 +571,25 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
       ? (async (): Promise<(FailureGroupsView & { truncated: boolean }) | null> => {
       const windowStart = new Date(Date.now() - parseWindowMs(window));
       const failed = await db.query.workers.findMany({
-        where: and(
+        where: sqlWhere(and(
           inArray(workers.workspaceId, scopedWsIds),
           inArray(workers.status, [...FAILED_WORKER_STATUSES]),
           sql`${workers.completedAt} >= ${windowStart}`,
-        ),
+        )),
         columns: { id: true, taskId: true, workspaceId: true, error: true, exitCause: true, completedAt: true },
         with: { task: { columns: { title: true } } },
-        orderBy: [desc(workers.completedAt)],
+        orderBy: sqlOrderBy([desc(workers.completedAt)]),
         limit: FAILURE_GROUP_WORKER_LIMIT,
       });
       const ids = (failed as Array<{ id: string }>).map(w => w.id);
-      const traces = ids.length
-        ? await db
-            .selectDistinct({ workerId: workerErrorTraces.workerId, pattern: workerErrorTraces.pattern })
-            .from(workerErrorTraces)
-            .where(inArray(workerErrorTraces.workerId, ids))
-        : [];
+      const [traces] = await Promise.all([
+        ids.length
+          ? db
+              .selectDistinct({ workerId: workerErrorTraces.workerId, pattern: workerErrorTraces.pattern })
+              .from(workerErrorTraces)
+              .where(inArray(workerErrorTraces.workerId, ids))
+          : [],
+      ]);
       const view = buildFailureGroups({
         failures: (failed as any[]).map(w => ({
           workerId: w.id,
@@ -648,17 +653,17 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
   // "silently drop it" (facae217 AC-6).
   const orphanedPrs: OrphanedPrRow[] = !need('orphanedPrs') ? [] : await db.query.workers
     .findMany({
-      where: and(
+      where: sqlWhere(and(
         inArray(workers.workspaceId, scopedWsIds),
         eq(workers.prLifecycleStatus, 'unresolvable'),
-      ),
+      )),
       columns: {
         id: true, workspaceId: true, prUrl: true, prNumber: true,
         prUnresolvableReason: true, prCheckFailureCount: true,
         prLastCheckedAt: true, completedAt: true, createdAt: true,
       },
       with: { task: { columns: { id: true, title: true } } },
-      orderBy: desc(workers.prLastCheckedAt),
+      orderBy: sqlOrderBy(desc(workers.prLastCheckedAt)),
       limit: 25,
     })
     .then(rows => rows.map((w): OrphanedPrRow => ({
@@ -675,15 +680,15 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
     })))
     .catch(() => [] as OrphanedPrRow[]);
 
-  // Team experiments (model routing A/B). Admins-only rows are dropped for
-  // members inside the loader; a failure hides the section, never the page.
+  // Team experiments (model routing A/B). Operator-only rows are dropped for
+  // everyone else inside the loader; a failure hides the section, never the page.
   const runnerLanes = need('runnerLanes')
     ? await loadRunnersFleet({ teamId: activeTeamId, wsIds: scopedWsIds, now })
       .then(async lanes => ({ ...lanes, missions: await loadLaneMissions(lanes.fleet, activeTeamId).catch(() => ({})) }))
       .catch(() => null)
     : null;
 
-  const experiments = need('experiments') ? await loadHealthExperiments(activeTeamId, userId).catch(() => null) : null;
+  const experiments = need('experiments') ? await loadHealthExperiments(activeTeamId, userId, operator).catch(() => null) : null;
 
   return {
     kind: 'ok',

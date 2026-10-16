@@ -29,6 +29,8 @@ const OPTED_IN = [
   'apps/web/src/app/api/agent-capabilities/model-inference/route.ts',
   // Governed outcomes: confined to the workspace of its task (taskScopeAllowsWorkspace); lib/specs/outcome.ts lets it read its own task and record only on its parent, never itself.
   'apps/web/src/app/api/specs/outcomes/[taskId]/route.ts',
+  // Mission-level outcome-spec verdicts (Living Specs Slice 12): confined to its own task's mission (taskScopeAllowsMission); lib/specs/mission-outcome.ts lets only that mission's server-filed final verification task record, every other task token only read.
+  'apps/web/src/app/api/specs/mission-outcomes/[missionId]/route.ts',
   // Finalize an upload: only the token's own worker's artifact (taskScopeAllowsWorkspace + taskScopeAllowsWorker).
   'apps/web/src/app/api/artifacts/[artifactId]/finalize/route.ts',
   // Typed links: the route passes the token taskScope to the link caller, and lib/artifact-links.ts confines every artifact and subject to that workspace.
@@ -66,6 +68,8 @@ const OPTED_IN = [
   'apps/web/src/app/api/prs/route.ts',
   // Read-only for a task token (list, explain), its own workspace via taskScopeAllowsWorkspace; every write refuses it.
   'apps/web/src/app/api/providers/explain/route.ts',
+  // Refuses a task token on both handlers (.taskScope); only the settings page reads or picks.
+  'apps/web/src/app/api/providers/assignments/route.ts',
   'apps/web/src/app/api/providers/route.ts',
   'apps/web/src/app/api/releases/[id]/route.ts',
   'apps/web/src/app/api/releases/route.ts',
@@ -86,6 +90,10 @@ const OPTED_IN = [
   'apps/web/src/app/api/workers/[id]/evidence/[evidenceId]/confirm/route.ts',
   'apps/web/src/app/api/workers/[id]/instruct/route.ts',
   'apps/web/src/app/api/workers/[id]/page-source/route.ts',
+  // await_answer: an interactive session long-polls for the answer to its own question.
+  'apps/web/src/app/api/workers/[id]/answer/route.ts',
+  // ask_human: mint the wait capability for its own parked question (callerOwnsWorker).
+  'apps/web/src/app/api/workers/[id]/answer/capability/route.ts',
   'apps/web/src/app/api/workers/[id]/park/route.ts',
   'apps/web/src/app/api/workers/[id]/prompt-bundles/route.ts',
   'apps/web/src/app/api/workers/[id]/reattach/route.ts',

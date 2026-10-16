@@ -3,10 +3,12 @@ import { db } from '@buildd/core/db';
 import { failureIncidents } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { isPlatformOperator } from '@/lib/platform-operator';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { createDbIncidentPort, updateIncidentState } from '@/lib/failure-incident-store';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ACTIONS = ['acknowledge', 'resolve'] as const;
@@ -29,6 +31,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const apiAccount = await authenticateApiKey(apiKey, req);
     const user = apiAccount ? null : await getCurrentUser();
     if (!user && !apiAccount) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    if (user && !isPlatformOperator(user)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     if (apiAccount && !hasTokenRouteAdminAccess(apiAccount, req)) {
       return NextResponse.json({ error: 'Changing an incident requires an admin-level token' }, { status: 403 });
     }
@@ -43,7 +46,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
 
     const row = await db.query.failureIncidents.findFirst({
-      where: eq(failureIncidents.id, id),
+      where: sqlWhere(eq(failureIncidents.id, id)),
       columns: { id: true, workspaceId: true },
     });
     const wsId = row?.workspaceId ?? null;

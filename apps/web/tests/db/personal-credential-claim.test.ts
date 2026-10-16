@@ -5,8 +5,8 @@
  * (`resolveTaskRequesterUserId`) and the provider resolver.
  *
  * The property: a personal key reaches only a task whose requester owns it,
- * only when the team explicitly chose a personal policy, and a NULL policy
- * never reads a personal row at all. Route tests mock `db`, which hides every
+ * under a personal policy (NULL reads as personal_first), and never for work
+ * with no requester. Route tests mock `db`, which hides every
  * WHERE; this runs the same decision on real rows.
  */
 import { beforeAll, describe, expect, test } from 'bun:test';
@@ -50,8 +50,10 @@ async function task(workspaceId: string, o: { createdBy?: string | null; parent?
   return t.id;
 }
 
+/** A NULL policy leaves the legacy column at its default, as a team that never chose one has. */
 async function setPolicy(teamId: string, policy: string | null) {
-  await q(sql`UPDATE teams SET credential_policy = ${policy}, inference_key_policy = 'own' WHERE id = ${teamId}::uuid`);
+  const legacy = policy === null ? 'team' : 'own';
+  await q(sql`UPDATE teams SET credential_policy = ${policy}, inference_key_policy = ${legacy} WHERE id = ${teamId}::uuid`);
 }
 
 let teamId: string, W: string, A: string, alice: string, bob: string;
@@ -78,9 +80,11 @@ async function decide(taskId: string, over: Partial<PersonalCredentialInput> = {
 }
 
 describe('personal credential decision on real rows', () => {
-  test('credential_policy NULL: legacy for everyone, even Alice with a key and the legacy column at own', async () => {
+  test('credential_policy NULL is personal_first: Alice gets her own key, a task with no requester gets team credentials', async () => {
     await setPolicy(teamId, null);
-    expect(await decide(await task(W, { createdBy: alice }))).toEqual({ kind: 'legacy' });
+    const a = await decide(await task(W, { createdBy: alice }));
+    expect(a.kind === 'personal' && a.value).toBe('ALICE-ANTHROPIC');
+    expect((await decide(await task(W))).kind).toBe('legacy');
   });
 
   test('personal_first: Alice gets her own key, Bob gets his, never each other\'s', async () => {

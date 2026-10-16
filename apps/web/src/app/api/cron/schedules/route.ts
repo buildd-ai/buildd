@@ -2,6 +2,7 @@ import { OPEN_TASK_STATUSES } from '@buildd/shared';
 import { withoutLandingOverrideGrant } from '@/lib/landing-override-grant';
 import { withoutPrReachGrant } from '@/lib/pr-reach-grant';
 import { withoutReviewDispatchContext } from '@/lib/verdict-provenance';
+import { withoutMissionVerificationMarkers } from '@/lib/server-context-markers';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
 import { taskSchedules, tasks, workspaces, missions, workers, accounts, accountWorkspaces } from '@buildd/core/db/schema';
@@ -37,6 +38,10 @@ import { sweepTaskCategories } from '@/lib/task-category-sweep';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
 import { resolveEffectiveRoleSlugs } from '@/lib/effective-roles';
 import { assertScheduleSkillsAvailable, fileMissingSkillFriction, MissingScheduleSkillError } from '@/lib/schedule-skill-preflight';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { liveLinkCondition } from '@/lib/granted-links';
+
+const SCHEDULE_TIERS: ReadonlySet<string> = new Set(['premium-plus', 'premium', 'standard', 'budget']);
 
 const MAX_SCHEDULES_PER_RUN = 50;
 const TRIGGER_FETCH_TIMEOUT = 10_000;
@@ -159,10 +164,10 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
   try {
     // Find due schedules: enabled=true AND nextRunAt <= now
     const dueSchedules = await db.query.taskSchedules.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(taskSchedules.enabled, true),
         lte(taskSchedules.nextRunAt, now)
-      ),
+      )),
       limit: MAX_SCHEDULES_PER_RUN,
     });
 
@@ -171,7 +176,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     const scheduleIds = dueSchedules.map(s => s.id);
     const linkedMissionsBatch = scheduleIds.length > 0
       ? await db.query.missions.findMany({
-          where: inArray(missions.scheduleId, scheduleIds),
+          where: sqlWhere(inArray(missions.scheduleId, scheduleIds)),
           columns: { id: true, scheduleId: true, priority: true },
         })
       : [];
@@ -185,10 +190,11 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     )] as string[];
     const wsAccountLinks = scheduleWorkspaceIds.length > 0
       ? await db.query.accountWorkspaces.findMany({
-          where: and(
+          where: sqlWhere(and(
             inArray(accountWorkspaces.workspaceId, scheduleWorkspaceIds),
             eq(accountWorkspaces.canClaim, true),
-          ),
+            liveLinkCondition(),
+          )),
           columns: { accountId: true, workspaceId: true },
         })
       : [];
@@ -203,7 +209,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     const uniqueAccountIds = [...new Set(wsAccountLinks.map(l => l.accountId))];
     const accountRecords = uniqueAccountIds.length > 0
       ? await db.query.accounts.findMany({
-          where: inArray(accounts.id, uniqueAccountIds),
+          where: sqlWhere(inArray(accounts.id, uniqueAccountIds)),
           columns: { id: true, authType: true, maxConcurrentSessions: true, maxConcurrentWorkers: true },
         })
       : [];
@@ -213,10 +219,10 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     const activeWorkerCounts = new Map<string, number>();
     if (uniqueAccountIds.length > 0) {
       const activeWorkerRows = await db.query.workers.findMany({
-        where: and(
+        where: sqlWhere(and(
           inArray(workers.accountId, uniqueAccountIds),
           inArray(workers.status, [...LIVE_WORKER_STATUSES]),
-        ),
+        )),
         columns: { id: true, accountId: true },
       });
       for (const w of activeWorkerRows) {
@@ -374,7 +380,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
         const template = schedule.taskTemplate;
         const taskContext: Record<string, unknown> = {
           // A landing grant is a person's call on one task, never a template's (landing-override-grant.ts).
-          ...withoutPrReachGrant(withoutReviewDispatchContext(withoutLandingOverrideGrant(template.context || {}))),
+          ...withoutMissionVerificationMarkers(withoutPrReachGrant(withoutReviewDispatchContext(withoutLandingOverrideGrant(template.context || {})))),
           scheduleId: schedule.id,
           scheduleName: schedule.name,
         };
@@ -428,7 +434,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
 
         // Check if this schedule is linked to a mission
         const linkedMission = await db.query.missions.findFirst({
-          where: eq(missions.scheduleId, schedule.id),
+          where: sqlWhere(eq(missions.scheduleId, schedule.id)),
           columns: {
             id: true,
             title: true,
@@ -905,6 +911,8 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
             complexity: cadence.complexity,
             classifiedBy: cadence.classifiedBy === 'user' ? 'user' : 'default',
             ...(templateRole ? { roleSlug: templateRole } : {}),
+            // A stated tier skips the kind x complexity matrix, as on create_task.
+            ...(template.tier && SCHEDULE_TIERS.has(template.tier) ? { tier: template.tier } : {}),
             ...(externalId ? { externalId } : {}),
             ...(linkedMission ? { missionId: linkedMission.id } : {}),
             ...(linkedMission?.defaultBackend ? { backend: linkedMission.defaultBackend } : {}),
@@ -957,7 +965,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
 
         // Dispatch task
         const workspace = await db.query.workspaces.findFirst({
-          where: eq(workspaces.id, taskWorkspaceId),
+          where: sqlWhere(eq(workspaces.id, taskWorkspaceId)),
         });
 
         if (workspace) {

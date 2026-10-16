@@ -87,6 +87,17 @@ describe('requestMissionSurfaceAudit', () => {
     expect(mockWakeTask).toHaveBeenCalledWith((mockAnnounceTaskCreated.mock.calls[0] as any[])[0].id, 'task.created');
   });
 
+  it('leaves a trunk-refresh task out of the dependencies and the scope', async () => {
+    gateTasks.mockResolvedValue([
+      { id: 'b1', title: 'Build nav', status: 'completed', taskClass: 'work', pathManifest: ['**'] },
+      { id: 'r1', title: 'chore(mission): merge dev into the Mobile nav redesign integration branch', status: 'completed', taskClass: 'work', pathManifest: ['apps/web/src/app/app/(protected)/layout.tsx'] },
+    ]);
+    await requestMissionSurfaceAudit('mission-1');
+    const row = tasksInsertValues.mock.calls[0][0];
+    expect(row.dependsOn).toEqual(['b1']);
+    expect(row.description).not.toContain('layout.tsx');
+  });
+
   it('is idempotent: an open audit is returned, not duplicated', async () => {
     tasksFindMany.mockResolvedValue([{ id: 'audit-9', status: 'in_progress' }]);
     const out = await requestMissionSurfaceAudit('mission-1');

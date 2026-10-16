@@ -43,6 +43,24 @@ function GroupMeta({ g, now }: { g: FailureGroup; now: number }) {
   );
 }
 
+/**
+ * Under the heading: a platform cause says where buildd stands on it (the
+ * incident covering it, linked); a task cause says what to do.
+ */
+function GroupNext({ g }: { g: FailureGroup }) {
+  if (g.incident) {
+    return (
+      <p className="pl-15 pr-4 pb-3 -mt-2">
+        <Link href={`/app/incidents/${g.incident.id}`} data-testid="failure-group-incident" className="inline-flex items-center min-h-6 text-meta text-text-secondary hover:text-text-primary hover:underline">
+          {g.incident.line} ›
+        </Link>
+      </p>
+    );
+  }
+  if (!g.hint) return null;
+  return <p data-testid="failure-group-todo" className="pl-15 pr-4 pb-3 -mt-2 text-meta text-text-secondary">{g.hint}</p>;
+}
+
 function GroupRow({ g, now, expanded, onToggle }: { g: FailureGroup; now: number; expanded: boolean; onToggle: () => void }) {
   return (
     <li data-testid="failure-group" data-group-key={g.key}>
@@ -54,16 +72,14 @@ function GroupRow({ g, now, expanded, onToggle }: { g: FailureGroup; now: number
       >
         <span className="text-title font-semibold tabular-nums text-text-primary w-8 shrink-0">{g.count}</span>
         <span className="min-w-0 flex-1">
-          <span className="flex items-center gap-2 flex-wrap">
-            <span className="text-body text-text-primary break-words">{g.label}</span>
-          </span>
+          <span className="block text-body text-text-primary break-words">{g.label}</span>
           <GroupMeta g={g} now={now} />
         </span>
         <span aria-hidden="true" className="text-text-muted text-meta shrink-0">{expanded ? '−' : '+'}</span>
       </button>
+      <GroupNext g={g} />
       {expanded && (
         <div className="px-4 pb-4 md:pl-15 space-y-3 text-body" data-testid="failure-group-detail">
-          {g.hint && <p className="text-text-secondary">{g.hint}</p>}
           {g.tasks.length > 0 && (
             <div>
               <p className="section-label mb-1">Tasks</p>
@@ -126,10 +142,15 @@ export function FailureGroupsSection({
           <p className={`text-heading font-bold tabular-nums ${rateClass(headline.failureRatePct)}`} data-testid="failure-groups-rate">{headline.failureRatePct}%</p>
           <p className="text-meta text-text-muted">
             {headline.failed} of {headline.terminal} agent runs failed
-            {groups.platformFailures > 0 && <> · {plural(groups.platformFailures, 'was', 'were')} platform problems, not the task</>}
-            {groups.stopped > 0 && <> · {groups.stopped} stopped by a person (not counted)</>}
+            {groups.platformFailures > 0 && <> · {groups.platformFailures} {groups.platformFailures === 1 ? 'was a platform problem' : 'were platform problems'}</>}
+            {groups.stopped > 0 && <> · {groups.stopped} stopped by a person</>}
           </p>
         </div>
+      )}
+      {groups.landed > 0 && (
+        <p className="px-4 text-meta text-text-muted" data-testid="failure-groups-landed">
+          {groups.landed} stopped because the work already landed
+        </p>
       )}
 
       {groups.groups.length === 0 ? (
@@ -138,7 +159,7 @@ export function FailureGroupsSection({
         </div>
       ) : (
         <div data-testid="failure-groups" className="space-y-5">
-          {(['platform', 'work', 'stopped'] as const).map(kind => {
+          {(['platform', 'work'] as const).map(kind => {
             const causes = groups.groups.filter(g => g.kind === kind);
             if (!causes.length) return null;
             const recurring = causes.filter(g => g.count > 1);
@@ -147,10 +168,10 @@ export function FailureGroupsSection({
               {list.map(g => <GroupRow key={g.key} g={g} now={now} expanded={open === g.key} onToggle={() => setOpen(open === g.key ? null : g.key)} />)}
             </ul>;
             return <section key={kind} data-testid={`failure-kind-${kind}`}>
-              <h2 className="section-label mb-2">{kind === 'platform' ? 'Platform causes' : kind === 'work' ? 'Task causes' : 'Stopped by a person'}</h2>
+              <h2 className="section-label mb-2">{kind === 'platform' ? 'Platform causes' : 'Task causes'}</h2>
               <div className="border-y border-border-default">
                 {rows(recurring)}
-                {once.length > 0 && <Disclosure summary={`${once.length} one-off ${kind === 'stopped' ? (once.length === 1 ? 'stop' : 'stops') : (once.length === 1 ? 'failure' : 'failures')}`}>
+                {once.length > 0 && <Disclosure summary={`${once.length} one-off ${once.length === 1 ? 'failure' : 'failures'}`}>
                   {rows(once)}
                 </Disclosure>}
               </div>

@@ -25,6 +25,7 @@ import { notifyTeamOf } from '@/lib/notify';
 import { retryCiFailureForPr } from '@/lib/ci-failure-retry';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { createReviewerTask, preflightEscalationCheck } from '@/lib/reviewer';
+import { prNeedsCopyReview } from '@/lib/copy-review';
 import { applyPolicyConfigToMergePolicy } from '@/lib/workspace-policy';
 import { reviewerTitle } from '@/lib/task-title';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
@@ -36,9 +37,11 @@ import { readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request'
 import { pickReviewerRole } from '@/lib/pr-review-status';
 import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
-import { observeHead, openKernelDelivery, policyFindingFor } from '@/lib/workflow/seam';
+import { observeHead, policyFindingFor } from '@/lib/workflow/seam';
+import { openKernelDelivery } from '@/lib/workflow/kernel-client';
 import { releaseKernelDeliveryForPr } from '@/lib/workflow/authority';
 import { agentReviewsDataMigrations } from '@buildd/shared';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** The webhook payload shape the dispatch functions read. */
 type WebhookPr = { number: number; head: { sha: string }; html_url: string; base?: { ref: string }; body?: string | null };
@@ -88,12 +91,12 @@ async function maybeDispatchReviewer(
 ): Promise<boolean> {
   try {
     const workspace = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, openWorker.workspaceId),
+      where: sqlWhere(eq(workspaces.id, openWorker.workspaceId)),
     });
     if (!workspace) return false;
 
     const task = await db.query.tasks.findFirst({
-      where: eq(tasks.id, openWorker.taskId),
+      where: sqlWhere(eq(tasks.id, openWorker.taskId)),
       columns: { id: true, title: true, description: true, backend: true, missionId: true, pathManifest: true, pathDeclaration: true, context: true },
     });
     if (!task) return false;
@@ -108,7 +111,7 @@ async function maybeDispatchReviewer(
     let mission: PolicyMission | null = null;
     if (task.missionId) {
       const row = await db.query.missions.findFirst({
-        where: eq(missions.id, task.missionId),
+        where: sqlWhere(eq(missions.id, task.missionId)),
         columns: RESOLVE_POLICY_MISSION_COLUMNS,
       });
       if (row) mission = row as PolicyMission;
@@ -179,12 +182,19 @@ async function maybeDispatchReviewer(
 
     // Apply semantic risk-class policy override (detected policyConfig paths)
     const policyConfig = workspace.gitConfig?.policyConfig ?? null;
-    const policy = applyPolicyConfigToMergePolicy(
+    let policy = applyPolicyConfigToMergePolicy(
       basePolicy,
       policyConfig,
       prFiles.map((f) => f.filename),
       migrationSafety,
     );
+
+    // Copy review lives in the reviewer's prompt, so an auto-threshold PR that
+    // changes copy in a workspace that opted in needs a reviewer too — otherwise
+    // it merges on CI alone and the copy check never runs.
+    if (policy.tier === 'auto-threshold' && (await prNeedsCopyReview(workspace.gitConfig, prFiles))) {
+      policy = { ...policy, tier: 'agent-review' };
+    }
 
     if (policy.tier !== 'agent-review' && policy.tier !== 'human') return false;
 
@@ -206,7 +216,7 @@ async function maybeDispatchReviewer(
         installationId,
         source: 'webhook:opened',
         policy: policyFindingFor({ reason, migrationSafety }),
-      }).catch((err) => {
+      }, { principal: { kind: 'system', id: 'system:webhook:opened' } }).catch((err) => {
         console.error(`[reviewer] workflow kernel could not take PR #${pr.number} for its pre-flight finding; legacy escalation:`, err);
         return { owned: false };
       });
@@ -278,7 +288,7 @@ async function maybeDispatchReviewer(
       prNumber: pr.number,
       installationId,
       source: 'webhook:opened',
-    }).catch((err) => {
+    }, { principal: { kind: 'system', id: 'system:webhook:opened' } }).catch((err) => {
       console.error(`[reviewer] workflow kernel could not open a delivery for PR #${pr.number}; legacy review dispatch:`, err);
       return { owned: false };
     });
@@ -441,11 +451,11 @@ async function maybeReDispatchReviewer(
     const priorHeadSha = status.reviewHeadSha;
     if (!priorHeadSha || priorHeadSha === pr.head.sha) return;
 
-    const workspace = await db.query.workspaces.findFirst({ where: eq(workspaces.id, openWorker.workspaceId) });
+    const workspace = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, openWorker.workspaceId)) });
     if (!workspace) return;
 
     const task = await db.query.tasks.findFirst({
-      where: eq(tasks.id, openWorker.taskId),
+      where: sqlWhere(eq(tasks.id, openWorker.taskId)),
       columns: { id: true, title: true, description: true, backend: true, missionId: true, pathManifest: true, pathDeclaration: true, context: true },
     });
     if (!task) return;
@@ -458,7 +468,7 @@ async function maybeReDispatchReviewer(
     } | null = null;
     if (task.missionId) {
       const row = await db.query.missions.findFirst({
-        where: eq(missions.id, task.missionId),
+        where: sqlWhere(eq(missions.id, task.missionId)),
         columns: RESOLVE_POLICY_MISSION_COLUMNS,
       });
       if (row) mission = row;

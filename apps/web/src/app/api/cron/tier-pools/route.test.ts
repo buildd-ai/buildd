@@ -13,6 +13,10 @@ mock.module('@buildd/core/tier-pool-daily-source', () => ({ TIER_POOLS_JOB: 'tie
 let dialSummary: any = { pools: 0, evaluated: 0, transitions: [], stale: 0, errors: 0 };
 const runDial = mock(async (_a: { now: Date }) => dialSummary);
 mock.module('@buildd/core/tier-dial-source', () => ({ runDialStep: runDial }));
+let claimSummary: any = { evaluatedAt: '2026-01-01', cells: [] };
+let claimFails = false;
+const runClaimLearning = mock(async (_a: { now: Date }) => { if (claimFails) throw new Error('unavailable'); return claimSummary; });
+mock.module('@buildd/core/orchestration-claim-learning-source', () => ({ runClaimLearningStep: runClaimLearning }));
 const RETRO_SOURCE = { status: async () => ({ enabled: true, judgeModel: 'typesafe/jev-1.13' }), verdicts: async () => [] };
 mock.module('@/lib/chat-retro/policy-signal', () => ({ chatRetroQualitySource: RETRO_SOURCE }));
 
@@ -35,11 +39,12 @@ const req = (token: string | null = SECRET) => new NextRequest('http://localhost
 });
 
 describe('GET /api/cron/tier-pools', () => {
-  beforeEach(() => { process.env.CRON_SECRET = SECRET; run.mockClear(); recorded.length = 0; });
+  beforeEach(() => { process.env.CRON_SECRET = SECRET; run.mockClear(); recorded.length = 0; runClaimLearning.mockClear(); claimFails = false; claimSummary = { evaluatedAt: '2026-01-01', cells: [] }; });
 
   it('refuses without the cron secret and runs nothing', async () => {
     expect((await GET(req('wrong'))).status).toBe(401);
     expect(run).not.toHaveBeenCalled();
+    expect(runClaimLearning).not.toHaveBeenCalled();
   });
 
   it('runs the daily step and reports changed = pools whose allocation changed', async () => {
@@ -65,4 +70,23 @@ describe('GET /api/cron/tier-pools', () => {
     await GET(req());
     expect((runDial.mock.calls[0][0] as { chatQuality?: unknown }).chatQuality).toBe(RETRO_SOURCE);
   });
+
+  it('evaluates claim cells and includes changes in the existing cron report', async () => {
+    dialSummary = { pools: 0, evaluated: 0, transitions: [], stale: 0, errors: 0 };
+    claimSummary = { cells: [{ applied: true, changed: true }, { applied: true, changed: false }, { applied: false, changed: false }] };
+    const response = await GET(req());
+    expect(runClaimLearning).toHaveBeenCalledTimes(1);
+    expect((await response.json()).claimLearning.cells).toHaveLength(3);
+    expect(recorded.filter(r => r.changed !== undefined).at(-1)).toMatchObject({ processed: 5, changed: 2, errors: 1 });
+    expect(runClaimLearning.mock.calls[0][0].now).toBe(run.mock.calls[0][0].now);
+  });
+  it('reports a claim learning read failure while retaining other pool results', async () => {
+    dialSummary = { pools: 0, evaluated: 0, transitions: [], stale: 0, errors: 0 };
+    claimFails = true;
+    const response = await GET(req());
+    expect(response.status).toBe(200);
+    expect((await response.json()).claimLearning).toBeNull();
+    expect(recorded.filter(r => r.changed !== undefined).at(-1)).toMatchObject({ processed: 2, changed: 1, errors: 1 });
+  });
+
 });

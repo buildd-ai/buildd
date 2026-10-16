@@ -45,7 +45,7 @@ describe('no surface keeps its own humaniser', () => {
     readFileSync(join(WEB_SRC, rel), 'utf8').includes(needle);
 
   test('the role page no longer hardcodes a model generation', () => {
-    const page = 'app/app/(protected)/settings/roles/[slug]/page.tsx';
+    const page = 'app/app/(protected)/settings/agents/[slug]/page.tsx';
     expect(has(page, 'Claude Opus 4')).toBe(false);
     expect(has(page, 'Claude Sonnet 4')).toBe(false);
     expect(has(page, 'roleModelLabel')).toBe(true);

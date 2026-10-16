@@ -1,8 +1,8 @@
 import { after } from 'next/server';
 import { db } from '@buildd/core/db';
-import { tasks, workers } from '@buildd/core/db/schema';
+import { accounts, localSessions, localSessionWorkers, tasks, teamMembers, workers } from '@buildd/core/db/schema';
 import { and, eq, inArray, lt, ne, sql, type SQL } from 'drizzle-orm';
-import { INTERACTIVE_WORKER_IDLE_TTL_MS, INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
+import { INTERACTIVE_WORKER_BUSY_MAX_MS, INTERACTIVE_WORKER_IDLE_TTL_MS, INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
 
 /**
  * Liveness for interactive workers: the rows `claim_task` mints from an MCP
@@ -95,16 +95,151 @@ export function interactiveTouchScope(accountId: string, userId: string | null, 
 
 /**
  * The reaper's interactive arm: this account's interactive workers with no MCP
- * activity for INTERACTIVE_WORKER_IDLE_TTL_MS. Account-scoped like the runner
- * rules; the account that claimed is the only one whose calls count.
+ * or hook activity for INTERACTIVE_WORKER_IDLE_TTL_MS. Account-scoped like the
+ * runner rules; the account that claimed is the only one whose calls count.
+ *
+ * `updated_at` alone is not enough: MCP silence, client presence, a running
+ * command and the claim are separate signals. A long command fires no hook
+ * until it returns, so the client is alive and working with nothing to say; a
+ * `/clear` or a missed bind leaves a live client whose presence does not hold
+ * the claim. So a worker is also kept while
+ *  - an open presence holding it (the buildd plugin's, lib/local-session.ts)
+ *    was heard from within the TTL, or marked itself inside a turn
+ *    (`busy_since`) and was heard from within INTERACTIVE_WORKER_BUSY_MAX_MS; or
+ *  - its own last activity is within INTERACTIVE_WORKER_BUSY_MAX_MS and an
+ *    open presence of its claimant, in its workspace, was heard from within
+ *    the TTL (the person's client is alive there, it just is not holding it).
+ * INTERACTIVE_WORKER_BUSY_MAX_MS is the hard backstop either way: a client that
+ * died mid-turn never clears its mark, and a person's open session never keeps
+ * an abandoned claim forever.
  */
 export function interactiveAbandonedScope(accountId: string, now: Date): SQL {
+  const idleCutoff = new Date(now.getTime() - INTERACTIVE_WORKER_IDLE_TTL_MS);
   return and(
     eq(workers.accountId, accountId),
     eq(workers.runner, INTERACTIVE_WORKER_RUNNER),
     inArray(workers.status, [...INTERACTIVE_LIVE_STATUSES]),
-    lt(workers.updatedAt, new Date(now.getTime() - INTERACTIVE_WORKER_IDLE_TTL_MS)),
+    lt(workers.updatedAt, idleCutoff),
+    sql`NOT ${heldByLivePresence(now)}`,
+    sql`NOT ${claimantPresenceAlive(now)}`,
   )!;
+}
+
+/**
+ * The claimant's client is alive in the worker's workspace, though no presence
+ * of it holds the worker, and the worker itself was active within the backstop.
+ * Claimant: a presence of the account that claimed, or a person's presence
+ * (presence token) of whoever the claim recorded or, when it recorded nobody,
+ * of a member of the claiming account's team: the same rule bind uses.
+ */
+export function claimantPresenceAlive(now: Date): SQL {
+  const idleCutoff = new Date(now.getTime() - INTERACTIVE_WORKER_IDLE_TTL_MS).toISOString();
+  const backstop = new Date(now.getTime() - INTERACTIVE_WORKER_BUSY_MAX_MS).toISOString();
+  const w = { accountId: sql`${workers.accountId}`, workspaceId: sql`${workers.workspaceId}`, taskId: sql`${workers.taskId}`, updatedAt: sql`${workers.updatedAt}` };
+  return sql`(
+    ${w.updatedAt} > ${backstop}::timestamptz
+    AND EXISTS (
+      SELECT 1 FROM ${localSessions} ls_mine
+      WHERE ls_mine."ended_at" IS NULL
+      AND ls_mine."workspace_id" = ${w.workspaceId}
+      AND ls_mine."last_seen_at" > ${idleCutoff}::timestamptz
+      AND (
+        ls_mine."account_id" = ${w.accountId}
+        OR (
+          ls_mine."user_id" IS NOT NULL
+          AND COALESCE(
+            (SELECT t_who.context->>${INTERACTIVE_CLAIM_USER_KEY} FROM ${tasks} t_who WHERE t_who.id = ${w.taskId}),
+            ls_mine."user_id"::text
+          ) = ls_mine."user_id"::text
+          AND EXISTS (
+            SELECT 1 FROM ${teamMembers} tm_mine
+            JOIN ${accounts} a_mine ON a_mine.team_id = tm_mine."team_id"
+            WHERE a_mine.id = ${w.accountId} AND tm_mine."user_id" = ls_mine."user_id"
+          )
+        )
+      )
+    )
+  )`;
+}
+
+/** An open presence holding this worker that still counts as its client being alive. */
+export function heldByLivePresence(now: Date): SQL {
+  const idleCutoff = new Date(now.getTime() - INTERACTIVE_WORKER_IDLE_TTL_MS).toISOString();
+  const busyCutoff = new Date(now.getTime() - INTERACTIVE_WORKER_BUSY_MAX_MS).toISOString();
+  // Nested fragment so the column renders qualified inside the subquery.
+  const workerId = sql`${workers.id}`;
+  return sql`EXISTS (
+    SELECT 1 FROM ${localSessions} ls_hold
+    WHERE ls_hold."ended_at" IS NULL
+    AND (
+      ls_hold."bound_worker_id" = ${workerId}
+      OR EXISTS (
+        SELECT 1 FROM ${localSessionWorkers} lsw_hold
+        WHERE lsw_hold."worker_id" = ${workerId} AND lsw_hold."local_session_id" = ls_hold.id
+      )
+    )
+    AND (
+      ls_hold."last_seen_at" > ${idleCutoff}::timestamptz
+      OR (ls_hold."busy_since" IS NOT NULL AND ls_hold."last_seen_at" > ${busyCutoff}::timestamptz)
+    )
+  )`;
+}
+
+/**
+ * Whether a PATCH /api/workers/[id] must leave `updated_at` alone: a read or
+ * ack (receive_messages, a message ack) on an interactive worker parked on a
+ * question.
+ *
+ * An interactive worker parked by `ask_human` is outside every reaper rule
+ * here (waiting_input is not a live status). Its only expiry is the
+ * waiting_input sweep (cleanupStuckWaitingInput: 24 h, 4 h in a mission, the
+ * same as a runner's question), which measures from `updated_at`. The session
+ * waiting for the answer keeps polling receive_messages; if each poll moved
+ * `updated_at`, the question would never expire. A status change or a new
+ * question does restart the clock.
+ */
+export function keepsParkClock(
+  worker: { runner?: string | null; status: string },
+  body: { status?: unknown; waitingFor?: unknown },
+): boolean {
+  return isInteractiveWorker(worker.runner)
+    && worker.status === 'waiting_input'
+    && body.status === undefined
+    && body.waitingFor === undefined;
+}
+
+/**
+ * The poll heartbeat of an interactive session parked on its own question:
+ * stamp `waitingFor.sessionSeenAt` (now, ISO). /respond reads it to tell a
+ * session that is still waiting from one whose terminal closed mid-wait
+ * (INTERACTIVE_SESSION_POLL_STALE_MS in lib/answer-resume.ts).
+ *
+ * Its own UPDATE, for two reasons:
+ *  - it must not move `updated_at`: that column is the park clock the
+ *    waiting_input sweep measures expiry from (see keepsParkClock), and
+ *    drizzle sets nothing the SET does not name;
+ *  - it must never resurrect a question. The write is `jsonb_set` on the live
+ *    column, gated on it still being set and the worker still parked, so an
+ *    answer that cleared `waitingFor` a moment earlier stays cleared.
+ *
+ * Best-effort: a heartbeat that fails to land only makes the session look
+ * older, never fails the poll it rides on.
+ */
+export async function recordInteractiveSessionSeen(workerId: string, now: Date = new Date()): Promise<void> {
+  try {
+    await db.update(workers)
+      .set({
+        waitingFor: sql`jsonb_set(${workers.waitingFor}, '{sessionSeenAt}', to_jsonb(${now.toISOString()}::text))` as any,
+      })
+      .where(and(
+        eq(workers.id, workerId),
+        eq(workers.runner, INTERACTIVE_WORKER_RUNNER),
+        eq(workers.status, 'waiting_input'),
+        sql`${workers.waitingFor} IS NOT NULL`,
+      ));
+  } catch (err) {
+    console.warn(`[interactive] session heartbeat failed for worker ${workerId}:`, err);
+  }
 }
 
 /** Per-instance memo: (account, user, session) → last touch. Saves the round trip on bursts. */
@@ -156,6 +291,23 @@ export async function touchInteractiveWorkers(opts: {
 }
 
 /**
+ * True when a JSON-RPC body is (or, for a batch, contains only) `initialize`.
+ * Every new MCP session opens with one, and it is always keyless, so it proves
+ * nothing about which claims the caller owns. A fleet opening sessions
+ * on an account every minute would otherwise keep every keyless claim alive.
+ * Unparseable bodies are not initialize (the touch proceeds as before).
+ */
+export async function isInitializeOnlyRequest(req: Request): Promise<boolean> {
+  try {
+    const body = await req.clone().json();
+    const msgs = Array.isArray(body) ? body : [body];
+    return msgs.length > 0 && msgs.every((m) => m?.method === 'initialize');
+  } catch {
+    return false;
+  }
+}
+
+/**
  * What the MCP routes call on every authenticated request: gate on the session
  * level, then run the touch after the response is sent so the MCP call never
  * waits on it. Outside a request scope (tests, scripts) it runs immediately.
@@ -165,7 +317,10 @@ export function scheduleInteractiveTouch(opts: {
   userId?: string | null;
   sessionKey?: string | null;
   level: string | null | undefined;
+  /** An `initialize`-only request: keyless by construction, never a touch. */
+  initializeOnly?: boolean;
 }): void {
+  if (opts.initializeOnly) return;
   if (!opts.accountId || !opts.level || !LIVENESS_LEVELS.has(opts.level)) return;
   const run = () => touchInteractiveWorkers({ accountId: opts.accountId, userId: opts.userId ?? null, sessionKey: opts.sessionKey ?? null });
   try {

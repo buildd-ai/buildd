@@ -9,6 +9,7 @@ const mockVerifyWorkspaceAccess = mock(async (..._a: any[]) => null as any);
 const mockVerifyAccountWorkspaceAccess = mock(async (..._a: any[]) => false);
 const mockMemberFindFirst = mock(async (..._a: any[]) => null as any);
 const mockWorkspaceFindFirst = mock(async (..._a: any[]) => null as any);
+const mockUserFindFirst = mock(async (..._a: any[]) => null as any);
 
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
@@ -22,8 +23,12 @@ mock.module('@/lib/team-access', () => ({
   verifyAccountWorkspaceAccess: mockVerifyAccountWorkspaceAccess,
 }));
 mock.module('@buildd/core/db', () => ({
-  db: { query: { teamMembers: { findFirst: mockMemberFindFirst }, workspaces: { findFirst: mockWorkspaceFindFirst } } },
+  db: { query: { teamMembers: { findFirst: mockMemberFindFirst }, workspaces: { findFirst: mockWorkspaceFindFirst }, users: { findFirst: mockUserFindFirst } } },
 }));
+
+// Who counts as a buildd platform operator (platform-operator.ts, platform-admin.ts).
+process.env.BUILDD_OPERATOR_USER_EMAILS = 'op@example.com';
+process.env.BUILDD_PLATFORM_ADMIN_ACCOUNT_IDS = 'platform-acct';
 
 import { resolveExperimentViewer, taskTokenExperimentViewer } from './experiment-access';
 
@@ -36,7 +41,7 @@ function req(opts: { bearer?: string; cookie?: string } = {}) {
 
 beforeEach(() => {
   for (const m of [mockGetCurrentUser, mockAuthenticateApiKey, mockVerifyJwt, mockResolveActiveTeamId,
-    mockVerifyWorkspaceAccess, mockVerifyAccountWorkspaceAccess, mockMemberFindFirst, mockWorkspaceFindFirst]) m.mockReset();
+    mockVerifyWorkspaceAccess, mockVerifyAccountWorkspaceAccess, mockMemberFindFirst, mockWorkspaceFindFirst, mockUserFindFirst]) m.mockReset();
   mockGetCurrentUser.mockResolvedValue(null);
   mockAuthenticateApiKey.mockResolvedValue(null);
 });
@@ -52,7 +57,7 @@ describe('resolveExperimentViewer — session', () => {
     mockResolveActiveTeamId.mockResolvedValue('team-a');
     mockMemberFindFirst.mockResolvedValue({ role });
     const r = await resolveExperimentViewer(req({ cookie: 'team-a' }), null);
-    expect(r).toEqual({ ok: true, viewer: { teamId: 'team-a', role: role as any, userId: 'u-1', accountId: null } });
+    expect(r).toEqual({ ok: true, viewer: { teamId: 'team-a', role: role as any, userId: 'u-1', accountId: null, operator: false } });
     expect(mockResolveActiveTeamId).toHaveBeenCalledWith('u-1', 'team-a');
   });
 
@@ -70,7 +75,15 @@ describe('resolveExperimentViewer — session', () => {
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-b', role: 'member' });
     mockMemberFindFirst.mockResolvedValue({ role: 'admin' });
     const r = await resolveExperimentViewer(req(), 'ws-1');
-    expect(r).toEqual({ ok: true, viewer: { teamId: 'team-b', role: 'admin', userId: 'u-1', accountId: null } });
+    expect(r).toEqual({ ok: true, viewer: { teamId: 'team-b', role: 'admin', userId: 'u-1', accountId: null, operator: false } });
+  });
+
+  it('a signed-in platform operator is an operator whatever their team role', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-op', email: 'Op@Example.com' });
+    mockResolveActiveTeamId.mockResolvedValue('team-a');
+    mockMemberFindFirst.mockResolvedValue({ role: 'member' });
+    const r = await resolveExperimentViewer(req(), null);
+    expect(r.ok && r.viewer).toMatchObject({ role: 'member', operator: true });
   });
 
   it('workspaceId the user cannot reach → 404', async () => {
@@ -85,7 +98,14 @@ describe('resolveExperimentViewer — API key', () => {
   it('admin-level key acts as admin on its own team', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acct', teamId: 'team-a', level: 'admin' });
     const r = await resolveExperimentViewer(req({ bearer: 'bld_x' }), null);
-    expect(r).toEqual({ ok: true, viewer: { teamId: 'team-a', role: 'admin', userId: null, accountId: 'acct' } });
+    expect(r).toEqual({ ok: true, viewer: { teamId: 'team-a', role: 'admin', userId: null, accountId: 'acct', operator: false } });
+  });
+
+  it('an admin-level key of a platform admin account is an operator; below admin it is not', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'platform-acct', teamId: 'team-a', level: 'admin' });
+    expect((await resolveExperimentViewer(req({ bearer: 'bld_x' }), null) as any).viewer.operator).toBe(true);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'platform-acct', teamId: 'team-a', level: 'worker' });
+    expect((await resolveExperimentViewer(req({ bearer: 'bld_x' }), null) as any).viewer.operator).toBe(false);
   });
 
   it.each(['worker', 'trigger'])('%s-level key acts as member', async (level) => {
@@ -110,7 +130,17 @@ describe('resolveExperimentViewer — API key', () => {
     mockVerifyJwt.mockResolvedValue({ sub: 'u-9' });
     mockMemberFindFirst.mockResolvedValue({ role: 'member' });
     const r = await resolveExperimentViewer(req({ bearer: 'aaa.bbb.ccc' }), null);
-    expect(r).toEqual({ ok: true, viewer: { teamId: 'team-a', role: 'member', userId: 'u-9', accountId: 'acct' } });
+    expect(r).toEqual({ ok: true, viewer: { teamId: 'team-a', role: 'member', userId: 'u-9', accountId: 'acct', operator: false } });
+  });
+
+  it("an OAuth bearer is an operator when its person is, never by the team's shared account", async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'platform-acct', teamId: 'team-a', level: 'admin' });
+    mockVerifyJwt.mockResolvedValue({ sub: 'u-9' });
+    mockMemberFindFirst.mockResolvedValue({ role: 'owner' });
+    mockUserFindFirst.mockResolvedValue({ email: 'owner@example.com' });
+    expect((await resolveExperimentViewer(req({ bearer: 'aaa.bbb.ccc' }), null) as any).viewer.operator).toBe(false);
+    mockUserFindFirst.mockResolvedValue({ email: 'op@example.com' });
+    expect((await resolveExperimentViewer(req({ bearer: 'aaa.bbb.ccc' }), null) as any).viewer.operator).toBe(true);
   });
 });
 
@@ -118,7 +148,7 @@ describe('taskTokenExperimentViewer', () => {
   it('is a member of its own workspace\'s team, never more', async () => {
     mockWorkspaceFindFirst.mockResolvedValue({ teamId: 'team-a' });
     const r = await taskTokenExperimentViewer('ws-own', 'acct-1');
-    expect(r).toEqual({ ok: true, viewer: { teamId: 'team-a', role: 'member', userId: null, accountId: 'acct-1' } });
+    expect(r).toEqual({ ok: true, viewer: { teamId: 'team-a', role: 'member', userId: null, accountId: 'acct-1', operator: false } });
   });
 
   it('404s when the workspace has no team', async () => {

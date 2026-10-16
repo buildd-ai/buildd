@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 // ─── DB mocks ─────────────────────────────────────────────────────────────────
 
 const mockWorkersFindMany = mock(() => [] as any[]);
+const mockWorkerMergedRead = mock(async () => [{ mergedAt: null as Date | null }]);
 const mockMissionsFindMany = mock(() => [] as any[]);
 const mockWorkspacesFindFirst = mock(() => null as any);
 const mockGithubReposFindFirst = mock(() => null as any);
@@ -36,6 +37,12 @@ mock.module('@buildd/core/db', () => ({
       githubRepos: { findFirst: mockGithubReposFindFirst },
     },
     update: (table: any) => (table === missionsSchema ? mockMissionsUpdate() : mockWorkersUpdate()),
+    // refreshWorkerMergeStateIfStale asks the row whether it now carries the merge (S4a).
+    // Only that read: every other select stays unmocked, as the sweep tests below expect.
+    select: (cols: any) => {
+      if (!cols || !('mergedAt' in cols)) throw new Error('db.select is not mocked here');
+      return { from: () => ({ where: () => mockWorkerMergedRead() }) };
+    },
   },
 }));
 
@@ -104,10 +111,13 @@ const mockEvaluateMissionWorkState = mock(() => Promise.resolve({
   unmergedPrCount: 0,
   landedOnIntegrationCount: 1,
 } as any));
+const mockReconcileMissionDeliveries = mock((_missionId: string) => Promise.resolve([] as string[]));
 mock.module('@/lib/mission-pr', () => ({
   maybeOpenMissionIntegrationPr: mockMaybeOpenMissionIntegrationPr,
   findMissionPrOwner: mockFindMissionPrOwner,
   evaluateMissionWorkState: mockEvaluateMissionWorkState,
+  // §6 backstop: finishes what a delivery transition left owed (its own tests are the kernel's).
+  reconcileMissionDeliveries: mockReconcileMissionDeliveries,
 }));
 
 // A shipped mission (its mission PR merged) is handed to the one completion
@@ -134,7 +144,10 @@ const mockGithubApi = mock(() => Promise.resolve({ state: 'open', merged: false,
 mock.module('@/lib/github', () => ({ githubApi: mockGithubApi }));
 
 // Sibling-row merge stamp; its predicate is covered in pr-merge-stamp.test.ts.
-const mockStampPrMergedOnAllRows = mock(async (_input: any) => [] as Array<{ id: string; taskId: string | null }>);
+// By default the stamp wrote one row (the sweep counts only real writes, S4a); a test that needs
+// "the funnel wrote nothing" (a delivery-owned PR the kernel takes) says so.
+const STAMPED_ROW = { id: 'stamped-row', taskId: null as string | null };
+const mockStampPrMergedOnAllRows = mock(async (_input: any) => [STAMPED_ROW] as Array<{ id: string; taskId: string | null }>);
 mock.module('@/lib/pr-merge-stamp', () => ({
   stampPrMergedOnAllRows: mockStampPrMergedOnAllRows,
   noRowOfPrMerged: () => ({ op: 'noRowOfPrMerged' }),
@@ -155,7 +168,17 @@ mock.module('@buildd/core/pr-facts', () => ({
 
 // Kernel import on merge/close is best-effort; no real kernel code runs here.
 const mockObservePrState = mock(async (_input: any) => false);
-mock.module('@/lib/workflow/seam', () => ({ observePrState: mockObservePrState }));
+const mockRecordPrStateObserved = mock(async (_input: any) => true);
+mock.module('@/lib/workflow/seam', () => ({ observePrState: mockObservePrState, recordPrStateObserved: mockRecordPrStateObserved }));
+
+// G6 (failure-incident-recovery): a healed merge releases the PR's paths,
+// like the webhook's merge work does.
+const healOrder: string[] = [];
+mock.module('@/lib/path-claim-release', () => ({
+  releaseAndNotify: async (taskId: string, reason: string) => { healOrder.push(`release:${taskId}:${reason}`); },
+  deliverPathReleased: async () => {},
+  resolveReleaseReasonForTask: async () => 'merged',
+}));
 
 beforeEach(() => {
   recordedFacts.length = 0;
@@ -175,6 +198,10 @@ import {
   MISSION_PR_SWEEP_WINDOW_MS,
 } from './pr-reconcile';
 import { TIER_SLA_MS, UNRESOLVABLE_FAILURE_THRESHOLD, DAY_MS, HOUR_MS } from './pr-freshness';
+import { capturedOrderBy, capturedWhere } from '@buildd/core/db/relational-sql';
+
+/** A terminal fact goes to the funnel under the kernel's scope (S4a, pr-fact-scope.ts). */
+const FUNNEL_OPTS = { scope: expect.objectContaining({ where: expect.any(Function) }) };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -192,14 +219,19 @@ const ancientOpenedAt = new Date(Date.now() - 90 * DAY_MS);
  * which columns and literals it references. Cycle-safe: the stubbed `sql` tag
  * hands back objects that share sub-trees, which plain JSON.stringify chokes on.
  */
-function describePredicate(node: unknown, seen = new WeakSet<object>()): string {
+/** A captured relational where / orderBy, as it was built before or after the RQB v2 move. */
+function describePredicate(captured: unknown): string {
+  return describeNode(typeof captured === 'function' ? capturedOrderBy(captured, {}) : capturedWhere(captured));
+}
+
+function describeNode(node: unknown, seen = new WeakSet<object>()): string {
   if (node == null) return '';
   if (typeof node !== 'object') return String(node);
   if (seen.has(node as object)) return '';
   seen.add(node as object);
-  if (Array.isArray(node)) return node.map(n => describePredicate(n, seen)).join(' ');
+  if (Array.isArray(node)) return node.map(n => describeNode(n, seen)).join(' ');
   return Object.entries(node as Record<string, unknown>)
-    .map(([k, v]) => `${k} ${describePredicate(v, seen)}`)
+    .map(([k, v]) => `${k} ${describeNode(v, seen)}`)
     .join(' ');
 }
 
@@ -224,6 +256,7 @@ describe('refreshWorkerMergeStateIfStale', () => {
 
   it('calls GitHub API and stamps mergedAt when PR is merged', async () => {
     mockStampPrMergedOnAllRows.mockClear();
+    mockStampPrMergedOnAllRows.mockResolvedValueOnce([{ id: 'w1', taskId: 't1' }]);
     mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-03-01T10:00:00Z' });
     const setMock = mock(() => ({ where: mock(() => Promise.resolve()) }));
     mockWorkersUpdate.mockReturnValue({ set: setMock });
@@ -245,6 +278,42 @@ describe('refreshWorkerMergeStateIfStale', () => {
       prCheckFailureCount: 0,
       updatedAt: expect.any(Date),
     });
+  });
+
+  // S4a review item 3: the dependency gate wakes a dependent only for a row that really carries
+  // the merge now, never for a funnel no-op the SQL gate would still refuse.
+  it('returns false when no row was written (a delivery-owned PR the kernel did not take in)', async () => {
+    mockStampPrMergedOnAllRows.mockResolvedValueOnce([]);
+    mockWorkerMergedRead.mockResolvedValueOnce([{ mergedAt: null }]);
+    mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-03-01T10:00:00Z' });
+    mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    expect(await refreshWorkerMergeStateIfStale({ id: 'w1', prNumber: 55, prUrl: 'https://github.com/owner/repo/pull/55' }, 456)).toBe(false);
+  });
+
+  // S4a review item 1a: a lost merge webhook heals through the dependency gate in one call.
+  it('hands a merge to the kernel first (T17 from its own read), then answers from the row', async () => {
+    mockObservePrState.mockClear();
+    mockRecordPrStateObserved.mockClear();
+    mockStampPrMergedOnAllRows.mockResolvedValueOnce([]);
+    mockWorkerMergedRead.mockResolvedValueOnce([{ mergedAt: new Date('2026-03-01T10:00:00Z') }]);
+    mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-03-01T10:00:00Z' });
+    mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    const ok = await refreshWorkerMergeStateIfStale({ id: 'w1', prNumber: 55, prUrl: 'https://github.com/owner/repo/pull/55' }, 456, { workspaceId: 'ws1' });
+    expect(ok).toBe(true);
+    expect(mockObservePrState).toHaveBeenCalledTimes(1);
+    expect(mockObservePrState.mock.calls[0][0]).toMatchObject({ workspaceId: 'ws1', repoFullName: 'owner/repo', prNumber: 55, installationId: 456, source: 'dependency-gate' });
+    expect(mockRecordPrStateObserved).not.toHaveBeenCalled();
+  });
+
+  it('from a page render (observeOnly) records the merge as a fact and applies nothing (AC-3)', async () => {
+    mockObservePrState.mockClear();
+    mockRecordPrStateObserved.mockClear();
+    mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-03-01T10:00:00Z' });
+    mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    await refreshWorkerMergeStateIfStale({ id: 'w1', prNumber: 55, prUrl: 'https://github.com/owner/repo/pull/55' }, 456, { workspaceId: 'ws1', observeOnly: true });
+    expect(mockObservePrState).not.toHaveBeenCalled();
+    expect(mockRecordPrStateObserved).toHaveBeenCalledTimes(1);
+    expect(mockRecordPrStateObserved.mock.calls[0][0]).toMatchObject({ workspaceId: 'ws1', repoFullName: 'owner/repo', prNumber: 55 });
   });
 
   it('stamps the merge on every other row carrying the PR (read-through tier)', async () => {
@@ -406,6 +475,28 @@ describe('reconcileStalePrWorkers', () => {
     }));
   });
 
+  it('G6: healing a missed merge releases the task\'s paths', async () => {
+    healOrder.length = 0;
+    mockWorkersFindMany.mockResolvedValue([{ id: 'w1', prNumber: 42, workspaceId: 'ws1', taskId: 't1' }]);
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-01-01T00:00:00Z' });
+
+    await reconcileStalePrWorkers();
+
+    expect(healOrder).toEqual(['release:t1:merged']);
+  });
+
+  it('G6: an open PR releases nothing', async () => {
+    healOrder.length = 0;
+    mockWorkersFindMany.mockResolvedValue([{ id: 'w1', prNumber: 42, workspaceId: 'ws1', taskId: 't1' }]);
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockResolvedValue({ state: 'open', merged: false, merged_at: null, mergeable_state: 'clean' });
+
+    await reconcileStalePrWorkers();
+
+    expect(healOrder).toEqual([]);
+  });
+
   it('stamps the merge on every other row carrying the PR (cron tier)', async () => {
     mockStampPrMergedOnAllRows.mockClear();
     mockWorkersFindMany.mockResolvedValue([
@@ -455,7 +546,7 @@ describe('reconcileStalePrWorkers', () => {
 
     expect(result.closed).toBe(1);
     expect(result.stamped).toBe(0);
-    expect(recordedFacts).toEqual([{ target: { workerId: 'w1' }, fact: { kind: 'closed' }, opts: undefined }]);
+    expect(recordedFacts).toEqual([{ target: { workerId: 'w1' }, fact: { kind: 'closed' }, opts: FUNNEL_OPTS }]);
     // AC-4: closed is a confirmed GitHub answer too — both clocks advance.
     const written = setMock.mock.calls[0][0] as Record<string, unknown>;
     expect(written.prLastCheckedAt).toBeInstanceOf(Date);
@@ -1206,6 +1297,31 @@ describe('sweepMissionIntegrationPrs', () => {
     console.warn = origWarn;
 
     expect(logs).toEqual([]);
+  });
+
+  // §6 delivery reconcile under #4805's rule: only an outage defers.
+  it('a delivery reconcile the control plane could not take is deferred, silently; any other failure is an error', async () => {
+    const { ControlPlaneUnavailableError, KernelCommandRefusedError } = await import('@/lib/workflow/kernel-client');
+    mockMissionsFindMany.mockResolvedValue([{ id: 'm1' }]);
+    mockFindMissionPrOwner.mockResolvedValue({ taskId: 't', workerId: 'w', prNumber: 9, prUrl: 'u', mergedAt: null, state: 'open' });
+    const logs: unknown[][] = [];
+    const origErr = console.error;
+    console.error = (...a: unknown[]) => { logs.push(a); };
+    try {
+      mockReconcileMissionDeliveries.mockImplementationOnce(() => Promise.reject(new ControlPlaneUnavailableError('budget spent')));
+      const deferred = await sweepMissionIntegrationPrs();
+      expect(deferred).toMatchObject({ deliveriesDeferred: 1, alreadyOpen: 1 });
+      expect(deferred.deliveryErrors).toBeUndefined();
+      expect(logs).toEqual([]);
+
+      mockReconcileMissionDeliveries.mockImplementationOnce(() => Promise.reject(new KernelCommandRefusedError(403, { code: 'forbidden' })));
+      const refused = await sweepMissionIntegrationPrs();
+      expect(refused).toMatchObject({ deliveryErrors: 1, alreadyOpen: 1 });
+      expect(refused.deliveriesDeferred).toBeUndefined();
+      expect(logs).toHaveLength(1);
+    } finally {
+      console.error = origErr;
+    }
   });
 
   it('never reopens a mission PR a human closed, and says nothing about it', async () => {

@@ -7,6 +7,7 @@ import { getUserTeamIds, verifyWorkspaceAccess } from '@/lib/team-access';
 import { resolveFeedbackEntityHome } from '@/lib/feedback-entity-workspace';
 import { rateableTurnTeam } from '@/lib/chat/turn-feedback';
 import { isChatFeedbackReason, type ChatFeedbackReason } from '@buildd/core/tier-pool';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // 'conversation_message' = thumbs on an assistant chat turn
 // (knowledge-base: buildd/design/tier-model-pools.md). It carries a reason label, never a comment.
@@ -78,11 +79,11 @@ export async function POST(req: NextRequest) {
 
     // Upsert: if user already gave feedback on this entity, update it
     const existing = await db.query.userFeedback.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(userFeedback.userId, user.id),
         eq(userFeedback.entityType, entityType),
         eq(userFeedback.entityId, entityId),
-      ),
+      )),
     });
 
     if (existing) {
@@ -139,7 +140,7 @@ export async function GET(req: NextRequest) {
     ];
 
     const results = await db.query.userFeedback.findMany({
-      where: and(...conditions),
+      where: sqlWhere(and(...conditions)),
     });
 
     // Filter by entityIds client-side if provided (to avoid dynamic IN clause)

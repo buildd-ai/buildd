@@ -26,7 +26,7 @@ export const SUBAGENT_TOOLS_LABEL = 'Subagent Tools';
 
 /** The scope of the control, stated where it is configured. */
 export const SUBAGENT_TOOLS_NOTE =
-  `Applies when this role runs as a skill subagent — it does not narrow the main agent on a task. ` +
+  `Applies when this agent runs as a skill subagent — it does not narrow the main agent on a task. ` +
   `Empty = the subagent default set (${SUBAGENT_DEFAULT_TOOLS.join(', ')}).`;
 
 /**

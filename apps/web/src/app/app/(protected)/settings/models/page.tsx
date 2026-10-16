@@ -3,16 +3,13 @@ import SettingsPage from '../_components/SettingsPage';
 import { loadSettingsContext } from '../_lib/settings-context';
 import { teamIdsHolding } from '../_lib/settings-permissions';
 import { settingsReadOnly } from '@/lib/settings-nav';
+import { isPlatformOperatorCaller } from '@/lib/admin/platform-operator-caller';
 import ModelProvidersClient from '../providers/ModelProvidersClient';
 import { PROVIDERS_DESCRIPTION } from '../providers/provider-copy';
 import ModelTiersClient from './ModelTiersClient';
 import TierLimitSection from './TierLimitSection';
 import ChatTierPolicySection from './ChatTierPolicySection';
 import ModelUpgradePolicySection from './ModelUpgradePolicySection';
-import { isPlatformOperator } from '@/lib/platform-operator';
-import DecisionFeatures from '../ai/DecisionFeatures';
-// Experiment: remove with apps/web/src/lib/chat-retro/ (see its REMOVAL.md).
-import ChatRetroSection from '@/lib/chat-retro/ChatRetroSection';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,19 +19,20 @@ export const dynamic = 'force-dynamic';
  * provider is connected: key, subscription and runner sign-in, in one row per
  * provider), Routing (gateway, decision model,
  * agent endpoint) and Tiers (which model each tier runs, limits, upgrades).
- * Features (opt-in decision features, chat session retros) moved to the admin
- * app; only the platform owner still sees it here. Goal grading has no control:
- * Auto is the behaviour. Was /app/settings/providers and
+ * Goal grading has no control: Auto is the behaviour. Was /app/settings/providers and
  * /app/settings/ai; next.config redirects both here. Your own keys are
  * You › Keys (the old `?scope=mine` redirects there).
  *
  * Every section is a client component that loads its own data, so one failed
  * read blanks that section, not the page. Each control follows the permission
- * its API enforces; this only decides what renders.
+ * its API enforces; this only decides what renders. A team admin picks each
+ * tier's primary model; traffic pools and the decision model are platform
+ * operator controls (lib/admin/platform-operator-caller.ts) and render for an operator only.
+ * Your own maximum is You › Keys.
  */
 export default async function ModelsSettingsPage() {
   const { user, currentTeam, currentTeamId, perms, permsByTeam, workspaces } = await loadSettingsContext();
-  const showOperatorFeatures = isPlatformOperator(user);
+  const operator = await isPlatformOperatorCaller({ user });
 
   if (!currentTeam) {
     return (
@@ -49,9 +47,13 @@ export default async function ModelsSettingsPage() {
 
   return (
     <SettingsPage title="Models" description={PROVIDERS_DESCRIPTION} wide readOnly={settingsReadOnly('models', perms)}>
+      {/* Old #features and /app/settings#inference-spending links land on the page top. */}
+      <span id="features" aria-hidden="true" />
+      <span id="inference-spending" aria-hidden="true" />
       <ModelProvidersClient
         teamId={teamId}
         isAdmin={perms.manage_inference_providers}
+        operator={operator}
         workspaces={teamWorkspaces.map((w) => ({ id: w.id, name: w.name }))}
         signIns={{
           workspaces,
@@ -63,20 +65,11 @@ export default async function ModelsSettingsPage() {
       />
 
       <Section title="Tiers" id="tiers" className="scroll-mt-20">
-        <ModelTiersClient teamId={teamId} teamName={currentTeam.name ?? null} isAdmin={perms.manage_model_tiers} />
+        <ModelTiersClient teamId={teamId} teamName={currentTeam.name ?? null} isAdmin={perms.manage_model_tiers} operator={operator} />
         <TierLimitSection teamId={teamId} isAdmin={perms.manage_model_tiers} />
         <ChatTierPolicySection teamId={teamId} isAdmin={perms.manage_model_tiers} />
         <ModelUpgradePolicySection teamId={teamId} isAdmin={perms.manage_model_tiers} />
       </Section>
-
-      {showOperatorFeatures && (
-        <Section title="Features" id="features" className="scroll-mt-20">
-          {/* Old /app/settings#inference-spending links. */}
-          <span id="inference-spending" aria-hidden="true" />
-          <DecisionFeatures teamId={teamId} canManage={perms.manage_team_settings} />
-          {perms.manage_chat_retro && <ChatRetroSection teamId={teamId} isAdmin />}
-        </Section>
-      )}
     </SettingsPage>
   );
 }

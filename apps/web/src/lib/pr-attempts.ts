@@ -4,6 +4,7 @@ import { eq, inArray } from 'drizzle-orm';
 import type { TaskEvidence, TaskMismatch } from '@buildd/shared';
 import { collectLineage } from '@/lib/attempt-lineage';
 import { evidenceHint } from '@/lib/task-evidence';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface PrAttempt {
   taskId: string;
@@ -39,13 +40,13 @@ export async function loadPrAttempts(taskId: string | null | undefined): Promise
   const rows = await collectLineage<Row>(taskId, {
     fetchTask: async (id) =>
       ((await db.query.tasks.findFirst({
-        where: eq(tasks.id, id),
+        where: sqlWhere(eq(tasks.id, id)),
         columns: COLUMNS,
         with: { workers: WORKER_WITH },
       })) as unknown as Row | undefined) ?? null,
     fetchChildren: async (parentIds) =>
       (await db.query.tasks.findMany({
-        where: inArray(tasks.parentTaskId, parentIds),
+        where: sqlWhere(inArray(tasks.parentTaskId, parentIds)),
         columns: COLUMNS,
         with: { workers: WORKER_WITH },
       })) as unknown as Row[],

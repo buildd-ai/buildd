@@ -27,6 +27,7 @@ import { releaseClaims, rearmWaiter, type ReleaseResult } from '@buildd/core/pat
 import { buildWorkerMessage, enqueueWorkerMessage } from '@buildd/core/worker-messages';
 import { triggerEvent, channels } from '@/lib/pusher';
 import { kickDispatch } from '@/lib/dispatch-authority';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Why the locks dropped — decides what the waiting agent should do next.
@@ -156,7 +157,7 @@ export async function deliverPathReleased(
  */
 export async function resolveReleaseReasonForTask(taskId: string): Promise<PathReleaseReason> {
   const taskWorkers = await db.query.workers.findMany({
-    where: eq(workers.taskId, taskId),
+    where: sqlWhere(eq(workers.taskId, taskId)),
     columns: { mergedAt: true, prLifecycleStatus: true, prNumber: true },
   });
   const merged = taskWorkers.some(w => w.mergedAt || w.prLifecycleStatus === 'merged');
@@ -165,7 +166,7 @@ export async function resolveReleaseReasonForTask(taskId: string): Promise<PathR
   const hasOpenPr = taskWorkers.some(w => w.prNumber);
   if (hasOpenPr) {
     const task = await db.query.tasks.findFirst({
-      where: eq(tasks.id, taskId),
+      where: sqlWhere(eq(tasks.id, taskId)),
       columns: { status: true },
     });
     if (task?.status === 'completed') return 'pending_merge';

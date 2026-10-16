@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { capturedOrderBy } from '@buildd/core/db/relational-sql';
 
 const missionsFindFirst = mock(() => Promise.resolve(null as any));
 const tasksFindFirst = mock(() => Promise.resolve(null as any));
@@ -278,6 +279,32 @@ describe('ensureMissionSurfaceAudit', () => {
     expect(inserted.description).toContain('apps/web/src/components/Foo.tsx');
     expect(inserted.description).toContain('packages/core/mission-helpers.ts');
   });
+
+  // A refresh's claim manifest widens to trunk's whole diff; as a dependency it
+  // made the gate demand every route under /app.
+  it('never adds a trunk-refresh task to the audit, filed by hand or by the refresher', async () => {
+    tasksFindFirst.mockResolvedValue({ id: 'audit-1', dependsOn: ['builder-1'] });
+    for (const refresh of [
+      uiTask('refresh-1', { title: 'chore(mission): merge dev into the Mobile nav redesign integration branch' }),
+      uiTask('refresh-2', { title: 'Refresh mission branch', context: { requireMergeCommit: true, refreshTrunk: 'dev' } }),
+    ]) {
+      await ensureMissionSurfaceAudit({ missionId: MISSION_ID, workspaceId: WORKSPACE_ID, createdTask: refresh, targetWorkspace });
+    }
+    expect(tasksUpdateSet).not.toHaveBeenCalled();
+
+    tasksFindFirst.mockResolvedValue(null);
+    const builder = uiTask('builder-1');
+    const refresh = uiTask('refresh-1', {
+      title: 'Refresh mission branch',
+      context: { requireMergeCommit: true },
+      pathManifest: ['apps/web/src/app/app/(protected)/layout.tsx'],
+    });
+    tasksFindMany.mockResolvedValue([builder, refresh]);
+    await ensureMissionSurfaceAudit({ missionId: MISSION_ID, workspaceId: WORKSPACE_ID, createdTask: builder, targetWorkspace });
+    const inserted = tasksInsertValues.mock.calls[0][0];
+    expect(inserted.dependsOn).toEqual(['builder-1']);
+    expect(inserted.description).not.toContain('layout.tsx');
+  });
 });
 
 describe('ensureMissionSurfaceAudit — re-check rounds', () => {
@@ -304,8 +331,9 @@ describe('ensureMissionSurfaceAudit — re-check rounds', () => {
     const opts = tasksFindFirst.mock.calls[0][0] as any;
     // Ascending would keep returning the finished round 1, and every later fix
     // would open yet another round 2.
-    expect(opts.orderBy).toHaveLength(1);
-    expect(render(opts.orderBy[0]).sql).toBe('"tasks"."created_at" desc');
+    const orderBy = capturedOrderBy(opts.orderBy, {});
+    expect(orderBy).toHaveLength(1);
+    expect(render(orderBy[0]).sql).toBe('"tasks"."created_at" desc');
     expect(opts.columns).toMatchObject({ id: true, status: true, title: true, context: true, dependsOn: true });
   });
 
@@ -421,6 +449,35 @@ describe('ensureMissionSurfaceAudit — re-check rounds', () => {
 
     expect(tasksInsertValues).not.toHaveBeenCalled();
     expect(tasksUpdateSet.mock.calls[0][0].dependsOn).toEqual(['builder-1', 'builder-2']);
+  });
+
+  it('a builder task never extends a re-check round: it extends the newest round-1 audit instead', async () => {
+    // A round-2 audit re-checks the routes its fixes touched. Giving it a
+    // builder dependency makes the evidence check demand that builder's whole
+    // route set (over the shot cap) while its description still names one route.
+    tasksFindFirst
+      .mockResolvedValueOnce(round2('pending'))
+      .mockResolvedValueOnce(round1('completed'));
+
+    await run({ ...uiTask('builder-2') } as any);
+
+    expect(tasksInsertValues).not.toHaveBeenCalled();
+    expect(tasksUpdateSet).toHaveBeenCalledTimes(1);
+    expect(tasksUpdateSet.mock.calls[0][0].dependsOn).toEqual(['builder-1', 'builder-2']);
+    const roundOneLookup = render((tasksFindFirst.mock.calls[1] as any[])[0].where);
+    expect(roundOneLookup.sql).toContain('not like');
+    expect(roundOneLookup.params).toContain('[surface audit] round %');
+  });
+
+  it('a builder task after only re-check rounds (no round-1 audit) writes nothing', async () => {
+    tasksFindFirst
+      .mockResolvedValueOnce(round2('failed'))
+      .mockResolvedValueOnce(null);
+
+    await run({ ...uiTask('builder-2') } as any);
+
+    expect(tasksUpdateSet).not.toHaveBeenCalled();
+    expect(tasksInsertValues).not.toHaveBeenCalled();
   });
 
   it('a fix task in a mission with no audit is treated like any builder task', async () => {
@@ -589,5 +646,16 @@ describe('ensureMissionSurfaceAudit — mission belongs to another team', () => 
       targetWorkspace: { id: WORKSPACE_ID, name: 'test-ws' },
     });
     expect(tasksInsertValues).not.toHaveBeenCalled();
+  });
+});
+
+describe('isLiveAudit (failure-incident-recovery §16.4 mission adapter)', () => {
+  it('an audit blocked by a repair is still the mission\'s audit; only an unrecovered failure is replaced', async () => {
+    const { isLiveAudit } = await import('./mission-surface-audit');
+    expect(isLiveAudit({ status: 'in_progress' })).toBe(true);
+    expect(isLiveAudit({ status: 'completed' })).toBe(true);
+    expect(isLiveAudit({ status: 'failed', context: {} })).toBe(false);
+    expect(isLiveAudit({ status: 'cancelled', context: { incidentRecovery: { incidentId: 'inc-1', generation: 1 } } })).toBe(false);
+    expect(isLiveAudit({ status: 'failed', context: { incidentRecovery: { incidentId: 'inc-1', generation: 2 } } })).toBe(true);
   });
 });

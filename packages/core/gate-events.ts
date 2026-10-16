@@ -136,9 +136,24 @@ export async function recordGateEvent(input: RecordGateEventInput): Promise<stri
  * record `stranded` rows from the sweep (also collapsed by (taskId, reason)),
  * not just `deferred` ones from the claim loop.
  *
+ * A deferral that names its blocker (`detail.prNumber` / `detail.blockingTaskId`)
+ * also starts a fresh streak when the blocker changes: a streak is one episode
+ * of waiting on ONE blocker, so `firstDeferredAt` never charges the time spent
+ * behind PR A to PR B (failure-incident-recovery §5 rule 3).
+ *
  * Falls back to a plain `recordGateEvent` insert when there's no `taskId` to
  * key the lookup on.
  */
+/**
+ * The blocker a deferral names is unchanged. A write that names no blocker
+ * (most reasons) is always the same episode.
+ */
+function sameBlocker(prior: Record<string, unknown>, next: Record<string, unknown> | null | undefined): boolean {
+  if (!next || (!('prNumber' in next) && !('blockingTaskId' in next))) return true;
+  const key = (d: Record<string, unknown>) => `${d.prNumber ?? ''}\u0000${d.blockingTaskId ?? ''}`;
+  return key(prior) === key(next);
+}
+
 export async function recordOrCoalesceDeferral(input: RecordGateEventInput): Promise<string | null> {
   const taskId = uuidOrNull(input.taskId);
   if (!taskId) return recordGateEvent(input);
@@ -153,8 +168,11 @@ export async function recordOrCoalesceDeferral(input: RecordGateEventInput): Pro
       .orderBy(desc(gateEvents.occurredAt))
       .limit(1);
 
-    if (latest && latest.outcome === input.outcome && latest.reason === normalizedReason) {
-      const priorDetail = (latest.detail as Record<string, unknown> | null) ?? {};
+    const priorDetail = (latest?.detail as Record<string, unknown> | null) ?? {};
+    if (
+      latest && latest.outcome === input.outcome && latest.reason === normalizedReason &&
+      sameBlocker(priorDetail, input.detail)
+    ) {
       const priorCount = typeof priorDetail.consecutiveDeferrals === 'number' ? priorDetail.consecutiveDeferrals : 1;
       // `occurredAt` moves forward on every coalesced poll, so it can never
       // answer "how long has this been stuck" — `firstDeferredAt` is the one

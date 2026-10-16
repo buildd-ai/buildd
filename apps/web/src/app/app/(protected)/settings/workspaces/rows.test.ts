@@ -11,7 +11,6 @@ import {
 } from './rows';
 
 /** No team has stored grants: every check uses the registry defaults. */
-const NO_OVERRIDES = new Map();
 
 // Illustrative fixtures only.
 const USER = 'user-1';
@@ -21,7 +20,7 @@ const team = (id: string, role: string, slug = id) => ({ id, name: `Name ${id}`,
 const ws = (id: string, extra: Record<string, unknown> = {}) => ({ id, name: id, teamId: 't1', gitConfig: null, webhookConfig: null, ...extra });
 
 function build(workspaces: ReturnType<typeof ws>[], activity = new Map()) {
-  return buildWorkspaceRows({ overrides: NO_OVERRIDES, userId: USER, teams: [team('t1', 'owner')], workspaces: workspaces as never, activity });
+  return buildWorkspaceRows({ userId: USER, teams: [team('t1', 'owner')], workspaces: workspaces as never, activity });
 }
 
 describe('WORKSPACE_DEFAULTS', () => {
@@ -93,7 +92,6 @@ describe('buildWorkspaceRows: activity and health', () => {
 describe('buildWorkspaceRows: permissions', () => {
   it('allows a move only when the user administers the workspace team and at least one other team', () => {
     const { rows, moveTeams } = buildWorkspaceRows({
-      overrides: NO_OVERRIDES,
       userId: USER,
       teams: [team('t1', 'owner'), team('t2', 'admin'), team('t3', 'member')],
       workspaces: [ws('w1'), ws('w3', { teamId: 't3' })] as never,
@@ -105,27 +103,12 @@ describe('buildWorkspaceRows: permissions', () => {
 
   it('counts the personal team as administered, and no move with a single admin team', () => {
     const { rows } = buildWorkspaceRows({
-      overrides: NO_OVERRIDES,
       userId: USER,
       teams: [team('p', 'member', `personal-${USER}`), team('t3', 'member')],
       workspaces: [ws('w1', { teamId: 'p' })] as never,
       activity: new Map(),
     });
     expect(rows[0]).toMatchObject({ canEdit: true, canMove: false });
-  });
-
-  it('a move follows migrate_workspace, not workspace settings, with each team’s overrides', () => {
-    // t2 takes migrate_workspace from admins: the admin there keeps editing,
-    // but the move precheck (admin of both teams) would refuse.
-    const { rows, moveTeams } = buildWorkspaceRows({
-      overrides: new Map([['t2', { migrate_workspace: ['owner'] as const }]]),
-      userId: USER,
-      teams: [team('t1', 'owner'), team('t2', 'admin')],
-      workspaces: [ws('w1'), ws('w2', { teamId: 't2' })] as never,
-      activity: new Map(),
-    });
-    expect(rows.map((r) => [r.id, r.canEdit, r.canMove])).toEqual([['w1', true, false], ['w2', true, false]]);
-    expect(moveTeams.map((t) => t.id)).toEqual(['t1']);
   });
 });
 
@@ -176,7 +159,7 @@ describe('groupWorkspaceRows', () => {
 describe('a team whose name cannot be resolved', () => {
   it('buildWorkspaceRows leaves the name null, never "Unknown team"', () => {
     const { rows } = buildWorkspaceRows({
-      overrides: NO_OVERRIDES, userId: USER, teams: [team('t1', 'owner')],
+      userId: USER, teams: [team('t1', 'owner')],
       workspaces: [ws('a'), ws('b', { teamId: 't-gone' })] as never, activity: new Map(),
     });
     expect(rows.map((r) => r.teamName)).toEqual(['Name t1', null]);
@@ -195,8 +178,8 @@ describe('a team whose name cannot be resolved', () => {
 describe('moveTargets', () => {
   it('returns the administered teams when the workspace can move, else null', () => {
     const teams = [team('t1', 'owner'), team('t2', 'admin'), team('t3', 'member')];
-    expect(moveTargets(USER, teams, 't1', NO_OVERRIDES)?.map((t) => t.id)).toEqual(['t1', 't2']);
-    expect(moveTargets(USER, teams, 't3', NO_OVERRIDES)).toBeNull();
-    expect(moveTargets(USER, [team('t1', 'owner'), team('t3', 'member')], 't1', NO_OVERRIDES)).toBeNull();
+    expect(moveTargets(USER, teams, 't1')?.map((t) => t.id)).toEqual(['t1', 't2']);
+    expect(moveTargets(USER, teams, 't3')).toBeNull();
+    expect(moveTargets(USER, [team('t1', 'owner'), team('t3', 'member')], 't1')).toBeNull();
   });
 });

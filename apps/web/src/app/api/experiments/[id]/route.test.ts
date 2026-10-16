@@ -48,7 +48,9 @@ function row(over: Record<string, unknown> = {}) {
   };
 }
 
-const as = (role: Role) => { viewer = { ok: true, viewer: { teamId: TEAM, role, userId: 'u-1' } }; };
+/** A team role, or 'operator': a buildd platform operator (an owner of the team here). */
+type Who = Role | 'operator';
+const as = (who: Who) => { viewer = { ok: true, viewer: { teamId: TEAM, role: who === 'operator' ? 'owner' : who, userId: 'u-1', operator: who === 'operator' } }; };
 const ctx = (id = ID) => ({ params: Promise.resolve({ id }) });
 const get = (id = ID) => GET(new NextRequest(`http://localhost/api/experiments/${id}`), ctx(id));
 const patch = (body: unknown, id = ID) => PATCH(new NextRequest(`http://localhost/api/experiments/${id}`, {
@@ -69,13 +71,16 @@ beforeEach(() => {
 // ── Auth matrix: role × visibility, for reads and writes ────────────────────
 
 describe('GET /api/experiments/[id] — visibility', () => {
-  const cases: [Role, 'team' | 'admins', number][] = [
+  // 'admins' is the stored value for operator-only.
+  const cases: [Who, 'team' | 'admins', number][] = [
     ['member', 'team', 200],
     ['member', 'admins', 404],
     ['admin', 'team', 200],
-    ['admin', 'admins', 200],
+    ['admin', 'admins', 404],
     ['owner', 'team', 200],
-    ['owner', 'admins', 200],
+    ['owner', 'admins', 404],
+    ['operator', 'team', 200],
+    ['operator', 'admins', 200],
   ];
   it.each(cases)('%s × %s → %d', async (role, visibility, status) => {
     as(role);
@@ -96,13 +101,13 @@ describe('GET /api/experiments/[id] — visibility', () => {
   });
 
   it('looks the id up inside the viewer team only', async () => {
-    as('admin');
+    as('operator');
     await get();
     expect(mockGet).toHaveBeenCalledWith(TEAM, ID);
   });
 
   it('a non-uuid id is a 404 without touching the db', async () => {
-    as('admin');
+    as('operator');
     const res = await get('not-a-uuid');
     expect(res.status).toBe(404);
     expect(mockGet).not.toHaveBeenCalled();
@@ -115,15 +120,18 @@ describe('GET /api/experiments/[id] — visibility', () => {
 });
 
 describe('PATCH /api/experiments/[id] — auth', () => {
-  const cases: [Role, 'team' | 'admins', number][] = [
-    // Member on a team-visible experiment knows it exists → honest 403.
+  // No team role manages experiments: only a platform operator does.
+  const cases: [Who, 'team' | 'admins', number][] = [
+    // A team member on a team-visible experiment knows it exists → honest 403.
     ['member', 'team', 403],
-    // Member on an admins-only one must not learn it exists → 404, not 403.
+    ['admin', 'team', 403],
+    ['owner', 'team', 403],
+    // On an operator-only one they must not learn it exists → 404, not 403.
     ['member', 'admins', 404],
-    ['admin', 'team', 200],
-    ['admin', 'admins', 200],
-    ['owner', 'team', 200],
-    ['owner', 'admins', 200],
+    ['admin', 'admins', 404],
+    ['owner', 'admins', 404],
+    ['operator', 'team', 200],
+    ['operator', 'admins', 200],
   ];
   it.each(cases)('%s × %s → %d', async (role, visibility, status) => {
     as(role);
@@ -138,7 +146,7 @@ describe('PATCH /api/experiments/[id] — auth', () => {
 
 describe('PATCH /api/experiments/[id] — transitions', () => {
   it('draft → running stamps startedAt and guards the update on the other-running check', async () => {
-    as('admin');
+    as('operator');
     const res = await patch({ status: 'running' });
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -153,7 +161,7 @@ describe('PATCH /api/experiments/[id] — transitions', () => {
   });
 
   it('409 when another model_routing experiment is already running on the team', async () => {
-    as('owner');
+    as('operator');
     mockFindOtherRunning.mockResolvedValue({ id: OTHER_ID, key: 'other' });
     const res = await patch({ status: 'running' });
     expect(res.status).toBe(409);
@@ -163,20 +171,20 @@ describe('PATCH /api/experiments/[id] — transitions', () => {
   });
 
   it('resume from paused also checks for another running experiment', async () => {
-    as('admin');
+    as('operator');
     stored = row({ status: 'paused', startedAt: T0 });
     mockFindOtherRunning.mockResolvedValue({ id: OTHER_ID, key: 'other' });
     expect((await patch({ status: 'running' })).status).toBe(409);
   });
 
   it('409 when the guarded update loses a race (row changed or a concurrent start won)', async () => {
-    as('admin');
+    as('operator');
     mockApply.mockResolvedValue(null);
     expect((await patch({ status: 'running' })).status).toBe(409);
   });
 
   it('running → paused does not run the single-running guard', async () => {
-    as('admin');
+    as('operator');
     stored = row({ status: 'running', startedAt: T0 });
     const res = await patch({ status: 'paused' });
     expect(res.status).toBe(200);
@@ -185,7 +193,7 @@ describe('PATCH /api/experiments/[id] — transitions', () => {
   });
 
   it('conclude without a decision → 400; with one → 200 and terminal afterwards', async () => {
-    as('admin');
+    as('operator');
     stored = row({ status: 'running', startedAt: T0 });
     expect((await patch({ status: 'concluded' })).status).toBe(400);
     const ok = await patch({ status: 'concluded', decision: 'Keep the router as is.' });
@@ -202,14 +210,14 @@ describe('PATCH /api/experiments/[id] — transitions', () => {
     ['draft', 'paused'],
     ['running', 'draft'],
   ] as const)('%s → %s is 409', async (from, to) => {
-    as('admin');
+    as('operator');
     stored = row({ status: from, startedAt: from === 'draft' ? null : T0 });
     expect((await patch({ status: to })).status).toBe(409);
     expect(mockApply).not.toHaveBeenCalled();
   });
 
   it('400 on invalid JSON', async () => {
-    as('admin');
+    as('operator');
     const res = await PATCH(new NextRequest(`http://localhost/api/experiments/${ID}`, {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: '{nope',
     }), ctx());
@@ -221,7 +229,7 @@ describe('PATCH /api/experiments/[id] — transitions', () => {
 
 describe('PATCH /api/experiments/[id] — policyVersion', () => {
   it('changing the fraction while running bumps the version, locked on the old one', async () => {
-    as('admin');
+    as('operator');
     stored = row({ status: 'running', startedAt: T0, policyVersion: 2 });
     const res = await patch({ treatmentFraction: 0.25 });
     expect(res.status).toBe(200);
@@ -234,14 +242,14 @@ describe('PATCH /api/experiments/[id] — policyVersion', () => {
   });
 
   it('changing the config while running bumps the version', async () => {
-    as('owner');
+    as('operator');
     stored = row({ status: 'running', startedAt: T0 });
     const body = await (await patch({ config: { a: 2 } })).json();
     expect(body.experiment.policyVersion).toBe(2);
   });
 
   it('a title edit while running does not bump', async () => {
-    as('admin');
+    as('operator');
     stored = row({ status: 'running', startedAt: T0 });
     const body = await (await patch({ title: 'x' })).json();
     expect(body.policyVersionBumped).toBe(false);
@@ -249,7 +257,7 @@ describe('PATCH /api/experiments/[id] — policyVersion', () => {
   });
 
   it('a fraction change in draft does not bump', async () => {
-    as('admin');
+    as('operator');
     const body = await (await patch({ treatmentFraction: 0.3 })).json();
     expect(body.experiment.policyVersion).toBe(1);
   });

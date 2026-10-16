@@ -49,6 +49,7 @@ import {
   type SnapshotWorker,
 } from '@/lib/mission-invariants';
 import { MISSION_BRANCH_PREFIX } from '@buildd/core/mission-integration';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 const DAY_MS = 86_400_000;
 
@@ -176,7 +177,7 @@ export async function loadInvariantSnapshot(
 
   // ── Missions in scope ─────────────────────────────────────────────────────
   const missionRows = (await db.query.missions.findMany({
-    where: gt(missions.updatedAt, missionCutoff),
+    where: sqlWhere(gt(missions.updatedAt, missionCutoff)),
     columns: {
       id: true,
       workspaceId: true,
@@ -189,7 +190,7 @@ export async function loadInvariantSnapshot(
       goalCriteriaState: true,
       updatedAt: true,
     },
-    orderBy: desc(missions.updatedAt),
+    orderBy: sqlOrderBy(desc(missions.updatedAt)),
     limit: MAX_MISSIONS,
   })) as Array<Record<string, any>>;
 
@@ -258,7 +259,7 @@ export async function loadInvariantSnapshot(
 
   if (missionIds.length > 0) {
     const rows = (await db.query.tasks.findMany({
-      where: inArray(tasks.missionId, missionIds),
+      where: sqlWhere(inArray(tasks.missionId, missionIds)),
       columns: TASK_COLUMNS,
       limit: MAX_MISSION_TASKS,
     })) as Array<Record<string, any>>;
@@ -266,13 +267,13 @@ export async function loadInvariantSnapshot(
   }
 
   const planningRows = (await db.query.tasks.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.mode, 'planning'),
       eq(tasks.status, 'completed'),
       gt(tasks.updatedAt, recentCutoff),
-    ),
+    )),
     columns: TASK_COLUMNS,
-    orderBy: desc(tasks.updatedAt),
+    orderBy: sqlOrderBy(desc(tasks.updatedAt)),
     limit: MAX_RECENT_TASKS,
   })) as Array<Record<string, any>>;
   for (const t of planningRows) if (!taskById.has(t.id)) taskById.set(t.id, toSnapshotTask(t));
@@ -321,23 +322,23 @@ export async function loadInvariantSnapshot(
   // Open PRs: base-drift, orphaned base, approved-unmerged, and the head-equals-
   // integration-branch check all read this set.
   const openPrRows = (await db.query.workers.findMany({
-    where: and(isNotNull(workers.prNumber), isNull(workers.mergedAt)),
+    where: sqlWhere(and(isNotNull(workers.prNumber), isNull(workers.mergedAt))),
     columns: WORKER_COLUMNS,
-    orderBy: desc(workers.createdAt),
+    orderBy: sqlOrderBy(desc(workers.createdAt)),
     limit: MAX_WORKERS,
   })) as Array<Record<string, any>>;
   for (const w of openPrRows) workerById.set(w.id, toSnapshotWorker(w));
 
   // Completed workers that committed and opened nothing.
   const strandedRows = (await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(workers.status, 'completed'),
       isNull(workers.prNumber),
       gt(workers.commitCount, 0),
       gt(workers.completedAt, recentCutoff),
-    ),
+    )),
     columns: WORKER_COLUMNS,
-    orderBy: desc(workers.completedAt),
+    orderBy: sqlOrderBy(desc(workers.completedAt)),
     limit: MAX_WORKERS,
   })) as Array<Record<string, any>>;
   for (const w of strandedRows) if (!workerById.has(w.id)) workerById.set(w.id, toSnapshotWorker(w));
@@ -347,7 +348,7 @@ export async function loadInvariantSnapshot(
   const missionTaskIds = [...taskById.values()].filter(t => t.missionId).map(t => t.id);
   if (missionTaskIds.length > 0) {
     const rows = (await db.query.workers.findMany({
-      where: inArray(workers.taskId, missionTaskIds),
+      where: sqlWhere(inArray(workers.taskId, missionTaskIds)),
       columns: WORKER_COLUMNS,
       limit: MAX_MISSION_TASKS,
     })) as Array<Record<string, any>>;
@@ -363,7 +364,7 @@ export async function loadInvariantSnapshot(
   )];
   if (missingTaskIds.length > 0) {
     const rows = (await db.query.tasks.findMany({
-      where: inArray(tasks.id, missingTaskIds),
+      where: sqlWhere(inArray(tasks.id, missingTaskIds)),
       columns: TASK_COLUMNS,
       limit: MAX_MISSION_TASKS,
     })) as Array<Record<string, any>>;
@@ -396,13 +397,13 @@ export async function loadInvariantSnapshot(
   // `open_pr_outpaced_by_base` counts zero drift for every PR forever.
   const baseMergeCutoff = new Date(now.getTime() - BASE_MERGE_WINDOW_DAYS * DAY_MS);
   const baseMergeRows = (await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       isNotNull(workers.prBaseRef),
       isNotNull(workers.mergedAt),
       gt(workers.mergedAt, baseMergeCutoff),
-    ),
+    )),
     columns: { workspaceId: true, prBaseRef: true, mergedAt: true },
-    orderBy: desc(workers.mergedAt),
+    orderBy: sqlOrderBy(desc(workers.mergedAt)),
     limit: MAX_BASE_MERGES,
   })) as Array<Record<string, any>>;
   snapshot.baseMerges = baseMergeRows
@@ -419,7 +420,7 @@ export async function loadInvariantSnapshot(
 
   // ── Releases + attribution edges ──────────────────────────────────────────
   const releaseRows = (await db.query.releases.findMany({
-    where: gt(releases.createdAt, RELEASE_INVARIANT_CUTOFF),
+    where: sqlWhere(gt(releases.createdAt, RELEASE_INVARIANT_CUTOFF)),
     columns: {
       id: true,
       workspaceId: true,
@@ -428,7 +429,7 @@ export async function loadInvariantSnapshot(
       dispatchedAt: true,
       createdAt: true,
     },
-    orderBy: desc(releases.createdAt),
+    orderBy: sqlOrderBy(desc(releases.createdAt)),
     limit: MAX_RELEASES,
   })) as Array<Record<string, any>>;
   const releaseById = new Map<string, SnapshotRelease>(
@@ -462,11 +463,11 @@ export async function loadInvariantSnapshot(
   const escalatedMissionIds = snapshot.missions.filter(m => m.criteriaEscalatedAt).map(m => m.id);
   if (escalatedMissionIds.length > 0) {
     const rows = (await db.query.missionNotes.findMany({
-      where: and(
+      where: sqlWhere(and(
         inArray(missionNotes.missionId, escalatedMissionIds),
         eq(missionNotes.type, 'question'),
         eq(missionNotes.status, 'open'),
-      ),
+      )),
       columns: { id: true, missionId: true, type: true, status: true, createdAt: true },
       limit: MAX_RECENT_TASKS,
     })) as Array<Record<string, any>>;
@@ -484,13 +485,13 @@ export async function loadInvariantSnapshot(
   // creates a fresh one per iteration — newest wins, matching
   // `findReviewTaskForPr`. Ordered newest-first, so first write wins.
   const reviewRows = (await db.query.tasks.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.category, 'review'),
       eq(tasks.status, 'completed'),
       gt(tasks.updatedAt, reviewCutoff),
-    ),
+    )),
     columns: { workspaceId: true, context: true, result: true, updatedAt: true },
-    orderBy: desc(tasks.updatedAt),
+    orderBy: sqlOrderBy(desc(tasks.updatedAt)),
     limit: MAX_RECENT_TASKS,
   })) as Array<Record<string, any>>;
   const reviewByPr = new Map<string, SnapshotReview>();
@@ -519,7 +520,7 @@ export async function loadInvariantSnapshot(
   const workspaceRepoFk = new Map<string, string>();
   if (workspaceIds.length > 0) {
     const rows = (await db.query.workspaces.findMany({
-      where: inArray(workspaces.id, workspaceIds),
+      where: sqlWhere(inArray(workspaces.id, workspaceIds)),
       columns: { id: true, repo: true, githubRepoId: true, gitConfig: true },
     })) as Array<Record<string, any>>;
     for (const ws of rows) {

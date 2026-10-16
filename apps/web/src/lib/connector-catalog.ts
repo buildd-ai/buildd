@@ -90,6 +90,19 @@ export interface ResolvedCatalogEntry extends ConnectorCatalogEntry {
   policy: CatalogPolicy;
 }
 
+/**
+ * A catalog entry as a team sees it (GET /api/connectors/catalog): whether it
+ * can be connected, never why not. `clientSupport` (the vendor's refusal, its
+ * client-review status and link) is operator detail; it stays in the platform
+ * catalog (`/api/admin/connector-catalog`) and the server log.
+ */
+export type CustomerCatalogEntry = Omit<ResolvedCatalogEntry, 'clientSupport'> & { unavailable?: true };
+
+export function customerCatalogEntry(entry: ResolvedCatalogEntry): CustomerCatalogEntry {
+  const { clientSupport, ...rest } = entry;
+  return clientSupport ? { ...rest, unavailable: true } : rest;
+}
+
 export const CATALOG_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,47}$/;
 
 export function normalizeConnectorUrl(url: string): string | null {

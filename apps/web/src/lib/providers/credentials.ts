@@ -68,6 +68,7 @@ import {
   writeSharedSecret,
   writeTeamChatKey,
 } from './write-path';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // ── Rows ─────────────────────────────────────────────────────────────────────
 
@@ -114,12 +115,12 @@ function maskKeyLast4(value: string): string {
 async function loadRows(teamId: string, workspaceId: string | null, userId: string | null): Promise<Row[]> {
   const purposes = modelCredentialPurposes();
   const rows = (await db.query.secrets.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(secrets.teamId, teamId),
       inArray(secrets.purpose, modelCredentialPurposes() as never[]),
       workspaceId ? or(isNull(secrets.workspaceId), eq(secrets.workspaceId, workspaceId)) : isNull(secrets.workspaceId),
       userId ? or(isNull(secrets.userId), eq(secrets.userId, userId)) : isNull(secrets.userId),
-    ),
+    )),
     columns: ROW_COLUMNS,
   })) as Row[];
   // Every predicate again in JS: a personal row reaches only its owner.
@@ -236,11 +237,22 @@ export function providerListing(
   };
 }
 
+/** The team's display name; null when the lookup fails (the page falls back to "team"). */
+export async function loadTeamName(teamId: string): Promise<string | null> {
+  try {
+    const team = await db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, teamId)), columns: { name: true } });
+    return team?.name ?? null;
+  } catch (error) {
+    console.warn('[providers] team name lookup failed:', error);
+    return null;
+  }
+}
+
 export async function loadPolicySummary(teamId: string): Promise<ProviderPolicySummary> {
   let team: { credentialPolicy: unknown; inferenceKeyPolicy: unknown } | null = null;
   try {
     team = (await db.query.teams.findFirst({
-      where: eq(teams.id, teamId),
+      where: sqlWhere(eq(teams.id, teamId)),
       columns: { credentialPolicy: true, inferenceKeyPolicy: true },
     })) ?? null;
   } catch (error) {
@@ -256,19 +268,37 @@ export async function loadPolicySummary(teamId: string): Promise<ProviderPolicyS
 }
 
 /**
- * How many personal model keys anyone in the team has stored: decides whether
- * Settings shows "Who pays". A count only; never whose.
+ * How many personal model keys anyone in the team has stored. A count only;
+ * never whose.
  */
 export async function countPersonalKeys(teamId: string): Promise<number> {
   try {
     const rows = await db.query.secrets.findMany({
-      where: and(eq(secrets.teamId, teamId), inArray(secrets.purpose, modelCredentialPurposes() as never[]), isNotNull(secrets.userId)),
+      where: sqlWhere(and(eq(secrets.teamId, teamId), inArray(secrets.purpose, modelCredentialPurposes() as never[]), isNotNull(secrets.userId))),
       columns: { id: true, teamId: true, userId: true },
     });
     return rows.filter((r) => r.teamId === teamId && r.userId !== null).length;
   } catch (error) {
     console.warn('[providers] personal key count failed:', error);
     return 0;
+  }
+}
+
+/**
+ * Workspaces of the team that hold model credentials of their own (a
+ * workspace-scoped row, never a personal one): the team Models page names
+ * how many, and links to each. Ids only.
+ */
+export async function workspacesWithKeys(teamId: string): Promise<string[]> {
+  try {
+    const rows = await db.query.secrets.findMany({
+      where: sqlWhere(and(eq(secrets.teamId, teamId), inArray(secrets.purpose, modelCredentialPurposes() as never[]), isNotNull(secrets.workspaceId), isNull(secrets.userId))),
+      columns: { teamId: true, workspaceId: true, userId: true },
+    });
+    return [...new Set(rows.filter((r) => r.teamId === teamId && r.workspaceId && !r.userId).map((r) => r.workspaceId!))].sort();
+  } catch (error) {
+    console.warn('[providers] workspace key lookup failed:', error);
+    return [];
   }
 }
 
@@ -374,7 +404,7 @@ function chatProviderOf(provider: ProviderId): ChatProvider | null {
 
 async function workspaceInTeam(teamId: string, workspaceId: string): Promise<boolean> {
   const ws = await db.query.workspaces.findFirst({
-    where: and(eq(workspaces.id, workspaceId), eq(workspaces.teamId, teamId)),
+    where: sqlWhere(and(eq(workspaces.id, workspaceId), eq(workspaces.teamId, teamId))),
     columns: { id: true },
   });
   return !!ws;
@@ -526,7 +556,13 @@ export async function deleteProviderCredential(input: {
 
 // ── Policy ───────────────────────────────────────────────────────────────────
 
-export async function setCredentialPolicy(teamId: string, policy: CredentialPolicy): Promise<ProviderPolicySummary> {
-  await db.update(teams).set({ ...policyColumns(policy), updatedAt: new Date() }).where(eq(teams.id, teamId));
+/**
+ * Store a policy, or clear it with null. Cleared, both columns read as unset:
+ * `inferenceKeyPolicy` goes back to its column default `'team'`, which
+ * `effectiveKeyPolicy` treats as no choice.
+ */
+export async function setCredentialPolicy(teamId: string, policy: CredentialPolicy | null): Promise<ProviderPolicySummary> {
+  const columns = policy ? policyColumns(policy) : { credentialPolicy: null, inferenceKeyPolicy: 'team' as const };
+  await db.update(teams).set({ ...columns, updatedAt: new Date() }).where(eq(teams.id, teamId));
   return loadPolicySummary(teamId);
 }

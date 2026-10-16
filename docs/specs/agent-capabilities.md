@@ -2,7 +2,7 @@
 title: Agent Capabilities
 status: active
 owner: max
-last_verified: 2026-10-08
+last_verified: 2026-10-11
 summary: An agent role MUST hold a platform capability (deploy, use a deploy credential, manage or reveal one) only through a named registry entry, a per-workspace opt-in, and a named target scope, failing closed.
 domain: auth
 surfaces: [apps/web/src/lib/permission-registry.ts, apps/web/src/lib/operator-capability.ts, apps/web/src/lib/operator-capability-source.ts, apps/web/src/lib/default-roles.ts]
@@ -114,8 +114,9 @@ surface used for every other role field, never a parallel admin system, and
 never see a credential value.
 
 **Invariants**:
-- Writing a grant needs `manage_agent_roles` in the role's team, with the
-  team's permission overrides applied; anyone else sees the section read-only.
+- Writing a grant needs `manage_agent_roles` in the role's team; anyone else
+  sees one plain line naming the workspaces the agent can deploy from (or that
+  it can't deploy from any), not the editor.
   A personal role never holds a grant (`operatorGrant` on one is a 400), and
   operator grants are never read from a personal row.
 - `PATCH /api/roles/[id]` accepts `operatorGrant` (an `OperatorGrantConfig`, or
@@ -129,20 +130,23 @@ never see a credential value.
   overridable field, a new override row never inherits the team default's
   `metadata.operator` — the workspace's grant is its own opt-in, not a copy of
   the team's ceiling config.
-- The role editor (`apps/web/src/app/app/(protected)/settings/roles/[slug]/edit/`)
-  renders `OperatorAccessSection` instead of the generic workspace-overrides
-  editor when the role's slug holds any agent capability. It shows: a team
-  kill switch and standard-capability/scope ceiling; per workspace, an
-  enabled toggle, deploy/use capabilities and secret management/reveal
-  capabilities in two visually distinct groups (the latter unchecked by
-  default), and scope chip lists; and a live effective-grant preview computed
-  with `resolveOperatorGrant` from the current draft, before saving.
+- The role editor (`apps/web/src/app/app/(protected)/settings/agents/[slug]/edit/`)
+  renders `OperatorAccessSection` (titled **Deploy access**) instead of the
+  generic workspace-overrides editor when the role's slug holds any agent
+  capability. It configures the team's own agent, so it never names the
+  platform operator. It shows: a **Team limit** (kill switch plus
+  standard-capability and scope limits); per workspace, an enabled toggle,
+  deploy/use capabilities and secret access capabilities in two visually
+  distinct groups (the latter unchecked by default), and scope chip lists.
+  Each workspace row's On/Off and Elevated pills are computed with
+  `resolveOperatorGrant` from the current draft; there is no separate
+  resolved-grant readout.
 - No surface ever renders a credential value — scope only ever carries the
   reference string a credential was registered under.
 
 **Code surface**: `apps/web/src/app/api/roles/[id]/route.ts`,
 `apps/web/src/app/api/roles/[id]/overrides/route.ts`,
-`apps/web/src/app/app/(protected)/settings/roles/[slug]/edit/OperatorAccessSection.tsx`.
+`apps/web/src/app/app/(protected)/settings/agents/[slug]/edit/OperatorAccessSection.tsx`.
 
 ## Operator persona
 

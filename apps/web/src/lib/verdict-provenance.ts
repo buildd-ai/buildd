@@ -15,6 +15,7 @@ import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { workspaceRepo } from '@/lib/workflow/github-facts';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Context keys only the review system writes. */
 export const REVIEW_DISPATCH_CONTEXT_KEYS = ['reviewerFor', 'workflowRoundId'] as const;
@@ -50,7 +51,7 @@ export async function resolveDispatchedReview(
   const prNumber = ctx.prNumber;
   if (typeof prNumber !== 'number' || !Number.isInteger(prNumber) || prNumber <= 0) return { ok: false, reason: 'no PR number' };
 
-  const original = await db.query.tasks.findFirst({ where: eq(tasks.id, originalTaskId), columns: { id: true, workspaceId: true } });
+  const original = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, originalTaskId)), columns: { id: true, workspaceId: true } });
   if (!original || original.workspaceId !== workspaceId) return { ok: false, reason: 'reviewed task is not in this workspace' };
 
   const repo = await (deps.repoOf ?? workspaceRepo)(workspaceId);

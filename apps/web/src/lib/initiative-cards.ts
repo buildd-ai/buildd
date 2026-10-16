@@ -12,6 +12,7 @@ import {
   type InitiativeCardModel,
   type InitiativeMissionInput,
 } from './initiative-view';
+import { sqlOrderBy, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Load initiatives as cards (lib/initiative-view.ts) for the Initiatives list
@@ -47,8 +48,8 @@ export async function loadInitiativeCards(opts: {
     : and(inArray(initiatives.teamId, teamIds), ne(initiatives.status, 'archived'));
 
   const rows = await db.query.initiatives.findMany({
-    where,
-    orderBy: [desc(initiatives.priority), desc(initiatives.createdAt)],
+    where: sqlWhere(where),
+    orderBy: sqlOrderBy([desc(initiatives.priority), desc(initiatives.createdAt)]),
     columns: { id: true, title: true, description: true, status: true, teamId: true, workspaceId: true, ownerUserId: true, targetDate: true },
     with: {
       workspace: { columns: { id: true, name: true } },
@@ -59,19 +60,19 @@ export async function loadInitiativeCards(opts: {
   if (rows.length === 0) return [];
 
   const missionRows = (await db.query.missions.findMany({
-    where: inArray(missions.initiativeId, rows.map((r) => r.id)),
-    orderBy: [desc(missions.priority), desc(missions.createdAt)],
+    where: sqlWhere(inArray(missions.initiativeId, rows.map((r) => r.id))),
+    orderBy: sqlOrderBy([desc(missions.priority), desc(missions.createdAt)]),
     columns: MISSION_BASE_COLUMNS,
     with: {
       schedule: { columns: { id: true, nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true, maxConcurrentFromSchedule: true, totalRuns: true, taskTemplate: true } },
       tasks: {
         columns: { ...MISSION_TASK_BASE_COLUMNS, roleSlug: true, missionPhaseIndex: true, missionPhaseLabel: true, label: true },
-        orderBy: (t: any, { desc: d }: any) => [d(t.updatedAt)],
+        orderBy: sqlOrderByFn((t: any, { desc: d }: any) => [d(t.updatedAt)]),
         with: {
           workers: {
             columns: { ...MISSION_WORKER_BASE_COLUMNS, exitCause: true, waitingFor: true },
             limit: 5,
-            orderBy: (w: any, { desc: d }: any) => [d(w.startedAt), d(w.updatedAt)],
+            orderBy: sqlOrderByFn((w: any, { desc: d }: any) => [d(w.startedAt), d(w.updatedAt)]),
           },
         },
       },

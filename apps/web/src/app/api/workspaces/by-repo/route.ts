@@ -7,6 +7,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { workspaceRepoMatches } from '@/lib/repo-scope';
 import { listReachableWorkspaceIds } from '@/lib/workspace-access';
 import { toPublicWorkspace } from '@/lib/workspace-public';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Look up the workspace for a repo, among the workspaces the caller can reach
@@ -45,7 +46,7 @@ export async function GET(req: NextRequest) {
   // finding globally and then checking) also means another team's workspace
   // for the same repo can never shadow the caller's own.
   const workspace = await db.query.workspaces.findFirst({
-    where: and(workspaceRepoMatches(repoFullName), inArray(workspaces.id, reachableIds)),
+    where: sqlWhere(and(workspaceRepoMatches(repoFullName), inArray(workspaces.id, reachableIds))),
   });
   // The rule is re-checked on the row itself, so a query-level slip can never
   // hand back a workspace the caller could not have listed.

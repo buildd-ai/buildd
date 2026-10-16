@@ -5,6 +5,7 @@ import {
   DEP_SATISFYING_STATUSES,
   DEP_UNBLOCKING_PR_LIFECYCLE,
   EARLY_RELEASE_SATISFYING_DECISIONS,
+  type DepEdgeReleaseArm,
 } from '@/lib/dep-gate-contract';
 import { SURFACE_AUDIT_TITLE_PREFIX } from '@buildd/core/member-scoped-deps';
 import { MIGRATION_PATH_RE } from '@buildd/core/path-overlap';
@@ -78,18 +79,30 @@ export function outsideSurfaceAuditMission(depId: SQL): SQL {
  * can say WHICH dependency is blocking with the same predicate the claim used.
  */
 export function dependencySatisfied(depId: SQL): SQL {
+  const arms = (Object.keys(DEP_EDGE_ARM_SQL) as DepEdgeReleaseArm[]).map((arm) => DEP_EDGE_ARM_SQL[arm](depId));
+  return sql`(${sql.join(arms, sql` OR `)})`;
+}
+
+/**
+ * The per-edge arms `dependencySatisfied()` ORs, one predicate each, keyed by
+ * the contract's arm names (`DEP_EDGE_RELEASE_ARMS`). The mission page selects
+ * each one separately (lib/mission-board-waiting.ts) to say which arm released
+ * an edge, so the claim and the display read the same SQL.
+ */
+export const DEP_EDGE_ARM_SQL: Record<DepEdgeReleaseArm, (depId: SQL) => SQL> = {
+  status: statusArm,
+  early_release: earlyReleaseArm,
+  migration_other_base: (depId) => migrationEdgeOnOtherBase(depId),
+  inferred_unstarted_holder: (depId) => inferredEdgeOntoUnstartedHolder(depId),
+  force_start: (depId) => forceStartLiftsEdge(depId),
+};
+
+function statusArm(depId: SQL): SQL {
   const satisfyingStatuses = sql.join(
     DEP_SATISFYING_STATUSES.map((s) => sql`${s}`),
     sql`, `,
   );
-
-  const releaseDecisions = sql.join(
-    EARLY_RELEASE_SATISFYING_DECISIONS.map((d) => sql`${d}`),
-    sql`, `,
-  );
-
-  return sql`(
-    EXISTS (
+  return sql`EXISTS (
       SELECT 1 FROM ${tasks} t2
       WHERE t2.id = ${depId}
       AND t2.status IN (${satisfyingStatuses})
@@ -107,8 +120,15 @@ export function dependencySatisfied(depId: SQL): SQL {
           AND COALESCE(w.pr_lifecycle_status, '') != ${DEP_UNBLOCKING_PR_LIFECYCLE}
         )
       )
-    )
-    OR EXISTS (
+    )`;
+}
+
+function earlyReleaseArm(depId: SQL): SQL {
+  const releaseDecisions = sql.join(
+    EARLY_RELEASE_SATISFYING_DECISIONS.map((d) => sql`${d}`),
+    sql`, `,
+  );
+  return sql`EXISTS (
       -- Early release: a human/decision-model call to start this dependent
       -- before the upstream's own status/PR state would otherwise allow it.
       -- Revoked rows (revoked_at set) do not count — see docs/design/early-release.md.
@@ -117,9 +137,26 @@ export function dependencySatisfied(depId: SQL): SQL {
       AND dr.upstream_task_id = ${depId}
       AND dr.decision IN (${releaseDecisions})
       AND dr.revoked_at IS NULL
-    )
-    OR ${migrationEdgeOnOtherBase(depId)}
-    OR ${inferredEdgeOntoUnstartedHolder(depId)}
+    )`;
+}
+
+/**
+ * TRUE when a person's unexpired dashboard Force start names `depId` in
+ * `context.forceStart.liftDependsOn` AND the edge is one the system inferred
+ * at creation (`pathDeclaration.inferredDependsOn`): incidental file-overlap
+ * ordering, which a force may lift for claim order (docs/specs/force-start.md).
+ * A declared edge never qualifies, even if named. The intent is single-use:
+ * the claim consumes it, and after `expiresAt` it no longer lifts anything.
+ * The edit-time path lease still serializes the shared files.
+ */
+function forceStartLiftsEdge(depId: SQL): SQL {
+  // The key is FORCE_START_CONTEXT_KEY, written as a literal so the gate's
+  // bound parameters stay the contract's (pinned by deps-gate.test.ts).
+  return sql`(
+    -- Two-valued: a missing key must be FALSE, never NULL, inside the NOT EXISTS.
+    COALESCE(${tasks.pathDeclaration}->'inferredDependsOn' ? (${depId})::text, FALSE)
+    AND COALESCE(${tasks.context}->'forceStart'->'liftDependsOn' ? (${depId})::text, FALSE)
+    AND COALESCE((${tasks.context}->'forceStart'->>'expiresAt') > to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'), FALSE)
   )`;
 }
 

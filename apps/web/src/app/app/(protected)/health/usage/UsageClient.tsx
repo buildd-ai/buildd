@@ -20,7 +20,7 @@ import {
   type DrilldownWindow,
   type UsageDrilldownView,
 } from '@/lib/usage-drilldown';
-import type { Distribution, PerTaskMetric, UsageStats } from '@/lib/usage-stats';
+import type { Distribution, UsageStats } from '@/lib/usage-stats';
 import { BASIS_KEYS, BASIS_LABEL, splitTotal } from '@/lib/cost-basis-split';
 import type { HostedRunnerMeterView } from '@/lib/hosted-runner-usage';
 import { HostedRunnerUsageSection, type HostedRunnerWorkspaceRow } from '@/components/hosted-runner/HostedRunnerUsageSection';
@@ -54,14 +54,10 @@ interface Props {
  * every section below honours.
  */
 export function UsageClient({ view, hostedRunner = null, roleUsage = null, monthly = null, scope = 'team' }: Props) {
-  const { window, tasks, perTask, totals, scan } = view;
+  const { window, tasks, perTask, scan } = view;
   const caveat = scanCaveat(scan, observedAgo(scan.completeSince, Date.now()) ?? 'the window start');
-
-  /** "n of m tasks" — the sample behind a median, so it is never read as all of them. */
-  const sampleNote = (metric: PerTaskMetric) => {
-    const n = perTask.contributing[metric];
-    return n < perTask.tasks ? `${n} of ${perTask.tasks} tasks` : `all ${perTask.tasks} tasks`;
-  };
+  // A subscription-only team paid nothing per token: drop the real-cost line and column, say why once.
+  const planOnly = isPlanOnly(view.byBasis, roleUsage);
 
   return (
     <div className="max-w-2xl mx-auto px-4 pt-14 pb-24 md:pt-6">
@@ -93,6 +89,10 @@ export function UsageClient({ view, hostedRunner = null, roleUsage = null, month
           <p data-testid="usage-scope-mine" className="mt-2 text-[11px] text-text-muted">Tasks you started.</p>
         )}
 
+        {planOnly && (
+          <p data-testid="usage-plan-only" className="mt-2 text-meta text-text-muted">All of this ran on your plan; list price shown.</p>
+        )}
+
         {view.clampNotice && (
           <p data-testid="usage-clamp-notice" className="mt-2 text-[11px] text-warning">
             {view.clampNotice}
@@ -117,7 +117,7 @@ export function UsageClient({ view, hostedRunner = null, roleUsage = null, month
                   label="Tokens / task"
                   metric={perTask.inputTokens}
                   render={(d) => formatTokens(d.median)}
-                  sub={(d) => `p90 ${formatTokens(d.p90)} · ${sampleNote('inputTokens')}`}
+                  sub={() => MEDIAN}
                 />
                 {/* With no recorded cost, cost is ABSENT, not approximate: no number
                     is shown with a hedge word attached. The token proxy underneath
@@ -126,7 +126,7 @@ export function UsageClient({ view, hostedRunner = null, roleUsage = null, month
                   label="Cost / task"
                   metric={perTask.costUsd}
                   render={(d) => formatUsd(d.median)}
-                  sub={() => `${formatUsd(totals.costUsd)} combined total · ${sampleNote('costUsd')}`}
+                  sub={() => MEDIAN}
                   extra={
                     view.costProxyTokens === null
                       ? null
@@ -137,13 +137,13 @@ export function UsageClient({ view, hostedRunner = null, roleUsage = null, month
                   label="Turns / task"
                   metric={perTask.turns}
                   render={(d) => `${Math.round(d.median)}`}
-                  sub={(d) => `p90 ${Math.round(d.p90)} · ${sampleNote('turns')}`}
+                  sub={() => MEDIAN}
                 />
                 <MetricStat<Distribution>
                   label="Tool calls / task"
                   metric={perTask.toolCalls}
                   render={(d) => `${Math.round(d.median)}`}
-                  sub={(d) => `p90 ${Math.round(d.p90)} · ${sampleNote('toolCalls')}`}
+                  sub={() => MEDIAN}
                 />
               </div>
               {perTask.costUsd.kind === 'unavailable' && view.costProxyTokens !== null && (
@@ -155,11 +155,11 @@ export function UsageClient({ view, hostedRunner = null, roleUsage = null, month
             </div>
           </section>
 
-          <CostBasisSection byBasis={view.byBasis} />
+          <CostBasisSection byBasis={view.byBasis} showReal={!planOnly} />
         </>
       )}
 
-      {roleUsage && <RoleUsage {...roleUsage} window={window} />}
+      {roleUsage && <RoleUsage {...roleUsage} window={window} showReal={!planOnly} />}
       {monthly && <MonthlySpend monthly={monthly} />}
 
       {/* Hosted runner time is month-scoped, so it follows the windowed figures
@@ -412,6 +412,16 @@ function CountRows({
   );
 }
 
+const MEDIAN = 'median per task';
+
+/** No real dollars anywhere in the window, and some plan usage: every figure is list price. */
+export function isPlanOnly(byBasis: UsageStats['byBasis'], roleUsage: RoleUsageData | null): boolean {
+  const rows = roleUsage?.rows ?? [];
+  const real = byBasis.total.real.costUsd + rows.filter(r => r.basis === 'real').reduce((n, r) => n + r.costUsd, 0);
+  const plan = byBasis.total.virtual.costUsd + rows.filter(r => r.basis === 'virtual').reduce((n, r) => n + r.costUsd, 0);
+  return real === 0 && plan > 0;
+}
+
 // ── Window ───────────────────────────────────────────────────────────────────
 
 /**
@@ -549,10 +559,10 @@ function ActionBreakdownView({ view }: { view: UsageDrilldownView }) {
  * (docs/specs/real-and-virtual-cost.md "Reporting"). Mixed and "basis not
  * reported" rows appear only when the window has them.
  */
-function CostBasisSection({ byBasis }: { byBasis: UsageStats['byBasis'] }) {
+function CostBasisSection({ byBasis, showReal }: { byBasis: UsageStats['byBasis']; showReal: boolean }) {
   const { total, byExecutor } = byBasis;
   if (BASIS_KEYS.every(k => total[k].workers === 0)) return null;
-  const shown = BASIS_KEYS.filter(k => k === 'real' || k === 'virtual' || total[k].workers > 0);
+  const shown = BASIS_KEYS.filter(k => (k === 'real' && showReal) || k === 'virtual' || (k !== 'real' && total[k].workers > 0));
   const cols = 'grid grid-cols-[minmax(0,1fr)_4.5rem_4.5rem_4.5rem] sm:grid-cols-[minmax(0,1fr)_5.5rem_6.5rem_5.5rem] gap-2';
   return (
     <section data-testid="usage-cost-basis" className="mb-6">
@@ -571,17 +581,19 @@ function CostBasisSection({ byBasis }: { byBasis: UsageStats['byBasis'] }) {
                 {BASIS_LABEL[k]}
                 {k === 'unknown' && <span className="text-text-muted"> · {countOf(total.unknown.workers, 'worker')}</span>}
               </span>
-              <span className="text-right">{formatUsd(byExecutor.runner[k].costUsd)}</span>
-              <span className="text-right">{formatUsd(byExecutor.interactive[k].costUsd)}</span>
-              <span className="text-right font-semibold">{formatUsd(total[k].costUsd)}</span>
+              <span className="text-right font-mono">{formatUsd(byExecutor.runner[k].costUsd)}</span>
+              <span className="text-right font-mono">{formatUsd(byExecutor.interactive[k].costUsd)}</span>
+              <span className="text-right font-mono font-semibold">{formatUsd(total[k].costUsd)}</span>
             </li>
           ))}
-          <li className={`${cols} border-t-2 border-border pt-2 text-text-secondary`}>
-            <span>Combined</span>
-            <span />
-            <span />
-            <span className="text-right">{formatUsd(splitTotal(total).costUsd)}</span>
-          </li>
+          {shown.length > 1 && (
+            <li className={`${cols} border-t-2 border-border pt-2 text-text-secondary`}>
+              <span>Combined</span>
+              <span />
+              <span />
+              <span className="text-right font-mono">{formatUsd(splitTotal(total).costUsd)}</span>
+            </li>
+          )}
         </ul>
       </div>
     </section>

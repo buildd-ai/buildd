@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { escalationFingerprint, verdictCode, type EscalationSubject } from '@buildd/core/escalation-gate';
+import { buildEscalationGateState, escalationFingerprint, verdictCode, type EscalationSubject } from '@buildd/core/escalation-gate';
 import { ESCALATION_STUCK_MS, escalationActionFiler, gateEscalations, storedVerdictWhere, type EscalationGateDeps, type GatedSubject, type StoredVerdict } from './escalation-gate-check';
 
 const NOW = Date.parse('2026-10-09T12:00:00Z');
@@ -325,5 +325,27 @@ describe('gateEscalations: a Buildd-owned verdict says what is running (c06dedf5
 
     const young = new Map<string, StoredVerdict>([[s.key, { ...base, createdAt: new Date(NOW - 60_000), dispatch: null }]]);
     expect((await gateEscalations([s], { ...harness({}, young).deps, decide: false })).get(s.key)?.reason).toContain('(queued)');
+  });
+});
+
+describe('gateEscalations: replayable inputs', () => {
+  it('the row Jev answered keeps the state it was asked with', async () => {
+    const h = harness({ run: jevRun('act', 'address_review') as any });
+    const s = subject();
+    await gateEscalations([s], h.deps);
+    expect(h.records[0].replay).toEqual({
+      state: buildEscalationGateState(s), questionIds: ['disposition', 'action'], candidates: null,
+      promptRef: { id: 'buildd.escalation_gate', version: 'eg1|jev', contentHash: null },
+    });
+  });
+
+  it('a rule row and a failed call keep none', async () => {
+    const rule = harness();
+    await gateEscalations([subject({ ci: 'running', why: 'human_tier' })], rule.deps);
+    expect(rule.records[0].replay ?? null).toBeNull();
+    const failed = harness({ run: FAILED as any });
+    await gateEscalations([subject()], failed.deps);
+    expect(failed.records[0].status).toBe('fallback');
+    expect(failed.records[0].replay ?? null).toBeNull();
   });
 });

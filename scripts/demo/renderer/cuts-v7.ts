@@ -62,8 +62,11 @@ export function stepLook(o: { mobile?: boolean; theme?: 'dark' | 'light' } = {})
     : { frame: { width: 1280, height: 720 }, dim: 0.35, reserve: 0, tight: 0.35, minPx: 1.4, theme: o.theme ?? 'dark', beat: true };
 }
 
+/** What a later film may swap in v7's chapters: the shots that open "agents work" (v7: one runner, three slots). */
+export type V7Overrides = { agents?: (s: Stills, look: Look) => Shot[] };
+
 /** The chapters' shots, before timing: [opening], [what done means], [agents work], [buildd checks], [end]. */
-export function v7Chapters(s: Stills, look: Look = FILM_LOOK): Shot[][] {
+export function v7Chapters(s: Stills, look: Look = FILM_LOOK, o: V7Overrides = {}): Shot[][] {
   const f = (step: string, rect: Rect, padding: number, t = 0, viewport: 'desktop' | 'phone' = 'desktop'): CamKey => aim(look, s.img(step, viewport), rect, padding, t);
   const DIMV = look.dim;
   const key = (t: number, rects: Rect[], dim = DIMV) => ({ at: t, rects, dim, padPx: PAD });
@@ -87,16 +90,19 @@ export function v7Chapters(s: Stills, look: Look = FILM_LOOK): Shot[][] {
   };
 
   // 2. Agents work: one runner, three slots lighting up; the question on the phone.
-  const H = 's04-home';
-  const fleetBox = s.box(H, 'home-fleet');
-  const slotRows = s.boxAttrs(H, 'fleet-slot');
-  const right = fleetBox.x + fleetBox.w;
-  const fleet: Shot = {
-    id: 'fleet', layout: 'screen', dur: 4.6, images: [s.img(H)],
-    masks: slotRows.map((x, i): Mask => ({ rect: { x: x.rect.x, y: x.rect.y, w: right - x.rect.x, h: x.rect.h }, until: 0.6 + i * 0.55, wipe: 0.6, fill: 'dim' })),
-    spot: [key(0, [fleetBox])],
-    camera: [f(H, fleetBox, 1.08, 0), f(H, fleetBox, 1.05, 1)],
+  const v7Fleet = (): Shot => {
+    const H = 's04-home';
+    const fleetBox = s.box(H, 'home-fleet');
+    const slotRows = s.boxAttrs(H, 'fleet-slot');
+    const right = fleetBox.x + fleetBox.w;
+    return {
+      id: 'fleet', layout: 'screen', dur: 4.6, images: [s.img(H)],
+      masks: slotRows.map((x, i): Mask => ({ rect: { x: x.rect.x, y: x.rect.y, w: right - x.rect.x, h: x.rect.h }, until: 0.6 + i * 0.55, wipe: 0.6, fill: 'dim' })),
+      spot: [key(0, [fleetBox])],
+      camera: [f(H, fleetBox, 1.08, 0), f(H, fleetBox, 1.05, 1)],
+    };
   };
+  const agents = o.agents ? o.agents(s, look) : [v7Fleet()];
   const Q = 's05-question';
   const opts = s.boxes(Q, 'question-option', 'phone');
   const all = union(opts);
@@ -172,7 +178,7 @@ export function v7Chapters(s: Stills, look: Look = FILM_LOOK): Shot[][] {
 
   void retry;
   // The checks: attempt 1 sent back; tests and review (the attempt-2 history, the deck's Looks right); then before/after.
-  return [[open], [checks, draft], [fleet, decided, question], [red, green, looks, ba], [end]];
+  return [[open], [checks, draft], [...agents, decided, question], [red, green, looks, ba], [end]];
 }
 
 /**
@@ -199,7 +205,12 @@ export function timeToVoice(chapters: Shot[][], spoken: Spoken, fade = V7_FADE):
 }
 
 export function v7Film(s: Stills, spoken: Spoken): Cut {
-  const { shots, voice } = timeToVoice(v7Chapters(s), spoken);
+  return filmOf(v7Chapters(s), spoken);
+}
+
+/** The voiced cut over any chapters shaped like v7's (posters and key stills by shot id). */
+export function filmOf(chapters: Shot[][], spoken: Spoken): Cut {
+  const { shots, voice } = timeToVoice(chapters, spoken);
   return { name: 'full', ...FRAME, fade: V7_FADE, fadeOut: 0.9, captions: false, theme: 'dark', dip: true, voice, maxBytes: 8 * 1024 * 1024,
     poster: posterAt(shots, 'green', 1.5), keyStills: keyStills(shots), shots };
 }
@@ -214,13 +225,17 @@ export const sentences = (line: string) => line.match(/[^.!?]+[.!?]+/g)!.map((x)
  * The end card already shows its words.
  */
 export function v7Captioned(s: Stills, spoken: Spoken): Cut {
-  const chapters = v7Chapters(s);
+  return captionedOf(v7Chapters(s), V7_LINES, spoken);
+}
+
+/** The silent captioned cut over any chapters shaped like v7's, captioned from `lines` (one per chapter but the end). */
+export function captionedOf(chapters: Shot[][], lines: readonly string[], spoken: Spoken): Cut {
   // The phone question and the review deck fill the frame, so no caption sits clear of them: their sentences go on the neighbours.
   const NO_CAPTION = new Set(['question', 'looks']);
   // The before/after phones sit shorter and higher here, so the caption band is clear of their rows.
   for (const shot of chapters.flat()) if (shot.motion?.kind === 'beforeAfter') shot.motion = { ...shot.motion, heightShare: 0.66 };
   chapters.slice(0, -1).forEach((ch, i) => {
-    const ss = sentences(V7_LINES[i]);
+    const ss = sentences(lines[i]);
     const shots = ch.filter((x) => !NO_CAPTION.has(x.id));
     shots.forEach((shot, k) => {
       if (k >= ss.length) return;
@@ -240,7 +255,7 @@ function posterAt(shots: Shot[], id: string, t: number): number {
 
 function keyStills(shots: Shot[]): Record<string, number> {
   const out: Record<string, number> = {};
-  for (const [name, id, t] of [['open', 'open', 3.5], ['checks', 'checks', 3.6], ['draft', 'draft', 1.5], ['fleet', 'fleet', 3.0], ['question', 'question', 2.0], ['red', 'red', 2.6], ['green', 'green', 1.5], ['before-after', 'beforeAfter', 2.4], ['looks-right', 'looks', 1.8], ['end', 'end', 2.5]] as const) {
+  for (const [name, id, t] of [['open', 'open', 3.5], ['checks', 'checks', 3.6], ['draft', 'draft', 1.5], ['fleet', 'fleet', 3.0], ['session', 'session', 2.0], ['question', 'question', 2.0], ['red', 'red', 2.6], ['green', 'green', 1.5], ['before-after', 'beforeAfter', 2.4], ['looks-right', 'looks', 1.8], ['end', 'end', 2.5]] as const) {
     const at = posterAt(shots, id, t);
     if (at) out[name] = at;
   }

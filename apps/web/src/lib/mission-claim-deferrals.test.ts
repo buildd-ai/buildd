@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { summarizeDeferralRows } from './mission-claim-deferrals';
+import { latestHoldByTask, summarizeDeferralRows } from './mission-claim-deferrals';
 import { SURFACE_DEFERRAL_MS, STRAND_MS, MIN_CONSECUTIVE_DEFERRALS, isRepeatedlyDeferred } from './claim-deferral-thresholds';
 
 describe('summarizeDeferralRows', () => {
@@ -92,5 +92,17 @@ describe('thresholds', () => {
     expect(isRepeatedlyDeferred(undefined, longAgo, now)).toBe(false);
     expect(isRepeatedlyDeferred(MIN_CONSECUTIVE_DEFERRALS, null, now)).toBe(false);
     expect(isRepeatedlyDeferred(MIN_CONSECUTIVE_DEFERRALS, undefined, now)).toBe(false);
+  });
+});
+
+describe('latestHoldByTask (spec f7f67f1a R-33)', () => {
+  it('keeps the newest reason per task, rows newest first', () => {
+    const out = latestHoldByTask([
+      { taskId: 't1', reason: 'budget_paused' },
+      { taskId: 't1', reason: 'workspace_cap' },
+      { taskId: 't2', reason: 'path_overlap' },
+      { taskId: null, reason: 'budget_paused' },
+    ]);
+    expect([...out]).toEqual([['t1', 'budget_paused'], ['t2', 'path_overlap']]);
   });
 });

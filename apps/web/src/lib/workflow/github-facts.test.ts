@@ -43,3 +43,45 @@ describe('readBaseDelta (S15 base delta)', () => {
     expect((await readBaseDelta(paged, 'acme/w', 7, 'H1', 'dev')).prFiles).toHaveLength(105);
   });
 });
+
+// D12 / AC-15: a merge no buildd door made records who made it, as GitHub reports it.
+describe('toLivePr: the merger', () => {
+  test('a merged PR carries merged_by; an open one carries nothing extra', async () => {
+    const { toLivePr } = await import('./github-facts');
+    const merged = toLivePr({ state: 'closed', merged: true, merged_at: '2026-10-01T00:00:00Z', merge_commit_sha: 'm1', merged_by: { login: 'a-person' }, head: { sha: 'h1' }, base: { ref: 'dev' } } as never);
+    expect(merged?.mergedBy).toBe('a-person');
+    const open = toLivePr({ state: 'open', merged: false, head: { sha: 'h1' }, base: { ref: 'dev' } } as never);
+    expect(open && 'mergedBy' in open).toBe(false);
+  });
+});
+
+describe('changedPaths (§13.13 rule 4)', () => {
+  const reader = (files: unknown) => githubReader(1, (async () => ({ files })) as never);
+  test('a renamed file counts under its old name too, since a finding was anchored on that one', async () => {
+    expect(await reader([{ filename: 'src/b.ts', previous_filename: 'src/a.ts' }, { filename: 'README.md' }]).changedPaths!('o/r', 'A', 'B')).toEqual(['src/b.ts', 'README.md', 'src/a.ts']);
+  });
+  test('a list at the compare cap may be cut: unread', async () => {
+    expect(await reader(Array.from({ length: 300 }, (_, i) => ({ filename: `f${i}.ts` }))).changedPaths!('o/r', 'A', 'B')).toBeNull();
+  });
+});
+
+describe('a bounded reader (S4a review: the fast heal reads GitHub under a budget)', () => {
+  test('every call carries an abort signal; a read GitHub never answers in time reads as failed', async () => {
+    const seen: Array<RequestInit | undefined> = [];
+    // Answers only when aborted, like fetch with a signal.
+    const hanging = (async (_i: number, _p: string, init?: RequestInit) => {
+      seen.push(init);
+      await new Promise((_r, reject) => init?.signal?.addEventListener('abort', () => reject(new Error('aborted'))));
+    }) as never;
+    const started = Date.now();
+    expect(await githubReader(1, hanging, { timeoutMs: 30 }).readPr('acme/app', 7)).toBeNull();
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(seen[0]?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  test('without a timeout nothing changes: no signal is added', async () => {
+    const seen: Array<RequestInit | undefined> = [];
+    await githubReader(1, (async (_i: number, _p: string, init?: RequestInit) => { seen.push(init); return null; }) as never).readPr('acme/app', 7);
+    expect(seen[0]?.signal).toBeUndefined();
+  });
+});

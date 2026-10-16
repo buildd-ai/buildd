@@ -15,7 +15,7 @@ import { collectPolicySuggestions } from '@/lib/policy-suggestions';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess, getUserTeamsWithDetails } from '@/lib/team-access';
 import { resolvePolicy } from '@/lib/merge-policy';
-import { getTeamsPermissionOverrides, getTeamPermissionOverrides, roleHas } from '@/lib/permissions';
+import { roleHas } from '@/lib/permissions';
 import { loadWorkspaceRepoFacts, memberHasRepoAccess } from '@/lib/member-repo-access';
 import { getRepoAccessView } from '@/lib/github-repo-access-store';
 import { checkWorkspaceHealth } from '@/lib/workspace-health';
@@ -27,6 +27,7 @@ import SettingsSection from '../../SettingsSection';
 import { moveTargets } from '../../workspaces/rows';
 import { WorkspaceHealthCard } from './WorkspaceHealthCard';
 import { readinessNotices } from './readiness-notices';
+import { SectionIndex } from './SectionIndex';
 import { ReadinessCard } from './ReadinessCard';
 import { RepoAccessCard } from './RepoAccessCard';
 import { GitConfigForm } from './GitConfigForm';
@@ -34,16 +35,21 @@ import MemberRepoAccessSection from './MemberRepoAccessSection';
 import MergePolicyEditor from './MergePolicyEditor';
 import BranchStrategySection from './BranchStrategySection';
 import CopyReviewSection from './CopyReviewSection';
-import { copyReviewConfigOf } from '@buildd/shared';
+import VisualReviewPolicySection from './VisualReviewPolicySection';
+import { copyReviewConfigOf, visualReviewPolicyOf } from '@buildd/shared';
+import FreshContainerSection from './FreshContainerSection';
 import CiRetrySection from './CiRetrySection';
-import WarmHandoverSection from '@/components/WarmHandoverSection';
 import ReleaseSection from './ReleaseSection';
 import SubjectPolicySection from './SubjectPolicySection';
 import ExecutorSection from './ExecutorSection';
 import RunnerSizeSection from './RunnerSizeSection';
+import WorkspaceModels from './WorkspaceModels';
 import ConcurrencySection from './ConcurrencySection';
+import PauseStartsSection from './PauseStartsSection';
+import { isPaused } from '@/lib/workspace-pause';
 import WorkTrackerSection from './WorkTrackerSection';
 import DeleteWorkspaceButton from './DeleteWorkspaceButton';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -51,6 +57,8 @@ const SUGGESTION_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** Hairline-divided rows inside one group; each row component carries its own py-4. */
 const ROWS = 'divide-y divide-border-default';
+/** Room for the sticky section index when a link jumps here. */
+const JUMP = 'scroll-mt-14';
 
 /**
  * Everything about one workspace, in one place: readiness, repository,
@@ -70,10 +78,9 @@ export default async function WorkspaceSettingsPage({
 
   const access = await verifyWorkspaceAccess(user.id, workspaceId);
   if (!access) notFound();
-  const overrides = await getTeamPermissionOverrides(access.teamId);
 
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     columns: {
       id: true,
       name: true,
@@ -86,28 +93,29 @@ export default async function WorkspaceSettingsPage({
       workTrackerConfig: true,
       webhookConfig: true,
       maxConcurrentTasks: true,
+      newStartsPausedUntil: true,
     },
   });
   if (!workspace) notFound();
 
   const gitConfig = workspace.gitConfig as WorkspaceGitConfig | null;
-  const canManageSettings = roleHas(access.role, 'manage_workspace_settings', overrides);
+  const canManageSettings = roleHas(access.role, 'manage_workspace_settings');
 
   // Roles a reviewer can be picked from (skills with isRole = true).
   const roles = await db.query.workspaceSkills.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(workspaceSkills.workspaceId, workspaceId),
       eq(workspaceSkills.isRole, true),
-    ),
+    )),
     columns: { slug: true, name: true },
   });
 
   // Missions with their own merge policy.
   const missionsWithOverrides = await db.query.missions.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(missions.workspaceId, workspaceId),
       isNotNull(missions.mergePolicy),
-    ),
+    )),
     columns: { id: true, title: true, mergePolicy: true },
   });
 
@@ -131,7 +139,7 @@ export default async function WorkspaceSettingsPage({
     : [];
 
   const userTeams = await getUserTeamsWithDetails(user.id).catch(() => []);
-  const moveTeams = moveTargets(user.id, userTeams, workspace.teamId, await getTeamsPermissionOverrides(userTeams.map((t) => t.id)));
+  const moveTeams = moveTargets(user.id, userTeams, workspace.teamId);
 
   // Read-only diagnosis; a failure here must not take the settings page down.
   const repoAccessView = await getRepoAccessView(workspaceId, user.id).catch((err) => {
@@ -158,7 +166,7 @@ export default async function WorkspaceSettingsPage({
   const runnerSize = executor.executor === 'host' ? null : await resolveWorkspaceRunnerSize(workspace);
   const runnerMonth = runnerSize ? await workspaceHostedRunnerMonth(workspace.id).catch(() => null) : null;
 
-  const canDelete = roleHas(access.role, 'delete_workspace', overrides);
+  const canDelete = roleHas(access.role, 'delete_workspace');
 
   // One notice per problem above the settings (readiness-notices.ts). Every
   // health action, the scaffold and the spec routes are admin writes, so
@@ -175,6 +183,18 @@ export default async function WorkspaceSettingsPage({
     }),
   });
 
+  const showReadiness = notices.health.length > 0 || Boolean(notices.readiness) || Boolean(notices.repoAccess);
+  const sections = [
+    ...(showReadiness ? [{ id: 'readiness', label: 'Readiness' }] : []),
+    { id: 'repository', label: 'Repository' },
+    { id: 'agents', label: 'Agents' },
+    { id: 'delivery', label: 'Delivery' },
+    { id: 'where-work-runs', label: 'Where work runs' },
+    { id: 'models', label: 'Models' },
+    { id: 'integrations', label: 'Integrations' },
+    ...(moveTeams || canDelete ? [{ id: 'danger-zone', label: 'Danger zone' }] : []),
+  ];
+
   return (
     <SettingsPage
       title={workspace.name}
@@ -186,12 +206,14 @@ export default async function WorkspaceSettingsPage({
             ? <span className="font-mono text-text-primary break-all">{workspace.repo}</span>
             : 'No repository linked.'}
           {/* The phone header says "Workspaces"; the h1 and repo carry it there. */}
-          <span className="hidden md:inline">{' '}How agents work in this workspace: git, merging, releases and where tasks run.</span>
+          <span className="hidden md:inline">{' '}Git, merging, releases and where tasks run.</span>
         </>
       }
     >
-      {(notices.health.length > 0 || notices.readiness || notices.repoAccess) && (
-        <Section title="Readiness" id="readiness">
+      <SectionIndex sections={sections} />
+
+      {showReadiness && (
+        <Section title="Readiness" id="readiness" className={JUMP}>
           <div className={ROWS}>
             {notices.health.length > 0 && (
               <WorkspaceHealthCard
@@ -211,9 +233,10 @@ export default async function WorkspaceSettingsPage({
         </Section>
       )}
 
-      <Section title="Repository" id="repository">
+      <Section title="Repository" id="repository" className={JUMP}>
         <div className={ROWS}>
           <GitConfigForm
+            part="repository"
             workspaceId={workspace.id}
             workspaceName={workspace.name}
             initialConfig={gitConfig}
@@ -229,7 +252,17 @@ export default async function WorkspaceSettingsPage({
         </div>
       </Section>
 
-      <Section title="Delivery" id="delivery">
+      <Section title="Agents" id="agents" className={JUMP}>
+        <GitConfigForm
+          part="agents"
+          workspaceId={workspace.id}
+          workspaceName={workspace.name}
+          initialConfig={gitConfig}
+          canEdit={canManageSettings}
+        />
+      </Section>
+
+      <Section title="Delivery" id="delivery" className={JUMP}>
         <div className={ROWS}>
           <MergePolicyEditor
             workspaceId={workspaceId}
@@ -247,7 +280,6 @@ export default async function WorkspaceSettingsPage({
             defaultBranch={gitConfig?.defaultBranch || 'main'}
             canEdit={canManageSettings}
           />
-          <WarmHandoverSection workspaceId={workspace.id} teamId={workspace.teamId} initial={gitConfig?.warmHandover ?? null} canEdit={canManageSettings} />
           <CiRetrySection
             workspaceId={workspace.id}
             initial={gitConfig?.enforceGreenCI === true}
@@ -256,6 +288,12 @@ export default async function WorkspaceSettingsPage({
           <CopyReviewSection
             workspaceId={workspace.id}
             initial={copyReviewConfigOf(gitConfig)}
+            canEdit={canManageSettings}
+          />
+          <VisualReviewPolicySection
+            workspaceId={workspace.id}
+            override={visualReviewPolicyOf(gitConfig)}
+            inherited={{ mode: 'automatic', origin: 'default' }}
             canEdit={canManageSettings}
           />
           <ReleaseSection
@@ -274,7 +312,7 @@ export default async function WorkspaceSettingsPage({
         </div>
       </Section>
 
-      <Section title="Where work runs" id="where-work-runs">
+      <Section title="Where work runs" id="where-work-runs" className={JUMP}>
         <div className={ROWS}>
           <ExecutorSection
             workspaceId={workspace.id}
@@ -294,18 +332,31 @@ export default async function WorkspaceSettingsPage({
               canEdit={canManageSettings}
             />
           )}
+          {executor.executor !== 'host' && (
+            <FreshContainerSection workspaceId={workspace.id} initial={gitConfig?.warmHandover === 'off'} canEdit={canManageSettings} />
+          )}
           <ConcurrencySection
             workspaceId={workspace.id}
             initialMaxConcurrentTasks={workspace.maxConcurrentTasks}
+            canEdit={canManageSettings}
+          />
+          <PauseStartsSection
+            workspaceId={workspace.id}
+            pausedUntil={isPaused(workspace.newStartsPausedUntil) ? new Date(workspace.newStartsPausedUntil!).toISOString() : null}
+            canEdit={canManageSettings}
           />
           <p className="py-4 last:pb-0 text-xs text-text-secondary" data-testid="workspace-runners-pointer">
-            Runners and their sign-ins are set up in{' '}
-            <Link href="/app/settings/runners" className="text-text-primary underline">Settings › Runners</Link>.
+            Manage runners in{' '}
+            <Link href={`/app/settings/runners?team=${encodeURIComponent(workspace.teamId)}`} className="text-text-primary underline">Settings › Runners</Link>.
           </p>
         </div>
       </Section>
 
-      <Section title="Integrations" id="integrations">
+      <div id="models" className={JUMP}>
+        <WorkspaceModels workspaceId={workspace.id} teamId={workspace.teamId} />
+      </div>
+
+      <Section title="Integrations" id="integrations" className={JUMP}>
         <WorkTrackerSection
           workspaceId={workspace.id}
           initialWorkTrackerConfig={workspace.workTrackerConfig as WorkspaceWorkTrackerConfig | null}
@@ -323,7 +374,7 @@ export default async function WorkspaceSettingsPage({
               <div className="flex flex-col gap-3 py-4 first:pt-0 last:pb-0 sm:flex-row sm:items-center sm:justify-between">
                 <div className="min-w-0">
                   <h3 className="text-sm font-medium text-text-primary">Move to another team</h3>
-                  <p className="text-xs text-text-secondary mt-0.5">Hands this workspace to a team you manage.</p>
+                  <p className="text-xs text-text-secondary mt-0.5">Transfers this workspace to another team you manage.</p>
                 </div>
                 <MoveToTeamButton
                   workspace={{ id: workspace.id, name: workspace.name, teamId: workspace.teamId }}
@@ -332,7 +383,7 @@ export default async function WorkspaceSettingsPage({
                 />
               </div>
             )}
-            {roleHas(access.role, 'delete_workspace', overrides) && (
+            {roleHas(access.role, 'delete_workspace') && (
               <div
                 data-testid="workspace-danger-zone"
                 className="flex flex-col gap-3 py-4 first:pt-0 last:pb-0 sm:flex-row sm:items-center sm:justify-between"

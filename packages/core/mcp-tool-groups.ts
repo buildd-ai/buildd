@@ -19,6 +19,7 @@
  */
 import { allActions, buildParamsDescription, type BuilddAction } from './mcp-tools';
 import { BUILDD_MCP_TOOL_GROUPS } from '@buildd/shared';
+import { SUB_ACTIONS, subActionAlternation as alt, subActionSelector, subActionsOf } from './mcp-sub-actions';
 
 /** Chat's tool groups. `notifications` has chat-native tools only. */
 export const CHAT_AREAS = ['missions', 'tasks', 'workers', 'prs', 'memory', 'schedules', 'artifacts', 'notifications', 'admin'] as const;
@@ -48,6 +49,7 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   reject_plan: 'tasks',
   // workers: steering and fleet health
   send_agent_message: 'workers',
+  answer_question: 'workers',
   query_events: 'workers',
   explain: 'workers',
   get_error_traces: 'workers',
@@ -110,10 +112,14 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   manage_evidence_backends: 'admin',
   manage_secrets: 'admin',
   manage_providers: 'admin',
+  get_decision: 'admin',
+  label_decision: 'admin',
   // a worker's own lifecycle: never a chat tool
   claim_task: 'work',
   update_progress: 'work',
   receive_messages: 'work',
+  ask_human: 'work',
+  await_answer: 'work',
   complete_task: 'work',
   create_pr: 'work',
   emit_event: 'work',
@@ -240,6 +246,8 @@ export const ACTION_LISTING: Record<BuilddAction, 'listed' | 'more'> = {
   close_pr: 'listed', // runner PR-mutation prompt
   manage_secrets: 'listed', // visual-review skill (preview bypass secret)
   get_visual_review: 'listed', // the mission visual-QA phase is read only here
+  ask_human: 'listed', // buildd-mcp-consumer / buildd-workflow skills: an interactive session's hard block
+  await_answer: 'listed', // same skills: the wait loop after ask_human
   // rare: named on the More: line
   get_task_messages: 'more',
   receive_messages: 'more',
@@ -251,6 +259,8 @@ export const ACTION_LISTING: Record<BuilddAction, 'listed' | 'more'> = {
   list_releases: 'more',
   release_status: 'more',
   manage_experiments: 'more',
+  get_decision: 'more',
+  label_decision: 'more',
   manage_initiatives: 'more',
   link_tracker: 'more',
   list_discrepancies: 'more',
@@ -261,6 +271,7 @@ export const ACTION_LISTING: Record<BuilddAction, 'listed' | 'more'> = {
   approve_plan: 'more',
   reject_plan: 'more',
   send_agent_message: 'more',
+  answer_question: 'more',
   query_events: 'more',
   emit_event: 'more',
   suggest_schedule_update: 'more',
@@ -329,7 +340,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
     parts: [
       { text: 'claim', actions: ['claim_task'] },
       { text: 'report progress', actions: ['update_progress'] },
-      { text: 'messages', actions: ['receive_messages'] },
+      { text: 'messages, ask a person', actions: ['receive_messages', 'ask_human', 'await_answer'] },
       { text: 'post notes', actions: ['post_note'] },
       { text: 'record events', actions: ['emit_event', 'query_events'] },
       { text: 'write artifacts', actions: ['create_artifact', 'upload_artifact'] },
@@ -360,7 +371,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
   runners: {
     parts: [
       { text: 'connectors', actions: ['list_connectors', 'resolve_capability', 'request_capability'] },
-      { text: 'message a running agent', actions: ['send_agent_message'] },
+      { text: 'message or answer an agent', actions: ['send_agent_message', 'answer_question'] },
     ],
   },
   artifacts: {
@@ -383,6 +394,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
       { text: 'secrets', actions: ['manage_secrets'] },
       { text: 'model providers', actions: ['manage_providers'] },
       { text: 'experiments', actions: ['manage_experiments'] },
+      { text: 'decision audit', actions: ['get_decision', 'label_decision'] },
       { text: 'model tiers, evidence', actions: ['manage_model_tiers', 'manage_evidence_backends'] },
       { text: 'watched projects', actions: ['manage_watched_projects'] },
       { text: 'releases', actions: ['trigger_release'] },
@@ -421,6 +433,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   approve_plan: 'approve a planning task',
   reject_plan: 'reject a plan with feedback',
   send_agent_message: 'steer the agent running a task',
+  answer_question: 'answer a waiting agent\'s question',
   explain: 'what blocks a task, mission, PR; evidence',
   get_error_traces: 'errors from tool output',
   get_failure_analytics: 'failure patterns; error= finds one',
@@ -459,7 +472,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   update_artifact: 'edit an artifact',
   link_artifact: 'link an artifact to a task, mission or chat',
   list_artifact_links: 'what is linked, without bodies',
-  manage_specs: 'Living Specs: draft, read, revise, relate',
+  manage_specs: 'Living Specs: draft, read, revise, approve, verify, comment',
   trigger_release: 'start a release',
   manage_workspaces: 'workspace config and new projects',
   manage_watched_projects: 'deploy-watched projects',
@@ -469,6 +482,8 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   update_skill: 'edit a skill or role',
   delete_skill: 'delete a skill',
   manage_experiments: 'experiments and their readouts',
+  get_decision: 'one decision and the evidence to judge it',
+  label_decision: 'grade a decision right, wrong or unsure',
   manage_model_tiers: 'model per tier',
   manage_evidence_backends: 'evidence buckets',
   manage_secrets: 'encrypted MCP credential secrets',
@@ -478,6 +493,8 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   claim_task: 'claim your assignment, the next, or a named task',
   update_progress: 'report progress',
   receive_messages: 'your inbox',
+  ask_human: 'park on a question for a person',
+  await_answer: 'wait for that answer',
   complete_task: 'finish your task (error marks it failed)',
   create_pr: 'open the PR for your branch',
   emit_event: 'record a milestone event',
@@ -498,6 +515,8 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
  */
 const SIGNATURE_OVERRIDES: Partial<Record<BuilddAction, string>> = {
   create_task: '{title, description, kind, workspaceId?, missionId?, priority?, roleSlug?, dependsOn?, pathManifest?, baseBranch?, outputRequirement?, verificationCommand?, loopUntilMerged?, tier?, backend?, …}',
+  // A cancel needs cancelReason or supersededBy, so those stay listed.
+  update_task: '{taskId, title?, description?, priority?, status?, cancelReason?, supersededBy?, abort?, startAt?, startIn?, tier?, model?, pause?, …}',
   // Token, cost and diff counters are runner telemetry; help lists them.
   update_progress: '{workerId?, progress?, message?, plan?, kind?, …}',
   resolve_capability: '{capability?, …}',
@@ -508,14 +527,14 @@ const SIGNATURE_OVERRIDES: Partial<Record<BuilddAction, string>> = {
   manage_evidence_backends: '{action, backendId?, …}',
   read_evidence: '{taskId?|prNumber?, grep?, …}',
   get_artifact: '{artifactId, view?, section?, grep?, full?, …}',
-  manage_specs: '{action: create_draft|get|revise|list|relate, specId?, title?, body?, expectedVersion?, parentSpecId?, …}',
+  manage_specs: `{action: ${alt('manage_specs')}, specId?, title?, body?, expectedVersion?, parentSpecId?, …}`,
   list_incidents: '{}',
-  update_incident: '{incidentId, action: acknowledge|resolve}',
+  update_incident: `{incidentId, action: ${alt('update_incident')}}`,
   record_pr_supersession: '{prNumber?, supersedingPrNumber, supersedingRepo?, reason, …}',
   merge_pr: '{prNumber, workspaceId?, overrides?, reason?, …}',
-  manage_providers: '{action: list|set|delete|explain|set_policy, provider?, scope?, value?, surface?, …}',
-  manage_watched_projects: '{action: list|create|update|delete|run, workspaceId?, projectId?, repo?, …}',
-  manage_workspaces: '{action: list|get|create|update|create_repo|init|readiness|scaffold|author_spec, workspaceId?, name?, repoUrl?, gitConfig?, releaseConfig?, …}',
+  manage_providers: `{action: ${alt('manage_providers')}, provider?, scope?, value?, surface?, …}`,
+  manage_watched_projects: `{action: ${alt('manage_watched_projects')}, workspaceId?, projectId?, repo?, …}`,
+  manage_workspaces: `{action: ${alt('manage_workspaces')}, workspaceId?, name?, repoUrl?, gitConfig?, releaseConfig?, …}`,
 };
 
 /** The long parameter docs of one action (what the params description used to carry for it). */
@@ -610,7 +629,8 @@ export const SIGNATURE_OVERRIDE_ACTIONS = Object.keys(SIGNATURE_OVERRIDES) as Bu
  * sees only the fields (and the parts of a description) it can act on. A test
  * holds that each tagged action's long docs name the field.
  */
-type ParamPart = { text: string; actions: BuilddAction[] };
+/** `moreOnly`: shown only while its action is on `More:` (a listed one's signature already says it). */
+type ParamPart = { text: string; actions: BuilddAction[]; moreOnly?: true };
 export interface GroupParam {
   name: string;
   /** JSON schema of the field, without its description. */
@@ -628,11 +648,13 @@ const bool = { type: 'boolean' };
 
 const WS = 'UUID, repo name or owner/repo';
 const MISSION_WRITES: BuilddAction[] = ['manage_missions'];
+const ADMIN_SUB_ACTION_OWNERS = ['manage_experiments', 'manage_providers', 'manage_secrets', 'manage_workspaces', 'manage_watched_projects', 'manage_model_tiers', 'manage_evidence_backends'] as const;
 
 export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
   missions: [
     param('action', str, [
-      { text: 'manage_missions: list|get|update|create|arm|delete|link_task|unlink_task|evaluate|get_criteria_state', actions: ['manage_missions'] },
+      { text: `manage_missions: ${alt('manage_missions')}`, actions: ['manage_missions'] },
+      { text: `manage_initiatives: ${alt('manage_initiatives')}`, actions: ['manage_initiatives'], moreOnly: true },
     ]),
     param('missionId', str, [
       { text: 'Mission UUID, or its title (looked up)', actions: ['manage_missions', 'get_visual_review'] },
@@ -680,7 +702,7 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
   ],
   analytics: [
     param('incidentId', str, [{ text: 'Incident UUID (from list_incidents)', actions: ['update_incident'] }]),
-    param('action', { type: 'string', enum: ['acknowledge', 'resolve'] }, [{ text: 'update_incident: acknowledge or resolve', actions: ['update_incident'] }]),
+    param('action', { type: 'string', enum: [...SUB_ACTIONS.update_incident] }, [{ text: `update_incident: ${alt('update_incident')}`, actions: ['update_incident'] }]),
     param('workspaceId', str, [
       { text: WS, actions: ['list_runners', 'explain', 'get_error_traces', 'get_budget_forecast', 'get_usage_stats', 'get_failure_analytics', 'dispatch_health', 'get_manifest_coverage', 'get_path_claim_stats', 'get_decision_stats'] },
       { text: 'list_runners: says if a browser runner is online', actions: ['list_runners'] },
@@ -695,8 +717,8 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
   runners: [
     param('workspaceId', str, [{ text: WS, actions: ['list_connectors', 'resolve_capability'] }]),
     param('capability', str, [{ text: 'Need as domain:verb, e.g. observability:query', actions: ['resolve_capability', 'request_capability'] }]),
-    param('taskId', str, [{ text: 'Task UUID', actions: ['send_agent_message'] }]),
-    param('message', str, [{ text: 'Steering message for the running agent', actions: ['send_agent_message'] }]),
+    param('taskId', str, [{ text: 'Task UUID', actions: ['send_agent_message', 'answer_question'] }]),
+    param('message', str, [{ text: 'Steering message for the running agent, or the answer to its question', actions: ['send_agent_message', 'answer_question'] }]),
   ],
   prs: [
     param('prNumber', num, [{ text: 'PR number', actions: ['get_pr', 'merge_pr', 'close_pr', 'update_pr', 'get_pr_review', 'request_pr_review'] }]),
@@ -710,7 +732,7 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
     param('revision', num, [{ text: 'Read this revision', actions: ['get_artifact'] }]),
     param('expectedRevision', num, [{ text: 'Refuse if the body moved on', actions: ['update_artifact'] }]),
     param('missionId', str, [{ text: 'list_artifacts: mission UUID (not a title)', actions: ['list_artifacts'] }]),
-    param('action', str, [{ text: 'manage_specs: create_draft|get|revise|list|relate', actions: ['manage_specs'] }]),
+    param('action', str, [{ text: `manage_specs: ${alt('manage_specs')}`, actions: ['manage_specs'], moreOnly: true }]),
     param('specId', str, [{ text: 'Spec UUID', actions: ['manage_specs'] }]),
     param('expectedVersion', num, [{ text: 'revise: the version you read; a stale one is refused with currentVersion', actions: ['manage_specs'] }]),
   ],
@@ -720,11 +742,13 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
     param('name', str, [{ text: 'Schedule name', actions: ['create_schedule'] }]),
     param('cronExpression', str, [{ text: 'Cron expression', actions: ['create_schedule', 'update_schedule'] }]),
     param('title', str, [{ text: 'Title of the tasks it files', actions: ['create_schedule'] }]),
+    param('tier', { type: 'string', enum: ['premium-plus', 'premium', 'standard', 'budget'] }, [{ text: 'Model tier of the tasks it files', actions: ['create_schedule'] }]),
   ],
   work: [
     param('taskId', str, [{ text: 'Task to pick up', actions: ['claim_task'] }]),
     param('progress', num, [{ text: 'Percent, 0-100', actions: ['update_progress'] }]),
     param('message', str, [{ text: 'What you are doing', actions: ['update_progress'] }]),
+    param('question', str, [{ text: 'For a person', actions: ['ask_human'] }]),
     param('summary', str, [{ text: 'What you delivered', actions: ['complete_task'] }]),
     param('error', str, [{ text: 'Set to fail', actions: ['complete_task'] }]),
     param('structuredOutput', { type: 'object' }, [{ text: 'e.g. handoff.delivered', actions: ['complete_task'] }]),
@@ -755,13 +779,21 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
     param('label', str, [{ text: 'Event label', actions: ['emit_event'] }]),
   ],
   admin: [
-    param('action', str, [{ text: 'Sub-action (list, get, set, update, ...): see the action line', actions: ['manage_experiments', 'manage_providers', 'manage_secrets', 'manage_workspaces', 'manage_watched_projects', 'manage_model_tiers', 'manage_evidence_backends'] }]),
+    // One part per action, so a level sees only the sub-actions of what it lists.
+    param('action', str, [
+      { text: 'Sub-action: see the action line', actions: [...ADMIN_SUB_ACTION_OWNERS] },
+      ...ADMIN_SUB_ACTION_OWNERS.map(a => ({ text: `${a}: ${alt(a)}`, actions: [a], moreOnly: true as const })),
+    ]),
     param('workspaceId', str, [{ text: WS, actions: ['manage_workspaces', 'list_skills', 'get_skill', 'register_skill', 'update_skill', 'delete_skill', 'trigger_release'] }]),
     param('slug', str, [{ text: 'Skill or role slug', actions: ['register_skill', 'get_skill', 'update_skill', 'delete_skill'] }]),
     param('name', str, [{ text: 'Skill or role name', actions: ['register_skill', 'update_skill'] }]),
     param('content', str, [{ text: 'Skill body (markdown)', actions: ['register_skill', 'update_skill'] }]),
-    param('op', { type: 'string', enum: ['find_duplicates', 'find_decayed', 'archive'] }, [{ text: 'Consolidation step', actions: ['consolidate_knowledge'] }]),
+    param('op', { type: 'string', enum: [...SUB_ACTIONS.consolidate_knowledge] }, [{ text: 'Consolidation step', actions: ['consolidate_knowledge'] }]),
     param('id', str, [{ text: 'Memory ID', actions: ['memory_delete'] }]),
+    param('decisionId', str, [{ text: 'Decision id', actions: ['get_decision', 'label_decision'] }]),
+    param('label', { type: 'string', enum: ['right', 'wrong', 'unsure'] }, [{ text: 'Grade of the answer', actions: ['label_decision'] }]),
+    param('rationale', str, [{ text: 'Evidence, at most 280 chars', actions: ['label_decision'] }]),
+    param('ruleLabel', { type: 'string', enum: ['right', 'wrong', 'unsure'] }, [{ text: "Grade of the rule's answer", actions: ['label_decision'] }]),
   ],
 };
 
@@ -770,11 +802,19 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
  * No schema-level description: the tool description's signatures already say what params takes, and
  * repeating "per the signature above" on every group cost ~100 tokens of the 6k budget.
  */
-export function mcpGroupParamsSchema(group: McpToolGroup, actions: readonly string[]): { type: 'object'; properties: Record<string, Record<string, unknown>>; additionalProperties: true } {
+export function mcpGroupParamsSchema(group: McpToolGroup, actions: readonly string[], more?: readonly string[]): { type: 'object'; properties: Record<string, Record<string, unknown>>; additionalProperties: true } {
   const listed = new Set(actions);
+  // `more` (the tool's `More:` actions) types only what a schema-constrained
+  // model cannot call one without: its sub-action selector. All of their fields
+  // would cost ~700 tokens past the 6k budget; the rest pass through untyped.
+  // Without `more` (the whole registry, as tests read it), moreOnly parts count.
+  const typedForMore = (a: string, field: string) =>
+    !!more?.includes(a) && field === subActionSelector(a) && subActionsOf(a) != null;
   const properties: Record<string, Record<string, unknown>> = {};
   for (const f of MCP_GROUP_PARAMS[group]) {
-    const texts = f.parts.filter(p => p.actions.some(a => listed.has(a))).map(p => p.text);
+    const texts = f.parts
+      .filter(p => p.actions.some(a => (listed.has(a) && !(p.moreOnly && more)) || typedForMore(a, f.name)))
+      .map(p => p.text);
     if (texts.length === 0) continue;
     properties[f.name] = { ...f.schema, description: texts.join('. ') };
   }

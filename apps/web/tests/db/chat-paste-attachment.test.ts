@@ -112,8 +112,14 @@ describe('a 60,000-character paste', () => {
   });
 
   test('every read is in the read ledger', async () => {
-    await new Promise(r => setTimeout(r, 200)); // the ledger write runs detached outside a request
-    const reads = await q<{ view: string; user_id: string }>(sql`SELECT view, user_id FROM artifact_reads WHERE artifact_id = ${pasteId}::uuid ORDER BY created_at`);
+    // The ledger write runs detached outside a request, so poll for it rather
+    // than sleeping a fixed time: a slow CI runner can land the last write late.
+    const ledger = () => q<{ view: string; user_id: string }>(sql`SELECT view, user_id FROM artifact_reads WHERE artifact_id = ${pasteId}::uuid ORDER BY created_at`);
+    let reads = await ledger();
+    for (let i = 0; i < 50 && reads.length < 4; i++) {
+      await new Promise(r => setTimeout(r, 100));
+      reads = await ledger();
+    }
     expect(reads.length).toBeGreaterThanOrEqual(4);
     expect(reads.every(r => r.user_id === userA)).toBe(true);
     expect(new Set(reads.map(r => r.view))).toEqual(new Set(['full', 'range']));

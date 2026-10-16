@@ -18,16 +18,24 @@
  *    hard triggers still apply, otherwise the run skips.
  *  - **Out of band.** The store writes only `post_session_runs`, fenced on
  *    `state = 'collected'` so two sweeps cannot both triage one run.
+ *  - **Sampled skips.** A small random share of skips that have a ledger row
+ *    (default 3%, capped per UTC day) also goes to analysis, so the skips get
+ *    labelled and the miss rate is measured. The skip stands; the flag is on
+ *    the triage record (`@buildd/core/post-session-triage` skip sampling).
  */
 
 import type { PostSessionRunState, StageAFacts } from '@buildd/core/post-session-quality';
 import {
   buildTriageFeatures,
   evaluateHardTriggers,
+  markSampledSkip,
+  resolveSkipSampleConfig,
   resolveTriageOutcome,
+  utcDayStart,
   triageRecordFromResponse,
   unavailableTriage,
   type HardTrigger,
+  type SkipSampleConfig,
   type TriageOutcome,
   type TriageRule,
 } from '@buildd/core/post-session-triage';
@@ -57,6 +65,8 @@ export interface PostSessionTriageStore {
    * so a run that keeps failing rotates behind the others.
    */
   recordTriageFailure(runId: string, error: string, now: Date): Promise<void>;
+  /** Runs flagged as sampled skips triaged since `since`. Absent: no sampling. */
+  countSampledSkipsSince?(since: Date): Promise<number>;
 }
 
 /** What the decision call cost, from its usage receipts. `usd` null = no receipt priced it. */
@@ -75,6 +85,8 @@ export type TriagePostSessionResult =
     rule: TriageRule;
     triageStatus: PostSessionTriageRecord['status'];
     hardTriggered: boolean;
+    /** A skip sent to analysis only to label it (excluded from selected counts). */
+    sampled: boolean;
     cost: TriageCost;
   }
   | { status: 'not_ready'; runId: string; state: PostSessionRunState | null }
@@ -88,6 +100,8 @@ export interface TriageDeps {
   decisionDeps?: BuilddDecisionDeps;
   recordReceipts?: (receipts: DecisionReceipt[], scope: { teamId: string; accountId: string | null }) => Promise<void>;
   now?: Date;
+  /** Skip sampling. Default: the env config (`resolveSkipSampleConfig`) and Math.random. */
+  skipSample?: SkipSampleConfig & { random?: () => number };
 }
 
 const MAX_ERROR_CHARS = 500;
@@ -161,6 +175,31 @@ async function decide(
   return out;
 }
 
+/**
+ * The rate a skip is sampled at, or null when it is not. Only a skip with a
+ * decision row (a team, not sensitive) can be labelled, so only those are
+ * drawn. A failed cap read samples nothing.
+ */
+async function drawSkipSample(
+  store: PostSessionTriageStore,
+  input: PostSessionTriageInput,
+  outcome: TriageOutcome,
+  deps: TriageDeps,
+  now: Date,
+): Promise<number | null> {
+  if (outcome.finalDecision !== 'skip' || !input.teamId || input.dataClass === 'sensitive') return null;
+  if (!store.countSampledSkipsSince) return null;
+  const config = deps.skipSample ?? resolveSkipSampleConfig(process.env);
+  if (!(config.rate > 0) || config.dailyCap <= 0) return null;
+  if ((deps.skipSample?.random ?? Math.random)() >= config.rate) return null;
+  try {
+    const today = await store.countSampledSkipsSince(utcDayStart(now));
+    return today < config.dailyCap ? config.rate : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function triagePostSessionRun(runId: string, deps: TriageDeps = {}): Promise<TriagePostSessionResult> {
   let store: PostSessionTriageStore | null = null;
   const now = deps.now ?? new Date();
@@ -174,7 +213,9 @@ export async function triagePostSessionRun(runId: string, deps: TriageDeps = {})
     const hardTriggers = evaluateHardTriggers(facts);
     const receipts: DecisionReceipt[] = [];
     const { record, finalDecision } = await decide(runId, { ...input, facts }, hardTriggers, deps, receipts);
-    const outcome = resolveTriageOutcome(record, finalDecision, hardTriggers);
+    let outcome = resolveTriageOutcome(record, finalDecision, hardTriggers);
+    const sampleRate = await drawSkipSample(store, input, outcome, deps, now);
+    if (sampleRate !== null) outcome = markSampledSkip(outcome, sampleRate);
     const ok = await store.recordTriage(runId, outcome, now);
     if (!ok) return { status: 'fenced', runId };
     return {
@@ -184,6 +225,7 @@ export async function triagePostSessionRun(runId: string, deps: TriageDeps = {})
       rule: outcome.rule,
       triageStatus: outcome.triage.status,
       hardTriggered: outcome.hardTriggered,
+      sampled: sampleRate !== null,
       cost: triageCost(receipts),
     };
   } catch (err) {

@@ -7,6 +7,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { callerOwnsWorker } from '@/lib/worker-owner';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * GET /api/workers/[id]/sessions
@@ -42,7 +43,7 @@ export async function GET(
   if (account) {
     // Bearer auth: only the principal that claimed the worker (lib/worker-owner.ts)
     const worker = await db.query.workers.findFirst({
-      where: eq(workers.id, id),
+      where: sqlWhere(eq(workers.id, id)),
       columns: { id: true, accountId: true, claimedByUserId: true, localUiUrl: true, workspaceId: true, taskId: true },
     });
     if (!worker) {
@@ -59,7 +60,7 @@ export async function GET(
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
     const worker = await db.query.workers.findFirst({
-      where: eq(workers.id, id),
+      where: sqlWhere(eq(workers.id, id)),
       columns: { id: true, workspaceId: true, localUiUrl: true },
     });
     if (!worker) {
@@ -78,7 +79,7 @@ export async function GET(
 
   // Fetch worker to get localUiUrl for proxying
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.id, id),
+    where: sqlWhere(eq(workers.id, id)),
     columns: { id: true, localUiUrl: true },
   });
 

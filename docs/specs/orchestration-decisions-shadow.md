@@ -2,13 +2,13 @@
 title: Orchestration Decisions (Shadow and Promotion Guard)
 status: active
 owner: max
-last_verified: 2026-10-08
-summary: Creation-manifest decisions MUST stay record-only without a committed promotion; claim hold/start MAY apply a confident Jev START to its three advisory gates only; both MUST fall back to the rule on failure.
+last_verified: 2026-10-15
+summary: Creation-manifest decisions MUST stay record-only without a committed promotion; claim hold/start MAY apply a measured model's confident START to its three advisory gates; both fall back to the rule.
 domain: tasks
 surfaces: [packages/core/orchestration-decision.ts, packages/core/orchestration-promotion.ts, packages/core/orchestration-readout.ts, apps/web/src/app/api/workers/claim/hold-start-shadow.ts]
 related: [model-routing-and-tiers, mission-task-lifecycle, live-sibling-conflict-probe]
 keywords: [jev, shadow, gated, applying fraction, cohort, propensity, orchestration_decisions, orchestration_manifest, orchestration_claim, readout, insufficient_n, soft overlap, softOverlaps, partitionOverlapEdges, hold start]
-verified_by: [packages/core/__tests__/orchestration-claim-risk.test.ts, packages/core/__tests__/orchestration-claim-risk-eval.test.ts, apps/web/src/lib/hard-overlap-surfaces.test.ts, packages/core/__tests__/orchestration-decision.test.ts, packages/core/__tests__/orchestration-promotion.test.ts, packages/core/__tests__/orchestration-readout.test.ts, packages/core/__tests__/orchestration-claim-decision.test.ts, packages/core/__tests__/path-overlap-edges.test.ts, apps/web/src/app/api/workers/claim/hold-start-shadow.test.ts, apps/web/src/app/api/workers/claim/soft-overlap-gate.test.ts]
+verified_by: [packages/core/__tests__/orchestration-claim-learning.test.ts, packages/core/__tests__/orchestration-claim-learning-input.test.ts, packages/core/__tests__/orchestration-claim-learning-evidence.test.ts, packages/core/__tests__/orchestration-claim-learning-source.test.ts, apps/web/src/app/api/admin/operator/route.test.ts, packages/core/__tests__/orchestration-claim-risk.test.ts, packages/core/__tests__/orchestration-claim-risk-eval.test.ts, apps/web/src/lib/hard-overlap-surfaces.test.ts, packages/core/__tests__/orchestration-decision.test.ts, packages/core/__tests__/orchestration-promotion.test.ts, packages/core/__tests__/orchestration-readout.test.ts, packages/core/__tests__/orchestration-claim-decision.test.ts, packages/core/__tests__/path-overlap-edges.test.ts, apps/web/src/app/api/workers/claim/hold-start-shadow.test.ts, apps/web/src/app/api/workers/claim/soft-overlap-gate.test.ts]
 assertions:
   - id: "run-orchestration-decision"
     type: "symbol"
@@ -77,8 +77,9 @@ questions, which files a scope-less task will edit (at creation) and whether
 an advisory-deferred task should start (at claim). It MUST record every answer
 content-free. The creation-manifest answer MUST NOT change behaviour unless a
 committed, evidence-backed promotion grants an applying cohort. The claim
-hold/start answer MAY apply, but only a confident Jev START, only to the three
-advisory gates, and never past a deterministic rail.
+hold/start answer MAY apply, but only a confident START from a model measured
+for that decision, only to the three advisory gates, and never past a
+deterministic rail.
 
 The creation-manifest decision is **shadow-only** as shipped: no promotion is
 recorded, so its applying fraction resolves to zero. See
@@ -89,8 +90,9 @@ reversing the earlier "stays evidence-gated" exception: it ships `gated` at a
 conservative starting threshold (`CLAIM_HOLD_MIN_CONFIDENCE`) with every
 eligible deferral in the applying arm, and does not go through the promotion
 guard. Every call is logged so the threshold can be recalibrated from labelled
-outcomes. Rollback is one switch: `CLAIM_HOLD_APPLYING_FRACTION = 0` returns
-every advisory gate to deterministic HOLD.
+outcomes. Each gate × area cell now has one persisted applying fraction; zero returns
+that cell to deterministic HOLD. The committed fraction remains the bootstrap
+ceiling. The existing model-policy dial evaluates and records each cell hourly.
 
 **Hard vs soft path overlap**: a stored `dependsOn` edge blocks until the
 upstream completes and merges, and is never re-checked. At creation (and on a
@@ -121,14 +123,24 @@ current manifests.
   candidate set, thrown dependency) returns the caller's deterministic rule
   verdict. It never throws.
 - An answer is applied only when all three hold: the kit's policy permits it
-  (not `shadow`, at or above the threshold), `isJevModel` passes for the model
-  that answered, and the unit was drawn into the applying arm. A non-Jev team
-  model is recorded as a suggestion, never applied, even inside a granted
-  cohort.
-- Claim hold/start applies at `CLAIM_HOLD_APPLYING_FRACTION` (1) through
-  `grantedFraction`, which clamps it to [0, 1]; zero or non-finite is rolled
-  back. Its definition is `gated` at `CLAIM_HOLD_MIN_CONFIDENCE`, so a START
-  below the threshold, from a non-Jev model, or any fallback is the rule's HOLD.
+  (not `shadow`), the answering model is measured for this decision and its
+  answer clears the measured gate, and the unit was drawn into the applying
+  arm. Measured means `measurementFor` (`packages/core/decision-model-measurements.ts`)
+  finds an active `decision_model_measurements` row for the decision id, the
+  answering model and the decision's current prompt version; Jev with no row
+  counts as measured at the definition's own threshold. `gateOnMeasurement`
+  then compares the number the row names (confidence, top p, margin or
+  calibrated top p) with the row's threshold, or with per-label thresholds
+  when the row acts on some labels only. Any other model, or a row whose
+  prompt version no longer matches, or a retired row, is recorded as a
+  suggestion with reason `non_jev`, never applied, even inside a granted
+  cohort. A measured answer below its threshold is `below_threshold`.
+- Claim hold/start boots at `CLAIM_HOLD_APPLYING_FRACTION` (1) and 0.85,
+  then serves the persisted gate × area cell fraction and threshold. Unresolved coordination
+  state or a failed policy read holds. The already-live scope-undeclared
+  advisory gate retains its conservative bootstrap in the unknown-area cell. Every lookup rechecks the current
+  fraction's deterministic assignment and current confidence threshold, so an
+  older applied START cannot escape a revert, reduced cohort or raised threshold.
 - The creation-manifest fraction (`MANIFEST_APPLYING_FRACTION`, zero) is
   never used raw. `resolveApplyingFraction` grants it only when `ORCHESTRATION_PROMOTIONS`
   holds `eligible_for_gated` evidence for the same decision id and candidate
@@ -140,6 +152,10 @@ current manifests.
 - A team that has not opted in to the capability writes no ledger row. An
   opted-in team writes one content-free row per look: labels that are not
   short opaque tokens are stored hashed (`contentFreeLabel`).
+- Opting a team in (`teams.enabledDecisionShadows`) is a platform operator's
+  switch, written only through `PATCH /api/admin/teams/[id]/experiment-flags`;
+  team settings refuse it to every team role
+  (`docs/specs/team-permissions.md` "Platform operator").
 - At claim, only advisory deferrals are asked about: `advisory_manifest`,
   `open_pr_overlap` (every overlapping PR's worker ended) and `soft_overlap`.
   `classifyClaimHoldEligibility` refuses a forced claim, an unresolved lease
@@ -151,11 +167,11 @@ current manifests.
   within its TTL; a ledger read error holds.
 - A soft overlap holds only while its holder is in flight. Reclassified at
   claim (`evaluateSoftOverlaps`): a migration path or a workspace hard surface
-  is a deterministic hold Jev never sees; a hard-surface check that throws, or
+  is a deterministic hold the decision model never sees; a hard-surface check that throws, or
   a malformed surface config, holds (fail closed); a failed holder read holds
   every soft entry (fail closed); a finished holder or a vanished overlap
   releases.
-- For a soft overlap Jev sees the overlap kind (`same_file` or `prefix`), each
+- For a soft overlap the decision model sees the overlap kind (`same_file` or `prefix`), each
   shared file's conflict history (merged PRs in the last 90 days whose task
   touched it, and how many needed a conflict retry; `no_history` when none),
   the holder's stage (`queued`, `just_started`, `working`, `in_review`,
@@ -177,7 +193,7 @@ current manifests.
   is `high`: HOLD with no model call, recorded as a `fallback` row with reason
   `rule_decided`. Missing or stale evidence is `uncertain`, never `high`. Only
   `uncertain` and `low` same-file, open-PR and scope-undeclared deferrals
-  reach Jev, which sees the tier and its reasons, never the rationale prose.
+  reach the decision model, which sees the tier and its reasons, never the rationale prose.
   `CLAIM_RISK_DETERMINISTIC_START = false` sends the deterministic STARTs back
   to the model.
 - Conflict history is judged on intervals, not point rates: a file's summary
@@ -229,41 +245,97 @@ current manifests.
   against the regex and neighbour-union baselines, reporting unknown scope as
   a covariate; it applies nothing.
 
+## Live claim learning
+
+The feedback loop follows private artifact `coordination-visibility-map`
+§8.1–8.3. Its readout separates `jev_start`, `jev_hold`,
+`deterministic_hold`, `human_force`, `rule_start_overlap` and `rule_start_clean`
+by gate, area (`core/db`, `other`, `unknown`) and prompt fingerprint. Holds are
+censored for safety and retain wait/stranded measurements. An applied model
+answer is on-policy evidence only when a successful claim records the same
+gate, blockers, overlap paths and fingerprint within the decision TTL. A task
+that runs later after its blocker clears does not retrospectively validate START.
+
+Every group shows raw risk, attributable unsafe rate, clean-start base rate and
+the overlap control separately. Clean deterministic starts are recorded at
+successful claims with known scope and no observed coordination blocker.
+Only landed runs can be labelled safe. A collision is attributable when its
+path or counterparty matches the start-time overlap; base refusal requires
+both. Existing conflict-retry records without conflicting file and counterparty
+evidence remain unknown, rather than counting every conflict against Jev.
+Human outcomes are observational; they never change confidence or allocation.
+Stale-blocker outcomes are excluded from learning and reported as ownership
+hygiene. Missing evidence, unlanded runs and censored outcomes never count safe.
+
+Cells reuse `decideDialCell`, its allocation steps, events, evidence boundary
+and revert cooldown. The policy records delta (default 0.05), minimum sample
+per arm (default 20), confidence, fraction, dial state and owner pin. Confidence
+is the lowest applied-cohort threshold whose attributable-unsafe Wilson upper
+95% bound is at most the clean base rate plus delta, with enough samples on
+both arms; below the sample bar it stays 0.85. Thresholds never pool human
+forces, stale blockers or different prompt fingerprints. A prompt revision
+resets calibration and records a new evidence boundary.
+
+An increase requires both that safety bound and a measured median wait or idle
+improvement against held controls with enough timing samples. These timing
+comparisons are observational, never causal claims. An observed attributable unsafe-rate breach with sufficient samples
+reverts the cell to fraction zero in one evaluation, including a pinned cell.
+The existing tier-pools cron runs this evaluation hourly; no scheduler is added.
+Every evaluation atomically records its policy revision, evidence summary and
+reason alongside the compare-and-set update. Partial reads never lower the
+threshold or raise the applying fraction. A failed read changes no policy.
+
+False-hold candidates require a safe human force and a prior Jev HOLD matching
+the task, gate, area and blocker/path evidence. False-start candidates require
+an attributable unsafe Jev START. Both are prompt-revision candidates only;
+neither automatically rewrites a prompt. Revised prompts must bump the prompt
+version, which changes the fingerprint and splits the next readout.
+
+The platform-owner operator API exposes this through `claimLearning=1`;
+a failed panel read is `claimLearning: null`, and non-owners receive 404.
+Owner `claim_learning_pin`, `claim_learning_revert` and
+`claim_learning_set_delta` actions require a revision and reason, use the
+existing owner-action audit path and write policy changes. A pin cannot
+bypass a safety revert or unresolved coordination state. Missing code-area
+metadata is distinct from an unresolved coordination state: eligible
+scope-undeclared advisory decisions retain their live bootstrap. The companion screen belongs in
+the platform admin application; no member UI is added.
+
 **Acceptance criteria**:
 
 - AC-1: GIVEN a gated definition and a requested fraction of 1 WHEN
   `resolveApplyingFraction` finds no matching evidence THEN the granted
   fraction is 0 (the creation-manifest path).
-- AC-1b: GIVEN the shipped claim hold/start definition WHEN Jev answers START
-  at or above the threshold THEN the row is applied with `experiment_arm`
+- AC-11: GIVEN the shipped claim hold/start definition WHEN Jev (with no
+  measurement row) answers START at or above the threshold THEN the row is applied with `experiment_arm`
   `apply`; below the threshold, or on a provider error, the effective verdict
   is HOLD.
-- AC-1c: GIVEN a new task whose manifest overlaps an in-flight task's by
+- AC-12: GIVEN a new task whose manifest overlaps an in-flight task's by
   directory prefix, or on the same ordinary file, WHEN it is created THEN no
   `dependsOn` edge is stored and the pair is recorded in
   `pathDeclaration.softOverlaps` (kind `prefix` or `same_file`); GIVEN a
   migration path, or the same generated or hotspot file on both sides, THEN
   the edge is stored and listed in `inferredDependsOn`.
-- AC-1e: GIVEN a same-file soft overlap whose file has no merged-PR conflict
-  history WHEN Jev answers START at or above the threshold THEN the claim
+- AC-13: GIVEN a same-file soft overlap whose file has no merged-PR conflict
+  history WHEN the decision model answers START at or above the threshold THEN the claim
   proceeds; GIVEN the same file is a migration path THEN the claim holds
-  deterministically and Jev is never asked; GIVEN the evidence read fails THEN
+  deterministically and no model is asked; GIVEN the evidence read fails THEN
   the effective verdict is HOLD with status `fallback`.
-- AC-1d: GIVEN a soft overlap with an in-flight holder WHEN no applied START
+- AC-14: GIVEN a soft overlap with an in-flight holder WHEN no applied START
   exists THEN the claim defers with reason `soft_overlap` naming the holder,
   paths and verdict; WHEN one exists THEN the declared paths are acquired
   exclusively and the claim proceeds; WHEN the holder holds a live lease on
   the files THEN the claim defers regardless.
-- AC-1f: GIVEN a soft overlap that shares only a directory, or whose holder
+- AC-15: GIVEN a soft overlap that shares only a directory, or whose holder
   never started, WHEN the claim runs THEN it starts with no ledger lookup and
   no model call, its declared paths acquired exclusively; GIVEN that
   acquisition is refused THEN it holds; GIVEN a live lease on the files THEN
   it is `hard` and holds.
-- AC-1g: GIVEN a same-file soft overlap whose files' history has a 95% lower
+- AC-16: GIVEN a same-file soft overlap whose files' history has a 95% lower
   bound at or above `HIGH_CONFLICT_LOWER_BOUND` WHEN the decision runs THEN no
   model is called and the row is `fallback` / `rule_decided` with effective
   HOLD.
-- AC-1h: GIVEN more eligible deferrals than `CLAIM_HOLD_MAX_PER_CLAIM`, some
+- AC-17: GIVEN more eligible deferrals than `CLAIM_HOLD_MAX_PER_CLAIM`, some
   recently asked, WHEN the decisions run THEN the recently asked ones are
   skipped without using a slot and the rest are asked longest-waiting first.
 - AC-2: GIVEN matching eligible evidence WHEN the deployed definition's
@@ -275,9 +347,15 @@ current manifests.
   fraction is requested THEN the granted fraction equals the ceiling.
 - AC-5: GIVEN a requested fraction of 0 THEN the granted fraction is 0 and
   the gated START path is unreachable (no ledger lookup).
-- AC-6: GIVEN a granted cohort of 1 WHEN a non-Jev model answers START with
-  high confidence THEN the outcome is `suggested` with reason `non_jev` and the
-  effective verdict is the rule's HOLD.
+- AC-6: GIVEN a granted cohort of 1 WHEN a model with no active measurement
+  for the decision (none stored, a retired row, or a row for another prompt
+  version) answers START with high confidence THEN the outcome is `suggested`
+  with reason `non_jev` and the effective verdict is the rule's HOLD.
+- AC-18: GIVEN an active measurement row for a non-Jev model at the
+  decision's current prompt version WHEN that model answers START above the
+  row's threshold, even below the definition's own threshold THEN the answer
+  is applied; WHEN it answers below the row's threshold THEN the outcome is
+  `suggested` with reason `below_threshold`.
 - AC-7: GIVEN the decision provider returns an error or the deadline passes
   WHEN a decision runs THEN the effective verdict is the rule verdict and the
   row's status is `fallback`.
@@ -292,10 +370,26 @@ current manifests.
 - AC-10: GIVEN no recorded decisions in the window WHEN the readout runs THEN
   both decisions are `insufficient_n` and the promotion status is `blocked`.
 
+- AC-19: GIVEN human forces and Jev starts in the same window WHEN read out
+  THEN actors remain separate and only successful, attributable, non-stale Jev
+  starts calibrate confidence or applying fraction.
+- AC-20: GIVEN fewer than the minimum samples on either arm WHEN calibrated
+  THEN confidence remains 0.85; unknown attribution never supplies a safe label.
+- AC-21: GIVEN enough evidence WHEN both safety and timing improve THEN the
+  existing dial may raise one step; WHEN observed attributable unsafe exceeds the
+  policy budget with enough samples THEN fraction becomes zero in one evaluation, including a pin.
+- AC-22: GIVEN an owner read WHEN a panel dependency fails THEN claimLearning
+  is null; GIVEN a non-owner THEN the operator route returns 404.
+- AC-23: GIVEN a reverted cell or a raised threshold WHEN a previously applied
+  START is looked up THEN the current policy still determines whether it applies.
+
 **Code surface**:
 
 - `packages/core/orchestration-decision.ts`: `runOrchestrationDecision`,
   `assignApplyingArm`, `contentFreeLabel`.
+- `packages/core/decision-model-measurements.ts`: `measurementFor`,
+  `gateOnMeasurement`, the `decision_model_measurements` rows that let a
+  model act.
 - `packages/core/orchestration-promotion.ts`: `resolveApplyingFraction`,
   `ORCHESTRATION_PROMOTIONS`, `measuredIdentity`, `manifestPickIdentity`.
 - `packages/core/orchestration-claim-risk.ts`: `assessClaimOverlapRisk`,
@@ -318,7 +412,7 @@ current manifests.
   `evaluateSoftOverlaps`; holder read in `soft-overlap-store.ts`.
 - `apps/web/src/lib/explain-coordination.ts`: `buildCoordinationHolds`, the
   explain answer's `coordination.holds` (edge kind, holder, paths, verdict).
-- `packages/core/drizzle/0267_soft_overlap_legacy_edges.sql`: the legacy
+- `packages/core/drizzle/20261008023735_soft_overlap_legacy_edges/migration.sql`: the legacy
   edge conversion (pending tasks only, idempotent).
 - `apps/web/src/app/api/workers/claim/hold-start-shadow.ts`:
   `ClaimHoldCollector`, `scheduleClaimHoldShadow`, `grantedFraction`,
@@ -326,6 +420,13 @@ current manifests.
   wired from `apps/web/src/app/api/workers/claim/route.ts`.
 - `packages/core/manifest-prediction.ts` and `manifest-prediction-source.ts`:
   `predictCreationManifest`, `prepareGatedManifest`, `labelManifestPrediction`.
+- `packages/core/orchestration-claim-learning.ts`: calibration and the shared dial adapter.
+- `packages/core/orchestration-claim-learning-evidence.ts`: conservative attribution.
+- `packages/core/orchestration-claim-learning-input.ts`: successful claim/control evidence.
+- `packages/core/orchestration-claim-learning-source.ts`: policy CAS, hourly step and operator readout.
+- `apps/web/src/lib/admin/data.ts`: owner panel loader; `apps/web/src/app/api/admin/operator/route.ts`: owner reads/actions.
+- `apps/web/src/lib/admin/claim-learning-actions.ts`: audited policy overrides.
+- `apps/web/src/app/api/cron/tier-pools/route.ts`: existing hourly dial step.
 - `packages/core/orchestration-outcomes.ts`: `labelDecisionOutcomes`.
 - `packages/core/orchestration-readout.ts`: `buildOrchestrationReadout`,
   `splitWorkUnits`, `replayDecisionEval`, `calibrateAndJudge`; loader
@@ -334,8 +435,9 @@ current manifests.
 - `apps/web/src/lib/orchestration-decision-stats-query.ts`:
   `fetchOrchestrationDecisionStats`, the DB-free evidence count (rows by
   decision group / UTC day / fallback reason, labelled vs unlabelled, opt-in
-  state) behind MCP `get_decision_stats`. The readout script
-  needs `DATABASE_URL`; this does not.
+  state) behind MCP `get_decision_stats` without `capability`; with it, the
+  raw ledger (`GET /api/decisions`) of the caller's own team. The readout
+  script needs `DATABASE_URL`; this does not.
 - Data model: `orchestration_decisions`, `orchestration_touch_labels`,
   `orchestration_manifest_predictions` in `packages/core/db/schema.ts`.
 
@@ -348,3 +450,17 @@ current manifests.
 - The optional overlap-real decision (design §5c).
 - Readout output: it holds workspace data and is a private artifact, never
   committed.
+
+## Renumbered
+
+Suffixed ids did not parse as their own criteria. Old to new:
+
+- was AC-1b, now AC-11
+- was AC-1c, now AC-12
+- was AC-1e, now AC-13
+- was AC-1d, now AC-14
+- was AC-1f, now AC-15
+- was AC-1g, now AC-16
+- was AC-1h, now AC-17
+
+New: AC-18, a measured non-Jev model acts at its own threshold.

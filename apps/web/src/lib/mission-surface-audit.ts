@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { tasks, missions, missionNotes, workspaces } from '@buildd/core/db/schema';
-import { and, desc, eq, inArray, isNull, like } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, like, notLike } from 'drizzle-orm';
 import {
   MAX_SURFACE_AUDIT_ROUNDS,
   SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE,
@@ -8,6 +8,7 @@ import {
   buildSurfaceAuditDescription,
   isSurfaceAuditTask,
   isSurfaceFixTask,
+  isTrunkRefreshTask,
   planSurfaceFixFollowUp,
   surfaceAuditRound,
   surfaceAuditTitle,
@@ -20,8 +21,11 @@ import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { visualQaRequiredRoutes } from '@/lib/visual-qa-required-routes';
 import { resolveVisualQaConfig } from '@buildd/core/visual-qa-page-source';
 import { evaluateSurfaceAuditGate, loadSurfaceAuditGateTasks } from '@/lib/mission-surface-audit-gate';
+import { readAuditedSha } from '@/lib/workflow/visual-review-state';
 import { missionMemberIds } from '@/lib/mission-surface-audit-membership';
+import { readIncidentRecoveryRef } from '@/lib/incident-recovery-refs';
 import type { WorkspaceWebhookConfig } from '@buildd/core/db/schema';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface EnsureSurfaceAuditParams {
   missionId: string;
@@ -31,6 +35,8 @@ export interface EnsureSurfaceAuditParams {
     title: string;
     taskClass: string | null;
     pathManifest: string[] | null;
+    /** Read for the trunk-refresh marks (`isTrunkRefreshTask`). */
+    context?: unknown;
   };
   targetWorkspace: {
     id?: string;
@@ -78,9 +84,12 @@ export async function ensureMissionSurfaceAudit(params: EnsureSurfaceAuditParams
   // tasks, friction reports, etc.) as "builder work".
   if (createdTask.taskClass !== 'work') return;
   if (isSurfaceAuditTask(createdTask.title)) return;
+  // Merging trunk in is upkeep, not mission work: its manifest widens to
+  // trunk's whole diff, which would make the audit demand every route.
+  if (isTrunkRefreshTask(createdTask)) return;
 
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, missionId),
+    where: sqlWhere(eq(missions.id, missionId)),
     columns: { id: true, title: true, autoSurfaceAudit: true, teamId: true },
   });
   if (!mission || mission.autoSurfaceAudit === false) return;
@@ -92,12 +101,12 @@ export async function ensureMissionSurfaceAudit(params: EnsureSurfaceAuditParams
   // Newest first: after a waiting-input retry clone or a later round there is
   // more than one audit, and the one that matters is the latest.
   const existingAudit = await db.query.tasks.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.missionId, missionId),
       like(tasks.title, `${SURFACE_AUDIT_TITLE_PREFIX}%`),
-    ),
+    )),
     columns: { id: true, title: true, status: true, dependsOn: true, context: true },
-    orderBy: [desc(tasks.createdAt)],
+    orderBy: sqlOrderBy([desc(tasks.createdAt)]),
   });
 
   if (existingAudit && isSurfaceFixTask(createdTask.title)) {
@@ -123,14 +132,32 @@ export async function ensureMissionSurfaceAudit(params: EnsureSurfaceAuditParams
     // The rewrite also drops a dependency that has left the mission since it
     // was added (an unlink that predates detachTaskFromMissionSurfaceAudits),
     // so the stored list is current membership, not a filing-time record.
-    const currentDeps = Array.isArray(existingAudit.dependsOn) ? existingAudit.dependsOn : [];
+    //
+    // Only a round-1 audit reviews builder work. A re-check round depends on
+    // its fixes alone: the evidence check derives required routes from every
+    // dependency's manifest, so a builder edge there demands that builder's
+    // whole route set while the round's description names only the fixed
+    // routes, and its retry clone inherits the edge.
+    const roundOne = surfaceAuditRound(existingAudit) > 1
+      ? await db.query.tasks.findFirst({
+          where: sqlWhere(and(
+            eq(tasks.missionId, missionId),
+            like(tasks.title, `${SURFACE_AUDIT_TITLE_PREFIX}%`),
+            notLike(tasks.title, `${SURFACE_AUDIT_TITLE_PREFIX}round %`),
+          )),
+          columns: { id: true, title: true, status: true, dependsOn: true, context: true },
+          orderBy: sqlOrderBy([desc(tasks.createdAt)]),
+        })
+      : existingAudit;
+    if (!roundOne) return;
+    const currentDeps = Array.isArray(roundOne.dependsOn) ? roundOne.dependsOn : [];
     const members = await missionMemberIds(missionId, currentDeps);
     const nextDeps = members.includes(createdTask.id) ? members : [...members, createdTask.id];
     const changed = nextDeps.length !== currentDeps.length || nextDeps.some((d, i) => d !== currentDeps[i]);
     if (changed) {
       await db.update(tasks)
         .set({ dependsOn: nextDeps, updatedAt: new Date() })
-        .where(eq(tasks.id, existingAudit.id));
+        .where(eq(tasks.id, roundOne.id));
     }
     return;
   }
@@ -141,13 +168,13 @@ export async function ensureMissionSurfaceAudit(params: EnsureSurfaceAuditParams
   if (!touchesUiSurface(createdTask.pathManifest)) return;
 
   const builderTasks = await db.query.tasks.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.missionId, missionId),
       eq(tasks.taskClass, 'work'),
-    ),
-    columns: { id: true, title: true, pathManifest: true },
+    )),
+    columns: { id: true, title: true, pathManifest: true, context: true },
   });
-  const nonAuditBuilderTasks = builderTasks.filter(t => !isSurfaceAuditTask(t.title));
+  const nonAuditBuilderTasks = builderTasks.filter(t => !isSurfaceAuditTask(t.title) && !isTrunkRefreshTask(t));
   const dependsOn = nonAuditBuilderTasks.map(t => t.id);
   const scopedPaths = Array.from(new Set(
     nonAuditBuilderTasks
@@ -185,11 +212,35 @@ export async function ensureMissionSurfaceAudit(params: EnsureSurfaceAuditParams
   }
 }
 
+/**
+ * What the automatic scheduler asks of `requestMissionSurfaceAudit`
+ * (workflow/visual-review-schedule.ts). A person's request passes none of it.
+ */
+export interface RequestSurfaceAuditOptions {
+  /** The integration branch head the review is for. Stamped on the task as `context.visualReview.headSha`. */
+  headSha?: string;
+  /** Round to file at (a re-review on a new head is the next round). Default 1. */
+  round?: number;
+  /** Why the scheduler filed it, recorded for the task page. */
+  reason?: 'first' | 'new_head' | 'retry' | 'post_merge_recovery';
+  attempt?: number;
+}
+
 export type RequestSurfaceAuditResult =
   | { ok: true; created: boolean; taskId: string; status: string }
   | { ok: false; reason: 'mission_not_found' | 'mission_closed' | 'no_workspace' };
 
 const finishedWithoutLooking = (status: string) => status === 'failed' || status === 'cancelled';
+
+/**
+ * An audit that still answers for the mission: open or done, or failed but
+ * blocked by an incident's repair (`context.incidentRecovery`,
+ * failure-incident-recovery §16.4), which re-queues that same audit when its
+ * capture works again. Only a failed audit nothing is recovering is replaced.
+ */
+export function isLiveAudit(a: { status: string; context?: unknown }): boolean {
+  return !finishedWithoutLooking(a.status) || (a.status === 'failed' && readIncidentRecoveryRef(a.context) !== null);
+}
 
 type PlanMission = { id: string; title: string; status: string; workspaceId: string | null; autoSurfaceAudit: boolean | null; workingBranch: string | null; integrationBranchEnabled: boolean | null; executor: string | null };
 
@@ -213,9 +264,9 @@ export type SurfaceAuditPlan =
  * carry. `requestMissionSurfaceAudit` acts on this and the mission page's
  * Visual review sheet previews it, so the two cannot describe different audits.
  */
-export async function planMissionSurfaceAudit(missionId: string): Promise<SurfaceAuditPlan> {
+export async function planMissionSurfaceAudit(missionId: string, opts: RequestSurfaceAuditOptions = {}): Promise<SurfaceAuditPlan> {
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, missionId),
+    where: sqlWhere(eq(missions.id, missionId)),
     columns: {
       id: true, title: true, status: true, workspaceId: true, autoSurfaceAudit: true,
       workingBranch: true, integrationBranchEnabled: true, executor: true,
@@ -226,21 +277,24 @@ export async function planMissionSurfaceAudit(missionId: string): Promise<Surfac
   if (!mission.workspaceId) return { ok: false, reason: 'no_workspace' };
 
   const audits = await db.query.tasks.findMany({
-    where: and(eq(tasks.missionId, missionId), like(tasks.title, `${SURFACE_AUDIT_TITLE_PREFIX}%`)),
-    columns: { id: true, status: true },
-    orderBy: [desc(tasks.createdAt)],
+    where: sqlWhere(and(eq(tasks.missionId, missionId), like(tasks.title, `${SURFACE_AUDIT_TITLE_PREFIX}%`))),
+    columns: { id: true, status: true, context: true },
+    orderBy: sqlOrderBy([desc(tasks.createdAt)]),
   });
-  const live = audits.find(a => !finishedWithoutLooking(a.status));
+  // A finished audit is the answer only for the commit it looked at. Asked for a
+  // head, a completed audit stamped for another one is history, not a live review.
+  const live = audits.find(a => isLiveAudit(a)
+    && !(opts.headSha && a.status === 'completed' && readAuditedSha(a.context) !== opts.headSha.toLowerCase()));
   if (live) return { ok: true, mission, live: { id: live.id, status: live.status } };
 
   const [targetWorkspace, missionTasks] = await Promise.all([
-    db.query.workspaces.findFirst({ where: eq(workspaces.id, mission.workspaceId) }),
+    db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, mission.workspaceId)) }),
     loadSurfaceAuditGateTasks(missionId),
   ]);
   if (!targetWorkspace) return { ok: false, reason: 'no_workspace' };
 
   const builders = missionTasks.filter(t =>
-    t.taskClass === 'work' && !isSurfaceAuditTask(t.title ?? '') && !finishedWithoutLooking(t.status));
+    t.taskClass === 'work' && !isSurfaceAuditTask(t.title ?? '') && !isTrunkRefreshTask(t) && !finishedWithoutLooking(t.status));
   const gate = await evaluateSurfaceAuditGate(mission, missionTasks).catch(() => null);
   const scopedPaths = Array.from(new Set([
     ...(gate?.required ? gate.uiPaths : []),
@@ -264,27 +318,34 @@ export async function planMissionSurfaceAudit(missionId: string): Promise<Surfac
  * scoped to the files the mission actually changed (the completion gate's
  * diff read), because declared manifests are often the advisory wildcard.
  */
-export async function requestMissionSurfaceAudit(missionId: string): Promise<RequestSurfaceAuditResult> {
-  const plan = await planMissionSurfaceAudit(missionId);
+export async function requestMissionSurfaceAudit(missionId: string, opts: RequestSurfaceAuditOptions = {}): Promise<RequestSurfaceAuditResult> {
+  const plan = await planMissionSurfaceAudit(missionId, opts);
   if (!plan.ok) return plan;
   const { mission, live, targetWorkspace, builderIds, scopedPaths, requiredRoutes } = plan;
   if (live) return { ok: true, created: false, taskId: live.id, status: live.status };
 
+  const round = Math.max(1, opts.round ?? 1);
   const [auditTask] = await db.insert(tasks).values({
     workspaceId: targetWorkspace.id,
     missionId,
-    title: surfaceAuditTitle(mission.title),
+    title: surfaceAuditTitle(mission.title, round),
     description: buildSurfaceAuditDescription({
       missionTitle: mission.title,
       scopedPaths,
       requiredRoutes,
       visualQa: auditVisualQa(targetWorkspace),
-    }),
+    }) + (opts.headSha
+      ? `\n\nThis review is for commit \`${opts.headSha.slice(0, 12)}\` of the integration branch. If the branch has moved past it by the time you capture, say so in your report: a pass only counts for the commit it looked at, and buildd files the next review for the new head itself.`
+      : ''),
     taskClass: 'work',
     kind: 'observation',
     dependsOn: builderIds,
     outputRequirement: 'artifact_required',
-    context: { surfaceAuditTrigger: 'auto' },
+    context: {
+      surfaceAuditTrigger: 'auto',
+      ...(round > 1 ? { surfaceAuditRound: round } : {}),
+      ...(opts.headSha ? { visualReview: { headSha: opts.headSha.toLowerCase(), reason: opts.reason ?? null, attempt: opts.attempt ?? 1 } } : {}),
+    },
     roleSlug: VISUAL_AUDITOR_ROLE_SLUG,
   }).returning();
 
@@ -370,11 +431,11 @@ async function followUpSurfaceFix(opts: {
   if (plan.action === 'escalate') {
     // One question per mission while it is open: a round files several fixes.
     const existing = await db.query.missionNotes.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(missionNotes.missionId, missionId),
         eq(missionNotes.title, SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE),
         eq(missionNotes.status, 'open'),
-      ),
+      )),
       columns: { id: true },
     });
     if (existing) return;
@@ -458,9 +519,9 @@ export async function detachFixFromPendingAudit(opts: {
 }): Promise<DetachFixResult> {
   const { missionId, fixTaskId, route } = opts;
   const audit = await db.query.tasks.findFirst({
-    where: and(eq(tasks.missionId, missionId), like(tasks.title, `${SURFACE_AUDIT_TITLE_PREFIX}%`)),
+    where: sqlWhere(and(eq(tasks.missionId, missionId), like(tasks.title, `${SURFACE_AUDIT_TITLE_PREFIX}%`))),
     columns: { id: true, title: true, status: true, dependsOn: true, context: true, workspaceId: true },
-    orderBy: [desc(tasks.createdAt)],
+    orderBy: sqlOrderBy([desc(tasks.createdAt)]),
   });
   if (!audit || audit.status !== 'pending') return { action: 'none' };
   const deps = Array.isArray(audit.dependsOn) ? (audit.dependsOn as string[]) : [];
@@ -483,7 +544,7 @@ export async function detachFixFromPendingAudit(opts: {
   let nextRoutes = routes;
   if (route && routes.includes(route)) {
     const others = remaining.length > 0
-      ? await db.query.tasks.findMany({ where: inArray(tasks.id, remaining), columns: { id: true, title: true } })
+      ? await db.query.tasks.findMany({ where: sqlWhere(inArray(tasks.id, remaining)), columns: { id: true, title: true } })
       : [];
     if (!others.some(t => surfaceFixRoute(t.title) === route)) nextRoutes = routes.filter(r => r !== route);
   }

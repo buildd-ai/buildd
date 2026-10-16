@@ -4,6 +4,7 @@ import { workspaces, workers } from '@buildd/core/db/schema';
 import { and, eq } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { writeBackCodexTokens } from '@/lib/codex-credential';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -34,7 +35,7 @@ export async function POST(req: NextRequest, { params }: RouteContext) {
   }
 
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, id),
+    where: sqlWhere(eq(workspaces.id, id)),
     columns: { id: true, teamId: true },
   });
   if (!workspace) {
@@ -46,7 +47,7 @@ export async function POST(req: NextRequest, { params }: RouteContext) {
   // this workspace (the credential was leased to it at claim time).
   if (account.teamId !== workspace.teamId) {
     const ranHere = await db.query.workers.findFirst({
-      where: and(eq(workers.accountId, account.id), eq(workers.workspaceId, id)),
+      where: sqlWhere(and(eq(workers.accountId, account.id), eq(workers.workspaceId, id))),
       columns: { id: true },
     });
     if (!ranHere) {

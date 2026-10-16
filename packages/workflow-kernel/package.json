@@ -1,0 +1,20 @@
+{
+  "name": "@buildd/workflow-kernel",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The workflow kernel's pure core: delivery states, commands, the reducer, base-delta, hand-off and the read model, with an in-memory conformance harness. No Buildd tables, no runtime dependencies.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "type-check": "bunx tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.0"
+  },
+  "license": "Apache-2.0"
+}

@@ -13,9 +13,11 @@ import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
 import { triggerEvent, channels } from '@/lib/pusher';
 import { artifactMetadataMergeSql, isJsonObject } from '@/lib/artifact-metadata-merge';
 import { getArtifactRevision, writeArtifactBody } from '@/lib/artifact-revisions';
+import { SPEC_BODY_WRITE_REFUSED, specIdForBodyArtifact } from '@/lib/specs/body-guard';
 import { recordArtifactRead } from '@/lib/artifact-reads';
 import { finalizeArtifactUpload } from '@/lib/artifact-upload';
 import { ArtifactReadError, parseReadSelector, readArtifactBody, returnedChars, type ArtifactReadSelector } from '@buildd/core/artifact-read';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // PATCH metadata semantics and the in-SQL merge: lib/artifact-metadata-merge.ts.
 
@@ -45,7 +47,7 @@ export async function GET(
   }
 
   const artifact = await db.query.artifacts.findFirst({
-    where: eq(artifacts.id, artifactId),
+    where: sqlWhere(eq(artifacts.id, artifactId)),
     with: { worker: true },
   });
 
@@ -220,7 +222,7 @@ export async function PATCH(
 
   // Find artifact and verify ownership via worker -> account
   const artifact = await db.query.artifacts.findFirst({
-    where: eq(artifacts.id, artifactId),
+    where: sqlWhere(eq(artifacts.id, artifactId)),
     with: { worker: true },
   });
 
@@ -250,6 +252,13 @@ export async function PATCH(
     } else {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
+  }
+
+  // A Living Spec body changes only through a spec revise: its title and
+  // metadata too, so the spec's own view of its body never drifts.
+  const specId = await specIdForBodyArtifact(artifactId);
+  if (specId) {
+    return NextResponse.json({ error: SPEC_BODY_WRITE_REFUSED, code: 'spec_body', specId }, { status: 409 });
   }
 
   const body = await req.json();
@@ -284,6 +293,9 @@ export async function PATCH(
       updateFields,
     );
     if (!written.ok) {
+      if ('specBody' in written) {
+        return NextResponse.json({ error: SPEC_BODY_WRITE_REFUSED, code: 'spec_body', specId: written.specId }, { status: 409 });
+      }
       return written.conflict
         ? NextResponse.json(
           {

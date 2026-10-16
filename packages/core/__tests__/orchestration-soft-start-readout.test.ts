@@ -89,3 +89,13 @@ describe('sibling probe outcome', () => {
     expect(rule.startSafety.observedUnsafe).toBe(0);
   });
 });
+
+it('splits soft starts by actor, gate, area and fingerprint', () => {
+  const [rule] = summarizeSoftStartReadout({ starts: [
+    start({ id: 'one', taskId: 'safe', actor: 'rule_start_clean', gate: 'overlap', areaClass: 'other', fingerprint: 'v1', attributableUnsafe: false }),
+    start({ id: 'two', taskId: 'bad', actor: 'human_force', gate: 'overlap', areaClass: 'other', fingerprint: 'v1', attributableUnsafe: true, staleBlocker: true }),
+  ], outcome: outcome(), probes: [] });
+  expect(rule.cells).toHaveLength(2);
+  expect(rule.cells[0]).toMatchObject({ actor: 'rule_start_clean', attributableUnsafeRate: 0 });
+  expect(rule.cells[1].calibration.excludedStale).toBe(1);
+});

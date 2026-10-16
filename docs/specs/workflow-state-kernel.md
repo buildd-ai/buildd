@@ -2,13 +2,13 @@
 title: Workflow State Kernel
 status: draft
 owner: max
-last_verified: 2026-10-11
+last_verified: 2026-10-13
 summary: One kernel MUST own each task-to-PR-to-review-to-merge delivery's state, advance it only by version-checked transitions citing GitHub-confirmed evidence, and leave other lifecycle columns fact caches or projections.
 domain: tasks
 surfaces: [apps/web/src/app/api/workers/[id]/route.ts, apps/web/src/app/api/github/webhook/route.ts, apps/web/src/lib/pr-landing.ts, apps/web/src/lib/workflow/landing.ts]
-related: [mission-task-lifecycle, pr-lifecycle-reconciliation, task-dispatch-authority, surface-merge-ordering]
-keywords: [workflow kernel, delivery state, AWAITING_PUSH, review round, head sha binding, outbox, CAS, fix_ended, stale verdict, write sites]
-verified_by: [apps/web/tests/db/pr-facts.test.ts, packages/core/__tests__/generated-artifacts.test.ts, apps/web/tests/db/workflow-scenarios-repeat.test.ts, packages/core/__tests__/pr-fact-write-sites.test.ts, apps/web/src/lib/workflow/pr-fact-effects.test.ts, apps/web/src/lib/pr-fact-import.test.ts, apps/web/src/lib/workflow/projections.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/workflow/pr-activity-render.test.ts, apps/web/src/lib/action-queue.delivery-view.test.ts, apps/web/src/lib/workflow/reducer.test.ts, apps/web/src/lib/workflow/review-effects.test.ts, apps/web/src/lib/workflow/pr-landing-effects.test.ts, apps/web/src/lib/pr-landing.test.ts, apps/web/src/lib/auto-merge.test.ts, apps/web/src/lib/ci-verdict.test.ts, apps/web/tests/db/workflow-probe-github.test.ts, apps/web/tests/db/workflow-probe-concurrency.test.ts, apps/web/src/app/api/prs/[prNumber]/merge/route.test.ts, apps/web/src/app/api/github/pr/route.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/prs/[prNumber]/retry-ci/route.test.ts, apps/web/src/lib/ci-failure-retry.wake.test.ts, apps/web/tests/db/workflow-matrix.test.ts, apps/web/tests/db/review-request-authority.test.ts, apps/web/tests/db/review-provenance.test.ts, packages/core/__tests__/pr-shipped.test.ts, apps/web/src/lib/mission-completion.test.ts, apps/web/src/lib/pr-supersession.test.ts, apps/web/src/app/api/github/pr/supersede/route.test.ts, apps/web/src/app/api/github/pr/review/route.test.ts, apps/web/src/lib/workflow/facts.test.ts, apps/web/src/lib/workflow/github-facts.test.ts, apps/web/src/modules.test.ts, apps/web/src/lib/workflow/conflict-retry-effects.test.ts, apps/web/src/lib/conflict-retry.test.ts, apps/web/src/lib/workflow/trunk.test.ts, apps/web/src/lib/workflow/delivery-display.test.ts, apps/web/src/lib/explain-because.test.ts, apps/web/src/lib/explain.test.ts, apps/web/src/lib/pr-presentation.test.ts, apps/web/src/lib/pr-list.test.ts, apps/web/src/app/api/tasks/[id]/summary/route.test.ts, packages/core/__tests__/workflow-write-sites.test.ts, apps/web/tests/db/workflow-scenarios-treadmill.test.ts, apps/web/src/lib/workflow/base-delta.test.ts, apps/web/tests/db/workflow-scenarios-lane.test.ts, apps/web/src/lib/repair-completion.test.ts, apps/web/src/lib/mission-state-view.landing.test.ts, apps/web/src/lib/pr-predecessors.test.ts, apps/web/src/lib/retry-pr-supersession.test.ts, apps/web/src/lib/migration-inspector.test.ts, apps/web/src/app/api/workers/claim/claim-plan-input.test.ts, apps/runner/__tests__/unit/worktree-mission-integration-guard.test.ts, apps/runner/__tests__/unit/worktree-base-branch.test.ts, packages/core/__tests__/repair-target.test.ts, apps/web/src/lib/workflow/coordination-owner-review.test.ts]
+related: [workflow-kernel-library, mission-task-lifecycle, pr-lifecycle-reconciliation, task-dispatch-authority, surface-merge-ordering]
+keywords: [workflow kernel, delivery state, AWAITING_PUSH, review round, head sha binding, outbox, CAS, fix_ended, stale verdict, write sites, review composition, durable findings, merge doors, landing authority, merged over open findings]
+verified_by: [apps/web/tests/db/pr-facts.test.ts, packages/core/__tests__/generated-artifacts.test.ts, apps/web/tests/db/workflow-scenarios-repeat.test.ts, packages/core/__tests__/pr-fact-write-sites.test.ts, apps/web/src/lib/workflow/pr-fact-effects.test.ts, apps/web/src/lib/pr-fact-import.test.ts, packages/workflow-kernel/src/projections.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/workflow/pr-activity-render.test.ts, apps/web/src/lib/action-queue.delivery-view.test.ts, packages/workflow-kernel/src/reducer.test.ts, apps/web/src/lib/workflow/review-effects.test.ts, apps/web/src/lib/workflow/pr-landing-effects.test.ts, apps/web/src/lib/pr-landing.test.ts, apps/web/src/lib/auto-merge.test.ts, apps/web/src/lib/ci-verdict.test.ts, apps/web/tests/db/workflow-probe-github.test.ts, apps/web/tests/db/workflow-probe-concurrency.test.ts, apps/web/src/app/api/prs/[prNumber]/merge/route.test.ts, apps/web/src/app/api/github/pr/route.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/prs/[prNumber]/retry-ci/route.test.ts, apps/web/src/lib/ci-failure-retry.wake.test.ts, apps/web/tests/db/workflow-matrix.test.ts, apps/web/tests/db/review-request-authority.test.ts, apps/web/tests/db/review-provenance.test.ts, packages/core/__tests__/pr-shipped.test.ts, apps/web/src/lib/mission-completion.test.ts, apps/web/src/lib/pr-supersession.test.ts, apps/web/src/app/api/github/pr/supersede/route.test.ts, apps/web/src/app/api/github/pr/review/route.test.ts, apps/web/src/lib/workflow/facts.test.ts, apps/web/src/lib/workflow/github-facts.test.ts, apps/web/src/modules.test.ts, apps/web/src/lib/workflow/conflict-retry-effects.test.ts, apps/web/src/lib/conflict-retry.test.ts, apps/web/src/lib/workflow/trunk.test.ts, apps/web/src/lib/workflow/delivery-display.test.ts, apps/web/src/lib/explain-because.test.ts, apps/web/src/lib/explain.test.ts, apps/web/src/lib/pr-presentation.test.ts, apps/web/src/lib/pr-list.test.ts, apps/web/src/app/api/tasks/[id]/summary/route.test.ts, packages/core/__tests__/workflow-write-sites.test.ts, apps/web/tests/db/workflow-scenarios-treadmill.test.ts, apps/web/src/lib/workflow/base-delta.test.ts, apps/web/tests/db/workflow-scenarios-lane.test.ts, apps/web/src/lib/repair-completion.test.ts, apps/web/src/lib/mission-state-view.landing.test.ts, apps/web/src/lib/pr-predecessors.test.ts, apps/web/src/lib/retry-pr-supersession.test.ts, apps/web/src/lib/migration-inspector.test.ts, apps/web/src/app/api/workers/claim/claim-plan-input.test.ts, apps/runner/__tests__/unit/worktree-mission-integration-guard.test.ts, apps/runner/__tests__/unit/worktree-base-branch.test.ts, packages/core/__tests__/repair-target.test.ts, apps/web/src/lib/workflow/coordination-owner-review.test.ts]
 supersedes: []
 ---
 
@@ -61,8 +61,12 @@ for a kernel-owned delivery the task card stage, the tasks list, the mission
 board and Landed strip, the mission feed, the task page's PR tile, card and
 shipped header, explain's state chain, history and `because[]`, and the chat
 tile, dock and PR object all read `getDeliveryView`, and the duplicate PR-state
-maps are deleted (§13.9). §13.1–§13.9 list what landed and the deviations; §14
-the cutover and the kill switch.
+maps are deleted (§13.9). What each slice landed and its deviations (§13.1 to
+§13.10) is in `knowledge-base: buildd/reports/workflow-state-kernel-history.md`; §14
+is the cutover and the kill switch. **§13.13** holds review composition (its
+criteria AC-20 through AC-23 stay here) and the findings, repair and landing rules written against PR #4686,
+whose criteria and shipped status now live in the native spec "Workflow kernel"
+(fa62b865, `workflow-kernel-library.md`).
 
 **Capability statement.** For every deliverable that is meant to reach GitHub as a
 pull request, exactly one row (the *delivery*) records where the work stands. That row
@@ -434,7 +438,10 @@ an ordinary task PR into the same branch is not one). `isCompositionPr` recognis
    (`renumberedMigrations`). That means a mission-side `.sql` the merge dropped, paired
    one to one with a new `.sql` that holds the same blob and is on neither side. This
    is what the generated-conflict resolver's renumber produces. A moved migration whose
-   content changed, or one written in the merge, stays novel.
+   content changed, or one written in the merge, stays novel. The merge-safety
+   inspector reads the same shape in a refresh PR's diff as a renumber, not lineage,
+   using the same pairing (`pairMovedMigrations`, db-migration-gates.md "A renumber in
+   a refresh PR is not lineage").
 
 A truncated or unreadable tree makes the result `unverifiable` (full review). With
 nothing left novel, the refresh is approved on composition with no reviewer. Otherwise a
@@ -449,8 +456,9 @@ composition` and the head in `composition_heads`; `approved_heads` is untouched 
 round is decided at the aggregate head. With `present` a `delta` round scoped to the
 novel paths is queued. An approve of that delta round (S33) keeps `approval_basis =
 composition`, adds the head to `composition_heads` only, and records the delta round id
-in the transition evidence. Its GitHub review and the headline ("Release-only changes
-approved") say it covers the novel paths only. `unverifiable` or any failed check claims
+in the transition evidence. Its GitHub review and the headline ("New changes
+approved") say it covers the novel paths only. The copy names no PR kind, because a
+release, a mission integration PR and a mission branch refresh PR all compose this way. `unverifiable` or any failed check claims
 nothing (`rejected`). Ordinary verdicts stay exact-head (§8): `headCoverage` reports
 `verdict`, `human`, `composition` or `none`, and `PrMerged` records which one covered
 the merged head.
@@ -513,6 +521,8 @@ turns a fact into the command shown; a human or agent caller issues commands dir
 | T27 | `ReviewRoundFailed(round, reason)` (no valid structured verdict, reviewer died, contract retry spent, a person interrupted the reviewer) | `AWAITING_REVIEW` | round exists and is `queued`/`reviewing`; `reason` ∈ `no_verdict`, `prose_verdict`, `infra`, `human_takeover` | stay `AWAITING_REVIEW` while the contract/infra retry budget allows (round re-queued at the same head, **not** a new round number), then `ESCALATED(review_unavailable)`; `human_takeover` (`POST /api/workers/[id]/interrupt`) is never re-queued and escalates at once | `dispatch_review` retry; `gate_events` row | `roundfail:{round}:{reviewerTask}` (the reviewer task whose run failed; `roundfail:{round}:{n}` only for a kernel-side failure where no reviewer was ever asked) | a repeated report of one reviewer's failure (a retried PATCH, the reaper) is `duplicate`, and a reviewer task that is not the round's recorded reviewer is `stale(reviewer_not_current)`: the round's contract budget is spent once per reviewer (04a79514); a prose verdict is a failure, never an approve; the existing prose fallback can only *propose* a verdict that a person confirms, it cannot apply T6 |
 | T28 | `PolicyEvidenceRecorded(evidence)` (the PR-open pre-flight finding; `workflow_deliveries.policy_evidence`) | any non-terminal | `evidence.headSha == current_head_sha`. `outcome` is `human` (destructive or uninspectable SQL, deny path, human-tier policy) or `agent_split` (a PR mixing EXPAND and CONTRACT migrations, a mechanical-split job for an agent) | from `AWAITING_REVIEW`/`APPROVED` with no open attempt: `human` → `ESCALATED(policy_human)`, open rounds superseded; `agent_split` → `REPAIRING(migration)` with one agent `migration` ledger row (past 2 rows → `ESCALATED(policy_human)`). Every other state (a running owner, an open repair, an owed fix, landing) **records** the finding and acts on nothing: the platform already owns the PR, so no human is notified and no second branch writer is queued. An owner hand-off (§6.5 row 1) at exactly that head applies the recorded finding instead of queuing a review round | `notify(policy_human)` (admitted only while the delivery is still `ESCALATED` at that head); `dispatch_conflict_fix(repairKind=migration_split)` | `policy:{delivery}:{head}:{outcome}@v{version}` | a finding for any other head is `stale(head_not_current)` and never re-escalates a newer head; the same finding replays as `duplicate` while the delivery holds it (`policy_evidence` equal, `evidence_recorded`), so a person's resolution at that head stands against a redelivered import. Once the delivery has dropped the finding (T29 clears it), the same finding applies again (10658a4c). It never bypasses CI or T15's rails |
 | T29 | `BaseChanged(live)` (`pull_request.edited` with `changes.base`; GitHub's retarget of a PR stacked on a merged, deleted branch; or a live read at a CI, landing or floor door whose `base.ref` differs from `delivery.base_ref`) | any non-terminal | live read: PR open, `base.ref != base_ref` | `base_ref` follows the live base. Unless the PR's diff against the new base equals its diff against the old one (`diffEquivalent`: each side's `base...head` diff less the files whose head content that base's tip already holds, e.g. a squash-landed parent of a stacked PR, compared per file patch; fails closed, so an unreadable or deleted old base is not equivalent), every approval is dropped (`approved_heads`, `composition_heads`, `approval_basis`, `policy_evidence` cleared) and rounds decided at the head are `superseded`. From `APPROVED`, `LANDING`, `AWAITING_REVIEW`: round `r+1` at the head → `AWAITING_REVIEW` (a queued `merge_call` skips once the delivery left `LANDING`). From `BLOCKED_ON_TRUNK`: `resume_state = APPROVED` becomes `AWAITING_REVIEW`. Every other state keeps its owner and only records | `dispatch_review` when a round starts | `base:{repo}#{pr}:{from}->{to}@v{version}` | same base: `duplicate(base_unchanged)`. T15 refuses a landing whose live read names another base than `base_ref` (`stale(base_moved)`); the landing door records T29 first. CI classification and incident joins (§6.10) read the live base over the stored one (24e1cfad) |
+
+**Migration stale-parent at landing.** The landing door (T15, via the `landPr` safety-check rail) runs the migration inspector; for a drizzle v1 PR whose new snapshot parent is no longer a leaf of the base it returns `kind: stale_parent` with a "needs rebase" reason. `landPr` treats that as work, not a decision: it refreshes the branch onto the base (`refresh`, the same path as behind-base), so CI runs fresh on the new base before the PR can land. It is never parked as a human `migration` decision. The kernel already carries the base state; no new table.
 
 ### 6.4 `HeadObserved(H')` by state
 
@@ -663,7 +673,7 @@ runner without it is no less safe, only noisier.
    `db.transaction()` (neon-http), so the transition row, fact link and effect rows are
    written by the **same single statement** using data-modifying CTEs, the pattern
    `enqueueDispatchSql` in `packages/core/dispatch-outbox.ts` uses and the trigger in
-   migration 0231 (now in `packages/core/drizzle/0000_baseline.sql`) backs up.
+   migration 0231 (now in `packages/core/drizzle/20261006230118_baseline/migration.sql`) backs up.
 2. **Who supplies `expectedVersion`.**
    - Human and agent callers (dashboard, MCP, task token) receive `version` with every
      read of a delivery and send it back; a stale one gets `stale` plus the current
@@ -846,6 +856,8 @@ between "merge accepted" and "`task.pr_merged` emitted" loses the effect.
 
 ### 10.3 Delivery and leases
 
+> Amended 2026-10-13 by the native spec "Workflow kernel" (fa62b865; repo copy `workflow-kernel-library.md`) §3: in production the drain runs only on the execution control plane, never inline in a Vercel request or from a Vercel cron.
+
 Mirror `task_dispatch_outbox` (`packages/core/dispatch-outbox.ts`, `dispatch-authority.ts`):
 claim due rows with `FOR UPDATE SKIP LOCKED` in one CTE, set `status='delivering'` and
 `attempt_count+1`; a `delivering` row older than the lease (120s) is claimable again.
@@ -906,6 +918,8 @@ as a deferral with its reason (and rendered, §12.1) instead of vanishing.
 ---
 
 ## 11. Reconciliation
+
+> Amended 2026-10-13 by the native spec "Workflow kernel" (fa62b865; repo copy `workflow-kernel-library.md`) §1 and §3: the floor runs on the control plane, and page renders never write.
 
 Reconcilers exist because webhooks are lost, reordered and unretried
 (`webhook/route.ts` documents that App webhooks are not redelivered; `X-GitHub-Delivery`
@@ -1104,975 +1118,9 @@ Files that change in the seam (Slice A):
 
 Later slices add the files named in §14.
 
-### 13.1 What Slice A part 1 shipped, and its deviations
+### 13.1 to 13.10 Slice history
 
-Shipped live (part 1, the review family): schema linkage (§5.6, `authority`);
-`seam.ts` (route API), `authority.ts` (kill switch and release), `github-facts.ts`
-(live reads), `review-effects.ts` (effects, owned by the reviews module and wired through the composition root `workflowEffectHandlers()`); `openKernelDelivery` at the two legacy
-first-review points (the PR `opened` policy after pre-flight and role resolution, and
-create_pr's integration-branch review); T4 at the terminal worker PATCH; the
-`delivery_not_advanced` gate; T6 in `handleReviewerOutcomeIfNeeded`; T9 at claim;
-T3 on `synchronize` (with §8.3 carry-forward decided in the fact funnel from the
-delivery's approved heads, then `equivalentHeadShas` projected for the legacy landing
-gate after the transition commits); T17–T19 on
-close/reopen; T5 for `request_pr_review` and the dashboard re-review (`request_pr_review` names the
-reviewer of the delivery's latest round at the live head, never `findReviewTaskForPr`); T27 for a
-reviewer that ended without a verdict, including one that completed with a prose or
-malformed verdict: on a kernel round (`isKernelReviewRound`) the worker PATCH skips the
-prose fallback, the legacy same-task requeue and `escalateReviewContractFailure`, and T4
-sends `ReviewRoundFailed` with `prose_verdict`, `no_verdict` or (silent start) `infra`;
-T23 `HumanResolve(apply_recommendation)` for `POST /api/prs/[prNumber]/apply-recommendation`
-on a kernel-owned PR (`applyRecommendationThroughKernel`): the route never files a legacy
-fix task there. The seam records the live head first, then resolves at the version the
-person sent (`version` in the body, or the version read before that head was recorded),
-so a stale screen gets 409 with `current` and nothing is dispatched. The transition records
-the person and the bypass. Its `dispatch_fix` carries `trigger: 'human'` and the person's
-`humanInstructions` (their corrections, else the card's recommendation or defect text).
-The handler then sends T8 with `trigger: 'human'`, which accepts the escalated round
-whatever its verdict, still runs the §10.5 revalidation, and allocates a `review_fix` row
-with `trigger=human`. Past the cap it extends the budget by exactly that one dispatch,
-recorded as a bypass (`budgetFrom`/`budgetTo`). The fix task puts the instructions first,
-as the authoritative ask, with the reviewer's own words below them as context. With no
-review round at the current head, T23 refuses `no_review_at_head` rather than strand the
-delivery in `CHANGES_REQUESTED`; the outbox floor drain on the `pr-reconcile`
-full pass plus an inline drain after every applied transition.
-
-Shipped live in part 2 (the CI family):
-
-- **T10 doors.** `retryCiFailureForPr` (the `check_suite` webhook and the red-PR
-  sweep) asks `observeCiFailure` first; for a kernel-owned PR the legacy decision
-  does not run, and the kernel's answer is mapped onto the outcomes those doors
-  already understand (`kernelCiOutcome`). The head is recorded from a live read
-  first, so an old-SHA failure is `stale(head_not_current)`.
-- **Ledger.** `ledgerBudget` is the one budget rule: every dispatched row spends one,
-  except a `skipped` one (revalidation found nothing to do); the cap is the
-  configured `maxCiRetries`, raised only by a `trigger=human` row. `attemptView`
-  counts the same rows, so N of M is 1-based and identical in the title, the task
-  context and the activity entry.
-- **`dispatch_ci_fix`** (`ci-retry-effects.ts`, reviews module, composed into
-  `workflowEffectHandlers()`) revalidates at dispatch (PR open, head still the bound
-  head, CI not green now), then files the legacy-shaped CI fix or drift-diagnose task
-  with `delivery_role = ci_fix`; its task id is the attempt id, so a re-run files
-  nothing twice. CI exhaustion escalates through `escalateCiRedHead`.
-- **Claim (T9 for `ci`).** `FixClaimed` on a `ci` attempt moves it to `running`; CI
-  green at claim resumes the delivery and cancels the task as skipped.
-  `RepairNotNeeded` is the dispatch-time equivalent.
-- **Provenance (§6.9).** The runner's metric sync appends its local head to the
-  attempt's `reported_shas` (`recordLocalHead`); `HeadObserved` attributes a head to
-  the bound attempt when the SHA is reported, or the attempt is running and the head
-  descends from its bound head (compare API). A head the running attempt cannot
-  claim is a `foreignPush` (recorded, no row); one that arrives while the attempt is
-  only queued skips that row and is handled by the normal head rules.
-- **`BudgetExtended`.** A person's "Fix CI" past the cap allocates exactly one more
-  attempt (`trigger=human`, numbered after the last, `bypass` records who and why);
-  under the cap it is an ordinary T10 attempt with `trigger=human`. Never
-  "iteration 0".
-- **§8 / R1 in the CI family.** No CI decision reads `context.iteration` or
-  `lastCommitSha` as the head; `buildCIRetryTask` takes `attemptsUsed` explicitly.
-  `isBuilddWorkerCommit` and `fetchCommitAuthor` are deleted, and the legacy path
-  (PRs opened before cutover) now counts every filed CI retry against the cap.
-- **S9.** An owner attempt that ends `lost`/`failed` with commits and no reported
-  head is not proof: `AWAITING_PUSH` with `push_recovery` (T22 after its tries). The
-  cleanup route no longer promotes a kernel attempt's dead worker to `completed`.
-
-Part 2 deviations:
-
-9. **A running CI attempt blocks a new T10 at any head** (`fix_in_flight`), as the
-   legacy in-flight rule did: the worker is still watching its checks. The sweep
-   comes back after it ends.
-10. **T10 from `AWAITING_REVIEW` leaves the open review round queued**; a verdict
-    that lands while `REPAIRING` is stale and kept, and the repaired head starts a new
-    round.
-11. **The CI signature is a placeholder** (`ci_failed`) at ingestion; the failing
-    step digest is read by the dispatch effect. The trunk breaker stays off.
-12. **CI green means every check suite completed and none failed**; a running or
-    empty suite set is never read as green, so revalidation fails toward doing the
-    work.
-13. **The owner `lost` case goes to `AWAITING_PUSH`, not straight to
-    `ESCALATED(push_undeliverable)`** (§6.5): AC-10 asks for `AWAITING_PUSH`, and T22
-    reaches a person after the bounded recovery.
-14. **`SupersessionRecorded`'s idempotency key carries the target**, so a second,
-    different target reaches the reducer and is refused `edge_exists` instead of
-    answering `duplicate`.
-15. **Landing, supersession and the treadmill are kernel transitions only.** S10,
-    S12 and S15 run `LandingRequested`/`MergeCallResult`/`SupersessionRecorded` on real
-    Postgres, and `conflictRepair` bounds base refreshes across heads
-    (`DEFAULT_MAX_BEHIND_REFRESHES`, the treadmill default); the doors that would call
-    them stay legacy until Slices B–D.
-16. A queued mechanical attempt counts as live for attribution (the platform's own
-    refresh is in flight from dispatch). The runner's `remoteHeadSha` /
-    `unpushedCommits` payload is not added: provenance uses the reported local heads.
-17. **T10's live check-suite read is the check runs on `H'` now, and its key carries
-    the ledger row: `ci:{delivery}:{H'}:{n}`.** The `check_suite` hint and the red-PR
-    sweep both pass through `observeCiFailure`, which reads the runs on the live head
-    through the `GithubFactReader`; a read with nothing failing (re-run green, or a
-    re-run still going, whose own completion is the next hint) is
-    `rejected(ci_not_red)` and records nothing, so a stale or redelivered failure hint
-    never leaves `APPROVED`. The read is the transition's `liveChecks` evidence; an
-    unreadable one (and a person's "Fix CI") fails toward doing the work. The key keeps
-    `:{n}` because T10 at the same head is a designed path, not a replay: the sweep
-    re-observes a head whose attempt ended without a push, the cap escalates at that
-    head, and a re-run that fails again after going green is a new red. A plain
-    `ci:{delivery}:{H'}` would answer every one of those `duplicate` and strand a red
-    head with no repair. Redelivery is bounded by the live read, `fix_in_flight` and
-    the ledger cap instead.
-18. **The owner's hand-off reads CI on its head (e9f1674b).** T10 does not move
-    `WORKING`, so a `check_suite` failure that arrived while the owner ran was dropped
-    until the red-PR sweep or a push. `attemptEnded` in the seam now reads the check runs
-    on the live head when an owner attempt ends with the PR open, and passes them as
-    `AttemptEnded.ci` (`liveChecks`, the failing checks' `signature`, the workspace's
-    `maxCiRetries`). A red read routes §6.5 row 1 to `REPAIRING(ci)` through the same
-    ledger, dispatch key and cap as T10; the read is the transition's `liveChecks`
-    evidence either way. A red the trunk explains (the T10 classification, §6.10) is
-    handed on as before and then applied as `TrunkRedObserved`. A green, still-running
-    or unreadable read changes nothing, so recorded histories without the field replay
-    unchanged.
-
-Deferred to part 3, which shipped them (§13.2): `DeliveryView` with one owner of the
-next move, `render_activity` regenerating the comment from transitions (§12.1),
-release composition, explain's `attemptView`, and S35/S37. The conflict and migration
-families stay legacy (Slice B).
-
-Deviations, each deliberate:
-
-1. **Round 1 is queued when the owner attempt ends**, not when the PR opens
-   (§6.5 row 1, §15 step 2). Opening a delivery dispatches nothing; a delivery opened
-   after the owner attempt already ended (the webhook arrived late) applies T4 at once.
-2. **Landing stays on the legacy doors.** An applied approve returns to the legacy
-   approve tail (`landPr` / `tryAutoMergeWorkerPr`), which reads the reviewer task the
-   round created. The kernel posts the GitHub review (`post_review`); the legacy post
-   does not run. Slice C moves landing.
-3. **The legacy activity comment stayed** in part 1 (`appendPrActivity` from the
-   handlers). Part 3 replaced it for kernel-owned PRs (§13.2). Post-merge and
-   supersession effects of T17/T18 are still acknowledged `legacy_owns`: the webhook
-   runs them.
-4. **`push_recovery` re-reads and bounds, it does not instruct.** Each try reads the PR;
-   a new head goes through T3, otherwise the next try is enqueued (2m/10m/30m), then
-   T22 notifies a person. The live worker is told to push by the completion gate's 400
-   instead. Tries after the first ride the hourly floor drain.
-5. **A pre-flight human escalation releases the delivery to legacy** (and opens none),
-   so no kernel round is queued behind a human gate.
-6. **`createReviewerTask` refuses a reviewer for a kernel-owned PR** unless the call is
-   the round's own `dispatch_review`; every legacy door (re-dispatch on push, stale
-   approval, integration review) is closed in one place.
-7. The completion gate reuses the `output_requirement` gate slug with
-   `detail.code = delivery_not_advanced`; no new slug.
-8. `max_attempts` of a review fix is the delivery's `max_rounds`. A second attempt on
-   the same head (the first failed) leaves `reviewerRetryHeadSha` empty: the ledger,
-   not that unique index, dedupes it.
-9. `workflow_attempts.task_id` has no foreign key (like `tasks.delivery_id`, §5.6).
-   Allocation is consumption, so the dispatching statement names the fix task's id
-   before `dispatch_fix` inserts that task; the FK the first migration carried rejected
-   every allocation, so no fix task was ever filed. The live matrix caught it.
-
-
-### 13.2 What Slice A part 3 shipped, and its deviations
-
-Shipped live (kill switch only), for kernel-owned deliveries; a legacy-owned or
-PR-less task is absent from every map below and keeps today's projection:
-
-- **`DeliveryView`** (`lib/workflow/projections.ts`, pure; loaded in one statement
-  per surface by `getDeliveryViewsForTasks` in `lib/workflow/delivery-view.ts`). One
-  owner of the next move per §4 state (`worker`, `reviewer`, `platform`, `human`,
-  `landing`, `trunk`, `none`); `needsYou` is true only for `human`. A headline and
-  the evidence behind it (`detail`, from the delivery and its last transition), the
-  ledger's `attempt N of M`, the current attempt, and every earlier attempt marked
-  `superseded` for audit.
-- **Home** (`buildActionQueue` option `deliveryViews`): the chip of a kernel-owned
-  PR comes from `chipForDelivery`, applied after `resolveMergeChip`. Landing keeps the
-  legacy merge chip, because the merge rails stay legacy until Slice C. A failed
-  attempt of a delivery that is live or merged produces no FAILED card.
-- **Task page**: the header pill reads the view; `RealTimeWorkerView` replaces the
-  needs-input banner with a "Buildd is handling this" notice when the platform owns
-  the next move.
-- **Mission failure reading (S35)**: `kernelReplacedFailedTaskIds` marks a failed
-  attempt of a live or shipped delivery as superseded, in `explain` and in the mission
-  page's fallback (which now also applies the existing title/PR supersession rule it
-  skipped).
-- **Explain (S28)**: a task subject whose delivery is kernel-owned carries
-  `delivery` (state, owner, headline, evidence) with `attemptLine`, the one
-  family-labelled "CI 1 of 3 · review 1 of 3" line the comment and titles use.
-- **`render_activity`** (`lib/workflow/pr-activity-render.ts`, `pr-activity-effects.ts`):
-  the comment is rendered from the delivery row and every `workflow_transitions` row,
-  with the headline from canonical state and a `buildd-render-version` marker. A
-  render older than the marker is skipped, duplicate comments are reduced to the
-  oldest, and a version that advanced during the write owes another render. For a
-  kernel-owned PR, `appendPrActivity` no longer writes. It records the entry as an
-  `activity_note` fact and enqueues a render. Kinds a transition owns are dropped from
-  those notes; the rest (CI, lede corrections, human overrides) are kept until their
-  families move.
-- **Release composition (§5.9)** (`lib/workflow/review-composition.ts`): before
-  `dispatch_review` dispatches a full round on a composition PR (a mission integration
-  branch into trunk, or a release PR per `isReleaseBranchPr`), it builds a
-  `patch_set_equal` attestation from the compare and per-commit reads, proving each
-  constituent by patch-id against its reviewed head's own diff. Zero novel
-  delta → `CompositionAttested` → `APPROVED` with `approval_basis = composition` and no
-  reviewer. A novel delta → a delta round scoped to those paths, with the
-  attestation in the reviewer's prompt. Unverifiable → the normal full review. CI
-  still gates the aggregate through the unchanged landing rails. The headline reads
-  "Release composition verified", or "Release-only changes approved" once a delta
-  round approved the novel paths.
-- **S37 conflict recovery** (`dispatchConflictRetry`, `classifyConflictFix`,
-  `recoverStalledConflictFix` in `lib/conflict-retry.ts`): a live conflict fix is
-  the canonical remediation. A pending one unclaimed for 30 minutes is re-dispatched,
-  and a claimed one whose worker ended is requeued. A claimed one whose worker is only
-  silent is stalled but left to the reaper. Recovery is a compare-and-set on
-  `context.conflictRecovery`, so concurrent sweeps, webhooks and clicks apply it once,
-  and no second fix task is filed. The view's CTA reads "Conflict fix stalled" with
-  Run fix / Repair, "Resolving conflicts", or "Resolve conflicts" when none exists.
-
-Deviations, each deliberate:
-
-1. **The conflict family is still legacy (Slice B).** S37's recovery lives in the
-   legacy conflict-retry path, keyed by the live fix task plus its recovery marker
-   (the remediation family is implied by `conflict_retry_pr_number`). It is not a
-   kernel effect, and `ConflictObserved` is still not wired; the view reads `mergeable`
-   on the current head and the open conflict-fix row.
-2. **Explain's state chain, the mission strip and the chat dock** still read their
-   own projections (Slice E); explain only adds the `delivery` block. S17 covers
-   Home, the task header and the mission failure reading. *Closed by Slice E
-   (§13.9).*
-3. **A fix worker's own question stays a question.** A worker-owned delivery whose
-   worker is `waiting_input` keeps the needs-input banner. Only a platform-owned
-   blocker is restated; generic `needs_input` is task 01b8a69d's.
-4. **Composition constituents need kernel evidence.** A change reviewed on the
-   legacy path is novel delta, so it gets the delta review rather than borrowing a
-   verdict. A merge commit's novel delta is approximated as the files both sides
-   changed. Release artifacts are recognised by the release automation's commit
-   subjects plus a path allowlist (`package.json`, `CHANGELOG.md`, `bun.lock`).
-5. **Chips stay in the existing vocabulary.** A kernel-owned card reuses
-   `REVIEW_RUNNING`, `FIXING_REVIEW`, `FIXING_CI` and `RESOLVING`, and carries the
-   headline as its reason line, so no card component changed.
-
-### 13.3 What the S30/S31 runner signals shipped, and their deviations
-
-S30 (§6.6). The runner reports a hand-off failure after work (an output-gate
-refusal of its completion, or an unmet `pr_required`) as `failed` with
-`outcome: 'unproven'`, `localHeadSha` and `commitCount`
-(`apps/runner/src/hand-off-outcome.ts`). The worker PATCH maps that onto
-`AttemptEnded(unproven)` (`apps/web/src/lib/workflow/hand-off.ts`). With commits the
-result is `AWAITING_PUSH` plus `push_recovery`, even while the task's own retry is
-queued. An owner with nothing local and a retry queued gets a recorded `WORKING`
-requeue. An old runner omits the fields and gets today's `failed` mapping.
-
-S31 (§6.10). Tier 1: on a workspace with `gitConfig.preflight.prProseScan`, `create_pr`
-refuses a title or body that CI's prose scan would reject, and names the line and
-category. Tier 2: the runner runs `gitConfig.preflight.commands` before a push or
-`create_pr`, and a failing command denies that one call with its output. Tier 3: a
-kernel CI failure is tagged `preflightMiss` on its T10 transition when it names a
-preflight class (`gitConfig.preflight.ciChecks`, default the No Production Data
-workflow).
-
-Deviations:
-
-1. **The prose rule is a port, not a shared function.** CI runs Python and the
-   server cannot. `packages/core/no-prod-data-prose.ts` is the same count/UUID rule
-   in TypeScript. A parity test runs both on one fixture set and fails on any
-   disagreement. The identifier half needs CI's secret and stays CI-only.
-2. **Preflight evidence is not stored on the delivery.** Tier 1 refusals and tier 2
-   denials appear in the refusal and the runner milestone. Only tier 3's
-   `preflightMiss` is a kernel record.
-
-### 13.4 What Slice B part 2 shipped, and its deviations
-
-Shipped live (kill switch only), for kernel-owned deliveries; a PR the kernel does
-not own keeps the legacy conflict retry unchanged:
-
-- **One door (T12).** Every caller that decided a conflict retry (landing, the merge
-  routes, auto-merge, the dead-zone sweep, the landing-action tap and the PR-opened
-  migration-collision dispatch) reaches `dispatchConflictRetry`, which now asks
-  `observeConflict` (`seam.ts`) first. For a kernel-owned PR it takes a live read of
-  `mergeable_state` now (the door's own reading is used only when GitHub says
-  `unknown`), records the head first, and applies `ConflictObserved`. GitHub says
-  `behind` only under "require up to date" protection; without it a PR behind its
-  base reads `clean`. So a door that saw the PR behind (landing's freshness rail) on
-  a mergeable PR is answered by ancestry (`conflictReading`): the base tip missing
-  from the head is `behind`, and `refresh_branch` runs. Reading `clean` as
-  `not_conflicting` there stranded approved, green PRs: landing asked for a refresh
-  every sweep and was told the branch already had every base commit. The legacy
-  decision does not run: no `conflictIteration` counter, no spent-key release, no
-  behind-only refresh, no task insert. `kernelConflictOutcome` maps the answer onto the
-  `DispatchConflictRetryResult` the doors already understand (a landed mechanical
-  refresh reads as `branchUpdated`, an agent attempt as `dispatched` with its task, a
-  spent budget as `exhausted`).
-- **The dead-zone sweep asks first** (`dead-zone-sweep.ts`, final-audit fix b6a62a4e).
-  A kernel owner task is normally `completed` while its delivery is live, so a kernel
-  PR qualifies as a dead-zone candidate. Before the legacy retry count, the sweep
-  asks `kernelDeliveryForPr`. A dirty kernel PR goes through `dispatchConflictRetry`,
-  which is T12. A red one is left to the kernel CI family (T10) and nothing is filed.
-  An authority read error files nothing for that PR. Only a legacy PR reaches the
-  direct insert and `releaseSpentConflictRetryKey`. Until this fix the sweep inserted
-  the conflict task directly for kernel PRs too: no `delivery_id`, no ledger row, no
-  budget, and the task's push read as foreign.
-- **`merge_pr` does not refresh a kernel PR** (`app/api/github/pr/route.ts`,
-  final-audit fix b6a62a4e). When the door's legacy safety check refuses a merge as
-  behind base (landing mode `shadow` or `off`), a kernel-owned PR gets a 409 with
-  `kernelOwned: true`, and `refreshBehindPr` / `updateBehindPrBranch` never run. The
-  refresh belongs to the kernel's `refresh_branch` effect, reached through T12
-  `behind` (the auto-merge door) or T16 (the kernel's own merge call refused as
-  behind). A legacy PR keeps the in-door refresh.
-- **Mechanical first (§6.7), in `conflict-retry-effects.ts`** (composed into
-  `workflowEffectHandlers()`). `refresh_branch` runs `refreshBehindPr` pinned to the
-  bound head (GitHub update-branch with `expected_head_sha`, so the semantic check, the
-  single-flight lease and the operational bound still apply). Success: the new head
-  arrives through T3, is attributed to the mechanical row by §6.9, ends it `delivered`,
-  and, on an approved head, carries the approval forward as the platform's own refresh
-  (T13, no new round). GitHub's textual-conflict 422 or a same-symbol overlap refuses
-  the mechanical row and allocates the agent attempt (`ConflictObserved{mechanicalRefused}`,
-  with the refusal handed to the task). Up to date: `RepairNotNeeded`. An operational
-  dead end (update-branch kept failing, refused, semantic overlap unverifiable) is the
-  new `MechanicalRepairFailed` command: the row ends `failed` and landing needs a
-  person, never an agent.
-- **`renumber_migration`** re-verifies the collision against live trees with the
-  migration inspector (which compares only open PRs into the same base, so a mission
-  branch lagging trunk is not a collision: `RepairNotNeeded(collision_resolved)`), then
-  renames the migration through the git data API into the next index past the PR's
-  head, its base, the trunk and the colliding PR's head. The renamed path points at the
-  same blob, so it is byte-identical by construction, and the ref update is
-  fast-forward only. A directory with a drizzle journal (`meta/`) is refused
-  (`journal_regenerate_required`) and becomes an agent attempt with the renumber recipe.
-- **`dispatch_conflict_fix`** revalidates at dispatch (§10.5: PR open, head still the
-  bound head, still conflicting now, or the collision still there) and files the
-  legacy-shaped conflict task with `delivery_role = conflict_fix`; its task id is the
-  attempt id, and its title and "attempt N of M" come from the ledger row.
-  `conflict_fix` is a repair role, so the §9 completion gate (`delivery_not_advanced`),
-  `recordLocalHead` provenance and T4 apply. Claim-time revalidation: a conflict that
-  GitHub no longer reports cancels the task as skipped and resumes the delivery.
-  Conflict exhaustion escalates through `escalateConflictExhaustion`.
-- **S37 under the kernel.** The kernel's live conflict fix is the canonical
-  remediation: a second door gets `fix_in_flight` with that task, and a stalled one is
-  re-woken or requeued in place by the same `recoverStalledConflictFix` row repair.
-  A conflict retry filed by the legacy path (no `delivery_id`) is left to legacy.
-
-Deviations, each deliberate:
-
-1. **The drizzle case is always an agent.** A drizzle migration's journal and snapshot
-   chain cannot be renumbered byte-identically server-side (open question 9), so for
-   buildd itself the mechanical renumber always refuses; the mechanical rename covers
-   plain SQL migration directories. Runner-side regeneration of derived files (task
-   a2829bdb, not landed) can make the agent attempt cheap; nothing in the kernel
-   assumes a derived-file conflict needs an agent once the mechanical refresh resolves it.
-2. **The mechanical refresh is the conflict recheck.** A conflict flagged from a stale
-   snapshot that GitHub's own merge of today's base resolves never reaches an agent. A
-   sharper pre-agent check (a merge-tree replay against the base tip, task 61dbc148,
-   not landed) plugs in at `agentIsOwed` in `conflict-retry-effects.ts`.
-3. **A migration collision found at PR open stays legacy** unless the kernel already
-   owns the PR: the opened door dispatches the renumber before the kernel opens a
-   delivery, so that PR never becomes kernel-owned. A collision on a kernel delivery
-   still in `WORKING` is `stale(state_not_allowed)` and falls through to the door's
-   normal handling.
-4. **A person's "fix the conflict" past the cap** raises the agent budget by the
-   configured cap on top of what is spent (as the legacy path did); there is no
-   conflict-family `BudgetExtended` row yet.
-5. **The landing door's own refresh counter** (`refreshCycleCount` in `pr-landing.ts`)
-   still runs before it calls the door. The T15/T16 half of S15 is Slice C's (§13.7):
-   a merge call GitHub refuses as behind or conflicting is T16 into the same
-   `conflictRepair`, so it runs these handlers, with one addition at the handler: a
-   dependency-bot PR reaching `refresh_branch` through T16 (past the doors' own check)
-   is never pushed to; the mechanical row ends `failed` and a person lands it (S27).
-
-### 13.5 What Slice B part 3 shipped, and its deviations
-
-Shipped live for kernel-owned deliveries (the trunk circuit breaker, §5.8, §6.10,
-T25/T26, S24, AC-15):
-
-- **Signatures at ingestion.** `observeCiFailure` reads the head's check runs and
-  replaces the placeholder `ci_failed` (§13.1 deviation 11) with
-  `ci:<check>|<check>`: the sorted names of the failing runs, normalised by
-  `normalizeErrorSignature` (`lib/workflow/trunk-signature.ts`). The signature is
-  the `ci` ledger row's trigger reason; ledger keys and budgets are unchanged. A
-  check set that cannot be read keeps the placeholder and never opens an incident.
-- **Classification** (`classifyCiFailure`, `lib/workflow/trunk.ts`), only for a
-  delivery whose current head is the red one and whose state a CI failure moves:
-  join an incident already open on the base whose checks explain the failure;
-  else (a) the base branch's own head fails every check the PR fails; else (b) the
-  opt-in multi-delivery rule over the `ci` ledger rows in the window. Opening and
-  joining is one upsert on `trunk_incidents_open_signature_unique`; the incident
-  carries the base's signature (rule a) or the shared one (rule b).
-- **T25.** `CiFailedObserved` with the incident routes to `TrunkRedObserved`; a
-  delivery already `REPAIRING(ci)` joins too (its queued attempt is `skipped`, it
-  spends nothing). A newly opened incident also takes every kernel delivery on the
-  same base repairing a failure it explains. `dispatch_trunk_fix`
-  (`lib/workflow/ci-red-trunk-effects.ts`) files one trunk-fix task per red base,
-  not per incident: a base can hold several unresolved incidents at once (one per
-  signature: its runs were read before every check finished, or its head moved and
-  broke more), and each used to file its own fixer. The task id is the base's
-  anchor (`trunkFixAnchorSql`): the oldest unresolved incident on the base whose fix
-  is unfinished, else the incident itself. Every incident of one red base, and
-  concurrent drains in either order, insert that one id, so the primary key files it
-  once with no interactive transaction. An incident that joins a fixer is linked to
-  it and steers it with the checks it was not filed for (appended to the task, and
-  queued to a live worker), once per incident. A resolved incident never anchors, so
-  a red after recovery files a fix of its own; the effect's dedupe key stays the
-  incident (a base-scoped key would swallow every later red on the base forever).
-  The task is linked after it exists (the FK, §13.1 deviation 9), and a base that
-  is already green at dispatch files nothing. The
-  `cancel_open_attempts(blocked_on_trunk)` effect cancels the per-PR CI fix tasks
-  that never started. The CI doors map a blocked delivery to the skip reason
-  `blocked_on_trunk`, so the red-PR sweep files nothing and does not come back.
-- **T26.** `reconcileTrunkIncidents` (seam, on the `pr-reconcile` floor tick)
-  re-reads each unresolved incident's base head. When every run there completed and
-  none of the incident's checks fails, the incident resolves and each delivery
-  blocked on it re-enters `resume_state`; a head that does not contain the new base
-  head gets `refresh_branch`. A delivery left blocked on a resolved incident (an
-  interrupted pass) is recovered on the next pass.
-- **Activity.** `blocked_on_trunk` (with the failing checks) and `trunk_recovered`
-  are rendered from their transitions (§12.1).
-
-Deviations, each deliberate:
-
-1. **The base-red rule is ON by default**, not opt-in as §6.10 first said: the
-   kernel ships live, and the rule blocks only while the base itself fails every
-   check the PR fails. A workspace with no `trunkBreaker` key in its `gitConfig`
-   has it. **To turn the breaker off**, set `gitConfig.trunkBreaker = false`
-   (`WorkspaceGitConfig.trunkBreaker`, read by `trunkBreakerConfig`): no CI failure
-   is classified against the base, no incident opens, and every red PR gets its own
-   `ci` attempt as before (S24 off path in the matrix). The multi-delivery rule
-   stays opt-in: `trunkBreaker: { minDeliveries, windowMinutes? }`.
-2. **"The same signature" is set containment**: the PR's failing checks are a
-   subset of the base's. The incident is keyed by the base's signature, so PRs that
-   fail different subsets of one red trunk share one incident and one fix.
-3. **Recovery is a sweep, not a webhook.** The hourly `pr-reconcile` floor re-reads
-   open incidents; a base push does not resume PRs sooner. A trunk-fix task is a
-   plain task with no delivery role (it is not an attempt of any PR's delivery).
-4. **T26's `refresh_branch` is the conflict family's handler** (§13.4,
-   `conflict-retry-effects.ts`): with no ledger row it is a plain GitHub
-   update-branch pinned to the head T26 judged stale, skipped if the head moved and
-   retried by the outbox on an operational failure. The breaker registers no
-   `refresh_branch` of its own: one handler per effect kind.
-5. **Legacy (pre-cutover) PRs keep the per-PR CI path**; the breaker reads and
-   writes kernel deliveries only. A person's "Fix CI" still records a `manual`
-   signature and is not classified.
-
-### 13.6 What Slice B part 1 shipped, and its deviations
-
-Shipped live: the fact-ingestion funnel and terminal-wins for the PR fact cache.
-
-- **`recordPrFact(target, fact)`** (`packages/core/pr-facts.ts`) is one statement
-  that applies a PR fact (`merged`, `closed`, `open`, `ci`, `conflict`,
-  `unresolvable`) to the targeted worker rows (one row, a set, or every row of the
-  PR) and returns the rows it changed with their previous status. The ordering rules
-  are in its `WHERE`, so arrival order never matters: `merged` is final and keeps its
-  first instant; `closed` yields only to `merged` or an explicit reopen; a CI fact
-  whose suite SHA is not the PR's current head is dropped; `conflict_detected_at` is
-  first-seen. A pure mirror (`prFactApplies`) answers the same question for a row in
-  hand, and the real-Postgres test checks the two agree on every (status, fact) pair.
-- **Every writer moved** (§18.2): the webhook's open-state, closed and `check_suite`
-  writes; `pr-reconcile.ts`, `pr-state-refresh.ts`, `dead-zone-sweep.ts`,
-  `dead-pr-shutdown.ts`, `register-local-pr.ts`, `mission-pr.ts`, the adoption
-  insert in `pr-review-request.ts`, the `backfill-merged-prs` route and
-  `backfill-mergedat.ts`, the three merge-door stamps, and `stampPrMergedOnAllRows`
-  (now a thin caller). `packages/core/__tests__/pr-fact-write-sites.test.ts` fails any
-  other module that writes `pr_lifecycle_status` or `merged_at`.
-- **Defects closed on the way**: a late `synchronize`/`opened` no longer regresses a
-  merged or closed PR to `pr_open`; a closed-unmerged PR is stamped on every row of
-  the PR, not one; the webhook stamps GitHub's `merged_at` instead of receipt time;
-  red CI is a `ci_failed` fact in the dead-zone sweep, no longer an overloaded
-  `conflict`; `conflict_detected_at` is no longer reset on re-entry; the `check_suite`
-  terminal guard is in the statement, not a read-then-write.
-- **`stamp_pr_rows`** (`lib/workflow/pr-fact-effects.ts`, composed into
-  `workflowEffectHandlers()`) is live: T17/T18 project the merge (with the
-  delivery's GitHub `merged_at`) or the close onto every row of the PR through the
-  funnel. It is no longer acknowledged `legacy_owns`.
-- **Importers feed the kernel** (§11): when `pr-reconcile` or `pr-state-refresh`
-  finds a merge or close GitHub never delivered, a kernel-owned PR also gets it
-  through `observePrState` (T17/T18 from the kernel's own live read).
-- **`pr-state-reconcile.ts` is deleted.** `POST /api/missions/[id]/reconcile` and
-  `scripts/reconcile-pr-merge-state.ts` use `lib/pr-fact-import.ts`, which imports
-  merged/closed facts and writes nothing for an open PR (the old `pr_open` write was
-  the regression).
-- **No render-time writes**: Home, the task page and the mission page enqueue their
-  read-through import with `after()` and render what is stored.
-- **An owner in `AWAITING_PUSH` leaves on a push** (§6.4, §9). An owner attempt has
-  no ledger row, so its `L` is read from the evidence of the transition that entered
-  `AWAITING_PUSH` (`pushPendingLocalHead` on the loaded view; no new column). A head
-  that contains `L` and differs from `Hb` goes to `AWAITING_REVIEW` with a new round
-  and `dispatch_review`, whether it arrives by `synchronize` or by `push_recovery`'s
-  own re-read; a head that does not is recorded, the delivery stays, and recovery is
-  re-armed from that head. With `L` unknown (a reaped owner, S9), the proof is "moved
-  off `Hb` and the new head descends from it", read through the compare API.
-
-Deviations, each deliberate:
-
-1. **The funnel lives in `@buildd/core`, not `lib/workflow/`.** It writes only the
-   `workers` fact cache, never a `workflow_*` table, and the offline backfill script
-   in `packages/core/scripts` must use the same statement; the write-site guard is
-   its own test.
-2. **The merge doors still stamp their own instant** (`merge_pr`, the dashboard
-   merge, the `PUT /api/github/pr` race path): they hold GitHub's merge response, not
-   its `merged_at`. Through the funnel a later fact never moves that instant; Slice C
-   replaces the doors with T16 and `verify_merge`.
-3. **Webhooks stay fact importers.** "Hint, not writer" means they no longer write
-   lifecycle columns directly and never assign delivery state: they hand facts to the
-   funnel (for every PR) and to the kernel (for a kernel-owned PR). Both are
-   convergent, so the webhook stamp and `stamp_pr_rows` cannot disagree.
-4. **The one-time repair of a wrong-repo `merged` stamp is gone with
-   `pr-state-reconcile.ts`.** `merged` is terminal on the fact cache; the repo-scoped
-   lookups that caused those stamps shipped long ago.
-5. **`register-local-pr.ts` still writes `lastCommitSha` from the PR head** (§12):
-   that column is not part of this funnel; Slice E retires the reader that needs it.
-6. **Bookkeeping clocks** (`prLastCheckedAt`, `prLastVerifiedAt`,
-   `prCheckFailureCount`) are written beside the fact by the importers, unguarded:
-   they record that a check ran, not what the PR is.
-7. **"The PR's content changed" is approximated by ancestry.** With `L` unknown, a
-   new head that descends from `Hb` counts as changed content; an empty commit would
-   pass. `push_recovery` re-armed per non-proving head is bounded by the pushes that
-   arrive, and each chain still ends in T22.
-
-### 13.7 What Slice C shipped, and its deviations
-
-Shipped live (kill switch only), for kernel-owned deliveries; a legacy PR keeps every
-door exactly as it was (AC-11):
-
-- **One merge call per landing, by the kernel.** `landThroughKernel`
-  (`lib/workflow/landing.ts`, through `seam.ts`) is the merge of a kernel-owned PR
-  for every door: `landPr` (and through it the landing sweep and
-  `surface-ordering-wake`), `tryAutoMergeWorkerPr` (now an adapter: its rails run, it
-  never calls GitHub's merge or finalizes the mission branch for a kernel-owned PR),
-  `POST /api/prs/[prNumber]/merge` and `PUT /api/github/pr` (`merge_pr`). Each door
-  runs its rails unchanged and calls it where it used to call `mergePullRequest`,
-  inside the same surface-ordering slot. It records the live head (R2), applies T15,
-  and drains: `merge_call` (`lib/workflow/pr-landing-effects.ts`) makes the pinned
-  `PUT /merge` and applies T16 from GitHub's answer (`classifyMergeCall`); merged and
-  indeterminate answers go through `verify_merge`, whose live read is the only thing
-  that produces `PrMerged`.
-- **Refusals are repair, not a page.** Behind / out-of-date is
-  `REPAIRING(behind)` with a mechanical `refresh_branch` (`updateBehindPrBranch`,
-  pinned to its `expected_head`; the refreshed head is attributed to the attempt and
-  carried forward as the platform's own refresh, §8.3), bounded by the treadmill cap.
-  A textual conflict from update-branch hands over to an agent attempt
-  (`dispatch_conflict_fix`); a branch already current skips the row and resumes
-  `APPROVED`. Anything else GitHub definitely refused is
-  `ESCALATED(landing_needs_human)`.
-- **Transient answers are a wait, not a refusal** (9bfe0d23). `classifyMergeCall`
-  reads the HTTP status first: a rate limit (429, or a 403 with a rate-limit message
-  or reset headers) is `not_merged`, since GitHub refuses it before looking at the PR;
-  a 5xx is `indeterminate` and goes through `verify_merge` like a lost answer. Only
-  the remaining definite answers (405/409/422 and other 4xx) are refusals. The
-  MergeCallResult records `retryAt` from `retry-after`, or `x-ratelimit-reset` once
-  the quota is spent (a rate limit with neither waits a minute; capped at an hour),
-  and `listApprovedKernelPrs` skips the delivery until then, so the landing sweep
-  does not spend another call against the same limit. A door a caller drives may
-  still ask earlier.
-- **A draft is a hold, not a refusal** (e89035b6). T15 refuses a draft PR as
-  `rejected(pr_is_draft)` before any merge call, so the delivery stays `APPROVED`
-  and the landing sweep lands it once a person marks it ready for review (the next
-  sweep tick after `ready_for_review`). A draft made between the live read and the
-  merge call is GitHub's 405, which T16 maps to `not_merged`.
-- **Post-merge work is outbox effects.** T17 queues `stamp_pr_rows`,
-  `cancel_open_attempts`, `emit_pr_merged` and `finalize_mission_pr`.
-  `emit_pr_merged` runs `runMergedPrWork` (`lib/pr-merged-work.ts`, extracted from the
-  webhook): the owner task's completion, dependents, path-claim release, the
-  `pr.closed` / `task.pr_merge_delivered` / `task.pr_merged` fan-out (mission wake,
-  dependent missions, release Path B) and the work-tracker update.
-  `finalize_mission_pr` deletes a shipped mission branch whoever merged it. The
-  `pull_request.closed` webhook records the fact for a kernel-owned PR and runs none of
-  that inline; for a legacy PR it calls the same function.
-- **Removed for kernel-owned PRs**: the per-door `recordPrFact(merged)` stamps, the
-  doors' inline `finalizeMissionPrMerge`, `checkDependsOnResolved`,
-  `reconcileSubjectEvent`, `checkAndUnblockDependentMissions`, the post-merge-call
-  conflict dispatch in `tryAutoMergeWorkerPr` and the routes, and the webhook's
-  inline post-merge block.
-- **S20.** Both merge routes accept `version` (the delivery version the caller read)
-  and answer HTTP 409 `{ stale: true, current }` before any rail runs when it is
-  stale; the same version rides T15 as `expectedVersion`, so a screen that goes stale
-  between the check and the CAS is also refused, and nothing applies.
-
-Deviations, each deliberate:
-
-1. **The landing key carries the version** (`merge:{repo}#{pr}:{head}:v{version}`,
-   and `merge_call` / `mergeresult` / `verify_merge` keys name the landing version).
-   With the head alone, a landing GitHub refused could never be requested again at
-   that head, not even by a person past the escalation. A double door is still one
-   landing: the second reads `LANDING` and is `duplicate(landing_in_flight)`.
-2. **`not_merged` is a T16 outcome.** After an indeterminate answer, a
-   `verify_merge` read that shows the PR still open and unmerged at the head returns
-   the delivery to `APPROVED` (the approval stands; a door or the sweep lands it
-   again). "Head branch was modified" maps to it too: the new head has its own fact.
-   A merge GitHub *accepted* whose read lags is retried by `verify_merge`, never
-   turned into `not_merged`.
-3. **The override door is a person's verdict override from any review state**
-   (`APPROVED`, `AWAITING_REVIEW`, `CHANGES_REQUESTED`, `ESCALATED`), matching the
-   dashboard's "Merge anyway", which also overrides an in-flight review. It is
-   recorded in `bypass` with the state it overrode; red CI and deny paths stay
-   non-overridable, and an agent actor never gets it on its own. An override
-   naming only `freshness` / `size` (`override.kinds`) is not a verdict override:
-   it lifts `ESCALATED(landing_needs_human)` and nothing else
-   (`rejected(override_does_not_cover_state)` from a review state). The doors that
-   carry one are the landing page's "Merge anyway" (`POST /api/prs/[prNumber]/merge`),
-   `merge_pr` with `overrides` + `reason` from a person's OAuth session, and chat's
-   `merge_pr` (which merges through that same dashboard route, behind an approval
-   card it never skips). An agent run gets the door only under a grant a person
-   put on its task at creation, `context.landingOverride: { prNumbers, overrides }`
-   (`lib/landing-override-grant.ts`): the server stamps `grantedBy` with that person
-   and refuses the field from any API key or task token, a template-spawned task
-   never inherits one, and the run may override only the named PRs and kinds,
-   never the verdict. T15 records `kinds` and `grantedBy` in `bypass`.
-4. **The mission wake and release attribution are not separate T17 effects.** They
-   are subscribers of the `task.pr_merged` event `emit_pr_merged` emits, and they read
-   the task transition (`flipped` / `already_completed`) that same effect produced; two
-   effects racing it would see a different one. `wake_mission` is an effect of
-   T20/T21 (handled since Slice D, §13.8); `release_attribution` is declared and
-   emitted by no transition.
-5. **`landPr`'s own freshness step is unchanged.** A PR found behind *before* the
-   merge call is still refreshed by `landPr`'s marker-keyed treadmill (a rail); only a
-   merge call GitHub refuses as behind is T16's `refresh_branch`.
-6. **T16's `behind` and `conflict` are conflict-family repairs.** The landing family
-   registers no `refresh_branch` or `dispatch_conflict_fix` of its own: both are the
-   conflict family's handlers (`conflict-retry-effects.ts`, §13.4), so the refresh
-   runs `refreshBehindPr` pinned to the bound head and the agent attempt's task is
-   filed against its ledger row, exactly as from any other conflict door.
-7. **The doc-fix spec recheck stays in the webhook** for every merged worker PR: it
-   belongs to the spec-conformance module, which core may not import, and its sweep
-   is the backstop.
-8. **`version` is accepted, not yet shown.** The routes take it and the kernel
-   enforces it; the dashboard card, `get_pr` and the MCP `merge_pr` tool do not send
-   or display it yet (Slice E reads the delivery view).
-9. **The kernel's treadmill has cycles (S15 cycles).** `DEFAULT_MAX_BEHIND_REFRESHES`
-   bounds the behind refreshes in one *cycle*, not over the delivery's life. A spent
-   cycle escalates `ESCALATED(landing_needs_human)` with `evidence.treadmill` and the
-   cycle number (a90fc99b: with no `notify` effect unless it is the final cycle, because
-   the sweep restarts every other one; a person hears only when nothing will); once `LANDING_CYCLE_COOLDOWN_MS` has passed since that escalation,
-   `restartTreadmillCycles` (the `pr-reconcile` cron, beside the kernel floor) applies
-   `TreadmillCycleRestarted`, pinned to the escalation's version: the delivery returns
-   to `APPROVED` (its approval still covering the head) and a skipped
-   `treadmill_cycle` marker row in the conflict ledger opens the next cycle. Only the
-   treadmill cause qualifies (the escalation transition's `:treadmill` key at the
-   current version; the reducer also checks the cycle is spent), and after
-   `MAX_TREADMILL_CYCLES` the escalation stays with a person. Landing pages a spent
-   treadmill as `refresh_exhausted` (or `refresh_unsafe`, item 10), so the page offers
-   "Merge anyway" past freshness.
-10. **The disjoint-delta rule (S15, 88318f31; #4283).** On a base that moves faster than
-   one CI cycle the treadmill alone never converges: every refresh restarts CI and the
-   base moves again. The legacy door's answer (`TREADMILL_EXHAUSTED_MAX_BASE_COMMITS`)
-   keyed on a landing marker the kernel's asynchronous `refresh_branch` never wrote,
-   so kernel PRs only ever escalated. The rule now lives in the reducer
-   (`behindTolerance`, `lib/workflow/base-delta.ts` `judgeBaseDelta`): an approved head
-   (any coverage, including a platform `own_refresh` carry) may land behind its base
-   when the base delta (the commits and files the base gained since the head's
-   merge-base, compare `head...base`, plus the PR's own files) is listable, disjoint
-   from the PR's files and touches no risky path (`isRiskyLandingPath`: migrations,
-   `schema.ts`, lockfiles, `package.json`, `.github/workflows/`, repo-wide
-   `scripts/*.test.ts`). The gap bound is `treadmillMaxBaseCommits` (default 3) and only
-   for a head a platform refresh produced while the cycle's budget is unspent; once
-   it is spent, any covered head within `TREADMILL_EXHAUSTED_MAX_BASE_COMMITS` (20).
-   A base whose GitHub state is `behind` (branch protection requiring up-to-date
-   branches) is never tolerated. The base delta is a fact the seam reads
-   (`observeConflict` for T12, `landThroughKernel` for T15 with the door's `behind`
-   flag), never the reducer. Required CI, review coverage, deny paths, the migration
-   inspector and real conflicts are unchanged: the door's rails still run first, a
-   `dirty` PR still goes to conflict repair, and GitHub's own merge answer still
-   decides. With the rule, a disjoint PR lands at the first tolerable gap instead
-   of competing for a quiet window.
-11. **The landing lane (S15, opt-in).** Every behind refresh records the verdict it went
-   ahead on (`evidence.freshness`: `cause`, `behindBy`, `baseFileCount`, the named
-   `files`, or `cause: 'unread'` when no base delta was read; `freshnessEvidence`).
-   What the rule refuses (a risky or shared gap) used to be refreshed for every
-   waiting PR at once, and all but the first to land refreshed again. With
-   `gitConfig.landingLane` (`off` default | `shadow` | `enforce`), at most one behind
-   refresh is in flight per repo + base (`lib/workflow/landing-lane.ts`, table
-   `landing_lanes`): `refresh_branch` for a `behind` repair takes the lane by
-   compare-and-set, and while another delivery holds it, the effect *parks*
-   (`parkEffectSql`: pending again, due after a backstop, its claim handed back, so
-   a wait never backs off or goes dead). A lane holds only while its lease
-   (`LANE_HOLD_MS`) runs and its delivery is APPROVED, LANDING or REPAIRING(behind);
-   when `drainDelivery` sees the holder leave that window (merged, closed, CI red,
-   escalated, a foreign push) it frees the lane and makes the oldest parked refresh
-   due, in the same drain. `shadow` takes and frees the lane but never parks,
-   recording `lane:would_wait:#N` on the refresh's outcome. Conflict refreshes and
-   T26's trunk refresh do not take the lane. The lane is Postgres only and drains
-   nothing outside the outbox's own entry points.
-
-### 13.8 What Slice D shipped, and its deviations
-
-Shipped live (kill switch only), for kernel-owned deliveries; a legacy PR keeps the
-direct column writes exactly as they were:
-
-- **T20 is the only write of a supersession edge.** `recordPrSupersession`
-  (`lib/pr-supersession.ts`) keeps its validation and its live read of the target
-  (exists, merged, a different PR, a repo the work could have moved to) and, for a
-  kernel-owned PR, hands the decision to `recordSupersession` (`seam.ts`): T20 from
-  `CLOSED_UNMERGED` only, never overwriting an edge. Its callers are all four doors:
-  `POST /api/github/pr/supersede` (MCP `record_pr_supersession`), the mission card's
-  Confirm, the automatic detector and the hourly sweep. The answer maps to the
-  route's status: `not_closed_unmerged`, `edge_exists` and `target_not_merged` are
-  409, `same_pr` and `reason_required` 400. The direct `workers` update runs only for
-  a legacy PR.
-- **T21 is the only write of an abandonment** for a kernel-owned PR
-  (`recordPrAbandonment` → `abandonDelivery`), with the person as `human:<userId>`.
-- **The close reconciler leaves kernel PRs alone** (`review-subscribers.ts`,
-  final-audit fix 708a55c0). Like its detect sibling, `supersession-reconcile-on-close`
-  asks `kernelDeliveryForPr` first. For a kernel-owned PR it does not run
-  `reconcileSubjectEvent`: T17 and T18 carry `cancel_open_attempts`, which ends each
-  attempt in the ledger. The reconciler's `casCancel` would have cancelled the same
-  tasks with no AttemptEnded, so a reopen (T19) could find a ledger row still
-  `queued`. A failed ownership read falls back to the reconciler. A task that is only
-  anchored to the PR is left to the hourly `subject_check` sweep.
-- **A lost close is caught up first.** Both resolutions read GitHub and record
-  `PrClosedUnmerged` before deciding when the delivery has not heard of the close
-  (R2), so an edge is never refused for a webhook the platform missed, and the
-  kernel, not a stale `prLifecycleStatus`, says whether the PR is closed.
-- **`project_supersession` and `wake_mission` are live** (`lib/workflow/supersession-effects.ts`):
-  the projection writes `supersededBy*` or `abandoned*` on every row of the PR from
-  the delivery (never over an edge already on a row); the wake re-plans the owner
-  task's mission, which may now be completable (`MissionWakeReason` `pr_resolved`).
-- **`base_deleted` is read, not guessed.** `pr_closed` asks GitHub whether the PR's
-  base branch still exists (`branchExists`); a 404 is `CLOSED_UNMERGED(base_deleted)`,
-  anything else stays `unknown` (S18).
-- **`scan_supersession` runs the detector** for a kernel-owned PR. The
-  `pull_request.closed` subscriber skips a kernel-owned PR, so the scan is owed
-  durably by T18 rather than run in the request; an edge it proves goes back in as
-  T20 with actor `system:auto-supersession`.
-- **Mission completion reads the delivery.** `prShipState` takes the delivery's
-  state when the kernel owns the PR (`MERGED`, `SUPERSEDED`, `ABANDONED`,
-  `CLOSED_UNMERGED` → closed with no edge, every other state → open; `FAILED` and no
-  delivery → the columns). `canCompleteMission` and the `all_prs_merged` criterion
-  overlay it on the row they judge (`withDeliveryShip`, loaded by
-  `deliveryShipsForPrs`, `lib/workflow/delivery-ship.ts`), so neither waits on a
-  projection and the gate's own rules are unchanged: the `mission-task-lifecycle`
-  acceptance tests pass unmodified (S16).
-- **§17.1 (b) holds at the supersede route.** A task token may supersede the PR its
-  own run opened **or** a PR its own task's records link (`taskScopeTaskLinksPr`, shared with
-  `POST /api/github/pr/review`), never one the owner's task links; its T20 actor is
-  `agent:<its task>` (S21).
-- **Found and fixed: Slice C's handlers were never composed.** `modules.ts`
-  imported `withLandingEffects` and did not apply it, so in production `merge_call`,
-  `verify_merge`, `refresh_branch`, `dispatch_conflict_fix`, `emit_pr_merged` and
-  `finalize_mission_pr` had no handler and would have retried until dead (the matrix
-  composes its own handler set, so it never saw this). The root now composes
-  landing and supersession, and `modules.test.ts` fails when a recorded effect kind
-  has no production handler.
-
-Deviations, each deliberate:
-
-1. **The composition is built on first use** (`workflowEffectHandlers()`, which
-   replaces the `WORKFLOW_EFFECT_HANDLERS` constant). The handler modules reach
-   back into `modules.ts` through `core-emit`, so composing them at load works or
-   throws depending on which module a process imports first.
-2. **One projection effect for both resolutions.** T21 emits `project_supersession`
-   too; the handler reads which edge to write from the delivery's terminal state
-   (§12 treats `supersededBy*` and `abandoned*` as one edge).
-3. **The hourly sweep still runs the detector** for every closed, unresolved row,
-   kernel-owned or not, instead of only re-enqueueing `scan_supersession`. Its write
-   is T20 either way, so it is a second door, not a second authority.
-4. **Abandon needs a person** (task c2bdd4ba; this slice first let an admin API key
-   abandon as `human:<key name>`). The mission card route passes `human:<userId>`
-   only for a dashboard session or the person's own OAuth session, and refuses any
-   API key (403) and any per-task token (401) before the kernel is asked;
-   `recordPrAbandonment` itself refuses a non-`human:` actor on a legacy PR too.
-   Runner agents never present an OAuth session: their buildd MCP connection is the
-   worker endpoint on a per-task token or the runner's buildd key, and a runner
-   started on a session bearer hands the agent no buildd credential rather than
-   that bearer (`apps/runner/src/agent-task-token.ts`).
-5. **Lineage-derived supersession stays a read-time proof.** A closed PR followed
-   by a merged PR from its own attempt lineage reads as shipped in the gate
-   (`deriveLineageSupersession`) without a T20, as before; the delivery stays
-   `CLOSED_UNMERGED` until someone or the scan records the edge.
-6. **The reaper needed no change in this slice.** Slice A part 2 already stopped
-   `resolveStaleTask` and `tasks/cleanup` promoting a kernel attempt to `completed`
-   from local commits; they send `AttemptEnded(lost)` instead, and S9 stays green.
-   The waiting-input sweep (`cleanupStuckWaitingInput`) now sends the worker's own
-   `lastCommitSha` and `commitCount` (final-audit fix 708a55c0). Before, it sent
-   `null` and `0`, which the reducer reads as nothing local to lose, so an owner
-   attempt with unpushed commits handed the old remote head on to review instead of
-   going to `AWAITING_PUSH`.
-7. **The owner-attempt completion gates G1–G3 (§17.4) are not closed here.** They
-   change what plain builders see and are left to their own slice; the kernel still
-   only records the mismatch.
-
-### 13.9 What Slice E shipped, and its deviations
-
-Shipped live (kill switch only). A kernel-owned delivery is read from
-`getDeliveryView` on every surface below; a legacy-owned or PR-less task keeps
-the fact-cache projection until that population drains (§14). There is one
-source per row: a surface never combines the delivery with the worker columns.
-
-- **`DeliveryView` carries the PR's own state.** `prState`
-  (`deliveryPrState`, `lib/workflow/projections.ts`) comes from the delivery
-  row: terminal state first, then a CI or mergeable fact only when it was
-  observed on the current head. It also carries `lastTransition`, the newest
-  `workflow_transitions` row.
-- **One serialisable display, one load per surface.** `DeliveryDisplay`
-  (`lib/workflow/delivery-display.ts`, client-safe) is the slice list surfaces
-  carry. `getOwnerDeliveryDisplays` loads it for the **owner** task of each
-  kernel-owned delivery only, because an attempt row is history of the
-  delivery, not the delivery itself (S35). The mission page makes one
-  `getDeliveryViewsForTasks` call. Its failure reading (`replacedFailedTaskIds`),
-  board, strip and structure view all read that call.
-- **One PR accessor.** `resolvePrDisplayState` (`lib/pr-presentation.ts`) returns
-  the delivery's `prState` when there is one, else `derivePrDisplayState` over
-  the columns. `PR_PILL`, keyed by display state, is the only pill vocabulary.
-  The task page's stat tile, PR card and shipped header, the chat PR object,
-  explain's history and the mission feed's PR state all call it.
-- **Task card stage.** `deriveStageReading` takes `delivery` and returns
-  `deliveryReading`'s label with a chip style from its tone: `FIXING` for live
-  work under a non-human owner, `STALLED` for a stalled or missing
-  remediation and a red base. The tasks list histogram (`deriveGridTaskStage`)
-  buckets from the same tone. A live worker and a worker's own question still
-  lead (§13.2 deviation 3). A failed owner attempt of a live delivery reads
-  the delivery, not FAILED.
-- **Mission strip, board and feed.** `deriveFeedTaskState` and
-  `deriveBoardStatus` read `task.delivery` (`feedStateForDelivery`,
-  `boardStatusForDelivery`, both over `deliveryReading`). A person's move
-  (ESCALATED, or an approved PR whose merge policy leaves the merge to a person) is yours. Every other live
-  state is moving, so a fix in flight is never "needs you" and never FAILED.
-  On the Board every non-human live state reads `running` and the tile says
-  the reading's label (deviation 5). The strip drawer gives the kernel's headline and evidence
-  (`BoardTask.kernelReason`) instead of generic copy. The chat's mission
-  object loads the same displays for its board and AT WORK rows.
-- **Chat.** The dock badge (`dockToneForDelivery`), the task tile
-  (`taskStateForDelivery`), both over `deliveryReading`, and the PR object
-  (`prStateOf`) read the delivery.
-  The dock's insight and closing line carry the kernel's headline and evidence
-  instead of "Needs input."
-- **Explain.** For the owner of a kernel-owned delivery, the state chain's
-  unmerged-PR input is `kernelUnmergedPr`: merged, superseded, abandoned and
-  failed deliveries are settled, and `CLOSED_UNMERGED` is closed-unsuperseded.
-  The worker's `mergedAt` and `prLifecycleStatus` are not read. The CI-red chain
-  takes the delivery's `prState`. Failed attempts the kernel carried past drop
-  out of the task's failure input. `because[]` gains a link from the newest `workflow_transitions` row
-  (`deliveryTransitionLink`, cited as `DeliveryView.lastTransition`) before the conclusion, and history nodes
-  take their PR state from the delivery. The chain loads deliveries once, and
-  the `delivery` block reuses that load.
-
-**Retired in this PR:**
-- `derivePrLifecycle` and `isPrMerged`. They were the second map, and it
-  ignored `mergedAt`.
-- TaskCard's private `PR_LIFECYCLE`, which was dead.
-- `deriveStage`'s own PR state machine (now `derivePrDisplayState` for legacy
-  rows, `stageForDelivery` for kernel ones).
-- `deriveGridTaskStage`'s lifecycle read.
-- The chat dock's `mergedAt || status === 'completed'` "Landed" rule.
-- The chat task tile's column reads.
-- The chat PR object's `lifecycleOf` reverse map, which also mislabelled CI
-  running as Open.
-- Explain's `unmergedPr` column predicate, for kernel-owned PRs.
-
-Deviations, each deliberate:
-
-1. **Legacy rows got one behaviour fix.** "Landed" in the chat dock is no
-   longer `status === 'completed'` for a legacy task whose PR is still open
-   (§17.5 named it a bug). Every other legacy reading is unchanged; it now runs
-   through `derivePrDisplayState` instead of its own column checks.
-2. **`get_pr`, `list_prs` and the PR attention ranking are not in this slice.**
-   S36 (#3881) already moved their human-ownership reading to the view. Their
-   `canonicalState` and terminal sets are API vocabulary that Slice F's column
-   drop has to revisit anyway.
-3. **The mission card's failure count is task 058285e3's.** The card's strip
-   reads the board cells, which accept `delivery`. The Home and missions-list
-   loaders do not pass it yet, and the raw failed-task count
-   (`mission-card-view.ts`) is left to that task to avoid a conflicting edit.
-4. **The mission task drawer (`TaskPanel`) and the unmounted
-   `CondensedTimeline` component keep their column reads.** The timeline's
-   rows pass `delivery` to `TaskCard`, so its chip is correct. The drawer's PR
-   card still takes `prLifecycleStatus` from its own query.
-5. **Resolved after the slice: one reading, not one mapping per surface.** A
-   visual review of the `delivery-states` fixture found the surfaces still
-   disagreeing: a stalled conflict fix and a CI fix counted as "failed" on the
-   strip, an escalation read "in review" on the board and "needs input" in the
-   list, an approved PR read "in review", and the mission's Needs-you count was
-   zero while Home listed two. `deliveryReading`
-   (`lib/workflow/delivery-display.ts`) is now the one label, canonical tone,
-   needs-you and failed answer per delivery. The task chip and histogram, the
-   board tile, strip drawer and band, the feed, the chat tile and the dock take
-   it as is. Each maps the tone through one total palette table and never maps
-   a state. An approved PR reads "Ready to merge" and needs you only when a
-   person merges it (tier `human`, `agent-review` approve-only, or a landing
-   handoff open at the current head, or a mission that requires review on its
-   mission PR; the loader asks the approved-merge slot once per row, which the
-   composition root fills with the reviews module's `approvedNeedsPerson`, and
-   `ownerOfNextMove` turns a yes into owner `human`). Under approve-and-merge or
-   auto-threshold (a task PR into its mission integration branch included) the
-   landing path merges it and it reads live, "Approved · merging"; Home's chip
-   for it is `AUTO_MERGE` ("merging"), never a MERGE card. A stalled remediation reads "Conflict fix stalled" and offers
-   Home's "Run fix" in the strip drawer and the dock. Only a FAILED delivery is
-   failed. The Board still keeps `waiting` (and its Ask/Reply) for an agent's
-   question. A delivery that needs you reads `review` and is counted in Needs
-   you through `BoardTask.delivery`. The S17 table test in
-   `delivery-display.test.ts` holds every surface to it.
-6. **Visual QA ran locally.** The dispatched capture fails at Run migrations
-   for any mission-branch ref, because a branch migration sits below prod's
-   journal mark and the planner refuses the backfill. That has nothing to do
-   with this PR. The fixture was shot locally with `scripts/qa/shoot.sh`
-   against Docker Postgres through the neon-sql shim.
-7. **The kernel has no "CI running" fact.** An open kernel PR without a verdict
-   on its head reads `awaiting_ci` ("Open"), where a legacy row may read
-   "CI running".
-
-### 13.10 What Slice F shipped, and what it deferred
-
-Slice F is the reader-removal half of the drop. It drops no column and no
-index, because every one the plan names is still read or written by code that
-is deployed, or will stay deployed until legacy drains (below).
-
-- **`get_pr` reads the delivery.** For the owner or an attempt of a
-  kernel-owned delivery, the merge record and the supersession edge come from
-  the delivery (`prRecord`, `lib/pr-presentation.ts`, over
-  `DeliveryView.mergedAt` and `DeliveryView.supersededBy`). `canonicalPrState`
-  lets GitHub decide open versus closed, and the record fills in a merge that
-  GitHub reported as a plain close. The worker's `mergedAt`,
-  `prLifecycleStatus` and `supersededBy*` are not read for that PR.
-- **`list_prs` and its ranking read the delivery.** `kernelPrStatuses` maps
-  each task of a kernel-owned delivery to its `prState`, in the list's own
-  lifecycle words (`prListStatus`, the inverse of `derivePrDisplayState`).
-  `shapePrRows` lets that decide merged, closed and the state for the PR,
-  over every worker row it has. `rankPrs` and `needsAttention` rank that state.
-  `conflict` and `ci_failed` now read every open PR and filter after the
-  collapse, so a stale column can neither hide a red kernel PR nor list a
-  green one.
-- **The mission task drawer reads the delivery.** `GET /api/tasks/[id]/summary`
-  returns `worker.prState` for a kernel-owned PR, and `TaskPanel`'s PR card
-  passes it to `PrCard`, where it wins over `prLifecycleStatus`.
-- **The write-site guard blocks, with an empty allowlist.**
-  `packages/core/__tests__/workflow-write-sites.test.ts` scans every deployed
-  module in `apps`, `packages` and `scripts`. Tests are excluded by the same
-  rule as the PR-fact guard. It flags access to a kernel table: raw SQL that
-  reads or writes one, or a Drizzle builder or `db.query` over a table object.
-  A declaration is not access, so the schema passes without an exemption, and
-  the test proves it does declare the tables. `ALLOWED` is asserted empty.
-- **The matrix has no todo left.** The one remaining `test.todo` was the live
-  S1 integration case (`apps/web/tests/integration/workflow-s1.test.ts`). It is
-  retired, not passed. It needs a real reviewer verdict, and a fix worker that
-  commits but does not push, against a deployment running the kernel. The
-  integration harness can drive neither deterministically. S1 runs end to end
-  on real Postgres in `workflow-seam.test.ts` and the matrix (both arms), and
-  the route's 400 `delivery_not_advanced` is in the workers route test.
-
-**Drop after legacy drains.** Each item below still has a deployed reader or
-writer, so dropping it in this release would break a live path:
-
-| Column, index or key | Still used by | Why it cannot go yet |
-|---|---|---|
-| `tasks.reviewer_retry_pr_number`, `reviewer_retry_head_sha`, index `tasks_reviewer_retry_event_unique` | the legacy request-changes fix insert (workers route), `supersession.ts` / `supersession-store.ts`, and the kernel's own `dispatch_fix` (`review-effects.ts` stamps the head on the first fix at a head) | The kill switch hands a released delivery back to legacy, and legacy dedupes its fix insert on this index. The kernel stamps the first fix so that a legacy insert after a release still collides. |
-| `tasks.ci_retry_pr_number`, `ci_retry_head_sha`, index `tasks_ci_retry_event_unique` (and the pending-retry index beside it) | `ci-failure-retry.ts` (legacy path and the cap count), `retry-ci` route, `apply-recommendation` route, `pr-list.ts` CI-fix counts, the kernel's `ci-retry-effects.ts` | The same kill-switch dedupe, and the CI-fix attempt count `list_prs` reports. |
-| `tasks.conflict_retry_pr_number`, `conflict_retry_head_sha`, index `tasks_conflict_retry_event_unique` | `conflict-retry.ts`, `dead-zone-sweep.ts`, `pr-attention.ts`, the delivery view's own remediation lookup (`delivery-view.ts`), the kernel's `conflict-retry-effects.ts` | S37's remediation join reads `conflict_retry_pr_number`. Legacy conflict retries dedupe on the index. |
-| `tasks.context.iteration` / `maxIterations` (and `conflictIteration`) | the runner's prompt builder (`apps/runner/src/prompt-builder.ts`, deployed by release), the activity comment's attempt line, `pr-attention.ts`, legacy CI and review paths | No decision reads them for a kernel-owned delivery (§13.1). The runner reads them to word its prompt, and fix tasks created by kernel effects keep carrying them for it (§14, kill switch semantics). |
-
-The safe order is the schema-change skill's. First, a release removes the
-legacy writers and readers above, together with the kill switch, because
-legacy is the rollback path. That release also moves the runner's prompt off
-`context.iteration`, and moves the remediation join to the attempt ledger.
-That is possible only after the legacy-owned population has drained: every
-delivery with `authority = 'legacy'`, and every PR without a delivery row,
-merged or closed. The drop then ships in the next release, when nothing
-deployed reads the columns, with the production row counts in its PR. Both
-steps are owned by follow-up task `9d7ce2d4` (§14 row F).
-
-Deviations, each deliberate:
-
-1. **No column or index is dropped.** This is the safety rule above, not an
-   omission. `bun db:generate` reports no change.
-2. **`list_prs`' merged window still comes from the worker stamp.** The
-   candidate query keeps `workers.merged_at` for `state: merged`. For a
-   kernel-owned PR, `stamp_pr_rows` (T17) writes that stamp, and the instant
-   shown is the delivery's. A delivery whose stamp effect has not run yet
-   appears once it runs.
-3. **`pr-attention.ts` keeps its column pre-filter.** Its open-PR query and
-   dead-zone count read the fact cache. For a kernel-owned PR, the inbox
-   decision is already the kernel's (S36).
-4. **`CondensedTimeline` keeps its column reads.** It is not mounted anywhere,
-   and its rows already pass `delivery` to `TaskCard`. It goes away with the
-   legacy readers.
+What each slice (A to F) shipped and its deviations now lives in the knowledge base as `knowledge-base: buildd/reports/workflow-state-kernel-history.md`; a reference to §13.1 to §13.10 in this file or in code points there.
 
 ### 13.11 PR recovery: exact-target repair, evidence-gated completion, landing truth
 
@@ -2172,7 +1220,7 @@ deferred behind its own lineage's PR.
 
 **Deviations and remaining gaps.**
 
-1. The kernel CI fix (`ci-retry-effects.ts`) does not read the live PR, so it
+1. The kernel CI fix (`ciFixWork`, `ci-retry-effects.ts`) does not read the live PR, so it
    carries no `repairTarget`. It resumes the worker's branch as before. Legacy CI
    retries and every conflict and migration attempt carry the stamp.
 2. A supersession stated only in prose (a PR body saying "Supersedes #N") is not
@@ -2192,6 +1240,8 @@ cycle. Each conflict therefore spends budget until it escalates.
 ---
 
 ### 13.12 Review, refresh and landing while an owner keeps running (edc02148)
+
+> Amended 2026-10-13 by the native spec "Workflow kernel" (fa62b865; repo copy `workflow-kernel-library.md`) §3: these rules run on the execution control plane, not `apps/web`.
 
 PR #4413 sat open for half an hour with green CI and, once asked, an approval. Its owner was a
 coordination task that stayed assigned after `create_pr` to watch other PRs. So the delivery
@@ -2300,7 +1350,230 @@ exit" and "review, refresh and landing while a coordination owner keeps running"
 `pr-landing.test.ts` "a REPAIRING delivery: the door re-drives its due repair";
 `facts.test.ts` "carryForwardReading"; `coordination-owner-review.test.ts`.
 
+---
+
+### 13.13 Integration reviews, durable findings, repair builders and landing authority (#4686)
+
+**Status.** Every rule below is the target. Where the code differs today, the rule
+says so under "Today" or "As built". Rule 1 (composition) is checked by AC-20 to AC-23
+(§19). The findings, repair, landing, GitHub-status, projection and external-merge
+rules (2 to 10) are owned by the native spec "Workflow kernel" (fa62b865,
+`workflow-kernel-library.md` §4, §5 and §7), which carries their criteria and what has
+shipped (S3b, S5); §19 maps the old ids to it.
+
+**The incident.** A mission integration PR into trunk was owned by the mission's
+`bookkeeping` task (`openMissionIntegrationPr`, `mission-pr.ts`). No delivery was ever
+opened for it, so the legacy authority handled it end to end. Evidence: the landing row
+was written by `guardReviewVerdict`, a kernel PR skips that gate, and a zero-diff fix
+completed even though `fixCompletionGate` would refuse one. The sequence:
+
+1. The landing door found the PR green with no review on file and requested one
+   (`pr_landing` deferred).
+2. Reviewer `c487c022` asked for changes: two copy findings, each tied to a file and
+   line, at the PR's head. GitHub refuses `REQUEST_CHANGES` from a PR's own author, and
+   the buildd App had opened this PR, so `postPrReview` posted the verdict as a
+   `COMMENTED` review (own-PR fallback, `lib/github.ts`).
+3. The legacy fix `8eedeae9` (`workers/[id]/route.ts`, reviewer-outcome handler) copied
+   the owner's description verbatim, including "It performs no work of its own". It got
+   no builder role and no `repairTarget`. It made zero edits and reported no work, and
+   nothing refused that: no completion gate covers a legacy review fix.
+4. The next push was a person's merge of trunk into the mission branch. It was not a
+   fix. Re-review `5d910273` found both findings still unaddressed and again posted as
+   `COMMENTED`.
+5. The landing door refused the PR on the outstanding verdict (`pr_landing`
+   `stranded`). **The buildd gate held.**
+6. A person's own GitHub account then merged the PR. The committer was GitHub's
+   `web-flow` and the merge carried no app attribution. Every buildd door merges with
+   the installation token, which GitHub attributes to the App's bot, so this was a
+   **manual merge outside buildd** (GitHub UI or a personal-token CLI). After the merge,
+   `measureMergeAgainstReview` wrote one `review_verdict` `bypassed` row. Nothing else
+   recorded the bypass: no finding record, no task, no note.
+7. `get_pr` printed "Reviews: none". Its summary keeps only GitHub `APPROVED` /
+   `CHANGES_REQUESTED` reviews, so it drops `COMMENTED` and never reads buildd's own
+   verdict.
+
+Both findings are still on trunk.
+
+**COMMENTED does not explain it on its own.** Trunk has no required review and no
+required check that carries buildd's verdict, and admins are not bound. So a genuine
+`CHANGES_REQUESTED` review would not have stopped this merge either. The verdict lived
+only in buildd's rows, and nothing projected it onto the one surface GitHub enforces. The
+gap is "landing authority stops at buildd's own doors", not "the review was the wrong
+type".
+
+#### Rules
+
+1. **Review composition reuses evidence and never invents approval.** An integration,
+   release or refresh PR reuses each constituent's head-bound review (§5.9). Only the
+   novel or uncovered delta is reviewed. An `unverifiable` composition, or one whose
+   constituents cannot all be proved, means a full review. It is never approval. A
+   constituent counts only when its *latest* decided round at the cited head is
+   `approve` and its delivery is not `CHANGES_REQUESTED`/`ESCALATED` at that head. An
+   approve round that a later request-changes round superseded at the same head does
+   not count.
+   *Today:* `coveringRound` (`review-composition.ts`) and `verifyCompositionAttestation`
+   (`reducer.ts`) accept any decided approve round at the head and ignore later rounds.
+   A mission integration PR with no delivery gets no composition at all and is
+   reviewed whole.
+2. **Findings are durable.** A request-changes verdict creates findings, one per
+   distinct issue, each pinned to the round, head, path and line it was raised on.
+   A finding stays open across later pushes, CI results, base refreshes,
+   composition, re-review rounds that do not re-read its path, and replacement of the
+   owner task or worker. It closes only when one of these happens:
+   - a later round at a head that contains the change explicitly resolves it;
+   - a person waives it (recorded with who and why);
+   - the PR closes unmerged (the finding moves to the superseding PR, if any).
+
+   An open finding blocks landing at every door (rule 6).
+   Amended by `workflow-kernel-library.md` §5 (slice S5): a finding's id is stable
+   across rounds (derived from the round that raised it and its position, kept when a
+   later round restates it); `addressed` (a push touched its path) is an interim state
+   that still blocks; `deferred` (to a named task, by a reviewer or a person, with who
+   and why) is a fourth closure.
+   *As built (S5):* `workflow_findings`, written by the kernel's transition statement;
+   the gate, T15, the policy-merge rule and `buildd/landing` read open required
+   findings. An approval that leaves one unverified queues a verification round at the
+   same head instead of approving it (library §5, "As built").
+3. **A repair is an executable builder pinned to the exact target.** A review fix,
+   whether kernel `dispatch_fix` or legacy, carries all of the following:
+   - its own description: the open findings, verbatim, as its task. The owner's
+     description appears only as background, and a `bookkeeping` or `coordination`
+     owner's "performs no work" text is never copied;
+   - a builder role;
+   - `repairTarget: { prNumber, headRef, headSha, baseRef }` (§13.11 rule 1), so it
+     resumes the PR head even when that head is a mission branch far ahead of trunk.
+
+   *As built (S5):* the kernel's review fix (`fixWork`) and CI fix (`ciFixWork`) are builders
+   (role `builder` when the owner has none or is coordination-only), stamp `repairTarget`
+   from the PR head GitHub reports, and never copy a coordination or bookkeeping owner's
+   description (`workflow-kernel-library.md` §5, "As built"). *Today* (legacy, a PR with no
+   delivery): the `workers/[id]/route.ts` reviewer-outcome fix still copies the owner's
+   description and inherits its role.
+4. **Completion evidence has three separate states.** A task ending is not a repair
+   published, and a repair published is not a finding resolved. A review fix completes
+   only on one of these:
+   - a push to the PR head that changes at least one path named by an open finding
+     (or a path the reviewer's feedback names);
+   - a verified no-op: a live read showing the finding's text or condition is already
+     absent at the current head, recorded as evidence.
+
+   A zero diff, a diff that touches none of the findings' paths, or a head that moved
+   only because of a refresh or someone else's push keeps the blocker. The task fails
+   and spends the attempt budget. Reporting success does not stop that.
+   *As built (S5):* the kernel's `fixCompletionGate` refuses an unmoved head without a
+   verified no-op claim, and a moved head whose diff changes nothing near any open
+   finding nor any path the feedback names (the library's §5 "As built" says what "near"
+   is and why it is wide). A no-op claim ends the attempt "no change" and owes a
+   verification round; a fix that ends with the head unmoved is "no change" too.
+   *Today:* legacy review fixes (a PR with no delivery) have no completion gate, and a
+   refresh push credited to a running fix by §6.9 is not told apart from the fix's own.
+5. **A refresh push is not a fix.** A push whose only new content is a merge of the
+   base, or the platform's own `refresh_branch`, starts a delta round scoped to what
+   the merge decided (§5.9 refresh). It never counts as the fix attempt's output and
+   never closes a finding.
+6. **One landing authority, at every merge door, checked when the merge runs.** Every
+   path that can merge a PR asks one question before the `PUT .../merge` call: is the
+   PR covered at this exact head, with no open finding and no unresolved
+   request-changes or escalation? The paths are each door, the sweep, the kernel's
+   `merge_call` effect, a policy-rule merge and the release executors, and the door
+   inventory below lists them. The `merge_call` effect asks again when it runs, not
+   only at T15. A verdict or finding recorded while the delivery is `APPROVED` or
+   `LANDING` moves it out of landing (`CHANGES_REQUESTED`). A rule can never turn a
+   request-changes into approval. `PolicyMergeApproved` may lift a policy escalation.
+   It may not lift `review_exhausted` while a finding is open. Only a person's
+   recorded override (dashboard, §7 `bypass`) passes an open finding.
+   *Today:* see the door inventory. The release executors and compose release do not
+   consult the gate. `merge_pr` `force` with an admin token skips it for a non-kernel
+   PR. `tryAutoMergeWorkerPr` skips it when it cannot resolve a workspace. The kernel
+   does not recheck a review at `merge_call`, and `ReviewVerdictRecorded` outside
+   `AWAITING_REVIEW` is `stale`. `PolicyMergeApproved` lifts `review_exhausted`.
+7. **buildd's verdict reaches GitHub as something GitHub enforces.** While a finding is
+   open, buildd publishes a failing commit status (or check run) at the PR head that
+   names the open findings. Workspaces can make that status required on trunk. A
+   `COMMENTED` review is **never** approval and never clears anything (it already is
+   not; `readGithubApproval` skips it). The own-PR fallback stays, because GitHub
+   refuses the alternative, but it can no longer be the only signal.
+   *Today:* no status or check carries the verdict. Trunk protection can only see CI.
+8. **Projections read canonical delivery state.** `get_pr`, `get_pr_review`, explain,
+   the activity comment and the task page report the reviews, open findings and
+   landing blockers that the delivery (or, for a legacy PR, the reviewer rows plus
+   findings) records. They never report only GitHub's review states. "Reviews: none"
+   with an open request-changes is a defect.
+   *Today:* `get_pr`'s summary reads GitHub reviews only (`api/github/pr/route.ts`) and
+   drops `COMMENTED`.
+9. **Recovery, idempotency and retry exhaustion.** Each finding has one fix lineage.
+   Re-dispatch for the same `(finding set, head)` is single-flight. A fix attempt that
+   fails rule 4 counts against the round budget (`max_rounds`). At exhaustion the
+   delivery is `ESCALATED(review_exhausted)` with the open findings attached, and a
+   person is notified. Nothing merges it unattended (rule 6). A replay of any effect
+   at the same head and version is a no-op.
+   *As built (S5):* `workflow-kernel-library.md` §5, "the review loop never stalls":
+   an outside reviewer's verdict at the current head is adopted, never dropped; a round
+   whose reviewer could not be filed fails (T27) rather than staying open; a green CI
+   run at the head a CI repair was bound to ends that repair without spending it.
+10. **An external merge records the truth and approves nothing.** When GitHub reports
+    a merge buildd did not make while findings were open, the delivery becomes
+    `MERGED` (T17 accepts any non-terminal state). The record says `merged over open
+    findings`, with the merge actor and path as GitHub reported them (app bot versus a
+    person's account, committer), and every open finding stays open and attached to
+    the merged PR. A follow-up fix task is filed against trunk for those findings, and
+    a person is notified. The merge is never counted as an approval, a resolution or
+    a waiver.
+    *Today:* a `review_verdict` `bypassed` ledger row only (`review-subscribers.ts`).
+
+#### Merge door inventory
+
+Read from the code at this section's commit. Line numbers drift, so re-grep the
+symbol. Every REST merge goes through `mergePullRequest` (`lib/github.ts`, pinned with
+`sha`) except where noted. No GraphQL merge, no `enablePullRequestAutoMerge` and no
+workflow `gh pr merge` exists.
+
+| # | Door | Merge call | Reached from | Review gate today |
+|---|---|---|---|---|
+| D1 | Kernel `merge_call` effect | `workflow/pr-landing-effects.ts` `mergeCall` | T15 `LandingRequested` (`reducer.ts`), drained by `landThroughKernel` (`workflow/landing.ts`) and the cron drain | kernel state at T15 only. At run time it checks `LANDING` + head, and no review recheck |
+| D2 | `landPr` | `lib/pr-landing.ts` (legacy `mergePullRequest`, else `landThroughKernel`) | `check_suite` webhook, `PUT /api/github/pr`, dashboard route, reviewer approve (`workers/[id]`), surface wake, landing sweep (`pr-landing-sweep-deps.ts`, cron `pr-reconcile`) | `guardReviewVerdict` (legacy PR), kernel `APPROVED` (kernel PR) |
+| D3 | Landing sweep, kernel arm | via D2 → D1 | `listApprovedKernelPrs` (`workflow/landing.ts`) | kernel `APPROVED`, including composition and `policy_rule` approvals |
+| D4 | `tryAutoMergeWorkerPr` | `lib/auto-merge.ts` | `check_suite` webhook (shadow/off), `maybeAutoMergeNoCiPr`, reviewer approve, surface wake | `guardReviewVerdict`, **skipped when no workspace id resolves** |
+| D5 | `PUT /api/github/pr` (MCP `merge_pr`) | `app/api/github/pr/route.ts` | MCP `merge_pr` (`packages/core/mcp-tools.ts`) | `landPr` in enforce. Otherwise `guardReviewVerdict`, **skipped entirely by admin `force`** |
+| D6 | `POST /api/prs/[prNumber]/merge` (dashboard, chat `merge_pr`, compose include) | `app/api/prs/[prNumber]/merge/route.ts` | dashboard, chat registry, `release/compose-runtime.ts` | `landPr` in enforce, otherwise `guardReviewVerdict`. A person may override |
+| D7 | Release PR on green CI | `app/api/github/webhook/route.ts` `handleReleasePrCiSuccess` | `check_suite` success | `guardReviewVerdict` (legacy rows). **No kernel check** |
+| D8 | `executeRelease`, release-PR path | `lib/release-executor.ts` (direct `githubApi` PUT, **no `sha` pin**) | worker completion (`release-completion-policy.ts`), mission release | **none** |
+| D9 | `executeRelease`, `mergeIntoProd` | `lib/release-executor.ts` `mergeIntoProd` (squash, **no `sha` pin**) | same, `every_merge` strategy | **none** |
+| D10 | Compose release | `release/compose-actions.ts` → `release/compose-runtime.ts` `mergePr` | `api/releases/compose` | GitHub reviews at the candidate SHA only (`packages/core/release-compose.ts`). No buildd verdict |
+| D11 | Policy-rule merge | `workflow/seam.ts` `policyMergeThroughKernel` → `PolicyMergeApproved` → D3/D1 | escalation gate `policy_merge` (`packages/core/escalation-gate.ts`, `merge-policy-rule-executor.ts`) | creates the approval. Lifts `review_exhausted`. Mission ship PRs are excluded |
+| D12 | Manual merge on GitHub | — | a person's account, UI or CLI | **none: nothing buildd publishes is required** (rule 7). This is the #4686 door |
+| D13 | Agent self-merge | — | local runner Bash (only `gh pr merge` denied, `apps/runner/src/pr-mutation-enforcement.ts`), cloud runner egress (REST and GraphQL merge blocked, `apps/cloud-runner/src/outbound.ts`) | deny lists, not a gate |
+| D14 | Living Spec generated repo copy | `lib/specs/repo-copy.ts` `landSpecRepoCopy` (pinned with `sha`) | `check_suite` success on a spec's generated PR | only the generator's own commit at the approved revision (living-specs R-35); not a kernel delivery |
+
+**S3b (workflow-kernel-library.md §4):** D1 now asks the gate when it runs (fresh read,
+review half, rails port; AC-14); D4 refuses with no workspace; D5 `force` keeps the
+review verdict; D7 lands a kernel PR through the kernel; D8–D10 take the review gate and
+merge only the verified head (`release/pinned-merge.ts`, AC-16); D11's policy-rule
+approval passes an escalation, never an open request for changes, at merge time; D12 is
+recorded as an external merge with a trunk fix filed once (AC-15) and is what
+`buildd/landing` exists to stop once trunk requires it; D13 is unchanged (deny lists).
+The inventory is held to the code by `apps/web/src/lib/workflow/merge-door-inventory.test.ts`.
+
+Branch-to-branch merges that do not go through a PR (`release-executor.ts` `POST
+/merges`, `mission-branch-refresh.ts`, `scripts/sync-dev.sh`, `release-refresh.yml`)
+are not landing doors. They move a base, and §5.9 refresh composition reviews what that
+merge decided.
+The mission delivery settlement's tree probe (`workflow/delivery-epochs.ts`,
+`workflow-kernel-library.md` §6) is not a door either: it test-merges a PR head into a
+scratch ref cut at the delivery's merge commit, reads the tree, and deletes the ref in
+the same step. Nothing it writes is ever a base or a branch anything reads.
+
+**Which already use the kernel gate:** D1 (as T15), D2 and D3 for a kernel-owned PR,
+D4–D6 via T15 for a kernel-owned PR after their own legacy gate, and D11 (but it
+manufactures the approval). D7–D10 and D12 never consult the kernel. A mission
+integration PR, as in #4686, has no delivery at all, so it gets no kernel gate from any
+door.
+
+Regressions: AC-20 to AC-23 (§19) here; the rest in fa62b865 (§19 maps them).
+
 ## 14. Migration plan: no two authorities, ever
+
+> Amended 2026-10-13 by the native spec "Workflow kernel" (fa62b865; repo copy `workflow-kernel-library.md`) §3: the kill switch and cutover are per host mode; in production the kernel runs only on the control plane.
 
 **Principle.** Authority is assigned per field family, in order, and each slice ends
 with the previous authority for that family *deleted*, not shadowed. A "shadow" that
@@ -2336,7 +1609,10 @@ purpose.
 `kernelEnabled(gitConfig)` in TypeScript and `kernelOnSql(gitConfigColumn)` in SQL
 (`apps/web/src/lib/workflow/authority.ts`); no other code parses it, and a test runs
 both over the same value forms and requires them to agree
-(`apps/web/tests/db/workflow-probe-killswitch.test.ts`). The kernel is **on** only
+(`apps/web/tests/db/workflow-probe-killswitch.test.ts`). The outbox drain reads it
+through the kernel's `Policy` port (`builddPolicy`, `kernel-policy.ts`, over
+`kernelEnabled`), not in the effect claim statement, which reports only the
+delivery row's own authority. The kernel is **on** only
 when the key is absent, JSON `null`, `true`, or the string `'true'` or `'on'` (a
 `git_config` that is null or not an object reads as absent). **Every other value is
 off**: `false`, `'false'`, `'off'`, and anything unrecognised (`'no'`, `'TRUE'`,
@@ -2410,8 +1686,9 @@ attempt ends (§6.5 row 1). A delivery the switch releases before then has had n
 review from either authority, and legacy files a first review only when the PR opens,
 which has passed. So when an owner attempt ends on a released delivery that has no
 round, in a workspace whose switch is off, for a PR that is still open, the seam
-(`handOffToLegacy`) runs legacy's first review through the reviews module's
-`LEGACY_FIRST_REVIEW` slot: one reviewer task at the live head with no
+(`handOffToLegacy`, the package's `handOffToLegacyOn`, reading the switch from `Policy`) runs
+legacy's first review through the reviews module's `HandOff` port (`handOffHost`,
+`review-handoff.ts`): one reviewer task at the live head with no
 `workflowRound` (legacy's), announced and woken, and the PR's `review_queued` line; a
 delivery opened with a pre-flight finding gets legacy's answer to that instead, a
 `human_review_required` line and a team notice. The policy is not re-run, because the
@@ -2471,8 +1748,8 @@ directory to `UNIT_TEST_ROOTS` in `scripts/run-unit-tests.ts` (the
 
 | # | Scenario | Asserts | Target test file(s) |
 |---|---|---|---|
-| S1 | Fix ends with a local commit, GitHub head unchanged (#3754) | completion gate 400 `delivery_not_advanced`; with worker gone → `AWAITING_PUSH` + `push_recovery`; no round 2; no `fix_ended`-then-review | `apps/web/src/lib/workflow/reducer.test.ts` (new), `apps/web/src/app/api/workers/[id]/route.test.ts` |
-| S2 | Approve at `H0`, non-equivalent push to `H1` | `APPROVED → AWAITING_REVIEW`, delta round 2 dispatched **on the push**, not at merge time | `apps/web/src/lib/workflow/reducer.test.ts`, `apps/web/src/lib/reviewer-subscribers.test.ts` (new: the module has no test file today; its re-dispatch cases live in the webhook route test), `apps/web/src/lib/review-verdict-gate.test.ts` |
+| S1 | Fix ends with a local commit, GitHub head unchanged (#3754) | completion gate 400 `delivery_not_advanced`; with worker gone → `AWAITING_PUSH` + `push_recovery`; no round 2; no `fix_ended`-then-review | `packages/workflow-kernel/src/reducer.test.ts` (new), `apps/web/src/app/api/workers/[id]/route.test.ts` |
+| S2 | Approve at `H0`, non-equivalent push to `H1` | `APPROVED → AWAITING_REVIEW`, delta round 2 dispatched **on the push**, not at merge time | `packages/workflow-kernel/src/reducer.test.ts`, `apps/web/src/lib/reviewer-subscribers.test.ts` (new: the module has no test file today; its re-dispatch cases live in the webhook route test), `apps/web/src/lib/review-verdict-gate.test.ts` |
 | S3 | Approve at `H0`, head moves by platform refresh (content-equivalent) | `approved_heads` appended once; concurrent double call appends once; a composition approval carries the same way (`composition_heads`); a newer reviewer row at another head does not decide it; `own_refresh` when the previous head is a `refresh_branch` pin; `equivalentHeadShas` projected only after the transition | `apps/web/src/lib/approval-carry-forward.test.ts`, reducer test, `apps/web/tests/db/workflow-matrix.test.ts` (T13 describe, S32/T13), `apps/web/tests/db/workflow-seam.test.ts` |
 | S4 | Late verdict for a superseded head | stored on its round, no state change, no `post_review`, no merge | reducer test; `apps/web/src/app/api/workers/[id]/route.test.ts` |
 | S5 | Duplicate webhook delivery and duplicate reviewer PATCH | `duplicate`; effects not doubled | reducer test; `apps/web/src/app/api/github/webhook/route.test.ts` |
@@ -2494,21 +1771,21 @@ directory to `UNIT_TEST_ROOTS` in `scripts/run-unit-tests.ts` (the
 | S21 | Authorization matrix (§17.1) | owner, caller-names-PR, sibling, other workspace, human | `apps/web/src/app/api/github/pr/supersede/route.test.ts`, `apps/web/src/app/api/github/pr/review/route.test.ts`, `apps/web/src/lib/task-token-auth.test.ts` |
 | S22 | Kill switch | with `workflowKernel=false` a delivery is released to legacy (sticky), no new one opens, and a PR with no delivery is untouched by every seam function; the string `"false"` reads the same in TypeScript and SQL; a queued `merge_call` never merges or refreshes after the switch; the trunk sweep decides nothing; a PR released before its first round gets legacy's first review | `apps/web/tests/db/workflow-seam.test.ts`, `apps/web/tests/db/workflow-probe-killswitch.test.ts`, `bun run test` |
 | S23 | CI provenance (audit): worker pushes under the owner's git identity; worker pushes under the bot identity; a person pushes | the first two are attributed by SHA set and consume a ledger row; the third is `foreign_push` and consumes none; the cap bounds dispatches in all three; manual "Fix CI" uses the configured cap | `apps/web/src/lib/ci-failure-retry.test.ts`, `apps/web/src/app/api/prs/[prNumber]/retry-ci/route.test.ts`, reducer test (replaces the author-string cases around `isBuilddWorkerCommit`) |
-| S24 | Trunk breakage: one signature red on trunk and on several PRs | one incident, one trunk-fix task, zero per-PR `ci` attempts, queued ones `skipped`, deliveries `BLOCKED_ON_TRUNK`, `ci` budget untouched, recovery re-enters `resume_state`; two dependency-bot PRs do not accumulate retries; a second incident on a base whose fix is open joins that fixer (one task, in either drain order), and a red after recovery files a new one | `apps/web/src/lib/workflow/trunk.test.ts`, `apps/web/src/lib/ci-failure-retry.wake.test.ts`, `apps/web/src/lib/workflow/reducer.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
+| S24 | Trunk breakage: one signature red on trunk and on several PRs | one incident, one trunk-fix task, zero per-PR `ci` attempts, queued ones `skipped`, deliveries `BLOCKED_ON_TRUNK`, `ci` budget untouched, recovery re-enters `resume_state`; two dependency-bot PRs do not accumulate retries; a second incident on a base whose fix is open joins that fixer (one task, in either drain order), and a red after recovery files a new one | `apps/web/src/lib/workflow/trunk.test.ts`, `apps/web/src/lib/ci-failure-retry.wake.test.ts`, `packages/workflow-kernel/src/reducer.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
 | S25 | Stale dispatch: target merged / approved / CI green / conflict resolved between trigger and dispatch, and between dispatch and claim | ledger row `skipped`, no task (or task cancelled as skipped, not failed); replay is a no-op; reason recorded | `apps/web/src/lib/workflow/effects.test.ts` (new), `apps/web/src/lib/conflict-retry.test.ts`, `apps/web/src/lib/ci-failure-retry.test.ts` |
 | S26 | Comment as projection: concurrent renders, lost-update race (a `reviewing` write racing the merge), entries after merge, duplicate sticky comments, PR with no comment, CI red while approved | final comment equals a fresh render of canonical state; `Merged` stays the headline; one comment; created for every bound PR; "Approved" never heads a `REPAIRING` delivery | `apps/web/src/lib/pr-activity-comment.test.ts`, `apps/web/src/lib/workflow/pr-activity-render.test.ts`, `apps/web/src/lib/workflow/pr-activity-effects.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
 | S27 | Mechanical versus agent repair | behind-only conflict and byte-identical renumber complete with no task; textual conflict and non-identical renumber escalate to an agent attempt; false collision from a lagging mission branch is not a collision; dependency-bot PRs are never pushed to | `apps/web/src/lib/conflict-retry.test.ts`, `apps/web/src/lib/migration-collision-retry.test.ts`, `apps/web/src/lib/base-refresh.test.ts` |
 | S28 | Ledger separation | CI, review, conflict, migration, trunk families count independently; a reviewer spawned on a CI-fix task does not inherit the CI count; infra requeues change no ledger; `attemptView` is 1-based and identical in comment, title and `explain` | reducer test; `apps/web/src/lib/pr-activity-comment.test.ts`, `apps/web/src/lib/explain.test.ts` |
 | S29 | Reviewer prose or no verdict | round fails (T27, reason `prose_verdict` / `no_verdict` / `infra`; a reviewer interrupt is `human_takeover` and escalates at once), re-queued at the same head without a new round number, then `ESCALATED(review_unavailable)`; prose is never applied as approve or request-changes; no legacy requeue and no legacy `reviewer_escalated` note beside it | `apps/web/src/lib/reviewer-output.test.ts`, `apps/web/src/app/api/workers/[id]/route.test.ts`, `apps/web/src/app/api/workers/[id]/interrupt/route.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
 | S30 | Runner hand-off failures (no confirmed outcome, commits but no PR, uncommitted changes) | `AttemptEnded(unproven)` → `AWAITING_PUSH` or requeue; never `completed` delivery | `apps/runner/__tests__/unit/` (new case beside the existing completion tests), `apps/web/src/app/api/workers/[id]/route.test.ts` |
-| S35 | Replacement chains read current, not FAILED | a superseded predecessor attempt stays auditable but the delivery and mission situation project the current attempt; owner of next move is canonical | `apps/web/src/lib/workflow/projections.test.ts`, `apps/web/src/lib/action-queue.delivery-view.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
-| S37 | Conflict remediation already exists | a conflicted PR with a valid pending/stalled conflict-fix task re-dispatches or repairs it instead of filing a second; the recovery effect is keyed by delivery + remediation family; UI says "Conflict fix stalled" vs "Resolve conflicts" | `apps/web/src/lib/conflict-retry.test.ts`, `apps/web/src/lib/workflow/projections.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
+| S35 | Replacement chains read current, not FAILED | a superseded predecessor attempt stays auditable but the delivery and mission situation project the current attempt; owner of next move is canonical | `packages/workflow-kernel/src/projections.test.ts`, `apps/web/src/lib/action-queue.delivery-view.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
+| S37 | Conflict remediation already exists | a conflicted PR with a valid pending/stalled conflict-fix task re-dispatches or repairs it instead of filing a second; the recovery effect is keyed by delivery + remediation family; UI says "Conflict fix stalled" vs "Resolve conflicts" | `apps/web/src/lib/conflict-retry.test.ts`, `packages/workflow-kernel/src/projections.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
 | S31 | Preflight | `create_pr` refuses a body the CI scan would reject, with the reason; runner preflight failure keeps the attempt open; CI miss is tagged `preflight_miss` | `apps/web/src/app/api/github/pr/route.test.ts`, `scripts/check-no-prod-data-local.test.ts` |
-| S32 | Release PR composed only of reviewed constituents | composition attestation accepted (`approval_basis = composition`, head in `composition_heads` only); CI still gates; no second reviewer or human escalation; idempotent under duplicate delivery | `apps/web/src/lib/workflow/reducer.test.ts`, `apps/web/src/lib/workflow/review-composition.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
+| S32 | Release PR composed only of reviewed constituents | composition attestation accepted (`approval_basis = composition`, head in `composition_heads` only); CI still gates; no second reviewer or human escalation; idempotent under duplicate delivery | `packages/workflow-kernel/src/reducer.test.ts`, `apps/web/src/lib/workflow/review-composition.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
 | S33 | Release PR plus a release-only novel delta (conflict resolution, changed migration or generated output) | prior verdicts cover only mapped constituents; a delta round scoped to the novel paths; can still need a human | as S32 |
 | S34 | Stale constituent review, head mismatch, missing equivalence proof, incomplete set | composition proof fails closed; the release PR borrows nothing; ordinary PRs stay exact-head bound | as S32 |
 | S38 | Mission branch refresh PR (trunk merged into the integration branch by the refresh conflict task) | trunk commits proven as constituents against their trunk PRs; the merge read from whole trees; only paths the merge decided are novel, a dropped trunk change included; CI-regenerated files left out; nothing novel → `approval_basis = composition`, no reviewer; a migration renumbered unchanged is not novel, one edited in the merge is; real code → delta round scoped to it; unreadable tree → full review; the same PR without the refresh context stays ordinary | `apps/web/src/lib/workflow/review-composition.test.ts`, `apps/web/src/lib/workflow/review-effects.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` (S38), `packages/core/__tests__/generated-artifacts.test.ts` |
-| S36 | Needs You reads the kernel, not a raw worker status | Home/task surfaces project the owner of the next move; a recoverable blocker stays platform-owned; failure evidence preserved | `apps/web/src/lib/workflow/projections.test.ts`, `apps/web/src/lib/action-queue.delivery-view.test.ts`, `apps/web/src/app/app/(protected)/tasks/[id]/RealTimeWorkerView.test.tsx`, `apps/web/tests/db/workflow-matrix.test.ts` |
+| S36 | Needs You reads the kernel, not a raw worker status | Home/task surfaces project the owner of the next move; a recoverable blocker stays platform-owned; failure evidence preserved | `packages/workflow-kernel/src/projections.test.ts`, `apps/web/src/lib/action-queue.delivery-view.test.ts`, `apps/web/src/app/app/(protected)/tasks/[id]/RealTimeWorkerView.test.tsx`, `apps/web/tests/db/workflow-matrix.test.ts` |
 
 **The live matrix.** `apps/web/tests/db/workflow-matrix.test.ts` (`bun run test:db`) carries
 every S-number: a passing case drives the seam and the real review-loop effect handlers on
@@ -2619,9 +1896,10 @@ by the workers route test.
   `size`, `freshness`) keep working only from T15's override door and are written to
   `bypass`, which the ledger already counts.
 - `release-executor.ts` merges (two direct `PUT .../merge` calls that skip
-  `mergePullRequest` and every rail) are **intentionally out of scope** for the
-  kernel's first slices (§17.6); they are release PRs, not task deliveries, and are
-  called out so no one assumes the kernel gates them.
+  `mergePullRequest` and every rail) were out of scope for the kernel's first
+  slices (§17.6). §13.13 rule 6 brings them into scope **for the review gate
+  only**: they keep their release semantics, but no door may merge over an open
+  finding. Implementation pending (doors D8–D10).
 - `landing.mode` (`off|shadow|enforce`) keeps its meaning; `shadow` still computes and
   records without acting. The kernel flag is separate (`workflowKernel`).
 - Merge idempotency: the `sha` pin is the only merge-side idempotency GitHub gives;
@@ -2676,7 +1954,8 @@ are unchanged and the kernel only *records* the mismatch as a fact
 
 ### 17.6 Intentionally out of scope
 
-Release PRs and `release-executor.ts`; `missions.status` authority; task claim gates
+Release PRs and `release-executor.ts`, except the review gate every merge door
+must ask (§13.13 rule 6); `missions.status` authority; task claim gates
 and dependency resolution (`task-dependencies.ts` keeps its rules; it reads the
 projection); credentials; dispatch outbox (separate table, same pattern); Linear/issue
 webhooks; knowledge ingestion; CI log retrieval; agent prompts.
@@ -2703,199 +1982,7 @@ webhooks; knowledge ingestion; CI log retrieval; agent prompts.
 
 ## 18. Inventory: every lifecycle writer and reader found
 
-Compiled from five independent read-only sweeps of the tree at the base commit. Line
-numbers are the `.update(` or call line then; they drift. `W/` = `apps/web/src/`,
-`WID` = `W/app/api/workers/[id]/route.ts`, `R/` = `apps/runner/src/`. Rows marked
-(unverified) were seen by grep and not read in full.
-
-### 18.1 Task, worker and attempt state writers
-
-| Site | Writes | Trigger | Evidence checked today | Category |
-|---|---|---|---|---|
-| `WID` PATCH (`:592`) completion gate `:1596-2250` | 400 refusals only | `completed` PATCH, `complete_task` | `pr_required`/`auto` gates; G1–G6 below | migrate (gate gains `delivery_not_advanced`) |
-| `WID:2314`, `:2929`, `:4055` | `workers.status`, `completedAt`, `waitingFor`, `commitCount`, `lastCommitSha` | every PATCH | CAS on `NOT IN terminal` / `finalWriteGuard` | execution fact; stays |
-| `WID:3580` | `tasks.status`, `result`, `context`, `loopState` | terminal PATCH | contract, loop, `shouldAutoRetry` | execution fact; stays; emits `AttemptEnded` |
-| `WID:1745`, `:1831`, `:1909` | `workers.prUrl/prNumber/branch/prBaseRef` | completion auto-detect / adopt | existence of a PR on the branch; head match only against self-reported `lastCommitSha` | migrate (PrBound with live head compare) |
-| `WID:1184` | `prUrl`, `prNumber` | self-reported PR, `verifyReportedWorkerPr` | GitHub when App installed | external-fact ingestion |
-| `WID:1958-1975`, `:2488`, `:2718`, `:2816`, `:2888`, `:4188` | `workers.status='failed'`, `tasks.status` pending/failed, `context` | refusal, deferral, budget, mount gap, auth failover | task not cancelled | execution fact; stays |
-| `WID:3622-3672` | `tasks.status`, `releaseResult` | release outcomes | release verdict | out of scope (release) |
-| `WID:4906` | `result.effectiveVerdict` | reviewer completes | file list / confidence | migrate (→ round `effective_verdict`) |
-| `WID:5290-5330` | INSERT fix task with `reviewerRetryPrNumber/HeadSha`, `iteration` | request-changes outcome | iteration cap, unique index | migrate (→ `dispatch_fix` effect) |
-| `WID:5392`, `:5195` / `lib/auto-merge.ts:1055` | notify, `reviewerExhaustedHeadSha` | escalate / exhaustion | CAS on context key | migrate (→ T7 effect) |
-| `W/app/api/workers/claim/route.ts:2396`, `:2587`, `:2075` | `tasks.status` assigned/pending/failed, `claimedBy` | claim, rollback | CAS on `pending`/`assigned` | execution fact; stays; adds `FixClaimed` |
-| `W/lib/stale-workers.ts:695`, `:853`, `:1034`, `:1068` | `workers.status='failed'`, `tasks.status='failed'` | stale, offline, stuck input | none; not CAS (`inArray(id)`) | execution fact; stays; add CAS; emit `AttemptEnded(lost)` with the worker's `lastCommitSha` / `commitCount` (the stuck-input sweep, final-audit fix 708a55c0) |
-| `W/lib/stale-workers.ts:251` | `tasks.status='completed'`, `result.sha` | reaper auto-complete | `checkWorkerDeliverables`: bare `commitCount>0` | **migrate** (G8) |
-| `W/lib/stale-workers.ts:109`, `:155`, `:171`, `:200`, `:288`-`:336`, `:1203`-`:1281` | task failed/pending, `infraRetryCount`, answers | reaper retry budget, loop wait, unresumed answers | `exitCause`, counts | execution fact; stays |
-| `W/app/api/tasks/cleanup/route.ts:48`, `:82`, `:190`, `:266` | task/worker status; `:266` completes an assigned task with `result.sha` | cleanup | `:266` bare `commitCount>0` | `:190`/`:48`/`:82` execution fact; **`:266` migrate** (G9) |
-| `W/lib/interactive-detach.ts:116`, `:200` | worker status; `tasks.status='pending'` | TTL / task ended | CAS | execution fact; stays |
-| `W/lib/task-cancel.ts`, `tasks/[id]/route.ts:528`, `tasks/bulk/route.ts:153`, `workers/[id]/interrupt/route.ts:96,127`, `tasks/[id]/reassign/route.ts:102-171`, `workers/[id]/recover/route.ts:111`, `workers/[id]/respond/route.ts:240-395` | task/worker status | human and API actions | mixed CAS | execution fact; stays; cancel emits `AttemptEnded`/`DeliveryFailed`; the reviewer interrupt on a kernel round sends T27 `human_takeover` and writes no legacy `reviewer_escalated` note (final-audit fix 708a55c0) |
-| `W/lib/supersession-store.ts:275`, `:290` | `tasks.status='cancelled'`, `workers.status='failed'` | supersession rules | CAS on both | migrate (rules become part of T5/T6/T17/T18 effects); the `pr.closed` reconcile no longer runs for a kernel-owned PR (§13.8, final-audit fix 708a55c0) |
-| `W/lib/task-dependencies.ts:438`, `:781` | task cancelled/failed | dependency resolution | none (`inArray(id)`) | execution fact; stays (reads delivery) |
-| `W/lib/loop-webhook.ts:72-104` | `tasks.status='completed'`, `prLifecycleStatus='merged'` | `pr_merged` loop exit | `loopState` | migrate (consumer of `PrMerged`) |
-| `W/lib/credential-recovery.ts:82`, `mission-surface-audit.ts:453`, `visual-review-decisions.ts:283,824` | task status | recovery, audits | CAS | intentionally out of scope |
-| `W/app/api/webhooks/ingest/route.ts:173,182`, `linear-webhook.ts:170`, `github/webhook/route.ts:332,352` (issues) | task status from external systems | external events | CAS / id | external-fact ingestion (task-level); stays |
-| `R/workers.ts:1536`…`:6647`, `R/recovery.ts`, `R/worker-sync.ts` | PATCH status/metrics | runner lifecycle | `prCreated` flag, bounded push nudges `:4781-4864`; `:5097` completion has no remote check | execution fact; stays; add `remoteHeadSha`/`unpushedCommits` |
-| `W/lib/ci-failure-inspect.ts` `isBuilddWorkerCommit` and its callers in `ci-failure-retry.ts`, `ci-red-sweep*.ts` | decides whether a failing commit is the worker's own, which advances `context.iteration`; bot-identity-only | **migrate: delete** (§6.9) |
-| `W/lib/ci-failure-retry.ts:180,487,612,636`, `conflict-retry.ts:241,422,812`, `migration-collision-retry.ts`, `app/api/prs/[prNumber]/retry-ci/route.ts`, `prs/[prNumber]/apply-recommendation/route.ts:200`, `dead-zone-sweep.ts` (retry insert) | INSERT repair/fix tasks with `*RetryPrNumber/HeadSha`; `escalateCiRedHead` writes `tasks.status='failed'`, `context` | CI red, conflict, human apply | unique indexes, attempt caps | migrate (→ effects, T10/T12/T23) |
-| `W/lib/auto-merge.ts:991,1071,1158` | `context.conflictExhaustedHeadSha`, `reviewerExhaustedHeadSha`, `reviewContractFailureEscalated` | caps hit | CAS on key (unverified) | migrate (budgets move to delivery) |
-| `W/lib/pr-review-request.ts:418`, `approval-carry-forward.ts:27`, `base-refresh.ts:225`, `pr-landing-marker.ts`, `pr-landing-handoff.ts`, `pr-landing-alert-deps.ts` | `context.reviewCallbackFiredAt`, `equivalentHeadShas`, `baseRefresh`, `landing`, `landingHandoff` | callbacks, carry-forward, refresh, landing | CAS (some not) | callback/refresh bookkeeping stays; `equivalentHeadShas` and `landing` decision content migrate |
-| `W/lib/task-evidence-store.ts`, `task-shipped-store.ts`, `task-pr-attach.ts:151,172`, queue-stall, notify stamps | `tasks.result`, `context` stamps | evidence, shipped, attach | mixed | projection-only / out of scope |
-
-**Completion-gate holes found (G-list):** G1 only the `pr_required` fallback compares
-the PR head with `lastCommitSha`, which is itself runner-reported; G2 any `prUrl` on
-the row passes, with commits after the PR opened never compared; G3 auto-detect adopts
-an open PR on the branch without a head compare (a retry's unpushed commits hide
-behind an older PR); G4 an artifact satisfies `auto`/`artifact_required`/`none` even
-with `commitCount>0`; G5 a row with `mergedAt` skips the gate even if the merge was a
-different PR; G6 `commitCount=0` from a worktree that never diverged completes with
-nothing; G7 the runner completes with no remote check; G8/G9 reaper and cleanup
-promote bare local commits to `completed`; G10 several reaper writes are `inArray(id)`
-without a status CAS; G11 dependents trust whichever of these set `tasks.status`.
-
-### 18.2 PR-state and fact writers (`workers` PR columns)
-
-| Site | Writes | Category |
-|---|---|---|
-| Webhook `handlePullRequestEvent` (`github/webhook/route.ts:620-1050`): base-ref sync `:668`, retarget repair `:735`, open-state lifecycle `:822/833`, closed `:1023` (via `pr-merge-stamp.ts:41`), `:1048` | `prBaseRef`, `prLifecycleStatus` (`pr_open`/`conflict`/`closed`/`merged`), `prIsDraft`, `conflictDetectedAt`, `mergedAt` (receipt time) | external-fact ingestion → `recordPrFact`; **no terminal guard in the open-state write; closed-unmerged stamps one row only** |
-| Webhook `handleCheckSuiteEvent` (`:383`, `:412`, `:472`) | `prLifecycleStatus` `ci_running`/`ci_failed`/`ci_green` | external-fact ingestion; terminal guard is read-then-write (TOCTOU); event SHA not compared to current head |
-| `lib/register-local-pr.ts:26` | `prUrl`, `prNumber`, `prBaseRef`, `lastCommitSha`(=GitHub head), `prLifecycleStatus='pr_open'` | external-fact ingestion → `PrBound`; stop writing GitHub head into `lastCommitSha` |
-| `lib/pr-state-refresh.ts:312` | clocks, `mergedAt`, `merged`/`closed`/CI status | external-fact ingestion (importer); `WHERE id` after a round trip |
-| `lib/pr-reconcile.ts:95,307,329,439,520,547` | clocks, `mergedAt`, `merged`/`closed`/`unresolvable`/`conflict` | external-fact ingestion (importer) |
-| `lib/dead-zone-sweep.ts:267-311` | `mergedAt`, `merged`/`closed`/`conflict`, `conflictDetectedAt` reset each re-entry, red CI mapped to `conflict` | external-fact ingestion; **migrate** the overloaded `conflict` write |
-| `lib/pr-state-reconcile.ts:127` | `mergedAt` (set/null), maps every open PR to `pr_open` | **migrate: delete** (regresses state) |
-| `app/api/admin/backfill-merged-prs/route.ts:89`, `packages/core/scripts/backfill-mergedat.ts:157,165` | `unresolvable`, `mergedAt`, `merged`/`closed` | external-fact ingestion; offline import allowed |
-| `lib/dead-pr-shutdown.ts:396` | `prLifecycleStatus='closed'` | migrate (after a GitHub close the kernel records `PrClosedUnmerged`) |
-| `lib/pr-merge-stamp.ts:31` | `mergedAt`, `merged` on all rows | projection-only (`stamp_pr_rows`) |
-| `app/api/github/pr/route.ts:1123,726,772,494,579,1722,1978,2016` | `prUrl`, `prNumber`, `prOpenedBaseSha`, `prBaseRef`, `mergedAt`, `merged` | `create_pr`/adopt: external-fact ingestion → `PrBound` (reset rules on override); merge branches: **migrate** (T15/T16) |
-| `app/api/prs/[prNumber]/merge/route.ts:257` | `mergedAt`, `merged` | migrate |
-| `lib/mission-pr.ts:658,792,701` | PR fields, `pr_open`, `merged`, owner-row inserts | external-fact ingestion + `DeliveryOpened` for mission PR owner rows |
-| `lib/pr-review-request.ts:173` | INSERT adopted owner worker | migrate (`PrBound` adoption; repo-scoped key) |
-| `lib/loop-webhook.ts:72` | `merged` | migrate |
-| `lib/pr-supersession.ts:236,285,315`, `lib/pr-supersession-detect.ts:342,384,511`, `retry-pr-supersession.ts` | `supersededBy*`, `abandoned*`, `supersessionScan` | `supersededBy*`/`abandoned*`: **migrate** (T20/T21; today no closed-PR requirement, no overwrite guard); `supersessionScan`: projection-only |
-| `lastCommitSha` writers: `WID:325,1057` (runner), `register-local-pr.ts` | local head | split: runner stays a local fact; GitHub head moves to `current_head_sha` |
-
-Webhook event map: `pull_request` (opened/reopened/synchronize/ready_for_review/edited/
-closed/converted_to_draft; other actions only sync `prBaseRef`), `check_suite`
-(`requested`/`rerequested`→`ci_running`, completed `failure`/`success`; cancelled,
-timed-out, neutral, skipped, `action_required` return without writing), `pull_request_review`
-and review comments (emit only), `push`, `workflow_run`, `issues`, installation events.
-No handler for `check_run`, `status`, `issue_comment`. No delivery de-duplication;
-`X-GitHub-Delivery` is only logged.
-
-Further defects found by the sweep, each fixed by a rule above: late open-state events
-overwrite terminal state (no guard in the `WHERE`); two different CI derivations
-(`allCheckSuitesPassed` vs `ciLifecycleFromSuites`); `conflict` never cleared except by
-a `pull_request` event; a `closed` row is invisible to every sweep so a lost `reopened`
-strands it; two clocks for `mergedAt`; the webhook, create_pr and merge routes never
-write `prLastVerifiedAt`; owner lookup by `(workspaceId, prNumber)` without repo.
-
-### 18.3 Review writers and readers
-
-| Site | Role | Category |
-|---|---|---|
-| `lib/reviewer.ts` `createReviewerTask` `:451`, `findLiveReviewerTaskForHead :420`, `resolvePriorVerdict :201` | create/dedupe reviewer task, bind `context.headSha`, `subject_head_sha` | migrate (T5/`dispatch_review`; bound head moves to round) |
-| `lib/reviewer-subscribers.ts` `maybeDispatchReviewer :78`, `maybeReDispatchReviewer :342`, slots `:489`,`:508` | review on open, re-review on push | migrate (decision → reducer; slots become fact hints) |
-| `app/api/github/pr/review/route.ts` (`request_pr_review`, `:255-381`), `app/api/prs/[prNumber]/re-review/route.ts`, `lib/stale-approval-re-review.ts:79`, `lib/pr-re-review.ts:43`, `app/api/github/pr/route.ts:80` (`requestIntegrationBranchReview`) | callers of reviewer dispatch | migrate (all call T5; fix `lastCommitSha`-as-head and the non-force "returns stale review" behaviour) |
-| `WID:4745` `handleReviewerOutcomeIfNeeded` (+ `:3255-3440` contract enforcement, `:3924` step) | verdict handling; posts review; approve → landing; request-changes → fix; escalate | migrate (T6); **not idempotent today** |
-| `lib/reviewer.ts:1571,1613` `supersedeReviewerTaskOnMerge`, `supersedeFixTaskOnApproval`; `lib/supersession.ts:303` rules; `supersession-store.ts` | cancel superseded tasks | migrate (effects of T6/T17/T18) |
-| `lib/pr-review-status.ts:141` `derivePrReviewStatus`, `pr-review-request.ts:44,339` `findReviewTaskForPr`/`readPrReviewStatus` | the only definition of "verdict in force"; JSONB lookup, newest row wins, no head filter | migrate (read rounds); `supersession-store.ts:166` and `post-session-store.ts:45` copy its precedence |
-| `lib/review-verdict-gate.ts:129,186`, `approval-carry-forward.ts:35` | merge gate over status; carry-forward | migrate (read delivery); carry-forward becomes T13 |
-| `lib/reviewer-gate.ts:197,333,387,411,445` `resolveReviewerGate` | UI/inbox "who acts" | projection-only (reads delivery) |
-| `lib/github-approval.ts:5` `readGithubApproval` | live GitHub human approval | external-fact ingestion (`HumanApproved`) |
-| `lib/review-subscribers.ts:41,109,176` | merged-over-verdict classification; GitHub review → mission note | projection-only / T17 effect |
-| `lib/github.ts:259` `postPrReview` | GitHub review submit; never throws | effect handler (`post_review`); MUST check `posted` |
-
-### 18.4 Landing, merge and mission completion
-
-| Site | Role | Category |
-|---|---|---|
-| Merge API wrapper `lib/github.ts:184` `mergePullRequest` | writes nothing | effect handler (`merge_call`) |
-| Doors: `lib/auto-merge.ts:777` `tryAutoMergeWorkerPr`; `lib/pr-landing.ts:882` `landPr`; `app/api/prs/[prNumber]/merge/route.ts:566`; `app/api/github/pr/route.ts:1956`; `webhook/route.ts:1466` (release PR) | five merge doors | first four migrate to T15/T16; release PR door out of scope |
-| `lib/release-executor.ts:188,857` | direct merge of release PRs | intentionally out of scope |
-| `landPr` callers: merge route `:375`, `PUT /api/github/pr :1704`, webhook `:527`, `WID:5121`, `surface-ordering-wake.ts:84`, `pr-landing-sweep-deps.ts:199`; `tryAutoMergeWorkerPr` callers: webhook `:587,600,1372`, `WID:5142,5170`, `surface-ordering-wake.ts:110` | entry points | migrate (become `LandingRequested` callers) |
-| `lib/pr-landing-marker.ts`, `pr-landing-handoff.ts`, `pr-landing-sweep*.ts`, `pr-landing-alert*.ts`, `pr-landing-ownership.ts`, `pr-landing-metrics.ts` | landing bookkeeping and sweep | migrate (decision data → delivery; sweep → effect re-enqueue; metrics read transitions) |
-| `lib/base-refresh.ts:425`, `pr-branch-update.ts`, `conflict-retry.ts`, `dead-zone-sweep.ts` | refresh/conflict repair | migrate (`refresh_branch`, T12) |
-| `lib/mission-pr.ts` `finalizeMissionPrMerge :1191`, `guardMissionPrMerge :1144`, `findMissionPrOwner :952` | mission PR gate, branch deletion | `finalize` migrates to effect; guard stays (rail) |
-| `lib/mission-completion.ts` `canCompleteMission :251`, `completeMissionIfVerified :786`; `packages/core/pr-shipped.ts` `prShipState :40`, `deriveLineageSupersession :148`; `packages/core/mission-helpers.ts:327` (`all_prs_merged`) | mission completion | readers; keep logic; feed from delivery projection |
-| `app/api/missions/[id]/route.ts:397,583`, `mission-loop.ts:482`, `mission-archive.ts:90`, `mission-budget.ts:32`, `heartbeat-circuit-breaker.ts:129` | `missions.status` | intentionally out of scope |
-| `gate_events` (`packages/core/gate-events.ts`) | refusal ledger | stays; kernel adds slugs (`workflow_effect_dead`, `workflow_transition_rejected`) |
-| Cron: `app/api/cron/pr-reconcile/route.ts`, `queue-stall/route.ts`, `mission-invariants/route.ts`, `dispatch-drain/route.ts` | sweeps and drain | migrate to importers/re-enqueuers; add drain |
-
-### 18.5 Projections and readers (re-derivations to retire in Slice E)
-
-| Reader | Re-derives | Cheapest canonical read |
-|---|---|---|
-| `lib/pr-presentation.ts:48` `derivePrDisplayState` | canonical today for display | extend into `getDeliveryView` |
-| `derivePrLifecycle :78`, `isPrMerged :86` | second map ignoring `mergedAt` | **retired (Slice E)**: `resolvePrDisplayState` + `PR_PILL` |
-| `components/TaskCard.tsx:132,329,343`; `lib/stage.ts:59` `deriveStage` | duplicate `PR_LIFECYCLE`, own state machine without `conflict`/`unresolvable` | **retired (Slice E)**: `stageForDelivery`; legacy via `derivePrDisplayState` |
-| `lib/action-queue.ts:128,161,222,1194,1236,1285` | `resolveMergeChip` 10-rule precedence; `partitionEscalations` omits `unresolvable`/`mergedAt` | one landing-state row |
-| `app/app/(protected)/home/page.tsx:789,1220,1354-1438,504` | assembles inputs inline; three SQL/JS filters; refresh-before-read | `getDeliveryView` per PR |
-| `lib/pr-attention.ts`, `lib/pr-list.ts:93-256` (`list_prs`), `app/api/github/pr/route.ts:149` (`get_pr` `canonicalState`) | own terminal sets and ranking | view |
-| `lib/explain.ts:266,708-716,925`, `explain-because.ts` | local `unmergedPr` conditions | `because[]` from `workflow_transitions` |
-| `lib/mission-state-view.ts`, `lib/mission-card-view.ts:182,411`, `lib/mission-board.ts`, `lib/mission-pulse.ts`, `lib/condensed-timeline.ts`, missions/[id] page (`:142-165` refreshes during render, `:536-1064` inline predicates), `CondensedTimeline.tsx`, `tasks/[id]/page.tsx` (~12 inline expressions, `:1615` synthesises `merged`), `PrDetailsCard.tsx`, `PlanChainView.tsx`, `task-eyebrow.ts`, `task-presentation.ts:342` | mix of canonical accessor and inline predicates | `unmergedPrs` from one helper; one `DeliveryView` call per page |
-| `app/api/tasks/[id]/summary/route.ts`, `app/api/explain/route.ts`, `health/_lib/health-data.ts`, chat `load-pr-object.ts`, `PrObject.tsx`, `TaskObject.tsx`, `dock-model.ts:68-72` | raw pass-through; chat dock "Landed" for a completed task with an open PR | add derived `deliveryState` next to raw fields |
-| `lib/pr-activity-comment.ts` (~18 writer modules) | parallel event log, read-modify-write, last 12 entries | render of transitions |
-| `lib/pusher.ts` | no PR event; several writers emit none | `projectDelivery` emits one event |
-
-### 18.6 Checklist: direct writes to lifecycle fields, by disposition
-
-Legend: **M** migrate (becomes a transition or an effect), **P** projection-only
-(written only by `projectDelivery`/`stamp_pr_rows`), **F** external-fact ingestion
-(only through `recordPrFact`/`ingestFact`), **O** intentionally out of scope. Each box
-is a site to tick off in the Phase 2 PR that moves it.
-
-**Migrate (M)**
-- [ ] `WID:5290-5330` fix-task insert on request-changes
-- [ ] `WID:4745-5404` `handleReviewerOutcomeIfNeeded` branches (approve landing, escalate notify, exhaustion)
-- [ ] `WID:4906` `effectiveVerdict` write
-- [ ] `WID` completion gate `:1596-2250` (add `delivery_not_advanced`; G1–G3 in Slice D)
-- [ ] `WID:1745`, `:1831`, `:1909` PR auto-detect / adopt writes without head compare
-- [ ] `lib/reviewer.ts` `createReviewerTask`, `supersedeFixTaskOnApproval`, `supersedeReviewerTaskOnMerge`
-- [ ] `lib/reviewer-subscribers.ts` `maybeDispatchReviewer`, `maybeReDispatchReviewer`
-- [ ] `lib/stale-approval-re-review.ts`, `lib/pr-re-review.ts`, `app/api/prs/[prNumber]/re-review/route.ts`, `app/api/github/pr/review/route.ts`, `app/api/github/pr/route.ts` (`requestIntegrationBranchReview`)
-- [ ] `lib/pr-review-request.ts` `findReviewTaskForPr` / owner lookup / `insertPrOwnerWorker`
-- [ ] `lib/supersession-store.ts:275,290` and rules in `lib/supersession.ts` (the `pr.closed` reconcile is skipped for a kernel-owned PR, §13.8; other events still reach it)
-- [ ] `lib/ci-failure-retry.ts` (`:180,487,612,636`), `app/api/prs/[prNumber]/retry-ci/route.ts`
-- [x] `lib/conflict-retry.ts` (`:241,422,812,893,974`), `lib/migration-collision-retry.ts`, `lib/dead-zone-sweep.ts` retry insert (kernel-owned PRs, §13.4; the sweep asks `kernelDeliveryForPr` and routes a kernel PR through `dispatchConflictRetry`, final-audit fix b6a62a4e; it was ticked before the sweep was migrated)
-- [x] `lib/auto-merge.ts` `:777` merge door (Slice C: an adapter calling `LandingRequested` for a kernel-owned PR)
-- [ ] `lib/auto-merge.ts` `:991,1055,1071,1141,1158` escalation stamps
-- [x] `lib/pr-landing.ts` `landPr` merge call (Slice C: T15/T16; its rails, marker, handoff and sweep are unchanged)
-- [ ] `lib/pr-landing-marker.ts`, `pr-landing-handoff.ts`, `pr-landing-sweep*.ts` decision data → delivery
-- [x] `app/api/prs/[prNumber]/merge/route.ts:566,257`; `app/api/github/pr/route.ts:1956,1722,1978,2016` (Slice C, kernel-owned PRs); `app/api/github/pr/route.ts` behind-base refresh skipped for a kernel-owned PR (§13.4, final-audit fix b6a62a4e)
-- [x] `lib/stale-workers.ts:251` auto-complete; `app/api/tasks/cleanup/route.ts:266` assigned-task complete (Slice A part 2: a kernel attempt is never promoted from local commits; `AttemptEnded(lost)`)
-- [x] `lib/pr-supersession.ts:236,285`, `lib/pr-supersession-detect.ts:384`, `app/api/github/pr/supersede/route.ts` (Slice D: T20/T21 for a kernel-owned PR; the route authorises on the caller's task)
-- [ ] `lib/dead-pr-shutdown.ts:396`; `lib/loop-webhook.ts:72`
-- [x] `lib/pr-state-reconcile.ts:127` (delete); `lib/dead-zone-sweep.ts:302` `conflict` overload (Slice B part 1)
-- [x] webhook `handlePullRequestEvent` open-state write `:822/833` and closed `:1048`; `check_suite` writes `:383,412,472` (Slice B part 1: through `recordPrFact`)
-- [ ] `lib/approval-carry-forward.ts:27` `equivalentHeadShas` append
-- [ ] `lib/pr-activity-comment.ts` writers (~18 modules) → `render_activity`
-- [ ] `lib/ci-failure-inspect.ts` `isBuilddWorkerCommit` and every `context.iteration` read used for a decision (CI, review, conflict families)
-- [ ] `app/api/prs/[prNumber]/retry-ci/route.ts` manual CI path (ignores the workspace cap, restarts at 0)
-- [x] `lib/migration-collision-retry.ts`, `lib/conflict-retry.ts` dispatch decisions (mechanical-first, §6.7; §13.4)
-- [ ] `lib/ci-red-sweep*.ts`/`ci-red-queue.ts` per-PR retry fan-out (§6.10)
-- [ ] `lib/reviewer-output.ts` / `WID:3255-3440` prose-verdict fallback (§6.6, T27)
-
-**Projection-only (P)**
-- [x] `workers.supersededBy*`, `abandoned*` (Slice D: `project_supersession`)
-- [x] `lib/pr-merge-stamp.ts:31` `stampPrMergedOnAllRows` (Slice B part 1: a funnel caller); `tasks.status='completed'` on merge (Slice C: `emit_pr_merged` → `lib/pr-merged-work.ts` for a kernel-owned PR)
-- [ ] mission notes for reviewer verdicts; `workers.mergedAt`/`prLifecycleStatus` after a transition (done, Slice B part 1: `stamp_pr_rows`)
-- [ ] `tasks.result.shipped`, evidence stores (`task-shipped-store.ts`, `task-evidence-store.ts`)
-
-**External-fact ingestion (F)**
-- [ ] `lib/register-local-pr.ts:26`; webhook base-ref sync `:668` and retarget `:735`
-- [x] `lib/pr-state-refresh.ts:312`; `lib/pr-reconcile.ts` writers; `lib/dead-zone-sweep.ts:267-311` merged/closed (Slice B part 1)
-- [x] `app/api/admin/backfill-merged-prs/route.ts:89`; `packages/core/scripts/backfill-mergedat.ts` (Slice B part 1)
-- [ ] `lib/mission-pr.ts:658,792`; `create_pr` adopt/mirror writes (`github/pr/route.ts:494,579,726,772,1123`)
-- [ ] `lib/github-approval.ts` reads; runner metrics `WID:337,1057`, `R/worker-sync.ts`
-
-**Intentionally out of scope (O)**
-- [ ] Execution-state writes of `tasks.status` and `workers.status` (claim, cancel, reaper retry budgets, budget/auth/mount deferrals, interactive detach, answers, bulk and Linear/ingest webhooks)
-- [ ] Release PR merges and release rows (`release-executor.ts`, `release/subscribers.ts`, `webhook/route.ts:1466-1555`)
-- [ ] `missions.status` writers; credential recovery; visual-review/audit task writes
-- [ ] Context stamps unrelated to delivery (`queueStall*`, notification stamps, `task-kind`, `task-role-apply`, `subject-intake-db`, `approve-plan`)
-- [ ] `task_dispatch_outbox` and `gate_events` (patterns reused, tables unchanged)
-
----
+The writer and reader inventory (§18.1 to §18.6) now lives in the knowledge base as `knowledge-base: buildd/reports/workflow-state-kernel-history.md`; the live debt list is §9 of the Workflow kernel spec (fa62b865, `workflow-kernel-library.md`).
 
 ## 19. Acceptance criteria
 
@@ -2905,7 +1992,7 @@ is a site to tick off in the Phase 2 PR that moves it.
 - AC-4: GIVEN two writers apply a transition at the same `version` THEN exactly one is `applied` and the other is `stale` carrying the current state, version, head and round.
 - AC-5: GIVEN a reviewer verdict whose round head differs from `current_head_sha` THEN the verdict is stored, no GitHub review is posted for it, no merge starts, and the state is unchanged.
 - AC-6: GIVEN any transition THEN its follow-up effect rows exist if and only if the transition committed.
-- AC-7: GIVEN a reconciler run THEN no `workflow_deliveries.state` or guarded column is written outside `apps/web/src/lib/workflow/` (checked by the write-site guard test).
+- AC-7 (amended by `workflow-kernel-library.md` §1 and §2: the guarded path also covers the kernel package): GIVEN a reconciler run THEN no `workflow_deliveries.state` or guarded column is written outside `apps/web/src/lib/workflow/` (checked by the write-site guard test).
 - AC-8: GIVEN `PrMerged` WHEN any later `synchronize`, `check_suite` or `opened` fact arrives THEN the delivery stays `MERGED` and no fact-cache column regresses.
 - AC-9: GIVEN `SupersessionRecorded` for a delivery not in `CLOSED_UNMERGED`, or whose target PR is not merged THEN it is rejected, and an existing edge is never overwritten.
 - AC-10: GIVEN a task with a delivery WHEN the reaper or cleanup finds its worker dead with only local commits THEN `tasks.status` is not set to `completed`, and the delivery is `AWAITING_PUSH`.
@@ -2918,6 +2005,34 @@ is a site to tick off in the Phase 2 PR that moves it.
 - AC-17: GIVEN concurrent `render_activity` runs THEN the comment converges to a render of the latest delivery version, `Merged` is the headline of a merged delivery whatever is appended later, and exactly one comment exists.
 - AC-18: GIVEN a behind-only branch or a byte-identical migration renumber THEN it completes as a mechanical attempt with no agent task and consumes no agent budget; GIVEN a textual conflict or a non-identical renumber THEN an agent attempt is allocated.
 - AC-19: GIVEN a reviewer ends with prose and no structured verdict THEN the round is `failed` (T27), never approved, and the delivery is `ESCALATED(review_unavailable)` once the bounded retry is spent.
+
+§13.13 criteria, review composition (rule 1):
+
+- AC-20 (composition reuse): GIVEN an integration PR whose every constituent's latest decided round at its merged head is `approve` and the composition is `tree_equal` with no novel delta WHEN review is requested THEN the delivery is `APPROVED` with `approval_basis = composition` and no reviewer task is created.
+- AC-21 (novel delta only): GIVEN the same PR with a novel delta on paths P THEN exactly one `delta` round is created and its scope is P.
+- AC-22 (unknown composition is not approval): GIVEN a composition `unverifiable`, or a constituent with no decided round, THEN the delivery is not `APPROVED` and a full-scope round is queued.
+- AC-23 (superseded constituent approval): GIVEN a constituent whose approve round at head H was followed by a request-changes round at H THEN the attestation is `rejected` and the composed PR is not `APPROVED`.
+
+§13.13 criteria AC-24 to AC-37 (findings, repair builders, landing at every door, the
+GitHub status, projections, external merges) now live in the native spec "Workflow
+kernel" (fa62b865, `workflow-kernel-library.md`), which states them against what shipped:
+
+| Old criterion here (number) | Now in fa62b865 |
+|---|---|
+| 24, findings survive | AC-18, AC-13 |
+| 25, explicit resolution | AC-37 |
+| 26, repair is a builder | AC-35 |
+| 27, zero diff keeps the blocker | AC-19 |
+| 28, refresh is not a fix | AC-36 |
+| 29, verified no-op | AC-38 |
+| 30, every door asks | AC-13 |
+| 31, recheck at execution | AC-31 |
+| 32, no rule overrides a finding | AC-32 |
+| 33, admin force does not pass a finding | AC-33 |
+| 34, COMMENTED is never approval | AC-34 |
+| 35, verdict visible to GitHub | AC-13 (`buildd/landing`) |
+| 36, projections from canonical state | AC-24 |
+| 37, external merge with open findings | AC-15 |
 
 ## 20. Open questions
 
@@ -2948,6 +2063,7 @@ is a site to tick off in the Phase 2 PR that moves it.
 
 - Existing, to be migrated or wrapped: `apps/web/src/app/api/workers/[id]/route.ts`, `apps/web/src/app/api/github/webhook/route.ts`, `apps/web/src/app/api/github/pr/route.ts`, `apps/web/src/app/api/github/pr/review/route.ts`, `apps/web/src/app/api/github/pr/supersede/route.ts`, `apps/web/src/lib/pr-landing.ts`, `apps/web/src/lib/auto-merge.ts`, `apps/web/src/lib/pr-review-status.ts`, `apps/web/src/lib/review-verdict-gate.ts`, `apps/web/src/lib/reviewer.ts`, `apps/web/src/lib/pr-activity-comment.ts`, `apps/web/src/lib/pr-presentation.ts`, `apps/web/src/lib/mission-completion.ts`, `packages/core/pr-shipped.ts`, `packages/core/db/schema.ts`.
 - PR recovery (§13.11): `packages/core/repair-target.ts`, `apps/runner/src/worktree-utils.ts`, `apps/runner/src/git-operations.ts`, `apps/web/src/lib/repair-completion.ts`, `apps/web/src/lib/landing-blocker.ts`, `apps/web/src/lib/pr-predecessors.ts`, `apps/web/src/lib/retry-pr-supersession.ts`, `apps/web/src/lib/attempt-lineage.ts`.
+- Review findings and landing authority (§13.13): `apps/web/src/lib/review-verdict-gate.ts`, `apps/web/src/lib/review-subscribers.ts`, `apps/web/src/lib/workflow/review-composition.ts`, `apps/web/src/lib/workflow/review-effects.ts`, `apps/web/src/lib/workflow/pr-landing-effects.ts`, `apps/web/src/lib/workflow/landing.ts`, `apps/web/src/lib/release-executor.ts`, `apps/web/src/lib/release/compose-runtime.ts`, `packages/core/release-compose.ts`, `packages/core/escalation-gate.ts`, `apps/web/src/lib/mission-pr.ts`.
 - Pattern sources: `packages/core/dispatch-outbox.ts`, `apps/web/src/lib/dispatch-authority.ts`, `packages/core/gate-events.ts`.
 - Wired in Slice A part 1: `apps/web/src/app/api/workers/claim/route.ts`, `apps/web/src/app/api/prs/[prNumber]/re-review/route.ts`, `apps/web/src/app/api/cron/pr-reconcile/route.ts`, `apps/web/src/lib/reviewer-subscribers.ts`.
 - New (Phase 2): `apps/web/src/lib/workflow/*` (the route seam is `seam.ts`; landing is `landing.ts` and `pr-landing-effects.ts`; a closed PR's resolution is `supersession-effects.ts`; mission completion's input is `delivery-ship.ts`), `apps/web/src/lib/pr-merged-work.ts`, `packages/core/__tests__/workflow-write-sites.test.ts`, `apps/web/tests/db/workflow-seam.test.ts`.

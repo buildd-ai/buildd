@@ -101,8 +101,7 @@ async function readJson(res: Response): Promise<Record<string, unknown>> {
  * Settings → Integrations, evidence storage: where the team's run evidence is written. One row per
  * backend (team default first, then workspace ones), each with its status,
  * last error and last check, and the lifecycle rule to paste into the bucket.
- * With manage_evidence_backends (the API's `canManage`, team overrides
- * applied) a person adds, edits, verifies and removes; without it each row
+ * With manage_evidence_backends (the API's `canManage`) a person adds, edits, verifies and removes; without it each row
  * reads as text, and the page says who manages it.
  *
  * What the browser holds is the DTO from /api/evidence-backends, rendered
@@ -274,7 +273,7 @@ export default function StorageSection({ workspaces, fixture }: {
           <p className="text-sm text-status-error">{loadError}</p>
         ) : sorted.length === 0 ? (
           <div className="py-3 border-y border-border-default" data-testid="storage-empty">
-            <div className="text-sm font-medium text-text-primary">Buildd managed</div>
+            <div className="text-sm font-medium text-text-primary">buildd managed</div>
             <p className="mt-0.5 text-xs text-text-secondary">
               Evidence goes to buildd&apos;s own bucket and is kept 30 days.
             </p>

@@ -29,7 +29,7 @@ const OPTIONS: Array<{ value: Choice; label: string }> = [
 
 export function describeExecutorSource(source: WorkspaceExecutorSource): string {
   if (source === 'explicit') return 'Set on this workspace.';
-  if (source === 'dispatch_webhook') return 'From the cloud dispatch webhook.';
+  if (source === 'dispatch_webhook') return 'Set by the cloud runner.';
   return 'Default.';
 }
 
@@ -55,12 +55,12 @@ export default function ExecutorSection({ workspaceId, explicit, effective, sour
         body: JSON.stringify({ gitConfig: { executor: next === 'auto' ? null : next } }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'Failed to save');
+      if (!res.ok) throw new Error(data.error || 'Could not save. Try again.');
       // Clearing goes back to the derived value, which only the server knows:
       // the page re-renders it on the next load.
       if (next !== 'auto') setShown({ effective: next, source: 'explicit' });
     } catch (err) {
-      setSaveError(err instanceof Error ? err.message : 'Failed to save');
+      setSaveError(err instanceof Error ? err.message : 'Could not save. Try again.');
     } finally {
       setSaving(false);
     }
@@ -86,8 +86,7 @@ export default function ExecutorSection({ workspaceId, explicit, effective, sour
         />
       )}
       <p className="text-xs text-text-muted">
-        Cloud only: only the cloud runner claims tasks. Host runners only: only your own runners do.
-        Automatic picks cloud when the cloud dispatch webhook is on, and any runner otherwise.
+        Automatic: the cloud runner when it&apos;s on, otherwise any runner.
       </p>
       {saveError && <p className="text-status-error text-sm">{saveError}</p>}
     </div>

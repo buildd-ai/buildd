@@ -8,6 +8,7 @@ import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { pickEffectiveRole } from '@/lib/effective-roles';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { registerTemplatePrompt } from '@buildd/core/prompts';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Batched, repo-grounded criteria evaluator.
@@ -112,12 +113,12 @@ export type CriteriaWorkerEvalResolution =
  */
 async function findWorkerEvalTask(missionId: string) {
   const rows = await db.query.tasks.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.missionId, missionId),
       sql`${tasks.context} -> 'criteriaWorkerEval' ->> 'missionId' = ${missionId}`,
-    ),
+    )),
     columns: { id: true, status: true, context: true, result: true, updatedAt: true },
-    orderBy: [desc(tasks.createdAt)],
+    orderBy: sqlOrderBy([desc(tasks.createdAt)]),
     limit: 5,
   });
   return rows.find(r => readMarker(r.context)?.missionId === missionId) ?? null;
@@ -165,7 +166,7 @@ export async function resolveCriteriaWorkerEval(opts: {
   }
 
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, missionId),
+    where: sqlWhere(eq(missions.id, missionId)),
     columns: { id: true, title: true, description: true, workspaceId: true, workingBranch: true },
   });
   if (!mission) return { kind: 'unavailable', evidence: `Mission ${missionId} not found` };
@@ -304,7 +305,7 @@ async function dispatchWorkerEvalTask(opts: {
   if (!mission.workspaceId) return { ok: false, reason: 'No workspace for worker eval dispatch' };
 
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, mission.workspaceId),
+    where: sqlWhere(eq(workspaces.id, mission.workspaceId)),
   });
   if (!workspace) return { ok: false, reason: 'Workspace not found for worker eval dispatch' };
 
@@ -429,7 +430,7 @@ export async function handleCriteriaWorkerEvalOutcome(
   structuredOutput?: unknown,
 ): Promise<{ applied: boolean }> {
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { id: true, status: true, context: true, result: true, missionId: true },
   });
   if (!task) return { applied: false };
@@ -440,7 +441,7 @@ export async function handleCriteriaWorkerEvalOutcome(
   if (!['completed', 'failed', 'cancelled'].includes(task.status)) return { applied: false };
 
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, task.missionId),
+    where: sqlWhere(eq(missions.id, task.missionId)),
     columns: { id: true, workspaceId: true, goalCriteria: true, goalCriteriaState: true },
   });
   const state = (mission?.goalCriteriaState ?? null) as GoalCriteriaState | null;

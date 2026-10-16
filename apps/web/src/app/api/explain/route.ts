@@ -10,6 +10,7 @@ import { resolveWorkerByPrNumber, resolveWorkerByPrNumberInWorkspaces } from '@/
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveSessionTeamIds, workspaceIdsForTeams } from '@/lib/session-team-scope';
 import { explainMission, explainTask, explainWorkspace, explainPr } from '@/lib/explain';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -164,7 +165,7 @@ export async function GET(req: NextRequest) {
         return NextResponse.json({ error: `Invalid taskId: expected a UUID, got "${taskId}".` }, { status: 400 });
       }
       const row = await db.query.tasks.findFirst({
-        where: eq(tasks.id, taskId),
+        where: sqlWhere(eq(tasks.id, taskId)),
         columns: { id: true, workspaceId: true },
       });
       if (!row || !row.workspaceId || !teamWsIds.includes(row.workspaceId) || !(await reaches(row.workspaceId))) {
@@ -181,7 +182,7 @@ export async function GET(req: NextRequest) {
         return NextResponse.json({ error: `Invalid missionId: expected a UUID, got "${missionId}".` }, { status: 400 });
       }
       const row = await db.query.missions.findFirst({
-        where: eq(missions.id, missionId),
+        where: sqlWhere(eq(missions.id, missionId)),
         columns: { id: true, teamId: true, workspaceId: true },
       });
       if (!row) {
@@ -208,7 +209,7 @@ export async function GET(req: NextRequest) {
       );
     }
     const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, workspaceId!),
+      where: sqlWhere(eq(workspaces.id, workspaceId!)),
       columns: { id: true, teamId: true },
     });
     if (!ws || !teamIds.includes(ws.teamId) || !(await reaches(ws.id))) {

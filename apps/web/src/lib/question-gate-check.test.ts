@@ -8,6 +8,7 @@ import { describe, expect, it } from 'bun:test';
 import { checkQuestion, recheckParkedQuestion, gateEnabledFromGitConfig, hardRailContextFromGitConfig, type QuestionCheckDeps, type QuestionCheckScope } from './question-gate-check';
 import { labelDecidedQuestionOutcomes } from './question-gate-decision-outcomes';
 import type { QuestionGateRequest } from '@buildd/core/question-gate';
+import { QUESTION_DECIDE_DECISION, QUESTION_GATE_DECISION, buildQuestionGateState } from '@buildd/core/question-gate-decision';
 
 const SCOPE: QuestionCheckScope = {
   teamId: 't', workspaceId: 'w', accountId: 'a', taskId: 'task-1', missionId: null, workerId: 'worker-1',
@@ -356,5 +357,42 @@ describe('gateEnabledFromGitConfig / hardRailContextFromGitConfig', () => {
 
   it('with no gitConfig at all, every list is the default fallback (undefined ⇒ detectHardRail\'s own hardcoded paths)', () => {
     expect(hardRailContextFromGitConfig(undefined)).toEqual({ schemaPaths: undefined, authSecretsPaths: undefined, ciDeployPaths: undefined });
+  });
+});
+
+describe('checkQuestion: replayable inputs', () => {
+  const state = () => buildQuestionGateState(BARE.question, SCOPE.taskTitle);
+
+  it('every answered row, at either stage, carries the state the model was asked with', async () => {
+    const { d, records, stage1 } = deps();
+    await checkQuestion(SCOPE, BARE, d);
+    expect(stage1[0].replay).toEqual({
+      state: state(), questionIds: Object.keys(QUESTION_GATE_DECISION.questions), candidates: null,
+      promptRef: { id: QUESTION_GATE_DECISION.id, version: QUESTION_GATE_DECISION.version, contentHash: QUESTION_GATE_DECISION.fingerprint },
+    });
+    expect(records[0].replay).toEqual({
+      state: state(), questionIds: Object.keys(QUESTION_DECIDE_DECISION.questions), candidates: ['local time', 'UTC'],
+      promptRef: { id: QUESTION_DECIDE_DECISION.id, version: QUESTION_DECIDE_DECISION.version, contentHash: QUESTION_DECIDE_DECISION.fingerprint },
+    });
+    for (const disposition of ['hold', 'ask'] as const) {
+      const other = deps({ runDecide: decideRun(disposition, null, 0.9) as any });
+      await checkQuestion(SCOPE, BARE, other.d);
+      expect(other.records[0].replay?.state).toEqual(state());
+    }
+  });
+
+  it('rows where no model answered keep no copy: a failed call, a rail, a recovery', async () => {
+    const failed = deps({ runGate: FAILED_RUN as any });
+    await checkQuestion(SCOPE, BARE, failed.d);
+    expect(failed.stage1[0].replay ?? null).toBeNull();
+
+    const failedDecide = deps({ runDecide: FAILED_RUN as any });
+    await checkQuestion(SCOPE, BARE, failedDecide.d);
+    expect(failedDecide.records[0].replay ?? null).toBeNull();
+
+    const railed = deps();
+    await checkQuestion({ ...SCOPE, hardRail: { pathManifest: ['packages/core/db/schema.ts'] } }, BARE, railed.d);
+    expect(railed.records.at(-1).reason).toBe('rail_blocked:migration');
+    expect(railed.records.at(-1).replay ?? null).toBeNull();
   });
 });

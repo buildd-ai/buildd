@@ -5,7 +5,7 @@
 import { after } from 'next/server';
 import { isActionableChip, type ActionQueueItem } from '@/lib/action-queue';
 import type { Stage } from '@/lib/stage';
-import { roleHas, type PermissionOverrides } from '@/lib/permission-registry';
+import { roleHas } from '@/lib/permission-registry';
 
 /**
  * Split the Waiting-on-You queue into what needs the human and what an agent
@@ -106,7 +106,7 @@ export function groupInFlight<T extends Pick<ActionQueueItem, 'chip' | 'docFixTa
   return entries.sort((a, b) => a.rank - b.rank || a.first - b.first).map(e => e.entry);
 }
 
-export type HomeAudience = 'operator' | 'member';
+export type HomeAudience = 'admin' | 'member';
 
 /**
  * Who Home is laid out for. Owners and admins run the fleet, so the fleet
@@ -114,8 +114,8 @@ export type HomeAudience = 'operator' | 'member';
  * first, and the fleet as one expandable line. A personal team resolves to
  * `owner` (getUserTeamRole), which covers a solo user and their own runners.
  */
-export function homeAudience(role: 'owner' | 'admin' | 'member' | null | undefined, overrides: PermissionOverrides | null): HomeAudience {
-  return roleHas(role, 'view_team_usage', overrides) ? 'operator' : 'member';
+export function homeAudience(role: 'owner' | 'admin' | 'member' | null | undefined): HomeAudience {
+  return roleHas(role, 'view_team_usage') ? 'admin' : 'member';
 }
 
 export type HomeChatPlacement =
@@ -128,7 +128,7 @@ export type HomeChatPlacement =
 
 /**
  * Where chat sits on Home. Available: the composer is the first thing on the
- * page for everyone; operators get the fleet directly under it. No key: an
+ * page for everyone; owners and admins get the fleet directly under it. No key: an
  * admin gets the provider step of onboarding in its place until a key works;
  * under "everyone brings their own key", anyone without one gets the single
  * connect card. A member of a team with no key sees nothing new on Home; the
@@ -145,10 +145,10 @@ export function homeChatPlacement(
   return { kind: 'none' };
 }
 
-/** "1 needs you · 4 in flight" — null when both halves are empty. */
+/** "1 waiting on you · 4 in flight" — null when both halves are empty. */
 export function waitingOnYouSummary(needsYouCount: number, inFlightCount: number): string | null {
   const parts: string[] = [];
-  if (needsYouCount > 0) parts.push(`${needsYouCount} need${needsYouCount === 1 ? 's' : ''} you`);
+  if (needsYouCount > 0) parts.push(`${needsYouCount} waiting on you`);
   if (inFlightCount > 0) parts.push(`${inFlightCount} in flight`);
   return parts.length > 0 ? parts.join(' · ') : null;
 }
@@ -160,7 +160,7 @@ export function waitingOnYouSummary(needsYouCount: number, inFlightCount: number
  */
 export function homeSubheading(shipClause: string | null, needsYouCount: number): string {
   const parts = [shipClause, waitingOnYouSummary(needsYouCount, 0)].filter(Boolean) as string[];
-  return parts.length > 0 ? parts.join(' · ') : 'Nothing needs input';
+  return parts.length > 0 ? parts.join(' · ') : 'Nothing waiting on you';
 }
 
 export type RightNowState = 'active' | 'create-workspace' | 'get-started' | 'idle';

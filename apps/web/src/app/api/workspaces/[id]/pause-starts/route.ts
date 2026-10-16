@@ -5,9 +5,10 @@ import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
-import { getTeamPermissionOverrides, roleHas } from '@/lib/permissions';
+import { roleHas } from '@/lib/permissions';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { isPaused, resolvePauseUntil, setWorkspacePause } from '@/lib/workspace-pause';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * GET/POST /api/workspaces/[id]/pause-starts: "Pause new starts until <time>".
@@ -32,9 +33,9 @@ async function access(auth: Auth, workspaceId: string, req: NextRequest, write: 
     const a = await verifyWorkspaceAccess(auth.user.id, workspaceId);
     if (!a) return 'not_found';
     if (!write) return 'ok';
-    return roleHas(a.role, 'manage_workspace_settings', await getTeamPermissionOverrides(a.teamId)) ? 'ok' : 'forbidden';
+    return roleHas(a.role, 'manage_workspace_settings') ? 'ok' : 'forbidden';
   }
-  const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId), columns: { teamId: true } });
+  const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, workspaceId)), columns: { teamId: true } });
   if (!ws || ws.teamId !== auth.apiAccount?.teamId) return 'not_found';
   if (!write) return 'ok';
   return hasTokenRouteAdminAccess(auth.apiAccount, req) ? 'ok' : 'forbidden';
@@ -51,7 +52,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   if (!auth) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   if ((await access(auth, id, req, false)) !== 'ok') return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, id),
+    where: sqlWhere(eq(workspaces.id, id)),
     columns: { newStartsPausedUntil: true, newStartsPausedBy: true },
   });
   if (!ws) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });

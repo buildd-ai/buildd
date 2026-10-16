@@ -96,6 +96,32 @@ describe('recordOrchestrationDecision', () => {
   });
 });
 
+describe('recordOrchestrationDecision replay', () => {
+  it('gives the row an id and keeps the input under it, after the insert', async () => {
+    const calls: any[] = [];
+    const capture = (input: any) => { calls.push({ input, insertedFirst: fake.inserted.length === 1 }); return 'scheduled' as const; };
+    const replay = { state: 'two tasks touch a.ts', questionIds: ['pick'], promptRef: { id: 'buildd.x', version: '2', contentHash: 'fp' } };
+    await src.recordOrchestrationDecision(
+      { teamId: 't', workspaceId: WS, decisionId: 'buildd.x', capability: 'orchestration_claim', model: 'typesafe/jev-1.13', ruleVerdict: 'HOLD' } as any,
+      replay,
+      { capture, newId: () => 'row-id-1' },
+    );
+    expect(fake.inserted[0].values.id).toBe('row-id-1');
+    expect(calls).toHaveLength(1);
+    expect(calls[0].insertedFirst).toBe(true);
+    expect(calls[0].input).toMatchObject({ ...replay, decisionId: 'row-id-1', source: 'orchestration_decisions', teamId: 't', workspaceId: WS, capability: 'orchestration_claim', model: 'typesafe/jev-1.13', ruleAnswer: 'HOLD' });
+  });
+
+  it('keeps no copy when the insert fails, and sets no id without a replay', async () => {
+    const capture = mock(() => 'scheduled' as const);
+    await src.recordOrchestrationDecision({ teamId: 't', workspaceId: WS } as any, null, { capture });
+    expect(fake.inserted[0].values).not.toHaveProperty('id');
+    fake.throwOnInsert = true;
+    await src.recordOrchestrationDecision({ teamId: 't', workspaceId: WS } as any, { state: 's', questionIds: ['q'] }, { capture });
+    expect(capture).not.toHaveBeenCalled();
+  });
+});
+
 describe('recordOrchestrationTouchLabel', () => {
   const label = { taskId: TASK, workspaceId: WS, workerId: WORKER, workerStatus: 'completed', paths: ['a.ts', 'a.ts', 'b.ts'], prNumber: 7, headSha: 'h1', baseRef: 'dev' };
 

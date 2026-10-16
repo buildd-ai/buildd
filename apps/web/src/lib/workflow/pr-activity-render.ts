@@ -16,7 +16,7 @@
  *    render older than the marker already on GitHub is skipped by the handler.
  */
 import { renderPrActivityComment, taskActivityUrl, type PrActivityEntry, type PrActivityKind, type ActivityHeader } from '@/lib/pr-activity-comment';
-import { deriveDeliveryView } from './projections';
+import { deriveDeliveryView, reviewSummaryLine, reviewSummaryOf } from './projections';
 import { signatureChecks } from './trunk-signature';
 import type { AttemptSnapshot, DeliveryState, KernelView, RoundSnapshot } from './types';
 
@@ -99,7 +99,7 @@ export function transitionsToActivityEntries(
         const url = reviewUrl(round);
         const delta = ev.compositionDelta as { paths?: unknown } | undefined;
         if (t.toState === 'APPROVED' && delta) {
-          // §5.9 / S33: the delta round covers only the novel paths, never the whole release.
+          // §5.9 / S33: the delta round covers only the novel paths, never the whole PR.
           const paths = Array.isArray(delta.paths) ? delta.paths.map(String) : [];
           push({ kind: 'composition_delta_approved', note: paths.length ? paths.join('\n') : null, ...(url ? { taskUrl: url } : {}) });
         } else if (t.toState === 'APPROVED') push({ kind: 'review_approved', ...(url ? { taskUrl: url } : {}) });
@@ -236,5 +236,39 @@ export function renderDeliveryActivity(p: {
     status: dv?.detail && dv.detail.length <= 80 ? dv.detail : undefined,
   };
   const body = renderPrActivityComment(entries, p.timezone, { header, stateBlock: false });
-  return `${body}\n${renderVersionMarker(d.version)}`;
+  // §7 / AC-24: the same review line get_pr and the task page print.
+  const review = reviewSummaryOf(p.view);
+  const reviewLine = review ? `Review: ${reviewSummaryLine(review)}` : '';
+  const findings = renderFindingsSummary(p.view);
+  return `${body}\n${reviewLine ? `\n${reviewLine}\n` : ''}${findings ? `${findings}\n` : ''}${renderVersionMarker(d.version)}`;
+}
+
+/**
+ * §5 (workflow-kernel-library.md): every finding with its disposition, the
+ * commit that addressed it and the round that verified it, so a request for
+ * changes that was fixed reads as fixed and one that was not stays visible.
+ * Empty when the delivery has no findings.
+ */
+export function renderFindingsSummary(view: Pick<KernelView, 'findings' | 'rounds'>): string {
+  const all = view.findings ?? [];
+  if (all.length === 0) return '';
+  const roundNo = (id: string | null) => view.rounds.find((r) => r.id === id)?.round ?? null;
+  const open = all.filter((f) => f.status === 'open' || f.status === 'addressed').length;
+  const line = (f: (typeof all)[number]): string => {
+    const where = f.path ? `\`${f.path}${f.line != null ? `:${f.line}` : ''}\` ` : '';
+    const raised = `round ${f.originRound}`;
+    const state = f.status === 'open' ? 'open'
+      : f.status === 'addressed' ? `addressed by \`${shortSha(f.addressedBySha)}\`, awaiting verification`
+        : f.status === 'resolved' ? `resolved${f.addressedBySha ? ` by \`${shortSha(f.addressedBySha)}\`` : ''}, verified in round ${roundNo(f.closedByRoundId) ?? '?'}`
+          : f.status === 'waived' ? `waived${f.closedBy ? ` by ${f.closedBy.replace(/^human:/, '')}` : ''}${f.closedReason ? `: ${f.closedReason}` : ''}`
+            : `deferred${f.deferredToTaskId ? ` to task ${f.deferredToTaskId.slice(0, 8)}` : ''}${f.closedReason ? `: ${f.closedReason}` : ''}`;
+    return `- ${where}${escapeFindingText(f.title)} (${raised}${f.required ? '' : ', optional'}) · ${state}`;
+  };
+  const summary = `Findings: ${open} open of ${all.length}`;
+  return ['<details><summary>' + summary + '</summary>', '', ...all.map(line), '', '</details>'].join('\n');
+}
+
+/** A finding's title in one line, with nothing that could open a tag or a mention. */
+function escapeFindingText(t: string): string {
+  return t.replace(/\s+/g, ' ').replace(/[<>]/g, (c) => (c === '<' ? '&lt;' : '&gt;')).replace(/@/g, '@\u200b').slice(0, 200);
 }

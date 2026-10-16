@@ -11,6 +11,7 @@
 // own shape.
 
 import type { WorkspaceReleaseConfig, ReleaseStrategy, ReleaseTrigger } from './db/schema';
+import { isLegacyReleasePr } from './release-candidate';
 
 export type ResolvedReleaseStrategy =
   | {
@@ -83,15 +84,16 @@ export function resolveReleaseTrigger(
 // prodBranch populated from before must not have unrelated PRs (e.g. a
 // routine dev→main PR that isn't this workspace's release rollup) silently
 // exempted from the aggregate line-count cap.
+//
+// Legacy fixed-branch shape only. A frozen release candidate
+// (`releaseConfig.candidate`, e.g. release/v1.2.3 → main) is recognised by
+// `classifyReleasePr` in release-candidate.ts, which also needs the PR's
+// author, body and head sha — refs alone cannot prove a candidate.
 export function isReleaseBranchPr(
   config: WorkspaceReleaseConfig | null | undefined,
   refs: { headRef?: string | null; baseRef?: string | null },
 ): boolean {
-  if (!config?.enabled) return false;
-  const releaseBranch = config?.releaseBranch?.trim();
-  const prodBranch = config?.prodBranch?.trim();
-  if (!releaseBranch || !prodBranch) return false;
-  return refs.headRef?.trim() === releaseBranch && refs.baseRef?.trim() === prodBranch;
+  return isLegacyReleasePr(config, refs);
 }
 
 export function resolveReleaseStrategy(

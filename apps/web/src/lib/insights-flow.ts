@@ -35,10 +35,11 @@
  */
 
 import type { InsightsUsageRow } from '../../../../packages/shared/src/insights';
-import { LIVE_WORKER_STATUSES, TERMINAL_TASK_STATUSES } from '@buildd/shared';
+import { FAILED_WORKER_STATUSES, LIVE_WORKER_STATUSES, TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { basisOfRow } from './cost-basis-split';
 import { executorOf } from './executor';
 import { MAX_UNENDED_RUN_MS } from './fleet-occupancy';
+import { emptySplit, splitTime, TIME_CATEGORIES, type TimeCategory, type TimeInterval } from './insights-time-split';
 
 export type FlowWindow = '7d' | '30d';
 export const FLOW_WINDOWS: readonly FlowWindow[] = ['7d', '30d'];
@@ -91,6 +92,12 @@ export interface FlowWorkerRow {
   prAbandonedAt: number | null;
   /** Branch the PR merged into; `mission/...` means a mission integration branch. */
   prBaseRef?: string | null;
+  /** When the worker's task was created, for the wait before a runner picked it up. */
+  taskCreatedAt?: number | null;
+  /** The task waits on other tasks, so its wait before starting is not a runner's. */
+  taskHasDependencies?: boolean;
+  /** Set on a task created to fix a PR: its CI failed, it conflicted, or review asked for changes. */
+  taskRetryKind?: 'ci' | 'conflict' | 'review' | null;
 }
 
 export interface FlowReleaseRow {
@@ -138,7 +145,15 @@ export interface FlowTask {
   lostAt: number | null;
   outcome?: 'In flight' | 'Completed';
   agentHours: number;
+  /** Milliseconds inside the window per category; see insights-time-split.ts. */
+  time?: Record<TimeCategory, number>;
 }
+
+/** Tasks shipped and lost in one 24-hour slice of the window. */
+export interface FlowDay { start: number; end: number; shipped: number; lost: number }
+
+/** One row of "What slowed work down?": time inside the window, and how many tasks spent any. */
+export interface FlowTimeRow { category: TimeCategory; ms: number; tasks: number; longestMs: number }
 
 export interface FlowBucket {
   start: number;
@@ -179,10 +194,18 @@ export interface FlowSeries {
   usage?: InsightsUsageRow[];
   workspaceNames?: Record<string, string>;
   headline: FlowHeadline;
+  /** 24-hour slices from the window start: what shipped and what was lost in each. */
+  days: FlowDay[];
+  /** Where task time went inside the window, in display order. */
+  time: FlowTimeRow[];
+  /** The same counts for the window before, when the read reached back that far. */
+  previous?: { shippedTasks: number; lostTasks: number; days: FlowDay[] } | null;
 }
 
 export const UNASSIGNED_ROLE = 'general-purpose';
 const LIVE = new Set<string>(LIVE_WORKER_STATUSES);
+const FAILED_WORKER = new Set<string>(FAILED_WORKER_STATUSES);
+const DAY = 24 * HOUR;
 const SHIPPED_RELEASE_STATES = new Set(['healthy', 'degraded']);
 const CLOSED_PR = new Set(['closed', 'unresolvable']);
 // Terminal task statuses that mean the work did not land (`completed` is the other one).
@@ -292,6 +315,9 @@ export function buildFlowSeries(input: FlowInput): FlowSeries {
   const roleHours = new Map<string, number>();
   let shippedHours = 0, lostHours = 0, inFlightHours = 0, otherHours = 0;
   const startToProd: number[] = [];
+  const timeTotals = emptySplit();
+  const timeTasks = emptySplit();
+  const timeLongest = emptySplit();
 
   for (const [key, rows] of groups) {
     rows.sort((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0));
@@ -349,8 +375,15 @@ export function buildFlowSeries(input: FlowInput): FlowSeries {
     const segments = stageSegments(runs, waits, review, merged)
       .map(s => ({ ...s, from: Math.max(s.from, window.from), to: Math.min(s.to, window.to) }))
       .filter(s => s.to > s.from);
+    const time = splitTime(timeIntervals(rows, runs, waits, review, merged, latestPr, now), window);
     const inWindow = (t: number | null) => t != null && t >= window.from && t < window.to;
-    if (segments.length === 0 && !inWindow(shippedAt) && !inWindow(lostAt)) continue;
+    if (segments.length === 0 && !inWindow(shippedAt) && !inWindow(lostAt) && TIME_CATEGORIES.every(c => time[c] === 0)) continue;
+    for (const c of TIME_CATEGORIES) {
+      if (time[c] <= 0) continue;
+      timeTotals[c] += time[c];
+      timeTasks[c]++;
+      timeLongest[c] = Math.max(timeLongest[c], time[c]);
+    }
 
     const agentHours = runs.reduce((h, i) => h + (i.to - i.from), 0) / HOUR;
     for (const s of segments) {
@@ -374,6 +407,7 @@ export function buildFlowSeries(input: FlowInput): FlowSeries {
       lostAt,
       outcome: (settledQuietly || !latestPr) && !rows.some(r => LIVE.has(r.status)) ? 'Completed' : 'In flight',
       agentHours,
+      time,
     });
   }
 
@@ -399,6 +433,13 @@ export function buildFlowSeries(input: FlowInput): FlowSeries {
   const windowReleases = input.releases
     .filter(r => r.at >= window.from && r.at <= window.to)
     .sort((a, b) => a.at - b.at);
+
+  const days: FlowDay[] = [];
+  for (let start = window.from; start < window.to; start += DAY) {
+    const end = Math.min(window.to, start + DAY);
+    const at = (t: number | null) => t != null && t >= start && t < end;
+    days.push({ start, end, shipped: tasks.filter(t => at(t.shippedAt)).length, lost: tasks.filter(t => at(t.lostAt)).length });
+  }
 
   const settled = shippedHours + lostHours;
   const shippedTasks = tasks.filter(t => t.shippedAt != null && t.shippedAt >= window.from && t.shippedAt < window.to).length;
@@ -430,5 +471,60 @@ export function buildFlowSeries(input: FlowInput): FlowSeries {
       releases: windowReleases.filter(r => SHIPPED_RELEASE_STATES.has(r.state)).length,
       medianStartToProdMs: median(startToProd),
     },
+    days,
+    time: TIME_CATEGORIES.map(category => ({ category, ms: timeTotals[category], tasks: timeTasks[category], longestMs: timeLongest[category] })),
   };
+}
+
+/**
+ * Every interval of one task's life, by category, before precedence: runs
+ * (a retry when it fixes a PR or follows a failed attempt), parked questions,
+ * waits for a runner, the open PR (CI up to each failure that started a fix,
+ * or until now while checks run) and the wait for a release.
+ */
+function timeIntervals(
+  rows: FlowWorkerRow[], runs: Interval[], waits: Interval[], review: Interval | null, merged: Interval | null,
+  latestPr: FlowWorkerRow | undefined, now: number,
+): TimeInterval[] {
+  const out: TimeInterval[] = [];
+  const runEnds: number[] = [];
+  const byTask = new Map<string, FlowWorkerRow[]>();
+  rows.forEach((r, i) => {
+    const prior = rows.slice(0, i);
+    const retry = r.taskRetryKind != null || prior.some(p => FAILED_WORKER.has(p.status) && (p.taskId ?? p.workerId) === (r.taskId ?? r.workerId));
+    const end = Math.max(r.startedAt!, runEnd(r, now));
+    out.push({ from: r.startedAt!, to: end, category: retry ? 'retry' : 'running' });
+    runEnds.push(end);
+    const k = r.taskId ?? `worker:${r.workerId}`;
+    if (!byTask.has(k)) byTask.set(k, []);
+    byTask.get(k)!.push(r);
+  });
+  for (const w of waits) out.push({ ...w, category: 'needs_input' });
+
+  for (const attempts of byTask.values()) {
+    const first = attempts[0];
+    if (first.taskCreatedAt != null && !first.taskHasDependencies) {
+      out.push({ from: first.taskCreatedAt, to: first.startedAt!, category: 'runner' });
+    }
+    // Requeued after a failed attempt: the gap until the next one started.
+    for (let i = 1; i < attempts.length; i++) {
+      const prev = attempts[i - 1];
+      if (FAILED_WORKER.has(prev.status)) out.push({ from: runEnd(prev, now), to: attempts[i].startedAt!, category: 'runner' });
+    }
+  }
+
+  if (review) {
+    out.push({ ...review, category: 'review' });
+    const lastPushBefore = (t: number) => Math.max(review.from, ...runEnds.filter(e => e <= t));
+    for (const attempts of byTask.values()) {
+      const created = attempts[0].taskCreatedAt;
+      if (attempts[0].taskRetryKind !== 'ci' || created == null || created < review.from || created > review.to) continue;
+      out.push({ from: lastPushBefore(created), to: created, category: 'ci' });
+    }
+    if (latestPr?.prLifecycleStatus === 'ci_running' && review.to >= now) {
+      out.push({ from: lastPushBefore(now), to: now, category: 'ci' });
+    }
+  }
+  if (merged) out.push({ ...merged, category: 'release' });
+  return out;
 }

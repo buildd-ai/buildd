@@ -11,7 +11,8 @@ import { workspaceProjectKey } from '@buildd/core/project-scope';
 import ObservationList from './ObservationList';
 import KnowledgeHealthSection from './KnowledgeHealthSection';
 import { roleHas } from '@/lib/permission-registry';
-import { getTeamPermissionOverrides } from '@/lib/permissions';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
+
 
 async function fetchInitialMemories(workspaceId: string): Promise<{ memories: Memory[]; total: number }> {
   try {
@@ -22,7 +23,7 @@ async function fetchInitialMemories(workspaceId: string): Promise<{ memories: Me
     // key the memories rows carry (workspaces.repo is a mix of full URLs and
     // short forms, so the raw value scoped nothing).
     const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, workspaceId),
+      where: sqlWhere(eq(workspaces.id, workspaceId)),
       columns: { repo: true, name: true },
     });
     const project = workspaceProjectKey(ws?.repo, ws?.name) ?? undefined;
@@ -63,7 +64,7 @@ export default async function WorkspaceMemoryPage({
   if (!access) notFound();
 
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, id),
+    where: sqlWhere(eq(workspaces.id, id)),
     columns: { id: true, name: true },
   });
 
@@ -102,7 +103,7 @@ export default async function WorkspaceMemoryPage({
             reverifyFlaggedAt: m.reverifyFlaggedAt ?? null,
             reverifyRef: m.reverifyRef ?? null,
           }))}
-          canReview={roleHas(access.role, 'review_memory', await getTeamPermissionOverrides(access.teamId))}
+          canReview={roleHas(access.role, 'review_memory')}
         />
         <KnowledgeHealthSection workspaceId={id} />
       </div>

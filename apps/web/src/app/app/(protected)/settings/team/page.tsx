@@ -1,28 +1,26 @@
-import WarmHandoverSection from '@/components/WarmHandoverSection';
 import Link from 'next/link';
 import { db } from '@buildd/core/db';
 import { teams, teamMembers } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import SettingsPage from '../_components/SettingsPage';
 import TimezoneSection from '../TimezoneSection';
-import TeamPermissionsSection from './TeamPermissionsSection';
 import TeamDetailClient from './TeamDetailClient';
 import { loadSettingsContext } from '../_lib/settings-context';
 import { roleHas } from '@/lib/permission-registry';
 import PrimaryAction from '@/components/ui/PrimaryAction';
 import { resolveTeamQaState, withQaFixtureMembers } from './qa-state';
-import { pickShownTeam } from './shown-team';
-import { getTeamPermissionOverrides } from '@/lib/permissions';
+import { pickShownTeam } from '../_lib/shown-team';
+
 import { settingsReadOnly } from '@/lib/settings-nav';
 import { NO_PERMISSIONS, settingsPermissions } from '../_lib/settings-permissions';
 import UrlSheet from '@/components/UrlSheet';
 import NewTeamForm from './NewTeamForm';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
 /**
- * Settings › Team › Members: a team's people, its timezone, and who can do what (team
- * permission overrides). Shows the active team, or `?team=<id>` when the
+ * Settings › Team › Members: a team's people and its timezone. Shows the active team, or `?team=<id>` when the
  * person is a member of it, so a link to another team (the old
  * /app/teams/[id]) lands on that team's members.
  * `?new=1` opens the New team sheet (the old /app/settings/team/new redirects here).
@@ -59,60 +57,32 @@ export default async function TeamSettingsPage({
 
   const [team, members] = await Promise.all([
     db.query.teams.findFirst({
-      where: eq(teams.id, shown.id),
+      where: sqlWhere(eq(teams.id, shown.id)),
       columns: { id: true, name: true, slug: true, createdAt: true },
     }).catch(() => null),
     db.query.teamMembers.findMany({
-      where: eq(teamMembers.teamId, shown.id),
+      where: sqlWhere(eq(teamMembers.teamId, shown.id)),
       with: { user: true },
     }).catch(() => []),
   ]);
 
   const role = shown.role as 'owner' | 'admin' | 'member';
-  const permissionOverrides = team ? await getTeamPermissionOverrides(team.id) : null;
-  const otherTeams = userTeams.filter((t) => t.id !== shown.id);
   // The shown team's flags (it can differ from the active team via ?team=).
-  // A failed overrides read holds nothing, as loadSettingsContext does.
-  const perms = permissionOverrides ? settingsPermissions({ role, slug: team?.slug ?? shown.slug }, user.id, permissionOverrides) : NO_PERMISSIONS;
+  // A failed team read leaves the page read-only, as it says it could not load.
+  const perms = team ? settingsPermissions({ role, slug: team.slug }, user.id) : NO_PERMISSIONS;
 
   const sections = (
     <>
-      <WarmHandoverSection teamId={shown.id} canEdit={roleHas(role, 'manage_team_settings', permissionOverrides)} />
-
       {/* This team only: another team's timezone is on its own Members page. */}
       <TimezoneSection teams={[{ id: shown.id, name: shown.name }]} currentTeamId={shown.id} />
-
-      {/* A personal team has one member, its owner: there is nothing to grant. */}
-      {team && !team.slug.startsWith('personal-') && <TeamPermissionsSection teamId={team.id} />}
     </>
   );
 
   return (
     <SettingsPage title="Members" readOnly={settingsReadOnly('team', perms)}>
       {newTeamSheet}
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        {otherTeams.length > 0 ? (
-          <details data-testid="team-switcher" className="group min-w-0 flex-1 text-sm">
-            <summary className="flex min-h-11 md:min-h-0 cursor-pointer list-none items-center gap-1.5 text-text-secondary">
-              <span className="text-text-muted">Team:</span>
-              <span className="font-medium text-text-primary">{shown.name}</span>
-              <span aria-hidden="true">·</span>
-              <span className="underline underline-offset-2 hover:text-text-primary">Switch</span>
-            </summary>
-            <div className="mt-2 divide-y divide-border-default border-y border-border-default">
-              {otherTeams.map((t) => (
-                <Link
-                  key={t.id}
-                  href={`/app/settings/team?team=${encodeURIComponent(t.id)}`}
-                  className="flex min-h-11 items-center justify-between gap-3 py-2 hover:bg-surface-3 transition-colors"
-                >
-                  <span className="truncate font-medium text-text-primary">{t.name}</span>
-                  <span className="shrink-0 text-text-muted">{t.role}</span>
-                </Link>
-              ))}
-            </div>
-          </details>
-        ) : <span />}
+      {/* The team card below names the team; the shell switcher changes it. */}
+      <div className="flex justify-end">
         <Link href={newTeamHref} scroll={false} data-testid="new-team-link" className="btn btn-sm h-11 md:h-8 shrink-0">New team</Link>
       </div>
 
@@ -132,14 +102,13 @@ export default async function TeamSettingsPage({
           currentUserRole={role}
           currentUserId={user.id}
           isPersonal={team.slug.startsWith('personal-')}
-          canManage={roleHas(role, 'manage_team_members', permissionOverrides)}
-          permissionOverrides={permissionOverrides}
+          canManage={roleHas(role, 'manage_team_members')}
         >
           {sections}
         </TeamDetailClient>
       ) : (
         <>
-          <p className="text-sm text-text-muted">Could not load the team.</p>
+          <p className="text-sm text-text-muted">Couldn&apos;t load the team.</p>
           {sections}
         </>
       )}

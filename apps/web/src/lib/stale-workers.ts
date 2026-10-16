@@ -1,4 +1,5 @@
 import { isSilentCompletion } from '@/lib/silent-completion';
+import { inheritTaskDelegation } from '@buildd/core/token-delegation';
 import { db } from '@buildd/core/db';
 import { workers, tasks, workerHeartbeats, missionNotes, accounts } from '@buildd/core/db/schema';
 import { eq, and, or, not, inArray, lt, gt, notInArray, isNotNull, asc, sql } from 'drizzle-orm';
@@ -6,18 +7,21 @@ import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { checkWorkerDeliverables, getWorkerDeliverableArtifactCount, getLatestWorkerArtifactWithStructuredOutput } from '@/lib/worker-deliverables';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { classifyStaleExit, consumesRetryAttempt, SILENT_START_MAX_TURNS, type WorkerExitCause } from '@/lib/worker-exit-taxonomy';
-import { WORKER_STALE_REAP_MS, WORKER_LEASE_TTL_MS, RUNNER_STALE_CUTOFF_MS, VISUAL_AUDITOR_ROLE_SLUG, INTERACTIVE_WORKER_RUNNER, type LoopConfig } from '@buildd/shared';
+import { WORKER_STALE_REAP_MS, WORKER_LEASE_TTL_MS, RUNNER_STALE_CUTOFF_MS, VISUAL_AUDITOR_ROLE_SLUG, INTERACTIVE_WORKER_RUNNER, isTerminalTaskStatus, type LoopConfig } from '@buildd/shared';
 import { interactiveAbandonedScope, runnerWorkerOnly } from '@/lib/interactive-worker-liveness';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { detachInteractiveWorkersOfEndedTasks, releaseConcurrencySeats } from '@/lib/interactive-detach';
 import { withoutForceClaim } from '@/lib/force-claim';
 import { escalateReviewContractFailure } from '@/lib/auto-merge';
 import { kernelDeliveryById } from '@/lib/workflow/authority';
+import { notKernelMergedTaskSql } from '@/lib/workflow/pr-fact-scope';
 import { notHeldOrLocal } from '@/app/api/workers/claim/held-gate';
 import { PARK_MAX_MS, PARK_MISSION_MAX_MS, notParkedScope } from '@/lib/worker-park';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
+import { clearWorkerMessages } from '@buildd/core/worker-messages';
 import {
   ANSWER_PATH_REASONS,
+  INTERACTIVE_ANSWER_READ_DEADLINE_MS,
   buildContinuationTaskValues,
   describeAnswerPath,
   type AnswerDeliveryRecord,
@@ -25,6 +29,7 @@ import {
 } from '@/lib/answer-resume';
 import type { WaitingFor } from '@buildd/shared';
 import { waitingForOptionLabels } from '@/lib/waiting-for-options';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Maximum number of failed worker attempts before a task is permanently failed */
 const MAX_WORKER_RETRIES = 3;
@@ -73,13 +78,13 @@ const WAITING_INPUT_MISSION_STALE_MS = PARK_MISSION_MAX_MS;
 async function resolveStaleTask(
   taskId: string,
   workspaceId: string,
-  staleWorker: { id: string; prUrl: string | null; prNumber: number | null; commitCount: number | null; branch: string | null; error: string | null } | undefined,
+  staleWorker: { id: string; prUrl: string | null; prNumber: number | null; commitCount: number | null; branch: string | null; error: string | null; runner?: string | null } | undefined,
   exitCause?: WorkerExitCause,
 ) {
   // Read current task status and context upfront. A cancelled task must never
   // be re-queued — the user explicitly cancelled it and its worker was aborted.
   const currentTask = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { kind: true, pathManifest: true, outputRequirement: true, taskClass: true, status: true, context: true, category: true, loopConfig: true, loopState: true, updatedAt: true, missionId: true, roleSlug: true, deliveryId: true, deliveryRole: true },
   });
   // A visual-auditor mission task is settled only by its own evidence check
@@ -102,7 +107,7 @@ async function resolveStaleTask(
     : null;
   const kernelAttemptEnded = async () => {
     if (!kernelDeliveryId || !currentTask) return;
-    const after = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId), columns: { status: true } });
+    const after = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { status: true } });
     if (after?.status !== 'failed') return;
     // Lazy: the seam loads the effect handlers, which load half the app.
     const { attemptEnded: workflowAttemptEnded } = await import('@/lib/workflow/seam');
@@ -116,12 +121,12 @@ async function resolveStaleTask(
     }).catch((err) => console.error(`[stale-workers] workflow kernel AttemptEnded(lost) failed for task ${taskId}:`, err));
   };
 
-  // Reaper exemption: a task in condition_unmet with a pr_merged exit condition
-  // is waiting for a webhook event — no in-flight worker to kill. Leave as pending
-  // until the wait expires or the webhook fires and advances the loop.
+  // Reaper exemption: a task in condition_unmet with a pr_merged or pr_checks_green
+  // exit condition is waiting for a webhook event — no in-flight worker to kill. Leave
+  // as pending until the wait expires or the webhook fires and advances the loop.
   if (currentTask?.loopState === 'condition_unmet') {
     const loopCfg = currentTask.loopConfig as LoopConfig | null;
-    if (loopCfg?.exitCondition?.type === 'pr_merged') {
+    if (loopCfg?.exitCondition?.type === 'pr_merged' || loopCfg?.exitCondition?.type === 'pr_checks_green') {
       const waitExpiryMinutes = loopCfg.waitExpiryMinutes ?? 240;
       const waitExpiryMs = waitExpiryMinutes * 60 * 1000;
       const elapsed = Date.now() - (currentTask.updatedAt?.getTime() ?? 0);
@@ -131,14 +136,18 @@ async function resolveStaleTask(
         return;
       }
       // Wait expired — fail the task so the mission can move forward.
+      const conditionType = loopCfg.exitCondition.type;
+      const waitReason = conditionType === 'pr_merged'
+        ? `PR merge wait expired after ${waitExpiryMinutes} minutes`
+        : `PR checks green wait expired after ${waitExpiryMinutes} minutes`;
       await db
         .update(tasks)
         .set({
           status: 'failed',
-          result: { error: `PR merge wait expired after ${waitExpiryMinutes} minutes` } as any,
+          result: { error: waitReason } as any,
           updatedAt: new Date(),
         })
-        .where(eq(tasks.id, taskId));
+        .where(and(eq(tasks.id, taskId), notKernelMergedTaskSql()));
       await resolveCompletedTask(taskId, workspaceId);
       return;
     }
@@ -230,7 +239,7 @@ async function resolveStaleTask(
           result: { error: 'agent review timed out' } as any,
           updatedAt: new Date(),
         })
-        .where(eq(tasks.id, taskId));
+        .where(and(eq(tasks.id, taskId), notKernelMergedTaskSql()));
     }
 
     await kernelAttemptEnded();
@@ -299,10 +308,10 @@ async function resolveStaleTask(
     // NOT consume a retry slot (they reflect external constraints, not task bugs).
     // Workers predating exitCause (null) are treated as code_failure for safety.
     const failedWorkers = await db.query.workers.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(workers.taskId, taskId),
         eq(workers.status, 'failed'),
-      ),
+      )),
       columns: { id: true, exitCause: true },
     });
     const chargeableFailures = failedWorkers.filter(w => consumesRetryAttempt(w.exitCause));
@@ -322,7 +331,7 @@ async function resolveStaleTask(
           } as any,
           updatedAt: new Date(),
         })
-        .where(eq(tasks.id, taskId));
+        .where(and(eq(tasks.id, taskId), notKernelMergedTaskSql()));
     } else if (chargeableFailures.length >= MAX_WORKER_RETRIES) {
       // Retry cap reached — permanently fail the task
       await db
@@ -332,7 +341,7 @@ async function resolveStaleTask(
           result: { error: `Task failed after ${chargeableFailures.length} worker attempts`, ...auditStall } as any,
           updatedAt: new Date(),
         })
-        .where(eq(tasks.id, taskId));
+        .where(and(eq(tasks.id, taskId), notKernelMergedTaskSql()));
     } else {
       // Infra failure path (stale reaper always means the runner went offline).
       // Track attempts separately so infra burns don't consume code-failure retry slots.
@@ -340,6 +349,9 @@ async function resolveStaleTask(
       const existingCtx = (currentTask?.context || {}) as Record<string, unknown>;
       const infraRetryCount = (existingCtx.infraRetryCount as number) || 0;
 
+      // An interactive worker never reaches here: resolveTasksOfReapedWorkers
+      // routes it to resolveAbandonedInteractiveTask, and the heartbeat-orphan
+      // scope excludes it.
       if (infraRetryCount >= MAX_INFRA_RETRIES) {
         // Infra retry cap reached — mark as stalled so mission health surfaces the issue
         // and operators know it needs attention (not just queued like a fresh task).
@@ -354,7 +366,7 @@ async function resolveStaleTask(
             } as any,
             updatedAt: new Date(),
           })
-          .where(eq(tasks.id, taskId));
+          .where(and(eq(tasks.id, taskId), notKernelMergedTaskSql()));
       } else {
         // Infra retries remaining — reset to pending with backoff so the next runner
         // attempt doesn't race immediately (helps when the infra issue needs settling time).
@@ -377,7 +389,7 @@ async function resolveStaleTask(
             },
             updatedAt: new Date(),
           })
-          .where(eq(tasks.id, taskId));
+          .where(and(eq(tasks.id, taskId), notKernelMergedTaskSql()));
         // Keyed onto the trigger's start_at row, so it fires when the backoff ends.
         await wakeTask(taskId, 'task.requeued', { notBefore: startAt });
       }
@@ -394,6 +406,51 @@ async function resolveStaleTask(
   );
 
   await kernelAttemptEnded();
+  await resolveCompletedTask(taskId, workspaceId);
+}
+
+/**
+ * The task of an interactive worker the reaper released. Its session runs on
+ * someone's own machine and may well still be running (the release is a lease
+ * decision, not proof the client died), so none of the runner outcomes apply:
+ * the task is never completed from the worker's deliverables (a PR opened
+ * mid-work is not the work done), and never charged an infra retry or a
+ * backoff. An open task goes straight back to pending, so the same client can
+ * claim it again at once, on the worker's branch; a terminal one keeps its
+ * status (failure-incident-recovery §18.3, I-15: never `failed`). The same
+ * outcome as "Release slot" (lib/interactive-detach.ts).
+ */
+async function resolveAbandonedInteractiveTask(
+  taskId: string,
+  workspaceId: string,
+  staleWorker: { branch?: string | null; error?: string | null } | undefined,
+) {
+  const current = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { status: true, context: true } });
+  if (current && current.status !== 'pending' && !isTerminalTaskStatus(current.status)) {
+    const existingCtx = (current.context || {}) as Record<string, unknown>;
+    await db
+      .update(tasks)
+      .set({
+        status: 'pending',
+        claimedBy: null,
+        claimedAt: null,
+        expiresAt: null,
+        startAt: null,
+        context: {
+          ...withoutForceClaim(existingCtx),
+          ...(staleWorker?.branch ? { baseBranch: staleWorker.branch, resumeBranch: staleWorker.branch } : {}),
+          failureContext: staleWorker?.error || 'The local session went quiet; a session can re-claim this task',
+          // Carried as it was: an interactive release is never charged.
+          infraRetryCount: (existingCtx.infraRetryCount as number) || 0,
+        },
+        updatedAt: new Date(),
+      })
+      .where(and(eq(tasks.id, taskId), eq(tasks.status, current.status), notKernelMergedTaskSql()));
+    await wakeTask(taskId, 'task.requeued');
+  }
+  await releaseAndNotify(taskId, 'abandoned').catch(e =>
+    console.error(`[stale-workers] releaseAndNotify failed for task ${taskId}:`, e),
+  );
   await resolveCompletedTask(taskId, workspaceId);
 }
 
@@ -563,7 +620,8 @@ export function heartbeatFreshnessScope(accountId: string, heartbeatCutoff: Date
  *    of these arms excludes it; without that the idle rule reaped live
  *    interactive work five minutes after claim_task (friction 92866723).
  *  - The interactive arm reaps an interactive worker only after
- *    INTERACTIVE_WORKER_IDLE_TTL_MS with no MCP activity at all.
+ *    INTERACTIVE_WORKER_IDLE_TTL_MS with no MCP or hook activity, unless the
+ *    plugin presence holding it says a turn is still in progress.
  */
 export function staleWorkerScope(accountId: string, now: Date = new Date()) {
   //    - 'running'/'starting': no update for WORKER_STALE_REAP_MS (runner hard
@@ -643,7 +701,7 @@ export async function cleanupStaleWorkers(accountId: string): Promise<{ heartbea
 
   // 1. Auto-expire stale workers. The rules live in staleWorkerScope.
   const staleWorkers = await db.query.workers.findMany({
-    where: staleWorkerScope(accountId),
+    where: sqlWhere(staleWorkerScope(accountId)),
     columns: {
       id: true, taskId: true, prUrl: true, prNumber: true, commitCount: true, branch: true, error: true,
       // Needed to tell a never-started row and a silent session apart from a
@@ -655,8 +713,10 @@ export async function cleanupStaleWorkers(accountId: string): Promise<{ heartbea
       accountId: true,
       // Shadow-mode only: compared against the legacy verdict, never acted on.
       leaseExpiresAt: true,
-      // Interactive workers are booked under their own error text.
+      // Interactive workers are booked under their own error text, which names
+      // the signal that expired (the idle TTL or the hard backstop).
       runner: true,
+      updatedAt: true,
     },
   });
 
@@ -707,16 +767,18 @@ export async function cleanupStaleWorkers(accountId: string): Promise<{ heartbea
   if (staleWorkers.length > 0) {
     // Book each reaped worker under the cause that actually applies. One UPDATE
     // per cause keeps this to at most three statements for the whole batch.
-    const byCause = new Map<WorkerExitCause, { ids: string[]; error: string }>();
+    // One write per (cause, text): rows of one cause can carry different text.
+    const byCause = new Map<string, { exitCause: WorkerExitCause; ids: string[]; error: string }>();
     for (const w of staleWorkers) {
       const { exitCause, error } = classifyStaleExit(w as any);
-      const group = byCause.get(exitCause);
+      const key = `${exitCause}\u0000${error}`;
+      const group = byCause.get(key);
       if (group) group.ids.push(w.id);
-      else byCause.set(exitCause, { ids: [w.id], error });
+      else byCause.set(key, { exitCause, ids: [w.id], error });
     }
 
     const reapedAt = new Date();
-    for (const [exitCause, group] of byCause) {
+    for (const { exitCause, ...group } of byCause.values()) {
       await db
         .update(workers)
         .set({
@@ -729,7 +791,7 @@ export async function cleanupStaleWorkers(accountId: string): Promise<{ heartbea
         .where(inArray(workers.id, group.ids));
     }
 
-    const neverStartedCount = byCause.get('never_started')?.ids.length ?? 0;
+    const neverStartedCount = [...byCause.values()].filter(g => g.exitCause === 'never_started').reduce((n, g) => n + g.ids.length, 0);
     if (neverStartedCount > 0) {
       // "cleaned by" not "for": this arm is team-scoped, so some of these rows
       // may belong to a sibling account whose runner died holding them.
@@ -768,6 +830,7 @@ export async function cleanupStaleWorkers(accountId: string): Promise<{ heartbea
 
 type ReapedWorker = Parameters<typeof resolveStaleTask>[2] & {
   taskId: string | null;
+  runner?: string | null;
   startedAt?: Date | string | null;
   status?: string | null;
 };
@@ -788,7 +851,7 @@ export async function resolveTasksOfReapedWorkers(
   if (taskIds.length === 0) return;
   // Fetch workspace IDs before updating, for dependency resolution
   const staleTasks = await db.query.tasks.findMany({
-    where: inArray(tasks.id, taskIds),
+    where: sqlWhere(inArray(tasks.id, taskIds)),
     columns: { id: true, workspaceId: true },
   });
 
@@ -796,17 +859,21 @@ export async function resolveTasksOfReapedWorkers(
   const reapedIds = reaped.map(w => w.id);
   for (const t of staleTasks) {
     const otherActiveWorkers = await db.query.workers.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(workers.taskId, t.id),
         inArray(workers.status, ['running', 'starting', 'waiting_input', 'idle']),
         not(inArray(workers.id, reapedIds)),
-      ),
+      )),
       columns: { id: true },
       limit: 1,
     });
 
     if (otherActiveWorkers.length === 0) {
       const staleWorker = reaped.find(w => w.taskId === t.id);
+      if (staleWorker?.runner === INTERACTIVE_WORKER_RUNNER) {
+        await resolveAbandonedInteractiveTask(t.id, t.workspaceId, staleWorker);
+        continue;
+      }
       // Determine exit cause for this worker so reviewer tasks can distinguish
       // infra failures (retry) from genuine timeouts (escalate)
       let exitCauseForReview: WorkerExitCause | undefined = exitCauseOverride;
@@ -862,7 +929,7 @@ async function failWorkersOfOfflineRunner(accountId: string, now: Date): Promise
   const heartbeatCutoff = new Date(now.getTime() - HEARTBEAT_STALE_MS);
 
   const freshHeartbeat = await db.query.workerHeartbeats.findFirst({
-    where: heartbeatFreshnessScope(accountId, heartbeatCutoff),
+    where: sqlWhere(heartbeatFreshnessScope(accountId, heartbeatCutoff)),
     columns: { id: true },
   });
   if (freshHeartbeat) return 0;
@@ -870,7 +937,7 @@ async function failWorkersOfOfflineRunner(accountId: string, now: Date): Promise
   const orphanedByHeartbeat = await db.query.workers.findMany({
     // Account-scoped on purpose — NOT widened to the team. See
     // heartbeatOrphanScope for why widening it is unsafe either way.
-    where: heartbeatOrphanScope(accountId, heartbeatCutoff, now),
+    where: sqlWhere(heartbeatOrphanScope(accountId, heartbeatCutoff, now)),
     columns: {
       id: true, taskId: true, prUrl: true, prNumber: true, commitCount: true, branch: true, error: true,
       startedAt: true, turns: true, costUsd: true, inputTokens: true, outputTokens: true,
@@ -917,18 +984,18 @@ async function failWorkersOfOfflineRunner(accountId: string, now: Date): Promise
   if (orphanTaskIds.length > 0) {
     // Fetch workspace IDs for dependency resolution
     const orphanTasks = await db.query.tasks.findMany({
-      where: inArray(tasks.id, orphanTaskIds),
+      where: sqlWhere(inArray(tasks.id, orphanTaskIds)),
       columns: { id: true, workspaceId: true },
     });
 
     // Only reset tasks that have NO other active workers
     for (const task of orphanTasks) {
       const otherActiveWorkers = await db.query.workers.findMany({
-        where: and(
+        where: sqlWhere(and(
           eq(workers.taskId, task.id),
           inArray(workers.status, ['running', 'starting', 'waiting_input', 'idle']),
           not(inArray(workers.id, orphanIds)),
-        ),
+        )),
         columns: { id: true },
         limit: 1,
       });
@@ -964,14 +1031,14 @@ export async function attemptStaleRecovery(accountId: string): Promise<string[]>
   const recoveryCutoff = new Date(Date.now() - RECOVERY_CUTOFF_MS);
 
   const staleWorkers = await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(workers.accountId, accountId),
       inArray(workers.status, ['running', 'starting']),
       lt(workers.updatedAt, staleThreshold),
       // Don't attempt recovery on workers that have been stale for 30+ minutes
       // (they already had their chance)
       gt(workers.updatedAt, recoveryCutoff),
-    ),
+    )),
     columns: { id: true, taskId: true, localUiUrl: true },
   });
 
@@ -984,11 +1051,11 @@ export async function attemptStaleRecovery(accountId: string): Promise<string[]>
       // Only attempt recovery if runner has a fresh heartbeat
       if (worker.localUiUrl) {
         const heartbeat = await db.query.workerHeartbeats.findFirst({
-          where: and(
+          where: sqlWhere(and(
             eq(workerHeartbeats.accountId, accountId),
             eq(workerHeartbeats.localUiUrl, worker.localUiUrl),
             gt(workerHeartbeats.lastHeartbeatAt, staleThreshold),
-          ),
+          )),
           columns: { id: true },
         });
 
@@ -996,10 +1063,10 @@ export async function attemptStaleRecovery(accountId: string): Promise<string[]>
       } else {
         // No localUiUrl on the worker — check if ANY heartbeat for the account is fresh
         const anyHeartbeat = await db.query.workerHeartbeats.findFirst({
-          where: and(
+          where: sqlWhere(and(
             eq(workerHeartbeats.accountId, accountId),
             gt(workerHeartbeats.lastHeartbeatAt, staleThreshold),
-          ),
+          )),
           columns: { id: true },
         });
 
@@ -1032,6 +1099,10 @@ export async function attemptStaleRecovery(accountId: string): Promise<string[]>
   return recoveredIds;
 }
 
+/** Why a waiting_input question is closed: it aged out, or recovery owns its failure now. */
+export type WaitingInputCloseReason = 'timeout' | 'superseded_by_recovery';
+export const SUPERSEDED_BY_RECOVERY = 'superseded_by_recovery';
+
 /**
  * Clean up workers stuck in waiting_input for 24+ hours, for ONE account.
  *
@@ -1045,24 +1116,36 @@ export async function attemptStaleRecovery(accountId: string): Promise<string[]>
  * account therefore fired the timeout for every other tenant's waiting workers.
  * Account-wide coverage is the cron sweep's job
  * (`/api/cron/waiting-input-sweep`), which loops accounts explicitly.
+ *
+ * `reason: 'superseded_by_recovery'` closes the named `workerIds` at once: a
+ * failure incident's recovery owns the failure the question was about
+ * (failure-incident-recovery §16.4). The worker is failed with that reason,
+ * its question and attempt stay as history, and the task is failed for the
+ * incident to re-queue: no retry clone, no dependency release.
  */
-export async function cleanupStuckWaitingInput(accountId: string): Promise<{ failedWorkers: number; retriedTasks: number }> {
+export async function cleanupStuckWaitingInput(
+  accountId: string,
+  opts: { reason?: WaitingInputCloseReason; workerIds?: string[] } = {},
+): Promise<{ failedWorkers: number; retriedTasks: number }> {
+  const superseded = opts.reason === 'superseded_by_recovery';
   // Fetch all waiting workers past the shorter (mission) threshold, then filter
   const missionCutoff = new Date(Date.now() - WAITING_INPUT_MISSION_STALE_MS);
   const standaloneCutoff = new Date(Date.now() - WAITING_INPUT_STALE_MS);
 
   const allWaitingWorkers = await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(workers.accountId, accountId),
       eq(workers.status, 'waiting_input'),
-      lt(workers.updatedAt, missionCutoff),
-    ),
-    columns: { id: true, taskId: true, accountId: true, waitingFor: true, updatedAt: true, branch: true, error: true, lastCommitSha: true, commitCount: true },
-    with: { task: { columns: { missionId: true } } },
+      // A superseded question is closed now, whatever its age; only the named workers.
+      superseded ? inArray(workers.id, opts.workerIds?.length ? opts.workerIds : ['']) : lt(workers.updatedAt, missionCutoff),
+    )),
+    columns: { id: true, taskId: true, accountId: true, runner: true, waitingFor: true, updatedAt: true, branch: true, error: true, lastCommitSha: true, commitCount: true },
+    with: { task: { columns: { missionId: true }, with: { mission: { columns: { executor: true } } } } },
   });
 
   // Mission tasks use 4h timeout, standalone tasks use 24h timeout
   const stuckWorkers = allWaitingWorkers.filter(w => {
+    if (superseded) return true;
     const isMissionTask = !!(w as any).task?.missionId;
     if (isMissionTask) return true; // Already past 4h cutoff
     return w.updatedAt < standaloneCutoff;
@@ -1076,12 +1159,26 @@ export async function cleanupStuckWaitingInput(accountId: string): Promise<{ fai
   let retriedTasks = 0;
 
   for (const worker of stuckWorkers) {
+    const hours = (worker as any).task?.missionId ? '4' : '24';
+    // An interactive session (claim_task from a person's own session) chose to
+    // run this work itself. A retry cloned onto a runner mission would hand it
+    // to a background runner nobody asked for — the duplicate a person then
+    // finds rebuilt behind their back. So it is not retried, unless its
+    // mission is executor = 'local': only a person's session can claim that
+    // retry, which is the same arrangement the original claim had.
+    const interactive = (worker as { runner?: string | null }).runner === INTERACTIVE_WORKER_RUNNER;
+    const localMission = (worker as any).task?.mission?.executor === 'local';
+    const fileRetry = !interactive || localMission;
     // Fail the worker
     await db
       .update(workers)
       .set({
         status: 'failed',
-        error: `Worker timed out waiting for user input (${(worker as any).task?.missionId ? '4' : '24'}+ hours)`,
+        error: superseded
+          ? `${SUPERSEDED_BY_RECOVERY}: the failure this question was about is owned by an incident's recovery; the question is kept as history`
+          : interactive && !fileRetry
+            ? `Question from an interactive session went unanswered for ${hours}+ hours; the task was not retried on a runner. Claim it again from your session, or retry it from the task page.`
+            : `Worker timed out waiting for user input (${hours}+ hours)`,
         // Not a code defect — an unanswered question timing out is the
         // correct terminal outcome for a hard-blocked worker. Must carry its
         // own exit cause so it stays out of the failure rate and
@@ -1097,7 +1194,7 @@ export async function cleanupStuckWaitingInput(accountId: string): Promise<{ fai
 
     // Fetch original task to clone
     const originalTask = await db.query.tasks.findFirst({
-      where: eq(tasks.id, worker.taskId),
+      where: sqlWhere(eq(tasks.id, worker.taskId)),
     });
 
     if (!originalTask) continue;
@@ -1118,7 +1215,12 @@ export async function cleanupStuckWaitingInput(accountId: string): Promise<{ fai
         status: 'failed',
         updatedAt: new Date(),
       })
-      .where(eq(tasks.id, originalTask.id));
+      .where(and(eq(tasks.id, originalTask.id), notKernelMergedTaskSql()));
+
+    // Superseded by recovery (failure-incident-recovery §16.4): the incident
+    // re-queues this same task once its check passes. No clone, no
+    // dependency release: the task is not done, it is blocked by a repair.
+    if (superseded) continue;
 
     // An attempt of a workflow-kernel delivery is not cloned here: a clone would
     // run without the delivery link (its push would read as foreign) and the
@@ -1139,6 +1241,11 @@ export async function cleanupStuckWaitingInput(accountId: string): Promise<{ fai
         commitCount: worker.commitCount ?? 0,
         source: 'sweep:waiting-input',
       }).catch((err) => console.error(`[stale-workers] workflow kernel AttemptEnded(lost) failed for task ${originalTask.id}:`, err));
+      continue;
+    }
+
+    if (!fileRetry) {
+      await resolveCompletedTask(originalTask.id, originalTask.workspaceId);
       continue;
     }
 
@@ -1169,6 +1276,8 @@ export async function cleanupStuckWaitingInput(accountId: string): Promise<{ fai
         outputRequirement: originalTask.outputRequirement,
         outputSchema: originalTask.outputSchema,
         parentTaskId: originalTask.parentTaskId,
+        // A person's cross-workspace grant is part of the work, not the attempt.
+        ...(() => { const delegation = inheritTaskDelegation(originalTask); return delegation ? { delegation } : {}; })(),
         // Routing survives the retry: without it a visual-auditor audit would
         // be claimable by any runner and skip its evidence check.
         roleSlug: originalTask.roleSlug,
@@ -1235,11 +1344,11 @@ export async function cleanupUnresumedAnswers(
   const now = Date.now();
 
   const candidates = await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(workers.accountId, accountId),
       eq(workers.status, 'waiting_input'),
       isNotNull(workers.pendingInstructions),
-    ),
+    )),
     columns: {
       id: true, taskId: true, accountId: true, workspaceId: true, branch: true,
       milestones: true, pendingInstructions: true, instructionHistory: true,
@@ -1392,6 +1501,183 @@ export async function cleanupUnresumedAnswers(
 
   // Release concurrency seats for OAuth accounts — a superseded worker no
   // longer holds one. Grouped per account for one atomic decrement.
+  if (degraded > 0) {
+    await db
+      .update(accounts)
+      .set({ activeSessions: sql`GREATEST(${accounts.activeSessions} - ${degraded}, 0)` })
+      .where(and(eq(accounts.id, accountId), eq(accounts.authType, 'oauth')));
+  }
+
+  return { degraded };
+}
+
+/**
+ * Send an answer that went back to an interactive session, and was never read,
+ * to a follow-up task.
+ *
+ * `/respond`'s interactive path flips the worker to `running` and queues the
+ * answer for the session that asked (`ask_human`). If that session dies between
+ * the answer landing and its next poll, nothing else ever looks at the worker:
+ * it is not `waiting_input`, so neither the park expiry nor
+ * cleanupUnresumedAnswers sees it, and the answer sits on a `running` row until
+ * the 2 h idle reaper fails it. Past INTERACTIVE_ANSWER_READ_DEADLINE_MS with
+ * no activity on the worker, the answer goes to the cold continuation it would
+ * have gone to had the session already been gone when the human answered.
+ *
+ * "No activity" is the worker's `updatedAt`, which the answer itself, any
+ * update_progress and every plugin presence touch move, so a session that is
+ * busy and checking in is never overtaken. The claiming write is gated on it
+ * staying quiet; a session that reads the answer or checks in first wins.
+ *
+ * The answer also leaves the old task's queue, and the worker is superseded:
+ * a session that does come back gets "this went to a follow-up task" from
+ * await_answer and an abort from everything else, instead of acting on the
+ * answer alongside the follow-up.
+ *
+ * See docs/specs/answered-question-resume.md.
+ */
+export async function cleanupUnreadInteractiveAnswers(
+  accountId: string,
+): Promise<{ degraded: number }> {
+  const now = Date.now();
+  const quietSince = new Date(now - INTERACTIVE_ANSWER_READ_DEADLINE_MS);
+
+  const candidates = await db.query.workers.findMany({
+    where: sqlWhere(and(
+      eq(workers.accountId, accountId),
+      eq(workers.runner, INTERACTIVE_WORKER_RUNNER),
+      eq(workers.status, 'running'),
+      lt(workers.updatedAt, quietSince),
+    )),
+    columns: {
+      id: true, taskId: true, accountId: true, workspaceId: true, branch: true,
+      milestones: true, instructionHistory: true, runner: true, status: true, updatedAt: true,
+    },
+    with: { task: true, workspace: true },
+  });
+
+  let degraded = 0;
+
+  for (const worker of candidates) {
+    if (worker.runner !== INTERACTIVE_WORKER_RUNNER || worker.status !== 'running') continue;
+    if (!worker.updatedAt || new Date(worker.updatedAt).getTime() >= quietSince.getTime()) continue;
+    const task = (worker as any).task as Record<string, any> | null;
+    if (!task?.id) continue;
+    const delivery = (task.context as Record<string, unknown> | null)
+      ?.answerDelivery as AnswerDeliveryRecord | undefined;
+    if (!delivery || delivery.path !== 'interactive' || delivery.workerId !== worker.id || !delivery.messageId) continue;
+
+    // The answer is unread while its instruction-history entry is not
+    // acknowledged (await_answer and the receive_messages ack both write that).
+    const history = Array.isArray(worker.instructionHistory)
+      ? (worker.instructionHistory as Array<{ id?: string; message?: string; deliveryState?: string }>)
+      : [];
+    const entry = history.find(e => e?.id === delivery.messageId);
+    if (!entry || entry.deliveryState === 'acknowledged') continue;
+    const answer = typeof entry.message === 'string' && entry.message ? entry.message : null;
+    if (!answer) continue;
+
+    const [claimed] = await db
+      .update(workers)
+      .set({
+        status: 'superseded',
+        currentAction: 'Answer went to a follow-up task — the session never read it',
+        completedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(workers.id, worker.id),
+        eq(workers.status, 'running'),
+        lt(workers.updatedAt, quietSince),
+      ))
+      .returning({ id: workers.id });
+
+    if (!claimed) continue;
+
+    const coldDecision = {
+      path: 'cold_continuation' as const,
+      reasonCode: 'interactive_answer_not_read' as const,
+      reason: ANSWER_PATH_REASONS.interactive_answer_not_read,
+    };
+    const coldDelivery: AnswerDeliveryRecord = {
+      ...delivery,
+      path: coldDecision.path,
+      reasonCode: coldDecision.reasonCode,
+      reason: coldDecision.reason,
+      decidedAt: new Date(now).toISOString(),
+    };
+
+    let continuation;
+    try {
+      [continuation] = await db
+        .insert(tasks)
+        .values(buildContinuationTaskValues({
+          task: task as ContinuationParentTask,
+          workspaceId: worker.workspaceId,
+          workerId: worker.id,
+          branch: worker.branch,
+          milestones: (worker.milestones as Array<{ type?: string; label?: string }>) || [],
+          question: delivery.question || 'A question the agent asked (not retained)',
+          answer,
+          delivery: coldDelivery,
+        }))
+        .returning();
+    } catch (err) {
+      // No transactions on neon-http: undo the claim so the session can still
+      // read its answer, and a later pass can try again.
+      console.error(`[Worker ${worker.id}] Cold-continuation insert failed, restoring the interactive answer:`, err);
+      await db
+        .update(workers)
+        .set({ status: 'running', completedAt: null, updatedAt: worker.updatedAt })
+        .where(eq(workers.id, worker.id));
+      continue;
+    }
+
+    // Best-effort from here: the continuation carries the answer.
+    try {
+      await clearWorkerMessages(task.id, [delivery.messageId]);
+      await db
+        .update(tasks)
+        .set({
+          context: sql`COALESCE(${tasks.context}, '{}'::jsonb) || jsonb_build_object('answerDelivery', ${JSON.stringify(coldDelivery)}::jsonb)` as any,
+          updatedAt: new Date(),
+        })
+        .where(eq(tasks.id, task.id));
+      if (continuation) {
+        await db
+          .update(workers)
+          .set({ continuationTaskId: continuation.id })
+          .where(eq(workers.id, worker.id));
+      }
+      await db.insert(missionNotes).values({
+        missionId: task.missionId ?? null,
+        taskId: task.id,
+        workerId: worker.id,
+        authorType: 'system',
+        type: 'warning',
+        title: 'The session never read your answer',
+        body: describeAnswerPath(coldDecision),
+        status: 'open',
+      });
+      // The work goes on under the continuation's id, as on /respond's cold path.
+      await releaseAndNotify(task.id, 'abandoned');
+    } catch (err) {
+      console.error(`[Worker ${worker.id}] Post-continuation bookkeeping failed:`, err);
+    }
+
+    if (continuation) {
+      await wakeTask(continuation.id, 'task.created');
+      try {
+        const workspace = (worker as any).workspace ?? { id: worker.workspaceId };
+        await announceTaskCreated(continuation, workspace);
+      } catch (err) {
+        console.error(`[Worker ${worker.id}] Continuation task announce failed:`, err);
+      }
+    }
+
+    degraded++;
+  }
+
   if (degraded > 0) {
     await db
       .update(accounts)

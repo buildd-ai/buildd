@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import TaskStrip, { type TaskStripCell } from './TaskStrip';
+import TaskStrip, { stripRowCapacity, wrapStripGroups, type TaskStripCell } from './TaskStrip';
 import { STATES, type StateKey } from './states';
 
 const cells: TaskStripCell[] = (['landed', 'landed', 'review', 'running', 'blocked', 'queued', 'queued'] as StateKey[])
@@ -9,10 +9,87 @@ const cells: TaskStripCell[] = (['landed', 'landed', 'review', 'running', 'block
 function cellTags(html: string): string[] {
   return html.match(/<button[^>]*>/g) ?? [];
 }
+/** Each cell's fill span, opening tag through its content. */
+function fills(html: string): string[] {
+  return html.match(/<span[^>]*data-testid="task-strip-fill"[^>]*>[^<]*<\/span>/g) ?? [];
+}
 function ticks(html: string): string[] {
   const row = html.slice(html.indexOf('data-testid="task-strip-ticks"'));
   return row.match(/<span[^>]*>[^<]*<\/span>/g) ?? [];
 }
+
+describe('TaskStrip lg group outline', () => {
+  const toolbar = (html: string) => html.match(/<div[^>]*data-testid="task-strip-cells"[^>]*>/)![0];
+
+  it('pads the strip so an outline on the first group never sticks out past its left edge', () => {
+    const html = renderToStaticMarkup(
+      <TaskStrip cells={cells} selectedId="t1" groups={[{ key: 'active', ids: ['t1', 't2'], outline: true }, { key: 'waiting', ids: ['t3', 't4', 't5', 't6', 't7'] }]} />,
+    );
+    expect(toolbar(html)).toContain('data-outline-edge="start"');
+    expect(toolbar(html)).toContain('pl-[5px]');
+    expect(toolbar(html)).not.toContain('pr-[5px]');
+  });
+
+  it('pads the right edge when the outlined group is last, and neither edge when it sits between groups', () => {
+    const last = renderToStaticMarkup(<TaskStrip cells={cells} selectedId="t1" groups={[{ key: 'done', ids: ['t1', 't2'] }, { key: 'active', ids: ['t3', 't4', 't5', 't6', 't7'], outline: true }]} />);
+    expect(toolbar(last)).toContain('data-outline-edge="end"');
+    expect(toolbar(last)).toContain('pr-[5px]');
+    const middle = renderToStaticMarkup(<TaskStrip cells={cells} selectedId="t1" groups={[{ key: 'done', ids: ['t1', 't2'] }, { key: 'active', ids: ['t3'], outline: true }, { key: 'waiting', ids: ['t4', 't5', 't6', 't7'] }]} />);
+    expect(toolbar(middle)).not.toContain('data-outline-edge');
+    expect(toolbar(middle)).not.toContain('pl-[5px]');
+  });
+});
+
+describe('TaskStrip lg grouped sizing (spec f7f67f1a R-4, R-38, AC-2, AC-20)', () => {
+  const grid = (html: string) => html.match(/<div[^>]*data-testid="task-strip-cells"[^>]*>/)![0];
+  const grouped = (ids: string[]) => [{ key: 'done', ids: ids.slice(0, 1) }, { key: 'active', ids: ids.slice(1), outline: true }];
+  const many = (n: number): TaskStripCell[] => Array.from({ length: n }, (_, i) => ({ id: `g${i}`, state: 'queued' as StateKey }));
+
+  it('below md a cell shares the width up to a 44px box, so two tasks stay two compact boxes and many shrink to fit', () => {
+    for (const n of [2, 10, 20, 64]) {
+      const c = many(n);
+      const bar = grid(renderToStaticMarkup(<TaskStrip cells={c} groups={grouped(c.map(x => x.id))} />));
+      expect(bar).toContain('[--cell:minmax(0,44px)]');
+      expect(bar).not.toContain('[--cell:44px]');
+      expect(bar).toContain('md:[--cell:minmax(0,56px)]');
+    }
+  });
+
+  it('never scrolls sideways: no scroller, no fixed-width grid', () => {
+    const c = many(12);
+    const html = renderToStaticMarkup(<TaskStrip cells={c} groups={grouped(c.map(x => x.id))} />);
+    expect(html).not.toContain('task-strip-scroll');
+    expect(html).not.toContain('overflow-x-auto');
+    expect(grid(html)).not.toContain('w-max');
+  });
+
+  it('a phone row holds as many cells as fit at the minimum width, minus the group gaps', () => {
+    // 340px at 28px cells and 4px gaps: (340 + 4) / 32 = 10.75 cells; one group gap costs 10px.
+    expect(stripRowCapacity(340, 1)).toBe(10);
+    expect(stripRowCapacity(340, 3)).toBe(10);
+    expect(stripRowCapacity(300, 3)).toBe(8);
+    expect(stripRowCapacity(10, 1)).toBe(1);
+  });
+
+  it('wraps groups onto rows of at most perRow cells, keeping order and each group\'s outline across the break', () => {
+    const rows = wrapStripGroups([{ key: 'done', ids: ['a', 'b', 'c'] }, { key: 'active', ids: ['d', 'e', 'f', 'g'], outline: true }], 5);
+    expect(rows.map(r => r.map(g => [g.key, g.ids.join('')]))).toEqual([[['done', 'abc'], ['active', 'de']], [['active', 'fg']]]);
+    expect(rows[1][0].outline).toBe(true);
+    expect(wrapStripGroups([{ key: 'x', ids: ['a', 'b'] }], Number.POSITIVE_INFINITY)).toHaveLength(1);
+  });
+
+  it('one toolbar holds every row, so arrow keys step across a wrapped strip', () => {
+    const c = many(20);
+    const html = renderToStaticMarkup(<TaskStrip cells={c} groups={grouped(c.map(x => x.id))} />);
+    expect(html.match(/role="toolbar"/g)).toHaveLength(1);
+    expect(cellTags(html)).toHaveLength(20);
+  });
+
+  it('an ungrouped strip keeps its own sizing (Flow and other strips are unchanged)', () => {
+    const html = renderToStaticMarkup(<TaskStrip cells={cells} />);
+    expect(grid(html)).toContain('[grid-template-columns:repeat(var(--n),minmax(0,1fr))]');
+  });
+});
 
 describe('TaskStrip lg', () => {
   it('one button per task, textured by state', () => {
@@ -24,7 +101,7 @@ describe('TaskStrip lg', () => {
     expect(tags[2]).toContain('aria-label="03 Auditing: Task 3"');
   });
 
-  it('marks live on the tick row only; a marked cell renders exactly as unmarked (MK-4)', () => {
+  it('marks live on the tick row only; a marked cell renders exactly as unmarked (strip R-17)', () => {
     const plain = renderToStaticMarkup(<TaskStrip cells={cells} selectedId="t4" />);
     const marked = renderToStaticMarkup(<TaskStrip cells={cells} selectedId="t4" marks={{ t5: 'direct', t6: 'transitive' }} />);
     expect(cellTags(marked)).toEqual(cellTags(plain));
@@ -34,14 +111,14 @@ describe('TaskStrip lg', () => {
     expect(row[6]).not.toContain('data-mark');
   });
 
-  it('direct and transitive differ in shape, not only colour (MK-2)', () => {
+  it('direct and transitive differ in shape, not only colour (strip R-15)', () => {
     const row = ticks(renderToStaticMarkup(<TaskStrip cells={cells} selectedId="t4" marks={new Map([['t5', 'direct'], ['t6', 'transitive']])} />));
     expect(row[4]).toContain('bg-accent');
     expect(row[5]).toContain('border-b-2');
     expect(row[5]).not.toContain('bg-accent');
   });
 
-  it('the selected tick is never marked and keeps its number (MK-3)', () => {
+  it('the selected tick is never marked and keeps its number (strip R-16)', () => {
     const row = ticks(renderToStaticMarkup(<TaskStrip cells={cells} selectedId="t4" marks={{ t4: 'direct' }} />));
     expect(row[3]).not.toContain('data-mark');
     expect(row[3]).toContain('>04<');
@@ -54,9 +131,34 @@ describe('TaskStrip lg', () => {
 
   it('flat-fill states draw their glyph inside the cell', () => {
     const html = renderToStaticMarkup(<TaskStrip cells={[{ id: 'a', state: 'needs_you' }, { id: 'b', state: 'landed' }]} />);
-    const [needs, landed] = cellTags(html).map(t => html.slice(html.indexOf(t) + t.length, html.indexOf('</button>', html.indexOf(t))));
-    expect(needs).toContain('!');
-    expect(landed).toBe('');
+    const [needs, landed] = fills(html);
+    expect(needs).toMatch(/>!<\/span>$/);
+    expect(landed).toMatch(/><\/span>$/);
+  });
+
+  it('below md a cell is a slim bar in a 44px target, never a tall framed column', () => {
+    const html = renderToStaticMarkup(<TaskStrip cells={cells} selectedId="t5" />);
+    for (const tag of cellTags(html)) {
+      expect(tag).toContain('h-11');
+      expect(tag).toContain('md:h-16');
+      expect(tag).not.toContain('outline');
+    }
+    for (const f of fills(html)) {
+      expect(f).toContain('state-cell');
+      expect(f).toContain(' h-4 ');
+      expect(f).toContain('md:h-full');
+    }
+  });
+
+  it('the selection is a separate marker below md and a ring from md, on the selected cell only', () => {
+    const html = renderToStaticMarkup(<TaskStrip cells={cells} selectedId="t5" />);
+    const markers = html.match(/<span[^>]*data-testid="task-strip-marker"[^>]*>/g) ?? [];
+    expect(markers).toHaveLength(7);
+    expect(markers.filter(m => m.includes('bg-text-primary'))).toHaveLength(1);
+    expect(markers[4]).toContain('bg-text-primary');
+    const rings = fills(html).filter(f => f.includes('md:[outline:2px_solid_var(--text-primary)]'));
+    expect(rings).toHaveLength(1);
+    expect(fills(html)[4]).toContain('md:[outline');
   });
 
   it('past 12 cells unmarked ticks go quiet and marks become bars', () => {

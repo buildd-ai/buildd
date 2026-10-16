@@ -5,7 +5,7 @@ import { NextRequest } from 'next/server';
 const mockGetCurrentUser = mock(() => null as any);
 const mockGetUserTeamIds = mock(() => Promise.resolve([] as string[]));
 // Named permissions the signed-in user holds, per team. Stands in for the role
-// grant plus the team's overrides that `can` resolves; an API key holds a
+// grant that `can` resolves; an API key holds a
 // permission in its own team when its level is admin (both are admin-level).
 let sessionGrants: Record<string, string[]> = {};
 const grant = (teamIds: string[], permissions = ['manage_team_credentials', 'manage_team_model_keys']) => {

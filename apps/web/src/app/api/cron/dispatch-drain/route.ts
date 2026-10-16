@@ -114,9 +114,43 @@ const isolate = <T>(p: Promise<T>): Promise<Isolated<T>> =>
   p.catch(err => ({ error: errorText(err) }));
 const failed = (r: Isolated<unknown>): boolean => typeof r === 'object' && r !== null && 'error' in r;
 
+/**
+ * The kernel's fast heal rides the same minute (workflow-kernel-library.md §1, S4a): a delivery
+ * whose merge or close was seen but not applied is reconciled now, not on the hourly floor. Its
+ * own Redis due-queue gates it, so an idle minute still touches no Postgres. Never throws.
+ *
+ * It runs AFTER the dispatch drain, in what is left of the tick: task wakes come first, and a
+ * slow GitHub under the heal can never cost the drain its budget. Its share is capped at
+ * KERNEL_HEAL_BUDGET_MS and stops short of maxDuration by HEAL_HEADROOM_MS; below
+ * MIN_HEAL_BUDGET_MS it does not start (the queue keeps the ids for the next minute).
+ */
+const TICK_BUDGET_MS = maxDuration * 1000;
+const HEAL_HEADROOM_MS = 5_000;
+const MIN_HEAL_BUDGET_MS = 1_000;
+const KERNEL_HEAL_SHARE_MS = 10_000;
+
+async function kernelHeals(tickStartedAt: number): Promise<Isolated<unknown> | null> {
+  const budgetMs = Math.min(KERNEL_HEAL_SHARE_MS, TICK_BUDGET_MS - HEAL_HEADROOM_MS - (Date.now() - tickStartedAt));
+  if (budgetMs < MIN_HEAL_BUDGET_MS) return null;
+  return isolate((async () => {
+    const { runDueKernelHeals } = await import('@/lib/workflow/kernel-heal');
+    return runDueKernelHeals({ budgetMs });
+  })());
+}
+
+const healedSomething = (h: Isolated<unknown> | null): boolean => !!h && !failed(h) && ((h as { due?: number } | null)?.due ?? 0) > 0;
+
 async function run(req: NextRequest, report: CronReport): Promise<NextResponse> {
+  const tickStartedAt = Date.now();
+  const gated = req.nextUrl.searchParams.get('gate') === 'due';
   const gate = await gateOnDueQueue(DISPATCH_DUE_QUEUE, req.nextUrl.searchParams);
   if (!gate.proceed) {
+    // Nothing for the drain this minute: the heal has the tick's whole share.
+    const heals = gated ? await kernelHeals(tickStartedAt) : null;
+    if (healedSomething(heals) || failed(heals ?? {})) {
+      report({ processed: 0, changed: 0, errors: failed(heals ?? {}) ? 1 : 0, result: { gated: true, reason: gate.reason, kernelHeals: heals } });
+      return NextResponse.json({ gated: true, reason: gate.reason, kernelHeals: heals });
+    }
     // Every idle minute would otherwise write a cron_runs row and keep Neon
     // awake around the clock. The floor tick is this route's health signal.
     report({ unrecorded: true });
@@ -126,11 +160,13 @@ async function run(req: NextRequest, report: CronReport): Promise<NextResponse> 
   if (!gate.reseed) {
     const { totals, lastClaimAtMs } = await drainDue();
     const timer = await isolate(totals.exhausted ? settleDispatchTimer(lastClaimAtMs) : markDispatchBacklog());
-    const result = { gate: gate.reason, drain: totals, timer: failed(timer) ? timer : 'ok' };
+    // After the drain, in the leftover budget (see kernelHeals).
+    const heals = gated ? await kernelHeals(tickStartedAt) : null;
+    const result = { gate: gate.reason, drain: totals, timer: failed(timer) ? timer : 'ok', ...(healedSomething(heals) || failed(heals ?? {}) ? { kernelHeals: heals } : {}) };
     report({
       processed: totals.claimed,
       changed: totals.delivered,
-      errors: totals.failed + (failed(timer) ? 1 : 0),
+      errors: totals.failed + (failed(timer) ? 1 : 0) + (failed(heals ?? {}) ? 1 : 0),
       result,
     });
     return NextResponse.json(result);

@@ -6,8 +6,9 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { resolveEarlyReleaseMode } from '@/lib/early-release-mode';
-import { getTeamPermissionOverrides, roleHas } from '@/lib/permissions';
+import { roleHas } from '@/lib/permissions';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 async function resolveAuth(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -26,7 +27,7 @@ async function verifyAccess(auth: { user: any; apiAccount: any }, workspaceId: s
   }
   if (apiAccount) {
     const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, workspaceId),
+      where: sqlWhere(eq(workspaces.id, workspaceId)),
       columns: { teamId: true },
     });
     // The workspace must belong to the API key's own team (same check as
@@ -50,7 +51,7 @@ async function verifyWriteAccess(
   if (user && !apiAccount) {
     const access = await verifyWorkspaceAccess(user.id, workspaceId);
     if (!access) return 'not_found';
-    return roleHas(access.role, 'manage_workspace_settings', await getTeamPermissionOverrides(access.teamId)) ? 'ok' : 'forbidden';
+    return roleHas(access.role, 'manage_workspace_settings') ? 'ok' : 'forbidden';
   }
   if (!(await verifyAccess(auth, workspaceId))) return 'not_found';
   return hasTokenRouteAdminAccess(apiAccount, req) ? 'ok' : 'forbidden';
@@ -74,7 +75,7 @@ export async function GET(
 
   try {
     const workspace = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, id),
+      where: sqlWhere(eq(workspaces.id, id)),
       columns: { workTrackerConfig: true, gitConfig: true },
     });
 
@@ -150,7 +151,7 @@ export async function PATCH(
   }
 
   const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, id),
+    where: sqlWhere(eq(workspaces.id, id)),
     columns: { teamId: true, githubInstallationId: true },
   });
   if (!ws) {
@@ -177,7 +178,7 @@ export async function PATCH(
     const connectorId = wtcObj.connectorId;
 
     const connectorRow = await db.query.connectors.findFirst({
-      where: and(eq(connectors.id, connectorId), eq(connectors.teamId, ws.teamId)),
+      where: sqlWhere(and(eq(connectors.id, connectorId), eq(connectors.teamId, ws.teamId))),
       columns: { id: true },
     });
     if (!connectorRow) {
@@ -185,11 +186,11 @@ export async function PATCH(
     }
 
     const linked = await db.query.connectorWorkspaces.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(connectorWorkspaces.connectorId, connectorId),
         eq(connectorWorkspaces.workspaceId, id),
         eq(connectorWorkspaces.enabled, true),
-      ),
+      )),
       columns: { connectorId: true },
     });
     if (!linked) {

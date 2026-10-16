@@ -34,6 +34,7 @@ import { buildWorkflowRunOutcome, isConfiguredReleaseRun, mapWorkflowConclusionT
 import { verifyReleaseDeployment } from '@/lib/release-verification';
 import { recordDirectProdMerge, advanceGatedReleaseOnPrMerge } from '@/lib/release-executor';
 import { subscriber, type AnySubscriber, type EventOf, type WorkflowRunFact } from '@/lib/core-events';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 function recordProdMerge(e: EventOf<'pr.merged'>): void {
   const d = e.delivery;
@@ -103,7 +104,7 @@ async function releaseOnTaskPrMerge(e: EventOf<'task.pr_merged'>): Promise<void>
   // mission task on a merged PR.
   const mergedTaskMission = mergedTask.missionId
     ? await db.query.missions.findFirst({
-        where: eq(missions.id, mergedTask.missionId),
+        where: sqlWhere(eq(missions.id, mergedTask.missionId)),
         columns: { workingBranch: true, integrationBranchEnabled: true },
       })
     : null;
@@ -113,7 +114,7 @@ async function releaseOnTaskPrMerge(e: EventOf<'task.pr_merged'>): Promise<void>
   });
   if (mergedTask.release !== 'false' && installationId != null && !mergedOntoIntegrationBranch) {
     const mergedWorkspace = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, mergedTask.workspaceId),
+      where: sqlWhere(eq(workspaces.id, mergedTask.workspaceId)),
     });
     const shouldRelease =
       mergedTask.release === 'true' ||
@@ -368,7 +369,7 @@ async function advanceReleaseStateFromWorkflowRun(
     if (!candidate || candidate.runUrl) return;
 
     const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, candidate.workspaceId),
+      where: sqlWhere(eq(workspaces.id, candidate.workspaceId)),
       columns: { id: true, releaseConfig: true },
       with: { githubRepo: { columns: { fullName: true } } },
     });

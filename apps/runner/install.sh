@@ -149,6 +149,7 @@ packages/shared/
 packages/core/
 packages/ai-kit/
 packages/dispatch-contract/
+packages/spec-contract/
 scripts/stub-server-only.ts
 bunfig.toml
 package.json
@@ -164,6 +165,8 @@ SPARSE
 write_client_sparse_checkout() {
   cat > .git/info/sparse-checkout << 'CLIENT_SPARSE'
 apps/runner/src/login.ts
+apps/runner/src/login-workspaces.ts
+apps/runner/src/server-url.ts
 apps/runner/src/agent-plugin-install.ts
 apps/runner/src/buildd-home.ts
 apps/runner/src/claude-json-mcp.ts
@@ -290,7 +293,8 @@ fi
     "packages/shared",
     "packages/core",
     "packages/ai-kit",
-    "packages/dispatch-contract"
+    "packages/dispatch-contract",
+    "packages/spec-contract"
   ]
 }
 PKGJSON
@@ -408,6 +412,31 @@ client_only_runner() {
   exit 3
 }
 
+# Packages: apps/runner/node_modules/* are symlinks into the root node_modules, so
+# one missing folder leaves every package dangling and bun dies with a raw ENOENT
+# before the runner starts. Repair once (bounded), else say the one command.
+RUNNER_PKG_DIR="$HOME/.buildd/apps/runner"
+packages_missing() {
+  [ -f "$RUNNER_PKG_DIR/package.json" ] || return 1
+  for dep in pusher-js zod marked; do
+    [ -e "$RUNNER_PKG_DIR/node_modules/$dep/package.json" ] || [ -e "$HOME/.buildd/node_modules/$dep/package.json" ] || return 0
+  done
+  return 1
+}
+ensure_packages() {
+  packages_missing || return 0
+  local marker="$HOME/.buildd/.buildd-package-repair" limit
+  if [ -z "$(find "$marker" -mmin -10 2>/dev/null)" ]; then
+    date +%s000 > "$marker" 2>/dev/null
+    echo "buildd: packages are missing from ~/.buildd; running bun install..." >&2
+    limit="$(command -v timeout || command -v gtimeout)"
+    ( cd "$HOME/.buildd" && ${limit:+$limit 600} bun install --frozen-lockfile >&2 )
+    packages_missing || { rm -f "$marker"; return 0; }
+  fi
+  echo "buildd: packages are missing from ~/.buildd. Fix: cd ~/.buildd && bun install" >&2
+  exit 78
+}
+
 # Auto-detect project roots if not set
 if [ -z "$PROJECTS_ROOT" ]; then
   ROOTS=""
@@ -432,6 +461,7 @@ case "${1:-}" in
 Usage: buildd <command>   (client-only install: no runner)
 
   buildd login [--device]    Sign in and save your key to ~/.buildd/config.json
+  buildd login --workspaces  Choose which workspaces this machine's key serves (same key)
   buildd logout              Remove the saved key
   buildd status              Show whether you are signed in
   buildd install --global    Turn buildd on in Claude Code for your workspace folders,
@@ -445,6 +475,7 @@ CLIENTUSAGE
       exit 0
     fi
     # Answered by the runner's own usage text (cli-args.ts) without starting it.
+    ensure_packages
     exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/index.ts" --help
     ;;
 
@@ -600,6 +631,7 @@ MCPEOF
 
   service)
     [ "$CLIENT_ONLY" = "1" ] && client_only_runner
+    ensure_packages
     shift
     exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/service.ts" "$@"
     ;;
@@ -609,10 +641,13 @@ esac
 
 # Run with restart loop (exit code 75 = update applied, restart)
 while true; do
+  ensure_packages
   bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/index.ts" "$@"
   EXIT_CODE=$?
   if [ "$EXIT_CODE" -ne 75 ]; then exit $EXIT_CODE; fi
   echo "Restarting after update..."
+  # The runner opens its debug page in a browser on the first start only.
+  export BUILDD_RESTART=update
   sleep 1
 done
 LAUNCHER
@@ -669,6 +704,10 @@ print_next_steps() {
     echo "  buildd service status    the runner is already running in the background"
   elif [ "$service" = "1" ]; then
     echo "  buildd service install   restart the background service with your account"
+  fi
+  if [ "$service" = "1" ]; then
+    echo "  buildd top               watch the runner and act on its work"
+    echo "  buildd web               open it in your browser"
   else
     echo "  buildd                   start the runner in this terminal"
     echo "                           (or buildd service install to keep it running in the background)"
@@ -769,7 +808,7 @@ fi
 
 SERVICE_INSTALLED=0
 if [ "$INSTALL_SERVICE" = "1" ]; then
-  if "$BIN_DIR/buildd" service install; then
+  if BUILDD_INSTALLER=1 "$BIN_DIR/buildd" service install; then
     SERVICE_INSTALLED=1
   else
     echo -e "${YELLOW}Could not install the background service — run 'buildd service install' to retry, or 'buildd' to run it in the foreground.${NC}"

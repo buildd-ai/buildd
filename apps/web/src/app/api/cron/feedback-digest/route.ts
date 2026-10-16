@@ -16,6 +16,11 @@
  * `memoryCandidateWrites` on produce candidates, so with the flag off
  * everywhere it reads and changes nothing.
  *
+ * And the Living Specs derived refresh (apps/web/src/lib/specs/knowledge.ts,
+ * living-specs.md §14): every approved spec's neighbours and derived graph
+ * edges, recomputed without re-embedding, within what the cron has left. A spec
+ * approved since the last run thereby shows up as a neighbour of older ones.
+ *
  * Auth: Bearer token matching CRON_SECRET env var.
  * Schedule: recommended every 1-4 hours via external cron trigger.
  */
@@ -55,6 +60,21 @@ async function runLifecycle(startedAt: number): Promise<LifecycleResult | { erro
   }
 }
 
+/** Spec neighbours and derived edges. Never throws. */
+async function runSpecRefresh(startedAt: number): Promise<{ refreshed: number; failed: number } | { error: string }> {
+  try {
+    const budgetMs = Math.max(0, Math.min(SPEC_REFRESH_BUDGET_MS, CRON_MAX_MS - 5_000 - (Date.now() - startedAt)));
+    if (budgetMs === 0) return { refreshed: 0, failed: 0 };
+    const { refreshAllSpecDerived } = await import('@/lib/specs/knowledge');
+    return await refreshAllSpecDerived(budgetMs);
+  } catch (error) {
+    console.error('[feedback-digest] Spec neighbour refresh error:', error);
+    return { error: String(error) };
+  }
+}
+
+const SPEC_REFRESH_BUDGET_MS = 15_000;
+
 const lifecycleErrors = (r: LifecycleResult | { error: string }): number => ('error' in r ? 1 : r.errors);
 
 export const maxDuration = 60; // Allow up to 60s for processing
@@ -81,7 +101,8 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     const memoryIndexReconcile = await runReconcile(startedAt);
     const reconcileFailed = 'error' in memoryIndexReconcile ? 1 : memoryIndexReconcile.failed;
     const memoryLifecycle = await runLifecycle(startedAt);
-    const failed = reconcileFailed + lifecycleErrors(memoryLifecycle);
+    const specRefresh = await runSpecRefresh(startedAt);
+    const failed = reconcileFailed + lifecycleErrors(memoryLifecycle) + ('error' in specRefresh ? 1 : specRefresh.failed);
 
     report({
       processed: digest.totalFeedback,
@@ -93,6 +114,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
         teams: digest.results.length,
         memoryIndexReconcile,
         memoryLifecycle,
+        specRefresh,
       },
     });
 
@@ -106,6 +128,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
       },
       memoryIndexReconcile,
       memoryLifecycle,
+      specRefresh,
     });
   } catch (error) {
     console.error('[feedback-digest] Pipeline error:', error);

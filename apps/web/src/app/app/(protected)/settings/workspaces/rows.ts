@@ -4,7 +4,7 @@ import { resolveWorkspaceExecutor, type MergePolicy } from '@buildd/shared';
 import { resolvePolicy } from '@/lib/merge-policy';
 import { resolveRunnerSize } from '@/lib/runner-size';
 import type { UserTeam } from '@/lib/team-access';
-import { roleHas, type Permission, type PermissionOverrides } from '@/lib/permission-registry';
+import { roleHas, type Permission } from '@/lib/permission-registry';
 import type { WorkspaceActivity } from '@/lib/workspace-activity';
 import type { WorkspaceDiffer, WorkspaceRow } from './list-groups';
 
@@ -28,11 +28,8 @@ export const WORKSPACE_DEFAULTS = {
   mergePolicy: TIER_LABEL[resolvePolicy({ gitConfig: null }).tier],
 } as const;
 
-/** Each team's permission overrides (getTeamsPermissionOverrides); a missing team = defaults. */
-export type TeamOverrides = ReadonlyMap<string, PermissionOverrides>;
-
-function teamsHolding(userId: string, teams: UserTeam[], permission: Permission, overrides: TeamOverrides): UserTeam[] {
-  return teams.filter((t) => roleHas(t.role, permission, overrides.get(t.id) ?? null) || t.slug === `personal-${userId}`);
+function teamsHolding(userId: string, teams: UserTeam[], permission: Permission): UserTeam[] {
+  return teams.filter((t) => roleHas(t.role, permission) || t.slug === `personal-${userId}`);
 }
 
 /**
@@ -44,9 +41,8 @@ export function moveTargets(
   userId: string,
   teams: UserTeam[],
   workspaceTeamId: string,
-  overrides: TeamOverrides,
 ): Array<{ id: string; name: string }> | null {
-  const admin = teamsHolding(userId, teams, 'migrate_workspace', overrides);
+  const admin = teamsHolding(userId, teams, 'migrate_workspace');
   if (admin.length < 2 || !admin.some((t) => t.id === workspaceTeamId)) return null;
   return admin.map((t) => ({ id: t.id, name: t.name }));
 }
@@ -84,19 +80,17 @@ export function buildWorkspaceRows({
   userId,
   teams,
   workspaces,
-  overrides,
   activity,
 }: {
   userId: string;
   teams: UserTeam[];
-  overrides: TeamOverrides;
   workspaces: Array<{ id: string; name: string; teamId: string; gitConfig: WorkspaceGitConfig | null; webhookConfig: unknown }>;
   activity: ReadonlyMap<string, WorkspaceActivity>;
 }): { rows: WorkspaceRow[]; moveTeams: Array<{ id: string; name: string }> } {
-  const adminTeams = teamsHolding(userId, teams, 'manage_workspace_settings', overrides);
+  const adminTeams = teamsHolding(userId, teams, 'manage_workspace_settings');
   const adminIds = new Set(adminTeams.map((t) => t.id));
   // Moving needs migrate_workspace in the source team and in at least one other.
-  const moveTeams = teamsHolding(userId, teams, 'migrate_workspace', overrides);
+  const moveTeams = teamsHolding(userId, teams, 'migrate_workspace');
   const moveIds = new Set(moveTeams.map((t) => t.id));
   const teamName = new Map(teams.map((t) => [t.id, t.name]));
 

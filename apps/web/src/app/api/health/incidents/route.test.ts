@@ -262,13 +262,30 @@ describe('GET /api/health/incidents', () => {
     expect(mockSelect).not.toHaveBeenCalled();
   });
 
-  it('honors a session user when no API key is present', async () => {
+  it('refuses a team member or team admin session: the incident ledger is the platform operator\'s', async () => {
     mockAuthenticateApiKey.mockResolvedValue(null);
-    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1', email: 'admin@team.example' });
     mockGetUserTeamIds.mockResolvedValue([TEAM_ID]);
     mockGetTeamWorkspaceIds.mockResolvedValue([VALID_UUID]);
     const res = await GET(makeRequest(URL_BASE));
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(403);
+    expect(mockSelect).not.toHaveBeenCalled();
+  });
+
+  it('honors a platform-operator session when no API key is present', async () => {
+    const prev = process.env.BUILDD_OPERATOR_USER_EMAILS;
+    process.env.BUILDD_OPERATOR_USER_EMAILS = 'ops@platform.example';
+    try {
+      mockAuthenticateApiKey.mockResolvedValue(null);
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1', email: 'ops@platform.example' });
+      mockGetUserTeamIds.mockResolvedValue([TEAM_ID]);
+      mockGetTeamWorkspaceIds.mockResolvedValue([VALID_UUID]);
+      const res = await GET(makeRequest(URL_BASE));
+      expect(res.status).toBe(200);
+    } finally {
+      if (prev === undefined) delete process.env.BUILDD_OPERATOR_USER_EMAILS;
+      else process.env.BUILDD_OPERATOR_USER_EMAILS = prev;
+    }
   });
 
   it('500s cleanly when the query layer throws', async () => {

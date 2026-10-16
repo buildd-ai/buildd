@@ -13,6 +13,7 @@ import { parseOperatorGrantInput, withOperatorGrantMetadata, type OperatorGrantC
 import { AGENT_CAPABILITY_NAMES, roleMayHold } from '@/lib/permission-registry';
 import { can } from '@/lib/permissions';
 import { canSeeRole, isPersonalRole } from '@/lib/personal-roles';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 function computeContentHash(content: string): string {
   return createHash('sha256').update(content).digest('hex');
@@ -56,11 +57,11 @@ export async function POST(
 
     // Find the team-level role (the one being overridden)
     const teamDefault = await db.query.workspaceSkills.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(workspaceSkills.id, id),
         isNull(workspaceSkills.workspaceId),
         teamIds.length > 0 ? inArray(workspaceSkills.teamId, teamIds) : undefined,
-      ),
+      )),
     });
 
     if (!teamDefault) {
@@ -133,11 +134,11 @@ export async function POST(
 
     // Check for existing override
     const existing = await db.query.workspaceSkills.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(workspaceSkills.teamId, teamDefault.teamId),
         eq(workspaceSkills.slug, teamDefault.slug),
         eq(workspaceSkills.workspaceId, workspaceId),
-      ),
+      )),
     });
 
     let result;

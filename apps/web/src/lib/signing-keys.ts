@@ -16,6 +16,7 @@ import { db } from '@buildd/core/db';
 import { secrets } from '@buildd/core/db/schema';
 import { eq, and, isNull, or, gt } from 'drizzle-orm';
 import { getSecretsProvider } from '@buildd/core/secrets';
+import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * kid format: 'buildd-YYYY-MM-<suffix>'.
@@ -81,12 +82,12 @@ export async function getActiveSigningKey(): Promise<{
   const provider = getSecretsProvider();
 
   const row = await db.query.secrets.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(secrets.purpose, 'signing_key'),
       isNull(secrets.tokenExpiresAt),
-    ),
+    )),
     columns: { id: true, label: true, createdAt: true },
-    orderBy: (t, { asc }) => [asc(t.createdAt)],
+    orderBy: sqlOrderByFn((t, { asc }) => [asc(t.createdAt)]),
   });
 
   if (!row || !row.label) return null;
@@ -121,15 +122,15 @@ export async function getAllPublicKeys(): Promise<Array<{
   const now = new Date();
 
   const rows = await db.query.secrets.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(secrets.purpose, 'signing_key'),
       or(
         isNull(secrets.tokenExpiresAt),
         gt(secrets.tokenExpiresAt, now),
       ),
-    ),
+    )),
     columns: { id: true, label: true },
-    orderBy: (t, { asc }) => [asc(t.createdAt)],
+    orderBy: sqlOrderByFn((t, { asc }) => [asc(t.createdAt)]),
   });
 
   const results: Array<{ kid: string; publicKeyJwk: JsonWebKey }> = [];

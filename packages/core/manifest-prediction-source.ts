@@ -52,7 +52,8 @@ import { loadTaskPrDiffs, type LoadTaskPrDiffs } from './task-pr-diffs';
 import { estimateTaskSize, type EstimateTaskSizeArgs, type ExpectedTaskSize } from './task-size-estimate';
 import { estimateExpectedSize, type EstimateExpectedSizeDeps } from './task-size-bucket-source';
 import type { DecisionAccess } from './decision-client';
-import { manifestPickIdentity, resolveApplyingFraction, type PromotionEvidence } from './orchestration-promotion';
+import { ORCHESTRATION_PROMOTIONS, manifestPickIdentity, manifestPromotionFromRow, resolveApplyingFraction, type PromotionEvidence } from './orchestration-promotion';
+import { loadDecisionFeatureMode, type StoredFeatureMode } from './owner-feature-switches';
 import {
   MANIFEST_APPLYING_FRACTION,
   MANIFEST_CANDIDATE_POLICY_VERSION,
@@ -70,6 +71,7 @@ import {
   type RepeatedChoiceResult,
   type TreeCandidateResult,
 } from './manifest-prediction';
+import { sqlWhere } from './db/relational-sql';
 
 const CAPABILITY = 'orchestration_manifest' as const;
 
@@ -197,14 +199,14 @@ export function createTreeCandidateAdapter(deps: TreeCandidateAdapterDeps): Tree
 const SERVER_TREE_CACHE = new Map<string, readonly string[]>();
 
 async function resolveServerRepo(workspaceId: string, signal?: AbortSignal): Promise<TreeRepoAccess | null> {
-  const workspace = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId) });
+  const workspace = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, workspaceId)) });
   if (!workspace?.githubInstallationId) return null;
   let repo = workspace.repo ?? null;
   if (workspace.githubRepoId) {
-    const linked = await db.query.githubRepos.findFirst({ where: eq(githubRepos.id, workspace.githubRepoId) });
+    const linked = await db.query.githubRepos.findFirst({ where: sqlWhere(eq(githubRepos.id, workspace.githubRepoId)) });
     repo = linked?.fullName ?? repo;
   }
-  const installation = await db.query.githubInstallations.findFirst({ where: eq(githubInstallations.id, workspace.githubInstallationId) });
+  const installation = await db.query.githubInstallations.findFirst({ where: sqlWhere(eq(githubInstallations.id, workspace.githubInstallationId)) });
   if (!repo || !installation) return null;
   const token = await getInstallationToken(installation.installationId);
   return {
@@ -359,15 +361,18 @@ export interface CreationManifestDeps {
   deadlineMs?: number;
   /** The REQUESTED applying fraction (default `MANIFEST_APPLYING_FRACTION`); the promotion guard grants it. */
   applyingFraction?: number;
-  /** Default: the committed `ORCHESTRATION_PROMOTIONS` (empty). */
+  /** Default: the committed `ORCHESTRATION_PROMOTIONS` (empty), plus the owner's stored switch when it matches. */
   promotions?: readonly PromotionEvidence[];
+  /** The platform owner's stored switch (packages/core/owner-feature-switches.ts). Default: the DB row. */
+  featureMode?: () => Promise<StoredFeatureMode | null>;
 }
 
 export type ManifestPredictionRow = typeof orchestrationManifestPredictions.$inferInsert;
 
 export type CreationManifestOutcome =
   | { skipped: 'caller_declared' | 'capability_disabled' | 'error' }
-  | { row: ManifestPredictionRow };
+  /** `acting`: the owner switched this feature on, so applied picks may become the task's scope at `threshold`. */
+  | { row: ManifestPredictionRow; acting?: { threshold: number } | null };
 
 /** The same "declared scope" test the creation gate uses: too-wide globs and the sentinel are missing scope. */
 const isConcreteDeclaration = (m: readonly string[] | null | undefined) =>
@@ -404,6 +409,8 @@ export async function predictCreationManifest(
   const pickCap = resolvePickCap(input.pickCap);
   const seedText = [input.title ?? '', input.description ?? ''].filter(Boolean).join('\n');
   const regexPaths = (() => { try { return inferPathsFromText(input.title, input.description); } catch { return []; } })();
+  // Set once access resolves (step 1): the owner's switch, when it still matches the pick template.
+  let acting: { threshold: number; fraction: number; evidence: PromotionEvidence } | null = null;
 
   const persist = async (row: ManifestPredictionRow) => {
     try {
@@ -426,7 +433,7 @@ export async function predictCreationManifest(
     decisionId: MANIFEST_DECISION_ID,
     promptVersion: manifestPromptVersion(),
     candidatePolicyVersion: MANIFEST_CANDIDATE_POLICY_VERSION,
-    mode: MANIFEST_PICK_MODE,
+    mode: acting ? 'gated' : MANIFEST_PICK_MODE,
     taskCreatedAt: input.createdAt,
     candidates: c.candidates,
     candidateSources: c.sources,
@@ -456,11 +463,17 @@ export async function predictCreationManifest(
     });
     let access: DecisionAccess;
     try {
-      access = await resolveAccess({ capability: CAPABILITY, teamId: input.teamId, workspaceId: input.workspaceId, accountId: input.accountId ?? null, userId: input.userId ?? null });
+      access = await resolveAccess({ capability: CAPABILITY, teamId: input.teamId, workspaceId: input.workspaceId, accountId: input.accountId ?? null, userId: input.userId ?? null, kind: MANIFEST_DECISION_ID });
     } catch {
       return { skipped: 'error' };
     }
     if (!access.ok && access.error.kind === 'capability_disabled') return { skipped: 'capability_disabled' };
+
+    // The owner's switch: read only for a team that has the feature on. A
+    // failed read is the code default (record only).
+    const stored = await (deps.featureMode ?? (() => loadDecisionFeatureMode(CAPABILITY)))().catch(() => null);
+    const evidence = manifestPromotionFromRow(stored);
+    if (evidence && stored && evidence.threshold !== null) acting = { threshold: evidence.threshold, fraction: stored.applyingFraction, evidence };
 
     const emptyCandidates = buildManifestCandidates({ cutoff: input.createdAt, neighbours: [] });
     if (!access.ok) {
@@ -539,6 +552,7 @@ export async function predictCreationManifest(
       pickCap,
       deadlineAt,
       now,
+      ...(acting ? { mode: 'gated' as const, minConfidence: acting.threshold } : {}),
       runPick: (args) => runOrchestrationDecision({
         decision: args.decision,
         question: MANIFEST_PICK_QUESTION,
@@ -573,9 +587,9 @@ export async function predictCreationManifest(
             decision: args.decision,
             question: MANIFEST_PICK_QUESTION,
             candidatePolicyVersion: MANIFEST_CANDIDATE_POLICY_VERSION,
-            requestedFraction: deps.applyingFraction ?? MANIFEST_APPLYING_FRACTION,
+            requestedFraction: deps.applyingFraction ?? (acting ? acting.fraction : MANIFEST_APPLYING_FRACTION),
             identity: pickIdentity,
-            promotions: deps.promotions,
+            promotions: deps.promotions ?? (acting ? [...ORCHESTRATION_PROMOTIONS, acting.evidence] : undefined),
           }).fraction,
         },
         deadlineAt: args.deadlineAt,
@@ -592,7 +606,7 @@ export async function predictCreationManifest(
 
     const row = rowOf(candidates, result, result.stop, neighbourUnion, expectedSize);
     await persist(row);
-    return { row };
+    return { row, acting: acting ? { threshold: acting.threshold } : null };
   } catch (err) {
     console.warn('[manifest-prediction] failed open (non-fatal):', (err as Error)?.message ?? err);
     return { skipped: 'error' };

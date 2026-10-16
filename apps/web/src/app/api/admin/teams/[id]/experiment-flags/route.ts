@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { normalizeDecisionShadows } from '@buildd/core/inference-policy';
+import { normalizeDecisionShadows, normalizeFeatureModes, type FeatureModes } from '@buildd/core/inference-policy';
 import { isUuid } from '@/lib/uuid';
 import { applyChatRetroPatch, type ChatRetroSettings } from '@/lib/chat-retro/settings';
 import { notFound, requirePlatformOwner } from '@/lib/admin/owner-gate';
@@ -9,16 +9,25 @@ import { recordPlatformAdminAudit } from '@/lib/admin/audit';
 /**
  * /api/admin/teams/[id]/experiment-flags — platform owner only (404 otherwise).
  *
- * A team's experimental switches: the opt-in decision capabilities it has on
- * (enabledDecisionShadows) and chat retro (lessons / proposals).
+ * A team's experimental switches, and the only write path for each: the
+ * opt-in decision capabilities it has on (enabledDecisionShadows), where each
+ * server-side feature runs (inferenceFeatureModes: { feature: 'server' |
+ * 'runner' | 'default' }, null clears), chat retro (lessons / proposals) and
+ * whether buildd may pick each decision's model on the team's own replayed
+ * decisions (decisionModelOptimizer, default off: replaying sends the team's
+ * decision inputs to the candidate providers).
+ * Team settings (PATCH /api/teams/[id]) refuse the first two to every team
+ * role, and no team route writes chat retro: they are platform machinery.
  *
- * GET   → { teamId, flags: { enabledDecisionShadows, chatRetro, chatRetroDogfood } }
- * PATCH { enabledDecisionShadows?: string[] | null, chatRetro?: { lessons?, proposals? } }
+ * GET   → { teamId, flags: { enabledDecisionShadows, inferenceFeatureModes, chatRetro, chatRetroDogfood, decisionModelOptimizer } }
+ * PATCH { enabledDecisionShadows?: string[] | null, inferenceFeatureModes?: object | null,
+ *         chatRetro?: { lessons?, proposals? }, decisionModelOptimizer?: boolean }
  *       → { teamId, flags, deletedLessons }. Audited with the flags before and after.
- *       Same validation as the team settings routes; turning lessons off deletes the
- *       team's lessons, as it does there.
+ *       Unknown features and 'default' are dropped from inferenceFeatureModes;
+ *       turning lessons off deletes the team's lessons. While an owner of the
+ *       team has account dogfood on, turning chat retro off is a 409.
  */
-const FIELDS = ['enabledDecisionShadows', 'chatRetro'];
+const FIELDS = ['enabledDecisionShadows', 'inferenceFeatureModes', 'chatRetro', 'decisionModelOptimizer'];
 
 async function load(req: NextRequest, params: Promise<{ id: string }>) {
   const gate = await requirePlatformOwner(req);
@@ -56,6 +65,19 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     if (!normalized.ok) return NextResponse.json({ error: normalized.error }, { status: 400 });
     enabledDecisionShadows = normalized.value;
   }
+  let inferenceFeatureModes: FeatureModes | null | undefined;
+  if ('inferenceFeatureModes' in b) {
+    const v = b.inferenceFeatureModes;
+    if (v !== null && (typeof v !== 'object' || Array.isArray(v))) {
+      return NextResponse.json({ error: "inferenceFeatureModes must be an object of feature → 'server' | 'runner' | 'default', or null" }, { status: 400 });
+    }
+    inferenceFeatureModes = normalizeFeatureModes(v);
+  }
+  let decisionModelOptimizer: boolean | undefined;
+  if ('decisionModelOptimizer' in b) {
+    if (typeof b.decisionModelOptimizer !== 'boolean') return NextResponse.json({ error: 'decisionModelOptimizer must be true or false' }, { status: 400 });
+    decisionModelOptimizer = b.decisionModelOptimizer;
+  }
   let chatRetro: ChatRetroSettings | undefined;
   let deleteLessons = false;
   if ('chatRetro' in b) {
@@ -67,13 +89,17 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 
   const { deletedLessons } = await writeTeamExperimentFlags(r.teamId, {
     ...(enabledDecisionShadows !== undefined ? { enabledDecisionShadows } : {}),
+    ...(inferenceFeatureModes !== undefined ? { inferenceFeatureModes } : {}),
     ...(chatRetro ? { chatRetro } : {}),
+    ...(decisionModelOptimizer !== undefined ? { decisionModelOptimizer } : {}),
     deleteLessons,
   });
   const after = {
     ...before,
     ...(enabledDecisionShadows !== undefined ? { enabledDecisionShadows } : {}),
+    ...(inferenceFeatureModes !== undefined ? { inferenceFeatureModes } : {}),
     ...(chatRetro ? { chatRetro } : {}),
+    ...(decisionModelOptimizer !== undefined ? { decisionModelOptimizer } : {}),
   };
   await recordPlatformAdminAudit({
     actorAccountId: r.account.id,

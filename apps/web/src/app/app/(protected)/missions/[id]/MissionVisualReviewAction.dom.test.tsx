@@ -97,7 +97,7 @@ describe('MissionVisualReviewAction', () => {
     expect(q('visual-review-capture')?.textContent).toBe('A local build of the mission branch (buildd/mission-x)');
     const sheet = q('mission-visual-review-sheet')!;
     expect(sheet.querySelectorAll('input, textarea, select').length).toBe(0);
-    expect(sheet.textContent).not.toMatch(/Any role|Title|Description|Output requirement|Depends on/);
+    expect(sheet.textContent).not.toMatch(/Any agent|Title|Description|Output requirement|Depends on/);
     expect(q('visual-review-run')?.textContent).toBe('Run visual review');
   });
 

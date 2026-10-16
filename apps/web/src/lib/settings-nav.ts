@@ -6,9 +6,9 @@
  *
  * Every item is its own route so a section is linkable. Groups are labels
  * only; they have no page of their own. A group is one scope: your own
- * settings, or the team's. One page holds both: Connected apps lists the apps
- * you signed in and the team's MCP connectors, since both are outside tools;
- * its team half follows manage_connectors.
+ * settings, or the team's. Connected apps (You) lists the apps you signed in
+ * to buildd; Apps (Team) holds the team's MCP connectors and agent access,
+ * and follows manage_connectors.
  */
 
 import type { Permission } from './permission-registry';
@@ -19,13 +19,15 @@ export type SettingsSectionId =
   | 'notifications'
   | 'connections'
   | 'team'
-  | 'roles'
+  | 'agents'
   | 'billing'
   | 'models'
   | 'workspaces'
   | 'runners'
   | 'alerts'
-  | 'integrations';
+  | 'integrations'
+  | 'apps'
+  | 'features';
 
 export interface SettingsNavItem {
   id: SettingsSectionId;
@@ -70,25 +72,25 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
         id: 'account',
         label: 'Profile',
         href: '/app/settings/account',
-        description: 'Your sign-in, preferences, teams and standing rules for chat.',
+        description: 'Account details, preferences, chat instructions and teams.',
       },
       {
         id: 'keys',
         label: 'Keys',
         href: '/app/settings/keys',
-        description: 'Your own model keys, used when the team lets personal keys pay.',
+        description: 'Manage your personal API keys.',
       },
       {
         id: 'notifications',
         label: 'Notifications',
         href: '/app/settings/notifications',
-        description: 'Your Pushover key, for alerts on work you watch.',
+        description: 'Configure Pushover alerts for work you watch.',
       },
       {
         id: 'connections',
         label: 'Connected apps',
         href: '/app/settings/connections',
-        description: 'Apps signed in to buildd as you, and the outside tools your agents can call.',
+        description: 'Manage apps connected to your account and the workspaces they can access.',
       },
     ],
   },
@@ -100,35 +102,35 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
         id: 'team',
         label: 'Members',
         href: '/app/settings/team',
-        description: 'Who is on the team, what each person can change, and the team timezone.',
-        manage: ['manage_team_members', 'assign_team_roles', 'assign_team_owner', 'manage_team_settings', 'manage_team_permissions', 'delete_team'],
+        description: 'Manage team members, roles, invites and timezone.',
+        manage: ['manage_team_members', 'assign_team_roles', 'assign_team_owner', 'manage_team_settings', 'delete_team'],
       },
       {
-        id: 'roles',
-        label: 'Roles',
-        href: '/app/settings/roles',
-        description: 'The agents on the team: what each one does, its model and its tools.',
+        id: 'agents',
+        label: 'Agents',
+        href: '/app/settings/agents',
+        description: 'Configure team agents, models and tools.',
         manage: ['manage_agent_roles'],
       },
       {
         id: 'billing',
         label: 'Billing and budgets',
         href: '/app/settings/billing',
-        description: 'The plan and seats, what you and the team spend, and daily caps.',
+        description: 'Manage the plan, monitor spending and set daily limits.',
         manage: ['manage_billing', 'manage_team_settings'],
       },
       {
         id: 'models',
         label: 'Models',
         href: '/app/settings/models',
-        description: 'Team and workspace keys, and which model backs each tier.',
+        description: 'Configure model providers, API keys and model tiers.',
         manage: ['manage_inference_providers', 'manage_team_credentials', 'manage_team_model_keys', 'manage_model_tiers', 'manage_team_settings'],
       },
       {
         id: 'workspaces',
         label: 'Workspaces',
         href: '/app/settings/workspaces',
-        description: 'Each repo agents work in: delivery, merge policy and where its work runs.',
+        description: 'Manage repositories, delivery settings and merge policies.',
         alsoMatches: ['/app/settings/workspace/'],
         manage: ['create_workspace', 'manage_workspace_settings'],
       },
@@ -136,22 +138,36 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
         id: 'runners',
         label: 'Runners',
         href: '/app/settings/runners',
-        description: 'Runner tokens, the cloud runner and Cloudflare.',
+        description: 'Manage runner tokens, the cloud runner and Cloudflare.',
         manage: ['manage_team_keys', 'manage_team_model_keys'],
       },
       {
         id: 'alerts',
         label: 'Alerts',
         href: '/app/settings/team-notifications',
-        description: "Where the team's alerts go: Pushover or a webhook, and which events.",
+        description: 'Send team alerts to Pushover or a webhook.',
         manage: ['manage_team_notifications'],
       },
       {
         id: 'integrations',
         label: 'Integrations',
         href: '/app/settings/integrations',
-        description: 'GitHub, Vercel, and the bucket where run evidence is kept.',
+        description: 'Connect GitHub, Vercel and evidence storage.',
         manage: ['manage_github_installation', 'manage_team_credentials', 'manage_evidence_backends'],
+      },
+      {
+        id: 'apps',
+        label: 'Apps',
+        href: '/app/settings/apps',
+        description: 'Manage the apps team agents can use and their access requests.',
+        manage: ['manage_connectors'],
+      },
+      {
+        id: 'features',
+        label: 'Features',
+        href: '/app/settings/features',
+        description: 'Turn on optional team features, such as task estimates.',
+        manage: ['manage_team_settings'],
       },
     ],
   },
@@ -162,7 +178,7 @@ export const SETTINGS_ITEMS: SettingsNavItem[] = SETTINGS_NAV.flatMap((g) => g.i
 /** The billing section while BILLING_ENFORCED is off: the same page, budgets only. */
 const BUDGETS_ONLY: Pick<SettingsNavItem, 'label' | 'description'> = {
   label: 'Budgets',
-  description: 'What you and the team spend, and daily caps.',
+  description: 'Monitor spending and set daily limits.',
 };
 
 /**
@@ -183,7 +199,7 @@ export function settingsItemAs(item: SettingsNavItem, opts: { billing: boolean }
 
 /**
  * True when a team section shows the viewer values only: they hold none of
- * the permissions behind its controls (team overrides applied). Your own
+ * the permissions behind its controls. Your own
  * sections are never read-only. The server enforces each write either way;
  * this only decides what renders.
  */
@@ -222,7 +238,7 @@ export const LEGACY_SETTINGS_ANCHORS: Record<string, string> = {
   'runner-tokens': '/app/settings/runners',
   'inference-spending': '/app/settings/models',
   'provider-keys': '/app/settings/models',
-  connectors: '/app/settings/connections',
+  connectors: '/app/settings/apps',
   notifications: '/app/settings/notifications',
   github: '/app/settings/integrations',
   vercel: '/app/settings/integrations',

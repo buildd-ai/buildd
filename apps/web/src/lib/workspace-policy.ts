@@ -277,10 +277,21 @@ export function guessRiskClass(path: string): RiskClassName | null {
 }
 
 /**
+ * Tests, docs and prototypes. Their names carry the same keywords as the code
+ * they describe (`auth.test.ts`, `docs/design/secrets.md`), but changing one is
+ * not a risky change, so they are never suggested for a class.
+ */
+const NEVER_SUGGESTED: RegExp[] = [
+  /\.(test|spec)\.[^/]+$/,
+  /(^|\/)(__tests__|tests|docs|prototypes)\//,
+  /\.mdx?$/,
+];
+
+/**
  * Find files in a PR that are risk-adjacent but not covered by any policy class.
  *
- * Returns proposed additions — the reviewer can mention these in escalation reasons
- * so the human can add them to the appropriate class.
+ * Returns proposed additions — the reviewer records these on its task and the
+ * Merge Policy page offers to add them to the appropriate class.
  */
 export function findUncoveredRiskPaths(
   policyConfig: WorkspacePolicyConfig,
@@ -288,6 +299,7 @@ export function findUncoveredRiskPaths(
 ): Array<{ file: string; suggestedClass: RiskClassName }> {
   const proposals: Array<{ file: string; suggestedClass: RiskClassName }> = [];
   for (const file of prFiles) {
+    if (NEVER_SUGGESTED.some((rx) => rx.test(file))) continue;
     // Is this file already covered?
     const covered = policyConfig.riskClasses.some((entry) => fileCoveredByClass(file, entry));
     if (covered) continue;

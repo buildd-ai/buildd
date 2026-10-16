@@ -21,7 +21,7 @@ import { eq, and, inArray } from 'drizzle-orm';
 import { config } from '../config';
 
 const client = neon(config.databaseUrl);
-const db = drizzle(client);
+const db = drizzle({ client });
 
 // ── Skills to disable (granular scripts that should become part of broader roles) ──
 

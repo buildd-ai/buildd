@@ -22,12 +22,39 @@ export const DRIZZLE_META_DIR = 'packages/core/drizzle/meta/';
 /** Lowered by `bun run design:check --update`; CI checks counts against it, not equality. */
 export const DESIGN_CHECK_BASELINE_PATH = 'scripts/design-check.baseline.json';
 
+/** A drizzle v1 folder's snapshot: regenerated in full, like the legacy meta files. */
+const V1_SNAPSHOT_PATH = /^packages\/core\/drizzle\/\d{14}_[^/]+\/snapshot\.json$/;
+
 export function isCiVerifiedGeneratedPath(path: string): boolean {
-  return path === SPECS_INDEX_PATH || path.startsWith(DRIZZLE_META_DIR);
+  return path === SPECS_INDEX_PATH || path.startsWith(DRIZZLE_META_DIR) || V1_SNAPSHOT_PATH.test(path);
 }
 
 export function isMigrationSqlPath(path: string): boolean {
   return path.startsWith(DRIZZLE_DIR) && !path.startsWith(DRIZZLE_META_DIR) && path.endsWith('.sql');
+}
+
+/**
+ * Pair migrations that only moved: each path in `arrived` (sorted) takes the
+ * first unused path in `left` holding the same blob, one to one. Returns both
+ * ends of every pair. Shared by the refresh-merge review exemption
+ * (`renumberedMigrations`) and the merge-safety inspector, so a renumber is
+ * the same shape to both (docs/specs/db-migration-gates.md).
+ */
+export function pairMovedMigrations(
+  left: Record<string, string | undefined>,
+  arrived: Record<string, string | undefined>,
+): Set<string> {
+  const out = new Set<string>();
+  const used = new Set<string>();
+  for (const p of Object.keys(arrived).sort()) {
+    if (arrived[p] === undefined) continue;
+    const q = Object.keys(left).find((c) => !used.has(c) && left[c] !== undefined && left[c] === arrived[p]);
+    if (!q) continue;
+    used.add(q);
+    out.add(p);
+    out.add(q);
+  }
+  return out;
 }
 
 export function isGeneratedArtifactPath(path: string): boolean {

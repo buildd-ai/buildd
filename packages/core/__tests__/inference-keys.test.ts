@@ -252,9 +252,12 @@ describe('team key policy', () => {
     teamRow = { inferenceKeyPolicy: 'own' };
     secretRows = [TEAM()];
     expect(await resolveInferenceKey({ provider: 'openrouter', teamId: 't-1', userId: 'u-1' })).toBeNull();
-    teamRow = { inferenceKeyPolicy: 'team' };
+    teamRow = { credentialPolicy: 'team', inferenceKeyPolicy: 'team' };
     secretRows = [MINE(), TEAM()];
     expect(await resolveInferenceKey({ provider: 'openrouter', teamId: 't-1', userId: 'u-1' })).toBe('team');
+    // The legacy column's default alone is no choice: your own key goes first.
+    teamRow = { inferenceKeyPolicy: 'team' };
+    expect(await resolveInferenceKey({ provider: 'openrouter', teamId: 't-1', userId: 'u-1' })).toBe('mine');
   });
 });
 

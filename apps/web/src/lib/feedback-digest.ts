@@ -22,6 +22,7 @@ import type { KnowledgeStore } from '@buildd/core/knowledge-store/types';
 import { getMemoryStoreForTeam, getMemoryIndexStore } from '@/lib/memory-helper';
 import { resolveFeedbackEntityWorkspaces } from '@/lib/feedback-entity-workspace';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -77,7 +78,7 @@ async function resolveEntityContext(entityType: EntityType, entityIds: string[])
 
   if (entityType === 'note') {
     const notes = await db.query.missionNotes.findMany({
-      where: inArray(missionNotes.id, entityIds),
+      where: sqlWhere(inArray(missionNotes.id, entityIds)),
       columns: { id: true, type: true, title: true, body: true },
     });
     for (const n of notes) {
@@ -88,7 +89,7 @@ async function resolveEntityContext(entityType: EntityType, entityIds: string[])
 
   if (entityType === 'artifact') {
     const arts = await db.query.artifacts.findMany({
-      where: inArray(artifacts.id, entityIds),
+      where: sqlWhere(inArray(artifacts.id, entityIds)),
       columns: { id: true, type: true, title: true, content: true },
     });
     for (const a of arts) {
@@ -145,7 +146,7 @@ async function resolveFeedbackProjects(teamId: string, rows: FeedbackRow[]): Pro
   const out = new Map<string, string>();
   if (wsOf.size === 0) return out;
   const teamWorkspaces = await db.query.workspaces.findMany({
-    where: eq(workspaces.teamId, teamId),
+    where: sqlWhere(eq(workspaces.teamId, teamId)),
     columns: { id: true, teamId: true, repo: true, name: true, dataClass: true },
   });
   const byId = new Map(teamWorkspaces.map(w => [w.id, w]));
@@ -286,10 +287,10 @@ export async function runFeedbackDigest(windowHours = 24): Promise<{
 
   // 1. Query recent negative feedback
   const rows = await db.query.userFeedback.findMany({
-    where: and(
+    where: sqlWhere(and(
       gte(userFeedback.createdAt, since),
       inArray(userFeedback.signal, ['down', 'dismiss']),
-    ),
+    )),
   }) as FeedbackRow[];
 
   if (rows.length === 0) {
@@ -349,7 +350,7 @@ export async function getFeedbackStats(windowHours = 24): Promise<{
   const since = new Date(Date.now() - windowHours * 60 * 60 * 1000);
 
   const rows = await db.query.userFeedback.findMany({
-    where: gte(userFeedback.createdAt, since),
+    where: sqlWhere(gte(userFeedback.createdAt, since)),
     columns: { signal: true, entityType: true },
   });
 

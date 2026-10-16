@@ -4,8 +4,12 @@
  * Settings → Models → Tiers. One table: a cell per tier x surface (Coding,
  * Chat), each its primary and price on line 1 and its state in words on line
  * 2, straight from the cells read model (`GET /api/model-tiers/cells`).
- * Clicking a cell opens its editor; a tier name opens what ran; History holds
- * the change log. On a phone each tier is a stacked card.
+ * Clicking a cell opens its editor. A team member or admin sees each cell's
+ * primary and price only, and an admin picks the primary. A platform operator
+ * also gets the pool machinery: the state line and alternates, what ran (from
+ * a tier name), the editor's alternates and dial, the "testing" chip and
+ * History, the pool change log
+ * (lib/admin/platform-operator-caller.ts). On a phone each tier is a stacked card.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ErrorState from '@/components/ErrorState';
@@ -26,6 +30,8 @@ interface Props {
   teamId: string;
   teamName: string | null;
   isAdmin: boolean;
+  /** A platform operator: traffic pools, the testing chip and History render. */
+  operator?: boolean;
 }
 
 interface ModelsResponse {
@@ -56,7 +62,7 @@ type Open =
   | { kind: 'history' }
   | null;
 
-export default function ModelTiersClient({ teamId, isAdmin }: Props) {
+export default function ModelTiersClient({ teamId, isAdmin, operator = false }: Props) {
   const [data, setData] = useState<ModelPolicyCellsResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [catalog, setCatalog] = useState<ModelsResponse>({});
@@ -142,10 +148,12 @@ export default function ModelTiersClient({ teamId, isAdmin }: Props) {
           Which model each tier runs. Each needs a key in{' '}
           <a href="#keys" className="underline hover:text-text-primary">Keys</a>.
         </p>
-        <button type="button" className="btn btn-sm btn-quiet min-h-11 md:min-h-0"
-          onClick={() => setOpen({ kind: 'history' })} disabled={!data} data-testid="tiers-history">
-          History
-        </button>
+        {operator && (
+          <button type="button" className="btn btn-sm btn-quiet min-h-11 md:min-h-0"
+            onClick={() => setOpen({ kind: 'history' })} disabled={!data} data-testid="tiers-history">
+            History
+          </button>
+        )}
       </div>
 
       {loadError && (
@@ -163,14 +171,14 @@ export default function ModelTiersClient({ teamId, isAdmin }: Props) {
         {data && TIERS.map((tier) => (
           <div key={tier} className="grid grid-cols-[180px_minmax(0,1fr)_minmax(0,1fr)] gap-3 px-3 py-2 border-b border-border-default last:border-b-0" data-testid={`tier-row-${tier}`}>
             <div className="min-w-0">
-              <TierName tier={tier} routes={SURFACES.some((s) => { const c = cellFor(tier, s); return !!c && cellRoutes(c); })}
+              <TierName tier={tier} routes={operator && SURFACES.some((s) => { const c = cellFor(tier, s); return !!c && cellRoutes(c); })}
                 blocked={blockedOn(tier)} onOpen={() => setOpen({ kind: 'what-ran', tier })} />
               <UpgradeNote note={noteFor(tier)} tier={tier} />
             </div>
             {SURFACES.map((surface) => {
               const cell = cellFor(tier, surface);
               return cell
-                ? <CellButton key={surface} cell={cell} models={models} isAdmin={isAdmin} onOpen={(el) => openCell(tier, surface, el)} />
+                ? <CellButton key={surface} cell={cell} models={models} isAdmin={isAdmin} operator={operator} onOpen={(el) => openCell(tier, surface, el)} />
                 : <span key={surface} />;
             })}
           </div>
@@ -183,13 +191,13 @@ export default function ModelTiersClient({ teamId, isAdmin }: Props) {
         {data && TIERS.map((tier) => (
           <div key={tier} className="card px-3 py-2" data-testid={`tier-card-${tier}`}>
             <div className="flex items-center gap-2">
-              <TierName tier={tier} routes={SURFACES.some((s) => { const c = cellFor(tier, s); return !!c && cellRoutes(c); })}
+              <TierName tier={tier} routes={operator && SURFACES.some((s) => { const c = cellFor(tier, s); return !!c && cellRoutes(c); })}
                 blocked={blockedOn(tier)} onOpen={() => setOpen({ kind: 'what-ran', tier })} />
             </div>
             <UpgradeNote note={noteFor(tier)} tier={tier} />
             {SURFACES.map((surface) => {
               const cell = cellFor(tier, surface);
-              return cell && <PhoneLine key={surface} cell={cell} models={models} isAdmin={isAdmin} onOpen={(el) => openCell(tier, surface, el)} />;
+              return cell && <PhoneLine key={surface} cell={cell} models={models} isAdmin={isAdmin} operator={operator} onOpen={(el) => openCell(tier, surface, el)} />;
             })}
           </div>
         ))}
@@ -227,6 +235,7 @@ export default function ModelTiersClient({ teamId, isAdmin }: Props) {
           suggestion={suggestionFor(suggestions, editing.tier)}
           anchorRef={anchorRef}
           sheet={isMobile}
+          operator={operator}
           onClose={() => setOpen(null)}
           onSaved={load}
         />
@@ -234,7 +243,7 @@ export default function ModelTiersClient({ teamId, isAdmin }: Props) {
       {open?.kind === 'what-ran' && data && (
         <WhatRanSheet tier={open.tier} cells={cells} windowDays={data.windowDays} onClose={() => setOpen(null)} />
       )}
-      {open?.kind === 'history' && (
+      {operator && open?.kind === 'history' && (
         <HistorySheet teamId={teamId} cells={cells} onClose={() => setOpen(null)} onWhatRan={(t) => setOpen({ kind: 'what-ran', tier: t as Tier })} />
       )}
     </div>
@@ -272,7 +281,7 @@ function TierName({ tier, routes, blocked, onOpen }: { tier: Tier; routes: boole
 }
 
 /** Line 1: the primary (grey with a footnote mark when the team did not set it) and its price. */
-function PrimaryLine({ cell, models }: { cell: ModelPolicyCell; models: readonly CatalogModel[] }) {
+function PrimaryLine({ cell, models, operator }: { cell: ModelPolicyCell; models: readonly CatalogModel[]; operator: boolean }) {
   const price = priceText(models, cell.primary.model);
   const note = cell.source !== 'team' ? SOURCE_NOTE[cell.source] : null;
   return (
@@ -282,18 +291,18 @@ function PrimaryLine({ cell, models }: { cell: ModelPolicyCell; models: readonly
         {cell.primary.model}{note && <sup className="ml-0.5" data-testid="cell-source-mark">{note.mark}</sup>}
       </span>
       {price && <span className="shrink-0 font-mono text-meta tabular-nums text-text-muted" data-testid="cell-price">{price}</span>}
-      {cell.experimentRunning && <Chip tone="info" dot={false} data-testid="cell-testing">testing</Chip>}
+      {operator && cell.experimentRunning && <Chip tone="info" dot={false} data-testid="cell-testing">testing</Chip>}
     </span>
   );
 }
 
-function CellButton({ cell, models, isAdmin, onOpen }: {
-  cell: ModelPolicyCell; models: readonly CatalogModel[]; isAdmin: boolean; onOpen: (el: HTMLElement) => void;
+function CellButton({ cell, models, isAdmin, operator, onOpen }: {
+  cell: ModelPolicyCell; models: readonly CatalogModel[]; isAdmin: boolean; operator: boolean; onOpen: (el: HTMLElement) => void;
 }) {
   const body = (
     <>
-      <PrimaryLine cell={cell} models={models} />
-      <span className="block truncate font-mono text-meta text-text-secondary" data-testid="cell-state">{cellStateText(cell)}</span>
+      <PrimaryLine cell={cell} models={models} operator={operator} />
+      {operator && <span className="block truncate font-mono text-meta text-text-secondary" data-testid="cell-state">{cellStateText(cell)}</span>}
     </>
   );
   const testId = `cell-${cell.surface}-${cell.tier}`;
@@ -308,8 +317,8 @@ function CellButton({ cell, models, isAdmin, onOpen }: {
 }
 
 /** Phone: "Coding <model>" then "+ alt · state". Tap opens the editor sheet. */
-function PhoneLine({ cell, models, isAdmin, onOpen }: {
-  cell: ModelPolicyCell; models: readonly CatalogModel[]; isAdmin: boolean; onOpen: (el: HTMLElement) => void;
+function PhoneLine({ cell, models, isAdmin, operator, onOpen }: {
+  cell: ModelPolicyCell; models: readonly CatalogModel[]; isAdmin: boolean; operator: boolean; onOpen: (el: HTMLElement) => void;
 }) {
   const alt = cell.alternates[0]?.model;
   const more = cell.alternates.length > 1 ? ` +${cell.alternates.length - 1}` : '';
@@ -318,11 +327,13 @@ function PhoneLine({ cell, models, isAdmin, onOpen }: {
     <>
       <span className="flex min-w-0 items-baseline gap-2">
         <span className="w-14 shrink-0 font-mono text-meta text-text-muted">{SURFACE_LABEL[cell.surface]}</span>
-        <PrimaryLine cell={cell} models={models} />
+        <PrimaryLine cell={cell} models={models} operator={operator} />
       </span>
-      <span className="block truncate pl-16 font-mono text-meta text-text-secondary" data-testid="cell-state">
-        {alt && !state.includes(alt) ? `+ ${alt}${more} · ` : ''}{state}
-      </span>
+      {operator && (
+        <span className="block truncate pl-16 font-mono text-meta text-text-secondary" data-testid="cell-state">
+          {alt && !state.includes(alt) ? `+ ${alt}${more} · ` : ''}{state}
+        </span>
+      )}
     </>
   );
   const testId = `cell-${cell.surface}-${cell.tier}`;

@@ -11,7 +11,7 @@ vi.mock('@buildd/core/db', () => ({
         findMany: vi.fn(),
       },
       // Read by the real permission check (lib/permissions.ts): the caller's
-      // team roles and the team's permission overrides.
+      // team roles and the personal-team lookup.
       teamMembers: { findMany: vi.fn(async () => []) },
       teams: { findFirst: vi.fn(async () => null) },
     },
@@ -99,10 +99,10 @@ function mockAdminApiKey() {
   (verifyAccountWorkspaceAccess as any).mockResolvedValue(true);
 }
 
-/** The session user's role in team-1, and team-1's permission overrides. */
-function teamRole(role: 'owner' | 'admin' | 'member', overrides: Record<string, string[]> | null = null) {
+/** The session user's role in team-1. */
+function teamRole(role: 'owner' | 'admin' | 'member') {
   (db.query.teamMembers.findMany as any).mockResolvedValue([{ teamId: 'team-1', role }]);
-  (db.query.teams.findFirst as any).mockResolvedValue({ id: 'not-a-personal-team', permissionOverrides: overrides });
+  (db.query.teams.findFirst as any).mockResolvedValue({ id: 'not-a-personal-team' });
 }
 
 function mockNoAuth() {
@@ -262,24 +262,6 @@ describe('PATCH delegation (explicit cross-workspace reach for the schedule\'s t
     expect(written.grants).toEqual(grant.grants);
     expect(written.grantedByUserId).toBe('user-1');
     expect(typeof written.grantedAt).toBe('string');
-  });
-
-  it('an admin cannot grant it once delegate_schedule_access is owner-only', async () => {
-    mockSessionUser();
-    teamRole('admin', { delegate_schedule_access: ['owner'] });
-    mockDbUpdate({ ...mockSchedule });
-    const res = await PATCH(makeRequest('PATCH', { delegation: grant }), { params });
-    expect(res.status).toBe(403);
-    expect(db.update).not.toHaveBeenCalled();
-  });
-
-  it('a member grants it once delegate_schedule_access is granted to members', async () => {
-    mockSessionUser();
-    teamRole('member', { delegate_schedule_access: ['owner', 'admin', 'member'] });
-    const { set } = mockDbUpdate({ ...mockSchedule });
-    const res = await PATCH(makeRequest('PATCH', { delegation: grant }), { params });
-    expect(res.status).toBe(200);
-    expect((set.mock.calls[0] as any)[0].delegation.grants).toEqual(grant.grants);
   });
 
   it('an admin key of another team cannot grant it', async () => {

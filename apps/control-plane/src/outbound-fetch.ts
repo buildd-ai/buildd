@@ -17,9 +17,41 @@ export function withDefaultUserAgent(base: typeof fetch): typeof fetch {
   return wrapped as typeof fetch;
 }
 
+const GITHUB_API = 'https://api.github.com';
+const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]']);
+
+/** A loopback origin, or null: anything else is ignored, so production never redirects GitHub. */
+function loopbackOrigin(raw: string | undefined): string | null {
+  if (!raw) return null;
+  try {
+    const u = new URL(raw);
+    return u.protocol === 'http:' && LOOPBACK.has(u.hostname) ? u.origin : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * GITHUB_API_ORIGIN (a loopback origin, set only by `wrangler dev` in the
+ * web-down e2e) sends `https://api.github.com/*` to a fake GitHub served on
+ * that origin, the same model the kernel DB tests use. The handlers keep their
+ * hardcoded GitHub URLs; only the host changes.
+ */
+export function withGithubApiOrigin(base: typeof fetch, origin: () => string | undefined): typeof fetch {
+  const wrapped = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const to = loopbackOrigin(origin());
+    const url = input instanceof Request ? input.url : String(input);
+    if (!to || !url.startsWith(`${GITHUB_API}/`)) return base(input, init);
+    const moved = to + url.slice(GITHUB_API.length);
+    return base(input instanceof Request ? new Request(moved, input) : moved, init);
+  };
+  return wrapped as typeof fetch;
+}
+
 let installed = false;
 export function installOutboundFetch(): void {
   if (installed) return;
-  globalThis.fetch = withDefaultUserAgent(globalThis.fetch.bind(globalThis));
+  const base = globalThis.fetch.bind(globalThis);
+  globalThis.fetch = withDefaultUserAgent(withGithubApiOrigin(base, () => process.env.GITHUB_API_ORIGIN));
   installed = true;
 }

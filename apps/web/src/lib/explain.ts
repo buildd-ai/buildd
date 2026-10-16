@@ -20,6 +20,7 @@
  * the five underlying derivations. This module does not decide what a state is;
  * it only supplies the accessor's inputs and turns its answer into evidence.
  */
+import { isOpenAsk, missionOpenQuestions } from './open-ask';
 import { loadTaskAccess } from './agent-capabilities/access-log';
 import { BACKEND_ROUTING_KEY, describeBackendRouting } from '@buildd/core/backend-policy';
 import { OPEN_TASK_STATUSES as SHARED_OPEN_TASK_STATUSES, LIVE_WORKER_STATUSES as SHARED_LIVE_WORKER_STATUSES, VISUAL_AUDITOR_ROLE_SLUG, type TaskEvidence, type TaskMismatch } from '@buildd/shared';
@@ -44,13 +45,18 @@ import { classifyMissionWait, type WaitClassifiableTask } from '@/lib/heartbeat-
 import { evaluateMissionWorkState } from '@/lib/mission-pr';
 import { deriveMissionStateView, type MissionStateInput, type MissionStateView } from '@/lib/mission-state-view';
 import { computeSupersededFailedTasks } from '@/lib/mission-task-superseded';
-import { getDeliveryViewsForTasks, kernelReplacedFailedTaskIds, replacedFailedTaskIds } from '@/lib/workflow/delivery-view';
+import { getDeliveryViewsForTasks, replacedFailedTaskIds } from '@/lib/workflow/delivery-view';
+import { missionEpochsOf } from '@/lib/workflow/delivery-ship';
+import { deliveryDisagreements, overlayDeliveryLifecycle, type DeliveryDisagreement } from '@/lib/delivery-overlay';
 import { attemptLine } from '@/lib/workflow/projections';
-import { loadMissionClaimDeferrals } from '@/lib/mission-claim-deferrals';
+import { loadClaimHoldReasons, loadMissionClaimDeferrals } from '@/lib/mission-claim-deferrals';
+import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
+import { openCriteriaChecks, summarizeVisualReview } from '@/lib/mission-open-checks';
 import { deriveMissionIntegrationPr } from '@/lib/mission-integration-pr';
 import { missionCardProgress, ownerUnmergedPrs, type MissionCardTaskRow } from '@/lib/mission-card-view';
-import { REPO_WIDE_SENTINEL, readSoftOverlaps } from '@buildd/core/path-overlap';
-import { buildCoordinationHolds, coordinationGateDetail, coordinationLink, type CoordinationHold, type CoordinationHolder } from '@/lib/explain-coordination';
+import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
+import { coordinationGateDetail, coordinationLink, type CoordinationHold } from '@/lib/explain-coordination';
+import { loadCoordinationHolds, type HoldTask } from '@/lib/coordination-holds';
 import { latestDispatchForTask } from '@buildd/core/dispatch-outbox';
 import { loadBrowserRunnerHeartbeats } from './runner-heartbeats';
 import { browserRunnerOnline } from './visual-audit-runner';
@@ -59,9 +65,11 @@ import {
   buildStateBecause,
   buildConflictBecause,
   deliveryTransitionLink,
+  deliveryDisagreementLink,
   dispatchWakeLink,
   withDispatchLink,
   entitlementHoldLink,
+  taskRecoveryLink,
   type BaseSideMerge,
   type StateBecauseExtras,
   type ConflictSubject,
@@ -75,6 +83,7 @@ import {
   type HistoryNode,
   type GateHistoryEntry,
 } from '@/lib/explain-types';
+import { sqlOrderBy, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** How many recent gate_events rows a task's `explain` answer carries. */
 const GATE_HISTORY_LIMIT = 10;
@@ -91,8 +100,8 @@ async function loadGateHistory(taskId: string): Promise<GateHistoryEntry[]> {
 
 async function loadGateRows(taskId: string): Promise<Array<{ entry: GateHistoryEntry; detail: unknown }>> {
   const rows = await db.query.gateEvents.findMany({
-    where: eq(gateEvents.taskId, taskId),
-    orderBy: [desc(gateEvents.occurredAt)],
+    where: sqlWhere(eq(gateEvents.taskId, taskId)),
+    orderBy: sqlOrderBy([desc(gateEvents.occurredAt)]),
     limit: GATE_HISTORY_LIMIT,
     columns: { occurredAt: true, gate: true, outcome: true, reason: true, detail: true },
   });
@@ -114,30 +123,12 @@ async function loadGateRows(taskId: string): Promise<Array<{ entry: GateHistoryE
   });
 }
 
-/**
- * Who holds a pending task, and why (./explain-coordination). One extra read,
- * only for a pending task that names holders. A failure omits it.
- */
-async function loadCoordination(
-  task: { id: string; status: string; dependsOn?: string[] | null; pathManifest?: string[] | null; pathDeclaration?: unknown },
+/** Who holds a pending task, and why (lib/coordination-holds.ts). A failure omits it. */
+function loadCoordination(
+  task: HoldTask,
   gateRows: Array<{ entry: GateHistoryEntry; detail: unknown }>,
 ): Promise<CoordinationHold[]> {
-  if (task.status !== 'pending') return [];
-  const gateDetails = gateRows.map(r => ({ reason: r.entry.reason, detail: r.detail }));
-  const ids = new Set<string>(task.dependsOn ?? []);
-  for (const e of readSoftOverlaps(task.pathDeclaration)) ids.add(e.taskId);
-  for (const g of gateRows) if (g.entry.holder?.blockingTaskId) ids.add(g.entry.holder.blockingTaskId);
-  ids.delete(task.id);
-  const rows = ids.size > 0
-    ? await db.query.tasks.findMany({
-        where: inArray(tasks.id, [...ids]),
-        columns: { id: true, title: true, status: true, pathManifest: true },
-      })
-    : [];
-  const holders = new Map<string, CoordinationHolder>(
-    (rows as Array<{ id: string; title: string | null; status: string; pathManifest: string[] | null }>).map(r => [r.id, r]),
-  );
-  return buildCoordinationHolds({ task, holders, gateDetails });
+  return loadCoordinationHolds(task, gateRows.map(r => ({ reason: r.entry.reason, detail: r.detail })));
 }
 
 /** Cap on how many gated subjects a workspace answer returns. */
@@ -211,6 +202,7 @@ type LoadedTask = {
     observedTouches: string[] | null;
     error: string | null;
     startedAt: Date | null;
+    waitingFor?: unknown;
     supersededByPrNumber: number | null;
     supersededByPrUrl: string | null;
     supersededReason: string | null;
@@ -240,8 +232,10 @@ const WORKER_WITH = {
     updatedAt: true, completedAt: true,
     supersededByPrNumber: true, supersededByPrUrl: true, supersededReason: true,
     abandonedAt: true, abandonedReason: true, supersessionScan: true,
+    // A worker parked on a question: what it asked (`missionOpenQuestions`).
+    waitingFor: true,
   },
-  orderBy: [desc(workers.startedAt)],
+  orderBy: sqlOrderBy([desc(workers.startedAt)]),
 };
 
 const LIVE_WORKER_STATUSES = new Set<string>(SHARED_LIVE_WORKER_STATUSES);
@@ -252,7 +246,7 @@ async function missingBrowserFor(rows: LoadedTask[], workspaceId: string | null,
   if (local || !workspaceId || !rows.some(t => t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG && t.status === 'pending' && !hasLiveWorker(t))) return false;
   try {
     const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, workspaceId),
+      where: sqlWhere(eq(workspaces.id, workspaceId)),
       columns: { id: true, teamId: true, accessMode: true, gitConfig: true, webhookConfig: true },
     });
     if (!ws) return false;
@@ -269,6 +263,11 @@ function hasLiveWorker(t: { workers?: Array<{ status: string }> | null }): boole
   return (t.workers ?? []).some(w => LIVE_WORKER_STATUSES.has(w.status));
 }
 
+/** True when this row's worker is parked on a question for a person. */
+function hasOpenAsk(t: { status: string; workers?: Array<{ status: string }> | null }): boolean {
+  return (t.workers ?? []).some(w => isOpenAsk(t.status, w.status));
+}
+
 /** The canonical "is a fix attempt open on this task" descriptor — see mission-state-view.ts rule 6½. */
 export interface OpenAttemptInfo {
   taskId: string;
@@ -277,6 +276,8 @@ export interface OpenAttemptInfo {
   iteration: number | null;
   maxIterations: number | null;
   claimed: boolean;
+  /** 00d288fd: a reviewer is a review, never a fix (its `iteration` is the round, not a fix attempt). */
+  kind?: 'review' | 'fix';
 }
 
 /**
@@ -300,6 +301,7 @@ function deriveOpenAttempt(attempts: LoadedTask[]): OpenAttemptInfo | null {
     status: openAttemptRow.status,
     iteration: typeof attemptCtx.iteration === 'number' ? attemptCtx.iteration : null,
     maxIterations: typeof attemptCtx.maxIterations === 'number' ? attemptCtx.maxIterations : null,
+    kind: openAttemptRow.category === 'review' ? 'review' : 'fix',
     claimed:
       openAttemptRow.status !== 'pending' ||
       (openAttemptRow.workers ?? []).some(w => LIVE_WORKER_STATUSES.has(w.status)),
@@ -314,7 +316,7 @@ function deriveOpenAttempt(attempts: LoadedTask[]): OpenAttemptInfo | null {
  */
 export async function loadOpenAttempt(taskId: string): Promise<OpenAttemptInfo | null> {
   const attempts = (await db.query.tasks.findMany({
-    where: eq(tasks.parentTaskId, taskId),
+    where: sqlWhere(eq(tasks.parentTaskId, taskId)),
     columns: TASK_COLUMNS,
     with: { workers: WORKER_WITH },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -415,21 +417,34 @@ async function viewForMission(missionId: string): Promise<{
   mission: Record<string, unknown>;
   loaded: LoadedTask[];
   answerExtras: StateBecauseExtras;
+  /** Owner PR rows whose merge columns disagree with their delivery (AC-26). */
+  disagreements: DeliveryDisagreement[];
+  deliveries: Map<string, DeliveryView>;
 } | null> {
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, missionId),
+    where: sqlWhere(eq(missions.id, missionId)),
     with: { schedule: true },
   });
   if (!mission) return null;
 
-  const loaded = (await db.query.tasks.findMany({
-    where: eq(tasks.missionId, missionId),
+  const rawLoaded = (await db.query.tasks.findMany({
+    where: sqlWhere(eq(tasks.missionId, missionId)),
     columns: TASK_COLUMNS,
     with: { workers: WORKER_WITH },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   })) as any as LoadedTask[];
 
   const m = mission as unknown as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  // §7 (workflow-kernel-library.md): where each delivery-owned task's PR
+  // stands is its delivery's, and a mission PR's is its delivery records'
+  // (§6). One load each; the worker rows below carry the delivery's lifecycle
+  // (derived on read, nothing written), and a row that disagrees is named.
+  const [deliveries, missionDeliveries] = await Promise.all([
+    getDeliveryViewsForTasks(rawLoaded.map(t => t.id)),
+    m.integrationBranchEnabled === true ? missionEpochsOf(missionId) : Promise.resolve([]),
+  ]);
+  const loaded = overlayDeliveryLifecycle(rawLoaded, deliveries);
+  const disagreements = deliveryDisagreements(rawLoaded, deliveries);
   const schedule = m.schedule as { lastDeferralReason?: string | null; nextRunAt?: Date | null } | null;
   // Same read the mission detail page does: a heartbeat that is deliberately
   // holding records its resume time on the schedule row.
@@ -455,7 +470,7 @@ async function viewForMission(missionId: string): Promise<{
 
   // S35: a failed attempt the kernel already replaced (its delivery is live or
   // shipped) is history too, read from the DeliveryView, not a title heuristic.
-  const kernelReplaced = await kernelReplacedFailedTaskIds(failedDeliverables.map(t => t.id));
+  const kernelReplaced = replacedFailedTaskIds(deliveries, failedDeliverables.map(t => t.id));
   const health = deriveTaskHealthSignal(
     { ...m, heartbeatWaitingUntil },
     loaded.map(t => ({ ...t, superseded: supersededMap.has(t.id) || kernelReplaced.has(t.id) })),
@@ -487,6 +502,18 @@ async function viewForMission(missionId: string): Promise<{
   // evaluateCriteria: false — a read must never dispatch a verification task or
   // spend a token to answer "what is this waiting on".
   const completion = await canCompleteMission(missionId, { evaluateCriteria: false });
+  // A missing visual review is the owner's to run only when the policy asks. Read
+  // the canonical state only then, so every other explain stays one query lighter.
+  // An open audit row also needs it: the header follows the visual review state
+  // (waived, blocked, running), not the audit task row (spec 8e137fdb I-1, I-5).
+  const openAudit = loaded.some(t => OPEN_TASK_STATUSES.has(t.status) && isSurfaceAuditTask(t.title ?? ''));
+  const visualReviewState = completion.code === 'surface_audit_missing' || openAudit
+    ? await import('@/lib/workflow/visual-review-state-load')
+        .then(m => m.getMissionVisualReviewState(missionId))
+        .catch(() => null)
+    : null;
+  const visualReviewActor = completion.code === 'surface_audit_missing' ? visualReviewState?.nextActor ?? null : null;
+  const visualReview = summarizeVisualReview(visualReviewState);
 
   const wait = classifyMissionWait(loaded as unknown as WaitClassifiableTask[]);
 
@@ -507,12 +534,18 @@ async function viewForMission(missionId: string): Promise<{
   // already loaded above is the current answer to "did it leave pending" and
   // costs nothing extra to consult.
   const pendingTaskIds = new Set(loaded.filter(t => t.status === 'pending').map(t => t.id));
-  const deferrals = (await loadMissionClaimDeferrals(missionId)).filter(d => pendingTaskIds.has(d.taskId));
+  const [deferralRows, holdReasons] = await Promise.all([
+    loadMissionClaimDeferrals(missionId),
+    // R-33: the newest refusal names why a pending task has not started.
+    loadClaimHoldReasons([...pendingTaskIds]),
+  ]);
+  const deferrals = deferralRows.filter(d => pendingTaskIds.has(d.taskId));
 
   // `canCompleteMission` knows the mission PR has not merged; only the task
   // rows know where it is. Supplying it turns "the mission PR has not merged"
   // into an affordance with a destination.
   const integrationPr = deriveMissionIntegrationPr({
+    deliveries: missionDeliveries,
     mission: m as { workingBranch?: string | null; integrationBranchEnabled?: boolean | null },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     tasks: loaded as any,
@@ -546,6 +579,7 @@ async function viewForMission(missionId: string): Promise<{
     .filter(t => supersededMap.has(t.id))
     .map(t => ({ task: t, superseded: supersededMap.get(t.id)! }));
 
+  const missingBrowser = await missingBrowserFor(openTasks, m.workspaceId ?? null, m.executor === 'local');
   const input: MissionStateInput = {
     status: String(m.status),
     isHeld: m.isHeld === true,
@@ -562,12 +596,25 @@ async function viewForMission(missionId: string): Promise<{
     criteriaGate,
     criteriaItems,
     completion,
+    visualReviewActor,
     wait,
     workState,
     openTasks: openTasks.map(t => ({
       id: t.id, status: t.status, title: t.title, waitingOnTaskIds: waitingOnOf(t),
       ...(t.status === 'pending' ? { waitingOnPrs: unmetDependencyPrs(t, loadedById) } : {}),
+      surfaceAudit: isSurfaceAuditTask(t.title ?? ''),
+      holdReason: t.status === 'pending' ? holdReasons.get(t.id) ?? null : null,
+      missingBrowser: missingBrowser && t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG,
     })),
+    visualReview,
+    // AC-7: what is left when nothing else is outstanding, the rail's own reading.
+    openChecks: openCriteriaChecks(m.goalCriteria, m.goalCriteriaState, {
+      branch: m.integrationBranchEnabled ? 'mission-branch' : 'direct',
+      prMerged: integrationPr?.state === 'merged',
+      buildComplete: progress !== undefined && progress >= 100,
+    }),
+    missionPrMerged: integrationPr?.state === 'merged',
+    openQuestions: missionOpenQuestions(loaded),
     localStrand: strand
       ? { ...strand, flipBlockedReason: continueOnRunnerBlockedReason({ status: String(m.status), workspaceId: (m.workspaceId as string | null) ?? null }) }
       : null,
@@ -591,19 +638,22 @@ async function viewForMission(missionId: string): Promise<{
     ),
   };
 
-  const missingBrowser = await missingBrowserFor(openTasks, m.workspaceId ?? null, m.executor === 'local');
   return {
     view: deriveMissionStateView(input),
     mission: m,
     loaded,
+    disagreements,
+    deliveries,
     answerExtras: {
       openTasks: openTasks.map(t => ({
         id: t.id,
         title: t.title,
         status: t.status,
         live: hasLiveWorker(t),
+        waiting: hasOpenAsk(t),
         runnerClaimable: !!(t.context as Record<string, unknown> | null)?.reviewerFor,
         missingBrowser: missingBrowser && t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG,
+        holdReason: t.status === 'pending' ? holdReasons.get(t.id) ?? null : null,
         waitingOn: waitingOnOf(t).map(id => ({ id, title: loadedById.get(id)?.title ?? null })),
       })),
       failedTasks: failedTasks.map(t => ({
@@ -659,12 +709,12 @@ function answerFrom(
 export async function explainMission(missionId: string): Promise<ExplainResult | null> {
   const loadedMission = await viewForMission(missionId);
   if (!loadedMission) return null;
-  const { view, mission, loaded, answerExtras } = loadedMission;
+  const { view, mission, loaded, answerExtras, disagreements, deliveries } = loadedMission;
 
   // Name the upstream mission rather than pointing at a UUID.
   if (view.waitingOn?.kind === 'dependency') {
     const upstream = await db.query.missions.findFirst({
-      where: eq(missions.id, view.waitingOn.missionId),
+      where: sqlWhere(eq(missions.id, view.waitingOn.missionId)),
       columns: { title: true },
     });
     answerExtras.dependencyTitle = upstream?.title ?? null;
@@ -680,13 +730,13 @@ export async function explainMission(missionId: string): Promise<ExplainResult |
     prNumber: null,
   };
 
-  const because = buildStateBecause(
+  const because = withDisagreements(buildStateBecause(
     view,
     { missionId, workspaceId: subject.workspaceId },
     answerExtras,
-  );
+  ), disagreements, { missionId, workspaceId: subject.workspaceId });
 
-  return { scope: 'mission', subjects: [answerFrom(view, subject, buildHistory(loaded), because)] };
+  return { scope: 'mission', subjects: [answerFrom(view, subject, buildHistory(loaded, deliveries), because)] };
 }
 
 // ─── Task scope ───────────────────────────────────────────────────────────────
@@ -711,6 +761,11 @@ function withBackendRouting(answer: ExplainAnswer, task: { context: Record<strin
         : 'tasks.context.failedOverFrom + tasks.backend',
     },
   };
+}
+
+/** AC-26: one because[] link per worker row that disagrees with its delivery. */
+function withDisagreements(chain: ExplainAnswer['because'], ds: readonly DeliveryDisagreement[], subject: { missionId?: string | null; workspaceId?: string | null }): ExplainAnswer['because'] {
+  return ds.reduce((c, d) => withDispatchLink(c, deliveryDisagreementLink(d, subject)), chain);
 }
 
 /** The delivery `taskId` owns, from a loaded map; null when it is an attempt or legacy. */
@@ -762,8 +817,8 @@ async function loadLandingBlocker(
   lineage: LoadedTask[],
 ): Promise<LandingBlocker[]> {
   const rows = await db.query.gateEvents.findMany({
-    where: and(eq(gateEvents.taskId, task.id), eq(gateEvents.gate, GATE_SLUGS.PR_LANDING)),
-    orderBy: [desc(gateEvents.occurredAt)],
+    where: sqlWhere(and(eq(gateEvents.taskId, task.id), eq(gateEvents.gate, GATE_SLUGS.PR_LANDING))),
+    orderBy: sqlOrderBy([desc(gateEvents.occurredAt)]),
     limit: 1,
     columns: { occurredAt: true, gate: true, outcome: true, reason: true, detail: true },
   }).catch(() => []);
@@ -809,7 +864,7 @@ async function viewForTask(taskId: string): Promise<{
   missionId: string | null;
 } | null> {
   const task = (await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { ...TASK_COLUMNS, workspaceId: true, missionId: true, dependsOn: true, backend: true, pathDeclaration: true },
     with: { workers: WORKER_WITH },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -817,7 +872,7 @@ async function viewForTask(taskId: string): Promise<{
   if (!task) return null;
 
   const attempts = (await db.query.tasks.findMany({
-    where: eq(tasks.parentTaskId, taskId),
+    where: sqlWhere(eq(tasks.parentTaskId, taskId)),
     columns: TASK_COLUMNS,
     with: { workers: WORKER_WITH },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -828,7 +883,7 @@ async function viewForTask(taskId: string): Promise<{
   // A held mission is the pause and wins, so it is not read as local.
   const parentMission = task.missionId
     ? await db.query.missions.findFirst({
-        where: eq(missions.id, task.missionId),
+        where: sqlWhere(eq(missions.id, task.missionId)),
         columns: { executor: true, isHeld: true },
       })
     : null;
@@ -847,14 +902,14 @@ async function viewForTask(taskId: string): Promise<{
       id === taskId
         ? (task as LoadedTask)
         : (((await db.query.tasks.findFirst({
-            where: eq(tasks.id, id),
+            where: sqlWhere(eq(tasks.id, id)),
             columns: TASK_COLUMNS,
             with: { workers: WORKER_WITH },
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
           })) as any as LoadedTask | undefined) ?? null),
     fetchChildren: async (parentIds) =>
       (await db.query.tasks.findMany({
-        where: inArray(tasks.parentTaskId, parentIds),
+        where: sqlWhere(inArray(tasks.parentTaskId, parentIds)),
         columns: TASK_COLUMNS,
         with: { workers: WORKER_WITH },
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -927,6 +982,7 @@ async function viewForTask(taskId: string): Promise<{
     health,
     progress: terminal ? 100 : undefined,
     openTasks,
+    openQuestions: missionOpenQuestions(family),
     failedTasks: failedTasks.map(t => ({
       id: t.id,
       title: t.title,
@@ -962,7 +1018,7 @@ async function viewForTask(taskId: string): Promise<{
     workspaceId: task.workspaceId ?? null,
     missionId: task.missionId ?? null,
     answerExtras: {
-      openTasks: openTasks.map(t => ({ id: t.id, title: t.title, status: t.status, live: family.some(f => f.id === t.id && hasLiveWorker(f)), missingBrowser: missingBrowser && family.some(f => f.id === t.id && f.roleSlug === VISUAL_AUDITOR_ROLE_SLUG) })),
+      openTasks: openTasks.map(t => ({ id: t.id, title: t.title, status: t.status, live: family.some(f => f.id === t.id && hasLiveWorker(f)), waiting: family.some(f => f.id === t.id && hasOpenAsk(f)), missingBrowser: missingBrowser && family.some(f => f.id === t.id && f.roleSlug === VISUAL_AUDITOR_ROLE_SLUG) })),
       failedTasks: failedTasks.map(t => ({
         id: t.id,
         title: t.title,
@@ -1024,10 +1080,11 @@ export async function explainTask(taskId: string, actor: EvidenceActor): Promise
   const gateHistory = gateRows.map(r => r.entry);
   const holds = await loadCoordination(task as any, gateRows).catch(() => [] as CoordinationHold[]);
   const coordLink = coordinationLink(holds, { taskId, workspaceId });
-  const because = withDispatchLink(
+  const recovery = taskRecoveryLink(task.status, task.context, { taskId, workspaceId });
+  const because = withDisagreements(withDispatchLink(withDispatchLink(
     withDispatchLink(withDispatchLink(withDispatchLink(buildStateBecause(view, { taskId, missionId, workspaceId }, answerExtras), transition), wake), hold),
     coordLink as Parameters<typeof withDispatchLink>[1],
-  );
+  ), recovery), deliveryDisagreements([task], deliveries), { missionId, workspaceId });
   const evidenceObjects = workspaceId
     ? await loadInlineEvidence(workspaceId, taskId, { surface: 'explain', actor })
     : [];
@@ -1060,18 +1117,18 @@ async function loadBaseSideMerges(input: {
   excludeWorkerId: string;
 }): Promise<BaseSideMerge[]> {
   const rows = await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(workers.workspaceId, input.workspaceId),
       eq(workers.prBaseRef, input.baseRef),
       isNotNull(workers.mergedAt),
       gt(workers.mergedAt, input.since),
       ne(workers.id, input.excludeWorkerId),
-    ),
+    )),
     columns: {
       id: true, taskId: true, prNumber: true, branch: true,
       mergedAt: true, lastCommitSha: true, observedTouches: true,
     },
-    orderBy: (w, { desc: d }) => [d(w.mergedAt)],
+    orderBy: sqlOrderByFn((w, { desc: d }) => [d(w.mergedAt)]),
     limit: BASE_SIDE_LIMIT,
   });
   if (rows.length === 0) return [];
@@ -1079,7 +1136,7 @@ async function loadBaseSideMerges(input: {
   const taskIds = rows.map(r => r.taskId).filter((t): t is string => !!t);
   const taskRows = taskIds.length > 0
     ? await db.query.tasks.findMany({
-        where: inArray(tasks.id, taskIds),
+        where: sqlWhere(inArray(tasks.id, taskIds)),
         columns: { id: true, title: true, pathManifest: true },
       })
     : [];
@@ -1201,7 +1258,7 @@ export async function explainPr(worker: {
  */
 export async function explainWorkspace(workspaceId: string, actor: EvidenceActor): Promise<ExplainResult> {
   const activeMissions = await db.query.missions.findMany({
-    where: and(eq(missions.workspaceId, workspaceId), eq(missions.status, 'active')),
+    where: sqlWhere(and(eq(missions.workspaceId, workspaceId), eq(missions.status, 'active'))),
     columns: { id: true },
     // Same scan cap as the orphan-tasks query below — without it, a workspace
     // with many active missions fans out one explainMission() call (several
@@ -1212,10 +1269,10 @@ export async function explainWorkspace(workspaceId: string, actor: EvidenceActor
   });
 
   const orphanTasks = await db.query.tasks.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.workspaceId, workspaceId),
       inArray(tasks.status, ['pending', 'assigned', 'in_progress', 'completed']),
-    ),
+    )),
     columns: { id: true, missionId: true, taskClass: true },
     limit: 200,
   });

@@ -5,7 +5,7 @@ import { db } from '@buildd/core/db';
 import { reportTaskPolicyOutcome } from '@/lib/model-policy-outcomes';
 import { githubInstallations, githubRepos, tasks, workers, workspaces, missions, missionNotes } from '@buildd/core/db/schema';
 import { and, eq, sql, inArray, isNull, not, or, ne, desc } from 'drizzle-orm';
-import { verifyWebhookSignature, allCheckSuitesPassed, hasCheckSuites, mergePullRequest, githubApi, type GitHubInstallationEvent, type GitHubIssuesEvent, type GitHubCheckSuiteEvent } from '@/lib/github';
+import { verifyWebhookSignature, allCheckSuitesPassed, hasCheckSuites, githubApi, type GitHubInstallationEvent, type GitHubIssuesEvent, type GitHubCheckSuiteEvent } from '@/lib/github';
 import type { WorkspaceGitConfig, WorkspaceWorkTrackerConfig } from '@buildd/core/db/schema';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { notifyOperator } from '@/lib/pushover';
@@ -25,9 +25,11 @@ import { resumeAfterInstallationChange } from '@/lib/github-repo-access-store';
 import { workerOwnsPr, workspaceRepoMatches, prUrlFor } from '@/lib/repo-scope';
 import { emit } from '@/lib/core-emit';
 import { emitHeldReleaseOutcome } from '@/lib/task-outcome-event';
+import { handleReleasePrCiSuccess, settleHeldReleasesOnClose } from '@/lib/held-pr-tasks';
 import { PR_OPENED_POLICY } from '@/modules';
 import type { PrOwnerFact } from '@/lib/core-events';
 import { maybePostWorkTrackerIssueUpdate, runMergedPrWork } from '@/lib/pr-merged-work';
+import { completeTaskOnBranchMatchMerge, legacyCompleteTaskOnMerge } from '@/lib/pr-merged-legacy-task';
 import { requestRecheckForMergedDocFix } from '@/lib/spec-recheck';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { schedulePrScopeReconcile } from '@/lib/pr-scope-reconcile-trigger';
@@ -36,16 +38,17 @@ import { readPrReviewStatus } from '@/lib/pr-review-request';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
 import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
 import { landPr, resolveLandingMode } from '@/lib/pr-landing';
-import { guardReviewVerdict } from '@/lib/review-verdict-gate';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { recordPrReverts } from '@/lib/pr-reverts';
 import { recordPrFact } from '@buildd/core/pr-facts';
+import { factFunnelScope } from '@/lib/workflow/pr-fact-scope';
 import { authorsFromPushCommits, changedFilesFromPush, isPossibleBaseRef, type BaseAdvanceInput, type BaseResolver } from '@/lib/base-advance-notice';
 import { changedFilesForCompare, changedFilesForPr, isReleaseRollupPr, runBaseAdvanceNotice } from '@/lib/base-advance-notice-store';
 import { promptEvalRefForPush } from '@/lib/prompt-evals/push-trigger';
 import { runPromptEval } from '@/lib/prompt-evals/run';
 import { promptEvalDeps } from '@/lib/prompt-evals/store';
-import { observeBase, observePrState } from '@/lib/workflow/seam';
+import { observeBase, observeCiGreen, observePrState } from '@/lib/workflow/seam';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 // A push to the prompts repo runs the prompt eval in after() (up to ~240s).
 export const maxDuration = 300;
@@ -274,7 +277,7 @@ async function createTaskFromIssue(
   // Idempotent: one task per (workspace, issue) whether triggered by opened or
   // labeled (or the same event redelivered).
   const existing = await db.query.tasks.findFirst({
-    where: and(eq(tasks.workspaceId, workspace.id), eq(tasks.externalId, externalId)),
+    where: sqlWhere(and(eq(tasks.workspaceId, workspace.id), eq(tasks.externalId, externalId))),
     columns: { id: true },
   });
   if (existing) return;
@@ -321,7 +324,7 @@ async function handleIssuesEvent(event: GitHubIssuesEvent) {
 
   // Find the workspace linked to this repo by full name
   const workspace = await db.query.workspaces.findFirst({
-    where: workspaceRepoMatches(repository.full_name),
+    where: sqlWhere(workspaceRepoMatches(repository.full_name)),
   });
 
   if (!workspace) {
@@ -395,7 +398,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
   if (action === 'requested' || action === 'rerequested') {
     for (const pr of check_suite.pull_requests) {
       const worker = await db.query.workers.findFirst({
-        where: workerOwnsPr(repository.full_name, pr.number),
+        where: sqlWhere(workerOwnsPr(repository.full_name, pr.number)),
         columns: { id: true, workspaceId: true, taskId: true, prLifecycleStatus: true },
       });
       // A CI fact on the fact cache (recordPrFact): a merged or closed PR keeps
@@ -419,6 +422,18 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
 
   const headSha = check_suite.head_sha;
 
+  // A Living Spec's generated repo copy (docs/specs/living-specs.md §18, R-35)
+  // has its own landing door: no worker owns it, so nothing below acts on it.
+  for (const pr of check_suite.pull_requests) {
+    try {
+      const { landSpecRepoCopy } = await import('@/lib/specs/repo-copy');
+      const landed = await landSpecRepoCopy({ repoFullName: repository.full_name, prNumber: pr.number, headSha, conclusion: check_suite.conclusion, installationId: installation.id });
+      if (landed) console.log(`[spec-copy] ${repository.full_name}#${pr.number}@${headSha}: ${landed.outcome}`);
+    } catch (err) {
+      console.error(`[spec-copy] ${repository.full_name}#${pr.number}: landing check failed`, err);
+    }
+  }
+
   // CI failure: spawn fix tasks for worker PRs AND fail tracked release PRs.
   if (check_suite.conclusion === 'failure') {
     // Mark worker PRs as ci_failed before handling retries.
@@ -426,7 +441,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
     // failure webhook must not overwrite a merged PR's lifecycle status (AC-4).
     for (const pr of check_suite.pull_requests) {
       const worker = await db.query.workers.findFirst({
-        where: workerOwnsPr(repository.full_name, pr.number),
+        where: sqlWhere(workerOwnsPr(repository.full_name, pr.number)),
         columns: { id: true, workspaceId: true, taskId: true, prLifecycleStatus: true },
       });
       const applied = worker
@@ -458,16 +473,23 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
     try {
       // Find workspaces linked to this repo with autoMergePR enabled
       const linkedWorkspaces = await db.query.workspaces.findMany({
-        where: workspaceRepoMatches(repository.full_name),
+        where: sqlWhere(workspaceRepoMatches(repository.full_name)),
       });
 
       for (const workspace of linkedWorkspaces) {
+        // 38442d17: a green head ends a kernel CI repair bound to it (an infrastructure failure re-run green).
+        // Before the worker lookup: a kernel delivery needs no worker row (a local mission's PR may have none).
+        await observeCiGreen({
+          workspaceId: workspace.id, repoFullName: repository.full_name, prNumber: pr.number, installationId: installation.id,
+          headSha, source: 'webhook:check_suite',
+        }).catch((err) => console.error(`[workflow] CiGreenObserved ${repository.full_name}#${pr.number} failed:`, err));
+
         // Ensure this PR was created by a Buildd worker
         const worker = await db.query.workers.findFirst({
-          where: and(
+          where: sqlWhere(and(
             eq(workers.workspaceId, workspace.id),
             workerOwnsPr(repository.full_name, pr.number),
-          ),
+          )),
         });
 
         if (!worker) {
@@ -493,7 +515,10 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
         // Model policy: every check suite passed on the run's PR (once per transition to green).
         if (greened.length > 0) {
           await reportTaskPolicyOutcome(worker.taskId, [{ type: 'tests', passed: true }]);
-          await emit({ type: 'pr.ci_passed', repoFullName: repository.full_name, prNumber: pr.number, headSha, installationId: installation.id });
+          await emit({
+            type: 'pr.ci_passed', repoFullName: repository.full_name, prNumber: pr.number, headSha, installationId: installation.id,
+            workspaceId: workspace.id, workerId: worker.id, taskId: worker.taskId,
+          });
         }
 
         // Resolve merge policy via the single precedence chain:
@@ -502,7 +527,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
         let workerTask: { requiresReview: boolean; missionId: string | null; title: string; mission: { mergePolicy?: import('@buildd/shared').MergePolicy | null; requiresReview: boolean; workingBranch: string | null; integrationBranchEnabled: boolean } | null } | undefined;
         if (worker.taskId) {
           workerTask = await db.query.tasks.findFirst({
-            where: eq(tasks.id, worker.taskId),
+            where: sqlWhere(eq(tasks.id, worker.taskId)),
             with: { mission: { columns: { mergePolicy: true, requiresReview: true, workingBranch: true, integrationBranchEnabled: true } } },
             columns: { id: true, requiresReview: true, missionId: true, title: true },
           }) as typeof workerTask;
@@ -550,6 +575,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
             eventHeadSha: headSha,
             door: 'check_suite',
             actor: { kind: 'system' },
+            principal: { kind: 'system', id: 'system:check_suite' },
             mode: landingMode,
             policy,
             owner: { taskId: worker.taskId ?? null, workerId: worker.id },
@@ -680,7 +706,7 @@ async function handlePullRequestEvent(event: {
       // UPDATE only yields POST-update rows, and detecting a mission-gate
       // retarget (P2b) needs the value it moved FROM, not just that it moved.
       const retargetCandidate = await db.query.workers.findFirst({
-        where: workerOwnsPr(repository.full_name, pr.number),
+        where: sqlWhere(workerOwnsPr(repository.full_name, pr.number)),
         columns: { id: true, workspaceId: true, taskId: true, prBaseRef: true },
         with: { task: { columns: { id: true, title: true, taskClass: true, missionId: true, context: true, dependsOn: true } } },
       });
@@ -727,7 +753,7 @@ async function handlePullRequestEvent(event: {
       if (rebased.length > 0 && retargetMissionId && retargetCandidate?.task && !isMissionPrTask(retargetCandidate.task) && !pr.merged) {
         const task = retargetCandidate.task;
         const mission = await db.query.missions.findFirst({
-          where: eq(missions.id, retargetMissionId),
+          where: sqlWhere(eq(missions.id, retargetMissionId)),
           columns: { workingBranch: true, integrationBranchEnabled: true },
         });
         const guard = buildMissionBaseGuard({ mission, task, head: pr.head?.ref ?? null });
@@ -826,9 +852,9 @@ async function handlePullRequestEvent(event: {
     // newest so re-review dispatch (below) reads the retry's iteration
     // context, not the original task's stale one.
     const openWorker = await db.query.workers.findFirst({
-      where: workerOwnsPr(repository.full_name, pr.number),
+      where: sqlWhere(workerOwnsPr(repository.full_name, pr.number)),
       columns: { id: true, workspaceId: true, taskId: true, branch: true },
-      orderBy: [desc(workers.createdAt)],
+      orderBy: sqlOrderBy([desc(workers.createdAt)]),
     });
     if (openWorker) {
       // A fact for the fact cache (recordPrFact): mergeable=false is a
@@ -876,7 +902,7 @@ async function handlePullRequestEvent(event: {
     if (event.installation && action === 'reopened' && openWorker?.workspaceId) {
       await observePrState({
         workspaceId: openWorker.workspaceId, repoFullName: repository.full_name, prNumber: pr.number,
-        installationId: event.installation.id, source: 'webhook:reopened',
+        installationId: event.installation.id, source: 'webhook:reopened', pull: pr,
       }).catch((err) => console.error(`[webhook] workflow kernel reopen fact failed for PR #${pr.number}:`, err));
     }
 
@@ -907,7 +933,7 @@ async function handlePullRequestEvent(event: {
         type: 'pr.review_ready',
         installationId: event.installation.id,
         repoFullName: repository.full_name,
-        pr: { number: pr.number, headRef: pr.head.ref, additions: pr.additions ?? null, deletions: pr.deletions ?? null },
+        pr: { number: pr.number, headRef: pr.head.ref, headSha: pr.head.sha, additions: pr.additions ?? null, deletions: pr.deletions ?? null },
         worker: { id: openWorker.id, workspaceId: openWorker.workspaceId, taskId: openWorker.taskId },
       });
     }
@@ -999,7 +1025,7 @@ async function handlePullRequestEvent(event: {
 
   // Strategy 1: Match by prNumber on workers table (agent-created PRs)
   const worker = await db.query.workers.findFirst({
-    where: workerOwnsPr(repository.full_name, pr.number),
+    where: sqlWhere(workerOwnsPr(repository.full_name, pr.number)),
     with: { task: true },
   });
 
@@ -1011,8 +1037,15 @@ async function handlePullRequestEvent(event: {
   if (worker?.workspaceId && event.installation) {
     kernelOwned = await observePrState({
       workspaceId: worker.workspaceId, repoFullName: repository.full_name, prNumber: pr.number,
-      installationId: event.installation.id, source: 'webhook:closed',
+      installationId: event.installation.id, source: 'webhook:closed', pull: pr,
     }).catch((err) => {
+      // S4a: the kernel owns the PR but its live read failed. This payload is recorded as an
+      // unapplied fact and a fast heal applies it within minutes (kernel-heal.ts); the legacy
+      // path must not run for a PR the kernel owns (it would race the kernel's own merge work).
+      if ((err as { name?: string } | null)?.name === 'KernelObservationFailed') {
+        console.warn(`[webhook] kernel live read failed for PR #${pr.number}; fast heal scheduled:`, err);
+        return true;
+      }
       console.error(`[webhook] workflow kernel close fact failed for PR #${pr.number}:`, err);
       return false;
     });
@@ -1072,6 +1105,12 @@ async function handlePullRequestEvent(event: {
     workspaceId: worker?.workspaceId ?? null,
   });
 
+  // A release task held on this PR (its release could not land when the task finished) is
+  // settled by the PR itself: completed when it merged, failed with the reason when it closed
+  // unmerged. Isolated: a failure here must not stop the close handling below.
+  await settleHeldReleasesOnClose({ repoFullName: repository.full_name, prNumber: pr.number, merged: !!pr.merged })
+    .catch((err) => console.error(`[release-pr] settling held releases on ${repository.full_name}#${pr.number} failed:`, err));
+
   if (worker && pr.merged) {
     // A merged doc fix gets its conformance re-run now, not whenever the
     // next dev push happens to evaluate the doc (spec-conformance.md §9).
@@ -1113,6 +1152,8 @@ async function handlePullRequestEvent(event: {
         mergedAt: pr.merged_at ?? new Date(),
         mergeIsNew,
         stamp: true,
+        // Not the kernel's PR: the legacy writer makes the task's transition (pr-merged-legacy-task.ts).
+        taskTransition: legacyCompleteTaskOnMerge({ repoFullName: repository.full_name, prUrl: prUrlFor(repository.full_name, pr.number), prNumber: pr.number, runner: worker.runner }),
       });
     }
     // A worker row with no task falls through to the branch-name match below.
@@ -1122,7 +1163,7 @@ async function handlePullRequestEvent(event: {
   if (worker && !pr.merged) {
     // PR closed without merge (abandoned/superseded): every row carrying the
     // PR, never over a merge (recordPrFact).
-    await recordPrFact({ prUrl: prUrlFor(repository.full_name, pr.number), prNumber: pr.number }, { kind: 'closed' });
+    await recordPrFact({ prUrl: prUrlFor(repository.full_name, pr.number), prNumber: pr.number }, { kind: 'closed' }, { scope: factFunnelScope });
     await triggerEvent(channels.workspace(worker.workspaceId), events.WORKER_PROGRESS, {
       taskId: worker.taskId,
     });
@@ -1174,20 +1215,15 @@ async function handlePullRequestEvent(event: {
     const taskIdPrefix = branchMatch[1];
     // Find task by ID prefix (first 8 chars of UUID)
     const matchingTask = await db.query.tasks.findFirst({
-      where: sql`${tasks.id}::text LIKE ${taskIdPrefix + '%'}`,
+      where: sqlWhere(sql`${tasks.id}::text LIKE ${taskIdPrefix + '%'}`),
     });
 
     if (matchingTask && matchingTask.status !== 'completed') {
       // Same rule as runMergedPrWork: a task with other open PRs is not done.
       const openSiblingPrs = await otherOpenPrsOfTask(matchingTask.id, { prUrl: prUrlFor(repository.full_name, pr.number) });
       if (openSiblingPrs.length > 0) return;
-      // Row-guarded for the same reason as the worker-match path above.
-      const [flipped] = await db
-        .update(tasks)
-        .set({ status: 'completed', updatedAt: new Date() })
-        .where(and(eq(tasks.id, matchingTask.id), ne(tasks.status, 'completed')))
-        .returning({ id: tasks.id });
-      if (!flipped) return;
+      // Row-guarded for the same reason as the worker-match path above; never a delivery-owned task.
+      if (!(await completeTaskOnBranchMatchMerge(matchingTask.id, { repoFullName: repository.full_name, prNumber: pr.number }))) return;
       console.log(`Auto-completed task ${matchingTask.id} via branch match on merged PR #${pr.number}`);
 
       await emit({
@@ -1285,16 +1321,16 @@ async function maybeAutoMergeNoCiPr(
   pr: { number: number; head: { sha: string }; base?: { ref: string } },
 ): Promise<void> {
   const linkedWorkspaces = await db.query.workspaces.findMany({
-    where: workspaceRepoMatches(repoFullName),
+    where: sqlWhere(workspaceRepoMatches(repoFullName)),
   });
 
   for (const workspace of linkedWorkspaces) {
     // Only auto-merge PRs created by a Buildd worker in this workspace.
     const worker = await db.query.workers.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(workers.workspaceId, workspace.id),
         workerOwnsPr(repoFullName, pr.number),
-      ),
+      )),
     });
     if (!worker) {
       continue;
@@ -1304,7 +1340,7 @@ async function maybeAutoMergeNoCiPr(
     let workerTask: { requiresReview: boolean; mission: { mergePolicy?: import('@buildd/shared').MergePolicy | null; requiresReview: boolean; workingBranch: string | null; integrationBranchEnabled: boolean } | null } | undefined;
     if (worker.taskId) {
       workerTask = await db.query.tasks.findFirst({
-        where: eq(tasks.id, worker.taskId),
+        where: sqlWhere(eq(tasks.id, worker.taskId)),
         with: { mission: { columns: { mergePolicy: true, requiresReview: true, workingBranch: true, integrationBranchEnabled: true } } },
         columns: { id: true, requiresReview: true },
       }) as typeof workerTask;
@@ -1348,142 +1384,6 @@ async function maybeAutoMergeNoCiPr(
 
 // tryAutoMergeWorkerPr and evaluateAutoMergeSafety are now in @/lib/auto-merge
 // (shared with the reviewer outcome handler in apps/web/src/app/api/workers/[id]/route.ts)
-
-/**
- * When CI goes green on a PR that a release task is tracking, merge the release
- * PR and mark the task completed. This is the event-driven completion path for
- * the pending_ci release state — the counterpart to executeRelease returning
- * pending_ci when CI is still running at the time the worker finishes.
- */
-async function handleReleasePrCiSuccess(
-  prNumber: number,
-  installationId: number,
-  repoFullName: string,
-  headSha: string,
-): Promise<void> {
-  // Find tasks waiting on this exact release PR (context.releasePrPending = true
-  // and context.releasePrNumber = prNumber).
-  const pendingReleaseTasks = await db
-    .select({ id: tasks.id, title: tasks.title, context: tasks.context, workspaceId: tasks.workspaceId })
-    .from(tasks)
-    .where(
-      and(
-        sql`(${tasks.context}->>'releasePrPending')::boolean = true`,
-        sql`(${tasks.context}->>'releasePrNumber')::int = ${prNumber}`,
-      ),
-    )
-    .limit(5);
-
-  if (pendingReleaseTasks.length === 0) return;
-
-  // A delayed success must not authorize a newer commit. Leave the pending
-  // release for its own CI event if the head moved or cannot be verified.
-  try {
-    const livePr = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
-    if (!headSha || livePr?.head?.sha !== headSha) return;
-  } catch (error) {
-    console.warn(`[release-pr] Could not verify live head for ${repoFullName}#${prNumber}:`, error);
-    return;
-  }
-
-  // Verify ALL check suites passed before merging (not just this one).
-  const allPassed = await allCheckSuitesPassed(installationId, repoFullName, headSha);
-  if (!allPassed) {
-    console.log(`[release-pr] Not all suites passed for ${repoFullName}#${prNumber} — waiting for remaining checks`);
-    return;
-  }
-
-  // Release promotion is a merge door like any other. buildd never dispatches a
-  // reviewer for a release PR on its own, so the gate normally reads
-  // `not_requested` and passes — but `request_pr_review` can be pointed at any
-  // PR, and a release that ships past its own reviewer's finding is the one
-  // merge where that matters most.
-  const releaseGate = await guardReviewVerdict({
-    workspaceId: pendingReleaseTasks[0]!.workspaceId,
-    prNumber,
-    headSha,
-    surface: 'release-pr ci-success',
-    taskId: pendingReleaseTasks[0]!.id,
-    callerOrigin: 'system',
-  });
-  if (releaseGate.blocks) {
-    console.log(
-      `[release-pr] Merge of ${repoFullName}#${prNumber} held: ${releaseGate.reason}. ${releaseGate.clearedBy}`,
-    );
-    fireGateEvent({
-      gate: GATE_SLUGS.REVIEW_VERDICT,
-      surface: 'release-pr ci-success',
-      outcome: 'deferred',
-      reason: releaseGate.reason ?? 'review verdict blocks this merge',
-      workspaceId: pendingReleaseTasks[0]!.workspaceId,
-      taskId: pendingReleaseTasks[0]!.id,
-      callerOrigin: 'system',
-      detail: {
-        prNumber,
-        headSha,
-        reviewState: releaseGate.state ?? null,
-        reviewKind: releaseGate.kind ?? null,
-      },
-    });
-    return;
-  }
-
-  const mergeResult = await mergePullRequest(installationId, repoFullName, prNumber, 'merge', headSha);
-
-  for (const task of pendingReleaseTasks) {
-    const ctx = (task.context ?? {}) as Record<string, unknown>;
-    const prUrl = ctx.releasePrUrl as string | undefined;
-
-    if (mergeResult.merged) {
-      const releaseResult = {
-        status: 'completed' as const,
-        message: `Release: completed — PR #${prNumber} merged to ${repoFullName}`,
-        mergedAt: new Date().toISOString(), // pr-fact-guard: not a workers write (release task result)
-        releasePrNumber: prNumber,
-        releasePrUrl: prUrl,
-      };
-      await db
-        .update(tasks)
-        .set({
-          status: 'completed',
-          releaseResult,
-          context: { ...ctx, releasePrPending: false },
-          updatedAt: new Date(),
-        })
-        .where(eq(tasks.id, task.id));
-      console.log(`[release-pr] Task ${task.id} completed after PR #${prNumber} merged on ${repoFullName}`);
-      await emitHeldReleaseOutcome(task.id, null);
-    } else {
-      const errMsg = mergeResult.message;
-      const releaseResult = {
-        status: 'failed' as const,
-        message: `Release: FAILED — could not merge PR #${prNumber}: ${errMsg}`,
-        error: errMsg,
-        releasePrNumber: prNumber,
-        releasePrUrl: prUrl,
-      };
-      await db
-        .update(tasks)
-        .set({
-          status: 'failed',
-          releaseResult,
-          context: { ...ctx, releasePrPending: false },
-          updatedAt: new Date(),
-        })
-        .where(eq(tasks.id, task.id));
-
-      void notifyTeamOf({ taskId: task.id }, 'needsAttention', {
-        title: `Release merge failed — ${repoFullName}#${prNumber}`,
-        message: errMsg,
-        priority: 1,
-        url: prUrl || `https://github.com/${repoFullName}/pull/${prNumber}`,
-        urlTitle: 'Open PR',
-      });
-      console.error(`[release-pr] Task ${task.id} FAILED: merge of PR #${prNumber} rejected: ${errMsg}`);
-      await emitHeldReleaseOutcome(task.id, { slot: 'release', label: 'Release merge failed', reason: errMsg });
-    }
-  }
-}
 
 /**
  * When CI fails on a PR that a release task is tracking, mark the task as
@@ -1730,7 +1630,7 @@ async function handleWorkflowRunEvent(event: {
 /** Resolve the worker that owns a PR, plus the workspace the row needs. */
 async function resolvePrOwner(repoFullName: string, prNumber: number) {
   return db.query.workers.findFirst({
-    where: workerOwnsPr(repoFullName, prNumber),
+    where: sqlWhere(workerOwnsPr(repoFullName, prNumber)),
     columns: { id: true, taskId: true, workspaceId: true },
     with: { task: { columns: { id: true, title: true, missionId: true } } },
   });

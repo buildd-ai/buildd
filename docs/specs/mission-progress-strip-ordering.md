@@ -2,7 +2,7 @@
 title: Mission Progress Strip — Topological Order and Dependency-on-Selection
 status: active
 owner: builder
-last_verified: 2026-10-03
+last_verified: 2026-10-15
 summary: The mission Landed strip MUST place every dependency left of its dependents, give blocked, queued and ready distinct textures, and mark a selected cell's blockers or unblocked work on the existing tick row.
 domain: surfaces
 surfaces: [apps/web/src/app/app/(protected)/missions/[id]/MissionTaskStrip.tsx, apps/web/src/app/app/(protected)/missions/[id]/MissionBoardParts.tsx, apps/web/src/lib/mission-task-strip.ts, apps/web/src/lib/mission-board.ts]
@@ -53,7 +53,8 @@ Landed band MUST order its cells so that every dependency sits left of every
 task that depends on it, MUST draw blocked, queued-behind and ready work with
 distinct textures, and MUST mark on the strip itself which cells hold the
 selected task (or which cells the selected task releases), using one adjacency
-derivation shared with the Timeline, the Structure canvas and the Activity grid.
+derivation (`buildMissionAdjacency`) shared with the History tab's timeline rail
+and the Flow tab (the Structure canvas it once shared with is removed).
 
 > **Status `active`**: built. The shared adjacency is `buildMissionAdjacency`
 > (`condensed-timeline.ts`); the strip's rules live in `mission-task-strip.ts`
@@ -63,6 +64,9 @@ derivation shared with the Timeline, the Structure canvas and the Activity grid.
 ---
 
 ## 0. The field defect, and which component it is
+
+This section records the defects as found, before this spec was built. All
+three are fixed: order (§2), textures (§3.2) and the drawer count (§5).
 
 The screenshot (mission detail → Landed card, 14 cells, drawer reading
 `04 / 14  BLOCKED`, "Blocked · waiting on 8 dependencies") is **not**
@@ -108,8 +112,8 @@ but does not exist (see `timeline-mobile-rail.md` §10.3); nothing here needs it
 | **on-strip edge** | Both ends are cells of this strip. |
 | **off-strip blocker** | An unsatisfied dependency whose task is not a cell: another mission's task, or a task outside the mission's deliverable set. |
 | **satisfied** | `isGateSatisfied(dep, dep.workers)` is true — the claim gate's definition (`timeline-dependency-geometry.md` §2.5, GP-1). Nothing else. |
-| **blockers(T)** | T's dependencies that are not satisfied. The truthful full set (TR-1). |
-| **frontier(T)** | blockers(T) after transitive reduction — the set `reduceToFrontier` returns (TR-2, TR-3). |
+| **blockers(T)** | T's dependencies that are not satisfied. The truthful full set (TR-1 in `timeline-dependency-geometry.md`). |
+| **frontier(T)** | blockers(T) after transitive reduction — the set `reduceToFrontier` returns (TR-2, TR-3 in `timeline-dependency-geometry.md`). |
 | **upstream(T)** | Every task reachable from T by following only unsatisfied edges toward dependencies. Superset of blockers(T). |
 | **downstream(T)** | Every non-landed task that reaches T by following only unsatisfied edges toward dependencies — the work T is holding. |
 | **component** | A weakly connected set of cells under on-strip edges. |
@@ -135,23 +139,34 @@ but does not exist (see `timeline-mobile-rail.md` §10.3); nothing here needs it
 5. **`createdAt`** — ascending.
 6. **task id** — ascending (total order; two renders of one model are identical).
 
-**Rule ORD-1 (topological)**: for every on-strip edge T→D outside a cycle,
+**R-1** (topological): for every on-strip edge T→D outside a cycle,
 position(D) < position(T). Holds by construction: every edge raises the level
 by at least one, and component and level outrank every state-based key.
 
-**Rule ORD-2 (deterministic)**: `stripOrder` is a pure function of the board
+**R-2** (deterministic): `stripOrder` is a pure function of the board
 model. Same model in, same array out.
 
-**Rule ORD-3 (bounded motion)**: a state change moves a cell only within the
+**R-3** (bounded motion): a state change moves a cell only within the
 run of cells that share its component and level. A cell never crosses a level
 boundary or a component boundary because something landed or started.
+
+### 2.1a Scoped amendment: the Overview tab groups by outcome
+
+On the mission page's Overview tab only, the strip draws build tasks in three
+groups, Done, then In progress, then Waiting, with audit, fix and refresh rows
+after them (Living Spec f7f67f1a R-1). This spec's R-1 and the §2.1 sort key still hold
+inside each group, so a dependency never sits right of its dependent within a
+group, and a cell changes group only when its status changes. Every other
+consumer of `stripOrder` (Flow, the mission list, Home, the pulse and the card
+view) keeps plain §2.1 order, unchanged. The projection is `overviewLayout` in
+`apps/web/src/lib/mission-overview.ts`.
 
 ### 2.2 Why levels, not a free Kahn order
 
 A priority-queue Kahn sort with readiness as the priority is also topological,
 but a single state change can reshuffle the whole tail of the strip: the cell
 under the user's thumb jumps across the screen. Level banding gives the same
-"dependencies left" guarantee and bounds every reorder to one level (ORD-3). It
+"dependencies left" guarantee and bounds every reorder to one level (R-3). It
 also gives the ordinal something true to say (§4).
 
 ### 2.3 Why components before levels
@@ -169,7 +184,7 @@ level and stays **right** of the open dependency. The strip does **not**
 compact landed cells to the left.
 
 Justification: global compaction is exactly the state sort that
-`MissionProgressBar` does today (§10). It breaks ORD-1 the first time work lands
+`MissionProgressBar` does today (§10). It breaks R-1 the first time work lands
 out of order, and that is the case where the strip most needs to be right —
 a solid green cell sitting right of an open cell is the visible evidence that
 the order of work and the order of dependencies diverged. Within a level, the
@@ -181,18 +196,18 @@ crosses a level.
 
 Phase stays a tie-breaker (key 4), not a primary grouping. `phase` and
 `dependsOn` are independent fields and nothing cross-validates them
-(the removed Structure layout's header comment said so); a phase-first order breaks ORD-1
+(the removed Structure layout's header comment said so); a phase-first order breaks R-1
 whenever a later-phase task is a dependency of an earlier-phase one. The
 non-interactive `LandedMeter` variants (`band` without `selection`, `strip`)
 keep their phase-grouped layout and captions: they are unaddressable (§2.6).
 
 ### 2.6 Addressable vs unaddressable strips
 
-**Rule ADDR-1**: a strip whose cells carry a position (tick numbers, an
+**R-4**: a strip whose cells carry a position (tick numbers, an
 ordinal, arrow-key stepping, selection) MUST use the §2.1 order.
 
-**Rule ADDR-2**: a strip with no position — `MissionProgressBar` densities
-`full`, `stacked`, `mini`, and `LandedMeter` without `selection` — MUST NOT
+**R-5**: a strip with no position (`MissionProgressBar` densities
+`full`, `stacked`, `mini`, and `LandedMeter` without `selection`) MUST NOT
 render tick numbers, an ordinal, or a selection. Compacting it by state or
 grouping it by phase is permitted. A histogram is honest about being a histogram; it
 becomes a lie only when it is numbered.
@@ -218,19 +233,18 @@ from the shared adjacency (§6), never stored.
 | `blocked` | `blocked` | some member of frontier(T) is **active**, or is an off-strip blocker |
 | `queued` | `blocked` | every member of frontier(T) is **held** (T is queued behind a chain that itself is not moving) |
 
-**Rule ST-1 (gate parity)**: `ready` vs `blocked`/`queued` MUST be decided by
-blockers(T) under `isGateSatisfied`. Today `buildMissionBoard` decides ready
-from feedLanded (deleted) (`depsLanded`) while the drawer counts `!d.ok`, where `ok` is
-"landed or in review". Two definitions inside one model is how the count and
-the hatch disagree; both MUST read blockers(T).
+**R-6** (gate parity): `ready` vs `blocked`/`queued` MUST be decided by
+blockers(T) under `isGateSatisfied`. `buildMissionBoard` reads both the cell's
+state and the drawer's count from the shared adjacency's `blockersOf` (each
+edge's `satisfied`), so the count and the hatch cannot disagree. Before this
+spec the Board decided ready from one rule and the drawer counted another.
 
-**Rule ST-2 (cross-mission)**: an off-strip blocker counts. Today
-`buildMissionBoard` filters `dependsOn` to `allById`, so a task waiting on
-another mission's task computes `depsLanded = true` and renders `ready` while
-the claim gate refuses it. That is a phantom-ready cell. The page query MUST
-load each off-strip dependency's id, title, status, mission and PR worker
-fields (read-only; nothing the orchestrator stores changes) so the gate can be
-evaluated.
+**R-7** (cross-mission): an off-strip blocker counts. A task waiting on
+another mission's task MUST NOT render `ready` while the claim gate refuses
+it (a phantom-ready cell). The mission page loads each off-strip dependency by
+id (`loadDependencyRows` over `foreignDependencyIds`, read-only; nothing the
+orchestrator stores changes) and passes them to `buildMissionBoard` as
+`externalDeps`, so the gate is evaluated for them too.
 
 ### 3.2 Cell treatment (`STRIP_CELL_CLASS`)
 
@@ -250,7 +264,7 @@ in greyscale.
 | `blocked` | `border-[var(--fleet-border-mid)]` | `fleet-hatch` (dense diagonal, 2px/6px) | unchanged texture, now `blocked` only |
 | `queued` | `border-[var(--fleet-border-mid)]` | `fleet-hatch-future` (sparse diagonal, 1px/7px) | **new mapping**, existing class |
 
-**Rule ST-3**: `ready`, `blocked` and `queued` MUST resolve to three different
+**R-8**: `ready`, `blocked` and `queued` MUST resolve to three different
 class strings, and the three fills MUST differ in texture (none / dense /
 sparse), not only in colour.
 
@@ -280,14 +294,14 @@ The drawer header becomes:
 - `LEVEL l OF L` — l = the cell's level, L = the deepest level in its
   component. It says "at least l − 1 tasks have to land one after another
   before this one can". That is true; "4th of 14" was not.
-- **Rule ORDN-1**: the level segment is omitted for a cell with no on-strip
+- **R-9**: the level segment is omitted for a cell with no on-strip
   edges (its component has one level). Any cell with an on-strip edge is in a
   component of at least two levels and shows it.
-- **Rule ORDN-2**: no string matching `/\d+ \/ \d+/` is rendered in the drawer
+- **R-10**: no string matching `/\d+ \/ \d+/` is rendered in the drawer
   header.
 - The cell `aria-label` becomes
   `Cell {pos} of {n}, level {l} of {L}, {state words}: {title}` (level omitted
-  per ORDN-1). "Task 4 of 14" is deleted for the same reason as the header.
+  per R-9). "Task 4 of 14" is deleted for the same reason as the header.
 
 ---
 
@@ -302,22 +316,22 @@ The drawer header becomes:
 | active with empty downstream(T) | none | unchanged |
 | `landed` | none | unchanged |
 
-Because of ORD-1, upstream marks always fall left of the selected cell and
+Because of R-1, upstream marks always fall left of the selected cell and
 downstream marks always fall right of it, so one mark vocabulary serves both
 directions; the side of the screen, and the drawer's "After" / "Unblocks",
 say which.
 
-**Rule SEL-1**: marks are recomputed from the selected task id only; the
+**R-11**: marks are recomputed from the selected task id only; the
 selection store (`useMissionStrip`) and the "a selection change re-renders two
 cells" property of `StripCell` stay. Marks live on the tick row, which
 re-renders as one unit.
 
-**Rule SEL-2**: the reason line names at most two cells, frontier-first, as
+**R-12**: the reason line names at most two cells, frontier-first, as
 `{tick} {label}`, and tails the rest as `+N upstream` / `+N downstream`
 (CC-3/CC-4 parity with `DependencyRail`). Off-strip blockers are named by
 title plus `· other mission` and are always named before on-strip ones.
 
-**Rule SEL-3**: the "waiting on N dependencies" count in `TaskActionZone`
+**R-13**: the "waiting on N dependencies" count in `TaskActionZone`
 MUST equal |blockers(T)|, including off-strip blockers — the same set the
 marks are drawn from. Satisfied deps (landed, cancelled, closed-PR) are never
 counted and never marked.
@@ -333,16 +347,16 @@ two-entry table, using the existing accent:
 | numbered (n ≤ `MAX_NUMBERED_TICKS`) | number drawn inverse: `bg-accent text-card`, 2px box | number in `text-accent-text` with a 2px `border-b-2 border-accent` underline |
 | unnumbered (n > `MAX_NUMBERED_TICKS`) | full-cell-width bar, 6px (`h-1.5 w-full bg-accent`) | full-cell-width line, 2px (`h-0.5 w-full bg-accent`) |
 
-**Rule MK-1**: a marked tick is always drawn, even in unnumbered mode where an
+**R-14**: a marked tick is always drawn, even in unnumbered mode where an
 unmarked landed tick draws nothing. Mark beats the open-cell dot.
 
-**Rule MK-2**: `direct` and `transitive` differ in shape (filled box vs
+**R-15**: `direct` and `transitive` differ in shape (filled box vs
 underline; 6px vs 2px), not only colour.
 
-**Rule MK-3**: the selected cell's own tick keeps its number in every mode
+**R-16**: the selected cell's own tick keeps its number in every mode
 (existing behaviour) and is never itself marked.
 
-**Rule MK-4**: the cells themselves are not restyled by a mark. The cell says
+**R-17**: the cells themselves are not restyled by a mark. The cell says
 what state a task is in; the tick says how it relates to the selection. One
 signal per row.
 
@@ -357,11 +371,11 @@ There are four edge walks over mission tasks today:
 2. `collapseTerminalChains` — the same over resolved edges among terminal
    tasks.
 3. `buildMissionBoard` — its own `deps` / `unblocks` loops with its own
-   satisfaction rule (§3.1, ST-1).
+   satisfaction rule (§3.1, R-6).
 4. computeStructureLayout (the Structure canvas, since removed) — its own
    blockerMap / dependentsOf and assignRanks.
 
-**Rule ADJ-1**: identifyChains' pass 1 is extracted into one exported pure
+**R-18**: identifyChains' pass 1 is extracted into one exported pure
 helper in `apps/web/src/lib/condensed-timeline.ts` (proposed name:
 buildMissionAdjacency). Input: tasks with `id`, `status`, `dependsOn`,
 `workers`, plus the folded-id map. Output, computed in one O(N+E) pass:
@@ -374,13 +388,13 @@ buildMissionAdjacency). Input: tasks with `id`, `status`, `dependsOn`,
 - component id per task;
 - cycle members (tasks Kahn never released).
 
-**Rule ADJ-2**: `identifyChains`, `collapseTerminalChains`,
+**R-19**: `identifyChains`, `collapseTerminalChains`,
 `buildMissionBoard` (its `deps`, `unblocks` and ready/blocked decision),
 the Flow timeline (`buildFlowTimeline`, which reads the board's deps and the
 strip order; `mission-flow-timeline.md`) and the strip (§2, §3, §5) all read
 that one result. None of them walks `dependsOn` itself afterwards.
 
-**Rule ADJ-3**: frontier(T) is `reduceToFrontier` — exported from
+**R-20**: frontier(T) is `reduceToFrontier`, exported from
 `task-presentation.ts` and fed the helper's edges, not re-implemented. The
 Timeline rail, the Activity grid (`TaskGrid` via `deriveChainPosition`) and
 the strip therefore name the same frontier for the same task.
@@ -474,8 +488,10 @@ A B
 ```
 
 No cell is marked — Z has no cell. B is `blocked` (an off-strip blocker
-counts, ST-2), not `ready`. Drawer: "After {Z title} · other mission." The
-count reads 1. **Rule XM-1**: a held cell with no on-strip marks MUST name at
+counts, R-7), not `ready`. Drawer: "After {Z title} · other mission." The
+count reads 1.
+
+**R-21**: a held cell with no on-strip marks MUST name at
 least one off-strip blocker in its reason line; if it cannot, the data is
 inconsistent and the reason line says "Waiting on its dependencies." (today's
 fallback).
@@ -553,13 +569,13 @@ downstream L (10), M (12), N (14).
 A→B, B→A, C→A. Kahn releases nothing in {A, B}; C depends on a cycle member
 and is never released either.
 
-**Rule CYC-1**: tasks Kahn never releases are appended after all released
+**R-22**: tasks Kahn never releases are appended after all released
 tasks of their component, ordered by readiness, phase, `createdAt`, id, and
-given level = maxLevel of the released part + 1. ORD-1 is waived for edges
+given level = maxLevel of the released part + 1. R-1 is waived for edges
 between unreleased tasks only.
-**Rule CYC-2**: every task still gets exactly one cell; the helper terminates
+**R-23**: every task still gets exactly one cell; the helper terminates
 in O(N+E).
-**Rule CYC-3**: frontier is non-empty for a held cycle member (TR-3), so
+**R-24**: frontier is non-empty for a held cycle member (TR-3 in `timeline-dependency-geometry.md`), so
 selecting it always marks at least one cell.
 
 ### 7.10 Width greater than the strip
@@ -567,23 +583,23 @@ selecting it always marks at least one cell.
 One root A with 30 dependents B1…B30, all at level 2. All 31 cells render in
 one row: n > 24 → `--strip-gap: 1px` (§8). At 360px each cell is ≈ 9.6px.
 Ticks are unnumbered (n > 12): open cells carry the existing dot, marks
-replace the dot (MK-1). Select A: 30 direct bars under the tick row.
+replace the dot (R-14). Select A: 30 direct bars under the tick row.
 
 ### 7.11 64+ cells
 
 The strip renders at most `FLIGHT_STRIP_BAR_CAP` (64) cell buttons.
 
-**Rule CAP-1**: when n > 64, fold the leftmost K = n − 63 **landed** cells (in
+**R-25**: when n > 64, fold the leftmost K = n − 63 **landed** cells (in
 §2.1 order) into one summary cell at position 01: solid success fill, tick
 `+K`, `aria-label` "K landed tasks". If fewer than K cells are landed, fold
 the rightmost **queued** cells into a trailing summary cell (`+K`, `queued`
 texture) for the remainder. Active and blocked cells are never folded —
 the gotcha recorded for `computeMissionFlightStrip` (dropping live work at the
 cap) MUST NOT recur here.
-**Rule CAP-2**: the summary cell is exempt from ORD-1. A mark whose target is
+**R-26**: the summary cell is exempt from R-1. A mark whose target is
 folded marks the summary cell's tick instead.
-**Rule CAP-3**: selecting a summary cell opens a drawer with the count and a
-link to the Timeline tab; it has no task actions.
+**R-27**: selecting a summary cell opens a drawer with the count and a
+link to the History tab (`?view=timeline`); it has no task actions.
 
 ---
 
@@ -598,28 +614,28 @@ Content width at 360px is 328px (16px page padding each side).
 | 13–24 | 4px | 21.5 → 9.8px | unnumbered + dots + marks |
 | 25–64 | 1px | 12.2 → 4.1px | unnumbered + dots + marks |
 
-**Rule W-1 (gap density)**: `--strip-gap` is 4px for n ≤ 24 and 1px for
+**R-28** (gap density): `--strip-gap` is 4px for n ≤ 24 and 1px for
 n > 24 (6px / 1px at `md`). `stripCaretLeft` already reads the variable, so
 the caret and tether stay exact.
 
-**Rule W-2 (tap targets)**: cells stay `h-11` (44px tall). Width falls under
+**R-29** (tap targets): cells stay `h-11` (44px tall). Width falls under
 24px from n = 12 at 360px. The ‹ / › stepper buttons (44×44) and the Next
 open button are the conforming equivalent control (WCAG 2.5.8 equivalent
 exception); they MUST remain rendered whenever the strip is.
 
-**Rule W-3 (marks never vanish)**: a mark is drawn at the full width of its
+**R-30** (marks never vanish): a mark is drawn at the full width of its
 cell's tick slot, minimum 1px, at every n ≤ 64. At 4.1px a direct mark is a
 4×6px block, a transitive mark a 4×2px line.
 
-**Rule W-4 (truncation)**: the drawer reason line names at most two cells
-(SEL-2) and wraps with `[overflow-wrap:anywhere]` (existing); the header
+**R-31** (truncation): the drawer reason line names at most two cells
+(R-12) and wraps with `[overflow-wrap:anywhere]` (existing); the header
 `13 · LEVEL 9 OF 10` never truncates (at most 20 characters at n ≤ 64).
 
 ---
 
 ## 9. Next open
 
-**Rule NX-1**: Next open cycles through **open** cells only (active and not
+**R-32**: Next open cycles through **open** cells only (active and not
 failed, `openIndices`), in strip order (§2.1), starting after the selection
 and wrapping. Held cells are skipped: there is nothing to do on a held task
 except look at its blockers, which the marks already show. Failed cells are
@@ -631,12 +647,12 @@ Readiness decides membership (active vs held); topology decides sequence
 the strip is topological, stepping forward through active cells walks
 dependencies before dependents.
 
-**Rule NX-2**: the header button reads `{a} open ›` where a = number of active
+**R-33**: the header button reads `{a} open ›` where a = number of active
 cells, plus ` · {h} held` when h > 0. Today's "open" means "not landed",
 which counts held cells the button then visits; after this change the count
 and the cycle set are the same set.
 
-**Rule NX-3**: label states: `Next open · 06` / `Only open task · 06` /
+**R-34**: label states: `Next open · 06` / `Only open task · 06` /
 `All tasks landed` (unchanged) / `Nothing open · 2 failed` when a = 0 and a
 cell has failed (it selects the leftmost failed cell) / **new**
 `Nothing open · 3 held` when a = 0, nothing failed
@@ -644,7 +660,7 @@ and h > 0 — enabled, and it selects the leftmost held cell (whose blocker is
 off-strip or in a cycle; there is no other way for every non-landed cell to
 be held).
 
-**Rule NX-4**: `defaultStripSelection` order of preference: the focus task;
+**R-35**: `defaultStripSelection` order of preference: the focus task;
 else the first active cell; else the first held cell; else the last cell.
 
 ‹ / › and ArrowLeft/Right/Home/End keep stepping by position
@@ -658,17 +674,17 @@ else the first active cell; else the first held cell; else the last cell.
 |---|---|---|
 | `apps/web/src/lib/mission-task-strip.ts` `stripOrder` | `model.phases.flatMap(p => p.taskIds)` | §2.1 sort over the shared adjacency |
 | `mission-task-strip.ts` openIndices (deleted) | "open = not in `BOARD_LANDED`" | active-set test (§1) |
-| `mission-task-strip.ts` `defaultStripSelection` | "first unfinished" | NX-4 |
+| `mission-task-strip.ts` `defaultStripSelection` | "first unfinished" | R-35 |
 | `MissionTaskStrip.tsx` `StripDrawer` | the `{tick} / {n}` header | §4 header |
 | `MissionTaskStrip.tsx` `StripDrawer` | `t.deps.filter(d => !d.ok).length` (twice) | \|blockers(T)\| from the shared adjacency |
-| `MissionTaskStrip.tsx` `stripReason` `blocked` branch | `t.deps.filter(d => !d.ok)` scope list | SEL-2 frontier sentence |
-| `MissionTaskStrip.tsx` `LandedStrip` | `${open.length} open ›` over not-landed | NX-2 |
+| `MissionTaskStrip.tsx` `stripReason` `blocked` branch | `t.deps.filter(d => !d.ok)` scope list | R-12 frontier sentence |
+| `MissionTaskStrip.tsx` `LandedStrip` | `${open.length} open ›` over not-landed | R-33 |
 | `MissionBoardParts.tsx` `StripCells` | the "Task {i + 1} of {n}, …" aria-label | §4 aria-label |
 | `MissionBoardParts.tsx` `STRIP_CELL_CLASS` | `ready` and `blocked` sharing one class | §3.2 table |
-| `mission-board.ts` `buildMissionBoard` | `BoardDep.ok` = landed-or-in-review; `depsLanded` from feedLanded (deleted); the `allById` filter that drops off-strip deps; the `unblocks` push loop | the shared adjacency (ADJ-2, ST-1, ST-2) |
-| structure-layout.ts assignRanks and its local blockerMap build (the file is since removed with the Structure canvas) | private Kahn | moved into the shared helper (ADJ-1) |
+| `mission-board.ts` `buildMissionBoard` | `BoardDep.ok` = landed-or-in-review; `depsLanded` from feedLanded (deleted); the `allById` filter that drops off-strip deps; the `unblocks` push loop | the shared adjacency (R-19, R-6, R-7) |
+| structure-layout.ts assignRanks and its local blockerMap build (the file is since removed with the Structure canvas) | private Kahn | moved into the shared helper (R-18) |
 | `condensed-timeline.ts` `identifyChains` pass 1 and `collapseTerminalChains` edge loop | two local adjacency builds | the shared helper |
-| `MissionProgressBar.tsx` `FullBar`, `StackedBar`, mini branch | three inline copies of `const order = { solid: 0, half: 1, ghost: 2, notch: 3, empty: 4 }` + sort | one exported state-compaction helper, used by all three (ADDR-2 keeps them state-compacted; there must be one copy, not three) |
+| `MissionProgressBar.tsx` `FullBar`, `StackedBar`, mini branch | three inline copies of `const order = { solid: 0, half: 1, ghost: 2, notch: 3, empty: 4 }` + sort | one exported state-compaction helper, used by all three (R-5 keeps them state-compacted; there must be one copy, not three) |
 
 Nothing on this list changes a stored column, an API payload, or anything the
 orchestrator emits.
@@ -699,10 +715,10 @@ Each criterion is checkable against a board model built from fixtures
   respectively.
 - **AC-8**: GIVEN a task whose only unsatisfied dep is in review (completed,
   PR open), WHEN the board is built, THEN its display state is `blocked`, not
-  `ready` (gate parity, ST-1).
+  `ready` (gate parity, R-6).
 - **AC-9** (rejection): GIVEN a task whose only unsatisfied dep belongs to
   another mission, WHEN the board is built, THEN its display state is
-  `blocked`, never `ready`, and the drawer count reads 1 (ST-2).
+  `blocked`, never `ready`, and the drawer count reads 1 (R-7).
 - **AC-10**: GIVEN the §7.8 fixture with D selected, WHEN the strip renders,
   THEN the tick at position 12 has `data-mark="direct"`, the ticks at 05–11
   have `data-mark="transitive"`, and no other tick has `data-mark`.
@@ -727,22 +743,22 @@ Each criterion is checkable against a board model built from fixtures
   `Nothing open · {h} held`, is enabled, and selects the leftmost held cell.
 - **AC-17**: GIVEN a cycle A↔B plus C→A, WHEN `stripOrder` runs, THEN it
   terminates, returns each of A, B, C exactly once, after every released task
-  of the component (CYC-1, CYC-2).
+  of the component (R-22, R-23).
 - **AC-18**: GIVEN 80 tasks of which 30 are landed, WHEN the strip renders,
   THEN exactly 64 cell buttons exist, the first is a `+17` summary cell, and
-  every running, blocked and ready task has its own cell (CAP-1).
+  every running, blocked and ready task has its own cell (R-25).
 - **AC-19**: GIVEN 30 cells at a 360px viewport, WHEN the strip renders, THEN
   `--strip-gap` resolves to 1px and every marked tick has a rendered width
-  ≥ 1px (W-1, W-3).
+  ≥ 1px (R-28, R-30).
 - **AC-20**: GIVEN the codebase after the change, WHEN `buildMissionBoard`,
   `identifyChains`, `collapseTerminalChains`, `buildFlowTimeline` and
   `stripOrder` are searched, THEN none of them reads `.dependsOn` directly;
-  each consumes the shared adjacency helper's result (ADJ-2).
+  each consumes the shared adjacency helper's result (R-19).
 - **AC-21**: GIVEN `MissionProgressBar.tsx` after the change, WHEN searched,
   THEN the literal `{ solid: 0, half: 1, ghost: 2, notch: 3, empty: 4 }`
   appears at most once.
 - **AC-22** (rejection): GIVEN any strip rendered with state-compacted order
-  (ADDR-2), WHEN inspected, THEN it carries no tick numbers, no ordinal and no
+  (R-5), WHEN inspected, THEN it carries no tick numbers, no ordinal and no
   selectable cell.
 
 ---
@@ -757,7 +773,7 @@ Each criterion is checkable against a board model built from fixtures
 - `apps/web/src/app/app/(protected)/missions/[id]/TaskActionZone.tsx` — the
   "waiting on N dependencies" line
 - `apps/web/src/app/app/(protected)/missions/[id]/mission-page-query.ts` —
-  loads the board input; gains off-strip dependency rows (ST-2)
+  loads the board input; gains off-strip dependency rows (R-7)
 - `apps/web/src/lib/mission-task-strip.ts` — `stripOrder`, openIndices (deleted),
   `nextOpenIndex`, `defaultStripSelection`, `stripCaretLeft`, `stripTick`
 - `apps/web/src/lib/mission-board.ts` — `buildMissionBoard`, `BoardTask`,
@@ -779,7 +795,7 @@ Each criterion is checkable against a board model built from fixtures
   opening the drawer, but `stripCaretLeft` assumes uniform gaps and every
   caret/tether position would need a level-aware variant. Revisit after this
   ships.
-- The Timeline tab's row geometry — `timeline-dependency-geometry.md` owns it;
+- The History tab's timeline row geometry: `timeline-dependency-geometry.md` owns it;
   this spec only shares its adjacency.
 - `SegmentStrip` glyphs and `MissionProgressBar` colours — unchanged beyond
   the delete list.
@@ -788,3 +804,13 @@ Each criterion is checkable against a board model built from fixtures
 - A cycle label on the strip. Cycles terminate and render (§7.9); naming them
   is the same open item as `timeline-dependency-geometry.md`'s out-of-scope
   CYCLE chip.
+
+## Renumbered
+
+Rule codes became plain criterion ids on 2026-10-15 so they parse and can be
+graded. Old to new: ORD-1..3 to R-1..R-3; ADDR-1, ADDR-2 to R-4, R-5;
+ST-1..3 to R-6..R-8; ORDN-1, ORDN-2 to R-9, R-10; SEL-1..3 to R-11..R-13;
+MK-1..4 to R-14..R-17; ADJ-1..3 to R-18..R-20; XM-1 to R-21; CYC-1..3
+to R-22..R-24; CAP-1..3 to R-25..R-27; W-1..4 to R-28..R-31; NX-1..4
+to R-32..R-35. AC-1..AC-22 are unchanged. TR-n ids named here belong to
+`timeline-dependency-geometry.md`.

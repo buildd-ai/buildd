@@ -29,6 +29,7 @@ import { PATH_SIGNAL_REASONS } from '@buildd/core/path-coordination-signal';
 import { deliverPathReleased } from '@/lib/path-claim-release';
 import { recordPathDeclaration } from '@/lib/path-declaration-ledger';
 import { fireGateEvent, fireRepeatGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const WORKER_PATCH_SURFACE = 'PATCH /api/workers/[id]';
 
@@ -161,7 +162,7 @@ export async function applyWorkingSetSync(input: ApplyWorkingSetInput): Promise<
   if (result.blocked.length > 0) {
     const holderIds = [...new Set(result.blocked.map(b => b.blockingTaskId))];
     const holders = await db.query.tasks.findMany({
-      where: inArray(tasks.id, holderIds),
+      where: sqlWhere(inArray(tasks.id, holderIds)),
       columns: { id: true, title: true },
     }).catch(() => [] as Array<{ id: string; title: string | null }>);
     const titles = new Map((holders ?? []).map(h => [h.id, h.title ?? null]));

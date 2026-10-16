@@ -16,7 +16,7 @@ import SettingsSection from '../SettingsSection';
 import { StatusChip } from '../_components/ConnectionRow';
 
 const busyOn = (r: FleetRunner) => r.slots.filter(s => s.worker).length;
-const runs = (n: number) => `${n} run${n === 1 ? '' : 's'}`;
+const agents = (n: number) => `${n} agent${n === 1 ? '' : 's'}`;
 
 /**
  * "3 of 8 slots busy." / "No agents working. 8 slots free." plus "1 offline."
@@ -31,11 +31,10 @@ export function fleetOverviewHeadline(fleet: FleetSnapshot, teamName?: string | 
   const stale = offline.reduce((n, r) => n + busyOn(r), 0);
   if (offline.length === fleet.runners.length) {
     if (stale === 0) return [{ text: 'All runners offline.' }];
-    const where = offline.length === 1 ? 'it at its' : 'them at their';
-    return [{ text: `All runners offline. ${runs(stale)} ${stale === 1 ? 'was' : 'were'} on ${where} last check-in.` }];
+    return [{ text: `All runners offline. ${agents(stale)} ${stale === 1 ? 'was' : 'were'} working at the last check-in.` }];
   }
   const tail: HeadlinePart[] = offline.length === 0 ? []
-    : [{ text: stale > 0 ? ` ${offline.length} offline, with ${runs(stale)} at ${offline.length === 1 ? 'its' : 'their'} last check-in.` : ` ${offline.length} offline.` }];
+    : [{ text: stale > 0 ? ` ${offline.length} offline, with ${agents(stale)} working at the last check-in.` : ` ${offline.length} offline.` }];
   if (busy > 0) return [{ text: `${busy} of ${fleet.capacity} slots busy.` }, ...tail];
   return [{ text: `No agents working. ${fleet.capacity} slot${fleet.capacity === 1 ? '' : 's'} free.` }, ...tail];
 }
@@ -57,7 +56,7 @@ function RunnerRow({ runner }: { runner: FleetRunner }) {
         </div>
         <div className="mt-0.5 truncate text-xs text-text-muted">
           {runner.machine ?? 'Host runner'}
-          {waiting > 0 && <span className="text-status-warning"> · {waiting} need input</span>}
+          {waiting > 0 && <span className="text-status-warning"> · {waiting} waiting on you</span>}
         </div>
       </div>
       {runner.elastic ? (
@@ -85,13 +84,16 @@ export default function FleetOverview({ fleet, cloud, teamName }: { fleet: Fleet
       bare
     >
       <div data-testid="runners-fleet" className="space-y-3">
-        <p data-testid="runners-fleet-headline" className="text-base font-semibold text-text-primary">
-          {headline.map((p, i) => <span key={i} className={p.tone === 'accent' ? 'text-accent-text' : undefined}>{p.text}</span>)}
-        </p>
+        {/* Empty: the section title already says "0 runners", so the install prompt is the one statement. */}
+        {fleet.runners.length > 0 && (
+          <p data-testid="runners-fleet-headline" className="text-base font-semibold text-text-primary">
+            {headline.map((p, i) => <span key={i} className={p.tone === 'accent' ? 'text-accent-text' : undefined}>{p.text}</span>)}
+          </p>
+        )}
         {/* The one install instruction (lib/runner-install.ts). */}
         {fleet.runners.length === 0 && (
           <div data-testid="fleet-runner-empty" className="py-2 text-text-secondary">
-            <p className="text-body mb-3">Start a runner on any machine:</p>
+            <p className="text-body mb-3">{teamName ? `No runners online for ${teamName}. Start one on any machine:` : 'Start a runner on any machine:'}</p>
             <RunnerInstallSteps />
           </div>
         )}

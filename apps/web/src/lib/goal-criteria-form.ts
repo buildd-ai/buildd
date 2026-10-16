@@ -29,7 +29,9 @@ import { validateGoalCriteria, MECHANICAL_CRITERION_TYPES } from '@buildd/core/m
  * cannot add a mechanical form that this picker silently buries.
  */
 export const SELECTABLE_CRITERION_TYPES = [
-  ...MECHANICAL_CRITERION_TYPES,
+  // `living_spec` is mechanical but never typed into this form: selecting the
+  // mission's outcome spec writes it (lib/specs/mission-selection.ts).
+  ...MECHANICAL_CRITERION_TYPES.filter((t): t is Exclude<typeof t, 'living_spec'> => t !== 'living_spec'),
   'description',
 ] as const satisfies readonly GoalCriterionType[];
 

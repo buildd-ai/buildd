@@ -7,6 +7,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { attachPrToTask, parsePrReference, resolveWorkspaceGithubRepo } from '@/lib/task-pr-attach';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const FULL_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -46,7 +47,7 @@ export async function POST(
   }
 
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, id),
+    where: sqlWhere(eq(tasks.id, id)),
     with: { workspace: true },
   });
   if (!task) return NextResponse.json({ error: 'Task not found' }, { status: 404 });

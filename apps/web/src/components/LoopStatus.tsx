@@ -1,5 +1,47 @@
-import type { LoopHistoryEntry, LoopState } from '@buildd/shared';
+import type { LoopExitCondition, LoopHistoryEntry, LoopState } from '@buildd/shared';
 import { ZonedTime } from './DisplayTimezone';
+
+type ConditionType = LoopExitCondition['type'];
+
+/** The exit condition in words, for the history heading ("until CI passes"). */
+const CONDITION_GOAL: Record<ConditionType, string> = {
+  command: 'until the check passes',
+  pr_checks_green: 'until CI passes',
+  pr_merged: 'until the PR merges',
+  structured_predicate: 'until the result matches',
+};
+
+/** One evaluation's outcome in words: [met, unmet]. */
+const CONDITION_OUTCOME: Record<ConditionType, [string, string]> = {
+  command: ['Check passed', 'Check failed'],
+  pr_checks_green: ['CI passed', 'CI not passing'],
+  pr_merged: ['PR merged', 'PR not merged'],
+  structured_predicate: ['Result matched', 'Result did not match'],
+};
+
+function outcomeLabel(type: string, satisfied: boolean): string {
+  const pair = CONDITION_OUTCOME[type as ConditionType];
+  if (pair) return satisfied ? pair[0] : pair[1];
+  return satisfied ? 'Condition met' : 'Condition unmet';
+}
+
+/**
+ * The attempt number the loop chip shows. `loopIteration` counts evaluations
+ * already completed (it advances once per evaluated run, the same moment a
+ * Loop history row is written). While the loop is still going, the chip names
+ * the attempt in progress, one past that. Once it has stopped (satisfied or
+ * exhausted) there is no attempt in progress, so it is the count itself and
+ * matches the number of history rows.
+ */
+export function loopAttemptShown(
+  loopIteration: number,
+  maxLoops: number,
+  loopState: LoopState | null,
+): number {
+  const terminal = loopState === 'satisfied' || loopState === 'exhausted';
+  const attempt = terminal ? Math.max(loopIteration, 1) : loopIteration + 1;
+  return Math.min(attempt, maxLoops);
+}
 
 function formatDuration(evidence?: Record<string, unknown>): string | null {
   const durationMs = evidence?.durationMs;
@@ -28,7 +70,7 @@ export function LoopStatusChip({
   startAt?: string | null;
   exitConditionType?: string | null;
 }) {
-  const attempt = Math.min(loopIteration + 1, maxLoops);
+  const attempt = loopAttemptShown(loopIteration, maxLoops, loopState);
   const deferred = loopState === 'condition_unmet'
     && !!startAt
     && new Date(startAt).getTime() > Date.now();
@@ -99,10 +141,13 @@ export function LoopHistory({
   loopState: LoopState | null;
   maxLoops: number;
 }) {
+  const latestType = entries.length > 0 ? entries[entries.length - 1].conditionType : null;
+  const goal = latestType ? CONDITION_GOAL[latestType as ConditionType] ?? null : null;
   return (
     <section className="mb-6" data-testid="loop-history">
       <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
         Loop history
+        {goal && <span className="normal-case tracking-normal"> · {goal}</span>}
       </div>
       {loopState === 'exhausted' && (
         <div className="mb-3 border border-status-error/30 bg-status-error/10 p-3 text-sm text-status-error">
@@ -124,9 +169,8 @@ export function LoopHistory({
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-medium text-sm text-text-primary">Iteration {entry.iteration + 1}</span>
                       <span className={`text-xs font-medium ${entry.satisfied ? 'text-status-success' : 'text-status-error'}`}>
-                        {entry.satisfied ? 'Condition met' : 'Condition unmet'}
+                        {outcomeLabel(entry.conditionType, entry.satisfied)}
                       </span>
-                      <span className="font-mono text-[11px] md:text-[10px] uppercase text-text-muted">{entry.conditionType}</span>
                     </div>
                     <p className="mt-1 text-sm text-text-secondary">{entry.summary}</p>
                   </div>
@@ -135,7 +179,6 @@ export function LoopHistory({
                     {duration && <div>{duration}</div>}
                   </div>
                 </div>
-                <div className="mt-2 text-[11px] text-text-muted">Worker {entry.workerId}</div>
                 {excerpt && (
                   <details className="mt-2">
                     <summary className="cursor-pointer text-xs text-accent-text">Evidence excerpt</summary>

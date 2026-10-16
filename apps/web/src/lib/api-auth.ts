@@ -11,6 +11,7 @@ import { grantPrincipal, grantTokenScopes, grantedWorkspace, resolveTokenGrant }
 import { getCachedApiKey, setCachedApiKey, invalidateCachedApiKey } from './redis';
 import { isTaskToken } from './task-token';
 import { isPresenceToken } from './presence-token';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Cache API key hash → account record.
@@ -55,7 +56,7 @@ export function extractApiKeyPrefix(key: string): string {
 /** Raw DB lookup, separated for testability and cache-miss path. */
 async function dbLookupAccount(hashedKey: string) {
   return db.query.accounts.findFirst({
-    where: eq(accounts.apiKey, hashedKey),
+    where: sqlWhere(eq(accounts.apiKey, hashedKey)),
   });
 }
 
@@ -325,15 +326,15 @@ export async function authenticateApiKey(apiKey: string | null, request?: { url:
     if (match) {
       const id = match[2];
       const lookups: Record<string, () => Promise<{workspaceId: string | null} | undefined>> = {
-        'knowledge/ingest-jobs': () => db.query.knowledgeIngestJobs.findFirst({where:eq(knowledgeIngestJobs.id,id),columns:{workspaceId:true}}),
-        tasks: () => db.query.tasks.findFirst({where:eq(tasks.id,id),columns:{workspaceId:true}}),
-        workers: () => db.query.workers.findFirst({where:eq(workers.id,id),columns:{workspaceId:true}}),
-        missions: () => db.query.missions.findFirst({where:eq(missions.id,id),columns:{workspaceId:true}}),
-        initiatives: () => db.query.initiatives.findFirst({where:eq(initiatives.id,id),columns:{workspaceId:true}}),
-        artifacts: () => db.query.artifacts.findFirst({where:eq(artifacts.id,id),columns:{workspaceId:true}}),
-        releases: () => db.query.releases.findFirst({where:eq(releases.id,id),columns:{workspaceId:true}}),
-        discrepancies: () => db.query.specDiscrepancies.findFirst({where:eq(specDiscrepancies.id,id),columns:{workspaceId:true}}),
-        'watched-projects': () => db.query.watchedProjects.findFirst({where:eq(watchedProjects.id,id),columns:{workspaceId:true}}),
+        'knowledge/ingest-jobs': () => db.query.knowledgeIngestJobs.findFirst({where:sqlWhere(eq(knowledgeIngestJobs.id,id)),columns:{workspaceId:true}}),
+        tasks: () => db.query.tasks.findFirst({where:sqlWhere(eq(tasks.id,id)),columns:{workspaceId:true}}),
+        workers: () => db.query.workers.findFirst({where:sqlWhere(eq(workers.id,id)),columns:{workspaceId:true}}),
+        missions: () => db.query.missions.findFirst({where:sqlWhere(eq(missions.id,id)),columns:{workspaceId:true}}),
+        initiatives: () => db.query.initiatives.findFirst({where:sqlWhere(eq(initiatives.id,id)),columns:{workspaceId:true}}),
+        artifacts: () => db.query.artifacts.findFirst({where:sqlWhere(eq(artifacts.id,id)),columns:{workspaceId:true}}),
+        releases: () => db.query.releases.findFirst({where:sqlWhere(eq(releases.id,id)),columns:{workspaceId:true}}),
+        discrepancies: () => db.query.specDiscrepancies.findFirst({where:sqlWhere(eq(specDiscrepancies.id,id)),columns:{workspaceId:true}}),
+        'watched-projects': () => db.query.watchedProjects.findFirst({where:sqlWhere(eq(watchedProjects.id,id)),columns:{workspaceId:true}}),
       };
       const resource = await lookups[match[1]]();
       if (!resource?.workspaceId || !account.workspaceIds.includes(resource.workspaceId)) return null;

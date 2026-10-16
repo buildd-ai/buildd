@@ -439,7 +439,7 @@ describe('mission sheet (the summoned canvas over a mission)', () => {
 
   it('the context card: status badge, LANDED and GOAL counts, an insight line', async () => {
     await render(overlay());
-    expect(q('[data-testid="mission-context-status"]')?.textContent).toContain('Needs you');
+    expect(q('[data-testid="mission-context-status"]')?.textContent).toContain('Waiting on you');
     expect(q('[data-testid="mission-context-landed-count"]')?.textContent).toMatch(/^\d+\/\d+$/);
     expect(q('[data-testid="mission-context-goal-count"]')?.textContent).toMatch(/^\d+\/\d+$/);
     expect(q('[data-testid="mission-context-insight"]')?.textContent).toMatch(/needs? you/);
@@ -846,14 +846,14 @@ describe('desktop right panel (>= 1024px, docs/design/chat-v3-desktop.md "Dock")
     expect(dock.dataset.mode).toBe('needs');
     expect(cls(dock)).toEqual(expect.arrayContaining(['hidden', 'xl:flex']));
     expect(cls(dock)).not.toContain('lg:flex');
-    expect(q('[data-testid="chat-dock-crumbs"]')?.textContent).toMatch(/Needs you\s*\/\s*Task/i);
-    expect(q('[data-testid="dock-task-badge"]')?.textContent).toBe('Needs you');
+    expect(q('[data-testid="chat-dock-crumbs"]')?.textContent).toMatch(/Waiting on you\s*\/\s*Task/i);
+    expect(q('[data-testid="dock-task-badge"]')?.textContent).toBe('Has a question');
     expect(q('[data-testid="dock-task-title"]')?.className).toContain('font-voice');
     expect(q('[data-testid="dock-task-tries"]')?.textContent).toContain('2');
     expect(q('[data-testid="dock-task-insight"]')?.textContent).toContain('Round per line');
     const steps = qa('[data-testid="dock-happened-row"]').map(r => r.textContent);
     expect(steps[0]).toContain('Started the change');
-    expect(steps.at(-1)).toContain('Needs input.');
+    expect(steps.at(-1)).toContain('Has a question.');
     expect(qa('[data-testid="dock-action"]').map(b => b.textContent)).toEqual(['Answer it', 'Ask about it']);
   });
 
@@ -1014,5 +1014,50 @@ describe('a long paste (Living Specs C2)', () => {
     expect(qa('[data-testid="kit-composer-attachments"] [data-testid="kit-attachment"]')).toHaveLength(1);
     await enter();
     expect(payload!.attachments[0].id).toBeTruthy();
+  });
+});
+
+describe('the draft-attachments fixture (/app/dev/chat?state=draft-attachments)', () => {
+  it('is a fixture state with no messages', () => {
+    expect(fixtures.CHAT_FIXTURE_STATES).toContain('draft-attachments');
+    expect(fixtures.isChatFixtureState('draft-attachments')).toBe(true);
+    expect(fixtures.chatFixture('draft-attachments').messages).toHaveLength(0);
+  });
+
+  const mount = async (attachError: boolean) => {
+    await render({
+      draft: fixtures.DRAFT_TEXT, onDraftChange() {},
+      initialAttachments: fixtures.DRAFT_ATTACHMENTS, uploadFile: fixtures.draftUploader(attachError),
+    }, { state: 'draft-attachments' });
+    const input = q('[data-testid="kit-attach-input"]') as HTMLInputElement;
+    expect(input).not.toBeNull();
+    await act(async () => { fixtures.pickFiles(input, fixtures.draftDroppedFiles(attachError)); });
+    await act(async () => { await new Promise(r => setTimeout(r, 0)); });
+  };
+  const tray = () => q('[data-testid="kit-composer-attachments"]')!;
+
+  it('renders the real composer with a paste card, an image thumbnail, a PDF and a refused file, each removable', async () => {
+    await mount(false);
+    expect((q('#chat-composer-input') as HTMLTextAreaElement).value).toBe(fixtures.DRAFT_TEXT);
+    expect(tray().querySelectorAll('[data-testid="kit-attachment"]')).toHaveLength(1);
+    const files = [...tray().querySelectorAll('[data-testid="kit-file"]')] as HTMLElement[];
+    expect(files).toHaveLength(3);
+    expect(tray().querySelector('[data-testid="kit-file-thumb"]')?.getAttribute('src')).toStartWith('data:image/svg+xml');
+    const refused = files.find(f => f.dataset.state === 'failed')!;
+    expect(refused.textContent).toContain(fixtures.DRAFT_REFUSED_FILE.name);
+    expect(refused.textContent).toContain('File type not supported');
+    expect(refused.querySelector('[data-testid="kit-file-retry"]')).toBeNull();
+    // Every card carries its remove control.
+    const removes = tray().querySelectorAll('button[aria-label^="Remove"]');
+    expect(removes).toHaveLength(4);
+  });
+
+  it('&attach=error adds an upload that failed, with Retry', async () => {
+    await mount(true);
+    const failed = ([...tray().querySelectorAll('[data-testid="kit-file"]')] as HTMLElement[]).filter(f => f.dataset.state === 'failed');
+    expect(failed).toHaveLength(2);
+    const upload = failed.find(f => f.textContent?.includes(fixtures.DRAFT_FAILED_FILE.name))!;
+    expect(upload.textContent).toContain(fixtures.DRAFT_UPLOAD_ERROR);
+    expect(upload.querySelector('[data-testid="kit-file-retry"]')).not.toBeNull();
   });
 });

@@ -45,7 +45,9 @@ export function getGitHubAppConfig() {
 export { generateAppJWT, getInstallationToken } from '@buildd/core/github-installation-auth';
 import { getInstallationToken } from '@buildd/core/github-installation-auth';
 
-// GitHub API client for a specific installation
+// GitHub API client for a specific installation.
+// No timeout by default. A caller that must not wait forever passes `options.signal`
+// (e.g. `AbortSignal.timeout(ms)`): fetch and the body read are both abandoned when it fires.
 export async function githubApi(installationId: number, path: string, options: RequestInit = {}) {
   const token = await getInstallationToken(installationId);
 
@@ -365,7 +367,7 @@ export function isOwnPrReviewRefusal(message: string): boolean {
   return /GitHub API error: 422\b/.test(message) && /Can not (approve|request changes on) your own pull request/i.test(message);
 }
 
-interface CheckSuiteSummary {
+export interface CheckSuiteSummary {
   status: string;
   conclusion: string | null;
   app?: { slug?: string } | null;

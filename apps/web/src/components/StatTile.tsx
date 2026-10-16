@@ -7,12 +7,16 @@ import type { DerivedMetric } from '@buildd/core/derived-metric';
  * absence behaviour, and a second copy of that is a second chance to render a
  * zero where a measurement was never taken.
  */
+/**
+ * Figures are set in the mono figure font, which is already fixed-width: adding
+ * `tabular-nums` on top spaced the decimal point out ("$0 . 485").
+ */
 export function Stat({ label, value, sub }: { label: string; value: string; sub: string }) {
   return (
     <div>
       <div className="text-xs text-text-muted">{label}</div>
-      <div className="text-lg text-text-primary tabular-nums">{value}</div>
-      <div className="text-xs text-text-muted tabular-nums">{sub}</div>
+      <div className="text-lg text-text-primary font-mono">{value}</div>
+      <div className="text-xs text-text-muted">{sub}</div>
     </div>
   );
 }
@@ -48,9 +52,9 @@ export function MetricStat<T>({
     return (
       <div title={metric.detail ?? metric.reason}>
         <div className="text-xs text-text-muted">{label}</div>
-        <div className="text-lg text-text-muted tabular-nums">&nbsp;</div>
+        <div className="text-lg text-text-muted font-mono">&nbsp;</div>
         <div className="text-xs text-text-muted">not recorded</div>
-        {extra && <div className="text-[11px] text-text-muted/80 tabular-nums">{extra}</div>}
+        {extra && <div className="text-[11px] text-text-muted/80">{extra}</div>}
       </div>
     );
   }

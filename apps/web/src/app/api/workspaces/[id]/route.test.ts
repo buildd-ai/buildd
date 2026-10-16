@@ -64,7 +64,7 @@ mock.module('drizzle-orm', () => ({
   ),
 }));
 
-mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id', permissionOverrides: 'teams.permission_overrides' },
+mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id' },
   workspaces: { id: 'id', teamId: 'teamId' },
   githubRepos: { fullName: 'fullName' },
   workers: { prNumber: 'prNumber', prUrl: 'prUrl' },
@@ -797,12 +797,12 @@ describe('PATCH /api/workspaces/[id]', () => {
     }
   });
 
-  it('validates workspace warm handover and allows clearing to team policy', async () => {
-    for (const value of ['off', 'repo', 'deps', null, 'unknown', true]) {
+  it('a workspace may only opt out of warm handover, or clear its opt-out', async () => {
+    for (const value of ['off', null, 'repo', 'deps', 'unknown', true]) {
       mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
       mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: { autoMergePR: true } });
       const res = await PATCH(createMockRequest({ method: 'PATCH', body: { gitConfig: { warmHandover: value } } }), { params: mockParams });
-      expect(res.status).toBe(value === 'unknown' || value === true ? 400 : 200);
+      expect(res.status).toBe(value === 'off' || value === null ? 200 : 400);
       if (res.status === 200) expect(capturedUpdates.gitConfig).toMatchObject({ autoMergePR: true, warmHandover: value });
     }
   });
@@ -944,7 +944,7 @@ describe('PATCH /api/workspaces/[id]', () => {
 });
 
 describe('PATCH /api/workspaces/[id] — privilege gates', () => {
-  // Merge policy / git config, access mode, data class and the connector claim
+  // Merge policy / git config, access mode, data class, the concurrency cap and the connector claim
   // gate are workspace-admin settings: a session caller needs owner or admin in
   // the workspace's team, an API key needs admin level.
   const PRIVILEGED_BODIES: Array<[string, Record<string, unknown>]> = [
@@ -954,6 +954,7 @@ describe('PATCH /api/workspaces/[id] — privilege gates', () => {
     ['connectorAdvisoryMode', { connectorAdvisoryMode: true }],
     ['webhookConfig', { webhookConfig: { url: 'https://runner.example/dispatch', token: 't', enabled: true } }],
     ['webhookConfig (clear)', { webhookConfig: null }],
+    ['maxConcurrentTasks', { maxConcurrentTasks: 8 }],
   ];
 
   let updateCalled = false;

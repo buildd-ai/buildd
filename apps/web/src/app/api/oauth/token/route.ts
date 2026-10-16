@@ -14,6 +14,8 @@ import { db } from '@buildd/core/db';
 import { workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { ensureTeamSessionAccount } from '@/lib/oauth/ensure-session-account';
+import { resourceMatchesBinding } from '@/lib/oauth/resource-binding';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,7 +23,7 @@ export const dynamic = 'force-dynamic';
 async function ensureUserAccount(userId: string, workspaceId: string): Promise<void> {
   try {
     const workspace = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, workspaceId),
+      where: sqlWhere(eq(workspaces.id, workspaceId)),
       columns: { teamId: true },
     });
     if (workspace) await ensureTeamSessionAccount(userId, workspace.teamId);
@@ -148,6 +150,9 @@ export async function POST(req: NextRequest) {
     if ('error' in result) return tokenError(result.error);
 
     const { userId, scope, ...binding } = result;
+    if (!resourceMatchesBinding(form.get('resource'), binding as TokenBinding, 'authorization_code')) {
+      return tokenError('invalid_target', 'the resource does not match this authorization');
+    }
     return issuePair({ binding: binding as TokenBinding, userId, clientId, scope });
   }
 
@@ -165,6 +170,9 @@ export async function POST(req: NextRequest) {
     // no new pair is minted and the user's remaining refresh tokens for that
     // workspace or grant are revoked (the presented one already is).
     const { userId, scope, family, ...binding } = result;
+    if (!resourceMatchesBinding(form.get('resource'), binding as TokenBinding, 'refresh_token')) {
+      return tokenError('invalid_target', 'the resource does not match this connection');
+    }
     return issuePair({
       binding: binding as TokenBinding,
       userId,

@@ -7,11 +7,22 @@ fix's own check (a Playwright no-overflow test, the task's loop exit condition)
 fails on the first attempt, sends it back, and passes on the second.
 
 Default output: invoice-phone.json next to this file. Edit here and re-run;
-never hand-edit the JSON. Shapes follow build-multi-currency.py."""
+never hand-edit the JSON. Shapes follow build-multi-currency.py.
+
+  python3 build-invoice-phone.py --session [out.json]
+
+writes the v8 variant (invoice-phone-session.json): the same story, but the
+Playwright test task is claimed by a person's own Claude Code session over MCP
+(worker runner "mcp", no runner URL) while the runner works the other two."""
 import json, os, sys
 
-OUT = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(os.path.abspath(__file__)), "invoice-phone.json")
+ARGS = [a for a in sys.argv[1:] if a != "--session"]
+SESSION = "--session" in sys.argv[1:]
 HERE = os.path.dirname(os.path.abspath(__file__))
+OUT = ARGS[0] if ARGS else os.path.join(HERE, "invoice-phone-session.json" if SESSION else "invoice-phone.json")
+# The task a person's own session claims in the v8 variant, and the runner name such a claim carries.
+SESSION_TASK = "T3" if SESSION else None
+SESSION_RUNNER = "mcp"
 
 REPO_SLUG = "harborline/billing-web"
 REPO_URL = f"https://github.com/{REPO_SLUG}"
@@ -143,7 +154,7 @@ def mk_worker(tk, wk, **kw):
     w.update(kw)
     return w
 for tk, wk in WK.items():
-    workers.append(mk_worker(tk, wk))
+    workers.append(mk_worker(tk, wk, **({"runner": SESSION_RUNNER} if tk == SESSION_TASK else {})))
 n, a, r, f, c = PRS["T1"]
 workers.append(mk_worker("T1", "w1b", _final={"prNumber": n, "prUrl": pr_url(n), "linesAdded": a, "linesRemoved": r, "filesChanged": f,
                                                 "commitCount": c, "prLifecycleStatus": "merged"}))
@@ -199,7 +210,11 @@ TL = []
 def ev(t, op, **kw): TL.append({"t": t, "op": op, **kw})
 def claim(t, tk, wk=None):
     wk = wk or WK[tk]
-    ev(t, "claim", task=tk, worker=wk, runner="atlas", api="POST /api/workers/claim", db="tasks.status=assigned; INSERT workers")
+    if tk == SESSION_TASK:
+        ev(t, "claim", task=tk, worker=wk, runner=SESSION_RUNNER, api="MCP buildd claim_task {taskId}",
+           db="tasks.status=assigned; INSERT workers(runner='mcp')")
+    else:
+        ev(t, "claim", task=tk, worker=wk, runner="atlas", api="POST /api/workers/claim", db="tasks.status=assigned; INSERT workers")
     ev(t + 2, "worker_status", worker=wk, status="running", api=f"PATCH /api/workers/{wk} {{status:'running'}}", db="workers.status=running")
 def prog(t, wk, pct, msg):
     ev(t, "progress", worker=wk, pct=pct, message=msg, api="MCP buildd update_progress", db="workers.milestones")
@@ -225,7 +240,7 @@ for i, k in enumerate(["T1", "T2", "T3"]):
 ev(27, "mission_note", note="n_plan", api="MCP buildd post_note", db="INSERT mission_notes")
 complete(29, "T0", "w0", "Planned 3 tasks. All three can start now.")
 claim(31, "T1"); claim(32, "T2"); claim(33, "T3")
-TL[-1]["beat"] = "One runner, three tasks"
+TL[-1]["beat"] = "The runner takes two; your own session takes one" if SESSION else "One runner, three tasks"
 prog(45, "w1", 20, "InvoiceTable: a <table> with min-width: 760px")
 prog(50, "w2", 25, "Checking the Tax column across this account's invoices")
 prog(55, "w3", 30, "Playwright at 390x844: compare scrollWidth with the viewport")
@@ -339,6 +354,10 @@ data = {
 }
 text = json.dumps(data, indent=2, ensure_ascii=False)
 assert "checkout" not in text.lower(), "the v7 story must not say checkout"
+if SESSION:
+    # The v8 scene is about coordination, never about how a session's model is paid for.
+    for word in ("subscription", "seat", "login", "oauth token", "api key"):
+        assert word not in text.lower(), f"the v8 story must not mention {word}"
 with open(OUT, "w") as f:
     f.write(text)
 print(OUT, "events:", len(TL), "end t:", TL[-1]["t"])

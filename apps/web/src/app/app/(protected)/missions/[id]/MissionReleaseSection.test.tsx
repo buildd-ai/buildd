@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { buildDeliverySteps, DELIVERY_STATE_TEXT, type DeliveryInput, type DeliveryStep } from '@/lib/mission-delivery';
-import { MissionReleaseSection, missionShippedStatus, missionShippedHref } from './MissionReleaseSection';
+import { MissionReleaseSection, missionReleaseRow, missionShippedStatus, missionShippedHref } from './MissionReleaseSection';
 
 function shippedOf(overrides: Partial<DeliveryInput>): DeliveryStep | null {
   const steps = buildDeliverySteps({
@@ -110,5 +110,77 @@ describe('MissionReleaseSection', () => {
     const html = renderToStaticMarkup(<MissionReleaseSection step={waiting} releaseId={null} workspaceId="ws-1" />);
     expect(html).toContain(`data-state="${waiting.state}"`);
     expect(html).toContain('Waiting for next release');
+  });
+});
+
+describe('missionReleaseRow: the release status beside the Shipped step (spec f7f67f1a P-3, R-22, AC-9)', () => {
+  it('renders nothing when the workspace has no release flow', () => {
+    expect(missionReleaseRow(released, 'not_configured')).toBeNull();
+    expect(missionReleaseRow(null, 'not_configured')).toBeNull();
+  });
+
+  it('keeps the Shipped step words while the work waits for a release', () => {
+    expect(missionReleaseRow(waiting, 'waiting')?.text).toBe('Waiting for next release');
+    expect(missionReleaseRow(null, 'waiting')).toBeNull();
+  });
+
+  it('shows a deploy in flight even though the Shipped step is hidden', () => {
+    const row = missionReleaseRow(null, 'deploying')!;
+    expect(row.text).toBe('Deploying');
+    expect(row.state).toBe('partial');
+  });
+
+  it('shows a dispatched release as in progress, not released', () => {
+    const row = missionReleaseRow(null, 'dispatched')!;
+    expect(row.text).toBe('Release dispatched');
+    expect(row.state).toBe('partial');
+  });
+
+  it('shows a failed deploy as a hold', () => {
+    const row = missionReleaseRow(null, 'failed')!;
+    expect(row.text).toBe('Deploy failed');
+    expect(row.state).toBe('blocked');
+  });
+
+  it('reads Released only when the deploy is healthy', () => {
+    expect(missionReleaseRow(released, 'healthy')?.text).toBe('Released');
+    for (const s of ['dispatched', 'deploying', 'failed', 'unknown'] as const) {
+      expect(missionReleaseRow(released, s)?.text).not.toBe('Released');
+    }
+  });
+
+  it('keeps "Partly released" when more of the mission is still to merge', () => {
+    const landedSome = shippedOf({ completedTasks: 2 })!;
+    expect(missionReleaseRow(landedSome, 'healthy')?.text).toBe('Partly released');
+  });
+
+  it('says when nothing reports the deploy health', () => {
+    const row = missionReleaseRow(released, 'unknown')!;
+    expect(row.text).toBe('Health not reported');
+    expect(row.state).toBe('partial');
+  });
+
+  it('without a status, behaves exactly like the Shipped step alone', () => {
+    expect(missionReleaseRow(released, undefined)?.text).toBe('Released');
+    expect(missionReleaseRow(null, undefined)).toBeNull();
+  });
+
+  it('every status line fits one row at 390px', () => {
+    for (const s of ['dispatched', 'deploying', 'failed', 'unknown', 'healthy'] as const) {
+      expect(missionReleaseRow(released, s)!.text.length).toBeLessThanOrEqual(24);
+    }
+  });
+
+  it('renders a failed deploy with the error glyph colour and links to the release that carries the work', () => {
+    const html = renderToStaticMarkup(<MissionReleaseSection step={null} status="failed" releaseId="rel-1" workspaceId="ws-1" />);
+    expect(html).toContain('Deploy failed');
+    expect(html).toContain('data-state="blocked"');
+    expect(html).toContain(DELIVERY_STATE_TEXT.blocked);
+    expect(html).toContain('href="/app/releases/rel-1"');
+  });
+
+  it('links an in-flight deploy without a known release to the workspace releases list', () => {
+    const html = renderToStaticMarkup(<MissionReleaseSection step={null} status="deploying" releaseId={null} workspaceId="ws-1" />);
+    expect(html).toContain('href="/app/releases?workspace=ws-1"');
   });
 });

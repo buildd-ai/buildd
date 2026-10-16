@@ -1,7 +1,17 @@
 import { describe, expect, it } from 'bun:test';
-import worker, { executionMode, matchRoute, ROUTES, SERVED_BY } from './index';
+import { readdirSync } from 'fs';
+import { join } from 'path';
+import worker from './index';
+import * as mainModule from './index';
+import { anonymousGithubProbe, executionMode, matchRoute, ROUTES, SERVED_BY } from './router';
 import { NextRequest, NextResponse, after } from './next-server-shim';
 import { runInRequest } from './request-context';
+
+describe('the main module', () => {
+  it('exports only the default handler: workerd treats every named export as an entrypoint and will not start on a non-handler one', () => {
+    expect(Object.keys(mainModule)).toEqual(['default']);
+  });
+});
 
 describe('the execution routes the control plane serves', () => {
   it('matches exactly the execution path, with path params', () => {
@@ -16,6 +26,19 @@ describe('the execution routes the control plane serves', () => {
     }
     expect(matchRoute('POST', '/api/dispatch/v1/relay')).not.toBeNull();
     expect(ROUTES).toHaveLength(7);
+  });
+
+  it('leaves the static siblings of /api/workers/[id] to the web app, as Next routing does', () => {
+    // Next serves a static segment before a dynamic one; `:id` matching
+    // `queue`, `mine` or `active` answered them with "Worker not found".
+    const siblings = readdirSync(join(import.meta.dir, '../../web/src/app/api/workers'), { withFileTypes: true })
+      .filter(d => d.isDirectory() && !d.name.startsWith('['))
+      .map(d => d.name);
+    expect(siblings).toContain('queue');
+    for (const name of siblings) {
+      for (const m of ['GET', 'PATCH']) expect(matchRoute(m, `/api/workers/${name}`)).toBeNull();
+    }
+    expect(matchRoute('GET', '/api/workers/w-1')?.params).toEqual({ id: 'w-1' });
   });
 });
 
@@ -85,6 +108,35 @@ describe('outbound fetch', () => {
     await f('https://x.example', { headers: { 'User-Agent': 'mine' } });
     expect(seen).toEqual([CONTROL_PLANE_USER_AGENT, CONTROL_PLANE_USER_AGENT, 'mine']);
   });
+
+  it('GITHUB_API_ORIGIN sends GitHub API calls to a loopback fake (the web-down e2e), and nothing else moves', async () => {
+    const { withGithubApiOrigin } = await import('./outbound-fetch');
+    const seen: string[] = [];
+    const base = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const r = input instanceof Request ? input : new Request(String(input), init);
+      seen.push(`${r.method} ${r.url} ${r.headers.get('authorization') ?? ''}`);
+      return new Response('ok');
+    }) as typeof fetch;
+    const f = withGithubApiOrigin(base, () => 'http://127.0.0.1:8798');
+    await f('https://api.github.com/repos/o/r/pulls/1?x=1', { method: 'GET', headers: { Authorization: 'Bearer t' } });
+    await f(new Request('https://api.github.com/graphql', { method: 'POST', body: '{}' }));
+    await f('https://hooks.example/a');
+    expect(seen).toEqual([
+      'GET http://127.0.0.1:8798/repos/o/r/pulls/1?x=1 Bearer t',
+      'POST http://127.0.0.1:8798/graphql ',
+      'GET https://hooks.example/a ',
+    ]);
+  });
+
+  it('GITHUB_API_ORIGIN is ignored unless it is loopback, so a stray var cannot redirect production GitHub calls', async () => {
+    const { withGithubApiOrigin } = await import('./outbound-fetch');
+    const seen: string[] = [];
+    const base = (async (input: RequestInfo | URL) => { seen.push(String(input instanceof Request ? input.url : input)); return new Response('ok'); }) as typeof fetch;
+    for (const origin of [undefined, '', 'https://evil.example', 'http://10.0.0.1:80']) {
+      await withGithubApiOrigin(base, () => origin)('https://api.github.com/zen');
+    }
+    expect(seen).toEqual(Array(4).fill('https://api.github.com/zen'));
+  });
 });
 
 describe('pusher shim', () => {
@@ -102,7 +154,22 @@ describe('pusher shim', () => {
 describe('health', () => {
   it('reports the deployed commit, so release CI can verify lockstep with the web app', async () => {
     const res = await worker.fetch(new Request('https://control-plane.buildd.dev/__control-plane/health'), { EXECUTION_MODE: 'own', GIT_SHA: 'abc123' }, { waitUntil() {}, passThroughOnException() {} } as never);
-    expect(await res.json()).toEqual({ ok: true, service: 'control-plane', mode: 'own', commit: 'abc123' });
+    expect(await res.json()).toEqual({ ok: true, service: 'control-plane', mode: 'own', kernel: 'shadow', commit: 'abc123' });
+  });
+
+  it('reports kernel own only in own mode AND with a command key, so a web host keyed first keeps running the kernel itself', async () => {
+    const ctx = { waitUntil() {}, passThroughOnException() {} } as never;
+    const kernelOf = async (env: Record<string, string>) =>
+      ((await (await worker.fetch(new Request('https://control-plane.buildd.dev/__control-plane/health'), env, ctx)).json()) as { kernel: string; mode: string });
+    const prior = process.env.KERNEL_COMMAND_SECRET;
+    delete process.env.KERNEL_COMMAND_SECRET;
+    try {
+      expect(await kernelOf({ EXECUTION_MODE: 'own' })).toMatchObject({ mode: 'own', kernel: 'shadow' });
+      expect(await kernelOf({ EXECUTION_MODE: 'own', KERNEL_COMMAND_SECRET: 'k1:s' })).toMatchObject({ mode: 'own', kernel: 'own' });
+      expect(await kernelOf({ EXECUTION_MODE: 'shadow', KERNEL_COMMAND_SECRET: 'k1:s' })).toMatchObject({ mode: 'shadow', kernel: 'shadow' });
+    } finally {
+      if (prior !== undefined) process.env.KERNEL_COMMAND_SECRET = prior;
+    }
   });
 });
 
@@ -142,8 +209,130 @@ describe('deep health', () => {
     }
   });
 
+  /** Every probe healthy except what `zen` answers. */
+  async function deepWith(zen: Response) {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (r: RequestInfo | URL) => {
+      const u = String(r instanceof Request ? r.url : r);
+      return u.endsWith('/zen') ? zen.clone() : new Response('{}', { status: 200 });
+    }) as typeof fetch;
+    try {
+      const res = await worker.fetch(deep('Bearer s3cret'), { EXECUTION_MODE: 'own', CRON_SECRET: 's3cret' }, ctx);
+      return { status: res.status, body: await res.json() as Record<string, unknown> };
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  }
+
+  it("an anonymous GitHub budget spent on the Worker's shared IP reads rate_limited and fails nothing", async () => {
+    const limited = await deepWith(new Response('', { status: 403, headers: { 'x-ratelimit-remaining': '0' } }));
+    expect(limited.body.github).toBe('rate_limited');
+    const secondary = await deepWith(new Response('', { status: 429 }));
+    expect(secondary.body.github).toBe('rate_limited');
+    expect(anonymousGithubProbe(403, '0')).toEqual({ report: 'rate_limited', healthy: true });
+    expect(anonymousGithubProbe(429, null)).toEqual({ report: 'rate_limited', healthy: true });
+    expect(anonymousGithubProbe(200, '59')).toEqual({ report: 200, healthy: true });
+  });
+
+  it('regression: a 403 with budget left (the missing User-Agent of the cutover) still fails the probe', async () => {
+    const r = await deepWith(new Response('', { status: 403, headers: { 'x-ratelimit-remaining': '42' } }));
+    expect(r.body).toMatchObject({ ok: false, github: 403 });
+    expect(r.status).toBe(503);
+    expect(anonymousGithubProbe(403, '42')).toEqual({ report: 403, healthy: false });
+    expect(anonymousGithubProbe(403, null)).toEqual({ report: 403, healthy: false });
+    expect(anonymousGithubProbe(0, null)).toEqual({ report: 0, healthy: false });
+  });
+
   it('shallow health stays public', async () => {
     const res = await worker.fetch(new Request('https://control-plane.buildd.dev/__control-plane/health'), { EXECUTION_MODE: 'own', CRON_SECRET: 's3cret' }, ctx);
     expect([res.status, (await res.json() as { ok: boolean }).ok]).toEqual([200, true]);
+  });
+});
+
+describe('the kernel command API (workflow-kernel-library.md §3)', () => {
+  const ctx = { waitUntil() {}, passThroughOnException() {} } as never;
+  const OWN_HOST = { EXECUTION_MODE: 'own', CONTROL_PLANE_HOST: 'control-plane.buildd.dev', KERNEL_COMMAND_SECRET: 'k1:s3cret' };
+
+  it('this process is the kernel\'s control-plane host: every transition it applies is tagged so', async () => {
+    const { kernelHost } = await import('@/lib/workflow/kernel-host');
+    expect(kernelHost()).toBe('control-plane');
+  });
+
+  it('POST /v1/commands is served on the Worker\'s own hostname, and refuses an unsigned request before anything runs', async () => {
+    const res = await worker.fetch(new Request('https://control-plane.buildd.dev/v1/commands', { method: 'POST', body: '{}' }), OWN_HOST, ctx);
+    expect(res.status).toBe(401);
+    expect(res.headers.get(SERVED_BY)).toBe('control-plane');
+  });
+
+  it('in shadow it answers not_host, so the web host runs the command and the two never both apply', async () => {
+    const res = await worker.fetch(new Request('https://control-plane.buildd.dev/v1/commands', { method: 'POST', body: '{}' }), { ...OWN_HOST, EXECUTION_MODE: 'shadow' }, ctx);
+    expect([res.status, ((await res.json()) as { code: string }).code]).toEqual([409, 'not_host']);
+  });
+
+  it('without KERNEL_COMMAND_SECRET every command is refused, even in own mode and signed with another secret', async () => {
+    const body = '{}';
+    // Shaped like a signed request; the refusal comes before any signature is read.
+    const headers = { 'Dispatch-Key-Id': 'cron', 'Dispatch-Timestamp': String(Math.floor(Date.now() / 1000)), 'Dispatch-Signature': '0'.repeat(64) };
+    const res = await worker.fetch(new Request('https://control-plane.buildd.dev/v1/commands', { method: 'POST', body, headers }), { EXECUTION_MODE: 'own', CONTROL_PLANE_HOST: 'control-plane.buildd.dev', CRON_SECRET: 's3cret' }, ctx);
+    expect([res.status, ((await res.json()) as { code: string }).code]).toEqual([503, 'unconfigured']);
+  });
+
+  it('is never served on a buildd.dev route: there the path passes through to the web app', async () => {
+    const seen: string[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (r: Request) => { seen.push(new URL(r.url).pathname); return new Response('origin', { status: 404 }); }) as typeof fetch;
+    try {
+      const res = await worker.fetch(new Request('https://buildd.dev/v1/commands', { method: 'POST', body: '{}' }), OWN_HOST, ctx);
+      expect(res.headers.get(SERVED_BY)).toBe('web');
+      expect(seen).toEqual(['/v1/commands']);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    expect(ROUTES).toHaveLength(7);
+  });
+});
+
+describe('the cron trigger: the kernel\'s drain and floor (AC-10)', () => {
+  it('is committed hourly at :10, sharing the web app\'s merge-state wake window', async () => {
+    const { readFileSync } = await import('node:fs');
+    const cfg = readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8');
+    expect(cfg).toContain('"triggers": { "crons": ["10 * * * *"] }');
+  });
+
+  it('in shadow the tick does nothing: no database read, no outbound call', async () => {
+    const seen: string[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (r: RequestInfo | URL) => { seen.push(String(r instanceof Request ? r.url : r)); return new Response('x'); }) as typeof fetch;
+    const logs: string[] = [];
+    const realLog = console.log;
+    console.log = (...a: unknown[]) => { logs.push(a.join(' ')); };
+    try {
+      await worker.scheduled({ cron: '10 * * * *', scheduledTime: Date.now(), noRetry() {} } as never, { EXECUTION_MODE: 'shadow' }, { waitUntil() {}, passThroughOnException() {} } as never);
+    } finally {
+      globalThis.fetch = realFetch;
+      console.log = realLog;
+    }
+    expect(seen).toEqual([]);
+    expect(logs.some((l) => l.includes('[kernel-floor] skipped: shadow'))).toBe(true);
+  });
+
+  it('in own mode without KERNEL_COMMAND_SECRET (not switched over) the tick does nothing either', async () => {
+    const seen: string[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (r: RequestInfo | URL) => { seen.push(String(r instanceof Request ? r.url : r)); return new Response('x'); }) as typeof fetch;
+    const logs: string[] = [];
+    const realLog = console.log;
+    console.log = (...a: unknown[]) => { logs.push(a.join(' ')); };
+    const prior = process.env.KERNEL_COMMAND_SECRET;
+    delete process.env.KERNEL_COMMAND_SECRET;
+    try {
+      await worker.scheduled({ cron: '10 * * * *', scheduledTime: Date.now(), noRetry() {} } as never, { EXECUTION_MODE: 'own' }, { waitUntil() {}, passThroughOnException() {} } as never);
+    } finally {
+      globalThis.fetch = realFetch;
+      console.log = realLog;
+      if (prior !== undefined) process.env.KERNEL_COMMAND_SECRET = prior;
+    }
+    expect(seen).toEqual([]);
+    expect(logs.some((l) => l.includes('[kernel-floor] skipped: no_command_key'))).toBe(true);
   });
 });

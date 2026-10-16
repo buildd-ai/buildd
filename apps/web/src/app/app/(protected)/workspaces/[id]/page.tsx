@@ -9,13 +9,14 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { roleHas } from '@/lib/permission-registry';
 import { RepoLinkCard } from '../../settings/workspace/[workspaceId]/RepoLinkCard';
-import { getTeamPermissionOverrides } from '@/lib/permissions';
+
 import { primaryActionClass } from '@/components/ui/PrimaryAction';
 import Lede from '@/components/ui/Lede';
 import Section from '@/components/ui/Section';
 import { StatusPill } from '@/components/ui/StatePill';
 import { taskCountLede } from './overview-lede';
 import { displayTaskTitle } from '@/lib/task-title';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export default async function WorkspaceDetailPage({
   params,
@@ -42,7 +43,7 @@ export default async function WorkspaceDetailPage({
   if (!access) notFound();
 
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, id),
+    where: sqlWhere(eq(workspaces.id, id)),
     with: {
       accountWorkspaces: {
         with: {
@@ -50,7 +51,7 @@ export default async function WorkspaceDetailPage({
         },
       },
       tasks: {
-        orderBy: desc(tasks.createdAt),
+        orderBy: sqlOrderBy(desc(tasks.createdAt)),
         limit: 5,
       },
     },
@@ -121,15 +122,16 @@ export default async function WorkspaceDetailPage({
     artifactCount = Number(artCount?.count || 0);
   }
 
-  const canManage = roleHas(access.role, 'manage_workspace_settings', await getTeamPermissionOverrides(access.teamId));
+  const canManage = roleHas(access.role, 'manage_workspace_settings');
   const links: Array<{ href: string; label: string; count?: number }> = [
     { href: `/app/settings/workspace/${workspace.id}`, label: 'Settings' },
     { href: `/app/workspaces/${workspace.id}/memory`, label: 'Memory', count: memoryCount },
     { href: `/app/missions?workspaceId=${workspace.id}`, label: 'Missions', count: missionCount },
     { href: `/app/workspaces/${workspace.id}/schedules`, label: 'Schedules', count: scheduleCount },
     { href: `/app/workspaces/${workspace.id}/artifacts`, label: 'Artifacts', count: artifactCount },
+    { href: `/app/workspaces/${workspace.id}/specs`, label: 'Specs' },
     { href: `/app/health/runners?workspace=${workspace.id}`, label: 'Runners' },
-    { href: '/app/settings/roles', label: 'Roles' },
+    { href: '/app/settings/agents', label: 'Agents' },
   ];
 
   return (

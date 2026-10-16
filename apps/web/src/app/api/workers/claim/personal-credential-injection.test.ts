@@ -61,16 +61,28 @@ function input(over: Partial<PersonalCredentialInput> = {}): PersonalCredentialI
 }
 
 describe('decidePersonalCredential', () => {
-  describe('credential_policy NULL (the default): nothing changes', () => {
+  describe('credential_policy NULL (the default): personal_first', () => {
     for (const policy of [undefined, null, 'garbage']) {
-      it(`policy ${String(policy)}: legacy, no marker, and no requester or credential lookup`, async () => {
+      it(`policy ${String(policy)}: the requester's own key is used`, async () => {
         const x = deps({ policy, requester: ALICE, result: personalResult() });
         const d = await decidePersonalCredential(input(), x.d);
-        expect(d).toEqual({ kind: 'legacy' });
-        expect(x.requesterOf).not.toHaveBeenCalled();
-        expect(x.resolve).not.toHaveBeenCalled();
+        expect(d.kind).toBe('personal');
+        expect((d as any).marker).toMatchObject({ policy: 'personal_first', scope: 'personal' });
+        expect(x.resolve.mock.calls[0][0]).toMatchObject({ requesterUserId: ALICE, team: { credentialPolicy: 'personal_first' } });
       });
     }
+
+    it('no requester (schedule, webhook work): team credentials', async () => {
+      const x = deps({ policy: null, requester: null, result: personalResult() });
+      const d = await decidePersonalCredential(input({ task: { id: 't', backend: 'claude' } }), x.d);
+      expect(d).toEqual({ kind: 'legacy', marker: { surface: 'agent-claude', policy: 'personal_first', scope: 'team', runnerLocalAllowed: true } });
+      expect(x.resolve).not.toHaveBeenCalled();
+    });
+
+    it('the requester has no key: team credentials', async () => {
+      const x = deps({ policy: null, requester: ALICE, result: none });
+      expect((await decidePersonalCredential(input(), x.d)).kind).toBe('legacy');
+    });
 
     it('a team-policy lookup failure reads as no policy', async () => {
       const x = deps({ teamThrows: true, result: personalResult() });

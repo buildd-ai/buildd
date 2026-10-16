@@ -64,7 +64,7 @@ mock.module('@/lib/deferred-start', () => ({
   },
 }));
 
-import { evaluateAndAdvanceLoopOnMerge } from './loop-webhook';
+import { evaluateAndAdvanceLoopOnMerge, evaluateAndAdvanceLoopOnCiGreen } from './loop-webhook';
 
 const PR_MERGED_LOOP_CONFIG = {
   exitCondition: { type: 'pr_merged' },
@@ -191,6 +191,171 @@ describe('evaluateAndAdvanceLoopOnMerge', () => {
     returningResult = [];
 
     const result = await evaluateAndAdvanceLoopOnMerge('w1', 'task-1', 'ws-1');
+    expect(result).toBe(false);
+    expect(mockResolveCompletedTask).not.toHaveBeenCalled();
+  });
+});
+
+const PR_CHECKS_GREEN_LOOP_CONFIG = {
+  exitCondition: { type: 'pr_checks_green' },
+  maxLoops: 3,
+  waitExpiryMinutes: 240,
+};
+
+describe('evaluateAndAdvanceLoopOnCiGreen', () => {
+  beforeEach(() => {
+    capturedTaskUpdate = null;
+    returningResult = [{ id: 'task-1' }];
+    mockTasksFindFirst.mockReset();
+    mockWorkersFindFirst.mockReset();
+    mockTasksUpdate.mockReset();
+    mockTasksUpdateSet.mockReset();
+    mockResolveCompletedTask.mockReset();
+    mockTasksUpdate.mockReturnValue({ set: mockTasksUpdateSet });
+    mockTasksUpdateSet.mockImplementation((vals: any) => {
+      capturedTaskUpdate = vals;
+      return {
+        where: mock(() => ({
+          returning: mock(() => Promise.resolve(returningResult)),
+        })),
+      };
+    });
+  });
+
+  it('returns false when task does not exist', async () => {
+    mockTasksFindFirst.mockResolvedValue(null);
+    const result = await evaluateAndAdvanceLoopOnCiGreen('w1', 'task-1', 'ws-1', 'ci_green');
+    expect(result).toBe(false);
+  });
+
+  it('returns false when task loopState is not condition_unmet', async () => {
+    mockTasksFindFirst.mockResolvedValue({
+      loopConfig: PR_CHECKS_GREEN_LOOP_CONFIG,
+      loopIteration: 1,
+      loopState: 'satisfied',
+      context: {},
+      startAt: null,
+      status: 'completed',
+    });
+    const result = await evaluateAndAdvanceLoopOnCiGreen('w1', 'task-1', 'ws-1', 'ci_green');
+    expect(result).toBe(false);
+  });
+
+  it('returns false when loopConfig exitCondition is not pr_checks_green', async () => {
+    mockTasksFindFirst.mockResolvedValue({
+      loopConfig: PR_MERGED_LOOP_CONFIG,
+      loopIteration: 0,
+      loopState: 'condition_unmet',
+      context: {},
+      startAt: null,
+      status: 'pending',
+    });
+    const result = await evaluateAndAdvanceLoopOnCiGreen('w1', 'task-1', 'ws-1', 'ci_green');
+    expect(result).toBe(false);
+  });
+
+  it('returns false when worker does not exist', async () => {
+    mockTasksFindFirst.mockResolvedValue({
+      loopConfig: PR_CHECKS_GREEN_LOOP_CONFIG,
+      loopIteration: 0,
+      loopState: 'condition_unmet',
+      context: {},
+      startAt: null,
+      status: 'pending',
+    });
+    mockWorkersFindFirst.mockResolvedValue(null);
+    const result = await evaluateAndAdvanceLoopOnCiGreen('w1', 'task-1', 'ws-1', 'ci_green');
+    expect(result).toBe(false);
+  });
+
+  it('returns false when prLifecycleStatus is ci_running', async () => {
+    mockTasksFindFirst.mockResolvedValue({
+      loopConfig: PR_CHECKS_GREEN_LOOP_CONFIG,
+      loopIteration: 0,
+      loopState: 'condition_unmet',
+      context: {},
+      startAt: null,
+      status: 'pending',
+    });
+    mockWorkersFindFirst.mockResolvedValue({
+      prNumber: 42,
+      branch: 'buildd/feat',
+      lastCommitSha: 'abc',
+    });
+    const result = await evaluateAndAdvanceLoopOnCiGreen('w1', 'task-1', 'ws-1', 'ci_running');
+    expect(result).toBe(false);
+  });
+
+  it('advances loop to satisfied when CI checks are green', async () => {
+    mockTasksFindFirst.mockResolvedValue({
+      loopConfig: PR_CHECKS_GREEN_LOOP_CONFIG,
+      loopIteration: 0,
+      loopState: 'condition_unmet',
+      context: { loopHistory: [] },
+      startAt: null,
+      status: 'pending',
+    });
+    mockWorkersFindFirst.mockResolvedValue({
+      prNumber: 42,
+      branch: 'buildd/feat',
+      lastCommitSha: 'deadbeef',
+    });
+
+    const result = await evaluateAndAdvanceLoopOnCiGreen('w1', 'task-1', 'ws-1', 'ci_green');
+
+    expect(result).toBe(true);
+    expect(capturedTaskUpdate).not.toBeNull();
+    expect(capturedTaskUpdate.status).toBe('completed');
+    expect(capturedTaskUpdate.loopState).toBe('satisfied');
+    expect(capturedTaskUpdate.result.summary).toContain('42');
+    expect(capturedTaskUpdate.result.summary).toContain('ci_green');
+    expect(mockResolveCompletedTask).toHaveBeenCalledWith('task-1', 'ws-1');
+  });
+
+  it('advances loop to satisfied when PR is merged (satisfies pr_checks_green)', async () => {
+    mockTasksFindFirst.mockResolvedValue({
+      loopConfig: PR_CHECKS_GREEN_LOOP_CONFIG,
+      loopIteration: 0,
+      loopState: 'condition_unmet',
+      context: { loopHistory: [] },
+      startAt: null,
+      status: 'pending',
+    });
+    mockWorkersFindFirst.mockResolvedValue({
+      prNumber: 99,
+      branch: 'buildd/feat',
+      lastCommitSha: 'abc123',
+    });
+
+    const result = await evaluateAndAdvanceLoopOnCiGreen('w1', 'task-1', 'ws-1', 'merged');
+
+    expect(result).toBe(true);
+    expect(capturedTaskUpdate).not.toBeNull();
+    expect(capturedTaskUpdate.status).toBe('completed');
+    expect(capturedTaskUpdate.loopState).toBe('satisfied');
+    expect(capturedTaskUpdate.result.summary).toContain('99');
+    expect(capturedTaskUpdate.result.summary).toContain('merged');
+    expect(mockResolveCompletedTask).toHaveBeenCalledWith('task-1', 'ws-1');
+  });
+
+  it('returns false when the atomic WHERE guard prevents double-fire', async () => {
+    mockTasksFindFirst.mockResolvedValue({
+      loopConfig: PR_CHECKS_GREEN_LOOP_CONFIG,
+      loopIteration: 0,
+      loopState: 'condition_unmet',
+      context: {},
+      startAt: null,
+      status: 'pending',
+    });
+    mockWorkersFindFirst.mockResolvedValue({
+      prNumber: 42,
+      branch: 'buildd/feat',
+      lastCommitSha: 'abc',
+    });
+
+    returningResult = [];
+
+    const result = await evaluateAndAdvanceLoopOnCiGreen('w1', 'task-1', 'ws-1', 'ci_green');
     expect(result).toBe(false);
     expect(mockResolveCompletedTask).not.toHaveBeenCalled();
   });

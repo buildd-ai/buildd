@@ -6,15 +6,14 @@ const WS = '22222222-2222-4222-8222-222222222222';
 const KEY = 'sk-agent-example-1234';
 const mockRequireSessionUser = mock(async () => ({ user: { id: 'u-1' } }) as any);
 const mockGetUserTeamIds = mock(async () => [TEAM] as string[]);
-// The caller's team roles and the team's permission overrides, read by the
+// The caller's team roles, read by the
 // real permission check (lib/permissions.ts) through this db mock.
 let roles: Record<string, string> = {};
-let overrides: Record<string, unknown> | null = null;
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       teamMembers: { findMany: async () => Object.entries(roles).map(([teamId, role]) => ({ teamId, role })) },
-      teams: { findFirst: async () => ({ id: 'not-a-personal-team', permissionOverrides: overrides }) },
+      teams: { findFirst: async () => ({ id: 'not-a-personal-team' }) },
     },
   },
 }));
@@ -37,7 +36,7 @@ const put = { kind: 'anthropic-compatible', baseUrl: 'https://litellm.example.co
 
 beforeEach(() => {
   mockGetUserTeamIds.mockResolvedValue([TEAM]);
-  roles = {}; overrides = null;
+  roles = {};
   mockSet.mockClear();
   mockDelete.mockClear();
   mockScope.mockClear();
@@ -115,25 +114,5 @@ describe('/api/teams/[id]/agent-endpoint', () => {
     expect(res.status).toBe(400);
     expect((await res.json()).error).toMatch(/not in this team/);
     expect((await PATCH(req('PATCH', [WS]), ctx())).status).toBe(400);
-  });
-});
-
-describe('/api/teams/[id]/agent-endpoint honours the team permission overrides', () => {
-  it('an admin is refused once manage_inference_providers is owner-only, and nothing is written', async () => {
-    roles = { [TEAM]: 'admin' };
-    overrides = { manage_inference_providers: ['owner'] };
-    expect((await PUT(req('PUT', put), ctx())).status).toBe(403);
-    expect((await PATCH(req('PATCH', { appliesTo: [WS] }), ctx())).status).toBe(403);
-    expect((await DELETE(req('DELETE'), ctx())).status).toBe(403);
-    expect(mockSet).not.toHaveBeenCalled();
-    expect(mockScope).not.toHaveBeenCalled();
-    expect(mockDelete).not.toHaveBeenCalled();
-  });
-
-  it('a member is admitted once manage_inference_providers is granted to members, and the write happens', async () => {
-    roles = { [TEAM]: 'member' };
-    overrides = { manage_inference_providers: ['owner', 'admin', 'member'] };
-    expect((await PUT(req('PUT', put), ctx())).status).toBe(200);
-    expect(mockSet).toHaveBeenCalledWith({ teamId: TEAM, workspaceId: undefined, endpoint: put });
   });
 });

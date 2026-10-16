@@ -55,7 +55,7 @@ export function HeaderStatusPill({ status, merged, delivery = null }: { status: 
       return <span className={`${base} text-accent-text border-accent bg-accent-soft`}>{dot('animate-status-pulse')}Fixing CI</span>;
     case 'waiting_on_you':
     case 'waiting_input':
-      return <span className={`${base} text-[var(--on-accent)] border-accent bg-accent`}>{dot()}Needs input</span>;
+      return <span className={`${base} text-[var(--on-accent)] border-accent bg-accent`}>{dot()}{status === 'waiting_input' ? 'Waiting for your answer' : 'Waiting for you'}</span>;
     case 'completed':
       return <span className={`${base} text-status-success border-status-success bg-status-success/10`}>{dot()}Completed</span>;
     case 'failed':
@@ -69,6 +69,16 @@ export interface FactRow {
   key: string;
   label: string;
   value: ReactNode;
+}
+
+/** The runner a worker ran on, by name (runner-display), as a fact row. Empty without one. */
+export function runnerFactRow(name: string | null | undefined): FactRow[] {
+  return name ? [{ key: 'runner', label: 'Runner', value: name }] : [];
+}
+
+/** The worker's branch as a fact row. Empty without one. */
+export function branchFactRow(branch: string | null | undefined): FactRow[] {
+  return branch ? [{ key: 'branch', label: 'Branch', value: <span className="block truncate" title={branch}>{branch}</span> }] : [];
 }
 
 /** The right-hand fact sheet: label/value rows in one bordered card. */

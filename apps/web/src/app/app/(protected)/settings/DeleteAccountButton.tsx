@@ -20,13 +20,13 @@ export default function DeleteAccountButton({ accountId, accountName }: { accoun
 
       if (!res.ok) {
         const err = await res.json();
-        throw new Error(err.error || 'Failed to delete');
+        throw new Error(err.error || "Could not delete the account.");
       }
 
       setShowConfirm(false);
       router.refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete account');
+      setError(err instanceof Error ? err.message : "Could not delete the account.");
       setDeleting(false);
     }
   }

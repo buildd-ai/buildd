@@ -29,6 +29,7 @@ const ALLOWED_FILES = new Map<string, string>([
   ['apps/web/src/app/api/teams/[id]/ownership/route.ts', 'Role assignment: promotes the target to owner and the caller to admin; the gate is roleHas(assign_team_owner)'],
   // The caller's permissions come from roleHas; the owner comparisons are about
   // the row (an owner row, the last owner), mirroring the members route's guards.
+  ['apps/web/src/app/app/(protected)/settings/account/YourTeams.tsx', 'Last-owner rule on Profile › Leave: whether the caller is the team\'s only owner'],
   ['apps/web/src/app/app/(protected)/settings/team/TeamDetailClient.tsx', 'Owner-row rules in the member list: which rows are owners, and whether the caller is the last one'],
   // Shared types: the TeamRole type definition.
   ['packages/shared/src/types.ts', 'TeamRole type definition for API contracts'],

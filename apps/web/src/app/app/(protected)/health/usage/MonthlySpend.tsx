@@ -6,7 +6,7 @@ export function MonthlySpend({ monthly }: { monthly: MonthlyBudgetForecast }) {
   return <section className="mb-6" data-testid="usage-monthly-spend">
     <h2 className="section-label mb-3">Monthly budget · team</h2>
     <div className="border-y border-border-default py-3 space-y-1">
-      <p className="text-body text-text-primary tabular-nums" title={ESTIMATED_COST_TITLE}>
+      <p className="text-body text-text-primary font-mono" title={ESTIMATED_COST_TITLE}>
         {formatEstimatedUsd(monthly.spentUsd)} / ${monthly.budgetUsd.toFixed(0)}
       </p>
       <p className="text-meta text-text-muted" data-testid="monthly-anchor">{monthlyAnchor(monthly.resetsAt)} · resets {new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(new Date(monthly.resetsAt))}</p>

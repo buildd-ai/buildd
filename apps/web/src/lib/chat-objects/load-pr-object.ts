@@ -13,6 +13,7 @@ import { verifyWorkspaceAccess } from '@/lib/team-access';
 import type { PrObjectView } from '@/components/chat/objects/object-views';
 import { resolvePrDisplayState, type PrDisplayState } from '@/lib/pr-presentation';
 import { getOwnerDeliveryDisplays } from '@/lib/workflow/delivery-view';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * The PR's display state, projected onto the chat object's vocabulary. Pure.
@@ -56,17 +57,17 @@ export async function loadPrObject(id: string, userId: string): Promise<PrObject
   const slug = parsePrRefId(id);
   if (slug) {
     const w = await db.query.workers.findFirst({
-      where: and(eq(workers.prNumber, slug.number), like(workers.prUrl, `%/${likeLiteral(slug.repo)}/pull/${slug.number}`)),
-      orderBy: desc(workers.createdAt),
+      where: sqlWhere(and(eq(workers.prNumber, slug.number), like(workers.prUrl, `%/${likeLiteral(slug.repo)}/pull/${slug.number}`))),
+      orderBy: sqlOrderBy(desc(workers.createdAt)),
       columns: PR_WORKER_COLUMNS,
     });
     return w ? prViewFromWorker(id, w, userId) : null;
   }
   const [byWorker, byTask] = await Promise.all([
-    db.query.workers.findFirst({ where: eq(workers.id, id), columns: PR_WORKER_COLUMNS }),
+    db.query.workers.findFirst({ where: sqlWhere(eq(workers.id, id)), columns: PR_WORKER_COLUMNS }),
     db.query.workers.findFirst({
-      where: and(eq(workers.taskId, id), isNotNull(workers.prNumber)),
-      orderBy: desc(workers.createdAt),
+      where: sqlWhere(and(eq(workers.taskId, id), isNotNull(workers.prNumber))),
+      orderBy: sqlOrderBy(desc(workers.createdAt)),
       columns: PR_WORKER_COLUMNS,
     }),
   ]);
@@ -83,7 +84,7 @@ async function prViewFromWorker(id: string, w: PrWorkerRow, userId: string): Pro
   if (w.prNumber == null || !w.taskId) return null;
 
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, w.taskId),
+    where: sqlWhere(eq(tasks.id, w.taskId)),
     columns: { id: true, title: true, workspaceId: true, missionId: true },
   });
   if (!task) return null;

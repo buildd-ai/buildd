@@ -4,8 +4,9 @@ import { teamInvitations, teamMembers, users } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { requireSessionUser } from '@/lib/auth-helpers';
 import crypto from 'crypto';
-import { roleHas, getTeamPermissionOverrides } from '@/lib/permissions';
+import { roleHas } from '@/lib/permissions';
 import { checkSeatForNewMember, seatsExhaustedResponse } from '@/lib/billing/seats';
+import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 // GET /api/teams/[id]/invitations — list pending invitations
 export async function GET(
@@ -20,28 +21,28 @@ export async function GET(
 
   // Verify user is owner or admin of this team
   const membership = await db.query.teamMembers.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(teamMembers.teamId, teamId),
       eq(teamMembers.userId, user.id)
-    ),
+    )),
   });
 
-  if (!membership || !roleHas(membership.role, 'manage_team_members', await getTeamPermissionOverrides(teamId))) {
+  if (!membership || !roleHas(membership.role, 'manage_team_members')) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
   try {
     const invitations = await db.query.teamInvitations.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(teamInvitations.teamId, teamId),
         eq(teamInvitations.status, 'pending')
-      ),
+      )),
       with: {
         inviter: {
           columns: { id: true, name: true, email: true },
         },
       },
-      orderBy: (ti, { desc }) => [desc(ti.createdAt)],
+      orderBy: sqlOrderByFn((ti, { desc }) => [desc(ti.createdAt)]),
     });
 
     return NextResponse.json({ invitations });
@@ -64,14 +65,13 @@ export async function POST(
 
   // Verify user is owner or admin of this team
   const membership = await db.query.teamMembers.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(teamMembers.teamId, teamId),
       eq(teamMembers.userId, user.id)
-    ),
+    )),
   });
 
-  const overrides = await getTeamPermissionOverrides(teamId);
-  if (!membership || !roleHas(membership.role, 'manage_team_members', overrides)) {
+  if (!membership || !roleHas(membership.role, 'manage_team_members')) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
@@ -88,21 +88,21 @@ export async function POST(
     }
 
     // Widening manage_team_members must not let its holders mint admins.
-    if (role === 'admin' && !roleHas(membership.role, 'assign_team_roles', overrides)) {
+    if (role === 'admin' && !roleHas(membership.role, 'assign_team_roles')) {
       return NextResponse.json({ error: 'Inviting an admin needs the assign_team_roles permission' }, { status: 403 });
     }
 
     // Check if email is already a team member
     const existingMember = await db.query.users.findFirst({
-      where: eq(users.email, email),
+      where: sqlWhere(eq(users.email, email)),
     });
 
     if (existingMember) {
       const alreadyMember = await db.query.teamMembers.findFirst({
-        where: and(
+        where: sqlWhere(and(
           eq(teamMembers.teamId, teamId),
           eq(teamMembers.userId, existingMember.id)
-        ),
+        )),
       });
 
       if (alreadyMember) {
@@ -112,11 +112,11 @@ export async function POST(
 
     // Check for duplicate pending invitation
     const existingInvite = await db.query.teamInvitations.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(teamInvitations.teamId, teamId),
         eq(teamInvitations.email, email),
         eq(teamInvitations.status, 'pending')
-      ),
+      )),
     });
 
     if (existingInvite) {

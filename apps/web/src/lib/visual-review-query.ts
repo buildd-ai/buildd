@@ -99,7 +99,9 @@ export const VISUAL_REVIEW_TASK_SELECTION = {
   pathManifest: tasks.pathManifest,
   createdAt: tasks.createdAt,
   updatedAt: tasks.updatedAt,
-  context: sql<Record<string, unknown> | null>`case when ${tasks.roleSlug} = ${VISUAL_AUDITOR_ROLE_SLUG} then jsonb_build_object('surfaceAuditRound', ${tasks.context} -> 'surfaceAuditRound', 'visualQa', ${tasks.context} -> 'visualQa') else null end`.as('visual_context'),
+  // Audits: round and frozen routes. Everyone else: the trunk-refresh marks
+  // isTrunkRefreshTask reads, so a refresh dependency names no route.
+  context: sql<Record<string, unknown> | null>`case when ${tasks.roleSlug} = ${VISUAL_AUDITOR_ROLE_SLUG} then jsonb_build_object('surfaceAuditRound', ${tasks.context} -> 'surfaceAuditRound', 'visualQa', ${tasks.context} -> 'visualQa') else nullif(jsonb_strip_nulls(jsonb_build_object('requireMergeCommit', ${tasks.context} -> 'requireMergeCommit', 'refreshTrunk', ${tasks.context} -> 'refreshTrunk')), '{}'::jsonb) end`.as('visual_context'),
   errorType: sql<string | null>`${tasks.result} ->> 'errorType'`.as('error_type'),
   // An audit's `why` (cancelled, failed): the summary only, never the whole result.
   resultSummary: sql<string | null>`case when ${tasks.roleSlug} = ${VISUAL_AUDITOR_ROLE_SLUG} then left(${tasks.result} ->> 'summary', 500) else null end`.as('result_summary'),

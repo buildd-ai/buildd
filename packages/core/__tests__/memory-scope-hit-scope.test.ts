@@ -5,9 +5,9 @@
  * workspace outside the namespace's team, or a failed lookup all mean no memory.
  */
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
-import { PgDialect } from 'drizzle-orm/pg-core';
+import { GroupingNormalisedPgDialect } from '../db/sql-grouping';
 
-const dialect = new PgDialect();
+const dialect = new GroupingNormalisedPgDialect();
 
 /** Render a drizzle predicate so the test sees the WHERE that was actually built. */
 function render(where: unknown): { sql: string; params: unknown[] } {

@@ -203,6 +203,11 @@ const claimRow = (i: number, over: Partial<ClaimReadoutRow> = {}): ClaimReadoutR
 });
 
 describe('buildClaimReadout', () => {
+  it('never uses human forces as model promotion evidence', async () => {
+    const human = claimRow(1, {experimentArm:'human', decisionId:'buildd.human_force_start', actor:'human_force', applied:true, effective:'START'});
+    const groups = await buildClaimReadout({rows:[human],hold:{decisions:[human],labels:[observedLabel(human.id,false)],tasks:[],starts:[],windowEnd:day(40)},links:new Map(),plan:PLAN});
+    expect(groups).toEqual([]);
+  });
   it('shadow-only evidence is insufficient by construction: every hold is censored, no threshold', async () => {
     const decisions = Array.from({ length: 40 }, (_, i) => claimRow(i));
     const [g] = await buildClaimReadout({

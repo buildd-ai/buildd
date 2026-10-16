@@ -33,6 +33,7 @@ import { DEFAULT_MAX_BUDGET_PRESSURE } from './model-routing-experiment';
 import { getCachedOpenRouterCatalog } from './model-catalog-cache';
 import { chatModelVerdict } from './chat-model-eligibility';
 import { DEFAULT_DIAL, decideDialArm, dialAllocation, isDial, type Dial, type DialStateRecord } from './tier-dial';
+import { sqlWhere } from './db/relational-sql';
 
 // ── Pool lookup (cached) ────────────────────────────────────────────────────
 
@@ -469,7 +470,7 @@ export async function drawChatPoolArm(args: ChatPoolArgs): Promise<ChatPoolDraw 
     let sensitive = false;
     if (args.workspaceId) {
       const ws = await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, args.workspaceId),
+        where: sqlWhere(eq(workspaces.id, args.workspaceId)),
         columns: { dataClass: true, gitConfig: true },
       });
       sensitive = isSensitiveWorkspace(ws);

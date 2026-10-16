@@ -6,20 +6,25 @@
  * patterns (tool-output patterns ranked by failed workers). This folds them
  * into groups a person can act on:
  *
- * - A group is one cause. Known platform causes (the model provider's usage
- *   limit, workspace setup, budget, an agent that never started) merge every
- *   variant under one plain label; anything else groups by its normalized
- *   error signature.
+ * - A group is one cause, headed by a sentence buildd wrote. Known causes
+ *   (the model provider's usage limit, workspace setup, budget, a missing
+ *   Codex login, a run that ended without a PR) merge every variant under it;
+ *   anything else groups by its cause category (the worker's exit cause), and
+ *   the raw error text stays inside the expanded row as evidence.
  * - Every failed worker counts once, in exactly one group.
  * - Error-trace patterns are evidence under the group their worker is in,
  *   counted by distinct workers, never as a separate list.
  * - Work a person stopped (cancelled, aborted) is counted apart, not as a
- *   failure to fix.
+ *   failure to fix. So is a fix or review buildd stopped because the work had
+ *   already landed (its PR merged or was approved): nothing failed.
+ * - A platform cause carries the state of the buildd incident that covers it,
+ *   when there is one (`incidents`); a task cause carries what to do (`hint`).
  *
  * Pure: no db, no React. The query that feeds it lives in health-data.ts.
  */
 import { normalizeErrorSignature } from './error-signature';
 import { DISPATCH_MODEL_REJECTED_PATTERN } from '@buildd/core/dispatch-model-guard';
+import { classifyAuthErrorSeverity } from '@buildd/core/auth-error-classifier';
 
 export interface FailedWorkerInput {
   workerId: string;
@@ -38,14 +43,29 @@ export interface TracePatternInput {
   pattern: string;
 }
 
-export type FailureKind = 'platform' | 'work' | 'stopped';
+/**
+ * A failure_incidents row that may cover some of these failures, already put
+ * into the one line the row shows (lib/failure-incident-states.ts).
+ */
+export interface IncidentStateInput {
+  id: string;
+  line: string;
+  resolved: boolean;
+  workerIds: readonly string[];
+  taskIds: readonly string[];
+  /** ISO; breaks ties between incidents covering the same group. */
+  lastSeenAt: string;
+}
+
+/** `landed`: buildd stopped it because the work already landed. Neither it nor `stopped` is a failure. */
+export type FailureKind = 'platform' | 'work' | 'stopped' | 'landed';
 
 export interface FailureCause {
   key: string;
   kind: FailureKind;
-  /** Plain words, for the group heading. */
+  /** A sentence buildd wrote, for the group heading. Never raw error text. */
   label: string;
-  /** One line on what it usually means or what to do, when known. */
+  /** One line on what to do, when there is something to do. */
   hint?: string;
 }
 
@@ -63,16 +83,20 @@ export interface FailureGroup extends FailureCause {
   variants: Array<{ signature: string; count: number }>;
   /** Error-trace patterns seen on this group's workers, by distinct workers. */
   patterns: Array<{ pattern: string; workers: number }>;
+  /** Platform causes: the buildd incident covering this group, as one line. */
+  incident?: { id: string; line: string };
 }
 
 export interface FailureGroupsView {
   groups: FailureGroup[];
-  /** Distinct failed workers, stopped work excluded. */
+  /** Distinct failed workers, stopped and landed work excluded. */
   totalFailedWorkers: number;
   platformFailures: number;
   workFailures: number;
   /** Workers a person stopped. Not failures. */
   stopped: number;
+  /** Workers buildd stopped because the work already landed. Not failures. */
+  landed: number;
 }
 
 interface Family {
@@ -85,15 +109,25 @@ interface Family {
 
 const has = (re: RegExp) => (error: string) => re.test(error);
 
+/** `Superseded — <rule label>` (lib/supersession-store.ts) for work whose PR merged or was approved. */
+const LANDED_SUPERSESSION = /^Superseded\b.*(already merged|already approved|work landed)/i;
+
 /** Checked in order; the first match names the cause. */
 const FAMILIES: Family[] = [
   {
+    key: 'landed:superseded', kind: 'landed', label: 'Stopped because the work already landed',
+    test: has(LANDED_SUPERSESSION),
+  },
+  {
     key: 'stopped:by_person', kind: 'stopped', label: 'Stopped by a person',
-    test: (e, c) => c === 'task_cancelled' || /aborted by user|cancelled by user/i.test(e),
+    // Also a retry stopped because its task was cancelled, and an interactive
+    // session handing its claim to a runner.
+    test: (e, c) => c === 'task_cancelled'
+      || /aborted by user|cancelled by user|^Superseded\b.*task cancelled|Released interactive MCP claim/i.test(e),
   },
   {
     key: 'platform:usage_limit', kind: 'platform', label: "Hit the model provider's usage limit",
-    hint: 'Work resumes when the limit resets. Nothing to fix in the task.',
+    hint: 'Work resumes when the limit resets.',
     test: has(/session limit|usage limit|rate limit|hit your .*limit/i),
   },
   {
@@ -102,20 +136,33 @@ const FAMILIES: Family[] = [
     test: (e, c) => c === 'budget_limited' || /budget (exhausted|exceeded)/i.test(e),
   },
   {
+    key: 'work:codex_credential', kind: 'work', label: "Codex isn't connected",
+    hint: 'Connect a ChatGPT or OpenAI account in Settings › Models.',
+    test: has(/codex (credential|auth)|chatgpt account/i),
+  },
+  {
     key: 'platform:provision', kind: 'platform', label: "Couldn't set up the workspace for the agent",
-    hint: 'A setup step on the runner failed before the agent started.',
     test: has(/provision failed|\[provision\]/i),
+  },
+  {
+    key: 'work:model_login', kind: 'work', label: 'The model provider refused the login',
+    hint: 'Check the Claude key or login in Settings › Models.',
+    test: e => classifyAuthErrorSeverity(e) !== 'none',
   },
   {
     key: 'platform:never_started', kind: 'platform', label: 'The agent never started',
     test: (_e, c) => c === 'never_started' || c === 'silent_start',
   },
   {
+    key: 'platform:stale', kind: 'platform', label: 'The runner stopped reporting partway through',
+    test: has(/stale worker expired/i),
+  },
+  {
     key: 'platform:sandbox', kind: 'platform', label: "The sandbox couldn't reach a folder it needed",
     test: (_e, c) => c === 'sandbox_mount_gap',
   },
   {
-    key: 'platform:infra', kind: 'platform', label: 'Runner or infrastructure failure',
+    key: 'platform:infra', kind: 'platform', label: 'The runner or its machine failed',
     test: (_e, c) => c === 'infra_failure',
   },
   {
@@ -124,21 +171,37 @@ const FAMILIES: Family[] = [
   },
   {
     key: 'work:output_unmet', kind: 'work', label: 'Finished without the required output',
-    hint: 'The task needed a PR or an artifact and the agent produced neither.',
-    test: (_e, c) => c === 'output_unmet',
+    hint: 'The task needed a PR or an artifact. Retry it, or say in the task what it should produce.',
+    test: (e, c) => c === 'output_unmet'
+      || /no confirmed outcome|no pull request or artifact|No PR was created/i.test(e),
+  },
+  {
+    key: 'work:review_no_verdict', kind: 'work', label: 'The review finished without a verdict',
+    hint: 'Request the review again.',
+    test: has(/without structuredOutput\.verdict/i),
+  },
+  {
+    key: 'work:agent_error', kind: 'work', label: 'The agent stopped with an error from the model',
+    hint: 'Retry the task.',
+    test: has(/Agent SDK returned an error/i),
   },
   {
     key: 'work:needs_input', kind: 'work', label: 'Stopped to ask a question nobody answered',
+    hint: 'Answer it on the task to let the agent continue.',
     test: (e, c) => c === 'needs_input' || /^needs_input:/i.test(e),
   },
 ];
 
-const MAX_LABEL = 90;
-
-function firstLine(text: string): string {
-  const line = text.split('\n').map(l => l.trim()).find(Boolean) ?? text;
-  return line.length > MAX_LABEL ? `${line.slice(0, MAX_LABEL - 1)}…` : line;
-}
+/**
+ * A failure buildd has no sentence for, named by its cause category. The raw
+ * text is the group's sample error and variants, shown inside the row.
+ */
+const CATEGORY_LABEL: Record<string, string> = {
+  code_failure: "The agent hit an error it couldn't recover from",
+  condition_unmet: "Something the task waits for wasn't ready",
+  reassigned: 'Handed to another runner before it finished',
+  unknown: 'The run failed',
+};
 
 /** Which cause a failed worker belongs to. */
 export function classifyFailure(error: string | null, exitCause: string | null): FailureCause {
@@ -146,12 +209,9 @@ export function classifyFailure(error: string | null, exitCause: string | null):
   for (const f of FAMILIES) {
     if (f.test(text, exitCause)) return { key: f.key, kind: f.kind, label: f.label, ...(f.hint ? { hint: f.hint } : {}) };
   }
-  const signature = normalizeErrorSignature(error);
-  return {
-    key: `signature:${signature}`,
-    kind: 'work',
-    label: error ? firstLine(signature) : 'Failed with no error message',
-  };
+  if (!error && !exitCause) return { key: 'cause:none', kind: 'work', label: 'Failed with no error message' };
+  const category = exitCause && CATEGORY_LABEL[exitCause] ? exitCause : 'unknown';
+  return { key: `cause:${category}`, kind: 'work', label: CATEGORY_LABEL[category] };
 }
 
 interface Acc {
@@ -169,12 +229,14 @@ interface Acc {
 export function buildFailureGroups({
   failures,
   traces,
+  incidents = [],
   maxTasks = 5,
   maxPatterns = 3,
   maxVariants = 3,
 }: {
   failures: readonly FailedWorkerInput[];
   traces: readonly TracePatternInput[];
+  incidents?: readonly IncidentStateInput[];
   maxTasks?: number;
   maxPatterns?: number;
   maxVariants?: number;
@@ -186,10 +248,12 @@ export function buildFailureGroups({
   const groupOfWorker = new Map<string, string>();
   const accs = new Map<string, Acc>();
   let stopped = 0;
+  let landed = 0;
 
   for (const f of byWorker.values()) {
     const cause = classifyFailure(f.error, f.exitCause);
     if (cause.kind === 'stopped') { stopped++; continue; }
+    if (cause.kind === 'landed') { landed++; continue; }
     let acc = accs.get(cause.key);
     if (!acc) {
       acc = {
@@ -228,6 +292,7 @@ export function buildFailureGroups({
   const groups: FailureGroup[] = [...accs.values()]
     .map(acc => ({
       ...acc.cause,
+      ...coveringIncident(acc, incidents),
       count: acc.workers.size,
       workspaces: [...acc.workspaces],
       tasks: [...acc.tasks.entries()]
@@ -250,5 +315,19 @@ export function buildFailureGroups({
 
   const platformFailures = groups.filter(g => g.kind === 'platform').reduce((n, g) => n + g.count, 0);
   const workFailures = groups.filter(g => g.kind === 'work').reduce((n, g) => n + g.count, 0);
-  return { groups, totalFailedWorkers: platformFailures + workFailures, platformFailures, workFailures, stopped };
+  return { groups, totalFailedWorkers: platformFailures + workFailures, platformFailures, workFailures, stopped, landed };
+}
+
+/**
+ * The incident covering a platform group: one naming any of its workers, else
+ * any of its tasks. An open one beats a resolved one, then the most recent.
+ */
+function coveringIncident(acc: Acc, incidents: readonly IncidentStateInput[]): { incident?: { id: string; line: string } } {
+  if (acc.cause.kind !== 'platform' || incidents.length === 0) return {};
+  const covers = (i: IncidentStateInput) =>
+    i.workerIds.some(id => acc.workers.has(id)) || i.taskIds.some(id => acc.tasks.has(id));
+  const best = incidents
+    .filter(covers)
+    .sort((a, b) => Number(a.resolved) - Number(b.resolved) || b.lastSeenAt.localeCompare(a.lastSeenAt))[0];
+  return best ? { incident: { id: best.id, line: best.line } } : {};
 }

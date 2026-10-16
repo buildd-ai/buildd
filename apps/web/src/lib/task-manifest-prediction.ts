@@ -27,6 +27,7 @@
 import type { CreationManifestDeps, CreationManifestInput } from '@buildd/core/manifest-prediction-source';
 import type { OverlapRealShadowDeps } from '@buildd/core/orchestration-overlap-source';
 import { hasConcretePathManifest } from '@buildd/core/path-overlap';
+import type { ApplyPredictedManifestDeps } from './apply-predicted-manifest';
 
 export type CreationManifestShadowInput = CreationManifestInput;
 
@@ -64,6 +65,7 @@ export async function runCreationManifestShadow(
   input: CreationManifestShadowInput,
   deps: CreationManifestDeps = {},
   overlapDeps: OverlapRealShadowDeps = {},
+  applyDeps: ApplyPredictedManifestDeps = {},
 ): Promise<void> {
   try {
     const { predictCreationManifest } = await import('@buildd/core/manifest-prediction-source');
@@ -72,6 +74,12 @@ export async function runCreationManifestShadow(
       await insertDecisionReceipts([receipt], { teamId: input.teamId, accountId: input.accountId ?? null });
     });
     const outcome = await predictCreationManifest(input, { ...deps, onReceipt });
+    // Owner switched file prediction to acting: a confident, complete
+    // prediction becomes the scope of the still-unclaimed task.
+    if ('row' in outcome && outcome.acting) {
+      const { applyPredictedManifest } = await import('./apply-predicted-manifest');
+      await applyPredictedManifest({ taskId: input.taskId, row: outcome.row, threshold: outcome.acting.threshold }, applyDeps);
+    }
     if ('row' in outcome && outcome.row.selected.length > 0) {
       const { runOverlapRealShadow } = await import('@buildd/core/orchestration-overlap-source');
       await runOverlapRealShadow(

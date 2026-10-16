@@ -47,6 +47,7 @@ import { isInferenceAllowed, type InferenceCapability } from './inference-policy
 import { ROUTES, routeAttributionHeaders, type RouteId } from '@builddai/ai-kit/models';
 import { createPublicGatewayFetcher } from './net/fetch-public-gateway';
 import { isRouteVendor, resolveInferenceRoute } from './inference-route';
+import { sqlWhere } from './db/relational-sql';
 
 const DEFAULT_MAX_TOKENS = 1024;
 const RETRY_BACKOFF_MS = 1000;
@@ -139,7 +140,7 @@ export { resolveInferenceKey } from './inference-keys';
 async function teamAllowsCapability(teamId: string, capability: InferenceCapability): Promise<{ allowed: boolean; ceilings: TeamTierCeilingPolicy | null }> {
   try {
     const team = await db.query.teams.findFirst({
-      where: eq(teams.id, teamId),
+      where: sqlWhere(eq(teams.id, teamId)),
       // The ceiling rides on the same read: no extra query per call.
       columns: { inferenceFeatureModes: true, enabledDecisionShadows: true, modelTierCeilings: true },
     });

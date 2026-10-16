@@ -13,8 +13,11 @@ import {
   isAnswerableWaitingFor,
   isAnswerQueued,
   recordedAnswerOf,
+  evaluateInteractiveAnswerPath,
+  INTERACTIVE_SESSION_POLL_STALE_MS,
   type AnswerPathInput,
 } from './answer-resume';
+import { INTERACTIVE_WORKER_IDLE_TTL_MS, INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
 
 const NOW = Date.UTC(2026, 0, 1, 12, 0, 0);
 
@@ -32,7 +35,7 @@ function eligible(overrides: Partial<AnswerPathInput> = {}): AnswerPathInput {
 }
 
 describe('evaluateAnswerPath', () => {
-  // AC-AQR-1
+  // AC-1 (docs/specs/answered-question-resume.md; AC-n below cite it too)
   it('resumes a parked, freshly-synced, ack-capable worker with headroom and a healthy credential', () => {
     const decision = evaluateAnswerPath(eligible());
     expect(decision.path).toBe('resume');
@@ -40,7 +43,7 @@ describe('evaluateAnswerPath', () => {
     expect(decision.reason).toBe(ANSWER_PATH_REASONS.resume_eligible);
   });
 
-  // AC-AQR-2 — G1. An `error` worker may still carry waitingFor (that is the
+  // AC-2 — G1. An `error` worker may still carry waitingFor (that is the
   // /respond contract) but the runner already deleted its worktree.
   it.each([['error'], ['failed'], ['completed'], ['running'], [null]])(
     'falls back when the worker status is %p rather than waiting_input',
@@ -51,7 +54,7 @@ describe('evaluateAnswerPath', () => {
     },
   );
 
-  // AC-AQR-3 — G2
+  // AC-3 — G2
   it('falls back when the owning runner has stopped syncing the worker', () => {
     const decision = evaluateAnswerPath(
       eligible({ workerUpdatedAt: new Date(NOW - RESUME_RUNNER_FRESH_MS - 1) }),
@@ -105,14 +108,14 @@ describe('evaluateAnswerPath', () => {
     expect(decision.path).toBe('resume');
   });
 
-  // AC-AQR-4 — G3
+  // AC-4 — G3
   it('falls back when the runner cannot confirm delivery', () => {
     const decision = evaluateAnswerPath(eligible({ supportsInstructionAck: false }));
     expect(decision.path).toBe('cold_continuation');
     expect(decision.reasonCode).toBe('runner_cannot_confirm_delivery');
   });
 
-  // AC-AQR-5 — G4
+  // AC-5 — G4
   it('falls back deliberately above the turn ceiling instead of resuming into it', () => {
     const decision = evaluateAnswerPath(eligible({ workerTurns: RESUME_MAX_TURNS + 1 }));
     expect(decision.path).toBe('cold_continuation');
@@ -161,20 +164,20 @@ describe('evaluateAnswerPath', () => {
     expect(decision.path).toBe('resume');
   });
 
-  // AC-AQR-6 — G5
+  // AC-6 — G5
   it('falls back when the backend credential preflight reports unhealthy', () => {
     const decision = evaluateAnswerPath(eligible({ credentialPreflight: 'unhealthy' }));
     expect(decision.path).toBe('cold_continuation');
     expect(decision.reasonCode).toBe('credential_unhealthy');
   });
 
-  // AC-AQR-8 — absence is not breakage
+  // AC-8 — absence is not breakage
   it('resumes when no managed credential row exists (preflight unknown)', () => {
     const decision = evaluateAnswerPath(eligible({ credentialPreflight: 'unknown' }));
     expect(decision.path).toBe('resume');
   });
 
-  // AC-AQR-7 — fixed gate order, so the recorded reason is stable
+  // AC-7 — fixed gate order, so the recorded reason is stable
   it('reports the most fundamental failing gate when several fail at once', () => {
     const decision = evaluateAnswerPath(
       eligible({
@@ -447,5 +450,171 @@ describe('isAnswerQueued', () => {
 
   it('is false with nothing queued', () => {
     expect(isAnswerQueued({ pendingInstructions: null, instructionHistory: [{ type: 'instruction', message: 'x', timestamp: 1, deliveryState: 'delivered' }] })).toBe(false);
+  });
+});
+
+// An interactive worker (claim_task from a person's own session, runner =
+// 'mcp') has no runner holding a transcript and must never be handed to one:
+// the answer goes back to the session that asked, or, when that session is
+// gone, to a cold continuation that says so.
+describe('evaluateInteractiveAnswerPath', () => {
+  const live = (overrides: Record<string, unknown> = {}) => ({
+    workerRunner: INTERACTIVE_WORKER_RUNNER,
+    workerStatus: 'waiting_input',
+    workerUpdatedAt: new Date(NOW - 60_000),
+    now: NOW,
+    ...overrides,
+  });
+
+  it('is null for a runner-managed worker, leaving the resume/cold gates in charge', () => {
+    expect(evaluateInteractiveAnswerPath(live({ workerRunner: 'runner-abc' }))).toBeNull();
+    expect(evaluateInteractiveAnswerPath(live({ workerRunner: null }))).toBeNull();
+  });
+
+  it('answers a live interactive session in place', () => {
+    const decision = evaluateInteractiveAnswerPath(live());
+    expect(decision?.path).toBe('interactive');
+    expect(decision?.reasonCode).toBe('interactive_session');
+    expect(decision?.reason).toBe(ANSWER_PATH_REASONS.interactive_session);
+  });
+
+  it('still counts a session last seen just inside the interactive idle window', () => {
+    const decision = evaluateInteractiveAnswerPath(live({ workerUpdatedAt: new Date(NOW - INTERACTIVE_WORKER_IDLE_TTL_MS + 1) }));
+    expect(decision?.path).toBe('interactive');
+  });
+
+  // Regression: updatedAt is frozen at the ask while an interactive worker is
+  // parked (the park sweep measures from it), so a slow human must not read as
+  // a dead session. The park sweep owns expiry; once it fails the worker, the
+  // status gate below sends the answer cold.
+  it('treats a parked (waiting_input) session as live however long ago it asked', () => {
+    const decision = evaluateInteractiveAnswerPath(live({ workerUpdatedAt: new Date(NOW - 3 * 60 * 60 * 1000) }));
+    expect(decision?.path).toBe('interactive');
+    expect(evaluateInteractiveAnswerPath(live({ workerUpdatedAt: null }))?.path).toBe('interactive');
+  });
+
+  it('goes cold, with a recorded reason, once a running session is past the idle window', () => {
+    const decision = evaluateInteractiveAnswerPath(live({ workerStatus: 'running', workerUpdatedAt: new Date(NOW - INTERACTIVE_WORKER_IDLE_TTL_MS - 1) }));
+    expect(decision?.path).toBe('cold_continuation');
+    expect(decision?.reasonCode).toBe('interactive_session_gone');
+    expect(decision?.reason).toBe(ANSWER_PATH_REASONS.interactive_session_gone);
+  });
+
+  it('goes cold when nothing ever recorded a non-parked session checking in', () => {
+    expect(evaluateInteractiveAnswerPath(live({ workerStatus: 'running', workerUpdatedAt: null }))?.reasonCode).toBe('interactive_session_gone');
+  });
+
+  it.each([['completed'], ['failed'], ['error'], ['superseded'], [null]])(
+    'goes cold for an interactive worker whose status is %p',
+    (status) => {
+      const decision = evaluateInteractiveAnswerPath(live({ workerStatus: status }));
+      expect(decision?.path).toBe('cold_continuation');
+      expect(decision?.reasonCode).toBe('interactive_session_gone');
+    },
+  );
+
+  it('evaluateAnswerPath applies the interactive gate before every runner gate', () => {
+    // A runner-shaped worker that would RESUME is still answered in place when
+    // it is interactive: no runner holds this session.
+    const decision = evaluateAnswerPath(eligible({ workerRunner: INTERACTIVE_WORKER_RUNNER, supportsInstructionAck: false, credentialPreflight: 'unhealthy' }));
+    expect(decision.path).toBe('interactive');
+  });
+
+  it('evaluateAnswerPath never resumes a gone interactive worker on a runner', () => {
+    const decision = evaluateAnswerPath(eligible({
+      workerRunner: INTERACTIVE_WORKER_RUNNER,
+      workerStatus: 'failed',
+    }));
+    expect(decision.path).toBe('cold_continuation');
+    expect(decision.reasonCode).toBe('interactive_session_gone');
+  });
+
+  it('describeAnswerPath says the answer went back to the session that asked', () => {
+    const line = describeAnswerPath(evaluateInteractiveAnswerPath(live())!);
+    expect(line).toContain('session');
+    expect(line).not.toContain('continuation');
+  });
+
+  it('describeAnswerPath names why a gone interactive session went cold', () => {
+    const line = describeAnswerPath(evaluateInteractiveAnswerPath(live({ workerStatus: 'failed' }))!);
+    expect(line).toContain('continuation');
+    expect(line).toContain(ANSWER_PATH_REASONS.interactive_session_gone);
+  });
+
+  it('records no acknowledgement deadline: the resume sweep must not degrade it', () => {
+    const record = buildAnswerDeliveryRecord({
+      decision: evaluateInteractiveAnswerPath(live())!,
+      workerId: 'w',
+      question: 'q',
+      now: NOW,
+    });
+    expect(record.path).toBe('interactive');
+    expect(record.ackDeadlineAt).toBeUndefined();
+  });
+});
+
+describe('explainNotWaiting: an interactive session already answered', () => {
+  // The interactive path flips the worker back to running at once, so a second
+  // tap sees a running worker. With its answer still unread that is a
+  // duplicate, not an agent that moved on.
+  it('calls a running interactive worker with an unread answer already answered', () => {
+    const r = explainNotWaiting({ workerStatus: 'running', continuationTaskId: null, answerQueued: true, interactive: true });
+    expect(r.reasonCode).toBe('already_answered');
+    expect(r.nextAction).toEqual({ kind: 'refresh' });
+  });
+
+  it('a running runner-managed worker with a queued instruction still reads as moved on', () => {
+    const r = explainNotWaiting({ workerStatus: 'running', continuationTaskId: null, answerQueued: true });
+    expect(r.reasonCode).toBe('no_longer_waiting');
+  });
+});
+
+// await_answer and receive_messages stamp waitingFor.sessionSeenAt on every
+// poll of a parked interactive worker. A session whose terminal closed
+// mid-wait stops stamping; its answer must go cold instead of being queued
+// for nobody until the park sweep fails the worker hours later.
+describe('evaluateInteractiveAnswerPath: the poll heartbeat', () => {
+  const parked = (sessionSeenAt: unknown) => ({
+    workerRunner: INTERACTIVE_WORKER_RUNNER,
+    workerStatus: 'waiting_input',
+    workerUpdatedAt: new Date(NOW - 60 * 60 * 1000),
+    sessionSeenAt: sessionSeenAt as string | null,
+    now: NOW,
+  });
+
+  it('is more than twice the 45 s long-poll, and well under the idle TTL', () => {
+    expect(INTERACTIVE_SESSION_POLL_STALE_MS).toBeGreaterThan(2 * 45_000);
+    expect(INTERACTIVE_SESSION_POLL_STALE_MS).toBeLessThan(INTERACTIVE_WORKER_IDLE_TTL_MS);
+  });
+
+  it('answers in place while the session polled recently', () => {
+    const d = evaluateInteractiveAnswerPath(parked(new Date(NOW - 30_000).toISOString()));
+    expect(d?.path).toBe('interactive');
+  });
+
+  it('answers in place right at the staleness line', () => {
+    const d = evaluateInteractiveAnswerPath(parked(new Date(NOW - INTERACTIVE_SESSION_POLL_STALE_MS).toISOString()));
+    expect(d?.path).toBe('interactive');
+  });
+
+  it('goes cold, with its own recorded reason, once the session stopped polling', () => {
+    const d = evaluateInteractiveAnswerPath(parked(new Date(NOW - INTERACTIVE_SESSION_POLL_STALE_MS - 1).toISOString()));
+    expect(d?.path).toBe('cold_continuation');
+    expect(d?.reasonCode).toBe('interactive_session_stopped_polling');
+    expect(d?.reason).toBe(ANSWER_PATH_REASONS.interactive_session_stopped_polling);
+  });
+
+  it('no heartbeat at all keeps the parked session live (a session that never polled is not proof of absence)', () => {
+    expect(evaluateInteractiveAnswerPath(parked(null))?.path).toBe('interactive');
+    expect(evaluateInteractiveAnswerPath(parked(undefined))?.path).toBe('interactive');
+    expect(evaluateInteractiveAnswerPath(parked('not a date'))?.path).toBe('interactive');
+  });
+
+  it('evaluateAnswerPath carries the heartbeat through', () => {
+    const d = evaluateAnswerPath(eligible({
+      workerRunner: INTERACTIVE_WORKER_RUNNER,
+      sessionSeenAt: new Date(NOW - INTERACTIVE_SESSION_POLL_STALE_MS - 1).toISOString(),
+    }));
+    expect(d.reasonCode).toBe('interactive_session_stopped_polling');
   });
 });

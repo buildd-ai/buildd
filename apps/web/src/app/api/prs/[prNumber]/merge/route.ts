@@ -22,6 +22,7 @@ import { checkDependsOnResolved } from '@/lib/task-dependencies';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
 import { recordPrFact } from '@buildd/core/pr-facts';
+import { factFunnelScope } from '@/lib/workflow/pr-fact-scope';
 import { escalateConflictExhaustion } from '@/lib/auto-merge';
 import { reconcileSubjectEvent } from '@/lib/supersession';
 import { guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
@@ -33,7 +34,9 @@ import { landPr, resolveLandingMode, type LandingOutcome } from '@/lib/pr-landin
 import { resolveMergeMethod } from '@/lib/integration-refresh';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { latestRunPerName } from '@/lib/auto-merge-bound';
-import { kernelLandingView, landThroughKernel, type KernelLanding } from '@/lib/workflow/seam';
+import { kernelLandingView, type KernelLanding } from '@/lib/workflow/seam';
+import { doorErrorResponse, isDoorError, idempotencyKeyOf, landThroughKernel } from '@/lib/workflow/kernel-client';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * The dashboard's answer when the landing function did not merge. A refresh in
@@ -170,7 +173,7 @@ export async function POST(
       workspaceId = rawWorkspaceId;
     } else {
       const allWs = await db.query.workspaces.findMany({
-        where: inArray(workspaces.id, wsIds),
+        where: sqlWhere(inArray(workspaces.id, wsIds)),
         columns: { id: true, name: true, repo: true },
       });
       const lower = rawWorkspaceId.toLowerCase();
@@ -195,12 +198,12 @@ export async function POST(
   // PR numbers are not unique across repos — findFirst would silently pick the wrong
   // workspace's worker if two repos both happen to have an open PR with this number.
   const matchingWorkers = await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       inArray(workers.workspaceId, searchIds),
       eq(workers.prNumber, prNumber),
       isNotNull(workers.prUrl),
       isNull(workers.mergedAt),
-    ),
+    )),
     columns: {
       id: true,
       taskId: true,
@@ -249,7 +252,7 @@ export async function POST(
   // workspaces.githubInstallationId columns can be stale or null, which causes
   // GitHub to return 404 "Not Found" on the merge PUT.
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, worker.workspaceId),
+    where: sqlWhere(eq(workspaces.id, worker.workspaceId)),
     columns: { id: true, gitConfig: true, releaseConfig: true },
     with: {
       githubRepo: {
@@ -304,10 +307,10 @@ export async function POST(
     // wins). A kernel-owned PR's merge, its stamp and everything it owes are the
     // kernel's post-merge effects (PrMerged from a live read), never this door's.
     if (!kernelOwned) {
-      await recordPrFact({ workerId: worker.id }, { kind: 'merged', mergedAt: new Date() });
+      await recordPrFact({ workerId: worker.id }, { kind: 'merged', mergedAt: new Date() }, { scope: factFunnelScope });
       // landPr finalizes the mission PR itself when it merged.
       if (!opts.missionFinalized) {
-        await finalizeMissionPrMerge(worker.task ?? null, installationId, repoFullName);
+        await finalizeMissionPrMerge(worker.task ?? null, installationId, repoFullName, prNumber);
       }
     }
 
@@ -417,7 +420,7 @@ export async function POST(
   if (landingMode !== 'off') {
     const missionForPolicy = worker.task?.missionId
       ? await db.query.missions.findFirst({
-          where: eq(missions.id, worker.task.missionId),
+          where: sqlWhere(eq(missions.id, worker.task.missionId)),
           columns: RESOLVE_POLICY_MISSION_COLUMNS,
         })
       : null;
@@ -443,6 +446,8 @@ export async function POST(
             }
           : {}),
       },
+      // A dashboard session: the person, checked by membership on both hosts.
+      principal: { kind: 'user', id: user.id },
       mode: landingMode,
       policy,
       owner: { taskId: worker.taskId ?? null, workerId: worker.id },
@@ -630,6 +635,9 @@ export async function POST(
         kinds: kernelKinds,
       }
     : null;
+  // A kernel-owned PR's merge is a landing command, applied where the kernel is hosted
+  // (workflow-kernel-library.md §3): the control plane in own mode. Unreachable = 503, nothing merged.
+  const idempotencyKey = idempotencyKeyOf(req);
   const slotted = await mergeInSurfaceSlot(surfaceOrder, async () => {
     const kernel = kernelOwned
       ? await landThroughKernel({
@@ -637,10 +645,11 @@ export async function POST(
           door: 'dashboard', actor: `human:${user.id}`, mergeMethod,
           ...(kernelOverride ? { override: kernelOverride } : {}),
           ...(expectedVersion !== undefined ? { expectedVersion } : {}),
-        })
+        }, { principal: { kind: 'user', id: user.id }, idempotencyKey })
       : null;
     return kernel ? { kernel } : { legacy: await mergePullRequest(installationId, repoFullName, prNumber, mergeMethod, liveHeadSha!) };
-  });
+  }).catch((err: unknown) => (isDoorError(err) ? err : Promise.reject(err)));
+  if (isDoorError(slotted)) return doorErrorResponse(slotted) as NextResponse;
   if ('refused' in slotted) {
     return NextResponse.json({ error: `Merge deferred: ${slotted.refused}`, surfaceOrderBlocked: true }, { status: 409 });
   }

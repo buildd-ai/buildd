@@ -46,7 +46,27 @@ export interface MissionIntegrationPrView {
   prUrl: string | null;
   /** The bookkeeping task that owns the PR, for linking. */
   taskId: string | null;
+  /**
+   * With delivery records (workflow-kernel-library.md §6): which delivery this
+   * view is (the writable one, else the newest), and the ones that already
+   * reached trunk. Absent for a mission that predates them.
+   */
+  delivery?: number;
+  shippedDeliveries?: Array<{ delivery: number; prNumber: number | null; prUrl: string | null }>;
 }
+
+/** The delivery record as a surface reads it (`EpochSnapshot`'s shown fields). */
+export interface MissionDeliveryLike {
+  epoch: number;
+  branch: string;
+  state: 'open' | 'merged';
+  prNumber: number | null;
+  repoFullName: string | null;
+  ownerTaskId?: string | null;
+}
+
+const prUrlOf = (d: MissionDeliveryLike): string | null =>
+  d.prNumber != null && d.repoFullName ? `https://github.com/${d.repoFullName}/pull/${d.prNumber}` : null;
 
 /** The shape this module needs of a mission task the caller already loaded. */
 export interface MissionPrTaskLike {
@@ -71,9 +91,34 @@ export interface MissionPrTaskLike {
 export function deriveMissionIntegrationPr(args: {
   mission: MissionIntegrationFields | null | undefined;
   tasks: MissionPrTaskLike[] | null | undefined;
+  /** The mission's delivery records, ordered. When present they decide; the owner rows are not read. */
+  deliveries?: MissionDeliveryLike[] | null;
 }): MissionIntegrationPrView | null {
   const branch = missionIntegrationBase(args.mission);
   if (!branch) return null;
+
+  // A merged mission PR is one delivery, not the mission: the view is the
+  // writable delivery, with the shipped ones named beside it.
+  const deliveries = [...(args.deliveries ?? [])].sort((a, b) => a.epoch - b.epoch);
+  if (deliveries.length > 0) {
+    const open = deliveries.find((d) => d.state === 'open') ?? null;
+    const current = open ?? deliveries[deliveries.length - 1]!;
+    const shippedDeliveries = deliveries
+      .filter((d) => d.state === 'merged' && d !== current)
+      .map((d) => ({ delivery: d.epoch, prNumber: d.prNumber, prUrl: prUrlOf(d) }));
+    const ownerWorker = (args.tasks ?? []).filter(isMissionPrTask)
+      .flatMap((t) => (t.workers ?? []).map((w) => ({ t, w })))
+      .find(({ w }) => current.prNumber != null && w.prNumber === current.prNumber);
+    const state: MissionIntegrationPrState = current.state === 'merged'
+      ? 'merged'
+      : current.prNumber == null
+        ? 'not_opened'
+        : ownerWorker?.w.prLifecycleStatus === 'closed' ? 'closed' : 'open';
+    return {
+      branch: current.branch, state, prNumber: current.prNumber, prUrl: prUrlOf(current) ?? ownerWorker?.w.prUrl ?? null,
+      taskId: current.ownerTaskId ?? ownerWorker?.t.id ?? null, delivery: current.epoch, shippedDeliveries,
+    };
+  }
 
   // Exactly one such PR exists per mission by construction
   // (`openMissionIntegrationPr` short-circuits on an existing owner), so the
@@ -133,12 +178,14 @@ function missionIntegrationPrSuffix(
   switch (pr.state) {
     case 'open':
       // The number is what a reader can act on, so it leads.
+      if (pr.delivery && pr.delivery > 1) return pr.prNumber != null ? `delivery ${pr.delivery} PR #${pr.prNumber} awaiting merge` : `delivery ${pr.delivery} awaiting merge`;
       return pr.prNumber != null ? `mission PR #${pr.prNumber} awaiting merge` : 'mission PR awaiting merge';
     case 'closed':
       return pr.prNumber != null ? `mission PR #${pr.prNumber} closed unmerged` : 'mission PR closed unmerged';
     case 'not_opened':
       // Only worth saying once the work is in: before that, "not open yet" is
       // the expected state and would be noise on every in-flight mission.
+      if (pr.delivery && pr.delivery > 1) return opts.workLanded ? `delivery ${pr.delivery} PR not open yet` : `delivery ${pr.delivery - 1} shipped`;
       return opts.workLanded ? 'mission PR not open yet' : null;
     case 'merged':
       // Nothing to add: the mission's diff is on trunk and the task counters
@@ -172,3 +219,34 @@ export const MISSION_PR_STATE_LABEL: Record<MissionIntegrationPrState, string> =
   closed: 'CLOSED UNMERGED',
   not_opened: 'NOT OPENED',
 };
+
+/**
+ * What the mission-PR line says, in words (no chips): the current delivery
+ * leads, a shipped delivery is a fact beside it, never the mission's verdict.
+ * Null heading = the pre-delivery wording ("Mission PR").
+ */
+export function describeMissionDelivery(pr: MissionIntegrationPrView): { heading: string; line: string; earlier: string | null } {
+  const earlier = (pr.shippedDeliveries ?? []).length > 0
+    ? (pr.shippedDeliveries ?? []).map((d) => `Delivery ${d.delivery} merged${d.prNumber != null ? ` (#${d.prNumber})` : ''}`).join(', ') + '.'
+    : null;
+  if (!pr.delivery) {
+    return {
+      heading: 'Mission PR',
+      line: pr.state === 'not_opened'
+        ? 'Task PRs merge into the integration branch. No PR to the target branch is open, so none of this work has shipped.'
+        : pr.state === 'merged'
+          ? "This mission's work reached the target branch through one PR from its integration branch."
+          : "All of this mission's work ships in this one PR.",
+      earlier,
+    };
+  }
+  const n = pr.delivery;
+  const line = pr.state === 'merged'
+    ? `Delivery ${n} reached the target branch. Work added to the mission from here goes out in a new delivery.`
+    : pr.state === 'not_opened'
+      ? `The work still to come goes into delivery ${n} on this branch. Nothing on it has shipped yet.`
+      : pr.state === 'closed'
+        ? `Delivery ${n}'s PR was closed without merging, so its work is only on this branch.`
+        : `Delivery ${n}'s work ships in this PR.`;
+  return { heading: `Delivery ${n}`, line, earlier };
+}

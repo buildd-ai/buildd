@@ -28,6 +28,7 @@ import {
   type ShippedHeroShot,
   type ShippedRecord,
 } from '@/lib/mission-shipped';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * PR-file reads per mission, one page of files each, each cut off after a few
@@ -77,7 +78,7 @@ async function fetchChangedPaths(
   if (!workspace.githubRepoId || deliverableIds.length === 0) return null;
 
   const rows = await db.query.workers.findMany({
-    where: inArray(workers.taskId, deliverableIds),
+    where: sqlWhere(inArray(workers.taskId, deliverableIds)),
     columns: { prNumber: true, mergedAt: true },
   });
   const prNumbers = [...new Set(
@@ -86,7 +87,7 @@ async function fetchChangedPaths(
   if (prNumbers.length === 0) return null;
 
   const repo = await db.query.githubRepos.findFirst({
-    where: eq(githubRepos.id, workspace.githubRepoId),
+    where: sqlWhere(eq(githubRepos.id, workspace.githubRepoId)),
     columns: { fullName: true },
     with: { installation: { columns: { installationId: true } } },
   });
@@ -144,7 +145,7 @@ async function computeChangeType(
  */
 async function readAuthorShipped(missionId: string, authorTaskId: string): Promise<unknown> {
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, authorTaskId),
+    where: sqlWhere(eq(tasks.id, authorTaskId)),
     columns: { missionId: true, result: true },
   });
   if (!task || task.missionId !== missionId) return null;
@@ -166,7 +167,7 @@ export async function storeMissionShippedReport(
   opts: { authorTaskId: string | null; origin: 'manual' | 'auto'; completedAt: Date },
 ): Promise<ShippedRecord | null> {
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, missionId),
+    where: sqlWhere(eq(missions.id, missionId)),
     columns: { id: true, title: true, workspaceId: true },
   });
   if (!mission) return null;
@@ -176,14 +177,14 @@ export async function storeMissionShippedReport(
   if (!workspaceId) return null;
 
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     columns: { dataClass: true, githubRepoId: true },
   });
   if (!workspace) return null;
 
   const manual = opts.origin === 'manual';
   const taskRows = (await db.query.tasks.findMany({
-    where: eq(tasks.missionId, missionId),
+    where: sqlWhere(eq(tasks.missionId, missionId)),
     columns: {
       id: true, title: true, status: true, mode: true, taskClass: true,
       kind: true, category: true, creationSource: true, pathManifest: true,

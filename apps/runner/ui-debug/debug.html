@@ -977,18 +977,54 @@
     }
 
     // ── SSE Connection ──
+    // <connection-view>
+    // What the header says about the link to this runner. A short outage is a
+    // reconnect; a long one means the runner is gone, and then the page says so.
+    const STOPPED_AFTER_MS = 20000;
+    function connectionView(sinceMs) {
+      if (sinceMs === null) return { label: 'connected', stopped: false, detail: '' };
+      if (sinceMs < STOPPED_AFTER_MS) return { label: 'reconnecting...', stopped: false, detail: '' };
+      return {
+        label: 'runner stopped',
+        stopped: true,
+        detail: 'This runner has stopped. A background service may be the one running now: run "buildd top" in a terminal to see it. To run this one again, start it with "buildd --debug".',
+      };
+    }
+    // </connection-view>
+    let lostSince = null;
+    let lostTimer = null;
+    function renderConnection() {
+      const v = connectionView(lostSince === null ? null : Date.now() - lostSince);
+      $connDot.classList.toggle('connected', lostSince === null);
+      $connLabel.textContent = v.label;
+      let banner = document.getElementById('stoppedBanner');
+      if (v.stopped) {
+        if (!banner) {
+          banner = document.createElement('div');
+          banner.id = 'stoppedBanner';
+          banner.style.cssText = 'padding:10px 16px;background:var(--bg-card,#222);border-bottom:1px solid var(--error);color:var(--text);font-size:13px;';
+          document.body.insertBefore(banner, document.body.firstChild);
+        }
+        banner.textContent = v.detail;
+      } else if (banner) {
+        banner.remove();
+      }
+      if (lostSince === null && lostTimer) { clearInterval(lostTimer); lostTimer = null; }
+    }
+
     function connect() {
       if (eventSource) eventSource.close();
       eventSource = new EventSource('/api/events');
 
       eventSource.onopen = () => {
-        $connDot.classList.add('connected');
-        $connLabel.textContent = 'connected';
+        lostSince = null;
+        renderConnection();
       };
 
       eventSource.onerror = () => {
-        $connDot.classList.remove('connected');
-        $connLabel.textContent = 'reconnecting...';
+        if (lostSince === null) lostSince = Date.now();
+        renderConnection();
+        if (!lostTimer) lostTimer = setInterval(renderConnection, 5000);
       };
 
       eventSource.onmessage = (e) => {
@@ -1177,7 +1213,7 @@
           <div class="claim-timeline">
             ${entries.map(e => {
               const color = e.event === 'claim_success' ? 'var(--success)' : (e.event === 'claim_empty' || e.event === 'claim_idle') ? 'var(--text-muted)' : 'var(--error)';
-              const label = e.event === 'claim_success' ? `claimed ${e.workersClaimed}/${e.slotsRequested}${e.taskId ? ' (' + e.taskId.slice(0, 8) + ')' : ''}` : e.event === 'claim_idle' ? `idle: ${e.idlePolls} poll${e.idlePolls === 1 ? '' : 's'} since ${new Date(e.idleSince).toLocaleTimeString()}` : e.diagnosticReason || e.event;
+              const label = e.words || 'nothing claimed';
               return `<div class="claim-entry"><div class="c-dot" style="background:${color}"></div><div class="c-time">${formatTime(e.ts)}</div><span>${esc(label)}</span></div>`;
             }).join('')}
           </div>`}

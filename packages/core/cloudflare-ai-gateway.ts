@@ -33,6 +33,7 @@
  */
 
 import { CLOUDFLARE_AI_GATEWAY_ROOT, cloudflareGatewayURL, cloudflareWorkersAiURL } from '@builddai/ai-kit/models/routes';
+import { sqlOrderBy, sqlWhere } from './db/relational-sql';
 
 export const CLOUDFLARE_TOKEN_PURPOSE = 'cloudflare_token' as const;
 
@@ -111,13 +112,13 @@ export async function resolveCloudflareAiGateway(
     const { and, desc, eq, isNull } = await import('drizzle-orm');
     const { decrypt } = await import('./secrets');
     const rows = await db.query.secrets.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(secrets.teamId, opts.teamId),
         eq(secrets.purpose, CLOUDFLARE_TOKEN_PURPOSE),
         isNull(secrets.workspaceId),
         isNull(secrets.userId),
-      ),
-      orderBy: desc(secrets.updatedAt),
+      )),
+      orderBy: sqlOrderBy(desc(secrets.updatedAt)),
       columns: { encryptedValue: true, healthStatus: true },
       limit: 5,
     });

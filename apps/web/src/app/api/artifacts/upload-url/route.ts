@@ -5,10 +5,11 @@ import { eq } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorker } from '@/lib/task-token-auth';
 import { isStorageConfigured, generateSizedUploadUrl } from '@/lib/storage';
-import { buildArtifactKey, buildAuditScreenshotKey } from '@/lib/storage-keys';
+import { buildArtifactKey, buildAuditScreenshotKey, uploadStagingKey } from '@/lib/storage-keys';
 import { ARTIFACT_TYPES, ArtifactType, isArtifactType, VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 import { appBaseUrl } from '@/lib/app-url';
 import { triggerEvent, channels } from '@/lib/pusher';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Ceiling for a single artifact upload, enforced in the signature.
@@ -82,7 +83,7 @@ export async function POST(req: NextRequest) {
   }
 
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.id, workerId),
+    where: sqlWhere(eq(workers.id, workerId)),
   });
 
   if (!worker) {
@@ -96,7 +97,7 @@ export async function POST(req: NextRequest) {
   // Sensitive workspaces: block R2 uploads entirely (content must not leave the runner)
   if (worker.workspaceId) {
     const wsRow = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, worker.workspaceId),
+      where: sqlWhere(eq(workspaces.id, worker.workspaceId)),
       columns: { dataClass: true },
     });
     if (wsRow?.dataClass === 'sensitive') {
@@ -128,7 +129,7 @@ export async function POST(req: NextRequest) {
   }
   const linkedTask = worker.taskId
     ? await db.query.tasks.findFirst({
-        where: eq(tasks.id, worker.taskId),
+        where: sqlWhere(eq(tasks.id, worker.taskId)),
         columns: { missionId: true, roleSlug: true },
       })
     : null;
@@ -199,7 +200,9 @@ export async function POST(req: NextRequest) {
     })
     .returning();
 
-  const uploadUrl = await generateSizedUploadUrl(storageKey, mimeType, sizeBytes);
+  // Signed for the staging key: finalize copies the verified bytes to storageKey,
+  // which no signed URL can write (lib/artifact-upload.ts).
+  const uploadUrl = await generateSizedUploadUrl(uploadStagingKey(storageKey), mimeType, sizeBytes);
 
   // An audit shot joined the mission (docs/design/visual-qa-human-review.md,
   // "Realtime"): the mission page refreshes on worker:artifact, so thumbnails

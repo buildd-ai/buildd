@@ -12,6 +12,7 @@ import type { FleetSnapshot } from '@buildd/shared';
 import type { LaneMission } from '@/components/fleet/runner-lanes';
 import { projectMissionDelivery, type MissionTaskRow } from '@/lib/delivery-projection';
 import { MISSION_TASK_BASE_COLUMNS, MISSION_WORKER_BASE_COLUMNS } from '@/lib/missions-query';
+import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export function laneMissionIds(fleet: FleetSnapshot): string[] {
   const ids = new Set<string>();
@@ -47,12 +48,12 @@ export async function loadLaneMissions(fleet: FleetSnapshot, teamId: string | nu
   const ids = laneMissionIds(fleet);
   if (ids.length === 0) return {};
   const rows = await db.query.missions.findMany({
-    where: teamId ? and(inArray(missions.id, ids), eq(missions.teamId, teamId)) : inArray(missions.id, ids),
+    where: sqlWhere(teamId ? and(inArray(missions.id, ids), eq(missions.teamId, teamId)) : inArray(missions.id, ids)),
     columns: { id: true, title: true, status: true, isHeld: true, integrationBranchEnabled: true },
     with: {
       tasks: {
         columns: MISSION_TASK_BASE_COLUMNS,
-        with: { workers: { columns: MISSION_WORKER_BASE_COLUMNS, limit: 5, orderBy: (w, { desc }) => [desc(w.startedAt)] } },
+        with: { workers: { columns: MISSION_WORKER_BASE_COLUMNS, limit: 5, orderBy: sqlOrderByFn((w, { desc }) => [desc(w.startedAt)]) } },
       },
     },
   });

@@ -209,6 +209,26 @@ function evalRoute(fields: Record<string, string>, repoRoot: string): { pass: bo
 }
 
 /**
+ * In a drizzle v1 tree a migration is `<YYYYMMDDHHMMSS>_<slug>/migration.sql` and
+ * has no number. History from before the cutover keeps its old number in the
+ * committed legacy map (`db/legacy-migrations.json`, beside the migrations
+ * dir's `drizzle/`), whose entry names the folder. Returns the path relative to
+ * `dir`, or undefined when there is no map or no such entry.
+ */
+function v1MigrationForNumber(dir: string, num: string): string | undefined {
+  const mapPath = join(dir, '..', 'db', 'legacy-migrations.json');
+  if (!existsSync(mapPath)) return undefined;
+  try {
+    const map = JSON.parse(readFileSync(mapPath, 'utf8')) as Array<{ name: string; tag: string }>;
+    const entry = map.find((e) => e.tag.startsWith(`${num}_`));
+    const file = entry && join(entry.name, 'migration.sql');
+    return file && existsSync(join(dir, file)) ? file : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * §1 `migration`: pre-commit tier only — glob the migration directory for a
  * file numbered `number` and grep it for `contains`. The CI-tier DB check
  * (verify the migration is recorded in `drizzle.__drizzle_migrations`) needs
@@ -224,7 +244,7 @@ function evalMigration(fields: Record<string, string>, repoRoot: string, migrati
   } catch {
     return { pass: false, detail: `migrations directory not found: ${migrationsDir}` };
   }
-  const match = files.find((f) => f.startsWith(`${num}_`) && f.endsWith('.sql'));
+  const match = files.find((f) => f.startsWith(`${num}_`) && f.endsWith('.sql')) ?? v1MigrationForNumber(dir, num);
   if (!match) return { pass: false, detail: `no migration file numbered ${num} in ${migrationsDir}` };
   const content = readFileSync(join(dir, match), 'utf8');
   const hit = content.includes(fields.contains);

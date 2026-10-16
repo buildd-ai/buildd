@@ -99,7 +99,25 @@ export interface CloudflareVerifyResult {
   expiresOn?: string | null;
   /** True when Cloudflare answered and said no (as opposed to a network error). */
   rejected?: boolean;
+  /** What the token may do, checked only for an active token. See `checkCloudflareCapabilities`. */
+  capabilities?: CloudflareCapabilities;
 }
+
+/** One permission check: Cloudflare said yes, said no, or could not be asked. */
+export interface CapabilityCheck {
+  state: 'allowed' | 'not_allowed' | 'not_found' | 'unknown';
+  /** Cloudflare's own words, or the network error. */
+  detail?: string;
+}
+
+export interface CloudflareCapabilities {
+  /** Workers AI, which Clef decisions run on. */
+  workersAi: CapabilityCheck;
+  /** The AI Gateway named on the credential; null when none is set. */
+  aiGateway: CapabilityCheck | null;
+}
+
+export type CloudflareCapability = keyof CloudflareCapabilities;
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -127,6 +145,78 @@ async function callVerify(url: string, token: string, fetchImpl: FetchLike) {
 function describeFailure(res: Response, body: CfVerifyBody): string {
   const msg = body.errors?.map((e) => e.message).filter(Boolean).join('; ');
   return msg ? `HTTP ${res.status}: ${msg}` : `HTTP ${res.status}`;
+}
+
+/** Like `describeFailure`, with Cloudflare's error codes (10000 is "this token may not"). */
+function describeWithCodes(res: Response, body: CfVerifyBody): string {
+  const msg = body.errors
+    ?.filter((e) => e.message)
+    .map((e) => (e.code !== undefined ? `${e.message} (code ${e.code})` : e.message))
+    .join('; ');
+  return msg ? `HTTP ${res.status}: ${msg}` : `HTTP ${res.status}`;
+}
+
+const CAPABILITY_LABEL: Record<CloudflareCapability, { name: string; permission: string }> = {
+  workersAi: { name: 'Workers AI', permission: 'Workers AI Read' },
+  aiGateway: { name: 'AI Gateway', permission: 'AI Gateway Read' },
+};
+
+/** One read that only succeeds with the permission. 401/403 = not allowed, 404 = not found, else unknown. */
+async function checkOne(url: string, token: string, fetchImpl: FetchLike): Promise<CapabilityCheck> {
+  try {
+    const { res, body } = await callVerify(url, token, fetchImpl);
+    if (res.ok && body.success !== false) return { state: 'allowed' };
+    const detail = describeWithCodes(res, body);
+    if (res.status === 401 || res.status === 403) return { state: 'not_allowed', detail };
+    if (res.status === 404) return { state: 'not_found', detail };
+    return { state: 'unknown', detail };
+  } catch (err) {
+    return { state: 'unknown', detail: err instanceof Error ? err.message : 'Network error' };
+  }
+}
+
+/**
+ * What an active token may do beyond being active. A token can verify as
+ * active and still be refused by Workers AI (401, code 10000), which is how a
+ * team's Clef decisions can fail on every call behind a "Verified" chip.
+ *
+ * Both checks are free reads that need the same permission the real call
+ * does: listing one Workers AI model (Workers AI Read), and reading the named
+ * gateway (AI Gateway Read). Saving a decision model then runs one real
+ * decision through the exact route (packages/core/decision-probe.ts).
+ */
+export async function checkCloudflareCapabilities(
+  cred: CloudflareCredential,
+  fetchImpl: FetchLike = fetch,
+): Promise<CloudflareCapabilities> {
+  const base = `${CLOUDFLARE_API_BASE}/accounts/${cred.accountId}`;
+  const [workersAi, aiGateway] = await Promise.all([
+    checkOne(`${base}/ai/models/search?per_page=1`, cred.apiToken, fetchImpl),
+    cred.aiGatewayId
+      ? checkOne(`${base}/ai-gateway/gateways/${encodeURIComponent(cred.aiGatewayId)}`, cred.apiToken, fetchImpl)
+      : Promise.resolve(null),
+  ]);
+  return { workersAi, aiGateway };
+}
+
+/** The card's words for one check: "Workers AI: not allowed (add Workers AI Read to this token)". */
+export function describeCloudflareCapability(which: CloudflareCapability, check: CapabilityCheck): string {
+  const { name, permission } = CAPABILITY_LABEL[which];
+  switch (check.state) {
+    case 'allowed': return `${name}: allowed`;
+    case 'not_allowed': return `${name}: not allowed (add ${permission} to this token)`;
+    case 'not_found': return `${name}: not found (check the AI Gateway ID)`;
+    default: return `${name}: could not check${check.detail ? ` (${check.detail})` : ''}`;
+  }
+}
+
+/** The capability lines worth keeping on the row: only what is refused or missing. Null when all is well. */
+export function capabilityProblems(caps: CloudflareCapabilities): string | null {
+  const lines = (Object.keys(CAPABILITY_LABEL) as CloudflareCapability[])
+    .map((k) => [k, caps[k]] as const)
+    .filter((e): e is readonly [CloudflareCapability, CapabilityCheck] => !!e[1] && (e[1].state === 'not_allowed' || e[1].state === 'not_found'))
+    .map(([k, c]) => describeCloudflareCapability(k, c));
+  return lines.length ? lines.join('. ') : null;
 }
 
 /**

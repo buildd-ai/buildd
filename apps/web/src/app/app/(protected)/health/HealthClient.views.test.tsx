@@ -209,7 +209,7 @@ describe('HealthClient — pages', () => {
     expect(html).not.toContain('aria-label="Window"');
   });
 
-  it('Runners leads with what is running in words; the timeline and the slot history are behind disclosures', () => {
+  it('Runners leads with what is running in words, then the slot chart open; only the timeline is folded', () => {
     const fleet = {
       runners: [{ id: 'r1', name: 'atlas', slots: [{ lane: { bars: [{ id: 'b1', start: NOW - HOUR, end: NOW - 30 * 60_000, label: 'x', color: null, state: 'done' }] } }] }],
       live: 0, capacity: 1, window: { from: NOW - 2 * HOUR, to: NOW },
@@ -217,13 +217,17 @@ describe('HealthClient — pages', () => {
     const html = render({ ...everything, page: 'runners', runnerLanes: { fleet, idle: [], missions: {} } });
     const at = (id: string) => html.indexOf(`data-testid="${id}"`);
     expect(at('health-section-running-now')).toBeGreaterThan(-1);
-    expect(at('health-section-running-now')).toBeLessThan(at('health-section-lanes'));
-    expect(at('health-section-lanes')).toBeLessThan(at('health-section-slot-history'));
-    // The timeline is folded: its chart mounts only when opened.
+    // The slot chart (runner slots and interactive sessions) is on the page at
+    // first glance, not behind a disclosure.
+    expect(at('health-section-running-now')).toBeLessThan(at('health-section-slot-history'));
+    expect(has(html, 'health-section-occupancy')).toBe(true);
+    expect(html).not.toContain('Slot history over 24 hours');
+    // The per-slot timeline is the long diagnostic: still folded, its chart
+    // mounts only when opened.
+    expect(at('health-section-slot-history')).toBeLessThan(at('health-section-lanes'));
+    expect(html).toContain('Timeline: each slot over the last hours');
     expect(has(html, 'runner-lanes-chart')).toBe(false);
-    expect(at('health-section-slot-history')).toBeLessThan(at('health-section-runners'));
-    // Collapsed by default: the history chart mounts only when opened.
-    expect(has(html, 'health-section-occupancy')).toBe(false);
+    expect(at('health-section-lanes')).toBeLessThan(at('health-section-runners'));
   });
 
   it('a failing schedule on Overview links to where it is configured', () => {
@@ -237,17 +241,10 @@ describe('HealthClient — pages', () => {
     expect(html).not.toContain('/app/schedules');
   });
 
-  it("Overview lists an access problem under Problems, linking a member to the workspace's settings", () => {
+  it('Overview lists an access problem under Problems, linking to Failures', () => {
     const html = render({ ...everything, page: 'overview' });
     expect(html).toContain('data-testid="problem-access"');
     expect(html).toContain('ws: runs can&#x27;t get access');
-    expect(html).toContain('href="/app/settings/workspace/ws-1"');
-    // Failures moved to the admin app: a member never gets a link to it.
-    expect(html).not.toContain('/app/health/failures');
-  });
-
-  it('links the platform owner from Overview to Failures', () => {
-    const html = render({ ...everything, page: 'overview', operator: true });
     expect(html).toContain('href="/app/health/failures"');
   });
 
@@ -279,11 +276,15 @@ describe('HealthClient — pages', () => {
     }
   });
 
-  it('Overview names the merged failure groups in one row and links to Activity history', () => {
-    const words = ['alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot', 'golf', 'hotel'];
-    const failures = words.map((w, i) => ({
-      workerId: `w${i}`, taskId: `t${i}`, taskTitle: `Task ${w}`, workspaceName: 'ws',
-      error: `${w} broke`, exitCause: 'code_failure', completedAt: ago(HOUR),
+  it('Overview names the merged failure groups in one row and links to Failures', () => {
+    // Eight distinct causes buildd names.
+    const causes: Array<[string | null, string]> = [
+      ['boom', 'code_failure'], [null, 'budget_limited'], [null, 'never_started'], [null, 'sandbox_mount_gap'],
+      [null, 'infra_failure'], [null, 'server_refused'], [null, 'output_unmet'], [null, 'needs_input'],
+    ];
+    const failures = causes.map(([error, exitCause], i) => ({
+      workerId: `w${i}`, taskId: `t${i}`, taskTitle: `Task ${i}`, workspaceName: 'ws',
+      error, exitCause, completedAt: ago(HOUR),
     }));
     const html = render({
       page: 'overview',
@@ -295,9 +296,7 @@ describe('HealthClient — pages', () => {
     expect(html).not.toContain('data-testid="top-failure-groups"');
     expect(html).toContain('data-testid="problem-failures"');
     expect(html).toContain('Failures: 8 causes this week');
-    // A member reads failed work in Activity's History; Failures is the owner's.
-    expect(html).toContain('href="/app/tasks?view=history"');
-    expect(html).not.toContain('/app/health/failures');
+    expect(html).toContain('href="/app/health/failures"');
     // The old 24h signature rows and their overflow line are gone from Overview.
     expect(html).not.toContain('data-testid="problem-failure-group"');
     expect(html).not.toContain('data-testid="problems-denominator"');

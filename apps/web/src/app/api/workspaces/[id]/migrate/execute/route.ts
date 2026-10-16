@@ -8,6 +8,7 @@ import {
   collectMigrationSnapshot, classifyMigration, verifyDryRunToken,
   executeMigrationPhases, MigrationPhaseError,
 } from '@/lib/workspace-migration';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * POST /api/workspaces/[id]/migrate/execute  (spec BT-3…BT-10)
@@ -31,7 +32,7 @@ export async function POST(
   if (auth.type === 'dev') return NextResponse.json({ ok: false });
 
   const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, id),
+    where: sqlWhere(eq(workspaces.id, id)),
     columns: { id: true, teamId: true },
   });
   if (!ws || !auth.teamIds.includes(ws.teamId)) {

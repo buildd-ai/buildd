@@ -173,7 +173,17 @@ export function appendContextBlock(cw: ClaimTasksResponse['workers'][number], bl
  * while still landing on the rail in the fixed contract order — see that
  * file for why the order can't just be "whoever resolves first".
  */
-export type ContextBlockSink = (cw: ClaimTasksResponse['workers'][number], block: string) => void;
+/**
+ * A module's claim-time prompt block (filled in apps/web/src/modules.ts).
+ * Best-effort: it appends to the claimed workers' context and never refuses
+ * or fails the claim.
+ */
+export type ClaimContextInjection = (
+  claimedWorkers: ClaimTasksResponse['workers'],
+  claimedTasks: ReadonlyArray<{ id: string; roleSlug?: string | null; dependsOn?: unknown; context?: unknown }>,
+) => Promise<void>;
+
+export type ContextBlockSink =(cw: ClaimTasksResponse['workers'][number], block: string) => void;
 
 /**
  * Fetch the task's declared external context providers (5s timeout each) and

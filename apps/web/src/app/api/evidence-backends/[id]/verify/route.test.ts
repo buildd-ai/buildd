@@ -15,7 +15,7 @@ mock.module('@/lib/evidence-backend-access', () => ({
 }));
 mock.module('@/lib/experiment-access', () => ({ resolveExperimentViewer: async () => viewer }));
 mock.module('drizzle-orm', () => ({ eq: (c: unknown, v: unknown) => ({ c, v }) }));
-mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id', permissionOverrides: 'teams.permission_overrides' }, evidenceBackends: new Proxy({}, { get: (_t, p) => String(p) }) }));
+mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id' }, evidenceBackends: new Proxy({}, { get: (_t, p) => String(p) }) }));
 mock.module('@buildd/core/db', () => ({ db: { query: { teams: { findFirst: async () => null }, evidenceBackends: { findFirst: async () => row } } } }));
 mock.module('@/lib/evidence-backend', () => ({ verifyEvidenceBackend: mockVerify }));
 

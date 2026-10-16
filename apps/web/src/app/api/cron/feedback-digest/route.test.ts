@@ -50,6 +50,12 @@ mock.module('@buildd/core/memory-lifecycle', () => ({
 const decider = { judgeLearn: async () => ({}) };
 mock.module('@/lib/memory-decisions', () => ({ memoryDeciderFor: () => decider }));
 
+let specRefresh: { refreshed: number; failed: number } = { refreshed: 0, failed: 0 };
+const specRefreshCalls: number[] = [];
+mock.module('@/lib/specs/knowledge', () => ({
+  refreshAllSpecDerived: async (budgetMs: number) => { specRefreshCalls.push(budgetMs); return specRefresh; },
+}));
+
 const { POST } = await import('./route');
 
 const call = () => POST(new NextRequest('http://localhost/api/cron/feedback-digest', { method: 'POST' }));
@@ -131,5 +137,20 @@ describe('feedback-digest cron: memory lifecycle', () => {
     console.error = err;
     expect(lifecycleCalls).toHaveLength(1);
     expect(lastReport.result.memoryLifecycle).toEqual(lifecycleResult);
+  });
+
+  it('refreshes Living Spec neighbours within a bounded budget, and counts failed specs as run errors', async () => {
+    lifecycleResult = { ...lifecycleResult, errors: 0 };
+    specRefresh = { refreshed: 3, failed: 0 };
+    specRefreshCalls.length = 0;
+    await call();
+    expect(specRefreshCalls).toHaveLength(1);
+    expect(specRefreshCalls[0]).toBeGreaterThan(0);
+    expect(specRefreshCalls[0]).toBeLessThanOrEqual(15_000);
+    expect(lastReport.result.specRefresh).toEqual({ refreshed: 3, failed: 0 });
+    specRefresh = { refreshed: 1, failed: 2 };
+    await call();
+    expect(lastReport.errors).toBe(2);
+    specRefresh = { refreshed: 0, failed: 0 };
   });
 });

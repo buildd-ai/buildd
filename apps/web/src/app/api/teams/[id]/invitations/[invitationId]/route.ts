@@ -4,7 +4,8 @@ import { teamInvitations, teamMembers } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { requireSessionUser } from '@/lib/auth-helpers';
 import { isUuid } from '@/lib/uuid';
-import { roleHas, getTeamPermissionOverrides } from '@/lib/permissions';
+import { roleHas } from '@/lib/permissions';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // DELETE /api/teams/[id]/invitations/[invitationId] — revoke invitation
 export async function DELETE(
@@ -25,23 +26,23 @@ export async function DELETE(
 
   // Verify user is owner or admin of this team
   const membership = await db.query.teamMembers.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(teamMembers.teamId, id),
       eq(teamMembers.userId, user.id)
-    ),
+    )),
   });
 
-  if (!membership || !roleHas(membership.role, 'manage_team_members', await getTeamPermissionOverrides(id))) {
+  if (!membership || !roleHas(membership.role, 'manage_team_members')) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
   try {
     // Verify the invitation belongs to this team
     const invitation = await db.query.teamInvitations.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(teamInvitations.id, invitationId),
         eq(teamInvitations.teamId, id)
-      ),
+      )),
     });
 
     if (!invitation) {

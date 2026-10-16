@@ -75,13 +75,22 @@ const SECRET_ASSIGNMENT = /\b([A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|API_?KEY
 
 const maskCount = (m: string, n: string) => `[redacted-count]${m.slice(n.length)}`;
 
-export function redactLogText(text: string): string {
-  let out = text.replace(UUID, '[redacted-id]');
+/**
+ * Credential shapes only (tokens, bearer headers, URL credentials, secret
+ * assignments). Ids and counts are left alone: for a caller that must keep a
+ * text faithful, such as a decision input kept for replay.
+ */
+export function redactSecretShapes(text: string): string {
+  let out = text;
   for (const re of TOKEN_SHAPES) out = out.replace(re, SECRET);
-  out = out
+  return out
     .replace(BEARER, `$1 ${SECRET}`)
     .replace(URL_CREDENTIALS, `$1:${SECRET}@`)
     .replace(SECRET_ASSIGNMENT, `$1=${SECRET}`);
+}
+
+export function redactLogText(text: string): string {
+  const out = redactSecretShapes(text.replace(UUID, '[redacted-id]'));
   return out
     .split('\n')
     .map(line => {

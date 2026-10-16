@@ -59,6 +59,7 @@ async function mount(focusRequestId: string | null = null) {
 const q = (el: ParentNode, id: string) => el.querySelector(`[data-testid="${id}"]`) as HTMLElement | null;
 const button = (el: ParentNode, label: string | RegExp) => [...el.querySelectorAll('button')].find(b => (typeof label === 'string' ? b.textContent === label : label.test(b.textContent ?? ''))) as HTMLButtonElement | undefined;
 const click = async (n: Element | undefined | null) => { await act(async () => { (n as HTMLElement).click(); }); await flush(); await flush(); };
+const openDetails = (el: ParentNode) => click(button(el, /Allowed access, history and policy/));
 
 describe('AgentAccessSection', () => {
   it('a pending request says who, what, where, why and for how long', async () => {
@@ -79,6 +80,7 @@ describe('AgentAccessSection', () => {
     expect(q(el, 'access-member-note')).not.toBeNull();
     expect(button(el, /^Approve/)).toBeUndefined();
     expect(button(el, 'Deny')).toBeUndefined();
+    await openDetails(el);
     expect(button(el, 'Revoke')).toBeUndefined();
     expect(q(el, 'access-policy-axiom-summary')!.textContent).toBe('Defaults');
     await click(button(el, /Axiom/));
@@ -135,6 +137,7 @@ describe('AgentAccessSection', () => {
       canDecide: true,
     });
     const { el, unmount } = await mount();
+    await openDetails(el);
     expect(q(el, 'access-request-g1')!.textContent).toContain('Approved by Sam');
     await click(button(el, /History/));
     expect(q(el, 'access-history')!.textContent).toContain('Denied by Sam: use staging');
@@ -147,6 +150,8 @@ describe('AgentAccessSection', () => {
     stubFetch({ requests: [req('g1', { status: 'granted', decidedBy: 'policy', expiresAt: '2099-01-01T00:00:00Z' })], canDecide: true });
     const { el, unmount } = await mount();
     expect(q(el, 'access-pending-empty')).not.toBeNull();
+    expect(q(el, 'access-summary')!.textContent).toContain('1 allowed now.');
+    await openDetails(el);
     expect(q(el, 'access-active')!.textContent).toContain('Allowed by team policy');
     await unmount();
   });
@@ -154,10 +159,28 @@ describe('AgentAccessSection', () => {
   it('policy: write offers no automatic allow, and a blocked provider has no controls', async () => {
     stubFetch({ requests: [], canDecide: true, canManage: true });
     const { el, unmount } = await mount();
+    await openDetails(el);
     await click(button(el, /Axiom/));
     expect(q(el, 'access-policy-axiom-read')).not.toBeNull();
     expect(q(el, 'access-policy-vercel')!.textContent).toContain('Blocked in the catalog');
     expect(q(el, 'access-policy-vercel-read')).toBeNull();
+    await unmount();
+  });
+
+  it('compact by default: waiting requests show, what agents hold and the policy stay folded', async () => {
+    stubFetch({ requests: [req('r1'), req('g1', { status: 'granted', decidedBy: 'policy', expiresAt: '2099-01-01T00:00:00Z' })], canDecide: true });
+    const { el, unmount } = await mount();
+    expect(q(el, 'access-summary')!.textContent).toBe('1 waiting for a decision. 1 allowed now.');
+    expect(q(el, 'access-request-r1')).not.toBeNull();
+    expect(q(el, 'access-details')).toBeNull();
+    expect(q(el, 'access-policy')).toBeNull();
+    await unmount();
+  });
+
+  it('?request= pointing at a live grant opens the details to it', async () => {
+    stubFetch({ requests: [req('g1', { status: 'granted', decidedBy: 'human', decidedByName: 'Sam', expiresAt: '2099-01-01T00:00:00Z' })], canDecide: true });
+    const { el, unmount } = await mount('g1');
+    expect(q(el, 'access-request-g1')!.getAttribute('aria-current')).toBe('true');
     await unmount();
   });
 });

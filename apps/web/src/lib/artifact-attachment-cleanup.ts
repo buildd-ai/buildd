@@ -22,7 +22,7 @@
 import { db } from '@buildd/core/db';
 import { artifactLinks, artifacts, conversationMessages, conversations, specs } from '@buildd/core/db/schema';
 import { and, eq, lt, sql } from 'drizzle-orm';
-import { defaultUploadStorage, STALE_UPLOAD_MS, type UploadStorage } from '@/lib/artifact-upload';
+import { defaultUploadStorage, removeUploadObjects, STALE_UPLOAD_MS, type UploadStorage } from '@/lib/artifact-upload';
 
 const chatAttachment = sql`(${artifacts.workspaceId} IS NULL AND ${artifacts.workerId} IS NULL AND ${artifacts.metadata} #>> '{chatAttachment,source}' IN ('paste', 'upload'))`;
 
@@ -92,7 +92,7 @@ export async function removeOrphanChatAttachments(opts: {
     removed++;
     const key = gone[0]!.storageKey;
     if (key) {
-      await storage.remove(key).then(() => { objectsRemoved++; }, (err) => {
+      await removeUploadObjects(storage, key).then(() => { objectsRemoved++; }, (err) => {
         console.error('[chat-attachments] stored object not removed', err instanceof Error ? err.message : err);
       });
     }

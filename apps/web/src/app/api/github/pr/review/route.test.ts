@@ -19,6 +19,7 @@ const mockCreateReviewerTask = mock(() => ({ id: 'review-task-9' }) as any);
 const mockAnnounceTaskCreated = mock(() => Promise.resolve());
 const mockAppendPrActivity = mock(() => Promise.resolve({ action: 'created', commentId: 1 }));
 const mockFindReviewTaskForPr = mock(() => null as any);
+const mockFindLiveReviewTaskForPr = mock(() => null as any);
 const mockFindPrOwningWorker = mock(() => null as any);
 const mockListWorkspaceRoles = mock(() => [{ slug: 'reviewer', isRole: true }] as any[]);
 const mockWaitForPrReviewStatus = mock(() => ({
@@ -70,6 +71,7 @@ mock.module('@/lib/gate-ledger', () => ({ GATE_SLUGS: REAL_GATE_SLUGS, fireGateE
 
 mock.module('@/lib/pr-review-request', () => ({
   findReviewTaskForPr: mockFindReviewTaskForPr,
+  findLiveReviewTaskForPr: mockFindLiveReviewTaskForPr,
   findPrOwningWorker: mockFindPrOwningWorker,
   listWorkspaceRoles: mockListWorkspaceRoles,
   waitForPrReviewStatus: mockWaitForPrReviewStatus,
@@ -504,6 +506,57 @@ describe('POST /api/github/pr/review — idempotency', () => {
     const current = { state: 'AWAITING_REVIEW', version: 3, head: 'h', round: 1 };
     afterEach(() => { mockRequestKernelReview.mockReset(); mockRequestKernelReview.mockResolvedValue({ handled: false }); });
 
+    describe('cut over to the control plane (workflow-kernel-library §3)', () => {
+      let cp: ReturnType<typeof import('@/lib/workflow/testing/cut-over').cutOver> | null = null;
+      afterEach(() => { cp?.restore(); cp = null; });
+
+      it('the control plane unreachable: 503 naming it, and no legacy reviewer is created in its place', async () => {
+        const { cutOver } = await import('@/lib/workflow/testing/cut-over');
+        cp = cutOver();
+        mockRequestKernelReview.mockClear();
+        mockCreateReviewerTask.mockClear();
+        const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+        expect(res.status).toBe(503);
+        expect(await res.json()).toMatchObject({ code: 'control_plane_unavailable', controlPlane: true, retryable: true, idempotencyKey: expect.stringMatching(/^request_review:/) });
+        expect(cp.calls.map((c) => c.op)).toContain('request_review');
+        expect(mockRequestKernelReview).not.toHaveBeenCalled();
+        expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+      });
+
+      // The control plane re-checks the caller with the web host's rule: the door submits the session it judged.
+      const principalSent = async (account: Record<string, unknown>) => {
+        const { cutOver } = await import('@/lib/workflow/testing/cut-over');
+        cp = cutOver();
+        mockAuthenticateApiKey.mockReturnValue(account);
+        await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+        return cp.calls.filter((c) => c.op === 'request_review').map((c) => c.body?.principal);
+      };
+
+      it('a grant session is submitted as its grant with its workspace list, a person behind it or not', async () => {
+        const grant = { ...ACCOUNT, oauthGrantId: 'g-1', grantScopes: ['read', 'write'], workspaceIds: ['ws-1'] };
+        const asGrant = { kind: 'grant', id: 'account-1', grantId: 'g-1', workspaceIds: ['ws-1'], scopes: ['read', 'write'] };
+        expect(await principalSent(grant)).toEqual([asGrant]);
+        cp?.restore();
+        expect(await principalSent({ ...grant, sessionUserId: 'user-7' })).toEqual([{ ...asGrant, userId: 'user-7' }]);
+      });
+
+      it('a person is submitted as the user; a plain API account as an account that is not a grant', async () => {
+        expect(await principalSent({ ...ACCOUNT, sessionUserId: 'user-7' })).toEqual([{ kind: 'user', id: 'user-7' }]);
+        cp?.restore();
+        expect(await principalSent(ACCOUNT)).toEqual([{ kind: 'account', id: 'account-1', grant: null }]);
+      });
+
+      it('the control plane refuses the command: 403, not a 500, and no legacy reviewer', async () => {
+        const { cutOver, refusedByControlPlane } = await import('@/lib/workflow/testing/cut-over');
+        cp = cutOver({ reply: refusedByControlPlane });
+        mockCreateReviewerTask.mockClear();
+        const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+        expect(res.status).toBe(403);
+        expect(await res.json()).toMatchObject({ code: 'control_plane_refused' });
+        expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+      });
+    });
+
     it('is T5 on the live head and never creates a legacy reviewer', async () => {
       mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'applied', transitionId: 't', deliveryId: 'd', version: 4, decision: {} } });
       const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
@@ -525,6 +578,34 @@ describe('POST /api/github/pr/review — idempotency', () => {
       expect(json).toMatchObject({ kernel: true, reviewTaskId: 'round-reviewer' });
       expect(mockFindReviewTaskForPr).not.toHaveBeenCalled();
       mockFindReviewTaskForPr.mockReturnValue(null);
+    });
+
+    it('1bd26ae7: a round with no reviewer task is never "already under review" with nothing behind it: it says what is queued', async () => {
+      mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'rejected', reason: 'review_in_flight', current }, reviewTaskId: null });
+      const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+      expect(res.status).toBe(200);
+      const json = await res.json();
+      expect(json).toMatchObject({ ok: true, kernel: true, reviewTaskId: null, queued: { state: 'queued', reason: 'no reviewer task exists for this head yet (review_in_flight)' } });
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+    });
+
+    it('a reviewTaskId whose row is missing falls through to queueing a review, never a null status', async () => {
+      mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'rejected', reason: 'review_in_flight', current }, reviewTaskId: 'ghost-task' });
+      mockTasksFindFirst.mockImplementation(async () => null);
+      const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+      const json = await res.json();
+      expect(json.kernel).toBeUndefined();
+      expect(json.status ?? null).not.toBeNull();
+      expect(mockCreateReviewerTask).toHaveBeenCalled();
+    });
+
+    it('a refused result with a missing reviewTaskId row keeps its 409 and queues nothing', async () => {
+      mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'rejected', reason: 'escalation_needs_human', current }, reviewTaskId: 'ghost-task' });
+      mockTasksFindFirst.mockImplementation(async () => null);
+      const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+      expect(res.status).toBe(409);
+      expect((await res.json()).code).toBe('escalation_needs_human');
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
     });
 
     it('force is a recorded bypass actor, never a second reviewer on a running round', async () => {
@@ -672,6 +753,45 @@ describe('POST /api/github/pr/review — idempotency', () => {
     expect(mockCreateReviewerTask).toHaveBeenCalledTimes(1);
     const created = mockCreateReviewerTask.mock.calls[0][0] as any;
     expect(created.priorVerdict).toBeUndefined();
+  });
+
+  it('falls back to live task lookup when createReviewerTask returns null (concurrent writer race)', async () => {
+    mockCreateReviewerTask.mockReturnValueOnce(null);
+    mockFindLiveReviewTaskForPr.mockReturnValue({
+      id: 'review-task-concurrent',
+    });
+
+    const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.ok).toBe(true);
+    expect(json.alreadyRequested).toBe(true);
+    expect(json.reviewTaskId).toBe('review-task-concurrent');
+    expect(json.deduplicated).toBe(true);
+    // Verify the fallback lookup was called
+    expect(mockFindLiveReviewTaskForPr).toHaveBeenCalled();
+  });
+
+  it('does not adopt a completed review task when createReviewerTask returns null', async () => {
+    mockCreateReviewerTask.mockReturnValueOnce(null);
+    // findLiveReviewTaskForPr filters to live tasks, so it returns null for completed ones
+    mockFindLiveReviewTaskForPr.mockReturnValue(null);
+
+    const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+    expect(res.status).toBe(500);
+    const json = await res.json();
+    expect(json.error).toContain('Could not create the reviewer task');
+  });
+
+  it('returns 500 when createReviewerTask is null due to skipped dispatch (merged/closed PR)', async () => {
+    mockCreateReviewerTask.mockReturnValueOnce(null);
+    // Even if there was an old completed task for this PR, we don't adopt it
+    mockFindLiveReviewTaskForPr.mockReturnValue(null);
+
+    const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+    expect(res.status).toBe(500);
+    const json = await res.json();
+    expect(json.error).toContain('Could not create the reviewer task');
   });
 });
 

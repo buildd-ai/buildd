@@ -13,6 +13,9 @@ const mockRun = mock(async (_input: any, _deps: any) => outcome);
 mock.module('@/lib/prompt-evals/run', () => ({ runPromptEval: mockRun }));
 const mockList = mock(async (_limit: number) => [{ id: 'r1', modelMismatch: true, results: [] }]);
 mock.module('@/lib/prompt-evals/store', () => ({ promptEvalDeps: () => ({}), listPromptEvalRuns: mockList }));
+let comparison: any = { status: 'passed', runId: 'r3', prodModel: 'p', models: ['p', 'clef'], source: 'both', problems: [], costUsd: 0, rows: [] };
+const mockCompare = mock(async (_input: any, _deps: any) => comparison);
+mock.module('@/lib/prompt-evals/compare-run', () => ({ runModelComparison: mockCompare }));
 
 const { GET, POST } = await import('./route');
 
@@ -31,6 +34,8 @@ describe('/api/admin/prompt-evals', () => {
     mockAuthenticateApiKey.mockResolvedValue(ADMIN);
     mockRun.mockClear();
     mockList.mockClear();
+    mockCompare.mockClear();
+    comparison = { status: 'passed', runId: 'r3', prodModel: 'p', models: ['p', 'clef'], source: 'both', problems: [], costUsd: 0, rows: [] };
     outcome = { status: 'passed', runId: 'r1', evalModel: 'e', prodModel: 'p', modelMismatch: true, problems: [], report: { sets: [{ set: 'task_category', cases: 2 }] } };
   });
 
@@ -70,5 +75,49 @@ describe('/api/admin/prompt-evals', () => {
     expect((await failed.json()).problems).toEqual(['x']);
     outcome = { status: 'skipped', reason: 'another prompt eval is running' };
     expect((await POST(req('POST'))).status).toBe(409);
+  });
+
+  describe('with models: a model comparison', () => {
+    it('reaches each model as production would, defaulting the source to both', async () => {
+      const res = await POST(req('POST', { body: { models: ['clef', { model: 'qwen3-8b', via: 'litellm' }, 'typesafe/jev-1.13'], kinds: ['claim_hold'], costCapUsd: 1.5, concurrency: 2 } }));
+      expect(res.status).toBe(200);
+      expect(mockRun).not.toHaveBeenCalled();
+      expect(mockCompare.mock.calls[0][0]).toEqual({
+        teamId: 'team-admin',
+        models: [
+          { endpoint: 'systemone', model: 'clef', via: 'cloudflare' },
+          { endpoint: 'chat', model: 'qwen3-8b', via: 'litellm' },
+          { endpoint: 'systemone', model: 'typesafe/jev-1.13', via: 'openrouter' },
+        ],
+        source: 'both',
+        kinds: ['claim_hold'],
+        costCapUsd: 1.5,
+        concurrency: 2,
+        dryRun: false,
+      });
+      expect(await res.json()).toMatchObject({ status: 'passed', runId: 'r3', models: ['p', 'clef'] });
+    });
+
+    it('passes the source through', async () => {
+      await POST(req('POST', { body: { models: ['clef'], source: 'collected' } }));
+      expect(mockCompare.mock.calls[0][0].source).toBe('collected');
+    });
+
+    it('rejects a bad model list, source or kinds before running anything', async () => {
+      expect((await POST(req('POST', { body: { models: [] } }))).status).toBe(400);
+      expect((await POST(req('POST', { body: { models: 'clef' } }))).status).toBe(400);
+      expect((await POST(req('POST', { body: { models: Array(7).fill('clef') } }))).status).toBe(400);
+      expect((await POST(req('POST', { body: { models: [{ model: 'clef', via: 'openrouter' }] } }))).status).toBe(400);
+      expect((await POST(req('POST', { body: { models: ['clef'], source: 'all' } }))).status).toBe(400);
+      expect((await POST(req('POST', { body: { models: ['clef'], kinds: ['Bad Kind'] } }))).status).toBe(400);
+      expect(mockCompare).not.toHaveBeenCalled();
+    });
+
+    it('a failed comparison is a 422; a skipped one a 409', async () => {
+      comparison = { ...comparison, status: 'failed', problems: ['the cost cap ($1) was reached'] };
+      expect((await POST(req('POST', { body: { models: ['clef'] } }))).status).toBe(422);
+      comparison = { status: 'skipped', reason: 'another prompt eval is running' };
+      expect((await POST(req('POST', { body: { models: ['clef'] } }))).status).toBe(409);
+    });
   });
 });

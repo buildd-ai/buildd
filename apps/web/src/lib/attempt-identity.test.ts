@@ -77,3 +77,21 @@ describe('inheritAttemptIdentity', () => {
     expect(identity.roleSlug).toBeNull();
   });
 });
+
+describe('delegation on a retry', () => {
+  const TARGET = '22222222-2222-4222-8222-222222222222';
+  const grant = { grants: [{ workspaceId: TARGET, capabilities: ['tasks:create'] }], grantedByUserId: 'user-owner', grantedByAccountId: null, grantedAt: '2026-01-01T00:00:00Z' };
+
+  it('a retry carries the grant a person gave the task it re-attempts', () => {
+    expect(attemptIdentityFrom({ id: 'task-parent', roleSlug: 'builder', delegation: grant }).delegation).toEqual({ ...grant, inheritedFromTaskId: 'task-parent' });
+  });
+
+  it('read from the parent row when the caller has only its id', async () => {
+    mockTasksFindFirst.mockResolvedValueOnce({ id: 'task-parent', roleSlug: 'builder', delegation: grant });
+    expect((await inheritAttemptIdentity('task-parent')).delegation?.inheritedFromTaskId).toBe('task-parent');
+  });
+
+  it('no grant, no key: the insert shape is unchanged', () => {
+    expect('delegation' in attemptIdentityFrom({ id: 'task-parent', roleSlug: 'builder', delegation: null })).toBe(false);
+  });
+});

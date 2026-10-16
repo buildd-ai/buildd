@@ -41,7 +41,9 @@ import { and, eq, inArray, isNotNull, ne, not, or, isNull } from 'drizzle-orm';
 import { resolveSubjectPolicy } from '@buildd/core/subject-anchor-observe';
 import { sweepSubjectAnchoredTasks } from './subject-sweep';
 import { recordPrFact } from '@buildd/core/pr-facts';
+import { factFunnelScope } from '@/lib/workflow/pr-fact-scope';
 import { isMissionPrTask } from '@buildd/core/mission-integration';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -121,13 +123,13 @@ async function upsertConflictEscalation(loser: LoserCandidate): Promise<void> {
 
   // Check for an existing open escalation for this loser PR
   const existing = await db.query.missionNotes.findFirst({
-    where: and(
+    where: sqlWhere(and(
       loser.missionId ? eq(missionNotes.missionId, loser.missionId) : isNull(missionNotes.missionId),
       eq(missionNotes.taskId, loser.taskId),
       eq(missionNotes.type, 'warning'),
       eq(missionNotes.status, 'open'),
       eq(missionNotes.title, title),
-    ),
+    )),
     columns: { id: true },
   });
 
@@ -257,7 +259,7 @@ export async function shutdownDeadBuilddPrs(
   // ── 1. Check feature flag ────────────────────────────────────────────────
 
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     columns: { gitConfig: true },
   });
   const policy = resolveSubjectPolicy(workspace?.gitConfig?.subjectPolicy);
@@ -268,16 +270,16 @@ export async function shutdownDeadBuilddPrs(
   // ── 2. Find the event worker and its task's subject PR ──────────────────
 
   const eventWorker = await db.query.workers.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(workers.workspaceId, workspaceId),
       eq(workers.prNumber, eventPrNumber),
-    ),
+    )),
     columns: { id: true, taskId: true, prBaseRef: true },
   });
   if (!eventWorker?.taskId) return result;
 
   const eventTask = await db.query.tasks.findFirst({
-    where: eq(tasks.id, eventWorker.taskId),
+    where: sqlWhere(eq(tasks.id, eventWorker.taskId)),
     columns: { subjectPrNumber: true },
   });
   if (!eventTask?.subjectPrNumber) return result;
@@ -289,11 +291,11 @@ export async function shutdownDeadBuilddPrs(
   // A loser is a worker in this workspace with an open PR (not the event PR)
   // whose task anchors to the same subject PR.
   const loserTasks = await db.query.tasks.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.workspaceId, workspaceId),
       eq(tasks.subjectPrNumber, subjectPrNumber),
       ne(tasks.id, eventWorker.taskId),
-    ),
+    )),
     columns: { id: true, missionId: true, title: true, taskClass: true },
   });
 
@@ -308,7 +310,7 @@ export async function shutdownDeadBuilddPrs(
   const missionById = Object.fromEntries(eligibleTasks.map(t => [t.id, t.missionId]));
 
   const loserWorkers = await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       inArray(workers.taskId, loserTaskIds),
       isNotNull(workers.prNumber),
       // Include workers whose prLifecycleStatus is null OR not 'closed'/'merged'.
@@ -317,7 +319,7 @@ export async function shutdownDeadBuilddPrs(
         isNull(workers.prLifecycleStatus),
         not(inArray(workers.prLifecycleStatus as any, ['closed', 'merged'])),
       ),
-    ),
+    )),
     columns: {
       id: true,
       taskId: true,
@@ -399,7 +401,7 @@ async function closePrWithComment(
   // If the above throws, we do NOT stamp closed (let it propagate)
 
   // Step 4 of spec §5: stamp worker lifecycle
-  await recordPrFact({ workerId: loser.workerId }, { kind: 'closed' });
+  await recordPrFact({ workerId: loser.workerId }, { kind: 'closed' }, { scope: factFunnelScope });
 
   // Step 5 of spec §5: supersede open escalations
   await supersedePrEscalations(loser.taskId, successorPrNumber);

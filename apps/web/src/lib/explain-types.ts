@@ -79,9 +79,15 @@ export type CausalLinkSource =
   | 'tasks.roleSlug + workerHeartbeats.environment + workspaces.gitConfig.executor'
   | 'task_dispatch_outbox.status'
   | 'tasks.context.entitlementBlock'
+  /** failure-incident-recovery §18.3/§18.5: a credential hold, a recorded cancel reason. */
+  | 'tasks.context.credentialHold'
+  | 'tasks.context.cancellation'
   | 'tasks.pathDeclaration.softOverlaps + gate_events'
   | 'gate_events.detail'
+  | 'gate_events.reason'
   | 'DeliveryView.lastTransition'
+  /** workflow-kernel-library.md §7 / AC-26: the worker row's merge columns disagree with the delivery. */
+  | 'DeliveryView.state vs workers.mergedAt'
   | 'artifacts.metadata.qa (replacedAudits)';
 
 export interface CausalLink {

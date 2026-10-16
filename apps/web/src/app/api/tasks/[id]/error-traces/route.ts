@@ -6,6 +6,7 @@ import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/ta
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { resolveTaskIdForCaller } from '@/lib/resolve-task-id';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 // GET /api/tasks/[id]/error-traces?since=<ISO>&limit=<n>
 //
@@ -49,7 +50,7 @@ export async function GET(
   const id = resolved.id;
 
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, id),
+    where: sqlWhere(eq(tasks.id, id)),
     columns: { id: true, workspaceId: true, status: true, result: true },
   });
   if (!task || !(await canAccess(task.workspaceId))) {
@@ -67,8 +68,8 @@ export async function GET(
   }
 
   const traces = await db.query.workerErrorTraces.findMany({
-    where: and(...conds),
-    orderBy: [desc(workerErrorTraces.ts)],
+    where: sqlWhere(and(...conds)),
+    orderBy: sqlOrderBy([desc(workerErrorTraces.ts)]),
     limit,
   });
 

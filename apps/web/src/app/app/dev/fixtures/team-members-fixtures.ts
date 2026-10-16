@@ -37,7 +37,7 @@ export function teamMembersFixtureLinks(): Array<{ label: string; href: string }
   }));
 }
 
-/** TeamDetailClient's props for `viewer`, gated the way settings/team/page.tsx gates them (no overrides). */
+/** TeamDetailClient's props for `viewer`, gated the way settings/team/page.tsx gates them. */
 export function teamMembersFixtureProps(viewer: TeamMembersFixtureViewer) {
   const me = MEMBERS.find((m) => m.role === viewer)!;
   return {
@@ -46,7 +46,6 @@ export function teamMembersFixtureProps(viewer: TeamMembersFixtureViewer) {
     currentUserRole: viewer,
     currentUserId: me.userId,
     isPersonal: false,
-    canManage: roleHas(viewer, 'manage_team_members', null),
-    permissionOverrides: null,
+    canManage: roleHas(viewer, 'manage_team_members'),
   };
 }

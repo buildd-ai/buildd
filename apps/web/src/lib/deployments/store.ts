@@ -9,6 +9,7 @@ import { and, desc, eq, isNull } from 'drizzle-orm';
 import { CLOUDFLARE_PURPOSE } from '../cloudflare-credential-shared';
 import { decodeCloudflareValue } from '../cloudflare-credential';
 import type { DeploymentAuditInput, DeploymentDeps, DeploymentProvider } from './action';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * The reference a stored credential answers to: its label, lower-cased and
@@ -45,13 +46,13 @@ export async function settleDeploymentAudit(
 /** The team-wide credential whose reference is `credentialRef`, decrypted, or null. */
 export async function resolveDeploymentCredential(teamId: string, provider: DeploymentProvider, credentialRef: string) {
   const rows = await db.query.secrets.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(secrets.teamId, teamId),
       eq(secrets.purpose, PURPOSE[provider]),
       isNull(secrets.workspaceId),
       isNull(secrets.userId),
-    ),
-    orderBy: desc(secrets.updatedAt),
+    )),
+    orderBy: sqlOrderBy(desc(secrets.updatedAt)),
     columns: { label: true, encryptedValue: true },
   });
   const ref = credentialRef.trim().toLowerCase();

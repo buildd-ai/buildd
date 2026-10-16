@@ -1,4 +1,5 @@
 import { db } from '@buildd/core/db';
+import { isRunnerReported } from '@/lib/verification-provenance';
 import { missionIntegrationBase } from '@buildd/core/mission-integration';
 import { missions, tasks, workspaces } from '@buildd/core/db/schema';
 import { eq, and, desc, sql } from 'drizzle-orm';
@@ -7,6 +8,7 @@ import type { GoalCriteriaState } from '@buildd/shared';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { pickEffectiveRole } from '@/lib/effective-roles';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * `command` goal criteria: verified by running the command, never by asking a
@@ -65,12 +67,12 @@ function shortCommand(command: string): string {
  */
 async function findVerificationTask(missionId: string, criterionIndex: number) {
   const rows = await db.query.tasks.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.missionId, missionId),
       sql`${tasks.context}->'criteriaVerification'->>'criterionIndex' = ${String(criterionIndex)}`,
-    ),
+    )),
     columns: { id: true, status: true, context: true, result: true, updatedAt: true },
-    orderBy: [desc(tasks.createdAt)],
+    orderBy: sqlOrderBy([desc(tasks.createdAt)]),
     limit: 5,
   });
   // Re-check in JS so a mocked/loose `where` can never widen the match.
@@ -193,6 +195,8 @@ function classifyCommandRun(result: Record<string, unknown> | null): CommandRunO
   const history = (result?.loopHistory as Array<Record<string, unknown>> | undefined) ?? [];
   const last = history[history.length - 1];
   if (!last || typeof last.satisfied !== 'boolean') return null;
+  // Evidence the agent reported on its task token is its word, not a run.
+  if (last.evidence !== undefined && !isRunnerReported(last.evidence)) return null;
 
   const outcome = (last.evidence as Record<string, unknown> | undefined)?.outcome;
   if (typeof outcome === 'string') {
@@ -234,7 +238,7 @@ export async function dispatchCommandCriterionTask(opts: {
   const { missionId, criterionIndex, command } = opts;
 
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, missionId),
+    where: sqlWhere(eq(missions.id, missionId)),
     // `integrationBranchEnabled` is load-bearing here, not decorative: the
     // column list is explicit, so omitting it would read `undefined` and
     // quietly send every mission's verify task at a branch that may not exist.
@@ -249,7 +253,7 @@ export async function dispatchCommandCriterionTask(opts: {
   }
 
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, mission.workspaceId),
+    where: sqlWhere(eq(workspaces.id, mission.workspaceId)),
   });
   if (!workspace) return { ok: false, reason: 'Command criterion cannot run: workspace not found' };
 
@@ -352,7 +356,7 @@ export async function handleCriteriaVerificationOutcome(
   evidence?: unknown,
 ): Promise<{ applied: boolean; verdict?: 'pass' | 'fail' | 'UNVERIFIED' }> {
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { id: true, status: true, context: true, result: true, missionId: true },
   });
   if (!task) return { applied: false };
@@ -366,7 +370,7 @@ export async function handleCriteriaVerificationOutcome(
   if (!['completed', 'failed', 'cancelled'].includes(task.status)) return { applied: false };
 
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, task.missionId),
+    where: sqlWhere(eq(missions.id, task.missionId)),
     columns: { id: true, workspaceId: true, goalCriteria: true, goalCriteriaState: true },
   });
   const state = (mission?.goalCriteriaState ?? null) as GoalCriteriaState | null;
@@ -401,7 +405,14 @@ export async function handleCriteriaVerificationOutcome(
   const ran = classifyCommandRun(task.result as Record<string, unknown> | null);
   let verdict: 'pass' | 'fail' | 'UNVERIFIED';
   let unverifiedCause: string | null = null;
-  if (ev && typeof ev.outcome === 'string') {
+  // Evidence the agent in the verification task reported on its own task
+  // token (lib/verification-provenance.ts) is not the runner's run: the
+  // criterion stays unverified until the runner's own report lands.
+  const agentReported = !!ev && !isRunnerReported(ev);
+  if (agentReported) {
+    verdict = 'UNVERIFIED';
+    unverifiedCause = 'agent_reported_evidence';
+  } else if (ev && typeof ev.outcome === 'string') {
     verdict = ev.outcome === 'ok' ? 'pass' : ev.outcome === 'timeout' || ev.outcome === 'exec_error' ? 'UNVERIFIED' : 'fail';
     if (verdict === 'UNVERIFIED') unverifiedCause = ev.outcome;
   } else if (ran !== null) {
@@ -449,7 +460,9 @@ export async function handleCriteriaVerificationOutcome(
 
   criterion.verdict = verdict;
   criterion.workerTaskId = task.id;
-  criterion.evidence = ev
+  criterion.evidence = agentReported
+    ? `\`${shortCommand(marker.command)}\` was reported by the agent in verification task ${task.id.slice(0, 8)}, not by the runner`
+    : ev
     ? (verdict === 'pass'
         ? `\`${shortCommand(marker.command)}\` exited 0 (verification task ${task.id.slice(0, 8)})`
         : verdict === 'UNVERIFIED'

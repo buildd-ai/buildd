@@ -1,8 +1,10 @@
 'use client';
 
 /**
- * Edits one tier x surface cell: its primary, the models it may also use, and
- * the dial. Anchored to the clicked cell on desktop, a bottom sheet on a phone.
+ * Edits one tier x surface cell. A team admin picks its primary. A platform
+ * operator also edits the models it may also use and the dial (traffic pools
+ * are an operator control, lib/admin/platform-operator-caller.ts; the pool routes refuse anyone
+ * else). Anchored to the clicked cell on desktop, a bottom sheet on a phone.
  * Nothing is written until Save; Save applies the primary, then removals, then
  * additions, then the dial, each against the pool's latest version.
  */
@@ -29,6 +31,8 @@ interface Props {
   suggestion: TierSuggestion | null;
   anchorRef: RefObject<HTMLElement | null>;
   sheet: boolean;
+  /** A platform operator: the alternates and dial render. */
+  operator?: boolean;
   onClose: () => void;
   onSaved: () => Promise<void>;
 }
@@ -60,7 +64,7 @@ async function freshCell(teamId: string, cell: ModelPolicyCell): Promise<ModelPo
 
 const sameValue = (a: PickerValue, b: PickerValue) => a.route === b.route && a.model === b.model;
 
-export default function CellEditor({ cell, teamId, models, keys, catalogLoading, suggestion, anchorRef, sheet, onClose, onSaved }: Props) {
+export default function CellEditor({ cell, teamId, models, keys, catalogLoading, suggestion, anchorRef, sheet, operator = false, onClose, onSaved }: Props) {
   const initialPrimary: PickerValue = { route: providerForModel(cell.primary.provider), model: cell.primary.model };
   const initialAlts = useMemo<PickerValue[]>(() => cell.alternates.map((a) => ({ route: a.provider, model: a.model })), [cell.alternates]);
   const [primary, setPrimary] = useState<PickerValue>(initialPrimary);
@@ -70,7 +74,7 @@ export default function CellEditor({ cell, teamId, models, keys, catalogLoading,
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const pools = tierAllowsPool(cell.tier);
+  const pools = operator && tierAllowsPool(cell.tier);
   const primaryRoutes = useMemo(() => withKeyStatus(TIER_ROUTES, keys), [keys]);
   const armRoutes = useMemo(() => withKeyStatus(routesFor(cell.surface).map((r) => ARM_ROUTE_SPECS[r]), keys), [cell.surface, keys]);
   const locked = useMemo<PickerValue[]>(() => [{ route: primary.route, model: primary.model }, ...alts], [primary, alts]);
@@ -211,11 +215,6 @@ export default function CellEditor({ cell, teamId, models, keys, catalogLoading,
           </button>
           {advanced && (
             <div id="cell-advanced" className="mt-1.5 flex flex-col gap-2 border border-border-default p-2" data-testid="cell-advanced">
-              <p className="text-meta text-text-secondary">
-                Evaluating is a shadow: the primary serves every run.
-                Switching is live: a keeping-up alternative takes a share of work.
-                {cell.surface === 'chat' && cell.qualitySignal !== 'chat-retro' && ' This chat cell has no quality feedback, so nothing switches on quality.'}
-              </p>
               <div className="flex items-baseline justify-between text-meta text-text-muted">
                 <span>Quality</span>
                 <span className="text-text-secondary" data-testid="cell-dial-label">{DIAL_LABEL[dial]}</span>
@@ -239,7 +238,7 @@ export default function CellEditor({ cell, teamId, models, keys, catalogLoading,
         </section>
       )}
 
-      <p className="font-convo text-body text-text-secondary" data-testid="cell-learning">{learningParagraph(cell)}</p>
+      {operator && <p className="font-convo text-body text-text-secondary" data-testid="cell-learning">{learningParagraph(cell)}</p>}
 
       {err && <p role="alert" className="text-meta text-status-error">{err}</p>}
 

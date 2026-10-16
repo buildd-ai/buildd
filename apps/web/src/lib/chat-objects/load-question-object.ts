@@ -17,6 +17,7 @@ import {
 } from '@/app/app/(protected)/tasks/[id]/question-hero';
 import { findTaskRole } from '@/app/app/(protected)/tasks/[id]/role-lookup';
 import type { QuestionObjectView } from '@/components/chat/objects/object-views';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface QuestionNoteRow extends QuestionNoteLike {
   createdAt?: Date | string | null;
@@ -120,7 +121,7 @@ export interface QuestionContext {
  */
 export async function loadQuestionContext(taskId: string, userId: string): Promise<QuestionContext | null> {
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     with: {
       workspace: { columns: { id: true, name: true, teamId: true } },
       mission: { columns: { id: true, title: true } },
@@ -131,8 +132,8 @@ export async function loadQuestionContext(taskId: string, userId: string): Promi
   const [access, taskWorkers, noteRows, role] = await Promise.all([
     verifyWorkspaceAccess(userId, task.workspaceId),
     db.query.workers.findMany({
-      where: eq(workers.taskId, taskId),
-      orderBy: desc(workers.createdAt),
+      where: sqlWhere(eq(workers.taskId, taskId)),
+      orderBy: sqlOrderBy(desc(workers.createdAt)),
       columns: { id: true, waitingFor: true, status: true, updatedAt: true, error: true },
     }),
     db
@@ -202,7 +203,7 @@ export async function loadQuestionContext(taskId: string, userId: string): Promi
 export async function loadQuestionObject(id: string, userId: string): Promise<QuestionObjectView | null> {
   const direct = await loadQuestionContext(id, userId);
   if (direct) return direct.view;
-  const w = await db.query.workers.findFirst({ where: eq(workers.id, id), columns: { taskId: true } });
+  const w = await db.query.workers.findFirst({ where: sqlWhere(eq(workers.id, id)), columns: { taskId: true } });
   if (!w?.taskId) return null;
   return (await loadQuestionContext(w.taskId, userId))?.view ?? null;
 }

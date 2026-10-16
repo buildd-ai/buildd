@@ -39,6 +39,10 @@
  *                                     A route whose document is 5xx or whose page threw a module-load
  *                                     error (the app did not boot) is a FAIL, recorded as `bootFailure`,
  *                                     and exits 5 after every shot is written.
+ *                                     A boot failure, a browser that never launched and an auth wall
+ *                                     are also typed into QA_OUTPUT/capture-failure.json
+ *                                     ({ ownership, component, step, errorSignature }, see
+ *                                     scripts/qa/capture-failure.ts), which the auditor reports.
  *   QA_TASK_ID                      — resolves `/app/tasks/:id` in the manifest
  *   QA_MISSION_ID                   — resolves `/app/missions/:id` in the manifest
  *   VISUAL_QA_STORAGE_STATE_PATH    — Playwright storageState JSON for remote auth
@@ -73,10 +77,16 @@ import { resolveTheme, resolveViewport, type QaTheme } from './viewport';
 import { bootFailure, isModuleLoadError } from './boot';
 import { describeStep, guardWrites, parsePlan, planText, runSteps, type BlockedWrite, type PlanRoute, type Step, type StepFailure } from './steps';
 import {
+  classifyCaptureFailure,
+  classifyConfigError,
   classifyPageLoad,
   CONFIG_ERROR_MESSAGES,
   type CaptureConfigError,
 } from '../../packages/core/visual-qa-page-source';
+import { writeCaptureFailure } from './capture-failure';
+
+/** This script's step in visual-qa.yml: the `step` of every failure it types. */
+const CAPTURE_STEP = 'Capture screenshots and a11y snapshots';
 
 // Validate QA_VIEWPORT before anything else runs (no browser launched yet, no
 // swallow handlers registered yet) so a typo fails fast with a clear message
@@ -230,6 +240,7 @@ try {
     ? ((err as Error).message.includes('service_') ? (err as Error).message : 'provider_handshake_failed')
     : 'provider_missing';
   writeFileSync(join(OUTPUT_DIR, 'captures.json'), JSON.stringify(routes.map(route => ({ id: route.id, path: route.path, providerError, error: providerError, capturedAt: new Date().toISOString(), browser: { provider: process.env.BUILDD_BROWSER_PROVIDER ?? 'local', probe: { ok: false } } })), null, 2));
+  writeCaptureFailure(OUTPUT_DIR, classifyCaptureFailure({ step: CAPTURE_STEP, component: 'visual_qa.browser', error: providerError }));
   console.error(`[capture] browser did not launch: ${providerError}`);
   process.exit(1);
 }
@@ -529,6 +540,8 @@ console.log(`[capture] done — ${captures.length} routes → ${OUTPUT_DIR}`);
 const walls = [...new Set(captures.map((c) => c.configError).filter((e): e is CaptureConfigError => !!e))];
 if (walls.length > 0) {
   for (const w of walls) console.error(`[capture] CONFIG ERROR ${w}: ${CONFIG_ERROR_MESSAGES[w]}`);
+  // Owner setup, not infrastructure: the one capture failure a person is asked about.
+  writeCaptureFailure(OUTPUT_DIR, classifyConfigError(walls[0], CAPTURE_STEP));
   process.exit(3);
 }
 
@@ -548,7 +561,12 @@ if (bootFailures.length > 0) {
   for (const c of bootFailures) console.error(`[capture] BOOT FAILED ${c.id}: ${c.bootFailure}`);
   // Annotation, so the boot failure shows on the run even where the step is report-only.
   if (process.env.GITHUB_ACTIONS) console.log(`::error title=Visual QA: app did not boot::${bootFailures.map((c) => c.id).join(", ")}`);
+  writeCaptureFailure(OUTPUT_DIR, classifyCaptureFailure({ step: CAPTURE_STEP, component: 'visual_qa.boot', error: bootFailures[0].bootFailure }));
   process.exit(5);
 }
 
-if (captures.some(c => c.providerError)) process.exit(1);
+const providerFailure = captures.find(c => c.providerError);
+if (providerFailure) {
+  writeCaptureFailure(OUTPUT_DIR, classifyCaptureFailure({ step: CAPTURE_STEP, component: 'visual_qa.browser', error: providerFailure.providerError }));
+  process.exit(1);
+}

@@ -15,6 +15,7 @@ import { workspaces } from '@buildd/core/db/schema';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
 import { completeMissionIfVerified } from '@/lib/mission-completion';
 import { shippedOutputSchema, shippedPromptText, taskOutcomeLine, type ShippedOutput } from '@buildd/shared';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Structured output schema the evaluator must produce */
 export const EVALUATION_OUTPUT_SCHEMA = {
@@ -78,15 +79,15 @@ export async function buildEvaluationContext(missionId: string): Promise<{
   context: Record<string, unknown>;
 } | null> {
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, missionId),
+    where: sqlWhere(eq(missions.id, missionId)),
     columns: { id: true, title: true, description: true, status: true },
   });
   if (!mission) return null;
 
   // Fetch all mission tasks
   const allTasks = await db.query.tasks.findMany({
-    where: eq(tasks.missionId, missionId),
-    orderBy: [desc(tasks.createdAt)],
+    where: sqlWhere(eq(tasks.missionId, missionId)),
+    orderBy: sqlOrderBy([desc(tasks.createdAt)]),
     columns: {
       id: true, title: true, status: true, mode: true,
       result: true, createdAt: true, updatedAt: true,
@@ -202,7 +203,7 @@ export async function spawnEvaluationTask(
   triggeringTaskId: string,
 ): Promise<string | null> {
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, missionId),
+    where: sqlWhere(eq(missions.id, missionId)),
     columns: {
       id: true, title: true, workspaceId: true,
       lastEvaluationTaskId: true, status: true,
@@ -213,7 +214,7 @@ export async function spawnEvaluationTask(
   // Check if there's already a pending/in-progress evaluation
   if (mission.lastEvaluationTaskId) {
     const existingEval = await db.query.tasks.findFirst({
-      where: eq(tasks.id, mission.lastEvaluationTaskId),
+      where: sqlWhere(eq(tasks.id, mission.lastEvaluationTaskId)),
       columns: { status: true },
     });
     if (existingEval && ['pending', 'assigned', 'in_progress'].includes(existingEval.status)) {
@@ -261,7 +262,7 @@ export async function spawnEvaluationTask(
 
   // Dispatch the task
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
   });
   if (workspace) {
     await announceTaskCreated(evalTask, workspace);
@@ -280,7 +281,7 @@ export async function handleEvaluationResult(
   evaluationTaskId: string,
 ): Promise<{ action: 'completed' | 'kept_active'; verdict: EvaluationVerdict | null }> {
   const evalTask = await db.query.tasks.findFirst({
-    where: eq(tasks.id, evaluationTaskId),
+    where: sqlWhere(eq(tasks.id, evaluationTaskId)),
     columns: { result: true, status: true },
   });
 

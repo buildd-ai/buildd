@@ -312,6 +312,13 @@ mock.module('@/lib/github', () => ({
   postPrReview: mockPostPrReview,
 }));
 
+// Has the mission's one PR into trunk merged? (lib/mission-shipping-pr, reached
+// through the MISSION_SHIPPING_PR_MERGED slot in @/modules). Null = no.
+const mockMissionShippingPrMerged = mock((..._args: any[]) => Promise.resolve(null as null | { prNumber: number | null; via: string }));
+mock.module('@/lib/mission-shipping-pr', () => ({
+  missionShippingPrMerged: (...args: any[]) => mockMissionShippingPrMerged(...args),
+}));
+
 // The verdict-time escalation gate re-inspects migrations. The real inspector
 // walks several paginated endpoints; mocking it keeps these tests about the
 // gate's wiring, the way the webhook route tests do.
@@ -425,6 +432,8 @@ mock.module('@/lib/subscriptions', () => ({
 const mockRecordTaskOutcome = mock((_input: any) => Promise.resolve(true));
 const mockRecordRunnerOutcome = mock(async (_outcome: string) => {});
 mock.module('@buildd/core/runner-health', () => ({ recordRunnerOutcome: mockRecordRunnerOutcome }));
+const mockRecordRootCauseForOutcome = mock(async (_input: any) => {});
+mock.module('@/lib/root-cause-record', () => ({ recordRootCauseForOutcome: mockRecordRootCauseForOutcome }));
 // The message queue writes are single SQL statements now, so a mocked db has
 // no resulting array to inspect. Mock the queue module instead and assert the
 // calls — which is also what the route's contract actually is.
@@ -526,6 +535,17 @@ mock.module('@/lib/dispatch-authority', () => ({
   reseedDispatchTimer: mock(() => Promise.resolve()),
   DISPATCH_DUE_QUEUE: 'dispatch',
   DRAIN_BATCH: 25,
+}));
+// Whether a Claude wall belongs to one runner's own machine login (task
+// e68327a1). Its decision is unit-tested in lib/runner-seat-wall.test.ts;
+// here it is pinned so the route's wiring can be asserted. Default: shared,
+// which is the pre-existing behaviour every other test expects.
+const mockResolveRunnerSeatWallKey = mock((..._args: unknown[]) =>
+  Promise.resolve({ seatKey: null as string | null, reason: 'test default' }));
+mock.module('@/lib/runner-seat-wall', () => ({
+  resolveRunnerSeatWallKey: mockResolveRunnerSeatWallKey,
+  runnerSeatKey: (runner: string | null | undefined) => (runner ? `runner:${runner}` : null),
+  isMachineLoginWallError: () => true,
 }));
 /** Causes wakeTask was called with for one task, in call order. */
 const wakeCausesFor = (taskId: string) =>
@@ -720,6 +740,7 @@ const mockWorkflowAttemptEnded = mock(async (_p: any) => ({ handled: false }));
 const mockFixCompletionGate = mock(async (_p: any): Promise<any> => null);
 const mockRecordLocalHead = mock(async (_taskId: string, _sha: string) => undefined);
 const mockRecordReviewVerdict = mock(async (_p: any): Promise<any> => ({ handled: false }));
+const mockAdoptReviewVerdict = mock(async (_p: any): Promise<any> => ({ result: 'applied' }));
 const mockIsKernelReviewRound = mock(async (_t: any): Promise<boolean> => false);
 // The legacy conflict/migration repair gate (lib/repair-completion.ts) has its
 // own unit suite; here: that the route refuses on its verdict.
@@ -734,6 +755,9 @@ mock.module('@/lib/workflow/seam', () => ({
   taskRetryCoversAttemptEnd: realHandOff.taskRetryCoversAttemptEnd,
   fixCompletionGate: mockFixCompletionGate,
   recordReviewVerdict: mockRecordReviewVerdict,
+  adoptReviewVerdict: mockAdoptReviewVerdict,
+  noopEvidenceOf: (o: any) => (o?.noopEvidence?.findingIds?.length && o?.noopEvidence?.evidence ? o.noopEvidence : null),
+  fixedElsewhereOf: (o: any) => (o?.fixedElsewhere?.findingIds?.length ? o.fixedElsewhere : null),
   isKernelReviewRound: mockIsKernelReviewRound,
   isRepairRole: (r: string | null | undefined) => r === 'fix' || r === 'ci_fix',
   recordLocalHead: mockRecordLocalHead,
@@ -814,6 +838,11 @@ mock.module('@/lib/mission-completion', () => ({
     if (missionCompletionError) throw missionCompletionError;
   }),
 }));
+/** Calls the route made to the late runner evidence path (lib/late-runner-evidence.ts). */
+const lateRunnerEvidenceCalls: unknown[] = [];
+mock.module('@/lib/late-runner-evidence', () => ({
+  recordLateRunnerEvidence: mock(async (input: unknown) => { lateRunnerEvidenceCalls.push(input); return { handled: true }; }),
+}));
 mock.module('@/lib/mission-criteria-verify', () => ({
   ...realCriteriaVerify,
   isCriteriaVerificationTask: () => criteriaKinds.verification,
@@ -852,6 +881,17 @@ const siblingProbeCalls: any[] = [];
 let siblingProbeReply: any[] = [];
 mock.module('@/lib/sibling-conflict-probe-store', () => ({
   siblingProbeHeartbeat: async (input: any) => { siblingProbeCalls.push(input); return siblingProbeReply; },
+}));
+
+// Credential holds (failure-incident-recovery §18.3): the planner is real, the
+// writer and the credential lookup are recorded.
+import * as realRecoveryHold from '@/lib/task-recovery-hold';
+const mockHoldTaskForCredential = mock(async (input: any) => realRecoveryHold.planCredentialHold({ ...input, now: new Date().toISOString() }).hold);
+const mockResolveCredentialIdentity = mock(async (input: any) => ({ credentialKey: `account:${input.accountId}`, shared: false, label: 'the Claude login on runner "test"' }));
+mock.module('@/lib/task-recovery-hold', () => ({
+  ...realRecoveryHold,
+  holdTaskForCredential: mockHoldTaskForCredential,
+  resolveCredentialIdentity: mockResolveCredentialIdentity,
 }));
 
 import { GET, PATCH } from './route';
@@ -3147,6 +3187,60 @@ describe('PATCH /api/workers/[id]', () => {
     });
   });
 
+  describe('terminal status replaces the last tool call as the current action', () => {
+    function captureSets(status: string) {
+      const sets: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          sets.push(updates);
+          return {
+            where: mock(() => ({
+              returning: mock(() => [{ id: 'worker-1', status, accountId: 'account-1', workspaceId: 'ws-1' }]),
+            })),
+          };
+        }),
+      });
+      return sets;
+    }
+
+    async function patchTerminal(body: Record<string, unknown>) {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        currentAction: 'Running: echo final-marker',
+        pendingInstructions: null,
+      });
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body,
+      });
+      return PATCH(req, { params: mockParams });
+    }
+
+    it('a completed worker reads Completed', async () => {
+      const sets = captureSets('completed');
+      await patchTerminal({ status: 'completed' });
+      expect(sets.some(s => s.currentAction === 'Completed')).toBe(true);
+    });
+
+    it('a failed worker reads Failed', async () => {
+      const sets = captureSets('failed');
+      await patchTerminal({ status: 'failed', error: 'boom' });
+      expect(sets.some(s => s.currentAction === 'Failed')).toBe(true);
+    });
+
+    it('an explicit currentAction on the terminal write is kept', async () => {
+      const sets = captureSets('completed');
+      await patchTerminal({ status: 'completed', currentAction: 'Done: opened PR' });
+      expect(sets.some(s => s.currentAction === 'Done: opened PR')).toBe(true);
+      expect(sets.some(s => s.currentAction === 'Completed')).toBe(false);
+    });
+  });
+
   it('includes phases and lastQuestion in task.result on completion', async () => {
     let capturedTaskSet: any = null;
     mockTasksUpdate.mockReturnValue({
@@ -3827,6 +3921,24 @@ describe('PATCH /api/workers/[id]', () => {
         task: { id: 'fix-task-1', deliveryId: 'delivery-1', deliveryRole: 'fix' },
         workerId: (await mockParams).id, status: 'completed', localHeadSha: 'pushed-l2', commitCount: 1,
       });
+    });
+
+    it('§13.13 rule 4: a fix\'s no-op and fixed-elsewhere claims reach the completion gate, and the no-op claim reaches T4', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue(fixWorker);
+      mockTasksFindFirst.mockResolvedValue(fixTaskRow);
+      mockFixCompletionGate.mockReset();
+      mockFixCompletionGate.mockResolvedValue(null);
+      mockWorkflowAttemptEnded.mockReset();
+      mockWorkflowAttemptEnded.mockResolvedValue({ handled: true });
+      mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ ...fixWorker, status: 'completed' }]) })) })) });
+      mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+      const noopEvidence = { findingIds: ['r1:0'], evidence: 'already returns early' };
+      const fixedElsewhere = { findingIds: ['r1:1'], files: ['lib/z.ts'], reason: 'read there' };
+      const res = await PATCH(createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body: { status: 'completed', structuredOutput: { noopEvidence, fixedElsewhere } } }), { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(mockFixCompletionGate.mock.calls[0][0]).toMatchObject({ noopEvidence, fixedElsewhere });
+      expect(mockWorkflowAttemptEnded.mock.calls[0][0]).toMatchObject({ noopEvidence });
     });
 
     const failKernelAttempt = async (body: Record<string, unknown>, taskRow: Record<string, unknown> = fixTaskRow) => {
@@ -5839,6 +5951,118 @@ describe('PATCH /api/workers/[id]', () => {
         expect(capturedTaskSet?.result?.alreadyShippedIn?.prNumber).toBe(3851);
       });
 
+      describe('mission-branch refresh already on the branch', () => {
+        const refreshTask = {
+          ...shippedTask,
+          context: {
+            baseBranch: 'buildd/mission-x', requireMergeCommit: true,
+            refreshTrunk: 'dev', refreshTrunkSha: 'abc1234', refreshMissionHeadSha: 'def5678',
+          },
+        };
+        const compare = (status: string) => mockGithubApi.mockImplementation((_i: number, path: string) => {
+          if (path.includes('/pulls?head=')) return Promise.resolve([]);
+          if (path.includes('/compare/abc1234...')) return Promise.resolve({ status });
+          return Promise.resolve(null);
+        });
+
+        it('completes without a PR when the branch already contains the trunk sha', async () => {
+          mockTasksFindFirst.mockResolvedValue(refreshTask);
+          mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
+          compare('ahead');
+          expect((await complete({})).status).toBe(200);
+        });
+
+        it('keeps the slashes in the branch name when comparing', async () => {
+          mockTasksFindFirst.mockResolvedValue(refreshTask);
+          mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
+          mockGithubApi.mockClear();
+          compare('ahead');
+          await complete({});
+          const comparePaths = (mockGithubApi.mock.calls as any[]).map((c) => c[1] as string).filter((p) => p.includes('/compare/'));
+          expect(comparePaths.length).toBeGreaterThan(0);
+          for (const p of comparePaths) {
+            expect(p).toContain('buildd/mission-x');
+            expect(p).not.toContain('%2F');
+          }
+        });
+
+        it('still refuses when the branch does not contain the trunk sha', async () => {
+          mockTasksFindFirst.mockResolvedValue(refreshTask);
+          mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
+          compare('diverged');
+          expect((await complete({})).status).toBe(400);
+        });
+
+        it('own commits still need discardEdits', async () => {
+          mockTasksFindFirst.mockResolvedValue(refreshTask);
+          mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 1 });
+          compare('identical');
+          expect((await complete({})).status).toBe(400);
+          expect((await complete({ discardEdits: 'merge already pushed to the branch' })).status).toBe(200);
+        });
+
+        it('records the ancestry evidence on the task result', async () => {
+          mockTasksFindFirst.mockResolvedValue(refreshTask);
+          mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
+          compare('ahead');
+          expect((await complete({})).status).toBe(200);
+          expect(capturedTaskSet?.result?.refreshAlreadyLanded).toMatchObject({
+            branch: 'buildd/mission-x', trunk: 'dev', trunkSha: 'abc1234', evidence: 'branch_contains_trunk_sha',
+          });
+        });
+
+        // A refresh filed for a mission whose shipping PR then merged: the
+        // integration branch may be deleted (compare reads fail, isAncestor is
+        // null) and GitHub refuses an empty PR, so nothing could ever satisfy
+        // pr_required. The merged shipping PR is the evidence instead.
+        describe('the mission branch is gone after its shipping PR merged', () => {
+          const missionRefreshTask = { ...refreshTask, missionId: 'mission-1' };
+          const branchDeleted = () => mockGithubApi.mockImplementation((_i: number, path: string) => {
+            if (path.includes('/pulls?head=')) return Promise.resolve([]);
+            if (path.includes('/compare/')) return Promise.reject(new Error('GitHub API error: 404 Not Found'));
+            return Promise.resolve(null);
+          });
+          beforeEach(() => {
+            mockMissionShippingPrMerged.mockReset();
+            mockMissionShippingPrMerged.mockResolvedValue(null);
+          });
+
+          it('completes when the shipping PR merged, and records that PR', async () => {
+            mockTasksFindFirst.mockResolvedValue(missionRefreshTask);
+            mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
+            branchDeleted();
+            mockMissionShippingPrMerged.mockResolvedValue({ prNumber: 4686, via: 'github' });
+
+            expect((await complete({})).status).toBe(200);
+            expect(mockMissionShippingPrMerged.mock.calls[0]?.[0]).toBe('mission-1');
+            expect(capturedTaskSet?.result?.refreshAlreadyLanded).toMatchObject({
+              branch: 'buildd/mission-x', trunkSha: 'abc1234', evidence: 'mission_pr_merged', missionPrNumber: 4686,
+            });
+          });
+
+          it('neither the ancestry nor a merged shipping PR: still refused by the same gate', async () => {
+            mockTasksFindFirst.mockResolvedValue(missionRefreshTask);
+            mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
+            branchDeleted();
+
+            const res = await complete({});
+            expect(res.status).toBe(400);
+            const data = await res.json();
+            expect(data.gate).toBe('output_requirement');
+            expect(data.hint).toBe('create_pr');
+          });
+
+          it('a task that is not a refresh never counts a merged shipping PR', async () => {
+            mockTasksFindFirst.mockResolvedValue({ ...shippedTask, missionId: 'mission-1' });
+            mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
+            branchDeleted();
+            mockMissionShippingPrMerged.mockResolvedValue({ prNumber: 4686, via: 'github' });
+
+            expect((await complete({})).status).toBe(400);
+          });
+        });
+      });
+
       it('the plain pr_required refusal points at alreadyShippedIn', async () => {
         mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
         githubPr(true);
@@ -7374,6 +7598,79 @@ describe('PATCH /api/workers/[id]', () => {
 
       // Account should have budgetExhaustedAt set
       expect(mockAccountsUpdate).toHaveBeenCalled();
+    });
+
+    // Task e68327a1: one of two runners on a shared runner account hit the
+    // weekly limit of its OWN machine login. The wall is that runner's, so the
+    // account flag (which holds every runner) is not written, the pause carries
+    // the runner's seat key, and the task is claimable now by another runner.
+    describe("a wall on a runner's own machine login", () => {
+      const WEEKLY = "You've hit your weekly limit · resets Oct 16, 4am (UTC)";
+      function setup() {
+        mockBackendPausesInsert.mockClear();
+        mockBackendPausesFindMany.mockResolvedValue([]);
+        mockAccountsFindFirst.mockResolvedValue(null);
+        mockWakeTask.mockClear();
+        accountsUpdateSets = [];
+        lastBackendPauseValues = null;
+        mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'oauth', teamId: 'team-1', seatId: 'seat-1' });
+        mockWorkersFindFirst.mockResolvedValue({
+          id: 'worker-1', taskId: 'task-1', workspaceId: 'ws-1', accountId: 'account-1',
+          status: 'running', milestones: [], runner: 'headless://box-a', claimedByCloud: false,
+        });
+        mockTasksFindFirst.mockResolvedValue({
+          id: 'task-1', context: {}, workspaceId: 'ws-1', backend: 'claude', status: 'in_progress',
+          workspace: { teamId: 'team-1' },
+        });
+        const taskSets: any[] = [];
+        mockTasksUpdate.mockImplementation(() => ({
+          set: mock((vals: any) => { taskSets.push(vals); return { where: mock(() => Promise.resolve()) }; }),
+        }));
+        return { taskSets };
+      }
+      afterEach(() => {
+        mockResolveRunnerSeatWallKey.mockReset();
+        mockResolveRunnerSeatWallKey.mockImplementation(() => Promise.resolve({ seatKey: null, reason: 'test default' }));
+      });
+      const report = () => PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: WEEKLY, budgetExhausted: true },
+      }), { params: mockParams });
+
+      it('records the wall for that runner only and leaves the task claimable now', async () => {
+        const { taskSets } = setup();
+        mockResolveRunnerSeatWallKey.mockImplementation(() => Promise.resolve({ seatKey: 'runner:box-a', reason: 'machine login' }));
+
+        const res = await report();
+        expect(res.status).toBe(200);
+
+        expect(mockResolveRunnerSeatWallKey).toHaveBeenCalledWith(expect.objectContaining({
+          backend: 'claude', runner: 'headless://box-a', accountId: 'account-1', teamId: 'team-1', workspaceId: 'ws-1',
+        }));
+        expect(lastBackendPauseValues).toMatchObject({ backend: 'claude', reason: 'budget', seatKey: 'runner:box-a' });
+        // The account-wide flag would hold every runner on the account.
+        expect(accountsUpdateSets.some((s: any) => s?.budgetExhaustedAt)).toBe(false);
+        // Re-queued with no start floor and no "budget paused" banner: another
+        // runner can take it now; the walled runner's own claims defer it.
+        const requeue = taskSets.find((s: any) => s?.status === 'pending');
+        expect(requeue).toBeTruthy();
+        expect(requeue.startAt ?? null).toBeNull();
+        expect(requeue.backend).toBeUndefined();
+        expect(requeue.context?.budgetExhausted).toBeUndefined();
+        expect(wakeCausesFor('task-1')).toContain('task.requeued');
+      });
+
+      it('keeps the account-wide wall when the login identity is unknown', async () => {
+        const { taskSets } = setup();
+        // default mock: seatKey null
+        await report();
+        expect(lastBackendPauseValues?.seatKey ?? null).toBeNull();
+        expect(accountsUpdateSets.some((s: any) => s?.budgetExhaustedAt)).toBe(true);
+        const requeue = taskSets.find((s: any) => s?.status === 'pending');
+        expect(requeue?.context?.budgetExhausted).toBe(true);
+        expect(requeue?.startAt).toBeInstanceOf(Date);
+      });
     });
 
     // A per-session dollar cap (the SDK's maxBudgetUsd) is THIS task's own
@@ -8980,6 +9277,33 @@ describe('PATCH /api/workers/[id]', () => {
       expect(arg).not.toHaveProperty('summary');
     });
 
+    it('approve on an integration-refresh PR: the verdict-time inspector judges the trunk delta, like pre-flight', async () => {
+      // Without deltaBase the inspector read the PR diff against the mission
+      // branch, where a renumbered mission migration shows as deleted, and
+      // escalated a refresh the reviewer had approved (task 87c7e48d).
+      setupReviewerTaskCompletion('approve');
+      const reviewerTask = mockTasksFindFirst.getMockImplementation()!;
+      mockTasksFindFirst.mockImplementation((opts_?: any) => {
+        const cols = Object.keys(opts_?.columns ?? {});
+        if (cols.length === 1 && cols[0] === 'context') {
+          return Promise.resolve({ context: { requireMergeCommit: true, refreshTrunk: 'dev' } });
+        }
+        return reviewerTask(opts_);
+      });
+
+      await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+      expect(mockInspectPullRequestMigrations).toHaveBeenCalledTimes(1);
+      expect((mockInspectPullRequestMigrations.mock.calls[0] as any[])[0]).toMatchObject({ prNumber: 42, headSha: 'abc123', deltaBase: 'dev' });
+    });
+
+    it('approve on an ordinary PR: the verdict-time inspector gets no deltaBase', async () => {
+      setupReviewerTaskCompletion('approve');
+      await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+      expect(mockInspectPullRequestMigrations).toHaveBeenCalledTimes(1);
+      expect((mockInspectPullRequestMigrations.mock.calls[0] as any[])[0]).not.toHaveProperty('deltaBase');
+    });
+
     it('approve: honours a server override — escalates, does not merge, and says why', async () => {
       setupReviewerTaskCompletion('approve');
       mockEnforceServerSideEscalation.mockImplementation(() => ({
@@ -9066,14 +9390,18 @@ describe('PATCH /api/workers/[id]', () => {
       expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
     });
 
-    it('approve: a legacy reviewer for a PR the kernel owns posts no review and merges nothing', async () => {
+    it('approve: a legacy reviewer for a PR the kernel owns posts no review and merges nothing; the kernel adopts its verdict (00d288fd)', async () => {
       setupReviewerTaskCompletion('approve');
       mockKernelDeliveryForPr.mockImplementationOnce(async () => 'delivery-9');
+      mockAdoptReviewVerdict.mockClear();
 
       await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
 
       expect(mockPostPrReview).not.toHaveBeenCalled();
       expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+      // Not dropped: the kernel keeps it as the head's review (applied when the owner ends).
+      expect(mockAdoptReviewVerdict).toHaveBeenCalledTimes(1);
+      expect(mockAdoptReviewVerdict.mock.calls[0][0]).toMatchObject({ deliveryId: 'delivery-9', verdict: 'approve' });
     });
 
     it('approve: an unreadable delivery authority posts no review and merges nothing', async () => {
@@ -13441,6 +13769,33 @@ describe('PATCH /api/workers/[id]', () => {
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     });
 
+    it('a loop hold still reports the completed owner attempt to the kernel (approved PR must not stick in WORKING)', async () => {
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [makeLoopWorker({ status: 'completed' })]) })) })),
+      });
+      mockWorkersFindFirst.mockResolvedValue(makeLoopWorker({ commitCount: 1, prUrl: 'https://github.com/org/repo/pull/42', prNumber: 42 }));
+      mockTasksFindFirst.mockResolvedValue(makeLoopTask({ deliveryId: 'delivery-1', deliveryRole: 'owner' }));
+      mockFixCompletionGate.mockReset();
+      mockFixCompletionGate.mockResolvedValue(null);
+      mockWorkflowAttemptEnded.mockReset();
+      mockWorkflowAttemptEnded.mockResolvedValue({ handled: true });
+
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'completed',
+          verificationEvidence: { workerId: 'worker-1', iteration: 0, conditionType: 'command', exitCode: 1, outcome: 'failed' },
+        },
+      }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockWorkflowAttemptEnded).toHaveBeenCalledTimes(1);
+      expect(mockWorkflowAttemptEnded.mock.calls[0][0]).toMatchObject({
+        task: { id: 'task-1', deliveryId: 'delivery-1', deliveryRole: 'owner' }, status: 'completed',
+      });
+    });
+
     it('requeues task to pending when condition is unmet (command exit code != 0)', async () => {
       const taskSetCalls: any[] = [];
       const workerSetCalls: any[] = [];
@@ -13481,6 +13836,38 @@ describe('PATCH /api/workers/[id]', () => {
       expect(ctx.loopHistory[0].iteration).toBe(0);
       expect(ctx.loopHistory[0].satisfied).toBe(false);
       expect(ctx.resumeBranch).toBe('buildd/loop-branch');
+    });
+
+    it('pr_checks_green with CI still running waits for the webhook and leaves loopIteration unchanged', async () => {
+      const taskSetCalls: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [makeLoopWorker({ status: 'completed' })]) })) })),
+      });
+      mockTasksUpdate.mockReturnValue({
+        set: mock((u: any) => { taskSetCalls.push(u); return { where: mock(() => Promise.resolve()) }; }),
+      });
+      mockWorkersFindFirst.mockResolvedValue(makeLoopWorker({ prNumber: 42, prUrl: 'https://github.com/org/repo/pull/42', prLifecycleStatus: 'ci_running' }));
+      mockTasksFindFirst.mockResolvedValue(makeLoopTask({
+        loopConfig: { exitCondition: { type: 'pr_checks_green' }, maxLoops: 3, backoffMinutes: 0 },
+        loopIteration: 0,
+      }));
+
+      const before = Date.now();
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const taskPendingSet = taskSetCalls.find((u: any) => u.status === 'pending');
+      expect(taskPendingSet).toBeDefined();
+      expect(taskPendingSet.loopIteration).toBe(0);
+      // Still reachable by evaluateAndAdvanceLoopOnCiGreen's guard.
+      expect(taskPendingSet.loopState).toBe('condition_unmet');
+      expect(taskPendingSet.context.loopHistory ?? []).toEqual([]);
+      expect(taskPendingSet.context.loopWebhookWait).toMatchObject({ prNumber: 42 });
+      expect(new Date(taskPendingSet.startAt).getTime()).toBeGreaterThanOrEqual(before + 240 * 60_000);
     });
 
     it('sets task to failed with loopState=exhausted when maxLoops reached', async () => {
@@ -13655,7 +14042,136 @@ describe('PATCH /api/workers/[id]', () => {
       const res = await PATCH(req, { params: mockParams });
 
       expect(res.status).toBe(200);
-      expect(workerSetCalls.some((u: any) => JSON.stringify(u.verificationEvidence) === JSON.stringify(evidence))).toBe(true);
+      expect(workerSetCalls.some((u: any) => JSON.stringify(u.verificationEvidence) === JSON.stringify({ ...evidence, reportedVia: 'runner' }))).toBe(true);
+    });
+
+    // The agent session holds a per-task token and may PATCH its own worker.
+    // Its evidence is stamped as such, whatever it claims, and never replaces
+    // the runner's (lib/verification-provenance.ts).
+    describe('who reported the evidence', () => {
+      const asTaskToken = () => mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1', level: 'worker', taskScope: { taskId: 'task-1', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 },
+      });
+      const ok = { workerId: 'worker-1', iteration: 0, conditionType: 'command', exitCode: 0, outcome: 'ok' };
+      const failed = { workerId: 'worker-1', iteration: 0, conditionType: 'command', exitCode: 1, outcome: 'failed' };
+
+      it('stamps a task-token copy as the agent on a host-claimed worker, even when it claims to be the runner', async () => {
+        asTaskToken();
+        const workerSetCalls: any[] = [];
+        mockWorkersUpdate.mockReturnValue({
+          set: mock((u: any) => { workerSetCalls.push(u); return { where: mock(() => ({ returning: mock(() => [makeLoopWorker()]) })) }; }),
+        });
+        mockWorkersFindFirst.mockResolvedValue(makeLoopWorker({ claimedByCloud: false }));
+        mockTasksFindFirst.mockResolvedValue(makeLoopTask());
+
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+          body: { verificationEvidence: { ...ok, reportedVia: 'runner' } },
+        }), { params: mockParams });
+
+        expect(res.status).toBe(200);
+        expect(workerSetCalls.find((u: any) => u.verificationEvidence)?.verificationEvidence).toEqual({ ...ok, reportedVia: 'task_token' });
+      });
+
+      it('never lets a task-token copy replace the evidence the runner recorded', async () => {
+        asTaskToken();
+        const workerSetCalls: any[] = [];
+        mockWorkersUpdate.mockReturnValue({
+          set: mock((u: any) => { workerSetCalls.push(u); return { where: mock(() => ({ returning: mock(() => [makeLoopWorker()]) })) }; }),
+        });
+        mockWorkersFindFirst.mockResolvedValue(makeLoopWorker({ verificationEvidence: { ...failed, reportedVia: 'runner' } }));
+        mockTasksFindFirst.mockResolvedValue(makeLoopTask());
+
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+          body: { verificationEvidence: ok },
+        }), { params: mockParams });
+
+        expect(res.status).toBe(200);
+        expect(workerSetCalls.some((u: any) => 'verificationEvidence' in u)).toBe(false);
+      });
+
+      it('decides a task-token completion on the runner copy, not the agent one in the body', async () => {
+        asTaskToken();
+        const workerSetCalls: any[] = [];
+        mockWorkersUpdate.mockReturnValue({
+          set: mock((u: any) => { workerSetCalls.push(u); return { where: mock(() => ({ returning: mock(() => [makeLoopWorker({ status: 'completed' })]) })) }; }),
+        });
+        mockWorkersFindFirst.mockResolvedValue(makeLoopWorker({ verificationEvidence: { ...failed, reportedVia: 'runner' } }));
+        mockTasksFindFirst.mockResolvedValue(makeLoopTask());
+
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'completed', verificationEvidence: ok },
+        }), { params: mockParams });
+
+        expect(res.status).toBe(200);
+        expect(workerSetCalls[workerSetCalls.length - 1].exitCause).toBe('condition_unmet');
+      });
+
+      it('hands the runner report on an already-terminal worker to the late evidence path, and still refuses the write', async () => {
+        lateRunnerEvidenceCalls.length = 0;
+        mockWorkersFindFirst.mockResolvedValue(makeLoopWorker({ status: 'completed' }));
+        mockTasksFindFirst.mockResolvedValue(makeLoopTask());
+
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'completed', verificationEvidence: failed },
+        }), { params: mockParams });
+
+        expect(res.status).toBe(409);
+        expect(lateRunnerEvidenceCalls).toEqual([{ workerId: 'worker-1', taskId: 'task-1', evidence: failed }]);
+      });
+
+      // A cloud container runs its whole runner on a task token, so on a worker
+      // the claim route recorded as cloud-claimed that token is the runner.
+      it('counts a task-token copy as the runner on a worker a cloud container claimed', async () => {
+        asTaskToken();
+        const workerSetCalls: any[] = [];
+        mockWorkersUpdate.mockReturnValue({
+          set: mock((u: any) => { workerSetCalls.push(u); return { where: mock(() => ({ returning: mock(() => [makeLoopWorker({ claimedByCloud: true })]) })) }; }),
+        });
+        mockWorkersFindFirst.mockResolvedValue(makeLoopWorker({ claimedByCloud: true }));
+        mockTasksFindFirst.mockResolvedValue(makeLoopTask());
+
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+          body: { verificationEvidence: ok },
+        }), { params: mockParams });
+
+        expect(res.status).toBe(200);
+        expect(workerSetCalls.find((u: any) => u.verificationEvidence)?.verificationEvidence).toEqual({ ...ok, reportedVia: 'runner' });
+      });
+
+      it('hands a cloud runner late report on its task token to the late evidence path', async () => {
+        asTaskToken();
+        lateRunnerEvidenceCalls.length = 0;
+        mockWorkersFindFirst.mockResolvedValue(makeLoopWorker({ status: 'completed', claimedByCloud: true }));
+        mockTasksFindFirst.mockResolvedValue(makeLoopTask());
+
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'completed', verificationEvidence: failed },
+        }), { params: mockParams });
+
+        expect(res.status).toBe(409);
+        expect(lateRunnerEvidenceCalls).toEqual([{ workerId: 'worker-1', taskId: 'task-1', evidence: failed }]);
+      });
+
+      it('ignores a late task-token report on a terminal worker', async () => {
+        asTaskToken();
+        lateRunnerEvidenceCalls.length = 0;
+        mockWorkersFindFirst.mockResolvedValue(makeLoopWorker({ status: 'completed' }));
+        mockTasksFindFirst.mockResolvedValue(makeLoopTask());
+
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'completed', verificationEvidence: ok },
+        }), { params: mockParams });
+
+        expect(res.status).toBe(409);
+        expect(lateRunnerEvidenceCalls).toEqual([]);
+      });
     });
 
     it('does not set loop fields when task has no loopConfig', async () => {
@@ -13713,6 +14229,8 @@ describe('PATCH /api/workers/[id]', () => {
         set: mock(() => ({ where: mock(() => ({ returning: mock(() => [updatedWorker]) })) })),
       });
       mockHasCodexCredential.mockResolvedValue(false);
+      mockHoldTaskForCredential.mockClear();
+      mockResolveCredentialIdentity.mockClear();
     });
 
     it('flips task to Codex and requeues on auth failure when Codex credential is present', async () => {
@@ -13782,7 +14300,7 @@ describe('PATCH /api/workers/[id]', () => {
       expect(taskSetCalls.some((u: any) => u.backend === 'codex')).toBe(false);
     });
 
-    it('fails normally when auth error occurs but no Codex credential is present', async () => {
+    it('holds the task for the credential when no other backend can carry it (no Codex credential)', async () => {
       const taskSetCalls: any[] = [];
       mockTasksUpdate.mockReturnValue({
         set: mock((vals: any) => {
@@ -13810,10 +14328,59 @@ describe('PATCH /api/workers/[id]', () => {
 
       expect(res.status).toBe(200);
 
-      // Task must fail normally — no flip to Codex
+      // No flip to Codex, and not failed: held for the credential on its branch (§18.3, I-14).
       expect(taskSetCalls.some((u: any) => u.backend === 'codex')).toBe(false);
-      const failedUpdate = taskSetCalls.find((u: any) => u.status === 'failed');
-      expect(failedUpdate).toBeDefined();
+      expect(taskSetCalls.some((u: any) => u.status === 'failed')).toBe(false);
+      expect(mockHoldTaskForCredential).toHaveBeenCalledTimes(1);
+      const hold = (mockHoldTaskForCredential.mock.calls[0] as any[])[0];
+      expect(hold.taskId).toBe('task-1');
+      expect(hold.branch).toBe('buildd/task-1');
+      expect(hold.credential.credentialKey).toBe('account:account-1');
+    });
+
+    it('a 401 at session start ("OAuth access token is invalid") is auth_failure and is held, not failed (AC-18)', async () => {
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((vals: any) => { taskSetCalls.push(vals); return { where: mock(() => Promise.resolve()) }; }),
+      });
+      const workerSets: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((vals: any) => { workerSets.push(vals); return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) }; }),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'oauth', teamId: 'team-1' });
+      mockWorkersFindFirst.mockResolvedValue(makeAuthFailWorker());
+      mockTasksFindFirst.mockResolvedValue(makeClaudeTask());
+
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'Failed to authenticate. API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"OAuth access token is invalid"}}' },
+      }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(workerSets.some((u: any) => u.exitCause === 'auth_failure')).toBe(true);
+      expect(workerSets.some((u: any) => u.exitCause === 'code_failure')).toBe(false);
+      expect(taskSetCalls.some((u: any) => u.status === 'failed')).toBe(false);
+      expect(mockHoldTaskForCredential).toHaveBeenCalledTimes(1);
+      expect((mockResolveCredentialIdentity.mock.calls[0] as any[])[0]).toMatchObject({ accountId: 'account-1', authType: 'oauth' });
+    });
+
+    it('a cancelled task is not held', async () => {
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((vals: any) => { taskSetCalls.push(vals); return { where: mock(() => Promise.resolve()) }; }),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'api_key', teamId: 'team-1' });
+      mockWorkersFindFirst.mockResolvedValue(makeAuthFailWorker());
+      mockTasksFindFirst.mockResolvedValue({ ...makeClaudeTask(), status: 'cancelled' });
+
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'Invalid authentication credentials.' },
+      }), { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(mockHoldTaskForCredential).not.toHaveBeenCalled();
     });
 
     it('does not flip on a non-auth code failure', async () => {
@@ -13844,10 +14411,11 @@ describe('PATCH /api/workers/[id]', () => {
 
       expect(res.status).toBe(200);
 
-      // No Codex flip — non-auth failure should fall through to normal failure
+      // No Codex flip — a genuine failure fails exactly as before (AC-24)
       expect(taskSetCalls.some((u: any) => u.backend === 'codex')).toBe(false);
       const failedUpdate = taskSetCalls.find((u: any) => u.status === 'failed');
       expect(failedUpdate).toBeDefined();
+      expect(mockHoldTaskForCredential).not.toHaveBeenCalled();
     });
 
     it('does not flip again when authFailoverApplied is already set (ping-pong guard)', async () => {
@@ -13884,10 +14452,10 @@ describe('PATCH /api/workers/[id]', () => {
 
       expect(res.status).toBe(200);
 
-      // Guard active — must NOT flip again
+      // Guard active — must NOT flip again; the task is held for the credential instead.
       expect(taskSetCalls.some((u: any) => u.backend === 'codex')).toBe(false);
-      const failedUpdate = taskSetCalls.find((u: any) => u.status === 'failed');
-      expect(failedUpdate).toBeDefined();
+      expect(taskSetCalls.some((u: any) => u.status === 'failed')).toBe(false);
+      expect(mockHoldTaskForCredential).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -16792,6 +17360,33 @@ describe('PATCH /api/workers/[id] — instruction queue hand-off', () => {
     expect(sets.every(v => v.turns === undefined)).toBe(true);
   });
 
+  // /respond's interactive path queues a human answer as an `answer` worker
+  // message and records it in instructionHistory under the same id. The
+  // session acks it as a worker message; that ack is also the read receipt.
+  it('a worker-message ack settles the instruction-history entry sharing its id', async () => {
+    setup({
+      ...idWorker,
+      runner: 'mcp',
+      pendingInstructions: null,
+      instructionHistory: [
+        { id: 'i-1', type: 'instruction', message: 'other', timestamp: 1, deliveryState: 'pending' },
+        { id: 'msg-answer', type: 'instruction', message: 'Use JWT', timestamp: 2, deliveryState: 'pending' },
+      ],
+    });
+    const res = await patch({ workerMessagesDelivered: ['msg-answer'] });
+    expect(res.status).toBe(200);
+    const marked = sets.find(v => v.instructionHistory).instructionHistory;
+    expect(marked[0].deliveryState).toBe('pending');
+    expect(marked[1].deliveryState).toBe('acknowledged');
+    expect(sets.every(v => v.turns === undefined)).toBe(true);
+  });
+
+  it('a worker-message ack naming no history entry leaves instructionHistory unwritten', async () => {
+    setup({ ...idWorker, runner: 'mcp', pendingInstructions: null });
+    await patch({ workerMessagesDelivered: ['msg-from-another-agent'] });
+    expect(sets.some(v => 'instructionHistory' in v)).toBe(false);
+  });
+
   it('delivered and acknowledged in one PATCH (an MCP consumer reads the text in the same turn)', async () => {
     setup({ ...idWorker, runner: 'mcp' });
     await patch({ instructionsDelivered: 'Switch to the other auth flow', instructionIdsDelivered: ['i-1'], instructionsAcknowledged: ['i-1'] });
@@ -16991,7 +17586,7 @@ describe('PATCH /api/workers/[id] — completion fan-out (characterization)', ()
       'scheduleMemoryUseLabels',
     ]);
     expect(call('persistTaskEvidence')).toEqual(['persistTaskEvidence', 'task-1', WORKER_ID, { isSensitive: false }]);
-    expect(call('handleCriteriaVerificationOutcome')).toEqual(['handleCriteriaVerificationOutcome', 'task-1', VERIFICATION]);
+    expect(call('handleCriteriaVerificationOutcome')).toEqual(['handleCriteriaVerificationOutcome', 'task-1', { ...VERIFICATION, reportedVia: 'runner' }]);
     expect(call('handleProseEvalOutcome')).toEqual(['handleProseEvalOutcome', 'task-1', STRUCTURED]);
     expect(call('handleCriteriaWorkerEvalOutcome')).toEqual(['handleCriteriaWorkerEvalOutcome', 'task-1', STRUCTURED]);
     expect(call('completeMissionIfVerified')).toEqual(['completeMissionIfVerified', 'mission-1', { path: 'criteria_eval', predicate: 'task task-1 reached completed' }]);
@@ -17349,6 +17944,13 @@ describe('PATCH /api/workers/[id] — completion verdicts (characterization)', (
     mockLoadVisualAuditEvidence.mockResolvedValue(okEvidence as any);
   });
 
+  it('a held worker PR records the method it merges with on the task context', async () => {
+    setup();
+    releaseReturns({ status: 'pending_ci', message: 'Waiting', releasePrNumber: 12, releaseMergeMethod: 'squash' });
+    await patch({ status: 'completed', summary: 'Done.', summarySource: 'agent' });
+    expect(releaseSets()[0]).toMatchObject({ context: { releasePrPending: true, releasePrNumber: 12, releaseMergeMethod: 'squash' } });
+  });
+
   it('release held for CI: no task.completed, no push and no chat post until the CI settles it', async () => {
     setup();
     releaseReturns({ status: 'pending_ci', message: 'Waiting on CI', releasePrNumber: 9, releasePrUrl: 'https://example.test/pr/9' });
@@ -17426,6 +18028,16 @@ describe('PATCH /api/workers/[id] — completion verdicts (characterization)', (
     expect(runnerOutcomes()).toEqual(['completed']);
     expect(missionVerdicts()).toEqual([['mission-1', { path: 'criteria_eval', predicate: 'task task-1 reached completed' }]]);
     expect(evidenceWrites()).toHaveLength(1);
+  });
+
+  it('root causes hear the outcome with the worker\'s runner: a failure to record, a completion to verify', async () => {
+    setup();
+    mockRecordRootCauseForOutcome.mockClear();
+    releaseReturns({ status: 'completed', message: 'Released to main' });
+    await patch({ status: 'completed', summary: 'Done.', summarySource: 'agent' });
+    expect(mockRecordRootCauseForOutcome.mock.calls.map(c => c[0])).toEqual([
+      { taskId: 'task-1', accountId: 'account-1', status: 'completed', error: undefined },
+    ]);
   });
 });
 
@@ -17523,5 +18135,107 @@ describe('PATCH /api/workers/[id] — OAuth session owner check', () => {
   it('the bld_ key path is unchanged: the claiming account gets 200', async () => {
     setup({ id: 'account-1', authType: 'api', level: 'worker' }, { ...sessionWorker, runner: 'runner-1', claimedByUserId: null });
     expect((await patch()).status).toBe(200);
+  });
+});
+
+// ask_human (packages/core/mcp-tools.ts) parks an interactive session's own
+// worker through this route, exactly as a runner's AskUserQuestion does. Its
+// expiry is the waiting_input sweep's, keyed on updated_at, so the session's
+// receive_messages polls while it waits must not push that clock forward.
+describe('PATCH /api/workers/[id] — interactive worker parked on a question', () => {
+  let capturedSet: any = null;
+  const interactive = {
+    id: 'worker-1', accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1',
+    runner: 'mcp', status: 'running', claimedByUserId: null, pendingInstructions: null,
+    milestones: [], instructionHistory: [],
+  };
+
+  function setup(worker: any) {
+    capturedSet = null;
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'api', level: 'worker' });
+    mockWorkersFindFirst.mockResolvedValue(worker);
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((updates: any) => {
+        capturedSet = updates;
+        return { where: mock(() => ({ returning: mock(() => [{ ...worker, ...updates }]) })) };
+      }),
+    });
+    mockTasksFindFirst.mockResolvedValue(null);
+    mockWorkersFindMany.mockResolvedValue([]);
+    mockMissionNotesFindMany.mockResolvedValue([]);
+  }
+
+  const patch = (body: Record<string, unknown>) => PATCH(
+    createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body }),
+    { params: mockParams },
+  );
+
+  it('asking parks the worker and reaches the owner, the same as a runner question', async () => {
+    setup(interactive);
+    mockNotify.mockClear();
+    mockNotifySubject.mockClear();
+    const res = await patch({ status: 'waiting_input', waitingFor: { type: 'question', prompt: 'Flag or straight on?', options: ['flag', 'straight'] } });
+    expect(res.status).toBe(200);
+    expect(capturedSet.status).toBe('waiting_input');
+    expect(capturedSet.waitingFor).toMatchObject({ type: 'question', prompt: 'Flag or straight on?' });
+    expect(capturedSet.updatedAt).toBeInstanceOf(Date);
+    expect(mockNotifySubject.mock.calls.some((c: any) => c[1] === 'needsAttention')).toBe(true);
+  });
+
+  it('a receive_messages poll while parked leaves updated_at where the park set it', async () => {
+    const parkedAt = new Date('2026-10-01T09:00:00.000Z');
+    setup({ ...interactive, status: 'waiting_input', updatedAt: parkedAt, waitingFor: { type: 'question', prompt: 'Flag or straight on?' } });
+    const res = await patch({ consumer: 'agent' });
+    expect(res.status).toBe(200);
+    expect(capturedSet).not.toBeNull();
+    expect(capturedSet.updatedAt).toEqual(parkedAt);
+  });
+
+  // The poll heartbeat: a session that stopped polling is gone, and /respond
+  // sends its answer cold. Recorded in waitingFor, by its own write that
+  // never touches updated_at (the park clock) and never resurrects a
+  // question an answer has just cleared.
+  it('a receive_messages poll while parked stamps waitingFor.sessionSeenAt without moving the park clock', async () => {
+    const parkedAt = new Date('2026-10-01T09:00:00.000Z');
+    const sets: any[] = [];
+    setup({ ...interactive, status: 'waiting_input', updatedAt: parkedAt, waitingFor: { type: 'question', prompt: 'Q?' } });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((updates: any) => {
+        sets.push(updates);
+        capturedSet = updates;
+        return { where: mock(() => Object.assign(Promise.resolve([]), { returning: mock(() => [{ ...interactive, ...updates }]) })) };
+      }),
+    });
+    const res = await patch({ consumer: 'agent' });
+    expect(res.status).toBe(200);
+    const beat = sets.find(u => u.waitingFor && u.waitingFor.type === 'sql');
+    expect(beat).toBeTruthy();
+    expect(JSON.stringify(beat.waitingFor.strings)).toContain('sessionSeenAt');
+    expect(beat.updatedAt).toBeUndefined();
+  });
+
+  it('a runner worker is never stamped', async () => {
+    const sets: any[] = [];
+    setup({ ...interactive, runner: 'runner-1', status: 'waiting_input', waitingFor: { type: 'question', prompt: 'Q?' } });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((updates: any) => {
+        sets.push(updates);
+        return { where: mock(() => Object.assign(Promise.resolve([]), { returning: mock(() => [{ ...interactive, ...updates }]) })) };
+      }),
+    });
+    await patch({ consumer: 'runner' });
+    expect(sets.some(u => u.waitingFor && u.waitingFor.type === 'sql')).toBe(false);
+  });
+
+  it('a runner worker parked on a question is unchanged: every PATCH bumps updated_at', async () => {
+    setup({ ...interactive, runner: 'runner-1', status: 'waiting_input', waitingFor: { type: 'question', prompt: 'Q?' } });
+    await patch({ consumer: 'runner' });
+    expect(capturedSet.updatedAt).toBeInstanceOf(Date);
+  });
+
+  it('resuming (status running) restarts the clock', async () => {
+    setup({ ...interactive, status: 'waiting_input', waitingFor: { type: 'question', prompt: 'Q?' } });
+    await patch({ status: 'running', consumer: 'agent' });
+    expect(capturedSet.updatedAt).toBeInstanceOf(Date);
   });
 });

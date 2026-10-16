@@ -32,6 +32,7 @@ import { sweepAbandonedPathClaims } from './path-claims';
 import { detachInteractiveWorkersOfEndedTasks } from '@/lib/interactive-detach';
 import { sweepStaleUploads } from '@/lib/artifact-upload';
 import { removeOrphanChatAttachments } from '@/lib/artifact-attachment-cleanup';
+import { removeDetachedTeamFiles } from '@/lib/artifact-team-files';
 import { isStorageConfigured } from '@/lib/storage';
 
 export async function GET(req: NextRequest) {
@@ -54,9 +55,14 @@ async function runCronJob(report: CronReport): Promise<NextResponse> {
     console.error('[maintenance] chat attachment sweep failed', err instanceof Error ? err.message : err);
     return { removed: 0, objectsRemoved: 0 };
   });
-  const result = { heartbeatOrphans, abandonedClaimsReleased, interactiveDetached, uploads, chatAttachments };
+  // Stored files a team deletion detached and a crash left behind.
+  const teamFiles = await removeDetachedTeamFiles().catch((err) => {
+    console.error('[maintenance] deleted-team file sweep failed', err instanceof Error ? err.message : err);
+    return { removed: 0, objectsRemoved: 0 };
+  });
+  const result = { heartbeatOrphans, abandonedClaimsReleased, interactiveDetached, uploads, chatAttachments, teamFiles };
   // Nothing to repair is the healthy state, so changed=0 with errors=0 is fine.
   // Every sweep logs and swallows its own failures, so errors stays 0 here.
-  report({ changed: heartbeatOrphans + abandonedClaimsReleased + interactiveDetached + uploads.finalized + uploads.removed + chatAttachments.removed, errors: 0, result });
+  report({ changed: heartbeatOrphans + abandonedClaimsReleased + interactiveDetached + uploads.finalized + uploads.removed + chatAttachments.removed + teamFiles.removed, errors: 0, result });
   return NextResponse.json(result);
 }

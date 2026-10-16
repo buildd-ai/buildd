@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import {
+  uploadStagingKey,
   MAX_OBJECT_FILENAME_LENGTH,
   safeObjectFilename,
   assertSafeKeySegment,
@@ -375,5 +376,18 @@ describe('buildScoutRunEvidenceObjectKey', () => {
     ] as const) {
       expect(() => buildScoutRunEvidenceObjectKey(...args)).toThrow();
     }
+  });
+});
+
+describe('uploadStagingKey', () => {
+  const key = 'artifacts/ws-1/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee/report.pdf';
+  it('is a sibling of the key, never the key itself', () => {
+    expect(uploadStagingKey(key)).toBe(`${key}.upload`);
+    expect(uploadStagingKey(key)).not.toBe(key);
+    // A file already named *.upload still stages elsewhere.
+    expect(uploadStagingKey(`${key}.upload`)).not.toBe(`${key}.upload`);
+  });
+  it('refuses a key that is not normalized', () => {
+    expect(() => uploadStagingKey('../x')).toThrow();
   });
 });

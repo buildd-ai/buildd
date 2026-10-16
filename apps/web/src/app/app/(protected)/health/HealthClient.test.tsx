@@ -348,7 +348,7 @@ describe('HealthClient — Trend', () => {
     });
     expect(html).not.toContain('health-section-usage');
     expect(html).toContain('href="/app/team"');
-    expect(html).toContain('per role →');
+    expect(html).toContain('per agent →');
   });
 
   it('keeps the two lines /app/team cannot serve, worded task-keyed', () => {
@@ -357,7 +357,7 @@ describe('HealthClient — Trend', () => {
       usageStats: { total: 40, completed: 30, failed: 4, unassigned: 6 },
     });
     expect(html).toContain('30/40 tasks completed (30d)');
-    expect(html).toContain('6 tasks ran with no role (30d)');
+    expect(html).toContain('6 tasks ran with no agent (30d)');
   });
 
   it('states the shared seat-auth cause once, without removing the per-stat markers', () => {

@@ -6,6 +6,7 @@ import { db } from '@buildd/core/db';
 import { workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { getDispatchHealth } from '@/lib/dispatch-health';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -49,7 +50,7 @@ export async function GET(req: NextRequest) {
       if (!UUID_RE.test(workspaceId)) {
         return NextResponse.json({ error: `Invalid workspaceId: expected a UUID, got "${workspaceId}".` }, { status: 400 });
       }
-      const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId), columns: { id: true, teamId: true } });
+      const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, workspaceId)), columns: { id: true, teamId: true } });
       if (!ws || !teamIds.includes(ws.teamId) || (account && !taskScopeAllowsWorkspace(account, ws.id))) {
         return NextResponse.json({ error: 'Workspace not found or not in your team' }, { status: 404 });
       }
@@ -57,7 +58,7 @@ export async function GET(req: NextRequest) {
     } else if (account?.taskScope) {
       scoped = [account.taskScope.workspaceId];
     } else if (account) {
-      const rows = await db.query.workspaces.findMany({ where: eq(workspaces.teamId, account.teamId), columns: { id: true } });
+      const rows = await db.query.workspaces.findMany({ where: sqlWhere(eq(workspaces.teamId, account.teamId)), columns: { id: true } });
       scoped = rows.map((w: { id: string }) => w.id);
     } else {
       scoped = await workspaceIdsForTeams(teamIds);

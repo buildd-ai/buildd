@@ -1,7 +1,7 @@
 import 'server-only';
 import { drizzle } from 'drizzle-orm/neon-http';
 import { neon, NeonQueryFunction } from '@neondatabase/serverless';
-import * as schema from './schema';
+import { relations } from './relations';
 import { config } from '../config';
 import { applyNeonLocalOverride } from './neon-local';
 import { capturePostgresErrorOnSpan } from './error-span';
@@ -10,7 +10,7 @@ import { assertTestDatabaseSafe } from './test-guard';
 
 // Lazy initialization to avoid errors during build
 let _sql: NeonQueryFunction<false, false> | null = null;
-let _db: ReturnType<typeof drizzle<typeof schema>> | null = null;
+let _db: ReturnType<typeof drizzle<typeof relations>> | null = null;
 
 function getSql() {
   if (!_sql) {
@@ -36,13 +36,13 @@ function getSql() {
 const DISABLE_WRITES = process.env.DISABLE_WRITES === 'true';
 const WRITE_OPS = new Set(['insert', 'update', 'delete']);
 
-export const db = new Proxy({} as ReturnType<typeof drizzle<typeof schema>>, {
+export const db = new Proxy({} as ReturnType<typeof drizzle<typeof relations>>, {
   get(_target, prop) {
     if (DISABLE_WRITES && typeof prop === 'string' && WRITE_OPS.has(prop)) {
       throw new Error(`[DISABLE_WRITES] Mutation blocked: db.${prop}() called in read-only mode`);
     }
     if (!_db) {
-      _db = drizzle(getSql(), { schema });
+      _db = drizzle({ client: getSql(), relations });
     }
     return (_db as any)[prop];
   },

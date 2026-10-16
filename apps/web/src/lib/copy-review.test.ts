@@ -4,6 +4,7 @@ import {
   applyCopyReviewGate,
   changedCopyStrings,
   parseCopyFindings,
+  prNeedsCopyReview,
   renderCopyReviewSection,
 } from './copy-review';
 import { REVIEWER_TASK_OUTPUT_SCHEMA } from './reviewer';
@@ -145,5 +146,23 @@ describe('applyCopyReviewGate', () => {
   it('drops malformed findings instead of trusting them', async () => {
     expect(parseCopyFindings([{ verdict: 'rewrite' }, 'x', null])).toEqual([]);
     expect(parseCopyFindings('nope')).toEqual([]);
+  });
+});
+
+describe('prNeedsCopyReview', () => {
+  const adminFiles = [{
+    filename: 'src/app/(admin)/decisions/page.tsx', status: 'modified', additions: 1, deletions: 0,
+    patch: '@@ -1,1 +1,2 @@\n+<p>Nothing waiting on you right now.</p>',
+  }];
+  const gitConfig = { copyReview: { voiceGuide: 'docs/voice.md', mode: 'gate' } };
+
+  it('is true for a workspace repo with its own layout that opted in and changed copy', async () => {
+    expect(await prNeedsCopyReview(gitConfig, adminFiles)).toBe(true);
+  });
+  it('is false when the workspace has not opted in', async () => {
+    expect(await prNeedsCopyReview({}, adminFiles)).toBe(false);
+  });
+  it('is false when the PR adds no copy', async () => {
+    expect(await prNeedsCopyReview(gitConfig, [{ ...adminFiles[0], filename: 'src/lib/x.ts' }])).toBe(false);
   });
 });

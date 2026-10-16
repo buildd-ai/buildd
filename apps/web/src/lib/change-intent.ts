@@ -21,6 +21,7 @@ export { matchesSurface } from './surface-ordering-config';
 import { matchesSurface, resolveSerializedSurfaces } from './surface-ordering-config';
 import { overlapIsHard } from './hard-overlap-surfaces';
 import type { ManifestOverlapKind } from '@buildd/core/path-overlap';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Given a list of file paths and the workspace gitConfig, returns the surfaces
@@ -58,39 +59,9 @@ export function overlapTouchesSerializedSurface(paths: string[], gitConfig: Work
   return overlapIsHard(paths, kind, gitConfig, resolveSerializedSurfaces);
 }
 
-/**
- * Given a task's pathManifest and the workspace gitConfig, returns additional
- * anchor files that should be auto-appended to the manifest.
- *
- * Drizzle migrations example: any path under "packages/core/drizzle" triggers
- * auto-append of "packages/core/drizzle/meta/_journal.json" so the claim-route
- * serialisation (findBlockingPr) fires on the anchor file rather than individual
- * migration filenames (which have distinct names despite sharing the integer index).
- */
-export function resolveAnchorInjections(
-  pathManifest: string[],
-  gitConfig: WorkspaceGitConfig | null | undefined,
-): string[] {
-  const namespaces = gitConfig?.sequenceNamespaces;
-  if (!namespaces?.length || !pathManifest.length) return [];
-
-  const toAdd: string[] = [];
-  const under = (path: string, dir: string) => path === dir || path.startsWith(dir + '/');
-  for (const ns of namespaces) {
-    const dir = ns.dir.replace(/\/+$/, '');
-    // A schema trigger (e.g. schema.ts) generates INTO the namespace without
-    // touching it: a manifest naming the trigger, or a directory containing
-    // it, serializes on the anchor too. The directory-only rule misses it.
-    const triggers = (ns.triggers ?? []).map((t) => t.replace(/\/+$/, ''));
-    const overlaps = pathManifest.some(
-      (p) => under(p, dir) || triggers.some((t) => under(t, p.replace(/\/+$/, ''))),
-    );
-    if (overlaps && !pathManifest.includes(ns.anchorFile)) {
-      toAdd.push(ns.anchorFile);
-    }
-  }
-  return toAdd;
-}
+// The anchor rule lives in core (the creation-manifest apply path needs it
+// too); re-exported here so existing callers keep their import.
+export { resolveAnchorInjections } from '@buildd/core/sequence-anchors';
 
 // ── Intent recording ─────────────────────────────────────────────────────────
 
@@ -191,7 +162,7 @@ export async function findConflictingIntents(
   if (!matchedSurfaces.length) return [];
 
   const rows = await db.query.changeIntents.findMany({
-    where: conflictingIntentsWhere(workspaceId, matchedSurfaces, excludeTaskId),
+    where: sqlWhere(conflictingIntentsWhere(workspaceId, matchedSurfaces, excludeTaskId)),
     columns: { taskId: true, prNumber: true, surface: true },
   });
 
@@ -212,7 +183,7 @@ async function postConflictNote(
   try {
     // Resolve missionId so the note appears on the mission timeline too
     const task = await db.query.tasks.findFirst({
-      where: eq(tasks.id, taskId),
+      where: sqlWhere(eq(tasks.id, taskId)),
       columns: { missionId: true, workspaceId: true },
     });
 

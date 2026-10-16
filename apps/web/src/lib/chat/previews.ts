@@ -96,7 +96,7 @@ function taskLabel(t: Obj): string {
 function workerDetail(t: Obj, live: Obj | null): string | undefined {
   if (t?.context?.heldBy) return 'held';
   if (!live) return t?.status ? String(t.status) : undefined;
-  if (live.status === 'waiting_input') return 'needs input';
+  if (live.status === 'waiting_input') return 'has a question';
   return `running${live.runner ? ` on ${runnerName(live.runner)}` : ''}`;
 }
 
@@ -214,7 +214,7 @@ const answerQuestion: Builder = async (input, env) => {
     input: { ...input, taskId: task.id, workerId: waiting.id },
     preview: {
       v: 1, verb: 'Answer the question on',
-      target: { kind: 'question', id: waiting.id, label: taskLabel(task), detail: 'needs input', workspaceId: task.workspaceId ?? null },
+      target: { kind: 'question', id: waiting.id, label: taskLabel(task), detail: 'has a question', workspaceId: task.workspaceId ?? null },
       changes, note: 'The agent resumes with this answer.',
       fingerprint: fingerprint(waiting.id, changes, { prompt }),
     },
@@ -271,7 +271,7 @@ const createTask: Builder = async (input, env) => {
   if (desc) changes.push({ label: 'Brief', before: null, after: desc });
   if (depLabels.length) changes.push({ label: 'After', before: null, after: depLabels.join(', ') });
   if (str(input.baseBranch)) changes.push({ label: 'Branch', before: null, after: str(input.baseBranch)! });
-  if (str(input.roleSlug)) changes.push({ label: 'Role', before: null, after: str(input.roleSlug)! });
+  if (str(input.roleSlug)) changes.push({ label: 'Agent', before: null, after: str(input.roleSlug)! });
   const paths = listOf(input.pathManifest).filter((p): p is string => typeof p === 'string');
   if (paths.length) changes.push({ label: 'Paths', before: null, after: clip(paths.join(', '), 200)! });
   if (standalone) changes.push({ label: 'Mission', before: null, after: 'none' });

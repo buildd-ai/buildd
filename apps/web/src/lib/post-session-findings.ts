@@ -77,6 +77,8 @@ export interface FindingRunRow {
   mode: PostSessionQualityMode;
   /** The workspace's current gitConfig, for the policy thresholds. */
   gitConfig: { postSessionQuality?: PostSessionQualityConfig | null } | null;
+  /** Set when triage skipped the run and it was sampled for analysis only to label the skip. */
+  sample?: { rate: number | null } | null;
 }
 
 export interface StoredFinding extends FindingLedgerAggregate {
@@ -149,7 +151,7 @@ export interface RecordedFinding {
 }
 
 export type RecordPostSessionFindingsResult =
-  | { status: 'recorded'; runId: string; findings: RecordedFinding[] }
+  | { status: 'recorded'; runId: string; findings: RecordedFinding[]; sampled?: boolean }
   | { status: 'action_failed'; runId: string; error: string }
   | { status: 'not_ready'; runId: string; state: PostSessionRunState }
   | { status: 'missing' }
@@ -297,6 +299,8 @@ async function labelTriageDecision(
       source: POST_SESSION_OUTCOME_SOURCE,
       label: analysis.findings.some(f => f.class !== 'no_action') ? 'actionable' : 'not_actionable',
       observedAt: now,
+      // A sampled skip's label is a recall measurement; the rate lets a readout reweight it.
+      ...(run.sample ? { metadata: { sampled: true, sampleRate: run.sample.rate } } : {}),
     });
   } catch {
     // The analysis is already recorded.
@@ -320,6 +324,12 @@ export async function recordPostSessionFindings(
     const run = await store.loadRun(runId);
     if (!run) return { status: 'missing' };
     if (run.state !== 'triaged') return { status: 'not_ready', runId, state: run.state };
+    // A sampled skip is analysed only to label the skip: nothing is folded or filed.
+    if (run.sample) {
+      await store.markRunAnalysed(runId, analysis.coverage, now);
+      await labelTriageDecision(run, analysis, deps.labelOutcome ?? labelDecisionOutcome, now);
+      return { status: 'recorded', runId, findings: [], sampled: true };
+    }
     const policy = resolveFindingActionPolicy(run.gitConfig);
 
     const recorded: RecordedFinding[] = [];
@@ -360,6 +370,8 @@ export interface RecordTriagedSummary {
   duplicatesSuppressed: number;
   /** Analysed runs whose transcript could not be read (coverage degraded, not failed). */
   transcriptUnread: number;
+  /** Sampled skips analysed and labelled. Not in `recorded` or any act count. */
+  sampledLabelled: number;
 }
 
 export const POST_SESSION_RECORD_LIMIT = 20;
@@ -393,6 +405,7 @@ export async function recordTriagedRuns(opts: {
   const summary: RecordTriagedSummary = {
     candidates: 0, recorded: 0, notReady: 0, analyseErrors: 0, recordErrors: 0, deferred: 0,
     actionable: 0, tasksFiled: 0, proposalsFiled: 0, deduped: 0, wouldAct: 0, duplicatesSuppressed: 0, transcriptUnread: 0,
+    sampledLabelled: 0,
   };
   const now = opts.now ?? new Date();
   const shouldContinue = opts.shouldContinue ?? (() => true);
@@ -426,7 +439,9 @@ export async function recordTriagedRuns(opts: {
       continue;
     }
     const r = await recordPostSessionFindings(runId, a.analysis, { store, now });
-    if (r.status === 'recorded') {
+    if (r.status === 'recorded' && r.sampled) {
+      summary.sampledLabelled++;
+    } else if (r.status === 'recorded') {
       summary.recorded++;
       if (TRANSCRIPT_READ_FAILURES.has(a.analysis.coverage.traceMissing.reason ?? '')) summary.transcriptUnread++;
       for (const f of r.findings) {

@@ -1,6 +1,7 @@
 import { db } from '@buildd/core/db';
 import { after } from 'next/server';
-import { missions, workspaces, workspaceSkills, missionNotes, workers, tasks, initiatives, artifacts, orchestrationManifestPredictions } from '@buildd/core/db/schema';
+import { loadBuildEstimateRows } from '@/lib/mission-build-estimates';
+import { missions, workspaces, workspaceSkills, missionNotes, workers, tasks, initiatives, artifacts, orchestrationManifestPredictions, specs, users } from '@buildd/core/db/schema';
 import { eq, and, or, inArray, desc, isNotNull, isNull, ne } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
@@ -10,6 +11,7 @@ import { formatCompletionRecord, situationRepeatsCompletion } from '@/lib/missio
 import { computeSupersededFailedTasks } from '@/lib/mission-task-superseded';
 import { getDeliveryViewsForTasks, replacedFailedTaskIds } from '@/lib/workflow/delivery-view';
 import { ownerDeliveryDisplays } from '@/lib/workflow/delivery-display';
+import { overlayDeliveryLifecycle } from '@/lib/delivery-overlay';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
 import { deriveTaskHealthSignal, foreignDependencyIds, formatNextRun, selectMissionCompletionSummary, MISSION_COMPLETED_NOTE_TITLE } from '@/lib/mission-helpers';
 import { computeMissionProgress, deriveMissionProgressMetric, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, hasPendingDeliverableWork as computeHasPendingDeliverableWork, computeMissionAuthorshipHealth } from '@buildd/core/mission-helpers';
@@ -20,12 +22,14 @@ import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/l
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { isOverdue as checkOverdue } from '@/lib/heartbeat-helpers';
 import { describeLastCheck, selectOrganizerRuns } from '@/lib/mission-checkins';
-import { isSystemWorkspace, displayWorkspaceName, type GoalCriterion, type GoalCriteriaState } from '@buildd/shared';
+import { isSystemWorkspace, displayWorkspaceName, type GoalCriterion, type GoalCriteriaState, type LivingSpecGoalCriterion } from '@buildd/shared';
 import { resolvePolicy } from '@/lib/merge-policy';
 import { selectMissionRecords } from '@/lib/flight-strip-nav';
 import MissionVerifiedPill from './MissionVerifiedPill';
 import MissionOverflowMenu from './MissionOverflowMenu';
 import MissionNoticeSlot, { noticeNeedsPerson } from './MissionNoticeSlot';
+import MissionRecoveryNotice from '@/components/incidents/MissionRecoveryNotice';
+import { loadTaskRecoveryViewsForViewer } from '@/lib/incident-recovery-load';
 import { AskAboutLink } from '@/components/chat/ChatEntry';
 import MissionMergePolicyRow from '@/components/MissionMergePolicyRow';
 import MissionReviewSummary from './MissionReviewSummary';
@@ -50,10 +54,11 @@ import ScheduleWizard from './ScheduleWizard';
 import MissionConfig from './MissionConfig';
 import { MissionNotesSheet } from './MissionFeed';
 import { mastheadBack, parseMissionOrigin } from './MissionDetailView';
-import MissionLayoutShell, { MissionBoardHeader, MissionLayoutTabs } from './MissionLayoutShell';
+import MissionLayoutShell, { MISSION_HEADER_ACTION, MissionBoardHeader, MissionLayoutTabs } from './MissionLayoutShell';
 import FlowTimeline from './FlowTimeline';
 import { expectedMinutesFromPredictions, sameFilesFromRows } from '@/lib/flow-timeline';
-import MissionOverview from './MissionOverview';
+import MissionOverview, { type MissionChecksSource } from './MissionOverview';
+import { missionPlanInputs } from '@/lib/mission-plan-source';
 import MissionFeedLayout from './MissionFeedLayout';
 import { missionSummaryLine } from '@/lib/mission-summary-line';
 import { buildMissionBoard, toBoardTaskInput } from '@/lib/mission-board';
@@ -69,10 +74,16 @@ import { MissionVisualReviewProvider } from './MissionVisualReview';
 import { MissionSurfaceAuditWaiverProvider } from './MissionSurfaceAuditWaiver';
 import { loadSurfaceAuditWaiver } from '@/lib/mission-surface-audit-gate';
 import MissionVisualReviewSetting from './MissionVisualReviewSetting';
+import MissionBranchPanel from './MissionBranchPanel';
+import { branchPanelHasAction } from '@/lib/mission-branch-panel';
+import { verifiedHold, visualCheck, waiverActorEmails, waiverActorName, type MergeTier } from '@/lib/mission-checks';
+import MissionVisualRecord from './MissionVisualRecord';
+import { getMissionVisualReviewState } from '@/lib/workflow/visual-review-state-load';
+import { presentVisualReview } from '@/lib/workflow/visual-review-presentation';
 import MissionScreensRow from './MissionScreensRow';
 import MissionRecordsSheet from './MissionRecordsSheet';
-import { MissionReleaseSection } from './MissionReleaseSection';
-import { buildDeliverySteps, deliveryReleaseInput, missionPrCount, missionTrunkMergedAt } from '@/lib/mission-delivery';
+import { MissionReleaseSection, missionReleaseRow } from './MissionReleaseSection';
+import { buildDeliverySteps, deliveryReleaseInput, missionPrCount, missionReleaseStatus, missionTrunkMergedAt } from '@/lib/mission-delivery';
 import { classifyReleaseState } from '@/lib/release-state';
 import { taskPageHref } from '@/lib/mission-task-href';
 import MissionDecisionSheet from './MissionDecisionSheet';
@@ -85,7 +96,8 @@ import { resolveMissionBreadcrumb } from '@/lib/initiative-breadcrumb';
 import { SwipeProvider } from '@/components/SwipeableRow';
 import { DisplayTimezoneProvider } from '@/components/DisplayTimezone';
 import { getTeamTimezoneSetting } from '@/lib/team-timezone';
-import { refreshWorkerMergeStateIfStale } from '@/lib/pr-reconcile';
+import { displayTaskTitle } from '@/lib/task-title';
+import { observeMergeStateOnRender } from '@/lib/pr-state-refresh';
 import { loadReleaseFooterData } from '@/lib/release-footer';
 import { loadMissionCarryingReleaseId } from '@/lib/mission-carrying-release';
 import type { WorkspaceReleaseConfig, WorkspaceGitConfig } from '@buildd/core/db/schema';
@@ -95,14 +107,19 @@ import { countOf } from '@/lib/plural';
 import {
   deriveMissionIntegrationPr,
   shouldRenderMissionPrBlock,
-  MISSION_PR_STATE_LABEL,
 } from '@/lib/mission-integration-pr';
+import { MissionPrLine, MissionScopeUpdates } from './MissionPrLine';
+import { missionEpochsOf, scopeAmendmentsOf } from '@/lib/workflow/delivery-ship';
+import { describeScopeUpdates } from '@/lib/mission-scope-view';
 import { explainMission } from '@/lib/explain';
 import { deriveMissionStateView } from '@/lib/mission-state-view';
+import { missionOpenQuestions } from '@/lib/open-ask';
 import { loadDependencyRows } from '@/lib/dependency-rows';
+import { loadMissionGateFacts } from '@/lib/mission-board-waiting';
 import { resolveEffectiveRoles } from '@/lib/effective-roles';
 import MissionSituationBlock, { affordanceFor, MISSION_CRITERIA_ANCHOR } from '@/components/missions/MissionSituationBlock';
 import { formatEstimatedUsd, ESTIMATED_COST_TITLE } from '@/lib/cost-label';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -127,7 +144,7 @@ export default async function MissionDetailPage({
   // columns arrive as a projected digest, read alongside (mission-page-query.ts).
   const [missionRow, digestRows] = await Promise.all([
     db.query.missions.findFirst({
-      where: eq(missions.id, id),
+      where: sqlWhere(eq(missions.id, id)),
       with: MISSION_DETAIL_WITH,
     }),
     db.select(TASK_DIGEST_SELECTION).from(tasks).where(taskDigestWhere(id)),
@@ -147,11 +164,12 @@ export default async function MissionDetailPage({
       if (t.status !== 'completed') return [];
       const w = (t.workers as any[])?.[0];
       if (!w?.prNumber || w?.mergedAt || !w?.prUrl) return [];
-      return [{ id: w.id as string, prNumber: w.prNumber as number, prUrl: w.prUrl as string }];
+      // Each worker's own workspace: a mission's tasks can live in several.
+      return [{ id: w.id as string, prNumber: w.prNumber as number, prUrl: w.prUrl as string, workspaceId: (w.workspaceId as string | undefined) ?? mission.workspaceId! }];
     });
     if (staleWorkers.length > 0) {
       const wsWithInstall = await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, mission.workspaceId),
+        where: sqlWhere(eq(workspaces.id, mission.workspaceId)),
         columns: {},
         with: { githubInstallation: { columns: { installationId: true } } },
       });
@@ -159,7 +177,8 @@ export default async function MissionDetailPage({
       if (installId) {
         // Enqueued after the response, never written during the render (spec
         // workflow-state-kernel §11): this render shows what is stored.
-        after(() => Promise.all(staleWorkers.map(w => refreshWorkerMergeStateIfStale(w, installId)))
+        // AC-3: a delivery-owned task records at most a fact here; no lifecycle write.
+        after(() => observeMergeStateOnRender(staleWorkers, installId)
           .catch((err) => console.error('[mission-page] PR fact import failed (non-fatal):', err)));
       }
     }
@@ -182,6 +201,7 @@ export default async function MissionDetailPage({
     fleetCapacity,
     quickAddRoles,
     visualModel,
+    deliveryViews,
   ] = await Promise.all([
     // Roles and workspaces for this user. getUserWorkspaceIds is React
     // cache()-wrapped, so the protected layout has normally already resolved
@@ -196,15 +216,15 @@ export default async function MissionDetailPage({
       }
       const [rolesResult, workspacesResult] = await Promise.all([
         db.query.workspaceSkills.findMany({
-          where: and(
+          where: sqlWhere(and(
             inArray(workspaceSkills.workspaceId, wsIds),
             eq(workspaceSkills.enabled, true),
-          ),
+          )),
           columns: { slug: true, name: true, color: true },
-          orderBy: [desc(workspaceSkills.createdAt)],
+          orderBy: sqlOrderBy([desc(workspaceSkills.createdAt)]),
         }),
         db.query.workspaces.findMany({
-          where: inArray(workspaces.teamId, teamIds),
+          where: sqlWhere(inArray(workspaces.teamId, teamIds)),
           columns: { id: true, name: true },
         }),
       ]);
@@ -227,20 +247,20 @@ export default async function MissionDetailPage({
     // would silently vanish from the rail.
     allMissionTaskIds.length > 0
       ? db.query.missionNotes.findMany({
-          where: and(
+          where: sqlWhere(and(
             or(eq(missionNotes.missionId, id), inArray(missionNotes.taskId, allMissionTaskIds)),
             eq(missionNotes.authorType, 'user'),
-          ),
+          )),
           columns: { id: true, authorType: true, createdAt: true },
         })
       : db.query.missionNotes.findMany({
-          where: and(eq(missionNotes.missionId, id), eq(missionNotes.authorType, 'user')),
+          where: sqlWhere(and(eq(missionNotes.missionId, id), eq(missionNotes.authorType, 'user'))),
           columns: { id: true, authorType: true, createdAt: true },
         }),
     // BT-21: the workspace row behind the effective merge policy tier.
     mission.workspaceId
       ? db.query.workspaces.findFirst({
-          where: eq(workspaces.id, mission.workspaceId),
+          where: sqlWhere(eq(workspaces.id, mission.workspaceId)),
           columns: { id: true, gitConfig: true },
         })
       : Promise.resolve(null),
@@ -275,7 +295,17 @@ export default async function MissionDetailPage({
           return null;
         })
       : Promise.resolve(null as VisualReviewModel | null),
+    // One DeliveryView load for the page (§17.5): the failure reading, the
+    // board/strip, the timeline cards, the structure view, and (§7) every
+    // worker-row lifecycle reading below.
+    getDeliveryViewsForTasks(allMissionTaskIds),
   ]);
+
+  // workflow-kernel-library.md §7: a delivery-owned task's PR reads as its
+  // delivery says (merged, open, closed), derived on read and never written,
+  // so progress, "awaiting merge", blockers and the feed agree with the kernel.
+  // A task with no delivery keeps its worker rows.
+  (mission as { tasks?: unknown }).tasks = overlayDeliveryLifecycle(mission.tasks ?? [], deliveryViews);
 
   const { roles, teamWorkspaces } = scopeResult;
 
@@ -286,9 +316,9 @@ export default async function MissionDetailPage({
   const workspaceDefaultPolicy = resolvePolicy(workspaceForPolicy ?? { gitConfig: null });
   const hasPolicyOverride = (mission as any).mergePolicy != null;
   const policyTierLabel: Record<string, string> = {
-    'auto-threshold': 'Auto',
-    'agent-review': 'Agent Review',
-    'human': 'Human Gate',
+    'auto-threshold': 'Auto-merge',
+    'agent-review': 'Agent reviews',
+    'human': 'You approve',
   };
   const policyLabel = policyTierLabel[effectivePolicy.tier] ?? effectivePolicy.tier;
 
@@ -303,10 +333,6 @@ export default async function MissionDetailPage({
   // deliverable tasks only, and `awaitingMerge` counts task PRs, which for an
   // opted-in mission have all merged into `mission/<slug>` while none of the
   // mission's diff is on trunk. Null for every mission that has not opted in.
-  const missionIntegrationPr = deriveMissionIntegrationPr({
-    mission: mission as { workingBranch?: string | null; integrationBranchEnabled?: boolean | null },
-    tasks: (mission.tasks ?? []) as Array<{ id: string; title: string | null; taskClass: string | null; workers?: Array<{ prUrl?: string | null; prNumber?: number | null; mergedAt?: string | Date | null; prLifecycleStatus?: string | null }> | null }>,
-  });
   const progressMetric = deriveMissionProgressMetric(mission.tasks || []);
   const progress = progressMetric.kind === 'value' ? progressMetric.value : undefined;
 
@@ -348,17 +374,31 @@ export default async function MissionDetailPage({
   // shipped under another task/PR, or that the kernel already replaced, must
   // not drive this fallback reading to FAILING.
   const failedDeliverableRows = (mission.tasks || []).filter((t) => isDeliverableTask(t as never) && t.status === 'failed');
-  const [foreignDeps, supersededMap, deliveryViews] = await Promise.all([
+  // Delivery records and scope decisions (workflow-kernel-library.md §6): the
+  // mission page projects them, so a merged delivery never reads as the mission.
+  const [foreignDeps, supersededMap, gateFacts, missionDeliveries, scopeRows] = await Promise.all([
     loadDependencyRows(foreignDependencyIds(mission.tasks || [])),
     computeSupersededFailedTasks(
       mission.id,
       (mission.workspaceId as string | null) ?? null,
       failedDeliverableRows.map((t) => ({ id: t.id, title: t.title, subjectPrNumber: (t as { subjectPrNumber?: number | null }).subjectPrNumber ?? null, createdAt: t.createdAt, roleSlug: t.roleSlug })),
     ).catch(() => new Map()),
-    // One DeliveryView load for the page (§17.5): the failure reading, the
-    // board/strip, the timeline cards and the structure view all read it.
-    getDeliveryViewsForTasks((mission.tasks || []).map((t) => t.id)),
+    // Which claim-gate arm released each dependency, and why each queued task
+    // waits, from the claim's own SQL (spec f7f67f1a P-1). Never throws.
+    loadMissionGateFacts(mission.id, {
+      held: (mission as any).isHeld === true,
+      local: (mission as any).executor === 'local',
+      budgetExhausted: mission.status === 'budget_exhausted',
+    }),
+    (mission as { integrationBranchEnabled?: boolean | null }).integrationBranchEnabled === true ? missionEpochsOf(id) : Promise.resolve([]),
+    scopeAmendmentsOf(id),
   ]);
+  const scopeUpdates = describeScopeUpdates(scopeRows, (taskId) => (mission.tasks ?? []).find(t => t.id === taskId)?.title ?? null);
+  const missionIntegrationPr = deriveMissionIntegrationPr({
+    deliveries: missionDeliveries,
+    mission: mission as { workingBranch?: string | null; integrationBranchEnabled?: boolean | null },
+    tasks: (mission.tasks ?? []) as Array<{ id: string; title: string | null; taskClass: string | null; workers?: Array<{ prUrl?: string | null; prNumber?: number | null; mergedAt?: string | Date | null; prLifecycleStatus?: string | null }> | null }>,
+  });
   const kernelReplaced = replacedFailedTaskIds(deliveryViews, failedDeliverableRows.map((t) => t.id));
   const deliveryDisplays = ownerDeliveryDisplays(deliveryViews);
   const healthState = deriveTaskHealthSignal(
@@ -432,6 +472,7 @@ export default async function MissionDetailPage({
     criteriaGate,
     criteriaEscalatedAt: (mission as any).criteriaEscalatedAt ?? null,
     hasPendingDeliverableWork,
+    openQuestions: missionOpenQuestions(mission.tasks || []),
   });
   const displayState = missionAnswer?.displayState ?? fallbackView!.displayState;
   const stateChip = missionAnswer?.chip ?? fallbackView!.chip;
@@ -537,6 +578,14 @@ export default async function MissionDetailPage({
 
   const allWorkers = allTasks.flatMap(t => (t.workers || []) as any[]);
 
+  // Tasks held by a failure incident's recovery, read through the task adapter
+  // (failure-incident-recovery §16.4): the notice says what Buildd is doing.
+  const recoveryViews = await loadTaskRecoveryViewsForViewer(allTasks.map(t => t.id), { userId: user.id, teamId: mission.teamId ?? null });
+  const recoveryItems = allTasks.flatMap(t => {
+    const view = recoveryViews.get(t.id);
+    return view?.holdsCompletion ? [{ taskId: t.id, title: displayTaskTitle(t.title), view }] : [];
+  });
+
   // PRs with failing CI — surfaced in the all_prs_merged criterion panel (AC-3).
   // Derived from the same worker state the Activity chip reads (no extra GitHub call).
   const failingCiPrNumbers = allWorkers
@@ -603,24 +652,32 @@ export default async function MissionDetailPage({
 
   // The breadcrumb initiative, the initiative-selector options, the release
   // footer and the completion note are mutually independent.
-  const [initiativeName, teamInitiativeOptions, releaseFooterData, completionNote, carryingReleaseId, feedNoteRows, shippedRow, surfaceAuditWaiver] = await Promise.all([
+  const waiverLoad = loadSurfaceAuditWaiver(id).catch(() => null);
+  const visualReviewLoad = getMissionVisualReviewState(id).catch((err) => {
+    console.error('[mission-page] visual review state load failed', err);
+    return null;
+  });
+  // The selected outcome specs' titles, for the line under the rail (R-40). Scoped to the
+  // mission's workspace; a failed read only costs the titles, the lines still show.
+  const outcomeSpecIds = goalCriteria.flatMap(c => (c.type === 'living_spec' ? [c.specId] : []));
+  const [initiativeName, teamInitiativeOptions, releaseFooterData, completionNote, carryingReleaseId, feedNoteRows, shippedRow, surfaceAuditWaiver, visualReviewState, estimateRows, outcomeSpecTitles, waiverNames] = await Promise.all([
     // Breadcrumb: URL param takes priority, DB-stored initiative is the fallback
     // so users see the parent initiative even when navigating directly to the mission.
     (from === 'initiative' && initiativeId)
       ? db.query.initiatives.findFirst({
-          where: eq(initiatives.id, initiativeId),
+          where: sqlWhere(eq(initiatives.id, initiativeId)),
           columns: { title: true },
         }).then(row => row?.title)
       : Promise.resolve(undefined),
     isTerminal
       ? Promise.resolve([] as InitiativeOption[])
       : db.query.initiatives.findMany({
-          where: and(
+          where: sqlWhere(and(
             inArray(initiatives.teamId, teamIds),
             inArray(initiatives.status, ['active', 'paused']),
-          ),
+          )),
           columns: { id: true, title: true, status: true },
-          orderBy: [desc(initiatives.priority), desc(initiatives.createdAt)],
+          orderBy: sqlOrderBy([desc(initiatives.priority), desc(initiatives.createdAt)]),
           limit: 50,
         }).then(rows => rows.map(r => ({ id: r.id, title: r.title, status: r.status, progress: 0 }))),
     // The mission reads only its own Shipped fact from this (D6); the
@@ -637,9 +694,9 @@ export default async function MissionDetailPage({
     // never the latest task's summary.
     mission.status === 'completed'
       ? db.query.missionNotes.findFirst({
-          where: and(eq(missionNotes.missionId, id), eq(missionNotes.title, MISSION_COMPLETED_NOTE_TITLE)),
+          where: sqlWhere(and(eq(missionNotes.missionId, id), eq(missionNotes.title, MISSION_COMPLETED_NOTE_TITLE))),
           columns: { body: true, createdAt: true },
-          orderBy: desc(missionNotes.createdAt),
+          orderBy: sqlOrderBy(desc(missionNotes.createdAt)),
         }).then(row => row ?? null)
       : Promise.resolve(null),
     // F6: the Shipped link opens the release carrying THIS mission's work
@@ -648,25 +705,51 @@ export default async function MissionDetailPage({
     // The Feed's escalations and answers: agent questions and human replies,
     // on the mission or on any of its tasks (task-scoped notes carry no missionId).
     db.query.missionNotes.findMany({
-      where: and(
+      where: sqlWhere(and(
         allMissionTaskIds.length > 0 ? or(eq(missionNotes.missionId, id), inArray(missionNotes.taskId, allMissionTaskIds)) : eq(missionNotes.missionId, id),
         or(eq(missionNotes.type, 'question' as any), eq(missionNotes.authorType, 'user')),
-      ),
+      )),
       columns: { id: true, type: true, authorType: true, title: true, taskId: true, createdAt: true },
-      orderBy: desc(missionNotes.createdAt),
+      orderBy: sqlOrderBy(desc(missionNotes.createdAt)),
       limit: 200,
     }),
     // The stored "What shipped" record. A read failure only costs the header.
     mission.status === 'completed'
       ? db.query.artifacts.findFirst({
-          where: and(eq(artifacts.missionId, id), eq(artifacts.key, shippedArtifactKey(id))),
+          where: sqlWhere(and(eq(artifacts.missionId, id), eq(artifacts.key, shippedArtifactKey(id)))),
           columns: { metadata: true },
         }).then(row => row ?? null, () => null)
       : Promise.resolve(null),
     // The person-set "Waive visual audit" record, if any. A failed read only
     // costs the record line; the waiver action stays.
-    loadSurfaceAuditWaiver(id).catch(() => null),
+    waiverLoad,
+    // The one canonical visual-review state; every visual-review surface on this page reads it.
+    visualReviewLoad,
+    // The build-only estimate reads the same frozen estimates as the Plan page (spec f7f67f1a R-23).
+    // Only for a team with the task-estimates switch on, the Plan page's gate.
+    loadBuildEstimateRows({ teamId: mission.teamId, taskIds: allMissionTaskIds, finished: isTerminal }).catch((err) => {
+      console.error('[mission-page] estimate load failed', err);
+      return [];
+    }),
+    outcomeSpecIds.length > 0 && mission.workspaceId
+      ? db.select({ id: specs.id, title: specs.title }).from(specs)
+          .where(and(inArray(specs.id, outcomeSpecIds), eq(specs.workspaceId, mission.workspaceId)))
+          .then(rows => Object.fromEntries(rows.map(r => [r.id, r.title])) as Record<string, string>, () => ({} as Record<string, string>))
+      : Promise.resolve({} as Record<string, string>),
+    // A waiver's actor reads as "You" or the person's name, never a raw email: one
+    // name lookup chained on the two waiver sources, inside this same wait.
+    Promise.all([waiverLoad, visualReviewLoad]).then(async ([w, v]): Promise<Record<string, string>> => {
+      const labels = [w?.actorLabel, v?.waiver?.actorLabel];
+      const emails = waiverActorEmails(labels);
+      if (emails.length === 0) return {};
+      const rows = await db.select({ email: users.email, name: users.name }).from(users)
+        .where(inArray(users.email, [...new Set([...emails, ...labels.filter((l): l is string => !!l)])]))
+        .catch(() => [] as { email: string; name: string | null }[]);
+      return Object.fromEntries(rows.flatMap(r => (r.name ? [[r.email.toLowerCase(), r.name]] : [])));
+    }),
   ]);
+  if (surfaceAuditWaiver) surfaceAuditWaiver.actorLabel = waiverActorName(surfaceAuditWaiver.actorLabel, user?.email, waiverNames);
+  if (visualReviewState?.waiver) visualReviewState.waiver.actorLabel = waiverActorName(visualReviewState.waiver.actorLabel, user?.email, waiverNames);
   const shippedView = mission.status === 'completed'
     ? buildShippedHeaderView((shippedRow?.metadata as { shipped?: unknown } | null)?.shipped, (mission as any).completedAt)
     : null;
@@ -709,9 +792,17 @@ export default async function MissionDetailPage({
     missionBranch: (mission as { integrationBranchEnabled?: boolean | null }).integrationBranchEnabled === true,
     readonly: isTerminal,
   };
+  // The words, the stage and whether a person owes anything come from the canonical state.
+  // The waiver is offered only where the policy allows it beside a real owner decision
+  // (or to show a record that already exists); an automatic policy never asks for it.
+  const visualPresentation = visualReviewState
+    ? presentVisualReview(visualReviewState, { ownerMergesIntegration: effectivePolicy.tier === 'human' })
+    : null;
   const showAuditWaiver = !!surfaceAuditWaiver
-    || (mission.tasks ?? []).some(t => isSurfaceAuditTask(t.title ?? '') || t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG)
-    || (missionAnswer?.waitingOn?.kind === 'human_decision' && missionAnswer.waitingOn.surfaceAudit === true);
+    || (visualPresentation
+      ? visualPresentation.canWaive
+      : (mission.tasks ?? []).some(t => isSurfaceAuditTask(t.title ?? '') || t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG)
+        || (missionAnswer?.waitingOn?.kind === 'human_decision' && missionAnswer.waitingOn.surfaceAudit === true));
   const vs = boardVisual?.summary;
   const visualReview = vs
     ? {
@@ -720,6 +811,11 @@ export default async function MissionDetailPage({
         ...(vs.bootFailed ? { bootFailed: true } : {}),
       }
     : null;
+  // D6: this mission's own trunk merges, read against the release baseline.
+  const missionMergedAt = missionTrunkMergedAt(
+    (mission.tasks ?? []) as Array<{ id: string; workers?: Array<{ mergedAt?: string | Date | null }> | null }>,
+    missionIntegrationPr,
+  );
   // The footer renders Shipped and Screens; the band says the rest.
   const deliverySteps = buildDeliverySteps({
     missionStatus: mission.status,
@@ -730,11 +826,8 @@ export default async function MissionDetailPage({
     criteria: { total: criteriaTotal, passed: criteriaPassed, overall: missionCriteriaOverall },
     visual: visualReview,
     visualPhase: boardVisual,
-    // D6: this mission's own trunk merges, read against the release baseline.
-    mergedAt: missionTrunkMergedAt(
-      (mission.tasks ?? []) as Array<{ id: string; workers?: Array<{ mergedAt?: string | Date | null }> | null }>,
-      missionIntegrationPr,
-    ),
+    visualReview: visualPresentation ?? undefined,
+    mergedAt: missionMergedAt,
     release: deliveryReleaseInput(releaseState),
     budget: budgetUsd != null
       ? { budgetUsd, spendUsd, exhausted: mission.status === 'budget_exhausted' }
@@ -743,37 +836,45 @@ export default async function MissionDetailPage({
     durationLabel: null,
   });
   const shippedStep = deliverySteps.find(s => s.key === 'shipped');
+  // P-3: a deploying, dispatched or failed release shows even when Shipped is hidden.
+  const releasedAtRaw = (mission as { releasedAt?: string | Date | null }).releasedAt ?? null;
+  const releaseStatus = missionReleaseStatus({
+    state: releaseState,
+    mergedAt: missionMergedAt,
+    releasedAt: releasedAtRaw ? new Date(releasedAtRaw).toISOString() : null,
+  });
+  // Overview's checks after the build (spec f7f67f1a R-11 to R-22): a projection over the
+  // same visual review state, criteria, mission PR and release status this page already reads.
+  const trunkName = (workspaceForPolicy?.gitConfig as { defaultBranch?: unknown } | null)?.defaultBranch;
+  const overviewChecks: MissionChecksSource = {
+    branch: (mission as { integrationBranchEnabled?: boolean | null }).integrationBranchEnabled === true ? 'mission-branch' : 'direct',
+    target: (typeof trunkName === 'string' && trunkName ? trunkName : null) ?? visualReviewState?.branch.base ?? null,
+    mergeTier: effectivePolicy.tier as MissionChecksSource['mergeTier'],
+    visual: visualReviewState ?? null,
+    criteria: goalCriteria,
+    criteriaState: goalCriteriaStateFull,
+    integrationPr: missionIntegrationPr,
+    release: releaseStatus,
+    evidence: visualReviewState ? { visual: [{ label: 'Open screens', href: `/app/missions/${id}?visualReview=1` }] } : undefined,
+  };
+  // The Plan page's schedule over the build tasks only (P-2): Overview and Plan give the same numbers.
+  const newestEstimate = new Map<string, { p50Minutes: number; p80Minutes: number }>();
+  for (const e of estimateRows) if (!newestEstimate.has(e.taskId)) newestEstimate.set(e.taskId, e);
+  const buildPlanTasks = missionPlanInputs([{
+    id, title: mission.title, workspaceId: mission.workspaceId ?? null, dependsOnMissionId: null, isHeld: false,
+    tasks: (mission.tasks ?? []).filter(t => t.taskClass !== 'attempt' && missionHelpers.deliverableRole(t as Parameters<typeof missionHelpers.deliverableRole>[0]) === 'build') as never,
+  }], newestEstimate, new Map())[0]?.tasks ?? [];
+  // Waiting on another mission is an outside wait: no time promise (R-24).
+  const waitsOnMission = !!(mission as { dependsOnMissionId?: string | null }).dependsOnMissionId;
   const visualStep = deliverySteps.find(s => s.key === 'visual') ?? null;
-  const missionPrCard = shouldRenderMissionPrBlock(missionIntegrationPr, { workLanded: feedCounts.total > 0 && feedCounts.done >= feedCounts.total }) && missionIntegrationPr ? (
+  const missionPrCard = (shouldRenderMissionPrBlock(missionIntegrationPr, { workLanded: feedCounts.total > 0 && feedCounts.done >= feedCounts.total })
+    || (missionIntegrationPr?.shippedDeliveries?.length ?? 0) > 0) && missionIntegrationPr
     // Mission integration PR (Option A′): the mission's review gate, and a
-    // different object from the task PRs that fed the branch. One line.
-    <div data-testid="mission-pr-line" className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-      <p className="min-w-0 text-body text-text-secondary">
-        <span className="font-semibold text-text-primary">Mission PR</span>
-        <span className={`ml-2 font-mono text-meta ${missionIntegrationPr.state === 'merged' ? 'text-status-success' : missionIntegrationPr.state === 'closed' ? 'text-status-error' : 'text-text-muted'}`}>
-          {MISSION_PR_STATE_LABEL[missionIntegrationPr.state]}
-        </span>
-        <span className="ml-2 font-mono text-meta text-text-muted [overflow-wrap:anywhere]">{missionIntegrationPr.branch}</span>
-        <span className="mt-0.5 block">
-          {missionIntegrationPr.state === 'not_opened'
-            ? 'Task PRs merge into the integration branch. No PR to the target branch is open, so none of this work has shipped.'
-            : missionIntegrationPr.state === 'merged'
-              ? "This mission's work reached the target branch through one PR from its integration branch."
-              : "The mission's review gate: one PR from the integration branch into the target branch. The merge policy applies to this PR only."}
-        </span>
-      </p>
-      {missionIntegrationPr.prUrl && (
-        <a
-          href={missionIntegrationPr.prUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="shrink-0 font-mono text-meta text-text-secondary hover:text-text-primary"
-        >
-          #{missionIntegrationPr.prNumber} →
-        </a>
-      )}
-    </div>
-  ) : null;
+    // different object from the task PRs that fed the branch. With delivery
+    // records it is the current delivery; a shipped one is named beside it.
+    ? <MissionPrLine pr={missionIntegrationPr} />
+    : null;
+  const scopeUpdatesBlock = scopeUpdates.length > 0 ? <MissionScopeUpdates lines={scopeUpdates} /> : null;
 
   const reviewSummary = displayState === 'review' ? (
     <MissionReviewSummary
@@ -945,9 +1046,9 @@ export default async function MissionDetailPage({
 
       {!['completed', 'archived'].includes(mission.status) && (
         <div>
-          <h3 className="mb-2 text-body font-semibold text-text-primary">Agent backend</h3>
+          <h3 className="mb-2 text-body font-semibold text-text-primary">Agent</h3>
           <MissionBackendSelector missionId={id} initialBackend={((mission as { defaultBackend?: 'claude' | 'codex' | null }).defaultBackend) ?? null} />
-          <p className="text-[11px] text-text-muted mt-1.5">Default engine for this mission&apos;s tasks. Auto uses the role or workspace default.</p>
+          <p className="text-[11px] text-text-muted mt-1.5">Used for this mission&apos;s tasks. Auto uses the workspace default.</p>
         </div>
       )}
 
@@ -959,6 +1060,8 @@ export default async function MissionDetailPage({
         visual={boardVisual}
         readonly={isTerminal}
         auditWaiver={showAuditWaiver ? auditWaiverProps : null}
+        presentation={visualPresentation}
+        policyLocked={visualReviewState?.policy.locked === true}
       />
 
       {/* Organizer runs are in History › Everything, not repeated here. */}
@@ -1045,6 +1148,7 @@ export default async function MissionDetailPage({
     humanTouches: humanSteeringNotes.map(n => new Date(n.createdAt).getTime()),
     // Another mission's dependency is judged by the claim gate, not dropped.
     externalDeps: [...foreignDeps.values()],
+    gateFacts,
   });
   // Flow: the same-files waits Buildd added, and each task's expected size.
   const flowSameFiles = sameFilesFromRows(allTasks as Array<{ id: string; pathDeclaration?: unknown }>);
@@ -1065,10 +1169,11 @@ export default async function MissionDetailPage({
   // The band says running / needs-you / done by itself. Anything else the
   // mission is waiting on (a decision gate, a block, a stall) still gets its
   // one sentence and its one action above the columns.
-  // The integration PR card and the review summary ride along on every layout.
+  // The situation, the integration PR card and the review summary live on
+  // Overview only (spec f7f67f1a R-37): History is the timeline, not a second copy.
   const quietState = ['running', 'active', 'complete'].includes(displayState);
   const budgetExhausted = budgetUsd != null && mission.status === 'budget_exhausted';
-  const boardNotice = quietState && !missionPrCard && !reviewSummary ? null : (
+  const boardNotice = quietState && !missionPrCard && !scopeUpdatesBlock && !reviewSummary && recoveryItems.length === 0 ? null : (
     <MissionNoticeSlot
       needsYou={!quietState && noticeNeedsPerson({
         displayState,
@@ -1086,7 +1191,9 @@ export default async function MissionDetailPage({
       )}
       {!quietState && decisionBlock}
       {!quietState && budgetExhausted && budgetDetail}
+      {recoveryItems.length > 0 && <MissionRecoveryNotice items={recoveryItems} />}
       {missionPrCard}
+      {scopeUpdatesBlock}
       {reviewSummary}
     </MissionNoticeSlot>
   );
@@ -1102,8 +1209,16 @@ export default async function MissionDetailPage({
       : null,
     deliveries: taskDeliveries,
   };
+  // Verified reads current verdicts, never a stale stored overall: a criterion not
+  // passing on the board's live counts, or a blocking visual review not clear, holds it.
+  const verifiedHoldReason = verifiedHold({
+    criteria: boardModel.criteria,
+    visual: visualReviewState ? visualCheck(visualReviewState, { mergeTier: effectivePolicy.tier as MergeTier }) : null,
+  });
   const verifiedPill = (
     <MissionVerifiedPill
+      hold={verifiedHoldReason}
+      liveStates={boardModel.criteria.map(c => c.state)}
       sheetOnly={!showVerifiedPill}
       missionId={id}
       criteria={goalCriteria}
@@ -1116,11 +1231,27 @@ export default async function MissionDetailPage({
     />
   );
   // Chat is how you ask about work: opens a conversation with this mission docked.
-  const askAbout = <AskAboutLink kind="mission" id={id} teamId={mission.teamId} workspaceId={mission.workspaceId} />;
+  const askAbout = <AskAboutLink kind="mission" id={id} teamId={mission.teamId} workspaceId={mission.workspaceId} className={MISSION_HEADER_ACTION} />;
   // The mission's visual review as a mission command (never the task composer),
   // started from ⋯ on any open mission with a workspace to run it in; once an
   // audit exists the footer's Screens row is where it is reviewed.
   const visualReviewEntry = !isTerminal && mission.workspaceId ? { initialOpen: visualReviewParam === '1' } : null;
+  const completionFailingState = (goalCriteriaStateFull?.criteria ?? []).find(c => c.verdict !== 'pass') ?? null;
+  const completionFailingIndex = completionFailingState ? completionFailingState.index : null;
+  const completionDecision = isTerminal ? null : {
+    goalCriteria,
+    failingCriterionIndex: completionFailingIndex,
+    fileWorkHref: buildFileWorkHref({
+      missionId: id,
+      missionTitle: mission.title,
+      criterion: completionFailingIndex != null ? goalCriteria[completionFailingIndex] ?? null : null,
+      evidence: completionFailingState?.evidence ?? null,
+    }),
+    criteriaUnmet: goalCriteria.length > 0 && goalCriteriaStateFull?.overall !== 'pass',
+    surfaceAudit: missionAnswer?.waitingOn?.kind === 'human_decision' && missionAnswer.waitingOn.surfaceAudit === true
+      ? { paths: missionAnswer.waitingOn.surfaceAuditPaths ?? [], executorLocal: (mission as any).executor === 'local' }
+      : null,
+  };
   const overflowMenu = (
     <MissionOverflowMenu
       missionId={id}
@@ -1133,8 +1264,10 @@ export default async function MissionDetailPage({
       isHeld={isHeld}
       displayState={displayState}
       hasPrimaryAction={hasPrimaryAction}
+      completionDecision={completionDecision}
       executor={(mission as any).executor === 'local' ? 'local' : (mission as any).executor === 'runner' ? 'runner' : null}
       visualReview={visualReviewEntry}
+      outcomeSpecs={goalCriteria.filter((c): c is LivingSpecGoalCriterion => c.type === 'living_spec')}
       settings={settings}
     />
   );
@@ -1144,14 +1277,25 @@ export default async function MissionDetailPage({
   const footerRows = (
     <>
       {/* F6: this mission's own release status, linking to the release. */}
-      {mission.workspaceId && shippedStep && (
+      {mission.workspaceId && missionReleaseRow(shippedStep, releaseStatus) && (
         <div className="border-t border-border-default">
-          <MissionReleaseSection step={shippedStep} releaseId={carryingReleaseId} workspaceId={mission.workspaceId} />
+          <MissionReleaseSection step={shippedStep} status={releaseStatus} releaseId={carryingReleaseId} workspaceId={mission.workspaceId} />
         </div>
       )}
       {/* The visual review, live: opens the review deck (or, before any
           screen, the phase and its actions). Any audit phase shows it. */}
       {boardVisual && <MissionScreensRow missionId={id} step={visualStep} />}
+      {/* Only when it carries a person's action or the report: its state line
+          alone repeats the Screens row and the checks (spec f7f67f1a R-37). */}
+      {visualPresentation && branchPanelHasAction(visualPresentation, isTerminal) && (
+        <MissionBranchPanel
+          missionId={id}
+          presentation={visualPresentation}
+          prUrl={missionIntegrationPr?.prUrl ?? null}
+          workspaceSettingsHref={mission.workspaceId ? `/app/settings/workspace/${mission.workspaceId}` : null}
+          readonly={isTerminal}
+        />
+      )}
       <MissionRecordsSheet
         missionId={id}
         baseUrl={baseUrl}
@@ -1176,6 +1320,7 @@ export default async function MissionDetailPage({
       activeMs={boardModel.activeMs}
     >
       {shippedView && <MissionShippedHeader missionId={id} view={shippedView} />}
+      {isTerminal && visualPresentation?.record && <MissionVisualRecord record={visualPresentation.record} />}
       {content}
       <div data-testid="mission-board-footer" className="mt-10">
         {footerRows}
@@ -1211,14 +1356,13 @@ export default async function MissionDetailPage({
       <MissionSurfaceAuditWaiverProvider {...auditWaiverProps}>
       <MissionLayoutShell
         initial={parseMissionLayout(layoutParam, listViewParam)}
-        board={boardHeader(<MissionOverview model={boardModel} completionText={completionText} notice={boardNotice} visual={boardVisual} {...boardLink} {...boardStrip} />)}
+        board={boardHeader(<MissionOverview model={boardModel} completionText={completionText} notice={boardNotice} visual={boardVisual} checks={overviewChecks} outcomeSpecTitles={outcomeSpecTitles} planTasks={buildPlanTasks} held={isHeld || waitsOnMission || mission.status === 'budget_exhausted'} {...boardLink} {...boardStrip} />)}
         flow={boardHeader(<FlowTimeline model={boardModel} sameFiles={flowSameFiles} expectedMinutes={flowExpectedMinutes} {...boardLink} />)}
         feed={boardHeader(
           <MissionFeedLayout
             model={boardModel}
             notes={feedNotes}
             completionText={completionText}
-            notice={boardNotice}
             visual={boardVisual}
             notesEntry={<MissionNotesSheet missionId={id} />}
             {...boardLink}

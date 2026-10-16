@@ -23,6 +23,7 @@ const objects = new Map<string, { bytes: Buffer; type: string }>();
 const storage = {
   head: async (k: string) => (objects.has(k) ? { sizeBytes: objects.get(k)!.bytes.byteLength, contentType: objects.get(k)!.type } : null),
   sha256: async (k: string) => ({ sha256: sha(objects.get(k)!.bytes), sizeBytes: objects.get(k)!.bytes.byteLength }),
+  copy: async (from: string, to: string) => { objects.set(to, { ...objects.get(from)! }); },
   remove: async (k: string) => { objects.delete(k); },
 };
 const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex');

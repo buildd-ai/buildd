@@ -11,11 +11,31 @@ const mockNotifySubject = mock((_subject: unknown, _event: unknown) => {});
 // delivery, so every legacy merge case below runs unchanged.
 const mockLandThroughKernel = mock(async (..._a: any[]): Promise<any> => null);
 const mockKernelLandingView = mock(async (..._a: any[]): Promise<any> => null);
+// §6 mission deliveries: a mission PR merge is recorded with the kernel, which
+// rotates, settles and only then retires the branch. The door just records it.
+const mockRecordMissionPrMerged = mock((..._args: any[]) => Promise.resolve({ recorded: true, reason: 'merged' }));
+mock.module('@/lib/mission-epoch-door', () => ({
+  recordMissionPrMerged: (...args: any[]) => mockRecordMissionPrMerged(...args),
+  ensureMissionWritableBranch: async () => null,
+  bindMissionDeliveryPr: async () => {},
+  reconcileMissionDeliveries: async () => [],
+}));
+
 mock.module('@/lib/workflow/landing', () => ({
   landThroughKernel: mockLandThroughKernel,
   kernelLandingView: mockKernelLandingView,
   staleLandingVersion: async () => null,
 }));
+// The visual review half of the mission-PR gate (ready-to-merge.ts) is proven in
+// ready-to-merge.test.ts and mission-pr.test.ts; here the review has passed.
+mock.module('@/lib/workflow/visual-review-state-load', () => ({
+  getMissionVisualReviewState: async () => ({
+    status: 'passed', pendingVerification: false, staleEvidence: false, nextActor: 'none',
+    branch: { headSha: 'abc12345', integrationPr: { number: 9, stage: 'ready' } },
+  }),
+}));
+mock.module('@/lib/workflow/visual-review-schedule-run', () => ({ scheduleMissionVisualReview: async () => null }));
+
 mock.module('@/lib/notify', () => ({
   notifyTeamOf: async (subject: unknown, event: unknown, payload: unknown) => {
     mockNotifySubject(subject, event);
@@ -291,6 +311,19 @@ describe('evaluateAutoMergeSafety CI verification', () => {
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce({ mergeable_state: 'dirty', head: { sha: 'head-sha' } });
     mockStatusApi.mockResolvedValueOnce({ state: 'pending', total_count: 0, statuses: [] });
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy)).resolves.toEqual({
+      ok: false,
+      reason: expect.stringContaining('dirty'),
+    });
+  });
+
+  it('does not read buildd\'s own buildd/landing status as CI (it follows the verdict, not the build)', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ total_count: 1, check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] })
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ mergeable_state: 'dirty', head: { sha: 'head-sha' } });
+    mockStatusApi.mockResolvedValueOnce({ state: 'failure', total_count: 1, statuses: [{ context: 'buildd/landing', state: 'failure' }] });
+    // Past the CI rail: the next refusal is the mergeable-state one, not "CI checks still pending or failed".
     await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy)).resolves.toEqual({
       ok: false,
       reason: expect.stringContaining('dirty'),
@@ -670,6 +703,64 @@ describe('evaluateAutoMergeSafety migration operation-class gate (unconditional)
     };
     const res = await evaluateAutoMergeSafety(...params, policy);
     expect(res.reason ?? '').not.toMatch(/protected path/);
+  });
+});
+
+// workflow-kernel-library.md §4 (review of #4786, finding 1): the merge effect reads the rails again for a
+// person's own merge, and a person is held to the rails they have always merged under: CI and protected
+// paths, not the migration inspector, the size cap or the semantic hold. An escalated schema PR a person
+// decided to merge must merge.
+describe('evaluateAutoMergeSafety for a person\'s merge (personDecides)', () => {
+  it('a destructive migration a person merges is theirs to decide; unattended, it still refuses', async () => {
+    const files = [{ filename: 'packages/core/drizzle/0095_drop.sql', additions: 1, deletions: 0 }];
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue({ safe: false, operationClass: 'CONTRACT', reason: 'drops column missions.legacy_mode' } as never);
+    mockGithubApi.mockReset();
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce(files)
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha' } });
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy, { personDecides: true })).resolves.toEqual({ ok: true });
+    expect(mockInspectPullRequestMigrations).not.toHaveBeenCalled();
+    mockGithubApi.mockReset();
+    mockGithubApi.mockResolvedValueOnce({ check_runs: [] }).mockResolvedValueOnce(files);
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy)).resolves.toEqual({ ok: false, reason: 'drops column missions.legacy_mode' });
+  });
+
+  it('a person may merge on pending CI (as the dashboard always could), never on red; unattended, pending still waits', async () => {
+    const pending = [{ name: 'build', status: 'in_progress', conclusion: null }];
+    mockGithubApi.mockReset();
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: pending })
+      .mockResolvedValueOnce([{ filename: 'apps/web/src/lib/foo.ts', additions: 1, deletions: 0 }])
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha' } });
+    mockStatusApi.mockResolvedValueOnce({ state: 'pending', total_count: 1, statuses: [{ context: 'ci/jenkins', state: 'pending' }] });
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy, { personDecides: true })).resolves.toEqual({ ok: true });
+    mockGithubApi.mockReset();
+    mockGithubApi.mockResolvedValueOnce({ check_runs: pending });
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy)).resolves.toMatchObject({ ok: false, reason: expect.stringContaining('pending or failed') });
+    mockGithubApi.mockReset();
+    mockGithubApi.mockResolvedValueOnce({ check_runs: [] });
+    mockStatusApi.mockResolvedValueOnce({ state: 'failure', total_count: 1, statuses: [{ context: 'ci/jenkins', state: 'failure' }] });
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy, { personDecides: true })).resolves.toMatchObject({ ok: false, reason: expect.stringContaining('ci/jenkins (failure)') });
+  });
+
+  it('a person is not held to the size cap, but is to red CI and protected paths', async () => {
+    mockGithubApi.mockReset();
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce(OVERSIZED_FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha' } });
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy, { personDecides: true })).resolves.toEqual({ ok: true });
+    mockGithubApi.mockReset();
+    mockGithubApi.mockResolvedValueOnce({ check_runs: [{ name: 'build', status: 'completed', conclusion: 'failure' }] });
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy, { personDecides: true })).resolves.toMatchObject({ ok: false, reason: expect.stringContaining('CI checks') });
+    mockGithubApi.mockReset();
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce([{ filename: '.github/workflows/build.yml', additions: 1, deletions: 0 }]);
+    const deny: MergePolicy = { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: ['.github/workflows/'] } };
+    await expect(evaluateAutoMergeSafety(...params, deny, { personDecides: true })).resolves.toMatchObject({ ok: false, reason: expect.stringContaining('protected path') });
   });
 });
 
@@ -1599,6 +1690,69 @@ describe('evaluateAutoMergeSafety — release branch PR', () => {
   });
 });
 
+// ── A frozen release candidate (release/vX.Y.Z → prodBranch) ────────────────
+//
+// Exempt from the aggregate cap only when it proves it was opened by the
+// configured release workflow at the head its metadata records.
+
+const candidateConfig = {
+  enabled: true, strategy: 'workflow_dispatch' as const, workflowFile: 'release.yml', ref: 'dev', prodBranch: PROD_BRANCH,
+  candidate: { branches: ['release/v*'], sourceBranch: 'dev', authors: ['github-actions[bot]'] },
+};
+const candidatePull = (o: Record<string, unknown> = {}) => ({
+  mergeable_state: 'clean',
+  head: { sha: 'head-sha', ref: 'release/v1.2.3', repo: { full_name: 'org/repo' } },
+  base: { ref: PROD_BRANCH, repo: { full_name: 'org/repo' } },
+  user: { login: 'github-actions[bot]' },
+  body: `<!-- release-candidate ${JSON.stringify({ schema: 1, version: '1.2.3', branch: 'release/v1.2.3', sourceRef: 'dev', sourceSha: 's', candidateSha: 'head-sha', baseRef: PROD_BRANCH })} -->`,
+  ...o,
+});
+
+describe('evaluateAutoMergeSafety — frozen release candidate', () => {
+  beforeEach(() => {
+    mockGithubApi.mockReset();
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue({ safe: true });
+  });
+  const oversized = (pull: unknown) => mockGithubApi
+    .mockResolvedValueOnce({ check_runs: [] })
+    .mockResolvedValueOnce(OVERSIZED_FILES)
+    .mockResolvedValueOnce(pull);
+
+  it('does not apply the aggregate line threshold to a trusted release/v1.2.3 → main candidate', async () => {
+    oversized(candidatePull());
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy, { releaseConfig: candidateConfig })).resolves.toEqual({ ok: true });
+  });
+
+  it('keeps the cap for a release/v* branch someone else opened (spoof)', async () => {
+    oversized(candidatePull({ user: { login: 'mallory' } }));
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy, { releaseConfig: candidateConfig }))
+      .resolves.toEqual({ ok: false, reason: expect.stringContaining('2500') });
+  });
+
+  it('keeps the cap once the head moved off the recorded candidate SHA', async () => {
+    oversized(candidatePull({ head: { sha: 'pushed-sha', ref: 'release/v1.2.3', repo: { full_name: 'org/repo' } } }));
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy, { releaseConfig: candidateConfig }))
+      .resolves.toEqual({ ok: false, reason: expect.stringContaining('2500') });
+  });
+
+  it('keeps the cap when the workspace declares no candidate policy', async () => {
+    oversized(candidatePull());
+    const { candidate: _c, ...noCandidates } = candidateConfig;
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy, { releaseConfig: noCandidates }))
+      .resolves.toEqual({ ok: false, reason: expect.stringContaining('2500') });
+  });
+
+  it('a CONTRACT migration still blocks a trusted candidate', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce([{ filename: 'packages/core/drizzle/0001_drop_column.sql', additions: 2, deletions: 0 }]);
+    mockInspectPullRequestMigrations.mockResolvedValue({ safe: false, operationClass: 'CONTRACT', reason: 'drops a column' });
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy, { releaseConfig: candidateConfig }))
+      .resolves.toEqual({ ok: false, reason: 'drops a column' });
+  });
+});
+
 describe('tryAutoMergeWorkerPr — mission-branch strategy and the size cap', () => {
   beforeEach(() => {
     mockGithubApi.mockReset();
@@ -1744,7 +1898,7 @@ describe('tryAutoMergeWorkerPr — mission-PR branch-lifecycle gate (P3)', () =>
     expect(mockMergePullRequest).not.toHaveBeenCalled();
   });
 
-  it('merges the mission PR and deletes the integration branch once every task PR has landed', async () => {
+  it('merges the mission PR and records the merged delivery with the kernel, which retires the branch after settlement', async () => {
     mockFindFirst = mock(() => missionPrTask) as any;
     mockGithubApi
       .mockResolvedValueOnce({ check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] })
@@ -1766,7 +1920,9 @@ describe('tryAutoMergeWorkerPr — mission-PR branch-lifecycle gate (P3)', () =>
     });
 
     expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
-    expect(mockGithubApi).toHaveBeenCalledWith(
+    // The merge is recorded with the kernel; the branch is retired only after settlement.
+    expect(mockRecordMissionPrMerged).toHaveBeenCalledWith(expect.anything(), 1, 'buildd-ai/buildd', 42);
+    expect(mockGithubApi).not.toHaveBeenCalledWith(
       1,
       `/repos/buildd-ai/buildd/git/refs/heads/${encodeURIComponent(MISSION_BRANCH)}`,
       expect.objectContaining({ method: 'DELETE' }),
@@ -1835,11 +1991,33 @@ describe('tryAutoMergeWorkerPr — return value', () => {
       repoFullName: 'buildd-ai/buildd',
       prNumber: 42,
       headSha: 'head-sha',
-      worker: { id: 'worker-1', taskId: null },
+      worker: { id: 'worker-1', taskId: null, workspaceId: 'ws-1' },
       policy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } },
     });
 
     expect(result).toEqual({ merged: true });
+  });
+
+  it('D4: with no workspace to read the review gate in, nothing merges (the gate is never skipped)', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: CLEAN_GREEN })
+      .mockResolvedValueOnce(ORDINARY_FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha', ref: 'task/x' } });
+    mockGuardReviewVerdict.mockClear();
+
+    const result = await tryAutoMergeWorkerPr({
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      prNumber: 42,
+      headSha: 'head-sha',
+      worker: { id: 'worker-1', taskId: null },
+      policy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } },
+      landThroughKernel: async () => { throw new Error('no landing without a workspace'); },
+    });
+
+    expect(result.merged).toBe(false);
+    expect(result.reason).toContain('no workspace');
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
   });
 
   describe('integration-refresh PR (dev merged into a mission branch)', () => {
@@ -1934,7 +2112,7 @@ describe('tryAutoMergeWorkerPr — return value', () => {
       repoFullName: 'buildd-ai/buildd',
       prNumber: 42,
       headSha: 'head-sha',
-      worker: { id: 'worker-1', taskId: null },
+      worker: { id: 'worker-1', taskId: null, workspaceId: 'ws-1' },
       policy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } },
     });
 

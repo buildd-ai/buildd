@@ -71,9 +71,11 @@ export interface Env extends EgressEnv, OtelEgressEnv {
   /**
    * `1` turns on container reuse (container-lease.ts): a warm container goes
    * to the next task of the same workspace and size, after a verified reset.
-   * Default off.
+   * Default off. The kill switch for both warm handover modes.
    */
   CONTAINER_REUSE?: string;
+  /** `1` (with CONTAINER_REUSE=1) also keeps verified dependencies between tasks (`deps`); otherwise `repo`. Default off. */
+  CONTAINER_REUSE_DEPS?: string;
   /** How long a lease keeps a container warm after a run; default 5 minutes, 30 s to 30 min. */
   CONTAINER_REUSE_WINDOW_MS?: string;
   /** Leases per workspace and size; default 2, never above the class's max_instances. */

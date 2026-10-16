@@ -1,11 +1,11 @@
 import Link from 'next/link';
+import { displayTaskTitle } from '@/lib/task-title';
 import Chip from '@/components/ui/Chip';
 import Disclosure from '@/components/ui/Disclosure';
 import Section from '@/components/ui/Section';
 // Client-safe: the collapse rules, and types only from the db-backed view module.
 import { groupSessionsForDisplay, sessionTaskPreview } from '@/lib/local-session-display';
 import type { LocalSessionView, LocalSessionState, LocalSessionTaskView } from '@/lib/local-session-view';
-import { displayTaskTitle } from '@/lib/task-title';
 
 /**
  * Local interactive sessions (Claude Code, Codex, Cursor on someone's own
@@ -48,8 +48,8 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
 
 function TaskLink({ t }: { t: LocalSessionTaskView }) {
   return (
-    <Link href={`/app/tasks/${t.id}`} title={t.title} className="block min-h-6 truncate text-body text-text-primary hover:underline">
-      {displayTaskTitle(t.title)}
+    <Link href={`/app/tasks/${t.id}`} className="flex min-h-11 items-center text-body text-text-primary hover:underline md:min-h-6" title={t.title}>
+      <span className="min-w-0 truncate">{displayTaskTitle(t.title)}</span>
     </Link>
   );
 }
@@ -74,7 +74,7 @@ function SessionRow({ s, now }: { s: LocalSessionView; now: number }) {
             </Disclosure>
           )}
           {s.workerLive && (
-            <span className="text-meta text-text-muted">Runs on your machine. Buildd can release its slot, not close it.</span>
+            <span className="text-meta text-text-muted">Runs on your machine. buildd can release its slot, not close it.</span>
           )}
         </div>
       )}

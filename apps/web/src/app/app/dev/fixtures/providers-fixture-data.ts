@@ -99,11 +99,11 @@ export const MEMBER_CAN: ListProvidersResponse['caller']['can'] = {
 };
 
 export function fixturePolicy(credentialPolicy: ProviderPolicySummary['credentialPolicy']): ProviderPolicySummary {
-  const p = credentialPolicy ?? 'team';
+  const p = credentialPolicy ?? 'personal_first';
   return {
     credentialPolicy,
     chat: { policy: p, source: credentialPolicy ? 'credential_policy' : 'default' },
-    agent: { policy: p, enforced: credentialPolicy !== null, source: credentialPolicy ? 'credential_policy' : 'default' },
+    agent: { policy: p, enforced: true, source: credentialPolicy ? 'credential_policy' : 'default' },
   };
 }
 

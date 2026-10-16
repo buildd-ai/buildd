@@ -8,7 +8,8 @@ import { canAdministerTeamKeys } from '@/lib/key-level-policy';
 import { invalidateAccountCacheByHash } from '@/lib/api-auth';
 import { invalidateAccountWorkspaceCache } from '@/lib/account-workspace-cache';
 import { isUuid } from '@/lib/uuid';
-import { getTeamPermissionOverrides } from '@/lib/permissions';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
+
 
 export async function GET(
   req: NextRequest,
@@ -32,7 +33,7 @@ export async function GET(
     const teamIds = await getUserTeamIds(user.id);
     const account = teamIds.length > 0
       ? await db.query.accounts.findFirst({
-          where: and(eq(accounts.id, id), inArray(accounts.teamId, teamIds)),
+          where: sqlWhere(and(eq(accounts.id, id), inArray(accounts.teamId, teamIds))),
         })
       : null;
 
@@ -69,7 +70,7 @@ export async function DELETE(
     const teamIds = await getUserTeamIds(user.id);
     const account = teamIds.length > 0
       ? await db.query.accounts.findFirst({
-          where: and(eq(accounts.id, id), inArray(accounts.teamId, teamIds)),
+          where: sqlWhere(and(eq(accounts.id, id), inArray(accounts.teamId, teamIds))),
         })
       : null;
 
@@ -81,7 +82,7 @@ export async function DELETE(
     // regenerating it. Anyone may delete a key they minted themselves.
     const ownKey = account.createdByUserId != null && account.createdByUserId === user.id;
     const role = ownKey ? null : await getUserTeamRole(user.id, account.teamId);
-    if (!ownKey && !canAdministerTeamKeys(role, await getTeamPermissionOverrides(account.teamId))) {
+    if (!ownKey && !canAdministerTeamKeys(role)) {
       return NextResponse.json(
         { error: 'Only the person who created this key, or team members holding manage_team_keys, can delete it' },
         { status: 403 },
@@ -131,7 +132,7 @@ export async function PATCH(
     const teamIds = await getUserTeamIds(user.id);
     const account = teamIds.length > 0
       ? await db.query.accounts.findFirst({
-          where: and(eq(accounts.id, id), inArray(accounts.teamId, teamIds)),
+          where: sqlWhere(and(eq(accounts.id, id), inArray(accounts.teamId, teamIds))),
         })
       : null;
 
@@ -140,7 +141,7 @@ export async function PATCH(
     }
 
     const role = await getUserTeamRole(user.id, account.teamId);
-    if (!canAdministerTeamKeys(role, await getTeamPermissionOverrides(account.teamId))) {
+    if (!canAdministerTeamKeys(role)) {
       return NextResponse.json(
         { error: 'Only team owners and admins can edit runner tokens' },
         { status: 403 },

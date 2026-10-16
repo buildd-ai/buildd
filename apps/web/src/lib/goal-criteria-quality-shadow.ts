@@ -35,6 +35,7 @@ import {
   type GoalQualityVerdict,
   type RewriteLabel,
 } from './goal-criteria-quality-decision';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export type GoalQualityMode = 'shadow' | 'surface';
 
@@ -73,7 +74,7 @@ async function defaultLoadDataClass(workspaceId: string): Promise<string | null>
     import('@buildd/core/db/schema'),
     import('drizzle-orm'),
   ]);
-  const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId), columns: { dataClass: true, gitConfig: true } });
+  const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, workspaceId)), columns: { dataClass: true, gitConfig: true } });
   // Either marker makes it sensitive: the column most routes read, or the
   // gitConfig field the spec names (and task creation still reads).
   const legacy = (ws?.gitConfig as { dataClass?: string | null } | null)?.dataClass;

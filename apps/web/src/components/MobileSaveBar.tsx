@@ -26,7 +26,7 @@ export function MobileSaveBar({
   error,
   saved,
   dirty,
-  label = 'Save Changes',
+  label = 'Save changes',
 }: {
   onSave: () => void;
   saving: boolean;
@@ -80,7 +80,7 @@ export function HeaderSaveButton({
   saving,
   saved,
   dirty,
-  label = 'Save Changes',
+  label = 'Save changes',
 }: {
   onSave: () => void;
   saving: boolean;

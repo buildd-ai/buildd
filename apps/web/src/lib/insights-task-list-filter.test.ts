@@ -2,6 +2,7 @@ import { expect, it, mock } from 'bun:test';
 import { sampleFlowSeries } from '@/app/app/(protected)/health/insights/sample-series';
 import { tasksInBand } from '@/components/insights/flow-chart-model';
 import { bandTaskListHref } from '@/components/insights/usage-model';
+import { tasksWithTime, timeTaskListHref } from '@/components/insights/insights-summary';
 const series = sampleFlowSeries('7d');
 let allowed = true;
 const load = mock(async () => series);
@@ -27,4 +28,22 @@ it('denies band filtering without team usage permission before reading worker to
   const params = Object.fromEntries(new URLSearchParams(bandTaskListHref(series, 0, 'running').split('?')[1]));
   await expect(insightsTaskListFilter({ ...input, params })).rejects.toThrow('redirect:/app/health/insights');
   expect(load).not.toHaveBeenCalled();
+});
+it('reproduces the tasks behind a row of where time went', async () => {
+  allowed = true;
+  for (const category of ['review', 'running', 'runner'] as const) {
+    const params = Object.fromEntries(new URLSearchParams(timeTaskListHref(series, category).split('?')[1]));
+    const result = await insightsTaskListFilter({ ...input, params });
+    expect(result!.ids).toEqual(tasksWithTime(series, category).map(t => t.key));
+    expect(result!.ids.length).toBeGreaterThan(0);
+    expect(load).toHaveBeenLastCalledWith(input.workspaceIds, '7d', series.window.to);
+  }
+});
+it('denies a time-row selection without team usage permission', async () => {
+  allowed = false;
+  load.mockClear();
+  const params = Object.fromEntries(new URLSearchParams(timeTaskListHref(series, 'review').split('?')[1]));
+  await expect(insightsTaskListFilter({ ...input, params })).rejects.toThrow('redirect:/app/health/insights');
+  expect(load).not.toHaveBeenCalled();
+  allowed = true;
 });

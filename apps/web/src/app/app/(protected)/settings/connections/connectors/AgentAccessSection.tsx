@@ -40,7 +40,7 @@ interface Rule {
   maxTtlSeconds: number | null;
 }
 
-interface CatalogProvider { slug: string; name: string; policy: 'blocked' | 'available' | 'preinstalled' }
+interface CatalogProvider { slug: string; name: string; policy: 'blocked' | 'available' | 'preinstalled'; unavailable?: boolean }
 interface Workspace { id: string; name: string }
 
 const isTeamWide = (r: Rule) => !r.workspaceId && !r.roleSlug && !r.environment && !r.resource;
@@ -48,10 +48,14 @@ const isTeamWide = (r: Rule) => !r.workspaceId && !r.roleSlug && !r.environment 
 /**
  * Settings → Connected apps → Agent access. What agents asked for beyond their
  * role, what they hold now, what was decided and by whom, and the team policy
- * that answers the next ask. Everything here reads and writes through
- * /api/agent-capabilities (session only); a member sees it all and changes
- * nothing, because the API refuses them the same writes. Nothing is decided
- * on this page: a button posts, and the row shows what the server answered.
+ * that answers the next ask. Compact by default: a one-line summary, and the
+ * requests waiting for a decision, which are never folded. What agents hold,
+ * the history and the policy open below it (and open by themselves when
+ * `?request=<id>` points at a row in there). Everything reads and writes
+ * through /api/agent-capabilities (session only); a member sees it all and
+ * changes nothing, because the API refuses them the same writes. Nothing is
+ * decided on this page: a button posts, and the row shows what the server
+ * answered.
  */
 export default function AgentAccessSection({
   teamId,
@@ -69,15 +73,17 @@ export default function AgentAccessSection({
   const [canManage, setCanManage] = useState(false);
   const [providers, setProviders] = useState<CatalogProvider[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [message, setMessage] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null);
   const q = teamId ? `teamId=${encodeURIComponent(teamId)}` : '';
 
   const loadRequests = useCallback(async () => {
     const res = await fetch(`/api/agent-capabilities/requests?${q}${q ? '&' : ''}limit=100`).catch(() => null);
-    if (!res?.ok) return;
+    if (!res?.ok) return [];
     const data = await res.json() as { requests?: AccessRequestView[]; canDecide?: boolean };
     setRequests(data.requests ?? []);
     setCanDecide(!!data.canDecide);
+    return data.requests ?? [];
   }, [q]);
 
   const loadPolicy = useCallback(async () => {
@@ -91,71 +97,84 @@ export default function AgentAccessSection({
   useEffect(() => {
     void (async () => {
       const catalog = fetch('/api/connectors/catalog').then(r => (r.ok ? r.json() : { entries: [] })).catch(() => ({ entries: [] }));
-      const [, , cat] = await Promise.all([loadRequests(), loadPolicy(), catalog]);
-      setProviders(((cat as { entries?: CatalogProvider[] }).entries ?? []).map(e => ({ slug: e.slug, name: e.name, policy: e.policy })));
+      const [loadedRequests, , cat] = await Promise.all([loadRequests(), loadPolicy(), catalog]);
+      // An app the team can't connect has nothing for a policy to answer.
+      setProviders(((cat as { entries?: CatalogProvider[] }).entries ?? []).filter(e => !e.unavailable).map(e => ({ slug: e.slug, name: e.name, policy: e.policy })));
+      const focused = loadedRequests.find(r => r.id === focusRequestId);
+      if (focused && focused.status !== 'pending') setDetailsOpen(true);
       setLoaded(true);
     })();
-  }, [loadRequests, loadPolicy]);
+  }, [loadRequests, loadPolicy, focusRequestId]);
 
   const pending = requests.filter(r => r.status === 'pending');
   const active = requests.filter(r => r.status === 'granted');
   const past = requests.filter(r => r.status !== 'pending' && r.status !== 'granted');
+  const onDecided = async (text: string, ok: boolean) => { setMessage({ tone: ok ? 'ok' : 'err', text }); await loadRequests(); };
 
   if (!loaded) return null;
 
   return (
     <div id="agent-access" className="scroll-mt-20">
       <Section title="Agent access">
-        <p className="mb-3 text-sm text-text-secondary">
-          Agents ask for tools their role lacks, and team policy answers.{' '}
-          Installing a connector grants agents nothing. Writes always need a person.
+        <p className="mb-3 text-body text-text-secondary" data-testid="access-summary">
+          {pending.length === 0
+            ? <span data-testid="access-pending-empty">No requests waiting.</span>
+            : `${pending.length} waiting for a decision.`}
+          {' '}{active.length === 0 ? 'Agents hold no extra access.' : `${active.length} allowed now.`}
         </p>
         {message && (
           <Notice tone={message.tone} className="mb-3" data-testid="access-message">{message.text}</Notice>
         )}
 
-        <h3 className="section-label mb-1">Waiting for a decision</h3>
-        {pending.length === 0 ? (
-          <p className="py-2 text-sm text-text-muted" data-testid="access-pending-empty">No requests are waiting.</p>
-        ) : (
+        {pending.length > 0 && (
           <ul className="divide-y divide-border-default border-y border-border-default" data-testid="access-pending">
             {pending.map(r => (
-              <RequestRow key={r.id} r={r} canDecide={canDecide} focused={r.id === focusRequestId} onDecided={async (text, ok) => { setMessage({ tone: ok ? 'ok' : 'err', text }); await loadRequests(); }} />
+              <RequestRow key={r.id} r={r} canDecide={canDecide} focused={r.id === focusRequestId} onDecided={onDecided} />
             ))}
           </ul>
         )}
         {!canDecide && pending.length > 0 && (
-          <p className="mt-2 text-xs text-text-muted" data-testid="access-member-note">Only team owners and admins can approve or deny.</p>
+          <p className="mt-2 text-meta text-text-muted" data-testid="access-member-note">Only team owners and admins can approve or deny.</p>
         )}
 
-        {active.length > 0 && (
-          <>
-            <h3 className="section-label mb-1 mt-5">Allowed now</h3>
-            <ul className="divide-y divide-border-default border-y border-border-default" data-testid="access-active">
-              {active.map(r => (
-                <RequestRow key={r.id} r={r} canDecide={canDecide} focused={r.id === focusRequestId} onDecided={async (text, ok) => { setMessage({ tone: ok ? 'ok' : 'err', text }); await loadRequests(); }} />
-              ))}
-            </ul>
-          </>
-        )}
+        <Disclosure
+          summary="Allowed access, history and policy"
+          open={detailsOpen}
+          onOpenChange={setDetailsOpen}
+          className="mt-2"
+        >
+          <div className="pb-2" data-testid="access-details">
+            <p className="mb-3 text-meta text-text-muted">Installing an app grants agents nothing. Writes always need a person.</p>
+            {active.length > 0 && (
+              <>
+                <h3 className="section-label mb-1">Allowed now</h3>
+                <ul className="mb-4 divide-y divide-border-default border-y border-border-default" data-testid="access-active">
+                  {active.map(r => (
+                    <RequestRow key={r.id} r={r} canDecide={canDecide} focused={r.id === focusRequestId} onDecided={onDecided} />
+                  ))}
+                </ul>
+              </>
+            )}
 
-        {past.length > 0 && (
-          <Disclosure summary={<span className="text-sm">History · {past.length}</span>} className="mt-4">
-            <ul className="divide-y divide-border-default" data-testid="access-history">
-              {past.map(r => <RequestRow key={r.id} r={r} canDecide={false} focused={r.id === focusRequestId} onDecided={async () => {}} />)}
-            </ul>
-          </Disclosure>
-        )}
+            {past.length > 0 && (
+              <Disclosure summary={<span className="text-sm">History · {past.length}</span>} defaultOpen={past.some(r => r.id === focusRequestId)} className="mb-2">
+                <ul className="divide-y divide-border-default" data-testid="access-history">
+                  {past.map(r => <RequestRow key={r.id} r={r} canDecide={false} focused={r.id === focusRequestId} onDecided={async () => {}} />)}
+                </ul>
+              </Disclosure>
+            )}
+
+            <PolicySection
+              rules={rules}
+              canManage={canManage}
+              providers={providers}
+              workspaces={workspaces}
+              teamQuery={q}
+              onChanged={async (text, ok) => { setMessage({ tone: ok ? 'ok' : 'err', text }); await loadPolicy(); }}
+            />
+          </div>
+        </Disclosure>
       </Section>
-
-      <PolicySection
-        rules={rules}
-        canManage={canManage}
-        providers={providers}
-        workspaces={workspaces}
-        teamQuery={q}
-        onChanged={async (text, ok) => { setMessage({ tone: ok ? 'ok' : 'err', text }); await loadPolicy(); }}
-      />
     </div>
   );
 }
@@ -347,13 +366,13 @@ function PolicySection({ rules, canManage, providers, workspaces, teamQuery, onC
 
       {(narrower.length > 0 || canManage) && (
         <div className="mt-4">
-          <h3 className="section-label mb-1">For one workspace or role</h3>
+          <h3 className="section-label mb-1">For one workspace or agent</h3>
           {narrower.length === 0 ? (
             <p className="py-2 text-sm text-text-muted">No narrower rules. The team rules above apply everywhere.</p>
           ) : (
             <ul className="divide-y divide-border-default border-y border-border-default" data-testid="access-policy-narrower">
               {narrower.map(r => {
-                const where = [wsName(r.workspaceId), r.roleSlug ? `role ${r.roleSlug}` : null, r.environment, r.resource].filter(Boolean).join(' · ');
+                const where = [wsName(r.workspaceId), r.roleSlug ? `agent ${r.roleSlug}` : null, r.environment, r.resource].filter(Boolean).join(' · ');
                 return (
                   <li key={r.id} className="flex flex-col gap-2 py-2.5 sm:flex-row sm:items-center sm:justify-between">
                     <span className="min-w-0 text-sm text-text-primary [overflow-wrap:anywhere]">
@@ -369,7 +388,7 @@ function PolicySection({ rules, canManage, providers, workspaces, teamQuery, onC
             </ul>
           )}
           {canManage && (
-            <Disclosure summary={<span className="text-sm">Add a rule for one workspace or role</span>} className="mt-2">
+            <Disclosure summary={<span className="text-sm">Add a rule for one workspace or agent</span>} className="mt-2">
               <NarrowRuleForm providers={rows.filter(p => p.policy !== 'blocked')} workspaces={workspaces} saving={saving === 'narrow'} onSubmit={body => put(body, 'narrow')} />
             </Disclosure>
           )}
@@ -415,11 +434,11 @@ function NarrowRuleForm({ providers, workspaces, saving, onSubmit }: {
       <div><span className="field-label">Provider</span><Select aria-label="Provider" value={provider} onChange={setProvider} options={providers.map(p => ({ value: p.slug, label: p.name }))} /></div>
       <div><span className="field-label">Access</span><Select aria-label="Access" value={risk} onChange={v => setRisk(v as AccessRisk)} options={RISKS.map(r => ({ value: r, label: RISK_LABEL[r] }))} /></div>
       <div><span className="field-label">Workspace</span><Select aria-label="Workspace" value={workspaceId} onChange={setWorkspaceId} placeholder="Any workspace" options={[{ value: '', label: 'Any workspace' }, ...workspaces.map(w => ({ value: w.id, label: w.name }))]} /></div>
-      <div><span className="field-label">Role</span><Select aria-label="Role" value={roleSlug} onChange={setRoleSlug} placeholder="Any role" options={[{ value: '', label: 'Any role' }, ...roles.map(r => ({ value: r.slug, label: r.name }))]} /></div>
+      <div><span className="field-label">Agent</span><Select aria-label="Agent" value={roleSlug} onChange={setRoleSlug} placeholder="Any agent" options={[{ value: '', label: 'Any agent' }, ...roles.map(r => ({ value: r.slug, label: r.name }))]} /></div>
       <div><span className="field-label">Then</span><Select aria-label="Then" value={effect} onChange={v => setEffect(v as AccessEffect)} options={effectsFor(risk).map(e => ({ value: e, label: EFFECT_LABEL[e] }))} /></div>
       <div><span className="field-label">Longest lease</span><Select aria-label="Longest lease" value={cap} onChange={setCap} placeholder="Team default" options={[{ value: '', label: 'Team default' }, ...LEASE_CAPS.map(s => ({ value: String(s), label: formatLease(s) }))]} /></div>
       <div className="flex items-center justify-between gap-3 sm:col-span-2">
-        <span className="text-xs text-text-muted">{ready ? '' : 'Pick a workspace or a role.'}</span>
+        <span className="text-xs text-text-muted">{ready ? '' : 'Pick a workspace or an agent.'}</span>
         <button type="submit" className="btn btn-primary" disabled={saving || !ready}>{saving ? 'Saving…' : 'Add rule'}</button>
       </div>
     </form>

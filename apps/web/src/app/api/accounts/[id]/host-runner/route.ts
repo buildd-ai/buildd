@@ -7,7 +7,8 @@ import { invalidateAccountCacheByHash } from '@/lib/api-auth';
 import { getUserTeamIds, getUserTeamRole } from '@/lib/team-access';
 import { canAdministerTeamKeys } from '@/lib/key-level-policy';
 import { isUuid } from '@/lib/uuid';
-import { getTeamPermissionOverrides } from '@/lib/permissions';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
+
 
 /**
  * PUT /api/accounts/[id]/host-runner  { hostRunner: boolean }
@@ -39,7 +40,7 @@ export async function PUT(
   const teamIds = await getUserTeamIds(user.id);
   const account = teamIds.length > 0
     ? await db.query.accounts.findFirst({
-        where: and(eq(accounts.id, id), inArray(accounts.teamId, teamIds)),
+        where: sqlWhere(and(eq(accounts.id, id), inArray(accounts.teamId, teamIds))),
         columns: { id: true, teamId: true, apiKey: true },
       })
     : null;
@@ -48,7 +49,7 @@ export async function PUT(
   }
 
   const role = await getUserTeamRole(user.id, account.teamId);
-  if (!canAdministerTeamKeys(role, await getTeamPermissionOverrides(account.teamId))) {
+  if (!canAdministerTeamKeys(role)) {
     return NextResponse.json(
       { error: 'Only team owners and admins can flag a host runner key' },
       { status: 403 },

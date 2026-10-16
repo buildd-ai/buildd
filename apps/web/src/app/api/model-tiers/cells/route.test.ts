@@ -9,7 +9,9 @@ import { NextRequest } from 'next/server';
  */
 
 let role: string | null = 'admin';
-let user: { id: string } | null = { id: 'user-1' };
+process.env.BUILDD_OPERATOR_USER_EMAILS = 'op@example.com';
+const OPERATOR = { id: 'user-1', email: 'op@example.com' };
+let user: { id: string; email?: string } | null = OPERATOR;
 let found: any = null;
 let writeVersion: number | null = 7;
 const calls: Record<string, any[]> = {};
@@ -21,7 +23,6 @@ mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: async () => user }));
 mock.module('@/lib/team-access', () => ({ getUserTeamRole: async () => role }));
 mock.module('@/lib/permissions', () => ({
   roleHas: (r: string) => r === 'admin' || r === 'owner',
-  getTeamPermissionOverrides: async () => null,
 }));
 mock.module('@buildd/core/tier-pool-admin', () => ({
   findTeamPool: async (...a: any[]) => { log('findTeamPool')(...a); return found; },
@@ -54,7 +55,7 @@ const patch = (body: Record<string, unknown>) => PATCH(new NextRequest('http://l
 
 beforeEach(() => {
   role = 'admin';
-  user = { id: 'user-1' };
+  user = OPERATOR;
   found = poolRow();
   writeVersion = 7;
   for (const k of Object.keys(calls)) delete calls[k];
@@ -78,9 +79,14 @@ describe('GET /api/model-tiers/cells', () => {
 });
 
 describe('PATCH /api/model-tiers/cells', () => {
-  it('only an admin may turn the dial', async () => {
-    role = 'member';
-    expect((await patch({ dial: 3 })).status).toBe(403);
+  it('only a platform operator may turn the dial: a team owner or admin gets 403', async () => {
+    user = { id: 'user-1', email: 'admin@example.com' };
+    for (const r of ['member', 'admin', 'owner']) {
+      role = r;
+      const res = await patch({ dial: 3 });
+      expect(res.status).toBe(403);
+      expect((await res.json()).code).toBe('operator_only');
+    }
     expect(calls.writeDialState).toBeUndefined();
   });
 

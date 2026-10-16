@@ -29,7 +29,7 @@ mock.module('drizzle-orm', () => ({
   isNull: (c: unknown) => ({ isNull: c }),
   desc: (c: unknown) => c,
 }));
-mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id', permissionOverrides: 'teams.permission_overrides' },
+mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id' },
   evidenceBackends: new Proxy({}, { get: (_t, p) => `evidenceBackends.${String(p)}` }),
   workspaces: new Proxy({}, { get: (_t, p) => `workspaces.${String(p)}` }),
 }));

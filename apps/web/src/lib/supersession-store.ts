@@ -28,6 +28,7 @@ import {
   type SupersessionStore,
   selectOpenRetryBlockers,
 } from './supersession';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 const DEAD_LIFECYCLE = new Set(['closed', 'merged']);
 
@@ -92,20 +93,20 @@ function bindingCondition(event: SubjectEvent) {
 
 async function loadCandidates(event: SubjectEvent): Promise<SupersessionCandidate[]> {
   const rows = await db.query.tasks.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.workspaceId, event.workspaceId),
       inArray(tasks.status, [...OPEN_STATUSES]),
       bindingCondition(event),
-    ),
+    )),
     columns: CANDIDATE_COLUMNS,
   });
   if (rows.length === 0) return [];
 
   // Each task's own open PR, for the "own live PR is not the subject" bound.
   const prWorkers = await db.query.workers.findMany({
-    where: and(inArray(workers.taskId, rows.map(r => r.id)), isNotNull(workers.prNumber)),
+    where: sqlWhere(and(inArray(workers.taskId, rows.map(r => r.id)), isNotNull(workers.prNumber))),
     columns: { taskId: true, prNumber: true, prLifecycleStatus: true, mergedAt: true, createdAt: true },
-    orderBy: [desc(workers.createdAt)],
+    orderBy: sqlOrderBy([desc(workers.createdAt)]),
   });
   const ownLive = new Map<string, number>();
   for (const w of prWorkers) {
@@ -130,7 +131,7 @@ async function loadCandidates(event: SubjectEvent): Promise<SupersessionCandidat
  */
 export async function subjectHasLiveSuccessor(workspaceId: string, prNumber: number): Promise<boolean> {
   const anchored = await db.query.tasks.findMany({
-    where: and(eq(tasks.workspaceId, workspaceId), eq(tasks.subjectPrNumber, prNumber)),
+    where: sqlWhere(and(eq(tasks.workspaceId, workspaceId), eq(tasks.subjectPrNumber, prNumber))),
     columns: { id: true, parentTaskId: true },
   });
   if (anchored.length === 0) return false;
@@ -140,18 +141,18 @@ export async function subjectHasLiveSuccessor(workspaceId: string, prNumber: num
   if (parentIds.length > 0) {
     for (const p of parentIds) taskIds.add(p);
     const siblings = await db.query.tasks.findMany({
-      where: inArray(tasks.parentTaskId, parentIds),
+      where: sqlWhere(inArray(tasks.parentTaskId, parentIds)),
       columns: { id: true },
     });
     for (const s of siblings) taskIds.add(s.id);
   }
 
   const chainWorkers = await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       inArray(workers.taskId, [...taskIds]),
       isNotNull(workers.prNumber),
       isNotNull(workers.prLifecycleStatus),
-    ),
+    )),
     columns: { prLifecycleStatus: true },
   });
   return chainWorkers.some(w => !!w.prLifecycleStatus && !DEAD_LIFECYCLE.has(w.prLifecycleStatus));
@@ -198,12 +199,12 @@ export async function loadOpenRetryIds(
     eq(tasks.conflictRetryPrNumber, prNumber),
   )!;
   const rows = await db.query.tasks.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.workspaceId, workspaceId),
       eq(tasks.taskClass, 'attempt'),
       inArray(tasks.status, [...OPEN_STATUSES]),
       family.length > 0 ? or(bound, inArray(tasks.id, [...family]))! : bound,
-    ),
+    )),
     columns: { id: true, createdAt: true, status: true, category: true },
   });
   return selectOpenRetryBlockers(rows, selfTaskId, { startedAlwaysCounts: opts.startedAlwaysCounts });
@@ -227,9 +228,9 @@ async function loadDispatchFacts(p: DispatchProposal): Promise<DispatchFacts> {
 
   if (p.prNumber != null) {
     const prWorker = await db.query.workers.findFirst({
-      where: and(eq(workers.workspaceId, p.workspaceId), eq(workers.prNumber, p.prNumber)),
+      where: sqlWhere(and(eq(workers.workspaceId, p.workspaceId), eq(workers.prNumber, p.prNumber))),
       columns: { prLifecycleStatus: true, mergedAt: true },
-      orderBy: [desc(workers.createdAt)],
+      orderBy: sqlOrderBy([desc(workers.createdAt)]),
     });
     facts.prState = !prWorker
       ? null
@@ -254,13 +255,13 @@ async function loadDispatchFacts(p: DispatchProposal): Promise<DispatchFacts> {
 
   if (p.parentTaskId) {
     const parent = await db.query.tasks.findFirst({
-      where: eq(tasks.id, p.parentTaskId),
+      where: sqlWhere(eq(tasks.id, p.parentTaskId)),
       columns: { status: true },
     });
     facts.parentStatus = parent?.status ?? null;
     if (parent?.status === 'completed') {
       const merged = await db.query.workers.findFirst({
-        where: and(eq(workers.taskId, p.parentTaskId), isNotNull(workers.mergedAt)),
+        where: sqlWhere(and(eq(workers.taskId, p.parentTaskId), isNotNull(workers.mergedAt))),
         columns: { id: true },
       });
       facts.parentMerged = !!merged;
@@ -283,7 +284,7 @@ async function applyCancelEffects(task: SupersessionCandidate, rule: Supersessio
   // The task CAS is already won, so a claim that comes after fails its own
   // pending-status CAS; a claim that won before is read here.
   const liveWorkers = await db.query.workers.findMany({
-    where: and(eq(workers.taskId, task.id), inArray(workers.status, [...LIVE_WORKER_STATUSES])),
+    where: sqlWhere(and(eq(workers.taskId, task.id), inArray(workers.status, [...LIVE_WORKER_STATUSES]))),
     columns: { id: true, status: true },
   });
   for (const w of liveWorkers) {

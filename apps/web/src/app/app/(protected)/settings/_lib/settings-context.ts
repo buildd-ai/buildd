@@ -6,15 +6,23 @@ import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds, getUserTeamsWithDetails, resolveActiveTeamId, type UserTeam } from '@/lib/team-access';
-import { isSystemWorkspace } from '@buildd/shared';
-import { getTeamsPermissionOverrides, type PermissionOverrides } from '@/lib/permissions';
-import { NO_PERMISSIONS, settingsPermissions, type SettingsPermissions } from './settings-permissions';
+import {
+  isSystemWorkspace,
+  isRunnerModelAuthSource,
+  isRunnerCodexAuthSource,
+  type RunnerModelAuthSource,
+  type RunnerCodexAuthSource,
+} from '@buildd/shared';
+import { settingsPermissions, type SettingsPermissions } from './settings-permissions';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface SettingsWorkspace {
   id: string;
   name: string;
   repo: string | null;
   teamId: string;
+  /** 'open': every key of the owning team reaches it; 'restricted': linked keys only. */
+  accessMode: string | null;
 }
 
 export interface SettingsContext {
@@ -23,8 +31,8 @@ export interface SettingsContext {
   currentTeamId: string | null;
   currentTeam: UserTeam | null;
   /**
-   * What the person may do in the active team, one flag per named permission,
-   * with the team's overrides applied: exactly what the API would accept from
+   * What the person may do in the active team, one flag per named permission:
+   * exactly what the API would accept from
    * this session. A personal team counts as owned. All false with no team.
    */
   perms: SettingsPermissions;
@@ -57,24 +65,14 @@ export const loadSettingsContext = cache(async (): Promise<SettingsContext> => {
   const teamCookie = (await cookies()).get('buildd-team')?.value;
   const currentTeamId = await resolveActiveTeamId(user.id, teamCookie).catch(() => null);
   const currentTeam = teams.find((t) => t.id === currentTeamId) ?? null;
-  // Overrides are read once per request for every team (cached). A failed read
-  // holds nothing: an override can take a permission away, so guessing the
-  // defaults could offer a control the API would refuse.
-  const overrides = await getTeamsPermissionOverrides(teams.map((t) => t.id)).catch((e) => {
-    console.error('Settings: permission overrides query error:', e);
-    return null as Map<string, PermissionOverrides> | null;
-  });
   const permsByTeam: Record<string, SettingsPermissions> = {};
-  for (const t of teams) {
-    const o = overrides?.get(t.id);
-    permsByTeam[t.id] = o ? settingsPermissions(t, user.id, o) : NO_PERMISSIONS;
-  }
-  const perms = (currentTeam && permsByTeam[currentTeam.id]) || NO_PERMISSIONS;
+  for (const t of teams) permsByTeam[t.id] = settingsPermissions(t, user.id);
+  const perms = settingsPermissions(currentTeam, user.id);
 
   const rows = wsIds.length > 0
     ? await db.query.workspaces.findMany({
-        where: inArray(workspaces.id, wsIds),
-        columns: { id: true, name: true, repo: true, teamId: true },
+        where: sqlWhere(inArray(workspaces.id, wsIds)),
+        columns: { id: true, name: true, repo: true, teamId: true, accessMode: true },
       }).catch(() => [] as SettingsWorkspace[])
     : [];
 
@@ -139,8 +137,8 @@ export interface RunnerAccountDto {
 export async function loadRunnerAccounts(teamIds: string[]): Promise<RunnerAccountDto[]> {
   if (teamIds.length === 0) return [];
   const rows = await db.query.accounts.findMany({
-    where: inArray(accounts.teamId, teamIds),
-    orderBy: desc(accounts.createdAt),
+    where: sqlWhere(inArray(accounts.teamId, teamIds)),
+    orderBy: sqlOrderBy(desc(accounts.createdAt)),
     columns: RUNNER_ACCOUNT_COLUMNS,
     with: {
       team: { columns: { name: true } },
@@ -184,5 +182,41 @@ export async function loadAccountLastSeen(accountIds: string[]): Promise<Record<
     .catch(() => [] as Array<{ accountId: string; at: Date | string }>);
   const out: Record<string, string> = {};
   for (const r of rows) if (r.at) out[r.accountId] = new Date(r.at).toISOString();
+  return out;
+}
+
+/** The model logins one runner token's latest heartbeat reported. */
+export interface AccountModelAuth {
+  claude: RunnerModelAuthSource | null;
+  codex: RunnerCodexAuthSource | null;
+}
+
+/**
+ * The model logins (Claude and Codex) each runner token's most recent
+ * heartbeat reported (docs/specs/runner-model-login-detect-say-report.md). Null when that
+ * runner never sends the field (older build), so the row says "not reported"
+ * (Claude) or shows no Codex line, instead of guessing. Degrades to empty on
+ * failure.
+ */
+export async function loadAccountModelAuth(accountIds: string[]): Promise<Record<string, AccountModelAuth>> {
+  if (accountIds.length === 0) return {};
+  const rows = await db
+    .select({
+      accountId: workerHeartbeats.accountId,
+      source: workerHeartbeats.modelAuthSource,
+      codex: workerHeartbeats.codexAuthSource,
+    })
+    .from(workerHeartbeats)
+    .where(inArray(workerHeartbeats.accountId, accountIds))
+    .orderBy(desc(workerHeartbeats.lastHeartbeatAt))
+    .catch(() => [] as Array<{ accountId: string; source: string | null; codex: string | null }>);
+  const out: Record<string, AccountModelAuth> = {};
+  for (const r of rows) {
+    if (r.accountId in out) continue;
+    out[r.accountId] = {
+      claude: isRunnerModelAuthSource(r.source) ? r.source : null,
+      codex: isRunnerCodexAuthSource(r.codex) ? r.codex : null,
+    };
+  }
   return out;
 }

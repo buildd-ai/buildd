@@ -17,6 +17,8 @@ import { readGithubAccessBlock } from '@/lib/github-repo-access';
 import { getUserTeamRole, holdsInWorkspace, resolveActiveTeamScope } from '@/lib/team-access';
 import { teamHostedRunnerBanner } from '@/lib/hosted-runner-usage-store';
 import { HostedRunnerBanner } from '@/components/hosted-runner/HostedRunnerBanner';
+import { EMPTY_SERVICE_STATUS, loadServiceStatus, type ServiceStatusView } from '@/lib/service-status-loader';
+import { ServiceStatusBanner } from '@/components/service-status/ServiceStatusList';
 import ModelUpgradeNotice from '@/components/models/ModelUpgradeNotice';
 import { roleHas as roleHasPermission } from '@/lib/permission-registry';
 import { rightNowState, recordBestEffort, homeAudience, type HomeAudience } from './home-view';
@@ -26,6 +28,7 @@ import { workerNotDependencyBotPr } from '@/lib/dependency-bot-pr';
 import { guardMissionPrMerge } from '@/lib/mission-pr';
 import { isMissionPrTask } from '@buildd/core/mission-integration';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
+import { overlayDeliveryLifecycle } from '@/lib/delivery-overlay';
 import { classifyConflictFix } from '@/lib/conflict-fix-liveness';
 import { isActionableChip, kernelInboxMembership, missionPrRoleOf, reviewMachineActing, buildActionQueue, buildDecideItems, buildDiscrepancyItems, buildFailedTaskItems, summariseActionQueueAge } from '@/lib/action-queue';
 import { describeConflictReason } from '@/lib/merge-blocker';
@@ -37,7 +40,8 @@ import type { CiGate, PrLifecycle } from '@/lib/ci-gate';
 import type { EscalationGateMark, WaitingOnYouRawItem } from '@/lib/action-queue';
 import { gateEscalations } from '@/lib/escalation-gate-check';
 import { agentReviewsDataMigrations } from '@buildd/shared';
-import { ACCESS_NEEDS_YOU, ESCALATION_GATE_READ_DEPS, INCIDENT_NEEDS_YOU } from '@/modules';
+import { isPlatformOperator } from '@/lib/platform-operator';
+import { ACCESS_NEEDS_YOU, DECISION_COLLECTION_NEEDS_YOU, DECISION_HEALTH_NEEDS_YOU, ESCALATION_GATE_READ_DEPS, INCIDENT_NEEDS_YOU } from '@/modules';
 import { loadLandingStalls, prSubjectFor } from '@/lib/escalation-subjects';
 import { needsReconnect } from '@/lib/connector-status';
 import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
@@ -58,20 +62,19 @@ import { loadMissionVerdicts } from '@buildd/core/mission-verdicts';
 export const dynamic = 'force-dynamic';
 import { LIVE_WORKER_STATUSES, LIVE_TASK_STATUSES } from '@/lib/task-presentation';
 import {
-  failedDeliverableTaskIds,
   summarizeMissionForCard,
   type MissionCardRow,
   type MissionCardSummary,
   type MissionCardView,
 } from '@/lib/mission-card-view';
-import { loadMissionCardViews, MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH } from '@/lib/mission-card-views';
+import { loadCardVisualReviews, loadMissionCardViews, missionDeliveryFacts, MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH, MISSION_TASK_REFRESH_EXTRAS } from '@/lib/mission-card-views';
 import type { HomeMissionSummary } from './HomeMissions';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
 import { resolveLandingOwnership, landingModeOf, resolveReviewerGate, resolveReviewInFlight, deriveStoredVerdictFallback, gateReachesActionQueue } from '@/lib/reviewer-gate';
 import type { ReviewerTaskStatus } from '@/lib/reviewer-gate';
 import { createReviewerStallFactsLoader } from '@/lib/reviewer-stall-facts';
 import { HomeBody } from './HomeBody';
-import { countQuietMissions, deliveryCounts, projectMissionDelivery, selectHomeMilestones, type MissionDelivery } from '@/lib/delivery-projection';
+import { countQuietMissions, deliveryCounts, quietMissionCauses, projectMissionDelivery, selectHomeMilestones, type MissionDelivery } from '@/lib/delivery-projection';
 import { deriveHomeNeedsYou } from '@/lib/home-needs-you';
 import type { HomeHeldMission, HomeQuestion } from './NeedsYouCards';
 import { HomeMissionsSummary, type HomeMissionRow } from './HomeMissionsSummary';
@@ -86,7 +89,7 @@ import { startOfDayInZone } from '@/lib/fleet-view';
 import { buildMissionListCard, shortAgo, type ListMissionRow } from '@/lib/mission-list-card';
 import { applyStrandChoice } from '@/lib/strand-choice-shadow';
 import { buildMissionCardView as buildHomeCardView } from '@/lib/mission-card-view';
-import { missionTaskHref as homeTaskHref } from '@/lib/mission-task-href';
+import { missionTaskHref as homeTaskHref, taskAnswerHref } from '@/lib/mission-task-href';
 import { getChatAvailability } from '@/lib/chat-availability';
 import HomeChatCard from '@/components/chat/HomeChatCard';
 import GettingStartedChecklist from '@/components/onboarding/GettingStartedChecklist';
@@ -94,7 +97,8 @@ import { firstTaskState, gettingStartedChecklist, type FirstTaskState } from '@/
 import { teamHasAgentCredential } from '@/lib/getting-started-load';
 import { homeChatPlacement, type HomeChatPlacement } from './home-view';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
-import { getTeamPermissionOverrides } from '@/lib/permissions';
+import { loadSupersededQuestionTaskIds } from '@/lib/incident-recovery-load';
+import { sqlOrderBy, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 // --- Helpers ---
 
@@ -150,6 +154,8 @@ export default async function HomePage({
   let hasAgentCredential: boolean | null = null;
   // Hosted runner allowance at 80% / used; null below that or without one.
   let hostedRunnerBanner: { level: 'warn' | 'used'; text: string } | null = null;
+  // The team's service status for this viewer: one read per render, never fatal.
+  let serviceStatus: ServiceStatusView = EMPTY_SERVICE_STATUS;
   // Team whose admin sees the stale/deprecated tier-model notice (fetched client-side).
   let modelUpgradeTeamId: string | null = null;
   let lastHeartbeat: { name: string; lastHeartbeatAt: Date } | null = null;
@@ -282,7 +288,7 @@ export default async function HomePage({
   let idleStretches: IdleStretch[] = [];
   let teamTz: string | null = null;
   // Owners/admins run the fleet; members see their asks and missions first.
-  let audience: HomeAudience = 'operator';
+  let audience: HomeAudience = 'admin';
   // Agent chat on Home (knowledge-base: buildd/design/agent-chat.md, "Who sees what first").
   let chatPlacement: HomeChatPlacement = { kind: 'none' };
   let chatTeamId: string | null = null;
@@ -307,18 +313,19 @@ export default async function HomePage({
       if (activeTeamId) {
         // Role and chat availability are independent: one wait. Availability
         // stops at one column read for a team that hasn't turned chat on.
-        const [role, chatAvail, overrides, agentKey, hostedBanner] = await Promise.all([
+        const [role, chatAvail, agentKey, hostedBanner, status] = await Promise.all([
           getUserTeamRole(user.id, activeTeamId).catch(() => null),
           getChatAvailability(user.id, activeTeamId).catch(() => null),
-          getTeamPermissionOverrides(activeTeamId),
           // A failed lookup reads as "has a key": never nag a working team.
           teamHasAgentCredential(activeTeamId).catch(() => true),
           teamHostedRunnerBanner(activeTeamId).catch(() => null),
+          loadServiceStatus({ userId: user.id, teamId: activeTeamId }),
         ]);
+        serviceStatus = status;
         hasAgentCredential = agentKey;
         hostedRunnerBanner = hostedBanner;
-        if (roleHasPermission(role, 'manage_model_tiers', overrides)) modelUpgradeTeamId = activeTeamId;
-        audience = homeAudience(role, overrides);
+        if (roleHasPermission(role, 'manage_model_tiers')) modelUpgradeTeamId = activeTeamId;
+        audience = homeAudience(role);
         chatPlacement = homeChatPlacement(audience, chatAvail);
         chatTeamId = activeTeamId;
       }
@@ -393,11 +400,11 @@ export default async function HomePage({
 
         // Active workers with their tasks and objectives
         const activeWorkers = await db.query.workers.findMany({
-          where: and(
+          where: sqlWhere(and(
             inArray(workers.workspaceId, wsIds),
             inArray(workers.status, [...LIVE_WORKER_STATUSES])
-          ),
-          orderBy: desc(workers.createdAt),
+          )),
+          orderBy: sqlOrderBy(desc(workers.createdAt)),
           // No cap: every live worker is a fleet slot, and a cap hid the 11th.
           with: {
             task: {
@@ -421,7 +428,7 @@ export default async function HomePage({
         const depTaskInfoMap = new Map<string, ChainPositionDep>();
         if (allDepIds.length > 0) {
           const depTasks = await db.query.tasks.findMany({
-            where: inArray(tasks.id, allDepIds),
+            where: sqlWhere(inArray(tasks.id, allDepIds)),
             // title → readable rail chips; dependsOn → transitive reduction.
             columns: { id: true, title: true, status: true, dependsOn: true },
             with: {
@@ -429,7 +436,7 @@ export default async function HomePage({
                 // No limit: the gate asks "does ANY worker hold an open PR?".
                 // prLifecycleStatus: a closed/abandoned PR unblocks dependents.
                 columns: { prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true },
-                orderBy: (w: any, { desc: d }: any) => [d(w.startedAt)],
+                orderBy: sqlOrderByFn((w: any, { desc: d }: any) => [d(w.startedAt)]),
               },
             },
           });
@@ -527,12 +534,13 @@ export default async function HomePage({
           // Columns are the card's (lib/mission-card-views.ts) so the visible
           // cards cost no second task fan-out.
           const allMissions = missionsWhere ? await db.query.missions.findMany({
-            where: and(missionsWhere, ne(missionsTable.status, 'archived')),
-            orderBy: [desc(missionsTable.priority), desc(missionsTable.createdAt)],
+            where: sqlWhere(and(missionsWhere, ne(missionsTable.status, 'archived'))),
+            orderBy: sqlOrderBy([desc(missionsTable.priority), desc(missionsTable.createdAt)]),
             columns: { id: true, teamId: true, title: true, description: true, initiativeId: true, workspaceId: true, status: true, orchestrationMode: true, dependsOnMissionId: true, dependencyMetAt: true, criteriaEscalatedAt: true, isHeld: true, executor: true, startAt: true, goalCriteria: true, goalCriteriaState: true, completedAt: true, workingBranch: true, integrationBranchEnabled: true, createdAt: true, updatedAt: true },
             with: {
               tasks: {
                 columns: MISSION_CARD_TASK_COLUMNS,
+                extras: MISSION_TASK_REFRESH_EXTRAS,
                 with: { workers: MISSION_CARD_WORKERS_WITH },
               },
               schedule: { columns: { id: true, nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true, maxConcurrentFromSchedule: true, totalRuns: true, taskTemplate: true } },
@@ -568,6 +576,10 @@ export default async function HomePage({
           // the same builder the missions list uses (AC-14, D8).
           // The nested workers are capped per task, so live workers are an
           // exact batched count, not a count of the loaded rows.
+          // The visual review the mission page reads, for missions whose audit is
+          // still open, so a Home card names the same state and cause as the
+          // mission header (spec 8e137fdb I-1). Runs beside the live count.
+          const visualReviewsLoad = loadCardVisualReviews(allMissions as Parameters<typeof loadCardVisualReviews>[0]);
           const liveWorkerCounts = new Map<string, number>();
           if (allMissions.length > 0) {
             const liveRows = await db
@@ -581,25 +593,35 @@ export default async function HomePage({
               .groupBy(tasks.missionId);
             for (const r of liveRows) if (r.missionId) liveWorkerCounts.set(r.missionId, r.n);
           }
+          // One DeliveryView load for every task of these missions, beside the
+          // visual reviews: S35's failure reading (a failed attempt the kernel
+          // already replaced does not read FAILED) and §7's lifecycle, where a
+          // delivery-owned task's PR reads as its delivery says, derived on read.
+          const [visualReviews, missionDeliveryViews] = await Promise.all([
+            visualReviewsLoad,
+            getDeliveryViewsForTasks(allMissions.flatMap(m => (m.tasks ?? []).map(t => t.id))),
+          ]);
+          const factsNow = Date.now();
+          const lifecycleMissions = allMissions.map(m => ({ ...m, tasks: overlayDeliveryLifecycle(m.tasks ?? [], missionDeliveryViews) }));
 
-          missionDeliveries = allMissions.map(m => ({
+          missionDeliveries = lifecycleMissions.map(m => ({
             delivery: projectMissionDelivery({
               id: m.id, title: m.title, status: m.status, href: `/app/missions/${m.id}`,
               isHeld: m.isHeld, integrationBranch: m.integrationBranchEnabled === true,
               tasks: m.tasks as unknown as Parameters<typeof projectMissionDelivery>[0]['tasks'],
+              // The same facts the missions list reads, so both cards agree.
+              ...missionDeliveryFacts(m as Parameters<typeof missionDeliveryFacts>[0], visualReviews.get(m.id), factsNow),
             }, missionHelpers),
             status: m.status,
             liveAgents: liveWorkerCounts.get(m.id) ?? 0,
           }));
 
-          // S35: one DeliveryView load for every failed deliverable, so a
-          // failed attempt the kernel already replaced does not read FAILED.
-          const missionDeliveryViews = await getDeliveryViewsForTasks(failedDeliverableTaskIds(allMissions as MissionCardRow[]));
           const nowMs = Date.now();
           const summaries = new Map<string, MissionCardSummary>();
-          for (const m of allMissions) {
+          for (const m of lifecycleMissions) {
             summaries.set(m.id, summarizeMissionForCard(m as MissionCardRow, {
               now: nowMs, liveWorkers: liveWorkerCounts.get(m.id) ?? 0, deliveryViews: missionDeliveryViews,
+              visualReview: visualReviews.get(m.id) ?? null,
             }));
           }
           missions = allMissions.map(m => ({
@@ -672,7 +694,7 @@ export default async function HomePage({
           // its parent's PR). A merge seen by any of them means the PR merged,
           // and the rest collapse to the owner row: one PR, one card.
           const openPrWorkers = oneRowPerPr(await db.query.workers.findMany({
-            where: and(
+            where: sqlWhere(and(
               inArray(workers.workspaceId, wsIds),
               isNotNull(workers.prUrl),
               isNull(workers.mergedAt),
@@ -681,7 +703,7 @@ export default async function HomePage({
               // in flight, and not a merge buildd is waiting on anyone for.
               workerNotDependencyBotPr(),
               sql`COALESCE(${workers.prLifecycleStatus}, 'pr_open') NOT IN ('closed', 'merged', 'unresolvable')`,
-            ),
+            )),
             columns: {
               id: true, taskId: true, workspaceId: true, prUrl: true, prNumber: true,
               prLifecycleStatus: true, completedAt: true,
@@ -745,20 +767,20 @@ export default async function HomePage({
             }>();
             if (openTaskIds.length > 0) {
               const reviewerTasksRaw = await db.query.tasks.findMany({
-                where: and(
+                where: sqlWhere(and(
                   inArray(tasks.parentTaskId, openTaskIds),
                   eq(tasks.category, 'review'),
-                ),
+                )),
                 columns: { id: true, parentTaskId: true, status: true, roleSlug: true, createdAt: true, context: true, result: true, startAt: true },
                 with: {
                   mission: { columns: { status: true } },
                   workers: {
-                    where: inArray(workers.status, [...LIVE_WORKER_STATUSES]),
+                    where: sqlWhere(inArray(workers.status, [...LIVE_WORKER_STATUSES])),
                     columns: { id: true, status: true, startedAt: true },
                     limit: 1,
                   },
                 },
-                orderBy: [desc(tasks.createdAt)],
+                orderBy: sqlOrderBy([desc(tasks.createdAt)]),
               });
               // orderBy desc → first row seen per parentTaskId is the latest.
               for (const rt of reviewerTasksRaw) {
@@ -783,10 +805,10 @@ export default async function HomePage({
 
             const allReviewerNotes = openTaskIds.length > 0
               ? await db.query.missionNotes.findMany({
-                  where: and(
+                  where: sqlWhere(and(
                     inArray(missionNotes.taskId, openTaskIds),
                     inArray(missionNotes.type, ['reviewer_escalated', 'reviewer_approved']),
-                  ),
+                  )),
                   columns: { taskId: true, type: true, body: true, title: true, status: true, createdAt: true },
                 })
               : [];
@@ -815,7 +837,7 @@ export default async function HomePage({
             );
 
             const wsRowsForInbox = await db.query.workspaces.findMany({
-              where: inArray(workspacesTable.id, [...new Set(openPrWorkers.map(w => w.workspaceId))]),
+              where: sqlWhere(inArray(workspacesTable.id, [...new Set(openPrWorkers.map(w => w.workspaceId))])),
               columns: { id: true, name: true, repo: true, gitConfig: true, teamId: true, maxConcurrentTasks: true, dataClass: true },
               with: WORKSPACE_INSTALLATION_WITH,
             });
@@ -1032,13 +1054,13 @@ export default async function HomePage({
             )];
             if (openPrNumbers.length > 0) {
               const conflictRetryTasks = await db.query.tasks.findMany({
-                where: and(
+                where: sqlWhere(and(
                   inArray(tasks.workspaceId, wsIds),
                   sql`${tasks.creationSource} = 'conflict'`,
                   inArray(tasks.conflictRetryPrNumber, openPrNumbers),
-                ),
+                )),
                 columns: { id: true, workspaceId: true, conflictRetryPrNumber: true, context: true, status: true, createdAt: true, claimedAt: true },
-                orderBy: [desc(tasks.createdAt)],
+                orderBy: sqlOrderBy([desc(tasks.createdAt)]),
               });
               for (const t of conflictRetryTasks) {
                 if (t.conflictRetryPrNumber == null) continue;
@@ -1086,26 +1108,26 @@ export default async function HomePage({
               )];
               if (ciPrNumbers.length > 0) {
                 const attemptTasks = await db.query.tasks.findMany({
-                  where: and(
+                  where: sqlWhere(and(
                     inArray(tasks.workspaceId, wsIds),
                     eq(tasks.taskClass, 'attempt'),
                     sql`(${tasks.context}->>'prNumber') IN (${sql.join(
                       ciPrNumbers.map(n => sql`${String(n)}`),
                       sql`, `,
                     )})`,
-                  ),
+                  )),
                   columns: {
                     id: true, workspaceId: true, status: true, context: true, result: true,
                     title: true, reviewerRetryPrNumber: true,
                   },
                   with: {
                     workers: {
-                      where: inArray(workers.status, [...LIVE_WORKER_STATUSES]),
+                      where: sqlWhere(inArray(workers.status, [...LIVE_WORKER_STATUSES])),
                       columns: { id: true },
                       limit: 1,
                     },
                   },
-                  orderBy: [desc(tasks.createdAt)],
+                  orderBy: sqlOrderBy([desc(tasks.createdAt)]),
                 });
                 for (const t of attemptTasks) {
                   const ctx = (t.context ?? {}) as Record<string, unknown>;
@@ -1155,12 +1177,12 @@ export default async function HomePage({
             if (terminalConflictWorkers.length > 0) {
               const tcPrNumbers = terminalConflictWorkers.map(w => w.prNumber).filter(Boolean) as number[];
               const allRetries = await db.query.tasks.findMany({
-                where: and(
+                where: sqlWhere(and(
                   inArray(tasks.workspaceId, wsIds),
                   inArray(tasks.conflictRetryPrNumber, tcPrNumbers),
-                ),
+                )),
                 columns: { id: true, workspaceId: true, conflictRetryPrNumber: true, status: true },
-                orderBy: [desc(tasks.createdAt)],
+                orderBy: sqlOrderBy([desc(tasks.createdAt)]),
               });
 
               for (const w of terminalConflictWorkers) {
@@ -1432,20 +1454,20 @@ export default async function HomePage({
 
             if (upstreamIds.length > 0) {
               const upstreamTasks = await db.query.tasks.findMany({
-                where: and(
+                where: sqlWhere(and(
                   inArray(tasks.id, upstreamIds),
                   eq(tasks.status, 'completed'),
-                ),
+                )),
                 columns: { id: true, title: true, missionId: true },
                 with: {
                   workers: {
-                    where: and(
+                    where: sqlWhere(and(
                       isNotNull(workers.prUrl),
                       isNull(workers.mergedAt),
                       // A sibling row (e.g. a CI-retry attempt) may be the one
                       // that recorded the merge.
                       noRowOfPrMerged(),
-                    ),
+                    )),
                     columns: {
                       prUrl: true, prNumber: true, prLifecycleStatus: true,
                       // Freshness inputs — a blocker-derived merge card is still
@@ -1455,7 +1477,7 @@ export default async function HomePage({
                       // CI and the review have finished (resolveMergeChip).
                       updatedAt: true,
                     },
-                    orderBy: desc(workers.createdAt),
+                    orderBy: sqlOrderBy(desc(workers.createdAt)),
                     limit: 1,
                   },
                   mission: { columns: { id: true, title: true } },
@@ -1467,17 +1489,29 @@ export default async function HomePage({
                 pendingWithDeps.map(t => t.missionId).filter(Boolean) as string[]
               )];
               const downstreamMissionMap = new Map<string, string>();
-              if (downstreamMissionIds.length > 0) {
-                const missionRows = await db
-                  .select({ id: missionsTable.id, title: missionsTable.title })
-                  .from(missionsTable)
-                  .where(inArray(missionsTable.id, downstreamMissionIds));
-                for (const m of missionRows) downstreamMissionMap.set(m.id, m.title);
-              }
+              // §7: an upstream PR the kernel owns reads as its delivery says,
+              // loaded beside the mission titles (no extra round trip).
+              const [missionRows, upstreamViews] = await Promise.all([
+                downstreamMissionIds.length > 0
+                  ? db
+                    .select({ id: missionsTable.id, title: missionsTable.title })
+                    .from(missionsTable)
+                    .where(inArray(missionsTable.id, downstreamMissionIds))
+                  : Promise.resolve([] as Array<{ id: string; title: string }>),
+                getDeliveryViewsForTasks(upstreamTasks.map(t => t.id)),
+              ]);
+              for (const m of missionRows) downstreamMissionMap.set(m.id, m.title);
 
               for (const upstream of upstreamTasks) {
                 const w = (upstream.workers as any[])[0];
                 if (!w?.prNumber) continue;
+                // A kernel-owned PR is a merge for you only when its delivery
+                // says so (approved, and the policy leaves the merge to a
+                // person); merged, in review or being fixed, it is not, whatever
+                // the worker row says.
+                const uv = upstreamViews.get(upstream.id);
+                const kernelOwned = !!uv && uv.ownerTaskId === upstream.id && uv.prNumber === w.prNumber;
+                if (kernelOwned && !(uv!.state === 'APPROVED' && uv!.needsYou)) continue;
 
                 const blockedTasks = pendingWithDeps.filter(t =>
                   ((t.dependsOn as string[]) ?? []).includes(upstream.id)
@@ -1541,22 +1575,22 @@ export default async function HomePage({
           // `failed`, so its card goes on the next build. Recent only: an old
           // failure the owner already moved past is not a live ask.
           const failedTaskRows = await db.query.tasks.findMany({
-            where: and(
+            where: sqlWhere(and(
               inArray(tasks.workspaceId, wsIds),
               eq(tasks.status, 'failed'),
               isNull(tasks.parentTaskId),
               gte(tasks.updatedAt, new Date(Date.now() - 7 * 86_400_000)),
-            ),
+            )),
             columns: { id: true, title: true, status: true, backend: true, missionId: true, workspaceId: true, context: true },
             with: {
               mission: { columns: { id: true, title: true } },
               workers: {
                 columns: { error: true },
-                orderBy: (w, { desc: descOrder }) => [descOrder(w.createdAt)],
+                orderBy: sqlOrderByFn((w, { desc: descOrder }) => [descOrder(w.createdAt)]),
                 limit: 1,
               },
             },
-            orderBy: desc(tasks.updatedAt),
+            orderBy: sqlOrderBy(desc(tasks.updatedAt)),
             limit: 5,
           });
           // Tasks waiting on GitHub access go only to whoever can fix the
@@ -1579,18 +1613,18 @@ export default async function HomePage({
             missionTitle: (t.mission as { title?: string } | null)?.title ?? null,
             workspaceId: t.workspaceId,
             context: t.context,
-          })), { githubAccessFixableWorkspaceIds }));
+          })), { githubAccessFixableWorkspaceIds, linkedTaskIds: serviceStatus.linkedTaskIds }));
 
           // 2. Unanswered worker questions (waiting_input with waitingFor set)
           const waitingInputWorkers = await db.query.workers.findMany({
-            where: and(
+            where: sqlWhere(and(
               inArray(workers.workspaceId, wsIds),
               eq(workers.status, 'waiting_input'),
               isNotNull(workers.waitingFor),
               // Needs You admission, pre-filtered so undisposed or recovered
               // parks cannot crowd admitted ones out of the limit.
               sql`${workers.waitingFor}->>'disposition' in ('ask', 'hold')`,
-            ),
+            )),
             columns: { id: true, taskId: true, waitingFor: true },
             with: {
               task: {
@@ -1600,9 +1634,12 @@ export default async function HomePage({
             },
             limit: 5,
           });
+          // A question recovery superseded is the incident's, not the owner's (failure-incident-recovery §17.2).
+          const supersededQuestions = await loadSupersededQuestionTaskIds(waitingInputWorkers.map(w => w.taskId ?? ''));
           for (const w of waitingInputWorkers) {
             const wf = w.waitingFor as { type: string; prompt: string } | null;
             if (!wf?.prompt || !isOpenAsk(w.task?.status, 'waiting_input') || !admitsToNeedsYou(wf, Date.now())) continue;
+            if (w.taskId && supersededQuestions.has(w.taskId)) continue;
             waitingOnYou.push({
               kind: 'answer',
               workerId: w.id,
@@ -1616,15 +1653,15 @@ export default async function HomePage({
 
           // 3. Pending plan approvals: planning tasks completed with plan, not yet approved
           const planningTaskRows = await db.query.tasks.findMany({
-            where: and(
+            where: sqlWhere(and(
               inArray(tasks.workspaceId, wsIds),
               eq(tasks.mode, 'planning'),
               eq(tasks.status, 'completed'),
               isNotNull(tasks.result),
-            ),
+            )),
             columns: { id: true, title: true, missionId: true, result: true },
             with: { mission: { columns: { id: true, title: true } } },
-            orderBy: desc(tasks.updatedAt),
+            orderBy: sqlOrderBy(desc(tasks.updatedAt)),
             limit: 10,
           });
           if (planningTaskRows.length > 0) {
@@ -1660,7 +1697,7 @@ export default async function HomePage({
         // "expiring soon": the refresh sweep renews those (connector-status.ts).
         if (initiativeTeamIds.length > 0) {
           const credentialRows = await db.query.secrets.findMany({
-            where: teamCredentialWhere({ teamId: initiativeTeamIds, purpose: 'mcp_connector_credential' }),
+            where: sqlWhere(teamCredentialWhere({ teamId: initiativeTeamIds, purpose: 'mcp_connector_credential' })),
             columns: {
               label: true,
               tokenExpiresAt: true,
@@ -1671,7 +1708,7 @@ export default async function HomePage({
           if (stale.length > 0) {
             // `label` holds the connector id (see /api/connectors).
             const connectorRows = await db.query.connectors.findMany({
-              where: inArray(connectors.id, stale.map(c => c.label as string)),
+              where: sqlWhere(inArray(connectors.id, stale.map(c => c.label as string))),
               columns: { id: true, name: true },
             });
             const nameById = new Map(connectorRows.map(c => [c.id, c.name]));
@@ -1699,11 +1736,11 @@ export default async function HomePage({
           // membership from `status`/`criteriaOverallVerdict` regardless, so this
           // query narrowing and that function's own check can never drift apart.
           const escalatedMissions = await db.query.missions.findMany({
-            where: and(
+            where: sqlWhere(and(
               inArray(missionsTable.workspaceId, wsIds),
               isNotNull(missionsTable.criteriaEscalatedAt),
               inArray(missionsTable.status, ['active', 'paused']),
-            ),
+            )),
             columns: {
               id: true, title: true, status: true,
               criteriaEscalatedAt: true, criteriaRearmFingerprint: true, goalCriteriaState: true,
@@ -1712,12 +1749,12 @@ export default async function HomePage({
           if (escalatedMissions.length > 0) {
             const escalatedIds = escalatedMissions.map(m => m.id);
             const openNotes = await db.query.missionNotes.findMany({
-              where: and(
+              where: sqlWhere(and(
                 inArray(missionNotes.missionId, escalatedIds),
                 eq(missionNotes.type, 'question'),
                 eq(missionNotes.status, 'open'),
-              ),
-              orderBy: desc(missionNotes.createdAt),
+              )),
+              orderBy: sqlOrderBy(desc(missionNotes.createdAt)),
               columns: { id: true, missionId: true, title: true, body: true, type: true, authorType: true, disposition: true },
             });
             const noteByMission = new Map<string, typeof openNotes[number]>();
@@ -1751,7 +1788,7 @@ export default async function HomePage({
         // + ranks per workspace so this query can stay a simple unfiltered read.
         if (wsIds.length > 0) {
           const discrepancyRows = await db.query.specDiscrepancies.findMany({
-            where: inArray(specDiscrepancies.workspaceId, wsIds),
+            where: sqlWhere(inArray(specDiscrepancies.workspaceId, wsIds)),
             columns: {
               id: true, workspaceId: true, specPath: true, assertionId: true,
               direction: true, status: true, firstSeenAt: true, promotedMissionId: true,
@@ -1775,7 +1812,7 @@ export default async function HomePage({
             )];
             const docFixTasks = docFixTaskIds.length > 0
               ? await db.query.tasks.findMany({
-                  where: inArray(tasks.id, docFixTaskIds),
+                  where: sqlWhere(inArray(tasks.id, docFixTaskIds)),
                   columns: { id: true, status: true },
                 })
               : [];
@@ -1788,9 +1825,9 @@ export default async function HomePage({
             // would have more than one, so the most recently started wins.
             const docFixWorkers = docFixTaskIds.length > 0
               ? await db.query.workers.findMany({
-                  where: inArray(workers.taskId, docFixTaskIds),
+                  where: sqlWhere(inArray(workers.taskId, docFixTaskIds)),
                   columns: { taskId: true, prLifecycleStatus: true, mergedAt: true },
-                  orderBy: (w, { desc: descOrder }) => [descOrder(w.startedAt)],
+                  orderBy: sqlOrderByFn((w, { desc: descOrder }) => [descOrder(w.startedAt)]),
                 })
               : [];
             const docFixWorkerByTask = new Map<string, { prLifecycleStatus: string | null; mergedAt: Date | null }>();
@@ -1831,7 +1868,8 @@ export default async function HomePage({
         // 7. Sentinel incidents the escalation gate gave to the owner: the
         // stored verdict, read here with no model call (lib/failure-incident-escalation.ts
         // through the composition root).
-        if (wsIds.length > 0) {
+        // Operator-only: a team's Home never carries incident cards (lib/service-status.ts is its surface).
+        if (wsIds.length > 0 && isPlatformOperator(user)) {
           waitingOnYou.push(...await INCIDENT_NEEDS_YOU(wsIds));
         }
 
@@ -1841,16 +1879,30 @@ export default async function HomePage({
           waitingOnYou.push(...await ACCESS_NEEDS_YOU(user?.id, wsIds));
         }
 
+        // 9. A team whose decisions all fail at the provider (a token Workers AI
+        // refuses, a revoked key): one card per team, operator-only like the
+        // decision model itself. Read from the ledgers; no push (DECISION_HEALTH_NEEDS_YOU in modules.ts).
+        if (wsIds.length > 0 && isPlatformOperator(user)) {
+          waitingOnYou.push(...await DECISION_HEALTH_NEEDS_YOU(user, wsIds));
+        }
+
+        // 10. Decision features asked all day that never got a model answer:
+        // platform-wide, so the platform operator's only
+        // (lib/decision-collection-needs-you.ts). Pulled here, never pushed.
+        if (isPlatformOperator(user)) {
+          waitingOnYou.push(...await DECISION_COLLECTION_NEEDS_YOU());
+        }
+
         // This user's active gate-card snoozes (SwipeableRow's snooze-24h/3d/7d
         // on a MERGE/REVIEW card) — re-checked against `now` here, not trusted
         // as a standing flag, per the freshness invariant at the top of
         // lib/action-queue.ts.
         const activeSnoozes = user
           ? await db.query.actionQueueSnoozes.findMany({
-              where: and(
+              where: sqlWhere(and(
                 eq(actionQueueSnoozes.userId, user.id),
                 gt(actionQueueSnoozes.snoozedUntil, new Date()),
-              ),
+              )),
               columns: { subjectKey: true },
             })
           : [];
@@ -1904,7 +1956,7 @@ export default async function HomePage({
 
         // Get team roles for mini Team section (isRole = true, dedupe by slug)
         const allRolesRaw = await db.query.workspaceSkills.findMany({
-          where: and(
+          where: sqlWhere(and(
             // Team-level roles (workspaceId NULL, teamId set) are the default
             // shape; workspace-scoped ones override per workspace.
             activeTeamId
@@ -1912,9 +1964,9 @@ export default async function HomePage({
               : inArray(workspaceSkills.workspaceId, wsIds),
             eq(workspaceSkills.enabled, true),
             eq(workspaceSkills.isRole, true),
-          ),
+          )),
           columns: { id: true, name: true, color: true, slug: true, workspaceId: true },
-          orderBy: [desc(workspaceSkills.createdAt)],
+          orderBy: sqlOrderBy([desc(workspaceSkills.createdAt)]),
           limit: 20,
         });
         const seenSlugs = new Set<string>();
@@ -2011,18 +2063,20 @@ export default async function HomePage({
   const questions: HomeQuestion[] = (fleetData?.questions ?? []).map(q => ({
     workerId: q.workerId, taskId: q.taskId, label: q.label, runnerName: q.runnerName,
     askedAt: q.askedAt, question: q.question,
-    href: q.taskId ? homeTaskHref({ missionId: q.missionId, taskId: q.taskId, from: 'home', mode: 'sheet' }) : null,
+    // A question opens where it is answered in full: the task page.
+    href: q.taskId ? taskAnswerHref({ taskId: q.taskId, missionId: q.missionId }) : null,
   }));
   const live = fleetData?.fleet.live ?? activeItems.length;
   const missionTitleById = new Map(missionDeliveries.map(d => [d.delivery.id, d.delivery.title] as const));
   const agentsModel = fleetData ? buildAgentsModel(fleetData.fleet, renderNow, missionTitleById, ({ missionId, taskId }) => missionTaskHref({ missionId, taskId, from: 'home', mode: 'sheet' })) : null;
 
   // The one list of what needs you, at every width: the headline counts it.
-  const { items: attention, inProgress: reviewsInProgress } = deriveHomeNeedsYou({ queue: filteredActionQueue, missions: phoneMissionRows, questions, held: heldMissions, isActionable: isActionableChip });
+  const { items: attention, inProgress: reviewsInProgress } = deriveHomeNeedsYou({ queue: filteredActionQueue, missions: phoneMissionRows, questions, held: heldMissions, isActionable: isActionableChip, status: serviceStatus.needsYou });
   const counts = deliveryCounts({ missions: missionDeliveries, liveAgents: live, capacity: fleetData?.fleet.capacity ?? 0 });
   const deliveries = missionDeliveries.map(d => d.delivery);
   const milestones = selectHomeMilestones(deliveries);
   const quietMissions = countQuietMissions(deliveries);
+  const quietCauses = quietMissionCauses(deliveries);
   // Chat is where work starts, and it has its own tab. On a phone a team with
   // chat keeps the composer under the headline; desktop gets one quiet link.
   // Chat setup (no key yet) lives on the Chat page: Home says so in one line.
@@ -2071,6 +2125,11 @@ export default async function HomePage({
           <HostedRunnerBanner level={hostedRunnerBanner.level} text={hostedRunnerBanner.text} />
         </div>
       )}
+      {serviceStatus.banner && (
+        <div className="mx-auto max-w-[1320px]">
+          <ServiceStatusBanner status={serviceStatus.banner} href="/app/health" />
+        </div>
+      )}
       {modelUpgradeTeamId && (
         <div className="mx-auto max-w-[1320px]">
           <ModelUpgradeNotice teamId={modelUpgradeTeamId} />
@@ -2085,6 +2144,7 @@ export default async function HomePage({
           counts={counts}
           milestones={milestones}
           quietMissions={quietMissions}
+          quietCauses={quietCauses}
           inProgress={reviewsInProgress}
           agents={agentsModel ? <AgentsPanel model={agentsModel} occupancy={occupancy} idle={idleStretches} /> : null}
           landed={landedWeek.length > 0 ? <LandedThisWeek missions={landedWeek} timeZone={teamTz} /> : null}
@@ -2092,7 +2152,7 @@ export default async function HomePage({
             // Initiative scoping chips: they SCOPE the list, never group it.
             <div className="mb-3">
               <InitiativeFilterChips initiatives={actionQueueInitiatives} selectedId={initFilter ?? null} workspaceFilter={wsFilter ?? null} />
-              {filteredActionQueue.length === 0 && <p className="text-body text-text-muted">Nothing waiting for this initiative.</p>}
+              {initFilter && filteredActionQueue.length === 0 && <p className="text-body text-text-muted">Nothing waiting for this initiative.</p>}
             </div>
           )}
           foot={discrepancyOverflowCount > 0 && (

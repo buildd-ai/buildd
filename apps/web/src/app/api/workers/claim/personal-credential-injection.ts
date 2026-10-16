@@ -1,9 +1,9 @@
 /**
  * Personal agent credentials on a host claim (provider parity, slice 5).
  *
- * A team that has explicitly set `teams.credential_policy` lets the person a
- * task is for (its requester, `resolveTaskRequesterUserId`) run it on their own
- * API key. This module decides, per claimed task, whether that happens, and
+ * The person a task is for (its requester, `resolveTaskRequesterUserId`) runs
+ * it on their own API key when they have stored one: `personal_first` is the
+ * policy of every team that has not chosen another. This module decides, per claimed task, whether that happens, and
  * attaches the key in the wire shape the runner already reads.
  *
  * ## The safety property
@@ -18,7 +18,7 @@
  *
  * | team policy           | outcome                                                                         |
  * |-----------------------|---------------------------------------------------------------------------------|
- * | NULL                  | `legacy`: nothing read, nothing written. The claim is byte-identical to before. |
+ * | NULL                  | as `personal_first` (`surfacePolicy`; the legacy column's default `team` too).  |
  * | `team`                | `legacy`, plus a `credentialDecision` marker (no secret).                       |
  * | `personal_first`      | requester's own key ⇒ `personal`; otherwise `legacy` (team credentials).        |
  * | `personal_only`       | requester's own key ⇒ `personal`; otherwise `refuse` (`no_personal_credential`). |
@@ -60,6 +60,7 @@ import {
 } from '@buildd/core/providers';
 import type { ProviderCredentialResult, ResolveProviderCredentialInput } from '@buildd/core/providers/resolve';
 import type { RequesterTaskFields } from '@buildd/core/task-requester';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export { PERSONAL_CREDENTIAL_RUNNER_FEATURE };
 
@@ -118,8 +119,8 @@ const defaultDeps: PersonalCredentialDeps = {
       import('drizzle-orm'),
     ]);
     const row = await db.query.teams.findFirst({
-      where: eq(teams.id, teamId),
-      columns: { credentialPolicy: true },
+      where: sqlWhere(eq(teams.id, teamId)),
+      columns: { credentialPolicy: true, inferenceKeyPolicy: true },
     });
     return row ?? null;
   },
@@ -161,10 +162,7 @@ export async function decidePersonalCredential(
     return { kind: 'legacy' };
   }
   const { surface, provider } = agentSurfaceFor(input.task.backend);
-  const sp = surfacePolicy({ credentialPolicy: team?.credentialPolicy }, surface);
-  // NULL policy: agent runs keep today's credentials, and the claim gains nothing.
-  if (!sp.enforced) return { kind: 'legacy' };
-  const policy = sp.policy;
+  const policy = surfacePolicy(team, surface).policy;
   const marker = (scope: ClaimCredentialDecision['scope'], extra: Partial<ClaimCredentialDecision> = {}): ClaimCredentialDecision => ({
     surface, policy, scope, runnerLocalAllowed: true, ...extra,
   });

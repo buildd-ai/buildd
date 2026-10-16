@@ -1,6 +1,7 @@
+// @ui-copy: strings here render in the app; copy:check and the em-dash test scan them.
 /**
  * How a capability request, a grant and a provider's state read to a person:
- * Settings → Connected apps → Agent access, and the Needs You card. Client-safe
+ * Settings › Team › Apps › Agent access, and the Needs You card. Client-safe
  * and pure (no server imports): the rules live in capability-grants.ts, the
  * state comes from the API, and nothing here decides anything. A label never
  * says more than the backend did: "Connected" only for a live credential,
@@ -8,7 +9,7 @@
  *
  * Spec: docs/specs/capability-requests.md → Showing and deciding.
  */
-import { CONNECTOR_CATALOG, connectorHostKey, type ConnectorClientSupport } from './connector-catalog';
+import { CONNECTOR_CATALOG } from './connector-catalog';
 
 export type AccessRisk = 'read' | 'query' | 'write' | 'admin';
 export type AccessStatus = 'pending' | 'granted' | 'denied' | 'revoked' | 'expired';
@@ -56,7 +57,7 @@ export function effectsFor(risk: AccessRisk): AccessEffect[] {
 
 /** What happens with no team rule, in the words of capability-grants.ts `defaultEffect`. */
 export function defaultEffectText(risk: AccessRisk): string {
-  return risk === 'write' || risk === 'admin' ? 'Ask a person' : 'Allow if a role uses it';
+  return risk === 'write' || risk === 'admin' ? 'Ask a person' : 'Allow if the agent uses it';
 }
 
 /**
@@ -135,7 +136,7 @@ export function accessStatusLine(r: AccessRequestView, now: Date = new Date()): 
 const EXPIRED_WHY: Record<string, string> = {
   task_terminal: 'the task ended',
   worker_not_live: 'the agent run stopped',
-  role_changed: "the task's role changed",
+  role_changed: "the task's agent changed",
 };
 
 /** The approve button's words: the lease is part of the decision. */
@@ -163,46 +164,4 @@ export function decisionResultText(decision: 'approve' | 'deny' | 'revoke', stat
   if (status === 404) return { ok: false, text: 'This request no longer exists.' };
   if (status === 409 && body.grant?.status) return { ok: false, text: `Someone already decided: this request is ${body.grant.status}.` };
   return { ok: false, text: body.error || body.message || 'Could not save the decision.' };
-}
-
-// ── Provider state on a catalog card ────────────────────────────────────────
-
-export interface InstalledConnector {
-  id: string;
-  url: string;
-  authMode: 'none' | 'header' | 'oauth';
-  status: 'connected' | 'expired' | 'not_connected';
-  shared?: boolean;
-}
-
-export type ProviderStateKind = 'needs_client_approval' | 'not_installed' | 'connect' | 'set_key' | 'reconnect' | 'connected' | 'no_auth';
-
-export interface ProviderState {
-  kind: ProviderStateKind;
-  /** The pill: what is true now. */
-  label: string;
-  tone: 'ok' | 'act' | 'q';
-  /** The one next step for an admin, or null when there is none to take here. */
-  action: { kind: 'install' | 'connect' | 'set_key'; label: string; connectorId?: string } | null;
-}
-
-/**
- * A catalog entry's real state for this team: the installed connector on the
- * same host (the catalog policy's matching key) and its credential. A provider
- * that has not approved buildd as a client offers no Connect at all: the only
- * honest next step is the provider's review, so the card links there instead.
- */
-export function providerState(entry: { url: string; authMode: 'none' | 'header' | 'oauth'; clientSupport?: ConnectorClientSupport }, installed: readonly InstalledConnector[]): ProviderState {
-  const host = connectorHostKey(entry.url);
-  const c = installed.find(i => !i.shared && connectorHostKey(i.url) === host) ?? installed.find(i => connectorHostKey(i.url) === host) ?? null;
-  if (c && (c.authMode === 'none')) return { kind: 'no_auth', label: 'Installed', tone: 'ok', action: null };
-  if (c && c.status === 'connected') return { kind: 'connected', label: 'Connected', tone: 'ok', action: null };
-  if (entry.clientSupport?.status === 'needs_approved_client') {
-    return { kind: 'needs_client_approval', label: 'Client approval needed', tone: 'q', action: null };
-  }
-  if (!c) return { kind: 'not_installed', label: 'Not installed', tone: 'q', action: { kind: 'install', label: 'Install' } };
-  if (c.shared) return { kind: c.status === 'expired' ? 'reconnect' : 'connect', label: c.status === 'expired' ? 'Expired' : 'Not connected', tone: c.status === 'expired' ? 'act' : 'q', action: null };
-  if (c.status === 'expired') return { kind: 'reconnect', label: 'Expired', tone: 'act', action: { kind: 'connect', label: 'Reconnect', connectorId: c.id } };
-  if (c.authMode === 'header') return { kind: 'set_key', label: 'Not connected', tone: 'q', action: { kind: 'set_key', label: 'Set key', connectorId: c.id } };
-  return { kind: 'connect', label: 'Not connected', tone: 'q', action: { kind: 'connect', label: 'Connect', connectorId: c.id } };
 }

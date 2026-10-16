@@ -43,8 +43,9 @@ describe('stand-alone links are 44px to touch below md', () => {
     // The whole tile is the link: a box inside the tile's truncating value
     // line would be clipped back to the line's height for touch.
     const cls = classesOf(html, 'a', 'data-testid="worker-pr-link"');
-    expect(cls).toEqual(expect.arrayContaining(['block', '-mx-3', '-my-2.5', 'px-3', 'py-2.5', 'md:-mx-4', 'md:-my-3', 'md:px-4', 'md:py-3']));
-    expect(classesOf(html, 'div', 'data-testid="worker-stat-pr"')).toEqual(expect.arrayContaining(['px-3', 'py-2.5', 'md:px-4', 'md:py-3']));
+    // Wide padding follows the row's own width (StatRow sits in the mission sheet too).
+    expect(cls).toEqual(expect.arrayContaining(['block', '-mx-3', '-my-2.5', 'px-3', 'py-2.5', '@xl:-mx-4', '@xl:-my-3', '@xl:px-4', '@xl:py-3']));
+    expect(classesOf(html, 'div', 'data-testid="worker-stat-pr"')).toEqual(expect.arrayContaining(['px-3', 'py-2.5', '@xl:px-4', '@xl:py-3']));
   });
 
   it('the PR number on the outcome card, widened to 44px too', () => {

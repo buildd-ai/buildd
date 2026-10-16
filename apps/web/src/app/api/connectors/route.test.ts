@@ -72,7 +72,7 @@ mock.module('drizzle-orm', () => ({
   inArray: (a: any, b: any) => ({ a, b, op: 'inArray' }),
 }));
 
-mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id', permissionOverrides: 'teams.permission_overrides' },
+mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id' },
   connectors: { teamId: 'teamId', id: 'id', name: 'name' },
   connectorShares: { connectorId: 'connectorId', sharedWithTeamId: 'sharedWithTeamId' },
   secrets: { teamId: 'teamId', purpose: 'purpose', label: 'label' },
@@ -354,7 +354,7 @@ describe('POST /api/connectors', () => {
     const data = await res.json();
     expect(data.error).toBe('needs_approved_client');
     expect(data.message).toMatch(/Vercel/);
-    expect(data.actionUrl).toMatch(/^https:\/\/vercel\.com\//);
+    expect(data.actionUrl).toBeUndefined();
     expect(mockConnectorsInsert).not.toHaveBeenCalled();
   });
 
@@ -440,7 +440,7 @@ describe('POST /api/connectors', () => {
     expect(mockRegisterClient).toHaveBeenCalled();
   });
 
-  // §1 AC-2: header authMode requires headerName
+  // AC-2: header authMode requires headerName
   it('returns 400 header_name_required when header authMode has no headerName', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     const res = await POST(makePostReq({
@@ -453,7 +453,7 @@ describe('POST /api/connectors', () => {
     expect(data.error).toBe('header_name_required');
   });
 
-  // §1 AC-3: stdio transport requires command
+  // AC-3: stdio transport requires command
   it('returns 400 command_required when stdio transport has no command', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     const res = await POST(makePostReq({
@@ -488,7 +488,7 @@ describe('POST /api/connectors', () => {
     expect(captured.authMode).toBe('none');
   });
 
-  // §1 AC-4: (teamId, name) uniqueness on the plain create path
+  // AC-4: (teamId, name) uniqueness on the plain create path
   it('returns 409 connector_name_taken when a connector with the same (teamId,name) exists', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockConnectorsFindFirst.mockResolvedValue({ id: 'conn-existing', name: 'Dup', url: 'https://mcp.example.com', teamId: 'team-1' });
@@ -498,7 +498,7 @@ describe('POST /api/connectors', () => {
     expect(data.error).toBe('connector_name_taken');
   });
 
-  // §5 AC-3: create-or-reuse — installing an existing (teamId,name) reuses it (no 409)
+  // AC-26: create-or-reuse — installing an existing (teamId,name) reuses it (no 409)
   it('reuses an existing connector when reuseIfExists is set', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     const existing = { id: 'conn-existing', name: 'Dup', url: 'https://mcp.example.com', teamId: 'team-1' };

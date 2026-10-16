@@ -25,7 +25,7 @@ describe('chat_retros is content-free by construction', () => {
   });
 
   it('no varchar or unbounded text other than the vocabulary columns, and the only jsonb is evidence', () => {
-    const json = cfg.columns.filter(c => c.dataType === 'json').map(c => c.name);
+    const json = cfg.columns.filter(c => c.columnType === 'PgJsonb' || c.columnType === 'PgJson').map(c => c.name);
     expect(json).toEqual(['evidence']);
   });
 

@@ -8,12 +8,16 @@
  *
  *   - `docs/specs/INDEX.md`: take trunk's copy, then `bun run specs:check`
  *     regenerates it. Waits while a spec file itself is still conflicted.
- *   - `packages/core/drizzle/**`: `renumberAgainstBase` against the trunk
- *     being merged (the same repair `bun run migrations:renumber` runs): trunk's
- *     migrations, journal and snapshots as they are, and this branch's schema
- *     change regenerated at the next free index. Runs last and waits while any
- *     other conflict remains (`schema.ts` must hold both sides). If the
- *     regenerated SQL is not the SQL it replaced, a person checks the result.
+ *   - `packages/core/drizzle/**`: `regenerateAgainstBase` against the trunk
+ *     being merged (the same repair `bun run migrations:regenerate` runs): trunk's
+ *     migration folders as they are, and this branch's schema change
+ *     regenerated on top of them. A conflict here is a branch cut before the
+ *     drizzle v1 cutover (its journal was modified, trunk deleted it), or two
+ *     branches that touched one folder. Runs last and waits while any other
+ *     conflict remains (`schema.ts` must hold both sides). If the regenerated
+ *     SQL is not the SQL it replaced, a person checks the result. Whatever the
+ *     repair leaves must pass the fail-closed layout check (no legacy `.sql`
+ *     next to v1 folders), or it is not called resolved.
  *   - `scripts/design-check.baseline.json`: a three-way merge of the per-file
  *     counts (ours + theirs - base), then `bun run design:check --update`
  *     lowers it to today's counts. Waits while a file under apps/web/src is
@@ -34,7 +38,8 @@ import {
   SPECS_INDEX_PATH,
   isGeneratedArtifactPath,
 } from '../packages/core/generated-artifacts';
-import { renumberAgainstBase, type RenumberResult } from '../packages/core/db/migration-index';
+import { regenerateAgainstBase, type RegenerateResult } from '../packages/core/db/migration-layout';
+import { detectLayout, v1LayoutProblems } from '../packages/core/db/migrate-tree';
 
 export interface Run {
   (cmd: string, args: string[], opts?: { cwd?: string }): { status: number; stdout: string; stderr: string };
@@ -124,19 +129,23 @@ function resolveSpecsIndex(run: Run, root: string, conflicted: string[]): Step {
 }
 
 /** The drizzle repair, injectable so a test need not run drizzle-kit. */
-export type Renumber = (root: string) => RenumberResult;
-const realRenumber: Renumber = (root) => renumberAgainstBase({ root, drizzleDir: DRIZZLE_DIR.replace(/\/$/, '') }, 'MERGE_HEAD');
+export type Regenerate = (root: string) => RegenerateResult;
+const realRegenerate: Regenerate = (root) => regenerateAgainstBase({ root, drizzleDir: DRIZZLE_DIR.replace(/\/$/, '') }, 'MERGE_HEAD');
 
-function resolveDrizzle(root: string, conflicted: string[], renumber: Renumber): Step {
+function resolveDrizzle(root: string, conflicted: string[], regenerate: Regenerate): Step {
   const blocking = conflicted.filter((p) => !p.startsWith(DRIZZLE_DIR));
   if (blocking.length > 0) {
     return { path: DRIZZLE_DIR, result: 'waiting', reason: `resolve ${blocking.join(', ')} first (the migrations regenerate from the merged schema.ts), then run this again` };
   }
-  let r: RenumberResult;
+  let r: RegenerateResult;
   try {
-    r = renumber(root);
+    r = regenerate(root);
   } catch (err) {
     return { path: DRIZZLE_DIR, result: 'needs_person', reason: err instanceof Error ? err.message : String(err) };
+  }
+  const layout = layoutAfterRepair(join(root, DRIZZLE_DIR));
+  if (layout.length > 0) {
+    return { path: DRIZZLE_DIR, result: 'needs_person', reason: `the repaired migrations dir fails the layout check: ${layout.join('; ')}` };
   }
   if (r.sqlChanged) {
     return {
@@ -146,6 +155,15 @@ function resolveDrizzle(root: string, conflicted: string[], renumber: Renumber):
     };
   }
   return { path: DRIZZLE_DIR, result: 'resolved' };
+}
+
+/** Fail-closed: a legacy file left next to v1 folders would never be applied. */
+function layoutAfterRepair(dir: string): string[] {
+  try {
+    return detectLayout(dir) === 'v1' ? v1LayoutProblems(dir) : [];
+  } catch (err) {
+    return [err instanceof Error ? err.message : String(err)];
+  }
 }
 
 /** Where design:check counts violations: a conflicted file there still holds both sides' text. */
@@ -173,7 +191,7 @@ function resolveDesignBaseline(run: Run, root: string, conflicted: string[]): St
 
 // ── Entry ───────────────────────────────────────────────────────────────────
 
-export function resolveGeneratedConflicts(root: string, run: Run = realRun, renumber: Renumber = realRenumber): Report {
+export function resolveGeneratedConflicts(root: string, run: Run = realRun, regenerate: Regenerate = realRegenerate): Report {
   if (run('git', ['rev-parse', '-q', '--verify', 'MERGE_HEAD'], { cwd: root }).status !== 0) {
     throw new Error('not in the middle of a merge: run `git merge origin/<trunk>` first');
   }
@@ -183,7 +201,7 @@ export function resolveGeneratedConflicts(root: string, run: Run = realRun, renu
   if (conflictedPaths(run, root).includes(DESIGN_CHECK_BASELINE_PATH)) steps.push(resolveDesignBaseline(run, root, conflictedPaths(run, root)));
   if (conflictedPaths(run, root).includes(SPECS_INDEX_PATH)) steps.push(resolveSpecsIndex(run, root, conflictedPaths(run, root)));
   const before = conflictedPaths(run, root);
-  if (before.some((p) => p.startsWith(DRIZZLE_DIR))) steps.push(resolveDrizzle(root, before, renumber));
+  if (before.some((p) => p.startsWith(DRIZZLE_DIR))) steps.push(resolveDrizzle(root, before, regenerate));
   const remaining = conflictedPaths(run, root);
   const unsettled = steps.filter((s) => s.result !== 'resolved').map((s) => s.path);
   return { steps, remaining: [...new Set([...remaining, ...unsettled])] };

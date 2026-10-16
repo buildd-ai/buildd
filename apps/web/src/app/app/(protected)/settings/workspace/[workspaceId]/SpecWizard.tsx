@@ -85,7 +85,7 @@ export function SpecWizard({ workspaceId }: { workspaceId: string }) {
             const data = await res.json().catch(() => ({}));
             if (!res.ok) {
                 setIssues(Array.isArray(data.issues) ? data.issues : []);
-                setError(data.error || 'Could not render the spec');
+                setError(data.error || 'Could not generate the spec preview. Try again.');
                 if (!confirm) setPhase({ kind: 'edit' });
                 return;
             }
@@ -109,7 +109,7 @@ export function SpecWizard({ workspaceId }: { workspaceId: string }) {
             <div className="py-4 first:pt-0 last:pb-0" data-testid="spec-wizard">
                 <h3 className="text-sm font-medium text-text-primary mb-0.5">Draft spec requested</h3>
                 <p className="text-sm text-text-secondary mb-3" data-testid="spec-wizard-created">
-                    A builder will open a PR adding <code>{phase.preview.path}</code> as a draft. Review and merge it when ready.
+                    An agent will open a PR adding <code>{phase.preview.path}</code> as a draft. Review and merge it.
                 </p>
                 <Link href={missionHref(workspaceId)} data-testid="spec-wizard-mission-link" className="btn btn-primary min-h-11">
                     Plan your first mission
@@ -122,7 +122,7 @@ export function SpecWizard({ workspaceId }: { workspaceId: string }) {
         <div className="py-4 first:pt-0 last:pb-0" data-testid="spec-wizard">
             <h3 className="text-sm font-medium text-text-primary mb-0.5">First spec</h3>
             <p className="text-xs text-text-muted mb-3">
-                Answer a few questions. You see the rendered draft before anything is created, and a PR you merge is the only thing that lands.
+                Answer a few questions. You preview the draft before a PR opens, and nothing lands until you merge it.
             </p>
 
             {phase.kind === 'preview' ? (
@@ -276,7 +276,7 @@ export function SpecWizard({ workspaceId }: { workspaceId: string }) {
 
                     <div className="flex flex-wrap gap-2">
                         <button type="submit" data-testid="spec-wizard-preview-button" className="btn btn-primary min-h-11" disabled={busy}>
-                            {busy ? 'Rendering…' : 'Preview spec'}
+                            {busy ? 'Generating…' : 'Preview spec'}
                         </button>
                         <Link href={missionHref(workspaceId)} className="btn min-h-11">
                             Skip to first mission

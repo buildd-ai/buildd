@@ -1,10 +1,9 @@
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
 
 // The real permissions module runs: membership rows come from teamMembers,
-// the personal team from teams (slug lookup), overrides from teams (id lookup).
+// the personal team from teams (slug lookup).
 let memberships: { teamId: string; role: string }[] = [];
 let personalTeamId: string | null = null;
-let overrides: Record<string, unknown> = {};
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -14,7 +13,7 @@ mock.module('@buildd/core/db', () => ({
         findFirst: async ({ where }: { where: { b: string } }) => {
           const value = where.b;
           if (value.startsWith('personal-')) return personalTeamId ? { id: personalTeamId } : undefined;
-          return { permissionOverrides: overrides[value] ?? null };
+          return undefined;
         },
       },
     },
@@ -26,7 +25,7 @@ mock.module('drizzle-orm', () => ({
 }));
 mock.module('@buildd/core/db/schema', () => ({
   teamMembers: { userId: 'userId', teamId: 'teamId' },
-  teams: { id: 'id', slug: 'slug', permissionOverrides: 'permissionOverrides' },
+  teams: { id: 'id', slug: 'slug' },
 }));
 mock.module('@/lib/team-access', () => ({ getUserTeamIds: async () => memberships.map(m => m.teamId) }));
 let currentUser: { id: string } | null = null;
@@ -39,7 +38,6 @@ const { NextRequest } = await import('next/server');
 beforeEach(() => {
   memberships = [];
   personalTeamId = null;
-  overrides = {};
   currentUser = null;
 });
 
@@ -65,18 +63,6 @@ describe('canManageTeamConnectors', () => {
 
   it('fails closed when there is no membership row and the team is not the caller’s personal team', async () => {
     personalTeamId = 'my-personal-team';
-    expect(await canManageTeamConnectors('u1', 'team-a')).toBe(false);
-  });
-
-  it('honours a team override that grants manage_connectors to members', async () => {
-    memberships = [{ teamId: 'team-a', role: 'member' }];
-    overrides = { 'team-a': { manage_connectors: ['owner', 'admin', 'member'] } };
-    expect(await canManageTeamConnectors('u1', 'team-a')).toBe(true);
-  });
-
-  it('honours a team override that takes manage_connectors from admins', async () => {
-    memberships = [{ teamId: 'team-a', role: 'admin' }];
-    overrides = { 'team-a': { manage_connectors: ['owner'] } };
     expect(await canManageTeamConnectors('u1', 'team-a')).toBe(false);
   });
 });

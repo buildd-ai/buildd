@@ -129,7 +129,11 @@ export interface MergedReleasePr {
 }
 
 // Find a release PR (head `headRef` → base `prodBranch`) merged after `since`
-// whose head contains `sha`. This is the cron's way to tell "the release PR
+// whose head contains `sha`. A workspace with frozen candidates has no fixed
+// head: pass `headMatches` instead (e.g. release/v1.2.3 for `release/v*`), and
+// every merged PR into `prodBranch` whose head ref it accepts is considered.
+// Shape is enough here — containment, not provenance, decides whether the sha
+// reached prodBranch. This is the cron's way to tell "the release PR
 // was never merged" (true) from "it merged and we missed the event" (the row
 // shipped). Returns:
 //   - the PR, when one is found;
@@ -139,12 +143,13 @@ export async function findMergedReleasePrContaining(params: {
   installationId: number | null | undefined;
   repoFullName: string | null | undefined;
   prodBranch: string;
-  headRef: string;
+  headRef?: string | null;
+  headMatches?: ((ref: string) => boolean) | null;
   sha: string;
   since: Date | null;
 }): Promise<MergedReleasePr | null | 'unknown'> {
-  const { installationId, repoFullName, prodBranch, headRef, sha, since } = params;
-  if (!installationId || !repoFullName) return 'unknown';
+  const { installationId, repoFullName, prodBranch, headRef, headMatches, sha, since } = params;
+  if (!installationId || !repoFullName || (!headRef && !headMatches)) return 'unknown';
   const owner = repoFullName.split('/')[0];
 
   let pulls: Array<{
@@ -152,13 +157,14 @@ export async function findMergedReleasePrContaining(params: {
     title?: string | null;
     merged_at?: string | null;
     merge_commit_sha?: string | null;
-    head?: { sha?: string };
+    head?: { sha?: string; ref?: string };
   }>;
   try {
     pulls = (await githubApi(
       installationId,
       `/repos/${repoFullName}/pulls?state=closed&base=${encodeURIComponent(prodBranch)}` +
-        `&head=${encodeURIComponent(`${owner}:${headRef}`)}&sort=updated&direction=desc&per_page=100`,
+        (headMatches ? '' : `&head=${encodeURIComponent(`${owner}:${headRef}`)}`) +
+        `&sort=updated&direction=desc&per_page=100`,
     )) ?? [];
   } catch {
     return 'unknown';
@@ -168,6 +174,7 @@ export async function findMergedReleasePrContaining(params: {
   // that shipped it.
   const merged = pulls
     .filter((p) => p.merged_at && p.merge_commit_sha && p.head?.sha)
+    .filter((p) => !headMatches || (!!p.head?.ref && headMatches(p.head.ref)))
     .filter((p) => !since || new Date(p.merged_at!).getTime() >= since.getTime())
     .sort((a, b) => new Date(a.merged_at!).getTime() - new Date(b.merged_at!).getTime());
 

@@ -5,6 +5,7 @@ import { desc, eq, inArray, or } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { isGitHubAppConfigured } from '@/lib/github';
 import { getUserWorkspaceIds } from '@/lib/team-access';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export async function GET(req: NextRequest) {
   if (process.env.NODE_ENV === 'development' && (!process.env.DATABASE_URL || !process.env.DEV_USER_EMAIL)) {
@@ -35,7 +36,7 @@ export async function GET(req: NextRequest) {
 
     const userWorkspaces = wsIds.length
       ? await db.query.workspaces.findMany({
-          where: inArray(workspaces.id, wsIds),
+          where: sqlWhere(inArray(workspaces.id, wsIds)),
           columns: { githubInstallationId: true },
         })
       : [];
@@ -49,13 +50,13 @@ export async function GET(req: NextRequest) {
     ];
 
     const installations = await db.query.githubInstallations.findMany({
-      where: installationIds.length
+      where: sqlWhere(installationIds.length
         ? or(
             inArray(githubInstallations.id, installationIds),
             eq(githubInstallations.installedByUserId, user.id)
           )
-        : eq(githubInstallations.installedByUserId, user.id),
-      orderBy: desc(githubInstallations.createdAt),
+        : eq(githubInstallations.installedByUserId, user.id)),
+      orderBy: sqlOrderBy(desc(githubInstallations.createdAt)),
     });
 
     return NextResponse.json({

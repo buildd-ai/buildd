@@ -16,11 +16,12 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { canManageTeamConnectors } from '@/lib/connector-team-auth';
 import { checkConnectorBlocked } from '@/lib/connector-access-policy';
 import { scheduleAuthedIconRefresh } from '@/lib/connector-icon-refresh';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
 function errorRedirect(req: NextRequest, error: string) {
-  const url = new URL('/app/settings/connections', req.url);
+  const url = new URL('/app/settings/apps', req.url);
   url.searchParams.set('error', error);
   return NextResponse.redirect(url);
 }
@@ -67,7 +68,7 @@ export async function GET(req: NextRequest) {
 
   // Load connector row
   const connector = await db.query.connectors.findFirst({
-    where: eq(connectors.id, connectorId),
+    where: sqlWhere(eq(connectors.id, connectorId)),
   });
 
   if (!connector) {
@@ -167,7 +168,7 @@ export async function GET(req: NextRequest) {
 
   // Upsert secret: find existing by (teamId, purpose, label) then update or insert
   const existingSecret = await db.query.secrets.findFirst({
-    where: teamCredentialWhere({ teamId: connector.teamId, purpose: 'mcp_connector_credential', label: connectorId }),
+    where: sqlWhere(teamCredentialWhere({ teamId: connector.teamId, purpose: 'mcp_connector_credential', label: connectorId })),
     columns: { id: true },
   });
 
@@ -202,7 +203,7 @@ export async function GET(req: NextRequest) {
 
   // Clear the state cookie
   const response = NextResponse.redirect(
-    new URL(`/app/settings/connections?connected=${encodeURIComponent(connectorId)}`, req.url),
+    new URL(`/app/settings/apps?connected=${encodeURIComponent(connectorId)}`, req.url),
   );
   response.cookies.delete(OAUTH_STATE_COOKIE);
   return response;

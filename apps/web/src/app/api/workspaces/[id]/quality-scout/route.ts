@@ -33,6 +33,7 @@ import {
   triggerQualityScout,
 } from '@/lib/quality-scout-trigger';
 import { dismissQualityScoutFinding } from '@/lib/quality-scout-actions';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // A server-hosted run is capped below this (SERVER_SCOUT_MAX_DURATION_MS).
 export const maxDuration = 300;
@@ -47,7 +48,7 @@ async function authorize(req: NextRequest, id: string, onCaller?: (by: string) =
   // Same rule as readiness: an API key reaches its own team's workspaces only,
   // and a workspace elsewhere is indistinguishable from one that does not exist.
   if (apiAccount) {
-    const owner = await db.query.workspaces.findFirst({ where: eq(workspaces.id, id), columns: { teamId: true } });
+    const owner = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, id)), columns: { teamId: true } });
     if (!owner || owner.teamId !== apiAccount.teamId) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   } else if (user && !(await verifyWorkspaceAccess(user.id, id))) {
     return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });

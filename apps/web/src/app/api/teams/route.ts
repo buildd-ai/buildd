@@ -2,9 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { teams, teamMembers } from '@buildd/core/db/schema';
 import { eq, inArray, sql } from 'drizzle-orm';
-import { sanitizeOverrides } from '@/lib/permission-registry';
+
 import { getRequestPrincipal, requireSessionUser } from '@/lib/auth-helpers';
 import { emit } from '@/lib/core-emit';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export async function GET(req: NextRequest) {
   const principal = await getRequestPrincipal(req);
@@ -17,7 +18,7 @@ export async function GET(req: NextRequest) {
     if (principal.kind === 'api_key') {
       const teamId = principal.account.teamId;
       const team = await db.query.teams.findFirst({
-        where: eq(teams.id, teamId),
+        where: sqlWhere(eq(teams.id, teamId)),
         columns: {
           id: true, name: true, slug: true, plan: true,
           createdAt: true, updatedAt: true,
@@ -38,7 +39,7 @@ export async function GET(req: NextRequest) {
 
     // Get all teams the user is a member of, with their role and member count
     const memberships = await db.query.teamMembers.findMany({
-      where: eq(teamMembers.userId, user.id),
+      where: sqlWhere(eq(teamMembers.userId, user.id)),
       with: {
         // Explicit column list. `team: true` expands to every column declared in
         // schema.ts, exactly like an unfiltered top-level query — so a dropped
@@ -47,7 +48,7 @@ export async function GET(req: NextRequest) {
         team: {
           columns: {
             id: true, name: true, slug: true, plan: true,
-            createdAt: true, updatedAt: true, permissionOverrides: true,
+            createdAt: true, updatedAt: true,
           },
         },
       },
@@ -70,8 +71,6 @@ export async function GET(req: NextRequest) {
 
     const result = memberships.map(m => ({
       ...m.team,
-      // Sanitized, so a client's roleHas() answers what the server will enforce.
-      permissionOverrides: sanitizeOverrides(m.team.permissionOverrides),
       role: m.role,
       memberCount: countMap.get(m.teamId) || 1,
     }));
@@ -103,7 +102,7 @@ export async function POST(req: NextRequest) {
 
     // Check slug uniqueness
     const existing = await db.query.teams.findFirst({
-      where: eq(teams.slug, slug),
+      where: sqlWhere(eq(teams.slug, slug)),
       columns: { id: true },
     });
 

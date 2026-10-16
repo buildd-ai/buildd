@@ -4,18 +4,15 @@
  * Pure: no DB, client-safe. The resolver (`./resolve`) is the one caller that
  * enforces it; settings and `explain` can call it to say why a row was skipped.
  *
- * ## The policy each surface follows
+ * ## The policy every surface follows
  *
- * - **chat** (chat turns, inference and decision calls) follows the team's
- *   policy as `effectiveKeyPolicy` reads it: `teams.credentialPolicy`, else the
- *   older `teams.inferenceKeyPolicy`, else `personal_first` (the behaviour
- *   before either column existed, as `loadInferenceKeyPolicy` has always done).
- * - **agent surfaces** (`agent-claude`, `agent-codex`, `cloud-egress`) follow
- *   the policy only when the team has explicitly set `credentialPolicy`
- *   (non-NULL). That is the per-team opt-in; there is no separate flag. With it
- *   NULL an agent run does what it always did: team scopes only, never a
- *   personal credential, whatever `inferenceKeyPolicy` says (that column was
- *   chat-only copy).
+ * Chat (turns, inference and decision calls) and agent surfaces
+ * (`agent-claude`, `agent-codex`, `cloud-egress`) follow one policy, as
+ * `effectiveKeyPolicy` reads it: `teams.credentialPolicy`, else the older
+ * `teams.inferenceKeyPolicy` (its default `'team'` reads as unset), else
+ * `personal_first`: the person the work is for spends their own key, and the
+ * team's key is the fallback. Work with no requester (schedules, webhooks)
+ * always spends team scopes.
  *
  * ## Truth table (`policyAllowsScope`)
  *
@@ -29,6 +26,7 @@
  * this module only says whether the personal scope is open at all.
  */
 import {
+  DEFAULT_CREDENTIAL_POLICY,
   effectiveKeyPolicy,
   isCredentialPolicy,
   toCredentialPolicy,
@@ -49,20 +47,23 @@ export type PolicyScope = 'personal' | 'workspace' | 'account' | 'team' | 'env';
 export interface TeamPolicyColumns {
   credentialPolicy?: unknown;
   inferenceKeyPolicy?: unknown;
+  /** `teams.provider_assignments`, read by the resolver (`./assignments`), not by the policy. */
+  providerAssignments?: unknown;
 }
 
 export function isAgentSurface(surface: Surface): boolean {
   return surface !== 'chat';
 }
 
-/** The policy chat falls back to when neither column is readable. */
-export const CHAT_DEFAULT_POLICY: CredentialPolicy = 'personal_first';
+/** The policy every surface falls back to when the team has chosen none. */
+export const CHAT_DEFAULT_POLICY: CredentialPolicy = DEFAULT_CREDENTIAL_POLICY;
 
 export interface SurfacePolicy {
   policy: CredentialPolicy;
   /**
-   * Agent surfaces: true only when `credentialPolicy` is explicitly set.
-   * Chat: always true (chat has followed the policy since it existed).
+   * Always true from `surfacePolicy`. Kept on the shape (and as
+   * `agentEnforced` below) for callers that still pass it; false reads an
+   * agent surface as `team`.
    */
   enforced: boolean;
   /** Where `policy` came from, for `why`. */
@@ -70,13 +71,8 @@ export interface SurfacePolicy {
 }
 
 /** The policy a surface follows for this team (see the module comment). */
-export function surfacePolicy(team: TeamPolicyColumns | null | undefined, surface: Surface): SurfacePolicy {
+export function surfacePolicy(team: TeamPolicyColumns | null | undefined, _surface: Surface): SurfacePolicy {
   const explicit = isCredentialPolicy(team?.credentialPolicy) ? team!.credentialPolicy as CredentialPolicy : null;
-  if (isAgentSurface(surface)) {
-    return explicit
-      ? { policy: explicit, enforced: true, source: 'credential_policy' }
-      : { policy: 'team', enforced: false, source: 'default' };
-  }
   if (explicit) return { policy: explicit, enforced: true, source: 'credential_policy' };
   const legacy = effectiveKeyPolicy(team);
   return legacy

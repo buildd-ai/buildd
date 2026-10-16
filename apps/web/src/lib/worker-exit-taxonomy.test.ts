@@ -4,12 +4,14 @@ import {
   classifyStaleExit,
   consumesRetryAttempt,
   isBookkeepingExit,
+  isInfrastructureExit,
   isConcurrencyConflictError,
   isSilentStartShape,
   isModelIdRejectedError,
   isUnrecognizedModelError,
   rejectedModelId,
   INTERACTIVE_ABANDONED_ERROR,
+  INTERACTIVE_BACKSTOP_ERROR,
   NEVER_STARTED_ERROR,
   SILENT_START_ERROR,
   STALE_EXPIRED_ERROR,
@@ -137,6 +139,18 @@ describe('classifyStaleExit', () => {
     // Neither charges the task a retry.
     expect(consumesRetryAttempt(unstarted.exitCause)).toBe(false);
     expect(consumesRetryAttempt(started.exitCause)).toBe(false);
+  });
+
+  it('an interactive release names the signal that expired: the idle TTL or the hard backstop', () => {
+    const now = new Date('2026-10-09T09:13:00Z');
+    const ago = (h: number) => new Date(now.getTime() - h * 3_600_000);
+    expect(classifyStaleExit({ runner: 'mcp', startedAt: ago(5), updatedAt: ago(3) }, now).error).toBe(INTERACTIVE_ABANDONED_ERROR);
+    expect(classifyStaleExit({ runner: 'mcp', startedAt: ago(30), updatedAt: ago(9) }, now).error).toBe(INTERACTIVE_BACKSTOP_ERROR);
+    expect(INTERACTIVE_ABANDONED_ERROR).toContain('2 hours');
+    expect(INTERACTIVE_BACKSTOP_ERROR).toContain('8 hours');
+    // Neither says the task completed.
+    expect(INTERACTIVE_ABANDONED_ERROR).toContain('back to pending');
+    expect(INTERACTIVE_BACKSTOP_ERROR).toContain('back to pending');
   });
 
   it('a runner whose id merely contains "mcp" is still judged as a runner', () => {
@@ -476,5 +490,25 @@ describe('isSilentStartShape', () => {
   it('keeps the turn cap when there is no terminal usage evidence (the reaper path)', () => {
     expect(isSilentStartShape({ turns: 9, costUsd: 0, inputTokens: 0, outputTokens: 0 })).toBe(false);
     expect(isSilentStartShape({ turns: 9, costUsd: 0, inputTokens: 0, outputTokens: 0, resultMeta: null })).toBe(false);
+  });
+});
+
+// failure-incident-recovery §18.2: a rejected credential is the credential's
+// failure, not the work's. Booked code_failure, a dead login failed the task.
+describe('auth_failure', () => {
+  it('a reported auth failure is auth_failure, after cancellation and budget', () => {
+    expect(classifyReportedFailure({ budgetLimited: false, sandboxMountGap: false, authFailure: true })).toBe('auth_failure');
+    expect(classifyReportedFailure({ budgetLimited: true, sandboxMountGap: false, authFailure: true })).toBe('budget_limited');
+    expect(classifyReportedFailure({ budgetLimited: false, sandboxMountGap: false, authFailure: true, taskCancelled: true })).toBe('task_cancelled');
+  });
+
+  it('is not charged, and is an infrastructure exit', () => {
+    expect(consumesRetryAttempt('auth_failure')).toBe(false);
+    expect(isBookkeepingExit('auth_failure')).toBe(false);
+    expect(isInfrastructureExit('auth_failure')).toBe(true);
+    expect(isInfrastructureExit('infra_failure')).toBe(true);
+    expect(isInfrastructureExit('reassigned')).toBe(true);
+    expect(isInfrastructureExit('code_failure')).toBe(false);
+    expect(isInfrastructureExit(null)).toBe(false);
   });
 });

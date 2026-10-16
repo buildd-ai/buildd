@@ -57,12 +57,12 @@ export default function RunnerSizeSection({ workspaceId, explicit, effective, so
         body: JSON.stringify({ gitConfig: { runnerSize: next === 'auto' ? null : next } }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'Failed to save');
+      if (!res.ok) throw new Error(data.error || 'Could not save. Try again.');
       // Clearing goes back to the derived value, which only the server knows:
       // the page re-renders it on the next load.
       if (next !== 'auto') setShown({ effective: next, source: 'explicit', reason: null });
     } catch (err) {
-      setSaveError(err instanceof Error ? err.message : 'Failed to save');
+      setSaveError(err instanceof Error ? err.message : 'Could not save. Try again.');
     } finally {
       setSaving(false);
     }
@@ -89,7 +89,7 @@ export default function RunnerSizeSection({ workspaceId, explicit, effective, so
         />
       )}
       <p className="text-xs text-text-muted">
-        Large: 4× CPU, 2× memory and disk, and counts double toward fair use. Automatic switches to Large after a run nearly runs out of memory or disk.
+        Large: 4× CPU, 2× memory and disk; counts double toward fair use. Automatic switches to Large after a task nearly runs out of memory or disk.
       </p>
       {saveError && <p className="text-status-error text-sm">{saveError}</p>}
     </div>

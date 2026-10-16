@@ -12,6 +12,7 @@ import * as schema from '@buildd/core/db/schema';
 import { and, eq, isNull, or } from 'drizzle-orm';
 import { resolveOperatorGrant, type OperatorGrant } from './operator-capability';
 import { roleMayHold, AGENT_CAPABILITY_NAMES } from './permission-registry';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * The effective grant of `roleSlug` in `workspaceId`. Deny-shaped (enabled
@@ -25,12 +26,12 @@ export async function loadOperatorGrant(workspaceId: string, roleSlug: string): 
   if (!AGENT_CAPABILITY_NAMES.some(c => roleMayHold(roleSlug, c))) return denied;
   try {
     const ws = await db.query.workspaces.findFirst({
-      where: eq(schema.workspaces.id, workspaceId),
+      where: sqlWhere(eq(schema.workspaces.id, workspaceId)),
       columns: { teamId: true },
     });
     if (!ws?.teamId) return denied;
     const rows = await db.query.workspaceSkills.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(schema.workspaceSkills.teamId, ws.teamId),
         eq(schema.workspaceSkills.slug, roleSlug),
         eq(schema.workspaceSkills.isRole, true),
@@ -38,7 +39,7 @@ export async function loadOperatorGrant(workspaceId: string, roleSlug: string): 
         // A capability grant is a team decision: a member's personal role of
         // the same slug never stands in for the team row (role-visibility.ts).
         isNull(schema.workspaceSkills.ownerUserId),
-      ),
+      )),
       columns: { workspaceId: true, enabled: true, metadata: true },
     });
     return resolveOperatorGrant({

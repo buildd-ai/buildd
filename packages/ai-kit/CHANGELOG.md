@@ -12,6 +12,45 @@ The merge publishes to npm and tags the commit `ai-kit-v<version>`
 (`.github/workflows/publish-ai-kit.yml`); a version with no heading here fails
 the publish.
 
+## 0.28.0 — 2026-10-11
+
+Minor: a failed decision says why.
+
+- `DecisionReceipt.error` (optional, failures only): `{ kind, status?, body? }`.
+  A `provider_error` keeps the status and the first
+  `PROVIDER_ERROR_EXCERPT_CHARS` (200) characters of the provider's body, one
+  line, so a ledger can say "Authentication error" instead of only
+  `provider_error`.
+- `decide` redacts the API key, any auth header value and any `Bearer` value
+  from a `provider_error` body before it returns it or emits a receipt.
+- `DecisionFailure.body` carries the same excerpt for a `provider_error`.
+- New helpers: `redactSecrets`, `providerErrorExcerpt(status, body)`
+  (`HTTP 401: …`), `decisionReceiptError(error)`.
+
+## 0.27.1 — 2026-10-11
+
+Patch: attachment cards and the Attach button read right on a phone.
+
+- A failed upload's reason wraps instead of ending in an ellipsis, and its
+  composer card grows past the usual 56px to hold it. Ready and uploading
+  cards keep their fixed height.
+- The card's detail line and the composer's character count no longer use
+  `tabular-nums`. Under `tnum` some body fonts (Schibsted Grotesk among them)
+  give "," and "." a full digit's width, so "60,000" read as "60 , 000".
+- The Attach button fills its toolbar cell like Send (48px wide, at least 44px
+  tall, no inner border) instead of a 32px box pinned to the top of the cell.
+
+## 0.27.0 — 2026-10-11
+
+Minor: a route can carry a threshold measured on the model that answered.
+
+- `DecisionRoute.thresholdFor(answeringModel)`: a number in [0, 1] replaces the
+  kind's (or the escalation's) threshold for that attempt, and the attempt
+  records it as `threshold`. Null, or anything outside [0, 1], keeps the
+  kind's own. Hosts use it so a model measured on a kind acts at its own
+  threshold instead of one measured on Jev. No engine version change: a route
+  without it behaves exactly as before.
+
 ## 0.26.0 — 2026-10-11
 
 Minor: images and files attach to a message.

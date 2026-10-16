@@ -213,6 +213,23 @@ describe('qaRouteSatisfies', () => {
     expect(qaRouteSatisfies('/docs/:slug*', '/docs/a/b')).toBe(true);
     expect(qaRouteSatisfies('/app/tasks', '/app/missions')).toBe(false);
   });
+
+  it('handles Next.js [id] syntax for single-segment parameters', () => {
+    expect(qaRouteSatisfies('/app/tasks/[id]', '/app/tasks/[id]')).toBe(true);
+    expect(qaRouteSatisfies('/app/tasks/[id]', '/app/tasks/abc')).toBe(true);
+    expect(qaRouteSatisfies('/app/tasks/[id]', '/app/tasks/abc/logs')).toBe(false);
+  });
+
+  it('handles Next.js [...slug] syntax for catch-all routes', () => {
+    expect(qaRouteSatisfies('/docs/[...slug]', '/docs/[...slug]')).toBe(true);
+    expect(qaRouteSatisfies('/docs/[...slug]', '/docs/a/b')).toBe(true);
+    expect(qaRouteSatisfies('/docs/[...slug]', '/docs')).toBe(false);
+  });
+
+  it('mixes Next.js and express-style parameters in the same route', () => {
+    expect(qaRouteSatisfies('/app/[workspace]/tasks/[id]', '/app/my-workspace/tasks/123')).toBe(true);
+    expect(qaRouteSatisfies('/api/:version/[resource]', '/api/v1/users')).toBe(true);
+  });
 });
 
 describe('requiredCoverage', () => {

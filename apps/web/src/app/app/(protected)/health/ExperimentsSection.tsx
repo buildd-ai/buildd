@@ -2,14 +2,14 @@
 
 /**
  * Experiments on /app/health: each visible experiment's state and readout,
- * plus start/pause/conclude and a create form for team admins.
+ * plus start/pause/conclude and a create form for platform operators.
  *
  * Readouts are intent-to-treat per policy version (see
  * packages/core/experiment-readout.ts). "Insufficient data" is a verdict in
  * its own right and is rendered as one, never as a number that looks final.
  *
  * Visibility is enforced server-side (page.tsx → loadHealthExperiments drops
- * admins-only rows below admin); this component only decides whether to show
+ * operator-only rows for everyone else); this component only decides whether to show
  * controls, and hides itself when the viewer has nothing to see or do.
  */
 import { useState, type FormEvent } from 'react';
@@ -137,7 +137,7 @@ function ExperimentCard({ item, canManage }: { item: HealthExperimentItem; canMa
       </div>
       <p className="text-[11px] text-text-muted">
         <span className="font-mono">{e.key}</span> · treatment {pct(e.treatmentFraction)} of eligible · started {dateOnly(e.startedAt)} · v{e.policyVersion}
-        {e.visibility === 'admins' && ' · admins only'}
+        {e.visibility === 'admins' && ' · operators only'}
       </p>
       {e.hypothesis && <p className="text-xs text-text-secondary">{e.hypothesis}</p>}
 
@@ -285,7 +285,7 @@ function CreateExperimentForm() {
             value={visibility}
             onChange={v => setVisibility(v as 'admins' | 'team')}
             options={[
-              { value: 'admins', label: 'Admins only' },
+              { value: 'admins', label: 'Operators only' },
               { value: 'team', label: 'Whole team' },
             ]}
           />

@@ -3,6 +3,7 @@ import { secrets } from '@buildd/core/db/schema';
 import { encrypt, decrypt } from '@buildd/core/secrets';
 import { eq, and, or, isNull, lt, sql } from 'drizzle-orm';
 import { recordCredentialAuthSuccess, recordCredentialAuthFailure } from './credential-health';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const OPENAI_TOKEN_URL = 'https://auth.openai.com/oauth/token';
 const PURPOSE = 'codex_credential' as const;
@@ -256,12 +257,12 @@ export async function resolveCodexCredential(opts: {
   workspaceId?: string | null;
 }): Promise<CodexCredential | null> {
   const rows = await db.query.secrets.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(secrets.teamId, opts.teamId),
       eq(secrets.purpose, PURPOSE),
       or(isNull(secrets.accountId), opts.accountId ? eq(secrets.accountId, opts.accountId) : sql`false`),
       or(isNull(secrets.workspaceId), opts.workspaceId ? eq(secrets.workspaceId, opts.workspaceId) : sql`false`),
-    ),
+    )),
     columns: { encryptedValue: true, accountId: true, workspaceId: true, tokenExpiresAt: true, lastRefreshedAt: true, healthStatus: true },
   });
   if (rows.length === 0) return null;
@@ -269,14 +270,20 @@ export async function resolveCodexCredential(opts: {
   // Skip permanently-dead credentials — revoked credentials cannot be recovered via
   // refresh (the refresh_token family was invalidated by the provider). Filtering here
   // prevents the claim route from handing a dead token to the runner.
-  const liveRows = rows.filter((r) => (r.healthStatus as string) !== 'revoked');
+  //
+  // Expired credentials are skipped too (model credentials spec R-3 / AC-2): a
+  // claim never carries a credential that has already expired. Handing one over
+  // killed the worker seconds after the claim and the task retried forever; with
+  // it left out the runner uses its own login, or the claim's Codex capability
+  // filter (hasCodexCredential deliverableOnly) keeps the task for a runner that
+  // has one. A less specific live row still wins over a more specific dead one.
+  const liveRows = rows.filter((r) => (r.healthStatus as string) !== 'revoked' && credentialUsable(r));
   if (liveRows.length === 0) return null;
 
   // Specificity: workspace match (2) outranks account match (1) outranks team-wide (0).
   const score = (r: { accountId: string | null; workspaceId: string | null }) =>
     (r.workspaceId && r.workspaceId === opts.workspaceId ? 2 : 0) +
     (r.accountId && r.accountId === opts.accountId ? 1 : 0);
-  // Expired credentials are still returned — the claim gate attempts refresh before use.
   const best = liveRows.reduce((a, b) => (score(b) > score(a) ? b : a));
 
   let blob: CodexBlob;
@@ -315,30 +322,37 @@ export async function hasCodexCredential(opts: {
    */
   accountId?: string | null | 'any';
   workspaceId?: string | null;
+  /**
+   * Count only a credential the claim would actually deliver: not revoked and
+   * not expired (resolveCodexCredential's filter). The claim's Codex capability
+   * filter asks this form; readiness reporting keeps the default.
+   */
+  deliverableOnly?: boolean;
 }): Promise<boolean> {
   const anyAccount = opts.accountId === 'any';
   const rows = await db.query.secrets.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(secrets.teamId, opts.teamId),
       eq(secrets.purpose, PURPOSE),
       ...(anyAccount
         ? []
         : [or(isNull(secrets.accountId), opts.accountId ? eq(secrets.accountId, opts.accountId) : sql`false`)]),
       or(isNull(secrets.workspaceId), opts.workspaceId ? eq(secrets.workspaceId, opts.workspaceId) : sql`false`),
-    ),
+    )),
     columns: { tokenExpiresAt: true, healthStatus: true },
   });
-  // Expired credentials still count — the CLI refreshes via refresh_token. Revoked
+  // Expired credentials still count by default (readiness reporting); the claim
+  // passes deliverableOnly, because it never delivers an expired one. Revoked
   // credentials cannot be refreshed (the refresh_token family was invalidated by the
   // provider), so exclude them to prevent tryFlipToCodex from routing tasks to a
   // disconnected backend that resolveCodexCredential will then return null for.
-  return rows.some((r) => (r.healthStatus as string) !== 'revoked');
+  return rows.some((r) => (r.healthStatus as string) !== 'revoked' && (!opts.deliverableOnly || credentialUsable(r)));
 }
 
 /** Connection status (no token values) for the credential stored at an exact scope. */
 export async function getCodexStatus(scope: CodexScope): Promise<CodexStatus> {
   const row = await db.query.secrets.findFirst({
-    where: scopeMatch(scope),
+    where: sqlWhere(scopeMatch(scope)),
     columns: {
       encryptedValue: true,
       workspaceId: true,
@@ -391,7 +405,7 @@ export async function deleteCodexCredential(scope: CodexScope): Promise<void> {
 /** Secret id of the Codex credential at an exact scope, or null. Used by the refresh route. */
 export async function getCodexSecretId(scope: CodexScope): Promise<string | null> {
   const row = await db.query.secrets.findFirst({
-    where: scopeMatch(scope),
+    where: sqlWhere(scopeMatch(scope)),
     columns: { id: true },
   });
   return row?.id ?? null;
@@ -438,7 +452,7 @@ export async function refreshCodexCredential(secretId: string): Promise<RefreshR
 
   if (!claimed) {
     const exists = await db.query.secrets.findFirst({
-      where: and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)),
+      where: sqlWhere(and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE))),
       columns: { id: true },
     });
     return exists ? 'locked' : 'no_credential';
@@ -630,12 +644,12 @@ export async function writeBackCodexTokens(
 ): Promise<boolean> {
   // Find the credential row to update (most specific scope wins).
   const rows = await db.query.secrets.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(secrets.teamId, opts.teamId),
       eq(secrets.purpose, PURPOSE),
       or(isNull(secrets.accountId), opts.accountId ? eq(secrets.accountId, opts.accountId) : sql`false`),
       or(isNull(secrets.workspaceId), opts.workspaceId ? eq(secrets.workspaceId, opts.workspaceId) : sql`false`),
-    ),
+    )),
     columns: { id: true, encryptedValue: true, accountId: true, workspaceId: true },
   });
   if (rows.length === 0) return false;
@@ -727,7 +741,7 @@ const OPENAI_MODELS_URL = 'https://api.openai.com/v1/models';
  */
 export async function verifyCodexCredential(secretId: string): Promise<VerifyResult> {
   const row = await db.query.secrets.findFirst({
-    where: and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)),
+    where: sqlWhere(and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE))),
     columns: { encryptedValue: true, healthStatus: true },
   });
 

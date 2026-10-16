@@ -59,6 +59,7 @@ import { repoFullNameFromPrUrl } from '@/lib/repo-scope';
 import { TERMINAL_PR_LIFECYCLE } from '@/lib/dep-gate-contract';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { channels, events, triggerEvent } from '@/lib/pusher';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 // ── Pure rules ───────────────────────────────────────────────────────────────
 
@@ -209,20 +210,20 @@ async function defaultFindActiveReleases(): Promise<ActiveRelease[]> {
 
 async function defaultGetDependentTask(id: string): Promise<DependentTaskInfo | null> {
   const row = await db.query.tasks.findFirst({
-    where: eq(tasks.id, id),
+    where: sqlWhere(eq(tasks.id, id)),
     columns: { id: true, title: true, workspaceId: true, missionId: true, pathManifest: true },
   });
   return row ?? null;
 }
 
 async function defaultGetUpstreamTaskTitle(id: string): Promise<string | null> {
-  const row = await db.query.tasks.findFirst({ where: eq(tasks.id, id), columns: { title: true } });
+  const row = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, id)), columns: { title: true } });
   return row?.title ?? null;
 }
 
 async function defaultGetRepoIdentity(workspaceId: string): Promise<RepoIdentity | null> {
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     with: WORKSPACE_INSTALLATION_WITH,
   });
   if (!workspace) return null;
@@ -233,8 +234,8 @@ async function defaultGetRepoIdentity(workspaceId: string): Promise<RepoIdentity
 
 async function defaultGetUpstreamPrState(workspaceId: string, prNumber: number): Promise<UpstreamPrState | null> {
   const row = await db.query.workers.findFirst({
-    where: and(eq(workers.workspaceId, workspaceId), eq(workers.prNumber, prNumber)),
-    orderBy: desc(workers.createdAt),
+    where: sqlWhere(and(eq(workers.workspaceId, workspaceId), eq(workers.prNumber, prNumber))),
+    orderBy: sqlOrderBy(desc(workers.createdAt)),
     columns: { prLifecycleStatus: true, mergedAt: true, abandonedAt: true, supersededByPrNumber: true, supersededByPrUrl: true },
   });
   return row ?? null;
@@ -244,12 +245,12 @@ const TERMINAL_LIFECYCLE = [...TERMINAL_PR_LIFECYCLE];
 
 async function defaultFindOpenDependentPrNumber(dependentTaskId: string): Promise<number | null> {
   const row = await db.query.workers.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(workers.taskId, dependentTaskId),
       isNull(workers.mergedAt),
       or(isNull(workers.prLifecycleStatus), notInArray(workers.prLifecycleStatus, TERMINAL_LIFECYCLE)),
-    ),
-    orderBy: desc(workers.createdAt),
+    )),
+    orderBy: sqlOrderBy(desc(workers.createdAt)),
     columns: { prNumber: true },
   });
   return row?.prNumber ?? null;
@@ -287,7 +288,7 @@ async function defaultGetRequestChangesPaths(input: { workspaceId: string; prNum
 
 async function defaultHasOpenEscalation(dependentTaskId: string, collapseKey: string): Promise<boolean> {
   const existing = await db.query.missionNotes.findFirst({
-    where: and(eq(missionNotes.taskId, dependentTaskId), eq(missionNotes.collapseKey, collapseKey), eq(missionNotes.status, 'open')),
+    where: sqlWhere(and(eq(missionNotes.taskId, dependentTaskId), eq(missionNotes.collapseKey, collapseKey), eq(missionNotes.status, 'open'))),
     columns: { id: true },
   });
   return !!existing;

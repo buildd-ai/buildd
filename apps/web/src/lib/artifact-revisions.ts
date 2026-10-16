@@ -1,6 +1,7 @@
 import { db } from '@buildd/core/db';
 import { artifactRevisions, artifacts } from '@buildd/core/db/schema';
-import { and, eq, type SQL } from 'drizzle-orm';
+import { and, eq, sql, type SQL } from 'drizzle-orm';
+import { specIdForBodyArtifact } from './specs/body-guard';
 
 /**
  * Artifact body history. The artifacts_record_revision trigger appends an
@@ -39,6 +40,7 @@ export async function getArtifactRevision(artifactId: string, revision: number):
 export type WriteArtifactBodyResult =
   | { ok: true; revision: number; unchanged: boolean; artifact: typeof artifacts.$inferSelect }
   | { ok: false; conflict: true; currentRevision: number }
+  | { ok: false; conflict: false; specBody: true; specId: string }
   | { ok: false; conflict: false };
 
 /**
@@ -46,15 +48,17 @@ export type WriteArtifactBodyResult =
  * With `expectedRevision`, the write lands only if the body is still at that
  * revision; otherwise the caller gets the current one to re-read and retry.
  * Without it the write still lands as a new recorded revision, never in place.
+ * A spec's body is refused (lib/specs/body-guard.ts): only a spec revise moves it.
  */
 export async function writeArtifactBody(
   artifactId: string,
   body: { content: string | null; expectedRevision?: number; author?: string | null },
   also: Record<string, unknown | SQL> = {},
 ): Promise<WriteArtifactBodyResult> {
+  const notSpecBody = sql`NOT EXISTS (SELECT 1 FROM specs WHERE specs.body_artifact_id = ${artifacts.id})`;
   const where = body.expectedRevision === undefined
-    ? eq(artifacts.id, artifactId)
-    : and(eq(artifacts.id, artifactId), eq(artifacts.currentRevision, body.expectedRevision));
+    ? and(eq(artifacts.id, artifactId), notSpecBody)
+    : and(eq(artifacts.id, artifactId), eq(artifacts.currentRevision, body.expectedRevision), notSpecBody);
   const [row] = await db
     .update(artifacts)
     .set({ ...also, content: body.content, contentAuthor: body.author ?? null, updatedAt: new Date() })
@@ -63,6 +67,8 @@ export async function writeArtifactBody(
   if (row) {
     return { ok: true, revision: row.currentRevision, unchanged: row.currentRevision === body.expectedRevision, artifact: row };
   }
+  const specId = await specIdForBodyArtifact(artifactId);
+  if (specId) return { ok: false, conflict: false, specBody: true, specId };
   const [current] = await db
     .select({ currentRevision: artifacts.currentRevision })
     .from(artifacts)

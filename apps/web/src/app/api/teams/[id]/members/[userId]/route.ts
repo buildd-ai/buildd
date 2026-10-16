@@ -3,15 +3,16 @@ import { db } from '@buildd/core/db';
 import { teamMembers, teams } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { requireSessionUser } from '@/lib/auth-helpers';
-import { roleHas, isTeamRole, getTeamPermissionOverrides } from '@/lib/permissions';
+import { roleHas, isTeamRole } from '@/lib/permissions';
 import { clampCreatorKeys } from '@/lib/creator-key-clamp';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 async function ownerCount(teamId: string): Promise<number> {
   const owners = await db.query.teamMembers.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(teamMembers.teamId, teamId),
       eq(teamMembers.role, 'owner')
-    ),
+    )),
     columns: { userId: true },
   });
   return owners.length;
@@ -38,10 +39,10 @@ export async function PATCH(
 
   try {
     const currentMembership = await db.query.teamMembers.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(teamMembers.teamId, teamId),
         eq(teamMembers.userId, user.id)
-      ),
+      )),
     });
 
     if (!currentMembership) {
@@ -50,8 +51,7 @@ export async function PATCH(
 
     // Owner holds every permission, so assign_team_roles is the floor for any
     // role change: refuse before revealing whether the target exists.
-    const overrides = await getTeamPermissionOverrides(teamId);
-    if (!roleHas(currentMembership.role, 'assign_team_roles', overrides)) {
+    if (!roleHas(currentMembership.role, 'assign_team_roles')) {
       return NextResponse.json({ error: 'Changing roles needs the assign_team_roles permission' }, { status: 403 });
     }
 
@@ -64,10 +64,10 @@ export async function PATCH(
 
     // Verify target is a member
     const targetMembership = await db.query.teamMembers.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(teamMembers.teamId, teamId),
         eq(teamMembers.userId, targetUserId)
-      ),
+      )),
     });
 
     if (!targetMembership) {
@@ -76,7 +76,7 @@ export async function PATCH(
 
     if (
       (targetMembership.role === 'owner' || role === 'owner') &&
-      !roleHas(currentMembership.role, 'assign_team_owner', null /* locked */)
+      !roleHas(currentMembership.role, 'assign_team_owner')
     ) {
       return NextResponse.json({ error: "Changing a role to or from owner needs the assign_team_owner permission" }, { status: 403 });
     }
@@ -100,7 +100,7 @@ export async function PATCH(
       return NextResponse.json({ error: 'Member not found' }, { status: 404 });
     }
 
-    const clampedKeys = await clampCreatorKeys({ teamId, userId: targetUserId, role, overrides });
+    const clampedKeys = await clampCreatorKeys({ teamId, userId: targetUserId, role });
 
     return NextResponse.json({ success: true, clampedKeys });
   } catch (error) {
@@ -131,10 +131,10 @@ export async function DELETE(
 
   try {
     const currentMembership = await db.query.teamMembers.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(teamMembers.teamId, teamId),
         eq(teamMembers.userId, user.id)
-      ),
+      )),
     });
 
     if (!currentMembership) {
@@ -145,7 +145,7 @@ export async function DELETE(
 
     if (targetUserId === user.id) {
       const team = await db.query.teams.findFirst({
-        where: eq(teams.id, teamId),
+        where: sqlWhere(eq(teams.id, teamId)),
         columns: { slug: true },
       });
       if (team?.slug.startsWith('personal-')) {
@@ -155,16 +155,16 @@ export async function DELETE(
         return NextResponse.json({ error: 'You are the last owner. Transfer ownership before leaving.' }, { status: 400 });
       }
     } else {
-      if (!roleHas(currentRole, 'manage_team_members', await getTeamPermissionOverrides(teamId))) {
+      if (!roleHas(currentRole, 'manage_team_members')) {
         return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
       }
 
       // Verify target is a member
       const targetMembership = await db.query.teamMembers.findFirst({
-        where: and(
+        where: sqlWhere(and(
           eq(teamMembers.teamId, teamId),
           eq(teamMembers.userId, targetUserId)
-        ),
+        )),
       });
 
       if (!targetMembership) {
@@ -173,7 +173,7 @@ export async function DELETE(
 
       if (targetMembership.role === 'owner') {
         // Removing an owner takes more than member management: admins cannot.
-        if (!roleHas(currentRole, 'assign_team_owner', null /* locked */)) {
+        if (!roleHas(currentRole, 'assign_team_owner')) {
           return NextResponse.json({ error: 'Admins cannot remove owners' }, { status: 403 });
         }
         if ((await ownerCount(teamId)) <= 1) {

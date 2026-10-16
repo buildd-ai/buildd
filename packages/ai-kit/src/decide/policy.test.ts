@@ -310,6 +310,26 @@ describe('runDecisionKind: the plan', () => {
     expect(r.attempts[0]).toMatchObject({ outcome: 'unmeasured', decision: 'analyse', applied: false });
   });
 
+  it('a route can carry a threshold measured on the model that answered, which replaces the kind\'s', async () => {
+    // Kind threshold 0.8. The route measured 0.3 for this model: 0.35 decides.
+    const low = { ...scripted('a', 'other-model', [{ choice: 'analyse', confidence: 0.35 }]), thresholdFor: () => 0.3 };
+    const r = await runDecisionKind(triageKind(), { features: feats() }, live(low));
+    expect(r).toMatchObject({ decision: 'analyse', source: 'model' });
+    expect(r.attempts[0]).toMatchObject({ outcome: 'decided', threshold: 0.3, applied: true });
+
+    // A measured threshold also holds an answer back: 0.85 is under 0.9.
+    const high = { ...scripted('a', 'other-model', [{ choice: 'analyse', confidence: 0.85 }]), thresholdFor: () => 0.9 };
+    const held = await runDecisionKind(triageKind(), { features: feats() }, live(high));
+    expect(held.attempts[0]).toMatchObject({ outcome: 'below_threshold', threshold: 0.9 });
+
+    // null (or a value outside [0, 1]) keeps the kind's own threshold.
+    for (const t of [null, 1.5]) {
+      const keep = { ...scripted('a', 'cheap', [{ choice: 'analyse', confidence: 0.35 }]), thresholdFor: () => t };
+      const k = await runDecisionKind(triageKind(), { features: feats() }, live(keep));
+      expect(k.attempts[0]).toMatchObject({ outcome: 'below_threshold', threshold: 0.8 });
+    }
+  });
+
   it('hands the full response to onRecord, and a throwing sink changes nothing', async () => {
     const seen: string[] = [];
     const r = await runDecisionKind(triageKind(), { features: feats() }, live(scripted('a', 'cheap', [{}])), {

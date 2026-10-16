@@ -11,6 +11,7 @@ import { eq } from 'drizzle-orm';
 import { MemoryStore } from '@buildd/core/memory-store';
 import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from '@buildd/core/knowledge-store';
 import type { KnowledgeStore } from '@buildd/core/knowledge-store/types';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export async function getMemoryStoreForTeam(
   workspaceId: string | null | undefined,
@@ -20,7 +21,7 @@ export async function getMemoryStoreForTeam(
 
   if (workspaceId) {
     const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, workspaceId),
+      where: sqlWhere(eq(workspaces.id, workspaceId)),
       columns: { teamId: true },
     });
     teamId = ws?.teamId;

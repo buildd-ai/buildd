@@ -327,6 +327,24 @@ describe('findUncoveredRiskPaths', () => {
     ]);
     expect(proposals).toHaveLength(0);
   });
+
+  // Settings spec R-6 / AC-7: a keyword in a test, doc or prototype path is not
+  // a risky change, so it is never suggested for a class.
+  it('never suggests tests, docs or prototypes', () => {
+    const policy: WorkspacePolicyConfig = { preset: 'balanced', riskClasses: [] };
+    const proposals = findUncoveredRiskPaths(policy, [
+      'apps/x/credential.test.ts',
+      'apps/web/src/lib/auth/session.spec.tsx',
+      'apps/web/src/lib/auth/__tests__/token.ts',
+      'apps/web/tests/integration/auth-flow.ts',
+      'docs/design/auth-secrets.md',
+      'packages/core/drizzle/README.md',
+      'apps/web/content/secrets-guide.mdx',
+      'prototypes/auth/login.tsx',
+      'apps/web/src/lib/auth/session.ts',
+    ]);
+    expect(proposals.map((p) => p.file)).toEqual(['apps/web/src/lib/auth/session.ts']);
+  });
 });
 
 // ── applyPolicyConfigToMergePolicy ───────────────────────────────────────────

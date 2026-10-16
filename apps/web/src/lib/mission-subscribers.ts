@@ -26,12 +26,12 @@
  * runs after. Each step is isolated by the emitter, and pages under its label.
  */
 import { db } from '@buildd/core/db';
-import { tasks } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
+import { tasks, workers } from '@buildd/core/db/schema';
+import { and, eq } from 'drizzle-orm';
 import { after } from 'next/server';
 import { refreshMissionBranchesBeforeStart } from '@/lib/mission-branch-refresh';
 import { subscriber, type AnySubscriber } from '@/lib/core-events';
-import { evaluateAndAdvanceLoopOnMerge } from '@/lib/loop-webhook';
+import { evaluateAndAdvanceLoopOnMerge, evaluateAndAdvanceLoopOnCiGreen } from '@/lib/loop-webhook';
 import { maybeOpenMissionIntegrationPr, noteMissionPrOpenFailure } from '@/lib/mission-pr';
 import { wakeMissionAfterResponse } from '@/lib/mission-wake';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
@@ -56,9 +56,35 @@ export const missionSubscribers: readonly AnySubscriber[] = [
   // trunk first, so the work cuts from current trunk
   // (docs/specs/mission-branch-refresh.md). Awaited by the claim, bounded by
   // START_REFRESH_BUDGET_MS, and never throws. A trunk merge alone no longer
-  // refreshes anything.
+  // refreshes anything. A refresh past its budget is kept alive with after();
+  // if the request dies anyway, its expired lease makes the backstop retry it.
   subscriber('missions', 'tasks.claimed', 'refresh-mission-branches-before-start', async e => {
-    await refreshMissionBranchesBeforeStart(e.tasks);
+    await refreshMissionBranchesBeforeStart(e.tasks, {
+      keepAlive: pending => after(() => pending.then(() => {})),
+    });
+  }),
+  // §6: deliverable work filed into a mission gets its scope decision (in
+  // scope, a recorded amendment, or a hold for a person), and, when the
+  // mission's newest delivery already merged, a writable successor delivery,
+  // so the claim hands its worker a live branch.
+  // After the response, like the merge and retarget subscribers below: the scope decision is a
+  // model call that can run to its timeout, and filing a task must never wait on it. A late
+  // branch is safe: the claim swaps a stale filed base for the live one.
+  subscriber('missions', 'task.created', 'open-writable-mission-delivery', e => {
+    if (!e.missionId) return;
+    const missionId = e.missionId;
+    after(() => (async () => {
+      const [task] = await db
+        .select({ taskClass: tasks.taskClass, mode: tasks.mode })
+        .from(tasks)
+        .where(eq(tasks.id, e.taskId))
+        .limit(1);
+      if (task?.taskClass !== 'work' || task.mode === 'planning') return;
+      const { decideMissionTaskScope, ensureMissionWritableBranch } = await import('@/lib/mission-epoch-door');
+      // The scope decision first: an amended contract is the version the next delivery carries.
+      await decideMissionTaskScope({ taskId: e.taskId, workspaceId: e.workspaceId });
+      await ensureMissionWritableBranch(missionId, 'task_filed');
+    })().catch(err => console.error('[task-create] mission scope/delivery failed:', err)));
   }),
   subscriber('missions', 'task.created', 'task-created-mission-feed', e => {
     if (!e.missionId) return;
@@ -88,12 +114,25 @@ export const missionSubscribers: readonly AnySubscriber[] = [
   }),
 
   // ── GitHub facts ───────────────────────────────────────────────────────────
-  // mergedAt is stamped; the helper reads it and completes the task if its
-  // pr_merged loop condition now holds. Fire-and-forget.
+  // mergedAt is stamped; the helpers read it and complete the task if its
+  // pr_merged loop condition now holds, or its pr_checks_green one (a merge
+  // satisfies that too, should no green delivery have reached us first).
+  // Fire-and-forget.
   subscriber('missions', 'task.pr_merge_delivered', 'loop-advance-on-merge', e => {
     if (!e.taskId || !e.workspaceId) return;
     evaluateAndAdvanceLoopOnMerge(e.workerId, e.taskId, e.workspaceId).catch((err) =>
       console.error(`[webhook] evaluateAndAdvanceLoopOnMerge failed for task ${e.taskId}:`, err),
+    );
+    evaluateAndAdvanceLoopOnCiGreen(e.workerId, e.taskId, e.workspaceId, 'merged').catch((err) =>
+      console.error(`[webhook] evaluateAndAdvanceLoopOnCiGreen(merged) failed for task ${e.taskId}:`, err),
+    );
+  }),
+  // The pr_checks_green counterpart: a task the loop parked on its PR's CI
+  // (lib/loop-dispatcher-policy.ts) completes when the checks go green.
+  subscriber('missions', 'pr.ci_passed', 'loop-advance-on-ci-green', e => {
+    if (!e.taskId) return;
+    evaluateAndAdvanceLoopOnCiGreen(e.workerId, e.taskId, e.workspaceId, 'ci_green').catch((err) =>
+      console.error(`[webhook] evaluateAndAdvanceLoopOnCiGreen failed for task ${e.taskId}:`, err),
     );
   }),
   // Option A′: a task PR landing on the mission's integration branch is the
@@ -150,6 +189,21 @@ export const missionSubscribers: readonly AnySubscriber[] = [
       ),
     );
   }),
+  // §6 (workflow-kernel-library.md): a mission PR merged on GitHub itself
+  // (no buildd door ran) is still a merged delivery. Every door records it
+  // too; the kernel's transition is idempotent, so the second is a noop.
+  subscriber('missions', 'pr.closed', 'record-mission-delivery-merged', async e => {
+    if (!e.merged || !e.taskId || e.installationId == null) return;
+    const [task] = await db
+      .select({ title: tasks.title, taskClass: tasks.taskClass, missionId: tasks.missionId })
+      .from(tasks)
+      .where(eq(tasks.id, e.taskId))
+      .limit(1);
+    const { isMissionPrTask } = await import('@buildd/core/mission-integration');
+    if (!task?.missionId || !isMissionPrTask(task)) return;
+    const { recordMissionPrMerged } = await import('@/lib/mission-epoch-door');
+    await recordMissionPrMerged(task, e.installationId, e.repoFullName, e.prNumber);
+  }),
   subscriber('missions', 'pr.closed', 'settle-surface-intents', async e => {
     const settle = () => import('@/lib/surface-ordering')
       .then((m) => m.settleSurfaceIntentsOnClose({ workspaceId: e.workspaceId, prNumber: e.prNumber }))
@@ -162,6 +216,20 @@ export const missionSubscribers: readonly AnySubscriber[] = [
   }),
   // A retarget leaves the PR's change-intent rows naming the OLD base. Move its
   // open intents to where the PR now lands and re-wake the head of both lanes.
+  // §6: GitHub moved a mission PR off a delivery branch (delete-on-merge
+  // retargets it to trunk). Recorded on the delivery, so settlement moves only
+  // PRs that were really on it.
+  subscriber('missions', 'pr.base_changed', 'record-pr-moved-off-delivery', async e => {
+    const [row] = await db
+      .select({ missionId: tasks.missionId })
+      .from(workers)
+      .innerJoin(tasks, eq(tasks.id, workers.taskId))
+      .where(and(eq(workers.workspaceId, e.workspaceId), eq(workers.prNumber, e.prNumber)))
+      .limit(1);
+    if (!row?.missionId) return;
+    const { recordPrMovedOffDelivery } = await import('@/lib/mission-epoch-door');
+    await recordPrMovedOffDelivery({ missionId: row.missionId, prNumber: e.prNumber, fromBase: e.fromBase });
+  }),
   subscriber('missions', 'pr.base_changed', 'retarget-surface-intents', async e => {
     const retarget = () => import('@/lib/surface-ordering')
       .then((m) => m.retargetSurfaceIntents({ workspaceId: e.workspaceId, prNumber: e.prNumber, fromBase: e.fromBase, toBase: e.toBase }))
@@ -204,6 +272,11 @@ export const missionSubscribers: readonly AnySubscriber[] = [
   subscriber('missions', 'worker.reported', 'mission-completion-attempt', async e => {
     if (!e.missionId || e.releaseHeld) return;
     await completeMissionIfVerified(e.missionId, { path: 'criteria_eval', predicate: `task ${e.taskId} reached ${e.finalStatus ?? e.status}` });
+  }),
+  // S4b (workflow-kernel-library.md §1, §6): a settled or retired delivery can be the last thing
+  // a mission's completion was held on (`epochCompletionHold`).
+  subscriber('missions', 'mission.delivery_settled', 'mission-completion-on-delivery-settled', async e => {
+    await completeMissionIfVerified(e.missionId, { path: 'epoch_settled', predicate: `delivery ${e.steps.join(', ')}` });
   }),
   subscriber('missions', 'task.completed', 'mission-completion-on-release-completed', async e => {
     if (e.via !== 'release' || !e.missionId) return;

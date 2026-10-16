@@ -83,13 +83,34 @@ async function mount(props: Partial<Parameters<typeof TaskActionZone>[0]> = {}) 
 
 const startCalls = () => calls.filter(c => c.url === '/api/tasks/t1/start');
 
+describe('TaskActionZone — Run now frame', () => {
+  it('boxes Run now on its own, and drops the box inside a card that already frames the task', async () => {
+    stubFetch({ status: 200, body: {} });
+    await mount();
+    expect(container.querySelector('[data-testid="task-run-now"]')!.className).toContain('border');
+    await mount({ framed: false });
+    const group = container.querySelector('[data-testid="task-run-now"]')!;
+    expect(group.className).not.toContain('border');
+    expect(button('Run now')).toBeDefined();
+  });
+
+  it('the Blocked notice drops its box the same way', async () => {
+    stubFetch({ status: 200, body: {} });
+    await mount({ isBlocked: true, blockedByCount: 1 });
+    expect(container.querySelector('[data-testid="task-blocked"]')!.className).toContain('border');
+    await mount({ isBlocked: true, blockedByCount: 1, framed: false });
+    expect(container.querySelector('[data-testid="task-blocked"]')!.getAttribute('class')).toBeNull();
+    expect(container.textContent).toContain('waiting on 1 dependency');
+  });
+});
+
 describe('TaskActionZone — inline Force start', () => {
   it('a bypassable 422 offers Force start, and pressing it posts forceOverride exactly once', async () => {
     stubFetch({ status: 422, body: { gateReason: 'mission_local', canForce: true, blockClass: 'policy' } });
     await mount();
     await act(async () => { button('Run now')!.click(); });
     await flush();
-    expect(container.textContent).toContain('Running in a local session');
+    expect(container.textContent).toContain('Runs from a local session');
     const force = button('Force start');
     expect(force).toBeDefined();
     await act(async () => { force!.click(); });
@@ -139,7 +160,17 @@ describe('TaskActionZone — inline Force start', () => {
 });
 
 describe('TaskActionZone — raise workspace cap stepper', () => {
-  const gatedCapBody = { gateReason: 'workspace_cap_reached', canForce: true, canExempt: true, blockClass: 'policy', cap: 3, active: 3, error: 'Workspace is full' };
+  const gatedCapBody = { gateReason: 'workspace_cap_reached', canForce: true, canExempt: true, canRaiseCap: true, blockClass: 'policy', cap: 3, active: 3, error: 'Workspace is full' };
+
+  it('hides raising the limit from someone who cannot change workspace settings; Start anyway stays', async () => {
+    stubFetch({ status: 422, body: { ...gatedCapBody, canRaiseCap: false } });
+    await mount();
+    await act(async () => { button('Run now')!.click(); });
+    await flush();
+    expect(container.querySelector('[data-action="raise_cap"]')).toBeNull();
+    expect(container.textContent).not.toContain('Raise the workspace limit');
+    expect(container.querySelector('[data-action="cap_exempt"]')).not.toBeNull();
+  });
 
   it('keeps −/value/+ in their own group, separate from the label and Save & start, so they never split across lines', async () => {
     stubFetch({ status: 422, body: gatedCapBody });
@@ -288,7 +319,7 @@ describe('TaskActionZone — overrides carry through a chain of refusals', () =>
     await flush();
     await act(async () => { button('Start anyway')!.click(); });
     await flush();
-    expect(container.textContent).toContain('Running in a local session');
+    expect(container.textContent).toContain('Runs from a local session');
     await act(async () => { button('Force start')!.click(); });
     await flush();
     expect(startCalls().at(-1)!.body).toEqual({ forceOverride: true, capExempt: true });
@@ -340,7 +371,7 @@ describe('TaskActionZone — managed-runner plan limit', () => {
   });
 
   it('the workspace cap refusal is unchanged: an operational limit keeps its own controls', async () => {
-    stubFetch({ status: 422, body: { gateReason: 'workspace_cap_reached', blockClass: 'policy', active: 3, cap: 3, canExempt: true } });
+    stubFetch({ status: 422, body: { gateReason: 'workspace_cap_reached', blockClass: 'policy', active: 3, cap: 3, canExempt: true, canRaiseCap: true } });
     await mount();
     await act(async () => { button('Run now')!.click(); });
     await flush();

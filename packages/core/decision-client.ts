@@ -85,9 +85,10 @@ import {
 } from '@builddai/ai-kit/decide';
 import { INFERENCE_CAPABILITIES, isInferenceAllowed, type InferenceCapability } from './inference-policy';
 import { effectiveKeyPolicy, type InferenceKeyPolicy } from './inference-key-policy';
-import { isClefModel, normalizeDecisionModel, readDecisionModel, OPENROUTER_CHAT_BASE_URL, type DecisionModelConfig } from './decision-model';
+import { decisionModelFor, isClefModel, normalizeDecisionModel, OPENROUTER_CHAT_BASE_URL, type DecisionModelRoute, type DecisionModelSetting } from './decision-model';
 import { entitlements, isBillingEnforced, type EntitlementTeam } from './entitlements';
 import { loadTeamEntitlements } from './billing-limits';
+import { sqlWhere } from './db/relational-sql';
 
 // The question/answer types, request and response validation, `gateChoice` and
 // the transport live in `@builddai/ai-kit/decide` (knowledge-base: buildd/design/shared-ai-kit.md
@@ -184,6 +185,8 @@ export interface DecisionKeyScope {
   allowPlatformKey?: boolean;
   /** The team's plan columns, when the caller already read them (else read on demand). */
   billing?: EntitlementTeam;
+  /** The decision asked (`DECISION_MODEL_KINDS`): its override, if the team set one, answers before the team default. */
+  kind?: string | null;
 }
 
 export interface ResolvedDecisionKey {
@@ -274,19 +277,19 @@ export interface TeamDecisionRow {
  * decision model answers. Fails closed: a failed lookup means "not enabled",
  * never "spend anyway". `row` skips the read (undefined ⇒ read it; null ⇒ no team).
  */
-async function loadTeamDecisionSettings(teamId: string, capability: InferenceCapability, row?: TeamDecisionRow | null): Promise<{ allowed: boolean; model: DecisionModelConfig | null; keyPolicy?: InferenceKeyPolicy; billing?: EntitlementTeam }> {
+async function loadTeamDecisionSettings(teamId: string, capability: InferenceCapability, row?: TeamDecisionRow | null, kind?: string | null): Promise<{ allowed: boolean; model: DecisionModelRoute | null; keyPolicy?: InferenceKeyPolicy; billing?: EntitlementTeam }> {
   try {
     let team = row;
     if (team === undefined) {
       const { db } = await import('./db');
       team = await db.query.teams.findFirst({
-        where: eq(teams.id, teamId),
+        where: sqlWhere(eq(teams.id, teamId)),
         columns: { inferenceFeatureModes: true, enabledDecisionShadows: true, decisionModel: true, inferenceKeyPolicy: true, credentialPolicy: true, plan: true, paidSeats: true },
       }) ?? null;
     }
     return {
       allowed: isInferenceAllowed(capability, team ? { featureModes: team.inferenceFeatureModes, enabledDecisionShadows: team.enabledDecisionShadows } : null),
-      model: readDecisionModel(team?.decisionModel),
+      model: decisionModelFor(team?.decisionModel, kind),
       ...(effectiveKeyPolicy(team) ? { keyPolicy: effectiveKeyPolicy(team)! } : {}),
       // Only a row that carries the plan column answers for it; a caller's
       // partial row leaves the platform-key check to read the plan itself.
@@ -318,8 +321,14 @@ export async function resolveDecisionAccess(opts: {
   userId?: string | null;
   /** The team's decision columns, when the caller already has them. */
   team?: TeamDecisionRow | null;
+  /**
+   * The decision asked, by the name its stored measurement uses
+   * (`DECISION_MODEL_KINDS`). The team's override for it answers before the
+   * team default; whether that answer acts is still its measurement's call.
+   */
+  kind?: string | null;
 }): Promise<DecisionAccess> {
-  const settings = await loadTeamDecisionSettings(opts.teamId, opts.capability, opts.team);
+  const settings = await loadTeamDecisionSettings(opts.teamId, opts.capability, opts.team, opts.kind);
   if (!settings.allowed) return { ok: false, error: { kind: 'capability_disabled', capability: opts.capability } };
   let route: Awaited<ReturnType<typeof resolveDecisionRoute>>;
   try {
@@ -342,12 +351,14 @@ export async function resolveDecisionAccess(opts: {
  * Key, endpoint and model for a team's decision model. Null key ⇒ nothing to
  * spend: no OpenRouter key, or (via the gateway) no gateway, and no platform
  * key under the plan either. The platform key always runs the platform's
- * model, never the team's custom one.
+ * model, never the team's custom one. With `scope.kind`, that decision's
+ * override in `setting.byKind` answers before the default.
  */
 export async function resolveDecisionRoute(
-  config: DecisionModelConfig | null,
+  setting: DecisionModelSetting | null,
   scope: DecisionKeyScope,
 ): Promise<{ apiKey: string | null; endpoint?: DecisionEndpoint; model: string }> {
+  const config = decisionModelFor(setting, scope.kind);
   if (config?.via === 'cloudflare') return resolveCloudflareDecisionRoute(config, scope);
   if (config?.via === 'litellm') {
     const { resolveLiteLLMGateway } = await import('./litellm-gateway');
@@ -378,7 +389,7 @@ export async function resolveDecisionRoute(
  * moved elsewhere.
  */
 async function resolveCloudflareDecisionRoute(
-  config: DecisionModelConfig,
+  config: DecisionModelRoute,
   scope: DecisionKeyScope,
 ): Promise<{ apiKey: string | null; endpoint?: DecisionEndpoint; model: string }> {
   const { resolveCloudflareAiGateway, clefBaseURL, jevGatewayBaseURL } = await import('./cloudflare-ai-gateway');
@@ -428,6 +439,8 @@ export interface DecisionCallParams<Q extends DecisionQuestions> {
   accountId?: string | null;
   /** The signed-in person the call is for, so their own OpenRouter key is spent first. */
   userId?: string | null;
+  /** The decision asked (`DECISION_MODEL_KINDS`), so the team's override for it answers. See `resolveDecisionAccess`. */
+  kind?: string | null;
   /** Keep it small: accuracy falls as irrelevant state grows. */
   state: string | Record<string, unknown> | unknown[];
   questions: Q;
@@ -484,7 +497,7 @@ export async function decisionCall<Q extends DecisionQuestions>(
       ? await params.access
       : await resolveDecisionAccess({
         capability: params.capability, teamId: params.teamId, workspaceId: params.workspaceId,
-        accountId: params.accountId, userId: params.userId,
+        accountId: params.accountId, userId: params.userId, kind: params.kind,
       });
     if (!access.ok) return fail(access.error, 0);
     apiKey = access.apiKey;

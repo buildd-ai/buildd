@@ -2,6 +2,7 @@ import { createHmac, hkdfSync, timingSafeEqual } from 'crypto';
 import { db } from '@buildd/core/db';
 import { presenceTokens } from '@buildd/core/db/schema';
 import { and, eq, isNull } from 'drizzle-orm';
+import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * A person's presence token: what the buildd agent plugin's hooks
@@ -163,7 +164,7 @@ export const drizzlePresenceTokenStore: PresenceTokenStore = {
     // A signed token always names a uuid; anything else is not ours.
     if (!UUID_RE.test(tokenId)) return null;
     const row = await db.query.presenceTokens.findFirst({
-      where: eq(presenceTokens.id, tokenId),
+      where: sqlWhere(eq(presenceTokens.id, tokenId)),
       columns: { userId: true, revokedAt: true, lastUsedAt: true },
     });
     return row ?? null;
@@ -183,8 +184,8 @@ export const drizzlePresenceTokenStore: PresenceTokenStore = {
 /** This person's tokens, newest first, for settings. Never includes a token value. */
 export async function listPresenceTokens(userId: string) {
   return db.query.presenceTokens.findMany({
-    where: eq(presenceTokens.userId, userId),
+    where: sqlWhere(eq(presenceTokens.userId, userId)),
     columns: { id: true, label: true, createdAt: true, lastUsedAt: true, revokedAt: true },
-    orderBy: (t, { desc }) => [desc(t.createdAt)],
+    orderBy: sqlOrderByFn((t, { desc }) => [desc(t.createdAt)]),
   });
 }

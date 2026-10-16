@@ -76,6 +76,7 @@ import { isAnthropicApiKeyAuth, resolveAnthropicAuth } from '@/lib/claude-creden
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveDispatchPrincipal } from '@/lib/agent-capabilities/dispatch-principal';
 import { recordCapabilityDecision } from '@/lib/agent-capabilities/audit';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Mirrors DISPATCH_TOKEN_HEADER in apps/cloud-runner/src/outbound.ts. */
 const DISPATCH_TOKEN_HEADER = 'x-buildd-dispatch-token';
@@ -123,8 +124,11 @@ export async function POST(req: NextRequest) {
 
   try {
     const team = await loadTeamPolicy(ws.teamId);
-    if (surfacePolicy(team, 'cloud-egress').enforced) {
-      const requesterUserId = await loadRequester(task.id);
+    // The resolver decides when a team chose a policy, or when a person the
+    // work is for may have their own key (the default, personal_first). Team
+    // work under the default keeps the path below, unchanged.
+    const requesterUserId = await loadRequester(task.id);
+    if (surfacePolicy(team, 'cloud-egress').source !== 'default' || requesterUserId) {
       const result = await resolveProviderCredential({
         teamId: ws.teamId,
         workspaceId: ws.id,
@@ -145,7 +149,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(answer.body, { headers: NO_STORE });
     }
 
-    // credential_policy NULL: exactly the decision this route always made.
+    // No policy chosen and no requester: exactly the decision this route always made.
     const decision = await resolveAgentModelRoute({ teamId: ws.teamId, workspaceId: ws.id, accountId: account.id });
     if (decision && decision.winner === 'endpoint') {
       const e = decision.endpoint;
@@ -177,7 +181,7 @@ export async function POST(req: NextRequest) {
 async function loadTeamPolicy(teamId: string): Promise<TeamPolicyColumns | null> {
   try {
     return (await db.query.teams.findFirst({
-      where: eq(teams.id, teamId),
+      where: sqlWhere(eq(teams.id, teamId)),
       columns: { credentialPolicy: true, inferenceKeyPolicy: true },
     })) ?? null;
   } catch {
@@ -190,7 +194,7 @@ async function loadTeamPolicy(teamId: string): Promise<TeamPolicyColumns | null>
 async function loadRequester(taskId: string): Promise<string | null> {
   try {
     const row = await db.query.tasks.findFirst({
-      where: eq(tasks.id, taskId),
+      where: sqlWhere(eq(tasks.id, taskId)),
       columns: { createdByUserId: true, parentTaskId: true, missionId: true, scheduleId: true },
     });
     return row ? await resolveTaskRequesterUserId(row) : null;

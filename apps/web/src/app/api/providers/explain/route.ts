@@ -4,6 +4,7 @@ import { resolveProvidersCaller } from '@/lib/providers/caller';
 import { resolveProviderCredential } from '@buildd/core/providers/resolve';
 import { PROVIDER_SURFACE_UNSUPPORTED, isProviderId, isSurface, surfaceRefusal } from '@buildd/core/providers/manage';
 import type { ExplainProviderResponse, ProviderRefusal } from '@buildd/shared';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * What the resolver would pick, and why, without running anything.
@@ -54,7 +55,7 @@ export async function GET(req: NextRequest) {
       const { db } = await import('@buildd/core/db');
       const { workspaces } = await import('@buildd/core/db/schema');
       const { and, eq } = await import('drizzle-orm');
-      const ws = await db.query.workspaces.findFirst({ where: and(eq(workspaces.id, workspaceId), eq(workspaces.teamId, caller.teamId)), columns: { id: true } });
+      const ws = await db.query.workspaces.findFirst({ where: sqlWhere(and(eq(workspaces.id, workspaceId), eq(workspaces.teamId, caller.teamId))), columns: { id: true } });
       if (!ws) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     }
     const out = await resolveProviderCredential({

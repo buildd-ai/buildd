@@ -5,7 +5,7 @@ import { useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { Select } from '@/components/ui/Select';
 import { useConfirm } from '@/components/useConfirm';
-import { roleHas, type PermissionOverrides } from '@/lib/permission-registry';
+import { roleHas } from '@/lib/permission-registry';
 import { isQaFixtureMemberId } from './qa-state';
 import Section from '@/components/ui/Section';
 import Notice from '@/components/ui/Notice';
@@ -35,11 +35,9 @@ interface TeamDetailClientProps {
   isPersonal: boolean;
   /** `manage_team_members`: add, invite and remove members. */
   canManage: boolean;
-  /** The team's permission overrides, so role checks here match the server. */
-  permissionOverrides: PermissionOverrides | null;
   /**
    * Sections the page shows between the members and the danger zone
-   * (timezone, permissions), so Leave and Delete stay at the bottom.
+   * (handover, timezone), so Leave and Delete stay at the bottom.
    */
   children?: ReactNode;
 }
@@ -58,7 +56,6 @@ export default function TeamDetailClient({
   currentUserId,
   isPersonal,
   canManage,
-  permissionOverrides,
   children,
 }: TeamDetailClientProps) {
   const { confirm, confirmDialog } = useConfirm();
@@ -78,10 +75,10 @@ export default function TeamDetailClient({
   const [showInvite, setShowInvite] = useState(false);
   const [leaving, setLeaving] = useState(false);
 
-  const canEditTeam = roleHas(currentUserRole, 'manage_team_settings', permissionOverrides);
-  const canDeleteTeam = roleHas(currentUserRole, 'delete_team', null /* locked */) && !isPersonal;
-  const canAssignOwner = roleHas(currentUserRole, 'assign_team_owner', null /* locked */);
-  const canAssignRoles = roleHas(currentUserRole, 'assign_team_roles', permissionOverrides);
+  const canEditTeam = roleHas(currentUserRole, 'manage_team_settings');
+  const canDeleteTeam = roleHas(currentUserRole, 'delete_team') && !isPersonal;
+  const canAssignOwner = roleHas(currentUserRole, 'assign_team_owner');
+  const canAssignRoles = roleHas(currentUserRole, 'assign_team_roles');
   const isLastOwner = currentUserRole === 'owner' && members.filter((m) => m.role === 'owner').length <= 1;
 
   /** The roles this caller may pick for `member`, or null when its role is fixed for them. */
@@ -107,14 +104,14 @@ export default function TeamDetailClient({
 
       if (!res.ok) {
         const err = await res.json();
-        throw new Error(err.error || 'Failed to send invitation');
+        throw new Error(err.error || "Could not send the invitation.");
       }
 
       const data = await res.json();
       setInviteUrl(data.inviteUrl);
       setInviteEmail('');
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to invite');
+      setError(err instanceof Error ? err.message : "Could not send the invitation.");
     } finally {
       setInviting(false);
     }
@@ -133,13 +130,13 @@ export default function TeamDetailClient({
 
       if (!res.ok) {
         const err = await res.json();
-        throw new Error(err.error || 'Failed to update team');
+        throw new Error(err.error || "Could not rename the team.");
       }
 
       setEditing(false);
       router.refresh();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
+      setError(err instanceof Error ? err.message : "Could not rename the team.");
     } finally {
       setSaving(false);
     }
@@ -158,13 +155,13 @@ export default function TeamDetailClient({
 
       if (!res.ok) {
         const err = await res.json();
-        throw new Error(err.error || 'Failed to delete team');
+        throw new Error(err.error || "Could not delete the team.");
       }
 
       router.push('/app/settings');
       router.refresh();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
+      setError(err instanceof Error ? err.message : "Could not delete the team.");
       setDeleting(false);
     }
   }
@@ -181,13 +178,13 @@ export default function TeamDetailClient({
 
       if (!res.ok) {
         const err = await res.json();
-        throw new Error(err.error || 'Failed to update role');
+        throw new Error(err.error || "Could not change the role.");
       }
 
       setNotice(clampedKeysNotice((await res.json().catch(() => ({}))).clampedKeys, 'they'));
       router.refresh();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
+      setError(err instanceof Error ? err.message : "Could not change the role.");
     }
   }
 
@@ -204,13 +201,13 @@ export default function TeamDetailClient({
 
       if (!res.ok) {
         const err = await res.json();
-        throw new Error(err.error || 'Failed to remove member');
+        throw new Error(err.error || "Could not remove the member.");
       }
 
       setNotice(clampedKeysNotice((await res.json().catch(() => ({}))).clampedKeys, 'they'));
       router.refresh();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
+      setError(err instanceof Error ? err.message : "Could not remove the member.");
     }
   }
 
@@ -235,18 +232,18 @@ export default function TeamDetailClient({
 
       if (!res.ok) {
         const err = await res.json();
-        throw new Error(err.error || 'Failed to transfer ownership');
+        throw new Error(err.error || "Could not transfer ownership.");
       }
 
       setNotice(clampedKeysNotice((await res.json().catch(() => ({}))).clampedKeys, 'you'));
       router.refresh();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
+      setError(err instanceof Error ? err.message : "Could not transfer ownership.");
     }
   }
 
   async function handleLeave() {
-    if (!(await confirm({ title: 'Leave team?', message: `You lose access to ${team.name} and its workspaces. Someone with member access has to add you back.`, confirmLabel: 'Leave team', variant: 'danger' }))) {
+    if (!(await confirm({ title: 'Leave team?', message: `You lose access to ${team.name} and its workspaces. Only someone who manages members can add you back.`, confirmLabel: 'Leave team', variant: 'danger' }))) {
       return;
     }
     if (isQaFixtureMemberId(currentUserId)) return;
@@ -259,13 +256,13 @@ export default function TeamDetailClient({
 
       if (!res.ok) {
         const err = await res.json();
-        throw new Error(err.error || 'Failed to leave team');
+        throw new Error(err.error || "Could not leave the team.");
       }
 
       router.push('/app/settings/account');
       router.refresh();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
+      setError(err instanceof Error ? err.message : "Could not leave the team.");
       setLeaving(false);
     }
   }
@@ -288,10 +285,12 @@ export default function TeamDetailClient({
             <label htmlFor="team-name" className="mb-1.5 block text-sm font-medium text-text-primary">Team name</label>
             <input id="team-name" type="text" value={editName} onChange={(e) => setEditName(e.target.value)} className={input} />
           </div>
-          <div>
-            <label htmlFor="team-slug" className="mb-1.5 block text-sm font-medium text-text-primary">Slug</label>
-            <input id="team-slug" type="text" value={editSlug} onChange={(e) => setEditSlug(e.target.value)} className={`${input} font-mono`} />
-          </div>
+          {!isPersonal && (
+            <div>
+              <label htmlFor="team-slug" className="mb-1.5 block text-sm font-medium text-text-primary">Slug</label>
+              <input id="team-slug" type="text" value={editSlug} onChange={(e) => setEditSlug(e.target.value)} className={`${input} font-mono`} />
+            </div>
+          )}
           <div className="flex gap-2">
             <button onClick={handleSaveEdit} disabled={saving} className="btn">
               {saving ? 'Saving…' : 'Save'}
@@ -316,7 +315,8 @@ export default function TeamDetailClient({
               {isPersonal && <TonePill tone="q">Personal</TonePill>}
             </div>
             <p className="text-sm text-text-muted">
-              <span className="font-mono text-meta">{team.slug}</span> · Created {new Date(team.createdAt).toLocaleDateString()}
+              {/* A personal team's slug is an internal id; only a shared team's is the team's own. */}
+              {!isPersonal && <><span className="font-mono text-meta">{team.slug}</span> · </>}Created {new Date(team.createdAt).toLocaleDateString()}
             </p>
           </div>
           {canEditTeam && (
@@ -327,7 +327,7 @@ export default function TeamDetailClient({
 
       <Section title="Members" count={members.length}>
         <p className="mb-3 text-sm text-text-muted">
-          A lower role also lowers the API keys that person created. Older keys with no recorded creator stay as they are.
+          Lowering a role also limits the API keys that person created. Keys with no recorded creator are unchanged.
         </p>
         <div className="divide-y divide-border-default border-y border-border-default">
           {members.map((member) => (
@@ -404,7 +404,7 @@ export default function TeamDetailClient({
         {canManage && (
           <div className="mt-4">
             {!showInvite ? (
-              <PrimaryAction onClick={() => setShowInvite(true)}>+ Invite someone</PrimaryAction>
+              <PrimaryAction onClick={() => setShowInvite(true)}>+ Invite member</PrimaryAction>
             ) : (
               <div className="space-y-3">
                 <h3 className="text-sm font-semibold text-text-primary">Invite a team member</h3>

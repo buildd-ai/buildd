@@ -23,6 +23,7 @@ import { callerOwnsWorker } from '@/lib/worker-owner';
 import { isUuid } from '@/lib/uuid';
 import { checkQuestion, gateEnabledFromGitConfig, hardRailContextFromGitConfig } from '@/lib/question-gate-check';
 import { RECOVERABLE_BLOCKER_REPAIR } from '@/modules';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 10;
@@ -43,20 +44,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
 
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.id, id),
+    where: sqlWhere(eq(workers.id, id)),
     columns: { id: true, accountId: true, claimedByUserId: true, workspaceId: true, taskId: true },
   });
   if (!worker || !callerOwnsWorker(account, worker)) return notFound();
   if (!worker.taskId) return NextResponse.json({ verdict: 'send', outcome: 'off', version: null, latencyMs: 0 });
 
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, worker.workspaceId),
+    where: sqlWhere(eq(workspaces.id, worker.workspaceId)),
     columns: { id: true, teamId: true, dataClass: true, gitConfig: true },
   });
   if (!workspace?.teamId) return notFound();
 
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, worker.taskId),
+    where: sqlWhere(eq(tasks.id, worker.taskId)),
     columns: { title: true, pathManifest: true, missionId: true },
   });
 

@@ -144,18 +144,18 @@ export async function saveState(db: LocalDb, state: DemoState): Promise<void> {
 }
 
 /**
- * Shift every timestamp in the demo DB by `deltaMs`, so "story now" tracks the
- * wall clock without the app ever seeing a faked server time. Covers every
- * timestamp column in `public` plus the ms-epoch `ts`/`timestamp` fields inside
- * workers.milestones.
+ * The clock move: every public timestamp column by `secs`. User triggers are
+ * off for it (local to its one statement's transaction): moving the whole
+ * clock rewrites no history, but an append-only table (artifact_revisions)
+ * refuses any UPDATE, and the artifacts revision trigger would record one.
+ * The demo database only; its user owns it.
  */
-export async function shiftAllTimestamps(db: LocalDb, deltaMs: number): Promise<void> {
-  if (!deltaMs) return;
-  const secs = (deltaMs / 1000).toFixed(3);
-  await db.execute(sql.raw(`
+export function shiftTimestampsSql(secs: string): string {
+  return `
     do $$
     declare r record; sets text;
     begin
+      perform set_config('session_replication_role', 'replica', true);
       for r in
         select table_name, string_agg(format('%I = %I + interval ''${secs} seconds''', column_name, column_name), ', ') as sets
         from information_schema.columns
@@ -164,7 +164,18 @@ export async function shiftAllTimestamps(db: LocalDb, deltaMs: number): Promise<
       loop
         execute format('update %I set %s', r.table_name, r.sets);
       end loop;
-    end $$;`));
+    end $$;`;
+}
+
+/**
+ * Shift every timestamp in the demo DB by `deltaMs`, so "story now" tracks the
+ * wall clock without the app ever seeing a faked server time. Covers every
+ * timestamp column in `public` plus the ms-epoch `ts`/`timestamp` fields inside
+ * workers.milestones.
+ */
+export async function shiftAllTimestamps(db: LocalDb, deltaMs: number): Promise<void> {
+  if (!deltaMs) return;
+  await db.execute(sql.raw(shiftTimestampsSql((deltaMs / 1000).toFixed(3))));
   const ms = Math.round(deltaMs);
   await db.execute(sql.raw(`
     update workers set milestones = (
@@ -185,6 +196,20 @@ export async function shiftAllTimestamps(db: LocalDb, deltaMs: number): Promise<
 export function runnerUrl(story: Story, key: string | null | undefined): string {
   const r = (story.runners ?? []).find((x: Entity) => x.runner === key || x.key === key);
   return r?.localUiUrl ?? String(key ?? 'runner');
+}
+
+/** The runner name a claim from a person's own coding session (claim_task over MCP) carries: INTERACTIVE_WORKER_RUNNER. */
+export const SESSION_RUNNER = 'mcp';
+
+/**
+ * A worker's runner columns at claim. A runner claim reports its URL as both;
+ * a session claim (story runner "mcp") is runner "mcp" with no localUiUrl, so
+ * the fleet puts it in the "Your sessions" lane instead of on a runner.
+ */
+export function claimColumns(story: Story, key: string | null | undefined): { runner: string; localUiUrl: string | null } {
+  if (key === SESSION_RUNNER) return { runner: SESSION_RUNNER, localUiUrl: null };
+  const url = runnerUrl(story, key);
+  return { runner: url, localUiUrl: url };
 }
 
 /** The heartbeat `environment` a real runner reports: hostname + a readable machine label. */

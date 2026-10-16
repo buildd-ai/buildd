@@ -8,6 +8,7 @@ import { isTerminalWorkerStatus } from '@buildd/shared';
 import { getDefaultStorageClient, isStorageConfigured } from './storage';
 import { EvidenceReadError, decodeEvidenceBody } from './evidence-read';
 import { MAX_SESSION_ARTIFACT_BYTES, sessionArtifactKey } from './session-artifact-keys';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface CompletedTranscriptWorker {
   id: string;
@@ -31,7 +32,7 @@ export interface CompletedTranscriptDeps {
   open(key: string): Promise<AsyncIterable<Uint8Array>>;
 }
 const defaults: CompletedTranscriptDeps = {
-  loadWorker: id => db.query.workers.findFirst({ where: eq(workers.id, id),
+  loadWorker: id => db.query.workers.findFirst({ where: sqlWhere(eq(workers.id, id)),
     columns: { id: true, workspaceId: true, status: true },
     with: { workspace: { columns: { teamId: true, dataClass: true } } } }),
   open: async key => {

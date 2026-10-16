@@ -13,6 +13,7 @@
 import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
 import { and, eq, ne } from 'drizzle-orm';
+import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 const MAX_SIBLING_TASKS = 5;
 const MAX_CHARS = 2000;
@@ -61,44 +62,44 @@ export async function buildSubjectPriorWork(
 
     if (task.subjectKind === 'pull_request' && task.subjectPrNumber) {
       siblingTasks = await db.query.tasks.findMany({
-        where: and(
+        where: sqlWhere(and(
           eq(tasks.workspaceId, task.workspaceId),
           eq(tasks.subjectPrNumber, task.subjectPrNumber),
           ne(tasks.id, task.id),
-        ),
+        )),
         columns: { id: true, title: true, status: true },
         with: {
           workers: {
             columns: { branch: true, prNumber: true, prLifecycleStatus: true, mergedAt: true },
             limit: 1,
-            orderBy: (w, { desc }) => [desc(w.createdAt)],
+            orderBy: sqlOrderByFn((w, { desc }) => [desc(w.createdAt)]),
           },
         },
         limit: MAX_SIBLING_TASKS,
-        orderBy: (t, { desc }) => [desc(t.createdAt)],
+        orderBy: sqlOrderByFn((t, { desc }) => [desc(t.createdAt)]),
       });
     } else if (task.subjectKind === 'error' && task.subjectErrorSignature) {
       const rows = await db.query.tasks.findMany({
-        where: and(
+        where: sqlWhere(and(
           eq(tasks.workspaceId, task.workspaceId),
           eq(tasks.subjectErrorSignature, task.subjectErrorSignature),
           ne(tasks.id, task.id),
-        ),
+        )),
         columns: { id: true, title: true, status: true },
         limit: MAX_SIBLING_TASKS,
-        orderBy: (t, { desc }) => [desc(t.createdAt)],
+        orderBy: sqlOrderByFn((t, { desc }) => [desc(t.createdAt)]),
       });
       siblingTasks = rows.map(r => ({ ...r, workers: [] }));
     } else if (task.subjectKind === 'mission' && task.subjectMissionId) {
       const rows = await db.query.tasks.findMany({
-        where: and(
+        where: sqlWhere(and(
           eq(tasks.workspaceId, task.workspaceId),
           eq(tasks.subjectMissionId, task.subjectMissionId),
           ne(tasks.id, task.id),
-        ),
+        )),
         columns: { id: true, title: true, status: true },
         limit: MAX_SIBLING_TASKS,
-        orderBy: (t, { desc }) => [desc(t.createdAt)],
+        orderBy: sqlOrderByFn((t, { desc }) => [desc(t.createdAt)]),
       });
       siblingTasks = rows.map(r => ({ ...r, workers: [] }));
     }

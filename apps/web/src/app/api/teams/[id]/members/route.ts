@@ -3,8 +3,9 @@ import { db } from '@buildd/core/db';
 import { teamMembers, users } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getRequestPrincipal, requireSessionUser } from '@/lib/auth-helpers';
-import { roleHas, type TeamRole, getTeamPermissionOverrides } from '@/lib/permissions';
+import { roleHas, type TeamRole } from '@/lib/permissions';
 import { checkSeatForNewMember, seatsExhaustedResponse } from '@/lib/billing/seats';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export async function GET(
   req: NextRequest,
@@ -25,10 +26,10 @@ export async function GET(
       }
     } else {
       const membership = await db.query.teamMembers.findFirst({
-        where: and(
+        where: sqlWhere(and(
           eq(teamMembers.teamId, teamId),
           eq(teamMembers.userId, principal.user.id)
-        ),
+        )),
       });
 
       if (!membership) {
@@ -37,7 +38,7 @@ export async function GET(
     }
 
     const members = await db.query.teamMembers.findMany({
-      where: eq(teamMembers.teamId, teamId),
+      where: sqlWhere(eq(teamMembers.teamId, teamId)),
       with: {
         user: true,
       },
@@ -71,10 +72,10 @@ export async function POST(
 
   try {
     const membership = await db.query.teamMembers.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(teamMembers.teamId, teamId),
         eq(teamMembers.userId, user.id)
-      ),
+      )),
     });
 
     if (!membership) {
@@ -82,8 +83,7 @@ export async function POST(
     }
 
     const currentRole = membership.role as TeamRole;
-    const overrides = await getTeamPermissionOverrides(teamId);
-    if (!roleHas(currentRole, 'manage_team_members', overrides)) {
+    if (!roleHas(currentRole, 'manage_team_members')) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 
@@ -98,18 +98,18 @@ export async function POST(
       return NextResponse.json({ error: 'Invalid role' }, { status: 400 });
     }
 
-    if (role === 'owner' && !roleHas(currentRole, 'assign_team_owner', null /* locked */)) {
+    if (role === 'owner' && !roleHas(currentRole, 'assign_team_owner')) {
       return NextResponse.json({ error: 'Only owners can add owners' }, { status: 403 });
     }
 
     // Widening manage_team_members must not let its holders mint admins.
-    if (role === 'admin' && !roleHas(currentRole, 'assign_team_roles', overrides)) {
+    if (role === 'admin' && !roleHas(currentRole, 'assign_team_roles')) {
       return NextResponse.json({ error: 'Adding an admin needs the assign_team_roles permission' }, { status: 403 });
     }
 
     // Validate user exists
     const targetUser = await db.query.users.findFirst({
-      where: eq(users.id, userId),
+      where: sqlWhere(eq(users.id, userId)),
       columns: { id: true },
     });
 
@@ -119,10 +119,10 @@ export async function POST(
 
     // Check if already a member
     const existingMembership = await db.query.teamMembers.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(teamMembers.teamId, teamId),
         eq(teamMembers.userId, userId)
-      ),
+      )),
     });
 
     if (existingMembership) {

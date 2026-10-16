@@ -37,6 +37,7 @@ mock.module('@buildd/core/db/schema', () => ({
     ownerUserId: 'ownerUserId', visibility: 'visibility',
   },
   // task-requester (loaded only when a personal role is in play)
+  systemCache: { key: 'key' }, workspaces: { id: 'workspaces.id' },
   tasks: { id: 'tasks.id' }, missions: { id: 'missions.id' }, taskSchedules: { id: 'taskSchedules.id' },
 }));
 

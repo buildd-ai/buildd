@@ -252,6 +252,98 @@ describe('recordOrCoalesceDeferral', () => {
     expect(inserted[0].outcome).toBe('stranded');
     expect(inserted[0].detail?.consecutiveDeferrals).toBe(1);
   });
+
+  // failure-incident-recovery §5 rule 3 (G1): an episode is per blocker. A
+  // streak behind PR A must not lend its age to PR B.
+  it('starts a fresh streak when the blocking PR changes under the same reason', async () => {
+    latestRow = {
+      id: 'row-existing',
+      reason: 'path_overlap',
+      outcome: 'deferred',
+      detail: { consecutiveDeferrals: 40, firstDeferredAt: '2026-01-01T00:00:00.000Z', prNumber: 101, prUrl: 'u101' },
+    };
+
+    await recordOrCoalesceDeferral({
+      gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
+      surface: 'POST /api/workers/claim',
+      outcome: 'deferred',
+      reason: 'path_overlap',
+      taskId: TASK,
+      detail: { prNumber: 202, prUrl: 'u202' },
+    });
+
+    expect(updateCalls).toHaveLength(0);
+    expect(inserted).toHaveLength(1);
+    expect(inserted[0].detail?.prNumber).toBe(202);
+    expect(inserted[0].detail?.consecutiveDeferrals).toBe(1);
+    expect(inserted[0].detail?.firstDeferredAt).not.toBe('2026-01-01T00:00:00.000Z');
+  });
+
+  it('starts a fresh streak when the blocking task changes (active-claim layer)', async () => {
+    latestRow = {
+      id: 'row-existing',
+      reason: 'path_overlap',
+      outcome: 'deferred',
+      detail: { consecutiveDeferrals: 5, firstDeferredAt: '2026-01-01T00:00:00.000Z', prNumber: 101, blockingTaskId: null },
+    };
+
+    await recordOrCoalesceDeferral({
+      gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
+      surface: 'POST /api/workers/claim',
+      outcome: 'deferred',
+      reason: 'path_overlap',
+      taskId: TASK,
+      detail: { blockingTaskId: 'holder-task', prNumber: null, prUrl: null },
+    });
+
+    expect(updateCalls).toHaveLength(0);
+    expect(inserted).toHaveLength(1);
+    expect(inserted[0].detail?.blockingTaskId).toBe('holder-task');
+  });
+
+  it('keeps coalescing while the blocker stays the same', async () => {
+    latestRow = {
+      id: 'row-existing',
+      reason: 'path_overlap',
+      outcome: 'deferred',
+      detail: { consecutiveDeferrals: 2, firstDeferredAt: '2026-01-01T00:00:00.000Z', prNumber: 101, blockingTaskId: 'holder' },
+    };
+
+    await recordOrCoalesceDeferral({
+      gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
+      surface: 'POST /api/workers/claim',
+      outcome: 'deferred',
+      reason: 'path_overlap',
+      taskId: TASK,
+      detail: { prNumber: 101, blockingTaskId: 'holder', paths: ['a.ts'] },
+    });
+
+    expect(inserted).toHaveLength(0);
+    expect(updateCalls).toHaveLength(1);
+    const d = updateCalls[0].set.detail as Record<string, unknown>;
+    expect(d.consecutiveDeferrals).toBe(3);
+    expect(d.firstDeferredAt).toBe('2026-01-01T00:00:00.000Z');
+    expect(d.paths).toEqual(['a.ts']);
+  });
+
+  it('a reason with no blocker fields coalesces as before', async () => {
+    latestRow = {
+      id: 'row-existing',
+      reason: 'workspace_cap',
+      outcome: 'deferred',
+      detail: { consecutiveDeferrals: 2, firstDeferredAt: '2026-01-01T00:00:00.000Z' },
+    };
+    await recordOrCoalesceDeferral({
+      gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
+      surface: 'POST /api/workers/claim',
+      outcome: 'deferred',
+      reason: 'workspace_cap',
+      taskId: TASK,
+      detail: { cap: 3 },
+    });
+    expect(inserted).toHaveLength(0);
+    expect(updateCalls).toHaveLength(1);
+  });
 });
 
 describe('recordOrCoalesceRepeat', () => {

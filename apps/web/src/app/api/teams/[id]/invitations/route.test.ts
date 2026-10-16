@@ -18,11 +18,7 @@ mock.module('@/lib/auth-helpers', () => ({
 // the way the server decides it.
 import { roleHas } from '@/lib/permission-registry';
 let callerRole = 'owner';
-let overrides: any = null;
-mock.module('@/lib/permissions', () => ({
-  roleHas,
-  getTeamPermissionOverrides: async () => overrides,
-}));
+mock.module('@/lib/permissions', () => ({ roleHas }));
 
 let capacity: any = { ok: true };
 const capacityCalls: any[] = [];
@@ -74,7 +70,6 @@ beforeEach(() => {
   capacityCalls.length = 0;
   capacity = { ok: true };
   callerRole = 'owner';
-  overrides = null;
 });
 
 describe('POST /api/teams/[id]/invitations — plan member limit', () => {
@@ -100,22 +95,6 @@ describe('POST /api/teams/[id]/invitations — the role an invite carries', () =
     expect((await post({ email: 'new@example.com', role: 'admin' })).status).toBe(200);
     expect(inserted).toHaveLength(1);
     expect(inserted[0].role).toBe('admin');
-  });
-
-  it('a member granted manage_team_members may invite a member', async () => {
-    callerRole = 'member';
-    overrides = { manage_team_members: ['owner', 'admin', 'member'] };
-    expect((await post({ email: 'new@example.com', role: 'member' })).status).toBe(200);
-    expect(inserted).toHaveLength(1);
-  });
-
-  it('…but not an admin, which takes assign_team_roles', async () => {
-    callerRole = 'member';
-    overrides = { manage_team_members: ['owner', 'admin', 'member'] };
-    const res = await post({ email: 'new@example.com', role: 'admin' });
-    expect(res.status).toBe(403);
-    expect((await res.json()).error).toContain('assign_team_roles');
-    expect(inserted).toHaveLength(0);
   });
 
   it('403s a plain member', async () => {

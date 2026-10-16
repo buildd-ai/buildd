@@ -41,6 +41,7 @@ import { notifyTeam } from '@/lib/notify';
 import { sweepLookaheadMinutes } from '@/lib/cron-cadence';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const maxDuration = 60;
 
@@ -63,14 +64,14 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
   // subsequent sweep, making the state a one-way trap with manual reconnect the
   // only exit.
   const expiringCodex = await db.query.secrets.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(secrets.purpose, 'codex_credential'),
       or(
         isNull(secrets.tokenExpiresAt),
         lt(secrets.tokenExpiresAt, sql`NOW() + INTERVAL '1 hour'`),
       ),
       ne(secrets.healthStatus, 'revoked'),
-    ),
+    )),
     columns: { id: true, teamId: true, workspaceId: true },
   });
 
@@ -127,14 +128,14 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
   // never looked at again. `healthStatus` is what marks a credential beyond
   // saving; a null column should not be doing that job silently.
   const expiringClaude = await db.query.secrets.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(secrets.purpose, 'claude_credential'),
       or(
         isNull(secrets.tokenExpiresAt),
         lt(secrets.tokenExpiresAt, sql`NOW() + INTERVAL '1 hour'`),
       ),
       ne(secrets.healthStatus, 'revoked'),
-    ),
+    )),
     columns: { id: true, teamId: true, workspaceId: true },
   });
 
@@ -177,10 +178,10 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
   // they silently imply managed refresh is degraded until the user reconnects.
   // Kept regardless of BUILDD_ALLOW_CONTROL_PLANE_REFRESH for ops visibility.
   const zombieClaude = await db.query.secrets.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(secrets.purpose, 'claude_credential'),
       isNull(secrets.tokenExpiresAt),
-    ),
+    )),
     columns: { id: true, teamId: true, workspaceId: true, healthStatus: true, lastVerificationError: true },
   });
 
@@ -207,13 +208,13 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
   // Not moved to runner-side: MCP servers are often remote, not colocated with the runner.
   const mcpLookaheadMinutes = sweepLookaheadMinutes();
   const expiringMcp = await db.query.secrets.findMany({
-    where: teamCredentialWhere(
+    where: sqlWhere(teamCredentialWhere(
       { purpose: 'mcp_connector_credential' },
       or(
         isNull(secrets.tokenExpiresAt),
         lt(secrets.tokenExpiresAt, sql`NOW() + (${mcpLookaheadMinutes} * INTERVAL '1 minute')`),
       ),
-    ),
+    )),
     columns: { id: true },
   });
 
@@ -246,7 +247,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
   // both are pinged. That purpose also holds other providers' and personal
   // keys, which are dropped.
   const claudeCreds = (await db.query.secrets.findMany({
-    where: or(...CLAUDE_CREDENTIAL_PURPOSES.map((p) => eq(secrets.purpose, p))),
+    where: sqlWhere(or(...CLAUDE_CREDENTIAL_PURPOSES.map((p) => eq(secrets.purpose, p)))),
     columns: { id: true, purpose: true, label: true, userId: true },
   })).filter(isTeamClaudeCredential);
 

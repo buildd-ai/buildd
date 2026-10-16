@@ -43,6 +43,7 @@ function rng(seed: number) {
   return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 2 ** 32);
 }
 
+/** Two windows of synthetic work: the one shown, and the one before it for the comparison. */
 export function sampleFlowSeries(window: FlowWindow, now = Date.now()): FlowSeries {
   const r = rng(42);
   const span = windowMsFor(window);
@@ -50,9 +51,10 @@ export function sampleFlowSeries(window: FlowWindow, now = Date.now()): FlowSeri
   const workers: FlowWorkerRow[] = [];
   const releases: { id: string; workspaceId: string; version: string; state: string; at: number }[] = [];
   const releaseTasks: { releaseId: string; taskId: string }[] = [];
-  const count = window === '7d' ? 60 : 220;
+  const count = (window === '7d' ? 60 : 220) * 2;
   for (let n = 0; n < count; n++) {
-    const start = from + r() * (span - 2 * H);
+    // The window before carries a little less work, so the comparison has a direction.
+    const start = n % 2 === 0 ? from - span + r() * span * 0.85 : from + r() * (span - 2 * H);
     const run = (0.2 + r() * 1.8) * H;
     const role = ROLES[Math.floor(r() * ROLES.length)];
     const withPr = role === 'builder';
@@ -66,6 +68,7 @@ export function sampleFlowSeries(window: FlowWindow, now = Date.now()): FlowSeri
       parentTaskId: null,
       taskTitle: `${role === 'builder' ? 'feat' : role}: sample task ${n + 1}`,
       taskStatus: status === 'failed' ? 'failed' : done ? 'completed' : 'in_progress',
+      taskCreatedAt: start - r() * 3 * H,
       roleSlug: role,
       missionId: null,
       workspaceId: 'sample-ws',
@@ -80,24 +83,43 @@ export function sampleFlowSeries(window: FlowWindow, now = Date.now()): FlowSeri
       prSupersededAt: null,
       prAbandonedAt: r() < 0.04 ? start + run + 2 * H : null,
     });
+    // Some PRs fail CI first: a fix task is created a while after the PR opens.
+    if (withPr && done && status !== 'failed' && r() < 0.3) {
+      const failedAt = start + run + (0.5 + r() * 2) * H;
+      const fixStart = failedAt + r() * 1.5 * H;
+      if (fixStart + H < now) {
+        workers.push({
+          workerId: `w${n}-fix`, taskId: `t${n}-fix`, parentTaskId: `t${n}`, taskTitle: `fix CI: sample task ${n + 1}`,
+          taskStatus: 'completed', roleSlug: role, missionId: null, workspaceId: 'sample-ws', status: 'completed',
+          startedAt: fixStart, completedAt: fixStart + 0.5 * H, updatedAt: fixStart + 0.5 * H,
+          prNumber: null, mergedAt: null, prLifecycleStatus: null, prLastCheckedAt: null, prSupersededAt: null, prAbandonedAt: null,
+          taskCreatedAt: failedAt, taskRetryKind: 'ci',
+        });
+      }
+    }
   }
   // A release roughly every day, carrying what merged since the last one.
-  let prev = from;
+  let prev = from - span;
   let v = 100;
-  for (let t = from + 20 * H; t < now; t += (18 + r() * 12) * H) {
+  for (let t = from - span + 20 * H; t < now; t += (18 + r() * 12) * H) {
     const id = `r${v}`;
     releases.push({ id, workspaceId: 'sample-ws', version: `v0.${v}.0`, state: r() < 0.08 ? 'failed' : 'healthy', at: t });
     for (const w of workers) if (w.mergedAt != null && w.mergedAt >= prev && w.mergedAt < t) releaseTasks.push({ releaseId: id, taskId: w.taskId! });
     prev = t;
     v++;
   }
-  return buildFlowSeries({
-    window: { from, to: now },
-    bucketMs: bucketMsFor(window),
+  const fold = (w: { from: number; to: number }, bucketMs: number) => buildFlowSeries({
+    window: w,
+    bucketMs,
     now,
     workers,
     releases,
     releaseTasks,
     releaseWorkspaceIds: ['sample-ws'],
   });
+  const prior = fold({ from: from - span, to: from }, span);
+  return {
+    ...fold({ from, to: now }, bucketMsFor(window)),
+    previous: { shippedTasks: prior.headline.shippedTasks, lostTasks: prior.days.reduce((n, d) => n + d.lost, 0), days: prior.days },
+  };
 }
