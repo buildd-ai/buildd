@@ -24,7 +24,7 @@ exports[`Queue view (R-26) 80x24: the tab line, both teams in claim order, est. 
                                                                                 
                                                                                 
 ────────────────────────────────────────────────────────────────────────────────
- ↑↓ move c claim h hold o web tab missions t team w workspace ? help q quit     "
+ ↑↓ move c claim o web tab missions t team w workspace / filter ? help q quit   "
 `;
 
 exports[`Queue view (R-26) 120x40: est. shows for the team that has estimates on, and not for the one that does not 1`] = `

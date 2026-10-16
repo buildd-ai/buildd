@@ -14,6 +14,7 @@
  * classified below, so the choice is made deliberately rather than by default.
  */
 import type { LocalWorker } from './types';
+import { workerSpend, type RunSpend } from './run-route';
 
 /**
  * Credential material and credential handles — never serialised. PublicWorker
@@ -64,6 +65,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   toolInFlight: true,
   pauseRequestedAt: true, // a timestamp, no content
   killedByRestart: true,
+  resumeOnStart: true, // shutdown or crash, no content
   completedAt: true,
   milestones: true,
   currentAction: true,
@@ -115,6 +117,8 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   lastAssistantMessage: true,
   tokenTally: true,
   costBasis: true,
+  route: true, // bucket/provider/owner/host label; no credential
+  modelLoginFailed: true, // a boolean
   sandboxMountGap: true,
   bwrapRetryPending: true,
   modelAuthMissing: true, // a boolean, no credential
@@ -170,7 +174,7 @@ const PUBLIC_FIELDS: ReadonlyArray<keyof LocalWorker> = (
 ).filter((k) => (WORKER_FIELD_VISIBILITY as Record<string, boolean>)[k]);
 
 /** A projected worker. Credential fields are absent from the type itself. */
-export type PublicWorker = Partial<Omit<LocalWorker, WithheldWorkerField>>;
+export type PublicWorker = Partial<Omit<LocalWorker, WithheldWorkerField>> & { spend?: RunSpend };
 
 /** Project a worker onto its allowlisted, client-safe fields. */
 export function toPublicWorker(worker: LocalWorker): PublicWorker {
@@ -179,6 +183,10 @@ export function toPublicWorker(worker: LocalWorker): PublicWorker {
     const value = (worker as any)[field];
     if (value !== undefined) out[field] = value;
   }
+  // The run's dollars, worked out where the price catalog is loaded, so a
+  // client (buildd top) reads them instead of re-pricing (run-route.ts).
+  const spend = workerSpend(worker);
+  if (spend) out.spend = spend;
   return out as PublicWorker;
 }
 

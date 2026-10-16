@@ -3259,7 +3259,8 @@ export interface MissionProgressCell {
 /**
  * One mission as `GET /api/missions/recent` sends it (spec c7410e76 R-24):
  * open missions and those finished in the last 7 days, in the caller's
- * reachable workspaces. `completedAt` is set only on a finished mission.
+ * reachable workspaces. All open missions are included; only recent deliveries
+ * are capped. `completedAt` is set only on a finished mission.
  */
 export interface RecentMission {
   id: string;

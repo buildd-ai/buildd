@@ -23,9 +23,11 @@ import {
   installedServiceDebug,
   parseInstallArgs,
   handleInstallCommand,
+  SERVICE_STOP_TIMEOUT_S,
   type CommandResult,
   type CommandRunner,
 } from '../../src/service';
+import { SHUTDOWN_DEADLINE_MS } from '../../src/restart-resume';
 
 describe('detectServicePlatform', () => {
   test('darwin', () => expect(detectServicePlatform('darwin')).toBe('darwin'));
@@ -69,6 +71,17 @@ describe('launchdPlistPath / systemdUnitPath', () => {
 
   test('unit lives under ~/.config/systemd/user', () => {
     expect(systemdUnitPath(paths)).toBe('/home/alice/.config/systemd/user/buildd-runner.service');
+  });
+});
+
+describe('generateLaunchdPlist: the stop window (R-37)', () => {
+  test('ExitTimeOut leaves the runner time to pause its agents before launchd kills it', () => {
+    const plist = generateLaunchdPlist(resolveServicePaths({ home: '/Users/alice', builddHome: '/Users/alice/.buildd' }));
+    expect(plist).toMatch(new RegExp(`<key>ExitTimeOut</key>\\s*<integer>${SERVICE_STOP_TIMEOUT_S}</integer>`));
+  });
+
+  test('the runner exits on its own inside launchd\'s default ExitTimeOut too (an install from before this setting)', () => {
+    expect(SHUTDOWN_DEADLINE_MS).toBeLessThan(20_000);
   });
 });
 
@@ -119,6 +132,14 @@ describe('generateLaunchdPlist', () => {
 describe('generateSystemdUnit', () => {
   const paths = resolveServicePaths({ home: '/home/alice', builddHome: '/home/alice/.buildd' });
   const unit = generateSystemdUnit(paths);
+
+  test('R-37: a stop signals the launcher only and waits longer than the runner takes to pause its agents', () => {
+    // control-group (the default) signals every agent process at once, so each
+    // died before the runner could pause it.
+    expect(unit).toContain('KillMode=mixed');
+    expect(unit).toContain(`TimeoutStopSec=${SERVICE_STOP_TIMEOUT_S}`);
+    expect(SERVICE_STOP_TIMEOUT_S * 1000).toBeGreaterThan(SHUTDOWN_DEADLINE_MS + 5_000);
+  });
 
   test('runs the launcher binary as ExecStart', () => {
     expect(unit).toContain(`ExecStart=${paths.builddBin}`);
