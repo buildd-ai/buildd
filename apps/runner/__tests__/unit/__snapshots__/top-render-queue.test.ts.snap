@@ -67,5 +67,5 @@ exports[`Queue view (R-26) 120x40: est. shows for the team that has estimates on
                                                                                                                         
                                                                                                                         
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- ↑↓ move  c claim  o web  tab missions  t team  w workspace  / filter  ? help  q quit                                   "
+ ↑↓ move  c claim  h hold  o web  tab missions  t team  w workspace  / filter  ? help  q quit                           "
 `;

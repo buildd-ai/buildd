@@ -9,7 +9,7 @@
  * with `SlotLanes`' own `assignSlots` (components/fleet/slot-lanes-layout.ts),
  * so the slot a row describes here is the slot the lanes chart draws.
  */
-import { INTERACTIVE_WORKER_RUNNER, RUNNER_LIVE_WINDOW_MS, executorDisplayName, fleetGroupKey, isEphemeralRunner, isOnceRunnerUrl, runnerFleetIdentity, type FleetRunner, type FleetSlot, type FleetSnapshot, type LaneBar, type RunnerFleetIdentity } from '@buildd/shared';
+import { INTERACTIVE_WORKER_RUNNER, RUNNER_LIVE_WINDOW_MS, activeRunnerHold, executorDisplayName, fleetGroupKey, isEphemeralRunner, isOnceRunnerUrl, runnerFleetIdentity, type FleetRunner, type FleetSlot, type FleetSnapshot, type LaneBar, type RunnerFleetIdentity } from '@buildd/shared';
 import { assignSlots, fitLaneWindowStart } from '@/components/fleet/slot-lanes-layout';
 import { runnerIdentity, runnerNameFromUrl } from './runner-display';
 import { missionTaskHref } from './mission-task-href';
@@ -27,7 +27,7 @@ export interface FleetHeartbeatRow {
   localUiUrl: string;
   maxConcurrentWorkers: number;
   /** `fleet`: a `--once` run's identity (@buildd/shared runner-fleet). */
-  environment?: { labels?: Record<string, string> | null; fleet?: unknown } | null;
+  environment?: { labels?: Record<string, string> | null; fleet?: unknown; hold?: unknown } | null;
   lastHeartbeatAt: DateLike;
   /** What the runner last reported running. Decides an ephemeral run's share of capacity. */
   activeWorkerCount?: number | null;
@@ -278,7 +278,9 @@ export function buildFleetSnapshot(
     for (const iv of [...intervals].sort((a, b) => a.start - b.start)) {
       place(slots[laneOf.get(iv.id) ?? 0], byId.get(iv.id)!, iv);
     }
-    runners.push({ id: gid, name: identity.name, machine: identity.machine, maxSlots: cap, online, slots });
+    // A person's hold (`buildd hold`): shown as on hold, not idle, while in force.
+    const hold = g.hb ? activeRunnerHold(g.hb.environment, now) : null;
+    runners.push({ id: gid, name: identity.name, machine: identity.machine, maxSlots: cap, online, slots, ...(hold ? { hold } : {}) });
   }
 
   runners.sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name));

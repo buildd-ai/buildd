@@ -33,27 +33,27 @@ const SIBLING = `${PRIMARY}/.buildd-worktrees/buildd-def-other-task`;
 const scope = { worktreePath: OWN, primaryPath: PRIMARY };
 
 describe('classifyWorktreePath', () => {
-  test('own worktree root and files inside it are own', () => {
+  test('own worktree root and files inside it are own', async () => {
     expect(classifyWorktreePath(OWN, scope)).toBe('own');
     expect(classifyWorktreePath(`${OWN}/apps/web/page.tsx`, scope)).toBe('own');
   });
 
-  test('the primary root and files in it are primary', () => {
+  test('the primary root and files in it are primary', async () => {
     expect(classifyWorktreePath(PRIMARY, scope)).toBe('primary');
     expect(classifyWorktreePath(`${PRIMARY}/apps/web/page.tsx`, scope)).toBe('primary');
     expect(classifyWorktreePath(`${PRIMARY}/.buildd-worktrees`, scope)).toBe('primary');
   });
 
-  test('a sibling worktree is other_worktree', () => {
+  test('a sibling worktree is other_worktree', async () => {
     expect(classifyWorktreePath(SIBLING, scope)).toBe('other_worktree');
     expect(classifyWorktreePath(`${SIBLING}/x.ts`, scope)).toBe('other_worktree');
   });
 
-  test('a path sharing only a string prefix with the worktree is not own', () => {
+  test('a path sharing only a string prefix with the worktree is not own', async () => {
     expect(classifyWorktreePath(`${OWN}-evil/x.ts`, scope)).toBe('other_worktree');
   });
 
-  test('paths outside the primary are outside', () => {
+  test('paths outside the primary are outside', async () => {
     expect(classifyWorktreePath('/tmp/scratch', scope)).toBe('outside');
     expect(classifyWorktreePath('/home/coder/project/demo-other', scope)).toBe('outside');
   });
@@ -62,7 +62,7 @@ describe('classifyWorktreePath', () => {
 describe('findWorktreeEscape — Bash', () => {
   const deny = (command: string, cwd = OWN) => findWorktreeEscape(command, { ...scope, cwd });
 
-  test('cd into the primary clone is denied (the observed pattern)', () => {
+  test('cd into the primary clone is denied (the observed pattern)', async () => {
     expect(deny(`cd ${PRIMARY} && bun run test`)).not.toBeNull();
     expect(deny(`cd "${PRIMARY}" && git stash`)).not.toBeNull();
     expect(deny(`cd ${PRIMARY}/apps/web; git commit -am wip`)).not.toBeNull();
@@ -70,34 +70,34 @@ describe('findWorktreeEscape — Bash', () => {
     expect(deny(`(cd ${PRIMARY} && git log -1)`)).not.toBeNull();
   });
 
-  test('cd into a sibling worktree is denied', () => {
+  test('cd into a sibling worktree is denied', async () => {
     expect(deny(`cd ${SIBLING} && git diff`)).not.toBeNull();
   });
 
-  test('relative cd that climbs out of the worktree is denied', () => {
+  test('relative cd that climbs out of the worktree is denied', async () => {
     expect(deny('cd ../.. && git status')).not.toBeNull();
     expect(deny('cd ../buildd-def-other-task')).not.toBeNull();
   });
 
-  test('git -C / --cwd pointed at the primary clone is denied', () => {
+  test('git -C / --cwd pointed at the primary clone is denied', async () => {
     expect(deny(`git -C ${PRIMARY} status`)).not.toBeNull();
     expect(deny(`bun --cwd ${PRIMARY} run test`)).not.toBeNull();
     expect(deny(`bun --cwd=${PRIMARY}/apps/web run build`)).not.toBeNull();
   });
 
-  test('a shell cwd already inside the primary clone is denied', () => {
+  test('a shell cwd already inside the primary clone is denied', async () => {
     expect(deny('git status', PRIMARY)).not.toBeNull();
   });
 
-  test('...unless the command first returns to its own worktree', () => {
+  test('...unless the command first returns to its own worktree', async () => {
     expect(deny(`cd ${OWN} && git status`, PRIMARY)).toBeNull();
   });
 
-  test('the denial names the worktree path to use', () => {
+  test('the denial names the worktree path to use', async () => {
     expect(deny(`cd ${PRIMARY} && ls`)).toContain(OWN);
   });
 
-  test('own worktree, including absolute paths nested under the primary, is allowed', () => {
+  test('own worktree, including absolute paths nested under the primary, is allowed', async () => {
     expect(deny(`cd ${OWN} && bun run test`)).toBeNull();
     expect(deny(`cd ${OWN}/apps/runner && bun run test`)).toBeNull();
     expect(deny('cd apps/web && bun run build:only')).toBeNull();
@@ -105,29 +105,29 @@ describe('findWorktreeEscape — Bash', () => {
     expect(deny('git status && git diff')).toBeNull();
   });
 
-  test('reads of the primary clone without changing directory are allowed', () => {
+  test('reads of the primary clone without changing directory are allowed', async () => {
     expect(deny(`cat ${PRIMARY}/package.json`)).toBeNull();
     expect(deny(`ls ${PRIMARY}`)).toBeNull();
     expect(deny(`grep -r foo ${PRIMARY}/docs`)).toBeNull();
   });
 
-  test('cd outside the primary entirely is allowed', () => {
+  test('cd outside the primary entirely is allowed', async () => {
     expect(deny('cd /tmp && ls')).toBeNull();
     expect(deny('cd && ls')).toBeNull();
     expect(deny('cd ~ && ls')).toBeNull();
   });
 
-  test('unresolvable targets fail open', () => {
+  test('unresolvable targets fail open', async () => {
     expect(deny('cd "$SOME_DIR" && ls')).toBeNull();
     expect(deny('cd - && ls')).toBeNull();
   });
 
-  test('a cd inside a quoted string is not a directory change', () => {
+  test('a cd inside a quoted string is not a directory change', async () => {
     expect(deny(`echo "cd ${PRIMARY}" && git status`)).toBeNull();
     expect(deny(`git commit -m 'do not cd ${PRIMARY}'`)).toBeNull();
   });
 
-  test('a heredoc body is data, not commands', () => {
+  test('a heredoc body is data, not commands', async () => {
     // Writing a script whose body climbs out of ITS directory is ordinary work;
     // the body lines never run in this shell.
     expect(deny("cat > scripts/run.sh <<'EOF'\n#!/bin/sh\ncd ..\nbun run test\nEOF\nchmod +x scripts/run.sh")).toBeNull();
@@ -142,24 +142,24 @@ describe('findWorktreeEscape — Bash', () => {
 });
 
 describe('findWriteEscape — Edit/Write', () => {
-  test('writing into the primary clone is denied', () => {
+  test('writing into the primary clone is denied', async () => {
     expect(findWriteEscape(`${PRIMARY}/apps/web/page.tsx`, scope)).not.toBeNull();
   });
 
-  test('writing into a sibling worktree is denied', () => {
+  test('writing into a sibling worktree is denied', async () => {
     expect(findWriteEscape(`${SIBLING}/apps/web/page.tsx`, scope)).not.toBeNull();
   });
 
-  test('writing into the own worktree is allowed (absolute and relative)', () => {
+  test('writing into the own worktree is allowed (absolute and relative)', async () => {
     expect(findWriteEscape(`${OWN}/apps/web/page.tsx`, scope)).toBeNull();
     expect(findWriteEscape('apps/web/page.tsx', scope)).toBeNull();
   });
 
-  test('a relative path that climbs out is denied', () => {
+  test('a relative path that climbs out is denied', async () => {
     expect(findWriteEscape('../../apps/web/page.tsx', scope)).not.toBeNull();
   });
 
-  test('writing outside the primary (scratch, tmp) is allowed', () => {
+  test('writing outside the primary (scratch, tmp) is allowed', async () => {
     expect(findWriteEscape('/tmp/scratch/notes.txt', scope)).toBeNull();
   });
 });
@@ -220,11 +220,11 @@ describe('Git Workflow prompt names the worktree, never the primary clone', () =
     hasApiKey: true,
   } as any);
 
-  test('states the worktree path as the place to run every command', () => {
+  test('states the worktree path as the place to run every command', async () => {
     expect(built.promptText).toContain(`\`${OWN}\``);
   });
 
-  test('never names the primary clone path on its own', () => {
+  test('never names the primary clone path on its own', async () => {
     expect(built.promptText.split(OWN).join('<WT>')).not.toContain(PRIMARY);
   });
 });
@@ -232,7 +232,7 @@ describe('Git Workflow prompt names the worktree, never the primary clone', () =
 // ─── Ancestor project memory ───────────────────────────────────────────────
 
 describe('primaryCloneMemoryExcludes', () => {
-  test('excludes project memory in the primary clone and the worktrees dir', () => {
+  test('excludes project memory in the primary clone and the worktrees dir', async () => {
     const ex = primaryCloneMemoryExcludes(OWN, PRIMARY);
     expect(ex).toContain(`${PRIMARY}/CLAUDE.md`);
     expect(ex).toContain(`${PRIMARY}/CLAUDE.local.md`);
@@ -241,13 +241,13 @@ describe('primaryCloneMemoryExcludes', () => {
     expect(ex).toContain(`${PRIMARY}/.buildd-worktrees/CLAUDE.md`);
   });
 
-  test('never excludes the worktree own memory, nor anything above the primary', () => {
+  test('never excludes the worktree own memory, nor anything above the primary', async () => {
     const ex = primaryCloneMemoryExcludes(OWN, PRIMARY);
     expect(ex.some(p => p.startsWith(`${OWN}/`))).toBe(false);
     expect(ex.some(p => !p.startsWith(`${PRIMARY}/`))).toBe(false);
   });
 
-  test('no worktree (cwd is the clone itself, or unrelated) → nothing excluded', () => {
+  test('no worktree (cwd is the clone itself, or unrelated) → nothing excluded', async () => {
     expect(primaryCloneMemoryExcludes(PRIMARY, PRIMARY)).toEqual([]);
     expect(primaryCloneMemoryExcludes('/tmp/role-dir', PRIMARY)).toEqual([]);
   });
@@ -256,22 +256,22 @@ describe('primaryCloneMemoryExcludes', () => {
 // ─── Primary clone drift warning ───────────────────────────────────────────
 
 describe('describePrimaryCloneDrift', () => {
-  test('clean clone on its expected branch → no warning', () => {
+  test('clean clone on its expected branch → no warning', async () => {
     expect(describePrimaryCloneDrift({ branch: 'dev', expectedBranch: 'dev', dirtyEntries: 0, stashes: 0 })).toBeNull();
   });
 
-  test('off its expected branch → warning names both branches', () => {
+  test('off its expected branch → warning names both branches', async () => {
     const w = describePrimaryCloneDrift({ branch: 'mission/old', expectedBranch: 'dev', dirtyEntries: 0, stashes: 0 });
     expect(w).toContain('mission/old');
     expect(w).toContain('dev');
   });
 
-  test('uncommitted changes or stashes → warning', () => {
+  test('uncommitted changes or stashes → warning', async () => {
     expect(describePrimaryCloneDrift({ branch: 'dev', expectedBranch: 'dev', dirtyEntries: 3, stashes: 0 })).toContain('3 uncommitted');
     expect(describePrimaryCloneDrift({ branch: 'dev', expectedBranch: 'dev', dirtyEntries: 0, stashes: 7 })).toContain('7 stash');
   });
 
-  test('unknown branch (probe failed) is not itself a warning', () => {
+  test('unknown branch (probe failed) is not itself a warning', async () => {
     expect(describePrimaryCloneDrift({ branch: undefined, expectedBranch: 'dev', dirtyEntries: 0, stashes: 0 })).toBeNull();
   });
 });
@@ -294,30 +294,30 @@ describe('warnOnPrimaryCloneDrift (probe)', () => {
 
   afterEach(() => __resetGitOpsDeps());
 
-  test('reports a primary clone that drifted onto another branch with stashes and edits', () => {
+  test('reports a primary clone that drifted onto another branch with stashes and edits', async () => {
     __setGitOpsDeps(deps({
       'git rev-parse --abbrev-ref HEAD': 'mission/old-arc\n',
       'git status --porcelain': ' M apps/web/page.tsx\n?? scratch.txt\n',
       'git stash list': 'stash@{0}: WIP\nstash@{1}: WIP\n',
     }));
-    const w = warnOnPrimaryCloneDrift(PRIMARY, 'dev', 'w-1');
+    const w = await warnOnPrimaryCloneDrift(PRIMARY, 'dev', 'w-1');
     expect(w).toContain('mission/old-arc');
     expect(w).toContain('2 uncommitted');
     expect(w).toContain('2 stashes');
   });
 
-  test('a pristine primary produces no warning', () => {
+  test('a pristine primary produces no warning', async () => {
     __setGitOpsDeps(deps({ 'git rev-parse --abbrev-ref HEAD': 'dev\n' }));
-    expect(warnOnPrimaryCloneDrift(PRIMARY, 'dev', 'w-1')).toBeNull();
+    expect(await warnOnPrimaryCloneDrift(PRIMARY, 'dev', 'w-1')).toBeNull();
   });
 
-  test('a failing probe never throws', () => {
+  test('a failing probe never throws', async () => {
     __setGitOpsDeps(deps({
       'git rev-parse --abbrev-ref HEAD': new Error('not a git repo'),
       'git status --porcelain': new Error('boom'),
       'git stash list': new Error('boom'),
     }));
-    expect(warnOnPrimaryCloneDrift(PRIMARY, 'dev', 'w-1')).toBeNull();
+    expect(await warnOnPrimaryCloneDrift(PRIMARY, 'dev', 'w-1')).toBeNull();
   });
 });
 
@@ -350,48 +350,48 @@ describe('warnOnPrimaryCloneDrift (dedupe per process)', () => {
 
   afterEach(() => { __resetGitOpsDeps(); __resetPrimaryCloneDriftWarnings(); });
 
-  test('the same drift on the same repo is printed once, however many workers start', () => {
+  test('the same drift on the same repo is printed once, however many workers start', async () => {
     __setGitOpsDeps(deps(drifted));
     const cap = captureWarn();
     try {
       for (let i = 0; i < 5; i++) {
         // Still returned every time — callers that want the state get it.
-        expect(warnOnPrimaryCloneDrift(PRIMARY, 'dev', `w-${i}`)).toContain('PRIMARY CLONE DRIFT');
+        expect(await warnOnPrimaryCloneDrift(PRIMARY, 'dev', `w-${i}`)).toContain('PRIMARY CLONE DRIFT');
       }
     } finally { cap.restore(); }
     expect(cap.lines.filter(l => l.includes('PRIMARY CLONE DRIFT'))).toHaveLength(1);
   });
 
-  test('a different repo warns separately', () => {
+  test('a different repo warns separately', async () => {
     __setGitOpsDeps(deps(drifted));
     const cap = captureWarn();
     try {
-      warnOnPrimaryCloneDrift(PRIMARY, 'dev', 'w-1');
-      warnOnPrimaryCloneDrift('/home/coder/project/other', 'dev', 'w-2');
+      await warnOnPrimaryCloneDrift(PRIMARY, 'dev', 'w-1');
+      await warnOnPrimaryCloneDrift('/home/coder/project/other', 'dev', 'w-2');
     } finally { cap.restore(); }
     expect(cap.lines.filter(l => l.includes('PRIMARY CLONE DRIFT'))).toHaveLength(2);
   });
 
-  test('a change in the drift re-warns', () => {
+  test('a change in the drift re-warns', async () => {
     __setGitOpsDeps(deps(drifted));
     const cap = captureWarn();
     try {
-      warnOnPrimaryCloneDrift(PRIMARY, 'dev', 'w-1');
+      await warnOnPrimaryCloneDrift(PRIMARY, 'dev', 'w-1');
       __setGitOpsDeps(deps({ ...drifted, 'git stash list': 'stash@{0}: WIP\n' }));
-      warnOnPrimaryCloneDrift(PRIMARY, 'dev', 'w-2');
+      await warnOnPrimaryCloneDrift(PRIMARY, 'dev', 'w-2');
     } finally { cap.restore(); }
     expect(cap.lines.filter(l => l.includes('PRIMARY CLONE DRIFT'))).toHaveLength(2);
   });
 
-  test('drift that clears and comes back warns again', () => {
+  test('drift that clears and comes back warns again', async () => {
     const cap = captureWarn();
     try {
       __setGitOpsDeps(deps(drifted));
-      warnOnPrimaryCloneDrift(PRIMARY, 'dev', 'w-1');
+      await warnOnPrimaryCloneDrift(PRIMARY, 'dev', 'w-1');
       __setGitOpsDeps(deps({ 'git rev-parse --abbrev-ref HEAD': 'dev\n' }));
-      expect(warnOnPrimaryCloneDrift(PRIMARY, 'dev', 'w-2')).toBeNull();
+      expect(await warnOnPrimaryCloneDrift(PRIMARY, 'dev', 'w-2')).toBeNull();
       __setGitOpsDeps(deps(drifted));
-      warnOnPrimaryCloneDrift(PRIMARY, 'dev', 'w-3');
+      await warnOnPrimaryCloneDrift(PRIMARY, 'dev', 'w-3');
     } finally { cap.restore(); }
     expect(cap.lines.filter(l => l.includes('PRIMARY CLONE DRIFT'))).toHaveLength(2);
   });

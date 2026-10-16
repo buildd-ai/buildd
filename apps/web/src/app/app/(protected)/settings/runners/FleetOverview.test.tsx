@@ -6,6 +6,7 @@ import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { FleetRunner, FleetSlot, FleetSnapshot } from '@buildd/shared';
 import FleetOverview, { fleetOverviewHeadline } from './FleetOverview';
+import { DisplayTimezoneProvider } from '@/components/DisplayTimezone';
 
 function slot(index: number, busy: boolean, question: string | null = null): FleetSlot {
   return {
@@ -122,5 +123,20 @@ describe('Settings → Runners page order', () => {
     expect(tokensAt).toBeGreaterThan(page.indexOf('<CloudflareSection'));
     // The same heartbeat-backed snapshot Home builds, not a new API.
     expect(page).toContain("import { loadFleetSnapshot } from '@/lib/home-fleet'");
+  });
+
+  it('a held runner says on hold, since when and when it resumes, instead of idle (R-35)', () => {
+    const held = { ...runner('a', 'runner-1', 1, 4), hold: { since: '2026-03-10T09:12:00.000Z', until: '2026-03-10T11:12:00.000Z' } };
+    const html = renderToStaticMarkup(
+      <DisplayTimezoneProvider teamTimezone="UTC"><FleetOverview fleet={fleet([held, runner('b', 'runner-2', 0, 4)])} /></DisplayTimezoneProvider>,
+    );
+    const t = text(html);
+    expect(t).toContain('runner-1 On hold');
+    expect(t).toContain('Nothing new starts here; running agents finish.');
+    expect(t).toContain('On hold since 9:12 AM');
+    expect(t).toContain('resumes at 11:12 AM');
+    expect(t).toContain('runner-2 Online');
+    expect(t).toContain('1 on hold.');
+    expect(html).toContain('data-held="true"');
   });
 });

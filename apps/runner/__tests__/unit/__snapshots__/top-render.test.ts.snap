@@ -67,7 +67,7 @@ exports[`list view 120x40 1`] = `
                             │                                                                                           
                             │                                                                                           
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- ↑↓ move ⏎ open a answer m message p pause x stop c claim o web tab queue t team w workspace / filter ? help q quit     "
+ ↑↓ move ⏎ open a answer m message x stop c claim h hold o web tab queue t team w workspace / filter ? help q quit      "
 `;
 
 exports[`list view 80x24 in colour (night, truecolor) keeps the same text 1`] = `
@@ -191,5 +191,5 @@ exports[`mission progress at a glance (R-29, R-30, R-31, AC-14, AC-15) 120x40 1`
                             │                                                                                           
                             │                                                                                           
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- ↑↓ move ⏎ open a answer m message p pause x stop c claim o web tab queue t team w workspace / filter ? help q quit     "
+ ↑↓ move ⏎ open a answer m message x stop c claim h hold o web tab queue t team w workspace / filter ? help q quit      "
 `;

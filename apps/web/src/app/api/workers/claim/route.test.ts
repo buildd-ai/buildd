@@ -999,6 +999,55 @@ describe('POST /api/workers/claim', () => {
     expect(res.status).toBe(200);
   });
 
+  // R-35: a runner a person put on hold (`buildd hold`) gets nothing on a broad
+  // claim; a claim of one named task (a person's Start, `c` in top) still runs.
+  describe('a held runner', () => {
+    const setup = () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 5, type: 'user', authType: 'api', maxConcurrentSessions: 10, activeSessions: 0 });
+      mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'private', teamId: 'team-1' }]);
+      mockTasksFindMany.mockResolvedValue([]);
+    };
+    const env = (hold: unknown) => ({ tools: [], envKeys: [], mcp: [], labels: {}, scannedAt: '2026-01-01T00:00:00.000Z', hold });
+
+    it('a broad claim returns nothing, says why, and never reads the queue', async () => {
+      setup();
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner', maxTasks: 3, environment: env({ since: new Date().toISOString(), until: null }) },
+      }));
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.workers).toEqual([]);
+      expect(data.diagnostics?.reason).toBe('runner_held');
+      expect(mockTasksFindMany).not.toHaveBeenCalled();
+    });
+
+    it('a claim of one named task goes on as usual', async () => {
+      setup();
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner', maxTasks: 1, taskId: 'task-1', environment: env({ since: new Date().toISOString(), until: null }) },
+      }));
+      const data = await res.json();
+      expect(data.diagnostics?.reason).not.toBe('runner_held');
+      expect(mockTasksFindMany).toHaveBeenCalled();
+    });
+
+    it('a hold whose until has passed, or a null hold, does not hold', async () => {
+      for (const hold of [{ since: new Date(Date.now() - 120_000).toISOString(), until: new Date(Date.now() - 60_000).toISOString() }, null]) {
+        setup();
+        mockTasksFindMany.mockClear();
+        const res = await POST(createMockRequest({
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { runner: 'test-runner', maxTasks: 3, environment: env(hold) },
+        }));
+        const data = await res.json();
+        expect(data.diagnostics?.reason).toBe('no_pending_tasks');
+      }
+    });
+  });
+
   it('skips non-tenant tasks when OAuth budget is exhausted', async () => {
     const futureReset = new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString();
     mockAuthenticateApiKey.mockResolvedValue({

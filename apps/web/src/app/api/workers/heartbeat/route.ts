@@ -6,6 +6,7 @@ import {
   WORKER_LEASE_TTL_MS,
   runnerFleetIdentity,
   storedHeartbeatEnvironment,
+  withNormalizedRunnerHold,
   isRunnerModelAuthSource,
   isRunnerCodexAuthSource,
 } from '@buildd/shared';
@@ -118,7 +119,9 @@ export async function POST(req: NextRequest) {
     // long-lived runner's environment is stored exactly as sent, minus any
     // `fleet` it claims (it cannot report itself out of the fleet).
     const fleet = runnerFleetIdentity({ localUiUrl: String(localUiUrl), environment });
-    const storedEnvironment = storedHeartbeatEnvironment(environment, fleet);
+    // `hold` (a person's `buildd hold`, R-35) is kept only as a valid
+    // { since, until }; a lifted (null) or malformed one is dropped.
+    const storedEnvironment = withNormalizedRunnerHold(storedHeartbeatEnvironment(environment, fleet));
     const maxConcurrentWorkers = fleet.ephemeral ? 1 : account.maxConcurrentWorkers;
 
     const now = new Date();
