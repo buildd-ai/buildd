@@ -43,7 +43,8 @@ export const RUNNER_USAGE = [
   '  buildd hold [--for <time>] Stop this runner taking new work; running agents finish',
   '                             (--for 2h or 30m resumes on its own; h in buildd top does the same)',
   '  buildd resume              Let this runner take new work again',
-  '  buildd stop [--yes]        Stop every running agent and hold this runner (asks first)',
+  '  buildd stop [--yes]        Pause every running agent and hold this runner (asks first);',
+  '                             buildd resume continues them. --abort ends them instead',
   '  buildd web                 Open the runner on this machine in your browser',
   '  buildd help                Show this help',
   '',
@@ -76,8 +77,8 @@ export type CliDecision =
   | { kind: 'hold'; forArg: string | null }
   /** `buildd resume` (runner-hold.ts). */
   | { kind: 'resume' }
-  /** `buildd stop [--yes|-y]` (runner-hold.ts runStopCommand). */
-  | { kind: 'stop'; yes: boolean }
+  /** `buildd stop [--abort] [--yes|-y]` (runner-hold.ts runStopCommand). */
+  | { kind: 'stop'; yes: boolean; abort: boolean }
   /** `buildd web`: open the running runner's local web UI (runner-web.ts). */
   | { kind: 'web' }
   | { kind: 'run' }
@@ -144,8 +145,9 @@ export function classifyCliArgs(argv: string[]): CliDecision {
   }
   if (args[0] === 'stop') {
     const rest = args.slice(1);
-    const bad = rest.find(a => a !== '--yes' && a !== '-y');
-    return bad !== undefined ? { kind: 'unknown', arg: bad } : { kind: 'stop', yes: rest.length > 0 };
+    const bad = rest.find(a => a !== '--yes' && a !== '-y' && a !== '--abort');
+    if (bad !== undefined) return { kind: 'unknown', arg: bad };
+    return { kind: 'stop', yes: rest.includes('--yes') || rest.includes('-y'), abort: rest.includes('--abort') };
   }
   if (args[0] === 'web') {
     return args.length > 1 ? { kind: 'unknown', arg: args[1] } : { kind: 'web' };

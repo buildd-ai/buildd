@@ -952,7 +952,10 @@ export function holdLine(state: TopState, now: number): string | null {
   const h = heldNow(state, now);
   if (!h) return null;
   const until = h.until ? ` until ${localLiftTime(h.until, now)}` : '';
-  return `On hold since ${localLiftTime(h.since, now)}${until}: nothing new starts, ${holdRunningWords(busySlots(state))}. h resumes${h.until ? ' now' : ''}.`;
+  // R-33: what still runs, and what `buildd stop` paused.
+  const paused = Object.values(state.workers).filter(w => w.status === 'waiting' && w.waitingFor?.type === 'pause').length;
+  const pausedWords = paused > 0 ? `, ${paused} paused` : '';
+  return `On hold since ${localLiftTime(h.since, now)}${until}: nothing new starts, ${holdRunningWords(busySlots(state))}${pausedWords}. h resumes${h.until ? ' now' : ''}.`;
 }
 
 /** `Claude work waits for the plan limit: resumes Thu 00:00 (in 17h)`. */

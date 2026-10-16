@@ -277,6 +277,7 @@ export type HoldCommand = { kind: 'hold'; forArg: string | null } | { kind: 'res
 export interface HoldCommandDeps {
   configFile: string;
   socketPath: string;
+  get?: (path: string) => Promise<{ status: number; body: unknown }>;
   now?: () => number;
   probe?: (socketPath: string) => Promise<SocketProbe>;
   post?: (path: string, body: Record<string, unknown>) => Promise<{ status: number; body: unknown }>;
@@ -350,26 +351,82 @@ export async function runHoldCommand(cmd: HoldCommand, deps: HoldCommandDeps): P
     return { code: 1, stdout: '', stderr: `The runner refused: ${typeof b.error === 'string' ? b.error : `HTTP ${res.status}`}. Nothing changed.` };
   }
   const running = typeof b.running === 'number' ? b.running : 0;
-  if (cmd.kind === 'resume') return { code: 0, stdout: resumeLine(b.wasHeld !== false, running), stderr: '' };
+  if (cmd.kind === 'resume') {
+    // R-36: resume also continues every paused agent in its own session.
+    const continued = await continuePausedAgents(deps, post);
+    const head = resumeLine(b.wasHeld !== false, running);
+    return { code: continued.failed ? 1 : 0, stdout: [head, ...continued.lines].join('\n'), stderr: '' };
+  }
   const hold = parseRunnerHold(b.hold) ?? { since: new Date(now()).toISOString(), until: null };
   return { code: 0, stdout: holdLine(hold, running, now()), stderr: '' };
 }
 
-// ── buildd stop (R-36) ──────────────────────────────────────────────────────
+// ── live agents over the socket ─────────────────────────────────────────────
 
-export interface StopCommandDeps extends HoldCommandDeps {
-  get?: (path: string) => Promise<{ status: number; body: unknown }>;
-  /** Ask a yes/no question; null when there is no terminal to ask in. */
-  confirm?: ((question: string) => Promise<boolean>) | null;
-}
-
-/** Workers `buildd stop` ends: the same ones `x` in top can stop. */
-const STOPPABLE = new Set(['working', 'stale', 'waiting']);
+interface LiveAgent { id: string; title: string; status: string; paused: boolean }
 
 async function socketGet(socketPath: string, path: string): Promise<{ status: number; body: unknown }> {
   const res = await fetch(`http://localhost${path}`, { unix: socketPath, signal: AbortSignal.timeout(5_000) } as RequestInit);
   const text = await res.text();
   try { return { status: res.status, body: JSON.parse(text) }; } catch { return { status: res.status, body: text }; }
+}
+
+function refusal(body: unknown, status: number): string {
+  const b = body as { error?: unknown } | null;
+  const why = typeof body === 'string' ? body : typeof b?.error === 'string' ? b.error : '';
+  return why ? `${why} (HTTP ${status})` : `HTTP ${status}`;
+}
+
+/** The runner's agents (what `buildd top` lists), or an error line. */
+async function listAgents(deps: HoldCommandDeps): Promise<LiveAgent[] | { error: string }> {
+  const get = deps.get ?? ((path: string) => socketGet(deps.socketPath, path));
+  try {
+    const r = await get('/api/workers?view=top');
+    const workers = Array.isArray((r.body as { workers?: unknown })?.workers) ? (r.body as { workers: any[] }).workers : null;
+    if (r.status !== 200 || !workers) return { error: `The runner did not list its agents (${refusal(r.body, r.status)}).` };
+    return workers
+      .filter(w => w && typeof w.id === 'string' && typeof w.status === 'string')
+      .map(w => ({
+        id: w.id,
+        title: typeof w.taskTitle === 'string' && w.taskTitle ? w.taskTitle : w.id,
+        status: w.status,
+        paused: w.status === 'waiting' && w.waitingFor?.type === 'pause',
+      }));
+  } catch (err) {
+    return { error: `The runner on this machine did not answer (${(err as Error)?.message ?? err}).` };
+  }
+}
+
+/**
+ * Continue every paused agent in its own session: the answer to its pause,
+ * the same path as Resume on the dashboard and `a` on a paused row in top.
+ */
+async function continuePausedAgents(
+  deps: HoldCommandDeps,
+  post: (path: string, body: Record<string, unknown>) => Promise<{ status: number; body: unknown }>,
+): Promise<{ lines: string[]; failed: boolean }> {
+  const agents = await listAgents(deps);
+  if ('error' in agents) return { lines: [`${agents.error} Paused agents were not continued; resume each with a in buildd top.`], failed: true };
+  const lines: string[] = [];
+  let failed = false;
+  for (const a of agents.filter(x => x.paused)) {
+    try {
+      const r = await post(`/api/workers/${encodeURIComponent(a.id)}/answer`, { message: 'Resume' });
+      if (r.status >= 200 && r.status < 300) lines.push(`Continued "${a.title}" in its own session.`);
+      else { failed = true; lines.push(`Could not continue "${a.title}": ${refusal(r.body, r.status)}`); }
+    } catch (err) {
+      failed = true;
+      lines.push(`Could not continue "${a.title}": the runner did not answer (${(err as Error)?.message ?? err})`);
+    }
+  }
+  return { lines, failed };
+}
+
+// ── buildd stop (R-36) ──────────────────────────────────────────────────────
+
+export interface StopCommandDeps extends HoldCommandDeps {
+  /** Ask a yes/no question; null when there is no terminal to ask in. */
+  confirm?: ((question: string) => Promise<boolean>) | null;
 }
 
 /** Ask on the terminal; null when stdin is not one. */
@@ -387,46 +444,40 @@ export function terminalConfirm(): ((q: string) => Promise<boolean>) | null {
   };
 }
 
-function refusal(body: unknown, status: number): string {
-  const b = body as { error?: unknown } | null;
-  const why = typeof body === 'string' ? body : typeof b?.error === 'string' ? b.error : '';
-  return why ? `${why} (HTTP ${status})` : `HTTP ${status}`;
-}
+const plural = (n: number) => `${n} agent${n === 1 ? '' : 's'}`;
 
 /**
- * `buildd stop [--yes]`: end every agent the runner on this machine is running,
- * through the same socket action as `x` in top, and leave the runner on hold
- * so nothing new takes their place. Asks first, naming the agents, unless
- * `--yes`. One line per agent, then the hold.
+ * `buildd stop [--abort] [--yes]`: leave the runner on hold and
+ *  - by default pause every running agent the way `p` in top does: each stops
+ *    at its next safe point and keeps its worktree, branch and session, and
+ *    `buildd resume` continues it in that session;
+ *  - with `--abort`, end every live agent the way `x` does.
+ * Asks first, naming the agents, unless `--yes`. One line per agent, then the hold.
  */
-export async function runStopCommand(cmd: { yes: boolean }, deps: StopCommandDeps): Promise<HoldCommandResult> {
+export async function runStopCommand(cmd: { yes: boolean; abort?: boolean }, deps: StopCommandDeps): Promise<HoldCommandResult> {
+  const abort = cmd.abort === true;
   const probe = await (deps.probe ?? ((p: string) => import('./runner-socket').then(m => m.probeRunnerSocket(p))))(deps.socketPath);
   if (probe.state !== 'live') {
     const saved = await runHoldCommand({ kind: 'hold', forArg: null }, { ...deps, probe: async () => ({ state: 'absent' }) });
     if (saved.code !== 0) return saved;
     return { ...saved, stdout: saved.stdout.replace('No runner is running on this machine.', 'No runner is running on this machine, so no agent is running.') };
   }
-  const get = deps.get ?? ((path: string) => socketGet(deps.socketPath, path));
   const post = deps.post ?? ((path: string, body: Record<string, unknown>) => socketPost(deps.socketPath, path, body));
 
-  let list: Array<{ id: string; title: string }>;
-  try {
-    const r = await get('/api/workers?view=top');
-    const workers = Array.isArray((r.body as { workers?: unknown })?.workers) ? (r.body as { workers: any[] }).workers : null;
-    if (r.status !== 200 || !workers) return { code: 1, stdout: '', stderr: `The runner did not list its agents (${refusal(r.body, r.status)}). Nothing stopped.` };
-    list = workers
-      .filter(w => w && typeof w.id === 'string' && STOPPABLE.has(w.status))
-      .map(w => ({ id: w.id, title: typeof w.taskTitle === 'string' && w.taskTitle ? w.taskTitle : w.id }));
-  } catch (err) {
-    return { code: 1, stdout: '', stderr: `The runner on this machine did not answer (${(err as Error)?.message ?? err}). Nothing stopped.` };
-  }
+  const agents = await listAgents(deps);
+  if ('error' in agents) return { code: 1, stdout: '', stderr: `${agents.error} Nothing stopped.` };
+  // A pause stops a working agent at its next safe point; one already paused or
+  // parked on a question has no session running to pause. --abort ends all of them.
+  const targets = agents.filter(a => abort ? (a.status === 'working' || a.status === 'stale' || a.status === 'waiting') : (a.status === 'working' || a.status === 'stale'));
 
-  if (list.length > 0 && !cmd.yes) {
+  if (targets.length > 0 && !cmd.yes) {
     const confirm = deps.confirm === undefined ? terminalConfirm() : deps.confirm;
     if (!confirm) return { code: 1, stdout: '', stderr: 'buildd stop asks before it stops agents. Run it in a terminal, or add --yes. Nothing stopped.' };
-    const names = list.map(w => w.title).join(', ');
-    const ok = await confirm(`Stop ${list.length} agent${list.length === 1 ? '' : 's'} (${names}) and hold this runner? [y/N] `);
-    if (!ok) return { code: 0, stdout: 'Nothing stopped. The runner is as it was.', stderr: '' };
+    const names = targets.map(a => a.title).join(', ');
+    const question = abort
+      ? `End ${plural(targets.length)} (${names}) and hold this runner? Their unpushed work and conversation are lost, and each task starts again from its last pushed commit. [y/N] `
+      : `Pause ${plural(targets.length)} (${names}) and hold this runner? Each keeps its worktree, branch and session; buildd resume continues them. [y/N] `;
+    if (!(await confirm(question))) return { code: 0, stdout: 'Nothing stopped. The runner is as it was.', stderr: '' };
   }
 
   // Hold first, so a stopped agent's slot is not refilled while the rest stop.
@@ -442,17 +493,21 @@ export async function runStopCommand(cmd: { yes: boolean }, deps: StopCommandDep
 
   const lines: string[] = [];
   let failed = false;
-  for (const w of list) {
+  for (const a of targets) {
+    const path = `/api/workers/${encodeURIComponent(a.id)}/${abort ? 'stop' : 'pause'}`;
+    const verb = abort ? 'stop' : 'pause';
     try {
-      const r = await post(`/api/workers/${encodeURIComponent(w.id)}/stop`, {});
-      if (r.status >= 200 && r.status < 300) lines.push(`Stopped "${w.title}".`);
-      else { failed = true; lines.push(`Could not stop "${w.title}": ${refusal(r.body, r.status)}`); }
+      const r = await post(path, {});
+      if (r.status >= 200 && r.status < 300) lines.push(abort ? `Stopped "${a.title}".` : `Paused "${a.title}": it stops at its next safe point and keeps its session.`);
+      else { failed = true; lines.push(`Could not ${verb} "${a.title}": ${refusal(r.body, r.status)}`); }
     } catch (err) {
       failed = true;
-      lines.push(`Could not stop "${w.title}": the runner did not answer (${(err as Error)?.message ?? err})`);
+      lines.push(`Could not ${verb} "${a.title}": the runner did not answer (${(err as Error)?.message ?? err})`);
     }
   }
-  const tail = 'On hold: nothing new starts until buildd resume.';
-  if (list.length === 0) return { code: 0, stdout: `Nothing is running. ${tail}`, stderr: '' };
+  const tail = abort
+    ? 'On hold: nothing new starts until buildd resume.'
+    : 'On hold: nothing new starts. buildd resume lifts it and continues the paused agents.';
+  if (targets.length === 0) return { code: 0, stdout: `Nothing is running. ${tail}`, stderr: '' };
   return { code: failed ? 1 : 0, stdout: [...lines, tail].join('\n'), stderr: '' };
 }

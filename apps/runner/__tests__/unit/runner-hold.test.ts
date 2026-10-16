@@ -234,12 +234,24 @@ describe('runHoldCommand', () => {
     expect(existsSync(configFile)).toBe(false);
   });
 
-  test('resume over the socket', async () => {
+  test('resume over the socket lifts the hold and continues each paused agent in its own session (R-36)', async () => {
+    const posts: Array<{ path: string; body: unknown }> = [];
     const r = await runHoldCommand({ kind: 'resume' }, {
       configFile, socketPath: join(home, 'runner.sock'), now: () => T0, probe: live,
-      post: async () => ({ status: 200, body: { hold: null, wasHeld: true, running: 1 } }),
+      get: async () => ({ status: 200, body: { workers: [
+        { id: 'w1', taskTitle: 'name override', status: 'waiting', waitingFor: { type: 'pause', prompt: 'Paused.' } },
+        { id: 'w2', taskTitle: 'installer hint', status: 'waiting', waitingFor: { type: 'question', prompt: 'Which?' } },
+        { id: 'w3', taskTitle: 'single instance', status: 'working' },
+      ] } }),
+      post: async (path, body) => { posts.push({ path, body }); return { status: 200, body: { hold: null, wasHeld: true, running: 1 } }; },
     });
-    expect(r.stdout).toBe('Resumed: this runner takes new work again. 1 agent running.');
+    expect(posts).toEqual([
+      { path: '/api/resume', body: {} },
+      // The answer to its pause: the same path as Resume on the dashboard.
+      { path: '/api/workers/w1/answer', body: { message: 'Resume' } },
+    ]);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toBe('Resumed: this runner takes new work again. 1 agent running.\nContinued "name override" in its own session.');
   });
 
   test('with no runner running, it writes the config and says the next start is held', async () => {
@@ -269,16 +281,16 @@ describe('runHoldCommand', () => {
   });
 });
 
-describe('runStopCommand (R-36, AC-20)', () => {
+describe('runStopCommand (R-36, AC-20, AC-22)', () => {
   const live = async () => ({ state: 'live' as const, pid: 1, version: null });
   const absent = async () => ({ state: 'absent' as const });
   const workers = [
     { id: 'w1', taskTitle: 'name override', status: 'working' },
     { id: 'w2', taskTitle: 'single instance', status: 'stale' },
-    { id: 'w3', taskTitle: 'installer hint', status: 'waiting' },
+    { id: 'w3', taskTitle: 'installer hint', status: 'waiting', waitingFor: { type: 'question', prompt: 'Which?' } },
     { id: 'w4', taskTitle: 'spec draft', status: 'done' },
   ];
-  function harness(over: { stopStatus?: (id: string) => number } = {}) {
+  function harness(over: { failId?: string } = {}) {
     const posts: string[] = [];
     return {
       posts,
@@ -287,20 +299,41 @@ describe('runStopCommand (R-36, AC-20)', () => {
         get: async (path: string) => { expect(path).toBe('/api/workers?view=top'); return { status: 200, body: { workers } }; },
         post: async (path: string) => {
           posts.push(path);
-          if (path === '/api/hold') return { status: 200, body: { hold: { since: new Date(T0).toISOString(), until: null }, running: 3 } };
+          if (path === '/api/hold') return { status: 200, body: { hold: { since: new Date(T0).toISOString(), until: null }, running: 2 } };
           const id = path.split('/')[3];
-          const status = over.stopStatus?.(id) ?? 200;
-          return { status, body: status === 200 ? { ok: true } : { error: 'worker is gone' } };
+          return id === over.failId ? { status: 404, body: { error: 'worker is gone' } } : { status: 200, body: { ok: true } };
         },
       },
     };
   }
 
-  test('--yes holds first, then stops every live agent the way x does, one line each', async () => {
+  test('--yes holds first, then pauses each running agent the way p does, one line each', async () => {
     const h = harness();
     const r = await runStopCommand({ yes: true }, h.deps);
-    expect(h.posts).toEqual(['/api/hold', '/api/workers/w1/stop', '/api/workers/w2/stop', '/api/workers/w3/stop']);
+    expect(h.posts).toEqual(['/api/hold', '/api/workers/w1/pause', '/api/workers/w2/pause']);
     expect(r.code).toBe(0);
+    expect(r.stdout.split('\n')).toEqual([
+      'Paused "name override": it stops at its next safe point and keeps its session.',
+      'Paused "single instance": it stops at its next safe point and keeps its session.',
+      'On hold: nothing new starts. buildd resume lifts it and continues the paused agents.',
+    ]);
+  });
+
+  test('without --yes it names the agents and asks; no means nothing changes', async () => {
+    const h = harness();
+    let asked = '';
+    const r = await runStopCommand({ yes: false }, { ...h.deps, confirm: async (q: string) => { asked = q; return false; } });
+    expect(asked).toBe('Pause 2 agents (name override, single instance) and hold this runner? Each keeps its worktree, branch and session; buildd resume continues them. [y/N] ');
+    expect(h.posts).toEqual([]);
+    expect(r.stdout).toBe('Nothing stopped. The runner is as it was.');
+  });
+
+  test('--abort ends every live agent the way x does, after saying what is lost (AC-22)', async () => {
+    const h = harness();
+    let asked = '';
+    const r = await runStopCommand({ yes: false, abort: true }, { ...h.deps, confirm: async (q: string) => { asked = q; return true; } });
+    expect(asked).toBe('End 3 agents (name override, single instance, installer hint) and hold this runner? Their unpushed work and conversation are lost, and each task starts again from its last pushed commit. [y/N] ');
+    expect(h.posts).toEqual(['/api/hold', '/api/workers/w1/stop', '/api/workers/w2/stop', '/api/workers/w3/stop']);
     expect(r.stdout.split('\n')).toEqual([
       'Stopped "name override".',
       'Stopped "single instance".',
@@ -309,18 +342,9 @@ describe('runStopCommand (R-36, AC-20)', () => {
     ]);
   });
 
-  test('without --yes it names the agents and asks; no means nothing changes', async () => {
+  test('--abort --yes asks nothing', async () => {
     const h = harness();
-    let asked = '';
-    const r = await runStopCommand({ yes: false }, { ...h.deps, confirm: async (q: string) => { asked = q; return false; } });
-    expect(asked).toBe('Stop 3 agents (name override, single instance, installer hint) and hold this runner? [y/N] ');
-    expect(h.posts).toEqual([]);
-    expect(r.stdout).toBe('Nothing stopped. The runner is as it was.');
-  });
-
-  test('yes at the prompt stops them', async () => {
-    const h = harness();
-    await runStopCommand({ yes: false }, { ...h.deps, confirm: async () => true });
+    await runStopCommand({ yes: true, abort: true }, { ...h.deps, confirm: async () => { throw new Error('asked'); } });
     expect(h.posts).toHaveLength(4);
   });
 
@@ -332,19 +356,19 @@ describe('runStopCommand (R-36, AC-20)', () => {
     expect(h.posts).toEqual([]);
   });
 
-  test('a refused stop says why and exits non-zero; the rest still stop', async () => {
-    const h = harness({ stopStatus: id => (id === 'w2' ? 404 : 200) });
+  test('a refused pause says why and exits non-zero; the rest still pause', async () => {
+    const h = harness({ failId: 'w1' });
     const r = await runStopCommand({ yes: true }, h.deps);
     expect(r.code).toBe(1);
-    expect(r.stdout).toContain('Could not stop "single instance": worker is gone (HTTP 404)');
-    expect(h.posts).toContain('/api/workers/w3/stop');
+    expect(r.stdout).toContain('Could not pause "name override": worker is gone (HTTP 404)');
+    expect(h.posts).toContain('/api/workers/w2/pause');
   });
 
   test('nothing running: it still holds, and says so', async () => {
     const h = harness();
     const r = await runStopCommand({ yes: true }, { ...h.deps, get: async () => ({ status: 200, body: { workers: [] } }) });
     expect(h.posts).toEqual(['/api/hold']);
-    expect(r.stdout).toBe('Nothing is running. On hold: nothing new starts until buildd resume.');
+    expect(r.stdout).toBe('Nothing is running. On hold: nothing new starts. buildd resume lifts it and continues the paused agents.');
   });
 
   test('no runner running: nothing to stop, saved on hold for the next start', async () => {

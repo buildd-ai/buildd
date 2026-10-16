@@ -65,14 +65,17 @@ describe('with a runner answering on its socket', () => {
       if (path === '/api/runner') return Response.json({ pid: 4242, version: 'test' });
       if (path === '/api/hold') return Response.json({ hold: { since: new Date().toISOString(), until: null }, running: 1 });
       if (path === '/api/workers?view=top') return Response.json({ workers: [{ id: 'w1', taskTitle: 'name override', status: 'working' }] });
-      if (path === '/api/workers/w1/stop') return Response.json({ ok: true });
+      if (path === '/api/workers/w1/pause' || path === '/api/workers/w1/stop') return Response.json({ ok: true });
       return Response.json({ error: 'Not found' }, { status: 404 });
     });
     const h = await buildd('hold');
     expect(h.stdout).toBe('On hold: nothing new starts. 1 agent still running finishes. buildd resume lifts it.');
     const s = await buildd('stop', '--yes');
     expect(s.code).toBe(0);
-    expect(s.stdout).toBe('Stopped "name override".\nOn hold: nothing new starts until buildd resume.');
+    expect(s.stdout).toBe('Paused "name override": it stops at its next safe point and keeps its session.\nOn hold: nothing new starts. buildd resume lifts it and continues the paused agents.');
+    expect(seen).toContain('POST /api/workers/w1/pause');
+    const a = await buildd('stop', '--abort', '--yes');
+    expect(a.stdout).toBe('Stopped "name override".\nOn hold: nothing new starts until buildd resume.');
     expect(seen).toContain('POST /api/workers/w1/stop');
     // The runner keeps the hold; the CLI wrote nothing itself.
     expect(config()).toBeNull();

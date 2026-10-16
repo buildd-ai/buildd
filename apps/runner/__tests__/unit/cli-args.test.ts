@@ -157,10 +157,12 @@ describe('hold and resume (R-32)', () => {
 });
 
 describe('stop (R-36)', () => {
-  test('`stop`, `stop --yes`, `stop -y`', () => {
-    expect(classifyCliArgs(argv('stop'))).toEqual({ kind: 'stop', yes: false });
-    expect(classifyCliArgs(argv('stop', '--yes'))).toEqual({ kind: 'stop', yes: true });
-    expect(classifyCliArgs(argv('stop', '-y'))).toEqual({ kind: 'stop', yes: true });
+  test('`stop`, `--yes` / `-y`, `--abort`', () => {
+    expect(classifyCliArgs(argv('stop'))).toEqual({ kind: 'stop', yes: false, abort: false });
+    expect(classifyCliArgs(argv('stop', '--yes'))).toEqual({ kind: 'stop', yes: true, abort: false });
+    expect(classifyCliArgs(argv('stop', '-y'))).toEqual({ kind: 'stop', yes: true, abort: false });
+    expect(classifyCliArgs(argv('stop', '--abort'))).toEqual({ kind: 'stop', yes: false, abort: true });
+    expect(classifyCliArgs(argv('stop', '--abort', '--yes'))).toEqual({ kind: 'stop', yes: true, abort: true });
     expect(classifyCliArgs(argv('stop', 'now'))).toEqual({ kind: 'unknown', arg: 'now' });
   });
   test('help lists top, web, name, hold, resume and stop (R-16)', () => {

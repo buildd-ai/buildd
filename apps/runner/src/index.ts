@@ -86,12 +86,13 @@ if (CLI.kind === 'hold' || CLI.kind === 'resume') {
   process.exit(r.code);
 }
 
-// `buildd stop [--yes]`: stop every running agent, the way `x` in top does,
-// and leave the runner on hold (runner-hold.ts). Never starts a runner.
+// `buildd stop [--abort] [--yes]`: pause every running agent the way `p` in
+// top does (`--abort`: end them the way `x` does) and leave the runner on
+// hold (runner-hold.ts). Never starts a runner.
 if (CLI.kind === 'stop') {
   const { runStopCommand } = await import('./runner-hold');
   const { runnerSocketPath: socketPathFor } = await import('./runner-socket');
-  const r = await runStopCommand({ yes: CLI.yes }, { configFile: CONFIG_FILE, socketPath: socketPathFor(BUILDD_DIR) });
+  const r = await runStopCommand({ yes: CLI.yes, abort: CLI.abort }, { configFile: CONFIG_FILE, socketPath: socketPathFor(BUILDD_DIR) });
   if (r.stdout) console.log(r.stdout);
   if (r.stderr) console.error(r.stderr);
   process.exit(r.code);

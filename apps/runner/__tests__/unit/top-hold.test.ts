@@ -41,6 +41,8 @@ describe('the hold in state', () => {
     expect(holdLine(held(fixtureState()), NOW)).toBe('On hold since 09:12: nothing new starts, 2 running finish. h resumes.');
     expect(holdLine(held(fixtureState(), at(17, 0)), NOW)).toBe('On hold since 09:12 until 17:00: nothing new starts, 2 running finish. h resumes now.');
     expect(holdLine(fixtureState(), NOW)).toBeNull();
+    const paused = reduce(held(fixtureState()), { type: 'worker_update', worker: { id: 'w-p', taskId: 't-loose', taskTitle: 'fix flaky test', status: 'waiting', waitingFor: { type: 'pause', prompt: 'Paused.' } } as any });
+    expect(holdLine(paused, NOW)).toBe('On hold since 09:12: nothing new starts, 2 running finish, 1 paused. h resumes.');
   });
 
   test('a waiting row says the runner is on hold', () => {
