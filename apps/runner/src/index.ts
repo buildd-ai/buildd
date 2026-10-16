@@ -24,6 +24,7 @@ import { getCurrentCommit as getDiskCommit, checkForUpdate, applyUpdate, rollbac
 import { evaluateManualUpdateGate, performManualUpdate, type ManualUpdateDeps } from './update-gate';
 import { initUpdateCanary, runCanaryTrip } from './update-canary';
 import { initUpdateDrain, getUpdateDrain } from './update-drain';
+import { initRunnerHold, currentRunnerHold } from './runner-hold';
 import { saveWorker } from './worker-store';
 import { initHistory, searchSessions, getSession, getArchivedData, getStats as getHistoryStats } from './history-store';
 import { readClaimLogs } from './session-logger';
@@ -65,6 +66,33 @@ if (CLI.kind === 'unknown') {
 if (CLI.kind === 'name') {
   const { runNameCommand } = await import('./runner-name');
   const r = runNameCommand(CLI.args, { configFile: CONFIG_FILE });
+  if (r.stdout) console.log(r.stdout);
+  if (r.stderr) console.error(r.stderr);
+  process.exit(r.code);
+}
+
+// `buildd hold [--for <time>]` / `buildd resume`: ask the runner on this
+// machine to stop or resume taking new work; with none running, save it for
+// the next start (runner-hold.ts). Never starts a runner.
+if (CLI.kind === 'hold' || CLI.kind === 'resume') {
+  const { runHoldCommand } = await import('./runner-hold');
+  const { runnerSocketPath: socketPathFor } = await import('./runner-socket');
+  const r = await runHoldCommand(CLI.kind === 'hold' ? { kind: 'hold', forArg: CLI.forArg } : { kind: 'resume' }, {
+    configFile: CONFIG_FILE,
+    socketPath: socketPathFor(BUILDD_DIR),
+  });
+  if (r.stdout) console.log(r.stdout);
+  if (r.stderr) console.error(r.stderr);
+  process.exit(r.code);
+}
+
+// `buildd stop [--abort] [--yes]`: pause every running agent the way `p` in
+// top does (`--abort`: end them the way `x` does) and leave the runner on
+// hold (runner-hold.ts). Never starts a runner.
+if (CLI.kind === 'stop') {
+  const { runStopCommand } = await import('./runner-hold');
+  const { runnerSocketPath: socketPathFor } = await import('./runner-socket');
+  const r = await runStopCommand({ yes: CLI.yes, abort: CLI.abort }, { configFile: CONFIG_FILE, socketPath: socketPathFor(BUILDD_DIR) });
   if (r.stdout) console.log(r.stdout);
   if (r.stderr) console.error(r.stderr);
   process.exit(r.code);
@@ -649,6 +677,28 @@ if (ONCE_RUN) {
 // Initialize clients (null if no API key - will show setup UI)
 let buildd: BuilddClient | null = config.apiKey ? new BuilddClient(config) : null;
 let workerManager: WorkerManager | null = config.apiKey ? new WorkerManager(config, resolver) : null;
+
+// A person's hold (`buildd hold`, runner-hold.ts), read from config.json so a
+// restart of any kind keeps it. `--once` runs one named task and has none.
+const runnerHold = ONCE_TASK_ID === null ? initRunnerHold({ configFile: CONFIG_FILE }) : null;
+if (runnerHold?.isHeld()) {
+  const h = runnerHold.current()!;
+  console.log(`[runner-hold] Started on hold since ${h.since}${h.until ? `, until ${h.until}` : ''}: nothing new starts until buildd resume`);
+}
+runnerHold?.onChange((hold) => {
+  // top's header, and the server, learn at once; a lifted hold claims straight away.
+  broadcast({ type: 'runner_hold', hold });
+  const wm = workerManager;
+  if (!wm) return;
+  void wm.sendHeartbeatNow().catch(() => {}).then(() => {
+    if (!hold) wm.claimPendingTasks().catch(() => {});
+  });
+});
+
+/** Agents the hold lets finish: the busy ones, the same count top's header uses. */
+function liveAgentCount(): number {
+  return (workerManager?.getWorkers() ?? []).filter((w: LocalWorker) => w.status === 'working' || w.status === 'stale').length;
+}
 
 // Offline outbox for queuing failed mutations (not used in permanent serverless)
 const outbox = new Outbox();
@@ -1786,6 +1836,8 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
         workers: toPublicWorkers(activeWorkers),
         // What held the last claims, so `buildd top` says why work waits (spec c7410e76 R-25).
         claimOutcomes: workerManager?.getClaimOutcomes() ?? { tasks: {}, broad: null },
+        // A person's hold, so top's header says "on hold" from its first frame (R-33).
+        hold: currentRunnerHold(),
         config: {
           projectRoots: config.projectRoots,
           builddServer: config.builddServer,
@@ -1909,6 +1961,23 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
       return Response.json({ workers: toPublicWorkers(workerManager!.getWorkers()) }, { headers: corsHeaders });
     }
 
+    // `buildd hold` / `buildd resume` / `h` in top (runner-hold.ts, R-32/R-33).
+    if (path === '/api/hold' && req.method === 'GET') {
+      return Response.json({ hold: currentRunnerHold(), running: liveAgentCount() }, { headers: corsHeaders });
+    }
+    if (path === '/api/hold' && req.method === 'POST') {
+      if (!runnerHold) return Response.json({ error: 'This runner runs one task and cannot be held.' }, { status: 409, headers: corsHeaders });
+      const body = await parseBody(req).catch(() => ({}));
+      const forMs = typeof body?.forMs === 'number' && Number.isFinite(body.forMs) && body.forMs > 0 ? body.forMs : null;
+      const hold = runnerHold.hold(forMs);
+      return Response.json({ hold, running: liveAgentCount() }, { headers: corsHeaders });
+    }
+    if (path === '/api/resume' && req.method === 'POST') {
+      if (!runnerHold) return Response.json({ error: 'This runner runs one task and cannot be held.' }, { status: 409, headers: corsHeaders });
+      const was = runnerHold.resume();
+      return Response.json({ hold: null, wasHeld: was !== null, running: liveAgentCount() }, { headers: corsHeaders });
+    }
+
     if (path === '/api/workers/purge' && req.method === 'POST') {
       const count = workerManager!.purgeCompleted();
       return Response.json({ purged: count }, { headers: corsHeaders });
@@ -1926,7 +1995,8 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
       }
 
       try {
-        const worker = await workerManager!.claimAndStart(task);
+        // A person picked this task (`c` in top, the local UI): a hold does not stop it (R-34).
+        const worker = await workerManager!.claimAndStart(task, { byPerson: true });
         if (!worker) {
           // claimAndStart returns null only when the auth context is paused (rate
           // limit) or a Codex sequential-enforcement deferral. The server-rejected
@@ -2028,7 +2098,7 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
           return Response.json({ error: 'Task not found after reassign' }, { status: 404, headers: corsHeaders });
         }
 
-        const worker = await workerManager!.claimAndStart(task);
+        const worker = await workerManager!.claimAndStart(task, { byPerson: true });
         if (!worker) {
           return Response.json({ error: 'Failed to claim task after reassign' }, { status: 400, headers: corsHeaders });
         }

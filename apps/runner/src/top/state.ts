@@ -25,7 +25,7 @@
  *     team (R-26), read while the Queue view is open (queue.ts derives it).
  */
 import type { ProgressCell } from './progress';
-import { TERMINAL_TASK_STATUSES, type RecentMission, type RunnerQueueResponse } from '@buildd/shared';
+import { TERMINAL_TASK_STATUSES, isRunnerHoldActive, parseRunnerHold, type RecentMission, type RunnerHold, type RunnerQueueResponse } from '@buildd/shared';
 
 export type WorkerStatus = 'idle' | 'working' | 'done' | 'error' | 'stale' | 'waiting';
 
@@ -126,6 +126,8 @@ export interface TopState {
     maxConcurrent: number;
     builddServer: string | null;
     online: boolean;
+    /** A person's hold (`buildd hold`, `h`): nothing new starts while set (R-33). */
+    hold: RunnerHold | null;
   };
   workers: Record<string, TopWorker>;
   tasks: TopTask[];
@@ -186,7 +188,7 @@ export const NO_MISSION = '(none)';
 
 export function initialState(opts: { hostname: string; missionId?: string | null; workspace?: string | null; team?: string | null }): TopState {
   return {
-    runner: { hostname: opts.hostname, version: null, pid: null, maxConcurrent: 1, builddServer: null, online: false },
+    runner: { hostname: opts.hostname, version: null, pid: null, maxConcurrent: 1, builddServer: null, online: false, hold: null },
     workers: {},
     tasks: [],
     workspaces: [],
@@ -220,7 +222,9 @@ export type TopEvent =
   | { type: 'connection'; online: boolean }
   | { type: 'status'; status: StatusLine | null }
   // Frames from the socket's /api/events, as the runner sends them.
-  | { type: 'init'; workers?: TopWorker[]; config?: { maxConcurrent?: number; builddServer?: string }; claimOutcomes?: { tasks?: Record<string, ClaimOutcome>; broad?: ClaimOutcome | null } }
+  | { type: 'init'; workers?: TopWorker[]; config?: { maxConcurrent?: number; builddServer?: string }; claimOutcomes?: { tasks?: Record<string, ClaimOutcome>; broad?: ClaimOutcome | null }; hold?: RunnerHold | null }
+  /** The runner's hold changed (`buildd hold`, `h`, or its `until` passed). */
+  | { type: 'runner_hold'; hold: RunnerHold | null }
   | { type: 'claim_outcome'; taskId?: string; outcome: ClaimOutcome }
   | { type: 'worker_update'; worker: TopWorker }
   | { type: 'claim_rejected'; taskId?: string; status?: number; reason?: string }
@@ -302,7 +306,11 @@ export function reduce(state: TopState, event: TopEvent): TopState {
         next = { ...next, claimOutcomes: { tasks: pruneMovedOutcomes(tasks, next.tasks), broad: e.claimOutcomes.broad ? stampBroad(e.claimOutcomes.broad, next.tasks) : null } };
       }
       if (e.config) next = reduce(next, { type: 'config', maxConcurrent: e.config.maxConcurrent, builddServer: e.config.builddServer });
-      return { ...next, runner: { ...next.runner, online: true } };
+      // An older runner sends no `hold`: it cannot be held, so none.
+      return { ...next, runner: { ...next.runner, online: true, hold: parseRunnerHold(e.hold) } };
+    }
+    case 'runner_hold': {
+      return { ...state, runner: { ...state.runner, hold: parseRunnerHold((event as any).hold) } };
     }
     case 'worker_update': {
       const w = (event as any).worker as TopWorker | undefined;
@@ -924,6 +932,32 @@ export function providerHolds(state: TopState, now: number): ProviderHold[] {
   return [...out.values()];
 }
 
+/** The runner's hold, while it is in force at `now` (a lapsed `until` reads as none). */
+export function heldNow(state: TopState, now: number): RunnerHold | null {
+  const h = state.runner.hold;
+  return h && isRunnerHoldActive(h, now) ? h : null;
+}
+
+/** `N running finish`, or that nothing is running. */
+export function holdRunningWords(running: number): string {
+  return running === 0 ? 'nothing is running' : `${running} running finish${running === 1 ? 'es' : ''}`;
+}
+
+/**
+ * The line under the header while held (R-33): since when, what still runs,
+ * that h resumes, and when it resumes on its own (`--for`). Null when not held.
+ * "On hold since 09:12: nothing new starts, 3 running finish. h resumes."
+ */
+export function holdLine(state: TopState, now: number): string | null {
+  const h = heldNow(state, now);
+  if (!h) return null;
+  const until = h.until ? ` until ${localLiftTime(h.until, now)}` : '';
+  // R-33: what still runs, and what `buildd stop` paused.
+  const paused = Object.values(state.workers).filter(w => w.status === 'waiting' && w.waitingFor?.type === 'pause').length;
+  const pausedWords = paused > 0 ? `, ${paused} paused` : '';
+  return `On hold since ${localLiftTime(h.since, now)}${until}: nothing new starts, ${holdRunningWords(busySlots(state))}${pausedWords}. h resumes${h.until ? ' now' : ''}.`;
+}
+
 /** `Claude work waits for the plan limit: resumes Thu 00:00 (in 17h)`. */
 export function providerHoldLine(h: ProviderHold, now: number): string {
   const head = `${h.provider} work waits for the ${h.word}`;
@@ -1083,6 +1117,7 @@ export function waitingReason(task: TopTask, state: TopState, now: number, holds
     const words = wallFor(broad, taskBackend(task), now) ? wallWords(broad, task, holds, now) : null;
     if (words) return words;
   }
+  if (heldNow(state, now)) return 'runner is on hold';
   if (task.mission?.isHeld) return 'mission is on hold';
   const deps = dependencyWords(task, state);
   if (deps) return deps;
