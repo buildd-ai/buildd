@@ -237,3 +237,41 @@ describe('applyCommand (§7.2)', () => {
     await expect(applyCommand(verdictCmd, { exec: async () => ({ rows: [] }) })).rejects.toThrow('a delivery ref is required');
   });
 });
+
+/**
+ * S4a / AC-2 (docs/specs/workflow-kernel-library.md §1): for a delivery-owned task the worker
+ * columns `merged_at` and `pr_lifecycle_status` are a projection the kernel writes in the SAME
+ * statement as the transition that changes the delivery. The real-Postgres half (a merged
+ * webhook moving delivery and worker rows with no effect drained) is
+ * apps/web/tests/db/kernel-pr-projection.test.ts.
+ */
+describe('S4a: the merge and the close reach the worker rows inside the transition statement', () => {
+  const merged = () => decision({ type: 'PrMerged', actor: 'w', live: { ...live('H1'), state: 'closed', merged: true, mergedAt: '2026-10-06T00:00:00Z' } });
+
+  test('T17: one statement updates the delivery and every worker row of its PR, terminal-wins', () => {
+    const { sql: text } = render(transitionSql(merged(), { deliveryId: 'd1' }));
+    // The delivery CTE hands the PR identity and merge instant to the projection.
+    expect(text).toContain('RETURNING id, version, workspace_id, repo_full_name, pr_number, merged_at');
+    expect(text).toContain('w_proj AS (\nUPDATE workers w SET updated_at = now(), pr_lifecycle_status = \'merged\', merged_at = COALESCE(w.merged_at, d.merged_at, now())');
+    // Every row of the delivery's workspace carrying the PR, by its URL and number.
+    expect(text).toContain("FROM d\nWHERE w.workspace_id = d.workspace_id AND w.pr_number = d.pr_number AND w.pr_url = 'https://github.com/' || d.repo_full_name || '/pull/' || d.pr_number::text");
+    expect(text).toContain("AND (w.merged_at IS NULL OR w.pr_lifecycle_status IS DISTINCT FROM 'merged')");
+    // Still one statement: the projection is a CTE of the transition, before its final SELECT.
+    expect(text.indexOf('w_proj AS (')).toBeLessThan(text.indexOf('SELECT t.id AS transition_id'));
+    expect(text.match(/-- workflow:transition/g)?.length).toBe(1);
+  });
+
+  test('T18: the close is projected the same way and never over a merge', () => {
+    const closed = decision({ type: 'PrClosedUnmerged', actor: 'w', closeCause: 'manual', live: { ...live('H1'), state: 'closed', merged: false, updatedAt: 'u1' } });
+    const { sql: text } = render(transitionSql(closed, { deliveryId: 'd1' }));
+    expect(text).toContain("w_proj AS (\nUPDATE workers w SET updated_at = now(), pr_lifecycle_status = 'closed'");
+    expect(text).toContain('w.merged_at IS NULL AND (w.pr_lifecycle_status IS NULL OR w.pr_lifecycle_status NOT IN (');
+  });
+
+  test('a transition that does not merge or close the PR writes no worker row', () => {
+    const d = decision({ type: 'ReviewVerdictRecorded', actor: 'reviewer', roundId: 'r1', verdict: 'approve', effectiveVerdict: 'approve', headBound: 'H1' });
+    const text = render(transitionSql(d, { deliveryId: 'd1' })).sql;
+    expect(text).not.toContain('UPDATE workers');
+    expect(text).toContain('RETURNING id, version\n)');
+  });
+});

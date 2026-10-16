@@ -40,6 +40,7 @@ import { landPr, resolveLandingMode } from '@/lib/pr-landing';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { recordPrReverts } from '@/lib/pr-reverts';
 import { recordPrFact } from '@buildd/core/pr-facts';
+import { factFunnelScope } from '@/lib/workflow/pr-fact-scope';
 import { authorsFromPushCommits, changedFilesFromPush, isPossibleBaseRef, type BaseAdvanceInput, type BaseResolver } from '@/lib/base-advance-notice';
 import { changedFilesForCompare, changedFilesForPr, isReleaseRollupPr, runBaseAdvanceNotice } from '@/lib/base-advance-notice-store';
 import { promptEvalRefForPush } from '@/lib/prompt-evals/push-trigger';
@@ -1151,7 +1152,7 @@ async function handlePullRequestEvent(event: {
   if (worker && !pr.merged) {
     // PR closed without merge (abandoned/superseded): every row carrying the
     // PR, never over a merge (recordPrFact).
-    await recordPrFact({ prUrl: prUrlFor(repository.full_name, pr.number), prNumber: pr.number }, { kind: 'closed' });
+    await recordPrFact({ prUrl: prUrlFor(repository.full_name, pr.number), prNumber: pr.number }, { kind: 'closed' }, { scope: factFunnelScope });
     await triggerEvent(channels.workspace(worker.workspaceId), events.WORKER_PROGRESS, {
       taskId: worker.taskId,
     });

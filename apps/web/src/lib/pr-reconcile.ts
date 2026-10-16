@@ -51,6 +51,7 @@ import { repoFullNameFromPrUrl, resolvePrRepo } from '@/lib/repo-scope';
 import { stampPrMergedOnAllRows } from '@/lib/pr-merge-stamp';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { recordPrFact } from '@buildd/core/pr-facts';
+import { factFunnelScope } from '@/lib/workflow/pr-fact-scope';
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 import {
   TIER_SLA_MS,
@@ -518,7 +519,7 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
           // later PR on a serialized surface would wait on it forever.
           await settleSurfaceIntents(worker.workspaceId, worker.prNumber);
         } else if (pr.state === 'closed') {
-          await recordPrFact({ workerId: worker.id }, { kind: 'closed' });
+          await recordPrFact({ workerId: worker.id }, { kind: 'closed' }, { scope: factFunnelScope });
           await recordCheck(worker.id, { prCheckFailureCount: 0, updatedAt: new Date() }, { verified: true });
           await importClosureToKernel(worker.workspaceId, repo, worker.prNumber, installationId);
           result.closed++;

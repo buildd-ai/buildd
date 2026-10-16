@@ -19,6 +19,7 @@
 import { sql, type SQL } from 'drizzle-orm';
 import { workers } from '@buildd/core/db/schema';
 import { recordPrFact, type PrFactBookkeeping } from '@buildd/core/pr-facts';
+import { factFunnelScope } from '@/lib/workflow/pr-fact-scope';
 
 /**
  * Stamp the merge on every row carrying this PR that has not recorded it yet,
@@ -36,7 +37,7 @@ export async function stampPrMergedOnAllRows(input: {
 }): Promise<Array<{ id: string; taskId: string | null }>> {
   // Never issue an UPDATE we cannot scope to a real PR identity.
   if (!input.prUrl || input.prNumber == null) return [];
-  const rows = await recordPrFact({ prUrl: input.prUrl, prNumber: input.prNumber }, { kind: 'merged', mergedAt: input.mergedAt }, { bookkeeping: input.bookkeeping });
+  const rows = await recordPrFact({ prUrl: input.prUrl, prNumber: input.prNumber }, { kind: 'merged', mergedAt: input.mergedAt }, { bookkeeping: input.bookkeeping, scope: factFunnelScope });
   return rows.map((r) => ({ id: r.id, taskId: r.taskId }));
 }
 

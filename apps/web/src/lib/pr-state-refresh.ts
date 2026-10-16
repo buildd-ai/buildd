@@ -41,6 +41,7 @@ import {
 import { resolvePrRepo } from '@/lib/repo-scope';
 import { stampPrMergedOnAllRows } from '@/lib/pr-merge-stamp';
 import { recordPrFact } from '@buildd/core/pr-facts';
+import { factFunnelScope } from '@/lib/workflow/pr-fact-scope';
 import { TERMINAL_PR_LIFECYCLE, isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
@@ -406,18 +407,14 @@ async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
         if (pr.merged && pr.merged_at) {
           // The merge belongs to the PR: one fact stamps this row and every
           // other row carrying it (lib/pr-merge-stamp), GitHub's merged_at.
-          await recordPrFact({ workerId: worker.id }, { kind: 'merged', mergedAt: pr.merged_at });
-          // The stamp reaches every row on the PR; it is skipped when any of
-          // them is delivery-owned (AC-3: that row is the healers' to write).
-          if (!(await prHasOwnedSibling(worker.prUrl, worker.prNumber))) {
-            stamped = await stampPrMergedOnAllRows({ prUrl: worker.prUrl, prNumber: worker.prNumber, mergedAt: pr.merged_at }).catch(err => {
-              console.error(`[pr-state-refresh] merge stamp failed for PR #${worker.prNumber}:`, err);
-              return [] as Array<{ id: string; taskId: string | null }>;
-            });
-          }
+          await recordPrFact({ workerId: worker.id }, { kind: 'merged', mergedAt: pr.merged_at }, { scope: factFunnelScope });
+          stamped = await stampPrMergedOnAllRows({ prUrl: worker.prUrl, prNumber: worker.prNumber, mergedAt: pr.merged_at }).catch(err => {
+            console.error(`[pr-state-refresh] merge stamp failed for PR #${worker.prNumber}:`, err);
+            return [] as Array<{ id: string; taskId: string | null }>;
+          });
           didMerge = true;
         } else if (pr.state === 'closed') {
-          await recordPrFact({ workerId: worker.id }, { kind: 'closed' });
+          await recordPrFact({ workerId: worker.id }, { kind: 'closed' }, { scope: factFunnelScope });
         } else if (pr.state === 'open' && CI_STATUSES.has(worker.prLifecycleStatus ?? '')) {
           // Reconcile CI state: fetch live check-suite verdict for open CI-tracked PRs.
           // This corrects stale ci_failed→ci_green and ci_green→ci_failed transitions

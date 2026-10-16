@@ -16,6 +16,7 @@ import { db } from '@buildd/core/db';
 import { missions, tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNotNull } from 'drizzle-orm';
 import { prFactApplies, recordPrFact, type PrFact } from '@buildd/core/pr-facts';
+import { factFunnelScope } from '@/lib/workflow/pr-fact-scope';
 import { githubApi as _githubApi } from '@/lib/github';
 import { WORKSPACE_INSTALLATION_WITH, pickWorkspaceInstallationId } from '@/lib/workspace-installation';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
@@ -113,7 +114,7 @@ export async function importWorkerPrFacts(workerRows: WorkerPrRow[], opts: PrFac
       if (prFactApplies(fact, { prLifecycleStatus: worker.prLifecycleStatus, mergedAt: worker.mergedAt })) fixes.push(fix);
       continue;
     }
-    const applied = await record({ workerId: worker.id }, fact);
+    const applied = await record({ workerId: worker.id }, fact, { scope: factFunnelScope });
     if (applied.length > 0) fixes.push(fix);
     await importToKernel({ workspaceId: worker.workspaceId, repoFullName: parsed.repo, prNumber: parsed.number, installationId })
       .catch((err) => console.error(`[pr-fact-import] kernel close import failed for ${worker.prUrl}:`, err));

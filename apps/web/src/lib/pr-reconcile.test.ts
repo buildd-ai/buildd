@@ -189,6 +189,9 @@ import {
 import { TIER_SLA_MS, UNRESOLVABLE_FAILURE_THRESHOLD, DAY_MS, HOUR_MS } from './pr-freshness';
 import { capturedOrderBy, capturedWhere } from '@buildd/core/db/relational-sql';
 
+/** A terminal fact goes to the funnel under the kernel's scope (S4a, pr-fact-scope.ts). */
+const FUNNEL_OPTS = { scope: expect.objectContaining({ where: expect.any(Function) }) };
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /** Legacy shape: only the direct `workspaces.githubInstallationId` FK resolves. */
@@ -495,7 +498,7 @@ describe('reconcileStalePrWorkers', () => {
 
     expect(result.closed).toBe(1);
     expect(result.stamped).toBe(0);
-    expect(recordedFacts).toEqual([{ target: { workerId: 'w1' }, fact: { kind: 'closed' }, opts: undefined }]);
+    expect(recordedFacts).toEqual([{ target: { workerId: 'w1' }, fact: { kind: 'closed' }, opts: FUNNEL_OPTS }]);
     // AC-4: closed is a confirmed GitHub answer too — both clocks advance.
     const written = setMock.mock.calls[0][0] as Record<string, unknown>;
     expect(written.prLastCheckedAt).toBeInstanceOf(Date);

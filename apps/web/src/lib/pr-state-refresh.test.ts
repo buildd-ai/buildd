@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 
+/** A terminal fact goes to the funnel under the kernel's scope (S4a, pr-fact-scope.ts). */
+const FUNNEL_OPTS = { scope: expect.objectContaining({ where: expect.any(Function) }) };
+
 // ─── DB mocks ─────────────────────────────────────────────────────────────────
 
 const mockWorkersFindMany = mock(() => [] as any[]);
@@ -200,7 +203,7 @@ describe('refreshStaleWorkersForWorkspaces', () => {
     expect(recordedFacts).toContainEqual({
       target: { workerId: 'w1' },
       fact: { kind: 'merged', mergedAt: '2026-01-01T00:00:00Z' },
-      opts: undefined,
+      opts: FUNNEL_OPTS,
     });
     expect(setMock).toHaveBeenCalledWith(BOOKKEEPING);
     expect(mockTriggerEvent).toHaveBeenCalledWith(
@@ -255,7 +258,7 @@ describe('refreshStaleWorkersForWorkspaces', () => {
     expect(recordedFacts).toContainEqual({
       target: { workerId: 'w-missed' },
       fact: { kind: 'merged', mergedAt: '2026-08-27T07:00:00Z' },
-      opts: undefined,
+      opts: FUNNEL_OPTS,
     });
     expect(setMock).toHaveBeenCalledWith(BOOKKEEPING);
     expect(mockCheckDependsOnResolved).toHaveBeenCalledWith('task-missed');
@@ -271,7 +274,7 @@ describe('refreshStaleWorkersForWorkspaces', () => {
     const setMock = makeSetMock();
     await refreshStaleWorkersForWorkspaces(['ws1']);
 
-    expect(recordedFacts).toEqual([{ target: { workerId: 'w1' }, fact: { kind: 'closed' }, opts: undefined }]);
+    expect(recordedFacts).toEqual([{ target: { workerId: 'w1' }, fact: { kind: 'closed' }, opts: FUNNEL_OPTS }]);
     expect(setMock).toHaveBeenCalledWith(BOOKKEEPING);
     // A kernel-owned delivery imports the same close from its own live read.
     expect(mockObservePrState).toHaveBeenCalledWith(expect.objectContaining({
@@ -725,7 +728,7 @@ describe('pr-state-refresh repo resolution', () => {
     expect(recordedFacts).toContainEqual({
       target: { workerId: 'w1' },
       fact: { kind: 'merged', mergedAt: '2026-06-05T22:43:47Z' },
-      opts: undefined,
+      opts: FUNNEL_OPTS,
     });
     expect(setMock).toHaveBeenCalledWith(BOOKKEEPING);
   });

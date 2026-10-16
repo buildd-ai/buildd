@@ -17,6 +17,7 @@
 import { describe, it, expect } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { offendingSites, taskStatusSites } from './_write-site-scan';
 
 const repo = join(import.meta.dir, '../../..');
 const tracked = Bun.spawnSync(['git', 'ls-files', '--cached', '--others', '--exclude-standard', 'apps', 'packages', 'scripts'], { cwd: repo })
@@ -63,7 +64,10 @@ const ALLOWED = new Set<string>();
 // `command-keys` is the command key ring alone (no I/O), which the control plane's entry reads at load.
 const KERNEL_ENTRY_POINTS = new Set(['kernel-client', 'command-api', 'command-keys', 'kernel-floor', 'kernel-host', 'seam', 'authority', 'github-facts', 'projections', 'delivery-view', 'pr-activity-effects', 'delivery-ship', 'delivery-display', 'base-delta', 'visual-review-state', 'visual-review-state-load', 'visual-review-schedule-run', 'visual-review-presentation', 'visual-review-diagnostics', 'visual-review-policy', 'visual-review-impact', 'pr-display',
   // The landing gate's pure answer and the `buildd/landing` context (workflow-kernel-library.md §4): read-only, like projections.
-  'landing-gate']);
+  'landing-gate',
+  // S4a: the PR fact funnel's scope for terminal facts (a predicate, no command): the way a funnel caller
+  // records a merge or close without deciding it for a delivery-owned row.
+  'pr-fact-scope']);
 const COMPOSITION_ROOT = 'apps/web/src/modules.ts';
 // The package is matched too: importing `@buildd/workflow-kernel/reducer` is importing the reducer, and its
 // root (`@buildd/workflow-kernel`, every module at once) reads as `index`, which is no entry point.
@@ -229,5 +233,158 @@ describe('S3a: doors submit kernel commands through the one client', () => {
     }
     const viaClient = files.filter((f) => !inKernel(f) && /from\s+['"]@\/lib\/workflow\/kernel-client['"]|import\(\s*['"](?:@\/lib\/|\.\/)workflow\/kernel-client['"]\s*\)/.test(code(f)));
     expect(viaClient.length).toBeGreaterThan(5);
+  });
+});
+
+/**
+ * S4a: the delivery-columns write-site guard (docs/specs/workflow-kernel-library.md §1 AC-1, §9).
+ *
+ * For a delivery-owned task `workers.merged_at` and `workers.pr_lifecycle_status` change only
+ * in the kernel transition that changes the delivery: T17 / T18 project the merge or close onto
+ * every worker row of the PR inside the transition's own statement (kernel.ts `w_proj`).
+ * Everything else is a fact funnel:
+ *
+ *  - The only SQL that writes those columns is `packages/core/pr-facts.ts` (`recordPrFact`) and
+ *    `pr-fact-sql.ts` (the projection fragment the transition embeds). A raw or Drizzle write anywhere else fails here.
+ *  - A terminal fact (merged, closed) needs a scope, and scopes are minted only in the kernel
+ *    (`apps/web/src/lib/workflow/pr-fact-scope.ts`): `factFunnelScope` keeps a kernel-owned row out
+ *    unless its delivery already says the same thing. So a caller records the fact; the reducer
+ *    decides. The type requires the scope and the funnel refuses a terminal fact without one.
+ *  - Every module outside the kernel that calls the funnel is listed below with its reason, so a
+ *    new caller fails naming its file, and a listed caller that stops calling it fails too.
+ *
+ * Still allowed, and listed here so the debt is visible: the funnel's NON-terminal facts
+ * (pr_open, ci_*, conflict, unresolvable) for delivery-owned rows, and every `tasks.status` /
+ * `tasks.result` writer. Both are S4b's.
+ */
+const PR_FACTS = new Set(['packages/core/pr-facts.ts', 'packages/core/pr-fact-sql.ts']);
+const WORKERS_COLUMN_DECLARATIONS = new Set<string>([
+  // Declares the columns.
+  'packages/core/db/schema.ts',
+  // The demo stack seeds a scripted timeline into its own local database; never a real PR.
+  'scripts/demo/advance.ts',
+]);
+
+/** Terminal facts here go under `factFunnelScope`; non-terminal facts are TODO S4b. */
+const FUNNEL = 'records PR facts through the funnel; a terminal fact under factFunnelScope (delivery-owned rows take only what their delivery says)';
+const FUNNEL_CALLERS: Record<string, string> = {
+  'apps/web/src/app/api/github/webhook/route.ts': `${FUNNEL}; CI, conflict and open facts unscoped (TODO S4b). A kernel-owned merge is T17's, reached through observePrState`,
+  'apps/web/src/app/api/github/pr/route.ts': `${FUNNEL}: the legacy merge door's receipt`,
+  'apps/web/src/app/api/prs/[prNumber]/merge/route.ts': `${FUNNEL}: the dashboard merge door's receipt`,
+  'apps/web/src/app/api/admin/backfill-merged-prs/route.ts': 'unresolvable bookkeeping only (non-terminal; TODO S4b)',
+  'apps/web/src/lib/dead-pr-shutdown.ts': `${FUNNEL}: the loser of a duplicate PR closes`,
+  'apps/web/src/lib/dead-zone-sweep.ts': `${FUNNEL}: the sweep heals a missed merge or close`,
+  'apps/web/src/lib/mission-pr.ts': `${FUNNEL}; the open fact unscoped (TODO S4b). The mission PR has no delivery until S6`,
+  'apps/web/src/lib/pr-fact-import.ts': `${FUNNEL}: the reconcile script's import`,
+  'apps/web/src/lib/pr-merge-stamp.ts': `${FUNNEL}: stampPrMergedOnAllRows, the legacy merge's stamp`,
+  // runMergedPrWork stamps only with \`stamp: true\`: the webhook's legacy path. A kernel-owned PR's
+  // work runs from the emit_pr_merged effect with \`stamp: false\`, after T17 already projected the rows.
+  'apps/web/src/lib/pr-merged-work.ts': `${FUNNEL}: stampPrMergedOnAllRows for a PR the kernel does not own`,
+  'apps/web/src/lib/pr-reconcile.ts': `${FUNNEL}; conflict and unresolvable unscoped (TODO S4b)`,
+  'apps/web/src/lib/pr-review-request.ts': `${FUNNEL}; the open fact unscoped (TODO S4b)`,
+  'apps/web/src/lib/pr-state-refresh.ts': `${FUNNEL}; the CI fact unscoped (TODO S4b). The render read-through itself retires with AC-3`,
+  'apps/web/src/lib/register-local-pr.ts': 'the open fact only (non-terminal; TODO S4b)',
+  // Cannot import apps/web, so it mints an unscoped scope (below).
+  'packages/core/scripts/backfill-mergedat.ts': 'manual operator backfill, run by hand; unscoped. TODO S4b: heal through the kernel floor instead',
+};
+/** Minting a terminal-fact scope outside the kernel bypasses the delivery check. */
+const SCOPE_MINTERS: Record<string, string> = {
+  'packages/core/scripts/backfill-mergedat.ts': 'manual operator backfill in @buildd/core, which cannot import the kernel. TODO S4b',
+};
+const FUNNEL_CALL = /\b(?:recordPrFact|stampPrMergedOnAllRows)\b/;
+/** The funnel's SQL builders write the columns: only the funnel and the kernel may run them. */
+const FUNNEL_SQL = /\b(?:recordPrFactSql|prFactProjectionSql)\b/;
+/** Minting a scope, or borrowing the kernel's own unscoped one (only `stamp_pr_rows` may write past the delivery check). */
+const SCOPE_MINT = /\b(?:unscopedPrFactScope|PR_FACT_SCOPE|kernelProjectionScope)\b/;
+
+/** Every `tasks.status` / `tasks.result` writer outside the kernel. S4b moves the delivery-owned half into transitions. */
+const S4B = 'TODO S4b: tasks.status/result writer (§9); for a task with no delivery it stays';
+const TASK_STATUS_WRITERS: Record<string, string> = Object.fromEntries([
+  'apps/web/src/app/api/cron/task-archive/route.ts',
+  'apps/web/src/app/api/github/webhook/route.ts',
+  'apps/web/src/app/api/tasks/[id]/reassign/route.ts',
+  'apps/web/src/app/api/tasks/[id]/route.ts',
+  'apps/web/src/app/api/tasks/bulk/route.ts',
+  'apps/web/src/app/api/tasks/cleanup/route.ts',
+  'apps/web/src/app/api/webhooks/ingest/route.ts',
+  'apps/web/src/app/api/workers/[id]/interrupt/route.ts',
+  'apps/web/src/app/api/workers/[id]/route.ts',
+  'apps/web/src/app/api/workers/claim/route.ts',
+  'apps/web/src/lib/approve-plan.ts',
+  'apps/web/src/lib/ci-failure-retry.ts',
+  'apps/web/src/lib/conflict-retry.ts',
+  'apps/web/src/lib/credential-recovery.ts',
+  'apps/web/src/lib/github-repo-access-store.ts',
+  'apps/web/src/lib/held-pr-tasks.ts',
+  'apps/web/src/lib/interactive-detach.ts',
+  'apps/web/src/lib/linear-webhook.ts',
+  'apps/web/src/lib/loop-webhook.ts',
+  'apps/web/src/lib/mission-surface-audit.ts',
+  // runMergedPrWork: the merge completes the task. Its worker stamp is legacy-only (stamp: false on the kernel path).
+  'apps/web/src/lib/pr-merged-work.ts',
+  'apps/web/src/lib/quality-scout-actions.ts',
+  'apps/web/src/lib/stale-workers.ts',
+  'apps/web/src/lib/supersession-store.ts',
+  'apps/web/src/lib/surface-audit-waiver-cancel.ts',
+  'apps/web/src/lib/task-dependencies.ts',
+  'apps/web/src/lib/task-evidence-store.ts',
+  'apps/web/src/lib/task-pr-attach.ts',
+  'apps/web/src/lib/task-recovery-hold.ts',
+  'apps/web/src/lib/task-shipped-store.ts',
+  'apps/web/src/lib/visual-review-decisions.ts',
+  // An operator script scrubbing leaked secrets out of task results.
+  'packages/core/scripts/scrub-exposed-secrets.ts',
+].map((f) => [f, S4B]));
+
+describe('S4a: the delivery columns (workers.merged_at, workers.pr_lifecycle_status) move only through the kernel', () => {
+  const outside = files.filter((f) => !inKernel(f) && !PR_FACTS.has(f));
+
+  it('no module outside the funnel and the kernel writes the columns in SQL', () => {
+    const offenders = outside.filter((f) => !WORKERS_COLUMN_DECLARATIONS.has(f)).flatMap((f) => offendingSites(code(f)).map((s) => `${f} ${s}`));
+    expect(offenders).toEqual([]);
+  });
+
+  it('every caller of the funnel outside the kernel is listed with its reason', () => {
+    const callers = outside.filter((f) => FUNNEL_CALL.test(code(f)));
+    expect(callers.filter((f) => !FUNNEL_CALLERS[f])).toEqual([]);
+    // The list cannot rot: every entry still exists and still calls the funnel.
+    expect(Object.keys(FUNNEL_CALLERS).filter((f) => !callers.includes(f))).toEqual([]);
+  });
+
+  it("the funnel's SQL builders run only in the funnel and the kernel", () => {
+    expect(outside.filter((f) => FUNNEL_SQL.test(code(f)))).toEqual([]);
+  });
+
+  it('a terminal-fact scope is minted only in the kernel', () => {
+    const minters = outside.filter((f) => SCOPE_MINT.test(code(f)));
+    expect(minters.filter((f) => !SCOPE_MINTERS[f])).toEqual([]);
+    expect(Object.keys(SCOPE_MINTERS).filter((f) => !minters.includes(f))).toEqual([]);
+    // The kernel mints them where the funnel's callers import them from.
+    expect(SCOPE_MINT.test(code(`${KERNEL_DIR}pr-fact-scope.ts`))).toBe(true);
+  });
+
+  it('the kernel transition is the writer for a delivery: T17 / T18 project the worker rows in their own statement', () => {
+    const kernel = code(`${KERNEL_DIR}kernel.ts`);
+    expect(/w_proj AS \(/.test(kernel)).toBe(true);
+    expect(/prFactProjectionSql\(/.test(kernel)).toBe(true);
+  });
+
+  it('every tasks.status / tasks.result writer outside the kernel is listed (S4b burns the list down)', () => {
+    const writers = files.filter((f) => !inKernel(f) && taskStatusSites(code(f)).length > 0);
+    expect(writers.filter((f) => !TASK_STATUS_WRITERS[f])).toEqual([]);
+    expect(Object.keys(TASK_STATUS_WRITERS).filter((f) => !writers.includes(f))).toEqual([]);
+  });
+
+  it('the guard can fail: it names each new writer shape', () => {
+    expect(offendingSites(`await db.update(workers).set({ mergedAt: new Date() }).where(eq(workers.id, id));`).length).toBeGreaterThan(0);
+    expect(offendingSites('await db.execute(sql`UPDATE workers SET pr_lifecycle_status = \'merged\' WHERE id = 1`)')).toEqual(['raw UPDATE workers@1']);
+    expect(FUNNEL_CALL.test(`await recordPrFact({ workerId }, { kind: 'merged', mergedAt }, { scope: factFunnelScope });`)).toBe(true);
+    expect(FUNNEL_CALL.test(`const { recordPrFact } = await import('@buildd/core/pr-facts');`)).toBe(true);
+    expect(SCOPE_MINT.test(`const s = unscopedPrFactScope('why');`)).toBe(true);
+    expect(SCOPE_MINT.test(`await recordPrFact(t, f, { scope: kernelProjectionScope });`)).toBe(true);
+    expect(taskStatusSites(`await db.update(tasks).set({ status: 'completed' }).where(eq(tasks.id, id));`)).toEqual(['update(tasks)@1']);
+    expect(taskStatusSites(`await db.update(tasks).set(patch).where(eq(tasks.id, id));`)).toEqual(['update(tasks)@1']);
+    expect(taskStatusSites('sql`UPDATE tasks t SET result = $1 WHERE t.id = $2`')).toEqual(['raw UPDATE tasks@1']);
+    expect(taskStatusSites(`await db.update(tasks).set({ title: 'x' }).where(eq(tasks.id, id));`)).toEqual([]);
   });
 });
