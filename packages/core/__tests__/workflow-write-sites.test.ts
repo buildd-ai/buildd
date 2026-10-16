@@ -290,6 +290,7 @@ const FUNNEL_CALLERS: Record<string, string> = {
   'apps/web/src/lib/pr-review-request.ts': `${FUNNEL}; the open fact unscoped (TODO S4b)`,
   'apps/web/src/lib/pr-state-refresh.ts': `${FUNNEL}; the CI fact unscoped (TODO S4b). The render read-through itself retires with AC-3`,
   'apps/web/src/lib/register-local-pr.ts': 'the open fact only (non-terminal; TODO S4b)',
+  'apps/web/src/lib/worker-pr-slot.ts': 'the open fact only (non-terminal; TODO S4b): the sibling owner row of a second PR from one worker',
   // Cannot import apps/web, so it mints an unscoped scope (below).
   'packages/core/scripts/backfill-mergedat.ts': 'manual operator backfill, run by hand; unscoped. TODO S4b: heal through the kernel floor instead',
 };

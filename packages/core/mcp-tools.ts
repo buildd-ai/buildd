@@ -3748,6 +3748,14 @@ export async function handleBuilddAction(
         );
       }
 
+      // Never claim a review is in flight with no review task behind it.
+      if (data.alreadyRequested && !data.reviewTaskId) {
+        return text(
+          `PR #${data.prNumber}: no review task exists for it, so it is not under review. ${data.queued?.reason ?? 'The request was acknowledged but nothing was filed'}; ` +
+          `retry with force=true, or check action=get_pr_review { prNumber: ${data.prNumber} }.`,
+        );
+      }
+
       if (data.alreadyRequested) {
         return text(
           `PR #${data.prNumber} is already under review — state: **${data.status?.state ?? 'queued'}** ` +
