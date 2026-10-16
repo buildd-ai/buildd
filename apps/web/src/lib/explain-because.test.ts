@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { buildStateBecause, buildConflictBecause, deliveryTransitionLink, dispatchWakeLink, withDispatchLink, entitlementHoldLink, taskRecoveryLink, type BaseSideMerge, type ConflictSubject } from './explain-because';
+import { buildStateBecause, buildConflictBecause, deliveryTransitionLink, reviewRoundLink, dispatchWakeLink, withDispatchLink, entitlementHoldLink, taskRecoveryLink, type BaseSideMerge, type ConflictSubject } from './explain-because';
 import { rankGatedSubjects, waitingOnRank, type ExplainAnswer } from './explain-types';
 import { deriveMissionStateView, type MissionStateInput } from './mission-state-view';
 
@@ -466,5 +466,29 @@ describe('taskRecoveryLink', () => {
     expect(taskRecoveryLink('cancelled', {}, subject)).toBeNull();
     expect(taskRecoveryLink('pending', null, subject)).toBeNull();
     expect(taskRecoveryLink('completed', { cancellation: { reason: 'x', actor: 'a', at: 'b' } }, subject)).toBeNull();
+  });
+});
+
+describe('reviewRoundLink (58c8961e: why the latest review round started)', () => {
+  const base = { failureCount: 0, verdict: null, effectiveVerdict: null } as const;
+  it('names the trigger and a delta review that carries an approval', () => {
+    const l = reviewRoundLink({ prNumber: 7, rounds: [
+      { ...base, id: 'r1', round: 1, headSha: 'a'.repeat(40), kind: 'full', status: 'decided', trigger: 'first_pass' },
+      { ...base, id: 'r2', round: 2, headSha: 'b'.repeat(40), kind: 'delta', status: 'queued', trigger: 'ci_fix', scope: { deltaApproval: { eligible: true, fromHeadSha: 'a'.repeat(40), reason: 'small delta inside the approved PR' } } },
+    ] }, { taskId: 't1' })!;
+    expect(l.derivedFrom).toBe('DeliveryView.rounds');
+    expect(l.refs).toEqual({ taskId: 't1', prNumber: 7 });
+    expect(l.claim).toBe('Review round 2 at bbbbbbb: After a CI fix. A delta review that carries the approval at aaaaaaa.');
+  });
+  it('says why a round after an approval is a full review, and how a superseded one ended', () => {
+    const full = reviewRoundLink({ prNumber: 7, rounds: [
+      { ...base, id: 'r2', round: 2, headSha: 'b'.repeat(40), kind: 'full', status: 'superseded', trigger: 'new_commits', endReason: 'superseded_by_push', scope: { deltaApproval: { eligible: false, fromHeadSha: 'a'.repeat(40), reason: 'the delta touches a file outside the PR (src/b.ts)' } } },
+    ] }, {})!;
+    expect(full.claim).toBe('Review round 2 at bbbbbbb: After new commits. A full review, because the delta touches a file outside the PR (src/b.ts). Ended: replaced by a newer push.');
+  });
+  it('no rounds, or a round from before triggers: no link', () => {
+    expect(reviewRoundLink({ prNumber: 7, rounds: [] }, {})).toBeNull();
+    expect(reviewRoundLink(null, {})).toBeNull();
+    expect(reviewRoundLink({ prNumber: 7, rounds: [{ ...base, id: 'r1', round: 1, headSha: 'a', kind: 'full', status: 'queued' }] }, {})).toBeNull();
   });
 });

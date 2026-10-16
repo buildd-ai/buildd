@@ -12,6 +12,7 @@
  * Versioned with the package: a breaking change to a port is a major bump.
  */
 import type { BaseDeltaFact } from './base-delta';
+import type { DeltaReading } from './delta-approval';
 import type { ApplyDecision, Command, CurrentView, EffectKind, LivePr, RecordOnly } from './commands';
 import type { AttemptSnapshot, DeliverySnapshot, DeliveryState, KernelView, RoundSnapshot } from './types';
 
@@ -226,6 +227,12 @@ export interface GithubFactReader {
    * "nothing changed".
    */
   changedPaths?(repoFullName: string, fromSha: string, toSha: string): Promise<string[] | null>;
+  /**
+   * 58c8961e: the delta from an approved head `fromSha` to `toSha`, bounded against
+   * `baseRef` (a file the base moved on its own is not in it), with the PR's own files
+   * at `fromSha`. null = unreadable or possibly cut; the round is then a full review.
+   */
+  reviewedDelta?(repoFullName: string, baseRef: string, fromSha: string, toSha: string): Promise<DeltaReading | null>;
 }
 
 /** GitHub's answer to a pinned merge call, read as the T16 outcome it is (`MergeCallResult`). */

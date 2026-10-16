@@ -117,6 +117,8 @@ export const reviewWork: WorkBuilder = async (req) => {
     policyConfig: (workspace.gitConfig as { policyConfig?: never } | null)?.policyConfig ?? undefined,
     baseRef,
     priorVerdict: (detail.priorVerdict as import('@/lib/reviewer').PriorVerdict | undefined) ?? undefined,
+    deltaApproval: detail.deltaApproval === true,
+    reviewTrigger: typeof detail.trigger === 'string' ? detail.trigger : null,
     compositionScope: (detail.compositionScope as { novelDeltaPaths: string[] } | undefined) ?? undefined,
     findingsBrief: (detail.findingsBrief as import('@/lib/reviewer').FindingsBrief | undefined) ?? undefined,
     workflowRound: { deliveryId: req.lineage.deliveryId, roundId, round },

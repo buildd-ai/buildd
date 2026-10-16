@@ -164,3 +164,32 @@ describe('renderDeliveryActivity (S26)', () => {
     expect(parseRenderVersion('legacy body')).toBeNull();
   });
 });
+
+describe('58c8961e: why each review round started', () => {
+  test('a queued round names its trigger and whether it is a delta of an approval; a superseded one says what ended it', () => {
+    const rs: RoundSnapshot[] = [
+      { id: 'q1', round: 1, headSha: 'H1', kind: 'full', status: 'superseded', verdict: null, effectiveVerdict: null, failureCount: 0, trigger: 'first_pass', endReason: 'superseded_by_push' },
+      { id: 'q2', round: 2, headSha: 'H2', kind: 'full', status: 'decided', verdict: 'approve', effectiveVerdict: 'approve', failureCount: 0, trigger: 'superseded_by_push' },
+      { id: 'q3', round: 3, headSha: 'H3', kind: 'delta', status: 'decided', verdict: 'approve', effectiveVerdict: 'approve', failureCount: 0, trigger: 'ci_fix', scope: { deltaApproval: { eligible: true, fromHeadSha: 'H2' } } },
+    ];
+    v = 0;
+    const ts = [
+      T('AttemptEnded', 'WORKING', 'AWAITING_REVIEW', { outcome: 'success', live: live('H1') }, 1),
+      T('HeadObserved', 'AWAITING_REVIEW', 'AWAITING_REVIEW', { live: live('H2'), previousHead: 'H1' }, 2),
+      T('ReviewVerdictRecorded', 'AWAITING_REVIEW', 'APPROVED', { roundId: 'q2', verdict: 'approve', effectiveVerdict: 'approve' }, 3),
+      T('HeadObserved', 'REPAIRING', 'AWAITING_REVIEW', { live: live('H3'), previousHead: 'H2' }, 4),
+      T('ReviewVerdictRecorded', 'AWAITING_REVIEW', 'APPROVED', { roundId: 'q3', verdict: 'approve', effectiveVerdict: 'approve', deltaApproval: { fromHeadSha: 'H2', toHeadSha: 'H3', roundId: 'q3' } }, 5),
+    ];
+    const entries = transitionsToActivityEntries(ts, rs, []);
+    expect(entries.filter((e) => e.kind === 'review_queued').map((e) => e.detail)).toEqual([
+      'round 1 · First review · replaced by a newer push',
+      'round 2 · A newer push replaced the open review',
+      'round 3 · After a CI fix · delta review of the approval',
+    ]);
+    expect(entries.filter((e) => e.kind === 'review_approved').map((e) => e.detail ?? null)).toEqual([null, 'carries the approval at `H2`']);
+  });
+
+  test('a round recorded before triggers keeps its plain label', () => {
+    expect(transitionsToActivityEntries(log, rounds, attempts).filter((e) => e.kind === 'review_queued').map((e) => e.detail)).toEqual(['round 1', 'round 2']);
+  });
+});

@@ -133,6 +133,10 @@ export interface RoundSnapshot {
   reviewerTaskId?: string | null;
   /** What a delta round is scoped to, e.g. a composition's novel paths (§5.9). */
   scope?: Record<string, unknown> | null;
+  /** Why the round started (58c8961e). Absent on a round recorded before triggers were. */
+  trigger?: import('./delta-approval').RoundTrigger | null;
+  /** How a round that ended without a verdict of its own ended, e.g. `superseded_by_push`. */
+  endReason?: string | null;
 }
 
 export interface AttemptSnapshot {

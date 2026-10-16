@@ -61,6 +61,11 @@ export function recordedReader(payload: J, view: KernelView): GithubFactReader {
       // `null`/false to carryForwardEvidence, which fails closed on anything but true.
       return payload.carryForward === 'content_equivalent' || payload.carryForward === 'own_refresh' ? true : null;
     },
+    async reviewedDelta() {
+      // 58c8961e: the delta read the fact recorded. None recorded means the original read nothing or
+      // read null; both are a full review, so null replays it exactly.
+      return (payload.delta ?? null) as Awaited<ReturnType<NonNullable<GithubFactReader['reviewedDelta']>>>;
+    },
     async branchExists() {
       return typeof payload.baseExists === 'boolean' ? payload.baseExists : null;
     },

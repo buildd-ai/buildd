@@ -77,6 +77,9 @@ const LANDING = {
 };
 const mockGetLandingMetrics = mock(() => Promise.resolve(LANDING as any));
 mock.module('@/lib/pr-landing-metrics', () => ({ getLandingMetrics: mockGetLandingMetrics }));
+const REVIEW_ROUNDS = { window: '7d', mergedPrs: 2, rounds: 3, roundsPerMergedPr: 1.5, byTrigger: [{ trigger: 'first_pass', rounds: 2, perMergedPr: 1 }, { trigger: 'ci_fix', rounds: 1, perMergedPr: 0.5 }], deltaApprovalRounds: 1, supersededRounds: 0, supersededWithoutReason: 0, truncated: false };
+const mockGetReviewRoundMetrics = mock(() => Promise.resolve(REVIEW_ROUNDS as any));
+mock.module('@/lib/workflow/review-round-metrics', () => ({ getReviewRoundMetrics: mockGetReviewRoundMetrics }));
 
 const mockGetStalledIngestReport = mock(async (_ws: string[]) => null as any);
 mock.module('@/lib/knowledge-ingest-stalls', () => ({ getStalledIngestReport: mockGetStalledIngestReport }));
@@ -791,5 +794,32 @@ describe('GET /api/health/failures — per-task token', () => {
     mockAuthenticateApiKey.mockResolvedValue(authedAccount());
     await GET(makeRequest(URL_BASE));
     expect(mockGetFailureAnalytics.mock.calls[0][0]).toEqual([OWN, OTHER]);
+  });
+});
+
+describe('GET /api/health/failures: family=gate review rounds per merged PR (58c8961e)', () => {
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockGetFailureAnalytics.mockReset();
+    mockWorkspacesFindMany.mockReset();
+    mockGetReviewRoundMetrics.mockClear();
+    mockGetReviewRoundMetrics.mockResolvedValue(REVIEW_ROUNDS);
+    mockAuthenticateApiKey.mockResolvedValue(authedAccount());
+    mockWorkspacesFindMany.mockResolvedValue([{ id: VALID_UUID }]);
+    mockGetFailureAnalytics.mockResolvedValue(EMPTY_ANALYTICS);
+  });
+
+  it('returns rounds per merged PR by trigger next to the gate overview, with the same scope and window', async () => {
+    const body = await (await GET(makeRequest(`${URL_BASE}?family=gate&window=30d`))).json();
+    expect(body.reviewRounds).toEqual(REVIEW_ROUNDS);
+    expect(mockGetReviewRoundMetrics.mock.calls[0]).toEqual([[VALID_UUID], '30d']);
+  });
+
+  it('omits them when the read degraded to null, and outside the gate overview', async () => {
+    mockGetReviewRoundMetrics.mockResolvedValue(null);
+    expect((await (await GET(makeRequest(`${URL_BASE}?family=gate`))).json()).reviewRounds).toBeUndefined();
+    mockGetReviewRoundMetrics.mockClear();
+    expect((await (await GET(makeRequest(`${URL_BASE}?error=boom`))).json()).reviewRounds).toBeUndefined();
+    expect(mockGetReviewRoundMetrics).not.toHaveBeenCalled();
   });
 });

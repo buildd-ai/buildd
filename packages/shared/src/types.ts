@@ -3821,6 +3821,33 @@ export interface LandingMetrics {
 }
 
 /**
+ * Review rounds per merged PR, split by why each round started (58c8961e):
+ * the kernel's `RoundTrigger`, or `unrecorded` for a round from before rounds
+ * carried one. Returned with the gate overview of get_failure_analytics.
+ */
+export interface ReviewRoundMetrics {
+  window: GateWindow;
+  /** Kernel-owned PRs merged in the window. */
+  mergedPrs: number;
+  /** Every review round those PRs had. */
+  rounds: number;
+  roundsPerMergedPr: number;
+  byTrigger: Array<{ trigger: string; rounds: number; perMergedPr: number }>;
+  /** Delta reviews that carried an approval to a new head. */
+  deltaApprovalRounds: number;
+  /** Rounds a newer round replaced before they reached a verdict. */
+  supersededRounds: number;
+  /**
+   * Of those, how many recorded no end reason. Only a push records one today
+   * (`superseded_by_push`); a merge, close, policy approval, composition carry or
+   * retarget supersedes without one, so this is not expected to be zero.
+   */
+  supersededWithoutReason: number;
+  /** The read hit its row cap: the counts are a floor. */
+  truncated: boolean;
+}
+
+/**
  * A rollup across every gate reason sharing a literal prefix — the gate-ledger
  * counterpart to `FailureSignatureFamily`, for a reason family whose surviving
  * free text makes each occurrence its own singleton.

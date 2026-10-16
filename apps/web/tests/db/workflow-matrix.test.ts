@@ -51,6 +51,8 @@ interface FakePr {
   checks?: Record<string, string[]>; baseHead?: string | null; running?: string[];
   /** §8.3: `[from, to]` head pairs whose PR diff the compare API reports unchanged. */
   equivalent?: Array<[string, string]>;
+  /** 58c8961e: the delta read from an approved head, keyed `from->to` (absent = unread). */
+  deltas?: Record<string, { prFilesAtFrom: string[]; files: Array<{ path: string; status: string; additions: number; deletions: number }> }>;
 }
 let gh: FakePr;
 const live = (): LivePr => ({
@@ -67,6 +69,10 @@ const reader: GithubFactReader = {
   failingChecks: async () => gh.failing ?? null,
   branchExists: async () => gh.baseExists ?? null,
   contentEquivalent: async (_repo, _base, from, to) => (gh.equivalent ?? []).some(([f, t]) => f === from && t === to),
+  reviewedDelta: async (_repo, _base, from, to) => {
+    const d = gh.deltas?.[`${from}->${to}`];
+    return d ? { fromHeadSha: from, toHeadSha: to, ...d } : null;
+  },
 };
 const repoFor = async () => ({ installationId: 1, repoFullName: REPO, gitConfig: null });
 
@@ -532,15 +538,42 @@ describe('S1 — fix ends with a local commit, GitHub head unchanged (#3754)', (
 });
 
 describe('S2 — approve at H0, non-equivalent push to H1', () => {
-  test('APPROVED → AWAITING_REVIEW with a delta round dispatched on the push, never at merge time; the old approval covers only its own head', async () => {
+  test('APPROVED → AWAITING_REVIEW with a new round dispatched on the push, never at merge time; the old approval covers only its own head', async () => {
     const o = await openAndHandOn();
     expect(await verdict(o, 'approve')).toMatchObject({ handled: true, toState: 'APPROVED' });
     expect(posted).toEqual([{ commitId: 'H1', event: 'APPROVE' }]);
     await push(o, 'H2');
     const d = await delivery(o.deliveryId);
     expect(d).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'H2', currentRound: 2, approvedHeads: ['H1'] });
-    expect((await rounds(o.deliveryId)).map((r) => [r.round, r.kind, r.status])).toEqual([[1, 'full', 'decided'], [2, 'delta', 'queued']]);
+    // 58c8961e: no read of the delta (this fake reader has none), so the round after the approval is a full review.
+    expect((await rounds(o.deliveryId)).map((r) => [r.round, r.kind, r.status])).toEqual([[1, 'full', 'decided'], [2, 'full', 'queued']]);
     expect(reviewersCreated.map((r) => r.head)).toEqual(['H1', 'H2']);
+  });
+});
+
+describe('58c8961e: an approval carried across a reviewed delta; every round says why it started', () => {
+  const scopeOf = (deliveryId: string) => q<{ round: number; kind: string; status: string; scope: Record<string, unknown> | null }>(
+    sql`SELECT round, kind, status, scope FROM workflow_review_rounds WHERE delivery_id = ${deliveryId}::uuid ORDER BY round`);
+  test('a small push inside the PR after an approval is a delta round; its approve covers the new head; trigger and supersession persist', async () => {
+    const o = await openAndHandOn();
+    expect(await verdict(o, 'approve')).toMatchObject({ handled: true, toState: 'APPROVED' });
+    gh.deltas = { 'H1->H2': { prFilesAtFrom: ['src/a.ts', 'src/a.test.ts'], files: [{ path: 'src/a.test.ts', status: 'modified', additions: 2, deletions: 1 }] } };
+    await push(o, 'H2');
+    let rs = await scopeOf(o.deliveryId);
+    expect(rs.map((r) => [r.round, r.kind, r.status, r.scope?.trigger ?? null])).toEqual([[1, 'full', 'decided', 'first_pass'], [2, 'delta', 'queued', 'new_commits']]);
+    expect((rs[1]!.scope?.deltaApproval as { eligible?: boolean })?.eligible).toBe(true);
+    const v = await loadView({ deliveryId: o.deliveryId });
+    expect(v.rounds.map((r) => r.trigger)).toEqual(['first_pass', 'new_commits']);
+    expect(v.rounds[0]!.scope).toBeNull();
+    // A newer push while round 2 is open: round 2 ends superseded, saying why; H3 reads outside the PR, so round 3 is full.
+    gh.deltas!['H1->H3'] = { prFilesAtFrom: ['src/a.ts'], files: [{ path: 'src/new.ts', status: 'added', additions: 5, deletions: 0 }] };
+    await push(o, 'H3', { ancestors: ['H2', 'H1'] });
+    rs = await scopeOf(o.deliveryId);
+    expect(rs.map((r) => [r.round, r.kind, r.status, r.scope?.trigger ?? null, r.scope?.endReason ?? null])).toEqual([
+      [1, 'full', 'decided', 'first_pass', null], [2, 'delta', 'superseded', 'new_commits', 'superseded_by_push'], [3, 'full', 'queued', 'superseded_by_push', null],
+    ]);
+    const after = await loadView({ deliveryId: o.deliveryId });
+    expect(after.rounds.map((r) => [r.status, r.endReason ?? null])).toEqual([['decided', null], ['superseded', 'superseded_by_push'], ['queued', null]]);
   });
 });
 
@@ -2495,7 +2528,7 @@ describe('AWAITING_PUSH — an owner delivery leaves on a push (§6.4, §9)', ()
 describe('§11 — the reconciliation floor re-imports what a lost webhook never delivered (ddcbe113)', () => {
   const floor = (o: Delivery) => seam.reconcileKernelDeliveries(deps, { only: [o.deliveryId], minQuietMs: 0 });
 
-  test('a missed synchronize: APPROVED at H1 while GitHub is at H2 → the floor imports the head and a delta round at H2 starts', async () => {
+  test('a missed synchronize: APPROVED at H1 while GitHub is at H2 → the floor imports the head and a round at H2 starts', async () => {
     const o = await openAndHandOn();
     await verdict(o, 'approve');
     expect(await delivery(o.deliveryId)).toMatchObject({ state: 'APPROVED', currentHeadSha: 'H1' });
@@ -2506,7 +2539,8 @@ describe('§11 — the reconciliation floor re-imports what a lost webhook never
     const s = await floor(o);
     expect(s).toMatchObject({ checked: 1, imported: 1, errors: 0 });
     expect(await delivery(o.deliveryId)).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: 'H2', currentRound: 2 });
-    expect((await rounds(o.deliveryId)).at(-1)).toMatchObject({ round: 2, head_sha: 'H2', kind: 'delta' });
+    // 58c8961e: the round after an approval is a full review unless the delta was read and eligible.
+    expect((await rounds(o.deliveryId)).at(-1)).toMatchObject({ round: 2, head_sha: 'H2', kind: 'full' });
     expect(reviewersCreated.slice(before).map((r) => [r.round, r.head])).toEqual([[2, 'H2']]);
     const t = (await transitions(o.deliveryId)).at(-1)!;
     expect(t.command).toBe('HeadObserved');
