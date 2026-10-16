@@ -1375,9 +1375,11 @@ at any time.
   already in buildd (a native spec that recorded its path as provenance, or
   with its exact title) is reported as existing, never created again; the
   caller may record the path and commit on that spec's metadata instead. A
-  native spec that only cites the path is a related hint, never a match; a
-  person may name it (`attachTo`) to record the file there. Import runs in
-  pages read at one commit, each cut short by a time bound.
+  native spec that has been retired or superseded is not re-imported, even if
+  the file changes; it is reported as superseded and skipped. A native spec
+  that only cites the path is a related hint, never a match; a person may name
+  it (`attachTo`) to record the file there. Import runs in pages read at one
+  commit, each cut short by a time bound.
 - R-19: Confirmation is one action by a person with `approve_specs` over a
   selected batch, listed per area with each spec's path and commit. It is
   still one approval per spec (§6), each written only while the file is

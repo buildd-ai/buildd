@@ -6310,6 +6310,10 @@ export const decisionModelMeasurements = pgTable('decision_model_measurements', 
   calibration: jsonb('calibration').$type<{ x: number[]; y: number[] }>(),
   // Act on these labels only, each at its own threshold; null = every label at `threshold`.
   labelThresholds: jsonb('label_thresholds').$type<Record<string, number>>(),
+  // What the threshold was derived from: 'collected' (replayed decisions graded by
+  // outcome) or 'labelled' (a labelled or synthetic set). A labelled row is a
+  // placeholder: a later collected score replaces it, never the other way round.
+  caseSource: text('case_source').notNull().default('collected').$type<'collected' | 'labelled'>(),
 }, (t) => ({
   kindModelIdx: uniqueIndex('decision_model_measurements_kind_model_idx').on(t.kind, t.model),
 }));
