@@ -347,6 +347,13 @@ export interface LocalWorker {
    * `costBasis` when the agent env is built; a label, never a credential.
    */
   route?: import('./run-route').RunRoute | null;
+  /**
+   * The model provider refused this run's login: the SDK's own
+   * `authentication_failed` / `oauth_org_not_allowed`, a session that died on
+   * its first model call, or an expired Codex login. Never set from a tool's
+   * error text. Marks a plan login expired (run-route.ts nextLoginFailures).
+   */
+  modelLoginFailed?: boolean;
   // Set when sandbox_mount_gap abort fires; signals server to exempt from retry cap.
   // Currently never set — the abort was disabled after it fired on file content
   // (test titles, fixture strings) rather than real denials. Detection now only

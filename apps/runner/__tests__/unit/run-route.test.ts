@@ -3,12 +3,13 @@
  * AC-23 to AC-25): the route derivation table, the words, and dollars that
  * read as billed, estimated or plan-covered and never mix in a total.
  */
-import { describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, test } from 'bun:test';
 import { applyModelEnv, type ModelEnvInput } from '../../src/agent-model-env';
-import { isAuthError } from '../../src/claim-breaker';
+import { setCatalogPrices } from '@buildd/core/model-prices';
+import { normalizeCatalog } from '@buildd/core/model-catalog';
 import { claudeCostBasis, codexCostBasis } from '../../src/cost-basis';
 import {
-  claudeRunRoute, cloudRunRoute, codexRunRoute, detailDollars, machineRoutes, nextLoginFailures, rowDollars, routeWords, runSpend, runWords,
+  claudeRunRoute, clearRedoneLogins, cloudRunRoute, codexRunRoute, detailDollars, machineRoutes, nextLoginFailures, rowDollars, routeWords, runSpend, runWords,
   runsOnLine, spendTotals, todayLine, type RunRoute,
 } from '../../src/run-route';
 
@@ -34,6 +35,8 @@ const CLAUDE_TABLE: Claude[] = [
   { name: "the team's API key from the claim", input: { serverApiKey: 'sk-team' }, want: { bucket: 'api_key', provider: 'anthropic', owner: 'team' }, words: 'Claude · API key (team)' },
   { name: "the requester's own key (personal_only)", input: { serverApiKey: 'sk-mine', runnerLocalAllowed: false }, scope: 'personal', want: { bucket: 'api_key', provider: 'anthropic', owner: 'personal' }, words: 'Claude · API key (yours)' },
   { name: 'an API key on the machine', env: { ANTHROPIC_API_KEY: 'sk-machine' }, want: { bucket: 'api_key', provider: 'anthropic', owner: 'machine' }, words: 'Claude · API key (this machine)' },
+  // The route reads the env with the cost basis's own predicate: a whitespace-only key still counts as a key.
+  { name: 'a whitespace-only API key next to a login', env: { ANTHROPIC_API_KEY: '  ' }, input: { machineLogin: 'login' }, want: { bucket: 'api_key', provider: 'anthropic', owner: 'machine' } },
   { name: 'the API key wins over a login in the same env', env: { ANTHROPIC_API_KEY: 'sk-machine' }, input: { machineLogin: 'login' }, want: { bucket: 'api_key', provider: 'anthropic', owner: 'machine' } },
   { name: "the team's OpenRouter endpoint", input: { modelEndpoint: OPENROUTER as any, serverApiKey: 'withheld' }, want: { bucket: 'gateway', provider: 'openrouter', owner: 'team' }, words: 'Claude · OpenRouter (team)' },
   { name: "the team's LiteLLM gateway", input: { modelEndpoint: LITELLM as any }, want: { bucket: 'gateway', provider: 'litellm', owner: 'team' }, words: 'Claude · LiteLLM (team)' },
@@ -123,6 +126,8 @@ describe('cloudRunRoute', () => {
 const route = (r: Partial<RunRoute>): RunRoute => ({ backend: 'claude', bucket: 'plan', provider: 'anthropic', owner: 'machine', ...r });
 const SONNET = 'claude-sonnet-4-5';
 
+afterEach(() => setCatalogPrices([]));
+
 describe('dollars (R-41)', () => {
   const meta = (usd: number, model = SONNET) => ({ totalCostUsd: usd, actualModel: model });
 
@@ -131,6 +136,24 @@ describe('dollars (R-41)', () => {
     expect(s).toEqual({ usd: 0.08, kind: 'billed' });
     expect(rowDollars(s)).toBe('$0.08');
     expect(detailDollars(s)).toBe('$0.08 billed');
+  });
+
+  test('a Codex run on an OpenAI key is estimated: its price is not from OpenAI\'s own list', () => {
+    const s = runSpend({ route: route({ backend: 'codex', bucket: 'api_key', provider: 'openai' }), resultMeta: meta(0.3, 'gpt-5.5') });
+    expect(s?.kind).toBe('estimated');
+    expect(rowDollars(s)).toBe('~$0.30');
+  });
+
+  test('a Codex model only the family fallback prices is flagged as not on the price list', () => {
+    const codexKey = route({ backend: 'codex', bucket: 'api_key', provider: 'openai' });
+    expect(runSpend({ route: codexKey, resultMeta: meta(0.3, 'gpt-5.5') })).toEqual({ usd: 0.3, kind: 'estimated', priceUnknown: true });
+    setCatalogPrices(normalizeCatalog({ data: [{
+      id: 'openai/gpt-5.5', name: 'GPT 5.5', created: 1_800_000_000, context_length: 400_000,
+      architecture: { output_modalities: ['text'] }, pricing: { prompt: '0.000005', completion: '0.00003' }, supported_parameters: ['tools'],
+    }] } as any));
+    const s = runSpend({ route: codexKey, resultMeta: meta(0.3, 'gpt-5.5') });
+    expect(s).toEqual({ usd: 0.3, kind: 'estimated' });
+    expect(detailDollars(s)).toBe('~$0.30 estimated, from tokens at list price');
   });
 
   test('a gateway run is estimated: no gateway reports its charge to the runner', () => {
@@ -166,10 +189,12 @@ describe('dollars (R-41)', () => {
     expect(runSpend({ route: route({}), resultMeta: { totalCostUsd: 0, totalUsage: { inputTokens: 5, outputTokens: 5 } } })).toBeNull();
   });
 
-  test('no route: a virtual basis is plan, anything else is estimated, never billed', () => {
+  test('no route: a plan basis is plan, a per-token one estimated; an unknown basis has no dollar figure', () => {
     expect(runSpend({ costBasis: 'virtual', resultMeta: meta(1) })?.kind).toBe('plan');
     expect(runSpend({ costBasis: 'real', resultMeta: meta(1) })?.kind).toBe('estimated');
-    expect(runSpend({ resultMeta: meta(1) })?.kind).toBe('estimated');
+    // Unknown may well be a plan: it keeps its tokens and stays out of Today.
+    expect(runSpend({ costBasis: 'unknown', resultMeta: meta(1) })).toBeNull();
+    expect(runSpend({ resultMeta: meta(1) })).toBeNull();
   });
 });
 
@@ -194,9 +219,11 @@ describe('totals never mix buckets (R-42)', () => {
   });
 });
 
+const CHATGPT_JSON = { tokens: { access_token: 'a', refresh_token: 'r' } };
+
 describe('the header: Runs on (R-39)', () => {
   test('grouped by bucket, with whose credential it is', () => {
-    const { routes, problems } = machineRoutes({ modelAuthSource: 'machine_login', codexAuthSource: 'machine_login', env: {} });
+    const { routes, problems } = machineRoutes({ env: {}, machineLogin: 'login', codexAuthJson: CHATGPT_JSON });
     const line = runsOnLine([
       ...routes,
       route({ bucket: 'api_key', owner: 'team' }),
@@ -207,7 +234,7 @@ describe('the header: Runs on (R-39)', () => {
 
   test('an expired Codex login says so and where to fix it, and no Codex plan reads as available (AC-24)', () => {
     const { routes, problems } = machineRoutes({
-      modelAuthSource: 'machine_login', codexAuthSource: 'machine_login', env: {},
+      env: {}, machineLogin: 'login', codexAuthJson: CHATGPT_JSON,
       loginFailures: { codex: { owner: 'machine', at: 1 } },
     });
     expect(routes.some(r => r.backend === 'codex')).toBe(false);
@@ -219,34 +246,66 @@ describe('the header: Runs on (R-39)', () => {
     expect(problems[0].text).toBe('Codex plan: login expired, reconnect in Settings › Credentials');
   });
 
-  test("the machine's own provider, cloud account and key", () => {
-    expect(machineRoutes({ modelAuthSource: 'api_key', env: {}, llmProvider: { provider: 'openrouter' } }).routes[0]).toMatchObject({ bucket: 'gateway', provider: 'openrouter' });
-    expect(machineRoutes({ modelAuthSource: 'none', env: { CLAUDE_CODE_USE_BEDROCK: '1' } }).routes[0]).toMatchObject({ bucket: 'cloud', provider: 'bedrock' });
-    expect(machineRoutes({ modelAuthSource: 'api_key', codexAuthSource: 'api_key', env: {} }).routes.map(routeWords)).toEqual(['API key (this machine)', 'API key (this machine)']);
-    expect(runsOnLine(machineRoutes({ modelAuthSource: 'api_key', codexAuthSource: 'api_key', env: {} }).routes)).toBe('Runs on: API key Anthropic, OpenAI');
+  test('a machine login behind a non-Anthropic ANTHROPIC_BASE_URL is that gateway, as the runs are', () => {
+    const env = { ANTHROPIC_BASE_URL: 'https://llm.corp.example.test', CLAUDE_CODE_OAUTH_TOKEN: 'seat' };
+    const header = machineRoutes({ env, machineLogin: 'env' }).routes;
+    // The same route a run on this machine records.
+    const run = claudeRunRoute({ modelEnv: applyModelEnv({ ...env }, { isCodexTask: false, machineLogin: 'env' }), claudeCredentialUsed: false });
+    expect(header).toEqual([run!]);
+    expect(run).toMatchObject({ bucket: 'gateway', provider: 'custom', label: 'llm.corp.example.test' });
+    expect(runsOnLine(header)).toBe('Runs on: gateway llm.corp.example.test');
+  });
+
+  test("the machine's own provider, cloud account and keys", () => {
+    expect(machineRoutes({ env: { ANTHROPIC_API_KEY: 'k' }, llmProvider: { provider: 'openrouter' } }).routes[0]).toMatchObject({ bucket: 'gateway', provider: 'openrouter' });
+    expect(machineRoutes({ env: { CLAUDE_CODE_USE_BEDROCK: '1' } }).routes[0]).toMatchObject({ bucket: 'cloud', provider: 'bedrock' });
+    const keys = machineRoutes({ env: { ANTHROPIC_API_KEY: 'k', OPENAI_API_KEY: 'o' } }).routes;
+    expect(keys.map(routeWords)).toEqual(['API key (this machine)', 'API key (this machine)']);
+    expect(runsOnLine(keys)).toBe('Runs on: API key Anthropic, OpenAI');
+  });
+
+  test('runner-managed auth: an inherited key does not reach the agent, so it is not a route', () => {
+    expect(machineRoutes({ env: { BUILDD_MODEL_AUTH_SOURCE: 'runner', ANTHROPIC_API_KEY: 'k' } }).routes).toEqual([]);
   });
 
   test('nothing detected says nothing', () => {
-    expect(runsOnLine(machineRoutes({ modelAuthSource: 'none', codexAuthSource: 'none', env: {} }).routes)).toBeNull();
+    expect(runsOnLine(machineRoutes({ env: {} }).routes)).toBeNull();
   });
 });
 
 describe('nextLoginFailures: what a finished run says about its login', () => {
   const codexPlan = route({ backend: 'codex', provider: 'openai' });
-  test('a plan run that fails to authenticate marks the login expired', () => {
-    const next = nextLoginFailures({}, { route: codexPlan, status: 'error', error: 'Agent authentication failed' }, isAuthError, 5);
-    expect(next).toEqual({ codex: { owner: 'machine', at: 5 } });
+  const stamp = () => 'stamp-1';
+
+  test("a plan run the model provider refused marks the login expired, with its store's stamp", () => {
+    const next = nextLoginFailures({}, { route: codexPlan, status: 'error', modelLoginFailed: true }, 5, stamp);
+    expect(next).toEqual({ codex: { owner: 'machine', at: 5, stamp: 'stamp-1' } });
+  });
+
+  test("a tool, MCP or git 401 in the run's error never does", () => {
+    // modelLoginFailed is set only from the backend's own auth signal, never from error text.
+    expect(nextLoginFailures({}, { route: route({}), status: 'error' }, 5, stamp)).toEqual({});
+    expect(nextLoginFailures({}, { route: route({}), status: 'error', modelLoginFailed: false }, 5, stamp)).toEqual({});
   });
 
   test('a run on that login that ends well clears it', () => {
     const prev = { codex: { owner: 'machine' as const, at: 5 } };
-    expect(nextLoginFailures(prev, { route: codexPlan, status: 'done' }, isAuthError, 9)).toEqual({});
+    expect(nextLoginFailures(prev, { route: codexPlan, status: 'done' }, 9)).toEqual({});
   });
 
-  test('another failure, or another route, changes nothing', () => {
+  test('another route changes nothing', () => {
     const prev = { codex: { owner: 'machine' as const, at: 5 } };
-    expect(nextLoginFailures(prev, { route: codexPlan, status: 'error', error: 'tests failed' }, isAuthError, 9)).toBe(prev);
-    expect(nextLoginFailures(prev, { route: route({ backend: 'codex', bucket: 'api_key', provider: 'openai' }), status: 'error', error: 'Agent authentication failed' }, isAuthError, 9)).toBe(prev);
-    expect(nextLoginFailures(prev, { route: null, status: 'done' }, isAuthError, 9)).toBe(prev);
+    expect(nextLoginFailures(prev, { route: route({ backend: 'codex', bucket: 'api_key', provider: 'openai' }), status: 'error', modelLoginFailed: true }, 9)).toBe(prev);
+    expect(nextLoginFailures(prev, { route: null, status: 'done' }, 9)).toBe(prev);
+  });
+
+  test('a fresh claude login or codex login (its store changed) clears the failure', () => {
+    const prev = { claude: { owner: 'machine' as const, at: 5, stamp: 'a' }, codex: { owner: 'machine' as const, at: 5, stamp: 'c' } };
+    const next = clearRedoneLogins(prev, (b) => (b === 'claude' ? 'b' : 'c'));
+    expect(next).toEqual({ codex: prev.codex });
+    // Unchanged stores, or no stamp at all, keep it.
+    expect(clearRedoneLogins(prev, (b) => (b === 'claude' ? 'a' : 'c'))).toBe(prev);
+    const noStamp = { claude: { owner: 'machine' as const, at: 5, stamp: null } };
+    expect(clearRedoneLogins(noStamp, () => 'z')).toBe(noStamp);
   });
 });

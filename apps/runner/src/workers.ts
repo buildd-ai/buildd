@@ -21,7 +21,7 @@ import { captureDependencyManifest, DEPENDENCY_MANIFEST_FILENAME } from './depen
 import { emitPhase } from './phase-lines';
 import { ClaimHandoffTracker } from './claim-handoff';
 import { type SkillBundle, type ClaudeAiArtifactAccess, applyClaudeAiArtifactEnv, resolveOutputFormat, RUNNER_HEARTBEAT_INTERVAL_MS, LIVENESS_PING_INTERVAL_MS } from '@buildd/shared';
-import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, copyFileSync, rmSync, statSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, copyFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { materializeCodexAuth, writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, seedCodexAuthIfMissing, ensureStableCodexHome, teardownStableCodexHome, readCodexAuthJson, writeCodexApiKeyToHome, checkCodexCredentialExpiry, stableCodexHomePath, stableCodexHomeIsolatedPath, linkMachineCodexAuth } from './codex-auth.js';
@@ -101,7 +101,7 @@ import { archiveSession } from './history-store';
 import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
 import { applyModelEnv, endpointSessionModels, shouldUseClaudeCredential, TRUSTED_MODEL_BASE_URL_ENV } from './agent-model-env';
 import { resolveModelAuthSource, stripInheritedApiKeys } from './model-auth-source';
-import { applyMachineLoginPolicy, claudeModelAuthMissing, decideCodexLogin, describeCodexAuthSource, describeMachineLogin, describeModelAuthSource, detectCodexAuthSource, detectModelAuthSource, type CodexAuthSource, hostModelCredentialValues, reportIgnoredLoginSetting, localCodexAuthPath, type ModelAuthReport } from './host-seat';
+import { applyMachineLoginPolicy, claudeModelAuthMissing, detectMachineLogin, machineLoginStamp, decideCodexLogin, describeCodexAuthSource, describeMachineLogin, describeModelAuthSource, detectCodexAuthSource, detectModelAuthSource, type CodexAuthSource, hostModelCredentialValues, reportIgnoredLoginSetting, localCodexAuthPath, type ModelAuthReport } from './host-seat';
 import { bundledTierEntry } from '@buildd/core/model-tier-defaults';
 import type { WorkerEnvironment, ClaimDiagnostics, ClaimModelEndpoint, ClaimCredentialDecision } from '@buildd/shared';
 import { withFleetIdentity } from './fleet-identity';
@@ -153,7 +153,7 @@ import { InstructionAckTracker } from './instruction-acks';
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch, TERMINAL_WORKER_RETENTION_MS, SERVER_TERMINAL_STATUSES, SERVER_TERMINAL_TASK_STATUSES } from './worker-sync';
 import { buildTerminalAttributionPayload } from './terminal-attribution';
 import { claudeCostBasis, cloudCostBasis, codexCostBasis } from './cost-basis';
-import { claudeRunRoute, cloudRunRoute, codexRunRoute, machineRoutes, nextLoginFailures, type LoginFailure, type RouteBackend, type RouteProblem, type RunRoute } from './run-route';
+import { claudeRunRoute, clearRedoneLogins, cloudRunRoute, codexRunRoute, machineRoutes, nextLoginFailures, type LoginFailures, type RouteProblem, type RunRoute } from './run-route';
 import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
 import { handOffUnproven, isHandOffRefusal } from './hand-off-outcome';
 import { preflightHookEntries } from './preflight-guard';
@@ -731,13 +731,6 @@ interface DepsEntry {
 /** Keyed by the worker object: never persisted, gone with the worker. */
 const depsJobs = new WeakMap<LocalWorker, DepsEntry>();
 
-/** When this machine's Codex auth.json last changed, or null when there is none. */
-function codexAuthMtime(): number | null {
-  const p = localCodexAuthPath();
-  if (!p) return null;
-  try { return statSync(p).mtimeMs; } catch { return null; }
-}
-
 export class WorkerManager {
   private config: LocalUIConfig;
   private workers = new Map<string, LocalWorker>();
@@ -755,10 +748,10 @@ export class WorkerManager {
   /**
    * Plan logins whose last run on this runner failed to authenticate, per
    * backend (the header's "login expired", R-39). Cleared by the next run on
-   * that login that ends well, or, for this machine's Codex login, when its
-   * auth.json changes (a fresh `codex login`).
+   * that login that ends well, or, for this machine's own login, when its
+   * credential store changes (a fresh `claude login` / `codex login`).
    */
-  private loginFailures: Partial<Record<RouteBackend, LoginFailure & { authFileMtime?: number | null }>> = {};
+  private loginFailures: LoginFailures = {};
   private acceptRemoteTasks: boolean = true;
   private cleanupInterval?: Timer;
   private terminalWorktreeSweepTimer?: Timer;
@@ -1092,28 +1085,25 @@ export class WorkerManager {
    * that do not work (run-route.ts machineRoutes). Labels only, never a value.
    */
   getRouteStatus(): { routes: RunRoute[]; problems: RouteProblem[] } {
-    const codex = this.loginFailures.codex;
-    if (codex?.owner === 'machine' && codex.authFileMtime !== undefined && codexAuthMtime() !== codex.authFileMtime) {
-      delete this.loginFailures.codex;
+    this.loginFailures = clearRedoneLogins(this.loginFailures, (b) => machineLoginStamp(b));
+    let codexAuthJson: Record<string, unknown> | null = null;
+    const codexAuthPath = localCodexAuthPath();
+    if (codexAuthPath) {
+      try { codexAuthJson = JSON.parse(readFileSync(codexAuthPath, 'utf-8')); } catch { codexAuthJson = null; }
     }
     return machineRoutes({
-      modelAuthSource: this.modelAuth.source,
-      codexAuthSource: this.codexAuth,
-      llmProvider: this.config.llmProvider,
       env: process.env,
+      llmProvider: this.config.llmProvider,
+      machineLogin: detectMachineLogin(),
+      trustedBaseUrl: process.env[TRUSTED_MODEL_BASE_URL_ENV],
+      codexAuthJson,
       loginFailures: this.loginFailures,
     });
   }
 
-  /** A plan run that failed to authenticate marks its login expired; one that ends well clears it. */
+  /** A plan run the model provider refused marks its login expired; one that ends well clears it. */
   private noteLoginOutcome(worker: LocalWorker): void {
-    const prev = this.loginFailures;
-    const next = nextLoginFailures(prev, worker, isAuthError, Date.now());
-    if (next === prev) return;
-    // A fresh `codex login` rewrites auth.json: remember its time to notice that.
-    const codex = next.codex;
-    if (codex && codex !== prev.codex && codex.owner === 'machine') next.codex = { ...codex, authFileMtime: codexAuthMtime() } as typeof codex;
-    this.loginFailures = next;
+    this.loginFailures = nextLoginFailures(this.loginFailures, worker, Date.now(), (b) => machineLoginStamp(b));
   }
 
   getViewerToken(): string | undefined {
@@ -3983,7 +3973,9 @@ export class WorkerManager {
         ?? (isCodexTask ? 'unknown' : claudeCostBasis(modelEnv, { claudeCredentialUsed: shouldUseClaudeCredential(modelEnv, worker) }));
       sessionLog(worker.id, 'info', 'cost_basis', `basis=${worker.costBasis}`, task.id);
       // The route behind that basis (run-route.ts), from the same inputs.
-      // Codex is classified below with its basis.
+      // Codex is classified below with its basis. A new session starts with
+      // no login refusal recorded.
+      worker.modelLoginFailed = false;
       worker.route = cloudRunRoute(process.env, isCodexTask ? 'codex' : 'claude')
         ?? (isCodexTask ? null : claudeRunRoute({
           modelEnv,
@@ -4249,6 +4241,7 @@ export class WorkerManager {
       if (isCodexTask && worker.codexCredential && (worker as any).codexLoginSource !== 'machine') {
         const expiryError = checkCodexCredentialExpiry(worker.codexCredential);
         if (expiryError) {
+          worker.modelLoginFailed = true;
           throw new Error(
             `Codex credential expired: ${expiryError}. Reconnect your ChatGPT / OpenAI account in Settings → Credentials.`,
           );
@@ -5331,6 +5324,8 @@ export class WorkerManager {
       const authFailed = worker.toolCalls.length === 0 && isAuthError(earlyOutput);
 
       if (authFailed) {
+        // The session died on its first model call: the backend's own auth refusal.
+        worker.modelLoginFailed = true;
         // Auth error - mark as failed, not completed
         sessionLog(worker.id, 'error', 'auth_error', 'Agent authentication failed — check API key', worker.taskId);
         this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
@@ -6493,6 +6488,11 @@ export class WorkerManager {
       this.acknowledgeInstructions(worker.id, this.instructionAcks.onAssistant(worker.id, msg as any));
 
       // Surface rate_limit errors on assistant messages
+      // The model provider refused this run's login (not a tool's 401): the
+      // header says the login expired (run-route.ts nextLoginFailures).
+      if ((msg as any).error === 'authentication_failed' || (msg as any).error === 'oauth_org_not_allowed') {
+        worker.modelLoginFailed = true;
+      }
       if ((msg as any).error === 'rate_limit') {
         worker.currentAction = 'Rate limited — retrying...';
         console.log(`[Worker ${worker.id}] Assistant rate_limit error — SDK retrying automatically`);

@@ -19,19 +19,27 @@
  * tokens only (the runner prices them, codex-backend.ts), and a gateway's
  * charge (OpenRouter's `usage.cost`) never reaches the runner through Claude
  * Code or Codex. So:
- *   - api_key: billed. The provider's own key is charged at the provider's own
- *     published price for the tokens it reported, which is what is priced.
- *     A model the price list does not know reads as estimated instead.
+ *   - Claude on an Anthropic API key: billed. The key is charged at
+ *     Anthropic's published price for the tokens it reported, which is the
+ *     price list Claude Code uses. A model that list does not know reads as
+ *     estimated instead.
+ *   - Codex on an OpenAI key: estimated. Its price comes from the OpenRouter
+ *     catalog or a static family fallback, not OpenAI's own list.
  *   - gateway, cloud: estimated ("~"). The gateway or account sets its own
  *     price and reports no charge we can read.
  *   - plan: no dollar figure; the list-price value is "covered by the plan".
+ *   - no route: estimated only when the basis is `real`; a plan basis is plan;
+ *     an unknown basis has no dollar figure at all (the row keeps its tokens
+ *     and Today leaves it out), since it may well be a plan.
  * Totals keep the three apart; nothing estimated or plan-covered is ever added
  * into billed.
  *
  * Pure: no I/O.
  */
-import { estimateCostUsdFromTotals, knownPriceForModel } from '@buildd/core/model-prices';
-import { codexAuthJsonKind, CLOUD_MODEL_AUTH_ENV } from './cost-basis';
+import { catalogPriceFor, estimateCostUsdFromTotals, knownPriceForModel } from '@buildd/core/model-prices';
+import { applyModelEnv } from './agent-model-env';
+import { codexAuthJsonKind, CLOUD_MODEL_AUTH_ENV, isCredentialSet } from './cost-basis';
+import { modelAuthSourceMode, stripInheritedApiKeys } from './model-auth-source';
 
 export type RouteBucket = 'plan' | 'api_key' | 'gateway' | 'cloud';
 export type RouteProvider = 'anthropic' | 'openai' | 'openrouter' | 'litellm' | 'custom' | 'bedrock' | 'vertex' | 'foundry';
@@ -59,7 +67,8 @@ export interface RouteEndpoint {
 /** The claim's credential scope (credentialDecision.scope); `personal` = the requester's own key. */
 export type CredentialScope = 'personal' | 'team' | 'none' | undefined;
 
-const set = (v: string | undefined) => typeof v === 'string' && v.trim().length > 0;
+// The cost basis's own predicate: a route and its basis read the same env the same way.
+const set = isCredentialSet;
 
 function hostOf(url: string | undefined): string | undefined {
   if (!url) return undefined;
@@ -260,11 +269,15 @@ export interface RunSpend {
   priceUnknown?: true;
 }
 
-/** How a route's dollars read. No route: plan when the basis says so, else estimated (never billed). */
-export function dollarKind(route: RunRoute | null | undefined, costBasis?: string | null): DollarKind {
-  if (!route) return costBasis === 'virtual' ? 'plan' : 'estimated';
+/**
+ * How a route's dollars read. No route: plan for a plan basis, estimated for
+ * a per-token one, and null (no dollar figure) when the basis is unknown.
+ */
+export function dollarKind(route: RunRoute | null | undefined, costBasis?: string | null): DollarKind | null {
+  if (!route) return costBasis === 'virtual' ? 'plan' : costBasis === 'real' ? 'estimated' : null;
   if (route.bucket === 'plan') return 'plan';
-  if (route.bucket === 'api_key') return 'billed';
+  // Only Anthropic's own key is priced from its provider's own list.
+  if (route.bucket === 'api_key' && route.backend === 'claude') return 'billed';
   return 'estimated';
 }
 
@@ -293,6 +306,8 @@ export function runSpend(input: {
 }): RunSpend | null {
   const rm = input.resultMeta;
   if (!rm) return null;
+  let kind = dollarKind(input.route, input.costBasis);
+  if (!kind) return null;
   const model = rm.actualModel || input.model || null;
   let usd = positive(rm.totalCostUsd);
   if (!usd && rm.modelUsage) {
@@ -300,10 +315,10 @@ export function runSpend(input: {
   }
   if (!usd && rm.totalUsage && model) usd = estimateCostUsdFromTotals(rm.totalUsage, model);
   if (!usd) return null;
-  let kind = dollarKind(input.route, input.costBasis);
   const backend = input.route?.backend ?? input.backend ?? 'claude';
-  // Codex's estimator always carries a price; Claude's list knows Claude models only.
-  const priceUnknown = backend === 'claude' && !!model && knownPriceForModel(model) === null;
+  // Claude's list knows Claude models; a Codex model the catalog does not
+  // carry was priced by codex-backend.ts's family fallback, a guess.
+  const priceUnknown = !!model && (backend === 'codex' ? catalogPriceFor(model) === null : knownPriceForModel(model) === null);
   if (priceUnknown && kind === 'billed') kind = 'estimated';
   return { usd, kind, ...(priceUnknown ? { priceUnknown: true as const } : {}) };
 }
@@ -403,30 +418,40 @@ export interface RouteProblem {
   text: string;
 }
 
-/** A plan login that failed its last run with an auth error. */
+/** A plan login whose last run the model provider refused. */
 export interface LoginFailure {
   owner: RouteOwner;
   at: number;
+  /**
+   * For this machine's own login: a stamp of its credential store when the
+   * run failed (host-seat.ts machineLoginStamp). A different stamp later means
+   * the login was redone, so the failure is over. Absent: no stamp is readable.
+   */
+  stamp?: string | null;
 }
 
 export type LoginFailures = Partial<Record<RouteBackend, LoginFailure>>;
 
 /**
- * A finished run's lesson about its login: a plan run that ended on an auth
- * error marks that backend's login expired; one that ended well clears it.
- * Anything else (another route, another kind of failure) changes nothing.
- * `authError` is the caller's classifier (claim-breaker.ts isAuthError).
+ * A finished run's lesson about its login. A plan run that ended because the
+ * model provider refused its login (`modelLoginFailed`, set only from the
+ * backend's own auth signal: the SDK's `authentication_failed` /
+ * `oauth_org_not_allowed`, a session that died on its first model call, an
+ * expired Codex login) marks that backend's login expired. A tool, MCP or
+ * git 401 in the transcript never does. A plan run that ended well clears it.
  */
 export function nextLoginFailures(
   prev: LoginFailures,
-  worker: { route?: RunRoute | null; status: string; error?: string | null },
-  authError: (text: string) => boolean,
+  worker: { route?: RunRoute | null; status: string; modelLoginFailed?: boolean },
   now: number,
+  stamp?: (backend: RouteBackend) => string | null,
 ): LoginFailures {
   const route = worker.route;
   if (!route || route.bucket !== 'plan') return prev;
-  if (worker.status === 'error' && worker.error && authError(worker.error.toLowerCase())) {
-    return { ...prev, [route.backend]: { owner: route.owner, at: now } };
+  if (worker.status === 'error' && worker.modelLoginFailed) {
+    const failure: LoginFailure = { owner: route.owner, at: now };
+    if (route.owner === 'machine' && stamp) failure.stamp = stamp(route.backend);
+    return { ...prev, [route.backend]: failure };
   }
   if (worker.status === 'done' && prev[route.backend]) {
     const next = { ...prev };
@@ -436,13 +461,31 @@ export function nextLoginFailures(
   return prev;
 }
 
+/** Drop failures of this machine's logins whose credential store has changed since (a fresh login). */
+export function clearRedoneLogins(failures: LoginFailures, stamp: (backend: RouteBackend) => string | null): LoginFailures {
+  let next = failures;
+  for (const backend of ['claude', 'codex'] as const) {
+    const f = failures[backend];
+    if (!f || f.owner !== 'machine' || f.stamp === undefined || f.stamp === null) continue;
+    if (stamp(backend) !== f.stamp) {
+      if (next === failures) next = { ...failures };
+      delete next[backend];
+    }
+  }
+  return next;
+}
+
 export interface MachineRoutesInput {
-  /** host-seat.ts detectModelAuthSource. */
-  modelAuthSource?: 'machine_token' | 'machine_login' | 'api_key' | 'none';
-  /** host-seat.ts detectCodexAuthSource. */
-  codexAuthSource?: 'machine_login' | 'api_key' | 'none';
-  llmProvider?: { provider?: string; baseUrl?: string } | null;
+  /** The runner's own env (the agent env inherits its model variables). */
   env: Record<string, string | undefined>;
+  /** This runner's LLM_PROVIDER. */
+  llmProvider?: { provider?: string; baseUrl?: string } | null;
+  /** host-seat.ts detectMachineLogin: this machine's own Claude login. */
+  machineLogin?: 'env' | 'login' | null;
+  /** Value of BUILDD_TRUSTED_MODEL_BASE_URL. */
+  trustedBaseUrl?: string;
+  /** This machine's parsed Codex auth.json, or null when there is none. */
+  codexAuthJson?: Record<string, unknown> | null;
   /** Plan logins whose last run failed to authenticate, per backend. */
   loginFailures?: LoginFailures;
 }
@@ -455,46 +498,44 @@ function expiredText(backend: RouteBackend, owner: RouteOwner): string {
 }
 
 /**
- * The routes this runner's own credentials give each backend (R-39), from the
- * same detection as the login report, and the ones that do not work. Routes a
- * claim delivers (the team's key or endpoint) are not here: the view adds them
- * from the runs that used them.
+ * The routes this runner's own credentials give each backend (R-39), worked
+ * out by the same functions as each run's route: the env a claim that
+ * delivers nothing would build (applyModelEnv), then claudeRunRoute and
+ * codexRunRoute. Routes a claim delivers (the team's key or endpoint) are not
+ * here: the view adds them from the runs that used them.
  */
 export function machineRoutes(input: MachineRoutesInput): { routes: RunRoute[]; problems: RouteProblem[] } {
-  const env = input.env;
   const routes: RunRoute[] = [];
   const problems: RouteProblem[] = [];
   const failed = input.loginFailures ?? {};
 
-  // Claude: a per-machine provider wins, then a cloud account, then a base URL, then the login.
-  const p = input.llmProvider;
-  const anthropicBase = env.ANTHROPIC_BASE_URL;
-  const anthropicHost = hostOf(anthropicBase);
-  if (p?.provider === 'openrouter' || set(p?.baseUrl)) {
-    routes.push(p?.provider === 'openrouter' && (!p.baseUrl || isOpenRouterHost(hostOf(p.baseUrl)))
-      ? { backend: 'claude', bucket: 'gateway', provider: 'openrouter', owner: 'machine' }
-      : machineGateway('claude', p?.baseUrl));
-  } else if (cloudSwitch(env)) {
-    routes.push({ backend: 'claude', bucket: 'cloud', provider: cloudSwitch(env)!, owner: 'machine' });
-  } else if (anthropicHost && anthropicHost !== 'api.anthropic.com' && input.modelAuthSource === 'api_key') {
-    routes.push(machineGateway('claude', anthropicBase));
-  } else if (input.modelAuthSource === 'machine_token' || input.modelAuthSource === 'machine_login') {
-    if (failed.claude?.owner === 'machine') problems.push({ backend: 'claude', text: expiredText('claude', 'machine') });
-    else routes.push({ backend: 'claude', bucket: 'plan', provider: 'anthropic', owner: 'machine' });
-  } else if (input.modelAuthSource === 'api_key') {
-    routes.push({ backend: 'claude', bucket: 'api_key', provider: 'anthropic', owner: 'machine' });
-  }
+  // Claude: the agent env a bare claim would get.
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(input.env)) if (typeof v === 'string') env[k] = v;
+  const providerSelected = input.llmProvider?.provider === 'openrouter' || set(input.llmProvider?.baseUrl);
+  // BUILDD_MODEL_AUTH_SOURCE=runner: an inherited key is no consent to spend (model-auth-source.ts).
+  if (modelAuthSourceMode(input.env) === 'runner' && !providerSelected && !set(env.ANTHROPIC_BASE_URL)) stripInheritedApiKeys(env);
+  const modelEnv = applyModelEnv(env, {
+    isCodexTask: false,
+    llmProvider: input.llmProvider as any,
+    machineLogin: input.machineLogin ?? null,
+    trustedBaseUrl: input.trustedBaseUrl,
+  });
+  const claude = claudeRunRoute({ modelEnv, claudeCredentialUsed: false, llmProvider: input.llmProvider });
+  if (claude?.bucket === 'plan' && failed.claude?.owner === 'machine') problems.push({ backend: 'claude', text: expiredText('claude', 'machine') });
+  else if (claude) routes.push(claude);
   if (failed.claude && failed.claude.owner !== 'machine') problems.push({ backend: 'claude', text: expiredText('claude', failed.claude.owner) });
 
-  // Codex.
-  if (input.codexAuthSource === 'machine_login') {
-    if (failed.codex?.owner === 'machine') problems.push({ backend: 'codex', text: expiredText('codex', 'machine') });
-    else routes.push({ backend: 'codex', bucket: 'plan', provider: 'openai', owner: 'machine' });
-  } else if (input.codexAuthSource === 'api_key') {
-    routes.push(set(env.OPENAI_BASE_URL)
-      ? machineGateway('codex', env.OPENAI_BASE_URL)
-      : { backend: 'codex', bucket: 'api_key', provider: 'openai', owner: 'machine' });
-  }
+  // Codex: this machine's auth.json, else its OPENAI_API_KEY.
+  const codex = codexRunRoute({
+    endpoint: 'anthropic',
+    authJson: input.codexAuthJson ?? null,
+    envApiKey: input.env.OPENAI_API_KEY,
+    openAiBaseUrl: input.env.OPENAI_BASE_URL,
+    codexLogin: input.codexAuthJson ? 'machine' : 'none',
+  });
+  if (codex?.bucket === 'plan' && failed.codex?.owner === 'machine') problems.push({ backend: 'codex', text: expiredText('codex', 'machine') });
+  else if (codex) routes.push(codex);
   if (failed.codex && failed.codex.owner !== 'machine') problems.push({ backend: 'codex', text: expiredText('codex', failed.codex.owner) });
 
   return { routes, problems };

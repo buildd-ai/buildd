@@ -96,6 +96,18 @@ describe('routes and dollars in the list view', () => {
     expect(row).not.toContain('$0.08');
   });
 
+  test('a running row with no route and an unknown basis keeps its tokens, never "~$" (and stays out of Today)', () => {
+    let s = fixtureState();
+    const w = { ...WORKERS[0], costBasis: 'unknown', sessionModel: SONNET, resultMeta: { totalCostUsd: 0.5, actualModel: SONNET } };
+    s = reduce(s, { type: 'worker_update', worker: w });
+    const t = text(frame(s, 120, 40));
+    const row = t.split('\n').find(l => l.includes('name override'))!;
+    expect(row).toContain('41k tok');
+    expect(row).not.toContain('$');
+    expect(t).not.toContain('Today:');
+    expect(spendToday(s, NOW)).toEqual({ billed: 0, estimated: 0, plan: 0 });
+  });
+
   test('rows without a recorded route keep the old columns', () => {
     expect(text(frame(fixtureState(), 120, 40))).not.toContain('Runs on');
     expect(taskRows(fixtureState(), NOW).every(r => r.route === undefined)).toBe(true);
@@ -151,7 +163,8 @@ describe('the detail (R-40, R-41)', () => {
 
   test('a gateway run reads as estimated', () => {
     const t = text(frame({ ...routedState(), mode: { kind: 'detail', taskId: 't-hint' } }, 120, 24));
-    expect(t).toContain('Codex · OpenRouter (team) · ~$0.02 estimated, from tokens at list price');
+    // The catalog is cold here, so the Codex model reads as priced by the fallback.
+    expect(t).toContain('Codex · OpenRouter (team) · ~$0.02 estimated, gpt-5.5 is not on the price list');
   });
 });
 
