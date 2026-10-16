@@ -121,6 +121,22 @@ describe('installInProgress: atomic lock acquisition', () => {
     expect(nodeFs.existsSync(lockPath)).toBe(false);
   });
 
+  test('a second acquireInstallLock while a live lock exists leaves the first intact', () => {
+    seed({ dangling: false });
+    const lockPath = join(HOME, INSTALL_LOCK_FILE);
+    const FIRST_PID = 12345;
+    const SECOND_PID = 99999;
+    acquireInstallLock(HOME, nodeFs, () => T0, FIRST_PID, { isAlive: () => true });
+    const firstContents = JSON.parse(nodeFs.readFileSync(lockPath, 'utf-8'));
+    expect(firstContents.pid).toBe(FIRST_PID);
+    expect(firstContents.startedAt).toBe(T0);
+    acquireInstallLock(HOME, nodeFs, () => T0 + 1000, SECOND_PID, { isAlive: () => true });
+    const secondContents = JSON.parse(nodeFs.readFileSync(lockPath, 'utf-8'));
+    expect(secondContents.pid).toBe(FIRST_PID);
+    expect(secondContents.startedAt).toBe(T0);
+    releaseInstallLock(HOME, nodeFs);
+  });
+
   test('installInProgress respects the lock age bound: old locks are stale', () => {
     seed({ dangling: false });
     const OLD_LOCK_AGE_MS = INSTALL_LOCK_MAX_AGE_MS + 1;
