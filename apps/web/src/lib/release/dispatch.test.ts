@@ -10,6 +10,8 @@ const {
   deploymentOnlyPreflight,
   releasePreflight,
   summarizePostMergeIntegration,
+  CANDIDATE_INTEGRATION_CHECK_NAME,
+  POST_MERGE_INTEGRATION_CHECK_PREFIX,
 } = await import('./dispatch');
 
 const run = (over: Partial<CheckRun> = {}): CheckRun => ({
@@ -52,6 +54,18 @@ describe('classifyCheckRuns', () => {
     expect(classifyCheckRuns([run(), advisory])).toEqual({ ciState: 'passing', failingChecks: [] });
     const pendingAdvisory = run({ name: 'post-merge integration / integration', status: 'in_progress', conclusion: null });
     expect(classifyCheckRuns([run(), pendingAdvisory]).ciState).toBe('passing');
+  });
+
+  // build.yml `candidate-integration` is the authoritative verdict for a
+  // release candidate's exact SHA; it must gate, and only a real pass counts.
+  it('counts the candidate integration check, and never as passing unless it succeeded', () => {
+    const name = CANDIDATE_INTEGRATION_CHECK_NAME;
+    expect(classifyCheckRuns([run(), run({ name, status: 'queued', conclusion: null })]).ciState).toBe('pending');
+    expect(classifyCheckRuns([run(), run({ name })]).ciState).toBe('passing');
+    for (const conclusion of ['failure', 'cancelled', 'skipped', 'neutral', 'timed_out']) {
+      expect(classifyCheckRuns([run(), run({ name, conclusion })])).toEqual({ ciState: 'failing', failingChecks: [name] });
+    }
+    expect(name.startsWith(POST_MERGE_INTEGRATION_CHECK_PREFIX)).toBe(false);
   });
 
   it('still counts the PR-path integration check', () => {

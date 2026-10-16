@@ -12,7 +12,7 @@ mock.module('@/lib/pusher-client', () => ({
   CHANNEL_PREFIX: 'buildd-',
 }));
 
-const { default: RealTimeWorkerView, shouldFlushImmediately, parseErrorMessage, elapsedLabel, staleAnswerNotice } = await import(
+const { default: RealTimeWorkerView, shouldFlushImmediately, parseErrorMessage, elapsedLabel } = await import(
   './RealTimeWorkerView'
 );
 
@@ -324,37 +324,6 @@ describe('parseErrorMessage', () => {
   test('falls back when the JSON body has no error field', async () => {
     const res = new Response(JSON.stringify({ ok: false }), { status: 500 });
     expect(await parseErrorMessage(res, 'Failed to abort')).toBe('Failed to abort');
-  });
-});
-
-// What a stale card shows when /respond says nothing is waiting any more.
-describe('staleAnswerNotice', () => {
-  test('links an already-answered question to its continuation', () => {
-    expect(staleAnswerNotice({
-      error: 'This was already answered, and the work moved to a follow-up task.',
-      reasonCode: 'already_answered',
-      nextAction: { kind: 'open_task', taskId: 'task-2' },
-    }, 'task-1')).toEqual({
-      message: 'This was already answered, and the work moved to a follow-up task.',
-      href: '/app/tasks/task-2',
-      linkLabel: 'Open the follow-up task',
-    });
-  });
-
-  test('sends an ended worker to its own task page to retry or follow up', () => {
-    const notice = staleAnswerNotice({ error: 'This agent has already stopped.', reasonCode: 'worker_ended', nextAction: { kind: 'follow_up' } }, 'task-1');
-    expect(notice?.href).toBe('/app/tasks/task-1');
-    expect(notice?.linkLabel).toMatch(/retry|follow-up/i);
-  });
-
-  test('offers no link when a refresh is all it takes', () => {
-    const notice = staleAnswerNotice({ error: 'The agent moved on.', reasonCode: 'no_longer_waiting', nextAction: { kind: 'refresh' } }, 'task-1');
-    expect(notice).toEqual({ message: 'The agent moved on.', href: null, linkLabel: null });
-  });
-
-  test('is null for any other rejection, which keeps the question open', () => {
-    expect(staleAnswerNotice({ error: 'Backend credential (claude) is revoked.', credentialRevoked: true }, 'task-1')).toBeNull();
-    expect(staleAnswerNotice(null, 'task-1')).toBeNull();
   });
 });
 

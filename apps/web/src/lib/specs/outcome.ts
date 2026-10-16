@@ -8,7 +8,8 @@ import {
 import { isUuid } from '@/lib/uuid';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 import { readPinnedSpecRevision } from './pin';
-import { specCriteria, type RequirementRef } from './requirements';
+import { specCriteria, type RequirementRef } from '@buildd/spec-contract/requirements';
+import { inScope } from '@buildd/spec-contract/scope';
 import { fail, reach, type SpecCaller, type SpecError } from './store';
 
 /**
@@ -17,7 +18,8 @@ import { fail, reach, type SpecCaller, type SpecError } from './store';
  * whether the task completed or its PR merged.
  *
  * The criteria are the requirements (`R-n`) and acceptance criteria (`AC-n`)
- * of the pinned revision's body, parsed by ./requirements.ts. Decisions and
+ * of the pinned revision's body, parsed by ./requirements.ts, narrowed to the
+ * ones the task names in `specSource.criteria` when it names any (./scope.ts). Decisions and
  * invariants are context, not criteria. A verdict on one criterion is a row in
  * `spec_outcome_verdicts`, bound to the PR head it judged and the references it
  * read (F4 read-ledger ids); the newest row per criterion stands. The outcome
@@ -109,7 +111,7 @@ async function loadGoverned(caller: SpecCaller | null, taskId: unknown, mode: Mo
   if (!pin || typeof pin.specId !== 'string') return fail(409, 'This task is not pinned to a Living Spec, so it has no governed outcome');
   const read = await readPinnedSpecRevision(pin);
   if (!read.ok) return fail(409, `The pinned spec revision is unavailable: ${read.reason}`);
-  return { task, pin, revision: read.revision, specRevisionId: pin.specRevisionId as string, specId: read.specId, criteria: specCriteria(read.body) };
+  return { task, pin, revision: read.revision, specRevisionId: pin.specRevisionId as string, specId: read.specId, criteria: inScope(pin, specCriteria(read.body)) };
 }
 
 async function fold(l: Loaded): Promise<OutcomeView> {
@@ -142,7 +144,7 @@ export async function recordSpecVerdict(caller: SpecCaller, taskId: unknown, inp
   const { criterionId, verdict, headSha } = input;
   if (typeof criterionId !== 'string' || !l.criteria.some((c) => c.id === criterionId)) {
     const ids = l.criteria.map((c) => c.id);
-    return fail(400, `criterionId must be a criterion of the pinned revision ${l.revision}: ${ids.length ? ids.join(', ') : 'it has none (no R-n or AC-n lines)'}`);
+    return fail(400, `criterionId must be a criterion this task answers for in pinned revision ${l.revision}: ${ids.length ? ids.join(', ') : 'it has none (no R-n or AC-n lines)'}`);
   }
   if (typeof verdict !== 'string' || !(VERIFICATION_VERDICTS as readonly string[]).includes(verdict)) {
     return fail(400, `verdict must be one of: ${VERIFICATION_VERDICTS.join(', ')}`);
@@ -188,7 +190,7 @@ export async function recordCheckVerdict(taskId: string, input: {
   const l = await loadGoverned(null, taskId, 'record');
   if ('ok' in l) return l;
   if (l.specRevisionId !== input.specRevisionId) return fail(409, 'The task is no longer pinned to the revision this check ran against');
-  if (!l.criteria.some((c) => c.id === input.criterionId)) return fail(400, `${input.criterionId} is not a criterion of the pinned revision ${l.revision}`);
+  if (!l.criteria.some((c) => c.id === input.criterionId)) return fail(400, `${input.criterionId} is not a criterion this task answers for in pinned revision ${l.revision}`);
   if (!SHA.test(input.headSha)) return fail(400, 'headSha must be a commit SHA');
   const [row] = await db.insert(specOutcomeVerdicts).values({
     workspaceId: l.task.workspaceId,
@@ -200,6 +202,34 @@ export async function recordCheckVerdict(taskId: string, input: {
     evidence: { ...input.evidence, verificationTaskId: input.verificationTaskId, recordedBy: `check:${input.verificationTaskId}` },
   }).returning({ id: specOutcomeVerdicts.id });
   return { ok: true, verdictId: row.id };
+}
+
+/**
+ * Record a verdict the mission's visual audit made (lib/visual-audit-spec-verdict.ts),
+ * after that module has checked who the auditor is, what it captured and
+ * which screenshots it cites. Server-side, no caller, like a check run's;
+ * authored as `visual:<audit task id>`.
+ */
+export async function recordAuditedVerdict(taskId: string, input: {
+  criterionId: string; verdict: VerificationVerdict; headSha: string; auditTaskId: string; evidence: Record<string, unknown>;
+}): Promise<{ ok: true; verdictId: string; outcome: OutcomeView } | SpecError> {
+  const l = await loadGoverned(null, taskId, 'record');
+  if ('ok' in l) return l;
+  if (!l.criteria.some((c) => c.id === input.criterionId)) {
+    const ids = l.criteria.map((c) => c.id);
+    return fail(400, `criterionId must be a criterion this task answers for in pinned revision ${l.revision}: ${ids.length ? ids.join(', ') : 'it has none (no R-n or AC-n lines)'}`);
+  }
+  if (!SHA.test(input.headSha)) return fail(400, 'headSha must be a commit SHA');
+  const [row] = await db.insert(specOutcomeVerdicts).values({
+    workspaceId: l.task.workspaceId,
+    taskId: l.task.id,
+    specRevisionId: l.specRevisionId,
+    criterionId: input.criterionId,
+    verdict: input.verdict,
+    headSha: input.headSha.toLowerCase(),
+    evidence: { ...input.evidence, auditTaskId: input.auditTaskId, recordedBy: `visual:${input.auditTaskId}` },
+  }).returning({ id: specOutcomeVerdicts.id });
+  return { ok: true, verdictId: row.id, outcome: await fold(l) };
 }
 
 /**

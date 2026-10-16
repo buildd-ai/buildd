@@ -7,8 +7,12 @@ import { cookies } from 'next/headers';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveActiveTeamId, getTeamWorkspaceIds } from '@/lib/team-access';
 import ActivityView from './ActivityView';
-import { loadActivity, type ActivityData } from './activity-data';
+import {
+  loadActivity, loadLiveRootIds, ACTIVITY_CHILD_LIMIT, ACTIVITY_ROOT_LIMIT, ACTIVITY_WINDOW_DAYS, type ActivityData,
+} from './activity-data';
 import { listLocalSessions, type LocalSessionView } from '@/lib/local-session-view';
+import { localHoldsByWorker } from '@/lib/local-session-display';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export default async function TasksPage({
   searchParams,
@@ -30,6 +34,10 @@ export default async function TasksPage({
   let localSessions: LocalSessionView[] = [];
   // Activity owns Now/History. Insights loads its band drill-down separately.
   let activity: ActivityData | null = null;
+  // Set when the root cap, not the 30-day window, ended History.
+  let historyReach: { oldestAt: string } | null = null;
+  // A failed load says so; it never renders as an empty Now and History.
+  let loadFailed = false;
 
   if (!isDev && user) {
     try {
@@ -41,7 +49,7 @@ export default async function TasksPage({
         if (initiativeId) {
           try {
             const init = await db.query.initiatives.findFirst({
-              where: eq(initiatives.id, initiativeId),
+              where: sqlWhere(eq(initiatives.id, initiativeId)),
               columns: { title: true },
             });
             initiativeTitle = init?.title || null;
@@ -61,92 +69,83 @@ export default async function TasksPage({
           } catch (err) {
             console.warn('[tasks] local sessions query failed:', err);
           }
-          // A task a local session is working on names that client, not a runner.
-          const localClientByTaskId = new Map(
-            localSessions.flatMap(s => s.tasks.filter(t => t.live).map(t => [t.id, `${s.clientLabel} · local`] as const)),
-          );
-          // Fetch recent root tasks; retry children follow below.
-          const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-          const recentTasks = await db.query.tasks.findMany({
-            where: and(
-              inArray(tasks.workspaceId, wsIds),
-              gte(tasks.updatedAt, thirtyDaysAgo),
-              isNull(tasks.parentTaskId),
-            ),
-            columns: {
-              id: true,
-              title: true,
-              status: true,
-              mode: true,
-              category: true,
-              createdAt: true,
-              updatedAt: true,
-              workspaceId: true,
-              result: true,
-              missionId: true,
-              context: true,
-              backend: true,
-              dependsOn: true,
-              startAt: true,
-              loopConfig: true,
-              loopIteration: true,
-              loopState: true,
-              parentTaskId: true,
-              taskClass: true,
-              // Subject-liveness gate inputs. subjectAnchor carries `source`,
-              // which decides whether the anchor gates claims at all — an
-              // unselected column reads as undefined and the row would render
-              // as a healthy QUEUED task again.
-              subjectKind: true,
-              subjectPrNumber: true,
-              subjectResolution: true,
-              subjectAnchor: true,
-            },
-            orderBy: [desc(tasks.updatedAt)],
-            limit: 200,
-          });
-
-          // Fetch child tasks (retry/reviewer) for the root tasks we loaded
-          const rootIds = recentTasks.map(t => t.id);
-          const childTasks = rootIds.length > 0
+          const localHolds = localHoldsByWorker(localSessions);
+          const taskColumns = {
+            id: true,
+            title: true,
+            status: true,
+            mode: true,
+            category: true,
+            createdAt: true,
+            updatedAt: true,
+            workspaceId: true,
+            result: true,
+            missionId: true,
+            context: true,
+            backend: true,
+            dependsOn: true,
+            startAt: true,
+            loopConfig: true,
+            loopIteration: true,
+            loopState: true,
+            parentTaskId: true,
+            taskClass: true,
+            // Subject-liveness gate inputs. subjectAnchor carries `source`,
+            // which decides whether the anchor gates claims at all — an
+            // unselected column reads as undefined and the row would render
+            // as a healthy QUEUED task again.
+            subjectKind: true,
+            subjectPrNumber: true,
+            subjectResolution: true,
+            subjectAnchor: true,
+          } as const;
+          // Recent roots (the History window) plus every live root, however old.
+          const windowStart = new Date(Date.now() - ACTIVITY_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+          const [recentTasks, liveRootIds] = await Promise.all([
+            db.query.tasks.findMany({
+              where: sqlWhere(and(
+                inArray(tasks.workspaceId, wsIds),
+                gte(tasks.updatedAt, windowStart),
+                isNull(tasks.parentTaskId),
+              )),
+              columns: taskColumns,
+              orderBy: sqlOrderBy([desc(tasks.updatedAt)]),
+              limit: ACTIVITY_ROOT_LIMIT,
+            }),
+            loadLiveRootIds(wsIds),
+          ]);
+          if (recentTasks.length >= ACTIVITY_ROOT_LIMIT) {
+            historyReach = { oldestAt: recentTasks[recentTasks.length - 1].updatedAt.toISOString() };
+          }
+          const loadedRootIds = new Set(recentTasks.map(t => t.id));
+          const missingLiveIds = liveRootIds.filter(id => !loadedRootIds.has(id));
+          const liveRoots = missingLiveIds.length > 0
             ? await db.query.tasks.findMany({
-                where: inArray(tasks.parentTaskId, rootIds),
-                columns: {
-                  id: true,
-                  title: true,
-                  status: true,
-                  mode: true,
-                  category: true,
-                  createdAt: true,
-                  updatedAt: true,
-                  workspaceId: true,
-                  result: true,
-                  missionId: true,
-                  context: true,
-                  backend: true,
-                  dependsOn: true,
-                  startAt: true,
-                  loopConfig: true,
-                  loopIteration: true,
-                  loopState: true,
-                  parentTaskId: true,
-                  taskClass: true,
-                  subjectKind: true,
-                  subjectPrNumber: true,
-                  subjectResolution: true,
-                  subjectAnchor: true,
-                },
-                limit: 500,
+                where: sqlWhere(and(inArray(tasks.workspaceId, wsIds), inArray(tasks.id, missingLiveIds))),
+                columns: taskColumns,
               })
             : [];
-          const allTasks = [...new Map([...recentTasks, ...childTasks].map(t => [t.id, t])).values()];
+          const rootTasks = [...recentTasks, ...liveRoots];
+
+          // Fetch child tasks (retry/reviewer) for the root tasks we loaded,
+          // newest first so a cap drops the oldest attempts, never a live one.
+          const rootIds = rootTasks.map(t => t.id);
+          const childTasks = rootIds.length > 0
+            ? await db.query.tasks.findMany({
+                where: sqlWhere(and(inArray(tasks.workspaceId, wsIds), inArray(tasks.parentTaskId, rootIds))),
+                columns: taskColumns,
+                orderBy: sqlOrderBy([desc(tasks.createdAt)]),
+                limit: ACTIVITY_CHILD_LIMIT,
+              })
+            : [];
+          const allTasks = [...new Map([...rootTasks, ...childTasks].map(t => [t.id, t])).values()];
 
           // Fetch mission titles for tasks that have missionId
           const missionIds = [...new Set(allTasks.map(t => t.missionId).filter(Boolean))] as string[];
           const missionTitleMap = new Map<string, string>();
           if (missionIds.length > 0) {
             const misns = await db.query.missions.findMany({
-              where: inArray(missions.id, missionIds),
+              where: sqlWhere(inArray(missions.id, missionIds)),
               columns: { id: true, title: true, initiativeId: true },
             });
             for (const m of misns) {
@@ -162,13 +161,14 @@ export default async function TasksPage({
             if (initiativeId) return !!t.missionId && initiativeMissionIds.includes(t.missionId);
             return true;
           });
-          activity = await loadActivity({ tasks: inView, missionTitles: missionTitleMap, localClientByTaskId, now: Date.now(), rules: missionHelpers });
+          activity = await loadActivity({ tasks: inView, missionTitles: missionTitleMap, localHolds, now: Date.now(), rules: missionHelpers });
 
         }
       }
     } catch (error) {
       unstable_rethrow(error);
       console.error('Activity query error:', error);
+      loadFailed = true;
     }
   }
 
@@ -177,7 +177,7 @@ export default async function TasksPage({
   if (missionId && user) {
     try {
       const mission = await db.query.missions.findFirst({
-        where: eq(missions.id, missionId),
+        where: sqlWhere(eq(missions.id, missionId)),
         columns: { title: true },
       });
       missionTitle = mission?.title || null;
@@ -204,6 +204,8 @@ export default async function TasksPage({
       missionFilter={missionId ? { id: missionId, title: missionTitle } : null}
       initiativeTitle={initiativeTitle}
       localSessions={localSessions}
+      loadError={loadFailed}
+      historyReach={historyReach}
     />
   );
 }

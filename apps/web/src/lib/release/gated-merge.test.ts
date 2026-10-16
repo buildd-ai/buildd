@@ -81,6 +81,32 @@ describe('findMergedReleasePrContaining', () => {
   });
 });
 
+describe('findMergedReleasePrContaining — frozen release candidates', () => {
+  const candidatePr = (number: number, mergedAt: string, headSha: string, ref: string) =>
+    ({ ...pr(number, mergedAt, headSha), head: { sha: headSha, ref } });
+  const CANDIDATE = { ...BASE, headMatches: (ref: string) => /^release\/v\d+\.\d+\.\d+$/.test(ref) };
+
+  it('lists merged PRs into prod without a fixed head and keeps only candidate heads', async () => {
+    github(
+      [
+        candidatePr(7, '2026-01-11T00:00:00Z', 'feature-head', 'feature/x'),
+        candidatePr(8, '2026-01-12T00:00:00Z', 'cand-head', 'release/v1.2.3'),
+      ],
+      { 'feature-head': 'ahead', 'cand-head': 'ahead' },
+    );
+    const found = await findMergedReleasePrContaining(CANDIDATE);
+    expect(String(mockGithubApi.mock.calls[0]?.[1])).not.toContain('head=');
+    // The feature PR into main also contains the sha but is not a release PR.
+    expect(found).toMatchObject({ number: 8, headSha: 'cand-head', mergeCommitSha: 'merge-8' });
+  });
+
+  it('a dev commit that landed after the cut is not shipped by the candidate', async () => {
+    // The candidate was frozen at an earlier dev SHA, so its head does not contain the later one.
+    github([candidatePr(8, '2026-01-12T00:00:00Z', 'cand-head', 'release/v1.2.3')], { 'cand-head': 'diverged' });
+    expect(await findMergedReleasePrContaining({ ...CANDIDATE, sha: 'dev-after-cut' })).toBeNull();
+  });
+});
+
 describe('commitContains', () => {
   it('is true for identical shas without an API call', async () => {
     expect(await commitContains(undefined, 'org/repo', 'a', 'a')).toBe(true);

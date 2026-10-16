@@ -32,6 +32,7 @@ import {
   type AnswerPathDecision,
 } from '@/lib/answer-resume';
 import { preflightBackendCredential } from '@/lib/answer-credential-preflight';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // POST /api/workers/[id]/respond - Answer a worker's question.
 //
@@ -74,7 +75,7 @@ export async function POST(
 
   // Load worker with its task
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.id, id),
+    where: sqlWhere(eq(workers.id, id)),
     with: { workspace: true, task: true, account: true },
   });
 
@@ -444,7 +445,14 @@ async function respondToInteractiveSession(args: {
     // it (recordAnswerDelivery) would delete the answer from the queue. The
     // record names the message so await_answer can find the answer by it even
     // after the capped queue has evicted it.
-    const record = { ...deliveryRecord, messageId: answerMessage.id };
+    // waitCapId: the ask the wait capability names (answer/capability), so the
+    // shell waiter can tell the answer to its own ask from a later one's.
+    const waitCapId = (worker.waitingFor as { waitCapId?: unknown } | null)?.waitCapId;
+    const record = {
+      ...deliveryRecord,
+      messageId: answerMessage.id,
+      ...(typeof waitCapId === 'string' && waitCapId ? { waitCapId } : {}),
+    };
     await db
       .update(tasks)
       .set({
@@ -678,7 +686,7 @@ async function respondByContinuation(args: {
  * card shows the answer rather than an error.
  */
 async function alreadyAnsweredReply(workerId: string) {
-  const fresh = await db.query.workers.findFirst({ where: eq(workers.id, workerId) }).catch(() => null);
+  const fresh = await db.query.workers.findFirst({ where: sqlWhere(eq(workers.id, workerId)) }).catch(() => null);
   return NextResponse.json(
     {
       error: 'Question was already answered',
@@ -695,7 +703,7 @@ async function readRecordedAnswer(worker: { status: string | null; instructionHi
     let continuationContext: unknown = null;
     if (worker.status === 'superseded' && worker.continuationTaskId) {
       const next = await db.query.tasks.findFirst({
-        where: eq(tasks.id, worker.continuationTaskId),
+        where: sqlWhere(eq(tasks.id, worker.continuationTaskId)),
         columns: { context: true },
       });
       continuationContext = next?.context ?? null;

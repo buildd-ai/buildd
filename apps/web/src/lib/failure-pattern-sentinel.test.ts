@@ -8,8 +8,6 @@ import {
   MAX_EVIDENCE_REFS,
   MAX_AFFECTED_REFS,
   DEFAULT_SENTINEL_THRESHOLDS,
-  pathOverlapIncidentCleared,
-  type BlockerPrState,
   type SentinelFacts,
   type RetryChildFact,
   type WorkerFailureFact,
@@ -267,46 +265,30 @@ describe('path_overlap deferral with no progress', () => {
   });
 });
 
-describe('pathOverlapIncidentCleared: the resolve check, on facts read now', () => {
-  const inc = (over: { taskIds?: string[]; prNumbers?: number[]; stalledTasks?: number } = {}) => ({
-    firstSeenAt: minutesAgo(600),
-    affectedRefs: { taskIds: over.taskIds ?? ['t1'], workerIds: [], prNumbers: over.prNumbers ?? [77] },
-    impact: { stalledTasks: over.stalledTasks ?? (over.taskIds ?? ['t1']).length },
-  });
-  const obs = (
-    tasks: Record<string, { status: string | null; lastWorkerAt?: string | null }>,
-    prs: Record<number, BlockerPrState> = {},
-  ) => ({
-    tasks: new Map(Object.entries(tasks).map(([id, s]) => [id, { status: s.status, lastWorkerAt: s.lastWorkerAt ?? null }])),
-    prs: new Map(Object.entries(prs).map(([n, s]) => [Number(n), s])),
+describe('path_overlap episodes are per blocker (failure-incident-recovery §5 rule 3, G1)', () => {
+  const T = DEFAULT_SENTINEL_THRESHOLDS.pathOverlapStallMinutes;
+
+  it('AC-1: 3 h behind PR A then 10 min behind PR B opens nothing for B, and nothing for A once B is current', () => {
+    const out = detectFailurePatterns(facts({
+      pathOverlapDeferrals: [
+        { taskId: 't1', blockingPrNumber: 101, firstDeferredAt: minutesAgo(190), lastDeferredAt: minutesAgo(11), lastProgressAt: null, taskStatus: 'pending', blockerState: 'open' },
+        { taskId: 't1', blockingPrNumber: 202, firstDeferredAt: minutesAgo(10), lastDeferredAt: minutesAgo(1), lastProgressAt: null, taskStatus: 'pending', blockerState: 'open' },
+      ],
+    })).filter(c => c.rule === 'path_overlap_stall');
+    expect(out).toHaveLength(0);
   });
 
-  it('clears when the blocking PR merged, even with the subject still pending', () => {
-    expect(pathOverlapIncidentCleared(inc(), obs({ t1: { status: 'pending' } }, { 77: 'merged' }))).toBe(true);
-    expect(pathOverlapIncidentCleared(inc(), obs({ t1: { status: 'pending' } }, { 77: 'closed' }))).toBe(true);
+  it('I-8: an episode never counts time before its blocker existed', () => {
+    const out = detectFailurePatterns(facts({
+      pathOverlapDeferrals: [
+        { taskId: 't1', blockingPrNumber: 77, firstDeferredAt: minutesAgo(T + 600), lastDeferredAt: minutesAgo(1), lastProgressAt: null, taskStatus: 'pending', blockerState: 'open', blockerCreatedAt: minutesAgo(30) },
+      ],
+    })).filter(c => c.rule === 'path_overlap_stall');
+    expect(out).toHaveLength(0);
   });
 
-  it('clears when every subject finished or started a worker since', () => {
-    expect(pathOverlapIncidentCleared(
-      inc({ taskIds: ['t1', 't2'] }),
-      obs({ t1: { status: 'completed' }, t2: { status: 'pending', lastWorkerAt: minutesAgo(10) } }, { 77: 'open' }),
-    )).toBe(true);
-  });
-
-  it('a real remaining blocker keeps it open', () => {
-    expect(pathOverlapIncidentCleared(inc(), obs({ t1: { status: 'pending' } }, { 77: 'open' }))).toBe(false);
-    expect(pathOverlapIncidentCleared(
-      inc({ taskIds: ['t1', 't2'] }),
-      obs({ t1: { status: 'completed' }, t2: { status: 'pending' } }, { 77: 'open' }),
-    )).toBe(false);
-  });
-
-  it('unknown evidence never clears: an unread task, an unknown PR, or subjects beyond the stored refs', () => {
-    expect(pathOverlapIncidentCleared(inc(), obs({}, { 77: 'open' }))).toBe(false);
-    expect(pathOverlapIncidentCleared(inc(), obs({ t1: { status: null } }))).toBe(false);
-    expect(pathOverlapIncidentCleared(inc({ prNumbers: [] }), obs({ t1: { status: 'pending' } }))).toBe(false);
-    expect(pathOverlapIncidentCleared(inc({ stalledTasks: 30 }), obs({ t1: { status: 'completed' } }, { 77: 'open' }))).toBe(false);
-    expect(pathOverlapIncidentCleared(inc({ taskIds: [] }), obs({}, { 77: 'open' }))).toBe(false);
+  it('the detector version moved with the signature semantics', () => {
+    expect(FAILURE_PATTERN_DETECTOR_VERSION).toBe('fps-v2');
   });
 });
 

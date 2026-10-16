@@ -36,6 +36,8 @@
  *   revisions, gates and repair rounds: attempts and review runs are evidence
  *   inside their task's drawer, never cells or cards of their own.
  */
+import { CLAIM_ROW_BTN } from '@/components/tasks/ClaimTaskHint';
+import { displayTaskTitle } from '@/lib/task-title';
 import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
 import { SurfaceAuditWaiverTile } from './MissionSurfaceAuditWaiver';
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
@@ -79,7 +81,7 @@ export interface LandedStripProps {
 }
 
 const STATUS_PILL: Record<StripState, string> = {
-  landed: 'Landed', review: 'In review', running: 'Running', waiting: 'Needs you',
+  landed: 'Landed', review: 'In review', running: 'Running', waiting: 'Has a question',
   ci_failed: 'CI failed', fixing: 'Fixing', failed: 'Failed', ready: 'Ready', blocked: 'Blocked', queued: 'Queued',
 };
 
@@ -102,7 +104,7 @@ export function LandedStrip({ model, compact, link, workspaceId, executor, focus
   const focusNonce = useSyncExternalStore(subscribe, () => strip?.store.getFocusNonce() ?? 0, () => 0);
   const selectedId = chosen && slots.some(s => s.id === chosen) ? chosen : defaultStripSelection(slots, focus?.taskId);
   const select = useCallback((id: string) => strip?.store.select(id), [strip]);
-  // Marks depend on the selected task only (SEL-1): the tick row re-renders as one unit.
+  // Marks depend on the selected task only (strip R-11): the tick row re-renders as one unit.
   const selection = useMemo(() => (selectedId ? stripMarks(model, selectedId) : null), [model, selectedId]);
 
   const drawerRef = useRef<HTMLDivElement>(null);
@@ -123,9 +125,9 @@ export function LandedStrip({ model, compact, link, workspaceId, executor, focus
     return s.kind === 'fold' ? `+${s.taskIds.length}` : stripTick(i);
   };
   const marks = slotMarks(slots, selection.marks, sel);
-  // Next open cycles through open cells only (NX-1): held ones are skipped,
+  // Next open cycles through open cells only (strip R-32): held ones are skipped,
   // and so are failed ones. Failed is its own bucket (TONE-1): "N open" never
-  // counts a failed cell, so the cycle must not visit one either (NX-2).
+  // counts a failed cell, so the cycle must not visit one either (strip R-33).
   const open = openIndices(slots);
   const failedAt = errorIndices(slots);
   const counts = stripSlotCounts(slots);
@@ -239,16 +241,16 @@ export function stripReason(t: BoardTask, executor: MissionExecutor | null): str
     case 'done':
     case 'blocked':
       return null;
-    case 'waiting': return t.waitingFor?.prompt ?? 'Needs input.';
-    case 'running': return t.currentAction ?? `Running${t.runner ? ` on ${t.runner}` : ''}.`;
+    case 'waiting': return t.waitingFor?.prompt ?? 'Has a question.';
+    case 'running': return t.currentAction ?? `In progress${t.runner ? ` on ${t.runner}` : ''}.`;
     case 'review': return 'PR open, awaiting merge.';
     case 'ci_failed': return 'CI failed on its PR.';
     case 'fixing': return 'A fix attempt is working on its red PR.';
     case 'failed': return 'The last attempt failed.';
     case 'ready':
       return executor === 'local'
-        ? "Waiting for a local session to claim it. Runners never pick up this mission's tasks."
-        : 'Ready · next free slot.';
+        ? 'Ready to start. Claim it from a local session.'
+        : 'Next in line for a runner.';
   }
 }
 
@@ -290,7 +292,7 @@ const StripDrawer = memo(function StripDrawer({ ref, task: t, state, index, tone
             </span>
           )}
         </div>
-        <p className={`font-mono font-semibold leading-snug text-text-primary [overflow-wrap:anywhere] ${compact ? 'text-lede' : 'text-lede'}`}>{t.title}</p>
+        <p className={`font-mono font-semibold leading-snug text-text-primary [overflow-wrap:anywhere] ${compact ? 'text-lede' : 'text-lede'}`} title={t.title}>{displayTaskTitle(t.title)}</p>
         {why && <p data-testid="landed-strip-drawer-reason" className="font-mono text-body leading-normal text-text-secondary [overflow-wrap:anywhere]">{why}</p>}
         {delivery && <DrawerDelivery key={t.id} delivery={delivery} />}
         <p className="font-mono text-meta text-text-muted">{meta}</p>
@@ -316,7 +318,7 @@ export function StripTaskActions({ task: t, state, link, workspaceId, executor, 
   const router = useRouter();
   const onChanged = useCallback(() => router.refresh(), [router]);
   const landed = state === 'landed';
-  // |blockers(T)|, off-strip included: every one of them is marked or named (SEL-3).
+  // |blockers(T)|, off-strip included: every one of them is marked or named (strip R-13).
   const blockedByCount = stripBlockerCount(t);
   const { phase, isBlocked } = taskActionPhase({
     taskStatus: t.taskStatus,
@@ -345,8 +347,14 @@ export function StripTaskActions({ task: t, state, link, workspaceId, executor, 
             roleSlug={t.roleSlug}
             missionExecutor={executor}
             hideQueuedNote={!!why}
+            framed={false}
             taskTitle={t.title}
             onChanged={onChanged}
+            trailing={
+              <a href={taskSheetHref(link, t.id)} data-task-id={t.id} data-testid="landed-strip-drawer-open" className={CLAIM_ROW_BTN}>
+                Task →
+              </a>
+            }
           />
         )}
         {/* The audit has not started: a person may waive it here (and, on a
@@ -370,14 +378,17 @@ export function StripTaskActions({ task: t, state, link, workspaceId, executor, 
               {`PR #${t.pr.number} ↗`}
             </a>
           )}
-          <a
-            href={taskSheetHref(link, t.id)}
-            data-task-id={t.id}
-            data-testid="landed-strip-drawer-open"
-            className="inline-flex h-11 items-center justify-center border-[1.5px] border-border-strong px-3.5 font-mono text-body font-semibold text-text-primary hover:bg-surface-3"
-          >
-            Task →
-          </a>
+          {/* An open task's Task link rides in the action zone's row (R-39). */}
+          {landed && (
+            <a
+              href={taskSheetHref(link, t.id)}
+              data-task-id={t.id}
+              data-testid="landed-strip-drawer-open"
+              className="inline-flex h-11 items-center justify-center border-[1.5px] border-border-strong px-3.5 font-mono text-body font-semibold text-text-primary hover:bg-surface-3"
+            >
+              Task →
+            </a>
+          )}
         </div>
       </div>
   );
@@ -391,7 +402,12 @@ const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`;
  * by default; it starts open while the task is repairing, which is when the
  * evidence is the point. Re-keyed per task, so it never carries over.
  */
-export function DrawerDelivery({ delivery }: { delivery: TaskDeliveryDetail }) {
+/**
+ * `stages={false}`: the caller already draws where the task is on Build ›
+ * Audit › Land (the Overview's focus card has its Lifecycle line), so only
+ * the Audit and repair evidence is left to show.
+ */
+export function DrawerDelivery({ delivery, stages = true }: { delivery: TaskDeliveryDetail; stages?: boolean }) {
   const [open, setOpen] = useState(delivery.kind === 'repair');
   const id = useId();
   const summary = [
@@ -400,8 +416,12 @@ export function DrawerDelivery({ delivery }: { delivery: TaskDeliveryDetail }) {
   ].filter(Boolean).join(' · ');
   return (
     <div data-testid="landed-strip-drawer-delivery" className="flex flex-col gap-1.5">
-      <span className="font-mono text-eyebrow uppercase tracking-[1.4px] text-text-muted">This task</span>
-      <Lifecycle state={lifecycleState(delivery.kind)} repairs={delivery.repairs} notes={[delivery.stages.build, delivery.stages.audit, delivery.stages.land]} />
+      {stages && (
+        <>
+          <span className="font-mono text-eyebrow uppercase tracking-[1.4px] text-text-muted">This task</span>
+          <Lifecycle state={lifecycleState(delivery.kind)} repairs={delivery.repairs} notes={[delivery.stages.build, delivery.stages.audit, delivery.stages.land]} />
+        </>
+      )}
       {delivery.evidence.length > 0 && (
         <>
           <button
@@ -430,7 +450,7 @@ export function DrawerDelivery({ delivery }: { delivery: TaskDeliveryDetail }) {
 }
 
 /**
- * A summary cell's drawer (CAP-3): how many tasks it holds and where to see
+ * A summary cell's drawer (strip R-27): how many tasks it holds and where to see
  * them. No task actions — it is not one task.
  */
 const FoldDrawer = memo(function FoldDrawer({ ref, slot, index, tone, caret, link }: {

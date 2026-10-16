@@ -311,6 +311,56 @@ describe('runTaskRoleRouting', () => {
     expect(asked).not.toContain(TASK_ROLE_APPLY_CAPABILITY);
   });
 
+  // A team the way a real one looks once routing text is written: four described
+  // team defaults among undescribed and deliberately opted-out ones, a workspace
+  // override with no routing block of its own, and a read-only role.
+  const realisticTeam = (): RoleRow[] => [
+    routed('builder'),
+    { ...routed('builder'), workspaceId: 'ws-1', name: 'Repo builder', metadata: { color: 'blue' } },
+    { ...routed('researcher'), allowedTools: ['Read', 'Grep', 'WebSearch'] },
+    routed('organizer'),
+    routed('copy-editor'),
+    { ...routed('writer'), metadata: {} },
+    { ...routed('analyst'), metadata: null },
+    { ...routed('reviewer'), metadata: { routing: { disabled: true } } },
+    { ...routed('visual-auditor'), metadata: { routing: { disabled: true } } },
+    { ...routed('organizer'), workspaceId: 'ws-other', enabled: false },
+  ];
+
+  it('a workspace with two or more described roles reaches the model, and records no insufficient_candidates row', async () => {
+    const asked = mock(decide);
+    const recordDecision = mock(async () => {});
+    const res = await runTaskRoleRouting({ ...TASK, outputRequirement: 'pr_required' }, {
+      resolveAccess: async () => ({ ok: true, apiKey: 'k', model: JEV }),
+      decide: asked as never, loadRoles: async () => realisticTeam(),
+      readClaimedAt: async () => null, log: () => {},
+      apply: { write: async () => true, recordDecision, skipRowExists: async () => false, log: () => {}, minConfidence: 0.9 },
+    });
+    expect(asked).toHaveBeenCalledTimes(1);
+    expect(res.shadow.outcome).toBe('logged');
+    // The override inherits the team default's text; the read-only role cannot take a PR task.
+    expect(res.shadow.record?.candidates).toEqual(['builder', 'copy-editor', 'organizer']);
+    expect(res.shadow.record?.excluded).toMatchObject({ researcher: 'tools', writer: 'no_when_to_use', analyst: 'no_when_to_use' });
+    expect(recordDecision.mock.calls.map(c => (c as any)[0].reason)).not.toContain('insufficient_candidates');
+  });
+
+  it('a workspace with fewer than two described roles reports too_few_candidates, makes no call, and records insufficient_candidates', async () => {
+    const asked = mock(decide);
+    const recordDecision = mock(async () => {});
+    const res = await runTaskRoleRouting(TASK, {
+      resolveAccess: async () => ({ ok: true, apiKey: 'k', model: JEV }),
+      decide: asked as never,
+      loadRoles: async () => realisticTeam().filter(r => r.slug !== 'researcher' && r.slug !== 'organizer' && r.slug !== 'copy-editor'),
+      readClaimedAt: async () => null, log: () => {},
+      apply: { write: async () => true, recordDecision, skipRowExists: async () => false, log: () => {} },
+    });
+    expect(asked).not.toHaveBeenCalled();
+    expect(res.shadow.outcome).toBe('too_few_candidates');
+    expect(res.apply.outcome).toBe('no_decision');
+    expect(recordDecision).toHaveBeenCalledTimes(1);
+    expect((recordDecision.mock.calls[0] as any)[0]).toMatchObject({ status: 'fallback', reason: 'insufficient_candidates' });
+  });
+
   it('scheduleTaskRoleRouting hands the run to after(), and fires it directly outside a request scope', async () => {
     const scheduled: Array<() => Promise<unknown>> = [];
     const write = mock(async () => true);
@@ -328,5 +378,47 @@ describe('runTaskRoleRouting', () => {
     await new Promise(r => setTimeout(r, 0));
     await new Promise(r => setTimeout(r, 0));
     expect(write).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('applyTaskRoleDecision: replayable inputs', () => {
+  const REPLAY = {
+    state: { task: { title: 't' } }, questionIds: ['role'], candidates: ['builder', 'researcher'],
+    promptRef: { id: 'buildd.task_role', version: 'tr1', contentHash: 'fp-abc123' },
+  };
+  const rowsOf = async (input: typeof INPUT & { statedRoleSlug?: string | null }, shadow: Parameters<typeof applyTaskRoleDecision>[1], extra: Record<string, unknown> = {}) => {
+    const rows: any[] = [];
+    await applyTaskRoleDecision(input, shadow, { recordDecision: async (r) => { rows.push(r); }, write: async () => true, skipRowExists: async () => false, log: () => {}, minConfidence: 0.9, isMeasuredModel: () => true, ...extra });
+    return rows;
+  };
+
+  it('every row that carries the model\'s answer keeps the input it was asked with', async () => {
+    // applied, lost race, below threshold, not a candidate, unmeasured model
+    const cases: Array<[Parameters<typeof applyTaskRoleDecision>[1], Record<string, unknown>]> = [
+      [{ outcome: 'logged', record: record(), applyEnabled: true, replay: REPLAY }, {}],
+      [{ outcome: 'logged', record: record(), applyEnabled: true, replay: REPLAY }, { write: async () => false }],
+      [{ outcome: 'logged', record: record({ confidence: 0.5 }), applyEnabled: true, replay: REPLAY }, {}],
+      [{ outcome: 'logged', record: record({ decision: 'writer' }), applyEnabled: true, replay: REPLAY }, {}],
+      [{ outcome: 'logged', record: record(), applyEnabled: true, replay: REPLAY }, { isMeasuredModel: () => false }],
+    ];
+    for (const [shadow, extra] of cases) {
+      const rows = await rowsOf(INPUT, shadow, extra);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].replay).toEqual(REPLAY);
+    }
+  });
+
+  it('the stated-role sample and the kind sub-answer keep it too', async () => {
+    const stated = await rowsOf({ ...INPUT, statedRoleSlug: 'researcher' }, { outcome: 'logged', record: record({ stated: 'researcher', kindDecision: 'engineering', kindConfidence: 0.8 }), applyEnabled: true, replay: REPLAY });
+    expect(stated.map(r => r.reason)).toEqual(['stated_role_sample', 'kind_observed']);
+    for (const r of stated) expect(r.replay).toEqual(REPLAY);
+  });
+
+  it('skip and fallback rows keep none: nothing was answered', async () => {
+    for (const outcome of ['too_few_candidates', 'sensitive', 'no_key', 'error'] as const) {
+      const rows = await rowsOf(INPUT, { outcome, applyEnabled: true, fingerprint: 'fp-x' });
+      expect(rows).toHaveLength(1);
+      expect(rows[0].replay ?? null).toBeNull();
+    }
   });
 });

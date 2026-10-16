@@ -2,13 +2,15 @@
  * The I/O half of the task-estimates experiment (the pure blend is
  * `./task-estimate.ts`; removal steps in `./TASK-ESTIMATES-REMOVAL.md`).
  *
- * Every new work task on an opted-in team (`teams.task_estimates.enabled`)
- * gets ONE frozen row in `task_estimates`, written after the creation response
+ * Every new work task on a team with estimates on (`teams.task_estimates`,
+ * read against the default-on gate in `./task-estimate-rollout.ts`) gets ONE
+ * frozen row in `task_estimates`, written after the creation response
  * (`writeTaskEstimate`, scheduled by apps/web/src/lib/task-estimate-hook.ts).
  * Insert-only: a re-estimate is a new estimator version, never an update.
  *
- * Evidence, all cut off at the task's `createdAt` so nothing the task could
- * not have known at creation counts:
+ * Historical outcome evidence is cut off at the task's `createdAt`.
+ * The current task's recorded size decision is read at estimate freeze; diff
+ * paths come from the current ingestion corpus, not a historical snapshot:
  *
  * - neighbours: the completed tasks most similar to this one in the same
  *   workspace (`findNeighbourTasks`, the task-size estimate's retrieval), sized
@@ -24,7 +26,7 @@
  * Size bucket: the Jev S/M/L size-bucket decision is an inference call that
  * writes ledger rows, so it is never called from here. Its recorded verdict
  * (`orchestration_manifest_predictions.expected_size`, source 'jev') is read
- * when it exists; otherwise the bucket is null and the estimator falls back.
+ * when it exists at estimate freeze; otherwise the bucket is null and the estimator falls back.
  * History without a recorded bucket counts as 'M', the decision's own rule
  * verdict (the same floor the estimate backtest replays with).
  *
@@ -49,23 +51,39 @@ import {
   type ClusterEvidence, type EstimateInputs, type NeighbourEvidence, type PriorCell, type PriorTable, type SizeBucket,
   type TaskEstimateResult,
 } from './task-estimate';
+import { resolveTaskEstimatesState, taskEstimatesDefaultOn, type TaskEstimatesState } from './task-estimate-rollout';
 import { defaultStore, neighbourSessionsWhere } from './task-size-estimate';
+import { sqlWhere } from './db/relational-sql';
+import type { TaskEstimateEvidence } from '@buildd/shared';
+import { eligibleEstimateTasksQuery, historyEvidenceFrom, historyEvidenceQuery } from './task-estimate-evidence';
 
 // ── Team switch ──────────────────────────────────────────────────────────────
 
-/** The stored value, read fail-closed: only a literal `enabled: true` is on. */
-export function readTaskEstimatesSetting(raw: unknown): boolean {
-  return !!raw && typeof raw === 'object' && !Array.isArray(raw) && (raw as Record<string, unknown>).enabled === true;
+/**
+ * The stored value against the platform default (./task-estimate-rollout.ts):
+ * a boolean `enabled` is the team's choice; NULL or anything else follows the
+ * default, which is off until the quality gate passes.
+ */
+export function readTaskEstimatesSetting(raw: unknown, defaultOn: boolean = taskEstimatesDefaultOn()): boolean {
+  return resolveTaskEstimatesState(raw, defaultOn).enabled;
 }
 
-/** Whether a team opted in. A read error is "off". */
-export async function taskEstimatesEnabled(teamId: string): Promise<boolean> {
+/**
+ * A team's switch, with whether it chose or follows the default. `error`: the
+ * row could not be read, so estimates read as off (never written, never shown).
+ */
+export async function loadTaskEstimatesState(teamId: string): Promise<TaskEstimatesState & { error?: true }> {
   try {
-    const row = await db.query.teams.findFirst({ where: eq(teams.id, teamId), columns: { taskEstimates: true } });
-    return readTaskEstimatesSetting(row?.taskEstimates);
+    const row = await db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, teamId)), columns: { taskEstimates: true } });
+    return resolveTaskEstimatesState(row?.taskEstimates);
   } catch {
-    return false;
+    return { ...resolveTaskEstimatesState(null), enabled: false, error: true };
   }
+}
+
+/** Whether a team gets estimates. A read error is "off". */
+export async function taskEstimatesEnabled(teamId: string): Promise<boolean> {
+  return (await loadTaskEstimatesState(teamId)).enabled;
 }
 
 // ── k0 config ────────────────────────────────────────────────────────────────
@@ -107,7 +125,7 @@ export async function loadTaskEstimateK0(): Promise<number> {
   if (k0Cache && Date.now() - k0Cache.at < CONFIG_TTL_MS) return k0Cache.k0;
   let row: Record<string, unknown> | null = null;
   try {
-    const found = await db.query.systemCache.findFirst({ where: eq(systemCache.key, TASK_ESTIMATE_CONFIG_CACHE_KEY) });
+    const found = await db.query.systemCache.findFirst({ where: sqlWhere(eq(systemCache.key, TASK_ESTIMATE_CONFIG_CACHE_KEY)) });
     if (found?.value && typeof found.value === 'object' && !Array.isArray(found.value)) row = found.value as Record<string, unknown>;
   } catch {
     // No row, no table: the fallback is a working value.
@@ -157,7 +175,7 @@ export function neighbourEvidenceFrom(
     acc.tokens += (s.inputTokens ?? 0) + (s.outputTokens ?? 0);
     spent.set(s.taskId, acc);
   }
-  const sized = [...spent.values()].filter(v => v.minutes > 0);
+  const sized = [...spent.values()].filter(v => v.minutes > 0 && Number.isFinite(v.tokens) && v.tokens > 0);
   if (sized.length < (opts.minN ?? 2)) return null;
   const minutes = sized.map(v => v.minutes);
   const tokens = sized.map(v => v.tokens);
@@ -229,6 +247,7 @@ export function priorAggregateQuery(cutoff: Date): SQL {
                SELECT p.expected_size->>'bucket'
                  FROM orchestration_manifest_predictions p
                 WHERE p.task_id = t.id AND p.expected_size->>'source' = 'jev'
+                  AND p.created_at < ${at}::timestamptz
                 ORDER BY p.created_at DESC
                 LIMIT 1
              ), 'M') AS bucket
@@ -336,24 +355,31 @@ export function resetTaskEstimateCaches(): void {
 const fresh = (c: { at: number; cutoff: number } | null | undefined, cutoff: Date) =>
   !!c && c.cutoff <= cutoff.getTime() && Date.now() - c.at < MODEL_TTL_MS;
 
-export async function loadPriorTable(cutoff: Date): Promise<PriorTable> {
-  if (fresh(priorCache, cutoff)) return priorCache!.table;
+export async function loadPriorTable(cutoff: Date, onCutoff?: (at: Date) => void): Promise<PriorTable> {
+  if (fresh(priorCache, cutoff)) {
+    onCutoff?.(new Date(priorCache!.cutoff));
+    return priorCache!.table;
+  }
   const result = await db.execute(priorAggregateQuery(cutoff));
   const table = buildPriorTable((result.rows ?? []) as Array<Record<string, unknown>>);
   priorCache = { at: Date.now(), cutoff: cutoff.getTime(), table };
+  onCutoff?.(cutoff);
   return table;
 }
 
 // ── Workspace-local loaders ──────────────────────────────────────────────────
 
 /** Completed work tasks in one workspace created before the cutoff, with their pre-cutoff sessions, as a cluster model. */
-export async function loadClusterModel(workspaceId: string, cutoff: Date): Promise<ClusterModel> {
+export async function loadClusterModel(workspaceId: string, cutoff: Date, onCutoff?: (at: Date) => void): Promise<ClusterModel> {
   const hit = clusterCache.get(workspaceId);
-  if (fresh(hit, cutoff)) return hit!.model;
+  if (fresh(hit, cutoff)) {
+    onCutoff?.(new Date(hit!.cutoff));
+    return hit!.model;
+  }
   const rows = await db
     .select({ id: tasks.id, workspaceId: tasks.workspaceId, createdAt: tasks.createdAt, kind: tasks.kind, complexity: tasks.complexity })
     .from(tasks)
-    .where(and(eq(tasks.workspaceId, workspaceId), eq(tasks.taskClass, 'work'), eq(tasks.status, 'completed'), lt(tasks.createdAt, cutoff)));
+    .where(and(eq(tasks.workspaceId, workspaceId), eq(tasks.taskClass, 'work'), eq(tasks.status, 'completed'), lt(tasks.createdAt, cutoff), sql`${tasks.id} IN (${eligibleEstimateTasksQuery(workspaceId, cutoff)})`));
   const history: ReplayTask[] = rows.map(r => ({ ...r, title: '', description: null, completedAt: null }));
   const sessions: ReplaySession[] = [];
   for (let i = 0; i < history.length; i += 500) {
@@ -367,13 +393,14 @@ export async function loadClusterModel(workspaceId: string, cutoff: Date): Promi
       .where(and(inArray(workers.taskId, ids), eq(workers.status, 'completed'), isNotNull(workers.startedAt), lt(workers.completedAt, cutoff)));
     sessions.push(...(part as ReplaySession[]));
   }
-  const [files, repairs] = await Promise.all([loadDiffFiles(history), loadRepairCounts(history.map(t => t.id))]);
+  const [files, repairs] = await Promise.all([loadDiffFiles(history), loadRepairCounts(history.map(t => t.id), { asOf: cutoff })]);
   const model = deriveClusters(buildClusterTasks(history, sessions, files, repairs, { asOf: cutoff }), { asOf: cutoff });
   clusterCache.set(workspaceId, { at: Date.now(), cutoff: cutoff.getTime(), model });
+  onCutoff?.(cutoff);
   return model;
 }
 
-/** The size-bucket decision's recorded verdict for this task, if one exists yet. Never calls the decision. */
+/** The current task's verdict available at estimate freeze (not historical outcome evidence). Never calls the decision. */
 async function loadRecordedBucket(taskId: string): Promise<SizeBucket | null> {
   const rows = await db
     .select({ expectedSize: orchestrationManifestPredictions.expectedSize })
@@ -420,7 +447,25 @@ export async function loadEstimateInputs(task: EstimateTask, deps: LoadEstimateI
   const kind = typeof task.kind === 'string' && PRIOR_KIND_SET.has(task.kind) && task.kind !== 'unknown' ? task.kind : null;
   const seedText = [task.title ?? '', task.description ?? ''].filter(Boolean).join('\n');
 
-  const neighbourIds = await bestEffort('neighbour retrieval', task.id, async () => {
+  const evidence: TaskEstimateEvidence = {
+    cutoff: cutoff.toISOString(), kind, history: null,
+    neighbours: { retrieved: 0, used: 0, reason: null },
+    clusters: { available: 0, used: 0, reason: null }, unavailable: [],
+    modelCutoffs: { prior: null, clusters: null },
+  };
+  const read = async <T>(what: string, fn: () => Promise<T>, fallback: T): Promise<T> =>
+    bestEffort(what, task.id, async () => {
+      try { return await fn(); }
+      catch (err) { evidence.unavailable.push(what); throw err; }
+    }, fallback);
+  evidence.history = await read('history', async () => {
+    const result = await db.execute(historyEvidenceQuery(task.workspaceId, cutoff));
+    const counts = historyEvidenceFrom((result.rows ?? []) as Array<Record<string, unknown>>);
+    if (!counts) throw new Error('MissingHistoryCounts');
+    return counts;
+  }, null);
+
+  const neighbourIds = await read('neighbour retrieval', async () => {
     const store = await (deps.storeFactory ?? defaultStore)();
     const found = await findNeighbourTasks(store, {
       workspaceId: task.workspaceId,
@@ -431,41 +476,58 @@ export async function loadEstimateInputs(task: EstimateTask, deps: LoadEstimateI
     return found.filter(n => n.score >= TASK_AREA_FALLBACK.similarityFloor && n.taskId !== task.id).map(n => n.taskId);
   }, [] as string[]);
 
-  const neighbours = neighbourIds.length === 0 ? null : await bestEffort('neighbour sessions', task.id, async () => {
+  evidence.neighbours.retrieved = neighbourIds.length;
+  evidence.neighbours.reason = neighbourIds.length === 0 ? 'no_similar_neighbours' : null;
+  let comparableNeighbourIds: string[] = [];
+  const neighbours = neighbourIds.length === 0 ? null : await read('neighbour sessions', async () => {
     const [sessions, created] = await Promise.all([
       db.select({
         taskId: workers.taskId, startedAt: workers.startedAt, completedAt: workers.completedAt,
         inputTokens: workers.inputTokens, outputTokens: workers.outputTokens,
       }).from(workers).where(neighbourSessionsWhere({ workspaceId: task.workspaceId, taskIds: neighbourIds, cutoff })),
       db.select({ id: tasks.id, createdAt: tasks.createdAt }).from(tasks)
-        .where(and(eq(tasks.workspaceId, task.workspaceId), inArray(tasks.id, neighbourIds))),
+        .where(and(eq(tasks.workspaceId, task.workspaceId), inArray(tasks.id, neighbourIds), sql`${tasks.id} IN (${eligibleEstimateTasksQuery(task.workspaceId, cutoff)})`)),
     ]);
-    return neighbourEvidenceFrom(neighbourIds, sessions as NeighbourSessionRow[], {
+    const eligibleIds = created.map(r => r.id);
+    comparableNeighbourIds = eligibleIds;
+    if (eligibleIds.length === 0) evidence.neighbours.reason = 'no_eligible_neighbours';
+    const result = neighbourEvidenceFrom(eligibleIds, sessions as NeighbourSessionRow[], {
       cutoff,
       createdAtById: new Map((created as Array<{ id: string; createdAt: Date }>).map(r => [r.id, r.createdAt])),
     });
+    if (!result && !evidence.neighbours.reason) evidence.neighbours.reason = 'insufficient_valid_samples';
+    return result;
   }, null);
+  evidence.neighbours.used = neighbours?.n ?? 0;
 
-  const clusters = await bestEffort('cluster evidence', task.id, async () => {
-    const model = await loadClusterModel(task.workspaceId, cutoff);
-    if (model.clusters.length === 0) return null;
+  const clusters = await read('cluster evidence', async () => {
+    const model = await loadClusterModel(task.workspaceId, cutoff, at => { evidence.modelCutoffs!.clusters = at.toISOString(); });
+    evidence.clusters.available = model.clusters.length;
+    if (model.clusters.length === 0) { evidence.clusters.reason = 'no_supported_area_clusters'; return null; }
     const manifest = Array.isArray(task.pathManifest) ? task.pathManifest : [];
     let neighbourPaths: string[] = [];
-    if (neighbourIds.length > 0) {
-      const paths = await fetchNeighbourPaths(neighbourIds, { workspaceId: task.workspaceId, config: { ...TASK_AREA_FALLBACK, pathSource: 'diff' } });
+    if (comparableNeighbourIds.length > 0) {
+      const paths = await fetchNeighbourPaths(comparableNeighbourIds, { workspaceId: task.workspaceId, config: { ...TASK_AREA_FALLBACK, pathSource: 'diff' } });
       neighbourPaths = [...paths.values()].flat();
     }
     const mapped = mapNewTaskToClusters({ pathManifest: manifest, neighbourPaths }, model);
-    return mapped.source === 'none' ? null : clusterEvidenceFrom(mapped.clusters, model, { kind: task.kind, complexity: task.complexity });
+    if (mapped.source === 'none') { evidence.clusters.reason = 'task_area_unmapped'; return null; }
+    const result = clusterEvidenceFrom(mapped.clusters, model, { kind: task.kind, complexity: task.complexity });
+    evidence.clusters.used = result?.n ?? 0;
+    if (!result) evidence.clusters.reason = 'invalid_cluster_actuals';
+    return result;
   }, null);
 
   const [bucket, prior, k0] = await Promise.all([
-    bestEffort('recorded bucket', task.id, () => loadRecordedBucket(task.id), null),
-    bestEffort('prior', task.id, () => loadPriorTable(cutoff), {} as PriorTable),
+    read('recorded bucket', () => loadRecordedBucket(task.id), null),
+    read('prior', () => loadPriorTable(cutoff, at => { evidence.modelCutoffs!.prior = at.toISOString(); }), {} as PriorTable),
     loadTaskEstimateK0(),
   ]);
 
-  return { kind, bucket, neighbours, clusters, prior, k0 };
+  evidence.bucket = { value: bucket, timing: 'estimate_freeze' };
+  if (evidence.unavailable.includes('neighbour retrieval') || evidence.unavailable.includes('neighbour sessions')) evidence.neighbours.reason = 'unavailable';
+  if (evidence.unavailable.includes('cluster evidence')) evidence.clusters.reason = 'unavailable';
+  return { kind, bucket, neighbours, clusters, prior, k0, evidence };
 }
 
 // ── Write / read ─────────────────────────────────────────────────────────────
@@ -484,9 +546,10 @@ export interface WriteTaskEstimateDeps extends LoadEstimateInputsDeps {
  * (task_id, estimator_version) for a concurrent writer). Never throws.
  */
 export async function writeTaskEstimate(taskId: string, deps: WriteTaskEstimateDeps = {}): Promise<WriteTaskEstimateOutcome> {
+  const startedAt = Date.now();
   try {
     const task = await db.query.tasks.findFirst({
-      where: eq(tasks.id, taskId),
+      where: sqlWhere(eq(tasks.id, taskId)),
       columns: {
         id: true, workspaceId: true, title: true, description: true, kind: true, complexity: true,
         createdAt: true, pathManifest: true, taskClass: true,
@@ -522,6 +585,8 @@ export async function writeTaskEstimate(taskId: string, deps: WriteTaskEstimateD
       })
       .onConflictDoNothing({ target: [taskEstimates.taskId, taskEstimates.estimatorVersion] })
       .returning({ id: taskEstimates.id });
+    // The runtime cost of one estimate, after the response: the number to watch before and after a default flip.
+    if (inserted.length > 0) console.info(`[task-estimate] written for task ${taskId} in ${Date.now() - startedAt}ms`);
     return inserted.length > 0 ? 'written' : 'exists';
   } catch (err) {
     const e = err as { name?: string; code?: string } | null;

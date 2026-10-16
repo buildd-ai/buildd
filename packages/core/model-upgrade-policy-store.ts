@@ -16,6 +16,7 @@ import {
   type EffectiveUpgradePolicy,
   type ModelUpgradePolicy,
 } from './model-upgrade-policy';
+import { sqlWhere } from './db/relational-sql';
 
 const CACHE_TTL_MS = 60 * 1000;
 const cache = new Map<string, { value: EffectiveUpgradePolicy; loadedAt: number }>();
@@ -36,10 +37,10 @@ export async function loadUpgradePolicy(
   try {
     const [team, ws] = await Promise.all([
       teamId
-        ? db.query.teams.findFirst({ where: eq(teams.id, teamId), columns: { modelUpgradePolicy: true } })
+        ? db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, teamId)), columns: { modelUpgradePolicy: true } })
         : Promise.resolve(null),
       workspaceId
-        ? db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId), columns: { modelUpgradePolicy: true } })
+        ? db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, workspaceId)), columns: { modelUpgradePolicy: true } })
         : Promise.resolve(null),
     ]);
     const value = resolveUpgradePolicy(team?.modelUpgradePolicy ?? null, ws?.modelUpgradePolicy ?? null);
@@ -56,12 +57,12 @@ export async function readStoredUpgradePolicy(
 ): Promise<unknown> {
   if ('workspaceId' in scope) {
     const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, scope.workspaceId),
+      where: sqlWhere(eq(workspaces.id, scope.workspaceId)),
       columns: { modelUpgradePolicy: true },
     });
     return ws?.modelUpgradePolicy ?? null;
   }
-  const team = await db.query.teams.findFirst({ where: eq(teams.id, scope.teamId), columns: { modelUpgradePolicy: true } });
+  const team = await db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, scope.teamId)), columns: { modelUpgradePolicy: true } });
   return team?.modelUpgradePolicy ?? null;
 }
 

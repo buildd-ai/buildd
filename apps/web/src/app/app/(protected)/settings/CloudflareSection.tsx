@@ -7,6 +7,7 @@ import { Select } from '@/components/ui/Select';
 import ConnectionRow, { StatusChip } from './_components/ConnectionRow';
 import { CLOUD_RUNNER_DEPLOY_COMMAND, cloudflareState } from './_lib/cloudflare-state';
 import { useCloudflareCredential } from './_lib/use-cloudflare-credential';
+import { describeCloudflareCapability, type CloudflareCapabilities, type CloudflareCapability } from '@/lib/cloudflare-credential-shared';
 import CloudflareGatewayTokens from './CloudflareGatewayTokens';
 
 interface Team {
@@ -49,8 +50,10 @@ export default function CloudflareSection({ teams, defaultTeamId, manageableTeam
   const [replacing, setReplacing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  // What the last Verify found the token may do (Workers AI, the gateway).
+  const [capabilities, setCapabilities] = useState<CloudflareCapabilities | null>(null);
 
-  useEffect(() => { setReplacing(false); }, [selectedTeamId]);
+  useEffect(() => { setReplacing(false); setCapabilities(null); }, [selectedTeamId]);
 
   // Open from the fleet's cloud-runner row (and a pasted #cloudflare link).
   useEffect(() => {
@@ -74,12 +77,13 @@ export default function CloudflareSection({ teams, defaultTeamId, manageableTeam
     try {
       const res = await fetch(`/api/secrets/${id}/verify`, { method: 'POST' });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? 'Verify failed');
+      if (!res.ok) throw new Error(data.error ?? 'Verification failed.');
+      setCapabilities((data.capabilities ?? null) as CloudflareCapabilities | null);
       setMessage(data.verified
         ? { type: 'success', text: `Verified: ${data.tokenKind === 'account' ? 'account' : 'user'} token, active.` }
         : { type: 'error', text: `Cloudflare rejected the token: ${data.error ?? 'unknown error'}` });
     } catch (err) {
-      setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Verify failed' });
+      setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Verification failed.' });
     } finally {
       setBusy(false);
       await reload();
@@ -88,7 +92,7 @@ export default function CloudflareSection({ teams, defaultTeamId, manageableTeam
 
   async function save() {
     if (!apiToken.trim() || !accountId.trim()) {
-      setMessage({ type: 'error', text: 'Paste the API token and the account ID' });
+      setMessage({ type: 'error', text: 'Enter the API token and account ID.' });
       return;
     }
     setBusy(true);
@@ -105,14 +109,14 @@ export default function CloudflareSection({ teams, defaultTeamId, manageableTeam
         body: JSON.stringify({ value, purpose: 'cloudflare_token', label: 'Cloudflare API token', teamId: selectedTeamId }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? 'Failed to store token');
+      if (!res.ok) throw new Error(data.error ?? 'Could not save the token.');
       resetForm();
       setReplacing(false);
       setBusy(false);
       // Check it straight away so a typo shows up now, not at deploy time.
       await verify(data.id, true);
     } catch (err) {
-      setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Failed' });
+      setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Could not save the token.' });
       setBusy(false);
     }
   }
@@ -120,7 +124,7 @@ export default function CloudflareSection({ teams, defaultTeamId, manageableTeam
   async function remove(id: string) {
     if (!(await confirm({
       title: 'Delete the Cloudflare token?',
-      message: 'A deployed cloud runner keeps running. Redeploying it will need a new token.',
+      message: 'A deployed cloud runner keeps running. Redeploying requires a new token.',
       confirmLabel: 'Delete',
       variant: 'danger',
     }))) return;
@@ -128,11 +132,11 @@ export default function CloudflareSection({ teams, defaultTeamId, manageableTeam
     setMessage(null);
     try {
       const res = await fetch(`/api/secrets?id=${id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error((await res.json()).error ?? 'Delete failed');
+      if (!res.ok) throw new Error((await res.json()).error ?? 'Could not delete the token.');
       await reload();
       setMessage({ type: 'success', text: 'Deleted.' });
     } catch (err) {
-      setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Failed' });
+      setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Could not delete the token.' });
     } finally {
       setBusy(false);
     }
@@ -208,7 +212,20 @@ export default function CloudflareSection({ teams, defaultTeamId, manageableTeam
               {cred.lastVerifiedAt ? new Date(cred.lastVerifiedAt).toLocaleString() : 'never'}
             </dd>
           </dl>
-          {cred.lastVerificationError && cred.healthStatus !== 'healthy' && (
+          {capabilities ? (
+            <ul data-testid="cloudflare-capabilities" className="text-xs space-y-0.5">
+              {(Object.keys(capabilities) as CloudflareCapability[]).map((k) => {
+                const c = capabilities[k];
+                if (!c) return null;
+                return (
+                  <li key={k} className={c.state === 'allowed' ? 'text-text-secondary' : c.state === 'unknown' ? 'text-text-muted' : 'text-status-error'}>
+                    {describeCloudflareCapability(k, c)}
+                  </li>
+                );
+              })}
+            </ul>
+          ) : cred.lastVerificationError && (
+            // A verified token keeps what it may not do here (Workers AI, the gateway) until the next Verify.
             <p className="text-xs text-status-error break-words">{cred.lastVerificationError}</p>
           )}
           {state.kind === 'verified' && (
@@ -251,7 +268,7 @@ export default function CloudflareSection({ teams, defaultTeamId, manageableTeam
             <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noreferrer" className="underline">
               dash.cloudflare.com/profile/api-tokens
             </a>{' '}
-            with Workers Scripts, Containers and Durable Objects edit access (plus AI Gateway if you use one).
+            with Workers Scripts, Containers and Durable Objects edit access, Workers AI Read for Clef decisions, and AI Gateway if you use one.
           </p>
           <input
             value={apiToken}

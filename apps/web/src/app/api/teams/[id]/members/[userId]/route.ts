@@ -5,13 +5,14 @@ import { eq, and } from 'drizzle-orm';
 import { requireSessionUser } from '@/lib/auth-helpers';
 import { roleHas, isTeamRole } from '@/lib/permissions';
 import { clampCreatorKeys } from '@/lib/creator-key-clamp';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 async function ownerCount(teamId: string): Promise<number> {
   const owners = await db.query.teamMembers.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(teamMembers.teamId, teamId),
       eq(teamMembers.role, 'owner')
-    ),
+    )),
     columns: { userId: true },
   });
   return owners.length;
@@ -38,10 +39,10 @@ export async function PATCH(
 
   try {
     const currentMembership = await db.query.teamMembers.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(teamMembers.teamId, teamId),
         eq(teamMembers.userId, user.id)
-      ),
+      )),
     });
 
     if (!currentMembership) {
@@ -63,10 +64,10 @@ export async function PATCH(
 
     // Verify target is a member
     const targetMembership = await db.query.teamMembers.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(teamMembers.teamId, teamId),
         eq(teamMembers.userId, targetUserId)
-      ),
+      )),
     });
 
     if (!targetMembership) {
@@ -130,10 +131,10 @@ export async function DELETE(
 
   try {
     const currentMembership = await db.query.teamMembers.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(teamMembers.teamId, teamId),
         eq(teamMembers.userId, user.id)
-      ),
+      )),
     });
 
     if (!currentMembership) {
@@ -144,7 +145,7 @@ export async function DELETE(
 
     if (targetUserId === user.id) {
       const team = await db.query.teams.findFirst({
-        where: eq(teams.id, teamId),
+        where: sqlWhere(eq(teams.id, teamId)),
         columns: { slug: true },
       });
       if (team?.slug.startsWith('personal-')) {
@@ -160,10 +161,10 @@ export async function DELETE(
 
       // Verify target is a member
       const targetMembership = await db.query.teamMembers.findFirst({
-        where: and(
+        where: sqlWhere(and(
           eq(teamMembers.teamId, teamId),
           eq(teamMembers.userId, targetUserId)
-        ),
+        )),
       });
 
       if (!targetMembership) {

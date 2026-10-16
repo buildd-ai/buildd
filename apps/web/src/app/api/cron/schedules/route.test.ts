@@ -507,6 +507,20 @@ describe('GET /api/cron/schedules', () => {
     expect(tasksInsertValues.roleSlug).toBeUndefined();
   });
 
+  it('files the spawned task at the template tier, and ignores a tier outside the vocabulary', async () => {
+    mockTaskSchedulesFindMany.mockResolvedValue([makeSchedule({
+      taskTemplate: { title: 'Weekly audit', mode: 'execution', priority: 0, tier: 'premium' },
+    })]);
+    await GET(makeRequest());
+    expect(tasksInsertValues.tier).toBe('premium');
+
+    mockTaskSchedulesFindMany.mockResolvedValue([makeSchedule({
+      taskTemplate: { title: 'Weekly audit', mode: 'execution', priority: 0, tier: 'ultra' },
+    })]);
+    await GET(makeRequest());
+    expect(tasksInsertValues.tier).toBeUndefined();
+  });
+
   it('does not crash dispatching a conflicted insert (no task row to dispatch)', async () => {
     // Regression guard: the code after the insert dereferences task.id for
     // lastTaskId, dispatch, and the Pusher payload. onConflictDoNothing makes

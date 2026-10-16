@@ -5,6 +5,7 @@ import { eq } from 'drizzle-orm';
 import { findTeamSessionAccount } from '@/lib/oauth/session-account';
 import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
 import { resolveClaudeCredential, extractJwtSub } from '@/lib/claude-credential';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Make sure `teamId` has the `type='user'` account an OAuth session in that
@@ -31,7 +32,7 @@ export async function ensureTeamSessionAccount(userId: string, teamId: string): 
       if (existing.seatId) return true;
     } else {
       const user = await db.query.users.findFirst({
-        where: eq(users.id, userId),
+        where: sqlWhere(eq(users.id, userId)),
         columns: { name: true, email: true },
       });
 

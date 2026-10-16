@@ -31,13 +31,13 @@ afterEach(() => { act(() => root.unmount()); host.remove(); });
 
 type Call = { url: string; init?: RequestInit };
 type Health = 'healthy' | 'unknown' | 'revoked';
-function installFetch(state: { stored: boolean; health?: Health; readable?: boolean }) {
+function installFetch(state: { stored: boolean; health?: Health; readable?: boolean; capabilities?: unknown; lastVerificationError?: string | null }) {
   const calls: Call[] = [];
   globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
     calls.push({ url, init });
     if (url.startsWith('/api/cloudflare/credential')) {
       const credential = state.stored
-        ? { ...STORED, healthStatus: state.health ?? STORED.healthStatus, readable: state.readable ?? true }
+        ? { ...STORED, healthStatus: state.health ?? STORED.healthStatus, readable: state.readable ?? true, lastVerificationError: state.lastVerificationError ?? null }
         : null;
       return new Response(JSON.stringify({ credential }), { status: 200 });
     }
@@ -47,7 +47,7 @@ function installFetch(state: { stored: boolean; health?: Health; readable?: bool
     }
     if (url.endsWith('/verify')) {
       state.health = 'healthy';
-      return new Response(JSON.stringify({ verified: true, error: null, tokenKind: 'account', tokenStatus: 'active' }), { status: 200 });
+      return new Response(JSON.stringify({ verified: true, error: null, tokenKind: 'account', tokenStatus: 'active', ...(state.capabilities ? { capabilities: state.capabilities } : {}) }), { status: 200 });
     }
     return new Response('{}', { status: 404 });
   }) as unknown as typeof fetch;
@@ -132,6 +132,27 @@ describe('CloudflareSection', () => {
     await flush();
     expect(calls.some((c) => c.url === `/api/secrets/${STORED.id}/verify`)).toBe(true);
     expect(chip()).toBe('Verified');
+  });
+
+  it('Verify says what the token may do, one word per capability', async () => {
+    installFetch({
+      stored: true, health: 'unknown',
+      capabilities: { workersAi: { state: 'not_allowed', detail: 'HTTP 401: Authentication error (code 10000)' }, aiGateway: { state: 'allowed' } },
+    });
+    await mount();
+    await click(next());
+    await flush();
+    const caps = host.querySelector('[data-testid="cloudflare-capabilities"]')!;
+    expect(caps.textContent).toContain('Workers AI: not allowed (add Workers AI Read to this token)');
+    expect(caps.textContent).toContain('AI Gateway: allowed');
+  });
+
+  it('a verified token that Workers AI refuses still says so after a reload', async () => {
+    installFetch({ stored: true, health: 'healthy', lastVerificationError: 'Workers AI: not allowed (add Workers AI Read to this token)' });
+    await mount();
+    await click(host.querySelector<HTMLButtonElement>('[data-testid="cloudflare-row"] button[aria-expanded]') ?? next());
+    expect(chip()).toBe('Verified');
+    expect(host.textContent).toContain('Workers AI: not allowed (add Workers AI Read to this token)');
   });
 
   it('verified: Deploy shows the deploy.ts command', async () => {

@@ -62,7 +62,7 @@ export default function TimezoneSection({ teams, currentTeamId }: { teams: Team[
       setDraft(data.team?.timezone ?? detected);
       setCanEdit(roleHas(data.currentUserRole, 'manage_team_settings'));
     } catch {
-      setMsg({ type: 'error', text: 'Failed to load the team timezone' });
+      setMsg({ type: 'error', text: "Could not load the team timezone. Try again." });
     } finally {
       setLoading(false);
     }
@@ -82,12 +82,12 @@ export default function TimezoneSection({ teams, currentTeamId }: { teams: Team[
         body: JSON.stringify({ timezone }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error ?? 'Failed to save');
+      if (!res.ok) throw new Error(data.error ?? "Could not save. Try again.");
       setStored(timezone);
       setDraft(timezone);
       setMsg({ type: 'success', text: 'Saved.' });
     } catch (err) {
-      setMsg({ type: 'error', text: err instanceof Error ? err.message : 'Failed to save' });
+      setMsg({ type: 'error', text: err instanceof Error ? err.message : "Could not save. Try again." });
     } finally {
       setBusy(false);
     }
@@ -113,7 +113,7 @@ export default function TimezoneSection({ teams, currentTeamId }: { teams: Team[
 
   const status = (
     <>
-      {stored === null ? 'Not set. buildd uses UTC.' : `Set to ${stored}.`}
+      {stored === null ? 'Not set. Defaults to UTC.' : `Set to ${stored}.`}
       {preview && <> It is <span className="font-mono">{preview}</span> there now.</>}
     </>
   );
@@ -173,7 +173,7 @@ export default function TimezoneSection({ teams, currentTeamId }: { teams: Team[
           {/* When the picker already shows this browser's zone, Save does the same thing. */}
           {detected !== stored && detected !== draft && (
             <button onClick={() => save(detected)} disabled={busy} className="btn btn-sm btn-quiet">
-              Use mine ({detected})
+              Use my timezone ({detected})
             </button>
           )}
         </div>

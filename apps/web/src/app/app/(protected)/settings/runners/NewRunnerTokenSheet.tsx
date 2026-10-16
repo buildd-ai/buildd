@@ -91,9 +91,9 @@ export default function NewRunnerTokenSheet() {
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to create token');
+      if (!res.ok) throw new Error(data.error || 'Could not create the token.');
       setCreatedAccount({ name: data.name, apiKey: data.apiKey });
-    } catch (err) { setError(err instanceof Error ? err.message : 'Failed to create token'); }
+    } catch (err) { setError(err instanceof Error ? err.message : 'Could not create the token.'); }
     finally { setLoading(false); }
   }
 
@@ -140,8 +140,8 @@ export default function NewRunnerTokenSheet() {
           <section aria-label="Permission preview" className="card p-4">
             {limited && <p className="text-xs text-text-secondary mb-3">Workspace restrictions also apply to admin access. Team-wide credentials, account administration and reports without workspace filters are unavailable.</p>}
             <h2 className="section-label mb-3">This token can</h2>
-            {scopes.length === 0 ? <p className="text-sm text-text-muted">No capabilities selected.</p> : <ul className="space-y-2 text-sm">{TOKEN_SCOPE_DEFINITIONS.filter(def => scopes.includes(def.scope)).map(def => <li key={def.scope}><span className="font-medium">{def.label}</span><span className="block text-xs text-text-secondary">{def.description}</span></li>)}</ul>}
-            <p className="text-xs text-text-secondary mt-4">{limited ? `Restricted to ${workspaceIds.length ? workspaces.filter(ws => workspaceIds.includes(ws.id)).map(ws => ws.name).join(', ') : 'no workspaces selected'}.` : 'Available in all linked workspaces.'}</p>
+            {scopes.length === 0 ? <p className="text-sm text-text-muted">No scopes. Choose at least one.</p> : <ul className="space-y-2 text-sm">{TOKEN_SCOPE_DEFINITIONS.filter(def => scopes.includes(def.scope)).map(def => <li key={def.scope}><span className="font-medium">{def.label}</span><span className="block text-xs text-text-secondary">{def.description}</span></li>)}</ul>}
+            <p className="text-xs text-text-secondary mt-4">{limited ? (workspaceIds.length ? `Restricted to ${workspaces.filter(ws => workspaceIds.includes(ws.id)).map(ws => ws.name).join(', ')}.` : 'Choose at least one workspace.') : 'Available in all linked workspaces.'}</p>
             <p className="text-xs text-text-secondary mt-2">{expiry === 'never' ? 'Does not expire.' : expiry === 'custom' ? `Expires ${customExpiry || 'on your selected date'}.` : `Expires ${expiry} days after creation.`}</p>
           </section>
           <div className="flex items-center gap-3"><PrimaryAction type="submit" pending={loading} disabled={!selectedTeamId || !scopes.length || (scopes.includes('admin') && !canAdmin)} fullWidthOnMobile>{loading ? 'Creating…' : 'Create token'}</PrimaryAction><button type="button" onClick={close} className="btn min-h-11 md:min-h-0">Cancel</button></div>

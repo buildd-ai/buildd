@@ -30,6 +30,7 @@ import {
 } from '@/lib/auto-merge-bound';
 import {
   isPassingCheckRun,
+  isFailingCheckRun,
   isPassingStatus,
   listAllCheckRuns,
   listAllCommitStatuses,
@@ -38,9 +39,10 @@ import {
   isMissionIntegrationBase,
   type MissionIntegrationFields,
 } from '@buildd/core/mission-integration';
-import { isReleaseBranchPr } from '@buildd/core/release-strategy';
+import { classifyReleasePr } from '@buildd/core/release-candidate';
 import type { WorkspaceReleaseConfig } from '@buildd/core/db/schema';
 import { guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
+import { LANDING_STATUS_CONTEXT } from '@buildd/workflow-kernel/landing-gate';
 import { guardReviewVerdict } from '@/lib/review-verdict-gate';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
@@ -50,6 +52,7 @@ import { dispatchStaleApprovalReReview } from '@/lib/stale-approval-re-review';
 import type { DispatchConflictRetryResult } from '@/lib/conflict-retry';
 import { refreshCause } from '@/lib/refresh-cause';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * The base-freshness refusal below: behind the base but not conflicting.
@@ -155,7 +158,7 @@ async function fetchLiveChangedFilenames(
  *  - whether `opts.bound` may permit an unattended merge (below).
  *
  * `opts.releaseConfig` is the workspace's release config, read for the same
- * AGGREGATE LINE THRESHOLD decision via `isReleaseBranchPr`: a PR from the
+ * AGGREGATE LINE THRESHOLD decision via `classifyReleasePr` (legacy release branch or trusted frozen candidate): a PR from the
  * configured release branch into the configured prod branch (e.g. dev → main)
  * is a rollup of every commit since the last release, each of which was
  * already size-gated on its own way into the release branch — re-applying the
@@ -202,6 +205,13 @@ export async function evaluateAutoMergeSafety(
      */
     skipBaseFreshness?: boolean;
     /**
+     * A person's own merge, read again at merge time (the kernel's `merge_call` for a person's
+     * door): only the rails a person has always merged under apply, CI and protected paths and
+     * the PR's own state. The semantic hold, the migration inspector and the size cap are the
+     * unattended merge's stand-ins for judgment, and a person is the judgment.
+     */
+    personDecides?: boolean;
+    /**
      * The workspace gitConfig, for the post-refresh semantic hold
      * (base-refresh.ts `checkBaseRefreshHold`). Every merge door passes it;
      * omitted, or with `semanticRefresh` off, the hold makes no read.
@@ -234,7 +244,9 @@ export async function evaluateAutoMergeSafety(
       };
     }
 
-    const pendingOrFailed = checkRuns.filter((r) => !isPassingCheckRun(r));
+    // A person may merge on pending CI (the dashboard always could), never on red: for a
+    // person's merge only a finished, failing run refuses here.
+    const pendingOrFailed = checkRuns.filter((r) => (opts?.personDecides ? isFailingCheckRun(r) : !isPassingCheckRun(r)));
     if (pendingOrFailed.length > 0) {
       return {
         ok: false,
@@ -247,7 +259,10 @@ export async function evaluateAutoMergeSafety(
     // CI that reports through the Statuses API (Jenkins, CircleCI, Buildkite,
     // Vercel contexts) never creates check runs.
     const statuses = await listAllCommitStatuses(githubApi, installationId, repoFullName, headSha);
-    const notPassing = statuses.items.filter((st) => !isPassingStatus(st));
+    // buildd's own `buildd/landing` status is the kernel's verdict, published from
+    // what this merge decides (workflow-kernel-library.md §4): never CI to wait on.
+    const notPassing = statuses.items.filter((st) => st.context !== LANDING_STATUS_CONTEXT
+      && (opts?.personDecides ? st.state === 'failure' || st.state === 'error' : !isPassingStatus(st)));
     if (!statuses.complete || notPassing.length > 0) {
       return {
         ok: false,
@@ -289,7 +304,7 @@ export async function evaluateAutoMergeSafety(
   // can merge in base commits that landed after its semantic verdict. Under
   // enforce the PR waits here until that arrived range is re-verified. Only
   // consulted once CI is green, and makes no read when the check is off.
-  const hold = await checkBaseRefreshHold({
+  const hold = opts?.personDecides ? { blocks: false as const, reason: '' } : await checkBaseRefreshHold({
     installationId,
     repoFullName,
     prNumber,
@@ -364,7 +379,7 @@ export async function evaluateAutoMergeSafety(
   const hasMigrationOrSchema = files.some(
     (f) => isGeneratedMigrationPath(f.filename) || f.filename === 'packages/core/db/schema.ts',
   );
-  if (hasMigrationOrSchema) {
+  if (hasMigrationOrSchema && !opts?.personDecides) {
     const migrationSafety = await inspectPullRequestMigrations({
       installationId,
       repoFullName,
@@ -393,8 +408,10 @@ export async function evaluateAutoMergeSafety(
   // check below. The bound also requires a verified base ref.
   let prData: {
     mergeable_state?: string;
-    head?: { ref?: string | null; sha?: string | null };
-    base?: { ref?: string | null };
+    head?: { ref?: string | null; sha?: string | null; repo?: { full_name?: string | null } | null };
+    base?: { ref?: string | null; repo?: { full_name?: string | null } | null };
+    user?: { login?: string | null } | null;
+    body?: string | null;
   } | null = null;
   let prReadError: unknown = null;
   try {
@@ -413,7 +430,7 @@ export async function evaluateAutoMergeSafety(
   // doc comment). `agent-review` and `human` never reach this block, so a
   // workspace on either tier cannot inherit the 800-line default just
   // because `policy.threshold` happened to be unset.
-  if (policy.tier === 'auto-threshold') {
+  if (policy.tier === 'auto-threshold' && !opts?.personDecides) {
     // Is this a task PR into its own mission's integration branch
     // (task branch → integration branch)?
     //
@@ -433,14 +450,20 @@ export async function evaluateAutoMergeSafety(
       mission: opts?.mission ?? null,
     });
 
-    // Is this the workspace's release-branch → prod-branch PR (e.g. dev → main)?
-    // Unlike the mission check above, this compares BOTH refs — a release PR's
-    // own head and base are both configured (releaseBranch, prodBranch), so
-    // there is no single trunk-base assumption to lean on.
-    const isReleasePr = isReleaseBranchPr(opts?.releaseConfig ?? null, {
+    // Is this the workspace's release PR into the prod branch? Either the
+    // legacy fixed one (releaseBranch → prodBranch, e.g. dev → main), or a
+    // frozen candidate (e.g. release/v1.2.3 → main) that proves it was opened
+    // by the configured release workflow at the head its metadata records.
+    // A candidate-shaped branch that cannot prove that keeps the cap.
+    const isReleasePr = classifyReleasePr(opts?.releaseConfig ?? null, {
       headRef: prData?.head?.ref ?? null,
       baseRef: prData?.base?.ref ?? null,
-    });
+      headSha: prData?.head?.sha ?? null,
+      author: prData?.user?.login ?? null,
+      headRepoFullName: prData?.head?.repo?.full_name ?? null,
+      baseRepoFullName: prData?.base?.repo?.full_name ?? null,
+      body: prData?.body ?? null,
+    }).kind !== 'none';
 
     const LOCKFILE_PATTERNS = [/\.lock$/, /^bun\.lockb$/];
     const sourceFiles = files.filter(
@@ -746,7 +769,7 @@ export async function tryAutoMergeWorkerPr(params: {
     // Non-conflict or disabled auto-resolve — notify the mission feed
     if (worker.taskId) {
       const task = await db.query.tasks.findFirst({
-        where: eq(tasks.id, worker.taskId),
+        where: sqlWhere(eq(tasks.id, worker.taskId)),
         columns: { missionId: true, title: true },
       });
       if (task?.missionId) {
@@ -775,7 +798,25 @@ export async function tryAutoMergeWorkerPr(params: {
   // No override here by construction: nothing unattended may bypass a verdict.
   // A human override lives on the dashboard route, where a person is present.
   const reviewWorkspaceId = await workspaceIdOnce();
-  if (reviewWorkspaceId) {
+  if (!reviewWorkspaceId) {
+    // D4 (workflow-kernel-library.md §4): the review gate is never skipped. With no
+    // workspace to read the verdict in, there is no verdict to rely on: nothing merges.
+    const reason = 'no workspace resolves for this PR, so its review verdict cannot be read; nothing was merged';
+    console.log(`Auto-merge blocked for ${repoFullName}#${prNumber}: ${reason}`);
+    fireGateEvent({
+      gate: GATE_SLUGS.REVIEW_VERDICT,
+      surface: 'auto-merge',
+      outcome: 'rejected',
+      reason,
+      workspaceId: null,
+      taskId: worker.taskId ?? null,
+      workerId: worker.id ?? null,
+      callerOrigin: 'system',
+      detail: { prNumber, headSha, repoFullName, reasonClass: 'no_workspace' },
+    });
+    return { merged: false, reason };
+  }
+  {
     const reviewGate = await guardReviewVerdict({
       workspaceId: reviewWorkspaceId,
       prNumber,
@@ -839,7 +880,7 @@ export async function tryAutoMergeWorkerPr(params: {
   // the integration branch is still open, since merging deletes that branch.
   const mergingTask = worker.taskId
     ? await db.query.tasks.findFirst({
-        where: eq(tasks.id, worker.taskId),
+        where: sqlWhere(eq(tasks.id, worker.taskId)),
         columns: { id: true, title: true, taskClass: true, missionId: true, context: true },
       })
     : null;
@@ -869,11 +910,11 @@ export async function tryAutoMergeWorkerPr(params: {
   // kernel lands it (LandingRequested → merge_call → MergeCallResult) and owns
   // what follows — the post-merge work, and the refresh or conflict repair a
   // refusal is owed. Any other PR merges here as before.
-  const kernelLand = params.landThroughKernel ?? (await import('@/lib/workflow/seam')).landThroughKernel;
+  const kernelLand = params.landThroughKernel ?? (await import('@/lib/workflow/kernel-client')).landThroughKernel;
   const landingWorkspaceId = await workspaceIdOnce();
   const slotted = await mergeInSurfaceSlot(surfaceOrder, async () => {
     const kernel = landingWorkspaceId
-      ? await kernelLand({ workspaceId: landingWorkspaceId, installationId, repoFullName, prNumber, headSha, door: 'auto_merge', actor: 'system:auto_merge', mergeMethod })
+      ? await kernelLand({ workspaceId: landingWorkspaceId, installationId, repoFullName, prNumber, headSha, door: 'auto_merge', actor: 'system:auto_merge', mergeMethod }, { principal: { kind: 'system', id: 'system:auto_merge' } })
       : null;
     return kernel ? { kernel } : { legacy: await mergePullRequest(installationId, repoFullName, prNumber, mergeMethod, headSha) };
   });
@@ -889,7 +930,7 @@ export async function tryAutoMergeWorkerPr(params: {
   const result = slotted.result.legacy;
   if (result.merged) {
     console.log(`Auto-merged PR #${prNumber} on ${repoFullName} for worker ${worker.id}`);
-    await finalizeMissionPrMerge(mergingTask, installationId, repoFullName);
+    await finalizeMissionPrMerge(mergingTask, installationId, repoFullName, prNumber);
     return { merged: true };
   }
 
@@ -1067,7 +1108,7 @@ async function refreshDeltaBaseForTask(
 ): Promise<string | null> {
   if (!taskId) return null;
   try {
-    const task = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId), columns: { context: true } });
+    const task = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { context: true } });
     return refreshDeltaBase(task?.context, gitConfig);
   } catch {
     return null;
@@ -1086,7 +1127,7 @@ async function loadTaskMergeFields(
   if (!taskId) return { mission: null, requiresReview: false };
   try {
     const task = await db.query.tasks.findFirst({
-      where: eq(tasks.id, taskId),
+      where: sqlWhere(eq(tasks.id, taskId)),
       columns: { id: true, requiresReview: true },
       with: { mission: { columns: { workingBranch: true, integrationBranchEnabled: true } } },
     });
@@ -1100,7 +1141,7 @@ async function loadTaskMergeFields(
 
 async function resolveWorkspaceId(taskId: string): Promise<string | null> {
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { workspaceId: true },
   });
   return task?.workspaceId ?? null;
@@ -1123,7 +1164,7 @@ export async function escalateConflictExhaustion(
   headSha: string,
 ): Promise<void> {
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { id: true, missionId: true, title: true, context: true },
   });
   if (!task) return;
@@ -1203,7 +1244,7 @@ export async function escalateReviewerExhaustion(
   lastFeedback: string | null | undefined,
 ): Promise<void> {
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { id: true, missionId: true, title: true, context: true },
   });
   if (!task) return;
@@ -1290,7 +1331,7 @@ export async function escalateReviewContractFailure(params: {
   const { taskId, repoFullName, prNumber, headSha, installationId } = params;
 
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { id: true, missionId: true, title: true, workspaceId: true },
   });
   if (!task) return;
@@ -1376,11 +1417,11 @@ export async function hasActiveReviewerFixTask(
   prNumber: number,
 ): Promise<boolean> {
   const existing = await db.query.tasks.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.workspaceId, workspaceId),
       eq(tasks.reviewerRetryPrNumber, prNumber),
       inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
-    ),
+    )),
     columns: { id: true },
   });
   return existing != null;

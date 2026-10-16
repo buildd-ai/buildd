@@ -88,7 +88,7 @@ Each team configures **its own** channel; alerts route to the team that owns the
 - UI: `apps/web/src/app/app/(protected)/settings/NotificationsSection.tsx` → **Settings → Notifications**
 
 ### Events (`NotifyEvent`)
-`taskClaimed` · `taskCompleted` · `taskFailed` · `credentialExpired` — all default-on, all muteable per team.
+`taskClaimed` · `taskCompleted` · `taskFailed` · `credentialExpired` — all toggleable per team. `taskClaimed` and `taskCompleted` default off (one push per task each exhausts a Pushover app's monthly quota at fleet volume); the rest default on.
 
 Call sites: `workers/claim/route.ts:1007` (claimed); `workers/[id]/route.ts:736,744,758` (failed/completed/credentialExpired).
 

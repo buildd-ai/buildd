@@ -24,7 +24,7 @@ export default function PersonalProviderKeys({ teamId, isAdmin }: { teamId: stri
     let live = true;
     listProviderKeys(teamId)
       .then((v) => { if (live) { setView(v); setError(null); } })
-      .catch((e) => { if (live) setError(e instanceof Error ? e.message : 'Could not load your key'); });
+      .catch((e) => { if (live) setError(e instanceof Error ? e.message : "Could not load your keys. Try again."); });
     return () => { live = false; };
   }, [teamId]);
 

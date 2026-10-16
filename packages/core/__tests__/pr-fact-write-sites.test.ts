@@ -14,14 +14,12 @@
 import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { code, deployedFiles, offendingSites, repo } from './_write-site-scan';
 
-const repo = join(import.meta.dir, '../../..');
-const files = Bun.spawnSync(['git', 'ls-files', '--cached', '--others', '--exclude-standard', 'apps', 'packages', 'scripts'], { cwd: repo })
-  .stdout.toString()
-  .split('\n')
-  .filter((f) => /\.(ts|tsx)$/.test(f) && !/\.d\.ts$/.test(f) && !/\.test\.tsx?$/.test(f) && !/__tests__\//.test(f) && !/\/tests\//.test(f));
+const files = deployedFiles();
 
-const FUNNEL = 'packages/core/pr-facts.ts';
+/** The funnel and its SQL (the projection T17 / T18 embed lives beside it). */
+const FUNNEL = new Set(['packages/core/pr-facts.ts', 'packages/core/pr-fact-sql.ts']);
 /**
  * Declarations and fixtures: the schema defines the columns; the demo stack
  * seeds a scripted timeline (simulated clocks, never a real PR) into its own
@@ -31,49 +29,15 @@ const ALLOWED = new Set<string>(['packages/core/db/schema.ts', 'scripts/demo/adv
 /** A flagged line (or the line above it) carrying this marker is a write to another table. */
 const NOT_A_WORKERS_WRITE = 'pr-fact-guard: not a workers write';
 
-function code(file: string): string {
-  return readFileSync(join(repo, file), 'utf8')
-    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
-    .replace(/(^|[^:'"`])\/\/.*$/gm, '$1');
-}
-
-const GUARDED_KEY = /\b(prLifecycleStatus|mergedAt)\b/;
-const GUARDED_COLUMN = /\b(pr_lifecycle_status|merged_at)\s*=/;
-
-export function offendingSites(src: string): string[] {
-  const out: string[] = [];
-  const line = (i: number) => src.slice(0, i).split('\n').length;
-  for (const m of src.matchAll(/\b(?:update|insert)\(\s*workers\s*\)/g)) {
-    const rest = src.slice(m.index!);
-    const end = rest.search(/\.(?:where|returning|onConflict\w*)\(|;\s*$/m);
-    const block = rest.slice(0, end > 0 ? end : 1500);
-    if (GUARDED_KEY.test(block)) out.push(`${m[0]}@${line(m.index!)}`);
-  }
-  for (const m of src.matchAll(/UPDATE\s+(?:"?workers"?)(?:\s+\w+)?\s+SET\b/gi)) {
-    const rest = src.slice(m.index!);
-    const end = rest.search(/\bWHERE\b|\bFROM\b/i);
-    if (GUARDED_COLUMN.test(rest.slice(0, end > 0 ? end : 1500))) out.push(`raw UPDATE workers@${line(m.index!)}`);
-  }
-  if (/\b(?:update\(\s*workers\s*\)|UPDATE\s+"?workers"?\b)/i.test(src)) {
-    for (const m of src.matchAll(/\b(prLifecycleStatus|mergedAt)\s*:\s*(?:'[a-z_]+'|"[a-z_]+"|new Date\b|sql`)/g)) {
-      // A fact handed to the funnel (`{ kind: 'merged', mergedAt: … }`) is the sanctioned shape.
-      if (/kind:\s*'merged',\s*$/.test(src.slice(Math.max(0, m.index! - 40), m.index!))) continue;
-      out.push(`${m[1]} literal@${line(m.index!)}`);
-    }
-    for (const m of src.matchAll(/\.\s*(prLifecycleStatus|mergedAt)\s*=(?!=)/g)) out.push(`${m[1]} assignment@${line(m.index!)}`);
-  }
-  return out;
-}
-
 describe('the PR fact cache has one writer', () => {
   it('scans a real tree that contains the funnel', () => {
     expect(files.length).toBeGreaterThan(500);
-    expect(files).toContain(FUNNEL);
+    for (const f of FUNNEL) expect(files).toContain(f);
   });
 
   it('no module but recordPrFact writes workers.pr_lifecycle_status or workers.merged_at', () => {
     const offenders = files
-      .filter((f) => f !== FUNNEL && !ALLOWED.has(f))
+      .filter((f) => !FUNNEL.has(f) && !ALLOWED.has(f))
       .flatMap((f) => {
         const raw = readFileSync(join(repo, f), 'utf8').split('\n');
         return offendingSites(code(f))

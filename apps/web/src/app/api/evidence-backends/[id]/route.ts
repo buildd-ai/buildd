@@ -24,6 +24,7 @@ import { parseUpdateEvidenceBackend } from '@/lib/evidence-backend-input';
 import { filterReachableEvidenceBackends } from '@/lib/evidence-backend-access';
 import { isUuid } from '@/lib/uuid';
 import { roleHas } from '@/lib/permissions';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -33,7 +34,7 @@ async function load(req: NextRequest, id: string) {
   if (!isUuid(id)) return { res: notFound() };
   const who = await resolveExperimentViewer(req, req.nextUrl.searchParams.get('workspaceId'));
   if (!who.ok) return { res: NextResponse.json({ error: who.error }, { status: who.status }) };
-  const row = await db.query.evidenceBackends.findFirst({ where: eq(evidenceBackends.id, id) });
+  const row = await db.query.evidenceBackends.findFirst({ where: sqlWhere(eq(evidenceBackends.id, id)) });
   // Another team's backend, or a workspace backend the caller cannot reach,
   // answers exactly like a missing one.
   if (!row || row.teamId !== who.viewer.teamId) return { res: notFound() };
@@ -87,7 +88,7 @@ export async function PATCH(req: NextRequest, { params }: RouteContext) {
     .where(eq(evidenceBackends.id, row.id));
 
   const verification = await verifyEvidenceBackend(row.id);
-  const saved = await db.query.evidenceBackends.findFirst({ where: eq(evidenceBackends.id, row.id) });
+  const saved = await db.query.evidenceBackends.findFirst({ where: sqlWhere(eq(evidenceBackends.id, row.id)) });
   return NextResponse.json({ backend: toEvidenceBackendDTO(saved ?? row), verification });
 }
 

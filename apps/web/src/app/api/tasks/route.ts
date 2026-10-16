@@ -14,6 +14,7 @@ import { assertMemberRepoAccess, memberRepoAccessSubject, resolveMemberRepoAcces
 import { stampLandingOverrideGrant } from '@/lib/landing-override-grant';
 import { requestingPerson } from '@/lib/request-person';
 import { withoutReviewDispatchContext } from '@/lib/verdict-provenance';
+import { specRepairStamp, withoutMissionVerificationMarkers } from '@/lib/server-context-markers';
 import { resolveCreatorContext } from '@/lib/task-service';
 import { validateRequiredConnectors } from '@/lib/required-connectors';
 import { authenticateTaskScopedCaller, isDelegatedReach, taskScopeAllowsDelegated, taskScopeAllowsMission, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
@@ -51,6 +52,8 @@ import { createSubjectIntakeRepository } from '@/lib/subject-intake-db';
 import { detectProseGate } from '@buildd/core/prose-gate';
 import { findIntakeWarnings } from '@buildd/core/spec-discrepancy-intake';
 import { isUuid } from '@/lib/uuid';
+import { resolveTaskDelegationWrite } from '@/lib/task-delegation-checks';
+import { FILING_TARGETS_CONTEXT_KEY, parseFilingTargets, type TaskDelegation } from '@buildd/core/token-delegation';
 import {
   GATE_SLUGS,
   fireGateEvent,
@@ -68,6 +71,9 @@ import { checkStatedRole } from '@/lib/stated-role';
 import { resolveTaskRequesterUserId } from '@buildd/core/task-requester';
 import { loadRequestCeiling, previewUnderCeiling, rejectOverCeiling } from '@/lib/tier-ceiling-check';
 import { terminalAuditFields } from './audit-fields';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import { TASK_RESERVATION_KEY, buildReservation } from '../workers/claim/held-gate';
+import { INTERACTIVE_SESSION_HEADER, verifyInteractiveSession } from '@/lib/interactive-session';
 
 // Routing vocabulary for tasks.kind / tasks.complexity — the two inputs the
 // claim-time router's kind×complexity matrix reads (see packages/core/model-router.ts).
@@ -268,7 +274,7 @@ export async function GET(req: NextRequest) {
     // callers that need budget-reset info alongside the task list.
     const allTasks = workspaceIds.length > 0
       ? await db.query.tasks.findMany({
-          where: and(
+          where: sqlWhere(and(
             inArray(tasks.workspaceId, workspaceIds),
             missionScope,
             activeOnly
@@ -283,8 +289,8 @@ export async function GET(req: NextRequest) {
                     gte(tasks.updatedAt, oneDayAgo),
                   ),
                 ),
-          ),
-          orderBy: desc(tasks.createdAt),
+          )),
+          orderBy: sqlOrderBy(desc(tasks.createdAt)),
           limit: 200,
           columns: {
             id: true,
@@ -311,6 +317,9 @@ export async function GET(req: NextRequest) {
             outputRequirement: true,
             missionId: true,
             dependsOn: true,
+            roleSlug: true,
+            // `buildd top` tells which provider's limit holds a waiting task.
+            backend: true,
             createdAt: true,
             updatedAt: true,
           },
@@ -322,9 +331,20 @@ export async function GET(req: NextRequest) {
                 repo: true,
               },
             },
+            // `buildd top` groups a runner's work by mission and names why a
+            // task waits (a held mission, one a person runs from their session).
+            mission: {
+              columns: {
+                id: true,
+                title: true,
+                isHeld: true,
+                executor: true,
+              },
+            },
           },
         })
       : [];
+    const listedTasks = await withTaskListAggregates(allTasks, workspaceIds, terminalStatuses);
 
     // Stale-while-revalidate: refresh stale PR state for workers in these
     // workspaces after the response is sent, pushing updates via WORKER_PROGRESS.
@@ -341,7 +361,7 @@ export async function GET(req: NextRequest) {
     }
 
     return jsonResponse({
-      tasks: allTasks,
+      tasks: listedTasks,
       budgetWindows: apiAccount ? {
         claude: {
           resetAt: apiAccount.budgetResetsAt?.toISOString?.() ?? apiAccount.budgetResetsAt ?? null,
@@ -362,6 +382,58 @@ export async function GET(req: NextRequest) {
     const detail = error instanceof Error ? error.message : String(error);
     console.error('Get tasks error:', error);
     return NextResponse.json({ error: 'Failed to get tasks', detail }, { status: 500 });
+  }
+}
+
+/**
+ * Two counts the full list's rows cannot give `buildd top`, which sees only
+ * this list (active tasks plus a day of finished ones, capped):
+ *   - mission.taskCounts { done, total } over EVERY task of each listed
+ *     mission in the caller's workspaces, not just the listed ones;
+ *   - prMergedAt on a finished task whose PR has merged.
+ * Best effort: a failed aggregate leaves the list as it was.
+ */
+async function withTaskListAggregates<T extends { id: string; status: string; missionId: string | null; mission?: unknown }>(
+  rows: T[],
+  workspaceIds: string[],
+  terminalStatuses: readonly string[],
+): Promise<Array<T & { prMergedAt?: unknown }>> {
+  const missionIds = [...new Set(rows.map(t => t.missionId).filter((id): id is string => !!id))];
+  const finishedIds = rows.filter(t => terminalStatuses.includes(t.status)).map(t => t.id);
+  if (missionIds.length === 0 && finishedIds.length === 0) return rows;
+  try {
+    const [counts, merged] = await Promise.all([
+      missionIds.length > 0
+        ? db.select({
+            missionId: tasks.missionId,
+            done: sql<number>`count(*) filter (where ${tasks.status} = 'completed')::int`,
+            total: sql<number>`count(*) filter (where ${tasks.status} != 'cancelled')::int`,
+          })
+            .from(tasks)
+            .where(and(inArray(tasks.missionId, missionIds), inArray(tasks.workspaceId, workspaceIds)))
+            .groupBy(tasks.missionId)
+        : Promise.resolve([] as Array<{ missionId: string | null; done: number; total: number }>),
+      finishedIds.length > 0
+        ? db.select({ taskId: workers.taskId, mergedAt: sql<string>`max(${workers.mergedAt})` })
+            .from(workers)
+            .where(and(inArray(workers.taskId, finishedIds), isNotNull(workers.mergedAt)))
+            .groupBy(workers.taskId)
+        : Promise.resolve([] as Array<{ taskId: string | null; mergedAt: string }>),
+    ]);
+    const countBy = new Map(counts.map(c => [c.missionId, { done: Number(c.done) || 0, total: Number(c.total) || 0 }]));
+    const mergedBy = new Map(merged.map(m => [m.taskId, m.mergedAt]));
+    return rows.map(t => {
+      const taskCounts = t.missionId ? countBy.get(t.missionId) : undefined;
+      const mergedAt = mergedBy.get(t.id);
+      return {
+        ...t,
+        ...(taskCounts && t.mission && typeof t.mission === 'object' ? { mission: { ...t.mission, taskCounts } } : {}),
+        ...(mergedAt ? { prMergedAt: mergedAt } : {}),
+      };
+    });
+  } catch (err) {
+    console.error('[tasks] list aggregates failed:', err);
+    return rows;
   }
 }
 
@@ -432,6 +504,9 @@ export async function POST(req: NextRequest) {
       requiredConnectors: rawRequiredConnectors,
       // Incoming context (from MCP or API callers — baseBranch, iteration, failureContext, etc.)
       context: rawIncomingContext,
+      // An interactive session creating a task it will claim itself: insert it
+      // already reserved so no runner can win the gap before its claim_task.
+      reserve: rawReserve,
       // Release override: 'true' | 'false' | 'inherit' (default inherit)
       release: rawRelease,
       // Agent backend that executes this task: 'claude' | 'codex'
@@ -455,7 +530,22 @@ export async function POST(req: NextRequest) {
       loopConfig: rawLoopConfig,
       subjectAnchor: rawSubjectAnchor,
       fileAnywayReason,
+      // Cross-workspace reach for this task's token (person only) and the
+      // workspaces it declares it will file tasks in (lib/task-delegation.ts).
+      delegation: rawDelegation,
+      filingTargets: rawFilingTargets,
     } = body;
+    // A reservation is only for a verified interactive session (the one the claim
+    // route lets claim its own reserved task). Refused before anything is filed, so
+    // create_task claim:true can never leave a task parked from every claimer.
+    const reserveVerified = rawReserve === true && !!apiAccount && !apiAccount.taskScope
+      && !!verifyInteractiveSession(req.headers.get(INTERACTIVE_SESSION_HEADER), apiAccount.id);
+    if (rawReserve !== undefined && typeof rawReserve !== 'boolean') {
+      return NextResponse.json({ error: 'reserve must be true or false' }, { status: 400 });
+    }
+    if (rawReserve === true && !reserveVerified) {
+      return NextResponse.json({ error: 'A task is only filed reserved from your own interactive session, the one claim_task would run as.' }, { status: 403 });
+    }
     let missionId: string | undefined = requestedMissionId;
 
     gateCaller = gateCallerOrigin({ apiAccount, user, workerId: createdByWorkerId });
@@ -470,7 +560,11 @@ export async function POST(req: NextRequest) {
     // The keys that make a task a dispatched review are the review system's to write (verdict-provenance.ts).
     // context.prReach is the server's to write (lib/pr-reach-grant.ts): a caller's value is dropped
     // here and the link this filing earns is stamped just before the insert.
-    let incomingContext = withoutPrReachGrant(withoutReviewDispatchContext(stampedGrant.context)) as typeof rawIncomingContext;
+    // context.finalVerification and context.specRepair are the server's to write
+    // (lib/server-context-markers.ts): a caller's copy is dropped here, and a repair
+    // filed by the mission's own final verification is stamped below.
+    const requestedSpecRepair = (rawIncomingContext as Record<string, unknown> | null | undefined)?.specRepair;
+    let incomingContext = withoutMissionVerificationMarkers(withoutPrReachGrant(withoutReviewDispatchContext(stampedGrant.context))) as typeof rawIncomingContext;
 
     // Spec-to-build opt-in — see docs/design/spec-to-build-pattern.md Proposal §1.
     // Never opens `mode` itself as a public parameter (that would let any task,
@@ -585,31 +679,59 @@ export async function POST(req: NextRequest) {
     if (!workspaceId) {
       return NextResponse.json({ error: 'workspaceId is required' }, { status: 400 });
     }
-    // A task token files in its own workspace, or in one its schedule's
-    // delegation grants tasks:create on (packages/core/token-delegation.ts).
+    // A task token files in its own workspace, or in one its delegation (the
+    // schedule's or the task's own) grants tasks:create on
+    // (packages/core/token-delegation.ts).
     if (apiAccount && !taskScopeAllowsDelegated(apiAccount, workspaceId, 'tasks:create')) {
-      return NextResponse.json({ error: 'A task token may create tasks only in its own workspace, or one its schedule delegates tasks:create on' }, { status: 403 });
+      return NextResponse.json({
+        error: "A task token may create tasks only in its own workspace, or one its delegation grants tasks:create on. Ask for it with request_capability { capability: 'tasks:create', resource: '<workspace UUID>' }: a person approves it and the run keeps going.",
+        code: 'delegation_required',
+      }, { status: 403 });
     }
-    // A delegated follow-up is a plain task: it never joins a mission or a
-    // dependency graph in the other workspace, so it cannot steer work there.
-    // Its parent is the filing task itself (derived from the worker), which
-    // is the audit link back to the run that filed it.
+    // A delegated filing stays inside the delegated workspace: a mission link
+    // and dependencies only when the mission and every dependency are that
+    // workspace's own (dependsOn is confined to it by the check further down),
+    // so it cannot steer work anywhere the grant does not name. Its parent is
+    // the filing task itself (derived from the worker), the audit link back to
+    // the run that filed it.
+    let delegatedMissionChecked = false;
     if (apiAccount?.taskScope && isDelegatedReach(apiAccount, workspaceId)) {
       // MCP create_task fills in the filing task's own mission by default;
       // that link stays home rather than refusing the follow-up.
       if (missionId && await taskScopeAllowsMission(apiAccount, missionId)) missionId = undefined;
-      if (missionId || (Array.isArray(dependsOn) && dependsOn.length > 0)) {
-        return NextResponse.json({ error: 'A delegated task cannot set missionId or dependsOn' }, { status: 400 });
+      if (missionId) {
+        const mission = isUuid(missionId)
+          ? await db.query.missions.findFirst({ where: sqlWhere(eq(missions.id, missionId)), columns: { id: true, workspaceId: true } })
+          : null;
+        if (!mission || mission.workspaceId !== workspaceId) {
+          return NextResponse.json({ error: 'A delegated task may join a mission only in the workspace its delegation names' }, { status: 403 });
+        }
+        delegatedMissionChecked = true;
       }
       if (parentTaskId && parentTaskId !== apiAccount.taskScope.taskId) {
         return NextResponse.json({ error: 'A delegated task can only name its filing task as parent' }, { status: 400 });
       }
     }
+    // A task's own delegation is a person's grant (lib/task-delegation.ts):
+    // only a dashboard or OAuth session that reaches each target may set it.
+    let taskDelegation: TaskDelegation | null = null;
+    if (rawDelegation !== undefined) {
+      const write = await resolveTaskDelegationWrite(rawDelegation, workspaceId, grantPerson);
+      if (!write.ok) return NextResponse.json({ error: write.error }, { status: write.status });
+      taskDelegation = write.value;
+    }
+    // Declared filing targets are a need, not a grant: the claim holds the
+    // task until a delegation covers them (claim/delegation-gate.ts).
+    const filingTargets = parseFilingTargets(rawFilingTargets ?? (incomingContext as Record<string, unknown> | undefined)?.[FILING_TARGETS_CONTEXT_KEY]);
+    if (!filingTargets.ok) return NextResponse.json({ error: filingTargets.error }, { status: 400 });
+    if (filingTargets.targets.length > 0) {
+      incomingContext = { ...(incomingContext ?? {}), [FILING_TARGETS_CONTEXT_KEY]: filingTargets.targets } as typeof rawIncomingContext;
+    }
     gateWorkspaceId = workspaceId;
 
     // Validate workspace exists and fetch webhook config in one query
     const targetWorkspace = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, workspaceId),
+      where: sqlWhere(eq(workspaces.id, workspaceId)),
     });
     if (!targetWorkspace) {
       return NextResponse.json({ error: 'Workspace not found' }, { status: 400 });
@@ -621,7 +743,7 @@ export async function POST(req: NextRequest) {
     }
     // A per-task token files work only onto its own task's mission, never
     // another mission on the team, whatever its level.
-    if (missionId && apiAccount && !(await taskScopeAllowsMission(apiAccount, missionId))) {
+    if (missionId && apiAccount && !delegatedMissionChecked && !(await taskScopeAllowsMission(apiAccount, missionId))) {
       return NextResponse.json(
         {
           error: "A task token may create tasks only in its own task's mission. This mission exists on your team but is outside your token's scope; ask a person or an organizer to file the task.",
@@ -692,12 +814,12 @@ export async function POST(req: NextRequest) {
 
     if (subjectPolicy.mode === 'observe' && title.startsWith('[friction] ') && frictionSignature) {
       const existing = await db.query.tasks.findFirst({
-        where: and(
+        where: sqlWhere(and(
           eq(tasks.workspaceId, workspaceId),
           like(tasks.title, '[friction] %'),
           sql`${tasks.context}->>'frictionSignature' = ${frictionSignature}`,
           notInArray(tasks.status, ['completed', 'failed', 'cancelled']),
-        ),
+        )),
         columns: { id: true, title: true, description: true, creationSource: true },
       });
 
@@ -792,7 +914,7 @@ export async function POST(req: NextRequest) {
       }
 
       const depTasks = await db.query.tasks.findMany({
-        where: and(inArray(tasks.id, dependsOn), eq(tasks.workspaceId, workspaceId)),
+        where: sqlWhere(and(inArray(tasks.id, dependsOn), eq(tasks.workspaceId, workspaceId))),
         columns: { id: true },
       });
       const foundIds = new Set(depTasks.map(t => t.id));
@@ -841,11 +963,11 @@ export async function POST(req: NextRequest) {
     if (pathManifest && pathManifest.length > 0 && !isAdvisoryManifest(pathManifest)) {
       const existingDepsSet = new Set(resolvedDependsOn);
       const inFlightTasks = await db.query.tasks.findMany({
-        where: and(
+        where: sqlWhere(and(
           eq(tasks.workspaceId, workspaceId),
           inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
           isNotNull(tasks.pathManifest),
-        ),
+        )),
         columns: { id: true, pathManifest: true },
       });
       const overlapGitConfig = targetWorkspace.gitConfig ?? null;
@@ -885,7 +1007,7 @@ export async function POST(req: NextRequest) {
       prReachFiler = { kind: 'task', taskId: apiAccount.taskScope.taskId };
     } else if (apiAccount && creatorContext.createdByWorkerId) {
       const filerWorker = await db.query.workers.findFirst({
-        where: eq(workers.id, creatorContext.createdByWorkerId),
+        where: sqlWhere(eq(workers.id, creatorContext.createdByWorkerId)),
         columns: { taskId: true },
       });
       if (filerWorker?.taskId) prReachFiler = { kind: 'task', taskId: filerWorker.taskId };
@@ -896,6 +1018,15 @@ export async function POST(req: NextRequest) {
         return null;
       });
     const prReachCtx = prReach ? { prReach } : {};
+    let specRepairCtx: { specRepair?: NonNullable<ReturnType<typeof specRepairStamp>> } = {};
+    if (prReachFiler.kind === 'task' && missionId) {
+      const filerTask = await db.query.tasks.findFirst({
+        where: sqlWhere(eq(tasks.id, prReachFiler.taskId)),
+        columns: { missionId: true, context: true },
+      });
+      const stamp = specRepairStamp({ requested: requestedSpecRepair, missionId, filerTaskId: prReachFiler.taskId, filerTask: filerTask ?? null });
+      if (stamp) specRepairCtx = { specRepair: stamp };
+    }
 
     // Decomposition re-check gate. `runMission()` detects pre-filed sibling
     // tasks exactly ONCE, when the mission's planning task is created — but
@@ -911,12 +1042,12 @@ export async function POST(req: NextRequest) {
     // planning task started.
     if (missionId && !parentTaskId && createdByWorkerId) {
       const callingWorker = await db.query.workers.findFirst({
-        where: eq(workers.id, createdByWorkerId),
+        where: sqlWhere(eq(workers.id, createdByWorkerId)),
         columns: { taskId: true },
       });
       const callingTask = callingWorker?.taskId
         ? await db.query.tasks.findFirst({
-            where: eq(tasks.id, callingWorker.taskId),
+            where: sqlWhere(eq(tasks.id, callingWorker.taskId)),
             columns: { id: true, missionId: true, mode: true, creationSource: true, createdAt: true },
           })
         : null;
@@ -927,7 +1058,7 @@ export async function POST(req: NextRequest) {
         && callingTask.creationSource === 'orchestrator'
       ) {
         const missionRow = await db.query.missions.findFirst({
-          where: eq(missions.id, missionId),
+          where: sqlWhere(eq(missions.id, missionId)),
           columns: { decompositionSkipped: true, orchestrationMode: true },
         });
         // `orchestrationMode === 'manual'` is the one exemption, matching
@@ -940,7 +1071,7 @@ export async function POST(req: NextRequest) {
         // persist-and-note below is a no-op repeat.
         if (missionRow && missionRow.orchestrationMode !== 'manual') {
           const preFiled = await db.query.tasks.findMany({
-            where: and(
+            where: sqlWhere(and(
               eq(tasks.missionId, missionId),
               not(eq(tasks.creationSource, 'orchestrator')),
               not(eq(tasks.mode, 'planning')),
@@ -951,7 +1082,7 @@ export async function POST(req: NextRequest) {
               // this the organizer's 2nd/3rd create_task call would see its
               // own 1st call's task and wrongly refuse itself.
               not(eq(tasks.createdByWorkerId, createdByWorkerId)),
-            ),
+            )),
             columns: { id: true },
             limit: 20,
           });
@@ -1116,11 +1247,11 @@ export async function POST(req: NextRequest) {
       for (const slug of skillSlugs) {
         // Look up workspace-level skills (enabled only)
         const wsSkill = await db.query.workspaceSkills.findFirst({
-          where: and(
+          where: sqlWhere(and(
             eq(workspaceSkills.workspaceId, workspaceId),
             eq(workspaceSkills.slug, slug),
             eq(workspaceSkills.enabled, true),
-          ),
+          )),
         });
 
         if (!wsSkill) {
@@ -1224,7 +1355,7 @@ export async function POST(req: NextRequest) {
     let missionIntegrationBaseBranch: string | null = null;
     if (missionId) {
       const mission = await db.query.missions.findFirst({
-        where: eq(missions.id, missionId),
+        where: sqlWhere(eq(missions.id, missionId)),
         columns: {
           defaultOutputRequirement: true,
           defaultBackend: true,
@@ -1392,7 +1523,7 @@ export async function POST(req: NextRequest) {
     }
     if (!resolvedBackend) {
       const ws = await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, workspaceId),
+        where: sqlWhere(eq(workspaces.id, workspaceId)),
         columns: { gitConfig: true },
       });
       const wsDefault = ws?.gitConfig?.defaultBackend;
@@ -1464,13 +1595,13 @@ export async function POST(req: NextRequest) {
     if (targetWorkspace.teamId) {
       try {
         const roleRows = await db.query.workspaceSkills.findMany({
-          where: and(
+          where: sqlWhere(and(
             eq(workspaceSkills.teamId, targetWorkspace.teamId),
             eq(workspaceSkills.isRole, true),
             eq(workspaceSkills.enabled, true),
             or(isNull(workspaceSkills.workspaceId), eq(workspaceSkills.workspaceId, workspaceId)),
             ...(previewRoleSlug ? [eq(workspaceSkills.slug, previewRoleSlug)] : []),
-          ),
+          )),
           columns: {
             ...ROLE_VISIBILITY_COLUMNS, name: true, model: true, metadata: true,
             enabled: true, isRole: true, allowedTools: true, connectorRefs: true, defaultBackend: true,
@@ -1561,6 +1692,7 @@ export async function POST(req: NextRequest) {
         description: description || null,
         priority: priority || 0,
         status: 'pending',
+        ...(taskDelegation ? { delegation: taskDelegation } : {}),
         mode: emitsPlan ? 'planning' : 'execution',
         taskClass: isBookkeepingTitle ? 'bookkeeping' : 'work',
         runnerPreference: runnerPreference || 'any',
@@ -1574,7 +1706,10 @@ export async function POST(req: NextRequest) {
           // Merge incoming context (MCP sends baseBranch, iteration, failureContext, model, effort, etc.)
           ...(typeof incomingContext === 'object' && incomingContext !== null && !Array.isArray(incomingContext) ? incomingContext : {}),
           // Route-computed fields take precedence
+          // A reservation is the server's to write, from the authenticated account.
+          [TASK_RESERVATION_KEY]: reserveVerified ? buildReservation(apiAccount!.id) : undefined,
           ...prReachCtx,
+          ...specRepairCtx,
           ...(processedAttachments.length > 0 ? { attachments: processedAttachments } : {}),
           ...(skillSlugs.length > 0 ? { skillSlugs } : {}),
           ...(resolvedSkillRefs.length > 0 ? { skillRefs: resolvedSkillRefs } : {}),
@@ -1635,6 +1770,7 @@ export async function POST(req: NextRequest) {
           context: {
             ...(typeof incomingContext === 'object' && incomingContext !== null && !Array.isArray(incomingContext) ? incomingContext : {}),
             ...prReachCtx,
+            ...specRepairCtx,
             ...(processedAttachments.length > 0 ? { attachments: processedAttachments } : {}),
             ...(skillSlugs.length > 0 ? { skillSlugs } : {}),
             ...(resolvedSkillRefs.length > 0 ? { skillRefs: resolvedSkillRefs } : {}),

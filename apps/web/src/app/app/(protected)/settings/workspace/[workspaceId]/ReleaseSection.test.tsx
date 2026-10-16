@@ -50,4 +50,26 @@ describe('ReleaseSection — AC-47 (no Release now trigger on workspace config)'
     expect(html).not.toContain('mission detail');
     expect(html).toContain('trigger_release over MCP');
   });
+
+  it('shows the release candidate policy, unchecked and empty when none is configured', () => {
+    const html = renderToStaticMarkup(
+      <ReleaseSection workspaceId="ws-1" teamId="team-1" initialReleaseConfig={enabledConfig} hasRepo={true} canEdit />,
+    );
+    expect(html).toContain('Release candidates');
+    expect(html).not.toContain('Candidate branches');
+  });
+
+  it('shows the configured candidate fields, and the policy as text for a read-only viewer', () => {
+    const cfg: WorkspaceReleaseConfig = {
+      ...enabledConfig, prodBranch: 'main',
+      candidate: { branches: ['release/v*'], sourceBranch: 'dev', authors: ['github-actions[bot]'] },
+    };
+    const edit = renderToStaticMarkup(<ReleaseSection workspaceId="ws-1" teamId="team-1" initialReleaseConfig={cfg} hasRepo={true} canEdit />);
+    expect(edit).toContain('Candidate branches');
+    expect(edit).toContain('value="release/v*"');
+    expect(edit).toContain('value="github-actions[bot]"');
+    const read = renderToStaticMarkup(<ReleaseSection workspaceId="ws-1" teamId="team-1" initialReleaseConfig={cfg} hasRepo={true} canEdit={false} />);
+    expect(read).toContain('release/v*');
+    expect(read).toContain('Cut from dev, opened by github-actions[bot]');
+  });
 });

@@ -5,7 +5,7 @@
  * model call. `?state=propose|confirmed|split|question|answered|shipped|starting|streaming|streaming-long|denied|empty|watch|visual`
  * (`&review=1` with `visual` opens the review deck: the sheet on a phone, the pane on desktop)
  * (`&mood=calm|needs` for the empty canvas's mood)
- * and `&aside=member|operator`, `&setup=no_key&admin=1`,
+ * and `&aside=member|admin`, `&setup=no_key&admin=1`,
  * `&hints=1` (keyboard hints on), `&controls=1` (the composer's tools menu and
  * tier switch, on fixture rows and prices), `&pane=closed`, `&about=mission` (opened from
  * "Ask about this mission": the mission pinned in the canvas), `&focus=question` (the
@@ -241,7 +241,7 @@ export default function DevChatPage() {
     );
   }
 
-  const panel = aside === 'member' || aside === 'operator' ? (
+  const panel = aside === 'member' || aside === 'admin' ? (
     <ChatContextPanel
       audience={aside}
       needsYou={state === 'question' || state === 'split' ? [{ id: 'q', title: 'Round per line, or only the total?', href: '#', meta: 'checkout · Multi-currency invoices' }] : []}

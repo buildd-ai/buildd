@@ -39,6 +39,7 @@ import { captureCiJobLogEvidence } from '@/lib/ci-job-log-evidence';
 import { fetchPrRetryGate, fetchCIFailureLogs } from '@/lib/ci-failure-inspect';
 import { policyValue } from '@/lib/policy-overrides';
 import { observeCiFailure } from '@/lib/workflow/seam';
+import { notKernelMergedTaskSql } from '@/lib/workflow/pr-fact-scope';
 import { isSchemaDriftFailure, buildDriftDiagnoseTask } from '@/lib/ci-drift-diagnose';
 import { inheritAttemptIdentity } from '@/lib/attempt-identity';
 import { prepareSubjectFiling, recordSubjectMatchObserved } from '@/lib/subject-anchor-observer';
@@ -49,6 +50,8 @@ import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { dependencyBotPushRefusal, isDependencyBotAuthor, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
 import { CI_RED_ESCALATED_KEY, scheduleCiRedLook } from '@/lib/ci-red-queue';
+import { rerunIfInfraFailure } from '@/lib/ci-infra-failure';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Which door asked. Recorded as the gate row's `surface`. */
 export type CiRetrySurface = 'webhook:check_suite' | 'cron:ci-red' | 'landing';
@@ -70,6 +73,8 @@ export type CiRetrySkipReason =
   | 'retries_disabled'
   | 'advisory_only'
   | 'duplicate'
+  /** The failed jobs hit an infrastructure fault (registry rate limit, image pull): they were re-run, no fix attempt filed. */
+  | 'infra_rerun'
   /** The workflow kernel owns this PR and decided not to dispatch now (its state is the reason). */
   | 'kernel_owned'
   /** The kernel blocked the delivery on a trunk incident (§6.10): the base branch fails the same checks. */
@@ -89,6 +94,7 @@ const SKIP_REASON_TEXT: Record<CiRetrySkipReason, string> = {
   retries_disabled: 'no CI retry: CI retries are disabled for this workspace',
   advisory_only: 'no CI retry: all failed checks are advisory only (Visual QA)',
   duplicate: 'no CI retry: a retry for this PR and head was filed concurrently',
+  infra_rerun: 'no CI retry: the failure is infrastructure (registry or runner), the failed jobs were re-run',
   kernel_owned: 'no CI retry: the workflow kernel owns this PR and its state owes no CI fix now',
   blocked_on_trunk: 'no CI retry: the base branch fails the same checks; one trunk fix runs for every blocked PR',
 };
@@ -199,6 +205,7 @@ export async function escalateCiRedHead(input: EscalationInput): Promise<boolean
     .where(and(
       eq(tasks.id, input.task.id),
       sql`coalesce(${tasks.context}->>${CI_RED_ESCALATED_KEY}, '') <> ${input.headSha}`,
+      notKernelMergedTaskSql(),
     ))
     .returning({ id: tasks.id });
   if (rows.length === 0) return false;
@@ -236,9 +243,9 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
   // context, not an earlier (possibly iteration-less) one — see the openWorker
   // fix in PR #2574, which this mirrors for the CI-retry path.
   let worker = await db.query.workers.findFirst({
-    where: workerOwnsPr(repoFullName, prNumber),
+    where: sqlWhere(workerOwnsPr(repoFullName, prNumber)),
     with: { task: true },
-    orderBy: [desc(workers.createdAt)],
+    orderBy: sqlOrderBy([desc(workers.createdAt)]),
   });
 
   if (!worker?.task) {
@@ -249,7 +256,7 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
     // repos this workspace actually manages, and skipped for forks — a
     // fork's CI failure is not buildd's to fix.
     const adoptingWorkspace = await db.query.workspaces.findFirst({
-      where: workspaceRepoMatches(repoFullName),
+      where: sqlWhere(workspaceRepoMatches(repoFullName)),
     });
     if (!adoptingWorkspace) return { kind: 'not_ours' };
 
@@ -297,7 +304,7 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
     });
 
     worker = await db.query.workers.findFirst({
-      where: eq(workers.id, ownerWorker.id),
+      where: sqlWhere(eq(workers.id, ownerWorker.id)),
       with: { task: true },
     });
     if (!worker?.task) return { kind: 'not_ours' };
@@ -321,6 +328,22 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
       detail: { prNumber, repo: repoFullName, stage: 'ci_fix' },
     });
     return { kind: 'not_ours' };
+  }
+
+  // Ahead of the kernel door: a merged or closed PR owes no fix attempt, and a
+  // failure caused by the runner's infrastructure is cured by a re-run, not a
+  // builder (which would put the delivery in REPAIRING for nothing).
+  const earlyGate = await fetchPrRetryGate(installationId, repoFullName, prNumber);
+  if (earlyGate.closed) {
+    const reason = earlyGate.merged ? 'pr_merged' : 'pr_closed';
+    recordSkip(skipCtx, reason);
+    return { kind: 'skipped', reason };
+  }
+  const infra = await rerunIfInfraFailure(installationId, repoFullName, headSha);
+  if (infra.rerun) {
+    recordSkip(skipCtx, 'infra_rerun', { infraSignature: infra.signature, runId: infra.runId, runAttempt: infra.runAttempt });
+    await lookAgain(skipCtx);
+    return { kind: 'skipped', reason: 'infra_rerun' };
   }
 
   // Workflow kernel (docs/specs/workflow-state-kernel.md §5.7, T10): a PR whose
@@ -367,7 +390,7 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
   }
 
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, task.workspaceId),
+    where: sqlWhere(eq(workspaces.id, task.workspaceId)),
   });
   if (!workspace) {
     console.log(`No workspace found for task ${task.id}, skipping CI retry`);
@@ -498,7 +521,7 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
     });
 
     // The diagnose task re-attempts the PR's owner task, so it carries the
-    // same identity as the CI retry below would (Rule P1-7).
+    // same identity as the CI retry below would (mission-legibility R-7).
     const diagnoseIdentity = await inheritAttemptIdentity(diagnoseTask.parentTaskId);
 
     const [newDiagnoseTask] = await db
@@ -621,7 +644,7 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
     origin: 'webhook',
   });
 
-  // An attempt inherits the backend, role, routing kind and phase (Rule P1-7)
+  // An attempt inherits the backend, role, routing kind and phase (mission-legibility R-7)
   // of the task it re-attempts.
   const retryIdentity = await inheritAttemptIdentity(retryTask.parentTaskId);
 
@@ -711,7 +734,7 @@ type KernelCiOutcome =
  * kernel does not own this PR (no delivery, released, or switched off).
  */
 async function observeKernelCiFailure(input: CiFailureInput, workspaceId: string): Promise<KernelCiOutcome | null> {
-  const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId), columns: { gitConfig: true } });
+  const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, workspaceId)), columns: { gitConfig: true } });
   const configured = (ws?.gitConfig as { maxCiRetries?: number } | null)?.maxCiRetries;
   const seen = await observeCiFailure({
     workspaceId,

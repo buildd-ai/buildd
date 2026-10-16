@@ -1,3 +1,4 @@
+// @ui-copy: strings here render in the app; copy:check and the em-dash test scan them.
 /**
  * `MissionStateView` — the one owner of "what state is this in, and what is it
  * waiting on?".
@@ -102,6 +103,7 @@ import type { SupersessionSuggestion } from '@buildd/core/pr-shipped';
 import { isRepeatedlyDeferred, SURFACE_DEFERRAL_MS } from './claim-deferral-thresholds';
 import { quietLabel } from './local-strand';
 import type { LandingBlocker, LandingBlockCause } from './landing-blocker';
+import { BROWSER_RUNNER_MISSING, claimHoldPhrase } from './claim-hold-phrase';
 
 // ─── Provenance ───────────────────────────────────────────────────────────────
 
@@ -116,6 +118,7 @@ export type MissionStateSource =
   | 'deriveLocalStrand'
   | 'mission.criteriaEscalatedAt'
   | 'workers.live'
+  | 'workers.waitingFor'
   | 'deriveTaskHealthSignal'
   | 'deriveCriteriaGatePresentation'
   | 'canCompleteMission'
@@ -172,7 +175,7 @@ export type WaitingOnDescriptor =
        * PR (builder-after-review, CI retry). `claimed` separates "queued" from
        * "a worker has it" — the two read very differently to someone waiting.
        */
-      attempt?: { iteration: number | null; maxIterations: number | null; claimed: boolean };
+      attempt?: { iteration: number | null; maxIterations: number | null; claimed: boolean; kind?: 'review' | 'fix' };
       /**
        * The mission runs in a local session (`executor: 'local'`): the open rows
        * are the session's to claim, so "dispatch a worker" is the wrong advice.
@@ -190,6 +193,24 @@ export type WaitingOnDescriptor =
        * Nothing here is the owner's to do.
        */
       blockedBy?: { prNumbers: number[]; unfinished: number };
+      /**
+       * The claim loop's hold on every claimable open row, in words
+       * (`claimHoldPhrase`): the honest cause instead of "nothing is running".
+       */
+      hold?: string;
+      /**
+       * The mission PR has merged and only the visual review is left (spec
+       * f7f67f1a R-32): the mission is waiting on a check, not stalled.
+       */
+      visualQueued?: true;
+      /** With `visualQueued`: the visual review state says it cannot run (`hold` names why). */
+      visualBlocked?: true;
+      /** With `visualQueued`: the visual review is capturing now. */
+      visualRunning?: true;
+      /** Every open row is queued and nothing holds it: next in line for a runner. */
+      nextInLine?: true;
+      /** Every open row is queued for reasons with no wording, or for different ones: waiting, no cause named. */
+      waitingNoCause?: true;
     }
   /** A deliverable failed. `infra` distinguishes "failed on infrastructure" from "failed on its merits". */
   | { kind: 'task_failed'; tone: WaitingOnTone; label: string; infra: boolean; taskIds: string[]; titles: string[] }
@@ -330,6 +351,18 @@ export type WaitingOnDescriptor =
       surfaceAudit?: true;
       /** With `surfaceAudit`: the changed UI files, for a surface that says how many. */
       surfaceAuditPaths?: string[];
+      /**
+       * A worker is parked on a question for a person (`waiting_input`): a
+       * runner agent's AskUserQuestion or an interactive session's `ask_human`.
+       * `taskIds` are the asking tasks; `prompt` is the one question when
+       * exactly one is open; `asks` names each, for the causal chain.
+       */
+      question?: {
+        count: number;
+        taskIds: string[];
+        prompt: string | null;
+        asks: Array<{ taskId: string; title: string | null; prompt: string | null }>;
+      };
     }
   /**
    * Everything open is on a known self-resolving condition. Resumes by itself.
@@ -505,6 +538,14 @@ export interface MissionStateInput {
   criteriaItems?: Array<{ verdict: string; label?: string; name?: string; type?: string; awaitingRunner?: boolean }>;
   /** From `canCompleteMission`, when a caller ran it. */
   completion?: MissionCompletionSummary | null;
+  /**
+   * Who the mission's visual review waits on, from the one canonical state
+   * (`MissionVisualReviewState.nextActor`). Set when a caller loaded it. Absent
+   * keeps the legacy reading, where a missing audit is always the owner's;
+   * present and not `owner`, the system files and runs the review and the
+   * owner is not asked to run or waive anything.
+   */
+  visualReviewActor?: 'system' | 'jev' | 'owner' | 'none' | null;
   /** From `classifyMissionWait`, when a caller ran it. */
   wait?: { reason: string; waitUntil: Date | string } | null;
   /** From `evaluateMissionWorkState`, when a caller ran it. */
@@ -522,7 +563,38 @@ export interface MissionStateInput {
     title?: string | null;
     waitingOnTaskIds?: string[];
     waitingOnPrs?: Record<string, number>;
+    /** A `[surface audit]` row: the visual review, not build work. */
+    surfaceAudit?: boolean;
+    /** The claim loop's newest refusal reason for this row (gate_events), when known. */
+    holdReason?: string | null;
+    /** A visual-auditor row no online browser runner can take: that is its one cause. */
+    missingBrowser?: boolean;
   }>;
+  /**
+   * The canonical visual review state (`getMissionVisualReviewState`), when the
+   * caller read it: the header follows it rather than the audit task row, so a
+   * waiver or a blocked review reads the same here as on the check row.
+   */
+  visualReview?: { status: string; blockedDetail?: string | null } | null;
+  /**
+   * Required goal criteria the Checks rail shows as not yet passed, the
+   * selected outcome spec included (`openCriteriaChecks`). Names what is left
+   * when nothing else is outstanding, instead of "nothing is waiting".
+   */
+  openChecks?: Array<{ label: string; state: string }>;
+  /**
+   * The mission's integration PR merged into trunk. Unlike `missionPr`, which
+   * collapses a merged PR to null, this keeps the fact so an open check is read
+   * as what is left, never as a stall.
+   */
+  missionPrMerged?: boolean;
+  /**
+   * Tasks whose worker is parked on a question for a person
+   * (`missionOpenQuestions`, lib/open-ask.ts). Such a worker still counts in
+   * `activeAgents` (a waiting worker is live), so this is what tells the
+   * accessor the live work is waiting on an answer.
+   */
+  openQuestions?: Array<{ taskId: string; title?: string | null; prompt: string | null }>;
   /**
    * From `deriveLocalStrand` (lib/local-strand.ts), plus the refusal the
    * executor flip would meet (`continueOnRunnerBlockedReason`). Read only on a
@@ -598,6 +670,8 @@ export interface MissionStateInput {
     maxIterations: number | null;
     /** A worker has picked it up (task left `pending`, or a live worker is on it). */
     claimed: boolean;
+    /** A reviewer reads as a review, never "Fix 0 of 3" (00d288fd). Absent = a fix. */
+    kind?: 'review' | 'fix';
   } | null;
 }
 
@@ -622,6 +696,8 @@ export interface MissionCompletionSummary {
   visualReviewHold?: { cells: number; roundCapOpen: boolean; enforced: boolean } | null;
   /** The rendered UI files behind `surface_audit_missing`. */
   surfaceAuditPaths?: string[];
+  /** Who clears `surface_audit_missing`, as the completion gate decided it (policy, executor, prior audits). */
+  surfaceAuditActor?: 'system' | 'owner';
 }
 
 // ─── The situation line ───────────────────────────────────────────────────────
@@ -676,6 +752,8 @@ export interface MissionSituation {
   /** Everything outstanding other than `focus`, in rank order. */
   readonly alsoOutstanding: readonly WaitingOnDescriptor[];
   readonly derivedFrom: MissionStateSource;
+  /** With nothing else outstanding: the required checks still open, by name (`openChecks`). */
+  readonly openChecks?: readonly string[];
 }
 
 // ─── Factory ──────────────────────────────────────────────────────────────────
@@ -704,9 +782,23 @@ export function deriveMissionStateView(input: MissionStateInput): MissionStateVi
 
   // A self-resolving wait resumes by itself: say so, rather than the generic
   // AUTO every `active` state shares. Same tone as that state.
-  const chip = resolved.waitingOn?.kind === 'self_resolving_wait'
-    ? { ...getMissionStateChip(resolved.displayState), label: /retry/i.test(resolved.waitingOn.reason) ? 'WAITING TO RETRY' : 'WAITING' }
-    : getMissionStateChip(resolved.displayState);
+  const w = resolved.waitingOn;
+  const chip = w?.kind === 'self_resolving_wait'
+    ? { ...getMissionStateChip(resolved.displayState), label: /retry/i.test(w.reason) ? 'WAITING TO RETRY' : 'WAITING' }
+    : w?.kind === 'task' && w.visualQueued
+      ? { ...getMissionStateChip(resolved.displayState), label: w.visualBlocked ? 'VISUAL REVIEW UNABLE TO RUN' : w.visualRunning ? 'VISUAL REVIEW RUNNING' : 'VISUAL REVIEW QUEUED' }
+      // All clear: the mission can complete, nothing is under review. A
+      // required check still open is named instead (spec 8e137fdb AC-7).
+      : resolved.kind === 'idle' && resolved.displayState === 'review'
+        ? (input.openChecks?.length ?? 0) > 0
+          // A pending check waits; only the all-clear wears the success tone.
+          ? { label: 'CHECK PENDING', cls: getMissionStateChip('awaiting_verification').cls }
+          : { ...getMissionStateChip(resolved.displayState), label: 'READY TO COMPLETE' }
+      : w?.kind === 'task' && w.nextInLine
+        ? { ...getMissionStateChip(resolved.displayState), label: 'NEXT IN LINE' }
+      : w?.kind === 'task' && (w.hold || w.waitingNoCause)
+        ? { ...getMissionStateChip(resolved.displayState), label: 'WAITING' }
+        : getMissionStateChip(resolved.displayState);
   const criteriaBlockingReason =
     resolved.waitingOn?.kind === 'criterion_failing' || resolved.waitingOn?.kind === 'criterion_unverified'
       ? resolved.waitingOn.label
@@ -828,6 +920,13 @@ function resolve(input: MissionStateInput): Resolution {
   const strand = strandFact(input);
   if (strand) return strand;
 
+  // 4¾. A worker is parked on a question for a person. Its worker row is live
+  //     (a waiting worker is still live), so rule 5 below would read it as
+  //     work in progress; it is the owner's move, and nothing moves until they
+  //     answer. Same for a runner agent and a local session's `ask_human`.
+  const question = questionFact(input);
+  if (question) return question;
+
   // 5. A live worker is observable ground truth. Everything below this line is
   //    an inference about a mission where nothing is currently executing.
   //    A local mission's live worker is the session's own claim: LOCAL, same tone.
@@ -918,7 +1017,8 @@ function resolve(input: MissionStateInput): Resolution {
   }
 
   // 9¾. The mission changed UI and nothing has looked at it
-  //     (`surface_audit_missing`). The owner either runs the audit or waives it.
+  //     (`surface_audit_missing`). Under `automatic` / `strict` the system files
+  //     and runs the audit (a wait); otherwise the owner runs or waives it.
   const surface = surfaceAuditFact(input);
   if (surface) return surface;
 
@@ -942,6 +1042,40 @@ function resolve(input: MissionStateInput): Resolution {
     displayState: input.progress !== undefined && input.progress >= 100 ? 'review' : 'active',
     source: 'mission.status',
   };
+}
+
+/** Rule 4¾ — a worker waiting on a person's answer. */
+function questionFact(input: MissionStateInput): Resolution | null {
+  const qs = input.openQuestions ?? [];
+  if (qs.length === 0) return null;
+  const prompt = qs.length === 1 ? qs[0].prompt : null;
+  return {
+    kind: 'awaiting_decision',
+    waitingOn: {
+      kind: 'human_decision',
+      tone: 'warning',
+      // The question itself leads; several are counted in words.
+      label: qs.length > 1 ? `${qs.length} questions for you` : prompt ? clip(prompt) : 'An agent is waiting for your answer',
+      detail: prompt,
+      question: {
+        count: qs.length,
+        taskIds: qs.map(q => q.taskId),
+        prompt,
+        asks: qs.map(q => ({ taskId: q.taskId, title: q.title ?? null, prompt: q.prompt })),
+      },
+    },
+    // The chip keeps saying who runs the work; the headline says what it needs.
+    displayState: isLocal(input) ? 'local' : 'running',
+    source: 'workers.waitingFor',
+  };
+}
+
+/** A question in a one-line headline: whole when short, else cut at a word. */
+function clip(s: string, max = 160): string {
+  const one = s.replace(/\s+/g, ' ').trim();
+  if (one.length <= max) return one;
+  const cut = one.slice(0, max);
+  return `${cut.slice(0, Math.max(cut.lastIndexOf(' '), max - 20)).trimEnd()}…`;
 }
 
 /** The mission's tasks are run from a person's local session. */
@@ -1029,18 +1163,20 @@ function attemptFact(input: MissionStateInput): Resolution | null {
     waitingOn: {
       kind: 'task',
       tone: 'neutral',
-      label: `${fixLabel(a)} ${a.claimed ? 'in progress' : 'queued, no worker yet'}`,
+      label: `${fixLabel(a)} ${a.claimed ? 'in progress' : 'queued, waiting for a runner'}`,
       count: 1,
       taskIds: [a.taskId],
       byStatus: { [a.status]: 1 },
-      attempt: { iteration: a.iteration, maxIterations: a.maxIterations, claimed: a.claimed },
+      attempt: { iteration: a.iteration, maxIterations: a.maxIterations, claimed: a.claimed, ...(a.kind === 'review' ? { kind: 'review' as const } : {}) },
     },
     displayState: 'active',
     source: 'tasks.parentTaskId + tasks.taskClass',
   };
 }
 
-function fixLabel(a: { iteration: number | null; maxIterations: number | null }): string {
+function fixLabel(a: { iteration: number | null; maxIterations: number | null; kind?: 'review' | 'fix' }): string {
+  // A reviewer's iteration counts review rounds, not fixes: it is "Review", never "Fix 0 of 3".
+  if (a.kind === 'review') return 'Review';
   if (a.iteration == null) return 'Fix';
   return a.maxIterations != null ? `Fix ${a.iteration} of ${a.maxIterations}` : `Fix ${a.iteration}`;
 }
@@ -1127,6 +1263,13 @@ function landingFact(
 }
 
 /** Rule 7 — the work is done and has not reached trunk. */
+/** The merge wait's label: the mission PR, or the task PRs still open. */
+function unmergedLabel(missionPr: boolean, taskPrs: number): string {
+  return missionPr
+    ? 'The mission PR has not merged, so the work is not on trunk'
+    : `${taskPrs} completed task(s) have an unmerged PR`;
+}
+
 function mergeFact(input: MissionStateInput): Resolution | null {
   // An open fix attempt means the PR is about to change; asking the owner to
   // merge it now is the false headline rule 6½ exists to prevent.
@@ -1226,9 +1369,7 @@ function mergeFact(input: MissionStateInput): Resolution | null {
       waitingOn: {
         kind: 'merge',
         tone: 'warning',
-        label: missionPr
-          ? 'The mission PR has not merged, so the work is not on trunk'
-          : `${completion.awaitingMerge ?? details.length} completed task(s) have an unmerged PR`,
+        label: unmergedLabel(missionPr, completion.awaitingMerge ?? details.length),
         count: completion.awaitingMerge ?? details.length,
         prNumbers,
         prUrls,
@@ -1283,9 +1424,7 @@ function mergeFact(input: MissionStateInput): Resolution | null {
       waitingOn: {
         kind: 'merge',
         tone: 'warning',
-        label: missionPr
-          ? 'The mission PR has not merged, so the work is not on trunk'
-          : `${rowPrs.length} completed task(s) have an unmerged PR`,
+        label: unmergedLabel(missionPr, rowPrs.length),
         count: missionPr ? 1 : rowPrs.length,
         prNumbers: missionPr
           ? openMissionPr!.prNumber != null ? [openMissionPr!.prNumber] : []
@@ -1312,10 +1451,18 @@ function mergeFact(input: MissionStateInput): Resolution | null {
  * `blocked`; with a worker running they are simply not finished yet, which is
  * still something the header owes the reader and is deliberately quiet.
  */
+/** Visual review states in which an open audit row is no longer outstanding work. */
+// `optional` is not here: it means the review could not be read, and an audit row still open is still the wait (c9353c11).
+const VISUAL_SETTLED = new Set(['waived', 'passed', 'not_applicable']);
+
 function openTaskFact(input: MissionStateInput, live: boolean): Resolution | null {
   const { completion } = input;
-  const openTasks = input.openTasks ?? [];
-  const pendingCount = completion?.pendingDeliverables ?? openTasks.length;
+  const allOpen = input.openTasks ?? [];
+  // A waived or passed review leaves its audit row open; it is not what holds the mission.
+  const settled = !!input.visualReview && VISUAL_SETTLED.has(input.visualReview.status);
+  const openTasks = settled ? allOpen.filter(t => !t.surfaceAudit) : allOpen;
+  if (settled && allOpen.length > 0 && openTasks.length === 0) return null;
+  const pendingCount = settled ? openTasks.length : completion?.pendingDeliverables ?? openTasks.length;
   // Every open row waiting on its dependencies is a fact whatever the health
   // signal says (it reads NOMINAL for exactly this case), so a card with no
   // completion decision names the wait the same way `explain` does.
@@ -1330,7 +1477,8 @@ function openTaskFact(input: MissionStateInput, live: boolean): Resolution | nul
       acc[t.status] = (acc[t.status] ?? 0) + 1;
       return acc;
     }, {});
-  const breakdown = Object.entries(byStatus).map(([s, n]) => `${n} ${s}`).join(', ');
+  const breakdown = Object.entries(byStatus).map(([s, n]) => `${n} ${OPEN_STATUS_LABEL[s] ?? s.replace(/_/g, ' ')}`).join(', ');
+  const tasksWord = pendingCount === 1 ? '1 task' : `${pendingCount} tasks`;
 
   // Never cite a row that is only waiting on its dependency: it cannot be
   // claimed, so it is not what is holding the mission. Claimable rows lead;
@@ -1361,6 +1509,66 @@ function openTaskFact(input: MissionStateInput, live: boolean): Resolution | nul
   }
   const citedIds = (live ? openTasks : claimable).map(t => t.id);
 
+  // R-32 / R-33: with nothing live, say what the open rows actually wait on.
+  if (!live && claimable.length > 0) {
+    // One cause per row: a missing browser runner outranks a claim-loop hold,
+    // because the hold lifting would still leave nothing able to run it.
+    const holds = claimable.map(t => (t.missingBrowser ? BROWSER_RUNNER_MISSING : claimHoldPhrase(t.holdReason)));
+    const hold = holds.every(h => h && h === holds[0]) ? holds[0]! : undefined;
+    const base = { kind: 'task' as const, count: pendingCount, taskIds: citedIds, byStatus, ...(isLocal(input) ? { local: true as const } : {}) };
+    if (input.missionPrMerged && claimable.every(t => t.surfaceAudit)) {
+      const vr = input.visualReview?.status;
+      if (vr === 'blocked') {
+        const why = input.visualReview?.blockedDetail ?? null;
+        return {
+          kind: 'awaiting_verification',
+          waitingOn: { ...base, tone: 'warning', label: why ? `Visual review unable to run: ${why}` : 'Visual review unable to run', visualQueued: true, visualBlocked: true, ...(why ? { hold: why } : {}) },
+          displayState: 'awaiting_verification',
+          source: completion?.code === 'pending_deliverables' ? 'canCompleteMission' : 'deriveTaskHealthSignal',
+        };
+      }
+      if (vr === 'running') {
+        return {
+          kind: 'awaiting_verification',
+          waitingOn: { ...base, tone: 'neutral', label: 'Visual review running', visualQueued: true, visualRunning: true },
+          displayState: 'awaiting_verification',
+          source: completion?.code === 'pending_deliverables' ? 'canCompleteMission' : 'deriveTaskHealthSignal',
+        };
+      }
+      return {
+        kind: 'awaiting_verification',
+        waitingOn: { ...base, tone: 'neutral', label: hold ? `Visual review queued: ${hold}` : 'Visual review queued', visualQueued: true, ...(hold ? { hold } : {}) },
+        displayState: 'awaiting_verification',
+        source: completion?.code === 'pending_deliverables' ? 'canCompleteMission' : 'deriveTaskHealthSignal',
+      };
+    }
+    if (hold) {
+      return {
+        kind: 'waiting',
+        waitingOn: { ...base, tone: 'warning', label: `${pendingCount === 1 ? 'The open task is' : `${pendingCount} open tasks are`} queued: ${hold}`, hold },
+        displayState: 'active',
+        source: completion?.code === 'pending_deliverables' ? 'canCompleteMission' : 'deriveTaskHealthSignal',
+      };
+    }
+    // Spec 8e137fdb I-4: queued rows nothing holds are next in line; a reason
+    // the derivation does not know (or several different ones) reads as
+    // waiting, with no invented cause (AC-9). Either way, not a stall: only a
+    // started row with nothing running it is one. A local mission keeps its own
+    // local-session reading.
+    if (!isLocal(input) && claimable.every(t => t.status === 'pending')) {
+      const subject = pendingCount === 1 ? 'The open task is' : `${pendingCount} open tasks are`;
+      const nothingHolds = claimable.every(t => !t.holdReason && !t.missingBrowser);
+      return {
+        kind: 'waiting',
+        waitingOn: nothingHolds
+          ? { ...base, tone: 'neutral', label: `${subject} next in line for a runner`, nextInLine: true }
+          : { ...base, tone: 'neutral', label: `${subject} waiting`, waitingNoCause: true },
+        displayState: 'active',
+        source: completion?.code === 'pending_deliverables' ? 'canCompleteMission' : 'deriveTaskHealthSignal',
+      };
+    }
+  }
+
   return {
     kind: live ? 'running' : 'blocked',
     waitingOn: {
@@ -1368,11 +1576,11 @@ function openTaskFact(input: MissionStateInput, live: boolean): Resolution | nul
       tone: live ? 'neutral' : 'warning',
       label: live
         ? breakdown
-          ? `${pendingCount} deliverable task(s) still open (${breakdown})`
-          : `${pendingCount} deliverable task(s) still open`
+          ? `${tasksWord} still open: ${breakdown}`
+          : `${tasksWord} still open`
         : breakdown
-          ? `${pendingCount} task(s) open with no live worker (${breakdown})`
-          : `${pendingCount} task(s) open with no live worker`,
+          ? `No agent is working on ${pendingCount === 1 ? 'the 1 open task' : `${pendingCount} open tasks`}: ${breakdown}`
+          : `No agent is working on ${pendingCount === 1 ? 'the 1 open task' : `${pendingCount} open tasks`}`,
       count: pendingCount,
       taskIds: citedIds,
       byStatus,
@@ -1385,7 +1593,7 @@ function openTaskFact(input: MissionStateInput, live: boolean): Resolution | nul
 
 const OPEN_STATUS_LABEL: Record<string, string> = {
   pending: 'queued',
-  assigned: 'claimed',
+  assigned: 'picked up',
   in_progress: 'running',
 };
 
@@ -1467,6 +1675,24 @@ function visualReviewFact(input: MissionStateInput): Resolution | null {
 /** Rule 9¾ — completion refused for want of a surface audit on a UI change. */
 function surfaceAuditFact(input: MissionStateInput): Resolution | null {
   if (input.completion?.code !== 'surface_audit_missing') return null;
+  // Either reading may name the system; either naming the owner keeps it the owner's.
+  const gateActor = input.completion.surfaceAuditActor;
+  const reviewActor = input.visualReviewActor;
+  const systemActs = gateActor !== 'owner' && reviewActor !== 'owner' && (gateActor === 'system' || !!reviewActor);
+  if (systemActs) {
+    return {
+      kind: 'waiting',
+      waitingOn: {
+        kind: 'self_resolving_wait',
+        tone: 'neutral',
+        label: 'Waiting: the visual check is running',
+        reason: 'visual check',
+        waitUntil: null,
+      },
+      displayState: 'active',
+      source: 'canCompleteMission',
+    };
+  }
   return {
     kind: 'awaiting_decision',
     waitingOn: {
@@ -1543,8 +1769,8 @@ function criteriaFact(input: MissionStateInput): Resolution | null {
         // attempted and held — only then is a missing verdict newsworthy.
         tone: refused ? 'warning' : 'neutral',
         label: count === 1
-          ? '1 criterion not verified yet · run verification'
-          : `${count} criteria not verified yet · run verification`,
+          ? '1 criterion unverified · run verification'
+          : `${count} criteria unverified · run verification`,
         count,
         criteria: nonPass,
       },
@@ -1561,7 +1787,7 @@ function criteriaFact(input: MissionStateInput): Resolution | null {
       kind: 'awaiting_verification',
       waitingOn: failing
         ? { kind: 'criterion_failing', tone: 'warning', label: 'Goal criteria failed', count: 1, criteria: [], refused: true }
-        : { kind: 'criterion_unverified', tone: 'neutral', label: 'Goal criteria not verified yet · run verification', count: 1, criteria: [] },
+        : { kind: 'criterion_unverified', tone: 'neutral', label: 'Goal criteria unverified · run verification', count: 1, criteria: [] },
       displayState: 'awaiting_verification',
       source: 'canCompleteMission',
     };
@@ -1635,6 +1861,7 @@ function collectOutstanding(input: MissionStateInput, resolved: Resolution): Out
   const live = input.activeAgents > 0 || resolved.source === 'mission.executor';
   const candidates: Array<OutstandingEntry | null> = [
     resolved.waitingOn ? { fact: resolved.waitingOn, source: resolved.source } : null,
+    fromResolution(questionFact(input)),
     entry(deferralFact(input), 'gateEvents.claimLoopDeferral'),
     fromResolution(failedFact(input)),
     fromResolution(attemptFact(input)),
@@ -1681,7 +1908,7 @@ function situationPhrase(d: WaitingOnDescriptor, opts: { running?: boolean } = {
     case 'task':
       if (d.attempt) {
         const fix = fixLabel(d.attempt).toLowerCase();
-        return d.attempt.claimed ? `waiting on ${fix} (in progress)` : `waiting on ${fix} (queued, no worker yet)`;
+        return d.attempt.claimed ? `waiting on ${fix} (in progress)` : `waiting on ${fix} (queued, waiting for a runner)`;
       }
       if (d.stranded) {
         return `stranded: no local session for ${quietLabel(d.stranded.quietMs)}. Continue on a runner?`;
@@ -1689,7 +1916,18 @@ function situationPhrase(d: WaitingOnDescriptor, opts: { running?: boolean } = {
       if (d.blockedBy) {
         return `${d.count === 1 ? '1 task is' : `${d.count} tasks are`} waiting on ${unblocksWhen(d.blockedBy, 'phrase')}`;
       }
-      return d.count === 1 ? '1 task is still open' : `${d.count} tasks are still open`;
+      if (d.visualBlocked) return d.hold ? `visual review unable to run: ${d.hold}` : 'visual review unable to run';
+      if (d.visualRunning) return 'visual review running';
+      if (d.visualQueued) return d.hold ? `visual review queued: ${d.hold}` : 'visual review queued';
+      if (d.hold) return `${d.count === 1 ? 'the open task is' : `${d.count} open tasks are`} queued: ${d.hold}`;
+      if (d.nextInLine) return `${d.count === 1 ? 'the open task is' : `${d.count} open tasks are`} next in line for a runner`;
+      if (d.waitingNoCause) return `${d.count === 1 ? 'the open task is' : `${d.count} open tasks are`} waiting`;
+      // `neutral` is open work with something live on the mission; `warning`
+      // is the stall, where nothing is.
+      if (d.tone === 'warning') {
+        return d.count === 1 ? 'nothing is running the open task' : `nothing is running its ${d.count} open tasks`;
+      }
+      return d.count === 1 ? '1 task to do' : `${d.count} tasks to do`;
     case 'task_failed':
       return d.infra
         ? d.titles.length === 1
@@ -1743,7 +1981,7 @@ function situationPhrase(d: WaitingOnDescriptor, opts: { running?: boolean } = {
     case 'criterion_unverified':
       if (d.awaitingRunner && d.awaitingRunner.length > 0) {
         return d.awaitingRunner.length === 1
-          ? `waiting for a runner to verify "${d.awaitingRunner[0]}"`
+          ? `waiting on a runner to verify "${d.awaitingRunner[0]}"`
           : `waiting for a runner to verify ${d.awaitingRunner.length} goal criteria`;
       }
       return d.count === 1
@@ -1788,7 +2026,7 @@ function deriveSituation(
 
   if (resolved.kind === 'complete') {
     return {
-      headline: 'Complete. Nothing outstanding.',
+      headline: 'Complete.',
       tone: 'neutral',
       focus: null,
       nextAction: null,
@@ -1800,11 +2038,15 @@ function deriveSituation(
   if (!focus || !lead) {
     // Every source that could contradict this was consulted and had nothing to
     // say. Say THAT, rather than falling back to a row of buttons.
+    const checks = input.openChecks ?? [];
+    const allLanded = !input.hasPendingDeliverableWork && input.progress !== undefined && input.progress >= 100;
     const headline = resolved.kind === 'running'
-      ? isLocal(input)
-        ? `${localLead(input)}. Nothing else outstanding.`
-        : `Running: ${countAgents(input.activeAgents)} in flight, nothing outstanding.`
-      : 'Nothing to do. No source reports outstanding work.';
+      ? `${runningLead(input)}.`
+      : checks.length === 1
+        ? `Waiting on ${checks[0].label}: ${checks[0].state}.`
+        : checks.length > 1
+          ? `Waiting on ${checks.length} checks: ${checks.map(c => c.label).join(', ')}.`
+          : allLanded ? 'Ready to complete.' : 'Nothing is waiting.';
     return {
       headline,
       tone: 'neutral',
@@ -1812,17 +2054,13 @@ function deriveSituation(
       nextAction: null,
       alsoOutstanding: [],
       derivedFrom: resolved.source,
+      ...(checks.length > 0 && resolved.kind !== 'running' ? { openChecks: checks.map(c => c.label) } : {}),
     };
   }
 
   const phrase = situationPhrase(focus, { running: resolved.kind === 'running' });
-  // A local session that has claimed nothing yet: the lead already says what
-  // the open-task fact would ("1 task is still open"), so it stands alone.
-  const localWaiting = isLocal(input) && focus.kind === 'task' && focus.local && localAwaitingClaim(input);
   const headline = resolved.kind === 'running'
-    ? isLocal(input)
-      ? localWaiting ? `${localLead(input)}.` : `${localLead(input)}. ${capitalize(phrase)}.`
-      : `Running (${countAgents(input.activeAgents)}). ${capitalize(phrase)}.`
+    ? runningHeadline(input, focus, phrase)
     : /[.?!]$/.test(phrase) ? capitalize(phrase) : `${capitalize(phrase)}.`;
 
   return {
@@ -1842,20 +2080,41 @@ function localAwaitingClaim(input: MissionStateInput): boolean {
 }
 
 /**
- * The lead of a local mission's headline. "Running in a local session" while
- * the session holds a claim (or a row is past `pending`); "Waiting for a local
- * session to claim …" when nothing has been claimed — the honest answer for a
- * queued task, and never "stalled" or "dispatch a worker".
+ * A running mission's headline: what is in progress, then the leading fact.
+ *
+ * The plain open-task fact ("N tasks to do") is folded into the lead rather
+ * than said after it: "1 task in progress. 1 task to do." about the same task
+ * is the sentence this replaced. Only the tasks not yet in progress are added.
  */
-function localLead(input: MissionStateInput): string {
-  if (input.activeAgents > 0) return `Running in a local session (${countAgents(input.activeAgents)})`;
-  if (localAwaitingClaim(input)) {
+function runningHeadline(input: MissionStateInput, focus: WaitingOnDescriptor, phrase: string): string {
+  const lead = runningLead(input);
+  const plainOpen = focus.kind === 'task' && !focus.attempt && !focus.stranded && !focus.blockedBy;
+  if (!plainOpen) return `${lead}. ${capitalize(phrase)}${/[.?!]$/.test(phrase) ? '' : '.'}`;
+  const more = focus.count - inProgressCount(input);
+  return more > 0 && !localAwaitingClaim(input) ? `${lead}, ${more} more to do.` : `${lead}.`;
+}
+
+/** Tasks counted as in progress: the live workers, else the open rows a session claimed. */
+function inProgressCount(input: MissionStateInput): number {
+  if (input.activeAgents > 0) return input.activeAgents;
+  return (input.openTasks ?? []).filter(t => t.status !== 'pending').length;
+}
+
+/**
+ * The lead of a running mission's headline. "1 task in progress" (in a local
+ * session, when the mission runs there); "Ready to start from a local session"
+ * when a local mission's session has claimed nothing yet. That is the honest
+ * answer for a queued task, never "stalled" or "dispatch a worker".
+ */
+function runningLead(input: MissionStateInput): string {
+  const where = isLocal(input) ? ' in a local session' : '';
+  if (isLocal(input) && localAwaitingClaim(input)) {
     const n = (input.openTasks ?? []).length;
-    return n === 1
-      ? 'Waiting for a local session to claim the open task'
-      : `Waiting for a local session to claim its ${n} open tasks`;
+    return n === 1 ? 'Ready to start from a local session' : `${n} tasks ready to start from a local session`;
   }
-  return 'Running in a local session';
+  const n = inProgressCount(input);
+  if (n === 0) return `In progress${where}`;
+  return `${n === 1 ? '1 task' : `${n} tasks`} in progress${where}`;
 }
 
 /** "#3319 and #3317", "#1, #2 and #3". */
@@ -1881,10 +2140,6 @@ function unblocksWhen(b: { prNumbers: number[]; unfinished: number }, form: 'phr
   return parts.length > 0 ? parts.join(' and ') : 'its dependencies';
 }
 
-function countAgents(n: number): string {
-  return n === 1 ? '1 agent' : `${n} agents`;
-}
-
 /**
  * What would unblock it. One sentence, imperative, derived from the descriptor
  * — never null on a gated view, because "gated with no way out" is not a state
@@ -1897,8 +2152,8 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
     case 'task':
       if (waitingOn.attempt) {
         return waitingOn.attempt.claimed
-          ? 'Nothing to do yet. The reviewer runs again after the fix pushes.'
-          : 'Nothing to do yet. The fix is queued for the next free worker; cancel it if you no longer want the work.';
+          ? 'The reviewer runs again after the fix pushes.'
+          : 'The fix is queued for the next free runner. Cancel it if you no longer want the work.';
       }
       if (waitingOn.stranded) {
         return waitingOn.stranded.flipBlockedReason
@@ -1906,10 +2161,22 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
           : 'Continue on a runner: switch the mission to runners and its open task(s) are dispatched to them. Or keep it local and claim them from a session with claim_task {taskId}.';
       }
       if (waitingOn.blockedBy) {
-        return `Nothing to do yet. Unblocks when ${unblocksWhen(waitingOn.blockedBy, 'action')}.`;
+        return `Unblocks when ${unblocksWhen(waitingOn.blockedBy, 'action')}.`;
       }
+      if (waitingOn.nextInLine) return 'It starts when a runner picks it up. Cancel it if you no longer want the work.';
+      if (waitingOn.waitingNoCause) return 'It starts when what holds it clears. Cancel it if you no longer want the work.';
+      if (waitingOn.visualBlocked) return 'A person can skip the visual review, or fix what keeps it from running.';
+      if (waitingOn.visualRunning) return 'Nothing to do: the visual review is taking its screenshots.';
+      if (waitingOn.hold && !waitingOn.local) {
+        return waitingOn.visualQueued
+          ? 'It starts when the hold lifts. A person can skip the visual review instead.'
+          : 'It starts when the hold lifts. Cancel it if you no longer want the work.';
+      }
+      if (waitingOn.visualQueued && !waitingOn.local) return 'It starts when a browser runner picks it up. A person can skip the visual review instead.';
       if (waitingOn.local) {
-        return 'Nothing to dispatch: this mission runs in a local session. Claim the open task(s) from it with claim_task {taskId}, or cancel them if you no longer want the work.';
+        return waitingOn.count === 1
+          ? 'Start it from a local session with claim_task {taskId}, or cancel it if you no longer want the work.'
+          : 'Start them from a local session with claim_task {taskId}, or cancel the ones you no longer want.';
       }
       return 'Dispatch a worker for the open task(s), or cancel them if you no longer want the work.';
     case 'task_failed':
@@ -1921,7 +2188,7 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
         return 'The mission PR was closed without merging and will not reopen on its own. Reopen it, or land the work another way.';
       }
       if (waitingOn.missionPr && waitingOn.missionPrState === 'not_opened') {
-        return 'Nothing to merge yet. The mission PR opens automatically once every task PR has landed on the integration branch; if it still has not after a while, the opener is stuck and needs investigating.';
+        return 'The mission PR opens once every task PR has landed on the integration branch. If it doesn’t open, the opener is stuck.';
       }
       return waitingOn.missionPr
         ? 'Merge the mission PR to move the work from the integration branch to trunk.'
@@ -1949,6 +2216,11 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
       }
       return 'Run goal-criteria verification to produce a verdict.';
     case 'human_decision':
+      if (waitingOn.question) {
+        return waitingOn.question.count > 1
+          ? 'Answer them on each task page to continue.'
+          : 'Answer it on the task page to continue.';
+      }
       if (waitingOn.visualReview) {
         return waitingOn.visualReview.cells > 0
           ? 'Open the visual review and decide each screen: looks right, or needs fix.'
@@ -1960,8 +2232,8 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
       return 'Decide this yourself; no automated step will clear it.';
     case 'self_resolving_wait':
       return waitingOn.waitUntil
-        ? `Nothing to do. Work resumes at ${waitingOn.waitUntil}.`
-        : 'Nothing to do. Work resumes when the wait ends.';
+        ? `Work resumes at ${waitingOn.waitUntil}.`
+        : 'Work resumes when the wait ends.';
     case 'claim_deferral':
       return `The claim loop is refusing this task (${deferralReasonText(waitingOn)}). Clear that gate, or cancel the task if you no longer want the work.`;
   }

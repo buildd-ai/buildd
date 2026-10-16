@@ -14,6 +14,7 @@ import { isUuid } from '@/lib/uuid';
 import { notifyTeamOf, type NotifyPayload } from '@/lib/notify';
 import { isReviewArtifact } from '@/lib/artifact-prominence';
 import { upsertedContent } from '@/lib/artifact-upsert-content';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** GET's auth. A per-task token is accepted here and confined in GET. */
 async function authenticateRequest(req: NextRequest) {
@@ -128,8 +129,8 @@ export async function GET(
   if (reviewOnly) conditions.push(reviewArtifactScope());
 
   const results = await db.query.artifacts.findMany({
-    where: and(...conditions),
-    orderBy: [desc(artifacts.updatedAt)],
+    where: sqlWhere(and(...conditions)),
+    orderBy: sqlOrderBy([desc(artifacts.updatedAt)]),
     limit,
   });
 
@@ -204,7 +205,7 @@ export async function POST(
   };
 
   const existing = await db.query.artifacts.findFirst({
-    where: and(eq(artifacts.workspaceId, id), eq(artifacts.key, key)),
+    where: sqlWhere(and(eq(artifacts.workspaceId, id), eq(artifacts.key, key))),
   });
 
   if (existing) {

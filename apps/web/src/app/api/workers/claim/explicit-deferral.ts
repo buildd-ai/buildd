@@ -80,7 +80,7 @@ export function describeExplicitDeferral(
       const backend = str(detail.backend) ?? 'its provider';
       const at = str(detail.resetsAt);
       const wall = str(detail.wall);
-      if ((wall === 'account_seat' || wall === 'provider_pause' || wall === 'tenant_budget') && (backend === 'claude' || backend === 'codex')) {
+      if ((wall === 'account_seat' || wall === 'provider_pause' || wall === 'runner_seat' || wall === 'tenant_budget') && (backend === 'claude' || backend === 'codex')) {
         return { code: reason, detail: `${describeBudgetWall({ kind: wall, backend, resetsAt: at })} There's no provider to fail over to.` };
       }
       return { code: reason, detail: `The ${backend} budget or rate limit is exhausted${at ? ` until ${at}` : ''}, with no provider to fail over to.` };
@@ -128,6 +128,13 @@ export function describeExplicitDeferral(
       return {
         code: reason,
         detail: `${role ? `Its role '${role}'` : 'Its workspace'} declares env ${missing.length > 0 ? missing.join(', ') : 'vars'} that no secret supplies. Add a role_env_secret under the mapped label (or remove the declaration), and it is claimable on the next poll.`,
+      };
+    }
+    case 'delegation_unmet': {
+      const message = str(detail.message);
+      return {
+        code: reason,
+        detail: `It needs cross-workspace reach its token would not carry${message ? `: ${message}` : ''}. A person who reaches the workspace grants it with update_task { delegation } before the run starts, or a runner account that reaches it claims the task. It is re-checked on every claim; forcing would only start an agent that hits the same wall.`,
       };
     }
     case 'managed_concurrency': {

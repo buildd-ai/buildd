@@ -8,6 +8,7 @@
 import { and, eq, inArray, ne, sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { evidenceObjects, qualityScoutRuns, workspaces } from '@buildd/core/db/schema';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface NewScoutRunEvidence {
   workspaceId: string;
@@ -38,7 +39,7 @@ export const dbScoutRunEvidenceStore: ScoutRunEvidenceStore = {
   },
 
   async workspaceDataClass(workspaceId) {
-    const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId), columns: { dataClass: true } });
+    const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, workspaceId)), columns: { dataClass: true } });
     return ws?.dataClass ?? null;
   },
 

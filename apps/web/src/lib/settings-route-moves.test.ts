@@ -10,7 +10,7 @@ import nextConfig, { SETTINGS_ROUTE_MOVES } from '../../next.config.mjs';
  */
 
 const PROTECTED = resolve(import.meta.dir, '../app/app/(protected)');
-/** `/app/settings/roles/:slug` → `settings/roles/[slug]/page.tsx` (any `:param` name maps to its bracket dir). */
+/** `/app/settings/agents/:slug` → `settings/agents/[slug]/page.tsx` (any `:param` name maps to its bracket dir). */
 function pageFile(path: string, params: Record<string, string> = {}): string {
   const rel = path.split('?')[0].replace(/^\/app\//, '').split('/')
     .map((seg) => (seg.startsWith(':') ? `[${params[seg.slice(1)] ?? seg.slice(1)}]` : seg))
@@ -20,11 +20,12 @@ function pageFile(path: string, params: Record<string, string> = {}): string {
 
 // old path → [new path, the param dir names on the new side]
 const EXPECTED: Array<[string, string, Record<string, string>?]> = [
-  ['/app/team', '/app/settings/roles'],
-  ['/app/team/new', '/app/settings/roles/new'],
-  ['/app/team/:slug/settings', '/app/settings/roles/:slug/edit'],
-  ['/app/team/:slug', '/app/settings/roles/:slug'],
-  ['/app/workspaces/:id/skills', '/app/settings/roles'],
+  ['/app/settings/roles', '/app/settings/agents'],
+  ['/app/team', '/app/settings/agents'],
+  ['/app/team/new', '/app/settings/agents/new'],
+  ['/app/team/:slug/settings', '/app/settings/agents/:slug/edit'],
+  ['/app/team/:slug', '/app/settings/agents/:slug'],
+  ['/app/workspaces/:id/skills', '/app/settings/agents'],
   ['/app/teams/new', '/app/settings/team?new=1'],
   ['/app/teams/:id', '/app/settings/team?team=:id'],
   ['/app/accounts/new', '/app/settings/runners?new=1'],
@@ -44,7 +45,23 @@ describe('settings route moves', () => {
       expect(r ? `${source} → ${r.destination}` : `${source} → (none)`).toBe(`${source} → ${destination}`);
       expect(r!.permanent).toBe(false);
     }
-    expect(SETTINGS_ROUTE_MOVES.filter((m) => !('has' in m))).toHaveLength(EXPECTED.length);
+    // +1: the `/app/settings/roles/:path*` catch-all, checked on its own below.
+    expect(SETTINGS_ROUTE_MOVES.filter((m) => !('has' in m))).toHaveLength(EXPECTED.length + 1);
+  });
+
+  it('sends every old Settings › Roles link to the same page under Settings › Agents', async () => {
+    const redirects = (await nextConfig.redirects!()).filter((x) => !x.has);
+    const deep = redirects.find((x) => x.source === '/app/settings/roles/:path*');
+    expect(deep?.destination).toBe('/app/settings/agents/:path*');
+    expect(deep!.permanent).toBe(false);
+    // The exact path comes first, so the bare old URL lands on the list page.
+    const order = redirects.map((x) => x.source);
+    expect(order.indexOf('/app/settings/roles')).toBeLessThan(order.indexOf('/app/settings/roles/:path*'));
+    // Every page the old tree had exists at the new one, and the old tree is gone.
+    for (const rel of ['', 'new', '[slug]', '[slug]/edit']) {
+      expect(`${rel}: ${existsSync(resolve(PROTECTED, 'settings/agents', rel, 'page.tsx'))}`).toBe(`${rel}: true`);
+    }
+    expect(existsSync(resolve(PROTECTED, 'settings/roles'))).toBe(false);
   });
 
   it('sends your keys from the old Mine tab on Models to You › Keys', async () => {
@@ -57,6 +74,19 @@ describe('settings route moves', () => {
     // Only the Mine tab moves: Team and Workspace keys stay on Models.
     expect(existsSync(pageFile('/app/settings/models'))).toBe(true);
     expect(existsSync(pageFile('/app/settings/keys'))).toBe(true);
+  });
+
+  it('sends a team-app link on Connected apps to Settings › Team › Apps, query intact', async () => {
+    const redirects = await nextConfig.redirects!();
+    for (const key of ['connected', 'error', 'request', 'reconnect']) {
+      const r = redirects.find((x) => x.source === '/app/settings/connections' && x.has?.some((h) => h.type === 'query' && h.key === key));
+      expect(`${key}: ${r?.destination}`).toBe(`${key}: /app/settings/apps`);
+      expect(r!.permanent).toBe(false);
+    }
+    // A bare link still opens your own connected apps.
+    expect(redirects.find((x) => x.source === '/app/settings/connections' && !x.has)).toBeUndefined();
+    expect(existsSync(pageFile('/app/settings/apps'))).toBe(true);
+    expect(existsSync(pageFile('/app/settings/connections'))).toBe(true);
   });
 
   it('matches a fixed segment before the param route beside it', () => {
@@ -85,7 +115,7 @@ describe('settings route moves', () => {
     // /app/workspaces/[id]/skills/[skillId] needs the skill's slug, so it is a
     // page-level redirect, not a config one; the old editor is gone.
     const page = readFileSync(resolve(PROTECTED, 'workspaces/[id]/skills/[skillId]/page.tsx'), 'utf8');
-    expect(page).toContain('/app/settings/roles');
+    expect(page).toContain('/app/settings/agents');
     expect(page).toMatch(/\bredirect\(/);
     expect(existsSync(resolve(PROTECTED, 'workspaces/[id]/skills/[skillId]/RoleEditor.tsx'))).toBe(false);
   });
@@ -95,7 +125,7 @@ describe('one editor per concern', () => {
   const exists = (rel: string) => existsSync(resolve(PROTECTED, rel));
 
   it('has one role editor', () => {
-    expect(exists('settings/roles/[slug]/edit/TeamRoleEditor.tsx')).toBe(true);
+    expect(exists('settings/agents/[slug]/edit/TeamRoleEditor.tsx')).toBe(true);
     expect(exists('workspaces/[id]/skills/[skillId]/RoleEditor.tsx')).toBe(false);
     expect(exists('workspaces/[id]/skills/SkillForm.tsx')).toBe(false);
   });

@@ -20,6 +20,7 @@ import { connectorCatalogTeamPolicies } from '@buildd/core/db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
 import { connectorHostKey, type ResolvedCatalogEntry } from '@/lib/connector-catalog';
 import { loadTeamCatalog } from '@/lib/connector-catalog-store';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Why a connector is blocked: which team's policy, on which catalog entry. */
 export interface ConnectorBlock {
@@ -71,10 +72,10 @@ export async function loadBlockedCatalogs(teamIds: readonly string[]): Promise<B
   const unique = [...new Set(teamIds.filter(Boolean))];
   if (unique.length === 0) return out;
   const rows = await db.query.connectorCatalogTeamPolicies.findMany({
-    where: and(
+    where: sqlWhere(and(
       inArray(connectorCatalogTeamPolicies.teamId, unique),
       eq(connectorCatalogTeamPolicies.policy, 'blocked'),
-    ),
+    )),
     columns: { teamId: true },
   });
   const blockingTeams = [...new Set(rows.map(r => r.teamId))];

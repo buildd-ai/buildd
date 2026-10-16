@@ -195,7 +195,7 @@ export default function PlanReviewPanel({ taskId, mode, status, result }: PlanRe
   return (
     <div className="mb-8">
       <div className="section-label pb-2 border-b border-border-default mb-4">
-        Plan Review
+        Plan review
       </div>
 
       {/* Status message */}
@@ -296,7 +296,7 @@ export default function PlanReviewPanel({ taskId, mode, status, result }: PlanRe
               className="px-4 py-2 text-sm bg-status-error text-white hover:opacity-90 disabled:opacity-50 flex items-center gap-2"
             >
               {rejecting && <Spinner size="sm" className="text-white" aria-label="Rejecting" />}
-              {rejecting ? 'Rejecting…' : 'Submit Rejection'}
+              {rejecting ? 'Rejecting…' : 'Send back'}
             </button>
           </div>
         </div>
@@ -311,7 +311,7 @@ export default function PlanReviewPanel({ taskId, mode, status, result }: PlanRe
             className="px-5 py-2.5 text-sm font-medium bg-status-success text-white hover:opacity-90 disabled:opacity-50 flex items-center gap-2"
           >
             {approving && <Spinner size="sm" className="text-white" aria-label="Approving" />}
-            {approving ? 'Approving…' : 'Approve Plan'}
+            {approving ? 'Approving…' : 'Approve plan'}
           </button>
           {!showRejectForm && (
             <button
@@ -319,7 +319,7 @@ export default function PlanReviewPanel({ taskId, mode, status, result }: PlanRe
               disabled={approving || rejecting}
               className="px-5 py-2.5 text-sm font-medium border border-border-default hover:bg-surface-3 disabled:opacity-50 text-text-secondary"
             >
-              Reject Plan
+              Reject plan
             </button>
           )}
         </div>

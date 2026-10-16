@@ -101,3 +101,10 @@ describe('isRevocationClass', () => {
     expect(isRevocationClass('rate limit exceeded')).toBe(false);
   });
 });
+
+describe('the CLI rejecting an OAuth token at session start', () => {
+  it('is an auth failure, not a code failure', () => {
+    expect(classifyAuthErrorSeverity('Failed to authenticate. API Error: 401 {"error":{"type":"authentication_error","message":"OAuth access token is invalid"}}')).toBe('degraded');
+    expect(classifyAuthErrorSeverity('OAuth access token is invalid')).toBe('degraded');
+  });
+});

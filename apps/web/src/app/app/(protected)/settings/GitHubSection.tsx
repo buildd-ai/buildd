@@ -78,7 +78,7 @@ export default function GitHubSection({ disconnectableIds }: { disconnectableIds
         setMessage({ type: 'error', text: err.error || 'Sync failed' });
       }
     } catch (err) {
-      setMessage({ type: 'error', text: 'Failed to sync repos' });
+      setMessage({ type: 'error', text: 'Could not sync repositories. Try again.' });
     } finally {
       setSyncing(null);
     }
@@ -102,7 +102,7 @@ export default function GitHubSection({ disconnectableIds }: { disconnectableIds
         setMessage({ type: 'error', text: err.error || 'Disconnect failed' });
       }
     } catch (err) {
-      setMessage({ type: 'error', text: 'Failed to disconnect' });
+      setMessage({ type: 'error', text: 'Could not disconnect. Try again.' });
     } finally {
       setDisconnectLoading(false);
     }
@@ -110,7 +110,7 @@ export default function GitHubSection({ disconnectableIds }: { disconnectableIds
 
   const manageLink = (
     <p className="text-xs text-text-secondary">
-      To change which repos buildd can see, use{' '}
+      Manage repository access in{' '}
       <a
         href="https://github.com/settings/installations"
         target="_blank"
@@ -138,8 +138,8 @@ export default function GitHubSection({ disconnectableIds }: { disconnectableIds
       ) : !configured ? (
         <div data-testid="github-unavailable" className="space-y-1">
           <Lede>
-            GitHub is not set up on this server. You can still paste a repository&apos;s address when you create a
-            workspace, or in its settings under Link a repository.
+            The GitHub App is not configured on this server. To link a repository, enter its URL when you create a
+            workspace, or under Link a repository in workspace settings.
           </Lede>
           <Disclosure summary="Running this server yourself?">
             <p className="pb-2 text-sm text-text-secondary">
@@ -205,7 +205,7 @@ export default function GitHubSection({ disconnectableIds }: { disconnectableIds
       <ConfirmDialog
         open={!!disconnecting}
         title={`Disconnect ${disconnecting?.login}?`}
-        message="Removes the synced repos from buildd. GitHub keeps them."
+        message="Removes the synced repositories from buildd. The repositories on GitHub are unchanged."
         confirmLabel="Disconnect"
         variant="warning"
         loading={disconnectLoading}

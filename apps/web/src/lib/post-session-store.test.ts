@@ -63,7 +63,7 @@ import {
   workers,
   workspaces,
 } from '@buildd/core/db/schema';
-import { postSessionRunStore } from './post-session-store';
+import { postSessionRunStore, sampledSkipsSinceWhere } from './post-session-store';
 
 const NOW = new Date('2026-10-03T12:00:00Z');
 const claimInput = {
@@ -280,5 +280,14 @@ describe('postSessionRunStore Stage B triage', () => {
     const set = w.steps.find(([s]) => s === 'set')![1][0] as Record<string, unknown>;
     expect(set).toEqual({ errorStage: 'triage', lastError: 'write timeout', failedAt: NOW, updatedAt: NOW });
     expect(set).not.toHaveProperty('state');
+  });
+});
+
+describe('sampledSkipsSinceWhere', () => {
+  it('counts runs triaged since the day start whose triage record carries the sample flag', async () => {
+    const { PgDialect } = await import('drizzle-orm/pg-core');
+    const q = new PgDialect().sqlToQuery(sampledSkipsSinceWhere(new Date('2026-10-03T00:00:00Z'))!);
+    expect(q.sql).toContain('"post_session_runs"."triaged_at" >= $1');
+    expect(q.sql).toContain(`"post_session_runs"."triage"->'provenance'->>'sampled' = 'true'`);
   });
 });

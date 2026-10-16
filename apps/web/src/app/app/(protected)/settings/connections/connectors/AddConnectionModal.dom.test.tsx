@@ -13,7 +13,7 @@ const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 
 const { default: AddConnectionModal } = await import('./AddConnectionModal');
-const { CONNECTOR_CATALOG } = await import('@/lib/connector-catalog');
+const { CONNECTOR_CATALOG, customerCatalogEntry } = await import('@/lib/connector-catalog');
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -25,7 +25,7 @@ function stubFetch(onCreate: (body: Record<string, unknown>) => Response, catalo
     calls.push({ url: String(url), body });
     if (String(url) === '/api/connectors' && init?.method === 'POST') return onCreate(body);
     if (String(url) === '/api/connectors/catalog') {
-      return catalog ? catalog() : new Response(JSON.stringify({ canManage: true, entries: CONNECTOR_CATALOG.map(e => ({ ...e, id: null, source: 'builtin', policy: 'available' })) }));
+      return catalog ? catalog() : new Response(JSON.stringify({ canManage: true, entries: CONNECTOR_CATALOG.map(e => customerCatalogEntry({ ...e, id: null, source: 'builtin', policy: 'available' })) }));
     }
     return new Response(JSON.stringify({ workspaces: [], teams: [] }), { headers: { 'content-type': 'application/json' } });
   }) as typeof fetch;
@@ -59,7 +59,7 @@ describe('AddConnectionModal catalog', () => {
   it('opens on the catalog with the starter connectors and a custom option', async () => {
     stubFetch(() => new Response('{}'));
     const { el, unmount } = await mount();
-    for (const slug of ['vercel', 'neon', 'axiom', 'custom']) expect(q(el, `connector-catalog-${slug}`)).not.toBeNull();
+    for (const slug of ['neon', 'axiom', 'custom']) expect(q(el, `connector-catalog-${slug}`)).not.toBeNull();
     await unmount();
   });
 
@@ -78,21 +78,21 @@ describe('AddConnectionModal catalog', () => {
     await unmount();
   });
 
-  // Vercel only admits MCP clients it has reviewed (live-probed); the tile says
-  // so up front instead of failing after a click with no explanation.
-  it('flags the built-in Vercel entry as needing provider approval', async () => {
+  // An app the provider won't let buildd connect is not offered as a tile, and
+  // nothing about the provider's client review reaches the person.
+  it('does not offer an unavailable app, and says nothing about provider review', async () => {
     stubFetch(() => new Response('{}'));
     const { el, unmount } = await mount();
-    expect(q(el, 'connector-catalog-vercel')!.textContent).toContain('Needs approval');
-    expect(q(el, 'connector-catalog-vercel-client-support')!.textContent).toContain('Vercel');
-    expect(q(el, 'connector-catalog-axiom-client-support')).toBeNull();
+    expect(q(el, 'connector-catalog-vercel')).toBeNull();
+    expect(q(el, 'connector-catalog-axiom')).not.toBeNull();
+    expect(el.textContent).not.toMatch(/approval|review/i);
     await unmount();
   });
 
   it('falls back to the built-ins when the catalog request fails', async () => {
     stubFetch(() => new Response('{}'), () => new Response('boom', { status: 500 }));
     const { el, unmount } = await mount();
-    expect(q(el, 'connector-catalog-vercel')).not.toBeNull();
+    expect(q(el, 'connector-catalog-vercel')).toBeNull();
     expect(q(el, 'connector-catalog-neon')).not.toBeNull();
     await unmount();
   });
@@ -118,9 +118,9 @@ describe('AddConnectionModal catalog', () => {
 
   it('marks catalog entries the team already has as Added and disables them', async () => {
     stubFetch(() => new Response('{}'));
-    const { el, unmount } = await mount({ existingUrls: ['https://mcp.vercel.com/'] });
-    expect(q(el, 'connector-catalog-vercel')!.disabled).toBe(true);
-    expect(q(el, 'connector-catalog-vercel')!.textContent).toContain('Added');
+    const { el, unmount } = await mount({ existingUrls: ['https://mcp.axiom.co/mcp/'] });
+    expect(q(el, 'connector-catalog-axiom')!.disabled).toBe(true);
+    expect(q(el, 'connector-catalog-axiom')!.textContent).toContain('Added');
     expect(q(el, 'connector-catalog-neon')!.disabled).toBe(false);
     await unmount();
   });
@@ -172,7 +172,7 @@ describe('AddConnectionModal "All my teams"', () => {
       if (url === '/api/connectors' && init?.method === 'POST') {
         return json({ connector: { id: 'c1', teamId: 't1', name: 'Neon', url: 'https://mcp.neon.tech/mcp', authMode: 'oauth', discoveredMetadata: { authMode: 'oauth' } } }, 201);
       }
-      return json({ entries: CONNECTOR_CATALOG.map(e => ({ ...e, id: null, source: 'builtin', policy: 'available' })) });
+      return json({ entries: CONNECTOR_CATALOG.map(e => customerCatalogEntry({ ...e, id: null, source: 'builtin', policy: 'available' })) });
     }) as typeof fetch;
     return calls;
   }

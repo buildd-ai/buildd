@@ -31,7 +31,7 @@ export interface UnifiedQuestion {
   where?: { taskTitle?: string; branch?: string; file?: string };
 }
 
-type BriefedWaitingFor = {
+export type BriefedWaitingFor = {
   prompt: string;
   options?: WaitingForOption[] | null;
   type?: string;

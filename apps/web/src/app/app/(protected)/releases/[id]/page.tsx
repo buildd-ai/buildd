@@ -12,6 +12,7 @@ import Eyebrow from '@/components/ui/Eyebrow';
 import type { StateTone } from '@/components/ui/states';
 import { isSupersededRelease, releasePill, supersededById } from '../release-display';
 import ReleaseAutoRefresh from './ReleaseAutoRefresh';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -44,13 +45,13 @@ export default async function ReleaseDetailPage({
   const teamIds = await getUserTeamIds(user.id);
 
   const release = await db.query.releases.findFirst({
-    where: eq(releases.id, id),
+    where: sqlWhere(eq(releases.id, id)),
   });
 
   if (!release) notFound();
 
   const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, release.workspaceId),
+    where: sqlWhere(eq(workspaces.id, release.workspaceId)),
     columns: { id: true, name: true, teamId: true, githubRepoId: true },
   });
 
@@ -59,7 +60,7 @@ export default async function ReleaseDetailPage({
   let repoFullName: string | null = null;
   if (ws.githubRepoId) {
     const repoRow = await db.query.githubRepos.findFirst({
-      where: eq(githubRepos.id, ws.githubRepoId),
+      where: sqlWhere(eq(githubRepos.id, ws.githubRepoId)),
       columns: { fullName: true },
     });
     repoFullName = repoRow?.fullName ?? null;

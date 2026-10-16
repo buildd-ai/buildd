@@ -8,6 +8,7 @@
 import { beforeAll, describe, expect, test } from 'bun:test';
 import { sql } from 'drizzle-orm';
 import { assertDbConfigured, q, seedWorkspace } from './harness';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const { checkContextArtifactIds, contextArtifactsWhere } = await import('../../src/lib/context-artifact-ids');
 const { db } = await import('@buildd/core/db');
@@ -97,7 +98,7 @@ describe('checkContextArtifactIds', () => {
 describe('contextArtifactsWhere: the planning-context read', () => {
   test('a stored foreign or workspace-less id is never read', async () => {
     const rows = await db.query.artifacts.findMany({
-      where: contextArtifactsWhere([ownArtifact, restrictedArtifact, foreignArtifact, orphanArtifact], teamA),
+      where: sqlWhere(contextArtifactsWhere([ownArtifact, restrictedArtifact, foreignArtifact, orphanArtifact], teamA)),
       columns: { id: true },
     });
     expect(rows.map((r) => r.id).sort()).toEqual([ownArtifact, restrictedArtifact].sort());

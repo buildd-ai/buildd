@@ -49,6 +49,9 @@ type Json = Record<string, any>;
  * because an async hook can be cut off as the process exits. PostToolUse
  * matches every tool: any tool call is a boundary. It costs one node start per
  * call, and at most one request a minute (touches are throttled client-side).
+ * PreToolUse marks the session as inside a turn before a tool runs, so a long
+ * silent command does not read as an abandoned session; nothing is returned to
+ * the agent, so it is async (it sends only when the mark flips, or once a minute).
  * Codex does not take `async`, so it gets none.
  */
 export function claudeLikeHookEntries(command: string, opts: { async: boolean }): Record<string, Json[]> {
@@ -62,6 +65,14 @@ export function claudeLikeHookEntries(command: string, opts: { async: boolean })
     SessionStart: [{ hooks: [handler(true)] }],
     UserPromptSubmit: [{ hooks: [handler(false)] }],
     Stop: [{ hooks: [handler(false)] }],
+    PreToolUse: [
+      { hooks: [handler(true)] },
+      // Claude Code only (the client that takes async): a session holding a
+      // buildd claim asks through buildd instead of the terminal-only
+      // AskUserQuestion. Synchronous, because its deny is the output.
+      // docs/specs/terminal-question-redirect.md
+      ...(opts.async ? [{ matcher: 'AskUserQuestion', hooks: [{ type: 'command', command: `${command} ask`, timeout: 5 }] }] : []),
+    ],
     PostToolUse: [{ hooks: [handler(false)] }],
     SessionEnd: [{ hooks: [handler(false)] }],
   };

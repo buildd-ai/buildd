@@ -50,7 +50,7 @@ export interface UnfetchableRepo {
 export interface KnowledgeIngestPollerOptions {
   enabled: boolean;
   api: FullIngestApiClient;
-  scanRepos: () => LocalRepo[];
+  scanRepos: () => LocalRepo[] | Promise<LocalRepo[]>;
   /** Injectable for tests; defaults to the git-reader + batch executor. */
   executeJob?: (job: FullIngestJob, repoPath: string) => Promise<{ status: 'done' | 'error' }>;
   /**
@@ -91,7 +91,7 @@ export class KnowledgeIngestPoller {
     const log = this.opts.log ?? ((msg: string) => console.log(msg));
     try {
       const now = this.now();
-      const repos = this.opts.scanRepos().filter(r => {
+      const repos = (await this.opts.scanRepos()).filter(r => {
         if (!r.normalizedUrl) return false;
         const backoff = this.unfetchable.get(r.normalizedUrl.toLowerCase());
         return !backoff || backoff.until <= now;
@@ -295,7 +295,7 @@ function createLocalExecuteJob(api: FullIngestApiClient) {
 export function createKnowledgeIngestPoller(config: {
   builddServer: string;
   apiKey: string;
-  scanRepos: () => LocalRepo[];
+  scanRepos: () => LocalRepo[] | Promise<LocalRepo[]>;
 }): KnowledgeIngestPoller {
   const api = createHttpIngestApi({ serverUrl: config.builddServer, apiKey: config.apiKey });
   const hasLocalDb = !!(process.env.DATABASE_URL && process.env.VOYAGE_API_KEY);

@@ -6,6 +6,7 @@ import { agentKeyPurposes, agentKeyStorageIndex, isAgentKeyRow } from '@buildd/c
 import { eq, and, or, isNull, lt, sql } from 'drizzle-orm';
 import { recordCredentialAuthSuccess, recordCredentialAuthFailure } from './credential-health';
 import { CLAUDE_CREDENTIAL_PURPOSES, isTeamClaudeCredential } from './claude-credential-rows';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Decode the `sub` claim from an Anthropic JWT access token without verification.
@@ -259,13 +260,13 @@ export async function resolveClaudeCredential(opts: {
   const rows = await db.query.secrets.findMany({
     // teamCredentialWhere pins `user_id IS NULL`: a personal row is never read
     // as the team's Claude credential.
-    where: teamCredentialWhere(
+    where: sqlWhere(teamCredentialWhere(
       { teamId: opts.teamId, purpose: PURPOSE },
       opts.accountId
         ? or(isNull(secrets.accountId), eq(secrets.accountId, opts.accountId))
         : isNull(secrets.accountId),
       or(isNull(secrets.workspaceId), opts.workspaceId ? eq(secrets.workspaceId, opts.workspaceId) : sql`false`),
-    ),
+    )),
     columns: {
       encryptedValue: true, accountId: true, workspaceId: true, userId: true,
       tokenExpiresAt: true, lastRefreshedAt: true, healthStatus: true, updatedAt: true,
@@ -302,11 +303,11 @@ export async function hasClaudeCredential(opts: {
   workspaceId?: string | null;
 }): Promise<boolean> {
   const rows = await db.query.secrets.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(secrets.teamId, opts.teamId),
       eq(secrets.purpose, PURPOSE),
       or(isNull(secrets.workspaceId), opts.workspaceId ? eq(secrets.workspaceId, opts.workspaceId) : sql`false`),
-    ),
+    )),
     columns: { id: true },
   });
   return rows.length > 0;
@@ -315,7 +316,7 @@ export async function hasClaudeCredential(opts: {
 /** Connection status (no token values) for an exact scope. */
 export async function getClaudeStatus(scope: ClaudeScope): Promise<ClaudeStatus> {
   const row = await db.query.secrets.findFirst({
-    where: scopeMatch(scope),
+    where: sqlWhere(scopeMatch(scope)),
     columns: {
       workspaceId: true,
       tokenExpiresAt: true,
@@ -364,7 +365,7 @@ export async function deleteClaudeCredential(scope: ClaudeScope): Promise<void> 
 /** Secret id of the Claude credential at an exact scope, or null. Used by the refresh route. */
 export async function getClaudeSecretId(scope: ClaudeScope): Promise<string | null> {
   const row = await db.query.secrets.findFirst({
-    where: scopeMatch(scope),
+    where: sqlWhere(scopeMatch(scope)),
     columns: { id: true },
   });
   return row?.id ?? null;
@@ -412,7 +413,7 @@ export async function refreshClaudeCredential(secretId: string): Promise<Refresh
 
   if (!claimed) {
     const exists = await db.query.secrets.findFirst({
-      where: and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)),
+      where: sqlWhere(and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE))),
       columns: { id: true },
     });
     return exists ? 'locked' : 'no_credential';
@@ -574,10 +575,10 @@ export async function refreshClaudeCredential(secretId: string): Promise<Refresh
  */
 export async function verifyClaudeCredential(secretId: string): Promise<ClaudeVerifyResult> {
   const row = await db.query.secrets.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(secrets.id, secretId),
       or(...CLAUDE_CREDENTIAL_PURPOSES.map((p) => eq(secrets.purpose, p))),
-    ),
+    )),
     columns: { encryptedValue: true, purpose: true, label: true, userId: true, healthStatus: true },
   });
 
@@ -712,13 +713,13 @@ export async function resolveAnthropicAuth(opts: {
 }): Promise<AnthropicAuth | null> {
   // Team rows only (user_id IS NULL): a person's own key is never the team's.
   const rows = (await db.query.secrets.findMany({
-    where: teamCredentialWhere(
+    where: sqlWhere(teamCredentialWhere(
       { teamId: opts.teamId, purpose: [...ANTHROPIC_AUTH_PURPOSES] },
       or(
         isNull(secrets.workspaceId),
         opts.workspaceId ? eq(secrets.workspaceId, opts.workspaceId) : sql`false`,
       ),
-    ),
+    )),
     columns: {
       id: true, purpose: true, label: true, userId: true, encryptedValue: true,
       workspaceId: true, healthStatus: true, updatedAt: true,

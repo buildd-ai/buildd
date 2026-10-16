@@ -6,6 +6,8 @@ import { wakeTask } from '@/lib/dispatch-authority';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
+import { roleHas } from '@/lib/permissions';
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { checkConnectorRouting, findAlternativeRole, type ConnectorFailure } from '../../../workers/claim/connector-gate';
 import { checkMissionHeld } from '../../../workers/claim/held-gate';
 import { checkMissionBudgetExhausted } from '../../../workers/claim/mission-budget-gate';
@@ -28,6 +30,7 @@ import {
   type WaitingReason,
 } from '@buildd/core/waiting-reason';
 import { checkHostedRunnerAllowance } from '@/lib/hosted-runner-usage-store';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * POST /api/tasks/[id]/start
@@ -97,7 +100,7 @@ export async function POST(
 
     // Get the task
     const task = await db.query.tasks.findFirst({
-      where: eq(tasks.id, taskId),
+      where: sqlWhere(eq(tasks.id, taskId)),
       with: { workspace: true },
     });
 
@@ -105,13 +108,18 @@ export async function POST(
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 
-    // Authorization check
+    // Authorization check. canRaiseCap: the same bar PATCH /api/workspaces/[id]
+    // sets for maxConcurrentTasks, so a cap refusal only offers "raise the
+    // limit" to someone whose raise would be accepted.
+    let canRaiseCap = false;
     if (authType === 'session') {
       const access = await verifyWorkspaceAccess(userId!, task.workspaceId);
       if (!access) {
         return NextResponse.json({ error: 'Task not found' }, { status: 404 });
       }
+      canRaiseCap = roleHas(access.role, 'manage_workspace_settings');
     } else {
+      canRaiseCap = hasTokenRouteAdminAccess(sessionAccount, req);
       const hasAccess = await verifyAccountWorkspaceAccess(sessionAccount ?? accountId!, task.workspaceId);
       if (!hasAccess) {
         return NextResponse.json({ error: 'Task not found' }, { status: 404 });
@@ -144,11 +152,11 @@ export async function POST(
     const dependsOn = ((task.dependsOn as string[] | null) || []).filter(id => !inferredEdges.has(id));
     if (dependsOn.length > 0 && !forceOverride) {
       const openDepWorkers = await db.query.workers.findMany({
-        where: and(
+        where: sqlWhere(and(
           inArray(workers.taskId, dependsOn),
           isNotNull(workers.prUrl),
           isNull(workers.mergedAt),
-        ),
+        )),
         with: {
           task: { columns: { id: true, title: true, status: true } },
         },
@@ -295,7 +303,7 @@ export async function POST(
       let missionMaxConcurrent: number | null = null;
       if (missionId) {
         const missionRow = await db.query.missions.findFirst({
-          where: eq(missions.id, missionId),
+          where: sqlWhere(eq(missions.id, missionId)),
           columns: { maxConcurrentTasks: true },
         });
         missionMaxConcurrent = missionRow?.maxConcurrentTasks ?? null;
@@ -308,11 +316,11 @@ export async function POST(
       if (capResult) {
         // Count other pending tasks to surface queue position in the UI.
         const pendingAhead = await db.query.tasks.findMany({
-          where: and(
+          where: sqlWhere(and(
             eq(tasks.workspaceId, task.workspaceId),
             eq(tasks.status, 'pending'),
             ne(tasks.id, taskId),
-          ),
+          )),
           columns: { id: true },
         });
         return NextResponse.json({
@@ -323,6 +331,7 @@ export async function POST(
           cap: capResult.cap,
           queuePosition: pendingAhead.length,
           canExempt: true,
+          canRaiseCap,
         }, { status: 422 });
       }
     }

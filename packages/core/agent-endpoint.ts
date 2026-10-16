@@ -53,10 +53,12 @@
  *
  * ## Precedence
  *
- * The endpoint is a model credential ranked against `anthropic_api_key`,
- * `oauth_token` and `claude_credential` in ONE ranking: the most specific scope
- * wins (workspace > account > team), and a tie goes to the endpoint. Only the
- * winner reaches the agent. `resolveAgentModelRoute` applies it; the claim
+ * The endpoint is a model credential ranked against the team's Anthropic API
+ * key in ONE ranking: the most specific scope wins (workspace > account >
+ * team), and a tie goes to the endpoint. Only the winner reaches the agent. A
+ * stored subscription login (`oauth_token`, `claude_credential`) does not
+ * compete: no claim delivers one (model credentials spec R-2), and an endpoint
+ * replaces the runner's own login (R-7). `resolveAgentModelRoute` applies it; the claim
  * route and `/api/runner/model-endpoint` both call it.
  *
  * The inference key policy does not bind it (§1 "Key policy").
@@ -83,6 +85,7 @@ import { openRouterModelId } from './openrouter-id';
 import { verifyByFetch, type LookupAll, type VerifyOutcome } from './net/public-address';
 import { agentKeyPurposes, isAgentKeyRow, type AgentKeyProvider } from './providers/agent-keys';
 import type { TeamReadablePurpose } from './secrets/team-scope';
+import { sqlWhere } from './db/relational-sql';
 
 export const AGENT_ENDPOINT_PURPOSE = 'agent_endpoint' as const;
 
@@ -535,20 +538,19 @@ export function endpointWinsRanking(endpointScope: AgentEndpointScope, competito
  * The Anthropic API key competes from either storage (provider parity): its
  * canonical `inference_key` / `anthropic` row or the legacy `anthropic_api_key`.
  * An `inference_key` row competes only with the backend's own provider label
- * (`competingScopes`), never another provider's chat key.
+ * (`competingScopes`), never another provider's chat key. Stored subscription
+ * logins do not compete: a claim never delivers one (model credentials spec R-2).
  */
-export const COMPETING_MODEL_PURPOSES: readonly string[] = [...agentKeyPurposes('anthropic'), 'oauth_token', 'claude_credential'];
+export const COMPETING_MODEL_PURPOSES: readonly string[] = [...agentKeyPurposes('anthropic')];
 
 /**
- * The Codex-side equivalent: a team/workspace OpenAI key (`openai_api_key`) or
- * a ChatGPT/OAuth connect (`codex_credential`, api_key or oauth shape — either
- * is "a credential exists", liveness is the same revoked check as the
- * Anthropic purposes). Used instead of `COMPETING_MODEL_PURPOSES` when ranking
- * the endpoint for a Codex task, so a more specific Codex credential still
- * beats a broader team endpoint — mirroring the Claude path exactly, just
- * against the credentials a Codex run would actually otherwise use.
+ * The Codex-side equivalent: a team/workspace OpenAI key. Used instead of
+ * `COMPETING_MODEL_PURPOSES` when ranking the endpoint for a Codex task, so a
+ * more specific OpenAI key still beats a broader team endpoint. A
+ * `codex_credential` row does not compete: its kind (ChatGPT login or legacy
+ * API key) is only known after decrypting, and a login is never delivered.
  */
-export const CODEX_COMPETING_MODEL_PURPOSES: readonly string[] = [...agentKeyPurposes('openai'), 'codex_credential'];
+export const CODEX_COMPETING_MODEL_PURPOSES: readonly string[] = [...agentKeyPurposes('openai')];
 
 export interface CompetingCredentialRow {
   purpose: string;
@@ -563,9 +565,7 @@ export interface CompetingCredentialRow {
 /**
  * Scopes of the competing rows that could actually be delivered for this task:
  * a live (non-revoked) row of a competing purpose, visible to this workspace
- * and account. A `claude_credential` with no expiry is a dead refresh family
- * (resolveClaudeCredential skips it), so it doesn't compete either.
- * Re-checks the predicates in code so a loose query can't widen them.
+ * and account. Re-checks the predicates in code so a loose query can't widen them.
  */
 export function competingScopes(
   rows: readonly CompetingCredentialRow[],
@@ -581,7 +581,6 @@ export function competingScopes(
     if (r.userId) continue;
     if (r.purpose === 'inference_key' && !isAgentKeyRow(r, keyProvider)) continue;
     if (r.healthStatus === 'revoked') continue;
-    if (r.purpose === 'claude_credential' && !r.tokenExpiresAt) continue;
     if (r.workspaceId && r.workspaceId !== ctx.workspaceId) continue;
     if (r.accountId && r.accountId !== ctx.accountId) continue;
     out.push(r.workspaceId ? 'workspace' : r.accountId ? 'account' : 'team');
@@ -731,11 +730,11 @@ export async function resolveAgentEndpoint(opts: { teamId: string; workspaceId?:
     const { eq, isNull, or, sql } = await import('drizzle-orm');
     const { teamCredentialWhere } = await import('./secrets/team-scope');
     const rows = await db.query.secrets.findMany({
-      where: teamCredentialWhere(
+      where: sqlWhere(teamCredentialWhere(
         { teamId: opts.teamId, purpose: AGENT_ENDPOINT_PURPOSE },
         isNull(secrets.accountId),
         or(isNull(secrets.workspaceId), opts.workspaceId ? eq(secrets.workspaceId, opts.workspaceId) : sql`false`),
-      ),
+      )),
       columns: { id: true, purpose: true, encryptedValue: true, workspaceId: true, accountId: true, userId: true, healthStatus: true, updatedAt: true },
     });
     const ranked = rankEndpointRows(rows ?? [], opts.workspaceId);
@@ -776,9 +775,8 @@ export type AgentModelDecision =
  * so an error can never move a workspace off its own credential.
  *
  * `backend` picks which credentials compete: `claude` (default) ranks against
- * `COMPETING_MODEL_PURPOSES` (anthropic_api_key / oauth_token /
- * claude_credential); `codex` ranks against `CODEX_COMPETING_MODEL_PURPOSES`
- * (openai_api_key / codex_credential) instead — the credentials a Codex run
+ * `COMPETING_MODEL_PURPOSES` (the Anthropic API key); `codex` ranks against
+ * `CODEX_COMPETING_MODEL_PURPOSES` (the OpenAI API key) instead — the credentials a Codex run
  * would otherwise use. The endpoint itself is backend-agnostic (one row for
  * both); only the competitor set changes.
  */
@@ -799,11 +797,11 @@ export async function resolveAgentModelRoute(opts: {
     const { eq, isNull, or } = await import('drizzle-orm');
     const { teamCredentialWhere } = await import('./secrets/team-scope');
     const rows = await db.query.secrets.findMany({
-      where: teamCredentialWhere(
+      where: sqlWhere(teamCredentialWhere(
         { teamId: opts.teamId, purpose: purposes as TeamReadablePurpose[] },
         opts.accountId ? or(isNull(secrets.accountId), eq(secrets.accountId, opts.accountId)) : isNull(secrets.accountId),
         or(isNull(secrets.workspaceId), eq(secrets.workspaceId, opts.workspaceId)),
-      ),
+      )),
       columns: { purpose: true, label: true, userId: true, accountId: true, workspaceId: true, healthStatus: true, tokenExpiresAt: true },
     });
     scopes = competingScopes(rows ?? [], opts, purposes, keyProvider);

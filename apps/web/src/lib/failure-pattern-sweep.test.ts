@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import {
+  countsTowardFailureRate,
   computeSweepFloors,
   effectiveFloor,
   minutesBeforeIso,
@@ -12,9 +13,15 @@ import {
   type SweepDeps,
   type SweepFloors,
 } from './failure-pattern-sweep';
-import type { FixTaskPort, IncidentAlertSender } from './failure-incident-actions';
+import type { FixTaskPort, IncidentAlert, IncidentAlertSender } from './failure-incident-actions';
 import type { IncidentStorePort, StoredIncident } from './failure-incident-store';
-import type { PathOverlapObservation, SentinelFacts, WorkerFailureFact } from './failure-pattern-sentinel';
+import type { SentinelFacts, WorkerFailureFact } from './failure-pattern-sentinel';
+import {
+  evaluatePathOverlap,
+  type PathOverlapBlockerFacts,
+  type PathOverlapRecoveryFacts,
+  type PathOverlapSubjectFacts,
+} from './failure-incident-recovery-path-overlap';
 import type { FailureIncidentRule } from '@buildd/shared';
 
 const T0 = Date.parse('2026-10-04T12:00:00.000Z');
@@ -100,7 +107,7 @@ interface FakeOpts {
   incidentPort?: IncidentStorePort;
   fixTasks?: FixTaskPort | null;
   send?: IncidentAlertSender;
-  observe?: () => PathOverlapObservation;
+  rootCauses?: SweepDeps['rootCauses'];
 }
 
 function fakeDeps(workspaceIds: string[], opts: FakeOpts = {}) {
@@ -124,7 +131,7 @@ function fakeDeps(workspaceIds: string[], opts: FakeOpts = {}) {
     decide: null, // keep triage deterministic/DB-free in tests
     send: opts.send ?? sentSender,
     fixTasks: opts.fixTasks === undefined ? null : opts.fixTasks,
-    ...(opts.observe ? { observePathOverlapSubjects: async () => opts.observe!() } : {}),
+    rootCauses: opts.rootCauses,
     async reportOpsError(message, detail, severity) { opsErrors.push({ message, detail, severity }); },
     async recordSelfHealth(ok) {
       selfHealthConsecutive = ok ? 0 : selfHealthConsecutive + 1;
@@ -339,88 +346,192 @@ describe('runFailurePatternSweep', () => {
 
 // ── path-overlap incidents reconcile against current facts ──────────────────
 
-describe('runFailurePatternSweep: path-overlap incidents resolve on current facts', () => {
+describe('runFailurePatternSweep: root causes', () => {
+  it('records each detected pattern as one root cause on the workspace\'s team', async () => {
+    const upserts: any[] = [];
+    const rootCauses = { store: { async upsert(o: any) { upserts.push(o); }, async verifyRestored() { return 0; } }, teamOfWorkspace: async () => 'team-a' };
+    const facts = new Map([[WS1, { ...emptyFacts(WS1), workerFailures: criticalWorkerFailures(10) }]]);
+    const { deps } = fakeDeps([WS1], { facts, incidentPort: memoryIncidentPort(), rootCauses });
+
+    const counters = await runFailurePatternSweep(deps, { now });
+
+    expect(counters.runFailures).toBe(0);
+    expect(upserts).toHaveLength(1);
+    expect(upserts[0]).toMatchObject({ key: `pattern:repeated_failure:${WS1}`, teamId: 'team-a', classification: 'unknown', capability: { kind: 'platform', workspaceId: WS1 } });
+    expect(upserts[0].taskIds.length).toBeGreaterThan(0);
+  });
+
+  it('a root-cause store failure is an ops error; the incident path and the watermark still run', async () => {
+    const rootCauses = { store: { async upsert() { throw new Error('store down'); }, async verifyRestored() { return 0; } }, teamOfWorkspace: async () => 'team-a' };
+    const incidentPort = memoryIncidentPort();
+    const facts = new Map([[WS1, { ...emptyFacts(WS1), workerFailures: criticalWorkerFailures(10) }]]);
+    const { deps, opsErrors, watermarkWrites } = fakeDeps([WS1], { facts, incidentPort, rootCauses });
+
+    const counters = await runFailurePatternSweep(deps, { now });
+
+    expect(counters.runFailures).toBe(1);
+    expect(counters.incidentsOpened).toBe(1);
+    expect(opsErrors.map(e => e.message)).toEqual([`Failure Pattern Sentinel: root-cause record failed for workspace ${WS1}`]);
+    expect(watermarkWrites).toHaveLength(1);
+  });
+});
+
+describe('runFailurePatternSweep: last run and recovery event retention (operator-recovery §10)', () => {
+  it('a full sweep records its run and prunes; a triggered one-workspace sweep does neither', async () => {
+    const { deps } = fakeDeps([WS1], { incidentPort: memoryIncidentPort() });
+    const runs: any[] = [];
+    let prunes = 0;
+    deps.recordLastRun = async run => { runs.push(run); };
+    deps.pruneRecoveryEvents = async () => { prunes++; return 0; };
+
+    await runFailurePatternSweep(deps, { now, workspaceIds: [WS1] });
+    expect(runs).toHaveLength(0);
+    expect(prunes).toBe(0);
+
+    await runFailurePatternSweep(deps, { now });
+    expect(prunes).toBe(1);
+    expect(runs).toEqual([expect.objectContaining({ full: true, workspaces: 1, runFailures: 0 })]);
+    expect(Date.parse(runs[0].finishedAt)).toBeGreaterThanOrEqual(Date.parse(runs[0].startedAt));
+  });
+
+  it('a failing last-run write never fails the sweep', async () => {
+    const { deps } = fakeDeps([WS1], { incidentPort: memoryIncidentPort() });
+    deps.recordLastRun = async () => { throw new Error('cache down'); };
+    deps.pruneRecoveryEvents = async () => { throw new Error('db down'); };
+    const counters = await runFailurePatternSweep(deps, { now });
+    expect(counters.workspacesEvaluated).toBe(1);
+  });
+});
+
+describe('runFailurePatternSweep: open path-overlap incidents are assessed on fresh facts', () => {
   const STALL = 120;
   const minutesAgo = (m: number) => new Date(T0 - m * 60_000).toISOString();
   const deferral = (over: Partial<NonNullable<SentinelFacts['pathOverlapDeferrals']>[number]> = {}) => ({
     taskId: 'task-a', blockingPrNumber: 77, firstDeferredAt: minutesAgo(STALL + 60), lastDeferredAt: minutesAgo(5),
     lastProgressAt: null, taskStatus: 'pending', blockerState: 'open' as const, ...over,
   });
-  const observation = (taskStatus: string | null, pr: 'open' | 'merged' | 'closed' | 'unknown'): PathOverlapObservation => ({
-    tasks: new Map([['task-a', { status: taskStatus, lastWorkerAt: null }]]),
-    prs: new Map([[77, pr]]),
+  const subject = (over: Partial<PathOverlapSubjectFacts> = {}): PathOverlapSubjectFacts => ({
+    taskId: 'task-a', status: 'pending', lastWorkerAt: null, wokenAt: null, subjectPrNumber: null,
+    lastDeferral: { at: minutesAgo(5), prNumber: 77, blockingTaskId: 'holder', firstDeferredAt: minutesAgo(STALL + 60), paths: ['a.ts'] },
+    ...over,
+  });
+  const blocker = (over: Partial<PathOverlapBlockerFacts> = {}): PathOverlapBlockerFacts => ({
+    prNumber: 77, taskId: 'holder', createdAt: minutesAgo(600), prState: 'open', deliveryState: 'CI_PENDING', lastMovedAt: minutesAgo(1),
+    leasesHeld: 0, unnotifiedWaiters: [], dependsOnSubjects: [], diffPaths: null, ...over,
   });
 
   async function openIncident() {
     const incidentPort = memoryIncidentPort();
     let facts: SentinelFacts = { ...emptyFacts(WS1), pathOverlapDeferrals: [deferral()] };
-    let obs = observation('pending', 'open');
+    let recoveryFacts: PathOverlapRecoveryFacts | Error = { subjects: [subject()], blocker: blocker(), fixTask: null };
+    const effects: string[] = [];
+    const sent: IncidentAlert[] = [];
     const factsMap = { get: () => facts } as unknown as Map<string, SentinelFacts>;
-    const { deps } = fakeDeps([WS1], { facts: factsMap, incidentPort, observe: () => obs });
-    const first = await runFailurePatternSweep(deps, { now });
+    const { deps, opsErrors } = fakeDeps([WS1], { facts: factsMap, incidentPort, send: async a => { sent.push(a); return false; } });
+    deps.recovery = {
+      families: [{
+        rule: 'path_overlap_stall',
+        async observe() { if (recoveryFacts instanceof Error) throw recoveryFacts; return { complete: true, facts: recoveryFacts }; },
+        evaluate: evaluatePathOverlap,
+      }],
+      effects: {
+        async releaseBlocker(id) { effects.push(`release:${id}`); },
+        async wakeSubject(id) { effects.push(`wake:${id}`); },
+        async fileFixTask() { effects.push('fix'); return null; },
+      },
+    };
+    let clock = T0;
+    const run = (advanceMin = 0) => { clock += advanceMin * 60_000; return runFailurePatternSweep(deps, { now: () => new Date(clock).toISOString() }); };
+    const first = await run();
     expect(first.incidentsOpened).toBe(1);
     return {
-      incidentPort,
-      deps,
+      run, effects, sent, opsErrors,
       row: () => [...incidentPort.rows.values()][0],
-      set(next: { facts?: SentinelFacts; obs?: PathOverlapObservation }) {
+      set(next: { facts?: SentinelFacts; recovery?: PathOverlapRecoveryFacts | Error }) {
         if (next.facts) facts = next.facts;
-        if (next.obs) obs = next.obs;
+        if (next.recovery) recoveryFacts = next.recovery;
       },
     };
   }
 
-  it('a stale incident is resolved by the sweep after its blocker merged, with no merge event seen', async () => {
+  it('a new incident is assessed in the sweep that opened it, and re-gated on that assessment', async () => {
     const h = await openIncident();
-    const before = h.row();
-    // The merge webhook was missed: the only signal is the sweep's fresh read.
-    // The old deferral rows are still inside the 24h window.
-    h.set({
-      facts: { ...emptyFacts(WS1), pathOverlapDeferrals: [deferral({ blockerState: 'merged' })] },
-      obs: observation('pending', 'merged'),
-    });
-    const counters = await runFailurePatternSweep(h.deps, { now });
-    expect(counters.incidentsResolved).toBe(1);
-    expect(counters.incidentsOpened + counters.incidentsUpdated).toBe(0);
-    const after = h.row();
-    expect(after.status).toBe('resolved');
-    expect(after.resolvedAt).toBe(now());
-    // History is kept: the row, its evidence and its counts are untouched.
-    expect(after.evidenceRefs).toEqual(before.evidenceRefs);
-    expect(after.occurrenceCount).toBe(before.occurrenceCount);
+    expect(h.row().recovery?.state).toBe('waiting');
+    expect(h.row().recovery?.nextCheckAt).not.toBeNull();
+    expect(h.sent.some(a => a.dedupeKey.endsWith(':waiting'))).toBe(true);
+  });
 
-    const again = await runFailurePatternSweep(h.deps, { now });
-    expect(again.incidentsResolved).toBe(0);
+  it('nothing is re-assessed before its promised check', async () => {
+    const h = await openIncident();
+    const version = h.row().version;
+    const again = await h.run(1);
+    expect(again.incidentsAssessed).toBe(0);
+    expect(h.row().version).toBe(version);
+  });
+
+  it('a missed merge: the blocker merged with its leases held → released once, then resolved once the task moves', async () => {
+    const h = await openIncident();
+    h.set({ facts: emptyFacts(WS1), recovery: { subjects: [subject()], blocker: blocker({ prState: 'merged', leasesHeld: 2 }), fixTask: null } });
+    const c1 = await h.run(6);
+    expect(c1.recoveryRepairs).toBe(1);
+    expect(h.effects).toEqual(['release:holder']);
+    expect(h.row().status).toBe('open');
+
+    // Released and woken, but nothing picked it up: still open, no second repair.
+    h.set({ recovery: { subjects: [subject({ wokenAt: new Date(T0 + 7 * 60_000).toISOString() })], blocker: blocker({ prState: 'merged' }), fixTask: null } });
+    await h.run(3);
+    expect(h.effects).toEqual(['release:holder']);
+    expect(h.row().status).toBe('open');
+
+    h.set({ recovery: { subjects: [subject({ status: 'completed' })], blocker: blocker({ prState: 'merged' }), fixTask: null } });
+    const c3 = await h.run(10);
+    expect(c3.incidentsResolved).toBe(1);
     expect(h.row().status).toBe('resolved');
+    expect(h.row().recovery?.state).toBe('recovered');
+    // History is kept.
+    expect(h.row().occurrenceCount).toBe(1);
   });
 
-  it('resolves once the waiting task completed, even with the blocker still open', async () => {
+  it('unknown evidence is inconclusive, never resolved', async () => {
     const h = await openIncident();
-    h.set({ facts: emptyFacts(WS1), obs: observation('completed', 'open') });
-    const counters = await runFailurePatternSweep(h.deps, { now });
-    expect(counters.incidentsResolved).toBe(1);
-    expect(h.row().status).toBe('resolved');
-  });
-
-  it('a real remaining blocker keeps the incident open', async () => {
-    const h = await openIncident();
-    h.set({ facts: emptyFacts(WS1), obs: observation('pending', 'open') });
-    const counters = await runFailurePatternSweep(h.deps, { now });
-    expect(counters.incidentsResolved).toBe(0);
+    h.set({ facts: emptyFacts(WS1), recovery: new Error('read failed') });
+    await h.run(6);
     expect(h.row().status).toBe('open');
+    expect(h.row().recovery?.state).toBe('inconclusive');
+  });
+});
+
+describe('the collector feeds per-blocker episodes (G1) into detection', () => {
+  it('AC-1: a long wait behind PR A then a short one behind PR B opens nothing for B', async () => {
+    const minutesAgo = (m: number) => new Date(T0 - m * 60_000).toISOString();
+    const incidentPort = memoryIncidentPort();
+    const facts = new Map([[WS1, { ...emptyFacts(WS1), pathOverlapDeferrals: [
+      { taskId: 't', blockingPrNumber: 1, firstDeferredAt: minutesAgo(190), lastDeferredAt: minutesAgo(11), lastProgressAt: null, taskStatus: 'pending', blockerState: 'open' as const },
+      { taskId: 't', blockingPrNumber: 2, firstDeferredAt: minutesAgo(10), lastDeferredAt: minutesAgo(1), lastProgressAt: null, taskStatus: 'pending', blockerState: 'open' as const },
+    ] }]]);
+    const { deps } = fakeDeps([WS1], { facts, incidentPort });
+    const c = await runFailurePatternSweep(deps, { now });
+    expect(c.incidentsOpened).toBe(0);
+  });
+});
+
+// failure-incident-recovery §18.7: the failure-rate windows count real
+// failures. A recovered infrastructure exit is noise; an unrecovered one is not.
+describe('countsTowardFailureRate', () => {
+  it('drops an infrastructure exit whose task recovered', () => {
+    expect(countsTowardFailureRate({ exitCause: 'auth_failure', taskStatus: 'pending' })).toBe(false);
+    expect(countsTowardFailureRate({ exitCause: 'infra_failure', taskStatus: 'completed' })).toBe(false);
+    expect(countsTowardFailureRate({ exitCause: 'reassigned', taskStatus: 'in_progress' })).toBe(false);
   });
 
-  it('unknown evidence is not a resolution', async () => {
-    const h = await openIncident();
-    h.set({ facts: emptyFacts(WS1), obs: observation(null, 'unknown') });
-    expect((await runFailurePatternSweep(h.deps, { now })).incidentsResolved).toBe(0);
-    expect(h.row().status).toBe('open');
+  it('keeps an infrastructure exit whose task is still failed, and every code failure', () => {
+    expect(countsTowardFailureRate({ exitCause: 'infra_failure', taskStatus: 'failed' })).toBe(true);
+    expect(countsTowardFailureRate({ exitCause: 'code_failure', taskStatus: 'completed' })).toBe(true);
+    expect(countsTowardFailureRate({ exitCause: null, taskStatus: 'pending' })).toBe(true);
   });
 
-  it('never resolves an incident its own rule still reports in this sweep', async () => {
-    const h = await openIncident();
-    h.set({ obs: observation('completed', 'merged') }); // facts still say stalled behind an open PR
-    expect((await runFailurePatternSweep(h.deps, { now })).incidentsResolved).toBe(0);
-    expect(h.row().status).toBe('open');
+  it('never counts bookkeeping', () => {
+    expect(countsTowardFailureRate({ exitCause: 'needs_input', taskStatus: 'failed' })).toBe(false);
+    expect(countsTowardFailureRate({ exitCause: 'task_cancelled', taskStatus: 'cancelled' })).toBe(false);
   });
 });

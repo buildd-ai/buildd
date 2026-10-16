@@ -31,3 +31,17 @@ plugin({
     build.module('server-only', () => ({ contents: '', loader: 'js' }));
   },
 });
+
+// Runner boot preflight (task c08b35ae). A missing package fails during the
+// runner's own module loading, before it can repair anything, and every launcher
+// ever written passes this file as --preload, so this is the one hook that
+// reaches installs whose launcher predates the repair. It acts only when the
+// entry script is the runner's, and does nothing where the file is not checked out.
+{
+  const entry = process.argv[1] ?? '';
+  if (/[\\/]apps[\\/]runner[\\/]src[\\/](index|service)\.ts$/.test(entry)) {
+    let preflight: { preflightForEntry: (entry: string) => void } | null = null;
+    try { preflight = require('../apps/runner/src/preflight'); } catch { /* not a runner checkout */ }
+    preflight?.preflightForEntry(entry);
+  }
+}

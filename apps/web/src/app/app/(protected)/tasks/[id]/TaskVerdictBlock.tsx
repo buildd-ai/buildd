@@ -8,7 +8,7 @@
  * Compact by default: a chip and a line. It becomes a card only when it asks
  * for something (a primary or danger action, or failing checks to read).
  * There is no explanation disclosure: the decision ledger behind the wording
- * lives in the admin app.
+ * is served by the platform-owner API.
  */
 import Chip, { type ChipTone } from '@/components/ui/Chip';
 import type { TaskVerdict, VerdictState } from '@/lib/task-verdict';
@@ -18,7 +18,7 @@ const STATE: Record<VerdictState, { label: string; tone: ChipTone }> = {
   done: { label: 'Done', tone: 'success' },
   blocked: { label: 'Blocked', tone: 'error' },
   failed: { label: 'Failed', tone: 'error' },
-  needs_you: { label: 'Needs you', tone: 'warning' },
+  needs_you: { label: 'Waiting on you', tone: 'warning' },
   in_progress: { label: 'In progress', tone: 'running' },
 };
 

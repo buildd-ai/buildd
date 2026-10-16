@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
 const mockGetCurrentUser = mock(() => null as any);
@@ -153,6 +153,36 @@ describe('POST /api/prs/[prNumber]/apply-recommendation', () => {
       mockGetCurrentUser.mockResolvedValue({ id: 'u-1', email: 'max@example.com' });
       mockResolveOpenWorkerForUser.mockResolvedValue(openWorker);
       mockKernelDeliveryOfPr.mockResolvedValue(kernelOwned);
+    });
+
+    describe('cut over to the control plane (workflow-kernel-library §3)', () => {
+      let cp: ReturnType<typeof import('@/lib/workflow/testing/cut-over').cutOver> | null = null;
+      afterEach(() => { cp?.restore(); cp = null; });
+      it('the control plane unreachable: 503 naming it, and nothing is filed on the legacy path', async () => {
+        const { cutOver } = await import('@/lib/workflow/testing/cut-over');
+        cp = cutOver();
+        mockApplyThroughKernel.mockClear(); mockTasksValues.mockClear(); mockAnnounceTaskCreated.mockClear(); mockWakeTask.mockClear();
+        const [req, ctx] = makeRequest('42', { workspaceId: 'ws-1', version: 7 });
+        const res = await POST(req, ctx);
+        expect(res.status).toBe(503);
+        expect(await res.json()).toMatchObject({ code: 'control_plane_unavailable', controlPlane: true, retryable: true, idempotencyKey: expect.stringMatching(/^apply_recommendation:/) });
+        expect(cp.calls.map((c) => c.op)).toContain('apply_recommendation');
+        expect(mockApplyThroughKernel).not.toHaveBeenCalled();
+        expect(mockTasksValues).not.toHaveBeenCalled();
+        expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+        expect(mockWakeTask).not.toHaveBeenCalled();
+      });
+
+      it('the control plane refuses the command: 403, not a 500', async () => {
+        const { cutOver, refusedByControlPlane } = await import('@/lib/workflow/testing/cut-over');
+        cp = cutOver({ reply: refusedByControlPlane });
+        mockTasksValues.mockClear();
+        const [req, ctx] = makeRequest('42', { workspaceId: 'ws-1', version: 7 });
+        const res = await POST(req, ctx);
+        expect(res.status).toBe(403);
+        expect(await res.json()).toMatchObject({ code: 'control_plane_refused' });
+        expect(mockTasksValues).not.toHaveBeenCalled();
+      });
     });
 
     it('dispatches the fix through the kernel with the reviewer recommendation as instructions; nothing on the legacy path', async () => {

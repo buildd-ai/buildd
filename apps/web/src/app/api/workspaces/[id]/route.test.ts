@@ -944,7 +944,7 @@ describe('PATCH /api/workspaces/[id]', () => {
 });
 
 describe('PATCH /api/workspaces/[id] — privilege gates', () => {
-  // Merge policy / git config, access mode, data class and the connector claim
+  // Merge policy / git config, access mode, data class, the concurrency cap and the connector claim
   // gate are workspace-admin settings: a session caller needs owner or admin in
   // the workspace's team, an API key needs admin level.
   const PRIVILEGED_BODIES: Array<[string, Record<string, unknown>]> = [
@@ -954,6 +954,7 @@ describe('PATCH /api/workspaces/[id] — privilege gates', () => {
     ['connectorAdvisoryMode', { connectorAdvisoryMode: true }],
     ['webhookConfig', { webhookConfig: { url: 'https://runner.example/dispatch', token: 't', enabled: true } }],
     ['webhookConfig (clear)', { webhookConfig: null }],
+    ['maxConcurrentTasks', { maxConcurrentTasks: 8 }],
   ];
 
   let updateCalled = false;

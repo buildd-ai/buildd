@@ -21,7 +21,7 @@ export default async function PrActionSheet({ prNumber, token, userId }: { prNum
         <>
           {view.headMoved && (
             <p className="mt-3 border border-border-default bg-surface-2 p-3 text-sm text-text-secondary" data-testid="landing-action-head-moved">
-              New commits arrived since this alert. Confirming re-runs landing against the current commit instead of acting on old advice.
+              The PR changed since this alert. Confirming checks it again.
             </p>
           )}
           <LandingActionConfirm

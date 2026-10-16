@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, workspaces } from '@buildd/core/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, isNotNull } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { invalidateAccountWorkspaceCache } from '@/lib/account-workspace-cache';
 import { canAdministerTeamKeys } from '@/lib/key-level-policy';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 
 const ADMIN_ONLY = 'Only team owners and admins can change which accounts a workspace is connected to.';
@@ -33,7 +34,7 @@ export async function GET(
 
   try {
     const connections = await db.query.accountWorkspaces.findMany({
-      where: eq(accountWorkspaces.workspaceId, id),
+      where: sqlWhere(eq(accountWorkspaces.workspaceId, id)),
       with: {
         account: true,
       },
@@ -88,7 +89,7 @@ export async function POST(
 
     // Verify workspace exists
     const workspace = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, workspaceId),
+      where: sqlWhere(eq(workspaces.id, workspaceId)),
     });
 
     if (!workspace) {
@@ -97,7 +98,7 @@ export async function POST(
 
     // Verify account exists
     const account = await db.query.accounts.findFirst({
-      where: eq(accounts.id, accountId),
+      where: sqlWhere(eq(accounts.id, accountId)),
     });
 
     // An account from another team is reported as missing, not forbidden.
@@ -107,10 +108,10 @@ export async function POST(
 
     // Check if connection already exists
     const existing = await db.query.accountWorkspaces.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(accountWorkspaces.accountId, accountId),
         eq(accountWorkspaces.workspaceId, workspaceId)
-      ),
+      )),
     });
 
     if (existing) {
@@ -181,14 +182,31 @@ export async function DELETE(
       return NextResponse.json({ error: 'accountId is required' }, { status: 400 });
     }
 
-    await db
-      .delete(accountWorkspaces)
+    // A pick a person made on the runner consent page (granted_by_user_id) is
+    // kept as a tombstone, so the key's owner cannot put it back through Edit
+    // (lib/runner-picks.ts); a removed pick reaches nothing (lib/granted-links.ts).
+    // An ordinary link is deleted, as before.
+    const tombstoned = await db
+      .update(accountWorkspaces)
+      .set({ removedByUserId: user.id, removedAt: new Date(), canClaim: false, canCreate: false })
       .where(
         and(
           eq(accountWorkspaces.accountId, accountId),
-          eq(accountWorkspaces.workspaceId, workspaceId)
+          eq(accountWorkspaces.workspaceId, workspaceId),
+          isNotNull(accountWorkspaces.grantedByUserId),
         )
-      );
+      )
+      .returning({ accountId: accountWorkspaces.accountId });
+    if (tombstoned.length === 0) {
+      await db
+        .delete(accountWorkspaces)
+        .where(
+          and(
+            eq(accountWorkspaces.accountId, accountId),
+            eq(accountWorkspaces.workspaceId, workspaceId)
+          )
+        );
+    }
 
     invalidateAccountWorkspaceCache(accountId);
 

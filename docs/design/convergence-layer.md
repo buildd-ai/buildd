@@ -25,9 +25,9 @@ assertions:
     file: "packages/shared/src/types.ts"
   - id: "migration-journal-guard"
     type: "test_file"
-    path: "packages/core/__tests__/migration-journal-ordering.test.ts"
+    path: "packages/core/__tests__/migration-layout.test.ts"
     skip_until: "2026-12-19"
-    skip_reason: "migration-journal-ordering.test.ts genuinely covers the shipped Candidate 4 substitute (the CI-script guard, §Shipped note) — this isn't a false positive — but the doc must stay 'partially' until merge-order-edges (Candidate 3's mergeAfter) ships, so this assertion will pass forever under a non-terminal status. merge-order-edges is the assertion that tracks real remaining progress."
+    skip_reason: "migration-layout.test.ts (which replaced the journal-ordering guard at the drizzle v1 cutover) genuinely covers the shipped Candidate 4 substitute (the CI-script guard, §Shipped note) — this isn't a false positive — but the doc must stay 'partially' until merge-order-edges (Candidate 3's mergeAfter) ships, so this assertion will pass forever under a non-terminal status. merge-order-edges is the assertion that tracks real remaining progress."
 ---
 
 # convergence-layer

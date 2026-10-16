@@ -5,6 +5,7 @@ import type { GoalCriteriaState } from '@buildd/shared';
 import { resolveCriteriaEscalation, escalateCriteriaFailure } from '@/lib/criteria-escalation';
 import { systemActor } from '@/lib/mission-feed';
 import { CRITERIA_ESCALATION_NOTE_TITLE } from '@/lib/criteria-escalation-note';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * The consumer of a non-pass goal-criteria verdict.
@@ -198,7 +199,7 @@ export async function applyCriteriaRearm(input: {
   // verdict. Re-arming on the pre-check snapshot would fingerprint the previous
   // round and hand the organizer stale criterion text.
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, input.missionId),
+    where: sqlWhere(eq(missions.id, input.missionId)),
     columns: {
       id: true,
       title: true,

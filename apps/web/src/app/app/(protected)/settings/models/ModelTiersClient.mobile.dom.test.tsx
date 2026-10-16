@@ -37,11 +37,24 @@ afterEach(() => { act(() => root.unmount()); document.body.innerHTML = ''; });
 const flush = async () => { await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
 
 describe('ModelTiersClient on a phone', () => {
-  it('stacks a card per tier with Coding and Chat lines, alternates before the state', async () => {
+  it('a team admin on a phone reads each line as surface and primary: no "+ alternate", no state', async () => {
     host = document.createElement('div');
     document.body.append(host);
     root = createRoot(host);
     await act(async () => { root.render(<ModelTiersClient teamId="team-demo" teamName="Demo" isAdmin />); });
+    await flush();
+    await flush();
+    const premium = document.querySelector('[data-testid="cell-agent-premium"]')!;
+    expect(premium.textContent).toContain('claude-opus-5');
+    expect(premium.querySelector('[data-testid="cell-state"]')).toBeNull();
+    expect(document.body.textContent).not.toMatch(/\+ claude-sonnet-5|learning \d+ of \d+/);
+  });
+
+  it('stacks a card per tier with Coding and Chat lines, alternates before the state', async () => {
+    host = document.createElement('div');
+    document.body.append(host);
+    root = createRoot(host);
+    await act(async () => { root.render(<ModelTiersClient teamId="team-demo" teamName="Demo" isAdmin operator />); });
     await flush();
     await flush();
 
@@ -82,7 +95,7 @@ describe('History and What ran on a phone', () => {
     host = document.createElement('div');
     document.body.append(host);
     root = createRoot(host);
-    await act(async () => { root.render(<ModelTiersClient teamId="team-demo" teamName="Demo" isAdmin />); });
+    await act(async () => { root.render(<ModelTiersClient teamId="team-demo" teamName="Demo" isAdmin operator />); });
     await flush(); await flush();
   };
 
@@ -127,7 +140,7 @@ describe('tier maximum on the tier cards', () => {
     host = document.createElement('div');
     document.body.append(host);
     root = createRoot(host);
-    await act(async () => { root.render(<ModelTiersClient teamId="team-demo" teamName="Demo" isAdmin />); });
+    await act(async () => { root.render(<ModelTiersClient teamId="team-demo" teamName="Demo" isAdmin operator />); });
     await flush(); await flush();
   }
   const note = (tier: string) => document.querySelector(`[data-testid="tier-blocked-${tier}"]`);

@@ -22,7 +22,7 @@ mock.module('@buildd/core/db/schema', () => ({
   githubInstallations: { installationId: 'installationId' },
 }));
 
-import { postPrReview, mergePullRequest, checkSuitesAllPassed, retryAfterFromHeaders } from './github';
+import { postPrReview, mergePullRequest, checkSuitesAllPassed, retryAfterFromHeaders, githubApi } from './github';
 
 function jsonResponse(status: number, body: unknown): Response {
   return {
@@ -364,5 +364,38 @@ describe('checkSuitesAllPassed', () => {
 
   it('fails on a failed suite', () => {
     expect(checkSuitesAllPassed([suite('github-actions', 'completed', 'failure', 3)])).toBe(false);
+  });
+});
+
+// Task 9f4d3339: githubApi had no way to give up on a call, so one stalled read held a whole cron pass.
+// The timeout is opt-in: a caller passes `signal`; the many callers that pass nothing get no signal.
+describe('githubApi request timeout (opt-in AbortSignal)', () => {
+  /** Like fetch against a server that never answers: settles only when the signal aborts. */
+  const stalledFetch = (seen: Array<AbortSignal | undefined>) => mock((_url: unknown, opts?: RequestInit) => {
+    seen.push(opts?.signal ?? undefined);
+    return new Promise<Response>((_resolve, reject) => {
+      const sig = opts?.signal;
+      if (!sig) return;
+      sig.addEventListener('abort', () => reject(sig.reason), { once: true });
+    });
+  });
+
+  it('abandons a stalled call when the caller\'s signal fires', async () => {
+    const seen: Array<AbortSignal | undefined> = [];
+    global.fetch = stalledFetch(seen) as unknown as typeof fetch;
+    const t0 = Date.now();
+    await expect(githubApi(5000, '/repos/o/r/pulls/1', { signal: AbortSignal.timeout(40) })).rejects.toThrow();
+    expect(Date.now() - t0).toBeLessThan(1_000);
+    expect(seen[0]).toBeInstanceOf(AbortSignal);
+  });
+
+  it('passes no signal when the caller gives none, so existing callers are unchanged', async () => {
+    const seen: Array<AbortSignal | undefined> = [];
+    global.fetch = mock((_url: unknown, opts?: RequestInit) => {
+      seen.push(opts?.signal ?? undefined);
+      return Promise.resolve(jsonResponse(200, { ok: 1 }));
+    }) as unknown as typeof fetch;
+    expect(await githubApi(5000, '/repos/o/r/pulls/1')).toEqual({ ok: 1 });
+    expect(seen).toEqual([undefined]);
   });
 });

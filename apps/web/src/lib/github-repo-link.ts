@@ -3,6 +3,7 @@ import { githubInstallations, githubRepos } from '@buildd/core/db/schema';
 import { eq, sql } from 'drizzle-orm';
 import { listInstallationRepos } from '@/lib/github';
 import { GITHUB_HOST_PREFIX_RE, GIT_SUFFIX_RE } from '@/lib/repo-scope';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface SyncInstallationReposResult {
   synced: number;
@@ -143,7 +144,7 @@ export async function syncInstallationReposById(
   installationId: number
 ): Promise<SyncInstallationReposResult> {
   const installation = await db.query.githubInstallations.findFirst({
-    where: eq(githubInstallations.installationId, installationId),
+    where: sqlWhere(eq(githubInstallations.installationId, installationId)),
     columns: { id: true, installationId: true },
   });
   if (!installation) return { ...EMPTY_RESULT };

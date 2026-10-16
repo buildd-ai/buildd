@@ -8,7 +8,7 @@ const SHA = 'a'.repeat(40);
 mock.module('@buildd/core/db', () => ({
   db: { select: () => ({ from: () => ({ where: () => ({ limit: async () => (contextRow ? [contextRow] : []) }) }) }) },
 }));
-mock.module('@/lib/specs/outcome', () => ({ currentPrHeadSha: async () => 'b'.repeat(40) }));
+mock.module('@/lib/specs/outcome', () => ({ currentPrHeadSha: async () => 'b'.repeat(40), recordAuditedVerdict: async () => ({ ok: true, verdictId: 'v' }) }));
 mock.module('@/lib/specs/criterion-checks', () => ({
   dispatchCriterionChecks: async (o: unknown) => { dispatched.push(o); return { dispatched: 1 }; },
   handleCriterionCheckOutcome: async (id: string, ev: unknown) => { handled.push([id, ev]); return { recorded: true }; },

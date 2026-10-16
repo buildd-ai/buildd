@@ -70,6 +70,7 @@ import {
 } from '@/lib/semantic-refresh';
 import { GATE_SLUGS, fireGateEvent, fireDeferralEvent, fireRepeatGateEvent } from '@/lib/gate-ledger';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Operational update failures per PR head before a person is told. */
 export const MAX_REFRESH_FAILURES = 3;
@@ -210,13 +211,13 @@ export interface BaseRefreshDeps {
 // ── DB-bound defaults ─────────────────────────────────────────────────────────
 
 async function readStateFromDb(taskId: string): Promise<BaseRefreshState | null> {
-  const row = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId), columns: { context: true } });
+  const row = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { context: true } });
   const raw = (row?.context as Record<string, unknown> | null)?.baseRefresh;
   return raw && typeof raw === 'object' ? (raw as BaseRefreshState) : null;
 }
 
 async function missionOfFromDb(taskId: string): Promise<string | null> {
-  const row = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId), columns: { missionId: true } });
+  const row = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { missionId: true } });
   return row?.missionId ?? null;
 }
 

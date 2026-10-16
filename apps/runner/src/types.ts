@@ -348,6 +348,9 @@ export interface LocalWorker {
   // taxonomy to re-enable once the tightened scanner has a production track record.
   sandboxMountGap?: boolean;
   bwrapRetryPending?: boolean;  // Set when bwrap namespace denial fires mid-run; startSession will restart without sandbox
+  // Refused before spawn: no model credential for a Claude run (host-seat.ts
+  // claudeModelAuthMissing). Reported as an infra failure, paused by NO_MODEL_AUTH_PAUSE.
+  modelAuthMissing?: boolean;
   // Phase tracking (reasoning text → tool call grouping)
   phaseText: string | null;
   phaseStart: number | null;
@@ -621,6 +624,12 @@ export interface BuilddTask {
   mission?: {
     workingBranch?: string | null;
     integrationBranchEnabled?: boolean | null;
+    /** Task list (GET /api/tasks) only: what `buildd top` shows and why a task waits. */
+    id?: string;
+    title?: string;
+    isHeld?: boolean;
+    executor?: 'runner' | 'local';
+    taskCounts?: { done: number; total: number };
   } | null;
   // Role slug this task is routed to (e.g. "builder", "researcher") — drives
   // role-scoped runner behaviour such as pr-mutation-enforcement.ts.

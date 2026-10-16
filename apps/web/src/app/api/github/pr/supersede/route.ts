@@ -25,6 +25,7 @@ import { resolveWorkerByPrNumber } from '@/lib/pr-resolve';
 import { recordPrSupersession } from '@/lib/pr-supersession';
 import { canActOnWorkerPr } from '@/lib/worker-pr-access';
 import { agentRunMayActOnPr } from '@/lib/agent-capabilities/worker-pr';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // The acting run's task, as agentRunMayActOnPr reads it (same columns close_pr loads).
 const ACTING_TASK_COLUMNS = {
@@ -79,7 +80,7 @@ export async function POST(req: NextRequest) {
   let acting: any = null;
   if (workerId) {
     acting = await db.query.workers.findFirst({
-      where: eq(workers.id, workerId),
+      where: sqlWhere(eq(workers.id, workerId)),
       with: { workspace: true, task: { columns: ACTING_TASK_COLUMNS } },
     });
     if (!acting) return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
@@ -143,11 +144,13 @@ export async function POST(req: NextRequest) {
     reason,
     // The workflow kernel records this as T20's actor: the caller's own task for a task token.
     recordedBy: account.taskScope ? `agent:${account.taskScope.taskId}` : account.name,
+    // The control plane checks the API account against the workspace (never a name in the ledger).
+    caller: { account },
     ...(account.taskScope ? { targetRepoWithinWorkspace: true } : {}),
   });
 
   if (!result.ok) {
-    return NextResponse.json({ error: result.error }, { status: result.status });
+    return NextResponse.json(result.door?.body ?? { error: result.error }, { status: result.status, headers: result.door?.headers });
   }
 
   return NextResponse.json({

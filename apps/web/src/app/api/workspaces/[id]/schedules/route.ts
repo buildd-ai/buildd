@@ -9,6 +9,7 @@ import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace, type TaskScoped
 import { validateCronExpression, computeNextRunAt } from '@/lib/schedule-helpers';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { getWorkspaceTimezone } from '@/lib/team-timezone';
+import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 type AuthOk = { ok: true; userId?: string; accountId?: string };
 // status 401 = no valid principal at all (missing/invalid key, no session) — a
@@ -76,8 +77,8 @@ export async function GET(
   }
 
   const schedules = await db.query.taskSchedules.findMany({
-    where: eq(taskSchedules.workspaceId, id),
-    orderBy: (s, { desc }) => [desc(s.createdAt)],
+    where: sqlWhere(eq(taskSchedules.workspaceId, id)),
+    orderBy: sqlOrderByFn((s, { desc }) => [desc(s.createdAt)]),
   });
 
   return NextResponse.json({ schedules });

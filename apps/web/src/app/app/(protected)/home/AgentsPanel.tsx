@@ -3,11 +3,12 @@
  * are only ever now), the same number's 24h water level with idle-while-queued
  * shaded, and one line per busy slot naming the work. Each line wears its
  * slot's square, so the squares, the line and the list share one meaning.
+ * A day with no runner work collapses to the count and one quiet line.
  * Steer and Stop live on the task, not here; the per-slot lanes live on
  * Health › Runners. Model: lib/home-agents.ts. Server-safe (no hooks).
  */
 import Link from 'next/link';
-import { OccupancySparkline } from '@/components/fleet/OccupancySparkline';
+import { NO_RUNNER_WORK, OccupancySparkline } from '@/components/fleet/OccupancySparkline';
 import type { OccupancySeries } from '@/lib/fleet-occupancy';
 import { agentsSummary, elapsedLabel, type AgentSquare, type AgentsModel } from '@/lib/home-agents';
 import { idleStretchLabel, type IdleStretch } from '@/lib/idle-while-queued';
@@ -23,6 +24,7 @@ function Square({ kind, size = 'h-3 w-3', testId = 'agent-square' }: { kind: Age
 export function AgentsPanel({ model, occupancy, idle = [], idPrefix = 'home' }: { model: AgentsModel; occupancy?: OccupancySeries | null; idle?: readonly IdleStretch[]; idPrefix?: string }) {
   const longest = [...idle].sort((a, b) => (b.to - b.from) - (a.to - a.from))[0];
   const waiting = model.squares.filter(s => s === 'waiting').length;
+  const quiet = model.busy === 0 && occupancy?.summary.runner.peak === 0;
   return (
     <section data-testid="home-agents" aria-labelledby={`${idPrefix}-agents-h`} style={{ gridArea: 'agents' }} className="min-w-0">
       <div className="mb-2 flex items-baseline justify-between gap-3">
@@ -41,13 +43,24 @@ export function AgentsPanel({ model, occupancy, idle = [], idPrefix = 'home' }: 
           </span>
         )}
       </div>
-      {occupancy && <OccupancySparkline series={occupancy} shade={idle} />}
-      {longest && (
-        // Plain text under the chart's own caption: Runners › above is the way in.
-        <p data-testid="agents-idle" className="mt-0.5 flex items-center gap-1.5 font-mono text-[11px] text-text-muted">
-          <i aria-hidden="true" className="block h-2 w-2 shrink-0 bg-[var(--q-tint)] shadow-[inset_0_0_0_1px_var(--border-default)]" />
-          {idleStretchLabel(longest)}
+      {quiet ? (
+        // Nothing ran all day: one quiet row, no flat plot. A stretch where work
+        // waited is still worth saying; there is no chart for a swatch to key.
+        <p data-testid="agents-quiet" className="mt-2 flex flex-wrap gap-x-1.5 font-mono text-[11px] text-text-muted">
+          <span>{NO_RUNNER_WORK}</span>
+          {longest && <span data-testid="agents-idle">· {idleStretchLabel(longest)}</span>}
         </p>
+      ) : (
+        <>
+          {occupancy && <OccupancySparkline series={occupancy} shade={idle} />}
+          {longest && (
+            // Plain text under the chart's own caption: Runners › above is the way in.
+            <p data-testid="agents-idle" className="mt-0.5 flex items-center gap-1.5 font-mono text-[11px] text-text-muted">
+              <i aria-hidden="true" className="block h-2 w-2 shrink-0 bg-[var(--q-tint)] shadow-[inset_0_0_0_1px_var(--border-default)]" />
+              {idleStretchLabel(longest)}
+            </p>
+          )}
+        </>
       )}
       {model.lines.length > 0 && (
         <ul className="mt-3 divide-y divide-border-default border-t border-border-default">
@@ -60,7 +73,7 @@ export function AgentsPanel({ model, occupancy, idle = [], idPrefix = 'home' }: 
                   {l.mission && <span className="block truncate text-meta text-text-muted">{l.mission}</span>}
                 </span>
                 <span className="shrink-0 font-mono text-meta tabular-nums text-text-muted">
-                  {l.waiting && <span className="text-accent-text">needs you{l.elapsedMs != null ? ' · ' : ''}</span>}
+                  {l.waiting && <span className="text-accent-text">waiting on you{l.elapsedMs != null ? ' · ' : ''}</span>}
                   {l.elapsedMs != null ? elapsedLabel(l.elapsedMs) : ''}
                 </span>
               </>
@@ -75,7 +88,6 @@ export function AgentsPanel({ model, occupancy, idle = [], idPrefix = 'home' }: 
           })}
         </ul>
       )}
-      {model.total > 0 && model.lines.length === 0 && <p className="mt-3 text-meta text-text-muted">Every slot is free.</p>}
     </section>
   );
 }

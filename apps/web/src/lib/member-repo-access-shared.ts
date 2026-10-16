@@ -40,7 +40,7 @@ export function memberRepoAccessMessage(result: MemberRepoAccessResult): string 
       return `Your GitHub account does not have read access to ${repo}.`;
     case 'check_failed':
     default:
-      return `Buildd could not confirm your GitHub access to ${repo} right now. Try again shortly.`;
+      return `buildd could not confirm your GitHub access to ${repo} right now. Try again shortly.`;
   }
 }
 

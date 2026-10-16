@@ -2,6 +2,7 @@ import { eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { missions } from '@buildd/core/db/schema';
 import { BYPASS_MISSION_BUDGET_KEY } from '@/lib/bypass-flags';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Context key set by /api/tasks/[id]/start when forceOverride=true and the
@@ -37,7 +38,7 @@ export { BYPASS_MISSION_BUDGET_KEY };
  */
 export async function checkMissionBudgetExhausted(missionId: string): Promise<boolean> {
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, missionId),
+    where: sqlWhere(eq(missions.id, missionId)),
     columns: { id: true, status: true },
   });
   return mission?.status === 'budget_exhausted';

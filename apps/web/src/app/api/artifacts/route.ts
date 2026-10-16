@@ -7,6 +7,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserTeamIds } from '@/lib/team-access';
 import { appBaseUrl } from '@/lib/app-url';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 // GET /api/artifacts — list artifacts for the user's team(s)
 export async function GET(req: NextRequest) {
@@ -30,7 +31,7 @@ export async function GET(req: NextRequest) {
       // Deliberately outside the permission registry
       // (docs/specs/team-permissions.md, oddity 4).
       const ownerMembership = await db.query.teamMembers.findFirst({
-        where: and(eq(teamMembers.teamId, apiAccount.teamId), eq(teamMembers.role, 'owner')),
+        where: sqlWhere(and(eq(teamMembers.teamId, apiAccount.teamId), eq(teamMembers.role, 'owner'))),
         columns: { userId: true },
       });
       if (ownerMembership?.userId) {
@@ -53,7 +54,7 @@ export async function GET(req: NextRequest) {
 
     // Get all mission IDs for the user's teams
     const teamMissions = await db.query.missions.findMany({
-      where: inArray(missions.teamId, teamIds),
+      where: sqlWhere(inArray(missions.teamId, teamIds)),
       columns: { id: true },
     });
     const missionIds = teamMissions.map(m => m.id);
@@ -68,8 +69,8 @@ export async function GET(req: NextRequest) {
     }
 
     const results = await db.query.artifacts.findMany({
-      where,
-      orderBy: [desc(artifacts.createdAt)],
+      where: sqlWhere(where),
+      orderBy: sqlOrderBy([desc(artifacts.createdAt)]),
       limit,
       with: {
         mission: { columns: { id: true, title: true } },

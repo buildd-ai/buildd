@@ -34,6 +34,7 @@ import { githubApi } from '@/lib/github';
 import { normalizeRepoFullName, repoFullNameFromPrUrl } from '@/lib/repo-scope';
 import { installationIdForRepo } from '@/lib/workspace-installation';
 import type { CommandResult } from '@/lib/workflow/seam';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface RecordPrSupersessionParams {
   workerId: string;
@@ -48,6 +49,15 @@ export interface RecordPrSupersessionParams {
   reason: string;
   /** Actor label (user email, or `agent:<taskId>`) — free text, not a FK. */
   recordedBy: string;
+  /**
+   * Who the kernel command is for, as the door authenticated them: the person and/or the session
+   * object (never a bare id), so the control plane re-checks the same reach the door did, a grant
+   * session by its grant (`kernelPrincipalOf`). `'system'`: buildd's own sweeps, named by their
+   * `system:` actor (`recordedBy`); any other actor names no principal and is refused. Required.
+   */
+  caller: import('@/lib/workflow/kernel-client').KernelCaller | 'system';
+  /** The kernel transition's actor; defaults to `recordedBy` (`human:<id>` for a person). */
+  actor?: string;
   /**
    * Confine a cross-repo target to the workspace's own repo, dropping the
    * mission's other repos. Set for a per-task token, which reads only its
@@ -68,6 +78,18 @@ export interface RecordPrSupersessionError {
   ok: false;
   error: string;
   status: number;
+  /**
+   * When the kernel's host could not take the command: the door's whole answer (kernel-client.ts
+   * `doorErrorAnswer`: the outcome, the idempotency key, retryable, controlPlane), for the route to send as it is.
+   */
+  door?: { body: Record<string, unknown>; headers: Record<string, string> };
+}
+
+/** A door error from the kernel client, as this module's error result. */
+async function doorFailure(err: unknown): Promise<RecordPrSupersessionError> {
+  const { doorErrorAnswer } = await import('@/lib/workflow/kernel-client');
+  const a = doorErrorAnswer(err as Parameters<typeof doorErrorAnswer>[0]);
+  return { ok: false, error: String(a.body.error ?? 'control plane error'), status: a.status, door: { body: a.body, headers: a.headers } };
 }
 
 export type RecordPrSupersessionResult = RecordPrSupersessionOk | RecordPrSupersessionError;
@@ -95,12 +117,12 @@ export async function supersessionRepoScope(worker: {
   if (!worker.taskId) return out;
 
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, worker.taskId),
+    where: sqlWhere(eq(tasks.id, worker.taskId)),
     columns: { missionId: true },
   });
   if (!task?.missionId) return out;
   const siblings = await db.query.tasks.findMany({
-    where: eq(tasks.missionId, task.missionId),
+    where: sqlWhere(eq(tasks.missionId, task.missionId)),
     columns: { id: true },
     with: {
       workspace: { columns: { repo: true }, with: { githubRepo: { columns: { fullName: true } } } },
@@ -150,7 +172,7 @@ export async function recordPrSupersession(
   }
 
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.id, workerId),
+    where: sqlWhere(eq(workers.id, workerId)),
     with: {
       workspace: {
         with: { githubRepo: { with: { installation: true } } },
@@ -247,12 +269,14 @@ export async function recordPrSupersession(
     ? wsRepo.installation.installationId
     : await installationIdForRepo(closedRepo).catch(() => null);
   if (worker.workspaceId && closedInstallationId) {
-    const { recordSupersession } = await import('@/lib/workflow/seam');
+    const { recordSupersession, isDoorError, doorPrincipal } = await import('@/lib/workflow/kernel-client');
     const kernel = await recordSupersession({
       workspaceId: worker.workspaceId, repoFullName: closedRepo, prNumber: worker.prNumber, installationId: closedInstallationId,
-      actor: recordedBy, reason: reason.trim(),
+      actor: params.actor ?? recordedBy, reason: reason.trim(),
       target: { repoFullName: targetRepo, prNumber: supersedingPrNumber, url: supersedingPrUrl },
-    });
+    }, { principal: doorPrincipal(params.caller, params.actor ?? recordedBy) }).catch((err: unknown) => (isDoorError(err) ? err : Promise.reject(err)));
+    // The kernel's host did not take it: nothing was recorded here, and the legacy write must not run in its place.
+    if (isDoorError(kernel)) return doorFailure(kernel);
     if (kernel.handled) return kernelAnswer(kernel.result, worker.prNumber, ok);
   }
 
@@ -285,7 +309,7 @@ function kernelAnswer<T extends { ok: true }>(r: CommandResult, prNumber: number
   return { ok: false, error, status };
 }
 
-export type SimpleWriteResult = { ok: true } | { ok: false; error: string; status: number };
+export type SimpleWriteResult = { ok: true } | { ok: false; error: string; status: number; door?: RecordPrSupersessionError['door'] };
 
 /**
  * Declare a closed-unmerged PR abandoned: the work is deliberately not
@@ -300,6 +324,8 @@ export async function recordPrAbandonment(params: {
   recordedBy: string;
   /** Who decided: `human:<userId>` for a person; anything else is refused. */
   actor: string;
+  /** Who the kernel command is for, as the door authenticated them (see `recordPrSupersession`). Required. */
+  caller: import('@/lib/workflow/kernel-client').KernelCaller | 'system';
 }): Promise<SimpleWriteResult> {
   const reason = params.reason?.trim();
   if (!reason) return { ok: false, error: 'A reason is required to mark a PR abandoned', status: 400 };
@@ -308,7 +334,7 @@ export async function recordPrAbandonment(params: {
   if (!params.actor?.startsWith('human:')) return { ok: false, error: 'only a person can mark a PR abandoned', status: 403 };
 
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.id, params.workerId),
+    where: sqlWhere(eq(workers.id, params.workerId)),
     columns: { id: true, workspaceId: true, prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true, supersededByPrNumber: true },
   });
   if (!worker) return { ok: false, error: 'Worker not found', status: 404 };
@@ -320,11 +346,12 @@ export async function recordPrAbandonment(params: {
   const repo = repoFullNameFromPrUrl(worker.prUrl);
   const installationId = repo ? await installationIdForRepo(repo).catch(() => null) : null;
   if (repo && worker.prNumber && worker.workspaceId && installationId) {
-    const { abandonDelivery } = await import('@/lib/workflow/seam');
+    const { abandonDelivery, isDoorError, doorPrincipal } = await import('@/lib/workflow/kernel-client');
     const kernel = await abandonDelivery({
       workspaceId: worker.workspaceId, repoFullName: repo, prNumber: worker.prNumber, installationId,
       actor: params.actor, reason,
-    });
+    }, { principal: doorPrincipal(params.caller, params.actor) }).catch((err: unknown) => (isDoorError(err) ? err : Promise.reject(err)));
+    if (isDoorError(kernel)) return doorFailure(kernel);
     if (kernel.handled) return kernelAnswer(kernel.result, worker.prNumber, { ok: true as const });
   }
 
@@ -354,13 +381,16 @@ export async function dismissSupersessionSuggestion(params: {
   candidatePrUrl: string;
 }): Promise<SimpleWriteResult> {
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.id, params.workerId),
+    where: sqlWhere(eq(workers.id, params.workerId)),
     columns: { id: true, prUrl: true, supersessionScan: true },
   });
   if (!worker?.prUrl) return { ok: false, error: 'Worker not found', status: 404 };
   const prev: SupersessionScan | null = worker.supersessionScan ?? null;
   const dismissed = [...new Set([...(prev?.dismissed ?? []), params.candidatePrUrl])];
+  // Keep the rest of the scan (deferral count, judged verdicts, last attempt): dismissing one
+  // candidate must not reset the deferral cap or throw away verdicts already paid for.
   const next: SupersessionScan = {
+    ...(prev ?? {}),
     scannedAt: prev?.scannedAt ?? new Date().toISOString(),
     candidatesChecked: prev?.candidatesChecked ?? 0,
     suggestion: prev?.suggestion?.prUrl === params.candidatePrUrl ? null : (prev?.suggestion ?? null),

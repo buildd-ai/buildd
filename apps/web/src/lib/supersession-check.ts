@@ -19,6 +19,7 @@ import { db } from '@buildd/core/db';
 import { tasks, workers } from '@buildd/core/db/schema';
 import { and, eq, ne, inArray } from 'drizzle-orm';
 import { splitDiffStats, type SplitDiffStats } from '@buildd/shared';
+import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const DEFAULT_SUPERSESSION_DRIFT_RATIO = 10;
 
@@ -256,7 +257,7 @@ export async function findSuccessorPr(
   let rootTaskId = taskId;
   for (let depth = 0; depth < 6; depth++) {
     const t = await db.query.tasks.findFirst({
-      where: eq(tasks.id, rootTaskId),
+      where: sqlWhere(eq(tasks.id, rootTaskId)),
       columns: { parentTaskId: true, subjectPrNumber: true },
     });
     if (!t?.parentTaskId) break;
@@ -265,7 +266,7 @@ export async function findSuccessorPr(
 
   // Get the root task's subject PR number
   const rootTask = await db.query.tasks.findFirst({
-    where: eq(tasks.id, rootTaskId),
+    where: sqlWhere(eq(tasks.id, rootTaskId)),
     columns: { subjectPrNumber: true },
   });
   const subjectPrNumber = rootTask?.subjectPrNumber ?? null;
@@ -274,10 +275,10 @@ export async function findSuccessorPr(
 
   // Find sibling tasks that share the same subject anchor
   const siblings = await db.query.tasks.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.workspaceId, workspaceId),
       eq(tasks.subjectPrNumber, subjectPrNumber),
-    ),
+    )),
     columns: { id: true },
   });
 
@@ -286,14 +287,14 @@ export async function findSuccessorPr(
 
   // Find merged workers for those tasks whose PR ≠ the conflicted PR
   const mergedWorker = await db.query.workers.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(workers.workspaceId, workspaceId),
       inArray(workers.taskId, siblingIds),
       eq(workers.prLifecycleStatus, 'merged'),
       ne(workers.prNumber, prNumber),
-    ),
+    )),
     columns: { prNumber: true },
-    orderBy: (w, { desc }) => [desc(w.mergedAt)],
+    orderBy: sqlOrderByFn((w, { desc }) => [desc(w.mergedAt)]),
   });
 
   return mergedWorker?.prNumber ?? null;

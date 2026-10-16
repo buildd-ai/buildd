@@ -77,8 +77,10 @@ export interface MergeReadinessOutcome {
   changedFiles?: string[];
 }
 
-const DRIZZLE_META_RE = /(^|\/)drizzle\/(.+\/)?meta\/(_journal\.json|[^/]*_snapshot\.json)$/;
-const MIGRATION_SQL_RE = /(^|\/)drizzle\/(.+\/)?\d+_[^/]*\.sql$/;
+// Both layouts: the legacy meta/ journal and snapshots and numbered files, and
+// drizzle v1's <YYYYMMDDHHMMSS>_name/ folders holding snapshot.json and migration.sql.
+const DRIZZLE_META_RE = /(^|\/)drizzle\/(.+\/)?(meta\/(_journal\.json|[^/]*_snapshot\.json)|\d{14}_[^/]+\/snapshot\.json)$/;
+const MIGRATION_SQL_RE = /(^|\/)drizzle\/(.+\/)?(\d+_[^/]*\.sql|\d{14}_[^/]+\/migration\.sql)$/;
 
 export function isDrizzleMetaFile(path: string): boolean {
   return DRIZZLE_META_RE.test(path);

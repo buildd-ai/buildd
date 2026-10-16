@@ -18,17 +18,17 @@ const TIER_OPTIONS: { value: MergePolicyTier | 'inherit'; label: string; hint: s
   },
   {
     value: 'auto-threshold',
-    label: 'Auto-Threshold',
+    label: 'Auto-merge',
     hint: 'Merge when CI passes and the PR is within the size limit.',
   },
   {
     value: 'agent-review',
-    label: 'Agent Review',
+    label: 'Agent reviews',
     hint: 'An agent reviewer approves the PR before it merges.',
   },
   {
     value: 'human',
-    label: 'Human Gate',
+    label: 'You approve',
     hint: 'A person approves and merges every PR.',
   },
 ];
@@ -100,7 +100,7 @@ export default function MissionPolicyDrawer({
   }
 
   return (
-    <Sheet open onClose={onCancel} title="Mission Merge Policy" trapFocus testId="mission-policy-sheet">
+    <Sheet open onClose={onCancel} title="Merge policy" trapFocus testId="mission-policy-sheet">
       <div className="space-y-4">
         <p className="text-xs text-text-muted truncate">{missionTitle}</p>
 
@@ -206,8 +206,7 @@ export default function MissionPolicyDrawer({
 function DetectedPathsNote() {
   return (
     <p className="text-xs text-text-muted leading-relaxed" data-testid="mission-policy-detected-paths-note">
-      The workspace risk-class policy sets protected paths from the repo. To refresh them, use
-      Re-scan repo on the workspace Merge Policy page.
+      Protected paths come from the repo. To update them, use Re-scan repo in workspace settings.
     </p>
   );
 }

@@ -12,6 +12,18 @@ describe('detectArchetype', () => {
     expect(detectArchetype(input)).toBe('gated');
   });
 
+  it('a frozen-candidate workspace is gated even when its prod branch is the default branch', () => {
+    const input: ArchetypeInput = {
+      name: 'app',
+      releaseConfig: {
+        enabled: true, strategy: 'workflow_dispatch', workflowFile: 'release.yml', ref: 'dev', prodBranch: 'main',
+        candidate: { branches: ['release/v*'], sourceBranch: 'dev', authors: ['github-actions[bot]'] },
+      },
+      gitConfig: { defaultBranch: 'main', requiresPR: false, branchingStrategy: 'feature', commitStyle: 'conventional', autoCreatePR: true, useClaudeMd: true },
+    };
+    expect(detectArchetype(input)).toBe('gated');
+  });
+
   it('trunk-shaped (requiresPR=false, no releaseConfig) → continuous', () => {
     const input: ArchetypeInput = {
       name: 'trunk-ops',

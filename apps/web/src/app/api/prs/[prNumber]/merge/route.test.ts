@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
 const mockGetCurrentUser = mock(() => null as any);
@@ -30,6 +30,25 @@ const mockFireGateEvent = mock((_input: any) => {});
 // delivery, so every legacy merge case below runs unchanged.
 const mockLandThroughKernel = mock(async (..._a: any[]): Promise<any> => null);
 const mockKernelLandingView = mock(async (..._a: any[]): Promise<any> => null);
+// The visual review half of the mission-PR gate (lib/ready-to-merge.ts). Default: passed on this head.
+let visualReviewOwed = false;
+// §6 mission deliveries: a mission PR merge is recorded with the kernel, which
+// rotates, settles and only then retires the branch. The door just records it.
+const mockRecordMissionPrMerged = mock((..._args: any[]) => Promise.resolve({ recorded: true, reason: 'merged' }));
+mock.module('@/lib/mission-epoch-door', () => ({
+  recordMissionPrMerged: (...args: any[]) => mockRecordMissionPrMerged(...args),
+  ensureMissionWritableBranch: async () => null,
+  bindMissionDeliveryPr: async () => {},
+  reconcileMissionDeliveries: async () => [],
+}));
+
+mock.module('@/lib/workflow/visual-review-state-load', () => ({
+  getMissionVisualReviewState: async () => visualReviewOwed
+    ? { status: 'needed', pendingVerification: true, staleEvidence: false, nextActor: 'system', branch: { headSha: 'abc12345', integrationPr: { number: 9, stage: 'ready' } } }
+    : { status: 'passed', pendingVerification: false, staleEvidence: false, nextActor: 'none', branch: { headSha: 'abc12345', integrationPr: { number: 9, stage: 'ready' } } },
+}));
+mock.module('@/lib/workflow/visual-review-schedule-run', () => ({ scheduleMissionVisualReview: async () => null }));
+
 mock.module('@/lib/workflow/landing', () => ({
   landThroughKernel: mockLandThroughKernel,
   kernelLandingView: mockKernelLandingView,
@@ -561,7 +580,26 @@ describe('POST /api/prs/[prNumber]/merge — mission-PR branch-lifecycle gate (P
     expect(mockMergePullRequest).not.toHaveBeenCalled();
   });
 
-  it('merges the mission PR and deletes the integration branch once every task PR has landed', async () => {
+  it('refuses to merge the mission PR while its visual review is owed, and merges nothing', async () => {
+    mockTasksFindMany.mockResolvedValue([
+      { id: 't-2', title: 'Task 2', status: 'completed', mode: 'execution', taskClass: 'work' },
+    ]);
+    mockWorkersFindMany.mockResolvedValueOnce([missionPrWorker]).mockResolvedValueOnce([
+      { taskId: 't-2', prUrl: 'u2', prNumber: 7, prBaseRef: BRANCH, mergedAt: new Date(), prLifecycleStatus: 'merged', startedAt: new Date(), createdAt: new Date() },
+    ]);
+    visualReviewOwed = true;
+    try {
+      const [req, ctx] = makeRequest();
+      const res = await POST(req, ctx);
+      expect(res.status).toBe(409);
+      expect((await res.json()).error).toContain('visual review');
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    } finally {
+      visualReviewOwed = false;
+    }
+  });
+
+  it('merges the mission PR and records the merged delivery with the kernel, which retires the branch after settlement', async () => {
     mockTasksFindMany.mockResolvedValue([
       { id: 't-2', title: 'Task 2', status: 'completed', mode: 'execution', taskClass: 'work' },
     ]);
@@ -574,7 +612,9 @@ describe('POST /api/prs/[prNumber]/merge — mission-PR branch-lifecycle gate (P
 
     expect(res.status).toBe(200);
     expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
-    expect(mockGithubApi).toHaveBeenCalledWith(
+    // The merge is recorded with the kernel; the branch is retired only after settlement.
+    expect(mockRecordMissionPrMerged).toHaveBeenCalledWith(expect.anything(), workspace.githubRepo.installation.installationId, workspace.githubRepo.fullName, expect.any(Number));
+    expect(mockGithubApi).not.toHaveBeenCalledWith(
       workspace.githubRepo.installation.installationId,
       `/repos/${workspace.githubRepo.fullName}/git/refs/heads/${encodeURIComponent(BRANCH)}`,
       expect.objectContaining({ method: 'DELETE' }),
@@ -914,6 +954,14 @@ describe('POST /api/prs/[prNumber]/merge — red CI and the landing function', (
     expect(mockLandPr.mock.calls[0]![0].actor).toEqual({ kind: 'human', userId: 'u-1' });
   });
 
+  it('enforce: the door submits as the signed-in person, never as the system', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue(enforceWorkspace);
+    const [req, ctx] = makeRequest('42');
+    await POST(req, ctx);
+    // The principal is what both hosts check membership against: a system principal would skip that.
+    expect(mockLandPr.mock.calls[0]![0].principal).toEqual({ kind: 'user', id: 'u-1' });
+  });
+
   it('shadow/off: red CI on the live head is refused even with override (no door is exempt)', async () => {
     for (const gitConfig of [{}, { landing: { mode: 'off' } }]) {
       mockWorkspacesFindFirst.mockResolvedValue({ ...workspace, gitConfig });
@@ -1225,6 +1273,53 @@ describe('POST /api/prs/[prNumber]/merge — kernel-owned PR (Slice C)', () => {
     expect(res.status).toBe(409);
     expect(await res.json()).toMatchObject({ stale: true, current: { version: 8 } });
     expect(recordedFacts).toEqual([]);
+  });
+
+  describe('EXECUTION_MODE=own (workflow-kernel-library.md §3)', () => {
+    const saved: Record<string, string | undefined> = {};
+    const realFetch = globalThis.fetch;
+    let submitted: Array<{ url: string; body: Record<string, unknown> }> = [];
+    beforeEach(async () => {
+      for (const k of ['EXECUTION_MODE', 'KERNEL_COMMAND_SECRET', 'KERNEL_COMMAND_BUDGET_MS']) saved[k] = process.env[k];
+      process.env.EXECUTION_MODE = 'own';
+      process.env.KERNEL_COMMAND_SECRET = 'k1:test';
+      process.env.KERNEL_COMMAND_BUDGET_MS = '300';
+      submitted = [];
+      (await import('@/lib/workflow/kernel-client')).resetKernelModeCache();
+    });
+    afterEach(() => {
+      globalThis.fetch = realFetch;
+      for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    });
+
+    it('AC-9: the route submits a landing command to the control plane and answers from it; the web host applies nothing', async () => {
+      globalThis.fetch = (async (url: string, init: RequestInit) => {
+        submitted.push({ url: String(url), body: JSON.parse(String(init.body)) });
+        return Response.json({ v: 1, op: 'land', idempotencyKey: 'k', result: kernelMerged, delivery: { id: 'd-1', version: 10 }, host: 'control-plane', replayed: false });
+      }) as unknown as typeof fetch;
+      const [req, ctx] = makeRequest('42', { version: 7 });
+      const res = await POST(req, ctx);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ ok: true, merged: true });
+      expect(submitted).toHaveLength(1);
+      expect(submitted[0].url).toBe('https://control-plane.buildd.dev/v1/commands');
+      expect(submitted[0].body).toMatchObject({ v: 1, op: 'land', principal: { kind: 'user', id: 'u-1' }, input: { prNumber: 42, headSha: 'head-A', door: 'dashboard', actor: 'human:u-1', expectedVersion: 7 } });
+      expect(mockLandThroughKernel).not.toHaveBeenCalled();
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it('AC-12: the control plane unreachable → 503, retryable, naming the control plane; nothing merged here', async () => {
+      globalThis.fetch = (async () => { throw Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) }); }) as unknown as typeof fetch;
+      const [req, ctx] = makeRequest('42', { version: 7 });
+      const res = await POST(req, ctx);
+      expect(res.status).toBe(503);
+      const body = await res.json();
+      expect(body).toMatchObject({ code: 'control_plane_unavailable', retryable: true, controlPlane: true, outcome: 'not_applied', idempotencyKey: expect.stringMatching(/^land:/) });
+      expect(body.error).toContain('control plane');
+      expect(mockLandThroughKernel).not.toHaveBeenCalled();
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+      expect(recordedFacts).toEqual([]);
+    });
   });
 
   it('a refresh the kernel queued is accepted work (202), not a failure', async () => {

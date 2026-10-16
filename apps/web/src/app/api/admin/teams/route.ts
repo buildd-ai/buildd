@@ -6,7 +6,7 @@ import { viewTeams } from '@/lib/admin/tenant-privacy';
 /**
  * GET /api/admin/teams — platform owner only (404 otherwise).
  *
- * Every team with its workspaces, so the admin app can show names where the
+ * Every team with its workspaces, so an operator client can show names where the
  * other reports carry only ids. Names for the owner's own teams (`own: true`);
  * every other team and its workspaces by pseudonym.
  */

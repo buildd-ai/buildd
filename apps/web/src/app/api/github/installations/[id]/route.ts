@@ -5,6 +5,7 @@ import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getInstallationAccessForUser } from '@/lib/github-installation-access';
 import { isUuid } from '@/lib/uuid';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // DELETE /api/github/installations/[id] - Disconnect an installation
 export async function DELETE(
@@ -27,7 +28,7 @@ export async function DELETE(
 
   try {
     const installation = await db.query.githubInstallations.findFirst({
-      where: eq(githubInstallations.id, id),
+      where: sqlWhere(eq(githubInstallations.id, id)),
     });
 
     if (!installation) {

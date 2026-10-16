@@ -12,6 +12,8 @@ import * as missionHelpers from '@buildd/core/mission-helpers';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { summarizeMissionForCard, type MissionCardRow } from '@/lib/mission-card-view';
 import { projectMissionDelivery } from '@/lib/delivery-projection';
+import { loadCardVisualReviews } from '@/lib/mission-card-visual-reviews';
+import { missionDeliveryFacts } from '@/lib/mission-delivery-facts';
 import { taskRowsStripProjection } from '@/lib/mission-strip-order';
 import { MissionGrid, type PortfolioRow } from './MissionGrid';
 import NewMissionSheet from './NewMissionSheet';
@@ -23,6 +25,7 @@ import {
   decodeCompletedCursor,
   paginateCompletedMissions,
 } from '@/lib/missions-query';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -83,7 +86,7 @@ export default async function MissionsPage({
     // needs the account ids, so it genuinely follows the accounts read.
     (async () => {
       const teamAccounts = await db.query.accounts.findMany({
-        where: inArray(accounts.teamId, scopedTeamIds),
+        where: sqlWhere(inArray(accounts.teamId, scopedTeamIds)),
         columns: { id: true, maxConcurrentWorkers: true },
       });
       const max = teamAccounts.reduce((sum, a) => sum + a.maxConcurrentWorkers, 0);
@@ -129,6 +132,11 @@ export default async function MissionsPage({
     if (mission) mission.escalationGateVerdict = verdict;
   }
 
+  // The visual review as the mission page reads it, for each mission whose
+  // audit (or a fix from it) is still open: the card names the same state and
+  // cause (spec 8e137fdb I-1, I-5). Finished rounds say nothing a card shows.
+  const visualReviews = await loadCardVisualReviews(allMissions as Parameters<typeof loadCardVisualReviews>[0]);
+
   // One row per mission from the shared delivery projection — the same one
   // Home reads (lib/delivery-projection.ts), so a mission's chip, landed n/m
   // and next milestone read the same on both.
@@ -139,6 +147,7 @@ export default async function MissionsPage({
       id: obj.id, title: obj.title, status: obj.status, href: `/app/missions/${obj.id}`,
       isHeld: obj.isHeld ?? false, integrationBranch: obj.integrationBranchEnabled === true,
       tasks: obj.tasks ?? [],
+      ...missionDeliveryFacts(obj, visualReviews.get(obj.id), now),
     }, missionHelpers);
     const tasks = (obj.tasks ?? []) as Array<{ updatedAt?: Date | string | null; workers?: Array<{ status: string }> }>;
     const lastAdvancedAt = Math.max(
@@ -178,12 +187,15 @@ export default async function MissionsPage({
           Missions
         </h1>
         <div className="ml-auto flex flex-wrap items-center gap-3">
-          {/* Releases left the primary nav; this is its door. */}
+          {/* Releases and specs have no nav item; these are their doors. */}
           {planEnabled && (
             <Link href="/app/missions/plan" data-testid="missions-plan-link" className="btn btn-quiet h-11 md:h-8">
               Plan ›
             </Link>
           )}
+          <Link href="/app/specs" data-testid="missions-specs-link" className="btn btn-quiet h-11 md:h-8">
+            Specs
+          </Link>
           <Link href="/app/releases" data-testid="missions-releases-link" className="btn btn-quiet h-11 md:h-8">
             Releases
           </Link>

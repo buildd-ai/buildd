@@ -12,6 +12,8 @@ import {
 } from './runner-heartbeats-shared';
 import { heartbeatAccountIds, type RunnerHeartbeatLike, type RunnerWorkerLike } from './runner-display';
 import { RUNNER_STALE_CUTOFF_MS, resolveWorkspaceExecutor, runnerFleetIdentity } from '@buildd/shared';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import { liveLinkCondition } from './granted-links';
 
 // Pure helpers and types live in ./runner-heartbeats-shared so client
 // components can import them without pulling `@buildd/core/db` (and its
@@ -43,8 +45,8 @@ export async function getRunnerHeartbeats(
   // "Not dead" window — see the window table in @buildd/shared runner-liveness.
   const cutoff = new Date(Date.now() - RUNNER_STALE_CUTOFF_MS);
   const hbs = await db.query.workerHeartbeats.findMany({
-    where: gt(workerHeartbeats.lastHeartbeatAt, cutoff),
-    orderBy: desc(workerHeartbeats.lastHeartbeatAt),
+    where: sqlWhere(gt(workerHeartbeats.lastHeartbeatAt, cutoff)),
+    orderBy: sqlOrderBy(desc(workerHeartbeats.lastHeartbeatAt)),
     with: { account: { columns: { name: true, teamId: true } } },
   });
   if (hbs.length === 0) return [];
@@ -58,6 +60,7 @@ export async function getRunnerHeartbeats(
       .where(and(
         inArray(accountWorkspaces.accountId, hbAccountIds),
         inArray(accountWorkspaces.workspaceId, workspaceIds),
+        liveLinkCondition(),
       )),
     db
       .selectDistinct({ accountId: workers.accountId })
@@ -164,7 +167,7 @@ export async function loadBrowserRunnerHeartbeats(
     const links = await db
       .select({ accountId: accountWorkspaces.accountId, canClaim: accountWorkspaces.canClaim, canCreate: accountWorkspaces.canCreate })
       .from(accountWorkspaces)
-      .where(and(inArray(accountWorkspaces.accountId, accountIds), eq(accountWorkspaces.workspaceId, workspace.id)));
+      .where(and(inArray(accountWorkspaces.accountId, accountIds), eq(accountWorkspaces.workspaceId, workspace.id), liveLinkCondition()));
     const linkOf = new Map(links.map(l => [l.accountId, l]));
     return hbs.map(h => ({
       accountId: h.accountId,

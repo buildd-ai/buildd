@@ -42,7 +42,7 @@ describe('team-members fixture controls', () => {
     expect(v.count('Transfer ownership')).toBe(2);
     expect(v.count('Remove')).toBe(2);
     expect(v.count('Delete team')).toBe(1);
-    expect(v.count('+ Invite someone')).toBe(1);
+    expect(v.count('+ Invite member')).toBe(1);
     expect(v.leave.disabled).toBe(true);
     expect(v.text).toContain('You are the only owner.');
   });
@@ -76,7 +76,7 @@ describe('team-members fixture controls', () => {
     expect(v.count('Remove')).toBe(1);
     expect(v.count('Delete team')).toBe(0);
     expect(v.count('Rename')).toBe(1);
-    expect(v.count('+ Invite someone')).toBe(1);
+    expect(v.count('+ Invite member')).toBe(1);
     expect(v.leave.disabled).toBe(false);
   });
 
@@ -86,7 +86,35 @@ describe('team-members fixture controls', () => {
     expect(v.count('Transfer ownership')).toBe(0);
     expect(v.count('Remove')).toBe(0);
     expect(v.count('Rename')).toBe(0);
-    expect(v.count('+ Invite someone')).toBe(0);
+    expect(v.count('+ Invite member')).toBe(0);
     expect(v.leave.disabled).toBe(false);
+  });
+});
+
+// Settings spec R-10 / AC-11: a personal team's slug is an internal id, so it is
+// shown (and editable) only for a shared team.
+describe('team slug', () => {
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  afterAll(() => act(() => root.unmount()));
+
+  async function renderTeam(isPersonal: boolean) {
+    const props = teamMembersFixtureProps('owner');
+    const team = { ...props.team, slug: isPersonal ? 'personal-0000' : props.team.slug };
+    await act(async () => { root.render(<TeamDetailClient key={String(isPersonal)} {...props} team={team} isPersonal={isPersonal} />); });
+    return container.textContent ?? '';
+  }
+
+  it('is hidden for a personal team, including when renaming', async () => {
+    expect(await renderTeam(true)).not.toContain('personal-0000');
+    const rename = [...container.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Rename') as HTMLButtonElement;
+    await act(async () => { rename.click(); });
+    expect(container.querySelector('#team-slug')).toBeNull();
+    expect(container.querySelector('#team-name')).not.toBeNull();
+  });
+
+  it('is shown for a shared team', async () => {
+    expect(await renderTeam(false)).toContain('acme-robotics');
   });
 });

@@ -14,7 +14,7 @@
 
 import { db } from '@buildd/core/db';
 import { accounts, backendPauses, tenantBudgets } from '@buildd/core/db/schema';
-import { and, desc, eq, gt, lt } from 'drizzle-orm';
+import { and, desc, eq, gt, isNull, lt, or } from 'drizzle-orm';
 import {
   BACKEND_REGISTRY,
   DISPATCHABLE_BACKENDS,
@@ -28,6 +28,7 @@ import { hasCodexCredential } from './codex-credential';
 import { hasOpenAiApiKey } from './openai-credential';
 import { hasOpenAiCompatibleAgentEndpoint } from '@buildd/core/agent-endpoint';
 import { effectiveBudgetResetAt, isBudgetExhausted } from './budget-errors';
+import { sqlOrderBy, sqlWhere, sqlWhereFn } from '@buildd/core/db/relational-sql';
 
 export type PauseReason = 'budget' | 'auth';
 
@@ -44,6 +45,14 @@ export interface BackendScope {
    * claiming account and must not call an account-scoped credential absent.
    */
   anyAccount?: boolean;
+  /**
+   * The caller runner's seat key (./runner-seat-wall runnerSeatKey). When set,
+   * a pause recorded for ANOTHER runner's own login is not this caller's wall
+   * and is ignored; shared pauses (NULL seat key) still apply. Unset: every
+   * pause applies, seat-scoped ones included, which is the fail-safe for any
+   * reader that cannot say which login it runs on.
+   */
+  seatKey?: string | null;
 }
 
 /** How long an expired pause row is kept before the next write prunes it. */
@@ -62,6 +71,8 @@ export async function recordBackendPause(opts: {
   resetsAt: Date;
   reason?: PauseReason;
   sourceWorkerId?: string | null;
+  /** Set only for a wall on one runner's own machine login (./runner-seat-wall). */
+  seatKey?: string | null;
 }): Promise<void> {
   const backend = (opts.backend || 'claude') as AgentBackend;
   if (!opts.scope.teamId || !BACKEND_REGISTRY[backend as BackendId]?.dispatchable) return;
@@ -73,6 +84,7 @@ export async function recordBackendPause(opts: {
       reason: opts.reason ?? 'budget',
       resetsAt: opts.resetsAt,
       sourceWorkerId: opts.sourceWorkerId ?? null,
+      seatKey: opts.seatKey ?? null,
     });
   } catch (err) {
     console.warn(`[backend-failover] Failed to record ${backend} pause for team ${opts.scope.teamId}:`, err);
@@ -97,6 +109,16 @@ export interface ActivePause {
   backend: AgentBackend;
   resetsAt: Date;
   reason: string;
+  /** Non-null: the wall belongs to one runner's own login, the caller's own (see BackendScope.seatKey). */
+  seatKey: string | null;
+}
+
+/**
+ * The seat predicate for a pause read: shared rows, plus the caller's own
+ * seat-scoped ones. No predicate when the caller has no seat key.
+ */
+export function pauseSeatScope(seatKey: string | null | undefined) {
+  return seatKey ? or(isNull(backendPauses.seatKey), eq(backendPauses.seatKey, seatKey)) : undefined;
 }
 
 /**
@@ -113,13 +135,20 @@ export async function getActiveBackendPauses(scope: BackendScope): Promise<Map<A
   if (scope.teamId) {
     try {
       const rows = await db.query.backendPauses.findMany({
-        where: and(eq(backendPauses.teamId, scope.teamId), gt(backendPauses.resetsAt, now)),
-        orderBy: [desc(backendPauses.resetsAt)],
-        columns: { backend: true, resetsAt: true, reason: true },
+        where: sqlWhere(and(
+          eq(backendPauses.teamId, scope.teamId),
+          gt(backendPauses.resetsAt, now),
+          pauseSeatScope(scope.seatKey),
+        )),
+        orderBy: sqlOrderBy([desc(backendPauses.resetsAt)]),
+        columns: { backend: true, resetsAt: true, reason: true, seatKey: true },
       });
       for (const row of rows) {
+        const rowSeat = (row as { seatKey?: string | null }).seatKey ?? null;
+        // Re-check the seat scoping in code so a loose query cannot widen it.
+        if (rowSeat && scope.seatKey && rowSeat !== scope.seatKey) continue;
         const backend = row.backend as AgentBackend;
-        if (!out.has(backend)) out.set(backend, { backend, resetsAt: row.resetsAt, reason: row.reason });
+        if (!out.has(backend)) out.set(backend, { backend, resetsAt: row.resetsAt, reason: row.reason, seatKey: rowSeat });
       }
     } catch (err) {
       console.warn('[backend-failover] Pause lookup failed:', err);
@@ -132,7 +161,7 @@ export async function getActiveBackendPauses(scope: BackendScope): Promise<Map<A
   if (claudeLegacyReset) {
     const existing = out.get('claude');
     if (!existing || claudeLegacyReset > existing.resetsAt) {
-      out.set('claude', { backend: 'claude', resetsAt: claudeLegacyReset, reason: 'budget' });
+      out.set('claude', { backend: 'claude', resetsAt: claudeLegacyReset, reason: 'budget', seatKey: null });
     }
   }
 
@@ -143,7 +172,7 @@ async function legacyClaudePauseResetsAt(scope: BackendScope, now: Date): Promis
   try {
     if (scope.tenantId && scope.teamId) {
       const row = await db.query.tenantBudgets.findFirst({
-        where: and(eq(tenantBudgets.tenantId, scope.tenantId), eq(tenantBudgets.teamId, scope.teamId)),
+        where: sqlWhere(and(eq(tenantBudgets.tenantId, scope.tenantId), eq(tenantBudgets.teamId, scope.teamId))),
         columns: { budgetResetsAt: true },
       });
       if (row?.budgetResetsAt && new Date(row.budgetResetsAt) > now) return new Date(row.budgetResetsAt);
@@ -151,7 +180,7 @@ async function legacyClaudePauseResetsAt(scope: BackendScope, now: Date): Promis
     }
     if (scope.accountId) {
       const row = await db.query.accounts.findFirst({
-        where: eq(accounts.id, scope.accountId),
+        where: sqlWhere(eq(accounts.id, scope.accountId)),
         columns: { budgetExhaustedAt: true, budgetResetsAt: true },
       });
       if (row?.budgetExhaustedAt && isBudgetExhausted(row.budgetExhaustedAt, row.budgetResetsAt, now)) {
@@ -246,7 +275,7 @@ export async function teamEnabledBackends(teamId?: string | null): Promise<Agent
   if (!teamId) return null;
   try {
     const team = await db.query.teams.findFirst({
-      where: (t, { eq: teq }) => teq(t.id, teamId),
+      where: { RAW: sqlWhereFn((t, { eq: teq }) => teq(t.id, teamId)) },
       columns: { enabledBackends: true },
     });
     const enabled = (team as { enabledBackends?: AgentBackend[] | null } | undefined)?.enabledBackends;

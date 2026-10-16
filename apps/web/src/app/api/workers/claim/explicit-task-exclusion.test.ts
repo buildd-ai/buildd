@@ -106,6 +106,8 @@ describe('classifyExplicitTaskExclusion', () => {
     const r = classifyExplicitTaskExclusion(probe({ startAt: new Date('2026-09-28T00:00:00Z') }), NOW);
     expect(r.code).toBe('deferred');
     expect(r.detail).toContain('2026-09-28T00:00:00.000Z');
+    // Structured too, so a runner shows it in local time without parsing prose.
+    expect(r.until).toBe('2026-09-28T00:00:00.000Z');
   });
 
   it('a held mission → mission_held, and points at the override', () => {
@@ -119,6 +121,7 @@ describe('classifyExplicitTaskExclusion', () => {
     const cases: Array<[keyof ExplicitTaskProbe['gates'], string]> = [
       ['activeWorker', 'active_worker'],
       ['taskHeld', 'task_held'],
+      ['taskReserved', 'task_reserved'],
       ['missionHeld', 'mission_held'],
       ['missionLocal', 'mission_local'],
       ['deps', 'deps_blocked'],
@@ -165,6 +168,12 @@ describe('classifyExplicitTaskExclusion', () => {
     expect(r.code).toBe('workspace_paused');
     expect(r.detail).toContain(`New starts in this workspace are paused until ${new Date(NOW.getTime() + 2 * 60 * 60 * 1000).toISOString()}.`);
     expect(r.detail).toContain('Health');
+    expect(r.until).toBe(new Date(NOW.getTime() + 2 * 60 * 60 * 1000).toISOString());
+  });
+
+  it('an exclusion with no known end carries no until', () => {
+    expect(classifyExplicitTaskExclusion(probe({ gates: { workspacePaused: false } }), NOW).until).toBeUndefined();
+    expect(classifyExplicitTaskExclusion(probe({ gates: { missionLocal: false } }), NOW).until).toBeUndefined();
   });
 
   it('a held mission outranks the local executor (held is the pause)', () => {

@@ -20,6 +20,7 @@ import type { ChatObjectOwner, ChatReach } from './in-process-api';
 import { isStandardWorkspace } from '../workspace-data-class';
 import type { OwnedKind } from './reach-rules';
 import { filterWorkspacesByMemberRepoAccess } from '../member-repo-access';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Sensitive by either marker: the column, or the older gitConfig flag. Shared in ../workspace-data-class. */
 export { isStandardWorkspace };
@@ -35,7 +36,7 @@ async function one<T>(rows: Promise<T[]>): Promise<T | null> {
 export const OWNER_LOOKUPS: Record<OwnedKind, (id: string) => Promise<Owner | null>> = {
   task: async (id) => {
     const t = await db.query.tasks.findFirst({
-      where: eq(tasks.id, id),
+      where: sqlWhere(eq(tasks.id, id)),
       columns: { workspaceId: true },
       with: { workspace: { columns: { teamId: true } } },
     });
@@ -99,7 +100,7 @@ export async function loadChatReach(teamId: string, userId?: string): Promise<Ch
   let workspaceIds = new Set<string>();
   try {
     const rows = await db.query.workspaces.findMany({
-      where: eq(workspaces.teamId, teamId),
+      where: sqlWhere(eq(workspaces.teamId, teamId)),
       columns: { id: true, dataClass: true, gitConfig: true },
     });
     const standard = rows.filter(isStandardWorkspace);

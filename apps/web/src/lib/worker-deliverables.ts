@@ -1,3 +1,4 @@
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 export interface DeliverableCheck {
   hasPR: boolean;
   hasArtifacts: boolean;
@@ -98,7 +99,7 @@ export async function getWorkerArtifactCount(workerId: string): Promise<number> 
     const { artifacts } = await import('@buildd/core/db/schema');
     const { eq } = await import('drizzle-orm');
     const workerArtifacts = await db.query.artifacts.findMany({
-      where: eq(artifacts.workerId, workerId),
+      where: sqlWhere(eq(artifacts.workerId, workerId)),
       columns: { id: true },
     });
     return workerArtifacts.length;
@@ -126,7 +127,7 @@ export async function getWorkerDeliverableArtifactCount(workerId: string): Promi
     // 1. Non-byproduct types (review types like report, analysis, summary, etc.)
     // 2. Byproduct types that are explicitly keyed, EXCEPT cloud-run-report telemetry
     const deliverableArtifacts = await db.query.artifacts.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(artifacts.workerId, workerId),
         or(
           // Non-byproduct types
@@ -138,7 +139,7 @@ export async function getWorkerDeliverableArtifactCount(workerId: string): Promi
             notLike(artifacts.key, 'cloud-run-report:%'),
           ),
         ),
-      ),
+      )),
       columns: { id: true, metadata: true },
     });
 

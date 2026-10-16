@@ -108,7 +108,8 @@ describe('listMcpTools — token level gating', () => {
     const [builddTool] = listMcpTools({ accountLevel: 'worker', isSensitive: false, surface: 'legacy' }) as Array<{
       inputSchema: { properties: { action: { enum: string[] } } };
     }>;
-    expect(builddTool.inputSchema.properties.action.enum).toEqual(actionsForLevel('worker'));
+    // help (docs and workflow guidance) is answered by every level.
+    expect(builddTool.inputSchema.properties.action.enum).toEqual([...actionsForLevel('worker'), 'help']);
   });
 });
 
@@ -249,14 +250,22 @@ describe('listMcpTools — group tools', () => {
   // declared fields, so an undeclared params object reached buildd as {}.
   // Raised from 5.6k / 4.5k for ask_human (task fd2e8396): an interactive
   // session's one way to ask a person, listed under More: in the work group.
-  it('keeps the whole groups surface under 5.7k tokens', () => {
+  // Raised from 5.7k / 4.6k for task 78c3e533 (measured 5.68k / ~4.5k before,
+  // 5.93k / 4.71k after): a More: action with sub-actions now types its
+  // selector with every sub-action named (~210 tokens; a strict model had no
+  // typed params.action for manage_specs at all), and help takes {topic}
+  // (~20). Typing every field of the More: actions instead would have cost
+  // ~900 and broken the 6k spec budget, so they stay untyped beyond the
+  // selector. The admin ceiling now IS the 6k spec budget: the next addition
+  // has to pay for itself.
+  it('keeps the whole groups surface under the 6k spec budget', () => {
     const all = tools({ accountLevel: 'admin', isSensitive: false, surface: 'groups' });
-    expect(all.reduce((s, t) => s + estTokens(t), 0)).toBeLessThan(5700);
+    expect(all.reduce((s, t) => s + estTokens(t), 0)).toBeLessThan(6000);
   });
 
-  it('keeps a runner worker session (task token) under 4.6k tokens', () => {
+  it('keeps a runner worker session (task token) under 4.8k tokens', () => {
     const all = tools({ accountLevel: 'worker', isSensitive: false, surface: 'groups', principal: 'task_token' });
-    expect(all.reduce((s, t) => s + estTokens(t), 0)).toBeLessThan(4600);
+    expect(all.reduce((s, t) => s + estTokens(t), 0)).toBeLessThan(4800);
   });
 
   it('names the rare actions on one More: line per group, and keeps them callable', () => {
@@ -420,7 +429,8 @@ describe('surface choice and instructions', () => {
   });
 
   it('legacy instructions are unchanged', () => {
-    expect(mcpServerInstructions('admin', 'legacy').startsWith('Buildd is a task coordination system for AI coding agents. Tools: `buildd` (task actions)')).toBe(true);
+    // After the guidance pointer, which leads every surface's instructions.
+    expect(mcpServerInstructions('admin', 'legacy').split('\n\n')[1].startsWith('Buildd is a task coordination system for AI coding agents. Tools: `buildd` (task actions)')).toBe(true);
     expect(mcpServerInstructions('admin', 'legacy')).toContain('gates which `buildd` actions you can call');
   });
 });

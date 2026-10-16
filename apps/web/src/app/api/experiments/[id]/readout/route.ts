@@ -42,7 +42,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   if (!UUID_RE.test(id)) return notFound();
 
   const row = await getTeamExperimentForReadout(who.viewer.teamId, id);
-  if (!row || !canViewExperiment(row.visibility, who.viewer.role)) return notFound();
+  if (!row || !canViewExperiment(row.visibility, who.viewer)) return notFound();
 
   let policyVersion = row.policyVersion;
   const pv = req.nextUrl.searchParams.get('policyVersion');

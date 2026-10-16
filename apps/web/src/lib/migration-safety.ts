@@ -33,12 +33,15 @@ export interface MigrationCollision {
  *  - `lineage`: the PR deletes, rewrites or reorders existing migrations.
  *  - `mixed`: safe EXPAND plus CONTRACT in one PR; an agent splits it.
  *  - `collision`: a mechanical renumber (see `MigrationSafety.collision`).
+ *  - `stale_parent`: a drizzle v1 snapshot's parent is no longer a leaf on the
+ *    base, so a sibling landed since CI ran: the PR needs a fresh base and a
+ *    fresh CI run, not a decision.
  *  - `uninspectable`: GitHub could not be read; the inspector retries once,
  *    then fails closed.
  * Absent means `destructive` (see `unsafeKind`), so a verdict without one
  * still fails closed.
  */
-export type MigrationUnsafeKind = 'destructive' | 'data' | 'lineage' | 'mixed' | 'collision' | 'uninspectable';
+export type MigrationUnsafeKind = 'destructive' | 'data' | 'lineage' | 'mixed' | 'collision' | 'stale_parent' | 'uninspectable';
 
 export type MigrationSafety =
   | { safe: true; operationClass: 'EXPAND' }
@@ -73,14 +76,26 @@ export function unsafeKind(safety: MigrationSafety): MigrationUnsafeKind | null 
   return safety.kind ?? (safety.collision ? 'collision' : safety.mixedSplit ? 'mixed' : 'destructive');
 }
 
-const MIGRATION_PATH = /(?:^|\/)drizzle\/(\d{4})_[^/]+\.sql$/;
+// Both layouts, because this gate serves every workspace's repo: the legacy
+// `drizzle/NNNN_name.sql`, and drizzle v1's `drizzle/<YYYYMMDDHHMMSS>_name/migration.sql`.
+const LEGACY_MIGRATION_PATH = /(?:^|\/)drizzle\/(\d{4})_[^/]+\.sql$/;
+const V1_MIGRATION_PATH = /(?:^|\/)drizzle\/\d{14}_[^/]+\/migration\.sql$/;
 
 export function isGeneratedMigrationPath(filename: string): boolean {
-  return MIGRATION_PATH.test(filename);
+  return LEGACY_MIGRATION_PATH.test(filename) || V1_MIGRATION_PATH.test(filename);
 }
 
+/** A legacy numbered file. In a v1 tree it is never read, so the inspector treats one over a v1 base as unsafe. */
+export function isLegacyMigrationPath(filename: string): boolean {
+  return LEGACY_MIGRATION_PATH.test(filename);
+}
+
+/**
+ * The slot a legacy migration claims. A v1 migration has none: its folder name
+ * is a timestamp and slug, so two branches cannot take the same one.
+ */
 export function getMigrationNumber(filename: string): string | null {
-  return MIGRATION_PATH.exec(filename)?.[1] ?? null;
+  return LEGACY_MIGRATION_PATH.exec(filename)?.[1] ?? null;
 }
 
 function identifier(value: string): string {
@@ -358,8 +373,8 @@ export function classifyPullRequestMigrations(
 
     results.push(classifyMigrationSql(migration.content));
 
-    if (!collision) {
-      const number = getMigrationNumber(migration.filename)!;
+    const number = getMigrationNumber(migration.filename);
+    if (!collision && number !== null) {
       const other = openPullRequestMigrations.find((m) => getMigrationNumber(m.path) === number);
       // A collision is only this PR's to report when it is the deterministic
       // owner (the higher/later PR number) — otherwise the other PR renumbers

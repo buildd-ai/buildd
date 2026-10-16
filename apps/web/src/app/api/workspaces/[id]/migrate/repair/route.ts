@@ -6,6 +6,7 @@ import { authenticateMigration, isTeamAdmin } from '@/lib/migrate-access';
 import {
   collectMigrationSnapshot, classifyMigration, executeMigrationPhases, MigrationPhaseError,
 } from '@/lib/workspace-migration';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * POST /api/workspaces/[id]/migrate/repair  (spec BT-11)
@@ -38,7 +39,7 @@ export async function POST(
     return NextResponse.json({ error: 'runId is required' }, { status: 400 });
   }
 
-  const rows = await db.query.migrationLog.findMany({ where: eq(migrationLog.runId, body.runId) });
+  const rows = await db.query.migrationLog.findMany({ where: sqlWhere(eq(migrationLog.runId, body.runId)) });
   if (rows.length === 0) {
     return NextResponse.json({ error: 'Migration run not found' }, { status: 404 });
   }

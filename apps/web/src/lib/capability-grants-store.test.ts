@@ -5,6 +5,7 @@
  * stopping the next call, role change and terminal tasks mid-run.
  */
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { capturedWhere } from '@buildd/core/db/relational-sql';
 
 // ── a tiny drizzle stand-in: columns are names, conditions are predicates ────
 
@@ -25,22 +26,23 @@ const GRANT_COLS = ['id', 'teamId', 'workspaceId', 'taskId', 'workerId', 'status
 const schema = {
   capabilityGrants: tableOf('grants', GRANT_COLS),
   capabilityPolicies: tableOf('policies', ['teamId', 'id']),
-  tasks: tableOf('tasks', ['id']),
+  tasks: tableOf('tasks', ['id', 'updatedAt', 'delegation']),
   workers: tableOf('workers', ['id']),
+  workspaces: tableOf('workspaces', ['id']),
 };
 mock.module('@buildd/core/db/schema', () => schema);
 
-const T: Record<string, Row[]> = { grants: [], policies: [], tasks: [], workers: [] };
+const T: Record<string, Row[]> = { grants: [], policies: [], tasks: [], workers: [], workspaces: [] };
 let seq = 0;
 const tick = () => new Promise(r => setTimeout(r, 0));
 
 const finder = (name: string) => ({
-  findFirst: async (q: { where?: Pred } = {}) => { await tick(); return T[name].find(r => !q.where || q.where(r)) ?? undefined; },
-  findMany: async (q: { where?: Pred } = {}) => { await tick(); return T[name].filter(r => !q.where || q.where(r)).map(r => ({ ...r })); },
+  findFirst: async (q: { where?: unknown } = {}) => { await tick(); const w = capturedWhere(q.where) as Pred | undefined; return T[name].find(r => !w || w(r)) ?? undefined; },
+  findMany: async (q: { where?: unknown } = {}) => { await tick(); const w = capturedWhere(q.where) as Pred | undefined; return T[name].filter(r => !w || w(r)).map(r => ({ ...r })); },
 });
 
 const db = {
-  query: { capabilityGrants: finder('grants'), capabilityPolicies: finder('policies'), tasks: finder('tasks'), workers: finder('workers') },
+  query: { capabilityGrants: finder('grants'), capabilityPolicies: finder('policies'), tasks: finder('tasks'), workers: finder('workers'), workspaces: finder('workspaces') },
   update: (t: any) => ({
     set: (v: Row) => ({
       where: (p: Pred) => {
@@ -68,6 +70,13 @@ const db = {
 };
 mock.module('@buildd/core/db', () => ({ db }));
 
+// The approver's own reach, for tasks:create approvals.
+let approverReaches = true;
+mock.module('./team-access', () => ({
+  verifyWorkspaceAccess: async () => (approverReaches ? { role: 'admin' } : null),
+  verifyAccountWorkspaceAccess: async () => true,
+}));
+
 const audit: any[] = [];
 mock.module('./agent-capabilities/audit', () => ({ recordCapabilityDecision: (r: any) => { audit.push(r); return Promise.resolve(); } }));
 
@@ -90,6 +99,8 @@ const TEAM = 'team-a';
 const WS = '33333333-3333-4333-8333-333333333333';
 const TASK = '22222222-2222-4222-8222-222222222222';
 const WORKER = '11111111-1111-4111-8111-111111111111';
+const OTHER_WS = '55555555-5555-4555-8555-555555555555';
+const FOREIGN_WS = '66666666-6666-4666-8666-666666666666';
 const PRINCIPAL = { kind: 'agent_run' as const, via: 'task_token' as const, workerId: WORKER, taskId: TASK, workspaceId: WS, teamId: TEAM, accountId: 'acct-1' };
 const ADMIN = { userId: 'user-admin' };
 const USE = { capability: 'observability:query', provider: 'axiom', connectorId: AXIOM, tool: 'queryApl', resource: null, environment: null };
@@ -114,7 +125,9 @@ function ask(body: Record<string, unknown>) {
 
 beforeEach(() => {
   T.grants = []; T.policies = []; audit.length = 0; seq = 0;
-  T.tasks = [{ id: TASK, status: 'in_progress', roleSlug: 'builder' }];
+  T.tasks = [{ id: TASK, workspaceId: WS, status: 'in_progress', roleSlug: 'builder', delegation: null, updatedAt: new Date(0) }];
+  T.workspaces = [{ id: WS, teamId: TEAM }, { id: OTHER_WS, teamId: TEAM }, { id: FOREIGN_WS, teamId: 'team-b' }];
+  approverReaches = true;
   T.workers = [{ id: WORKER, status: 'running' }];
   candidate = axiom();
 });
@@ -284,5 +297,68 @@ describe('capabilityGrantSource (model.inference)', () => {
     });
     T.tasks[0].status = 'cancelled';
     expect(await capabilityGrantSource.findLiveGrant({ principal: PRINCIPAL, capability: 'model.inference' })).toBeNull();
+  });
+});
+
+// ── tasks:create: filing in another workspace of the team ────────────────────
+
+describe('tasks:create requests', () => {
+  const fileThere = (resource = OTHER_WS) => requestCapability(PRINCIPAL, ask({ capability: 'tasks:create', resource, reason: 'file the follow-ups the owner asked for' }));
+  const delegation = () => T.tasks[0].delegation;
+
+  it('asks a person, keeps the run alive, and a repeat ask is the same request', async () => {
+    const first = await fileThere();
+    expect(first.ok && first.resolution.kind).toBe('pending_approval');
+    expect(first.ok && first.resolution.nextSteps.join(' ')).toMatch(/Do not end the run/);
+    const again = await fileThere();
+    expect(again.ok && again.deduped).toBe(true);
+    expect(T.grants).toHaveLength(1);
+    expect(T.grants[0]).toMatchObject({ capability: 'tasks:create', provider: 'buildd', resource: OTHER_WS, risk: 'write', status: 'pending' });
+    expect(delegation()).toBeNull();
+  });
+
+  it('an approval lands as a delegation grant bound to that task; a revoke takes it back', async () => {
+    const out = await fileThere();
+    const row = (await loadGrant(out.ok ? out.grant!.id : ''))!;
+    const approved = await decideCapabilityRequest(row, 'approve', ADMIN);
+    expect(approved.ok).toBe(true);
+    expect(delegation()).toMatchObject({
+      grants: [{ workspaceId: OTHER_WS, capabilities: ['tasks:create'] }],
+      grantedByUserId: 'user-admin',
+      capabilityGrantIds: [row.id],
+    });
+    // Covered now: asking again is `existing`, not a new request.
+    const covered = await fileThere();
+    expect(covered.ok && covered.resolution.kind).toBe('existing');
+
+    await decideCapabilityRequest((await loadGrant(row.id))!, 'revoke', ADMIN);
+    expect(delegation()).toBeNull();
+  });
+
+  it('an approver who does not reach the target cannot grant it', async () => {
+    approverReaches = false;
+    const out = await fileThere();
+    const res = await decideCapabilityRequest((await loadGrant(out.ok ? out.grant!.id : ''))!, 'approve', ADMIN);
+    expect(res.ok).toBe(false);
+    expect(!res.ok && res.code).toBe('approver_lacks_reach');
+    expect(delegation()).toBeNull();
+  });
+
+  it('another team\'s workspace is forbidden outright, and nothing is queued', async () => {
+    const out = await fileThere(FOREIGN_WS);
+    expect(out.ok && out.resolution.kind).toBe('forbidden');
+    expect(T.grants).toHaveLength(0);
+  });
+
+  it('its own workspace needs nothing', async () => {
+    const out = await fileThere(WS);
+    expect(out.ok && out.resolution.kind).toBe('existing');
+  });
+
+  it('needs a workspace UUID, and never a connector', () => {
+    expect(parseCapabilityRequest({ capability: 'tasks:create' }).ok).toBe(false);
+    expect(parseCapabilityRequest({ capability: 'tasks:create', resource: 'buildd' }).ok).toBe(false);
+    expect(parseCapabilityRequest({ capability: 'tasks:create', resource: OTHER_WS, provider: 'axiom' }).ok).toBe(false);
+    expect(parseCapabilityRequest({ capability: 'tasks:create', resource: OTHER_WS, tool: 'createTask' }).ok).toBe(false);
   });
 });

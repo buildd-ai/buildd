@@ -149,6 +149,8 @@ export class WorkerAgent extends Agent<Env, RunState> {
         get browserSessionToken() { return agent.browserSessionToken; },
         BUILDD_SERVER: env.BUILDD_SERVER,
         BUILDD_API_KEY: env.BUILDD_API_KEY,
+        // The runner's own check run (runner-verification.ts); never in the container env.
+        DISPATCH_TOKEN: env.DISPATCH_TOKEN,
         MODEL: env.MODEL,
         PUSHER_KEY: env.PUSHER_KEY,
         PUSHER_CLUSTER: env.PUSHER_CLUSTER,

@@ -89,6 +89,7 @@ const EXEMPT: Record<string, string> = {
   record_pr_supersession: 'server-resolved',
   spec_compare: 'no workspaceId param (prose mention)',
   query_knowledge: 'no workspaceId param (prose mention)',
+  update_task: 'no workspaceId param (prose mention: the delegation grant shape)',
 };
 
 function makeApi() {

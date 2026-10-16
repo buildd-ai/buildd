@@ -34,6 +34,7 @@ import { refreshMcpConnectorCredential } from './mcp-connector-refresh';
 import { loadPolicyRules } from './capability-grants-store';
 import { readRoleCeiling, type CredentialState, type GatewayRun } from './connector-gateway';
 import type { AgentPrincipal } from './agent-capabilities/principal';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 type ConnectorRow = typeof connectors.$inferSelect;
 
@@ -61,17 +62,17 @@ export async function loadGatewayRun(principal: AgentPrincipal, connectorId: str
   if (!teamId) return null;
 
   const [connector, task, worker] = await Promise.all([
-    db.query.connectors.findFirst({ where: eq(connectors.id, connectorId) }),
+    db.query.connectors.findFirst({ where: sqlWhere(eq(connectors.id, connectorId)) }),
     db.query.tasks.findFirst({
-      where: eq(tasks.id, principal.taskId),
+      where: sqlWhere(eq(tasks.id, principal.taskId)),
       columns: { id: true, status: true, roleSlug: true, workspaceId: true, scheduleId: true, missionId: true, createdByUserId: true, parentTaskId: true },
     }),
-    db.query.workers.findFirst({ where: eq(workers.id, principal.workerId), columns: { status: true } }),
+    db.query.workers.findFirst({ where: sqlWhere(eq(workers.id, principal.workerId)), columns: { status: true } }),
   ]);
   if (!connector) return null;
 
   const shared = connector.teamId === teamId ? null : await db.query.connectorShares.findFirst({
-    where: and(eq(connectorShares.connectorId, connector.id), eq(connectorShares.sharedWithTeamId, teamId)),
+    where: sqlWhere(and(eq(connectorShares.connectorId, connector.id), eq(connectorShares.sharedWithTeamId, teamId))),
     columns: { connectorId: true },
   });
   const visible = connector.teamId === teamId || !!shared;
@@ -80,21 +81,21 @@ export async function loadGatewayRun(principal: AgentPrincipal, connectorId: str
   const roleSlug = task?.roleSlug ?? null;
   const [cw, block, roleRows, missionRow, secretRow, provider, rules] = await Promise.all([
     db.query.connectorWorkspaces.findFirst({
-      where: and(eq(connectorWorkspaces.connectorId, connector.id), eq(connectorWorkspaces.workspaceId, principal.workspaceId)),
+      where: sqlWhere(and(eq(connectorWorkspaces.connectorId, connector.id), eq(connectorWorkspaces.workspaceId, principal.workspaceId))),
       columns: { enabled: true },
     }),
     checkConnectorBlocked(connector, teamId),
     roleSlug ? db.query.workspaceSkills.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(workspaceSkills.slug, roleSlug), eq(workspaceSkills.isRole, true), eq(workspaceSkills.enabled, true),
         eq(workspaceSkills.teamId, teamId),
         or(isNull(workspaceSkills.workspaceId), eq(workspaceSkills.workspaceId, principal.workspaceId)),
-      ),
+      )),
       columns: { ...ROLE_VISIBILITY_COLUMNS, connectorRefs: true, metadata: true },
     }) : Promise.resolve([]),
-    task?.missionId ? db.query.missions.findFirst({ where: eq(missions.id, task.missionId), columns: { scheduleId: true } }) : Promise.resolve(null),
+    task?.missionId ? db.query.missions.findFirst({ where: sqlWhere(eq(missions.id, task.missionId)), columns: { scheduleId: true } }) : Promise.resolve(null),
     db.query.secrets.findFirst({
-      where: teamCredentialWhere({ teamId: connector.teamId, purpose: 'mcp_connector_credential', label: connector.id }),
+      where: sqlWhere(teamCredentialWhere({ teamId: connector.teamId, purpose: 'mcp_connector_credential', label: connector.id })),
       columns: { id: true, tokenExpiresAt: true, healthStatus: true },
     }),
     providerSlugFor(teamId, connector.url),
@@ -205,12 +206,12 @@ export async function recentCallCount(workerId: string, connectorId: string, now
 /** Has this exact write already been let through for this worker? */
 export async function isReplayedCall(workerId: string, key: string): Promise<boolean> {
   const row = await db.query.agentCapabilityDecisions.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(agentCapabilityDecisions.workerId, workerId),
       eq(agentCapabilityDecisions.capability, TOOL_CALL_CAPABILITY),
       eq(agentCapabilityDecisions.decision, 'allowed'),
       sql`${agentCapabilityDecisions.sideEffect}->>'callKey' = ${key}`,
-    ),
+    )),
     columns: { id: true },
   });
   return !!row;

@@ -132,8 +132,17 @@ mock.module('@/lib/dispatch-authority', () => ({
   DRAIN_BATCH: 25,
 }));
 
-import { cleanupStaleWorkers, cleanupStuckWaitingInput, cleanupUnresumedAnswers, resolveTasksOfReapedWorkers } from './stale-workers';
+const mockClearWorkerMessages = mock(async (_taskId: string, _ids: string[]) => true);
+mock.module('@buildd/core/worker-messages', () => ({
+  clearWorkerMessages: mockClearWorkerMessages,
+  enqueueWorkerMessage: mock(async () => true),
+  buildEnqueueContextSql: mock(() => ({})),
+  buildClearContextSql: mock(() => ({})),
+}));
+
+import { cleanupStaleWorkers, cleanupStuckWaitingInput, cleanupUnresumedAnswers, cleanupUnreadInteractiveAnswers, resolveTasksOfReapedWorkers } from './stale-workers';
 import { INTERACTIVE_ABANDONED_ERROR } from './worker-exit-taxonomy';
+import { capturedWhere } from '@buildd/core/db/relational-sql';
 
 describe('cleanupStuckWaitingInput', () => {
   beforeEach(() => {
@@ -259,6 +268,27 @@ describe('cleanupStuckWaitingInput', () => {
     const result = await cleanupStuckWaitingInput('account-1');
     expect(result.failedWorkers).toBe(0);
     expect(result.retriedTasks).toBe(0);
+  });
+
+  it('superseded_by_recovery closes the named question now: worker and task failed, no clone, history kept (§16.4)', async () => {
+    const fresh = new Date(Date.now() - 5 * 60 * 1000); // 5 minutes: far below any timeout
+    const question = { type: 'question', prompt: 'How should I proceed?' };
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w-audit', taskId: 'task-audit', accountId: 'account-1', status: 'waiting_input', updatedAt: fresh, waitingFor: question, task: { missionId: 'm-1' } },
+    ]);
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-audit', workspaceId: 'ws-1', title: '[surface audit] x', description: '', context: {}, missionId: 'm-1' });
+    let workerSet: any = null;
+    mockWorkersUpdate.mockReturnValue({ set: mock((v: any) => { workerSet = v; return { where: mock(() => Promise.resolve()) }; }) });
+
+    const result = await cleanupStuckWaitingInput('account-1', { reason: 'superseded_by_recovery', workerIds: ['w-audit'] });
+
+    expect(result).toEqual({ failedWorkers: 1, retriedTasks: 0 });
+    expect(workerSet.status).toBe('failed');
+    expect(workerSet.error).toStartWith('superseded_by_recovery');
+    // The question stays on the row as history: never cleared.
+    expect('waitingFor' in workerSet).toBe(false);
+    expect(mockTasksUpdate).toHaveBeenCalledTimes(1);
+    expect(mockTasksInsert).not.toHaveBeenCalled();
   });
 
   it('fails workers stuck in waiting_input for 24+ hours', async () => {
@@ -985,6 +1015,63 @@ describe('cleanupStaleWorkers — deliverable-aware cleanup', () => {
     // Task should be promoted to completed, NOT reset to pending
     expect(taskUpdateSet).not.toBeNull();
     expect(taskUpdateSet.status).toBe('completed');
+  });
+
+  // An interactive session's lease ran out while its client may still be
+  // running a long command: a PR opened mid-work is not the task done, and the
+  // same client must be able to claim it again at once (no infra backoff).
+  it('never completes a reaped interactive worker\'s task; requeues it with no backoff', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'mcp-1', taskId: 'task-1', runner: 'mcp', status: 'running', startedAt: new Date(), turns: 0, costUsd: '0', prUrl: 'https://github.com/org/repo/pull/42', prNumber: 42, commitCount: 3, branch: 'b', error: null },
+      ])
+      .mockResolvedValueOnce([]) // no other active workers
+      .mockResolvedValueOnce([]); // heartbeat orphans
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', status: 'in_progress', parentTaskId: null });
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: true, hasArtifacts: false, hasStructuredOutput: false, hasCommits: true, hasAny: true, details: 'PR #42, 3 commits',
+    });
+    const taskSets: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskSets.push(vals);
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+    mockWakeTask.mockClear();
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskSets.some(v => v.status === 'completed')).toBe(false);
+    const requeue = taskSets.find(v => v.status === 'pending');
+    expect(requeue).toBeDefined();
+    expect(requeue.startAt).toBeNull();
+    expect(requeue.context.infraRetryCount).toBe(0); // no infra retry charged
+    expect(requeue.context.resumeBranch).toBe('b');
+    expect(mockWakeTask).toHaveBeenCalledWith('task-1', 'task.requeued');
+  });
+
+  it('leaves a reaped interactive worker\'s finished task as it is', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'mcp-1', taskId: 'task-1', runner: 'mcp', status: 'running', startedAt: new Date(), turns: 0, costUsd: '0', prUrl: null, prNumber: null, commitCount: 0, branch: null, error: null },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', status: 'completed', parentTaskId: null });
+    const taskSets: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskSets.push(vals);
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskSets.filter(v => 'status' in v)).toEqual([]);
   });
 
   it('promotes task to completed when stale worker has artifacts but no PR', async () => {
@@ -2625,7 +2712,8 @@ describe('cleanupStaleWorkers — never-started / silent-start taxonomy', () => 
       if (Array.isArray(node)) { node.forEach(n => walk(n, depth + 1)); return; }
       if (typeof node === 'object') { Object.values(node).forEach(n => walk(n, depth + 1)); }
     };
-    walk(mockWorkersFindMany.mock.calls[0][0]);
+    const findArgs = mockWorkersFindMany.mock.calls[0][0] as any;
+    walk({ ...findArgs, where: capturedWhere(findArgs.where) });
 
     const agesMin = dates.map(d => Math.round((Date.now() - d.getTime()) / 60000));
     // Derived from the shared constant rather than hardcoded: the generic rule
@@ -2855,7 +2943,7 @@ describe('cleanupUnresumedAnswers', () => {
     } as any);
   });
 
-  // AC-AQR-16
+  // AC-16
   it('creates a continuation carrying the queued answer and supersedes the worker', async () => {
     mockWorkersFindMany.mockReturnValue([parkedWithQueuedAnswer()] as any);
 
@@ -2914,7 +3002,7 @@ describe('cleanupUnresumedAnswers', () => {
     expect(capturedWorkerUpdates).toHaveLength(0);
   });
 
-  // AC-AQR-17 — one pass flips the recorded path, so a second pass skips it.
+  // AC-17 — one pass flips the recorded path, so a second pass skips it.
   it('does not degrade an answer it has already degraded', async () => {
     mockWorkersFindMany.mockReturnValue([
       parkedWithQueuedAnswer({ path: 'cold_continuation', reasonCode: 'resume_not_acknowledged' }),
@@ -2925,7 +3013,7 @@ describe('cleanupUnresumedAnswers', () => {
     expect(result.degraded).toBe(0);
   });
 
-  // AC-AQR-18 — an acknowledged answer clears the queue; the SQL predicate
+  // AC-18 — an acknowledged answer clears the queue; the SQL predicate
   // already excludes it, and the JS guard agrees.
   it('ignores a worker with nothing queued', async () => {
     const worker = parkedWithQueuedAnswer();
@@ -2983,7 +3071,7 @@ describe('cleanupUnresumedAnswers', () => {
     expect(capturedAccountsSet).toBeNull();
   });
 
-  // AC-AQR-19 — no transactions on neon-http: the worker is superseded and the
+  // AC-19 — no transactions on neon-http: the worker is superseded and the
   // continuation is inserted as two separate writes. If the insert throws, the
   // worker must not be left permanently superseded with the answer discarded —
   // it has to go back to waiting_input so a later sweep can still recover it.
@@ -3006,7 +3094,7 @@ describe('cleanupUnresumedAnswers', () => {
     expect(capturedAccountsSet).toBeNull();
   });
 
-  // AC-AQR-26 — once the Continue: task insert has succeeded, the answer is
+  // AC-26 — once the Continue: task insert has succeeded, the answer is
   // durably recoverable, so the two remaining writes (context stamp, feed
   // note) are best-effort: a throw there must not abort the sweep for the
   // rest of the account's candidates.
@@ -3204,4 +3292,244 @@ describe('resolveTasksOfReapedWorkers — lost claim response', () => {
     expect(taskUpdateSet).toBeNull();
     expect(mockWakeTask).not.toHaveBeenCalled();
   });
+});
+
+// ---------------------------------------------------------------------------
+// cleanupUnreadInteractiveAnswers — an answer sent back to an interactive
+// session that then went quiet without reading it (the session died between
+// the answer and its next poll) goes to a follow-up task instead of sitting on
+// a `running` worker nobody will ever drive again.
+// ---------------------------------------------------------------------------
+describe('cleanupUnreadInteractiveAnswers', () => {
+  const QUIET = new Date(Date.now() - 60 * 60 * 1000);
+  const RECENT = new Date(Date.now() - 60 * 1000);
+
+  function interactiveWithUnreadAnswer(overrides: {
+    delivery?: Record<string, unknown>;
+    entry?: Record<string, unknown>;
+    worker?: Record<string, unknown>;
+  } = {}) {
+    return {
+      id: 'worker-1',
+      taskId: 'task-1',
+      accountId: 'account-1',
+      workspaceId: 'workspace-1',
+      runner: 'mcp',
+      status: 'running',
+      updatedAt: QUIET,
+      branch: 'buildd/task-1-thing',
+      milestones: [{ label: 'Read the route', timestamp: 1 }],
+      instructionHistory: [
+        { type: 'instruction', id: 'msg-1', message: 'Use Postgres', timestamp: 1, deliveryState: 'pending', ...overrides.entry },
+      ],
+      ...overrides.worker,
+      task: {
+        id: 'task-1',
+        title: 'Pick a database',
+        description: 'Choose and wire the store',
+        missionId: 'mission-1',
+        taskClass: 'work',
+        context: {
+          pendingWorkerMessages: [{ id: 'msg-1', type: 'answer', body: { source: 'human', text: 'Use Postgres', workerId: 'worker-1' } }],
+          answerDelivery: {
+            path: 'interactive',
+            reasonCode: 'interactive_session',
+            reason: 'live',
+            workerId: 'worker-1',
+            decidedAt: QUIET.toISOString(),
+            messageId: 'msg-1',
+            question: 'Which database?',
+            ...overrides.delivery,
+          },
+        },
+      },
+    };
+  }
+
+  const insertedValues: any[] = [];
+  beforeEach(() => {
+    mockWorkersFindMany.mockReset();
+    insertedValues.length = 0;
+    mockTasksInsert.mockReset();
+    mockTasksInsert.mockReturnValue({
+      values: mock((v: any) => { insertedValues.push(v); return { returning: mock(() => [{ id: 'new-task-id' }]) }; }),
+    } as any);
+    mockTasksUpdate.mockReset();
+    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) } as any);
+    mockClearWorkerMessages.mockClear();
+    mockWakeTask.mockClear();
+    capturedInsertValues = null;
+    capturedWorkerUpdates.length = 0;
+    workersUpdateReturning = [{ id: 'worker-1' }];
+    capturedAccountsSet = null;
+    mockAccountsUpdate.mockReset();
+    mockAccountsUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        capturedAccountsSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    } as any);
+    mockWorkersUpdate.mockReset();
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        capturedWorkerUpdates.push(vals);
+        return {
+          where: mock(() => Object.assign(Promise.resolve(), {
+            returning: () => Promise.resolve(workersUpdateReturning),
+          })),
+        };
+      }),
+    } as any);
+  });
+
+  it('sends a quiet session\'s unread answer to a follow-up task and supersedes the worker', async () => {
+    mockWorkersFindMany.mockReturnValue([interactiveWithUnreadAnswer()] as any);
+
+    const result = await cleanupUnreadInteractiveAnswers('account-1');
+
+    expect(result.degraded).toBe(1);
+    expect(capturedWorkerUpdates[0].status).toBe('superseded');
+    expect(insertedValues).toHaveLength(1);
+    expect(insertedValues[0].title).toBe('Continue: Pick a database');
+    expect(insertedValues[0].context.userInput).toBe('Use Postgres');
+    expect(insertedValues[0].context.answerDelivery.path).toBe('cold_continuation');
+    expect(insertedValues[0].context.answerDelivery.reasonCode).toBe('interactive_answer_not_read');
+    expect(insertedValues[0].description).toContain('Which database?');
+    // The superseded worker points at where the work went on.
+    expect(capturedWorkerUpdates.some(u => u.continuationTaskId === 'new-task-id')).toBe(true);
+    expect(mockWakeTask).toHaveBeenCalledWith('new-task-id', 'task.created');
+  });
+
+  it('takes the answer out of the old task\'s queue, so a session that comes back cannot also act on it', async () => {
+    mockWorkersFindMany.mockReturnValue([interactiveWithUnreadAnswer()] as any);
+
+    await cleanupUnreadInteractiveAnswers('account-1');
+
+    expect(mockClearWorkerMessages).toHaveBeenCalledWith('task-1', ['msg-1']);
+  });
+
+  it('posts one warning note saying the session never read the answer', async () => {
+    mockWorkersFindMany.mockReturnValue([interactiveWithUnreadAnswer()] as any);
+
+    await cleanupUnreadInteractiveAnswers('account-1');
+
+    expect(capturedInsertValues?.type).toBe('warning');
+    expect(capturedInsertValues?.taskId).toBe('task-1');
+    expect(capturedInsertValues?.body).toContain('went quiet without reading it');
+  });
+
+  it('leaves a session that was active recently alone', async () => {
+    mockWorkersFindMany.mockReturnValue([interactiveWithUnreadAnswer({ worker: { updatedAt: RECENT } })] as any);
+
+    const result = await cleanupUnreadInteractiveAnswers('account-1');
+
+    expect(result.degraded).toBe(0);
+    expect(capturedWorkerUpdates).toHaveLength(0);
+  });
+
+  it('leaves an answer the session already read alone', async () => {
+    mockWorkersFindMany.mockReturnValue([interactiveWithUnreadAnswer({ entry: { deliveryState: 'acknowledged' } })] as any);
+
+    const result = await cleanupUnreadInteractiveAnswers('account-1');
+
+    expect(result.degraded).toBe(0);
+  });
+
+  it('ignores a delivery that was not sent to an interactive session', async () => {
+    mockWorkersFindMany.mockReturnValue([interactiveWithUnreadAnswer({ delivery: { path: 'resume' } })] as any);
+
+    expect((await cleanupUnreadInteractiveAnswers('account-1')).degraded).toBe(0);
+  });
+
+  it('ignores a delivery recorded for a different worker', async () => {
+    mockWorkersFindMany.mockReturnValue([interactiveWithUnreadAnswer({ delivery: { workerId: 'worker-2' } })] as any);
+
+    expect((await cleanupUnreadInteractiveAnswers('account-1')).degraded).toBe(0);
+  });
+
+  it('ignores a runner-managed worker', async () => {
+    mockWorkersFindMany.mockReturnValue([interactiveWithUnreadAnswer({ worker: { runner: 'buildd-runner' } })] as any);
+
+    expect((await cleanupUnreadInteractiveAnswers('account-1')).degraded).toBe(0);
+  });
+
+  // The session can read the answer, or check in, in the window between the
+  // read and the write. It wins.
+  it('does nothing when the claiming compare-and-swap matches no row', async () => {
+    mockWorkersFindMany.mockReturnValue([interactiveWithUnreadAnswer()] as any);
+    workersUpdateReturning = [];
+
+    const result = await cleanupUnreadInteractiveAnswers('account-1');
+
+    expect(result.degraded).toBe(0);
+    expect(mockTasksInsert).not.toHaveBeenCalled();
+    expect(mockClearWorkerMessages).not.toHaveBeenCalled();
+  });
+
+  it('puts the worker back to running, answer still queued, when the follow-up insert fails', async () => {
+    mockTasksInsert.mockReturnValue({
+      values: mock(() => ({ returning: mock(() => Promise.reject(new Error('insert failed'))) })),
+    } as any);
+    mockWorkersFindMany.mockReturnValue([interactiveWithUnreadAnswer()] as any);
+
+    const result = await cleanupUnreadInteractiveAnswers('account-1');
+
+    expect(result.degraded).toBe(0);
+    expect(capturedWorkerUpdates).toHaveLength(2);
+    expect(capturedWorkerUpdates[1].status).toBe('running');
+    expect(mockClearWorkerMessages).not.toHaveBeenCalled();
+    expect(capturedAccountsSet).toBeNull();
+  });
+
+  it('releases one OAuth seat per degraded worker', async () => {
+    mockWorkersFindMany.mockReturnValue([interactiveWithUnreadAnswer()] as any);
+
+    await cleanupUnreadInteractiveAnswers('account-1');
+
+    expect(capturedAccountsSet).not.toBeNull();
+  });
+});
+
+// failure-incident-recovery §18.3 (I-15, AC-20): an interactive worker's task
+// goes back to pending for a session to re-claim — no floor, no charge, and
+// never `failed`, even at the infra cap.
+describe('resolveTasksOfReapedWorkers — interactive (local session) worker', () => {
+  const idle = { id: 'w-mcp', taskId: 'task-1', runner: 'mcp', prUrl: null, prNumber: null, commitCount: 2, branch: 'buildd/abc-fix', error: 'Interactive worker released: no MCP activity from its session for 2 hours (claim_task worker, not run by a runner)', startedAt: new Date() };
+  let taskUpdateSet: any;
+  beforeEach(() => {
+    mockWorkersFindMany.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockTasksFindMany.mockReset();
+    mockTasksUpdate.mockReset();
+    mockGetWorkerDeliverableArtifactCount.mockReset();
+    mockGetWorkerDeliverableArtifactCount.mockResolvedValue(0);
+    mockCheckWorkerDeliverables.mockReset();
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
+    });
+    taskUpdateSet = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => { taskUpdateSet = vals; return { where: mock(() => Promise.resolve()) }; }),
+    });
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockWakeTask.mockClear();
+  });
+
+  for (const infraRetryCount of [0, 3]) {
+    it(`returns the task to pending on its branch, uncharged (infraRetryCount=${infraRetryCount})`, async () => {
+      mockWorkersFindMany
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 'w-mcp', exitCause: 'infra_failure' }]);
+      mockTasksFindFirst.mockResolvedValueOnce({
+        id: 'task-1', workspaceId: 'ws-1', status: 'in_progress', category: 'feature',
+        context: { infraRetryCount }, loopState: null, loopConfig: null, updatedAt: new Date(),
+      }).mockResolvedValue({ parentTaskId: null });
+      await resolveTasksOfReapedWorkers([idle], 'infra_failure');
+      expect(taskUpdateSet.status).toBe('pending');
+      expect(taskUpdateSet.startAt).toBeNull();
+      expect(taskUpdateSet.context.resumeBranch).toBe('buildd/abc-fix');
+      expect(taskUpdateSet.context.infraRetryCount).toBe(infraRetryCount);
+      expect(mockWakeTask.mock.calls).toEqual([['task-1', 'task.requeued']]);
+    });
+  }
 });

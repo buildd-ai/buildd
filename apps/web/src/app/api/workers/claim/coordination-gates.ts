@@ -35,6 +35,8 @@ export interface OpenPrTask {
   prLifecycle: string | null;
   branch: string | null;
   prBaseRef: string | null;
+  /** A repair attempt (conflict / CI / review fix) for this PR is queued. */
+  awaitingRepair?: boolean;
 }
 
 /** Worker statuses that mean the PR's writer is still at work. */

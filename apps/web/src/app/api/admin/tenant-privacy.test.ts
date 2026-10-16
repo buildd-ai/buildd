@@ -46,13 +46,14 @@ mock.module('@/lib/admin/data', () => ({
   resolveScopeWorkspaces: async () => ({ workspaces: [{ id: OWN_WS, teamId: OWN_TEAM }, { id: OTHER_WS, teamId: OTHER_TEAM }] }),
   loadOwnTeams: async () => [{ id: OWN_TEAM, name: 'Mine team' }],
   loadDecisionFeatureCounts: async () => [],
+  loadDecisionHealthRows: async () => ({ rows: [], outcomes: [], truncated: false }),
   loadDecisionStats: async () => ({ decisions: { total: 2 } }),
   listExperiments: async () => [experimentRow(OWN_EXP, OWN_TEAM), experimentRow(OTHER_EXP, OTHER_TEAM)],
   loadExperimentHealth: async () => ({}),
   getExperiment: async (id: string) => (id === OWN_EXP ? experimentRow(OWN_EXP, OWN_TEAM) : id === OTHER_EXP ? experimentRow(OTHER_EXP, OTHER_TEAM) : null),
   findOtherRunning: async () => null,
   applyExperimentUpdate: async (teamId: string, id: string, _guard: unknown, set: any) => ({ ...experimentRow(id, teamId), ...set }),
-  readTeamExperimentFlags: async () => ({ enabledDecisionShadows: [], chatRetro: { lessons: false, proposals: false }, chatRetroDogfood: false }),
+  readTeamExperimentFlags: async () => ({ enabledDecisionShadows: [], inferenceFeatureModes: null, chatRetro: { lessons: false, proposals: false }, chatRetroDogfood: false }),
   writeTeamExperimentFlags: async () => ({ deletedLessons: 0 }),
   listChatRetros: async () => [OWN_WS, OTHER_WS].map(ws => ({ id: `r-${ws}`, teamId: teamOf(ws), workspaceId: ws, status: 'judged', turns: 4 })),
   loadUsage: async (o: any) => ({
@@ -83,6 +84,9 @@ mock.module('@/lib/admin/data', () => ({
     family: o.errorPrefix ? { prefix: o.errorPrefix, topSignatures: o.workspaceIds.map((ws: string) => ({ signature: text(ws, 'family'), count: 1 })) } : null,
     stalledIngest: { stalled: o.workspaceIds.length, jobs: o.workspaceIds.map((ws: string) => ({ id: `job-${ws}`, workspaceId: ws, repo: text(ws, 'repo'), lastError: text(ws, 'ingest error') })) },
   }),
+  loadClaimLearningPanel: async () => null,
+  loadRecoveryQueue: async () => null,
+  loadRecoveryCause: async () => null,
   loadOperatorData: async (o: any) => ({
     subagentDelegation: null, errorPatterns: null,
     orphanedPrs: o.workspaceIds.map((ws: string) => ({ workspaceId: ws, taskId: `task-${ws}`, prUrl: `https://github.com/x/${text(ws, 'pr').replace(' ', '-')}`, prNumber: 7, reason: text(ws, 'pr reason') })),
@@ -108,6 +112,19 @@ mock.module('@/lib/admin/data', () => ({
     { id: OTHER_TEAM, name: `${SECRET} team`, workspaces: [{ id: OTHER_WS, name: `${SECRET} repo` }] },
   ],
   loadExperimentReadout: async (row: any) => ({ policyVersion: row.policyVersion, readout: null, health: [] }),
+  // Estimates: the real report builder runs over these rows; the other team's area label is a repo path it wrote.
+  loadEstimates: async (o: any) => ({
+    rows: o.workspaceIds.flatMap((ws: string) => Array.from({ length: 12 }, (_, i) => ({
+      taskId: `task-${ws}-${i}`, teamId: teamOf(ws), workspaceId: ws, estimatorVersion: 'blend-v1', createdAt: new Date('2026-01-01T00:00:00Z'),
+      p50Minutes: 10, p80Minutes: 20, p50Tokens: 1, p80Tokens: 2, expectedRepairs: 0,
+      explanation: { sources: [{ source: 'clusters', n: 3, weight: 1 }], clusterLabel: text(ws, 'area') },
+      kind: 'engineering', complexity: null, taskClass: 'work', taskStatus: 'completed',
+      actuals: { minutes: 12, tokens: 1, repairs: 0 }, priorCompleted: 5,
+    }))),
+    truncated: false, rowLimit: 5000,
+    counts: { workTasks: 24, estimatedByVersion: { 'blend-v1': 24 }, written: 24 },
+    workspaceNames: Object.fromEntries(o.workspaceIds.map((ws: string) => [ws, text(ws, 'repo')])),
+  }),
 }));
 
 const route = (p: string) => import(p);
@@ -133,10 +150,12 @@ const cases: { name: string; call: () => Promise<Response>; own: string | null }
   { name: 'GET gates?errorPrefix', call: async () => (await route('./gates/route')).GET(req('gates?errorPrefix=x')), own: 'Mine family reason' },
   { name: 'GET dispatch-health', call: async () => (await route('./dispatch-health/route')).GET(req('dispatch-health')), own: 'Mine repo' },
   { name: 'GET operator', call: async () => (await route('./operator/route')).GET(req('operator')), own: 'Mine pr reason' },
+  { name: 'GET operator?claimLearning=1', call: async () => (await route('./operator/route')).GET(req('operator?claimLearning=1')), own: 'Mine pr reason' },
   { name: 'GET agent-access', call: async () => (await route('./agent-access/route')).GET(req('agent-access')), own: 'Mine repo' },
   { name: 'GET chat-retros', call: async () => (await route('./chat-retros/route')).GET(req('chat-retros')), own: 'Mine team' },
   { name: 'GET teams', call: async () => (await route('./teams/route')).GET(req('teams')), own: 'Mine repo' },
   { name: 'GET experiments', call: async () => (await route('./experiments/route')).GET(req('experiments')), own: 'Mine hypothesis' },
+  { name: 'GET estimates', call: async () => (await route('./estimates/route')).GET(req('estimates')), own: 'Mine area' },
   {
     name: 'GET experiments/[id]/readout (other team)',
     call: async () => (await route('./experiments/[id]/readout/route')).GET(req(`experiments/${OTHER_EXP}/readout`), idCtx(OTHER_EXP)),
@@ -201,6 +220,19 @@ describe('what the other team still contributes', () => {
     const gates = await (await (await route('./gates/route')).GET(req('gates'))).json();
     expect(gates.gates.gates[0].count).toBe(2);
     expect(gates.gates.gates[0].exampleTaskId).toBe(`task-${OWN_WS}`);
+  });
+
+  it('counts its estimates in every number, names it by pseudonym and keeps its area labels out', async () => {
+    const body = await (await (await route('./estimates/route')).GET(req('estimates'))).json();
+    const live = body.live.find((v: any) => v.estimatorVersion === 'blend-v1');
+    expect(live.overall.n).toBe(24);
+    expect(body.selection).toHaveLength(12);
+    expect(body.selection.every((r: any) => r.workspaceId === OWN_WS && r.evidence === null)).toBe(true);
+    expect(live.byCluster.map((g: any) => g.key)).toEqual(['Mine area']);
+    expect(live.byTeam.find((g: any) => g.key === OTHER_TEAM)).toMatchObject({ own: false, name: expect.stringMatching(/^Team [0-9a-f]{6}$/) });
+    expect(live.byWorkspace.find((g: any) => g.key === OWN_WS)).toMatchObject({ own: true, name: 'Mine repo' });
+    expect(live.byWorkspace.find((g: any) => g.key === OTHER_WS)).toMatchObject({ own: false, name: expect.stringMatching(/^Workspace [0-9a-f]{6}$/) });
+    expect(body.detailLimitedToOwnTeams).toBe(true);
   });
 
   it('pseudonymizes the team on chat retros', async () => {

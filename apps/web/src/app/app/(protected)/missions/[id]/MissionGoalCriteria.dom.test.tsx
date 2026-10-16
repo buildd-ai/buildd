@@ -154,3 +154,32 @@ describe('MissionGoalCriteria — automatic check bound', () => {
     expect(err.querySelector('details')).not.toBeNull();
   });
 });
+
+describe('the sheet agrees with the pill (Mission checks I-3, AC-3, AC-8; visual review round 4)', () => {
+  const OPEN: GoalCriterion = { type: 'no_open_tasks' };
+  const PRS: GoalCriterion = { type: 'all_prs_merged' };
+  const stalePass: GoalCriteriaState = {
+    evaluatedAt: '2026-10-14T00:00:00Z', evaluatedBy: 'auto', overall: 'pass',
+    criteria: [
+      { index: 0, label: 'All PRs merged', verdict: 'pass', type: 'all_prs_merged', fingerprint: criterionFingerprint(PRS) },
+      { index: 1, label: 'No open tasks', verdict: 'pass', type: 'no_open_tasks', fingerprint: criterionFingerprint(OPEN) },
+    ],
+  } as GoalCriteriaState;
+  const badges = () => Array.from(container.querySelectorAll('[data-testid="criterion-row"] > span:first-child')).map(b => b.textContent);
+
+  it('with a hold, the header names it and never says PASS; each row reads its live state', () => {
+    render({ criteria: [PRS, OPEN], criteriaState: stalePass, hold: 'open tasks not met', liveStates: ['pass', 'partial'] });
+    expect(q('criteria-hold')?.textContent).toBe('Open tasks not met.');
+    expect(q('criteria-overall')?.textContent).not.toContain('Pass');
+    expect(badges()).toEqual(['✓', '?']);
+  });
+
+  it('a live fail reads fail; without a hold or live states the stored verdicts stand', () => {
+    render({ criteria: [PRS, OPEN], criteriaState: stalePass, liveStates: ['fail', 'pass'] });
+    expect(badges()).toEqual(['✗', '✓']);
+    render({ criteria: [PRS, OPEN], criteriaState: stalePass });
+    expect(q('criteria-hold')).toBeNull();
+    expect(q('criteria-overall')?.textContent).toContain('Pass');
+    expect(badges()).toEqual(['✓', '✓']);
+  });
+});

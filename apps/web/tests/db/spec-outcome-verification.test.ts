@@ -130,6 +130,41 @@ describe('a violated requirement is never reported verified', () => {
   });
 });
 
+describe('a task answers for the criteria it names', () => {
+  async function scopedTask(criteria: unknown) {
+    const d = await createSpecDraft(user(admin), { workspaceId: wsA, title: `Checkout ${rand()}`, body: BODY });
+    if (!d.ok) throw new Error(d.error);
+    const a = await approveSpecRevision(user(admin), d.spec.id, { revision: 1, expectedVersion: 1 });
+    if (!a.ok) throw new Error(a.error);
+    return { specId: d.spec.id, pinned: await pinSpecSource(wsA, { specSource: { specId: d.spec.id, criteria } }) };
+  }
+
+  test('a slice that names AC-1 reads verified when AC-1 passes on the head, with R-1 out of its scope', async () => {
+    const s = await scopedTask(['AC-01']);
+    if (!s.pinned.ok) throw new Error(s.pinned.error);
+    expect((s.pinned.context as any).specSource.criteria).toEqual(['AC-1']);
+    const [task] = await q<{ id: string }>(sql`
+      INSERT INTO tasks (workspace_id, title, status, context) VALUES (${wsA}::uuid, ${`slice ${rand()}`}, 'completed', ${JSON.stringify(s.pinned.context)}::jsonb) RETURNING id`);
+    const [delivery] = await q<{ id: string }>(sql`INSERT INTO workflow_deliveries (workspace_id, owner_task_id, state, authority, current_head_sha, merged_at)
+      VALUES (${wsA}::uuid, ${task.id}::uuid, 'MERGED', 'kernel', ${HEAD1}, now()) RETURNING id`);
+    const reviewer = token(teamA, wsA, await child(task.id, delivery.id, 'review', `[reviewer] PR #2: review ${rand()}`));
+
+    expect((await outcomeOf(task.id)).criteria.map((c) => c.criterionId)).toEqual(['AC-1']);
+    expect(await recordSpecVerdict(reviewer, task.id, { criterionId: 'R-1', verdict: 'pass', headSha: HEAD1 })).toMatchObject({ ok: false, status: 400 });
+    await recordSpecVerdict(reviewer, task.id, { criterionId: 'AC-1', verdict: 'pass', headSha: HEAD1 });
+    expect((await outcomeOf(task.id)).outcome).toBe('verified');
+  });
+
+  test('a scope naming a criterion the revision lacks, a decision, or nothing is refused at filing', async () => {
+    for (const bad of [['AC-9'], ['D-1'], [], 'AC-1']) {
+      const s = await scopedTask(bad);
+      expect(s.pinned).toMatchObject({ ok: false, status: 400 });
+    }
+    const s = await scopedTask(['AC-9']);
+    expect(!s.pinned.ok && s.pinned.error).toContain('R-1, AC-1');
+  });
+});
+
 describe('a verdict is evidence bound to a head and to what was read', () => {
   test('a criterion the revision does not have, a verdict outside the vocabulary, or no head is refused, and nothing is written', async () => {
     const g = await governedTask();

@@ -257,3 +257,44 @@ describe('create_pr requestReview', () => {
     expect(text).toContain('403 no reviewer role');
   });
 });
+
+describe('create_pr requestReview retries a transient 500', () => {
+  it('retries once and reports the review, without printing undefined', async () => {
+    let reviewCalls = 0;
+    const api = (async (endpoint: string) => {
+      if (endpoint === '/api/github/pr/review') {
+        reviewCalls++;
+        if (reviewCalls === 1) throw new Error('API error: 500 - {"error":"Could not create the reviewer task"}');
+        return { ok: true, alreadyRequested: true, prNumber: 80, reviewTaskId: 'rt1', status: { state: 'queued' } };
+      }
+      return { pr: { number: 80, title: 't', url: 'https://github.com/o/r/pull/80', state: 'open' } };
+    }) as unknown as ApiFn;
+    const out = await handleBuilddAction(api, 'create_pr', { title: 't', head: 'b', lede: 'A change.', requestReview: true }, context());
+    const text = out.content[0]!.text;
+    expect(reviewCalls).toBe(2);
+    expect(text).toContain('Review requested');
+    expect(text).not.toContain('undefined');
+  });
+});
+
+describe('1bd26ae7: a kernel round with no reviewer task is never "already under review"', () => {
+  const queued = { ok: true, kernel: true, alreadyRequested: true, prNumber: 42, reviewTaskId: null, status: null, queued: { state: 'queued', headSha: 'abc', reason: 'no reviewer task exists for this head yet (review_in_flight)' } };
+  it('request_pr_review says what is queued', async () => {
+    const { api } = recordingApi({ '/api/github/pr/review': queued });
+    const out = await handleBuilddAction(api, 'request_pr_review', { prNumber: 42 }, context());
+    const text = out.content[0]!.text;
+    expect(text).toContain('PR #42: no reviewer task exists for this head yet (review_in_flight).');
+    expect(text).not.toContain('already under review');
+    expect(text).not.toContain('undefined');
+  });
+  it('create_pr with requestReview says the same', async () => {
+    const { api } = recordingApi({
+      '/api/github/pr/review': queued,
+      '/api/github/pr': { pr: { number: 42, title: 't', url: 'https://github.com/o/r/pull/42', state: 'open' } },
+    });
+    const out = await handleBuilddAction(api, 'create_pr', { title: 't', head: 'b', lede: 'A change.', requestReview: true }, context());
+    const text = out.content[0]!.text;
+    expect(text).toContain('**Review requested** — no reviewer task exists for this head yet (review_in_flight).');
+    expect(text).not.toContain('review task null');
+  });
+});

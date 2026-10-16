@@ -84,3 +84,47 @@ it('a mission group whose projection did not load counts its tasks instead of "0
     container.remove();
   }
 });
+
+
+it('failed loads remain failures in both tabs, without empty copy or counts', () => {
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  try {
+    for (const mode of ['now', 'history'] as const) {
+      act(() => root.render(<ActivityView mode={mode} now={{ groups: [], inMotion: 0, liveAgents: 0 }} history={[]} nowMs={0} hrefs={{ now: '/app/tasks', history: '/app/tasks?view=history' }} loadError />));
+      expect(container.querySelector('[data-testid="activity-load-error"]')?.getAttribute('role')).toBe('alert');
+      expect(container.querySelector('[data-testid="activity-counts"]')).toBeNull();
+      expect(container.querySelector('[data-testid="activity-empty"]')).toBeNull();
+    }
+  } finally { act(() => root.unmount()); }
+});
+
+it('a History filter that hides finished deliveries offers to clear it', () => {
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  const history = [{ id: 'landed', title: 'Finished delivery', href: '/app/tasks/landed', missionId: null, missionTitle: null, kind: 'landed' as const, repairRounds: 0, at: 0, steps: [] }];
+  try {
+    act(() => root.render(<ActivityView mode="history" now={{ groups: [], inMotion: 0, liveAgents: 0 }} history={history} nowMs={0} hrefs={{ now: '/app/tasks', history: '/app/tasks?view=history' }} initialFilters={{ outcome: 'retries' }} />));
+    expect(container.querySelector('[data-testid="activity-filtered-empty"]')?.textContent).toContain('1 episode in History');
+    act(() => container.querySelector<HTMLButtonElement>('[data-testid="activity-clear-filters"]')!.click());
+    expect(container.querySelectorAll('[data-testid="activity-episode"]')).toHaveLength(1);
+  } finally { act(() => root.unmount()); }
+});
+
+
+it('History-only outcomes do not hide live rows when switching to Now', () => {
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  const nowMs = Date.parse('2026-10-08T12:00:00Z');
+  const now = buildActivityNow({ tasks: [{ id: 'live', title: 'Live work', status: 'in_progress', missionId: null, createdAt: new Date(nowMs).toISOString(), updatedAt: new Date(nowMs).toISOString(), workers: [{ status: 'running' }] }], missions: [], rules, now: nowMs });
+  const props = { now, history: [], nowMs, hrefs: { now: '/app/tasks', history: '/app/tasks?view=history' } };
+  try {
+    act(() => root.render(<ActivityView mode="history" {...props} />));
+    const landed = [...container.querySelectorAll('button')].find(b => b.textContent === 'Landed')!;
+    act(() => landed.click());
+    act(() => root.render(<ActivityView mode="now" {...props} />));
+    expect(container.querySelectorAll('[data-testid="activity-now-row"]')).toHaveLength(1);
+    act(() => root.render(<ActivityView mode="history" {...props} />));
+    expect([...container.querySelectorAll('button')].find(b => b.textContent === 'Landed')?.getAttribute('aria-pressed')).toBe('true');
+  } finally { act(() => root.unmount()); }
+});

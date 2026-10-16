@@ -29,14 +29,22 @@ mock.module('../../src/session-logger', () => ({
 }));
 
 let statusPorcelainOutput = '';
+// The sync tick runs git async (git-async.ts), never execSync on the event loop.
 const execSyncCalls: Array<{ cmd: string; opts: any }> = [];
-const mockExecSync = mock((cmd: string, opts?: any) => {
+const mockGitShell = mock(async (cmd: string, opts?: any) => {
   execSyncCalls.push({ cmd, opts });
-  if (cmd.includes('status --porcelain')) return statusPorcelainOutput;
-  // computeTouchedPaths' `git diff --name-only` — no touched paths by default.
+  if (cmd === 'git status --porcelain') return statusPorcelainOutput;
+  // The checkpoint sweep's own git calls — no touched paths by default.
   return '';
 });
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+mock.module('../../src/git-async', () => ({
+  gitShellAsync: mockGitShell,
+  gitArgsAsync: mock(async () => ''),
+  mapWithConcurrency: async (items: any[], _limit: number, fn: (x: any, i: number) => Promise<any>) => Promise.all(items.map(fn)),
+}));
+mock.module('child_process', () => ({
+  execSync: mock(() => { throw new Error('execSync on the sync tick'); }),
+}));
 
 let worktreeExists = true;
 mock.module('fs', () => ({ existsSync: mock(() => worktreeExists) }));
@@ -135,7 +143,7 @@ describe('WorkerSync dirty-worktree reporting', () => {
     const worker = makeWorker();
     await makeSync(worker).syncWorkerToServer(worker);
 
-    const statusCall = execSyncCalls.find(c => c.cmd.includes('status --porcelain'));
+    const statusCall = execSyncCalls.find(c => c.cmd === 'git status --porcelain');
     expect(statusCall?.opts?.env?.GIT_OPTIONAL_LOCKS).toBe('0');
   });
 });

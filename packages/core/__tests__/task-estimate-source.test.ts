@@ -21,13 +21,14 @@ const fake = {
   conflictTargets: [] as any[],
   insertThrows: null as Error | null,
   taskThrows: null as Error | null,
+  teamThrows: null as Error | null,
 };
 
 mock.module('../db/client', () => ({
   db: {
     query: {
       tasks: { findFirst: async () => { if (fake.taskThrows) throw fake.taskThrows; return fake.task; } },
-      teams: { findFirst: async () => fake.team },
+      teams: { findFirst: async () => { if (fake.teamThrows) throw fake.teamThrows; return fake.team; } },
       systemCache: { findFirst: async () => null },
     },
     select: () => ({
@@ -83,6 +84,7 @@ beforeEach(() => {
   fake.conflictTargets = [];
   fake.insertThrows = null;
   fake.taskThrows = null;
+  fake.teamThrows = null;
   warnings = [];
   console.warn = (...a: unknown[]) => { warnings.push(a.map(String).join(' ')); };
   src.resetTaskEstimateCaches();
@@ -175,11 +177,31 @@ describe('writeTaskEstimate', () => {
 });
 
 describe('readTaskEstimatesSetting', () => {
-  it('only a literal enabled: true is on', () => {
+  it('while the gate is no-go, only a literal enabled: true is on', () => {
     expect(src.readTaskEstimatesSetting({ enabled: true })).toBe(true);
-    for (const v of [null, undefined, {}, { enabled: 1 }, { enabled: 'true' }, [true], 'enabled']) {
+    for (const v of [null, undefined, {}, { enabled: false }, { enabled: 1 }, { enabled: 'true' }, [true], 'enabled']) {
       expect(src.readTaskEstimatesSetting(v)).toBe(false);
     }
+  });
+
+  it('with the default on, a team that never chose is on and an explicit opt-out is off', () => {
+    expect(src.readTaskEstimatesSetting(null, true)).toBe(true);
+    expect(src.readTaskEstimatesSetting({ enabled: false }, true)).toBe(false);
+  });
+});
+
+describe('loadTaskEstimatesState', () => {
+  it('names who decided: the team, or the default for a team that never chose', async () => {
+    expect(await src.loadTaskEstimatesState(TEAM)).toMatchObject({ enabled: true, source: 'team' });
+    fake.team = { taskEstimates: null };
+    expect(await src.loadTaskEstimatesState(TEAM)).toMatchObject({ enabled: false, source: 'default', defaultOn: false });
+  });
+
+  it('a failed team read is off and flagged, so pages show an error rather than "off"', async () => {
+    fake.teamThrows = new Error('connection reset');
+    expect(await src.loadTaskEstimatesState(TEAM)).toMatchObject({ enabled: false, error: true });
+    expect(await src.taskEstimatesEnabled(TEAM)).toBe(false);
+    expect(await src.writeTaskEstimate(TASK, { loadInputs: async () => inputs() as any })).toBe('skipped');
   });
 });
 
@@ -239,17 +261,18 @@ describe('priorAggregateQuery (rendered)', () => {
   it('reads completed work tasks only, created and finished before the cutoff', () => {
     expect(text).toContain("t.task_class = 'work'");
     expect(text).toContain("t.status = 'completed'");
-    expect(text).toContain('t.created_at < $1::timestamptz');
-    expect(text).toContain('w.completed_at < $3::timestamptz');
+    expect(text).toContain('p.created_at < $1::timestamptz');
+    expect(text).toContain('t.created_at < $2::timestamptz');
+    expect(text).toContain('w.completed_at < $4::timestamptz');
     expect(text).toContain("a.task_class = 'attempt'");
-    expect(q.params).toEqual(Array(4).fill(cutoff.toISOString()));
+    expect(q.params).toEqual(Array(5).fill(cutoff.toISOString()));
   });
 
   it('sizes tasks as the backtest does: completed sessions summed, whole tasks only, unrecorded tokens excluded', () => {
     expect(text).toContain("w.status = 'completed'");
     expect(text).toContain('sum(extract(epoch from (w.completed_at - w.started_at)) / 60.0) as minutes');
     expect(text).toContain('sum(coalesce(w.input_tokens, 0) + coalesce(w.output_tokens, 0)) as tokens');
-    expect(text).toContain('not exists ( select 1 from workers wf where wf.task_id = t.id and wf.completed_at >= $2::timestamptz )');
+    expect(text).toContain('not exists ( select 1 from workers wf where wf.task_id = t.id and wf.completed_at >= $3::timestamptz )');
     expect(text).toContain('order by s.tokens) filter (where s.tokens > 0)');
   });
 
@@ -278,12 +301,48 @@ describe('neighbourEvidenceFrom (pure)', () => {
     expect(e).toEqual({ n: 3, p50Minutes: 40, p80Minutes: 60, p50Tokens: 400, p80Tokens: 600 });
   });
 
+  it('requires positive token actuals as well as durations for comparable samples', () => {
+    const e = src.neighbourEvidenceFrom(['a', 'b', 'c'], [s('a', 10, 10, 0), s('b', 10, 40, 0), s('c', 10, 60)], { cutoff });
+    expect(e).toBeNull();
+  });
+
   it('a session ending at/after the cutoff and a neighbour created after it are the future', () => {
     const late = { taskId: 'a', startedAt: before(1), completedAt: new Date(cutoff.getTime() + 60_000), inputTokens: 1, outputTokens: 1 };
     const e = src.neighbourEvidenceFrom(['a', 'b', 'c'], [late, s('b', 10, 40), s('c', 10, 60)], {
       cutoff, createdAtById: new Map([['c', new Date(cutoff.getTime() + 1)]]),
     });
     expect(e).toBeNull(); // only b is left; one neighbour is not evidence
+  });
+});
+
+describe('frozen evidence availability', () => {
+  it('reports each model read cutoff even when concurrent reads replace the cache', async () => {
+    const older = new Date('2026-09-29T00:00:00Z');
+    const newer = new Date('2026-09-30T00:00:00Z');
+    const seen: string[] = [];
+    await Promise.all([src.loadPriorTable(older, at => seen.push(at.toISOString())), src.loadPriorTable(newer, at => seen.push(at.toISOString()))]);
+    expect(seen.sort()).toEqual([older.toISOString(), newer.toISOString()]);
+  });
+
+  it('reports the older cutoff of a reused model separately from the task cutoff', async () => {
+    const older = new Date('2026-09-30T23:59:00Z');
+    await src.loadPriorTable(older);
+    const result = await src.loadEstimateInputs(taskRow(), {
+      storeFactory: async () => { throw new Error('UnavailableStore'); },
+    });
+    expect(result.evidence?.cutoff).toBe('2026-10-01T00:00:00.000Z');
+    expect(result.evidence?.kind).toBe('engineering');
+    expect(result.evidence?.modelCutoffs).toEqual({ prior: older.toISOString(), clusters: null });
+  });
+  it('records unavailable reads rather than claiming the workspace has no history', async () => {
+    const result = await src.loadEstimateInputs(taskRow(), {
+      storeFactory: async () => { throw new Error('UnavailableStore'); },
+    });
+    expect(result.evidence?.history).toBeNull();
+    expect(result.evidence?.unavailable).toContain('history');
+    expect(result.evidence?.unavailable).toContain('neighbour retrieval');
+    expect(result.evidence?.neighbours).toEqual({ retrieved: 0, used: 0, reason: 'unavailable' });
+    expect(result.evidence?.cutoff).toBe('2026-10-01T00:00:00.000Z');
   });
 });
 

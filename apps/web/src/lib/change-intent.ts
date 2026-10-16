@@ -21,6 +21,7 @@ export { matchesSurface } from './surface-ordering-config';
 import { matchesSurface, resolveSerializedSurfaces } from './surface-ordering-config';
 import { overlapIsHard } from './hard-overlap-surfaces';
 import type { ManifestOverlapKind } from '@buildd/core/path-overlap';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Given a list of file paths and the workspace gitConfig, returns the surfaces
@@ -161,7 +162,7 @@ export async function findConflictingIntents(
   if (!matchedSurfaces.length) return [];
 
   const rows = await db.query.changeIntents.findMany({
-    where: conflictingIntentsWhere(workspaceId, matchedSurfaces, excludeTaskId),
+    where: sqlWhere(conflictingIntentsWhere(workspaceId, matchedSurfaces, excludeTaskId)),
     columns: { taskId: true, prNumber: true, surface: true },
   });
 
@@ -182,7 +183,7 @@ async function postConflictNote(
   try {
     // Resolve missionId so the note appears on the mission timeline too
     const task = await db.query.tasks.findFirst({
-      where: eq(tasks.id, taskId),
+      where: sqlWhere(eq(tasks.id, taskId)),
       columns: { missionId: true, workspaceId: true },
     });
 

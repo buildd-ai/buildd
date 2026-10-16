@@ -1,9 +1,11 @@
-import { INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
+import { INTERACTIVE_WORKER_BUSY_MAX_MS, INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
 
 export type WorkerExitCause =
   | 'code_failure'
   | 'budget_limited'
   | 'infra_failure'
+  /** The backend credential was rejected (failure-incident-recovery §18.2). */
+  | 'auth_failure'
   | 'never_started'
   | 'silent_start'
   | 'reassigned'
@@ -133,12 +135,21 @@ export const CLAIM_RESPONSE_LOST_ERROR =
   'Claim response never reached the runner (runner reported it does not hold this worker) — released as a bookkeeping artifact, not a task failure';
 
 /**
- * Error text for an interactive (MCP-claimed) worker reaped after its account
- * made no MCP call for INTERACTIVE_WORKER_IDLE_TTL_MS. Its own text, because
+ * Error text for an interactive (MCP-claimed) worker reaped after its session
+ * made no MCP call and sent no hook event for INTERACTIVE_WORKER_IDLE_TTL_MS
+ * (and its presence was not inside a turn). Its own text, because
  * "never started by a runner" is always true of such a worker and says nothing.
  */
 export const INTERACTIVE_ABANDONED_ERROR =
-  'Interactive worker released: no MCP activity from its session for 2 hours (claim_task worker, not run by a runner)';
+  'Interactive worker released: no MCP call or plugin hook touched this claim for 2 hours, and no open buildd plugin session holding it (or of its claimant, in its workspace) was heard from or inside a command in that time (claim_task worker, not run by a runner); the task went back to pending and can be claimed again';
+
+/**
+ * Error text for an interactive worker released by the hard backstop
+ * (INTERACTIVE_WORKER_BUSY_MAX_MS): its claim saw no activity for that long,
+ * so a session that says it is mid-command, or is merely open, no longer keeps it.
+ */
+export const INTERACTIVE_BACKSTOP_ERROR =
+  'Interactive worker released: no MCP call or plugin hook touched this claim for 8 hours, the hard backstop, which applies even while a session of its claimant is open or says it is inside a command (claim_task worker, not run by a runner); the task went back to pending and can be claimed again';
 
 /** Error text for a completion that landed on a task cancelled while the session ran. */
 export const TASK_CANCELLED_UNDER_SESSION_ERROR =
@@ -213,6 +224,8 @@ export function classifyReportedFailure(input: {
    * retries. Nothing ran; a later attempt, after a backoff, can succeed. Infra.
    */
   githubThrottled?: boolean;
+  /** The runner refused a Claude run before spawn: no model login or key on the machine, none delivered. */
+  modelAuthMissing?: boolean;
   /**
    * The session died on the CLI's model version gate (see
    * isUnrecognizedModelError): the runner cannot serve the model the task was
@@ -225,12 +238,20 @@ export function classifyReportedFailure(input: {
    * is cancelled no other signal describes an outcome anyone is waiting on.
    */
   taskCancelled?: boolean;
+  /**
+   * The backend credential was rejected (classifyAuthErrorSeverity). The
+   * credential's failure, not the work's: the task is held for the credential
+   * instead of failed (failure-incident-recovery §18.3).
+   */
+  authFailure?: boolean;
 }): WorkerExitCause {
   if (input.taskCancelled) return 'task_cancelled';
   if (input.budgetLimited) return 'budget_limited';
+  if (input.authFailure) return 'auth_failure';
   if (input.sandboxMountGap) return 'sandbox_mount_gap';
   if (input.crashReconciled) return 'infra_failure';
   if (input.githubThrottled) return 'infra_failure';
+  if (input.modelAuthMissing) return 'infra_failure';
   if (input.unrecognizedModel) return 'infra_failure';
   // Steering-delivery crashes are infra failures — the CLI rejected a malformed
   // invocation, not a code defect. Must not consume a retry attempt.
@@ -279,14 +300,20 @@ export function classifyReportedFailure(input: {
  */
 export function classifyStaleExit(worker: {
   runner?: string | null;
+  /** Interactive only: which signal expired depends on how long the claim was quiet. */
+  updatedAt?: Date | string | null;
   startedAt?: Date | string | null;
   turns?: number | null;
   costUsd?: string | number | null;
   inputTokens?: number | null;
   outputTokens?: number | null;
-}): { exitCause: WorkerExitCause; error: string } {
+}, now: Date = new Date()): { exitCause: WorkerExitCause; error: string } {
   if (worker.runner === INTERACTIVE_WORKER_RUNNER) {
-    return { exitCause: worker.startedAt ? 'infra_failure' : 'never_started', error: INTERACTIVE_ABANDONED_ERROR };
+    const quietFor = worker.updatedAt ? now.getTime() - new Date(worker.updatedAt).getTime() : 0;
+    return {
+      exitCause: worker.startedAt ? 'infra_failure' : 'never_started',
+      error: quietFor >= INTERACTIVE_WORKER_BUSY_MAX_MS ? INTERACTIVE_BACKSTOP_ERROR : INTERACTIVE_ABANDONED_ERROR,
+    };
   }
   if (!worker.startedAt) {
     return { exitCause: 'never_started', error: NEVER_STARTED_ERROR };
@@ -374,9 +401,27 @@ export function isBookkeepingExit(exitCause: WorkerExitCause | null | undefined)
     || exitCause === 'task_cancelled';
 }
 
+/**
+ * Exits owned by Buildd's machinery rather than the work (failure-incident-
+ * recovery §18.2/§18.7): a provider wall, a rejected credential, a lost or
+ * released session. Real failures, but once the task recovers they are noise
+ * to the failure rate, so the spike baseline drops them for a task no longer
+ * `failed`.
+ */
+export function isInfrastructureExit(exitCause: WorkerExitCause | string | null | undefined): boolean {
+  return exitCause === 'auth_failure'
+    || exitCause === 'infra_failure'
+    || exitCause === 'reassigned'
+    || exitCause === 'sandbox_mount_gap'
+    || exitCause === 'silent_start'
+    || exitCause === 'budget_limited';
+}
+
 export function consumesRetryAttempt(exitCause: WorkerExitCause | null | undefined): boolean {
   return exitCause !== 'budget_limited'
     && exitCause !== 'infra_failure'
+    // A rejected credential says nothing about the task (§18.2).
+    && exitCause !== 'auth_failure'
     && exitCause !== 'sandbox_mount_gap'
     && exitCause !== 'condition_unmet'
     // A row no runner ever started, and a session that streamed nothing, say

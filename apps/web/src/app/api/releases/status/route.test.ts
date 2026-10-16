@@ -279,8 +279,8 @@ describe('GET /api/releases/status', () => {
       target: {
         workspaceId: 'ws-1',
         owner: 'buildd-ai',
-        name: 'dispatch-family',
-        repoFullName: 'buildd-ai/dispatch-family',
+        name: 'acme-app',
+        repoFullName: 'buildd-ai/acme-app',
         installationId: 12345,
         releaseConfig: {
           enabled: true,

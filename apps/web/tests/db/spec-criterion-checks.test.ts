@@ -15,7 +15,7 @@ const { approveSpecRevision } = await import('../../src/lib/specs/approval');
 const { pinSpecSource } = await import('../../src/lib/specs/pin');
 const { readGovernedOutcome, recordSpecVerdict } = await import('../../src/lib/specs/outcome');
 const { dispatchCriterionChecks, handleCriterionCheckOutcome } = await import('../../src/lib/specs/criterion-checks');
-const { checkCommandAt } = await import('../../src/lib/specs/check-lines');
+const { checkCommandAt } = await import('@buildd/spec-contract/check-lines');
 const { recordLateRunnerEvidence } = await import('../../src/lib/late-runner-evidence');
 
 const rand = () => Math.random().toString(36).slice(2, 10);

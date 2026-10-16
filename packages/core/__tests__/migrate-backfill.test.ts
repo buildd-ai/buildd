@@ -1,3 +1,4 @@
+import { readMigrationTree } from '../db/migrate-tree';
 import { describe, it, expect } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -306,19 +307,16 @@ describe('assertion coverage over the real migration corpus', () => {
    */
   it('derives checkable assertions from nearly every committed migration', () => {
     const drizzleDir = new URL('../drizzle', import.meta.url).pathname;
-    const journal = JSON.parse(
-      readFileSync(join(drizzleDir, 'meta', '_journal.json'), 'utf8'),
-    ) as { entries: Array<{ tag: string }> };
+    const tree = readMigrationTree(drizzleDir);
+    // The cutover's rebase migration is comment-only by design: no DDL to assert.
+    const journal = { entries: tree.filter((m) => !/_snapshot_rebase$/.test(m.name)).map((m) => ({ tag: m.name, sql: m.sql })) };
 
     let assertions = 0;
     let opaque = 0;
     const withoutAssertions: string[] = [];
 
     for (const entry of journal.entries) {
-      const statements = readFileSync(join(drizzleDir, `${entry.tag}.sql`), 'utf8')
-        .split('--> statement-breakpoint')
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0);
+      const statements = entry.sql.map((s) => s.trim()).filter((s) => s.length > 0);
       const derived = deriveAssertions(statements);
       assertions += derived.assertions.length;
       opaque += derived.opaque.length;

@@ -210,9 +210,14 @@ describe('invokeModelInference over the real grant source and ledger', () => {
     let entered = 0, refused = 0;
     let open!: () => void;
     const gate = new Promise<void>((r) => { open = r; });
-    const check = () => { if (entered + refused === n) open(); };
+    let allIn!: () => void;
+    const settled = new Promise<void>((r) => { allIn = r; });
+    const check = () => { if (entered + refused === n) allIn(); };
     return {
       gate,
+      /** Resolves once every invocation is at the provider or refused; calls stay held until `release`. */
+      settled,
+      release: () => open(),
       enter: () => { entered++; check(); },
       track: (p: Promise<{ ok: boolean }>) => p.then((r) => { if (!r.ok) { refused++; check(); } return r; }),
       get entered() { return entered; },
@@ -222,14 +227,17 @@ describe('invokeModelInference over the real grant source and ledger', () => {
   test('with every call in flight at once, the dollar budget admits exactly as many reservations as it covers', async () => {
     const { principal, grantId } = await seedGrant();
     const b = barrier(10);
-    let peak: Awaited<ReturnType<typeof usage>> | null = null;
     const deps = depsWith(async () => {
       b.enter();
       await b.gate;
-      peak = peak ?? (await usage(grantId));
       return answered();
     });
-    const results = await Promise.all(Array.from({ length: 10 }, () => b.track(invokeModelInference(principal, request, deps))));
+    const running = Promise.all(Array.from({ length: 10 }, () => b.track(invokeModelInference(principal, request, deps))));
+    // Sample while every call is still held, so no settle has returned a reservation yet.
+    await b.settled;
+    const peak = await usage(grantId);
+    b.release();
+    const results = await running;
     // $0.05 / $0.01 reserved per call: five reserve, five are refused, none overspends.
     expect(b.entered).toBe(5);
     expect(results.filter((r) => r.ok)).toHaveLength(5);

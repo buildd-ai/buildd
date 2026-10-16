@@ -1,14 +1,50 @@
 # Claude Agent SDK Ecosystem Research
 
-**Last updated**: 2026-10-06
-**Previous scan**: 2026-09-28
-**Current SDK version in Buildd**: `^0.3.280` (`package.json` pins `^0.3.280`; `bun.lock` resolves exactly `0.3.280`, parity with CLI v2.1.280 — now 10 versions behind this week's head, `0.3.290`/CLI v2.1.290, and **below the CLI that introduced Claude Sonnet 5.5 (2.1.284)** — see URGENT below.)
-**Python SDK**: v0.2.163 (bundles CLI v2.1.286 — fell 4 versions behind the CLI head again this week)
-**Claude Code CLI**: v2.1.290 (released ~October 5, 2026)
+**Last updated**: 2026-10-12
+**Previous scan**: 2026-10-06
+**Current SDK version in Buildd**: `^0.3.290` (runner + core; `bun.lock` resolves `0.3.290`). npm head is `0.3.296` (published ~Oct 9) — 6 patch versions behind.
+**Python SDK**: v0.2.165
+**Claude Code CLI**: v2.1.296
 
 > **Note**: For SDK feature details and integration status, see [sdk-reference/](sdk-reference/).
 
 ---
+
+## Oct 12 scan: status of last week's URGENT items (verified in code)
+
+- **Sonnet 5.5 `thinking: disabled` 400 — FIXED.** `packages/core/model-thinking.ts` `rejectsDisabledThinking()` now matches `claude-(sonnet|haiku)-5-5`; `MODEL_MIN_CLI_VERSION` has `claude-sonnet-5-5: 2.1.284`.
+- **TodoWrite/Task tools missing on newer models — FIXED.** `apps/runner/src/workers.ts` (~line 4130) sets `CLAUDE_CODE_ENABLE_TODO_TOOLS = '1'` in the spawn env. Closes a 6-scan-old item. Residual: confirm via a worker `system/init` tools list / `get_usage_stats` histogram that `TodoWrite` now appears.
+- **SDK pin** moved 0.3.280 → 0.3.290, past the 0.3.284 Sonnet 5.5 CLI floor.
+- **GitSpawn ultrareview variant**: still no explicit confirmation of a fix (CLI 2.1.292 adds an unrelated PreToolUse network-path-read bypass fix). Keep the verify-with-Anthropic action before using `/code-review ultra` on untrusted forks.
+
+## This week's releases (Oct 6 – Oct 12)
+
+TypeScript SDK 0.3.291–0.3.296; Python SDK 0.2.164–0.2.165; CLI 2.1.291–2.1.296.
+
+| Item | Detail |
+|------|--------|
+| SDK 0.3.296 | `claude_code_version` in the initialize response (capability/version detection); MCP tool description cap raised 2,048 → 4,096 chars; permission answers parsed consistently live vs after restart |
+| SDK 0.3.295 | Fixed streamed assistant text blocks losing `citations` |
+| SDK (all) | Native-binary distribution via per-platform optional deps; `sessionStore` for external session persistence |
+| CLI 2.1.296 | Haiku 5.5 support (1M context); Sonnet 5.5 cache-read price lowered to $0.10/MTok (from $0.20); headless `UserPromptSubmit` hook fix (could end sessions or skip prompts); no first-turn wait on slow MCP servers; default MCP protocol negotiation 2026-07-28; PostToolUse hooks now apply updated MCP tool output; remote MCP servers reconnect after 15s+ outages |
+| CLI 2.1.295 | `onFailure: "block"` for command/HTTP hooks |
+| CLI 2.1.292 | `effort` parameter on the Agent tool (per-subagent effort); security fix for PreToolUse hook bypass on network path reads |
+| CLI 2.1.290 | `serverToolUses` exposed (advisor tool calls); subagent thinking / prompt-cache loss fix; dangerous `rm` in script contexts now blocked |
+
+Limitation: the CLI changelog is very large and only the first ~100K chars were read; entries are summarized from that portion and the SDK changelog summary. Community-repo trending was not re-scanned this week; see prior sections for the project list.
+
+## Recommendations (this week)
+
+1. **Bump SDK `^0.3.290` → `^0.3.296`** (runner + core, then `bun install`). Gains: headless `UserPromptSubmit` hook fix, Haiku 5.5, `claude_code_version` for capability gating, MCP reliability. Effort: Low. Priority: Medium-High.
+2. **Update static cache-read price for Sonnet 5.5** to $0.10/MTok in `model-prices.ts` (cold-start fallback only; live catalog already preferred). Low.
+3. **Add Haiku 5.5 to `MODEL_MIN_CLI_VERSION`** once its floor is confirmed (>= the CLI that introduced it; do not guess). Low.
+4. **Use the Agent-tool `effort` parameter** (2.1.292) in role configs for cheap subagents (Researcher/Explore) to cut cost. Medium.
+5. **Consider `onFailure: "block"` hooks** (2.1.295) for fail-closed policy hooks (e.g. path-claim checks). Low.
+6. **Use `claude_code_version` from the init response** to replace/verify the static CLI floor table at runtime. Medium.
+
+---
+
+## Archive: previous scan (2026-10-06)
 
 ## ⚠️ URGENT: Active Items
 

@@ -12,7 +12,7 @@ export const dynamic = 'force-dynamic';
 export default async function NotificationsSettingsPage() {
   const { currentTeamId } = await loadSettingsContext();
   return (
-    <SettingsPage title="Notifications" description="Alerts on work you watch, sent to your own Pushover.">
+    <SettingsPage title="Notifications" description="Pushover alerts for work you watch.">
       {currentTeamId ? (
         <Section title="Channels">
           <ul className="divide-y divide-border-default" data-testid="notification-channels">

@@ -14,6 +14,7 @@ import { verifyEvidenceBackend } from '@/lib/evidence-backend';
 import { filterReachableEvidenceBackends } from '@/lib/evidence-backend-access';
 import { isUuid } from '@/lib/uuid';
 import { roleHas } from '@/lib/permissions';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -27,7 +28,7 @@ export async function POST(req: NextRequest, { params }: RouteContext) {
   const { viewer } = who;
 
   const row = await db.query.evidenceBackends.findFirst({
-    where: eq(evidenceBackends.id, id),
+    where: sqlWhere(eq(evidenceBackends.id, id)),
     columns: { id: true, teamId: true, workspaceId: true },
   });
   if (!row || row.teamId !== viewer.teamId) return notFound;

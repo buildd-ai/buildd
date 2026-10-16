@@ -29,7 +29,7 @@ export default function MissionSheetRow({ label, title, testId, sheetTestId, chi
         onClick={() => setOpen(true)}
         aria-haspopup="dialog"
         className={inline
-          ? 'inline-flex min-h-8 shrink-0 items-center gap-1 font-mono text-[12px] text-text-secondary underline decoration-border-strong underline-offset-2 hover:text-text-primary'
+          ? 'inline-flex min-h-11 shrink-0 md:min-h-8 items-center gap-1 font-mono text-[12px] text-text-secondary underline decoration-border-strong underline-offset-2 hover:text-text-primary'
           : 'flex min-h-11 w-full items-center gap-2 border-t border-border-default text-left font-mono text-[12px] text-text-secondary hover:text-text-primary'}
       >
         {!inline && <span aria-hidden="true" className="text-text-muted">─</span>}

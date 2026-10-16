@@ -2,7 +2,7 @@
 title: Real and Virtual Cost
 status: draft
 owner: max
-last_verified: 2026-10-07
+last_verified: 2026-10-15
 summary: Every worker's tokens and cost MUST carry a basis, real (charged per token) or virtual (list-price value of plan usage), and every rollup MUST report the two separately rather than as one sum.
 domain: billing
 surfaces: [apps/web/src/app/api/workers/[id]/route.ts, apps/runner/src/agent-model-env.ts, apps/runner/plugin/scripts/buildd-hook.mjs, packages/core/budget-alerts.ts]
@@ -10,6 +10,26 @@ related: [usage-and-cost-accounting, local-agent-presence, auth-oauth-boundaries
 keywords: [cost_basis, real cost, virtual cost, list price, metered, seat, modelAuth, costUsd, Agent SDK credit pool, per-worker billing mode]
 verified_by: []
 supersedes: []
+assertions:
+  - id: workers-table
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    type: symbol
+    name: workers
+    path: packages/core/db/schema.ts
+  - id: agent-sdk-credit-pool
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    type: symbol
+    name: countsTowardAgentSdkCreditPool
+    path: packages/core/budget-alerts.ts
+  - id: worker-report-route
+    skip_until: "2026-12-15"
+    skip_reason: "Spec is still draft; this assertion proves only that the named surface exists, not the spec's prose invariants. Remove when the spec is promoted to active."
+    type: route
+    method: PATCH
+    path: "/api/workers/[id]"
+    file: apps/web/src/app/api/workers/[id]/route.ts
 ---
 # Real and Virtual Cost
 
@@ -38,16 +58,19 @@ apply to an account (`auth-oauth-boundaries.md`).
 
 `accounts.authType` describes the account that claimed, not the credential that
 ran. The runner chooses a credential per worker (`applyModelEnv`,
-`apps/runner/src/agent-model-env.ts:155`): a delivered API key, the machine's
-own login, a delivered or tenant subscription token, or a team endpoint. CLI and
+`apps/runner/src/agent-model-env.ts`): a delivered API key, the machine's
+own login, a delivered or tenant subscription token, or a team endpoint. Under
+spec a8d1eb82 the machine's own login comes first and claims stop carrying
+subscription tokens; until that lands a delivered one can still run, and is
+reported as `virtual`. CLI and
 device logins create `api` accounts regardless of what the machine runs on. So
 the basis MUST be reported by whoever chose the credential, per worker, and
 MUST NOT be inferred from `authType`.
 
 The `costUsd` column today mixes three things with no marker: a backend-reported
 cost, a server list-price estimate from tokens
-(`apps/web/src/app/api/workers/[id]/route.ts:303-320`), and a session's priced
-transcript usage (`priceSessionUsage`, `packages/core/model-prices.ts:166`).
+(`apps/web/src/app/api/workers/[id]/route.ts`), and a session's priced
+transcript usage (`priceSessionUsage`, `packages/core/model-prices.ts`).
 Whether a figure was estimated is a separate fact from its basis and is recorded
 separately.
 
@@ -189,9 +212,9 @@ are.
   separable in every split, so session usage never disappears into runner usage.
 - Virtual dollars are labelled as list-price value, not spend, wherever they
   are shown.
-- The surfaces that today switch between cost and tokens on
-  `accounts.authType` (`WorkerStats.tsx`, `LiveWorkerActivity.tsx`) switch on
-  the worker's basis instead.
+- No live run view switches between cost and tokens on `accounts.authType`.
+  The mission sheet's own live view, which did, was retired for the task
+  page's (`RealTimeWorkerView.tsx`), which shows tokens and no dollar figure.
 - The "no cost recorded" state (`usage-and-cost-accounting.md` AC-5) still
   applies per basis: a basis with no recorded cost reads as unavailable, not
   `$0.00`.
@@ -231,7 +254,7 @@ measure.
   so real spend cannot slip past it unlabelled (`countsTowardMissionBudget`).
 
 **Acceptance criteria**:
-- AC-12b: GIVEN a mission whose workers are all `virtual` WHEN its spend is
+- AC-17: GIVEN a mission whose workers are all `virtual` WHEN its spend is
   computed for the `costBudgetUsd` gate THEN it is 0, and GIVEN one `real`
   worker at $2 THEN it is $2.
 - AC-13: GIVEN a terminal report with `costBasis: 'real'` and a positive cost
@@ -273,11 +296,10 @@ values.
 
 Existing, to change:
 - Report handler and server estimate:
-  `apps/web/src/app/api/workers/[id]/route.ts:303-320` (metrics-only),
-  `:1283-1330` (terminal transition and pool)
+  `apps/web/src/app/api/workers/[id]/route.ts` (metrics-only branch, terminal transition and pool)
 - Credential choice: `apps/runner/src/agent-model-env.ts` (`applyModelEnv`,
   `hostSeatUsed`, `injected`), `apps/runner/src/codex-auth.ts`
-- Runner report payload: `apps/runner/src/buildd.ts:280-300`
+- Runner report payload: `apps/runner/src/buildd.ts`
 - Cloud runner: `apps/cloud-runner/src/owner-seat.ts` (`modelAuth`),
   `apps/cloud-runner/src/run-report.ts`
 - Session usage: `apps/runner/plugin/scripts/buildd-hook.mjs` (`buildBody`,
@@ -317,3 +339,5 @@ Recorded from the owner's review of the draft:
    for; plan usage, interactive sessions especially, is not throttled by it.
 3. `unknown` keeps drawing on the credit pool as before. The goal is that
    `unknown` stops occurring, and the usage rollup shows whether it does.
+
+Renumbered: AC-12b to AC-17.

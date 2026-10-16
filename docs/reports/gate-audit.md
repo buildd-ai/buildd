@@ -353,6 +353,12 @@ merge writes an `accepted` row carrying `detail.timeToLandMs`.
 |---|---|---|---|---|
 | 71 | `lib/tier-ceiling-check.ts:rejectOverCeiling` (from `tasks/route.ts` POST, `tasks/[id]/route.ts` PATCH, `chat/route.ts` POST, `chat/[id]/route.ts` PATCH/POST) | `tier_ceiling` | rejected | an explicit tier / model pin / role model above the effective maximum; 403 `policy_denied`, `detail` is the structured error. Claim-time holds are `claim_loop_deferral` with reason `tier_policy`. |
 
+### Failure incident recovery (`docs/specs/failure-incident-recovery.md` §8)
+
+| Site | Gate | Outcome | Meaning |
+|------|------|---------|---------|
+| `apps/web/src/lib/failure-incident-recovery.ts:assessIncident` (via `failure-incident-recovery-events.ts`) | `incident_recovery` | accepted / rejected | One row per repair action key, written after the repair's existing writer ran (`accepted`) or threw (`rejected`). Not a refusal: the audit trail the operator recovery queue counts attempts from. `detail` is fixed-shape: `actionKey`, `incidentId`, `causeKey`, `capability` (a RepairKind), `generation`, `attempt`, `subject`, `actor`, `verify { predicate, passed, evidenceRevision }`, `costUsd`. `verify.passed` is null until the next assessment re-checks the repair, then set in place once. Pruned after 180 days, the only gate that is. |
+
 ### Early release of dependents (`docs/design/early-release.md`)
 
 | Site | Gate | Outcome | Meaning |

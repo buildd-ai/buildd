@@ -77,6 +77,7 @@ import type { KernelLanding, LandingInput } from '@/lib/workflow/seam';
 import { resolveMergeMethod } from '@/lib/integration-refresh';
 import { isFailingCheckRun } from '@/lib/ci-verdict';
 import { dispatchLandingFix, type LandingFixDispatchDeps } from '@/lib/pr-landing-fix-dispatch';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -196,6 +197,12 @@ export interface LandPrInput {
    * before calling here so no rail acts on a stale screen either.
    */
   expectedVersion?: number;
+  /**
+   * Who a kernel landing is for, as the door authenticated them (`kernelPrincipalOf`), which the
+   * control plane re-checks against the workspace; buildd's own sweeps pass `systemPrincipal`.
+   * Required, so a door cannot leave it out; null (no caller) is refused before sending.
+   */
+  principal: import('@/lib/workflow/kernel-client').KernelPrincipal | null;
 }
 
 export interface FixDispatchInput {
@@ -248,7 +255,7 @@ export interface LandPrDeps {
    */
   claimReviewRevalidation?: (taskId: string, reviewTaskId: string) => Promise<boolean>;
   /** The kernel's landing (T15/T16) for a kernel-owned PR; null = not the kernel's PR. Defaults to the seam's. */
-  landThroughKernel?: (input: LandingInput) => Promise<KernelLanding | null>;
+  landThroughKernel?: (input: LandingInput, call: import('@/lib/workflow/kernel-client').DoorCall) => Promise<KernelLanding | null>;
   /**
    * The kernel delivery that owns this PR and its current view; null = legacy-owned.
    * On a kernel PR the delivery, not the legacy reviewer row, is the review gate.
@@ -428,11 +435,11 @@ function filenames(list: unknown): string[] | null {
 
 async function findLiveReviewerRetryTask(workspaceId: string, prNumber: number): Promise<string | null> {
   const row = await db.query.tasks.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.workspaceId, workspaceId),
       eq(tasks.reviewerRetryPrNumber, prNumber),
       inArray(tasks.status, [...OPEN_TASK_STATUSES]),
-    ),
+    )),
     columns: { id: true },
   });
   return row?.id ?? null;
@@ -783,6 +790,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     ? { ...policy, threshold: { ...policy.threshold, maxLines: Number.MAX_SAFE_INTEGER } as MergePolicy['threshold'] }
     : policy;
   const observed: { baseRef?: string | null; mergeableState?: string | null; checkRuns?: CheckRunState[] } = {};
+  let kernelView: Awaited<ReturnType<typeof import('@/lib/workflow/seam').kernelLandingView>> = null;
   let kernelViewPromise: ReturnType<typeof import('@/lib/workflow/seam').kernelLandingView> | null = null;
   const kernelStatus = () => (kernelViewPromise ??= (async () => {
     const read = deps.kernelLandingView ?? (await import('@/lib/workflow/seam')).kernelLandingView;
@@ -850,6 +858,11 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
       case 'migration':
         if (/^migration number collision:/.test(reason)) return needsFix('renumber_migration', reason, deps.dispatchFix ?? defaultFix);
         if (/^could not /.test(reason)) return waiting(reason);
+        // A stale snapshot parent is work, not a decision: refresh onto the base so CI runs on it.
+        if (/^migration snapshot parent is no longer a leaf/.test(reason) && baseRef) {
+          kernelView = await kernelStatus();
+          return refresh(reason, baseRef);
+        }
         // Human authorization gates landing, not technical review. A repaired
         // head can earn its review while the migration decision is outstanding.
         // Use the existing reviewer dispatcher/dedupe; never file another repair.
@@ -885,7 +898,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   // row must not block, stall or re-review it: a composition- or human-approved
   // delivery has no reviewer row at all (incident #2574). A read error falls back to
   // the legacy gate, which can only hold a landing, never authorise one past T15.
-  let kernelView = await kernelStatus();
+  kernelView = await kernelStatus();
   if (kernelView?.current.state === 'REPAIRING') {
     // edc02148: a repair whose effect backed off (a refresh that threw once) is owed again once due,
     // and the outbox floor drains only hourly. The door runs the delivery's due effects itself
@@ -1033,7 +1046,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     try {
       mergingTask =
         (await db.query.tasks.findFirst({
-          where: eq(tasks.id, owner.taskId),
+          where: sqlWhere(eq(tasks.id, owner.taskId)),
           columns: { id: true, title: true, taskClass: true, missionId: true, context: true },
         })) ?? null;
     } catch (err) {
@@ -1055,7 +1068,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   // Every rail above passed. A kernel-owned PR is merged by the kernel (T15 →
   // merge_call → T16 → verify_merge → PrMerged), which also owns the
   // post-merge work; any other PR merges here as before.
-  const kernelLand = deps.landThroughKernel ?? (await import('@/lib/workflow/seam')).landThroughKernel;
+  const kernelLand = deps.landThroughKernel ?? (await import('@/lib/workflow/kernel-client')).landThroughKernel;
   const kernelOverride = kernelOverrideFor(actor, override);
   const slotted = await mergeInSurfaceSlot(surfaceOrder, async () => {
     const kernel = await kernelLand({
@@ -1066,7 +1079,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
       ...(kernelOverride ? { override: kernelOverride } : {}),
       ...(input.expectedVersion !== undefined ? { expectedVersion: input.expectedVersion } : {}),
       ...(landBehind ? { behind: { maxBaseCommits: policyValue('treadmillMaxBaseCommits') } } : {}),
-    });
+    }, { principal: input.principal });
     return kernel ? { kernel } : { legacy: await mergePullRequest(installationId, repoFullName, prNumber, mergeMethod, liveHead) };
   });
   if ('refused' in slotted) return waiting(slotted.refused, { waitingOn: 'surface_slot' });
@@ -1109,7 +1122,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   }
 
   async function landed(sha: string, mergingTask: Parameters<typeof finalizeMissionPrMerge>[0]): Promise<LandingOutcome> {
-    await finalizeMissionPrMerge(mergingTask, installationId, repoFullName).catch((err) =>
+    await finalizeMissionPrMerge(mergingTask, installationId, repoFullName, prNumber).catch((err) =>
       console.warn(`[pr-landing] mission finalize failed for PR #${prNumber}:`, err),
     );
     // The earliest known start wins: a refresh restarts CI, and the wait it caused is still the PR's wait.

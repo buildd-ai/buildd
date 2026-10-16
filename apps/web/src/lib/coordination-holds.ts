@@ -9,6 +9,7 @@ import { gateEvents, tasks } from '@buildd/core/db/schema';
 import { desc, eq, inArray } from 'drizzle-orm';
 import { readSoftOverlaps } from '@buildd/core/path-overlap';
 import { buildCoordinationHolds, coordinationGateDetail, type CoordinationHold, type CoordinationHolder } from '@/lib/explain-coordination';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export type HoldTask = { id: string; status: string; dependsOn?: string[] | null; pathManifest?: string[] | null; pathDeclaration?: unknown };
 
@@ -33,7 +34,7 @@ export async function loadCoordinationHolds(
   ids.delete(task.id);
   const rows = ids.size > 0
     ? await db.query.tasks.findMany({
-        where: inArray(tasks.id, [...ids]),
+        where: sqlWhere(inArray(tasks.id, [...ids])),
         columns: { id: true, title: true, status: true, pathManifest: true },
       })
     : [];
@@ -47,8 +48,8 @@ export async function loadCoordinationHolds(
 export async function loadTaskCoordinationHolds(task: HoldTask): Promise<CoordinationHold[]> {
   if (task.status !== 'pending') return [];
   const rows = await db.query.gateEvents.findMany({
-    where: eq(gateEvents.taskId, task.id),
-    orderBy: [desc(gateEvents.occurredAt)],
+    where: sqlWhere(eq(gateEvents.taskId, task.id)),
+    orderBy: sqlOrderBy([desc(gateEvents.occurredAt)]),
     limit: GATE_ROWS_LIMIT,
     columns: { reason: true, detail: true },
   });

@@ -234,7 +234,7 @@ describe('CondensedTimeline — §3.6 bookkeeping footer', () => {
         allTasksCount={1}
       />,
     );
-    expect(html).toContain('orchestrator');
+    expect(html).toContain('organizer');
   });
 
   it('shows count of bookkeeping runs in footer', () => {
@@ -250,7 +250,7 @@ describe('CondensedTimeline — §3.6 bookkeeping footer', () => {
         allTasksCount={1}
       />,
     );
-    expect(html).toContain('3 orchestrator runs');
+    expect(html).toContain('3 organizer runs');
   });
 
   it('does NOT render bookkeeping footer when bookkeepingTasks is empty', () => {
@@ -262,7 +262,7 @@ describe('CondensedTimeline — §3.6 bookkeeping footer', () => {
         allTasksCount={1}
       />,
     );
-    expect(html).not.toContain('orchestrator');
+    expect(html).not.toContain('organizer');
   });
 });
 
@@ -418,7 +418,7 @@ describe('CondensedTimeline — §3.7 verdict collapse', () => {
       />,
     );
     // Full verdict visible — not collapsed to chip
-    expect(html).toContain('Changes Requested');
+    expect(html).toContain('Changes requested');
     expect(html).toContain('Please fix the handler');
   });
 
@@ -556,7 +556,7 @@ describe('CondensedTimeline — §3.7 verdict collapse', () => {
         allTasksCount={1}
       />,
     );
-    expect(html).toContain('Escalated to you');
+    expect(html).toContain('Needs a decision');
     expect(html).toContain('Human review needed');
   });
 });
@@ -576,5 +576,32 @@ describe('CondensedTimeline — row menu card type', () => {
     );
     expect(html).toContain('data-card-type="completed-task"');
     expect(html).not.toContain('data-card-type="running-task"');
+  });
+});
+
+// ─── The open question: the task page's own card ─────────────────────────────
+
+describe('CondensedTimeline — a waiting task', () => {
+  it('answers with the task page question card, not a second answer box', () => {
+    const asking = makeTask('ask', {
+      status: 'in_progress',
+      roleSlug: 'builder',
+      latestWorker: {
+        id: 'w-ask', status: 'waiting_input', prUrl: null, prNumber: null, prLifecycleStatus: null,
+        mergedAt: null, completedAt: null, startedAt: null, currentAction: null, branch: 'b',
+        waitingFor: { type: 'question', prompt: 'Round per line, or only the total?', options: [{ label: 'Per line', consequence: 'The total matches the charge.' }, 'Total only'] },
+      },
+    });
+    const html = renderToStaticMarkup(
+      <CondensedTimeline {...baseProps} groups={{ ...emptyGroups, waitingOnYou: [toChain(asking)] }} allTasksCount={1} />,
+    );
+    const card = html.slice(html.indexOf('data-testid="timeline-question"'));
+    expect(card).toContain('data-density="feed"');
+    expect(card).toContain('The builder asks');
+    expect(card).toContain('Round per line, or only the total?');
+    expect(card).toContain('The total matches the charge.');
+    expect(card).toContain('Or answer in your own words…');
+    expect(html).not.toContain('[object Object]');
+    expect(html).not.toContain('Type your response');
   });
 });

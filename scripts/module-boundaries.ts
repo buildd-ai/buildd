@@ -34,8 +34,8 @@ export type ModuleId =
 export const MODULE_RULES: ReadonlyArray<readonly [ModuleId, RegExp]> = [
   ['workspace-migration', /\/migrate\/|migration-slot|workspace-migration|migrate-access|migration-(inspector|outcomes|safety)/],
   ['intake-integrations', /linear|\/webhooks\/ingest|subject-intake/],
-  // settings/connections is Connected apps: the team's MCP connectors live there.
-  ['connectors', /\/connectors|settings\/connections\/|connector-|mcp-connector|required-connectors|cross-app|assertion|capability-grants|\/api\/mcp\/c\/|\/agent-capabilities\/(requests|policy)\//],
+  // settings/connections is Connected apps; settings/apps holds the team's MCP connectors.
+  ['connectors', /\/connectors|settings\/connections\/|settings\/apps\/|connector-|mcp-connector|required-connectors|cross-app|assertion|capability-grants|team-apps-view|\/api\/mcp\/c\/|\/agent-capabilities\/(requests|policy)\//],
   ['spec-conformance', /spec-(conformance|discrepancy|doc-fix|recheck)|discrepanc|doc-fix/],
   ['visual-qa', /visual-(qa|review|audit|fix)|surface-audit|mcp-visual-review|page-source/],
   ['onboarding', /onboarding|workspace-readiness|\/readiness\//],
@@ -48,9 +48,9 @@ export const MODULE_RULES: ReadonlyArray<readonly [ModuleId, RegExp]> = [
   // `presence-token` is the agent plugin hooks' auth credential (core), not chat/notification presence.
   ['notifications', /notif|NotificationsSection|pushover|away-delivery|subscription|watch-|watched-project|artifact-notify|presence(?!-token)|stall-notify|connector-block-notify|personal-workspace-links/],
   ['schedules', /schedule/],
-  ['roles-skills', /role-(config|colors|outcomes|tool-scope|routing|env)|default-roles|effective-roles|task-role|delegate-options|\/api\/roles|\/skills|role-gate|skill-and-role|role-model-routing|\/team\/|\/settings\/roles\//],
+  ['roles-skills', /role-(config|colors|outcomes|tool-scope|routing|env)|default-roles|effective-roles|task-role|delegate-options|\/api\/roles|\/skills|role-gate|skill-and-role|role-model-routing|\/team\/|\/settings\/agents\//],
   ['reviews-merge', /reviewer-evidence|(?<!p)review|merge-policy|auto-merge|pr-landing|landing-action|ci-red|ci-failure|ci-retry|ci-drift|ci-gate|ci-lifecycle|ci-job-log|failed-checks|conflict-retry|dead-zone|dead-pr|supersession|pr-re-review|stale-approval|pr-lede-correction|pr-activity|dependency-bot|pr-attention|pr-branch-update|base-refresh|pr-scope-reconcile|spec-|discrepanc|doc-fix|migration-collision|\/prs\//],
-  ['health-quality', /(?<!credential-)health|post-session|quality-scout|scout-capabilit|failure-|error-pattern|error-traces|explain|insights|(?<!runner-)usage-|gate-analytics|coordination-stats|\/stats|spend-summary|fleet-view|queue-stall|mission-invariant|role-outcomes|cron-health|routing-calibration|routing-analytics|silent-completion|stranded|pacing-stall|workspace-error-traces|subagent-time|scheduling-metrics|model-quality|\/admin|platform-admin|task-category|dispatch-health|signal-registry|derived-metric|terminal-record|friction|bash-failure-trace/],
+  ['health-quality', /(?<!credential-)health|\/lib\/operator-recovery-|post-session|quality-scout|scout-capabilit|failure-|error-pattern|error-traces|explain|insights|(?<!runner-)usage-|gate-analytics|coordination-stats|\/stats|spend-summary|fleet-view|queue-stall|mission-invariant|role-outcomes|cron-health|routing-calibration|routing-analytics|silent-completion|stranded|pacing-stall|workspace-error-traces|subagent-time|scheduling-metrics|model-quality|\/admin|platform-admin|task-category|dispatch-health|signal-registry|derived-metric|terminal-record|friction|bash-failure-trace/],
   ['model-tiers', /tier-|model-tier|\/settings\/models\/|\/api\/model-tiers|tier-weights|openrouter-rankings|litellm/],
 ];
 
@@ -59,6 +59,8 @@ export type Owner = ModuleId | 'core';
 /** Core run-record helpers whose names also match broader module heuristics. */
 const CORE_RUN_RECORD_FILES: ReadonlySet<string> = new Set([
   'packages/core/bash-failure-trace.ts',
+  // Task/worker outcome eligibility for core forecasts, not stored knowledge.
+  'packages/core/task-estimate-evidence.ts',
   'apps/web/src/app/app/(protected)/tasks/[id]/error-evidence.ts',
   // The team credential policy (teams.credentialPolicy): it governs agent runs
   // and every provider (packages/core/providers/policy.ts), not just decision
@@ -87,6 +89,17 @@ const CORE_RUN_RECORD_FILES: ReadonlySet<string> = new Set([
   // task and why. The start gate and the claim probe decide on them, so they
   // are core coordination, not the explain feature `explain` misfiles them as.
   'apps/web/src/lib/explain-coordination.ts',
+  // The releaseConfig JSONB's shape (candidate branch patterns, config-write
+  // validation, refs-only release-PR test): read by the core workspace config
+  // route and base-advance notices. Pure, no release behaviour; provenance and
+  // tracking stay in the releases module (packages/core/release-candidate.ts).
+  'packages/core/release-config-shape.ts',
+  // The release settings form's serializer, used only by the core settings
+  // page's ReleaseSection.tsx (which `release` does not match, being PascalCase).
+  'apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/release-config-payload.ts',
+  // The Release section's recent-releases split (ran vs skipped), pure and used
+  // only by the core settings page's ReleaseSection.tsx.
+  'apps/web/src/app/app/(protected)/settings/_lib/recent-releases.ts',
 ]);
 
 export function moduleOf(path: string): Owner {

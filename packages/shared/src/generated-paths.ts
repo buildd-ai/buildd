@@ -10,8 +10,11 @@ export const GENERATED_PATH_PREFIXES: readonly string[] = [
   'packages/core/drizzle/meta/', // Drizzle ORM snapshot JSON (_journal.json + *_snapshot.json)
 ];
 
+/** A drizzle v1 folder's snapshot.json: generated noise, while its migration.sql stays reviewable. */
+const V1_SNAPSHOT_PATH = /^packages\/core\/drizzle\/\d{14}_[^/]+\/snapshot\.json$/;
+
 export function isGeneratedPath(filename: string): boolean {
-  return GENERATED_PATH_PREFIXES.some((prefix) => filename.startsWith(prefix));
+  return GENERATED_PATH_PREFIXES.some((prefix) => filename.startsWith(prefix)) || V1_SNAPSHOT_PATH.test(filename);
 }
 
 export interface DiffFileStat {

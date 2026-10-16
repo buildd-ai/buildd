@@ -108,7 +108,7 @@ export function SetUpChatNudge({ className = '' }: { className?: string }) {
     <Link
       href={setupHref}
       data-testid="set-up-chat-nudge"
-      className={`inline-flex min-h-11 md:min-h-9 items-center font-mono text-[12px] text-text-muted underline decoration-dotted underline-offset-4 hover:text-text-primary ${className}`}
+      className={`inline-flex min-h-11 md:min-h-8 items-center text-meta text-text-muted underline underline-offset-4 hover:text-text-primary ${className}`}
     >
       Set up chat
     </Link>

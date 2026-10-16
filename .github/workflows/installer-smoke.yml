@@ -18,6 +18,7 @@ on:
       - 'packages/shared/**'
       - 'packages/ai-kit/**'
       - 'packages/dispatch-contract/**'
+      - 'packages/spec-contract/**'
       - 'scripts/stub-server-only.ts'
       - 'bunfig.toml'
       - '.github/workflows/installer-smoke.yml'
@@ -29,6 +30,7 @@ on:
       - 'packages/shared/**'
       - 'packages/ai-kit/**'
       - 'packages/dispatch-contract/**'
+      - 'packages/spec-contract/**'
       - 'scripts/stub-server-only.ts'
       - 'bunfig.toml'
       - '.github/workflows/installer-smoke.yml'
@@ -43,8 +45,18 @@ jobs:
     name: Fresh install (ubuntu, non-root, no sudo)
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # ECR Public mirror of the official image: Docker Hub rate-limits shared runner IPs.
-    container: public.ecr.aws/docker/library/ubuntu:26.04
+    # The runner pulls a job container before any step runs, so no step can
+    # retry it or fall back. Docker Hub rate-limits shared runner IPs and ECR
+    # Public hit its data limit (2026-10-14/15), so this is the official image
+    # copied into our GHCR mirror (mirror-ci-images.yml), pulled with GITHUB_TOKEN.
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/buildd-ai/ci-mirror/ubuntu:26.04
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
     steps:
       - name: Base tools a fresh machine has
         run: |
@@ -68,8 +80,18 @@ jobs:
     name: Fresh install --client (ubuntu, non-root, no sudo)
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # ECR Public mirror of the official image: Docker Hub rate-limits shared runner IPs.
-    container: public.ecr.aws/docker/library/ubuntu:26.04
+    # The runner pulls a job container before any step runs, so no step can
+    # retry it or fall back. Docker Hub rate-limits shared runner IPs and ECR
+    # Public hit its data limit (2026-10-14/15), so this is the official image
+    # copied into our GHCR mirror (mirror-ci-images.yml), pulled with GITHUB_TOKEN.
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/buildd-ai/ci-mirror/ubuntu:26.04
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
     steps:
       - name: Base tools a fresh machine has
         run: |

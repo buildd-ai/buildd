@@ -23,6 +23,8 @@ export interface ProvidersCaller {
   /** The person (session or OAuth bearer); null for a key or task token. */
   userId: string | null;
   teamId: string;
+  /** How many teams the caller belongs to: a person's memberships; 1 for a key or task token. */
+  teamCount: number;
   /** Task token: its scope (`taskScopeAllowsWorkspace`); undefined otherwise. */
   taskScope?: TaskScope;
   may: (permission: Permission) => Promise<boolean>;
@@ -64,15 +66,16 @@ export async function resolveProvidersCaller(
     if (account.taskScope) {
       return {
         ok: true,
-        caller: { principal: 'task_token', userId: null, teamId, taskScope: account.taskScope, may: async () => false },
+        caller: { principal: 'task_token', userId: null, teamId, teamCount: 1, taskScope: account.taskScope, may: async () => false },
       };
     }
     const sessionUserId = (account as { sessionUserId?: string | null }).sessionUserId ?? null;
     if (sessionUserId) {
+      const teamCount = Math.max(1, (await getUserTeamIds(sessionUserId)).length);
       return {
         ok: true,
         caller: {
-          principal: 'person', userId: sessionUserId, teamId,
+          principal: 'person', userId: sessionUserId, teamId, teamCount,
           may: p => can({ kind: 'user', userId: sessionUserId }, p, teamId),
         },
       };
@@ -83,7 +86,7 @@ export async function resolveProvidersCaller(
     };
     return {
       ok: true,
-      caller: { principal: 'key', userId: null, teamId, may: p => can(keyCaller, p, teamId) },
+      caller: { principal: 'key', userId: null, teamId, teamCount: 1, may: p => can(keyCaller, p, teamId) },
     };
   }
 
@@ -96,6 +99,6 @@ export async function resolveProvidersCaller(
   if (!teamId || !teamIds.includes(teamId)) return { ok: false, response: NextResponse.json({ error: 'Team not found' }, { status: 404 }) };
   return {
     ok: true,
-    caller: { principal: 'person', userId: user.id, teamId, may: p => can({ kind: 'user', userId: user.id }, p, teamId) },
+    caller: { principal: 'person', userId: user.id, teamId, teamCount: teamIds.length, may: p => can({ kind: 'user', userId: user.id }, p, teamId) },
   };
 }

@@ -17,6 +17,7 @@ import {
   roleRowsInScope,
   slugHasPersonalRows,
 } from '@buildd/core/role-visibility';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export type StatedRoleRow = Pick<typeof workspaceSkills.$inferSelect,
   'id' | 'slug' | 'workspaceId' | 'teamId' | 'ownerUserId' | 'visibility' | 'enabled' | 'defaultBackend'>;
@@ -44,11 +45,11 @@ export async function checkStatedRole(
 ): Promise<StatedRoleCheck> {
   if (!roleSlug || !ctx.teamId) return { rows: [], refused: null };
   const rows: StatedRoleRow[] = await db.query.workspaceSkills.findMany({
-    where: and(
+    where: sqlWhere(and(
       roleRowsInScope({ teamId: ctx.teamId, workspaceId: ctx.workspaceId }),
       eq(workspaceSkills.slug, roleSlug),
       eq(workspaceSkills.isRole, true),
-    ),
+    )),
     columns: { ...ROLE_VISIBILITY_COLUMNS, enabled: true, defaultBackend: true },
   });
   if (rows.length === 0) return { rows, refused: null };

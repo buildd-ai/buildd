@@ -5,6 +5,7 @@ import { describe, it, expect } from 'bun:test';
 // import into anything that might one day be a client component.
 import {
   deriveMissionIntegrationPr,
+  describeMissionDelivery,
   deriveMissionProgressSubline,
   shouldRenderMissionPrBlock,
   type MissionPrTaskLike,
@@ -167,5 +168,47 @@ describe('deriveMissionProgressSubline', () => {
     });
 
     expect(line).toContain('2 awaiting merge');
+  });
+});
+
+// Scenario 8 (task f3bda4e1; workflow-kernel-library.md §6): with delivery
+// records, the surface shows the mission's current delivery and names the
+// shipped ones beside it. "Delivery 1 merged" is a fact, never the mission's verdict.
+describe('deriveMissionIntegrationPr with delivery records', () => {
+  const d = (epoch: number, state: 'open' | 'merged', prNumber: number | null, branch = epoch === 1 ? BRANCH : `${BRANCH}-delivery-${epoch}`) =>
+    ({ epoch, branch, state, prNumber, repoFullName: 'acme/app' });
+
+  it('delivery 1 merged, delivery 2 open with no PR yet: the view is delivery 2, never "merged"', () => {
+    // The owner rows alone read merged: the shipped delivery's PR is the only one on record.
+    const tasks = [landedTask(1), missionPrTask({ prNumber: 10, mergedAt: new Date(), prLifecycleStatus: 'merged' })];
+    const v = deriveMissionIntegrationPr({ mission: OPTED_IN, tasks, deliveries: [d(1, 'merged', 10), d(2, 'open', null)] })!;
+    expect(v).toMatchObject({ state: 'not_opened', delivery: 2, branch: `${BRANCH}-delivery-2`, prNumber: null });
+    expect(v.shippedDeliveries).toEqual([{ delivery: 1, prNumber: 10, prUrl: 'https://github.com/acme/app/pull/10' }]);
+    const words = describeMissionDelivery(v);
+    expect(words.heading).toBe('Delivery 2');
+    expect(words.earlier).toBe('Delivery 1 merged (#10).');
+    expect(words.line).not.toMatch(/reached the target branch/);
+    // Without delivery records the same rows read as a shipped mission: the old screenshot.
+    expect(deriveMissionIntegrationPr({ mission: OPTED_IN, tasks })!.state).toBe('merged');
+  });
+
+  it('delivery 2 has its PR open: awaiting merge, by its own number', () => {
+    const v = deriveMissionIntegrationPr({ mission: OPTED_IN, tasks: [], deliveries: [d(1, 'merged', 10), d(2, 'open', 11)] })!;
+    expect(v).toMatchObject({ state: 'open', delivery: 2, prNumber: 11 });
+    expect(deriveMissionProgressSubline({ missionStatus: 'active', totalTasks: 3, completedTasks: 3, awaitingMerge: 0, integrationPr: v }))
+      .toBe('3 of 3 tasks complete · delivery 2 PR #11 awaiting merge');
+  });
+
+  it('every delivery merged: the newest is the view, the earlier ones named', () => {
+    const v = deriveMissionIntegrationPr({ mission: OPTED_IN, tasks: [], deliveries: [d(1, 'merged', 10), d(2, 'merged', 11)] })!;
+    expect(v).toMatchObject({ state: 'merged', delivery: 2 });
+    expect(describeMissionDelivery(v).line).toContain('Delivery 2 reached the target branch');
+    expect(describeMissionDelivery(v).earlier).toBe('Delivery 1 merged (#10).');
+  });
+
+  it('while work is still running, the subline says the earlier delivery shipped, not that the mission did', () => {
+    const v = deriveMissionIntegrationPr({ mission: OPTED_IN, tasks: [], deliveries: [d(1, 'merged', 10), d(2, 'open', null)] })!;
+    expect(deriveMissionProgressSubline({ missionStatus: 'active', totalTasks: 4, completedTasks: 2, awaitingMerge: 0, integrationPr: v }))
+      .toBe('2 of 4 tasks complete · delivery 1 shipped');
   });
 });

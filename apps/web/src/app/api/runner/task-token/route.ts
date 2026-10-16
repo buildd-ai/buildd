@@ -9,6 +9,7 @@ import { canMintAdminTaskToken, mintTaskToken, missingTaskTokenScopes, type Task
 import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
 import { recordCapabilityDecision } from '@/lib/agent-capabilities/audit';
 import { isOrchestrationTask } from '@buildd/shared';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * POST /api/runner/task-token  { taskId, ttlMs?, level? } -> { token, taskId, expiresAt, level }
@@ -67,7 +68,7 @@ export async function POST(req: NextRequest) {
   }
 
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { id: true, workspaceId: true, roleSlug: true, mode: true, context: true },
     with: { workspace: { columns: { name: true, repo: true, githubRepoId: true } } },
   });

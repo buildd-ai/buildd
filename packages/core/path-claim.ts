@@ -31,6 +31,7 @@ import {
 } from './path-overlap';
 import { expiredParkedTaskIds } from './path-claim-ttl';
 import { outboxInsertSelectSql } from './dispatch-outbox';
+import { sqlWhere } from './db/relational-sql';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -89,10 +90,10 @@ async function dropExpiredParkedHolders(byTask: Map<string, string[]>): Promise<
   if (byTask.size === 0) return;
   try {
     const live = await db.query.workers.findMany({
-      where: and(
+      where: sqlWhere(and(
         inArray(workers.taskId, [...byTask.keys()]),
         inArray(workers.status, LIVE_WORKER_STATUSES),
-      ),
+      )),
       columns: { taskId: true, status: true, updatedAt: true },
     });
     for (const taskId of expiredParkedTaskIds(live ?? [])) byTask.delete(taskId);
@@ -117,11 +118,11 @@ async function dropExpiredParkedHolders(byTask: Map<string, string[]>): Promise<
 async function findTerminalHolders(taskIds: string[]): Promise<Set<string>> {
   const [holderTasks, holderWorkers] = await Promise.all([
     db.query.tasks.findMany({
-      where: inArray(tasks.id, taskIds),
+      where: sqlWhere(inArray(tasks.id, taskIds)),
       columns: { id: true, status: true },
     }),
     db.query.workers.findMany({
-      where: inArray(workers.taskId, taskIds),
+      where: sqlWhere(inArray(workers.taskId, taskIds)),
       columns: { taskId: true, status: true },
     }),
   ]);
@@ -185,11 +186,11 @@ async function dropTerminalHolders(byTask: Map<string, string[]>): Promise<void>
 export async function findStaleClaimHolderTaskIds(): Promise<string[]> {
   const [activeClaims, pendingWaiters] = await Promise.all([
     db.query.pathClaims.findMany({
-      where: isNull(pathClaims.releasedAt),
+      where: sqlWhere(isNull(pathClaims.releasedAt)),
       columns: { taskId: true },
     }),
     db.query.pathClaimWaiters.findMany({
-      where: isNull(pathClaimWaiters.notifiedAt),
+      where: sqlWhere(isNull(pathClaimWaiters.notifiedAt)),
       columns: { blockingTaskId: true },
     }),
   ]);
@@ -209,11 +210,11 @@ export async function findStaleClaimHolderTaskIds(): Promise<string[]> {
   const waiterOnly = [...terminal].filter(id => !holderIds.has(id));
   if (waiterOnly.length > 0) {
     const prWorkers = await db.query.workers.findMany({
-      where: and(
+      where: sqlWhere(and(
         inArray(workers.taskId, waiterOnly),
         isNull(workers.mergedAt),
         inArray(workers.status, [...OPEN_PR_WORKER_STATUSES] as typeof LIVE_WORKER_STATUSES[number][]),
-      ),
+      )),
       columns: { taskId: true, prUrl: true, prLifecycleStatus: true },
     });
     for (const w of prWorkers ?? []) {
@@ -241,10 +242,10 @@ export async function checkPathClaimConflict(
   paths: string[],
 ): Promise<ClaimConflict | null> {
   const activeClaims = await db.query.pathClaims.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(pathClaims.workspaceId, workspaceId),
       isNull(pathClaims.releasedAt),
-    ),
+    )),
     columns: { taskId: true, path: true },
   });
 
@@ -284,10 +285,10 @@ export async function getActiveClaimsByWorkspace(
   workspaceId: string,
 ): Promise<Map<string, string[]>> {
   const activeClaims = await db.query.pathClaims.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(pathClaims.workspaceId, workspaceId),
       isNull(pathClaims.releasedAt),
-    ),
+    )),
     columns: { taskId: true, path: true },
   });
 
@@ -420,7 +421,7 @@ export interface BlockedPath {
  */
 async function readHolders(workspaceId: string, taskId: string) {
   const rows = await db.query.pathClaims.findMany({
-    where: and(eq(pathClaims.workspaceId, workspaceId), isNull(pathClaims.releasedAt)),
+    where: sqlWhere(and(eq(pathClaims.workspaceId, workspaceId), isNull(pathClaims.releasedAt))),
     columns: { taskId: true, path: true },
   });
   const byTask = new Map<string, string[]>();
@@ -1105,10 +1106,10 @@ async function detectDeadlockCycle(
 
     // Where is taskId currently waiting? Follow waiting → blocking edges.
     const waitingOn = await db.query.pathClaimWaiters.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(pathClaimWaiters.waitingTaskId, taskId),
         isNull(pathClaimWaiters.notifiedAt),
-      ),
+      )),
       columns: { blockingTaskId: true },
     });
 
@@ -1140,11 +1141,11 @@ export async function checkStarvation(workspaceId: string): Promise<void> {
   const cutoff = new Date(Date.now() - STARVATION_THRESHOLD_MINUTES * 60 * 1000);
 
   const starved = await db.query.pathClaimWaiters.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(pathClaimWaiters.workspaceId, workspaceId),
       isNull(pathClaimWaiters.notifiedAt),
       lt(pathClaimWaiters.registeredAt, cutoff),
-    ),
+    )),
     columns: { waitingTaskId: true, blockingTaskId: true, blockedPath: true },
     with: {
       waitingTask: { columns: { missionId: true, title: true } },

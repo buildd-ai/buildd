@@ -78,17 +78,29 @@ describe('discoverAndRegister', () => {
 });
 
 describe('registrationRefusalBody', () => {
-  it("uses the catalog's Vercel guidance for Vercel's approved-clients-only refusal", () => {
+  it('tells the person only that Vercel is not available, never the review link or vendor wording', () => {
     const body = registrationRefusalBody(new FakeRejected(true), 'https://mcp.vercel.com/');
-    expect(body?.error).toBe('needs_approved_client');
-    expect(body?.message).toContain('Vercel');
-    expect(body?.actionUrl).toContain('vercel.com/docs');
+    expect(body).toEqual({ error: 'needs_approved_client', message: "Vercel isn't available to connect." });
   });
 
-  it('names the host and the provider reason for an unlisted server', () => {
+  it('keeps the provider reason for an unlisted server out of the message', () => {
     const body = registrationRefusalBody(new FakeRejected(true, 'redirect not approved'), 'https://mcp.example.org/mcp');
-    expect(body?.message).toContain('mcp.example.org');
-    expect(body?.message).toContain('redirect not approved');
+    expect(body?.message).toBe("mcp.example.org isn't available to connect.");
+    expect(JSON.stringify(body)).not.toContain('redirect not approved');
+  });
+
+  it('logs the vendor refusal and the client review link for operators', () => {
+    const warn = console.warn;
+    const lines: string[] = [];
+    console.warn = (m: unknown) => { lines.push(String(m)); };
+    try {
+      registrationRefusalBody(new FakeRejected(true, 'redirect not approved'), 'https://mcp.vercel.com/');
+    } finally {
+      console.warn = warn;
+    }
+    const logged = JSON.parse(lines[0]);
+    expect(logged).toMatchObject({ event: 'connector.registration_refused', host: 'mcp.vercel.com', catalogSlug: 'vercel', providerError: 'redirect not approved' });
+    expect(logged.clientReviewUrl).toContain('vercel.com/docs');
   });
 
   it('returns null for outages and unrelated errors, leaving the generic error', () => {

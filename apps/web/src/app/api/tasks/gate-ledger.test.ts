@@ -97,6 +97,8 @@ mock.module('@/lib/account-workspace-cache', () => ({
 mock.module('@/lib/team-access', () => ({
   getUserWorkspaceIds: async () => [WS],
   verifyAccountWorkspaceAccess: async () => true,
+  // A person's task delegation (lib/task-delegation-checks.ts); unused here.
+  verifyWorkspaceAccess: async () => null,
 }));
 // Workspace reach is covered by lib/workspace-access.test.ts and route.test.ts.
 mock.module('@/lib/workspace-access', () => ({
@@ -377,7 +379,7 @@ describe('POST /api/tasks — gate ledger wiring', () => {
     expect(events[0].outcome).toBe('rejected');
   });
 
-  // ── Advisory kind gate (mission-legibility.md Rule K2-13/K2-14) ───────────
+  // ── Advisory kind gate (mission-legibility.md R-25/R-26) ───────────
 
   it('AC-15 (rejection): a mission task with no kind is WARNED, never 400ed', async () => {
     // `kind` is meaningful on every task, so a hard gate would fire on all of

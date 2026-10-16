@@ -39,6 +39,12 @@ const DEGRADED_PATTERNS: string[] = [
   'credentials expired',
   'no codex auth',
   'agent authentication failed',
+  // The CLI's wording for a rejected OAuth token at session start:
+  // "Failed to authenticate. API Error: 401 … OAuth access token is invalid".
+  // Without these a dead login was booked as the task's own code failure.
+  'failed to authenticate',
+  'oauth access token is invalid',
+  'access token is invalid',
   // The Claude CLI's own terminal-session message ("Not logged in · Please
   // run /login") when a worker's OAuth token goes stale mid-session. The
   // runner's `isAuthError` (claim-breaker.ts, assertion-exchange.ts) is built

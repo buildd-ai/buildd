@@ -132,7 +132,7 @@ describe('MissionDecisionSheet (mounted): visual audit', () => {
 
     expect(container.querySelector('[data-testid="surface-audit-waived"]')).toBeNull();
     const alert = container.querySelector('[role="alert"]')?.textContent ?? '';
-    expect(alert).toContain('Nothing was recorded');
+    expect(alert).toContain('Couldn’t save the waiver. Try again.');
     expect(container.textContent).not.toContain('manage_missions');
     expect(container.textContent).not.toContain('[surface audit]');
     expect(refresh).not.toHaveBeenCalled();

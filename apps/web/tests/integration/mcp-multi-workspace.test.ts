@@ -665,19 +665,28 @@ describe.skipIf(!ENABLED)('live: one MCP connection across teams', () => {
     let clientId = '';
     let tok: TokenSet;
 
-    test('authorize without the resource keeps the one-workspace flow and its token', async () => {
+    test('an app at the older address gets consent for that one workspace and its token', async () => {
       clientId = await registerClient('e2e legacy client');
       const { verifier, challenge } = pkce();
-      const page = await getConsent(authorizeUrl(clientId, challenge, { resource: null, workspace: W.a1, scope: 'mcp' }), W.cookie);
+      const legacyResource = `${SERVER}/api/mcp-oauth/${W.a1}`;
+      const page = await getConsent(authorizeUrl(clientId, challenge, { resource: legacyResource, scope: 'mcp' }), W.cookie);
       expect(page.status).toBe(200);
       const html = await page.text();
-      expect(html).not.toContain('data-consent="account"');
+      expect(html).toContain('data-consent="legacy"');
+      expect(html).toContain(`${SERVER}/api/mcp<`);
+      expect(html).not.toMatch(/separate connector/i);
       const res = await postConsent([...formOf(html), ['decision', 'approve']], W.cookie);
       expect(res.status).toBe(200);
       const { code } = codeFrom(await res.text());
-      const t = await tokenRequest({ grant_type: 'authorization_code', code, client_id: clientId, redirect_uri: REDIRECT, code_verifier: verifier });
+      const t = await tokenRequest({ grant_type: 'authorization_code', code, client_id: clientId, redirect_uri: REDIRECT, code_verifier: verifier, resource: legacyResource });
       expect(t.status).toBe(200);
       tok = t.body;
+    }, T);
+
+    test('authorize without a resource opens the account consent page', async () => {
+      const page = await getConsent(authorizeUrl(await registerClient('e2e no-resource client'), pkce().challenge, { resource: null }), W.cookie);
+      expect(page.status).toBe(200);
+      expect(await page.text()).toContain('data-consent="account"');
     }, T);
 
     test('works on its own endpoint, with Deprecation and successor Link headers', async () => {

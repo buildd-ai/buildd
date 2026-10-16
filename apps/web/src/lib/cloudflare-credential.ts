@@ -9,12 +9,15 @@ import { and, eq, isNull, desc } from 'drizzle-orm';
 import { recordCredentialAuthSuccess } from './credential-health';
 import {
   CLOUDFLARE_PURPOSE,
+  capabilityProblems,
+  checkCloudflareCapabilities,
   parseCloudflareCredential,
   verifyCloudflareToken,
   type CloudflareCredential,
   type CloudflareVerifyResult,
   type FetchLike,
 } from './cloudflare-credential-shared';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export * from './cloudflare-credential-shared';
 
@@ -23,13 +26,13 @@ export * from './cloudflare-credential-shared';
 /** The team's team-wide Cloudflare credential row, newest first. */
 export async function findCloudflareSecret(teamId: string) {
   return db.query.secrets.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(secrets.teamId, teamId),
       eq(secrets.purpose, CLOUDFLARE_PURPOSE),
       isNull(secrets.workspaceId),
       isNull(secrets.userId),
-    ),
-    orderBy: desc(secrets.updatedAt),
+    )),
+    orderBy: sqlOrderBy(desc(secrets.updatedAt)),
     columns: {
       id: true, teamId: true, label: true, encryptedValue: true, healthStatus: true,
       lastVerifiedAt: true, lastVerificationError: true, createdAt: true, updatedAt: true,
@@ -54,7 +57,7 @@ export function decodeCloudflareValue(encryptedValue: string): CloudflareCredent
  */
 export async function verifyCloudflareCredential(secretId: string, fetchImpl: FetchLike = fetch): Promise<CloudflareVerifyResult> {
   const row = await db.query.secrets.findFirst({
-    where: and(eq(secrets.id, secretId), eq(secrets.purpose, CLOUDFLARE_PURPOSE)),
+    where: sqlWhere(and(eq(secrets.id, secretId), eq(secrets.purpose, CLOUDFLARE_PURPOSE))),
     columns: { encryptedValue: true },
   });
   if (!row) return { verified: false, error: 'Credential not found' };
@@ -62,10 +65,17 @@ export async function verifyCloudflareCredential(secretId: string, fetchImpl: Fe
   if (!cred) return { verified: false, error: 'Failed to decrypt credential' };
 
   const result = await verifyCloudflareToken(cred, fetchImpl);
+  // An active token can still be refused by Workers AI or the gateway; say so,
+  // and keep it on the row so the card still says so after a reload.
+  if (result.verified) result.capabilities = await checkCloudflareCapabilities(cred, fetchImpl);
   const now = new Date();
   await db
     .update(secrets)
-    .set({ lastVerifiedAt: now, lastVerificationError: result.error, updatedAt: now })
+    .set({
+      lastVerifiedAt: now,
+      lastVerificationError: result.error ?? (result.capabilities ? capabilityProblems(result.capabilities) : null),
+      updatedAt: now,
+    })
     .where(eq(secrets.id, secretId));
 
   if (result.verified) {

@@ -27,6 +27,7 @@ import { eq, and, inArray, isNotNull, isNull, gte, like } from 'drizzle-orm';
 import { resolvePolicy } from '@/lib/merge-policy';
 import { notifyTeamOf } from '@/lib/notify';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const maxDuration = 60;
 const DEFAULT_STALL_MINUTES = 30;
@@ -39,10 +40,10 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
 
   // Find all workers with open (unmerged) PRs
   const openPrWorkers = await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       isNotNull(workers.prUrl),
       isNull(workers.mergedAt),
-    ),
+    )),
     columns: {
       id: true,
       taskId: true,
@@ -68,7 +69,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
   // Load workspaces for policy resolution
   const uniqueWsIds = [...new Set(openPrWorkers.map(w => w.workspaceId))];
   const workspaceRows = await db.query.workspaces.findMany({
-    where: inArray(workspaces.id, uniqueWsIds),
+    where: sqlWhere(inArray(workspaces.id, uniqueWsIds)),
     columns: { id: true, repo: true, gitConfig: true },
   });
   const wsMap = new Map(workspaceRows.map(ws => [ws.id, ws]));
@@ -89,7 +90,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
   const missionMap = new Map<string, { workingBranch: string | null; integrationBranchEnabled: boolean }>();
   if (missionIdsForPolicy.length > 0) {
     const missionRows = await db.query.missions.findMany({
-      where: inArray(missions.id, missionIdsForPolicy),
+      where: sqlWhere(inArray(missions.id, missionIdsForPolicy)),
       columns: { id: true, workingBranch: true, integrationBranchEnabled: true },
     });
     for (const m of missionRows) {
@@ -106,11 +107,11 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
   const escalatedNoteTaskIds = new Set<string>();
   if (taskIds.length > 0) {
     const escalatedNotes = await db.query.missionNotes.findMany({
-      where: and(
+      where: sqlWhere(and(
         inArray(missionNotes.taskId, taskIds),
         eq(missionNotes.type, 'reviewer_escalated'),
         eq(missionNotes.status, 'open'),
-      ),
+      )),
       columns: { taskId: true },
     });
     for (const n of escalatedNotes) {
@@ -154,12 +155,12 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     const windowStart = new Date(now - stallMs);
     if (missionId) {
       const recentStallNote = await db.query.missionNotes.findFirst({
-        where: and(
+        where: sqlWhere(and(
           eq(missionNotes.missionId, missionId),
           eq(missionNotes.type, 'warning'),
           like(missionNotes.title, `[stall-notify] PR #${worker.prNumber}%`),
           gte(missionNotes.createdAt, windowStart),
-        ),
+        )),
         columns: { id: true },
       });
       if (recentStallNote) continue; // Already notified in this window

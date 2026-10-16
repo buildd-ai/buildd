@@ -16,13 +16,14 @@
  * Self-contained: it owns the in-flight action and its error, and calls
  * `onChanged` after a successful action so the host can refetch.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import Link from 'next/link';
-import WorkerRespondInput from '@/components/WorkerRespondInput';
+import TaskQuestion from '@/components/tasks/TaskQuestion';
+import type { QuestionNoteLike } from '@/app/app/(protected)/tasks/[id]/question-hero';
 import AnswerRecorded from '@/components/AnswerRecorded';
 import { useAnswerSubmit } from '@/app/app/(protected)/tasks/[id]/respond/use-answer-submit';
 import Spinner from '@/components/Spinner';
-import ClaimTaskHint from '@/components/tasks/ClaimTaskHint';
+import ClaimTaskHint, { CLAIM_ROW_BTN } from '@/components/tasks/ClaimTaskHint';
 import RunnerPicker from '@/components/tasks/RunnerPicker';
 import Disclosure from '@/components/ui/Disclosure';
 import type { TaskFailureKind } from '@/lib/task-failure-kind';
@@ -81,7 +82,12 @@ export interface TaskActionZoneProps {
   failureKind?: TaskFailureKind | null;
   /** Set when this task IS the surface audit: a verification failure then offers "Retry the audit". */
   auditTaskId?: string | null;
-  worker: { id: string; waitingFor: Pick<WaitingFor, 'prompt' | 'options' | 'context'> | null } | null;
+  worker: {
+    id: string;
+    waitingFor: Pick<WaitingFor, 'prompt' | 'options' | 'context' | 'recommended' | 'where'> | null;
+    /** The open question note recording the same ask: its headline leads, and an answer marks it. */
+    questionNote?: QuestionNoteLike | null;
+  } | null;
   /** "View history" target on failure; omitted on the full page itself. */
   historyHref?: string | null;
   roleSlug?: string | null;
@@ -102,6 +108,18 @@ export interface TaskActionZoneProps {
   /** The task's title, named in the Force start confirmation. */
   taskTitle?: string | null;
   onChanged?: () => void | Promise<void>;
+  /**
+   * False inside a card that already frames the task (the mission Overview's
+   * focus card, the strip drawer): the Blocked notice and the Run now group
+   * drop their own boxes.
+   */
+  framed?: boolean;
+  /**
+   * A way into the task (the strip's Task link). It joins the Run now row, at
+   * that row's button size, so a local task's actions read as one row (R-39);
+   * with no Run now row it closes the zone on its own row.
+   */
+  trailing?: ReactNode;
 }
 
 const SECONDARY_BTN = 'inline-flex min-h-11 items-center justify-center gap-1.5 border-2 border-border-strong px-3 font-mono text-meta font-medium text-text-primary hover:bg-surface-3 disabled:opacity-50';
@@ -127,6 +145,8 @@ export default function TaskActionZone({
   credentialBlock = null,
   taskTitle = null,
   onChanged,
+  framed = true,
+  trailing = null,
 }: TaskActionZoneProps) {
   const displayTz = useDisplayTimezone();
   const [retrying, setRetrying] = useState<'same' | 'switch' | null>(null);
@@ -201,7 +221,11 @@ export default function TaskActionZone({
     void fetchTaskWaiting(taskId).then(w => { if (!cancelled) setWaiting(w); });
     return () => { cancelled = true; };
   }, [probeWaiting, taskId, start.status]);
-  const held = waiting ? refusalFromWaiting(waiting) : null;
+  const probed = waiting ? refusalFromWaiting(waiting) : null;
+  // A local mission's task held by nothing else is just "claim it from a
+  // local session": the one-line note says that, not a Held line beside it.
+  const localOnly = !!probed?.waitingReasons?.length && probed.waitingReasons.every(r => r.kind === 'mission_local');
+  const held = localOnly && local ? null : probed;
   const queuedHeld = start.status === 'queued' && start.waiting ? refusalFromWaiting(start.waiting) : null;
 
   const refusal = start.refusal;
@@ -223,21 +247,22 @@ export default function TaskActionZone({
       data-actions={actions.join(' ')}
       className="space-y-3 empty:hidden"
     >
-      {/* Needs input → respond inline */}
+      {/* A question → the task page's own question card, compact: the same
+          question (its note's headline too), options, recommendation and
+          own-words field, answered in place. */}
       {answer.outcome || answeredAwaitingAgent ? (
         <AnswerRecorded outcome={answer.outcome} awaitingAgent={!MOVED_ON.has(phase)} />
       ) : has('answer') && worker?.waitingFor && (
-        <div className="border-2 border-status-warning p-4">
-          <span className="font-mono text-[11px] font-semibold uppercase tracking-wider text-status-warning">Needs input</span>
-          <WorkerRespondInput
-            workerId={worker.id}
-            taskId={taskId}
-            question={worker.waitingFor.prompt}
-            options={worker.waitingFor.options}
-            context={worker.waitingFor.context}
-            answer={answer}
-          />
-        </div>
+        <TaskQuestion
+          testId="task-sheet-question"
+          variant="compact"
+          taskId={taskId}
+          workerId={worker.id}
+          waitingFor={worker.waitingFor}
+          questionNote={worker.questionNote ?? null}
+          role={roleSlug}
+          answer={answer}
+        />
       )}
 
       {/* Work landed, audit failed → say so; the audit's own surface retries the audit */}
@@ -333,7 +358,7 @@ export default function TaskActionZone({
         </div>
       )}
       {has('blocked') && start.status === 'idle' && !held?.waitingReasons && (
-        <div className="border border-status-warning p-4">
+        <div data-testid="task-blocked" className={framed ? 'border border-status-warning p-4' : undefined}>
           <p className="font-mono text-[12px] font-medium text-status-warning">
             Blocked · waiting on {blockedByCount} {blockedByCount === 1 ? 'dependency' : 'dependencies'}
           </p>
@@ -351,7 +376,7 @@ export default function TaskActionZone({
 
       {/* Queued → run now (a local mission's task: claim it from a session first) */}
       {showRunNow && (
-        <div className="space-y-3 border border-border-default p-4">
+        <div data-testid="task-run-now" className={framed ? 'space-y-3 border border-border-default p-4' : 'space-y-2'}>
           {held?.waitingReasons ? (
             <WaitingLine reasons={held.waitingReasons}>
               {waiting?.forceStart ? (
@@ -364,22 +389,29 @@ export default function TaskActionZone({
             </WaitingLine>
           ) : !hideQueuedNote && <p className="font-mono text-meta text-text-secondary">
             {local
-              ? "Waiting for a local session to claim it. Runners never pick up this mission's tasks."
+              ? 'Ready to start. Claim it from a local session.'
               : 'Waiting for a runner to claim it.'}
           </p>}
-          {has('claim_hint') && <ClaimTaskHint taskId={taskId} />}
           {runnerPicker && workspaceId && (
             <RunnerPicker workspaceId={workspaceId} value={target} onChange={setTarget} disabled={starting} />
           )}
-          <button
-            type="button"
-            data-action="run_now"
-            onClick={() => start.start({ targetLocalUiUrl: target || undefined })}
-            disabled={starting}
-            className={local ? SECONDARY_BTN : 'btn btn-primary min-h-11 shrink-0'}
-          >
-            {start.pending === 'start' ? 'Starting…' : 'Run now'}
-          </button>
+          {(() => {
+            const runNow = (
+              <button
+                type="button"
+                data-action="run_now"
+                onClick={() => start.start({ targetLocalUiUrl: target || undefined })}
+                disabled={starting}
+                className={local ? CLAIM_ROW_BTN : 'btn btn-primary min-h-11 shrink-0 md:min-h-9'}
+              >
+                {start.pending === 'start' ? 'Starting…' : 'Run now'}
+              </button>
+            );
+            // A local task: Copy, Run now and Task are one row at one size (R-39).
+            return has('claim_hint')
+              ? <ClaimTaskHint taskId={taskId} actions={<>{runNow}{trailing}</>} />
+              : <div className="flex flex-wrap items-center gap-2">{runNow}{trailing}</div>;
+          })()}
         </div>
       )}
 
@@ -406,12 +438,12 @@ export default function TaskActionZone({
               </p>
               <p className="text-eyebrow text-text-secondary">
                 {start.status === 'accepted'
-                  ? 'A worker claimed the task.'
+                  ? 'A runner picked it up.'
                   : start.forced
-                    ? `Skipping: ${start.forced.gates.join(', ')}. A runner claims it on its next poll.`
+                    ? `Skipping: ${start.forced.gates.join(', ')}. Starts next.`
                     : start.status === 'queued'
-                      ? 'No runner has responded. The task is first in the queue and starts on the next claim cycle.'
-                      : 'Waiting for a worker to claim it.'}
+                      ? 'No runner has responded. It’s next in the queue.'
+                      : 'Waiting for a runner.'}
               </p>
             </div>
           </div>
@@ -467,7 +499,7 @@ export default function TaskActionZone({
               </p>
             )}
           </div>
-          {refusal.gateReason === 'workspace_cap_reached' && (
+          {refusal.gateReason === 'workspace_cap_reached' && refusal.canRaiseCap && (
             <div className="flex flex-wrap items-center gap-2 font-mono text-meta">
               <span className="text-text-secondary">Raise the workspace limit to</span>
               <div className="inline-flex shrink-0 items-center gap-2">
@@ -509,6 +541,8 @@ export default function TaskActionZone({
         </div>
       )}
 
+      {!showRunNow && trailing && <div className="flex flex-wrap items-center gap-2">{trailing}</div>}
+
       {start.status === 'failed' && start.error && (
         <div className="flex flex-wrap items-center gap-2">
           <p role="alert" className="font-mono text-meta text-status-error">{start.error}</p>
@@ -523,7 +557,7 @@ export default function TaskActionZone({
 function ForcePending() {
   return (
     <p data-testid="task-force-pending" className="font-mono text-eyebrow text-text-secondary">
-      Force start requested. The next runner claim skips this wait.
+      Force start requested. Starts next.
     </p>
   );
 }
@@ -602,7 +636,6 @@ export function CoordinationRefusal({ refusal, pending, onForce, onCancel, taskT
           {(offer.redLines ?? []).map(line => (
             <p key={line} data-testid="task-force-red-line" className="text-status-error [overflow-wrap:anywhere]">{line}</p>
           ))}
-          <p className="text-text-muted">This start and how it lands (merged cleanly, conflicted, needed repair) are recorded and used to tune automatic holds.</p>
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"

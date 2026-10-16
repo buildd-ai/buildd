@@ -35,6 +35,7 @@ import { fireDeferralEvent, GATE_SLUGS } from './gate-ledger';
 // elapsed-time definition, which the mission header's much earlier surfacing
 // threshold is pinned to so the two cannot drift apart independently.
 import { isStranded, STRAND_MS } from './claim-deferral-thresholds';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const STRANDED_NOTE_PREFIX = '[stranded]';
 
@@ -184,7 +185,7 @@ export async function sweepStrandedTasks(): Promise<StrandedSweepResult> {
       ` Nothing re-arms this automatically; it needs a look.`;
 
     const existingNote = await db.query.missionNotes.findFirst({
-      where: and(eq(missionNotes.taskId, c.id), eq(missionNotes.title, title), eq(missionNotes.status, 'open')),
+      where: sqlWhere(and(eq(missionNotes.taskId, c.id), eq(missionNotes.title, title), eq(missionNotes.status, 'open'))),
       columns: { id: true, body: true },
     });
 

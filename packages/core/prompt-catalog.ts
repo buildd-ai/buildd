@@ -16,6 +16,8 @@ import './task-size-bucket-decision';
 import './decision-kind-post-session-triage';
 import './decision-kind-scout-probe-selection';
 import './decision-kind-failure-incident-triage';
+import './decision-kind-operator-recovery';
+import './decision-kind-mission-scope';
 import './manifest-prediction';
 
 export { listRegisteredPrompts, type RegisteredPrompt } from './prompts';

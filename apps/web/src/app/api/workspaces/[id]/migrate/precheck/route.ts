@@ -4,6 +4,7 @@ import { workspaces, artifacts } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { authenticateMigration, isTeamAdmin } from '@/lib/migrate-access';
 import { collectMigrationSnapshot, classifyMigration, signDryRunToken } from '@/lib/workspace-migration';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * POST /api/workspaces/[id]/migrate/precheck  (spec BT-2)
@@ -24,7 +25,7 @@ export async function POST(
   if (auth.type === 'dev') return NextResponse.json({ report: null });
 
   const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, id),
+    where: sqlWhere(eq(workspaces.id, id)),
     columns: { id: true, teamId: true },
   });
   if (!ws || !auth.teamIds.includes(ws.teamId)) {

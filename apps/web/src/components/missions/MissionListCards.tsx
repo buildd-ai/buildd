@@ -199,7 +199,7 @@ export function ActiveMissionCard({ view, model, workspaceName }: ListCardProps)
           {counts.inCi > 0 && <span><b className="font-semibold text-text-primary">{counts.inCi}</b> in CI</span>}
           {counts.running > 0 && <span><b className="font-semibold text-text-primary">{counts.running}</b> running</span>}
           {counts.needsYou > 0 && (
-            <span className="text-status-warning"><b className="font-semibold">{counts.needsYou}</b> {model.question ? 'question' : 'needs you'}</span>
+            <span className="text-status-warning"><b className="font-semibold">{counts.needsYou}</b> {model.question ? (counts.needsYou === 1 ? 'question' : 'questions') : 'waiting on you'}</span>
           )}
           {counts.failed > 0 && <span className="text-status-error"><b className="font-semibold">{counts.failed}</b> failed</span>}
           {counts.open > 0 && <span className="text-text-muted">{counts.open} open</span>}

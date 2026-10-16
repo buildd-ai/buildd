@@ -88,9 +88,13 @@ describe('buildMissionListCard — a worker waiting on the owner', () => {
   const card = build(row);
 
   it('says Needs you and carries the inline answer strip', () => {
-    expect(card.status).toEqual({ label: 'Needs you', tone: 'warning' });
+    expect(card.status).toEqual({ label: 'Waiting on you', tone: 'warning' });
     expect(card.question).toMatchObject({ taskId: 'checkout', workerId: 'w-q', label: 'checkout', options: ['Per line', 'Total only'] });
     expect(card.counts.needsYou).toBe(1);
+  });
+
+  it('its Answer link opens the task page, the full answering experience', () => {
+    expect(card.question?.href).toBe('/app/tasks/checkout?from=mission&missionId=m2&respond=1');
   });
 });
 
@@ -112,11 +116,11 @@ describe('buildMissionListCard — a PR that just went green is merging, not an 
     const card = build(mk(20_000));
     expect(card.counts.needsYou).toBe(0);
     expect(card.phases.flatMap(p => p.cells).find(c => c.taskId === 'inv')?.state).not.toBe('needs_you');
-    expect(card.status.label).not.toBe('Needs you');
+    expect(card.status.label).not.toBe('Waiting on you');
   });
   it('once auto-merge had its chance and the PR is still open, it is yours', () => {
     const card = build(mk(30 * 60_000));
-    expect(card.status.label).toBe('Needs you');
+    expect(card.status.label).toBe('Waiting on you');
   });
 });
 
@@ -223,7 +227,7 @@ describe('buildMissionListCard — recurring, held and done', () => {
     expect(card.kind).toBe('active');
     expect(card.status).toEqual({ label: 'Local', tone: 'accent' });
     expect(card.held).toBeNull();
-    expect(card.sentence).toBe('Waiting for a local session to claim its 2 open tasks.');
+    expect(card.sentence).toBe('2 tasks ready to start from a local session.');
     expect(card.sentence).not.toMatch(/no live worker|stall/i);
     expect(summary.group).toBe('running');
     expect(summary.state.chip.label).toBe('LOCAL');

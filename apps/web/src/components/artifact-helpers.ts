@@ -101,7 +101,7 @@ export function getArtifactPreview(artifact: ArtifactPreviewInput): string | nul
         ? `${(sizeBytes / 1024).toFixed(1)} KB`
         : `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`
       : null;
-    return [filename, size].filter(Boolean).join(' — ') || 'File';
+    return [filename, size].filter(Boolean).join(' · ') || 'File';
   }
   if (!artifact.content) return null;
   if (artifact.type === 'data') {

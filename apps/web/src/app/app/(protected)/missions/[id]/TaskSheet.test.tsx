@@ -88,6 +88,15 @@ describe('TaskSheet — opens at once (AC-7)', () => {
 });
 
 describe('TaskSheet — body', () => {
+  // Regression (owner report): the sheet printed the description as raw
+  // markdown run together ("## Original Task ... ## Question Asked ...").
+  it('renders the description as markdown, as the task page does', () => {
+    const html = render({ summary: { data: summaryData({ description: '## Original Task\nScratch task\n\n## Question Asked\nTabs or spaces?' }), loading: false, error: null } });
+    expect(html).toContain('data-testid="task-sheet-description"');
+    expect(html).toMatch(/<h2[^>]*>Original Task<\/h2>/);
+    expect(html).not.toContain('## Original Task');
+  });
+
   it('keeps task-header-status on the status badge (AC-19)', () => {
     const html = render({ summary: { data: summaryData(), loading: false, error: null } });
     expect(html).toMatch(/data-testid="task-header-status" data-status="completed"/);

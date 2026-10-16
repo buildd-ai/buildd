@@ -24,8 +24,9 @@
  * | `personal_only`       | requester's own key ⇒ `personal`; otherwise `refuse` (`no_personal_credential`). |
  *
  * Under `personal`, `withhold` and `refuse` no team model credential (Anthropic
- * key, seat, Claude/Codex credential, endpoint, pre-refresh list) is attached
- * for the worker; MCP and role secrets are not model credentials and still go.
+ * key, Codex API key, endpoint) is attached for the worker; MCP and role
+ * secrets are not model credentials and still go. No claim carries a
+ * subscription login at all (model credentials spec R-2).
  *
  * ## Limits, deliberately
  *
@@ -39,8 +40,8 @@
  *   `personal_first` it gets the team credentials, under `personal_only` the
  *   task is deferred for a runner that can take it.
  * - **API keys only.** Anthropic for Claude tasks, OpenAI for Codex tasks.
- *   Personal subscription seats are pending in the registry; personal
- *   endpoints are not a registry scope.
+ *   A personal subscription login stays on its owner's machine (spec R-2);
+ *   personal endpoints are not a registry scope.
  * - **Cloud claims** never carry a model credential: cloud egress
  *   (`/api/runner/model-endpoint`) resolves the route per run with the same
  *   requester rule. Here `personal_only` only checks that egress would find a
@@ -60,6 +61,7 @@ import {
 } from '@buildd/core/providers';
 import type { ProviderCredentialResult, ResolveProviderCredentialInput } from '@buildd/core/providers/resolve';
 import type { RequesterTaskFields } from '@buildd/core/task-requester';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export { PERSONAL_CREDENTIAL_RUNNER_FEATURE };
 
@@ -118,7 +120,7 @@ const defaultDeps: PersonalCredentialDeps = {
       import('drizzle-orm'),
     ]);
     const row = await db.query.teams.findFirst({
-      where: eq(teams.id, teamId),
+      where: sqlWhere(eq(teams.id, teamId)),
       columns: { credentialPolicy: true, inferenceKeyPolicy: true },
     });
     return row ?? null;

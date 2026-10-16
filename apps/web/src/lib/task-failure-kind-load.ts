@@ -3,6 +3,7 @@ import { tasks } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
 import { classifyTaskFailure, type TaskFailureKind } from './task-failure-kind';
+import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * The failure kind of one task, read against the rest of its mission. Only a
@@ -13,12 +14,12 @@ export async function loadTaskFailureKind(task: { id: string; title: string; sta
   if (task.status !== 'failed') return null;
   if (!task.missionId) return 'execution';
   const rows = await db.query.tasks.findMany({
-    where: eq(tasks.missionId, task.missionId),
+    where: sqlWhere(eq(tasks.missionId, task.missionId)),
     columns: { id: true, title: true, status: true },
     with: {
       workers: {
         columns: { status: true, prUrl: true, mergedAt: true, prLifecycleStatus: true },
-        orderBy: (w, { desc }) => desc(w.createdAt),
+        orderBy: sqlOrderByFn((w, { desc }) => desc(w.createdAt)),
         limit: 1,
       },
     },

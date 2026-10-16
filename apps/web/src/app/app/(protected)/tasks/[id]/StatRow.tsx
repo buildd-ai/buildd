@@ -8,7 +8,9 @@ export function formatTokens(n: number): string | null {
 }
 
 /** Literal class names so Tailwind keeps them. */
-const MD_COLS: Record<number, string> = { 1: 'md:grid-cols-1', 2: 'md:grid-cols-2', 3: 'md:grid-cols-3', 4: 'md:grid-cols-4', 5: 'md:grid-cols-5' };
+// Container widths, not the viewport's: the row also sits in the mission
+// sheet's narrow panel on a desktop screen, where five tiles do not fit.
+const WIDE_COLS: Record<number, string> = { 1: '@xl:grid-cols-1', 2: '@xl:grid-cols-2', 3: '@xl:grid-cols-3', 4: '@xl:grid-cols-4', 5: '@xl:grid-cols-5' };
 
 /**
  * One figure and its label. With `link`, the whole tile is the link: its
@@ -18,7 +20,7 @@ const MD_COLS: Record<number, string> = { 1: 'md:grid-cols-1', 2: 'md:grid-cols-
 function Tile({ testId, value, unit, label, link }: { testId?: string; value: React.ReactNode; unit?: string; label: string; link?: { href: string; testId: string } }) {
   const body = (
     <>
-      <div className="font-mono text-[20px] md:text-[24px] font-semibold tracking-[-0.5px] leading-tight tabular-nums truncate">
+      <div className="font-mono text-[20px] @xl:text-[24px] font-semibold tracking-[-0.5px] leading-tight tabular-nums truncate">
         {value}
         {unit && <small className="ml-1 text-[12px] font-normal text-text-muted">{unit}</small>}
       </div>
@@ -26,9 +28,9 @@ function Tile({ testId, value, unit, label, link }: { testId?: string; value: Re
     </>
   );
   return (
-    <div data-testid={testId} className="px-3 py-2.5 md:px-4 md:py-3 border-r border-b md:border-b-0 border-border-default last:border-r-0 min-w-0">
+    <div data-testid={testId} className="px-3 py-2.5 @xl:px-4 @xl:py-3 border-r border-b @xl:border-b-0 border-border-default last:border-r-0 min-w-0">
       {link ? (
-        <a href={link.href} target="_blank" rel="noopener noreferrer" data-testid={link.testId} className="group block -mx-3 -my-2.5 px-3 py-2.5 md:-mx-4 md:-my-3 md:px-4 md:py-3">
+        <a href={link.href} target="_blank" rel="noopener noreferrer" data-testid={link.testId} className="group block -mx-3 -my-2.5 px-3 py-2.5 @xl:-mx-4 @xl:-my-3 @xl:px-4 @xl:py-3">
           {body}
         </a>
       ) : body}
@@ -97,8 +99,10 @@ export default function StatRow({
   ].filter(Boolean);
   if (tiles.length === 0) return null;
   return (
-    <div data-testid="worker-stats" className={`grid grid-cols-2 ${MD_COLS[tiles.length] ?? 'md:grid-cols-5'} border-2 border-border-strong bg-card mt-4 md:mt-5`}>
-      {tiles}
+    <div className="@container mt-4 md:mt-5">
+      <div data-testid="worker-stats" className={`grid grid-cols-2 ${WIDE_COLS[tiles.length] ?? '@xl:grid-cols-5'} border-2 border-border-strong bg-card`}>
+        {tiles}
+      </div>
     </div>
   );
 }

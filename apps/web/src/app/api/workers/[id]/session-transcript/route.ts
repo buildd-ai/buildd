@@ -9,6 +9,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { callerOwnsWorker } from '@/lib/worker-owner';
 import { isUuid } from '@/lib/uuid';
 import { readCompletedSessionTranscript } from '@/lib/session-transcript';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const json = (body: unknown, status = 200) => NextResponse.json(body, { status, headers: { 'Cache-Control': 'no-store' } });
@@ -19,7 +20,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     if (!account) return json({ error: 'Unauthorized' }, 401);
     if (account.level !== 'admin') return json({ error: 'Forbidden' }, 403);
     const worker = await db.query.workers.findFirst({
-      where: eq(workers.id, id),
+      where: sqlWhere(eq(workers.id, id)),
       columns: { id: true, accountId: true, claimedByUserId: true, workspaceId: true, taskId: true, status: true },
       with: { workspace: { columns: { teamId: true, dataClass: true } } },
     });

@@ -240,6 +240,8 @@ expect(prompt).toContain('authentication method');
 
 ## Running Unit Tests — Always Isolated
 
+When stdout is not a TTY (a log file, an agent shell) the runner prints a `[progress]` line every 30s: files done, elapsed, host load vs CPU count, and hinted work left. Documented durations assume an idle host; a load well above the CPU count (shared runner) slows every broad check, so a long run with advancing `[progress]` lines is slow, not hung.
+
 Run unit tests through the runner, never `bun test` directly:
 
 ```bash
@@ -397,6 +399,14 @@ For asserting on SQL shape, read the module source rather than a rendered
 predicate (see `github-repo-link.test.ts` and `required-connectors.test.ts`):
 sibling tests stub `drizzle-orm` with incompatible `sql` shapes, so anything
 built on the real tagged-template internals is load-order dependent.
+
+When a test mocks `db.query.<t>.findFirst/findMany` and asserts on the config
+it received, read `where` / `orderBy` / `extras` through `capturedWhere`,
+`capturedWhereFn`, `capturedOrderBy` and `capturedExtras` from
+`@buildd/core/db/relational-sql`, not as raw properties. They read the drizzle
+0.45 shape and the drizzle v1 shape (`{ RAW }` filters, orderBy callbacks) the
+same way, so the test survives the relational-query move
+(`scripts/codemods/rqb-v2.ts`).
 
 ## Test-Driven Development (TDD)
 

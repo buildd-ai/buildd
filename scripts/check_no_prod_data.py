@@ -319,7 +319,9 @@ def main() -> int:
         diff_range = [f"{base}...HEAD"]
     diff = subprocess.run(
         ["git", "diff", *diff_range, "--", ".",
-         ":(exclude)packages/core/drizzle/meta", *excludes],
+         ":(exclude)packages/core/drizzle/meta",
+         # drizzle v1 folder snapshots: generated, and every one carries random UUID ids.
+         ":(exclude,glob)packages/core/drizzle/**/snapshot.json", *excludes],
         capture_output=True, text=True).stdout
 
     # Added SOURCE lines: UUIDs. Needs no secret, so unlike the identifier half

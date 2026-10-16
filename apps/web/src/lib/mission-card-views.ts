@@ -10,7 +10,7 @@
  */
 import { computeMissionFlightStrip } from '@buildd/core/mission-helpers';
 import { loadHumanSteeringMarksByMission } from './mission-steering-notes';
-import { adaptFlightStripInputs } from './missions-query';
+import { adaptFlightStripInputs, MISSION_TASK_REFRESH_EXTRAS } from './missions-query';
 import {
   buildMissionCardView,
   MISSION_CARD_VIEW_CAP,
@@ -21,6 +21,13 @@ import {
 } from './mission-card-view';
 import type { MissionOrigin } from './mission-task-href';
 import type { DeliveryView } from './workflow/projections';
+import { sqlOrderByFn } from '@buildd/core/db/relational-sql';
+
+// The card facts beyond its tasks, for surfaces that load cards through here
+// (Home): the visual review it reads and the delivery facts it passes, the
+// same ones the missions list reads (spec 8e137fdb I-1).
+export { loadCardVisualReviews } from './mission-card-visual-reviews';
+export { missionDeliveryFacts } from './mission-delivery-facts';
 
 /** Task columns a card reads (pulse, feed state, situation, health, schedule timing). */
 export const MISSION_CARD_TASK_COLUMNS = {
@@ -32,10 +39,12 @@ export const MISSION_CARD_TASK_COLUMNS = {
   context: true, loopConfig: true, loopState: true,
 } as const;
 
+export { MISSION_TASK_REFRESH_EXTRAS };
+
 /** Worker columns a card reads (liveness, PR state, and the strip's spans). */
 export const MISSION_CARD_WORKER_COLUMNS = {
   id: true, status: true, startedAt: true, completedAt: true, updatedAt: true, turns: true,
-  prUrl: true, mergedAt: true, prNumber: true, prLifecycleStatus: true, supersededByPrNumber: true, abandonedAt: true,
+  prUrl: true, mergedAt: true, prNumber: true, prLifecycleStatus: true, supersededByPrNumber: true, abandonedAt: true, supersessionScan: true,
   exitCause: true,
 } as const;
 
@@ -46,7 +55,7 @@ export const MISSION_CARD_WORKER_COLUMNS = {
 export const MISSION_CARD_WORKERS_WITH = {
   columns: MISSION_CARD_WORKER_COLUMNS,
   limit: 5,
-  orderBy: (w: any, { desc }: any) => [desc(w.startedAt), desc(w.updatedAt)],
+  orderBy: sqlOrderByFn((w: any, { desc }: any) => [desc(w.startedAt), desc(w.updatedAt)]),
 } as const;
 
 /** Most cards one surface builds in a request. Home shows active + ≤ 3 scheduled. */

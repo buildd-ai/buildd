@@ -57,7 +57,7 @@ describe('ReleaseWidget — release action button', () => {
       <ReleaseWidget items={[item({ queueDepth: val(859), commitsAheadAtDispatch: 4 })]} />,
     );
     expect(html).not.toContain('859 unshipped');
-    expect(html).toContain("doesn&#x27;t match the last dispatch");
+    expect(html).toContain('The release count looks wrong. Check Releases.');
   });
 
   it('does not flag a small, plausible disagreement between queue depth and the dispatch snapshot', () => {

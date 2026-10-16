@@ -1,6 +1,7 @@
 import { missions } from '@buildd/core/db/schema';
 import { and, desc, eq, lt, ne, or, type SQL } from 'drizzle-orm';
 import type { FlightStripTask, FlightStripWorker } from '@buildd/core/mission-helpers';
+import { sqlOrderBy, sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Query-shape helpers for the missions list (docs/design/mission-flight-strip.md
@@ -20,6 +21,16 @@ export const MISSION_BASE_COLUMNS = {
   updatedAt: true, criteriaEscalatedAt: true, completedAt: true, workingBranch: true,
   integrationBranchEnabled: true,
 } as const;
+
+/**
+ * One boolean, not the context blob: whether the task is the platform's own
+ * integration-branch refresh chore (`context.requireMergeCommit`, the marker
+ * `integrationRefreshOf` reads). Bookkeeping, never a deliverable. The callback
+ * form: a nested relation is aliased, so the column comes from the aliased table.
+ */
+export const MISSION_TASK_REFRESH_EXTRAS = {
+  isIntegrationRefresh: (t: any, { sql }: any) => sql`coalesce((${t.context} ->> 'requireMergeCommit') = 'true', false)`.as('is_integration_refresh'),
+};
 
 export const MISSION_TASK_BASE_COLUMNS = {
   id: true, title: true, status: true, result: true, createdAt: true, updatedAt: true, kind: true,
@@ -53,21 +64,22 @@ const workerOrderBy = (w: any, { desc }: any) => [desc(w.startedAt), desc(w.upda
  */
 export function buildActiveMissionsQueryArgs(missionsWhere: SQL | undefined) {
   return {
-    where: and(missionsWhere, ne(missions.status, 'completed')),
-    orderBy: [desc(missions.priority), desc(missions.lastTaskStartedAt), desc(missions.updatedAt)],
+    where: sqlWhere(and(missionsWhere, ne(missions.status, 'completed'))),
+    orderBy: sqlOrderBy([desc(missions.priority), desc(missions.lastTaskStartedAt), desc(missions.updatedAt)]),
     columns: MISSION_BASE_COLUMNS,
     with: {
       ...MISSION_WITH_SHARED,
       tasks: {
         // Phase fields order the card's pulse (lib/mission-card-view.ts).
         columns: { ...MISSION_TASK_BASE_COLUMNS, roleSlug: true, missionPhaseIndex: true, missionPhaseLabel: true, label: true },
-        orderBy: taskOrderBy,
+        extras: MISSION_TASK_REFRESH_EXTRAS,
+        orderBy: sqlOrderByFn(taskOrderBy),
         with: {
           workers: {
             // waitingFor: the list card answers a parked question inline.
             columns: { ...MISSION_WORKER_BASE_COLUMNS, exitCause: true, waitingFor: true },
             limit: 5,
-            orderBy: workerOrderBy,
+            orderBy: sqlOrderByFn(workerOrderBy),
           },
         },
       },
@@ -113,20 +125,21 @@ export function buildCompletedMissionsQueryArgs(missionsWhere: SQL | undefined, 
       )
     : undefined;
   return {
-    where: and(missionsWhere, eq(missions.status, 'completed'), cursorClause),
-    orderBy: [desc(missions.completedAt), desc(missions.id)],
+    where: sqlWhere(and(missionsWhere, eq(missions.status, 'completed'), cursorClause)),
+    orderBy: sqlOrderBy([desc(missions.completedAt), desc(missions.id)]),
     limit: COMPLETED_MISSIONS_PAGE_SIZE + 1,
     columns: { ...MISSION_BASE_COLUMNS, flightStripCache: true },
     with: {
       ...MISSION_WITH_SHARED,
       tasks: {
         columns: MISSION_TASK_BASE_COLUMNS,
-        orderBy: taskOrderBy,
+        extras: MISSION_TASK_REFRESH_EXTRAS,
+        orderBy: sqlOrderByFn(taskOrderBy),
         with: {
           workers: {
             columns: MISSION_WORKER_BASE_COLUMNS,
             limit: 5,
-            orderBy: workerOrderBy,
+            orderBy: sqlOrderByFn(workerOrderBy),
           },
         },
       },

@@ -15,6 +15,7 @@ import { deriveMissionProgressSubline, type MissionIntegrationPrView } from './m
 import type { ReleaseState } from './release-state';
 import type { VisualReviewModel } from '@buildd/shared';
 import { describeVisualPhase } from './visual-review-model';
+import type { VisualReviewPresentation } from './workflow/visual-review-presentation';
 
 export type DeliveryStepKey = 'integrated' | 'verified' | 'visual' | 'shipped' | 'budget';
 export type DeliveryStepState = 'done' | 'partial' | 'todo' | 'blocked';
@@ -77,6 +78,12 @@ export interface DeliveryInput {
    * of a bare "waiting". Absent: the verdict counts alone decide the step.
    */
   visualPhase?: Pick<VisualReviewModel, 'phase' | 'progress' | 'summary' | 'needsYou'> | null;
+  /**
+   * The canonical visual-review reading (`presentVisualReview`). When set it
+   * decides the Visual review step, and `visual` / `visualPhase` are not
+   * consulted: no surface re-derives the stage from phases.
+   */
+  visualReview?: VisualReviewPresentation | null;
   /**
    * When THIS mission's work reached trunk (`missionTrunkMergedAt`): one entry
    * per merge. Empty when nothing of the mission is on trunk yet.
@@ -178,7 +185,12 @@ export function buildDeliverySteps(input: DeliveryInput): DeliveryStep[] {
     });
   }
 
-  if (input.visual) steps.push(visualStep(input.visual, input.visualPhase ?? null));
+  if (input.visualReview !== undefined) {
+    const step = presentedVisualStep(input.visualReview);
+    if (step) steps.push(step);
+  } else if (input.visual) {
+    steps.push(visualStep(input.visual, input.visualPhase ?? null));
+  }
 
   // D6: the Shipped step is this mission's fact. The workspace queue depth
   // never decides it: only this mission's merges, read against the release
@@ -197,6 +209,31 @@ export function buildDeliverySteps(input: DeliveryInput): DeliveryStep[] {
   }
 
   return steps;
+}
+
+/** The Visual review step read off the canonical presentation: its words are the panel's words. */
+function presentedVisualStep(p: VisualReviewPresentation | null): DeliveryStep | null {
+  if (!p) return null;
+  const base = { key: 'visual' as const, label: DELIVERY_STEP_LABEL.visual };
+  switch (p.stage) {
+    case 'none':
+      return p.record?.kind === 'passed' ? { ...base, state: 'done', value: '✓', detail: p.record.text } : null;
+    case 'ready':
+    case 'merged':
+      return { ...base, state: 'done', value: '✓', detail: p.label };
+    case 'waived':
+      return { ...base, state: 'done', value: 'waived', detail: p.label };
+    case 'verifying':
+      return p.tone === 'success'
+        ? { ...base, state: 'done', value: '✓', detail: p.label }
+        : { ...base, state: 'partial', value: '…', detail: p.label };
+    case 'fixing':
+      return { ...base, state: 'partial', value: 'fix', detail: p.label };
+    case 'judgment':
+      return { ...base, state: 'partial', value: '?', detail: p.label };
+    case 'blocked':
+      return { ...base, state: p.needsYou ? 'blocked' : 'partial', value: p.needsYou ? 'stuck' : 'retry', detail: p.label };
+  }
 }
 
 /**
@@ -280,6 +317,68 @@ export function deliveryReleaseInput(state: ReleaseState): DeliveryRelease | nul
   }
   if (state.state === 'clean' && state.reason === 'zero_queue') return { releasedThrough: 'all' };
   return null;
+}
+
+/**
+ * What happened to this mission's merged work after it reached trunk (spec
+ * f7f67f1a P-3, R-22). Unlike `deliveryReleaseInput`, which only says how far
+ * healthy releases reach, this names the deploy in flight and the deploy that
+ * failed, so the page can show them instead of hiding the row.
+ *
+ * Only `healthy` means delivered. A workspace deploy older than the mission's
+ * last merge says nothing about this work; a deploy with no recorded time is
+ * read as covering it, so a failure is never hidden by a missing timestamp.
+ */
+export type MissionReleaseStatus = 'not_configured' | 'waiting' | 'dispatched' | 'deploying' | 'healthy' | 'failed' | 'unknown';
+
+export interface MissionReleaseStatusInput {
+  state: ReleaseState;
+  /** This mission's trunk merges (`missionTrunkMergedAt`). */
+  mergedAt: readonly string[];
+  /** `missions.releasedAt`: a release was dispatched (or merged) for this mission. */
+  releasedAt: string | null;
+}
+
+const IN_FLIGHT_DEPLOY = new Set(['deploying', 'pending_external']);
+const FAILED_DEPLOY = new Set(['failed', 'degraded']);
+
+export function missionReleaseStatus({ state, mergedAt, releasedAt }: MissionReleaseStatusInput): MissionReleaseStatus {
+  if (state.state === 'none') return 'not_configured';
+  if (state.state === 'clean' && state.reason === 'no_pipeline') return 'not_configured';
+  const merges = mergedAt.map(timestampMs).filter(t => !Number.isNaN(t));
+  if (merges.length === 0) return 'waiting';
+  const lastMerge = Math.max(...merges);
+  const notYet: MissionReleaseStatus = releasedAt ? 'dispatched' : 'waiting';
+  const covers = (at: string | null | undefined) => {
+    if (!at) return false;
+    const t = timestampMs(at);
+    return !Number.isNaN(t) && t >= lastMerge;
+  };
+
+  if (state.state === 'clean') {
+    if (state.reason === 'zero_queue') return state.baselineSource === 'healthy' ? 'healthy' : 'unknown';
+    if (state.reason === 'no_deploy_state') return notYet;
+    return 'unknown';
+  }
+
+  if (state.archetype === 'gated') {
+    if (!covers(state.baselineAsOf)) return notYet;
+    switch (state.baselineSource) {
+      case 'healthy': return 'healthy';
+      case 'deployed': return 'deploying';
+      case 'dispatched': return 'dispatched';
+      default: return 'unknown';
+    }
+  }
+
+  const deployAt = state.deployState === 'healthy' ? (state.healthyAt ?? state.deployedAt) : state.deployedAt;
+  const applies = deployAt == null ? state.deployState !== 'healthy' : covers(deployAt);
+  if (!applies) return notYet;
+  if (state.deployState === 'healthy') return 'healthy';
+  if (state.deployState === 'dispatched') return 'dispatched';
+  if (IN_FLIGHT_DEPLOY.has(state.deployState)) return 'deploying';
+  if (FAILED_DEPLOY.has(state.deployState)) return 'failed';
+  return 'unknown';
 }
 
 interface TrunkTaskLike {

@@ -60,11 +60,11 @@ let host: HTMLElement;
 let root: ReturnType<typeof createRoot>;
 afterEach(() => { act(() => root.unmount()); host.remove(); });
 
-async function mount(canManage = true, workspaces = [{ id: 'ws-1', name: 'Widgets' }]) {
+async function mount(canManage = true, workspaces = [{ id: 'ws-1', name: 'Widgets' }], scope?: 'team' | { workspaceId: string }) {
   host = document.createElement('div');
   document.body.append(host);
   root = createRoot(host);
-  await act(async () => { root.render(<AgentEndpointSection teamId="t" canManage={canManage} workspaces={workspaces} />); });
+  await act(async () => { root.render(<AgentEndpointSection teamId="t" canManage={canManage} workspaces={workspaces} scope={scope} />); });
   await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
 }
 const text = (id: string) => host.querySelector(`[data-testid="${id}"]`)?.textContent ?? '';
@@ -143,6 +143,27 @@ describe('AgentEndpointSection', () => {
     expect(text('agent-endpoint-health')).toMatch(/not confirmed/i);
     expect(host.querySelector('[data-testid="agent-endpoint-route"]')!.textContent).toContain('endpoint returned 502');
     expect(text('agent-endpoint-default')).toMatch(/Anthropic \(default\)/);
+  });
+
+  it('team scope: the team endpoint only; a workspace with its own is named and linked, with no way to add one here', async () => {
+    endpoints = [teamEndpoint, { ...teamEndpoint, id: 's-2', scope: 'workspace', workspaceId: 'ws-1', workspaceName: 'Widgets' }];
+    await mount(true, [{ id: 'ws-1', name: 'Widgets' }, { id: 'ws-2', name: 'Gadgets' }], 'team');
+    expect([...host.querySelectorAll('[data-testid="agent-endpoint-route"]')].map((e) => e.getAttribute('data-scope'))).toEqual(['team']);
+    expect(host.querySelector('[data-testid="agent-endpoint-overrides"]')).toBeNull();
+    expect(text('agent-endpoint-elsewhere')).toBe('Own endpoint: Widgets');
+    expect(host.querySelector('[data-testid="agent-endpoint-elsewhere"] a')!.getAttribute('href')).toBe('/app/settings/workspace/ws-1#models');
+    expect(button('Add a workspace override')).toBeUndefined();
+  });
+
+  it('workspace scope: that workspace only, set up for it alone, and no team controls', async () => {
+    endpoints = [teamEndpoint, { ...teamEndpoint, id: 's-3', scope: 'workspace', workspaceId: 'ws-2', workspaceName: 'Gadgets' }];
+    await mount(true, [{ id: 'ws-1', name: 'Widgets' }], { workspaceId: 'ws-1' });
+    expect(host.querySelector('[data-testid="agent-endpoint-route"]')).toBeNull();
+    expect(text('agent-endpoint-status')).toBe('Uses the team endpoint.');
+    expect(host.querySelector('[data-testid="agent-endpoint-default"]')).toBeNull();
+    expect(button('Set up a team endpoint')).toBeUndefined();
+    await click(button('Set up an endpoint for this workspace'));
+    expect(host.querySelector('#agent-endpoint-scope')!.textContent).toContain('Widgets');
   });
 
   it('Edit opens the editor on that scope', async () => {

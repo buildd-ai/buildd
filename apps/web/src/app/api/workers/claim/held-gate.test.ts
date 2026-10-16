@@ -13,7 +13,7 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
-import { missionNotHeld, missionNotLocal, checkMissionLocal, checkTaskMissionLocal, BYPASS_HELD_GATE_KEY, checkMissionHeld, taskNotHeld, TASK_HOLD_KEY, notHeldOrLocal, REVIEWER_FOR_KEY } from './held-gate';
+import { missionNotHeld, missionNotLocal, checkMissionLocal, checkTaskMissionLocal, BYPASS_HELD_GATE_KEY, checkMissionHeld, taskNotHeld, TASK_HOLD_KEY, notHeldOrLocal, REVIEWER_FOR_KEY, taskNotReserved, TASK_RESERVATION_KEY, TASK_RESERVATION_TTL_MS, buildReservation } from './held-gate';
 
 /**
  * The held gate is a SQL expression. We verify the exported constant that
@@ -231,13 +231,49 @@ describe('notHeldOrLocal() — the three claim gates, conjoined', () => {
 
   it('embeds missionNotHeld, missionNotLocal and taskNotHeld verbatim', () => {
     const text = norm(notHeldOrLocal());
-    for (const gate of [missionNotHeld(), missionNotLocal(), taskNotHeld()]) {
+    for (const gate of [missionNotHeld(), missionNotLocal(), taskNotHeld(), taskNotReserved()]) {
       expect(text).toContain(norm(gate));
     }
   });
 
   it('ANDs them: every gate must pass, not any one', () => {
     const text = norm(notHeldOrLocal());
-    expect(text).toContain(`${norm(missionNotHeld())} AND ${norm(missionNotLocal())} AND ${norm(taskNotHeld())}`);
+    expect(text).toContain(`${norm(missionNotHeld())} AND ${norm(missionNotLocal())} AND ${norm(taskNotHeld())} AND ${norm(taskNotReserved())}`);
+  });
+});
+
+describe('taskNotReserved() — a session-reserved task is not claimable by runners', () => {
+  const norm = (q: Parameters<PgDialect['sqlToQuery']>[0]) => {
+    const r = dialect.sqlToQuery(q);
+    return { text: r.sql.replace(/\s+/g, ' ').trim(), params: r.params };
+  };
+
+  it('passes a task with no reservation, or one whose expiresAt has passed', () => {
+    const { text } = norm(taskNotReserved());
+    expect(text).toContain(`("tasks"."context"->'${TASK_RESERVATION_KEY}') IS NULL`);
+    expect(text).toContain(`"tasks"."context"->'${TASK_RESERVATION_KEY}'->>'expiresAt'`);
+    expect(text).toContain('<= now()');
+  });
+
+  it('lets the reserving account through when asked, and nobody else', () => {
+    const open = norm(taskNotReserved());
+    const forOwner = norm(taskNotReserved('acct-1'));
+    expect(open.text).not.toContain("->>'accountId'");
+    expect(forOwner.text).toContain(`->'${TASK_RESERVATION_KEY}'->>'accountId') =`);
+    expect(forOwner.params).toContain('acct-1');
+  });
+
+  it('the key is stable — the PATCH route writes it', () => {
+    expect(TASK_RESERVATION_KEY).toBe('reservedBy');
+  });
+});
+
+describe('buildReservation', () => {
+  it('expires after the TTL from the moment it is made, and renews by calling it again', () => {
+    const now = new Date('2026-10-12T12:00:00.000Z');
+    const r = buildReservation('acct-1', now);
+    expect(r.accountId).toBe('acct-1');
+    expect(r.at).toBe('2026-10-12T12:00:00.000Z');
+    expect(new Date(r.expiresAt).getTime() - now.getTime()).toBe(TASK_RESERVATION_TTL_MS);
   });
 });

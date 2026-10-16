@@ -41,6 +41,7 @@
 import { createHash } from 'node:crypto';
 import {
   applyDecisionPolicy,
+  decisionReceiptError,
   type Decision,
   type DecisionQuestions,
   type DecisionReceipt,
@@ -48,7 +49,7 @@ import {
   type DecideResult,
   type QuestionOutcome,
 } from '@builddai/ai-kit/decide';
-import { loadMeasurementsSafe, measurementFor, type StoredMeasurement } from './decision-model-measurements';
+import { gateOnMeasurement, loadMeasurementsSafe, measurementFor, type StoredMeasurement } from './decision-model-measurements';
 import type { DecisionAccess, DecisionResult, DecisionCallParams } from './decision-client';
 import type { InferenceCapability } from './inference-policy';
 import type { DecisionReplayCapture } from './decision-replay';
@@ -174,6 +175,8 @@ type ResolveAccessFn = (opts: {
   workspaceId?: string | null;
   accountId?: string | null;
   userId?: string | null;
+  /** The decision asked, so the team's model override for it answers (decision-model.ts `byKind`). */
+  kind?: string | null;
 }) => Promise<DecisionAccess>;
 
 export interface OrchestrationDecisionDeps {
@@ -423,6 +426,7 @@ export async function runOrchestrationDecision<Q extends DecisionQuestions>(
       workspaceId: scope.workspaceId,
       accountId: scope.accountId ?? null,
       userId: scope.userId ?? null,
+      kind: decision.id,
     }), remaining());
     if (access === DEADLINE) return await fallback('deadline');
     if (!access.ok) {
@@ -488,6 +492,7 @@ export async function runOrchestrationDecision<Q extends DecisionQuestions>(
       kind: 'decision', decisionId: decision.id, provider: 'openrouter', model: answeredModel,
       usage: result.ok ? { ...result.usage } : { inputTokens: 0, outputTokens: 0, costUsd: null },
       latencyMs: result.latencyMs, outcome: result.ok ? 'ok' : 'error', attempts: result.attempts,
+      ...(result.ok ? {} : { error: decisionReceiptError(result.error as Parameters<typeof decisionReceiptError>[0]) }),
     };
 
     if (!result.ok) {
@@ -510,7 +515,9 @@ export async function runOrchestrationDecision<Q extends DecisionQuestions>(
     // Whether the answering model may act on this decision, and at what
     // confidence: a stored measurement (decision-model-measurements.ts) keyed
     // on the decision id and its prompt version. Jev with no row keeps the
-    // definition's threshold; any other model needs a row.
+    // definition's threshold; any other model needs a row. The row also names
+    // the number compared (confidence, top p, margin, calibrated top p) and may
+    // act on some labels only (a START-only row leaves every HOLD to the rule).
     let reason: OrchestrationSuggestReason | null = null;
     if (outcome.status === 'suggested' && outcome.reason === 'shadow') {
       reason = 'shadow';
@@ -518,9 +525,14 @@ export async function runOrchestrationDecision<Q extends DecisionQuestions>(
       const rows = await (deps.measurements ?? (() => loadMeasurementsSafe()))().catch(() => [] as readonly StoredMeasurement[]);
       const m = measurementFor(rows, { kind: decision.id, answeringModel: answeredModel, fingerprint: decision.promptVersion });
       const policy = decision.policyOf(question);
-      const threshold = m.threshold ?? policy.minConfidence ?? (policy.mode === 'live' ? 0 : Infinity);
+      const answer = outcome.answer as { probabilities?: Record<string, number> };
+      const gate = gateOnMeasurement(
+        m,
+        { choice: suggested, confidence: outcome.confidence, probabilities: answer.probabilities ?? null },
+        policy.minConfidence ?? (policy.mode === 'live' ? 0 : Infinity),
+      );
       if (!m.measured) reason = 'non_jev';
-      else if (outcome.confidence < threshold) reason = 'below_threshold';
+      else if (!gate.acts) reason = 'below_threshold';
       else if (cohort.arm !== 'apply') reason = 'not_in_cohort';
     }
 

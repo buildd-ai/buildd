@@ -32,6 +32,7 @@ import {
   type ReleaseResult,
 } from './path-claim';
 import { leasablePaths, REPO_WIDE_SENTINEL, stripTrailingSep } from './path-overlap';
+import { sqlWhere } from './db/relational-sql';
 
 export { leasablePaths };
 
@@ -67,7 +68,7 @@ export function workingSetSizeBucket(n: number): WorkingSetSizeBucket {
 /** This task's active lease rows (`id` + `path`). */
 export async function activeLeases(workspaceId: string, taskId: string): Promise<Array<{ id: string; path: string }>> {
   const rows = await db.query.pathClaims.findMany({
-    where: and(eq(pathClaims.workspaceId, workspaceId), eq(pathClaims.taskId, taskId), isNull(pathClaims.releasedAt)),
+    where: sqlWhere(and(eq(pathClaims.workspaceId, workspaceId), eq(pathClaims.taskId, taskId), isNull(pathClaims.releasedAt))),
     columns: { id: true, path: true },
   });
   return rows.map(r => ({ id: String(r.id), path: r.path }));
@@ -225,7 +226,7 @@ export async function promoteLeasesToPrScope(input: {
   if (held.length === 0) return null;
 
   const row = await db.query.tasks.findFirst({
-    where: and(eq(tasks.id, taskId), eq(tasks.workspaceId, workspaceId)),
+    where: sqlWhere(and(eq(tasks.id, taskId), eq(tasks.workspaceId, workspaceId))),
     columns: { pathManifest: true },
   });
   if (!row) return null;
@@ -258,7 +259,7 @@ export async function promoteLeasesToPrScope(input: {
 export async function authoritativeTaskScope(workspaceId: string, taskId: string): Promise<string[]> {
   const [held, row] = await Promise.all([
     activeLeasePaths(workspaceId, taskId),
-    db.query.tasks.findFirst({ where: and(eq(tasks.id, taskId), eq(tasks.workspaceId, workspaceId)), columns: { pathManifest: true } }),
+    db.query.tasks.findFirst({ where: sqlWhere(and(eq(tasks.id, taskId), eq(tasks.workspaceId, workspaceId))), columns: { pathManifest: true } }),
   ]);
   const manifest = Array.isArray(row?.pathManifest) ? (row!.pathManifest as string[]) : [];
   return [...new Set([...held, ...manifest.filter(p => typeof p === 'string' && p.trim() !== REPO_WIDE_SENTINEL)])].sort();

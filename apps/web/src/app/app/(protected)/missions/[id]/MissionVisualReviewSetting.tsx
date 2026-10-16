@@ -13,6 +13,7 @@ import { useId, useState } from 'react';
 import type { VisualReviewModel } from '@buildd/shared';
 import Switch, { SWITCH_HIT_AREA } from '@/components/ui/Switch';
 import VisualReviewLine from '@/components/visual-review/VisualReviewLine';
+import type { VisualReviewPresentation } from '@/lib/workflow/visual-review-presentation';
 import { useMissionVisualReview } from './MissionVisualReview';
 import MissionSurfaceAuditWaiver, { type MissionSurfaceAuditWaiverProps } from './MissionSurfaceAuditWaiver';
 
@@ -24,6 +25,8 @@ export default function MissionVisualReviewSetting({
   visual,
   readonly = false,
   auditWaiver = null,
+  presentation = null,
+  policyLocked = false,
 }: {
   missionId: string;
   /** `missions.autoSurfaceAudit`; the column defaults to on. */
@@ -33,6 +36,10 @@ export default function MissionVisualReviewSetting({
   readonly?: boolean;
   /** The person-only "Waive visual audit" action; null hides it (no audit on the mission). */
   auditWaiver?: Omit<MissionSurfaceAuditWaiverProps, 'variant'> | null;
+  /** The canonical reading. When set it supplies the state words and the record, in place of the audit's own Line. */
+  presentation?: VisualReviewPresentation | null;
+  /** Strict workspace policy: the switch is not the mission's to turn off. */
+  policyLocked?: boolean;
 }) {
   const live = useMissionVisualReview(missionId);
   const model = live?.model ?? visual ?? null;
@@ -75,25 +82,39 @@ export default function MissionVisualReviewSetting({
       <h2 className="section-label mb-3">Visual review</h2>
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <span className="text-[13px] text-text-primary">{VISUAL_REVIEW_SETTING_LABEL}</span>
-          <p id={hintId} className="mt-0.5 text-[12px] leading-[1.45] text-text-muted">
-            When a task changes a page, an agent screenshots it on a phone and a desktop and flags what looks wrong.
+          <span className="text-body text-text-primary">{VISUAL_REVIEW_SETTING_LABEL}</span>
+          <p id={hintId} className="mt-0.5 text-meta leading-[1.45] text-text-muted">
+            Pages a mission changes are checked on a phone and a desktop before it merges.
           </p>
         </div>
         <Switch
           checked={enabled}
           onChange={next => void toggle(next)}
-          disabled={saving || readonly}
+          disabled={saving || readonly || policyLocked}
           label={VISUAL_REVIEW_SETTING_LABEL}
           className={SWITCH_HIT_AREA}
         />
       </div>
-      {error && <p role="alert" className="mt-2 font-mono text-[12px] text-status-error">{error}</p>}
+      {error && <p role="alert" className="mt-2 font-mono text-meta text-status-error">{error}</p>}
+      {policyLocked && (
+        <p className="mt-2 text-meta leading-[1.45] text-text-muted" data-testid="mission-visual-review-locked">
+          This workspace requires visual review. It cannot be turned off for a mission.
+        </p>
+      )}
       <div className="mt-3 border-t border-border-default pt-3">
-        {model && model.phase !== 'off' ? (
+        {presentation ? (
+          <div data-testid="mission-visual-review-state" data-stage={presentation.stage}>
+            <p className="text-body text-text-primary">{presentation.record?.kind === 'auto_no_impact' ? presentation.record.text : presentation.label}</p>
+            {(presentation.record?.kind === 'auto_no_impact' ? presentation.record.detail : presentation.detail) && (
+              <p className="mt-0.5 text-meta leading-[1.45] text-text-muted">
+                {presentation.record?.kind === 'auto_no_impact' ? presentation.record.detail : presentation.detail}
+              </p>
+            )}
+          </div>
+        ) : model && model.phase !== 'off' ? (
           <VisualReviewLine model={model} variant="full" />
         ) : (
-          <p className="font-mono text-[12px] text-text-muted">No visual audit.</p>
+          <p className="font-mono text-meta text-text-muted">No visual audit.</p>
         )}
       </div>
       {auditWaiver && (

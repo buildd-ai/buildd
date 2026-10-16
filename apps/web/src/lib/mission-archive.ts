@@ -1,6 +1,7 @@
 import { db } from '@buildd/core/db';
 import { missions, taskSchedules } from '@buildd/core/db/schema';
 import { eq, inArray } from 'drizzle-orm';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Auto-archive for done missions ("Awaiting review" group): an active
@@ -51,7 +52,7 @@ export function selectMissionsToArchive(
 /** Fetch candidates, apply the pure selector, archive. Returns archived ids. */
 export async function archiveStaleDoneMissions(now = new Date()): Promise<string[]> {
   const candidates = await db.query.missions.findMany({
-    where: eq(missions.status, 'active'),
+    where: sqlWhere(eq(missions.status, 'active')),
     columns: { id: true, status: true, updatedAt: true, scheduleId: true, goalCriteria: true, goalCriteriaState: true },
     with: {
       schedule: { columns: { enabled: true } },

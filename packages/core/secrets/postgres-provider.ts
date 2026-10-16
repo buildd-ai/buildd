@@ -9,6 +9,7 @@ import { and, eq, isNull } from 'drizzle-orm';
 import { encrypt, decrypt } from './crypto';
 import type { SecretsProvider, SecretMetadata, SecretRecord } from './types';
 import { assertPersonalScopeAllowed } from './team-scope';
+import { sqlWhere } from '../db/relational-sql';
 
 /**
  * The exact, NULL-aware scope a singleton credential occupies. A personal key
@@ -102,7 +103,7 @@ export class PostgresSecretsProvider implements SecretsProvider {
 
   async get(id: string): Promise<string | null> {
     const row = await db.query.secrets.findFirst({
-      where: eq(secrets.id, id),
+      where: sqlWhere(eq(secrets.id, id)),
       columns: { encryptedValue: true },
     });
     if (!row) return null;
@@ -117,7 +118,7 @@ export class PostgresSecretsProvider implements SecretsProvider {
     const rows = await db.query.secrets.findMany({
       // Personal keys are one person's, not the team's: never listed here, so
       // no team-wide list or delete path can reach them.
-      where: and(eq(secrets.teamId, teamId), isNull(secrets.userId)),
+      where: sqlWhere(and(eq(secrets.teamId, teamId), isNull(secrets.userId))),
       columns: {
         id: true,
         teamId: true,

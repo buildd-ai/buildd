@@ -177,8 +177,8 @@ let tempRepoPath: string | null = null;
 beforeAll(async () => {
   // Verify server is running
   try {
-    const config = await api<{ configured: boolean; hasClaudeCredentials: boolean; builddServer?: string }>('/api/config');
-    if (!config.hasClaudeCredentials) {
+    const config = await api<{ configured: boolean; modelAuthSource?: string; builddServer?: string }>('/api/config');
+    if (!config.modelAuthSource || config.modelAuthSource === 'none') {
       throw new Error('No Claude credentials configured');
     }
 

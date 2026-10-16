@@ -15,6 +15,7 @@ import { githubApi } from '@/lib/github';
 import { resolvePrRepo } from '@/lib/repo-scope';
 import { WORKSPACE_INSTALLATION_WITH, pickWorkspaceRepoIdentity, installationIdForRepo } from '@/lib/workspace-installation';
 import { buildTaskEvidence, summarizeCheckRuns, type EvidenceTrace } from '@/lib/task-evidence';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const TRACE_LIMIT = 200;
 const CI_LOOKUP_TIMEOUT_MS = 4000;
@@ -62,13 +63,13 @@ export async function persistTaskEvidence(
 ): Promise<PersistedEvidence | null> {
   try {
     const task = await db.query.tasks.findFirst({
-      where: eq(tasks.id, taskId),
+      where: sqlWhere(eq(tasks.id, taskId)),
       columns: { id: true, status: true, result: true, context: true, workspaceId: true },
     });
     if (!task || (task.status !== 'completed' && task.status !== 'failed')) return null;
 
     const worker = await db.query.workers.findFirst({
-      where: eq(workers.id, workerId),
+      where: sqlWhere(eq(workers.id, workerId)),
       columns: { prUrl: true, prNumber: true, error: true },
     });
     const result = (task.result ?? {}) as Record<string, unknown>;
@@ -90,7 +91,7 @@ export async function persistTaskEvidence(
     let ciChecks: TaskEvidence['ciChecks'] | null = null;
     if (prNumber != null) {
       const ws = await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, task.workspaceId),
+        where: sqlWhere(eq(workspaces.id, task.workspaceId)),
         columns: { repo: true },
         with: WORKSPACE_INSTALLATION_WITH,
       });

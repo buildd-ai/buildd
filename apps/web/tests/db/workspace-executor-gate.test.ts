@@ -12,6 +12,7 @@ import { tasks } from '@buildd/core/db/schema';
 import { CLOUD_DISPATCH_EVENTS } from '@buildd/shared';
 import { workspaceExecutorGate } from '@/app/api/workers/claim/workspace-executor-gate';
 import { assertDbConfigured, q, seedTask, seedWorkspace } from './harness';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const cloudWebhook = { url: 'https://cloud.example/dispatch', token: 't', enabled: true, events: [...CLOUD_DISPATCH_EVENTS] };
 
@@ -43,7 +44,7 @@ beforeAll(async () => {
 
 async function claimable(claim: 'host' | 'cloud'): Promise<string[]> {
   const rows = await db.query.tasks.findMany({
-    where: and(inArray(tasks.id, Object.values(t)), workspaceExecutorGate(claim)),
+    where: sqlWhere(and(inArray(tasks.id, Object.values(t)), workspaceExecutorGate(claim))),
     columns: { id: true },
   });
   const byId = new Map(Object.entries(t).map(([k, v]) => [v, k]));

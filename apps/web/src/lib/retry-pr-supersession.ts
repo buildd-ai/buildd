@@ -39,6 +39,7 @@ import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { repoFullNameFromPrUrl } from '@/lib/repo-scope';
 import { installationIdForRepo } from '@/lib/workspace-installation';
 import { verifyByContent, type DiffFile } from '@/lib/pr-supersession-verify';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Why the successor could not continue on the ancestor's branch, as the runner
@@ -115,7 +116,7 @@ async function protectedHeadBranches(workspaceId: string | null | undefined): Pr
   if (!workspaceId) return out;
   try {
     const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, workspaceId),
+      where: sqlWhere(eq(workspaces.id, workspaceId)),
       columns: { gitConfig: true, releaseConfig: true },
     });
     const git = (ws?.gitConfig ?? {}) as { defaultBranch?: string | null; targetBranch?: string | null };
@@ -187,7 +188,7 @@ export async function collectRetryLineage(startTaskId: string): Promise<string[]
     lineage.push(taskId);
     const currentId: string = taskId;
     const current = await db.query.tasks.findFirst({
-      where: eq(tasks.id, currentId),
+      where: sqlWhere(eq(tasks.id, currentId)),
       columns: { parentTaskId: true, taskClass: true },
     });
     taskId = current?.taskClass === 'attempt' ? (current.parentTaskId ?? null) : null;
@@ -216,7 +217,7 @@ export async function collectRetryFamily(startTaskId: string): Promise<{ rootId:
   let frontier = [rootId];
   for (let depth = 0; depth < RETRY_FAMILY_MAX_DEPTH && frontier.length > 0 && ids.size < RETRY_FAMILY_MAX_SIZE; depth++) {
     const children = await db.query.tasks.findMany({
-      where: and(inArray(tasks.parentTaskId, frontier), eq(tasks.taskClass, 'attempt')),
+      where: sqlWhere(and(inArray(tasks.parentTaskId, frontier), eq(tasks.taskClass, 'attempt'))),
       columns: { id: true },
     });
     frontier = [];
@@ -238,12 +239,12 @@ export async function resolveSupersessionCause(successorWorkerId: string | null 
   if (!successorWorkerId) return 'unknown';
   try {
     const trace = await db.query.workerErrorTraces.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(workerErrorTraces.workerId, successorWorkerId),
         inArray(workerErrorTraces.pattern, [...RESUME_TRACE_PATTERNS]),
-      ),
+      )),
       columns: { pattern: true, excerpt: true },
-      orderBy: desc(workerErrorTraces.ts),
+      orderBy: sqlOrderBy(desc(workerErrorTraces.ts)),
     });
     if (!trace) return 'unknown';
     if (trace.pattern === 'resume_branch_held') return 'checked_out';
@@ -321,12 +322,12 @@ export async function closeAncestorRetryPrs(opts: {
   if (lineage.length === 0) return [];
 
   const ancestorWorkers = await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       inArray(workers.taskId, lineage),
       isNotNull(workers.prNumber),
       isNull(workers.mergedAt),
       or(isNull(workers.prLifecycleStatus), notInArray(workers.prLifecycleStatus, CLOSED_LIFECYCLE)),
-    ),
+    )),
     columns: { id: true, taskId: true, prNumber: true, prUrl: true },
   });
 
@@ -516,25 +517,25 @@ export async function sweepDuplicateLineagePrs(now: Date = new Date()): Promise<
   const result: DuplicateLineageSweepResult = { candidates: 0, closed: 0, stranded: 0, skipped: 0 };
 
   const attempts = await db.query.tasks.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.taskClass, 'attempt'),
       isNotNull(tasks.parentTaskId),
       gte(tasks.createdAt, new Date(now.getTime() - SWEEP_WINDOW_MS)),
-    ),
+    )),
     columns: { id: true, parentTaskId: true, workspaceId: true },
-    orderBy: desc(tasks.createdAt),
+    orderBy: sqlOrderBy(desc(tasks.createdAt)),
     limit: SWEEP_CANDIDATE_CAP,
   });
   if (attempts.length === 0) return result;
   const attemptById = new Map(attempts.map(t => [t.id, t]));
 
   const successors = await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       inArray(workers.taskId, attempts.map(t => t.id)),
       isNotNull(workers.prNumber),
       isNull(workers.mergedAt),
       or(isNull(workers.prLifecycleStatus), notInArray(workers.prLifecycleStatus, CLOSED_LIFECYCLE)),
-    ),
+    )),
     columns: { id: true, taskId: true, prNumber: true, prUrl: true, workspaceId: true },
   });
   result.candidates = successors.length;

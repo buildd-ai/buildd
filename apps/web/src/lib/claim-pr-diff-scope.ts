@@ -17,6 +17,7 @@
  * at, so `effectiveScopeIsCurrent` refuses it. Never throws.
  */
 import { readPinnedPrScope, type GithubGet } from '@buildd/core/pr-scope-read';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface PrDiffScope {
   /** Every path the PR changes at `headSha` (both sides of a rename). */
@@ -130,9 +131,9 @@ export async function defaultPrDiffScopeDeps(): Promise<PrDiffScopeDeps> {
   return {
     github: (installationId, path) => githubApi(installationId, path),
     async resolveRepo(workspaceId) {
-      const ws = await db.query.workspaces.findFirst({ where: eq(schema.workspaces.id, workspaceId), columns: { githubRepoId: true } });
+      const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(schema.workspaces.id, workspaceId)), columns: { githubRepoId: true } });
       if (!ws?.githubRepoId) return null;
-      const repo = await db.query.githubRepos.findFirst({ where: eq(schema.githubRepos.id, ws.githubRepoId), with: { installation: true } }) as
+      const repo = await db.query.githubRepos.findFirst({ where: sqlWhere(eq(schema.githubRepos.id, ws.githubRepoId)), with: { installation: true } }) as
         { fullName: string; installation: { installationId: number } | null } | undefined;
       return repo?.installation ? { fullName: repo.fullName, installationId: repo.installation.installationId } : null;
     },

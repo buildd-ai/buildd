@@ -13,6 +13,7 @@ import { appBaseUrl } from '@/lib/app-url';
 import { upsertedContent } from '@/lib/artifact-upsert-content';
 import { shouldNotifyOnArtifact, notifyArtifactReady } from '@/lib/artifact-notify';
 import { isRunReportKey, recordRunnerUsageFromReport } from '@/lib/hosted-runner-usage-store';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 
 // POST /api/workers/[id]/artifacts - Create (or upsert by key) an artifact for a worker
@@ -37,7 +38,7 @@ export async function POST(
   }
 
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.id, id),
+    where: sqlWhere(eq(workers.id, id)),
     with: { task: true },
   });
 
@@ -53,7 +54,7 @@ export async function POST(
   let isSensitive = false;
   if (worker.workspaceId) {
     const wsRow = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, worker.workspaceId),
+      where: sqlWhere(eq(workspaces.id, worker.workspaceId)),
       columns: { dataClass: true },
     });
     isSensitive = wsRow?.dataClass === 'sensitive';
@@ -61,7 +62,7 @@ export async function POST(
 
   const linkedTask = worker.taskId
     ? await db.query.tasks.findFirst({
-        where: eq(tasks.id, worker.taskId),
+        where: sqlWhere(eq(tasks.id, worker.taskId)),
         columns: { missionId: true },
       })
     : null;
@@ -122,10 +123,10 @@ export async function POST(
   // If key is provided, try to upsert by (workspaceId, key)
   if (key && typeof key === 'string' && worker.workspaceId) {
     const existing = await db.query.artifacts.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(artifacts.workspaceId, worker.workspaceId),
         eq(artifacts.key, key),
-      ),
+      )),
     });
 
     // A key is unique per workspace, so the upsert can land on any artifact
@@ -136,7 +137,7 @@ export async function POST(
     if (existing && account.taskScope && existing.workerId !== id) {
       const owner = existing.workerId
         ? await db.query.workers.findFirst({
-          where: eq(workers.id, existing.workerId),
+          where: sqlWhere(eq(workers.id, existing.workerId)),
           columns: { taskId: true },
           with: { task: { columns: { scheduleId: true, missionId: true } } },
         })
@@ -295,7 +296,7 @@ export async function GET(
   }
 
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.id, id),
+    where: sqlWhere(eq(workers.id, id)),
   });
 
   if (!worker) {
@@ -307,7 +308,7 @@ export async function GET(
   }
 
   const workerArtifacts = await db.query.artifacts.findMany({
-    where: eq(artifacts.workerId, id),
+    where: sqlWhere(eq(artifacts.workerId, id)),
   });
 
   return NextResponse.json({ artifacts: workerArtifacts });

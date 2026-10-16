@@ -1,13 +1,5 @@
-/**
- * The task page's Time row: how long the agent has worked, next to the frozen
- * estimate. Pure and client-safe so the wording is tested once.
- *
- *   running:   "48m so far · est. 40m-1h 10m"   (warning only past the upper estimate)
- *   finished:  "Took 48m · est. 40m-1h 10m"
- *
- * Agent time is the sum over sessions, an open session counted to `now`, the
- * same measure the estimate is scored on.
- */
+/** The task Time row uses the same frozen payload and formatter as API/MCP. */
+import { formatTaskEstimate, type TaskEstimatePayload } from '@buildd/shared';
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 
@@ -20,24 +12,20 @@ function formatDuration(ms: number): string {
   return m > 0 ? `${h}h ${m}m` : `${h}h`;
 }
 
-export interface TimeRowSession { startedAt: Date | null; completedAt: Date | null }
 
+export interface TimeRowSession { startedAt: Date | null; completedAt: Date | null }
 export interface TimeRowInput {
   sessions: readonly TimeRowSession[];
   finished: boolean;
   now: number;
-  p50Minutes: number | null;
-  p80Minutes: number | null;
-  summary: string | null;
+  estimate: TaskEstimatePayload | null;
 }
-
 export interface TimeRowView {
   text: string;
-  /** Running and past the upper estimate: the only state the row turns warning. */
   overUpper: boolean;
   explanation: string | null;
+  breakdown: string | null;
 }
-
 export function agentMs(sessions: readonly TimeRowSession[], now: number): number {
   let total = 0;
   for (const s of sessions) {
@@ -49,20 +37,16 @@ export function agentMs(sessions: readonly TimeRowSession[], now: number): numbe
 }
 
 export function buildTimeRow(i: TimeRowInput): TimeRowView | null {
-  const hasEstimate = i.p50Minutes != null && i.p80Minutes != null;
   const elapsed = agentMs(i.sessions, i.now);
-  if (!hasEstimate && elapsed === 0) return null;
-
+  const display = i.estimate ? formatTaskEstimate(i.estimate) : null;
+  if (!display && elapsed === 0) return null;
   const parts: string[] = [];
   if (elapsed > 0) parts.push(i.finished ? `Took ${formatDuration(elapsed)}` : `${formatDuration(elapsed)} so far`);
-  if (hasEstimate) {
-    const lo = formatDuration(i.p50Minutes! * MINUTE);
-    const hi = formatDuration(i.p80Minutes! * MINUTE);
-    parts.push(lo === hi ? `est. ${lo}` : `est. ${lo}-${hi}`);
-  }
+  if (display) parts.push(display.headline);
   return {
     text: parts.join(' · '),
-    overUpper: hasEstimate && !i.finished && elapsed > i.p80Minutes! * MINUTE,
-    explanation: i.summary?.trim() || null,
+    overUpper: !!display?.range && !i.finished && elapsed > display.range.upperMinutes * MINUTE,
+    explanation: display?.provenance ?? null,
+    breakdown: display?.breakdown ?? null,
   };
 }

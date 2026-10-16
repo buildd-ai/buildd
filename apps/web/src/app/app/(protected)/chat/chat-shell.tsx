@@ -33,7 +33,7 @@ export interface ChatShellData {
   available: boolean;
   reason: 'no_key' | 'budget_exhausted' | 'rate_limited' | null;
   canManageTeamKeys: boolean;
-  audience: 'member' | 'operator';
+  audience: 'member' | 'admin';
   context: ChatPageContext;
   conversations: ConversationListItem[];
 }

@@ -45,7 +45,7 @@ function StepBody({ id, taskState }: { id: GettingStartedStepId; taskState?: Fir
   if (taskState === 'failed') {
     return (
       <p className="text-body text-text-secondary">
-        Your first task failed. Needs you, below, says why and how to fix it; then retry it.
+        Your first task failed. The card below says why and how to fix it; then retry it.
       </p>
     );
   }

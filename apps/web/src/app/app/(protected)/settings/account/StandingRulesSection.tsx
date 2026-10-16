@@ -15,6 +15,7 @@ import Section from '@/components/ui/Section';
 
 const EVERYWHERE = '__everywhere__';
 const MAX = 280;
+const SAVE_FAILED = 'Could not save changes. Try again.';
 
 async function send(url: string, method: string, body?: unknown): Promise<Record<string, unknown>> {
   const res = await fetch(url, {
@@ -24,13 +25,13 @@ async function send(url: string, method: string, body?: unknown): Promise<Record
     body: body ? JSON.stringify(body) : undefined,
   });
   const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(typeof json.message === 'string' ? json.message : typeof json.error === 'string' ? json.error : 'Something went wrong. Try again.');
+  if (!res.ok) throw new Error(typeof json.message === 'string' ? json.message : typeof json.error === 'string' ? json.error : SAVE_FAILED);
   return json;
 }
 
 function scopeLabel(d: ChatDirectiveDTO): string {
   if (!d.workspaceId) return 'Every chat';
-  return d.workspaceName ? `Only ${d.workspaceName}` : 'One workspace you no longer reach';
+  return d.workspaceName ? `Only ${d.workspaceName}` : 'A workspace you no longer have access to';
 }
 
 function RuleEditor({
@@ -95,7 +96,7 @@ export default function StandingRulesSection() {
       setData(await send('/api/chat/directives', 'GET') as unknown as ListChatDirectivesResponse);
       setError(null);
     } catch {
-      setError("Couldn't load your rules.");
+      setError("Could not load your rules.");
     }
   }, []);
 
@@ -110,7 +111,7 @@ export default function StandingRulesSection() {
       setAdding(false);
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Something went wrong. Try again.');
+      setError(e instanceof Error ? e.message : SAVE_FAILED);
     } finally {
       setBusy(false);
     }
@@ -133,7 +134,7 @@ export default function StandingRulesSection() {
         ) : undefined}
       >
         <p className="mb-2 text-sm text-text-muted">
-          Chat follows these in every reply. Only you can edit them. Tasks chat files carry the matching rules, visible to the workspace.
+          Applied to every chat reply. Only you can edit them. Tasks created from chat include the matching rules, visible to the workspace.
         </p>
         {adding && (
           <div className="border-t border-border-default py-3">

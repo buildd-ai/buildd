@@ -23,42 +23,41 @@ interface Props {
 const OPTIONS: Array<{ value: BranchStrategy; label: string; describe: (defaultBranch: string) => string }> = [
   {
     value: 'mission-branch',
-    label: 'Mission branch',
+    label: 'One PR per mission',
     describe: (defaultBranch) =>
       `Task PRs merge into a shared mission branch. The mission reaches ${defaultBranch} as one PR: one review, one commit to revert. The merge policy applies once per mission.`,
   },
   {
     value: 'direct',
-    label: 'Direct',
+    label: 'One PR per task',
     describe: (defaultBranch) =>
       `Each task PR merges into ${defaultBranch} on its own. The merge policy applies to each PR.`,
   },
 ];
 
+/** A choice that stands alone, so it saves when picked (settings spec R-4). */
 export default function BranchStrategySection({ workspaceId, effectiveBranchStrategy, defaultBranch, canEdit }: Props) {
   const [strategy, setStrategy] = useState<BranchStrategy>(effectiveBranchStrategy);
   const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  async function handleSave(e: React.FormEvent) {
-    e.preventDefault();
+  async function choose(next: BranchStrategy) {
+    if (saving || next === strategy) return;
+    const before = strategy;
+    setStrategy(next);
     setSaving(true);
-    setSaved(false);
     setSaveError(null);
-
     try {
       const res = await fetch(`/api/workspaces/${workspaceId}/config`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ branchStrategy: strategy }),
+        body: JSON.stringify({ branchStrategy: next }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to save');
-      setSaved(true);
-      setTimeout(() => setSaved(false), 3000);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Could not save. Try again.');
     } catch (err) {
-      setSaveError(err instanceof Error ? err.message : 'Failed to save');
+      setStrategy(before);
+      setSaveError(err instanceof Error ? err.message : 'Could not save. Try again.');
     } finally {
       setSaving(false);
     }
@@ -68,10 +67,10 @@ export default function BranchStrategySection({ workspaceId, effectiveBranchStra
 
   const header = (
     <div>
-      <h3 className="text-sm font-medium text-text-primary">Branch strategy</h3>
+      <h3 className="text-sm font-medium text-text-primary">Mission pull requests</h3>
       <p className="text-xs text-text-secondary mt-0.5">
         How a new mission&apos;s task PRs reach <code className="font-mono">{defaultBranch}</code>. Applies to new
-        missions only. Existing missions keep their strategy.
+        missions only. Existing missions keep theirs.
       </p>
     </div>
   );
@@ -82,7 +81,7 @@ export default function BranchStrategySection({ workspaceId, effectiveBranchStra
         {header}
         <ReadOnlyFacts
           facts={[{
-            label: 'Branch strategy',
+            label: 'Mission pull requests',
             value: chosen.label,
             testId: 'branch-strategy-value',
             note: <span data-testid="branch-strategy-description">{chosen.describe(defaultBranch)}</span>,
@@ -93,22 +92,16 @@ export default function BranchStrategySection({ workspaceId, effectiveBranchStra
   }
 
   return (
-    <form onSubmit={handleSave} className="py-4 first:pt-0 last:pb-0 space-y-3">
+    <div className="py-4 first:pt-0 last:pb-0 space-y-3">
       {header}
       <Segmented<BranchStrategy>
-        label="Branch strategy"
+        label="Mission pull requests"
         items={OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
         value={strategy}
-        onChange={setStrategy}
+        onChange={(v) => void choose(v)}
       />
       <p className="text-xs text-text-muted" data-testid="branch-strategy-description">{chosen.describe(defaultBranch)}</p>
-      <div className="flex flex-wrap items-center gap-3">
-        <button type="submit" disabled={saving} className="btn min-h-11">
-          {saving ? 'Saving…' : 'Save branch strategy'}
-        </button>
-        {saved && <span className="text-status-success text-sm">Saved</span>}
-        {saveError && <span className="text-status-error text-sm">{saveError}</span>}
-      </div>
-    </form>
+      {saveError && <p className="text-status-error text-sm" role="alert">{saveError}</p>}
+    </div>
   );
 }

@@ -49,8 +49,8 @@ describe('splitWaitingOnYou — the count and the cards agree', () => {
   });
 
   it('summary names both halves, and never calls in-flight work "waiting on you"', () => {
-    expect(waitingOnYouSummary(1, 4)).toBe('1 needs you · 4 in flight');
-    expect(waitingOnYouSummary(2, 0)).toBe('2 need you');
+    expect(waitingOnYouSummary(1, 4)).toBe('1 waiting on you · 4 in flight');
+    expect(waitingOnYouSummary(2, 0)).toBe('2 waiting on you');
     expect(waitingOnYouSummary(0, 3)).toBe('3 in flight');
     expect(waitingOnYouSummary(0, 0)).toBeNull();
   });
@@ -58,10 +58,10 @@ describe('splitWaitingOnYou — the count and the cards agree', () => {
 
 describe('homeSubheading — the greeting and the Waiting-on-You header say the same thing', () => {
   it('uses the header\'s "needs you" wording and count', () => {
-    expect(homeSubheading('3 ships today', 1)).toBe('3 ships today · 1 needs you');
-    expect(homeSubheading(null, 2)).toBe('2 need you');
+    expect(homeSubheading('3 ships today', 1)).toBe('3 ships today · 1 waiting on you');
+    expect(homeSubheading(null, 2)).toBe('2 waiting on you');
     expect(homeSubheading('1 ship overnight', 0)).toBe('1 ship overnight');
-    expect(homeSubheading(null, 0)).toBe('Nothing needs input');
+    expect(homeSubheading(null, 0)).toBe('Nothing waiting on you');
   });
 
   it('matches the header summary for the same (initiative-filtered) queue', () => {
@@ -196,9 +196,9 @@ describe('groupInFlight', () => {
 });
 
 describe('homeAudience', () => {
-  it('owners and admins are operators; members are not', () => {
-    expect(homeAudience('owner')).toBe('operator');
-    expect(homeAudience('admin')).toBe('operator');
+  it('owners and admins get the team admin layout; members do not', () => {
+    expect(homeAudience('owner')).toBe('admin');
+    expect(homeAudience('admin')).toBe('admin');
     expect(homeAudience('member')).toBe('member');
   });
   it('an unknown role reads as a member (the lighter layout)', () => {
@@ -208,19 +208,19 @@ describe('homeAudience', () => {
 
 describe('homeChatPlacement — chat first on Home, and the fallback', () => {
   const on = { available: true, reason: null, canManageTeamKeys: false };
-  it('available: the composer is the first thing on Home for members and operators alike', () => {
+  it('available: the composer is the first thing on Home for members and admins alike', () => {
     expect(homeChatPlacement('member', on)).toEqual({ kind: 'chat' });
-    expect(homeChatPlacement('operator', { ...on, canManageTeamKeys: true })).toEqual({ kind: 'chat' });
+    expect(homeChatPlacement('admin', { ...on, canManageTeamKeys: true })).toEqual({ kind: 'chat' });
   });
   it('availability unknown (the read failed): Home is unchanged', () => {
-    expect(homeChatPlacement('operator', null)).toEqual({ kind: 'none' });
+    expect(homeChatPlacement('admin', null)).toEqual({ kind: 'none' });
   });
   it('no key resolves: the admin gets onboarding in place of chat, a member gets nothing', () => {
-    expect(homeChatPlacement('operator', { available: false, reason: 'no_key', canManageTeamKeys: true, keyPolicy: 'team' })).toEqual({ kind: 'onboarding' });
+    expect(homeChatPlacement('admin', { available: false, reason: 'no_key', canManageTeamKeys: true, keyPolicy: 'team' })).toEqual({ kind: 'onboarding' });
     expect(homeChatPlacement('member', { available: false, reason: 'no_key', canManageTeamKeys: false, keyPolicy: 'team' })).toEqual({ kind: 'none' });
   });
   it('everyone brings their own key: anyone without one gets the connect card', () => {
     expect(homeChatPlacement('member', { available: false, reason: 'no_key', canManageTeamKeys: false, keyPolicy: 'own' })).toEqual({ kind: 'connect-own' });
-    expect(homeChatPlacement('operator', { available: false, reason: 'no_key', canManageTeamKeys: true, keyPolicy: 'own' })).toEqual({ kind: 'connect-own' });
+    expect(homeChatPlacement('admin', { available: false, reason: 'no_key', canManageTeamKeys: true, keyPolicy: 'own' })).toEqual({ kind: 'connect-own' });
   });
 });

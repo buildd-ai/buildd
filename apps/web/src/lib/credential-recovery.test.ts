@@ -3,7 +3,11 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 // ── mocks (before importing the module under test) ────────────────────────────
 
 let selectRows: any[] = [];
-const updateWhere = mock((_cond: any) => Promise.resolve());
+// The guarded flip returns the rows it moved; by default every failed task read.
+let flippedIds: string[] | null = null;
+const updateWhere = mock((_cond: any) => ({
+  returning: async () => (flippedIds ?? [...new Set(selectRows.map((r: any) => r.taskId))]).map(id => ({ id })),
+}));
 const updateSet = mock(() => ({ where: updateWhere }));
 const mockUpdate = mock(() => ({ set: updateSet }));
 
@@ -58,7 +62,12 @@ mock.module('@/lib/dispatch-authority', () => ({
   DRAIN_BATCH: 25,
 }));
 
-import { requeueAuthFailedTasks, MAX_REQUEUE } from './credential-recovery';
+// Held tasks (failure-incident-recovery §18.3) are released by their one writer.
+let releasedIds: string[] = [];
+const mockReleaseCredentialHolds = mock(async (_input: any) => releasedIds);
+mock.module('@/lib/task-recovery-hold', () => ({ releaseCredentialHolds: mockReleaseCredentialHolds }));
+
+import { requeueAuthFailedTasks, requeueFailedTasks, MAX_REQUEUE } from './credential-recovery';
 
 const AUTH_ERR = 'Your access token could not be refreshed because you have since logged out or signed in to another account.';
 const NON_AUTH_ERR = 'Command failed: tsc exited with code 2';
@@ -125,6 +134,57 @@ describe('requeueAuthFailedTasks', () => {
     selectRows = [];
     const res = await requeueAuthFailedTasks('team-1');
     expect(res.requeued).toEqual([]);
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+});
+
+describe('requeueAuthFailedTasks — credential holds', () => {
+  beforeEach(() => {
+    selectRows = [];
+    releasedIds = [];
+    mockReleaseCredentialHolds.mockClear();
+    mockWakeTasks.mockClear();
+  });
+
+  it('a stored healthy credential releases the team\'s held tasks too (AC-19)', async () => {
+    releasedIds = ['task-held'];
+    const result = await requeueAuthFailedTasks('team-1');
+    expect(mockReleaseCredentialHolds).toHaveBeenCalledWith({ teamId: 'team-1', by: 'credential.restored' });
+    expect(result.released).toEqual(['task-held']);
+  });
+
+  it('a release that throws does not undo the failed-task requeue', async () => {
+    selectRows = [row('task-auth', AUTH_ERR, '2026-07-19T17:00:00Z')];
+    mockReleaseCredentialHolds.mockImplementationOnce(async () => { throw new Error('db down'); });
+    const result = await requeueAuthFailedTasks('team-1');
+    expect(result.requeued).toEqual(['task-auth']);
+    expect(result.released).toEqual([]);
+  });
+});
+
+describe('requeueFailedTasks — the shared requeue writer', () => {
+  beforeEach(() => {
+    selectRows = [];
+    flippedIds = null;
+    mockUpdate.mockClear();
+    mockWakeTasks.mockClear();
+  });
+
+  it('wakes only the tasks the guarded flip actually moved', async () => {
+    flippedIds = ['task-a'];
+    const ids = await requeueFailedTasks(['task-a', 'task-b'], 'task.requeued');
+    expect(ids).toEqual(['task-a']);
+    expect(mockWakeTasks.mock.calls).toEqual([[['task-a'], 'task.requeued']]);
+  });
+
+  it('a task no longer failed is not woken (nothing flipped)', async () => {
+    flippedIds = [];
+    expect(await requeueFailedTasks(['task-a'], 'task.requeued')).toEqual([]);
+    expect(mockWakeTasks).not.toHaveBeenCalled();
+  });
+
+  it('no ids: no write', async () => {
+    expect(await requeueFailedTasks([], 'task.requeued')).toEqual([]);
     expect(mockUpdate).not.toHaveBeenCalled();
   });
 });

@@ -8,6 +8,7 @@ import { db } from '../db/client';
 import { secrets } from '../db/schema';
 import { and, eq } from 'drizzle-orm';
 import { getSecretsProvider } from './index';
+import { sqlWhere } from '../db/relational-sql';
 
 /**
  * Store (or update) an OAuth token for an account, encrypted at rest.
@@ -22,10 +23,10 @@ export async function setOAuthToken(opts: {
 
   // Check if an oauth_token secret already exists for this account
   const existing = await db.query.secrets.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(secrets.accountId, accountId),
       eq(secrets.purpose, 'oauth_token'),
-    ),
+    )),
     columns: { id: true },
   });
 
@@ -46,10 +47,10 @@ export async function getOAuthToken(accountId: string): Promise<string | null> {
   if (!process.env.ENCRYPTION_KEY) return null;
 
   const row = await db.query.secrets.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(secrets.accountId, accountId),
       eq(secrets.purpose, 'oauth_token'),
-    ),
+    )),
     columns: { id: true },
   });
   if (!row) return null;
@@ -63,10 +64,10 @@ export async function getOAuthToken(accountId: string): Promise<string | null> {
  */
 export async function deleteOAuthToken(accountId: string): Promise<void> {
   const row = await db.query.secrets.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(secrets.accountId, accountId),
       eq(secrets.purpose, 'oauth_token'),
-    ),
+    )),
     columns: { id: true },
   });
   if (!row) return;

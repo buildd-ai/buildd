@@ -17,9 +17,13 @@
 
 import { db } from '../db/index';
 import { workers, workspaces, githubInstallations, githubRepos } from '../db/schema';
-import { recordPrFact } from '../pr-facts';
+import { recordPrFact, unscopedPrFactScope } from '../pr-facts';
+
+/** A manual operator backfill, run by hand; it cannot import the kernel's scope (TODO S4b: heal through the kernel floor). */
+const OPERATOR_SCOPE = unscopedPrFactScope('backfill-mergedat');
 import { and, isNull, isNotNull, eq } from 'drizzle-orm';
 import { createSign, createPrivateKey } from 'crypto';
+import { sqlWhere } from '../db/relational-sql';
 
 // ─── Minimal inline GitHub auth ──────────────────────────────────────────────
 
@@ -47,7 +51,7 @@ function makeJwt(appId: string, privateKey: string): string {
 async function getToken(appId: string, privateKey: string, installationId: number): Promise<string> {
   // Use cached token if fresh enough
   const inst = await db.query.githubInstallations.findFirst({
-    where: eq(githubInstallations.installationId, installationId),
+    where: sqlWhere(eq(githubInstallations.installationId, installationId)),
     columns: { accessToken: true, tokenExpiresAt: true },
   });
   if (inst?.accessToken && inst.tokenExpiresAt) {
@@ -85,7 +89,7 @@ async function main() {
   }
 
   const candidates = await db.query.workers.findMany({
-    where: and(isNotNull(workers.prNumber), isNull(workers.mergedAt), isNotNull(workers.prUrl)),
+    where: sqlWhere(and(isNotNull(workers.prNumber), isNull(workers.mergedAt), isNotNull(workers.prUrl))),
     columns: { id: true, prNumber: true, workspaceId: true },
   });
 
@@ -103,7 +107,7 @@ async function main() {
 
   for (const [wsId, wsWorkers] of byWs) {
     const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, wsId),
+      where: sqlWhere(eq(workspaces.id, wsId)),
       columns: { githubRepoId: true },
       with: {
         githubRepo: { columns: { fullName: true } },
@@ -155,13 +159,13 @@ async function main() {
 
         if (pr.merged && pr.merged_at) {
           if (!DRY_RUN) {
-            await recordPrFact({ workerId: worker.id }, { kind: 'merged', mergedAt: pr.merged_at });
+            await recordPrFact({ workerId: worker.id }, { kind: 'merged', mergedAt: pr.merged_at }, { scope: OPERATOR_SCOPE });
           }
           console.log(`  PR #${worker.prNumber}: merged at ${pr.merged_at}${DRY_RUN ? ' [dry]' : ' ✓'}`);
           counts.stamped++;
         } else if (pr.state === 'closed') {
           if (!DRY_RUN) {
-            await recordPrFact({ workerId: worker.id }, { kind: 'closed' });
+            await recordPrFact({ workerId: worker.id }, { kind: 'closed' }, { scope: OPERATOR_SCOPE });
           }
           console.log(`  PR #${worker.prNumber}: closed (no merge)${DRY_RUN ? ' [dry]' : ' ✓'}`);
           counts.closed++;

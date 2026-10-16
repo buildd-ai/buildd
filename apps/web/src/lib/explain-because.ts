@@ -23,6 +23,10 @@ import type { MissionStateView, WaitingOnDescriptor } from './mission-state-view
 import { suggestionRef } from './mission-state-view';
 import type { SupersessionSuggestion } from '@buildd/core/pr-shipped';
 import { ENTITLEMENT_BLOCK_CONTEXT_KEY, parseEntitlementBlock } from '@buildd/shared';
+import { taskRecoverySentence } from './task-recovery-hold';
+import { cancellationLine } from './task-cancellation';
+import { claimHoldPhrase } from './claim-hold-phrase';
+import type { DeliveryDisagreement } from './delivery-overlay';
 
 const repoOf = (url: string | null | undefined) => url?.match(/github\.com\/([^/]+\/[^/]+)\/pull\/\d+/)?.[1] ?? null;
 
@@ -58,9 +62,13 @@ export interface StateBecauseExtras {
     title: string | null;
     status: string;
     live?: boolean;
+    /** Its worker is parked on a question for a person: the question link names it, not this row. */
+    waiting?: boolean;
     /** A reviewer task: runners claim it even in a local-executor mission. */
     runnerClaimable?: boolean;
     missingBrowser?: boolean;
+    /** The claim loop's newest refusal reason for this pending row (spec f7f67f1a R-33). */
+    holdReason?: string | null;
     /**
      * Unmet dependencies of a pending row. Such a row cannot be claimed, so it
      * is described as waiting on them (and ref'd to the first), never as
@@ -155,7 +163,9 @@ export function buildStateBecause(
     ? `State is ${view.kind} because ${w.label}.`
     : view.outstanding.length > 0
       ? `State is ${view.kind}, but ${view.outstanding.length} fact(s) are still outstanding: ${view.outstanding.map(o => o.label).join('; ')}.`
-      : `State is ${view.kind}. No source reports outstanding work.`;
+      : view.situation.openChecks?.length
+        ? `No task, PR or decision is open; ${view.situation.openChecks.length === 1 ? 'that check is' : 'those checks are'} what is left.`
+        : 'No task, PR, check or decision is open.';
   links.push(link(closing, view.derivedFrom.kind, base));
 
   return orderChain(links);
@@ -189,40 +199,51 @@ function openTaskLinks(
   const orphaned = (t: Row) => !depBlocked(t) && (t.live === undefined ? nothingLive : !t.live);
   const rank = (t: Row) => (orphaned(t) ? 0 : depBlocked(t) ? 2 : 1);
   const rows = [...(extra.openTasks ?? [])].sort((a, b) => rank(a) - rank(b));
-  return rows.slice(0, 10).map(t => {
+  const name = (t: Row) => `"${t.title ?? t.id}"`;
+  return rows.filter(t => !t.waiting).slice(0, 10).map(t => {
     if (depBlocked(t)) {
       const deps = t.waitingOn!;
       const named = deps.map(d => `"${d.title ?? d.id}"`).join(', ');
       return link(
-        `Task "${t.title ?? t.id}" is waiting on ${deps.length === 1 ? 'its dependency' : 'its dependencies'} ${named}.`,
+        `${name(t)} is waiting on ${named}.`,
         'tasks.dependsOn',
         { ...base, taskId: deps[0].id },
       );
     }
     // A local-executor mission: its rows are the person's session's to claim,
-    // so "no live worker" (read: a runner should have it) is the wrong claim.
+    // so "waiting for a runner" is the wrong claim.
     if (w.local && !t.live && !t.runnerClaimable) {
       return link(
         t.status === 'pending'
-          ? `Task "${t.title ?? t.id}" is pending, waiting for a local session to claim it (runners never pick up this mission's tasks).`
-          : `Task "${t.title ?? t.id}" is ${t.status} in a local session.`,
+          ? `${name(t)} is ready to start. Claim it from a local session.`
+          : `A local session claimed ${name(t)}, but it is not running now.`,
         'mission.executor',
         { ...base, taskId: t.id },
       );
     }
     if (t.missingBrowser && orphaned(t)) {
       return link(
-        `Task "${t.title ?? t.id}" is waiting for a runner with the missing browser capability. No eligible runner advertises a working browser provider for this workspace.`,
+        `${name(t)} needs a runner with a browser. None is online for this workspace.`,
         'tasks.roleSlug + workerHeartbeats.environment + workspaces.gitConfig.executor',
         { ...base, taskId: t.id },
       );
     }
+    const hold = t.status === 'pending' ? claimHoldPhrase(t.holdReason) : null;
+    if (hold && orphaned(t)) {
+      return link(`${name(t)} is queued: ${hold}.`, 'gate_events.reason', { ...base, taskId: t.id });
+    }
+    // A reason the derivation does not know reads as waiting, with no invented cause (spec 8e137fdb AC-9).
+    if (t.status === 'pending' && t.holdReason && orphaned(t)) {
+      return link(`${name(t)} is waiting.`, 'gate_events.reason', { ...base, taskId: t.id });
+    }
     return link(
       orphaned(t)
-        ? `Task "${t.title ?? t.id}" is ${t.status} with no live worker.`
+        ? t.status === 'pending'
+          ? `${name(t)} is next in line for a runner.`
+          : `${name(t)} was started, but nothing is running it now.`
         : t.live
-          ? `Task "${t.title ?? t.id}" is ${t.status}. A worker is running it.`
-          : `Task "${t.title ?? t.id}" is ${t.status} and not finished yet.`,
+          ? `${name(t)} is in progress${w.local ? ' in a local session' : ''}.`
+          : `${name(t)} is not finished yet.`,
       'tasks.status + workers.status',
       { ...base, taskId: t.id },
     );
@@ -371,6 +392,15 @@ function causeLinksFor(
       );
 
     case 'human_decision':
+      if (w.question) {
+        return w.question.asks.slice(0, 10).map(a =>
+          link(
+            a.prompt ? `"${a.title ?? a.taskId}" asks: ${a.prompt}` : `"${a.title ?? a.taskId}" is waiting for your answer.`,
+            'workers.waitingFor',
+            { ...base, taskId: a.taskId },
+          ),
+        );
+      }
       return [
         link(
           w.detail ? `An owner decision is open: ${w.detail}` : 'An owner decision is open.',
@@ -630,6 +660,44 @@ export function deliveryTransitionLink(
   return link(`Delivery is ${d.state} (${d.headline}${detail})${attempts}: ${t.command} moved it ${moved} at ${t.createdAt}.`, 'DeliveryView.lastTransition', refs);
 }
 
+const ROW_WORDS: Record<DeliveryDisagreement['worker'], string> = { merged: 'merged', open: 'still open', closed: 'closed' };
+
+/** Where the PR stands, in words a person reads (never the state's name). */
+const PR_STATE_WORDS: Record<DeliveryDisagreement['delivery'], string> = {
+  WORKING: 'still being built',
+  AWAITING_PUSH: 'waiting for a push to reach GitHub',
+  AWAITING_REVIEW: 'in review',
+  CHANGES_REQUESTED: 'waiting on requested changes',
+  FIXING: 'being fixed after review',
+  REPAIRING: 'being repaired',
+  BLOCKED_ON_TRUNK: 'held by a red base branch',
+  APPROVED: 'approved and not yet merged',
+  LANDING: 'merging',
+  ESCALATED: 'waiting on a person',
+  MERGED: 'merged',
+  CLOSED_UNMERGED: 'closed without merging',
+  SUPERSEDED: 'shipped in another PR',
+  ABANDONED: 'abandoned',
+  FAILED: 'stopped after its attempts failed',
+};
+
+/**
+ * workflow-kernel-library.md §7 / AC-26: a worker row whose merge columns say
+ * something other than the PR's review state (its delivery). The answer
+ * follows the review state; the row is named so the disagreement is visible.
+ */
+export function deliveryDisagreementLink(d: DeliveryDisagreement, subject: BecauseSubjectRefs): Link {
+  const refs: ExplainRefs = {
+    taskId: d.taskId,
+    ...(subject.missionId ? { missionId: subject.missionId } : {}),
+    ...(subject.workspaceId ? { workspaceId: subject.workspaceId } : {}),
+    prNumber: d.prNumber,
+  };
+  return link(
+    `PR #${d.prNumber} is ${PR_STATE_WORDS[d.delivery]} (${d.headline}), but the worker's own record says ${ROW_WORDS[d.worker]}. This answer follows the PR's review state.`,
+    'DeliveryView.state vs workers.mergedAt', refs);
+}
+
 /**
  * Why a pending task waits on a plan limit: the hold the claim stamped on it
  * (`tasks.context.entitlementBlock`). Null when there is none.
@@ -651,6 +719,27 @@ export function entitlementHoldLink(context: unknown, subject: BecauseSubjectRef
     case 'concurrency':
       return link(`${block.active} of ${block.limit} managed runs are active. It starts when one finishes.`, 'tasks.context.entitlementBlock', refs);
   }
+}
+
+/**
+ * failure-incident-recovery §18.5/§18.6: why a cancelled task was cancelled
+ * (or what superseded it), and what a task held for its credential waits on.
+ * The one sentence the task page shows too.
+ */
+export function taskRecoveryLink(status: string, context: unknown, subject: BecauseSubjectRefs): Link | null {
+  const refs: ExplainRefs = {
+    ...(subject.taskId ? { taskId: subject.taskId } : {}),
+    ...(subject.workspaceId ? { workspaceId: subject.workspaceId } : {}),
+  };
+  if (status === 'cancelled') {
+    const line = cancellationLine(context);
+    return line ? link(line, 'tasks.context.cancellation', refs) : null;
+  }
+  if (status === 'pending') {
+    const line = taskRecoverySentence(context, iso => `${iso.slice(11, 16)} UTC`);
+    return line ? link(line, 'tasks.context.credentialHold', refs) : null;
+  }
+  return null;
 }
 
 /** Insert the wake link before the chain's closing conclusion, renumbered. */

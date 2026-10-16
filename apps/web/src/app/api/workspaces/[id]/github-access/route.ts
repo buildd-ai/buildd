@@ -8,6 +8,7 @@ import { holdsInWorkspace, verifyWorkspaceAccess } from '@/lib/team-access';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { isUuid } from '@/lib/uuid';
 import { checkWorkspaceRepoConnection, getRepoAccessView } from '@/lib/github-repo-access-store';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * /api/workspaces/[id]/github-access
@@ -34,7 +35,7 @@ async function authorize(
   const apiKey = req.headers.get('authorization')?.replace('Bearer ', '') || null;
   const apiAccount = apiKey ? await authenticateApiKey(apiKey, req) : null;
   if (apiAccount) {
-    const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, id), columns: { teamId: true } });
+    const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, id)), columns: { teamId: true } });
     if (!ws || ws.teamId !== apiAccount.teamId) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     if (needManage && !hasTokenRouteAdminAccess(apiAccount, req)) {
       return NextResponse.json({ error: 'Requires admin-level API key' }, { status: 403 });

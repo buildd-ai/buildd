@@ -20,7 +20,7 @@ function current(state: StateKey, step: number, repairs: number | undefined): { 
   switch (state) {
     case 'fixing': return { glyph: STATES.fixing.glyph, tone: 'act', extra: ` · repair ${repairs ?? 1}` };
     case 'recovering': return { glyph: STATES.recovering.glyph, tone: 'q', extra: ` paused${rounds(repairs)}` };
-    case 'needs_you': return { glyph: STATES.needs_you.glyph, tone: 'dec', extra: ` · needs you${rounds(repairs)}` };
+    case 'needs_you': return { glyph: STATES.needs_you.glyph, tone: 'dec', extra: ` · waiting on you${rounds(repairs)}` };
     case 'ci_failed': return { glyph: STATES.ci_failed.glyph, tone: 'bad', extra: ` · CI failed${rounds(repairs)}` };
     case 'waiting': return { glyph: STATES.waiting.glyph, tone: 'act', extra: ' · waiting' };
     case 'failed': return { glyph: STATES.failed.glyph, tone: 'bad', extra: ' · failed' };

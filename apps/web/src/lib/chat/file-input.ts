@@ -1,4 +1,5 @@
 import type { ChatFileRef, ChatProvider } from '@buildd/shared';
+import type { CatalogEntry } from '@buildd/core/model-catalog';
 import { quoteAttachment } from '@/lib/artifact-chat-attachments';
 
 /**
@@ -10,17 +11,33 @@ import { quoteAttachment } from '@/lib/artifact-chat-attachments';
  * Only the message being sent carries file content; an earlier message's file
  * becomes a note, so the bytes are not re-sent every turn.
  *
- * No catalog field says which models take images, so this is a short explicit
- * map by provider and model family. A model it does not name is treated as
- * text-only: the person sees the note, not a wrong answer about a picture the
- * model never saw.
+ * What a model reads comes from the OpenRouter catalog (`input_modalities`:
+ * `image`, and `file` for PDFs). A model the catalog does not describe falls
+ * back to a short map by provider and family, and a model neither names is
+ * treated as text-only: the person sees the note, not a wrong answer about a
+ * picture the model never saw.
  */
 
 export interface ModelInputs { images: boolean; pdf: boolean }
 
 const OPENAI_VISION = /^(gpt-4o|gpt-4\.1|gpt-5|o1|o3|o4)/;
 
-export function modelInputs(provider: ChatProvider, modelId: string): ModelInputs {
+/** The catalog row for the model a turn is served by, when the catalog has one. */
+function catalogEntryFor(catalog: readonly CatalogEntry[], provider: ChatProvider, modelId: string): CatalogEntry | undefined {
+  const id = modelId.toLowerCase();
+  if (provider === 'openrouter') return catalog.find(e => e.openRouterId.toLowerCase() === id);
+  return catalog.find(e => e.provider === provider && (e.id.toLowerCase() === id || e.canonicalId?.toLowerCase() === id));
+}
+
+export function modelInputs(provider: ChatProvider, modelId: string, catalog: readonly CatalogEntry[] = []): ModelInputs {
+  const known = catalogEntryFor(catalog, provider, modelId)?.inputModalities;
+  const mapped = familyInputs(provider, modelId);
+  if (!known) return mapped;
+  // The catalog says `file` for PDFs on OpenRouter; a vendor's own API is the map's.
+  return { images: known.includes('image'), pdf: provider === 'openrouter' ? known.includes('file') : mapped.pdf };
+}
+
+function familyInputs(provider: ChatProvider, modelId: string): ModelInputs {
   const id = modelId.toLowerCase();
   if (provider === 'anthropic') return { images: id.startsWith('claude-'), pdf: id.startsWith('claude-') };
   if (provider === 'openai') return { images: OPENAI_VISION.test(id), pdf: false };

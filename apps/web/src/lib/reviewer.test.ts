@@ -24,7 +24,7 @@ let workerUpdateCalls: Array<{ set: any }> = [];
 // Fixture for the mission-criteria lookup createReviewerTask does when the
 // original task belongs to a mission. Null = task has no mission.
 let missionFindFirstResult: any = null;
-// Fixture for the Rule P1-7 attempt-phase read. Null = the reviewed task has no
+// Fixture for the mission-legibility R-7 attempt-phase read. Null = the reviewed task has no
 // phase, which is the majority case today.
 let parentPhaseRow: any = null;
 // Fixture for `loadTaskSpecSource`'s read of the reviewed task's own
@@ -2362,7 +2362,7 @@ describe('createReviewerTask — role, work-kind and inherited phase', () => {
     expect(insertedTask?.kind).toBe('analysis');
   });
 
-  it('AC-16 / Rule P1-7: the review pass inherits its parent\'s mission phase', async () => {
+  it('AC-16 / mission-legibility R-7: the review pass inherits its parent\'s mission phase', async () => {
     reset();
     parentPhaseRow = { missionPhaseIndex: 2, missionPhaseLabel: 'Population' };
     await createReviewerTask(params() as any);
@@ -2425,6 +2425,8 @@ describe('createReviewerTask — policy suggestions', () => {
     prFiles: [
       { filename: 'apps/api/package.json', status: 'modified', additions: 1, deletions: 1 },
       { filename: 'apps/api/src/handler.ts', status: 'modified', additions: 1, deletions: 1 },
+      // Settings spec AC-7: a test file named after a risky area is not suggested.
+      { filename: 'apps/x/credential.test.ts', status: 'modified', additions: 1, deletions: 1 },
     ],
     policyConfig,
   });

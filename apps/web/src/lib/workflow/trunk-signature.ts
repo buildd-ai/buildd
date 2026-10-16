@@ -2,11 +2,15 @@
  * CI failure signatures for the trunk circuit breaker
  * (docs/specs/workflow-state-kernel.md §6.10). Pure and dependency-light, so
  * the activity renderer can name the failing checks without loading the db.
+ *
+ * Comparing signatures is the package's (`@buildd/workflow-kernel/trunk-signature`);
+ * how a check name normalises (`ciSignature`) is buildd's, and is what the
+ * kernel's `Trunk.signatureOf` port answers with.
  */
 import { normalizeErrorSignature } from '@buildd/core/error-signature';
+import { UNKNOWN_CI_SIGNATURE, trunkRecoveredFrom } from '@buildd/workflow-kernel/trunk-signature';
 
-/** The placeholder signature of a failure whose failing checks could not be read. */
-export const UNKNOWN_CI_SIGNATURE = 'ci_failed';
+export { UNKNOWN_CI_SIGNATURE, signatureChecks, trunkExplains } from '@buildd/workflow-kernel/trunk-signature';
 
 /** `ci:<check>|<check>`: the sorted, normalised names of the failing checks. */
 export function ciSignature(failing: string[]): string {
@@ -14,20 +18,7 @@ export function ciSignature(failing: string[]): string {
   return names.length ? `ci:${names.join('|')}` : UNKNOWN_CI_SIGNATURE;
 }
 
-export function signatureChecks(signature: string): string[] {
-  return signature.startsWith('ci:') ? signature.slice(3).split('|').filter(Boolean) : [];
-}
-
-/** Does the base's failure explain the PR's? Every check failing on the PR also fails on the base. */
-export function trunkExplains(prSignature: string, baseSignature: string): boolean {
-  const pr = signatureChecks(prSignature);
-  const base = new Set(signatureChecks(baseSignature));
-  return pr.length > 0 && pr.every((n) => base.has(n));
-}
-
 /** Has the base recovered from the incident? None of the incident's checks fails on it any more. */
 export function trunkRecovered(incidentSignature: string, baseFailing: string[]): boolean {
-  const now = new Set(signatureChecks(ciSignature(baseFailing)));
-  return !signatureChecks(incidentSignature).some((n) => now.has(n));
+  return trunkRecoveredFrom(incidentSignature, ciSignature(baseFailing));
 }
-

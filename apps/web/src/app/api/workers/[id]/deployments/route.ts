@@ -26,6 +26,7 @@ import { isUuid } from '@/lib/uuid';
 import { loadOperatorGrant } from '@/lib/operator-capability-source';
 import { runDeploymentAction } from '@/lib/deployments/action';
 import { deploymentStore } from '@/lib/deployments/store';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -42,7 +43,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!isUuid(id)) return notFound();
 
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.id, id),
+    where: sqlWhere(eq(workers.id, id)),
     columns: { id: true, accountId: true, claimedByUserId: true, workspaceId: true, taskId: true, status: true },
   });
   if (!worker || !callerOwnsWorker(account, worker)) return notFound();
@@ -52,11 +53,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
 
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, worker.taskId),
+    where: sqlWhere(eq(tasks.id, worker.taskId)),
     columns: { id: true, workspaceId: true, roleSlug: true },
   });
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, worker.workspaceId),
+    where: sqlWhere(eq(workspaces.id, worker.workspaceId)),
     columns: { id: true, teamId: true },
   });
   if (!task || !workspace?.teamId || task.workspaceId !== workspace.id) return notFound();

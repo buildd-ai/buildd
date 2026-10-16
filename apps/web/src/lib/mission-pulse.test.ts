@@ -116,7 +116,9 @@ describe('deriveFeedTaskState × PR lifecycle (completed task)', () => {
     ['ci_failed', { state: 'needs_you', needsYou: 'pr' }, { state: 'failed', needsYou: null }],
     ['conflict', { state: 'needs_you', needsYou: 'pr' }, { state: 'failed', needsYou: null }],
     ['merged', { state: 'done', needsYou: null }, { state: 'done', needsYou: null }],
-    ['closed', { state: 'done', needsYou: null }, { state: 'done', needsYou: null }],
+    // Closed without merging and with no supersession never shipped (spec f7f67f1a R-2):
+    // not done. It did not land, so redoing or settling it is the owner's move.
+    ['closed', { state: 'needs_you', needsYou: 'failed' }, { state: 'failed', needsYou: null }],
     // Terminal: buildd cannot resolve the PR, so nobody can act on it from here.
     ['unresolvable', { state: 'failed', needsYou: null }, { state: 'failed', needsYou: null }],
   ];
@@ -295,5 +297,46 @@ describe('F3: n/N excludes cancelled rows', () => {
 
   it('cancelled has its own glyph, never the queued one', () => {
     expect(PULSE_STATE_GLYPH.skipped).not.toBe(PULSE_STATE_GLYPH.queued);
+  });
+});
+
+
+describe('closed PRs and deliverable roles (spec f7f67f1a P-2, R-2, R-14)', () => {
+  it('a closed PR whose work landed under another PR is done', () => {
+    const task = t('sup', { status: 'completed', worker: { status: 'completed', prNumber: 7, prLifecycleStatus: 'closed', supersededByPrNumber: 8 } });
+    expect(deriveFeedTaskState({ task, attempts: [] }).state).toBe('done');
+  });
+
+  it('a closed PR a person abandoned is settled, not done: it leaves the count like a cancelled task', () => {
+    const task = t('ab', { status: 'completed', worker: { status: 'completed', prNumber: 7, prLifecycleStatus: 'closed', abandonedAt: new Date() } });
+    expect(deriveFeedTaskState({ task, attempts: [] }).state).toBe('skipped');
+  });
+
+  it('a kernel-owned closed PR keeps the kernel reading on every surface (S17), so it is not split here', () => {
+    // The legacy rules above apply only without a kernel delivery. The kernel
+    // reads CLOSED_UNMERGED and ABANDONED as settled ("Closed") on every
+    // surface; changing that is a kernel decision, not this projection's.
+    const mk = (id: string, state: string, stage: string) =>
+      t(id, { status: 'completed', worker: { status: 'completed', prNumber: 7 }, delivery: { stage, state, headline: 'Closed', owner: 'system' } as never });
+    expect(deriveFeedTaskState({ task: mk('cu', 'CLOSED_UNMERGED', 'closed'), attempts: [] }).state).toBe('done');
+    expect(deriveFeedTaskState({ task: mk('su', 'SUPERSEDED', 'superseded'), attempts: [] }).state).toBe('done');
+  });
+
+  it('rows carry their role; audit, fix and refresh rows are listed but not counted', () => {
+    const tasks = [
+      t('b1', { status: 'completed' }),
+      t('b2'),
+      t('au', { title: '[surface audit] Mission' }),
+      t('fx', { title: '[surface fix] /app: tidy', status: 'completed' }),
+      t('rf', { title: 'chore(mission): merge dev into the Mission integration branch', status: 'completed', context: { requireMergeCommit: true } }),
+    ];
+    const { rows } = foldMissionDeliverables(tasks);
+    expect(rows.map(r => [r.task.id, r.deliverableRole])).toEqual([
+      ['b1', 'build'], ['b2', 'build'], ['au', 'verification'], ['fx', 'repair'], ['rf', 'maintenance'],
+    ]);
+    expect(missionDeliverableCounts(tasks)).toEqual({ done: 1, total: 2, cancelled: 0 });
+    const segments = buildPulseSegments(tasks);
+    expect(segments.map(s => s.taskId)).toEqual(['b1', 'b2']);
+    expect(pulseDoneCounts(segments)).toEqual({ done: 1, total: 2 });
   });
 });

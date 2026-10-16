@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { buildPromptWithComposition } from '../../src/prompt-builder';
 
 /**
- * Worker self-classification (docs/specs/mission-legibility.md Rule K2-17).
+ * Worker self-classification (docs/specs/mission-legibility.md R-29).
  *
  * The ask is conditional on purpose. `kind` is written at most once, so a task
  * that already has one has nothing to learn from the worker — and telling every

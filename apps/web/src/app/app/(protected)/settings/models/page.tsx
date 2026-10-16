@@ -3,6 +3,7 @@ import SettingsPage from '../_components/SettingsPage';
 import { loadSettingsContext } from '../_lib/settings-context';
 import { teamIdsHolding } from '../_lib/settings-permissions';
 import { settingsReadOnly } from '@/lib/settings-nav';
+import { isPlatformOperatorCaller } from '@/lib/admin/platform-operator-caller';
 import ModelProvidersClient from '../providers/ModelProvidersClient';
 import { PROVIDERS_DESCRIPTION } from '../providers/provider-copy';
 import ModelTiersClient from './ModelTiersClient';
@@ -24,10 +25,14 @@ export const dynamic = 'force-dynamic';
  *
  * Every section is a client component that loads its own data, so one failed
  * read blanks that section, not the page. Each control follows the permission
- * its API enforces; this only decides what renders.
+ * its API enforces; this only decides what renders. A team admin picks each
+ * tier's primary model; traffic pools and the decision model are platform
+ * operator controls (lib/admin/platform-operator-caller.ts) and render for an operator only.
+ * Your own maximum is You › Keys.
  */
 export default async function ModelsSettingsPage() {
-  const { currentTeam, currentTeamId, perms, permsByTeam, workspaces } = await loadSettingsContext();
+  const { user, currentTeam, currentTeamId, perms, permsByTeam, workspaces } = await loadSettingsContext();
+  const operator = await isPlatformOperatorCaller({ user });
 
   if (!currentTeam) {
     return (
@@ -48,6 +53,7 @@ export default async function ModelsSettingsPage() {
       <ModelProvidersClient
         teamId={teamId}
         isAdmin={perms.manage_inference_providers}
+        operator={operator}
         workspaces={teamWorkspaces.map((w) => ({ id: w.id, name: w.name }))}
         signIns={{
           workspaces,
@@ -59,7 +65,7 @@ export default async function ModelsSettingsPage() {
       />
 
       <Section title="Tiers" id="tiers" className="scroll-mt-20">
-        <ModelTiersClient teamId={teamId} teamName={currentTeam.name ?? null} isAdmin={perms.manage_model_tiers} />
+        <ModelTiersClient teamId={teamId} teamName={currentTeam.name ?? null} isAdmin={perms.manage_model_tiers} operator={operator} />
         <TierLimitSection teamId={teamId} isAdmin={perms.manage_model_tiers} />
         <ChatTierPolicySection teamId={teamId} isAdmin={perms.manage_model_tiers} />
         <ModelUpgradePolicySection teamId={teamId} isAdmin={perms.manage_model_tiers} />

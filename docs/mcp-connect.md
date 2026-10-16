@@ -22,15 +22,27 @@ in the address.
 1. Add the address to your app (Claude Code, Claude, ChatGPT, or any MCP client
    that supports OAuth sign-in).
 2. The app opens buildd in your browser. Sign in if you are not signed in.
-3. The consent page lists your teams and their workspaces. Choose:
-   - **Workspaces.** One is ticked to start. Search, select all, or pick by team.
-     You can only choose workspaces in teams you belong to.
-   - **What kind of connection.** See the next section.
+3. The page reads **Authorize <app>** and lists your teams with their
+   workspaces. Each workspace shows its repository under its name. Choose:
+   - **Workspaces.** One is ticked to start. Search by workspace, team or
+     repository, select all, or pick by team. You can only choose workspaces in
+     teams you belong to. Internal workspaces (each team's organizer workspace)
+     are not listed.
    - **Write.** Read access is always included. Write is ticked when the app asks
      for it, and you can untick it to make the connection read only.
-4. Click **Approve**. buildd sends you back to the app and the connection is live.
+   - **Acts.** Shown only when the app asks to act as you. See the next section.
+4. Click **Allow access**. buildd sends you back to the app and the connection is
+   live.
 
 **Cancel** sends the app an `access_denied` answer and creates nothing.
+
+The connection reaches the workspaces you ticked, and only those. **Select all**
+ticks the workspaces that exist now; a workspace created later is not added. Add
+it in Settings when you want it.
+
+Apps buildd recognises (ChatGPT and Claude, returning to their own sites) are
+shown as verified. For any other app the page shows the name the app gave and
+the site it returns you to.
 
 ## Two kinds of connection
 
@@ -148,14 +160,24 @@ Before this change each connection used a per-workspace address:
 https://<your-buildd-host>/api/mcp-oauth/<workspace-id>
 ```
 
-Those addresses are **deprecated now. A removal date will be announced.** They
-keep working until then, for one workspace each, exactly as before. Their
-responses carry a `Deprecation: true` header, a `Link` header pointing at
-`/api/mcp`, and a notice in the server instructions.
+Those addresses are **deprecated**. They keep working, and keep refreshing, for
+the one workspace they name, until the sunset steps in the spec are met
+(`docs/specs/auth-oauth-boundaries.md`, "Resource routing, older addresses and
+sunset"). Their responses carry a `Deprecation: true` header, a `Link` header
+pointing at `/api/mcp`, and a notice in the server instructions.
+
+An app still set up with an older address shows a sign-in page for that one
+workspace, named by team and repository, with the address that reaches several:
+`https://<your-buildd-host>/api/mcp`. Allowing it keeps the old one-workspace
+connection; it does not switch the app over.
 
 To switch: remove the old entry from your app, add `/api/mcp`, and sign in.
-For Claude Code, run `buildd install --global --oauth` again. Then revoke the old
-connection in Settings if it is still listed.
+You do not need to know the old address; if the sign-in page says the app uses
+an older address, it does. In ChatGPT, change it from ChatGPT on the web (the
+iOS app may not show the address): remove the buildd connector and add it again
+with `https://buildd.dev/api/mcp`. For Claude Code, run
+`buildd install --global --oauth` again. Then revoke the old connection in
+Settings if it is still listed.
 
 ## Limitations
 
@@ -167,11 +189,8 @@ connection in Settings if it is still listed.
 - A connection belongs to one person. It cannot be shared with a teammate.
 - `list_workspaces` is not available in buildd's own chat, because a chat is
   already bound to one workspace.
-- The consent page shows the name the app registered itself with, and where it
-  will send you back to. buildd does not verify app names. Check the return
-  address if a name looks wrong.
+- Only ChatGPT and Claude are shown as verified, and only when they return to
+  their own sites. Every other app shows the name it registered with and the
+  site it returns to. Check the return address if a name looks wrong.
 - Apps register with buildd by dynamic client registration. Client ID metadata
   documents (CIMD) are not supported yet.
-- A workspace added in Settings in a team the connection has never been used with
-  can fail with a sign-in error until the app's next token refresh (at most an
-  hour). This is a known issue being fixed.

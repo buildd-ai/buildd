@@ -27,6 +27,8 @@ interface Props {
    * latest first, decidable in place.
    */
   visual?: { round: number; model: VisualReviewModel } | null;
+  /** The mission sheet: its Trays in one narrow column. */
+  layout?: 'page' | 'sheet';
 }
 
 export default function TaskArtifactsSection({
@@ -36,6 +38,7 @@ export default function TaskArtifactsSection({
   initialOpenArtifactId,
   missionId,
   visual = null,
+  layout = 'page',
 }: Props) {
   const [viewerOpen, setViewerOpen] = useState(false);
   const [viewerIndex, setViewerIndex] = useState(0);
@@ -93,7 +96,7 @@ export default function TaskArtifactsSection({
       </div>
       {visual ? (
         <div data-testid="task-visual-shots" className="mb-4">
-          <AuditRoundTrays visual={visual} />
+          {layout === 'sheet' ? <AuditRoundTrays visual={visual} layout="sheet" columns="one" /> : <AuditRoundTrays visual={visual} />}
         </div>
       ) : localModel && localModel.cells.length > 0 ? (
         <div data-testid="task-visual-shots" className="mb-4">

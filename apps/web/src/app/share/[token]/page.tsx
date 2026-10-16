@@ -4,6 +4,7 @@ import { and, eq } from 'drizzle-orm';
 import { notFound } from 'next/navigation';
 import MarkdownContent from '@/components/MarkdownContent';
 import { ArtifactCodeBody } from '@/components/ArtifactCodeBody';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export default async function SharePage({
   params,
@@ -13,7 +14,7 @@ export default async function SharePage({
   const { token } = await params;
 
   const artifact = await db.query.artifacts.findFirst({
-    where: and(eq(artifacts.shareToken, token), eq(artifacts.visibility, 'public')),
+    where: sqlWhere(and(eq(artifacts.shareToken, token), eq(artifacts.visibility, 'public'))),
     with: {
       worker: {
         with: {

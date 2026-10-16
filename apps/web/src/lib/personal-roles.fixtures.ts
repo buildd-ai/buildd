@@ -9,6 +9,7 @@
  */
 import { mock } from 'bun:test';
 import { roleHas } from '@/lib/permission-registry';
+import { capturedWhere } from '@buildd/core/db/relational-sql';
 
 type Row = Record<string, any>;
 type Pred = (row: Row) => boolean;
@@ -82,12 +83,15 @@ function pick(row: Row, columns?: Record<string, boolean>) {
 
 function queryApi(name: string) {
   return {
-    findFirst: async ({ where, columns }: { where?: Pred; columns?: Record<string, boolean> } = {}) => {
+    findFirst: async ({ where: captured, columns }: { where?: unknown; columns?: Record<string, boolean> } = {}) => {
+      const where = capturedWhere(captured) as Pred | undefined;
       const hit = store[name].find(r => !where || where(r));
       return hit ? pick(hit, columns) : undefined;
     },
-    findMany: async ({ where, columns }: { where?: Pred; columns?: Record<string, boolean> } = {}) =>
-      store[name].filter(r => !where || where(r)).map(r => pick(r, columns)),
+    findMany: async ({ where: captured, columns }: { where?: unknown; columns?: Record<string, boolean> } = {}) => {
+      const where = capturedWhere(captured) as Pred | undefined;
+      return store[name].filter(r => !where || where(r)).map(r => pick(r, columns));
+    },
   };
 }
 

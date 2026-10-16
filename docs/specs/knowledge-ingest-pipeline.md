@@ -6,7 +6,7 @@ last_verified: 2026-10-02
 summary: Every file-derived chunk MUST arrive via a knowledge_ingest_jobs row that is atomically claimed by one executor, batched under the serverless body cap, and closed by an atomic completion.
 domain: knowledge
 surfaces: [apps/web/src/app/api/knowledge/ingest-jobs/claim/route.ts, packages/core/knowledge-store/full-ingest.ts, apps/web/src/lib/knowledge-ingest.ts, apps/web/src/lib/knowledge-full-ingest-fallback.ts]
-related: [knowledge-store-retrieval, webhook-dataflow, external-cron-triggers]
+related: [knowledge-store-retrieval, webhook-dataflow, external-cron-triggers, living-specs]
 keywords: [knowledge_ingest_jobs, ingest-jobs/claim, sweep, skippedUnchanged, escalated, KNOWLEDGE_INGEST_JOBS, knowledge:ingest, file_hash]
 verified_by: [apps/web/src/lib/knowledge-ingest.test.ts, apps/web/src/app/api/knowledge/ingest-jobs/claim/route.test.ts, apps/web/src/app/api/knowledge/ingest-jobs/[id]/files/route.test.ts, apps/web/src/app/api/knowledge/ingest-jobs/[id]/complete/route.test.ts, packages/core/__tests__/knowledge-full-ingest.test.ts, apps/runner/__tests__/unit/knowledge-ingest-poller.test.ts, apps/web/src/lib/knowledge-full-ingest-fallback.test.ts, apps/web/src/app/api/cron/knowledge-ingest-fallback/route.test.ts, apps/web/src/lib/knowledge-ingest-stalls.test.ts, packages/core/__tests__/voyage-embedder-batching.test.ts]
 supersedes: []
@@ -51,6 +51,12 @@ in-request; the fallback runs them from `/api/cron/knowledge-ingest-fallback`.
   `docs` chunks are written by `ingestFiles` under a job (`diff` in
   `executeDiffJob`, `full` in the `/files` route or the runner's local
   executor). There is no unauthenticated or job-less write path.
+- **The `spec` corpus is not only repo files.** Beside the repo specs the
+  runner's local executor ingests, `{ws}:spec` holds each approved Living Spec,
+  written at approval (not under a job) as `living_spec` chunks with no source
+  path (living-specs.md §8). Path-based pruning (`pruneOrphans`, which lists
+  only non-null paths) and the completion sweep (`code`/`docs` only) therefore
+  never remove them.
 - **Claim is a single atomic `UPDATE … WHERE status='queued' RETURNING`.** Two
   executors offering the same repo cannot both get the same job; the loser gets
   zero rows back and falls through to the next candidate rather than erroring.
@@ -226,18 +232,18 @@ in-request; the fallback runs them from `/api/cron/knowledge-ingest-fallback`.
 - AC-15: GIVEN a claimed job for a repo the runner has no checkout of WHEN the
   poller processes it THEN it calls `/complete` with `status: 'error'` and the
   job does not remain `running`.
-- AC-15a: GIVEN a claimed job whose checkout cannot fetch `origin` WHEN the
+- AC-20: GIVEN a claimed job whose checkout cannot fetch `origin` WHEN the
   poller processes it THEN it releases the job with the fetch error, the job is
   `queued` again with `stats.checkoutReport`, and the repo is not offered on
   the next poll.
-- AC-15b: GIVEN a full job queued past `QUEUED_FULL_STALL_MS` WHEN the
+- AC-21: GIVEN a full job queued past `QUEUED_FULL_STALL_MS` WHEN the
   fallback cron ticks THEN it ingests the repo at the job's sha from the GitHub
   API and, across as many ticks as it takes, completes `done` having sent every
   ingestible file exactly once.
-- AC-15c (failure path): GIVEN a batch push that times out WHEN the runner
+- AC-22 (failure path): GIVEN a batch push that times out WHEN the runner
   retries THEN it halves the batch and every file still lands; a single file
   that still fails fails the job.
-- AC-15d (failure path): GIVEN texts whose total exceeds the embeddings
+- AC-23 (failure path): GIVEN texts whose total exceeds the embeddings
   request token cap WHEN embedded THEN they go out as several requests and come
   back in input order.
 - AC-16: GIVEN a graph payload whose entities name a different `workspaceId`
@@ -248,10 +254,11 @@ in-request; the fallback runs them from `/api/cron/knowledge-ingest-fallback`.
   HTTP 413 and no entity is written.
 - AC-18 (failure path): GIVEN `BUILDD_API_KEY` is unset WHEN
   `bun run knowledge:ingest` runs THEN it exits non-zero without claiming a job.
-- AC-19: GIVEN `.github/workflows/` WHEN scanned for `name: Knowledge Ingest`
-  THEN there is no match, and therefore the `workflow_run` trigger in
-  `.github/workflows/knowledge-eval.yml` never fires. This assertion documents a
-  live defect (see Verification gaps) — a fix must flip this AC, not delete it.
+- AC-19: GIVEN `.github/workflows/knowledge-eval.yml` WHEN read THEN it has
+  no `workflow_run` trigger: the retrieval eval runs only on pull requests that
+  touch the retrieval paths and on manual dispatch. A post-ingest trigger, if one
+  comes back, needs a signal from the ingest completion route, not a workflow
+  name.
 
 ## Code surface
 
@@ -322,7 +329,7 @@ in-request; the fallback runs them from `/api/cron/knowledge-ingest-fallback`.
   `/graph` writes are additive, workspace-forced, and non-fatal.
 - Retrieval-quality regression gating (`.github/workflows/knowledge-eval.yml`,
   `packages/core/eval/retrieval-baseline.json`) except for the dead
-  `workflow_run` trigger recorded in AC-19.
+  `workflow_run` trigger AC-19 records as removed.
 - Consolidation, digests, and card generation over already-ingested chunks
   (`consolidation.ts`, `cards.ts`) — downstream of ingest.
 - The `memory`, `task`, `plan`, `session`, and `artifact` corpora, which do not
@@ -332,80 +339,71 @@ in-request; the fallback runs them from `/api/cron/knowledge-ingest-fallback`.
 
 Unguarded claims and known defects. Nothing below is asserted as holding.
 
-1. **The `Retrieval Eval` post-ingest trigger is dead.**
-   `.github/workflows/knowledge-eval.yml:18` triggers on
-   `workflow_run: workflows: ["Knowledge Ingest"]`, but
-   `.github/workflows/knowledge-ingest.yml` was **deleted** in `Release v0.175.0`
-   (commit `1b0ce506`, 2026-08-22) when full jobs moved to the runner fleet. No
-   workflow in `.github/workflows/` is named `Knowledge Ingest`, so that trigger
-   can never fire; the eval now runs only on `workflow_dispatch` and on PRs
-   touching the retrieval paths. Post-ingest retrieval regressions are unmeasured.
-   Same class of failure as the five cron routes parked on Vercel-native crons
-   (see `external-cron-triggers`): a declared trigger with no producer.
-2. **`docs/knowledge-store.md` describes a workflow that no longer exists.**
-   Lines 12, 83–96 and 211 present `knowledge-ingest.yml` as running on every
-   push to `dev` and weekly on Mondays at 06:17 UTC; line 213 says
-   "`spec-sync.yml` is deprecated; the weekly knowledge-ingest job supersedes
-   it." **There is no weekly knowledge-ingest job.** The schedule died with the
-   workflow, `cron-manifest.json` has no knowledge entry, `vercel.json` declares
-   no crons, and no code path produces `trigger: 'scheduled'` — the value is
-   accepted by the enqueue route and never emitted. Full ingest is therefore
-   event-driven only (repo link, first-index backfill, diff escalation, manual
-   `POST`). Nothing in CI catches this drift.
-3. **A claimed job has no lease and no expiry.** Nothing bounds how long a job
-   may sit in `running`. Because `knowledge_ingest_jobs_active_full_idx` covers
-   `status IN ('queued','running')`, one runner that dies mid-job blocks *every*
-   future full job for that `(workspace, repo)` pair indefinitely, and
-   `enqueueFullIngestJob` reports `already_queued` forever.
-   `/api/cron/lease-expiry-guard` covers `credential_leases` only; no cron
-   touches `knowledge_ingest_jobs`. No test asserts any recovery.
-4. **A lost `diff` job is never retried.** The webhook comments that jobs
-   "remain queued for a later executor"
-   (`apps/web/src/app/api/github/webhook/route.ts:620`), but no such executor
-   exists: the claim route serves `scope='full'` only, and no cron drains queued
-   diff jobs. Worse, the queued row occupies
-   `knowledge_ingest_jobs_ws_sha_scope_idx`, so a redelivery of the same webhook
-   inserts nothing — the PR's files are silently never ingested. Unguarded.
-5. **The legacy direct-DB script soft-skips a broken credential and exits 0.**
-   `packages/core/scripts/ingest-knowledge.ts:170-181` prints a warning and
+1. **Fixed: the dead `Retrieval Eval` post-ingest trigger.** The
+   `workflow_run` trigger on "Knowledge Ingest" is gone from
+   `.github/workflows/knowledge-eval.yml`; its header says why. AC-19 now
+   records that. Post-ingest retrieval regressions are still unmeasured.
+2. **Fixed: `docs/knowledge-store.md` described a deleted workflow.** It now
+   says `knowledge-ingest.yml` was deleted and that nothing replaced the weekly
+   schedule. Full ingest is event-driven only (repo link, first-index backfill,
+   diff escalation, manual `POST`). No code path emits `trigger: 'scheduled'`,
+   though the enqueue route still accepts it.
+3. **Fixed: a claimed job had no lease and no expiry.** Jobs now carry
+   `leaseOwner`, `leaseExpiresAt`, `heartbeatAt` and `attempts`.
+   `reclaimStaleIngestJobs` in `apps/web/src/lib/knowledge-ingest-lease.ts`
+   requeues a job whose lease lapsed and parks it in `error` after
+   `MAX_INGEST_ATTEMPTS`. It runs inline on the runner claim poll, the manual
+   enqueue route and the webhook enqueue path, not from a cron. Guarded by
+   `apps/web/src/lib/knowledge-ingest-lease.test.ts`.
+4. **Fixed: a lost `diff` job was never retried.** `QUEUED_DIFF_STALL_MS`
+   marks a queued diff job as lost, and `recoverBlockedDiffJob` frees the
+   `(workspace, sha, scope)` slot so a redelivery can run it again.
+5. **Open: the legacy direct-DB script soft-skips a broken credential and exits 0.**
+   `packages/core/scripts/ingest-knowledge.ts` prints a warning and
    `process.exit(0)` when `DATABASE_URL` is unset *or* unparseable. That is how a
    malformed repo `DATABASE_URL` secret produced green ingest runs that ingested
    nothing. The modern path is safer by construction — `knowledge:ingest` needs
    no `DATABASE_URL` and hard-fails on a missing `BUILDD_API_KEY` — but the
    script is still present and callable, and the runner's mode selection
-   (`apps/runner/src/knowledge-ingest.ts:232`) picks local mode on the mere
+   (`createKnowledgeIngestPoller` in `apps/runner/src/knowledge-ingest.ts`) picks local mode on the mere
    *presence* of `DATABASE_URL` + `VOYAGE_API_KEY` without validating either, so
    a malformed value there turns every local-mode job into an `error`
    completion. No test covers either behaviour.
-6. **Per-job writes are not bound to the job's claimer.** The invariant is that
+6. **Open: per-job writes are not bound to the job's claimer.** The invariant is that
    a file push, a graph push, or a completion for a job MUST come from the
-   executor that claimed it, and any other caller MUST be rejected. Nothing can
-   enforce that: the job row carries no claimer or executor identity to check a
-   caller against. No test asserts it. Specifics are tracked privately until the
+   executor that claimed it, and any other caller MUST be rejected. The job row
+   now records `leaseOwner` at claim, but the per-job write routes do not check
+   the caller against it. No test asserts it. Specifics are tracked privately until the
    guard lands.
-7. **Claim has a head-of-line window.** The candidate query takes the 50 oldest
+7. **Open: claim has a head-of-line window.** The candidate query takes the 50 oldest
    queued full jobs globally (`MAX_CANDIDATES`) and filters by offered repo *in
    application code*. A backlog of 50+ queued full jobs for repos a caller does
    not hold starves that caller indefinitely, with no error emitted — the same
    shape as the task-claim starvation fixed in v0.157.0. Offered repos beyond
    `MAX_OFFERED_REPOS` (200) are silently truncated. No test covers either.
-8. **The two full-ingest modes cover different corpora.** The HTTP path
+8. **Open: the two full-ingest modes cover different corpora.** The HTTP path
    (`/files`) classifies into `code`/`docs` only; the runner's local path also
    writes the `spec` corpus and prunes it against the *docs* seen-set
-   (`apps/runner/src/knowledge-ingest.ts:195`). A workspace whose full jobs run
+   (`createLocalExecuteJob` in `apps/runner/src/knowledge-ingest.ts`). A workspace whose full jobs run
    over HTTP therefore never refreshes `{ws}:spec`, which `spec_compare` reads.
    No test asserts parity between the modes.
-9. **`deletions` on `/files` has no in-repo producer.** The route accepts and
+9. **Open: `deletions` on `/files` has no in-repo producer.** The route accepts and
    tests a `deletions` array, but `createHttpIngestApi.pushFiles` sends only
    `{ files }`; the HTTP path relies on the completion sweep instead. Live but
    unexercised surface.
-10. **The completion sweep's documented collateral damage is unguarded.** It
+10. **Open: the completion sweep's documented collateral damage is unguarded.** It
     deletes *every* file-derived chunk in `{ws}:code` / `{ws}:docs` older than
     the run — including chunks ingested from a different source tree into the
     same namespace. Documented in `docs/knowledge-store.md`; no test or
     server-side guard distinguishes them.
-11. **Freshness is observed, never acted on.** `computeFreshness` returns
+11. **Open: freshness is observed, never acted on.** `computeFreshness` returns
     `stale` after 14 days without a `done` job, and the verdict is rendered by
     the knowledge-health route. Nothing enqueues a job in response, so a repo
     with no merges simply decays. `packages/core/__tests__/knowledge-health.test.ts`
     pins the verdict function, not any remediation.
+
+## Renumbered
+
+The ids AC-15a, AC-15b, AC-15c and AC-15d did not parse as criteria. They are
+now AC-20, AC-21, AC-22 and AC-23. AC-19 keeps its id and now records the trigger's
+removal instead of the defect.

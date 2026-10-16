@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
 const TEAM = 'team-1';
+process.env.BUILDD_OPERATOR_USER_EMAILS = 'op@example.com';
+process.env.BUILDD_PLATFORM_ADMIN_ACCOUNT_IDS = 'acct-platform';
 const WS = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 
 const mockGetCurrentUser = mock(() => null as any);
@@ -86,11 +88,39 @@ describe('/api/model-tiers/policy', () => {
   });
 
   it('PUT writes the team level with the actor stamped', async () => {
-    const res = await PUT(req('PUT', { mode: 'soak', soakHours: 24, teamId: TEAM }));
+    const res = await PUT(req('PUT', { mode: 'manual', teamId: TEAM }));
     expect(res.status).toBe(200);
     const [scope, policy] = mockWrite.mock.calls[0] as any[];
     expect(scope).toEqual({ teamId: TEAM });
-    expect(policy).toMatchObject({ mode: 'soak', soakHours: 24, setBy: 'user-1' });
+    expect(policy).toMatchObject({ mode: 'manual', setBy: 'user-1' });
+  });
+
+  it('a team owner picks Automatic or Manual, never soak: 403 and nothing written', async () => {
+    const res = await PUT(req('PUT', { mode: 'soak', soakHours: 24, teamId: TEAM }));
+    expect(res.status).toBe(403);
+    expect((await res.json()).code).toBe('operator_only');
+    expect(mockWrite).not.toHaveBeenCalled();
+    expect((await PUT(req('PUT', { mode: 'latest-compatible', teamId: TEAM }))).status).toBe(200);
+  });
+
+  it('a platform operator may set soak', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1', email: 'Op@Example.com' });
+    const res = await PUT(req('PUT', { mode: 'soak', soakHours: 24, teamId: TEAM }));
+    expect(res.status).toBe(200);
+    expect(mockWrite.mock.calls[0][1]).toMatchObject({ mode: 'soak', soakHours: 24, setBy: 'user-1' });
+  });
+
+  it('a platform admin key may set soak; a team admin key may not', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockReturnValue({ id: 'acct-other', teamId: TEAM, level: 'admin' });
+    const keyReq = () => new NextRequest('http://localhost/api/model-tiers/policy', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json', authorization: 'Bearer bld_x' },
+      body: JSON.stringify({ mode: 'soak', soakHours: 24 }),
+    });
+    expect((await PUT(keyReq())).status).toBe(403);
+    mockAuthenticateApiKey.mockReturnValue({ id: 'acct-platform', teamId: TEAM, level: 'admin' });
+    expect((await PUT(keyReq())).status).toBe(200);
+    mockAuthenticateApiKey.mockReturnValue(null);
   });
 
   it('PUT with a workspaceId writes the workspace override', async () => {

@@ -61,6 +61,8 @@ export function describeBudgetWall(wall: ClaimBudgetWall, now: Date = new Date()
       return `The account's ${name} session limit is reached.${at ? ` It lifts at ${at}.` : ''}`;
     case 'provider_pause':
       return `A run hit the ${name} rate limit for this team.${at ? ` ${name} work waits until ${at}.` : ` ${name} work waits until it clears.`}`;
+    case 'runner_seat':
+      return `This runner's own ${name} login hit its limit${at ? ` until ${at}` : ''}. Other runners can still take ${name} work.`;
     case 'tenant_budget':
       return `This tenant's ${name} budget is used up${at ? ` until ${at}` : ''}.`;
   }
@@ -74,7 +76,7 @@ export function describeBudgetWall(wall: ClaimBudgetWall, now: Date = new Date()
 export function describeBudgetWalls(walls: ClaimBudgetWall[], opts: { now?: Date; interactive: boolean }): string {
   const now = opts.now ?? new Date();
   const lines = walls.map(w => describeBudgetWall(w, now));
-  if (!opts.interactive && walls.some(w => w.kind === 'account_seat' || w.kind === 'provider_pause')) {
+  if (!opts.interactive && walls.some(w => w.kind === 'account_seat' || w.kind === 'provider_pause' || w.kind === 'runner_seat')) {
     lines.push('A claim from your own Claude Code session runs on your seat and can start now.');
   }
   return lines.join(' ');

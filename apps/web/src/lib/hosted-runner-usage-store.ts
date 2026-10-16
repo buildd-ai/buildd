@@ -31,6 +31,7 @@ import {
   type UsageSize,
 } from './hosted-runner-usage';
 import { RUN_REPORT_KEY_PREFIX } from './runner-size-store';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** True for the artifact key a cloud run report is delivered under. */
 export function isRunReportKey(key: unknown): boolean {
@@ -109,7 +110,7 @@ export interface HostedRunnerDeps {
 
 export const dbHostedRunnerDeps: HostedRunnerDeps = {
   async loadAllowanceHours(teamId) {
-    const row = await db.query.teams.findFirst({ where: eq(teams.id, teamId), columns: { hostedRunnerHours: true } });
+    const row = await db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, teamId)), columns: { hostedRunnerHours: true } });
     const v = row?.hostedRunnerHours;
     return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null;
   },

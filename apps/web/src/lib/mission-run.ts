@@ -2,6 +2,7 @@ import { OPEN_TASK_STATUSES } from '@buildd/shared';
 import { withoutLandingOverrideGrant } from '@/lib/landing-override-grant';
 import { withoutPrReachGrant } from '@/lib/pr-reach-grant';
 import { withoutReviewDispatchContext } from '@/lib/verdict-provenance';
+import { withoutMissionVerificationMarkers } from '@/lib/server-context-markers';
 import { db } from '@buildd/core/db';
 import { missions, tasks, workspaces, missionNotes, workers } from '@buildd/core/db/schema';
 import { eq, and, not, isNotNull, inArray, sql, isNull } from 'drizzle-orm';
@@ -29,6 +30,7 @@ import {
   prepareSubjectFiling,
   recordSubjectMatchObserved,
 } from '@/lib/subject-anchor-observer';
+import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 // One durable note per mission, not one per organizer cycle. Matched by
 // title, so this string is load-bearing — the dedupe query reads it.
@@ -130,18 +132,18 @@ export async function evaluateMissionOpenPrGate(missionId: string): Promise<Miss
   };
 
   const missionTasks = (await db.query.tasks.findMany({
-    where: eq(tasks.missionId, missionId),
+    where: sqlWhere(eq(tasks.missionId, missionId)),
     columns: { id: true, status: true, pathManifest: true },
   })) ?? [];
   if (missionTasks.length === 0) return idle;
 
   const openPrWorkers = (await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       inArray(workers.taskId, missionTasks.map(t => t.id)),
       isNotNull(workers.prUrl),
       isNull(workers.mergedAt),
       inArray(workers.status, [...OPEN_PR_WORKER_STATUSES]),
-    ),
+    )),
     columns: { taskId: true, prNumber: true, prUrl: true, lastCommitSha: true, prLifecycleStatus: true },
   })) ?? [];
   const activeOpenPrWorkers = openPrWorkers.filter(
@@ -292,7 +294,7 @@ export async function runMission(
   const tripHeartbeatCircuitBreaker = deps?.tripHeartbeatCircuitBreaker ?? _tripHeartbeatCircuitBreaker;
 
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, missionId),
+    where: sqlWhere(eq(missions.id, missionId)),
     with: { schedule: true },
   });
 
@@ -358,12 +360,12 @@ export async function runMission(
   // retrigger runs only after the prior planner is in a terminal state, and mission
   // auto-start happens at creation when no tasks exist yet.
   const inFlight = await db.query.tasks.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.missionId, missionId),
       eq(tasks.mode, 'planning'),
       inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
-    ),
-    orderBy: (t, { desc }) => [desc(t.createdAt)],
+    )),
+    orderBy: sqlOrderByFn((t, { desc }) => [desc(t.createdAt)]),
   });
   if (inFlight) {
     await recordOrganizerDuplicate(inFlight, mission.id, recordSubjectMatch);
@@ -376,12 +378,12 @@ export async function runMission(
   // would otherwise start a concurrent planning cycle that duplicates execution tasks.
   if (mission.scheduleId) {
     const cronInFlight = await db.query.tasks.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(tasks.missionId, missionId),
         eq(tasks.scheduleId, mission.scheduleId),
         inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
-      ),
-      orderBy: (t, { desc }) => [desc(t.createdAt)],
+      )),
+      orderBy: sqlOrderByFn((t, { desc }) => [desc(t.createdAt)]),
     });
     if (cronInFlight) {
       await recordOrganizerDuplicate(cronInFlight, mission.id, recordSubjectMatch);
@@ -394,7 +396,7 @@ export async function runMission(
     || (await getOrCreateCoordinationWorkspace(mission.teamId)).id;
 
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
   });
 
   // Open-PR planning gate. Pauses planning only when an open PR of this mission
@@ -433,7 +435,7 @@ export async function runMission(
       .returning({ workingBranch: missions.workingBranch });
     workingBranch = updated?.workingBranch
       ?? (await db.query.missions.findFirst({
-        where: eq(missions.id, missionId),
+        where: sqlWhere(eq(missions.id, missionId)),
         columns: { workingBranch: true },
       }))?.workingBranch
       ?? candidate;
@@ -455,11 +457,11 @@ export async function runMission(
       // Post once, not once per organizer cycle: repeating a durable failure
       // every heartbeat would bury the mission feed.
       const existingNote = await db.query.missionNotes.findFirst({
-        where: and(
+        where: sqlWhere(and(
           eq(missionNotes.missionId, missionId),
           eq(missionNotes.title, INTEGRATION_BRANCH_NOTE_TITLE),
           eq(missionNotes.status, 'open'),
-        ),
+        )),
         columns: { id: true },
       });
       if (!existingNote) {
@@ -537,7 +539,7 @@ export async function runMission(
 
   // Get template context from schedule if available
   // A landing grant is a person's call on one task, never a template's (landing-override-grant.ts).
-  const templateContext = withoutPrReachGrant(withoutReviewDispatchContext(withoutLandingOverrideGrant((mission.schedule as any)?.taskTemplate?.context as Record<string, unknown> | undefined)));
+  const templateContext = withoutMissionVerificationMarkers(withoutPrReachGrant(withoutReviewDispatchContext(withoutLandingOverrideGrant((mission.schedule as any)?.taskTemplate?.context as Record<string, unknown> | undefined))));
 
   // Build cycle context — default to cycle 1 with new chain if not provided
   const cycleCtx: CycleContext = options?.cycleContext || {
@@ -706,12 +708,12 @@ export async function runMission(
   if (!task) {
     // Another caller won the race — fetch the task they inserted
     const inFlight = await db.query.tasks.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(tasks.missionId, missionId),
         eq(tasks.mode, 'planning'),
         inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
-      ),
-      orderBy: (t, { desc }) => [desc(t.createdAt)],
+      )),
+      orderBy: sqlOrderByFn((t, { desc }) => [desc(t.createdAt)]),
     });
     if (inFlight) await recordOrganizerDuplicate(inFlight, mission.id, recordSubjectMatch);
     return { task: inFlight ?? null, deduped: true };

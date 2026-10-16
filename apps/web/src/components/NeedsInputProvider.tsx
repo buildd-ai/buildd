@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
 import { needsInputEventAction } from '@/lib/realtime-throttle';
 import { subscribeCatchUp } from '@/lib/app-freshness';
-import { missionTaskHref } from '@/lib/mission-task-href';
+import { taskAnswerHref } from '@/lib/mission-task-href';
 import { questionNotificationText } from '@buildd/core/question-brief';
 
 import { NeedsInputContext, type AlertPermission, type WaitingTask } from './needs-input-context';
@@ -143,7 +143,7 @@ function showToast(task: WaitingTask, router: ReturnType<typeof useRouter>) {
 
   // Show browser notification if permitted
   if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-    const n = new Notification('Task needs input', {
+    const n = new Notification('A question for you', {
       // The question, one line of context, the recommended default (question brief).
       body: task.waitingFor?.prompt
         ? questionNotificationText({
@@ -157,6 +157,6 @@ function showToast(task: WaitingTask, router: ReturnType<typeof useRouter>) {
       icon: '/favicon.ico',
       tag: `waiting-input-${task.id}`,
     });
-    n.onclick = () => { window.focus(); router.push(missionTaskHref({ missionId: task.missionId ?? null, taskId: task.id, mode: 'sheet' })); };
+    n.onclick = () => { window.focus(); router.push(taskAnswerHref({ taskId: task.id, missionId: task.missionId ?? null })); };
   }
 }

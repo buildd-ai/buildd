@@ -18,6 +18,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveAccountTeamIds, verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from '@/lib/team-access';
 import { loadWorkspaceAwaitingReview } from '@/lib/visual-review-load';
 import { isUuid } from '@/lib/uuid';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const notFound = () => NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
 
@@ -41,7 +42,7 @@ export async function GET(
 
   const teamIds = await resolveAccountTeamIds(user, apiAccount);
   const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, id),
+    where: sqlWhere(eq(workspaces.id, id)),
     columns: { id: true, name: true, teamId: true },
   });
   if (!ws || !teamIds.includes(ws.teamId)) return notFound();

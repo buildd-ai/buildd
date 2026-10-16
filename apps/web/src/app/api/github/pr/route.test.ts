@@ -1,7 +1,7 @@
 // Ensure test mode — routes short-circuit in development
 process.env.NODE_ENV = 'production';
 
-import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 import { TOKEN_PRESETS } from '@buildd/core/token-scopes';
 
@@ -24,7 +24,7 @@ const mockWorkspacesFindMany = mock(() => [] as any[]);
 const mockGetTeamWorkspaceIds = mock(() => [] as string[]);
 /**
  * `db.update(...).set(...).where(...)` — awaited by most callers, but the
- * guarded `kind` stamp (mission-legibility Rule K2-16) needs `.returning()` as
+ * guarded `kind` stamp (mission-legibility R-28) needs `.returning()` as
  * its did-anything-change signal, so the fake WHERE is a thenable that also
  * carries one.
  */
@@ -64,6 +64,25 @@ const mockReportMissionBranchUnresolved = mock(async (_input: any) => {});
 // delivery, so every legacy merge case below runs unchanged.
 const mockLandThroughKernel = mock(async (..._a: any[]): Promise<any> => null);
 const mockKernelLandingView = mock(async (..._a: any[]): Promise<any> => null);
+// The visual review half of the mission-PR gate (lib/ready-to-merge.ts). Default: passed on this head.
+let visualReviewOwed = false;
+// §6 mission deliveries: a mission PR merge is recorded with the kernel, which
+// rotates, settles and only then retires the branch. The door just records it.
+const mockRecordMissionPrMerged = mock((..._args: any[]) => Promise.resolve({ recorded: true, reason: 'merged' }));
+mock.module('@/lib/mission-epoch-door', () => ({
+  recordMissionPrMerged: (...args: any[]) => mockRecordMissionPrMerged(...args),
+  ensureMissionWritableBranch: async () => null,
+  bindMissionDeliveryPr: async () => {},
+  reconcileMissionDeliveries: async () => [],
+}));
+
+mock.module('@/lib/workflow/visual-review-state-load', () => ({
+  getMissionVisualReviewState: async () => visualReviewOwed
+    ? { status: 'needed', pendingVerification: true, staleEvidence: false, nextActor: 'system', branch: { headSha: 'abc12345', integrationPr: { number: 9, stage: 'ready' } } }
+    : { status: 'passed', pendingVerification: false, staleEvidence: false, nextActor: 'none', branch: { headSha: 'abc12345', integrationPr: { number: 9, stage: 'ready' } } },
+}));
+mock.module('@/lib/workflow/visual-review-schedule-run', () => ({ scheduleMissionVisualReview: async () => null }));
+
 mock.module('@/lib/workflow/landing', () => ({
   landThroughKernel: mockLandThroughKernel,
   kernelLandingView: mockKernelLandingView,
@@ -1409,8 +1428,8 @@ describe('POST /api/github/pr', () => {
 
     // Regression (mission 6341fe61): a task with NO missionId whose context
     // still carries the mission branch as baseBranch. The integration guard
-    // never runs, the base resolves from task context to a ref that was never
-    // created, and GitHub's bare 422 used to come back as a 500.
+    // never runs; the fix ignores the stale mission/... ref in context and
+    // falls through to the workspace default, avoiding a GitHub rejection.
     it('turns a non-existent base into an actionable 400 and traces a missing mission branch', async () => {
       mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
       mockWorkersFindFirst.mockResolvedValue(taskWorker({
@@ -1421,23 +1440,19 @@ describe('POST /api/github/pr', () => {
       mockMissionsFindFirst.mockResolvedValue(null);
       mockReportMissionBranchUnresolved.mockClear();
       noExistingPr();
-      mockGithubApi.mockImplementationOnce((() => Promise.reject(new Error(
-        'GitHub API error: 422 {"message":"Validation Failed","errors":[{"resource":"PullRequest","field":"base","code":"invalid"}]}',
-      ))) as any);
+      mockGithubApi.mockResolvedValueOnce({ number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'open', title: 'My PR' });
 
       const res = await POST(createMockRequest({
         headers: { Authorization: 'Bearer bld_test' },
         body: { workerId: 'w-1', title: 'My PR', head: WORKER_BRANCH },
       }));
 
-      expect(res.status).toBe(400);
-      const data = await res.json();
-      expect(data.error).toContain(`'${INTEGRATION_BRANCH}' does not exist`);
-      expect(data.hint).toContain("base='dev'");
-      expect(mockReportMissionBranchUnresolved).toHaveBeenCalledTimes(1);
-      expect((mockReportMissionBranchUnresolved.mock.calls[0] as any[])[0]).toMatchObject({
-        branch: INTEGRATION_BRANCH, where: 'create_pr', cause: 'missing', workerId: 'w-1',
-      });
+      expect(res.status).toBe(200);
+      const createCall = mockGithubApi.mock.calls.find((c: any[]) => c[2]?.method === 'POST');
+      expect(createCall).toBeDefined();
+      const body = JSON.parse((createCall as any[])[2].body);
+      expect(body.base).toBe('dev');
+      expect(mockReportMissionBranchUnresolved).not.toHaveBeenCalled();
     });
 
     it('refuses a caller-supplied head that disagrees with the worker’s own branch', async () => {
@@ -1924,6 +1939,35 @@ describe('POST /api/github/pr', () => {
       const res = await POST(req);
 
       expect(res.status).toBe(200);
+    });
+
+    describe('cut over: the adopted PR\'s kernel delivery is opened for the caller the door authenticated', () => {
+      let cp: ReturnType<typeof import('@/lib/workflow/testing/cut-over').cutOver> | null = null;
+      afterEach(() => { cp?.restore(); cp = null; });
+      const adopt = async (account: Record<string, unknown>) => {
+        const { cutOver } = await import('@/lib/workflow/testing/cut-over');
+        cp = cutOver();
+        mockAuthenticateApiKey.mockResolvedValue(account);
+        mockWorkersFindFirst.mockResolvedValue(taskWorker({ taskId: 't-1', workspaceId: 'ws-1', workspace: { ...WORKSPACE_OK, id: 'ws-1', gitConfig: { defaultBranch: 'dev' } } }));
+        mockGithubReposFindFirst.mockResolvedValue(REPO);
+        optedInMission();
+        mockGithubApi.mockResolvedValueOnce({ number: 42, base: { ref: INTEGRATION_BRANCH }, head: { sha: 'headsha' }, draft: false });
+        const res = await POST(createMockRequest({
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { workerId: 'w-1', title: 'My PR', head: 'buildd/t-1-do-thing', base: INTEGRATION_BRANCH, prUrl: 'https://github.com/owner/repo/pull/42', prNumber: 42 },
+        }));
+        expect(res.status).toBe(200);
+        return cp.calls.filter((c) => c.op === 'open_delivery').map((c) => c.body?.principal);
+      };
+
+      it('a plain API account: an account that is not a grant, never the system', async () => {
+        expect(await adopt(ACCOUNT)).toEqual([{ kind: 'account', id: 'account-1', grant: null }]);
+      });
+
+      it('a grant session: its grant with its workspace list', async () => {
+        expect(await adopt({ ...ACCOUNT, oauthGrantId: 'g-1', grantScopes: ['read', 'write'], workspaceIds: ['ws-1'] }))
+          .toEqual([{ kind: 'grant', id: 'account-1', grantId: 'g-1', workspaceIds: ['ws-1'], scopes: ['read', 'write'] }]);
+      });
     });
   });
 
@@ -3266,8 +3310,38 @@ describe('POST /api/github/pr', () => {
       expect(createArgs.headSha).toBe('headsha');
     });
 
+    describe('the kernel delivery is opened for the caller the door authenticated', () => {
+      let cp: ReturnType<typeof import('@/lib/workflow/testing/cut-over').cutOver> | null = null;
+      afterEach(() => { cp?.restore(); cp = null; });
+      const openPr = async (account: Record<string, unknown>) => {
+        const { cutOver } = await import('@/lib/workflow/testing/cut-over');
+        cp = cutOver();
+        mockAuthenticateApiKey.mockResolvedValue(account);
+        mockWorkersFindFirst.mockResolvedValue(taskWorker({ workspaceId: 'ws-1', workspace: { ...WORKSPACE_OK, id: 'ws-1' } }));
+        mockGithubReposFindFirst.mockResolvedValue(REPO);
+        optedInMission();
+        noExistingPr();
+        mockGithubApi.mockResolvedValueOnce({
+          number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'open', title: 'Do thing',
+          base: { ref: INTEGRATION_BRANCH, sha: 'basesha' }, head: { sha: 'headsha' },
+        });
+        const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-1', title: 'Do thing', head: WORKER_BRANCH } }));
+        expect(res.status).toBe(200);
+        return cp.calls.filter((c) => c.op === 'open_delivery').map((c) => c.body?.principal);
+      };
+
+      it('a plain API account: submitted as an account that is not a grant, never as the system', async () => {
+        expect(await openPr(ACCOUNT)).toEqual([{ kind: 'account', id: 'account-1', grant: null }]);
+      });
+
+      it('a grant session: submitted as its grant with its workspace list', async () => {
+        expect(await openPr({ ...ACCOUNT, oauthGrantId: 'g-1', grantScopes: ['read', 'write'], workspaceIds: ['ws-1'] }))
+          .toEqual([{ kind: 'grant', id: 'account-1', grantId: 'g-1', workspaceIds: ['ws-1'], scopes: ['read', 'write'] }]);
+      });
+    });
+
     it('creates the review pass EXACTLY once — the PR-open hook is the only trigger', async () => {
-      // mission-legibility.md Rule R3-4: the programmatic review pass for a
+      // mission-legibility.md R-36: the programmatic review pass for a
       // builder task that opens a PR is the existing agent-review tier fired
       // here. No second trigger is designed, and none is needed — any new one
       // would race this through the same dedupe.
@@ -3296,7 +3370,7 @@ describe('POST /api/github/pr', () => {
       expect(mockWakeTask).toHaveBeenCalledWith((mockAnnounceTaskCreated.mock.calls[0] as any[])[0].id, 'task.created');
     });
 
-    it('Rule K2-19: opening a PR stamps kind=engineering, guarded on kind IS NULL', async () => {
+    it('mission-legibility R-31: opening a PR stamps kind=engineering, guarded on kind IS NULL', async () => {
       mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
       mockWorkersFindFirst.mockResolvedValue(taskWorker());
       mockGithubReposFindFirst.mockResolvedValue(REPO);
@@ -4025,6 +4099,59 @@ describe('PUT /api/github/pr', () => {
         expect(await res.json()).toMatchObject({ merged: false, branchUpdated: true });
         expect(recordedFacts).toHaveLength(0);
       });
+
+      describe('cut over to the control plane (workflow-kernel-library §3)', () => {
+        let cp: ReturnType<typeof import('@/lib/workflow/testing/cut-over').cutOver> | null = null;
+        afterEach(() => { cp?.restore(); cp = null; });
+
+        it('MCP merge_pr with the control plane unreachable: 503 naming it, and nothing is merged on the legacy path', async () => {
+          const { cutOver } = await import('@/lib/workflow/testing/cut-over');
+          cp = cutOver();
+          workerOk();
+          const res = await putV(7);
+          expect(res.status).toBe(503);
+          expect(await res.json()).toMatchObject({ code: 'control_plane_unavailable', controlPlane: true, retryable: true, idempotencyKey: expect.stringMatching(/^land:/) });
+          expect(cp.calls.map((c) => c.op)).toContain('land');
+          expect(mockLandThroughKernel).not.toHaveBeenCalled();
+          expect(mockMergePullRequest).not.toHaveBeenCalled();
+          expect(recordedFacts).toHaveLength(0);
+        });
+
+        // The control plane re-checks who the landing is for with the web host's rule, so the door must
+        // submit its authenticated caller: a grant session as its grant, never the shared account's id.
+        const landed = () => Response.json({ v: 1, op: 'land', idempotencyKey: 'k', result: { merged: true, outcome: 'merged', reason: 'merged', message: 'merged', mergeCommitSha: 'M1', current: { ...current, state: 'MERGED' }, result: null }, delivery: null, host: 'control-plane', replayed: false });
+        const GRANT = { ...ACCOUNT, oauthGrantId: 'g-1', grantScopes: ['read', 'write'], workspaceIds: ['ws-1'] };
+
+        it('MCP merge_pr from a grant session submits the grant with its workspace list', async () => {
+          const { cutOver } = await import('@/lib/workflow/testing/cut-over');
+          cp = cutOver({ reply: landed });
+          workerOk();
+          mockAuthenticateApiKey.mockResolvedValue(GRANT);
+          mockWorkersFindFirst.mockResolvedValue({ id: 'w-1', accountId: 'account-1', taskId: 'task-1', workspaceId: 'ws-1', prUrl: 'https://github.com/owner/repo/pull/42', prNumber: 42, workspace: { ...WORKSPACE_OK, id: 'ws-1' } });
+          const res = await putV(7);
+          expect(res.status).toBe(200);
+          expect(cp.calls.find((c) => c.op === 'land')?.body?.principal).toEqual({ kind: 'grant', id: 'account-1', grantId: 'g-1', workspaceIds: ['ws-1'], scopes: ['read', 'write'] });
+        });
+
+        it('MCP merge_pr from a plain API account submits it as an account that is not a grant', async () => {
+          const { cutOver } = await import('@/lib/workflow/testing/cut-over');
+          cp = cutOver({ reply: landed });
+          workerOk();
+          const res = await putV(7);
+          expect(res.status).toBe(200);
+          expect(cp.calls.find((c) => c.op === 'land')?.body?.principal).toEqual({ kind: 'account', id: 'account-1', grant: null });
+        });
+
+        it('MCP merge_pr refused by the control plane: 403, not a 500, and nothing merged', async () => {
+          const { cutOver, refusedByControlPlane } = await import('@/lib/workflow/testing/cut-over');
+          cp = cutOver({ reply: refusedByControlPlane });
+          workerOk();
+          const res = await putV(7);
+          expect(res.status).toBe(403);
+          expect(await res.json()).toMatchObject({ code: 'control_plane_refused' });
+          expect(mockMergePullRequest).not.toHaveBeenCalled();
+        });
+      });
     });
 
     describe('landing function (gitConfig.landing.mode=enforce)', () => {
@@ -4066,6 +4193,24 @@ describe('PUT /api/github/pr', () => {
         // The merge is landPr's, never a second one from the route.
         expect(mockMergePullRequest).not.toHaveBeenCalled();
         expectMergedFactFor('w-1');
+      });
+
+      it('the landing is for the caller the door authenticated: a grant session with a person behind it goes as its grant', async () => {
+        enforceWorker({ tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } });
+        mockWorkersFindFirst.mockResolvedValue({
+          id: 'w-1', accountId: 'account-1', taskId: 'task-1', workspaceId: 'ws-1', prUrl: 'https://github.com/owner/repo/pull/42', prNumber: 42,
+          workspace: { ...WORKSPACE_OK, id: 'ws-1', gitConfig: { mergePolicy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } }, ...ENFORCE } },
+        });
+        mockAuthenticateApiKey.mockResolvedValue({ ...ACCOUNT, oauthGrantId: 'g-1', grantScopes: ['read', 'write'], workspaceIds: ['ws-1'], sessionUserId: 'user-7' });
+        await put();
+        expect(mockLandPr).toHaveBeenCalledTimes(1);
+        // Never the person's own principal (membership reaches more than the grant), and never the shared account.
+        expect(mockLandPr.mock.calls[0]![0].principal).toEqual({ kind: 'grant', id: 'account-1', grantId: 'g-1', workspaceIds: ['ws-1'], scopes: ['read', 'write'] });
+        // A plain API account: an account that is not a grant.
+        mockLandPr.mockClear();
+        enforceWorker({ tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } });
+        await put();
+        expect(mockLandPr.mock.calls[0]![0].principal).toEqual({ kind: 'account', id: 'account-1', grant: null });
       });
 
       it('behind base: the branch is refreshed with a marker; 202, nothing more asked of the caller', async () => {
@@ -5208,7 +5353,26 @@ describe('PUT /api/github/pr', () => {
       expect(mockMergePullRequest).not.toHaveBeenCalled();
     });
 
-    it('merges the mission PR and deletes the integration branch once every task PR has landed', async () => {
+    it('refuses to merge the mission PR while its visual review is owed, and merges nothing', async () => {
+      missionPrWorkerOk();
+      mockTasksFindMany.mockResolvedValue([
+        { id: 't-2', title: 'Task 2', status: 'completed', mode: 'execution', taskClass: 'work' },
+      ]);
+      mockWorkersFindMany.mockResolvedValue([
+        { taskId: 't-2', prUrl: 'u2', prNumber: 7, prBaseRef: BRANCH, mergedAt: new Date(), prLifecycleStatus: 'merged', startedAt: new Date(), createdAt: new Date() },
+      ]);
+      visualReviewOwed = true;
+      try {
+        const res = await put();
+        expect(res.status).toBe(409);
+        expect(JSON.stringify(await res.json())).toContain('visual review');
+        expect(mockMergePullRequest).not.toHaveBeenCalled();
+      } finally {
+        visualReviewOwed = false;
+      }
+    });
+
+    it('merges the mission PR and records the merged delivery with the kernel, which retires the branch after settlement', async () => {
       missionPrWorkerOk();
       mockTasksFindMany.mockResolvedValue([
         { id: 't-2', title: 'Task 2', status: 'completed', mode: 'execution', taskClass: 'work' },
@@ -5221,7 +5385,9 @@ describe('PUT /api/github/pr', () => {
 
       expect(res.status).toBe(200);
       expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
-      expect(mockGithubApi).toHaveBeenCalledWith(
+      // The merge is recorded with the kernel; the branch is retired only after settlement.
+      expect(mockRecordMissionPrMerged).toHaveBeenCalledWith(expect.objectContaining({ missionId: 'mission-1' }), expect.anything(), 'owner/repo', expect.any(Number));
+      expect(mockGithubApi).not.toHaveBeenCalledWith(
         expect.anything(),
         `/repos/owner/repo/git/refs/heads/${encodeURIComponent(BRANCH)}`,
         expect.objectContaining({ method: 'DELETE' }),
@@ -5436,7 +5602,7 @@ describe('PUT /api/github/pr', () => {
       expect(mockMergePullRequest).not.toHaveBeenCalled();
     });
 
-    it('an admin force still bypasses it, and the bypass is already recorded', async () => {
+    it('D5: an admin force no longer passes a review that asked for changes (only a person\'s recorded override on the dashboard does)', async () => {
       autoThresholdWorker();
       mockAuthenticateApiKey.mockResolvedValue({ ...ACCOUNT, level: 'admin' });
       mockReadPrReviewStatus.mockResolvedValue({
@@ -5448,8 +5614,11 @@ describe('PUT /api/github/pr', () => {
 
       const res = await put({ force: true });
 
-      expect(res.status).toBe(200);
-      expect(mockMergePullRequest).toHaveBeenCalled();
+      expect(res.status).toBe(403);
+      const data = await res.json();
+      expect(data.error).toContain('requested changes');
+      expect(data.hint).toContain('dashboard');
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
     });
   });
 });
@@ -6013,11 +6182,48 @@ describe('GET /api/github/pr', () => {
     mockGithubApi.mockResolvedValueOnce([]);
 
     const data = await (await GET(createGetRequest('w-k', 778))).json();
-    expect(mockGetDeliveryViewsForTasks).toHaveBeenCalledWith(['task-k']);
+    expect(mockGetDeliveryViewsForTasks.mock.calls.at(-1)?.[0]).toEqual(['task-k']);
     // The column's 'merged' would have read merged; the delivery says superseded, so closed-unmerged.
     expect(data.pr.state).toBe('closed_unmerged');
     expect(data.pr.supersededByPrNumber).toBe(790);
     expect(data.pr.supersededReason).toBe('reopened on a fresh branch');
+  });
+
+  // workflow-kernel-library.md §7 / AC-24, AC-26: rounds from the delivery, and its state over a stale worker row.
+  it('a kernel-owned PR reports its review rounds and standing from the delivery, even when the worker row says merged', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-r', accountId: 'account-1', taskId: 'task-r', prNumber: 779,
+      prUrl: 'https://github.com/owner/repo/pull/779',
+      mergedAt: new Date('2026-10-01T00:00:00Z'), prLifecycleStatus: 'merged',
+      lastCommitSha: null, workspace: WORKSPACE_OK,
+    });
+    const round = (n: number, verdict: string | null, status = 'decided') => ({ id: `r${n}`, round: n, headSha: `H${n}`, kind: 'full', status, verdict, effectiveVerdict: verdict, failureCount: 0 });
+    mockGetDeliveryViewsForTasks.mockResolvedValueOnce(new Map([['task-r', {
+      prNumber: 779, state: 'AWAITING_REVIEW', mergedAt: null, supersededBy: null, headline: 'Review queued', detail: 'round 2 at H2', needsYou: false,
+      headSha: 'H2', prState: 'ci_passed',
+      rounds: [round(1, 'request_changes'), round(2, 'request_changes')],
+      findings: [{ id: 'r1:0', status: 'open', required: true }, { id: 'r2:0', status: 'resolved', required: true }],
+      ledger: [{ id: 'a1', family: 'review_fix', attemptNo: 1, mode: 'agent', boundHeadSha: 'H1', triggerReason: 'r1', taskId: 'fx', status: 'ended', outcome: 'delivered', maxAttempts: 3, reportedShas: ['H2'], pushedHeadSha: 'H2' }],
+    }]]));
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockResolvedValueOnce({
+      number: 779, title: 'feat: x', body: null, state: 'open', merged: false, merged_at: null,
+      html_url: 'https://github.com/owner/repo/pull/779', head: { sha: 'H2' }, base: { ref: 'dev' }, additions: 1, deletions: 1, changed_files: 1,
+    });
+    mockGithubApi.mockResolvedValueOnce({ check_runs: [] });
+    mockGithubApi.mockResolvedValueOnce([]); // no GitHub reviews: buildd's reviewer records rounds
+
+    const data = await (await GET(createGetRequest('w-r', 779))).json();
+    // get_pr is one of the three readers that asks for findings (§7 review).
+    expect(mockGetDeliveryViewsForTasks.mock.calls.at(-1)?.[3]).toEqual({ withFindings: true });
+    expect(data.pr.state).toBe('open');
+    expect(data.reviews).toMatchObject({ approved: 0, changesRequested: 0 });
+    expect(data.delivery).toMatchObject({
+      state: 'AWAITING_REVIEW', headline: 'Review queued',
+      review: { rounds: 2, latestVerdict: 'request_changes', openFindings: 1, line: '2 rounds · latest: changes requested · 1 open finding' },
+      repairs: [{ label: 'Review fix 1 of 3', phase: 'pushed', taskId: 'fx' }],
+    });
   });
 
   it('merged PR by prNumber (no workerId) returns 200 with merged state', async () => {

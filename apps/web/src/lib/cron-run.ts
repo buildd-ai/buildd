@@ -38,6 +38,7 @@ import {
   HEALTH_WINDOW_MS,
   type CronRunSummary,
 } from '@/lib/cron-health';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** How long run history is kept. Long enough to see a trend, short enough not to grow. */
 const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -171,12 +172,12 @@ async function recordRun(args: {
 
 async function checkHealth(job: string, runId: string | null, now: Date): Promise<void> {
   const rows = await db.query.cronRuns.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(cronRuns.job, job),
       gt(cronRuns.startedAt, new Date(now.getTime() - HEALTH_WINDOW_MS)),
-    ),
+    )),
     columns: { ok: true, errors: true, changed: true, alertedAt: true, startedAt: true },
-    orderBy: desc(cronRuns.startedAt),
+    orderBy: sqlOrderBy(desc(cronRuns.startedAt)),
     limit: 50,
   });
 

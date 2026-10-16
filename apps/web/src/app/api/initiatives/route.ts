@@ -11,6 +11,7 @@ import { parseInitiativeStatus, parseOwnerUserId, parseTargetDate } from '@/lib/
 import type { InitiativeStatus } from '@/lib/initiative-view';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
 import { checkContextArtifactIds } from '@/lib/context-artifact-ids';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // GET /api/initiatives — list initiatives for the user's team(s), with rolled-up progress
 export async function GET(req: NextRequest) {
@@ -112,7 +113,7 @@ export async function POST(req: NextRequest) {
 
     if (workspaceId) {
       const ws = await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, workspaceId),
+        where: sqlWhere(eq(workspaces.id, workspaceId)),
         columns: { id: true, teamId: true, accessMode: true },
       });
       if (!ws) {

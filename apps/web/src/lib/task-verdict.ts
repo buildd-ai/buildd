@@ -167,6 +167,15 @@ export function verdictLinksPr(verdict: Pick<TaskVerdict, 'actions'> | null, prU
  * The verdict, or null for a task with nothing to judge yet (pending, never
  * claimed). Pure.
  */
+/**
+ * The question verdict only points at the question. When the page already
+ * draws the question card, the card is the answer flow and the verdict above
+ * it would just describe it, so it stands down.
+ */
+export function verdictRepeatsOpenQuestion(verdict: Pick<TaskVerdict, 'causeKey'>, { questionOnPage }: { questionOnPage: boolean }): boolean {
+  return questionOnPage && verdict.causeKey === 'needs_you:question';
+}
+
 export function deriveTaskVerdict(input: VerdictInput): TaskVerdict | null {
   const base = { failingChecks: [] as VerdictCheck[], wordedBy: 'rules' as const };
   // A review run reports on its parent's PR; that PR's state is the parent's delivery, not this outcome.

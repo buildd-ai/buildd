@@ -14,6 +14,7 @@ import { roleHas } from '@/lib/permissions';
 import { packageRoleConfig, uploadRoleConfig, deleteRoleConfig } from '@/lib/role-config';
 import { isStorageConfigured } from '@/lib/storage';
 import { normalizeBackend } from '@/lib/normalize-backend';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 async function authenticateRequest(req: NextRequest) {
     const authHeader = req.headers.get('authorization');
@@ -84,26 +85,26 @@ export async function GET(
         // First look for a workspace-scoped skill. If not found, fall back to a
         // team-level skill accessible from this workspace's team (read-only).
         let skill = await db.query.workspaceSkills.findFirst({
-            where: and(
+            where: sqlWhere(and(
                 eq(workspaceSkills.id, skillId),
                 eq(workspaceSkills.workspaceId, id)
-            ),
+            )),
         });
 
         if (!skill) {
             const ws = await db.query.workspaces.findFirst({
-                where: eq(workspaces.id, id),
+                where: sqlWhere(eq(workspaces.id, id)),
                 columns: { teamId: true },
             });
             if (ws) {
                 skill = await db.query.workspaceSkills.findFirst({
-                    where: and(
+                    where: sqlWhere(and(
                         eq(workspaceSkills.id, skillId),
                         isNull(workspaceSkills.workspaceId),
                         eq(workspaceSkills.teamId, ws.teamId),
                         // Personal roles are read through /api/roles/[id].
                         isNull(workspaceSkills.ownerUserId),
-                    ),
+                    )),
                 }) ?? undefined;
             }
         }
@@ -152,10 +153,10 @@ export async function PATCH(
             mcpServers, requiredEnvVars, connectorRefs, isRole, repoUrl, accountId } = body;
 
         const existing = await db.query.workspaceSkills.findFirst({
-            where: and(
+            where: sqlWhere(and(
                 eq(workspaceSkills.id, skillId),
                 eq(workspaceSkills.workspaceId, id)
-            ),
+            )),
         });
 
         if (!existing) {
@@ -266,10 +267,10 @@ export async function DELETE(
 
     try {
         const existing = await db.query.workspaceSkills.findFirst({
-            where: and(
+            where: sqlWhere(and(
                 eq(workspaceSkills.id, skillId),
                 eq(workspaceSkills.workspaceId, id)
-            ),
+            )),
         });
 
         if (!existing) {

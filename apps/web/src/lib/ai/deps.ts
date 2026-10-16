@@ -21,6 +21,8 @@ import { verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { startOfLocalDay } from '@/lib/chat/limits';
 import type { AiApiAccount, AiAuthDeps, PlanDeps, UsageDeps } from './handlers';
 import type { PlanProvider } from './plan';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { liveLinkCondition } from '@/lib/granted-links';
 
 async function authenticate(bearer: string | null): Promise<AiApiAccount | null> {
   const account = await authenticateApiKey(bearer);
@@ -59,7 +61,7 @@ export const planDeps: PlanDeps = {
     const rows = await db
       .select({ workspaceId: accountWorkspaces.workspaceId })
       .from(accountWorkspaces)
-      .where(eq(accountWorkspaces.accountId, accountId))
+      .where(and(eq(accountWorkspaces.accountId, accountId), liveLinkCondition()))
       .limit(2);
     return rows.length === 1 ? rows[0].workspaceId : null;
   },
@@ -86,8 +88,8 @@ export const planDeps: PlanDeps = {
 
   async loadBudget(account, now) {
     const [acct, team] = await Promise.all([
-      db.query.accounts.findFirst({ where: eq(accounts.id, account.id), columns: { aiDailyBudgetUsd: true } }),
-      db.query.teams.findFirst({ where: eq(teams.id, account.teamId), columns: { timezone: true } }),
+      db.query.accounts.findFirst({ where: sqlWhere(eq(accounts.id, account.id)), columns: { aiDailyBudgetUsd: true } }),
+      db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, account.teamId)), columns: { timezone: true } }),
     ]);
     const dayStart = startOfLocalDay(now, team?.timezone || 'UTC');
     const [spent] = await db

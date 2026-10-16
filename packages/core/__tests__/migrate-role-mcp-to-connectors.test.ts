@@ -1,5 +1,5 @@
 /**
- * Spec: docs/specs/mcp-connectors-and-roles.md §4 (AC-1..AC-4).
+ * Spec: docs/specs/mcp-connectors-and-roles.md §4 (AC-20..AC-23).
  *
  * The migration's core logic drives a `MigrationStore` seam, so these tests bind
  * an in-memory store (no db mock needed) and assert the reshaping + idempotency
@@ -108,7 +108,7 @@ describe('parseMcpServers', () => {
 });
 
 describe('migrateRoleMcpToConnectors', () => {
-  // AC-1
+  // AC-20
   it('creates a connector for an http mcpServers entry and references it', async () => {
     const { store, rows, roleMap } = makeStore([
       role({ id: 'r1', teamId: 'team-a', mcpServers: { linear: { type: 'http', url: 'https://linear.app/mcp' } } }),
@@ -128,7 +128,7 @@ describe('migrateRoleMcpToConnectors', () => {
     expect(roleMap.get('r1')!.connectorRefs).toContain(linear!.id);
   });
 
-  // AC-2
+  // AC-21
   it('dedups an identical http server across two roles in the same team', async () => {
     const github = { type: 'http', url: 'https://api.github.com/mcp' };
     const { store, rows, roleMap } = makeStore([
@@ -159,7 +159,7 @@ describe('migrateRoleMcpToConnectors', () => {
     expect(rows.filter((c) => c.name === 'github').length).toBe(2);
   });
 
-  // AC-3
+  // AC-22
   it('creates a needsReview placeholder for a legacy string[] server', async () => {
     const { store, rows, roleMap } = makeStore([
       role({ id: 'r1', teamId: 'team-a', mcpServers: ['slack'] }),
@@ -227,7 +227,7 @@ describe('migrateRoleMcpToConnectors', () => {
     expect(result).toEqual({ rolesProcessed: 0, connectorsCreated: 0, refsChanged: 0 });
   });
 
-  // AC-4
+  // AC-23
   it('is idempotent: a second run creates 0 rows and changes 0 refs', async () => {
     const { store, rows, roleMap } = makeStore([
       role({ id: 'r1', teamId: 'team-a', mcpServers: { linear: { type: 'http', url: 'https://linear.app/mcp' } } }),

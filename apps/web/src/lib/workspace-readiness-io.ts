@@ -16,6 +16,7 @@ import { detectSpecConformanceRoots } from '@buildd/core/spec-conformance-detect
 import { discoverScoutCapabilities, type ScoutCapabilityProfile } from '@buildd/core/scout-capabilities';
 import type { WorkspaceReadinessReport } from '@buildd/shared';
 import { githubApi } from '@/lib/github';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const MAX_MANIFESTS = 12;
 export const MAX_MANIFEST_BYTES = 64 * 1024;
@@ -137,7 +138,7 @@ async function fetchBranches(installationId: number, repo: string): Promise<stri
 }
 
 async function workspaceHasMissions(workspaceId: string): Promise<boolean> {
-  const row = await db.query.missions.findFirst({ where: eq(missions.workspaceId, workspaceId), columns: { id: true } });
+  const row = await db.query.missions.findFirst({ where: sqlWhere(eq(missions.workspaceId, workspaceId)), columns: { id: true } });
   return !!row;
 }
 

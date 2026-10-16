@@ -7,6 +7,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from '@/lib/team-access';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { isUuid } from '@/lib/uuid';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // POST /api/tasks/[id]/notes/[noteId]/reply — reply to a question note on a task
 export async function POST(
@@ -31,7 +32,7 @@ export async function POST(
   }
 
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, id),
+    where: sqlWhere(eq(tasks.id, id)),
     columns: { id: true, workspaceId: true },
   });
   if (!task) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
@@ -48,10 +49,10 @@ export async function POST(
   // legitimately carry both ids (reviewer_escalated, dead-PR shutdown) could not
   // be replied to at all.
   const parentNote = await db.query.missionNotes.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(missionNotes.id, noteId),
       eq(missionNotes.taskId, id),
-    ),
+    )),
   });
   if (!parentNote) return NextResponse.json({ error: 'Note not found' }, { status: 404 });
 

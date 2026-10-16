@@ -3,7 +3,7 @@
  * facts only, current round first, repairs attached to what caused them.
  */
 import { describe, expect, test } from 'bun:test';
-import { deriveTaskChecks, taskSubjectOf, type ChecksInput } from './task-checks';
+import { deriveTaskChecks, reviewDetailOf, taskSubjectOf, type ChecksInput, type ReviewFindings } from './task-checks';
 import type { DeliveryView } from './workflow/projections';
 
 type RoundSnapshot = DeliveryView['rounds'][number];
@@ -59,8 +59,39 @@ describe('deriveTaskChecks', () => {
     const c = deriveTaskChecks(V({ state: 'APPROVED', rounds: [r1, r2], ledger: [fix], approvedCurrentHead: true }));
     expect(row(c, 'review')).toMatchObject({ result: 'Approved · round 2', reviewTaskId: 'rev2' });
     expect(c.history).toEqual([
-      { round: 1, headSha: 'HEADA00', result: 'Changes requested', state: 'failed', reviewTaskId: 'rev1', repairs: [{ label: 'Review fix 1 of 3', status: 'completed', taskId: 'fix1' }] },
+      { round: 1, headSha: 'HEADA00', result: 'Changes requested', state: 'failed', reviewTaskId: 'rev1', repairs: [{ label: 'Review fix 1 of 3', status: 'pushed', taskId: 'fix1' }] },
     ]);
+  });
+
+  test('AC-19 (workflow-kernel-library.md §5): a repair that changed nothing reads "no change", never "completed"', () => {
+    const r1 = R({ id: 'r1', round: 1, headSha: 'HEADA000', status: 'decided', verdict: 'request_changes', effectiveVerdict: 'request_changes', reviewerTaskId: 'rev1' });
+    for (const outcome of ['noop', 'unproven'] as const) {
+      const c = deriveTaskChecks(V({ state: 'CHANGES_REQUESTED', headSha: 'HEADA000', rounds: [r1], ledger: [A({ status: 'ended', outcome })] }));
+      expect(row(c, 'review')?.repair).toMatchObject({ label: 'Review fix 1 of 3', status: 'no_change' });
+    }
+  });
+
+  // workflow-kernel-library.md §7: a repair reads its phase from attempt facts.
+  describe('repair phase (§7)', () => {
+    const r1 = R({ id: 'r1', round: 1, headSha: 'HEADA000', status: 'decided', verdict: 'request_changes', effectiveVerdict: 'request_changes' });
+    test('a review fix whose commits have not reached GitHub: awaiting push', () => {
+      const c = deriveTaskChecks(V({ state: 'AWAITING_PUSH', headSha: 'HEADA000', rounds: [r1], ledger: [A({ status: 'ended', outcome: 'unproven', reportedShas: ['LOCAL1'] })] }));
+      expect(row(c, 'review')?.repair).toMatchObject({ label: 'Review fix 1 of 3', status: 'awaiting_push' });
+    });
+    test('a review fix that pushed the head now awaiting its round: awaiting review, on the current row', () => {
+      const r2 = R({ id: 'r2', round: 2, headSha: 'HEADB000', status: 'queued' });
+      const c = deriveTaskChecks(V({ prState: 'ci_passed', rounds: [r1, r2], ledger: [A({ status: 'ended', outcome: 'delivered', pushedHeadSha: 'HEADB000' })] }));
+      expect(row(c, 'review')).toMatchObject({ result: 'Awaiting review · round 2', repair: { label: 'Review fix 1 of 3', status: 'awaiting_review', taskId: 'fix1' } });
+    });
+    test('a CI fix that pushed the head CI is now running on: pushed and testing', () => {
+      const fix = A({ id: 'c1', family: 'ci', triggerReason: 'ci', boundHeadSha: 'HEADA000', taskId: 'cifix', status: 'ended', outcome: 'delivered', pushedHeadSha: 'HEADB000' });
+      const c = deriveTaskChecks(V({ state: 'AWAITING_REVIEW', prState: 'awaiting_ci', ledger: [fix] }));
+      expect(row(c, 'tests')).toMatchObject({ state: 'running', result: 'Checking', repair: { label: 'CI fix 1 of 3', status: 'pushed_testing', taskId: 'cifix' } });
+    });
+    test('queued and running repairs keep those words', () => {
+      expect(row(deriveTaskChecks(V({ state: 'CHANGES_REQUESTED', headSha: 'HEADA000', rounds: [r1], ledger: [A()] })), 'review')?.repair?.status).toBe('queued');
+      expect(row(deriveTaskChecks(V({ state: 'FIXING', headSha: 'HEADA000', rounds: [r1], ledger: [A({ status: 'running' })] })), 'review')?.repair?.status).toBe('running');
+    });
   });
 
   test('AC-6: an approval of an older head is history, not the current review', () => {
@@ -119,5 +150,77 @@ describe('taskSubjectOf', () => {
     expect(taskSubjectOf({ taskId: 'x', view: null, context: { reviewerFor: 'p' }, parentTaskId: 'p' })).toEqual({ kind: 'review', deliverableTaskId: 'p' });
     expect(taskSubjectOf({ taskId: 'x', view: null, context: null, parentTaskId: 'p', retryOf: true })).toEqual({ kind: 'fix', deliverableTaskId: 'p' });
     expect(taskSubjectOf({ taskId: 'x', view: null, context: null, parentTaskId: 'p' })).toEqual({ kind: 'deliverable', deliverableTaskId: 'x' });
+  });
+});
+
+// What an opened Code review row says (task-page spec §Code review detail).
+// A self-reference is never detail on its own; old findings never ride on a
+// newer head; missing output never reads as an approval.
+describe('reviewDetailOf', () => {
+  const reviewRowOf = (v: ChecksInput) => row(deriveTaskChecks(v), 'review')!;
+  const F = (o: Record<string, ReviewFindings> = {}) => new Map(Object.entries(o));
+  const opts = (o: Partial<Parameters<typeof reviewDetailOf>[1]> = {}) => ({ findings: F(), currentTaskId: 'rev1', ...o });
+
+  test('self, queued: says the review is queued with no findings yet, bound to round and head, no self link', () => {
+    const r = reviewRowOf(V({ rounds: [R({ status: 'queued' })] }));
+    const d = reviewDetailOf(r, opts({ findings: F({ rev1: { prose: null, verdict: null, status: 'pending' } }) }));
+    expect(d).toEqual({ kind: 'queued', text: 'Review queued · no findings yet', round: { round: 1, headSha: 'HEADB00', carried: false }, linkTaskId: null });
+  });
+
+  test('self, running: the reviewer task being claimed makes it in progress even while the round is queued', () => {
+    const r = reviewRowOf(V({ rounds: [R({ status: 'queued' })] }));
+    const d = reviewDetailOf(r, opts({ findings: F({ rev1: { prose: null, verdict: null, status: 'in_progress' } }) }));
+    expect(d).toMatchObject({ kind: 'running', text: 'Review in progress · no findings yet', linkTaskId: null });
+    expect(reviewDetailOf(reviewRowOf(V({ rounds: [R({ status: 'reviewing' })] })), opts())).toMatchObject({ kind: 'running' });
+  });
+
+  test('self, completed with findings: the prose, round and head, and no link back to this page', () => {
+    const r = reviewRowOf(V({ state: 'APPROVED', rounds: [R({ status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' })], approvedCurrentHead: true }));
+    const d = reviewDetailOf(r, opts({ findings: F({ rev1: { prose: 'No blocking findings.', verdict: 'approve', status: 'completed' } }) }));
+    expect(d).toEqual({ kind: 'findings', prose: 'No blocking findings.', round: { round: 1, headSha: 'HEADB00', carried: false }, linkTaskId: null });
+  });
+
+  test('another task\'s review keeps its link', () => {
+    const r = reviewRowOf(V({ rounds: [R({ status: 'decided', verdict: 'request_changes', effectiveVerdict: 'request_changes' })] }));
+    const d = reviewDetailOf(r, opts({ currentTaskId: 'deliverable', findings: F({ rev1: { prose: 'Fix the label.', verdict: 'request-changes', status: 'completed' } }) }));
+    expect(d).toMatchObject({ kind: 'findings', prose: 'Fix the label.', linkTaskId: 'rev1' });
+  });
+
+  test('a decided round whose reviewer left no output says so, and never reads as approval', () => {
+    const r = reviewRowOf(V({ state: 'APPROVED', rounds: [R({ status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' })] }));
+    const d = reviewDetailOf(r, opts({ findings: F({ rev1: { prose: null, verdict: null, status: 'completed' } }) }));
+    expect(d).toMatchObject({ kind: 'no-output', text: 'The review finished without written findings' });
+    expect(JSON.stringify(d)).not.toMatch(/approv/i);
+    // No record at all for the reviewer task reads the same, not as loading.
+    expect(reviewDetailOf(r, opts())).toMatchObject({ kind: 'no-output' });
+  });
+
+  test('a failed retrieval is explicit and offers a retry, even when nothing was read', () => {
+    const r = reviewRowOf(V({ rounds: [R({ status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' })] }));
+    expect(reviewDetailOf(r, opts({ findingsUnavailable: true }))).toMatchObject({ kind: 'unavailable', text: 'Couldn’t load the review’s findings' });
+  });
+
+  test('a failed review run says it failed before a verdict', () => {
+    const r = reviewRowOf(V({ rounds: [R({ status: 'failed' })] }));
+    expect(reviewDetailOf(r, opts())).toMatchObject({ kind: 'run-failed', text: 'The review run ended before giving a verdict' });
+  });
+
+  test('stale round: an approval on an older head is history, so the current row opens to nothing', () => {
+    const old = R({ status: 'decided', verdict: 'approve', effectiveVerdict: 'approve', headSha: 'HEADA000' });
+    const r = reviewRowOf(V({ rounds: [old] }));
+    expect(r.result).toBe('Awaiting review');
+    expect(reviewDetailOf(r, opts({ currentTaskId: 'deliverable', findings: F({ rev1: { prose: 'Old findings on head A.', verdict: 'approve', status: 'completed' } }) }))).toBeNull();
+  });
+
+  test('a carried approval says which head its findings were written on', () => {
+    const old = R({ status: 'decided', verdict: 'approve', effectiveVerdict: 'approve', headSha: 'HEADA000' });
+    const r = reviewRowOf(V({ state: 'APPROVED', rounds: [old], approvedCurrentHead: true }));
+    const d = reviewDetailOf(r, opts({ currentTaskId: 'deliverable', findings: F({ rev1: { prose: 'Fine.', verdict: 'approve', status: 'completed' } }) }));
+    expect(d).toMatchObject({ kind: 'findings', round: { round: 1, headSha: 'HEADA00', carried: true }, linkTaskId: 'rev1' });
+  });
+
+  test('policy-skipped or never-queued review has nothing to open', () => {
+    expect(reviewDetailOf(reviewRowOf(V({ approvalBasis: 'policy' })), opts())).toBeNull();
+    expect(reviewDetailOf(reviewRowOf(V()), opts())).toBeNull();
   });
 });

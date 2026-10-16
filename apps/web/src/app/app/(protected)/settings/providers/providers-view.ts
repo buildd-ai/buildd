@@ -95,16 +95,34 @@ export function usedFor(surfaces: readonly ProviderSurfaceId[]): string {
   return surfaces.length ? `Used for ${surfaceList(surfaces)}.` : 'Not used by anything.';
 }
 
-export type RowState = { word: 'Needs attention' | 'Working' | 'Set' | 'Team key' | 'Not available' | 'Not set'; tone: 'error' | 'success' | 'muted' };
+export type RowState = { word: 'Needs attention' | 'Working' | 'Set' | `${string}'s key` | 'Team key' | 'Not set up'; tone: 'error' | 'success' | 'muted' };
+
+/** "Acme's key": an inherited row names the team it comes from. "Team key" when the name is unknown. */
+export function teamKeyWord(teamName?: string | null): RowState['word'] {
+  const name = teamName?.trim();
+  return name ? `${name}'s key` : 'Team key';
+}
+
+/** "Uses Acme's settings.": a workspace with nothing of its own. */
+export function usesTeamLine(teamName?: string | null): string {
+  const name = teamName?.trim();
+  return name ? `Uses ${name}'s settings.` : 'Uses team settings.';
+}
+
+/** "Providers · Acme" for someone in more than one team, so a "Not set" says whose; "Providers" otherwise. */
+export function providersTitle(data: Pick<ListProvidersResponse, 'teamName' | 'teamCount'> | null): string {
+  const name = data?.teamName?.trim();
+  return name && (data?.teamCount ?? 1) > 1 ? `Providers · ${name}` : 'Providers';
+}
 
 /** The one status word on a provider row. */
-export function rowState(rows: readonly ProviderCredentialSummary[], inherited: readonly ProviderCredentialSummary[], closed: string | null): RowState {
+export function rowState(rows: readonly ProviderCredentialSummary[], inherited: readonly ProviderCredentialSummary[], closed: string | null, teamName?: string | null): RowState {
   if (rows.some((r) => r.health === 'revoked' || r.lastVerificationError)) return { word: 'Needs attention', tone: 'error' };
   if (rows.some((r) => r.health === 'healthy')) return { word: 'Working', tone: 'success' };
   if (rows.length > 0) return { word: 'Set', tone: 'muted' };
-  if (inherited.length > 0) return { word: 'Team key', tone: 'muted' };
-  if (closed) return { word: 'Not available', tone: 'muted' };
-  return { word: 'Not set', tone: 'muted' };
+  if (inherited.length > 0) return { word: teamKeyWord(teamName), tone: 'muted' };
+  if (closed) return { word: 'Not set up', tone: 'muted' };
+  return { word: 'Not set up', tone: 'muted' };
 }
 
 /** What a stored credential looks like on the row: "…a1b2", "Subscription …bAAA", "Configured". */
@@ -262,13 +280,34 @@ export function usedForView(
 ): UsedForRow[] | null {
   const connected = connectedProviders(res);
   if (connected.length < 2) return null;
+  // A group shows once per surface, named the way the list names its row
+  // ("Claude"): only its members that serve the surface, or the first one,
+  // disabled, when none does. Two members serving go by their own names.
+  const groupOf = (id: string) => PROVIDER_GROUPS.find((g) => g.members.includes(id));
   return SURFACE_ORDER.map((surface) => {
-    const options: UsedForOption[] = connected.map((p) => {
+    const serves = (p: ProviderListing) => !!p.surfaces[surface]?.ok;
+    const shown = connected.filter((p) => {
+      const g = groupOf(p.id);
+      if (!g) return true;
+      const members = connected.filter((q) => groupOf(q.id) === g);
+      return members.some(serves) ? serves(p) : members[0] === p;
+    });
+    const label = (p: ProviderListing) => {
+      const g = groupOf(p.id);
+      return g && shown.filter((q) => groupOf(q.id) === g).length < 2 ? g.label : p.label;
+    };
+    const options: UsedForOption[] = shown.map((p) => {
       const support = p.surfaces[surface];
-      if (support?.ok) return { value: p.id, label: p.label, disabled: false };
+      if (support?.ok) {
+        // Every team key rejected: picking it would route this surface to a key that fails.
+        const broken = (p.set.team ?? []).every((r) => r.health === 'revoked' || !!r.lastVerificationError);
+        return broken
+          ? { value: p.id, label: label(p), disabled: true, description: 'Needs a working key' }
+          : { value: p.id, label: label(p), disabled: false };
+      }
       // The limit as a fact where someone acts ("Needs OpenAI or OpenRouter"), not a list of what it can't do.
       const instead = support?.instead?.map((id) => res.providers.find((q) => q.id === id)?.label ?? id) ?? [];
-      return { value: p.id, label: p.label, disabled: true, description: instead.length ? `Needs ${orList(instead)}` : support?.reason };
+      return { value: p.id, label: label(p), disabled: true, description: instead.length ? `Needs ${orList(instead)}` : support?.reason };
     });
     const picked = assignments[surface];
     const value = picked && options.some((o) => o.value === picked && !o.disabled) ? picked : null;

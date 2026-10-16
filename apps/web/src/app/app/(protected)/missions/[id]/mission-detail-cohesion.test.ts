@@ -97,3 +97,16 @@ describe('one notice slot', () => {
     expect(block).not.toMatch(/bg-acc[e]nt text-white/);
   });
 });
+
+describe('each fact once across the tabs (spec f7f67f1a R-37, AC-19)', () => {
+  const feed = PAGE.slice(PAGE.indexOf('<MissionFeedLayout'), PAGE.indexOf('/>', PAGE.indexOf('<MissionFeedLayout')));
+
+  it('History gets no situation notice or mission PR block; Overview keeps them', () => {
+    expect(feed).not.toContain('notice=');
+    expect(PAGE).toMatch(/<MissionOverview[^>]*notice=\{boardNotice\}/);
+  });
+
+  it('the footer keeps the branch panel only when it carries an action, never a repeat of the Screens row', () => {
+    expect(FOOTER).toMatch(/branchPanelHasAction\(visualPresentation, isTerminal\) && \(\s*<MissionBranchPanel/);
+  });
+});

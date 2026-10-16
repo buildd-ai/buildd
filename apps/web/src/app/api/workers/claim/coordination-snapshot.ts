@@ -5,13 +5,14 @@
  */
 import { db } from '@buildd/core/db';
 import { tasks, workers, missions } from '@buildd/core/db/schema';
-import { and, eq, inArray, isNull, not } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, not, or } from 'drizzle-orm';
 import { declaresNoScope } from '@buildd/core/path-overlap';
 import { isExpiredParkedHolder } from '@buildd/core/path-claim-ttl';
 import { isDispatchedReview } from '@/lib/read-only-task';
 import { LIVE_WORKER_STATUSES } from '@buildd/shared';
 import { producesNoFileEdits, type OpenPrTask } from './coordination-gates';
 import type { MissionInFlightRow } from './claim-plan-input';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Tasks with an open PR per workspace (path-overlap layer 1). Closed PRs and
@@ -23,12 +24,12 @@ export async function loadOpenPrTasksByWorkspace(workspaceIds: string[]): Promis
   const byWorkspace = new Map<string, OpenPrTask[]>();
   if (workspaceIds.length === 0) return byWorkspace;
   const openPrWorkers = await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       inArray(workers.workspaceId, workspaceIds),
       not(isNull(workers.prUrl)),
       isNull(workers.mergedAt),
       inArray(workers.status, [...LIVE_WORKER_STATUSES, 'completed']),
-    ),
+    )),
     columns: { workspaceId: true, taskId: true, prNumber: true, prUrl: true, branch: true, prBaseRef: true, prLifecycleStatus: true, status: true, updatedAt: true },
   });
   const activeOpenPrWorkers = openPrWorkers.filter(w => w.prLifecycleStatus !== 'closed' && !isExpiredParkedHolder(w));
@@ -36,10 +37,22 @@ export async function loadOpenPrTasksByWorkspace(workspaceIds: string[]): Promis
   const prTaskIds = activeOpenPrWorkers.map(w => w.taskId).filter(Boolean) as string[];
   const prTasks = prTaskIds.length > 0
     ? (await db.query.tasks.findMany({
-        where: inArray(tasks.id, prTaskIds),
+        where: sqlWhere(inArray(tasks.id, prTaskIds)),
         columns: { id: true, pathManifest: true },
       })) ?? []
     : [];
+  // PRs that already have a pending repair attempt queued: they are waiting on
+  // a fix, so another PR's fix must not wait on them (see the claim route).
+  const pendingRepairs = (await db.query.tasks.findMany({
+    where: sqlWhere(and(
+      inArray(tasks.workspaceId, workspaceIds),
+      eq(tasks.status, 'pending'),
+      or(isNotNull(tasks.conflictRetryPrNumber), isNotNull(tasks.ciRetryPrNumber), isNotNull(tasks.reviewerRetryPrNumber)),
+    )),
+    columns: { workspaceId: true, conflictRetryPrNumber: true, ciRetryPrNumber: true, reviewerRetryPrNumber: true },
+  })) ?? [];
+  const awaitingRepair = new Set(pendingRepairs.flatMap(t => [t.conflictRetryPrNumber, t.ciRetryPrNumber, t.reviewerRetryPrNumber]
+    .filter((n): n is number => n != null).map(n => `${t.workspaceId}:${n}`)));
   const manifestByTask = new Map(prTasks.map(t => [t.id, t.pathManifest as string[] | null]));
   for (const w of activeOpenPrWorkers) {
     const entry: OpenPrTask = {
@@ -51,6 +64,7 @@ export async function loadOpenPrTasksByWorkspace(workspaceIds: string[]): Promis
       prLifecycle: (w.prLifecycleStatus as string | null) ?? null,
       branch: w.branch ?? null,
       prBaseRef: w.prBaseRef ?? null,
+      awaitingRepair: w.prNumber != null && awaitingRepair.has(`${w.workspaceId}:${w.prNumber}`),
     };
     const list = byWorkspace.get(w.workspaceId) ?? [];
     list.push(entry);
@@ -93,7 +107,7 @@ export async function loadMissionCoordination(missionIds: string[]): Promise<Mis
   };
   if (missionIds.length === 0) return out;
   const missionRows = await db.query.missions.findMany({
-    where: inArray(missions.id, missionIds),
+    where: sqlWhere(inArray(missions.id, missionIds)),
     columns: {
       id: true, status: true, maxConcurrentTasks: true, pacingMode: true,
       pacingMaxPerHour: true, lastTaskStartedAt: true,
