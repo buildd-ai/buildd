@@ -210,8 +210,8 @@ describe('T3 HeadObserved by state (§6.4)', () => {
   test('AWAITING_REVIEW: round r superseded, delta round r+1 at H\'', () => {
     const dec = applied(h(V(D({ state: 'AWAITING_REVIEW', currentRound: 2 }), [R({ status: 'decided', verdict: 'request_changes', effectiveVerdict: 'request_changes' }), R({ id: 'r2', round: 2, status: 'reviewing', headSha: 'H1' })])));
     expect(dec.rounds).toEqual([
-      { op: 'update', roundId: 'r2', whenStatus: ['queued', 'reviewing'], set: { status: 'superseded' } },
-      expect.objectContaining({ op: 'insert', round: 3, headSha: 'H2', kind: 'delta', priorRound: 1 }),
+      { op: 'update', roundId: 'r2', whenStatus: ['queued', 'reviewing'], set: { status: 'superseded', endReason: 'superseded_by_push' } },
+      expect.objectContaining({ op: 'insert', round: 3, headSha: 'H2', kind: 'delta', priorRound: 1, trigger: 'superseded_by_push' }),
     ]);
     expect(dec.patch).toMatchObject({ currentRound: 3, currentHeadSha: 'H2' });
   });
@@ -227,11 +227,33 @@ describe('T3 HeadObserved by state (§6.4)', () => {
     expect(dec.attempts).toEqual([{ op: 'update', attemptId: 'a1', whenStatus: ['queued', 'running'], set: { appendReportedSha: 'H2' } }]);
     expect(dec.rounds).toEqual([]);
   });
-  test('APPROVED (S2): non-equivalent push starts a delta round on the push', () => {
+  test('APPROVED (S2): non-equivalent push with no delta read starts a full round on the push', () => {
     const dec = applied(h(V(D({ state: 'APPROVED', approvedHeads: ['H1'], approvalBasis: 'verdict', currentRound: 1 }), [R({ status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' })])));
     expect(dec.toState).toBe('AWAITING_REVIEW');
-    expect(dec.rounds).toContainEqual(expect.objectContaining({ op: 'insert', round: 2, kind: 'delta', headSha: 'H2' }));
+    expect(dec.rounds).toContainEqual(expect.objectContaining({ op: 'insert', round: 2, kind: 'full', headSha: 'H2', trigger: 'new_commits' }));
     expect(effectKinds(dec)).toContain('dispatch_review');
+  });
+  test('APPROVED (58c8961e): an eligible delta read starts a delta round that carries the approval', () => {
+    const delta = { fromHeadSha: 'H1', toHeadSha: 'H2', prFilesAtFrom: ['src/a.ts'], files: [{ path: 'src/a.ts', status: 'modified', additions: 4, deletions: 2 }] };
+    const dec = applied(h(V(D({ state: 'APPROVED', approvedHeads: ['H1'], approvalBasis: 'verdict', currentRound: 1 }), [R({ status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' })]), 'H2', { delta }));
+    const ins = dec.rounds.find((r) => r.op === 'insert') as Extract<(typeof dec.rounds)[number], { op: 'insert' }>;
+    expect(ins).toMatchObject({ kind: 'delta', trigger: 'new_commits', scope: { deltaApproval: { eligible: true, fromHeadSha: 'H1' } } });
+    const dispatch = dec.effects.find((e) => e.kind === 'dispatch_review')!;
+    expect(dispatch.payload).toMatchObject({ kind: 'delta', trigger: 'new_commits' });
+  });
+  test('APPROVED (58c8961e): the delta round\'s approve records what it carried', () => {
+    const r2 = R({ id: 'r2', round: 2, headSha: 'H2', kind: 'delta', status: 'reviewing', scope: { deltaApproval: { eligible: true, fromHeadSha: 'H1', reason: 'ok' } } });
+    const v = V(D({ state: 'AWAITING_REVIEW', currentHeadSha: 'H2', approvedHeads: ['H1'], approvalBasis: 'verdict', currentRound: 2 }), [R({ status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' }), r2]);
+    const dec = applied(run(v, { type: 'ReviewVerdictRecorded', actor: 'reviewer', roundId: 'r2', verdict: 'approve', effectiveVerdict: 'approve', headBound: 'H2' }));
+    expect(dec.toState).toBe('APPROVED');
+    expect(dec.patch.approvedHeads).toEqual(['H2']);
+    expect(dec.evidence.deltaApproval).toEqual({ fromHeadSha: 'H1', toHeadSha: 'H2', roundId: 'r2' });
+  });
+  test('REPAIRING (58c8961e): a CI fix\'s head on an approved delivery is reviewed with trigger ci_fix', () => {
+    const ci = A({ id: 'c1', family: 'ci', status: 'running', triggerReason: 'sig', taskId: 'c1', reportedShas: [] });
+    const v = V(D({ state: 'REPAIRING', boundAttemptId: 'c1', approvedHeads: ['H1'], approvalBasis: 'verdict', currentRound: 1 }), [R({ status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' })], [ci]);
+    const dec = applied(h(v, 'H2', { attribution: { descendsFromBound: true }, proof: { liveContainsLocal: true } }));
+    expect(dec.rounds).toContainEqual(expect.objectContaining({ op: 'insert', kind: 'full', trigger: 'ci_fix' }));
   });
   test('APPROVED (S3): carry-forward appends once to approved_heads', () => {
     const dec = applied(h(V(D({ state: 'APPROVED', approvedHeads: ['H1'], approvalBasis: 'verdict' })), 'H2', { carryForward: 'own_refresh' }));

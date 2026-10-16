@@ -525,6 +525,13 @@ export interface CreateReviewerTaskParams {
    * `buildDeltaReviewerContext`. Omit for a normal full review.
    */
   priorVerdict?: PriorVerdict;
+  /**
+   * 58c8961e: this delta review carries an approval (the kernel judged the delta eligible).
+   * The reviewer runs on the standard tier: a small delta read for weakened tests.
+   */
+  deltaApproval?: boolean;
+  /** 58c8961e: why the review round started (the kernel's RoundTrigger). Recorded on the task. */
+  reviewTrigger?: string | null;
   /** The delta's files (`priorVerdict.headSha..headSha`), when already fetched. */
   deltaFiles?: GithubPrFile[];
   /**
@@ -781,12 +788,27 @@ export async function createReviewerTask(
     loadTaskSpecSource(originalTaskId),
   ]);
 
+  // A delta review reads `priorVerdict.headSha..headSha` from the merge base. That is only the change
+  // since the prior verdict when the prior head is an ancestor of this one: after a force-push that
+  // dropped a reviewed commit, the three-dot diff would hide the drop (58c8961e). Not provably an
+  // ancestor (diverged, behind, unreadable) is a full review.
+  let priorVerdict = params.priorVerdict;
+  let deltaFallback: string | null = null;
+  if (priorVerdict) {
+    const ancestry = await priorHeadAncestry({ installationId, repoFullName, fromSha: priorVerdict.headSha, toSha: headSha });
+    if (ancestry !== 'ahead') {
+      console.log(`[reviewer] PR #${prNumber}: prior head ${priorVerdict.headSha.slice(0, 7)} is not an ancestor of ${headSha.slice(0, 7)} (${ancestry}); full review`);
+      deltaFallback = `prior_head_${ancestry}`;
+      priorVerdict = undefined;
+    }
+  }
+
   // Build reviewer context description. A priorVerdict switches this to a
   // DELTA review: the diff is `priorVerdict.headSha..headSha`, not the whole
   // PR, and the prompt carries the prior verdict instead of asking the agent
   // to re-derive an opinion it already reached.
   let policySuggestions: ReviewerPolicySuggestion[] = [];
-  const diffContext = params.priorVerdict
+  const diffContext = priorVerdict
     ? await buildDeltaReviewerContext({
         originalTaskId,
         originalTask,
@@ -797,7 +819,7 @@ export async function createReviewerTask(
         repoFullName,
         policyConfig: params.policyConfig,
         confidenceThreshold: params.confidenceThreshold,
-        priorVerdict: params.priorVerdict,
+        priorVerdict: priorVerdict,
         deltaFiles: params.deltaFiles,
         missionCriteria,
         baseRef: params.baseRef,
@@ -830,7 +852,7 @@ export async function createReviewerTask(
     installationId,
     repoFullName,
     prNumber,
-    files: params.priorVerdict ? params.deltaFiles : params.prFiles,
+    files: priorVerdict ? params.deltaFiles : params.prFiles,
   });
   const description = `${params.compositionScope ? `${diffContext}${compositionScopeSection(params.compositionScope)}` : diffContext}${params.workflowRound ? findingsSection(params.findingsBrief) : ''}${copySection}`;
 
@@ -860,6 +882,8 @@ export async function createReviewerTask(
       // Falling back to the DB's Claude default can strand reviews when Claude's
       // OAuth budget is exhausted even though the original ran on Codex.
       backend: originalTask.backend,
+      // 58c8961e: a delta review that carries an approval reads a small diff: the standard tier.
+      ...(priorVerdict && params.deltaApproval ? { tier: DELTA_APPROVAL_REVIEW_TIER } : {}),
       outputSchema: REVIEWER_TASK_OUTPUT_SCHEMA as unknown as Record<string, unknown>,
       missionId: originalTask.missionId,
       parentTaskId: originalTaskId,
@@ -877,11 +901,14 @@ export async function createReviewerTask(
         iteration: originalTask.iteration ?? 0,
         maxIterations: originalTask.maxIterations ?? 3,
         ...(params.reviewCallback ? { reviewCallback: params.reviewCallback } : {}),
-        ...(params.priorVerdict ? {
+        ...(priorVerdict ? {
           deltaReview: true,
-          priorVerdictHeadSha: params.priorVerdict.headSha,
-          priorVerdict: params.priorVerdict.verdict,
+          priorVerdictHeadSha: priorVerdict.headSha,
+          priorVerdict: priorVerdict.verdict,
         } : {}),
+        ...(priorVerdict && params.deltaApproval ? { deltaApproval: true } : {}),
+        ...(deltaFallback ? { deltaFallback } : {}),
+        ...(params.reviewTrigger ? { reviewTrigger: params.reviewTrigger } : {}),
         // The criteria this reviewer was actually shown, with the fingerprints
         // they had at dispatch. Read back when the verdict lands so a finding
         // lands on the claim it was made about, not on whatever now sits at
@@ -988,6 +1015,28 @@ Use your outputSchema to return:
 - \`recommendation\`: (escalate only) what the human should DO next, as one imperative sentence of at most 140 characters. Never leave this empty on an escalation: it is the first line they read on their queue
 - \`blockers\`: (escalate only) one \`{kind, text}\` entry per distinct reason, \`text\` a short phrase{{ledeOutputLine}}{{criteriaOutputLine}}
 `;
+
+/**
+ * Is `fromSha` an ancestor of `toSha`? GitHub's compare status: `ahead` (yes, and `toSha` has
+ * more), `identical`, `behind` or `diverged`; `unread` when the compare could not be read.
+ * Only `ahead` makes `fromSha...toSha` the change since `fromSha` (58c8961e).
+ */
+export async function priorHeadAncestry(p: {
+  installationId: number; repoFullName: string; fromSha: string; toSha: string;
+  api?: (installationId: number, path: string) => Promise<unknown>;
+}): Promise<'ahead' | 'identical' | 'behind' | 'diverged' | 'unread'> {
+  try {
+    const api = p.api ?? (await import('@/lib/github')).githubApi;
+    const cmp = (await api(p.installationId, `/repos/${p.repoFullName}/compare/${p.fromSha}...${p.toSha}`)) as { status?: unknown } | null;
+    const st = cmp?.status;
+    return st === 'ahead' || st === 'identical' || st === 'behind' || st === 'diverged' ? st : 'unread';
+  } catch {
+    return 'unread';
+  }
+}
+
+/** The tier a delta review carrying an approval runs on (58c8961e). */
+export const DELTA_APPROVAL_REVIEW_TIER = 'standard' as const;
 
 /** Public template of the delta re-review prompt. */
 export const DELTA_REVIEWER_CONTEXT_TEMPLATE = `# Delta Re-Review
@@ -1969,7 +2018,7 @@ ${securityEscalationRules()}`;
     ? `\n${criteriaSection}\n\nAnswer for the PR AS A WHOLE, not just this delta: restate your prior\nreading of a criterion the delta did not change.\n`
     : '';
 
-  return resolvePromptTemplate(DELTA_REVIEWER_CONTEXT_PROMPT_ID, DELTA_REVIEWER_CONTEXT_TEMPLATE, {
+  const resolved = resolvePromptTemplate(DELTA_REVIEWER_CONTEXT_PROMPT_ID, DELTA_REVIEWER_CONTEXT_TEMPLATE, {
     prNumber,
     repoFullName,
     headSha,
@@ -1988,7 +2037,32 @@ ${securityEscalationRules()}`;
     priorConfidence: priorVerdict.confidence,
     priorSummary: sanitizeUntrustedText(priorVerdict.summary).text,
   }).trim();
+  // 58c8961e: a delta of an approval carries that approval to the new head when it passes, so it
+  // is read for the one shape a "CI fix" most often hides. Appended after the template so a stored
+  // prompt override cannot drop it.
+  return priorVerdict.verdict === 'approve' ? `${resolved}\n\n${WEAKENED_TESTS_CHECKLIST}` : resolved;
 }
+
+/**
+ * What a delta review of an approval checks before it re-affirms (58c8961e).
+ * Any of these in the delta is a request for changes (or an escalation), never
+ * an approve: the approval this delta would carry was given to the tests as
+ * they were.
+ */
+export const WEAKENED_TESTS_CHECKLIST = [
+  '## Weakened tests (check before you approve this delta)',
+  '',
+  'Your approve here carries your earlier approval to the new head. Before you give it, check the delta for',
+  'a test that was made weaker instead of the code being fixed. Any of these is a request for changes, not an approve:',
+  '- an assertion deleted, or loosened (an exact match turned into a partial one, a value check turned into a type or',
+  '  existence check, an expected error no longer asserted)',
+  '- a test or suite added to a skip (`.skip`, `.todo`, `xit`, `test.if(false)`, a commented-out test, a filter that',
+  '  stops it running)',
+  '- a timeout or retry count raised, or a wait added, so a slow or flaky test passes without a fix',
+  '- an expected value changed to match what the code now outputs, where the old value looks correct',
+  '- a whole test file deleted, or test files moved out of the paths the runner collects',
+  'If you find one, name the file and line in your feedback.',
+].join('\n');
 
 // ── Supersession (legacy entry points) ──────────────────────────────────────
 //
