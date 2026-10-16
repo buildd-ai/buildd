@@ -150,9 +150,12 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
     if (queueTimer) return;
     queueTimer = setTimeout(() => {
       queueTimer = null;
-      void refreshTasks();
-      void refreshMissions();
-      if (state.view === 'queue') void refreshQueue();
+      if (state.view === 'missions') {
+        void refreshTasks();
+        void refreshMissions();
+      } else if (state.view === 'queue') {
+        void refreshQueue();
+      }
     }, QUEUE_DEBOUNCE_MS);
   };
 
