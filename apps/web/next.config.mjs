@@ -128,6 +128,16 @@ const nextConfig = {
       '../../packages/core/mcp-guidance/**',
     ],
   },
+  async headers() {
+    return [
+      {
+        source: '/fonts/:path*',
+        headers: [
+          { key: 'Cache-Control', value: 'public, max-age=2592000, immutable' },
+        ],
+      },
+    ];
+  },
   async redirects() {
     return [
       // `/` is handled in src/proxy.ts, not here: next.config redirects run
