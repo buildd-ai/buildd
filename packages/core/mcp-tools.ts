@@ -3455,7 +3455,7 @@ export async function handleBuilddAction(
       if (!params.requestReview) return text(created);
 
       try {
-        const review = await api('/api/github/pr/review', {
+        const reviewInit = {
           method: 'POST',
           body: JSON.stringify({
             prNumber: data.pr.number,
@@ -3464,7 +3464,21 @@ export async function handleBuilddAction(
             ...(params.callbackUrl != null ? { callbackUrl: params.callbackUrl } : {}),
             ...(params.callbackOn != null ? { callbackOn: params.callbackOn } : {}),
           }),
-        });
+        };
+        // A just-opened PR can race another writer filing its reviewer task, which
+        // the route reports as a 500; a second try finds the winner. Only 5xx is
+        // retried — a 4xx will not change.
+        let review: any;
+        for (let attempt = 0; ; attempt++) {
+          try {
+            review = await api('/api/github/pr/review', reviewInit);
+            break;
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            if (attempt >= 2 || !/^API error: 5\d\d\b/.test(msg)) throw err;
+            await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+          }
+        }
         // 1bd26ae7: no review task means no review yet; say what is queued, never "under review (undefined)".
         if (!review.reviewTaskId) {
           return text(
@@ -3474,7 +3488,7 @@ export async function handleBuilddAction(
         }
         const state = review.alreadyRequested
           ? `already under review (${review.status?.state ?? 'queued'})`
-          : `reviewer role \`${review.reviewerRole}\``;
+          : review.reviewerRole ? `reviewer role \`${review.reviewerRole}\`` : 'reviewer queued';
         return text(
           `${created}\n\n**Review requested** — ${state}, review task ${review.reviewTaskId}.\n` +
           `Wait for the verdict: action=get_pr_review { prNumber: ${data.pr.number}, waitSeconds: 45 }.`,
@@ -3764,7 +3778,7 @@ export async function handleBuilddAction(
       }
 
       const lines = [
-        `Review requested for **PR #${data.prNumber}** — reviewer role \`${data.reviewerRole}\` (review task ${data.reviewTaskId}).`,
+        `Review requested for **PR #${data.prNumber}** — reviewer role \`${data.reviewerRole ?? 'default'}\` (review task ${data.reviewTaskId}).`,
         data.adopted
           ? `The PR was adopted as task ${data.taskId} (buildd did not open it), so the verdict, PR comment and merge policy now apply to it.`
           : `Mapped to existing task ${data.taskId}.`,
