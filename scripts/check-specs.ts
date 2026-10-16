@@ -133,18 +133,9 @@ export const DUPLICATE_CRITERIA_DEBT = new Set([
   'artifacts-and-sharing',
   'credential-isolation',
   'living-specs',
-  'local-agent-presence',
-  'mcp-connectors-and-roles',
   'mission-branch-refresh',
-  'mission-task-lifecycle',
-  'runner-liveness',
   'settings-models',
-  'team-namespace-scoping',
-  'team-workspace-mission-onboarding',
   'timeline-mobile-rail',
-  'usage-and-cost-accounting',
-  'webhook-dataflow',
-  'work-tracker-integration',
   'workflow-kernel-library',
 ]);
 
