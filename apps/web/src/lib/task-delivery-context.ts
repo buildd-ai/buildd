@@ -25,7 +25,8 @@ export interface TaskDeliveryContext {
 }
 
 export async function loadTaskDeliveryContext(taskId: string): Promise<TaskDeliveryContext> {
-  const view = (await getDeliveryViewsForTasks([taskId])).get(taskId) ?? null;
+  // Findings too: the checks list and the PR card print the open-finding count (§7).
+  const view = (await getDeliveryViewsForTasks([taskId], undefined, undefined, { withFindings: true })).get(taskId) ?? null;
   const findings = new Map<string, ReviewFindings>();
   if (!view) return { view, deliverableTitle: null, findings, findingsUnavailable: false };
   const reviewerIds = view.rounds.map(r => r.reviewerTaskId).filter((id): id is string => !!id);
