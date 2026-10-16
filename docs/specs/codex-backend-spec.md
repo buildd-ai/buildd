@@ -181,7 +181,7 @@ A bump that breaks any of these breaks the spec above. Re-verify on SDK upgrade.
 
 The runner's own login comes first; API keys come from buildd (approved spec a8d1eb82, "Model credentials: the runner's own login first, API keys from buildd").
 
-**R-25 (the runner's own login first).** For a Codex task, `decideCodexSeat` (`host-seat.ts`) picks the login. When the claim delivers no Codex credential, the machine's own `codex login` (`localCodexAuthPath`: `$CODEX_HOME`, else `~/.codex`) is used when it exists and the claim allows a runner-local login (`runnerLocalAllowed`). The per-worker CODEX_HOME's `auth.json` is then a link to it (`linkMachineCodexAuth`), so a CLI token refresh lands in the machine's own file, not in a copy. *Guard:* `codex-host-login.test.ts`, `runner-local-allowed.test.ts`.
+**R-25 (the runner's own login first).** For a Codex task, `decideCodexLogin` (`host-seat.ts`) picks the login. When the claim delivers no Codex credential, the machine's own `codex login` (`localCodexAuthPath`: `$CODEX_HOME`, else `~/.codex`) is used when it exists and the claim allows a runner-local login (`runnerLocalAllowed`). The per-worker CODEX_HOME's `auth.json` is then a link to it (`linkMachineCodexAuth`), so a CLI token refresh lands in the machine's own file, not in a copy. *Guard:* `codex-host-login.test.ts`, `runner-local-allowed.test.ts`.
 
 **R-26 (API keys from buildd).** A delivered Codex API key is written as `{ api_key }` into the per-worker CODEX_HOME (`writeCodexApiKeyToHome`) and `resolveAuth` passes it to the SDK. *Guard:* `codex-auth.test.ts`, `codex-credential-injection.test.ts`.
 

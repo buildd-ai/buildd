@@ -153,7 +153,6 @@ export class LocalUIClient {
       configured: boolean;
       serverless: boolean;
       modelAuthSource?: 'machine_token' | 'machine_login' | 'api_key' | 'none';
-      modelAuthMode?: 'auto' | 'prefer' | 'off';
       codexAuthSource?: 'machine_login' | 'api_key' | 'none';
       builddServer: string;
       model: string;
