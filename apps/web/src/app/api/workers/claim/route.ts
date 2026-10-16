@@ -733,18 +733,16 @@ export async function POST(req: NextRequest) {
   // (visual-auditor) need an explicit availableSkills match; every other role
   // keeps the legacy rule, where an empty list claims anything.
   //
-  // Exception: an interactive session's explicit claim (taskId + interactiveSession)
-  // on a task whose mission runs locally (executor='local') skips the explicit-slug
-  // requirement too. Runners never see a local mission's tasks at all (missionLocal
-  // above already exempts this same claim from that gate), so the role gate's
-  // browser-capability signal has no runner to protect here — the person's own
-  // session can produce the same evidence a browser-capable runner would
-  // (scripts/qa/shoot.sh, or dispatching visual-qa.yml, per the visual-review
-  // skill), and the visual_evidence completion gate (workers/[id]/route.ts) still
-  // enforces it regardless of who claims. Scoped to local missions only: a
-  // runner-executed mission's browser-capability requirement is untouched, and a
-  // force claim still never lifts this gate (see the force-claim comment above).
-  const roleGateExempt = localMissionClaim;
+  // Exception: a verified interactive session's explicit claim (taskId +
+  // interactiveSession) skips the explicit-slug requirement, whatever the
+  // mission's executor. The slug is a proxy for "this runner has a browser", and
+  // a person's own session needs none: it produces the same evidence through
+  // visual-qa.yml dispatched from trunk (the visual-review worker recipe) or
+  // scripts/qa/shoot.sh, and the visual_evidence completion gate
+  // (workers/[id]/route.ts) still enforces it regardless of who claims. Runner
+  // claims keep the gate, and a force claim alone never lifts it (it is not an
+  // interactive session).
+  const roleGateExempt = !!(taskId && interactiveSession);
   const roleConditions = roleGateExempt ? [] : roleSlugGate(availableSkills);
   if (roleConditions.length > 0) explicitTaskGates.role = and(...roleConditions)!;
   claimableConditions.push(...roleConditions);

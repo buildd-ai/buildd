@@ -9779,7 +9779,7 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(data.workers[0].taskId).toBe('task-1');
   });
 
-  it('local executor: the role exemption is scoped to local missions — a non-local mission still gates on role', async () => {
+  it('the role exemption covers any interactive explicit claim — a runner-executed mission too (friction 4cbe3d84)', async () => {
     mockAuthenticateApiKey.mockResolvedValue(account());
     // checkTaskMissionLocal resolves the task's own mission, which is NOT local.
     mockTasksFindFirst.mockResolvedValue({ missionId: 'mission-R' });
@@ -9787,14 +9787,13 @@ describe('explicit taskId claims (organizer workflow)', () => {
 
     await claim({ runner: 'mcp' }, interactiveHeaders());
 
-    expect(probedGates()).toContain('role');
+    expect(probedGates()).not.toContain('role');
   });
 
   it('local executor: an admin force claim still does NOT lift the role gate on the audit task', async () => {
     mockAuthenticateApiKey.mockResolvedValue(account('admin'));
     mockTasksFindMany.mockResolvedValueOnce(forceTarget());
-    // Not an interactive session, so checkTaskMissionLocal is never consulted —
-    // force alone must not open the explicit-role-slug gate.
+    // Not an interactive session — force alone must not open the explicit-role-slug gate.
     await claim({ runner: 'runner-7', forceOverride: true });
     expect(probedGates()).toContain('role');
   });
