@@ -4,7 +4,7 @@
  * answer to the socket's answer endpoint (AC-3's terminal half), and leaves the
  * terminal as it found it on q (R-7). Never touches ~/.buildd.
  */
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test, spyOn } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -115,9 +115,9 @@ function fakeTerminal(tty = true, osc11Reply: string | Array<[number, string]> |
 }
 
 async function until(cond: () => boolean, ms = 2_000) {
-  const deadline = Date.now() + ms;
+  const deadline = performance.now() + ms;
   while (!cond()) {
-    if (Date.now() > deadline) throw new Error('timed out');
+    if (performance.now() > deadline) throw new Error('timed out');
     await Bun.sleep(10);
   }
 }
@@ -226,6 +226,34 @@ describe('runTop', () => {
     await until(() => t.screen().includes('Showing alpha (Team One).'));
     t.type('q');
     await done;
+  });
+
+  test('each minute timer refreshes missions even when its clock is slightly early', async () => {
+    serveFakeRunner();
+    const intervals: Array<{ callback: () => void; ms: number }> = [];
+    const realInterval = globalThis.setInterval;
+    const timer = spyOn(globalThis, 'setInterval').mockImplementation(((callback: () => void, ms: number) => {
+      intervals.push({ callback, ms });
+      return realInterval(() => {}, 1_000_000);
+    }) as typeof setInterval);
+    const t = fakeTerminal();
+    const done = runTop({ socketPath: sock, terminal: t.term, palette: createPalette('night', 'none'), processHooks: false });
+    let clock: ReturnType<typeof spyOn> | undefined;
+    try {
+      await until(() => intervals.length === 4 && missionFetches === 1);
+      const now = Date.now();
+      clock = spyOn(Date, 'now').mockReturnValue(now + 59_900);
+      intervals[2].callback();
+      await until(() => missionFetches === 2);
+      clock.mockReturnValue(now + 119_800);
+      intervals[2].callback();
+      await until(() => missionFetches === 3);
+    } finally {
+      clock?.mockRestore();
+      timer.mockRestore();
+      t.type('q');
+      await done;
+    }
   });
 
   test('lists the missions the server names, and never fetches them faster than once a minute (R-24)', async () => {

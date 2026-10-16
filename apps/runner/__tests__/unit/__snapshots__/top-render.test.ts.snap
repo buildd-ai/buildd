@@ -24,7 +24,7 @@ exports[`list view 80x24 1`] = `
                       │                                                         
                       │                                                         
 ────────────────────────────────────────────────────────────────────────────────
- a answer m message p pause x stop c claim t team w workspace ? help q quit     "
+ ↑↓ move ⏎ open o web tab queue t team w workspace / filter ? help q quit       "
 `;
 
 exports[`list view 120x40 1`] = `
@@ -94,7 +94,7 @@ exports[`list view 80x24 in colour (night, truecolor) keeps the same text 1`] = 
                       \x1B[38;2;122;114;105m│\x1B[39m                                                         
                       \x1B[38;2;122;114;105m│\x1B[39m                                                         
 \x1B[38;2;122;114;105m────────────────────────────────────────────────────────────────────────────────\x1B[39m
-\x1B[38;2;168;159;150m a answer m message p pause x stop c claim t team w workspace ? help q quit     \x1B[39m"
+\x1B[38;2;168;159;150m ↑↓ move ⏎ open o web tab queue t team w workspace / filter ? help q quit       \x1B[39m"
 `;
 
 exports[`detail view (R-5) 80x24: plan, milestones, tool calls and the PR link 1`] = `
@@ -148,7 +148,7 @@ exports[`mission progress at a glance (R-29, R-30, R-31, AC-14, AC-15) 80x24 1`]
                       │                                                         
                       │                                                         
 ────────────────────────────────────────────────────────────────────────────────
- a answer m message p pause x stop c claim t team w workspace ? help q quit     "
+ ↑↓ move ⏎ open o web tab queue t team w workspace / filter ? help q quit       "
 `;
 
 exports[`mission progress at a glance (R-29, R-30, R-31, AC-14, AC-15) 120x40 1`] = `
