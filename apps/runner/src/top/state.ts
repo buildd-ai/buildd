@@ -22,6 +22,7 @@
  *     each task and its last broad claim (R-25), in the `init` frame, then
  *     `claim_outcome` frames. They say what really holds a waiting task.
  */
+import type { ProgressCell } from './progress';
 import { TERMINAL_TASK_STATUSES, type RecentMission } from '@buildd/shared';
 
 export type WorkerStatus = 'idle' | 'working' | 'done' | 'error' | 'stale' | 'waiting';
@@ -91,6 +92,8 @@ export type MissionStageStep = 'building' | 'verifying' | 'delivering' | 'delive
 export interface MissionStage {
   step: MissionStageStep;
   waitingOn: string | null;
+  /** The mission page's Overview strip as cells, done first (R-29). Absent from older servers. */
+  progress?: ProgressCell[];
 }
 
 export interface TopWorkspace {

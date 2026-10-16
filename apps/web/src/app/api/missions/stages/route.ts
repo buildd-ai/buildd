@@ -1,7 +1,9 @@
 /**
  * GET /api/missions/stages?ids=<uuid>,<uuid> — each named mission's stage
  * (spec c7410e76 R-18): the Build / Verify / Deliver rail's current step and
- * what it waits on, from the rail's own projection (lib/mission-stage.ts).
+ * what it waits on, from the rail's own projection (lib/mission-stage.ts),
+ * and its progress cells (R-29): one `{ state, group }` per task in the
+ * Overview strip's order, from the strip's own projection (`overviewProgress`).
  *
  * `buildd top` asks for the missions its task list shows. This lives with the
  * missions module rather than on GET /api/tasks so core never imports the

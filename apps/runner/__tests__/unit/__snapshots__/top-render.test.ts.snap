@@ -123,3 +123,73 @@ exports[`detail view (R-5) 80x24: plan, milestones, tool calls and the PR link 1
 ────────────────────────────────────────────────────────────────────────────────
  esc back  a answer  m message  p pause  x stop  c claim  o web  q quit         "
 `;
+
+exports[`mission progress at a glance (R-29, R-30, R-31, AC-14, AC-15) 80x24 1`] = `
+" buildd · laptop-1234                   2 of 3 slots busy · ● online · v0.340.0 
+ t team: all · w workspace: all                                                 
+────────────────────────────────────────────────────────────────────────────────
+ MISSIONS             │ Runner TUI · building: 8 of 13 l… 3 running · 3 waiting 
+ ▸ Runn… building 2/8 │ ■ 8 done · ▶ 2 in progress · ▢ 3 waiting · ◐ 2 checks   
+   Specs import   1/2 │─────────────────────────────────────────────────────────
+   (no mission)   0/1 │ RUNNING                                                 
+                      │›● name override    Builder     12m Edit config.ts       
+                      │ ? installer hint   Builder      9m asks: "Print the URL…
+                      │ ● single instance  Builder      4m bun run test __tests…
+                      │ WAITING                                                 
+                      │ ○ buildd top       Builder         waits on: name overr…
+                      │ ○ docs page        Writer          starts in 2h         
+                      │ ○ heartbeat name   Builder         another runner has it
+                      │ DONE TODAY                                              
+                      │ ✓ spec draft                       done                 
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+                      │                                                         
+────────────────────────────────────────────────────────────────────────────────
+ a answer m message p pause x stop c claim t team w workspace ? help q quit     "
+`;
+
+exports[`mission progress at a glance (R-29, R-30, R-31, AC-14, AC-15) 120x40 1`] = `
+" buildd · laptop-1234                                                           2 of 3 slots busy · ● online · v0.340.0 
+ t team: all · w workspace: all                                                                                         
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ MISSIONS                   │ Runner TUI · building: 8 of 13 landed                               3 running · 3 waiting 
+ ▸ Runner TUI  building 2/8 │ ■■■■■■■■ ▶▶ ▢▢▢ ◐◐   8 done · 2 in progress · 3 waiting · 2 checks                        
+   Specs import         1/2 │───────────────────────────────────────────────────────────────────────────────────────────
+   (no mission)         0/1 │ RUNNING                                                                                   
+                            │›● name override               Builder     12m Edit config.ts                       41k tok
+                            │ ? installer hint              Builder      9m asks: "Print the URL or open the b…         
+                            │ ● single instance             Builder      4m bun run test __tests__/unit/runner…   8k tok
+                            │ WAITING                                                                                   
+                            │ ○ buildd top                  Builder         waits on: name override                     
+                            │ ○ docs page                   Writer          starts in 2h                                
+                            │ ○ heartbeat name              Builder         another runner has it                       
+                            │ DONE TODAY                                                                                
+                            │ ✓ spec draft                                  done                                        
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+                            │                                                                                           
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ↑↓ move  ⏎ open  a answer  m message  p pause  x stop  c claim  o web  t team  w workspace  / filter  ? help  q quit   "
+`;

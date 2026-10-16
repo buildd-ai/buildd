@@ -196,7 +196,8 @@ describe('revision 2 (R-17, R-19, R-21, AC-6)', () => {
       const lines = text(frame(s, cols, 24)).split('\n');
       const row = lines.find(l => l.includes('▸'))!;
       expect(row).toContain('verifying');
-      expect(row).not.toContain('2/8');
+      // R-31: done over total stays beside the stage word.
+      expect(row.split('│')[0]).toMatch(/verifying 2\/8 $/);
       // A cut heading ends in … and keeps a space before the counts.
       expect(lines[3]).toContain(cols >= 120 ? 'Runner TUI · verifying: 2 checks left' : 'Runner TUI · verifying');
       expect(lines[3]).toMatch(/\s\d+ running/);
@@ -253,5 +254,73 @@ describe('a provider limit, said once in the header (R-25, AC-11)', () => {
   test('no limit, no extra line', () => {
     const t = text(frame(fixtureState(), 80, 24)).split('\n');
     expect(t[2]).toMatch(/^─+$/);
+  });
+});
+
+describe('mission progress at a glance (R-29, R-30, R-31, AC-14, AC-15)', () => {
+  const cell = (state: string, group: 'done' | 'active' | 'waiting' | 'checks') => ({ state, group });
+  const fill = (n: number, state: string, group: 'done' | 'active' | 'waiting' | 'checks') => Array.from({ length: n }, () => cell(state, group));
+  // AC-14's mission: 8 done, 2 running, 3 waiting, plus 2 checks. Includes tasks this runner never ran.
+  const AC14 = [...fill(8, 'landed', 'done'), ...fill(2, 'running', 'active'), ...fill(3, 'ready', 'waiting'), ...fill(2, 'review', 'checks')];
+  const withProgress = (progress: Array<{ state: string; group: 'done' | 'active' | 'waiting' | 'checks' }>) => {
+    const mission = { ...TASKS[0].mission!, stage: { step: 'building' as const, waitingOn: '8 of 13 landed', progress } };
+    return reduce(fixtureState(), { type: 'tasks', tasks: TASKS.map(t => (t.missionId === mission.id ? { ...t, mission } : t)) });
+  };
+
+  test('80x24', () => {
+    const lines = frame(withProgress(AC14), 80, 24);
+    expectExactSize(lines, 80, 24);
+    expect(text(lines)).toMatchSnapshot();
+  });
+
+  test('120x40', () => {
+    const lines = frame(withProgress(AC14), 120, 40);
+    expectExactSize(lines, 120, 40);
+    expect(text(lines)).toMatchSnapshot();
+  });
+
+  test('AC-14: under the heading, 8 done squares before 2 in progress and 3 waiting, with the same counts', () => {
+    const row = text(frame(withProgress(AC14), 120, 40)).split('\n')[4];
+    expect(row).toContain('│ ■■■■■■■■ ▶▶ ▢▢▢ ◐◐   8 done · 2 in progress · 3 waiting · 2 checks');
+  });
+
+  test('AC-15: at 80 columns a 30-task mission keeps its row on one line, the counts whole', () => {
+    const thirty = [...fill(20, 'landed', 'done'), ...fill(3, 'running', 'active'), ...fill(5, 'blocked', 'waiting'), ...fill(2, 'review', 'checks')];
+    const lines = frame(withProgress(thirty), 80, 24);
+    expectExactSize(lines, 80, 24);
+    const t = text(lines).split('\n');
+    expect(t[4]).toContain('20 done · ▶ 3 in progress · ▢ 5 waiting · ◐ 2 checks');
+    expect(t[4].split('│')[1]).not.toContain('…');
+    expect(t[5]).toMatch(/│─+$/);
+  });
+
+  test('colours: done in success, in progress in the accent, failed ✗ in error; NO_COLOR keeps the glyphs', () => {
+    const p = createPalette('night', 'truecolor');
+    const cells = [cell('landed', 'done'), cell('running', 'active'), cell('failed', 'active'), cell('ready', 'waiting')];
+    const row = frame(withProgress(cells), 120, 40, p)[4];
+    expect(row).toContain(p.fgCode('success') + '■');
+    expect(row).toContain(p.fgCode('accent') + '▶');
+    expect(row).toContain(p.fgCode('error') + '✗');
+    const plainRow = text(frame(withProgress(cells), 120, 40)).split('\n')[4];
+    expect(plainRow).toContain('■ ▶✗ ▢   1 done · 2 in progress · 1 waiting');
+    // eslint-disable-next-line no-control-regex
+    expect(frame(withProgress(cells), 120, 40).join('')).not.toMatch(/\x1b/);
+  });
+
+  test('R-31: with a stage, the missions pane keeps done over total beside it, and has no squares', () => {
+    for (const [cols, rows, lw] of [[80, 24, 22], [120, 40, 28]] as const) {
+      const left = text(frame(withProgress(AC14), cols, rows)).split('\n').map(l => l.slice(0, lw));
+      const sel = left.find(l => l.includes('▸'))!;
+      expect(sel).toMatch(/building 2\/8 $/);
+      // The title is what gives way, never the counts.
+      expect(sel).toMatch(cols === 80 ? /▸ Runn… building 2\/8/ : /▸ Runner TUI +building 2\/8/);
+      expect(left.find(l => l.includes('Specs import'))).toMatch(/1\/2 $/);
+      expect(left.filter(l => /[■▶▢◐]/.test(l))).toEqual([]);
+    }
+  });
+
+  test('no progress from the server, no row', () => {
+    const t = text(frame(fixtureState(), 80, 24)).split('\n');
+    expect(t[4]).toMatch(/│─+$/);
   });
 });
