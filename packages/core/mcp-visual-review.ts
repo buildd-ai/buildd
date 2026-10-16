@@ -240,9 +240,9 @@ export async function runListRunners(
     ];
     if (r.updateAvailable) update.push(`updateAvailableSince=${r.updateAvailableSince ?? 'unknown'}`);
     if (r.trackedBranch === 'main') update.push(`upToDateWithDeployed=${r.upToDateWithDeployed ?? 'null'}`);
-    const drain = r.updateDrain as { since: string; endsAt: string; busy: number } | null | undefined;
-    const drainLine = drain
-      ? `\n  claims halted: draining for update since ${drain.since}, applies by ${drain.endsAt} or when ${drain.busy} busy worker(s) finish — free slots are expected, not a claim-gate bug`
+    const drain = r.updateDrain;
+    const drainLine = drain && typeof drain === 'object' && 'since' in drain
+      ? `\n  claims halted: draining for update since ${String(drain.since)}, applies by ${String((drain as { endsAt?: unknown }).endsAt)} or when ${String((drain as { busy?: unknown }).busy)} busy worker(s) finish — free slots are expected, not a claim-gate bug`
       : '';
     const runnerBuild = `runnerCommit=${r.runnerCommit ?? 'null'} runnerVersion=${r.runnerVersion ?? 'null'} modelAuth=${r.modelAuthSource ?? 'not_reported'}${r.codexAuthSource ? ` codexAuth=${r.codexAuthSource}` : ''}`;
     const workspaces = runnerWorkspacesText(r);
