@@ -14123,9 +14123,11 @@ describe('PATCH /api/workers/[id]', () => {
         expect(lateRunnerEvidenceCalls).toEqual([{ workerId: 'worker-1', taskId: 'task-1', evidence: failed }]);
       });
 
-      // A cloud container runs its whole runner on a task token, so on a worker
-      // the claim route recorded as cloud-claimed that token is the runner.
-      it('counts a task-token copy as the runner on a worker a cloud container claimed', async () => {
+      // A cloud container's runner and agent share one task token, so on a
+      // cloud-claimed worker that token is the agent too. The runner's own
+      // report comes from the cloud Worker on its runner key, which never
+      // enters the container (apps/cloud-runner/src/runner-verification.ts).
+      it('stamps a task-token copy as the agent on a worker a cloud container claimed', async () => {
         asTaskToken();
         const workerSetCalls: any[] = [];
         mockWorkersUpdate.mockReturnValue({
@@ -14140,10 +14142,10 @@ describe('PATCH /api/workers/[id]', () => {
         }), { params: mockParams });
 
         expect(res.status).toBe(200);
-        expect(workerSetCalls.find((u: any) => u.verificationEvidence)?.verificationEvidence).toEqual({ ...ok, reportedVia: 'runner' });
+        expect(workerSetCalls.find((u: any) => u.verificationEvidence)?.verificationEvidence).toEqual({ ...ok, reportedVia: 'task_token' });
       });
 
-      it('hands a cloud runner late report on its task token to the late evidence path', async () => {
+      it('ignores a late task-token report on a terminal cloud-claimed worker', async () => {
         asTaskToken();
         lateRunnerEvidenceCalls.length = 0;
         mockWorkersFindFirst.mockResolvedValue(makeLoopWorker({ status: 'completed', claimedByCloud: true }));
@@ -14155,7 +14157,7 @@ describe('PATCH /api/workers/[id]', () => {
         }), { params: mockParams });
 
         expect(res.status).toBe(409);
-        expect(lateRunnerEvidenceCalls).toEqual([{ workerId: 'worker-1', taskId: 'task-1', evidence: failed }]);
+        expect(lateRunnerEvidenceCalls).toEqual([]);
       });
 
       it('ignores a late task-token report on a terminal worker', async () => {

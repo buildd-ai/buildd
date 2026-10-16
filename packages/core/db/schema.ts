@@ -2042,8 +2042,8 @@ export const workers = pgTable('workers', {
   // account-owned (NULL) one.
   claimedByUserId: uuid('claimed_by_user_id'),
   // Set at claim when a cloud container claimed this worker (executor 'cloud' or a
-  // task-token claim). There the task token is the runner's own credential, so its
-  // verification evidence counts as the runner's (lib/verification-provenance.ts).
+  // task-token claim). Read by the seat-wall attribution; verification evidence on a
+  // task token counts as the agent's either way (lib/verification-provenance.ts).
   claimedByCloud: boolean('claimed_by_cloud').default(false).notNull(),
   name: text('name').notNull(),
   runner: text('runner').notNull(),
