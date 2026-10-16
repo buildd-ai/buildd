@@ -182,7 +182,7 @@ type ImportRow = {
   placement?: { by: AreaBy; reason?: string; p?: number };
   suggestion?: { specId: string | null; title: string; answer: string; p: number };
   related?: Array<{ specId: string; title: string; url: string }>;
-  provenance?: { commitSha: string; prNumber: number | null }; duplicates?: Array<{ specId: string; title: string; relation: string; p: number }>;
+  provenance?: { commitSha: string; prNumber: number | null }; duplicates?: Array<{ specId: string; title: string; relation: string; p: number; blocks?: boolean }>;
   existing?: { specId: string; title: string; url: string; matchedBy: string }; provenanceAttached?: boolean;
   criteria?: CriterionIdProblems;
 };
@@ -195,7 +195,11 @@ const MATCHED_BY: Record<string, string> = { provenance: 'its recorded provenanc
 /** One create / re-import line, with what a person should see under it: duplicates, the suggestion, related specs. */
 function importRowText(f: ImportRow): string {
   const lines = [`  ${f.action === 'reimport' ? 're-import' : 'create'}: ${f.spec?.title ?? f.path} from ${f.path}${f.provenance?.prNumber ? `, last changed in #${f.provenance.prNumber}` : ''}${f.specId ? ` → ${f.specId}${f.revision ? ` r${f.revision}` : ''}` : ''}${f.area?.by === 'classifier' && typeof f.area.p === 'number' ? ` (classifier p ${f.area.p.toFixed(2)})` : ''}`];
-  if (f.duplicates?.length) lines.push(`    possible duplicate of ${f.duplicates.map((d) => `"${d.title}" (${d.specId}, ${d.relation} p ${d.p.toFixed(2)})`).join(', ')}`);
+  const fmtDup = (d: NonNullable<ImportRow['duplicates']>[number]) => `"${d.title}" (${d.specId}, ${d.relation} p ${d.p.toFixed(2)})`;
+  const blocking = (f.duplicates ?? []).filter((d) => d.blocks !== false);
+  const overlaps = (f.duplicates ?? []).filter((d) => d.blocks === false);
+  if (blocking.length) lines.push(`    duplicate of ${blocking.map(fmtDup).join(', ')}; a real run skips it unless ${f.path} is in allowDuplicates`);
+  if (overlaps.length) lines.push(`    overlaps ${overlaps.map(fmtDup).join(', ')}; a real run still creates it`);
   const unread = criteriaUnreadText(f.criteria);
   if (unread) lines.push(`    ${unread}`);
   if (f.suggestion) lines.push(`    suggested: ${f.suggestion.title}${f.suggestion.specId ? ` (${f.suggestion.specId})` : ''} (p ${f.suggestion.p.toFixed(2)}), below the filing bar, so it stays Unfiled`);
@@ -398,6 +402,7 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
             checker: 'visual', criterionId: need(params.criterionId, 'criterionId'), verdict: need(params.verdict, 'verdict'), capturedSha: need(params.capturedSha, 'capturedSha'),
             ...(params.screenshotIds !== undefined ? { screenshotIds: params.screenshotIds } : {}),
             ...(params.designShotIds !== undefined ? { designShotIds: params.designShotIds } : {}),
+            ...(params.workerId !== undefined ? { workerId: params.workerId } : {}),
             ...(params.observed !== undefined ? { observed: params.observed } : {}),
           }) })
           : await api(path, { method: 'POST', body: JSON.stringify({

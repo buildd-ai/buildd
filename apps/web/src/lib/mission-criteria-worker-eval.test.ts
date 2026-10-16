@@ -624,3 +624,10 @@ describe('resolveCriteriaWorkerEval — role', () => {
     expect(insertedValues[0].roleSlug).toBeNull();
   });
 });
+
+describe('WORKER_EVAL_TEMPLATE', () => {
+  it('names the exact structuredOutput field for sessions without outputSchema enforcement', async () => {
+    const { WORKER_EVAL_TEMPLATE } = await import('./mission-criteria-worker-eval');
+    expect(WORKER_EVAL_TEMPLATE).toContain('"criteriaVerdicts":[{"index":0,"verdict":"pass|fail|UNVERIFIED"');
+  });
+});

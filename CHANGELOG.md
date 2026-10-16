@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `get_pr`, the task page, the mission page and Home read review and merge state from the delivery record, so `get_pr` no longer reports "Reviews: none" while review rounds exist; `explain` flags a worker row that disagrees with its delivery (#4857)
+
 ## [0.327.1] - 2026-10-12
 
 ### Fixed

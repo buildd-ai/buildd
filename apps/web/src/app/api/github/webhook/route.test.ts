@@ -1954,8 +1954,10 @@ describe('POST /api/github/webhook', () => {
         const [e] = skipEvents();
         expect(e.detail.skipReason).toBe('head_already_retried');
         expect(e.detail.priorAttemptTaskId).toBe('c1');
+        // Only the infra probe reads runs (no re-run POST, no failure-digest fetch).
         const runsCalls = (mockGithubApi.mock.calls as any[]).filter(c => String(c[1]).includes('/actions/runs'));
-        expect(runsCalls).toEqual([]);
+        expect(runsCalls.filter(c => c[2]?.method === 'POST')).toEqual([]);
+        expect(runsCalls.filter(c => String(c[1]).endsWith('/jobs'))).toEqual([]);
         expect(mockScheduleCiRedLook).toHaveBeenCalledTimes(1);
       });
 
@@ -2466,6 +2468,17 @@ describe('POST /api/github/webhook', () => {
       expect(res.status).toBe(200);
       expect(mockObserveCiGreen).toHaveBeenCalledTimes(1);
       expect(mockObserveCiGreen.mock.calls[0][0]).toMatchObject({ source: 'webhook:check_suite' });
+    });
+
+    it('a green head reaches the kernel even when no worker row owns the PR (local mission)', async () => {
+      withSuccessWorkerPr();
+      mockWorkersFindFirst.mockReturnValue(null);
+      mockObserveCiGreen.mockClear();
+      const res = await POST(
+        createWebhookRequest('check_suite', makeCheckSuitePayload({ check_suite: { conclusion: 'success' } }))
+      );
+      expect(res.status).toBe(200);
+      expect(mockObserveCiGreen).toHaveBeenCalledTimes(1);
     });
 
     it('holds PR and notifies when resolvePolicy returns tier=human', async () => {
