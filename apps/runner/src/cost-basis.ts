@@ -27,7 +27,7 @@ const set = (v: string | undefined) => typeof v === 'string' && v.length > 0;
  * in the env beats a subscription token, so it decides first.
  */
 export function claudeCostBasis(
-  modelEnv: Pick<ModelEnvResult, 'env' | 'endpoint' | 'hostSeatUsed'>,
+  modelEnv: Pick<ModelEnvResult, 'env' | 'endpoint' | 'machineLoginUsed'>,
   opts: { claudeCredentialUsed: boolean },
 ): RunnerCostBasis {
   const env = modelEnv.env;
@@ -35,7 +35,7 @@ export function claudeCostBasis(
   if (modelEnv.endpoint === 'team' || modelEnv.endpoint === 'custom') return 'real';
   if (CLOUD_PROVIDER_SWITCHES.some(k => set(env[k]) && env[k] !== '0')) return 'real';
   if (set(env.ANTHROPIC_AUTH_TOKEN) || set(env.ANTHROPIC_API_KEY)) return 'real';
-  if (set(env.CLAUDE_CODE_OAUTH_TOKEN) || modelEnv.hostSeatUsed || opts.claudeCredentialUsed) return 'virtual';
+  if (set(env.CLAUDE_CODE_OAUTH_TOKEN) || modelEnv.machineLoginUsed || opts.claudeCredentialUsed) return 'virtual';
   return 'unknown';
 }
 

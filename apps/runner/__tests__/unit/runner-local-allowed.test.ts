@@ -8,12 +8,12 @@ import { describe, test, expect } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { applyHostSeatPolicy, decideCodexSeat } from '../../src/host-seat';
+import { applyMachineLoginPolicy, decideCodexLogin } from '../../src/host-seat';
 import { applyModelEnv } from '../../src/agent-model-env';
 import { isWorkerScopedCredential, runnerLocalCredentialsAllowed } from '../../src/credential-cache';
 import { classifyClaimFailure } from '../../src/run-once';
 
-const HOST_TOKEN = 'host-seat-token-value-0123456789';
+const HOST_TOKEN = 'machine-login-token-value-0123456789';
 const MACHINE_KEY = 'sk-ant-machine-key-0123456789';
 const PERSONAL_KEY = 'sk-ant-personal-requester-key';
 
@@ -24,50 +24,47 @@ function loginHome(): string {
   return home;
 }
 
-describe('host seat refused when runnerLocalAllowed=false', () => {
-  test('env seat: not used, token removed, even under BUILDD_HOST_SEAT=prefer', () => {
-    for (const mode of ['auto', 'prefer']) {
-      const env: Record<string, string> = { CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN };
-      const d = applyHostSeatPolicy(env, {
-        serverSeatDelivered: false, runnerLocalAllowed: false,
-        probe: { env: { CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN, BUILDD_HOST_SEAT: mode }, home: loginHome(), platform: 'linux' },
-      });
-      expect(d.hostSeat).toBeNull();
-      expect(d.deferredTo).toBeNull();
-      expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
-    }
+describe('machine login refused when runnerLocalAllowed=false', () => {
+  test('personal_only removes the machine env token', () => {
+    const env: Record<string, string> = { CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN };
+    const d = applyMachineLoginPolicy(env, {
+      runnerLocalAllowed: false,
+      probe: { env, home: loginHome(), platform: 'linux' },
+    });
+    expect(d.machineLogin).toBeNull();
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
   });
 
   test('login seat: not used', () => {
-    const d = applyHostSeatPolicy({}, { serverSeatDelivered: false, runnerLocalAllowed: false, probe: { env: {}, home: loginHome(), platform: 'linux' } });
+    const d = applyMachineLoginPolicy({}, { runnerLocalAllowed: false, probe: { env: {}, home: loginHome(), platform: 'linux' } });
     expect(d.detected).toBe('login');
-    expect(d.hostSeat).toBeNull();
+    expect(d.machineLogin).toBeNull();
   });
 
   test('allowed (or absent): unchanged, the machine seat is used with no stored seat', () => {
     for (const runnerLocalAllowed of [true, undefined]) {
       const env: Record<string, string> = { CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN };
-      const d = applyHostSeatPolicy(env, { serverSeatDelivered: false, runnerLocalAllowed, probe: { env: { CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN }, home: loginHome(), platform: 'linux' } });
-      expect(d.hostSeat).toBe('env');
+      const d = applyMachineLoginPolicy(env, { runnerLocalAllowed, probe: { env: { CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN }, home: loginHome(), platform: 'linux' } });
+      expect(d.machineLogin).toBe('env');
       expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe(HOST_TOKEN);
     }
   });
 
   test('Codex: the machine login is never picked', () => {
-    expect(decideCodexSeat({ mode: 'prefer', serverCredentialType: 'oauth', localAuthPath: '/x/auth.json', explicitCodexHome: true, runnerLocalAllowed: false })).toBe('server');
-    expect(decideCodexSeat({ mode: 'auto', serverCredentialType: null, localAuthPath: '/x/auth.json', explicitCodexHome: false, runnerLocalAllowed: false })).toBe('none');
-    expect(decideCodexSeat({ mode: 'auto', serverCredentialType: null, localAuthPath: '/x/auth.json', explicitCodexHome: false })).toBe('machine');
+    expect(decideCodexLogin({ serverCredentialType: 'oauth', localAuthPath: '/x/auth.json', runnerLocalAllowed: false })).toBe('server');
+    expect(decideCodexLogin({ serverCredentialType: null, localAuthPath: '/x/auth.json', runnerLocalAllowed: false })).toBe('none');
+    expect(decideCodexLogin({ serverCredentialType: null, localAuthPath: '/x/auth.json' })).toBe('machine');
   });
 });
 
 describe('applyModelEnv with runnerLocalAllowed=false', () => {
   test('an inherited machine key and seat token do not displace the requester\'s key', () => {
     const env: Record<string, string> = { ANTHROPIC_API_KEY: MACHINE_KEY, CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN, ANTHROPIC_AUTH_TOKEN: 'machine-auth' };
-    const r = applyModelEnv(env, { isCodexTask: false, serverApiKey: PERSONAL_KEY, hostSeat: 'env', runnerLocalAllowed: false });
+    const r = applyModelEnv(env, { isCodexTask: false, serverApiKey: PERSONAL_KEY, machineLogin: 'env', runnerLocalAllowed: false });
     expect(r.env.ANTHROPIC_API_KEY).toBe(PERSONAL_KEY);
     expect(r.env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
     expect(r.env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
-    expect(r.hostSeatUsed).toBeUndefined();
+    expect(r.machineLoginUsed).toBeUndefined();
     expect(r.injected).toEqual(['serverApiKey']);
   });
 

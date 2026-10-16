@@ -114,7 +114,7 @@ charged on, as reported by the party that picked the credential, and MUST say
 
 | Reporter | Source of truth | real | virtual |
 |---|---|---|---|
-| Self-hosted runner, Claude | `applyModelEnv` result | injected API key; team endpoint | `hostSeatUsed`; injected subscription or tenant token |
+| Self-hosted runner, Claude | `applyModelEnv` result | injected API key; team endpoint | `machineLoginUsed`; injected subscription or tenant token |
 | Self-hosted runner, Codex | `codex-auth.ts` | `OPENAI_API_KEY`; team endpoint | ChatGPT `auth.json` |
 | Cloud runner | run report `modelAuth` | `metered` | `owner_seat` |
 | Interactive session (plugin hook) | the hook's own environment | see below | see below |
@@ -172,7 +172,7 @@ reading config is unknown.
 **Acceptance criteria**:
 - AC-1: GIVEN a runner whose `applyModelEnv` injected an API key WHEN it reports
   usage THEN the worker's `cost_basis` is `real`.
-- AC-2: GIVEN a runner that ran on the machine's own login (`hostSeatUsed`) WHEN
+- AC-2: GIVEN a runner that ran on the machine's own login (`machineLoginUsed`) WHEN
   it reports usage THEN `cost_basis` is `virtual`, regardless of the account's
   `authType`.
 - AC-3: GIVEN a usage report with no `costBasis` WHEN the server applies it THEN
@@ -298,7 +298,7 @@ Existing, to change:
 - Report handler and server estimate:
   `apps/web/src/app/api/workers/[id]/route.ts` (metrics-only branch, terminal transition and pool)
 - Credential choice: `apps/runner/src/agent-model-env.ts` (`applyModelEnv`,
-  `hostSeatUsed`, `injected`), `apps/runner/src/codex-auth.ts`
+  `machineLoginUsed`, `injected`), `apps/runner/src/codex-auth.ts`
 - Runner report payload: `apps/runner/src/buildd.ts`
 - Cloud runner: `apps/cloud-runner/src/owner-seat.ts` (`modelAuth`),
   `apps/cloud-runner/src/run-report.ts`
