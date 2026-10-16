@@ -502,3 +502,22 @@ describe('fleet online window', () => {
   });
 });
 
+
+describe('a held runner (buildd hold, R-35)', () => {
+  const hb = (id: string, hold: unknown): FleetHeartbeatRow => ({
+    id, accountId: 'acct', localUiUrl: `http://${id}.local:8766`, maxConcurrentWorkers: 2, lastHeartbeatAt: new Date(NOW - 10_000),
+    environment: { labels: { hostname: id }, hold } as any,
+  });
+  it('carries the hold while it is in force, and nothing once its until has passed', () => {
+    const since = new Date(NOW - 3_600_000).toISOString();
+    const snap = buildFleetSnapshot([
+      hb('atlas', { since, until: null }),
+      hb('birch', { since, until: new Date(NOW - 60_000).toISOString() }),
+      hb('cedar', null),
+    ], [], { now: NOW });
+    const by = Object.fromEntries(snap.runners.map(r => [r.name, r]));
+    expect(by.atlas.hold).toEqual({ since, until: null });
+    expect(by.birch.hold).toBeUndefined();
+    expect(by.cedar.hold).toBeUndefined();
+  });
+});

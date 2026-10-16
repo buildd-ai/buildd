@@ -9,7 +9,7 @@
  */
 import type { ApiFn, ToolResult } from './mcp-tools';
 import { formatVisualReview, missionArtifacts } from './visual-review-text';
-import { executorDisplayName, fleetGroupKey, runnerFleetIdentity, type RunnerFleetIdentity, type VisualReviewModel, type ActiveRunnerWorkspaces } from '@buildd/shared';
+import { activeRunnerHold, executorDisplayName, fleetGroupKey, runnerFleetIdentity, type RunnerFleetIdentity, type VisualReviewModel, type ActiveRunnerWorkspaces } from '@buildd/shared';
 
 const text = (t: string): ToolResult => ({ content: [{ type: 'text' as const, text: t }] });
 const errorResult = (t: string): ToolResult => ({ content: [{ type: 'text' as const, text: t }], isError: true });
@@ -244,9 +244,14 @@ export async function runListRunners(
     const drainLine = drain && typeof drain === 'object' && 'since' in drain
       ? `\n  claims halted: draining for update since ${String(drain.since)}, applies by ${String((drain as { endsAt?: unknown }).endsAt)} or when ${String((drain as { busy?: unknown }).busy)} busy worker(s) finish — free slots are expected, not a claim-gate bug`
       : '';
+    // A person's hold (`buildd hold`, spec c7410e76 R-35), from the heartbeat environment.
+    const hold = activeRunnerHold(r.environment);
+    const holdLine = hold
+      ? `\n  on hold since ${hold.since}${hold.until ? ` until ${hold.until}` : ''}: starts nothing new, running work finishes (buildd resume lifts it) — free slots are expected, not a claim-gate bug`
+      : '';
     const runnerBuild = `runnerCommit=${r.runnerCommit ?? 'null'} runnerVersion=${r.runnerVersion ?? 'null'} modelAuth=${r.modelAuthSource ?? 'not_reported'}${r.codexAuthSource ? ` codexAuth=${r.codexAuthSource}` : ''}`;
     const workspaces = runnerWorkspacesText(r);
-    return `- ${header}${drainLine}\n  ${runnerBuild}\n  ${update.join(' ')}\n  workspaces: ${workspaces} · last heartbeat ${r.lastUpdated}`;
+    return `- ${header}${holdLine}${drainLine}\n  ${runnerBuild}\n  ${update.join(' ')}\n  workspaces: ${workspaces} · last heartbeat ${r.lastUpdated}`;
   });
 
   const count = groups.size > 0 ? `${hosts.length} runner(s), ${groups.size} elastic group(s):` : `${runners.length} runner(s):`;

@@ -8,7 +8,7 @@ import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions, workerErrorTraces } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
 import type { ClaimBudgetWall, ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
-import { CLOUD_EXECUTOR, ENTITLEMENT_BLOCK_CONTEXT_KEY, entitlementDeferralKey, isRunnerExecutor, stripClaimCredentials } from '@buildd/shared';
+import { activeRunnerHold, CLOUD_EXECUTOR, ENTITLEMENT_BLOCK_CONTEXT_KEY, entitlementDeferralKey, isRunnerExecutor, stripClaimCredentials } from '@buildd/shared';
 import { checkManagedRunnerEntitlement, stampEntitlementBlock } from '@/lib/entitlements/managed-runner';
 import { checkHostedRunnerAllowance } from '@/lib/hosted-runner-usage-store';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
@@ -517,6 +517,18 @@ export async function POST(req: NextRequest) {
         activeWorkers: runnerSlotWorkers.length,
         maxConcurrent: account.maxConcurrentWorkers,
       } satisfies ClaimDiagnostics,
+    });
+  }
+
+  // A runner a person put on hold (`buildd hold`, spec c7410e76 R-35) gets no
+  // work on a broad claim. It already stops asking while held; this is the
+  // server's own answer if a claim arrives anyway. A claim naming one task is
+  // a person's choice (Start, `c` in top) and goes on, and an interactive
+  // session is not a runner. Read from the claim's own environment: it is the
+  // runner's state as of this request, fresher than its last heartbeat.
+  if (!taskId && !interactiveSession && activeRunnerHold(body.environment)) {
+    return emptyClaim({
+      diagnostics: { reason: 'runner_held' } satisfies ClaimDiagnostics,
     });
   }
 

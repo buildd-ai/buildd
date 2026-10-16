@@ -40,6 +40,10 @@ export const RUNNER_USAGE = [
   '  buildd env verify [--json] Check that the current repo is runnable',
   '  buildd name [<name>]       Name this runner on the dashboard (the hostname by default);',
   '                             with no name, print it and where it comes from. --clear removes it',
+  '  buildd hold [--for <time>] Stop this runner taking new work; running agents finish',
+  '                             (--for 2h or 30m resumes on its own; h in buildd top does the same)',
+  '  buildd resume              Let this runner take new work again',
+  '  buildd stop [--yes]        Stop every running agent and hold this runner (asks first)',
   '  buildd web                 Open the runner on this machine in your browser',
   '  buildd help                Show this help',
   '',
@@ -68,6 +72,12 @@ export type CliDecision =
   | { kind: 'help' }
   /** `buildd name [<name>|--clear]` (runner-name.ts); `args` are the words after `name`. */
   | { kind: 'name'; args: string[] }
+  /** `buildd hold [--for <time>]` (runner-hold.ts); `forArg` is checked there. */
+  | { kind: 'hold'; forArg: string | null }
+  /** `buildd resume` (runner-hold.ts). */
+  | { kind: 'resume' }
+  /** `buildd stop [--yes|-y]` (runner-hold.ts runStopCommand). */
+  | { kind: 'stop'; yes: boolean }
   /** `buildd web`: open the running runner's local web UI (runner-web.ts). */
   | { kind: 'web' }
   | { kind: 'run' }
@@ -95,6 +105,29 @@ function classifyTop(args: string[]): CliDecision {
   return { kind: 'top', missionId: values['--mission'], workspace: values['--workspace'], team: values['--team'] };
 }
 
+/** `buildd hold [--for <time>]`: nothing else is accepted. */
+function classifyHold(args: string[]): CliDecision {
+  let forArg: string | null = null;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--for') {
+      const v = args[i + 1];
+      if (v === undefined || v.startsWith('-')) return { kind: 'unknown', arg: a };
+      forArg = v;
+      i++;
+      continue;
+    }
+    if (a.startsWith('--for=')) {
+      const v = a.slice('--for='.length);
+      if (!v) return { kind: 'unknown', arg: a };
+      forArg = v;
+      continue;
+    }
+    return { kind: 'unknown', arg: a };
+  }
+  return { kind: 'hold', forArg };
+}
+
 export function classifyCliArgs(argv: string[]): CliDecision {
   const args = argv.slice(2);
   if (args.some(a => HELP.has(a))) return { kind: 'help' };
@@ -104,6 +137,15 @@ export function classifyCliArgs(argv: string[]): CliDecision {
     const rest = args.slice(1);
     const flag = rest.find(a => a.startsWith('-') && a !== '--clear');
     return flag ? { kind: 'unknown', arg: flag } : { kind: 'name', args: rest };
+  }
+  if (args[0] === 'hold') return classifyHold(args.slice(1));
+  if (args[0] === 'resume') {
+    return args.length > 1 ? { kind: 'unknown', arg: args[1] } : { kind: 'resume' };
+  }
+  if (args[0] === 'stop') {
+    const rest = args.slice(1);
+    const bad = rest.find(a => a !== '--yes' && a !== '-y');
+    return bad !== undefined ? { kind: 'unknown', arg: bad } : { kind: 'stop', yes: rest.length > 0 };
   }
   if (args[0] === 'web') {
     return args.length > 1 ? { kind: 'unknown', arg: args[1] } : { kind: 'web' };

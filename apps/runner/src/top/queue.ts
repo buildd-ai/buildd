@@ -16,7 +16,7 @@
  */
 import type { RunnerQueueExclusion, RunnerQueueTask } from '@buildd/shared';
 import {
-  RUNNER_COOLDOWN_MS, currentTeam, inView, isOrganizerTask, liveTaskOutcome, localLiftTime, matchesFilter, providerHolds, roleLabel, wallFor,
+  RUNNER_COOLDOWN_MS, currentTeam, heldNow, inView, isOrganizerTask, liveTaskOutcome, localLiftTime, matchesFilter, providerHolds, roleLabel, wallFor,
   type ProviderHold, type TopState, type TopTask,
 } from './state';
 
@@ -139,6 +139,7 @@ export function queueSections(state: TopState, now: number): QueueSection[] {
   const team = currentTeam(state);
   const show = inView(state);
   const holds = providerHolds(state, now);
+  const held = heldNow(state, now) !== null;
   const keep = (t: RunnerQueueTask) => !isOrganizerTask(t) && show(t.workspaceId) && matchesFilter(t.title, state.filter);
   const out: QueueSection[] = [];
   for (const tm of q.teams) {
@@ -160,7 +161,8 @@ export function queueSections(state: TopState, now: number): QueueSection[] {
         workspace: t.workspaceName,
         mission: t.missionTitle ?? '(no mission)',
         est: tm.estimatesOn ? (t.estimateMinutes != null ? estimateWords(t.estimateMinutes) : '-') : null,
-        starts: startWords(t, i, positions, state, holds, now),
+        // R-33: held, the order stays and nothing has a start time.
+        starts: held ? 'on hold' : startWords(t, i, positions, state, holds, now),
       })),
       held: heldTasks.map(t => {
         const w = heldWords(t, now);

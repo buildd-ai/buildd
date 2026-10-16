@@ -130,3 +130,40 @@ describe('buildd top', () => {
     expect(RUNNER_USAGE).toMatch(/^ {2}buildd top {2,}\S/m);
   });
 });
+
+describe('hold and resume (R-32)', () => {
+  test('`hold` alone, or with --for <time> / --for=<time>', () => {
+    expect(classifyCliArgs(argv('hold'))).toEqual({ kind: 'hold', forArg: null });
+    expect(classifyCliArgs(argv('hold', '--for', '2h'))).toEqual({ kind: 'hold', forArg: '2h' });
+    expect(classifyCliArgs(argv('hold', '--for=30m'))).toEqual({ kind: 'hold', forArg: '30m' });
+  });
+  test('`hold` refuses anything else, and --for needs a value', () => {
+    expect(classifyCliArgs(argv('hold', '--for'))).toEqual({ kind: 'unknown', arg: '--for' });
+    expect(classifyCliArgs(argv('hold', '--for='))).toEqual({ kind: 'unknown', arg: '--for=' });
+    expect(classifyCliArgs(argv('hold', 'now'))).toEqual({ kind: 'unknown', arg: 'now' });
+    expect(classifyCliArgs(argv('hold', '--debug'))).toEqual({ kind: 'unknown', arg: '--debug' });
+  });
+  test('`resume` takes nothing', () => {
+    expect(classifyCliArgs(argv('resume'))).toEqual({ kind: 'resume' });
+    expect(classifyCliArgs(argv('resume', 'now'))).toEqual({ kind: 'unknown', arg: 'now' });
+  });
+  test('only as the leading word', () => {
+    expect(classifyCliArgs(argv('--debug', 'hold'))).toEqual({ kind: 'unknown', arg: 'hold' });
+  });
+  test('help lists hold and resume', () => {
+    expect(RUNNER_USAGE).toMatch(/^ {2}buildd hold \[--for <time>\] +\S/m);
+    expect(RUNNER_USAGE).toMatch(/^ {2}buildd resume {2,}\S/m);
+  });
+});
+
+describe('stop (R-36)', () => {
+  test('`stop`, `stop --yes`, `stop -y`', () => {
+    expect(classifyCliArgs(argv('stop'))).toEqual({ kind: 'stop', yes: false });
+    expect(classifyCliArgs(argv('stop', '--yes'))).toEqual({ kind: 'stop', yes: true });
+    expect(classifyCliArgs(argv('stop', '-y'))).toEqual({ kind: 'stop', yes: true });
+    expect(classifyCliArgs(argv('stop', 'now'))).toEqual({ kind: 'unknown', arg: 'now' });
+  });
+  test('help lists top, web, name, hold, resume and stop (R-16)', () => {
+    for (const c of ['top', 'web', 'name', 'hold', 'resume', 'stop']) expect(RUNNER_USAGE).toMatch(new RegExp(`^ {2}buildd ${c}\\b`, 'm'));
+  });
+});
