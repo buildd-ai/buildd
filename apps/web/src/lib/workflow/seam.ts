@@ -514,6 +514,24 @@ export async function attemptEnded(p: {
     }
   }
   const attemptId = isRepairRole(attemptKind) ? (ctxOf(p.task).workflowAttemptId as string | undefined) : undefined;
+  // A CI repair that ended without a push (cancelled by a person, lost, failed) while the head it was
+  // bound to reads green now (an infrastructure failure re-run green) is not a failed attempt to retry:
+  // CI is fixed, so the repair ends and the delivery resumes (38442d17). Otherwise the ledger would queue
+  // another fix task that, on a mission no runner serves, nobody claims.
+  const ciAttempt = attemptId ? view.attempts.find((a) => a.id === attemptId) : undefined;
+  if (p.status !== 'completed' && ciAttempt?.family === 'ci' && d.state === 'REPAIRING' && d.boundAttemptId === ciAttempt.id
+    && live && live.state === 'open' && !live.merged && live.headSha === ciAttempt.boundHeadSha && d.currentHeadSha === live.headSha && d.repoFullName) {
+    const repo = await (deps.repoFor ?? workspaceRepo)(p.task.workspaceId);
+    const reader = repo ? readerFor(deps, repo.installationId) : null;
+    const liveChecks = reader?.checkRuns ? await reader.checkRuns(d.repoFullName, live.headSha).catch(() => null) : null;
+    if (reader?.ciGreen && liveChecks && (await reader.ciGreen(d.repoFullName, live.headSha).catch(() => null)) === true) {
+      const green = await applyCommand({ type: 'CiGreenObserved', actor: `${p.source}:ci_green`, headSha: live.headSha, liveChecks, allPassing: true }, { ref: { deliveryId }, exec: deps.exec });
+      if (green.result === 'applied') {
+        await drainDelivery(deliveryId, deps);
+        return { handled: true, result: green };
+      }
+    }
+  }
   // §5: what the repair changed since the head it was bound to, read only when an open finding names a path.
   let changedPaths: string[] | null = null;
   const boundHead = attemptId ? view.attempts.find((a) => a.id === attemptId)?.boundHeadSha ?? null : null;
