@@ -115,6 +115,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   lastAssistantMessage: true,
   tokenTally: true,
   costBasis: true,
+  route: true, // bucket/provider/owner/host label; no credential
   sandboxMountGap: true,
   bwrapRetryPending: true,
   modelAuthMissing: true, // a boolean, no credential

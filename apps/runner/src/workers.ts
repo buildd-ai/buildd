@@ -21,7 +21,7 @@ import { captureDependencyManifest, DEPENDENCY_MANIFEST_FILENAME } from './depen
 import { emitPhase } from './phase-lines';
 import { ClaimHandoffTracker } from './claim-handoff';
 import { type SkillBundle, type ClaudeAiArtifactAccess, applyClaudeAiArtifactEnv, resolveOutputFormat, RUNNER_HEARTBEAT_INTERVAL_MS, LIVENESS_PING_INTERVAL_MS } from '@buildd/shared';
-import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, copyFileSync, rmSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, copyFileSync, rmSync, statSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { materializeCodexAuth, writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, seedCodexAuthIfMissing, ensureStableCodexHome, teardownStableCodexHome, readCodexAuthJson, writeCodexApiKeyToHome, checkCodexCredentialExpiry, stableCodexHomePath, stableCodexHomeIsolatedPath, linkMachineCodexAuth } from './codex-auth.js';
@@ -153,6 +153,7 @@ import { InstructionAckTracker } from './instruction-acks';
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch, TERMINAL_WORKER_RETENTION_MS, SERVER_TERMINAL_STATUSES, SERVER_TERMINAL_TASK_STATUSES } from './worker-sync';
 import { buildTerminalAttributionPayload } from './terminal-attribution';
 import { claudeCostBasis, cloudCostBasis, codexCostBasis } from './cost-basis';
+import { claudeRunRoute, cloudRunRoute, codexRunRoute, machineRoutes, nextLoginFailures, type LoginFailure, type RouteBackend, type RouteProblem, type RunRoute } from './run-route';
 import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
 import { handOffUnproven, isHandOffRefusal } from './hand-off-outcome';
 import { preflightHookEntries } from './preflight-guard';
@@ -730,6 +731,13 @@ interface DepsEntry {
 /** Keyed by the worker object: never persisted, gone with the worker. */
 const depsJobs = new WeakMap<LocalWorker, DepsEntry>();
 
+/** When this machine's Codex auth.json last changed, or null when there is none. */
+function codexAuthMtime(): number | null {
+  const p = localCodexAuthPath();
+  if (!p) return null;
+  try { return statSync(p).mtimeMs; } catch { return null; }
+}
+
 export class WorkerManager {
   private config: LocalUIConfig;
   private workers = new Map<string, LocalWorker>();
@@ -744,6 +752,13 @@ export class WorkerManager {
   private hasCredentials: boolean = false;
   private modelAuth: ModelAuthReport = { source: 'none' };
   private codexAuth: CodexAuthSource = 'none';
+  /**
+   * Plan logins whose last run on this runner failed to authenticate, per
+   * backend (the header's "login expired", R-39). Cleared by the next run on
+   * that login that ends well, or, for this machine's Codex login, when its
+   * auth.json changes (a fresh `codex login`).
+   */
+  private loginFailures: Partial<Record<RouteBackend, LoginFailure & { authFileMtime?: number | null }>> = {};
   private acceptRemoteTasks: boolean = true;
   private cleanupInterval?: Timer;
   private terminalWorktreeSweepTimer?: Timer;
@@ -1070,6 +1085,35 @@ export class WorkerManager {
   // Which model credential this runner uses (labels, never a value)
   getAuthStatus(): { modelAuthSource: ModelAuthReport['source']; codexAuthSource: CodexAuthSource } {
     return { modelAuthSource: this.modelAuth.source, codexAuthSource: this.codexAuth };
+  }
+
+  /**
+   * The routes this machine's own credentials give each backend, and the ones
+   * that do not work (run-route.ts machineRoutes). Labels only, never a value.
+   */
+  getRouteStatus(): { routes: RunRoute[]; problems: RouteProblem[] } {
+    const codex = this.loginFailures.codex;
+    if (codex?.owner === 'machine' && codex.authFileMtime !== undefined && codexAuthMtime() !== codex.authFileMtime) {
+      delete this.loginFailures.codex;
+    }
+    return machineRoutes({
+      modelAuthSource: this.modelAuth.source,
+      codexAuthSource: this.codexAuth,
+      llmProvider: this.config.llmProvider,
+      env: process.env,
+      loginFailures: this.loginFailures,
+    });
+  }
+
+  /** A plan run that failed to authenticate marks its login expired; one that ends well clears it. */
+  private noteLoginOutcome(worker: LocalWorker): void {
+    const prev = this.loginFailures;
+    const next = nextLoginFailures(prev, worker, isAuthError, Date.now());
+    if (next === prev) return;
+    // A fresh `codex login` rewrites auth.json: remember its time to notice that.
+    const codex = next.codex;
+    if (codex && codex !== prev.codex && codex.owner === 'machine') next.codex = { ...codex, authFileMtime: codexAuthMtime() } as typeof codex;
+    this.loginFailures = next;
   }
 
   getViewerToken(): string | undefined {
@@ -3938,6 +3982,17 @@ export class WorkerManager {
       worker.costBasis = cloudCostBasis(process.env)
         ?? (isCodexTask ? 'unknown' : claudeCostBasis(modelEnv, { claudeCredentialUsed: shouldUseClaudeCredential(modelEnv, worker) }));
       sessionLog(worker.id, 'info', 'cost_basis', `basis=${worker.costBasis}`, task.id);
+      // The route behind that basis (run-route.ts), from the same inputs.
+      // Codex is classified below with its basis.
+      worker.route = cloudRunRoute(process.env, isCodexTask ? 'codex' : 'claude')
+        ?? (isCodexTask ? null : claudeRunRoute({
+          modelEnv,
+          claudeCredentialUsed: shouldUseClaudeCredential(modelEnv, worker),
+          llmProvider: runnerLocalAllowed ? this.config.llmProvider : undefined,
+          teamEndpoint: worker.modelEndpoint,
+          credentialScope: worker.credentialDecision?.scope,
+        }));
+      if (worker.route) sessionLog(worker.id, 'info', 'run_route', `bucket=${worker.route.bucket} provider=${worker.route.provider} owner=${worker.route.owner}`, task.id);
       if (modelEnv.withheld.length > 0) {
         console.log(`[Worker ${worker.id}] Custom model endpoint (${modelEnv.baseUrlOrigin || 'unparseable ANTHROPIC_BASE_URL'}): server-managed Anthropic credentials not given to the agent (${modelEnv.withheld.join(', ')}). Set ${TRUSTED_MODEL_BASE_URL_ENV} to that origin only if it forwards to Anthropic.`);
       }
@@ -4028,6 +4083,16 @@ export class WorkerManager {
             envApiKey: cleanEnv.OPENAI_API_KEY || process.env.OPENAI_API_KEY,
           });
           sessionLog(worker.id, 'info', 'cost_basis', `basis=${worker.costBasis}`, task.id);
+          worker.route = codexRunRoute({
+            endpoint: modelEnv.endpoint,
+            teamEndpoint: worker.modelEndpoint,
+            authJson,
+            envApiKey: cleanEnv.OPENAI_API_KEY || process.env.OPENAI_API_KEY,
+            openAiBaseUrl: modelEnv.endpoint === 'team' ? undefined : cleanEnv.OPENAI_BASE_URL,
+            codexLogin,
+            credentialScope: worker.credentialDecision?.scope,
+          });
+          if (worker.route) sessionLog(worker.id, 'info', 'run_route', `bucket=${worker.route.bucket} provider=${worker.route.provider} owner=${worker.route.owner}`, task.id);
         }
         const session = this.sessions.get(worker.id);
         if (session) (session as any).codexHome = _ch;
@@ -6041,6 +6106,8 @@ export class WorkerManager {
       this.secretRedactors.delete(worker.id);
 
       if (!bwrapRetryAfterCleanup) this.recordCanaryOutcome(worker, task.roleSlug);
+
+      this.noteLoginOutcome(worker);
 
       // Circuit breaker: detect errors that affect all workers and pause claims
       if (worker.status === 'error' && worker.error) {

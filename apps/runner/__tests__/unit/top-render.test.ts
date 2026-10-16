@@ -49,9 +49,9 @@ describe('list view', () => {
   });
 
   test('cost goes first, then role, and rows still never wrap', () => {
-    expect(columnsFor(91)).toEqual({ role: true, cost: true });
-    expect(columnsFor(57)).toEqual({ role: true, cost: false });
-    expect(columnsFor(37)).toEqual({ role: false, cost: false });
+    expect(columnsFor(91)).toEqual({ role: true, cost: true, route: false });
+    expect(columnsFor(57)).toEqual({ role: true, cost: false, route: false });
+    expect(columnsFor(37)).toEqual({ role: false, cost: false, route: false });
     const t80 = text(frame(fixtureState(), 80, 24));
     expect(t80).not.toContain('tok');
     expect(t80).toContain('Builder');

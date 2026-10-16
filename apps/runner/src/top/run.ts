@@ -146,10 +146,23 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
       else if (state.view === 'queue' && r.body?.error) dispatch({ type: 'status', status: { text: `Could not load the queue: ${r.body.error}`, tone: 'error' } });
     } catch { /* the stream's reconnect reports a dead socket */ }
   };
+  // Capacity, and the routes this machine's credentials give (R-39). Local
+  // only (the runner answers from memory), so a finished run re-reads it: a
+  // login that just failed shows as expired in the header.
+  const configEvent = (body: any): TopEvent => ({
+    type: 'config', maxConcurrent: body.maxConcurrent, builddServer: body.builddServer, routes: body.routes, routeProblems: body.routeProblems,
+  });
+  const refreshConfig = async () => {
+    try {
+      const r = await client.get('/api/config');
+      if (r.status === 200 && r.body) dispatch(configEvent(r.body));
+    } catch { /* the stream's reconnect reports a dead socket */ }
+  };
   const queueChanged = () => {
     if (queueTimer) return;
     queueTimer = setTimeout(() => {
       queueTimer = null;
+      void refreshConfig();
       if (state.view === 'missions') {
         void refreshTasks();
         void refreshMissions();
@@ -170,7 +183,7 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
     ]);
     if (workspaces?.status === 200 && Array.isArray(workspaces.body?.workspaces)) dispatch({ type: 'workspaces', workspaces: workspaces.body.workspaces });
     if (runner?.body) dispatch({ type: 'runner', pid: runner.body.pid, version: runner.body.version });
-    if (config?.body) dispatch({ type: 'config', maxConcurrent: config.body.maxConcurrent, builddServer: config.body.builddServer });
+    if (config?.body) dispatch(configEvent(config.body));
     if (workers?.status === 200 && Array.isArray(workers.body?.workers)) dispatch({ type: 'workers', workers: workers.body.workers });
     await Promise.all([refreshTasks(), refreshMissions()]);
   };

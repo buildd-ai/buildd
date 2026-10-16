@@ -14,6 +14,7 @@ import { credentialBroker } from './broker';
 import { createWorkspaceResolver, parseProjectRoots, normalizeGitUrl, getGitRemoteAsync } from './workspace';
 import { gitShellAsync } from './git-async';
 import { toTopWorkerSummaries } from './top-worker-summary';
+import { todayTotals } from './run-route';
 import { Outbox, createReplayHandler } from './outbox';
 import { parseOnceArgs, runOnceFromCli, ONCE_USAGE, EXIT_USAGE } from './run-once';
 import { classifyCliArgs, RUNNER_USAGE, EXIT_CLI_USAGE } from './cli-args';
@@ -1476,6 +1477,10 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
     // Check if configured
     if (path === '/api/config' && req.method === 'GET') {
       const authStatus = workerManager?.getAuthStatus() || { modelAuthSource: undefined, codexAuthSource: undefined };
+      const routeStatus = workerManager ? (() => {
+        const { routes, problems } = workerManager.getRouteStatus();
+        return { routes, routeProblems: problems, spendToday: todayTotals(workerManager.getWorkers(), Date.now()) };
+      })() : {};
       return Response.json({
         configured: !!config.apiKey,
         serverless: config.serverless || false,
@@ -1485,6 +1490,10 @@ async function handleLocalRequest(req: Request, peer: LocalPeer): Promise<Respon
         // detectCodexAuthSource), never a value.
         modelAuthSource: authStatus.modelAuthSource,
         codexAuthSource: authStatus.codexAuthSource,
+        // The routes this machine's own credentials give each backend, the
+        // ones that do not work, and today's dollars on this runner per
+        // bucket (run-route.ts). `buildd top`'s header reads these.
+        ...routeStatus,
         model: config.model,
         maxConcurrent: config.maxConcurrent,
         acceptRemoteTasks: config.acceptRemoteTasks !== false,

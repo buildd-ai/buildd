@@ -341,6 +341,12 @@ export interface LocalWorker {
   tokenTally?: { inputTokens: number; outputTokens: number };
   /** How this run's usage is charged (cost-basis.ts); set when the agent env is built. */
   costBasis?: 'real' | 'virtual' | 'unknown';
+  /**
+   * Which route this run reached its model by (run-route.ts): plan, API key,
+   * gateway or cloud account, the provider and whose credential. Set with
+   * `costBasis` when the agent env is built; a label, never a credential.
+   */
+  route?: import('./run-route').RunRoute | null;
   // Set when sandbox_mount_gap abort fires; signals server to exempt from retry cap.
   // Currently never set — the abort was disabled after it fired on file content
   // (test titles, fixture strings) rather than real denials. Detection now only
