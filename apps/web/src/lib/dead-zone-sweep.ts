@@ -48,6 +48,7 @@ import {
 } from '@/lib/workspace-installation';
 import { resolvePrRepo } from '@/lib/repo-scope';
 import { recordPrFact } from '@buildd/core/pr-facts';
+import { factFunnelScope } from '@/lib/workflow/pr-fact-scope';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 // ── Pure predicates ───────────────────────────────────────────────────────────
@@ -276,6 +277,7 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
           await recordPrFact(
             { workerId: worker.id },
             pr.merged && pr.merged_at ? { kind: 'merged', mergedAt: pr.merged_at } : { kind: 'closed' },
+            { scope: factFunnelScope },
           );
           await db.update(workers).set({ prLastCheckedAt: now, updatedAt: now }).where(eq(workers.id, worker.id));
           result.skipped++;

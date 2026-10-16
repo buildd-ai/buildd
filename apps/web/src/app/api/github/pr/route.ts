@@ -42,6 +42,7 @@ import { checkSurfaceOrder, mergeInSurfaceSlot } from '@/lib/surface-ordering-do
 import { resolveIntentSurfaces } from '@/lib/surface-ordering-config';
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
 import { recordPrFact } from '@buildd/core/pr-facts';
+import { factFunnelScope } from '@/lib/workflow/pr-fact-scope';
 import { escalateConflictExhaustion, evaluateAutoMergeSafety, isBehindBaseRefusal } from '@/lib/auto-merge';
 import { refreshBehindPr, type RefreshOutcome } from '@/lib/base-refresh';
 import { updateBehindPrBranch } from '@/lib/pr-branch-update';
@@ -2019,7 +2020,7 @@ export async function PUT(req: NextRequest) {
         if (landingMode === 'enforce') {
           // A kernel-owned PR's merge is recorded by the kernel's post-merge effects.
           if (outcome.kind === 'merged' && !kernelOwned) {
-            await recordPrFact({ workerId: worker.id }, { kind: 'merged', mergedAt: new Date() });
+            await recordPrFact({ workerId: worker.id }, { kind: 'merged', mergedAt: new Date() }, { scope: factFunnelScope });
           }
           return mergePrLandingResponse(outcome, { prNumber, prUrl: worker.prUrl ?? null, tier: policy.tier });
         }
@@ -2340,7 +2341,7 @@ export async function PUT(req: NextRequest) {
 
     if (result.merged) {
       // Through the fact funnel (terminal wins); Slice C moves this door to T16.
-      await recordPrFact({ workerId: worker.id }, { kind: 'merged', mergedAt: new Date() });
+      await recordPrFact({ workerId: worker.id }, { kind: 'merged', mergedAt: new Date() }, { scope: factFunnelScope });
       await finalizeMissionPrMerge(mergingTask, repo.installation.installationId, repo.fullName, prNumber);
       // The merge made a live reviewer and any open fix obsolete. The
       // pull_request.closed webhook fires the same event; the CAS keeps it to
@@ -2374,7 +2375,7 @@ export async function PUT(req: NextRequest) {
           // Merged externally during the race window — stamp DB if not yet set and
           // return idempotent success so the caller can distinguish this from a real failure.
           if (!worker.mergedAt) {
-            await recordPrFact({ workerId: worker.id }, { kind: 'merged', mergedAt: new Date() });
+            await recordPrFact({ workerId: worker.id }, { kind: 'merged', mergedAt: new Date() }, { scope: factFunnelScope });
           }
           return NextResponse.json({
             ok: true,
