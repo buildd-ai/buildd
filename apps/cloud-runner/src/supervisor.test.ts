@@ -321,6 +321,61 @@ describe('dispatch', () => {
   });
 });
 
+// runner-verification.ts: the agent shares the container's task token, so the
+// runner's own check run happens here, on the runner key, after the runner exits.
+describe("the runner's own check run", () => {
+  const PLAN = { taskId: TASK_ID, workerId: 'w-1', workspaceId: 'ws-1', run: true, command: 'bun run test', iteration: 0 };
+  const verifying = () => harness({
+    config: { DISPATCH_TOKEN: 'dispatch-secret' },
+    fetchImpl: async (url) => url.endsWith('/api/runner/verification-run')
+      ? new Response(JSON.stringify(PLAN), { status: 200 })
+      : new Response('{}', { status: 409 }),
+  });
+
+  test('runs in the container after the runner exits and before it is destroyed, and reports on the runner key', async () => {
+    const h = verifying();
+    h.fc.setStdout(['BUILDD_WORKER_ID=w-1']);
+    h.sup.dispatch();
+    await h.until(() => h.state.status === 'running' && h.state.workerId === 'w-1');
+    h.fc.exits[0]!.resolve(0);
+    await h.until(() => h.fc.exits.length === 2);
+    expect(h.fc.execs[1]).toEqual(['test', '-d', '/home/bun/.buildd/once-workspaces/ws-1']);
+    h.fc.exits[1]!.resolve(0);
+    await h.until(() => h.fc.exits.length === 3);
+    expect(h.fc.calls).not.toContain('destroy');
+    h.fc.exits[2]!.resolve(0);
+    await h.settle();
+
+    const patch = h.fetches.find(f => f.init.method === 'PATCH')!;
+    expect(patch.url).toBe('http://127.0.0.1:9/api/workers/w-1');
+    expect((patch.init.headers as Record<string, string>).Authorization).toBe('Bearer bld_test_key');
+    expect(JSON.parse(patch.init.body as string).verificationEvidence).toMatchObject({ outcome: 'ok', exitCode: 0, command: 'bun run test' });
+    expect(h.fc.calls.at(-1)).toBe('destroy');
+    expect(h.state).toMatchObject({ status: 'exited', outcome: 'done' });
+  });
+
+  test('security: the dispatch token and runner key never reach the container env', async () => {
+    const h = verifying();
+    h.sup.dispatch();
+    await h.until(() => h.state.status === 'running');
+    const all = [h.fc.starts[0]!.env, ...h.fc.execEnvs].map(e => Object.values(e ?? {}).join('\n')).join('\n');
+    expect(all).not.toContain('dispatch-secret');
+    expect(all).not.toContain('bld_test_key');
+  });
+
+  test('a crashed or parked run gets no check run', async () => {
+    for (const code of [137, 4]) {
+      const h = verifying();
+      h.fc.setStdout(['BUILDD_WORKER_ID=w-1']);
+      h.sup.dispatch();
+      await h.until(() => h.state.workerId === 'w-1');
+      h.fc.exits[0]!.resolve(code);
+      await h.settle();
+      expect(h.fetches.some(f => f.url.endsWith('/api/runner/verification-run'))).toBe(false);
+    }
+  });
+});
+
 describe('crash handling', () => {
   test('a crash after the worker id was printed marks the worker failed in buildd', async () => {
     const h = harness();

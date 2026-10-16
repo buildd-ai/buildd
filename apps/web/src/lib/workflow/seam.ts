@@ -19,7 +19,8 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces } from '@buildd/core/db/schema';
 import type { Command, CurrentView, LivePr, VerdictFindings } from './commands';
 import { applyCommand, loadView, type CommandResult, type Exec } from './kernel';
-import { catchUpBase, ingestFact, type GithubFactReader } from './facts';
+import { catchUpBase, ingestFact, readDeltaForApproval, type GithubFactReader } from './facts';
+import { deltaApprovalSource, type DeltaReading } from '@buildd/workflow-kernel/delta-approval';
 import { runEffects, type DrainSummary, type EffectHandlers } from './effects';
 import { settleLanes } from './landing-lane';
 import { withPrFactEffects } from './pr-fact-effects';
@@ -550,6 +551,13 @@ export async function attemptEnded(p: {
     const reader = repo ? readerFor(deps, repo.installationId) : null;
     if (reader?.contains) proof = { liveContainsLocal: false, contentDiffChanged: await reader.contains(d.repoFullName, boundHead, live.headSha).catch(() => false) };
   }
+  // 58c8961e: a repair's head on an approved delivery may be reviewed as a delta of the approval.
+  let delta: DeltaReading | null = null;
+  if (attemptKind !== 'owner' && live && live.state === 'open' && !live.merged && d.repoFullName && deltaApprovalSource(view)) {
+    const repo = await (deps.repoFor ?? workspaceRepo)(p.task.workspaceId);
+    const reader = repo ? readerFor(deps, repo.installationId) : undefined;
+    delta = await readDeltaForApproval(view, d.repoFullName, live, reader);
+  }
   const cmd: Command = {
     type: 'AttemptEnded',
     actor: p.source,
@@ -565,6 +573,7 @@ export async function attemptEnded(p: {
     reviewRequired: true,
     ...(ci ? { ci } : {}),
     ...(changedPaths ? { changedPaths } : {}),
+    ...(delta ? { delta } : {}),
     ...(p.noopEvidence && attemptKind === 'fix' ? { noopEvidence: p.noopEvidence } : {}),
   };
   const result = await applyCommand(cmd, { ref: { deliveryId }, exec: deps.exec });

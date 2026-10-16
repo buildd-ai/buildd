@@ -11,6 +11,7 @@ export * from './types';
 export * from './commands';
 export * from './reducer';
 export * from './findings';
+export * from './delta-approval';
 export * from './base-delta';
 export * from './hand-off';
 export * from './preflight-miss';

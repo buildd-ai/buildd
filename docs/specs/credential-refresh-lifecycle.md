@@ -2,7 +2,7 @@
 title: Credential Refresh Lifecycle
 status: active
 owner: max
-last_verified: 2026-09-30
+last_verified: 2026-10-16
 summary: A rotating OAuth credential MUST be refreshed by one holder at a time from the runner, not the control plane, and a rotation whose outcome was never learned MUST end in one reconnect signal, not a retry loop.
 domain: auth
 surfaces: [apps/web/src/app/api/runner/credential-refresh/route.ts, apps/runner/src/broker.ts, apps/web/src/app/api/cron/codex-token-refresh/route.ts, packages/core/db/schema.ts]
@@ -36,6 +36,16 @@ refresh token on every use, buildd MUST perform each rotation from a single
 holder at the runner's stable egress IP, persist the rotated token before using
 the access token it came with, and convert an unresolved rotation into exactly
 one user-facing reconnect signal.
+
+## Status: being retired
+
+A claim no longer carries a stored subscription login, and no claimed worker is
+wired to a stored credential (living spec "Model credentials: the runner's own
+login first, API keys from buildd", R-2 / AC-3 / AC-6). The machine's own CLI is
+the only refresher of the login a task runs on. What this spec still governs is
+the leftover machinery that keeps stored rows fresh for server-side readers (the
+idle broker, INV-9, and the crons) until it is deleted; that removal retires
+this spec. See INV-11.
 
 ## Why this spec exists
 
@@ -111,6 +121,11 @@ forever. The system therefore needs to *detect* a lost rotation, not retry it.
 - **INV-10 — unknown expiry is not healthy.** A credential with a NULL token
   expiry MUST remain eligible for the refresh sweep. Excluding it strands the
   row permanently.
+- **INV-11 — a task never causes a refresh.** A claim MUST NOT carry a stored
+  subscription login (`oauth_token`, `claude_credential`, a ChatGPT
+  `codex_credential`) or a per-worker `pendingCredentialRefreshes` list, so
+  running a task triggers no refresh, lease or write-back call. Only the
+  account-level announcement of INV-9 remains.
 
 ## Acceptance criteria
 

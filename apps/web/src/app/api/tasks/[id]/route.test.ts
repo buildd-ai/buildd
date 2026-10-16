@@ -603,19 +603,25 @@ describe('GET /api/tasks/[id]', () => {
     mockReadTaskEstimate.mockResolvedValueOnce({
       id: 'e-1', teamId: 'team-1', workspaceId: 'ws-1', taskId: TASK_ID, estimatorVersion: 'blend-v1',
       p50Minutes: 40, p80Minutes: 70, p50Tokens: 120000, p80Tokens: 220000, expectedRepairs: 0.3,
-      explanation: { sources: [], clusterLabel: null, priorWeight: 1, summary: '40m (25-70m), 120k tokens.' },
+      explanation: { sources: [{ source: 'prior', n: 50, weight: 1 }], clusterLabel: null, priorWeight: 1, summary: '40m (25-70m), 120k tokens; no history in this repo.' },
       createdAt: '2026-10-04T12:00:00.000Z',
     });
     const req = (search?: string) => createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' }, ...(search ? { search } : {}) });
 
     const data = await (await callHandler(GET, req('?include=estimate'), TASK_ID)).json();
     expect(mockReadTaskEstimate).toHaveBeenCalledWith(TASK_ID);
-    expect(data.estimate).toEqual({
+    expect(data.estimate).toMatchObject({
       estimatorVersion: 'blend-v1', p50Minutes: 40, p80Minutes: 70, p50Tokens: 120000, p80Tokens: 220000,
-      expectedRepairs: 0.3, summary: '40m (25-70m), 120k tokens.', createdAt: '2026-10-04T12:00:00.000Z',
-      // A legacy row has no diagnostics: empty sources is unknown, not an empty repo.
-      sources: [], priorWeight: 1, diagnostics: null, historyKnown: false,
+      expectedRepairs: 0.3, createdAt: '2026-10-04T12:00:00.000Z', calibration: 'failed',
+      display: { formatVersion: 'estimate-display-v1', estimatorVersion: 'blend-v1', headline: 'About 30–75 min' },
+      explanation: { sources: [{ source: 'prior', n: 50, weight: 1 }] },
     });
+    expect(data.estimate.summary).toBe(`${data.estimate.display.headline}. ${data.estimate.display.provenance}`);
+    expect(data.estimate.explanation.summary).toBe(data.estimate.summary);
+    expect(data.estimate.summary).not.toContain('no history');
+    expect(data.estimate.summary).not.toContain('tokens');
+    expect(data.estimate.id).toBeUndefined();
+    expect(data.estimate.teamId).toBeUndefined();
 
     mockReadTaskEstimate.mockResolvedValueOnce(null);
     expect((await (await callHandler(GET, req('?include=estimate'), TASK_ID)).json()).estimate).toBeUndefined();

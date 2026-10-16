@@ -5,9 +5,10 @@
  * Read-only; nothing here writes `tasks.path_manifest`.
  *
  * `asOf` applies the replay's cutoff (`createdAt < asOf`) in `buildClusterTasks`
- * and again inside `deriveClusters`, so a model can be built as of any date.
+ * and again inside `deriveClusters`; repair counts also respect that cutoff.
+ * Diff paths are read from the current ingestion corpus, not a historical snapshot.
  */
-import { and, count, eq, inArray, isNotNull } from 'drizzle-orm';
+import { and, count, eq, inArray, isNotNull, lt } from 'drizzle-orm';
 import { db } from './db/client';
 import { tasks } from './db/schema';
 import { actualOf, loadReplayInput, type ReplaySession, type ReplayTask } from './estimate-backtest-source';
@@ -48,13 +49,13 @@ export function buildClusterTasks(
 }
 
 /** Retry attempts (CI / conflict / review) that hang off each work task. */
-export async function loadRepairCounts(taskIds: readonly string[]): Promise<Map<string, number>> {
+export async function loadRepairCounts(taskIds: readonly string[], opts: { asOf?: Date } = {}): Promise<Map<string, number>> {
   const out = new Map<string, number>();
   for (let i = 0; i < taskIds.length; i += 500) {
     const rows = await db
       .select({ parent: tasks.parentTaskId, n: count() })
       .from(tasks)
-      .where(and(eq(tasks.taskClass, 'attempt'), isNotNull(tasks.parentTaskId), inArray(tasks.parentTaskId, taskIds.slice(i, i + 500) as string[])))
+      .where(and(eq(tasks.taskClass, 'attempt'), isNotNull(tasks.parentTaskId), inArray(tasks.parentTaskId, taskIds.slice(i, i + 500) as string[]), opts.asOf ? lt(tasks.createdAt, opts.asOf) : undefined))
       .groupBy(tasks.parentTaskId);
     for (const r of rows) if (r.parent) out.set(r.parent, Number(r.n));
   }
@@ -78,7 +79,7 @@ export async function loadDiffFiles(all: readonly ReplayTask[]): Promise<Map<str
 
 export async function loadClusterInput(opts: { workspaceId?: string; asOf?: Date } = {}) {
   const input = await loadReplayInput({ workspaceId: opts.workspaceId });
-  const [files, repairs] = await Promise.all([loadDiffFiles(input.tasks), loadRepairCounts(input.tasks.map(t => t.id))]);
+  const [files, repairs] = await Promise.all([loadDiffFiles(input.tasks), loadRepairCounts(input.tasks.map(t => t.id), { asOf: opts.asOf })]);
   return {
     ...input,
     clusterTasks: buildClusterTasks(input.tasks, input.sessions, files, repairs, { asOf: opts.asOf }),

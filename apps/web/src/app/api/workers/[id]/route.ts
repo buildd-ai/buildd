@@ -794,8 +794,8 @@ export async function PATCH(
   if (worker.status === 'failed' || worker.status === 'completed' || worker.status === 'error') {
     // The runner's own verification report for a verification run still counts
     // when the agent made the terminal write first (lib/late-runner-evidence.ts).
-    // A task token on a host worker is the agent, so its late copy is ignored.
-    if (body.verificationEvidence && worker.taskId && !agentCredential(account, worker)) {
+    // A task token is the agent (in a cloud container too), so its late copy is ignored.
+    if (body.verificationEvidence && worker.taskId && !agentCredential(account)) {
       await emit({
         type: 'worker.late_verification_reported',
         taskId: worker.taskId,
@@ -976,9 +976,9 @@ export async function PATCH(
     siblingProbe: supportsSiblingProbe,
   } = body;
   // Stamped by the server with how it arrived (lib/verification-provenance.ts):
-  // on a host runner a task token is the agent's credential, not the runner's.
+  // a task token is the agent's credential, not the runner's, on host and cloud alike.
   const verificationEvidence = stampEvidence(rawVerificationEvidence, {
-    viaTaskToken: agentCredential(account, worker),
+    viaTaskToken: agentCredential(account),
   }) ?? undefined;
   let status = reportedStatus;
   let error = reportedError;
@@ -2869,6 +2869,11 @@ export async function PATCH(
   // backoff, so the next attempt lands after GitHub's window instead of the
   // task failing outright.
   const isGithubThrottled = status === 'failed' && body.githubThrottled === true;
+  // The runner refused a Claude run before spawn: its machine has no model
+  // login or key, and the claim delivered none (model credentials spec R-5).
+  // The machine's setup, not the task: it rides the infra retry budget below,
+  // so the task goes back to the queue for a runner that has a login.
+  const isModelAuthMissing = status === 'failed' && body.modelAuthMissing === true;
   // The CLI's model version gate: this runner cannot serve the model the task
   // was routed to. A deterministic 400 before the first turn, so it is infra
   // and rides the infra retry budget below; the claim route's capability gate
@@ -2894,6 +2899,7 @@ export async function PATCH(
       taskCancelled: taskCancelledUnderSession,
       crashReconciled: isCrashReconciled,
       githubThrottled: isGithubThrottled,
+      modelAuthMissing: isModelAuthMissing,
       unrecognizedModel: isUnrecognizedModel,
       needsInput: isNeedsInput,
       budgetLimited: isBudgetError,
@@ -3595,7 +3601,7 @@ export async function PATCH(
         // failed every in-flight non-mission task. A model version-gate 400
         // rides it too: bounded, backed off, and uncharged. So does a clone GitHub
         // throttled: the backoff is the point, GitHub needs time.
-        if ((isSteeringDelivery || isNonGateRefusal || isCrashReconciled || isGithubThrottled || (isUnrecognizedModel && !isModelIdRejected)) && !isBudgetReset && taskForRetry?.status !== 'cancelled') {
+        if ((isSteeringDelivery || isNonGateRefusal || isCrashReconciled || isGithubThrottled || isModelAuthMissing || (isUnrecognizedModel && !isModelIdRejected)) && !isBudgetReset && taskForRetry?.status !== 'cancelled') {
           const infraRetryCount = (taskCtxForRetry.infraRetryCount as number) || 0;
           if (infraRetryCount < MAX_INFRA_RETRIES_PATCH) {
             shouldAutoRetry = true;

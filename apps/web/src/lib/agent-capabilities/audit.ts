@@ -30,6 +30,7 @@ export type CapabilityName =
   | 'connector.tool_result'
   | 'task_token.mint'
   | 'runner.size'
+  | 'runner.verification_run'
   | 'pr.create'
   | 'pr.adopt'
   | 'pr.close'

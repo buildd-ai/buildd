@@ -13177,6 +13177,34 @@ describe('PATCH /api/workers/[id]', () => {
         });
       });
 
+      // The runner refused a Claude run before spawn: its machine has no model
+      // login or key and the claim delivered none. The machine's setup, not
+      // the task: back to the queue for a runner that has a login.
+      describe('Claude run refused for want of a model login', () => {
+        const refusedBody = {
+          status: 'failed',
+          error: '[runner:no_model_auth] No model login for this Claude run',
+          modelAuthMissing: true,
+        };
+
+        it('requeues on the infra budget and books infra_failure', async () => {
+          const { taskSetCalls, workerSetCalls } = setupCrashReconcile({});
+          const res = await PATCH(createMockRequest({
+            method: 'PATCH',
+            headers: { Authorization: 'Bearer bld_test' },
+            body: refusedBody,
+          }), { params: mockParams });
+
+          expect(res.status).toBe(200);
+          const requeue = taskSetCalls.find((c: any) => c.status === 'pending');
+          expect(requeue).toBeDefined();
+          expect(requeue.context.infraRetryCount).toBe(1);
+          expect(requeue.context.retryCount).toBeUndefined();
+          expect(taskSetCalls.some((c: any) => c.status === 'failed')).toBe(false);
+          expect(workerSetCalls.find((u: any) => u.exitCause).exitCause).toBe('infra_failure');
+        });
+      });
+
       // The cloud runner's supervisor (apps/cloud-runner/src/supervisor.ts)
       // reports a container that died under the runner with the same flag. It
       // used to send a bare {failed, error}, which booked code_failure and left
@@ -14145,9 +14173,11 @@ describe('PATCH /api/workers/[id]', () => {
         expect(lateRunnerEvidenceCalls).toEqual([{ workerId: 'worker-1', taskId: 'task-1', evidence: failed }]);
       });
 
-      // A cloud container runs its whole runner on a task token, so on a worker
-      // the claim route recorded as cloud-claimed that token is the runner.
-      it('counts a task-token copy as the runner on a worker a cloud container claimed', async () => {
+      // A cloud container's runner and agent share one task token, so on a
+      // cloud-claimed worker that token is the agent too. The runner's own
+      // report comes from the cloud Worker on its runner key, which never
+      // enters the container (apps/cloud-runner/src/runner-verification.ts).
+      it('stamps a task-token copy as the agent on a worker a cloud container claimed', async () => {
         asTaskToken();
         const workerSetCalls: any[] = [];
         mockWorkersUpdate.mockReturnValue({
@@ -14162,10 +14192,10 @@ describe('PATCH /api/workers/[id]', () => {
         }), { params: mockParams });
 
         expect(res.status).toBe(200);
-        expect(workerSetCalls.find((u: any) => u.verificationEvidence)?.verificationEvidence).toEqual({ ...ok, reportedVia: 'runner' });
+        expect(workerSetCalls.find((u: any) => u.verificationEvidence)?.verificationEvidence).toEqual({ ...ok, reportedVia: 'task_token' });
       });
 
-      it('hands a cloud runner late report on its task token to the late evidence path', async () => {
+      it('ignores a late task-token report on a terminal cloud-claimed worker', async () => {
         asTaskToken();
         lateRunnerEvidenceCalls.length = 0;
         mockWorkersFindFirst.mockResolvedValue(makeLoopWorker({ status: 'completed', claimedByCloud: true }));
@@ -14177,7 +14207,7 @@ describe('PATCH /api/workers/[id]', () => {
         }), { params: mockParams });
 
         expect(res.status).toBe(409);
-        expect(lateRunnerEvidenceCalls).toEqual([{ workerId: 'worker-1', taskId: 'task-1', evidence: failed }]);
+        expect(lateRunnerEvidenceCalls).toEqual([]);
       });
 
       it('ignores a late task-token report on a terminal worker', async () => {

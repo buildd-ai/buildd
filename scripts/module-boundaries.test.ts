@@ -244,5 +244,6 @@ describe('scanner mechanics', () => {
 
 test('run lifecycle facts belong to coordination core, not stored knowledge', () => {
   expect(moduleOf('packages/core/run-evidence.ts')).toBe('core');
+  expect(moduleOf('packages/core/task-estimate-evidence.ts')).toBe('core');
   expect(moduleOf('packages/core/evidence-chunker.ts')).toBe('knowledge');
 });
