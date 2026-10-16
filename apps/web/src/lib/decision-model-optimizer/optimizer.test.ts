@@ -602,6 +602,14 @@ describe('measurementPlan on calibrated top p', () => {
     expect(measurementPlan(rows, KIND, 'clef', 'fp-1', derived(0.5, { x: [0.5, 0.9], y: [0.5, 0.9] }))).toBe('keep');
   });
 
+  it('a stored calibrated row with a threshold above its map acts never: prevented from switching', () => {
+    // The stored threshold 0.99 is above the maximum of the map [0.5, 0.9],
+    // so its cutoff is Infinity and it never acts. The optimizer should not
+    // switch to any model when the existing measurement never acts.
+    const rows: StoredMeasurement[] = [stored(0.99, { x: [0.5, 0.9], y: [0.5, 0.9] })];
+    expect(measurementPlan(rows, KIND, 'clef', 'fp-1', derived(0.5, { x: [0.5, 0.9], y: [0.5, 0.9] }))).toBe('measurement_never_acts');
+  });
+
   it('a switch past a looser stored row stores the new, stricter map', async () => {
     const strict = { x: [0.5, 0.9], y: [0.5, 0.95] };
     const w = world({ rows: [
