@@ -404,6 +404,7 @@ export const CONSENT_CSS = `
   }
 }
 @media (min-width: 48rem) { :root { --type-chip: 11px; --type-lede: 15px; --type-heading: 24px; } }
+@media (max-width: 390px) { .team-chips { flex-basis: 100%; margin-top: 4px; } }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--surface-1); color: var(--text-primary); font-family: var(--font-sans); font-size: var(--type-body); line-height: 1.5; }
 .wrap { max-width: 560px; margin: 0 auto; padding: 24px 16px 48px; }
