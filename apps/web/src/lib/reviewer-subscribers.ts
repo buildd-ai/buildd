@@ -34,7 +34,7 @@ import { tryDispatchMigrationCollisionRetry } from '@/lib/migration-collision-re
 import { conformanceManifest } from '@/lib/path-declaration';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request';
-import { pickReviewerRole } from '@/lib/pr-review-status';
+import { isReviewBudgetSpent, pickReviewerRole } from '@/lib/pr-review-status';
 import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { observeHead, policyFindingFor } from '@/lib/workflow/seam';
@@ -450,6 +450,12 @@ async function maybeReDispatchReviewer(
     // (a redelivered/duplicate synchronize) — nothing to re-review.
     const priorHeadSha = status.reviewHeadSha;
     if (!priorHeadSha || priorHeadSha === pr.head.sha) return;
+    // 2ded4e88: the round budget is the PR's. Spent, the push is recorded (the activity note
+    // above) and the PR stays with the person it escalated to; only a person asks again.
+    if (isReviewBudgetSpent(status)) {
+      console.log(`[reviewer] PR #${pr.number}: review budget spent (${status.iteration}/${status.maxIterations ?? 3}); push recorded, no re-review`);
+      return;
+    }
 
     const workspace = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, openWorker.workspaceId)) });
     if (!workspace) return;

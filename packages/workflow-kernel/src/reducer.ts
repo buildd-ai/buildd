@@ -95,6 +95,36 @@ export function isReviewEscalation(reason: string | null | undefined): boolean {
 }
 
 /**
+ * Task 2ded4e88: a spent review budget is final for the delivery, not for one round. Once a
+ * delivery escalates `review_exhausted`, nothing automatic queues another review: a push is
+ * recorded, an agent's or the floor's request is refused, and a CI or conflict repair out of the
+ * escalation (a90fc99b) hands the PR back to the person instead of to a reviewer. Only a person
+ * acting lifts it: a forced round, a resolve, an approval.
+ *
+ * The repair carries the hold in `resumeState = 'ESCALATED'` (a value nothing else writes: T25
+ * only ever resumes to AWAITING_REVIEW or APPROVED), because REPAIRING and BLOCKED_ON_TRUNK replace
+ * `stateReason` with their own.
+ */
+export function reviewBudgetHeld(d: Pick<DeliverySnapshot, 'state' | 'stateReason' | 'resumeState'>): boolean {
+  if (d.state === 'ESCALATED' && d.stateReason === 'review_exhausted') return true;
+  return d.resumeState === 'ESCALATED' && (d.state === 'REPAIRING' || d.state === 'BLOCKED_ON_TRUNK' || d.state === 'ESCALATED');
+}
+
+/** The person's acts that end a spent review budget's hold (2ded4e88). */
+function liftsReviewBudget(cmd: Command): boolean {
+  if (!isHumanActor(cmd.actor)) return false;
+  return (cmd.type === 'ReviewRequested' && cmd.forced === true) || cmd.type === 'HumanResolve';
+}
+
+/** The patch that carries a spent review budget into a repair that starts from its escalation. */
+function holdThroughRepair(d: DeliverySnapshot): Pick<DeliveryPatch, 'resumeState'> {
+  return d.state === 'ESCALATED' && d.stateReason === 'review_exhausted' ? { resumeState: 'ESCALATED' } : {};
+}
+
+/** States that keep a spent review budget's hold in `resumeState` while they run. */
+const HOLD_CARRIERS: ReadonlySet<DeliveryState> = new Set(['REPAIRING', 'BLOCKED_ON_TRUNK', 'ESCALATED']);
+
+/**
  * An escalation a machine repair may still move first (task a90fc99b): a
  * reviewer's or the policy's call on the change. A person can't merge a PR
  * whose CI is red or whose migration number collides, so the repair runs
@@ -420,7 +450,24 @@ class Ctx {
   } = {}): ApplyDecision {
     const d = this.d;
     const version = d?.version ?? 0;
-    const patch = o.patch ?? {};
+    if (d && toState === 'AWAITING_REVIEW' && reviewBudgetHeld(d) && !liftsReviewBudget(this.cmd)) {
+      // 2ded4e88: every path that would queue a round on a delivery whose review budget is spent
+      // (a repair's end or push, a recovered base, a head after a repair's own escalation) ends at
+      // the person instead. The head and the attempt bookkeeping still apply; no round, no reviewer.
+      return this.apply(key, 'ESCALATED', {
+        ...o,
+        patch: { ...withoutRound(o.patch ?? {}), stateReason: 'review_exhausted', resumeState: null, boundAttemptId: null },
+        rounds: (o.rounds ?? []).filter((r) => r.op !== 'insert' || !!r.decided),
+        effects: (o.effects ?? []).filter((e) => e.kind !== 'dispatch_review'),
+        evidence: { ...(o.evidence ?? {}), reviewBudgetSpent: true, heldFrom: d.state },
+      });
+    }
+    let patch = o.patch ?? {};
+    // The hold rides only on the states that carry it; anything else (a person's act, a merge, a
+    // close) ends it, so a later repair from an unrelated state never inherits it.
+    // Back at the spent escalation itself, the reason holds it and the marker has done its job.
+    const backAtPerson = toState === 'ESCALATED' && (patch.stateReason ?? d?.stateReason) === 'review_exhausted';
+    if (d?.resumeState === 'ESCALATED' && patch.resumeState === undefined && (!HOLD_CARRIERS.has(toState) || backAtPerson)) patch = { ...patch, resumeState: null };
     const effects = [...(o.effects ?? [])];
     const prBound = (patch.prNumber ?? d?.prNumber) != null;
     if (prBound) {
@@ -471,6 +518,12 @@ class Ctx {
       delayMs: PUSH_RECOVERY_BACKOFF_MS[Math.min(tryNo, PUSH_RECOVERY_BACKOFF_MS.length) - 1],
     };
   }
+}
+
+/** `patch` without the round counter: a round that is not started does not advance it. */
+function withoutRound(patch: DeliveryPatch): DeliveryPatch {
+  const { currentRound: _, ...rest } = patch;
+  return rest;
 }
 
 function livePrOpen(live: LivePr | null | undefined): boolean {
@@ -540,6 +593,8 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (c.openRoundAt(cmd.headSha)) return c.rejected('review_in_flight');
       // A forced round (a second look at a head that already has a verdict) is a person's call.
       if (cmd.forced && !isHumanActor(cmd.actor)) return c.rejected('force_requires_human');
+      // 2ded4e88: a spent review budget is the delivery's, so only a person forcing a round asks again.
+      if (reviewBudgetHeld(dd) && !cmd.forced) return c.rejected('review_budget_spent');
       // ESCALATED is a person's (§4). Anyone may ask again after a review escalation; every
       // other reason (unpushed work, a policy finding, a dead effect, landing) waits for a person.
       if (dd.state === 'ESCALATED' && !isHumanActor(cmd.actor) && !isReviewEscalation(dd.stateReason)) {
@@ -764,7 +819,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       const id = c.newId();
       return c.apply(`${key}:${n}`, 'REPAIRING', {
         guardHead: true,
-        patch: { ...ciPatch, stateReason: 'ci', boundAttemptId: id },
+        patch: { ...ciPatch, stateReason: 'ci', boundAttemptId: id, ...holdThroughRepair(dd) },
         attempts: [{ op: 'insert', id, family: 'ci', attemptNo: n, mode: 'agent', boundHeadSha: cmd.headSha, triggerReason: cmd.signature, triggerFactId: cmd.triggerFactId ?? null, taskId: null, trigger: human ? 'human' : 'automatic', status: 'queued', maxAttempts: max }],
         effects: [{ kind: 'dispatch_ci_fix', dedupeKey: `dispatch_ci_fix:${dd.id}:${cmd.headSha}:${n}`, payload: { attemptId: id, attemptNo: n, maxAttempts: max, headSha: cmd.headSha, signature: cmd.signature, trigger: human ? 'human' : 'automatic' } }],
         evidence: { signature: cmd.signature, attemptNo: n, spent: spent + 1, max, ...miss },
@@ -855,7 +910,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         mechanicalRefused: cmd.mechanicalRefused === true,
         maxMechanical: cmd.maxMechanical ?? DEFAULT_MAX_MECHANICAL,
         maxAgent: cmd.maxAgentAttempts,
-        patch: { mergeable: cmd.mergeable, mergeableHeadSha: cmd.headSha },
+        patch: { mergeable: cmd.mergeable, mergeableHeadSha: cmd.headSha, ...holdThroughRepair(dd) },
         refusal: cmd.refusal ?? null,
         detail: cmd.detail ?? null,
         baseDelta: kind === 'behind' ? cmd.baseDelta ?? null : null,
@@ -1329,8 +1384,9 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (!allowed) return c.stale('state_not_allowed');
       if (!cmd.thresholdMet) return c.rejected('threshold_not_met');
       const covered = headCoverage(dd, dd.currentHeadSha) !== 'none';
+      // 2ded4e88: a repair out of a spent review budget resumes at the person, never at a reviewer.
       const resume: DeliveryState = dd.state === 'LANDING' ? 'APPROVED'
-        : dd.state === 'REPAIRING' ? (covered ? 'APPROVED' : 'AWAITING_REVIEW')
+        : dd.state === 'REPAIRING' ? (reviewBudgetHeld(dd) ? 'ESCALATED' : covered ? 'APPROVED' : 'AWAITING_REVIEW')
           : dd.state;
       return c.apply(`trunk:${cmd.incidentId}:${dd.id}`, 'BLOCKED_ON_TRUNK', {
         guardHead: true,
@@ -1375,6 +1431,8 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         patch = { ...patch, ...r.patch }; rounds = r.rounds; effects.push(...r.effects);
         return c.apply(key, 'AWAITING_REVIEW', { patch, rounds, effects, evidence: { ...evidence, ...(resume === 'APPROVED' ? { approvalNotCovering: head } : {}) } });
       }
+      // 2ded4e88: back to the person a spent review budget left it with.
+      if (resume === 'ESCALATED') return c.apply(key, 'ESCALATED', { patch: { ...patch, stateReason: 'review_exhausted' }, effects, evidence: { ...evidence, reviewBudgetSpent: true } });
       return c.apply(key, resume, { patch, rounds, effects, evidence });
     }
 
@@ -1675,6 +1733,8 @@ function headObservedInner(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' 
       // conflicted answers that, whoever pushed it, so it is reviewed like any new head: the
       // review gate decides the landing, and a dirty head is only recorded.
       if (d.stateReason === 'conflict_exhausted') return cmd.live.mergeableState === 'dirty' ? record() : toReview();
+      // 2ded4e88: a spent review budget stays spent: the push is recorded, a person decides.
+      if (d.stateReason === 'review_exhausted') return record();
       if (d.stateReason !== 'push_undeliverable') return d.stateReason?.startsWith('review_') ? toReview() : record();
       // T22: a head with §9 proof observed after the escalation wins over it.
     // falls through

@@ -277,6 +277,7 @@ export async function POST(req: NextRequest) {
         code: r.reason, current: r.current, kernel: true,
         ...(r.reason === 'force_requires_human' ? { hint: FORCE_NEEDS_PERSON } : {}),
         ...(r.reason === 'escalation_needs_human' ? { hint: 'this PR is escalated to a person for a reason another review does not answer; the owner resolves it from the dashboard' } : {}),
+        ...(r.reason === 'review_budget_spent' ? { hint: person ? 'the review rounds for this PR are spent; pass force to ask for one more, or approve it yourself' : 'the review rounds for this PR are spent and it waits on a person; only a person forcing a round reviews it again' } : {}),
       });
     }
     const latest = kernelReviewTask;
