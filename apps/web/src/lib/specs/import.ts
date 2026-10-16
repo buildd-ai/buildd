@@ -411,6 +411,7 @@ export async function importRepoSpecs(caller: SpecCaller, input: ImportInput, de
     const row: ImportFileRow = { ...base, metadata: p.metadata, unread: p.unread, criteria: p.criteria, action: 'create', spec: { title: p.title, scope: 'feature', body: p.body } };
     const prior = byPath.get(f.path);
     if (prior?.repoSource?.state === 'confirmed') return { ...row, action: 'skip', reason: 'confirmed', message: `${f.path} was imported and confirmed; buildd is its source now`, specId: prior.id };
+    if (prior && (prior.status === 'retired' || prior.status === 'superseded')) return { ...row, action: 'skip', reason: 'superseded', message: `${f.path} was imported as "${prior.title}" (${prior.id}), which is now ${prior.status}; restore it first to re-import`, specId: prior.id };
     if (prior && prior.repoSource!.blobSha === f.blobSha) return { ...row, action: 'skip', reason: 'already_imported', message: `${f.path} is imported at this blob already`, specId: prior.id };
     if (!prior) {
       // Already in buildd as the same spec: never a second one, at most its provenance.

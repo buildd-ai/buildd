@@ -1,0 +1,1 @@
+ALTER TABLE "decision_model_measurements" ADD COLUMN "case_source" text DEFAULT 'collected' NOT NULL;
