@@ -65,7 +65,7 @@ mock.module('drizzle-orm', () => ({
 import {
   hasCodexCredential,
   refreshCodexCredential,
-  resolveCodexCredential,
+  resolveCodexApiKey,
   storeCodexCredential,
   getCodexStatus,
   normalizeCodexAuthJson,
@@ -206,89 +206,59 @@ describe('storeCodexCredential', () => {
   });
 });
 
-describe('resolveCodexCredential', () => {
+describe('resolveCodexApiKey', () => {
   beforeEach(() => mockDbFindMany.mockReset());
 
   it('returns null when no credential matches', async () => {
     mockDbFindMany.mockResolvedValue([]);
-    const result = await resolveCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' });
-    expect(result).toBeNull();
+    expect(await resolveCodexApiKey({ teamId: 't', accountId: 'a', workspaceId: 'w' })).toBeNull();
   });
 
-  it('prefers a workspace-scoped credential over a team-wide one', async () => {
+  // Model credentials spec R-2 / AC-3: a claim never carries a subscription
+  // login. A stored ChatGPT/OAuth login is not an API key, so it resolves to nothing.
+  it('never returns a stored OAuth login', async () => {
     mockDbFindMany.mockResolvedValue([
-      { encryptedValue: blob('teamAT', 'teamRT', 'team-acc'), accountId: null, workspaceId: null, tokenExpiresAt: null, lastRefreshedAt: null },
-      { encryptedValue: blob('wsAT', 'wsRT', 'ws-acc'), accountId: null, workspaceId: 'w', tokenExpiresAt: null, lastRefreshedAt: null },
+      { encryptedValue: blobWithIdToken('AT', 'RT', 'acc'), accountId: null, workspaceId: 'w', tokenExpiresAt: null, healthStatus: 'healthy' },
     ]);
-    const result = await resolveCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' });
-    expect(result?.accessToken).toBe('wsAT');
-    expect(result?.accountId).toBe('ws-acc');
+    expect(await resolveCodexApiKey({ teamId: 't', accountId: 'a', workspaceId: 'w' })).toBeNull();
   });
 
-  it('falls back to the team-wide credential when no workspace-scoped row exists', async () => {
+  it('returns a stored API key', async () => {
     mockDbFindMany.mockResolvedValue([
-      { encryptedValue: blob('teamAT', 'teamRT', 'team-acc'), accountId: null, workspaceId: null, tokenExpiresAt: null, lastRefreshedAt: null },
+      { encryptedValue: apiKeyBlob('sk-team'), accountId: null, workspaceId: null, tokenExpiresAt: null, healthStatus: 'healthy' },
     ]);
-    const result = await resolveCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' });
-    expect(result?.accessToken).toBe('teamAT');
+    expect(await resolveCodexApiKey({ teamId: 't', accountId: 'a', workspaceId: 'w' })).toEqual({ apiKey: 'sk-team' });
   });
 
-  // Model credentials spec R-3 / AC-2: a claim never carries a credential that
-  // has already expired. Handing one over killed the worker seconds after the
-  // claim ("Codex credential expired") and the task retried forever.
-  it('skips an expired credential, even a more specific one, for a live one', async () => {
+  it('prefers a workspace-scoped API key over a team-wide one', async () => {
     mockDbFindMany.mockResolvedValue([
-      { encryptedValue: blob('expiredAT', 'expiredRT', 'expired-acc'), accountId: null, workspaceId: 'w', tokenExpiresAt: new Date(Date.now() - 1000), lastRefreshedAt: null },
-      { encryptedValue: blob('teamAT', 'teamRT', 'team-acc'), accountId: null, workspaceId: null, tokenExpiresAt: null, lastRefreshedAt: null },
+      { encryptedValue: apiKeyBlob('sk-team'), accountId: null, workspaceId: null, tokenExpiresAt: null },
+      { encryptedValue: apiKeyBlob('sk-ws'), accountId: null, workspaceId: 'w', tokenExpiresAt: null },
     ]);
-    const result = await resolveCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' });
-    expect(result?.accessToken).toBe('teamAT');
+    expect(await resolveCodexApiKey({ teamId: 't', accountId: 'a', workspaceId: 'w' })).toEqual({ apiKey: 'sk-ws' });
   });
 
-  it('returns null when the only credential has expired', async () => {
+  it('a more specific OAuth login does not hide a team-wide API key', async () => {
     mockDbFindMany.mockResolvedValue([
-      { encryptedValue: blob('expiredAT', 'expiredRT', 'expired-acc'), accountId: null, workspaceId: null, tokenExpiresAt: new Date(Date.now() - 1000), lastRefreshedAt: null, healthStatus: 'unknown' },
+      { encryptedValue: blob('wsAT', 'wsRT', 'ws-acc'), accountId: null, workspaceId: 'w', tokenExpiresAt: new Date(Date.now() + 3600_000) },
+      { encryptedValue: apiKeyBlob('sk-team'), accountId: null, workspaceId: null, tokenExpiresAt: null },
     ]);
-    const result = await resolveCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' });
-    expect(result).toBeNull();
+    expect(await resolveCodexApiKey({ teamId: 't', accountId: 'a', workspaceId: 'w' })).toEqual({ apiKey: 'sk-team' });
   });
 
-  it('still returns a credential whose expiry is in the future', async () => {
-    const future = new Date(Date.now() + 3600_000);
+  it('skips a revoked API key', async () => {
     mockDbFindMany.mockResolvedValue([
-      { encryptedValue: blob('liveAT', 'liveRT', 'live-acc'), accountId: null, workspaceId: 'w', tokenExpiresAt: future, lastRefreshedAt: null },
+      { encryptedValue: apiKeyBlob('sk-dead'), accountId: null, workspaceId: 'w', tokenExpiresAt: null, healthStatus: 'revoked' },
     ]);
-    const result = await resolveCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' });
-    expect(result?.accessToken).toBe('liveAT');
-    expect(result?.tokenExpiresAt).toEqual(future);
+    expect(await resolveCodexApiKey({ teamId: 't', accountId: 'a', workspaceId: 'w' })).toBeNull();
   });
 
-  it('returns null when the only credential is revoked', async () => {
-    // Revoked credential must be skipped so the claim route fails fast (or falls
-    // through to a different backend) instead of handing a dead token to the runner.
+  it('skips a row that does not decrypt', async () => {
     mockDbFindMany.mockResolvedValue([
-      { encryptedValue: blob('deadAT', 'deadRT', 'dead-acc'), accountId: null, workspaceId: null, tokenExpiresAt: null, lastRefreshedAt: null, healthStatus: 'revoked' },
+      { encryptedValue: 'enc:not-json', accountId: null, workspaceId: 'w', tokenExpiresAt: null },
+      { encryptedValue: apiKeyBlob('sk-team'), accountId: null, workspaceId: null, tokenExpiresAt: null },
     ]);
-    const result = await resolveCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' });
-    expect(result).toBeNull();
-  });
-
-  it('falls through to team-wide when workspace-scoped credential is revoked', async () => {
-    mockDbFindMany.mockResolvedValue([
-      { encryptedValue: blob('teamAT', 'teamRT', 'team-acc'), accountId: null, workspaceId: null, tokenExpiresAt: null, lastRefreshedAt: null, healthStatus: 'unknown' },
-      { encryptedValue: blob('deadAT', 'deadRT', 'dead-acc'), accountId: null, workspaceId: 'w', tokenExpiresAt: null, lastRefreshedAt: null, healthStatus: 'revoked' },
-    ]);
-    const result = await resolveCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' });
-    // Revoked workspace row skipped; healthy team-wide row returned.
-    expect(result?.accessToken).toBe('teamAT');
-  });
-
-  it('returns degraded credential (transient, not permanently dead)', async () => {
-    mockDbFindMany.mockResolvedValue([
-      { encryptedValue: blob('degradedAT', 'degradedRT', 'acc'), accountId: null, workspaceId: null, tokenExpiresAt: new Date(Date.now() + 3600_000), lastRefreshedAt: null, healthStatus: 'degraded' },
-    ]);
-    const result = await resolveCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' });
-    expect(result?.accessToken).toBe('degradedAT');
+    expect(await resolveCodexApiKey({ teamId: 't', accountId: 'a', workspaceId: 'w' })).toEqual({ apiKey: 'sk-team' });
   });
 });
 
@@ -303,24 +273,6 @@ describe('hasCodexCredential', () => {
   it('returns true for an expired credential by default (readiness reporting)', async () => {
     mockDbFindMany.mockResolvedValue([{ tokenExpiresAt: new Date(Date.now() - 1000) }]);
     expect(await hasCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w' })).toBe(true);
-  });
-
-  // The claim asks deliverableOnly: an expired row is never delivered
-  // (resolveCodexCredential skips it), so it must not let a task through the
-  // claim's Codex capability filter either.
-  it('deliverableOnly: an expired credential does not count', async () => {
-    mockDbFindMany.mockResolvedValue([{ tokenExpiresAt: new Date(Date.now() - 1000), healthStatus: 'healthy' }]);
-    expect(await hasCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w', deliverableOnly: true })).toBe(false);
-  });
-
-  it('deliverableOnly: a live or expiry-less credential still counts', async () => {
-    mockDbFindMany.mockResolvedValue([
-      { tokenExpiresAt: new Date(Date.now() - 1000), healthStatus: 'healthy' },
-      { tokenExpiresAt: new Date(Date.now() + 3600_000), healthStatus: 'healthy' },
-    ]);
-    expect(await hasCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w', deliverableOnly: true })).toBe(true);
-    mockDbFindMany.mockResolvedValue([{ tokenExpiresAt: null, healthStatus: 'healthy' }]);
-    expect(await hasCodexCredential({ teamId: 't', accountId: 'a', workspaceId: 'w', deliverableOnly: true })).toBe(true);
   });
 
   it('returns false when the only credential is revoked — cannot be refreshed', async () => {
