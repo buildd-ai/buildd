@@ -21,7 +21,7 @@
  * Applies to Claude Coding runs only; Codex, Chat and inference calls are
  * outside this switch. Hosted managed runners never set it.
  */
-import { detectHostSeat, type HostSeat, type HostSeatProbe } from './host-seat';
+import { detectMachineLogin, type MachineLogin, type MachineLoginProbe } from './host-seat';
 
 export const MODEL_AUTH_SOURCE_ENV = 'BUILDD_MODEL_AUTH_SOURCE';
 
@@ -49,7 +49,7 @@ export interface ModelAuthSourceInput {
   runnerProviderSelected: boolean;
   /** Cloud executor: egress decides, the runner holds no credential. */
   cloud?: boolean;
-  probe?: HostSeatProbe;
+  probe?: MachineLoginProbe;
 }
 
 export interface ModelAuthSourceDecision {
@@ -63,7 +63,7 @@ export interface ModelAuthSourceDecision {
   dropInheritedApiKeys: boolean;
   /** Refuse to start: runner-managed with no local sign-in and no selected paid route. */
   blocked: boolean;
-  localSeat: HostSeat | null;
+  localLogin: MachineLogin | null;
 }
 
 export function decideModelAuthSource(
@@ -72,7 +72,7 @@ export function decideModelAuthSource(
 ): ModelAuthSourceDecision {
   const mode = modelAuthSourceMode(env);
   const inert: ModelAuthSourceDecision = {
-    mode, active: false, dropServerCredentials: false, dropInheritedApiKeys: false, blocked: false, localSeat: null,
+    mode, active: false, dropServerCredentials: false, dropInheritedApiKeys: false, blocked: false, localLogin: null,
   };
   if (mode !== 'runner' || input.isCodexTask || input.cloud || !input.runnerLocalAllowed) return inert;
 
@@ -81,15 +81,15 @@ export function decideModelAuthSource(
   if (paidSelected) {
     return { ...inert, active: true, label: 'api-provider' };
   }
-  const localSeat = detectHostSeat({ ...input.probe, env: { ...(input.probe?.env ?? env) } });
+  const localLogin = detectMachineLogin({ ...input.probe, env: { ...(input.probe?.env ?? env) } });
   return {
     mode,
     active: true,
     label: 'runner-managed',
     dropServerCredentials: true,
     dropInheritedApiKeys: true,
-    blocked: !localSeat,
-    localSeat,
+    blocked: !localLogin,
+    localLogin,
   };
 }
 
@@ -115,7 +115,7 @@ export interface ModelAuthSourceClaim {
   llmProvider?: { provider?: string; baseUrl?: string } | null;
   cloud?: boolean;
   credentials: ClaimCredentials;
-  probe?: HostSeatProbe;
+  probe?: MachineLoginProbe;
 }
 
 export interface ResolvedModelAuthSource {

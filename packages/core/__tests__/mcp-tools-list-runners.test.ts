@@ -327,4 +327,30 @@ describe('list_runners', () => {
     expect(out).toContain('claims halted: draining for update since 2026-10-11T10:00:00.000Z');
     expect(out).toContain('applies by 2026-10-11T11:00:00.000Z or when 4 busy worker(s) finish');
   });
+
+  it('says a runner a person put on hold is on hold, since when and until when (R-35)', async () => {
+    const until = new Date(Date.now() + 3_600_000).toISOString();
+    mockApi.mockResolvedValueOnce({
+      activeLocalUis: [{
+        localUiUrl: 'http://localhost:8766', accountName: 'Runner A', activeWorkers: 1, maxConcurrent: 3,
+        workspaceNames: [], trackedBranch: 'main',
+        environment: { labels: {}, hold: { since: '2026-10-11T09:12:00.000Z', until } },
+        lastUpdated: '2026-10-11T10:05:00.000Z',
+      }],
+    });
+    const out = (await handleBuilddAction(mockApi as unknown as ApiFn, 'list_runners', {}, ctx())).content[0].text;
+    expect(out).toContain(`on hold since 2026-10-11T09:12:00.000Z until ${until}: starts nothing new, running work finishes (buildd resume lifts it) — free slots are expected`);
+  });
+
+  it('a hold whose until has passed is not shown', async () => {
+    mockApi.mockResolvedValueOnce({
+      activeLocalUis: [{
+        localUiUrl: 'http://localhost:8766', accountName: 'Runner A', activeWorkers: 0, maxConcurrent: 3, workspaceNames: [],
+        environment: { labels: {}, hold: { since: '2026-10-11T09:12:00.000Z', until: '2026-10-11T09:13:00.000Z' } },
+        lastUpdated: '2026-10-11T10:05:00.000Z',
+      }],
+    });
+    const out = (await handleBuilddAction(mockApi as unknown as ApiFn, 'list_runners', {}, ctx())).content[0].text;
+    expect(out).not.toContain('on hold');
+  });
 });

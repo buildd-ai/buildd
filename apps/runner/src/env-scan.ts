@@ -9,7 +9,7 @@ export type { McpServerInfo } from './mcp-json';
 import { extractVarReferences, parseMcpJsonContent, type McpServerInfo } from './mcp-json';
 import { resolveClaudeCliVersion } from './sdk-binary-path';
 import { selectedBrowserCapability, getBrowserProviderProbe } from './browser-provider';
-import { hostSeatMode, localCodexAuthPath } from './host-seat';
+import { localCodexAuthPath } from './host-seat';
 
 export interface ScanConfig {
   extraEnvKeys?: string[];
@@ -290,7 +290,7 @@ export function scanEnvironment(config?: ScanConfig): WorkerEnvironment {
   // set) is local Codex auth too: advertise it under the same key the claim
   // route already reads, so a runner with only its own login is offered Codex
   // tasks. Presence only; the file is never read here.
-  if (!envKeys.includes('CODEX_HOME') && hostSeatMode() !== 'off' && localCodexAuthPath()) {
+  if (!envKeys.includes('CODEX_HOME') && localCodexAuthPath()) {
     envKeys.push('CODEX_HOME');
   }
 

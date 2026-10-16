@@ -28,7 +28,9 @@ import { readRepairTarget } from '@buildd/core/repair-target';
 import { describePrimaryCloneDrift } from './worktree-confinement';
 import { diagnoseRegistryAuth, type RegistryAuthDiagnosis } from './install-diagnosis';
 import { emitPhase, emitWorktreeMode } from './phase-lines';
-import { branchOfRemoteRef, ensureRemoteBranch, isCloudExecutor, type GitCwdRun, type RemoteBranchResult } from './git-clone';
+import { branchOfRemoteRef, ensureRemoteBranchAsync, isCloudExecutor, type GitCwdRunAsync, type RemoteBranchResult } from './git-clone';
+import { gitShellAsync, GitAsyncError } from './git-async';
+import { acquireRepoLock, withRepoLock } from './repo-lock';
 
 // Mutable dep references — tests inject mocks via __setGitOpsDeps() without
 // touching bun's mock.module registry (which is shared across parallel workers
@@ -38,6 +40,50 @@ import { branchOfRemoteRef, ensureRemoteBranch, isCloudExecutor, type GitCwdRun,
 // util.promisify) so mock injection via __setGitOpsDeps works consistently
 // across bun versions — util.promisify behaviour varies between 1.3.x releases.
 let execSync = cp.execSync;
+
+/** Options the async git runner reads; the rest of an execSync options bag is ignored. */
+export interface ExecAsyncOptions {
+  cwd?: string;
+  timeout?: number;
+  env?: NodeJS.ProcessEnv;
+  encoding?: string;
+  stdio?: unknown;
+}
+/**
+ * A git command line through `/bin/sh -c`, like execSync, but awaited: the
+ * runner's event loop keeps serving the local socket, the heartbeat and the
+ * sync tick while git runs. Resolves stdout; rejects like execSync
+ * ("Command failed: <cmd>" then stderr, plus `status` and `stderr`).
+ */
+export type ExecAsync = (command: string, opts: ExecAsyncOptions) => Promise<string>;
+
+/** No call here runs without a timeout; this only backs an options bag that forgot one. */
+const DEFAULT_EXEC_TIMEOUT_MS = 30_000;
+
+const realExecAsync: ExecAsync = async (command, opts) => {
+  try {
+    return await gitShellAsync(command, {
+      cwd: opts.cwd ?? process.cwd(),
+      timeoutMs: opts.timeout ?? DEFAULT_EXEC_TIMEOUT_MS,
+      ...(opts.env ? { env: opts.env } : {}),
+    });
+  } catch (err) {
+    // execSync's error fields, which callers (gitPort) read.
+    if (err instanceof GitAsyncError) {
+      Object.assign(err, { status: err.exitCode, stdout: '' });
+    }
+    throw err;
+  }
+};
+let execAsync: ExecAsync = realExecAsync;
+
+/** An injected execSync, awaited: a test's sync mock drives the async paths unchanged. */
+function execAsyncFromSync(sync: typeof cp.execSync): ExecAsync {
+  return async (command, opts) => {
+    const out = sync(command, opts as cp.ExecSyncOptions);
+    return typeof out === 'string' ? out : String(out ?? '');
+  };
+}
 let execFile: typeof cp.execFile = cp.execFile;
 let existsSync = fs.existsSync;
 let mkdirSync = fs.mkdirSync;
@@ -61,6 +107,8 @@ let _cleanupSpy: ((repoPath: string, worktreePath: string, workerId: string) => 
 
 export interface GitOpsDeps {
   execSync: typeof cp.execSync;
+  /** Optional: the async git runner. Default: the injected execSync, awaited. */
+  execAsync?: ExecAsync;
   execFile: typeof cp.execFile;
   existsSync: typeof fs.existsSync;
   mkdirSync: typeof fs.mkdirSync;
@@ -81,6 +129,7 @@ export interface GitOpsDeps {
 /** Test-only: replace internal dependencies with mocks. */
 export function __setGitOpsDeps(mocks: GitOpsDeps): void {
   execSync = mocks.execSync;
+  execAsync = mocks.execAsync ?? execAsyncFromSync(mocks.execSync);
   execFile = mocks.execFile;
   existsSync = mocks.existsSync;
   mkdirSync = mocks.mkdirSync;
@@ -97,6 +146,7 @@ export function __setGitOpsDeps(mocks: GitOpsDeps): void {
 /** Test-only: restore real implementations. */
 export function __resetGitOpsDeps(): void {
   execSync = cp.execSync;
+  execAsync = realExecAsync;
   execFile = cp.execFile;
   existsSync = fs.existsSync;
   mkdirSync = fs.mkdirSync;
@@ -395,11 +445,11 @@ async function runInstalls(
  * Best-effort: on any git error we return an empty map (guarding degrades to the
  * old behaviour rather than blocking worktree creation).
  */
-function listBranchOwners(
+async function listBranchOwners(
   execOpts: { cwd: string; timeout: number; encoding: 'utf-8' },
-): Map<string, string> {
+): Promise<Map<string, string>> {
   const owners = new Map<string, string>();
-  for (const entry of listWorktreeEntries(execOpts)) {
+  for (const entry of await listWorktreeEntries(execOpts)) {
     if (entry.branch) owners.set(entry.branch, entry.path);
   }
   return owners;
@@ -410,12 +460,12 @@ function listBranchOwners(
  * included). Best-effort: on any git error we return an empty list, so every
  * guard built on it degrades to the old, unguarded behaviour.
  */
-function listWorktreeEntries(
+async function listWorktreeEntries(
   execOpts: { cwd: string; timeout: number; encoding: 'utf-8' },
-): { path: string; branch: string | null }[] {
+): Promise<{ path: string; branch: string | null }[]> {
   try {
     const porcelain = String(
-      execSync('git worktree list --porcelain', { ...execOpts, timeout: 5000 }) ?? '',
+      (await execAsync('git worktree list --porcelain', { ...execOpts, timeout: 5000 })) ?? '',
     );
     return parseWorktreeList(porcelain);
   } catch {
@@ -438,13 +488,13 @@ function listWorktreeEntries(
  * Callers must only ask about paths git reports as worktrees; a plain leftover
  * directory is not this function's business (it is always removable).
  */
-function worktreeIsReclaimable(
+async function worktreeIsReclaimable(
   worktreePath: string,
   execOpts: { cwd: string; timeout: number; encoding: 'utf-8' },
-): boolean {
+): Promise<boolean> {
   try {
     const status = String(
-      execSync('git status --porcelain', { ...execOpts, cwd: worktreePath, timeout: 5000 }) ?? '',
+      (await execAsync('git status --porcelain', { ...execOpts, cwd: worktreePath, timeout: 5000 })) ?? '',
     );
     return status.trim().length === 0;
   } catch {
@@ -520,23 +570,29 @@ export interface SetupWorktreeResult {
  * primary may hold the only copy of someone's work. Every probe failure is
  * swallowed; this must never block worktree setup.
  */
-export function warnOnPrimaryCloneDrift(repoPath: string, expectedBranch: string, workerId: string): string | null {
+export async function warnOnPrimaryCloneDrift(repoPath: string, expectedBranch: string, workerId: string): Promise<string | null> {
   const opts = { cwd: repoPath, timeout: 10000, encoding: 'utf-8' as const, stdio: ['pipe', 'pipe', 'pipe'] as ['pipe', 'pipe', 'pipe'] };
-  const run = (cmd: string): string | undefined => {
+  const run = async (cmd: string): Promise<string | undefined> => {
     try {
-      const out = execSync(cmd, opts);
+      const out = await execAsync(cmd, opts);
       return typeof out === 'string' ? out : undefined;
     } catch {
       return undefined;
     }
   };
   const lines = (s: string | undefined) => (s ?? '').split('\n').filter(l => l.trim().length > 0).length;
-  const branch = run('git rev-parse --abbrev-ref HEAD')?.trim() || undefined;
+  // Three independent reads of the primary clone: run together.
+  const [head, status, stashList] = await Promise.all([
+    run('git rev-parse --abbrev-ref HEAD'),
+    run('git status --porcelain'),
+    run('git stash list'),
+  ]);
+  const branch = head?.trim() || undefined;
   const warning = describePrimaryCloneDrift({
     branch,
     expectedBranch,
-    dirtyEntries: lines(run('git status --porcelain')),
-    stashes: lines(run('git stash list')),
+    dirtyEntries: lines(status),
+    stashes: lines(stashList),
   });
   // Runs on every worker start: print a given drift once per repo per process,
   // again only when it changes (or clears and comes back). The per-worker
@@ -564,12 +620,12 @@ export function __resetPrimaryCloneDriftWarnings(): void {
 }
 
 /** Branch name → directory name. The only place this mapping is spelled. */
-/** git through this module's (injectable) execSync, for the git-clone.ts helpers. */
-function gitPort(cwd: string): GitCwdRun {
+/** git through this module's (injectable) execAsync, for the git-clone.ts helpers. */
+function gitPort(cwd: string): GitCwdRunAsync {
   const q = (a: string) => `'${a.replace(/'/g, `'\\''`)}'`;
-  return (args, timeoutMs) => {
+  return async (args, timeoutMs) => {
     try {
-      const out = execSync(`git ${args.map(q).join(' ')}`, { cwd, timeout: timeoutMs, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+      const out = await execAsync(`git ${args.map(q).join(' ')}`, { cwd, timeout: timeoutMs, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
       return { status: 0, stdout: String(out ?? ''), stderr: '', signal: null };
     } catch (err) {
       const e = err as { status?: unknown; stdout?: unknown; stderr?: unknown; message?: unknown; signal?: unknown };
@@ -588,13 +644,13 @@ function gitPort(cwd: string): GitCwdRun {
  * default branch only, fetch it by name (git-clone.ts ensureRemoteBranch). A
  * full clone: a no-op, its `git fetch origin` already brought every branch.
  */
-function ensureOriginBranch(repoPath: string, branch: string, workerId: string): RemoteBranchResult {
-  return ensureRemoteBranch(repoPath, branch, { run: gitPort(repoPath), log: (m) => console.log(`[Worker ${workerId}] ${m}`) });
+function ensureOriginBranch(repoPath: string, branch: string, workerId: string): Promise<RemoteBranchResult> {
+  return ensureRemoteBranchAsync(repoPath, branch, { run: gitPort(repoPath), log: (m) => console.log(`[Worker ${workerId}] ${m}`) });
 }
 
-function isShallowClone(repoPath: string): boolean {
+async function isShallowClone(repoPath: string): Promise<boolean> {
   try {
-    return String(execSync('git rev-parse --is-shallow-repository', { cwd: repoPath, timeout: 5000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }) ?? '').trim() === 'true';
+    return String((await execAsync('git rev-parse --is-shallow-repository', { cwd: repoPath, timeout: 5000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] })) ?? '').trim() === 'true';
   } catch {
     return false;
   }
@@ -656,6 +712,14 @@ export async function setupWorktree(
   const cloud = isCloudExecutor(process.env);
   const execOpts = { cwd: repoPath, timeout: 30000, encoding: 'utf-8' as const };
 
+  // Every step up to the dependency install writes the clone's shared `.git`
+  // (fetch, worktree add, branch -D/-m, config). Two claims on one clone must
+  // not interleave those writes (repo-lock.ts). Released before the install,
+  // which only touches the new worktree and can take minutes.
+  const releaseRepoLock = await acquireRepoLock(repoPath);
+  let holdingRepoLock = true;
+  const unlockRepo = () => { holdingRepoLock = false; releaseRepoLock(); };
+
   // Worktrees live in .buildd-worktrees/ inside the repo
   const worktreeBase = join(repoPath, '.buildd-worktrees');
   const safeBranch = safeWorktreeDirName(branch);
@@ -683,7 +747,7 @@ export async function setupWorktree(
     // Cloud acquisition already fetched the default; candidate refs are fetched by name.
     if (!cloud) console.log(`[Worker ${workerId}] Fetching latest from remote...`);
     try {
-      if (!cloud) execSync('git fetch origin', execOpts);
+      if (!cloud) await execAsync('git fetch origin', execOpts);
     } catch (err) {
       console.warn(`[Worker ${workerId}] git fetch failed (continuing with local state):`, err instanceof Error ? err.message : err);
     }
@@ -691,7 +755,7 @@ export async function setupWorktree(
     // The primary clone should be a pristine base that nobody works in. If it
     // is dirty or off its branch, something has been working in the shared
     // checkout — say so loudly. Never reset it: it may hold unpushed work.
-    if (!cloud) warnOnPrimaryCloneDrift(repoPath, defaultBranch, workerId);
+    if (!cloud) await warnOnPrimaryCloneDrift(repoPath, defaultBranch, workerId);
 
     // Clean up stale worktree at this path if it exists.
     //
@@ -709,15 +773,15 @@ export async function setupWorktree(
      * the post-ladder path so the recompute cannot reintroduce an unguarded
      * force-remove one line further down.
      */
-    const reclaimOrDivert = (candidate: string): string => {
+    const reclaimOrDivert = async (candidate: string): Promise<string> => {
       if (!existsSync(candidate)) return candidate;
-      const registered = listWorktreeEntries(execOpts).some(e => e.path === candidate);
+      const registered = (await listWorktreeEntries(execOpts)).some(e => e.path === candidate);
       // Ownership FIRST: a live worker that has committed its work reads clean,
       // so worktreeIsReclaimable() alone happily deletes an active session's cwd.
       const ownedByLive = liveWorkers
         ? isWorktreePathOwnedByOtherLiveWorker(liveWorkers, candidate, workerId)
         : false;
-      if (ownedByLive || (registered && !worktreeIsReclaimable(candidate, execOpts))) {
+      if (ownedByLive || (registered && !(await worktreeIsReclaimable(candidate, execOpts)))) {
         const diverted = `${candidate}-w${workerId.slice(0, 8)}`;
         const why = ownedByLive
           ? 'owned by another live worker'
@@ -738,16 +802,16 @@ export async function setupWorktree(
       }
       console.log(`[Worker ${workerId}] Cleaning up stale worktree at ${candidate}`);
       try {
-        execSync(`git worktree remove --force "${candidate}"`, execOpts);
+        await execAsync(`git worktree remove --force "${candidate}"`, execOpts);
       } catch {
         // Force-remove the directory if git worktree remove fails
         rmSync(candidate, { recursive: true, force: true });
-        try { execSync('git worktree prune', execOpts); } catch {}
+        try { await execAsync('git worktree prune', execOpts); } catch {}
       }
       return candidate;
     };
 
-    if (!cloud) worktreePath = reclaimOrDivert(worktreePath);
+    if (!cloud) worktreePath = await reclaimOrDivert(worktreePath);
 
     // Determine if there is a resume candidate from prior attempt context —
     // i.e. a branch to check out and push to DIRECTLY, as opposed to a base to
@@ -782,7 +846,7 @@ export async function setupWorktree(
     // log on every worker start. Piping keeps the throw (still caught below)
     // without the leak.
     try {
-      const sparsePatterns = execSync('git sparse-checkout list', { ...execOpts, timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+      const sparsePatterns = (await execAsync('git sparse-checkout list', { ...execOpts, timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] })).trim();
       if (sparsePatterns) {
         console.warn(
           `[Worker ${workerId}] Parent repo has sparse checkout enabled. ` +
@@ -800,9 +864,9 @@ export async function setupWorktree(
     // candidate is fetched by name first (ensureOriginBranch); a full clone
     // skips that.
     const fetchBranch = async (candidate: string): Promise<BranchFetchResult> => {
-      if (ensureOriginBranch(repoPath, candidate, workerId) === 'missing') return 'missing';
+      if ((await ensureOriginBranch(repoPath, candidate, workerId)) === 'missing') return 'missing';
       try {
-        const countStr = String(execSync(
+        const countStr = String(await execAsync(
           `git rev-list --count "origin/${defaultBranch}..origin/${candidate}"`,
           // Piped: a missing candidate is an expected negative (caught below and
           // logged by resolveWorktreeBase). Inherited stderr put git's
@@ -816,9 +880,9 @@ export async function setupWorktree(
           // boundary and counts every fetched commit: a branch cut a week ago
           // and a few commits ahead would read as diverged and lose its PR.
           // Undecidable here, so not a veto.
-          if (isShallowClone(repoPath)) {
+          if (await isShallowClone(repoPath)) {
             try {
-              execSync(`git merge-base "origin/${defaultBranch}" "origin/${candidate}"`, { ...execOpts, timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] });
+              await execAsync(`git merge-base "origin/${defaultBranch}" "origin/${candidate}"`, { ...execOpts, timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] });
             } catch {
               console.log(
                 `[Worker ${workerId}] origin/${candidate} has no merge base with origin/${defaultBranch} in this shallow clone; ` +
@@ -837,9 +901,9 @@ export async function setupWorktree(
     };
     // Does `refs/heads/<candidate>` exist in THIS clone (as opposed to
     // `origin/<candidate>`, which `fetchBranch` above already checks)?
-    const localBranchExists = (candidate: string): boolean => {
+    const localBranchExists = async (candidate: string): Promise<boolean> => {
       try {
-        execSync(`git rev-parse --verify --quiet "refs/heads/${candidate}"`, {
+        await execAsync(`git rev-parse --verify --quiet "refs/heads/${candidate}"`, {
           ...execOpts, timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'],
         });
         return true;
@@ -851,12 +915,12 @@ export async function setupWorktree(
     // How many commits does local ref `candidate` carry that origin/<default>
     // does not? Zero (not an error) when the range can't be computed at all —
     // e.g. origin/<default> itself isn't a valid remote-tracking ref yet.
-    const countCommitsAheadOfDefault = (candidate: string): number => {
+    const countCommitsAheadOfDefault = async (candidate: string): Promise<number> => {
       try {
-        const out = execSync(
+        const out = (await execAsync(
           `git rev-list --count "origin/${defaultBranch}..${candidate}"`,
           { ...execOpts, timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] },
-        ).trim();
+        )).trim();
         const n = parseInt(out, 10);
         return isNaN(n) ? 0 : n;
       } catch {
@@ -874,7 +938,7 @@ export async function setupWorktree(
       (branch !== defaultBranch &&
       !looksLikeMissionIntegrationBranch(branch) &&
       (await fetchBranch(branch)) === 'ok' &&
-      countCommitsAheadOfDefault(`origin/${branch}`) > 0
+      (await countCommitsAheadOfDefault(`origin/${branch}`)) > 0
         ? branch
         : undefined);
     if (resumeCandidate && !explicitResumeCandidate) {
@@ -899,8 +963,8 @@ export async function setupWorktree(
     const resumeFromLocalBranch =
       !!resumeCandidate &&
       (await fetchBranch(resumeCandidate)) === 'missing' &&
-      localBranchExists(resumeCandidate) &&
-      countCommitsAheadOfDefault(resumeCandidate) > 0;
+      (await localBranchExists(resumeCandidate)) &&
+      (await countCommitsAheadOfDefault(resumeCandidate)) > 0;
 
     if (resumeFromLocalBranch) {
       base = resumeCandidate as string;
@@ -940,10 +1004,10 @@ export async function setupWorktree(
     // measurement is visible next time instead of inferred.
     let staleBase: SetupWorktreeResult['staleBase'];
     try {
-      const behindStr = execSync(
+      const behindStr = (await execAsync(
         `git rev-list --count "${base}..origin/${defaultBranch}"`,
         { ...execOpts, timeout: 5000 },
-      ).trim();
+      )).trim();
       const commitsBehind = parseInt(behindStr, 10);
       if (!isNaN(commitsBehind) && commitsBehind > 10) {
         console.warn(
@@ -970,7 +1034,7 @@ export async function setupWorktree(
     // Which branches are already checked out somewhere in this repo? Computed
     // AFTER the stale-worktree cleanup above so a path we just reclaimed isn't
     // counted as a holder.
-    const branchOwners = listBranchOwners(execOpts);
+    const branchOwners = await listBranchOwners(execOpts);
     // The single-task cloud clone is our session, not another branch holder.
     if (cloud) for (const [name, path] of branchOwners) {
       if (resolve(path) === resolve(repoPath)) branchOwners.delete(name);
@@ -1067,16 +1131,16 @@ export async function setupWorktree(
           )
         : ({ eligible: false, reason: 'no_registry_owner' } as const);
       let reason: string | undefined = verdict.eligible ? undefined : verdict.reason;
-      if (!reason && !worktreeIsReclaimable(holderPath, execOpts)) reason = 'holder_dirty';
+      if (!reason && !(await worktreeIsReclaimable(holderPath, execOpts))) reason = 'holder_dirty';
       if (!reason) {
         // Commits on the local branch that its remote tip lacks — that is
         // unpushed work only this ref holds. An inconclusive count (e.g. no
         // origin/<branch>) is treated as unpushed.
         try {
-          const n = parseInt(execSync(
+          const n = parseInt((await execAsync(
             `git rev-list --count "origin/${resumeCandidate}..refs/heads/${resumeCandidate}"`,
             { ...execOpts, timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] },
-          ).trim(), 10);
+          )).trim(), 10);
           if (isNaN(n) || n > 0) reason = 'holder_unpushed';
         } catch {
           reason = 'holder_unpushed';
@@ -1086,7 +1150,7 @@ export async function setupWorktree(
       if (decision === 'released') {
         try {
           // Keeps the holder's tree (for forensics); frees only the branch ref.
-          execSync('git checkout --detach', { ...execOpts, cwd: holderPath, timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] });
+          await execAsync('git checkout --detach', { ...execOpts, cwd: holderPath, timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] });
           branchOwners.delete(resumeCandidate);
           const holderId = verdict.eligible ? verdict.holderWorkerId : undefined;
           if (holderId) {
@@ -1171,7 +1235,7 @@ export async function setupWorktree(
       if (divertedPath !== worktreePath) {
         // Through the same guard as the first reclaim — a recompute must not
         // grow a second, unguarded force-remove.
-        worktreePath = reclaimOrDivert(divertedPath);
+        worktreePath = await reclaimOrDivert(divertedPath);
       }
     }
 
@@ -1189,9 +1253,9 @@ export async function setupWorktree(
     // False — never an ancestor — for a nonexistent `ref` or `target`, which is
     // the conservative direction: an inconclusive answer must not be read as
     // "safe to delete".
-    const isAncestorOf = (ref: string, target: string): boolean => {
+    const isAncestorOf = async (ref: string, target: string): Promise<boolean> => {
       try {
-        execSync(`git merge-base --is-ancestor "${ref}" "${target}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
+        await execAsync(`git merge-base --is-ancestor "${ref}" "${target}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
         return true;
       } catch {
         return false;
@@ -1214,17 +1278,17 @@ export async function setupWorktree(
       if (resumeFromLocalBranch && candidate === resumeCandidate) continue;
       // `--is-ancestor` throws on every candidate that isn't already a local
       // branch, which in practice is nearly always.
-      if (!localBranchExists(candidate)) continue;
+      if (!(await localBranchExists(candidate))) continue;
 
       // Its remote tip may not be in a narrow (cloud) clone yet (a branch
       // restored from a park bundle, pushed by an earlier attempt): without it
       // pushed work reads as unpushed. A full clone: a no-op.
-      ensureOriginBranch(repoPath, candidate, workerId);
+      await ensureOriginBranch(repoPath, candidate, workerId);
       const safeToDelete =
-        isAncestorOf(candidate, `origin/${defaultBranch}`) || isAncestorOf(candidate, `origin/${candidate}`);
+        (await isAncestorOf(candidate, `origin/${defaultBranch}`)) || (await isAncestorOf(candidate, `origin/${candidate}`));
       if (safeToDelete) {
         try {
-          execSync(`git branch -D "${candidate}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
+          await execAsync(`git branch -D "${candidate}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
         } catch {
           // Branch doesn't exist locally — that's fine
         }
@@ -1237,7 +1301,7 @@ export async function setupWorktree(
       // them, and free up `candidate`'s name for `-b` to recreate below.
       const orphanName = `${candidate}-orphan-${workerId.slice(0, 8)}`;
       try {
-        execSync(`git branch -m "${candidate}" "${orphanName}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
+        await execAsync(`git branch -m "${candidate}" "${orphanName}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
         const detail = `Renamed local branch "${candidate}" to "${orphanName}": it is not an ancestor of ` +
           `origin/${defaultBranch} or origin/${candidate}, so it carries commits pushed nowhere else.`;
         console.warn(`[Worker ${workerId}] ${detail}`);
@@ -1245,7 +1309,7 @@ export async function setupWorktree(
       } catch (err) {
         // Host -b fails if the ref remains. Cloud -B would overwrite it: fail
         // closed when the target still holds work we could not preserve.
-        if (cloud && candidate === actualBranch && localBranchExists(candidate)) {
+        if (cloud && candidate === actualBranch && (await localBranchExists(candidate))) {
           throw new Error(`Cannot preserve unpushed branch "${candidate}" before checkout: ${errMessage(err)}`);
         }
       }
@@ -1260,21 +1324,21 @@ export async function setupWorktree(
     emitWorktreeMode(cloud ? 'clone' : 'worktree');
     try {
       if (cloud) {
-        execSync(checkoutExistingBranch
+        await execAsync(checkoutExistingBranch
           ? `git checkout "${actualBranch}"`
           : `git checkout -B "${actualBranch}" "${base}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
       } else if (checkoutExistingBranch) {
-        execSync(`git worktree add "${worktreePath}" "${actualBranch}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
+        await execAsync(`git worktree add "${worktreePath}" "${actualBranch}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
       } else {
-        execSync(`git worktree add -b "${actualBranch}" "${worktreePath}" "${base}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
+        await execAsync(`git worktree add -b "${actualBranch}" "${worktreePath}" "${base}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
         // `worktree add -b <new> <path> origin/<base>` makes git track the BASE
         // (branch.autoSetupMerge), so a plain `git push` fails with "upstream
         // branch name differs" — the push target must be the task's own branch.
         // Point the upstream at origin/<actualBranch> (it need not exist yet; a
         // push creates it), matching what `git push -u origin HEAD` would set.
         try {
-          execSync(`git config "branch.${actualBranch}.remote" origin`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
-          execSync(`git config "branch.${actualBranch}.merge" "refs/heads/${actualBranch}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
+          await execAsync(`git config "branch.${actualBranch}.remote" origin`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
+          await execAsync(`git config "branch.${actualBranch}.merge" "refs/heads/${actualBranch}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
         } catch {
           // Best-effort: `git push origin HEAD` still works without it.
         }
@@ -1283,7 +1347,7 @@ export async function setupWorktree(
       // Make the failure legible: name the branch and, when the branch namespace
       // is the cause, the worktree that holds it. Re-probe rather than trusting
       // the pre-flight map — another worker may have taken the branch in between.
-      const holder = listBranchOwners(execOpts).get(actualBranch) ?? branchOwners.get(actualBranch);
+      const holder = (await listBranchOwners(execOpts)).get(actualBranch) ?? branchOwners.get(actualBranch);
       const detail = holder
         ? `branch "${actualBranch}" is already checked out in worktree ${holder}`
         : `branch "${actualBranch}" could not be created at ${worktreePath}`;
@@ -1301,12 +1365,14 @@ export async function setupWorktree(
     // on .githooks existing so other repos the runner clones are unaffected.
     if (existsSync(join(worktreePath, '.githooks'))) {
       try {
-        execSync('git config core.hooksPath .githooks', { ...execOpts, cwd: worktreePath });
+        await execAsync('git config core.hooksPath .githooks', { ...execOpts, cwd: worktreePath });
         console.log(`[Worker ${workerId}] Registered .githooks (core.hooksPath)`);
       } catch (err) {
         console.warn(`[Worker ${workerId}] Failed to register .githooks:`, err instanceof Error ? err.message : err);
       }
     }
+
+    unlockRepo();
 
     // Wire up workspace package symlinks (@buildd/core, @buildd/shared, etc.).
     // Bun places these in nested node_modules (e.g. apps/web/node_modules/@buildd/core)
@@ -1349,13 +1415,21 @@ export async function setupWorktree(
   } catch (err) {
     console.error(`[Worker ${workerId}] Failed to set up worktree:`, err instanceof Error ? err.message : err);
     setupWorktreeErrors.set(workerId, (err instanceof Error ? err.message : String(err)).replace(/\s+/g, ' ').trim().slice(0, 400));
-    // Clean up partial worktree
-    try {
-      if (!cloud && existsSync(worktreePath)) {
-        rmSync(worktreePath, { recursive: true, force: true });
-      }
-      execSync('git worktree prune', { ...execOpts, timeout: 5000 });
-    } catch {}
+    // Clean up partial worktree (still under the repo lock; retaken when the
+    // failure came after it was released, e.g. in the install).
+    const cleanupPartial = async () => {
+      try {
+        if (!cloud && existsSync(worktreePath)) {
+          rmSync(worktreePath, { recursive: true, force: true });
+        }
+        await execAsync('git worktree prune', { ...execOpts, timeout: 5000 });
+      } catch {}
+    };
+    if (holdingRepoLock) {
+      try { await cleanupPartial(); } finally { unlockRepo(); }
+    } else {
+      await withRepoLock(repoPath, cleanupPartial);
+    }
     return null;
   }
 }
@@ -1367,16 +1441,24 @@ export async function setupWorktree(
 export async function cleanupWorktree(repoPath: string, worktreePath: string, workerId: string) {
   if (resolve(repoPath) === resolve(worktreePath)) return;
   if (_cleanupSpy) return _cleanupSpy(repoPath, worktreePath, workerId);
+  // `worktree remove` / `prune` write the clone's shared `.git/worktrees`.
+  await withRepoLock(repoPath, () => cleanupWorktreeLocked(repoPath, worktreePath, workerId));
+}
+
+/** cleanupWorktree's removal, for a caller already holding the repo lock. */
+async function cleanupWorktreeLocked(repoPath: string, worktreePath: string, workerId: string) {
+  if (resolve(repoPath) === resolve(worktreePath)) return;
+  if (_cleanupSpy) return _cleanupSpy(repoPath, worktreePath, workerId);
   const execOpts = { cwd: repoPath, timeout: 10000, encoding: 'utf-8' as const };
 
   try {
     console.log(`[Worker ${workerId}] Removing worktree: ${worktreePath}`);
-    execSync(`git worktree remove --force "${worktreePath}"`, execOpts);
+    await execAsync(`git worktree remove --force "${worktreePath}"`, execOpts);
   } catch (err) {
     console.warn(`[Worker ${workerId}] git worktree remove failed, cleaning up manually:`, err instanceof Error ? err.message : err);
     try {
       rmSync(worktreePath, { recursive: true, force: true });
-      execSync('git worktree prune', execOpts);
+      await execAsync('git worktree prune', execOpts);
     } catch {}
   }
 }
@@ -1412,18 +1494,44 @@ function hasUnpushedCommits(repoPath: string, branch: string | undefined): boole
   if (!branch) return true;
   const opts = { cwd: repoPath, timeout: 5000, encoding: 'utf-8' as const };
   try {
-    const count = String(
-      execSync(`git rev-list --count "origin/${branch}..${branch}"`, opts) ?? '',
-    ).trim();
-    const n = parseInt(count, 10);
-    return isNaN(n) ? true : n > 0;
+    return unpushedFromCount(String(
+      execSync(unpushedCountCommand(branch), opts) ?? '',
+    ));
   } catch {
     return true;
   }
 }
 
-/** Shared gate for both the async and sync removal entry points. */
+/** hasUnpushedCommits off the event loop: same command, same fail-closed reading. */
+async function hasUnpushedCommitsAsync(repoPath: string, branch: string | undefined): Promise<boolean> {
+  if (!branch) return true;
+  try {
+    return unpushedFromCount(await execAsync(unpushedCountCommand(branch), { cwd: repoPath, timeout: 5000, encoding: 'utf-8' }));
+  } catch {
+    return true;
+  }
+}
+
+const unpushedCountCommand = (branch: string) => `git rev-list --count "origin/${branch}..${branch}"`;
+function unpushedFromCount(out: string): boolean {
+  const n = parseInt(out.trim(), 10);
+  return isNaN(n) ? true : n > 0;
+}
+
+/** The sync removal gate (`destroy()`). The async entry point runs the same checks with an async unpushed probe. */
 function removalRefusal(opts: RemoveWorktreeOptions): WorktreeRemovalOutcome | null {
+  return removalRefusalBeforeGit(opts)
+    ?? (opts.protectUnpushed && hasUnpushedCommits(opts.repoPath, opts.branch) ? unpushedRefusal(opts) : null);
+}
+
+function unpushedRefusal(opts: RemoveWorktreeOptions): WorktreeRemovalOutcome {
+  const msg = `Refused to remove worktree ${opts.worktreePath}: commits are not on origin`;
+  sessionLog(opts.workerId, 'warn', 'worktree_removal_skipped_unpushed', msg);
+  console.warn(`[Worker ${opts.workerId}] ${msg}`);
+  return { removed: false, reason: 'unpushed_commits' };
+}
+
+function removalRefusalBeforeGit(opts: RemoveWorktreeOptions): WorktreeRemovalOutcome | null {
   const { repoPath, worktreePath, workerId, workers } = opts;
   if (resolve(repoPath) === resolve(worktreePath)) return { removed: false, reason: 'primary_clone' };
   if (isWorktreePathOwnedByOtherLiveWorker(workers, worktreePath, workerId)) {
@@ -1431,12 +1539,6 @@ function removalRefusal(opts: RemoveWorktreeOptions): WorktreeRemovalOutcome | n
     sessionLog(workerId, 'warn', 'worktree_removal_skipped_owned', msg);
     console.warn(`[Worker ${workerId}] ${msg} (force-remove exits 0 after destroying its work)`);
     return { removed: false, reason: 'owned_by_live_worker' };
-  }
-  if (opts.protectUnpushed && hasUnpushedCommits(repoPath, opts.branch)) {
-    const msg = `Refused to remove worktree ${worktreePath}: commits are not on origin`;
-    sessionLog(workerId, 'warn', 'worktree_removal_skipped_unpushed', msg);
-    console.warn(`[Worker ${workerId}] ${msg}`);
-    return { removed: false, reason: 'unpushed_commits' };
   }
   return null;
 }
@@ -1472,7 +1574,8 @@ function archiveRefusal(opts: RemoveWorktreeOptions, err: unknown): WorktreeRemo
 export async function removeWorktreeIfUnowned(
   opts: RemoveWorktreeOptions,
 ): Promise<WorktreeRemovalOutcome> {
-  const refusal = removalRefusal(opts);
+  const refusal = removalRefusalBeforeGit(opts)
+    ?? (opts.protectUnpushed && await hasUnpushedCommitsAsync(opts.repoPath, opts.branch) ? unpushedRefusal(opts) : null);
   if (refusal) return refusal;
   if (existsSync(opts.worktreePath)) {
     try {
@@ -1482,8 +1585,15 @@ export async function removeWorktreeIfUnowned(
       return archiveRefusal(opts, err);
     }
   }
-  await cleanupWorktree(opts.repoPath, opts.worktreePath, opts.workerId);
-  return { removed: true };
+  // The awaits above (unpushed probe, archive, waiting for the repo lock) gave
+  // another worker time to take this path: re-check ownership right before
+  // the removal, under the lock, so nothing can claim it in between.
+  return withRepoLock(opts.repoPath, async () => {
+    const late = removalRefusalBeforeGit(opts);
+    if (late) return late;
+    await cleanupWorktreeLocked(opts.repoPath, opts.worktreePath, opts.workerId);
+    return { removed: true } as const;
+  });
 }
 
 /**
@@ -1544,6 +1654,19 @@ export async function collectGitStats(
   const opts = { cwd, timeout: 5000, encoding: 'utf-8' as const, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } };
   const stats: Record<string, number | string | boolean | undefined> = {};
 
+  // Not a git work tree (no repo, or a worktree already removed): every read
+  // below would fail and leave only the fallback count, so say that after one
+  // probe instead of eight failing git children.
+  let insideWorkTree = false;
+  try {
+    // Outside any repo git exits non-zero; inside a git dir it prints `false`.
+    insideWorkTree = (await execAsync('git rev-parse --is-inside-work-tree', opts)).trim() !== 'false';
+  } catch { /* not a repo */ }
+  if (!insideWorkTree) {
+    if (fallbackCommitCount !== undefined) stats.commitCount = fallbackCommitCount;
+    return stats;
+  }
+
   // Resolve the ref this worktree's own commits are measured against.
   // Prefer the ref this worktree was actually cut from; a branch cut from a
   // mission integration branch must compare against THAT branch, not
@@ -1556,24 +1679,24 @@ export async function collectGitStats(
   // worktree into a fresh clone of the default branch only. Fetched by name;
   // a full clone: a no-op.
   const baseBranch = branchOfRemoteRef(baseRef);
-  if (baseBranch) ensureOriginBranch(cwd, baseBranch, workerId);
+  if (baseBranch) await ensureOriginBranch(cwd, baseBranch, workerId);
   if (baseRef) {
     try {
-      const result = execSync(`git merge-base HEAD ${baseRef} 2>/dev/null`, opts).trim();
+      const result = (await execAsync(`git merge-base HEAD ${baseRef} 2>/dev/null`, opts)).trim();
       if (result) mergeBase = result;
     } catch {}
   }
   if (!mergeBase) {
     for (const candidate of ['origin/dev', 'origin/main', 'origin/master']) {
       try {
-        const result = execSync(`git merge-base HEAD ${candidate} 2>/dev/null`, opts).trim();
+        const result = (await execAsync(`git merge-base HEAD ${candidate} 2>/dev/null`, opts)).trim();
         if (result) { mergeBase = result; break; }
       } catch {}
     }
   }
 
   try {
-    const head = execSync('git rev-parse HEAD', opts).trim();
+    const head = (await execAsync('git rev-parse HEAD', opts)).trim();
     // A SHA equal to the resolved merge-base is the BASE's own tip, not a
     // commit this worker made — the base moves as sibling branches/missions
     // merge into it, so a worktree that never diverged from its base (zero
@@ -1593,10 +1716,10 @@ export async function collectGitStats(
     // trunk-cut branch is the more precise comparison ref.
     let compareRef = baseRef;
     if (!compareRef) {
-      const defaultBranch = execSync('git rev-parse --abbrev-ref HEAD@{upstream}', opts).trim().replace(/^origin\//, '') || 'main';
+      const defaultBranch = (await execAsync('git rev-parse --abbrev-ref HEAD@{upstream}', opts)).trim().replace(/^origin\//, '') || 'main';
       compareRef = `origin/${defaultBranch}`;
     }
-    const count = execSync(`git rev-list --count HEAD ^${compareRef}`, opts).trim();
+    const count = (await execAsync(`git rev-list --count HEAD ^${compareRef}`, opts)).trim();
     stats.commitCount = parseInt(count, 10) || 0;
   } catch {
     // Fallback: use locally tracked commits
@@ -1610,7 +1733,7 @@ export async function collectGitStats(
     // commits of its own that parent is an unrelated ancestor (possibly
     // another task's already-merged work), not this worker's diff.
     if (mergeBase) {
-      const numstat = execSync(`git diff --numstat ${mergeBase} 2>/dev/null || true`, opts).trim();
+      const numstat = (await execAsync(`git diff --numstat ${mergeBase} 2>/dev/null || true`, opts)).trim();
       let added = 0, removed = 0, files = 0;
       if (numstat) {
         for (const line of numstat.split('\n')) {
@@ -1633,7 +1756,7 @@ export async function collectGitStats(
     // Tracked-file modifications only — an untracked (`??`) entry is not
     // something to commit-and-PR-or-discard, it's just a scratch file the
     // agent hasn't decided about yet.
-    const porcelain = execSync('git status --porcelain', opts).toString();
+    const porcelain = (await execAsync('git status --porcelain', opts)).toString();
     stats.dirtyWorktree = porcelain
       .split('\n')
       .some(line => line.length > 0 && !line.startsWith('??'));

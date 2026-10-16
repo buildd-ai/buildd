@@ -557,7 +557,7 @@ describe('WorkerManager — state transitions', () => {
 
       manager = new WorkerManager(makeConfig({ inputAsRetry: true }));
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      await waitFor(() => ['waiting', 'done', 'error'].includes(manager.getWorker('w-retry-1')?.status ?? ''));
 
       const worker = manager.getWorker('w-retry-1');
       // Local bookkeeping mirrors the sibling non-abort branch's 'waiting'
@@ -621,7 +621,7 @@ describe('WorkerManager — state transitions', () => {
 
       manager = new WorkerManager(makeConfig({ inputAsRetry: true }));
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      await waitFor(() => ['waiting', 'done', 'error'].includes(manager.getWorker('w-retry-throw')?.status ?? ''));
 
       const worker = manager.getWorker('w-retry-throw');
       expect(worker?.status).toBe('waiting');
@@ -864,7 +864,7 @@ describe('WorkerManager — state transitions', () => {
 
       manager = new WorkerManager(makeConfig({ inputAsRetry: true }));
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      await waitFor(() => mockUpdateWorker.mock.calls.some((call: any[]) => call[1]?.status === 'failed'));
 
       const worker = manager.getWorker('w-not-a-question');
       expect(worker?.waitingFor).toBeFalsy();

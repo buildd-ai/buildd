@@ -8,7 +8,7 @@ import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions, workerErrorTraces } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
 import type { ClaimBudgetWall, ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
-import { CLOUD_EXECUTOR, ENTITLEMENT_BLOCK_CONTEXT_KEY, entitlementDeferralKey, isRunnerExecutor, stripClaimCredentials } from '@buildd/shared';
+import { activeRunnerHold, CLOUD_EXECUTOR, ENTITLEMENT_BLOCK_CONTEXT_KEY, entitlementDeferralKey, isRunnerExecutor, stripClaimCredentials } from '@buildd/shared';
 import { checkManagedRunnerEntitlement, stampEntitlementBlock } from '@/lib/entitlements/managed-runner';
 import { checkHostedRunnerAllowance } from '@/lib/hosted-runner-usage-store';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
@@ -164,7 +164,8 @@ import { loadSoftOverlapHolders } from './soft-overlap-store';
 import { defaultPrDiffScopeDeps, prefetchPrDiffScopes } from '@/lib/claim-pr-diff-scope';
 import { loadPairProbeEvidence } from '@/lib/sibling-pair-probe';
 import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
-import { CLAIM_COOLDOWN_MS, activeWorkerGate, claimOrderBy, claimableWorkspaceIds, runnerCooldownGate, runnerPreferenceGate } from '@/lib/claim-order';
+import { CLAIM_COOLDOWN_MS, claimOrderBy, claimableWorkspaceIds } from '@/lib/claim-order';
+import { claimCandidateWhere } from '@/lib/claim-candidate-where';
 
 // Candidate pages fetched past role-env-gapped tasks before the window is cut
 // anyway (at most 4 × candidateLimit rows). See the candidate fetch.
@@ -519,6 +520,18 @@ export async function POST(req: NextRequest) {
     });
   }
 
+  // A runner a person put on hold (`buildd hold`, spec c7410e76 R-35) gets no
+  // work on a broad claim. It already stops asking while held; this is the
+  // server's own answer if a claim arrives anyway. A claim naming one task is
+  // a person's choice (Start, `c` in top) and goes on, and an interactive
+  // session is not a runner. Read from the claim's own environment: it is the
+  // runner's state as of this request, fresher than its last heartbeat.
+  if (!taskId && !interactiveSession && activeRunnerHold(body.environment)) {
+    return emptyClaim({
+      diagnostics: { reason: 'runner_held' } satisfies ClaimDiagnostics,
+    });
+  }
+
   const workspaceIds = await resolveClaimableWorkspaceIds();
   if (workspaceIds.length === 0) {
     return emptyClaim({
@@ -584,168 +597,29 @@ export async function POST(req: NextRequest) {
   // new task generation but does NOT block already-filed tasks from being claimed.
   // Tasks already in the queue when a mission is paused remain claimable so in-flight
   // work drains gracefully. Pause = stop producing new work, not abort existing work.
-  const claimableConditions = [
-    inArray(tasks.workspaceId, workspaceIds),
-    eq(tasks.status, 'pending'),
-    or(isNull(tasks.claimedBy), lt(tasks.expiresAt, now)),
-    // A deferred task is inert until its concrete floor. This is deliberately
-    // enforced in the atomic claim query, not only in dispatch/UI. A force
-    // claim starts it now, as the dashboard override clears startAt.
-    ...(forceClaim ? [] : [or(isNull(tasks.startAt), lte(tasks.startAt, now))]),
-  ];
-
-  // If a specific taskId was requested, only claim that task
-  if (taskId) {
-    claimableConditions.push(eq(tasks.id, taskId));
-  }
-
-  // Named handles on the WHERE-clause gates, so an explicit-taskId claim that
-  // comes back empty can re-evaluate these exact predicates for that one task
-  // and say which one excluded it (./explicit-task-exclusion). Only populated
-  // for gates that are pushed below; each value is the predicate as pushed.
+  // The candidate WHERE is built by lib/claim-candidate-where.ts, the same
+  // builder the runner queue reads its gates from. `explicitTaskGates` are the
+  // named handles on it: an explicit-taskId claim that comes back empty
+  // re-evaluates these exact predicates for that one task and says which one
+  // excluded it (./explicit-task-exclusion).
+  const { conditions: claimableConditions, gates: builtGates } = claimCandidateWhere({
+    workspaceIds,
+    now,
+    accountType: account.type,
+    runner: runner ?? null,
+    availableSkills,
+    executor: cloudExecutor ? 'cloud' : 'host',
+    forceClaim,
+    interactiveSession: !!interactiveSession,
+    accountId: account.id,
+    taskId,
+  });
   const explicitTaskGates: ExplicitTaskGates = {};
-
-  if (account.type !== 'user') {
-    explicitTaskGates.runnerPreference = runnerPreferenceGate(account.type);
-    claimableConditions.push(explicitTaskGates.runnerPreference);
+  for (const [name, predicate] of Object.entries(builtGates)) {
+    // claimFree and startAt are not part of the explicit-claim probe's gate set.
+    if (name === 'claimFree' || name === 'startAt' || !predicate) continue;
+    (explicitTaskGates as Record<string, unknown>)[name] = predicate;
   }
-
-  // Exclude tasks that already have an active worker (prevents duplicate claims
-  // when stale cleanup resets a task to pending while another worker is still active)
-  explicitTaskGates.activeWorker = activeWorkerGate();
-  claimableConditions.push(explicitTaskGates.activeWorker);
-
-  // Exclude tasks whose mission is held. A held mission gates ALL its tasks
-  // until explicitly armed (mission.isHeld=false). Force-starting a single task
-  // bypasses this via context.bypassHeldGate=true (set by /start with forceOverride).
-  if (!forceClaim) {
-    explicitTaskGates.missionHeld = missionNotHeld();
-    claimableConditions.push(explicitTaskGates.missionHeld);
-  }
-  // A mission with executor='local' is run from a person's own session: runners
-  // never auto-claim its tasks. A verified interactive session naming the task
-  // (claim_task {taskId}) is exactly that session, so the gate is not applied to
-  // it and it gets a normal tracked worker. The held gate above still applies to
-  // it — held is the pause and wins over the executor. Force claims and the
-  // dashboard force-start (context.bypassHeldGate) lift it.
-  if (!forceClaim && !(taskId && interactiveSession)) {
-    explicitTaskGates.missionLocal = missionNotLocal();
-    claimableConditions.push(explicitTaskGates.missionLocal);
-  }
-  // A single task held by a person (PATCH { held: true }) waits for resume.
-  explicitTaskGates.taskHeld = taskNotHeld();
-  claimableConditions.push(explicitTaskGates.taskHeld);
-  // A task an interactive session reserved (context.reservedBy, live until its
-  // expiresAt) is that session's: runners and other accounts skip it. The
-  // reserving account's own explicit claim_task passes. Not lifted by force.
-  explicitTaskGates.taskReserved = taskNotReserved(taskId && interactiveSession ? account.id : undefined);
-  claimableConditions.push(explicitTaskGates.taskReserved);
-
-  // Subject liveness gate (§6 of docs/design/task-subject-anchors.md):
-  // exclude tasks whose subject PR has been reconciled (marked dead by the
-  // reconciliation sweep) *and* whose anchor actually identifies the subject
-  // (source ∈ system|context). A PR number merely scraped from prose is
-  // advisory and never gates a claim — see lib/subject-gate-contract.ts.
-  // Reads persisted task columns only — zero extra DB calls. Tasks with no
-  // subject anchor are unaffected (backwards compat).
-  // context.bypassSubjectGate=true (written by /start with forceOverride)
-  // bypasses this gate for a single force-started task.
-  if (!forceClaim) {
-    explicitTaskGates.subject = subjectLivenessCondition();
-    claimableConditions.push(explicitTaskGates.subject);
-  }
-
-  // Exclude tasks whose dependencies haven't been satisfied yet.
-  // "Satisfied" = dep is completed (and any PR merged) OR cancelled. A completed
-  // dep with an open PR keeps blocking (root cause of the 6-overlapping-PR burst,
-  // PRs #1044-1049). A cancelled dep is intentionally non-blocking — cancelling a
-  // dead/abandoned dependency deliberately unblocks its dependents. failed /
-  // pending / in_progress deps still block. See dependenciesSatisfied().
-  // Exception: bypassDepsGate=true in task context lets a human override the gate
-  // (set by /api/tasks/[id]/start when forceOverride=true).
-  // No deps, empty deps, the force-start bypass, or every dependency satisfied.
-  // Two-valued (see depsGate) so the explicit-claim probe can name it.
-  if (!forceClaim) {
-    explicitTaskGates.deps = depsGate();
-    claimableConditions.push(explicitTaskGates.deps);
-  }
-
-  // Cap parallel workers per repo-backed workspace. Each task runs in its own git
-  // worktree+branch, so parallel work is safe on disk; the cap bounds merge-conflict
-  // surface from many branches on one repo. Skip this task if the count of active
-  // workers on OTHER tasks in the same workspace has reached the workspace's
-  // maxConcurrentTasks (default 3). Repo-less workspaces (coordination, etc.) never
-  // have a repo so the inner EXISTS is false → count 0 → never serialized.
-  // Workspace concurrency cap. A mission may raise the effective cap above the
-  // workspace default (e.g. a 6-task mission under a workspace cap of 3 gets
-  // effective cap = 6). GREATEST ensures the mission value can only raise, never
-  // lower, the workspace baseline — per-mission downward capping is handled by the
-  // mission-level gate in the dispatch loop below.
-  //
-  // context.capExempt=true is the operator override (written by /start with
-  // capExempt). It MUST be honoured here and not only in the dispatch loop:
-  // without this clause the exempted task is filtered out of the candidate set
-  // precisely when the workspace is at cap — i.e. every time the button is
-  // actually used — so the in-loop check below never saw the task at all.
-  // Same accepted value forms on both sides via lib/bypass-flags.ts.
-  if (!forceClaim) explicitTaskGates.workspaceCap = workspaceCapGate();
-  if (explicitTaskGates.workspaceCap) claimableConditions.push(explicitTaskGates.workspaceCap);
-
-  // Workspace executor (gitConfig.executor, packages/shared/src/executor.ts):
-  // a host claim skips workspaces whose work runs in the cloud, so a runner's
-  // cross-workspace poll cannot beat the cold-starting container to the task;
-  // a cloud claim skips host-only workspaces. Applies to a person's explicit
-  // interactive claim_task {taskId} too (the container is already on its way
-  // for that task); only an admin force claim lifts it.
-  if (!forceClaim) {
-    explicitTaskGates.workspaceExecutor = workspaceExecutorGate(cloudExecutor ? 'cloud' : 'host');
-    claimableConditions.push(explicitTaskGates.workspaceExecutor);
-  }
-
-  // Workspace "Pause new starts until <time>" (workspaces.new_starts_paused_until).
-  // Runner claims wait; a person's interactive session is never paused, and an
-  // admin force claim lifts it like the other workspace gates.
-  if (appliesWorkspacePausedGate({ interactive: !!interactiveSession, force: forceClaim })) {
-    explicitTaskGates.workspacePaused = workspaceNotPausedGate(now);
-    claimableConditions.push(explicitTaskGates.workspacePaused);
-  }
-
-  // Per-runner cooldown: skip tasks where this runner recently had a worker
-  // error. Prevents Pusher-driven burn loops (2026-04-16 incident: one runner
-  // re-claimed the same task ~12x in 52s after OAuth budget exhaustion).
-  // Scoped by runner so a healthy runner can still pick up the task.
-  const cooldownCutoff = new Date(Date.now() - CLAIM_COOLDOWN_MS);
-  // Per-runner cooldown covers both 'error' AND 'failed' — budget/session workers
-  // land in 'failed' (PATCH body sends status:'failed'), so the original 'error'
-  // only check missed them entirely and left the burn-loop gap that caused the
-  // 2026-06-25 session-limit storm.
-  //
-  // Not applied to a person's explicit claim from an MCP session: there is no
-  // runner loop to break, every MCP session shares the runner id 'mcp' (so one
-  // person's reaped worker cooled the task down for everyone), and re-claiming
-  // right after a worker was reaped is exactly what an organizer does.
-  if (!(taskId && interactiveSession)) {
-    explicitTaskGates.runnerCooldown = runnerCooldownGate(runner, cooldownCutoff);
-    claimableConditions.push(explicitTaskGates.runnerCooldown);
-  }
-
-  // Filter by roleSlug (see role-gate.ts). Opt-in EXPLICIT_ROLE_SLUGS
-  // (visual-auditor) need an explicit availableSkills match; every other role
-  // keeps the legacy rule, where an empty list claims anything.
-  //
-  // Exception: a verified interactive session's explicit claim (taskId +
-  // interactiveSession) skips the explicit-slug requirement, whatever the
-  // mission's executor. The slug is a proxy for "this runner has a browser", and
-  // a person's own session needs none: it produces the same evidence through
-  // visual-qa.yml dispatched from trunk (the visual-review worker recipe) or
-  // scripts/qa/shoot.sh, and the visual_evidence completion gate
-  // (workers/[id]/route.ts) still enforces it regardless of who claims. Runner
-  // claims keep the gate, and a force claim alone never lifts it (it is not an
-  // interactive session).
-  const roleGateExempt = !!(taskId && interactiveSession);
-  const roleConditions = roleGateExempt ? [] : roleSlugGate(availableSkills);
-  if (roleConditions.length > 0) explicitTaskGates.role = and(...roleConditions)!;
-  claimableConditions.push(...roleConditions);
 
   // Over-fetch candidates so a deferred prefix (e.g. connector-mismatched tasks)
   // cannot exhaust the window and starve valid tasks behind it.

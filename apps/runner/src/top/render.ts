@@ -9,7 +9,7 @@ import type { Palette, PaletteToken } from '../terminal-palette';
 import { progressPieces } from './progress';
 import { queueSections, selectedQueueRow, type QueueRow, type QueueSection } from './queue';
 import {
-  busySlots, currentMission, currentWorkspace, deliveredDay, describeToolCall, filterLine, formatDuration, missionMeta, missionRows, missionStageLine, missionStageWord, planOf,
+  busySlots, currentMission, currentWorkspace, deliveredDay, describeToolCall, filterLine, formatDuration, heldNow, holdLine, missionMeta, missionRows, missionStageLine, missionStageWord, planOf,
   providerHoldLine, providerHolds, selectedRow,
   NO_MISSION, taskRows, workerForTask, workspaceSummary, type MissionRow, type RowKind, type TaskRow, type TopState,
 } from './state';
@@ -134,12 +134,13 @@ function renderRow(row: TaskRow, width: number, selected: boolean, p: Palette): 
 
 // ── frame ───────────────────────────────────────────────────────────────────
 
-function header(state: TopState, cols: number, p: Palette): string {
+function header(state: TopState, cols: number, now: number, p: Palette): string {
   const host = state.runner.hostname;
   // R-19: which workspaces this runner serves, e.g. "5 workspaces · Acme".
   const served = workspaceSummary(state);
   const busy = busySlots(state);
-  const online = state.runner.online ? '● online' : '○ reconnecting';
+  // R-33: a held runner reads "on hold" where "online" would be.
+  const online = !state.runner.online ? '○ reconnecting' : heldNow(state, now) ? '● on hold' : '● online';
   const version = state.runner.version ? ` · v${state.runner.version}` : '';
   // Widest first; drop the version, then shorten the slots, then the hostname.
   const variants: Array<{ host: boolean; slots: string; version: string }> = [
@@ -169,13 +170,13 @@ function rule(cols: number, p: Palette): string {
   return p.fg('faint', '─'.repeat(cols));
 }
 
-const HINTS_LIST = ['↑↓ move', '⏎ open', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 'o web', 'tab queue', 't team', 'w workspace', '/ filter', '? help', 'q quit'];
-const HINTS_QUEUE = ['↑↓ move', 'c claim', 'o web', 'tab missions', 't team', 'w workspace', '/ filter', '? help', 'q quit'];
+const HINTS_LIST = ['↑↓ move', '⏎ open', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 'h hold', 'o web', 'tab queue', 't team', 'w workspace', '/ filter', '? help', 'q quit'];
+const HINTS_QUEUE = ['↑↓ move', 'c claim', 'h hold', 'o web', 'tab missions', 't team', 'w workspace', '/ filter', '? help', 'q quit'];
 const HINTS_HELP = ['o open this runner on buildd', 'any key back', 'q quit'];
 const HINTS_DETAIL = ['esc back', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 'o web', 'q quit'];
 
 /** Dropped first when the footer is too narrow; `? help`, `t`, `w` and `q quit` always stay. */
-const HINT_DROP_ORDER = ['/ filter', 'o web', '⏎ open', '↑↓ move', 'tab queue', 'm message', 'c claim', 'p pause', 'x stop', 'a answer', 'esc back'];
+const HINT_DROP_ORDER = ['/ filter', 'h hold', 'o web', '⏎ open', '↑↓ move', 'tab queue', 'm message', 'c claim', 'p pause', 'x stop', 'a answer', 'esc back'];
 
 function fitHints(hints: string[], cols: number): string {
   for (const sep of ['  ', ' ']) {
@@ -444,6 +445,7 @@ const HELP_KEYS: Array<[string, string]> = [
   ['x', 'stop a running agent (asks first)'],
   ['c', 'claim a waiting task onto this runner'],
   ['tab', 'switch between Missions and Queue (what this runner takes next)'],
+  ['h', 'hold: running agents finish, nothing new starts; h again resumes'],
   ['o', 'open the task on buildd'],
   ['t', 'show the next team, then all of them'],
   ['w', 'show the next workspace of that team, then all of them'],
@@ -474,9 +476,13 @@ export function renderFrame(state: TopState, opts: FrameOptions): string[] {
   const holdLines = providerHolds(state, now)
     .slice(0, 2)
     .map(h => p.fg('warning', fit(' ' + providerHoldLine(h, now), cols)));
+  // A person's hold (R-33): its own line straight under the header, in the
+  // accent: a choice the person made, not a fault.
+  const ownLine = holdLine(state, now);
+  const ownHold = ownLine ? [p.fg('accent', fit(' ' + ownLine, cols))] : [];
   // The line under the header: Missions | Queue (R-26), then what is shown and the keys that change it (R-23).
   const filterRow = tabLine(state, cols, p);
-  const bodyH = Math.max(1, rows - 5 - holdLines.length);
+  const bodyH = Math.max(1, rows - 5 - holdLines.length - ownHold.length);
   const body = state.mode.kind === 'detail'
     ? detailBody(state, state.mode.taskId, cols, bodyH, now, p)
     : state.mode.kind === 'help'
@@ -484,7 +490,7 @@ export function renderFrame(state: TopState, opts: FrameOptions): string[] {
       : state.view === 'queue'
         ? queueBody(state, cols, bodyH, now, p)
         : listBody(state, cols, bodyH, now, p);
-  return [header(state, cols, p), filterRow, ...holdLines, rule(cols, p), ...body, rule(cols, p), footer(state, cols, p)];
+  return [header(state, cols, now, p), ...ownHold, filterRow, ...holdLines, rule(cols, p), ...body, rule(cols, p), footer(state, cols, p)];
 }
 
 // ── Queue view (R-26) ───────────────────────────────────────────────────────

@@ -4,7 +4,7 @@
  * Pure, so every key is unit-tested (top-keys.test.ts).
  */
 import {
-  currentMission, currentTeam, currentWorkspace, cycleTeam, cycleWorkspace, missionRows, scopedWorkspaces, selectedRow, taskRows, teamCount, teamList, workspaceList,
+  currentMission, currentTeam, heldNow, holdRunningWords, currentWorkspace, cycleTeam, cycleWorkspace, missionRows, scopedWorkspaces, selectedRow, taskRows, teamCount, teamList, workspaceList,
   type TaskRow, type TopState,
 } from './state';
 import { queueRowList, selectedQueueRow } from './queue';
@@ -151,6 +151,8 @@ export type Effect =
   | { type: 'open'; taskId: string }
   /** The runner's page on buildd.dev, where its workspaces are set (R-20). */
   | { type: 'openRunner' }
+  /** `h`: hold this runner (`on`) or resume it (R-33). */
+  | { type: 'hold'; on: boolean }
   /** Read the queue now: the Queue view just opened (R-26). */
   | { type: 'refreshQueue' }
   | { type: 'quit' };
@@ -278,6 +280,14 @@ export function handleKey(state: TopState, key: Key, now: number): KeyResult {
     if (state.filter) return { state: { ...state, filter: '', rowCursor: 0, status: null }, effects: [] };
     return { state: { ...state, status: null }, effects: [] };
   }
+  // `h` (R-33): hold or resume, no confirmation, from any list or detail view.
+  if (key.name === 'char' && key.ch === 'h') {
+    const on = !heldNow(state, now);
+    return {
+      state: info(state, on ? 'Holding: nothing new starts, running agents finish…' : 'Resuming: this runner takes new work again…'),
+      effects: [{ type: 'hold', on }],
+    };
+  }
   if (mode.kind === 'list' && state.view === 'queue') {
     const q = queueKey({ ...state, status: null }, key, now);
     if (q) return q;
@@ -381,6 +391,13 @@ function backTo(mode: TopState['mode']): TopState['mode'] {
  */
 export function actionResultText(effect: Effect, result: { status: number; body: unknown }): { text: string; tone: 'ok' | 'error' } {
   const ok = result.status >= 200 && result.status < 300;
+  if (effect.type === 'hold') {
+    if (!ok) return { text: `${effect.on ? 'Hold' : 'Resume'} refused: ${refusalReason(result)}`, tone: 'error' };
+    const running = typeof (result.body as any)?.running === 'number' ? (result.body as any).running : 0;
+    return effect.on
+      ? { text: `On hold: nothing new starts, ${holdRunningWords(running)}. h resumes.`, tone: 'ok' }
+      : { text: 'Resumed: this runner takes new work again.', tone: 'ok' };
+  }
   const title = 'title' in effect ? effect.title : '';
   const done: Record<string, string> = {
     answer: `Answer sent to "${title}". The agent picks it up from here.`,

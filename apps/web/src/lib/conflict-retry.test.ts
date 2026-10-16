@@ -241,6 +241,17 @@ describe('buildConflictRetryTask', () => {
       expect(result!.context.repairTarget).toEqual({ prNumber: 42, headRef: 'mission/x-1234abcd', headSha: 'abc123def456', baseRef: 'dev' });
     });
 
+    it('names the PR head in the brief when it is not the worker branch', () => {
+      const refs = { headRef: 'buildd/pr-head', baseRef: 'dev' };
+      const result = buildConflictRetryTask(makeInput({
+        worker: { id: 'worker-xyz', branch: 'buildd/sweep', prNumber: 42 },
+        prRefs: refs,
+        targetRefs: refs,
+      }));
+      expect(result!.description).toContain('Bound PR lineage');
+      expect(result!.description).toContain('buildd/pr-head');
+    });
+
     it('without a GitHub head keeps the worker branch and claims no target', () => {
       const result = buildConflictRetryTask(makeInput());
       expect(result!.context.resumeBranch).toBe('feat/dark-mode');

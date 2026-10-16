@@ -3,17 +3,29 @@ import { getSpec, reviseSpecDraft } from '@/lib/specs/store';
 import { specCaller } from '@/lib/specs/caller';
 import { reviseSpecSection } from '@/lib/specs/section-revise';
 import { formatHints } from '@/lib/specs/format-hints';
+import { resolveSpecShortId, SHORT_ID } from '@/lib/specs/short-id';
 
 type Ctx = { params: Promise<{ specId: string }> };
 
-/** GET /api/specs/[specId][?revision=N]: the spec at its head or at revision N, exactly as written. */
+/**
+ * GET /api/specs/[specId][?revision=N]: the spec at its head or at revision N, exactly as written.
+ * specId may be the 8-hex short id a brief cites: it resolves among the specs the caller can reach;
+ * several matches are a 409 listing their full ids.
+ */
 export async function GET(req: NextRequest, { params }: Ctx) {
-  const { specId } = await params;
+  let { specId } = await params;
   const caller = await specCaller(req);
   if (!caller) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   const raw = req.nextUrl.searchParams.get('revision');
   const revision = raw === null ? undefined : Number(raw);
   if (revision !== undefined && (!Number.isInteger(revision) || revision < 1)) return NextResponse.json({ error: 'revision must be a positive integer' }, { status: 400 });
+  if (SHORT_ID.test(specId.toLowerCase())) {
+    const hit = await resolveSpecShortId(caller, specId);
+    if (hit.state === 'one') specId = hit.id;
+    else if (hit.state === 'many') {
+      return NextResponse.json({ error: `Short id ${specId} matches ${hit.specs.length} specs; pass a full id`, code: 'ambiguous_short_id', specs: hit.specs }, { status: 409 });
+    }
+  }
   const r = await getSpec(caller, specId, { revision });
   return r.ok ? NextResponse.json(r.view) : NextResponse.json({ error: r.error }, { status: r.status });
 }
