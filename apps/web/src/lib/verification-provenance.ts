@@ -12,13 +12,16 @@
  * The server stamps `reportedVia` on every stored copy; a caller cannot set
  * it. Evidence stored before the stamp existed keeps its old meaning.
  *
- * A cloud container runs its whole runner process on a task token, so on a
- * worker a cloud container claimed (workers.claimedByCloud, set by the claim
- * route) a task token counts as the runner. That leaves a known gap: in cloud
- * the agent and the runner share that token and cannot be told apart, so an
- * agent there could still report its own pass. An agent session on a host
- * runner that fell back to the runner key (mint failure, an admin role) is
- * the same gap. Closing either needs a runner-only proof, a separate change.
+ * A cloud container runs its whole runner process on a task token too, in
+ * the same process environment as the agent, so there the token cannot tell
+ * the two apart either: it counts as the agent on every worker. The runner's
+ * own report on a cloud run comes from the cloud Worker instead, which runs
+ * the check command in the container after the runner process exits and
+ * reports the exit code it saw on its runner key, a key the container never
+ * holds (apps/cloud-runner/src/runner-verification.ts,
+ * /api/runner/verification-run). An agent session on a host runner that
+ * fell back to the runner key (mint failure, an admin role) is a remaining
+ * gap; closing it needs a runner-only proof, a separate change.
  */
 
 export type ReportedVia = 'runner' | 'task_token';
@@ -52,13 +55,9 @@ export function evidenceForCompletion<T>(body: T | null | undefined, stored: T |
 }
 
 /**
- * True when the caller is the agent rather than the runner: a task token on a
- * worker a host runner claimed. On a cloud-claimed worker the task token is
- * the runner's own credential.
+ * True when the caller may be the agent rather than the runner: any task
+ * token, on a host-claimed worker and a cloud-claimed one alike.
  */
-export function agentCredential(
-  account: { taskScope?: unknown },
-  worker: { claimedByCloud?: boolean | null },
-): boolean {
-  return !!account.taskScope && worker.claimedByCloud !== true;
+export function agentCredential(account: { taskScope?: unknown }): boolean {
+  return !!account.taskScope;
 }

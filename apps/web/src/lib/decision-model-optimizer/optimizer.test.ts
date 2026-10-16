@@ -367,6 +367,27 @@ describe('optimizeTeam', () => {
     expect(w.switches).toHaveLength(0);
     expect(out.status === 'ran' && out.kinds[0]).toMatchObject({ kind: KIND, action: 'keep', reason: 'measurement_other_signal' });
   });
+
+  it('never switches to a measurement with cutoff above 1, and keeps the kind on its current model', async () => {
+    // A stored measurement with a calibration threshold above its map's maximum
+    // has an infinite cutoff and acts on no decisions. The kind should stay on
+    // its current model with the measurement_never_acts keep reason.
+    const calibration = { x: [0.5, 0.9], y: [0.5, 0.9] };
+    const w = world({ rows: [
+      row(JEV_ID, 'openrouter', { coverage: 0.5, precision: 0.95, source: 'calibrated_top_p', calibration }),
+      row('clef', 'cloudflare', { coverage: 0.85, precision: 0.96, threshold: 0.65, source: 'calibrated_top_p', calibration }),
+    ] });
+    w.measurements.push({
+      kind: KIND, model: 'clef', threshold: 0.99, precisionLower: 0.96, coverage: 0.85, n: 150, evalRunId: 'older', measuredFingerprint: 'fp-1',
+      status: 'active', setByAccountId: null, setAt: new Date(NOW - DAY), reason: null, confidenceSource: 'calibrated_top_p',
+      calibration,
+    });
+    const out = await optimizeTeam(TEAM, {}, w.deps);
+    expect(w.written).toHaveLength(0);
+    expect(readDecisionModelOverrides(w.stored.value)[KIND]).toBeUndefined();
+    expect(w.switches).toHaveLength(0);
+    expect(out.status === 'ran' && out.kinds[0]).toMatchObject({ kind: KIND, action: 'keep', reason: 'measurement_never_acts' });
+  });
 });
 
 // Below the minimum of graded collected cases, a kind is scored on its labelled
@@ -599,7 +620,15 @@ describe('measurementPlan on calibrated top p', () => {
 
   it('a stored calibrated row without a usable map is the strictest: kept, never loosened', () => {
     const rows: StoredMeasurement[] = [{ ...stored(0.9, { x: [0.5, 0.9], y: [0.5, 0.9] }), calibration: null }];
-    expect(measurementPlan(rows, KIND, 'clef', 'fp-1', derived(0.5, { x: [0.5, 0.9], y: [0.5, 0.9] }))).toBe('keep');
+    expect(measurementPlan(rows, KIND, 'clef', 'fp-1', derived(0.5, { x: [0.5, 0.9], y: [0.5, 0.9] }))).toBe('measurement_never_acts');
+  });
+
+  it('a stored calibrated row with a threshold above its map acts never: prevented from switching', () => {
+    // The stored threshold 0.99 is above the maximum of the map [0.5, 0.9],
+    // so its cutoff is Infinity and it never acts. The optimizer should not
+    // switch to any model when the existing measurement never acts.
+    const rows: StoredMeasurement[] = [stored(0.99, { x: [0.5, 0.9], y: [0.5, 0.9] })];
+    expect(measurementPlan(rows, KIND, 'clef', 'fp-1', derived(0.5, { x: [0.5, 0.9], y: [0.5, 0.9] }))).toBe('measurement_never_acts');
   });
 
   it('a switch past a looser stored row stores the new, stricter map', async () => {

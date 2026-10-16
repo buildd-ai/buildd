@@ -23,7 +23,7 @@ import { LIVE_WORKER_STATUSES, isGateSatisfied } from '@/lib/task-presentation';
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { jsonResponse } from '@/lib/api-response';
 import { notifyTeam } from '@/lib/notify';
-import { hasCodexCredential } from '@/lib/codex-credential';
+import { resolveCodexApiKey } from '@/lib/codex-credential';
 import { hasOpenAiApiKey } from '@/lib/openai-credential';
 import { hasOpenAiCompatibleAgentEndpoint } from '@buildd/core/agent-endpoint';
 import { resolveEffectiveModel } from '@buildd/core/model-router';
@@ -114,9 +114,7 @@ import { VISUAL_AUDIT_ROUTES, CLAIM_LEARNING_HOOKS } from '@/modules';
 import { runDependentContextInjections } from './prompt-context-pipeline';
 import { dependentCountQuery } from '@/lib/dependent-count-query';
 import {
-  attachClaudeCredentials,
   attachCodexCredentials,
-  attachPendingCredentialRefreshes,
   attachServerManagedSecrets,
   resolveAccountCredentialRefreshes,
 } from './credential-injection';
@@ -735,18 +733,16 @@ export async function POST(req: NextRequest) {
   // (visual-auditor) need an explicit availableSkills match; every other role
   // keeps the legacy rule, where an empty list claims anything.
   //
-  // Exception: an interactive session's explicit claim (taskId + interactiveSession)
-  // on a task whose mission runs locally (executor='local') skips the explicit-slug
-  // requirement too. Runners never see a local mission's tasks at all (missionLocal
-  // above already exempts this same claim from that gate), so the role gate's
-  // browser-capability signal has no runner to protect here — the person's own
-  // session can produce the same evidence a browser-capable runner would
-  // (scripts/qa/shoot.sh, or dispatching visual-qa.yml, per the visual-review
-  // skill), and the visual_evidence completion gate (workers/[id]/route.ts) still
-  // enforces it regardless of who claims. Scoped to local missions only: a
-  // runner-executed mission's browser-capability requirement is untouched, and a
-  // force claim still never lifts this gate (see the force-claim comment above).
-  const roleGateExempt = localMissionClaim;
+  // Exception: a verified interactive session's explicit claim (taskId +
+  // interactiveSession) skips the explicit-slug requirement, whatever the
+  // mission's executor. The slug is a proxy for "this runner has a browser", and
+  // a person's own session needs none: it produces the same evidence through
+  // visual-qa.yml dispatched from trunk (the visual-review worker recipe) or
+  // scripts/qa/shoot.sh, and the visual_evidence completion gate
+  // (workers/[id]/route.ts) still enforces it regardless of who claims. Runner
+  // claims keep the gate, and a force claim alone never lifts it (it is not an
+  // interactive session).
+  const roleGateExempt = !!(taskId && interactiveSession);
   const roleConditions = roleGateExempt ? [] : roleSlugGate(availableSkills);
   if (roleConditions.length > 0) explicitTaskGates.role = and(...roleConditions)!;
   claimableConditions.push(...roleConditions);
@@ -923,21 +919,21 @@ export async function POST(req: NextRequest) {
   const runnerSupportsEndpointForCapabilityCheck = runnerSupportsAgentEndpoint(body.runnerFeatures);
 
   // Memoized per-workspace server-side Codex auth (scope-aware: team-wide,
-  // account, or workspace): a ChatGPT/OAuth connect, an OpenAI API key, or an
-  // OpenAI-compatible team endpoint this runner will apply. Exactly what
-  // attachCodexCredentials / attachAgentEndpoints can deliver below.
+  // account, or workspace): an OpenAI API key (in a codex_credential row or as
+  // openai_api_key), or an OpenAI-compatible team endpoint this runner will
+  // apply. Exactly what attachCodexCredentials / attachAgentEndpoints can
+  // deliver below.
   const codexAvailability = new Map<string, boolean>();
   const workspaceHasCodex = async (scope: { teamId: string; accountId?: string | null; workspaceId: string }): Promise<boolean> => {
     const wsId = scope.workspaceId;
     if (codexAvailability.has(wsId)) return codexAvailability.get(wsId)!;
     let available = false;
     try {
-      // deliverableOnly: an expired stored login is never delivered
-      // (attachCodexCredentials leaves it out, model credentials spec R-3), so it
-      // must not let a Codex task through to a runner with no login of its own;
-      // that worker died on "Codex credential expired" and the task retried
-      // forever. Excluded here, the task stays pending for a runner that has one.
-      available = (await hasCodexCredential({ ...scope, deliverableOnly: true })) || (await hasOpenAiApiKey(scope)) ||
+      // A stored ChatGPT/OAuth login is never delivered (model credentials spec
+      // R-2), so it must not let a Codex task through to a runner with no login
+      // of its own: that worker would have nothing to run on. Excluded here, the
+      // task stays pending for a runner that has its own `codex login`.
+      available = !!(await resolveCodexApiKey(scope)) || (await hasOpenAiApiKey(scope)) ||
         (runnerSupportsEndpointForCapabilityCheck && await hasOpenAiCompatibleAgentEndpoint(scope));
     } catch (err) {
       console.warn(`[claim] Codex credential check failed for workspace ${wsId}:`, err);
@@ -989,7 +985,7 @@ export async function POST(req: NextRequest) {
         ...(taskId ? {
           taskExclusion: {
             code: 'capability_mismatch',
-            detail: 'The task runs on the Codex backend, and this caller advertises neither backend:codex with its own Codex login (codex login or OPENAI_API_KEY) nor access to a usable team Codex credential (a stored login that has expired is never sent). Run codex login on the runner or add an OpenAI API key; another runner with a Codex login can still take the task.',
+            detail: 'The task runs on the Codex backend, and this caller advertises neither backend:codex with its own Codex login (codex login or OPENAI_API_KEY) nor a team OpenAI API key (a stored Codex login is never sent). Run codex login on the runner or add an OpenAI API key; another runner with a Codex login can still take the task.',
           },
         } : {}),
       } satisfies ClaimDiagnostics,
@@ -1731,6 +1727,11 @@ export async function POST(req: NextRequest) {
       // A PR into a different landing base (a trunk → mission refresh, for a
       // trunk-bound task) changes nothing this task lands on — see
       // ./open-pr-target-base.
+      // A fix attempt never waits on another PR that is itself waiting on a
+      // fix: two PRs sharing files each held the other's fix forever, and
+      // neither could merge. Fixes repair existing branches, so they may overlap.
+      const isRepairAttempt = (task as any).taskClass === 'attempt'
+        && ((task as any).conflictRetryPrNumber ?? (task as any).ciRetryPrNumber ?? (task as any).reviewerRetryPrNumber) != null;
       const taskMission = (task as any).missionId ? missionClaimMap.get((task as any).missionId) : null;
       const trunk = workspaceTrunk(task.workspace?.gitConfig);
       const filterOpenPrTasks = partitionOpenPrsByLandingBase(
@@ -1740,7 +1741,7 @@ export async function POST(req: NextRequest) {
             && ((task as any).conflictRetryPrNumber ?? (task as any).ciRetryPrNumber ?? (task as any).reviewerRetryPrNumber) != null,
         },
         splitOwnOpenPrs(task, openPrTasks).others,
-      ).sameBase;
+      ).sameBase.filter(pr => !(isRepairAttempt && (pr as any).awaitingRepair));
       const blocking = findBlockingPr(taskManifest, filterOpenPrTasks);
       // Note the deferral (no I/O). An applied gated START for this exact
       // state relaxes ONLY this layer; layer 2 and every
@@ -3499,13 +3500,11 @@ export async function POST(req: NextRequest) {
     await attachMcpConnectors(claimedWorkers, now, getSecretsProvider());
   }
 
-  // Attach agent-backend credentials and the runner's pre-refresh list.
-  // Codex-backend tasks get Codex creds, everything else gets Claude creds; both
-  // read-only (refresh is runner-side). See ./credential-injection.
+  // Codex-backend tasks get a Codex API key. No subscription login is ever
+  // attached (model credentials spec R-2): the runner uses its own. See
+  // ./credential-injection.
   if (!cloudExecutor) {
     await attachCodexCredentials(claimedWorkers, filteredTasks, account.id, modelCredentialDecided);
-    await attachClaudeCredentials(claimedWorkers, filteredTasks, account.id, modelCredentialDecided);
-    await attachPendingCredentialRefreshes(claimedWorkers, filteredTasks, modelCredentialDecided);
   } else {
     for (const cw of claimedWorkers) {
       const removed = stripClaimCredentials(cw as unknown as Record<string, unknown>);
@@ -3514,11 +3513,8 @@ export async function POST(req: NextRequest) {
       }
     }
   }
-  // Also announce at the top level so the runner has ONE field to read on every
-  // poll, claim or no claim. This one is account-team-scoped; the per-worker
-  // lists above stay because a claim may serve a workspace outside the
-  // authenticated account's own team, and the runner reads the claude_credential
-  // secretId off the per-worker entry when wiring that worker to its broker.
+  // The idle broker's account-team-scoped list, on every poll, claim or no
+  // claim. No claimed worker is wired to it (spec AC-6).
   const accountCredentialRefreshes = cloudExecutor ? undefined : await resolveAccountCredentialRefreshes(account);
 
   // Notify on task claims — routed to the OWNING team's channel (not a global one).

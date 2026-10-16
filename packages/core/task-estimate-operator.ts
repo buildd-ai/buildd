@@ -1,3 +1,4 @@
+import type { TaskEstimateEvidence } from '@buildd/shared';
 /**
  * The platform operator's projection of the task-estimates model
  * (docs/specs/task-estimates.md, "Platform operator surface"): live
@@ -53,7 +54,7 @@ export interface OperatorEstimateRow {
   p50Tokens: number;
   p80Tokens: number;
   expectedRepairs: number;
-  explanation: Pick<TaskEstimateExplanation, 'sources' | 'clusterLabel'>;
+  explanation: Pick<TaskEstimateExplanation, 'sources' | 'clusterLabel'> & { evidence?: TaskEstimateEvidence };
   kind: string | null;
   complexity: string | null;
   taskClass: string;
@@ -165,6 +166,13 @@ export interface OperatorEstimatesReport {
   truncated: boolean;
   rowLimit: number;
   live: OperatorVersionLive[];
+  /** Own-team frozen selection detail only. Legacy records carry null evidence. */
+  selection: Array<{
+    taskId: string; workspaceId: string; estimatorVersion: string;
+    calibration: 'passed' | 'failed' | 'unknown';
+    sources: TaskEstimateExplanation['sources'];
+    evidence: TaskEstimateEvidence | null;
+  }>;
   backtest: OperatorGate[];
   coverage: OperatorCoverage;
   runtime: OperatorRuntime;
@@ -331,6 +339,12 @@ export function buildOperatorEstimatesReport(input: OperatorReportInput): Operat
     truncated: input.truncated,
     rowLimit: input.rowLimit,
     live: versions.map(v => liveForVersion(v, byVersion.get(v)!, input.detailTeamIds, running)),
+    selection: [...byVersion.values()].flat().filter(r => input.detailTeamIds.has(r.teamId)).map(r => ({
+      taskId: r.taskId, workspaceId: r.workspaceId, estimatorVersion: r.estimatorVersion,
+      calibration: r.estimatorVersion !== pin.estimatorVersion ? 'unknown' : pin.verdict === 'go' ? 'passed' : 'failed',
+      sources: r.explanation.sources,
+      evidence: r.explanation.evidence ?? null,
+    })),
     backtest: gateVersions.map(v => gateForVersion(v, pin, running)),
     coverage: {
       workTasks,

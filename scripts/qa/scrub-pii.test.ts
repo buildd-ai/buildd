@@ -232,6 +232,8 @@ const SAFE: Record<string, string[]> = {
   worker_heartbeats: [
     'workspace_ids', 'runner_commit', 'runner_version', 'current_commit', 'disk_commit',
     'tracked_branch',
+    // update_drain: two timestamps and a busy-worker count, no free text.
+    'update_drain',
   ],
   // delegation: workspace/user/account ids, a fixed capability vocabulary and a
   // timestamp (packages/core/token-delegation.ts). No free text.

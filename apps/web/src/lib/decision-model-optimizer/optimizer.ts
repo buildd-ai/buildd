@@ -146,7 +146,9 @@ export type KeepReason =
   | 'pinned' | 'too_few_graded' | 'current_not_asked' | 'no_model_clears_bar' | 'current_best' | 'within_margin'
   | 'preflight_failed' | 'no_fingerprint' | 'write_failed'
   // The shared (kind x model) measurement row is retired, or in force on another signal: not one team's to change.
-  | 'measurement_retired' | 'measurement_other_signal';
+  | 'measurement_retired' | 'measurement_other_signal'
+  // The existing measurement's cutoff is above 1 (acts never), so no model should switch to it.
+  | 'measurement_never_acts';
 
 export type KindPlan =
   | { action: 'switch'; kind: string; from: ModelResult; to: ModelResult; before: number; after: number }
@@ -351,7 +353,7 @@ export function calibratedCutoff(threshold: number, calibration: Calibration | n
 export function measurementPlan(
   rows: readonly StoredMeasurement[], kind: string, model: string, fingerprint: string, derived: DerivedAt,
   source: MeasurementCaseSource = 'collected',
-): 'write' | 'keep' | 'measurement_retired' | 'measurement_other_signal' {
+): 'write' | 'keep' | 'measurement_retired' | 'measurement_other_signal' | 'measurement_never_acts' {
   const same = rows.filter(r => r.kind === kind && canonicalMeasuredModel(r.model) === canonicalMeasuredModel(model));
   if (same.some(r => r.status === 'retired')) return 'measurement_retired';
   const existing = same.find(r => r.status === 'active' && r.measuredFingerprint === fingerprint);
@@ -366,7 +368,12 @@ export function measurementPlan(
     // Exact, not an approximation: calibrate is non-decreasing, so a row acts on
     // exactly the top p at or above its cutoff, and the higher cutoff acts on a
     // subset of the other's. A stored row with no usable map is the strictest.
-    return calibratedCutoff(existing.threshold, existing.calibration) >= calibratedCutoff(derived.threshold, derived.calibration) ? 'keep' : 'write';
+    const existingCutoff = calibratedCutoff(existing.threshold, existing.calibration);
+    // A cutoff above 1 means the measurement never acts (either because the
+    // threshold is above the calibration curve's maximum, or there is no usable
+    // calibration). Do not switch to a model that never acts.
+    if (existingCutoff > 1) return 'measurement_never_acts';
+    return existingCutoff >= calibratedCutoff(derived.threshold, derived.calibration) ? 'keep' : 'write';
   }
   return existing.threshold >= derived.threshold ? 'keep' : 'write';
 }
@@ -455,7 +462,7 @@ export async function optimizeTeam(teamId: string, opts: OptimizeOptions, deps: 
     if (!fingerprint) { kept('no_fingerprint'); continue; }
     const derived = plan.to.derived!;
     const measured = measurementPlan(await deps.measurements(), kind, plan.to.route.model, fingerprint, derived, source);
-    if (measured === 'measurement_retired' || measured === 'measurement_other_signal') { kept(measured); continue; }
+    if (measured === 'measurement_retired' || measured === 'measurement_other_signal' || measured === 'measurement_never_acts') { kept(measured); continue; }
     if (measured === 'write') {
       await deps.writeMeasurement({
         kind,

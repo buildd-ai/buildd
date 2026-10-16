@@ -44,7 +44,7 @@ const base = (over: Partial<EstimateInputs> = {}): EstimateInputs => ({
 
 describe('task-estimate', () => {
   it('has a version tag', () => {
-    expect(ESTIMATOR_VERSION).toBe('blend-v1');
+    expect(ESTIMATOR_VERSION).toBe('blend-v2');
   });
 
   it('prior weight falls as n grows', () => {
@@ -64,7 +64,8 @@ describe('task-estimate', () => {
     expect(r.p80Minutes).toBeCloseTo(80);
     expect(r.p50Tokens).toBeCloseTo(150_000);
     expect(r.expectedRepairs).toBeCloseTo(0.4);
-    expect(r.explanation.summary).toBe('45m (25-80m), 150k tokens, from typical engineering tasks; no history in this repo yet.');
+    expect(r.explanation.summary).toContain('About 45–90 min');
+    expect(r.explanation.summary).not.toContain('no history');
   });
 
   it('falls back to the kind M cell, then any kind cell, then a global average', () => {
@@ -105,7 +106,7 @@ describe('task-estimate', () => {
     expect(w.clusters).toBeCloseTo(0.6);
     expect(w.prior).toBeCloseTo(0.2);
     expect(r.explanation.clusterLabel).toBe('apps/web/missions');
-    expect(r.explanation.summary).toBe('30m (15-60m), 97k tokens, from 5 similar tasks and work in apps/web/missions, plus typical engineering tasks.');
+    expect(r.explanation.summary).toContain('Based on comparable tasks in this repo.');
 
     const local = estimateTask(base({ prior: {}, neighbours: nbs(3) }));
     expect(local.explanation.sources).toEqual([{ source: 'neighbours', n: 3, weight: 1 }]);
@@ -159,12 +160,12 @@ describe('task-estimate', () => {
     expect(r.expectedRepairs).toBe(DEFAULT_ESTIMATE.expectedRepairs);
     expect(r.explanation.priorWeight).toBe(1);
     expect(r.explanation.sources).toEqual([]);
-    expect(r.explanation.summary).toContain('default estimate');
+    expect(r.explanation.summary).toContain('Estimate unavailable');
     // n=0 evidence counts as no evidence
     expect(estimateTask(base({ prior: {}, neighbours: nbs(0) })).explanation.sources).toEqual([]);
   });
 
-  it('summary is one plain sentence with no banned words or em dashes', () => {
+  it('compatibility summary uses the shared display and honest provenance', () => {
     const cases = [
       estimateTask(base()),
       estimateTask(base({ prior: {} })),
@@ -173,11 +174,11 @@ describe('task-estimate', () => {
     ];
     for (const r of cases) {
       const s = r.explanation.summary;
-      expect(s).not.toMatch(/late|\u2014|about|roughly|maybe|probably|might/i);
+      expect(s).not.toMatch(/\u2014|rough guess|no history in this repo/i);
       expect(s.endsWith('.')).toBe(true);
-      expect(s.split('. ').length).toBe(1);
+      expect(s).not.toContain('tokens');
     }
-    expect(cases[3].explanation.summary).toBe('30m (15-60m), 90k tokens, from work in apps/web/missions.');
+    expect(cases[3].explanation.summary).toContain('Based on limited comparable tasks in this repo.');
     const { explanation, ...rest } = cases[0];
     const { summary, ...e } = explanation;
     expect(formatEstimateSummary(rest, e, 'engineering')).toBe(summary);

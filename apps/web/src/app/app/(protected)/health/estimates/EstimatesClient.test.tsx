@@ -21,7 +21,7 @@ describe('EstimatesClient', () => {
     const html = renderToStaticMarkup(<EstimatesClient readout={readout()} canManage={false} />);
     expect(html).toContain('9 in 10 tasks finished within the upper estimate.');
     expect(html).toContain('Across 40 finished tasks.');
-    expect(html).toContain('10 of these had little history in the repo to go on.');
+    expect(html).toContain('10 of these had limited comparable history in the repo.');
     expect(html).not.toMatch(/uppercase|font-mono/);
   });
 

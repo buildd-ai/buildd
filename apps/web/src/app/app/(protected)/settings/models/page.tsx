@@ -10,6 +10,7 @@ import ModelTiersClient from './ModelTiersClient';
 import TierLimitSection from './TierLimitSection';
 import ChatTierPolicySection from './ChatTierPolicySection';
 import ModelUpgradePolicySection from './ModelUpgradePolicySection';
+import { resolveModelsQaDecisions } from './qa-state';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,8 +30,16 @@ export const dynamic = 'force-dynamic';
  * tier's primary model; traffic pools and the decision model are platform
  * operator controls (lib/admin/platform-operator-caller.ts) and render for an operator only.
  * Your own maximum is You › Keys.
+ *
+ * `?state=decisions` (dev server only) shows sample decision overrides and
+ * switch lines in the operator's Decisions row — see ./qa-state.ts.
  */
-export default async function ModelsSettingsPage() {
+export default async function ModelsSettingsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ state?: string | string[] }>;
+}) {
+  const qaDecisions = resolveModelsQaDecisions((await searchParams).state);
   const { user, currentTeam, currentTeamId, perms, permsByTeam, workspaces } = await loadSettingsContext();
   const operator = await isPlatformOperatorCaller({ user });
 
@@ -54,6 +63,7 @@ export default async function ModelsSettingsPage() {
         teamId={teamId}
         isAdmin={perms.manage_inference_providers}
         operator={operator}
+        qaDecisions={qaDecisions}
         workspaces={teamWorkspaces.map((w) => ({ id: w.id, name: w.name }))}
         signIns={{
           workspaces,

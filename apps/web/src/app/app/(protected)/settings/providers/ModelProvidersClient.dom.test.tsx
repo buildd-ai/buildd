@@ -252,6 +252,35 @@ describe('connect: one input, the format decides', () => {
     expect($('[data-testid="used-for-decisions"] [data-testid="decision-model"]')).toBeTruthy();
   });
 
+  it('a platform operator keeps the decision model row with one provider, under its one line', async () => {
+    await mount({ rows: [{ provider: 'openrouter', scope: 'team' }] }, false, WORKSPACES, 'team', true);
+    expect($('[data-testid="used-for-decisions"] [data-testid="decision-model"]')).toBeTruthy();
+    expect($('[data-testid="provider-lone"]')!.textContent).toMatch(/^OpenRouter is used for chat/);
+    expect($('[data-testid="used-for-chat"]')).toBeNull();
+  });
+
+  it('a platform operator keeps the decision model row with no provider connected', async () => {
+    await mount({}, false, WORKSPACES, 'team', true);
+    expect($('[data-testid="used-for-decisions"] [data-testid="decision-model"]')).toBeTruthy();
+  });
+
+  it('the decisions fixture shows overrides and a switch line, and Undo writes nothing', async () => {
+    const { MODELS_QA_DECISIONS } = await import('../models/qa-state');
+    host = document.createElement('div');
+    document.body.append(host);
+    root = createRoot(host);
+    opts = { rows: [{ provider: 'openrouter', scope: 'team' }] };
+    await act(async () => { root.render(<ModelProvidersClient teamId="t" isAdmin workspaces={WORKSPACES} operator qaDecisions={MODELS_QA_DECISIONS} />); });
+    await flush();
+    await flush();
+    expect($('[data-testid="decision-model-overrides"]')!.querySelectorAll('li').length).toBeGreaterThan(0);
+    expect($('[data-testid="decision-model-switches"]')).toBeTruthy();
+    calls.length = 0;
+    await click($('[data-testid="decision-model-switch-undo"]'));
+    expect(calls.filter((c) => c.method !== 'GET')).toHaveLength(0);
+    expect(calls.some((c) => c.url.includes('decision-model-switches'))).toBe(false);
+  });
+
   it('remove asks first, then deletes at the tab scope', async () => {
     await mount({ rows: [{ provider: 'openai', scope: 'team' }] });
     await click(toggle('openai'));
