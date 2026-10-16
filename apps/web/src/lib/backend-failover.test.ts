@@ -19,12 +19,12 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
-// Mock hasCodexCredential directly to avoid relying on transitive @buildd/core/db
+// Mock resolveCodexApiKey directly to avoid relying on transitive @buildd/core/db
 // mock resolution — Bun 1.4.0 (CI) uses per-file module registries so transitive
 // mocks from @buildd/core/db don't propagate into codex-credential.ts's imports.
-const mockHasCodexCredential = mock(() => Promise.resolve(false));
+const mockResolveCodexApiKey = mock(() => Promise.resolve(null as { apiKey: string } | null));
 mock.module('@/lib/codex-credential', () => ({
-  hasCodexCredential: mockHasCodexCredential,
+  resolveCodexApiKey: mockResolveCodexApiKey,
 }));
 
 // Same reasoning for the plain-API-key sibling: either credential is enough
@@ -32,6 +32,11 @@ mock.module('@/lib/codex-credential', () => ({
 const mockHasOpenAiApiKey = mock(() => Promise.resolve(false));
 mock.module('@/lib/openai-credential', () => ({
   hasOpenAiApiKey: mockHasOpenAiApiKey,
+}));
+
+const mockHasEndpoint = mock(() => Promise.resolve(false));
+mock.module('@buildd/core/agent-endpoint', () => ({
+  hasOpenAiCompatibleAgentEndpoint: mockHasEndpoint,
 }));
 
 const {
@@ -49,8 +54,9 @@ beforeEach(() => {
   mockBackendPausesFindMany.mockResolvedValue([]);
   mockAccountsFindFirst.mockResolvedValue(null);
   mockTenantBudgetsFindFirst.mockResolvedValue(null);
-  mockHasCodexCredential.mockResolvedValue(false);
+  mockResolveCodexApiKey.mockResolvedValue(null);
   mockHasOpenAiApiKey.mockResolvedValue(false);
+  mockHasEndpoint.mockResolvedValue(false);
 });
 
 describe('recordBackendPause', () => {
@@ -135,21 +141,39 @@ describe('isBackendConfigured', () => {
     expect(await isBackendConfigured('claude', scope)).toBe(true);
   });
 
-  it('requires a stored credential for Codex', async () => {
+  it('requires a deliverable API key for Codex', async () => {
     expect(await isBackendConfigured('codex', scope)).toBe(false);
-    mockHasCodexCredential.mockResolvedValue(true);
+    mockResolveCodexApiKey.mockResolvedValue({ apiKey: 'sk-test' });
     expect(await isBackendConfigured('codex', scope)).toBe(true);
   });
 
   // A plain team/workspace OpenAI API key is the simpler sibling of
   // `codex_credential` (ChatGPT connect) — either one configures Codex.
   it('also treats a plain OpenAI API key as a configured Codex credential', async () => {
-    mockHasCodexCredential.mockResolvedValue(false);
+    mockResolveCodexApiKey.mockResolvedValue(null);
     mockHasOpenAiApiKey.mockResolvedValue(false);
     expect(await isBackendConfigured('codex', scope)).toBe(false);
 
     mockHasOpenAiApiKey.mockResolvedValue(true);
     expect(await isBackendConfigured('codex', scope)).toBe(true);
+  });
+
+  // resolveCodexApiKey returns null for a stored subscription login (claims
+  // never deliver one), so a login alone must not read as ready.
+  it('does not treat a stored subscription login alone as configured', async () => {
+    mockResolveCodexApiKey.mockResolvedValue(null);
+    expect(await isBackendConfigured('codex', scope)).toBe(false);
+    expect(await isBackendConfigured('codex', { teamId: 'team-1', anyAccount: true })).toBe(false);
+  });
+
+  it('an OpenAI-compatible agent endpoint alone configures Codex', async () => {
+    mockHasEndpoint.mockResolvedValue(true);
+    expect(await isBackendConfigured('codex', scope)).toBe(true);
+  });
+
+  it('is not configured without a team', async () => {
+    mockResolveCodexApiKey.mockResolvedValue({ apiKey: 'sk-test' });
+    expect(await isBackendConfigured('codex', { accountId: 'account-1' })).toBe(false);
   });
 
   it('refuses a backend the runner cannot execute yet', async () => {
@@ -158,7 +182,7 @@ describe('isBackendConfigured', () => {
 
   it('passes the claiming account through by default', async () => {
     await isBackendConfigured('codex', scope);
-    expect(mockHasCodexCredential).toHaveBeenLastCalledWith({
+    expect(mockResolveCodexApiKey).toHaveBeenLastCalledWith({
       teamId: 'team-1', accountId: 'account-1', workspaceId: 'ws-1',
     });
   });
@@ -167,7 +191,7 @@ describe('isBackendConfigured', () => {
     // Read-only reporting has no claiming account; an account-scoped credential
     // still means the backend works for someone, so it must not read as absent.
     await isBackendConfigured('codex', { teamId: 'team-1', workspaceId: 'ws-1', anyAccount: true });
-    expect(mockHasCodexCredential).toHaveBeenLastCalledWith({
+    expect(mockResolveCodexApiKey).toHaveBeenLastCalledWith({
       teamId: 'team-1', accountId: 'any', workspaceId: 'ws-1',
     });
   });
@@ -182,7 +206,7 @@ describe('resolveFailoverBackend', () => {
   });
 
   it('moves a Claude-walled task to Codex when a credential exists', async () => {
-    mockHasCodexCredential.mockResolvedValue(true);
+    mockResolveCodexApiKey.mockResolvedValue({ apiKey: 'sk-test' });
     expect((await resolveFailoverBackend({ from: 'claude', scope })).backend).toBe('codex');
   });
 
@@ -195,7 +219,7 @@ describe('resolveFailoverBackend', () => {
   });
 
   it('respects a busy provider slot the caller reports', async () => {
-    mockHasCodexCredential.mockResolvedValue(true);
+    mockResolveCodexApiKey.mockResolvedValue({ apiKey: 'sk-test' });
     const decision = await resolveFailoverBackend({ from: 'claude', scope, busy: { codex: true } });
     expect(decision.backend).toBeNull();
     expect(decision.blocked[0]).toMatchObject({ backend: 'codex', reason: 'busy' });
