@@ -23,6 +23,7 @@ import {
   runHoldCommand,
   runStopCommand,
   withRunnerHold,
+  RUNNER_SOCKET_TIMEOUT_MS,
 } from '../../src/runner-hold';
 import { activeRunnerHold, isRunnerHoldActive, parseRunnerHold, withNormalizedRunnerHold } from '@buildd/shared';
 import { UpdateDrain } from '../../src/update-drain';
@@ -278,6 +279,51 @@ describe('runHoldCommand', () => {
     expect(r.code).toBe(64);
     expect(r.stderr).toContain('--for takes a time like 2h, 30m or 1h30m');
     expect(existsSync(configFile)).toBe(false);
+  });
+});
+
+describe('a busy runner gets time to answer (task 7d42431c)', () => {
+  const live = async () => ({ state: 'live' as const, pid: 1, version: null });
+  const slow = <T,>(ms: number, v: T) => new Promise<T>(r => setTimeout(() => r(v), ms));
+
+  test('the socket budget survives a busy runner (5s did not)', () => {
+    expect(RUNNER_SOCKET_TIMEOUT_MS).toBeGreaterThanOrEqual(20_000);
+    expect(RUNNER_SOCKET_TIMEOUT_MS).toBeLessThanOrEqual(30_000);
+    const src = readFileSync(join(import.meta.dir, '../../src/runner-hold.ts'), 'utf8');
+    expect(src).not.toContain('AbortSignal.timeout(5_000)');
+  });
+
+  test('hold says it is waiting when the runner is slow to answer', async () => {
+    const notices: string[] = [];
+    const r = await runHoldCommand({ kind: 'hold', forArg: null }, {
+      configFile, socketPath: join(home, 'runner.sock'), now: () => T0, probe: live,
+      waitNotice: (line) => notices.push(line), waitNoticeAfterMs: 5,
+      post: () => slow(40, { status: 200, body: { hold: { since: new Date(T0).toISOString(), until: null }, running: 1 } }),
+    });
+    expect(r.code).toBe(0);
+    expect(notices).toEqual(['Waiting for the runner on this machine to answer (it is busy)...']);
+  });
+
+  test('no waiting line when the runner answers at once', async () => {
+    const notices: string[] = [];
+    await runHoldCommand({ kind: 'hold', forArg: null }, {
+      configFile, socketPath: join(home, 'runner.sock'), now: () => T0, probe: live,
+      waitNotice: (line) => notices.push(line), waitNoticeAfterMs: 200,
+      post: async () => ({ status: 200, body: { hold: { since: new Date(T0).toISOString(), until: null }, running: 0 } }),
+    });
+    expect(notices).toEqual([]);
+  });
+
+  test('stop says it is waiting too', async () => {
+    const notices: string[] = [];
+    const r = await runStopCommand({ yes: true }, {
+      configFile, socketPath: join(home, 'runner.sock'), now: () => T0, probe: live,
+      waitNotice: (line) => notices.push(line), waitNoticeAfterMs: 5,
+      get: () => slow(40, { status: 200, body: { workers: [] } }),
+      post: async () => ({ status: 200, body: {} }),
+    });
+    expect(r.code).toBe(0);
+    expect(notices).toEqual(['Waiting for the runner on this machine to answer (it is busy)...']);
   });
 });
 
