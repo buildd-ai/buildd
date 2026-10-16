@@ -1731,6 +1731,11 @@ export async function POST(req: NextRequest) {
       // A PR into a different landing base (a trunk → mission refresh, for a
       // trunk-bound task) changes nothing this task lands on — see
       // ./open-pr-target-base.
+      // A fix attempt never waits on another PR that is itself waiting on a
+      // fix: two PRs sharing files each held the other's fix forever, and
+      // neither could merge. Fixes repair existing branches, so they may overlap.
+      const isRepairAttempt = (task as any).taskClass === 'attempt'
+        && ((task as any).conflictRetryPrNumber ?? (task as any).ciRetryPrNumber ?? (task as any).reviewerRetryPrNumber) != null;
       const taskMission = (task as any).missionId ? missionClaimMap.get((task as any).missionId) : null;
       const trunk = workspaceTrunk(task.workspace?.gitConfig);
       const filterOpenPrTasks = partitionOpenPrsByLandingBase(
@@ -1740,7 +1745,7 @@ export async function POST(req: NextRequest) {
             && ((task as any).conflictRetryPrNumber ?? (task as any).ciRetryPrNumber ?? (task as any).reviewerRetryPrNumber) != null,
         },
         splitOwnOpenPrs(task, openPrTasks).others,
-      ).sameBase;
+      ).sameBase.filter(pr => !(isRepairAttempt && (pr as any).awaitingRepair));
       const blocking = findBlockingPr(taskManifest, filterOpenPrTasks);
       // Note the deferral (no I/O). An applied gated START for this exact
       // state relaxes ONLY this layer; layer 2 and every

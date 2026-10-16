@@ -5,7 +5,7 @@
  */
 import { db } from '@buildd/core/db';
 import { tasks, workers, missions } from '@buildd/core/db/schema';
-import { and, eq, inArray, isNull, not } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, not, or } from 'drizzle-orm';
 import { declaresNoScope } from '@buildd/core/path-overlap';
 import { isExpiredParkedHolder } from '@buildd/core/path-claim-ttl';
 import { isDispatchedReview } from '@/lib/read-only-task';
@@ -41,6 +41,18 @@ export async function loadOpenPrTasksByWorkspace(workspaceIds: string[]): Promis
         columns: { id: true, pathManifest: true },
       })) ?? []
     : [];
+  // PRs that already have a pending repair attempt queued: they are waiting on
+  // a fix, so another PR's fix must not wait on them (see the claim route).
+  const pendingRepairs = (await db.query.tasks.findMany({
+    where: sqlWhere(and(
+      inArray(tasks.workspaceId, workspaceIds),
+      eq(tasks.status, 'pending'),
+      or(isNotNull(tasks.conflictRetryPrNumber), isNotNull(tasks.ciRetryPrNumber), isNotNull(tasks.reviewerRetryPrNumber)),
+    )),
+    columns: { workspaceId: true, conflictRetryPrNumber: true, ciRetryPrNumber: true, reviewerRetryPrNumber: true },
+  })) ?? [];
+  const awaitingRepair = new Set(pendingRepairs.flatMap(t => [t.conflictRetryPrNumber, t.ciRetryPrNumber, t.reviewerRetryPrNumber]
+    .filter((n): n is number => n != null).map(n => `${t.workspaceId}:${n}`)));
   const manifestByTask = new Map(prTasks.map(t => [t.id, t.pathManifest as string[] | null]));
   for (const w of activeOpenPrWorkers) {
     const entry: OpenPrTask = {
@@ -52,6 +64,7 @@ export async function loadOpenPrTasksByWorkspace(workspaceIds: string[]): Promis
       prLifecycle: (w.prLifecycleStatus as string | null) ?? null,
       branch: w.branch ?? null,
       prBaseRef: w.prBaseRef ?? null,
+      awaitingRepair: w.prNumber != null && awaitingRepair.has(`${w.workspaceId}:${w.prNumber}`),
     };
     const list = byWorkspace.get(w.workspaceId) ?? [];
     list.push(entry);

@@ -6766,6 +6766,46 @@ describe('path-overlap claim guard', () => {
       expect(data.diagnostics?.deferrals?.path_overlap).toBe(1);
     });
 
+    // Two PRs sharing a file each got a fix; each fix deferred behind the
+    // other PR, which could not merge until its own fix landed: a deadlock.
+    it(`claims a ${label} fix task despite a different open PR that is itself awaiting a fix`, async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupForClaim();
+
+      mockWorkersFindMany
+        .mockResolvedValueOnce([]) // active workers
+        .mockResolvedValueOnce([
+          { workspaceId: 'ws-1', taskId: 'original-task', prNumber: 2659, prUrl: 'https://github.com/org/repo/pull/2659', status: 'completed', prLifecycleStatus: 'open' },
+          { workspaceId: 'ws-1', taskId: 'sibling-task', prNumber: 2700, prUrl: 'https://github.com/org/repo/pull/2700', status: 'completed', prLifecycleStatus: 'open' },
+        ]);
+
+      const fixTask = {
+        ...taskWithManifest(['.github/workflows/integration.yml']),
+        id: 'fix-task',
+        taskClass: 'attempt',
+        [column]: 2659,
+      };
+
+      mockTasksFindMany
+        .mockResolvedValueOnce([fixTask])
+        .mockResolvedValueOnce([
+          { id: 'original-task', pathManifest: ['.github/workflows/integration.yml'] },
+          { id: 'sibling-task', pathManifest: ['.github/workflows/integration.yml'] },
+        ])
+        .mockResolvedValueOnce([ // pending repair attempts: the sibling PR's fix is queued too
+          { workspaceId: 'ws-1', conflictRetryPrNumber: null, ciRetryPrNumber: null, reviewerRetryPrNumber: 2700 },
+        ]);
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner' },
+      }));
+
+      const data = await res.json();
+      expect(data.workers).toHaveLength(1);
+      expect(data.workers[0].taskId).toBe('fix-task');
+    });
+
     // Stacked mission chains: PR D is based on PR C's branch, so D's diff
     // contains all of C's files. A fix for C must not defer behind D (or
     // anything stacked on D) — those overlaps are C's own changes.
