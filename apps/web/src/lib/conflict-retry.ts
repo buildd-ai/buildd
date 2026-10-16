@@ -1185,7 +1185,7 @@ export async function dispatchConflictRetry(
   }
 
   // The PR's refs: its base is stamped on every retry (context.prBase, read by
-  // the runner's pre-merge); the head only changes the migration brief, so
+  // the runner's pre-merge); the head also decides which branch a repair targets, so
   // other retries keep their descriptions. Best-effort: a failed read leaves
   // the base absent and the runner derives it as before.
   const fetchedRefs: ConflictRetryInput['prRefs'] = installationId
@@ -1193,7 +1193,11 @@ export async function dispatchConflictRetry(
       .then(pr => (pr?.head?.ref ? { headRef: String(pr.head.ref), baseRef: pr.base?.ref ? String(pr.base.ref) : null } : null))
       .catch(() => null)
     : null;
-  const prRefs: ConflictRetryInput['prRefs'] = migrationCollision ? fetchedRefs : null;
+  // The brief names the PR's head whenever it is not this worker's own branch,
+  // so a repair filed against a sweep or coordination worker still pushes to the
+  // branch the PR is open from instead of the worker's.
+  const prRefs: ConflictRetryInput['prRefs'] =
+    migrationCollision || (fetchedRefs && fetchedRefs.headRef !== worker.branch) ? fetchedRefs : null;
 
   const basis = params.baseSha ? conflictBasisKey(headSha, params.baseSha) : null;
   const buildRetry = (maxConflictIterations?: number) => buildConflictRetryTask({
