@@ -1620,6 +1620,19 @@ export async function collectGitStats(
   const opts = { cwd, timeout: 5000, encoding: 'utf-8' as const, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } };
   const stats: Record<string, number | string | boolean | undefined> = {};
 
+  // Not a git work tree (no repo, or a worktree already removed): every read
+  // below would fail and leave only the fallback count, so say that after one
+  // probe instead of eight failing git children.
+  let insideWorkTree = false;
+  try {
+    // Outside any repo git exits non-zero; inside a git dir it prints `false`.
+    insideWorkTree = (await execAsync('git rev-parse --is-inside-work-tree', opts)).trim() !== 'false';
+  } catch { /* not a repo */ }
+  if (!insideWorkTree) {
+    if (fallbackCommitCount !== undefined) stats.commitCount = fallbackCommitCount;
+    return stats;
+  }
+
   // Resolve the ref this worktree's own commits are measured against.
   // Prefer the ref this worktree was actually cut from; a branch cut from a
   // mission integration branch must compare against THAT branch, not
