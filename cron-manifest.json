@@ -91,6 +91,14 @@
       "method": "GET"
     },
     {
+      "$comment": "Decision model optimizer (apps/web/src/lib/decision-model-optimizer/). Daily trigger, weekly per team: first the auto-revert check over every switch in effect (database only), then each opted-in team whose last scheduled comparison is a week old, while the invocation allows; the rest go first next day. Replays only teams that opted in (teams.decision_model_optimizer, default off), with a hard call cap per run. On the hour, inside the wake window the schedules tick already opens. No opted-in team and no switch in effect -> two cheap queries.",
+      "title": "Buildd: Decision Model Optimizer",
+      "profile": "module:experiments",
+      "path": "/api/cron/decision-model-optimizer",
+      "schedule": "0 10 * * *",
+      "method": "GET"
+    },
+    {
       "$comment": "Chat session retros (experiment, apps/web/src/lib/chat-retro/; remove per its REMOVAL.md). Daily, on the hour, inside the wake window the schedules tick already opens. Off for every team unless the team opts in; CHAT_RETRO_ENABLED=0 turns it off everywhere. No opted-in team -> one cheap query.",
       "title": "Buildd: Chat Retro",
       "profile": "module:chat",

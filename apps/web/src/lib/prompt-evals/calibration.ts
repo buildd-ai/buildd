@@ -3,19 +3,28 @@
  * over one kind's cases, read for calibration, a precision/coverage sweep and
  * the threshold that model could act at. No I/O.
  *
- * Two confidence sources are read per model, because they differ by model:
+ * Four confidence sources are read per model, because they differ by model.
+ * They are the four a stored measurement can be compared on
+ * (`@buildd/core/decision-model-measurements`):
  *   - `confidence`: the answer's own confidence field;
- *   - `top_p`: the probability of the chosen label.
- * Jev's two agree. Clef's `confidence` is compressed (it rarely passes ~0.45,
- * even when right) while its top p is usable, so a threshold read off the
- * wrong field says "never act" about a model that could. Every threshold is
- * reported with the source it was read from.
+ *   - `top_p`: the probability of the chosen label;
+ *   - `margin`: that probability minus the runner-up's;
+ *   - `calibrated_top_p`: top p mapped through isotonic breakpoints fitted on
+ *     the labelled cases. The threshold is swept on cross-fitted values (each
+ *     case mapped through the fit of the other half), so it is never derived
+ *     on the points it was fitted on; the breakpoints stored with it are
+ *     fitted on every labelled case.
+ * Jev's agree. Clef's `confidence` is compressed (it rarely passes ~0.45,
+ * even when right) while its probabilities are usable, so a threshold read off
+ * the wrong field says "never act" about a model that could. Every threshold
+ * is reported with the source it was read from.
  *
  * A threshold is derived on the Wilson lower bound of precision, not the point
  * estimate: 60 of 64 right is 94% but proves little.
  */
+import { calibrate, isCalibration, type Calibration } from '@buildd/core/decision-model-measurements';
 
-export const CONFIDENCE_SOURCES = ['confidence', 'top_p'] as const;
+export const CONFIDENCE_SOURCES = ['confidence', 'top_p', 'margin', 'calibrated_top_p'] as const;
 export type ConfidenceSource = (typeof CONFIDENCE_SOURCES)[number];
 
 /** Default kind target precision and minimum labelled cases before a threshold is derived. */
@@ -39,6 +48,10 @@ export interface ScoredCase {
   correct: boolean | null;
   confidence: number | null;
   topP: number | null;
+  /** Top p minus the runner-up's probability. Absent or null: the answer carried no probabilities. */
+  margin?: number | null;
+  /** Top p through the other half's isotonic fit (`crossFitCalibratedTopP`); `scoreModel` sets it. */
+  calibratedTopP?: number | null;
   /** Was the rule right on this case? Absent or null: no rule answer. */
   ruleCorrect?: boolean | null;
   /** The production model's label on the same case, when it was asked too. */
@@ -65,8 +78,81 @@ export function percentile(values: readonly number[], p: number): number | null 
   return sorted[idx];
 }
 
-const signalOf = (c: ScoredCase, source: ConfidenceSource) => (source === 'confidence' ? c.confidence : c.topP);
+function signalOf(c: ScoredCase, source: ConfidenceSource): number | null {
+  switch (source) {
+    case 'confidence': return c.confidence;
+    case 'top_p': return c.topP;
+    case 'margin': return c.margin ?? null;
+    case 'calibrated_top_p': return c.calibratedTopP ?? null;
+  }
+}
 const labelled = (cases: readonly ScoredCase[]) => cases.filter(c => c.correct !== null);
+
+// ── Isotonic calibration ─────────────────────────────────────────────────────
+
+/** The most breakpoints a stored calibration may carry (`isCalibration`). */
+export const MAX_CALIBRATION_BREAKPOINTS = 200;
+
+/**
+ * Isotonic regression of "was it right" on top p (pool adjacent violators),
+ * as breakpoints for `calibrate`: each pooled block contributes its lowest and
+ * highest top p at the block's accuracy. Null with fewer than two distinct
+ * points. Over `MAX_CALIBRATION_BREAKPOINTS`, evenly thinned (the ends kept),
+ * which stays non-decreasing.
+ */
+export function fitIsotonic(points: ReadonlyArray<{ x: number; correct: boolean }>): Calibration | null {
+  const sorted = points.filter(p => Number.isFinite(p.x) && p.x >= 0 && p.x <= 1).sort((a, b) => a.x - b.x);
+  const blocks: Array<{ lo: number; hi: number; sum: number; n: number }> = [];
+  for (const p of sorted) {
+    const last = blocks[blocks.length - 1];
+    if (last && last.hi === p.x) { last.sum += p.correct ? 1 : 0; last.n++; }
+    else blocks.push({ lo: p.x, hi: p.x, sum: p.correct ? 1 : 0, n: 1 });
+    // Pool while the block before is at least as accurate (ties pooled too: fewer breakpoints, same map).
+    while (blocks.length > 1) {
+      const b = blocks[blocks.length - 1];
+      const a = blocks[blocks.length - 2];
+      if (a.sum / a.n < b.sum / b.n) break;
+      blocks.splice(blocks.length - 2, 2, { lo: a.lo, hi: b.hi, sum: a.sum + b.sum, n: a.n + b.n });
+    }
+  }
+  const x: number[] = [];
+  const y: number[] = [];
+  for (const b of blocks) {
+    const v = b.sum / b.n;
+    x.push(b.lo); y.push(v);
+    if (b.hi > b.lo) { x.push(b.hi); y.push(v); }
+  }
+  if (x.length < 2 || x[0] >= x[x.length - 1]) return null;
+  if (x.length <= MAX_CALIBRATION_BREAKPOINTS) return { x, y };
+  const keep = Array.from({ length: MAX_CALIBRATION_BREAKPOINTS }, (_, k) => Math.round((k * (x.length - 1)) / (MAX_CALIBRATION_BREAKPOINTS - 1)));
+  return { x: keep.map(i => x[i]), y: keep.map(i => y[i]) };
+}
+
+/**
+ * Cross-fitted calibrated top p: the labelled cases that carry top p are split
+ * in two by position (alternating), and each half is mapped through the
+ * isotonic fit of the other, so a threshold swept on these values is never
+ * derived on the points that shaped the map. `calibration` is fitted on all of
+ * them: it is what a measurement stores. Every value (and `calibration`) is
+ * null when either half, or the whole, cannot be fitted; a case without top p
+ * or gold is null.
+ */
+export function crossFitCalibratedTopP(cases: readonly ScoredCase[]): { values: Array<number | null>; calibration: Calibration | null } {
+  const eligible = cases
+    .map((c, i) => ({ i, x: c.topP, correct: c.correct }))
+    .filter((e): e is { i: number; x: number; correct: boolean } => e.correct !== null && e.x !== null && Number.isFinite(e.x));
+  const none = { values: cases.map(() => null), calibration: null };
+  const halves = [eligible.filter((_, k) => k % 2 === 0), eligible.filter((_, k) => k % 2 === 1)];
+  const fits = halves.map(h => fitIsotonic(h));
+  const calibration = fitIsotonic(eligible);
+  if (!fits[0] || !fits[1] || !calibration || !isCalibration(calibration)) return none;
+  const values: Array<number | null> = cases.map(() => null);
+  halves.forEach((half, h) => {
+    const other = fits[1 - h]!;
+    for (const e of half) values[e.i] = calibrate(e.x, other);
+  });
+  return { values, calibration };
+}
 
 export interface ReliabilityBin {
   lo: number;
@@ -187,28 +273,41 @@ export interface ModelScore {
   calibration: Record<ConfidenceSource, Reliability>;
   sweep: Record<ConfidenceSource, SweepRow[]>;
   thresholds: Record<ConfidenceSource, DerivedThreshold>;
-  /** The threshold to use and the source it is read from: the qualifying one covering more. Null when none qualifies. */
-  derived: { source: ConfidenceSource; threshold: number; coverage: number; precision: number; wilsonLower: number } | null;
+  /**
+   * The threshold to use and the source it is read from: the qualifying one
+   * covering more. Null when none qualifies. `calibration` is the isotonic map
+   * a `calibrated_top_p` threshold is read through (null for any other source).
+   */
+  derived: { source: ConfidenceSource; threshold: number; coverage: number; precision: number; wilsonLower: number; calibration: Calibration | null } | null;
   derivedReason: ThresholdReason | null;
   latencyP50Ms: number | null;
   latencyP95Ms: number | null;
 }
 
-export function scoreModel(cases: readonly ScoredCase[], opts: ThresholdOptions): ModelScore {
+const bySource = <T>(f: (s: ConfidenceSource) => T): Record<ConfidenceSource, T> =>
+  Object.fromEntries(CONFIDENCE_SOURCES.map(s => [s, f(s)])) as Record<ConfidenceSource, T>;
+
+export function scoreModel(input: readonly ScoredCase[], opts: ThresholdOptions): ModelScore {
+  const crossFit = crossFitCalibratedTopP(input);
+  const cases = input.map((c, i) => ({ ...c, calibratedTopP: crossFit.values[i] }));
   const pool = labelled(cases);
   const withRule = pool.filter(c => c.ruleCorrect !== undefined && c.ruleCorrect !== null);
   const ruleAccuracy = withRule.length ? withRule.filter(c => c.ruleCorrect).length / withRule.length : opts.ruleAccuracy;
   const both = cases.filter(c => c.label !== null && c.prodLabel !== undefined && c.prodLabel !== null);
   const thresholdOpts = { ...opts, ruleAccuracy };
-  const thresholds = {
-    confidence: deriveThreshold(cases, 'confidence', thresholdOpts),
-    top_p: deriveThreshold(cases, 'top_p', thresholdOpts),
-  };
-  const calibration = { confidence: reliability(cases, 'confidence'), top_p: reliability(cases, 'top_p') };
+  const thresholds = bySource(s => deriveThreshold(cases, s, thresholdOpts));
+  const calibration = bySource(s => reliability(cases, s));
 
   const qualifying = CONFIDENCE_SOURCES.map(s => thresholds[s]).filter(t => t.threshold !== null);
+  // More coverage wins. On a tie the plainer signal does: confidence or top p
+  // (the better calibrated of the two), then margin, then calibrated top p,
+  // which also needs stored breakpoints. A derived signal is picked only for
+  // the decisions it adds; margin's and a mapped value's ECE are not on top p's
+  // scale, so they never win on it.
+  const rank = (s: ConfidenceSource) => (s === 'margin' ? 1 : s === 'calibrated_top_p' ? 2 : 0);
   qualifying.sort((a, b) =>
     (b.coverage ?? 0) - (a.coverage ?? 0)
+    || rank(a.source) - rank(b.source)
     || (calibration[a.source].ece ?? 1) - (calibration[b.source].ece ?? 1)
     || CONFIDENCE_SOURCES.indexOf(a.source) - CONFIDENCE_SOURCES.indexOf(b.source));
   const best = qualifying[0];
@@ -229,13 +328,13 @@ export function scoreModel(cases: readonly ScoredCase[], opts: ThresholdOptions)
     agreement: both.length ? both.filter(c => c.label === c.prodLabel).length / both.length : null,
     agreementN: both.length,
     calibration,
-    sweep: {
-      confidence: sweep(cases, 'confidence', opts.thresholds),
-      top_p: sweep(cases, 'top_p', opts.thresholds),
-    },
+    sweep: bySource(s => sweep(cases, s, opts.thresholds)),
     thresholds,
     derived: best
-      ? { source: best.source, threshold: best.threshold!, coverage: best.coverage!, precision: best.precision!, wilsonLower: best.wilsonLower! }
+      ? {
+        source: best.source, threshold: best.threshold!, coverage: best.coverage!, precision: best.precision!, wilsonLower: best.wilsonLower!,
+        calibration: best.source === 'calibrated_top_p' ? crossFit.calibration : null,
+      }
       : null,
     derivedReason,
     latencyP50Ms: percentile(latencies, 0.5),

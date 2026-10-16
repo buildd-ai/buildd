@@ -495,10 +495,6 @@ export async function handleCriteriaVerificationOutcome(
   return { applied: true, verdict };
 }
 
-/** True when this task is a criteria verification task (cheap context check). */
-export function isCriteriaVerificationTask(context: unknown): boolean {
-  const marker = (context as Record<string, unknown> | null)?.criteriaVerification as
-    | CriteriaVerificationContext
-    | undefined;
-  return typeof marker?.missionId === 'string' && typeof marker.criterionIndex === 'number';
-}
+// The predicate lives in core so core (the cloud verification-run plan) can
+// recognise the task without importing this module.
+export { isCriteriaVerificationTask } from '@/lib/runner-verification-plan';

@@ -36,7 +36,7 @@ const TILE_TONE_FOR_DELIVERY: Record<DeliveryTone, Tone> = {
 /** The tile's words for where a task is: the worker's state wins over the task row's. */
 export function taskState(view: TaskObjectView): { label: string; tone: Tone; live: boolean } {
   const w = view.worker;
-  if (w?.waiting) return { label: 'needs input', tone: 'attention', live: false };
+  if (w?.waiting) return { label: 'has a question', tone: 'attention', live: false };
   const kernel = view.delivery ? taskStateForDelivery(view.delivery) : null;
   if (kernel) return kernel;
   // Legacy-owned: the one fact-cache mapping.

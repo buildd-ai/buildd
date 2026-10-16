@@ -231,7 +231,7 @@ describe('resolveMcpConnectorsForTask — role opt-in intersection (§2)', () =>
     ]);
   });
 
-  // AC-1: enablement is not opt-in. The workspace enabling a connector the role
+  // AC-11: enablement is not opt-in. The workspace enabling a connector the role
   // never referenced must not mount it.
   it('mounts only role-referenced connectors even when the workspace enables more', async () => {
     mockWorkspaceSkillsFindMany.mockResolvedValue([role(['conn-1'])]);
@@ -249,7 +249,7 @@ describe('resolveMcpConnectorsForTask — role opt-in intersection (§2)', () =>
     expect(refsFilter?.values).toEqual(['conn-1']);
   });
 
-  // AC-3: least privilege. An unrouted task mounts nothing, and must not even
+  // AC-13: least privilege. An unrouted task mounts nothing, and must not even
   // reach the role table.
   it('mounts nothing and queries nothing when the task has no roleSlug', async () => {
     expect(await resolve(task({ roleSlug: null }))).toEqual([]);
@@ -283,7 +283,7 @@ describe('resolveMcpConnectorsForTask — role opt-in intersection (§2)', () =>
     expect(mockWorkspaceSkillsFindMany).not.toHaveBeenCalled();
   });
 
-  // AC-4: a dangling ref (deleted connector, or one no longer visible) drops out
+  // AC-14: a dangling ref (deleted connector, or one no longer visible) drops out
   // instead of failing the claim.
   it('tolerates a dangling ref and mounts the surviving ones', async () => {
     mockWorkspaceSkillsFindMany.mockResolvedValue([role(['conn-1', 'conn-deleted'])]);
@@ -385,7 +385,7 @@ describe('resolveMcpConnectorsForTask — workspace enablement', () => {
     expect((await resolve()).map(c => c.id)).toEqual(['conn-1']);
   });
 
-  // AC-2: an explicit opt-out wins over the role's opt-in.
+  // AC-12: an explicit opt-out wins over the role's opt-in.
   it('excludes a connector whose row has enabled: false', async () => {
     mockConnectorWorkspacesFindMany.mockResolvedValue([
       { connectorId: 'conn-1', workspaceId: 'ws-1', enabled: false },
@@ -421,7 +421,7 @@ describe('resolveMcpConnectorsForTask — workspace enablement', () => {
 // --- §1b: cross-team visibility ------------------------------------------
 
 describe('resolveMcpConnectorsForTask — cross-team sharing (§1b)', () => {
-  // AC-1: visibility = owned ∪ shared-in, and the credential comes from the OWNER.
+  // AC-6: visibility = owned ∪ shared-in, and the credential comes from the OWNER.
   it('mounts a shared-in connector using the owner-team credential', async () => {
     mockWorkspaceSkillsFindMany.mockResolvedValue([role(['conn-shared'])]);
     stageConnectors([
@@ -442,7 +442,7 @@ describe('resolveMcpConnectorsForTask — cross-team sharing (§1b)', () => {
     expect(teamIdsOf(credCall?.[0])).toEqual([OTHER_TEAM]);
   });
 
-  // AC-5: revoking a share removes the row; a stale ref + stale enablement must
+  // AC-10: revoking a share removes the row; a stale ref + stale enablement must
   // not keep the connector mounted.
   it('drops another team\'s connector when the share row is absent (revoked)', async () => {
     mockWorkspaceSkillsFindMany.mockResolvedValue([role(['conn-shared'])]);
@@ -482,7 +482,7 @@ describe('resolveMcpConnectorsForTask — cross-team sharing (§1b)', () => {
     ]));
   });
 
-  // AC-3: deterministic slug precedence — the owned connector wins.
+  // AC-8: deterministic slug precedence — the owned connector wins.
   it('mounts only the owned connector when an owned and a shared-in one collide on slug', async () => {
     mockWorkspaceSkillsFindMany.mockResolvedValue([role(['conn-own', 'conn-shared'])]);
     stageConnectors([
@@ -564,7 +564,7 @@ describe('resolveMcpConnectorsForTask — http transport', () => {
     }]);
   });
 
-  // AC-4: never mount unauthenticated in place of an authenticated connector.
+  // AC-18: never mount unauthenticated in place of an authenticated connector.
   it('omits a header connector whose secret row is missing', async () => {
     stageConnectors([connector({ authMode: 'header', headerName: 'X-API-Key' })]);
     stageSecrets({ credentials: [] });
@@ -631,7 +631,7 @@ describe('resolveMcpConnectorsForTask — oauth', () => {
     expect(mockRefresh).not.toHaveBeenCalled();
   });
 
-  // AC-2: an expired token is refreshed at claim time and the fresh value ships.
+  // AC-16: an expired token is refreshed at claim time and the fresh value ships.
   it('refreshes an expired token and injects the refreshed value', async () => {
     mockWorkspaceSkillsFindMany.mockResolvedValue([role(['conn-oauth'])]);
     stageConnectors([oauthConnector()]);
@@ -659,7 +659,7 @@ describe('resolveMcpConnectorsForTask — oauth', () => {
     expect(result).toHaveLength(1);
   });
 
-  // AC-3: unrecoverable refresh → omit rather than mount a dead token.
+  // AC-17: unrecoverable refresh → omit rather than mount a dead token.
   for (const outcome of ['expired', 'no_credential', 'error', 'skipped'] as const) {
     it(`omits the connector when refresh returns "${outcome}"`, async () => {
       mockWorkspaceSkillsFindMany.mockResolvedValue([role(['conn-oauth'])]);

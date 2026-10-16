@@ -35,6 +35,7 @@ import { existsSync, readFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import * as childProcess from 'child_process';
+import { codexAuthJsonKind } from './cost-basis';
 
 export type HostSeat = 'env' | 'login';
 
@@ -163,6 +164,97 @@ export function describeHostSeat(seat: HostSeat): string {
     : "this machine's own login (claude login on the runner host)";
 }
 
+// ─── The one model-auth detector (docs/specs/runner-model-login-detect-say-report.md) ───
+
+/**
+ * Which kind of credential this runner's Claude agent authenticates with for a
+ * claim that delivers none. The startup line, the local /api/config and the
+ * heartbeat label all come from `detectModelAuthSource`. A label, never a value.
+ */
+export type ModelAuthSource = 'machine_token' | 'machine_login' | 'api_key' | 'none';
+
+export interface ModelAuthReport {
+  source: ModelAuthSource;
+  mode: HostSeatMode;
+}
+
+/**
+ * Precedence: machine_token > machine_login > api_key > none.
+ * `BUILDD_HOST_SEAT=off` stops only machine_token from counting: the env token
+ * is withheld from the agent, but a `claude login` still reaches it through
+ * HOME, so machine_login is still reported. Under
+ * `BUILDD_MODEL_AUTH_SOURCE=runner` an inherited key is stripped from the agent
+ * env unless an operator-set ANTHROPIC_BASE_URL selects a paid route
+ * (model-auth-source.ts), so it is reported only in that case.
+ */
+export function detectModelAuthSource(probe: HostSeatProbe = {}): ModelAuthReport {
+  const env = probe.env ?? process.env;
+  const mode = hostSeatMode(env);
+  // `off` withholds only the env token (applyHostSeatPolicy deletes it); a
+  // `claude login` still reaches the agent through HOME, so it still counts.
+  const seat = mode === 'off'
+    ? detectHostSeat({ ...probe, env: { ...env, [HOST_SEAT_ENV]: 'auto', [HOST_SEAT_TOKEN_VAR]: '' } })
+    : detectHostSeat({ ...probe, env });
+  if (seat === 'env') return { source: 'machine_token', mode };
+  if (seat === 'login') return { source: 'machine_login', mode };
+  const has = (name: string) => (env[name] ?? '').trim().length > 0;
+  const runnerManaged = (env.BUILDD_MODEL_AUTH_SOURCE ?? '').trim().toLowerCase() === 'runner';
+  const keyReachesAgent = !runnerManaged || has('ANTHROPIC_BASE_URL');
+  if (keyReachesAgent && (has('ANTHROPIC_API_KEY') || has('ANTHROPIC_AUTH_TOKEN'))) return { source: 'api_key', mode };
+  return { source: 'none', mode };
+}
+
+export const NO_MODEL_AUTH_FIX =
+  'run `claude login` as the runner user, or set CLAUDE_CODE_OAUTH_TOKEN (`claude setup-token`) '
+  + 'for a headless machine, or ANTHROPIC_API_KEY for metered billing';
+
+/** Stable prefix of the pre-spawn refusal below, so a failure list can group it. */
+export const NO_MODEL_AUTH_ERROR_CODE = '[runner:no_model_auth]';
+
+const MODEL_AUTH_VARS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', HOST_SEAT_TOKEN_VAR] as const;
+
+/**
+ * Pre-spawn check for a Claude run (model credentials spec R-5 / AC-5): the
+ * refusal text when nothing can authenticate it, else null. Only a run headed
+ * for Anthropic is judged; a team endpoint or a custom host decides its own
+ * auth. Anything counts: the machine's seat, a model variable left in the
+ * agent env (the machine's or one the claim delivered), the claim's Claude
+ * credential written into the session, or a `claude login` the CLI will find
+ * through the agent's HOME (it reaches the agent even under
+ * BUILDD_HOST_SEAT=off).
+ */
+export function claudeModelAuthMissing(input: {
+  isCodexTask: boolean;
+  /** applyModelEnv's result. */
+  modelEnv: { endpoint: string; hostSeatUsed?: boolean };
+  /** The agent env, after applyModelEnv. */
+  env: Record<string, string | undefined>;
+  /** shouldUseClaudeCredential for this run. */
+  claudeCredentialUsed: boolean;
+  /** Login probe; `home` defaults to the agent env's HOME. Injected in tests. */
+  probe?: Omit<HostSeatProbe, 'env'>;
+}): string | null {
+  if (input.isCodexTask) return null;
+  if (input.modelEnv.endpoint !== 'anthropic') return null;
+  if (input.modelEnv.hostSeatUsed || input.claudeCredentialUsed) return null;
+  if (MODEL_AUTH_VARS.some((k) => (input.env[k] ?? '').trim().length > 0)) return null;
+  const home = input.probe?.home ?? input.env.HOME;
+  if (detectHostSeat({ ...input.probe, ...(home ? { home } : {}), env: {} }) === 'login') return null;
+  return `${NO_MODEL_AUTH_ERROR_CODE} No model login for this Claude run: this runner has no Claude login `
+    + 'or API key of its own, and the claim delivered none. The task is left for a runner that has one. '
+    + `To fix: ${NO_MODEL_AUTH_FIX}`;
+}
+
+/** Human words for a model-auth label (the startup `Model auth: <words>` line). */
+export function describeModelAuthSource(source: ModelAuthSource): string {
+  switch (source) {
+    case 'machine_token': return 'a Claude token set on this machine (CLAUDE_CODE_OAUTH_TOKEN)';
+    case 'machine_login': return "this machine's Claude login";
+    case 'api_key': return 'an API key (billed per token)';
+    default: return `no model login on this machine. To fix: ${NO_MODEL_AUTH_FIX}`;
+  }
+}
+
 /** Machine-level model credential variables the agent env can inherit through the passthrough. */
 export const HOST_MODEL_CREDENTIAL_VARS = [
   HOST_SEAT_TOKEN_VAR, 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'OPENAI_API_KEY',
@@ -226,4 +318,66 @@ export function decideCodexSeat(opts: {
   if (!serverCredentialType) return machineAvailable ? 'machine' : 'none';
   if (mode === 'prefer' && serverCredentialType === 'oauth' && machineAvailable) return 'machine';
   return 'server';
+}
+
+// ─── Codex auth label (docs/specs: runner model login, R-10/R-11) ──────────
+
+/**
+ * Which kind of Codex login this runner's Codex agent gets for a claim that
+ * delivers no Codex credential. Sent as the heartbeat's `codexAuthSource`.
+ * A label, never a value.
+ */
+export type CodexAuthSource = 'machine_login' | 'api_key' | 'none';
+
+export interface CodexAuthProbe {
+  env?: Record<string, string | undefined>;
+  home?: string;
+  /** Reads a file's text, or null when it is absent/unreadable. Injected in tests. */
+  readFile?: (path: string) => string | null;
+}
+
+function readFileOrNull(path: string): string | null {
+  try {
+    return existsSync(path) ? readFileSync(path, 'utf-8') : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Mirrors what a Codex task with no delivered credential actually gets
+ * (`decideCodexSeat` + `localCodexAuthPath`, then the env API key): the local
+ * `auth.json` (`$CODEX_HOME`, else `~/.codex`) counts only when
+ * `BUILDD_HOST_SEAT` is not `off` or `CODEX_HOME` is set explicitly. If it
+ * counts, a ChatGPT login is `machine_login` and an API key in it is
+ * `api_key`. Otherwise `OPENAI_API_KEY` in the env is `api_key`, else `none`.
+ * The file is parsed only to classify it; no value leaves this function.
+ */
+export function detectCodexAuthSource(probe: CodexAuthProbe = {}): CodexAuthSource {
+  const env = probe.env ?? process.env;
+  const home = probe.home ?? homedir();
+  const explicitCodexHome = (env.CODEX_HOME ?? '').trim().length > 0;
+  if (hostSeatMode(env) !== 'off' || explicitCodexHome) {
+    const raw = (probe.readFile ?? readFileOrNull)(join(resolveLocalCodexHome(env, home), 'auth.json'));
+    if (raw !== null) {
+      let parsed: Record<string, unknown> | null = null;
+      try { parsed = JSON.parse(raw); } catch { parsed = null; }
+      const kind = codexAuthJsonKind(parsed);
+      if (kind === 'chatgpt') return 'machine_login';
+      if (kind === 'api_key') return 'api_key';
+    }
+  }
+  if ((env.OPENAI_API_KEY ?? '').trim().length > 0) return 'api_key';
+  return 'none';
+}
+
+export const NO_CODEX_AUTH_FIX = 'run `codex login` as the runner user, or set OPENAI_API_KEY';
+
+/** Human words for a Codex label (the startup `Codex auth: <words>` line). Not a warning: Codex is optional. */
+export function describeCodexAuthSource(source: CodexAuthSource): string {
+  switch (source) {
+    case 'machine_login': return "this machine's Codex login";
+    case 'api_key': return 'an OpenAI API key (billed per token)';
+    default: return `no Codex login on this machine. To fix: ${NO_CODEX_AUTH_FIX}`;
+  }
 }

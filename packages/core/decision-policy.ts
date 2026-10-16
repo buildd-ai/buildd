@@ -104,7 +104,16 @@ function measuredRoute(
   kind: { kind: string; promptFingerprint: string; binding: Pick<BuilddDecisionKindBinding, 'measuredModels'> },
   rows: readonly StoredMeasurement[],
 ): { isMeasured: (model: string) => boolean; thresholdFor: (model: string) => number | null } {
-  const lookup = (model: string) => measurementFor(rows, { kind: kind.kind, answeringModel: model, fingerprint: kind.promptFingerprint });
+  const lookup = (model: string) => {
+    const m = measurementFor(rows, { kind: kind.kind, answeringModel: model, fingerprint: kind.promptFingerprint });
+    // This path compares the kind's interpreted confidence for every label, so
+    // a row measured on another signal or per label cannot be honoured here:
+    // it counts as no row (Jev keeps today, any other model records).
+    if (m.reason === 'measured' && (m.confidenceSource !== 'confidence' || m.labelThresholds)) {
+      return measurementFor([], { kind: kind.kind, answeringModel: model, fingerprint: kind.promptFingerprint });
+    }
+    return m;
+  };
   return {
     isMeasured: model => lookup(model).measured || isMeasuredForKind(kind.binding, model),
     thresholdFor: model => lookup(model).threshold,

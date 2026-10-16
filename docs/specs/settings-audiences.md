@@ -2,7 +2,7 @@
 title: Settings Audiences
 status: active
 owner: max
-last_verified: 2026-10-12
+last_verified: 2026-10-15
 summary: Every setting MUST live on the page of whose it is (you, the team, one workspace), show a member one read-only line instead of controls, and never surface platform-operator machinery to a team.
 domain: surfaces
 surfaces: [apps/web/src/lib/settings-nav.ts, apps/web/src/app/app/(protected)/settings/_lib/settings-permissions.ts, apps/web/src/app/app/(protected)/settings/_components/SettingsPage.tsx, apps/web/next.config.mjs]
@@ -67,17 +67,17 @@ page.
   `page.tsx` is gone, so one concern never renders twice.
 
 **Acceptance criteria**:
-- AC-L1: WHEN `SETTINGS_NAV` is read THEN its groups are You then Team, every
+- AC-1: WHEN `SETTINGS_NAV` is read THEN its groups are You then Team, every
   item's href has a `page.tsx`, and ids and hrefs are unique.
-- AC-L2: WHEN a person opens You › Keys THEN My maximum is there, and Settings
+- AC-2: WHEN a person opens You › Keys THEN My maximum is there, and Settings
   › Models renders no My maximum section.
-- AC-L3: GIVEN a shared team WHEN a person opens Profile THEN it offers Leave
+- AC-3: GIVEN a shared team WHEN a person opens Profile THEN it offers Leave
   for that team; GIVEN their personal team THEN it offers no Leave; GIVEN they
   are the last owner THEN Leave is disabled with the reason.
-- AC-L4: WHEN anyone requests `/app/settings/roles`, `/app/settings/roles/<any
+- AC-4: WHEN anyone requests `/app/settings/roles`, `/app/settings/roles/<any
   path>`, `/app/team` or `/app/settings/connectors` THEN they are redirected to
   the matching `/app/settings/agents…` or `/app/settings/apps` path.
-- AC-L5: WHEN Health › Runners renders a paused workspace THEN it shows the
+- AC-5: WHEN Health › Runners renders a paused workspace THEN it shows the
   pause and offers no control to pause or resume; the workspace settings page
   does.
 
@@ -105,16 +105,16 @@ editors or controls they cannot use.
   § No per-team grants).
 
 **Acceptance criteria**:
-- AC-M1: GIVEN a `member` WHEN they open any Team section THEN it is
+- AC-6: GIVEN a `member` WHEN they open any Team section THEN it is
   read-only and `TEAM_MANAGED_LINE` is shown once; GIVEN an `admin` THEN it is
   editable and the line is absent.
-- AC-M2: GIVEN a `member` WHEN they open an agent's edit page THEN Deploy
+- AC-7: GIVEN a `member` WHEN they open an agent's edit page THEN Deploy
   access is one plain line with no editor; GIVEN an `admin` THEN the team
   limit and workspace grants save.
-- AC-M3: GIVEN a caller without `manage_workspace_settings` WHEN a start is
+- AC-8: GIVEN a caller without `manage_workspace_settings` WHEN a start is
   refused with `workspace_cap_reached` THEN `canRaiseCap` is false; GIVEN an
   admin THEN it is true.
-- AC-M4: GIVEN a `member` WHEN they open Settings › Members THEN no
+- AC-9: GIVEN a `member` WHEN they open Settings › Members THEN no
   permission grant table renders.
 
 ## What stays out of team settings
@@ -140,11 +140,11 @@ team page, and team-facing copy MUST NOT name the operator.
   page.
 
 **Acceptance criteria**:
-- AC-O1: GIVEN a team owner who is not an operator WHEN they open Settings ›
+- AC-10: GIVEN a team owner who is not an operator WHEN they open Settings ›
   Models THEN no pool, decision-model, soak or over-maximum control renders.
-- AC-O2: WHEN Health's sub-nav is built for a non-operator THEN Operator is
+- AC-11: WHEN Health's sub-nav is built for a non-operator THEN Operator is
   not in it, and the page refuses them.
-- AC-O3: WHEN an agent's edit page renders for any viewer THEN its text never
+- AC-12: WHEN an agent's edit page renders for any viewer THEN its text never
   names the platform operator.
 
 ## Code surface
@@ -171,3 +171,7 @@ team page, and team-facing copy MUST NOT name the operator.
 - What the Models page computes and stores: `settings-models`,
   `model-tier-ceilings`.
 - Team apps and agent access behaviour: `mcp-connectors-and-roles` § 5c.
+
+## Renumbered
+
+Renumbered on 2026-10-15 so every criterion parses: AC-L1 to AC-1, AC-L2 to AC-2, AC-L3 to AC-3, AC-L4 to AC-4, AC-L5 to AC-5, AC-M1 to AC-6, AC-M2 to AC-7, AC-M3 to AC-8, AC-M4 to AC-9, AC-O1 to AC-10, AC-O2 to AC-11, AC-O3 to AC-12.

@@ -66,11 +66,17 @@ const UTC_ZONE_LABELS = new Set(['utc', 'gmt', 'z', 'utc+0', 'gmt+0', 'utc+00', 
  *   - `(?::\d{2})?` inside the captured group — minutes are part of the time,
  *     not decoration to be stripped by the caller.
  *
+ * A weekly limit names its day too ("resets Oct 16, 4am (UTC)"); the optional
+ * month and day are captured so that reset is read as that date, not as the
+ * next 4am.
+ *
  * The time and the (optional) timezone are captured separately so the timezone
  * can actually be honoured — an earlier version captured it and dropped it,
  * which would have read a non-UTC reset as UTC.
  */
-const RESET_CLAUSE = /(?:resets|try again at)\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*(?:\(([^)]+)\))?/i;
+const RESET_CLAUSE = /(?:resets|try again at)\s+(?:(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+)?(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*(?:\(([^)]+)\))?/i;
+
+const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
 
 /** Matches a bare time: "3am", "11:10am", "11:10 am", "23:45", "9". */
 const TIME_OF_DAY = /^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/;
@@ -93,6 +99,8 @@ export interface ResetClause {
   time: string;
   /** Timezone label as written, or null when the provider stated none. */
   timezone: string | null;
+  /** The day, when the provider named one ("Oct 16"); month is 0-based. */
+  date?: { month: number; day: number };
 }
 
 /**
@@ -107,10 +115,15 @@ export function matchResetClause(error: string | null | undefined): ResetClause 
   if (typeof error !== 'string') return null;
   const match = error.match(RESET_CLAUSE);
   if (!match) return null;
-  return {
-    time: match[1].trim().replace(/\s+/g, ' '),
-    timezone: match[2] ? match[2].trim() : null,
+  const clause: ResetClause = {
+    time: match[3].trim().replace(/\s+/g, ' '),
+    timezone: match[4] ? match[4].trim() : null,
   };
+  if (match[1] && match[2]) {
+    const day = Number.parseInt(match[2], 10);
+    if (day >= 1 && day <= 31) clause.date = { month: MONTHS.indexOf(match[1].slice(0, 3).toLowerCase()), day };
+  }
+  return clause;
 }
 
 /**
@@ -205,6 +218,18 @@ export function extractResetTime(
 
   const reset = parseResetTime(clause.time, { now, timezone: clause.timezone });
   if (!reset) return null;
+
+  // A dated reset is exact: put the clock time on that day, in the year that
+  // lands nearest to now (a "Jan 2" read on Dec 30 is next year's).
+  if (clause.date) {
+    const dated = new Date(Date.UTC(now.getUTCFullYear(), clause.date.month, clause.date.day,
+      reset.getUTCHours(), reset.getUTCMinutes(), 0, 0));
+    if (dated.getUTCDate() !== clause.date.day) return null; // "Feb 31"
+    const HALF_YEAR_MS = 183 * 24 * 60 * 60 * 1000;
+    if (dated.getTime() < now.getTime() - HALF_YEAR_MS) dated.setUTCFullYear(dated.getUTCFullYear() + 1);
+    else if (dated.getTime() > now.getTime() + HALF_YEAR_MS) dated.setUTCFullYear(dated.getUTCFullYear() - 1);
+    return dated;
+  }
 
   // parseResetTime always returns the next occurrence. If that is further out
   // than plausible the clock time already went by, so the previous occurrence

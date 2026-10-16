@@ -932,8 +932,7 @@ export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missio
             <div className="bg-status-warning/8">
               <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border-default">
                 <span className="w-2 h-2 rounded-full bg-status-warning" />
-                <span className="text-[13px] font-semibold text-text-primary">Needs input</span>
-                <span className="text-[12px] text-text-desc">{needsInputTasks.length}</span>
+                <span className="text-[13px] font-semibold text-text-primary">{needsInputTasks.length === 1 ? '1 question for you' : `${needsInputTasks.length} questions for you`}</span>
               </div>
               <div className="px-2">
                 {shownNeedsInput.map((task) => renderTaskWithChildren(task, childrenByParentId, expandedParents, toggleParent, !!missionFilter))}

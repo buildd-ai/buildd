@@ -206,6 +206,8 @@ export interface TeamExperimentFlags {
   chatRetro: ChatRetroSettings;
   /** An owner's account dogfood holds chat retro on whatever is stored. */
   chatRetroDogfood: boolean;
+  /** buildd may switch a decision's model on the team's replayed decisions (teams.decisionModelOptimizer). Default off. */
+  decisionModelOptimizer: boolean;
 }
 
 export async function readTeamExperimentFlags(teamId: string): Promise<TeamExperimentFlags | null> {
@@ -214,6 +216,7 @@ export async function readTeamExperimentFlags(teamId: string): Promise<TeamExper
       enabledDecisionShadows: teams.enabledDecisionShadows,
       inferenceFeatureModes: teams.inferenceFeatureModes,
       chatRetro: teams.chatRetro,
+      decisionModelOptimizer: teams.decisionModelOptimizer,
       dogfood: sql<boolean>`${dogfoodOwnerExists()}`,
     })
     .from(teams)
@@ -226,16 +229,18 @@ export async function readTeamExperimentFlags(teamId: string): Promise<TeamExper
     inferenceFeatureModes: normalizeFeatureModes(row.inferenceFeatureModes),
     chatRetro: effectiveChatRetroSettings(readChatRetroSettings(row.chatRetro), dogfood),
     chatRetroDogfood: dogfood,
+    decisionModelOptimizer: row.decisionModelOptimizer === true,
   };
 }
 
 export async function writeTeamExperimentFlags(
   teamId: string,
-  next: { enabledDecisionShadows?: string[] | null; inferenceFeatureModes?: FeatureModes | null; chatRetro?: ChatRetroSettings; deleteLessons: boolean },
+  next: { enabledDecisionShadows?: string[] | null; inferenceFeatureModes?: FeatureModes | null; chatRetro?: ChatRetroSettings; decisionModelOptimizer?: boolean; deleteLessons: boolean },
 ): Promise<{ deletedLessons: number }> {
   const columns = {
     ...(next.enabledDecisionShadows !== undefined ? { enabledDecisionShadows: next.enabledDecisionShadows } : {}),
     ...(next.inferenceFeatureModes !== undefined ? { inferenceFeatureModes: next.inferenceFeatureModes } : {}),
+    ...(next.decisionModelOptimizer !== undefined ? { decisionModelOptimizer: next.decisionModelOptimizer } : {}),
   };
   if (Object.keys(columns).length) {
     await db.update(teams).set({ ...columns, updatedAt: new Date() }).where(eq(teams.id, teamId));
@@ -740,4 +745,10 @@ export async function loadRecoveryCause(opts: RecoveryReadOpts & { causeKey: str
       lastDeliveredAt: lastDelivered,
     },
   });
+}
+
+/** Scoped evidence with global owner policy; the operator route returns null on read failure. */
+export async function loadClaimLearningPanel(opts: { workspaceIds: string[]; platformWide: boolean; window: '24h' | '7d' | '30d'; now?: Date }) {
+  const source = await import('@buildd/core/orchestration-claim-learning-source');
+  return source.loadClaimLearningPanel(opts);
 }

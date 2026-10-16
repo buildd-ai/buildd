@@ -37,7 +37,8 @@ import { applyRecommendationTitle } from '@/lib/task-title';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
 import { performLandingAction } from '@/lib/landing-action-run';
-import { applyRecommendationThroughKernel, kernelDeliveryOfPr } from '@/lib/workflow/seam';
+import { kernelDeliveryOfPr } from '@/lib/workflow/seam';
+import { doorErrorResponse, isDoorError, applyRecommendationThroughKernel } from '@/lib/workflow/kernel-client';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // A human choosing to apply a fix is a deliberate one-off, not another lap of
@@ -108,7 +109,8 @@ async function applyOnKernel(p: {
     actor: `human:${p.user.id}`,
     expectedVersion: p.expectedVersion,
     instructions,
-  });
+  }, { principal: { kind: 'user', id: p.user.id } }).catch((err: unknown) => (isDoorError(err) ? err : Promise.reject(err)));
+  if (isDoorError(out)) return doorErrorResponse(out) as NextResponse;
   if (!out) return NextResponse.json({ error: 'PR is no longer owned by the workflow kernel; retry' }, { status: 409 });
   const r = out.result;
   if (r.result === 'stale') {
@@ -275,7 +277,7 @@ export async function POST(
   // second Apply call for the same (PR, headSha) is a true double-tap, not a
   // legitimate second dispatch.
   // The fix re-attempts the escalated task, so it carries that task's backend,
-  // role, routing kind and phase (Rule P1-7).
+  // role, routing kind and phase (mission-legibility R-7).
   const identity = await inheritAttemptIdentity(originalTask.id);
 
   const [applyTask] = await db

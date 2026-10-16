@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, workspaces } from '@buildd/core/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, isNotNull } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { invalidateAccountWorkspaceCache } from '@/lib/account-workspace-cache';
@@ -182,14 +182,31 @@ export async function DELETE(
       return NextResponse.json({ error: 'accountId is required' }, { status: 400 });
     }
 
-    await db
-      .delete(accountWorkspaces)
+    // A pick a person made on the runner consent page (granted_by_user_id) is
+    // kept as a tombstone, so the key's owner cannot put it back through Edit
+    // (lib/runner-picks.ts); a removed pick reaches nothing (lib/granted-links.ts).
+    // An ordinary link is deleted, as before.
+    const tombstoned = await db
+      .update(accountWorkspaces)
+      .set({ removedByUserId: user.id, removedAt: new Date(), canClaim: false, canCreate: false })
       .where(
         and(
           eq(accountWorkspaces.accountId, accountId),
-          eq(accountWorkspaces.workspaceId, workspaceId)
+          eq(accountWorkspaces.workspaceId, workspaceId),
+          isNotNull(accountWorkspaces.grantedByUserId),
         )
-      );
+      )
+      .returning({ accountId: accountWorkspaces.accountId });
+    if (tombstoned.length === 0) {
+      await db
+        .delete(accountWorkspaces)
+        .where(
+          and(
+            eq(accountWorkspaces.accountId, accountId),
+            eq(accountWorkspaces.workspaceId, workspaceId)
+          )
+        );
+    }
 
     invalidateAccountWorkspaceCache(accountId);
 

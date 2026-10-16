@@ -116,6 +116,11 @@ mock.module('@/lib/admin/data', () => ({
   loadGates: async () => ({ gates: { totals: { events: 5 }, gates: [] } }),
   loadFailures: async () => ({ analytics: { totals: { failed: 2 }, signatures: [], diedEarlySignatures: [], repeatFailureTasks: [], byWorkspace: [] }, family: null, stalledIngest: null }),
   loadOperatorData: async () => ({ orphanedPrs: [], subagentDelegation: null, errorPatterns: null }),
+  loadClaimLearningPanel: async (opts: any) => {
+    claimLearningCalls.push(opts);
+    if (claimLearningThrows) throw new Error('read failed');
+    return { cells: [], readout: [], window: opts.window };
+  },
   loadRecoveryQueue: async (opts: any) => {
     recoveryCalls.push({ kind: 'queue', ...opts });
     if (recoveryThrows) throw new Error('read failed');
@@ -138,6 +143,8 @@ let estimatesFail = false;
 const insightCalls: any[] = [];
 const recoveryCalls: any[] = [];
 let recoveryThrows = false;
+const claimLearningCalls: any[] = [];
+let claimLearningThrows = false;
 const CAUSE = 'c1:0123456789abcdef0123';
 const OTHER_TEAM = '55555555-5555-4555-8555-555555555555';
 
@@ -186,6 +193,7 @@ const calls: Call[] = [
   { name: 'GET gates', call: () => routes.gates.GET(req('gates')) },
   { name: 'GET failures', call: () => routes.failures.GET(req('failures')) },
   { name: 'GET operator', call: () => routes.operator.GET(req('operator')) },
+  { name: 'GET operator?claimLearning=1', call: () => routes.operator.GET(req('operator?claimLearning=1')) },
   { name: 'GET operator?recovery=1', call: () => routes.operator.GET(req('operator?recovery=1')) },
   { name: 'GET operator?recoveryInclude=recovered', call: () => routes.operator.GET(req('operator?recovery=1&recoveryInclude=recovered')) },
   { name: 'GET operator?recoveryCause', call: () => routes.operator.GET(req(`operator?recoveryCause=${CAUSE}`)) },
@@ -209,6 +217,8 @@ beforeEach(() => {
   insightCalls.length = 0;
   recoveryCalls.length = 0;
   recoveryThrows = false;
+  claimLearningCalls.length = 0;
+  claimLearningThrows = false;
   estimateCalls.length = 0;
   estimatesFail = false;
   storedModes = new Map();
@@ -469,6 +479,16 @@ describe('PATCH teams/[id]/experiment-flags', () => {
     expect(writes).toHaveLength(0);
   });
 
+  it('turns decision model optimization on for a team, and refuses a non-boolean', async () => {
+    const res = await routes.flags.PATCH(req(`teams/${TEAM}/experiment-flags`, 'PATCH', { decisionModelOptimizer: true }), idCtx(TEAM));
+    expect(res.status).toBe(200);
+    expect(writes).toEqual([{ teamId: TEAM, next: { decisionModelOptimizer: true, deleteLessons: false } }]);
+    expect(audits[0]).toMatchObject({ after: { decisionModelOptimizer: true } });
+    writes.length = 0;
+    expect((await routes.flags.PATCH(req(`teams/${TEAM}/experiment-flags`, 'PATCH', { decisionModelOptimizer: 'yes' }), idCtx(TEAM))).status).toBe(400);
+    expect(writes).toHaveLength(0);
+  });
+
   it('rejects an unknown capability and writes nothing', async () => {
     const res = await routes.flags.PATCH(req(`teams/${TEAM}/experiment-flags`, 'PATCH', { enabledDecisionShadows: ['not_a_capability'] }), idCtx(TEAM));
     expect(res.status).toBe(400);
@@ -607,5 +627,29 @@ describe('POST operator: owner recovery actions (operator-recovery §7.2, F-9)',
     }
     expect(audits).toHaveLength(0);
     expect(writes).toHaveLength(0);
+  });
+});
+
+describe('GET operator: claim learning panel', () => {
+  it('does not load claim learning unless requested', async () => {
+    const body = await (await routes.operator.GET(req('operator'))).json();
+    expect(body.claimLearning).toBeUndefined();
+    expect(claimLearningCalls).toHaveLength(0);
+  });
+  it('passes requested workspace and window scope to the claim learning panel', async () => {
+    const body = await (await routes.operator.GET(req(`operator?claimLearning=1&workspaceId=${WS}&window=30d`))).json();
+    expect(body.claimLearning).toEqual({ cells: [], readout: [], window: '30d' });
+    expect(claimLearningCalls).toEqual([{ workspaceIds: [WS], platformWide: false, window: '30d' }]);
+  });
+  it('returns null when claim learning evidence cannot be read', async () => {
+    claimLearningThrows = true;
+    const response = await routes.operator.GET(req('operator?claimLearning=1'));
+    expect(response.status).toBe(200);
+    expect((await response.json()).claimLearning).toBeNull();
+  });
+  it('never reads the panel for a non-owner', async () => {
+    owner = false;
+    expect((await routes.operator.GET(req('operator?claimLearning=1'))).status).toBe(404);
+    expect(claimLearningCalls).toHaveLength(0);
   });
 });

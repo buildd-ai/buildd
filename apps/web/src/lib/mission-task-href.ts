@@ -47,6 +47,16 @@ export function taskPageHref({ taskId, missionId }: { taskId: string; missionId?
   return missionId ? `${base}?from=mission&missionId=${enc(missionId)}` : base;
 }
 
+/**
+ * Where "answer this question" goes: the task page, which is the full
+ * answering experience, with its answer box focused (`?respond=1`). Never the
+ * mission sheet, even for a mission task.
+ */
+export function taskAnswerHref({ taskId, missionId }: { taskId: string; missionId?: string | null }): string {
+  const page = taskPageHref({ taskId, missionId });
+  return `${page}${page.includes('?') ? '&' : '?'}respond=1`;
+}
+
 export function missionTaskHref({ missionId, taskId, from, initiativeId, mode }: MissionTaskHrefInput): string {
   if (!missionId) return taskPageHref({ taskId });
   const params: string[] = [];

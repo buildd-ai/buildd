@@ -12,12 +12,23 @@ import { VISUAL_AUDITOR_ROLE_SLUG } from '@/lib/mission-visual-review';
 import { loadVisualReview } from '@/lib/visual-review-load';
 import { visualReviewRoundOf } from '@/lib/visual-review-rounds';
 import type { VisualReviewModel } from '@buildd/shared';
-import { ENTITLEMENT_BLOCK_CONTEXT_KEY, parseEntitlementBlock } from '@buildd/shared';
+import { ENTITLEMENT_BLOCK_CONTEXT_KEY, parseEntitlementBlock, isTerminalTaskStatus } from '@buildd/shared';
 import { describeBackendRouting } from '@buildd/core/backend-policy';
 import { loadTaskFailureKind } from '@/lib/task-failure-kind-load';
-import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
+import { loadTaskDeliveryContext } from '@/lib/task-delivery-context';
 import type { WaitingFor } from '@buildd/shared';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import { loadTaskView } from '@/lib/task-view';
+import { taskPrFacts, taskHeaderMerged, isFallbackSummary, taskDeliverySections } from '@/lib/task-sections';
+import { liveWorkerViewProps, workerSteerProps, type LiveWorkerViewProps } from '@/lib/task-live-view';
+import { getWorkerDeliverableArtifactCount } from '@/lib/worker-deliverables';
+import { findTaskRole } from '@/app/app/(protected)/tasks/[id]/role-lookup';
+import { RUN_PROGRESS_READERS } from '@/modules';
+import { loadTaskAccess, type AccessItem } from '@/lib/agent-capabilities/access-log';
+import { deriveTaskModel } from '@/lib/model-presentation';
+import type { TaskDeliverablesResult } from '@/components/task/TaskDeliverables';
+import { loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
+import { runnerDisplayResolver } from '@/lib/runner-display';
 
 /** One record the task produced, as the sheet lists it (W4 "Records"). */
 export interface TaskSummaryRecord {
@@ -69,9 +80,15 @@ export async function GET(
         reviewerRetryPrNumber: true,
         conflictRetryPrNumber: true,
         taskClass: true,
+        // The live run view: what the run must deliver, its tier and its review gate.
+        outputRequirement: true,
+        requiresReview: true,
+        tier: true,
+        predictedModel: true,
       },
       with: {
-        mission: { columns: { title: true, executor: true } },
+        mission: { columns: { title: true, executor: true, mergePolicy: true, requiresReview: true, workingBranch: true, integrationBranchEnabled: true } },
+        workspace: { columns: { gitConfig: true, teamId: true } },
         parentTask: { columns: { title: true } },
         creatorAccount: { columns: { name: true } },
         creatorWorker: {
@@ -91,49 +108,35 @@ export async function GET(
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 
-    // Get latest worker
-    const latestWorkers = await db.query.workers.findMany({
-      where: sqlWhere(eq(workers.taskId, id)),
-      orderBy: sqlOrderBy(desc(workers.createdAt)),
-      limit: 1,
-      columns: {
-        id: true,
-        status: true,
-        currentAction: true,
-        turns: true,
-        prUrl: true,
-        prNumber: true,
-        prLifecycleStatus: true,
-        mergedAt: true,
-        commitCount: true,
-        filesChanged: true,
-        linesAdded: true,
-        linesRemoved: true,
-        costUsd: true,
-        costBasis: true,
-        inputTokens: true,
-        outputTokens: true,
-        startedAt: true,
-        completedAt: true,
-        waitingFor: true,
-        branch: true,
-        milestones: true,
-      },
-      with: {
-        account: {
-          columns: { authType: true },
-        },
-      },
-    });
-
-    const worker = latestWorkers[0] || null;
-    const result = task.result as { summary?: string; nextSuggestion?: string } | null;
+    // The worker and question the task page shows (lib/task-view.ts): the
+    // newest live worker, else the newest, ordered by (createdAt, id).
+    const view = await loadTaskView(task, { userId: user.id, teamId: access.teamId ?? null });
+    const worker = view.shownWorker ?? null;
+    const result = task.result as { summary?: string; summarySource?: string; nextSuggestion?: string } | null;
+    // The PR is the PR worker's, as on the page — not the shown worker's,
+    // which may be a newer attempt that opened none.
+    const prWorker = view.prWorker ?? null;
 
     // Slice F (§13.10): a kernel-owned PR's state is its delivery's, so the
     // drawer's PR card never reads the worker columns for it. Null for a
     // legacy or PR-less task: the card keeps the fact cache.
-    const kernelView = worker?.prNumber != null ? (await getDeliveryViewsForTasks([task.id])).get(task.id) : undefined;
+    // The delivery the task belongs to, read as the page reads it: the
+    // header's reading and the checks list come from it too.
+    const deliveryContext = await loadTaskDeliveryContext(task.id);
+    const kernelView = deliveryContext.view ?? undefined;
+    const sections = taskDeliverySections(deliveryContext, prWorker);
     const prState = kernelView && kernelView.prNumber === worker?.prNumber ? kernelView.prState : null;
+    const pr = taskPrFacts(prWorker, kernelView && kernelView.prNumber === prWorker?.prNumber ? kernelView : null);
+
+    // Runners by hostname, never their raw URL (runner-display), as on the page.
+    let runner: string | null = null;
+    if (worker) {
+      try {
+        runner = runnerDisplayResolver(await loadRunnerHeartbeats([worker]))(worker)?.name ?? null;
+      } catch (err) {
+        console.error('Task summary: runner heartbeats load failed', err);
+      }
+    }
 
     // Failover metadata lives on task.context (stamped when a Claude task is
     // flipped to Codex on budget exhaustion). Surface just the display bits so
@@ -233,12 +236,65 @@ export async function GET(
       ).length;
     }
 
+    // The open question note recording the same ask as the worker's
+    // waitingFor (the post_note path), linked as the task page links it. The
+    // sheet's question card leads with it and marks it answered alongside the
+    // worker.
+    const questionNote = view.questionNote;
+
     let failureKind: Awaited<ReturnType<typeof loadTaskFailureKind>> = null;
     try {
       failureKind = await loadTaskFailureKind(task);
     } catch (err) {
       console.error('Task summary: failure kind load failed', err);
     }
+
+    // The page's live run view, for a live worker on a task still open.
+    const activeWorker = !isTerminalTaskStatus(task.status) ? view.activeWorker : undefined;
+    const teamId = (task.workspace as { teamId?: string | null } | null)?.teamId ?? access.teamId ?? null;
+    const [live, accessItems] = await Promise.all([
+      activeWorker
+        ? (async (): Promise<LiveWorkerViewProps | null> => {
+            try {
+              const [deliverableArtifactCount, review, role] = await Promise.all([
+                getWorkerDeliverableArtifactCount(activeWorker.id),
+                prWorker?.prNumber ? RUN_PROGRESS_READERS.review({ workspaceId: task.workspaceId, prNumber: prWorker.prNumber }).catch(() => null) : null,
+                findTaskRole({ workspaceId: task.workspaceId, teamId, slug: task.roleSlug }),
+              ]);
+              // The newest run that recorded its model usage, as on the page.
+              const usageOf = (meta: unknown) => {
+                const u = (meta as { modelUsage?: unknown } | null)?.modelUsage;
+                return u && typeof u === 'object' && Object.keys(u).length > 0 ? u : null;
+              };
+              const attributedUsage = view.ordered.map(w => usageOf(w.resultMeta)).find(u => u != null) ?? null;
+              const model = deriveTaskModel({
+                tier: task.tier,
+                predictedModel: task.predictedModel,
+                context: task.context,
+                modelUsage: attributedUsage as Parameters<typeof deriveTaskModel>[0]['modelUsage'],
+              });
+              return liveWorkerViewProps({
+                task,
+                worker: activeWorker,
+                delivery: sections.delivery,
+                deliverableArtifactCount,
+                usesReviewer: RUN_PROGRESS_READERS.usesReviewer((task.workspace ?? {}) as never, task.mission as never, task, { baseRef: activeWorker.prBaseRef }),
+                reviewState: review?.state,
+                modelTier: model.tierLabel,
+                questionNote,
+                roleName: role?.name ?? null,
+              });
+            } catch (err) {
+              console.error('Task summary: live view load failed', err);
+              return null;
+            }
+          })()
+        : Promise.resolve(null),
+      loadTaskAccess(task.id).catch((err): AccessItem[] => {
+        console.error('Task summary: access load failed', err);
+        return [];
+      }),
+    ]);
 
     return NextResponse.json({
       id: task.id,
@@ -281,21 +337,34 @@ export async function GET(
             completedAt: worker.completedAt,
             waitingFor: worker.waitingFor as WaitingFor | null,
             branch: worker.branch,
+            runner,
             milestones: worker.milestones ?? [],
             account: worker.account
               ? { authType: worker.account.authType }
               : null,
           }
         : null,
+      questionNote,
+      pr,
+      merged: taskHeaderMerged(prWorker, task.status),
       lastError: trace
         ? { excerpt: trace.excerpt, pattern: trace.pattern, ts: trace.ts }
         : null,
       result: result
         ? {
             summary: result.summary || null,
+            fallback: isFallbackSummary(result),
             nextSuggestion: result.nextSuggestion || null,
           }
         : null,
+      // The shared Deliverables block (components/task/TaskDeliverables).
+      deliverables: (result ?? null) as TaskDeliverablesResult | null,
+      delivery: sections.delivery,
+      checks: sections.checks,
+      live,
+      // The page's steer panel for the same live worker.
+      steer: live && activeWorker ? workerSteerProps(activeWorker, view.ordered, false) : null,
+      access: accessItems,
       blockedByCount,
       failureKind,
       records,

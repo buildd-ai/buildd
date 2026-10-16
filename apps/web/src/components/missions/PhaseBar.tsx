@@ -17,7 +17,7 @@ export const CELL_STATE_LABEL: Record<ListCellState, string> = {
   done: 'merged',
   in_ci: 'in CI',
   running: 'running',
-  needs_you: 'needs you',
+  needs_you: 'waiting on you',
   failed: 'failed',
   queued: 'queued',
   skipped: 'cancelled',

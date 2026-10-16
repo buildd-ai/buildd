@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getSpec, reviseSpecDraft } from '@/lib/specs/store';
 import { specCaller } from '@/lib/specs/caller';
 import { reviseSpecSection } from '@/lib/specs/section-revise';
+import { formatHints } from '@/lib/specs/format-hints';
 
 type Ctx = { params: Promise<{ specId: string }> };
 
@@ -22,7 +23,7 @@ export async function GET(req: NextRequest, { params }: Ctx) {
  * draft. With `section` (an outline id) or `heading`, body is that one
  * section's new text and the rest of the spec is kept as it is. A stale
  * expectedVersion is a 409 with currentVersion: re-read, merge, revise on top. Agents and people may revise; approving is a separate,
- * person-only act.
+ * person-only act. formatHints (R-48) suggests a diagram or table for the text sent; it never refuses.
  */
 export async function PATCH(req: NextRequest, { params }: Ctx) {
   const { specId } = await params;
@@ -32,5 +33,5 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   if (!body || typeof body !== 'object') return NextResponse.json({ error: 'a JSON body is required' }, { status: 400 });
   const r = 'section' in body || 'heading' in body ? await reviseSpecSection(caller, specId, body) : await reviseSpecDraft(caller, specId, body);
   if (!r.ok) return NextResponse.json({ error: r.error, ...(r.currentVersion !== undefined ? { code: 'version_conflict', currentVersion: r.currentVersion } : r.code ? { code: r.code } : {}) }, { status: r.status });
-  return NextResponse.json({ spec: r.spec, revision: r.revision, unchanged: r.unchanged });
+  return NextResponse.json({ spec: r.spec, revision: r.revision, unchanged: r.unchanged, formatHints: formatHints(String((body as Record<string, unknown>).body ?? '')) });
 }

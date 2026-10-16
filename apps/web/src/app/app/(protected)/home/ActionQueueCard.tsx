@@ -104,7 +104,8 @@ function ActionQueueCardBody({ item }: { item: ActionQueueItem }) {
       return (
         <Link
           key={item.subjectKey}
-          href={actionCardTaskLink(item)}
+          // A question is answered on its task page, in full.
+          href={actionCardTaskLink(item, { answer: true })}
           className="block border-l-2 border-status-warning bg-status-warning/5 px-4 py-3 hover:bg-status-warning/10 transition-colors"
         >
           <div className="flex items-center gap-2 mb-0.5">

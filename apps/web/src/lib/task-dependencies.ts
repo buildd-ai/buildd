@@ -15,6 +15,7 @@ import { refreshWorkerMergeStateIfStale } from './pr-reconcile';
 import { isBookkeeping } from '@buildd/core/mission-helpers';
 import type { PathDeclaration } from '@buildd/shared';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { deliveryOwnedTaskSql, taskCols } from '@/lib/workflow/pr-fact-scope';
 
 /**
  * Result of interpreting `structuredOutput.plan`. Organizer heartbeats
@@ -533,7 +534,12 @@ async function maybeCreateAggregationTask(
  * runs after the live PR refresh so a merge that refresh discovers counts.
  */
 export async function checkDependsOnResolved(
-  completedTaskId: string
+  completedTaskId: string,
+  /**
+   * `observeOnly`: the caller is a page render's after() (pr-state-refresh), which may record a
+   * kernel-owned dependency's merge as a fact but never apply it (AC-3); the fast heal applies it.
+   */
+  opts: { observeOnly?: boolean } = {},
 ): Promise<void> {
   // Find all PENDING tasks where dependsOn contains the completed task ID.
   // Only pending tasks can be woken — completed/failed/cancelled ones are inert.
@@ -651,9 +657,11 @@ export async function checkDependsOnResolved(
           const installationId = wsId ? wsInstallMap.get(wsId) : null;
           if (!installationId) return;
 
+          // A kernel-owned dependency's merge goes through T17 (S4a), so the workspace rides along.
           const refreshed = await refreshWorkerMergeStateIfStale(
             { id: worker.id, prNumber: worker.prNumber, prUrl: worker.prUrl },
             installationId,
+            { workspaceId: wsId, observeOnly: opts.observeOnly },
           );
           if (refreshed) {
             for (const taskId of taskIds) {
@@ -719,7 +727,7 @@ export async function checkDependsOnResolved(
  * started). A caller-declared edge to the same failed task still cascades
  * normally.
  */
-async function cascadeDependencyFailure(
+export async function cascadeDependencyFailure(
   failedTaskId: string
 ): Promise<void> {
   // Find all pending/assigned tasks where dependsOn contains the failed task ID
@@ -738,6 +746,9 @@ async function cascadeDependencyFailure(
         sql`${tasks.dependsOn}::jsonb @> ${JSON.stringify([failedTaskId])}::jsonb`,
         // Only cascade to non-terminal tasks
         sql`${tasks.status} NOT IN ('completed', 'failed', 'cancelled')`,
+        // S4b (workflow-kernel-library.md §1): a task whose PR a live kernel delivery carries is the
+        // kernel's to settle. Failing it here would contradict a delivery in review or landing.
+        sql`NOT ${deliveryOwnedTaskSql(taskCols(), { live: true })}`,
       )
     );
 

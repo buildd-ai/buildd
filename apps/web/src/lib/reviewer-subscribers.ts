@@ -37,7 +37,8 @@ import { readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request'
 import { pickReviewerRole } from '@/lib/pr-review-status';
 import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
-import { observeHead, openKernelDelivery, policyFindingFor } from '@/lib/workflow/seam';
+import { observeHead, policyFindingFor } from '@/lib/workflow/seam';
+import { openKernelDelivery } from '@/lib/workflow/kernel-client';
 import { releaseKernelDeliveryForPr } from '@/lib/workflow/authority';
 import { agentReviewsDataMigrations } from '@buildd/shared';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
@@ -215,7 +216,7 @@ async function maybeDispatchReviewer(
         installationId,
         source: 'webhook:opened',
         policy: policyFindingFor({ reason, migrationSafety }),
-      }).catch((err) => {
+      }, { principal: { kind: 'system', id: 'system:webhook:opened' } }).catch((err) => {
         console.error(`[reviewer] workflow kernel could not take PR #${pr.number} for its pre-flight finding; legacy escalation:`, err);
         return { owned: false };
       });
@@ -287,7 +288,7 @@ async function maybeDispatchReviewer(
       prNumber: pr.number,
       installationId,
       source: 'webhook:opened',
-    }).catch((err) => {
+    }, { principal: { kind: 'system', id: 'system:webhook:opened' } }).catch((err) => {
       console.error(`[reviewer] workflow kernel could not open a delivery for PR #${pr.number}; legacy review dispatch:`, err);
       return { owned: false };
     });

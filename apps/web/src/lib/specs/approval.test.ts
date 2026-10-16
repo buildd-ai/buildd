@@ -50,6 +50,7 @@ let reachResult = true;
 const events: string[] = [];
 mock.module('@/lib/specs/store', () => ({
   fail: (status: number, error: string, extra = {}) => ({ ok: false, status, error, ...extra }),
+  importedRefusal: () => null,
   reach: async () => {
     events.push('reach:start');
     const ok = reachGate ? await reachGate.promise : reachResult;

@@ -29,6 +29,10 @@ describe('buildTickerEvents', () => {
     expect(events.find(e => e.kind === 'merged')?.href).toStartWith('/app/missions/m1?');
   });
 
+  it('a question opens its task page to answer it, in mission context', () => {
+    expect(events.find(e => e.kind === 'question')?.href).toBe('/app/tasks/t-checkout?from=mission&missionId=m1&respond=1');
+  });
+
   it('collapses identical consecutive rows (heartbeat ticks) into one with a count', () => {
     const ticks: TickerWorkerRow[] = [0, 1, 2].map(i => ({
       id: `hb${i}`, status: 'completed', startedAt: at(i), completedAt: at(i), runnerName: 'dune',

@@ -71,7 +71,7 @@ export const PROMPT_EVAL_CONCURRENCY = 8;
 /** A `running` row older than this is treated as dead, not in flight. */
 export const PROMPT_EVAL_STALE_MS = 10 * 60_000;
 
-export type PromptEvalTrigger = 'push' | 'manual';
+export type PromptEvalTrigger = 'push' | 'cron' | 'manual';
 
 export interface PromptEvalInput {
   trigger: PromptEvalTrigger;

@@ -28,6 +28,8 @@ import {
   assertRunnerConfig,
   buildContainerEnv,
   CLOUD_MODEL_AUTH_CONTAINER_ENV,
+  EXIT_COMPLETED,
+  EXIT_FAILED,
   EXIT_PARKED,
   EXIT_NOT_ATTACHABLE,
   IMAGE_ENV,
@@ -81,6 +83,7 @@ import {
   type StoredRunReport,
 } from './run-report';
 import { otelContainerEnv, type OtelEnv } from './otel';
+import { runRunnerVerification } from './runner-verification';
 import {
   WARM_UPLOAD_TIMEOUT_MS,
   decideLeaseClaim,
@@ -135,6 +138,12 @@ export interface SupervisorConfig extends ContainerEnvSource, OtelEnv {
   reuseEnabled?: boolean;
   /** How long a lease keeps a container warm after a run (resolveReuseWindowMs). */
   reuseWindowMs?: number;
+  /**
+   * The workspace dispatch token, for the runner's own check run after the
+   * runner process exits (runner-verification.ts). Never in the container
+   * env: buildContainerEnv copies named fields only. Absent: no check run.
+   */
+  DISPATCH_TOKEN?: string;
 }
 
 export interface SupervisorDeps {
@@ -733,6 +742,7 @@ export class TaskSupervisor {
       // The container itself went away under a live runner (OOM, a platform
       // stop): what buildd's size rule counts as a restart.
       if (settled.kind === 'container_exited' || settled.kind === 'container_error') interruption = 'container_stopped';
+      if (code === EXIT_COMPLETED || code === EXIT_FAILED) await this.verifyAsRunner();
     } catch (err) {
       if (err instanceof SeatDeferral) seatDeferral = err.reason;
       else error = describe(err);
@@ -1040,6 +1050,23 @@ export class TaskSupervisor {
     } catch (err) {
       this.d.log(`[cloud-runner] task ${this.d.taskId}: destroy failed: ${describe(err)}`);
     }
+  }
+
+  /**
+   * The runner's own check run for a verification task, after the runner
+   * process exited and before the container stops (runner-verification.ts).
+   * The agent shares the container's task token, so only this report, on the
+   * runner key the container never holds, can record a verdict.
+   */
+  private async verifyAsRunner(): Promise<void> {
+    const workerId = this.d.getState().workerId;
+    if (!workerId || !this.d.container.running) return;
+    await runRunnerVerification(
+      { fetch: this.d.fetch, container: this.d.container, log: (m) => this.d.log(m), now: () => this.d.now() },
+      this.d.config,
+      this.d.taskId,
+      workerId,
+    );
   }
 
   /**

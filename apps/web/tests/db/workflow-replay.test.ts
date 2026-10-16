@@ -173,9 +173,14 @@ describe('out-of-band rows are not the step’s decision', () => {
     // its delivery (§9, §6.9), so the current kernel starts the next round. A different to-state is
     // a different decision, which no known evolution may rewrite.
     const { c } = awaitingPush({ outcome: 'success', commitCount: 0 });
-    expect(await replayDelivery(c, { exec })).toMatchObject({
-      result: 'diverged', divergence: { field: 'transition.toState', recorded: 'AWAITING_PUSH', replayed: 'AWAITING_REVIEW' }, tolerated: [],
+    const report = await replayDelivery(c, { exec });
+    expect(report).toMatchObject({
+      result: 'diverged', divergence: { field: 'transition.toState', recorded: 'AWAITING_PUSH', replayed: 'AWAITING_REVIEW' },
     });
+    // The earlier steps' status effects are S3b's addition to every version, and the request for
+    // changes' findings evidence is S5's (a recording from before has neither); nothing else was
+    // tolerated, and nothing rewrote the diverging step.
+    expect(report.tolerated.filter((t) => !t.startsWith('buildd/landing status effect') && !t.startsWith('findings evidence (S5'))).toEqual([]);
   }, 60_000);
 
   test('the try-1 key is the reducer’s: a different local head in it is a divergence', async () => {

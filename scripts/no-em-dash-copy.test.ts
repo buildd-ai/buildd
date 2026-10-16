@@ -38,7 +38,6 @@ const ALLOWLIST: Array<[pattern: RegExp, reason: string]> = [
   // covers em dash, en dash, and hyphen because the agent's choice of
   // separator is not ours to constrain.
   [/^apps\/web\/src\/app\/app\/\(protected\)\/home\/NeedsYouCards\.tsx$/, 'parses an agent-authored option string, not app copy'],
-  [/^apps\/web\/src\/app\/app\/\(protected\)\/missions\/\[id\]\/MissionBoardParts\.tsx$/, 'parses an agent-authored option string, not app copy'],
   [/^apps\/web\/src\/components\/missions\/MissionListCards\.tsx$/, 'parses an agent-authored option string, not app copy'],
   [/^apps\/web\/src\/app\/app\/\(protected\)\/tasks\/\[id\]\/question-hero\.ts$/, 'parses an agent-authored option string, not app copy'],
   // Strips a "PR #12 — title" prefix from an agent- or GitHub-authored title.

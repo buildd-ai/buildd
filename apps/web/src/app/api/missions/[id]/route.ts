@@ -1,4 +1,5 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
+import { cancelWaivedSurfaceAudits } from '@/lib/surface-audit-waiver-cancel';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
 import { missions, tasks, taskSchedules, initiatives, workspaces } from '@buildd/core/db/schema';
@@ -11,7 +12,7 @@ import {
 } from '@/lib/task-token-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { computeNextRunAt } from '@/lib/schedule-helpers';
-import { computeMissionProgress, validateGoalCriteria } from '@buildd/core/mission-helpers';
+import { computeMissionProgress, outcomeSpecWriteRefusal, validateGoalCriteria } from '@buildd/core/mission-helpers';
 import { computeAndStoreFlightStripCache } from '@buildd/core/flight-strip-store';
 import { isMissionBlocked, wouldCreateCycle } from '@/lib/mission-dependency';
 import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
@@ -45,6 +46,10 @@ import {
   surfaceAuditMissingReason,
 } from '@buildd/core/surface-audit';
 import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
+import { selectMissionSpec, type OutcomeSpecInput, type OutcomeSpecRemoval } from '@/lib/specs/mission-selection';
+import type { SpecCaller } from '@/lib/specs/store';
+import { missionStatusNoteBody, MISSION_STATUS_CHANGE_TITLES } from '@/lib/mission-status-note';
+import { missionEpochsOf, scopeAmendmentsOf } from '@/lib/workflow/delivery-ship';
 
 const resolveTeamIds = resolveAccountTeamIds;
 
@@ -196,8 +201,21 @@ export async function GET(
       }
     }
 
+    // Delivery records and scope decisions (workflow-kernel-library.md §6): the
+    // mission's state and its deliveries' states are separate facts.
+    const [deliveryRows, scopeRows] = await Promise.all([missionEpochsOf(id), scopeAmendmentsOf(id)]);
+    const deliveries = deliveryRows.map((e) => ({
+      delivery: e.epoch, branch: e.branch, state: e.state, prNumber: e.prNumber, mergedAt: e.mergedAt,
+      scopeVersion: e.scopeVersion, retired: e.retiredAt != null, held: e.settlement?.held?.map((h) => h.prNumber) ?? [],
+    }));
+    const scopeUpdates = scopeRows.filter((r) => r.status !== 'recorded').map((r) => ({
+      taskId: r.sourceTaskId, decision: r.decision, status: r.status, scopeVersion: r.scopeVersionAfter, reason: r.reason, at: r.createdAt,
+    }));
+
     return NextResponse.json({
       ...mission,
+      deliveries,
+      scopeUpdates,
       totalTasks,
       completedTasks,
       progress,
@@ -272,6 +290,28 @@ export async function PATCH(
         return NextResponse.json({ error: 'actorWorkerId must be its own worker' }, { status: 403 });
       }
     }
+    // Living Specs Slice 12: selecting the mission's outcome spec. Its own write
+    // path (lib/specs/mission-selection.ts): the server pins the revision and
+    // adds one required `living_spec` goal criterion, idempotently. A task token
+    // never reaches here (outcomeSpec is not a task-token field above).
+    if (body && typeof body === 'object' && 'outcomeSpec' in body) {
+      if ('goalCriteria' in body) {
+        return NextResponse.json({ error: 'Send outcomeSpec or goalCriteria, not both: the outcome spec writes its own criterion' }, { status: 400 });
+      }
+      const raw = (body as { outcomeSpec: unknown }).outcomeSpec;
+      if (raw === null || typeof raw !== 'object') {
+        return NextResponse.json({ error: 'outcomeSpec must be { specId, revision?, criteria?, narrowedReason?, waive?, unwaive? } or { remove: true, specId?, reason }' }, { status: 400 });
+      }
+      const caller: SpecCaller = apiAccount ? { kind: 'account', account: apiAccount as any } : { kind: 'user', userId: user!.id };
+      const selected = await selectMissionSpec(caller, id, raw as OutcomeSpecInput | OutcomeSpecRemoval);
+      if (!selected.ok) return NextResponse.json({ error: selected.error }, { status: selected.status });
+      delete (body as Record<string, unknown>).outcomeSpec;
+      existing.goalCriteria = selected.goalCriteria as any;
+      if (Object.keys(body).filter(k => k !== 'actorWorkerId').length === 0) {
+        return NextResponse.json({ ...existing, outcomeSpec: { criterion: selected.criterion, changed: selected.changed } });
+      }
+    }
+
     const { title, description, status, priority, cronExpression, workspaceId: requestedWorkspaceId, initiativeId, skillSlugs, outputSchema, model,
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, maxConcurrentTasks, backend,
       dependsOnMission, gateCondition, mergePolicy, orchestrationMode, externalIssueId, externalIssueUrl, costBudgetUsd,
@@ -475,7 +515,7 @@ export async function PATCH(
         });
         if (gate?.required) {
           return NextResponse.json({
-            error: surfaceAuditMissingReason(gate.uiPaths, gate.source),
+            error: surfaceAuditMissingReason(gate.uiPaths, gate.source, { waiverAllowed: gate.waiverAllowed }),
             code: 'surface_audit_missing',
             uiPaths: gate.uiPaths.slice(0, 20),
           }, { status: 409 });
@@ -638,6 +678,11 @@ export async function PATCH(
     if (executor !== undefined) updateData.executor = executor;
 
     if (goalCriteria !== undefined) {
+      // The outcome spec (living_spec) leaves only through outcomeSpec, where
+      // removal is a person's act with a reason: never by clearing or
+      // re-saving the list without it.
+      const outcomeSpecError = outcomeSpecWriteRefusal(existing.goalCriteria, goalCriteria);
+      if (outcomeSpecError) return NextResponse.json({ error: outcomeSpecError }, { status: 400 });
       if (goalCriteria !== null) {
         // Grandfather unchanged entries: the dashboard saves the whole array, so
         // a mission holding a pre-gate prose criterion would otherwise 400 on
@@ -813,6 +858,13 @@ export async function PATCH(
         body: surfaceWaiverReason,
         actor,
       });
+      // The waived review's queued audit is retired, not left pending beside
+      // "nothing is waiting". One an agent already started is left alone.
+      try {
+        await cancelWaivedSurfaceAudits(id, surfaceWaiverReason, user ? `user:${user.id}` : `account:${apiAccount?.id ?? 'unknown'}`);
+      } catch (err) {
+        console.error('[missions PATCH] cancelling the waived audit failed', err);
+      }
     }
 
     const [updated] = await db
@@ -913,8 +965,8 @@ export async function PATCH(
       await postMissionFeedEvent({
         missionId: id,
         type: 'update',
-        title: isReopen ? 'Mission reopened' : 'Mission status changed',
-        body: `${existing.status} → ${status}`,
+        title: isReopen ? MISSION_STATUS_CHANGE_TITLES[1] : MISSION_STATUS_CHANGE_TITLES[0],
+        body: missionStatusNoteBody(existing.status, status),
         actor,
       }).catch(e => console.error('[missions/patch] Failed to emit status-change note:', e));
 

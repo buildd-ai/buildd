@@ -55,6 +55,17 @@ describe('creating a spec checks it against the approved ones', () => {
     expect(await createSpecDraft(user(), { workspaceId: wsA, title: 'x', body: BASKET, supersedes: fs.id }, { duplicates: judging('duplicate', 0.97) })).toMatchObject({ ok: false, status: 400 });
   });
 
+  test('an override lands on the refusing judgement\'s ledger row, by the person who made it', async () => {
+    const [team] = await q<{ team_id: string }>(sql`SELECT team_id FROM workspaces WHERE id = ${wsA}::uuid`);
+    const [rec] = await q<{ id: string }>(sql`INSERT INTO decision_records (team_id, workspace_id, capability, fingerprint, applied, status) VALUES (${team!.team_id}::uuid, ${wsA}::uuid, 'spec_duplicate', ${`fp-${rand()}`}, true, 'applied') RETURNING id`);
+    const deps = { judge: async () => ({ response: { decision: 'duplicate', confidence: 0.97, source: 'model', fallbackCause: null } as any, recordId: rec!.id }) };
+    const r = await createSpecDraft(user(), { workspaceId: wsA, title: `Basket ${rand()}`, body: BASKET, distinctBecause: 'This is the B2B basket with quotes, not the shop cart.' }, { duplicates: deps });
+    expect(r.ok).toBe(true);
+    const [row] = await q<{ human_override: Record<string, unknown> | null; overridden_by: string | null }>(sql`SELECT human_override, overridden_by FROM decision_records WHERE id = ${rec!.id}::uuid`);
+    expect(row!.human_override).toMatchObject({ decision: 'distinct', distinctBecause: expect.stringContaining('B2B'), by: `user:${admin}` });
+    expect(row!.overridden_by).toBe(admin);
+  });
+
   test('an overlap is created with a warning; with no decision model it is created with a note', async () => {
     const o = await createSpecDraft(user(), { workspaceId: wsA, title: `Basket ${rand()}`, body: BASKET }, { duplicates: judging('overlap', 0.8) });
     expect(o).toMatchObject({ ok: true, duplicateCheck: { ran: true, blocking: [], warnings: [{ specId: cartId, relation: 'overlap' }] } });

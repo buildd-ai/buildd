@@ -160,7 +160,7 @@ export async function loadActivity(input: {
       missionTitle: t.missionId ? input.missionTitles.get(t.missionId) ?? null : null,
       createdAt: t.createdAt.toISOString(),
       updatedAt: t.updatedAt.toISOString(),
-      waitingPrompt: waiting ? waiting.prompt || 'Needs input' : null,
+      waitingPrompt: waiting ? waiting.prompt || 'Has a question' : null,
       review: isReview ? reviewOf(t.result, t.context) : null,
       workers: ws.map(w => ({
         status: w.status,

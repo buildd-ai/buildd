@@ -21,9 +21,17 @@ import {
  */
 
 describe('SELECTABLE_CRITERION_TYPES — mechanical first, server-rejected types absent', () => {
+  // `living_spec` is mechanical but written only by selecting the mission's
+  // outcome spec (Living Specs Slice 12), so the form never offers it.
+  const TYPED = MECHANICAL_CRITERION_TYPES.filter(t => t !== 'living_spec');
+
   it('opens with exactly the mechanical types, in the shared constant order', () => {
-    expect(SELECTABLE_CRITERION_TYPES.slice(0, MECHANICAL_CRITERION_TYPES.length))
-      .toEqual([...MECHANICAL_CRITERION_TYPES]);
+    expect(SELECTABLE_CRITERION_TYPES.slice(0, TYPED.length)).toEqual([...TYPED]);
+  });
+
+  it('does not offer living_spec: the outcome spec selection writes it, and the server refuses a typed one', () => {
+    expect(SELECTABLE_CRITERION_TYPES as readonly string[]).not.toContain('living_spec');
+    expect(validateGoalCriteria([{ type: 'no_open_tasks' }, { type: 'living_spec', specId: 's', specRevisionId: 'r', revision: 1, contentHash: 'h' } as any])).toContain('outcomeSpec');
   });
 
   it('offers description last — it is the only LLM-graded form', () => {
@@ -62,7 +70,7 @@ describe('draftToCriterion', () => {
   });
 
   it('produces criteria the server accepts for every mechanical type', () => {
-    const filled = MECHANICAL_CRITERION_TYPES.map(type => {
+    const filled = MECHANICAL_CRITERION_TYPES.filter(t => t !== 'living_spec').map(type => {
       const draft = newCriterionDraft(type);
       return draftToCriterion(type === 'command' ? { ...draft, command: 'bun run test' } : draft);
     });

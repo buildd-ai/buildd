@@ -67,6 +67,7 @@ import { isOpenWithinTeams } from '@/lib/open-workspaces';
 import { missionNotHeld, missionNotLocal, taskNotHeld } from '@/app/api/workers/claim/held-gate';
 import { RUNNER_RECENTLY_SEEN_MS, isOnceRunnerUrl } from '@buildd/shared';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
+import { liveLinkCondition } from '@/lib/granted-links';
 
 /**
  * How long a live fleet may hold claimable work without starting anything.
@@ -359,7 +360,7 @@ async function claimableWorkspacesByAccount(
   }
 
   const linkRows = (await db.query.accountWorkspaces.findMany({
-    where: sqlWhere(inArray(accountWorkspaces.accountId, accountIds)),
+    where: sqlWhere(and(inArray(accountWorkspaces.accountId, accountIds), liveLinkCondition())),
     columns: { accountId: true, workspaceId: true, canClaim: true },
   })) as unknown as Array<{ accountId: string; workspaceId: string; canClaim: boolean }>;
   for (const link of linkRows) {

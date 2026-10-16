@@ -5,9 +5,10 @@ import { isUuid } from '@/lib/uuid';
 import { requestingPerson } from '@/lib/request-person';
 import { holdsInWorkspace } from '@/lib/team-access';
 import { appBaseUrl } from '@/lib/app-url';
-import { fail, reach, type SpecCaller, type SpecError, type SpecRevisionRow, type SpecRow } from './store';
+import { fail, importedRefusal, reach, type SpecCaller, type SpecError, type SpecRevisionRow, type SpecRow } from './store';
 import { signSpecApprovalRequest, specApprovalConfirmPath, verifySpecApprovalRequest } from './approval-request';
 import { emit } from '@/lib/core-emit';
+import { approvedAttachmentsSql } from './attachment-pins';
 import { after } from 'next/server';
 
 /**
@@ -118,7 +119,15 @@ export async function submitSpecRevision(caller: SpecCaller, specId: string, inp
 /** What an approve over MCP or chat returns: the link a person opens to confirm it. */
 export interface PendingSpecApproval { confirmUrl: string; revision: number; expiresAt: string }
 
-export async function approveSpecRevision(caller: SpecCaller, specId: string, input: { revision: unknown; expectedVersion: unknown }): Promise<{ ok: true; spec: SpecRow; revision: SpecRevisionRow } | { ok: true; spec: SpecRow; pending: PendingSpecApproval } | SpecError> {
+export async function approveSpecRevision(caller: SpecCaller, specId: string, input: { revision: unknown; expectedVersion: unknown }, opts: {
+  /**
+   * A person confirming an import (§18, R-19, ./import.ts), which has checked
+   * the repo file is unchanged since the imported commit. The confirmation is
+   * recorded on the spec in the approving statement. Without it, an imported
+   * spec is refused: its file may have moved, and only confirmation checks.
+   */
+  importConfirmation?: { note: string };
+} = {}): Promise<{ ok: true; spec: SpecRow; revision: SpecRevisionRow } | { ok: true; spec: SpecRow; pending: PendingSpecApproval } | SpecError> {
   if (!Number.isInteger(input.revision)) return fail(400, 'revision (the spec revision you read and are approving) is required');
   const loaded = await loadForDecision(caller, specId, input.expectedVersion);
   if ('ok' in loaded) return loaded;
@@ -126,6 +135,12 @@ export async function approveSpecRevision(caller: SpecCaller, specId: string, in
   const n = input.revision as number;
   if (n !== spec.headRevision) return fail(409, `Revision ${n} is not the head (revision ${spec.headRevision}); only the head is approved. Read it, then approve it.`, { currentVersion: spec.version });
   if (spec.approvedRevision === n) return fail(409, `Revision ${n} is already approved`, { currentVersion: spec.version });
+  if (!opts.importConfirmation) {
+    const refused = importedRefusal(spec);
+    if (refused) return refused;
+  } else if (spec.repoSource?.state !== 'imported' || spec.repoSource.revision !== n) {
+    return fail(409, 'This spec has no imported revision waiting for confirmation', { code: 'not_imported' });
+  }
 
   if (caller.kind === 'account') {
     // A bearer session: the person's own, but maybe driven by an agent. Ask, don't approve.
@@ -141,15 +156,26 @@ export async function approveSpecRevision(caller: SpecCaller, specId: string, in
   }
 
   const label = `user:${approver}`;
+  // The binding attachments (§21) are recorded in the same statement as the
+  // stamp, at their artifact revisions now, beside the design the revision pins.
+  // A confirmed import records who, when and what, with the approval (R-19), and buildd is the source from then on.
+  const confirmJson = opts.importConfirmation
+    ? JSON.stringify({ state: 'confirmed', confirmedBy: label, note: opts.importConfirmation.note })
+    : null;
   const rows = await db.execute(sql`
     WITH stamp AS (
-      UPDATE spec_revisions SET approved_by = ${label}, approved_at = now()
+      UPDATE spec_revisions SET approved_by = ${label}, approved_at = now(),
+        approved_attachments = ${approvedAttachmentsSql(specId, n)}
       WHERE spec_id = ${specId}::uuid AND revision = ${n} AND approved_at IS NULL
-        AND EXISTS (SELECT 1 FROM specs WHERE id = ${specId}::uuid AND version = ${spec.version} AND head_revision = ${n})
+        AND EXISTS (SELECT 1 FROM specs WHERE id = ${specId}::uuid AND version = ${spec.version} AND head_revision = ${n}
+          AND (${confirmJson}::jsonb IS NULL OR repo_source->>'state' = 'imported'))
       RETURNING revision
     )
-    UPDATE specs SET approved_revision = ${n}, status = 'approved', version = version + 1, updated_at = now()
+    UPDATE specs SET approved_revision = ${n}, status = 'approved', version = version + 1, updated_at = now(),
+      repo_source = CASE WHEN ${confirmJson}::jsonb IS NULL THEN repo_source
+        ELSE repo_source || ${confirmJson}::jsonb || jsonb_build_object('confirmedAt', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')) END
     WHERE id = ${specId}::uuid AND version = ${spec.version} AND head_revision = ${n} AND EXISTS (SELECT 1 FROM stamp)
+      AND (${confirmJson}::jsonb IS NULL OR repo_source->>'state' = 'imported')
     RETURNING id`);
   if (rowsOf(rows).length === 0) return conflictNow(specId);
   const [[after], [revision]] = await Promise.all([
@@ -159,7 +185,24 @@ export async function approveSpecRevision(caller: SpecCaller, specId: string, in
   // Modules react (the knowledge index), after the response: the approval has
   // committed, and emit never throws, so nothing there undoes it.
   const workspaceId = after.workspaceId;
-  specApprovalDeps.afterResponse(() => emit({ type: 'spec.approved', specId, workspaceId, revision: n }));
+  // A native-sourced spec (§18, R-15) also gets its repo copy's PR written; a
+  // workspace that has not opted in gets nothing (fileSpecRepoCopy returns null, AC-78).
+  // After the index, in the same task: emit never throws, and the copy reads
+  // nothing the index writes, so the order only keeps one task per approval.
+  // Work built ahead of approval (§20, R-39): every provisional pin on this
+  // spec re-pins to n and is re-graded there, after the index (emit never
+  // throws) and before the repo copy, on its own: a repo copy that fails must
+  // not leave shipped work ungraded.
+  specApprovalDeps.afterResponse(async () => {
+    await emit({ type: 'spec.approved', specId, workspaceId, revision: n });
+    const { regradeProvisionalPins } = await import('./provisional');
+    await regradeProvisionalPins(specId, n).catch((e) => console.error(`[spec-approval] provisional re-grade for ${specId} failed:`, e));
+    const { fileSpecRepoCopy, redecidePublication } = await import('./repo-copy');
+    await fileSpecRepoCopy(specId);
+    // Slice 14, R-70: a product spec carries the publication policy; a new
+    // approved revision of it re-decides every spec in the workspace.
+    if (after.scope === 'product') await redecidePublication(workspaceId);
+  });
   return { ok: true, spec: after, revision };
 }
 

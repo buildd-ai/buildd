@@ -166,7 +166,7 @@ export function recentPushesSql(userId: string, now: Date): SQL {
 const EVENT_LABEL: Record<string, string> = {
   'task.completed': 'Task completed',
   'task.failed': 'Task failed',
-  'task.needs_input': 'Needs input',
+  'task.needs_input': 'Has a question',
   'pr.merged': 'PR merged',
   'pr.ci_failed': 'CI failed',
 };

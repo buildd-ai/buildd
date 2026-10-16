@@ -151,16 +151,28 @@ function isControl(n: ClickNode): boolean {
   return n.getAttribute('role') === 'button';
 }
 
+function parseHref(n: ClickNode): URL | null {
+  const href = n.getAttribute('href');
+  if (!href) return null;
+  try {
+    return new URL(href, 'https://x.invalid');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * An answer link (`taskAnswerHref`, `?respond=1`): the full answering
+ * experience is the task page, so it always navigates, even inside its row.
+ */
+function isAnswerLink(n: ClickNode): boolean {
+  return n.tagName.toUpperCase() === 'A' && parseHref(n)?.searchParams.get('respond') === '1';
+}
+
 /** A link that means "this task" — its full page or its sheet — and so opens the sheet instead. */
 function isOwnTaskLink(n: ClickNode, taskId: string): boolean {
-  const href = n.getAttribute('href');
-  if (!href) return false;
-  let url: URL;
-  try {
-    url = new URL(href, 'https://x.invalid');
-  } catch {
-    return false;
-  }
+  const url = parseHref(n);
+  if (!url || url.searchParams.get('respond') === '1') return false;
   if (url.pathname === `/app/tasks/${taskId}`) return true;
   return url.pathname.startsWith('/app/missions/') && url.searchParams.get('task') === taskId;
 }
@@ -193,6 +205,7 @@ export function resolveTaskOpen(e: TaskClickLike): string | null {
     const id = n.getAttribute('data-task-id');
     if (id !== null) {
       if (!isValidTaskId(id)) return null;
+      if (isAnswerLink(n)) return null;
       // The row element itself may be the link (MissionTaskRow's <a>).
       if (control && control !== n && !isOwnTaskLink(control, id)) return null;
       return id;

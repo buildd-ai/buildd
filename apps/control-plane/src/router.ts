@@ -33,6 +33,14 @@ export type ExecutionMode = 'own' | 'shadow';
 export const executionMode = (raw: unknown): ExecutionMode => (raw === 'own' ? 'own' : 'shadow');
 export const SERVED_BY = 'x-buildd-served-by';
 
+/**
+ * The static routes beside `api/workers/[id]` in the web app. Next serves a
+ * static segment before a dynamic one, so these are never a worker id: they
+ * pass through to the web app. index.test.ts reads the web app's directory
+ * and fails when one is missing here.
+ */
+const WORKER_ID_SIBLINGS = new Set(['active', 'claim', 'heartbeat', 'local-sessions', 'mine', 'queue']);
+
 /** The route a request addresses, with its path params; null when it is not an execution route. */
 export function matchRoute(method: string, pathname: string): { route: Route; params: Record<string, string> } | null {
   for (const r of ROUTES) {
@@ -40,12 +48,23 @@ export function matchRoute(method: string, pathname: string): { route: Route; pa
     const m = r.pattern.exec({ pathname });
     if (!m) continue;
     const params = Object.fromEntries(Object.entries(m.pathname.groups).filter(([, v]) => v !== undefined)) as Record<string, string>;
+    if (params.id !== undefined && WORKER_ID_SIBLINGS.has(params.id)) continue;
     return { route: r, params };
   }
   return null;
 }
 
-export interface Env { EXECUTION_MODE?: string; CONTROL_PLANE_HOST?: string; CRON_SECRET?: string; GIT_SHA?: string }
+export interface Env { EXECUTION_MODE?: string; CONTROL_PLANE_HOST?: string; CRON_SECRET?: string; GIT_SHA?: string; KERNEL_COMMAND_SECRET?: string }
+
+/**
+ * The kernel command API (docs/specs/workflow-kernel-library.md §3): served on
+ * the Worker's own hostname only, never on a buildd.dev route, and not one of
+ * the web app's handlers (so not in ROUTES). The handler itself refuses unless
+ * this Worker is in `own` mode.
+ */
+export const COMMAND_ROUTE = { method: 'POST', pathname: '/v1/commands' } as const;
+export const isCommandRequest = (method: string, pathname: string, ownHost: boolean): boolean =>
+  ownHost && pathname === COMMAND_ROUTE.pathname && method === COMMAND_ROUTE.method;
 
 /**
  * Deep health makes outbound calls (GitHub, Pusher, storage, Redis) on every

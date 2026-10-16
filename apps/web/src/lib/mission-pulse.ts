@@ -10,7 +10,8 @@ import { isOpenAsk } from './open-ask';
  * same thing.
  */
 import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
-import { isAttempt, isDeliverableTask, stripTaskTypePrefix } from '@buildd/core/mission-helpers';
+import { deliverableRole, isAttempt, isDeliverableTask, stripTaskTypePrefix, type DeliverableRole } from '@buildd/core/mission-helpers';
+import { prShipState } from '@buildd/core/pr-shipped';
 import { groupTasksByPhase } from './flight-strip-nav';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
 import { isGreenAutoMergePending } from './auto-merge-grace';
@@ -28,6 +29,10 @@ export interface MissionFeedWorkerInput {
   prUrl?: string | null;
   prLifecycleStatus?: string | null;
   mergedAt?: Date | string | null;
+  /** The merged PR this closed one's work landed under (`record_pr_supersession`): shipped. */
+  supersededByPrNumber?: number | null;
+  /** A person recorded that this closed PR's work is deliberately not shipping: settled. */
+  abandonedAt?: Date | string | null;
 }
 
 export interface MissionFeedTaskInput {
@@ -44,6 +49,8 @@ export interface MissionFeedTaskInput {
   roleSlug?: string | null;
   category?: string | null;
   creationSource?: string | null;
+  /** `tasks.context`: carries the repair / refresh markers `deliverableRole` reads. */
+  context?: unknown;
   dependsOn?: readonly string[] | null;
   missionPhaseIndex?: number | null;
   missionPhaseLabel?: string | null;
@@ -79,6 +86,11 @@ export interface DeliverableRow<T extends MissionFeedTaskInput = MissionFeedTask
   task: T;
   /** Retries, reviewer passes and superseded re-creations, oldest first. Never rows of their own. */
   attempts: T[];
+  /**
+   * What the row is for (`deliverableRole`, spec f7f67f1a P-2). Every role is a
+   * row; only `build` rows count toward the mission's n / N (R-14).
+   */
+  deliverableRole: DeliverableRole;
 }
 
 export interface FoldedDeliverables<T extends MissionFeedTaskInput = MissionFeedTaskInput> {
@@ -144,7 +156,7 @@ export function foldMissionDeliverables<T extends MissionFeedTaskInput>(tasks: r
   const rowById = new Map<string, DeliverableRow<T>>();
   for (const t of deliverables) {
     if (survivorOf.has(t.id)) continue;
-    const row = { task: t, attempts: [] as T[] };
+    const row: DeliverableRow<T> = { task: t, attempts: [] as T[], deliverableRole: deliverableRole(t) };
     rows.push(row);
     rowById.set(t.id, row);
   }
@@ -346,7 +358,17 @@ export function deriveFeedTaskState(row: DeliverableRow, ctx: MissionFeedContext
       case 'ci_failed':
       case 'conflict':
         return openAttempt ? { state: 'failed', needsYou: null, askedAt: null } : needs('pr', fallbackAsk);
-      default: // merged, closed, or no PR
+      case 'closed': {
+        // The shared shipped predicate (pr-shipped.ts): superseded shipped,
+        // abandoned is settled, anything else closed never shipped (R-2).
+        // A row reaches here only with a PR, so the ship test never reads `no_pr`
+        // for a feed input that carries just the PR number.
+        const ship = prShipState({ ...task.worker, prUrl: task.worker?.prUrl ?? `#${pr.number}` });
+        if (ship === 'superseded') return { state: 'done', needsYou: null, askedAt: null };
+        if (ship === 'abandoned') return { state: 'skipped', needsYou: null, askedAt: null };
+        return openAttempt ? { state: 'failed', needsYou: null, askedAt: null } : needs('failed', fallbackAsk);
+      }
+      default: // merged, or no PR
         return { state: 'done', needsYou: null, askedAt: null };
     }
   }
@@ -404,10 +426,14 @@ function aggregateState(states: PulseState[]): PulseState {
  *
  * - rows are `foldMissionDeliverables` rows (D1): work tasks only, attempts and
  *   cancelled/failed re-creations folded under their survivor, bookkeeping out;
- * - N is every row except a cancelled one (`skipped`) — cancelled work was
- *   never going to be delivered, so it neither pads N nor counts as done;
- * - n is the rows in `done`: completed with no PR, a merged PR, or a closed one.
- *   A completed task whose PR is still open is not done — it is yours to merge.
+ *   and only `build` rows: audit, fix and refresh work is listed, never counted
+ *   (spec f7f67f1a R-14);
+ * - N is every row except a skipped one (cancelled, or a PR a person
+ *   abandoned) — that work was never going to be delivered, so it neither pads
+ *   N nor counts as done;
+ * - n is the rows in `done`: completed with no PR, a merged PR, or a closed PR
+ *   whose work landed under another (superseded). A PR still open, or closed
+ *   with no supersession, is not done.
  */
 export function pulseDoneCounts(segments: readonly PulseSegment[]): { done: number; total: number } {
   let done = 0;
@@ -430,6 +456,7 @@ export function missionDeliverableCounts(tasks: readonly MissionFeedTaskInput[])
   let total = 0;
   let cancelled = 0;
   for (const row of foldMissionDeliverables(tasks).rows) {
+    if (row.deliverableRole !== 'build') continue;
     const { state } = deriveFeedTaskState(row);
     if (state === 'skipped') cancelled += 1;
     else {
@@ -458,7 +485,8 @@ export function buildPulseCaption(segments: readonly PulseSegment[], opts: { liv
  * variant (card, header, context), so a task's position is learnable.
  */
 export function buildPulseSegments(tasks: readonly MissionFeedTaskInput[], ctx: MissionFeedContext = {}): PulseSegment[] {
-  const rows = foldMissionDeliverables(tasks).rows;
+  // The pulse is the build: audit, fix and refresh rows are listed elsewhere, never segments (R-14).
+  const rows = foldMissionDeliverables(tasks).rows.filter(r => r.deliverableRole === 'build');
   const ordered = ctx.order ? orderByIds(rows, ctx.order) : orderDeliverables(rows);
   const withState = ordered.map(row => ({ row, state: deriveFeedTaskState(row, ctx).state }));
   const hasPhases = groupTasksByPhase(ordered.map(r => r.task)).some(g => g.index !== null);

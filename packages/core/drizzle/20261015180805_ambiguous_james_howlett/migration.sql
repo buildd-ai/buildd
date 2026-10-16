@@ -1,0 +1,1 @@
+ALTER TABLE "backend_pauses" ADD COLUMN "seat_key" text;

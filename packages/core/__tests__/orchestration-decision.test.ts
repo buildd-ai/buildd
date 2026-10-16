@@ -285,6 +285,33 @@ describe('runOrchestrationDecision', () => {
       expect(await runOrchestrationDecision(base(moved, GATED, { cohort: { fraction: 1 } }))).toMatchObject({ applied: true, status: 'applied' });
     });
 
+    const probAnswer = (label: string, probabilities: Record<string, number>) => async () => ({
+      ok: true as const,
+      answers: { pick: { type: 'choice', choice: label, confidence: 0.99, probabilities } },
+      model: 'clef',
+      usage: { inputTokens: 100, outputTokens: 1, costUsd: 0.00002 },
+      latencyMs: 12,
+      attempts: 1,
+    });
+
+    it('a top p row compares top p, not Clef\'s confidence', async () => {
+      const rows = async () => [row({ confidenceSource: 'top_p', threshold: 0.75 })];
+      const low = harness({ resolveAccess: clefAccess, call: probAnswer('START', { START: 0.7, HOLD: 0.3 }) as any, measurements: rows });
+      expect(await runOrchestrationDecision(base(low, LIVE, { cohort: { fraction: 1 } }))).toMatchObject({ applied: false, reason: 'below_threshold' });
+      const high = harness({ resolveAccess: clefAccess, call: probAnswer('START', { START: 0.8, HOLD: 0.2 }) as any, measurements: rows });
+      expect(await runOrchestrationDecision(base(high, LIVE, { cohort: { fraction: 1 } }))).toMatchObject({ applied: true, effective: 'START' });
+    });
+
+    it('START-only: a START at top p >= 0.65 applies; a HOLD, however sure, stays the rule\'s', async () => {
+      const rows = async () => [row({ confidenceSource: 'top_p', threshold: 0.99, labelThresholds: { START: 0.65 } })];
+      const start = harness({ resolveAccess: clefAccess, call: probAnswer('START', { START: 0.66, HOLD: 0.34 }) as any, measurements: rows });
+      expect(await runOrchestrationDecision(base(start, GATED, { cohort: { fraction: 1 } }))).toMatchObject({ applied: true, effective: 'START' });
+      const weak = harness({ resolveAccess: clefAccess, call: probAnswer('START', { START: 0.6, HOLD: 0.4 }) as any, measurements: rows });
+      expect(await runOrchestrationDecision(base(weak, GATED, { cohort: { fraction: 1 } }))).toMatchObject({ applied: false, reason: 'below_threshold' });
+      const hold = harness({ resolveAccess: clefAccess, call: probAnswer('HOLD', { START: 0.01, HOLD: 0.99 }) as any, measurements: rows });
+      expect(await runOrchestrationDecision(base(hold, LIVE, { cohort: { fraction: 1 } }))).toMatchObject({ applied: false, effective: 'HOLD', suggested: 'HOLD' });
+    });
+
     it('a measurement read that throws: Jev keeps today, others record', async () => {
       const boom = async () => { throw new Error('db down'); };
       const jev = harness({ call: answer('START', 0.97) as any, measurements: boom });

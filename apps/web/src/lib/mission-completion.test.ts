@@ -11,7 +11,13 @@ mock.module('@/lib/mission-pr', () => ({
 // The workflow kernel's deliveries by PR (Slice D): empty = every PR is legacy, so every
 // test above the S16 block runs exactly the column answer it always did.
 let deliveryShips = new Map<string, any>();
+// Mission delivery records (workflow-kernel-library.md §6): empty = a mission
+// that predates them, judged by the mission-PR owner as before.
+let missionEpochs: any[] = [];
+const { epochCompletionHold: realEpochCompletionHold } = await import('@buildd/workflow-kernel/delivery-epochs');
 mock.module('@/lib/workflow/delivery-ship', () => ({
+  missionEpochsOf: () => Promise.resolve(missionEpochs),
+  epochCompletionHold: realEpochCompletionHold,
   deliveryShipsForPrs: () => Promise.resolve(deliveryShips),
   shipKey: (ws: string | null, u: string | null) => (ws && u ? `${ws}:${u.replace('https://github.com/', '').replace('/pull/', '#').toLowerCase()}` : null),
 }));
@@ -61,6 +67,29 @@ mock.module('@buildd/core/db/schema', () => ({
 
 // Uses the REAL @buildd/core/mission-helpers so isDeliverableTask's actual rules
 // (taskClass, housekeeping titles, planning mode) are under test here.
+// S4b: the completion write is the kernel's CAS statement (workflow/mission-completion-write.ts),
+// pinned on real Postgres in tests/db/mission-completion-writer.test.ts. Here it records like the
+// update it replaced, and the fingerprint the decision reads is what `epochFingerprint` says.
+let epochFingerprint: string | null = null;
+/** Later fingerprint reads (after a miss), in order; empty = the same as the first. */
+let laterFingerprints: Array<string | null> = [];
+/** Per-claim answers, in order (true = won); empty = `missionUpdateReturning` decides. */
+let claimAnswers: boolean[] = [];
+let fingerprintReads = 0;
+/** Runs when a claim misses: what another writer did to the mission meanwhile. */
+let onClaimMiss: (() => void) | null = null;
+const claimCalls: Array<{ missionId: string; fingerprint: string | null }> = [];
+mock.module('@/lib/workflow/mission-completion-write', () => ({
+  readMissionEpochFingerprint: async () => (fingerprintReads++ === 0 ? epochFingerprint : (laterFingerprints.shift() ?? epochFingerprint)),
+  claimMissionCompletion: async (missionId: string, fingerprint: string | null) => {
+    claimCalls.push({ missionId, fingerprint });
+    updateCalls.push({ table: 'missions', data: { status: 'completed' } });
+    const won = claimAnswers.length ? claimAnswers.shift()! : missionUpdateReturning.length > 0;
+    if (!won) onClaimMiss?.();
+    const row = missionUpdateReturning[0] ?? { id: missionId, scheduleId: null };
+    return won ? { id: row.id, scheduleId: row.scheduleId ?? null } : null;
+  },
+}));
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -156,6 +185,12 @@ const mockEvaluateSurfaceAuditGate = mock(async (_m: any, _t: any) => surfaceGat
 mock.module('@/lib/mission-surface-audit-gate', () => ({
   evaluateSurfaceAuditGate: mockEvaluateSurfaceAuditGate,
 }));
+// The one idempotent audit writer; under `automatic` the gate files through it.
+let auditRequestResult: any = { ok: true, created: true, taskId: 'audit-new', status: 'pending' };
+const mockRequestMissionSurfaceAudit = mock(async (_id: string, _opts?: any) => auditRequestResult);
+mock.module('@/lib/mission-surface-audit', () => ({
+  requestMissionSurfaceAudit: mockRequestMissionSurfaceAudit,
+}));
 
 mock.module('@/lib/mission-release', () => ({
   fireMissionReleaseIfComplete: mockFireMissionRelease,
@@ -202,6 +237,7 @@ const PASSING_STATE = {
 
 function reset() {
   missionRow = null;
+  missionEpochs = [];
   missionWorkState = { complete: true, reason: 'complete', unfinishedTaskCount: 0, unmergedPrCount: 0, landedOnIntegrationCount: 0 };
   missionPrOwner = null;
   taskRows = [];
@@ -210,6 +246,12 @@ function reset() {
   releaseTaskRows = [{ taskId: 't-done', workspaceId: 'ws-1' }];
   workerRow = { id: 'w-done' };
   updateCalls.length = 0;
+  claimCalls.length = 0;
+  epochFingerprint = null;
+  laterFingerprints = [];
+  claimAnswers = [];
+  fingerprintReads = 0;
+  onClaimMiss = null;
   insertedRows.length = 0;
   mockTriggerEvent.mockReset();
   mockTriggerEvent.mockImplementation(() => Promise.resolve());
@@ -223,6 +265,8 @@ function reset() {
   mockLoadVisualReview.mockClear();
   surfaceGate = { required: false, why: 'no_ui_change' };
   mockEvaluateSurfaceAuditGate.mockClear();
+  auditRequestResult = { ok: true, created: true, taskId: 'audit-new', status: 'pending' };
+  mockRequestMissionSurfaceAudit.mockClear();
   delete process.env.VISUAL_REVIEW_GATE;
 }
 
@@ -1051,6 +1095,71 @@ describe('completeMissionIfVerified — allowed', () => {
     expect(mockTriggerEvent).toHaveBeenCalledWith('mission-m1', 'mission:loop_completed', expect.objectContaining({ missionId: 'm1' }));
   });
 
+  it('S4b: the write is compare-and-set on the delivery records the decision read', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    epochFingerprint = 'e1:3:retired';
+    missionUpdateReturning = [{ id: 'm1', scheduleId: null }];
+    await completeMissionIfVerified('m1', { path: 'dormancy' });
+    expect(claimCalls).toEqual([{ missionId: 'm1', fingerprint: 'e1:3:retired' }]);
+  });
+
+  it('S4b review: deliveries that moved during the decision are decided once more on a fresh read', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    epochFingerprint = 'e1:2:merged';
+    laterFingerprints = ['e1:3:retired'];
+    claimAnswers = [false, true];
+    const result = await completeMissionIfVerified('m1', { path: 'dormancy' });
+    expect(result.completed).toBe(true);
+    expect(claimCalls.map((c) => c.fingerprint)).toEqual(['e1:2:merged', 'e1:3:retired']);
+  });
+
+  it('S4b review: a second miss on moved deliveries is reported as such, not as a lost race', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    epochFingerprint = 'e1:2:merged';
+    laterFingerprints = ['e1:3:retired'];
+    claimAnswers = [false, false];
+    const result = await completeMissionIfVerified('m1', { path: 'dormancy' });
+    expect(result.completed).toBe(false);
+    expect(result.decision.code).toBe('deliveries_moved');
+  });
+
+  // S4b delta review: an unrelated edit holding the mission row makes the xmin re-check miss with
+  // the deliveries unchanged and the mission still active. That is not a lost race: claim again.
+  it('S4b review: a miss with the deliveries unchanged and the mission still active claims once more', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    epochFingerprint = 'e1:3:retired';
+    claimAnswers = [false, true];
+    const result = await completeMissionIfVerified('m1', { path: 'dormancy' });
+    expect(result.completed).toBe(true);
+    expect(claimCalls.map((c) => c.fingerprint)).toEqual(['e1:3:retired', 'e1:3:retired']);
+  });
+
+  it('S4b review: a second such miss is reported as contended, not as a mission that left active', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    epochFingerprint = 'e1:3:retired';
+    claimAnswers = [false, false];
+    const result = await completeMissionIfVerified('m1', { path: 'dormancy' });
+    expect(result.completed).toBe(false);
+    expect(result.decision.code).toBe('completion_contended');
+    expect(claimCalls.length).toBe(2);
+  });
+
+  it('S4b review: a mission that really left active is mission_not_active, claimed once', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    claimAnswers = [false];
+    // Someone else completed it while this caller decided.
+    onClaimMiss = () => { missionRow = { ...missionRow, status: 'completed' }; };
+    const result = await completeMissionIfVerified('m1', { path: 'dormancy' });
+    expect(result.decision.code).toBe('mission_not_active');
+    expect(claimCalls.length).toBe(1);
+  });
+
   it('asks the release trigger to reconsider once the mission closes', async () => {
     // The gate clearing IS the moment an on_mission_complete release becomes due.
     // Previously the release could only be attempted from a worker-completion
@@ -1103,6 +1212,7 @@ describe('completeMissionIfVerified — allowed', () => {
     activeMission();
     taskRows = [work('completed')];
     missionUpdateReturning = []; // WHERE status='active' matched nothing
+    onClaimMiss = () => { missionRow = { ...missionRow, status: 'completed' }; }; // the other caller's win
 
     const result = await completeMissionIfVerified('m1', { path: 'dormancy' });
 
@@ -1398,6 +1508,86 @@ describe('canCompleteMission — Option A′: the mission integration PR is the 
     expect(d.ok).toBe(true);
   });
 
+  // ── §6: delivery epochs. "A mission PR merged" is never enough on its own. ──
+  function epoch(n: number, o: Record<string, unknown> = {}) {
+    return {
+      id: `e${n}`, missionId: 'm1', epoch: n, branch: n === 1 ? OPTED_IN.workingBranch : `${OPTED_IN.workingBranch}-delivery-${n}`,
+      state: 'open', version: 0, origin: n === 1 ? 'adopted' : 'cut', cutFromSha: null, branchReadyAt: null,
+      predecessorId: n === 1 ? null : `e${n - 1}`, scopeVersion: 1, repoFullName: 'acme/app', prNumber: null, ownerTaskId: null,
+      mergedAt: null, mergeCommitSha: null, mergedHeadSha: null, settlement: null, settledAt: null, retiredAt: null,
+      // A shipped delivery is settled and retired unless a test says otherwise.
+      ...(o.state === 'merged' ? { settledAt: '2026-10-14T10:05:00.000Z', retiredAt: '2026-10-14T10:06:00.000Z' } : {}),
+      ...o,
+    };
+  }
+
+  it('scenario 1: delivery 1 merged and later work landed on delivery 2 — the mission is not shipped', async () => {
+    activeMission({ ...OPTED_IN, workingBranch: `${OPTED_IN.workingBranch}-delivery-2` });
+    taskRows = [mergedWork()];
+    landedOnIntegration();
+    // The legacy reading says shipped: the newest mission-PR owner merged.
+    missionPrOwner = { taskId: 't-own', workerId: 'w-own', prNumber: 42, prUrl: 'https://example.test/pr/42', mergedAt: new Date(), state: 'merged' };
+    missionEpochs = [epoch(1, { state: 'merged', prNumber: 42, mergedAt: '2026-10-14T10:00:00.000Z' }), epoch(2)];
+    missionWorkState = { ...missionWorkState, landedOnIntegration: [{ taskId: 't-2', baseRef: `${OPTED_IN.workingBranch}-delivery-2`, mergedAt: '2026-10-14T11:00:00.000Z' }] };
+
+    const d = await canCompleteMission('m1', { path: 'dormancy' });
+    expect(d.ok).toBe(false);
+    expect(d.code).toBe('awaiting_mission_pr');
+    expect(d.reason).toContain('Delivery 2');
+  });
+
+  it('scenario 1: delivery 2 has its PR open — the mission waits on that PR, by number', async () => {
+    activeMission(OPTED_IN);
+    taskRows = [mergedWork()];
+    missionEpochs = [epoch(1, { state: 'merged', prNumber: 42 }), epoch(2, { prNumber: 43 })];
+    missionWorkState = { ...missionWorkState, landedOnIntegration: [{ taskId: 't-2', baseRef: `${OPTED_IN.workingBranch}-delivery-2`, mergedAt: '2026-10-14T11:00:00.000Z' }] };
+
+    const d = await canCompleteMission('m1', { path: 'dormancy' });
+    expect(d.code).toBe('awaiting_mission_pr');
+    expect(d.reason).toContain('#43');
+    expect(d.awaitingMerge).toBe(1);
+  });
+
+  it('scenario 4: every delivery merged and nothing on a writable branch — the delivery gate passes, criteria decide', async () => {
+    activeMission(OPTED_IN);
+    taskRows = [mergedWork()];
+    landedOnIntegration();
+    missionPrOwner = null;
+    missionEpochs = [epoch(1, { state: 'merged', prNumber: 42 }), epoch(2, { state: 'merged', prNumber: 43 })];
+    missionWorkState = { ...missionWorkState, landedOnIntegration: [{ taskId: 't-1', baseRef: OPTED_IN.workingBranch, mergedAt: '2026-10-14T09:00:00.000Z' }] };
+
+    const d = await canCompleteMission('m1', { path: 'dormancy' });
+    expect(d.code).not.toBe('awaiting_mission_pr');
+  });
+
+  it('review of #4806: a shipped delivery with PRs still on its branch holds completion, naming them', async () => {
+    activeMission(OPTED_IN);
+    taskRows = [mergedWork()];
+    landedOnIntegration();
+    missionEpochs = [
+      epoch(1, { state: 'merged', prNumber: 42, retiredAt: null, settlement: { settled: [], held: [{ prNumber: 77, kind: 'refresh', disposition: 'hold', reason: 'r', proof: {} }], satisfiedByPr: 42 } }),
+      epoch(2),
+    ];
+    missionWorkState = { ...missionWorkState, landedOnIntegration: [] };
+    const d = await canCompleteMission('m1', { path: 'dormancy' });
+    expect(d.code).toBe('awaiting_mission_pr');
+    expect(d.reason).toContain('#77');
+    // Not yet settled at all: held too.
+    missionEpochs = [epoch(1, { state: 'merged', prNumber: 42, settledAt: null, retiredAt: null }), epoch(2)];
+    expect((await canCompleteMission('m1', { path: 'dormancy' })).code).toBe('awaiting_mission_pr');
+  });
+
+  it('an open delivery with nothing landed on it (just cut) does not hold completion', async () => {
+    activeMission(OPTED_IN);
+    taskRows = [mergedWork()];
+    landedOnIntegration();
+    missionEpochs = [epoch(1, { state: 'merged', prNumber: 42 }), epoch(2)];
+    missionWorkState = { ...missionWorkState, landedOnIntegration: [{ taskId: 't-1', baseRef: OPTED_IN.workingBranch, mergedAt: '2026-10-14T09:00:00.000Z' }] };
+
+    const d = await canCompleteMission('m1', { path: 'dormancy' });
+    expect(d.code).not.toBe('awaiting_mission_pr');
+  });
+
   it('does not demand a mission PR when nothing landed on the integration branch', async () => {
     // An all-cancelled mission, or one that produced no code PRs. Three checks
     // above this, the gate explicitly allows completion for exactly that case;
@@ -1534,10 +1724,10 @@ describe('canCompleteMission — visual review hold', () => {
 describe('canCompleteMission — the surface-audit gate', () => {
   beforeEach(reset);
 
-  it('refuses a mission whose merged PRs changed UI and that has no audit, saying what to do', async () => {
+  it('refuses a mission whose merged PRs changed UI and that has no audit, saying what to do (policy ask)', async () => {
     activeMission();
     taskRows = [work('completed')];
-    surfaceGate = { required: true, source: 'diff', uiPaths: ['apps/web/src/components/Card.tsx'] };
+    surfaceGate = { required: true, source: 'diff', uiPaths: ['apps/web/src/components/Card.tsx'], policy: 'ask', waiverAllowed: true };
     const d = await canCompleteMission('m1');
     expect(d.ok).toBe(false);
     expect(d.code).toBe('surface_audit_missing');
@@ -1546,6 +1736,98 @@ describe('canCompleteMission — the surface-audit gate', () => {
     expect(d.reason).toContain('surfaceAuditWaiver');
     // The sheet shows the files without a second read of the diff.
     expect(d.surfaceAuditPaths).toEqual(['apps/web/src/components/Card.tsx']);
+    // Under ask the owner runs it: nothing is filed for them.
+    expect(d.surfaceAuditActor).toBe('owner');
+    expect(mockRequestMissionSurfaceAudit).not.toHaveBeenCalled();
+  });
+
+  // task e7285dc4: under `automatic` (the default) the owner is never asked to run or waive.
+  it('under automatic files the audit itself and reports a system wait, not an owner prompt', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    surfaceGate = { required: true, source: 'diff', uiPaths: ['apps/web/src/app/app/page.tsx'], policy: 'automatic', waiverAllowed: true };
+    const d = await canCompleteMission('m1');
+    expect(d.ok).toBe(false);
+    expect(d.code).toBe('surface_audit_missing');
+    expect(mockRequestMissionSurfaceAudit).toHaveBeenCalledTimes(1);
+    expect(mockRequestMissionSurfaceAudit.mock.calls[0][0]).toBe('m1');
+    expect(d.surfaceAuditActor).toBe('system');
+    expect(d.surfaceAuditTaskId).toBe('audit-new');
+    expect(d.reason).not.toContain('surfaceAuditWaiver');
+    expect(d.reason).toContain('completes when it');
+  });
+
+  it('strict files it too, and its refusal never offers a waiver', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    surfaceGate = { required: true, source: 'diff', uiPaths: ['apps/web/src/app/app/page.tsx'], policy: 'strict', waiverAllowed: false };
+    const d = await canCompleteMission('m1');
+    expect(mockRequestMissionSurfaceAudit).toHaveBeenCalledTimes(1);
+    expect(d.surfaceAuditActor).toBe('system');
+    expect(d.reason).not.toContain('waive');
+  });
+
+  it('a read-only caller files nothing but still reads a system wait', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    surfaceGate = { required: true, source: 'diff', uiPaths: ['apps/web/src/app/app/page.tsx'], policy: 'automatic', waiverAllowed: true };
+    const d = await canCompleteMission('m1', { evaluateCriteria: false });
+    expect(mockRequestMissionSurfaceAudit).not.toHaveBeenCalled();
+    expect(d.surfaceAuditActor).toBe('system');
+  });
+
+  it('after an audit already failed or was cancelled, it goes to the owner instead of refiling on every attempt', async () => {
+    activeMission();
+    taskRows = [
+      work('completed'),
+      { ...work('cancelled', '[surface audit] M2'), roleSlug: 'visual-auditor' },
+    ];
+    surfaceGate = { required: true, source: 'diff', uiPaths: ['apps/web/src/app/app/page.tsx'], policy: 'automatic', waiverAllowed: true };
+    const d = await canCompleteMission('m1');
+    expect(mockRequestMissionSurfaceAudit).not.toHaveBeenCalled();
+    expect(d.surfaceAuditActor).toBe('owner');
+  });
+
+  it('a local-executor mission goes to the owner: no runner would claim the audit', async () => {
+    activeMission({ executor: 'local' });
+    taskRows = [work('completed')];
+    surfaceGate = { required: true, source: 'diff', uiPaths: ['apps/web/src/app/app/page.tsx'], policy: 'automatic', waiverAllowed: true };
+    const d = await canCompleteMission('m1');
+    expect(mockRequestMissionSurfaceAudit).not.toHaveBeenCalled();
+    expect(d.surfaceAuditActor).toBe('owner');
+  });
+
+  it('a failed audit request falls back to the owner and never throws', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    surfaceGate = { required: true, source: 'diff', uiPaths: ['apps/web/src/app/app/page.tsx'], policy: 'automatic', waiverAllowed: true };
+    mockRequestMissionSurfaceAudit.mockImplementationOnce(async () => { throw new Error('db down'); });
+    const orig = console.error;
+    console.error = () => {};
+    try {
+      const d = await canCompleteMission('m1');
+      expect(d.code).toBe('surface_audit_missing');
+      expect(d.surfaceAuditActor).toBe('owner');
+    } finally {
+      console.error = orig;
+    }
+  });
+
+  it("a no-render result completes and keeps the classifier's applicability record", async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    const assessment = { recordKind: 'applicability', verdict: 'not_applicable', basis: 'rule', reasons: [{ code: 'no_render_changes' }] };
+    surfaceGate = { required: false, why: 'no_render_impact', assessment };
+    const d = await canCompleteMission('m1');
+    expect(d.ok).toBe(true);
+    expect(d.surfaceAuditAssessment).toEqual(assessment as any);
+  });
+
+  it('passes the mission workspace to the gate so it can resolve the policy', async () => {
+    activeMission({ workspaceId: 'ws-9' });
+    taskRows = [work('completed')];
+    await canCompleteMission('m1');
+    expect(mockEvaluateSurfaceAuditGate.mock.calls[0][0].workspaceId).toBe('ws-9');
   });
 
   it('completes a backend-only mission (gate not required)', async () => {

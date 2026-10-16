@@ -2,7 +2,7 @@
 title: Mission Heartbeat Schedule Lifecycle
 status: active
 owner: max
-last_verified: 2026-09-28
+last_verified: 2026-10-15
 summary: A mission heartbeat MUST be treated as mission state, not a user schedule, and its owning `task_schedule` row MUST NOT outlive or out-tick the mission it drives.
 domain: missions
 surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/lib/mission-archive.ts, apps/web/src/app/api/cron/schedules/route.ts, apps/web/src/lib/mission-stuck.ts]
@@ -100,8 +100,8 @@ deterministic backstop for when the event chain broke.
 - An error written to a heartbeat schedule's `lastError` by mission
   machinery working as intended (the documented example:
   `tasks_active_planning_per_mission` unique-constraint contention, already
-  handled with `onConflictDoNothing` at
-  `apps/web/src/app/api/cron/schedules/route.ts:756-766`) MUST NOT be
+  handled with `onConflictDoNothing` on the planning-task insert in
+  `apps/web/src/app/api/cron/schedules/route.ts`) MUST NOT be
   rendered to the mission's owner as if the schedule itself had failed.
   A stale `lastError` frozen on a schedule that is `enabled = false` (and
   therefore cannot self-clear the field on its next successful run) is a
@@ -110,8 +110,9 @@ deterministic backstop for when the event chain broke.
 ## The one closed transition: auto-archive no longer orphans a schedule
 
 **Implemented** (PR #2275, landed in #2300). `archiveStaleDoneMissions`
-(`apps/web/src/lib/mission-archive.ts:52-95`, wired into the `schedules`
-cron at `apps/web/src/app/api/cron/schedules/route.ts`) used to write
+(`apps/web/src/lib/mission-archive.ts`, wired into the `schedules`
+cron's maintenance step in
+`apps/web/src/app/api/cron/schedules/maintenance/archive-missions.ts`) used to write
 `status = 'archived'` via a raw `db.update(missions)` that never touched the
 mission's `scheduleId` or its `task_schedules` row — since it only selected
 missions whose schedule was already disabled, it always left a
@@ -131,8 +132,8 @@ Regression-tested in `apps/web/src/lib/mission-archive.test.ts`.
 close or slow down. See the audit §3 for the full citation chain.
 
 **Rule**: a heartbeat mission that has no open deliverable work (the same
-predicate `canCompleteMission` already computes —
-`apps/web/src/lib/mission-completion.ts:158`) and is NOT in
+predicate `canCompleteMission` already computes in
+`apps/web/src/lib/mission-completion.ts`) and is NOT in
 `orchestrationMode='auto'` MUST NOT keep ticking its schedule at full cadence
 forever. Pick **complete the mission**, not back off the cadence, for the
 following reason: `orchestrationMode='manual'` / `isHeld=true` mean "a human
@@ -145,8 +146,9 @@ the cadence instead would leave an indefinitely-idle mission camped in
 escalating would page a human for a case the existing completion predicate
 can already answer by itself.
 
-Concretely: the cron dispatcher's manual-mode defer branch
-(`apps/web/src/app/api/cron/schedules/route.ts:481-498`) now runs the same
+Concretely: the cron dispatcher's manual-mode defer branch (the
+`linkedMission.orchestrationMode === 'manual'` check in
+`apps/web/src/app/api/cron/schedules/route.ts`) now runs the same
 completion check `completeMissionIfVerified` already exposes
 (`path: 'dormancy'`, `proposed: false` — dormancy must not close a mission
 that only proposed-but-never-executed work, same guard as today) before
@@ -154,8 +156,9 @@ rescheduling, instead of unconditionally deferring. A mission this closes was
 already eligible to close by the existing predicate; this only adds the
 missing trigger for the held/manual case, where no planning task ever
 completes to fire that trigger via the existing task-completion-driven path
-(`apps/web/src/lib/task-dependencies.ts:281` →
-`apps/web/src/lib/mission-loop.ts:162-171`). Regression-tested in
+(`maybeRetriggerMission`, called from `apps/web/src/lib/task-dependencies.ts`,
+which calls `completeMissionIfVerified` in `apps/web/src/lib/mission-loop.ts`).
+Regression-tested in
 `apps/web/src/app/api/cron/schedules/route.test.ts` and
 `apps/web/src/lib/mission-completion.test.ts`.
 
@@ -164,7 +167,8 @@ completes to fire that trigger via the existing task-completion-driven path
 - AC-1: [GIVEN a mission with `status='active'` and an `isHeartbeat` schedule]
   WHEN a human or MCP caller sets `status: 'completed'` or `'archived'`
   THEN the mission's `scheduleId` is null and the `task_schedules` row is
-  deleted. *(Already true — `apps/web/src/app/api/missions/[id]/route.ts:374-386`,
+  deleted. *(Already true: the `status === 'completed' || status === 'archived'`
+  branch of `PATCH` in `apps/web/src/app/api/missions/[id]/route.ts`,
   regression-tested by PR #1086.)*
 - AC-2: [GIVEN a mission whose deliverable tasks are all terminal, no goal
   criteria are pending/failed, and no deliverable has an unmerged PR] WHEN
@@ -183,10 +187,11 @@ completes to fire that trigger via the existing task-completion-driven path
   it can only be from before the row was disabled. *(Implemented —
   `isScheduleErrorLive` in `apps/web/src/lib/schedule-health.ts`, gating
   `HealthClient.tsx` and `ScheduleList.tsx`; see slice 4.)*
-- AC-5: *(Retired 2026-10 with the cross-workspace Schedules page. A schedule
-  is shown where it is configured: a heartbeat or mission cron on its
-  mission, a workspace schedule on the workspace's schedules; `/app/schedules`
-  redirects there. There is no mixed list left to group.)*
+- Retired (formerly AC-5, no id now): retired 2026-10 with the cross-workspace
+  Schedules page. A schedule is shown where it is configured: a heartbeat or
+  mission cron on its mission, a workspace schedule on the workspace's
+  schedules; `/app/schedules` redirects there. There is no mixed list left to
+  group.
 
 - AC-6: [GIVEN an auto mission with a heartbeat schedule whose prepass
   reports `invoke_llm`] WHEN its cron tick fires THEN the organizer is
@@ -210,7 +215,8 @@ completes to fire that trigger via the existing task-completion-driven path
   writer of automated `active → completed`.
 - `apps/web/src/lib/mission-archive.ts` — `selectMissionsToArchive`,
   `archiveStaleDoneMissions`: the fifth terminal-status path, now
-  schedule-cleanup-complete like the other four.
+  schedule-cleanup-complete like the other four. Run by
+  `apps/web/src/app/api/cron/schedules/maintenance/archive-missions.ts`.
 - `apps/web/src/app/api/cron/schedules/route.ts` — the cron dispatcher;
   the `orchestrationMode==='manual'` defer branch runs the retirement rule
   before rescheduling.
@@ -235,6 +241,11 @@ completes to fire that trigger via the existing task-completion-driven path
   (deferred, not disabled, so a budget-raise auto-resume doesn't strand the
   mission); worth a one-line addition to the `docs/SPEC.md` clause, not a
   behavior change.
-- A mission status of `cancelled` — does not exist in the schema
-  (`packages/core/db/schema.ts:762`: `active | paused | completed | archived
+- A mission status of `cancelled` does not exist (`MISSION_STATUSES` in
+  `packages/shared/src/status.ts`: `active | paused | completed | archived
   | budget_exhausted`); any future addition of one is a separate spec.
+
+## Renumbered
+
+- The retired former AC-5 (cross-workspace Schedules page) no longer carries
+  an id, so it is not graded. AC-1 to AC-4, AC-6 and AC-7 are unchanged.

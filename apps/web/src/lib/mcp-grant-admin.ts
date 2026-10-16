@@ -73,7 +73,7 @@ export async function consentTeamsForUser(userId: string): Promise<ConsentTeam[]
     .orderBy(asc(teams.name), asc(teams.id));
   if (memberships.length === 0) return [];
   const rows = await db
-    .select({ id: workspaces.id, name: workspaces.name, repo: workspaces.repo, teamId: workspaces.teamId })
+    .select({ id: workspaces.id, name: workspaces.name, repo: workspaces.repo, teamId: workspaces.teamId, accessMode: workspaces.accessMode })
     .from(workspaces)
     .where(inArray(workspaces.teamId, memberships.map((m) => m.teamId)))
     .orderBy(asc(workspaces.name), asc(workspaces.id));
@@ -84,7 +84,7 @@ export async function consentTeamsForUser(userId: string): Promise<ConsentTeam[]
       role: (m.role as string | null) ?? null,
       workspaces: rows
         .filter((w) => w.teamId === m.teamId)
-        .map((w) => ({ id: w.id, name: w.name, repo: w.repo ?? null, system: isSystemWorkspace(w.name) })),
+        .map((w) => ({ id: w.id, name: w.name, repo: w.repo ?? null, system: isSystemWorkspace(w.name), accessMode: w.accessMode ?? null })),
     }))
     .filter((t) => t.workspaces.length > 0);
 }

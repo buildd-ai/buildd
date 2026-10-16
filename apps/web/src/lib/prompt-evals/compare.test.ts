@@ -12,7 +12,8 @@ function group(source: 'labelled' | 'collected', n: number, extra: Partial<CaseG
       questions: { v: { type: 'choice', instructions: 'x', options: { go: 'go', stop: 'stop' } } } as never,
       read: answers => {
         const a = (answers as Record<string, { choice: string; confidence: number; probabilities: Record<string, number> }>).v;
-        return { label: a.choice, confidence: a.confidence, topP: Math.max(...Object.values(a.probabilities)) };
+        const probs = Object.values(a.probabilities).sort((x, y) => y - x);
+        return { label: a.choice, confidence: a.confidence, topP: probs[0], margin: probs[0] - (probs[1] ?? 0) };
       },
       judge: label => label === gold,
       labelled: true,
@@ -50,6 +51,22 @@ function fakeDecide(behaviour: Record<string, { right: (state: string) => boolea
 }
 
 describe('runComparison', () => {
+  it('carries each answer\'s margin into the score, so a margin threshold is derived', async () => {
+    const out = await runComparison({
+      groups: [group('collected', 60)],
+      routes: [route('clef')],
+      concurrency: 4,
+      costCapUsd: 10,
+      // Confidence is flat and below any bar; the probabilities separate.
+      decide: fakeDecide({ clef: { right: () => true, confidence: 0.4, topP: 0.95 } }),
+    });
+    const s = out.results[0].score;
+    expect(s.thresholds.margin).toMatchObject({ reason: null, labelled: 60 });
+    expect(s.sweep.margin.find(r => r.threshold === 0.85)?.covered).toBe(60);
+    expect(s.sweep.margin.find(r => r.threshold === 0.95)?.covered).toBe(0);
+    expect(s.thresholds.calibrated_top_p.reason).not.toBe('too_few_labelled');
+  });
+
   it('scores each source as its own row, per model: never pooled', async () => {
     const out = await runComparison({
       groups: [group('labelled', 60), group('collected', 60)],
@@ -111,6 +128,26 @@ describe('runComparison', () => {
     expect(out.results[0].score.n).toBe(10);
     expect(out.costUsd).toBeCloseTo(0.01, 6);
     expect(out.problems.join(' ')).toContain('cost cap');
+  });
+
+  it('stops starting calls at the call cap, priced or not, and names the limit', async () => {
+    const calls: Call[] = [];
+    const out = await runComparison({
+      groups: [group('collected', 50)],
+      routes: [route('jev', { isProduction: true }), route('clef', { via: 'cloudflare' })],
+      concurrency: 1,
+      costCapUsd: 10,
+      callCap: 30,
+      // Workers AI returns no price, so the cost cap never stops it.
+      decide: fakeDecide({
+        jev: { right: () => true, confidence: 0.9, topP: 0.9 },
+        clef: { right: () => true, confidence: 0.4, topP: 0.9, cost: null },
+      }, calls),
+    });
+    expect(calls.length).toBe(30);
+    expect(out.aborted).toBe('call_cap');
+    expect(out.results.reduce((n, r) => n + r.notRun, 0)).toBe(70);
+    expect(out.problems.join(' ')).toContain('call cap (30 calls)');
   });
 
   it('stops at the deadline', async () => {

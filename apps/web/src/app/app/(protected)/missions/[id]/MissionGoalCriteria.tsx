@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
+import type { BoardCriterionState } from '@/lib/mission-board';
 import type { GoalCriterion, GoalCriteriaState, CriterionVerdict, GoalCriterionType } from '@buildd/shared';
 import { criterionLabel } from '@/lib/goal-criterion-label';
 import {
@@ -13,6 +14,7 @@ import {
   type PlainError,
 } from '@/lib/goal-criteria-panel';
 import Switch from '@/components/ui/Switch';
+import OutcomeSpecCriterion, { OutcomeSpecSummary } from './OutcomeSpecCriterion';
 import { Select } from '@/components/ui/Select';
 
 interface Props {
@@ -25,6 +27,22 @@ interface Props {
   failingCiPrNumbers?: number[];
   /** Distinct PRs the mission has opened — lets the sheet offer the PR check in one tap. */
   missionPrCount?: number;
+  /** Why the mission is not verified now (the header pill's `verifiedHold`), shown first. */
+  hold?: string | null;
+  /**
+   * Each criterion's current state, by index, from the board's live counts (the
+   * same source `verifiedHold` reads). A stored pass these do not back is shown
+   * as not verified, so the sheet never ticks "No open tasks" beside open tasks.
+   */
+  liveStates?: readonly BoardCriterionState[] | null;
+}
+
+/** A live board state as a verdict; a stored pass only stands where the live state passes too. */
+function liveVerdict(stored: CriterionVerdict, live: BoardCriterionState | undefined): CriterionVerdict {
+  if (live == null || live === 'pass') return stored;
+  if (live === 'fail') return 'fail';
+  if (live === 'running') return 'PENDING';
+  return stored === 'pass' ? 'UNVERIFIED' : stored;
 }
 
 const CRITERION_TYPE_LABELS: Record<GoalCriterionType, string> = {
@@ -34,6 +52,7 @@ const CRITERION_TYPE_LABELS: Record<GoalCriterionType, string> = {
   command: 'Command passes',
   metric: 'Metric',
   description: 'Judged by AI',
+  living_spec: 'Spec requirements',
 };
 
 const VERDICT_CONFIG: Record<CriterionVerdict, { label: string; cls: string; icon: string }> = {
@@ -305,7 +324,7 @@ export function AddCriterionForm({ initial, siblings = [], submitLabel = 'Add cr
 }
 
 /* ── Main Component ── */
-export default function MissionGoalCriteria({ missionId, criteria: initialCriteria, criteriaState: initialState, autoVerify: initialAutoVerify, readonly, failingCiPrNumbers, missionPrCount = 0 }: Props) {
+export default function MissionGoalCriteria({ missionId, criteria: initialCriteria, criteriaState: initialState, autoVerify: initialAutoVerify, readonly, failingCiPrNumbers, missionPrCount = 0, hold = null, liveStates = null }: Props) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [criteria, setCriteria] = useState<GoalCriterion[]>(initialCriteria);
@@ -410,7 +429,9 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
     }
   }
 
-  const overallVerdict = criteriaState?.overall ?? null;
+  // Never PASS while something holds the mission (a criterion failing now, a blocking check).
+  const storedOverall = criteriaState?.overall ?? null;
+  const overallVerdict: CriterionVerdict | null = storedOverall === 'pass' && hold ? 'UNVERIFIED' : storedOverall;
   const evaluatedAt = criteriaState?.evaluatedAt ?? null;
   const evaluatedBy = criteriaState?.evaluatedBy ?? null;
 
@@ -435,7 +456,7 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
 
   function renderRow({ c, i }: { c: GoalCriterion; i: number }) {
     const cs = joinedState[i];
-    const verdict: CriterionVerdict = cs?.verdict ?? 'UNVERIFIED';
+    const verdict: CriterionVerdict = liveVerdict(cs?.verdict ?? 'UNVERIFIED', liveStates?.[i]);
     const vc = VERDICT_CONFIG[verdict];
     const isExpanded = expandedRows.has(i);
     const label = criterionLabel(c);
@@ -482,7 +503,21 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
               ))}
             </p>
           )}
-          {cs?.evidence ? (
+          {c.type === 'living_spec' && (
+            <>
+              <OutcomeSpecSummary criterion={c} entry={cs} />
+              {isExpanded && (
+                <OutcomeSpecCriterion
+                  missionId={missionId}
+                  criterion={c}
+                  entry={cs}
+                  readonly={readonly}
+                  onChanged={() => startTransition(() => router.refresh())}
+                />
+              )}
+            </>
+          )}
+          {c.type === 'living_spec' ? null : cs?.evidence ? (
             <p className={`text-meta text-text-muted mt-0.5 leading-snug font-mono break-words${isExpanded ? '' : ' line-clamp-1'}`}>
               {cs.evidence}
             </p>
@@ -491,7 +526,7 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
               Not checked since this was added or changed.
             </p>
           ) : null}
-          {cs?.workerTaskId && (
+          {cs?.workerTaskId && c.type !== 'living_spec' && (
             <a
               href={`/app/tasks/${cs.workerTaskId}`}
               onClick={(e) => e.stopPropagation()}
@@ -512,7 +547,8 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
         </div>
         {/* Expand chevron + remove button */}
         <div className="shrink-0 flex items-center gap-2 mt-0.5">
-          {!readonly && (
+          {/* An outcome spec is removed with a reason, from its own detail. */}
+          {!readonly && c.type !== 'living_spec' && (
             <button
               onClick={(e) => { e.stopPropagation(); handleRemoveCriterion(i); }}
               disabled={savingCriteria}
@@ -538,12 +574,17 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
 
   return (
     <div className="card p-4">
+      {hold && (
+        <p data-testid="criteria-hold" className="mb-3 text-body text-status-warning [overflow-wrap:anywhere]">
+          {hold.charAt(0).toUpperCase() + hold.slice(1)}.
+        </p>
+      )}
       {/* Header row */}
       <div className="flex flex-wrap items-center justify-between mb-3 gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <h2 className="section-label whitespace-nowrap">Goal criteria</h2>
           {overallVerdict && !blocked && (
-            <span className={`shrink-0 border px-1.5 py-0.5 font-mono text-meta uppercase tracking-wide ${VERDICT_CONFIG[overallVerdict].cls}`}>
+            <span data-testid="criteria-overall" className={`shrink-0 border px-1.5 py-0.5 font-mono text-meta uppercase tracking-wide ${VERDICT_CONFIG[overallVerdict].cls}`}>
               {VERDICT_CONFIG[overallVerdict].icon} {VERDICT_CONFIG[overallVerdict].label}
             </span>
           )}

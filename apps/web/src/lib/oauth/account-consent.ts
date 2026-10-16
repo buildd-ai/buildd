@@ -144,6 +144,8 @@ export interface ConsentWorkspace {
   repo?: string | null;
   /** An internal workspace (`__` prefix, e.g. `__coordination`). */
   system?: boolean;
+  /** `open` or `restricted`; the runner picker offers `restricted` to owners and admins only. */
+  accessMode?: string | null;
 }
 
 export interface ConsentTeam {
@@ -374,8 +376,13 @@ function plural(n: number, one: string, many: string): string {
 /**
  * Tokens from apps/web/src/app/globals.css (the page does not load the app's
  * stylesheet). Night by default, Day under prefers-color-scheme: light.
+ * The faces are the app's own self-hosted files (public/fonts, the same ones
+ * app/layout.tsx hands next/font), from this origin: no font CDN.
  */
 export const CONSENT_CSS = `
+@font-face { font-family: "Schibsted Grotesk"; src: url("/fonts/schibsted-grotesk-latin-wght-normal.woff2") format("woff2"); font-weight: 400 900; font-style: normal; font-display: swap; }
+@font-face { font-family: "JetBrains Mono"; src: url("/fonts/jetbrains-mono-latin-wght-normal.woff2") format("woff2"); font-weight: 100 800; font-style: normal; font-display: swap; }
+@font-face { font-family: "Newsreader"; src: url("/fonts/newsreader-latin-wght-normal.woff2") format("woff2"); font-weight: 200 800; font-style: normal; font-display: swap; }
 :root {
   --surface-1: #1a1816; --card: #221f1c; --inset: #26221e; --q-tint: rgba(255,245,230,0.06);
   --text-primary: #ede8e2; --text-muted: #a89f96; --on-ink: #1a1816;
@@ -383,7 +390,7 @@ export const CONSENT_CSS = `
   --accent: #f4811f; --dec-frame: #f4811f; --status-error: #e08a7f;
   --font-sans: "Schibsted Grotesk", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-  --font-voice: Newsreader, Georgia, "Times New Roman", serif;
+  --font-voice: "Newsreader", Georgia, "Times New Roman", serif;
   --type-chip: 12px; --type-eyebrow: 13px; --type-meta: 12px; --type-body: 13px; --type-title: 14px; --type-lede: 16px; --type-heading: 20px;
   color-scheme: dark;
 }
@@ -397,6 +404,7 @@ export const CONSENT_CSS = `
   }
 }
 @media (min-width: 48rem) { :root { --type-chip: 11px; --type-lede: 15px; --type-heading: 24px; } }
+@media (max-width: 390px) { .team-chips { flex-basis: 100%; margin-top: 4px; } }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--surface-1); color: var(--text-primary); font-family: var(--font-sans); font-size: var(--type-body); line-height: 1.5; }
 .wrap { max-width: 560px; margin: 0 auto; padding: 24px 16px 48px; }
@@ -436,7 +444,9 @@ details.team > summary { list-style: none; display: flex; align-items: center; g
 details.team > summary::-webkit-details-marker { display: none; }
 details.team > summary::before { content: "\\25B8"; color: var(--text-muted); width: 12px; flex: none; }
 details.team[open] > summary::before { content: "\\25BE"; }
-.team-name { font-size: var(--type-title); font-weight: 600; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.team-head { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.team-name { font-size: var(--type-title); font-weight: 600; flex: 1 1 7rem; min-width: 0; overflow-wrap: break-word; }
+.team-chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip { font-family: var(--font-mono); font-size: var(--type-chip); line-height: 1; padding: 3px 8px; border: 1px solid var(--border-strong); border-radius: 4px; color: var(--text-muted); white-space: nowrap; }
 .team-body { padding: 0 0 12px 20px; }
 .ws { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 4px 0; border-bottom: 1px solid var(--line-soft); cursor: pointer; overflow-wrap: anywhere; }
@@ -477,6 +487,21 @@ export interface ConsentPageArgs {
   error?: string | null;
   /** The form's action; the authorize endpoint. */
   action?: string;
+  /**
+   * The runner login variant (lib/runner-consent.ts): the same picker, worded
+   * for a runner, with no permission or connection-kind choice (a runner key's
+   * level is capped by the person's role, not chosen here).
+   */
+  runner?: RunnerConsentWording;
+}
+
+export interface RunnerConsentWording {
+  title: string;
+  lede: string;
+  /** Where the browser or the key goes next, in words (e.g. a localhost port). */
+  returnsTo: string;
+  approveLabel: string;
+  footnote: string;
 }
 
 /** An internal workspace reads as the app names it elsewhere (displayWorkspaceName). */
@@ -502,7 +527,11 @@ function navButton(value: string, label: string, cls = 'btn', ariaLabel?: string
   return `<button class="${cls}" type="submit" name="nav" value="${escapeHtml(value)}"${aria}>${escapeHtml(label)}</button>`;
 }
 
-function renderTeam(team: ConsentTeam, state: ConsentState, selected: Set<string>, carried: string[]): string {
+/**
+ * One team's block. `teamActions` is false when the page offers a single team:
+ * its Select team / Clear team would repeat Select all / Clear all above it.
+ */
+function renderTeam(team: ConsentTeam, state: ConsentState, selected: Set<string>, carried: string[], teamActions: boolean): string {
   const shown = filteredWorkspaces(team, state.query);
   if (shown.length === 0) {
     for (const w of team.workspaces) if (selected.has(w.id)) carried.push(w.id);
@@ -532,11 +561,10 @@ function renderTeam(team: ConsentTeam, state: ConsentState, selected: Set<string
     : `${shown.length} of ${team.workspaces.length}`;
 
   return `<details class="team" data-team="${escapeHtml(team.id)}"${open ? ' open' : ''}>
-<summary><span class="team-name">${escapeHtml(team.name)}</span><span class="chip">${escapeHtml(count)}</span><span class="chip">${escapeHtml(accessLabel(team.role).toLowerCase())}</span></summary>
+<summary><span class="team-head"><span class="team-name">${escapeHtml(team.name)}</span><span class="team-chips"><span class="chip">${escapeHtml(count)}</span><span class="chip">${escapeHtml(accessLabel(team.role).toLowerCase())}</span></span></span></summary>
 <div class="team-body">
 ${rows}
-<div class="team-actions">${navButton(`team_all:${team.id}`, 'Select team', 'btn btn-quiet', `Select all in ${team.name}`)}${navButton(`team_clear:${team.id}`, 'Clear team', 'btn btn-quiet', `Clear ${team.name}`)}</div>
-${pager}
+${teamActions ? `<div class="team-actions">${navButton(`team_all:${team.id}`, 'Select team', 'btn btn-quiet', `Select all in ${team.name}`)}${navButton(`team_clear:${team.id}`, 'Clear team', 'btn btn-quiet', `Clear ${team.name}`)}</div>\n` : ''}${pager}
 </div>
 </details>`;
 }
@@ -552,7 +580,7 @@ export function renderAccountConsentPage(args: ConsentPageArgs): string {
   const selected = new Set(state.selected);
   const safeClient = escapeHtml(args.clientName);
   const carried: string[] = [];
-  const teamBlocks = teams.map((t) => renderTeam(t, state, selected, carried)).filter(Boolean);
+  const teamBlocks = teams.map((t) => renderTeam(t, state, selected, carried, teams.length > 1)).filter(Boolean);
   const totalWorkspaces = teams.reduce((n, t) => n + t.workspaces.length, 0);
 
   const hidden = args.hidden
@@ -573,6 +601,7 @@ export function renderAccountConsentPage(args: ConsentPageArgs): string {
     ? `<label class="option"><input type="checkbox" id="perm-write" name="perm_write" value="on"${state.write ? ' checked' : ''}><span><span class="t">Write</span><span class="d" style="display:block">Create and update tasks, claim work, open pull requests, record progress and knowledge.</span></span></label>`
     : '';
 
+  const runner = args.runner ?? null;
   const searchActive = state.query.trim() !== '';
   const workspaceList = teamBlocks.length > 0
     ? teamBlocks.join('\n')
@@ -582,41 +611,40 @@ export function renderAccountConsentPage(args: ConsentPageArgs): string {
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Authorize ${safeClient}</title>
+<title>${runner ? escapeHtml(runner.title) : `Authorize ${safeClient}`}</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>${CONSENT_CSS}</style>
 </head>
 <body>
 <main class="wrap">
-${clientHeader(args.clientName, args.clientVerified === true, args.redirectHost)}
-<p class="lede">Choose the teams and workspaces ${safeClient} can access.</p>
+${runner ? `<div class="ident"><h1>${escapeHtml(runner.title)}</h1></div>` : clientHeader(args.clientName, args.clientVerified === true, args.redirectHost)}
+<p class="lede">${runner ? escapeHtml(runner.lede) : `Choose the teams and workspaces ${safeClient} can access.`}</p>
 ${args.error ? `<div class="notice-err" role="alert">${escapeHtml(args.error)}</div>` : ''}
-<form method="post" action="${escapeHtml(args.action ?? '/api/oauth/authorize')}" style="--carried: ${carried.length}" data-consent="account">
+<form method="post" action="${escapeHtml(args.action ?? '/api/oauth/authorize')}" style="--carried: ${carried.length}" data-consent="${runner ? 'runner' : 'account'}">
 ${hidden}
 ${carriedInputs}
 <fieldset>
 <legend>Workspaces</legend>
-<div class="search"><input type="search" name="q" value="${escapeHtml(state.query)}" placeholder="Search ${escapeHtml(plural(totalWorkspaces, 'workspace', 'workspaces'))}" aria-label="Search workspaces, teams and repositories" maxlength="${MAX_QUERY}">${navButton('search', 'Search')}</div>
+<div class="search"><input type="search" name="q" value="${escapeHtml(state.query)}" placeholder="Name or repo" aria-label="Search workspaces, teams and repositories" maxlength="${MAX_QUERY}">${navButton('search', 'Search')}</div>
 <div class="bulk">${navButton('select_all', searchActive ? 'Select all matches' : 'Select all', 'btn btn-quiet')}${navButton('clear_all', 'Clear all', 'btn btn-quiet')}</div>
 ${workspaceList}
-<p class="meta">Access covers the workspaces ticked here. Workspaces created later need adding in Settings.</p>
+<p class="meta">${runner ? escapeHtml(runner.footnote) : 'Access covers the workspaces ticked here. Workspaces created later need adding in Settings.'}</p>
 </fieldset>
-<fieldset>
+${runner ? '' : `<fieldset>
 <legend>Permissions</legend>
 <div class="option off"><input type="checkbox" checked disabled aria-label="Read, always included"><span><span class="t">Read</span><span class="d" style="display:block">See tasks, missions, artifacts, pull requests and knowledge.</span></span></div>
 ${writeOption}
 <p class="meta">Admin actions work only where you are a team owner or admin.</p>
 </fieldset>
-${kind}
+${kind}`}
 <div class="decision sticky" aria-live="polite">
 <dl>
 <dt>Selected</dt><dd><span class="count mono"></span> of ${escapeHtml(plural(totalWorkspaces, 'workspace', 'workspaces'))}</dd>
-<dt>Can</dt><dd><span class="p-read">read</span><span class="p-write">read and write</span>, <span class="k-agent">as your agent</span><span class="k-person">as you</span></dd>
-<dt>Returns to</dt><dd class="mono">${escapeHtml(args.redirectHost)}</dd>
+${runner ? '' : `<dt>Can</dt><dd><span class="p-read">read</span><span class="p-write">read and write</span>, <span class="k-agent">as your agent</span><span class="k-person">as you</span></dd>\n`}<dt>Returns to</dt><dd class="mono">${escapeHtml(runner ? runner.returnsTo : args.redirectHost)}</dd>
 </dl>
 <div class="actions">
 <button class="btn" type="submit" name="decision" value="deny">Cancel</button>
-<button class="btn btn-ink" type="submit" name="decision" value="approve">Allow access</button>
+<button class="btn btn-ink" type="submit" name="decision" value="approve">${runner ? escapeHtml(runner.approveLabel) : 'Allow access'}</button>
 </div>
 </div>
 </form>

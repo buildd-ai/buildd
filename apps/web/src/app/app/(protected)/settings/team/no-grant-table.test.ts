@@ -2,7 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { join, relative } from 'path';
 
-// docs/specs/team-permissions.md → "No per-team grants" (AC-G1, AC-G2): which
+// docs/specs/team-permissions.md → "No per-team grants" (AC-14, AC-15): which
 // roles hold a permission is fixed in code, so nothing reads or writes a
 // per-team grant, no route serves one, and the Members page has no table.
 const WEB_SRC = join(import.meta.dir, '../../../../..');

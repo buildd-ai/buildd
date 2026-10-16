@@ -198,6 +198,67 @@ function modelName(model: string): string {
   return CLOUDFLARE_MODELS.find((m) => m.id === model)?.label ?? model;
 }
 
+type SwitchLine = { id: string; text: string };
+
+/**
+ * One line per decision whose model buildd switched ("Start or wait now uses
+ * Clef"), with Undo for people who can change team settings. Undo restores
+ * the previous model and keeps it for 30 days.
+ */
+function DecisionModelSwitches({ teamId, onChanged }: { teamId: string; onChanged: () => Promise<void> }) {
+  const [lines, setLines] = useState<SwitchLine[]>([]);
+  const [canUndo, setCanUndo] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const load = useCallback(async () => {
+    const res = await fetch(`/api/teams/${teamId}/decision-model-switches`, { cache: 'no-store' }).catch(() => null);
+    if (!res?.ok) return;
+    const body = (await res.json()) as { lines?: SwitchLine[]; canUndo?: boolean };
+    setLines(body.lines ?? []);
+    setCanUndo(body.canUndo === true);
+  }, [teamId]);
+  useEffect(() => { void load(); }, [load]);
+
+  async function undo(id: string) {
+    setBusy(id);
+    setErr(null);
+    try {
+      const res = await fetch(`/api/teams/${teamId}/decision-model-switches`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ switchId: id, action: 'undo' }),
+      });
+      if (!res.ok) throw new Error(await errorText(res));
+      await load();
+      await onChanged();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Could not undo');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  if (lines.length === 0) return null;
+  return (
+    <div data-testid="decision-model-switches">
+      <ul className="text-text-primary space-y-1">
+        {lines.map((l) => (
+          <li key={l.id} className="flex items-center gap-2">
+            <span>{l.text}</span>
+            {canUndo && (
+              <>
+                <button className="btn btn-quiet btn-sm" disabled={busy !== null} onClick={() => void undo(l.id)}
+                  data-testid="decision-model-switch-undo">{busy === l.id ? 'Undoing…' : 'Undo'}</button>
+              </>
+            )}
+          </li>
+        ))}
+      </ul>
+      {err && <p role="alert" className="text-status-error">{err}</p>}
+    </div>
+  );
+}
+
 function DecisionModelSection({ teamId, canManage, value, overrides = [], hasGateway, onChanged, embedded = false }: {
   /** A row in Used for: titled "Decisions", no card. */
   embedded?: boolean;
@@ -260,6 +321,7 @@ function DecisionModelSection({ teamId, canManage, value, overrides = [], hasGat
             {overrides.map((o) => <li key={o.kind}>{o.label} uses {modelName(o.model)}</li>)}
           </ul>
         )}
+        <DecisionModelSwitches teamId={teamId} onChanged={onChanged} />
         <p className="text-text-muted">
           Labels tasks by category. Needs a model that returns token logprobs. Other models only record their picks until evaluated.
         </p>

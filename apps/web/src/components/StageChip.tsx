@@ -30,7 +30,7 @@ const STAGE_CONFIG: Record<Stage, ChipConfig> = {
   BLOCKED:      { label: 'Blocked',     variant: 'filled', colorCls: 'bg-status-warning text-white' },
   QUEUED:       { label: 'Queued',      variant: 'muted',  colorCls: 'text-text-muted' },
   RUNNING:      { label: 'Running',     variant: 'filled', colorCls: 'bg-status-running text-white', pulse: true },
-  WAITING_INPUT:{ label: 'Needs input', variant: 'filled', colorCls: 'bg-status-warning text-white' },
+  WAITING_INPUT:{ label: 'Has a question', variant: 'filled', colorCls: 'bg-status-warning text-white' },
   REVIEWING:    { label: 'Reviewing',   variant: 'soft',   colorCls: 'bg-status-info/10 text-status-info', pulse: true },
   FIXING:       { label: 'Fixing',      variant: 'soft',   colorCls: 'bg-status-info/10 text-status-info', pulse: true },
   STALLED:      { label: 'Stalled',     variant: 'soft',   colorCls: 'bg-status-warning/10 text-status-warning' },

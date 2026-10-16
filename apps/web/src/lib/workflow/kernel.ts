@@ -11,16 +11,28 @@
  *
  * A replayed idempotency key violates workflow_transitions' unique index and
  * aborts the whole statement; the runner re-reads and answers `duplicate`.
+ *
+ * The runner itself (read → reduce → CAS → re-read once) is the package's
+ * `applyCommandOn` (@buildd/workflow-kernel/command-runner); these statements
+ * reach it through the Postgres store (postgres-store.ts).
  */
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
-import type { ApplyDecision, AttemptOp, Command, CurrentView, DeliveryPatch, RecordOnly, RoundOp } from './commands';
-import { currentOf, reduce, stableIdempotencyKey } from './reducer';
+import { applyCommandOn } from '@buildd/workflow-kernel/command-runner';
+import { isTaskId } from '@buildd/workflow-kernel/findings';
+import type { CommandResult, DeliveryRef } from '@buildd/workflow-kernel/ports';
+import type { ApplyDecision, AttemptOp, Command, DeliveryPatch, FindingOp, RecordOnly, RoundOp } from './commands';
+import { postgresStore } from './postgres-store';
+import { prFactProjectionSql } from '@buildd/core/pr-fact-sql';
+import { prRowOfDeliverySql } from './pr-fact-scope';
+import { mergeTaskPayloadSql, mergeTaskProjectionCtes } from './task-projection';
+import { kernelHost } from './kernel-host';
 import type {
   ApprovalBasis,
   AttemptSnapshot,
   DeliverySnapshot,
   DeliveryState,
+  FindingSnapshot,
   KernelView,
   RoundSnapshot,
 } from './types';
@@ -88,11 +100,16 @@ function roundCtes(ops: RoundOp[], src: string): SQL[] {
   const out: SQL[] = [];
   const inserts = ops.filter((o): o is Extract<RoundOp, { op: 'insert' }> => o.op === 'insert');
   if (inserts.length) {
-    const rows = inserts.map((o) => ({ id: o.id, round: o.round, head_sha: o.headSha, kind: o.kind, prior_round: o.priorRound, scope: o.scope ?? null }));
+    const rows = inserts.map((o) => ({
+      id: o.id, round: o.round, head_sha: o.headSha, kind: o.kind, prior_round: o.priorRound, scope: o.scope ?? null,
+      status: o.decided ? 'decided' : 'queued', verdict: o.decided?.verdict ?? null, effective_verdict: o.decided?.effectiveVerdict ?? null,
+      confidence: o.decided?.confidence ?? null, reviewer_task_id: o.decided?.reviewerTaskId ?? null, decided: !!o.decided,
+    }));
     out.push(sql`r_ins AS (
-  INSERT INTO workflow_review_rounds (id, delivery_id, round, head_sha, kind, prior_round, scope)
-  SELECT x.id, s.delivery_id, x.round, x.head_sha, x.kind, x.prior_round, x.scope
-  FROM ${sql.identifier(src)} s, jsonb_to_recordset(${jsonb(rows)}) AS x(id uuid, round int, head_sha text, kind text, prior_round int, scope jsonb)
+  INSERT INTO workflow_review_rounds (id, delivery_id, round, head_sha, kind, prior_round, scope, status, verdict, effective_verdict, confidence, reviewer_task_id, decided_at)
+  SELECT x.id, s.delivery_id, x.round, x.head_sha, x.kind, x.prior_round, x.scope, x.status, x.verdict, x.effective_verdict, x.confidence, x.reviewer_task_id,
+    CASE WHEN x.decided THEN now() END
+  FROM ${sql.identifier(src)} s, jsonb_to_recordset(${jsonb(rows)}) AS x(id uuid, round int, head_sha text, kind text, prior_round int, scope jsonb, status text, verdict text, effective_verdict text, confidence real, reviewer_task_id uuid, decided boolean)
   RETURNING id
 )`);
   }
@@ -164,6 +181,56 @@ function attemptCtes(ops: AttemptOp[], src: string): SQL[] {
   return out;
 }
 
+/**
+ * §5 finding writes. An insert lands under the finding's stable id (a replay
+ * is a primary-key violation, which aborts the statement like any replayed
+ * key). An update applies only while the finding is in one of `whenStatus`,
+ * read in the statement's own snapshot. The reducer writes each finding at
+ * most once per decision.
+ */
+const asUuid = (v: string | null): string | null => (v && isTaskId(v) ? v : null);
+
+function findingCtes(ops: FindingOp[], src: string): SQL[] {
+  const out: SQL[] = [];
+  const inserts = ops.filter((o): o is Extract<FindingOp, { op: 'insert' }> => o.op === 'insert');
+  if (inserts.length) {
+    const rows = inserts.map((o) => ({
+      id: o.id, origin_round_id: o.originRoundId, origin_round: o.originRound, origin_head_sha: o.originHeadSha, ordinal: o.ordinal,
+      path: o.path, line: o.line, title: o.title, required: o.required,
+    }));
+    out.push(sql`f_ins AS (
+  INSERT INTO workflow_findings (id, delivery_id, origin_round_id, origin_round, origin_head_sha, ordinal, path, line, title, required, status, last_round)
+  SELECT x.id, s.delivery_id, x.origin_round_id, x.origin_round, x.origin_head_sha, x.ordinal, x.path, x.line, x.title, x.required, 'open', x.origin_round
+  FROM ${sql.identifier(src)} s, jsonb_to_recordset(${jsonb(rows)}) AS x(id text, origin_round_id uuid, origin_round int, origin_head_sha text, ordinal int, path text, line int, title text, required boolean)
+  RETURNING id
+)`);
+  }
+  ops.forEach((o, i) => {
+    if (o.op !== 'update') return;
+    const sets: SQL[] = [sql`updated_at = now()`];
+    const v = o.set;
+    if (v.status !== undefined) sets.push(sql`status = ${v.status}::text`);
+    if (v.lastRound !== undefined) sets.push(sql`last_round = ${v.lastRound}::int`);
+    if (v.title !== undefined) sets.push(sql`title = ${v.title}::text`);
+    if (v.required !== undefined) sets.push(sql`required = ${v.required}::boolean`);
+    if (v.addressedBySha !== undefined) sets.push(sql`addressed_by_sha = ${v.addressedBySha}::text`);
+    // A uuid column only ever takes a full id: anything else would abort the whole transition (and with
+    // it the verdict), so it is written as NULL. The reducer refuses such a deferral before it gets here.
+    if (v.closedByRoundId !== undefined) sets.push(sql`closed_by_round_id = ${asUuid(v.closedByRoundId)}::uuid`);
+    if (v.closedBy !== undefined) sets.push(sql`closed_by = ${v.closedBy}::text`);
+    if (v.closedReason !== undefined) sets.push(sql`closed_reason = ${v.closedReason}::text`);
+    if (v.deferredToTaskId !== undefined) sets.push(sql`deferred_to_task_id = ${asUuid(v.deferredToTaskId)}::uuid`);
+    out.push(sql`${sql.identifier(`f_upd_${i}`)} AS (
+  UPDATE workflow_findings wf SET ${sql.join(sets, sql`, `)}
+  FROM ${sql.identifier(src)} s
+  WHERE wf.id = ${o.findingId}::text AND wf.delivery_id = s.delivery_id
+    AND wf.status IN (SELECT jsonb_array_elements_text(${jsonb(o.whenStatus)}))
+  RETURNING wf.id
+)`);
+  });
+  return out;
+}
+
 // ── Statements ──────────────────────────────────────────────────────────────
 
 /**
@@ -175,6 +242,9 @@ export function transitionSql(decision: ApplyDecision, ref: { deliveryId?: strin
   const d = decision;
   const ctes: SQL[] = [];
   const patch = patchEntries(d.patch);
+  const projected = prRowProjection(d);
+  // The projection reads the PR identity and merge instant from the delivery row it just wrote.
+  const returning = projected ? sql`RETURNING id, version, workspace_id, repo_full_name, pr_number, merged_at` : sql`RETURNING id, version`;
 
   if (d.create) {
     const cols: SQL[] = [sql`workspace_id`, sql`owner_task_id`, sql`state`, sql`version`, sql`max_rounds`, sql`last_transition_at`];
@@ -187,7 +257,7 @@ export function transitionSql(decision: ApplyDecision, ref: { deliveryId?: strin
   INSERT INTO workflow_deliveries (${sql.join(cols, sql`, `)})
   VALUES (${sql.join(vals, sql`, `)})
   ON CONFLICT (workspace_id, owner_task_id) DO NOTHING
-  RETURNING id, version
+  ${returning}
 )`);
   } else {
     if (!ref.deliveryId) throw new Error('transitionSql: deliveryId required for a non-creating transition');
@@ -210,14 +280,19 @@ export function transitionSql(decision: ApplyDecision, ref: { deliveryId?: strin
     ctes.push(sql`d AS (
   UPDATE workflow_deliveries SET ${sql.join(sets, sql`, `)}
   WHERE ${sql.join(where, sql` AND `)}
-  RETURNING id, version
+  ${returning}
 )`);
   }
 
+  // S4b (AC-2): T17 completes the owner task in this statement too, and tells the post-merge
+  // effect what it did (task-projection.ts), so runMergedPrWork performs only side effects.
+  const projectsTask = projected === 'merged';
+  if (projectsTask) ctes.push(...mergeTaskProjectionCtes('d'));
+
   ctes.push(sql`t AS (
-  INSERT INTO workflow_transitions (delivery_id, from_version, to_version, from_state, to_state, command, idempotency_key, actor, evidence, bypass)
+  INSERT INTO workflow_transitions (delivery_id, from_version, to_version, from_state, to_state, command, idempotency_key, actor, evidence, bypass, host)
   SELECT d.id, d.version - 1, d.version, ${d.fromState}::text, ${d.toState}::text, ${d.command}::text, ${d.idempotencyKey}::text,
-    ${String(d.evidence.actor ?? 'kernel')}::text, ${jsonb(d.evidence)}, ${d.bypass ? jsonb(d.bypass) : sql`NULL::jsonb`}
+    ${String(d.evidence.actor ?? 'kernel')}::text, ${jsonb(d.evidence)}, ${d.bypass ? jsonb(d.bypass) : sql`NULL::jsonb`}, ${kernelHost()}::text
   FROM d
   RETURNING id, delivery_id, to_version
 )`);
@@ -226,7 +301,9 @@ export function transitionSql(decision: ApplyDecision, ref: { deliveryId?: strin
     const rows = d.effects.map((e) => ({ kind: e.kind, dedupe_key: e.dedupeKey, payload: e.payload, delay_ms: e.delayMs ?? 0 }));
     ctes.push(sql`e AS (
   INSERT INTO workflow_effects (delivery_id, transition_id, kind, dedupe_key, payload, not_before)
-  SELECT t.delivery_id, t.id, x.kind, x.dedupe_key, x.payload, now() + make_interval(secs => x.delay_ms / 1000.0)
+  SELECT t.delivery_id, t.id, x.kind, x.dedupe_key,
+    ${projectsTask ? sql`CASE WHEN x.kind = 'emit_pr_merged' THEN COALESCE(x.payload, '{}'::jsonb) || ${mergeTaskPayloadSql()} ELSE x.payload END` : sql`x.payload`},
+    now() + make_interval(secs => x.delay_ms / 1000.0)
   FROM t, jsonb_to_recordset(${jsonb(rows)}) AS x(kind text, dedupe_key text, payload jsonb, delay_ms bigint)
   ON CONFLICT (dedupe_key) DO NOTHING
   RETURNING id
@@ -235,6 +312,14 @@ export function transitionSql(decision: ApplyDecision, ref: { deliveryId?: strin
 
   ctes.push(...roundCtes(d.rounds, 't'));
   ctes.push(...attemptCtes(d.attempts, 't'));
+  ctes.push(...findingCtes(d.findings ?? [], 't'));
+
+  // S4a (workflow-kernel-library.md §1): the worker rows of the PR are a projection of this
+  // transition, written in its own statement. They move only if the delivery did (the CTE reads
+  // `d`, which is empty on a CAS miss), and with the funnel's terminal-wins guard.
+  if (projected) {
+    ctes.push(sql`w_proj AS (\n${prFactProjectionSql({ kind: projected }, { from: sql`d`, where: prRowOfDeliverySql('d'), mergedAt: sql`d.merged_at` })}\n)`);
+  }
 
   if (ref.factId) {
     ctes.push(sql`f AS (
@@ -249,20 +334,28 @@ WITH ${sql.join(ctes, sql`,\n`)}
 SELECT t.id AS transition_id, t.delivery_id, t.to_version AS version FROM t`;
 }
 
+/**
+ * Which terminal fact a transition projects onto the worker rows of its PR: the reducer's
+ * `stamp_pr_rows` (T17 merged, T18 closed) names the transitions that change them, and the
+ * target state says which. The effect stays as a replay-safe backstop (a row that adopts the PR
+ * between the statement and the drain); after the statement it finds nothing left to write.
+ */
+function prRowProjection(d: ApplyDecision): 'merged' | 'closed' | null {
+  if (!d.effects.some((e) => e.kind === 'stamp_pr_rows')) return null;
+  if (d.toState === 'MERGED') return 'merged';
+  if (d.toState === 'CLOSED_UNMERGED') return 'closed';
+  return null;
+}
+
 /** Writes kept for audit when no transition applies (a stale verdict, a skipped fix). */
 export function recordOnlySql(deliveryId: string, record: RecordOnly): SQL | null {
-  const ctes = [...roundCtes(record.rounds, 'src'), ...attemptCtes(record.attempts, 'src')];
+  const ctes = [...roundCtes(record.rounds, 'src'), ...attemptCtes(record.attempts, 'src'), ...findingCtes(record.findings ?? [], 'src')];
   if (ctes.length === 0) return null;
   return sql`-- workflow:record
 WITH src AS (SELECT ${deliveryId}::uuid AS delivery_id),
 ${sql.join(ctes, sql`,\n`)}
 SELECT 1 AS recorded`;
 }
-
-export type DeliveryRef =
-  | { deliveryId: string }
-  | { workspaceId: string; ownerTaskId: string }
-  | { workspaceId: string; repoFullName: string; prNumber: number };
 
 /** One read of everything the reducer needs for one delivery. */
 export function loadViewSql(ref: DeliveryRef): SQL {
@@ -283,7 +376,8 @@ SELECT to_jsonb(d.*) || jsonb_build_object('push_pending_local_head', (
     SELECT max(t.to_version) FROM workflow_transitions t
     WHERE t.delivery_id = d.id AND t.to_state = 'AWAITING_PUSH' AND t.from_state IS DISTINCT FROM 'AWAITING_PUSH')) AS delivery,
   COALESCE((SELECT jsonb_agg(to_jsonb(r.*) ORDER BY r.round) FROM workflow_review_rounds r WHERE r.delivery_id = d.id), '[]'::jsonb) AS rounds,
-  COALESCE((SELECT jsonb_agg(to_jsonb(a.*) ORDER BY a.family, a.mode, a.attempt_no) FROM workflow_attempts a WHERE a.delivery_id = d.id), '[]'::jsonb) AS attempts
+  COALESCE((SELECT jsonb_agg(to_jsonb(a.*) ORDER BY a.family, a.mode, a.attempt_no) FROM workflow_attempts a WHERE a.delivery_id = d.id), '[]'::jsonb) AS attempts,
+  COALESCE((SELECT jsonb_agg(to_jsonb(f.*) ORDER BY f.origin_round, f.ordinal, f.created_at) FROM workflow_findings f WHERE f.delivery_id = d.id), '[]'::jsonb) AS findings
 FROM workflow_deliveries d
 WHERE ${where}
 LIMIT 1`;
@@ -350,6 +444,15 @@ export function toRoundSnapshot(r: J): RoundSnapshot {
   };
 }
 
+export function toFindingSnapshot(r: J): FindingSnapshot {
+  return {
+    id: String(r.id), originRoundId: String(r.origin_round_id), originRound: n(r.origin_round), originHeadSha: String(r.origin_head_sha),
+    ordinal: n(r.ordinal), path: s(r.path), line: r.line == null ? null : Number(r.line), title: String(r.title), required: r.required !== false,
+    status: r.status as FindingSnapshot['status'], lastRound: n(r.last_round), addressedBySha: s(r.addressed_by_sha),
+    closedByRoundId: s(r.closed_by_round_id), closedBy: s(r.closed_by), closedReason: s(r.closed_reason), deferredToTaskId: s(r.deferred_to_task_id),
+  };
+}
+
 export function toAttemptSnapshot(r: J): AttemptSnapshot {
   return {
     id: String(r.id), family: r.family as AttemptSnapshot['family'], attemptNo: n(r.attempt_no), mode: r.mode as AttemptSnapshot['mode'],
@@ -362,95 +465,27 @@ export function toAttemptSnapshot(r: J): AttemptSnapshot {
 
 // ── Runner ──────────────────────────────────────────────────────────────────
 
-export type CommandResult =
-  | { result: 'applied'; transitionId: string; deliveryId: string; version: number; decision: ApplyDecision }
-  | { result: 'duplicate'; transitionId: string | null; reason: string; current: CurrentView }
-  | { result: 'stale'; reason: string; current: CurrentView }
-  | { result: 'rejected'; reason: string; missing?: string[]; current: CurrentView };
+export type { CommandResult, DeliveryRef } from '@buildd/workflow-kernel/ports';
 
 export interface KernelDeps {
   exec?: Exec;
   newId?: () => string;
 }
 
+/** One read of everything the reducer needs for one delivery (`loadViewSql`, through the Postgres store). */
 export async function loadView(ref: DeliveryRef, exec: Exec = dbExec): Promise<KernelView> {
-  const row = ((await exec(loadViewSql(ref))).rows ?? [])[0] as { delivery: J; rounds: J[]; attempts: J[] } | undefined;
-  if (!row) return { delivery: null, rounds: [], attempts: [] };
-  return {
-    delivery: toDeliverySnapshot(row.delivery),
-    rounds: (row.rounds ?? []).map(toRoundSnapshot),
-    attempts: (row.attempts ?? []).map(toAttemptSnapshot),
-  };
-}
-
-function isUniqueViolation(err: unknown): boolean {
-  let e: unknown = err;
-  for (let i = 0; i < 4 && e; i++) {
-    const code = (e as { code?: string }).code;
-    if (code === '23505') return true;
-    e = (e as { cause?: unknown }).cause;
-  }
-  return /duplicate key value violates unique constraint/.test(String((err as Error)?.message ?? ''));
-}
-
-function refFor(cmd: Command, ref: DeliveryRef | undefined): DeliveryRef {
-  if (ref) return ref;
-  if (cmd.type === 'DeliveryOpened') return { workspaceId: cmd.workspaceId, ownerTaskId: cmd.ownerTaskId };
-  if (cmd.type === 'PrBound' && cmd.adoption) return { workspaceId: cmd.adoption.workspaceId, ownerTaskId: cmd.adoption.ownerTaskId };
-  throw new Error(`applyCommand: a delivery ref is required for ${cmd.type}`);
+  return postgresStore(exec).loadView(ref);
 }
 
 /**
  * Apply one command (§7.2): read, reduce, write with the version read; on a
- * CAS miss re-read and re-evaluate ONCE, then answer `stale`.
+ * CAS miss re-read and re-evaluate ONCE, then answer `stale`. The loop is the
+ * package's (`applyCommandOn`); the statements are this file's, run by the
+ * Postgres store.
  */
 export async function applyCommand(
   cmd: Command,
   opts: { ref?: DeliveryRef; factId?: string | null } & KernelDeps = {},
 ): Promise<CommandResult> {
-  const exec = opts.exec ?? dbExec;
-  const ref = refFor(cmd, opts.ref);
-  let view = await loadView(ref, exec);
-
-  for (let pass = 0; pass < 2; pass++) {
-    const d = view.delivery;
-    // §14: a delivery released to legacy is never decided by the kernel again,
-    // whoever asks (a draining effect's report, a sweep, a door that raced the release).
-    if (d?.authority === 'legacy') return { result: 'rejected', reason: 'legacy_owns', current: currentOf(view) };
-    const key = stableIdempotencyKey(cmd, d);
-    if (d && key) {
-      const hit = ((await exec(findTransitionSql(d.id, key))).rows ?? [])[0] as { id: string } | undefined;
-      if (hit) return { result: 'duplicate', transitionId: hit.id, reason: 'idempotency_key_seen', current: currentOf(view) };
-    }
-
-    const decision = reduce(view, cmd, { newId: opts.newId });
-    if (decision.result === 'duplicate') return { result: 'duplicate', transitionId: null, reason: decision.reason, current: decision.current };
-    if (decision.result === 'stale' || decision.result === 'rejected') {
-      if (d && decision.record) {
-        const q = recordOnlySql(d.id, decision.record);
-        if (q) await exec(q);
-      }
-      return decision.result === 'stale'
-        ? { result: 'stale', reason: decision.reason, current: decision.current }
-        : { result: 'rejected', reason: decision.reason, missing: decision.missing, current: decision.current };
-    }
-
-    let row: { transition_id: string; delivery_id: string; version: number | string } | undefined;
-    try {
-      row = ((await exec(transitionSql(decision, { deliveryId: d?.id ?? null, factId: opts.factId ?? null }))).rows ?? [])[0] as typeof row;
-    } catch (err) {
-      // A replayed key (or a racing single-flight insert) aborts the statement
-      // atomically; nothing was written. Re-read and decide again.
-      if (!isUniqueViolation(err)) throw err;
-    }
-    if (row) {
-      return { result: 'applied', transitionId: row.transition_id, deliveryId: row.delivery_id, version: Number(row.version), decision };
-    }
-    view = await loadView(d ? { deliveryId: d.id } : ref, exec);
-    if (decision.create && view.delivery) {
-      // Lost the open race: the delivery exists; T1 / adoption replay is a duplicate.
-      return { result: 'duplicate', transitionId: null, reason: 'delivery_exists', current: currentOf(view) };
-    }
-  }
-  return { result: 'stale', reason: 'cas_conflict', current: currentOf(view) };
+  return applyCommandOn(postgresStore(opts.exec ?? dbExec), cmd, { ref: opts.ref, factId: opts.factId, newId: opts.newId });
 }

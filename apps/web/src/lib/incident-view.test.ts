@@ -146,7 +146,7 @@ describe('projectIncident: one state word, sentence and owner per assessment', (
       recommended: 'cancel_attempt' as const,
     };
     const p = projectIncident(incident({ recovery: recovery({ state: 'needs_decision', owner: 'person', decision, nextCheckAt: null }) }), personVerdict(2), opts);
-    expect(p).toMatchObject({ phase: 'decision', stateWord: 'Needs you', owner: 'person', ownerLabel: 'You', needsYou: true, sentence: decision.question });
+    expect(p).toMatchObject({ phase: 'decision', stateWord: 'Waiting on you', owner: 'person', ownerLabel: 'You', needsYou: true, sentence: decision.question });
     expect(p.options.map(o => o.capability)).toEqual(['cancel_attempt', 'dismiss', 'open_blocker']);
     expect(p.options[0]).toMatchObject({ recommended: true, mode: 'link', href: 'https://github.com/o/r/pull/77' });
     expect(p.options.find(o => o.capability === 'dismiss')).toMatchObject({ mode: 'post' });

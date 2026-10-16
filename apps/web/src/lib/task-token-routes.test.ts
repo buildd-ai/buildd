@@ -29,6 +29,8 @@ const OPTED_IN = [
   'apps/web/src/app/api/agent-capabilities/model-inference/route.ts',
   // Governed outcomes: confined to the workspace of its task (taskScopeAllowsWorkspace); lib/specs/outcome.ts lets it read its own task and record only on its parent, never itself.
   'apps/web/src/app/api/specs/outcomes/[taskId]/route.ts',
+  // Mission-level outcome-spec verdicts (Living Specs Slice 12): confined to its own task's mission (taskScopeAllowsMission); lib/specs/mission-outcome.ts lets only that mission's server-filed final verification task record, every other task token only read.
+  'apps/web/src/app/api/specs/mission-outcomes/[missionId]/route.ts',
   // Finalize an upload: only the token's own worker's artifact (taskScopeAllowsWorkspace + taskScopeAllowsWorker).
   'apps/web/src/app/api/artifacts/[artifactId]/finalize/route.ts',
   // Typed links: the route passes the token taskScope to the link caller, and lib/artifact-links.ts confines every artifact and subject to that workspace.

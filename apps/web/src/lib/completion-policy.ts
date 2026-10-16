@@ -88,7 +88,7 @@ export interface ReleaseInput {
 export type ReleaseVerdict =
   | { kind: 'pass'; record: ReleaseResult; summary: string }
   | { kind: 'fail'; record: ReleaseResult; summary: string; reason: string; prUrl: string | undefined }
-  | { kind: 'hold'; until: 'ci'; record: ReleaseResult; summary: string; prNumber: number | undefined; prUrl: string | undefined };
+  | { kind: 'hold'; until: 'ci'; record: ReleaseResult; summary: string; prNumber: number | undefined; prUrl: string | undefined; mergeMethod?: 'merge' | 'squash' };
 
 export interface ReleasePolicy {
   evaluate(input: ReleaseInput): Promise<ReleaseVerdict>;

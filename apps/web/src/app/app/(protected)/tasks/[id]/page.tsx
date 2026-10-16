@@ -1,3 +1,5 @@
+import { taskEstimatePayload } from '@buildd/core/task-estimate-rollout';
+import TaskTimeRow from '@/components/TaskTimeRow';
 import { getWorkerDeliverableArtifactCount } from '@/lib/worker-deliverables';
 import { cancellationLine } from '@/lib/task-cancellation';
 import { taskRecoverySentence } from '@/lib/task-recovery-hold';
@@ -5,17 +7,17 @@ import { ANSWER_IN_CHAT, RUN_PROGRESS_READERS } from '@/modules';
 import { Suspense } from 'react';
 import { after } from 'next/server';
 import { resolveRunnerDisplay, runnerDisplayResolver } from '@/lib/runner-display';
-import { compareTasksChrono, compareWorkersChrono, newestFirst, oldestFirst, selectTaskWorkers } from '@/lib/attempt-order';
+import { compareTasksChrono, compareWorkersChrono, newestFirst, oldestFirst } from '@/lib/attempt-order';
 import { getRunnerHeartbeats, isRunnerOnline, loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
 import { db } from '@buildd/core/db';
-import { tasks, workers, artifacts, workspaceSkills, workerErrorTraces, workspaces, missionNotes, releases, missions, taskEstimates } from '@buildd/core/db/schema';
+import { tasks, workers, artifacts, workspaceSkills, workerErrorTraces, workspaces, releases, missions, taskEstimates } from '@buildd/core/db/schema';
 import { taskEstimatesEnabled } from '@buildd/core/task-estimate-source';
 import { buildTimeRow } from '@/lib/task-time-row';
 import { eq, desc, inArray, asc, ne, and, isNotNull, sql } from 'drizzle-orm';
 import { deriveTaskEyebrow, taskEyebrowText } from '@/lib/task-eyebrow';
 import { deriveDisplayStatus, deriveTaskPhase, isSubjectDead, isGateSatisfied, findBlockingPrWorker } from '@/lib/task-presentation';
 import { normalizeRepoFullName } from '@/lib/repo-scope';
-import { isOpenAsk, isOpenQuestionNote } from '@/lib/open-ask';
+import { loadTaskView } from '@/lib/task-view';
 import { BYPASS_MISSION_BUDGET_KEY, hasBypassFlag } from '@/lib/bypass-flags';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
@@ -31,9 +33,8 @@ import ReassignButton from './ReassignButton';
 import EditTaskButton from './EditTaskButton';
 import DeleteTaskButton from './DeleteTaskButton';
 import RealTimeWorkerView from './RealTimeWorkerView';
+import { liveWorkerViewProps, workerSteerProps } from '@/lib/task-live-view';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
-import { resolvePrDisplayState } from '@/lib/pr-presentation';
-import type { DeliveryPillState } from './TaskSidePanel';
 import PlanReviewPanel from './PlanReviewPanel';
 import PlanChainView from './PlanChainView';
 
@@ -45,24 +46,19 @@ import { blockedHeadline, gateName, lastForceStart } from '@buildd/core/waiting-
 import { getTeamTimezoneSetting } from '@/lib/team-timezone';
 import SwitchBackendButton, { type BackendOption } from './SwitchBackendButton';
 import TaskQuestionFeed from './TaskQuestionFeed';
-import MarkdownContent from '@/components/MarkdownContent';
 import CollapsibleDescription from './CollapsibleDescription';
-import AiFeedback from '@/components/AiFeedback';
 import { StatusPill } from '@/components/ui/StatePill';
 import { displayBranchName } from '@/lib/branch-display';
 import { LoopHistory, LoopStatusChip } from '@/components/LoopStatus';
 import type { LoopHistoryEntry } from '@buildd/shared';
-import { isSummaryDuplicate } from '@/components/artifact-helpers';
 import TaskArtifactsSection from './TaskArtifactsSection';
 import TaskAccessSection from './TaskAccessSection';
 import { loadTaskAccess } from '@/lib/agent-capabilities/access-log';
 import { VISUAL_AUDITOR_ROLE_SLUG } from '@/lib/mission-visual-review';
 import { loadVisualReview } from '@/lib/visual-review-load';
 import { visualReviewRoundOf } from '@/lib/visual-review-rounds';
-import { toTaskArtifactItem } from './task-artifact-items';
-import { hasCodeDeliverables as hasTaskCodeDeliverables } from './deliverables';
-import ArtifactShareControl from '@/components/ArtifactShareControl';
-import { refreshWorkerMergeStateIfStale } from '@/lib/pr-reconcile';
+import { toTaskArtifactItem, taskVisibleArtifacts } from './task-artifact-items';
+import { observeMergeStateOnRender } from '@/lib/pr-state-refresh';
 import { getBackendAvailability, teamEnabledBackends } from '@/lib/backend-failover';
 import { backendLabel, failoverCandidates } from '@buildd/core/backend-policy';
 import { deriveTaskModel } from '@/lib/model-presentation';
@@ -72,7 +68,10 @@ import { originLinkCards } from './origin-links';
 import { TaskShipBadge } from '@/components/TaskShipBadge';
 import { SpecSourceBlock, type SpecSourceContext } from '@/components/SpecSourceBlock';
 import { livingSpecLoad } from '@/lib/specs/task-view';
-import PrDetailsCard, { StoredPrCard } from './PrDetailsCard';
+import PrDetailsCard from './PrDetailsCard';
+import { StoredPrCard } from '@/components/task/StoredPrCard';
+import TaskDeliverables, { type TaskDeliverablesResult } from '@/components/task/TaskDeliverables';
+import { taskPrFacts, taskHeaderMerged, taskDeliverySections } from '@/lib/task-sections';
 import { loadOpenAttempt } from '@/lib/explain';
 import TaskEvidenceCard from './TaskEvidenceCard';
 import { plainWorkerError } from '@/lib/provider-auth-failure';
@@ -96,18 +95,18 @@ import { MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH, MISSION_TASK_REFR
 import type { MissionCardRow } from '@/lib/mission-card-view';
 import { missionTaskHref, taskPageHref } from '@/lib/mission-task-href';
 import WorkerSteerPanel from './WorkerSteerPanel';
-import { HeaderStatusPill, FactSheet, SideDescription, type FactRow } from './TaskSidePanel';
+import { HeaderStatusPill, FactSheet, SideDescription, runnerFactRow, branchFactRow, type FactRow } from './TaskSidePanel';
 import { findTaskRole } from './role-lookup';
 import { headerLifecycle, taskHeading } from './task-header';
-import TaskChecks from './TaskChecks';
+import TaskChecksSection from '@/components/task/TaskChecksSection';
 import TaskSubjectLink from './TaskSubjectLink';
 import TaskTitle from './TaskTitle';
-import { deriveTaskChecks, taskSubjectOf } from '@/lib/task-checks';
+import { taskSubjectOf } from '@/lib/task-checks';
 import { loadTaskDeliveryContext } from '@/lib/task-delivery-context';
+import { prLifecycleFor } from '@/lib/delivery-overlay';
 import { normaliseReviewVerdict, readableTaskResult } from '@/lib/task-result';
 import Lifecycle from '@/components/ui/Lifecycle';
 import { displayTaskTitle } from '@/lib/task-title';
-import { linkQuestionNote } from './question-hero';
 import { buildLineage, diffStatsRecorded } from './pr-lineage';
 import { lineageDisplayStatus, lineageWorkerHistory } from './lineage-status';
 import type { PrOutcome } from '@/components/task/PrCard';
@@ -126,13 +125,12 @@ import { buildErrorEvidenceItems } from './error-evidence';
 import { nonDiffActions } from './attempt-actions';
 import { bookkeepingAttemptRetry } from './bookkeeping-attempt';
 import BookkeepingAttemptRow from './BookkeepingAttemptRow';
-import { applyVerdictDecision, deriveTaskVerdict, parseStoredVerdictDecision, verdictLinksPr } from '@/lib/task-verdict';
+import { applyVerdictDecision, deriveTaskVerdict, parseStoredVerdictDecision, verdictLinksPr, verdictRepeatsOpenQuestion } from '@/lib/task-verdict';
 import { buildVerdictInput, traceOutcomeOf } from '@/lib/task-verdict-facts';
 import { priorAttemptFactsOf, resolveTraceConsequences } from '@/lib/trace-consequence';
 import type { WorkerMilestone } from '@buildd/core/db/schema';
 import StartTimeControl from '@/components/StartTimeControl';
 import Notice from '@/components/ui/Notice';
-import { loadTaskRecoveryViewsForViewer } from '@/lib/incident-recovery-load';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 // Exit causes that get their own badge instead of a bare "Failed" — each one
@@ -216,29 +214,12 @@ export default async function TaskDetailPage({
   // task's workers for a viewer who turns out not to have access is not a
   // trade worth two round trips.
   const depTaskIds = (task.dependsOn as string[] | undefined) || [];
-  const [openQuestionRows, depTasks, taskWorkers, missionContextRow, taskEstimate, answerInChat, taskRecoveryViews] = await Promise.all([
-    // Open question notes scoped to this task (drives the "Waiting on you"
-    // badge, and lets the live worker view show the note and the worker's
-    // waitingFor as ONE question). A mission task's questions carry its
-    // missionId too — they are still this task's, so no mission gate (S6).
-    db
-      .select({
-        id: missionNotes.id,
-        workerId: missionNotes.workerId,
-        type: missionNotes.type,
-        status: missionNotes.status,
-        title: missionNotes.title,
-        body: missionNotes.body,
-        defaultChoice: missionNotes.defaultChoice,
-        createdAt: missionNotes.createdAt,
-      })
-      .from(missionNotes)
-      .where(and(
-        eq(missionNotes.taskId, id),
-        eq(missionNotes.type, 'question'),
-        eq(missionNotes.status, 'open'),
-      ))
-      .orderBy(asc(missionNotes.createdAt)),
+  const [taskView, depTasks, missionContextRow, taskEstimate, answerInChat] = await Promise.all([
+    // The task's workers, open question notes and any failure recovery holding
+    // it, picked the way the sheet picks them (lib/task-view.ts): one worker
+    // and one question on both surfaces. A mission task's questions carry its
+    // missionId too; they are still this task's, so no mission gate (S6).
+    loadTaskView(task, { userId: user.id, teamId: (task.workspace as { teamId?: string } | null)?.teamId ?? null }),
     // Dependency tasks, if dependsOn has entries
     depTaskIds.length > 0
       ? db.query.tasks.findMany({
@@ -255,12 +236,6 @@ export default async function TaskDetailPage({
           },
         })
       : Promise.resolve([]),
-    // Workers for this task
-    db.query.workers.findMany({
-      where: sqlWhere(eq(workers.taskId, id)),
-      orderBy: sqlOrderBy([desc(workers.createdAt), desc(workers.id)]),
-      with: { account: { columns: { name: true } } },
-    }),
     // Mission context bar (W6): the mission row and its tasks' light columns —
     // the same selection a Home card makes, so no result/context/artifact
     // content — fed through the builders every mission surface shares.
@@ -299,10 +274,10 @@ export default async function TaskDetailPage({
     // An answer link for a mission filed from the reader's own conversation
     // opens that conversation instead, when chat is on for them.
     focusAnswer && task.missionId ? ANSWER_IN_CHAT(id, user.id).catch(() => null) : Promise.resolve(null),
-    // A failure incident's recovery holding this task (failure-incident-recovery §16.4).
-    loadTaskRecoveryViewsForViewer([task.id], { userId: user.id, teamId: (task.workspace as { teamId?: string } | null)?.teamId ?? null }),
   ]);
   if (answerInChat) redirect(answerInChat);
+  // Newest first by (createdAt, id).
+  const taskWorkers = taskView.ordered;
   const failedExcerpt = truncateExcerpt(taskWorkers[0]?.error);
   const taskBackend = (task.backend as 'claude' | 'codex' | null) ?? null;
   // S35: the mission's failed deliverables read through the kernel, as its card does.
@@ -329,8 +304,9 @@ export default async function TaskDetailPage({
       });
       const installId = wsWithInstall?.githubInstallation?.installationId;
       if (installId) {
-        const stale = { id: latestWorker.id, prNumber: latestWorker.prNumber, prUrl: latestWorker.prUrl };
-        after(() => refreshWorkerMergeStateIfStale(stale, installId).catch((err) =>
+        // AC-3: a delivery-owned task records at most a fact here; no lifecycle write.
+        const stale = { id: latestWorker.id, prNumber: latestWorker.prNumber, prUrl: latestWorker.prUrl, workspaceId: latestWorker.workspaceId ?? task.workspaceId };
+        after(() => observeMergeStateOnRender([stale], installId).catch((err) =>
           console.error('[task-page] PR fact import failed (non-fatal):', err)));
       }
     }
@@ -341,10 +317,7 @@ export default async function TaskDetailPage({
   // resolver (it needs the release id it returns), so it stays chained inside
   // that entry rather than becoming a fourth serial step.
   const workerIds = taskWorkers.map(w => w.id);
-  // Latest / live / PR worker by (createdAt, id), never by row position: two
-  // workers created in the same instant must not trade places between renders.
-  const workerPicks = selectTaskWorkers(taskWorkers, isLiveWorkerStatus);
-  const prWorker = workerPicks.prWorker ?? null;
+  const prWorker = taskView.prWorker ?? null;
   // Stored evidence objects (pointers only; the text is read on demand by the
   // section). Best-effort: a failed lookup shows the empty list, never an error page.
   const evidenceFilesPromise = listTaskEvidenceObjects({ id: task.id, workspaceId: task.workspaceId })
@@ -517,24 +490,10 @@ export default async function TaskDetailPage({
       }
     : null;
 
-  const deliverableArtifacts = taskArtifacts.filter(
-    a => a.type !== 'impl_plan'
-  );
-
-  // A completed task leads with "What shipped"; its raw handoff moves behind
-  // the Technical summary disclosure instead of the Deliverables block.
-  const leadsWithShipped = task.status === 'completed' && task.mode !== 'planning';
-
-  // Dedupe: find if exactly one summary-type artifact duplicates result.summary
+  // The artifacts list, as the sheet gets it: never the plan, and not a lone
+  // summary artifact that repeats result.summary (it shows as the summary).
   const resultSummary = (task.result as any)?.summary as string | undefined;
-  const summaryArtifacts = deliverableArtifacts.filter(a => a.type === 'summary');
-  const suppressedSummaryArtifact =
-    !leadsWithShipped && resultSummary && summaryArtifacts.length === 1 && isSummaryDuplicate(summaryArtifacts[0].content, resultSummary)
-      ? summaryArtifacts[0]
-      : null;
-  const visibleArtifacts = suppressedSummaryArtifact
-    ? deliverableArtifacts.filter(a => a.id !== suppressedSummaryArtifact.id)
-    : deliverableArtifacts;
+  const { visible: visibleArtifacts, suppressedSummary: suppressedSummaryArtifact } = taskVisibleArtifacts(taskArtifacts, task);
   // D9: when the description is the deliverable summary itself, the summary
   // (under Deliverables) is printed once and the description is not.
   const descriptionIsSummary = descriptionDuplicatesSummary(task.description, resultSummary);
@@ -652,17 +611,12 @@ export default async function TaskDetailPage({
     }
   }
 
-  // Never revive an ended worker merely because it retained a question.
-  const activeWorkerRow = !isTerminalTaskStatus(task.status)
-    ? workerPicks.activeWorker : undefined;
-  // A task blocked by a failure incident reads the incident's recovery (failure-incident-recovery
-  // §16.4, §17.2): while recovery owns the next step, a question the worker asked about the same
-  // failure is stale, so its controls are not offered; history keeps it.
-  const taskRecovery = taskRecoveryViews.get(task.id) ?? null;
-  const activeWorker = activeWorkerRow?.waitingFor && (!isOpenAsk(task.status, activeWorkerRow.status) || taskRecovery?.supersedesQuestion)
-    ? { ...activeWorkerRow, waitingFor: null } : activeWorkerRow;
-
-  const openQuestionCount = openQuestionRows.filter(n => isOpenQuestionNote(n, task.status, activeWorker)).length;
+  // The live worker, with its question dropped once the task ended or a failure
+  // incident's recovery owns the next step (failure-incident-recovery §16.4, §17.2):
+  // a question about the same failure is stale then; history keeps it.
+  const taskRecovery = taskView.recovery;
+  const activeWorker = taskView.activeWorker;
+  const openQuestionCount = taskView.openQuestionCount;
 
   // A kernel-owned delivery's header reads the kernel's DeliveryView, not the
   // raw task/worker columns below (workflow-state-kernel §17.5). Legacy-owned
@@ -671,6 +625,10 @@ export default async function TaskDetailPage({
   // title for the page's checks list and attempt framing (docs/specs/task-page.md).
   const deliveryContext = await loadTaskDeliveryContext(task.id);
   const deliveryView = deliveryContext.view;
+  // §7 (workflow-kernel-library.md): the PR's merged/open/closed reading is the
+  // delivery's when it owns this PR, never a worker row that disagrees (AC-26).
+  const prLife = prLifecycleFor(prWorker, deliveryView, task.id);
+  const latestLife = taskWorkers[0] && prWorker && taskWorkers[0].id === prWorker.id ? prLife : taskWorkers[0];
   // Which run this page is: the deliverable, or a review / fix attempt of it.
   const subject = taskSubjectOf({
     taskId: task.id,
@@ -687,10 +645,8 @@ export default async function TaskDetailPage({
     taskId: subject.deliverableTaskId,
     title: deliveryContext.deliverableTitle ?? (task.parentTask?.id === subject.deliverableTaskId ? task.parentTask.title : null),
   };
-  const taskChecks = deliveryView ? deriveTaskChecks(deliveryView) : null;
-  const deliveryPill: DeliveryPillState | null = deliveryView
-    ? { headline: deliveryView.headline, owner: deliveryView.owner, needsYou: deliveryView.needsYou, stage: deliveryView.stage, detail: deliveryView.detail, prState: deliveryView.prState, state: deliveryView.state }
-    : null;
+  // The header's delivery reading and the checks list, as the sheet gets them.
+  const { delivery: deliveryPill, checks: checksSection } = taskDeliverySections(deliveryContext, prWorker);
 
   // Derive canonical display status from task + active worker state.
   // If the worker is running, the chip shows "Running" not "Assigned".
@@ -721,8 +677,8 @@ export default async function TaskDetailPage({
   const displayStatus = lineageDisplayStatus({
     displayStatus: ownDisplayStatus,
     taskStatus: task.status,
-    prMerged: !!(prWorker && (prWorker.mergedAt || prWorker.prLifecycleStatus === 'merged')),
-    prClosed: prWorker?.prLifecycleStatus === 'closed',
+    prMerged: !!(prWorker && (prLife.mergedAt || prLife.prLifecycleStatus === 'merged')),
+    prClosed: prLife.prLifecycleStatus === 'closed',
     attemptStatuses: ciAttemptTasks.map(t => t.status),
   });
 
@@ -767,8 +723,8 @@ export default async function TaskDetailPage({
   // completed tasks until CI resolves (prevents stale badge after task finishes).
   const workerHasOpenPr = !!(
     taskWorkers[0]?.prNumber &&
-    !taskWorkers[0]?.mergedAt &&
-    taskWorkers[0]?.prLifecycleStatus !== 'closed'
+    !latestLife?.mergedAt &&
+    latestLife?.prLifecycleStatus !== 'closed'
   );
 
   // Dependency resolution checks — via the SHARED gate predicate, not a local
@@ -872,7 +828,7 @@ export default async function TaskDetailPage({
   const roleName = roleRow?.name ?? null;
   const headerTrack = headerLifecycle(deliveryView);
   const heading = taskHeading({ title: task.title, label: (task as { label?: string | null }).label ?? null }, roleName);
-  const questionNote = activeWorker?.waitingFor ? linkQuestionNote(openQuestionRows, activeWorker.id) : null;
+  const questionNote = taskView.questionNote;
 
 
   let prOutcome: PrOutcome | null = null;
@@ -917,7 +873,7 @@ export default async function TaskDetailPage({
         headSha: t.ciRetryHeadSha ?? null,
         failure: ((t.context as Record<string, unknown> | null)?.failureContext as { job?: string; test?: string; excerpt?: string } | undefined) ?? null,
       })),
-      pr: { lifecycle: prWorker.prLifecycleStatus ?? null, mergedAt: prWorker.mergedAt?.getTime() ?? null },
+      pr: { lifecycle: prLife.prLifecycleStatus, mergedAt: prLife.mergedAt ? new Date(prLife.mergedAt as Date).getTime() : null },
     });
     lineageClaimToMergeMs = lineage.totals.claimToMergeMs;
     prOutcome = {
@@ -1029,10 +985,7 @@ export default async function TaskDetailPage({
     sessions: taskWorkers,
     finished: isTerminal,
     now: Date.now(),
-    p50Minutes: taskEstimate?.p50Minutes ?? null,
-    p80Minutes: taskEstimate?.p80Minutes ?? null,
-    summary: taskEstimate?.explanation?.summary ?? null,
-    priorWeight: taskEstimate?.explanation?.priorWeight ?? null,
+    estimate: taskEstimatePayload(taskEstimate),
   });
   const factRows: FactRow[] = [
     ...(prOutcome && prWorker && isTerminal && !prStatedAbove
@@ -1042,7 +995,7 @@ export default async function TaskDetailPage({
           value: (
             <a href={prWorker.prUrl!} target="_blank" rel="noopener noreferrer" className="hover:underline">
               <span className="text-accent-text">#{prWorker.prNumber}</span>
-              <span className="text-text-muted"> · {(prWorker.mergedAt ? 'merged' : prWorker.prLifecycleStatus ?? 'open').replace(/_/g, ' ')}</span>
+              <span className="text-text-muted"> · {(prLife.mergedAt ? 'merged' : prLife.prLifecycleStatus ?? 'open').replace(/_/g, ' ')}</span>
             </a>
           ),
         }]
@@ -1066,20 +1019,15 @@ export default async function TaskDetailPage({
           ),
         }]
       : factWorker && !shippedViewShown
-        ? [{ key: 'runner', label: 'Runner', value: runnerLabel(factWorker) }]
+        ? runnerFactRow(runnerLabel(factWorker))
         : []),
-    ...(factWorker?.branch && !(prOutcome && isTerminal)
-      ? [{ key: 'branch', label: 'Branch', value: <span className="block truncate" title={factWorker.branch}>{factWorker.branch}</span> }]
-      : []),
+    ...(!(prOutcome && isTerminal) ? branchFactRow(factWorker?.branch) : []),
     ...(timeRow
       ? [{
           key: 'time',
           label: 'Time',
           value: (
-            <div className="space-y-0.5">
-              <div className={timeRow.overUpper ? 'text-status-warning' : 'text-text-primary'}>{timeRow.text}</div>
-              {timeRow.explanation && <div className="text-meta text-text-muted">{timeRow.explanation}</div>}
-            </div>
+            <TaskTimeRow view={timeRow} />
           ),
         }]
       : []),
@@ -1453,7 +1401,7 @@ export default async function TaskDetailPage({
               <span data-testid="task-header-status" data-status={displayStatus} className="col-start-1 row-start-2 self-center md:col-start-2 md:row-start-1 md:self-start md:mt-0.5">
                 <HeaderStatusPill
                   status={displayStatus}
-                  merged={!!(prWorker && (prWorker.mergedAt || prWorker.prLifecycleStatus === 'merged')) && isTerminal}
+                  merged={taskHeaderMerged(prWorker ? prLife : null, task.status)}
                   delivery={deliveryPill}
                 />
               </span>
@@ -1563,22 +1511,13 @@ export default async function TaskDetailPage({
           </Notice>
         )}
 
-        {verdict && (
+        {/* An open question's own card is below: the verdict would only point at it. */}
+        {verdict && !verdictRepeatsOpenQuestion(verdict, { questionOnPage: !!activeWorker?.waitingFor }) && (
           <TaskVerdictBlock verdict={verdict} displayStatus={displayStatus} />
         )}
 
         {/* Checks on the delivery's current head, by round (task-page spec). */}
-        {taskChecks && deliveryView && (
-          <TaskChecks
-            checks={taskChecks}
-            prNumber={deliveryView.prNumber}
-            prUrl={prWorker?.prUrl ?? (deliveryView.repoFullName && deliveryView.prNumber != null ? `https://github.com/${deliveryView.repoFullName}/pull/${deliveryView.prNumber}` : null)}
-            headSha={deliveryView.headSha}
-            findings={deliveryContext.findings}
-            findingsUnavailable={deliveryContext.findingsUnavailable}
-            currentTaskId={task.id}
-          />
-        )}
+        {checksSection && <TaskChecksSection section={checksSection} currentTaskId={task.id} />}
 
         <ServiceStatusList statuses={taskServiceStatus} showWork={false} />
         {runnerReach && (
@@ -1887,50 +1826,18 @@ export default async function TaskDetailPage({
         {activeWorker && (
           <div className="mb-8 order-first" data-testid="task-active-worker">
             <RealTimeWorkerView
-              delivery={deliveryPill}
-              outputRequirement={task.outputRequirement}
-              deliverableArtifactCount={evidenceArtifactCount}
-              usesReviewer={RUN_PROGRESS_READERS.usesReviewer(task.workspace, missionContextRow, task, { baseRef: activeWorker.prBaseRef })}
-              reviewState={evidenceReview?.state}
-              taskStatus={task.status}
-              taskId={task.id}
-              initialWorker={{
-                id: activeWorker.id,
-                name: activeWorker.name,
-                branch: activeWorker.branch,
-                status: activeWorker.status,
-                currentAction: activeWorker.currentAction,
-                milestones: (activeWorker.milestones as any[]) || [],
-                turns: activeWorker.turns,
-                costUsd: activeWorker.costUsd?.toString() || null,
-                inputTokens: activeWorker.inputTokens,
-                outputTokens: activeWorker.outputTokens,
-                createdAt: activeWorker.createdAt?.toISOString() || null,
-                mergedAt: activeWorker.mergedAt?.toISOString() || null,
-                dirtyWorktree: activeWorker.dirtyWorktree,
-                observedTouches: activeWorker.observedTouches,
-                prIsDraft: activeWorker.prIsDraft,
-                startedAt: activeWorker.startedAt?.toISOString() || null,
-                prUrl: activeWorker.prUrl,
-                prNumber: activeWorker.prNumber,
-                prLifecycleStatus: activeWorker.prLifecycleStatus,
-                localUiUrl: null,
-                commitCount: activeWorker.commitCount,
-                filesChanged: activeWorker.filesChanged,
-                linesAdded: activeWorker.linesAdded,
-                linesRemoved: activeWorker.linesRemoved,
-                lastCommitSha: activeWorker.lastCommitSha,
-                waitingFor: activeWorker.waitingFor as any,
-                error: activeWorker.error,
-                instructionHistory: (activeWorker.instructionHistory as any[]) || [],
-                pendingInstructions: activeWorker.pendingInstructions,
-                updatedAt: activeWorker.updatedAt?.toISOString() || null,
-                resultMeta: activeWorker.resultMeta as any,
-              }}
-              modelTier={modelSummary.tierLabel}
-              questionNote={questionNote}
+              {...liveWorkerViewProps({
+                task: { id: task.id, status: task.status, outputRequirement: task.outputRequirement },
+                worker: activeWorker,
+                delivery: deliveryPill,
+                deliverableArtifactCount: evidenceArtifactCount,
+                usesReviewer: RUN_PROGRESS_READERS.usesReviewer(task.workspace, missionContextRow, task, { baseRef: activeWorker.prBaseRef }),
+                reviewState: evidenceReview?.state,
+                modelTier: modelSummary.tierLabel,
+                questionNote,
+                roleName,
+              })}
               focusAnswer={focusAnswer}
-              roleName={roleName}
             />
           </div>
         )}
@@ -1939,22 +1846,18 @@ export default async function TaskDetailPage({
             CI → retry → merge) and checks per commit (AC-4). Shown for an open
             PR and for one that landed. */}
         {(() => {
-          if (!prWorker?.prUrl || !prWorker.prNumber) return null;
-          const prState = resolvePrDisplayState({ delivery: deliveryView, prLifecycleStatus: prWorker.prLifecycleStatus, mergedAt: prWorker.mergedAt });
-          if (prState === 'closed') return null;
+          // The same facts the mission task sheet cards (lib/task-sections).
+          const prFacts = taskPrFacts(prWorker, deliveryView);
+          if (!prFacts) return null;
           const storedPrFacts = {
-            prUrl: prWorker.prUrl,
-            prNumber: prWorker.prNumber,
-            prLifecycleStatus: prWorker.mergedAt ? 'merged' : prWorker.prLifecycleStatus,
-            prState,
-            linesAdded: prWorker.linesAdded,
-            linesRemoved: prWorker.linesRemoved,
-            filesChanged: prWorker.filesChanged,
+            ...prFacts,
             // The header carries the summary and the one action.
             outcome: prOutcome && shippedView ? { ...prOutcome, summary: null } : prOutcome,
             hideAction: !!shippedView,
             statedAbove: prStatedAbove,
             openAttempt,
+            // AC-24: the delivery's rounds, the same line the checks list and get_pr print.
+            reviewRounds: checksSection?.checks.review ?? null,
           };
           return (
             <div className={`mb-10 ${activeWorker ? '' : 'order-first'}`} data-testid="task-pr-section">
@@ -1987,116 +1890,18 @@ export default async function TaskDetailPage({
           </div>
         )}
 
-        {/* Deliverables */}
-        {(task.result as any) && !shippedView && (
-          (() => {
-            const result = task.result as { summary?: string; summarySource?: string; branch?: string; commits?: number; sha?: string; files?: number; added?: number; removed?: number; prUrl?: string; prNumber?: number; structuredOutput?: Record<string, unknown> };
-            const hasCodeDeliverables = hasTaskCodeDeliverables(result);
-            const isFallbackSummary = result.summarySource === 'fallback';
-            // The PR outcome card already carries the code deliverables and summary.
-            if (prOutcome && hasCodeDeliverables && !result.structuredOutput) return null;
-            const fallbackChip = (
-              <span className="font-mono text-chip border border-border-default rounded-[var(--radius-pill)] text-text-muted px-1 py-px shrink-0">
-                unauthored · last message
-              </span>
-            );
-
-            return (
-              <div className="mb-8">
-                <div className="section-label pb-2 border-b border-border-default mb-4">
-                  Deliverables
-                </div>
-
-                {/* Non-code summary — shown prominently when no code deliverables */}
-                {!hasCodeDeliverables && result.summary && (
-                  <div className="p-5 bg-surface-2 border border-border-default mb-4">
-                    {isFallbackSummary && <div className="mb-2">{fallbackChip}</div>}
-                    <MarkdownContent content={result.summary} />
-                    <div className="mt-3 pt-2 border-t border-border-default/50 flex items-center justify-between gap-3">
-                      <AiFeedback entityType="summary" entityId={`task-${task.id}-summary`} />
-                      {suppressedSummaryArtifact && (
-                        <div className="flex items-center gap-2">
-                          <ArtifactShareControl
-                            artifactId={suppressedSummaryArtifact.id}
-                            baseUrl={process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}
-                            initialVisibility={(suppressedSummaryArtifact.visibility as 'private' | 'public') ?? 'private'}
-                            initialShareToken={suppressedSummaryArtifact.shareToken}
-                          />
-                          <a
-                            href={`/app/artifacts/${suppressedSummaryArtifact.id}`}
-                            className="text-[11px] text-text-muted hover:text-text-secondary"
-                          >
-                            Open ↗
-                          </a>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {/* Code deliverables bar — the PR outcome card above carries these */}
-                {hasCodeDeliverables && !prOutcome && (
-                  <div className="p-4 bg-status-success/10 border border-status-success/20">
-                    <div className="flex items-center gap-3 text-sm flex-wrap">
-                      {result.branch && (
-                        <code className="px-2 py-0.5 bg-status-success/15 text-status-success rounded text-xs">
-                          {result.branch}
-                        </code>
-                      )}
-                      {(result.commits ?? 0) > 0 && (
-                        <span className="text-text-secondary text-xs">
-                          {result.commits} commit{result.commits !== 1 ? 's' : ''}
-                        </span>
-                      )}
-                      {((result.added ?? 0) > 0 || (result.removed ?? 0) > 0) && (
-                        <span className="text-xs">
-                          <span className="text-status-success">+{result.added}</span>
-                          <span className="text-status-error">/{'-'}{result.removed}</span>
-                        </span>
-                      )}
-                      {(result.files ?? 0) > 0 && (
-                        <span className="text-xs text-text-secondary">{result.files} files</span>
-                      )}
-                      {result.sha && (
-                        <code className="font-mono text-xs text-text-muted">{result.sha.slice(0, 7)}</code>
-                      )}
-                      {result.prUrl && (
-                        <a
-                          href={result.prUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="px-3 py-[5px] text-xs bg-status-success/10 text-status-success hover:bg-status-success/20"
-                        >
-                          PR #{result.prNumber}
-                        </a>
-                      )}
-                    </div>
-                    {result.summary && (
-                      <div className="text-sm text-text-secondary mt-2">
-                        {isFallbackSummary && <div className="mb-2">{fallbackChip}</div>}
-                        <MarkdownContent content={result.summary} />
-                        <div className="mt-2 flex justify-end">
-                          <AiFeedback entityType="summary" entityId={`task-${task.id}-summary`} compact />
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Structured Output */}
-                {result.structuredOutput && (
-                  <div className="mt-4">
-                    <div className="section-label mb-2">
-                      Output
-                    </div>
-                    <pre className="p-4 bg-surface-2 border border-border-default overflow-x-auto text-sm font-mono text-text-primary">
-                      {JSON.stringify(result.structuredOutput, null, 2)}
-                    </pre>
-                  </div>
-                )}
-              </div>
-            );
-          })()
+        {/* Deliverables: the summary, the code bar and any structured output,
+            as the mission sheet shows them. The PR card carries the code and
+            its summary when there is one. */}
+        {!shippedView && (
+          <TaskDeliverables
+            taskId={task.id}
+            result={task.result as TaskDeliverablesResult | null}
+            prCard={!!prOutcome}
+            summaryInPrCard
+            suppressedSummary={suppressedSummaryArtifact}
+            baseUrl={process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}
+          />
         )}
 
         {/* Artifacts; an audit task's Tray shows even before its first screen
@@ -2143,19 +1948,7 @@ export default async function TaskDetailPage({
             main column; the question or the Now strip stays the first screen. */}
         <aside data-testid="task-side-panel" className="mt-10 lg:mt-0 space-y-6 lg:sticky lg:top-4">
           {activeWorker && (
-            <WorkerSteerPanel
-              workerId={activeWorker.id}
-              status={activeWorker.status}
-              hasUnansweredQuestion={!!activeWorker.waitingFor}
-              instructionHistory={(activeWorker.instructionHistory as any[]) || []}
-              runner={activeWorker.runner}
-              taskTerminal={isTerminal}
-              earlierRun={(() => {
-                // The run before this one, for the messages it ended before reading.
-                const prev = workerPicks.ordered.find(w => w.id !== activeWorker.id && compareWorkersChrono(w, activeWorker) < 0);
-                return prev ? { workerId: prev.id, status: prev.status, history: (prev.instructionHistory as any[]) || [] } : null;
-              })()}
-            />
+            <WorkerSteerPanel {...workerSteerProps(activeWorker, taskWorkers, isTerminal)} />
           )}
 
           <FactSheet rows={factRows} />

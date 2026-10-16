@@ -60,3 +60,33 @@ export type TerminalPrLifecycle = (typeof TERMINAL_PR_LIFECYCLE)[number];
 export function isTerminalPrLifecycle(status: string | null | undefined): status is TerminalPrLifecycle {
   return status != null && (TERMINAL_PR_LIFECYCLE as readonly string[]).includes(status);
 }
+
+/**
+ * Every way the claim gate (`depsGate` in api/workers/claim/deps-gate.ts) lets
+ * a dependency stop holding its dependent. The mission page reads which one
+ * released an edge (`lib/mission-board-waiting.ts`), so a dependent the claim
+ * gate has released never reads blocked on the strip.
+ *
+ * Per-edge arms, in the order `dependencySatisfied()` ORs them:
+ *   - `status` — completed (no open PR) or cancelled; also judged in TS by `isGateSatisfied`.
+ *   - `early_release` — a non-revoked `dependency_releases` row (start_now / start_stacked).
+ *   - `migration_other_base` — an inferred migration edge whose PR lands on another base.
+ *   - `inferred_unstarted_holder` — an inferred overlap edge onto a task that has not started.
+ *   - `force_start` — a person's unexpired force start lifted this inferred edge.
+ * Gate-level arms, which release every edge of the dependent:
+ *   - `surface_audit_scope` — a `[surface audit]` ignores dependencies outside its mission.
+ *   - `bypass` — `context.bypassDepsGate`.
+ *
+ * `dep-gate-display-parity.test.ts` fails when the gate gains an arm this list
+ * does not name.
+ */
+export const DEP_EDGE_RELEASE_ARMS = [
+  'status',
+  'early_release',
+  'migration_other_base',
+  'inferred_unstarted_holder',
+  'force_start',
+] as const;
+export const DEP_GATE_RELEASE_ARMS = ['surface_audit_scope', 'bypass'] as const;
+export type DepEdgeReleaseArm = (typeof DEP_EDGE_RELEASE_ARMS)[number];
+export type DepReleaseArm = DepEdgeReleaseArm | (typeof DEP_GATE_RELEASE_ARMS)[number];

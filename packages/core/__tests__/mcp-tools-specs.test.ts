@@ -1,6 +1,6 @@
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
 import { handleBuilddAction, workerActions, adminActions, buildParamsDescription, type ApiFn, type ActionContext } from '../mcp-tools';
-import { SPEC_INLINE_BODY_MAX } from '../mcp-specs';
+import { SPEC_INLINE_BODY_MAX, WORKSPACE_SPEC_OPS } from '../mcp-specs';
 import { requiredScopeForAction } from '../token-scopes';
 
 const WS = '00000000-0000-0000-0000-000000000001';
@@ -31,6 +31,30 @@ describe('manage_specs', () => {
     expect([endpoint, opts.method]).toEqual(['/api/specs', 'POST']);
     expect(JSON.parse(opts.body)).toEqual({ workspaceId: WS, title: 'Checkout', body: 'R-1: x', scope: 'feature' });
     expect(r).toContain('Version: 1');
+  });
+
+  // Regression: organize shipped resolving no workspace, so over MCP it always
+  // failed with "workspaceId is required" even in a workspace-bound session.
+  it('every sub-action that needs a workspace gets the session one', async () => {
+    for (const action of WORKSPACE_SPEC_OPS) {
+      api.mockReset();
+      api.mockResolvedValue({ specs: [], spec: { ...spec, version: 1 }, mode: 'sweep', dryRun: true, scanned: 0, remaining: 0, skipped: 0, groups: [] });
+      const r: any = await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action, title: 'T', body: 'R-1: x' }, ctx());
+      expect(r.isError ?? false).toBe(false);
+      const [endpoint, opts] = api.mock.calls[0];
+      expect(`${endpoint} ${opts?.body ?? ''}`).toContain(WS);
+    }
+    expect(WORKSPACE_SPEC_OPS).toContain('organize');
+  });
+
+  it('a taxonomy dry run says which produced it, and lists the specs it left for a person', async () => {
+    const proposal = { product: { title: 'Shop' }, areas: [{ key: 'payments', title: 'Payments', charter: 'Specs about payments.', members: [{ specId: 's1', title: 'Refunds' }] }], unplaced: [{ specId: 's9', title: 'Test spec' }] };
+    api.mockResolvedValueOnce({ mode: 'taxonomy', dryRun: true, specs: 2, proposal, proposedBy: { source: 'words', label: 'word-based fallback, no model available', reason: 'this team has no decision-model key' } });
+    const words = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'organize' }, ctx()));
+    expect(words).toContain('Proposed by the word-based fallback, no model available (this team has no decision-model key).');
+    expect(words).toContain('Left for a person to place (1): Test spec (s9)');
+    api.mockResolvedValueOnce({ mode: 'taxonomy', dryRun: true, specs: 2, proposal, proposedBy: { source: 'model', model: 'typesafe/jev-1' } });
+    expect(out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'organize' }, ctx()))).toContain('Proposed by the decision model (typesafe/jev-1).');
   });
 
   it('create_draft and get return the spec page URL, from appBaseUrl when set and buildd.dev otherwise', async () => {
@@ -64,6 +88,25 @@ describe('manage_specs', () => {
     expect(r).toContain('Requirement ids: R-1');
     expect(r).toContain('r2 by agent: tighten');
     expect(r).toContain('expectedVersion 2');
+  });
+
+  it('get and import say how many criteria an import could not read, and which', async () => {
+    const criteria = { unreadable: [{ id: 'AC-3a', line: 4 }], duplicates: [{ id: 'AC-1', lines: [3, 7] }] };
+    api.mockResolvedValueOnce({ spec: { ...spec, metadata: { criteria_unread: criteria } }, revision: { revision: 2, artifactRevision: 3, contentHash: 'abc' }, body: '# Checkout\nAC-1: x', requirements: [{ id: 'AC-1' }], revisions: [] });
+    const got = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'get', specId: SPEC }, ctx()));
+    expect(got).toContain('2 criteria could not be read; not read: AC-3a (line 4); defined more than once, only the first is read: AC-1 (lines 3, 7).');
+
+    api.mockResolvedValueOnce({
+      dryRun: true, repo: 'acme/app', commitSha: 'a'.repeat(40), counts: { create: 1, reimport: 0, skip: 0 },
+      byArea: [{ area: 'Unfiled', areaSpecId: null, proposed: false, count: 1 }],
+      files: [{ path: 'docs/specs/messy.md', action: 'create', spec: { title: 'Messy' }, area: null, criteria }],
+    });
+    const imp = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'import' }, ctx()));
+    expect(imp).toContain('create: Messy from docs/specs/messy.md');
+    expect(imp).toContain('2 criteria could not be read; not read: AC-3a (line 4)');
+
+    api.mockResolvedValueOnce({ spec, revision: { revision: 2, artifactRevision: 3, contentHash: 'abc' }, body: '# Checkout\nR-1: x', requirements: [{ id: 'R-1' }], revisions: [] });
+    expect(out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'get', specId: SPEC }, ctx()))).not.toContain('could not be read');
   });
 
   it('get points a long body at bounded artifact reads instead of inlining it', async () => {
@@ -103,6 +146,36 @@ describe('manage_specs', () => {
     api.mockResolvedValueOnce({ spec: { ...spec, version: 3 }, revision: { revision: 3 }, unchanged: false });
     await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'revise', specId: SPEC, expectedVersion: 2, heading: 'Caching', body: text }, ctx());
     expect(JSON.parse(api.mock.calls[1][1].body)).toEqual({ expectedVersion: 2, heading: 'Caching', body: text });
+  });
+
+  // R-48 / AC-36: the server's formatHints come back as one gentle Tip line; the write still happened.
+  it('create_draft and revise show formatHints as one Tip line, and no line when there are none', async () => {
+    const hints = [
+      { kind: 'diagram', line: 3, message: 'The 5 numbered steps at line 3 read as a flow.' },
+      { kind: 'table', line: 9, message: 'The 3 parallel list lines at line 9 compare like a table.' },
+    ];
+    api.mockResolvedValueOnce({ spec: { ...spec, version: 1 }, formatHints: hints });
+    const created = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'create_draft', title: 'Checkout', body: '1. a\n2. b\n3. c\n4. d\n5. e' }, ctx()));
+    expect(created).toContain('Spec draft created');
+    const tips = created.split('\n').filter((l) => l.startsWith('Tip: '));
+    expect(tips).toHaveLength(1);
+    expect(tips[0]).toContain('read as a flow');
+    expect(tips[0]).toContain('compare like a table');
+    expect(tips[0]).toContain('living-specs');
+
+    api.mockResolvedValueOnce({ spec: { ...spec, version: 3 }, revision: { revision: 3 }, unchanged: false, formatHints: hints.slice(0, 1) });
+    const revised = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'revise', specId: SPEC, expectedVersion: 2, body: 'n' }, ctx()));
+    expect(revised).toContain('Revised: revision 3');
+    expect(revised).toMatch(/^Tip: .*read as a flow/m);
+
+    api.mockResolvedValueOnce({ spec: { ...spec, version: 1 }, formatHints: [] });
+    expect(out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'create_draft', title: 'T', body: 'R-1 x' }, ctx()))).not.toContain('Tip:');
+  });
+
+  it('the long help for create_draft and revise points at tables, diagrams and the guidance topic', () => {
+    const d = buildParamsDescription(workerActions);
+    const specs = d.slice(d.indexOf('- manage_specs:'));
+    expect(specs.slice(0, specs.indexOf('\n- ', 2))).toMatch(/table[\s\S]*mermaid[\s\S]*living-specs/);
   });
 
   it('the long help documents section revise', () => {
@@ -197,6 +270,27 @@ describe('manage_specs', () => {
     expect(refused.isError).toBe(true);
   });
 
+  // Living Specs Slice 12: the mission's selected outcome spec, judged on the integrated target.
+  it('with missionId, outcome and verdict read and record mission-level verdicts', async () => {
+    const MISSION = '00000000-0000-4000-8000-0000000000aa';
+    const standing = { verdict: 'UNVERIFIED', evidence: 'One of two pass on aaaaaaa. R-2 has no verdict.', targetSha: 'a'.repeat(40), standings: [{ criterionId: 'R-1', standing: 'pass', headSha: 'a'.repeat(40) }, { criterionId: 'R-2', standing: 'missing', headSha: null }] };
+    api.mockResolvedValueOnce({ outcomes: [{ criterion: { revision: 3, label: 'Spec "Overview" revision 3' }, standing }] });
+    const read = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'outcome', missionId: MISSION }, ctx()));
+    expect(api.mock.calls[0][0]).toBe(`/api/specs/mission-outcomes/${MISSION}`);
+    expect(read).toContain('Spec "Overview" revision 3 at aaaaaaaaaaaa: UNVERIFIED');
+    expect(read).toContain('R-2: missing');
+
+    api.mockResolvedValueOnce({ verdictId: 'v1', standing });
+    const rec = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'verdict', missionId: MISSION, criterionId: 'R-1', verdict: 'pass', headSha: HEAD, reaffirms: 'v0' }, ctx()));
+    const [endpoint, opts] = api.mock.calls[1];
+    expect([endpoint, opts.method, JSON.parse(opts.body)]).toEqual([`/api/specs/mission-outcomes/${MISSION}`, 'POST', { criterionId: 'R-1', verdict: 'pass', headSha: HEAD, reaffirms: 'v0' }]);
+    expect(rec).toContain('Recorded pass on R-1 at the integrated target');
+
+    api.mockRejectedValueOnce(Object.assign(new Error('API error: 403 - {"error":"A mission-level verdict is recorded by a person or by the mission\'s final verification task."}'), {}));
+    const refused: any = await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'verdict', missionId: MISSION, criterionId: 'R-1', verdict: 'pass', headSha: HEAD }, ctx());
+    expect(refused.isError).toBe(true);
+  });
+
   it('a visual verdict sends what the audit captured instead of a head', async () => {
     api.mockResolvedValueOnce(outcome('unverified', 'AC-1 has no verdict'));
     await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'verdict', taskId: TASK, checker: 'visual', criterionId: 'AC-1', verdict: 'pass', capturedSha: HEAD, screenshotIds: ['s-1'], headSha: 'ignored' }, ctx());
@@ -228,6 +322,103 @@ describe('manage_specs', () => {
     const r = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'conflict', specId: SPEC, revision: 1, criterionIds: ['R-1', 'R-2'], note: 'disagree' }, ctx()));
     expect([api.mock.calls[0][0], JSON.parse(api.mock.calls[0][1].body)]).toEqual([`/api/specs/${SPEC}/conflicts`, { revision: 1, criterionIds: ['R-1', 'R-2'], note: 'disagree' }]);
     expect(r).toContain('advisory');
+  });
+
+  it('attach_provisional POSTs the revision and tasks, lists each result, and passes an agent run\'s 403 through', async () => {
+    const T = '00000000-0000-4000-8000-0000000000d1';
+    api.mockResolvedValueOnce({ revision: 2, provisional: true, results: [{ taskId: T, attached: true }], regraded: [] });
+    const r = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'attach_provisional', specId: SPEC, revision: 2, taskIds: [T] }, ctx()));
+    expect([api.mock.calls[0][0], JSON.parse(api.mock.calls[0][1].body)]).toEqual([`/api/specs/${SPEC}/provisional`, { revision: 2, taskIds: [T] }]);
+    expect(r).toContain(`${T}: attached`);
+    expect(r).toContain('provisionally');
+
+    api.mockRejectedValueOnce(new Error('API error: 403 - {"error":"an agent run cannot attach work"}'));
+    const refused: any = await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'attach_provisional', specId: SPEC, revision: 2, taskIds: [T] }, ctx());
+    expect([refused.isError, out(refused)]).toEqual([true, 'an agent run cannot attach work']);
+  });
+
+  it('import is a dry run unless told otherwise, in the session workspace, and lists the files by area with what was skipped', async () => {
+    expect(WORKSPACE_SPEC_OPS).toContain('import');
+    api.mockResolvedValueOnce({
+      dryRun: true, repo: 'acme/app', commitSha: 'a'.repeat(40), counts: { create: 1, reimport: 0, skip: 1 },
+      byArea: [{ area: 'Billing', areaSpecId: SPEC, proposed: false, count: 1 }],
+      files: [
+        { path: 'docs/specs/invoices.md', action: 'create', spec: { title: 'Invoices' }, area: { specId: SPEC, title: 'Billing', proposed: false }, provenance: { commitSha: 'a'.repeat(40), prNumber: 12 }, duplicates: [{ specId: 'x1', title: 'Old invoices', relation: 'duplicate', p: 0.95, blocks: true }, { specId: 'x2', title: 'Runner login', relation: 'duplicate', p: 0.54, blocks: false }] },
+        { path: 'docs/specs/INDEX.md', action: 'skip', reason: 'meta_file', message: 'INDEX.md is generated', area: null },
+      ],
+    });
+    const r = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'import' }, ctx()));
+    expect([api.mock.calls[0][0], JSON.parse(api.mock.calls[0][1].body)]).toEqual(['/api/specs/import', { workspaceId: WS }]);
+    expect(r).toContain('Dry run (nothing written) from acme/app@aaaaaaa');
+    expect(r).toContain('create: Invoices from docs/specs/invoices.md, last changed in #12');
+    expect(r).toContain('duplicate of "Old invoices" (x1, duplicate p 0.95); a real run skips it unless docs/specs/invoices.md is in allowDuplicates');
+    expect(r).toContain('overlaps "Runner login" (x2, duplicate p 0.54); a real run still creates it');
+    expect(r).toContain('docs/specs/INDEX.md: meta_file');
+
+    api.mockResolvedValueOnce({ dryRun: false, files: [], counts: { create: 0, reimport: 0, skip: 0 }, byArea: [] });
+    await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'import', dryRun: false, paths: ['docs/specs/invoices.md'] }, ctx());
+    expect(JSON.parse(api.mock.calls[1][1].body)).toEqual({ workspaceId: WS, dryRun: false, paths: ['docs/specs/invoices.md'] });
+  });
+
+  it('import pages: limit, cursor and attach_provenance pass through, and the text says how many files remain and the exact call to continue', async () => {
+    api.mockResolvedValueOnce({
+      dryRun: true, repo: 'acme/app', commitSha: 'a'.repeat(40), counts: { create: 0, reimport: 0, exists: 1, skip: 0 }, limit: 15, remaining: 79, nextCursor: 'CUR123',
+      byArea: [],
+      files: [
+        { path: 'docs/specs/task-page.md', action: 'exists', specId: SPEC, spec: { title: 'Task Page' }, area: null, existing: { specId: SPEC, title: 'Task Page', url: `https://buildd.dev/app/specs/${SPEC}`, matchedBy: 'title' } },
+      ],
+    });
+    const r = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'import', limit: 15, attach_provenance: true }, ctx()));
+    expect(JSON.parse(api.mock.calls[0][1].body)).toEqual({ workspaceId: WS, limit: 15, attachProvenance: true });
+    expect(r).toContain('1 already in buildd');
+    expect(r).toContain(`exists: docs/specs/task-page.md is "Task Page" (https://buildd.dev/app/specs/${SPEC}, matched by title)`);
+    expect(r).toContain('79 file(s) remain');
+    expect(r).toContain('manage_specs { action: "import", dryRun: true, limit: 15, attach_provenance: true, cursor: "CUR123" }');
+
+    api.mockResolvedValueOnce({ dryRun: false, files: [], counts: { create: 0, reimport: 0, exists: 0, skip: 0 }, byArea: [], remaining: 0, nextCursor: null });
+    const last = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'import', dryRun: false, cursor: 'CUR123' }, ctx()));
+    expect(JSON.parse(api.mock.calls[1][1].body)).toEqual({ workspaceId: WS, dryRun: false, cursor: 'CUR123' });
+    expect(last).not.toContain('remain');
+  });
+
+  it('import text shows each file once, the classifier\'s suggestion for an Unfiled one, the fallback label, and a related spec as an explicit attach_to', async () => {
+    const REL = '33333333-3333-4333-8333-333333333333';
+    api.mockResolvedValueOnce({
+      dryRun: true, repo: 'acme/app', commitSha: 'a'.repeat(40), counts: { create: 3, reimport: 0, exists: 1, skip: 0 },
+      byArea: [
+        { area: 'Unfiled', areaSpecId: null, proposed: false, count: 2, by: null },
+        { area: 'Tasks and missions', areaSpecId: SPEC, proposed: false, count: 1, by: 'domain' },
+      ],
+      files: [
+        { path: 'docs/specs/task-page.md', action: 'exists', specId: SPEC, spec: { title: 'Task Page' }, area: null, existing: { specId: SPEC, title: 'Task Page', url: `https://buildd.dev/app/specs/${SPEC}`, matchedBy: 'title' } },
+        { path: 'docs/specs/decision-kinds.md', action: 'create', spec: { title: 'Decision Kinds' }, area: null, suggestion: { specId: 'd1', title: 'Decisions', answer: 'area', p: 0.8 }, placement: { by: 'classifier' } },
+        { path: 'docs/specs/claim-ordering.md', action: 'create', spec: { title: 'Claim Ordering' }, area: null, related: [{ specId: REL, title: 'Claim routing overview', url: `https://buildd.dev/app/specs/${REL}` }], placement: { by: 'classifier' }, suggestion: { specId: null, title: 'Unsure', answer: 'unsure', p: 0.4 } },
+        { path: 'docs/specs/runs.md', action: 'create', spec: { title: 'Runs' }, area: { specId: SPEC, title: 'Tasks and missions', proposed: false, by: 'domain' }, placement: { by: 'domain', reason: 'this team has no decision-model key' } },
+      ],
+    });
+    const r = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'import', attach_to: { 'docs/specs/claim-ordering.md': REL } }, ctx()));
+    expect(JSON.parse(api.mock.calls[0][1].body)).toEqual({ workspaceId: WS, attachTo: { 'docs/specs/claim-ordering.md': REL } });
+    expect(r.split('docs/specs/task-page.md').length - 1).toBe(1);
+    expect(r).not.toContain('create: Task Page');
+    expect(r).toContain('suggested: Decisions (d1) (p 0.80), below the filing bar, so it stays Unfiled');
+    expect(r).toContain(`related: "Claim routing overview" (${REL}) cites this path`);
+    expect(r).toContain(`attach_to: { "docs/specs/claim-ordering.md": "${REL}" }`);
+    expect(r).toContain('Tasks and missions (by domain, classifier unavailable: this team has no decision-model key)');
+  });
+
+  it('confirm_import POSTs the batch and passes an agent run\'s 403 through; an OAuth session is told where to confirm', async () => {
+    api.mockResolvedValueOnce({ confirmed: [{ specId: SPEC, title: 'Invoices', path: 'docs/specs/invoices.md', commitSha: 'b'.repeat(40) }], skipped: [{ specId: 'x2', path: 'docs/specs/moved.md', reason: 'stale', message: 'changed since bbbbbbb' }] });
+    const r = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'confirm_import', specIds: [SPEC, 'x2'] }, ctx()));
+    expect([api.mock.calls[0][0], JSON.parse(api.mock.calls[0][1].body)]).toEqual(['/api/specs/import/confirm', { specIds: [SPEC, 'x2'] }]);
+    expect(r).toContain('Confirmed 1 import(s), 1 not confirmed');
+    expect(r).toContain('docs/specs/moved.md: stale');
+
+    api.mockResolvedValueOnce({ confirmed: [], skipped: [], pending: { confirmUrl: 'https://buildd.dev/app/workspaces/w/specs#imported', specIds: [SPEC] } });
+    expect(out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'confirm_import', specIds: [SPEC] }, ctx()))).toContain('Nothing was confirmed');
+
+    api.mockRejectedValueOnce(new Error('API error: 403 - {"error":"an agent run cannot confirm"}'));
+    const refused: any = await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'confirm_import', specIds: [SPEC] }, ctx());
+    expect([refused.isError, out(refused)]).toEqual([true, 'an agent run cannot confirm']);
   });
 
   it('create_draft and revise pass repoRefs through; get lists the cited repo specs; a refused reference is the route error', async () => {

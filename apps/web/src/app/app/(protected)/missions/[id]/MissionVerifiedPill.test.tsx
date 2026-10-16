@@ -14,6 +14,7 @@ mock.module('next/navigation', () => ({
 }));
 
 mock.module('@buildd/core/mission-helpers', () => ({
+  criterionFingerprint: (c: any) => `fp:${c.type}:${c.label ?? ''}`,
   deriveCriteriaGatePresentation: (opts: any) => ({
     state: opts.overall === 'pass' ? 'clear' : opts.overall === 'fail' ? 'failing' : 'unverified',
     tone: opts.overall === 'pass' ? 'success' : opts.overall === 'fail' ? 'error' : 'warning',
@@ -74,8 +75,27 @@ describe('MissionVerifiedPill — criteria panel URL sync and hash-based opening
     expect(html).toContain('Not met');
   });
 
-  it('renders the Verified button when overall is pass', () => {
-    const html = renderPill({ overall: 'pass' });
+  it('renders the Verified button when overall is pass and every criterion passed', () => {
+    const html = renderPill({ overall: 'pass', criteriaState: { overall: 'pass', criteria: [{ index: 0, label: 'All PRs merged', verdict: 'pass', type: 'all_prs_merged' }] } as GoalCriteriaState });
+    expect(html).toContain('Verified');
+  });
+
+  // Mission checks I-3, AC-3, AC-8: a required criterion nobody has judged is never clear.
+  it('never says Verified while a required criterion is not checked, even if the stored overall says pass', () => {
+    const spec = { type: 'living_spec', specId: 's1', specRevisionId: 'r', revision: 8, contentHash: 'h' } as GoalCriterion;
+    const passState = { overall: 'pass', criteria: [{ index: 0, label: 'All PRs merged', verdict: 'pass', type: 'all_prs_merged' }] } as GoalCriteriaState;
+    const html = renderPill({ overall: 'pass', criteria: [{ type: 'all_prs_merged', label: 'All PRs merged' }, spec] as GoalCriterion[], criteriaState: passState });
+    expect(html).not.toContain('Verified');
+    expect(html).toContain('Needs verification');
+  });
+
+  it('a pass judged against a different criterion (stale fingerprint) is not Verified', () => {
+    const html = renderPill({ overall: 'pass', criteriaState: { overall: 'pass', criteria: [{ index: 0, label: 'All PRs merged', verdict: 'pass', type: 'all_prs_merged', fingerprint: 'fp:other' }] } as GoalCriteriaState });
+    expect(html).not.toContain('Verified');
+  });
+
+  it('a pass with the matching fingerprint stays Verified', () => {
+    const html = renderPill({ overall: 'pass', criteriaState: { overall: 'pass', criteria: [{ index: 0, label: 'All PRs merged', verdict: 'pass', type: 'all_prs_merged', fingerprint: 'fp:all_prs_merged:All PRs merged' }] } as GoalCriteriaState });
     expect(html).toContain('Verified');
   });
 
@@ -134,5 +154,22 @@ describe('MissionVerifiedPill — sheet only (terminal mission, no pill)', () =>
     const html = renderPill({ sheetOnly: true, overall: null, criteriaState: null, readonly: true });
     expect(html).not.toContain('id="mission-criteria"');
     expect(html).not.toContain('<button');
+  });
+
+  it('on a phone the chip is one line; the 44px hit area is a pseudo-element, not a taller box', () => {
+    for (const html of [renderPill({ overall: 'pass' }), renderPill({ criteria: [] })]) {
+      const tag = html.match(/<button[^>]*>/)![0];
+      expect(tag).not.toContain('min-h-11');
+      expect(tag).toContain('whitespace-nowrap');
+      expect(tag).toContain('after:-inset-y-[13px]');
+    }
+  });
+
+  it('a hold from the live criteria or a blocking check turns a stored pass into Needs verification, naming why', () => {
+    const passState = { overall: 'pass', criteria: [{ index: 0, label: 'All PRs merged', verdict: 'pass', type: 'all_prs_merged' }] } as GoalCriteriaState;
+    const html = renderPill({ overall: 'pass', criteriaState: passState, hold: 'Visual review: unable to run' });
+    expect(html).not.toContain('Verified');
+    expect(html).toContain('Needs verification');
+    expect(html).toContain('title="Visual review: unable to run"');
   });
 });

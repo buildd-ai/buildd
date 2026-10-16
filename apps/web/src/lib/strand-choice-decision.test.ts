@@ -205,6 +205,29 @@ describe('decision ledger recording', () => {
     }
   });
 
+  it('a top p row compares the probability of wait-for-local, not the confidence', async () => {
+    const clef = (p: number) => async () => ({
+      ...await okDecide('wait-for-local', 0.99)(),
+      answers: { pick: { choice: 'wait-for-local', confidence: 0.99, probabilities: { 'wait-for-local': p, 'runner-first': 1 - p } } },
+      model: 'clef',
+    });
+    const rows = async () => [{
+      kind: 'mission_strand_choice', model: 'clef', threshold: 0.6, precisionLower: 0.95, coverage: 0.3, n: 50, evalRunId: null,
+      measuredFingerprint: 'ms1', status: 'active' as const, setByAccountId: null, setAt: new Date(), reason: null,
+      confidenceSource: 'top_p' as const, labelThresholds: { 'wait-for-local': 0.65 },
+    }];
+    const run = async (p: number) => {
+      const recorded: any[] = [];
+      await adviseStrandChoice(facts, {
+        resolveAccess: allowed as any, decide: clef(p) as any, measurements: rows,
+        cache: new Map(), log: () => {}, recordDecision: async row => { recorded.push(row); return null; },
+      });
+      return recorded[0];
+    };
+    expect(await run(0.66)).toMatchObject({ applied: true, minConfidence: 0.65, appliedAnswer: 'wait-for-local' });
+    expect(await run(0.6)).toMatchObject({ applied: false, status: 'suggested', reason: 'below_threshold' });
+  });
+
   for (const reason of ['missing_key', 'timeout', 'sensitive', 'non_jev', 'throw']) {
     it(`records fallback for ${reason}`, async () => {
       const rows: any[] = [];

@@ -754,7 +754,7 @@ describe('a decision model chosen per decision', () => {
     expect(access.ok).toBe(true);
     if (!access.ok) return;
     expect(measurementFor([], { kind: 'task_category', answeringModel: access.model, fingerprint: 'tc1' }))
-      .toEqual({ measured: false, threshold: null, reason: 'not_measured' });
+      .toMatchObject({ measured: false, threshold: null, reason: 'not_measured' });
   });
 });
 

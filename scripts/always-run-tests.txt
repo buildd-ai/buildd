@@ -84,6 +84,9 @@ packages/dispatch-contract/src/no-producer-imports.test.ts
 # Scans packages/spec-contract for imports of anything buildd-only: the Living
 # Specs contract must stay copyable by another product.
 packages/spec-contract/src/no-buildd-imports.test.ts
+# Scans packages/workflow-kernel for imports of anything buildd-only, Next.js,
+# Node built-ins or paths outside the package: the kernel must stay embeddable.
+packages/workflow-kernel/src/no-buildd-imports.test.ts
 # One Playwright version across every package.json, bun.lock and Renovate, and
 # no bare `bunx|npx playwright install` in runner/CI/script files.
 scripts/playwright-pin.test.ts

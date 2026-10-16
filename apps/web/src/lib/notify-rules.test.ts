@@ -2,6 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import {
   resolveNotifyPlan,
   isCredentialExpiredError,
+  isTeamAlertEvent,
   DEFAULT_NOTIFICATION_PREFERENCES,
   type NotifyEvent,
 } from './notify-rules';
@@ -132,5 +133,15 @@ describe('isCredentialExpiredError', () => {
     expect(isCredentialExpiredError('budget limit exceeded')).toBe(false);
     expect(isCredentialExpiredError(undefined)).toBe(false);
     expect(isCredentialExpiredError('')).toBe(false);
+  });
+});
+
+describe('isTeamAlertEvent', () => {
+  it('knows needsAttention and every preference-backed event, and nothing else', () => {
+    expect(isTeamAlertEvent('needsAttention')).toBe(true);
+    for (const k of Object.keys(DEFAULT_NOTIFICATION_PREFERENCES)) expect(isTeamAlertEvent(k)).toBe(true);
+    expect(isTeamAlertEvent('needs_attention')).toBe(false);
+    expect(isTeamAlertEvent('toString')).toBe(false);
+    expect(isTeamAlertEvent('')).toBe(false);
   });
 });

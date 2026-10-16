@@ -14,9 +14,9 @@ import { afterAll, describe, expect, test } from 'bun:test';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { bannerPalette, renderBanner } from '../../src/banner';
 
 const installSh = await Bun.file(join(import.meta.dir, '../../install.sh')).text();
-const runnerIndex = await Bun.file(join(import.meta.dir, '../../src/index.ts')).text();
 
 const BEGIN = '# --- next steps: begin ---';
 const END = '# --- next steps: end ---';
@@ -111,9 +111,33 @@ describe('install.sh next steps', () => {
 
 describe('a not-logged-in headless buildd', () => {
   test('points at buildd login, not at --debug or a local page', () => {
-    const headless = runnerIndex.match(/if \(!config\.apiKey && !config\.serverless\) \{[\s\S]*?\n\}/)?.[0] ?? '';
-    const elseBranch = headless.slice(headless.indexOf('} else {'));
-    expect(elseBranch).toContain('buildd login');
-    expect(elseBranch).not.toContain('--debug');
+    // The startup banner lives in src/banner.ts (since #4774); render it for real.
+    const out = renderBanner({
+      version: '0.0.0', commit: '', debug: false, port: 8766, server: 'https://buildd.dev', apiKey: '',
+      localUrl: 'http://localhost:8766', repos: 0, reposCached: false, roots: 0, serverless: false,
+    }, bannerPalette({ NO_COLOR: '1' }, false)).join('\n');
+    expect(out).toContain('buildd login');
+    expect(out).not.toContain('--debug');
+    expect(out).not.toContain('localhost:8766');
+  });
+});
+
+describe('with the background service installed (spec c7410e76 R-14, AC-5)', () => {
+  for (const loggedIn of [true, false]) {
+    test(`${loggedIn ? 'logged in' : 'not logged in'}: names buildd top, then buildd web`, () => {
+      const out = nextSteps({ loggedIn, service: true });
+      const top = out.indexOf('  buildd top ');
+      const web = out.indexOf('  buildd web ');
+      expect(top).toBeGreaterThan(out.indexOf('Next:'));
+      expect(web).toBeGreaterThan(top);
+    });
+  }
+
+  test('a foreground install does not offer buildd top as the next step', () => {
+    expect(nextSteps({ loggedIn: true, service: false })).not.toContain('  buildd top ');
+  });
+
+  test('the service install the installer runs leaves the watch lines to the Next block', () => {
+    expect(installSh).toMatch(/BUILDD_INSTALLER=1 "\$BIN_DIR\/buildd" service install/);
   });
 });

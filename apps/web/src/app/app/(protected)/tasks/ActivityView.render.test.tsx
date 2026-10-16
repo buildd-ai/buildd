@@ -28,7 +28,7 @@ describe('ActivityView: Now', () => {
     const headline = html.slice(html.indexOf('data-testid="activity-headline"'), html.indexOf('data-testid="activity-group"'));
     expect(text(headline)).toMatch(/\d+ deliver(y|ies) moving/);
     expect(text(headline)).toContain('▶ 2 building');
-    expect(text(headline)).toContain('! 1 needs you');
+    expect(text(headline)).toContain('! 1 waiting on you');
     expect(text(headline)).toContain("1 waiting");
     expect(html).not.toContain('agents working');
   });
