@@ -476,6 +476,13 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
       });
 
       for (const workspace of linkedWorkspaces) {
+        // 38442d17: a green head ends a kernel CI repair bound to it (an infrastructure failure re-run green).
+        // Before the worker lookup: a kernel delivery needs no worker row (a local mission's PR may have none).
+        await observeCiGreen({
+          workspaceId: workspace.id, repoFullName: repository.full_name, prNumber: pr.number, installationId: installation.id,
+          headSha, source: 'webhook:check_suite',
+        }).catch((err) => console.error(`[workflow] CiGreenObserved ${repository.full_name}#${pr.number} failed:`, err));
+
         // Ensure this PR was created by a Buildd worker
         const worker = await db.query.workers.findFirst({
           where: sqlWhere(and(
@@ -499,12 +506,6 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
           console.log(`Not all check suites passed for ${repository.full_name}#${pr.number}, waiting`);
           continue;
         }
-
-        // 38442d17: a green head ends a kernel CI repair bound to it (an infrastructure failure re-run green).
-        await observeCiGreen({
-          workspaceId: workspace.id, repoFullName: repository.full_name, prNumber: pr.number, installationId: installation.id,
-          headSha, source: 'webhook:check_suite',
-        }).catch((err) => console.error(`[workflow] CiGreenObserved ${repository.full_name}#${pr.number} failed:`, err));
 
         // Mark CI as green — used by pr_checks_green loop exit condition evaluation.
         // Skip if the PR is already in a terminal state (merged/closed wins).
