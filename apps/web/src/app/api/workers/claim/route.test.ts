@@ -93,11 +93,11 @@ mock.module('@/lib/account-workspace-cache', () => ({
   getAccountWorkspacePermissions: mockGetAccountWorkspacePermissions,
 }));
 
-const mockGetCodexCredential = mock(() => Promise.resolve(null as any));
-const mockHasCodexCredential = mock(() => Promise.resolve(false));
+// The team's Codex API key (codex_credential `{api_key}` row). A stored
+// ChatGPT/OAuth login never resolves here: the claim delivers none.
+const mockResolveCodexApiKey = mock(() => Promise.resolve(null as { apiKey: string } | null));
 mock.module('@/lib/codex-credential', () => ({
-  getCodexCredential: mockGetCodexCredential,
-  hasCodexCredential: mockHasCodexCredential,
+  resolveCodexApiKey: mockResolveCodexApiKey,
 }));
 
 const mockHasOpenAiApiKey = mock(() => Promise.resolve(false));
@@ -595,10 +595,8 @@ describe('POST /api/workers/claim', () => {
     mockSecretsProviderGet.mockReset();
     mockConnectorsFindMany.mockReset();
     mockConnectorWorkspacesFindMany.mockReset();
-    mockGetCodexCredential.mockReset();
-    mockHasCodexCredential.mockReset();
-    mockGetCodexCredential.mockResolvedValue(null);
-    mockHasCodexCredential.mockResolvedValue(false);
+    mockResolveCodexApiKey.mockReset();
+    mockResolveCodexApiKey.mockResolvedValue(null);
     mockHasOpenAiApiKey.mockReset();
     mockHasOpenAiApiKey.mockResolvedValue(false);
     mockHasOpenAiCompatibleAgentEndpoint.mockReset();
@@ -1389,10 +1387,7 @@ describe('POST /api/workers/claim', () => {
       mockAuthenticateApiKey.mockResolvedValue(exhaustedOauthAccount());
       mockWorkersFindMany.mockResolvedValue([]); // no active workers → Codex slot free
       mockTasksFindMany.mockResolvedValueOnce([pendingClaudeTask()]); // claimable tasks
-      mockHasCodexCredential.mockResolvedValue(true);
-      mockGetCodexCredential.mockResolvedValue({
-        accessToken: 'at', refreshToken: 'rt', accountId: 'acc', tokenExpiresAt: null, lastRefreshedAt: null,
-      });
+      mockResolveCodexApiKey.mockResolvedValue({ apiKey: 'sk-codex' });
       setupClaim();
 
       const req = createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: codexRunner });
@@ -1417,9 +1412,8 @@ describe('POST /api/workers/claim', () => {
       mockAuthenticateApiKey.mockResolvedValue(exhaustedOauthAccount());
       mockWorkersFindMany.mockResolvedValue([]);
       mockTasksFindMany.mockResolvedValueOnce([pendingClaudeTask()]);
-      mockHasCodexCredential.mockResolvedValue(false); // no ChatGPT/OAuth connect
+      mockResolveCodexApiKey.mockResolvedValue(null); // no ChatGPT/OAuth connect
       mockHasOpenAiApiKey.mockResolvedValue(true);      // but a stored OpenAI key
-      mockGetCodexCredential.mockResolvedValue(null);
       setupClaim();
 
       const req = createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: codexRunner });
@@ -1435,7 +1429,7 @@ describe('POST /api/workers/claim', () => {
       mockAuthenticateApiKey.mockResolvedValue(exhaustedOauthAccount());
       mockWorkersFindMany.mockResolvedValue([]);
       mockTasksFindMany.mockResolvedValueOnce([pendingClaudeTask()]);
-      mockHasCodexCredential.mockResolvedValue(false); // no Codex → fall back to skip-until-reset
+      mockResolveCodexApiKey.mockResolvedValue(null); // no Codex → fall back to skip-until-reset
       setupClaim();
 
       const req = createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: codexRunner });
@@ -1458,7 +1452,7 @@ describe('POST /api/workers/claim', () => {
       mockAuthenticateApiKey.mockResolvedValue(account);
       mockWorkersFindMany.mockResolvedValue([]);
       mockTasksFindMany.mockResolvedValueOnce([pendingClaudeTask()]);
-      mockHasCodexCredential.mockResolvedValue(false);
+      mockResolveCodexApiKey.mockResolvedValue(null);
       setupClaim();
 
       const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: codexRunner }));
@@ -1477,7 +1471,7 @@ describe('POST /api/workers/claim', () => {
       mockBackendPausesFindMany.mockResolvedValue([{ backend: 'claude', resetsAt, reason: 'rate_limit' }]);
       mockWorkersFindMany.mockResolvedValue([]);
       mockTasksFindMany.mockResolvedValueOnce([pendingClaudeTask()]);
-      mockHasCodexCredential.mockResolvedValue(false);
+      mockResolveCodexApiKey.mockResolvedValue(null);
       setupClaim();
 
       const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: codexRunner }));
@@ -1494,7 +1488,7 @@ describe('POST /api/workers/claim', () => {
       mockAuthenticateApiKey.mockResolvedValue(exhaustedOauthAccount());
       mockWorkersFindMany.mockResolvedValue([]);
       mockTasksFindMany.mockResolvedValueOnce([pendingClaudeTask()]);
-      mockHasCodexCredential.mockResolvedValue(false);
+      mockResolveCodexApiKey.mockResolvedValue(null);
       setupClaim();
 
       const res = await POST(createMockRequest({
@@ -1519,7 +1513,7 @@ describe('POST /api/workers/claim', () => {
       });
       mockWorkersFindMany.mockResolvedValue([]);
       mockTasksFindMany.mockResolvedValueOnce([{ ...pendingClaudeTask(), backend: 'codex' }]);
-      mockHasCodexCredential.mockResolvedValue(true);
+      mockResolveCodexApiKey.mockResolvedValue({ apiKey: 'sk-codex' });
       setupClaim();
 
       const res = await POST(createMockRequest({
@@ -1545,7 +1539,7 @@ describe('POST /api/workers/claim', () => {
       });
       mockWorkersFindMany.mockResolvedValue([]);
       mockTasksFindMany.mockResolvedValueOnce([{ ...pendingClaudeTask(), backend: 'codex' }]);
-      mockHasCodexCredential.mockResolvedValue(false);   // this runner has no Codex at all
+      mockResolveCodexApiKey.mockResolvedValue(null);   // this runner has no Codex at all
       setupClaim();
 
       const res = await POST(createMockRequest({
@@ -1570,7 +1564,7 @@ describe('POST /api/workers/claim', () => {
       });
       mockWorkersFindMany.mockResolvedValue([]);
       mockTasksFindMany.mockResolvedValueOnce([{ ...pendingClaudeTask(), backend: 'codex' }]);
-      mockHasCodexCredential.mockResolvedValue(true);
+      mockResolveCodexApiKey.mockResolvedValue({ apiKey: 'sk-codex' });
       setupClaim();
 
       const res = await POST(createMockRequest({
@@ -1605,7 +1599,7 @@ describe('POST /api/workers/claim', () => {
       });
       mockWorkersFindMany.mockResolvedValue([]);
       mockTasksFindMany.mockResolvedValueOnce([{ ...pendingClaudeTask(), backend: 'codex' }]);
-      mockHasCodexCredential.mockResolvedValue(true);
+      mockResolveCodexApiKey.mockResolvedValue({ apiKey: 'sk-codex' });
       setupClaim();
 
       const res = await POST(createMockRequest({
@@ -1627,7 +1621,7 @@ describe('POST /api/workers/claim', () => {
       });
       mockWorkersFindMany.mockResolvedValue([]);
       mockTasksFindMany.mockResolvedValueOnce([pendingClaudeTask()]);
-      mockHasCodexCredential.mockResolvedValue(false);
+      mockResolveCodexApiKey.mockResolvedValue(null);
       setupClaim();
 
       const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: codexRunner }));
@@ -1645,10 +1639,7 @@ describe('POST /api/workers/claim', () => {
       mockAuthenticateApiKey.mockResolvedValue({ ...exhaustedOauthAccount(), budgetResetsAt: null });
       mockWorkersFindMany.mockResolvedValue([]);
       mockTasksFindMany.mockResolvedValueOnce([pendingClaudeTask()]);
-      mockHasCodexCredential.mockResolvedValue(true);
-      mockGetCodexCredential.mockResolvedValue({
-        accessToken: 'at', refreshToken: 'rt', accountId: 'acc', tokenExpiresAt: null, lastRefreshedAt: null,
-      });
+      mockResolveCodexApiKey.mockResolvedValue({ apiKey: 'sk-codex' });
       setupClaim();
 
       const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: codexRunner }));
@@ -1667,7 +1658,7 @@ describe('POST /api/workers/claim', () => {
       mockAuthenticateApiKey.mockResolvedValue(exhaustedOauthAccount());
       mockWorkersFindMany.mockResolvedValue([]);
       mockTasksFindMany.mockResolvedValueOnce([pendingClaudeTask()]);
-      mockHasCodexCredential.mockResolvedValue(true);
+      mockResolveCodexApiKey.mockResolvedValue({ apiKey: 'sk-codex' });
       setupClaim();
 
       const res = await POST(createMockRequest({
@@ -1690,7 +1681,7 @@ describe('POST /api/workers/claim', () => {
       mockTasksFindMany
         .mockResolvedValueOnce([pendingClaudeTask()])
         .mockResolvedValueOnce([{ workspaceId: 'ws-1', backend: 'codex', context: null }]);
-      mockHasCodexCredential.mockResolvedValue(true);
+      mockResolveCodexApiKey.mockResolvedValue({ apiKey: 'sk-codex' });
       setupClaim();
 
       const req = createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: codexRunner });
@@ -1721,7 +1712,7 @@ describe('POST /api/workers/claim', () => {
       mockTasksFindMany
         .mockResolvedValueOnce([{ ...pendingClaudeTask(), backend: 'codex' }])
         .mockResolvedValueOnce([{ workspaceId: 'ws-1', backend: 'codex', context: null }]);
-      mockHasCodexCredential.mockResolvedValue(true);
+      mockResolveCodexApiKey.mockResolvedValue({ apiKey: 'sk-codex' });
       setupClaim();
 
       const req = createMockRequest({
@@ -1758,7 +1749,7 @@ describe('POST /api/workers/claim', () => {
           backend: 'claude',
           context: { backendRouting: { backend: 'codex', from: 'claude', reason: 'claude_seat_exhausted' } },
         }]);
-      mockHasCodexCredential.mockResolvedValue(true);
+      mockResolveCodexApiKey.mockResolvedValue({ apiKey: 'sk-codex' });
       setupClaim();
 
       const res = await POST(createMockRequest({
@@ -1782,7 +1773,7 @@ describe('POST /api/workers/claim', () => {
       mockTasksFindMany
         .mockResolvedValueOnce([{ ...pendingClaudeTask(), backend: 'codex' }])
         .mockResolvedValueOnce([{ workspaceId: 'ws-1', backend: 'claude', context: {} }]);
-      mockHasCodexCredential.mockResolvedValue(true);
+      mockResolveCodexApiKey.mockResolvedValue({ apiKey: 'sk-codex' });
       setupClaim();
 
       const res = await POST(createMockRequest({
@@ -1828,7 +1819,7 @@ describe('POST /api/workers/claim', () => {
       }));
       // A Codex credential exists server-side, so a flip is always POSSIBLE —
       // every "not flipped" assertion below is a decision, not a missing cred.
-      mockHasCodexCredential.mockResolvedValue(true);
+      mockResolveCodexApiKey.mockResolvedValue({ apiKey: 'sk-codex' });
     });
     afterEach(() => {
       if (origKey === undefined) delete process.env.ENCRYPTION_KEY;
@@ -1986,7 +1977,7 @@ describe('POST /api/workers/claim', () => {
       });
 
       it("flips on the runner's own Codex auth with no server credential", async () => {
-        mockHasCodexCredential.mockResolvedValue(false);
+        mockResolveCodexApiKey.mockResolvedValue(null);
         mockAuthenticateApiKey.mockResolvedValue(exhaustedSeat());
         mockTasksFindMany.mockResolvedValueOnce([claudeTask()]);
 
@@ -2033,7 +2024,7 @@ describe('POST /api/workers/claim', () => {
     beforeEach(() => {
       mockBackendPausesFindMany.mockResolvedValue([]);
       mockAccountsFindFirst.mockResolvedValue(null);
-      mockHasCodexCredential.mockResolvedValue(false); // nowhere to fail over: a wall defers
+      mockResolveCodexApiKey.mockResolvedValue(null); // nowhere to fail over: a wall defers
       mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
       mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'private', teamId: 'team-1' }]);
       mockWorkersFindMany.mockResolvedValue([]);
@@ -2372,7 +2363,7 @@ describe('POST /api/workers/claim', () => {
           workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' }, teamId: 'team-1' },
         },
       ]);
-      mockHasCodexCredential.mockResolvedValue(false); // no ChatGPT/OAuth connect
+      mockResolveCodexApiKey.mockResolvedValue(null); // no ChatGPT/OAuth connect
       mockHasOpenAiApiKey.mockResolvedValue(true);      // but a stored OpenAI key
       mockDbExecute.mockReturnValue(Promise.resolve({
         rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
@@ -2419,7 +2410,7 @@ describe('POST /api/workers/claim', () => {
       mockTasksFindMany.mockResolvedValue([
         { id: 'task-1', workspaceId: 'ws-1', title: 'Codex task', backend: 'codex', requiredCapabilities: [], workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' }, teamId: 'team-1' } },
       ]);
-      mockHasCodexCredential.mockResolvedValue(false);
+      mockResolveCodexApiKey.mockResolvedValue(null);
       mockHasOpenAiApiKey.mockResolvedValue(false);
       mockHasOpenAiCompatibleAgentEndpoint.mockResolvedValue(true);
       mockDbExecute.mockReturnValue(Promise.resolve({ rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }] }));
@@ -2454,7 +2445,7 @@ describe('POST /api/workers/claim', () => {
       mockTasksFindMany.mockResolvedValue([
         { id: 'task-1', workspaceId: 'ws-1', title: 'Codex task', backend: 'codex', requiredCapabilities: [], workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' }, teamId: 'team-1' } },
       ]);
-      mockHasCodexCredential.mockResolvedValue(false);
+      mockResolveCodexApiKey.mockResolvedValue(null);
       mockHasOpenAiApiKey.mockResolvedValue(false);
       mockHasOpenAiCompatibleAgentEndpoint.mockResolvedValue(true);
 
@@ -2477,12 +2468,11 @@ describe('POST /api/workers/claim', () => {
     }
   });
 
-  // Model credentials spec R-3 / R-5 / AC-2 / AC-5. A stored Codex login whose
-  // expiry has passed is never delivered, so it must not carry a Codex task
-  // past the capability filter on a runner with no Codex login of its own:
-  // that runner started a worker which died on "Codex credential expired" and
-  // the task retried forever. The task stays pending for a runner that can run it.
-  it('asks only for a DELIVERABLE (unexpired) team Codex login, and excludes the task when there is none', async () => {
+  // Model credentials spec R-2 / R-5 / AC-5. A stored Codex login is never
+  // delivered, so only a team API key can carry a Codex task past the
+  // capability filter on a runner with no Codex login of its own. Without one
+  // the task stays pending for a runner that can run it.
+  it('asks only for a team Codex API key, and excludes the task when there is none', async () => {
     const origKey = process.env.ENCRYPTION_KEY;
     process.env.ENCRYPTION_KEY = 'test-encryption-key';
     try {
@@ -2493,9 +2483,9 @@ describe('POST /api/workers/claim', () => {
       mockTasksFindMany.mockResolvedValue([
         { id: 'task-1', workspaceId: 'ws-1', title: 'Codex task', backend: 'codex', requiredCapabilities: [], workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' }, teamId: 'team-1' } },
       ]);
-      mockHasCodexCredential.mockReset();
-      // The only stored login has expired: with deliverableOnly it does not count.
-      mockHasCodexCredential.mockImplementation(async (opts: any) => opts?.deliverableOnly !== true);
+      mockResolveCodexApiKey.mockReset();
+      // Only a stored login exists: it is not an API key, so nothing resolves.
+      mockResolveCodexApiKey.mockResolvedValue(null);
       mockHasOpenAiApiKey.mockResolvedValue(false);
       mockHasOpenAiCompatibleAgentEndpoint.mockResolvedValue(false);
 
@@ -2513,9 +2503,9 @@ describe('POST /api/workers/claim', () => {
       const data = await res.json();
       expect(data.workers ?? []).toHaveLength(0);
       expect(data.diagnostics.reason).toBe('capability_mismatch');
-      expect(mockHasCodexCredential).toHaveBeenCalled();
-      for (const call of mockHasCodexCredential.mock.calls) {
-        expect((call as any[])[0]).toMatchObject({ teamId: 'team-1', workspaceId: 'ws-1', deliverableOnly: true });
+      expect(mockResolveCodexApiKey).toHaveBeenCalled();
+      for (const call of mockResolveCodexApiKey.mock.calls) {
+        expect((call as any[])[0]).toMatchObject({ teamId: 'team-1', workspaceId: 'ws-1' });
       }
     } finally {
       if (origKey === undefined) delete process.env.ENCRYPTION_KEY;
@@ -2523,7 +2513,7 @@ describe('POST /api/workers/claim', () => {
     }
   });
 
-  it('a runner with its own Codex login still claims a Codex task whose stored login has expired', async () => {
+  it('a runner with its own Codex login still claims a Codex task when the team has no Codex API key', async () => {
     const origKey = process.env.ENCRYPTION_KEY;
     process.env.ENCRYPTION_KEY = 'test-encryption-key';
     try {
@@ -2534,8 +2524,8 @@ describe('POST /api/workers/claim', () => {
       mockTasksFindMany.mockResolvedValue([
         { id: 'task-1', workspaceId: 'ws-1', title: 'Codex task', backend: 'codex', requiredCapabilities: [], workspace: { id: 'ws-1', gitConfig: { claimPlanner: 'record' }, teamId: 'team-1' } },
       ]);
-      mockHasCodexCredential.mockReset();
-      mockHasCodexCredential.mockImplementation(async (opts: any) => opts?.deliverableOnly !== true);
+      mockResolveCodexApiKey.mockReset();
+      mockResolveCodexApiKey.mockResolvedValue(null);
       mockHasOpenAiApiKey.mockResolvedValue(false);
       mockDbExecute.mockReturnValue(Promise.resolve({ rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }] }));
 
@@ -3865,13 +3855,10 @@ describe('POST /api/workers/claim', () => {
     }
   });
 
-  // Regression: prod outage where Claude-backend tasks failed with
-  // `401 Invalid authentication credentials` because the server-managed
-  // `oauth_token` secret was never delivered to the runner at claim time.
-  // The claim RESPONSE must carry `serverOauthToken` (and `serverApiKey`)
-  // whenever the task's team has those secrets — this is the guard that
-  // was missing.
-  it('attaches serverOauthToken when an oauth_token secret exists for the team', async () => {
+  // Model credentials spec R-2 / AC-3: a claim never carries a subscription
+  // login. The team's stored oauth_token and claude_credential rows are
+  // ignored; its API key and MCP secrets still go. The runner uses its own login.
+  it('carries no subscription login, only the team API key, when both are stored', async () => {
     const origKey = process.env.ENCRYPTION_KEY;
     process.env.ENCRYPTION_KEY = 'test-encryption-key';
 
@@ -3913,11 +3900,13 @@ describe('POST /api/workers/claim', () => {
       rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
     }));
 
-    // Team-wide oauth_token secret (accountId/workspaceId NULL → team-scoped row)
+    // Team-wide rows (accountId/workspaceId NULL → team-scoped).
     mockSecretsFindMany.mockResolvedValue([
       { id: 'oauth-secret-1', purpose: 'oauth_token', label: null },
+      { id: 'claude-cred-1', purpose: 'claude_credential', label: null, tokenExpiresAt: new Date(Date.now() + 60_000) },
+      { id: 'api-key-1', purpose: 'anthropic_api_key', label: null },
     ]);
-    mockSecretsProviderGet.mockResolvedValue('decrypted-oauth-token');
+    mockSecretsProviderGet.mockImplementation((id: string) => Promise.resolve(`decrypted:${id}`));
 
     const req = createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -3928,77 +3917,14 @@ describe('POST /api/workers/claim', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.workers.length).toBe(1);
-    // The decrypted OAuth token MUST reach the runner under `serverOauthToken`.
-    expect(data.workers[0].serverOauthToken).toBe('decrypted-oauth-token');
-
-    if (origKey !== undefined) {
-      process.env.ENCRYPTION_KEY = origKey;
-    } else {
-      delete process.env.ENCRYPTION_KEY;
+    expect(data.workers[0].serverApiKey).toBe('decrypted:api-key-1');
+    for (const f of ['serverOauthToken', 'claudeAccessToken', 'claudeTokenExpiresAt', 'claudeTokenScopes', 'codexCredential', 'pendingCredentialRefreshes']) {
+      expect(data.workers[0][f]).toBeUndefined();
     }
-  });
-
-  // Defense-in-depth: if a team ever has more than one oauth_token row (legacy
-  // duplicate), the resolver must NOT hand a revoked leftover to the worker while
-  // a healthy credential exists. It prefers non-revoked, then most recent.
-  it('prefers a healthy oauth_token over a revoked duplicate', async () => {
-    const origKey = process.env.ENCRYPTION_KEY;
-    process.env.ENCRYPTION_KEY = 'test-encryption-key';
-
-    mockAuthenticateApiKey.mockResolvedValue({
-      id: 'account-1',
-      maxConcurrentWorkers: 5,
-      type: 'user',
-      authType: 'api',
-      dailyCostLimitCents: 10000,
-      currentDailyCostCents: 0,
-    });
-    mockGetAccountWorkspacePermissions.mockResolvedValue([
-      { workspaceId: 'ws-1', canClaim: true },
-    ]);
-    mockWorkersFindMany.mockResolvedValueOnce([]);
-    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
-    mockAccountWorkspacesFindMany.mockResolvedValue([]);
-    mockTasksFindMany.mockResolvedValueOnce([
-      {
-        id: 'task-1',
-        workspaceId: 'ws-1',
-        title: 'Test task',
-        dependsOn: [],
-        workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record' } },
-      },
-    ]);
-    mockTasksUpdate.mockReturnValue({
-      set: mock(() => ({
-        where: mock(() => ({
-          returning: mock(() => [{ id: 'task-1' }]),
-        })),
-      })),
-    });
-    mockDbExecute.mockReturnValue(Promise.resolve({
-      rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
-    }));
-
-    // Two team-wide oauth_token rows: a newer REVOKED one and an older HEALTHY one.
-    mockSecretsFindMany.mockResolvedValue([
-      { id: 'oauth-revoked', purpose: 'oauth_token', label: null, healthStatus: 'revoked', updatedAt: new Date('2026-07-19T18:00:00Z') },
-      { id: 'oauth-healthy', purpose: 'oauth_token', label: null, healthStatus: 'healthy', updatedAt: new Date('2026-07-19T11:00:00Z') },
-    ]);
-    // provider.get must be called with the HEALTHY row's id, not the revoked one.
-    mockSecretsProviderGet.mockImplementation((id: string) =>
-      Promise.resolve(id === 'oauth-healthy' ? 'healthy-token' : 'revoked-token'));
-
-    const req = createMockRequest({
-      headers: { Authorization: 'Bearer bld_test' },
-      body: { runner: 'test-runner' },
-    });
-    const res = await POST(req);
-
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.workers[0].serverOauthToken).toBe('healthy-token');
-    expect(mockSecretsProviderGet).toHaveBeenCalledWith('oauth-healthy');
-    expect(mockSecretsProviderGet).not.toHaveBeenCalledWith('oauth-revoked');
+    // No login value anywhere in the response, under any field name.
+    expect(JSON.stringify(data)).not.toContain('decrypted:oauth-secret-1');
+    expect(JSON.stringify(data)).not.toContain('decrypted:claude-cred-1');
+    expect(mockSecretsProviderGet).not.toHaveBeenCalledWith('oauth-secret-1');
 
     if (origKey !== undefined) {
       process.env.ENCRYPTION_KEY = origKey;
@@ -4009,8 +3935,8 @@ describe('POST /api/workers/claim', () => {
 
   // Cloud executor (task bb423c8a): a runner in a cloud container declares
   // `executor: 'cloud'` and must receive NO credential material. Same fixture
-  // as the serverApiKey/serverOauthToken tests above, which prove a host claim
-  // with this setup DOES get them.
+  // as the serverApiKey test above, which proves a host claim
+  // with this setup DOES get a key.
   describe('cloud executor claims carry no credentials', () => {
     const setupTeamWithEveryCredential = () => {
       mockAuthenticateApiKey.mockResolvedValue({
@@ -4070,7 +3996,6 @@ describe('POST /api/workers/claim', () => {
         }));
         const data = await res.json();
         expect(data.workers[0].serverApiKey).toBe('decrypted-secret-value');
-        expect(data.workers[0].serverOauthToken).toBe('decrypted-secret-value');
       });
     });
 
@@ -4247,7 +4172,6 @@ describe('POST /api/workers/claim', () => {
           const { data } = await claim();
           const w = data.workers[0];
           expect(w.serverApiKey).toBe('decrypted-secret-value');
-          expect(w.serverOauthToken).toBe('decrypted-secret-value');
           expect(w.credentialDecision.scope).toBe('team');
           expect(JSON.stringify(data)).not.toContain('sk-ant-alice-personal');
         });
@@ -4333,7 +4257,6 @@ describe('POST /api/workers/claim', () => {
           const data = await claimWith();
           expect(mockResolveAgentModelRoute).toHaveBeenCalledWith({ teamId: 'team-1', workspaceId: 'ws-1', accountId: 'account-1', backend: 'claude' });
           expect(data.workers[0].serverApiKey).toBe('decrypted-secret-value');
-          expect(data.workers[0].serverOauthToken).toBe('decrypted-secret-value');
           expect('modelEndpoint' in data.workers[0]).toBe(false);
           expect('modelEndpointIgnored' in data.workers[0]).toBe(false);
         });
@@ -4384,7 +4307,6 @@ describe('POST /api/workers/claim', () => {
             const data = await claimWith({ runnerFeatures });
             const w = data.workers[0];
             expect(w.serverApiKey).toBe('decrypted-secret-value');
-            expect(w.serverOauthToken).toBe('decrypted-secret-value');
             expect(w.modelEndpoint).toBeUndefined();
             expect(w.modelEndpointIgnored).toBeUndefined();
             expect(JSON.stringify(data)).not.toContain('sk-endpoint-example');
@@ -7930,10 +7852,7 @@ describe('entity catalog injection at claim time', () => {
         mockAuthenticateApiKey.mockResolvedValue(exhaustedOauthAccount());
         mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
         mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'private', teamId: 'team-1' }]);
-        mockHasCodexCredential.mockResolvedValue(true);
-        mockGetCodexCredential.mockResolvedValue({
-          accessToken: 'at', refreshToken: 'rt', accountId: 'acc', tokenExpiresAt: null, lastRefreshedAt: null,
-        });
+        mockResolveCodexApiKey.mockResolvedValue({ apiKey: 'sk-codex' });
         mockLoadOauthEpisodes.mockResolvedValue(learnedWindow());
         // Full forecast -> Claude cap of three sessions.
         mockMeasureOauthWindow.mockResolvedValue(windowUsage({ workerCount: 6, turns: 600, weightedTurns: 600 }));
@@ -9321,11 +9240,9 @@ describe('claim insert — atomic duplicate-worker guard', () => {
  * Idle-runner credential discovery.
  *
  * The claim call is the runner's heartbeat: it polls on a loop whether or not
- * work exists. `pendingCredentialRefreshes` used to be attached per claimed
- * worker only, so a poll that claimed nothing announced nothing, the runner's
- * credential broker stayed empty, and an idle-but-online runner never
- * refreshed the credentials it is responsible for. The top-level field below is
- * the fix, so the zero-worker polls are the cases that matter here.
+ * work exists, so the top-level `pendingCredentialRefreshes` is announced on
+ * every poll, zero-worker polls included. No claimed worker carries its own
+ * list any more (model credentials spec AC-6).
  */
 describe('claim response — top-level pendingCredentialRefreshes', () => {
   const ORIGINAL_KEY = process.env.ENCRYPTION_KEY;
@@ -9431,7 +9348,10 @@ describe('claim response — top-level pendingCredentialRefreshes', () => {
     expect(data.pendingCredentialRefreshes).toHaveLength(1);
   });
 
-  it('announces alongside the per-worker field when a task IS claimed', async () => {
+  // Model credentials spec AC-6: a claimed task is never wired to a stored
+  // login, so it carries no per-worker refresh list. Only the idle broker's
+  // account list remains.
+  it('a claimed task gets no per-worker refresh list; the account list still announces', async () => {
     mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'restricted', teamId: 'team-1' }]);
     mockTasksFindMany.mockResolvedValue([{
@@ -9451,9 +9371,7 @@ describe('claim response — top-level pendingCredentialRefreshes', () => {
     const data = await res.json();
 
     expect(data.workers).toHaveLength(1);
-    // The per-worker field stays — the runner reads the claude_credential
-    // secretId off it to wire that worker to the broker at spawn time.
-    expect(data.workers[0].pendingCredentialRefreshes).toHaveLength(1);
+    expect(data.workers[0].pendingCredentialRefreshes).toBeUndefined();
     expect(data.pendingCredentialRefreshes).toHaveLength(1);
   });
 
@@ -9513,7 +9431,7 @@ describe('explicit taskId claims (organizer workflow)', () => {
     process.env.AUTH_SECRET = 'organizer-test-secret';
     resetExplicitClaimRateLimit();
     for (const m of [mockAuthenticateApiKey, mockGetAccountWorkspacePermissions, mockWorkersFindMany, mockWorkspacesFindMany,
-      mockTasksFindMany, mockMissionsFindMany, mockTasksFindFirst, mockMissionsFindFirst, mockTeamsFindFirst, mockHasCodexCredential, mockDiagnoseExplicitTaskExclusion,
+      mockTasksFindMany, mockMissionsFindMany, mockTasksFindFirst, mockMissionsFindFirst, mockTeamsFindFirst, mockResolveCodexApiKey, mockDiagnoseExplicitTaskExclusion,
       mockEvaluateForcedGates, mockGetActiveClaimsByWorkspace, mockFireGateEvent] as any[]) m.mockReset();
     mockGetAccountWorkspacePermissions.mockResolvedValue([]);
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'open', teamId: 'team-1' }]);
@@ -9524,7 +9442,7 @@ describe('explicit taskId claims (organizer workflow)', () => {
     mockTasksFindFirst.mockResolvedValue(null);
     mockMissionsFindFirst.mockResolvedValue(null);
     mockTeamsFindFirst.mockResolvedValue(null);
-    mockHasCodexCredential.mockResolvedValue(false);
+    mockResolveCodexApiKey.mockResolvedValue(null);
     mockDiagnoseExplicitTaskExclusion.mockResolvedValue(null);
     mockEvaluateForcedGates.mockResolvedValue([]);
     mockGetActiveClaimsByWorkspace.mockResolvedValue(new Map());
