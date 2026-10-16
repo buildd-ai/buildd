@@ -299,11 +299,12 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
-    name: 'S2: a head advance invalidates the approval: a delta round at the new head, and the old approval does not land it',
+    name: 'S2: a head advance invalidates the approval: a new round at the new head, and the old approval does not land it',
     async run(host) {
       const s = await (await new Delivery(host).open()).approvedAt('H1');
       applied(await s.push('H2'), 'AWAITING_REVIEW', 'push H2');
-      eq(pick(await s.latestRound(), ['round', 'headSha', 'kind', 'status']), { round: 2, headSha: 'H2', kind: 'delta', status: 'queued' }, 'delta round');
+      // 58c8961e: with no read of the delta the round after an approval reviews the whole PR.
+      eq(pick(await s.latestRound(), ['round', 'headSha', 'kind', 'status', 'trigger']), { round: 2, headSha: 'H2', kind: 'full', status: 'queued', trigger: 'new_commits' }, 'a full round: the delta was not read');
       ok(!(await s.d()).approvedHeads.includes('H2'), 'H2 not approved');
       notApplied(await s.land('H2'), 'rejected', 'state_not_allowed', 'land unapproved head');
       eq(await s.count('merge_call'), 0, 'no merge owed');
@@ -1170,7 +1171,7 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
   {
     name: 'handlers/review: one reviewer per round, bound to it and woken; a redelivery files nothing; no role fails the round (T27); an attested composition files no reviewer',
     async run(host) {
-      const s = await new Delivery(host, 81).open();
+      const s = await new Delivery(host, 91).open();
       applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
       const r1 = await s.latestRound();
       const f = fakePorts(host);
@@ -2114,6 +2115,94 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
     },
   },
   {
+    name: 'delta approval (58c8961e): a small tests-only CI fix after an approval is reviewed as a delta, and its approve covers the new head',
+    async run(host) {
+      const s = await (await new Delivery(host, 81).open()).approvedAt('H1');
+      applied(await s.ciRed('H1'), 'REPAIRING', 'CI red on the approved head');
+      const ci = (await s.view()).attempts.find((a) => a.family === 'ci')!;
+      const delta = { fromHeadSha: 'H1', toHeadSha: 'H2', prFilesAtFrom: ['src/a.ts', 'src/a.test.ts'], files: [{ path: 'src/a.test.ts', status: 'modified', additions: 3, deletions: 1 }] };
+      applied(await s.fixEnded(ci.id, { localHeadSha: 'H2', commitCount: 1, live: s.live('H2'), proof: { liveContainsLocal: true }, delta }), 'AWAITING_REVIEW', 'the CI fix pushed H2');
+      const r2 = await s.latestRound();
+      eq(pick(r2, ['round', 'headSha', 'kind', 'trigger']), { round: 2, headSha: 'H2', kind: 'delta', trigger: 'ci_fix' }, 'a delta round, started by the CI fix');
+      eq(pick((r2.scope?.deltaApproval ?? {}) as Record<string, unknown>, ['eligible', 'fromHeadSha']), { eligible: true, fromHeadSha: 'H1' }, 'eligible to carry the approval at H1');
+      notApplied(await s.land('H2'), 'rejected', 'state_not_allowed', 'nothing lands before the delta is reviewed');
+      applied(await s.verdict('approve'), 'APPROVED', 'the delta review approves');
+      eq((await s.d()).approvedHeads, ['H2'], 'the approval covers H2, the exact head');
+      applied(await s.land('H2'), 'LANDING', 'H2 lands');
+    },
+  },
+  {
+    name: 'delta approval (58c8961e): a CI fix that touches a file outside the PR is a full review',
+    async run(host) {
+      const s = await (await new Delivery(host, 92).open()).approvedAt('H1');
+      applied(await s.ciRed('H1'), 'REPAIRING', 'CI red on the approved head');
+      const ci = (await s.view()).attempts.find((a) => a.family === 'ci')!;
+      const delta = { fromHeadSha: 'H1', toHeadSha: 'H2', prFilesAtFrom: ['src/a.ts'], files: [{ path: 'src/b.ts', status: 'modified', additions: 2, deletions: 0 }] };
+      applied(await s.fixEnded(ci.id, { localHeadSha: 'H2', commitCount: 1, live: s.live('H2'), proof: { liveContainsLocal: true }, delta }), 'AWAITING_REVIEW', 'the CI fix pushed H2');
+      const r2 = await s.latestRound();
+      eq(pick(r2, ['round', 'kind', 'trigger']), { round: 2, kind: 'full', trigger: 'ci_fix' }, 'a full round');
+      eq(pick((r2.scope?.deltaApproval ?? {}) as Record<string, unknown>, ['eligible', 'reason']), { eligible: false, reason: 'the delta touches a file outside the PR (src/b.ts)' }, 'with why');
+    },
+  },
+  {
+    name: 'delta approval (58c8961e): a delta review that asks for changes (a weakened test) leaves the new head unapproved',
+    async run(host) {
+      const s = await (await new Delivery(host, 93).open()).approvedAt('H1');
+      const delta = { fromHeadSha: 'H1', toHeadSha: 'H2', prFilesAtFrom: ['src/a.ts', 'src/a.test.ts'], files: [{ path: 'src/a.test.ts', status: 'modified', additions: 0, deletions: 4 }] };
+      applied(await s.push('H2', { delta }), 'AWAITING_REVIEW', 'push H2');
+      eq(pick(await s.latestRound(), ['kind', 'trigger']), { kind: 'delta', trigger: 'new_commits' }, 'a delta round');
+      applied(await s.verdictWith('request_changes', { findings: [{ path: 'src/a.test.ts', line: 9, title: 'an assertion was deleted' }] }), 'CHANGES_REQUESTED', 'the deleted assertion is caught');
+      ok(!(await s.d()).approvedHeads.includes('H2'), 'H2 is not approved');
+      notApplied(await s.land('H2'), 'rejected', 'state_not_allowed', 'and does not land');
+    },
+  },
+  {
+    name: 'review triggers (58c8961e): every round records why it started, and a round a push replaced ends superseded with that reason',
+    async run(host) {
+      const s = await new Delivery(host, 94).open();
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      eq(pick(await s.latestRound(), ['round', 'trigger']), { round: 1, trigger: 'first_pass' }, 'the first pass');
+      applied(await s.push('H2'), 'AWAITING_REVIEW', 'a push while round 1 is open');
+      const [r1, r2] = (await s.view()).rounds;
+      eq(pick(r1, ['round', 'status', 'endReason', 'verdict']), { round: 1, status: 'superseded', endReason: 'superseded_by_push', verdict: null }, 'round 1 ends superseded, not without an end');
+      eq(pick(r2, ['round', 'headSha', 'trigger']), { round: 2, headSha: 'H2', trigger: 'superseded_by_push' }, 'round 2 says why it started');
+      applied(await s.verdict('request_changes'), 'CHANGES_REQUESTED', 'request changes');
+      const fix = await s.startFix();
+      applied(await s.fixEnded(fix, { localHeadSha: 'H3', commitCount: 1, live: s.live('H3'), proof: { liveContainsLocal: true } }), 'AWAITING_REVIEW', 'fix ended');
+      eq(pick(await s.latestRound(), ['round', 'kind', 'trigger']), { round: 3, kind: 'delta', trigger: 'changes_requested_fix' }, 'a fix round stays a delta review of the fix');
+    },
+  },
+  {
+    name: 'handlers/review (58c8961e): a delta round that carries an approval tells its reviewer so, with why the round started',
+    async run(host) {
+      const s = await new Delivery(host, 95).open();
+      applied(await s.ownerPushed('H1'), 'AWAITING_REVIEW', 'owner pushed');
+      const f = fakePorts(host);
+      await drainKernel(host, s, f.ports);
+      const r1 = await s.latestRound();
+      f.reviews.outputs.set(r1.id, { verdict: 'approve', confidence: 0.9, summary: 'fine' });
+      applied(await s.verdict('approve'), 'APPROVED', 'approved at H1');
+      const delta = { fromHeadSha: 'H1', toHeadSha: 'H2', prFilesAtFrom: ['src/a.ts'], files: [{ path: 'src/a.ts', status: 'modified', additions: 2, deletions: 2 }] };
+      applied(await s.push('H2', { delta }), 'AWAITING_REVIEW', 'push H2');
+      f.github.setPr(s.repo, s.prNumber, s.live('H2'));
+      await drainKernel(host, s, f.ports);
+      const second = f.work.filed.filter((w) => w.role === 'review').at(-1)!;
+      eq(pick(second.detail ?? {}, ['trigger', 'deltaApproval', 'deltaFromHeadSha']), { trigger: 'new_commits', deltaApproval: true, deltaFromHeadSha: 'H1' }, 'the reviewer knows it is a delta of an approval, and from where');
+      eq(pick((second.detail?.priorVerdict ?? {}) as Record<string, unknown>, ['headSha', 'verdict']), { headSha: 'H1', verdict: 'approve' }, 'and diffs the range the rule measured');
+
+      // A second carried delta: the rule measures H1..H3, and the reviewer diffs H1..H3 too, not H2..H3.
+      const r2 = await s.latestRound();
+      f.reviews.outputs.set(r2.id, { verdict: 'approve', confidence: 0.9, summary: 'delta fine' });
+      applied(await s.verdict('approve'), 'APPROVED', 'the delta approves H2');
+      const delta3 = { fromHeadSha: 'H1', toHeadSha: 'H3', prFilesAtFrom: ['src/a.ts'], files: [{ path: 'src/a.ts', status: 'modified', additions: 4, deletions: 2 }] };
+      applied(await s.push('H3', { delta: delta3 }), 'AWAITING_REVIEW', 'push H3');
+      f.github.setPr(s.repo, s.prNumber, s.live('H3'));
+      await drainKernel(host, s, f.ports);
+      const third = f.work.filed.filter((w) => w.role === 'review').at(-1)!;
+      eq({ from: third.detail?.deltaFromHeadSha, prior: ((third.detail?.priorVerdict ?? {}) as Record<string, unknown>).headSha }, { from: 'H1', prior: 'H1' }, 'one range for the rule and the reviewer, from the last full review');
+    },
+  },
+  {
     // Task 2ded4e88, the sequence PR #4882 ran: the review budget ran out and the PR escalated, then a
     // push queued another round, and a CI fix out of the escalation queued one more after a red base.
     name: '2ded4e88: a spent review budget is final for the delivery: a push, an agent request, a CI fix and a red base all leave it a person\'s; only a person\'s forced round reviews again',
@@ -2185,6 +2274,22 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       applied(await s.push('H2', { proof: { liveContainsLocal: true, contentDiffChanged: true } }), 'ESCALATED', 'the push arrives');
       eq(pick(await s.d(), ['state', 'stateReason', 'currentRound', 'currentHeadSha']), { state: 'ESCALATED', stateReason: 'review_exhausted', currentRound: 1, currentHeadSha: 'H2' }, 'a person\'s, at the new head');
       eq({ rounds: (await s.view()).rounds.length, dispatched: await s.count('dispatch_review') }, { rounds: 1, dispatched: 1 }, 'no new round, no reviewer');
+    },
+  },
+  {
+    name: 'delta approval (58c8961e): carried deltas are capped together, measured from the last full review',
+    async run(host) {
+      const s = await (await new Delivery(host, 96).open()).approvedAt('H1');
+      const small = { fromHeadSha: 'H1', toHeadSha: 'H2', prFilesAtFrom: ['src/a.ts'], files: [{ path: 'src/a.ts', status: 'modified', additions: 150, deletions: 0 }] };
+      applied(await s.push('H2', { delta: small }), 'AWAITING_REVIEW', 'push H2');
+      eq((await s.latestRound()).kind, 'delta', 'H1..H2 is a delta');
+      applied(await s.verdict('approve'), 'APPROVED', 'carried to H2');
+      // H2..H3 alone is 60 lines, but H1..H3 is 210: over the cap, so a full review.
+      const sum = { fromHeadSha: 'H1', toHeadSha: 'H3', prFilesAtFrom: ['src/a.ts'], files: [{ path: 'src/a.ts', status: 'modified', additions: 210, deletions: 0 }] };
+      applied(await s.push('H3', { delta: sum }), 'AWAITING_REVIEW', 'push H3');
+      const r3 = await s.latestRound();
+      eq(pick(r3, ['round', 'kind']), { round: 3, kind: 'full' }, 'a full review once the chain is over the cap');
+      eq(pick((r3.scope?.deltaApproval ?? {}) as Record<string, unknown>, ['eligible', 'fromHeadSha']), { eligible: false, fromHeadSha: 'H1' }, 'measured from H1');
     },
   },
 ];

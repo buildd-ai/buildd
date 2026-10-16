@@ -27,6 +27,7 @@ import { taskRecoverySentence } from './task-recovery-hold';
 import { cancellationLine } from './task-cancellation';
 import { claimHoldPhrase } from './claim-hold-phrase';
 import type { DeliveryDisagreement } from './delivery-overlay';
+import { roundTriggerSentence, type DeliveryRound } from '@buildd/workflow-kernel/projections';
 
 const repoOf = (url: string | null | undefined) => url?.match(/github\.com\/([^/]+\/[^/]+)\/pull\/\d+/)?.[1] ?? null;
 
@@ -658,6 +659,27 @@ export function deliveryTransitionLink(
   const detail = d.detail ? `; ${d.detail}` : '';
   const attempts = d.attemptLine ? ` (${d.attemptLine})` : '';
   return link(`Delivery is ${d.state} (${d.headline}${detail})${attempts}: ${t.command} moved it ${moved} at ${t.createdAt}.`, 'DeliveryView.lastTransition', refs);
+}
+
+/**
+ * 58c8961e: why the delivery's latest review round started, whether it is a
+ * delta review that carries an approval (or, after one, why it is full), and
+ * how it ended if a push superseded it. Null for a round recorded before
+ * rounds carried a trigger.
+ */
+export function reviewRoundLink(
+  d: { prNumber: number | null; rounds: DeliveryRound[] } | null | undefined,
+  subject: BecauseSubjectRefs,
+): Link | null {
+  const r = d?.rounds?.length ? [...d.rounds].sort((a, b) => b.round - a.round)[0] : null;
+  const claim = r ? roundTriggerSentence(r) : null;
+  if (!claim) return null;
+  const refs: ExplainRefs = {
+    ...(subject.taskId ? { taskId: subject.taskId } : {}),
+    ...(subject.workspaceId ? { workspaceId: subject.workspaceId } : {}),
+    ...(d!.prNumber != null ? { prNumber: d!.prNumber } : {}),
+  };
+  return link(claim, 'DeliveryView.rounds', refs);
 }
 
 const ROW_WORDS: Record<DeliveryDisagreement['worker'], string> = { merged: 'merged', open: 'still open', closed: 'closed' };

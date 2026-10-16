@@ -24,6 +24,7 @@ import type {
   LivePr,
   RoundOp,
 } from './commands';
+import { deltaApprovalEligibility, PUSH_TRIGGERS, type DeltaReading, type RoundTrigger } from './delta-approval';
 import { addressFindings, applyVerdictToFindings, describeFinding, isTaskId, openRequiredFindings } from './findings';
 import {
   isHumanActor,
@@ -424,20 +425,41 @@ class Ctx {
     return this.view.attempts.find((a) => families.includes(a.family) && OPEN_ATTEMPT.has(a.status) && (head === undefined || a.boundHeadSha === head));
   }
 
-  /** Supersede every open round and queue round r+1 bound to `head` (T5 / §6.4). */
-  startRound(head: string, opts: { kind?: RoundKind; scope?: Record<string, unknown> | null } = {}): {
+  /**
+   * Supersede every open round and queue round r+1 bound to `head` (T5 / §6.4).
+   *
+   * 58c8961e: the round records why it started (`trigger`), and a round it
+   * supersedes records how it ended (`superseded_by_push` when a push did it).
+   * A round after a reviewer's approval is a delta review only when
+   * `deltaApprovalEligibility` says so for the host's read of the delta
+   * (`opts.delta`); anything else, including an unread delta, is a full review.
+   * A round after a request for changes stays a delta review of the fix.
+   */
+  startRound(head: string, opts: { kind?: RoundKind; scope?: Record<string, unknown> | null; trigger?: RoundTrigger; delta?: DeltaReading | null } = {}): {
     rounds: RoundOp[]; effects: EffectSpec[]; patch: DeliveryPatch; roundNo: number; roundId: string;
   } {
     const d = this.d!;
     const last = this.lastDecided();
     const n = d.currentRound + 1;
-    const kind: RoundKind = opts.kind ?? (last && last.headSha !== head ? 'delta' : 'full');
+    const trigger: RoundTrigger = opts.trigger ?? (last ? 'new_commits' : 'first_pass');
+    let kind: RoundKind | undefined = opts.kind;
+    let scope: Record<string, unknown> | null = opts.scope ?? null;
+    if (!kind) {
+      if (last && last.headSha !== head && last.effectiveVerdict === 'approve') {
+        const el = deltaApprovalEligibility(this.view, head, opts.delta);
+        kind = el.eligible ? 'delta' : 'full';
+        scope = { ...(scope ?? {}), deltaApproval: el };
+      } else {
+        kind = last && last.headSha !== head ? 'delta' : 'full';
+      }
+    }
     const id = this.newId();
-    const rounds: RoundOp[] = this.openRounds().map((r) => ({ op: 'update', roundId: r.id, whenStatus: ['queued', 'reviewing'], set: { status: 'superseded' } }));
-    rounds.push({ op: 'insert', id, round: n, headSha: head, kind, priorRound: last?.round ?? null, scope: opts.scope ?? null });
+    const endReason = PUSH_TRIGGERS.has(trigger) ? 'superseded_by_push' : `superseded_by_${trigger}`;
+    const rounds: RoundOp[] = this.openRounds().map((r) => ({ op: 'update', roundId: r.id, whenStatus: ['queued', 'reviewing'], set: { status: 'superseded', endReason } }));
+    rounds.push({ op: 'insert', id, round: n, headSha: head, kind, priorRound: last?.round ?? null, scope, trigger });
     return {
       rounds,
-      effects: [{ kind: 'dispatch_review', dedupeKey: `dispatch_review:${d.id}:${n}`, payload: { roundId: id, round: n, headSha: head, kind, priorRound: last?.round ?? null, scope: opts.scope ?? null } }],
+      effects: [{ kind: 'dispatch_review', dedupeKey: `dispatch_review:${d.id}:${n}`, payload: { roundId: id, round: n, headSha: head, kind, priorRound: last?.round ?? null, scope, trigger } }],
       patch: { currentRound: n },
       roundNo: n,
       roundId: id,
@@ -573,8 +595,8 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
           create: { workspaceId: a.workspaceId, ownerTaskId: a.ownerTaskId, maxRounds: a.maxRounds ?? 3 },
           states: [],
           patch: { ...bindPatch, currentHeadSha: cmd.live.headSha, currentRound: 1 },
-          rounds: [{ op: 'insert', id: roundId, round: 1, headSha: cmd.live.headSha, kind: 'full', priorRound: null }],
-          effects: [{ kind: 'dispatch_review', dedupeKey: `dispatch_review:task:${a.ownerTaskId}:1`, payload: { roundId, round: 1, headSha: cmd.live.headSha, kind: 'full' } }],
+          rounds: [{ op: 'insert', id: roundId, round: 1, headSha: cmd.live.headSha, kind: 'full', priorRound: null, trigger: 'first_pass' }],
+          effects: [{ kind: 'dispatch_review', dedupeKey: `dispatch_review:task:${a.ownerTaskId}:1`, payload: { roundId, round: 1, headSha: cmd.live.headSha, kind: 'full', trigger: 'first_pass' } }],
           evidence: { live: cmd.live, adoption: true },
         });
       }
@@ -606,7 +628,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         return c.rejected('escalation_needs_human');
       }
       if (c.decidedAt(cmd.headSha) && !cmd.forced) return c.rejected('head_already_reviewed');
-      const r = c.startRound(cmd.headSha);
+      const r = c.startRound(cmd.headSha, cmd.forced || isHumanActor(cmd.actor) ? { trigger: 'manual_force' } : {});
       const attempts: AttemptOp[] = dd.state === 'CHANGES_REQUESTED' ? [{ op: 'cancel_open', families: ['review_fix'], status: 'cancelled' }] : [];
       return c.apply(`round:${dd.id}:${cmd.headSha}:${r.roundNo}`, 'AWAITING_REVIEW', {
         guardHead: true, guardRound: true, patch: r.patch, rounds: r.rounds, attempts, effects: r.effects,
@@ -1210,7 +1232,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
           .map((r) => ({ op: 'update', roundId: r.id, whenStatus: ['decided'], set: { status: 'superseded' } }))
         : [];
       const review = (extra: { attempts?: AttemptOp[]; effects?: EffectSpec[] } = {}): Decision => {
-        const r = c.startRound(head!);
+        const r = c.startRound(head!, { trigger: 'base_refresh' });
         return c.apply(key, 'AWAITING_REVIEW', {
           patch: { ...patch, ...r.patch, stateReason: null }, rounds: [...retire, ...r.rounds],
           attempts: extra.attempts, effects: [...r.effects, ...(extra.effects ?? [])], evidence,
@@ -1352,7 +1374,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (cmd.choice === 'dismiss') {
         if (!cmd.reason?.trim()) return c.rejected('reason_required');
         if (!dd.currentHeadSha) return c.rejected('no_head');
-        const r = c.startRound(dd.currentHeadSha, { kind: 'full' });
+        const r = c.startRound(dd.currentHeadSha, { kind: 'full', trigger: 'manual_force' });
         return c.apply(key, 'AWAITING_REVIEW', { patch: { ...r.patch, stateReason: null }, rounds: r.rounds, effects: r.effects, bypass });
       }
       // apply_recommendation / request_changes: a new review_fix attempt against the round the
@@ -1433,7 +1455,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
           const r = reenterVerdict(c, key, decided, head, evidence);
           return r.result === 'apply' ? { ...r, patch: { ...patch, ...r.patch }, effects: [...effects, ...r.effects] } : r;
         }
-        const r = c.startRound(head);
+        const r = c.startRound(head, { trigger: 'base_refresh' });
         patch = { ...patch, ...r.patch }; rounds = r.rounds; effects.push(...r.effects);
         return c.apply(key, 'AWAITING_REVIEW', { patch, rounds, effects, evidence: { ...evidence, ...(resume === 'APPROVED' ? { approvalNotCovering: head } : {}) } });
       }
@@ -1526,7 +1548,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
           evidence,
         });
       }
-      const r = c.startRound(att.aggregateHeadSha, { kind: 'delta', scope: { novelDeltaPaths: att.novelDelta.paths, composition: true } });
+      const r = c.startRound(att.aggregateHeadSha, { kind: 'delta', scope: { novelDeltaPaths: att.novelDelta.paths, composition: true }, trigger: 'composition' });
       return c.apply(key, 'AWAITING_REVIEW', { guardHead: true, guardRound: true, patch: r.patch, rounds: r.rounds, effects: r.effects, evidence });
     }
   }
@@ -1604,8 +1626,12 @@ function verdictDecided(
     });
   }
   if (cmd.effectiveVerdict === 'approve') {
+    // 58c8961e: a delta round that followed an approval carries it: approval at A plus this
+    // passing review of A..B is the approval at B. Recorded with the round that judged the delta.
+    const carried = deltaApprovalOf(round);
     return c.apply(key, 'APPROVED', {
       ...common,
+      ...(carried ? { evidence: { ...common.evidence, deltaApproval: { fromHeadSha: carried.fromHeadSha, toHeadSha: round.headSha, roundId: round.id } } } : {}),
       patch: { approvedHeads: [round.headSha], approvalBasis: 'verdict', stateReason: null },
       rounds: [decide],
       attempts: [{ op: 'cancel_open', families: ['review_fix'], status: 'cancelled' }],
@@ -1664,7 +1690,7 @@ function verificationRound(
   // The other kind than the round it follows at this head: one open round per (head, kind) is a
   // unique index, and the decided round leaves it in the same statement. A round at a head that
   // already has a decided one reviews in full whatever its kind (no prior verdict at another head).
-  const r = c.startRound(head, { kind: decided.kind === 'full' ? 'delta' : 'full', scope: { verifyFindings: ids } });
+  const r = c.startRound(head, { kind: decided.kind === 'full' ? 'delta' : 'full', scope: { verifyFindings: ids }, trigger: 'verify_findings' });
   // The round being decided is written once, by the caller's op, never superseded by the new one.
   const written = new Set((o.rounds ?? []).filter((x) => x.op === 'update').map((x) => (x as { roundId: string }).roundId));
   const fresh = r.rounds.filter((x) => x.op !== 'update' || !written.has(x.roundId));
@@ -1674,6 +1700,42 @@ function verificationRound(
     rounds: [...(o.rounds ?? []), ...fresh],
     effects: [...(o.effects ?? []), ...r.effects],
   });
+}
+
+// ── Round triggers (58c8961e) ───────────────────────────────────────────────
+
+/** The approval a delta round was eligible to carry, when it is one. */
+export function deltaApprovalOf(round: Pick<RoundSnapshot, 'kind' | 'scope'>): { fromHeadSha: string } | null {
+  if (round.kind !== 'delta') return null;
+  const el = round.scope?.deltaApproval as { eligible?: unknown; fromHeadSha?: unknown } | undefined;
+  return el?.eligible === true && typeof el.fromHeadSha === 'string' ? { fromHeadSha: el.fromHeadSha } : null;
+}
+
+/** Why a repair attempt's head is reviewed: a review fix, a CI fix, or the base merged in. */
+function attemptTrigger(a: AttemptSnapshot | undefined): RoundTrigger {
+  if (!a) return 'new_commits';
+  if (a.family === 'review_fix') return 'changes_requested_fix';
+  if (a.family === 'ci') return 'ci_fix';
+  return 'base_refresh';
+}
+
+/** Why a head observed in the delivery's current state is reviewed. */
+function headTrigger(c: Ctx): RoundTrigger {
+  const d = c.d!;
+  const a = c.attempt(d.boundAttemptId);
+  switch (d.state) {
+    case 'CHANGES_REQUESTED':
+    case 'FIXING':
+      return 'changes_requested_fix';
+    case 'REPAIRING':
+    case 'AWAITING_PUSH':
+      return a ? attemptTrigger(a) : 'new_commits';
+    case 'AWAITING_REVIEW':
+      // A push while a review is still open: that review ends superseded by it.
+      return c.openRounds().length > 0 ? 'superseded_by_push' : (c.lastDecided() ? 'new_commits' : 'first_pass');
+    default:
+      return c.lastDecided() ? 'new_commits' : 'first_pass';
+  }
 }
 
 // ── T3 ──────────────────────────────────────────────────────────────────────
@@ -1716,7 +1778,7 @@ function headObservedInner(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' 
   const evidence = { live: cmd.live, hintedHeadSha: cmd.hintedHeadSha ?? null, previousHead: d.currentHeadSha };
   const record = (): Decision => c.apply(key, d.state, { patch: { currentHeadSha: h }, evidence });
   const toReview = (extra: { attempts?: AttemptOp[]; effects?: EffectSpec[]; patch?: DeliveryPatch; evidence?: Record<string, unknown> } = {}): Decision => {
-    const r = c.startRound(h);
+    const r = c.startRound(h, { trigger: headTrigger(c), delta: cmd.delta });
     return c.apply(key, 'AWAITING_REVIEW', {
       patch: { ...r.patch, currentHeadSha: h, stateReason: null, boundAttemptId: null, ...(extra.patch ?? {}) },
       rounds: r.rounds, attempts: extra.attempts, effects: [...r.effects, ...(extra.effects ?? [])], evidence: extra.evidence ?? evidence,
@@ -1899,7 +1961,8 @@ function attemptEndedInner(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' 
   if (!['WORKING', 'FIXING', 'REPAIRING'].includes(d.state)) return unbound();
   const L = cmd.localHeadSha;
   const live = cmd.live;
-  const evidence = { outcome: cmd.outcome, localHeadSha: L, commitCount: cmd.commitCount, live, ...(cmd.ci ? { liveChecks: cmd.ci.liveChecks } : {}) };
+  // 58c8961e: the delta read is recorded with the decision it fed, so a replay rebuilds the same round.
+  const evidence = { outcome: cmd.outcome, localHeadSha: L, commitCount: cmd.commitCount, live, ...(cmd.ci ? { liveChecks: cmd.ci.liveChecks } : {}), ...(cmd.delta ? { delta: cmd.delta } : {}) };
 
   if (d.state === 'WORKING') {
     if (cmd.taskId !== d.ownerTaskId) return c.stale('attempt_not_bound');
@@ -2018,7 +2081,7 @@ function attemptEndedInner(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' 
         attempts: [end('delivered', h)], evidence: { ...evidence, proof, carryForward: cmd.carryForward },
       });
     }
-    const r = c.startRound(h);
+    const r = c.startRound(h, { trigger: attemptTrigger(a), delta: cmd.delta });
     return c.apply(key, 'AWAITING_REVIEW', {
       patch: { ...r.patch, currentHeadSha: h, boundAttemptId: null, stateReason: null },
       rounds: r.rounds, attempts: [end('delivered', h)], effects: r.effects, evidence: { ...evidence, proof },
@@ -2042,7 +2105,7 @@ function attemptEndedInner(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' 
         const re = reenterVerdict(c, key, decided, h, ev);
         return re.result === 'apply' ? { ...re, patch: { ...re.patch, boundAttemptId: null }, attempts: [end('failed')] } : re;
       }
-      const r = c.startRound(h);
+      const r = c.startRound(h, { trigger: attemptTrigger(a), delta: cmd.delta });
       return c.apply(key, 'AWAITING_REVIEW', {
         patch: { ...r.patch, boundAttemptId: null, stateReason: null },
         rounds: r.rounds, attempts: [end('failed')], effects: r.effects, evidence: ev,
