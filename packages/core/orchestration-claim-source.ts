@@ -10,6 +10,9 @@
  *  - `findAppliedStart` is the gated-START lookup; the claim route calls it
  *    only when `isGatedStartReachable()` is true, which it is not as shipped.
  */
+import { claimReceipt, claimAreaClass, attributeClaimOutcome } from './orchestration-claim-learning-evidence';
+import { claimReadoutActor } from './orchestration-claim-readout';
+import { HUMAN_FORCE_START_DECISION_ID } from './waiting-reason';
 import { and, desc, eq, gte, inArray, lt, sql } from 'drizzle-orm';
 import { db } from './db/client';
 import { gateEvents, orchestrationDecisions, orchestrationManifestPredictions, reviewFeedback, tasks, workers } from './db/schema';
@@ -32,6 +35,7 @@ export interface ClaimDecisionKey {
   fingerprint: string;
   candidateDigest: string;
   since: Date;
+  minConfidence?: number;
 }
 
 // ── Predicates ───────────────────────────────────────────────────────────────
@@ -53,6 +57,7 @@ export function appliedStartWhere(k: ClaimDecisionKey) {
     eq(orchestrationDecisions.applied, true),
     eq(orchestrationDecisions.effective, 'START'),
     eq(orchestrationDecisions.experimentArm, 'apply'),
+    k.minConfidence === undefined ? undefined : gte(orchestrationDecisions.confidence, k.minConfidence),
   );
 }
 
@@ -68,7 +73,7 @@ export function claimDecisionsWhere(opts: { workspaceId: string; since: Date; un
   return and(
     eq(orchestrationDecisions.workspaceId, opts.workspaceId),
     eq(orchestrationDecisions.capability, CLAIM_HOLD_CAPABILITY),
-    eq(orchestrationDecisions.decisionId, CLAIM_HOLD_DECISION.id),
+    inArray(orchestrationDecisions.decisionId, [CLAIM_HOLD_DECISION.id, HUMAN_FORCE_START_DECISION_ID]),
     gte(orchestrationDecisions.createdAt, opts.since),
     lt(orchestrationDecisions.createdAt, opts.until),
   );
@@ -217,6 +222,17 @@ export function fileConflictCountsSql(opts: { workspaceId: string; paths: string
     GROUP BY p.path`;
 }
 
+/** Reconstruct only the gate encoded by old force-start receipts. */
+function humanForceGate(d: ClaimDecisionForReadout): string {
+  if (d.decisionId !== HUMAN_FORCE_START_DECISION_ID) return 'unknown';
+  const primary = d.candidatePolicyVersion?.startsWith('hf1.') ? d.candidatePolicyVersion.slice(4)
+    : Array.isArray(d.receipt?.kinds) ? d.receipt.kinds.find(k => typeof k === 'string') : null;
+  if (primary === 'soft_overlap') return 'soft_overlap';
+  if (primary === 'pr_overlap_ended' || primary === 'pr_overlap_live') return 'open_pr_overlap';
+  if (primary === 'scope_undeclared_mutex') return 'advisory_manifest';
+  return 'unknown';
+}
+
 /**
  * Everything `summarizeClaimHoldReadout` needs for one workspace's claim
  * decisions in a window: the decision rows, F's outcome labels for them, task
@@ -224,12 +240,16 @@ export function fileConflictCountsSql(opts: { workspaceId: string; paths: string
  */
 export async function loadClaimHoldReadoutInput(opts: { workspaceId: string; since: Date; until: Date }): Promise<ClaimHoldReadoutInput> {
   const decisions = (await db.select({
+    receipt: orchestrationDecisions.receipt,
+    confidence: orchestrationDecisions.confidence,
+    prNumber: orchestrationDecisions.prNumber, headSha: orchestrationDecisions.headSha, baseRef: orchestrationDecisions.baseRef,
     id: orchestrationDecisions.id,
     taskId: orchestrationDecisions.taskId,
     workspaceId: orchestrationDecisions.workspaceId,
     decisionId: orchestrationDecisions.decisionId,
     fingerprint: orchestrationDecisions.fingerprint,
     candidatePolicyVersion: orchestrationDecisions.candidatePolicyVersion,
+    candidateDigest: orchestrationDecisions.candidateDigest,
     model: orchestrationDecisions.model,
     experimentArm: orchestrationDecisions.experimentArm,
     propensity: orchestrationDecisions.propensity,
@@ -239,22 +259,39 @@ export async function loadClaimHoldReadoutInput(opts: { workspaceId: string; sin
     status: orchestrationDecisions.status,
     reason: orchestrationDecisions.reason,
     createdAt: orchestrationDecisions.createdAt,
-  }).from(orchestrationDecisions).where(claimDecisionsWhere(opts)).limit(CLAIM_HOLD_READOUT_MAX_DECISIONS)) as ClaimDecisionForReadout[];
+  }).from(orchestrationDecisions).where(claimDecisionsWhere(opts)).limit(CLAIM_HOLD_READOUT_MAX_DECISIONS)) as Array<ClaimDecisionForReadout & { receipt?: Record<string, unknown> | null; prNumber: number | null; headSha: string | null; baseRef: string | null }>;
+  for (const d of decisions) {
+    const receipt = claimReceipt(d.receipt);
+    const coordination = d.receipt?.coordination as Record<string, unknown> | undefined;
+    d.actor = claimReadoutActor(d);
+    d.gate = typeof coordination?.gate === 'string' ? coordination.gate : typeof d.receipt?.gate === 'string' ? d.receipt.gate : humanForceGate(d);
+    const recordedArea = coordination?.areaClass ?? d.receipt?.areaClass;
+    d.areaClass = recordedArea === 'core/db' || recordedArea === 'other' ? recordedArea : claimAreaClass(receipt.paths);
+    d.staleBlocker = receipt.staleBlocker;
+  }
 
   const empty: ClaimHoldReadoutInput = { decisions, labels: [], tasks: [], starts: [], windowEnd: opts.until };
   const taskIds = [...new Set(decisions.map(d => d.taskId).filter((t): t is string => !!t))];
   if (decisions.length === 0 || taskIds.length === 0) return empty;
 
-  const { loadOrchestrationOutcomeInput } = await import('./orchestration-ledger-source');
+  const { loadOutcomeJoinFor } = await import('./orchestration-ledger-source');
   const [outcomeInput, startRows] = await Promise.all([
-    loadOrchestrationOutcomeInput({ ...opts, decisionId: CLAIM_HOLD_DECISION.id }),
+    loadOutcomeJoinFor(decisions.map(d => ({ ...d, prNumber: d.prNumber ?? null, headSha: d.headSha ?? null, baseRef: d.baseRef ?? null })), opts),
     db.select({ taskId: workers.taskId, createdAt: workers.createdAt })
       .from(workers)
       .where(claimStartsWhere({ workspaceId: opts.workspaceId, taskIds, since: opts.since })),
   ]);
+  const labels = labelDecisionOutcomes(outcomeInput);
+  const byId = new Map(labels.map(l => [l.decisionId, l]));
+  for (const d of decisions) {
+    const label = byId.get(d.id);
+    if (!label) continue;
+    d.landed = outcomeInput.prs.some(p => p.taskId === d.taskId && p.workspaceId === d.workspaceId && p.mergedAt !== null);
+    d.attributableUnsafe = attributeClaimOutcome({ ...d, prNumber: d.prNumber ?? null, headSha: d.headSha ?? null, baseRef: d.baseRef ?? null }, claimReceipt(d.receipt), label, outcomeInput.gateEvents);
+  }
   return {
     decisions,
-    labels: labelDecisionOutcomes(outcomeInput),
+    labels,
     tasks: outcomeInput.tasks.map(t => ({ id: t.id, status: t.status })),
     starts: (startRows as Array<{ taskId: string | null; createdAt: Date }>)
       .filter((r): r is { taskId: string; createdAt: Date } => !!r.taskId)
@@ -302,7 +339,14 @@ export async function loadSoftStartReadoutInput(opts: { workspaceId: string; sin
     .flatMap((r) => {
       if (!r.taskId || !r.workspaceId) return [];
       const d = r.detail ?? {};
+      const receipt = claimReceipt(d);
+      const coordination = d.coordination as Record<string, unknown> | undefined;
+      const gate = typeof coordination?.gate === 'string' ? coordination.gate : typeof d.gate === 'string' ? d.gate : 'soft_overlap';
       return [{
+        actor: d.actor === 'human_force' ? 'human_force' as const : d.decidedBy === 'jev' ? 'jev_start' as const : 'rule_start_overlap' as const,
+        gate, areaClass: d.areaClass === 'core/db' || d.areaClass === 'other' ? d.areaClass : claimAreaClass(receipt.paths), staleBlocker: receipt.staleBlocker,
+        fingerprint: typeof d.fingerprint === 'string' ? d.fingerprint : 'unknown',
+        receipt: d,
         id: r.id,
         taskId: r.taskId,
         workspaceId: r.workspaceId,
@@ -322,6 +366,13 @@ export async function loadSoftStartReadoutInput(opts: { workspaceId: string; sin
     db.select({ workspaceId: gateEvents.workspaceId, taskId: gateEvents.taskId, occurredAt: gateEvents.occurredAt, detail: gateEvents.detail })
       .from(gateEvents).where(siblingProbeEventsWhere({ workspaceId: opts.workspaceId, since: opts.since, until: new Date() })),
   ]);
+  const labels = new Map(labelDecisionOutcomes(join).map(l => [l.decisionId, l]));
+  for (const start of starts) {
+    const label = labels.get(start.id);
+    start.landed = join.prs.some(p => p.taskId === start.taskId && p.workspaceId === start.workspaceId && p.mergedAt !== null);
+    if (label) start.attributableUnsafe = attributeClaimOutcome({ id: start.id, taskId: start.taskId, workspaceId: start.workspaceId,
+      prNumber: null, headSha: null, baseRef: null, createdAt: start.startedAt }, claimReceipt(start.receipt), label, join.gateEvents);
+  }
   const { decisions: _decisions, ...outcome } = join;
   return { starts, outcome, probes: probeRows as SiblingProbeEventForReadout[], windowEnd: opts.until };
 }

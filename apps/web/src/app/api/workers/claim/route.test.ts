@@ -10560,6 +10560,16 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
   function holdStartOn(over: Record<string, any> = {}) {
     return {
       hasRecent: async () => false,
+      // This harness routes every db.select() to its in-flight task rows.
+      // Supply the independent policy read so task rows cannot stand in for policy state.
+      loadLearningPolicy: async () => ({
+        delta: .05,
+        minSamplePerArm: 20,
+        minConfidence: .85,
+        fraction: 1,
+        dial: 5,
+        record: { state: 'shifted', since: '2026-01-01', alternateArmId: 'jev_start' },
+      }),
       // The decision runs after the response; nothing is on the ledger yet.
       findAppliedStart: async () => false,
       loadHolder: async () => ({ title: 'Holder', workerStatus: 'completed', lastActivityAt: null, prLifecycle: 'ci_green', baseStale: false }),
@@ -10807,6 +10817,18 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
       ...over,
     });
     beforeEach(() => { acquired.length = 0; });
+
+    it('keeps the advisory hold when policy state cannot be read, even with an applied START', async () => {
+      let appliedLookups = 0;
+      const on = await claimWith(gated({
+        loadLearningPolicy: async () => { throw new Error('fixture policy read failure'); },
+        findAppliedStart: async () => { appliedLookups++; return true; },
+      }), scenarios.advisoryManifest);
+      expect(on.body.workers).toHaveLength(0);
+      expect(appliedLookups).toBe(0);
+      expect(acquired).toHaveLength(0);
+      expect(on.rows).toHaveLength(0);
+    });
 
     it('relaxes only the open-PR overlap and acquires the declared paths exclusively first', async () => {
       const on = await claimWith(gated(), scenarios.openPrAfterWorkerEnded);

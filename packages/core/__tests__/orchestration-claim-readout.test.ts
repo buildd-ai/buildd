@@ -201,6 +201,44 @@ describe('summarizeClaimHoldReadout: wait, stranded, throughput', () => {
       decision({ id: 'd3', suggested: null, status: 'fallback', reason: 'deadline' }),
       decision({ id: 'd4', suggested: 'HOLD', status: 'applied', reason: null, applied: true }),
     ] }));
-    expect(g.outcomes).toEqual({ 'fallback:rule_decided': 1, 'suggested:below_threshold': 1, 'fallback:deadline': 1, 'applied:-': 1 });
+    expect(g.outcomes).toEqual({ 'fallback:rule_decided': 1, 'suggested:below_threshold': 1, 'fallback:deadline': 1 });
   });
+});
+
+it('splits actors and cells and excludes stale ownership evidence from calibration', () => {
+  const rows = [
+    decision({ id: 'jev', applied: true, effective: 'START', actor: 'jev_start', gate: 'overlap', areaClass: 'other', attributableUnsafe: false }),
+    decision({ id: 'human', applied: true, effective: 'START', actor: 'human_force', gate: 'overlap', areaClass: 'other', attributableUnsafe: true }),
+    decision({ id: 'stale', applied: true, effective: 'START', actor: 'jev_start', gate: 'overlap', areaClass: 'other', attributableUnsafe: true, staleBlocker: true }),
+  ];
+  const groups = summarizeClaimHoldReadout(input({ decisions: rows, labels: rows.map(d => observed(d.id, true)) }));
+  expect(groups).toHaveLength(2);
+  const jev = groups.find(g => g.actor === 'jev_start')!;
+  expect(jev.unsafeStartRate).toBe(1);
+  expect(jev.attributableUnsafeRate).toBe(0);
+  expect(jev.calibration).toEqual({ observedUnsafe: 0, observedSafe: 1, excludedStale: 1, missingAttribution: 0 });
+  expect(groups.find(g => g.actor === 'human_force')!.attributableUnsafeRate).toBe(1);
+});
+
+it('does not turn unlanded or unattributed starts into safe calibration evidence', () => {
+  const rows = [
+    decision({ id: 'unlanded', actor: 'jev_start', applied: true, effective: 'START', attributableUnsafe: false }),
+    decision({ id: 'unknown', actor: 'jev_start', applied: true, effective: 'START' }),
+  ];
+  const unlanded = observed('unlanded', false);
+  if (unlanded.touched.status === 'observed') unlanded.touched.value.landed = false;
+  const [group] = summarizeClaimHoldReadout(input({ decisions: rows, labels: [unlanded, observed('unknown', true)] }));
+  expect(group.attributableUnsafeRate).toBeNull();
+  expect(group.calibration.missingAttribution).toBe(2);
+});
+
+it('shows clean and overlap controls beside attributable harm, with stale controls excluded', () => {
+  const rows = [
+    decision({ id: 'jev', actor: 'jev_start', applied: true, effective: 'START', attributableUnsafe: false }),
+    decision({ id: 'clean', actor: 'rule_start_clean', applied: true, effective: 'START', attributableUnsafe: false }),
+    decision({ id: 'overlap', actor: 'rule_start_overlap', applied: true, effective: 'START', attributableUnsafe: true }),
+    decision({ id: 'stale', actor: 'rule_start_clean', applied: true, effective: 'START', staleBlocker: true }),
+  ];
+  const groups = summarizeClaimHoldReadout(input({ decisions: rows, labels: rows.map(d => observed(d.id, d.id !== 'clean')) }));
+  expect(groups.find(g => g.actor === 'jev_start')).toMatchObject({ attributableUnsafeRate: 0, unsafeStartRate: 1, baseUnsafeRate: 0, overlapControlUnsafeRate: 1 });
 });

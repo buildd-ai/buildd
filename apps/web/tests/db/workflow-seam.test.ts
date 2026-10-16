@@ -593,3 +593,53 @@ describe('S5 part 3: a verified no-op through the seam (§13.13 rule 4)', () => 
     expect(v.findings![0]!.status).toBe('open');
   });
 });
+
+describe('38442d17: a CI repair that ended without a push while its head reads green', () => {
+  /** An approved PR whose CI failed at H1: REPAIRING, with the CI attempt's task filed as the dispatch handler would. */
+  async function repairingWithCiTask() {
+    const { deliveryId, prNumber, review } = await openAndHandOn();
+    await recordReviewVerdict({ reviewerTask: await reviewerTask(review.taskId), verdict: 'approve', effectiveVerdict: 'approve', headSha: 'H1', confidence: 0.95 }, deps);
+    await applyCommand({ type: 'CiFailedObserved', actor: 'webhook', headSha: 'H1', signature: 'ci:db', maxAttempts: 3 }, { ref: { deliveryId } });
+    const view = await loadView({ deliveryId });
+    expect(view.delivery!.state).toBe('REPAIRING');
+    const attempt = view.attempts.find((a) => a.family === 'ci')!;
+    const taskId = await seedTask(workspaceId, { status: 'pending', title: 'ci fix' });
+    await q(sql`UPDATE tasks SET delivery_id = ${deliveryId}::uuid, delivery_role = 'ci_fix',
+      context = jsonb_build_object('workflowAttemptId', ${attempt.id}::text) WHERE id = ${taskId}::uuid`);
+    const task = await fixTask(taskId);
+    const workerId = await seedWorker(taskId, { status: 'failed', prNumber });
+    return { deliveryId, task, workerId };
+  }
+  const ciAttempts = async (deliveryId: string) => (await loadView({ deliveryId })).attempts.filter((a) => a.family === 'ci');
+
+  test('a cancelled (lost) repair on the bound head, now green, resumes the delivery and queues no further fix', async () => {
+    const { deliveryId, task, workerId } = await repairingWithCiTask();
+    checks = { complete: true, failing: [] };
+    green = true;
+    const r = await attemptEnded({ task, workerId, status: 'lost', localHeadSha: null, commitCount: 0, source: 'sweep:cancelled' }, deps);
+    expect(r).toMatchObject({ handled: true, result: { result: 'applied', decision: { toState: 'APPROVED' } } });
+    expect((await loadView({ deliveryId })).delivery!.state).toBe('APPROVED');
+    expect((await ciAttempts(deliveryId)).length).toBe(1);
+  });
+
+  test.each([
+    ['ciGreen false', () => { gh.head = 'H1'; green = false; }],
+    ['ciGreen unknown', () => { gh.head = 'H1'; green = null; }],
+    ['a different live head', () => { gh.head = 'H2'; gh.ancestors = { H2: ['H1'] }; green = true; }],
+  ])('%s falls through to the retry ledger', async (_name, arrange) => {
+    const { deliveryId, task, workerId } = await repairingWithCiTask();
+    checks = { complete: true, failing: [] };
+    arrange();
+    await attemptEnded({ task, workerId, status: 'lost', localHeadSha: null, commitCount: 0, source: 'sweep:cancelled' }, deps);
+    expect((await loadView({ deliveryId })).delivery!.state).not.toBe('APPROVED');
+    expect((await ciAttempts(deliveryId)).length).toBeGreaterThan(1);
+  });
+
+  test('a completed repair does not take the branch, even on a green head', async () => {
+    const { deliveryId, task, workerId } = await repairingWithCiTask();
+    checks = { complete: true, failing: [] };
+    green = true;
+    await attemptEnded({ task, workerId, status: 'completed', localHeadSha: null, commitCount: 0, source: 'runner' }, deps);
+    expect((await loadView({ deliveryId })).delivery!.state).not.toBe('APPROVED');
+  });
+});

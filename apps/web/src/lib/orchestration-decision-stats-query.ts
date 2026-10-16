@@ -38,10 +38,11 @@ export function rollupOrchestrationDecisions(
     addDecision(decisions, row);
     decisions.firstAt = minIso(decisions.firstAt, row.firstAt);
     decisions.lastAt = maxIso(decisions.lastAt, row.lastAt);
-    const groupKey = [row.capability, row.decisionId, row.fingerprint, row.candidatePolicyVersion, row.experimentArm, row.mode].join('\u0000');
+    const groupKey = [row.capability, row.decisionId, row.fingerprint, row.candidatePolicyVersion, row.experimentArm, row.mode, row.actor, row.gate, row.areaClass].join('\u0000');
     let group = groups.get(groupKey);
     if (!group) {
       group = {
+        actor: row.actor, gate: row.gate, areaClass: row.areaClass,
         capability: row.capability, decisionId: row.decisionId, fingerprint: row.fingerprint,
         candidatePolicyVersion: row.candidatePolicyVersion, experimentArm: row.experimentArm, mode: row.mode,
         ...emptyDecision(), firstAt: null, lastAt: null,
@@ -106,7 +107,14 @@ export async function fetchOrchestrationDecisionStats(input: {
     inArray(d.workspaceId, input.workspaceIds), gte(d.createdAt, windowStart),
     input.missionId ? eq(d.missionId, input.missionId) : undefined,
   );
+  const actor = sql<string>`case when ${d.decisionId} = 'buildd.human_force_start' then 'human_force'
+    when ${d.applied} and ${d.effective} = 'START' then 'jev_start'
+    when ${d.suggested} = 'HOLD' and ${d.model} is not null then 'jev_hold'
+    when ${d.effective} = 'HOLD' then 'deterministic_hold' else 'other' end`;
+  const gate = sql<string>`coalesce(${d.receipt}->>'gate', 'unknown')`;
+  const areaClass = sql<string>`coalesce(${d.receipt}->>'areaClass', 'unknown')`;
   const decisionRows = await db.select({
+    actor, gate, areaClass,
     capability: d.capability, decisionId: d.decisionId, fingerprint: d.fingerprint,
     candidatePolicyVersion: d.candidatePolicyVersion, experimentArm: d.experimentArm, mode: d.mode,
     day: decisionDay,
@@ -118,7 +126,7 @@ export async function fetchOrchestrationDecisionStats(input: {
     firstAt: sql<string | null>`min(${d.createdAt})::text`,
     lastAt: sql<string | null>`max(${d.createdAt})::text`,
   }).from(d).where(decisionWhere)
-    .groupBy(d.capability, d.decisionId, d.fingerprint, d.candidatePolicyVersion, d.experimentArm, d.mode, decisionDay);
+    .groupBy(d.capability, d.decisionId, d.fingerprint, d.candidatePolicyVersion, d.experimentArm, d.mode, decisionDay, actor, gate, areaClass);
 
   const reasonRows = await db.select({
     capability: d.capability, status: d.status, reason: d.reason,

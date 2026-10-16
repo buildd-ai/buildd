@@ -12,6 +12,8 @@ import { setDecisionModelForKind } from '@buildd/core/decision-model-store';
 import { canonicalMeasuredModel, loadMeasurementsSafe, writeDecisionModelMeasurement } from '@buildd/core/decision-model-measurements';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { runModelComparison } from '../prompt-evals/compare-run';
+import { SETS } from '../prompt-evals/benchmark-sets';
+import { EVAL_DATASETS } from '../prompt-evals/cases';
 import { collectedDeps, promptEvalDeps } from '../prompt-evals/store';
 import { OPTIMIZER_CADENCE_MS, type OptimizerDeps, type SwitchRow, type SwitchStore } from './optimizer';
 
@@ -115,6 +117,7 @@ export function optimizerDeps(): OptimizerDeps {
     },
     readDecisionModel: readStoredDecisionModel,
     compare: input => runModelComparison(input, promptEvalDeps()),
+    labelledKinds: async () => [...new Set([...Object.keys(SETS), ...Object.values(EVAL_DATASETS).map(d => d.kind)])],
     preflight: async (route, teamId) => {
       const r = await probeDecisionModel(route, { teamId });
       return r.ok ? { ok: true } : { ok: false, error: r.error };

@@ -67,6 +67,29 @@ mock.module('@buildd/core/db/schema', () => ({
 
 // Uses the REAL @buildd/core/mission-helpers so isDeliverableTask's actual rules
 // (taskClass, housekeeping titles, planning mode) are under test here.
+// S4b: the completion write is the kernel's CAS statement (workflow/mission-completion-write.ts),
+// pinned on real Postgres in tests/db/mission-completion-writer.test.ts. Here it records like the
+// update it replaced, and the fingerprint the decision reads is what `epochFingerprint` says.
+let epochFingerprint: string | null = null;
+/** Later fingerprint reads (after a miss), in order; empty = the same as the first. */
+let laterFingerprints: Array<string | null> = [];
+/** Per-claim answers, in order (true = won); empty = `missionUpdateReturning` decides. */
+let claimAnswers: boolean[] = [];
+let fingerprintReads = 0;
+/** Runs when a claim misses: what another writer did to the mission meanwhile. */
+let onClaimMiss: (() => void) | null = null;
+const claimCalls: Array<{ missionId: string; fingerprint: string | null }> = [];
+mock.module('@/lib/workflow/mission-completion-write', () => ({
+  readMissionEpochFingerprint: async () => (fingerprintReads++ === 0 ? epochFingerprint : (laterFingerprints.shift() ?? epochFingerprint)),
+  claimMissionCompletion: async (missionId: string, fingerprint: string | null) => {
+    claimCalls.push({ missionId, fingerprint });
+    updateCalls.push({ table: 'missions', data: { status: 'completed' } });
+    const won = claimAnswers.length ? claimAnswers.shift()! : missionUpdateReturning.length > 0;
+    if (!won) onClaimMiss?.();
+    const row = missionUpdateReturning[0] ?? { id: missionId, scheduleId: null };
+    return won ? { id: row.id, scheduleId: row.scheduleId ?? null } : null;
+  },
+}));
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -223,6 +246,12 @@ function reset() {
   releaseTaskRows = [{ taskId: 't-done', workspaceId: 'ws-1' }];
   workerRow = { id: 'w-done' };
   updateCalls.length = 0;
+  claimCalls.length = 0;
+  epochFingerprint = null;
+  laterFingerprints = [];
+  claimAnswers = [];
+  fingerprintReads = 0;
+  onClaimMiss = null;
   insertedRows.length = 0;
   mockTriggerEvent.mockReset();
   mockTriggerEvent.mockImplementation(() => Promise.resolve());
@@ -1066,6 +1095,71 @@ describe('completeMissionIfVerified — allowed', () => {
     expect(mockTriggerEvent).toHaveBeenCalledWith('mission-m1', 'mission:loop_completed', expect.objectContaining({ missionId: 'm1' }));
   });
 
+  it('S4b: the write is compare-and-set on the delivery records the decision read', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    epochFingerprint = 'e1:3:retired';
+    missionUpdateReturning = [{ id: 'm1', scheduleId: null }];
+    await completeMissionIfVerified('m1', { path: 'dormancy' });
+    expect(claimCalls).toEqual([{ missionId: 'm1', fingerprint: 'e1:3:retired' }]);
+  });
+
+  it('S4b review: deliveries that moved during the decision are decided once more on a fresh read', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    epochFingerprint = 'e1:2:merged';
+    laterFingerprints = ['e1:3:retired'];
+    claimAnswers = [false, true];
+    const result = await completeMissionIfVerified('m1', { path: 'dormancy' });
+    expect(result.completed).toBe(true);
+    expect(claimCalls.map((c) => c.fingerprint)).toEqual(['e1:2:merged', 'e1:3:retired']);
+  });
+
+  it('S4b review: a second miss on moved deliveries is reported as such, not as a lost race', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    epochFingerprint = 'e1:2:merged';
+    laterFingerprints = ['e1:3:retired'];
+    claimAnswers = [false, false];
+    const result = await completeMissionIfVerified('m1', { path: 'dormancy' });
+    expect(result.completed).toBe(false);
+    expect(result.decision.code).toBe('deliveries_moved');
+  });
+
+  // S4b delta review: an unrelated edit holding the mission row makes the xmin re-check miss with
+  // the deliveries unchanged and the mission still active. That is not a lost race: claim again.
+  it('S4b review: a miss with the deliveries unchanged and the mission still active claims once more', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    epochFingerprint = 'e1:3:retired';
+    claimAnswers = [false, true];
+    const result = await completeMissionIfVerified('m1', { path: 'dormancy' });
+    expect(result.completed).toBe(true);
+    expect(claimCalls.map((c) => c.fingerprint)).toEqual(['e1:3:retired', 'e1:3:retired']);
+  });
+
+  it('S4b review: a second such miss is reported as contended, not as a mission that left active', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    epochFingerprint = 'e1:3:retired';
+    claimAnswers = [false, false];
+    const result = await completeMissionIfVerified('m1', { path: 'dormancy' });
+    expect(result.completed).toBe(false);
+    expect(result.decision.code).toBe('completion_contended');
+    expect(claimCalls.length).toBe(2);
+  });
+
+  it('S4b review: a mission that really left active is mission_not_active, claimed once', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    claimAnswers = [false];
+    // Someone else completed it while this caller decided.
+    onClaimMiss = () => { missionRow = { ...missionRow, status: 'completed' }; };
+    const result = await completeMissionIfVerified('m1', { path: 'dormancy' });
+    expect(result.decision.code).toBe('mission_not_active');
+    expect(claimCalls.length).toBe(1);
+  });
+
   it('asks the release trigger to reconsider once the mission closes', async () => {
     // The gate clearing IS the moment an on_mission_complete release becomes due.
     // Previously the release could only be attempted from a worker-completion
@@ -1118,6 +1212,7 @@ describe('completeMissionIfVerified — allowed', () => {
     activeMission();
     taskRows = [work('completed')];
     missionUpdateReturning = []; // WHERE status='active' matched nothing
+    onClaimMiss = () => { missionRow = { ...missionRow, status: 'completed' }; }; // the other caller's win
 
     const result = await completeMissionIfVerified('m1', { path: 'dormancy' });
 
