@@ -690,3 +690,46 @@ describe('import: placement through the area classifier (§17)', () => {
     expect(seen).toEqual(names.map((n) => `docs/specs/${n}`));
   });
 });
+
+describe('import: a retired imported spec is skipped', () => {
+  test('a retired spec is skipped on re-import even if the file changes', async () => {
+    const w = await freshWs();
+    const gh = fakeGitHub({ 'living-specs.md': spec('Living Specs', 'ops') });
+    const first = await ok(importRepoSpecs(user(member), { workspaceId: w, dryRun: false }, gh.deps));
+    const id = first.files[0]!.specId!;
+    expect(first.files[0]).toMatchObject({ action: 'create' });
+
+    const [row] = await q<any>(sql`SELECT * FROM specs WHERE id = ${id}::uuid`);
+    expect(row.status).toBe('draft');
+    const replaced = await area(w, 'Living Specs Native Replacement');
+    await q(sql`UPDATE specs SET status = 'retired', repo_source = jsonb_set(repo_source, '{retired_at}', to_jsonb(now()::text)) WHERE id = ${id}::uuid`);
+
+    gh.edit('living-specs.md', spec('Living Specs', 'ops').replace('every widget', 'every widget, changed'));
+    const dry = await ok(importRepoSpecs(user(member), { workspaceId: w }, gh.deps));
+    expect(dry.files[0]).toMatchObject({ action: 'skip', reason: 'superseded', specId: id });
+    expect(dry.files[0]!.message).toContain('retired');
+
+    const real = await ok(importRepoSpecs(user(member), { workspaceId: w, dryRun: false }, gh.deps));
+    expect(real.files[0]).toMatchObject({ action: 'skip', reason: 'superseded', specId: id });
+    const [after] = await q<any>(sql`SELECT head_revision FROM specs WHERE id = ${id}::uuid`);
+    expect(after.head_revision).toBe(1);
+  });
+
+  test('a superseded spec is skipped on re-import', async () => {
+    const w = await freshWs();
+    const gh = fakeGitHub({ 'workflow-kernel-library.md': spec('Workflow Kernel Library', 'ops') });
+    const first = await ok(importRepoSpecs(user(member), { workspaceId: w, dryRun: false }, gh.deps));
+    const id = first.files[0]!.specId!;
+
+    const replacement = await area(w, 'Kernel Superseding Spec');
+    await q(sql`UPDATE specs SET status = 'superseded', superseded_by = ${replacement}::uuid WHERE id = ${id}::uuid`);
+
+    gh.edit('workflow-kernel-library.md', spec('Workflow Kernel Library', 'ops').replace('every widget', 'modified'));
+    const dry = await ok(importRepoSpecs(user(member), { workspaceId: w }, gh.deps));
+    expect(dry.files[0]).toMatchObject({ action: 'skip', reason: 'superseded', specId: id });
+    expect(dry.files[0]!.message).toContain('superseded');
+
+    const real = await ok(importRepoSpecs(user(member), { workspaceId: w, dryRun: false }, gh.deps));
+    expect(real.files[0]).toMatchObject({ action: 'skip', reason: 'superseded' });
+  });
+});
