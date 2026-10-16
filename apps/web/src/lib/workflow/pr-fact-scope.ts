@@ -19,6 +19,7 @@
 import { sql, type SQL } from 'drizzle-orm';
 import { PR_FACT_SCOPE, type PrFactScope, type TerminalPrFactKind } from '@buildd/core/pr-fact-sql';
 import { kernelOnSql } from './kill-switch';
+import { TERMINAL_STATES } from '@buildd/workflow-kernel/types';
 
 /**
  * The one reading of "this worker row carries that delivery's PR", for both the transition's
@@ -59,3 +60,19 @@ export const factFunnelScope: PrFactScope = {
 
 /** The kernel's own projection (`stamp_pr_rows`, the backstop of the transition's): it is the writer. */
 export const kernelProjectionScope: PrFactScope = { [PR_FACT_SCOPE]: 'kernel_projection', where: () => null };
+
+/**
+ * S4b: the one definition of "delivery-owned" for a task (§1), the task-side twin of
+ * `kernelOwnedRowSql`: the task owns a kernel-authority delivery bound to a PR, in a workspace
+ * whose kill switch is on. `task` is the task's id column (`tasks.id`, or an alias's).
+ *
+ * `live: true` narrows it to a delivery that has not reached a terminal state (MERGED, SUPERSEDED,
+ * ABANDONED, FAILED): the window in which the kernel, not a legacy writer, decides where the
+ * task's PR goes. A writer that infers delivery (a merge seen by branch name, an issue closing,
+ * a sweep) skips a delivery-owned task and leaves its lifecycle to the kernel's transitions.
+ */
+export function deliveryOwnedTaskSql(task: SQL, opts: { live?: boolean } = {}): SQL {
+  return sql`EXISTS (SELECT 1 FROM workflow_deliveries kd JOIN workspaces kw ON kw.id = kd.workspace_id
+    WHERE kd.owner_task_id = ${task} AND kd.authority = 'kernel' AND kd.pr_number IS NOT NULL AND ${kernelOnSql(sql`kw.git_config`)}${
+      opts.live ? sql` AND kd.state NOT IN (SELECT jsonb_array_elements_text(${JSON.stringify([...TERMINAL_STATES])}::jsonb))` : sql``})`;
+}

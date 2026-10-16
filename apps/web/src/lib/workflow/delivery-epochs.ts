@@ -410,6 +410,16 @@ export async function contentContained(api: GithubApi, repo: MissionRepo, headSh
   }
 }
 
+/**
+ * S4b (workflow-kernel-library.md §1 "mission completion"): whether a reconcile pass recorded a
+ * settlement or a retirement, the epoch transitions that can release a held completion
+ * (`epochCompletionHold`). The kernel's own epoch path then asks the one completion writer to
+ * decide, instead of waiting for the next task event or schedule tick to.
+ */
+export function epochStepsMayComplete(steps: ReconcileOutcome['steps']): boolean {
+  return steps.some((s) => (s.step === 'settle' || s.step === 'retire') && /(^|:)applied(:|$)/.test(s.outcome));
+}
+
 export interface ReconcileOutcome {
   missionId: string;
   steps: Array<{ step: string; epoch: number; outcome: string }>;

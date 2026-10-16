@@ -13,15 +13,23 @@
  *    it durable: a request killed between the merge and this work no longer
  *    loses it (docs/specs/workflow-state-kernel.md §10.1).
  *
+ * The task's own transition (`tasks.status = 'completed'` when the merge finishes
+ * it) is not written here. For a kernel-owned PR the T17 statement writes it
+ * (lib/workflow/task-projection.ts) and the effect passes what it did as
+ * `taskTransition`; for a PR the kernel does not own the webhook passes
+ * `legacyCompleteTaskOnMerge` (pr-merged-legacy-task.ts), which writes it at the
+ * point this work used to. Either way this module performs only side effects
+ * (docs/specs/workflow-kernel-library.md §1, AC-2).
+ *
  * Every step is idempotent or guarded on the row, so an at-least-once replay
  * of the effect repeats nothing a person can see. `mergeIsNew` gates the
  * once-per-merge steps: the webhook knows it from `workers.mergedAt`; the
  * effect runs once per merge by its dedupe key.
  */
 import { after } from 'next/server';
-import { and, eq, ne } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
-import { tasks, workspaces } from '@buildd/core/db/schema';
+import { workspaces } from '@buildd/core/db/schema';
 import { emit } from '@/lib/core-emit';
 import { reportTaskPolicyOutcome } from '@/lib/model-policy-outcomes';
 import { checkDependsOnResolved, resolveCompletedTask } from '@/lib/task-dependencies';
@@ -31,9 +39,10 @@ import { postWorkTrackerCompletionUpdate } from '@/lib/work-tracker';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { stampPrMergedOnAllRows } from '@/lib/pr-merge-stamp';
 import { workerOwnsPr, workerOwnsPrUrl } from '@/lib/repo-scope';
-import { otherOpenPrsOfTask } from '@/lib/task-open-prs';
-import { INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+
+/** What the merge did to the task: the `task.pr_merged` event's `transition`. */
+export type MergeTaskTransition = 'flipped' | 'already_completed' | 'not_flipped';
 
 export interface MergedPrTask {
   id: string;
@@ -61,6 +70,11 @@ export interface MergedPrWorkInput {
   mergeIsNew: boolean;
   /** Stamp every row of the PR here. False when the kernel's `stamp_pr_rows` effect owns the stamp. */
   stamp: boolean;
+  /**
+   * What the merge did to the task. A kernel-owned PR: the value its T17 statement recorded. A PR
+   * the kernel does not own: the legacy writer, called at the point the transition belongs.
+   */
+  taskTransition: MergeTaskTransition | ((task: MergedPrTask) => Promise<MergeTaskTransition>);
 }
 
 /** Run inside `after()` when a request scope exists, inline otherwise (tests, the effect drain). */
@@ -168,40 +182,19 @@ export async function runMergedPrWork(p: MergedPrWorkInput): Promise<void> {
   // `tasks.status = 'completed'` belongs to the TRANSITION (this merge
   // finished the task); everything after it belongs to the MERGE, and is true
   // whatever the task row already said.
-  let transition: 'flipped' | 'already_completed' | 'not_flipped' = 'already_completed';
-  // A stacked series: the task owns more PRs than this one. Its first merge
-  // must not complete the task; the last one does.
-  const openSiblingPrs = task.status !== 'completed' ? await otherOpenPrsOfTask(task.id, { prUrl: p.prUrl }) : [];
-  if (task.status !== 'completed' && p.worker.runner === INTERACTIVE_WORKER_RUNNER) {
-    // A local session decides when it is done (it may still be planning PR B..D,
-    // which no open-PR check can see); only its complete_task ends the task.
-    transition = 'not_flipped';
-    console.log(`Task ${task.id} stays open after PR #${p.prNumber} merged: interactive session completes its own task`);
-  } else if (openSiblingPrs.length > 0) {
-    transition = 'not_flipped';
-    console.log(`Task ${task.id} stays open after PR #${p.prNumber} merged: ${openSiblingPrs.length} other PR(s) still open`);
-  } else if (task.status !== 'completed') {
-    // Guarded on the row: the worker's own completion can land between the
-    // read and this write, and only the writer that flips it resolves it.
-    const [flipped] = await db
-      .update(tasks)
-      .set({ status: 'completed', updatedAt: new Date() })
-      .where(and(eq(tasks.id, task.id), ne(tasks.status, 'completed')))
-      .returning({ id: tasks.id });
-    transition = flipped ? 'flipped' : 'not_flipped';
-    if (flipped) {
-      console.log(`Auto-completed task ${task.id} via merged PR #${p.prNumber} on ${p.repoFullName}`);
-      // Same fact as the worker route's completion, same dedupe key: one row.
-      await emit({ type: 'task.completed', via: 'merge', taskId: task.id, workerId: worker.id, workspaceId: worker.workspaceId });
-      // One-shot announcement on the linked issue, inside the transition guard.
-      maybePostWorkTrackerIssueUpdate(p.prNumber, p.prHtmlUrl, true).catch(() => {});
-      // Parent rollup, dependents, mission completion and re-planning. A loop
-      // task waiting on this merge is resolved by its own loop advancement.
-      if (task.loopState !== 'condition_unmet') {
-        await resolveCompletedTask(task.id, task.workspaceId).catch((e) =>
-          console.error(`[pr-merged] resolveCompletedTask failed for task ${task.id}:`, e),
-        );
-      }
+  const transition: MergeTaskTransition = typeof p.taskTransition === 'function' ? await p.taskTransition(task) : p.taskTransition;
+  if (transition === 'flipped') {
+    console.log(`Auto-completed task ${task.id} via merged PR #${p.prNumber} on ${p.repoFullName}`);
+    // Same fact as the worker route's completion, same dedupe key: one row.
+    await emit({ type: 'task.completed', via: 'merge', taskId: task.id, workerId: worker.id, workspaceId: worker.workspaceId });
+    // One-shot announcement on the linked issue, inside the transition guard.
+    maybePostWorkTrackerIssueUpdate(p.prNumber, p.prHtmlUrl, true).catch(() => {});
+    // Parent rollup, dependents, mission completion and re-planning. A loop
+    // task waiting on this merge is resolved by its own loop advancement.
+    if (task.loopState !== 'condition_unmet') {
+      await resolveCompletedTask(task.id, task.workspaceId).catch((e) =>
+        console.error(`[pr-merged] resolveCompletedTask failed for task ${task.id}:`, e),
+      );
     }
   }
 

@@ -20,6 +20,8 @@ import type { MergePullRequestResult } from '@/lib/github';
 import { classifyMergeFailure } from '@/lib/conflict-retry';
 import { finalizeMissionPrMerge } from '@/lib/mission-pr';
 import { runMergedPrWork } from '@/lib/pr-merged-work';
+import { legacyCompleteTaskOnMerge } from '@/lib/pr-merged-legacy-task';
+import { mergeTaskTransitionOf } from './task-projection';
 import { workerOwnsPr } from '@/lib/repo-scope';
 import type { Lifecycle, MergeAnswer as PortMergeAnswer, MergeCallOutcome } from '@buildd/workflow-kernel/ports';
 import { workspaceRepo } from './github-facts';
@@ -94,11 +96,20 @@ export function mergeAnswerOf(res: MergeAnswer, now = Date.now()): PortMergeAnsw
 // ── post-merge work (T17) ───────────────────────────────────────────────────
 
 export const landingLifecycle: Pick<Lifecycle, 'merged' | 'finalizeMerge'> = {
-  async merged(d) {
+  async merged(d, payload) {
     if (!d.repoFullName || d.prNumber == null) return false;
+    // S4b (AC-2): the T17 statement completed the owner task (or did not) and said so here, naming
+    // the worker row it did it for. An effect queued before that carries neither: the legacy writer
+    // makes the transition, as before.
+    const decided = mergeTaskTransitionOf(payload);
     // Scoped to the delivery's workspace: another workspace on the same repo can carry a worker row
     // with this PR number and url, and the merge must never complete that workspace's task.
-    const owner = await db.query.workers.findFirst({
+    const owner = (decided?.ownerWorkerId
+      ? await db.query.workers.findFirst({
+          where: sqlWhere(and(eq(workers.id, decided.ownerWorkerId), eq(workers.workspaceId, d.workspaceId))),
+          with: { task: true },
+        })
+      : undefined) ?? await db.query.workers.findFirst({
       where: sqlWhere(and(eq(workers.workspaceId, d.workspaceId), workerOwnsPr(d.repoFullName, d.prNumber))),
       orderBy: sqlOrderByFn((w, { asc }) => [asc(w.createdAt)]),
       with: { task: true },
@@ -127,6 +138,8 @@ export const landingLifecycle: Pick<Lifecycle, 'merged' | 'finalizeMerge'> = {
       mergeIsNew: true,
       // stamp_pr_rows owns the fact-cache stamp.
       stamp: false,
+      taskTransition: decided?.taskTransition
+        ?? legacyCompleteTaskOnMerge({ prUrl: prUrlOf(d.repoFullName, d.prNumber), prNumber: d.prNumber, runner: owner.runner }),
     });
     return true;
   },

@@ -7,6 +7,7 @@ import { eq, and, gte, desc } from 'drizzle-orm';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
 import { deriveLineageSupersession, isPrUnshipped, prShipState, withDeliveryShip, type SupersessionScan, type SupersessionSuggestion } from '@buildd/core/pr-shipped';
 import { deliveryShipsForPrs, epochCompletionHold, missionEpochsOf, shipKey } from '@/lib/workflow/delivery-ship';
+import { claimMissionCompletion, readMissionEpochFingerprint } from '@/lib/workflow/mission-completion-write';
 import { MISSION_COMPLETED_NOTE_TITLE } from '@/lib/mission-helpers';
 import { computeAndStoreFlightStripCache } from '@buildd/core/flight-strip-store';
 import type { CriterionVerdict, GoalCriteriaState, GoalCriterion } from '@buildd/shared';
@@ -75,7 +76,9 @@ export type CompletionPath =
   | 'dormancy'
   | 'evaluation_task'
   | 'criteria_eval'
-  | 'release_trigger';
+  | 'release_trigger'
+  /** The kernel's epoch reconcile recorded a settlement or retirement (workflow/delivery-epochs.ts). */
+  | 'epoch_settled';
 
 export interface MissionCompletionDecision {
   ok: boolean;
@@ -900,6 +903,9 @@ export async function completeMissionIfVerified(
     authorTaskId?: string;
   },
 ): Promise<CompleteMissionResult> {
+  // S4b: the delivery records the decision reads, fingerprinted before it reads them, so the write
+  // below lands only on the epoch state it was decided on (workflow/mission-completion-write.ts).
+  const epochFingerprint = await readMissionEpochFingerprint(missionId);
   const decision = opts.decision
     ?? await canCompleteMission(missionId, {
       path: opts.path,
@@ -948,12 +954,10 @@ export async function completeMissionIfVerified(
 
   // Atomic active → completed. Concurrent callers race here; exactly one wins,
   // and only the winner disables the schedule and announces completion.
+  // For a mission with delivery records, also CAS on those records (§6): a merge, settlement or
+  // retirement recorded since the decision leaves it active for the next trigger to decide again.
   const completedAt = new Date();
-  const [claimed] = await db
-    .update(missions)
-    .set({ status: 'completed', completedAt, updatedAt: completedAt })
-    .where(and(eq(missions.id, missionId), eq(missions.status, 'active')))
-    .returning({ id: missions.id, scheduleId: missions.scheduleId });
+  const claimed = await claimMissionCompletion(missionId, epochFingerprint, completedAt);
 
   if (!claimed) {
     return {
@@ -962,7 +966,9 @@ export async function completeMissionIfVerified(
         ...decision,
         ok: false,
         code: 'mission_not_active',
-        reason: 'Mission left active state concurrently',
+        reason: epochFingerprint
+          ? 'Mission left active state, or its deliveries moved, concurrently'
+          : 'Mission left active state concurrently',
       },
     };
   }

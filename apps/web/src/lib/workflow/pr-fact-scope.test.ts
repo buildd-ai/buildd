@@ -6,8 +6,9 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
+import { sql as sqlTag } from 'drizzle-orm';
 import { recordPrFactSql } from '@buildd/core/pr-facts';
-import { factFunnelScope, kernelOwnedRowSql, kernelProjectionScope, prRowOfDeliverySql } from './pr-fact-scope';
+import { deliveryOwnedTaskSql, factFunnelScope, kernelOwnedRowSql, kernelProjectionScope, prRowOfDeliverySql } from './pr-fact-scope';
 
 const render = (q: Parameters<PgDialect['sqlToQuery']>[0]) => new PgDialect().sqlToQuery(q);
 
@@ -49,5 +50,21 @@ describe('factFunnelScope: a delivery-owned row takes only what its delivery alr
     expect(sql).toContain("kd.authority = 'kernel'");
     expect(sql).toContain("'workflowKernel'");
     expect(sql).not.toContain('owner_task_id');
+  });
+});
+
+describe('deliveryOwnedTaskSql (S4b): the task-side definition of delivery-owned', () => {
+  test('the owner of a kernel-authority delivery bound to a PR, kill switch on', () => {
+    const { sql } = render(deliveryOwnedTaskSql(sqlTag`t.id`));
+    expect(sql).toContain('EXISTS (SELECT 1 FROM workflow_deliveries kd JOIN workspaces kw ON kw.id = kd.workspace_id');
+    expect(sql).toContain("kd.owner_task_id = t.id AND kd.authority = 'kernel' AND kd.pr_number IS NOT NULL");
+    expect(sql).toContain("(COALESCE((kw.git_config)->>'workflowKernel', 'true') IN ('true', 'on'))");
+    expect(sql).not.toContain('kd.state');
+  });
+
+  test('live: only while the delivery has not reached a terminal state', () => {
+    const { sql, params } = render(deliveryOwnedTaskSql(sqlTag`t.id`, { live: true }));
+    expect(sql).toContain('AND kd.state NOT IN (SELECT jsonb_array_elements_text($1::jsonb))');
+    expect(JSON.parse(params[0] as string).sort()).toEqual(['ABANDONED', 'FAILED', 'MERGED', 'SUPERSEDED']);
   });
 });

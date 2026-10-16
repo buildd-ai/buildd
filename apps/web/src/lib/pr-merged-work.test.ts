@@ -6,7 +6,12 @@ const emit = mock(async (_e: any) => {});
 mock.module('next/server', () => ({ after: (fn: () => void) => fn() }));
 mock.module('@buildd/core/db', () => ({ db: { update: updateSpy, query: { workers: { findFirst: async () => null } } } }));
 mock.module('@buildd/core/db/schema', () => ({ tasks: {}, workspaces: {} }));
-mock.module('drizzle-orm', () => ({ and: () => ({}), eq: () => ({}), ne: () => ({}) }));
+mock.module('drizzle-orm', () => {
+  const sql: any = () => ({});
+  sql.raw = () => ({});
+  sql.join = () => ({});
+  return { and: () => ({}), eq: () => ({}), ne: () => ({}), sql };
+});
 mock.module('@/lib/core-emit', () => ({ emit }));
 mock.module('@/lib/model-policy-outcomes', () => ({ reportTaskPolicyOutcome: async () => {} }));
 mock.module('@/lib/task-dependencies', () => ({ checkDependsOnResolved: async () => {}, resolveCompletedTask: async () => {} }));
@@ -19,13 +24,16 @@ mock.module('@/lib/repo-scope', () => ({ workerOwnsPr: () => ({}), workerOwnsPrU
 mock.module('@/lib/task-open-prs', () => ({ otherOpenPrsOfTask: async () => [] }));
 
 const { runMergedPrWork } = await import('./pr-merged-work');
+const { legacyCompleteTaskOnMerge } = await import('./pr-merged-legacy-task');
 
-const input = (runner: string) => ({
+const input = (runner: string, taskTransition?: any) => ({
   worker: { id: 'w1', workspaceId: 'ws', taskId: 't1', runner },
   task: { id: 't1', status: 'in_progress', workspaceId: 'ws', missionId: null, taskClass: null, release: null, loopState: null },
   repoFullName: 'o/r', prNumber: 1, prUrl: 'u', prHtmlUrl: 'u', baseRef: 'dev', headSha: 's',
   installationId: null, mergedAt: new Date(), mergeIsNew: true, stamp: false,
+  taskTransition: taskTransition ?? legacyCompleteTaskOnMerge({ prUrl: 'u', prNumber: 1, runner }),
 });
+const events = () => emit.mock.calls.map((c) => c[0] as any);
 
 describe('runMergedPrWork completion', () => {
   beforeEach(() => { updateSpy.mockClear(); emit.mockClear(); });
@@ -40,5 +48,20 @@ describe('runMergedPrWork completion', () => {
   it('still completes a runner-held task', async () => {
     await runMergedPrWork(input('runner-1'));
     expect(updateSpy).toHaveBeenCalled();
+  });
+
+  // S4b (AC-2): for a kernel-owned PR the T17 statement already wrote the task; this work only reports it.
+  it('a transition the kernel decided writes no task row and still runs the completion side effects', async () => {
+    await runMergedPrWork(input('runner-1', 'flipped'));
+    expect(updateSpy).not.toHaveBeenCalled();
+    expect(events().find((e) => e.type === 'task.completed')).toMatchObject({ via: 'merge', taskId: 't1' });
+    expect(events().find((e) => e.type === 'task.pr_merged').transition).toBe('flipped');
+  });
+
+  it('a kernel answer of already_completed fires no completion', async () => {
+    await runMergedPrWork(input('runner-1', 'already_completed'));
+    expect(updateSpy).not.toHaveBeenCalled();
+    expect(events().some((e) => e.type === 'task.completed')).toBe(false);
+    expect(events().find((e) => e.type === 'task.pr_merged').transition).toBe('already_completed');
   });
 });

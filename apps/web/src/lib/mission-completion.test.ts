@@ -67,6 +67,20 @@ mock.module('@buildd/core/db/schema', () => ({
 
 // Uses the REAL @buildd/core/mission-helpers so isDeliverableTask's actual rules
 // (taskClass, housekeeping titles, planning mode) are under test here.
+// S4b: the completion write is the kernel's CAS statement (workflow/mission-completion-write.ts),
+// pinned on real Postgres in tests/db/mission-completion-writer.test.ts. Here it records like the
+// update it replaced, and the fingerprint the decision reads is what `epochFingerprint` says.
+let epochFingerprint: string | null = null;
+const claimCalls: Array<{ missionId: string; fingerprint: string | null }> = [];
+mock.module('@/lib/workflow/mission-completion-write', () => ({
+  readMissionEpochFingerprint: async () => epochFingerprint,
+  claimMissionCompletion: async (missionId: string, fingerprint: string | null) => {
+    claimCalls.push({ missionId, fingerprint });
+    updateCalls.push({ table: 'missions', data: { status: 'completed' } });
+    const row = missionUpdateReturning[0];
+    return row ? { id: row.id, scheduleId: row.scheduleId ?? null } : null;
+  },
+}));
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -223,6 +237,8 @@ function reset() {
   releaseTaskRows = [{ taskId: 't-done', workspaceId: 'ws-1' }];
   workerRow = { id: 'w-done' };
   updateCalls.length = 0;
+  claimCalls.length = 0;
+  epochFingerprint = null;
   insertedRows.length = 0;
   mockTriggerEvent.mockReset();
   mockTriggerEvent.mockImplementation(() => Promise.resolve());
@@ -1064,6 +1080,25 @@ describe('completeMissionIfVerified — allowed', () => {
     expect(insertedRows.some(r => r.title === 'Mission completed')).toBe(true);
     expect(mockUnblock).toHaveBeenCalledWith('m1', 'completed');
     expect(mockTriggerEvent).toHaveBeenCalledWith('mission-m1', 'mission:loop_completed', expect.objectContaining({ missionId: 'm1' }));
+  });
+
+  it('S4b: the write is compare-and-set on the delivery records the decision read', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    epochFingerprint = 'e1:3:retired';
+    missionUpdateReturning = [{ id: 'm1', scheduleId: null }];
+    await completeMissionIfVerified('m1', { path: 'dormancy' });
+    expect(claimCalls).toEqual([{ missionId: 'm1', fingerprint: 'e1:3:retired' }]);
+  });
+
+  it('S4b: deliveries that moved under the decision leave the mission active, said so', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+    epochFingerprint = 'e1:2:merged';
+    missionUpdateReturning = [];
+    const result = await completeMissionIfVerified('m1', { path: 'dormancy' });
+    expect(result.completed).toBe(false);
+    expect(result.decision.reason).toContain('deliveries moved');
   });
 
   it('asks the release trigger to reconsider once the mission closes', async () => {
