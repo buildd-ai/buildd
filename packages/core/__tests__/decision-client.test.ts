@@ -156,7 +156,7 @@ describe('decisionCall request', () => {
     expect(headers.get('content-type')).toBe('application/json');
     expect(headers.get('x-title')).toBe('buildd');
     // Proves the request went through the SDK, not a hand-rolled fetch.
-    expect(headers.get('x-typesafe-sdk')).toBe('typesafe-sdk/0.7.0');
+    expect(headers.get('x-typesafe-sdk')).toBe('typesafe-sdk/0.6.0');
 
     const body = JSON.parse(seen!.init.body as string);
     expect(Object.keys(body).sort()).toEqual(['model', 'questions', 'state']);
