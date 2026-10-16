@@ -240,6 +240,8 @@ expect(prompt).toContain('authentication method');
 
 ## Running Unit Tests — Always Isolated
 
+When stdout is not a TTY (a log file, an agent shell) the runner prints a `[progress]` line every 30s: files done, elapsed, host load vs CPU count, and hinted work left. Documented durations assume an idle host; a load well above the CPU count (shared runner) slows every broad check, so a long run with advancing `[progress]` lines is slow, not hung.
+
 Run unit tests through the runner, never `bun test` directly:
 
 ```bash
