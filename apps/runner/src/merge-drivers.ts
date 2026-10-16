@@ -25,6 +25,7 @@ import { dirname, isAbsolute, join } from 'path';
 import { promisify } from 'util';
 import type { NormalizedDerivedFileRule } from '@buildd/shared';
 import { gitArgsAsync, gitRunAsync } from './git-async';
+import { withRepoLock } from './repo-lock';
 
 export { normalizeDerivedFiles, type NormalizedDerivedFileRule } from '@buildd/shared';
 
@@ -196,6 +197,15 @@ function replaceManagedBlock(existing: string, lines: string[]): string {
  * a resolution recorded once replays on the next attempt.
  */
 export async function registerMergeDrivers(
+  worktreePath: string,
+  rules: NormalizedDerivedFileRule[],
+  opts: MergeDriverOptions,
+): Promise<MergeDriverPlan> {
+  // Writes the clone's shared config and info/: one writer per clone (repo-lock.ts).
+  return withRepoLock(worktreePath, () => registerMergeDriversLocked(worktreePath, rules, opts));
+}
+
+async function registerMergeDriversLocked(
   worktreePath: string,
   rules: NormalizedDerivedFileRule[],
   opts: MergeDriverOptions,
@@ -400,9 +410,6 @@ export async function mergeBaseWithDerivedFiles(
   const timeoutMs = opts.timeoutMs ?? MERGE_TIMEOUT_MS;
   const run = await gitRunAsync(['merge', '--no-edit', '--no-ff', baseRef], {
     cwd: worktreePath, timeoutMs, maxBuffer: 64 * 1024 * 1024,
-    // SIGTERM, as the sync spawn sent: git removes its index.lock on TERM, and
-    // the abort below needs the index.
-    killSignal: 'SIGTERM',
   });
   const timedOut = run.timedOut;
   const merge = {

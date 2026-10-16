@@ -30,6 +30,7 @@ import { diagnoseRegistryAuth, type RegistryAuthDiagnosis } from './install-diag
 import { emitPhase, emitWorktreeMode } from './phase-lines';
 import { branchOfRemoteRef, ensureRemoteBranchAsync, isCloudExecutor, type GitCwdRunAsync, type RemoteBranchResult } from './git-clone';
 import { gitShellAsync, GitAsyncError } from './git-async';
+import { acquireRepoLock, withRepoLock } from './repo-lock';
 
 // Mutable dep references — tests inject mocks via __setGitOpsDeps() without
 // touching bun's mock.module registry (which is shared across parallel workers
@@ -711,6 +712,14 @@ export async function setupWorktree(
   const cloud = isCloudExecutor(process.env);
   const execOpts = { cwd: repoPath, timeout: 30000, encoding: 'utf-8' as const };
 
+  // Every step up to the dependency install writes the clone's shared `.git`
+  // (fetch, worktree add, branch -D/-m, config). Two claims on one clone must
+  // not interleave those writes (repo-lock.ts). Released before the install,
+  // which only touches the new worktree and can take minutes.
+  const releaseRepoLock = await acquireRepoLock(repoPath);
+  let holdingRepoLock = true;
+  const unlockRepo = () => { holdingRepoLock = false; releaseRepoLock(); };
+
   // Worktrees live in .buildd-worktrees/ inside the repo
   const worktreeBase = join(repoPath, '.buildd-worktrees');
   const safeBranch = safeWorktreeDirName(branch);
@@ -1363,6 +1372,8 @@ export async function setupWorktree(
       }
     }
 
+    unlockRepo();
+
     // Wire up workspace package symlinks (@buildd/core, @buildd/shared, etc.).
     // Bun places these in nested node_modules (e.g. apps/web/node_modules/@buildd/core)
     // rather than the workspace root. A fresh worktree has no node_modules at all, so
@@ -1404,13 +1415,21 @@ export async function setupWorktree(
   } catch (err) {
     console.error(`[Worker ${workerId}] Failed to set up worktree:`, err instanceof Error ? err.message : err);
     setupWorktreeErrors.set(workerId, (err instanceof Error ? err.message : String(err)).replace(/\s+/g, ' ').trim().slice(0, 400));
-    // Clean up partial worktree
-    try {
-      if (!cloud && existsSync(worktreePath)) {
-        rmSync(worktreePath, { recursive: true, force: true });
-      }
-      await execAsync('git worktree prune', { ...execOpts, timeout: 5000 });
-    } catch {}
+    // Clean up partial worktree (still under the repo lock; retaken when the
+    // failure came after it was released, e.g. in the install).
+    const cleanupPartial = async () => {
+      try {
+        if (!cloud && existsSync(worktreePath)) {
+          rmSync(worktreePath, { recursive: true, force: true });
+        }
+        await execAsync('git worktree prune', { ...execOpts, timeout: 5000 });
+      } catch {}
+    };
+    if (holdingRepoLock) {
+      try { await cleanupPartial(); } finally { unlockRepo(); }
+    } else {
+      await withRepoLock(repoPath, cleanupPartial);
+    }
     return null;
   }
 }
@@ -1420,6 +1439,14 @@ export async function setupWorktree(
  * Removes the worktree directory and prunes git worktree metadata.
  */
 export async function cleanupWorktree(repoPath: string, worktreePath: string, workerId: string) {
+  if (resolve(repoPath) === resolve(worktreePath)) return;
+  if (_cleanupSpy) return _cleanupSpy(repoPath, worktreePath, workerId);
+  // `worktree remove` / `prune` write the clone's shared `.git/worktrees`.
+  await withRepoLock(repoPath, () => cleanupWorktreeLocked(repoPath, worktreePath, workerId));
+}
+
+/** cleanupWorktree's removal, for a caller already holding the repo lock. */
+async function cleanupWorktreeLocked(repoPath: string, worktreePath: string, workerId: string) {
   if (resolve(repoPath) === resolve(worktreePath)) return;
   if (_cleanupSpy) return _cleanupSpy(repoPath, worktreePath, workerId);
   const execOpts = { cwd: repoPath, timeout: 10000, encoding: 'utf-8' as const };
@@ -1558,8 +1585,15 @@ export async function removeWorktreeIfUnowned(
       return archiveRefusal(opts, err);
     }
   }
-  await cleanupWorktree(opts.repoPath, opts.worktreePath, opts.workerId);
-  return { removed: true };
+  // The awaits above (unpushed probe, archive, waiting for the repo lock) gave
+  // another worker time to take this path: re-check ownership right before
+  // the removal, under the lock, so nothing can claim it in between.
+  return withRepoLock(opts.repoPath, async () => {
+    const late = removalRefusalBeforeGit(opts);
+    if (late) return late;
+    await cleanupWorktreeLocked(opts.repoPath, opts.worktreePath, opts.workerId);
+    return { removed: true } as const;
+  });
 }
 
 /**
