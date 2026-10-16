@@ -255,6 +255,7 @@ export async function GET(req: NextRequest) {
           // up to date. Makes "how long has it been behind" a measured value
           // instead of something inferred from boot age.
           updateAvailableSince: hb.updateAvailableSince ?? null,
+          updateDrain: hb.updateDrain ?? null,
           trackedBranch: hb.trackedBranch || null,
           // Which model login the runner reported (a label, never a credential).
           modelAuthSource: hb.modelAuthSource ?? null,
