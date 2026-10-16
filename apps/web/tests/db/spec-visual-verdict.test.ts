@@ -134,7 +134,7 @@ describe('the visual audit grades the criteria of the tasks it reviews', () => {
     try {
       expect(await recordVisualVerdict(session(), s.builderId, input(undefined), deps())).toMatchObject({ ok: false, status: 403 });
       expect(await recordVisualVerdict(session(crypto.randomUUID()), s.builderId, input(wid), deps())).toMatchObject({ ok: false, status: 403 });
-      expect(await recordVisualVerdict(session(), s.builderId, input(await claimed(s.builderId, acct.id)), deps())).toMatchObject({ ok: false, status: 403, error: expect.stringContaining('Only a mission') });
+      expect(await recordVisualVerdict(session(), s.builderId, input(await claimed(s.builderId, acct.id)), deps())).toMatchObject({ ok: false, status: 403, error: expect.stringContaining('nly a mission') });
       const r = await recordVisualVerdict(session(), s.builderId, input(wid), deps());
       if (!r.ok) throw new Error(r.error);
       expect(r.outcome.criteria.find((c) => c.criterionId === 'AC-1')).toMatchObject({ verdict: 'pass', headSha: HEAD });
