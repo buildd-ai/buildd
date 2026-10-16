@@ -156,11 +156,26 @@ describe('isBackendConfigured', () => {
     expect(await isBackendConfigured('openrouter', scope)).toBe(false);
   });
 
-  it('passes the claiming account through by default', async () => {
+  it('passes the claiming account through by default and filters expired credentials', async () => {
     await isBackendConfigured('codex', scope);
     expect(mockHasCodexCredential).toHaveBeenLastCalledWith({
-      teamId: 'team-1', accountId: 'account-1', workspaceId: 'ws-1',
+      teamId: 'team-1', accountId: 'account-1', workspaceId: 'ws-1', deliverableOnly: true,
     });
+  });
+
+  it('does not configure Codex when the credential is expired (requires deliverableOnly filter)', async () => {
+    // Mock hasCodexCredential to return true (credential exists but is expired)
+    // but deliverableOnly=true should filter it out
+    let lastCallDeliverableOnly: boolean | undefined;
+    mockHasCodexCredential.mockImplementation(async (opts: any) => {
+      lastCallDeliverableOnly = opts.deliverableOnly;
+      // Simulate: credential exists (true) but is expired and should be filtered
+      // by deliverableOnly. Only return true when deliverableOnly is false.
+      return !opts.deliverableOnly;
+    });
+
+    expect(await isBackendConfigured('codex', scope)).toBe(false);
+    expect(lastCallDeliverableOnly).toBe(true);
   });
 
   it("anyAccount asks whether ANY runner in the team could run it", async () => {
@@ -168,7 +183,7 @@ describe('isBackendConfigured', () => {
     // still means the backend works for someone, so it must not read as absent.
     await isBackendConfigured('codex', { teamId: 'team-1', workspaceId: 'ws-1', anyAccount: true });
     expect(mockHasCodexCredential).toHaveBeenLastCalledWith({
-      teamId: 'team-1', accountId: 'any', workspaceId: 'ws-1',
+      teamId: 'team-1', accountId: 'any', workspaceId: 'ws-1', deliverableOnly: true,
     });
   });
 });

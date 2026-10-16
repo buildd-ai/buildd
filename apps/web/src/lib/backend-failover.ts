@@ -213,8 +213,10 @@ export async function isBackendConfigured(backend: BackendId, scope: BackendScop
       // Either a ChatGPT/OAuth connect (codex_credential), a plain team/workspace
       // OpenAI API key (openai_api_key), or a team agent model endpoint with an
       // OpenAI-compatible route (LiteLLM/OpenRouter) is enough to run Codex.
+      // deliverableOnly: true filters out revoked and expired credentials, matching
+      // what resolveCodexCredential will actually deliver at claim time (spec R-3/AC-2).
       const [hasCodex, hasOpenAi, hasEndpoint] = await Promise.all([
-        hasCodexCredential(credScope),
+        hasCodexCredential({ ...credScope, deliverableOnly: true }),
         hasOpenAiApiKey(credScope),
         hasOpenAiCompatibleAgentEndpoint(credScope),
       ]);
