@@ -10,6 +10,7 @@ import { resolveAccountTeamIds } from '@/lib/team-access';
 import { cleanupStaleWorkers, cleanupStuckWaitingInput, cleanupUnreadInteractiveAnswers, cleanupUnresumedAnswers } from '@/lib/stale-workers';
 import { checkWorkerDeliverables, getWorkerDeliverableArtifactCount } from '@/lib/worker-deliverables';
 import { kernelDeliveryById } from '@/lib/workflow/authority';
+import { notKernelMergedTaskSql } from '@/lib/workflow/pr-fact-scope';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { consumesRetryAttempt } from '@/lib/worker-exit-taxonomy';
 import { releaseAndNotify } from '@/lib/path-claim-release';
@@ -61,7 +62,7 @@ async function resetOrFailTask(taskId: string, now: Date, reason: string) {
           terminalReason: `${failureCount} worker failures (${reason}); aborting auto-retry`,
         },
       })
-      .where(eq(tasks.id, taskId));
+      .where(and(eq(tasks.id, taskId), notKernelMergedTaskSql()));
 
     // This is a TERMINAL write, so it must run the same post-terminal resolution
     // every other terminal writer runs (lib/stale-workers.ts resolveStaleTask,
@@ -92,7 +93,7 @@ async function resetOrFailTask(taskId: string, now: Date, reason: string) {
       // A requeue ends the claim, so a force claim's audit goes with it.
       context: sql`COALESCE(${tasks.context}, '{}'::jsonb) - ${FORCE_CLAIM_CONTEXT_KEY}`,
     })
-    .where(eq(tasks.id, taskId));
+    .where(and(eq(tasks.id, taskId), notKernelMergedTaskSql()));
   await wakeTask(taskId, 'task.requeued');
   return 'pending' as const;
 }

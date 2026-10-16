@@ -39,6 +39,7 @@ import { captureCiJobLogEvidence } from '@/lib/ci-job-log-evidence';
 import { fetchPrRetryGate, fetchCIFailureLogs } from '@/lib/ci-failure-inspect';
 import { policyValue } from '@/lib/policy-overrides';
 import { observeCiFailure } from '@/lib/workflow/seam';
+import { notKernelMergedTaskSql } from '@/lib/workflow/pr-fact-scope';
 import { isSchemaDriftFailure, buildDriftDiagnoseTask } from '@/lib/ci-drift-diagnose';
 import { inheritAttemptIdentity } from '@/lib/attempt-identity';
 import { prepareSubjectFiling, recordSubjectMatchObserved } from '@/lib/subject-anchor-observer';
@@ -49,6 +50,7 @@ import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { dependencyBotPushRefusal, isDependencyBotAuthor, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
 import { CI_RED_ESCALATED_KEY, scheduleCiRedLook } from '@/lib/ci-red-queue';
+import { rerunIfInfraFailure } from '@/lib/ci-infra-failure';
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Which door asked. Recorded as the gate row's `surface`. */
@@ -71,6 +73,8 @@ export type CiRetrySkipReason =
   | 'retries_disabled'
   | 'advisory_only'
   | 'duplicate'
+  /** The failed jobs hit an infrastructure fault (registry rate limit, image pull): they were re-run, no fix attempt filed. */
+  | 'infra_rerun'
   /** The workflow kernel owns this PR and decided not to dispatch now (its state is the reason). */
   | 'kernel_owned'
   /** The kernel blocked the delivery on a trunk incident (§6.10): the base branch fails the same checks. */
@@ -90,6 +94,7 @@ const SKIP_REASON_TEXT: Record<CiRetrySkipReason, string> = {
   retries_disabled: 'no CI retry: CI retries are disabled for this workspace',
   advisory_only: 'no CI retry: all failed checks are advisory only (Visual QA)',
   duplicate: 'no CI retry: a retry for this PR and head was filed concurrently',
+  infra_rerun: 'no CI retry: the failure is infrastructure (registry or runner), the failed jobs were re-run',
   kernel_owned: 'no CI retry: the workflow kernel owns this PR and its state owes no CI fix now',
   blocked_on_trunk: 'no CI retry: the base branch fails the same checks; one trunk fix runs for every blocked PR',
 };
@@ -200,6 +205,7 @@ export async function escalateCiRedHead(input: EscalationInput): Promise<boolean
     .where(and(
       eq(tasks.id, input.task.id),
       sql`coalesce(${tasks.context}->>${CI_RED_ESCALATED_KEY}, '') <> ${input.headSha}`,
+      notKernelMergedTaskSql(),
     ))
     .returning({ id: tasks.id });
   if (rows.length === 0) return false;
@@ -322,6 +328,22 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
       detail: { prNumber, repo: repoFullName, stage: 'ci_fix' },
     });
     return { kind: 'not_ours' };
+  }
+
+  // Ahead of the kernel door: a merged or closed PR owes no fix attempt, and a
+  // failure caused by the runner's infrastructure is cured by a re-run, not a
+  // builder (which would put the delivery in REPAIRING for nothing).
+  const earlyGate = await fetchPrRetryGate(installationId, repoFullName, prNumber);
+  if (earlyGate.closed) {
+    const reason = earlyGate.merged ? 'pr_merged' : 'pr_closed';
+    recordSkip(skipCtx, reason);
+    return { kind: 'skipped', reason };
+  }
+  const infra = await rerunIfInfraFailure(installationId, repoFullName, headSha);
+  if (infra.rerun) {
+    recordSkip(skipCtx, 'infra_rerun', { infraSignature: infra.signature, runId: infra.runId, runAttempt: infra.runAttempt });
+    await lookAgain(skipCtx);
+    return { kind: 'skipped', reason: 'infra_rerun' };
   }
 
   // Workflow kernel (docs/specs/workflow-state-kernel.md §5.7, T10): a PR whose

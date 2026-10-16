@@ -9,7 +9,10 @@
  * start. A hold with a time says the local time it lifts; one the runner's
  * last claim was refused for (a plan limit, a cooldown, R-25) is read from
  * that outcome, since a read cannot see the claim's in-loop deferrals. Every
- * other row starts "after N", N being the position ahead of it.
+ * other row starts "after N", N being the position ahead of it. A task held
+ * on its own (a start time ahead, e.g. a retry floor after failures, or a
+ * person's hold) is listed after the queue, not in it, with its reason, so
+ * "after N" counts only what the runner can take.
  */
 import type { RunnerQueueExclusion, RunnerQueueTask } from '@buildd/shared';
 import {
@@ -29,15 +32,20 @@ export interface QueueRow {
   est: string | null;
   /** When it is expected to start: a local time, "next", "after N", "on hold", or "-". */
   starts: string;
-  /** Set on a row this runner never takes. */
+  /** Set on a row this runner never takes, or one held on its own. */
   reason?: string;
+  /** Set on a row held on its own: it is listed after the queue and can still be picked. */
+  held?: boolean;
 }
 
 export interface QueueSection {
   teamId: string;
   teamName: string;
   estimatesOn: boolean;
+  /** Next for this runner: claimable now, or waiting on a hold the whole team shares. */
   rows: QueueRow[];
+  /** A per-task hold (a start time, a person's hold): out of the "after N" count, each with its reason. */
+  held: QueueRow[];
   notFor: QueueRow[];
 }
 
@@ -93,10 +101,27 @@ function runnerHoldTime(t: RunnerQueueTask, state: TopState, holds: ProviderHold
   return null;
 }
 
+/** A hold of this task alone: a start time still ahead, or a hold a person put on it or its mission. */
+function heldOnItsOwn(t: RunnerQueueTask, now: number): boolean {
+  if (t.holds.includes('task_held') || t.holds.includes('mission_held')) return true;
+  return t.holds.includes('deferred') && future(t.holdUntil, now);
+}
+
+/** The reason a held row waits, in the R-25 words ("retries after failures, Oct 22 14:07"). */
+function heldWords(t: RunnerQueueTask, now: number): { reason: string; starts: string } {
+  if (t.holds.includes('task_held')) return { reason: 'held by a person', starts: 'on hold' };
+  if (t.holds.includes('mission_held')) return { reason: 'mission is on hold', starts: 'on hold' };
+  const at = localLiftTime(t.holdUntil!, now);
+  const cause = t.holdCause === 'retry_after_failures' ? 'retries after failures'
+    : t.holdCause === 'usage_limit_reset' ? 'retries when the usage limit resets'
+    : t.holdCause === 'credential_probe' ? 'rechecks the rejected login'
+    : 'starts at its set time';
+  return { reason: `${cause}, ${at}`, starts: at };
+}
+
 /** When the row at `index` (0-based, in this team's queue) is expected to start. */
 function startWords(t: RunnerQueueTask, index: number, positions: Map<string, number>, state: TopState, holds: ProviderHold[], now: number): string {
-  if ((t.holds.includes('deferred') || t.holds.includes('workspace_paused')) && future(t.holdUntil, now)) return localLiftTime(t.holdUntil!, now);
-  if (t.holds.includes('task_held') || t.holds.includes('mission_held')) return 'on hold';
+  if (t.holds.includes('workspace_paused') && future(t.holdUntil, now)) return localLiftTime(t.holdUntil!, now);
   const own = runnerHoldTime(t, state, holds, now);
   if (own) return own;
   if (t.holds.includes('runner_cooldown')) return localLiftTime(new Date(now + RUNNER_COOLDOWN_MS).toISOString(), now);
@@ -118,9 +143,11 @@ export function queueSections(state: TopState, now: number): QueueSection[] {
   const out: QueueSection[] = [];
   for (const tm of q.teams) {
     if (team && tm.teamId !== team.key && tm.teamName !== team.name) continue;
-    const queued = tm.queue.filter(keep);
+    const kept = tm.queue.filter(keep);
+    const queued = kept.filter(t => !heldOnItsOwn(t, now));
+    const heldTasks = kept.filter(t => heldOnItsOwn(t, now));
     const notFor = tm.notForRunner.filter(keep);
-    if (queued.length === 0 && notFor.length === 0) continue;
+    if (queued.length === 0 && heldTasks.length === 0 && notFor.length === 0) continue;
     const positions = new Map(queued.map((t, i) => [t.id, i + 1]));
     out.push({
       teamId: tm.teamId,
@@ -135,6 +162,20 @@ export function queueSections(state: TopState, now: number): QueueSection[] {
         est: tm.estimatesOn ? (t.estimateMinutes != null ? estimateWords(t.estimateMinutes) : '-') : null,
         starts: startWords(t, i, positions, state, holds, now),
       })),
+      held: heldTasks.map(t => {
+        const w = heldWords(t, now);
+        return {
+          taskId: t.id,
+          position: null,
+          title: t.title,
+          workspace: t.workspaceName,
+          mission: w.reason,
+          est: tm.estimatesOn ? (t.estimateMinutes != null ? estimateWords(t.estimateMinutes) : '-') : null,
+          starts: w.starts,
+          reason: w.reason,
+          held: true,
+        };
+      }),
       notFor: notFor.map(t => ({
         taskId: t.id,
         position: null,
@@ -152,7 +193,7 @@ export function queueSections(state: TopState, now: number): QueueSection[] {
 
 /** Every row of the Queue view in drawn order: what ↑↓ moves over. */
 export function queueRowList(state: TopState, now: number): QueueRow[] {
-  return queueSections(state, now).flatMap(s => [...s.rows, ...s.notFor]);
+  return queueSections(state, now).flatMap(s => [...s.rows, ...s.held, ...s.notFor]);
 }
 
 /** The selected Queue row, or null when the view has none. */

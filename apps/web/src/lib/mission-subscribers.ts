@@ -273,6 +273,11 @@ export const missionSubscribers: readonly AnySubscriber[] = [
     if (!e.missionId || e.releaseHeld) return;
     await completeMissionIfVerified(e.missionId, { path: 'criteria_eval', predicate: `task ${e.taskId} reached ${e.finalStatus ?? e.status}` });
   }),
+  // S4b (workflow-kernel-library.md §1, §6): a settled or retired delivery can be the last thing
+  // a mission's completion was held on (`epochCompletionHold`).
+  subscriber('missions', 'mission.delivery_settled', 'mission-completion-on-delivery-settled', async e => {
+    await completeMissionIfVerified(e.missionId, { path: 'epoch_settled', predicate: `delivery ${e.steps.join(', ')}` });
+  }),
   subscriber('missions', 'task.completed', 'mission-completion-on-release-completed', async e => {
     if (e.via !== 'release' || !e.missionId) return;
     await completeMissionIfVerified(e.missionId, { path: 'criteria_eval', predicate: `task ${e.taskId} reached completed` });
