@@ -41,7 +41,7 @@ export default function IncidentDetail({ incidentId, headline, meta, projection,
 
         {fixTask && (
           <Section title="Fix task">
-            <Link href={`/app/tasks/${fixTask.id}`} className="flex items-center justify-between gap-3 py-2 border-b border-border hover:text-text-primary">
+            <Link href={`/app/tasks/${fixTask.id}`} className="flex min-h-11 md:min-h-0 items-center justify-between gap-3 py-2 border-b border-border hover:text-text-primary">
               <span className="min-w-0 truncate text-body text-text-primary">{fixTask.title}</span>
               <StatusPill status={fixTask.status} />
             </Link>
@@ -50,11 +50,11 @@ export default function IncidentDetail({ incidentId, headline, meta, projection,
 
         <Section title="Affected work" count={affectedCount || undefined}>
           {affected.tasks.map(t => (
-            <Link key={t.href} href={t.href} className="block py-2 border-b border-border text-body text-text-primary hover:underline truncate">{t.label}</Link>
+            <Link key={t.href} href={t.href} className="block min-h-11 md:min-h-0 py-3 md:py-2 border-b border-border text-body text-text-primary hover:underline truncate">{t.label}</Link>
           ))}
           {affected.moreTasks > 0 && <p className="py-2 text-meta text-text-muted">and {affected.moreTasks} more tasks</p>}
           {affected.prs.map(p => p.href
-            ? <a key={p.label} href={p.href} className="block py-2 border-b border-border text-body text-text-primary hover:underline">{p.label}</a>
+            ? <a key={p.label} href={p.href} className="block min-h-11 md:min-h-0 py-3 md:py-2 border-b border-border text-body text-text-primary hover:underline">{p.label}</a>
             : <p key={p.label} className="py-2 border-b border-border text-body text-text-primary">{p.label}</p>)}
         </Section>
 

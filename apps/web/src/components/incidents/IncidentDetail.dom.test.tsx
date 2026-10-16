@@ -45,6 +45,23 @@ describe('incident page states', () => {
   }
 });
 
+// happy-dom has no layout, so this reads the classes the plan's assertLayout
+// measures: below md every tap target is >= 44px tall (h-11 / min-h-11). A link
+// inside running text (a <p>) is exempt, as it is in the capture plan.
+describe('tap targets are 44px tall on mobile', () => {
+  const tall = /(^|\s)(min-)?h-11(\s|$)/;
+  for (const c of [...Object.keys(INCIDENT_FIXTURE_CASES), 'surfaces']) {
+    test(c, () => {
+      const el = render(c);
+      const short = Array.from(el.querySelectorAll('a[href], button'))
+        .filter(t => !(t.tagName === 'A' && t.parentElement?.tagName === 'P'))
+        .filter(t => !tall.test(t.getAttribute('class') ?? ''))
+        .map(t => t.textContent?.trim());
+      expect(short).toEqual([]);
+    });
+  }
+});
+
 describe('?state=incident-detail&case=<case> (scripts/qa/plans/incident-detail.json)', () => {
   test('renders the case the URL names, inside the testid the plan layout-checks', () => {
     window.history.replaceState(null, '', '/app/dev/fixtures?state=incident-detail&case=retry-exhausted');
