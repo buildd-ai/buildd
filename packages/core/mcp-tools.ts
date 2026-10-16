@@ -2050,7 +2050,10 @@ export function unknownWorkspaceMessage(value: string, visible: Array<{ name: st
   const seen = names.length === 0
     ? 'This key can see no workspaces.'
     : `You can see: ${names.slice(0, MAX).join(', ')}${names.length > MAX ? ` (+${names.length - MAX} more; manage_workspaces list)` : ''}.`;
-  return `Could not resolve workspace "${value}": not visible to this key. ${seen}`;
+  const next = names.length === 0
+    ? ''
+    : ' A key cannot file into a workspace outside its scope: file the follow-up in a visible workspace and name the intended destination in its description.';
+  return `Could not resolve workspace "${value}": not visible to this key. ${seen}${next}`;
 }
 
 /**
