@@ -794,8 +794,8 @@ export async function PATCH(
   if (worker.status === 'failed' || worker.status === 'completed' || worker.status === 'error') {
     // The runner's own verification report for a verification run still counts
     // when the agent made the terminal write first (lib/late-runner-evidence.ts).
-    // A task token on a host worker is the agent, so its late copy is ignored.
-    if (body.verificationEvidence && worker.taskId && !agentCredential(account, worker)) {
+    // A task token is the agent (in a cloud container too), so its late copy is ignored.
+    if (body.verificationEvidence && worker.taskId && !agentCredential(account)) {
       await emit({
         type: 'worker.late_verification_reported',
         taskId: worker.taskId,
@@ -976,9 +976,9 @@ export async function PATCH(
     siblingProbe: supportsSiblingProbe,
   } = body;
   // Stamped by the server with how it arrived (lib/verification-provenance.ts):
-  // on a host runner a task token is the agent's credential, not the runner's.
+  // a task token is the agent's credential, not the runner's, on host and cloud alike.
   const verificationEvidence = stampEvidence(rawVerificationEvidence, {
-    viaTaskToken: agentCredential(account, worker),
+    viaTaskToken: agentCredential(account),
   }) ?? undefined;
   let status = reportedStatus;
   let error = reportedError;
