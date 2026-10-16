@@ -50,7 +50,7 @@ describe('claudeCostBasis', () => {
   });
 
   it("the machine's own login is virtual", () => {
-    expect(run({}, { hostSeat: 'login' })).toBe('virtual');
+    expect(run({}, { machineLogin: 'login' })).toBe('virtual');
     expect(run({ CLAUDE_CODE_OAUTH_TOKEN: 'mine' })).toBe('virtual');
   });
 

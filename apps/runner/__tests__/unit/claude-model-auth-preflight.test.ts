@@ -68,6 +68,10 @@ describe('claudeModelAuthMissing: refused only when nothing can authenticate', (
     expect(check({ [name]: 'some-credential-value' })).toBeNull();
   });
 
+  test('the machine login selected by applyModelEnv is enough without probing HOME again', () => {
+    expect(check({}, { modelEnvInput: { machineLogin: 'login' } })).toBeNull();
+  });
+
   test('a server-delivered API key (injected by applyModelEnv) is enough', () => {
     expect(check({}, { modelEnvInput: { serverApiKey: 'server-key-value' } })).toBeNull();
   });

@@ -302,9 +302,13 @@ A self-hosted runner whose machine has its own Claude login gives that login to
 its agents. "Its own login" means `CLAUDE_CODE_OAUTH_TOKEN` in the runner's
 environment (on `RUNNER_ENV_PASSTHROUGH`, `apps/runner/src/agent-env.ts`) or a
 `claude login` under the runner user's `$HOME`; a stub `~/.claude.json` does not
-count. Detection and precedence: `applyHostSeatPolicy` in
-`apps/runner/src/host-seat.ts`, then `applyModelEnv` in
-`apps/runner/src/agent-model-env.ts`.
+count. Detection and precedence: `applyMachineLoginPolicy` in
+`apps/runner/src/host-seat.ts`, then `applyModelEnv` /
+`shouldUseClaudeCredential` in `apps/runner/src/agent-model-env.ts`.
+
+The machine's own login is used when present, with no switch. The
+`personal_only` rule (`runnerLocalAllowed: false`) separately prevents local
+credentials from displacing the requester's key.
 
 ### Subscription logins stay on the machine
 
@@ -317,21 +321,22 @@ ChatGPT `codex_credential` rows are ignored by the claim
 worker is wired to a stored login, so a task causes no refresh, lease or
 write-back call. Those rows are deleted only in a later step an owner approves.
 
-- `BUILDD_HOST_SEAT=off` keeps the machine's env token away from the agent.
 - A delivered metered key (`anthropic_api_key`) still fills an unset
   `ANTHROPIC_API_KEY`.
 - A team agent model endpoint or a non-Anthropic base URL replaces the login;
   a login never goes to a third-party host.
-- Codex tasks use the machine's `codex login` (`$CODEX_HOME`, else `~/.codex`;
-  `decideCodexSeat` in `host-seat.ts`). The per-worker Codex home links
-  `auth.json` to it (`linkMachineCodexAuth` in `codex-auth.ts`), and a
-  delivered API key is never written through the link. No tokens are written
-  back to buildd from a machine-login session.
+- Codex uses the machine's `codex login` (`$CODEX_HOME`, else `~/.codex`;
+  `decideCodexLogin` in `host-seat.ts`) first, then a delivered API key.
+  The per-worker Codex home links `auth.json` to it (`linkMachineCodexAuth` in
+  `codex-auth.ts`), and a delivered credential is never written through the
+  link. No tokens are written back to buildd from a machine-login session.
 - A Codex task never reaches a runner without a `codex login` or a team
   OpenAI key: the claim's capability filter keeps it for another runner. A
-  Claude runner with no login and no key still claims; its startup line says
-  `Model auth: no model login on this machine` with the fix, and the run fails
-  on Claude's own auth error.
+  Claude run with no login and no key is refused before spawn and requeued
+  for a runner with model access.
+- Startup, local config and heartbeat report only the login label
+  (`machine_token`, `machine_login`, `api_key`, `none`), with no mode.
+  The heartbeat ignores the obsolete mode field from older runners.
 - The value is never logged and is exact-value redacted from worker output.
 
 Setup per environment (local, service, container): `apps/runner/README.md`,
