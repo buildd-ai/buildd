@@ -636,8 +636,10 @@ describe('GET /api/tasks', () => {
     // Verify that the total count excludes cancelled tasks by checking the SQL
     const counts = selectCalls.find(c => c.table?.status === 'status')!;
     expect(counts.fields).toBeDefined();
-    // The total field should have a filter that excludes cancelled tasks
-    expect(JSON.stringify(counts.fields)).toContain('!=');
+    // The total field should have a filter that excludes cancelled tasks (status != 'cancelled')
+    const fieldStr = JSON.stringify(counts.fields);
+    expect(fieldStr).toContain('cancelled');
+    expect(fieldStr).toContain('!=');
   });
 });
 
