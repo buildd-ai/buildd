@@ -12,7 +12,11 @@ const mockListReachable = mock(async (_caller: unknown): Promise<string[]> => []
 let stagesImpl: (missionIds: string[], workspaceIds: string[]) => Promise<Map<string, any>> = async () => new Map();
 const mockLoadMissionStages = mock((missionIds: string[], workspaceIds: string[]) => stagesImpl(missionIds, workspaceIds));
 let rows: any[] = [];
-const mockFindMany = mock(async (_args: unknown): Promise<any[]> => rows);
+const mockFindMany = mock(async (args: any): Promise<any[]> => {
+  const params = dialect.sqlToQuery(args.where).params;
+  const matches = rows.filter(r => params.includes(r.status));
+  return args.limit ? matches.slice(0, args.limit) : matches;
+});
 
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
@@ -72,25 +76,45 @@ describe('GET /api/missions/recent', () => {
     const res = await GET(req({ authorization: 'Bearer bld_x' }));
     expect(res.status).toBe(200);
     expect(mockListReachable.mock.calls[0]![0]).toEqual({ account });
-    expect(mockLoadMissionStages.mock.calls[0]).toEqual([['m-open', 'm-local', 'm-done', 'm-reopened'], ['ws-1', 'ws-2']]);
+    expect(mockLoadMissionStages.mock.calls[0]).toEqual([['m-open', 'm-local', 'm-reopened', 'm-done'], ['ws-1', 'ws-2']]);
     const body = await res.json();
-    expect(body.missions.map((m: any) => m.id)).toEqual(['m-open', 'm-local', 'm-done', 'm-reopened']);
+    expect(body.missions.map((m: any) => m.id)).toEqual(['m-open', 'm-local', 'm-reopened', 'm-done']);
     expect(body.missions[0]).toEqual({
       id: 'm-open', title: 'Open one', workspaceId: 'ws-1', status: 'active', isHeld: false, executor: 'runner',
       completedAt: null, stage: { step: 'building', waitingOn: null },
     });
     expect(body.missions[1].executor).toBe('local');
     expect(body.missions[1].isHeld).toBe(true);
-    expect(body.missions[2].completedAt).toBe(day(2).toISOString());
-    expect(body.missions[3]).toMatchObject({ status: 'active', completedAt: null });
-    expect(body.missions[2].stage).toBeNull();
+    expect(body.missions[3].completedAt).toBe(day(2).toISOString());
+    expect(body.missions[2]).toMatchObject({ status: 'active', completedAt: null });
+    expect(body.missions[3].stage).toBeNull();
+  });
+
+  it('keeps stale open missions even when recent deliveries exceed the cap', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'a1' });
+    mockListReachable.mockResolvedValue(['ws-1']);
+    rows = [
+      ...Array.from({ length: 301 }, (_, i) => ({ id: `done-${i}`, status: 'completed', deliveredAt: day(1) })),
+      ...Array.from({ length: 301 }, (_, i) => ({ id: `open-${i}`, status: 'active', deliveredAt: null })),
+      { id: 'held', status: 'paused' },
+      { id: 'budget', status: 'budget_exhausted' },
+    ];
+    const body = await (await GET(req({ authorization: 'Bearer bld_x' }))).json();
+    expect(body.missions.filter((m: any) => m.status !== 'completed')).toHaveLength(303);
+    expect(body.missions.filter((m: any) => m.status === 'completed')).toHaveLength(300);
+    const calls = mockFindMany.mock.calls.map(([args]) => args as any);
+    expect(calls[0].limit).toBeUndefined();
+    expect(calls[1].limit).toBe(300);
+    expect(dialect.sqlToQuery(calls[0].where).params).toEqual(['ws-1', 'active', 'paused', 'budget_exhausted']);
+    expect(dialect.sqlToQuery(calls[1].where).params).toContain('completed');
+    expect(dialect.sqlToQuery(calls[1].where).params).not.toContain('active');
   });
 
   it('reads the delivered time from the latest transition into completed, not the first stamp', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'a1' });
     mockListReachable.mockResolvedValue(['ws-1']);
     await GET(req({ authorization: 'Bearer bld_x' }));
-    expect(mockFindMany).toHaveBeenCalledTimes(1);
+    expect(mockFindMany).toHaveBeenCalledTimes(2);
     expect(RECENT_DAYS).toBe(7);
     const args = mockFindMany.mock.calls[0]![0] as any;
     expect(args.columns.workspaceId).toBe(true);

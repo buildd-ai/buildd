@@ -128,10 +128,10 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
     } catch { /* the stream's reconnect reports a dead socket */ }
   };
   // The open and recently delivered missions of the runner's workspaces (R-24):
-  // at most once a minute, whoever asks (the timer, a snapshot, a queue event).
+  // Event-triggered reads are throttled; the minute timer is its own cadence.
   let missionsAt = 0;
-  const refreshMissions = async () => {
-    if (Date.now() - missionsAt < MISSION_REFRESH_MS) return;
+  const refreshMissions = async (timerTick = false) => {
+    if (!timerTick && Date.now() - missionsAt < MISSION_REFRESH_MS) return;
     missionsAt = Date.now();
     try {
       const r = await client.get<{ missions?: any[] }>('/api/missions/recent');
@@ -308,7 +308,7 @@ export async function runTop(opts: RunTopOptions): Promise<number> {
   // Elapsed times move without any event; redraw (no fetch) once a second.
   timers.push(setInterval(scheduleDraw, 1_000));
   timers.push(setInterval(() => void refreshTasks(), TASK_REFRESH_MS));
-  timers.push(setInterval(() => void refreshMissions(), MISSION_REFRESH_MS));
+  timers.push(setInterval(() => void refreshMissions(true), MISSION_REFRESH_MS));
   timers.push(setInterval(() => { if (state.view === 'queue') void refreshQueue(); }, QUEUE_REFRESH_MS));
   void loadSnapshot().then(() => stream());
 

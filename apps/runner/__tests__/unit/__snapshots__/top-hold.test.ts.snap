@@ -24,7 +24,7 @@ exports[`the frame while held 80x24: "on hold" in place of "online", and the lin
                       │                                                         
                       │                                                         
 ────────────────────────────────────────────────────────────────────────────────
- a answer m message p pause x stop c claim t team w workspace ? help q quit     "
+ ↑↓ move ⏎ open o web tab queue t team w workspace / filter ? help q quit       "
 `;
 
 exports[`the frame while held 120x40 1`] = `
@@ -67,5 +67,5 @@ exports[`the frame while held 120x40 1`] = `
                             │                                                                                           
                             │                                                                                           
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- ↑↓ move ⏎ open a answer m message p pause x stop c claim h hold o web tab queue t team w workspace ? help q quit       "
+ ↑↓ move ⏎ open a answer m message x stop c claim h hold o web tab queue t team w workspace / filter ? help q quit      "
 `;
