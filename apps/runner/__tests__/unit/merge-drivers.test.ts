@@ -51,19 +51,19 @@ function conflictedRepo(opts: { alsoRealConflict?: boolean } = {}): string {
 const LOCK_RULE = { glob: 'bun.lock', regenerate: 'printf "lock regenerated\\n" > bun.lock' };
 
 describe('normalizeDerivedFiles', () => {
-  test('keeps well-formed rules and defaults strategy to theirs', () => {
+  test('keeps well-formed rules and defaults strategy to theirs', async () => {
     expect(normalizeDerivedFiles([{ glob: 'bun.lock', regenerate: 'bun install' }])).toEqual([
       { glob: 'bun.lock', regenerate: 'bun install', strategy: 'theirs' },
     ]);
   });
 
-  test('never registers a repo-wide pattern', () => {
+  test('never registers a repo-wide pattern', async () => {
     for (const glob of ['**', '*', '**/*', '/', '', '  ', '**/**']) {
       expect(normalizeDerivedFiles([{ glob, regenerate: 'x' }])).toEqual([]);
     }
   });
 
-  test('never treats a migration chain as derived', () => {
+  test('never treats a migration chain as derived', async () => {
     for (const glob of [
       'packages/core/drizzle/*.sql',
       'packages/core/drizzle/meta/_journal.json',
@@ -77,7 +77,7 @@ describe('normalizeDerivedFiles', () => {
     }
   });
 
-  test('drops malformed entries instead of throwing', () => {
+  test('drops malformed entries instead of throwing', async () => {
     expect(normalizeDerivedFiles(null)).toEqual([]);
     expect(normalizeDerivedFiles('bun.lock')).toEqual([]);
     expect(normalizeDerivedFiles([null, 3, { glob: 'a' }, { regenerate: 'b' }, { glob: 'a b', regenerate: 'c' }])).toEqual([]);
@@ -88,7 +88,7 @@ describe('normalizeDerivedFiles', () => {
 });
 
 describe('planMergeDrivers', () => {
-  test('one driver per rule, scoped to its own pattern', () => {
+  test('one driver per rule, scoped to its own pattern', async () => {
     const plan = planMergeDrivers(normalizeDerivedFiles([
       { glob: 'bun.lock', regenerate: 'bun install' },
       { glob: 'docs/specs/INDEX.md', regenerate: 'bun run specs:check', strategy: 'ours' },
@@ -106,7 +106,7 @@ describe('planMergeDrivers', () => {
     expect(plan.attributes.some(l => l.startsWith('* ') || l.startsWith('** '))).toBe(false);
   });
 
-  test('mergiraf entries only when enabled AND the binary is present', () => {
+  test('mergiraf entries only when enabled AND the binary is present', async () => {
     const rules = normalizeDerivedFiles([{ glob: 'bun.lock', regenerate: 'bun install' }]);
     expect(planMergeDrivers(rules, { mergiraf: false }).attributes.some(l => l.includes('mergiraf'))).toBe(false);
     expect(planMergeDrivers(rules, { mergiraf: true, mergirafPath: null }).attributes.some(l => l.includes('mergiraf'))).toBe(false);
@@ -122,11 +122,11 @@ describe('registerMergeDrivers + mergeBaseWithDerivedFiles (real git)', () => {
   let dir: string;
   afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
 
-  test('derived-only conflict: merged, regenerated and committed with no agent work left', () => {
+  test('derived-only conflict: merged, regenerated and committed with no agent work left', async () => {
     dir = conflictedRepo();
     const rules = normalizeDerivedFiles([LOCK_RULE]);
-    registerMergeDrivers(dir, rules, { mergiraf: false });
-    const result = mergeBaseWithDerivedFiles(dir, 'main', rules);
+    await registerMergeDrivers(dir, rules, { mergiraf: false });
+    const result = await mergeBaseWithDerivedFiles(dir, 'main', rules);
     expect(result.status).toBe('merged');
     expect(result.conflicted).toEqual([]);
     expect(result.regenerated).toEqual(['printf "lock regenerated\\n" > bun.lock']);
@@ -137,11 +137,11 @@ describe('registerMergeDrivers + mergeBaseWithDerivedFiles (real git)', () => {
     expect(git(dir, 'show', 'HEAD:bun.lock')).toBe('lock regenerated');
   });
 
-  test('mixed conflict: derived file resolved, the agent is handed only the real one', () => {
+  test('mixed conflict: derived file resolved, the agent is handed only the real one', async () => {
     dir = conflictedRepo({ alsoRealConflict: true });
     const rules = normalizeDerivedFiles([LOCK_RULE]);
-    registerMergeDrivers(dir, rules, { mergiraf: false });
-    const result = mergeBaseWithDerivedFiles(dir, 'main', rules);
+    await registerMergeDrivers(dir, rules, { mergiraf: false });
+    const result = await mergeBaseWithDerivedFiles(dir, 'main', rules);
     expect(result.status).toBe('conflicts');
     expect(result.conflicted).toEqual(['src.ts']);
     // Regeneration waits for the real conflict: the lockfile may depend on it.
@@ -152,7 +152,7 @@ describe('registerMergeDrivers + mergeBaseWithDerivedFiles (real git)', () => {
     expect(note).toContain('printf "lock regenerated\\n" > bun.lock');
   });
 
-  test('no conflict at all: the merge stands and no command runs', () => {
+  test('no conflict at all: the merge stands and no command runs', async () => {
     dir = conflictedRepo();
     git(dir, 'checkout', '-q', 'main');
     git(dir, 'checkout', '-qb', 'clean');
@@ -165,52 +165,52 @@ describe('registerMergeDrivers + mergeBaseWithDerivedFiles (real git)', () => {
     git(dir, 'commit', '-qm', 'more');
     git(dir, 'checkout', '-q', 'clean');
     const rules = normalizeDerivedFiles([LOCK_RULE]);
-    registerMergeDrivers(dir, rules, { mergiraf: false });
-    const result = mergeBaseWithDerivedFiles(dir, 'main', rules);
+    await registerMergeDrivers(dir, rules, { mergiraf: false });
+    const result = await mergeBaseWithDerivedFiles(dir, 'main', rules);
     expect(result.status).toBe('merged');
     expect(result.regenerated).toEqual([]);
   });
 
-  test('a failing regenerate command aborts the merge and leaves the branch as it was', () => {
+  test('a failing regenerate command aborts the merge and leaves the branch as it was', async () => {
     dir = conflictedRepo();
     const before = git(dir, 'rev-parse', 'HEAD');
     const rules = normalizeDerivedFiles([{ glob: 'bun.lock', regenerate: 'exit 3' }]);
-    registerMergeDrivers(dir, rules, { mergiraf: false });
-    const result = mergeBaseWithDerivedFiles(dir, 'main', rules);
+    await registerMergeDrivers(dir, rules, { mergiraf: false });
+    const result = await mergeBaseWithDerivedFiles(dir, 'main', rules);
     expect(result.status).toBe('error');
     expect(git(dir, 'rev-parse', 'HEAD')).toBe(before);
     expect(git(dir, 'status', '--porcelain')).toBe('');
   });
 
-  test('registration is idempotent and enables rerere', () => {
+  test('registration is idempotent and enables rerere', async () => {
     dir = conflictedRepo();
     const rules = normalizeDerivedFiles([LOCK_RULE]);
-    registerMergeDrivers(dir, rules, { mergiraf: false });
-    registerMergeDrivers(dir, rules, { mergiraf: false });
+    await registerMergeDrivers(dir, rules, { mergiraf: false });
+    await registerMergeDrivers(dir, rules, { mergiraf: false });
     const attrs = readFileSync(join(dir, '.git', 'info', 'attributes'), 'utf-8');
     expect(attrs.match(/merge=buildd-derived-0/g)?.length).toBe(1);
     expect(git(dir, 'config', '--get', 'rerere.enabled')).toBe('true');
   });
 
-  test('re-registering with no rules removes the managed block', () => {
+  test('re-registering with no rules removes the managed block', async () => {
     dir = conflictedRepo();
-    registerMergeDrivers(dir, normalizeDerivedFiles([LOCK_RULE]), { mergiraf: false });
+    await registerMergeDrivers(dir, normalizeDerivedFiles([LOCK_RULE]), { mergiraf: false });
     writeFileSync(join(dir, '.git', 'info', 'attributes'),
       'keep.me -diff\n' + readFileSync(join(dir, '.git', 'info', 'attributes'), 'utf-8'));
-    registerMergeDrivers(dir, [], { mergiraf: false });
+    await registerMergeDrivers(dir, [], { mergiraf: false });
     const attrs = readFileSync(join(dir, '.git', 'info', 'attributes'), 'utf-8');
     expect(attrs).toContain('keep.me -diff');
     expect(attrs).not.toContain('buildd-derived');
   });
 
-  test('works from a linked worktree (attributes live in the common dir)', () => {
+  test('works from a linked worktree (attributes live in the common dir)', async () => {
     dir = conflictedRepo();
     const wt = join(dir, '.wt');
     git(dir, 'worktree', 'add', '-q', '-b', 'feature-wt', wt, 'feature');
     const rules = normalizeDerivedFiles([LOCK_RULE]);
-    registerMergeDrivers(wt, rules, { mergiraf: false });
+    await registerMergeDrivers(wt, rules, { mergiraf: false });
     expect(existsSync(join(dir, '.git', 'info', 'attributes'))).toBe(true);
-    const result = mergeBaseWithDerivedFiles(wt, 'main', rules);
+    const result = await mergeBaseWithDerivedFiles(wt, 'main', rules);
     expect(result.status).toBe('merged');
     expect(readFileSync(join(wt, 'bun.lock'), 'utf-8')).toBe('lock regenerated\n');
   });
@@ -228,19 +228,19 @@ describe('mergiraf (real git)', () => {
     }
   }
 
-  test('absent or disabled: the clone gets no mergiraf driver or attribute', () => {
+  test('absent or disabled: the clone gets no mergiraf driver or attribute', async () => {
     dir = conflictedRepo();
-    registerMergeDrivers(dir, normalizeDerivedFiles([LOCK_RULE]), { mergiraf: true, mergirafPath: null });
+    await registerMergeDrivers(dir, normalizeDerivedFiles([LOCK_RULE]), { mergiraf: true, mergirafPath: null });
     expect(() => git(dir, 'config', '--get-regexp', '^merge\\.mergiraf\\.')).toThrow();
     expect(readFileSync(join(dir, '.git', 'info', 'attributes'), 'utf-8')).not.toContain('mergiraf');
-    registerMergeDrivers(dir, normalizeDerivedFiles([LOCK_RULE]), { mergiraf: false });
+    await registerMergeDrivers(dir, normalizeDerivedFiles([LOCK_RULE]), { mergiraf: false });
     expect(() => git(dir, 'config', '--get-regexp', '^merge\\.mergiraf\\.')).toThrow();
   });
 
   // Naive both-sides merges duplicate a change the base already carries; the
   // structural driver must not. Skipped where the binary is not installed (the
   // runner image installs it in a separate change).
-  test.skipIf(!mergirafPath())('an identical addition on both sides appears once', () => {
+  test.skipIf(!mergirafPath())('an identical addition on both sides appears once', async () => {
     dir = mkdtempSync(join(tmpdir(), 'merge-drivers-mergiraf-'));
     git(dir, 'init', '-q', '-b', 'main');
     git(dir, 'config', 'user.email', 't@example.com');
@@ -257,8 +257,8 @@ describe('mergiraf (real git)', () => {
     git(dir, 'commit', '-qam', 'main');
     git(dir, 'checkout', '-q', 'feature');
 
-    registerMergeDrivers(dir, [], { mergiraf: true, mergirafPath: mergirafPath() });
-    const result = mergeBaseWithDerivedFiles(dir, 'main', []);
+    await registerMergeDrivers(dir, [], { mergiraf: true, mergirafPath: mergirafPath() });
+    const result = await mergeBaseWithDerivedFiles(dir, 'main', []);
     // A line-based merge conflicts here; the structural driver resolves it.
     expect(result.status).toBe('merged');
     const lines = readFileSync(join(dir, 'a.ts'), 'utf-8').split('\n');
@@ -296,10 +296,10 @@ describe('mergeBaseWithDerivedFiles: structural resolutions and slow merges (rea
     return path;
   }
 
-  test('a merge mergiraf resolved is reported with the files it touched', () => {
+  test('a merge mergiraf resolved is reported with the files it touched', async () => {
     dir = conflictedRepo({ alsoRealConflict: true });
-    registerMergeDrivers(dir, normalizeDerivedFiles([LOCK_RULE]), { mergiraf: true, mergirafPath: fakeMergiraf() });
-    const result = mergeBaseWithDerivedFiles(dir, 'main', normalizeDerivedFiles([LOCK_RULE]));
+    await registerMergeDrivers(dir, normalizeDerivedFiles([LOCK_RULE]), { mergiraf: true, mergirafPath: fakeMergiraf() });
+    const result = await mergeBaseWithDerivedFiles(dir, 'main', normalizeDerivedFiles([LOCK_RULE]));
     expect(result.status).toBe('merged');
     expect(result.structurallyResolved).toEqual(['src.ts']);
     // The agent is told to review exactly that file.
@@ -308,19 +308,19 @@ describe('mergeBaseWithDerivedFiles: structural resolutions and slow merges (rea
     expect(note).toMatch(/review/i);
   });
 
-  test('a derived-only merge reports no structural resolutions', () => {
+  test('a derived-only merge reports no structural resolutions', async () => {
     dir = conflictedRepo();
-    registerMergeDrivers(dir, normalizeDerivedFiles([LOCK_RULE]), { mergiraf: true, mergirafPath: fakeMergiraf() });
-    const result = mergeBaseWithDerivedFiles(dir, 'main', normalizeDerivedFiles([LOCK_RULE]));
+    await registerMergeDrivers(dir, normalizeDerivedFiles([LOCK_RULE]), { mergiraf: true, mergirafPath: fakeMergiraf() });
+    const result = await mergeBaseWithDerivedFiles(dir, 'main', normalizeDerivedFiles([LOCK_RULE]));
     expect(result.status).toBe('merged');
     expect(result.structurallyResolved).toEqual([]);
   });
 
-  test('a merge that outlives its time limit is aborted, says it timed out, and leaves the branch as it was', () => {
+  test('a merge that outlives its time limit is aborted, says it timed out, and leaves the branch as it was', async () => {
     dir = conflictedRepo({ alsoRealConflict: true });
     const before = git(dir, 'rev-parse', 'HEAD');
-    registerMergeDrivers(dir, normalizeDerivedFiles([LOCK_RULE]), { mergiraf: true, mergirafPath: fakeMergiraf(3) });
-    const result = mergeBaseWithDerivedFiles(dir, 'main', normalizeDerivedFiles([LOCK_RULE]), { timeoutMs: 1000 });
+    await registerMergeDrivers(dir, normalizeDerivedFiles([LOCK_RULE]), { mergiraf: true, mergirafPath: fakeMergiraf(3) });
+    const result = await mergeBaseWithDerivedFiles(dir, 'main', normalizeDerivedFiles([LOCK_RULE]), { timeoutMs: 1000 });
     expect(result.status).toBe('error');
     expect(result.error).toMatch(/timed out/);
     expect(git(dir, 'rev-parse', 'HEAD')).toBe(before);
@@ -333,7 +333,7 @@ describe('mergeBaseWithDerivedFiles: structural resolutions and slow merges (rea
 });
 
 describe('isConflictRetryContext', () => {
-  test('true only for a merge or semantic conflict retry on a resume branch', () => {
+  test('true only for a merge or semantic conflict retry on a resume branch', async () => {
     expect(isConflictRetryContext({ resumeBranch: 'b', failureContext: { errorType: 'merge_conflict' } })).toBe(true);
     expect(isConflictRetryContext({ resumeBranch: 'b', failureContext: { errorType: 'semantic_conflict' } })).toBe(true);
     // A migration collision is renumbered, never merged mechanically.
@@ -344,7 +344,7 @@ describe('isConflictRetryContext', () => {
 });
 
 describe('formatDerivedFilesGuidance', () => {
-  test('names each pattern with its regenerate command; nothing when no rules', () => {
+  test('names each pattern with its regenerate command; nothing when no rules', async () => {
     const note = formatDerivedFilesGuidance(normalizeDerivedFiles([{ glob: 'bun.lock', regenerate: 'bun install' }]));
     expect(note).toContain('`bun.lock` → `bun install`');
     expect(formatDerivedFilesGuidance([])).toBeNull();
@@ -360,27 +360,27 @@ describe('finishDerivedMerge (real git, bare remote)', () => {
   });
 
   /** A derived-only conflict merged by the runner, with `feature` tracking a bare origin. */
-  function mergedWithRemote(): string {
+  async function mergedWithRemote(): Promise<string> {
     dir = conflictedRepo();
     remote = mkdtempSync(join(tmpdir(), 'merge-drivers-remote-'));
     git(remote, 'init', '-q', '--bare');
     git(dir, 'remote', 'add', 'origin', remote);
     git(dir, 'push', '-q', 'origin', 'main', 'feature');
     const rules = normalizeDerivedFiles([LOCK_RULE]);
-    registerMergeDrivers(dir, rules, { mergiraf: false });
-    expect(mergeBaseWithDerivedFiles(dir, 'main', rules).status).toBe('merged');
+    await registerMergeDrivers(dir, rules, { mergiraf: false });
+    expect((await mergeBaseWithDerivedFiles(dir, 'main', rules)).status).toBe('merged');
     return git(dir, 'rev-parse', 'HEAD');
   }
 
   test('no verification command: pushes the merge commit and reports the head', async () => {
-    const head = mergedWithRemote();
+    const head = await mergedWithRemote();
     const finish = await finishDerivedMerge(dir, 'feature', { verificationCommand: null });
     expect(finish).toEqual({ status: 'pushed', verification: null, headSha: head });
     expect(git(remote, 'rev-parse', 'refs/heads/feature')).toBe(head);
   });
 
   test('a passing verification command runs in the worktree before the push', async () => {
-    const head = mergedWithRemote();
+    const head = await mergedWithRemote();
     const finish = await finishDerivedMerge(dir, 'feature', { verificationCommand: 'test "$(cat bun.lock)" = "lock regenerated"' });
     expect(finish.status).toBe('pushed');
     expect(finish.verification).toBe('test "$(cat bun.lock)" = "lock regenerated"');
@@ -388,7 +388,7 @@ describe('finishDerivedMerge (real git, bare remote)', () => {
   });
 
   test('a failing verification command pushes nothing', async () => {
-    mergedWithRemote();
+    await mergedWithRemote();
     const remoteBefore = git(remote, 'rev-parse', 'refs/heads/feature');
     const finish = await finishDerivedMerge(dir, 'feature', { verificationCommand: 'echo broken >&2; exit 4' });
     expect(finish.status).toBe('verify_failed');
@@ -397,7 +397,7 @@ describe('finishDerivedMerge (real git, bare remote)', () => {
   });
 
   test('a rejected push (remote moved) is reported, never forced', async () => {
-    mergedWithRemote();
+    await mergedWithRemote();
     // Someone else pushed to the branch since the runner fetched it.
     const other = mkdtempSync(join(tmpdir(), 'merge-drivers-other-'));
     try {
@@ -419,7 +419,7 @@ describe('finishDerivedMerge (real git, bare remote)', () => {
   });
 
   test('a dirty tree after verification is not pushed as if verified', async () => {
-    mergedWithRemote();
+    await mergedWithRemote();
     const finish = await finishDerivedMerge(dir, 'feature', { verificationCommand: 'echo changed > bun.lock' });
     expect(finish.status).toBe('verify_failed');
     expect(finish.error).toContain('bun.lock');
@@ -427,7 +427,7 @@ describe('finishDerivedMerge (real git, bare remote)', () => {
 });
 
 describe('derivedMergeVerificationCommand', () => {
-  test('the task context verificationCommand, trimmed; null when absent or blank', () => {
+  test('the task context verificationCommand, trimmed; null when absent or blank', async () => {
     expect(derivedMergeVerificationCommand({ verificationCommand: '  bun run test  ' })).toBe('bun run test');
     expect(derivedMergeVerificationCommand({ verificationCommand: '   ' })).toBeNull();
     expect(derivedMergeVerificationCommand({ verificationCommand: 7 })).toBeNull();
@@ -439,7 +439,7 @@ describe('derivedMergeVerificationCommand', () => {
 describe('formatDerivedMergeSummary / formatDerivedFinishFallback', () => {
   const merged = { status: 'merged' as const, conflicted: [], regenerated: ['bun install', 'bun run specs:check'], pendingRegenerate: [] };
 
-  test('the summary names the base, every regenerate command and how it was verified', () => {
+  test('the summary names the base, every regenerate command and how it was verified', async () => {
     const summary = formatDerivedMergeSummary(merged, 'origin/dev', { status: 'pushed', verification: 'bun run test', headSha: 'abc1234def' });
     expect(summary).toContain('origin/dev');
     expect(summary).toContain('`bun install`');
@@ -448,12 +448,12 @@ describe('formatDerivedMergeSummary / formatDerivedFinishFallback', () => {
     expect(summary).toContain('no agent');
   });
 
-  test('the summary says when nothing was verified', () => {
+  test('the summary says when nothing was verified', async () => {
     const summary = formatDerivedMergeSummary({ ...merged, regenerated: [] }, 'origin/dev', { status: 'pushed', verification: null, headSha: 'abc' });
     expect(summary).toContain('No verification command');
   });
 
-  test('the fallback note tells the agent what the runner tried and what is left', () => {
+  test('the fallback note tells the agent what the runner tried and what is left', async () => {
     const verify = formatDerivedFinishFallback({ status: 'verify_failed', verification: 'bun run test', error: 'exit 1' });
     expect(verify).toContain('`bun run test`');
     expect(verify).toContain('exit 1');
@@ -466,7 +466,7 @@ describe('formatDerivedMergeSummary / formatDerivedFinishFallback', () => {
 
 describe('canFinishWithoutAgent', () => {
   const base = { conflicted: [], regenerated: [], pendingRegenerate: [], structurallyResolved: [] };
-  test('only a clean merge with no structural resolution skips the agent', () => {
+  test('only a clean merge with no structural resolution skips the agent', async () => {
     expect(canFinishWithoutAgent({ ...base, status: 'merged' })).toBe(true);
     expect(canFinishWithoutAgent({ ...base, status: 'merged', structurallyResolved: ['src/a.ts'] })).toBe(false);
     expect(canFinishWithoutAgent({ ...base, status: 'conflicts', conflicted: ['b.ts'] })).toBe(false);
@@ -477,7 +477,7 @@ describe('canFinishWithoutAgent', () => {
 
 describe('formatPreMergeMilestone', () => {
   const base = { conflicted: [], regenerated: [], pendingRegenerate: [], structurallyResolved: [] };
-  test('every outcome gets a "Pre-merge:" line, naming what mergiraf resolved', () => {
+  test('every outcome gets a "Pre-merge:" line, naming what mergiraf resolved', async () => {
     expect(formatPreMergeMilestone({ ...base, status: 'merged', regenerated: ['bun install'] }))
       .toBe('Pre-merge: base merged by the runner; regenerated 1 derived file command(s)');
     expect(formatPreMergeMilestone({ ...base, status: 'merged', structurallyResolved: ['a/b.ts', 'c.json'] }))
@@ -491,39 +491,39 @@ describe('formatPreMergeMilestone', () => {
 });
 
 describe('dedupeImportLines', () => {
-  test('drops a repeated top-level import line, keeps the first', () => {
+  test('drops a repeated top-level import line, keeps the first', async () => {
     const src = "import a from 'a';\nimport { displayTaskTitle } from '@/lib/t';\nimport b from 'b';\nimport { displayTaskTitle } from '@/lib/t';\nconst x = 1;\n";
     const out = dedupeImportLines(src);
     expect(out).toBe("import a from 'a';\nimport { displayTaskTitle } from '@/lib/t';\nimport b from 'b';\nconst x = 1;\n");
   });
-  test('leaves distinct imports and indented/non-import repeats alone', () => {
+  test('leaves distinct imports and indented/non-import repeats alone', async () => {
     const src = "import a from 'a';\nimport b from 'b';\nfoo();\n  import('x');\n  import('x');\nfoo();\n";
     expect(dedupeImportLines(src)).toBe(src);
   });
-  test('returns null-safe identity when nothing to do', () => {
+  test('returns null-safe identity when nothing to do', async () => {
     expect(dedupeImportLines('')).toBe('');
   });
 });
 
 describe('planPreMerge: which ref the runner merges before the agent starts', () => {
   const conflict = { errorType: 'merge_conflict' };
-  test('an ordinary conflict retry merges its PR base', () => {
+  test('an ordinary conflict retry merges its PR base', async () => {
     expect(planPreMerge({ resumeBranch: 'buildd/abc-fix', failureContext: conflict }, 'origin/dev', 'dev'))
       .toEqual({ ref: 'origin/dev', kind: 'retry', mayFinishWithoutAgent: true });
   });
 
-  test('a retry whose PR base is its own branch (a mission ship PR) merges trunk instead of itself', () => {
+  test('a retry whose PR base is its own branch (a mission ship PR) merges trunk instead of itself', async () => {
     expect(planPreMerge({ resumeBranch: 'mission/x-1234', failureContext: conflict }, 'origin/mission/x-1234', 'dev'))
       .toEqual({ ref: 'origin/dev', kind: 'mission_pr_retry', mayFinishWithoutAgent: true });
   });
 
-  test('a mission refresh merges its trunk into the integration branch, and always needs the agent (it opens the PR)', () => {
+  test('a mission refresh merges its trunk into the integration branch, and always needs the agent (it opens the PR)', async () => {
     const ctx = { baseBranch: 'mission/x-1234', refreshTrunk: 'dev', failureContext: conflict };
     expect(planPreMerge(ctx, 'origin/mission/x-1234', 'dev'))
       .toEqual({ ref: 'origin/dev', kind: 'mission_refresh', mayFinishWithoutAgent: false });
   });
 
-  test('nothing to pre-merge: migration collisions, non-conflict tasks, a retry with no known base', () => {
+  test('nothing to pre-merge: migration collisions, non-conflict tasks, a retry with no known base', async () => {
     expect(planPreMerge({ resumeBranch: 'b', failureContext: { errorType: 'migration_collision' } }, 'origin/dev', 'dev')).toBeNull();
     expect(planPreMerge({ refreshTrunk: 'dev', failureContext: { errorType: 'migration_collision' } }, 'origin/m', 'dev')).toBeNull();
     expect(planPreMerge({}, 'origin/dev', 'dev')).toBeNull();

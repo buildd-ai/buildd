@@ -195,7 +195,9 @@ export class RecoveryManager {
       reactivate: true,
     });
 
-    // Resolve workspace
+    // Resolve workspace. A retry in the first seconds after start waits for
+    // the first repo scan rather than scanning synchronously.
+    try { await this.deps.resolver.whenScanned?.(); } catch { /* resolve() falls back */ }
     const workspacePath = this.deps.resolver.resolve({
       id: worker.workspaceId,
       name: worker.workspaceName,
@@ -290,6 +292,7 @@ export class RecoveryManager {
   }
 
   private async runDoctorAgent(worker: LocalWorker, goal: 'diagnose' | 'complete') {
+    try { await this.deps.resolver.whenScanned?.(); } catch { /* resolve() falls back */ }
     const workspacePath = this.deps.resolver.resolve({
       id: worker.workspaceId,
       name: worker.workspaceName,
