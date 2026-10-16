@@ -334,6 +334,17 @@ describe('resolveTaskPrBase', () => {
     expect(got.source).toBe('workspace');
   });
 
+  it('ignores a stale mission/... baseBranch when the mission no longer has an integration branch', () => {
+    const got = resolveTaskPrBase({
+      mission: null,
+      task: { title: 'Review', taskClass: 'work', context: { baseBranch: 'mission/old-goal-8665e99d' } },
+      head: 'buildd/new',
+      fallbacks: TRUNK_FALLBACKS,
+    });
+    expect(got.base).toBe('dev');
+    expect(got.source).toBe('workspace');
+  });
+
   it('still honours a baseBranch that differs from resumeBranch', () => {
     const got = resolveTaskPrBase({
       mission: null,
