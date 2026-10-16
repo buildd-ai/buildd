@@ -4,12 +4,14 @@
  * delivers on the claim. Its value never reaches a log line or evidence.
  */
 import { describe, test, expect } from 'bun:test';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { RUNNER_ENV_PASSTHROUGH, buildAgentBaseEnv } from '../../src/agent-env';
 import { applyModelEnv, shouldUseClaudeCredential } from '../../src/agent-model-env';
 import {
+  machineLoginStamp,
+  parseKeychainMdat,
   applyMachineLoginPolicy, credentialsFileHasLogin, describeMachineLogin, detectMachineLogin, hostModelCredentialValues,
 } from '../../src/host-seat';
 import { createSecretRedactor } from '@buildd/core/redaction';
@@ -179,5 +181,47 @@ describe('the token never appears in logs or evidence', () => {
     const labels = hostModelCredentialValues({ CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN, ANTHROPIC_API_KEY: '', OPENAI_API_KEY: 'sk-openai-0123456789' })
       .map((v) => v.label);
     expect(labels).toEqual(['host:CLAUDE_CODE_OAUTH_TOKEN', 'host:OPENAI_API_KEY']);
+  });
+});
+
+describe('machineLoginStamp: noticing a fresh login without reading it', () => {
+  test('the keychain mdat attribute is read from the attribute listing', () => {
+    const listing = 'keychain: "/x"\nattributes:\n    "mdat"<timedate>=0x32303236313031363039333030305A00  "20261016093000Z\\000"\n';
+    expect(parseKeychainMdat(listing)).toBe('20261016093000Z\\000');
+    expect(parseKeychainMdat('attributes:\n')).toBeNull();
+  });
+
+  test('the Claude stamp moves when the credentials file or the keychain item changes', () => {
+    const home = mkdtempSync(join(tmpdir(), 'stamp-'));
+    try {
+      const linux = { home, platform: 'linux' as const, env: {} };
+      expect(machineLoginStamp('claude', linux)).toBeNull();
+      mkdirSync(join(home, '.claude'), { recursive: true });
+      const file = join(home, '.claude', '.credentials.json');
+      writeFileSync(file, '{}');
+      const first = machineLoginStamp('claude', linux);
+      expect(first).not.toBeNull();
+      utimesSync(file, new Date(2026, 0, 1), new Date(2026, 0, 2));
+      expect(machineLoginStamp('claude', linux)).not.toBe(first);
+      let mdat = 'a';
+      const mac = { home, platform: 'darwin' as const, env: {}, macKeychainStamp: () => mdat };
+      const before = machineLoginStamp('claude', mac);
+      mdat = 'b';
+      expect(machineLoginStamp('claude', mac)).not.toBe(before);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("the Codex stamp is its auth.json's", () => {
+    const home = mkdtempSync(join(tmpdir(), 'stamp-'));
+    try {
+      expect(machineLoginStamp('codex', { home, env: {} })).toBeNull();
+      mkdirSync(join(home, '.codex'), { recursive: true });
+      writeFileSync(join(home, '.codex', 'auth.json'), '{}');
+      expect(machineLoginStamp('codex', { home, env: {} })).not.toBeNull();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

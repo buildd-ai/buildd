@@ -18,7 +18,7 @@
  * This module never reads or returns a token value. It only says whether one
  * is present.
  */
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import * as childProcess from 'child_process';
@@ -74,6 +74,59 @@ export function defaultMacKeychainHasLogin(): boolean {
   }
   keychainCache = { at: now, value };
   return value;
+}
+
+let keychainStampCache: { at: number; value: string | null } | undefined;
+
+/**
+ * The macOS keychain item's modification date (`mdat`), or null. Attributes
+ * only: no `-w`, so the secret is never printed. Cached like the presence check.
+ */
+export function defaultMacKeychainStamp(): string | null {
+  const now = Date.now();
+  if (keychainStampCache && now - keychainStampCache.at < KEYCHAIN_CACHE_MS) return keychainStampCache.value;
+  let value: string | null = null;
+  try {
+    const r = childProcess.spawnSync('security', ['find-generic-password', '-s', MAC_KEYCHAIN_SERVICE], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 3000,
+      encoding: 'utf-8',
+    });
+    if (r.status === 0) value = parseKeychainMdat(String(r.stdout ?? ''));
+  } catch {
+    value = null;
+  }
+  keychainStampCache = { at: now, value };
+  return value;
+}
+
+/** The `"mdat"<timedate>=... "20261016093000Z\000"` attribute line's date, or null. */
+export function parseKeychainMdat(attributes: string): string | null {
+  const m = /"mdat"<timedate>=(?:0x[0-9A-Fa-f]+\s+)?"([^"]+)"/.exec(attributes);
+  return m ? m[1] : null;
+}
+
+function mtimeOf(path: string): string | null {
+  try { return existsSync(path) ? String(statSync(path).mtimeMs) : null; } catch { return null; }
+}
+
+/**
+ * A stamp of where this machine keeps a backend's login, which changes when
+ * the login is redone (`claude login`, `codex login`): the Claude credentials
+ * file's mtime and, on macOS, the keychain item's modification date; the Codex
+ * auth.json's mtime. Never a value. Null when nothing readable holds one.
+ */
+export function machineLoginStamp(
+  backend: 'claude' | 'codex',
+  probe: { env?: Record<string, string | undefined>; home?: string; platform?: NodeJS.Platform; macKeychainStamp?: () => string | null } = {},
+): string | null {
+  const env = probe.env ?? process.env;
+  const home = probe.home ?? homedir();
+  if (backend === 'codex') return mtimeOf(join(resolveLocalCodexHome(env, home), 'auth.json'));
+  const file = mtimeOf(join(home, '.claude', '.credentials.json'));
+  const platform = probe.platform ?? process.platform;
+  const keychain = platform === 'darwin' ? (probe.macKeychainStamp ?? defaultMacKeychainStamp)() : null;
+  return file === null && keychain === null ? null : `${file ?? '-'}|${keychain ?? '-'}`;
 }
 
 /** Which Claude login this runner machine has, or null. */

@@ -14,6 +14,7 @@
  * so no credential field can reach a client through it.
  */
 import type { LocalWorker } from './types';
+import { workerSpend } from './run-route';
 
 /** Finished (done/error) workers always included, newest first, whatever day they ended. */
 export const TOP_RECENT_TERMINAL_WORKERS = 50;
@@ -27,6 +28,8 @@ export const TOP_MAX_TERMINAL_WORKERS = 1000;
 const TOP_FIELDS = [
   'id', 'taskId', 'taskTitle', 'workspaceId', 'workspaceName', 'status', 'startedAt', 'completedAt',
   'lastActivity', 'currentAction', 'milestones', 'prUrl', 'error', 'waitingFor', 'tokenTally',
+  // Which route the run used (run-route.ts), and the model it asked for.
+  'route', 'costBasis', 'taskBackend', 'sessionModel',
 ] as const;
 
 /** The tool-call input fields top reads (describeToolCall, planOf). */
@@ -57,6 +60,11 @@ export function toTopWorkerSummary(worker: LocalWorker): TopWorkerSummary {
     const value = (worker as any)[field];
     if (value !== undefined) out[field] = value;
   }
+  // The run's dollars, worked out here so top need not carry the result's
+  // per-model usage; and the model the route served, for the detail (R-40).
+  const spend = workerSpend(worker);
+  if (spend) out.spend = spend;
+  if (worker.resultMeta?.actualModel) out.resultMeta = { actualModel: worker.resultMeta.actualModel };
   if (Array.isArray(worker.toolCalls)) {
     out.toolCalls = worker.toolCalls.map((t: any) => {
       const input = slimInput(t?.input);

@@ -20,7 +20,13 @@ export const CLOUD_MODEL_AUTH_ENV = 'BUILDD_CLOUD_MODEL_AUTH';
 
 const CLOUD_PROVIDER_SWITCHES = ['CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY'] as const;
 
-const set = (v: string | undefined) => typeof v === 'string' && v.length > 0;
+/**
+ * Whether a credential variable counts as set. The one predicate for the cost
+ * basis and the run route (run-route.ts), so the two can never disagree about
+ * the same env (a whitespace-only key counts, as it does here).
+ */
+export const isCredentialSet = (v: string | undefined): boolean => typeof v === 'string' && v.length > 0;
+const set = isCredentialSet;
 
 /**
  * A Claude run. Precedence mirrors Claude Code's own: an API key or auth token
