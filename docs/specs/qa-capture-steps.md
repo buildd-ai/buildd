@@ -154,6 +154,9 @@ committing step MUST NOT run against a preview.
   `isMutatingMethod`, `layoutViolations`.
 - `scripts/qa/plans/run-activity.json`: the run-detail regression plan over
   `/app/dev/fixtures?state=run-activity&scenario=…`, one `layout` state per scenario.
+- `scripts/qa/plans/incident-detail.json`: the incident page (`/app/incidents/[id]`) over
+  `/app/dev/fixtures?state=incident-detail&case=…`, one per recovery state plus `surfaces`,
+  each with a `layout` state and, except `surfaces`, an `evidence-open` state.
 - `scripts/qa/capture.ts`: `QA_PLAN` mode, the write guard, `stepFailed`.
 - `scripts/demo/run-storyboard.ts`: selector resolution and clicks through the engine.
 - `apps/web/src/lib/visual-audit-evidence.ts`: `parseQaMeta` reads `state`;
@@ -171,6 +174,10 @@ committing step MUST NOT run against a preview.
   page (`/app/teams/[id]`) with an owner, an admin and a member, seen as each: role selects,
   Remove, Transfer ownership, the last-owner Leave gate and admin-vs-member gating. No DB; it
   never writes.
+  `/app/dev/fixtures?state=incident-detail&case=waiting|repairing|retrying|retry-exhausted|decision|inconclusive|recovered|surfaces`
+  renders the incident page (`/app/incidents/[id]`: IncidentDetail and IncidentRecoveryPanel)
+  in each recovery state, read-only. The clone scrubs `failure_incidents` and the page is
+  operator-only, so the real route redirects to `/app/health` in every capture.
   `/app/health/insights?state=sample|empty|not-admin` covers the chart (team admins only;
   `not-admin` shows what a member sees).
   `/app/health/runners?state=sample` draws the slots-busy chart from a synthetic fleet (every

@@ -1,0 +1,293 @@
+[
+  {
+    "route": "/app/dev/fixtures?state=incident-detail&case=waiting",
+    "states": [
+      {
+        "key": "layout",
+        "steps": [
+          {
+            "action": "waitFor",
+            "selector": "testid:incident-recovery"
+          },
+          {
+            "action": "assertLayout",
+            "selector": "testid:incident-detail-fixture"
+          }
+        ]
+      },
+      {
+        "key": "evidence-open",
+        "steps": [
+          {
+            "action": "waitFor",
+            "selector": "testid:incident-recovery"
+          },
+          {
+            "action": "click",
+            "selector": "role:button[name=Evidence and history]"
+          },
+          {
+            "action": "waitFor",
+            "selector": "testid:incident-evidence"
+          },
+          {
+            "action": "assertLayout",
+            "selector": "testid:incident-detail-fixture"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "route": "/app/dev/fixtures?state=incident-detail&case=repairing",
+    "states": [
+      {
+        "key": "layout",
+        "steps": [
+          {
+            "action": "waitFor",
+            "selector": "testid:incident-recovery"
+          },
+          {
+            "action": "assertLayout",
+            "selector": "testid:incident-detail-fixture"
+          }
+        ]
+      },
+      {
+        "key": "evidence-open",
+        "steps": [
+          {
+            "action": "waitFor",
+            "selector": "testid:incident-recovery"
+          },
+          {
+            "action": "click",
+            "selector": "role:button[name=Evidence and history]"
+          },
+          {
+            "action": "waitFor",
+            "selector": "testid:incident-evidence"
+          },
+          {
+            "action": "assertLayout",
+            "selector": "testid:incident-detail-fixture"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "route": "/app/dev/fixtures?state=incident-detail&case=retrying",
+    "states": [
+      {
+        "key": "layout",
+        "steps": [
+          {
+            "action": "waitFor",
+            "selector": "testid:incident-recovery"
+          },
+          {
+            "action": "assertLayout",
+            "selector": "testid:incident-detail-fixture"
+          }
+        ]
+      },
+      {
+        "key": "evidence-open",
+        "steps": [
+          {
+            "action": "waitFor",
+            "selector": "testid:incident-recovery"
+          },
+          {
+            "action": "click",
+            "selector": "role:button[name=Evidence and history]"
+          },
+          {
+            "action": "waitFor",
+            "selector": "testid:incident-evidence"
+          },
+          {
+            "action": "assertLayout",
+            "selector": "testid:incident-detail-fixture"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "route": "/app/dev/fixtures?state=incident-detail&case=retry-exhausted",
+    "states": [
+      {
+        "key": "layout",
+        "steps": [
+          {
+            "action": "waitFor",
+            "selector": "testid:incident-recovery"
+          },
+          {
+            "action": "assertLayout",
+            "selector": "testid:incident-detail-fixture"
+          }
+        ]
+      },
+      {
+        "key": "evidence-open",
+        "steps": [
+          {
+            "action": "waitFor",
+            "selector": "testid:incident-recovery"
+          },
+          {
+            "action": "click",
+            "selector": "role:button[name=Evidence and history]"
+          },
+          {
+            "action": "waitFor",
+            "selector": "testid:incident-evidence"
+          },
+          {
+            "action": "assertLayout",
+            "selector": "testid:incident-detail-fixture"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "route": "/app/dev/fixtures?state=incident-detail&case=decision",
+    "states": [
+      {
+        "key": "layout",
+        "steps": [
+          {
+            "action": "waitFor",
+            "selector": "testid:incident-recovery"
+          },
+          {
+            "action": "assertLayout",
+            "selector": "testid:incident-detail-fixture"
+          }
+        ]
+      },
+      {
+        "key": "evidence-open",
+        "steps": [
+          {
+            "action": "waitFor",
+            "selector": "testid:incident-recovery"
+          },
+          {
+            "action": "click",
+            "selector": "role:button[name=Evidence and history]"
+          },
+          {
+            "action": "waitFor",
+            "selector": "testid:incident-evidence"
+          },
+          {
+            "action": "assertLayout",
+            "selector": "testid:incident-detail-fixture"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "route": "/app/dev/fixtures?state=incident-detail&case=inconclusive",
+    "states": [
+      {
+        "key": "layout",
+        "steps": [
+          {
+            "action": "waitFor",
+            "selector": "testid:incident-recovery"
+          },
+          {
+            "action": "assertLayout",
+            "selector": "testid:incident-detail-fixture"
+          }
+        ]
+      },
+      {
+        "key": "evidence-open",
+        "steps": [
+          {
+            "action": "waitFor",
+            "selector": "testid:incident-recovery"
+          },
+          {
+            "action": "click",
+            "selector": "role:button[name=Evidence and history]"
+          },
+          {
+            "action": "waitFor",
+            "selector": "testid:incident-evidence"
+          },
+          {
+            "action": "assertLayout",
+            "selector": "testid:incident-detail-fixture"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "route": "/app/dev/fixtures?state=incident-detail&case=recovered",
+    "states": [
+      {
+        "key": "layout",
+        "steps": [
+          {
+            "action": "waitFor",
+            "selector": "testid:incident-recovery"
+          },
+          {
+            "action": "assertLayout",
+            "selector": "testid:incident-detail-fixture"
+          }
+        ]
+      },
+      {
+        "key": "evidence-open",
+        "steps": [
+          {
+            "action": "waitFor",
+            "selector": "testid:incident-recovery"
+          },
+          {
+            "action": "click",
+            "selector": "role:button[name=Evidence and history]"
+          },
+          {
+            "action": "waitFor",
+            "selector": "testid:incident-evidence"
+          },
+          {
+            "action": "assertLayout",
+            "selector": "testid:incident-detail-fixture"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "route": "/app/dev/fixtures?state=incident-detail&case=surfaces",
+    "states": [
+      {
+        "key": "layout",
+        "steps": [
+          {
+            "action": "waitFor",
+            "selector": "testid:incident-surfaces-fixture"
+          },
+          {
+            "action": "assertLayout",
+            "selector": "testid:incident-detail-fixture"
+          }
+        ]
+      }
+    ]
+  }
+]

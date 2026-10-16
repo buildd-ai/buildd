@@ -260,3 +260,16 @@ describe('scripts/qa/plans/run-activity.json', () => {
     }
   });
 });
+
+describe('scripts/qa/plans/incident-detail.json', () => {
+  it('is a valid preview-safe plan that layout-checks every incident fixture case', async () => {
+    const { INCIDENT_FIXTURE_CASE_NAMES } = await import('../../apps/web/src/app/app/dev/fixtures/incident-fixture-cases');
+    const plan = parsePlan(readFileSync(join(import.meta.dir, 'plans/incident-detail.json'), 'utf-8'), { pageSource: 'vercel-preview' });
+    expect(plan.map(r => new URLSearchParams(r.route.split('?')[1]).get('state'))).toEqual(plan.map(() => 'incident-detail'));
+    expect(plan.map(r => new URLSearchParams(r.route.split('?')[1]).get('case'))).toEqual([...INCIDENT_FIXTURE_CASE_NAMES]);
+    for (const r of plan) {
+      const layout = r.states.find(s => s.key === 'layout');
+      expect(layout?.steps.at(-1)).toEqual({ action: 'assertLayout', selector: 'testid:incident-detail-fixture' });
+    }
+  });
+});

@@ -48,6 +48,7 @@ import MissionFlowFixture from './MissionFlowFixture';
 import MissionDetailCompactFixture from './MissionDetailCompactFixture';
 import BranchPanelFixture from './BranchPanelFixture';
 import HomeCardsFixture from './HomeCardsFixture';
+import { IncidentDetailFixture } from './IncidentStatesFixture';
 import ServiceStatusFixture from './ServiceStatusFixture';
 import {
     ACTIVITY_DELIVERY_FIXTURE_STATE,
@@ -91,6 +92,7 @@ import {
     MISSION_DETAIL_COMPACT_FIXTURE_STATE,
     BRANCH_PANEL_FIXTURE_STATE,
     HOME_CARDS_FIXTURE_STATE,
+    INCIDENT_DETAIL_FIXTURE_STATE,
     isFixtureView,
     parseVisualReviewFixtureParams,
     visualReviewFixtureLinks,
@@ -263,6 +265,10 @@ export default function DevFixturesPage() {
 
     if (state === HOME_CARDS_FIXTURE_STATE) {
         return <HomeCardsFixture />;
+    }
+
+    if (state === INCIDENT_DETAIL_FIXTURE_STATE) {
+        return <IncidentDetailFixture />;
     }
 
     if (state === MISSION_FLOW_FIXTURE_STATE) {

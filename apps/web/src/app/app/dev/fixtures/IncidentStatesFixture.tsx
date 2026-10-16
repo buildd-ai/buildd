@@ -7,13 +7,17 @@
  * recovered. `&data=incident-surfaces` is the task-page and mission-page
  * notices for a task whose stale question recovery superseded. The CI clone
  * has no incident rows, so this is where every state is seen. Invented data.
+ * `?state=incident-detail&case=<case>` is the same, as its own fixture view
+ * (incident-fixture-cases.ts, scripts/qa/plans/incident-detail.json).
  */
+import { useEffect, useState } from 'react';
 import type { FailureIncidentRecovery } from '@buildd/shared';
 import IncidentDetail from '@/components/incidents/IncidentDetail';
 import MissionRecoveryNotice from '@/components/incidents/MissionRecoveryNotice';
 import Notice from '@/components/ui/Notice';
 import { incidentCause, incidentEvidence, projectIncident, type IncidentForView, type IncidentVerdictView } from '@/lib/incident-view';
 import { taskRecoveryView } from '@/lib/incident-recovery-refs';
+import { INCIDENT_FIXTURE_RECOVERY_CASES, type IncidentFixtureRecoveryCase } from './incident-fixture-cases';
 
 const NOW = '2026-10-11T14:00:00.000Z';
 const TZ = 'UTC';
@@ -55,7 +59,7 @@ const decision = {
   recommended: 'cancel_attempt' as const,
 };
 
-export const INCIDENT_FIXTURE_CASES: Record<string, Partial<IncidentForView>> = {
+export const INCIDENT_FIXTURE_CASES: Record<IncidentFixtureRecoveryCase, Partial<IncidentForView>> = {
   waiting: { recovery: recovery() },
   repairing: {
     recovery: recovery({
@@ -107,7 +111,7 @@ export const INCIDENT_FIXTURE_CASES: Record<string, Partial<IncidentForView>> = 
   },
 };
 
-function incidentFor(c: string): IncidentForView & { title: string; reasonCode: string; occurrenceCount: number; recurrenceCount: number } {
+function incidentFor(c: IncidentFixtureRecoveryCase): IncidentForView & { title: string; reasonCode: string; occurrenceCount: number; recurrenceCount: number } {
   return {
     id: 'fxinc001', status: 'open', severity: 'high', rule: 'path_overlap_stall', linkedFixTaskId: null,
     firstSeenAt: '2026-10-11T11:40:00.000Z', lastSeenAt: '2026-10-11T13:56:00.000Z',
@@ -156,7 +160,7 @@ export default function IncidentStatesFixture({ which }: { which: string }) {
       </main>
     );
   }
-  const c = INCIDENT_FIXTURE_CASES[which] ? which : 'waiting';
+  const c: IncidentFixtureRecoveryCase = (INCIDENT_FIXTURE_RECOVERY_CASES as readonly string[]).includes(which) ? which as IncidentFixtureRecoveryCase : 'waiting';
   const inc = incidentFor(c);
   const p = projectIncident(inc, c === 'decision' ? personVerdict : builddVerdict, { now: NOW, timeZone: TZ, prHref });
   return (
@@ -173,6 +177,18 @@ export default function IncidentStatesFixture({ which }: { which: string }) {
         readOnly
         now={NOW}
       />
+    </div>
+  );
+}
+
+/** `?state=incident-detail&case=<case>`: one case per URL, for the capture plan. */
+export function IncidentDetailFixture() {
+  const [which, setWhich] = useState<string | null>(null);
+  useEffect(() => { setWhich(new URLSearchParams(window.location.search).get('case') ?? 'waiting'); }, []);
+  if (which === null) return null;
+  return (
+    <div data-testid="incident-detail-fixture" data-case={which}>
+      <IncidentStatesFixture which={which} />
     </div>
   );
 }
