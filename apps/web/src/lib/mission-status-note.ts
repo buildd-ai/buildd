@@ -12,3 +12,6 @@ export function missionStatusNoteBody(from: string, to: string): string {
 export function missionStatusNoteIntoPattern(to: string): string {
   return missionStatusNoteBody('%', to);
 }
+
+/** Titles used in mission status change notes (PATCH /api/missions/[id] and GET /api/missions/recent). */
+export const MISSION_STATUS_CHANGE_TITLES = ['Mission status changed', 'Mission reopened'] as const;

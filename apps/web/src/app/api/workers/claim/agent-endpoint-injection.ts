@@ -2,13 +2,12 @@
  * The team's agent model endpoint on a host claim
  * (docs/design/agent-model-endpoint.md §2).
  *
- * One ranking across `agent_endpoint`, `anthropic_api_key`, `oauth_token` and
- * `claude_credential` (resolveAgentModelRoute in @buildd/core/agent-endpoint):
- * the most specific scope wins, a tie goes to the endpoint. When the endpoint
- * wins, this attaches `modelEndpoint` and returns the worker id, and the
- * credential attach steps in ./credential-injection then deliver no Anthropic
- * credential (serverApiKey / serverOauthToken / claudeAccessToken /
- * pendingCredentialRefreshes) for that worker. Only the winner is attached.
+ * One ranking across `agent_endpoint` and the team's API key
+ * (resolveAgentModelRoute in @buildd/core/agent-endpoint): the most specific
+ * scope wins, a tie goes to the endpoint. When the endpoint wins, this attaches
+ * `modelEndpoint` and returns the worker id, and the credential attach steps in
+ * ./credential-injection then deliver no API key (serverApiKey /
+ * codexCredential) for that worker. Only the winner is attached.
  *
  * Never called for a cloud claim (the route skips it; `modelEndpoint` is in
  * CLAIM_CREDENTIAL_FIELDS as the backstop). A Codex task ranks the endpoint
