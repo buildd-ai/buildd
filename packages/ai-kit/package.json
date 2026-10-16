@@ -43,7 +43,7 @@
   },
   "peerDependencies": {
     "@ai-sdk/react": "^4.0.0",
-    "@typesafe-ai/sdk": "0.7.0",
+    "@typesafe-ai/sdk": "0.6.0",
     "ai": "^7.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
@@ -68,7 +68,7 @@
   "devDependencies": {
     "@ai-sdk/react": "^4.0.119",
     "@happy-dom/global-registrator": "^21.0.0",
-    "@typesafe-ai/sdk": "0.7.0",
+    "@typesafe-ai/sdk": "0.6.0",
     "@types/bun": "latest",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
