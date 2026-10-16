@@ -546,7 +546,7 @@ export function cycleWorkspace(state: TopState): TopState {
   return { ...state, selectedWorkspace: next?.id ?? null, selectedMission: null, missionCursor: 0, rowCursor: 0, queueCursor: 0 };
 }
 
-/** "5 workspaces · TWC" with one team, "5 workspaces · 2 teams" with more. */
+/** "5 workspaces · Acme" with one team, "5 workspaces · 2 teams" with more. */
 export function workspaceSummary(state: TopState): string {
   const list = workspaceList(state);
   if (list.length === 0) return '';
