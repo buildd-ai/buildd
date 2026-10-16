@@ -16,7 +16,7 @@ export default function IncidentDetailFixture() {
         occurrenceCount: 7,
         recurrenceCount: 1,
         firstSeenAt: FIRST_SEEN,
-        affectedRefs: { taskIds: ['fx-task-a', 'fx-task-b'], prNumbers: [101, 102] },
+        affectedRefs: { taskIds: ['fx-task-a', 'fx-task-b'], workerIds: [], prNumbers: [101, 102] },
       }}
       workspaceName="Sample workspace"
       fixTask={{ id: 'fx-fix', title: 'Fix stalled claims on the runner', status: 'in_progress' }}
