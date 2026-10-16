@@ -118,6 +118,31 @@ describe('the visual audit grades the criteria of the tasks it reviews', () => {
     expect((await outcome(s.builderId)).outcome).toBe('unverified');
   });
 
+  test('on an executor=local mission, the audit worker claimed from the caller\'s own session records; elsewhere it does not', async () => {
+    const [acct] = await q<{ id: string }>(sql`
+      INSERT INTO accounts (type, name, api_key, team_id, auth_type) VALUES ('user', ${`sess-${rand()}`}, ${`k-${rand()}`}, ${teamA}::uuid, 'oauth') RETURNING id`);
+    await q(sql`INSERT INTO account_workspaces (account_id, workspace_id, can_claim, can_create) VALUES (${acct.id}::uuid, ${wsA}::uuid, true, true)`);
+    const session = (id = acct.id) => ({ kind: 'account' as const, account: { id, teamId: teamA, workspaceIds: null } as any });
+    const claimed = async (taskId: string, accountId: string) => (await q<{ id: string }>(sql`
+      INSERT INTO workers (workspace_id, task_id, account_id, name, runner, branch, status) VALUES (${wsA}::uuid, ${taskId}::uuid, ${accountId}::uuid, 'c', 'test', ${`c-${rand()}`}, 'completed') RETURNING id`))[0].id;
+    const s = await setup();
+    const input = (workerId: unknown) => ({ criterionId: 'AC-1', verdict: 'pass', capturedSha: CAPTURED, screenshotIds: [s.shot], workerId });
+    const wid = await claimed(s.auditId, acct.id);
+    // A runner-executor mission: a session-claimed worker is not the audit's run.
+    expect(await recordVisualVerdict(session(), s.builderId, input(wid), deps())).toMatchObject({ ok: false, status: 403 });
+    await q(sql`UPDATE missions SET executor = 'local' WHERE id = ${missionId}::uuid`);
+    try {
+      expect(await recordVisualVerdict(session(), s.builderId, input(undefined), deps())).toMatchObject({ ok: false, status: 403 });
+      expect(await recordVisualVerdict(session(crypto.randomUUID()), s.builderId, input(wid), deps())).toMatchObject({ ok: false, status: 403 });
+      expect(await recordVisualVerdict(session(), s.builderId, input(await claimed(s.builderId, acct.id)), deps())).toMatchObject({ ok: false, status: 403, error: expect.stringContaining('nly a mission') });
+      const r = await recordVisualVerdict(session(), s.builderId, input(wid), deps());
+      if (!r.ok) throw new Error(r.error);
+      expect(r.outcome.criteria.find((c) => c.criterionId === 'AC-1')).toMatchObject({ verdict: 'pass', headSha: HEAD });
+    } finally {
+      await q(sql`UPDATE missions SET executor = 'runner' WHERE id = ${missionId}::uuid`);
+    }
+  });
+
   test('the builder, a fix attempt, a task filed under it, an agent-filed audit and another mission\'s audit are refused', async () => {
     const s = await setup();
     const input = { criterionId: 'AC-1', verdict: 'pass', capturedSha: CAPTURED, screenshotIds: [s.shot] };
