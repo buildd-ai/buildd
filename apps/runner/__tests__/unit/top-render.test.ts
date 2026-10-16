@@ -277,8 +277,8 @@ describe('mission progress counts (R-31): left pane matches right pane', () => {
   });
 });
 
-describe('workspace count in header (R-19): keep last good count on timeout', () => {
-  test('empty workspace list does not overwrite previous count', () => {
+describe('workspace count in header (R-19): preserve partial lists, accept changes', () => {
+  test('same count with lost team info is preserved (partial list)', () => {
     const s1 = reduce(fixtureState(), {
       type: 'workspaces',
       workspaces: [
@@ -288,10 +288,16 @@ describe('workspace count in header (R-19): keep last good count on timeout', ()
     });
     const head1 = stripAnsi(frame(s1, 80, 24)[0]);
     expect(head1).toContain('2 workspaces · Acme');
-    // Simulate a timeout: empty list arrives.
-    const s2 = reduce(s1, { type: 'workspaces', workspaces: [] });
+    // Partial list: same count but lost team info (e.g., timeout mid-stream).
+    const s2 = reduce(s1, {
+      type: 'workspaces',
+      workspaces: [
+        { id: 'ws-a', name: 'alpha' },
+        { id: 'ws-b', name: 'bravo' },
+      ],
+    });
     const head2 = stripAnsi(frame(s2, 80, 24)[0]);
-    // Should still show 2 workspaces, not 0.
+    // Should preserve the old list with team info.
     expect(head2).toContain('2 workspaces · Acme');
   });
 });

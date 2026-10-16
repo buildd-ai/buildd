@@ -25,6 +25,7 @@
  *     team (R-26), read while the Queue view is open (queue.ts derives it).
  */
 import type { ProgressCell } from './progress';
+import { progressDone, progressTotal } from './progress';
 import { TERMINAL_TASK_STATUSES, type RecentMission, type RunnerQueueResponse } from '@buildd/shared';
 
 export type WorkerStatus = 'idle' | 'working' | 'done' | 'error' | 'stale' | 'waiting';
@@ -267,11 +268,16 @@ export function reduce(state: TopState, event: TopEvent): TopState {
           teamId: w.teamId ?? null,
           teamName: w.teamName ?? w.team?.name ?? null,
         }));
-      // Keep the last good count rather than a partial one (R-19): if the fetch
-      // times out mid-read, an empty list overwrites the previous count and makes
-      // the header flicker or say "0 workspaces". Only update if non-empty or if
-      // we have no prior count.
-      if (workspaces.length === 0 && state.workspaces.length > 0) return state;
+      // Keep the last good list when a new one is partial (R-19): same count but
+      // lost team info indicates a partial fetch (timeout mid-stream or degraded API).
+      // Accept legitimate changes like fewer workspaces (one deleted) or empty 200s.
+      if (workspaces.length === state.workspaces.length && workspaces.length > 0) {
+        const oldTeamCount = new Set(state.workspaces.map(teamKey).filter(Boolean)).size;
+        const newTeamCount = new Set(workspaces.map(teamKey).filter(Boolean)).size;
+        if (oldTeamCount > 0 && newTeamCount < oldTeamCount) {
+          return state; // Partial list (same workspaces, lost team info); keep old
+        }
+      }
       let next = { ...state, workspaces };
       // `--team` naming no team this runner serves: open on all, and say so (R-23).
       const team = state.selectedTeam?.trim();
@@ -664,10 +670,8 @@ export function missionRows(state: TopState, now: number = Date.now()): MissionR
   // retries and cancelled tasks, so the left pane matches the right pane (R-31).
   for (const row of map.values()) {
     if (row.stage?.progress) {
-      const progressDoneCount = row.stage.progress.filter(c => c.group === 'done').length;
-      const progressTotalCount = row.stage.progress.length;
-      row.done = progressDoneCount;
-      row.total = progressTotalCount;
+      row.done = progressDone(row.stage.progress);
+      row.total = progressTotal(row.stage.progress);
     }
   }
   // An organizer run in progress marks its mission as planning.

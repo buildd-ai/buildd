@@ -383,8 +383,8 @@ describe('failure reasons in plain words (R-22)', () => {
   });
 });
 
-describe('workspace count (R-19): keep last good count on timeout', () => {
-  test('empty workspace list does not overwrite previous count', () => {
+describe('workspace count (R-19): keep last good count on partial list', () => {
+  test('same count with lost team info is treated as partial and preserved (the observed symptom)', () => {
     let s = reduce(fixtureState(), {
       type: 'workspaces',
       workspaces: [
@@ -393,12 +393,39 @@ describe('workspace count (R-19): keep last good count on timeout', () => {
       ],
     });
     expect(workspaceSummary(s)).toBe('2 workspaces · Acme');
-    // Simulate a timeout: empty list arrives (e.g., /api/workspaces read times out mid-stream).
-    const s2 = reduce(s, { type: 'workspaces', workspaces: [] });
-    // Should still show 2 workspaces, not 0.
+    // Partial list: same count but lost team info (e.g., /api/workspaces timeout mid-stream).
+    const s2 = reduce(s, {
+      type: 'workspaces',
+      workspaces: [
+        { id: 'ws-a', name: 'alpha' }, // no teamId or teamName
+        { id: 'ws-b', name: 'bravo' },
+      ],
+    });
+    // Should still show the old list with team info, not the partial one.
     expect(workspaceSummary(s2)).toBe('2 workspaces · Acme');
   });
-  test('non-empty workspace list does replace the previous one', () => {
+  test('fewer workspaces is accepted as a legitimate change', () => {
+    let s = reduce(fixtureState(), {
+      type: 'workspaces',
+      workspaces: [
+        { id: 'ws-a', name: 'alpha', teamId: 'team-1', teamName: 'Team A' },
+        { id: 'ws-b', name: 'bravo', teamId: 'team-2', teamName: 'Team B' },
+        { id: 'ws-c', name: 'charlie', teamId: 'team-1', teamName: 'Team A' },
+      ],
+    });
+    expect(workspaceSummary(s)).toBe('3 workspaces · 2 teams');
+    // Fewer workspaces is accepted (one was legitimately deleted).
+    const s2 = reduce(s, {
+      type: 'workspaces',
+      workspaces: [
+        { id: 'ws-a', name: 'alpha', teamId: 'team-1', teamName: 'Team A' },
+        { id: 'ws-b', name: 'bravo', teamId: 'team-2', teamName: 'Team B' },
+      ],
+    });
+    // Accepted because even though we lost a team, the list is shorter (one workspace deleted).
+    expect(workspaceSummary(s2)).toBe('2 workspaces · 2 teams');
+  });
+  test('empty list after having workspaces is accepted', () => {
     let s = reduce(fixtureState(), {
       type: 'workspaces',
       workspaces: [
@@ -406,7 +433,14 @@ describe('workspace count (R-19): keep last good count on timeout', () => {
       ],
     });
     expect(workspaceSummary(s)).toBe('1 workspace · Acme');
-    // New non-empty list replaces the old one.
+    // Empty list: all workspaces removed or partial. Since count differs, we accept as legitimate.
+    const s2 = reduce(s, { type: 'workspaces', workspaces: [] });
+    // workspaceSummary returns empty string when there are no workspaces.
+    expect(workspaceSummary(s2)).toBe('');
+  });
+  test('a list with workspaces but no teams on the first read is accepted', () => {
+    let s = fixtureState();
+    // First read returns workspaces with no team info (legitimate, no prior state to compare).
     const s2 = reduce(s, {
       type: 'workspaces',
       workspaces: [
@@ -415,5 +449,60 @@ describe('workspace count (R-19): keep last good count on timeout', () => {
       ],
     });
     expect(workspaceSummary(s2)).toBe('2 workspaces');
+  });
+  test('non-empty workspace list with different entries does replace the previous one', () => {
+    let s = reduce(fixtureState(), {
+      type: 'workspaces',
+      workspaces: [
+        { id: 'ws-a', name: 'alpha', teamId: 'team-1', teamName: 'Acme' },
+      ],
+    });
+    expect(workspaceSummary(s)).toBe('1 workspace · Acme');
+    // New non-empty list replaces the old one (different entries).
+    const s2 = reduce(s, {
+      type: 'workspaces',
+      workspaces: [
+        { id: 'ws-x', name: 'xray' },
+        { id: 'ws-y', name: 'yankee' },
+      ],
+    });
+    expect(workspaceSummary(s2)).toBe('2 workspaces');
+  });
+});
+
+describe('mission progress with retries and organizer runs (R-31)', () => {
+  test('done/total from progress excludes organizer tasks and retries, matching the squares', () => {
+    // A mission with real work (2 done, 1 active, 1 waiting = 4 progress cells),
+    // plus an organizer task and retry attempts (should NOT be in the left-pane count).
+    const M = TASKS[0].mission!;
+    const progressCells = [
+      { state: 'landed', group: 'done' as const },
+      { state: 'landed', group: 'done' as const },
+      { state: 'running', group: 'active' as const },
+      { state: 'ready', group: 'waiting' as const },
+    ];
+    const mission = { ...M, stage: { step: 'building' as const, waitingOn: '2 of 4 landed', progress: progressCells } };
+
+    // Real tasks: attempt 1, attempt 2 (retry), organizer task
+    let s = reduce(fixtureState(), {
+      type: 'tasks',
+      tasks: [
+        // Original attempt (done, in progress now)
+        { id: 't-real-1', title: 'implement feature', status: 'pending', missionId: M.id, mission, roleSlug: 'builder' },
+        // Retry attempt (replaces the first if it failed)
+        { id: 't-real-2', title: 'implement feature (retry)', status: 'in_progress', missionId: M.id, mission, roleSlug: 'builder' },
+        // Organizer task (excluded from counts, marks mission as planning)
+        { id: 't-org', title: `Mission: ${M.title}`, status: 'in_progress', missionId: M.id, mission, roleSlug: 'organizer' },
+      ],
+    });
+
+    const rows = missionRows(s, NOW);
+    const row = rows.find(r => r.key === M.id)!;
+
+    // Left pane should show counts from progress cells: 2 done + 1 in progress + 1 waiting = 4 total, 2 done
+    expect(row.done).toBe(2);
+    expect(row.total).toBe(4);
+    // Mission should be marked as planning because of the organizer task
+    expect(row.planning).toBe(true);
   });
 });
