@@ -15,7 +15,7 @@
  * Each test still gets its own copy: anything it mutates is thrown away in
  * `teardown()` and the next test starts from the pristine template.
  */
-import { cpSync, existsSync, mkdtempSync, renameSync, rmSync } from 'fs';
+import { cpSync, existsSync, mkdtempSync, realpathSync, renameSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -31,7 +31,7 @@ export type TemplateDir = {
 };
 
 export function templateDir(prefix: string, build: (dir: string) => void): TemplateDir {
-  const root = mkdtempSync(join(tmpdir(), prefix));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
   const dir = join(root, 'work');
   const template = join(root, 'template');
   return {
