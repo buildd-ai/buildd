@@ -4,7 +4,8 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { deliveryViewsSql, getDeliveryViewsForTasks, laneWaitFrom, remediationFrom, rowToDeliveryView, withMergeContradiction } from './delivery-view';
+import { sql } from 'drizzle-orm';
+import { deliveryViewsSql, getDeliveryViewsForTasks, kernelDeliveryForWorkerSql, laneWaitFrom, remediationFrom, rowToDeliveryView, withMergeContradiction } from './delivery-view';
 
 const dialect = new PgDialect();
 const NOW = Date.parse('2026-10-06T12:00:00Z');
@@ -24,6 +25,17 @@ describe('deliveryViewsSql', () => {
     const q = dialect.sqlToQuery(deliveryViewsSql(['t1']));
     expect(q.sql).toContain("e.kind = 'refresh_branch' AND e.status = 'pending' AND e.outcome LIKE $2::text");
     expect(q.sql).toContain('AS lane_wait');
+  });
+});
+
+describe('kernelDeliveryForWorkerSql (list_prs, §7)', () => {
+  test('a kernel-owned delivery of the row\'s owner task and PR, in a workspace with the kernel on, matching the caller\'s condition', () => {
+    const q = dialect.sqlToQuery(kernelDeliveryForWorkerSql(sql`w.task_id`, sql`w.pr_number`, sql`kd.state = ${'MERGED'}`));
+    expect(q.sql).toContain('EXISTS (SELECT 1 FROM workflow_deliveries kd WHERE kd.owner_task_id = w.task_id AND kd.pr_number = w.pr_number');
+    expect(q.sql).toContain("kd.authority = 'kernel'");
+    expect(q.sql).toContain('kw.id = kd.workspace_id');
+    expect(q.sql).toContain('kd.state = $1');
+    expect(q.params).toEqual(['MERGED']);
   });
 });
 
