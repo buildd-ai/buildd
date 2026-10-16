@@ -478,13 +478,13 @@ describe('reviewRoundLink (58c8961e: why the latest review round started)', () =
     ] }, { taskId: 't1' })!;
     expect(l.derivedFrom).toBe('DeliveryView.rounds');
     expect(l.refs).toEqual({ taskId: 't1', prNumber: 7 });
-    expect(l.claim).toBe('Review round 2 (at bbbbbbb) started after a CI fix; a delta review that carries the approval at aaaaaaa.');
+    expect(l.claim).toBe('Review round 2 at bbbbbbb: After a CI fix. A delta review that carries the approval at aaaaaaa.');
   });
   it('says why a round after an approval is a full review, and how a superseded one ended', () => {
     const full = reviewRoundLink({ prNumber: 7, rounds: [
       { ...base, id: 'r2', round: 2, headSha: 'b'.repeat(40), kind: 'full', status: 'superseded', trigger: 'new_commits', endReason: 'superseded_by_push', scope: { deltaApproval: { eligible: false, fromHeadSha: 'a'.repeat(40), reason: 'the delta touches a file outside the PR (src/b.ts)' } } },
     ] }, {})!;
-    expect(full.claim).toBe('Review round 2 (at bbbbbbb) started after new commits; a full review because the delta touches a file outside the PR (src/b.ts); it ended superseded by a newer push.');
+    expect(full.claim).toBe('Review round 2 at bbbbbbb: After new commits. A full review, because the delta touches a file outside the PR (src/b.ts). Ended: replaced by a newer push.');
   });
   it('no rounds, or a round from before triggers: no link', () => {
     expect(reviewRoundLink({ prNumber: 7, rounds: [] }, {})).toBeNull();

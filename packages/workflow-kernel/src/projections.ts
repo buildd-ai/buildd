@@ -462,10 +462,10 @@ export type DeliveryRound = RoundSnapshot;
  */
 export function roundTriggerSentence(r: RoundSnapshot): string | null {
   if (!r.trigger || !ROUND_TRIGGER_COPY[r.trigger]) return null;
-  const parts = [`Review round ${r.round} (at ${r.headSha.slice(0, 7)}) started ${ROUND_TRIGGER_COPY[r.trigger]}`];
+  const parts = [ROUND_TRIGGER_COPY[r.trigger]];
   const el = r.scope?.deltaApproval as { eligible?: unknown; fromHeadSha?: unknown; reason?: unknown } | undefined;
-  if (el?.eligible === true && r.kind === 'delta' && typeof el.fromHeadSha === 'string') parts.push(`a delta review that carries the approval at ${el.fromHeadSha.slice(0, 7)}`);
-  else if (el && el.eligible !== true && typeof el.reason === 'string') parts.push(`a full review because ${el.reason}`);
-  if (r.status === 'superseded') parts.push(r.endReason === 'superseded_by_push' ? 'it ended superseded by a newer push' : 'it ended superseded');
-  return `${parts.join('; ')}.`;
+  if (el?.eligible === true && r.kind === 'delta' && typeof el.fromHeadSha === 'string') parts.push(`A delta review that carries the approval at ${el.fromHeadSha.slice(0, 7)}`);
+  else if (el && el.eligible !== true && typeof el.reason === 'string') parts.push(`A full review, because ${el.reason}`);
+  if (r.status === 'superseded') parts.push(r.endReason === 'superseded_by_push' ? 'Ended: replaced by a newer push' : 'Ended: superseded');
+  return `Review round ${r.round} at ${r.headSha.slice(0, 7)}: ${parts.join('. ')}.`;
 }

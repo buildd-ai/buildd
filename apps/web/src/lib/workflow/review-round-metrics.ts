@@ -6,8 +6,8 @@
  * deliveries that merged in the window. A round recorded before rounds carried
  * a trigger counts under `unrecorded`, never under a guessed reason. Also says
  * how many rounds were delta reviews carrying an approval, how many a push
- * superseded, and how many ended with no verdict and no recorded reason (the
- * number that should stay at zero).
+ * superseded, and how many of those recorded no end reason (only a push records
+ * one; a merge, close, policy approval, composition carry or retarget does not).
  *
  * Aggregation is pure and exported for tests; `getReviewRoundMetrics` is the
  * only DB read and never throws: a broken read degrades to null (omitted).

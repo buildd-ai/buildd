@@ -767,10 +767,16 @@ delta round's own approve puts `B` in `approved_heads` (evidence `deltaApproval
 round after a reviewer's approval is a `delta` round only when
 `deltaApprovalEligibility` holds for the fact layer's read of the delta (`delta` on
 `HeadObserved`/`AttemptEnded`, read by `GithubFactReader.reviewedDelta`, bounded
-against the base at both ends): the last decided round approved, the basis is a
-reviewer verdict covering that round's head and the delta's start, no finding is open,
-every touched file was in the PR at `A` or is a test or test-config file being added or
+against the base at both ends, and only when `A` is an ancestor of `B`: compare status
+`ahead`): the last decided round approved, the basis is a reviewer verdict covering that
+round's head, no finding is open, the read starts at the last full review's approved
+head (`deltaApprovalSource`: a chain of carried deltas is measured as one delta from
+it), every touched file was in the PR there or is a test (by file name, `__tests__/`, or
+a top-level `tests/` root) or an exact vitest/jest/playwright config being added or
 modified, and the delta is at most `DELTA_MAX_FILES` files and `DELTA_MAX_LINES` lines.
+The delta reviewer diffs exactly that range (`deltaFromHeadSha` in the dispatch detail),
+and any delta reviewer whose prior head is not an ancestor of the new head (diverged,
+behind, unreadable) gets a full review instead.
 Anything else, an unread delta included, is a `full` round, with the reason in
 `scope.deltaApproval`. A round after a request for changes stays a delta review of the
 fix. The delta reviewer of an approval gets the weakened-tests checklist (deleted or

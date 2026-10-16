@@ -1,4 +1,4 @@
-import { describe, it, expect, mock, beforeEach } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 
 let insertedTask: Record<string, unknown> | undefined;
 let insertedMissionNote: Record<string, unknown> | undefined;
@@ -1736,6 +1736,18 @@ describe('buildDeltaReviewerContext — base-anchored delta bounding (PR #2910)'
 });
 
 describe('createReviewerTask — delta re-review', () => {
+  // 58c8961e: a delta needs the prior head to be an ancestor of the new one (compare status `ahead`).
+  const compareStatus = (status: string) => {
+    githubApiImpl = async (_id: number, path: string) => {
+      if (path.includes('/compare/old-sha...new-sha')) return { status, files: [] };
+      throw new Error(`unmocked githubApi call: ${path}`);
+    };
+  };
+  beforeEach(() => compareStatus('ahead'));
+  afterEach(() => {
+    githubApiImpl = () => Promise.reject(new Error('unmocked githubApi call in this test'));
+  });
+
   it('creates a NEW reviewer task row (never mutates the prior terminal one) and marks it a delta', async () => {
     insertedTask = undefined;
 
@@ -1801,6 +1813,34 @@ describe('createReviewerTask — delta re-review', () => {
     expect(ctx.reviewTrigger).toBe('ci_fix');
     expect(insertedTask?.description as string).toContain('## Weakened tests');
   });
+
+  for (const [status, verdict] of [['diverged', 'approve'], ['diverged', 'request-changes'], ['behind', 'request-changes']] as const) {
+    it(`58c8961e: a prior head that is not an ancestor (${status}, prior ${verdict}) gets a full review, not a delta`, async () => {
+      compareStatus(status);
+      insertedTask = undefined;
+      await createReviewerTask({
+        workspaceId: 'ws-1',
+        originalTaskId: `original-diverged-${status}-${verdict}`,
+        originalTask: { title: 'Original title', description: null, backend: 'claude', missionId: null },
+        worker: { branch: 'buildd/original' },
+        prNumber: 104,
+        prUrl: 'https://github.com/buildd-ai/buildd/pull/104',
+        headSha: 'new-sha',
+        reviewerRole: 'reviewer',
+        installationId: 1,
+        repoFullName: 'buildd-ai/buildd',
+        priorVerdict: { headSha: 'old-sha', verdict, confidence: 0.9, summary: 'prior', feedback: verdict === 'approve' ? null : 'fix x', escalationReason: null },
+        deltaApproval: verdict === 'approve',
+        deltaFiles: [{ filename: 'a.test.ts', status: 'modified', additions: 1, deletions: 0, patch: null }],
+      });
+      const ctx = insertedTask?.context as any;
+      expect(ctx.deltaReview).toBeUndefined();
+      expect(ctx.deltaApproval).toBeUndefined();
+      expect(ctx.deltaFallback).toBe(`prior_head_${status}`);
+      expect((insertedTask as any).tier).toBeUndefined();
+      expect(insertedTask?.description as string).not.toContain('Delta Re-Review');
+    });
+  }
 
   it('dispatches a normal full review when no priorVerdict is passed (unchanged behaviour)', async () => {
     insertedTask = undefined;

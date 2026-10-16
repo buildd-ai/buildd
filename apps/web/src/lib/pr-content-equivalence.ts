@@ -181,10 +181,17 @@ export interface ReviewedDeltaFile {
  * reviewer's own bound (`reviewer.ts` `boundDeltaFilenames`): a file whose
  * blob or status differs between `base...fromSha` and `base...toSha`, so a
  * file the base moved on its own (a merge of the base into the branch) never
- * counts. Line counts come from the direct `fromSha...toSha` compare, which
- * can only over-count. `prFilesAtFrom` is the PR's own file list at `fromSha`.
- * Fails closed: a failed read, a list that may be cut, or a changed file the
- * direct compare does not list is null (unread), never a partial delta.
+ * counts. Line counts come from the direct `fromSha...toSha` compare.
+ * `prFilesAtFrom` is the PR's own file list at `fromSha`.
+ *
+ * `fromSha` must be an ancestor of `toSha` (compare status `ahead`). The
+ * three-dot compare diffs from the merge base, so after a force-push that
+ * dropped a reviewed commit (A = base+c1+c2, B = base+c1+c3) it would show
+ * only c3 and hide that c2 is gone. Diverged, behind or identical is null.
+ *
+ * Fails closed: a failed read, a list that may be cut, a head that is not a
+ * descendant, or a changed file the direct compare does not list is null
+ * (unread), never a partial delta.
  */
 export async function readReviewedDelta(params: {
   installationId: number;
@@ -201,8 +208,9 @@ export async function readReviewedDelta(params: {
     const [from, to, direct] = await Promise.all([
       read(params.fromSha),
       read(params.toSha),
-      api(params.installationId, `/repos/${params.repoFullName}/compare/${params.fromSha}...${params.toSha}`) as Promise<{ files?: unknown } | null>,
+      api(params.installationId, `/repos/${params.repoFullName}/compare/${params.fromSha}...${params.toSha}`) as Promise<{ files?: unknown; status?: unknown } | null>,
     ]);
+    if (direct?.status !== 'ahead') return null;
     const directFiles = Array.isArray(direct?.files) ? (direct!.files as Array<CompareFile & { additions?: unknown; deletions?: unknown }>) : null;
     if (!from || !to || !directFiles) return null;
     if (from.length >= COMPARE_FILE_LIMIT || to.length >= COMPARE_FILE_LIMIT || directFiles.length >= COMPARE_FILE_LIMIT) return null;

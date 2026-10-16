@@ -3837,7 +3837,11 @@ export interface ReviewRoundMetrics {
   deltaApprovalRounds: number;
   /** Rounds a newer round replaced before they reached a verdict. */
   supersededRounds: number;
-  /** Of those, how many ended with no recorded reason: should stay zero. */
+  /**
+   * Of those, how many recorded no end reason. Only a push records one today
+   * (`superseded_by_push`); a merge, close, policy approval, composition carry or
+   * retarget supersedes without one, so this is not expected to be zero.
+   */
   supersededWithoutReason: number;
   /** The read hit its row cap: the counts are a floor. */
   truncated: boolean;

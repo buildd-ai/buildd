@@ -139,8 +139,11 @@ export function reviewHandlers(ports: KernelPorts): EffectHandlers {
       if (prior && prior.headSha !== round.headSha) {
         const out = await reviews.output(prior);
         if (out.verdict === 'request-changes' || out.verdict === 'escalate' || out.verdict === 'approve') {
+          // 58c8961e: a delta that carries an approval is reviewed over exactly the range the rule
+          // measured (from the last full review's approved head), never a narrower one.
+          const carried = out.verdict === 'approve' ? deltaApprovalOf(round) : null;
           priorVerdict = {
-            headSha: prior.headSha, verdict: out.verdict, confidence: out.confidence ?? 0,
+            headSha: carried?.fromHeadSha ?? prior.headSha, verdict: out.verdict, confidence: out.confidence ?? 0,
             summary: out.summary ?? '', feedback: out.feedback ?? null, escalationReason: out.escalationReason ?? null,
           };
         }
@@ -159,7 +162,9 @@ export function reviewHandlers(ports: KernelPorts): EffectHandlers {
         // 58c8961e: why the round started, and whether it is a delta review carrying an approval
         // (the reviewer then checks the delta for weakened tests, on a cheaper tier).
         ...(round.trigger ? { trigger: round.trigger } : {}),
-        ...(priorVerdict && priorVerdict.verdict === 'approve' && deltaApprovalOf(round) ? { deltaApproval: true } : {}),
+        ...(priorVerdict && priorVerdict.verdict === 'approve' && deltaApprovalOf(round)
+          ? { deltaApproval: true, deltaFromHeadSha: deltaApprovalOf(round)!.fromHeadSha }
+          : {}),
         ...(priorVerdict ? { priorVerdict } : {}), ...(compositionScopeOf(round) ? { compositionScope: compositionScopeOf(round) } : {}),
         // §5: the findings still open, each with its id, for the reviewer to verify, restate or defer.
         findingsBrief: findingsBriefOf(view, round),

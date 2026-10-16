@@ -15,8 +15,9 @@
  *    both that round's head and the head the delta is read from;
  *  - no finding is still open (an open changes-requested point is reviewed in
  *    full, never waved through on a delta);
- *  - the host read the delta (A..B, bounded against the base) and the read is
- *    complete;
+ *  - the host read the delta (A..B, bounded against the base), A is an ancestor
+ *    of B, and the read is complete. A is the last FULL review's approved head:
+ *    a chain of carried deltas is measured as one delta from it;
  *  - every file the delta touches was already in the PR at A, or is a test or
  *    test-config file being added or modified (a deletion of a file the PR did
  *    not already touch is never a delta);
@@ -51,15 +52,15 @@ export const ROUND_TRIGGERS: readonly RoundTrigger[] = [
 
 /** Plain words for a trigger, for the activity comment and explain. */
 export const ROUND_TRIGGER_COPY: Record<RoundTrigger, string> = {
-  first_pass: 'first review',
-  changes_requested_fix: 'after a fix for requested changes',
-  ci_fix: 'after a CI fix',
-  new_commits: 'after new commits',
-  base_refresh: 'after the base branch was merged in',
-  manual_force: 'asked for by a person',
-  superseded_by_push: 'a newer push replaced the open review',
-  verify_findings: 'to verify open findings',
-  composition: 'changes new to a composed PR',
+  first_pass: 'First review',
+  changes_requested_fix: 'After a fix for requested changes',
+  ci_fix: 'After a CI fix',
+  new_commits: 'After new commits',
+  base_refresh: 'After the base branch was merged in',
+  manual_force: 'A person asked for it',
+  superseded_by_push: 'A newer push replaced the open review',
+  verify_findings: 'To verify open findings',
+  composition: 'Changes new to a composed PR',
 };
 
 export function isRoundTrigger(v: unknown): v is RoundTrigger {
@@ -94,12 +95,22 @@ export interface DeltaReading {
 export const DELTA_MAX_FILES = 10;
 export const DELTA_MAX_LINES = 200;
 
-const TEST_PATH = /(^|\/)(__tests__|__mocks__|tests?|spec|fixtures)\/|\.(test|spec)\.[cm]?[jt]sx?$|_test\.(go|py)$|(^|\/)test_[^/]+\.py$/;
-const TEST_CONFIG_PATH = /(^|\/)(vitest|jest|playwright|bunfig|tsconfig)[^/]*\.(json|toml|[cm]?[jt]s)$/;
+/** A test by its file name: a `.test.`/`.spec.` source, Go's `_test.go`, pytest's `test_*.py` / `*_test.py`. */
+const TEST_FILE_NAME = /\.(test|spec)\.[cm]?[jt]sx?$|_test\.(go|py)$|^test_[^/]+\.py$/;
+/** A test root: `__tests__/` anywhere, or `tests/`/`test/` at the top of the repo or of a package (`apps/x/tests/`). */
+const TEST_ROOT = /(^|\/)__tests__\/|^tests?\/|^(apps|packages)\/[^/]+\/tests?\//;
+/** Only these exact test-runner config names; never tsconfig, bunfig or a package manifest. */
+const TEST_RUNNER_CONFIG = /^(vitest|jest|playwright)\.config\.[cm]?[jt]s$/;
 
-/** A test, a test fixture or a test runner's config. Package manifests, lockfiles, CI and migrations are not. */
+/**
+ * A test, by file name or test root, or a test runner's own config (58c8961e).
+ * Matched on the file name and the repo's test roots only, so production code
+ * that merely sits under a `test`/`spec`/`fixtures` directory (an API route, a
+ * dev fixtures page) or is named after a tool (`playwright-pin.ts`) is not one.
+ */
 export function isTestOrConfigPath(path: string): boolean {
-  return TEST_PATH.test(path) || TEST_CONFIG_PATH.test(path);
+  const name = path.slice(path.lastIndexOf('/') + 1);
+  return TEST_FILE_NAME.test(name) || TEST_ROOT.test(path) || TEST_RUNNER_CONFIG.test(name);
 }
 
 export interface DeltaEligibility {
@@ -112,16 +123,22 @@ export interface DeltaEligibility {
 }
 
 /**
- * The approved head a delta read should start from, when the round after this
- * view's approval could be a delta review at all; null when it never could (the
- * host then reads nothing). The newest approved head: a content-equivalent
- * carry appends to `approved_heads`, so the newest one is closest to the push.
+ * The head a delta read starts from, when the round after this view's approval
+ * could be a delta review at all; null when it never could (the host then reads
+ * nothing). It is the head of the last FULL review's approval: a carried delta
+ * records the head it was measured from, so a chain of delta approvals is
+ * measured (files, lines, files outside the PR) as one delta from the last
+ * full review, never one small step at a time. After a full approval, the newest
+ * approved head (a content-equivalent carry appends to `approved_heads`).
  */
 export function deltaApprovalSource(view: Pick<KernelView, 'delivery' | 'rounds'>): string | null {
   const d = view.delivery;
   if (!d || d.approvalBasis !== 'verdict' || d.approvedHeads.length === 0) return null;
   const last = lastDecided(view.rounds);
   if (!last || last.effectiveVerdict !== 'approve' || !d.approvedHeads.includes(last.headSha)) return null;
+  if (last.scope?.composition === true) return null;
+  const carried = last.kind === 'delta' ? (last.scope?.deltaApproval as { eligible?: unknown; fromHeadSha?: unknown } | undefined) : undefined;
+  if (carried?.eligible === true) return typeof carried.fromHeadSha === 'string' ? carried.fromHeadSha : null;
   return d.approvedHeads.at(-1) ?? null;
 }
 
@@ -150,7 +167,8 @@ export function deltaApprovalEligibility(
   if (!reading) return no('the delta could not be read');
   const from = reading.fromHeadSha;
   if (reading.toHeadSha !== head) return no('the delta read is for another head', from);
-  if (!d.approvedHeads.includes(from)) return no('the delta does not start at an approved head', from);
+  // The read must start where the rule measures from: the last full review's approved head (a delta chain included).
+  if (from !== deltaApprovalSource(view)) return no('the delta does not start at the last full review\'s approved head', from);
   if (from === head) return no('the delta is empty', from);
   const inPr = new Set(reading.prFilesAtFrom);
   let lines = 0;

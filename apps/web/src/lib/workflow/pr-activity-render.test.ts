@@ -182,9 +182,9 @@ describe('58c8961e: why each review round started', () => {
     ];
     const entries = transitionsToActivityEntries(ts, rs, []);
     expect(entries.filter((e) => e.kind === 'review_queued').map((e) => e.detail)).toEqual([
-      'round 1 · first review · superseded by a newer push',
-      'round 2 · a newer push replaced the open review',
-      'round 3 · after a CI fix · delta review of the approval',
+      'round 1 · First review · replaced by a newer push',
+      'round 2 · A newer push replaced the open review',
+      'round 3 · After a CI fix · delta review of the approval',
     ]);
     expect(entries.filter((e) => e.kind === 'review_approved').map((e) => e.detail ?? null)).toEqual([null, 'carries the approval at `H2`']);
   });

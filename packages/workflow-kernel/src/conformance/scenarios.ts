@@ -2187,8 +2187,19 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       f.github.setPr(s.repo, s.prNumber, s.live('H2'));
       await drainKernel(host, s, f.ports);
       const second = f.work.filed.filter((w) => w.role === 'review').at(-1)!;
-      eq(pick(second.detail ?? {}, ['trigger', 'deltaApproval']), { trigger: 'new_commits', deltaApproval: true }, 'the reviewer knows it is a delta of an approval');
-      eq(pick((second.detail?.priorVerdict ?? {}) as Record<string, unknown>, ['headSha', 'verdict']), { headSha: 'H1', verdict: 'approve' }, 'and what it carries');
+      eq(pick(second.detail ?? {}, ['trigger', 'deltaApproval', 'deltaFromHeadSha']), { trigger: 'new_commits', deltaApproval: true, deltaFromHeadSha: 'H1' }, 'the reviewer knows it is a delta of an approval, and from where');
+      eq(pick((second.detail?.priorVerdict ?? {}) as Record<string, unknown>, ['headSha', 'verdict']), { headSha: 'H1', verdict: 'approve' }, 'and diffs the range the rule measured');
+
+      // A second carried delta: the rule measures H1..H3, and the reviewer diffs H1..H3 too, not H2..H3.
+      const r2 = await s.latestRound();
+      f.reviews.outputs.set(r2.id, { verdict: 'approve', confidence: 0.9, summary: 'delta fine' });
+      applied(await s.verdict('approve'), 'APPROVED', 'the delta approves H2');
+      const delta3 = { fromHeadSha: 'H1', toHeadSha: 'H3', prFilesAtFrom: ['src/a.ts'], files: [{ path: 'src/a.ts', status: 'modified', additions: 4, deletions: 2 }] };
+      applied(await s.push('H3', { delta: delta3 }), 'AWAITING_REVIEW', 'push H3');
+      f.github.setPr(s.repo, s.prNumber, s.live('H3'));
+      await drainKernel(host, s, f.ports);
+      const third = f.work.filed.filter((w) => w.role === 'review').at(-1)!;
+      eq({ from: third.detail?.deltaFromHeadSha, prior: ((third.detail?.priorVerdict ?? {}) as Record<string, unknown>).headSha }, { from: 'H1', prior: 'H1' }, 'one range for the rule and the reviewer, from the last full review');
     },
   },
   {
@@ -2263,6 +2274,22 @@ export const CONFORMANCE_SCENARIOS: ConformanceScenario[] = [
       applied(await s.push('H2', { proof: { liveContainsLocal: true, contentDiffChanged: true } }), 'ESCALATED', 'the push arrives');
       eq(pick(await s.d(), ['state', 'stateReason', 'currentRound', 'currentHeadSha']), { state: 'ESCALATED', stateReason: 'review_exhausted', currentRound: 1, currentHeadSha: 'H2' }, 'a person\'s, at the new head');
       eq({ rounds: (await s.view()).rounds.length, dispatched: await s.count('dispatch_review') }, { rounds: 1, dispatched: 1 }, 'no new round, no reviewer');
+    },
+  },
+  {
+    name: 'delta approval (58c8961e): carried deltas are capped together, measured from the last full review',
+    async run(host) {
+      const s = await (await new Delivery(host, 96).open()).approvedAt('H1');
+      const small = { fromHeadSha: 'H1', toHeadSha: 'H2', prFilesAtFrom: ['src/a.ts'], files: [{ path: 'src/a.ts', status: 'modified', additions: 150, deletions: 0 }] };
+      applied(await s.push('H2', { delta: small }), 'AWAITING_REVIEW', 'push H2');
+      eq((await s.latestRound()).kind, 'delta', 'H1..H2 is a delta');
+      applied(await s.verdict('approve'), 'APPROVED', 'carried to H2');
+      // H2..H3 alone is 60 lines, but H1..H3 is 210: over the cap, so a full review.
+      const sum = { fromHeadSha: 'H1', toHeadSha: 'H3', prFilesAtFrom: ['src/a.ts'], files: [{ path: 'src/a.ts', status: 'modified', additions: 210, deletions: 0 }] };
+      applied(await s.push('H3', { delta: sum }), 'AWAITING_REVIEW', 'push H3');
+      const r3 = await s.latestRound();
+      eq(pick(r3, ['round', 'kind']), { round: 3, kind: 'full' }, 'a full review once the chain is over the cap');
+      eq(pick((r3.scope?.deltaApproval ?? {}) as Record<string, unknown>, ['eligible', 'fromHeadSha']), { eligible: false, fromHeadSha: 'H1' }, 'measured from H1');
     },
   },
 ];

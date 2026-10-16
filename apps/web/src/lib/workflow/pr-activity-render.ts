@@ -71,7 +71,7 @@ export function roundLabel(r: RoundSnapshot): string {
   const parts = [`round ${r.round}`];
   if (r.trigger && ROUND_TRIGGER_COPY[r.trigger]) parts.push(ROUND_TRIGGER_COPY[r.trigger]);
   if (deltaApprovalOf(r)) parts.push('delta review of the approval');
-  if (r.status === 'superseded') parts.push(r.endReason === 'superseded_by_push' ? 'superseded by a newer push' : 'superseded');
+  if (r.status === 'superseded') parts.push(r.endReason === 'superseded_by_push' ? 'replaced by a newer push' : 'superseded');
   return parts.join(' · ');
 }
 

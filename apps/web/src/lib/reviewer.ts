@@ -788,12 +788,27 @@ export async function createReviewerTask(
     loadTaskSpecSource(originalTaskId),
   ]);
 
+  // A delta review reads `priorVerdict.headSha..headSha` from the merge base. That is only the change
+  // since the prior verdict when the prior head is an ancestor of this one: after a force-push that
+  // dropped a reviewed commit, the three-dot diff would hide the drop (58c8961e). Not provably an
+  // ancestor (diverged, behind, unreadable) is a full review.
+  let priorVerdict = params.priorVerdict;
+  let deltaFallback: string | null = null;
+  if (priorVerdict) {
+    const ancestry = await priorHeadAncestry({ installationId, repoFullName, fromSha: priorVerdict.headSha, toSha: headSha });
+    if (ancestry !== 'ahead') {
+      console.log(`[reviewer] PR #${prNumber}: prior head ${priorVerdict.headSha.slice(0, 7)} is not an ancestor of ${headSha.slice(0, 7)} (${ancestry}); full review`);
+      deltaFallback = `prior_head_${ancestry}`;
+      priorVerdict = undefined;
+    }
+  }
+
   // Build reviewer context description. A priorVerdict switches this to a
   // DELTA review: the diff is `priorVerdict.headSha..headSha`, not the whole
   // PR, and the prompt carries the prior verdict instead of asking the agent
   // to re-derive an opinion it already reached.
   let policySuggestions: ReviewerPolicySuggestion[] = [];
-  const diffContext = params.priorVerdict
+  const diffContext = priorVerdict
     ? await buildDeltaReviewerContext({
         originalTaskId,
         originalTask,
@@ -804,7 +819,7 @@ export async function createReviewerTask(
         repoFullName,
         policyConfig: params.policyConfig,
         confidenceThreshold: params.confidenceThreshold,
-        priorVerdict: params.priorVerdict,
+        priorVerdict: priorVerdict,
         deltaFiles: params.deltaFiles,
         missionCriteria,
         baseRef: params.baseRef,
@@ -837,7 +852,7 @@ export async function createReviewerTask(
     installationId,
     repoFullName,
     prNumber,
-    files: params.priorVerdict ? params.deltaFiles : params.prFiles,
+    files: priorVerdict ? params.deltaFiles : params.prFiles,
   });
   const description = `${params.compositionScope ? `${diffContext}${compositionScopeSection(params.compositionScope)}` : diffContext}${params.workflowRound ? findingsSection(params.findingsBrief) : ''}${copySection}`;
 
@@ -868,7 +883,7 @@ export async function createReviewerTask(
       // OAuth budget is exhausted even though the original ran on Codex.
       backend: originalTask.backend,
       // 58c8961e: a delta review that carries an approval reads a small diff: the standard tier.
-      ...(params.priorVerdict && params.deltaApproval ? { tier: DELTA_APPROVAL_REVIEW_TIER } : {}),
+      ...(priorVerdict && params.deltaApproval ? { tier: DELTA_APPROVAL_REVIEW_TIER } : {}),
       outputSchema: REVIEWER_TASK_OUTPUT_SCHEMA as unknown as Record<string, unknown>,
       missionId: originalTask.missionId,
       parentTaskId: originalTaskId,
@@ -886,12 +901,13 @@ export async function createReviewerTask(
         iteration: originalTask.iteration ?? 0,
         maxIterations: originalTask.maxIterations ?? 3,
         ...(params.reviewCallback ? { reviewCallback: params.reviewCallback } : {}),
-        ...(params.priorVerdict ? {
+        ...(priorVerdict ? {
           deltaReview: true,
-          priorVerdictHeadSha: params.priorVerdict.headSha,
-          priorVerdict: params.priorVerdict.verdict,
+          priorVerdictHeadSha: priorVerdict.headSha,
+          priorVerdict: priorVerdict.verdict,
         } : {}),
-        ...(params.priorVerdict && params.deltaApproval ? { deltaApproval: true } : {}),
+        ...(priorVerdict && params.deltaApproval ? { deltaApproval: true } : {}),
+        ...(deltaFallback ? { deltaFallback } : {}),
         ...(params.reviewTrigger ? { reviewTrigger: params.reviewTrigger } : {}),
         // The criteria this reviewer was actually shown, with the fingerprints
         // they had at dispatch. Read back when the verdict lands so a finding
@@ -999,6 +1015,25 @@ Use your outputSchema to return:
 - \`recommendation\`: (escalate only) what the human should DO next, as one imperative sentence of at most 140 characters. Never leave this empty on an escalation: it is the first line they read on their queue
 - \`blockers\`: (escalate only) one \`{kind, text}\` entry per distinct reason, \`text\` a short phrase{{ledeOutputLine}}{{criteriaOutputLine}}
 `;
+
+/**
+ * Is `fromSha` an ancestor of `toSha`? GitHub's compare status: `ahead` (yes, and `toSha` has
+ * more), `identical`, `behind` or `diverged`; `unread` when the compare could not be read.
+ * Only `ahead` makes `fromSha...toSha` the change since `fromSha` (58c8961e).
+ */
+export async function priorHeadAncestry(p: {
+  installationId: number; repoFullName: string; fromSha: string; toSha: string;
+  api?: (installationId: number, path: string) => Promise<unknown>;
+}): Promise<'ahead' | 'identical' | 'behind' | 'diverged' | 'unread'> {
+  try {
+    const api = p.api ?? (await import('@/lib/github')).githubApi;
+    const cmp = (await api(p.installationId, `/repos/${p.repoFullName}/compare/${p.fromSha}...${p.toSha}`)) as { status?: unknown } | null;
+    const st = cmp?.status;
+    return st === 'ahead' || st === 'identical' || st === 'behind' || st === 'diverged' ? st : 'unread';
+  } catch {
+    return 'unread';
+  }
+}
 
 /** The tier a delta review carrying an approval runs on (58c8961e). */
 export const DELTA_APPROVAL_REVIEW_TIER = 'standard' as const;

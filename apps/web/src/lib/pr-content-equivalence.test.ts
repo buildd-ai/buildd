@@ -135,7 +135,7 @@ describe('readReviewedDelta (58c8961e)', () => {
         [`dev...${A}`]: { files: [f('src/a.ts', 's1'), f('src/a.test.ts', 't1')] },
         [`dev...${B}`]: { files: [f('src/a.ts', 's1'), f('src/a.test.ts', 't2')] },
         // A merge of the base: the direct compare also lists a file the base moved on its own.
-        [`${A}...${B}`]: { files: [f('src/a.test.ts', 't2', { additions: 3, deletions: 1 }), f('docs/base-only.md', 'x', { additions: 40, deletions: 0 })] },
+        [`${A}...${B}`]: { status: 'ahead', files: [f('src/a.test.ts', 't2', { additions: 3, deletions: 1 }), f('docs/base-only.md', 'x', { additions: 40, deletions: 0 })] },
       }),
     });
     expect(r).toEqual({
@@ -150,7 +150,7 @@ describe('readReviewedDelta (58c8961e)', () => {
       api: api({
         [`dev...${A}`]: { files: [f('src/a.ts', 's1')] },
         [`dev...${B}`]: { files: [f('src/a.ts', 's1'), f('src/b.ts', 'b1', { status: 'added' })] },
-        [`${A}...${B}`]: { files: [f('src/b.ts', 'b1', { status: 'added', additions: 5, deletions: 0 })] },
+        [`${A}...${B}`]: { status: 'ahead', files: [f('src/b.ts', 'b1', { status: 'added', additions: 5, deletions: 0 })] },
       }),
     });
     expect(r?.files.map((x) => [x.path, x.status])).toEqual([['src/b.ts', 'added']]);
@@ -163,7 +163,20 @@ describe('readReviewedDelta (58c8961e)', () => {
     expect(await readReviewedDelta({ ...P, api: api({ [`dev...${A}`]: { files: many }, [`dev...${B}`]: { files: [] }, [`${A}...${B}`]: { files: [] } }) })).toBeNull();
     expect(await readReviewedDelta({
       ...P,
-      api: api({ [`dev...${A}`]: { files: [f('src/a.ts', 's1')] }, [`dev...${B}`]: { files: [f('src/a.ts', 's2')] }, [`${A}...${B}`]: { files: [] } }),
+      api: api({ [`dev...${A}`]: { files: [f('src/a.ts', 's1')] }, [`dev...${B}`]: { files: [f('src/a.ts', 's2')] }, [`${A}...${B}`]: { status: 'ahead', files: [] } }),
     })).toBeNull();
+  });
+
+  it('a force-push that dropped a reviewed commit (diverged) is unread, never the merge-base diff', async () => {
+    // A = base+c1+c2 (c2 added an auth check to x.ts); B = base+c1+c3. The three-dot compare shows only c3.
+    const routes = {
+      [`dev...${A}`]: { files: [f('src/x.ts', 'x-with-check'), f('src/x.test.ts', 't1')] },
+      [`dev...${B}`]: { files: [f('src/x.ts', 'x-without-check'), f('src/x.test.ts', 't2')] },
+      [`${A}...${B}`]: { status: 'diverged', files: [f('src/x.test.ts', 't2', { additions: 1, deletions: 0 })] },
+    };
+    expect(await readReviewedDelta({ ...P, api: api(routes) })).toBeNull();
+    for (const status of ['behind', 'identical', undefined]) {
+      expect(await readReviewedDelta({ ...P, api: api({ ...routes, [`${A}...${B}`]: { ...routes[`${A}...${B}`], status } }) })).toBeNull();
+    }
   });
 });
