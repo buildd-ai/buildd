@@ -221,16 +221,16 @@ describe('manage_missions — workspace resolution', () => {
   });
 
   it('tells the caller where to file instead when the workspace is out of key scope', async () => {
-    mockApi.mockResolvedValueOnce({ workspaces: [{ id: 'ws-1', name: 'buildd' }] });
+    mockApi.mockResolvedValueOnce({ workspaces: [{ id: 'ws-1', name: 'alpha' }] });
 
     await expect(
       handleBuilddAction(
         mockApi as unknown as ApiFn,
         'manage_missions',
-        { action: 'create', title: 'Test Mission', workspaceId: 'buildd-admin' },
+        { action: 'create', title: 'Test Mission', workspaceId: 'beta' },
         createMockContext(),
       ),
-    ).rejects.toThrow(/You can see: buildd\. .*file the follow-up in a visible workspace/);
+    ).rejects.toThrow(/You can see: alpha\. .*file the follow-up in a visible workspace/);
   });
 
   it('resolves workspace name to ID on update', async () => {
