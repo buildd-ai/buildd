@@ -418,6 +418,13 @@ describe('narrow widths', () => {
     expect(placeholder.length).toBeGreaterThan(0);
     expect(placeholder.length).toBeLessThanOrEqual(14);
   });
+  it('at 390px and narrower, chips have flex-basis: 100% to wrap below the name', () => {
+    expect(CONSENT_CSS).toContain('@media (max-width: 390px)');
+    const mediaStart = CONSENT_CSS.indexOf('@media (max-width: 390px)');
+    const mediaBlock = CONSENT_CSS.slice(mediaStart, CONSENT_CSS.indexOf('}', mediaStart) + 1);
+    expect(mediaBlock).toContain('.team-chips');
+    expect(mediaBlock).toContain('flex-basis: 100%');
+  });
 });
 
 describe('one team', () => {

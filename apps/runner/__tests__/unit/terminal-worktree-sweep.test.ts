@@ -16,7 +16,7 @@
  */
 import { describe, test, expect, beforeEach, afterAll } from 'bun:test';
 import { execSync } from 'child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync, mkdirSync, chmodSync } from 'fs';
+import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync, readFileSync, readdirSync, mkdirSync, chmodSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { sweepTerminalWorktrees, type SweepRecord } from '../../src/terminal-worktree-sweep';
@@ -51,7 +51,7 @@ function record(id: string, path: string, over: Partial<SweepRecord> = {}): Swee
 }
 
 beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), 'terminal-wt-sweep-'));
+  root = realpathSync(mkdtempSync(join(tmpdir(), 'terminal-wt-sweep-')));
   roots.push(root);
   const origin = join(root, 'origin.git');
   git(root, `init -q --bare -b main "${origin}"`);
