@@ -184,7 +184,20 @@ async function runSession(manager: InstanceType<typeof WorkerManager>, workerId:
   const task = makeTask();
   mockClaimTask.mockImplementation(async () => ({ workers: [{ id: workerId, branch: 'buildd/test', task }] }));
   await manager.claimAndStart(task);
-  await new Promise(r => setTimeout(r, 300));
+  // The session runs detached, and its git (stats, cleanup) runs async off the
+  // event loop: wait until it is terminal and the PATCHes have gone quiet.
+  await settleSession(() => manager.getWorker(workerId)?.status);
+}
+
+/** Wait for a terminal local status, then until no PATCH has landed for a beat. */
+async function settleSession(status: () => string | undefined, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!['done', 'error', 'waiting'].includes(status() ?? '') && Date.now() < deadline) await new Promise(r => setTimeout(r, 25));
+  let seen = -1;
+  while (seen !== mockUpdateWorker.mock.calls.length && Date.now() < deadline) {
+    seen = mockUpdateWorker.mock.calls.length;
+    await new Promise(r => setTimeout(r, 400));
+  }
 }
 
 /** The agent found the fix already landed, discarded its edits, and stopped. */

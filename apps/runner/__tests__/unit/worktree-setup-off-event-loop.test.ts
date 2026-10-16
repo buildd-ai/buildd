@@ -34,7 +34,7 @@ const ANSWER_WITHIN_MS = 200;
 const REAL_GIT = execSync('command -v git', { encoding: 'utf-8' }).trim();
 const ORIGINAL_PATH = process.env.PATH;
 const ORIGINAL_ENV: Record<string, string | undefined> = Object.fromEntries(
-  ['HOME', 'BUILDD_HOME', 'BUILDD_EXECUTOR', 'GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL'].map(k => [k, process.env[k]]),
+  ['BUILDD_EXECUTOR', 'GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL'].map(k => [k, process.env[k]]),
 );
 
 let tmp: string;
@@ -91,10 +91,7 @@ async function worstLatencyDuring<T>(work: () => Promise<T>): Promise<{ result: 
 
 beforeAll(() => {
   tmp = initTestWorkspace();
-  // Never the host's ~/.buildd: the session log and archive dirs live here.
-  process.env.HOME = join(tmp, 'home');
-  process.env.BUILDD_HOME = join(tmp, 'home', '.buildd');
-  mkdirSync(process.env.BUILDD_HOME, { recursive: true });
+  // HOME is already a per-file temp dir (the test runner injects it); archives go to tmp.
   delete process.env.BUILDD_EXECUTOR;
   // The pre-merge commits; a temp HOME has no git identity.
   process.env.GIT_AUTHOR_NAME = process.env.GIT_COMMITTER_NAME = 't';
