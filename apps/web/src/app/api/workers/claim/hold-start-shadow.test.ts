@@ -775,6 +775,23 @@ describe('runClaimHoldShadow: decision opportunities are not starved', () => {
 
 describe('learning cell enforcement', () => {
   const note = () => new ClaimHoldCollector().noteOpenPrOverlap(ctx(), ['apps/web/src/widget.ts'], [pr()], new Map())!;
+  it('does not read learning policy for a disabled team, including memoized polls', async () => {
+    let reads = 0;
+    const dd = decisionDeps({ resolveAccess: async () => ({ ok: false, error: { kind: 'capability_disabled', message: 'off' } }) as any });
+    const h = harness({ loadLearningPolicy: async () => { reads++; throw new Error('must not read'); } }, dd);
+    await runClaimHoldShadow([note()], h.deps);
+    await runClaimHoldShadow([note()], h.deps);
+    expect(reads).toBe(0);
+    expect(h.rows).toHaveLength(0);
+  });
+  it('does not read learning policy for state already in the ledger or recent memo', async () => {
+    let reads = 0;
+    const h = harness({ hasRecent: async () => true, loadLearningPolicy: async () => { reads++; throw new Error('must not read'); } });
+    await runClaimHoldShadow([note()], h.deps);
+    await runClaimHoldShadow([note()], h.deps);
+    expect(reads).toBe(0);
+    expect(h.counts().accessCalls).toBe(1);
+  });
   it('a cell rollback invalidates an old applied START immediately', async () => {
     let lookups = 0;
     expect(await gatedStartApplies(note(), { loadLearningPolicy: async () => ({ fraction: 0, minConfidence: .85 } as any), findAppliedStart: async () => { lookups++; return true; } })).toBe(false);

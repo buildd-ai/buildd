@@ -519,11 +519,9 @@ export async function runClaimHoldShadow(notes: readonly ClaimHoldNote[], deps: 
     if (note.candidate.risk && note.candidate.risk.route !== 'ask_model') continue;
     try {
       const c = note.candidate;
-      const learning = await learningPolicyFor(note, deps);
-      const decision = withLearningThreshold(baseDecision, learning.minConfidence);
       const t = now();
       if ((disabledTeams.get(c.teamId) ?? 0) > t) continue;
-      const memoKey = `${c.taskId}:${note.digest}:${decision.fingerprint}`;
+      const memoKey = `${c.taskId}:${note.digest}:${baseDecision.fingerprint}`;
       if ((recentAsks.get(memoKey) ?? 0) > t) continue;
       // Opt-in first: a team that has not turned the capability on costs one
       // team read here and nothing else (no ledger read, no row).
@@ -538,10 +536,12 @@ export async function runClaimHoldShadow(notes: readonly ClaimHoldNote[], deps: 
         remember(disabledTeams, c.teamId, now() + DISABLED_TEAM_TTL_MS);
         continue;
       }
-      if (await (deps.hasRecent ?? defaultHasRecent)(keyFor(note, decision, new Date(t - RECENT_ASK_TTL_MS)))) {
+      if (await (deps.hasRecent ?? defaultHasRecent)(keyFor(note, baseDecision, new Date(t - RECENT_ASK_TTL_MS)))) {
         remember(recentAsks, memoKey, t + RECENT_ASK_TTL_MS);
         continue;
       }
+      const learning = await learningPolicyFor(note, deps);
+      const decision = withLearningThreshold(baseDecision, learning.minConfidence);
       asked++;
       const outcome = await decide({
         decision,
