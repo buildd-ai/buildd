@@ -1428,8 +1428,8 @@ describe('POST /api/github/pr', () => {
 
     // Regression (mission 6341fe61): a task with NO missionId whose context
     // still carries the mission branch as baseBranch. The integration guard
-    // never runs, the base resolves from task context to a ref that was never
-    // created, and GitHub's bare 422 used to come back as a 500.
+    // never runs; the fix ignores the stale mission/... ref in context and
+    // falls through to the workspace default, avoiding a GitHub rejection.
     it('turns a non-existent base into an actionable 400 and traces a missing mission branch', async () => {
       mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
       mockWorkersFindFirst.mockResolvedValue(taskWorker({
@@ -1440,23 +1440,19 @@ describe('POST /api/github/pr', () => {
       mockMissionsFindFirst.mockResolvedValue(null);
       mockReportMissionBranchUnresolved.mockClear();
       noExistingPr();
-      mockGithubApi.mockImplementationOnce((() => Promise.reject(new Error(
-        'GitHub API error: 422 {"message":"Validation Failed","errors":[{"resource":"PullRequest","field":"base","code":"invalid"}]}',
-      ))) as any);
+      mockGithubApi.mockResolvedValueOnce({ number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'open', title: 'My PR' });
 
       const res = await POST(createMockRequest({
         headers: { Authorization: 'Bearer bld_test' },
         body: { workerId: 'w-1', title: 'My PR', head: WORKER_BRANCH },
       }));
 
-      expect(res.status).toBe(400);
-      const data = await res.json();
-      expect(data.error).toContain(`'${INTEGRATION_BRANCH}' does not exist`);
-      expect(data.hint).toContain("base='dev'");
-      expect(mockReportMissionBranchUnresolved).toHaveBeenCalledTimes(1);
-      expect((mockReportMissionBranchUnresolved.mock.calls[0] as any[])[0]).toMatchObject({
-        branch: INTEGRATION_BRANCH, where: 'create_pr', cause: 'missing', workerId: 'w-1',
-      });
+      expect(res.status).toBe(200);
+      const createCall = mockGithubApi.mock.calls.find((c: any[]) => c[2]?.method === 'POST');
+      expect(createCall).toBeDefined();
+      const body = JSON.parse((createCall as any[])[2].body);
+      expect(body.base).toBe('dev');
+      expect(mockReportMissionBranchUnresolved).not.toHaveBeenCalled();
     });
 
     it('refuses a caller-supplied head that disagrees with the worker’s own branch', async () => {

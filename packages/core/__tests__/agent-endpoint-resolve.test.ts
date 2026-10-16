@@ -190,11 +190,18 @@ describe('resolveAgentModelRoute (§2 cases)', () => {
   });
 
   it('team endpoint + workspace Anthropic key ⇒ that workspace stays on Anthropic', async () => {
-    for (const p of ['oauth_token', 'anthropic_api_key', 'claude_credential']) {
-      rows = [endpointRow({ id: 'team' }), cred(p, { workspaceId: WS })];
-      const d = await route();
-      expect(d?.winner).toBe('anthropic');
-      expect(d?.winner === 'anthropic' && d.beatenBy).toBe('workspace');
+    rows = [endpointRow({ id: 'team' }), cred('anthropic_api_key', { workspaceId: WS })];
+    const d = await route();
+    expect(d?.winner).toBe('anthropic');
+    expect(d?.winner === 'anthropic' && d.beatenBy).toBe('workspace');
+  });
+
+  // Model credentials spec R-2 / R-7: a stored subscription login is never
+  // delivered, so it cannot keep a workspace off the team endpoint.
+  it('team endpoint + workspace stored login ⇒ endpoint', async () => {
+    for (const p of ['oauth_token', 'claude_credential']) {
+      rows = [endpointRow({ id: 'team' }), cred(p, { workspaceId: WS, tokenExpiresAt: new Date(Date.now() + 3600_000) })];
+      expect((await route())?.winner).toBe('endpoint');
     }
   });
 
@@ -210,7 +217,7 @@ describe('resolveAgentModelRoute (§2 cases)', () => {
     expect((await route())?.winner).toBe('endpoint');
   });
 
-  it('another workspace\'s key, a revoked key and a dead claude_credential do not compete', async () => {
+  it('another workspace\'s key, a revoked key and a stored login do not compete', async () => {
     rows = [
       endpointRow({ id: 'team' }),
       cred('anthropic_api_key', { workspaceId: 'ws-2' }),
@@ -236,13 +243,17 @@ describe('resolveAgentModelRoute: backend: "codex" ranks against the Codex-side 
     }
   });
 
-  it('team endpoint + a workspace-scoped openai_api_key/codex_credential ⇒ that workspace stays on it', async () => {
-    for (const p of ['openai_api_key', 'codex_credential']) {
-      rows = [endpointRow({ id: 'team' }), cred(p, { workspaceId: WS })];
-      const d = await route();
-      expect(d?.winner).toBe('anthropic');
-      expect(d?.winner === 'anthropic' && d.beatenBy).toBe('workspace');
-    }
+  it('team endpoint + a workspace-scoped openai_api_key ⇒ that workspace stays on it', async () => {
+    rows = [endpointRow({ id: 'team' }), cred('openai_api_key', { workspaceId: WS })];
+    const d = await route();
+    expect(d?.winner).toBe('anthropic');
+    expect(d?.winner === 'anthropic' && d.beatenBy).toBe('workspace');
+  });
+
+  // A codex_credential row may hold a ChatGPT login, which is never delivered.
+  it('team endpoint + a workspace-scoped codex_credential ⇒ endpoint', async () => {
+    rows = [endpointRow({ id: 'team' }), cred('codex_credential', { workspaceId: WS })];
+    expect((await route())?.winner).toBe('endpoint');
   });
 
   it('the same rows rank differently by backend: a workspace anthropic_api_key does not block Codex, and vice versa', async () => {

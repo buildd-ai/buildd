@@ -319,7 +319,11 @@ export function resolveTaskPrBase(args: {
     ctxBase &&
     ctxBase !== args.head &&
     !(args.integrationBaseMissing && ctxBase === integrationBase) &&
-    !(args.stackedBaseMissing && ctxBase !== integrationBase)
+    !(args.stackedBaseMissing && ctxBase !== integrationBase) &&
+    // A `mission/...` ref that is not this mission's current integration base is
+    // a stale value from a prior delivery (or another mission); it may no longer
+    // exist, so fall through to trunk rather than 400 on a missing base.
+    !(looksLikeMissionIntegrationBranch(ctxBase) && ctxBase !== integrationBase)
       ? ctxBase
       : undefined;
   if (usableCtxBase) {
