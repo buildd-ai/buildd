@@ -676,17 +676,23 @@ if (ONCE_RUN) {
   if (n > 0) console.log(`[session-prompts] Removed ${n} leftover role/skill dir(s) from earlier runs`);
 }
 
-// Initialize clients (null if no API key - will show setup UI)
-let buildd: BuilddClient | null = config.apiKey ? new BuilddClient(config) : null;
-let workerManager: WorkerManager | null = config.apiKey ? new WorkerManager(config, resolver) : null;
-
 // A person's hold (`buildd hold`, runner-hold.ts), read from config.json so a
 // restart of any kind keeps it. `--once` runs one named task and has none.
+//
+// Set up BEFORE any WorkerManager: its constructor sends a heartbeat and, via
+// Pusher setup, runs a startup claim poll at once. With no hold store yet that
+// poll read "not held" and told the server `hold: null`, so a runner restarted
+// on hold (an auto-update included) started new agents (task 7d42431c).
 const runnerHold = ONCE_TASK_ID === null ? initRunnerHold({ configFile: CONFIG_FILE }) : null;
 if (runnerHold?.isHeld()) {
   const h = runnerHold.current()!;
   console.log(`[runner-hold] Started on hold since ${h.since}${h.until ? `, until ${h.until}` : ''}: nothing new starts until buildd resume`);
 }
+
+// Initialize clients (null if no API key - will show setup UI)
+let buildd: BuilddClient | null = config.apiKey ? new BuilddClient(config) : null;
+let workerManager: WorkerManager | null = config.apiKey ? new WorkerManager(config, resolver) : null;
+
 runnerHold?.onChange((hold) => {
   // top's header, and the server, learn at once; a lifted hold claims straight away.
   broadcast({ type: 'runner_hold', hold });
