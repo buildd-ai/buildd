@@ -1983,28 +1983,22 @@ export interface ClaimTasksResponse {
     claudeAiArtifacts?: ClaudeAiArtifactAccess;
     /** Decrypted server-managed API key (inline) */
     serverApiKey?: string;
-    /** Decrypted server-managed OAuth token (inline) */
+    /**
+     * @deprecated Never sent: a claim carries no subscription login (model
+     * credentials spec R-2). Kept until runners stop reading it.
+     */
     serverOauthToken?: string;
-    /**
-     * Access token from a managed claude_credential (centrally refreshed).
-     * When set, the runner creates a per-worker CLAUDE_CONFIG_DIR and writes
-     * a credentials file with ONLY this access_token — no refresh_token —
-     * preventing in-session token rotation by workers.
-     */
+    /** @deprecated Never sent (spec R-2): was a stored claude_credential access token. */
     claudeAccessToken?: string;
-    /** When the claudeAccessToken expires (epoch ms). Used by the runner for preflight checks. */
+    /** @deprecated Never sent (spec R-2). */
     claudeTokenExpiresAt?: string | null;
-    /**
-     * OAuth scopes the managed claude_credential was granted, when recorded
-     * (the dashboard login records them). The runner writes these into the
-     * worker's .credentials.json; absent means the legacy `['user:inference']`.
-     */
+    /** @deprecated Never sent (spec R-2). */
     claudeTokenScopes?: string[];
     /**
      * The team's agent model endpoint, when it won the §2 ranking for this task
-     * (docs/design/agent-model-endpoint.md). When set, serverApiKey,
-     * serverOauthToken, claudeAccessToken and pendingCredentialRefreshes are
-     * absent for this worker: it is the only model credential the agent sees.
+     * (docs/design/agent-model-endpoint.md). When set, serverApiKey and
+     * codexCredential are absent for this worker: it is the only model
+     * credential the agent sees.
      */
     modelEndpoint?: ClaimModelEndpoint;
     /**
@@ -2034,10 +2028,11 @@ export interface ClaimTasksResponse {
      * runner that declares the `scoped_github_token` feature, never on a cloud claim.
      */
     githubCredentials?: { mode: 'scoped' | 'runner' };
-    /** Credentials expiring within 2 hours, scoped to THIS task's workspace team.
-     *  Kept per-worker because the runner also reads the claude_credential secretId
-     *  off it to wire the worker to the broker at spawn time, and because a claim
-     *  may serve a workspace outside the authenticated account's own team. */
+    /**
+     * @deprecated Never sent: no claimed worker is wired to a stored login, so
+     * a task causes no refresh (model credentials spec AC-6). Kept until
+     * runners stop reading it.
+     */
     pendingCredentialRefreshes?: PendingCredentialRefresh[];
     /** Decrypted MCP credential secrets mapped by label (env var name) → value */
     mcpSecrets?: Record<string, string>;
@@ -2046,10 +2041,14 @@ export interface ClaimTasksResponse {
       | { name: string; transport?: 'http' | 'stdio'; url?: string; command?: string; args?: string[]; headers?: Record<string, string>; env?: Record<string, string> }
       | AssertionConnectorEntry
     >;
-    /** Decrypted Codex credential (only present for backend=codex tasks) */
+    /**
+     * A decrypted Codex API key (only present for backend=codex tasks). Always
+     * `credentialType: 'api_key'`: a stored ChatGPT/OAuth login is never sent
+     * (model credentials spec R-2); the OAuth fields remain for older runners.
+     */
     codexCredential?: {
       credentialType: 'oauth' | 'api_key';
-      /** OAuth fields — present when credentialType === 'oauth' */
+      /** @deprecated Never sent (spec R-2). */
       accessToken?: string;
       refreshToken?: string;
       accountId?: string;
@@ -2082,10 +2081,8 @@ export interface ClaimTasksResponse {
    * Credentials of the AUTHENTICATED ACCOUNT'S OWN TEAM that expire within 2 hours.
    *
    * Announced on every claim poll — including polls that claim nothing — because
-   * the claim call is the runner's heartbeat. The per-worker field above only
-   * exists when something was claimed, so an idle-but-online runner's credential
-   * broker never discovered the credentials it is responsible for and never
-   * refreshed them. This is that discovery channel.
+   * the claim call is the runner's heartbeat: the discovery channel for an idle
+   * runner's credential broker. No claimed worker is wired to these.
    *
    * Scope is a single team (the account's), never wider. Metadata only.
    */

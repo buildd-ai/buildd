@@ -373,9 +373,12 @@ shareable via `shareToken`), `mission_notes` (append-only agent↔user feed),
   interface. Backend resolution: `task.backend → role.defaultBackend → workspace
   default → 'claude'`. Codex invariants (events, multi-turn, resume, threads) are
   specified in `docs/specs/codex-backend-spec.md`.
-- **Server-managed credentials** — runners need not hold local creds. The claim
-  response delivers the resolved `oauth_token` / `api_key` from `secrets`; runners
-  poll and back off on failure.
+- **Model credentials** — a runner uses its own machine login first (`claude
+  login` / `CLAUDE_CODE_OAUTH_TOKEN`, `codex login`), then an API key the claim
+  delivers from `secrets`, then refuses the task. A claim never carries a
+  subscription (OAuth) login: stored `oauth_token`, `claude_credential` and
+  ChatGPT `codex_credential` rows are ignored (living spec "Model credentials:
+  the runner's own login first, API keys from buildd").
 - **Smart model routing** — `task.kind`/`complexity` (set at creation, by organizer,
   classifier, or schedule cadence) → router picks a model at claim time
   (`predictedModel`); actual outcome logged to `task_outcomes`; a calibration cron
@@ -393,7 +396,7 @@ per-request form, so server-side calls **structurally cannot** use a seat.
 | Runs | in the web app, seconds | on the team's runner, minutes to hours |
 | Shape | one call or a short streaming turn; no repo, no shell | Claude Code (Agent SDK) or Codex harness, worktree + tools |
 | Used for | interactive AI (chat and its per-turn routing), goal-criteria grading, the task-category shadow check | all engineering/research tasks, planning, prose-criteria grading fallback |
-| Credential | API key: `inference_key` (label `anthropic` \| `openai` \| `openrouter`), or `anthropic_api_key` for Anthropic, `decision_key` (legacy) for OpenRouter | `oauth_token` / `claude_credential` (Claude subscription), `anthropic_api_key`, `codex_credential` (ChatGPT/Codex auth.json) or runner-local `OPENAI_API_KEY`, runner-local `LLM_PROVIDER=openrouter` |
+| Credential | API key: `inference_key` (label `anthropic` \| `openai` \| `openrouter`), or `anthropic_api_key` for Anthropic, `decision_key` (legacy) for OpenRouter | the runner machine's own login (`claude login` / `CLAUDE_CODE_OAUTH_TOKEN`, `codex login`) first; else an API key on the claim (`anthropic_api_key` / `inference_key`, `openai_api_key` or an API key in `codex_credential`), runner-local `OPENAI_API_KEY`, runner-local `LLM_PROVIDER=openrouter`. A claim never carries a subscription login |
 | Billing | metered per token | seat/session window (virtual cost) or per token |
 | Code | `inference-client.ts` (`inferenceCall`), `decision-client.ts`, `apps/web/src/lib/chat/` | `apps/runner/src/backends/` |
 
@@ -455,9 +458,9 @@ per-request form, so server-side calls **structurally cannot** use a seat.
 - **Agent model endpoint** — one `secrets` row, purpose `agent_endpoint`
   (`packages/core/agent-endpoint.ts`, team-wide or one workspace): where
   runner-spawned agents send model traffic (the team gateway, OpenRouter, or any
-  Anthropic-compatible URL). Ranked against the Anthropic key, OAuth seat and
-  Claude credential in one precedence: the most specific scope wins, a tie goes
-  to the endpoint, and only the winner is delivered. Host runners that declare
+  Anthropic-compatible URL). Ranked against the team's Anthropic API key in one
+  precedence: the most specific scope wins, a tie goes to the endpoint, and only
+  the winner is delivered. A stored subscription login does not compete. Host runners that declare
   the `agent_endpoint` runner feature get it on the claim (`modelEndpoint`,
   stripped from cloud claims; any other runner keeps today's credentials); the
   cloud dispatcher, which forwards only the model API paths,
@@ -469,7 +472,7 @@ per-request form, so server-side calls **structurally cannot** use a seat.
   token). A `cloudflare` endpoint sends agents through the team's Cloudflare AI
   Gateway on its stored Anthropic or OpenRouter key; a Run-only gateway token
   rides as a header, so only a runner that applies headers gets one. A
-  Codex task ranks the endpoint against `openai_api_key` / `codex_credential`
+  Codex task ranks the endpoint against `openai_api_key`
   instead (`resolveAgentModelRoute`'s `backend: 'codex'`), and the runner
   applies it as `OPENAI_BASE_URL` + `OPENAI_API_KEY` (not the Anthropic auth
   vars), with a per-machine `OPENAI_BASE_URL` still winning the same way
@@ -681,7 +684,7 @@ watchers (`watched_projects`) that auto-file ops tasks + Pushover alerts.
 | Auth type | Credential | Billing | Limits |
 |-----------|-----------|---------|--------|
 | `api`     | `bld_xxx` API key → `secrets:anthropic_api_key` | pay-per-token | `maxCostPerDay`, team monthly budget |
-| `oauth`   | `secrets:oauth_token` | seat-based | `maxConcurrentSessions`, budget reset windows |
+| `oauth`   | the runner machine's own subscription login | seat-based | `maxConcurrentSessions`, budget reset windows |
 
 Check `authType` to know which limits apply. CLI auth via device-code flow
 (`device_codes`). MCP clients via OAuth 2.1 PKCE.

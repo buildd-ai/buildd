@@ -100,6 +100,18 @@ the run `crashed` and reporting it as above. Every restart is recorded on the
 run report as `agentRestarts` (`recovery`, `containerRunning`, `runningForMs`,
 and `versionChanged`: true is a Worker deploy, false is some other cause).
 
+**The runner's own check run.** Inside the container the runner and the agent
+share one task token, so buildd counts any verification evidence written on it
+as the agent's word, and it records no criterion verdict. After `buildd-once`
+exits 0 or 1, the agent asks buildd (runner key + dispatch token,
+`POST /api/runner/verification-run`) whether the run was a spec criterion
+check or a mission `command` criterion. If it was, the agent execs the command
+in the task's checkout (`<BUILDD_HOME>/once-workspaces/<workspace id>`), takes
+the exit code from the platform, and PATCHes it on its runner key, which the
+container never holds. The worker is terminal by then, so buildd takes it on
+its late runner evidence path and records the verdict. `src/runner-verification.ts`.
+A re-attached run after an agent restart does not get one yet.
+
 ## Configuration
 
 | Name | Kind | Required | Notes |
