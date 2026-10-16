@@ -1185,7 +1185,7 @@ export async function dispatchConflictRetry(
   }
 
   // The PR's refs: its base is stamped on every retry (context.prBase, read by
-  // the runner's pre-merge); the head only changes the migration brief, so
+  // the runner's pre-merge); the head also decides which branch a repair targets, so
   // other retries keep their descriptions. Best-effort: a failed read leaves
   // the base absent and the runner derives it as before.
   const fetchedRefs: ConflictRetryInput['prRefs'] = installationId
