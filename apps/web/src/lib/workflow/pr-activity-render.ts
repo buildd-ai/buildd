@@ -16,7 +16,7 @@
  *    render older than the marker already on GitHub is skipped by the handler.
  */
 import { renderPrActivityComment, taskActivityUrl, type PrActivityEntry, type PrActivityKind, type ActivityHeader } from '@/lib/pr-activity-comment';
-import { deriveDeliveryView } from './projections';
+import { deriveDeliveryView, reviewSummaryLine, reviewSummaryOf } from './projections';
 import { signatureChecks } from './trunk-signature';
 import type { AttemptSnapshot, DeliveryState, KernelView, RoundSnapshot } from './types';
 
@@ -236,8 +236,11 @@ export function renderDeliveryActivity(p: {
     status: dv?.detail && dv.detail.length <= 80 ? dv.detail : undefined,
   };
   const body = renderPrActivityComment(entries, p.timezone, { header, stateBlock: false });
+  // §7 / AC-24: the same review line get_pr and the task page print.
+  const review = reviewSummaryOf(p.view);
+  const reviewLine = review ? `Review: ${reviewSummaryLine(review)}` : '';
   const findings = renderFindingsSummary(p.view);
-  return `${body}\n${findings ? `${findings}\n` : ''}${renderVersionMarker(d.version)}`;
+  return `${body}\n${reviewLine ? `\n${reviewLine}\n` : ''}${findings ? `${findings}\n` : ''}${renderVersionMarker(d.version)}`;
 }
 
 /**

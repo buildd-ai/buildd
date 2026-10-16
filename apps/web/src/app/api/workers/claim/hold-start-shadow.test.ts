@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'bun:test';
 import { choice, defineDecision, JEV_MODEL } from '@builddai/ai-kit/decide';
-import type { OrchestrationDecisionDeps, OrchestrationDecisionRow } from '@buildd/core/orchestration-decision';
+import { assignApplyingArm, type OrchestrationDecisionDeps, type OrchestrationDecisionRow } from '@buildd/core/orchestration-decision';
 import {
   ClaimHoldCollector,
   openPrStartVerdict,
@@ -84,6 +84,7 @@ function decisionDeps(over: Partial<OrchestrationDecisionDeps> & { rows?: Orches
 
 function harness(over: Partial<ClaimHoldDeps> = {}, dd = decisionDeps()) {
   const deps: ClaimHoldDeps = {
+    loadLearningPolicy: async () => ({ fraction: 1, minConfidence: .85 } as any),
     decisionDeps: dd.deps,
     hasRecent: async () => false,
     loadHolder: async () => ({ title: 'Other', workerStatus: 'completed', lastActivityAt: '2026-09-30T11:30:00.000Z', prLifecycle: 'ci_green', baseStale: false }),
@@ -262,7 +263,7 @@ describe('ClaimHoldCollector.noteSoftOverlap: prefix-only declared overlap', () 
     expect(a.risk).toMatchObject({ tier: 'low', route: 'deterministic_start' });
     expect(c.candidates).toHaveLength(0);
     let lookups = 0;
-    expect(await softOverlapStartVerdict(a.note, true, { findAppliedStart: async () => { lookups++; return false; } })).toBe('rule_start');
+    expect(await softOverlapStartVerdict(a.note, true, { loadLearningPolicy: async () => ({ fraction: 1, minConfidence: .85 } as any), findAppliedStart: async () => { lookups++; return false; } })).toBe('rule_start');
     // Also with the Jev path rolled back: the rule start does not depend on it.
     expect(await softOverlapStartVerdict(a.note, false)).toBe('rule_start');
     expect(lookups).toBe(0);
@@ -286,9 +287,9 @@ describe('ClaimHoldCollector.noteSoftOverlap: prefix-only declared overlap', () 
     const a = c.assessSoftOverlap(ctx(), ['scripts/run-unit-tests.ts'], holder({ overlapPaths: ['scripts/run-unit-tests.ts'], overlapKind: 'same_file' }), new Map());
     expect(a.risk.route).toBe('ask_model');
     expect(c.candidates).toHaveLength(1);
-    expect(await softOverlapStartVerdict(a.note, true, { findAppliedStart: async () => true })).toBe('START');
-    expect(await softOverlapStartVerdict(a.note, true, { findAppliedStart: async () => false })).toBe('HOLD');
-    expect(await softOverlapStartVerdict(a.note, false, { findAppliedStart: async () => true })).toBe('HOLD');
+    expect(await softOverlapStartVerdict(a.note, true, { loadLearningPolicy: async () => ({ fraction: 1, minConfidence: .85 } as any), findAppliedStart: async () => true })).toBe('START');
+    expect(await softOverlapStartVerdict(a.note, true, { loadLearningPolicy: async () => ({ fraction: 1, minConfidence: .85 } as any), findAppliedStart: async () => false })).toBe('HOLD');
+    expect(await softOverlapStartVerdict(a.note, false, { loadLearningPolicy: async () => ({ fraction: 1, minConfidence: .85 } as any), findAppliedStart: async () => true })).toBe('HOLD');
   });
 
   it('a same-file overlap is asked, carrying the same_file kind into the candidate and its digest', () => {
@@ -469,7 +470,8 @@ describe('runClaimHoldShadow: records every decision; only a confident Jev START
       workspaceId: WS,
       prNumber: null,
     });
-    expect(JSON.stringify(row)).not.toContain('widget');
+    expect(JSON.stringify({ ...row, receipt: null })).not.toContain('widget');
+    expect(row.receipt).toMatchObject({ coordination: { paths: ['apps/web/src/widget.ts'] } });
     expect(JSON.stringify(row)).not.toContain('Add the widget');
   });
 
@@ -645,31 +647,31 @@ describe('gated START', () => {
 
   it('rolled back (zero fraction) it is unreachable: no ledger lookup, always holds', async () => {
     let lookups = 0;
-    expect(await gatedStartApplies(note(), { applyingFraction: 0, findAppliedStart: async () => { lookups++; return true; } })).toBe(false);
+    expect(await gatedStartApplies(note(), { applyingFraction: 0, loadLearningPolicy: async () => ({ fraction: 1, minConfidence: .85 } as any), findAppliedStart: async () => { lookups++; return true; } })).toBe(false);
     expect(lookups).toBe(0);
   });
 
   it('as shipped it applies an applied START from the ledger', async () => {
-    expect(await gatedStartApplies(note(), { findAppliedStart: async () => true })).toBe(true);
+    expect(await gatedStartApplies(note(), { loadLearningPolicy: async () => ({ fraction: 1, minConfidence: .85 } as any), findAppliedStart: async () => true })).toBe(true);
   });
 
   it('when reached, it applies only for an applied START on the same state digest', async () => {
     const keys: any[] = [];
     const n = note();
-    const deps: ClaimHoldDeps = { decision: GATED, applyingFraction: 0.1, findAppliedStart: async (k) => { keys.push(k); return true; }, now: () => Date.parse('2026-09-30T12:00:00Z') };
+    const deps: ClaimHoldDeps = { decision: GATED, applyingFraction: 1, loadLearningPolicy: async () => ({ fraction: 1, minConfidence: .85 } as any), findAppliedStart: async (k) => { keys.push(k); return true; }, now: () => Date.parse('2026-09-30T12:00:00Z') };
     expect(await gatedStartApplies(n, deps)).toBe(true);
     expect(keys[0]).toMatchObject({ workspaceId: WS, taskId: TASK, decisionId: GATED.id, fingerprint: GATED.fingerprint, candidateDigest: n.digest });
     expect(keys[0].since.toISOString()).toBe('2026-09-30T11:50:00.000Z');
-    expect(await gatedStartApplies(n, { ...deps, findAppliedStart: async () => false })).toBe(false);
+    expect(await gatedStartApplies(n, { ...deps, loadLearningPolicy: async () => ({ fraction: 1, minConfidence: .85 } as any), findAppliedStart: async () => false })).toBe(false);
   });
 
   it('a lookup error holds', async () => {
-    expect(await gatedStartApplies(note(), { decision: GATED, applyingFraction: 1, findAppliedStart: async () => { throw new Error('x'); } })).toBe(false);
+    expect(await gatedStartApplies(note(), { decision: GATED, applyingFraction: 1, loadLearningPolicy: async () => ({ fraction: 1, minConfidence: .85 } as any), findAppliedStart: async () => { throw new Error('x'); } })).toBe(false);
   });
 
   it('a shadow definition stays unreachable whatever the fraction: no ledger lookup', async () => {
     let lookups = 0;
-    const deps: ClaimHoldDeps = { decision: SHADOW, applyingFraction: 1, findAppliedStart: async () => { lookups++; return true; } };
+    const deps: ClaimHoldDeps = { decision: SHADOW, applyingFraction: 1, loadLearningPolicy: async () => ({ fraction: 1, minConfidence: .85 } as any), findAppliedStart: async () => { lookups++; return true; } };
     expect(gatedStartReachable(deps)).toBe(false);
     expect(await gatedStartApplies(note(), deps)).toBe(false);
     expect(lookups).toBe(0);
@@ -768,5 +770,53 @@ describe('runClaimHoldShadow: decision opportunities are not starved', () => {
     const h = harness({ hasRecent: async (k) => asked.has(k.taskId) }, decisionDeps({ label: 'HOLD' }));
     await runClaimHoldShadow(notesFor(8), h.deps);
     expect(h.rows.map(r => r.taskId)).toEqual(['t-2', 't-1', 't-0']);
+  });
+});
+
+describe('learning cell enforcement', () => {
+  const note = () => new ClaimHoldCollector().noteOpenPrOverlap(ctx(), ['apps/web/src/widget.ts'], [pr()], new Map())!;
+  it('does not read learning policy for a disabled team, including memoized polls', async () => {
+    let reads = 0;
+    const dd = decisionDeps({ resolveAccess: async () => ({ ok: false, error: { kind: 'capability_disabled', message: 'off' } }) as any });
+    const h = harness({ loadLearningPolicy: async () => { reads++; throw new Error('must not read'); } }, dd);
+    await runClaimHoldShadow([note()], h.deps);
+    await runClaimHoldShadow([note()], h.deps);
+    expect(reads).toBe(0);
+    expect(h.rows).toHaveLength(0);
+  });
+  it('does not read learning policy for state already in the ledger or recent memo', async () => {
+    let reads = 0;
+    const h = harness({ hasRecent: async () => true, loadLearningPolicy: async () => { reads++; throw new Error('must not read'); } });
+    await runClaimHoldShadow([note()], h.deps);
+    await runClaimHoldShadow([note()], h.deps);
+    expect(reads).toBe(0);
+    expect(h.counts().accessCalls).toBe(1);
+  });
+  it('a cell rollback invalidates an old applied START immediately', async () => {
+    let lookups = 0;
+    expect(await gatedStartApplies(note(), { loadLearningPolicy: async () => ({ fraction: 0, minConfidence: .85 } as any), findAppliedStart: async () => { lookups++; return true; } })).toBe(false);
+    expect(lookups).toBe(0);
+  });
+  it('a reduced fraction rechecks the cohort instead of reusing an old applying row', async () => {
+    const n = note();
+    let lookups = 0;
+    while (assignApplyingArm({ unitId: n.candidate.taskId, salt: GATED.id, fraction: .5 }).arm === 'apply') n.candidate.taskId += '-outside';
+    expect(await gatedStartApplies(n, { decision: GATED, loadLearningPolicy: async () => ({ fraction: .5, minConfidence: .85 } as any), findAppliedStart: async () => { lookups++; return true; } })).toBe(false);
+    expect(lookups).toBe(0);
+  });
+  it('policy read failures hold rather than using the old global switch', async () => {
+    expect(await gatedStartApplies(note(), { loadLearningPolicy: async () => { throw new Error('unavailable'); }, findAppliedStart: async () => true })).toBe(false);
+  });
+  it('threshold is sent to the applied START lookup on every claim', async () => {
+    const keys: any[] = [];
+    expect(await gatedStartApplies(note(), { loadLearningPolicy: async () => ({ fraction: 1, minConfidence: .97 } as any), findAppliedStart: async k => { keys.push(k); return true; } })).toBe(true);
+    expect(keys[0].minConfidence).toBe(.97);
+  });
+  it('uses cell threshold without changing fingerprint and enriches custom recorder receipts', async () => {
+    const h = harness({ loadLearningPolicy: async () => ({ fraction: 1, minConfidence: .99 } as any) });
+    await runClaimHoldShadow([note()], h.deps);
+    expect(h.rows).toHaveLength(1);
+    expect(h.rows[0].applied).toBe(false);
+    expect(h.rows[0].receipt).toMatchObject({ gate: 'open_pr_overlap', areaClass: 'other', coordination: { paths: ['apps/web/src/widget.ts'], blockerTaskIds: [HOLDER], staleBlocker: false } });
   });
 });

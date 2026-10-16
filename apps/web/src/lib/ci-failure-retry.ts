@@ -39,6 +39,7 @@ import { captureCiJobLogEvidence } from '@/lib/ci-job-log-evidence';
 import { fetchPrRetryGate, fetchCIFailureLogs } from '@/lib/ci-failure-inspect';
 import { policyValue } from '@/lib/policy-overrides';
 import { observeCiFailure } from '@/lib/workflow/seam';
+import { notKernelMergedTaskSql } from '@/lib/workflow/pr-fact-scope';
 import { isSchemaDriftFailure, buildDriftDiagnoseTask } from '@/lib/ci-drift-diagnose';
 import { inheritAttemptIdentity } from '@/lib/attempt-identity';
 import { prepareSubjectFiling, recordSubjectMatchObserved } from '@/lib/subject-anchor-observer';
@@ -200,6 +201,7 @@ export async function escalateCiRedHead(input: EscalationInput): Promise<boolean
     .where(and(
       eq(tasks.id, input.task.id),
       sql`coalesce(${tasks.context}->>${CI_RED_ESCALATED_KEY}, '') <> ${input.headSha}`,
+      notKernelMergedTaskSql(),
     ))
     .returning({ id: tasks.id });
   if (rows.length === 0) return false;

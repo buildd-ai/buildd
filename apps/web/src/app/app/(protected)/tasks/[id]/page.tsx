@@ -101,6 +101,7 @@ import TaskSubjectLink from './TaskSubjectLink';
 import TaskTitle from './TaskTitle';
 import { taskSubjectOf } from '@/lib/task-checks';
 import { loadTaskDeliveryContext } from '@/lib/task-delivery-context';
+import { prLifecycleFor } from '@/lib/delivery-overlay';
 import { normaliseReviewVerdict, readableTaskResult } from '@/lib/task-result';
 import Lifecycle from '@/components/ui/Lifecycle';
 import { displayTaskTitle } from '@/lib/task-title';
@@ -622,6 +623,10 @@ export default async function TaskDetailPage({
   // title for the page's checks list and attempt framing (docs/specs/task-page.md).
   const deliveryContext = await loadTaskDeliveryContext(task.id);
   const deliveryView = deliveryContext.view;
+  // §7 (workflow-kernel-library.md): the PR's merged/open/closed reading is the
+  // delivery's when it owns this PR, never a worker row that disagrees (AC-26).
+  const prLife = prLifecycleFor(prWorker, deliveryView, task.id);
+  const latestLife = taskWorkers[0] && prWorker && taskWorkers[0].id === prWorker.id ? prLife : taskWorkers[0];
   // Which run this page is: the deliverable, or a review / fix attempt of it.
   const subject = taskSubjectOf({
     taskId: task.id,
@@ -670,8 +675,8 @@ export default async function TaskDetailPage({
   const displayStatus = lineageDisplayStatus({
     displayStatus: ownDisplayStatus,
     taskStatus: task.status,
-    prMerged: !!(prWorker && (prWorker.mergedAt || prWorker.prLifecycleStatus === 'merged')),
-    prClosed: prWorker?.prLifecycleStatus === 'closed',
+    prMerged: !!(prWorker && (prLife.mergedAt || prLife.prLifecycleStatus === 'merged')),
+    prClosed: prLife.prLifecycleStatus === 'closed',
     attemptStatuses: ciAttemptTasks.map(t => t.status),
   });
 
@@ -716,8 +721,8 @@ export default async function TaskDetailPage({
   // completed tasks until CI resolves (prevents stale badge after task finishes).
   const workerHasOpenPr = !!(
     taskWorkers[0]?.prNumber &&
-    !taskWorkers[0]?.mergedAt &&
-    taskWorkers[0]?.prLifecycleStatus !== 'closed'
+    !latestLife?.mergedAt &&
+    latestLife?.prLifecycleStatus !== 'closed'
   );
 
   // Dependency resolution checks — via the SHARED gate predicate, not a local
@@ -866,7 +871,7 @@ export default async function TaskDetailPage({
         headSha: t.ciRetryHeadSha ?? null,
         failure: ((t.context as Record<string, unknown> | null)?.failureContext as { job?: string; test?: string; excerpt?: string } | undefined) ?? null,
       })),
-      pr: { lifecycle: prWorker.prLifecycleStatus ?? null, mergedAt: prWorker.mergedAt?.getTime() ?? null },
+      pr: { lifecycle: prLife.prLifecycleStatus, mergedAt: prLife.mergedAt ? new Date(prLife.mergedAt as Date).getTime() : null },
     });
     lineageClaimToMergeMs = lineage.totals.claimToMergeMs;
     prOutcome = {
@@ -991,7 +996,7 @@ export default async function TaskDetailPage({
           value: (
             <a href={prWorker.prUrl!} target="_blank" rel="noopener noreferrer" className="hover:underline">
               <span className="text-accent-text">#{prWorker.prNumber}</span>
-              <span className="text-text-muted"> · {(prWorker.mergedAt ? 'merged' : prWorker.prLifecycleStatus ?? 'open').replace(/_/g, ' ')}</span>
+              <span className="text-text-muted"> · {(prLife.mergedAt ? 'merged' : prLife.prLifecycleStatus ?? 'open').replace(/_/g, ' ')}</span>
             </a>
           ),
         }]
@@ -1400,7 +1405,7 @@ export default async function TaskDetailPage({
               <span data-testid="task-header-status" data-status={displayStatus} className="col-start-1 row-start-2 self-center md:col-start-2 md:row-start-1 md:self-start md:mt-0.5">
                 <HeaderStatusPill
                   status={displayStatus}
-                  merged={taskHeaderMerged(prWorker, task.status)}
+                  merged={taskHeaderMerged(prWorker ? prLife : null, task.status)}
                   delivery={deliveryPill}
                 />
               </span>
@@ -1855,6 +1860,8 @@ export default async function TaskDetailPage({
             hideAction: !!shippedView,
             statedAbove: prStatedAbove,
             openAttempt,
+            // AC-24: the delivery's rounds, the same line the checks list and get_pr print.
+            reviewRounds: checksSection?.checks.review ?? null,
           };
           return (
             <div className={`mb-10 ${activeWorker ? '' : 'order-first'}`} data-testid="task-pr-section">

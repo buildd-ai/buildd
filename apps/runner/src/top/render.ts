@@ -541,7 +541,7 @@ function queueRowLine(row: QueueRow, c: QueueCols, selected: boolean, p: Palette
   // Every column is cut with "…" and followed by a space (R-21).
   const col = (s: string, w: number) => fit(s, w - 1) + ' ';
   // A start held to a time stands out; "next" and "after N" do not.
-  const timed = row.position !== null && row.starts !== 'next' && !row.starts.startsWith('after') && row.starts !== '-';
+  const timed = (row.position !== null || row.held === true) && row.starts !== 'next' && !row.starts.startsWith('after') && row.starts !== '-';
   const line =
     (selected ? p.fg('accent', '›') : ' ') +
     p.fg('muted', pos) +
@@ -568,6 +568,10 @@ function queueBody(state: TopState, cols: number, height: number, now: number, p
     lines.push({ text: queueHeading(section, cols, c, p) });
     for (const r of section.rows) lines.push({ text: queueRowLine(r, c, sel?.taskId === r.taskId, p), taskId: r.taskId });
     if (section.rows.length === 0) lines.push({ text: p.fg('muted', fit('    Nothing this runner takes is waiting.', cols)) });
+    if (section.held.length > 0) {
+      lines.push({ text: p.fg('muted', fit(' Held, each on its own', cols)) });
+      for (const r of section.held) lines.push({ text: queueRowLine(r, c, sel?.taskId === r.taskId, p), taskId: r.taskId });
+    }
     if (section.notFor.length > 0) {
       lines.push({ text: p.fg('muted', fit(' Not for this runner', cols)) });
       for (const r of section.notFor) lines.push({ text: queueRowLine(r, c, sel?.taskId === r.taskId, p), taskId: r.taskId });

@@ -3294,6 +3294,9 @@ export type RunnerQueueExclusion =
   | 'workspace_executor'
   | 'subject_dead';
 
+/** Why a task carries a start time: failures it is retrying after, a usage-limit reset, a credential probe, or a plain start time. */
+export type RunnerQueueHoldCause = 'retry_after_failures' | 'usage_limit_reset' | 'credential_probe' | 'scheduled';
+
 export interface RunnerQueueTask {
   id: string;
   title: string;
@@ -3310,6 +3313,8 @@ export interface RunnerQueueTask {
   holds: RunnerQueueHold[];
   /** When its timed hold lifts (a start time, a workspace pause), else null. */
   holdUntil: string | null;
+  /** What set the start time in `holdUntil` when it is `deferred`; absent from an older server. */
+  holdCause?: RunnerQueueHoldCause | null;
   /** The task's frozen p50 estimate in minutes; null when the team has estimates off or none was made. */
   estimateMinutes: number | null;
 }
@@ -4306,6 +4311,9 @@ export interface OrchestrationDecisionCounts {
   unlabelled: number;
 }
 export interface OrchestrationDecisionGroup extends OrchestrationDecisionCounts {
+  actor?: string;
+  gate?: string;
+  areaClass?: string;
   capability: string;
   decisionId: string;
   fingerprint: string;

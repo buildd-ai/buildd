@@ -360,7 +360,7 @@ function queueKey(state: TopState, key: Key, now: number): KeyResult | null {
     const row = selectedQueueRow(state, now);
     if (!row) return { state: refuse(state, 'Nothing in the queue to pick.'), effects: [] };
     if (key.ch === 'o') return { state: info(state, `Opening "${row.title}" on buildd…`), effects: [{ type: 'open', taskId: row.taskId }] };
-    if (row.position === null) return { state: refuse(state, `"${row.title}" is not for this runner: ${row.reason}.`), effects: [] };
+    if (row.position === null && !row.held) return { state: refuse(state, `"${row.title}" is not for this runner: ${row.reason}.`), effects: [] };
     return { state: info(state, `Claiming "${row.title}" onto this runner…`), effects: [{ type: 'claim', taskId: row.taskId, title: row.title }] };
   }
   if ('ampx'.includes(key.ch)) return { state: info(state, 'Tab back to Missions to act on running work.'), effects: [] };

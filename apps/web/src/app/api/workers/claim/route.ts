@@ -110,7 +110,7 @@ import {
   attachExternalContextProviders,
   attachTaskAreaScope,
 } from './context-injection';
-import { VISUAL_AUDIT_ROUTES } from '@/modules';
+import { VISUAL_AUDIT_ROUTES, CLAIM_LEARNING_HOOKS } from '@/modules';
 import { runDependentContextInjections } from './prompt-context-pipeline';
 import { dependentCountQuery } from '@/lib/dependent-count-query';
 import {
@@ -158,6 +158,7 @@ import {
   softOverlapStartVerdict,
   touchesHardOverlapSurface,
   type ClaimHoldTaskContext,
+  type ClaimHoldNote,
   type ClaimRiskEvidence,
 } from './hold-start-shadow';
 import { evaluateSoftOverlaps, softOverlapHolderIds, type SoftHolderRow } from './soft-overlap-gate';
@@ -1616,6 +1617,8 @@ export async function POST(req: NextRequest) {
     // wins, so the outcome join can grade a started pair and the dashboard can
     // say who decided.
     const softOverlapStarted: Array<Record<string, unknown>> = [];
+    const jevStartNotes: ClaimHoldNote[] = [];
+    let sawCoordinationBlocker = false;
     // Captured before any provider-toggle/budget-failover flip below can mutate
     // (task as any).backend, so the Codex single-flight check further down tests
     // what this task WAS ASSIGNED, not what it may have just been flipped to.
@@ -1752,7 +1755,9 @@ export async function POST(req: NextRequest) {
         : {};
       const holdNote = holdCtx ? holdStart.noteOpenPrOverlap(holdCtx, taskManifest, filterOpenPrTasks, activePathClaimsByWorkspace.get(task.workspaceId), holdEvidence) : null;
       const openPrVerdict = blocking && holdNote ? await openPrStartVerdict(holdNote, holdStartGated) : 'HOLD';
+      if (blocking) sawCoordinationBlocker = true;
       if (blocking && openPrVerdict !== 'HOLD') {
+        if (openPrVerdict === 'START' && holdNote) jevStartNotes.push(holdNote);
         console.log(`[claim] ${openPrVerdict === 'rule_start' ? 'rule_start' : 'gated_start'}: task ${task.id} past open-PR overlap (PR #${blocking.prNumber ?? blocking.prUrl}); acquiring its paths`);
         gatedStartPaths = holdNote!.candidate.concretePaths;
       } else if (blocking) {
@@ -1840,7 +1845,9 @@ export async function POST(req: NextRequest) {
           })
         : [];
       let softHeld = false;
+      if (softVerdicts.length) sawCoordinationBlocker = true;
       for (const v of softVerdicts) {
+        let softNote: ClaimHoldNote | null = null;
         // The rule's verdict: deterministic for a hard overlap, HOLD for a
         // same-file or prefix one until an applied Jev START says otherwise.
         let verdict: 'deterministic_hold' | 'HOLD' | 'START' | 'rule_start' = v.kind === 'deterministic' ? 'deterministic_hold' : 'HOLD';
@@ -1856,9 +1863,11 @@ export async function POST(req: NextRequest) {
           const assessed = holdCtx
             ? holdStart.assessSoftOverlap(holdCtx, taskManifest, { taskId: v.holderTaskId, overlapPaths: v.paths, overlapKind: v.overlapKind, workerStatus: v.workerStatus }, activePathClaimsByWorkspace.get(task.workspaceId), { probe })
             : null;
+          softNote = assessed?.note ?? null;
           if (assessed) risk = assessed.risk;
           verdict = await softOverlapStartVerdict(assessed?.note ?? null, holdStartGated);
         }
+        if (verdict === 'START' && softNote) jevStartNotes.push(softNote);
         if (verdict === 'START' || verdict === 'rule_start') {
           console.log(`[claim] ${verdict === 'rule_start' ? 'rule_start' : 'gated_start'}: task ${task.id} past soft overlap with ${v.holderTaskId} (${risk?.tier ?? 'unknown'}); acquiring its paths`);
           gatedStartPaths = concreteManifest;
@@ -2015,9 +2024,11 @@ export async function POST(req: NextRequest) {
           // Noted like layer 1 above. An applied gated START relaxes
           // only this serialization; there are no declared paths to acquire,
           // and observed touches are leased by the exclusive primitive later.
+          if (blockingPeer) sawCoordinationBlocker = true;
           const holdCtx = blockingPeer ? holdStartContext(task, forced) : null;
           const holdNote = holdCtx && blockingPeer ? holdStart.noteAdvisoryManifest(holdCtx, blockingPeer) : null;
           if (blockingPeer && holdStartGated && holdNote && await gatedStartApplies(holdNote)) {
+            jevStartNotes.push(holdNote);
             console.log(`[claim] gated_start: task ${task.id} past advisory_manifest serialization (peer ${blockingPeer})`);
           } else if (blockingPeer && liftedByForce('advisory_manifest') && !forced) {
             // A person's dashboard Force start lifts this serialization for
@@ -3034,6 +3045,31 @@ export async function POST(req: NextRequest) {
       branch,
       task: task as any,
     });
+    // Learning observes only successful claims, never a decision that later lost a rail or race.
+    if (!forced && startForceBypassed.length === 0) {
+      for (const note of jevStartNotes) {
+        const c = note.candidate;
+        fireGateEvent({
+          gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL, surface: 'POST /api/workers/claim', outcome: 'accepted',
+          reason: 'claim_learning_jev_start', taskId: task.id, workspaceId: task.workspaceId,
+          missionId: (task as any).missionId ?? null, workerId: worker.id,
+          callerOrigin: gateCallerOrigin({ apiAccount: account }),
+          detail: { gate: c.gate, paths: c.overlapPaths, blockerTaskIds: c.holder.taskId ? [c.holder.taskId] : [],
+            areaClass: CLAIM_LEARNING_HOOKS.areaClass(c.concretePaths), fingerprint: CLAIM_LEARNING_HOOKS.fingerprint,
+            candidateDigest: note.digest, startedAt: now.toISOString() },
+        });
+      }
+      const declared = (task.pathManifest ?? []).filter((p: string) => p !== '**');
+      if (!sawCoordinationBlocker && declared.length > 0) {
+        fireGateEvent({
+          gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL, surface: 'POST /api/workers/claim', outcome: 'accepted',
+          reason: 'claim_learning_clean_start', taskId: task.id, workspaceId: task.workspaceId,
+          missionId: (task as any).missionId ?? null, workerId: worker.id,
+          callerOrigin: gateCallerOrigin({ apiAccount: account }),
+          detail: { paths: declared, areaClass: CLAIM_LEARNING_HOOKS.areaClass(declared), startedAt: now.toISOString() },
+        });
+      }
+    }
     // A START past a soft overlap (rule or Jev): one accepted row per holder,
     // the started half of the HOLD/START evaluation set.
     for (const s of softOverlapStarted) {
