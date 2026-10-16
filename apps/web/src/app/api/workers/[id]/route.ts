@@ -1881,8 +1881,13 @@ export async function PATCH(
     // runner-reported end-of-session completion has no agent turn left to read
     // a refusal, so it keeps the requeue-once contract guard further down.
     if (isReviewerTask && (worker.runner === 'mcp' || body.viaCompleteTask === true)) {
+      // Absent or null structuredOutput (verdict only in the summary prose) is
+      // refused too: parseReviewerOutput rejects it, and the worker stays live.
+      // Only an explicit complete_task call is refused for omitting it: other
+      // interactive completions keep the server-side prose-verdict extraction.
       const submitted = body.structuredOutput as { verdict?: unknown } | null | undefined;
-      if (submitted && typeof submitted === 'object' && submitted.verdict) {
+      const omitted = submitted === undefined || submitted === null;
+      if (!omitted || body.viaCompleteTask === true) {
         const parsed = parseReviewerOutput(submitted);
         if (!parsed.ok) {
           return NextResponse.json({
@@ -2864,6 +2869,11 @@ export async function PATCH(
   // backoff, so the next attempt lands after GitHub's window instead of the
   // task failing outright.
   const isGithubThrottled = status === 'failed' && body.githubThrottled === true;
+  // The runner refused a Claude run before spawn: its machine has no model
+  // login or key, and the claim delivered none (model credentials spec R-5).
+  // The machine's setup, not the task: it rides the infra retry budget below,
+  // so the task goes back to the queue for a runner that has a login.
+  const isModelAuthMissing = status === 'failed' && body.modelAuthMissing === true;
   // The CLI's model version gate: this runner cannot serve the model the task
   // was routed to. A deterministic 400 before the first turn, so it is infra
   // and rides the infra retry budget below; the claim route's capability gate
@@ -2889,6 +2899,7 @@ export async function PATCH(
       taskCancelled: taskCancelledUnderSession,
       crashReconciled: isCrashReconciled,
       githubThrottled: isGithubThrottled,
+      modelAuthMissing: isModelAuthMissing,
       unrecognizedModel: isUnrecognizedModel,
       needsInput: isNeedsInput,
       budgetLimited: isBudgetError,
@@ -3590,7 +3601,7 @@ export async function PATCH(
         // failed every in-flight non-mission task. A model version-gate 400
         // rides it too: bounded, backed off, and uncharged. So does a clone GitHub
         // throttled: the backoff is the point, GitHub needs time.
-        if ((isSteeringDelivery || isNonGateRefusal || isCrashReconciled || isGithubThrottled || (isUnrecognizedModel && !isModelIdRejected)) && !isBudgetReset && taskForRetry?.status !== 'cancelled') {
+        if ((isSteeringDelivery || isNonGateRefusal || isCrashReconciled || isGithubThrottled || isModelAuthMissing || (isUnrecognizedModel && !isModelIdRejected)) && !isBudgetReset && taskForRetry?.status !== 'cancelled') {
           const infraRetryCount = (taskCtxForRetry.infraRetryCount as number) || 0;
           if (infraRetryCount < MAX_INFRA_RETRIES_PATCH) {
             shouldAutoRetry = true;

@@ -382,6 +382,20 @@ describe('buildVisualReviewModel: after a fix merges (fixCheck)', () => {
     expect(m.resolvedElsewhere).toEqual([{ key: '/inv|desktop|eur', route: '/inv', viewport: 'desktop', variant: 'eur', resolvedBy: '/inv|desktop|' }]);
     expect(m.summary).toMatchObject({ shots: 2, ok: 2, issues: 0, unsure: 0, awaitingCapture: 0 });
   });
+
+  it('a later round re-shooting the same place supersedes an open issue even with no merged fix and a different title', () => {
+    const row = (id: string, workerId: string, title: string, verdict: 'ok' | 'issue', min: number) => ({
+      id, type: 'screenshot', workerId, createdAt: at(min), title,
+      metadata: { qa: { runKey: `run-${workerId}`, route: '/inv', viewport: 'desktop' as const, verdict, finding: 'f' } },
+    });
+    const m = buildVisualReviewModel(input({
+      // Round 1: two shots collide on /inv desktop, so each gets a title variant.
+      shots: [row('s1', 'w1', 'inv-eur-desktop.png', 'issue', 1), row('s1b', 'w1', 'inv-jpy-desktop.png', 'ok', 2), row('s2', 'w2', 'inv-desktop.png', 'ok', 120)],
+      tasks: [audit('t1', 1, 'completed', 'w1'), round2],
+    }));
+    expect(m.resolvedElsewhere).toHaveLength(1);
+    expect(m.summary).toMatchObject({ issues: 0 });
+  });
 });
 
 describe('buildVisualReviewModel: triage queue', () => {
@@ -525,7 +539,15 @@ describe('buildVisualReviewModel: phase', () => {
   it('needs_you: an unsure cell nobody decided, or the round-cap question is open', () => {
     const tasks = [audit('t1', 1, 'completed', 'w1')];
     expect(phaseOf({ shots: [shot('w1', '/a', 'mobile', 'unsure', 1)], tasks })).toBe('needs_you');
-    expect(phaseOf({ shots: [shot('w1', '/a', 'mobile', 'ok', 1)], tasks, roundCapOpen: true })).toBe('needs_you');
+    expect(phaseOf({ shots: [shot('w1', '/a', 'mobile', 'issue', 1)], tasks, roundCapOpen: true })).toBe('needs_you');
+  });
+
+  it('the round-cap question clears once every current screen is ok', () => {
+    const tasks = [audit('t1', 1, 'completed', 'w1')];
+    const m = buildVisualReviewModel(input({ shots: [shot('w1', '/a', 'mobile', 'ok', 1)], tasks, roundCapOpen: true }));
+    expect(m.roundCapOpen).toBe(false);
+    expect(m.needsYou).toBeNull();
+    expect(m.phase).toBe('reviewed');
   });
 
   it('needs_you: an in-progress audit whose worker waits on a question (not a boot failure)', () => {
@@ -797,9 +819,10 @@ describe('buildVisualReviewModel: a failed audit a later completed audit replace
   });
 
   it('an open fix or the open round-cap question keeps the failure', () => {
+    const unsureShots = () => [shot('w-later', ROUTE, 'mobile', 'issue', 70), shot('w-later', ROUTE, 'desktop', 'ok', 71)];
     const fix: VisualReviewTaskInput = { id: 'f1', title: `[surface fix] ${ROUTE}: header overflows`, status: 'pending' };
     expect(build({ tasks: [stalled(), later(), fix], shots: passing() }).replacedAudits).toEqual([]);
-    expect(build({ tasks: [stalled(), later()], shots: passing(), roundCapOpen: true }).replacedAudits).toEqual([]);
+    expect(build({ tasks: [stalled(), later()], shots: unsureShots(), roundCapOpen: true }).replacedAudits).toEqual([]);
   });
 
   it('only a completed audit that started after the failed one can replace it', () => {

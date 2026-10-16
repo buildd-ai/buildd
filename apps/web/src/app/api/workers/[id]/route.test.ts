@@ -10975,6 +10975,28 @@ describe('PATCH /api/workers/[id]', () => {
         expect(taskSetCalls).toHaveLength(0);
       });
 
+      it.each([
+        ['structuredOutput absent, verdict only in summary', { status: 'completed', viaCompleteTask: true, summary: 'approve, 0.75' }],
+        ['structuredOutput null', { status: 'completed', viaCompleteTask: true, summary: 'approve, 0.75', structuredOutput: null }],
+      ])('complete_task with %s: 400 naming the fields, worker not failed', async (_label, body) => {
+        setupReviewerTaskCompletion('approve');
+        const taskSetCalls = captureTaskSets();
+
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body,
+        }), { params: mockParams });
+
+        expect(res.status).toBe(400);
+        const json = await res.json();
+        expect(json.error).toContain('verdict');
+        expect(json.error).toContain('confidence');
+        expect(json.error).toContain('summary');
+        expect(taskSetCalls).toHaveLength(0);
+        expect(mockWorkersUpdate).not.toHaveBeenCalled();
+      });
+
       it('runner-reported completion (no viaCompleteTask) keeps the requeue contract, not a 400', async () => {
         setupReviewerTaskCompletion('approve');
         captureTaskSets();
@@ -13152,6 +13174,34 @@ describe('PATCH /api/workers/[id]', () => {
           }), { params: mockParams });
           expect(taskSetCalls.some((c: any) => c.status === 'pending')).toBe(false);
           expect(workerSetCalls.find((u: any) => u.exitCause).exitCause).toBe('code_failure');
+        });
+      });
+
+      // The runner refused a Claude run before spawn: its machine has no model
+      // login or key and the claim delivered none. The machine's setup, not
+      // the task: back to the queue for a runner that has a login.
+      describe('Claude run refused for want of a model login', () => {
+        const refusedBody = {
+          status: 'failed',
+          error: '[runner:no_model_auth] No model login for this Claude run',
+          modelAuthMissing: true,
+        };
+
+        it('requeues on the infra budget and books infra_failure', async () => {
+          const { taskSetCalls, workerSetCalls } = setupCrashReconcile({});
+          const res = await PATCH(createMockRequest({
+            method: 'PATCH',
+            headers: { Authorization: 'Bearer bld_test' },
+            body: refusedBody,
+          }), { params: mockParams });
+
+          expect(res.status).toBe(200);
+          const requeue = taskSetCalls.find((c: any) => c.status === 'pending');
+          expect(requeue).toBeDefined();
+          expect(requeue.context.infraRetryCount).toBe(1);
+          expect(requeue.context.retryCount).toBeUndefined();
+          expect(taskSetCalls.some((c: any) => c.status === 'failed')).toBe(false);
+          expect(workerSetCalls.find((u: any) => u.exitCause).exitCause).toBe('infra_failure');
         });
       });
 

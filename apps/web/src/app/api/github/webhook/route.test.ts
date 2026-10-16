@@ -1967,8 +1967,10 @@ describe('POST /api/github/webhook', () => {
         const [e] = skipEvents();
         expect(e.detail.skipReason).toBe('head_already_retried');
         expect(e.detail.priorAttemptTaskId).toBe('c1');
+        // Only the infra probe reads runs (no re-run POST, no failure-digest fetch).
         const runsCalls = (mockGithubApi.mock.calls as any[]).filter(c => String(c[1]).includes('/actions/runs'));
-        expect(runsCalls).toEqual([]);
+        expect(runsCalls.filter(c => c[2]?.method === 'POST')).toEqual([]);
+        expect(runsCalls.filter(c => String(c[1]).endsWith('/jobs'))).toEqual([]);
         expect(mockScheduleCiRedLook).toHaveBeenCalledTimes(1);
       });
 
