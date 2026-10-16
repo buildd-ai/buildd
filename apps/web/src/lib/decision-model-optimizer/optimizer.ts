@@ -369,10 +369,10 @@ export function measurementPlan(
     // exactly the top p at or above its cutoff, and the higher cutoff acts on a
     // subset of the other's. A stored row with no usable map is the strictest.
     const existingCutoff = calibratedCutoff(existing.threshold, existing.calibration);
-    // A cutoff above 1 with a usable map means the threshold is unreachable and
-    // the model never acts: do not switch to it. A row with no usable map
-    // (cutoff = Infinity) is the strictest and should be kept.
-    if (existingCutoff > 1 && isCalibration(existing.calibration)) return 'measurement_never_acts';
+    // A cutoff above 1 means the measurement never acts (either because the
+    // threshold is above the calibration curve's maximum, or there is no usable
+    // calibration). Do not switch to a model that never acts.
+    if (existingCutoff > 1) return 'measurement_never_acts';
     return existingCutoff >= calibratedCutoff(derived.threshold, derived.calibration) ? 'keep' : 'write';
   }
   return existing.threshold >= derived.threshold ? 'keep' : 'write';

@@ -104,9 +104,10 @@ and what has to be collected so the choice can be made on evidence.
   row that every other team already using that model for that kind also acts
   on. One team's run therefore never revives a retired measurement and never
   replaces one in force on another signal; it leaves that kind on its current
-  model instead. When a stored calibrated top p measurement has a threshold
-  above its map's maximum (so its cutoff is above 1 and it acts on no decisions),
-  the kind is not switched to that model. Every switch is
+  model instead. When a stored calibrated top p measurement has no usable
+  calibration or has a threshold above its map's maximum (either way, cutoff
+  above 1 and acts on no decisions), the kind is not switched to that model
+  (`measurement_never_acts` keep reason). Every switch is
   a decision-ledger event (`decision_model_switch`) with the eval run id and
   both scores. `optimizeTeam` is the entry point; a platform admin can run it
   now (`POST /api/admin/decision-model-optimizer`).
