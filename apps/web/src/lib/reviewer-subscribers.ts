@@ -34,10 +34,11 @@ import { tryDispatchMigrationCollisionRetry } from '@/lib/migration-collision-re
 import { conformanceManifest } from '@/lib/path-declaration';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request';
-import { pickReviewerRole } from '@/lib/pr-review-status';
+import { isReviewBudgetSpent, pickReviewerRole } from '@/lib/pr-review-status';
 import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
-import { observeHead, openKernelDelivery, policyFindingFor } from '@/lib/workflow/seam';
+import { observeHead, policyFindingFor } from '@/lib/workflow/seam';
+import { openKernelDelivery } from '@/lib/workflow/kernel-client';
 import { releaseKernelDeliveryForPr } from '@/lib/workflow/authority';
 import { agentReviewsDataMigrations } from '@buildd/shared';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
@@ -215,7 +216,7 @@ async function maybeDispatchReviewer(
         installationId,
         source: 'webhook:opened',
         policy: policyFindingFor({ reason, migrationSafety }),
-      }).catch((err) => {
+      }, { principal: { kind: 'system', id: 'system:webhook:opened' } }).catch((err) => {
         console.error(`[reviewer] workflow kernel could not take PR #${pr.number} for its pre-flight finding; legacy escalation:`, err);
         return { owned: false };
       });
@@ -287,7 +288,7 @@ async function maybeDispatchReviewer(
       prNumber: pr.number,
       installationId,
       source: 'webhook:opened',
-    }).catch((err) => {
+    }, { principal: { kind: 'system', id: 'system:webhook:opened' } }).catch((err) => {
       console.error(`[reviewer] workflow kernel could not open a delivery for PR #${pr.number}; legacy review dispatch:`, err);
       return { owned: false };
     });
@@ -394,10 +395,12 @@ async function maybeDispatchReviewer(
  *
  * The dispatched round inherits the SAME iteration/maxIterations the request-
  * changes retry loop already tracks on whichever task currently owns the PR
- * (the original task, or the newest retry) — so the existing cap in
- * `handleReviewerOutcomeIfNeeded` (apps/web/src/app/api/workers/[id]/route.ts,
- * default 3) keeps capping the round count and escalating on exhaustion; this
- * function does not need a cap of its own.
+ * (the original task, or the newest retry), and `handleReviewerOutcomeIfNeeded`
+ * (apps/web/src/app/api/workers/[id]/route.ts, default 3) escalates a request
+ * for changes at that cap. That cap alone let a push after the escalation file
+ * one more round, which escalated again (task 2ded4e88), so this function also
+ * stops once the newest review asked for changes at the cap
+ * (`isReviewBudgetSpent`): the budget is the PR's, and a person asks again.
  */
 async function maybeReDispatchReviewer(
   installationId: number,
@@ -449,6 +452,13 @@ async function maybeReDispatchReviewer(
     // (a redelivered/duplicate synchronize) — nothing to re-review.
     const priorHeadSha = status.reviewHeadSha;
     if (!priorHeadSha || priorHeadSha === pr.head.sha) return;
+    // 2ded4e88: the round budget is the PR's. Spent, no reviewer is filed and the PR stays with the
+    // person it escalated to; only a person asks again. The push itself is on the PR's activity
+    // comment through the `pr-activity-changes-pushed` subscriber, not through this one.
+    if (isReviewBudgetSpent(status)) {
+      console.log(`[reviewer] PR #${pr.number}: review budget spent (${status.iteration}/${status.maxIterations ?? 3}); push recorded, no re-review`);
+      return;
+    }
 
     const workspace = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, openWorker.workspaceId)) });
     if (!workspace) return;

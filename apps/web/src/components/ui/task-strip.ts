@@ -64,11 +64,11 @@ export const tickOf = (i: number) => String(i + 1).padStart(2, '0');
 
 export type ReasonDirection = 'upstream' | 'downstream';
 
-/** Most names a reason line carries (SEL-2). */
+/** Most names a reason line carries (strip R-12). */
 export const REASON_MAX_NAMED = 2;
 
 /**
- * The focus card's reason line (spec §5.1, SEL-2): names at most two,
+ * The focus card's reason line (spec §5.1, strip R-12): names at most two,
  * frontier first, and tails the rest. `names` is every name in order;
  * `total` is how many tasks the line stands for (defaults to `names.length`).
  *

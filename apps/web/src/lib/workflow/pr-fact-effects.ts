@@ -6,11 +6,16 @@
  * kept) instead of racing. The merge instant is the delivery's `merged_at`,
  * which T17 took from GitHub's live read.
  *
+ * S4a: T17 / T18 already wrote these rows in their own statement (kernel.ts `w_proj`). This
+ * effect is the replay-safe backstop for a row that adopted the PR between that statement and
+ * the drain; on every other row the funnel's terminal-wins guard makes it a no-op.
+ *
  * Ungated (§10.4): a merge stays a merge whatever the delivery did since; a
  * close is projected only while the delivery still reads closed, so a stale
  * close effect never closes a reopened PR's rows.
  */
 import { recordPrFact } from '@buildd/core/pr-facts';
+import { kernelProjectionScope } from './pr-fact-scope';
 import type { EffectHandler, EffectHandlers } from './effects';
 import { loadView, type Exec } from './kernel';
 
@@ -25,11 +30,11 @@ export function stampPrRowsHandler(deps: { exec?: Exec; record?: typeof recordPr
     if (!d?.repoFullName || d.prNumber == null) return { outcome: 'skipped:no_pr' };
     const target = { prUrl: prUrlOf(d.repoFullName, d.prNumber), prNumber: d.prNumber };
     if (d.state === 'MERGED' || d.mergedAt) {
-      const rows = await record(target, { kind: 'merged', mergedAt: d.mergedAt ?? new Date() });
+      const rows = await record(target, { kind: 'merged', mergedAt: d.mergedAt ?? new Date() }, { scope: kernelProjectionScope });
       return { outcome: `ok:merged_${rows.length}` };
     }
     if (d.state === 'CLOSED_UNMERGED') {
-      const rows = await record(target, { kind: 'closed' });
+      const rows = await record(target, { kind: 'closed' }, { scope: kernelProjectionScope });
       return { outcome: `ok:closed_${rows.length}` };
     }
     return { outcome: `skipped:state_${d.state}` };

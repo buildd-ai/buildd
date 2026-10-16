@@ -49,8 +49,8 @@ describe('splitWaitingOnYou — the count and the cards agree', () => {
   });
 
   it('summary names both halves, and never calls in-flight work "waiting on you"', () => {
-    expect(waitingOnYouSummary(1, 4)).toBe('1 needs you · 4 in flight');
-    expect(waitingOnYouSummary(2, 0)).toBe('2 need you');
+    expect(waitingOnYouSummary(1, 4)).toBe('1 waiting on you · 4 in flight');
+    expect(waitingOnYouSummary(2, 0)).toBe('2 waiting on you');
     expect(waitingOnYouSummary(0, 3)).toBe('3 in flight');
     expect(waitingOnYouSummary(0, 0)).toBeNull();
   });
@@ -58,10 +58,10 @@ describe('splitWaitingOnYou — the count and the cards agree', () => {
 
 describe('homeSubheading — the greeting and the Waiting-on-You header say the same thing', () => {
   it('uses the header\'s "needs you" wording and count', () => {
-    expect(homeSubheading('3 ships today', 1)).toBe('3 ships today · 1 needs you');
-    expect(homeSubheading(null, 2)).toBe('2 need you');
+    expect(homeSubheading('3 ships today', 1)).toBe('3 ships today · 1 waiting on you');
+    expect(homeSubheading(null, 2)).toBe('2 waiting on you');
     expect(homeSubheading('1 ship overnight', 0)).toBe('1 ship overnight');
-    expect(homeSubheading(null, 0)).toBe('Nothing needs input');
+    expect(homeSubheading(null, 0)).toBe('Nothing waiting on you');
   });
 
   it('matches the header summary for the same (initiative-filtered) queue', () => {

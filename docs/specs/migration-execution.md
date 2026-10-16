@@ -2,12 +2,12 @@
 title: DB Migration Execution
 status: active
 owner: max
-last_verified: 2026-10-12
+last_verified: 2026-10-15
 summary: Every committed migration MUST execute exactly once, recognised by its folder name (legacy history by its exact-ms journal time) and never by a high-water mark for post-cutover files; a missing tracking row for legacy history MUST be backfilled on evidence, never replayed.
 domain: releases
 surfaces: [packages/core/db/migrate.ts, packages/core/db/migrate-plan.ts, packages/core/db/migrate-drift.ts, scripts/check-schema-drift.ts]
 related: [db-migration-gates, release-flow]
-verified_by: [packages/core/__tests__/migrate-plan.test.ts, apps/web/tests/db/migration-baseline.test.ts, packages/core/__tests__/migrate-drift.test.ts, packages/core/__tests__/migrate-tree.test.ts, packages/core/__tests__/migrate-apply.test.ts, packages/core/__tests__/legacy-migrations.test.ts, packages/core/__tests__/migration-layout.test.ts, apps/web/tests/db/migration-layout-v1.test.ts]
+verified_by: [packages/core/__tests__/migrate-plan.test.ts, packages/core/__tests__/prod-build-runs-migrations.test.ts, apps/web/src/app/api/workspaces/[id]/migration-slot/route.test.ts, apps/web/tests/db/migration-baseline.test.ts, packages/core/__tests__/migrate-drift.test.ts, packages/core/__tests__/migrate-tree.test.ts, packages/core/__tests__/migrate-apply.test.ts, packages/core/__tests__/legacy-migrations.test.ts, packages/core/__tests__/migration-layout.test.ts, apps/web/tests/db/migration-layout-v1.test.ts]
 keywords: [__drizzle_migrations, planMigrationsV1, drizzle v1, folder per migration, legacy map, snapshot rebase, high-water mark, last_migration_number, schema drift, 42703, backfill, toRun, toBackfill, forked snapshot chain, prevId, snapshot gap, resolveSnapshotSelection]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
@@ -27,14 +27,14 @@ assertions:
 ---
 # DB Migration Execution
 
-**Capability statement**: When a migration actually runs — on deploy, on a
-preview branch, or by hand — the runner MUST apply each committed migration's
+**Capability statement**: When a migration actually runs (on deploy, in CI
+against a real Postgres, or by hand), the runner MUST apply each committed migration's
 DDL exactly once, MUST NOT replay DDL whose tracking row was merely lost, and
 MUST fail the build rather than let new code serve traffic against a schema that
 was not migrated.
 
-This is the runtime half of the migration story. The PR-time half — classifying
-a generated migration EXPAND vs CONTRACT and gating auto-merge on that verdict —
+This is the runtime half of the migration story. The PR-time half (classifying
+a generated migration EXPAND vs CONTRACT and gating auto-merge on that verdict)
 is `db-migration-gates`. Nothing here re-litigates whether a migration is
 *allowed* to land; this spec governs what happens once it has.
 
@@ -153,9 +153,10 @@ journal layout:
 - A failing run MUST surface the Postgres detail: `cause.message`, `detail`,
   `hint` and `position` are printed alongside `message`.
 - The process MUST exit explicitly on every path (0 on success, 1 on terminal
-  failure). Production ordering comes from `apps/web/package.json`'s
-  `"build": "bun run db:migrate && next build"`: a non-zero migrate exit means
-  `next build` never runs, so no deploy can serve code against an un-migrated
+  failure). Production ordering comes from `apps/web/package.json`'s `build`
+  script, which starts `bun run db:migrate && ...` and ends in `next build`
+  (pinned by `packages/core/__tests__/prod-build-runs-migrations.test.ts`): a
+  non-zero migrate exit means `next build` never runs, so no deploy can serve code against an un-migrated
   schema.
 
 ### Parallel branches
@@ -176,9 +177,14 @@ journal layout:
 
 ### Slot (serialising migration numbers across concurrent branches)
 
+Folder names are timestamps, so the drizzle v1 layout needs no number. The
+route below still exists and still holds these invariants, but no agent
+instructions call it any more.
+
+
 - `POST /api/workspaces/[id]/migration-slot` MUST allocate a number in a
   **single** `UPDATE ... SET last_migration_number = GREATEST(current,
-  currentMax) + 1 ... RETURNING` — no SELECT-then-write. neon-http cannot run
+  currentMax) + 1 ... RETURNING`, no SELECT-then-write. neon-http cannot run
   `db.transaction()` with interactive logic, so atomic UPDATE+RETURNING is the
   only serialisation primitive available.
 - Two concurrent callers on the same workspace MUST receive distinct numbers.
@@ -188,8 +194,9 @@ journal layout:
 - `currentMax` is floored at 0 and truncated to an integer; a non-numeric value
   is ignored rather than rejected.
 - `formatted` MUST be `nextNumber` zero-padded to 4 characters.
-- An unknown workspace id MUST return 404 and change no counter; a missing or
-  invalid API key MUST return 401 before any write.
+- An unknown workspace id, or one the caller's account cannot reach
+  (`verifyAccountWorkspaceAccess`), MUST return 404 and change no counter; a
+  missing or invalid API key MUST return 401 before any write.
 
 ### Drift gate (pre-promote, release PRs only)
 
@@ -222,10 +229,10 @@ journal layout:
   traced to a creating migration before any verdict, symmetrically with the
   missing-object path:
   - a migration drops it and has not run → `[pending]`, exit 0.
-  - a journal migration creates it and `__drizzle_migrations` records that
+    - a migration in the tree creates it and `__drizzle_migrations` records that
     migration as applied → `[snapshot gap]`, exit 0. The object is tracked and
     applied; the resolved snapshot simply does not cover it.
-  - no journal migration creates it → MUST fail with `EXTRA in DB` and the drift
+    - no migration in the tree creates it → MUST fail with `EXTRA in DB` and the drift
     exit code. This is the ONLY fatal extra-object condition, and the only one
     that may be phrased as untracked manual DDL.
 - The applied-migration count MUST be reported as a reconciliation (applied from
@@ -244,7 +251,7 @@ journal layout:
   throws and reports 0, which is indistinguishable from "no migration ever ran"
   against a long-lived production DB.
 - The `Schema Drift / check-prod` job MUST always emit success or failure and
-  never GitHub's `Skipped` status — branch protection treats `Skipped` as
+  never GitHub's `Skipped` status: branch protection treats `Skipped` as
   satisfied. The gate is therefore a *step*-level condition: the job always
   runs, exits 0 immediately when `base_ref != main`, and performs the real check
   only for dev→main.
@@ -266,16 +273,16 @@ journal layout:
   migration whose `when` is `100` WHEN `planMigrationsV1` runs THEN it is applied
   and neither run nor backfilled: `created_at` compares numerically whether the
   driver returns a string or a number.
-- AC-B1: GIVEN a tree whose first entry is the baseline and an empty tracking
+- AC-15: GIVEN a tree whose first entry is the baseline and an empty tracking
   table WHEN the plan runs THEN the baseline and every later entry are in `toRun`.
-- AC-B2: GIVEN tracking rows whose legacy mark equals the baseline's `when` WHEN
+- AC-16: GIVEN tracking rows whose legacy mark equals the baseline's `when` WHEN
   the plan runs THEN the baseline is neither run nor backfilled and only later
   entries run.
-- AC-B3 (failure path): GIVEN tracking rows whose legacy mark is below the
+- AC-17 (failure path): GIVEN tracking rows whose legacy mark is below the
   baseline's `when` WHEN the plan runs THEN it throws `PreBaselineDatabaseError`
   naming `LAST_RELEASE_BEFORE_SQUASH`, and nothing runs, including the tracking
   upgrade.
-- AC-B4: GIVEN a fresh database migrated through the pre-squash tree and another
+- AC-18: GIVEN a fresh database migrated through the pre-squash tree and another
   migrated through the squashed tree WHEN both schemas are fingerprinted THEN
   they are identical.
 - AC-4 (failure path): GIVEN a migrations directory holding a legacy `NNNN_x.sql`
@@ -288,7 +295,7 @@ journal layout:
   base and whose changes touch each other WHEN they are merged THEN
   `migrations:commute` exits non-zero; GIVEN changes that do not touch each other
   THEN it exits 0 with no repair needed.
-- AC-6b: GIVEN the cutover on a database that already holds the full history WHEN
+- AC-19: GIVEN the cutover on a database that already holds the full history WHEN
   the migrator runs THEN no DDL runs in `public`, only the rebase is recorded, a
   rerun plans nothing, and the previous release's migrator then applies nothing.
 - AC-7 (failure path): GIVEN a migration statement fails with an error not in
@@ -301,66 +308,63 @@ journal layout:
 - AC-9: GIVEN a workspace whose `last_migration_number` is 130 WHEN two
   `POST /api/workspaces/[id]/migration-slot` requests are issued concurrently
   THEN one returns `{ nextNumber: 131, formatted: "0131" }` and the other
-  `{ nextNumber: 132, formatted: "0132" }` — never the same number.
+  `{ nextNumber: 132, formatted: "0132" }`, never the same number.
 - AC-10: GIVEN a stored counter of 130 and body `{ "currentMax": 140 }` WHEN the
   slot is reserved THEN the response is `{ nextNumber: 141, formatted: "0141" }`.
 - AC-11 (failure path): GIVEN a valid API key and a workspace id that does not
-  exist WHEN the slot route is called THEN it returns 404 `Workspace not found`;
+  exist, or that the key's account cannot reach, WHEN the slot route is called
+  THEN it returns 404 `Workspace not found` and the counter is unchanged;
   GIVEN no `Authorization` header THEN it returns 401 `Invalid API key` and
   performs no UPDATE.
 - AC-12 (failure path): GIVEN production has column `tasks.hotfix_note` that the
-  resolved snapshot does not declare AND no migration in the journal creates it
+  resolved snapshot does not declare AND no migration in the tree creates it
   WHEN `scripts/check-schema-drift.ts` runs THEN it prints
   `EXTRA in DB    : tasks.hotfix_note — no migration in the journal creates it  ← untracked manual DDL`
   and exits 1.
-- AC-12b: GIVEN production has a table the resolved snapshot does not declare
-  BUT a journal migration creates it and `__drizzle_migrations` records that
+- AC-20: GIVEN production has a table the resolved snapshot does not declare
+  BUT a migration in the tree creates it and `__drizzle_migrations` records that
   migration as applied WHEN the gate runs THEN it logs `[snapshot gap]` naming
-  that migration and exits 0 — it MUST NOT report drift.
-- AC-12c: GIVEN two leaf snapshots that share a parent (two parallel migrations)
+  that migration and exits 0; it MUST NOT report drift.
+- AC-21: GIVEN two leaf snapshots that share a parent (two parallel migrations)
   WHEN the gate runs THEN it logs both leaves, expects the union of their entities,
   and returns a verdict: a table either branch added is expected, not "untracked
   manual DDL". GIVEN a legacy journal tree THEN it exits 2 ("cannot verify"), not 1.
-- AC-12d: GIVEN a snapshot whose successor was removed by past renumbering WHEN
+- AC-22: GIVEN a snapshot whose successor was removed by past renumbering WHEN
   the gate runs THEN it notes the dangling snapshot and proceeds to a verdict.
 - AC-13: GIVEN the newest snapshot declares a column that production does not
-  have yet WHEN `check-schema-drift.ts` runs THEN it logs
-  `[pending] Column '<table>.<col>' not in DB yet` and exits 0.
+    have yet WHEN `check-schema-drift.ts` runs THEN it logs a `[pending]` line
+  naming `<table>.<col>` as created on migrate, and exits 0.
 - AC-14: GIVEN a pull request whose `base_ref` is `dev` WHEN the
   `Schema Drift / check-prod` job runs THEN it reports success without checking
-  out the repo or connecting to any database, and its status is `success` —
+    out the repo or connecting to any database, and its status is `success`,
   never `Skipped`.
 
 ## Code surface
 
 | Symbol / artifact | Location |
 |---|---|
-| plan + apply loop, retry classification | `packages/core/db/migrate.ts:16-103` |
-| tracking schema/table bootstrap | `packages/core/db/migrate.ts:31-38` |
-| `readMigrationFiles` invocation | `packages/core/db/migrate.ts:44` |
-| backfill loop (records, does not execute) | `packages/core/db/migrate.ts:56-62` |
-| run loop + per-migration tracking insert | `packages/core/db/migrate.ts:64-76` |
-| transient-error list / terminal exit | `packages/core/db/migrate.ts:88-100` |
-| `planMigrationsV1`, `MigrationPlanV1` (name-keyed plan) | `packages/core/db/migrate-plan.ts` |
-| tree reader (fail closed), layout detection | `packages/core/db/migrate-tree.ts` |
+| plan + apply loop, lock, tracking bootstrap | `packages/core/db/migrate.ts`: `applyMigrationsV1`, `main` (`withMigrationLock`) |
+| transient-error classification, retry, terminal exit | `packages/core/db/migrate.ts`: `main` (`isTransient`) |
+| `planMigrationsV1`, `MigrationPlanV1` (name-keyed plan), `executionOrder` | `packages/core/db/migrate-plan.ts` |
+| tree reader (fail closed), layout detection | `packages/core/db/migrate-tree.ts`: `readMigrationTree`, `detectLayout` |
 | legacy map and its tree check | `packages/core/db/legacy-migrations.ts`, `packages/core/db/legacy-migrations.json` |
-| per-file atomic apply (`db.batch`) | `packages/core/db/migrate-apply.ts` |
+| per-file atomic apply (`db.batch`), unbatched statements | `packages/core/db/migrate-apply.ts`: `applyV1`, `needsUnbatched` |
+| evidence-gated backfill | `packages/core/db/migrate-backfill.ts`: `evaluateBackfill`, `BackfillContradictedError` |
+| migration lock | `packages/core/db/migrate-lock.ts`: `withMigrationLock`; `LOCK_TABLE` in `packages/core/db/migrate-client.ts` |
 | cutover script | `scripts/migrations-cutover.ts` |
-| layout check, commute check, regenerate | `packages/core/db/migration-layout.ts` |
-| `workspaces.lastMigrationNumber` | `packages/core/db/schema.ts:630` |
-| slot reservation (atomic UPDATE+RETURNING) | `apps/web/src/app/api/workspaces/[id]/migration-slot/route.ts:54-61` |
-| slot auth / 404 / zero-pad | `apps/web/src/app/api/workspaces/[id]/migration-slot/route.ts:35-38,63-68` |
-| agent-facing reserve-then-generate flow | `apps/web/src/lib/default-roles.ts:212-227` |
+| layout check, commute check, regenerate | `packages/core/db/migration-layout.ts`: `layoutProblems`, `runDrizzleCheck`, `regenerateAgainstBase` |
+| `workspaces.lastMigrationNumber` | `packages/core/db/schema.ts` |
+| slot reservation (atomic UPDATE+RETURNING), auth, 404, zero-pad | `apps/web/src/app/api/workspaces/[id]/migration-slot/route.ts`: `POST` |
 | drift gate: snapshot resolution, leaf union | `scripts/check-schema-drift.ts` (`latestSnapshot`), `packages/core/db/migrate-drift.ts` (`snapshotLeaves`, `unionLeafDdl`) |
-| drift gate: tracking-count schema fallback | `scripts/check-schema-drift.ts:244-270` |
-| drift gate: exit codes (drift vs cannot-verify) | `scripts/check-schema-drift.ts:69-70` |
+| drift gate: tracking-count schema fallback | `scripts/check-schema-drift.ts`: `appliedRows` |
+| drift gate: exit codes (drift vs cannot-verify) | `scripts/check-schema-drift.ts`: `EXIT_DRIFT`, `EXIT_CANNOT_VERIFY` |
 | `loadSnapshotMetasV1`, `resolveSnapshotSelectionV1`, `snapshotChainGaps` | `packages/core/db/migrate-drift.ts` |
-| `classifyExtraSchemaObjects` (creator tracing) | `packages/core/db/migrate-drift.ts:344-400` |
-| `reconcileAppliedCount` | `packages/core/db/migrate-drift.ts:419-445` |
-| `Schema Drift / check-prod` job (step-level gate) | `.github/workflows/build.yml:313-345` |
-| "migrations are up to date" PR check (asserts on exit code AND output) | `.github/workflows/build.yml:84-120` |
-| preview-branch migrate | `.github/workflows/build.yml:409-411` |
-| deploy ordering (`db:migrate && next build`) | `apps/web/package.json:7` |
+| `classifyExtraSchemaObjects` (creator tracing), `classifyMissingSchemaObjects` | `packages/core/db/migrate-drift.ts` |
+| `reconcileAppliedCount` | `packages/core/db/migrate-drift.ts` |
+| `Schema Drift / check-prod` job (step-level gate) | `.github/workflows/build.yml`: job `schema-drift` |
+| "migrations are up to date" PR check (asserts on exit code AND output), layout and commute checks | `.github/workflows/build.yml`: job `build-checks`, steps "Check migrations are up to date", "Check migration layout", "Check migrations commute" |
+| migrate against a real Postgres in CI | `.github/workflows/build.yml`: job `db-architecture`, step "Migrate" |
+| deploy ordering (`db:migrate && ... next build`) | `apps/web/package.json` (`build`), pinned by `packages/core/__tests__/prod-build-runs-migrations.test.ts` |
 | `migrations:lint` (prod build runs migrations), `migrations:layout-check`, `migrations:commute`, `migrations:regenerate` | `package.json` |
 | migration change → full unit suite | `scripts/affected-tests.ts` |
 | squashed baseline (released history up to the cut) | `packages/core/drizzle/20261006230118_baseline/migration.sql` |
@@ -369,7 +373,7 @@ journal layout:
 
 ## Out of scope
 
-- **EXPAND/CONTRACT classification and auto-merge gating** — owned entirely by
+- **EXPAND/CONTRACT classification and auto-merge gating**: owned entirely by
   `db-migration-gates` (`classifyMigrationSql`, `inspectPullRequestMigrations`,
   `evaluateAutoMergeSafety`). This spec assumes the migration already passed
   that gate and asks only what happens when it runs.
@@ -381,58 +385,38 @@ journal layout:
   has no spec. Named here only so the name collision does not send a reader to
   the wrong document.
 - `drizzle-kit generate` internals and snapshot production.
-- `db:push` — forbidden in every environment; it bypasses tracking entirely.
+- `db:push`: forbidden in every environment; it bypasses tracking entirely.
 - Shadow-DB apply/rollback per PR and `squawk`-class linting (see
   `db-migration-gates` → Out of scope).
 - Neon PITR as a recovery backstop.
-- The process rules around manual hotfix DDL and reconciliation-PR turnaround —
-  that is doctrine, in `docs/design/migration-doctrine.md`, not a runtime
-  contract.
+- The process rules around manual hotfix DDL and reconciliation-PR turnaround:
+  that is doctrine (`knowledge-base: buildd/design/migration-doctrine.md`, with
+  its assertions in the `docs/design/migration-doctrine.md` stub), not a
+  runtime contract.
 
 ## Verification gaps
 
-Unguarded claims. Each is either asserted by no test or contradicted by the
-code; do not read any of them as enforced.
+Claims that were unguarded when this spec was written, and where each stands
+on dev now. Read an open row as not enforced.
 
-1. **The slot route has no test at all.** There is no `route.test.ts` beside
-   `migration-slot/route.ts`, so AC-9 through AC-11 are unverified — including
-   the concurrency property the endpoint exists to provide.
-2. **Slot acquisition does not assert caller scope.** The invariant is that a
-   caller MUST hold access to the workspace whose slot it takes, and that a
-   request failing that check MUST be rejected rather than served. No test
-   asserts it. Specifics are tracked privately until the guard lands.
-3. **The slot counter is per-workspace; the migration number space is
-   per-repository.** Two workspaces pointing at the same repo can hand out the
-   same number, which is exactly the collision the endpoint claims to prevent.
-   Nothing keys the counter to the repo.
-4. **Nothing requires migration SQL to be replay-safe.** Since a partial
-   failure replays from statement 1, a non-idempotent statement makes the
-   failure permanent — the 0000/`source_id` crash mode. The EXPAND grammar in
-   `db-migration-gates` does not require `IF NOT EXISTS`.
-5. **Concurrent `db:migrate` runs have no mutual exclusion.** The plan is read
-   and then executed with no advisory lock (`pg_advisory_lock` appears nowhere
-   in the repo), so two overlapping deploys can both put the same pending
-   migration in `toRun` and execute it twice.
-6. **(closed)** The journal ordering check and its merge-race blind spot are gone with the journal: post-cutover files have no mark to out-rank.
-7. **Backfill trusts an inference it never checks.** "No row and below the mark"
-   is treated as "applied", with no introspection confirming the objects exist.
-   On a restored or branched database where the DDL genuinely never ran, the
-   backfill marks it applied permanently and silently. 0021/0022 is the
-   historical instance.
-8. **The drift gate only compares column *names*.** Type, nullability, default
-   and index drift are invisible to it, as is any drift introduced after a
-   release PR passes — it runs on dev→main PRs only, never on the deploy path.
-9. **`docs/design/migration-doctrine.md` Rule 4 is stale.** It states the gate
-   "Fails if any column is expected by the snapshot but absent from the DB
-   (unapplied migration)". The implementation logs `[pending]` and exits 0. The
-   code is correct here (migrations run after the gate); the doctrine document
-   is wrong.
-10. **Dead guard at `scripts/check-schema-drift.ts:155`** —
-    `if (col === '__drizzle_migrations') continue;` compares a *column* name
-    against a *table* name inside the per-column loop, so it can never fire.
-    Harmless today; misleading to anyone extending the exclusion list.
-11. **Nothing pins the deploy ordering.** No test asserts that
-    `apps/web/package.json`'s `build` keeps `db:migrate &&` ahead of
-    `next build`. CI builds with `build:only`, so dropping the migrate step
-    would go green and ship code against an un-migrated database.
-12. **`migrations:lint` guards one thing now** (the prod build runs migrations); the journal tests it used to run are gone. `migrations:layout-check` and `migrations:commute` are wired into `build.yml` and are the parallel-branch guards.
+| # | Gap | Status | Evidence |
+|---|---|---|---|
+| 1 | The slot route had no test. | Fixed, except concurrency | `migration-slot/route.test.ts` covers 401, 404, the access refusal and a normal reservation. Two concurrent callers (AC-9) are still untested. |
+| 2 | Slot acquisition did not assert caller scope. | Fixed | The route calls `verifyAccountWorkspaceAccess` and answers 404 without incrementing; the test "rejects an account that cannot reach the workspace" pins it. |
+| 3 | The slot counter is per workspace; the number space was per repository, so two workspaces on one repo could get the same number. | Open, moot for new migrations | Nothing keys the counter to the repo. Folder names are timestamps under drizzle v1, so new migrations do not use a number. |
+| 4 | Nothing required migration SQL to be replay-safe. | Narrowed | Each post-cutover file runs in one `db.batch` with its tracking insert (`applyV1`), so a failure rolls the whole file back. Statements that cannot run in a batch (`needsUnbatched`) still must be idempotent, and nothing lints that. |
+| 5 | Concurrent `db:migrate` runs had no mutual exclusion. | Fixed | `withMigrationLock` (`migrate-lock.ts`) takes a row in `__buildd_migrate_lock`; a second migrator waits, then plans against what the first recorded. |
+| 6 | The journal ordering check and its merge-race blind spot. | Closed | Gone with the journal: post-cutover files have no mark to out-rank. |
+| 7 | Backfill trusted an inference it never checked ("no row and below the mark" meant applied). | Fixed | `evaluateBackfill` checks the live schema; DDL that contradicts the plan throws `BackfillContradictedError`. |
+| 8 | The drift gate compares only column and table *names*. | Open | Type, nullability, default and index drift are invisible to it, as is drift introduced after a release PR passes. It runs on dev to main PRs only, never on the deploy path. |
+| 9 | The migration doctrine's rule 4 said the gate fails on an expected column absent from the DB. | Moved | The doctrine body now lives in the private knowledge base; this repo keeps only its assertion stub, which matches the code (`[pending]`, exit 0). |
+| 10 | A dead `__drizzle_migrations` guard in the drift script's per-column loop. | Fixed | Replaced by `MIGRATOR_OWNED_TABLES` in `scripts/check-schema-drift.ts`. |
+| 11 | Nothing pinned the deploy ordering. | Fixed | `packages/core/__tests__/prod-build-runs-migrations.test.ts`. |
+| 12 | `migrations:lint` guards one thing now. | Accepted | It checks that the prod build runs migrations; `migrations:layout-check` and `migrations:commute` in `build.yml` are the parallel-branch guards. |
+
+## Renumbered
+
+Baseline criteria AC-B1 to AC-B4 became AC-15 to AC-18. The old AC-6b became
+the new AC-19, and the old AC-12b, AC-12c and AC-12d became AC-20, AC-21 and
+the new AC-22. The parser read the letter-suffixed ids as repeats of AC-6 and
+of AC-12 and dropped them.

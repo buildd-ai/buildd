@@ -25,6 +25,15 @@ describe('isNavActive', () => {
       expect(isNavActive('/app/missions/abc-123', '/app/missions')).toBe(true);
     });
 
+    // Specs have no nav item either: the index, a workspace's index and a spec page light Missions.
+    it.each(['/app/specs', '/app/specs/s-1', '/app/workspaces/w-1/specs'])('owns %s', (p) => {
+      expect(isNavActive(p, '/app/missions')).toBe(true);
+    });
+
+    it('does not own the workspace page itself', () => {
+      expect(isNavActive('/app/workspaces/w-1', '/app/missions')).toBe(false);
+    });
+
     // Releases left the nav for Missions (owner decision, Oct 9).
     it.each(['/app/releases', '/app/releases/r-1'])('owns %s', (p) => {
       expect(isNavActive(p, '/app/missions')).toBe(true);

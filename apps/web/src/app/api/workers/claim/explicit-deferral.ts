@@ -80,7 +80,7 @@ export function describeExplicitDeferral(
       const backend = str(detail.backend) ?? 'its provider';
       const at = str(detail.resetsAt);
       const wall = str(detail.wall);
-      if ((wall === 'account_seat' || wall === 'provider_pause' || wall === 'tenant_budget') && (backend === 'claude' || backend === 'codex')) {
+      if ((wall === 'account_seat' || wall === 'provider_pause' || wall === 'runner_seat' || wall === 'tenant_budget') && (backend === 'claude' || backend === 'codex')) {
         return { code: reason, detail: `${describeBudgetWall({ kind: wall, backend, resetsAt: at })} There's no provider to fail over to.` };
       }
       return { code: reason, detail: `The ${backend} budget or rate limit is exhausted${at ? ` until ${at}` : ''}, with no provider to fail over to.` };

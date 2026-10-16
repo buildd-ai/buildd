@@ -314,6 +314,9 @@ DELETE FROM decision_feature_modes;
 -- Stored model measurements: owner notes in `reason`; a QA clone runs every
 -- decision on Jev at its code default.
 DELETE FROM decision_model_measurements;
+-- Automatic decision model switches: eval run ids and the routes a team chose;
+-- a QA clone has no switch in effect.
+DELETE FROM decision_model_switches;
 -- Stripe webhook idempotency ledger: event ids are Stripe-side identifiers.
 DELETE FROM stripe_events;
 -- Capability decisions: per-run grant/PR audit; resources name repos and PRs.
@@ -327,12 +330,19 @@ DELETE FROM task_dispatch_outbox;
 -- Workflow kernel ledger: facts, transitions and effects carry repo names, PR
 -- heads and evidence payloads. Children first (effects reference transitions).
 DELETE FROM landing_lanes;
+-- The command API's idempotency ledger: stored answers carry the same payloads.
+DELETE FROM workflow_commands;
 DELETE FROM workflow_effects;
 DELETE FROM workflow_transitions;
 DELETE FROM workflow_facts;
 DELETE FROM workflow_review_rounds;
+DELETE FROM workflow_findings;
 DELETE FROM workflow_attempts;
 DELETE FROM workflow_deliveries;
+-- Mission delivery epochs: branch names, repo names, merge SHAs, settlement proofs.
+DELETE FROM workflow_mission_epochs;
+-- Scope decisions: the mission's description and criteria before and after.
+DELETE FROM workflow_scope_amendments;
 DELETE FROM trunk_incidents;
 DELETE FROM watcher_events;
 -- Watches and their ledger: payloads carry task/PR titles and repo names.
@@ -621,17 +631,39 @@ UPDATE artifact_links SET created_by = NULL;
 -- Living Specs: titles and summaries are prose; who wrote or approved a
 -- revision is an account or user id. Bodies are artifacts, scrubbed above.
 UPDATE specs SET title = 'Spec ' || left(md5(id::text), 8), created_by = NULL;
+-- The metadata block names repo paths and a handle; the repo copy state holds a
+-- repo name, a path and an error string; an import's source names a repo path
+-- and who confirmed it: wiped.
+UPDATE specs SET metadata = NULL, repo_copy = NULL, repo_source = NULL;
+-- Metadata changes: the values and the reason are free text; who changed it is an id.
+UPDATE spec_metadata_changes SET previous_value = NULL, new_value = NULL, reason = pg_temp.qa_text(reason), changed_by = md5(changed_by);
 -- Spec comments: the text and the anchored heading are free text; ids and hashes are not content.
 UPDATE spec_comments SET body = pg_temp.qa_text(body), anchor_label = pg_temp.qa_text(anchor_label), author_id = md5(author_id),
   resolved_by = CASE WHEN resolved_by IS NULL THEN NULL ELSE md5(resolved_by) END;
--- A design reference carries free-text screen names and may carry a URL: wiped.
+-- A design reference carries free-text screen names and may carry a URL, and an
+-- import names the repo path it was read from: both wiped.
 UPDATE spec_revisions SET author_id = md5(author_id), change_summary = pg_temp.qa_text(change_summary),
-  approved_by = CASE WHEN approved_by IS NULL THEN NULL ELSE md5(approved_by) END, design = NULL;
+  approved_by = CASE WHEN approved_by IS NULL THEN NULL ELSE md5(approved_by) END, design = NULL, imported = NULL;
+-- Spec attachments: a name is chosen by its author and a caption is free text;
+-- who added or removed one is an id. A name maps to the same placeholder in the
+-- approval record (spec_revisions.approved_attachments), so "changed since
+-- approval" still reads the same; md5 keeps live names unique per spec.
+UPDATE spec_attachments SET name = 'file-' || md5(name), caption = pg_temp.qa_text(caption), added_by = md5(added_by),
+  removed_by = CASE WHEN removed_by IS NULL THEN NULL ELSE md5(removed_by) END;
+UPDATE spec_revisions SET approved_attachments = (
+  SELECT coalesce(jsonb_agg(e || jsonb_build_object('name', 'file-' || md5(e->>'name'))), '[]'::jsonb)
+  FROM jsonb_array_elements(approved_attachments) e)
+WHERE approved_attachments IS NOT NULL;
 -- Outcome verdicts: the evidence holds what a reviewer observed (prose), file
 -- refs and who recorded it; criterion ids and head SHAs are not content.
 UPDATE spec_outcome_verdicts SET evidence = pg_temp.qa_json(evidence);
 -- Spec neighbours: the reason detail names repo paths and criterion ids; kind and source are fixed words.
 UPDATE spec_neighbors SET detail = pg_temp.qa_json(detail);
+-- Spec filings: a proposed new area's title and charter (spec prose) ride in
+-- proposal; who filed or resolved one is an author label. kind, status and source are fixed words.
+UPDATE spec_filings SET proposal = pg_temp.qa_json(proposal),
+  created_by = CASE WHEN created_by IS NULL THEN NULL ELSE md5(created_by) END,
+  resolved_by = CASE WHEN resolved_by IS NULL THEN NULL ELSE md5(resolved_by) END;
 
 -- Human visual-review decisions: the route pattern goes through qa_str, as the
 -- shot's metadata.qa.route does via qa_json, so cell_key stays joinable.
@@ -722,7 +754,9 @@ UPDATE path_claim_waiters SET
   blocked_path = pg_temp.qa_hash('path/', blocked_path);
 
 UPDATE backend_pauses SET
-  reason = pg_temp.qa_str(reason);
+  reason = pg_temp.qa_str(reason),
+  -- Already an opaque hash of a runner id; re-hashed so equal keys stay equal.
+  seat_key = pg_temp.qa_hash('runner:', seat_key);
 
 UPDATE migration_log SET
   error = pg_temp.qa_text(error),

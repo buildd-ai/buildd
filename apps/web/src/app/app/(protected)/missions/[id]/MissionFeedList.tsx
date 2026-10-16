@@ -81,7 +81,7 @@ type PhaseGroup<T extends MissionFeedTaskInput> = Extract<FeedGroup<T>, { kind: 
 
 const groupKey = (g: FeedGroup, i: number) => (g.kind === 'phase' ? `phase:${g.index ?? 'none'}:${i}` : g.kind);
 
-const GROUP_LABEL = { needs_you: 'NEEDS YOU', moving: 'MOVING NOW' } as const;
+const GROUP_LABEL = { needs_you: 'WAITING ON YOU', moving: 'MOVING NOW' } as const;
 
 function GroupLabel({ children }: { children: string }) {
   return (

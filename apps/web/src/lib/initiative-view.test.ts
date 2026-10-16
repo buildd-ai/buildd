@@ -154,14 +154,14 @@ describe('what needs you comes from the missions', () => {
         missions: [
           doneMission('a'),
           mission('b', {
-            statusLabel: 'Needs you', tone: 'warning',
+            statusLabel: 'Waiting on you', tone: 'warning',
             question: { label: 'versions', href: '/app/missions/b?task=t4', prompt: 'Keep v1 at /v1?' },
           }),
         ],
       }),
       { now: NOW },
     );
-    expect(card.facts[0]).toMatchObject({ key: 'needs_you', text: '1 mission needs you', href: '/app/missions/b?task=t4' });
+    expect(card.facts[0]).toMatchObject({ key: 'needs_you', text: '1 mission waiting on you', href: '/app/missions/b?task=t4' });
     expect(card.action).toMatchObject({ kind: 'answer', label: 'Answer', href: '/app/missions/b?task=t4' });
     expect(card.section).toBe('needs_you');
     // The mission that needs you lists first.
@@ -170,7 +170,7 @@ describe('what needs you comes from the missions', () => {
 
   it('a merge ask keeps its own verb', () => {
     const card = buildInitiativeCard(
-      initiative({ missions: [mission('b', { statusLabel: 'Needs you', tone: 'warning', ask: { label: 'Merge: feat(x): thing', href: '/h' } })] }),
+      initiative({ missions: [mission('b', { statusLabel: 'Waiting on you', tone: 'warning', ask: { label: 'Merge: feat(x): thing', href: '/h' } })] }),
       { now: NOW },
     );
     expect(card.action).toMatchObject({ kind: 'answer', label: 'Merge', href: '/h' });
@@ -201,10 +201,10 @@ describe('what needs you comes from the missions', () => {
   it('counts several missions that need you', () => {
     const ask = { label: 'Retry: x', href: '/r' };
     const card = buildInitiativeCard(
-      initiative({ missions: [mission('a', { statusLabel: 'Needs you', ask }), mission('b', { statusLabel: 'Needs you', ask })] }),
+      initiative({ missions: [mission('a', { statusLabel: 'Waiting on you', ask }), mission('b', { statusLabel: 'Waiting on you', ask })] }),
       { now: NOW },
     );
-    expect(card.facts[0].text).toBe('2 missions need you');
+    expect(card.facts[0].text).toBe('2 missions waiting on you');
   });
 
   it('an initiative with no missions offers Add mission', () => {
@@ -249,7 +249,7 @@ describe('grouping and headline', () => {
       buildInitiativeCard(initiative({ id: 'done', status: 'completed', missions: [doneMission('a')] }), { now: NOW }),
       buildInitiativeCard(initiative({ id: 'plan', status: 'planned', missions: [mission('p', { done: 0 })] }), { now: NOW }),
       buildInitiativeCard(initiative({ id: 'run', missions: [mission('r')] }), { now: NOW }),
-      buildInitiativeCard(initiative({ id: 'ask', missions: [mission('q', { statusLabel: 'Needs you', ask: { label: 'Merge: y', href: '/y' } })] }), { now: NOW }),
+      buildInitiativeCard(initiative({ id: 'ask', missions: [mission('q', { statusLabel: 'Waiting on you', ask: { label: 'Merge: y', href: '/y' } })] }), { now: NOW }),
       buildInitiativeCard(initiative({ id: 'pause', status: 'paused', missions: [mission('z')] }), { now: NOW }),
     ];
     const groups = groupInitiativeCards(cards);
@@ -260,7 +260,7 @@ describe('grouping and headline', () => {
       ['paused', ['pause']],
       ['completed', ['done']],
     ]);
-    expect(groups.map((g) => g.label)).toEqual(['Needs you', 'Active', 'Planned', 'Paused', 'Completed']);
+    expect(groups.map((g) => g.label)).toEqual(['Waiting on you', 'Active', 'Planned', 'Paused', 'Completed']);
   });
 
   it('drops empty groups', () => {
@@ -270,9 +270,9 @@ describe('grouping and headline', () => {
 
   it('count line leads with what needs you, then each group', () => {
     const g = (section: string, n: number, label: string) => ({ section, label, cards: Array(n).fill({}) }) as any;
-    expect(initiativesCountLine([g('needs_you', 2, 'Needs you'), g('active', 3, 'Active'), g('completed', 6, 'Completed')]))
-      .toEqual([{ text: '2 need you', needsYou: true }, { text: '3 active', needsYou: false }, { text: '6 completed', needsYou: false }]);
-    expect(initiativesCountLine([g('needs_you', 1, 'Needs you')])).toEqual([{ text: '1 needs you', needsYou: true }]);
+    expect(initiativesCountLine([g('needs_you', 2, 'Waiting on you'), g('active', 3, 'Active'), g('completed', 6, 'Completed')]))
+      .toEqual([{ text: '2 waiting on you', needsYou: true }, { text: '3 active', needsYou: false }, { text: '6 completed', needsYou: false }]);
+    expect(initiativesCountLine([g('needs_you', 1, 'Waiting on you')])).toEqual([{ text: '1 waiting on you', needsYou: true }]);
     expect(initiativesCountLine([])).toEqual([]);
   });
 });

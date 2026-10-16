@@ -6,6 +6,7 @@ import { join } from 'path';
 import { homedir, hostname } from 'os';
 import { writeSecretJsonFile } from './secure-file';
 import { refreshBuilddMcpEntries } from './claude-json-mcp';
+import { runWorkspacesEdit } from './login-workspaces';
 
 const CONFIG_DIR = join(homedir(), '.buildd');
 const CONFIG_FILE = join(CONFIG_DIR, 'config.json');
@@ -35,6 +36,10 @@ const { values } = parseArgs({
       type: 'boolean',
       default: false,
     },
+    workspaces: {
+      type: 'boolean',
+      default: false,
+    },
     help: {
       type: 'boolean',
       short: 'h',
@@ -45,10 +50,11 @@ const { values } = parseArgs({
 
 if (values.help) {
   console.log([
-    'Usage: buildd login [--device] [--server <url>] [--name <key name>] [--no-mcp]',
+    'Usage: buildd login [--device | --workspaces] [--server <url>] [--name <key name>] [--no-mcp]',
     '',
     "Sign in and save an API key (and this machine's session presence token) to ~/.buildd/config.json.",
     '  --device        Sign in on another device with a code (no browser on this machine)',
+    "  --workspaces    Choose which workspaces this runner serves, keeping its key",
     '  --server <url>  buildd server (default: the saved one, else https://buildd.dev)',
     '  --name <name>   Name for the new API key',
     '  --no-mcp        Do not update the buildd MCP entries in ~/.claude.json',
@@ -108,6 +114,24 @@ const existingConfig = loadConfig();
 const serverUrl = values.server
   || (existingConfig.builddServer as string)
   || 'https://buildd.dev';
+
+// ============================================================================
+// --workspaces: change the current key's picks, no new key (R-4)
+// ============================================================================
+if (values.workspaces) {
+  const code = await runWorkspacesEdit({
+    config: existingConfig,
+    env: process.env,
+    serverFlag: values.server || undefined,
+    openUrl: async (url) => {
+      const proc = Bun.spawn(['open', url], { stdio: ['ignore', 'ignore', 'ignore'] });
+      await proc.exited;
+    },
+    log: (line) => console.log(line),
+    error: (line) => console.error(line),
+  });
+  process.exit(code);
+}
 
 // ============================================================================
 // Device code flow

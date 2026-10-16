@@ -22,12 +22,12 @@ const USED = ['name'] as const;
 const ALLOWLIST = `account: { columns: { ${USED.map(c => `${c}: true`).join(', ')} } }`;
 
 /**
- * How many account relations the page selects: the root tree, the worker read,
- * and the CI-retry attempts' workers (Worker history lists them beside the
- * task's own, so they carry the same shape). The re-read after a render-time
- * merge refresh is gone: that import now runs after the response.
+ * How many account relations the page selects: the root tree and the CI-retry
+ * attempts' workers. The task's own workers come from lib/task-view.ts, shared
+ * with the sheet, which also reads the account's authType. The re-read after a
+ * render-time merge refresh is gone: that import now runs after the response.
  */
-const ACCOUNT_RELATION_SITES = 3;
+const ACCOUNT_RELATION_SITES = 2;
 
 describe('tasks/[id]/page.tsx account relation', () => {
   it('never selects the account relation wholesale', () => {

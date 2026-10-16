@@ -11,8 +11,10 @@ import { markdownToStorage, storageToMarkdown } from './confluence-markdown';
  * ./hash.ts), because Confluence re-serializes storage on save.
  *
  * Agents never edit the page (D-3): a proposal is a child page titled
- * "Proposed: vN — <title>", with the base version and summary kept in a
- * content property, so the parent never shows text nobody approved. Writing an
+ * "Proposed vN: <title>" ("Proposed vN (2): <title>" and so on when another
+ * proposal on the same base exists, since Confluence titles are unique per
+ * space), with the base version and summary kept in a content property, so
+ * the parent never shows text nobody approved. Writing an
  * approved proposal back into the parent is the host's act, not this adapter's.
  *
  * I/O is the injected `fetch`, authenticated with `authHeader` (for example a
@@ -34,7 +36,16 @@ export interface ConfluenceSourceOptions {
   authHeader: string;
   /** The account the host writes proposals as; a version it authored reads as an agent's. */
   botAccountId?: string;
+  /**
+   * `current` (default) publishes a proposal page, so the whole space sees it
+   * in the page tree. `draft` keeps it out of the tree; whether a draft page
+   * accepts the content property on every Confluence site is untested.
+   */
+  proposalStatus?: 'current' | 'draft';
 }
+
+/** How many numbered titles a proposal tries before it is refused. */
+export const MAX_PROPOSAL_TITLE_ATTEMPTS = 20;
 
 /** The content property a proposal page carries. */
 export const PROPOSAL_PROPERTY_KEY = 'living-spec-proposal';
@@ -124,15 +135,21 @@ export function confluenceSource(opts: ConfluenceSourceOptions): SpecSourceAdapt
       const current = String(page.version.number);
       if (change.baseVersion !== current) return { ok: false, reason: 'stale', currentVersion: current };
       const next = page.version.number + 1;
-      const created = await call('POST', '/pages', {
-        spaceId: page.spaceId,
-        status: 'current',
-        title: `Proposed: v${next} — ${page.title ?? ref}`,
-        parentId: ref,
-        body: { representation: 'storage', value: markdownToStorage(change.body) },
-      });
+      const storage = markdownToStorage(change.body);
+      let created: { status: number; json: unknown } = { status: 0, json: null };
+      for (let n = 1; n <= MAX_PROPOSAL_TITLE_ATTEMPTS; n++) {
+        created = await call('POST', '/pages', {
+          spaceId: page.spaceId,
+          status: opts.proposalStatus ?? 'current',
+          title: `Proposed v${next}${n > 1 ? ` (${n})` : ''}: ${page.title ?? ref}`,
+          parentId: ref,
+          body: { representation: 'storage', value: storage },
+        });
+        // A 400 or 409 here is almost always the title being taken by another proposal on the same base.
+        if (created.status !== 400 && created.status !== 409) break;
+      }
       if (created.status === 400 || created.status === 409) {
-        return { ok: false, reason: 'refused', message: `a proposal for v${next} of this page already exists, or Confluence refused the page` };
+        return { ok: false, reason: 'refused', message: `Confluence refused a proposal page for v${next} of this page` };
       }
       if (created.status !== 200) fail(created.status, `create of a proposal under page ${ref}`);
       const childId = (created.json as Page | null)?.id;

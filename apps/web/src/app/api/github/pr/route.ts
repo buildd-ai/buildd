@@ -13,11 +13,12 @@ import { rankPrComments } from '@/lib/pr-comments';
 // One implementation of the primary-PR claim and of "what counts as trunk",
 // shared with the mission-PR opener. Two copies of a base-ref rule is how
 // the branch-name generator drifted (P8).
-import { claimMissionPrimaryPr, trunkBranches, MISSION_PR_TASK_PREFIX, guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
+import { claimMissionPrimaryPr, trunkBranches, MISSION_PR_TASK_PREFIX, guardMissionPrMerge, finalizeMissionPrMerge, ensureMissionWritableBranch } from '@/lib/mission-pr';
 import { buildMissionBaseGuard } from '@/lib/mission-base-guard';
 import { ensureIntegrationBaseForTaskPr, reportMissionBranchUnresolved } from '@/lib/mission-integration-branch';
 import { looksLikeMissionIntegrationBranch, resolveTaskPrBase } from '@buildd/core/mission-integration';
 import { composeBodyWithLede, deriveLedeFromTitle, normalizeLede } from '@buildd/core/pr-lede';
+import { withSpecSourceBlock } from '@/lib/specs/provisional-text';
 import { describeProseFindings, scanPrProse } from '@buildd/core/no-prod-data-prose';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkerPr, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
@@ -41,6 +42,7 @@ import { checkSurfaceOrder, mergeInSurfaceSlot } from '@/lib/surface-ordering-do
 import { resolveIntentSurfaces } from '@/lib/surface-ordering-config';
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
 import { recordPrFact } from '@buildd/core/pr-facts';
+import { factFunnelScope } from '@/lib/workflow/pr-fact-scope';
 import { escalateConflictExhaustion, evaluateAutoMergeSafety, isBehindBaseRefusal } from '@/lib/auto-merge';
 import { refreshBehindPr, type RefreshOutcome } from '@/lib/base-refresh';
 import { updateBehindPrBranch } from '@/lib/pr-branch-update';
@@ -49,8 +51,11 @@ import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/depend
 import { fetchSplitPrStats } from '@/lib/supersession-check';
 import { loadPrAttempts } from '@/lib/pr-attempts';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
-import { kernelLandingView, landThroughKernel, openKernelDelivery, type KernelLanding } from '@/lib/workflow/seam';
+import { kernelLandingView, type KernelLanding } from '@/lib/workflow/seam';
+import { doorErrorResponse, isDoorError, idempotencyKeyOf, landThroughKernel, openKernelDelivery, type KernelPrincipal } from '@/lib/workflow/kernel-client';
+import { kernelPrincipalOf } from '@/lib/workflow/kernel-client';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
+import { prDeliveryReport } from '@/lib/pr-delivery-report';
 import { canonicalPrState, prRecord } from '@/lib/pr-presentation';
 import { readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
@@ -71,6 +76,7 @@ import { ATTEMPT_FOOTER_PATTERN, checkFreshRetryPr, freshRetryPrRefusal, retryAt
 import { loadInlineEvidence } from '@/lib/evidence-inline';
 import { canActOnWorkerPr } from '@/lib/worker-pr-access';
 import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
+import { workerIdForNewPr, wouldDisplaceLivePr } from '@/lib/worker-pr-slot';
 import { findStackedReleaseForBase } from '@/lib/early-release-stacking';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 
@@ -108,6 +114,8 @@ async function requestIntegrationBranchReview(params: {
   baseRef: string;
   installationId: number;
   repoFullName: string;
+  /** The caller the kernel delivery is opened for (`kernelPrincipalOf`). Required: the door names it. */
+  principal: KernelPrincipal | null;
 }): Promise<void> {
   try {
     const existingReview = await findLiveReviewerTaskForHead(
@@ -147,7 +155,9 @@ async function requestIntegrationBranchReview(params: {
       prNumber: params.prNumber,
       installationId: params.installationId,
       source: 'create_pr',
-    }).catch((err) => {
+    }, { principal: params.principal }).catch((err) => {
+      // An unreachable control plane opened nothing (ControlPlaneUnavailableError): the PR is
+      // legacy-reviewed, exactly as when the kernel itself fails to open a delivery.
       console.error(`[create_pr] workflow kernel could not open a delivery for PR #${params.prNumber}; legacy review dispatch:`, err);
       return { owned: false };
     });
@@ -338,6 +348,10 @@ export async function POST(req: NextRequest) {
     // checks at PR creation. `missionIntegrationBase` returns null for a mission
     // that has not opted in, which is what makes every check below inert for
     // such a mission (and for a task with no mission at all).
+    // §6 mission deliveries: if the mission's newest delivery already merged,
+    // the kernel opens its successor first, so the mission read below names a
+    // live branch, never the merged one. One read for every other mission.
+    if (worker.task?.missionId) await ensureMissionWritableBranch(worker.task.missionId, 'task_pr_opening');
     const mission = worker.task?.missionId
       ? await db.query.missions.findFirst({
           where: sqlWhere(eq(missions.id, worker.task.missionId)),
@@ -538,11 +552,13 @@ export async function POST(req: NextRequest) {
         accountId: account.id, principalVia: auditVia(account, worker), resource: prNumber ? `pr:${prNumber}` : null,
         sideEffect: prNumber ? { prNumber } : null,
       });
+      // A second PR from the same worker gets its own owner row; the first keeps this one.
+      const adoptRecordId = await workerIdForNewPr(worker, { number: prNumber, url: existingPrUrl, head: typeof head === 'string' ? head : null });
       await db.update(workers).set({
         prUrl: existingPrUrl,
         prNumber,
         updatedAt: new Date(),
-      }).where(eq(workers.id, workerId));
+      }).where(eq(workers.id, adoptRecordId));
       await stampTaskKindIfAbsent(worker.taskId, 'engineering');
       if (prNumber) {
         await claimMissionPrimaryPr(worker.task?.missionId, prNumber, existingPrUrl, {
@@ -568,6 +584,7 @@ export async function POST(req: NextRequest) {
           await requestIntegrationBranchReview({
             workspace: { id: worker.workspace.id, gitConfig: worker.workspace.gitConfig },
             teamId: account.teamId,
+            principal: kernelPrincipalOf({ account }),
             task: {
               id: worker.task.id,
               title: worker.task.title,
@@ -606,6 +623,7 @@ export async function POST(req: NextRequest) {
       const siblingWorkerWithPr = await db.query.workers.findFirst({
         where: sqlWhere(and(
           eq(workers.taskId, worker.taskId),
+          eq(workers.branch, head),
           isNotNull(workers.prUrl),
           isNotNull(workers.prNumber),
         )),
@@ -617,6 +635,15 @@ export async function POST(req: NextRequest) {
         siblingWorkerWithPr.branch === head &&
         !isStoredPrStale(siblingWorkerWithPr)
       ) {
+        // A worker already holding a different live PR keeps it: this PR has its
+        // own owner row (the sibling), so there is nothing to mirror.
+        if (wouldDisplaceLivePr(worker, siblingWorkerWithPr.prNumber)) {
+          return NextResponse.json({
+            ok: true,
+            pr: { number: siblingWorkerWithPr.prNumber, url: siblingWorkerWithPr.prUrl, state: 'open', title },
+            deduplicated: true,
+          });
+        }
         // Mirror the PR onto this worker too so future calls hit the fast path.
         // The base ref is copied from the sibling because it is literally the same
         // PR — but only when the sibling actually has one recorded. A sibling from
@@ -769,7 +796,9 @@ export async function POST(req: NextRequest) {
           ? await fetchSplitPrStats(repo.installation.installationId, repo.fullName, existing.number)
           : null;
 
-        // Update worker with the existing PR info and diff stats
+        // Update worker with the existing PR info and diff stats. A second PR
+        // from the same worker gets its own owner row; the first keeps this one.
+        const dedupRecordId = await workerIdForNewPr(worker, { number: existing.number, url: existing.html_url, head });
         await db
           .update(workers)
           .set({
@@ -788,7 +817,7 @@ export async function POST(req: NextRequest) {
             // column here whose stale value removes a safety gate.
             updatedAt: new Date(),
           })
-          .where(eq(workers.id, workerId));
+          .where(eq(workers.id, dedupRecordId));
         await stampTaskKindIfAbsent(worker.taskId, 'engineering');
 
         // ── prBaseRef: BACKFILL only, never overwrite ────────────────────────
@@ -814,12 +843,12 @@ export async function POST(req: NextRequest) {
         const adoptedBaseRef = typeof adoptedBaseRefValue === 'string' && adoptedBaseRefValue
           ? adoptedBaseRefValue
           : null;
-        if (adoptedBaseRef && !worker.prBaseRef) {
+        if (adoptedBaseRef && (dedupRecordId !== workerId || !worker.prBaseRef)) {
           try {
             const filled = await db
               .update(workers)
               .set({ prBaseRef: adoptedBaseRef, updatedAt: new Date() })
-              .where(and(eq(workers.id, workerId), isNull(workers.prBaseRef)))
+              .where(and(eq(workers.id, dedupRecordId), isNull(workers.prBaseRef)))
               .returning({ id: workers.id });
             if (filled.length > 0) {
               console.log(
@@ -969,11 +998,13 @@ export async function POST(req: NextRequest) {
         `[create_pr] no lede supplied for worker ${workerId} — deriving one from the PR title`,
       );
     }
-    const effectivePrBody = composeBodyWithLede(
+    // Work built ahead of approval says so under the lede, in words that match
+    // what buildd will do with it (living-specs.md §20, R-38).
+    const effectivePrBody = withSpecSourceBlock(composeBodyWithLede(
       effectiveLede,
       (prBody || `Created by buildd worker ${worker.name}`) + lineageSuffix,
       { derived: ledeIsDerived },
-    );
+    ), taskContext?.specSource as Record<string, unknown> | undefined);
 
     // Mission integration guard: a task worker must NEVER open a PR with the
     // mission integration branch as its HEAD. Only the mission PR owner may do that.
@@ -1222,7 +1253,9 @@ export async function POST(req: NextRequest) {
       accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prData.number}`,
       sideEffect: { prNumber: prData.number, head },
     });
-    // Update worker with PR info and diff stats from GitHub's response
+    // Update worker with PR info and diff stats from GitHub's response. A
+    // second PR from the same worker gets its own owner row; the first keeps this one.
+    const createdRecordId = await workerIdForNewPr(worker, { number: prData.number, url: prData.html_url, head });
     await db
       .update(workers)
       .set({
@@ -1242,9 +1275,9 @@ export async function POST(req: NextRequest) {
           : {}),
         updatedAt: new Date(),
       })
-      .where(eq(workers.id, workerId));
+      .where(eq(workers.id, createdRecordId));
 
-    // Rule K2-19 — the late signal. "This task opened a PR, so it changed code"
+    // mission-legibility R-31 — the late signal. "This task opened a PR, so it changed code"
     // is a fact LEARNED LATE, not a presentation concern, so it goes in the
     // column where every consumer sees it (usage stats, exports, the model
     // router on a retry) rather than into a render-time derivation only the UI
@@ -1357,6 +1390,7 @@ export async function POST(req: NextRequest) {
       await requestIntegrationBranchReview({
         workspace: { id: workspace.id, gitConfig: workspace.gitConfig },
         teamId: account.teamId,
+        principal: kernelPrincipalOf({ account }),
         task: {
           id: worker.task.id,
           title: worker.task.title,
@@ -1992,6 +2026,7 @@ export async function PUT(req: NextRequest) {
           eventHeadSha: null,
           door: 'merge_pr',
           actor: landingActor,
+          principal: kernelPrincipalOf({ person: landingActor.kind === 'human' ? landingActor.userId : null, account }),
           mode: landingMode,
           policy,
           owner: { taskId: worker.taskId ?? null, workerId: worker.id ?? null },
@@ -2003,7 +2038,7 @@ export async function PUT(req: NextRequest) {
         if (landingMode === 'enforce') {
           // A kernel-owned PR's merge is recorded by the kernel's post-merge effects.
           if (outcome.kind === 'merged' && !kernelOwned) {
-            await recordPrFact({ workerId: worker.id }, { kind: 'merged', mergedAt: new Date() });
+            await recordPrFact({ workerId: worker.id }, { kind: 'merged', mergedAt: new Date() }, { scope: factFunnelScope });
           }
           return mergePrLandingResponse(outcome, { prNumber, prUrl: worker.prUrl ?? null, tier: policy.tier });
         }
@@ -2197,6 +2232,34 @@ export async function PUT(req: NextRequest) {
       }
     }
 
+    // D5 (workflow-kernel-library.md §4, §13.13 rule 6): `force` bypasses the merge policy
+    // (tier, rails), never the review verdict. Only a person's recorded override (the
+    // dashboard's "Merge anyway") passes a verdict; a kernel PR's gate is the kernel's.
+    if (force && !kernelOwned) {
+      const forcedGate = await guardReviewVerdict({
+        workspaceId: workspace.id,
+        prNumber,
+        headSha,
+        surface: 'PUT /api/github/pr force',
+        taskId: worker.taskId ?? null,
+        workerId: worker.id ?? null,
+        callerOrigin: 'api',
+        carryForward: policyPr?.base?.ref
+          ? { installationId: repo.installation.installationId, repoFullName: repo.fullName, baseRef: policyPr.base.ref }
+          : null,
+      });
+      if (forcedGate.blocks) {
+        recordMergeGate('rejected', forcedGate.reason ?? 'review verdict blocks this merge', {
+          force: true, reviewState: forcedGate.state ?? null, reviewKind: forcedGate.kind ?? null, reviewTaskId: forcedGate.reviewTaskId ?? null,
+        }, GATE_SLUGS.REVIEW_VERDICT);
+        return NextResponse.json({
+          error: `merge refused: ${forcedGate.reason}`,
+          reviewState: forcedGate.state ?? null,
+          hint: `\`force\` skips the merge policy, not the review verdict. ${forcedGate.clearedBy ?? ''} A person can merge past it from the dashboard ("Merge anyway"), which records the override.`.trim(),
+        }, { status: 403 });
+      }
+    }
+
     // ── Mission-PR branch-lifecycle gate (P3) ───────────────────────────────
     // Applies even under `force`: this guards data integrity (deleting the
     // integration branch out from under sibling PRs still targeting it), not
@@ -2247,6 +2310,8 @@ export async function PUT(req: NextRequest) {
       }, { status: 409 });
     }
 
+    // A kernel-owned PR's merge is a landing command, applied where the kernel is hosted
+    // (workflow-kernel-library.md §3). Unreachable control plane = 503, nothing merged.
     const slotted = await mergeInSurfaceSlot(surfaceOrder, async () => {
       const kernel = kernelOwned
         ? await landThroughKernel({
@@ -2256,6 +2321,9 @@ export async function PUT(req: NextRequest) {
             mergeMethod: effectiveMergeMethod,
             ...(kernelOverride ? { override: kernelOverride } : {}),
             ...(expectedVersion !== undefined ? { expectedVersion } : {}),
+          }, {
+            principal: kernelPrincipalOf({ person: landingActor.kind === 'human' ? landingActor.userId : null, account }),
+            idempotencyKey: idempotencyKeyOf(req),
           })
         : null;
       return kernel ? { kernel } : { legacy: await mergePullRequest(
@@ -2265,7 +2333,8 @@ export async function PUT(req: NextRequest) {
         effectiveMergeMethod,
         headSha,
       ) };
-    });
+    }).catch((err: unknown) => (isDoorError(err) ? err : Promise.reject(err)));
+    if (isDoorError(slotted)) return doorErrorResponse(slotted) as NextResponse;
     if ('refused' in slotted) {
       return NextResponse.json({
         error: `merge deferred: ${slotted.refused}`,
@@ -2290,8 +2359,8 @@ export async function PUT(req: NextRequest) {
 
     if (result.merged) {
       // Through the fact funnel (terminal wins); Slice C moves this door to T16.
-      await recordPrFact({ workerId: worker.id }, { kind: 'merged', mergedAt: new Date() });
-      await finalizeMissionPrMerge(mergingTask, repo.installation.installationId, repo.fullName);
+      await recordPrFact({ workerId: worker.id }, { kind: 'merged', mergedAt: new Date() }, { scope: factFunnelScope });
+      await finalizeMissionPrMerge(mergingTask, repo.installation.installationId, repo.fullName, prNumber);
       // The merge made a live reviewer and any open fix obsolete. The
       // pull_request.closed webhook fires the same event; the CAS keeps it to
       // one cancellation per task whichever door gets there first.
@@ -2324,7 +2393,7 @@ export async function PUT(req: NextRequest) {
           // Merged externally during the race window — stamp DB if not yet set and
           // return idempotent success so the caller can distinguish this from a real failure.
           if (!worker.mergedAt) {
-            await recordPrFact({ workerId: worker.id }, { kind: 'merged', mergedAt: new Date() });
+            await recordPrFact({ workerId: worker.id }, { kind: 'merged', mergedAt: new Date() }, { scope: factFunnelScope });
           }
           return NextResponse.json({
             ok: true,
@@ -2601,7 +2670,8 @@ export async function GET(req: NextRequest) {
     // kernel-owned PR the record is the delivery (Slice F, §13.10), never the
     // worker columns; a legacy PR keeps the fact cache.
     const kernelView = worker.taskId
-      ? (await getDeliveryViewsForTasks([worker.taskId])).get(worker.taskId)
+      // Findings too: get_pr prints the open-finding count (§7).
+      ? (await getDeliveryViewsForTasks([worker.taskId], undefined, undefined, { withFindings: true })).get(worker.taskId)
       : undefined;
     const record = prRecord({
       delivery: kernelView && kernelView.prNumber === prNumber ? kernelView : null,
@@ -2671,6 +2741,10 @@ export async function GET(req: NextRequest) {
       },
       checks: ciSummary,
       reviews: reviewSummary,
+      // §7 (workflow-kernel-library.md): a kernel-owned PR's standing, review
+      // rounds and repairs, from its delivery. GitHub's review counts above
+      // stay for a PR with no delivery.
+      ...(kernelView && kernelView.prNumber === prNumber ? { delivery: prDeliveryReport(kernelView) } : {}),
       ...(comments ? { comments } : {}),
       ...(ciFailures ? { ciFailures } : {}),
       ...(attempts.length > 0 ? { attempts } : {}),

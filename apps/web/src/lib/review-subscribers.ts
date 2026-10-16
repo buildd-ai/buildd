@@ -229,6 +229,6 @@ export const reviewSubscribers: readonly AnySubscriber[] = [
   subscriber('reviews', 'sweep.pr_hourly', 'superseded-refresh-sweep', async () => {
     const { sweepSupersededRefreshPrs } = await import('@/lib/pr-supersession-refresh');
     const r = await sweepSupersededRefreshPrs();
-    console.log(`[SupersededRefreshPrs] candidates=${r.candidates} retired=${r.retired} kept=${r.kept} skipped=${r.skipped}`);
+    console.log(`[SupersededRefreshPrs] candidates=${r.candidates} retired=${r.retired} kept=${r.kept} skipped=${r.skipped} deferred=${r.deferred}`);
   }),
 ];

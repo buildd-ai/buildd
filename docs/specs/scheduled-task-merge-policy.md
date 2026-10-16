@@ -2,7 +2,7 @@
 title: Scheduled-task merge policy override
 status: draft
 owner: max
-last_verified: 2026-09-19
+last_verified: 2026-10-15
 summary: A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
 domain: tasks
 surfaces: [apps/web/src/lib/merge-policy.ts, apps/web/src/app/api/cron/schedules/route.ts, apps/web/src/lib/workspace-policy.ts, packages/shared/src/types.ts]
@@ -31,73 +31,38 @@ assertions:
 
 # Scheduled-task merge policy override
 
-> **Status: `draft` — nothing in this spec is implemented.** It was carried as
-> `active` while none of AC-1…AC-6 held, which is the one thing a spec may not
-> be: `active` asserts what the system does today. Re-verified 2026-09-19
-> against `dev` (originally verified 2026-09-04, re-verified 2026-09-15 and
-> 2026-09-18 — nothing below has changed since the 2026-09-04 pass, only the
-> cron insert's line number drifted, which the 2026-09-18 pass already fixed):
+> **Status: `draft`. Nothing in this spec is implemented.** Re-verified
+> 2026-10-15 against `dev`:
 >
-> - There is still no `tasks.merge_policy` column. `merge_policy` appears once
->   in `packages/core/db/schema.ts:807`, on `missions`.
-> - `resolvePolicy` (`apps/web/src/lib/merge-policy.ts:124`) still has no
->   task-policy step, and its signature still cannot accept one — its `task`
->   parameter carries only `requiresReview`.
-> - The schedule cron still does not propagate the template's merge policy —
->   zero occurrences in `apps/web/src/app/api/cron/schedules/route.ts` (the task
->   insert has drifted from line 634 to 728 to 754; `TaskScheduleTemplate`
->   (`packages/shared/src/types.ts:743`) still has no `mergePolicy` field).
-> - `parseMergePolicy` is still wired only into
->   `apps/web/src/app/api/missions/route.ts` and
->   `apps/web/src/app/api/workspaces/[id]/config/route.ts`.
+> - There is no `tasks.merge_policy` column. The only `merge_policy` column in
+>   `packages/core/db/schema.ts` is on `missions` (`missions.mergePolicy`).
+> - `resolvePolicy` in `apps/web/src/lib/merge-policy.ts` has no task-policy
+>   step. Its `task` parameter carries only `requiresReview`.
+> - The schedule cron (`runCronJob` in
+>   `apps/web/src/app/api/cron/schedules/route.ts`) does not copy a merge policy
+>   into the task it inserts, and `TaskScheduleTemplate` in
+>   `packages/shared/src/types.ts` has no `mergePolicy` field.
+> - `parseMergePolicy` is wired only into `apps/web/src/app/api/missions/route.ts`
+>   and `apps/web/src/app/api/workspaces/[id]/config/route.ts`.
 >
-> The design is still wanted; `draft` is the honest home for it, and per
-> `SPEC-FORMAT.md` a draft is where naming not-yet-existing symbols is correct.
+> The design is still wanted, so it stays a draft. Promote it to `active` in the
+> PR that builds it, with `verified_by` filled in.
 >
-> **Note on the two passing assertions** (`resolve-merge-policy`,
-> `merge-policy-precedence-tests`): both are structural checks — that
-> `resolvePolicy` is exported from `merge-policy.ts`, and that
-> `merge-policy.test.ts` exists — not checks of this spec's capability. Both
-> symbols have existed since `resolvePolicy`'s introduction in #1162
-> (2026-07-12), long before this spec's own `mergePolicy`-on-`task` step was
-> proposed, so their passing predates and is independent of this draft. A
-> conformance run that reports them as "code ahead of doc" is a false
-> positive: there is no code ahead here for this spec to catch up to.
+> **The two passing assertions** (`resolve-merge-policy`,
+> `merge-policy-precedence-tests`) only check that `resolvePolicy` is exported
+> and that `merge-policy.test.ts` exists. Both predate this spec, so they say
+> nothing about its capability. `classifyAssertion`
+> (`packages/core/spec-discrepancy-ledger.ts`) cannot read a status paragraph,
+> so both carry `skip_until` with a `skip_reason` (the escape hatch in
+> `spec-conformance.md` §6). That stops the conformance ledger from filing the
+> same reconciliation task again; it does not close the ledger rows.
 >
-> **Why this is now a `skip_until` suppression, not just prose:** the last two
-> reconciliation passes (PR #2435, PR #2474) explained this false positive in
-> prose only. `classifyAssertion` (`packages/core/spec-discrepancy-ledger.ts`)
-> reads structural outcome and declared status alone — it has no way to see a
-> status-callout paragraph — so both assertions kept classifying `code_ahead`
-> against this doc's non-terminal status after every prose-only fix, and the
-> ledger re-dispatched this exact reconciliation task each time the checker
-> next ran (PR #2474 fixed the prose on 2026-09-18; the ledger re-checked at
-> 2026-09-19T00:43 UTC, found the same `code_ahead` pair, and re-dispatched
-> the task this PR is fixing). Both assertions now carry `skip_until:
-> "2026-12-15"` with `skip_reason` per §6 of `spec-conformance.md` — the
-> documented escape hatch for an assertion that legitimately passes but
-> doesn't certify the doc's capability. That stops the repeat dispatch; it
-> does not resolve the ledger rows, which stay open until the checker itself
-> reconciles them per §9.
->
-> **The open question this spec was blocked on has since been resolved —
-> implementation is unblocked, but still not started.**
-> `docs/design/mission-delivery-arc.md` is now `status: implemented`: Option A′
-> (mission integration branches) shipped, answering *where the merge-policy
-> tier applies* for mission-scoped delivery. That resolution does not implement
-> this spec's capability — Option A′ is keyed on `missions.workingBranch` /
-> `integrationBranchEnabled`, not on schedules or `tasks`, so a scheduled task
-> outside a mission gets nothing from it. But it does change the shape this
-> spec must fit into: Option A′ already occupies precedence-chain position 2
-> (see "Precedence chain" below), so `task.mergePolicy` can no longer slot in
-> at position 2 as originally written — it would need to sit above Option A′,
-> not replace it.
->
-> `docs/design/mission-delivery-arc.md` §B8 still asks the open question
-> directly: implement `tasks.mergePolicy` per this spec, or retire the spec to
-> `superseded`. Neither has happened as of this reconciliation pass — that
-> decision is left to a human rather than made unilaterally here. Promote this
-> back to `active` in the PR that implements it, with `verified_by` populated.
+> **Where this fits now.** Mission integration branches (Option A′ in
+> `docs/design/mission-delivery-arc.md`) shipped and took position 2 of the
+> precedence chain. They are keyed on the mission, not on schedules or tasks, so
+> a scheduled task outside a mission gets nothing from them. `task.mergePolicy`
+> would have to sit above Option A′ (see "Precedence chain" below). Whether to
+> build `tasks.mergePolicy` or retire this spec is still a person's call.
 
 **Capability statement**: A task schedule MUST be able to declare its own
 `MergePolicy` that overrides the workspace/mission default for every task it
@@ -152,7 +117,8 @@ table, between `requiresReview` and `scheduleId`:
 mergePolicy: jsonb('merge_policy').$type<MergePolicy | null>(),
 ```
 
-Migration: `packages/core/drizzle/0NNN_add_task_merge_policy.sql`
+Migration: a new drizzle folder, `packages/core/drizzle/<timestamp>_add_task_merge_policy/migration.sql`
+(generated with `bun db:generate`, never hand-written)
 ```sql
 ALTER TABLE tasks ADD COLUMN merge_policy jsonb;
 ```
@@ -161,8 +127,8 @@ No default, no NOT NULL — existing tasks are unaffected.
 
 ### Task creation from schedule
 
-`apps/web/src/app/api/cron/schedules/route.ts:754` — the `db.insert(tasks)`
-call MUST propagate `template.mergePolicy` when present:
+In `runCronJob` (`apps/web/src/app/api/cron/schedules/route.ts`), the
+`db.insert(tasks)` that creates the task from the template MUST propagate `template.mergePolicy` when present:
 
 ```ts
 ...(template.mergePolicy ? { mergePolicy: template.mergePolicy } : {}),
@@ -180,7 +146,8 @@ callout above). It no longer matches the chain `resolvePolicy()` actually runs
 today, because Option A′ (`docs/design/mission-delivery-arc.md`) shipped after
 this spec was drafted and took the position-2 slot this spec wanted:
 
-**Shipped, as of 2026-09-15** (`apps/web/src/lib/merge-policy.ts:124-149`):
+**Shipped today** (`resolvePolicy` and `resolveChainBelowIntegrationBranch` in
+`apps/web/src/lib/merge-policy.ts`):
 
 ```
 1. task.requiresReview = true                        →  { tier: 'human' }
@@ -228,7 +195,7 @@ change needed.
 ## Risk-class interaction
 
 `applyPolicyConfigToMergePolicy()` in
-`apps/web/src/lib/workspace-policy.ts:452` is called **after** `resolvePolicy()`
+`apps/web/src/lib/workspace-policy.ts` is called **after** `resolvePolicy()`
 at every webhook merge entry point. It can only **upgrade** the tier
 (auto-threshold → agent-review → human), never downgrade it.
 
@@ -275,7 +242,7 @@ offending field.
 
 ## Migration: CHANGELOG schedule
 
-The "Auto Changelog" schedule (ID `79aa99bf-f490-49df-b7ca-83dfa82ac933`) is the
+The "Auto Changelog" schedule is the
 first consumer. Its `taskTemplate` MUST be updated to:
 
 ```json
@@ -331,11 +298,11 @@ The schedule update is applied via `manage_workspaces`-equivalent API or direct
 
 | Symbol | File | Purpose |
 |---|---|---|
-| `TaskScheduleTemplate` | `packages/shared/src/types.ts:743` | Add `mergePolicy?: MergePolicy` |
-| `tasks.mergePolicy` | `packages/core/db/schema.ts` | New nullable JSONB column — does not exist yet; `missions.mergePolicy` (`schema.ts:807`) is the nearest existing analog |
-| `resolvePolicy()` | `apps/web/src/lib/merge-policy.ts:124` | New step above Option A′ in precedence chain (not position 2 — that slot is now Option A′; see "Precedence chain" above) |
-| Schedule cron task insert | `apps/web/src/app/api/cron/schedules/route.ts:754` | Propagate `template.mergePolicy` |
-| `applyPolicyConfigToMergePolicy()` | `apps/web/src/lib/workspace-policy.ts:452` | Unchanged — still fires post-resolvePolicy; only upgrades tier |
+| `TaskScheduleTemplate` | `packages/shared/src/types.ts` | Add `mergePolicy?: MergePolicy` |
+| `tasks.mergePolicy` | `packages/core/db/schema.ts` | New nullable JSONB column, does not exist yet; `missions.mergePolicy` is the nearest existing analog |
+| `resolvePolicy()` | `apps/web/src/lib/merge-policy.ts` | New step above Option A′ in precedence chain (not position 2, that slot is now Option A′; see "Precedence chain" above) |
+| Schedule cron task insert (`runCronJob`) | `apps/web/src/app/api/cron/schedules/route.ts` | Propagate `template.mergePolicy` |
+| `applyPolicyConfigToMergePolicy()` | `apps/web/src/lib/workspace-policy.ts` | Unchanged, still fires post-resolvePolicy; only upgrades tier |
 | Schedule save validation | `apps/web/src/app/api/workspaces/[id]/schedules/route.ts` | **DRIFT (found 2026-08-29): not implemented.** The route it named did not exist; schedule CRUD lives at the path shown, and it does not call `parseMergePolicy()` on `taskTemplate.mergePolicy`. An invalid policy on a schedule template is therefore accepted on write and only rejected (or silently ignored) at task-creation time. `parseMergePolicy()` is wired into `apps/web/src/app/api/missions/route.ts` and `apps/web/src/app/api/workspaces/[id]/config/route.ts` only. |
 
 ---

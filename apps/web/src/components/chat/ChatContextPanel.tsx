@@ -89,7 +89,7 @@ export default function ChatContextPanel({ audience, needsYou, missions, mission
       {audience === 'admin' && fleetBlock}
       {model.needsYou && (
         <section className="min-w-0">
-          <Label right={<span className="shrink-0">{needsYou.length}</span>}>Needs you</Label>
+          <Label right={<span className="shrink-0">{needsYou.length}</span>}>Waiting on you</Label>
           <ul className={LIST}>
             {needsYou.map(n => (
               <li key={n.id} className="min-w-0">

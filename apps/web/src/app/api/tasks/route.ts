@@ -14,6 +14,7 @@ import { assertMemberRepoAccess, memberRepoAccessSubject, resolveMemberRepoAcces
 import { stampLandingOverrideGrant } from '@/lib/landing-override-grant';
 import { requestingPerson } from '@/lib/request-person';
 import { withoutReviewDispatchContext } from '@/lib/verdict-provenance';
+import { specRepairStamp, withoutMissionVerificationMarkers } from '@/lib/server-context-markers';
 import { resolveCreatorContext } from '@/lib/task-service';
 import { validateRequiredConnectors } from '@/lib/required-connectors';
 import { authenticateTaskScopedCaller, isDelegatedReach, taskScopeAllowsDelegated, taskScopeAllowsMission, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
@@ -316,6 +317,9 @@ export async function GET(req: NextRequest) {
             outputRequirement: true,
             missionId: true,
             dependsOn: true,
+            roleSlug: true,
+            // `buildd top` tells which provider's limit holds a waiting task.
+            backend: true,
             createdAt: true,
             updatedAt: true,
           },
@@ -327,9 +331,20 @@ export async function GET(req: NextRequest) {
                 repo: true,
               },
             },
+            // `buildd top` groups a runner's work by mission and names why a
+            // task waits (a held mission, one a person runs from their session).
+            mission: {
+              columns: {
+                id: true,
+                title: true,
+                isHeld: true,
+                executor: true,
+              },
+            },
           },
         })
       : [];
+    const listedTasks = await withTaskListAggregates(allTasks, workspaceIds, terminalStatuses);
 
     // Stale-while-revalidate: refresh stale PR state for workers in these
     // workspaces after the response is sent, pushing updates via WORKER_PROGRESS.
@@ -346,7 +361,7 @@ export async function GET(req: NextRequest) {
     }
 
     return jsonResponse({
-      tasks: allTasks,
+      tasks: listedTasks,
       budgetWindows: apiAccount ? {
         claude: {
           resetAt: apiAccount.budgetResetsAt?.toISOString?.() ?? apiAccount.budgetResetsAt ?? null,
@@ -367,6 +382,58 @@ export async function GET(req: NextRequest) {
     const detail = error instanceof Error ? error.message : String(error);
     console.error('Get tasks error:', error);
     return NextResponse.json({ error: 'Failed to get tasks', detail }, { status: 500 });
+  }
+}
+
+/**
+ * Two counts the full list's rows cannot give `buildd top`, which sees only
+ * this list (active tasks plus a day of finished ones, capped):
+ *   - mission.taskCounts { done, total } over EVERY task of each listed
+ *     mission in the caller's workspaces, not just the listed ones;
+ *   - prMergedAt on a finished task whose PR has merged.
+ * Best effort: a failed aggregate leaves the list as it was.
+ */
+async function withTaskListAggregates<T extends { id: string; status: string; missionId: string | null; mission?: unknown }>(
+  rows: T[],
+  workspaceIds: string[],
+  terminalStatuses: readonly string[],
+): Promise<Array<T & { prMergedAt?: unknown }>> {
+  const missionIds = [...new Set(rows.map(t => t.missionId).filter((id): id is string => !!id))];
+  const finishedIds = rows.filter(t => terminalStatuses.includes(t.status)).map(t => t.id);
+  if (missionIds.length === 0 && finishedIds.length === 0) return rows;
+  try {
+    const [counts, merged] = await Promise.all([
+      missionIds.length > 0
+        ? db.select({
+            missionId: tasks.missionId,
+            done: sql<number>`count(*) filter (where ${tasks.status} = 'completed')::int`,
+            total: sql<number>`count(*) filter (where ${tasks.status} != 'cancelled')::int`,
+          })
+            .from(tasks)
+            .where(and(inArray(tasks.missionId, missionIds), inArray(tasks.workspaceId, workspaceIds)))
+            .groupBy(tasks.missionId)
+        : Promise.resolve([] as Array<{ missionId: string | null; done: number; total: number }>),
+      finishedIds.length > 0
+        ? db.select({ taskId: workers.taskId, mergedAt: sql<string>`max(${workers.mergedAt})` })
+            .from(workers)
+            .where(and(inArray(workers.taskId, finishedIds), isNotNull(workers.mergedAt)))
+            .groupBy(workers.taskId)
+        : Promise.resolve([] as Array<{ taskId: string | null; mergedAt: string }>),
+    ]);
+    const countBy = new Map(counts.map(c => [c.missionId, { done: Number(c.done) || 0, total: Number(c.total) || 0 }]));
+    const mergedBy = new Map(merged.map(m => [m.taskId, m.mergedAt]));
+    return rows.map(t => {
+      const taskCounts = t.missionId ? countBy.get(t.missionId) : undefined;
+      const mergedAt = mergedBy.get(t.id);
+      return {
+        ...t,
+        ...(taskCounts && t.mission && typeof t.mission === 'object' ? { mission: { ...t.mission, taskCounts } } : {}),
+        ...(mergedAt ? { prMergedAt: mergedAt } : {}),
+      };
+    });
+  } catch (err) {
+    console.error('[tasks] list aggregates failed:', err);
+    return rows;
   }
 }
 
@@ -493,7 +560,11 @@ export async function POST(req: NextRequest) {
     // The keys that make a task a dispatched review are the review system's to write (verdict-provenance.ts).
     // context.prReach is the server's to write (lib/pr-reach-grant.ts): a caller's value is dropped
     // here and the link this filing earns is stamped just before the insert.
-    let incomingContext = withoutPrReachGrant(withoutReviewDispatchContext(stampedGrant.context)) as typeof rawIncomingContext;
+    // context.finalVerification and context.specRepair are the server's to write
+    // (lib/server-context-markers.ts): a caller's copy is dropped here, and a repair
+    // filed by the mission's own final verification is stamped below.
+    const requestedSpecRepair = (rawIncomingContext as Record<string, unknown> | null | undefined)?.specRepair;
+    let incomingContext = withoutMissionVerificationMarkers(withoutPrReachGrant(withoutReviewDispatchContext(stampedGrant.context))) as typeof rawIncomingContext;
 
     // Spec-to-build opt-in — see docs/design/spec-to-build-pattern.md Proposal §1.
     // Never opens `mode` itself as a public parameter (that would let any task,
@@ -947,6 +1018,15 @@ export async function POST(req: NextRequest) {
         return null;
       });
     const prReachCtx = prReach ? { prReach } : {};
+    let specRepairCtx: { specRepair?: NonNullable<ReturnType<typeof specRepairStamp>> } = {};
+    if (prReachFiler.kind === 'task' && missionId) {
+      const filerTask = await db.query.tasks.findFirst({
+        where: sqlWhere(eq(tasks.id, prReachFiler.taskId)),
+        columns: { missionId: true, context: true },
+      });
+      const stamp = specRepairStamp({ requested: requestedSpecRepair, missionId, filerTaskId: prReachFiler.taskId, filerTask: filerTask ?? null });
+      if (stamp) specRepairCtx = { specRepair: stamp };
+    }
 
     // Decomposition re-check gate. `runMission()` detects pre-filed sibling
     // tasks exactly ONCE, when the mission's planning task is created — but
@@ -1629,6 +1709,7 @@ export async function POST(req: NextRequest) {
           // A reservation is the server's to write, from the authenticated account.
           [TASK_RESERVATION_KEY]: reserveVerified ? buildReservation(apiAccount!.id) : undefined,
           ...prReachCtx,
+          ...specRepairCtx,
           ...(processedAttachments.length > 0 ? { attachments: processedAttachments } : {}),
           ...(skillSlugs.length > 0 ? { skillSlugs } : {}),
           ...(resolvedSkillRefs.length > 0 ? { skillRefs: resolvedSkillRefs } : {}),
@@ -1689,6 +1770,7 @@ export async function POST(req: NextRequest) {
           context: {
             ...(typeof incomingContext === 'object' && incomingContext !== null && !Array.isArray(incomingContext) ? incomingContext : {}),
             ...prReachCtx,
+            ...specRepairCtx,
             ...(processedAttachments.length > 0 ? { attachments: processedAttachments } : {}),
             ...(skillSlugs.length > 0 ? { skillSlugs } : {}),
             ...(resolvedSkillRefs.length > 0 ? { skillRefs: resolvedSkillRefs } : {}),

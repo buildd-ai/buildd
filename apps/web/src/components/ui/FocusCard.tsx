@@ -42,7 +42,7 @@ export interface FocusCardProps {
   repairs?: number;
   /** What happens next, in a sentence. */
   next?: ReactNode;
-  /** The SEL-2 reason line (`reasonLine` in task-strip.ts): "After 03 …" / "Unblocks 05, 06". */
+  /** The strip R-12 reason line (`reasonLine` in task-strip.ts): "After 03 …" / "Unblocks 05, 06". */
   reason?: { lead: string; text: string } | null;
   estimate?: TimeEstimate | null;
   /** What it needs from a person. Omitted → the row is left out. */
@@ -85,7 +85,7 @@ export default function FocusCard({ meta, title, state, repairs, next, reason, e
           </>
         )}
         <TimeRow estimate={estimate} state={state} />
-        {needs != null && <><dt className="text-text-muted">Needs you</dt><dd>{needs}</dd></>}
+        {needs != null && <><dt className="text-text-muted">Waiting on you</dt><dd>{needs}</dd></>}
       </dl>
       {note && (
         <p className="flex gap-2 text-body leading-normal text-text-muted">

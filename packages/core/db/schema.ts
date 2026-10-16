@@ -134,6 +134,12 @@ export const teams = pgTable('teams', {
   // NULL = Jev on OpenRouter. Otherwise any chat model, via OpenRouter or the
   // team's LiteLLM gateway, with confidence from token logprobs.
   decisionModel: jsonb('decision_model').$type<import('../decision-model').DecisionModelConfig | null>(),
+  // Opt-in: buildd may switch a decision's model (decision_model.byKind) when
+  // another model measurably wins on this team's own replayed decisions
+  // (apps/web/src/lib/decision-model-optimizer/). Replaying sends the team's
+  // decision inputs to the candidate providers, so it is off until the team
+  // opts in; a team that has not opted in is never replayed.
+  decisionModelOptimizer: boolean('decision_model_optimizer').notNull().default(false),
   // DEPRECATED — nothing reads or writes this. It was the admin kill switch for
   // chat; chat is now always on and runs whenever a key resolves. Drop in a
   // follow-up release, after the build that stopped reading it is live
@@ -367,6 +373,20 @@ export const accountWorkspaces = pgTable('account_workspaces', {
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
   canClaim: boolean('can_claim').default(true).notNull(),
   canCreate: boolean('can_create').default(false).notNull(),
+  // The person who picked this workspace for the key on the runner consent
+  // page (lib/runner-picks.ts). NULL = a link an admin made, or one written
+  // before picks existed; those behave as they always have. A non-NULL row is
+  // re-checked on every claim against the person's current membership and
+  // role in the workspace's team and the workspace's access mode.
+  grantedByUserId: uuid('granted_by_user_id').references(() => users.id, { onDelete: 'cascade' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  // A team admin took this pick off the workspace (Settings > Connected apps).
+  // The row stays as a tombstone so the key's owner cannot put it back through
+  // Edit; a removed pick reaches nothing (lib/granted-links.ts). `removed_at`
+  // is the marker: who removed it is kept for display and goes NULL if that
+  // admin's user row is deleted, which never brings the pick back.
+  removedByUserId: uuid('removed_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  removedAt: timestamp('removed_at', { withTimezone: true }),
 }, (t) => ({
   pk: primaryKey({ columns: [t.accountId, t.workspaceId] }),
 }));
@@ -747,6 +767,13 @@ export interface WorkspaceGitConfig {
   // that even the schema-validated carve-out contains no content-bearing field names.
   // TODO: migrate to a first-class workspaces.data_class column (task cb34697b).
   dataClass?: 'standard' | 'sensitive';
+
+  // Living Specs (docs/specs/living-specs.md). `approverUserIds`: members who
+  // may approve besides owners and admins (§6). `nativeSource`: opt in to native
+  // spec homes (§18, D-13, R-12): a native spec is the source and its approved
+  // revision is generated to docs/specs/<slug>.md by a mechanical PR. Absent /
+  // false = off, and nothing of §18 runs.
+  livingSpecs?: { approverUserIds?: string[]; nativeSource?: boolean };
 
   // Spec conformance (docs/design/spec-conformance.md §14): where THIS
   // workspace's checkable specs live. Absent ⇒ buildd's own layout
@@ -1366,6 +1393,10 @@ export const missions = pgTable('missions', {
   // null = no criteria (completion driven by task progress alone).
   // Max 20 criteria; empty array treated as null (no gate).
   goalCriteria: jsonb('goal_criteria').$type<import('@buildd/shared').GoalCriterion[] | null>(),
+  // The mission contract's version (docs/specs/workflow-kernel-library.md §6
+  // "Scope amendments"): 1 as filed, +1 per applied amendment
+  // (workflow_scope_amendments). Each delivery epoch records the version it carried.
+  scopeVersion: integer('scope_version').default(1).notNull(),
   // Last evaluation result, persisted by evaluateGoalCriteria callers.
   goalCriteriaState: jsonb('goal_criteria_state').$type<import('@buildd/shared').GoalCriteriaState | null>(),
   // When false, organizer never auto-evaluates criteria; on-demand still works.
@@ -2011,8 +2042,8 @@ export const workers = pgTable('workers', {
   // account-owned (NULL) one.
   claimedByUserId: uuid('claimed_by_user_id'),
   // Set at claim when a cloud container claimed this worker (executor 'cloud' or a
-  // task-token claim). There the task token is the runner's own credential, so its
-  // verification evidence counts as the runner's (lib/verification-provenance.ts).
+  // task-token claim). Read by the seat-wall attribution; verification evidence on a
+  // task token counts as the agent's either way (lib/verification-provenance.ts).
   claimedByCloud: boolean('claimed_by_cloud').default(false).notNull(),
   name: text('name').notNull(),
   runner: text('runner').notNull(),
@@ -2775,6 +2806,117 @@ export const SPEC_STATUSES = ['draft', 'in_review', 'approved', 'superseded', 'r
 export type SpecScope = (typeof SPEC_SCOPES)[number];
 export type SpecStatus = (typeof SPEC_STATUSES)[number];
 
+/** A spec's metadata block (living-specs.md §18, R-14). `domain` is derived from the filed area, never stored. */
+export interface SpecMetadataBlock {
+  owner?: string;
+  /** The repo copy's `summary`, from an imported file's frontmatter. */
+  summary?: string;
+  last_verified?: string;
+  surfaces?: string[];
+  verified_by?: string[];
+  assertions?: Array<Record<string, string | number | boolean>>;
+  /**
+   * An area's own: the `domain:` values it covers (e.g. `[tasks, missions]`).
+   * Import files a repo spec by them, and a member's repo copy writes the
+   * first as its `domain:`; with none, the area title's slug stands in.
+   */
+  domains?: string[];
+  /** The repo file a spec that already existed in buildd was matched to on import (attachProvenance). */
+  repo_provenance?: { path: string; commitSha: string; blobSha: string | null; prNumber: number | null };
+  /**
+   * Living Specs R-66: a person's publication mark. `private` never leaves
+   * buildd, `public` is published once the production-data scan clears it.
+   * Absent: follow the workspace's publication policy. On an area, every member
+   * without a mark of its own inherits it.
+   */
+  publication?: 'private' | 'public';
+  /**
+   * Set by import: criterion ids the imported body defines that the parser
+   * does not read (AC-3a, AC-AQR-1, INV-2), and ids it defines more than once.
+   * Cleared by a re-import that finds none.
+   */
+  criteria_unread?: { unreadable: Array<{ id: string; line: number }>; duplicates: Array<{ id: string; lines: number[] }> };
+}
+
+/**
+ * How the publication decision (R-67, `buildd.spec_publication`) went for one
+ * approved revision. `source`: a fixed rule, the model, or the fallback (no
+ * model, below the bar). `reason` is the one sentence the spec page shows
+ * (R-68); `line` the policy line relied on, quoted.
+ */
+export interface SpecPublicationDecision {
+  publish: boolean;
+  source: 'rule' | 'model' | 'fallback' | 'person';
+  reasonCode: string;
+  reason: string;
+  line?: string;
+  policyVersion: string | null;
+  confidence?: number | null;
+  model?: string | null;
+  decisionRecordId?: string | null;
+  revision: number;
+  decidedAt: string;
+}
+
+/**
+ * Where a native spec's generated repo copy stands (R-15, R-35, AC-79).
+ * `open`: the PR is waiting on CI. `merged`: it landed. `behind`: a check went
+ * red (`failingCheck`), the PR stays open. `refused`: its head commit is not the
+ * generator's, so it does not land under the exception. `unfiled`: no area, so
+ * nothing is generated (R-32). `failed`: the PR could not be written (`error`).
+ */
+export interface SpecRepoCopyState {
+  /** `private`: the publication decision kept this revision out of the repo (R-68); nothing was written. */
+  state: 'open' | 'merged' | 'behind' | 'refused' | 'unfiled' | 'failed' | 'private';
+  path?: string;
+  branch?: string;
+  prNumber?: number;
+  repoFullName?: string;
+  /** The commit the generator wrote: the only head that lands under the exception. */
+  headSha?: string;
+  revision?: number;
+  contentHash?: string;
+  metadataHash?: string;
+  failingCheck?: string;
+  error?: string;
+  /** The last publication decision (R-67, R-69). */
+  publication?: SpecPublicationDecision;
+  /** A person published this approved revision anyway (R-68): who, when, which revision. */
+  publishAnyway?: { by: string; at: string; revision: number };
+  /**
+   * Kept private while an earlier copy is in the repo (R-70): the PR that
+   * removes it, which only a person merges. buildd never deletes the file itself.
+   */
+  removal?: { path: string; prNumber?: number; branch?: string; error?: string; listedAt: string };
+  updatedAt: string;
+}
+
+/**
+ * Where an imported spec came from (living-specs.md §18, R-18/R-19): the repo
+ * file it was read from, at which commit and blob, and the PR that last merged
+ * a change to it. `imported`: the repo file is still the source, nothing is
+ * generated over it, and the head revision is the imported one. `confirmed`: a
+ * person confirmed the import (who, when and the note say so); buildd is the
+ * source from then on.
+ */
+export interface SpecRepoSource {
+  state: 'imported' | 'confirmed';
+  path: string;
+  commitSha: string;
+  blobSha: string;
+  prNumber: number | null;
+  /** The imported revision the head is (re-imports move it). */
+  revision: number;
+  importedAt: string;
+  confirmedBy?: string;
+  confirmedAt?: string;
+  /** "confirmed import of <path>@<short sha>". */
+  note?: string;
+}
+
+/** On a spec revision written by an import: the file it is, exactly as read. */
+export interface SpecRevisionImport { path: string; commitSha: string; blobSha: string; prNumber: number | null }
+
 export const specs = pgTable('specs', {
   id: uuid('id').primaryKey().defaultRandom(),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
@@ -2787,12 +2929,24 @@ export const specs = pgTable('specs', {
   // The newest revision (the draft head) and the approved one, by spec revision number.
   headRevision: integer('head_revision').notNull().default(1),
   approvedRevision: integer('approved_revision'),
+  // The metadata block (living-specs.md §18, R-14/R-31): mechanical fields of
+  // the generated repo copy, outside every revision. Agents and CI change it
+  // without a new revision (spec_metadata_changes records each change); the
+  // version, the approved revision and its content hash never move with it.
+  metadata: jsonb('metadata').$type<SpecMetadataBlock>(),
+  // The generated repo copy's PR (R-15/R-35), in a workspace that opted in to a
+  // native source. NULL: never generated.
+  repoCopy: jsonb('repo_copy').$type<SpecRepoCopyState>(),
+  // A spec imported from a repo file (R-18): its provenance and whether a
+  // person has confirmed it (R-19). NULL: not imported.
+  repoSource: jsonb('repo_source').$type<SpecRepoSource>(),
   createdBy: text('created_by'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   workspaceIdx: index('specs_workspace_idx').on(t.workspaceId),
   parentIdx: index('specs_parent_idx').on(t.parentSpecId),
+  repoSourcePathIdx: index('specs_repo_source_path_idx').on(t.workspaceId, sql`(${t.repoSource}->>'path')`),
 }));
 
 export const specRevisions = pgTable('spec_revisions', {
@@ -2813,6 +2967,14 @@ export const specRevisions = pgTable('spec_revisions', {
   // version: an artifact at a revision number, a URL or a design-tool file at a
   // version id. Immutable with the revision, so an approval records it too.
   design: jsonb('design').$type<{ kind: 'artifact' | 'url' | 'figma'; ref: string; version: string; screens?: Array<{ id: string; name: string }> }>(),
+  // Set on a revision an import wrote (R-18): the repo file it is, as read. An
+  // imported revision is never approved except by a person's confirmation.
+  imported: jsonb('imported').$type<SpecRevisionImport>(),
+  // The binding attachments this revision was approved with (living-specs.md
+  // §21), each at the artifact revision it had then. Written once, by the
+  // approving statement, next to approved_at; reference attachments are never
+  // in it. NULL: not approved, or approved before attachments existed.
+  approvedAttachments: jsonb('approved_attachments').$type<SpecApprovedAttachment[]>(),
   // Set once by a person's approval (G2); never for an agent.
   approvedBy: text('approved_by'),
   approvedAt: timestamp('approved_at', { withTimezone: true }),
@@ -2842,6 +3004,64 @@ export const specNeighbors = pgTable('spec_neighbors', {
 }, (t) => ({
   uniquePair: uniqueIndex('spec_neighbors_pair_kind_idx').on(t.specId, t.neighborSpecId, t.kind),
   neighborIdx: index('spec_neighbors_neighbor_idx').on(t.neighborSpecId),
+}));
+
+/**
+ * Where a spec was placed in its workspace's tree, and by whom (Living Specs
+ * §17, R-7 to R-11). Structure, not body: nothing that approves, pins or
+ * grades work reads it.
+ *   - `filed`: buildd set the parent (a confident area answer, or a member of
+ *     a taxonomy a person accepted). `previous_parent_id` is what undo restores.
+ *   - `suggested`: a place buildd offers and did not apply (`new_area`,
+ *     `unsure`, a low answer, the similarity fallback). `proposal` carries a
+ *     proposed new area's title and charter.
+ *   - `manual`: a person (or an agent) set or cleared the parent by hand. The
+ *     sweep never touches a spec with one.
+ */
+export const specFilings = pgTable('spec_filings', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  specId: uuid('spec_id').references(() => specs.id, { onDelete: 'cascade' }).notNull(),
+  kind: text('kind').notNull().$type<'filed' | 'suggested' | 'manual'>(),
+  /** `applied` | `undone` | `overridden` for filed; `open` | `accepted` | `dismissed` for suggested; `applied` for manual. */
+  status: text('status').notNull().$type<'applied' | 'undone' | 'overridden' | 'open' | 'accepted' | 'dismissed'>(),
+  previousParentId: uuid('previous_parent_id'),
+  /** The area (or product) filed or suggested; null for a suggestion of a new area, an unsure answer, or a manual un-file. */
+  parentSpecId: uuid('parent_spec_id'),
+  /** `model` | `similarity` | `taxonomy` | `person`. */
+  source: text('source').notNull(),
+  /** The answer and its weight: `{ answer, p, model }`; for a new area also `{ title, charter }`. */
+  proposal: jsonb('proposal').$type<Record<string, unknown>>(),
+  decisionRecordId: uuid('decision_record_id'),
+  /** The organize run that produced it, when one did. */
+  batchId: uuid('batch_id'),
+  createdBy: text('created_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  resolvedBy: text('resolved_by'),
+  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+}, (t) => ({
+  specIdx: index('spec_filings_spec_idx').on(t.specId, t.createdAt),
+  workspaceStatusIdx: index('spec_filings_workspace_status_idx').on(t.workspaceId, t.status),
+}));
+
+/**
+ * One change to a spec's metadata block (living-specs.md §18, R-31): who, why,
+ * and the field's previous value. Append-only. A metadata change never writes a
+ * spec revision, so it never moves the version or the approved content hash.
+ */
+export const specMetadataChanges = pgTable('spec_metadata_changes', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  specId: uuid('spec_id').references(() => specs.id, { onDelete: 'cascade' }).notNull(),
+  field: text('field').notNull(),
+  previousValue: jsonb('previous_value'),
+  newValue: jsonb('new_value'),
+  reason: text('reason').notNull(),
+  changedByKind: text('changed_by_kind').notNull().$type<'user' | 'agent'>(),
+  changedBy: text('changed_by').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  specIdx: index('spec_metadata_changes_spec_idx').on(t.specId, t.createdAt),
 }));
 
 /**
@@ -2877,18 +3097,60 @@ export const specComments = pgTable('spec_comments', {
 }));
 
 /**
+ * A file or image attached to a Living Spec (living-specs.md §21): an artifact
+ * in the spec's workspace, under a name the body can place inline
+ * (`![caption](attachment:<name>)`). No second file store: the bytes are the
+ * artifact's.
+ *
+ * It belongs to the revision it was added in and applies to every revision
+ * from `added_in_revision` up to (not including) `removed_from_revision`, so a
+ * removal never changes what an older revision shows. Live names are unique per
+ * spec. `binding` attachments are part of what an approval records
+ * (spec_revisions.approved_attachments); `reference` ones never are.
+ * Only apps/web/src/lib/specs/attachments.ts writes it.
+ */
+export const SPEC_ATTACHMENT_KINDS = ['binding', 'reference'] as const;
+export type SpecAttachmentKind = (typeof SPEC_ATTACHMENT_KINDS)[number];
+export interface SpecApprovedAttachment { attachmentId: string; name: string; artifactId: string; revision: number }
+
+export const specAttachments = pgTable('spec_attachments', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  specId: uuid('spec_id').references(() => specs.id, { onDelete: 'cascade' }).notNull(),
+  artifactId: uuid('artifact_id').references(() => artifacts.id, { onDelete: 'cascade' }).notNull(),
+  name: text('name').notNull(),
+  kind: text('kind').notNull().$type<SpecAttachmentKind>(),
+  caption: text('caption'),
+  addedInRevision: integer('added_in_revision').notNull(),
+  // The first revision it no longer applies to; NULL while it is live.
+  removedFromRevision: integer('removed_from_revision'),
+  addedBy: text('added_by').notNull(),
+  removedBy: text('removed_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  removedAt: timestamp('removed_at', { withTimezone: true }),
+}, (t) => ({
+  specIdx: index('spec_attachments_spec_idx').on(t.specId, t.createdAt),
+  liveNameIdx: uniqueIndex('spec_attachments_live_name_idx').on(t.specId, t.name).where(sql`removed_from_revision IS NULL`),
+  kindCheck: check('spec_attachments_kind', sql`${t.kind} IN ('binding', 'reference')`),
+}));
+
+/**
  * One verdict on one acceptance criterion of an approved spec revision, for
- * one task's outcome (Living Specs V1, D-5). Append-only: a re-check adds a
- * row, and the outcome reads the newest row per criterion. A verdict is bound
- * to the PR head it judged and the references it actually read, so a verdict
- * on an older head never speaks for the current one. Distinct from task and PR
- * state: a task can complete and its PR merge while its governed outcome
- * reads fail.
+ * one task's outcome (Living Specs V1, D-5) or for a mission's integrated
+ * result (Slice 12: the mission's selected outcome spec). Exactly one of
+ * `taskId` and `missionId` is set. Append-only: a re-check adds a row, and the
+ * outcome reads the newest row per criterion. A verdict is bound to the head
+ * it judged (a task's PR head, or the mission's integrated target) and the
+ * references it actually read, so a verdict on an older head never speaks
+ * for the current one. Distinct from task and PR state: a task can complete
+ * and its PR merge while its governed outcome reads fail.
  */
 export const specOutcomeVerdicts = pgTable('spec_outcome_verdicts', {
   id: uuid('id').primaryKey().defaultRandom(),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
-  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }),
+  // Slice 12: a verdict about the mission's integrated target, not one task's PR.
+  missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'cascade' }),
   specRevisionId: uuid('spec_revision_id').references(() => specRevisions.id, { onDelete: 'cascade' }).notNull(),
   criterionId: text('criterion_id').notNull(),
   verdict: text('verdict').notNull().$type<'pass' | 'fail' | 'inconclusive' | 'unsupported'>(),
@@ -2898,6 +3160,8 @@ export const specOutcomeVerdicts = pgTable('spec_outcome_verdicts', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   taskCriterionIdx: index('spec_outcome_verdicts_task_idx').on(t.taskId, t.specRevisionId, t.criterionId, t.createdAt),
+  missionCriterionIdx: index('spec_outcome_verdicts_mission_idx').on(t.missionId, t.specRevisionId, t.criterionId, t.createdAt).where(sql`mission_id IS NOT NULL`),
+  oneSubject: check('spec_outcome_verdicts_one_subject', sql`(${t.taskId} IS NULL) <> (${t.missionId} IS NULL)`),
 }));
 
 /**
@@ -3228,10 +3492,23 @@ export const workerHeartbeats = pgTable('worker_heartbeats', {
   // stops being true — so "how long has it been behind" is measured from this
   // column instead of inferred from boot age or heartbeat cadence.
   updateAvailableSince: timestamp('update_available_since', { withTimezone: true }),
+  // Present while the runner has halted claims to drain busy workers before a
+  // self-update (update-drain.ts): ISO `since`, ISO `endsAt` (window expiry),
+  // and `busy` workers still running. Null/absent = claiming normally. Lets
+  // list_runners explain free slots + no claims without SSH.
+  updateDrain: jsonb('update_drain').$type<{ since: string; endsAt: string; busy: number } | null>(),
   // The branch this install tracks (BUILDD_BRANCH) — already sent on every
   // heartbeat to resolve latestCommit (see the heartbeat route), but not
   // persisted until now, so GET /api/workers/active can show it per runner.
   trackedBranch: text('tracked_branch'),
+  // Which model login this runner's agents use, as the runner reports it
+  // (docs/specs/runner-model-login-detect-say-report.md). A label from a fixed list, never
+  // a credential; null = not reported (older runner).
+  modelAuthSource: text('model_auth_source').$type<'machine_token' | 'machine_login' | 'api_key' | 'none'>(),
+  modelAuthMode: text('model_auth_mode').$type<'auto' | 'prefer' | 'off'>(),
+  // Which Codex login this runner's Codex agents use (same spec, R-10..R-13).
+  // A label from a fixed list, never a credential; null = not reported.
+  codexAuthSource: text('codex_auth_source').$type<'machine_login' | 'api_key' | 'none'>(),
   lastHeartbeatAt: timestamp('last_heartbeat_at', { withTimezone: true }).defaultNow().notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -4397,6 +4674,13 @@ export const backendPauses = pgTable('backend_pauses', {
   reason: text('reason').notNull().default('budget'),
   resetsAt: timestamp('resets_at', { withTimezone: true }).notNull(),
   sourceWorkerId: uuid('source_worker_id').references(() => workers.id, { onDelete: 'set null' }),
+  // Which login the wall belongs to, when it is one runner's own machine login
+  // rather than a pool the team shares: an opaque key derived from the runner
+  // id (apps/web/src/lib/runner-seat-wall.ts), never a credential. The wall
+  // then holds only claims from that runner. NULL = a shared wall (a team
+  // credential, an API-key limit, or a login nobody could identify): it holds
+  // every claim for the team, as every row did before this column.
+  seatKey: text('seat_key'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   activeIdx: index('backend_pauses_team_backend_resets_idx').on(t.teamId, t.backend, t.resetsAt),
@@ -5219,6 +5503,9 @@ export const workflowDeliveries = pgTable('workflow_deliveries', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   lastTransitionAt: timestamp('last_transition_at', { withTimezone: true }),
+  // When the reconciliation floor last read this delivery's PR (§11). Bookkeeping, not
+  // delivery state: it rotates the floor's queue so a checked delivery yields to the next.
+  floorCheckedAt: timestamp('floor_checked_at', { withTimezone: true }),
 }, (t) => ({
   ownerUnique: uniqueIndex('workflow_deliveries_owner_unique').on(t.workspaceId, t.ownerTaskId),
   prUnique: uniqueIndex('workflow_deliveries_pr_unique').on(t.workspaceId, t.repoFullName, t.prNumber).where(sql`${t.prNumber} IS NOT NULL`),
@@ -5254,6 +5541,37 @@ export const workflowReviewRounds = pgTable('workflow_review_rounds', {
 }));
 
 export type WorkflowReviewRoundRow = typeof workflowReviewRounds.$inferSelect;
+
+// workflow-kernel-library.md §5 — review findings that survive until a round
+// verifies them, a person waives them or a deferral names the task that owns
+// them. The id is stable across rounds (`<origin round id>:<ordinal>`), so a
+// later round restating a finding updates this row rather than adding one.
+// Written only by the kernel's transition statement (workflow-write-sites).
+export const workflowFindings = pgTable('workflow_findings', {
+  id: text('id').primaryKey(),
+  deliveryId: uuid('delivery_id').references(() => workflowDeliveries.id, { onDelete: 'cascade' }).notNull(),
+  originRoundId: uuid('origin_round_id').notNull(),
+  originRound: integer('origin_round').notNull(),
+  originHeadSha: text('origin_head_sha').notNull(),
+  ordinal: integer('ordinal').notNull(),
+  path: text('path'),
+  line: integer('line'),
+  title: text('title').notNull(),
+  required: boolean('required').default(true).notNull(),
+  status: text('status').default('open').notNull().$type<'open' | 'addressed' | 'resolved' | 'waived' | 'deferred'>(),
+  lastRound: integer('last_round').notNull(),
+  addressedBySha: text('addressed_by_sha'),
+  closedByRoundId: uuid('closed_by_round_id'),
+  closedBy: text('closed_by'),
+  closedReason: text('closed_reason'),
+  deferredToTaskId: uuid('deferred_to_task_id'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  deliveryIdx: index('workflow_findings_delivery_idx').on(t.deliveryId, t.originRound, t.ordinal),
+}));
+
+export type WorkflowFindingRow = typeof workflowFindings.$inferSelect;
 
 // §5.3 — append-only observations. A duplicate fact_key is a no-op that
 // returns the first application's result. payload holds normalised fields the
@@ -5293,6 +5611,9 @@ export const workflowTransitions = pgTable('workflow_transitions', {
   actor: text('actor').notNull(),
   evidence: jsonb('evidence').$type<Record<string, unknown>>().default({}).notNull(),
   bypass: jsonb('bypass').$type<Record<string, unknown>>(),
+  // Which host applied it (docs/specs/workflow-kernel-library.md §3, AC-9):
+  // 'control-plane' or 'web'. Null on rows written before the tag existed.
+  host: text('host').$type<'control-plane' | 'web'>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   idempotencyUnique: uniqueIndex('workflow_transitions_idempotency_unique').on(t.deliveryId, t.idempotencyKey),
@@ -5300,6 +5621,34 @@ export const workflowTransitions = pgTable('workflow_transitions', {
 }));
 
 export type WorkflowTransitionRow = typeof workflowTransitions.$inferSelect;
+
+// §3 of docs/specs/workflow-kernel-library.md — the command API's idempotency
+// ledger: one row per caller-supplied key, so a command submitted twice with one
+// key is applied once and both callers get the stored answer. Lives in Postgres,
+// never in Worker memory (a Worker isolate is not durable and not shared).
+export const workflowCommands = pgTable('workflow_commands', {
+  idempotencyKey: text('idempotency_key').primaryKey(),
+  op: text('op').notNull(),
+  /** `user:<id>`, `account:<id>` or `system:<name>`: who the web host vouched for. */
+  principal: text('principal').notNull(),
+  /** sha256 of the op, input and principal: one key never answers a different request. */
+  requestHash: text('request_hash').notNull(),
+  status: text('status').default('running').notNull().$type<'running' | 'done'>(),
+  /** The stored answer: `{ status, body }`, replayed verbatim to every caller with the key. */
+  response: jsonb('response').$type<Record<string, unknown>>(),
+  deliveryId: uuid('delivery_id'),
+  deliveryVersion: bigint('delivery_version', { mode: 'number' }),
+  host: text('host').notNull(),
+  /** The current claim: completion and release apply only for the claim that still holds the key. */
+  claimToken: text('claim_token').notNull(),
+  claimedAt: timestamp('claimed_at', { withTimezone: true }).defaultNow().notNull(),
+  completedAt: timestamp('completed_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  createdIdx: index('workflow_commands_created_idx').on(t.createdAt),
+}));
+
+export type WorkflowCommandRow = typeof workflowCommands.$inferSelect;
 
 // §5.5 — transactional outbox: inserted by the statement that applied the
 // transition, drained at least once by apps/web/src/lib/workflow/effects.ts.
@@ -5325,6 +5674,87 @@ export const workflowEffects = pgTable('workflow_effects', {
 }));
 
 export type WorkflowEffectRow = typeof workflowEffects.$inferSelect;
+
+// Mission deliveries (docs/specs/workflow-kernel-library.md §6): one row per
+// epoch of a mission-branch mission, each one integration branch and its PR
+// into trunk. Written only by the kernel (apps/web/src/lib/workflow/
+// delivery-epochs.ts, one compare-and-set statement per transition of
+// packages/workflow-kernel/src/delivery-epochs.ts). A merged row is the
+// immutable record of what that delivery shipped; rows are never deleted.
+export const workflowMissionEpochs = pgTable('workflow_mission_epochs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'cascade' }).notNull(),
+  epoch: integer('epoch').notNull(),
+  branch: text('branch').notNull(),
+  // 'open' (the one writable epoch) | 'merged' (terminal).
+  state: text('state').notNull().$type<'open' | 'merged'>(),
+  version: bigint('version', { mode: 'number' }).default(0).notNull(),
+  // 'cut' (rotated by the kernel) | 'adopted' | 'adopted_recut' (a mission predating epochs).
+  origin: text('origin').notNull().$type<'cut' | 'adopted' | 'adopted_recut'>(),
+  cutFromSha: text('cut_from_sha'),
+  branchReadyAt: timestamp('branch_ready_at', { withTimezone: true }),
+  predecessorId: uuid('predecessor_id'),
+  scopeVersion: integer('scope_version').default(1).notNull(),
+  repoFullName: text('repo_full_name'),
+  prNumber: integer('pr_number'),
+  ownerTaskId: uuid('owner_task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  // GitHub's values, never receipt time.
+  mergedAt: timestamp('merged_at', { withTimezone: true }),
+  mergeCommitSha: text('merge_commit_sha'),
+  mergedHeadSha: text('merged_head_sha'),
+  settlement: jsonb('settlement').$type<Record<string, unknown>>(),
+  settledAt: timestamp('settled_at', { withTimezone: true }),
+  retiredAt: timestamp('retired_at', { withTimezone: true }),
+  // PRs GitHub moved off this epoch's branch (the retarget webhook's `from`):
+  // the only trunk-based PRs settlement may touch.
+  movedPrs: integer('moved_prs').array().default(sql`'{}'::integer[]`).notNull(),
+  // Single-flight settlement of this epoch's branch (one caller reads and acts on its PRs at a time).
+  settleLeaseToken: text('settle_lease_token'),
+  settleLeaseUntil: timestamp('settle_lease_until', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  epochUnique: uniqueIndex('workflow_mission_epochs_epoch_unique').on(t.missionId, t.epoch),
+  // One successor per predecessor: a replayed or racing merge cannot cut two.
+  successorUnique: uniqueIndex('workflow_mission_epochs_successor_unique').on(t.predecessorId).where(sql`${t.predecessorId} IS NOT NULL`),
+  // At most one writable epoch per mission.
+  openUnique: uniqueIndex('workflow_mission_epochs_open_unique').on(t.missionId).where(sql`${t.state} = 'open'`),
+}));
+
+export type WorkflowMissionEpochRow = typeof workflowMissionEpochs.$inferSelect;
+
+// Mission scope amendments (docs/specs/workflow-kernel-library.md §6): one row
+// per task added to a mission, the recorded scope decision and what it did to
+// the mission's contract. Written only by the kernel (apps/web/src/lib/workflow/
+// scope-amendments.ts), in the same statement as the contract change.
+export const workflowScopeAmendments = pgTable('workflow_scope_amendments', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'cascade' }).notNull(),
+  sourceTaskId: uuid('source_task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  // 'in_scope' | 'amend_scope' | 'ask'
+  decision: text('decision').notNull().$type<'in_scope' | 'amend_scope' | 'ask'>(),
+  // 'recorded' (nothing changed) | 'applied' | 'held' (a person decides) | 'resolved'
+  status: text('status').notNull().$type<'recorded' | 'applied' | 'held' | 'resolved'>(),
+  scopeVersionBefore: integer('scope_version_before').notNull(),
+  scopeVersionAfter: integer('scope_version_after'),
+  before: jsonb('before').$type<Record<string, unknown>>(),
+  after: jsonb('after').$type<Record<string, unknown>>(),
+  weakens: jsonb('weakens').$type<Array<Record<string, unknown>>>(),
+  reason: text('reason'),
+  // The recorded decision (workflow_facts, kind decision): decider, verdict, confidence, fallback.
+  decisionFactId: uuid('decision_fact_id'),
+  deciderId: text('decider_id'),
+  confidence: real('confidence'),
+  fallback: text('fallback'),
+  actor: text('actor'),
+  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+  resolvedBy: text('resolved_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  // One decision per task added: a replay reads it and never asks again.
+  taskUnique: uniqueIndex('workflow_scope_amendments_task_unique').on(t.missionId, t.sourceTaskId),
+  missionIdx: index('workflow_scope_amendments_mission_idx').on(t.missionId, t.createdAt),
+}));
 
 // The landing lane (lib/workflow/landing-lane.ts): one row per repo + base
 // whose delivery is the one behind-refresh in flight there. A row whose
@@ -5878,11 +6308,63 @@ export const decisionModelMeasurements = pgTable('decision_model_measurements', 
   setByAccountId: uuid('set_by_account_id'),
   setAt: timestamp('set_at', { withTimezone: true }).defaultNow().notNull(),
   reason: text('reason'),
+  // Which number `threshold` is compared with (decision-model-measurements.ts
+  // `measuredSignal`). 'confidence' keeps the provider's confidence.
+  confidenceSource: text('confidence_source').notNull().default('confidence').$type<'confidence' | 'top_p' | 'margin' | 'calibrated_top_p'>(),
+  // Isotonic breakpoints { x, y } for 'calibrated_top_p'; null otherwise.
+  calibration: jsonb('calibration').$type<{ x: number[]; y: number[] }>(),
+  // Act on these labels only, each at its own threshold; null = every label at `threshold`.
+  labelThresholds: jsonb('label_thresholds').$type<Record<string, number>>(),
+  // What the threshold was derived from: 'collected' (replayed decisions graded by
+  // outcome) or 'labelled' (a labelled or synthetic set). A labelled row is a
+  // placeholder: a later collected score replaces it, never the other way round.
+  caseSource: text('case_source').notNull().default('collected').$type<'collected' | 'labelled'>(),
 }, (t) => ({
   kindModelIdx: uniqueIndex('decision_model_measurements_kind_model_idx').on(t.kind, t.model),
 }));
 
 export type DecisionModelMeasurementRow = typeof decisionModelMeasurements.$inferSelect;
+
+/**
+ * Every change of one decision's model for a team made by buildd, not a person
+ * (apps/web/src/lib/decision-model-optimizer/): the scheduled comparison
+ * switching to a model that won, the switch back when live graded decisions
+ * fall below the bar, and a person's Undo of either. One row per switch.
+ *
+ * `fromRoute` null means the kind had no override (it followed the team
+ * default); Undo writes it back, so null clears the override. `status`:
+ * `active` is the switch in effect (the team sees one line for it, with Undo);
+ * `undone` a person restored `fromRoute`, which is then pinned until
+ * `pinnedUntil`; `reverted` buildd switched back; `superseded` a later switch
+ * replaced it. Scores and the eval run id are operator data, never shown to
+ * the team.
+ */
+export const decisionModelSwitches = pgTable('decision_model_switches', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  kind: text('kind').notNull(),
+  cause: text('cause').notNull().$type<'optimizer' | 'auto_revert'>(),
+  fromRoute: jsonb('from_route').$type<import('../decision-model').DecisionModelRoute | null>(),
+  toRoute: jsonb('to_route').$type<import('../decision-model').DecisionModelRoute | null>(),
+  evalRunId: text('eval_run_id'),
+  // Share of the compared cases each would act on and get right (optimizer), or
+  // the live acted precision against the bar (auto_revert).
+  beforeScore: real('before_score'),
+  afterScore: real('after_score'),
+  // The precision the switched-to model must keep on live graded decisions.
+  bar: real('bar'),
+  n: integer('n'),
+  status: text('status').notNull().default('active').$type<'active' | 'undone' | 'reverted' | 'superseded'>(),
+  pinnedUntil: timestamp('pinned_until', { withTimezone: true }),
+  endedAt: timestamp('ended_at', { withTimezone: true }),
+  endedBy: uuid('ended_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  teamKindIdx: index('decision_model_switches_team_kind_idx').on(t.teamId, t.kind, t.createdAt),
+  statusIdx: index('decision_model_switches_status_idx').on(t.status, t.createdAt),
+}));
+
+export type DecisionModelSwitchRow = typeof decisionModelSwitches.$inferSelect;
 
 /**
  * One row per worker session end, on every path — completed, failed, the

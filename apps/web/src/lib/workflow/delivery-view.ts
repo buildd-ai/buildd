@@ -8,10 +8,10 @@
  * surface keeps today's projection. A caller therefore never has to know the
  * kill switch exists.
  */
-import { sql, type SQL } from 'drizzle-orm';
+import { sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { classifyConflictFix } from '@/lib/conflict-fix-liveness';
-import { toAttemptSnapshot, toDeliverySnapshot, toRoundSnapshot, type Exec } from './kernel';
+import { toAttemptSnapshot, toDeliverySnapshot, toFindingSnapshot, toRoundSnapshot, type Exec } from './kernel';
 import { workspaceKernelOnSql } from './authority';
 import { LANE_PARKED_OUTCOME } from './landing-lane';
 import { ownerDeliveryDisplays, replacedFailedTaskIds, type DeliveryDisplay } from './delivery-display';
@@ -21,7 +21,20 @@ const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown
 
 type J = Record<string, unknown>;
 
-export function deliveryViewsSql(taskIds: string[]): SQL {
+export interface DeliveryViewsOptions {
+  /**
+   * Also read each delivery's review findings. Off by default: the aggregate
+   * has no cap, and only the readers that print findings ask for it (get_pr,
+   * the task page; the activity comment loads its own view). Without it
+   * `findings` is empty and `openFindings` 0, as before §7.
+   */
+  withFindings?: boolean;
+}
+
+export function deliveryViewsSql(taskIds: string[], opts: DeliveryViewsOptions = {}): SQL {
+  const findings = opts.withFindings
+    ? sql`COALESCE((SELECT jsonb_agg(to_jsonb(f.*) ORDER BY f.origin_round, f.ordinal, f.created_at) FROM workflow_findings f WHERE f.delivery_id = d.id), '[]'::jsonb)`
+    : sql`'[]'::jsonb`;
   return sql`-- workflow:delivery_views
 WITH ids AS (SELECT DISTINCT x::uuid AS id FROM jsonb_array_elements_text(${JSON.stringify(taskIds)}::jsonb) x),
 dl AS (
@@ -33,6 +46,7 @@ dl AS (
 SELECT to_jsonb(d.*) AS delivery,
   COALESCE((SELECT jsonb_agg(to_jsonb(r.*) ORDER BY r.round) FROM workflow_review_rounds r WHERE r.delivery_id = d.id), '[]'::jsonb) AS rounds,
   COALESCE((SELECT jsonb_agg(to_jsonb(a.*) ORDER BY a.family, a.mode, a.attempt_no) FROM workflow_attempts a WHERE a.delivery_id = d.id), '[]'::jsonb) AS attempts,
+  ${findings} AS findings,
   (SELECT jsonb_build_object('command', tr.command, 'from_state', tr.from_state, 'to_state', tr.to_state, 'evidence', tr.evidence, 'created_at', tr.created_at)
      FROM workflow_transitions tr WHERE tr.delivery_id = d.id ORDER BY tr.to_version DESC LIMIT 1) AS last_transition,
   COALESCE((SELECT jsonb_agg(jsonb_build_object('id', t.id, 'role', COALESCE(t.delivery_role, CASE WHEN t.id = d.owner_task_id THEN 'owner' END), 'status', t.status, 'created_at', t.created_at) ORDER BY t.created_at)
@@ -48,12 +62,27 @@ SELECT to_jsonb(d.*) AS delivery,
      WHERE e.delivery_id = d.id AND e.kind = 'refresh_branch' AND e.status = 'pending' AND e.outcome LIKE ${LANE_PARKED_OUTCOME + '%'}::text
      ORDER BY e.created_at DESC LIMIT 1) AS lane_wait,
   (SELECT jsonb_build_object('git_config', w.git_config) FROM workspaces w WHERE w.id = d.workspace_id) AS workspace,
+  (SELECT f.payload->'contradiction' FROM workflow_facts f
+     WHERE f.workspace_id = d.workspace_id AND f.repo_full_name = d.repo_full_name AND f.pr_number = d.pr_number
+       AND f.kind = 'pr_closed' AND f.payload ? 'contradiction'
+     ORDER BY f.observed_at DESC LIMIT 1) AS merge_contradiction,
   (SELECT jsonb_build_object('requires_review', ot.requires_review, 'landing', ot.context->'landing', 'landing_handoff', ot.context->'landingHandoff',
             'mission', (SELECT jsonb_build_object('merge_policy', m.merge_policy, 'requires_review', m.requires_review,
                           'working_branch', m.working_branch, 'integration_branch_enabled', m.integration_branch_enabled)
                         FROM missions m WHERE m.id = ot.mission_id))
      FROM tasks ot WHERE ot.id = d.owner_task_id) AS owner_task
 FROM dl d`;
+}
+
+/**
+ * A worker row's PR has a kernel-owned delivery (owner task and PR number, the
+ * same reading `getDeliveryViewsForTasks` loads) matching `where`, which may
+ * name `kd`. `list_prs` keeps such a PR a candidate whatever its worker row
+ * says (workflow-kernel-library.md §7). A predicate; reads only.
+ */
+export function kernelDeliveryForWorkerSql(taskIdCol: SQLWrapper, prNumberCol: SQLWrapper, prUrlCol: SQLWrapper, where: SQL): SQL {
+  // Same repo too: a PR number alone does not name a PR (a same-numbered PR in another repo is not this delivery).
+  return sql`EXISTS (SELECT 1 FROM workflow_deliveries kd WHERE kd.owner_task_id = ${taskIdCol} AND kd.pr_number = ${prNumberCol} AND (kd.repo_full_name IS NULL OR lower(${prUrlCol}) LIKE '%github.com/' || lower(kd.repo_full_name) || '/pull/%') AND kd.authority = 'kernel' AND ${workspaceKernelOnSql(sql`kd.workspace_id`)} AND ${where})`;
 }
 
 const iso = (v: unknown): string => (v == null ? '' : new Date(String(v)).toISOString());
@@ -106,7 +135,9 @@ export function laneWaitFrom(outcome: unknown): { behindPr: number | null } | nu
 export function rowToDeliveryView(row: J, now = Date.now(), approvedNeedsPerson: ApprovedMergeRule = PERSON_MERGES): DeliveryView | null {
   if (!row.delivery) return null;
   const rounds = ((row.rounds as J[]) ?? []).map(toRoundSnapshot);
-  const attempts = ((row.attempts as J[]) ?? []).map(toAttemptSnapshot);
+  // §7: the proven push head stays on the read model, so a repair can say "pushed · testing".
+  const attempts = ((row.attempts as J[]) ?? []).map((a) => ({ ...toAttemptSnapshot(a), pushedHeadSha: a.pushed_head_sha == null ? null : String(a.pushed_head_sha) }));
+  const findings = ((row.findings as J[] | null | undefined) ?? []).map(toFindingSnapshot);
   const lt = row.last_transition as J | null;
   const lastTransition: TransitionRef | null = lt ? {
     command: String(lt.command), fromState: lt.from_state == null ? null : String(lt.from_state), toState: String(lt.to_state),
@@ -115,14 +146,30 @@ export function rowToDeliveryView(row: J, now = Date.now(), approvedNeedsPerson:
   const attemptTasks: AttemptTaskRef[] = ((row.attempt_tasks as J[]) ?? []).map((t) => ({
     taskId: String(t.id), role: t.role == null ? 'attempt' : String(t.role), status: String(t.status), createdAt: iso(t.created_at),
   }));
-  return deriveDeliveryView({
-    view: { delivery: toDeliverySnapshot(row.delivery as J), rounds, attempts },
+  const view = deriveDeliveryView({
+    view: { delivery: toDeliverySnapshot(row.delivery as J), rounds, attempts, findings },
     lastTransition,
     attemptTasks,
     remediation: remediationFrom(row.remediation as J | null, now),
     approvedNeedsPerson: (row.delivery as J).state === 'APPROVED' ? approvedNeedsPerson(row) : false,
     laneWait: laneWaitFrom(row.lane_wait),
   });
+  return view ? withMergeContradiction(view, row.merge_contradiction as J | null | undefined) : null;
+}
+
+/**
+ * AC-4 (S4a review): GitHub merged a PR whose delivery was already ABANDONED or SUPERSEDED. The
+ * kernel recorded the merge and did not apply it (merge-contradiction.ts); every surface reading
+ * this view, `explain` included, says so instead of reading as a quiet drop.
+ */
+export function withMergeContradiction(v: DeliveryView, c: J | null | undefined): DeliveryView {
+  if (!c || (v.state !== 'ABANDONED' && v.state !== 'SUPERSEDED')) return v;
+  const was = v.state === 'SUPERSEDED' ? 'superseded' : 'abandoned';
+  const at = c.mergedAt ? ` at ${String(c.mergedAt)}` : '';
+  return {
+    ...v,
+    detail: `GitHub reports this PR merged${at} after buildd recorded it as ${was}; the merge was recorded but not applied, so the work still reads as not shipped. A person should check whether it landed.`,
+  };
 }
 
 /**
@@ -130,12 +177,12 @@ export function rowToDeliveryView(row: J, now = Date.now(), approvedNeedsPerson:
  * to a kernel-owned delivery. Never throws: a projection read failing must
  * degrade the surface to its legacy projection, not break the page.
  */
-export async function getDeliveryViewsForTasks(taskIds: string[], exec: Exec = dbExec, rule?: ApprovedMergeRule): Promise<Map<string, DeliveryView>> {
+export async function getDeliveryViewsForTasks(taskIds: string[], exec: Exec = dbExec, rule?: ApprovedMergeRule, opts: DeliveryViewsOptions = {}): Promise<Map<string, DeliveryView>> {
   const out = new Map<string, DeliveryView>();
   const ids = [...new Set(taskIds.filter(Boolean))];
   if (ids.length === 0) return out;
   try {
-    const res = await exec(deliveryViewsSql(ids));
+    const res = await exec(deliveryViewsSql(ids, opts));
     const want = new Set(ids);
     const rows = (res.rows ?? []) as J[];
     const needsPerson = rule ?? (rows.some(r => (r.delivery as J | null)?.state === 'APPROVED') ? await approvedMergeRule() : PERSON_MERGES);
@@ -186,6 +233,29 @@ WHERE d.authority = 'kernel' AND ${workspaceKernelOnSql(sql`d.workspace_id`)}
   AND d.owner_task_id IN (SELECT x::uuid FROM jsonb_array_elements_text(${JSON.stringify(ids)}::jsonb) x)`);
   return ((res.rows ?? []) as Array<{ ownerTaskId: unknown; state: unknown }>).flatMap(r =>
     typeof r.ownerTaskId === 'string' && typeof r.state === 'string' ? [{ ownerTaskId: r.ownerTaskId, state: r.state }] : []);
+}
+
+/**
+ * The merge commit of each merged delivery the given tasks own, for a
+ * mission's integrated target on a direct mission (lib/specs/mission-outcome.ts:
+ * a verdict holds only at a commit containing every one). Any authority: a
+ * merge recorded on a legacy-owned delivery is still a merge. A null
+ * `mergeCommitSha` is returned as null, never dropped: the caller must not
+ * read an unknown merge as contained. A SELECT; throws on a read failure.
+ */
+export async function mergedDeliveryCommits(
+  taskIds: string[],
+  exec: Exec = dbExec,
+): Promise<Array<{ ownerTaskId: string; mergeCommitSha: string | null }>> {
+  const ids = [...new Set(taskIds.filter(Boolean))];
+  if (ids.length === 0) return [];
+  const res = await exec(sql`-- workflow:merged_delivery_commits
+SELECT d.owner_task_id AS "ownerTaskId", d.merge_commit_sha AS "mergeCommitSha"
+FROM workflow_deliveries d
+WHERE d.state = 'MERGED'
+  AND d.owner_task_id IN (SELECT x::uuid FROM jsonb_array_elements_text(${JSON.stringify(ids)}::jsonb) x)`);
+  return ((res.rows ?? []) as Array<{ ownerTaskId: unknown; mergeCommitSha: unknown }>).flatMap(r =>
+    typeof r.ownerTaskId === 'string' ? [{ ownerTaskId: r.ownerTaskId, mergeCommitSha: typeof r.mergeCommitSha === 'string' && r.mergeCommitSha ? r.mergeCommitSha : null }] : []);
 }
 
 /**

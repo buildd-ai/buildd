@@ -22,6 +22,7 @@ import { startOfLocalDay } from '@/lib/chat/limits';
 import type { AiApiAccount, AiAuthDeps, PlanDeps, UsageDeps } from './handlers';
 import type { PlanProvider } from './plan';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { liveLinkCondition } from '@/lib/granted-links';
 
 async function authenticate(bearer: string | null): Promise<AiApiAccount | null> {
   const account = await authenticateApiKey(bearer);
@@ -60,7 +61,7 @@ export const planDeps: PlanDeps = {
     const rows = await db
       .select({ workspaceId: accountWorkspaces.workspaceId })
       .from(accountWorkspaces)
-      .where(eq(accountWorkspaces.accountId, accountId))
+      .where(and(eq(accountWorkspaces.accountId, accountId), liveLinkCondition()))
       .limit(2);
     return rows.length === 1 ? rows[0].workspaceId : null;
   },

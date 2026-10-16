@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { requirementIds, specCriteria } from './requirements';
+import { criterionIdProblems, requirementIds, specCriteria } from './requirements';
 
 describe('requirementIds', () => {
   it('finds ids in the forms specs use, first definition wins, fenced code ignored', () => {
@@ -54,3 +54,42 @@ describe('criteria in a table', () => {
   });
 });
 
+
+describe('criterionIdProblems: ids a reader would take for criteria that the parser does not read', () => {
+  const body = [
+    '# Spec',
+    '- AC-1: plain, read.',
+    '- AC-3a: a letter suffix.',
+    '- **AC-AQR-1** a prefix.',
+    'INV-2: an invariant spelled INV.',
+    '### R-CG-4 a prefixed heading',
+    '| AC-7b | a suffixed table row |',
+    '- AC-1: defined again.',
+    '| AC-1 | and a third time, in a table |',
+    '- R-2: once.',
+    '```', '- AC-9z: inside code', '- R-2: inside code', '```',
+    'Prose that mentions AC-3a mid-sentence is not a definition.',
+  ].join('\n');
+
+  it('lists the letter-suffixed, prefixed and INV ids at a definition position, with their lines', () => {
+    expect(criterionIdProblems(body).unreadable).toEqual([
+      { id: 'AC-3a', line: 3 },
+      { id: 'AC-AQR-1', line: 4 },
+      { id: 'INV-2', line: 5 },
+      { id: 'R-CG-4', line: 6 },
+      { id: 'AC-7b', line: 7 },
+    ]);
+  });
+
+  it('lists ids defined more than once, with every line that defines them', () => {
+    expect(criterionIdProblems(body).duplicates).toEqual([{ id: 'AC-1', lines: [2, 8, 9] }]);
+  });
+
+  it('does not read a letter-suffixed id as the plain one (AC-3a is not AC-3)', () => {
+    expect(requirementIds(body).map((r) => r.id)).toEqual(['AC-1', 'R-2']);
+  });
+
+  it('a clean body has no problems', () => {
+    expect(criterionIdProblems('- R-1: one\n- AC-1: two\n| D-1 | three |')).toEqual({ unreadable: [], duplicates: [] });
+  });
+});

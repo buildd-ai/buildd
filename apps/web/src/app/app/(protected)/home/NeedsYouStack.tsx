@@ -119,7 +119,7 @@ export function NeedsYouStack({
   return (
     <section data-testid="home-waiting-on-you" className="mb-8">
       <div className="mb-3 flex items-center justify-between gap-3">
-        <span className="section-label text-text-muted">{shipped.length > 0 ? 'Results and decisions' : 'Needs you'}</span>
+        <span className="section-label text-text-muted">{shipped.length > 0 ? 'Results and decisions' : 'Waiting on you'}</span>
         {count > 0 && (
           <span data-testid="needs-you-count" className="grid h-7 min-w-7 place-items-center bg-primary px-1.5 font-mono text-[13px] font-bold text-white">
             {count}

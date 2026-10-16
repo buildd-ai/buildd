@@ -14,6 +14,7 @@ import { detachInteractiveWorkersOfEndedTasks, releaseConcurrencySeats } from '@
 import { withoutForceClaim } from '@/lib/force-claim';
 import { escalateReviewContractFailure } from '@/lib/auto-merge';
 import { kernelDeliveryById } from '@/lib/workflow/authority';
+import { notKernelMergedTaskSql } from '@/lib/workflow/pr-fact-scope';
 import { notHeldOrLocal } from '@/app/api/workers/claim/held-gate';
 import { PARK_MAX_MS, PARK_MISSION_MAX_MS, notParkedScope } from '@/lib/worker-park';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
@@ -146,7 +147,7 @@ async function resolveStaleTask(
           result: { error: waitReason } as any,
           updatedAt: new Date(),
         })
-        .where(eq(tasks.id, taskId));
+        .where(and(eq(tasks.id, taskId), notKernelMergedTaskSql()));
       await resolveCompletedTask(taskId, workspaceId);
       return;
     }
@@ -238,7 +239,7 @@ async function resolveStaleTask(
           result: { error: 'agent review timed out' } as any,
           updatedAt: new Date(),
         })
-        .where(eq(tasks.id, taskId));
+        .where(and(eq(tasks.id, taskId), notKernelMergedTaskSql()));
     }
 
     await kernelAttemptEnded();
@@ -330,7 +331,7 @@ async function resolveStaleTask(
           } as any,
           updatedAt: new Date(),
         })
-        .where(eq(tasks.id, taskId));
+        .where(and(eq(tasks.id, taskId), notKernelMergedTaskSql()));
     } else if (chargeableFailures.length >= MAX_WORKER_RETRIES) {
       // Retry cap reached — permanently fail the task
       await db
@@ -340,7 +341,7 @@ async function resolveStaleTask(
           result: { error: `Task failed after ${chargeableFailures.length} worker attempts`, ...auditStall } as any,
           updatedAt: new Date(),
         })
-        .where(eq(tasks.id, taskId));
+        .where(and(eq(tasks.id, taskId), notKernelMergedTaskSql()));
     } else {
       // Infra failure path (stale reaper always means the runner went offline).
       // Track attempts separately so infra burns don't consume code-failure retry slots.
@@ -365,7 +366,7 @@ async function resolveStaleTask(
             } as any,
             updatedAt: new Date(),
           })
-          .where(eq(tasks.id, taskId));
+          .where(and(eq(tasks.id, taskId), notKernelMergedTaskSql()));
       } else {
         // Infra retries remaining — reset to pending with backoff so the next runner
         // attempt doesn't race immediately (helps when the infra issue needs settling time).
@@ -388,7 +389,7 @@ async function resolveStaleTask(
             },
             updatedAt: new Date(),
           })
-          .where(eq(tasks.id, taskId));
+          .where(and(eq(tasks.id, taskId), notKernelMergedTaskSql()));
         // Keyed onto the trigger's start_at row, so it fires when the backoff ends.
         await wakeTask(taskId, 'task.requeued', { notBefore: startAt });
       }
@@ -444,7 +445,7 @@ async function resolveAbandonedInteractiveTask(
         },
         updatedAt: new Date(),
       })
-      .where(and(eq(tasks.id, taskId), eq(tasks.status, current.status)));
+      .where(and(eq(tasks.id, taskId), eq(tasks.status, current.status), notKernelMergedTaskSql()));
     await wakeTask(taskId, 'task.requeued');
   }
   await releaseAndNotify(taskId, 'abandoned').catch(e =>
@@ -1214,7 +1215,7 @@ export async function cleanupStuckWaitingInput(
         status: 'failed',
         updatedAt: new Date(),
       })
-      .where(eq(tasks.id, originalTask.id));
+      .where(and(eq(tasks.id, originalTask.id), notKernelMergedTaskSql()));
 
     // Superseded by recovery (failure-incident-recovery §16.4): the incident
     // re-queues this same task once its check passes. No clone, no

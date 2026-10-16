@@ -6,7 +6,7 @@ import { describe, expect, test } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 import type { LivePr } from './commands';
-import { carryForwardReading, constituentEvidenceSql, factKeyFor, findFactSql, ingestFact, insertFactSql, lastAppliedHeadFactSql, ownRefreshSql, projectEquivalentHeadSql, type GithubFactReader } from './facts';
+import { carryForwardReading, constituentEvidenceSql, factKeyFor, findFactSql, ingestFact, insertFactSql, lastAppliedHeadFactSql, ownRefreshSql, projectEquivalentHeadSql, refreshUnappliedFactSql, type GithubFactReader } from './facts';
 import type { Exec } from './kernel';
 
 const dialect = new PgDialect();
@@ -45,6 +45,10 @@ describe('fact keys', () => {
     expect(ins.sql).toContain('ON CONFLICT (workspace_id, fact_key) DO NOTHING');
     expect(ins.params).toEqual(['w', null, null, 'pr_bound', 'k', 'runner', '{"a":1}']);
     expect(render(findFactSql('w', 'k')).params).toEqual(['w', 'k']);
+    const refresh = render(refreshUnappliedFactSql({ factId: 'f1', source: 'webhook', payload: { b: 2 } }));
+    expect(refresh.sql).toContain('UPDATE workflow_facts SET payload = $1::jsonb, source = $2::text');
+    expect(refresh.sql).toContain('WHERE id = $3::uuid AND applied_transition_id IS NULL');
+    expect(refresh.params).toEqual(['{"b":2}', 'webhook', 'f1']);
     const last = render(lastAppliedHeadFactSql('w', 'd1'));
     expect(last.sql).toContain('JOIN workflow_transitions t ON t.id = f.applied_transition_id');
     expect(last.sql).toContain("t.command = 'HeadObserved'");
@@ -149,11 +153,18 @@ describe('ingestFact', () => {
     const crashed = router({
       insert_fact: () => ({ rows: [] }),
       find_fact: () => ({ rows: [{ id: 'f1', applied_transition_id: null }] }),
+      refresh_unapplied_fact: (_t, params) => { refreshed.push(params); return { rows: [] }; },
       load_view: () => ({ rows: [] }),
       transition: () => ({ rows: [{ transition_id: 'tr9', delivery_id: 'd1', version: 1 }] }),
     });
+    const refreshed: unknown[][] = [];
     expect(await ingestFact({ kind: 'delivery_opened', workspaceId: 'w1', source: 'runner', ownerTaskId: 't1', requiresPr: true }, { exec: crashed.exec }))
       .toMatchObject({ result: 'applied', factId: 'f1', firstSeen: false });
+    // The applying read replaces the earlier record's payload and source, before the transition.
+    expect(refreshed).toEqual([[JSON.stringify({ ownerTaskId: 't1', requiresPr: true }), 'runner', 'f1']]);
+    expect(crashed.seen.indexOf('refresh_unapplied_fact')).toBeLessThan(crashed.seen.indexOf('transition'));
+    // An applied duplicate is never rewritten.
+    expect(applied.seen).not.toContain('refresh_unapplied_fact');
 
     const vanished = router({ insert_fact: () => ({ rows: [] }), find_fact: () => ({ rows: [] }) });
     await expect(ingestFact({ kind: 'delivery_opened', workspaceId: 'w1', source: 'runner', ownerTaskId: 't1', requiresPr: true }, { exec: vanished.exec }))

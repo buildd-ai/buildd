@@ -9,7 +9,7 @@
  */
 import type { ApiFn, ToolResult } from './mcp-tools';
 import { formatVisualReview, missionArtifacts } from './visual-review-text';
-import { executorDisplayName, fleetGroupKey, runnerFleetIdentity, type RunnerFleetIdentity, type VisualReviewModel } from '@buildd/shared';
+import { executorDisplayName, fleetGroupKey, runnerFleetIdentity, type RunnerFleetIdentity, type VisualReviewModel, type ActiveRunnerWorkspaces } from '@buildd/shared';
 
 const text = (t: string): ToolResult => ({ content: [{ type: 'text' as const, text: t }] });
 const errorResult = (t: string): ToolResult => ({ content: [{ type: 'text' as const, text: t }], isError: true });
@@ -129,7 +129,29 @@ type RunnerRow = Record<string, unknown> & {
   environment?: { envKeys?: unknown } | null;
   workspaceIds?: unknown;
   workspaceNames?: unknown;
+  workspaceTeamNames?: unknown;
 };
+
+/**
+ * A runner's workspaces (spec bd009650 R-7). One team, or no team names from
+ * the server: "ws1, ws2" as before. More than one team: grouped,
+ * "Team A: ws1, ws2 · Team B: ws3", in the order the teams first appear.
+ */
+export function runnerWorkspacesText(r: Partial<ActiveRunnerWorkspaces> | RunnerRow): string {
+  const names = Array.isArray(r.workspaceNames) ? (r.workspaceNames as unknown[]).map(String) : [];
+  if (names.length === 0) return 'none';
+  const teams = r.workspaceTeamNames;
+  const plain = names.join(', ');
+  if (!Array.isArray(teams) || teams.length !== names.length) return plain;
+  const groups = new Map<string, string[]>();
+  names.forEach((name, i) => {
+    const t = teams[i];
+    const key = typeof t === 'string' && t ? t : 'team unknown';
+    groups.set(key, [...(groups.get(key) ?? []), name]);
+  });
+  if (groups.size < 2) return plain;
+  return [...groups].map(([team, ws]) => `${team}: ${ws.join(', ')}`).join(' · ');
+}
 
 /** The heartbeat advertises the `browser` capability (CAPABILITY_BROWSER). */
 function hasBrowser(r: RunnerRow): boolean {
@@ -218,9 +240,13 @@ export async function runListRunners(
     ];
     if (r.updateAvailable) update.push(`updateAvailableSince=${r.updateAvailableSince ?? 'unknown'}`);
     if (r.trackedBranch === 'main') update.push(`upToDateWithDeployed=${r.upToDateWithDeployed ?? 'null'}`);
-    const runnerBuild = `runnerCommit=${r.runnerCommit ?? 'null'} runnerVersion=${r.runnerVersion ?? 'null'}`;
-    const workspaces = ((r.workspaceNames as string[]) ?? []).join(', ') || 'none';
-    return `- ${header}\n  ${runnerBuild}\n  ${update.join(' ')}\n  workspaces: ${workspaces} · last heartbeat ${r.lastUpdated}`;
+    const drain = r.updateDrain;
+    const drainLine = drain && typeof drain === 'object' && 'since' in drain
+      ? `\n  claims halted: draining for update since ${String(drain.since)}, applies by ${String((drain as { endsAt?: unknown }).endsAt)} or when ${String((drain as { busy?: unknown }).busy)} busy worker(s) finish — free slots are expected, not a claim-gate bug`
+      : '';
+    const runnerBuild = `runnerCommit=${r.runnerCommit ?? 'null'} runnerVersion=${r.runnerVersion ?? 'null'} modelAuth=${r.modelAuthSource ?? 'not_reported'}${r.codexAuthSource ? ` codexAuth=${r.codexAuthSource}` : ''}`;
+    const workspaces = runnerWorkspacesText(r);
+    return `- ${header}${drainLine}\n  ${runnerBuild}\n  ${update.join(' ')}\n  workspaces: ${workspaces} · last heartbeat ${r.lastUpdated}`;
   });
 
   const count = groups.size > 0 ? `${hosts.length} runner(s), ${groups.size} elastic group(s):` : `${runners.length} runner(s):`;

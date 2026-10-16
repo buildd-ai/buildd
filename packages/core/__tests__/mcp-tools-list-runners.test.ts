@@ -93,6 +93,78 @@ describe('list_runners', () => {
     expect(out).toContain('last heartbeat 2026-09-27T00:00:00.000Z');
   });
 
+  describe('workspaces named by team (spec bd009650 R-7)', () => {
+    const row = { accountName: 'Runner A', localUiUrl: 'http://localhost:8766', activeWorkers: 0, maxConcurrent: 1, lastUpdated: '2026-09-27T00:00:00.000Z' };
+    const render = async (r: Record<string, unknown>) => {
+      mockApi.mockResolvedValueOnce({ activeLocalUis: [{ ...row, ...r }] });
+      return (await handleBuilddAction(mockApi as unknown as ApiFn, 'list_runners', {}, ctx())).content[0].text;
+    };
+
+    it('groups workspaces by team when a runner spans more than one', async () => {
+      const out = await render({
+        workspaceIds: ['a1', 'b1', 'a2'],
+        workspaceNames: ['alpha', 'beta', 'gamma'],
+        workspaceTeamNames: ['Team A', 'Team B', 'Team A'],
+      });
+      expect(out).toContain('workspaces: Team A: alpha, gamma · Team B: beta · last heartbeat');
+    });
+
+    it('keeps the plain line when every workspace is in one team', async () => {
+      const out = await render({
+        workspaceIds: ['a1', 'a2'],
+        workspaceNames: ['alpha', 'gamma'],
+        workspaceTeamNames: ['Team A', 'Team A'],
+      });
+      expect(out).toContain('workspaces: alpha, gamma · last heartbeat');
+      expect(out).not.toContain('Team A');
+    });
+
+    it('keeps the plain line for a server that sends no team names', async () => {
+      const out = await render({ workspaceIds: ['a1', 'b1'], workspaceNames: ['alpha', 'beta'] });
+      expect(out).toContain('workspaces: alpha, beta · last heartbeat');
+    });
+
+    it('says when a workspace\'s team is not known, rather than filing it under another team', async () => {
+      const out = await render({
+        workspaceIds: ['a1', 'x1'],
+        workspaceNames: ['alpha', 'mystery'],
+        workspaceTeamNames: ['Team A', null],
+      });
+      expect(out).toContain('workspaces: Team A: alpha · team unknown: mystery · last heartbeat');
+    });
+
+    it('ignores team names that do not line up with the workspace names', async () => {
+      const out = await render({ workspaceIds: ['a1', 'b1'], workspaceNames: ['alpha', 'beta'], workspaceTeamNames: ['Team A'] });
+      expect(out).toContain('workspaces: alpha, beta · last heartbeat');
+    });
+  });
+
+  it('names the model login each runner reported, or not_reported', async () => {
+    const row = { accountName: 'Runner A', activeWorkers: 0, maxConcurrent: 1, workspaceNames: [], lastUpdated: '2026-09-27T00:00:00.000Z' };
+    mockApi.mockResolvedValueOnce({
+      activeLocalUis: [
+        { ...row, localUiUrl: 'http://localhost:8766', modelAuthSource: 'machine_login' },
+        { ...row, localUiUrl: 'http://localhost:8767' },
+      ],
+    });
+    const out = (await handleBuilddAction(mockApi as unknown as ApiFn, 'list_runners', {}, ctx())).content[0].text;
+    expect(out).toContain('modelAuth=machine_login');
+    expect(out).toContain('modelAuth=not_reported');
+  });
+
+  it('names the Codex login only when a runner reported one', async () => {
+    const row = { accountName: 'Runner A', activeWorkers: 0, maxConcurrent: 1, workspaceNames: [], lastUpdated: '2026-09-27T00:00:00.000Z' };
+    mockApi.mockResolvedValueOnce({
+      activeLocalUis: [
+        { ...row, localUiUrl: 'http://localhost:8766', modelAuthSource: 'machine_login', codexAuthSource: 'api_key' },
+        { ...row, localUiUrl: 'http://localhost:8767', modelAuthSource: 'machine_login' },
+      ],
+    });
+    const out = (await handleBuilddAction(mockApi as unknown as ApiFn, 'list_runners', {}, ctx())).content[0].text;
+    expect(out).toContain('modelAuth=machine_login codexAuth=api_key');
+    expect(out.match(/codexAuth=/g)?.length).toBe(1);
+  });
+
   it('omits updateAvailableSince when the runner is up to date', async () => {
     mockApi.mockResolvedValueOnce({
       activeLocalUis: [
@@ -239,5 +311,20 @@ describe('list_runners', () => {
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toMatch(/"Nope"/);
     expect(mockApi.mock.calls.some((c: unknown[]) => String(c[0]).startsWith('/api/workers/active'))).toBe(false);
+  });
+
+  it('says why a draining runner has free slots and is not claiming', async () => {
+    mockApi.mockResolvedValueOnce({
+      activeLocalUis: [{
+        localUiUrl: 'http://localhost:8766', accountName: 'Runner A', activeWorkers: 4, maxConcurrent: 10,
+        workspaceNames: [], updateAvailable: true, updating: false, trackedBranch: 'dev',
+        updateDrain: { since: '2026-10-11T10:00:00.000Z', endsAt: '2026-10-11T11:00:00.000Z', busy: 4 },
+        lastUpdated: '2026-10-11T10:05:00.000Z',
+      }],
+    });
+    const res = await handleBuilddAction(mockApi as unknown as ApiFn, 'list_runners', {}, ctx());
+    const out = res.content[0].text;
+    expect(out).toContain('claims halted: draining for update since 2026-10-11T10:00:00.000Z');
+    expect(out).toContain('applies by 2026-10-11T11:00:00.000Z or when 4 busy worker(s) finish');
   });
 });

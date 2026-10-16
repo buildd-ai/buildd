@@ -79,7 +79,7 @@ describe('typicalBiasLine (AC-11)', () => {
 describe('limited history (AC-13)', () => {
   test('counts estimates that leaned on the new-repo prior or on no evidence, with no rate', () => {
     const line = limitedHistoryLine([src('neighbours', 20), src('prior', 3), src('default', 1)]);
-    expect(line).toBe('4 of these had little history in the repo to go on.');
+    expect(line).toBe('4 of these had limited comparable history in the repo.');
     expect(line).not.toMatch(/in 10|%|longer|shorter/);
   });
   test('none leaned on them: no line', () => {
@@ -89,9 +89,9 @@ describe('limited history (AC-13)', () => {
   test('shows below the cut-off too, under the count', () => {
     const v = view(score(3, 0.33), [src('prior', 2), src('neighbours', 1)]);
     expect(v.lead).toBe(NOT_ENOUGH);
-    expect(v.limitedHistory).toBe('2 of these had little history in the repo to go on.');
+    expect(v.limitedHistory).toBe('2 of these had limited comparable history in the repo.');
   });
   test('one reads in the singular', () => {
-    expect(limitedHistoryLine([src('prior', 1)])).toBe('1 of these had little history in the repo to go on.');
+    expect(limitedHistoryLine([src('prior', 1)])).toBe('1 of these had limited comparable history in the repo.');
   });
 });

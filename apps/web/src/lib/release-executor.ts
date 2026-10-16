@@ -6,6 +6,7 @@ import { and, desc, eq, inArray, isNotNull } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import { resolveReleaseStrategy, resolveReleaseTrigger } from '@buildd/core/release-strategy';
 import { classifyCheckRuns, type CheckRun } from '@/lib/release/dispatch';
+import { mergeReleasePrPinned } from '@/lib/release/pinned-merge';
 import { detectArchetype } from '@buildd/core/release-archetype';
 import { attributeRelease } from '@buildd/core/release-attribution';
 import { triggerEvent, channels, events } from '@/lib/pusher';
@@ -176,41 +177,23 @@ async function mergeIntoProd(
   repoFullName: string,
   workerBranch: string,
   prNumber: number | null | undefined,
-  prodBranch: string
-): Promise<{ merged: boolean; sha?: string; message: string }> {
+  prodBranch: string,
+  gate: { workspaceId: string; taskId: string },
+): Promise<{ merged: boolean; sha?: string; message: string; hold?: boolean }> {
   // A tracked PR is the release unit. If it cannot be merged, the release
   // fails — it never falls back to pushing the branch around the PR, because
   // "not mergeable" (405) is exactly the answer from required reviews, required
   // checks, conflicts or a draft: the gates the PR exists to enforce.
   if (prNumber) {
-    try {
-      const mergeResp = await githubApi(
-        installationId,
-        `/repos/${repoFullName}/pulls/${prNumber}/merge`,
-        {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ merge_method: 'squash' }),
-        }
-      );
-      return { merged: true, sha: mergeResp?.sha, message: 'PR merged via squash' };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      // The merge call failing does not mean the work is not in prod: the PR
-      // may already be merged (auto-merge, a human, a redelivery). Ask GitHub
-      // rather than pattern-matching the error text.
-      try {
-        const pr = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
-        if (pr?.merged === true) {
-          return {
-            merged: true,
-            sha: (pr.merge_commit_sha as string | undefined) ?? undefined,
-            message: `PR #${prNumber} already merged`,
-          };
-        }
-      } catch { /* fall through to the failure below */ }
-      return { merged: false, message: `PR #${prNumber} merge failed: ${msg}` };
-    }
+    // D9 (workflow-kernel-library.md §4): the review gate at the head it merges, pinned to
+    // that head. A moved head is refused, never merged unpinned.
+    const r = await mergeReleasePrPinned({
+      workspaceId: gate.workspaceId, installationId, repoFullName, prNumber, verifiedHeadSha: null,
+      mergeMethod: 'squash', surface: 'release-executor every_merge', taskId: gate.taskId,
+    });
+    if (r.merged) return { merged: true, sha: r.sha ?? undefined, message: r.alreadyMerged ? `PR #${prNumber} already merged` : 'PR merged via squash' };
+    if (r.hold) return { merged: false, hold: true, message: `PR #${prNumber} is not landed yet: ${r.message}` };
+    return { merged: false, message: `PR #${prNumber} merge failed: ${r.message}` };
   }
 
   // No PR — use GitHub merge API to merge the branch into prodBranch
@@ -626,6 +609,11 @@ export interface ReleaseInput {
  */
 export type ReleaseOutcome = ReleaseResult & {
   skipReason?: 'mission_integration_branch';
+  /**
+   * A held release (`pending_ci`): how the PR merges when it lands later. A held worker PR
+   * (every_merge) squashes, as `mergeIntoProd` does; a release PR merges with a merge commit.
+   */
+  releaseMergeMethod?: 'merge' | 'squash';
 };
 
 export async function executeRelease(input: ReleaseInput): Promise<ReleaseOutcome> {
@@ -852,49 +840,32 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseOutcom
       rbPreviousSha = ref?.object?.sha as string | undefined;
     } catch { /* non-fatal */ }
 
-    // CI is passing — merge the release PR now
-    const mergeResp = await githubApi(
-      repo.installation.installationId,
-      `/repos/${repo.fullName}/pulls/${releasePr.number}/merge`,
-      {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ merge_method: 'merge' }),
-      },
-    ).catch((err: unknown) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      return { merged: false, message: msg } as Record<string, unknown>;
+    // CI is passing on releasePr.headSha — merge exactly that head (D8, AC-16): the review
+    // gate at it, and GitHub's own sha pin. A head that moved since is refused.
+    const merged = await mergeReleasePrPinned({
+      workspaceId, installationId: repo.installation.installationId, repoFullName: repo.fullName, prNumber: releasePr.number,
+      verifiedHeadSha: releasePr.headSha, mergeMethod: 'merge', surface: 'release-executor release-pr', taskId,
     });
-
-    // The merge endpoint answers `{ merged: true, sha }` on success. Anything
-    // else — including an empty body — is not evidence of a merge.
-    let rbMergeSha: string | undefined;
-    if (!mergeResp?.sha && mergeResp?.merged !== true) {
-      // The merge call failing does not mean prod is unmoved: a human or the
-      // check_suite webhook may have merged the release PR first. Ask GitHub,
-      // as mergeIntoProd does — a `failed` without mergedAt makes mission
-      // release retry a release that already shipped.
-      let alreadyMerged = false;
-      try {
-        const pr = await githubApi(repo.installation.installationId, `/repos/${repo.fullName}/pulls/${releasePr.number}`);
-        if (pr?.merged === true) {
-          alreadyMerged = true;
-          rbMergeSha = (pr.merge_commit_sha as string | undefined) ?? undefined;
-        }
-      } catch { /* fall through to the failure below */ }
-
-      if (!alreadyMerged) {
-        return {
-          status: 'failed',
-          message: `Release: FAILED — could not merge release PR #${releasePr.number}: ${mergeResp?.message ?? 'merge failed'}`,
-          error: String(mergeResp?.message ?? 'merge failed'),
-          releasePrNumber: releasePr.number,
-          releasePrUrl: releasePr.url,
-        };
-      }
-    } else {
-      rbMergeSha = mergeResp.sha as string | undefined;
+    if (!merged.merged && merged.hold) {
+      // The kernel owns it and has not landed it yet (or the control plane did not answer):
+      // the release waits for CI/the kernel and is retried, it has not failed.
+      return {
+        status: 'pending_ci',
+        message: `Release: waiting — release PR #${releasePr.number} is not landed yet: ${merged.message}`,
+        releasePrNumber: releasePr.number,
+        releasePrUrl: releasePr.url,
+      };
     }
+    if (!merged.merged) {
+      return {
+        status: 'failed',
+        message: `Release: FAILED — could not merge release PR #${releasePr.number}: ${merged.message}`,
+        error: merged.message,
+        releasePrNumber: releasePr.number,
+        releasePrUrl: releasePr.url,
+      };
+    }
+    const rbMergeSha: string | undefined = merged.sha ?? undefined;
 
     mergedAt = new Date().toISOString();
     mergeSha = rbMergeSha;
@@ -915,9 +886,19 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseOutcom
       repo.fullName,
       worker.branch,
       worker.prNumber,
-      prodBranch
+      prodBranch,
+      { workspaceId, taskId },
     );
 
+    if (!mergeResult.merged && mergeResult.hold && worker.prNumber) {
+      return {
+        status: 'pending_ci',
+        message: `Release: waiting — ${mergeResult.message}`,
+        releasePrNumber: worker.prNumber,
+        releasePrUrl: worker.prUrl ?? undefined,
+        releaseMergeMethod: 'squash',
+      };
+    }
     if (!mergeResult.merged) {
       return {
         status: 'failed',

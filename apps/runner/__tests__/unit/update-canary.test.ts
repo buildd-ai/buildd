@@ -191,6 +191,8 @@ describe('recordOutcome — trip rule', () => {
     'connect ETIMEDOUT',
     'Process restarted',
     'Terminated by server',
+    'worker already failed',
+    'worker already cancelled',
     'Task failed or was cancelled on remote server',
     'Deferred: another codex worker is active',
     'needs_input: which branch?',
@@ -338,7 +340,8 @@ describe('runCanaryTrip — rollback mechanics', () => {
       bunInstall: async () => { installed = true; },
     };
     const install = join(dir, 'install');
-    const { d } = deps({ rollbackTo: (sha) => rollbackTo(sha, install, { rmSync: () => {} } as any, exec) });
+    require('fs').mkdirSync(install, { recursive: true });
+    const { d } = deps({ rollbackTo: (sha) => rollbackTo(sha, install, require('fs'), exec) });
     await runCanaryTrip(c, trip, d);
     expect(gitCalls).toContainEqual(['reset', '--hard', GOOD]);
     expect(installed).toBe(true);

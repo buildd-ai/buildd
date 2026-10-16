@@ -52,7 +52,7 @@ export const STATES: Record<StateKey, StateDef> = {
   queued:     { glyph: '░', word: 'Queued',     tone: 'q',   pattern: 'hatch-sparse',     frame: 'none',     cellGlyph: false, means: 'Queued behind a chain that is itself waiting' },
   recovering: { glyph: '⊘', word: 'Recovering', tone: 'q',   pattern: 'flat',             frame: 'hairline', cellGlyph: true,  means: "A check can't run; buildd is restoring it" },
   not_landed: { glyph: '✕', word: 'Not landed', tone: 'bad', pattern: 'flat',             frame: 'none',     cellGlyph: true,  means: 'The PR closed without merging' },
-  needs_you:  { glyph: '!', word: 'Needs you',  tone: 'dec', pattern: 'flat',             frame: 'decision', cellGlyph: true,  means: 'A decision only a person can make' },
+  needs_you:  { glyph: '!', word: 'Waiting on you',  tone: 'dec', pattern: 'flat',             frame: 'decision', cellGlyph: true,  means: 'A decision only a person can make' },
 };
 
 export const STATE_KEYS = Object.keys(STATES) as StateKey[];
@@ -91,8 +91,9 @@ export const STATUS_PILL: Record<string, { state: StateKey; label: string }> = {
   running:        { state: 'running',    label: 'Running' },
   // A task row claimed and being worked (`tasks.status`); same word the task header uses.
   in_progress:    { state: 'running',    label: 'Running' },
-  waiting_input:  { state: 'needs_you',  label: 'Needs input' },
-  waiting_on_you: { state: 'needs_you',  label: 'Needs input' },
+  // Said in words, not a label: a parked agent is waiting for an answer.
+  waiting_input:  { state: 'needs_you',  label: 'Waiting for your answer' },
+  waiting_on_you: { state: 'needs_you',  label: 'Waiting for you' },
   // The subject-liveness claim gate excludes this task: no worker can ever
   // pick it up. See lib/subject-gate-contract.ts.
   subject_dead:   { state: 'not_landed', label: 'Superseded' },

@@ -181,7 +181,10 @@ at what threshold.
   accuracy (an error counts as wrong), the rule's accuracy on the same cases,
   agreement with the production model, calibration (ten reliability bins and
   ECE) and a precision/coverage sweep for **each confidence source**: the
-  answer's `confidence` field and `top_p`, the probability of the chosen label.
+  answer's `confidence` field, `top_p` (the probability of the chosen label),
+  `margin` (top p minus the runner-up's probability) and `calibrated_top_p`
+  (top p through an isotonic map fitted on the labelled cases; the sweep reads
+  cross-fitted values, each case mapped through the other half's fit).
   They differ by model: Clef's `confidence` is compressed, its top p is usable.
   Also latency p50/p95 and cost per 1,000 priced calls (Workers AI returns no
   price; those calls are counted as unpriced).
@@ -189,7 +192,9 @@ at what threshold.
   lower bound on precision is at least max(rule accuracy, the kind's target),
   once the kind has its minimum of labelled cases (defaults: target 0.9, 50
   labelled; per kind in `KIND_TARGETS`, `compare.ts`). `derived` names the
-  source used (the qualifying one covering more cases); null with a reason
+  source used (the qualifying one covering more cases; on a tie confidence or
+  top p, then margin, then calibrated top p) and, for `calibrated_top_p`, the
+  isotonic breakpoints (`calibration`) a measurement stores; null with a reason
   (`too_few_labelled`, `no_signal`, `no_threshold_meets_bar`) otherwise.
 - **Bounded**: `concurrency` calls per model (default 4), a cost cap (default
   $2, at most $25) and the 240s budget. Once either runs out no call starts;

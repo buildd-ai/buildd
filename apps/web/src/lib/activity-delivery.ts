@@ -412,7 +412,7 @@ function lineFor(d: Delivery, delivery: TaskDelivery, prNumber: number | null, r
     case 'unavailable': return 'The audit could not run. It retries on its own.';
     case 'needs': return d.root.waitingPrompt?.trim() || 'Waiting on a decision.';
     case 'notlanded': return prNumber ? `Finished, but ${pr} closed without merging.` : 'Stopped without landing.';
-    case 'waiting': return delivery.waitingOn === 'dependency' ? 'Starts when the work it depends on lands.' : 'Starts when a slot frees up.';
+    case 'waiting': return delivery.waitingOn === 'dependency' ? 'Starts when the work it depends on lands.' : 'Next in line for a runner.';
     default: return DELIVERY_KIND[delivery.kind].label;
   }
 }

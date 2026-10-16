@@ -11,6 +11,7 @@ import {
   buildFlowTimeline, criticalPath, criticalPathLine, defaultFlowSelection, flowAxisTicks, flowEdgePaths, flowEdges, flowLit,
   FLOW_AUDIT_WAIT_MS, FLOW_DEFAULT_TASK_MS, FLOW_FOLD_ABOVE, FLOW_ROW_UNITS, FLOW_X_UNITS, layoutFlowTimeline, shouldFoldMerged,
   type FlowTask,
+  flowTickNearNow,
 } from './flow-timeline';
 import { stripMarks, stripOrder } from './mission-task-strip';
 
@@ -24,7 +25,7 @@ function flow(variant: 'small' | 'wide') {
   return { ...f, tl, tick };
 }
 
-describe('rows (ROW-1, ROW-2)', () => {
+describe('rows (R-1, R-2)', () => {
   it('one row per task, in the strip order', () => {
     const { model, tl } = flow('small');
     expect(tl.order).toEqual(stripOrder(model));
@@ -69,7 +70,7 @@ describe('rows (ROW-1, ROW-2)', () => {
   });
 });
 
-describe('critical path (CP-1..CP-3)', () => {
+describe('critical path (R-15..R-17)', () => {
   it('is the longest path through the gates', () => {
     // A(10m) → C and B(60m) → C: the path runs through B.
     const order = ['A', 'B', 'C'];
@@ -113,7 +114,7 @@ describe('critical path (CP-1..CP-3)', () => {
   });
 });
 
-describe('same-files edges gate (GATE-1, GATE-2)', () => {
+describe('same-files edges gate (R-5, R-6)', () => {
   it('a same-files wait is a gate: it holds the start and is drawn', () => {
     const { tl, idOf } = flow('wide');
     const g = tl.gates.find(x => x.from === idOf(5) && x.to === idOf(10));
@@ -145,7 +146,7 @@ describe('same-files edges gate (GATE-1, GATE-2)', () => {
   });
 });
 
-describe('edge lighting matches the strip (LIT-1..LIT-3)', () => {
+describe('edge lighting matches the strip (R-9..R-11)', () => {
   const cases: Array<['small' | 'wide', number]> = [['small', 4], ['small', 6], ['small', 7], ['small', 1], ['wide', 2], ['wide', 9], ['wide', 13], ['wide', 5]];
   for (const [v, n] of cases) {
     it(`${v} · select ${String(n).padStart(2, '0')}: lit = selection + what the strip marks`, () => {
@@ -172,7 +173,7 @@ describe('edge lighting matches the strip (LIT-1..LIT-3)', () => {
   });
 });
 
-describe('merged fold (FOLD-1..FOLD-3)', () => {
+describe('merged fold (R-12..R-14)', () => {
   it('folds above the threshold when two or more have merged', () => {
     const { tl } = flow('wide');
     expect(tl.order.length).toBeGreaterThan(FLOW_FOLD_ABOVE);
@@ -219,7 +220,7 @@ describe('merged fold (FOLD-1..FOLD-3)', () => {
   });
 });
 
-describe('rows never grow horizontally (W-1)', () => {
+describe('rows never grow horizontally (R-18)', () => {
   it('every horizontal position is a percentage of the window', () => {
     for (const v of ['small', 'wide'] as const) {
       const { tl } = flow(v);
@@ -262,5 +263,14 @@ describe('rows never grow horizontally (W-1)', () => {
       expect(ticks[0]).toEqual({ at: 0, label: '0' });
       for (const t of ticks) expect(t.at).toBeLessThanOrEqual(100);
     }
+  });
+});
+
+describe('flowTickNearNow: an axis tick never runs into "now" (visual review round 2, "10dnow")', () => {
+  it('hides a tick on top of now, hides it only on a phone when close, shows the rest', () => {
+    expect(flowTickNearNow(100, 98)).toBe('hide');
+    expect(flowTickNearNow(80, 92)).toBe('phone');
+    expect(flowTickNearNow(40, 92)).toBe('show');
+    expect(flowTickNearNow(100, null)).toBe('show');
   });
 });

@@ -6,11 +6,18 @@
  */
 import { beforeAll, describe, expect, test } from 'bun:test';
 import { sql } from 'drizzle-orm';
-import { recordPrFact, prFactApplies, type PrFact } from '@buildd/core/pr-facts';
+import { recordPrFact as record, prFactApplies, unscopedPrFactScope, type PrFact, type PrFactTarget, type RecordPrFactOptions } from '@buildd/core/pr-facts';
 import { assertDbConfigured, q, seedTask, seedWorkspace } from './harness';
 
 let workspaceId: string;
 let prSeq = 7300;
+
+/**
+ * These rows have no delivery: the ordering rules are the funnel's own. A terminal fact needs a
+ * scope (S4a); the delivery-owned half is tests/db/kernel-pr-projection.test.ts.
+ */
+const NO_DELIVERY = unscopedPrFactScope('tests/db/pr-facts: rows with no delivery');
+const recordPrFact = (t: PrFactTarget, f: PrFact, o: RecordPrFactOptions = {}) => record(t, f, { scope: NO_DELIVERY, ...o });
 
 beforeAll(async () => {
   assertDbConfigured();

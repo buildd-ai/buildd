@@ -34,3 +34,14 @@ describe('Home — InitiativeRail is unmounted (AC-6)', () => {
     expect(source).not.toContain('deriveInitiativeVerdict');
   });
 });
+
+describe('Home — the empty-initiative line shows only under an initiative filter', () => {
+  const source = readFileSync(join(import.meta.dir, 'page.tsx'), 'utf8');
+  it('"Nothing waiting for this initiative." is gated on initFilter', () => {
+    const line = source.split('\n').find(l => l.includes('Nothing waiting for this initiative.')) ?? '';
+    expect(line).toContain('initFilter &&');
+  });
+  it('the quiet-missions line gets its causes from the delivery projection', () => {
+    expect(source).toContain('quietCauses={quietCauses}');
+  });
+});

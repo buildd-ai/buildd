@@ -80,7 +80,8 @@ export interface ComposeActionDeps {
   mergeThroughGate: (prNumber: number, workspaceId: string) => Promise<{ status: number; body: any }>;
   recordAndDispatch: (params: RecordAndDispatchParams) => Promise<RecordAndDispatchResult>;
   dispatch: (installationId: number, owner: string, name: string, opts: { workflowFile: string; ref: string; inputs: Record<string, string> }) => Promise<DispatchResult>;
-  mergePr: (installationId: number, repo: string, prNumber: number, method: 'merge', expectedHeadSha: string) => Promise<MergePullRequestResult>;
+  /** `actorUserId`: the person releasing; their own principal for a kernel-owned candidate. */
+  mergePr: (installationId: number, repo: string, prNumber: number, method: 'merge', expectedHeadSha: string, actorUserId: string | null | undefined) => Promise<MergePullRequestResult>;
   /** Live head of a branch, to refuse a cut when dev moved under the page. */
   branchHead: (branch: string) => Promise<string | null>;
 }
@@ -290,7 +291,7 @@ async function release(
   if (bad.length) return refuse(`Not released: ${bad.join(', ')} ${bad.length === 1 ? 'has' : 'have'} not passed on ${c.candidateSha.slice(0, 9)}.`);
   if (!c.verdict.approved) return refuse(`Not released: no approval stands on ${c.candidateSha.slice(0, 9)}.`);
 
-  const merged = await deps.mergePr(target.installationId, target.repoFullName, c.prNumber, 'merge', c.candidateSha);
+  const merged = await deps.mergePr(target.installationId, target.repoFullName, c.prNumber, 'merge', c.candidateSha, base.actorUserId);
   await record(deps, {
     ...base,
     step: 'release',

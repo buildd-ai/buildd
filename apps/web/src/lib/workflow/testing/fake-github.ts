@@ -1058,6 +1058,16 @@ export class FakeGithub {
       };
     }
 
+    // Statuses API: a commit status on a sha (the kernel's `buildd/landing`), latest per context.
+    if (a === 'statuses' && b1 && !c && method === 'POST') {
+      const head = this.resolve(repo, b1);
+      const context = String(b.context ?? 'default');
+      repo.statuses = repo.statuses.filter((x) => !(x.sha === head && x.context === context));
+      const st: CommitStatus = { context, sha: head, state: b.state as CommitStatusState, description: String(b.description ?? ''), updatedAt: this.tick() };
+      repo.statuses.push(st);
+      return { status: 201, body: { id: this.nextId(), context, state: st.state, description: st.description, sha: head } };
+    }
+
     if (a === 'issues') {
       if (c === 'comments' && method === 'GET') {
         if (Number(query.get('page') ?? '1') > 1) return { body: [] };

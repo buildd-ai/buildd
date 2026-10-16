@@ -179,7 +179,7 @@ export async function approvePlan(
       id: true, workspaceId: true, missionId: true, context: true, pathManifest: true, mode: true,
       // Who the plan is for (resolveTaskRequesterUserId): its children are too.
       createdByUserId: true, parentTaskId: true, scheduleId: true,
-      // Rule P1-9: a re-plan raised inside a phase keeps its children in it.
+      // mission-legibility R-9: a re-plan raised inside a phase keeps its children in it.
       missionPhaseIndex: true, missionPhaseLabel: true,
     },
   });
@@ -469,7 +469,8 @@ export async function approvePlan(
 
   // Second pass: resolve dependsOn refs and baseBranch to actual IDs/branch names
   for (const step of survivingPlan) {
-    const updates: Record<string, unknown> = { updatedAt: new Date() };
+    // Typed to the keys this pass writes (dependencies and base branch), never a task's status or result.
+    const updates: { updatedAt: Date; dependsOn?: string[]; context?: Record<string, unknown> } = { updatedAt: new Date() };
 
     if (step.dependsOn && step.dependsOn.length > 0) {
       const resolvedDeps = step.dependsOn
@@ -500,7 +501,7 @@ export async function approvePlan(
     if (Object.keys(updates).length > 1) { // more than just updatedAt
       await db
         .update(tasks)
-        .set(updates as any)
+        .set({ updatedAt: updates.updatedAt, dependsOn: updates.dependsOn, context: updates.context })
         .where(eq(tasks.id, refToId[step.ref]));
     }
   }

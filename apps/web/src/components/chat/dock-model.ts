@@ -90,7 +90,7 @@ export function dockToneForDelivery(d: DeliveryReadingInput): { label: string; t
 function taskTone(view: TaskObjectView): { label: string; tone: DockTone; stopped: boolean; kernel?: boolean } {
   const w = view.worker;
   // A worker's own question stays a question (§13.2 dev. 3).
-  if (w?.waiting || w?.status === 'waiting_input') return { label: 'Needs you', tone: 'needs', stopped: false };
+  if (w?.waiting || w?.status === 'waiting_input') return { label: 'Has a question', tone: 'needs', stopped: false };
   const kernel = view.delivery ? dockToneForDelivery(view.delivery) : null;
   if (kernel) return { ...kernel, kernel: true };
   // Legacy-owned: the one fact-cache mapping. A completed task whose PR is
@@ -131,7 +131,7 @@ export function taskDockModel(view: TaskObjectView): TaskDockModel {
 
   const happened: TaskDockModel['happened'] = [...(view.happened ?? [])];
   if (t.tone === 'needs') {
-    const text = t.kernel && view.delivery ? `${view.delivery.headline}.` : t.stopped ? 'Stopped. Needs input.' : 'Needs input.';
+    const text = t.kernel && view.delivery ? `${view.delivery.headline}.` : t.stopped ? 'Stopped. Waiting on you.' : 'Has a question.';
     happened.push({ ts: null, text, needs: true });
   }
 
@@ -160,7 +160,7 @@ export function taskDockModel(view: TaskObjectView): TaskDockModel {
 export interface AtWorkRow { id: string; label: string; state: string; tone: DockTone }
 
 const WORDS: Partial<Record<BoardStatus, [string, DockTone]>> = {
-  waiting: ['needs input', 'needs'],
+  waiting: ['has a question', 'needs'],
   ci_failed: ['CI failed', 'needs'],
   failed: ['stopped', 'needs'],
   fixing: ['fixing', 'live'],

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
 const mockGetCurrentUser = mock(() => null as any);
@@ -371,6 +371,36 @@ describe('POST /api/prs/[prNumber]/retry-ci', () => {
       expect(res.status).toBe(409);
       expect((await res.json()).current).toMatchObject({ state: 'MERGED' });
       expect(mockTasksValues).not.toHaveBeenCalled();
+    });
+
+    describe('cut over to the control plane (workflow-kernel-library §3)', () => {
+      let cp: ReturnType<typeof import('@/lib/workflow/testing/cut-over').cutOver> | null = null;
+      afterEach(() => { cp?.restore(); cp = null; });
+      it('the control plane unreachable: 503 naming it, and the legacy dispatch never runs in its place', async () => {
+        const { cutOver } = await import('@/lib/workflow/testing/cut-over');
+        cp = cutOver();
+        authed();
+        mockRequestCiRetry.mockClear(); mockResolveOrAdoptPrOwner.mockClear(); mockTasksValues.mockClear();
+        const res = await POST(...makeRequest('42', { workspaceId: 'ws-1' }));
+        expect(res.status).toBe(503);
+        expect(await res.json()).toMatchObject({ code: 'control_plane_unavailable', controlPlane: true, retryable: true, idempotencyKey: expect.stringMatching(/^request_ci_retry:/) });
+        expect(cp.calls.map((c) => c.op)).toContain('request_ci_retry');
+        expect(mockRequestCiRetry).not.toHaveBeenCalled();
+        expect(mockResolveOrAdoptPrOwner).not.toHaveBeenCalled();
+        expect(mockTasksValues).not.toHaveBeenCalled();
+      });
+
+      it('the control plane refuses the command: 403, not a 500, and no legacy dispatch', async () => {
+        const { cutOver, refusedByControlPlane } = await import('@/lib/workflow/testing/cut-over');
+        cp = cutOver({ reply: refusedByControlPlane });
+        authed();
+        mockResolveOrAdoptPrOwner.mockClear(); mockTasksValues.mockClear();
+        const res = await POST(...makeRequest('42', { workspaceId: 'ws-1' }));
+        expect(res.status).toBe(403);
+        expect(await res.json()).toMatchObject({ code: 'control_plane_refused' });
+        expect(mockResolveOrAdoptPrOwner).not.toHaveBeenCalled();
+        expect(mockTasksValues).not.toHaveBeenCalled();
+      });
     });
   });
 });

@@ -2,7 +2,7 @@
 title: Model Routing and Tiers
 status: active
 owner: max
-last_verified: 2026-10-11
+last_verified: 2026-10-15
 summary: A claimed task MUST resolve to one model id at claim time under a fixed precedence — pin, task tier, role pin, then kind×complexity under budget gates and role floor — recorded on tasks.predicted_model.
 domain: tasks
 surfaces: [packages/core/model-router.ts, packages/core/model-tier-registry.ts, packages/core/model-policy.ts, apps/web/src/app/api/workers/claim/route.ts]
@@ -53,7 +53,7 @@ evaluate by hand.
 - Resolution runs in `POST /api/workers/claim` between the dependency gates and
   the optimistic-lock `UPDATE`. `predictedModel` and `context.model` are written
   in the **same** `set()` payload
-  (`apps/web/src/app/api/workers/claim/route.ts:1612-1630`), so the analytics
+  (`apps/web/src/app/api/workers/claim/route.ts`), so the analytics
   column and the dispatched value cannot disagree.
 - The precedence is fixed and total (`resolveClaimModelInputs`,
   `packages/core/role-model-routing.ts`):
@@ -69,7 +69,7 @@ evaluate by hand.
   `claude-sonnet-5` on a task filed with `tier: "premium"` runs at premium.
 - A pin from step 1 or 3 short-circuits **everything**: `resolveEffectiveModel`
   returns `reason: 'explicit_override'` before any gate runs
-  (`packages/core/model-router.ts:99-106`), so a pinned task is not downshifted
+  (`packages/core/model-router.ts`), so a pinned task is not downshifted
   by budget pressure, not downshifted by a claim spike, not raised to a role
   floor, and not paused at 95% of the daily cost cap.
 - The role row is resolved **per task**, the same way `checkConnectorRouting`
@@ -87,7 +87,7 @@ evaluate by hand.
   and the decision model may replace it while the task is unclaimed. A stated
   role is never replaced.
 - A role's `model` is a **floor, never a cap**: the clamp only fires when the
-  computed tier is *below* it (`model-router.ts:152-157`). A role pinned to
+  computed tier is *below* it (`model-router.ts`). A role pinned to
   `opus`/`premium` therefore defeats every downshift the budget and spike gates
   just applied.
 - A `premium-plus` role floor resolves to the `premium-plus` tier. The router
@@ -99,7 +99,7 @@ evaluate by hand.
   **pause** still applies, because it returns before the tier lookup.
 - `mapRouterAlias` is total: `opus→premium`, `haiku→budget`, anything else
   (including `sonnet` and any unknown string) `→standard`
-  (`packages/core/model-tier-registry.ts:34-38`). Role tier values round-trip
+  (`packages/core/model-tier-registry.ts`). Role tier values round-trip
   without drift: `premium→opus→premium`.
 - The `create_task` response's `routing` preview (`computeRoutingPreview`,
   `packages/core/task-routing-preview.ts`) follows the same precedence for the
@@ -109,15 +109,15 @@ evaluate by hand.
   may be inferred after creation; an inferred role does not change the model`.
 - The only non-claimable routing outcome is `'paused'`. The task is left
   `pending` — never failed, never given a `start_at` floor — and
-  `diagnostics.deferrals.routing_paused` increments (`route.ts:1580-1583`).
+  `diagnostics.deferrals.routing_paused` increments (`route.ts`).
 - `tasks.tier` is write-once: `POST /api/tasks` accepts it
-  (`apps/web/src/app/api/tasks/route.ts:838`) and `PATCH /api/tasks/[id]`
+  (`apps/web/src/app/api/tasks/route.ts`) and `PATCH /api/tasks/[id]`
   carries no `tier` branch, matching the schema comment at
-  `packages/core/db/schema.ts:870-873`.
+  `packages/core/db/schema.ts`.
 - Budget pressure has two sources folded into one `dailyBudgetPct` input:
   `totalCost / maxCostPerDay` for API-key accounts, and for OAuth seats the
   learned window pressure from `oauthBudgetPressure`, combined with `Math.max`
-  (`route.ts:933-975`). Seat accounts report no cost, so without the second
+  (`route.ts`). Seat accounts report no cost, so without the second
   source their gates would never fire.
 
 **Acceptance criteria**:
@@ -131,13 +131,13 @@ evaluate by hand.
 - AC-3: GIVEN role `builder` configured with `model='sonnet'` AND a task
   `engineering/simple` routed to it WHEN a runner claims THEN
   `tasks.predicted_model` is `sonnet` — the floor raises the baseline `haiku`.
-- AC-3a: GIVEN role `email-agent` configured with `model='claude-sonnet-5'`
+- AC-22: GIVEN role `email-agent` configured with `model='claude-sonnet-5'`
   AND a task routed to it with `tier='premium'` WHEN a runner claims THEN
   `tasks.predicted_model` is the premium tier's model, not `claude-sonnet-5`.
-- AC-3b: GIVEN role `builder` with `model='opus'` AND a task routed to it with
+- AC-23: GIVEN role `builder` with `model='opus'` AND a task routed to it with
   `context.roleInferred` set WHEN a runner claims THEN the floor does not apply
   and an `engineering/simple` task resolves to the budget tier.
-- AC-3c: GIVEN workspaces A and B each overriding `builder` with a different
+- AC-24: GIVEN workspaces A and B each overriding `builder` with a different
   `model` WHEN a runner serving both claims a task in A THEN A's row sets the
   floor.
 - AC-4 (failure path): GIVEN `dailyBudgetPct >= 0.95`, a task whose `kind` is
@@ -153,18 +153,18 @@ evaluate by hand.
 `packages/core/role-model-routing.ts` (`pickRoleRowForTask`,
 `resolveClaimModelInputs`), `packages/core/task-routing-preview.ts`
 (`computeRoutingPreview`),
-`apps/web/src/app/api/workers/claim/route.ts:1527-1630`,
-`packages/core/db/schema.ts:866-876` (`tasks.kind`, `complexity`, `tier`,
+`apps/web/src/app/api/workers/claim/route.ts`,
+`packages/core/db/schema.ts` (`tasks.kind`, `complexity`, `tier`,
 `predictedModel`, `classifiedBy`),
 `packages/core/__tests__/model-router.test.ts`,
 `packages/core/__tests__/role-model-routing.test.ts`,
 `apps/web/src/app/api/workers/claim/route.test.ts` (`describe('smart model
-routing')` including `role model precedence`, and the OAuth-pressure block at `:3796`).
+routing')` including `role model precedence`, and the OAuth-pressure block).
 
 **Out of scope**: which *backend process* executes the task
 (`provider-failover`), and per-task `effort` / `thinking` / `maxTurns`
 resolution, which the runner reads from task context and workspace gitConfig
-(`apps/runner/src/workers.ts:2300-2310`).
+(`apps/runner/src/workers.ts`).
 
 ---
 
@@ -193,10 +193,10 @@ standalone model policy (`docs/specs/model-policy.md`) over the team's registry
   escape hatch; a shorthand pin (`opus`/`sonnet`/`haiku`) is a tier request
   (`shorthandPinTier`).
 - At most one row exists per `(team_id, workspace_id, tier)` — enforced by the
-  `model_tier_registry_unique` index (`packages/core/db/schema.ts:2246`). The
+  `model_tier_registry_unique` index (`packages/core/db/schema.ts`). The
   API upserts by explicit read-then-write because `workspace_id IS NULL` does
   not participate in a plain `ON CONFLICT` match
-  (`apps/web/src/app/api/model-tiers/route.ts:109-144`).
+  (`apps/web/src/app/api/model-tiers/route.ts`).
 - A team's rows (its policy document) are cached in-process for 60s keyed by
   team; every registry write calls `invalidateTierCache`, which flushes that
   team. A tier change therefore reaches already-queued tasks within one cache
@@ -207,17 +207,17 @@ standalone model policy (`docs/specs/model-policy.md`) over the team's registry
   and the bundled policy. `resolveTierEntrySync` is the bundled answer with no
   DB dependency, for contexts that cannot await.
 - All three `TIER_DEFAULTS` entries are `provider: 'anthropic'`
-  (`packages/core/model-tier-defaults.ts:20-24`) — the last-resort fallback
+  (`packages/core/model-tier-defaults.ts`), so the last-resort fallback
   never routes a team to a provider it has not configured.
 - Single-shot structured inference resolves the *same* registry rather than
   keeping its own model list, and rejects a tier whose provider is an agent
   backend: `provider === 'openai-codex'` returns
-  `{ kind: 'unsupported_provider' }` (`packages/core/inference-client.ts:441-448`).
+  `{ kind: 'unsupported_provider' }` (`packages/core/inference-client.ts`).
 - `GET /api/models` MUST answer with the team's tier models even with no stored
   Anthropic credential, and MUST distinguish "catalog unknown" from "catalog
   empty" via `catalogComplete`. A stale-pin warning MUST NOT fire unless the
-  catalog is complete (`apps/web/src/app/api/models/route.ts:87-131`,
-  `apps/web/src/components/ModelPicker.tsx:34-44`).
+  catalog is complete (`apps/web/src/app/api/models/route.ts`,
+  `apps/web/src/components/ModelPicker.tsx`).
 
 - Who writes it: a team admin (`manage_model_tiers`) picks each tier's
   primary model and the upgrade policy, Automatic (`latest-compatible`) or
@@ -253,9 +253,9 @@ standalone model policy (`docs/specs/model-policy.md`) over the team's registry
 `packages/core/model-policy.ts` (`registryModelPolicy`, `resolveRegistryTier`,
 `resolveRemoteTier`),
 `packages/core/model-tier-defaults.ts` (`TIER_DEFAULTS`, `bundledTierEntry`, `TierEntry`),
-`packages/core/db/schema.ts:2234-2248` (`modelTierRegistry`),
+`packages/core/db/schema.ts` (`modelTierRegistry`),
 `apps/web/src/app/api/model-tiers/route.ts` (GET/POST/DELETE),
-`packages/core/mcp-tools.ts:4020-4074` (`manage_model_tiers`),
+`packages/core/mcp-tools.ts` (`manage_model_tiers`),
 `apps/web/src/app/api/models/route.ts`,
 `packages/core/__tests__/model-tier-registry.test.ts`,
 `apps/web/src/app/api/models/route.test.ts`.
@@ -268,23 +268,22 @@ standalone model policy (`docs/specs/model-policy.md`) over the team's registry
 ## Alias vocabulary and refresh
 
 **Capability statement**: The three short names `haiku`/`sonnet`/`opus` MUST
-resolve to full model ids from a refreshable store, so pointing an alias at a
-newer release needs no deploy — and MUST pass any other string through
-untouched.
+mean the tier they name, read from the model policy, so no second table of
+model ids can drift from the tier registry.
 
 **Invariants**:
-- The alias vocabulary is exactly `{haiku, sonnet, opus}`. `resolveModelName`
-  and `resolveModelNameSync` return their input unchanged for every other value,
-  including a full model id (`packages/core/model-aliases.ts:34-56`). Alias
-  resolution is therefore idempotent over model ids.
-- The store is a single **global** `system_cache` row keyed `model_aliases`,
-  with a 1-hour DB TTL and a 5-minute in-process cache. It is not team-scoped.
-  `DEFAULT_ALIASES` is the cold-cache fallback and the per-alias fallback when
-  the cached map omits a family (`model-aliases.ts:11-28`, `:58-82`).
+- The alias vocabulary is exactly `{haiku, sonnet, opus}`. `DEFAULT_ALIASES`
+  maps each to the bundled policy's tier model (`budget`, `standard`,
+  `premium` through `bundledTierEntry`), not to a literal id
+  (`packages/core/model-aliases.ts`).
+- Routing never reads an alias store. The old resolvers (`resolveModelName`,
+  `resolveModelNameSync`) had no reachable caller and were deleted. The global
+  `system_cache` row keyed `model_aliases` is an operator-visible record that
+  only `updateModelAliases` writes and nothing reads back.
 - `updateModelAliases` classifies candidates by substring on the model id
   (`includes('haiku')`, `'sonnet'`, `'opus'`) and writes **nothing** when no
   candidate matches any family — an empty write would blank the row
-  (`model-aliases.ts:116-130`). Later candidates overwrite earlier ones within
+  (`model-aliases.ts`). Later candidates overwrite earlier ones within
   the same family, so list order decides.
 - `POST /api/admin/refresh-model-aliases` is a platform-operator route: it
   admits only an admin-level `bld_` key whose account id is listed in
@@ -296,15 +295,16 @@ untouched.
   `requiresThinkingEnabled` matches `claude-opus-5`, and
   `resolveEffectiveThinking` drops a `thinking: { type: 'disabled' }` override
   at `xhigh`/`max` effort rather than letting the API return 400
-  (`model-aliases.ts:91-110`).
+  (`model-aliases.ts`).
 - The role/skill picker is tier-first: legacy `opus`/`sonnet`/`haiku` values are
   normalised to `premium`/`standard`/`budget` on mount and written back, and a
   tier value is never reported as a stale pin
-  (`apps/web/src/components/ModelPicker.tsx:7-44`).
+  (`apps/web/src/components/ModelPicker.tsx`).
 
 **Acceptance criteria**:
-- AC-11: WHEN `resolveModelNameSync('claude-haiku-4-5-20251001')` is called
-  THEN it returns that id unchanged, with no cache or database access.
+- AC-11: WHEN `DEFAULT_ALIASES` is read THEN `haiku`, `sonnet` and `opus`
+  equal `bundledTierEntry('budget')`, `bundledTierEntry('standard')` and
+  `bundledTierEntry('premium')` models.
 - AC-12 (failure path): GIVEN an API key whose `level` is not `admin`, or an
   admin-level key not listed in `BUILDD_PLATFORM_ADMIN_ACCOUNT_IDS`, WHEN
   `POST /api/admin/refresh-model-aliases` is called THEN the response is HTTP
@@ -316,8 +316,7 @@ untouched.
   'disabled' })` is called THEN it returns `undefined`.
 
 **Code surface**: `packages/core/model-aliases.ts`
-(`DEFAULT_ALIASES`, `resolveModelName`, `resolveModelNameSync`,
-`updateModelAliases`, `requiresThinkingEnabled`, `resolveEffectiveThinking`),
+(`DEFAULT_ALIASES`, `updateModelAliases`, `requiresThinkingEnabled`, `resolveEffectiveThinking`),
 `packages/core/db/schema.ts` (`systemCache`),
 `apps/web/src/app/api/admin/refresh-model-aliases/route.ts` and its
 `route.test.ts`, `apps/web/src/components/ModelPicker.tsx` and
@@ -337,7 +336,7 @@ than a code sweep.
 **Invariants**:
 - `scripts/lint-model-ids.ts` (a `bun`-run TypeScript tokenizer, not a
   line-based `grep`) runs in CI on every build
-  (`.github/workflows/build.yml:99`) and exits non-zero when a model-id
+  (`.github/workflows/build.yml`) and exits non-zero when a model-id
   literal matching `claude-(haiku|sonnet|opus|fable|mythos)-[0-9]`,
   `claude-[0-9]`, `gpt-[0-9]` or `o[0-9]-(mini|preview)` appears in a
   `.ts`/`.tsx` file outside the allowlist. It walks each file tracking
@@ -346,14 +345,14 @@ than a code sweep.
   and template literals (including `${...}` interpolations) are matched.
   Test files (`__tests__`, `.test.`, `.spec.`) are excluded entirely.
 - The allowlist is a declared list of exact file paths with a stated reason
-  per entry (`scripts/lint-model-ids.ts:44-58`); a directory prefix or a
+  per entry (`scripts/lint-model-ids.ts`); a directory prefix or a
   non-`.ts`/`.tsx` entry is rejected at lint time. The registry, defaults,
   pricing, capability-requirements, MCP help-text, the QA judge and the
   runner UI list are the sanctioned homes for literals.
 - Cost accounting classifies an id by substring rather than by exact match, so
   an unknown id degrades to the Sonnet rate instead of to zero:
-  `priceForModel` (`packages/core/model-prices.ts:43-50`) and `modelWeight`
-  (`packages/core/oauth-budget.ts:91-99`, which also accepts the tier names
+  `priceForModel` (`packages/core/model-prices.ts`) and `modelWeight`
+  (`packages/core/oauth-budget.ts`, which also accepts the tier names
   `premium`/`budget`).
 
 **Acceptance criteria**:
@@ -367,9 +366,9 @@ than a code sweep.
   called THEN both return `MODEL_WEIGHTS.opus`, and `modelWeight(null)` returns
   the Sonnet weight `1`.
 
-**Code surface**: `scripts/lint-model-ids.ts`, `.github/workflows/build.yml:99`,
+**Code surface**: `scripts/lint-model-ids.ts`, `.github/workflows/build.yml`,
 `packages/core/model-prices.ts`, `packages/core/oauth-budget.ts`,
-`packages/core/__tests__/oauth-window.test.ts:96-112`,
+`packages/core/__tests__/oauth-window.test.ts`,
 `packages/core/__tests__/model-prices.test.ts`.
 
 **Out of scope**: how the resulting cost is aggregated and billed — see
@@ -387,7 +386,7 @@ matrix can be argued about with data rather than taste.
 - `recordTaskOutcome` writes at most one `task_outcomes` row per terminal
   outcome. It is skipped entirely when the completion is an auto-retry, so a
   retried task contributes one row, not one per attempt
-  (`apps/web/src/app/api/workers/[id]/route.ts:1614-1629`).
+  (`apps/web/src/app/api/workers/[id]/route.ts`).
 - The row's `outcome` is the task's FINAL status, not the one the worker
   reported: a contract guard or a completion-policy slot (loop exhausted,
   release failed) that fails a reported completion records `failed`. A release
@@ -397,20 +396,20 @@ matrix can be argued about with data rather than taste.
   (`apps/web/src/lib/routing-analytics-subscribers.ts`).
 - The row copies `kind`, `complexity`, `classified_by` and `predicted_model`
   from the task row rather than trusting the caller
-  (`packages/core/routing-analytics.ts:45-74`).
+  (`packages/core/routing-analytics.ts`).
 - A task with a NULL `predicted_model` never went through the router and MUST
-  NOT produce a row (`routing-analytics.ts:56-57`).
+  NOT produce a row (`routing-analytics.ts`).
 - The write is best-effort telemetry: every failure is swallowed, reported via
   `reportOps`, and returns `false` — it MUST NOT block the worker status update
-  (`routing-analytics.ts:76-81`).
+  (`routing-analytics.ts`).
 - `recordTaskOutcome` reads the task through a raw `sql` template, never the
   Drizzle query builder, because the `tasks` relations emit a `workers`
-  reference with no FROM clause (`routing-analytics.ts:38-51`, pinned by
-  `packages/core/__tests__/routing-analytics.test.ts:14-22`).
+  reference with no FROM clause (`routing-analytics.ts`, pinned by
+  `packages/core/__tests__/routing-analytics.test.ts`).
 - `GET /api/cron/routing-calibration` is read-only, requires
   `Authorization: Bearer $CRON_SECRET`, and returns HTTP 401 on a mismatch and
   HTTP 500 when `CRON_SECRET` is unset
-  (`apps/web/src/app/api/cron/routing-calibration/route.ts:19-28`). Being
+  (`apps/web/src/app/api/cron/routing-calibration/route.ts`). Being
   side-effect-free is load-bearing: it is the liveness probe target for the
   cron-sync workflow (see `external-cron-triggers`).
 - The calibration job is staged **dark**: its `cron-manifest.json` entry carries
@@ -434,8 +433,8 @@ matrix can be argued about with data rather than taste.
 
 **Code surface**: `packages/core/routing-analytics.ts`
 (`recordTaskOutcome`, `detectDownshift`),
-`packages/core/db/schema.ts:1443-1470` (`taskOutcomes`),
-`apps/web/src/app/api/workers/[id]/route.ts:1613-1630`,
+`packages/core/db/schema.ts` (`taskOutcomes`),
+`apps/web/src/app/api/workers/[id]/route.ts`,
 `apps/web/src/app/api/cron/routing-calibration/route.ts`,
 `cron-manifest.json` (`Buildd: Routing Calibration`, `enabled: false`),
 `packages/core/__tests__/routing-analytics.test.ts`.
@@ -448,74 +447,43 @@ of this decision, specced under `usage-and-cost-accounting`.
 
 ## Verification gaps
 
-Unguarded claims and live drift found while writing this spec. Each is a real
-finding, not a TODO placeholder.
+Unguarded claims and live drift found while writing this spec, re-checked
+against the code on dev. A finding marked **Fixed** stays so the history reads;
+it names what closed it.
 
-**The resolved model does not reach the SDK.** `apps/runner` reads no model from
-the server. `tasks.context.model` and `tasks.predicted_model` are written by the
-claim route and read back only by the claim route, analytics, and OAuth
-pressure; a repo-wide search for `context.model` finds no consumer in
-`apps/runner`. The executing session uses the runner-global
-`config.model` — `process.env.MODEL || savedConfig.model ||
-TIER_DEFAULTS.standard.model` (`apps/runner/src/index.ts:428`) — passed straight
-through `apps/runner/src/workers.ts:2417` and
-`apps/runner/src/backends/claude-backend.ts:39`. The claim route's own comment
-("injected into task.context.model so worker-runner picks it up",
-`apps/web/src/app/api/workers/claim/route.ts:1554`) and the schema comment on
-`task_outcomes.actual_model` ("what the worker actually ran on") are both
-false today. Consequence: every invariant in this spec is verified at the
-*decision* layer only; no test asserts the decision is honoured at execution.
-The `roleConfig.model` field is transmitted to the runner
-(`route.ts:2099`) and never read either.
+**Fixed: the resolved model reaches the SDK.** The runner runs on the model the
+claim route resolved: `resolveSessionModel` (`apps/runner/src/prompt-builder.ts`)
+prefers `task.context.model` over the runner-global `config.model`, with
+`BUILDD_HONOR_TASK_MODEL=0` as the kill switch. Still open: the `roleConfig.model`
+field the claim payload carries is not read by the runner.
 
-**`task_outcomes.downshifted` is always `false`, and its baseline table has
-drifted.** `detectDownshift` bails out unless `predicted_model` is literally
-`haiku`/`sonnet`/`opus` (`packages/core/routing-analytics.ts:111`), but the
-claim route writes the *resolved full id* whenever a team resolves
-(`route.ts:1602`). Only the no-team fallback path writes an alias. Separately,
-the BASELINE copy in `routing-analytics.ts:91-99` says
-`coordination: opus/opus/opus` while the real matrix in
-`model-router.ts:66` says `sonnet/sonnet/opus` — two copies of one table, one
-of them wrong. The drift is currently masked by the first bug.
-`packages/core/__tests__/routing-analytics.test.ts:106` encodes the masking
-behaviour as intent.
+**Fixed: `task_outcomes.downshifted` reads full model ids.** `detectDownshift`
+maps the stored `predicted_model` through `normalizeToTier`, so a resolved full
+id, a tier name and a bare alias all compare, and the baseline table is
+imported from `model-router.ts` (`BASELINE`) instead of a local copy
+(`packages/core/routing-analytics.ts`).
 
-**The calibration loop is dark end to end.** The job is `enabled: false` in
-`cron-manifest.json`, so it has never run on a schedule. Its `overshoots` flag
-tests `predictedModel === 'opus'` (`routing-calibration/route.ts:68`), which
+**The calibration loop is still dark.** The job is `enabled: false` in
+`cron-manifest.json`, so it never runs on a schedule. Its `overshoots` flag
+tests `predictedModel === 'opus'` (`routing-calibration/route.ts`), which
 cannot match a full model id, so that flag is unreachable even if the job ran.
-`actual_model` is never passed by the only caller
-(`apps/web/src/app/api/workers/[id]/route.ts:1622-1629`), so predicted-vs-actual
-comparison has no data. No code consumes the route's response.
+No code consumes the route's response. Fixed since: the worker PATCH route now
+passes `actualModel` into `recordTaskOutcome`, so predicted-vs-actual has data.
 
-**`kind` and `complexity` are almost always NULL, so the routing matrix is
-unreachable.** The only production writer is the schedules cron
-(`apps/web/src/app/api/cron/schedules/route.ts:637-639` via
-`classifyScheduleCadence`). `POST /api/tasks` accepts no `kind`/`complexity`
-field at all, and MCP `create_task` **rejects** them as unknown parameters
-(`packages/core/mcp-tools.ts:1573-1582`) — while the seeded Organizer prompt
-instructs the agent to "Always set `kind` and `complexity`" and shows a plan
-example containing both (`apps/web/src/lib/default-roles.ts:104`, `:118-119`).
-Every non-scheduled task therefore defaults to `engineering/normal` →
-`sonnet` → `standard`.
+**Fixed: `kind` and `complexity` reach the matrix.** `POST /api/tasks` reads
+both (`apps/web/src/app/api/tasks/route.ts`), and MCP `create_task` takes them
+and rejects out-of-vocabulary values instead of dropping them. A task filed
+without them still routes as `engineering/normal`.
 
-**The alias subsystem has no live consumer.** Its only caller was `classifyTask`
-in `packages/core/task-classifier.ts`, which itself had no production caller and
-was deleted in v0.192.0 (#2006) — so `resolveModelName` now has none at all.
-`apps/web/src/app/api/tasks/route.ts` imports a same-named keyword classifier
-from `@/lib/task-category`, which is unrelated. The
-`task_classification` inference capability was declared but never performed,
-and has been removed. Nothing
-calls `updateModelAliases` except the admin route, contradicting the module
-docstring's claim that workers refresh it "automatically … via
-`supportedModels()`" (`packages/core/model-aliases.ts:15-18`).
+**Fixed: the alias resolvers are gone.** `resolveModelName` and
+`resolveModelNameSync` had no reachable caller and were deleted;
+`updateModelAliases` is called only by the operator refresh route, and the
+module docstring now says so (`packages/core/model-aliases.ts`).
 
-**Global model-alias writes are not admin-gated on every auth path.** The
-invariant is that a write to the global model-alias row MUST require an admin
-credential regardless of how the caller authenticated, and a non-admin caller
-MUST be rejected. No test asserts it. Specifics are tracked privately until the
-guard lands. Separately, the alias-refresh response reports aliases that the
-write may have silently dropped: `{ opus: 'claude-fable-5' }` returns
+**Fixed: global model-alias writes are operator-gated.** The refresh route runs
+`authorizePlatformAdmin` first (AC-12, pinned by the route's `route.test.ts`).
+Still open: the alias-refresh response reports aliases that the write may have
+silently dropped: `{ opus: 'claude-fable-5' }` returns
 `aliases.opus = 'claude-fable-5'` while `updateModelAliases` classifies by
 substring and stores no `opus` key at all.
 
@@ -526,23 +494,23 @@ test asserts it. Specifics are tracked privately until the guard lands.
 
 **Registry fields that are stored but never consumed.** `defaultEffort` and
 `defaultMaxTurns` round-trip through the API, the schema, and `TierEntry`
-(`packages/core/model-tier-registry.ts:93-94`) but no dispatch path reads them —
+(`packages/core/model-tier-registry.ts`) but no dispatch path reads them:
 the claim route takes only `entry.model`, `entry.provider`, `entry.source`
-(`route.ts:1601-1603`).
+(`route.ts`).
 
 **Tier provider and task backend are never reconciled.** A tier row may be
 `provider: 'openai-codex'` or `'openrouter'`
-(`apps/web/src/app/api/model-tiers/route.ts:86`) while `tasks.backend` is
+(`apps/web/src/app/api/model-tiers/route.ts`) while `tasks.backend` is
 `claude`. The claim route reads `entry.provider` only to stamp
 `context.resolvedTier`, and rejects nothing. The docstring claim that "dispatch
-throws a clear error if dispatched" (`model-tier-registry.ts:54-55`) has no
+throws a clear error if dispatched" (`model-tier-registry.ts`) has no
 implementing code. `provider-failover` owns `dispatchable: false` for backends;
 nothing applies an equivalent rule to tier providers.
 
 **Role tier values are handed to the SDK verbatim as subagent models.** After
 the picker normalises a role to `premium`/`standard`/`budget`, that string is
 passed through the claim payload into `agents[slug].model`
-(`apps/runner/src/workers.ts:2259`) with no translation to a model id or to the
+(`apps/runner/src/workers.ts`) with no translation to a model id or to the
 SDK's own alias vocabulary.
 
 **`scripts/lint-model-ids.ts` history.** The directory-prefix allowlist bug
@@ -554,16 +522,16 @@ or non-source-file entry is a lint-time error, not a silent no-op), and the
 `apps/web/src/lib/config-helpers.ts` entry is current — that file's model
 dropdown options are real literals, not stale.
 
-**Stale model ids in the fallbacks.** `TIER_DEFAULTS.standard` is
-`claude-sonnet-4-6` (`packages/core/model-tier-defaults.ts:22`) and
-`DEFAULT_ALIASES.sonnet` matches it (`packages/core/model-aliases.ts:22`), while
-the current family is Claude 5 (`claude-sonnet-5`). Neither
-`priceForModel` nor `modelWeight` has a `fable` branch, so `claude-fable-5`
-prices and weighs as Sonnet.
+**Model ids in the fallbacks.** Fixed: `TIER_DEFAULTS` and `DEFAULT_ALIASES`
+no longer hold literal ids; both read the bundled model policy through
+`bundledTierEntry` (`packages/core/model-tier-defaults.ts`), and
+`priceForModel` has a `fable` branch. Still open: `modelWeight`
+(`packages/core/oauth-budget.ts`) has no `fable` or `premium-plus` branch, so a
+Fable-class session weighs as Sonnet in OAuth window pressure.
 
 **Untested invariants in this spec.** No test covers: the claim route's
 tier-registry path (the routing tests all run with no `teamId` and assert the
-alias fallback — `apps/web/src/app/api/workers/claim/route.test.ts:1980`);
+alias fallback, `apps/web/src/app/api/workers/claim/route.test.ts`);
 `tasks.tier` overriding a budget downshift; `tasks.tier` immutability under
 `PATCH /api/tasks/[id]`; `context.resolvedTier` contents; `/api/model-tiers`
 authorisation or upsert semantics; the routing-calibration aggregate.
@@ -572,12 +540,13 @@ before the real scan — see `Model-id containment` above.)
 
 **Silent rejection of an invalid tier.** Both creation paths drop an
 unrecognised `tier` instead of returning HTTP 400 —
-`apps/web/src/app/api/tasks/route.ts:838` and
-`packages/core/mcp-tools.ts:1703-1705` — so `tier: 'ultra'` yields a task that
+`apps/web/src/app/api/tasks/route.ts` and
+`packages/core/mcp-tools.ts`, so `tier: 'ultra'` yields a task that
 silently routes at `standard`.
 
-**Comment drift in the seeded roles.** The header of
-`apps/web/src/lib/default-roles.ts:4-8` says Organizer is Opus (it is `sonnet`,
-`:158`) and that Organizer/Builder "downshift via task complexity" — but
-Builder's `opus` floor (`:259`) defeats every complexity and budget downshift,
-per the floor-not-cap invariant above.
+**Fixed: comment drift in the seeded roles.** The header of
+`apps/web/src/lib/default-roles.ts` now names Organizer as Sonnet and says the
+role `model` is the claim-time floor that the matrix moves off only for tasks
+carrying `kind` / `complexity`.
+
+Renumbered: AC-3a to AC-22, AC-3b to AC-23, AC-3c to AC-24.

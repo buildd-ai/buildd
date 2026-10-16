@@ -19,3 +19,7 @@ it('the sample uses current time and selectable mission bars that know their tas
   expect(html).toContain('Tap a run to see what it was and how it ended');
   expect(html).toContain('runner-lanes-chart');
 });
+it('the sample has interactive sessions, so the Runners capture shows that group', () => {
+  const sample = sampleRunnerLanes(Date.now());
+  expect(sample.fleet.sessions?.slots.filter(s => s.worker)).toHaveLength(2);
+});

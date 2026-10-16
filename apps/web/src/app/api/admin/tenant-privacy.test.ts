@@ -84,6 +84,7 @@ mock.module('@/lib/admin/data', () => ({
     family: o.errorPrefix ? { prefix: o.errorPrefix, topSignatures: o.workspaceIds.map((ws: string) => ({ signature: text(ws, 'family'), count: 1 })) } : null,
     stalledIngest: { stalled: o.workspaceIds.length, jobs: o.workspaceIds.map((ws: string) => ({ id: `job-${ws}`, workspaceId: ws, repo: text(ws, 'repo'), lastError: text(ws, 'ingest error') })) },
   }),
+  loadClaimLearningPanel: async () => null,
   loadRecoveryQueue: async () => null,
   loadRecoveryCause: async () => null,
   loadOperatorData: async (o: any) => ({
@@ -149,6 +150,7 @@ const cases: { name: string; call: () => Promise<Response>; own: string | null }
   { name: 'GET gates?errorPrefix', call: async () => (await route('./gates/route')).GET(req('gates?errorPrefix=x')), own: 'Mine family reason' },
   { name: 'GET dispatch-health', call: async () => (await route('./dispatch-health/route')).GET(req('dispatch-health')), own: 'Mine repo' },
   { name: 'GET operator', call: async () => (await route('./operator/route')).GET(req('operator')), own: 'Mine pr reason' },
+  { name: 'GET operator?claimLearning=1', call: async () => (await route('./operator/route')).GET(req('operator?claimLearning=1')), own: 'Mine pr reason' },
   { name: 'GET agent-access', call: async () => (await route('./agent-access/route')).GET(req('agent-access')), own: 'Mine repo' },
   { name: 'GET chat-retros', call: async () => (await route('./chat-retros/route')).GET(req('chat-retros')), own: 'Mine team' },
   { name: 'GET teams', call: async () => (await route('./teams/route')).GET(req('teams')), own: 'Mine repo' },
@@ -222,8 +224,10 @@ describe('what the other team still contributes', () => {
 
   it('counts its estimates in every number, names it by pseudonym and keeps its area labels out', async () => {
     const body = await (await (await route('./estimates/route')).GET(req('estimates'))).json();
-    const live = body.live[0];
+    const live = body.live.find((v: any) => v.estimatorVersion === 'blend-v1');
     expect(live.overall.n).toBe(24);
+    expect(body.selection).toHaveLength(12);
+    expect(body.selection.every((r: any) => r.workspaceId === OWN_WS && r.evidence === null)).toBe(true);
     expect(live.byCluster.map((g: any) => g.key)).toEqual(['Mine area']);
     expect(live.byTeam.find((g: any) => g.key === OTHER_TEAM)).toMatchObject({ own: false, name: expect.stringMatching(/^Team [0-9a-f]{6}$/) });
     expect(live.byWorkspace.find((g: any) => g.key === OWN_WS)).toMatchObject({ own: true, name: 'Mine repo' });

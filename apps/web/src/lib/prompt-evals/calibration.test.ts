@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'bun:test';
+import { isCalibration } from '@buildd/core/decision-model-measurements';
 import {
   CONFIDENCE_SOURCES,
+  crossFitCalibratedTopP,
   deriveThreshold,
+  fitIsotonic,
   percentile,
   reliability,
   scoreModel,
@@ -203,6 +206,124 @@ describe('percentile', () => {
   });
 });
 
-it('names both confidence sources', () => {
-  expect([...CONFIDENCE_SOURCES]).toEqual(['confidence', 'top_p']);
+it('names every confidence source a measurement can store', () => {
+  expect([...CONFIDENCE_SOURCES]).toEqual(['confidence', 'top_p', 'margin', 'calibrated_top_p']);
+});
+
+describe('fitIsotonic', () => {
+  it('pools adjacent violators into a non-decreasing step', () => {
+    const fit = fitIsotonic([
+      { x: 0.2, correct: true }, { x: 0.4, correct: false }, { x: 0.6, correct: true }, { x: 0.8, correct: true },
+    ]);
+    expect(fit).toEqual({ x: [0.2, 0.4, 0.6, 0.8], y: [0.5, 0.5, 1, 1] });
+    expect(isCalibration(fit)).toBe(true);
+  });
+
+  it('averages repeated points into one block', () => {
+    const fit = fitIsotonic([
+      { x: 0.3, correct: false }, { x: 0.3, correct: true }, { x: 0.3, correct: false }, { x: 0.9, correct: true },
+    ]);
+    expect(fit!.x).toEqual([0.3, 0.9]);
+    expect(fit!.y[0]).toBeCloseTo(1 / 3, 9);
+    expect(fit!.y[1]).toBe(1);
+  });
+
+  it('is null with fewer than two distinct points', () => {
+    expect(fitIsotonic([])).toBeNull();
+    expect(fitIsotonic([{ x: 0.5, correct: true }, { x: 0.5, correct: false }])).toBeNull();
+  });
+
+  it('stays a storable calibration on many distinct points', () => {
+    const points = Array.from({ length: 1000 }, (_, i) => ({ x: i / 999, correct: i % 3 !== 0 && i > 300 }));
+    const fit = fitIsotonic(points);
+    expect(isCalibration(fit)).toBe(true);
+    expect(fit!.x[0]).toBe(0);
+    expect(fit!.x[fit!.x.length - 1]).toBe(1);
+  });
+});
+
+describe('crossFitCalibratedTopP', () => {
+  it('maps each case through the fit of the other half, never its own', () => {
+    // Even cases: right at 0.7, wrong at 0.3 (a clean increasing fit).
+    // Odd cases: right at 0.3, wrong at 0.7 (pooled flat at 0.5).
+    const cases: ScoredCase[] = Array.from({ length: 40 }, (_, i) => {
+      const r = i % 4;
+      const topP = r === 0 || r === 3 ? 0.7 : 0.3;
+      const correct = r === 0 || r === 1;
+      return { label: correct ? 'gold' : 'other', correct, confidence: 0.5, topP };
+    });
+    const { values, calibration } = crossFitCalibratedTopP(cases);
+    values.forEach((v, i) => {
+      if (i % 2 === 0) expect(v).toBe(0.5);
+      else expect(v).toBe(cases[i].topP === 0.7 ? 1 : 0);
+    });
+    // What is stored is fitted on every labelled case.
+    expect(calibration).toEqual({ x: [0.3, 0.7], y: [0.5, 0.5] });
+  });
+
+  it('gives no value to cases without top p or gold, and none at all when a half cannot be fitted', () => {
+    const cases: ScoredCase[] = [
+      { label: 'gold', correct: true, confidence: 0.5, topP: 0.9 },
+      { label: 'gold', correct: true, confidence: 0.5, topP: 0.9 },
+      { label: 'gold', correct: null, confidence: 0.5, topP: 0.9 },
+    ];
+    const out = crossFitCalibratedTopP(cases);
+    expect(out.values).toEqual([null, null, null]);
+    expect(out.calibration).toBeNull();
+  });
+});
+
+describe('scoreModel on margin and calibrated top p', () => {
+  it('derives a margin threshold on a set where confidence and top p are flat', () => {
+    // Every answer says 0.5 confidence and 0.6 top p; only the gap to the runner-up separates right from wrong.
+    const cases: ScoredCase[] = [
+      ...Array.from({ length: 120 }, () => ({ label: 'gold', correct: true, confidence: 0.5, topP: 0.6, margin: 0.5 })),
+      ...Array.from({ length: 60 }, () => ({ label: 'other', correct: false, confidence: 0.5, topP: 0.6, margin: 0.05 })),
+    ];
+    const s = scoreModel(cases, { target: 0.9, minLabelled: 50, ruleAccuracy: null });
+    expect(s.thresholds.confidence.threshold).toBeNull();
+    expect(s.thresholds.top_p.threshold).toBeNull();
+    expect(s.thresholds.margin).toMatchObject({ threshold: 0.1, reason: null });
+    expect(s.derived).toMatchObject({ source: 'margin', threshold: 0.1, calibration: null });
+    expect(s.derived!.coverage).toBeCloseTo(120 / 180, 9);
+    expect(s.sweep.margin.length).toBe(s.sweep.confidence.length);
+  });
+
+  it('margin is no_signal when answers carry no probabilities', () => {
+    const s = scoreModel(at(0.95, 80, 80), { target: 0.9, minLabelled: 50, ruleAccuracy: null });
+    expect(s.thresholds.margin.reason).toBe('no_signal');
+  });
+
+  it('calibrated top p spreads a compressed top p so a threshold qualifies, and carries its breakpoints', () => {
+    // Right answers at top p 0.43, wrong at 0.41: no sweep step between them, so raw top p cannot separate them.
+    const cases: ScoredCase[] = Array.from({ length: 130 }, (_, i) => (
+      i % 3 === 2
+        ? { label: 'other', correct: false, confidence: 0.5, topP: 0.41 }
+        : { label: 'gold', correct: true, confidence: 0.5, topP: 0.43 }));
+    const s = scoreModel(cases, { target: 0.9, minLabelled: 50, ruleAccuracy: null });
+    expect(s.thresholds.top_p.threshold).toBeNull();
+    expect(s.thresholds.calibrated_top_p.threshold).not.toBeNull();
+    expect(s.derived).toMatchObject({ source: 'calibrated_top_p' });
+    expect(s.derived!.calibration).toEqual({ x: [0.41, 0.43], y: [0, 1] });
+    expect(isCalibration(s.derived!.calibration)).toBe(true);
+  });
+
+  it('a coverage tie prefers top p over margin, the same information on two labels', () => {
+    // Right at top p 0.97 (margin 0.94), wrong at 0.55 (margin 0.1): both signals cover the same right answers.
+    const cases: ScoredCase[] = [
+      ...Array.from({ length: 90 }, () => ({ label: 'gold', correct: true, confidence: 0.4, topP: 0.97, margin: 0.94 })),
+      ...Array.from({ length: 30 }, () => ({ label: 'other', correct: false, confidence: 0.4, topP: 0.55, margin: 0.1 })),
+    ];
+    const s = scoreModel(cases, { target: 0.9, minLabelled: 50, ruleAccuracy: null });
+    expect(s.thresholds.margin.coverage).toBe(s.thresholds.top_p.coverage);
+    expect(s.derived).toMatchObject({ source: 'top_p', calibration: null });
+  });
+
+  it('a coverage tie prefers the signal that needs no stored breakpoints', () => {
+    const cases = [...at(0.95, 200, 196), ...at(0.3, 100, 40)];
+    const s = scoreModel(cases, { target: 0.9, minLabelled: 50, ruleAccuracy: null });
+    expect(s.thresholds.calibrated_top_p.coverage).toBe(s.thresholds.top_p.coverage);
+    expect(s.derived!.source).not.toBe('calibrated_top_p');
+    expect(s.derived!.calibration).toBeNull();
+  });
 });

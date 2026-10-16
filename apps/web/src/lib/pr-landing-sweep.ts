@@ -351,6 +351,7 @@ export async function runLandingSweep(
         eventHeadSha: peeked.headSha,
         door: 'sweep',
         actor: { kind: 'system' },
+        principal: { kind: 'system', id: 'system:sweep' },
         mode: 'enforce',
         policy,
         owner: target.owner,

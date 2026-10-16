@@ -21,6 +21,7 @@
 
 import { db } from '@buildd/core/db';
 import { recordPrFact } from '@buildd/core/pr-facts';
+import { factFunnelScope } from '@/lib/workflow/pr-fact-scope';
 import { tasks, workers, workspaceSkills } from '@buildd/core/db/schema';
 import { personalRoleVisibleSql } from '@buildd/core/role-visibility';
 import { and, desc, eq, sql } from 'drizzle-orm';
@@ -225,6 +226,7 @@ export async function insertPrOwnerWorker(params: {
   await recordPrFact(
     { workerId: row.id },
     merged ? { kind: 'merged', mergedAt: pr.merged_at ?? new Date() } : pr.state === 'closed' ? { kind: 'closed' } : { kind: 'open' },
+    { scope: factFunnelScope },
   );
   return { id: row.id };
 }

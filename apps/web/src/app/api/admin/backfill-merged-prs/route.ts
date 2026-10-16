@@ -46,6 +46,7 @@ export async function POST(req: NextRequest) {
   const rows = await db.execute(sql`
     SELECT
       w.id,
+      w.workspace_id,
       w.pr_number,
       w.pr_url,
       w.pr_check_failure_count,
@@ -68,6 +69,7 @@ export async function POST(req: NextRequest) {
 
   type Row = {
     id: string;
+    workspace_id?: string | null;
     pr_number: number;
     pr_url: string;
     pr_check_failure_count: number | null;
@@ -107,6 +109,8 @@ export async function POST(req: NextRequest) {
         return refreshWorkerMergeStateIfStale(
           { id: row.id, prNumber: row.pr_number, prUrl: row.pr_url },
           row.installation_id,
+          // A kernel-owned PR's merge goes through T17 (S4a).
+          { workspaceId: row.workspace_id ?? null },
         );
       })
     );

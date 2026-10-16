@@ -2,7 +2,7 @@
 title: External Cron Triggers
 status: active
 owner: max
-last_verified: 2026-10-05
+last_verified: 2026-10-15
 summary: Every /api/cron/* route MUST have exactly one trigger whose cadence is declared in version control, so a route that never fires is a reviewable diff rather than a silent production gap.
 domain: integrations
 surfaces: [cron-manifest.json, scripts/sync-crons.ts, apps/web/src/app/api/cron/schedules/route.ts, apps/web/src/lib/cron-cadence.ts]
@@ -49,33 +49,36 @@ never firing is a reviewable diff rather than an invisible production gap.
 Buildd has two trigger mechanisms and they MUST NOT overlap. **Only the
 external scheduler is in use**: Vercel-native crons do not fire in this project,
 and the five routes parked there (`codex-token-refresh`, `connector-block-notify`,
-`lease-expiry-guard`, `pr-reconcile`, `task-archive`) silently never ran — which
+`lease-expiry-guard`, `pr-reconcile`, `task-archive`) silently never ran, which
 is how an MCP connector credential holding a valid refresh token stayed dead for
 15 days. `vercel.json` now declares no `crons`.
 
 | Mechanism | Declared in | Auth accepted | Status |
 |---|---|---|---|
 | External scheduler (cron-job.org) | `cron-manifest.json` | `Authorization: Bearer $CRON_SECRET` | **in use** |
-| Vercel-native cron | `vercel.json` → `crons[]` | `Authorization: Bearer $CRON_SECRET`, or `x-vercel-cron: 1` where the route accepts it | not used — does not fire here |
+| Vercel-native cron | `vercel.json` → `crons[]` | `Authorization: Bearer $CRON_SECRET` | not used: does not fire here |
 
 ## Invariants
 
 - Every route under `apps/web/src/app/api/cron/` appears in **exactly one** of
   `vercel.json`'s `crons[]` or `cron-manifest.json`'s `jobs[]`. A route in
   neither has no trigger; a route in both fires twice. Enforced by
-  `scripts/cron-coverage.test.ts` — the capability statement above was previously
+  `scripts/cron-coverage.test.ts`; the capability statement above was previously
   unchecked, which is exactly how five routes sat on a dead mechanism.
 - `vercel.json` declares **no** crons. Adding one there is a silent no-op.
-- Manifest default timezone is **America/New_York**: schedules are read in the
-  hours the product is actually used.
+- Every job's `schedule` is a valid 5-field cron expression, evaluated in one
+  timezone: the job's own `timezone` when it declares one, else the
+  manifest's top-level `timezone`, which is **America/New_York** so schedules
+  read in the hours the product is actually used. `sync-crons.ts` falls back
+  to `UTC` only for a manifest that declares no top-level `timezone`.
 - A job that touches the database runs **at most hourly**, and **daytime only
   (`7-23`)**, unless its correctness requires otherwise. Neon autosuspends idle
   compute; a sub-hourly round-the-clock tick keeps it awake and bills idle time.
   Two sanctioned exceptions, both load-bearing:
-  - `/api/cron/schedules` — hourly, hour field `*`. `isOverdue()` allows only
+    - `/api/cron/schedules`: hourly, hour field `*`. `isOverdue()` allows only
     `interval*2`. An hour range here is precisely what starved every schedule for
     12h a night, and an enabled schedule fires at 06:00.
-  - `/api/cron/codex-token-refresh` — `0 */4 * * *`, unrestricted. Tokens expire
+    - `/api/cron/codex-token-refresh`: `0 */4 * * *`, unrestricted. Tokens expire
     overnight, and its cadence sizes the credential sweep window (below), which
     must be an **even** interval.
 - A job whose cadence sizes a derived window MUST run on an even interval. An
@@ -85,13 +88,13 @@ is how an MCP connector credential holding a valid refresh token stayed dead for
 - Every externally-triggered route MUST authenticate via `Authorization: Bearer
   $CRON_SECRET`; the scheduler cannot send `x-vercel-cron`. Enforced by the same test.
 - A job whose cadence another module reasons about (currently
-  `codex-token-refresh`, whose cadence sizes the credential sweep window) is
-  mirrored in `apps/web/src/lib/cron-cadence.ts` and pinned by
+  `codex-token-refresh`, whose cadence sizes the credential sweep window, and
+  `release-health-check`) is mirrored in `CRON_SCHEDULES`
+  (`apps/web/src/lib/cron-cadence.ts`) and pinned by
   `cron-cadence.test.ts`, so a schedule change cannot silently mis-size a window.
 - A route that has effectively never run is staged `enabled: false` when moved,
   so its first run against a full backlog is a deliberate decision.
-- Every `cron-manifest.json` job's `schedule` is a valid 5-field cron
-  expression, evaluated in that job's `timezone` (manifest default: `UTC`).
+
 - The schedules tick (`/api/cron/schedules`) carries **no hour restriction**:
   its cron hour field is `*`. An hour range there starves every `task_schedules`
   row for the excluded hours, with no error emitted anywhere.
@@ -101,8 +104,8 @@ is how an MCP connector credential holding a valid refresh token stayed dead for
   least that fine, or it fires late.
 - Schedules fire **exactly on the hour**. No jitter may be added to `nextRunAt`:
   the tick runs at `:00`, so an offset past that instant does not spread load, it
-  delays the schedule to the next tick a full hour later. (computeStaggerOffset
-  added 0–299s to every top-of-hour schedule and was removed for this reason.)
+  delays the schedule to the next tick a full hour later. (A former stagger offset
+  added up to 299s to every top-of-hour schedule and was removed for this reason.)
 - Reconciliation is origin-scoped: `sync-crons.ts` only reads, updates, or
   deletes provider jobs whose URL starts with
   `CRON_TARGET_BASE_URL + "/api/cron/"`. Jobs on any other origin MUST be left
@@ -159,26 +162,28 @@ is how an MCP connector credential holding a valid refresh token stayed dead for
 
 ## Code surface
 
-- `cron-manifest.json` — the declared job set (single source of truth).
-- `scripts/sync-crons.ts` — `cronToSchedule`, `buildJob`, `signature`,
+- `cron-manifest.json`: the declared job set (single source of truth).
+- `scripts/sync-crons.ts`: `cronToSchedule`, `buildJob`, `signature`,
   `updateBody`, origin-scoped reconcile; modes `--dry-run` / `--check` /
   `--prune` / `--rotate-secret`.
-- `scripts/sync-crons.test.ts` — cron-field expansion and drift-detection tests.
-- `.github/workflows/cron-sync.yml` — probes the secret against production,
+- `scripts/sync-crons.test.ts`: cron-field expansion and drift-detection tests.
+- `scripts/cron-coverage.test.ts`: every route in exactly one trigger set,
+  bearer auth on every externally triggered route.
+- `.github/workflows/cron-sync.yml`: probes the secret against production,
   then runs `cron:sync`, on successful Production deploys only. Reads from the
   default branch (`dev`).
-- `apps/web/src/app/api/cron/routing-calibration/route.ts` — the probe target.
+- `apps/web/src/app/api/cron/routing-calibration/route.ts`: the probe target.
   Chosen because it is read-only, so a liveness check has no side effects.
-- `vercel.json` — the disjoint Vercel-native cron set.
-- `apps/web/src/app/api/cron/maintenance/route.ts` — core maintenance
+- `vercel.json`: the Vercel-native cron set, which declares none.
+- `apps/web/src/app/api/cron/maintenance/route.ts`: core maintenance
   (stale workers, abandoned path claims), split out of the schedules tick.
-- `apps/web/src/app/api/cron/schedules/route.ts` — the tick; `GET`, rejects a
+- `apps/web/src/app/api/cron/schedules/route.ts`: the tick; `GET`, rejects a
   mismatched bearer with HTTP 401.
-- `apps/web/src/lib/schedule-helpers.ts` — `computeNextRunAt` advances from
+- `apps/web/src/lib/schedule-helpers.ts`: `computeNextRunAt` advances from
   *now*, so a missed window causes one catch-up per schedule, not a backfill.
-- `apps/web/src/lib/heartbeat-helpers.ts` — `isOverdue`,
+- `apps/web/src/lib/heartbeat-helpers.ts`: `isOverdue`,
   `estimateCronIntervalMs`; overdue threshold is `interval * 2`.
-- `packages/core/db/schema.ts` — `taskSchedules.nextRunAt`, `enabled`.
+- `packages/core/db/schema.ts`: `taskSchedules.nextRunAt`, `enabled`.
 
 ## Out of scope
 
@@ -190,4 +195,4 @@ is how an MCP connector credential holding a valid refresh token stayed dead for
   `--rotate-secret`. Keeping the two copies of the secret in step (provider
   header vs. Vercel env) is out of scope for this spec.
 - Per-schedule fan-out behaviour inside the tick (`MAX_SCHEDULES_PER_RUN`,
-  stagger offsets) — see the scheduled-task specs.
+    stagger offsets): see the scheduled-task specs.

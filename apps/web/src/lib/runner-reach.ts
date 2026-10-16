@@ -1,9 +1,10 @@
 import { db } from '@buildd/core/db';
 import { accountWorkspaces, workerHeartbeats } from '@buildd/core/db/schema';
-import { eq, gt } from 'drizzle-orm';
+import { and, eq, gt } from 'drizzle-orm';
 import { RUNNER_ONLINE_WINDOW_MS } from './runner-heartbeats-shared';
 import { diagnoseRunnerReach, needsLinkForOwnTeam, type RunnerReachDiagnosis } from './runner-reach-diagnosis';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { liveLinkCondition } from '@/lib/granted-links';
 
 /**
  * Server half of ./runner-reach-diagnosis: loads the workspace's links and the
@@ -18,7 +19,7 @@ export async function loadRunnerReachDiagnosis(workspace: {
   const cutoff = new Date(Date.now() - RUNNER_ONLINE_WINDOW_MS);
   const [links, heartbeats] = await Promise.all([
     db.query.accountWorkspaces.findMany({
-      where: sqlWhere(eq(accountWorkspaces.workspaceId, workspace.id)),
+      where: sqlWhere(and(eq(accountWorkspaces.workspaceId, workspace.id), liveLinkCondition())),
       columns: { accountId: true, canClaim: true, canCreate: true },
     }),
     db.query.workerHeartbeats.findMany({

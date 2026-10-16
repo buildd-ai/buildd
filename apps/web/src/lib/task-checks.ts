@@ -10,7 +10,7 @@
  * branch refresh is not one either.
  */
 import { TaskStatus } from '@buildd/shared';
-import type { DeliveryView } from './workflow/projections';
+import { repairPhaseOf, reviewSummaryLine, reviewSummaryOf, type DeliveryView, type RepairPhase } from './workflow/projections';
 
 // The kernel's snapshots, read through the view (only its read model is imported outside the kernel).
 type RoundSnapshot = DeliveryView['rounds'][number];
@@ -22,7 +22,8 @@ export type CheckState = 'passed' | 'failed' | 'running' | 'pending' | 'blocked'
 export interface CheckRepair {
   /** "CI fix 1 of 3" */
   label: string;
-  status: 'queued' | 'running' | 'completed' | 'failed' | 'ended' | 'cancelled';
+  /** From the attempt's facts and the delivery it belongs to (workflow-kernel-library.md §7). */
+  status: RepairPhase;
   taskId: string | null;
 }
 
@@ -52,25 +53,26 @@ export interface TaskChecks {
   current: CheckRow[];
   /** Earlier rounds, oldest first. */
   history: RoundHistoryEntry[];
+  /**
+   * "2 rounds · latest: changes requested · 1 open finding": the same reading
+   * get_pr and the PR activity comment print (workflow-kernel-library.md §7, AC-24).
+   * Absent before the first review round.
+   */
+  review?: string;
 }
 
-export type ChecksInput = Pick<DeliveryView, 'state' | 'stateReason' | 'prNumber' | 'headSha' | 'prState' | 'rounds' | 'ledger' | 'approvedCurrentHead' | 'approvalBasis'>;
+export type ChecksInput = Pick<DeliveryView, 'state' | 'stateReason' | 'prNumber' | 'headSha' | 'prState' | 'rounds' | 'ledger' | 'approvedCurrentHead' | 'approvalBasis'>
+  & Partial<Pick<DeliveryView, 'findings'>>;
 
 const FAMILY_LABEL: Record<AttemptFamily, string> = { review_fix: 'Review fix', ci: 'CI fix', conflict: 'Conflict fix', migration: 'Migration fix', trunk: 'Base fix' };
 
-function repairStatus(a: AttemptSnapshot): CheckRepair['status'] {
-  switch (a.status) {
-    case 'queued': return 'queued';
-    case 'running': return 'running';
-    case 'skipped':
-    case 'cancelled': return 'cancelled';
-    case 'ended': return a.outcome === 'delivered' ? 'completed' : a.outcome === 'failed' ? 'failed' : 'ended';
-  }
+function repairOf(a: AttemptSnapshot, v: ChecksInput): CheckRepair {
+  return { label: `${FAMILY_LABEL[a.family]} ${a.attemptNo} of ${a.maxAttempts}`, status: repairPhaseOf(a, v), taskId: a.taskId };
 }
 
-function repairOf(a: AttemptSnapshot): CheckRepair {
-  return { label: `${FAMILY_LABEL[a.family]} ${a.attemptNo} of ${a.maxAttempts}`, status: repairStatus(a), taskId: a.taskId };
-}
+/** The head an attempt put on the PR, when it proved one. */
+const pushedHead = (a: AttemptSnapshot): string | null =>
+  a.outcome === 'delivered' ? (a.pushedHeadSha ?? a.reportedShas[a.reportedShas.length - 1] ?? null) : null;
 
 /** Agent repairs only: a mechanical attempt is the platform updating the branch, not a repair. */
 const repairs = (ledger: AttemptSnapshot[]) => ledger.filter(a => a.mode === 'agent');
@@ -97,9 +99,14 @@ function reviewRow(v: ChecksInput, current: RoundSnapshot | undefined, carried: 
   const base = { key: 'review' as const, name: 'Code review', repair: null };
   if (current) {
     const r = roundReading(current);
-    const fix = r.state === 'failed' ? newest(repairs(v.ledger).filter(a => a.family === 'review_fix' && a.triggerReason === current.id)) : undefined;
+    // A failed round carries the fix it caused; a round waiting on a head a fix pushed carries that fix.
+    const fix = r.state === 'failed'
+      ? newest(repairs(v.ledger).filter(a => a.family === 'review_fix' && a.triggerReason === current.id))
+      : r.state === 'pending' || r.state === 'running'
+        ? newest(repairs(v.ledger).filter(a => a.family === 'review_fix' && pushedHead(a) === current.headSha))
+        : undefined;
     return {
-      ...base, state: r.state, result: `${r.word} · round ${current.round}`, repair: fix ? repairOf(fix) : null,
+      ...base, state: r.state, result: `${r.word} · round ${current.round}`, repair: fix ? repairOf(fix, v) : null,
       reviewTaskId: current.reviewerTaskId ?? null, reviewRound: roundRef(current, false),
     };
   }
@@ -119,8 +126,12 @@ function testsRow(v: ChecksInput): CheckRow | null {
   if (v.state === 'BLOCKED_ON_TRUNK') return { ...base, state: 'blocked', result: 'Failed · the base branch is red', repair: null };
   switch (v.prState) {
     case 'ci_passed': return { ...base, state: 'passed', result: 'Passed', repair: null };
-    case 'ci_failed': return { ...base, state: 'failed', result: 'Failed', repair: fix ? repairOf(fix) : null };
-    case 'awaiting_ci': return { ...base, state: 'running', result: 'Checking', repair: null };
+    case 'ci_failed': return { ...base, state: 'failed', result: 'Failed', repair: fix ? repairOf(fix, v) : null };
+    case 'awaiting_ci': {
+      // CI running on the head a CI fix pushed: the fix is what is being tested.
+      const pushed = newest(repairs(v.ledger).filter(a => a.family === 'ci' && pushedHead(a) === v.headSha));
+      return { ...base, state: 'running', result: 'Checking', repair: pushed ? repairOf(pushed, v) : null };
+    }
     // A conflicted head runs no meaningful CI; merged and closed PRs end the list at Merge.
     default: return null;
   }
@@ -140,7 +151,7 @@ function mergeRow(v: ChecksInput): CheckRow | null {
       if (v.stateReason === 'conflict' || v.stateReason === 'migration') {
         const family = v.stateReason === 'migration' ? 'migration' : 'conflict';
         const fix = newest(repairs(v.ledger).filter(a => a.family === family && a.boundHeadSha === v.headSha));
-        return { ...base, state: 'failed', result: v.stateReason === 'migration' ? 'Migration number clash' : 'Conflict with base', repair: fix ? repairOf(fix) : null };
+        return { ...base, state: 'failed', result: v.stateReason === 'migration' ? 'Migration number clash' : 'Conflict with base', repair: fix ? repairOf(fix, v) : null };
       }
       return null;
     }
@@ -170,9 +181,10 @@ export function deriveTaskChecks(v: ChecksInput): TaskChecks {
     .map(r => {
       const reading = roundReading(r);
       const caused = repairs(v.ledger).filter(a => (a.family === 'review_fix' && a.triggerReason === r.id) || (a.family === 'ci' && a.boundHeadSha === r.headSha && r.headSha !== v.headSha));
-      return { round: r.round, headSha: r.headSha.slice(0, 7), result: reading.word, state: reading.state, reviewTaskId: r.reviewerTaskId ?? null, repairs: caused.sort((a, b) => a.attemptNo - b.attemptNo).map(repairOf) };
+      return { round: r.round, headSha: r.headSha.slice(0, 7), result: reading.word, state: reading.state, reviewTaskId: r.reviewerTaskId ?? null, repairs: caused.sort((a, b) => a.attemptNo - b.attemptNo).map(a => repairOf(a, v)) };
     });
-  return { current: rows, history };
+  const summary = reviewSummaryOf(v);
+  return { current: rows, history, ...(summary ? { review: reviewSummaryLine(summary) } : {}) };
 }
 
 // ── What an opened Code review row says ─────────────────────────────────────

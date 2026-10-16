@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 
+/** A terminal fact goes to the funnel under the kernel's scope (S4a, pr-fact-scope.ts). */
+const FUNNEL_OPTS = { scope: expect.objectContaining({ where: expect.any(Function) }) };
+
 // ─── DB mocks ─────────────────────────────────────────────────────────────────
 
 const mockWorkersFindMany = mock(() => [] as any[]);
@@ -99,7 +102,13 @@ mock.module('@buildd/core/pr-facts', () => ({
 
 // Kernel import on merge/close is best-effort; no real kernel code runs here.
 const mockObservePrState = mock(async (_input: any) => false);
-mock.module('@/lib/workflow/seam', () => ({ observePrState: mockObservePrState }));
+// No row here has a workflow delivery: these cases pin the legacy read-through
+// (delivery-owned rows: pr-state-refresh-delivery-owned.test.ts).
+mock.module('@/lib/workflow/seam', () => ({
+  observePrState: mockObservePrState,
+  deliveryOwnedWorkers: async () => new Set<string>(),
+  recordPrStateObserved: async () => false,
+}));
 
 beforeEach(() => {
   recordedFacts.length = 0;
@@ -193,7 +202,7 @@ describe('refreshStaleWorkersForWorkspaces', () => {
     expect(recordedFacts).toContainEqual({
       target: { workerId: 'w1' },
       fact: { kind: 'merged', mergedAt: '2026-01-01T00:00:00Z' },
-      opts: undefined,
+      opts: FUNNEL_OPTS,
     });
     expect(setMock).toHaveBeenCalledWith(BOOKKEEPING);
     expect(mockTriggerEvent).toHaveBeenCalledWith(
@@ -201,7 +210,7 @@ describe('refreshStaleWorkersForWorkspaces', () => {
       'worker:progress',
       expect.objectContaining({ taskId: 'task1' }),
     );
-    expect(mockCheckDependsOnResolved).toHaveBeenCalledWith('task1');
+    expect(mockCheckDependsOnResolved).toHaveBeenCalledWith('task1', { observeOnly: true });
   });
 
   it('heals every other row carrying the merged PR too (a CI-retry attempt that adopted it)', async () => {
@@ -224,8 +233,8 @@ describe('refreshStaleWorkersForWorkspaces', () => {
       mergedAt: '2026-01-01T00:00:00Z',
     }));
     // The sibling's task gets the same dependency nudge as the row itself.
-    expect(mockCheckDependsOnResolved).toHaveBeenCalledWith('task-retry');
-    expect(mockCheckDependsOnResolved).toHaveBeenCalledWith('task1');
+    expect(mockCheckDependsOnResolved).toHaveBeenCalledWith('task-retry', { observeOnly: true });
+    expect(mockCheckDependsOnResolved).toHaveBeenCalledWith('task1', { observeOnly: true });
   });
 
   it('stamps mergedAt when webhook was missed for an externally-merged PR (pr_open + null prLastCheckedAt)', async () => {
@@ -248,10 +257,10 @@ describe('refreshStaleWorkersForWorkspaces', () => {
     expect(recordedFacts).toContainEqual({
       target: { workerId: 'w-missed' },
       fact: { kind: 'merged', mergedAt: '2026-08-27T07:00:00Z' },
-      opts: undefined,
+      opts: FUNNEL_OPTS,
     });
     expect(setMock).toHaveBeenCalledWith(BOOKKEEPING);
-    expect(mockCheckDependsOnResolved).toHaveBeenCalledWith('task-missed');
+    expect(mockCheckDependsOnResolved).toHaveBeenCalledWith('task-missed', { observeOnly: true });
   });
 
   it('stamps closed status on closed-unmerged PR', async () => {
@@ -264,7 +273,7 @@ describe('refreshStaleWorkersForWorkspaces', () => {
     const setMock = makeSetMock();
     await refreshStaleWorkersForWorkspaces(['ws1']);
 
-    expect(recordedFacts).toEqual([{ target: { workerId: 'w1' }, fact: { kind: 'closed' }, opts: undefined }]);
+    expect(recordedFacts).toEqual([{ target: { workerId: 'w1' }, fact: { kind: 'closed' }, opts: FUNNEL_OPTS }]);
     expect(setMock).toHaveBeenCalledWith(BOOKKEEPING);
     // A kernel-owned delivery imports the same close from its own live read.
     expect(mockObservePrState).toHaveBeenCalledWith(expect.objectContaining({
@@ -484,7 +493,7 @@ describe('refreshStaleWorkers', () => {
       },
     ]);
 
-    expect(mockCheckDependsOnResolved).toHaveBeenCalledWith('task-abc');
+    expect(mockCheckDependsOnResolved).toHaveBeenCalledWith('task-abc', { observeOnly: true });
   });
 
   it('caps batch at 10 workers', async () => {
@@ -718,7 +727,7 @@ describe('pr-state-refresh repo resolution', () => {
     expect(recordedFacts).toContainEqual({
       target: { workerId: 'w1' },
       fact: { kind: 'merged', mergedAt: '2026-06-05T22:43:47Z' },
-      opts: undefined,
+      opts: FUNNEL_OPTS,
     });
     expect(setMock).toHaveBeenCalledWith(BOOKKEEPING);
   });

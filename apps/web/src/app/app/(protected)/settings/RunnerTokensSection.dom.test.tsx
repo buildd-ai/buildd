@@ -16,6 +16,8 @@ const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: RunnerTokensSection } = await import('./RunnerTokensSection');
 const { describeControls } = await import('./_lib/form-controls');
+const { RUNNERS_QA_STATES, withQaModelAuth } = await import('./runners/qa-state');
+type RunnersQaState = import('./runners/qa-state').RunnersQaState;
 
 const account = {
   id: 'fixture-token', name: 'Analytics client', type: 'service', authType: 'api',
@@ -198,5 +200,83 @@ describe('RunnerTokensSection unlinked chip', () => {
   it('warns when the team has no open workspace', async () => {
     await mountWith([{ id: 'w1', name: 'api', repo: null, teamId: 't1', accessMode: 'restricted' }]);
     expect(host.textContent).toContain('1 reaches no workspace');
+  });
+});
+
+describe('RunnerTokensSection model login (docs/specs/runner-model-login-detect-say-report.md R-7, AC-8)', () => {
+  const seen = () => new Date(Date.now() - 60_000).toISOString();
+  const line = () => host.querySelector<HTMLElement>('[data-testid="token-model-auth"]');
+
+  it("reads the machine's Claude login in words", async () => {
+    await mount({ lastSeenAt: seen(), modelAuthSource: 'machine_login' });
+    expect(line()?.textContent).toBe("Uses this machine's Claude login");
+    expect(line()?.className).not.toContain('text-status-warning');
+  });
+
+  it('shows the fix-it line as a warning when the runner has no login', async () => {
+    await mount({ lastSeenAt: seen(), modelAuthSource: 'none' });
+    expect(line()?.textContent).toBe('No model login on this machine. Run claude login');
+    expect(line()?.querySelector('code')?.textContent).toBe('claude login');
+    expect(line()?.className).toContain('text-status-warning');
+  });
+
+  it('says not reported for a runner that never sends the field', async () => {
+    await mount({ lastSeenAt: seen(), modelAuthSource: null });
+    expect(line()?.textContent).toBe('Model login: not reported');
+  });
+
+  it('says nothing for a token no runner has reported on', async () => {
+    await mount({});
+    expect(line()).toBeNull();
+  });
+
+  // The Settings › Runners `?state=model-auth-<source>` fixture (runners/qa-state.ts):
+  // each state renders its own words on a token, seen or not.
+  const fixtureWords: Record<RunnersQaState, { text: string; warning: boolean }> = {
+    'model-auth-machine_login': { text: "Uses this machine's Claude login", warning: false },
+    'model-auth-machine_token': { text: 'Uses a Claude token set on this machine', warning: false },
+    'model-auth-api_key': { text: 'Uses an API key (billed per token)', warning: false },
+    'model-auth-none': { text: 'No model login on this machine. Run claude login', warning: true },
+    'model-auth-not_reported': { text: 'Model login: not reported', warning: false },
+    'model-auth-codex': { text: "Uses this machine's Claude login", warning: false },
+  };
+  for (const state of RUNNERS_QA_STATES) {
+    it(`?state=${state} renders its line`, async () => {
+      const [token] = withQaModelAuth([{ ...account, lastSeenAt: null, modelAuthSource: null }], state);
+      await mount(token);
+      expect(line()?.textContent).toBe(fixtureWords[state].text);
+      expect(line()?.className.includes('text-status-warning')).toBe(fixtureWords[state].warning);
+    });
+  }
+});
+
+describe('RunnerTokensSection Codex login (docs/specs/runner-model-login-detect-say-report.md R-13, AC-13)', () => {
+  const seen = () => new Date(Date.now() - 60_000).toISOString();
+  const codexLine = () => host.querySelector<HTMLElement>('[data-testid="token-codex-auth"]');
+
+  it("shows the machine's Codex login on its own line", async () => {
+    await mount({ lastSeenAt: seen(), modelAuthSource: 'machine_login', codexAuthSource: 'machine_login' });
+    expect(codexLine()?.textContent).toBe("Codex: uses this machine's Codex login");
+    expect(host.querySelector('[data-testid="token-model-auth"]')?.textContent).toBe("Uses this machine's Claude login");
+  });
+
+  it('names an OpenAI API key', async () => {
+    await mount({ lastSeenAt: seen(), modelAuthSource: 'machine_login', codexAuthSource: 'api_key' });
+    expect(codexLine()?.textContent).toBe('Codex: uses an OpenAI API key (billed per token)');
+  });
+
+  it('shows no Codex line for none or not reported', async () => {
+    await mount({ lastSeenAt: seen(), modelAuthSource: 'machine_login', codexAuthSource: 'none' });
+    expect(codexLine()).toBeNull();
+    act(() => root.unmount()); host.remove();
+    await mount({ lastSeenAt: seen(), modelAuthSource: 'machine_login', codexAuthSource: null });
+    expect(codexLine()).toBeNull();
+  });
+
+  it('?state=model-auth-codex renders both lines', async () => {
+    const [token] = withQaModelAuth([{ ...account, lastSeenAt: null, modelAuthSource: null }], 'model-auth-codex');
+    await mount(token);
+    expect(host.querySelector('[data-testid="token-model-auth"]')?.textContent).toBe("Uses this machine's Claude login");
+    expect(codexLine()?.textContent).toBe("Codex: uses this machine's Codex login");
   });
 });

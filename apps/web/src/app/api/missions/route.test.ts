@@ -1384,6 +1384,10 @@ function matches(p: any, row: Record<string, unknown>): boolean {
   if (p.type === 'eq') return row[p.field] === p.value;
   if (p.type === 'inArray') return p.values.includes(row[p.field]);
   if (p.type === 'or') return p.args.some((a: any) => matches(a, row));
+  // liveLinkCondition (lib/granted-links.ts), a real SQL fragment: it passes
+  // a link with no granted_by_user_id, which is every link fixture here. Its
+  // own SQL is pinned in granted-links.test.ts and on real rows in tests/db.
+  if (Array.isArray(p.queryChunks) || p.type === 'sql') return row.grantedByUserId == null;
   throw new Error(`unhandled predicate ${p.type}`);
 }
 
