@@ -110,6 +110,10 @@ describe('claim learning', () => {
     const outcomes = [{...safe(), taskId:'repeated'}, {...safe(), taskId:'repeated', attributableUnsafe:true}];
     expect(evaluateClaimLearningCell({...input,outcomes}).safety.attributableUnsafeRate).toBe(1);
   });
+  test('repeated low-confidence safe polls cannot erase high-confidence unsafe starts', () => {
+    const outcomes = [...Array.from({length:400}, (_,i)=>({...safe(),taskId:`safe-${i}`,confidence:.9})), ...Array.from({length:50}, (_,i)=>[{...safe(),taskId:`unsafe-${i}`,confidence:.7},{...safe(),taskId:`unsafe-${i}`,confidence:.95,attributableUnsafe:true}]).flat()];
+    expect(calibrateClaimConfidence(outcomes,baseline)).toBe(.85);
+  });
   test('censored deterministic HOLD is never the unsafe baseline', () => {
     expect(calibrateClaimConfidence(Array.from({ length: 400 }, () => safe()), Array.from({ length: 400 }, () => safe('deterministic_hold')))).toBe(.85);
   });

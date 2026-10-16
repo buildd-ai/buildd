@@ -49,7 +49,7 @@ function unique(rows: readonly ClaimLearningOutcome[]): ClaimLearningOutcome[] {
       ? true : prior.attributableUnsafe === null || row.attributableUnsafe === null ? null : false;
     const confidences = [prior.confidence, row.confidence].filter((n): n is number => typeof n === 'number' && Number.isFinite(n));
     grouped.set(key, { ...prior, attributableUnsafe: unsafe,
-      confidence: confidences.length ? Math.min(...confidences) : undefined });
+      confidence: confidences.length ? (unsafe ? Math.max(...confidences) : Math.min(...confidences)) : undefined });
   });
   return [...grouped.values()];
 }
