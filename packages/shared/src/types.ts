@@ -3272,6 +3272,66 @@ export interface RecentMission {
   stage: MissionStage | null;
 }
 
+/**
+ * A claim gate that holds a task for now: the runner takes it once the hold
+ * lifts (spec c7410e76 R-26). `deferred` is a future startAt.
+ */
+export type RunnerQueueHold =
+  | 'deferred'
+  | 'deps_blocked'
+  | 'mission_held'
+  | 'task_held'
+  | 'workspace_paused'
+  | 'workspace_cap'
+  | 'runner_cooldown';
+
+/** Why waiting work is never this runner's to take (R-26 "Not for this runner"). */
+export type RunnerQueueExclusion =
+  | 'local_session'
+  | 'another_runner'
+  | 'role_missing'
+  | 'runner_type'
+  | 'workspace_executor'
+  | 'subject_dead';
+
+export interface RunnerQueueTask {
+  id: string;
+  title: string;
+  workspaceId: string;
+  workspaceName: string;
+  missionId: string | null;
+  missionTitle: string | null;
+  roleSlug: string | null;
+  backend: string | null;
+  priority: number;
+  createdAt: string;
+  dependsOn: string[];
+  /** The claim gates holding it now, in the claim's own check order; empty = claimable now. */
+  holds: RunnerQueueHold[];
+  /** When its timed hold lifts (a start time, a workspace pause), else null. */
+  holdUntil: string | null;
+  /** The task's frozen p50 estimate in minutes; null when the team has estimates off or none was made. */
+  estimateMinutes: number | null;
+}
+
+export interface RunnerQueueTeam {
+  teamId: string;
+  teamName: string;
+  /** The team has task estimates switched on (the est. column shows only then). */
+  estimatesOn: boolean;
+  /** In the claim route's order: what this runner takes next, first. */
+  queue: RunnerQueueTask[];
+  /** Waiting work it never takes, with the reason, in the same order. */
+  notForRunner: Array<RunnerQueueTask & { reason: RunnerQueueExclusion }>;
+}
+
+/** `GET /api/workers/queue`: per team, the order the calling runner's claims take work. */
+export interface RunnerQueueResponse {
+  teams: RunnerQueueTeam[];
+  /** Set when the read was cut at its row limit. */
+  truncated: boolean;
+}
+
 export interface GoalCriteriaState {
   evaluatedAt: string;
   evaluatedBy: 'auto' | 'manual' | 'mcp';
