@@ -96,7 +96,7 @@ import { SwipeProvider } from '@/components/SwipeableRow';
 import { DisplayTimezoneProvider } from '@/components/DisplayTimezone';
 import { getTeamTimezoneSetting } from '@/lib/team-timezone';
 import { displayTaskTitle } from '@/lib/task-title';
-import { refreshWorkerMergeStateIfStale } from '@/lib/pr-reconcile';
+import { observeMergeStateOnRender } from '@/lib/pr-state-refresh';
 import { loadReleaseFooterData } from '@/lib/release-footer';
 import { loadMissionCarryingReleaseId } from '@/lib/mission-carrying-release';
 import type { WorkspaceReleaseConfig, WorkspaceGitConfig } from '@buildd/core/db/schema';
@@ -173,7 +173,9 @@ export default async function MissionDetailPage({
       if (installId) {
         // Enqueued after the response, never written during the render (spec
         // workflow-state-kernel §11): this render shows what is stored.
-        after(() => Promise.all(staleWorkers.map(w => refreshWorkerMergeStateIfStale(w, installId)))
+        // AC-3: a delivery-owned task records at most a fact here; no lifecycle write.
+        const missionWorkspaceId = mission.workspaceId;
+        after(() => observeMergeStateOnRender(staleWorkers, installId, missionWorkspaceId)
           .catch((err) => console.error('[mission-page] PR fact import failed (non-fatal):', err)));
       }
     }
