@@ -26,7 +26,7 @@ describe('estimates fixtures', () => {
     expect(render('enabled')).toContain('Across 40 finished tasks.');
     expect(render('enabled-overrun')).toContain('Typically ran 1.5x longer than estimated.');
     expect(render('enabled-underrun')).toContain('Typically ran 1.7x shorter than estimated.');
-    expect(render('enabled-limited-history')).toContain('6 of these had little history in the repo to go on.');
+    expect(render('enabled-limited-history')).toContain('6 of these had limited comparable history in the repo.');
     expect(render('enabled')).not.toContain('estimates-limited-history');
   });
 });

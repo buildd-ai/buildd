@@ -114,7 +114,7 @@ export async function runShipCheckpoint(
   // The PR base, not the worktree base: on a resume the worktree was cut from
   // the prior attempt's branch, and measuring against that drops every file
   // earlier attempts committed (see resolvePrBaseRef).
-  const sweep = sweepWorktreeChanges(root, worker.prBaseRef);
+  const sweep = await sweepWorktreeChanges(root, worker.prBaseRef);
   if (sweep.error) {
     return { kind: 'unknown', cause: 'sweep_incomplete', attempts: 0, detail: sweep.error };
   }

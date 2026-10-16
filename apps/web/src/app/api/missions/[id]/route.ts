@@ -48,7 +48,7 @@ import {
 import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 import { selectMissionSpec, type OutcomeSpecInput, type OutcomeSpecRemoval } from '@/lib/specs/mission-selection';
 import type { SpecCaller } from '@/lib/specs/store';
-import { missionStatusNoteBody } from '@/lib/mission-status-note';
+import { missionStatusNoteBody, MISSION_STATUS_CHANGE_TITLES } from '@/lib/mission-status-note';
 import { missionEpochsOf, scopeAmendmentsOf } from '@/lib/workflow/delivery-ship';
 
 const resolveTeamIds = resolveAccountTeamIds;
@@ -965,7 +965,7 @@ export async function PATCH(
       await postMissionFeedEvent({
         missionId: id,
         type: 'update',
-        title: isReopen ? 'Mission reopened' : 'Mission status changed',
+        title: isReopen ? MISSION_STATUS_CHANGE_TITLES[1] : MISSION_STATUS_CHANGE_TITLES[0],
         body: missionStatusNoteBody(existing.status, status),
         actor,
       }).catch(e => console.error('[missions/patch] Failed to emit status-change note:', e));
