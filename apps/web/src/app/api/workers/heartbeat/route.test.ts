@@ -1160,7 +1160,7 @@ describe('POST /api/workers/heartbeat — model auth source (docs/specs/runner-m
     mockHeartbeatsFindFirst.mockResolvedValue({ viewerToken: 'existing-token' });
   });
 
-  it('AC-5: stores api_key and the mode on insert and on update', async () => {
+  it('AC-5: stores api_key while ignoring an old runner mode', async () => {
     const captured = captureUpsert();
     const res = await POST(createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -1168,9 +1168,9 @@ describe('POST /api/workers/heartbeat — model auth source (docs/specs/runner-m
     }));
     expect(res.status).toBe(200);
     expect(captured.values.modelAuthSource).toBe('api_key');
-    expect(captured.values.modelAuthMode).toBe('auto');
+    expect('modelAuthMode' in captured.values).toBe(false);
     expect(captured.set.modelAuthSource).toBe('api_key');
-    expect(captured.set.modelAuthMode).toBe('auto');
+    expect('modelAuthMode' in captured.set).toBe(false);
   });
 
   it('AC-5: a later beat without the fields leaves the stored values alone', async () => {
@@ -1183,7 +1183,7 @@ describe('POST /api/workers/heartbeat — model auth source (docs/specs/runner-m
     expect('modelAuthSource' in captured.set).toBe(false);
     expect('modelAuthMode' in captured.set).toBe(false);
     expect(captured.values.modelAuthSource).toBeNull();
-    expect(captured.values.modelAuthMode).toBeNull();
+    expect('modelAuthMode' in captured.values).toBe(false);
   });
 
   it('AC-6: a token-shaped value is never stored and the beat still succeeds', async () => {

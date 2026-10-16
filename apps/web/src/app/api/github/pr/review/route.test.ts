@@ -1049,4 +1049,28 @@ describe('per-task token', () => {
     const res = await GET(get('?prNumber=42&workspaceId=other'));
     expect(res.status).toBe(404);
   });
+
+  describe('workspace outside the team list', () => {
+    const OWN = { ...WORKSPACE, id: 'ws-own', name: 'buildd', repo: 'buildd-ai/buildd' };
+
+    beforeEach(() => {
+      mockAuthenticateApiKey.mockReturnValue({ ...SCOPED, taskScope: { ...SCOPED.taskScope, workspaceId: 'ws-own' } });
+      mockGetTeamWorkspaceIds.mockReturnValue(['ws-team-only']);
+      mockResolveWorkspace.mockReturnValue(null);
+      mockWorkspacesFindFirst.mockReturnValue(OWN);
+    });
+
+    for (const input of ['buildd', 'BuildD', 'buildd-ai/buildd', 'ws-own']) {
+      it(`resolves workspaceId=${input} to the token's own workspace`, async () => {
+        const res = await GET(get(`?prNumber=42&workspaceId=${encodeURIComponent(input)}`));
+        expect(res.status).toBe(200);
+        expect(mockWaitForPrReviewStatus.mock.calls.at(-1)![0]).toMatchObject({ workspaceId: 'ws-own', prNumber: 42 });
+      });
+    }
+
+    it('still 404s a different workspace name', async () => {
+      const res = await GET(get('?prNumber=42&workspaceId=other'));
+      expect(res.status).toBe(404);
+    });
+  });
 });
