@@ -20,6 +20,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { applyCommandOn } from '@buildd/workflow-kernel/command-runner';
 import { isTaskId } from '@buildd/workflow-kernel/findings';
+import { isRoundTrigger } from '@buildd/workflow-kernel/delta-approval';
 import type { CommandResult, DeliveryRef } from '@buildd/workflow-kernel/ports';
 import type { ApplyDecision, AttemptOp, Command, DeliveryPatch, FindingOp, RecordOnly, RoundOp } from './commands';
 import { postgresStore } from './postgres-store';
@@ -101,7 +102,9 @@ function roundCtes(ops: RoundOp[], src: string): SQL[] {
   const inserts = ops.filter((o): o is Extract<RoundOp, { op: 'insert' }> => o.op === 'insert');
   if (inserts.length) {
     const rows = inserts.map((o) => ({
-      id: o.id, round: o.round, head_sha: o.headSha, kind: o.kind, prior_round: o.priorRound, scope: o.scope ?? null,
+      // 58c8961e: the trigger is kept in the round's scope (no column of its own); toRoundSnapshot reads it back out.
+      id: o.id, round: o.round, head_sha: o.headSha, kind: o.kind, prior_round: o.priorRound,
+      scope: o.trigger ? { ...(o.scope ?? {}), [ROUND_TRIGGER_KEY]: o.trigger } : o.scope ?? null,
       status: o.decided ? 'decided' : 'queued', verdict: o.decided?.verdict ?? null, effective_verdict: o.decided?.effectiveVerdict ?? null,
       confidence: o.decided?.confidence ?? null, reviewer_task_id: o.decided?.reviewerTaskId ?? null, decided: !!o.decided,
     }));
@@ -123,6 +126,9 @@ function roundCtes(ops: RoundOp[], src: string): SQL[] {
     if (o.set.decided) sets.push(sql`decided_at = now()`);
     if (o.set.failureCount !== undefined) sets.push(sql`failure_count = ${o.set.failureCount}::int`);
     if (o.set.clearReviewer) sets.push(sql`reviewer_task_id = NULL`);
+    if (o.set.endReason !== undefined) {
+      sets.push(sql`scope = COALESCE(rr.scope, '{}'::jsonb) || jsonb_build_object(${ROUND_END_REASON_KEY}::text, ${o.set.endReason}::text)`);
+    }
     out.push(sql`${sql.identifier(`r_upd_${i}`)} AS (
   UPDATE workflow_review_rounds rr SET ${sql.join(sets, sql`, `)}
   FROM ${sql.identifier(src)} s
@@ -434,13 +440,22 @@ export function toDeliverySnapshot(r: J): DeliverySnapshot {
   };
 }
 
+/** Where a round's trigger and end reason live inside `workflow_review_rounds.scope` (58c8961e). */
+export const ROUND_TRIGGER_KEY = 'trigger';
+export const ROUND_END_REASON_KEY = 'endReason';
+
 export function toRoundSnapshot(r: J): RoundSnapshot {
+  const raw = (r.scope as Record<string, unknown> | null) ?? null;
+  const { [ROUND_TRIGGER_KEY]: trigger, [ROUND_END_REASON_KEY]: endReason, ...rest } = raw ?? {};
+  const scope = raw && Object.keys(rest).length > 0 ? rest : null;
   return {
     id: String(r.id), round: n(r.round), headSha: String(r.head_sha), kind: r.kind as RoundSnapshot['kind'],
     status: r.status as RoundSnapshot['status'], verdict: (r.verdict ?? null) as RoundSnapshot['verdict'],
     effectiveVerdict: (r.effective_verdict ?? null) as RoundSnapshot['effectiveVerdict'], failureCount: n(r.failure_count),
     reviewerTaskId: s(r.reviewer_task_id),
-    scope: (r.scope as Record<string, unknown> | null) ?? null,
+    scope,
+    ...(isRoundTrigger(trigger) ? { trigger } : {}),
+    ...(typeof endReason === 'string' ? { endReason } : {}),
   };
 }
 

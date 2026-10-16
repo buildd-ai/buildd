@@ -5,6 +5,7 @@
  * of (view, command); the caller (fact ingestion, a route) does the read.
  */
 import type { BaseDeltaFact } from './base-delta';
+import type { DeltaReading, RoundTrigger } from './delta-approval';
 import type {
   Actor,
   AttemptFamily,
@@ -116,6 +117,12 @@ export type Command =
        * `addressed`. Absent or null (unread) addresses nothing.
        */
       changedPaths?: string[] | null;
+      /**
+       * 58c8961e: the delta from the approved head to this one, bounded against the base,
+       * when the head moved under a reviewer's approval. Decides whether the round that
+       * follows may be a delta review (deltaApprovalEligibility); absent is a full review.
+       */
+      delta?: DeltaReading | null;
     })
   | (Base & {
       type: 'AttemptEnded';
@@ -130,6 +137,8 @@ export type Command =
       live: LivePr | null;
       proof?: { liveContainsLocal: boolean; contentDiffChanged?: boolean };
       carryForward?: 'content_equivalent' | 'own_refresh' | null;
+      /** 58c8961e: as HeadObserved's `delta`, for the head the attempt delivered. */
+      delta?: DeltaReading | null;
       /** The owner task's own (infra) retry budget, not a ledger. */
       taskRetryBudgetLeft?: boolean;
       /** Whether this workspace's policy wants a review round once a head exists. */
@@ -530,6 +539,8 @@ export interface DeliveryPatch {
 export type RoundOp =
   | {
       op: 'insert'; id: string; round: number; headSha: string; kind: RoundKind; priorRound: number | null; scope?: Record<string, unknown> | null;
+      /** Why the round started (58c8961e); persisted with the round. */
+      trigger?: RoundTrigger;
       /** 00d288fd: a round inserted already decided (a reviewer outside the kernel's rounds, adopted at the head it judged). */
       decided?: { verdict: Verdict; effectiveVerdict: Verdict; confidence: number | null; reviewerTaskId: string };
     }
@@ -545,6 +556,8 @@ export type RoundOp =
         decided?: boolean;
         failureCount?: number;
         clearReviewer?: boolean;
+        /** Why a round ended without its own verdict (a supersession), persisted with the round. */
+        endReason?: string;
       };
     };
 
