@@ -224,7 +224,8 @@ export interface ImportFileRow {
    * reason to skip; a real run records them on the metadata (`criteria_unread`).
    */
   criteria: CriterionIdProblems;
-  duplicates: DuplicateCandidate[];
+  /** `blocks`: a real run skips the file unless it is in allowDuplicates; otherwise it is an overlap warning and the file is created. */
+  duplicates: Array<DuplicateCandidate & { blocks: boolean }>;
   /** Why the duplicate check did not run, when it did not. */
   duplicateCheck: string | null;
 }
@@ -446,7 +447,7 @@ export async function importRepoSpecs(caller: SpecCaller, input: ImportInput, de
     } else {
       // §13: an imported spec is checked like a new draft, against the approved ones.
       const d = deps.duplicates === false ? null : await SPEC_DUPLICATE_CHECK({ workspaceId, title: p.title, body: p.body, ...('userId' in ids ? { userId: ids.userId } : { accountId: ids.accountId }) }, deps.duplicates ?? {});
-      if (d && d.ran) row.duplicates = [...d.blocking, ...d.warnings];
+      if (d && d.ran) row.duplicates = [...d.blocking.map((x) => ({ ...x, blocks: true })), ...d.warnings.map((x) => ({ ...x, blocks: false }))];
       else if (d) row.duplicateCheck = d.reason;
       if (d?.ran && d.blocking.length && !allow.has(f.path)) {
         row.message = `looks like a duplicate of ${d.blocking.map((x) => `"${x.title}" (${x.specId})`).join(', ')}`;
