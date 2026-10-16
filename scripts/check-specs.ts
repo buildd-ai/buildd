@@ -132,7 +132,6 @@ export const VERIFIED_BY_DEBT = new Set([
 export const DUPLICATE_CRITERIA_DEBT = new Set([
   'artifacts-and-sharing',
   'credential-isolation',
-  'living-specs',
   'mission-branch-refresh',
   'settings-models',
   'timeline-mobile-rail',
