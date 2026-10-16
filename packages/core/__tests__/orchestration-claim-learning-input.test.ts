@@ -24,3 +24,9 @@ it('a human safe force only becomes false-hold candidate with the same blocker e
   const unrelated = { ...human, receipt: { coordination: { paths: ['src/shared.ts'], blockerTaskIds: ['other'] } } };
   expect(assembleClaimLearningWorkspace({ ...input, decisions: [hold, unrelated], labels: [l] }, [], [], [l]).outcomes.find(r => r.actor === 'human_force')?.matchedJevLabel).toBeUndefined();
 });
+it('recognizes an eligible scope-undeclared advisory start by its blocker and state digest', () => {
+  const advisory = {...decision,gate:'advisory_manifest',areaClass:'unknown',candidateDigest:'state',receipt:{coordination:{paths:[],blockerTaskIds:['holder']}}};
+  const event: any = {id:'start',taskId:'task',workspaceId:'workspace',occurredAt:new Date(at.getTime()+1000),reason:'claim_learning_jev_start',detail:{gate:'advisory_manifest',paths:[],blockerTaskIds:['holder'],fingerprint:'fp',candidateDigest:'state'}};
+  const result=assembleClaimLearningWorkspace({...input,decisions:[advisory]},[event],[],[{...label,attributableUnsafe:false}]);
+  expect(result.outcomes[0].attributableUnsafe).toBe(false);
+});

@@ -110,7 +110,7 @@ import {
   attachExternalContextProviders,
   attachTaskAreaScope,
 } from './context-injection';
-import { VISUAL_AUDIT_ROUTES } from '@/modules';
+import { VISUAL_AUDIT_ROUTES, CLAIM_LEARNING_HOOKS } from '@/modules';
 import { runDependentContextInjections } from './prompt-context-pipeline';
 import { dependentCountQuery } from '@/lib/dependent-count-query';
 import {
@@ -161,8 +161,6 @@ import {
   type ClaimHoldNote,
   type ClaimRiskEvidence,
 } from './hold-start-shadow';
-import { claimAreaClass } from '@buildd/core/orchestration-claim-learning-evidence';
-import { CLAIM_HOLD_DECISION } from '@buildd/core/orchestration-claim-decision';
 import { evaluateSoftOverlaps, softOverlapHolderIds, type SoftHolderRow } from './soft-overlap-gate';
 import { loadSoftOverlapHolders } from './soft-overlap-store';
 import { defaultPrDiffScopeDeps, prefetchPrDiffScopes } from '@/lib/claim-pr-diff-scope';
@@ -3057,7 +3055,7 @@ export async function POST(req: NextRequest) {
           missionId: (task as any).missionId ?? null, workerId: worker.id,
           callerOrigin: gateCallerOrigin({ apiAccount: account }),
           detail: { gate: c.gate, paths: c.overlapPaths, blockerTaskIds: c.holder.taskId ? [c.holder.taskId] : [],
-            areaClass: claimAreaClass(c.concretePaths), fingerprint: CLAIM_HOLD_DECISION.fingerprint,
+            areaClass: CLAIM_LEARNING_HOOKS.areaClass(c.concretePaths), fingerprint: CLAIM_LEARNING_HOOKS.fingerprint,
             candidateDigest: note.digest, startedAt: now.toISOString() },
         });
       }
@@ -3068,7 +3066,7 @@ export async function POST(req: NextRequest) {
           reason: 'claim_learning_clean_start', taskId: task.id, workspaceId: task.workspaceId,
           missionId: (task as any).missionId ?? null, workerId: worker.id,
           callerOrigin: gateCallerOrigin({ apiAccount: account }),
-          detail: { paths: declared, areaClass: claimAreaClass(declared), startedAt: now.toISOString() },
+          detail: { paths: declared, areaClass: CLAIM_LEARNING_HOOKS.areaClass(declared), startedAt: now.toISOString() },
         });
       }
     }

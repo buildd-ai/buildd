@@ -25,11 +25,12 @@ type AttributedLabel = DecisionOutcomeLabels & {
 export const CLAIM_LEARNING_GATES = ['advisory_manifest', 'open_pr_overlap', 'soft_overlap'] as const;
 const strings = (v: unknown): string[] => Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
 const same = (a: string[], b: string[]) => a.length > 0 && [...new Set(a)].sort().join('\0') === [...new Set(b)].sort().join('\0');
+const samePaths = (gate: string | undefined, a: string[], b: string[]) => same(a, b) || (gate === 'advisory_manifest' && a.length === 0 && b.length === 0);
 const matches = (d: ClaimDecisionForReadout, e: ClaimStartEvent) => {
   const receipt = claimReceipt(d.receipt), detail = e.detail ?? {};
   return e.reason === 'claim_learning_jev_start' && e.workspaceId === d.workspaceId && e.taskId === d.taskId && detail.gate === d.gate
     && detail.fingerprint === d.fingerprint && (!d.candidateDigest || detail.candidateDigest === d.candidateDigest) && e.occurredAt >= d.createdAt && e.occurredAt.getTime() - d.createdAt.getTime() <= CLAIM_HOLD_START_TTL_MS
-    && same(receipt.blockerTaskIds, strings(detail.blockerTaskIds)) && same(receipt.paths, strings(detail.paths));
+    && same(receipt.blockerTaskIds, strings(detail.blockerTaskIds)) && samePaths(d.gate, receipt.paths, strings(detail.paths));
 };
 /** No accepted claim marker means no on-policy safety label, even if it ran later. */
 export function assembleClaimLearningWorkspace(input: ClaimHoldReadoutInput, events: ClaimStartEvent[], controlDecisions: ClaimDecisionForReadout[], labels: AttributedLabel[]) {
@@ -48,7 +49,7 @@ export function assembleClaimLearningWorkspace(input: ClaimHoldReadoutInput, eve
     let matchedJevLabel: 'HOLD' | 'START' | undefined;
     if (actor === 'human_force') {
       const previous = input.decisions.filter(p => p.taskId === d.taskId && p.workspaceId === d.workspaceId && p.createdAt < d.createdAt && p.gate === d.gate && p.areaClass === d.areaClass && p.model
-        && same(claimReceipt(p.receipt).blockerTaskIds, receipt.blockerTaskIds) && same(claimReceipt(p.receipt).paths, receipt.paths))
+        && same(claimReceipt(p.receipt).blockerTaskIds, receipt.blockerTaskIds) && samePaths(d.gate, claimReceipt(p.receipt).paths, receipt.paths))
         .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
       if (previous?.suggested === 'HOLD' || previous?.suggested === 'START')
         matchedJevLabel = previous.suggested;

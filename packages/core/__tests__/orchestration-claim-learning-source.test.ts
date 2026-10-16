@@ -44,7 +44,7 @@ test('missing global policy preserves the live bootstrap', async () => {
   expect(p.minConfidence).toBe(.85);
 });
 
-test('unknown areas fail closed', async () => expect((await loadClaimLearningPolicy('soft_overlap', 'unknown')).fraction).toBe(0));
+test('unclassified overlap areas fail closed', async () => expect((await loadClaimLearningPolicy('soft_overlap', 'unknown')).fraction).toBe(0));
 
 test('policy read errors propagate so serving fails closed', async () => {
   failRead = true;
@@ -67,7 +67,7 @@ test('owner changes compare revision', async () => {
   expect(writes).toBe(0);
 });
 
-test('owner cannot relax unknown scope', async () => {
+test('owner cannot relax unclassified overlap scope', async () => {
   const r = await changeClaimLearningPolicy({
     gate: 'soft_overlap', area: 'unknown', expectedRevision: 0, reason: 'fixture', actorAccountId: 'fixture', operation: 'pin', fraction: 1
   });
@@ -196,4 +196,24 @@ test('invalid persisted evidence boundary fails closed instead of silently suppr
     }
   };
   await expect(loadClaimLearningPolicy('soft_overlap', 'other')).rejects.toThrow('Invalid claim-learning policy');
+});
+
+test('eligible undeclared advisory manifests retain the authorized live bootstrap', async () => {
+  const policy = await loadClaimLearningPolicy('advisory_manifest', 'unknown');
+  expect(policy.fraction).toBe(1);
+  expect(policy.minConfidence).toBe(.85);
+});
+
+test('owner can pin the eligible undeclared advisory cell without bypassing coordination rails', async () => {
+  const result = await changeClaimLearningPolicy({
+    gate: 'advisory_manifest',
+    area: 'unknown',
+    expectedRevision: 0,
+    reason: 'fixture',
+    actorAccountId: 'fixture',
+    operation: 'pin',
+    fraction: .25
+  });
+  expect(result.status).toBe('applied');
+  expect(result.policy?.fraction).toBe(.25);
 });

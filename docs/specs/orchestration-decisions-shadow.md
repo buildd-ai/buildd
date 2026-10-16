@@ -136,8 +136,9 @@ current manifests.
   suggestion with reason `non_jev`, never applied, even inside a granted
   cohort. A measured answer below its threshold is `below_threshold`.
 - Claim hold/start boots at `CLAIM_HOLD_APPLYING_FRACTION` (1) and 0.85,
-  then serves the persisted gate × area cell fraction and threshold. Unknown
-  scope or a failed policy read holds. Every lookup rechecks the current
+  then serves the persisted gate × area cell fraction and threshold. Unresolved coordination
+  state or a failed policy read holds. The already-live scope-undeclared
+  advisory gate retains its conservative bootstrap in the unknown-area cell. Every lookup rechecks the current
   fraction's deterministic assignment and current confidence threshold, so an
   older applied START cannot escape a revert, reduced cohort or raised threshold.
 - The creation-manifest fraction (`MANIFEST_APPLYING_FRACTION`, zero) is
@@ -295,7 +296,9 @@ a failed panel read is `claimLearning: null`, and non-owners receive 404.
 Owner `claim_learning_pin`, `claim_learning_revert` and
 `claim_learning_set_delta` actions require a revision and reason, use the
 existing owner-action audit path and write policy changes. A pin cannot
-bypass a safety revert or unknown-state rail. The companion screen belongs in
+bypass a safety revert or unresolved coordination state. Missing code-area
+metadata is distinct from an unresolved coordination state: eligible
+scope-undeclared advisory decisions retain their live bootstrap. The companion screen belongs in
 the platform admin application; no member UI is added.
 
 **Acceptance criteria**:

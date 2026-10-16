@@ -175,3 +175,28 @@ describe('composition root', () => {
     for (const f of files) expect(moduleOf(f), f).not.toBe('core');
   });
 });
+
+it('wires claim learning through the core-owned extension slot', async () => {
+  const [{ CLAIM_LEARNING_HOOKS }, { claimAreaClass }, { CLAIM_HOLD_DECISION }] = await Promise.all([
+    import('./modules'), import('@buildd/core/orchestration-claim-learning-evidence'), import('@buildd/core/orchestration-claim-decision'),
+  ]);
+  expect(CLAIM_LEARNING_HOOKS.areaClass).toBe(claimAreaClass);
+  expect(CLAIM_LEARNING_HOOKS.fingerprint).toBe(CLAIM_HOLD_DECISION.fingerprint);
+  expect(typeof CLAIM_LEARNING_HOOKS.loadPolicy).toBe('function');
+  expect(typeof CLAIM_LEARNING_HOOKS.record).toBe('function');
+});
+
+it('claim learning markers follow a prompt change after the composition root loaded', async () => {
+  const [{ CLAIM_LEARNING_HOOKS }, { CLAIM_HOLD_DECISION, CLAIM_HOLD_QUESTIONS }, { withPromptOverlay }] = await Promise.all([
+    import('./modules'), import('@buildd/core/orchestration-claim-decision'), import('@buildd/core/prompt-overlay'),
+  ]);
+  const original = CLAIM_LEARNING_HOOKS.fingerprint;
+  const body = JSON.stringify({ ...CLAIM_HOLD_QUESTIONS, action: {
+    ...CLAIM_HOLD_QUESTIONS.action, instructions: `${CLAIM_HOLD_QUESTIONS.action.instructions}\nConsider the current evidence carefully.`,
+  } });
+  await withPromptOverlay([{ id: CLAIM_HOLD_DECISION.id, version: 2, body, contentHash: 'test-prompt-content' }], async () => {
+    expect(CLAIM_LEARNING_HOOKS.fingerprint).not.toBe(original);
+    expect(CLAIM_LEARNING_HOOKS.fingerprint).toBe(CLAIM_HOLD_DECISION.fingerprint);
+  });
+  expect(CLAIM_LEARNING_HOOKS.fingerprint).toBe(original);
+});

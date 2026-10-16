@@ -29,8 +29,15 @@ function keyOf(gate: string, area: string) {
   return `${PREFIX}${gate}:${area}`;
 }
 
-function bootstrap(area: string, now = new Date()): ClaimLearningPolicy {
-  const held = area === 'unknown';
+/** The undeclared advisory-manifest gate is intentionally eligible without code paths.
+ * Coordination-state uncertainty is rejected by claim eligibility before this dial.
+ */
+function holdsUnclassifiedCell(gate: string, area: string): boolean {
+  return area === 'unknown' && gate !== 'advisory_manifest';
+}
+
+function bootstrap(gate: string, area: string, now = new Date()): ClaimLearningPolicy {
+  const held = holdsUnclassifiedCell(gate, area);
   return {
     delta: .05, minSamplePerArm: 20, minConfidence: .85, fraction: held ? 0 : 1, dial: held ? 1 : 5, record: {
       state: held ? 'always' : 'shifted', since: now.toISOString(), alternateArmId: held ? null : 'jev_start'
@@ -45,7 +52,7 @@ async function readCell(gate: string, area: string, now = new Date()): Promise<S
   const [row] = await db.select({ value: systemCache.value }).from(systemCache).where(eq(systemCache.key, keyOf(gate, area))).limit(1);
   if (!row) {
     return {
-      revision: 0, policy: bootstrap(area, now), fingerprint: CLAIM_HOLD_DECISION.fingerprint, lastChange: now.toISOString(), why: 'existing live bootstrap; no calibrated evidence yet'
+      revision: 0, policy: bootstrap(gate, area, now), fingerprint: CLAIM_HOLD_DECISION.fingerprint, lastChange: now.toISOString(), why: 'existing live bootstrap; no calibrated evidence yet'
     };
   }
   const stored = row.value as StoredCell;
@@ -57,7 +64,7 @@ async function readCell(gate: string, area: string, now = new Date()): Promise<S
   if (typeof record.since !== 'string' || timestamps.some(value => value !== undefined && (typeof value !== 'string' || !Number.isFinite(Date.parse(value))))) {
     throw new Error('Invalid claim-learning policy');
   }
-  // Unknown scope is a rail even if an old persisted row says otherwise.
+  // Unclassified overlap cells remain closed; undeclared manifests retain their eligible advisory path.
   const normalized = stored.fingerprint !== CLAIM_HOLD_DECISION.fingerprint ? {
     ...stored, lastChange: now.toISOString(), why: 'prompt fingerprint changed: confidence reset to 0.85; new evidence boundary', policy: {
       ...stored.policy, minConfidence: .85, record: {
@@ -65,7 +72,7 @@ async function readCell(gate: string, area: string, now = new Date()): Promise<S
       }
     }
   } : stored;
-  return area === 'unknown' ? {
+  return holdsUnclassifiedCell(gate, area) ? {
     ...normalized, policy: {
       ...normalized.policy, minConfidence: .85, fraction: 0, dial: 1, record: {
         ...normalized.policy.record, state: 'always', alternateArmId: null
@@ -120,7 +127,7 @@ export async function changeClaimLearningPolicy(args: {
   if (args.operation === 'pin' && (args.fraction === undefined || ![0, .25, .5, .75, 1].includes(args.fraction))) {
     return rejected('Pin requires an existing dial share');
   }
-  if (args.area === 'unknown' && args.operation === 'pin' && args.fraction !== 0) {
+  if (holdsUnclassifiedCell(args.gate, args.area) && args.operation === 'pin' && args.fraction !== 0) {
     return rejected('Unknown scope must remain deterministic HOLD');
   }
   const current = await readCell(args.gate, args.area);
@@ -236,7 +243,7 @@ export async function runClaimLearningStep(args: {
       const evaluated = evaluateClaimLearningCell(inputForCell(evidence, gate, area, current, now));
       // Partial evidence must never authorize an increase; safety reverts still apply.
       const blocked = truncated && (evaluated.policy.fraction > current.policy.fraction || evaluated.policy.minConfidence < current.policy.minConfidence);
-      const policy = area === 'unknown' ? current.policy : blocked ? current.policy : evaluated.policy;
+      const policy = holdsUnclassifiedCell(gate, area) ? current.policy : blocked ? current.policy : evaluated.policy;
       const fingerprintChanged = current.fingerprint !== CLAIM_HOLD_DECISION.fingerprint;
       const changed = fingerprintChanged || JSON.stringify(policy) !== JSON.stringify(current.policy);
       const why = blocked ? 'truncated evidence: promotion withheld' : evaluated.decision.event?.reason ?? (fingerprintChanged ? current.why : 'evaluated: no policy change');

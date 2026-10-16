@@ -75,7 +75,7 @@ import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { resolveSerializedSurfaces } from '@/lib/surface-ordering-config';
 import { overlapIsHard, resolveHardOverlapSurfaces } from '@/lib/hard-overlap-surfaces';
 
-import { claimAreaClass } from '@buildd/core/orchestration-claim-learning-evidence';
+import { CLAIM_LEARNING_HOOKS } from '@/modules';
 import type { ClaimLearningPolicy } from '@buildd/core/orchestration-claim-learning';
 
 type ClaimHoldDecision = Decision<typeof CLAIM_HOLD_QUESTIONS>;
@@ -482,10 +482,10 @@ const defaultLoadEvidence: NonNullable<ClaimHoldDeps['loadEvidence']> = async (o
   (await import('@buildd/core/orchestration-claim-source')).loadSoftOverlapEvidence(opts);
 const defaultFindAppliedStart = async (k: ClaimDecisionKey) => (await import('@buildd/core/orchestration-claim-source')).findAppliedStart(k);
 const defaultLoadLearningPolicy: NonNullable<ClaimHoldDeps['loadLearningPolicy']> = async (gate, area) =>
-  (await import('@buildd/core/orchestration-claim-learning-source')).loadClaimLearningPolicy(gate, area);
+  CLAIM_LEARNING_HOOKS.loadPolicy(gate, area);
 
 async function learningPolicyFor(note: ClaimHoldNote, deps: ClaimHoldDeps) {
-  const policy = await (deps.loadLearningPolicy ?? defaultLoadLearningPolicy)(note.candidate.gate, claimAreaClass(note.candidate.concretePaths));
+  const policy = await (deps.loadLearningPolicy ?? defaultLoadLearningPolicy)(note.candidate.gate, CLAIM_LEARNING_HOOKS.areaClass(note.candidate.concretePaths));
   return { ...policy, fraction: deps.applyingFraction ?? policy.fraction };
 }
 
@@ -587,9 +587,9 @@ export async function runClaimHoldShadow(notes: readonly ClaimHoldNote[], deps: 
         // The access just resolved is reused, so the adapter does not read the team again.
         deps: { ...deps.decisionDeps, resolveAccess: async () => access,
           record: async (row, replay) => {
-            const record = deps.decisionDeps?.record ?? (await import('@buildd/core/orchestration-ledger-source')).recordOrchestrationDecision;
+            const record = deps.decisionDeps?.record ?? CLAIM_LEARNING_HOOKS.record;
             await record({ ...row, receipt: { ...row.receipt,
-              gate: c.gate, areaClass: claimAreaClass(c.concretePaths),
+              gate: c.gate, areaClass: CLAIM_LEARNING_HOOKS.areaClass(c.concretePaths),
               coordination: { paths: c.overlapPaths, blockerTaskIds: c.holder.taskId ? [c.holder.taskId] : [], staleBlocker: false },
             } as typeof row.receipt }, replay);
           },
