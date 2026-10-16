@@ -114,11 +114,29 @@ const isolate = <T>(p: Promise<T>): Promise<Isolated<T>> =>
   p.catch(err => ({ error: errorText(err) }));
 const failed = (r: Isolated<unknown>): boolean => typeof r === 'object' && r !== null && 'error' in r;
 
+/**
+ * The kernel's fast heal rides the same minute (workflow-kernel-library.md §1, S4a): a delivery
+ * whose merge or close was seen but not applied is reconciled now, not on the hourly floor. Its
+ * own Redis due-queue gates it, so an idle minute still touches no Postgres. Never throws.
+ */
+async function kernelHeals(): Promise<Isolated<unknown> | null> {
+  return isolate((async () => {
+    const { runDueKernelHeals } = await import('@/lib/workflow/kernel-heal');
+    return runDueKernelHeals();
+  })());
+}
+
 async function run(req: NextRequest, report: CronReport): Promise<NextResponse> {
+  const heals = req.nextUrl.searchParams.get('gate') === 'due' ? await kernelHeals() : null;
+  const healed = !!heals && !failed(heals) && ((heals as { due?: number } | null)?.due ?? 0) > 0;
   const gate = await gateOnDueQueue(DISPATCH_DUE_QUEUE, req.nextUrl.searchParams);
   if (!gate.proceed) {
     // Every idle minute would otherwise write a cron_runs row and keep Neon
     // awake around the clock. The floor tick is this route's health signal.
+    if (healed || failed(heals ?? {})) {
+      report({ processed: 0, changed: 0, errors: failed(heals ?? {}) ? 1 : 0, result: { gated: true, reason: gate.reason, kernelHeals: heals } });
+      return NextResponse.json({ gated: true, reason: gate.reason, kernelHeals: heals });
+    }
     report({ unrecorded: true });
     return NextResponse.json({ gated: true, reason: gate.reason });
   }
@@ -126,7 +144,7 @@ async function run(req: NextRequest, report: CronReport): Promise<NextResponse> 
   if (!gate.reseed) {
     const { totals, lastClaimAtMs } = await drainDue();
     const timer = await isolate(totals.exhausted ? settleDispatchTimer(lastClaimAtMs) : markDispatchBacklog());
-    const result = { gate: gate.reason, drain: totals, timer: failed(timer) ? timer : 'ok' };
+    const result = { gate: gate.reason, drain: totals, timer: failed(timer) ? timer : 'ok', ...(healed || failed(heals ?? {}) ? { kernelHeals: heals } : {}) };
     report({
       processed: totals.claimed,
       changed: totals.delivered,

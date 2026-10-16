@@ -21,6 +21,7 @@ import { applyCommand, loadView, type CommandResult, type DeliveryRef, type Exec
 import { baseChangeKey, headCoverage, headObservationKey } from './reducer';
 import { openFindings } from '@buildd/workflow-kernel/findings';
 import type { CloseCause, CompositionAttestation, ConstituentEvidence, DeliverySnapshot, KernelView } from './types';
+import { isResolvedWithoutMerge, recordMergeContradiction } from './merge-contradiction';
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
@@ -197,6 +198,12 @@ export async function ingestFact(fact: FactInput, deps: IngestDeps = {}): Promis
     // committed T13, written after it and never ahead of it.
     await exec(projectEquivalentHeadSql(result.deliveryId, String(result.decision.evidence.previousHead ?? ''), command.live.headSha))
       .catch((err) => console.warn(`[workflow] equivalentHeadShas projection failed for ${result.deliveryId}:`, err));
+  }
+  // S4a review (AC-4): GitHub says merged, the delivery already resolved without a merge. No edge
+  // leaves those states, so nothing applies; the contradiction is recorded loudly instead.
+  if (fact.kind === 'pr_closed' && live?.merged && result.result === 'stale' && isResolvedWithoutMerge(result.current.state)) {
+    await recordMergeContradiction({ workspaceId: fact.workspaceId, repoFullName: fact.repoFullName, prNumber: fact.prNumber, factId, state: result.current.state, live }, exec)
+      .catch((err) => console.error(`[workflow] merge contradiction record for ${fact.repoFullName}#${fact.prNumber} failed:`, err));
   }
   return { factId, factKey, firstSeen, ...result };
 }

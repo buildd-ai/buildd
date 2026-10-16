@@ -106,9 +106,8 @@ const mockObservePrState = mock(async (_input: any) => false);
 // (delivery-owned rows: pr-state-refresh-delivery-owned.test.ts).
 mock.module('@/lib/workflow/seam', () => ({
   observePrState: mockObservePrState,
-  deliveryOwnedWorkers: async () => new Map(),
+  deliveryOwnedWorkers: async () => new Set<string>(),
   recordPrStateObserved: async () => false,
-  prHasDeliveryOwnedRow: async () => false,
 }));
 
 beforeEach(() => {
@@ -211,7 +210,7 @@ describe('refreshStaleWorkersForWorkspaces', () => {
       'worker:progress',
       expect.objectContaining({ taskId: 'task1' }),
     );
-    expect(mockCheckDependsOnResolved).toHaveBeenCalledWith('task1');
+    expect(mockCheckDependsOnResolved).toHaveBeenCalledWith('task1', { observeOnly: true });
   });
 
   it('heals every other row carrying the merged PR too (a CI-retry attempt that adopted it)', async () => {
@@ -234,8 +233,8 @@ describe('refreshStaleWorkersForWorkspaces', () => {
       mergedAt: '2026-01-01T00:00:00Z',
     }));
     // The sibling's task gets the same dependency nudge as the row itself.
-    expect(mockCheckDependsOnResolved).toHaveBeenCalledWith('task-retry');
-    expect(mockCheckDependsOnResolved).toHaveBeenCalledWith('task1');
+    expect(mockCheckDependsOnResolved).toHaveBeenCalledWith('task-retry', { observeOnly: true });
+    expect(mockCheckDependsOnResolved).toHaveBeenCalledWith('task1', { observeOnly: true });
   });
 
   it('stamps mergedAt when webhook was missed for an externally-merged PR (pr_open + null prLastCheckedAt)', async () => {
@@ -261,7 +260,7 @@ describe('refreshStaleWorkersForWorkspaces', () => {
       opts: FUNNEL_OPTS,
     });
     expect(setMock).toHaveBeenCalledWith(BOOKKEEPING);
-    expect(mockCheckDependsOnResolved).toHaveBeenCalledWith('task-missed');
+    expect(mockCheckDependsOnResolved).toHaveBeenCalledWith('task-missed', { observeOnly: true });
   });
 
   it('stamps closed status on closed-unmerged PR', async () => {
@@ -494,7 +493,7 @@ describe('refreshStaleWorkers', () => {
       },
     ]);
 
-    expect(mockCheckDependsOnResolved).toHaveBeenCalledWith('task-abc');
+    expect(mockCheckDependsOnResolved).toHaveBeenCalledWith('task-abc', { observeOnly: true });
   });
 
   it('caps batch at 10 workers', async () => {

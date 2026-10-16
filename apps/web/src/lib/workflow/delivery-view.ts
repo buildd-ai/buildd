@@ -48,6 +48,10 @@ SELECT to_jsonb(d.*) AS delivery,
      WHERE e.delivery_id = d.id AND e.kind = 'refresh_branch' AND e.status = 'pending' AND e.outcome LIKE ${LANE_PARKED_OUTCOME + '%'}::text
      ORDER BY e.created_at DESC LIMIT 1) AS lane_wait,
   (SELECT jsonb_build_object('git_config', w.git_config) FROM workspaces w WHERE w.id = d.workspace_id) AS workspace,
+  (SELECT f.payload->'contradiction' FROM workflow_facts f
+     WHERE f.workspace_id = d.workspace_id AND f.repo_full_name = d.repo_full_name AND f.pr_number = d.pr_number
+       AND f.kind = 'pr_closed' AND f.payload ? 'contradiction'
+     ORDER BY f.observed_at DESC LIMIT 1) AS merge_contradiction,
   (SELECT jsonb_build_object('requires_review', ot.requires_review, 'landing', ot.context->'landing', 'landing_handoff', ot.context->'landingHandoff',
             'mission', (SELECT jsonb_build_object('merge_policy', m.merge_policy, 'requires_review', m.requires_review,
                           'working_branch', m.working_branch, 'integration_branch_enabled', m.integration_branch_enabled)
@@ -115,7 +119,7 @@ export function rowToDeliveryView(row: J, now = Date.now(), approvedNeedsPerson:
   const attemptTasks: AttemptTaskRef[] = ((row.attempt_tasks as J[]) ?? []).map((t) => ({
     taskId: String(t.id), role: t.role == null ? 'attempt' : String(t.role), status: String(t.status), createdAt: iso(t.created_at),
   }));
-  return deriveDeliveryView({
+  const view = deriveDeliveryView({
     view: { delivery: toDeliverySnapshot(row.delivery as J), rounds, attempts },
     lastTransition,
     attemptTasks,
@@ -123,6 +127,22 @@ export function rowToDeliveryView(row: J, now = Date.now(), approvedNeedsPerson:
     approvedNeedsPerson: (row.delivery as J).state === 'APPROVED' ? approvedNeedsPerson(row) : false,
     laneWait: laneWaitFrom(row.lane_wait),
   });
+  return view ? withMergeContradiction(view, row.merge_contradiction as J | null | undefined) : null;
+}
+
+/**
+ * AC-4 (S4a review): GitHub merged a PR whose delivery was already ABANDONED or SUPERSEDED. The
+ * kernel recorded the merge and did not apply it (merge-contradiction.ts); every surface reading
+ * this view, `explain` included, says so instead of reading as a quiet drop.
+ */
+export function withMergeContradiction(v: DeliveryView, c: J | null | undefined): DeliveryView {
+  if (!c || (v.state !== 'ABANDONED' && v.state !== 'SUPERSEDED')) return v;
+  const was = v.state === 'SUPERSEDED' ? 'superseded' : 'abandoned';
+  const at = c.mergedAt ? ` at ${String(c.mergedAt)}` : '';
+  return {
+    ...v,
+    detail: `GitHub reports this PR merged${at} after buildd recorded it as ${was}; the merge was recorded but not applied, so the work still reads as not shipped. A person should check whether it landed.`,
+  };
 }
 
 /**

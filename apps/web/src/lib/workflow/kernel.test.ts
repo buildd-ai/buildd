@@ -254,7 +254,7 @@ describe('S4a: the merge and the close reach the worker rows inside the transiti
     expect(text).toContain('RETURNING id, version, workspace_id, repo_full_name, pr_number, merged_at');
     expect(text).toContain('w_proj AS (\nUPDATE workers w SET updated_at = now(), pr_lifecycle_status = \'merged\', merged_at = COALESCE(w.merged_at, d.merged_at, now())');
     // Every row of the delivery's workspace carrying the PR, by its URL and number.
-    expect(text).toContain("FROM d\nWHERE w.workspace_id = d.workspace_id AND w.pr_number = d.pr_number AND w.pr_url = 'https://github.com/' || d.repo_full_name || '/pull/' || d.pr_number::text");
+    expect(text).toContain("FROM d\nWHERE w.workspace_id = d.workspace_id AND w.pr_number = d.pr_number AND lower(w.pr_url) = lower('https://github.com/' || d.repo_full_name || '/pull/' || d.pr_number::text)");
     expect(text).toContain("AND (w.merged_at IS NULL OR w.pr_lifecycle_status IS DISTINCT FROM 'merged')");
     // Still one statement: the projection is a CTE of the transition, before its final SELECT.
     expect(text.indexOf('w_proj AS (')).toBeLessThan(text.indexOf('SELECT t.id AS transition_id'));

@@ -67,7 +67,10 @@ const KERNEL_ENTRY_POINTS = new Set(['kernel-client', 'command-api', 'command-ke
   'landing-gate',
   // S4a: the PR fact funnel's scope for terminal facts (a predicate, no command): the way a funnel caller
   // records a merge or close without deciding it for a delivery-owned row.
-  'pr-fact-scope']);
+  'pr-fact-scope',
+  // S4a review: the fast heal's due-queue (kernel-heal.ts). Its tick calls the floor pass for named
+  // deliveries (seam functions only), like kernel-floor; it never imports the reducer.
+  'kernel-heal']);
 const COMPOSITION_ROOT = 'apps/web/src/modules.ts';
 // The package is matched too: importing `@buildd/workflow-kernel/reducer` is importing the reducer, and its
 // root (`@buildd/workflow-kernel`, every module at once) reads as `index`, which is no entry point.

@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 // ─── DB mocks ─────────────────────────────────────────────────────────────────
 
 const mockWorkersFindMany = mock(() => [] as any[]);
+const mockWorkerMergedRead = mock(async () => [{ mergedAt: null as Date | null }]);
 const mockMissionsFindMany = mock(() => [] as any[]);
 const mockWorkspacesFindFirst = mock(() => null as any);
 const mockGithubReposFindFirst = mock(() => null as any);
@@ -36,6 +37,12 @@ mock.module('@buildd/core/db', () => ({
       githubRepos: { findFirst: mockGithubReposFindFirst },
     },
     update: (table: any) => (table === missionsSchema ? mockMissionsUpdate() : mockWorkersUpdate()),
+    // refreshWorkerMergeStateIfStale asks the row whether it now carries the merge (S4a).
+    // Only that read: every other select stays unmocked, as the sweep tests below expect.
+    select: (cols: any) => {
+      if (!cols || !('mergedAt' in cols)) throw new Error('db.select is not mocked here');
+      return { from: () => ({ where: () => mockWorkerMergedRead() }) };
+    },
   },
 }));
 
@@ -137,7 +144,10 @@ const mockGithubApi = mock(() => Promise.resolve({ state: 'open', merged: false,
 mock.module('@/lib/github', () => ({ githubApi: mockGithubApi }));
 
 // Sibling-row merge stamp; its predicate is covered in pr-merge-stamp.test.ts.
-const mockStampPrMergedOnAllRows = mock(async (_input: any) => [] as Array<{ id: string; taskId: string | null }>);
+// By default the stamp wrote one row (the sweep counts only real writes, S4a); a test that needs
+// "the funnel wrote nothing" (a delivery-owned PR the kernel takes) says so.
+const STAMPED_ROW = { id: 'stamped-row', taskId: null as string | null };
+const mockStampPrMergedOnAllRows = mock(async (_input: any) => [STAMPED_ROW] as Array<{ id: string; taskId: string | null }>);
 mock.module('@/lib/pr-merge-stamp', () => ({
   stampPrMergedOnAllRows: mockStampPrMergedOnAllRows,
   noRowOfPrMerged: () => ({ op: 'noRowOfPrMerged' }),
@@ -158,7 +168,8 @@ mock.module('@buildd/core/pr-facts', () => ({
 
 // Kernel import on merge/close is best-effort; no real kernel code runs here.
 const mockObservePrState = mock(async (_input: any) => false);
-mock.module('@/lib/workflow/seam', () => ({ observePrState: mockObservePrState }));
+const mockRecordPrStateObserved = mock(async (_input: any) => true);
+mock.module('@/lib/workflow/seam', () => ({ observePrState: mockObservePrState, recordPrStateObserved: mockRecordPrStateObserved }));
 
 // G6 (failure-incident-recovery): a healed merge releases the PR's paths,
 // like the webhook's merge work does.
@@ -245,6 +256,7 @@ describe('refreshWorkerMergeStateIfStale', () => {
 
   it('calls GitHub API and stamps mergedAt when PR is merged', async () => {
     mockStampPrMergedOnAllRows.mockClear();
+    mockStampPrMergedOnAllRows.mockResolvedValueOnce([{ id: 'w1', taskId: 't1' }]);
     mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-03-01T10:00:00Z' });
     const setMock = mock(() => ({ where: mock(() => Promise.resolve()) }));
     mockWorkersUpdate.mockReturnValue({ set: setMock });
@@ -266,6 +278,42 @@ describe('refreshWorkerMergeStateIfStale', () => {
       prCheckFailureCount: 0,
       updatedAt: expect.any(Date),
     });
+  });
+
+  // S4a review item 3: the dependency gate wakes a dependent only for a row that really carries
+  // the merge now, never for a funnel no-op the SQL gate would still refuse.
+  it('returns false when no row was written (a delivery-owned PR the kernel did not take in)', async () => {
+    mockStampPrMergedOnAllRows.mockResolvedValueOnce([]);
+    mockWorkerMergedRead.mockResolvedValueOnce([{ mergedAt: null }]);
+    mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-03-01T10:00:00Z' });
+    mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    expect(await refreshWorkerMergeStateIfStale({ id: 'w1', prNumber: 55, prUrl: 'https://github.com/owner/repo/pull/55' }, 456)).toBe(false);
+  });
+
+  // S4a review item 1a: a lost merge webhook heals through the dependency gate in one call.
+  it('hands a merge to the kernel first (T17 from its own read), then answers from the row', async () => {
+    mockObservePrState.mockClear();
+    mockRecordPrStateObserved.mockClear();
+    mockStampPrMergedOnAllRows.mockResolvedValueOnce([]);
+    mockWorkerMergedRead.mockResolvedValueOnce([{ mergedAt: new Date('2026-03-01T10:00:00Z') }]);
+    mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-03-01T10:00:00Z' });
+    mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    const ok = await refreshWorkerMergeStateIfStale({ id: 'w1', prNumber: 55, prUrl: 'https://github.com/owner/repo/pull/55' }, 456, { workspaceId: 'ws1' });
+    expect(ok).toBe(true);
+    expect(mockObservePrState).toHaveBeenCalledTimes(1);
+    expect(mockObservePrState.mock.calls[0][0]).toMatchObject({ workspaceId: 'ws1', repoFullName: 'owner/repo', prNumber: 55, installationId: 456, source: 'dependency-gate' });
+    expect(mockRecordPrStateObserved).not.toHaveBeenCalled();
+  });
+
+  it('from a page render (observeOnly) records the merge as a fact and applies nothing (AC-3)', async () => {
+    mockObservePrState.mockClear();
+    mockRecordPrStateObserved.mockClear();
+    mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-03-01T10:00:00Z' });
+    mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    await refreshWorkerMergeStateIfStale({ id: 'w1', prNumber: 55, prUrl: 'https://github.com/owner/repo/pull/55' }, 456, { workspaceId: 'ws1', observeOnly: true });
+    expect(mockObservePrState).not.toHaveBeenCalled();
+    expect(mockRecordPrStateObserved).toHaveBeenCalledTimes(1);
+    expect(mockRecordPrStateObserved.mock.calls[0][0]).toMatchObject({ workspaceId: 'ws1', repoFullName: 'owner/repo', prNumber: 55 });
   });
 
   it('stamps the merge on every other row carrying the PR (read-through tier)', async () => {

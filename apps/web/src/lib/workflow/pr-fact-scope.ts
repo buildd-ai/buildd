@@ -29,7 +29,20 @@ import { kernelOnSql } from './kill-switch';
  */
 export function prRowOfDeliverySql(d: string): SQL {
   const a = sql.raw(d);
-  return sql`w.workspace_id = ${a}.workspace_id AND w.pr_number = ${a}.pr_number AND w.pr_url = 'https://github.com/' || ${a}.repo_full_name || '/pull/' || ${a}.pr_number::text`;
+  // Case folded: GitHub owner and repo names are case-insensitive, so a URL recorded with other
+  // casing is still this PR (and is then both projected and excluded, never one without the other).
+  return sql`w.workspace_id = ${a}.workspace_id AND w.pr_number = ${a}.pr_number AND lower(w.pr_url) = lower('https://github.com/' || ${a}.repo_full_name || '/pull/' || ${a}.pr_number::text)`;
+}
+
+/**
+ * The one definition of "delivery-owned" for a worker row `w` (§1): its PR belongs to a delivery
+ * the kernel decides for (authority kernel, the workspace's kill switch on). A delivery released
+ * to legacy, or a workspace with the kernel off, is not delivery-owned: legacy writers keep it.
+ * `extra` narrows the delivery (the funnel's "does it already agree" test).
+ */
+export function kernelOwnedRowSql(extra?: SQL): SQL {
+  return sql`EXISTS (SELECT 1 FROM workflow_deliveries kd JOIN workspaces kw ON kw.id = kd.workspace_id
+    WHERE kd.authority = 'kernel' AND ${kernelOnSql(sql`kw.git_config`)} AND ${prRowOfDeliverySql('kd')}${extra ? sql` AND ${extra}` : sql``})`;
 }
 
 /** The delivery states a terminal fact agrees with: the funnel may write only what these already say. */
@@ -41,9 +54,7 @@ const AGREES: Record<TerminalPrFactKind, string[]> = {
 /** The scope every funnel caller outside the kernel passes with a terminal fact. */
 export const factFunnelScope: PrFactScope = {
   [PR_FACT_SCOPE]: 'fact_funnel',
-  where: (kind) => sql`NOT EXISTS (SELECT 1 FROM workflow_deliveries kd JOIN workspaces kw ON kw.id = kd.workspace_id
-    WHERE kd.authority = 'kernel' AND ${kernelOnSql(sql`kw.git_config`)} AND ${prRowOfDeliverySql('kd')}
-      AND kd.state NOT IN (SELECT jsonb_array_elements_text(${JSON.stringify(AGREES[kind])}::jsonb)))`,
+  where: (kind) => sql`NOT ${kernelOwnedRowSql(sql`kd.state NOT IN (SELECT jsonb_array_elements_text(${JSON.stringify(AGREES[kind])}::jsonb))`)}`,
 };
 
 /** The kernel's own projection (`stamp_pr_rows`, the backstop of the transition's): it is the writer. */

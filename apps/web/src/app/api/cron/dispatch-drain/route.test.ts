@@ -71,6 +71,11 @@ mock.module('@/lib/dispatch-repair', () => ({
 const sweepEntitlementBlockedTasks = mock(async () => ({ teams: 0, woken: 0 }));
 mock.module('@/lib/entitlements/managed-runner', () => ({ sweepEntitlementBlockedTasks }));
 
+// S4a review: the kernel's fast heal rides the gated minute (kernel-heal.ts has its own tests).
+let healResult: { due: number; healed: unknown; rescheduled: number } | null = null;
+const runDueKernelHeals = mock(async () => healResult);
+mock.module('@/lib/workflow/kernel-heal', () => ({ runDueKernelHeals }));
+
 const { GET } = await import('./route');
 const call = (query = '', auth = 'Bearer s3cret') =>
   GET(new NextRequest(`http://localhost/api/cron/dispatch-drain${query}`, { headers: { authorization: auth } }));
@@ -82,6 +87,8 @@ beforeEach(() => {
   dueCount = 0;
   drainResults = [];
   health = { overdue: 0, stuck: 0, failed: 0, unacked: 0, orphaned: 0, unackedStale: 0 };
+  healResult = null;
+  runDueKernelHeals.mockClear();
   for (const m of [alertFloorRepair, publishPendingDispatches, reconcileOrphans, drainDispatchOutbox, reseedDispatchTimer, backfillStartAtWakes, settleDispatchTimer, markDispatchBacklog, repairDependencyWakes]) m.mockClear();
 });
 
@@ -89,6 +96,20 @@ describe('GET /api/cron/dispatch-drain', () => {
   it('requires the cron secret', async () => {
     expect((await call('?gate=due', 'Bearer nope')).status).toBe(401);
     expect(drainDispatchOutbox).not.toHaveBeenCalled();
+  });
+
+  it('gated tick: a delivery owed a fast heal is reconciled this minute even with no dispatch due, and recorded', async () => {
+    healResult = { due: 1, healed: { checked: 1, imported: 1, enqueued: 0, errors: 0 }, rescheduled: 0 };
+    const body = await (await call('?gate=due')).json();
+    expect(runDueKernelHeals).toHaveBeenCalledTimes(1);
+    expect(body).toMatchObject({ gated: true, kernelHeals: { due: 1 } });
+    expect(drainDispatchOutbox).not.toHaveBeenCalled();
+    expect(reports[0]).toMatchObject({ job: 'dispatch-drain:due', errors: 0 });
+  });
+
+  it('the floor tick leaves heals to the kernel floor', async () => {
+    await call('');
+    expect(runDueKernelHeals).not.toHaveBeenCalled();
   });
 
   it('gated tick with nothing due touches neither Postgres nor the run log', async () => {

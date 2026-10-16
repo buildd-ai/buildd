@@ -7,7 +7,7 @@
 import { describe, expect, test } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { recordPrFactSql } from '@buildd/core/pr-facts';
-import { factFunnelScope, kernelProjectionScope, prRowOfDeliverySql } from './pr-fact-scope';
+import { factFunnelScope, kernelOwnedRowSql, kernelProjectionScope, prRowOfDeliverySql } from './pr-fact-scope';
 
 const render = (q: Parameters<PgDialect['sqlToQuery']>[0]) => new PgDialect().sqlToQuery(q);
 
@@ -15,10 +15,11 @@ describe('factFunnelScope: a delivery-owned row takes only what its delivery alr
   test('merged: excluded while a kernel-owned delivery of the PR is anything but MERGED', () => {
     const { sql, params } = render(factFunnelScope.where('merged')!);
     expect(sql).toContain('NOT EXISTS (SELECT 1 FROM workflow_deliveries kd JOIN workspaces kw ON kw.id = kd.workspace_id');
+    expect(sql).toContain('AND kd.state NOT IN (SELECT jsonb_array_elements_text($');
     expect(sql).toContain("kd.authority = 'kernel'");
     // The kill switch: a workspace with the kernel off is legacy's, so the funnel writes as before.
     expect(sql).toContain("(COALESCE((kw.git_config)->>'workflowKernel', 'true') IN ('true', 'on'))");
-    expect(sql).toContain("w.workspace_id = kd.workspace_id AND w.pr_number = kd.pr_number AND w.pr_url = 'https://github.com/' || kd.repo_full_name || '/pull/' || kd.pr_number::text");
+    expect(sql).toContain("w.workspace_id = kd.workspace_id AND w.pr_number = kd.pr_number AND lower(w.pr_url) = lower('https://github.com/' || kd.repo_full_name || '/pull/' || kd.pr_number::text)");
     expect(sql).toContain('kd.state NOT IN (SELECT jsonb_array_elements_text($');
     expect(params).toContain(JSON.stringify(['MERGED']));
   });
@@ -39,6 +40,14 @@ describe('factFunnelScope: a delivery-owned row takes only what its delivery alr
   });
 
   test('one reading of "this worker row carries that delivery\'s PR", for the projection and the exclusion', () => {
-    expect(render(prRowOfDeliverySql('d')).sql).toBe("w.workspace_id = d.workspace_id AND w.pr_number = d.pr_number AND w.pr_url = 'https://github.com/' || d.repo_full_name || '/pull/' || d.pr_number::text");
+    expect(render(prRowOfDeliverySql('d')).sql).toBe("w.workspace_id = d.workspace_id AND w.pr_number = d.pr_number AND lower(w.pr_url) = lower('https://github.com/' || d.repo_full_name || '/pull/' || d.pr_number::text)");
+  });
+
+  test('kernelOwnedRowSql is the one "delivery-owned": kernel authority, switch on, the PR matched; legacy and switch-off are not', () => {
+    const { sql } = render(kernelOwnedRowSql());
+    expect(sql.startsWith('EXISTS (SELECT 1 FROM workflow_deliveries kd JOIN workspaces kw')).toBe(true);
+    expect(sql).toContain("kd.authority = 'kernel'");
+    expect(sql).toContain("'workflowKernel'");
+    expect(sql).not.toContain('owner_task_id');
   });
 });
