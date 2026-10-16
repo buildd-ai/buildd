@@ -4,6 +4,7 @@ import { teamInvitations, teamMembers, teams } from '@buildd/core/db/schema';
 import { and, eq } from 'drizzle-orm';
 import { requireSessionUser } from '@/lib/auth-helpers';
 import { checkSeatForNewMember, seatsExhaustedResponse } from '@/lib/billing/seats';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 function normaliseEmail(email: string | null | undefined): string {
   return (email ?? '').trim().toLowerCase();
@@ -30,7 +31,7 @@ export async function POST(
 
   try {
     const invitation = await db.query.teamInvitations.findFirst({
-      where: eq(teamInvitations.token, token),
+      where: sqlWhere(eq(teamInvitations.token, token)),
     });
 
     if (!invitation) {
@@ -61,7 +62,7 @@ export async function POST(
     // the team takes no new seat. A team that lost seats since (downgrade) is
     // refused; the invitation stays pending.
     const alreadyMember = await db.query.teamMembers.findFirst({
-      where: and(eq(teamMembers.teamId, invitation.teamId), eq(teamMembers.userId, user.id)),
+      where: sqlWhere(and(eq(teamMembers.teamId, invitation.teamId), eq(teamMembers.userId, user.id))),
       columns: { userId: true },
     });
     if (!alreadyMember) {
@@ -88,7 +89,7 @@ export async function POST(
     // whole build window, since db:migrate runs before next build. Identity only;
     // this response never carried anything a caller needs beyond them.
     const team = await db.query.teams.findFirst({
-      where: eq(teams.id, invitation.teamId),
+      where: sqlWhere(eq(teams.id, invitation.teamId)),
       columns: { id: true, name: true, slug: true },
     });
 

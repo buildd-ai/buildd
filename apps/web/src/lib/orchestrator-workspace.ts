@@ -1,6 +1,7 @@
 import { db } from '@buildd/core/db';
 import { workspaces } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const COORDINATION_WORKSPACE_NAME = '__coordination';
 
@@ -12,7 +13,7 @@ const COORDINATION_WORKSPACE_NAME = '__coordination';
  */
 export async function getOrCreateCoordinationWorkspace(teamId: string): Promise<{ id: string }> {
   const existing = await db.query.workspaces.findFirst({
-    where: and(eq(workspaces.name, COORDINATION_WORKSPACE_NAME), eq(workspaces.teamId, teamId)),
+    where: sqlWhere(and(eq(workspaces.name, COORDINATION_WORKSPACE_NAME), eq(workspaces.teamId, teamId))),
     columns: { id: true },
   });
 

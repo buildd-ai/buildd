@@ -20,6 +20,8 @@ import {
   installService,
   uninstallService,
   serviceStatus,
+  installedServiceDebug,
+  parseInstallArgs,
   type CommandResult,
   type CommandRunner,
 } from '../../src/service';
@@ -312,5 +314,135 @@ describe('unsupported platform', () => {
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
+  });
+});
+
+// ── Spec c7410e76 R-14/R-15/AC-5: say how to watch it; --debug turns the web UI on ──
+
+describe('installService: how to watch the runner', () => {
+  let home: string;
+  beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'buildd-service-test-watch-')); });
+  afterEach(() => { rmSync(home, { recursive: true, force: true }); });
+
+  for (const platform of ['darwin', 'linux'] as const) {
+    test(`${platform}: ends with buildd top, then buildd web`, () => {
+      const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd') });
+      const result = installService(paths, platform, fakeRunner(0).run);
+      expect(result.ok).toBe(true);
+      const lines = result.message.trimEnd().split('\n');
+      const top = lines.findIndex((l) => l.includes('buildd top'));
+      const web = lines.findIndex((l) => l.includes('buildd web'));
+      expect(top).toBeGreaterThan(-1);
+      expect(web).toBeGreaterThan(top);
+      expect(web).toBe(lines.length - 1);
+    });
+  }
+
+  test('a failed install does not tell anyone to watch it', () => {
+    const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd') });
+    expect(installService(paths, 'darwin', fakeRunner(1).run).message).not.toContain('buildd top');
+  });
+});
+
+describe('--debug: the service serves the web UI', () => {
+  const paths = resolveServicePaths({ home: '/home/alice', builddHome: '/home/alice/.buildd' });
+
+  test('off by default: the service runs the launcher with no arguments', () => {
+    expect(generateLaunchdPlist(paths)).not.toContain('--debug');
+    expect(generateSystemdUnit(paths)).not.toContain('--debug');
+  });
+
+  test('launchd passes --debug as its own argument', () => {
+    expect(generateLaunchdPlist(paths, { debug: true })).toContain(`<string>${paths.builddBin}</string>\n\t\t<string>--debug</string>`);
+  });
+
+  test('systemd runs the launcher with --debug', () => {
+    expect(generateSystemdUnit(paths, { debug: true })).toContain(`ExecStart=${paths.builddBin} --debug\n`);
+  });
+
+  test('installService writes what it was asked for', () => {
+    const home = mkdtempSync(join(tmpdir(), 'buildd-service-test-debug-'));
+    try {
+      const p = resolveServicePaths({ home, builddHome: join(home, '.buildd') });
+      installService(p, 'linux', fakeRunner(0).run, { debug: true });
+      expect(readFileSync(systemdUnitPath(p), 'utf-8')).toBe(generateSystemdUnit(p, { debug: true }));
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+// Review of PR #4766 (task 4b59eb5b): a reinstall must actually restart a running
+// Linux unit, and must keep --debug unless told otherwise.
+
+function scriptedRunner(answers: Record<string, number>): { run: CommandRunner; calls: string[] } {
+  const calls: string[] = [];
+  const run: CommandRunner = (cmd, args) => {
+    const line = [cmd, ...args].join(' ');
+    calls.push(line);
+    const hit = Object.keys(answers).find((k) => line.startsWith(k));
+    return { exitCode: hit ? answers[hit] : 0, stdout: '', stderr: '' };
+  };
+  return { run, calls };
+}
+
+describe('linux reinstall restarts a running unit', () => {
+  let home: string;
+  beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'buildd-service-test-restart-')); });
+  afterEach(() => { rmSync(home, { recursive: true, force: true }); });
+
+  test('already active: daemon-reload, then restart, so the new ExecStart takes effect', () => {
+    const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd') });
+    const { run, calls } = scriptedRunner({ 'systemctl --user is-active': 0 });
+    expect(installService(paths, 'linux', run, { debug: true }).ok).toBe(true);
+    const reload = calls.indexOf('systemctl --user daemon-reload');
+    const restart = calls.indexOf(`systemctl --user restart ${paths.unitName}.service`);
+    expect(reload).toBeGreaterThan(-1);
+    expect(restart).toBeGreaterThan(reload);
+  });
+
+  test('not active yet: enable --now starts it, no extra restart', () => {
+    const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd') });
+    const { run, calls } = scriptedRunner({ 'systemctl --user is-active': 3 });
+    expect(installService(paths, 'linux', run).ok).toBe(true);
+    expect(calls).toContain(`systemctl --user enable --now ${paths.unitName}.service`);
+    expect(calls.some((c) => c.startsWith('systemctl --user restart'))).toBe(false);
+  });
+
+  test('a failed restart is reported', () => {
+    const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd') });
+    const { run } = scriptedRunner({ 'systemctl --user is-active': 0, 'systemctl --user restart': 1 });
+    const result = installService(paths, 'linux', run);
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('restart');
+  });
+});
+
+describe('--debug is kept across reinstalls', () => {
+  let home: string;
+  beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'buildd-service-test-keep-')); });
+  afterEach(() => { rmSync(home, { recursive: true, force: true }); });
+
+  for (const platform of ['darwin', 'linux'] as const) {
+    test(`${platform}: reads whether the installed service runs with --debug`, () => {
+      const paths = resolveServicePaths({ home, builddHome: join(home, '.buildd') });
+      expect(installedServiceDebug(paths, platform)).toBe(false);
+      installService(paths, platform, fakeRunner(0).run, { debug: true });
+      expect(installedServiceDebug(paths, platform)).toBe(true);
+      installService(paths, platform, fakeRunner(0).run, { debug: false });
+      expect(installedServiceDebug(paths, platform)).toBe(false);
+    });
+  }
+
+  test('a plain install keeps what is installed; --debug turns it on, --no-debug off', () => {
+    expect(parseInstallArgs([], true)).toEqual({ debug: true });
+    expect(parseInstallArgs([], false)).toEqual({ debug: false });
+    expect(parseInstallArgs(['--debug'], false)).toEqual({ debug: true });
+    expect(parseInstallArgs(['--no-debug'], true)).toEqual({ debug: false });
+  });
+
+  test('unknown or conflicting arguments are refused', () => {
+    expect(parseInstallArgs(['--verbose'], false)).toEqual({ error: 'Unknown argument: --verbose' });
+    expect('error' in parseInstallArgs(['--debug', '--no-debug'], false)).toBe(true);
   });
 });

@@ -27,7 +27,7 @@ import { deriveFeedPrState } from './mission-pulse';
 import { unmetDependencyIds, type DependencyRow } from './mission-helpers';
 import type { LocalStrand } from './local-strand';
 import { registerPromptedQuestions } from '@buildd/core/prompted-decision';
-import { resolveModelMeasurement, type StoredMeasurement } from '@buildd/core/decision-model-measurements';
+import { gateOnMeasurement, resolveModelMeasurement, type StoredMeasurement } from '@buildd/core/decision-model-measurements';
 import { recordDecision, type DecisionLedgerInput } from '@buildd/core/decision-ledger';
 
 export const STRAND_CHOICE_CAPABILITY = 'mission_strand_choice' as const;
@@ -197,6 +197,7 @@ type ResolveAccess = (opts: {
   workspaceId: string | null;
   accountId: string | null;
   userId: string | null;
+  kind?: string;
 }) => Promise<DecisionAccess>;
 
 export interface StrandChoiceDeps {
@@ -245,6 +246,7 @@ export async function adviseStrandChoice(facts: StrandChoiceFacts, deps: StrandC
       workspaceId: facts.workspaceId,
       accountId: facts.accountId ?? null,
       userId: facts.userId ?? null,
+      kind: STRAND_CHOICE_DECISION_ID,
     });
     if (!access.ok) return await fallback(access.error.kind);
 
@@ -276,6 +278,7 @@ export async function adviseStrandChoice(facts: StrandChoiceFacts, deps: StrandC
       return await fallback(res.error.kind, res.latencyMs);
     }
     const { choice, confidence } = res.answers.pick;
+    const probabilities = (res.answers.pick as { probabilities?: Record<string, number> }).probabilities ?? null;
     // Ids, labels and numbers only.
     log(`${DECISION_SHADOW_LOG_PREFIX} ${JSON.stringify({
       site: 'mission_strand',
@@ -297,9 +300,12 @@ export async function adviseStrandChoice(facts: StrandChoiceFacts, deps: StrandC
       deps.measurements ? { load: deps.measurements } : {},
     );
     if (!measurement.measured) return await fallback('non_jev');
-    const minConfidence = measurement.threshold ?? STRAND_CHOICE_MIN_CONFIDENCE;
+    // The row names the number compared (confidence, top p, margin, calibrated top p)
+    // and may list the labels it acts on.
+    const gate = gateOnMeasurement(measurement, { choice, confidence, probabilities }, STRAND_CHOICE_MIN_CONFIDENCE);
+    const minConfidence = gate.threshold ?? measurement.threshold ?? STRAND_CHOICE_MIN_CONFIDENCE;
 
-    const isConfidentWaitForLocal = choice === 'wait-for-local' && confidence >= minConfidence;
+    const isConfidentWaitForLocal = choice === 'wait-for-local' && gate.acts;
     const applied = STRAND_CHOICE_MODE === 'gated' && isConfidentWaitForLocal;
     const appliedAnswer = applied ? choice : 'runner-first';
     const status = applied ? 'applied' : 'suggested';

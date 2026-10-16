@@ -37,7 +37,9 @@ import { applyRecommendationTitle } from '@/lib/task-title';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
 import { performLandingAction } from '@/lib/landing-action-run';
-import { applyRecommendationThroughKernel, kernelDeliveryOfPr } from '@/lib/workflow/seam';
+import { kernelDeliveryOfPr } from '@/lib/workflow/seam';
+import { doorErrorResponse, isDoorError, applyRecommendationThroughKernel } from '@/lib/workflow/kernel-client';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // A human choosing to apply a fix is a deliberate one-off, not another lap of
 // the bounded agent-only request-changes loop — it gets its own fresh budget
@@ -77,10 +79,10 @@ function buildApplyDescription(
 /** The reviewer's open escalation for a task, as the card shows it, or null. */
 async function openEscalation(taskId: string) {
   const notes = await db.query.missionNotes.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(missionNotes.taskId, taskId),
       inArray(missionNotes.type, ['reviewer_escalated', 'reviewer_approved']),
-    ),
+    )),
     columns: { taskId: true, type: true, body: true, title: true, status: true, createdAt: true },
   });
   return selectReviewerEvidence(notes).escalationMap.get(taskId) ?? null;
@@ -107,7 +109,8 @@ async function applyOnKernel(p: {
     actor: `human:${p.user.id}`,
     expectedVersion: p.expectedVersion,
     instructions,
-  });
+  }, { principal: { kind: 'user', id: p.user.id } }).catch((err: unknown) => (isDoorError(err) ? err : Promise.reject(err)));
+  if (isDoorError(out)) return doorErrorResponse(out) as NextResponse;
   if (!out) return NextResponse.json({ error: 'PR is no longer owned by the workflow kernel; retry' }, { status: 409 });
   const r = out.result;
   if (r.result === 'stale') {
@@ -274,7 +277,7 @@ export async function POST(
   // second Apply call for the same (PR, headSha) is a true double-tap, not a
   // legitimate second dispatch.
   // The fix re-attempts the escalated task, so it carries that task's backend,
-  // role, routing kind and phase (Rule P1-7).
+  // role, routing kind and phase (mission-legibility R-7).
   const identity = await inheritAttemptIdentity(originalTask.id);
 
   const [applyTask] = await db
@@ -322,18 +325,18 @@ export async function POST(
     // a fix task for this exact (PR, headSha). Return the existing one instead
     // of erroring so a double-tap reads as success, not failure.
     const existing = await db.query.tasks.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(tasks.workspaceId, worker.workspaceId),
         eq(tasks.reviewerRetryPrNumber, prNumber),
         eq(tasks.reviewerRetryHeadSha, headSha),
-      ),
+      )),
       columns: { id: true },
     });
     return NextResponse.json({ ok: true, dispatched: false, taskId: existing?.id ?? null });
   }
 
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, worker.workspaceId),
+    where: sqlWhere(eq(workspaces.id, worker.workspaceId)),
   });
   if (workspace) {
     await announceTaskCreated(applyTask, workspace);
@@ -366,7 +369,7 @@ export async function POST(
   // Best-effort — a failed GitHub App lookup must not fail the dispatch itself.
   try {
     const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, worker.workspaceId),
+      where: sqlWhere(eq(workspaces.id, worker.workspaceId)),
       columns: { id: true },
       with: { githubRepo: { columns: { fullName: true }, with: { installation: { columns: { installationId: true } } } } },
     });

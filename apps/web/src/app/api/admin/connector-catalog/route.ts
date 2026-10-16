@@ -5,6 +5,7 @@ import { isNull } from 'drizzle-orm';
 import { authorizePlatformAdmin } from '@/lib/platform-admin';
 import { CONNECTOR_CATALOG } from '@/lib/connector-catalog';
 import { parseCatalogEntryInput, verifyCatalogServer, type CatalogEntryInput } from '@/lib/connector-catalog-input';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Platform catalog (every team sees these). Platform admin API key only.
@@ -14,7 +15,7 @@ import { parseCatalogEntryInput, verifyCatalogServer, type CatalogEntryInput } f
 export async function GET(req: NextRequest) {
   const auth = await authorizePlatformAdmin(req);
   if (auth.response) return auth.response;
-  const rows = await db.query.connectorCatalogEntries.findMany({ where: isNull(connectorCatalogEntries.teamId) });
+  const rows = await db.query.connectorCatalogEntries.findMany({ where: sqlWhere(isNull(connectorCatalogEntries.teamId)) });
   return NextResponse.json({ builtins: CONNECTOR_CATALOG, entries: rows });
 }
 

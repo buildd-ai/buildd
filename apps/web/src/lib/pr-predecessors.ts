@@ -18,6 +18,7 @@
 import { db } from '@buildd/core/db';
 import { tasks, workers } from '@buildd/core/db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Pure half: the predecessor PR numbers from loaded rows, without `prNumber` itself. */
 export function predecessorsFrom(
@@ -40,17 +41,17 @@ export async function predecessorPrNumbers(workspaceId: string | null | undefine
   try {
     const [owners, superseded] = await Promise.all([
       db.query.workers.findMany({
-        where: and(eq(workers.workspaceId, workspaceId), eq(workers.prNumber, prNumber)),
+        where: sqlWhere(and(eq(workers.workspaceId, workspaceId), eq(workers.prNumber, prNumber))),
         columns: { taskId: true },
       }),
       db.query.workers.findMany({
-        where: and(eq(workers.workspaceId, workspaceId), eq(workers.supersededByPrNumber, prNumber)),
+        where: sqlWhere(and(eq(workers.workspaceId, workspaceId), eq(workers.supersededByPrNumber, prNumber))),
         columns: { prNumber: true },
       }),
     ]);
     const taskIds = [...new Set(owners.map(w => w.taskId).filter((id): id is string => !!id))];
     const contexts = taskIds.length > 0
-      ? (await db.query.tasks.findMany({ where: inArray(tasks.id, taskIds), columns: { context: true } })).map(t => t.context)
+      ? (await db.query.tasks.findMany({ where: sqlWhere(inArray(tasks.id, taskIds)), columns: { context: true } })).map(t => t.context)
       : [];
     return predecessorsFrom(prNumber, contexts, superseded.map(w => w.prNumber));
   } catch (err) {

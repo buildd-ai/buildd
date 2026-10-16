@@ -28,6 +28,7 @@
  */
 import { resolveAgentModelRoute, type AgentModelDecision } from '@buildd/core/agent-endpoint';
 import { agentKeyPurposes, isAgentKeyRow } from '@buildd/core/providers/agent-keys';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export type ClaudeModelRoute =
   | 'oauth_seat'
@@ -73,11 +74,11 @@ async function listAnthropicKeys(opts: { teamId: string; workspaceId: string; ac
   const { teamCredentialWhere } = await import('@buildd/core/secrets/team-scope');
   // Same scoping as attachServerManagedSecrets: team-wide, this account, this workspace.
   const rows = await db.query.secrets.findMany({
-    where: teamCredentialWhere(
+    where: sqlWhere(teamCredentialWhere(
       { teamId: opts.teamId, purpose: agentKeyPurposes('anthropic') },
       or(isNull(secrets.accountId), eq(secrets.accountId, opts.accountId)),
       or(isNull(secrets.workspaceId), eq(secrets.workspaceId, opts.workspaceId)),
-    ),
+    )),
     columns: { accountId: true, workspaceId: true, healthStatus: true, purpose: true, label: true, userId: true },
   });
   return (rows ?? []) as AnthropicKeyRow[];

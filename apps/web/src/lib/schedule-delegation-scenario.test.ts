@@ -58,6 +58,7 @@ mock.module('@/lib/team-access', () => ({
 mock.module('@buildd/core/decision-ledger', () => ({
   DECISION_LEDGER_MAX_ROWS: 500,
   readDecisionLedgerPage: ledger,
+  readDecisionHealthRows: async () => ({ rows: [], outcomes: [], truncated: false }),
   summarizeDecisionLedger: (rows: unknown[]) => ({ total: rows.length }),
 }));
 mock.module('@/lib/orchestration-decision-stats-query', () => ({ fetchOrchestrationDecisionStats: decisionStats }));

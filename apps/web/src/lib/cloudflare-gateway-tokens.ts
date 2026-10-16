@@ -20,6 +20,7 @@ import {
   serializeGatewayRunToken,
 } from '@buildd/core/cloudflare-gateway-tokens';
 import { decodeCloudflareValue, findCloudflareSecret, type FetchLike } from './cloudflare-credential';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export type GatewayTokenScope = 'personal' | 'team';
 
@@ -45,7 +46,7 @@ function scopeWhere(teamId: string, scope: GatewayTokenScope, userId: string) {
 
 async function rowAt(teamId: string, scope: GatewayTokenScope, userId: string) {
   const rows = await db.query.secrets.findMany({
-    where: scopeWhere(teamId, scope, userId),
+    where: sqlWhere(scopeWhere(teamId, scope, userId)),
     columns: { id: true, userId: true, encryptedValue: true, updatedAt: true },
   });
   // Re-checked in code: never another person's row.

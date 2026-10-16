@@ -80,6 +80,7 @@ import { collectLoopVerificationEvidence, VERIFICATION_COMMAND_TIMEOUT_MS } from
 import { sessionLog, cleanupOldLogs, readSessionLogs, claimLog } from './session-logger';
 import { IdlePollTracker } from './idle-poll-tracker';
 import type { ClaimLogEntry } from './session-logger';
+import { ClaimOutcomeStore, outcomeFromDiagnostics, outcomeFromRefusal, type ClaimOutcome, type ClaimOutcomeSnapshot } from './claim-outcomes';
 import {
   SessionStderrCollector,
   flushStderrTrace,
@@ -91,10 +92,11 @@ import { archiveSession } from './history-store';
 import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
 import { applyModelEnv, endpointSessionModels, shouldUseClaudeCredential, TRUSTED_MODEL_BASE_URL_ENV } from './agent-model-env';
 import { resolveModelAuthSource, stripInheritedApiKeys } from './model-auth-source';
-import { applyHostSeatPolicy, decideCodexSeat, describeHostSeat, hostModelCredentialValues, hostSeatMode, localCodexAuthPath } from './host-seat';
+import { applyHostSeatPolicy, decideCodexSeat, describeCodexAuthSource, describeHostSeat, describeModelAuthSource, detectCodexAuthSource, detectModelAuthSource, type CodexAuthSource, hostModelCredentialValues, hostSeatMode, localCodexAuthPath, type ModelAuthReport } from './host-seat';
 import { bundledTierEntry } from '@buildd/core/model-tier-defaults';
 import type { WorkerEnvironment, ClaimDiagnostics, ClaimModelEndpoint, ClaimCredentialDecision } from '@buildd/shared';
 import { withFleetIdentity } from './fleet-identity';
+import { heartbeatRunnerName, withRunnerName } from './runner-name';
 import {
   resolveBypassPermissions,
   resolveMaxBudgetUsd,
@@ -490,7 +492,8 @@ function isBenignBashCommand(cmd: string): boolean {
  * whenever the claim response carries them, independent of whether the runner
  * has any local credentials. A stale/invalid local credential (an expired
  * `~/.claude.json` oauthAccount, a leftover `.credentials.json`, etc.) makes
- * `hasClaudeCredentials()` return true even when those creds no longer work, so
+ * the legacy local-credential check (since replaced by host-seat.ts
+ * `detectModelAuthSource`) return true even when those creds no longer work, so
  * gating capture on `!hasCredentials` silently dropped the valid server token.
  *
  * Final precedence (explicitly-set env var wins) is enforced downstream at
@@ -598,40 +601,6 @@ import { exchangeAssertionConnector } from './assertion-exchange.js';
 import { PAUSED_ERROR, PAUSED_ERROR_PREFIX, PAUSE_UNAVAILABLE_CODEX_MESSAGE, PAUSE_UNAVAILABLE_MESSAGE, decidePause, holdsRunnerSlot, isParkedAbortError, pausedWaitingFor, type PauseMode } from './pause.js';
 import { resolveEffectiveThinking } from '@buildd/core/model-thinking';
 
-function hasClaudeCredentials(): boolean {
-  // Check for OAuth credentials from `claude login` (.credentials.json)
-  const credentialsPath = join(homedir(), '.claude', '.credentials.json');
-  if (existsSync(credentialsPath)) {
-    return true;
-  }
-
-  // Check for oauthAccount in Claude state files (where OAuth is sometimes stored)
-  const stateFiles = [
-    join(homedir(), '.claude', 'settings.json'),
-    join(homedir(), '.claude', 'settings.local.json'),
-    join(homedir(), '.claude.json'),
-  ];
-  for (const statePath of stateFiles) {
-    if (existsSync(statePath)) {
-      try {
-        const data = JSON.parse(readFileSync(statePath, 'utf-8'));
-        if (data.oauthAccount?.accountUuid) {
-          return true;
-        }
-      } catch {
-        // Ignore parse errors
-      }
-    }
-  }
-
-  // Check env vars
-  if (process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN || process.env.CLAUDE_CODE_OAUTH_TOKEN) {
-    return true;
-  }
-
-  return false;
-}
-
 // Cache key for the per-team server-managed credential cache. Prefer the
 // workspace's teamId (team-wide secrets cover all workspaces) and fall back to
 // the workspaceId so a task without team info still gets a stable, scoped key.
@@ -717,9 +686,14 @@ export function metricsOnlyPayload(
  */
 function claimDiagnosticDetail(
   diagnostics: ClaimDiagnostics | null | undefined,
-): Pick<ClaimLogEntry, 'deferrals' | 'pendingTasks' | 'matchedTasks'> {
+): Pick<ClaimLogEntry, 'deferrals' | 'pendingTasks' | 'matchedTasks' | 'walls' | 'until'> {
   if (!diagnostics) return {};
+  const walls = diagnostics.budgetBlock?.walls;
   return {
+    ...(walls && walls.length > 0
+      ? { walls: walls.map(w => ({ kind: w.kind, backend: w.backend, resetsAt: w.resetsAt ?? null })) }
+      : {}),
+    ...(diagnostics.taskExclusion?.until ? { until: diagnostics.taskExclusion.until } : {}),
     ...(diagnostics.deferrals && Object.keys(diagnostics.deferrals).length > 0
       ? { deferrals: diagnostics.deferrals }
       : {}),
@@ -749,6 +723,8 @@ export class WorkerManager {
   private syncInterval?: Timer;
   private pusherManager: PusherManager;
   private hasCredentials: boolean = false;
+  private modelAuth: ModelAuthReport = { source: 'none', mode: 'auto' };
+  private codexAuth: CodexAuthSource = 'none';
   private acceptRemoteTasks: boolean = true;
   private cleanupInterval?: Timer;
   private terminalWorktreeSweepTimer?: Timer;
@@ -785,6 +761,8 @@ export class WorkerManager {
   private roleEnvGapLog = new RoleEnvGapLog();
   /** Idle-poll counter + last-poll time (claims.log `claim_idle`, debug internals). */
   private claimPolls = new IdlePollTracker();
+  /** What the server said about the last claims, for `buildd top` (claim-outcomes.ts). */
+  private claimOutcomes = new ClaimOutcomeStore();
   // workerId → auth context the worker was started under, for breaker routing on error.
   private workerAuthContexts = new Map<string, string>();
   // workerId → team cache key, so an auth failure can invalidate the right
@@ -1036,15 +1014,17 @@ export class WorkerManager {
     // Initialize Pusher if configured
     this.pusherManager.initialize();
 
-    // Check if credentials exist (don't validate, SDK handles auth)
-    // Skip in serverless mode — SDK handles its own auth, no server to report to
-    this.hasCredentials = hasClaudeCredentials();
+    // Which model credential this machine's agents use (presence only, never
+    // validated or read: the SDK handles auth). One detector feeds this line,
+    // getAuthStatus() and the heartbeat label (host-seat.ts).
+    // Skip the log in serverless mode — SDK handles its own auth.
+    const modelAuth = this.refreshModelAuth();
     if (!config.serverless) {
-      if (this.hasCredentials) {
-        console.log('Claude Code: credentials found');
-      } else {
-        console.warn('Claude Code: no credentials - run `claude login` or set ANTHROPIC_API_KEY');
-      }
+      const line = `Model auth: ${describeModelAuthSource(modelAuth.source)}`;
+      if (modelAuth.source === 'none') console.warn(line);
+      else console.log(line);
+      // Codex is optional, so `none` here is not a warning.
+      console.log(`Codex auth: ${describeCodexAuthSource(this.codexAuth)}`);
     }
   }
 
@@ -1055,13 +1035,42 @@ export class WorkerManager {
     console.log(`Accept remote tasks: ${enabled}`);
   }
 
-  // Check if credentials exist
-  getAuthStatus(): { hasCredentials: boolean } {
-    return { hasCredentials: this.hasCredentials };
+  /** Re-run the model-auth detector and cache it (keychain probe is cached 60s). */
+  private refreshModelAuth(): ModelAuthReport {
+    this.modelAuth = detectModelAuthSource();
+    this.codexAuth = detectCodexAuthSource();
+    this.hasCredentials = this.modelAuth.source !== 'none';
+    return this.modelAuth;
+  }
+
+  // Which model credential this runner uses (labels + mode, never a value)
+  getAuthStatus(): { modelAuthSource: ModelAuthReport['source']; modelAuthMode: ModelAuthReport['mode']; codexAuthSource: CodexAuthSource } {
+    return { modelAuthSource: this.modelAuth.source, modelAuthMode: this.modelAuth.mode, codexAuthSource: this.codexAuth };
   }
 
   getViewerToken(): string | undefined {
     return this.viewerToken;
+  }
+
+  /** The latest claim outcome per task and of the broad claim, for `buildd top` (R-25). */
+  getClaimOutcomes(): ClaimOutcomeSnapshot {
+    return this.claimOutcomes.snapshot();
+  }
+
+  /** What this runner's claim body says about it, for the queue read (R-26): its runner id and advertised roles. */
+  getClaimIdentity(): { runner: string | undefined; skills: string[] } {
+    return { runner: this.config.localUiUrl, skills: advertisedRoleSlugs(this.environment) ?? [] };
+  }
+
+  /** Keep a claim outcome and tell `top` (one `claim_outcome` frame; no taskId = the broad claim). */
+  private noteClaimOutcome(taskId: string | null, outcome: ClaimOutcome): void {
+    if (taskId) {
+      if (outcome.reason === 'claimed') this.claimOutcomes.clearTask(taskId);
+      else this.claimOutcomes.recordTask(taskId, outcome);
+    } else {
+      outcome = this.claimOutcomes.recordBroad(outcome);
+    }
+    this.emit({ type: 'claim_outcome', ...(taskId ? { taskId } : {}), outcome });
   }
 
   /** Expose internal state for the debug dashboard */
@@ -1146,6 +1155,9 @@ export class WorkerManager {
     // A single-task runner never polls for Scout runs, so it never advertises one.
     const scoutHost = env && !this.config.singleTask ? this.scoutHostPoller?.advert() : undefined;
     if (env && scoutHost) env = { ...env, scoutHost };
+    // The display name (`buildd name`), read fresh each beat so a rename needs
+    // no restart. A label only: localUiUrl stays the identity.
+    env = withRunnerName(env, heartbeatRunnerName());
     return withFleetIdentity(env, this.config.fleetIdentity);
   }
 
@@ -1176,7 +1188,7 @@ export class WorkerManager {
         .map(w => w.id);
       const probeAt = getBwrapProbeAt();
       const sandboxEnabled = probeAt !== null ? isBwrapSupported() : null;
-      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.heartbeatEnvironment(), getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds, getRunnerCommit(), RUNNER_VERSION, getRunnerUpdateSnapshot(), this.handoff().snapshot());
+      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.heartbeatEnvironment(), getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds, getRunnerCommit(), RUNNER_VERSION, getRunnerUpdateSnapshot(), this.handoff().snapshot(), { ...this.refreshModelAuth(), codexSource: this.codexAuth });
       if (viewerToken) {
         this.viewerToken = viewerToken;
       }
@@ -1626,6 +1638,7 @@ export class WorkerManager {
         }
         this.claimPolls.recordPoll('rejected');
         this.emit({ type: 'claim_rejected', status, reason });
+        this.noteClaimOutcome(null, outcomeFromRefusal(status, reason, Date.now()));
         this.onClaimServerErrorStreak(status);
         throw err;
       }
@@ -1671,6 +1684,10 @@ export class WorkerManager {
       } else {
         this.pastResetStreak = 0;
       }
+
+      // `buildd top` reads what held this claim (R-25), or that nothing did.
+      this.noteClaimOutcome(null, claimed.length > 0 ? { at: Date.now(), reason: 'claimed' } : outcomeFromDiagnostics(diagnostics, Date.now()));
+      for (const cw of claimed) if (cw?.taskId) this.claimOutcomes.clearTask(cw.taskId);
 
       if (claimed.length === 0) {
         // no_pending_tasks is the normal idle state: count it, and write one
@@ -2011,6 +2028,7 @@ export class WorkerManager {
       const until = pausedCtx.until;
       console.log(`[WorkerManager] Context ${pausedCtx.key} paused (until ${until ? new Date(until).toISOString() : 'unknown'}) — skipping Pusher assignment for task ${task.id}`);
       claimLog({ event: 'claim_empty', slotsRequested: 1, workersClaimed: 0, taskId: task.id, diagnosticReason: 'context_paused' });
+      this.noteClaimOutcome(task.id, { at: Date.now(), reason: 'context_paused', until: until ? new Date(until).toISOString() : null });
       // The discarded nudge was the only thing that would have restarted this
       // work; make sure something wakes us when the pause lifts.
       this.scheduleContextWake();
@@ -2019,7 +2037,7 @@ export class WorkerManager {
 
     // Warn if no credentials found (but let SDK handle actual auth)
     if (!this.hasCredentials && !this.config.serverless) {
-      console.warn('No Claude credentials found - task may fail. Run `claude login` to authenticate.');
+      console.warn(`Model auth: ${describeModelAuthSource('none')} (the task fails unless its claim brings a credential)`);
     }
 
     // Claim from buildd first (pass taskId for targeted claiming). The claim
@@ -2036,9 +2054,11 @@ export class WorkerManager {
       const { status, reason } = parseClaimError(err);
       claimLog({ event: 'claim_rejected', slotsRequested: 1, workersClaimed: 0, taskId: task.id, status, reason });
       this.emit({ type: 'claim_rejected', taskId: task.id, status, reason });
+      this.noteClaimOutcome(task.id, outcomeFromRefusal(status, reason, Date.now()));
       throw err;
     }
     const { workers: claimed, diagnostics } = claimResult;
+    this.noteClaimOutcome(task.id, claimed.length > 0 ? { at: Date.now(), reason: 'claimed' } : outcomeFromDiagnostics(diagnostics, Date.now()));
     if (claimed.length === 0) {
       const reason = diagnostics?.reason || 'unknown';
       claimLog({
@@ -2116,7 +2136,7 @@ export class WorkerManager {
     // These are ALWAYS captured when present — we must NOT gate them behind
     // `!this.hasCredentials`. A leftover/stale local credential (e.g. an
     // expired `~/.claude.json` oauthAccount or a `.credentials.json` from a
-    // previous login) makes `hasClaudeCredentials()` return true even when
+    // previous login) makes the local credential check report one even when
     // those creds are invalid; gating here silently dropped the valid
     // server-managed OAuth token and the worker spawned with broken local
     // auth, failing with `401 Invalid authentication credentials`.

@@ -34,6 +34,7 @@ import {
   type TeamTierCeilingPolicy,
   type TierCeiling,
 } from '@buildd/shared';
+import { sqlWhere } from './db/relational-sql';
 
 export interface CeilingSubject {
   teamId: string | null | undefined;
@@ -49,14 +50,14 @@ export interface CeilingSubject {
 export async function loadTierCeilingInputs(subject: CeilingSubject): Promise<CeilingInputs> {
   const workspaceId = subject.workspaceId ?? null;
   if (!subject.teamId) return { team: null, workspaceId, userId: null, member: null };
-  const teamRow = await db.query.teams.findFirst({ where: eq(teams.id, subject.teamId), columns: { modelTierCeilings: true } });
+  const teamRow = await db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, subject.teamId)), columns: { modelTierCeilings: true } });
   const team = teamRow?.modelTierCeilings ?? null;
   const userId = team?.membersCapped
     ? (typeof subject.userId === 'function' ? await subject.userId() : subject.userId ?? null)
     : null;
   const member = userId
     ? await db.query.teamMembers.findFirst({
-      where: and(eq(teamMembers.teamId, subject.teamId), eq(teamMembers.userId, userId)),
+      where: sqlWhere(and(eq(teamMembers.teamId, subject.teamId), eq(teamMembers.userId, userId))),
       columns: { modelTierCeilings: true },
     })
     : null;
@@ -123,7 +124,7 @@ export async function writeTeamTierCeilings(args: {
     if (foreign) throw new CeilingWriteError(`workspace ${foreign} is not in this team`, 400);
   }
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-    const row = await db.query.teams.findFirst({ where: eq(teams.id, args.teamId), columns: { modelTierCeilings: true } });
+    const row = await db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, args.teamId)), columns: { modelTierCeilings: true } });
     if (!row) throw new CeilingWriteError('team not found', 404);
     const before = row.modelTierCeilings ?? null;
     const next: TeamTierCeilingPolicy = { ...(before ?? {}) };
@@ -167,7 +168,7 @@ export async function writeMemberTierCeilings(args: {
   if (!isEmptyCeilings(args.caps)) await markMembersCapped(args.teamId);
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const row = await db.query.teamMembers.findFirst({
-      where: and(eq(teamMembers.teamId, args.teamId), eq(teamMembers.userId, args.userId)),
+      where: sqlWhere(and(eq(teamMembers.teamId, args.teamId), eq(teamMembers.userId, args.userId))),
       columns: { modelTierCeilings: true },
     });
     if (!row) throw new CeilingWriteError('not a member of this team', 404);

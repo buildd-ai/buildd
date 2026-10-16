@@ -28,6 +28,8 @@
  * (`@buildd/core/decision-ledger`, knowledge-base: buildd/design/decision-calls.md
  * "The decision ledger") — applied, suggested-but-gated, or fallback alike.
  * This is what a weekly review reads instead of the `[decision-apply]` log line.
+ * A row that carries the model's answer also keeps what it was asked
+ * (`shadow.replay`) as a replayable copy, through the ledger write.
  */
 import { EXPLICIT_ROLE_SLUGS } from '@buildd/shared';
 import type { ChoiceAnswer } from '@buildd/core/decision-client';
@@ -195,7 +197,7 @@ export async function applyTaskRoleDecision(
       confidence: record.confidence, applied: false, status: 'suggested' as const,
       latencyMs: record.latencyMs, inputTokens: record.inputTokens, costUsd: record.costUsd,
     };
-    await ledger(record.fingerprint, { ...row, reason: 'stated_role_sample', appliedAnswer: stated });
+    await ledger(record.fingerprint, { ...row, reason: 'stated_role_sample', appliedAnswer: stated, replay: shadow.replay ?? null });
     await recordKind(record);
   };
   /** The kind sub-answer is recorded only: a task's kind is a stated fact. */
@@ -205,7 +207,7 @@ export async function applyTaskRoleDecision(
       subjectType: 'task_kind', subjectId: input.taskId,
       model: record.model, promptVersion: record.v,
       ruleAnswer: record.kindHeuristic, verdict: record.kindDecision, confidence: record.kindConfidence,
-      applied: false, status: 'suggested', reason: 'kind_observed',
+      applied: false, status: 'suggested', reason: 'kind_observed', replay: shadow.replay ?? null,
     });
   };
   try {
@@ -236,8 +238,9 @@ export async function applyTaskRoleDecision(
     // candidate set the shadow built (which already excludes explicit roles).
     const slug = record.decision;
     await recordKind(record);
+    // Every row from here carries the model's answer, so keeps what it was asked.
     const base: Partial<DecisionLedgerInput> = {
-      promptVersion: record.v, model: record.model, verdict: slug, confidence: record.confidence,
+      promptVersion: record.v, model: record.model, verdict: slug, confidence: record.confidence, replay: shadow.replay ?? null,
     };
     if (!record.candidates.includes(slug) || EXPLICIT_ROLE_SLUGS.includes(slug)) {
       await ledger(record.fingerprint, { ...base, reason: 'not_candidate' });

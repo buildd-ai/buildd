@@ -8,6 +8,7 @@ import { db } from '@buildd/core/db';
 import { tasks, workers } from '@buildd/core/db/schema';
 import { and, desc, eq, gte, inArray, lt } from 'drizzle-orm';
 import type { UsageWorkerRow } from './usage-stats';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Cap on worker rows scanned per request. Keeps a 30d team-wide window bounded. */
 export const USAGE_ROW_LIMIT = 5000;
@@ -39,14 +40,14 @@ export async function fetchUsageRows(opts: {
   if (opts.workspaceIds.length === 0) return [];
 
   const rows = await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       inArray(workers.workspaceId, opts.workspaceIds),
       gte(workers.completedAt, opts.windowStart),
       opts.windowEnd ? lt(workers.completedAt, opts.windowEnd) : undefined,
       opts.forUserId
         ? inArray(workers.taskId, db.select({ id: tasks.id }).from(tasks).where(eq(tasks.createdByUserId, opts.forUserId)))
         : undefined,
-    ),
+    )),
     columns: {
       id: true,
       completedAt: true,
@@ -80,12 +81,12 @@ export async function fetchUsageRows(opts: {
         // whether the role was routed (lib/task-role-apply.ts).
         // The callback form: a nested relation is aliased, so the column must
         // come from the aliased table, not the imported one.
-        extras: (t, { sql }) => ({
-          roleInferred: sql<boolean>`(${t.context} -> 'roleInferred') is not null`.as('role_inferred'),
-        }),
+        extras: {
+  roleInferred: (t, { sql }) => sql<boolean>`(${t.context} -> 'roleInferred') is not null`.as('role_inferred'),
+},
       },
     },
-    orderBy: [desc(workers.completedAt), desc(workers.id)],
+    orderBy: sqlOrderBy([desc(workers.completedAt), desc(workers.id)]),
     limit: opts.limit ?? USAGE_ROW_LIMIT,
   });
 

@@ -17,7 +17,7 @@ import { createHash } from 'crypto';
 import { CUE_CONNECTOR_URL } from './seed-cue-connector';
 
 const client = neon(config.databaseUrl);
-const db = drizzle(client);
+const db = drizzle({ client });
 
 // Origin AND name for the private sibling app's MCP endpoints. Neither is
 // hardcoded: this repo is public, and both the host and the connector name are

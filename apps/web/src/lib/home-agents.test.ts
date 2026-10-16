@@ -41,9 +41,9 @@ describe('buildAgentsModel', () => {
 
 describe('copy', () => {
   test('headline and sub-line', () => {
-    expect(homeHeadlineSentence(3)).toBe('3 decisions need you.');
-    expect(homeHeadlineSentence(1)).toBe('1 decision needs you.');
-    expect(homeHeadlineSentence(0)).toBe('All clear. Nothing needs you.');
+    expect(homeHeadlineSentence(3)).toBe('3 decisions for you.');
+    expect(homeHeadlineSentence(1)).toBe('1 decision for you.');
+    expect(homeHeadlineSentence(0)).toBe('All clear.');
     expect(homeSubline(0, 0)).toBe('No other action needed.');
     expect(homeSubline(0, 1)).toBe('1 automatic repair is running.');
     expect(homeSubline(2, 3)).toBe('3 automatic repairs are running.');
@@ -55,5 +55,14 @@ describe('copy', () => {
   test('elapsed', () => {
     expect(elapsedLabel(38 * 60_000)).toBe('38m');
     expect(elapsedLabel(65 * 60_000)).toBe('1h 05m');
+  });
+});
+
+describe('buildAgentsModel names', () => {
+  test('draws one name per line when the worker carries one, never name plus rest', () => {
+    const w = worker('n', { label: 'polish', rest: 'polish(mission-detail', name: 'Compact phone header' });
+    const line = buildAgentsModel(fleet([slot(0, w)], 1), 0).lines[0];
+    expect(line.name).toBe('Compact phone header');
+    expect(line.rest).toBe('');
   });
 });

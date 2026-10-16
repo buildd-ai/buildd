@@ -63,10 +63,10 @@ export default function CapsForm({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Could not save');
-      setMsg({ tone: 'ok', text: 'Saved' });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? "Could not save. Try again.");
+      setMsg({ tone: 'ok', text: 'Saved.' });
     } catch (e) {
-      setMsg({ tone: 'err', text: e instanceof Error ? e.message : 'Could not save' });
+      setMsg({ tone: 'err', text: e instanceof Error ? e.message : "Could not save. Try again." });
     } finally {
       setBusy(false);
     }

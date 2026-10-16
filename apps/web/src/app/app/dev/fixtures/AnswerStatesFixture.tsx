@@ -11,7 +11,7 @@
 import { ObjectStoreProvider } from '@/components/chat/objects/ObjectStoreProvider';
 import { QuestionCard } from '@/components/chat/objects/QuestionObject';
 import type { ReactNode } from 'react';
-import WorkerRespondInput from '@/components/WorkerRespondInput';
+import TaskQuestion from '@/components/tasks/TaskQuestion';
 import AnswerRecorded, { AnswerOutcomeText } from '@/components/AnswerRecorded';
 import TaskQuestionFeed from '../../(protected)/tasks/[id]/TaskQuestionFeed';
 import RealTimeWorkerView from '../../(protected)/tasks/[id]/RealTimeWorkerView';
@@ -22,6 +22,7 @@ import type { AnswerSubmitState } from '../../(protected)/tasks/[id]/respond/use
 
 const QUESTION = 'The settings audit found two more screens. Park this task until they land, or ship what is done?';
 const OPTIONS = ['Park and wait (recommended)', 'Ship what is done'];
+const ASK = { prompt: QUESTION, options: OPTIONS };
 
 const noop = async () => {};
 const state = (over: Partial<AnswerSubmitState>): AnswerSubmitState => ({ submit: noop, sending: null, outcome: null, error: null, ...over });
@@ -49,15 +50,6 @@ function Panel({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
-function SheetBox({ children }: { children: ReactNode }) {
-  return (
-    <div className="border-2 border-status-warning p-4">
-      <span className="font-mono text-[11px] font-semibold uppercase tracking-wider text-status-warning">Needs input</span>
-      {children}
-    </div>
-  );
-}
-
 export default function AnswerStatesFixture() {
   return (
     <div className="min-h-screen bg-surface-1 px-4 py-6 md:p-8">
@@ -77,9 +69,7 @@ export default function AnswerStatesFixture() {
               initialWorker={{ ...mockWorkers['waiting-input'], status: 'completed', prLifecycleStatus: 'closed' } as any} />
           </Panel>
           <Panel label="Tapped, sending">
-            <SheetBox>
-              <WorkerRespondInput workerId="w1" question={QUESTION} options={OPTIONS} answer={state({ sending: OPTIONS[0] })} />
-            </SheetBox>
+            <TaskQuestion taskId="fixture-task" workerId="w1" role="builder" waitingFor={ASK} answer={state({ sending: OPTIONS[0] })} />
           </Panel>
           <Panel label="Answered after one tap">
             <AnswerRecorded outcome={SENT} />
@@ -91,14 +81,13 @@ export default function AnswerStatesFixture() {
             <AnswerRecorded outcome={DIFFERS} />
           </Panel>
           <Panel label="Real failure: retry">
-            <SheetBox>
-              <WorkerRespondInput
-                workerId="w1"
-                question={QUESTION}
-                options={OPTIONS}
-                answer={state({ error: { message: 'The answer did not send. Check your connection.', credentialRevoked: false } })}
-              />
-            </SheetBox>
+            <TaskQuestion
+              taskId="fixture-task"
+              workerId="w1"
+              role="builder"
+              waitingFor={ASK}
+              answer={state({ error: { message: 'The answer did not send. Check your connection.', credentialRevoked: false } })}
+            />
           </Panel>
         </div>
         <div className="space-y-6">

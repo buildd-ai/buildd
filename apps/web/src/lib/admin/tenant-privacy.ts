@@ -20,10 +20,12 @@ import type { FlowWindow } from '@/lib/insights-flow';
 import type { ExperimentRow } from '@/lib/experiments-store';
 import { toExperimentDTO } from '@/lib/experiments';
 import {
-  listChatRetros, listTeamsWithWorkspaces, loadAgentAccess, loadDispatchHealth, loadFailures, loadGates,
+  listChatRetros, listTeamsWithWorkspaces, loadAgentAccess, loadDispatchHealth, loadEstimates, loadFailures, loadGates,
   loadInsights, loadInsightsBand, loadOperatorData, loadUsage, type InsightsBandFilter,
 } from './data';
+import { buildOperatorEstimatesReport, type OperatorGroup } from '@buildd/core/task-estimate-operator';
 import type { AdminScope } from './scope';
+import type { RootCauseRecord } from '@buildd/shared';
 
 export interface AdminViewer {
   /** The teams the owner is a member of, by name. */
@@ -83,7 +85,7 @@ async function splitRead<T>(v: ScopedViewer, read: (workspaceIds: string[]) => P
   return { all, own };
 }
 
-/** Echoed on every scoped read so the admin app can say detail is limited. */
+/** Echoed on every scoped read so a client can say detail is limited. */
 const detailNote = (v: ScopedViewer) => ({ detailLimitedToOwnTeams: v.otherTeams });
 
 // ── Views ─────────────────────────────────────────────────────────────────────
@@ -174,6 +176,26 @@ export async function viewAgentAccess(v: ScopedViewer, windowHours: number) {
   };
 }
 
+/**
+ * Insights → Estimation (docs/specs/task-estimates.md, operator surface).
+ * Every team's numbers count; area-cluster labels (repo paths) come from own
+ * teams' rows only, and other teams and workspaces are named by pseudonym.
+ */
+export async function viewEstimates(v: ScopedViewer, opts: { since: Date; estimatorVersion: string | null }) {
+  const data = await loadEstimates({ workspaceIds: v.workspaceIds, ...opts });
+  const report = buildOperatorEstimatesReport({ ...data, detailTeamIds: v.ownTeamIds, estimatorVersion: opts.estimatorVersion });
+  const team = (g: OperatorGroup) => ({ ...g, own: v.ownTeamIds.has(g.key), name: teamName(v, g.key) });
+  const owned = ownWs(v);
+  const workspace = (g: OperatorGroup) => ({
+    ...g, own: owned.has(g.key), name: workspaceName(v, g.key, data.workspaceNames[g.key] ?? workspacePseudonym(g.key)),
+  });
+  return {
+    ...report,
+    live: report.live.map(l => ({ ...l, byTeam: l.byTeam.map(team), byWorkspace: l.byWorkspace.map(workspace) })),
+    ...detailNote(v),
+  };
+}
+
 /** Retros carry labels and counts, never message text; the team is named by pseudonym unless it is the owner's. */
 export async function viewChatRetros(v: AdminViewer, opts: { teamId: string | null; since: Date; limit: number }) {
   const rows = await listChatRetros(opts);
@@ -208,4 +230,21 @@ export function viewExperiment(v: AdminViewer, row: ExperimentRow) {
   if (v.ownTeamIds.has(row.teamId)) return dto;
   const tag = pseudonym(row.id);
   return { ...dto, key: `experiment-${tag}`, title: `Experiment ${tag}`, hypothesis: null, decision: null, config: null };
+}
+
+/**
+ * A root cause as the owner may see it. Every team's record keeps its key,
+ * classification, capability and times: all platform-derived, nothing a team
+ * wrote. Another team's affected tasks are a count only, like every other
+ * drilldown here.
+ */
+export function viewRootCause(v: AdminViewer, r: RootCauseRecord) {
+  const own = v.ownTeamIds.has(r.teamId);
+  return {
+    ...r,
+    own,
+    team: teamName(v, r.teamId),
+    affectedTaskIds: own ? r.affectedTaskIds : [],
+    affectedTaskCount: r.affectedTaskIds.length,
+  };
 }

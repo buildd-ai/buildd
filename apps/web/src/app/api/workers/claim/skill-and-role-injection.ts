@@ -13,6 +13,7 @@ import { lazyRequester, pickVisibleRoleRowLazy, roleRowsInScope } from '@buildd/
 import { resolveClaudeAiArtifactAccess, type ClaimTasksResponse, type SkillBundle } from '@buildd/shared';
 import { generateDownloadUrl, isStorageConfigured } from '@/lib/storage';
 import { noteBodyReads } from '@/lib/body-read-monitor';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** The claim-candidate rows these blocks look tasks up in. */
 type ClaimedTask = { id: string; workspaceId: string };
@@ -65,11 +66,11 @@ export async function attachSkillBundles(
 
     // Look up workspace-level skills (enabled only)
     const wsSkills = await db.query.workspaceSkills.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(workspaceSkills.workspaceId, wsId),
         inArray(workspaceSkills.slug, slugs),
         eq(workspaceSkills.enabled, true),
-      ),
+      )),
     });
 
     const foundSlugs = new Set<string>();
@@ -84,11 +85,11 @@ export async function attachSkillBundles(
     const missingSlugs = slugs.filter(s => !foundSlugs.has(s));
     if (missingSlugs.length > 0) {
       const acctSkills = await db.query.workspaceSkills.findMany({
-        where: and(
+        where: sqlWhere(and(
           eq(workspaceSkills.accountId, accountId),
           inArray(workspaceSkills.slug, missingSlugs),
           eq(workspaceSkills.enabled, true),
-        ),
+        )),
       });
       for (const ws of acctSkills) {
         bodyIds.push(ws.id);
@@ -154,13 +155,13 @@ export async function resolveRoleRow(
   // Legacy account-level fallback (never a personal row)
   if (!role) {
     role = await db.query.workspaceSkills.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(workspaceSkills.accountId, accountId),
         eq(workspaceSkills.slug, roleSlug),
         eq(workspaceSkills.enabled, true),
         eq(workspaceSkills.isRole, true),
         isNull(workspaceSkills.ownerUserId),
-      ),
+      )),
     });
   }
 

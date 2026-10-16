@@ -54,7 +54,7 @@ export const PULSE_TOKEN_TEXT: Record<Token, string> = {
 };
 
 export const PULSE_STATE_LABEL: Record<PulseState, string> = {
-  needs_you: 'needs you',
+  needs_you: 'waiting on you',
   moving: 'running',
   queued: 'queued',
   done: 'done',

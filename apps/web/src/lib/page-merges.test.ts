@@ -19,7 +19,7 @@ const EXPECTED: Array<[string, string]> = [
   ['/app/settings/github', '/app/settings/integrations'],
   ['/app/settings/storage', '/app/settings/integrations'],
   ['/app/settings/budgets', '/app/settings/billing'],
-  ['/app/settings/connectors', '/app/settings/connections'],
+  ['/app/settings/connectors', '/app/settings/apps'],
   ['/app/tasks/new', '/app/chat?new=task'],
   ['/app/workers', '/app/tasks'],
   ['/app/artifacts', '/app/missions'],

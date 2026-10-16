@@ -9,6 +9,7 @@ import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
 import { workspaceNotPausedGate } from '@/app/api/workers/claim/workspace-paused-gate';
 import { assertDbConfigured, q, seedTask, seedWorkspace } from './harness';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const NOW = new Date();
 const HOUR = 3_600_000;
@@ -36,7 +37,7 @@ beforeAll(async () => {
 describe('workspaceNotPausedGate', () => {
   test('only the workspace with a pause still ahead is skipped', async () => {
     const rows = await db.query.tasks.findMany({
-      where: and(inArray(tasks.id, Object.values(t)), workspaceNotPausedGate(NOW)),
+      where: sqlWhere(and(inArray(tasks.id, Object.values(t)), workspaceNotPausedGate(NOW))),
       columns: { id: true },
     });
     const byId = new Map(Object.entries(t).map(([k, v]) => [v, k]));

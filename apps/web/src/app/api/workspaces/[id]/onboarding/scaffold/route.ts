@@ -26,6 +26,7 @@ import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { gatherReadinessInput } from '@/lib/workspace-readiness-io';
 import { resolveCreatorContext } from '@/lib/task-service';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export async function POST(
   req: NextRequest,
@@ -45,7 +46,7 @@ export async function POST(
   // 404, not 403, so a workspace in another team looks like one that does not exist.
   if (apiAccount) {
     const owner = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, id),
+      where: sqlWhere(eq(workspaces.id, id)),
       columns: { teamId: true },
     });
     if (!owner || owner.teamId !== apiAccount.teamId) {
@@ -99,7 +100,7 @@ export async function POST(
   }
 
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, id),
+    where: sqlWhere(eq(workspaces.id, id)),
     with: { githubRepo: { with: { installation: true } } },
   });
   if (!workspace) {
@@ -166,11 +167,11 @@ export async function POST(
   }
 
   const inFlight = await db.query.tasks.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.workspaceId, id),
       inArray(tasks.status, [...OPEN_TASK_STATUSES]),
       sql`${tasks.context} -> 'onboardingScaffold' IS NOT NULL`,
-    ),
+    )),
     columns: { id: true },
   });
   if (inFlight) {

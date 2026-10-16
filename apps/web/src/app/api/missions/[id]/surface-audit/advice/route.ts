@@ -11,6 +11,7 @@ import { evaluateSurfaceAuditGate, loadSurfaceAuditGateTasks } from '@/lib/missi
 import { adviseSurfaceAudit, cachedSurfaceAuditAdvice } from '@/lib/surface-audit-advice';
 import { isUuid } from '@/lib/uuid';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * POST /api/missions/[id]/surface-audit/advice
@@ -42,7 +43,7 @@ export async function POST(
   try {
     const teamIds = await resolveAccountTeamIds(user, apiAccount);
     const mission = await db.query.missions.findFirst({
-      where: eq(missions.id, id),
+      where: sqlWhere(eq(missions.id, id)),
       columns: { id: true, teamId: true, workspaceId: true, autoSurfaceAudit: true },
     });
     const allowed = !!mission && (
@@ -65,7 +66,7 @@ export async function POST(
     if (!gate.required) return NextResponse.json({ advice: null });
 
     const workspace = mission.workspaceId
-      ? await db.query.workspaces.findFirst({ where: eq(workspaces.id, mission.workspaceId), columns: { gitConfig: true } })
+      ? await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, mission.workspaceId)), columns: { gitConfig: true } })
       : null;
 
     const advice = await adviseSurfaceAudit({

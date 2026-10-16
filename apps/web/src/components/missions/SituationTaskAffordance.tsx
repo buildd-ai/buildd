@@ -19,9 +19,11 @@ import Link from 'next/link';
 import { taskAffordanceMode } from '@/lib/mission-task-href';
 import { useMissionStrip } from './mission-strip-context';
 
-export default function SituationTaskAffordance({ label, href, taskId }: { label: string; href: string; taskId: string }) {
+export default function SituationTaskAffordance({ label, href, taskId, navigate = false }: { label: string; href: string; taskId: string; navigate?: boolean }) {
   const strip = useMissionStrip();
-  const inPageAnchor = !!strip && strip.taskIds.includes(taskId);
+  // `navigate`: the action lives on another page (answering a question), so it
+  // is a link even when the task is drawn in the strip here.
+  const inPageAnchor = !navigate && !!strip && strip.taskIds.includes(taskId);
   const affordance = taskAffordanceMode(label, { inPageAnchor });
   if (affordance.kind === 'anchor') {
     const n = String(strip!.taskIds.indexOf(taskId) + 1).padStart(2, '0');

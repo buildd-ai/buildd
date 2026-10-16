@@ -17,6 +17,7 @@ import { randomBytes } from 'crypto';
 import { isUuid } from '@/lib/uuid';
 import { canManageTeamConnectors } from '@/lib/connector-team-auth';
 import { checkConnectorBlocked, blockedBody } from '@/lib/connector-access-policy';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -60,7 +61,7 @@ export async function POST(
   const teamIds = auth.type === 'api' ? [auth.account.teamId] : await getUserTeamIds(auth.user.id);
 
   const connector = await db.query.connectors.findFirst({
-    where: eq(connectors.id, id),
+    where: sqlWhere(eq(connectors.id, id)),
   });
   if (!connector || !teamIds.includes(connector.teamId)) {
     return NextResponse.json({ error: 'Connector not found' }, { status: 404 });

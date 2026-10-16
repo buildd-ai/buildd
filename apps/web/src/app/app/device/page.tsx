@@ -6,7 +6,7 @@ import DeviceConfirm from './DeviceConfirm';
 // Invariant: a device code is approved only by an explicit confirm.
 // This page reads the code (pre-filled from ?code= or typed by the user) and
 // shows what it would connect; it never approves. Approval is the
-// "Approve device" button in DeviceConfirm, which POSTs with confirm: true.
+// runner consent page DeviceConfirm links to (/api/auth/device/consent).
 
 const LOOKUP_ERRORS: Record<Exclude<DeviceConfirmLookup, { ok: true }>['reason'], string> = {
   not_found: 'That code was not found. Check the code in your terminal and try again.',

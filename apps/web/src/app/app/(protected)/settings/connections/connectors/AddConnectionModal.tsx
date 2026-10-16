@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import { ScopeSelector, type ShareScope } from '@/components/ScopeSelector';
 import { ConnectorIcon } from '@/components/ConnectorIcon';
 import { roleHas } from '@/lib/permission-registry';
-import { CONNECTOR_CATALOG, catalogEntryForUrl, normalizeConnectorUrl, type ConnectorCatalogEntry, type ResolvedCatalogEntry } from '@/lib/connector-catalog';
+import { CONNECTOR_CATALOG, catalogEntryForUrl, customerCatalogEntry, normalizeConnectorUrl, type ConnectorCatalogEntry, type CustomerCatalogEntry } from '@/lib/connector-catalog';
 
 interface CreatedConnector {
   id: string;
@@ -21,16 +21,21 @@ interface AddConnectionModalProps {
   onAdded: (connector: CreatedConnector) => void;
   /** URLs of connectors the team already has — their catalog tiles show "Added". */
   existingUrls?: string[];
+  /**
+   * `form`: open on the custom URL form, with Cancel in place of Back. Settings
+   * → Connected apps lists the catalog itself, so it opens the modal this way.
+   */
+  startWith?: 'catalog' | 'form';
 }
 
 type Step = 'catalog' | 'form' | 'discovered';
 
-export default function AddConnectionModal({ onClose, onAdded, existingUrls = [] }: AddConnectionModalProps) {
+export default function AddConnectionModal({ onClose, onAdded, existingUrls = [], startWith = 'catalog' }: AddConnectionModalProps) {
   const [name, setName] = useState('');
   const [url, setUrl] = useState('');
   const [preset, setPreset] = useState<ConnectorCatalogEntry | null>(null);
   const [headerValue, setHeaderValue] = useState('');
-  const [step, setStep] = useState<Step>('catalog');
+  const [step, setStep] = useState<Step>(startWith);
   const [createdConnector, setCreatedConnector] = useState<CreatedConnector & { discoveredAuthMode?: string } | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -48,21 +53,22 @@ export default function AddConnectionModal({ onClose, onAdded, existingUrls = []
 
   // The team's live catalog (built-in + platform + team entries with policy).
   // Until it loads, or if it fails, the built-ins stand in.
-  const [catalog, setCatalog] = useState<ResolvedCatalogEntry[]>(() =>
-    CONNECTOR_CATALOG.map((e) => ({ ...e, id: null, source: 'builtin' as const, policy: 'available' as const })),
+  const [catalog, setCatalog] = useState<CustomerCatalogEntry[]>(() =>
+    CONNECTOR_CATALOG.map((e) => customerCatalogEntry({ ...e, id: null, source: 'builtin' as const, policy: 'available' as const })),
   );
   useEffect(() => {
     let cancelled = false;
     fetch('/api/connectors/catalog')
       .then(async (res) => {
         if (!res.ok) return;
-        const data = await res.json() as { entries?: ResolvedCatalogEntry[] };
+        const data = await res.json() as { entries?: CustomerCatalogEntry[] };
         if (!cancelled && Array.isArray(data.entries)) setCatalog(data.entries);
       })
       .catch(() => { /* keep built-ins */ });
     return () => { cancelled = true; };
   }, []);
-  const offered = catalog.filter((e) => e.policy !== 'blocked');
+  // An app the provider won't let buildd connect is not offered here at all.
+  const offered = catalog.filter((e) => e.policy !== 'blocked' && !e.unavailable);
 
   const existing = new Set(existingUrls.map((u) => normalizeConnectorUrl(u)).filter((s): s is string => !!s));
   const installed = new Set(
@@ -206,8 +212,8 @@ export default function AddConnectionModal({ onClose, onAdded, existingUrls = []
         const data = await res.json() as { authorizationUrl: string };
         window.location.href = data.authorizationUrl;
       } else {
-        const err = await res.json() as { error?: string };
-        setError(err.error || 'Failed to start OAuth flow');
+        const err = await res.json().catch(() => ({})) as { message?: string };
+        setError(err.message || "Couldn't start the sign-in. Try again.");
         setSubmitting(false);
       }
     } catch {
@@ -313,14 +319,8 @@ export default function AddConnectionModal({ onClose, onAdded, existingUrls = []
                           <span className="text-sm font-medium text-text-primary">{entry.name}</span>
                           {added && <span className="text-xs font-mono text-status-success">Added</span>}
                           {entry.policy === 'preinstalled' && <span className="text-xs font-mono text-text-muted">Preinstalled</span>}
-                          {entry.clientSupport && <span className="text-xs font-mono text-status-warning">Needs approval</span>}
                         </span>
                         <span className="block text-xs text-text-muted mt-0.5">{entry.description}</span>
-                        {entry.clientSupport && (
-                          <span className="block text-xs text-status-warning mt-1" data-testid={`connector-catalog-${entry.slug}-client-support`}>
-                            {entry.clientSupport.detail}
-                          </span>
-                        )}
                       </span>
                     </button>
                   );
@@ -424,10 +424,10 @@ export default function AddConnectionModal({ onClose, onAdded, existingUrls = []
               <div className="flex gap-3 pt-1">
                 <button
                   type="button"
-                  onClick={() => setStep('catalog')}
+                  onClick={() => (startWith === 'form' ? handleClose() : setStep('catalog'))}
                   className="flex-1 px-4 py-2 text-sm text-text-secondary hover:bg-surface-3 rounded-md transition-colors"
                 >
-                  Back
+                  {startWith === 'form' ? 'Cancel' : 'Back'}
                 </button>
                 <button
                   type="submit"

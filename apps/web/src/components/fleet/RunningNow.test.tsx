@@ -38,7 +38,7 @@ describe('RunningNow', () => {
     expect(html).toContain('Ship it');
     expect(html).toContain('40m');
     expect(html).toContain('Working');
-    expect(html).toContain('Needs input');
+    expect(html).toContain('Has a question');
     expect(html).toContain('href="/app/tasks/t-a"');
   });
   it('people\'s own sessions are their own group, with readable names', () => {

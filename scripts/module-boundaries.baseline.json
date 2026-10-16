@@ -6,12 +6,6 @@
     "apps/web/src/app/api/accounts/route.ts": {
       "apps/web/src/lib/personal-workspace-links.ts": "notifications"
     },
-    "apps/web/src/app/api/auth/cli/route.ts": {
-      "apps/web/src/lib/personal-workspace-links.ts": "notifications"
-    },
-    "apps/web/src/app/api/auth/device/approve/route.ts": {
-      "apps/web/src/lib/personal-workspace-links.ts": "notifications"
-    },
     "apps/web/src/app/api/cron/codex-token-refresh/route.ts": {
       "apps/web/src/lib/mcp-connector-refresh.ts": "connectors",
       "apps/web/src/lib/notify.ts": "notifications"
@@ -81,7 +75,6 @@
       "apps/web/src/lib/prompt-evals/run.ts": "experiments",
       "apps/web/src/lib/prompt-evals/store.ts": "experiments",
       "apps/web/src/lib/pushover.ts": "notifications",
-      "apps/web/src/lib/review-verdict-gate.ts": "reviews-merge",
       "apps/web/src/lib/spec-recheck.ts": "spec-conformance",
       "packages/core/mission-integration.ts": "missions"
     },
@@ -158,8 +151,7 @@
       "packages/core/subject-anchor-observe.ts": "missions"
     },
     "apps/web/src/app/api/teams/[id]/route.ts": {
-      "packages/core/decision-model.ts": "jev-decisions",
-      "packages/core/inference-policy.ts": "jev-decisions"
+      "packages/core/decision-model.ts": "jev-decisions"
     },
     "apps/web/src/app/api/version/route.ts": {
       "apps/web/src/lib/deploy-identity.ts": "releases"
@@ -324,6 +316,10 @@
     "apps/web/src/lib/github.ts": {
       "apps/web/src/lib/ci-lifecycle.ts": "reviews-merge"
     },
+    "apps/web/src/lib/held-pr-tasks.ts": {
+      "apps/web/src/lib/notify.ts": "notifications",
+      "apps/web/src/lib/review-verdict-gate.ts": "reviews-merge"
+    },
     "apps/web/src/lib/home-fleet.ts": {
       "apps/web/src/lib/fleet-view.ts": "health-quality"
     },
@@ -363,10 +359,15 @@
       "apps/web/src/lib/mission-criteria-worker-eval.ts": "missions",
       "apps/web/src/lib/mission-prompts.ts": "missions",
       "apps/web/src/lib/reviewer.ts": "reviews-merge",
+      "apps/web/src/lib/spec-area-decision.ts": "jev-decisions",
+      "apps/web/src/lib/spec-duplicate-decision.ts": "jev-decisions",
+      "apps/web/src/lib/spec-publication-decision.ts": "jev-decisions",
+      "apps/web/src/lib/spec-taxonomy-decision.ts": "jev-decisions",
       "apps/web/src/lib/strand-choice-decision.ts": "jev-decisions",
       "apps/web/src/lib/surface-audit-advice.ts": "visual-qa",
       "apps/web/src/lib/task-category-decision.ts": "jev-decisions",
-      "apps/web/src/lib/task-role-decision.ts": "jev-decisions"
+      "apps/web/src/lib/task-role-decision.ts": "jev-decisions",
+      "packages/core/decision-kind-visual-impact.ts": "jev-decisions"
     },
     "apps/web/src/lib/prompt-fallback-alert.ts": {
       "apps/web/src/lib/pushover.ts": "notifications"
@@ -501,6 +502,8 @@
     },
     "packages/core/prompt-catalog.ts": {
       "packages/core/decision-kind-failure-incident-triage.ts": "jev-decisions",
+      "packages/core/decision-kind-mission-scope.ts": "jev-decisions",
+      "packages/core/decision-kind-operator-recovery.ts": "jev-decisions",
       "packages/core/decision-kind-post-session-triage.ts": "jev-decisions",
       "packages/core/decision-kind-scout-probe-selection.ts": "jev-decisions",
       "packages/core/escalation-gate-decision.ts": "jev-decisions",

@@ -8,6 +8,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserTeamIds } from '@/lib/team-access';
 import { isUuid } from '@/lib/uuid';
 import { canManageTeamConnectors } from '@/lib/connector-team-auth';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -39,8 +40,8 @@ type OwnerAdminContext = {
 };
 
 /**
- * Shares are managed only by an ADMIN of the connector's OWNER team (spec §1b
- * AC-4). A connector outside the actor's teams is invisible → 404 (not 403),
+ * Shares are managed only by an ADMIN of the connector's OWNER team (spec
+ * AC-9). A connector outside the actor's teams is invisible → 404 (not 403),
  * mirroring the [id] route's non-leaking resolution.
  */
 async function requireOwnerAdmin(
@@ -55,13 +56,13 @@ async function requireOwnerAdmin(
 
   const teamIds = auth.type === 'api' ? [auth.account.teamId] : await getUserTeamIds(auth.user.id);
   const connector = await db.query.connectors.findFirst({
-    where: eq(connectors.id, id),
+    where: sqlWhere(eq(connectors.id, id)),
   });
   if (!connector || !teamIds.includes(connector.teamId)) {
     return { error: NextResponse.json({ error: 'Connector not found' }, { status: 404 }) };
   }
 
-  // §1b AC-4: grantees / plain members can never manage shares.
+  // AC-9: grantees / plain members can never manage shares.
   if (auth.type === 'session' && !(await canManageTeamConnectors(auth.user.id, connector.teamId))) {
     return { error: NextResponse.json({ error: 'Forbidden' }, { status: 403 }) };
   }
@@ -83,13 +84,13 @@ export async function GET(
 
   try {
     const shares = await db.query.connectorShares.findMany({
-      where: eq(connectorShares.connectorId, id),
+      where: sqlWhere(eq(connectorShares.connectorId, id)),
     });
 
     const nameMap = new Map<string, string>();
     if (shares.length > 0) {
       const teamRows = await db.query.teams.findMany({
-        where: inArray(teams.id, shares.map(s => s.sharedWithTeamId)),
+        where: sqlWhere(inArray(teams.id, shares.map(s => s.sharedWithTeamId))),
         columns: { id: true, name: true },
       });
       for (const t of teamRows) nameMap.set(t.id, t.name);
@@ -157,10 +158,10 @@ export async function POST(
   try {
     // Idempotent: re-granting an existing share returns it unchanged.
     const existing = await db.query.connectorShares.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(connectorShares.connectorId, id),
         eq(connectorShares.sharedWithTeamId, targetTeamId),
-      ),
+      )),
     });
     if (existing) {
       return NextResponse.json({ share: existing });
@@ -207,7 +208,7 @@ export async function DELETE(
   }
 
   try {
-    // Revocation removes claim-time mounting automatically (§1b AC-5):
+    // Revocation removes claim-time mounting automatically (AC-10):
     // visibility is computed per claim, so no worker-side cleanup is needed.
     const deleted = await db.delete(connectorShares)
       .where(and(

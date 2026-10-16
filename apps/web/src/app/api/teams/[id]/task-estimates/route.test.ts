@@ -61,5 +61,14 @@ describe('GET /api/teams/[id]/task-estimates', () => {
     setting = null;
     const body = await (await get()).json();
     expect(body.enabled).toBe(false);
+    expect(body.source).toBe('default');
+    expect(body.defaultOn).toBe(false);
+  });
+
+  it('an explicit opt-out reads as the team\'s choice', async () => {
+    principal = { kind: 'session', user: { id: 'u1' } };
+    setting = { enabled: false, setBy: 'u1', setAt: '2026-10-11T00:00:00Z' };
+    const body = await (await get()).json();
+    expect(body).toMatchObject({ enabled: false, source: 'team' });
   });
 });

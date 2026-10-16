@@ -38,6 +38,7 @@ import { loadBlockedCatalogs, connectorBlock } from '@/lib/connector-access-poli
 import { loadTeamCatalog } from '@/lib/connector-catalog-store';
 import { connectorHostKey } from '@/lib/connector-catalog';
 import { GATEWAY_PROVIDERS, gatewayMode, gatewayPath, usesGateway } from '@/lib/connector-gateway';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // Slugify a connector name into the MCP server key used in queryOptions.mcpServers.
 // Connector names are already slug-shaped (uniqueness is on (teamId, name)), but we
@@ -84,12 +85,12 @@ export async function resolveMcpConnectorsForTask(
   const workspaceTeamId = task?.workspace?.teamId as string | undefined;
   if (!workspaceTeamId) return [];
 
-  // Resolve the task's role → connectorRefs. No role slug → no opt-in (§2 AC-3).
+  // Resolve the task's role → connectorRefs. No role slug → no opt-in (AC-13).
   const roleSlug = task?.roleSlug as string | null;
   if (!roleSlug) return [];
 
   const roleRows = await db.query.workspaceSkills.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(workspaceSkills.slug, roleSlug),
       eq(workspaceSkills.isRole, true),
       eq(workspaceSkills.enabled, true),
@@ -98,7 +99,7 @@ export async function resolveMcpConnectorsForTask(
         isNull(workspaceSkills.workspaceId),
         eq(workspaceSkills.workspaceId, task.workspaceId),
       ),
-    ),
+    )),
     // Personal rows (team-level) ride along; the pick below filters them.
     columns: { ...ROLE_VISIBILITY_COLUMNS, connectorRefs: true },
   });
@@ -130,7 +131,7 @@ export async function resolveMcpConnectorsForTask(
   let candidateIds: string[] = [];
   const catalogHasGatewayProvider = [...catalogSlugByHost.values()].some(s => GATEWAY_PROVIDERS.has(s));
   if (mode === 'all' || (mode === 'providers' && catalogHasGatewayProvider)) {
-    const owned =await db.query.connectors.findMany({ where: eq(connectors.teamId, workspaceTeamId) });
+    const owned =await db.query.connectors.findMany({ where: sqlWhere(eq(connectors.teamId, workspaceTeamId)) });
     candidateIds = owned.filter(c => !connectorRefs.includes(c.id) && usesGateway(c, slugOf(c), mode)).map(c => c.id);
   }
   if (connectorRefs.length === 0 && candidateIds.length === 0) return [];
@@ -138,22 +139,22 @@ export async function resolveMcpConnectorsForTask(
   // Cross-team sharing (§1b): visibility = owned ∪ shared-in. Fetch the
   // share grants for this team first, then keep only referenced connectors
   // that are owned by the task's team OR shared to it. A revoked share
-  // (row absent) drops the connector here — no orphaned injection (§1b AC-5).
-  // A dangling ref (deleted / invisible connector) simply drops out (§2 AC-4).
+  // (row absent) drops the connector here — no orphaned injection (AC-10).
+  // A dangling ref (deleted / invisible connector) simply drops out (AC-14).
   const shareRows = await db.query.connectorShares.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(connectorShares.sharedWithTeamId, workspaceTeamId),
       inArray(connectorShares.connectorId, connectorRefs),
-    ),
+    )),
     columns: { connectorId: true },
   });
   const sharedIdSet = new Set(shareRows.map(r => r.connectorId));
 
   const referencedRows = connectorRefs.length > 0 ? await db.query.connectors.findMany({
-    where: inArray(connectors.id, connectorRefs),
+    where: sqlWhere(inArray(connectors.id, connectorRefs)),
   }) : [];
   const candidateRows = candidateIds.length > 0 ? await db.query.connectors.findMany({
-    where: inArray(connectors.id, candidateIds),
+    where: sqlWhere(inArray(connectors.id, candidateIds)),
   }) : [];
   const referencedConnectors = [
     ...referencedRows.filter(c => c.teamId === workspaceTeamId || sharedIdSet.has(c.id)),
@@ -164,10 +165,10 @@ export async function resolveMcpConnectorsForTask(
   // Filter to connectors enabled for this workspace (enabled !== false; a
   // missing connector_workspaces row is treated as enabled).
   const cwRows = await db.query.connectorWorkspaces.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(connectorWorkspaces.workspaceId, task.workspaceId),
       inArray(connectorWorkspaces.connectorId, referencedConnectors.map(c => c.id)),
-    ),
+    )),
   });
   const cwMap = new Map(cwRows.map(r => [r.connectorId, r.enabled]));
   const enabledConnectors = referencedConnectors.filter(c => cwMap.get(c.id) !== false);
@@ -190,7 +191,7 @@ export async function resolveMcpConnectorsForTask(
   const connectorSecretMap = new Map<string, { id: string; tokenExpiresAt: Date | null }>();
   if (authConnectorIds.length > 0) {
     const connectorSecretRows = await db.query.secrets.findMany({
-      where: teamCredentialWhere({ teamId: ownerTeamIds, purpose: 'mcp_connector_credential', label: authConnectorIds }),
+      where: sqlWhere(teamCredentialWhere({ teamId: ownerTeamIds, purpose: 'mcp_connector_credential', label: authConnectorIds })),
       columns: { id: true, label: true, tokenExpiresAt: true },
     });
     for (const s of connectorSecretRows) {
@@ -211,7 +212,7 @@ export async function resolveMcpConnectorsForTask(
   const envSecretMap = new Map<string, string>();
   if (envLabels.length > 0) {
     const envSecretRows = await db.query.secrets.findMany({
-      where: teamCredentialWhere({ teamId: ownerTeamIds, purpose: 'mcp_credential', label: envLabels }),
+      where: sqlWhere(teamCredentialWhere({ teamId: ownerTeamIds, purpose: 'mcp_credential', label: envLabels })),
       columns: { id: true, label: true, teamId: true },
     });
     await Promise.all(envSecretRows.map(async (s) => {
@@ -239,7 +240,7 @@ export async function resolveMcpConnectorsForTask(
     claimedNames.add(name);
 
     // stdio transport: spawn a local process; env resolved from envMapping.
-    // No headers, no url. Omit if a mapped secret is missing (AC-4 parity).
+    // No headers, no url. Omit if a mapped secret is missing (AC-18 parity).
     if (connector.transport === 'stdio') {
       if (!connector.command) continue;
       const mapping = (connector.envMapping as Record<string, string> | null) ?? {};
@@ -286,7 +287,7 @@ export async function resolveMcpConnectorsForTask(
     }
 
     const secretInfo = connectorSecretMap.get(connector.id);
-    if (!secretInfo) continue; // missing credential → omit (AC-4)
+    if (!secretInfo) continue; // missing credential → omit (AC-18)
 
     // Brokered: the credential stays on the server; nothing is decrypted here.
     if (usesGateway(connector, slugOf(connector), mode)) {
@@ -295,7 +296,7 @@ export async function resolveMcpConnectorsForTask(
     }
 
     if (connector.authMode === 'oauth') {
-      // Refresh an expired access token at claim time; omit on unrecoverable failure (AC-3).
+      // Refresh an expired access token at claim time; omit on unrecoverable failure (AC-17).
       if (secretInfo.tokenExpiresAt && new Date(secretInfo.tokenExpiresAt) < now) {
         const result = await refreshMcpConnectorCredential(secretInfo.id);
         if (result !== 'refreshed' && result !== 'locked') continue;

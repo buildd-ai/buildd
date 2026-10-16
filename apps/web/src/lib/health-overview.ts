@@ -1,3 +1,4 @@
+// @ui-copy: strings here render in the app; copy:check and the em-dash test scan them.
 
 /**
  * Health → Overview, as plain data: the one status sentence at the top, and the

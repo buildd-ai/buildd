@@ -75,6 +75,10 @@ describe('actionCardTaskHref', () => {
     expect(actionCardTaskHref(item({ missionId: 'mis-1', taskId: 't-9' }))).toBe('/app/missions/mis-1?from=home&task=t-9');
   });
 
+  it('a question card opens the task page with the answer focused, never the sheet', () => {
+    expect(actionCardTaskHref(item({ missionId: 'mis-1', taskId: 't-9' }), { answer: true })).toBe('/app/tasks/t-9?from=mission&missionId=mis-1&respond=1');
+  });
+
   it('falls back to the task page for a task with no mission', () => {
     expect(actionCardTaskHref(item({ taskId: 't-9' }))).toBe('/app/tasks/t-9');
   });

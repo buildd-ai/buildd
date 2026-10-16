@@ -2,8 +2,8 @@
 title: OAuth Provider & Signing Keys
 status: active
 owner: max
-last_verified: 2026-10-05
-summary: buildd's OAuth provider surface MUST issue only workspace-scoped PKCE-protected tokens to registered clients, and its JWKS MUST publish the public half of every key that can verify a buildd assertion.
+last_verified: 2026-10-15
+summary: buildd's OAuth provider surface MUST issue only PKCE-protected tokens bound to one account-level grant (or, for an older connection, one workspace) to registered clients, and its JWKS MUST publish the public half of every key that can verify a buildd assertion.
 domain: auth
 surfaces: [apps/web/src/app/api/oauth/token/route.ts, apps/web/src/lib/signing-keys.ts, apps/web/src/lib/signing-key-windows.ts, apps/web/src/app/api/.well-known/jwks.json/route.ts]
 related: [auth-oauth-boundaries, credential-isolation, external-cron-triggers, mcp-action-contracts]
@@ -32,11 +32,20 @@ supersedes: []
 ---
 # OAuth Provider & Signing Keys
 
-**Capability statement**: When buildd acts as an identity provider — registering
-OAuth clients, running the authorize/token endpoints, and publishing a JWKS —
-every token it mints MUST be bound to exactly one workspace, and every public
-key needed to verify a buildd-issued assertion MUST be retrievable from
+**Capability statement**: When buildd acts as an identity provider (registering
+OAuth clients, running the authorize/token endpoints, and publishing a JWKS),
+every token it mints MUST be bound to exactly one thing: an account-level MCP
+grant (`grant_id`, the default for a new connection) or, for an older
+per-workspace connection, one workspace (`workspace_id`). Every public key
+needed to verify a buildd-issued assertion MUST be retrievable from
 `GET /api/.well-known/jwks.json`.
+
+Tokens are account-level. A grant (`mcp_oauth_grants`) names the workspaces a
+person chose at consent, across teams; the token carries the grant id, not a
+workspace, and its reach is the grant's workspaces intersected with the
+person's current memberships, read on every request. The grant model, consent
+and per-request confinement are `auth-oauth-boundaries.md` ("Account-level MCP
+grants", "Account-level consent", "Canonical MCP transport").
 
 This spec covers the **provider** side only. How buildd authenticates *inbound*
 credentials (`bld_*` key vs OAuth JWT, per-`authType` limits, level gating) is
@@ -49,8 +58,8 @@ likely reader error:
 
 | Token family | Algorithm | Key material | Verifier | Discoverable? |
 |---|---|---|---|---|
-| MCP access token (`/api/oauth/token`) | HS256 (symmetric) | `OAUTH_JWT_SECRET` → `AUTH_SECRET` → `NEXTAUTH_SECRET` env fallback chain (`apps/web/src/lib/oauth/config.ts:36-42`) | buildd itself only | No — never appears in JWKS |
-| Cross-app assertion (`/api/connectors/[id]/assertion`) | ES256 (P-256 keypair) | `secrets` rows with `purpose = 'signing_key'` | third-party resource servers | Yes — JWKS |
+| MCP access token (`/api/oauth/token`) | HS256 (symmetric) | `OAUTH_JWT_SECRET`, then `AUTH_SECRET`, then `NEXTAUTH_SECRET` (`apps/web/src/lib/oauth/config.ts`, `getJwtSecret()`) | buildd itself only | No, never appears in JWKS |
+| Cross-app assertion (`/api/connectors/[id]/assertion`) | ES256 (P-256 keypair) | `secrets` rows with `purpose = 'signing_key'` | third-party resource servers | Yes, JWKS |
 
 The JWKS endpoint therefore says **nothing** about MCP access tokens. A reader
 debugging a rejected MCP token by inspecting JWKS is looking at the wrong
@@ -100,17 +109,17 @@ system.
   405 (stateless; no SSE).
 
 **Code surface**:
-- AS metadata: `apps/web/src/app/.well-known/oauth-authorization-server/route.ts:6-31`
-- Protected-resource metadata: `apps/web/src/app/.well-known/oauth-protected-resource/api/mcp-oauth/[workspace]/route.ts:17-22`
-- DCR: `apps/web/src/app/api/oauth/register/route.ts:10-16` (schema), `:33-49` (response)
-- Client row: `apps/web/src/lib/oauth/storage.ts:16-29` — `createClient()`
-- 401 hint + 405: `apps/web/src/app/api/mcp-oauth/[workspace]/route.ts:51-61`, `:254-257`
-- Issuer resolution: `apps/web/src/lib/oauth/config.ts:12-26` — `getIssuer()`
-- Schema: `packages/core/db/schema.ts:2076-2083` — `oauthClients`
+- AS metadata: `apps/web/src/app/.well-known/oauth-authorization-server/route.ts` (`GET`)
+- Protected-resource metadata: `apps/web/src/app/.well-known/oauth-protected-resource/api/mcp-oauth/[workspace]/route.ts` (`GET`)
+- DCR: `apps/web/src/app/api/oauth/register/route.ts`: `RegisterSchema`, `POST`
+- Client row: `apps/web/src/lib/oauth/storage.ts`: `createClient()`, `isSafeRedirectUri()`
+- 401 hint + 405: `apps/web/src/app/api/mcp-oauth/[workspace]/route.ts`: `unauthorized()`, `GET`
+- Issuer resolution: `apps/web/src/lib/oauth/config.ts`: `getIssuer()`
+- Schema: `packages/core/db/schema.ts`: `oauthClients`
 
 ---
 
-## Authorize endpoint — consent binds exactly one workspace
+## Authorize endpoint: consent binds one grant or one workspace
 
 **Invariants**:
 - `client_id` and `redirect_uri` MUST both be present and the `redirect_uri`
@@ -128,12 +137,15 @@ system.
   `callbackUrl` set to the same authorize URL — the authorization request is
   never dropped, and no code is minted before a session exists.
 - A code MUST NOT be minted until the session user's workspace access is
-  re-checked against `teamMembers` at authorize time
-  (`workspacesForUser()`); a `workspace` param the user cannot reach returns
-  HTTP 403.
-- Every minted `oauthCodes` row MUST carry `(clientId, userId, workspaceId,
-  redirectUri, codeChallenge)`. There is no "all workspaces" code: the column
-  is `NOT NULL`.
+  re-checked against `teamMembers` at authorize time: for an older
+  per-workspace resource, `legacyWorkspaceForUser()` on the workspace the
+  resource names (a workspace the user cannot reach returns HTTP 403); for the
+  account level, the grant's workspaces (`validateApproval()`). Which consent a
+  request gets is decided by its `resource` (`classifyResource()`, see
+  auth-oauth-boundaries.md, "Resource routing, older addresses and sunset").
+- Every minted `oauthCodes` row MUST carry `(clientId, userId, redirectUri,
+  codeChallenge)` and exactly one of `workspaceId` (older per-workspace
+  address) or `grantId` (account level). There is no "all workspaces" code.
 - `GET` MUST NOT mint a code. With a valid request, a session and a reachable
   workspace it renders a consent page naming the client, the workspace, and
   the access the connection will have (the user's team role, via
@@ -145,9 +157,10 @@ system.
   lifetime) that matches the submitted parameters. Anything else is HTTP 403
   and mints nothing. `decision=deny` redirects (303) with
   `error=access_denied`.
-- After minting, the user MUST see an interstitial naming the workspace the
-  connector was scoped to before the redirect fires, so a user with several
-  buildd connectors can tell which workspace they just authorized.
+- After minting, the user MUST see an interstitial naming what the connector
+  was scoped to (the grant's workspaces, or the one workspace of an older
+  address) before the redirect fires, so a user with several buildd
+  connectors can tell what they just authorized.
 
 **Acceptance criteria**:
 - AC-6: GIVEN a client registered with `http://localhost:41776/callback/x` WHEN
@@ -159,31 +172,35 @@ system.
 - AC-8: GIVEN a registered `redirect_uri` and a logged-in session WHEN
   `code_challenge_method=plain` is supplied THEN the response is a redirect to
   the client carrying `error=invalid_request` and no `oauthCodes` row is created.
-- AC-9: GIVEN a logged-in user with no membership in the requested workspace's
-  team WHEN authorize is called with that `workspace` THEN the server returns
-  HTTP 403 and no code is minted.
-- AC-10: GIVEN a logged-in user with ≥1 workspace and no `workspace` param
-  WHEN authorize is called THEN the response is HTTP 200 `text/html` listing
-  each accessible workspace (picker), not a redirect.
-- AC-10a: GIVEN a valid request with a `workspace` WHEN `GET` is called THEN
-  no `oauthCodes` row is created and the response is a consent form.
-- AC-10b: GIVEN that consent form WHEN it is POSTed without its token, with a
+- AC-9: GIVEN a logged-in user with no membership in the team of the
+  workspace an older per-workspace address names WHEN authorize is called
+  THEN the server returns HTTP 403 and no code is minted.
+- AC-10: GIVEN a logged-in user with at least one workspace and no `resource`
+  WHEN authorize is called THEN the response is HTTP 200 `text/html`: the
+  account consent page listing the workspaces they can reach, not a redirect.
+- AC-33: GIVEN a valid request WHEN `GET` is called THEN no `oauthCodes` row
+  is created and the response is a consent form.
+- AC-34: GIVEN that consent form WHEN it is POSTed without its token, with a
   token for different parameters, from another origin, or with no `Origin`
   THEN the server returns HTTP 403 and no code is minted.
 
 **Code surface**:
-- Route: `apps/web/src/app/api/oauth/authorize/route.ts:83-176`
-- Redirect-URI matcher: same file `:23-51` — `isRegisteredRedirectUri()`
-- Access re-check: same file `:57-69` — `workspacesForUser()`
-- Consent page + decision: same file — `renderConsentPage()`, `POST`,
-  `verifyConsentToken()`, `isSameOriginPost()`
-- Post-approval interstitial: same file — `renderAuthorizedInterstitial()`
-- Code persistence: `apps/web/src/lib/oauth/storage.ts:36-59` — `createAuthCode()`
-- Schema: `packages/core/db/schema.ts:2085-2099` — `oauthCodes`
+- Route: `apps/web/src/app/api/oauth/authorize/route.ts`: `GET`, `validateRequest()`
+- Redirect-URI matcher: same file, `isRegisteredRedirectUri()`
+- Access re-check: same file, `legacyWorkspaceForUser()`; account level,
+  `validateApproval()` in `apps/web/src/lib/oauth/account-consent.ts`
+- Consent decision: same file, `POST`, `verifyConsentToken()`,
+  `isSameOriginPost()`, `accountConsentPost()`; pages in
+  `apps/web/src/lib/oauth/account-consent.ts`: `renderLegacyConsentPage()`,
+  `renderAccountConsentPage()`
+- Post-approval interstitials: `renderLegacyInterstitial()`,
+  `renderGrantInterstitial()` (same module)
+- Code persistence: `apps/web/src/lib/oauth/storage.ts`: `createAuthCode()` (`TokenBinding`: a `workspaceId` or a `grantId`, never both)
+- Schema: `packages/core/db/schema.ts`: `oauthCodes`
 
 ---
 
-## Token endpoint — single-use codes, rotating refresh, workspace-pinned JWT
+## Token endpoint: single-use codes, rotating refresh, grant-bound JWT
 
 **Invariants**:
 - Only `authorization_code` and `refresh_token` grants are accepted; anything
@@ -208,28 +225,42 @@ system.
   sign-in; reuse handling and the absolute lifetime are specified in
   `auth-oauth-boundaries.md` ("Refresh tokens: hashed, one family per
   sign-in").
-- Both grants MUST confirm the user still has a `team_members` row on the
+- A code or refresh token carries the same binding as the code it came from
+  (`TokenBinding`), so a refresh can never widen or change what a connection
+  reaches. For a grant binding, both OAuth grant types MUST confirm the grant
+  is still the user's, issued to this client, and still reaches at least one
+  workspace (`resolveGrant()`), else `invalid_grant` and the grant's refresh
+  tokens are revoked (`revokeRefreshTokensForGrant()`). For an older workspace
+  binding, they MUST confirm the user still has a `team_members` row on the
   workspace's team (`userHasWorkspaceMembership()`); a refresh that fails this
   returns `invalid_grant` and revokes the user's remaining refresh tokens for
-  that workspace (`revokeRefreshTokensForUserWorkspace()`).
+  that workspace (`revokeRefreshTokensForUserWorkspace()`). Error
+  descriptions never name a workspace or a grant.
   `REFRESH_TOKEN_TTL_SECONDS` (sliding) and
   `REFRESH_TOKEN_ABSOLUTE_LIFETIME_SECONDS` (from sign-in) are both 90 days.
-- Every issued access token MUST carry `sub` (userId), `client_id`, `scope`,
-  `workspace_id`, `iss = getIssuer()`, and
-  `aud = getResourceUrl(workspaceId)`, and expire after
-  `ACCESS_TOKEN_TTL_SECONDS` (3600).
-- `verifyAccessToken(token, expectedWorkspaceId)` MUST return `null` when the
-  signature is bad, the issuer differs, the audience is another workspace's
-  resource URL, or `workspace_id !== expectedWorkspaceId`. A token minted for
+- Every issued access token MUST carry `sub` (userId), `client_id`, `scope`
+  and `iss = getIssuer()`, and expire after `ACCESS_TOKEN_TTL_SECONDS` (3600).
+  A grant token (`signGrantAccessToken()`) carries `grant_id` and
+  `aud = getAccountResourceUrl()`; it names no workspace. An older workspace
+  token (`signAccessToken()`) carries `workspace_id` and
+  `aud = getResourceUrl(workspaceId)`. No token carries both.
+- `verifyAccessToken(token, expectedWorkspaceId)` (the per-workspace endpoint)
+  MUST return `null` when the signature is bad, the issuer differs, the
+  audience is another workspace's resource URL, `workspace_id !==
+  expectedWorkspaceId`, or the token carries a `grant_id`. A token minted for
   workspace A MUST NOT authenticate against workspace B.
-- Both grants MUST call `ensureUserAccount()`, which provisions a
-  `type: 'user'`, `authType: 'oauth'` account for the workspace's team when
-  none exists, and MUST swallow its own failures — a provisioning error MUST
+  `verifyAccessTokenAnyAudience()` (the account-level path) accepts a grant
+  token only at the account audience.
+- Both OAuth grant types MUST make sure the team has a session account: for a
+  grant, `ensureTeamSessionAccount()` for every team the grant reaches; for a
+  workspace binding, `ensureUserAccount()` for the workspace's team. Each
+  provisions a `type: 'user'`, `authType: 'oauth'` account when none exists,
+  and the workspace path swallows its own failures: a provisioning error MUST
   NOT block the token response.
 - All token responses MUST set `cache-control: no-store`.
 
 **Acceptance criteria**:
-- AC-11: GIVEN a signed access token for workspace A WHEN
+- AC-11: GIVEN a signed workspace access token for workspace A WHEN
   `verifyAccessToken(token, B)` is called THEN it returns `null`.
 - AC-12: GIVEN a signed access token WHEN one character of its signature
   segment is altered and it is verified against its own workspace THEN
@@ -246,14 +277,20 @@ system.
   grant succeeds THEN no account is created and the token is still returned.
 
 **Code surface**:
-- Route: `apps/web/src/app/api/oauth/token/route.ts:81-176`
-- Account provisioning: same file `:27-60` — `ensureUserAccount()`
-- Code + refresh redemption: `apps/web/src/lib/oauth/storage.ts:67-91`,
-  `:118-139` — `consumeAuthCode()`, `consumeRefreshToken()`
-- Signing/verification: `apps/web/src/lib/oauth/tokens.ts:16-87` —
-  `signAccessToken()`, `verifyAccessToken()`, `verifyAccessTokenAnyAudience()`
-- Lifetimes: `apps/web/src/lib/oauth/config.ts:6-10`
-- Schema: `packages/core/db/schema.ts:2101-2115` — `oauthRefreshTokens`
+- Route: `apps/web/src/app/api/oauth/token/route.ts`: `POST`, `issuePair()`
+- Account provisioning: same file, `ensureUserAccount()`;
+  `apps/web/src/lib/oauth/ensure-session-account.ts`, `ensureTeamSessionAccount()`
+- Grant resolution: `apps/web/src/lib/mcp-grants.ts`: `resolveGrant()`,
+  `revokeRefreshTokensForGrant()`
+- Code + refresh redemption: `apps/web/src/lib/oauth/storage.ts`:
+  `consumeAuthCode()`, `consumeRefreshToken()`
+- Signing/verification: `apps/web/src/lib/oauth/tokens.ts`:
+  `signAccessToken()`, `signGrantAccessToken()`, `verifyAccessToken()`,
+  `verifyAccessTokenAnyAudience()`
+- Lifetimes: `apps/web/src/lib/oauth/config.ts`: `ACCESS_TOKEN_TTL_SECONDS`,
+  `AUTH_CODE_TTL_SECONDS`, `REFRESH_TOKEN_TTL_SECONDS`,
+  `REFRESH_TOKEN_ABSOLUTE_LIFETIME_SECONDS`
+- Schema: `packages/core/db/schema.ts`: `oauthRefreshTokens`, `mcpOauthGrants`
 
 ---
 
@@ -301,13 +338,11 @@ system.
   now + 10 days (now + 10 minutes under `force=true`, the fast-revocation path).
 - Rotation MUST delete every row whose `tokenExpiresAt` is already in the past.
   Deletion of expired keys happens **only** here.
-- **The rotation cron is staged dark.** `cron-manifest.json` carries
-  `/api/cron/jwks-rotation` with `enabled: false` and the standing comment that
-  no trigger has ever existed — so in production no signing key has ever
-  rotated, no Active key has ever aged out, and no expired key has ever been
-  deleted. Every property in the two invariants above is unit-tested and
-  unexercised in production. An unrotated key widens the window in which a key
-  that leaked at any point stays trusted by every resource server, indefinitely.
+- The rotation cron runs weekly: `cron-manifest.json` carries
+  `/api/cron/jwks-rotation` with `enabled: true`. A weekly tick is enough
+  because rotation only acts once the Active key is older than 30 days. It
+  was staged dark until a first rotation had been performed and observed by
+  hand.
 
 **Acceptance criteria**:
 - AC-17: GIVEN zero `signing_key` rows WHEN the rotation cron runs with a valid
@@ -329,16 +364,15 @@ system.
   `CRON_SECRET` THEN the server returns HTTP 401.
 
 **Code surface**:
-- Key service: `apps/web/src/lib/signing-keys.ts:33-53` (`generateSigningKeypair`),
-  `:59-90` (`getActiveSigningKey`), `:96-117` (`getAllPublicKeys`),
-  `:135-145` (`createActiveSigningKey`), `:148-185` (`signAssertion`)
-- JWKS route: `apps/web/src/app/api/.well-known/jwks.json/route.ts:15-46`
-- Rotation cron: `apps/web/src/app/api/cron/jwks-rotation/route.ts:42-127`
-- Dark-staged trigger: `cron-manifest.json` — `"Buildd: JWKS Rotation"`,
-  `enabled: false`
-- Encryption at rest: `packages/core/secrets/postgres-provider.ts:86-92`,
-  `packages/core/secrets/crypto.ts:20-43`
-- Schema: `packages/core/db/schema.ts:1490-1544` — `secrets.purpose`
+- Key service: `apps/web/src/lib/signing-keys.ts`: `makeKid`,
+  `generateSigningKeypair`, `getActiveSigningKey`, `getAllPublicKeys`,
+  `createActiveSigningKey`, `signAssertion`
+- JWKS route: `apps/web/src/app/api/.well-known/jwks.json/route.ts` (`GET`)
+- Rotation cron: `apps/web/src/app/api/cron/jwks-rotation/route.ts`: `rotate()`
+- Trigger: `cron-manifest.json`, `"Buildd: JWKS Rotation"`, `enabled: true`
+- Encryption at rest: `packages/core/secrets/postgres-provider.ts` (`set`,
+  `get`), `packages/core/secrets/crypto.ts` (`getEncryptionKey`)
+- Schema: `packages/core/db/schema.ts`: `secrets.purpose`
   (`'signing_key'`), `secrets.label`, `secrets.tokenExpiresAt`
 
 ---
@@ -379,10 +413,10 @@ system.
   requested THEN the server returns HTTP 403.
 
 **Code surface**:
-- Route: `apps/web/src/app/api/connectors/[id]/assertion/route.ts:45-188`
-- No-key guard: same file `:148-153`
-- Rate limit: same file `:28-40` — `checkRateLimit()`
-- Signer: `apps/web/src/lib/signing-keys.ts:148-185` — `signAssertion()`
+- Route: `apps/web/src/app/api/connectors/[id]/assertion/route.ts`: `POST`
+  (its no-key guard returns `No active signing key`)
+- Rate limit: same file, `checkRateLimit()`
+- Signer: `apps/web/src/lib/signing-keys.ts`: `signAssertion()`
 - Design origin: `docs/design/cross-app-assertion-grant.md` §A–§C
 
 ---
@@ -428,20 +462,20 @@ system.
 - AC-32: GIVEN a device code already in `approved` status WHEN approve is
   called again with the same `userCode` THEN the server returns HTTP 400
   (the `status = 'pending'` predicate matched no row).
-- AC-32a: GIVEN a signed-in user WHEN they load `/app/device?code=<pending>`
+- AC-35: GIVEN a signed-in user WHEN they load `/app/device?code=<pending>`
   THEN no request is sent and the row stays `pending`; WHEN approve is called
   without `confirm: true` THEN the server returns HTTP 400 and nothing changes.
 
 **Code surface**:
-- CLI flow: `apps/web/src/app/api/auth/cli/route.ts:35-159`
-- Device flow: `apps/web/src/app/api/auth/device/code/route.ts:30-63`,
+- CLI flow: `apps/web/src/app/api/auth/cli/route.ts` (`GET`)
+- Device flow: `apps/web/src/app/api/auth/device/code/route.ts` (`POST`),
   `apps/web/src/app/api/auth/device/approve/route.ts`,
   confirm page `apps/web/src/app/app/device/page.tsx` +
   `apps/web/src/lib/device-confirm.ts`,
-  `apps/web/src/app/api/auth/device/token/route.ts:12-78`
-- Key hashing: `apps/web/src/lib/api-auth.ts` — `hashApiKey()`,
+  `apps/web/src/app/api/auth/device/token/route.ts` (`POST`)
+- Key hashing: `apps/web/src/lib/api-auth.ts`: `hashApiKey()`,
   `extractApiKeyPrefix()`
-- Schema: `packages/core/db/schema.ts:1547-1562` — `deviceCodes`
+- Schema: `packages/core/db/schema.ts`: `deviceCodes`
 
 ---
 
@@ -474,7 +508,7 @@ directly off the files cited.
 > that had already been fixed, and one of them claimed the opposite of the
 > truth (that JWKS publishes expired keys). A stale gap list is worse than no
 > gap list: an agent either re-fixes solved problems or trusts an inverted
-> statement about a security primitive. Entry 3 is the instructive one — it
+> statement about a security primitive. The JWKS test entry is the instructive one: it
 > asserted a gap by naming a path that does not exist
 > (`.well-known/jwks.json/route.test.ts`), and the test had all along been
 > deliberately placed elsewhere, because the unit-test runner skips dot
@@ -486,7 +520,7 @@ directly off the files cited.
    weekly and reports its own failures as a `critical` ops alert, but nothing
    probes the *health* of the key set between rotations. Because
    `provider.get()` decrypts with `ENCRYPTION_KEY`
-   (`packages/core/secrets/crypto.ts:20-43`), a wiped or rotated
+   (`packages/core/secrets/crypto.ts`, `getEncryptionKey`), a wiped or rotated
    `ENCRYPTION_KEY` makes `getAllPublicKeys()` throw and JWKS return HTTP 500
    for every caller — the failure mode is total, and the precedent exists: a
    production incident once returned JWKS 500 because the entire Vercel
@@ -520,43 +554,37 @@ directly off the files cited.
    triggered the background refresh. That is evidence about the values being
    replaced, not about the replacements.
 
-6. **Single-use codes and refresh rotation are untested.**
-    `apps/web/src/lib/oauth/storage.ts` has no test file. The `consumedAt`
-    single-use guard, PKCE `code_challenge` comparison, `redirectUri` rebinding
-    check, and `revokedAt` rotation are all asserted only by inspection.
-    `auth-oauth-boundaries.md` AC-11/AC-12 state these as criteria; no test
-    implements them.
+6. **Registered `redirect_uris` are not a strict allowlist.** Registration
+    and authorize refuse dangerous schemes and any URI with a fragment
+    (`isSafeRedirectUri()`, tested in `apps/web/src/app/api/oauth/register/route.test.ts`
+    and `authorize/route.test.ts`). It is deliberately not a strict
+    https-plus-loopback list: native clients register private-use schemes,
+    and non-loopback `http:` is still accepted. Tightening that needs an
+    audit of the redirect URIs already registered.
 
-7. **No test covers registration or discovery.** There is no test file for
-    `/api/oauth/register`, `/.well-known/oauth-authorization-server`, or
-    `/.well-known/oauth-protected-resource/...`. AC-1 through AC-5 are
-    currently manual checks.
-
-8. **Registered `redirect_uris` are not constrained to an allowed scheme
-    set.** The invariant is that a redirect URI MUST be accepted at
-    registration only within an allowed scheme set: `https:` plus loopback
-    `http:`, with non-loopback `http:` and any non-HTTP scheme rejected at
-    registration time. No test asserts it. Specifics are tracked privately
-    until the guard lands.
-
-9. **The HS256 secret has no rotation story.** `getJwtSecret()` falls back
+7. **The HS256 secret has no rotation story.** `getJwtSecret()` falls back
     through `OAUTH_JWT_SECRET → AUTH_SECRET → NEXTAUTH_SECRET`
-    (`apps/web/src/lib/oauth/config.ts:36-42`). Access tokens carry no `kid`
+    (`apps/web/src/lib/oauth/config.ts`, `getJwtSecret()`). Access tokens carry no `kid`
     and there is no two-key overlap window, so changing that secret invalidates
     every outstanding MCP access token at once — and where the fallback lands on
     `AUTH_SECRET`, the same value signs NextAuth sessions.
-
-10. **The authorize-time workspace access check is not tested.** Only
-    `isRegisteredRedirectUri` has coverage in
-    `apps/web/src/app/api/oauth/authorize/route.test.ts`. AC-9 and AC-10 (403
-    on unreachable workspace, picker on omitted workspace) have no test, and the
-    route's session and DB paths are never exercised.
 
 ### Recently closed
 
 Kept as a record so a reader who remembers the longer list can see where the
 entries went, and so the same claims are not re-derived from an older copy.
 
+- *"Single-use codes and refresh rotation are untested."* Covered by
+  `apps/web/src/lib/oauth/storage.test.ts` (`consumeAuthCode`,
+  `consumeRefreshToken`, the membership helpers).
+- *"No test covers registration or discovery."* Covered by
+  `apps/web/src/app/api/oauth/register/route.test.ts`,
+  `apps/web/src/app/well-known-oauth-authorization-server-route.test.ts` and
+  `apps/web/src/app/well-known-oauth-protected-resource-mcp-route.test.ts`.
+- *"The authorize-time workspace access check is not tested."* Covered by
+  `apps/web/src/app/api/oauth/authorize/route.test.ts` (an older address
+  naming a workspace outside the user's teams is refused; no resource opens
+  the account consent page).
 - *"No signing key has ever rotated in production."* Rotation was enabled, and a
   first rotation was then performed and observed by hand: the key set went from
   one key to two, the predecessor retiring rather than disappearing.
@@ -577,3 +605,7 @@ entries went, and so the same claims are not re-derived from an older copy.
 - *"Forced rotation is HTTP GET, not POST."* `POST` is now accepted for the
   operator path. `GET` remains because the external scheduler can issue nothing
   else.
+
+## Renumbered
+
+Renumbered on 2026-10-15 so every criterion parses: AC-10a to AC-33, AC-10b to AC-34, AC-32a to AC-35. Verification gaps renumbered after three moved to Recently closed: old 8 is now 6, old 9 is now 7.

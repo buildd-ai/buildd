@@ -11,6 +11,7 @@ import {
 } from '@/lib/linear-webhook';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { isUuid } from '@/lib/uuid';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Inbound Linear webhook (work-tracker spec §3, Phase 3a).
@@ -28,17 +29,17 @@ type Db = typeof db;
 
 async function defaultGetWorkspace(database: Db, id: string) {
   return database.query.workspaces.findFirst({
-    where: eq(workspaces.id, id),
+    where: sqlWhere(eq(workspaces.id, id)),
     columns: { teamId: true, workTrackerConfig: true },
   }) as Promise<{ teamId: string; workTrackerConfig: WorkspaceWorkTrackerConfig | null } | undefined>;
 }
 
 async function defaultGetSigningSecret(database: Db, workspaceId: string): Promise<string | null> {
   const row = await database.query.secrets.findFirst({
-    where: teamCredentialWhere(
+    where: sqlWhere(teamCredentialWhere(
       { purpose: 'webhook_token', label: 'linear' },
       eq(secrets.workspaceId, workspaceId),
-    ),
+    )),
     columns: { encryptedValue: true },
   });
   if (!row?.encryptedValue) return null;

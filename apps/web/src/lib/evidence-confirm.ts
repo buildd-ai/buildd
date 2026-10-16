@@ -23,6 +23,7 @@ import { and, eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { evidenceObjects } from '@buildd/core/db/schema';
 import { EvidenceReadError, evidenceObjectLocation, type EvidenceObjectRow } from './evidence-read';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export type EvidenceUploadState = EvidenceObjectRow['uploadState'];
 
@@ -66,7 +67,7 @@ async function settle(
 
     // Someone else settled it first; report what they decided.
     const now = await db.query.evidenceObjects.findFirst({
-      where: eq(evidenceObjects.id, row.id),
+      where: sqlWhere(eq(evidenceObjects.id, row.id)),
       columns: { uploadState: true, bytes: true },
     });
     if (!now) return { uploadState: row.uploadState, bytes: row.bytes, changed: false, reason: 'the evidence row no longer exists' };

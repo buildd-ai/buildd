@@ -6,6 +6,7 @@ import { canCompleteMission } from '@/lib/mission-completion';
 import { executeRelease } from '@/lib/release-executor';
 import { recordAndDispatchRelease } from '@/lib/release/record';
 import { detectArchetype } from '@buildd/core/release-archetype';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // Count tasks in the mission that are not yet terminal (pending, assigned, or in_progress).
 export async function countPendingTasksForMission(missionId: string): Promise<number> {
@@ -201,7 +202,7 @@ export async function fireMissionReleaseIfComplete(
 ): Promise<void> {
   // Fetch workspace config to check trigger policy
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     // name and gitConfig feed detectArchetype, which the recorded release row
     // carries — a row whose archetype is guessed is worse than no row.
     columns: { name: true, releaseConfig: true, githubRepoId: true, gitConfig: true },
@@ -258,7 +259,7 @@ export async function fireMissionReleaseIfComplete(
     // Dispatch the release workflow directly (no per-task merge needed)
     const repo = workspace?.githubRepoId
       ? await db.query.githubRepos.findFirst({
-          where: eq(githubRepos.id, workspace.githubRepoId),
+          where: sqlWhere(eq(githubRepos.id, workspace.githubRepoId)),
           with: { installation: true },
         })
       : null;

@@ -15,6 +15,7 @@
 import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
 import { eq, and, sql } from 'drizzle-orm';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface LandingMarker {
   prNumber: number;
@@ -55,7 +56,7 @@ export function parseLandingMarker(context: unknown, prNumber: number): LandingM
 
 export async function readLandingMarker(taskId: string, prNumber: number): Promise<LandingMarker | null> {
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { context: true },
   });
   return parseLandingMarker(task?.context, prNumber);

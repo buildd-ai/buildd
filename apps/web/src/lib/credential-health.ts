@@ -19,6 +19,7 @@ import { and, eq, or, isNull } from 'drizzle-orm';
 import { classifyAuthErrorSeverity } from '@buildd/core/auth-error-classifier';
 import { CLAUDE_CREDENTIAL_PURPOSES, claudeCredentialRank } from './claude-credential-rows';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export type { CredentialHealthStatus } from '@buildd/core/secrets';
 
@@ -45,7 +46,7 @@ export async function recordCredentialAuthFailure(
   if (severity === 'none') return null;
 
   const row = await db.query.secrets.findFirst({
-    where: eq(secrets.id, secretId),
+    where: sqlWhere(eq(secrets.id, secretId)),
     columns: {
       healthStatus: true,
       consecutiveAuthFailures: true,
@@ -90,7 +91,7 @@ export async function getActiveClaudeSecretId(
     : isNull(secrets.workspaceId);
 
   const rows = await db.query.secrets.findMany({
-    where: teamCredentialWhere({ teamId, purpose: [...CLAUDE_CREDENTIAL_PURPOSES] }, scopeFilter),
+    where: sqlWhere(teamCredentialWhere({ teamId, purpose: [...CLAUDE_CREDENTIAL_PURPOSES] }, scopeFilter)),
     columns: { id: true, purpose: true, label: true, userId: true },
   });
   // Seat token first (more likely to be the active cred), then canonical, then legacy.

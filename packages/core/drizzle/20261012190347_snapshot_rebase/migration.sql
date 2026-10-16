@@ -1,0 +1,2 @@
+-- Snapshot rebase: no DDL. drizzle v1 renders some expressions differently (partial index
+-- predicates, CHECK constraints); the snapshot is kept so generate converges, the churn is not.

@@ -34,6 +34,7 @@ import { loadMissionCoordination, loadOpenPrTasksByWorkspace } from '@/app/api/w
 import { ORDERED_BEHIND_REASON } from '@/app/api/workers/claim/claim-plan-store';
 import { GATE_SLUGS } from '@buildd/core/gate-events';
 import { LIVE_WORKER_STATUSES } from '@buildd/shared';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * `ordered_behind` is written once per (task, blocker), never refreshed, so
@@ -93,7 +94,7 @@ export async function probeCoordination(task: ProbeTask, now: Date = new Date(),
     ].filter(id => id !== task.id);
     const liveRows = candidateHolders.length > 0
       ? await db.query.workers.findMany({
-          where: and(inArray(workers.taskId, candidateHolders), inArray(workers.status, [...LIVE_WORKER_STATUSES])),
+          where: sqlWhere(and(inArray(workers.taskId, candidateHolders), inArray(workers.status, [...LIVE_WORKER_STATUSES]))),
           columns: { taskId: true },
         })
       : [];
@@ -129,7 +130,7 @@ export async function probeCoordination(task: ProbeTask, now: Date = new Date(),
 async function withTaskLabels(reasons: WaitingReason[]): Promise<WaitingReason[]> {
   const ids = [...new Set(reasons.filter(r => r.blocker?.type === 'task').map(r => r.blocker!.id))];
   if (ids.length === 0) return reasons;
-  const rows = await db.query.tasks.findMany({ where: inArray(tasks.id, ids), columns: { id: true, title: true } }).catch(() => []);
+  const rows = await db.query.tasks.findMany({ where: sqlWhere(inArray(tasks.id, ids)), columns: { id: true, title: true } }).catch(() => []);
   const titles = new Map(rows.map(r => [r.id, r.title as string | null]));
   return reasons.map(r => {
     const title = r.blocker?.type === 'task' ? titles.get(r.blocker.id) : null;

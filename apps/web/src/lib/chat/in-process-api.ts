@@ -336,7 +336,7 @@ function rowInReach(reach: ChatReach, row: unknown, isWorkspaceList: boolean): b
 
 /**
  * A row that serves several workspaces (a runner: `workspaceIds`, with
- * `workspaceNames` alongside) is kept with only the in-reach ones; with none
+ * `workspaceNames` and `workspaceTeamNames` alongside) is kept with only the in-reach ones; with none
  * left it is out of reach. Other rows pass through.
  */
 function narrowWorkspaceIds(reach: ChatReach, row: Record<string, unknown>): Record<string, unknown> | null {
@@ -345,8 +345,11 @@ function narrowWorkspaceIds(reach: ChatReach, row: Record<string, unknown>): Rec
   const keep = ids.map(id => typeof id === 'string' && reach.workspaceIds.has(id));
   if (!keep.some(Boolean)) return null;
   const out: Record<string, unknown> = { ...row, workspaceIds: ids.filter((_, i) => keep[i]) };
-  const names = row.workspaceNames;
-  if (Array.isArray(names)) out.workspaceNames = names.length === ids.length ? names.filter((_, i) => keep[i]) : [];
+  // Every array parallel to workspaceIds goes with it, index for index.
+  for (const key of ['workspaceNames', 'workspaceTeamNames'] as const) {
+    const vals = row[key];
+    if (Array.isArray(vals)) out[key] = vals.length === ids.length ? vals.filter((_, i) => keep[i]) : [];
+  }
   return out;
 }
 

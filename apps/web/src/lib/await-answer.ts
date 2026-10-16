@@ -72,6 +72,18 @@ interface QueuedMessage { id?: string; type?: string; body?: { text?: unknown; q
 const asArray = <T>(v: unknown): T[] => (Array.isArray(v) ? (v as T[]) : []);
 const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : null);
 
+function sessionEnded(worker: AnswerWorkerRow): AnswerReadState {
+  const superseded = worker.status === 'superseded';
+  return {
+    state: 'not_waiting',
+    reasonCode: 'session_ended',
+    message: superseded
+      ? 'The answer went to a follow-up task instead of this session (it had stopped waiting, or never read it). Stop here; the follow-up carries the work.'
+      : `This worker has ended (${worker.status}); there is nothing left to wait for.`,
+    ...(superseded ? { continuationTaskId: worker.continuationTaskId ?? null } : {}),
+  };
+}
+
 /** Where the worker's question stands, read from what /respond recorded. */
 export function readInteractiveAnswer(input: { worker: AnswerWorkerRow; taskContext: unknown }): AnswerReadState {
   const { worker } = input;
@@ -82,6 +94,11 @@ export function readInteractiveAnswer(input: { worker: AnswerWorkerRow; taskCont
       message: `Worker ${worker.id} is managed by a runner, so await_answer does not apply: its runner resumes the session with the answer.`,
     };
   }
+
+  // Superseded first: the answer went to a follow-up task (the session was
+  // gone when it landed, or never read it), and a session that comes back
+  // must not act on it alongside that task.
+  if (worker.status === 'superseded') return sessionEnded(worker);
 
   const context = (input.taskContext && typeof input.taskContext === 'object' ? input.taskContext : {}) as Record<string, unknown>;
   const history = asArray<HistoryEntry>(worker.instructionHistory);
@@ -126,17 +143,7 @@ export function readInteractiveAnswer(input: { worker: AnswerWorkerRow; taskCont
 
   if (worker.status === 'waiting_input' && worker.waitingFor) return { state: 'waiting' };
 
-  if (isTerminalWorkerStatus(worker.status)) {
-    const superseded = worker.status === 'superseded';
-    return {
-      state: 'not_waiting',
-      reasonCode: 'session_ended',
-      message: superseded
-        ? 'The answer went to a follow-up task instead of this session (it had stopped waiting). Stop here; the follow-up carries the work.'
-        : `This worker has ended (${worker.status}); there is nothing left to wait for.`,
-      ...(superseded ? { continuationTaskId: worker.continuationTaskId ?? null } : {}),
-    };
-  }
+  if (isTerminalWorkerStatus(worker.status)) return sessionEnded(worker);
 
   return {
     state: 'not_waiting',

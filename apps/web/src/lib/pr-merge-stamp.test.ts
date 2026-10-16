@@ -1,6 +1,8 @@
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { and, isNull } from 'drizzle-orm';
+import { normaliseSqlGrouping } from '@buildd/core/db/sql-grouping';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // Several worker rows can carry one PR: a CI-retry attempt pushes to its
 // parent's branch and adopts the PR number when it completes. The merge used to
@@ -118,10 +120,11 @@ describe('noRowOfPrMerged', () => {
   it('correlates to the relation alias inside a nested relational `with` (the blocker-card query)', async () => {
     const { drizzle } = await import('drizzle-orm/pg-proxy');
     const schema = await import('@buildd/core/db/schema');
-    const offline = drizzle(async () => ({ rows: [] }), { schema });
+    const { relations } = await import('@buildd/core/db/relations');
+    const offline = drizzle(async () => ({ rows: [] }), { relations });
     const q = offline.query.tasks.findMany({
       columns: { id: true },
-      with: { workers: { where: and(isNull(workers.mergedAt), noRowOfPrMerged()), columns: { prUrl: true } } },
+      with: { workers: { where: sqlWhere(and(isNull(workers.mergedAt), noRowOfPrMerged())), columns: { prUrl: true } } },
     }).toSQL();
     const text = norm(q.sql);
     const m = text.match(/"pr_row"\."pr_url" = "([^"]+)"\."pr_url"/);
@@ -134,6 +137,6 @@ describe('noRowOfPrMerged', () => {
 
   it('composes with the column references of the outer query', () => {
     const outer = dialect.sqlToQuery(and(isNull(workers.mergedAt), noRowOfPrMerged()) as any);
-    expect(norm(outer.sql)).toContain('"workers"."merged_at" is null and not exists');
+    expect(norm(normaliseSqlGrouping(outer.sql))).toContain('"workers"."merged_at" is null and not exists');
   });
 });

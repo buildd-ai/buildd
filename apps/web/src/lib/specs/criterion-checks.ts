@@ -2,10 +2,12 @@ import { db } from '@buildd/core/db';
 import { specOutcomeVerdicts, tasks, workspaces } from '@buildd/core/db/schema';
 import { and, eq, sql } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
-import { checkCommandAt, checkVerdict, criterionChecks, type CriterionCheck } from './check-lines';
+import { checkCommandAt, checkVerdict, criterionChecks, type CriterionCheck } from '@buildd/spec-contract/check-lines';
 import { isRunnerReported } from '@/lib/verification-provenance';
 import { recordCheckVerdict } from './outcome';
 import { readPinnedSpecRevision } from './pin';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { scopeOf } from '@buildd/spec-contract/scope';
 
 /**
  * Mechanical criterion checks (Living Specs V1). A criterion of a task's
@@ -57,7 +59,7 @@ export function isCriterionCheckTask(context: unknown): boolean {
 
 async function defaultWake(task: { id: string; title: string; workspaceId: string }): Promise<void> {
   const { announceTaskCreated, wakeTask } = await import('@/lib/dispatch-authority');
-  const workspace = await db.query.workspaces.findFirst({ where: eq(workspaces.id, task.workspaceId) });
+  const workspace = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, task.workspaceId)) });
   if (!workspace) return;
   await announceTaskCreated({ ...task, description: null, mode: 'execution', priority: 2, missionId: null }, workspace as never)
     .catch((e) => console.error(`[spec-checks] dispatch failed for task ${task.id}:`, e));
@@ -75,7 +77,9 @@ async function pinnedChecks(taskId: string): Promise<
   if (!pin || typeof pin.specRevisionId !== 'string') return { ok: false, reason: 'the task is not pinned to a Living Spec revision' };
   const read = await readPinnedSpecRevision(pin);
   if (!read.ok) return { ok: false, reason: read.reason };
-  return { ok: true, workspaceId: task.workspaceId, specRevisionId: pin.specRevisionId, checks: criterionChecks(read.body) };
+  const scope = scopeOf(pin);
+  const checks = criterionChecks(read.body).filter((c) => !scope || scope.includes(c.criterionId));
+  return { ok: true, workspaceId: task.workspaceId, specRevisionId: pin.specRevisionId, checks };
 }
 
 const sameRun = (m: Omit<CriterionCheckMarker, 'command'>) =>
@@ -94,7 +98,7 @@ export async function dispatchCriterionChecks(
   if (!SHA40.test(headSha)) return { dispatched: 0, reason: 'headSha must be a full commit SHA' };
   const p = await pinnedChecks(opts.taskId);
   if (!p.ok) return { dispatched: 0, reason: p.reason };
-  if (p.checks.length === 0) return { dispatched: 0, reason: 'no criterion of the pinned revision names a check' };
+  if (p.checks.length === 0) return { dispatched: 0, reason: 'no criterion this task answers for names a check' };
   const wake = deps.wake ?? defaultWake;
 
   let dispatched = 0;

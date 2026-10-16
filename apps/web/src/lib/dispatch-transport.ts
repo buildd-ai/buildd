@@ -44,6 +44,7 @@ import {
 } from '@buildd/core/dispatch-handoff';
 import { routeForCause, targetLocalUiUrlOf, webhookWants, type DispatchContext } from '@/lib/dispatch-adapters';
 import type { DispatchWorkspace } from '@/lib/task-dispatch-delivery';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** The publish is awaited this long; a slower Worker costs one sweep, not the request. */
 export const PUBLISH_TIMEOUT_MS = 2_000;
@@ -125,7 +126,7 @@ interface RouteContext { task: RouteTask; workspace: DispatchWorkspace }
 
 async function loadRouteContext(taskIds: string[]): Promise<Map<string, RouteContext>> {
   const found = await db.query.tasks.findMany({
-    where: inArray(tasks.id, taskIds),
+    where: sqlWhere(inArray(tasks.id, taskIds)),
     columns: {
       id: true, title: true, description: true, workspaceId: true, mode: true, priority: true,
       missionId: true, backend: true, roleSlug: true, runnerPreference: true, status: true, startAt: true,

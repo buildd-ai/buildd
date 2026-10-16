@@ -6,7 +6,7 @@
  *    rail `access_approval`. One Needs You card per request, which is already
  *    one row per (worker, target, exact ask): the store dedupes repeats.
  *  - granted by policy, or anything already decided: Buildd's. Informative on
- *    Settings → Connected apps → Agent access, never a card, never a push.
+ *    Settings › Team › Apps › Agent access, never a card, never a push.
  *
  * Only people who can decide see the card: a pending request is listed for a
  * team where the viewer holds manage_connectors, since nobody else can approve
@@ -24,7 +24,7 @@ export const accessSubjectKey = (requestId: string) => `${ACCESS_SUBJECT_TYPE}:$
 
 /** Where a person decides a request when the card cannot (a row, a push). */
 export function accessRequestHref(requestId: string, baseUrl = ''): string {
-  return `${baseUrl}/app/settings/connections?request=${encodeURIComponent(requestId)}#agent-access`;
+  return `${baseUrl}/app/settings/apps?request=${encodeURIComponent(requestId)}#agent-access`;
 }
 
 /** Pure. The gate's verdict for one request. */

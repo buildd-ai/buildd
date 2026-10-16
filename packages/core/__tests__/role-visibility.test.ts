@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
+import { GroupingNormalisedPgDialect } from '../db/sql-grouping';
 import {
   effectiveVisibleRoles,
   isRoleRowVisibleTo,
@@ -102,7 +103,7 @@ describe('pickVisibleRoleRowLazy', () => {
 });
 
 describe('SQL predicate (rendered)', () => {
-  const dialect = new PgDialect();
+  const dialect = new GroupingNormalisedPgDialect();
   const render = (q: Parameters<PgDialect['sqlToQuery']>[0]) => dialect.sqlToQuery(q);
 
   it('with a requester: team row, shared, or owned by the requester', () => {

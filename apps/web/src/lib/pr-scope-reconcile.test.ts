@@ -6,7 +6,7 @@
  * through PgDialect so workspace and PR scoping are asserted, not assumed.
  */
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
-import { PgDialect } from 'drizzle-orm/pg-core';
+import { GroupingNormalisedPgDialect } from '@buildd/core/db/sql-grouping';
 
 const WS = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const OWNER = '11111111-1111-4111-8111-111111111111';
@@ -70,7 +70,7 @@ const {
   PR_FILES_PAGE_SIZE,
 } = await import('./pr-scope-reconcile');
 
-const dialect = new PgDialect();
+const dialect = new GroupingNormalisedPgDialect();
 const render = (q: any) => dialect.sqlToQuery(q);
 
 // ── Scripted GitHub ──────────────────────────────────────────────────────────

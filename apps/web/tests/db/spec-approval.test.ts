@@ -10,6 +10,8 @@ import { createHash } from 'crypto';
 import { sql } from 'drizzle-orm';
 import { assertDbConfigured, q, seedWorkspace } from './harness';
 
+process.env.AUTH_SECRET ||= 'spec-approval-test-secret';
+
 const { createSpecDraft, reviseSpecDraft, getSpec } = await import('../../src/lib/specs/store');
 const { submitSpecRevision, approveSpecRevision } = await import('../../src/lib/specs/approval');
 const { pinSpecSource, readPinnedSpecRevision } = await import('../../src/lib/specs/pin');
@@ -65,12 +67,20 @@ describe('only a person with approval rights approves', () => {
     expect(row).toEqual({ approved_by: null, status: 'draft', approved_revision: null });
   });
 
-  test('an admin approves; so does the admin\'s own OAuth session; so does a delegated approver', async () => {
-    for (const caller of [user(admin), adminOAuth(), user(delegate)]) {
+  test('an admin approves; so does a delegated approver', async () => {
+    for (const caller of [user(admin), user(delegate)]) {
       const spec = await draft();
       const r = await approveSpecRevision(caller, spec.id, { revision: 1, expectedVersion: 1 });
-      expect(r.ok && [r.spec.status, r.spec.approvedRevision, r.revision.approvedBy]).toEqual(['approved', 1, `user:${caller.kind === 'user' ? caller.userId : admin}`]);
+      expect(r.ok && !('pending' in r) && [r.spec.status, r.spec.approvedRevision, r.revision.approvedBy]).toEqual(['approved', 1, `user:${caller.userId}`]);
     }
+  });
+
+  test('the admin\'s own OAuth session asks instead: a confirmation link, nothing approved (spec-approval-confirm.test.ts)', async () => {
+    const spec = await draft();
+    const r = await approveSpecRevision(adminOAuth(), spec.id, { revision: 1, expectedVersion: 1 });
+    expect(r.ok && 'pending' in r && r.pending.revision).toBe(1);
+    const [row] = await q<{ approved_revision: number | null }>(sql`SELECT approved_revision FROM specs WHERE id = ${spec.id}::uuid`);
+    expect(row.approved_revision).toBeNull();
   });
 
   test('another team\'s admin cannot see the spec to approve it', async () => {
@@ -140,15 +150,18 @@ describe('running work stays pinned to the revision it started on', () => {
     expect(await readPinnedSpecRevision(src)).toMatchObject({ ok: true, body: BODY_N, revision: 1 });
   });
 
-  test('a spec with no approved revision cannot pin a task', async () => {
+  test('a spec with no approved revision pins its head provisionally (§20, R-36), never as approved', async () => {
     const spec = await draft();
-    expect(await pinSpecSource(wsA, { specSource: { specId: spec.id } })).toMatchObject({ ok: false, status: 409 });
+    const p = await pinSpecSource(wsA, { specSource: { specId: spec.id } });
+    expect(p.ok && p.context.specSource).toMatchObject({ revision: 1, contentHash: sha(BODY_N), provisional: true });
+    expect(p.ok && (p.context.specSource as Record<string, unknown>).explicit).toBeUndefined();
   });
 
-  test('a named revision must be an approved revision of that spec', async () => {
+  test('a named revision that is not approved pins provisionally; one the spec does not have is refused', async () => {
     const spec = await draft();
     const [rev1] = await q<{ id: string }>(sql`SELECT id FROM spec_revisions WHERE spec_id = ${spec.id}::uuid AND revision = 1`);
-    expect(await pinSpecSource(wsA, { specSource: { specId: spec.id, specRevisionId: rev1.id } })).toMatchObject({ ok: false, status: 409 });
+    expect(await pinSpecSource(wsA, { specSource: { specId: spec.id, specRevisionId: rev1.id } })).toMatchObject({ ok: true, context: { specSource: { specRevisionId: rev1.id, provisional: true } } });
+    expect(await pinSpecSource(wsA, { specSource: { specId: spec.id, specRevisionId: '00000000-0000-4000-8000-0000000000c1' } })).toMatchObject({ ok: false, status: 409 });
   });
 
   test('a spec in another workspace is not found, and nothing is pinned', async () => {
@@ -161,8 +174,9 @@ describe('running work stays pinned to the revision it started on', () => {
     const spec = await draft();
     const a = await approveSpecRevision(user(admin), spec.id, { revision: 1, expectedVersion: 1 });
     if (!a.ok) throw new Error(a.error);
-    const p = await pinSpecSource(wsA, { specSource: { specId: spec.id, contentHash: 'f'.repeat(64), revision: 9 } });
+    const p = await pinSpecSource(wsA, { specSource: { specId: spec.id, contentHash: 'f'.repeat(64), revision: 1, provisional: true } });
     expect(p.ok && p.context.specSource).toMatchObject({ contentHash: sha(BODY_N), revision: 1 });
+    expect(p.ok && (p.context.specSource as Record<string, unknown>).provisional).toBeUndefined();
   });
 
   test('a pin whose hash no longer matches is reported unavailable, never read as the spec', async () => {

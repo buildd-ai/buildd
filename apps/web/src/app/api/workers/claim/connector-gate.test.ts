@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
-import { PgDialect } from 'drizzle-orm/pg-core';
+import { GroupingNormalisedPgDialect } from '@buildd/core/db/sql-grouping';
 
 // ── Mocks ──────────────────────────────────────────────────────────────────────
 
@@ -470,7 +470,7 @@ describe('checkConnectorRouting — multiple connectors', () => {
 // team's share unblocking a connector this team cannot see, or a credential of
 // the wrong purpose satisfying the check.
 
-const dialect = new PgDialect();
+const dialect = new GroupingNormalisedPgDialect();
 
 function lastWhere(m: { mock: { calls: any[] } }) {
   const args = m.mock.calls.at(-1)![0] as { where: any };

@@ -59,6 +59,7 @@ import type { PolicyScope } from './providers/policy';
 import { ROUTES, routeAuthHeaders } from '@builddai/ai-kit/models/routes';
 
 import { PERSONAL_KEY_PROVIDERS, isPersonalKeyProvider, providerKeyCapability, type PersonalKeyProvider } from '@builddai/ai-kit/models/provider-keys';
+import { sqlWhere } from './db/relational-sql';
 
 export type InferenceKeyProvider = PersonalKeyProvider;
 export const INFERENCE_KEY_PROVIDERS = PERSONAL_KEY_PROVIDERS;
@@ -73,7 +74,7 @@ export { INFERENCE_KEY_POLICIES, isInferenceKeyPolicy, policyAllowsOwnKey, type 
  */
 export async function loadInferenceKeyPolicy(teamId: string): Promise<InferenceKeyPolicy> {
   try {
-    const row = await db.query.teams.findFirst({ where: eq(teams.id, teamId), columns: { inferenceKeyPolicy: true, credentialPolicy: true } });
+    const row = await db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, teamId)), columns: { inferenceKeyPolicy: true, credentialPolicy: true } });
     return effectiveKeyPolicy(row) ?? 'team_or_own';
   } catch {
     return 'team_or_own';

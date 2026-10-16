@@ -2,7 +2,8 @@
  * The model-tier ceilings API (docs/specs/model-tier-ceilings.md):
  *
  *   GET  /api/teams/[id]/model-ceilings[?workspaceId=]   any member, or a key of the team
- *   PUT  /api/teams/[id]/model-ceilings                  manage_model_tiers: team / workspace caps, overCapAuto
+ *   PUT  /api/teams/[id]/model-ceilings                  manage_model_tiers: team / workspace caps;
+ *                                                        overCapAuto: a platform operator only (lib/admin/platform-operator-caller.ts)
  *   PUT  /api/teams/[id]/model-ceilings/members/[userId] manage_model_tiers: that member's admin cap
  *   PUT  /api/teams/[id]/model-ceilings/me               the signed-in member: their own cap
  *
@@ -32,6 +33,8 @@ export interface CeilingsApiDeps {
   caller(): Promise<TeamScopeCaller | null>;
   isMember(userId: string, teamId: string): Promise<boolean>;
   canManage(caller: TeamScopeCaller, teamId: string): Promise<boolean>;
+  /** A platform operator (lib/admin/platform-operator-caller.ts): the only caller who may write `overCapAuto`. */
+  isOperator(): Promise<boolean>;
   loadPolicy(teamId: string): Promise<TeamTierCeilingPolicy | null>;
   loadMember(teamId: string, userId: string): Promise<MemberTierCeilings | null>;
   listMembers(teamId: string): Promise<Record<string, MemberTierCeilings>>;
@@ -111,6 +114,8 @@ export async function handlePutTeamCeilings(teamId: string, body: unknown, deps:
     }
   }
   if (b.overCapAuto !== undefined) {
+    // Every team gets `downgrade`; a stored `deny` is still honoured, but only an operator sets it.
+    if (!(await deps.isOperator())) return json({ error: 'buildd manages this setting.', code: 'operator_only' }, 403);
     if (b.overCapAuto !== 'downgrade' && b.overCapAuto !== 'deny') return json({ error: "overCapAuto must be 'downgrade' or 'deny'" }, 400);
     patch.overCapAuto = b.overCapAuto;
   }

@@ -8,6 +8,7 @@ import type { GoalCriteriaState } from '@buildd/shared';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { pickEffectiveRole } from '@/lib/effective-roles';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * `command` goal criteria: verified by running the command, never by asking a
@@ -66,12 +67,12 @@ function shortCommand(command: string): string {
  */
 async function findVerificationTask(missionId: string, criterionIndex: number) {
   const rows = await db.query.tasks.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.missionId, missionId),
       sql`${tasks.context}->'criteriaVerification'->>'criterionIndex' = ${String(criterionIndex)}`,
-    ),
+    )),
     columns: { id: true, status: true, context: true, result: true, updatedAt: true },
-    orderBy: [desc(tasks.createdAt)],
+    orderBy: sqlOrderBy([desc(tasks.createdAt)]),
     limit: 5,
   });
   // Re-check in JS so a mocked/loose `where` can never widen the match.
@@ -237,7 +238,7 @@ export async function dispatchCommandCriterionTask(opts: {
   const { missionId, criterionIndex, command } = opts;
 
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, missionId),
+    where: sqlWhere(eq(missions.id, missionId)),
     // `integrationBranchEnabled` is load-bearing here, not decorative: the
     // column list is explicit, so omitting it would read `undefined` and
     // quietly send every mission's verify task at a branch that may not exist.
@@ -252,7 +253,7 @@ export async function dispatchCommandCriterionTask(opts: {
   }
 
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, mission.workspaceId),
+    where: sqlWhere(eq(workspaces.id, mission.workspaceId)),
   });
   if (!workspace) return { ok: false, reason: 'Command criterion cannot run: workspace not found' };
 
@@ -355,7 +356,7 @@ export async function handleCriteriaVerificationOutcome(
   evidence?: unknown,
 ): Promise<{ applied: boolean; verdict?: 'pass' | 'fail' | 'UNVERIFIED' }> {
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { id: true, status: true, context: true, result: true, missionId: true },
   });
   if (!task) return { applied: false };
@@ -369,7 +370,7 @@ export async function handleCriteriaVerificationOutcome(
   if (!['completed', 'failed', 'cancelled'].includes(task.status)) return { applied: false };
 
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, task.missionId),
+    where: sqlWhere(eq(missions.id, task.missionId)),
     columns: { id: true, workspaceId: true, goalCriteria: true, goalCriteriaState: true },
   });
   const state = (mission?.goalCriteriaState ?? null) as GoalCriteriaState | null;

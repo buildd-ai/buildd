@@ -24,6 +24,7 @@ import { connectorBlockReminderWhere } from './reminder-candidates';
 import { shouldNotifyExpiry } from '@/lib/connector-status';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const maxDuration = 60;
 
@@ -35,7 +36,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
 
   // Find pending tasks that have a connector block notification but no reminder yet.
   const blockedTasks = await db.query.tasks.findMany({
-    where: connectorBlockReminderWhere(),
+    where: sqlWhere(connectorBlockReminderWhere()),
     columns: {
       id: true,
       title: true,
@@ -93,7 +94,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
 
   // ── Pass 2: proactive connector-credential expiry scan ──────────────────────
   const credentials = await db.query.secrets.findMany({
-    where: teamCredentialWhere({ purpose: 'mcp_connector_credential' }),
+    where: sqlWhere(teamCredentialWhere({ purpose: 'mcp_connector_credential' })),
     columns: {
       id: true,
       teamId: true,
@@ -110,7 +111,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
   let expiryAlerted = 0;
   if (due.length > 0) {
     const connectorRows = await db.query.connectors.findMany({
-      where: inArray(connectors.id, due.map(c => c.label as string)),
+      where: sqlWhere(inArray(connectors.id, due.map(c => c.label as string))),
       columns: { id: true, name: true },
     });
     const nameById = new Map(connectorRows.map(c => [c.id, c.name]));

@@ -9,6 +9,7 @@ import { resolveAccountTeamIds } from '@/lib/team-access';
 import { isUuid } from '@/lib/uuid';
 import { requestingPerson } from '@/lib/request-person';
 import { dismissSupersessionSuggestion, recordPrAbandonment, recordPrSupersession } from '@/lib/pr-supersession';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 const ACTIONS = new Set(['confirm', 'dismiss', 'abandon']);
 
@@ -69,7 +70,7 @@ export async function POST(
   try {
     const teamIds = await resolveAccountTeamIds(user, apiAccount);
     const mission = await db.query.missions.findFirst({
-      where: eq(missions.id, id),
+      where: sqlWhere(eq(missions.id, id)),
       columns: { id: true, teamId: true },
     });
     if (!mission || !teamIds.includes(mission.teamId)) {
@@ -77,12 +78,12 @@ export async function POST(
     }
 
     const task = await db.query.tasks.findFirst({
-      where: eq(tasks.id, taskId),
+      where: sqlWhere(eq(tasks.id, taskId)),
       columns: { id: true, missionId: true },
       with: {
         workers: {
           columns: { id: true, prUrl: true, prNumber: true, supersessionScan: true },
-          orderBy: [desc(workers.startedAt)],
+          orderBy: sqlOrderBy([desc(workers.startedAt)]),
           limit: 1,
         },
       },
@@ -104,14 +105,17 @@ export async function POST(
             supersedingRepo: suggestion.repo,
             reason: 'confirmed by user',
             recordedBy,
+            // The person when there is one (their id, never their email), else the API account.
+            caller: { person, account: apiAccount },
+            ...(person ? { actor: `human:${person}` } : {}),
           })
         : await dismissSupersessionSuggestion({ workerId: worker.id, candidatePrUrl: suggestion.prUrl });
-      if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
+      if (!result.ok) return NextResponse.json(('door' in result && result.door?.body) || { error: result.error }, { status: result.status, headers: 'door' in result ? result.door?.headers : undefined });
       return NextResponse.json({ ok: true, action });
     }
 
-    const result = await recordPrAbandonment({ workerId: worker.id, reason, recordedBy, actor: `human:${person}` });
-    if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
+    const result = await recordPrAbandonment({ workerId: worker.id, reason, recordedBy, actor: `human:${person}`, caller: { person, account: apiAccount } });
+    if (!result.ok) return NextResponse.json(result.door?.body ?? { error: result.error }, { status: result.status, headers: result.door?.headers });
     return NextResponse.json({ ok: true, action });
   } catch (error) {
     console.error('Closed PR resolution error:', error);

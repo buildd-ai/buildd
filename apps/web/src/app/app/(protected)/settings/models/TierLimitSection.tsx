@@ -3,10 +3,12 @@
 import Notice from '@/components/ui/Notice';
 
 /**
- * Settings → Model tiers → Maximum allowed. The enforced tier ceilings
+ * Settings › Models › Maximum allowed. The enforced tier ceilings
  * (docs/specs/model-tier-ceilings.md): a team maximum, optional Coding and Chat
- * maximums, workspace and member overrides for admins, and every member's own
- * lower maximum. Everything shown comes from `GET /api/teams/[id]/model-ceilings`
+ * maximums, and workspace and member overrides for admins. A member's own
+ * lower maximum is theirs, so it is on You › Keys (MyMaximumSection), and what
+ * an automatic pick above the maximum does has no control (every team gets
+ * downgrade). Everything shown comes from `GET /api/teams/[id]/model-ceilings`
  * and is refetched after each write: the browser never works out an effective
  * maximum, and a refused write shows the server's message.
  *
@@ -19,7 +21,7 @@ import type { CeilingSurface, CeilingTier, SurfaceCeilings } from '@buildd/share
 import { Select } from '@/components/ui/Select';
 import Chip from '@/components/ui/Chip';
 import {
-  SOURCE_LABEL, SURFACE_TITLE, TIER_LABEL, boundForAll, boundFrom, hasSurfaceCaps, limitOptions, toValue, withCap,
+  SOURCE_LABEL, SURFACE_TITLE, TIER_LABEL, hasSurfaceCaps, limitOptions, toValue, withCap,
   type LimitValue,
 } from '@/lib/tier-limits-view';
 
@@ -51,7 +53,7 @@ const ROW_SELECT = 'w-full sm:w-44 sm:shrink-0';
  * `titleId` names a card title that already says what the main select is: the
  * select is labelled by it and the row carries no second copy of the same words.
  */
-function Limit({ id, label, titleId, caps, onPick, bound, boundBy, disabled, surface }: {
+export function Limit({ id, label, titleId, caps, onPick, bound, boundBy, disabled, surface }: {
   id: string; label?: string; titleId?: string; caps: SurfaceCeilings | undefined; onPick: (key: 'all' | CeilingSurface, v: LimitValue) => void;
   bound?: { all: CeilingTier | null; agent: CeilingTier | null; chat: CeilingTier | null }; boundBy?: string; disabled: boolean; surface?: boolean;
 }) {
@@ -76,7 +78,7 @@ function Limit({ id, label, titleId, caps, onPick, bound, boundBy, disabled, sur
       {pick('all', titleId ? undefined : label)}
       {surface !== false && (
         <>
-          <button type="button" className="self-start text-meta text-text-muted underline-offset-2 hover:underline" aria-expanded={open}
+          <button type="button" className="flex min-h-11 md:min-h-0 items-center self-start text-meta text-text-muted underline-offset-2 hover:underline" aria-expanded={open}
             data-testid={`${id}-advanced`} onClick={() => setOpen(!open)}>
             {open ? 'Hide' : 'Set'} Coding and Chat separately
           </button>
@@ -146,10 +148,7 @@ export default function TierLimitSection({ teamId, isAdmin }: { teamId: string; 
   }
   if (!data) return <section className="mt-6 text-meta text-text-muted" data-testid="tier-limits-loading">Loading maximums…</section>;
 
-  const { policy, me, effective } = data;
-  const otherAgent = boundFrom(effective.agent, 'member_self');
-  const otherChat = boundFrom(effective.chat, 'member_self');
-  const selfBound = { all: boundForAll(otherAgent, otherChat), agent: otherAgent, chat: otherChat };
+  const { policy, effective } = data;
   const anyCap = SURFACES.some((s) => effective[s].max);
   const stateOf = (id: string) => (id === 'agent' ? effective.agent : effective.chat);
 
@@ -180,31 +179,13 @@ export default function TierLimitSection({ teamId, isAdmin }: { teamId: string; 
             </div>
           );
         })}
-        <p className="text-meta text-text-muted">Premium-plus stays opt-in either way. Blocked tiers are refused with a reason, never swapped quietly.</p>
       </div>
-
-      {me && (
-        <div className="card mt-3 px-3 py-3" data-testid="my-limit">
-          <span id="self-title" className="text-meta font-medium text-text-secondary">My maximum</span>
-          <p className="mb-2 text-meta text-text-muted">Optional. You can only go lower than the team{me.admin && Object.keys(me.admin).length ? ' and your admin' : ''}; it never raises anything.</p>
-          <Limit id="self" titleId="self-title" caps={me.self} bound={selfBound} boundBy="the team or workspace"
-            disabled={busy} onPick={(k, v) => void write('/me', { ceilings: withCap(me.self, k, v) })} />
-        </div>
-      )}
-      {!me && <p className="mt-3 text-meta text-text-muted">A personal maximum belongs to a signed-in person; an API key has none.</p>}
 
       {canManage ? (
         <div className="card mt-3 flex flex-col gap-3 px-3 py-3" data-testid="team-limit">
           <span id="team-title" className="text-meta font-medium text-text-secondary">Team maximum</span>
           <Limit id="team" titleId="team-title" caps={policy.team} disabled={busy}
             onPick={(k, v) => void write('', { team: withCap(policy.team, k, v) })} />
-          <div className={ROW} data-limit-row>
-            <span id="over-cap-label" className="text-body text-text-primary">Router picks higher: downgrade or hold?</span>
-            <Select aria-labelledby="over-cap-label" testId="over-cap-auto" className={ROW_SELECT} disabled={busy}
-              options={[{ value: 'downgrade', label: 'Downgrade' }, { value: 'deny', label: 'Hold task' }]}
-              value={policy.overCapAuto} onChange={(v: string) => void write('', { overCapAuto: v })} />
-          </div>
-          <p className="text-meta text-text-muted">Applies to automatic choices only. A task or chat that asks for a blocked tier is always refused.</p>
         </div>
       ) : (
         <p className="mt-3 text-meta text-text-muted" data-testid="team-limit-readonly">
@@ -228,7 +209,6 @@ export default function TierLimitSection({ teamId, isAdmin }: { teamId: string; 
       {canManage && people.length > 0 && (
         <details className="card mt-3 px-3 py-3" data-testid="member-limits">
           <summary className="cursor-pointer text-meta font-medium text-text-secondary">Member maximums ({people.length})</summary>
-          <p className="my-2 text-meta text-text-muted">A member cannot raise what you set here. They may set a lower one of their own.</p>
           <div className="flex flex-col gap-4">
             {people.map((p) => {
               const m = data.members?.[p.userId];
@@ -245,10 +225,6 @@ export default function TierLimitSection({ teamId, isAdmin }: { teamId: string; 
           </div>
         </details>
       )}
-
-      <p className="mt-3 text-meta text-text-muted" data-testid="coding-route-note">
-        A maximum applies to both API and runner sign-in. Set the route under Providers.
-      </p>
 
       {(msg || loadError) && (
         <span role={msg?.tone === 'err' || loadError ? 'alert' : 'status'} className={`mt-1 block text-meta ${msg?.tone === 'ok' ? 'text-status-success' : 'text-status-error'}`}>

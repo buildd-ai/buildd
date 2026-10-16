@@ -5,7 +5,7 @@
  * reviewed on its own; anything the check cannot see fails closed.
  */
 import { describe, expect, test } from 'bun:test';
-import { buildCompositionAttestation, classifyRefreshMerge, renumberedMigrations, collectComposition, isCompositionPr, isReleaseArtifactCommit, patchIdOf, type CompositionInput, type ConstituentDelivery, type FileDiff, type RefreshMergeTrees } from './review-composition';
+import { buildCompositionAttestation, classifyRefreshMerge, renumberedMigrations, collectComposition, compositionConstituentBase, isCompositionPr, isReleaseArtifactCommit, patchIdOf, type CompositionInput, type ConstituentDelivery, type FileDiff, type RefreshMergeTrees } from './review-composition';
 import { headCoverage, reduce } from './reducer';
 import type { DeliverySnapshot, KernelView, RoundSnapshot } from './types';
 
@@ -258,6 +258,109 @@ describe('collectComposition (GitHub + ledger read)', () => {
     };
     const b = await collectComposition({ api, exec: async () => ({ rows: [] }), installationId: 1, workspaceId: 'w1', repoFullName: REPO, prNumber: 50, baseRef: 'dev', headRef: 'mission/x', aggregateHeadSha: 'AGG' });
     expect(b.attestation.novelDelta.result).toBe('unverifiable');
+  });
+});
+
+// ── A frozen release candidate: release/vX.Y.Z → main, cut from dev ──────────
+
+const CANDIDATE_CONFIG = {
+  enabled: true, strategy: 'workflow_dispatch', workflowFile: 'release.yml', ref: 'dev', prodBranch: 'main',
+  candidate: { branches: ['release/v*'], sourceBranch: 'dev', authors: ['github-actions[bot]'] },
+} as const;
+const candidateBody = (o: Record<string, unknown> = {}) => `Release v1.2.3\n<!-- release-candidate ${JSON.stringify({
+  schema: 1, version: '1.2.3', branch: 'release/v1.2.3', sourceRef: 'dev', sourceSha: 'S1', candidateSha: 'AGG',
+  baseRef: 'main', baseSha: 'B0', previousTag: 'v1.2.2', bump: 'patch', amendment: 0, previousCandidateSha: null, supersedes: null, cutAt: '2026-10-07T00:00:00Z', ...o,
+})} -->`;
+const candidateRefs = (pr: Record<string, unknown> = {}) => ({
+  headRef: 'release/v1.2.3', baseRef: 'main', releaseConfig: CANDIDATE_CONFIG as never,
+  pr: { headSha: 'AGG', author: 'github-actions[bot]', headRepoFullName: REPO, baseRepoFullName: REPO, body: candidateBody(), ...pr },
+});
+
+describe('isCompositionPr: a frozen release candidate', () => {
+  test('a trusted release/v1.2.3 → main candidate is composed from PRs into its source branch', () => {
+    expect(isCompositionPr(candidateRefs())).toBe(true);
+    expect(compositionConstituentBase(candidateRefs())).toBe('dev');
+  });
+  test('the old dev → main release PR still composes from PRs into dev', () => {
+    expect(compositionConstituentBase({ headRef: 'dev', baseRef: 'main', releaseConfig: { enabled: true, releaseBranch: 'dev', prodBranch: 'main' } as never })).toBe('dev');
+  });
+  test('a spoofed candidate (wrong author, fork, no metadata) reviews in full', () => {
+    expect(isCompositionPr(candidateRefs({ author: 'mallory' }))).toBe(false);
+    expect(isCompositionPr(candidateRefs({ headRepoFullName: 'mallory/widgets' }))).toBe(false);
+    expect(isCompositionPr(candidateRefs({ body: 'Release v1.2.3' }))).toBe(false);
+    expect(isCompositionPr({ headRef: 'release/v1.2.3', baseRef: 'main', releaseConfig: CANDIDATE_CONFIG as never })).toBe(false);
+  });
+  test('a candidate whose head moved off the recorded SHA (a push that was not an amendment) reviews in full', () => {
+    expect(isCompositionPr(candidateRefs({ headSha: 'PUSHED' }))).toBe(false);
+  });
+  test('without a candidate policy, a release/v* branch into main is ordinary', () => {
+    expect(isCompositionPr({ ...candidateRefs(), releaseConfig: { enabled: true, strategy: 'workflow_dispatch', ref: 'dev', prodBranch: 'main' } as never })).toBe(false);
+  });
+});
+
+describe('collectComposition: a frozen release candidate', () => {
+  // main...AGG: S1 (squash of PR #11 into dev), then the candidate's one release-only commit.
+  const api = (extra: (path: string) => unknown = () => undefined) => async (_i: number, path: string): Promise<unknown> => {
+    const hit = extra(path);
+    if (hit !== undefined) return hit;
+    if (path.startsWith(`/repos/${REPO}/compare/main...AGG`)) return {
+      merge_base_commit: { sha: 'B0' }, base_commit: { sha: 'B9' }, total_commits: 2,
+      commits: [{ sha: 'S1', parents: [{ sha: 'B0' }], commit: { message: 'feat: one (#11)' } }, { sha: 'V1', parents: [{ sha: 'S1' }], commit: { message: 'chore: bump version to v1.2.3' } }],
+      files: [{ filename: 'a.ts' }, { filename: 'package.json' }, { filename: 'CHANGELOG.md' }],
+    };
+    if (path === `/repos/${REPO}/commits/S1`) return { files: [{ filename: 'a.ts', status: 'modified', patch: '@@ -1 +1 @@\n-x\n+reviewed' }] };
+    if (path === `/repos/${REPO}/commits/V1`) return { files: [{ filename: 'package.json', status: 'modified', patch: '@@ -1 +1 @@\n-1.2.2\n+1.2.3' }, { filename: 'CHANGELOG.md', status: 'modified', patch: '@@ -1 +1 @@\n+## [1.2.3]' }] };
+    // PR #11 merged into dev, the candidate's source; the candidate branch itself never had a PR.
+    if (path === `/repos/${REPO}/commits/S1/pulls`) return [{ number: 11, merged_at: '2026-10-06T00:00:00Z', base: { ref: 'dev' }, head: { sha: 'P11' } }];
+    if (path === `/repos/${REPO}/commits/V1/pulls`) return [];
+    if (path === `/repos/${REPO}/compare/B0...P11`) return { files: [{ filename: 'a.ts', status: 'modified', patch: '@@ -3 +3 @@\n-x\n+reviewed' }] };
+    throw new Error(`unexpected ${path}`);
+  };
+  const ledger = async () => ({ rows: [{ id: 'd-11', pr_number: 11, approved_heads: ['P11'], rounds: [{ id: 'r-11', head_sha: 'P11', status: 'decided', effective_verdict: 'approve' }] }] });
+  const collect = (a: ReturnType<typeof api>, constituentBase: string | null = 'dev') => collectComposition({
+    api: a, exec: ledger, installationId: 1, workspaceId: 'w1', repoFullName: REPO, prNumber: 50, baseRef: 'main', headRef: 'release/v1.2.3', aggregateHeadSha: 'AGG', constituentBase,
+  });
+
+  test('every component reviewed and unchanged + the version commit: covered by composition, no aggregate review', async () => {
+    const b = await collect(api());
+    expect(b.attestation.novelDelta).toEqual({ result: 'none' });
+    expect(b.attestation.baseSha).toBe('B0');
+    expect(b.attestation.constituents.map((c) => [c.prNumber, c.reviewedHeadSha, c.landedSha])).toEqual([[11, 'P11', 'S1']]);
+    expect(run(b).result).toBe('apply');
+  });
+
+  test('regression: looking for constituents on the candidate branch finds none and claims nothing', async () => {
+    // What this did before: constituents were looked up on the head (release/v1.2.3).
+    const b = await collect(api(), null);
+    expect(b.attestation.novelDelta).toEqual({ result: 'unverifiable', reason: 'no_reviewed_constituents' });
+  });
+
+  test('a release-only change beyond the version bump is a novel delta, reviewed on its own', async () => {
+    const b = await collect(api((path) => path === `/repos/${REPO}/commits/V1`
+      ? { files: [{ filename: 'package.json', status: 'modified', patch: '@@ -1 +1 @@\n-1.2.2\n+1.2.3' }, { filename: 'apps/web/src/auth.ts', status: 'modified', patch: '@@ -1 +1 @@\n+bypass' }] }
+      : path.startsWith(`/repos/${REPO}/compare/main...AGG`)
+        ? {
+          merge_base_commit: { sha: 'B0' }, base_commit: { sha: 'B9' }, total_commits: 2,
+          commits: [{ sha: 'S1', parents: [{ sha: 'B0' }], commit: { message: 'feat: one (#11)' } }, { sha: 'V1', parents: [{ sha: 'S1' }], commit: { message: 'chore: bump version to v1.2.3' } }],
+          files: [{ filename: 'a.ts' }, { filename: 'package.json' }, { filename: 'apps/web/src/auth.ts' }],
+        }
+        : undefined));
+    expect(b.attestation.novelDelta).toEqual({ result: 'present', paths: ['apps/web/src/auth.ts', 'package.json'] });
+  });
+
+  test('a constituent that was never approved on dev is a novel delta', async () => {
+    const unapproved = async () => ({ rows: [{ id: 'd-11', pr_number: 11, approved_heads: [], rounds: [{ id: 'r-11', head_sha: 'P11', status: 'decided', effective_verdict: 'request-changes' }] }] });
+    const b = await collectComposition({
+      api: api(), exec: unapproved, installationId: 1, workspaceId: 'w1', repoFullName: REPO, prNumber: 50, baseRef: 'main', headRef: 'release/v1.2.3', aggregateHeadSha: 'AGG', constituentBase: 'dev',
+    });
+    expect(b.attestation.novelDelta.result).not.toBe('none');
+    expect(b.novelCommits.map((n) => n.reason)).toEqual(['pr_11_not_approved_at_merged_head']);
+  });
+
+  test('an attestation for an amended candidate SHA does not cover the old one, and vice versa', async () => {
+    const b = await collect(api());
+    // The PR head moved to the amendment: the attestation for AGG is stale.
+    expect(run(b, { delivery: D({ currentHeadSha: 'AMENDED' }), rounds: [R({ headSha: 'AMENDED' })], attempts: [] }).result).toBe('stale');
   });
 });
 

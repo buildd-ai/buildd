@@ -41,7 +41,7 @@ export default function ReassignButton({
   if (showConfirm) {
     return (
       <div className="flex flex-col gap-2 items-start">
-        <span className="text-sm text-text-secondary">{isFailed ? 'Retry this task' : 'Reset to pending'}{currentBackend ? ` on ${cap(currentBackend)}?` : '?'}</span>
+        <span className="text-sm text-text-secondary">{isFailed ? 'Retry this task' : 'Put back in the queue'}{currentBackend ? ` on ${cap(currentBackend)}?` : '?'}</span>
         <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={() => handleReassign('same')}

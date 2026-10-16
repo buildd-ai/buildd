@@ -33,6 +33,7 @@ import { getSecretsProvider } from '@buildd/core/secrets';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { loadBlockedCatalogs, connectorBlock } from '@/lib/connector-access-policy';
 import { lazyRequester, pickVisibleRoleRowLazy, ROLE_VISIBILITY_COLUMNS } from '@buildd/core/role-visibility';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** One connector that failed availability, with the first taxonomy mode that matched. */
 export type ConnectorFailure = { connectorId: string; connectorName: string; mode: string };
@@ -83,7 +84,7 @@ export async function runConnectorPreFilter(
     // Batch-fetch role rows for all relevant (teamId, roleSlug) combos —
     // personal rows included; each task's winner is picked below by who it is for.
     const preFilterRoleRows = await db.query.workspaceSkills.findMany({
-      where: and(
+      where: sqlWhere(and(
         inArray(workspaceSkills.slug, slugsToFetch),
         eq(workspaceSkills.isRole, true),
         eq(workspaceSkills.enabled, true),
@@ -92,7 +93,7 @@ export async function runConnectorPreFilter(
           isNull(workspaceSkills.workspaceId),
           inArray(workspaceSkills.workspaceId, wsIdsToFetch),
         ),
-      ),
+      )),
       columns: { ...ROLE_VISIBILITY_COLUMNS, connectorRefs: true },
     });
 
@@ -124,7 +125,7 @@ export async function runConnectorPreFilter(
       // Batch-fetch connector metadata — include authMode/transport/url for
       // expired_or_revoked and transient classification.
       const preFilterConnectors = await db.query.connectors.findMany({
-        where: inArray(connectors.id, refIdList),
+        where: sqlWhere(inArray(connectors.id, refIdList)),
         columns: { id: true, teamId: true, name: true, authMode: true, transport: true, url: true, envMapping: true },
       });
       const connectorById = new Map(preFilterConnectors.map(c => [c.id, c]));
@@ -139,10 +140,10 @@ export async function runConnectorPreFilter(
       // Batch-fetch cross-team share grants so shared connectors are treated
       // as visible even when teamId differs.
       const preFilterShares = await db.query.connectorShares.findMany({
-        where: and(
+        where: sqlWhere(and(
           inArray(connectorShares.sharedWithTeamId, teamIdsToFetch),
           inArray(connectorShares.connectorId, refIdList),
-        ),
+        )),
         columns: { connectorId: true, sharedWithTeamId: true },
       });
       const sharedByTeam = new Map<string, Set<string>>();
@@ -154,10 +155,10 @@ export async function runConnectorPreFilter(
       // Batch-fetch connector-workspace enabled rows. An absent row means the
       // connector is enabled by default (same semantics as the injection block).
       const preFilterCwRows = await db.query.connectorWorkspaces.findMany({
-        where: and(
+        where: sqlWhere(and(
           inArray(connectorWorkspaces.workspaceId, wsIdsToFetch),
           inArray(connectorWorkspaces.connectorId, refIdList),
-        ),
+        )),
         columns: { connectorId: true, workspaceId: true, enabled: true },
       });
       const cwEnabled = new Map<string, boolean>();
@@ -179,7 +180,7 @@ export async function runConnectorPreFilter(
         if (authConnectors.length > 0) {
           const ownerTeamIds = [...new Set(authConnectors.map(c => c.teamId))];
           const credSecretRows = await db.query.secrets.findMany({
-            where: teamCredentialWhere({ teamId: ownerTeamIds, purpose: 'mcp_connector_credential', label: authConnectors.map(c => c.id) }),
+            where: sqlWhere(teamCredentialWhere({ teamId: ownerTeamIds, purpose: 'mcp_connector_credential', label: authConnectors.map(c => c.id) })),
             columns: { id: true, label: true, tokenExpiresAt: true, lastRefreshedAt: true },
           });
           const secretByConnId = new Map(
@@ -222,7 +223,7 @@ export async function runConnectorPreFilter(
           ];
           if (envLabels.length > 0) {
             const envSecretRows = await db.query.secrets.findMany({
-              where: teamCredentialWhere({ teamId: ownerTeamIds, purpose: 'mcp_credential', label: envLabels }),
+              where: sqlWhere(teamCredentialWhere({ teamId: ownerTeamIds, purpose: 'mcp_credential', label: envLabels })),
               columns: { id: true, label: true, teamId: true },
             });
             const envSecretByTeamLabel = new Map(

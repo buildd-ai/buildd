@@ -48,7 +48,7 @@ describe('ask_human', () => {
       ctx(),
     );
 
-    expect(mockApi).toHaveBeenCalledTimes(2);
+    expect(mockApi).toHaveBeenCalledTimes(3);
     expect(mockApi.mock.calls[0][0]).toBe(`/api/workers/${WORKER_ID}`);
     const [endpoint, init] = mockApi.mock.calls[1];
     expect(endpoint).toBe(`/api/workers/${WORKER_ID}`);
@@ -70,6 +70,42 @@ describe('ask_human', () => {
     expect(Number.isNaN(Date.parse(out.askedAt))).toBe(false);
     expect(out.hint).toContain('await_answer');
     expect(out.hint).toContain('receive_messages');
+  });
+
+  // Waiting costs nothing: the reply hands back a plain shell command the
+  // session runs in the background; it exits when the person answers.
+  it('hands back the wait command minted for this question', async () => {
+    const waitCommand = "sh -c 'echo wait' buildd-wait 'https://buildd.dev/api/workers/x/answer/wait' 'bldw_p.m' 1760000000";
+    mockApi
+      .mockResolvedValueOnce({ id: WORKER_ID, runner: 'mcp', status: 'running' })
+      .mockResolvedValueOnce({ id: WORKER_ID, status: 'waiting_input' })
+      .mockResolvedValueOnce({ capability: 'bldw_p.m', waitUrl: 'https://buildd.dev/api/workers/x/answer/wait', waitCommand, expiresAt: '2026-10-12T10:00:00.000Z' });
+
+    const result = await handleBuilddAction(mockApi as unknown as ApiFn, 'ask_human', { question: 'Which base?' }, ctx());
+
+    const [endpoint, init] = mockApi.mock.calls[2];
+    expect(endpoint).toBe(`/api/workers/${WORKER_ID}/answer/capability`);
+    expect(init.method).toBe('POST');
+    const out = JSON.parse(result.content[0].text);
+    expect(out.waitCommand).toBe(waitCommand);
+    expect(out.waitExpiresAt).toBe('2026-10-12T10:00:00.000Z');
+    expect(out.hint).toContain('run_in_background');
+    expect(out.hint).toContain('waitSeconds');
+    // The session's own token never reaches the command.
+    expect(out.waitCommand).not.toMatch(/\bbld[tp]?_/);
+  });
+
+  it('still parks, and falls back to await_answer, when no wait command can be minted', async () => {
+    mockApi
+      .mockResolvedValueOnce({ id: WORKER_ID, runner: 'mcp', status: 'running' })
+      .mockResolvedValueOnce({ id: WORKER_ID, status: 'waiting_input' })
+      .mockRejectedValueOnce(new Error('API error: 503 - wait_capability_unavailable'));
+    const result = await handleBuilddAction(mockApi as unknown as ApiFn, 'ask_human', { question: 'Which base?' }, ctx());
+    expect(result.isError).toBeFalsy();
+    const out = JSON.parse(result.content[0].text);
+    expect(out.waiting).toBe(true);
+    expect(out.waitCommand).toBeUndefined();
+    expect(out.hint).toContain('await_answer');
   });
 
   it('omits options and context when not given', async () => {

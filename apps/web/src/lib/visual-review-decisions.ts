@@ -60,6 +60,7 @@ import { applyTaskCancelSideEffects, applyTaskReopenSideEffects } from '@/lib/ta
 import { postMissionFeedEvent } from '@/lib/mission-feed';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { decisionOutcome, planShotReviewEffect, type ShotReviewIntent } from '@/lib/visual-review-outcome';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // ── The effect table (pure, in visual-review-outcome.ts) ────────────────────
 
@@ -319,7 +320,7 @@ type WorkspaceRow = {
 };
 
 async function loadWorkspace(workspaceId: string): Promise<WorkspaceRow | null> {
-  const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId) });
+  const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, workspaceId)) });
   return (ws as WorkspaceRow | undefined) ?? null;
 }
 
@@ -343,7 +344,7 @@ async function fileHumanSurfaceFix(opts: {
   const title = humanFixTitle(group.route, note, shots[0]?.cell.current.finding);
 
   const builders = await db.query.tasks.findMany({
-    where: and(eq(tasks.missionId, mission.id), eq(tasks.taskClass, 'work')),
+    where: sqlWhere(and(eq(tasks.missionId, mission.id), eq(tasks.taskClass, 'work'))),
     columns: { id: true, title: true, taskClass: true, roleSlug: true, pathManifest: true },
   }) as Array<{ id: string; title: string; roleSlug: string | null; pathManifest: string[] | null }>;
   const files = [...new Set(builders
@@ -741,7 +742,7 @@ export async function undoDecision(input: {
 }): Promise<DecisionOutcome<VisualReviewUndoResponse>> {
   const { mission, reviewer, reviewId } = input;
   const review = await db.query.visualShotReviews.findFirst({
-    where: and(eq(visualShotReviews.id, reviewId), eq(visualShotReviews.missionId, mission.id), isNull(visualShotReviews.supersededAt)),
+    where: sqlWhere(and(eq(visualShotReviews.id, reviewId), eq(visualShotReviews.missionId, mission.id), isNull(visualShotReviews.supersededAt))),
   }) as StoredReview | undefined | null;
   if (!review) return { status: 404, body: { error: 'Review not found' } };
 
@@ -802,7 +803,7 @@ export async function undoDecision(input: {
   }
 
   const reFetchStatus = async (id: string) => {
-    const t = await db.query.tasks.findFirst({ where: and(eq(tasks.id, id), eq(tasks.missionId, mission.id)), columns: { id: true, status: true } });
+    const t = await db.query.tasks.findFirst({ where: sqlWhere(and(eq(tasks.id, id), eq(tasks.missionId, mission.id))), columns: { id: true, status: true } });
     return (t as { status?: string } | undefined)?.status ?? null;
   };
 
@@ -833,7 +834,7 @@ export async function undoDecision(input: {
     // Pending again: the trigger made the wake durable; this labels and kicks it.
     await wakeTask(f.fixTaskId, 'task.requeued');
     const fix = await db.query.tasks.findFirst({
-      where: eq(tasks.id, f.fixTaskId),
+      where: sqlWhere(eq(tasks.id, f.fixTaskId)),
       columns: { id: true, title: true, workspaceId: true, taskClass: true, pathManifest: true },
     }) as { id: string; title: string; workspaceId: string; taskClass: string | null; pathManifest: string[] | null } | undefined;
     const wsId = fix?.workspaceId ?? review.workspaceId;

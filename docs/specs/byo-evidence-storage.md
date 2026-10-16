@@ -2,7 +2,7 @@
 title: BYO Evidence Storage
 status: active
 owner: max
-last_verified: 2026-10-06
+last_verified: 2026-10-15
 summary: Buildd MUST write each task's run evidence to a team-configured S3-compatible bucket, keep only pointers in Postgres, and index the error-bearing parts into a searchable `evidence` corpus read through the reach guard.
 domain: knowledge
 surfaces: [apps/web/src/lib/evidence-backend.ts, apps/runner/src/evidence-writer.ts, apps/web/src/app/api/workers/[id]/evidence-upload-url/route.ts, apps/web/src/lib/evidence-read.ts]
@@ -80,7 +80,9 @@ anonymous GitHub API calls were rate-limited.
   (`confirmEvidenceUpload`, `apps/web/src/lib/evidence-confirm.ts`).
 - **CI job logs**: `captureCiJobLogEvidence` in
   `apps/web/src/lib/ci-job-log-evidence.ts`, called from
-  `apps/web/src/lib/ci-failure-retry.ts`.
+  `apps/web/src/lib/ci-failure-retry.ts` (legacy CI retries) and, for a
+  kernel-owned PR, from the workflow kernel's `capture_ci_evidence` effect
+  (`ciEvidence`, `apps/web/src/lib/workflow/ci-retry-effects.ts`).
 - **Read paths**: `GET /api/tasks/:id/evidence`, `GET /api/evidence`,
   `GET /api/evidence/download`, MCP `read_evidence`, the chat registry entry,
   and the inline object list on `get_task`, `get_pr` and `explain`

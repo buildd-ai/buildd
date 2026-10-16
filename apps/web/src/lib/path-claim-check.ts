@@ -31,6 +31,7 @@ import { PATH_SIGNAL_REASONS } from '@buildd/core/path-coordination-signal';
 import { GATE_SLUGS, fireGateEvent, type GateCallerOrigin } from '@/lib/gate-ledger';
 import { recordPathDeclaration } from '@/lib/path-declaration-ledger';
 import { deliverPathReleased } from '@/lib/path-claim-release';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const PATH_CLAIM_WILDCARD_ERROR =
   'Wildcard claims are not supported. Declare specific paths. Use maxConcurrentTasks=1 at the mission level to serialize broad tasks.';
@@ -90,7 +91,7 @@ export async function checkPathClaim(input: PathClaimCheckInput): Promise<PathCl
   const paths = input.paths;
 
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { id: true, workspaceId: true, missionId: true, pathManifest: true, status: true },
   });
 
@@ -132,7 +133,7 @@ export async function checkPathClaim(input: PathClaimCheckInput): Promise<PathCl
   if (acquired.kind === 'conflict') {
     const { conflict } = acquired;
     const blocker = await db.query.tasks.findFirst({
-      where: eq(tasks.id, conflict.blockingTaskId),
+      where: sqlWhere(eq(tasks.id, conflict.blockingTaskId)),
       columns: { id: true, title: true, missionId: true },
     });
 
@@ -284,7 +285,7 @@ export async function narrowPathClaim(input: PathClaimNarrowInput): Promise<Path
   const reason = typeof input.reason === 'string' && input.reason.trim() ? input.reason.trim().slice(0, 500) : null;
 
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { id: true, workspaceId: true, missionId: true, status: true },
   });
   if (!task) return { kind: 'not_found' };

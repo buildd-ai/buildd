@@ -10,12 +10,19 @@ import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type { VisualReviewModel } from '@buildd/shared';
 import Link from 'next/link';
-import LiveWorkerActivity from './LiveWorkerActivity';
-import { StatusPill } from '@/components/ui/StatePill';
-import PrCard from '@/components/task/PrCard';
+import RealTimeWorkerView from '@/app/app/(protected)/tasks/[id]/RealTimeWorkerView';
+import WorkerSteerPanel from '@/app/app/(protected)/tasks/[id]/WorkerSteerPanel';
+import TaskAccessSection from '@/app/app/(protected)/tasks/[id]/TaskAccessSection';
+import TaskChecksSection from '@/components/task/TaskChecksSection';
+import TaskDeliverables, { type TaskDeliverablesResult } from '@/components/task/TaskDeliverables';
+import type { LiveWorkerViewProps, WorkerSteerProps } from '@/lib/task-live-view';
+import type { TaskChecksSection as TaskChecksSectionData } from '@/lib/task-sections';
+import type { AccessItem } from '@/lib/agent-capabilities/access-log';
+import type { DeliveryPillState } from '@/app/app/(protected)/tasks/[id]/TaskSidePanel';
+import { StoredPrCard } from '@/components/task/StoredPrCard';
 import type { PrDisplayState } from '@/lib/pr-presentation';
-import WorkerStats from '@/components/task/WorkerStats';
-import TaskSummary from '@/components/task/TaskSummary';
+import type { TaskPrFacts } from '@/lib/task-sections';
+import { HeaderStatusPill, FactSheet, runnerFactRow, branchFactRow } from '@/app/app/(protected)/tasks/[id]/TaskSidePanel';
 import AiFeedback from '@/components/AiFeedback';
 import { deriveDisplayStatus } from '@/lib/task-presentation';
 import { taskActionPhase } from '@/lib/task-actions';
@@ -24,8 +31,10 @@ import { taskPageHref } from '@/lib/mission-task-href';
 import { CHANNEL_PREFIX, getPusherClient, subscribeToChannel, unsubscribeFromChannel } from '@/lib/pusher-client';
 import { subscribeCatchUp } from '@/lib/app-freshness';
 import TaskActionZone from './TaskActionZone';
+import CollapsibleDescription from '@/app/app/(protected)/tasks/[id]/CollapsibleDescription';
 import type { EntitlementBlock } from '@buildd/shared';
 import type { WaitingFor } from '@buildd/shared';
+import type { QuestionNoteLike } from '@/app/app/(protected)/tasks/[id]/question-hero';
 
 export interface TaskPanelData {
   id: string;
@@ -67,13 +76,21 @@ export interface TaskPanelData {
     completedAt: string | null;
     waitingFor: WaitingFor | null;
     branch: string | null;
+    /** The runner's name (runner-display), as the page's fact sheet shows it. Absent from older responses. */
+    runner?: string | null;
     milestones: Array<{ type: string; label: string; ts: number; [k: string]: unknown }> | null;
     account: { authType: string } | null;
   } | null;
   result: {
     summary: string | null;
     nextSuggestion: string | null;
+    /** `isFallbackSummary`: the summary is the worker's last message. Absent from older responses. */
+    fallback?: boolean;
   } | null;
+  /** The PR card's facts, decided by `taskPrFacts` from the PR worker. Absent from older responses. */
+  pr?: TaskPrFacts | null;
+  /** `taskHeaderMerged`: the header reads Merged. Absent from older responses. */
+  merged?: boolean;
   lastError: { excerpt: string; pattern: string | null; ts: string } | null;
   blockedByCount: number;
   /** `classifyTaskFailure`: null unless the task failed. */
@@ -88,6 +105,23 @@ export interface TaskPanelData {
   } | null;
   /** A visual-audit task: its round and the mission's review model (the sheet's Tray). */
   visual?: { round: number; model: VisualReviewModel } | null;
+  /**
+   * The open question note recording the waiting worker's ask (the post_note
+   * path), as the task page links it. Absent from older responses.
+   */
+  questionNote?: QuestionNoteLike | null;
+  /** The delivery's reading for the header pill (taskDeliverySections). Absent from older responses. */
+  delivery?: DeliveryPillState | null;
+  /** The page's checks list (taskDeliverySections). Absent from older responses. */
+  checks?: TaskChecksSectionData | null;
+  /** The page's live run view (liveWorkerViewProps), for a live worker. Absent from older responses. */
+  live?: LiveWorkerViewProps | null;
+  /** The page's steer panel for that worker (workerSteerProps). Absent from older responses. */
+  steer?: WorkerSteerProps | null;
+  /** The result's Deliverables block. Absent from older responses. */
+  deliverables?: TaskDeliverablesResult | null;
+  /** What the task's runs were given and refused (loadTaskAccess). Absent from older responses. */
+  access?: AccessItem[];
 }
 
 /** Records and Origin: what the task produced and where it came from (W4, U6). */
@@ -272,8 +306,7 @@ export default function TaskPanelBody({ data, workspaceId, onChanged }: TaskPane
     blockedByCount: data.blockedByCount,
   });
   const displayStatus = deriveDisplayStatus(data.status, w?.status);
-  const isRunning = phase === 'running';
-  const hasPr = !!w?.prUrl;
+  const facts = [...runnerFactRow(w?.runner), ...branchFactRow(w?.branch)];
 
   return (
     <div className="space-y-4">
@@ -282,7 +315,7 @@ export default function TaskPanelBody({ data, workspaceId, onChanged }: TaskPane
       <div>
         <div className="flex flex-wrap items-center gap-2">
           <span data-testid="task-header-status" data-status={displayStatus}>
-            <StatusPill status={displayStatus} />
+            <HeaderStatusPill status={displayStatus} merged={!!data.merged} delivery={data.delivery ?? null} />
           </span>
           {data.backend && (
             <span
@@ -323,7 +356,8 @@ export default function TaskPanelBody({ data, workspaceId, onChanged }: TaskPane
         lastError={data.lastError}
         failureKind={data.failureKind ?? null}
         auditTaskId={data.failureKind === 'verification' && isSurfaceAuditTask(data.title) ? data.id : null}
-        worker={w ? { id: w.id, waitingFor: w.waitingFor } : null}
+        // The live run view asks a live worker's question, as on the page.
+        worker={w && !data.live ? { id: w.id, waitingFor: w.waitingFor, questionNote: data.questionNote ?? null } : null}
         historyHref={taskPageHref({ taskId: data.id, missionId: data.missionId })}
         roleSlug={data.roleSlug}
         missionExecutor={data.missionExecutor ?? null}
@@ -332,57 +366,39 @@ export default function TaskPanelBody({ data, workspaceId, onChanged }: TaskPane
         onChanged={onChanged}
       />
 
-      {/* Live worker → first-class view: watch what it's doing, steer or stop it */}
-      {isRunning && w && (
-        <LiveWorkerActivity
-          workerId={w.id}
-          currentAction={w.currentAction}
-          turns={w.turns}
-          costUsd={w.costUsd}
-          inputTokens={w.inputTokens}
-          outputTokens={w.outputTokens}
-          costBasis={w.costBasis ?? null}
-          milestones={(w.milestones ?? []) as never}
-          onWorkerEvent={onChanged}
-        />
-      )}
+      {/* Checks on the delivery's current head: the page's list */}
+      {data.checks && <TaskChecksSection section={data.checks} currentTaskId={data.id} />}
 
-      {/* PR → review CI state + merge (in GitHub) without leaving to find it */}
-      {hasPr && w && (
-        <PrCard
-          prUrl={w.prUrl!}
-          prNumber={w.prNumber}
-          prLifecycleStatus={w.prLifecycleStatus}
-          prState={w.prState ?? null}
-          linesAdded={w.linesAdded}
-          linesRemoved={w.linesRemoved}
-          filesChanged={w.filesChanged}
-        />
-      )}
+      {/* A live worker: the page's live run view, then its steer panel */}
+      {data.live && <RealTimeWorkerView {...data.live} refresh={onChanged} />}
+      {data.steer && <WorkerSteerPanel {...data.steer} />}
+
+      {/* PR → the task page's stored PR card, its facts decided by taskPrFacts */}
+      {data.pr && <StoredPrCard {...data.pr} />}
 
       {/* ── Details ── */}
+      {/* The task page's own description: markdown, clamped with Show more. */}
       {data.description && (
-        <p className="line-clamp-4 text-[13px] leading-relaxed text-text-secondary">{data.description}</p>
+        <div data-testid="task-sheet-description">
+          <CollapsibleDescription content={data.description} />
+        </div>
       )}
 
-      {/* Worker stats — the run's shape once it's not live (live view owns these) */}
-      {w && !isRunning && (
-        <WorkerStats
-          turns={w.turns}
-          commitCount={w.commitCount}
-          costUsd={w.costUsd}
-          inputTokens={w.inputTokens}
-          outputTokens={w.outputTokens}
-          costBasis={w.costBasis ?? null}
-          branch={w.branch}
-        />
-      )}
+      {/* The page's fact sheet: where the run happened */}
+      <FactSheet rows={facts} />
 
-      {data.result?.summary && (
-        <TaskSummary summary={data.result.summary} entityId={`task-${data.id}-summary`} label="Summary" />
-      )}
+      {/* The page's Deliverables block. The sheet's PR card shows the diff,
+          not the summary, so the summary stays here. */}
+      <TaskDeliverables
+        taskId={data.id}
+        result={data.deliverables ?? (data.result?.summary ? { summary: data.result.summary, summarySource: data.result.fallback ? 'fallback' : undefined } : null)}
+        prCard={!!data.pr}
+        baseUrl={process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}
+      />
 
       <TaskProvenance records={data.records} origin={data.origin} />
+
+      <TaskAccessSection items={data.access ?? []} />
 
       {data.result?.nextSuggestion && (
         <div className="flex items-start gap-2">

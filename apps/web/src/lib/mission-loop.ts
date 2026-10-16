@@ -12,6 +12,7 @@ import type { CycleContext, RunMissionOptions, RunMissionResult } from '@/lib/mi
 import type { MissionWakeReason } from '@/lib/mission-wake';
 import { evaluateHeartbeatPrepass, type HeartbeatPrepassDecision } from '@/lib/heartbeat-prepass';
 import { recordHeartbeatWaitNote, resolveHeartbeatWaitNote } from '@/lib/heartbeat-wait-note';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Max planning cycles within a single trigger chain before stopping */
 const MAX_CYCLES_PER_CHAIN = 5;
@@ -81,7 +82,7 @@ export async function maybeRetriggerMission(
   const wakeReason = opts?.wakeReason;
   // 1. Mission status check
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, missionId),
+    where: sqlWhere(eq(missions.id, missionId)),
     // goalCriteria/goalCriteriaState are deliberately absent: the completion
     // predicate reads them itself, so this function cannot decide on a stale copy.
     columns: { id: true, status: true, scheduleId: true, updatedAt: true, dependsOnMissionId: true, gateCondition: true, dependencyMetAt: true, orchestrationMode: true },
@@ -112,7 +113,7 @@ export async function maybeRetriggerMission(
   let isHeartbeat = false;
   if (mission.scheduleId) {
     const schedule = await db.query.taskSchedules.findFirst({
-      where: eq(taskSchedules.id, mission.scheduleId),
+      where: sqlWhere(eq(taskSchedules.id, mission.scheduleId)),
       columns: { taskTemplate: true },
     });
     const ctx = (schedule?.taskTemplate as any)?.context as Record<string, unknown> | undefined;
@@ -123,7 +124,7 @@ export async function maybeRetriggerMission(
   // none and starts a fresh chain at cycle 1.
   const planningTask = completedPlanningTaskId && !wakeReason
     ? await db.query.tasks.findFirst({
-        where: eq(tasks.id, completedPlanningTaskId),
+        where: sqlWhere(eq(tasks.id, completedPlanningTaskId)),
         columns: { context: true, result: true, taskClass: true },
       })
     : null;
@@ -359,12 +360,12 @@ export async function maybeRetriggerMission(
   //    look. It cannot loop: the cycle it starts completes through the normal
   //    path, where this guard applies again.
   const recentPlanningTasks = wakeReason ? [] : await db.query.tasks.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.missionId, missionId),
       eq(tasks.mode, 'planning'),
       eq(tasks.status, 'completed'),
-    ),
-    orderBy: [desc(tasks.createdAt)],
+    )),
+    orderBy: sqlOrderBy([desc(tasks.createdAt)]),
     limit: 2,
     columns: { id: true },
   });
@@ -372,10 +373,10 @@ export async function maybeRetriggerMission(
   let stallCount = 0;
   for (const pt of recentPlanningTasks) {
     const children = await db.query.tasks.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(tasks.parentTaskId, pt.id),
         sql`${tasks.title} NOT LIKE 'Aggregate results:%'`
-      ),
+      )),
       limit: 1,
       columns: { id: true },
     });
@@ -402,7 +403,7 @@ export async function maybeRetriggerMission(
   const prGate = await evaluateMissionOpenPrGate(missionId);
   if (prGate.paused) {
     const missionWithPr = await db.query.missions.findFirst({
-      where: eq(missions.id, missionId),
+      where: sqlWhere(eq(missions.id, missionId)),
       columns: { title: true },
     });
     if (prGate.prNumber && prGate.prUrl) {
@@ -530,7 +531,7 @@ export async function retriggerMissionOnFailure(
 ): Promise<{ action: LoopAction }> {
   // 1. Mission status check
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, missionId),
+    where: sqlWhere(eq(missions.id, missionId)),
     columns: { id: true, status: true, updatedAt: true, orchestrationMode: true },
   });
 
@@ -563,7 +564,7 @@ export async function retriggerMissionOnFailure(
 
   // 3. Classify the failure — environmental failures should never be retried
   const failedTask = await db.query.tasks.findFirst({
-    where: eq(tasks.id, failedTaskId),
+    where: sqlWhere(eq(tasks.id, failedTaskId)),
     columns: { result: true },
   });
   const { classifyFailure, extractErrorFromResult } = await import('./failure-classifier');

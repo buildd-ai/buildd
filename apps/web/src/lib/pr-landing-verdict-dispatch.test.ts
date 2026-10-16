@@ -129,6 +129,59 @@ describe('dispatchVerdictAction', () => {
   });
 });
 
+// Incident 197552dc review: only an outage gives the claim back; it is counted, and settled for the
+// person before the verdict leaves the sweep's window. A refusal or a failed command is settled as before.
+describe('a policy merge the control plane did not answer', () => {
+  const kc = () => import('./workflow/kernel-client');
+  const withDeps = (thrower: () => unknown, unclaimed: string[]) => deps({
+    policyMerge: async () => { throw thrower(); },
+    unclaim: async (id) => { unclaimed.push(id); },
+    now: () => NOW,
+  });
+
+  it('an outage with time left in the window: the claim is given back, nothing settled, outcome deferred', async () => {
+    const { ControlPlaneUnavailableError } = await kc();
+    const unclaimed: string[] = [];
+    const h = withDeps(() => new ControlPlaneUnavailableError('the pass spent its control-plane budget', 'not_applied', 'k'), unclaimed);
+    expect(await dispatchVerdictAction(target({ action: 'policy_merge', createdAt: new Date(NOW - 30 * 60_000) }), h.d)).toEqual({ kind: 'deferred', cause: 'control_plane_unavailable' });
+    expect(unclaimed).toEqual(['rec-1']);
+    expect(h.settled).toEqual([]);
+  });
+
+  it('an outage within the last hour of the 6 h window is settled skipped with the cause, so the person sees it', async () => {
+    const { ControlPlaneUnavailableError } = await kc();
+    const unclaimed: string[] = [];
+    const h = withDeps(() => new ControlPlaneUnavailableError('timed out', 'unknown', 'k'), unclaimed);
+    const late = target({ action: 'policy_merge', createdAt: new Date(NOW - (5 * 60 + 30) * 60_000) });
+    expect(await dispatchVerdictAction(late, h.d)).toEqual({ kind: 'skipped', cause: 'control_plane_unavailable' });
+    expect(unclaimed).toEqual([]);
+    expect(h.settled).toEqual([{ recordId: 'rec-1', result: { kind: 'skipped', cause: 'control_plane_unavailable' } }]);
+  });
+
+  it('a refusal (403) and the command failing there (500) are deterministic: settled skipped, never given back', async () => {
+    const { KernelCommandRefusedError, KernelCommandFailedError } = await kc();
+    for (const thrower of [() => new KernelCommandRefusedError(403, { code: 'forbidden' }), () => new KernelCommandFailedError('boom', 'k')]) {
+      const unclaimed: string[] = [];
+      const h = withDeps(thrower, unclaimed);
+      expect(await dispatchVerdictAction(target({ action: 'policy_merge', createdAt: new Date(NOW - 30 * 60_000) }), h.d)).toEqual({ kind: 'skipped', cause: 'dispatch_error' });
+      expect(unclaimed).toEqual([]);
+      expect(h.settled).toHaveLength(1);
+    }
+  });
+
+  it('the sweep counts a deferral, and hands the dispatcher the verdict\'s filing time', async () => {
+    const seen: DispatchTarget[] = [];
+    const res = await sweepUndispatchedEscalations({
+      listRecent: async () => [{ id: 'r1', teamId: 'team', workspaceId: 'ws', taskId: 't1', subjectId: 'pr:ws:4171', appliedAnswer: 'buildd:rule:policy_merge:', createdAt: new Date(NOW - 30 * 60_000) }],
+      dispatchedIds: async () => new Set(),
+      dispatch: async (t) => { seen.push(t); return { kind: 'deferred', cause: 'control_plane_unavailable' }; },
+      now: () => NOW,
+    });
+    expect(res).toMatchObject({ candidates: 1, deferred: 1, skipped: 0 });
+    expect(seen[0].createdAt).toEqual(new Date(NOW - 30 * 60_000));
+  });
+});
+
 describe('labelWithDispatch: the label says what is running, or the person gets it', () => {
   const rule = { owner: 'buildd', by: 'rule', action: 'renumber_migration', reason: 'Buildd is renumbering a migration that collides with another PR' } as const;
 

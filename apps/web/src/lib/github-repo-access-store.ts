@@ -30,6 +30,7 @@ import {
   type RepoAccessProblem,
   type RepoRowFacts,
 } from '@/lib/github-repo-access';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** How long a refused task stays resumable, and how many one recovery wakes. */
 export const BLOCK_WINDOW_DAYS = 7;
@@ -134,7 +135,7 @@ export interface LoadedRepoAccess {
 
 export async function loadRepoAccessFacts(workspaceId: string): Promise<LoadedRepoAccess | null> {
   const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     columns: { id: true, teamId: true, repo: true, githubRepoId: true },
     with: {
       githubRepo: {
@@ -159,7 +160,7 @@ export async function loadRepoAccessFacts(workspaceId: string): Promise<LoadedRe
     // owns. Another team's installation is never borrowed: that is what keeps
     // one team from reaching a private repo through someone else's grant.
     const candidates = await db.query.githubRepos.findMany({
-      where: sql`${normalizedRepoSql(githubRepos.fullName)} = ${declaredRepo.toLowerCase()}`,
+      where: sqlWhere(sql`${normalizedRepoSql(githubRepos.fullName)} = ${declaredRepo.toLowerCase()}`),
       columns: { id: true, fullName: true, defaultBranch: true },
       with: { installation: { columns: INSTALLATION_COLUMNS } },
       limit: 5,
@@ -174,7 +175,7 @@ export async function loadRepoAccessFacts(workspaceId: string): Promise<LoadedRe
     if (!unlinkedRepo) {
       const owner = declaredRepo.split('/')[0].toLowerCase();
       const onOwner = await db.query.githubInstallations.findMany({
-        where: sql`lower(${githubInstallations.accountLogin}) = ${owner}`,
+        where: sqlWhere(sql`lower(${githubInstallations.accountLogin}) = ${owner}`),
         columns: INSTALLATION_COLUMNS,
       });
       for (const inst of onOwner) {
@@ -357,7 +358,7 @@ export async function resumeRepoAccessBlockedTasks(workspaceId: string): Promise
 export async function resumeAfterInstallationChange(installationId: number): Promise<string[]> {
   try {
     const inst = await db.query.githubInstallations.findFirst({
-      where: eq(githubInstallations.installationId, installationId),
+      where: sqlWhere(eq(githubInstallations.installationId, installationId)),
       columns: { accountLogin: true },
     });
     if (!inst) return [];
@@ -377,7 +378,7 @@ export async function resumeAfterInstallationChange(installationId: number): Pro
     if (wsIds.length === 0) return [];
 
     const candidates = await db.query.workspaces.findMany({
-      where: inArray(workspaces.id, wsIds),
+      where: sqlWhere(inArray(workspaces.id, wsIds)),
       columns: { id: true, repo: true },
       with: { githubRepo: { columns: { fullName: true } } },
     });
@@ -497,7 +498,7 @@ export async function getRepoAccessView(workspaceId: string, viewerUserId: strin
     resolveWorkspaceRepoAccess(workspaceId, 'pr.create'),
     countWaitingTasks(workspaceId),
     viewerUserId
-      ? db.query.users.findFirst({ where: eq(users.id, viewerUserId), columns: { id: true, githubId: true } })
+      ? db.query.users.findFirst({ where: sqlWhere(eq(users.id, viewerUserId)), columns: { id: true, githubId: true } })
       : Promise.resolve(null),
   ]);
   if (diagnosis.ok) return { ok: true, repo: diagnosis.repo.fullName, remediation: null, waitingTasks };

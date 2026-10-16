@@ -40,6 +40,11 @@ describe('release policy', () => {
     });
   });
 
+  it('a held worker PR keeps the method it merges with (squash, as mergeIntoProd)', async () => {
+    outcome = { status: 'pending_ci', message: 'Waiting', releasePrNumber: 12, releaseMergeMethod: 'squash' };
+    expect(await releasePolicy.evaluate(input)).toMatchObject({ kind: 'hold', prNumber: 12, mergeMethod: 'squash' });
+  });
+
   it('settled fires the mission release for a mission task only', () => {
     releasePolicy.settled(input);
     expect(mockFire).toHaveBeenCalledWith('ws-1', 'm-1', 't-1', 'w-1');

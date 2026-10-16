@@ -19,6 +19,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { getIngestAccessibleWorkspaceIds } from '@/lib/knowledge-ingest-access';
 import { isUuid } from '@/lib/uuid';
 import { sweepUnrefreshedFileChunks } from '@/lib/knowledge-ingest-batch';
+import { sqlWhereFn } from '@buildd/core/db/relational-sql';
 
 interface CompleteBody {
   status?: unknown;
@@ -61,7 +62,7 @@ export async function POST(
   }
 
   const job = await db.query.knowledgeIngestJobs.findFirst({
-    where: (jobs, { eq: eqOp }) => eqOp(jobs.id, id),
+    where: { RAW: sqlWhereFn((jobs, { eq: eqOp }) => eqOp(jobs.id, id)) },
   });
   if (!job) {
     return NextResponse.json({ error: 'Job not found' }, { status: 404 });

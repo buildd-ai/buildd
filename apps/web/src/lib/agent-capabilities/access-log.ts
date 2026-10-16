@@ -9,6 +9,7 @@
 import { db } from '@buildd/core/db';
 import { agentCapabilityDecisions, githubRepos, workspaces } from '@buildd/core/db/schema';
 import { and, asc, desc, eq, gte, inArray } from 'drizzle-orm';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface CapabilityRow {
   occurredAt: Date;
@@ -130,7 +131,7 @@ export function summarizeAccess(rows: readonly CapabilityRow[], repoNames: Reado
 async function repoNamesFor(rows: readonly CapabilityRow[]): Promise<Map<string, string>> {
   const ids = [...new Set(rows.map(r => r.resource ?? '').filter(r => r.startsWith('github_repo:')).map(r => r.slice('github_repo:'.length)))];
   if (ids.length === 0) return new Map();
-  const repos = await db.query.githubRepos.findMany({ where: inArray(githubRepos.id, ids), columns: { id: true, fullName: true } });
+  const repos = await db.query.githubRepos.findMany({ where: sqlWhere(inArray(githubRepos.id, ids)), columns: { id: true, fullName: true } });
   return new Map(repos.map(r => [r.id, r.fullName]));
 }
 
@@ -142,8 +143,8 @@ const ROW_COLUMNS = {
 /** A task's access timeline, oldest first. */
 export async function loadTaskAccess(taskId: string, limit = 300): Promise<AccessItem[]> {
   const rows = await db.query.agentCapabilityDecisions.findMany({
-    where: eq(agentCapabilityDecisions.taskId, taskId),
-    orderBy: [asc(agentCapabilityDecisions.occurredAt)],
+    where: sqlWhere(eq(agentCapabilityDecisions.taskId, taskId)),
+    orderBy: sqlOrderBy([asc(agentCapabilityDecisions.occurredAt)]),
     limit,
     columns: ROW_COLUMNS,
   }) as CapabilityRow[];
@@ -221,15 +222,15 @@ export async function loadAgentAccessReport(workspaceIds: readonly string[], win
   if (workspaceIds.length === 0) return null;
   const since = new Date(Date.now() - windowHours * 3600_000);
   const rows = await db.query.agentCapabilityDecisions.findMany({
-    where: and(inArray(agentCapabilityDecisions.workspaceId, [...workspaceIds]), gte(agentCapabilityDecisions.occurredAt, since)),
-    orderBy: [desc(agentCapabilityDecisions.occurredAt)],
+    where: sqlWhere(and(inArray(agentCapabilityDecisions.workspaceId, [...workspaceIds]), gte(agentCapabilityDecisions.occurredAt, since))),
+    orderBy: sqlOrderBy([desc(agentCapabilityDecisions.occurredAt)]),
     limit: 5000,
     columns: ROW_COLUMNS,
   }) as CapabilityRow[];
   if (rows.length === 0) return null;
   const wsIds = [...new Set(rows.map(r => r.workspaceId).filter((w): w is string => !!w))];
   const names = wsIds.length > 0
-    ? await db.query.workspaces.findMany({ where: inArray(workspaces.id, wsIds), columns: { id: true, name: true } })
+    ? await db.query.workspaces.findMany({ where: sqlWhere(inArray(workspaces.id, wsIds)), columns: { id: true, name: true } })
     : [];
   return buildAgentAccessReport(rows, new Map(names.map(w => [w.id, w.name])), windowHours);
 }

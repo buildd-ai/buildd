@@ -3,6 +3,7 @@ import { db } from '@buildd/core/db';
 import { teams } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { teamBillingFromSubscription, type BillingPrices, type SubscriptionLike } from '@buildd/core/billing';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Apply one verified Stripe event to the team it belongs to. The webhook route
@@ -86,11 +87,11 @@ function idOf(ref: string | { id: string } | null | undefined): string | null {
 async function findTeam(customerId: string | null, teamId: string | null | undefined): Promise<BillingTeamRow | null> {
   const columns = { id: true, stripeCustomerId: true, stripeSubscriptionId: true } as const;
   if (customerId) {
-    const byCustomer = await db.query.teams.findFirst({ where: eq(teams.stripeCustomerId, customerId), columns });
+    const byCustomer = await db.query.teams.findFirst({ where: sqlWhere(eq(teams.stripeCustomerId, customerId)), columns });
     if (byCustomer) return byCustomer;
   }
   if (teamId && /^[0-9a-f-]{36}$/i.test(teamId)) {
-    const byId = await db.query.teams.findFirst({ where: eq(teams.id, teamId), columns });
+    const byId = await db.query.teams.findFirst({ where: sqlWhere(eq(teams.id, teamId)), columns });
     // A team already bound to a different customer is not this customer's team.
     if (byId && (!byId.stripeCustomerId || !customerId || byId.stripeCustomerId === customerId)) return byId;
   }

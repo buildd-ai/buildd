@@ -27,6 +27,7 @@ import type {
   GateReasonFamily,
   LandingMetrics,
 } from '@buildd/shared';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -207,7 +208,7 @@ export async function GET(req: NextRequest) {
         );
       }
       const ws = await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, workspaceId),
+        where: sqlWhere(eq(workspaces.id, workspaceId)),
         columns: { id: true, teamId: true },
       });
       if (!ws || !teamIds.includes(ws.teamId) || (account && !taskScopeAllowsDelegated(account, ws.id, 'analytics:read'))) {
@@ -218,7 +219,7 @@ export async function GET(req: NextRequest) {
       scopedWsIds = [account.taskScope.workspaceId];
     } else if (account) {
       const wsRows = await db.query.workspaces.findMany({
-        where: eq(workspaces.teamId, account.teamId),
+        where: sqlWhere(eq(workspaces.teamId, account.teamId)),
         columns: { id: true },
       });
       scopedWsIds = wsRows.map((w: { id: string }) => w.id);

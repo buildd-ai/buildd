@@ -22,6 +22,7 @@
  */
 import { sql, eq, type SQL } from 'drizzle-orm';
 import { tasks } from '@buildd/core/db/schema';
+import { sqlOrderByFn } from '@buildd/core/db/relational-sql';
 
 // ── The relational query ─────────────────────────────────────────────────────
 
@@ -75,6 +76,8 @@ export const MISSION_WORKER_COLUMNS = {
   // The Landed drawer's audit evidence: the head this worker pushed, which a
   // review verdict must match to count (lib/activity-delivery.ts).
   lastCommitSha: true,
+  // The after() PR fact import records a fact in the worker's own workspace (AC-3).
+  workspaceId: true,
 } as const;
 
 export const MISSION_TASK_COLUMNS = {
@@ -124,11 +127,11 @@ export const MISSION_TASK_COLUMNS = {
 /** `mission.tasks` for the detail page: newest first, three workers each, five artifacts per worker. */
 export const MISSION_TASKS_WITH = {
   columns: MISSION_TASK_COLUMNS,
-  orderBy: (t: any, { desc }: any) => [desc(t.createdAt)],
+  orderBy: sqlOrderByFn((t: any, { desc }: any) => [desc(t.createdAt)]),
   with: {
     workers: {
       columns: MISSION_WORKER_COLUMNS,
-      orderBy: (w: any, { desc }: any) => [desc(w.startedAt)],
+      orderBy: sqlOrderByFn((w: any, { desc }: any) => [desc(w.startedAt)]),
       limit: 3,
       with: {
         artifacts: {

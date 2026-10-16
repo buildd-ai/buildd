@@ -78,8 +78,7 @@ describe('loadSettingsContext — permission flags', () => {
   // The flags each settings page reads, by page.
   const PAGE_FLAGS = [
     'manage_inference_providers', // providers, profile
-    'manage_team_settings', // AI features, budgets caps, provider routing
-    'manage_chat_retro', // AI features
+    'manage_team_settings', // AI features (task estimates), budgets caps, provider routing
     'view_team_usage', // budgets
     'manage_connectors', // MCP connectors
     'manage_team_notifications', // notifications

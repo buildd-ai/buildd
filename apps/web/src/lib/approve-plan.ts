@@ -19,6 +19,7 @@ import { withDispatchHint } from '@buildd/core/dispatch-outbox';
 import { recordPathDeclaration, manifestShape } from '@/lib/path-declaration-ledger';
 import { scheduleCreationManifestShadow } from './task-manifest-prediction';
 import { scheduleTaskEstimate } from './task-estimate-hook';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * `tasks.context.specDocFix` — written by the doc-fix dispatch
@@ -173,12 +174,12 @@ export async function approvePlan(
 ): Promise<ApprovePlanResult> {
   // Fetch the planning task for workspace/mission context
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, planningTaskId),
+    where: sqlWhere(eq(tasks.id, planningTaskId)),
     columns: {
       id: true, workspaceId: true, missionId: true, context: true, pathManifest: true, mode: true,
       // Who the plan is for (resolveTaskRequesterUserId): its children are too.
       createdByUserId: true, parentTaskId: true, scheduleId: true,
-      // Rule P1-9: a re-plan raised inside a phase keeps its children in it.
+      // mission-legibility R-9: a re-plan raised inside a phase keeps its children in it.
       missionPhaseIndex: true, missionPhaseLabel: true,
     },
   });
@@ -190,7 +191,7 @@ export async function approvePlan(
   // Fetch workspace git config for branch name prediction
   const workspace = task.workspaceId
     ? await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, task.workspaceId),
+        where: sqlWhere(eq(workspaces.id, task.workspaceId)),
         // gitConfig for branch prediction; teamId for the creation-manifest
         // shadow's per-team opt-in.
         columns: { id: true, gitConfig: true, teamId: true },
@@ -207,7 +208,7 @@ export async function approvePlan(
   // the context those children carry is byte-identical to before.
   const mission = task.missionId
     ? await db.query.missions.findFirst({
-        where: eq(missions.id, task.missionId),
+        where: sqlWhere(eq(missions.id, task.missionId)),
         columns: { workingBranch: true, integrationBranchEnabled: true },
       })
     : null;
@@ -215,7 +216,7 @@ export async function approvePlan(
 
   // Guard: prevent duplicate approval
   const existingChildren = await db.query.tasks.findMany({
-    where: eq(tasks.parentTaskId, planningTaskId),
+    where: sqlWhere(eq(tasks.parentTaskId, planningTaskId)),
     columns: { id: true },
     limit: 1,
   });
@@ -244,7 +245,7 @@ export async function approvePlan(
 
   if (task.missionId) {
     const existingMissionTasks = await db.query.tasks.findMany({
-      where: and(eq(tasks.missionId, task.missionId), inArray(tasks.status, [...OPEN_TASK_STATUSES])),
+      where: sqlWhere(and(eq(tasks.missionId, task.missionId), inArray(tasks.status, [...OPEN_TASK_STATUSES]))),
       columns: { id: true, title: true, subjectAnchor: true },
     });
 
@@ -468,7 +469,8 @@ export async function approvePlan(
 
   // Second pass: resolve dependsOn refs and baseBranch to actual IDs/branch names
   for (const step of survivingPlan) {
-    const updates: Record<string, unknown> = { updatedAt: new Date() };
+    // Typed to the keys this pass writes (dependencies and base branch), never a task's status or result.
+    const updates: { updatedAt: Date; dependsOn?: string[]; context?: Record<string, unknown> } = { updatedAt: new Date() };
 
     if (step.dependsOn && step.dependsOn.length > 0) {
       const resolvedDeps = step.dependsOn
@@ -489,7 +491,7 @@ export async function approvePlan(
 
       // Merge baseBranch into existing context
       const existingCtx = (await db.query.tasks.findFirst({
-        where: eq(tasks.id, refToId[step.ref]),
+        where: sqlWhere(eq(tasks.id, refToId[step.ref])),
         columns: { context: true },
       }))?.context as Record<string, unknown> || {};
 
@@ -499,7 +501,7 @@ export async function approvePlan(
     if (Object.keys(updates).length > 1) { // more than just updatedAt
       await db
         .update(tasks)
-        .set(updates as any)
+        .set({ updatedAt: updates.updatedAt, dependsOn: updates.dependsOn, context: updates.context })
         .where(eq(tasks.id, refToId[step.ref]));
     }
   }
@@ -556,8 +558,8 @@ async function resolveDependencyBranch(
   gitConfig: BranchNameGitConfig | null,
 ): Promise<string> {
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.taskId, depTaskId),
-    orderBy: desc(workers.createdAt),
+    where: sqlWhere(eq(workers.taskId, depTaskId)),
+    orderBy: sqlOrderBy(desc(workers.createdAt)),
     columns: { branch: true },
   });
   if (worker?.branch) return worker.branch;

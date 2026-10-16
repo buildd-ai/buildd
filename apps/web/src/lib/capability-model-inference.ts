@@ -44,6 +44,7 @@ import {
   type DecisionQuestions,
 } from '@builddai/ai-kit/decide';
 import type { AgentPrincipal } from '@/lib/agent-capabilities/principal';
+import { sqlWhereFn } from '@buildd/core/db/relational-sql';
 
 export const MODEL_INFERENCE_CAPABILITY = 'model.inference' as const;
 
@@ -554,7 +555,7 @@ export const resolveTeamDecisionRoute: RouteResolver = async ({ teamId, workspac
     import('@buildd/core/net/fetch-public-gateway'),
   ]);
   const team = await db.query.teams.findFirst({
-    where: (t, { eq }) => eq(t.id, teamId),
+    where: { RAW: sqlWhereFn((t, { eq }) => eq(t.id, teamId)) },
     columns: { decisionModel: true, inferenceKeyPolicy: true, credentialPolicy: true },
   });
   if (!team) return null;

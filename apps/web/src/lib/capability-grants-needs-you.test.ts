@@ -45,7 +45,7 @@ describe('accessNeedsYouItems', () => {
     expect(home).toHaveLength(1);
     expect(home[0]).toMatchObject({
       label: 'access request', actionType: 'access', title: 'Query Axiom', meta: 'web',
-      primary: { label: 'Review', href: '/app/settings/connections?request=r1#agent-access' },
+      primary: { label: 'Review', href: '/app/settings/apps?request=r1#agent-access' },
     });
   });
 });
@@ -55,6 +55,6 @@ describe('accessPushPayload', () => {
     const p = accessPushPayload(req('r1', { environment: 'production' }), 'https://buildd.example');
     expect(p.title).toBe('Access request: Query Axiom · production');
     expect(p.message).toContain('Fix checkout latency in web asks for 1 hour.');
-    expect(p.url).toBe('https://buildd.example/app/settings/connections?request=r1#agent-access');
+    expect(p.url).toBe('https://buildd.example/app/settings/apps?request=r1#agent-access');
   });
 });

@@ -2,22 +2,25 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { connectorCatalogEntries } from '@buildd/core/db/schema';
 import { loadTeamCatalog } from '@/lib/connector-catalog-store';
+import { customerCatalogEntry } from '@/lib/connector-catalog';
 import { resolveConnectorTeam, forbidden } from '@/lib/connector-team-auth';
 import { parseCatalogEntryInput, verifyCatalogServer, type CatalogEntryInput } from '@/lib/connector-catalog-input';
 
 /**
  * GET — the catalog the caller's active team sees (built-in + platform + team
- * entries, each with the team's policy). Members never see blocked entries;
- * admins do, so they can unblock them.
+ * entries, each with the team's policy). An entry the provider won't let
+ * buildd connect reads only `unavailable: true` (customerCatalogEntry). Members
+ * see what they could get: never a blocked or unavailable entry. Admins see
+ * both, so they can unblock one and know the other is not offered.
  */
 export async function GET(req: NextRequest) {
   const caller = await resolveConnectorTeam(req);
   if (caller instanceof NextResponse) return caller;
   try {
-    const entries = await loadTeamCatalog(caller.teamId);
+    const entries = (await loadTeamCatalog(caller.teamId)).map(customerCatalogEntry);
     return NextResponse.json({
       canManage: caller.canManage,
-      entries: caller.canManage ? entries : entries.filter(e => e.policy !== 'blocked'),
+      entries: caller.canManage ? entries : entries.filter(e => e.policy !== 'blocked' && !e.unavailable),
     });
   } catch (error) {
     console.error('List connector catalog error:', error);

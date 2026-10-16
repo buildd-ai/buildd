@@ -17,6 +17,7 @@ import { db } from '../db/index';
 import { missions } from '../db/schema';
 import { computeAndStoreFlightStripCache, loadFlightStripInputs } from '../flight-strip-store';
 import { computeMissionFlightStrip } from '../mission-helpers';
+import { sqlWhere } from '../db/relational-sql';
 
 /** Pure selection rule, split out so idempotency (AC-13) is testable without
  * a database: a mission already carrying a cache is never re-selected. */
@@ -30,7 +31,7 @@ const DRY_RUN = process.argv.includes('--dry-run');
 
 async function main() {
   const candidates = await db.query.missions.findMany({
-    where: and(eq(missions.status, 'completed'), isNull(missions.flightStripCache)),
+    where: sqlWhere(and(eq(missions.status, 'completed'), isNull(missions.flightStripCache))),
     columns: { id: true, flightStripCache: true, completedAt: true, updatedAt: true },
   });
 

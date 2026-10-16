@@ -11,6 +11,7 @@ import { MISSION_WORKER_BASE_COLUMNS } from '@/lib/missions-query';
 import BandTaskList from './BandTaskList';
 import { bandRows, type BandTaskInput } from './band-rows';
 import { resolveBandDrillQaState, sampleBandSelection } from './sample-band';
+import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Insights owns historical band selection and lists it as Activity-style rows. Team admins only, like Insights. */
 export default async function InsightsTasksPage({ searchParams }: {
@@ -34,11 +35,11 @@ export default async function InsightsTasksPage({ searchParams }: {
   const selection = await insightsTaskListFilter({ params, userId: user.id, teamId, workspaceIds });
   if (!selection) redirect('/app/health/insights');
   const rows = selection.ids.length === 0 || workspaceIds.length === 0 ? [] : await db.query.tasks.findMany({
-    where: and(inArray(tasks.id, selection.ids), inArray(tasks.workspaceId, workspaceIds)),
+    where: sqlWhere(and(inArray(tasks.id, selection.ids), inArray(tasks.workspaceId, workspaceIds))),
     columns: { id: true, title: true, status: true, updatedAt: true },
     with: {
       mission: { columns: { title: true } },
-      workers: { columns: MISSION_WORKER_BASE_COLUMNS, limit: 5, orderBy: (w, { desc }) => [desc(w.startedAt)] },
+      workers: { columns: MISSION_WORKER_BASE_COLUMNS, limit: 5, orderBy: sqlOrderByFn((w, { desc }) => [desc(w.startedAt)]) },
     },
   });
   const inputs: BandTaskInput[] = rows.map(t => ({

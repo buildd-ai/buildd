@@ -1,4 +1,5 @@
 import { expect, it, mock } from 'bun:test';
+import { capturedExtras } from '@buildd/core/db/relational-sql';
 const findMany = mock(async () => [
   { id: 'worker', taskId: 'task', workspaceId: 'ws', status: 'completed', startedAt: new Date(1000), completedAt: new Date(2000), inputTokens: 100, outputTokens: 20, costUsd: '1.250000', costBasis: 'real', runner: 'mcp', task: { roleSlug: 'builder', tier: 'premium', createdAt: new Date(500), dependencyCount: 2, ciRetryPrNumber: 7, routingContext: { resolvedTier: { tier: 'budget' }, routingReason: 'budget_downshift' } } },
   { id: 'alias', taskId: 'alias', workspaceId: 'ws', status: 'completed', startedAt: new Date(1000), task: { predictedModel: 'sonnet' } },
@@ -31,9 +32,8 @@ it('never selects the whole task context, only the routing keys the tier needs',
   expect(task.columns.context).toBeUndefined();
   const { PgDialect } = await import('drizzle-orm/pg-core');
   const { tasks } = await import('@buildd/core/db/schema');
-  const { sql } = await import('drizzle-orm');
-  const extras = task.extras(tasks, { sql });
-  const rendered = new PgDialect().sqlToQuery(extras.routingContext.getSQL()).sql;
+  const extras = capturedExtras(task.extras, tasks);
+  const rendered = new PgDialect().sqlToQuery(extras.routingContext).sql;
   for (const key of ['model', 'resolvedTier', 'routingReason', 'routingInferred', 'routingInferredReason']) {
     expect(rendered).toContain(`'${key}'`);
   }

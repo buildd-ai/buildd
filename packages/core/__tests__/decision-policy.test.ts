@@ -181,6 +181,21 @@ describe('runBuilddDecision', () => {
     }
   });
 
+  it('a row this path cannot read (another signal, or per-label thresholds) never acts on raw confidence', async () => {
+    const clef = { ok: true, apiKey: 'k', model: 'clef', endpoint: { kind: 'workers-ai', baseURL: 'https://api.cloudflare.com/client/v4/accounts/a/ai/run' } };
+    for (const extra of [{ confidenceSource: 'top_p' as const }, { labelThresholds: { run: 0.4 } }]) {
+      const h = harness({ access: clef, replies: [answer('run', 0.99, 'clef'), answer('skip', 0.5, 'acme/rich-1')] });
+      const r = await runBuilddDecision(kind, { features: feats() }, scope, {
+        ...h.deps,
+        measurements: async () => [{
+          kind: kind.kind, model: 'clef', threshold: 0.4, precisionLower: 0.95, coverage: 0.5, n: 80, evalRunId: 'run-1',
+          measuredFingerprint: kind.promptFingerprint, status: 'active', setByAccountId: null, setAt: new Date(), reason: null, ...extra,
+        }],
+      });
+      expect(r.attempts[0]).toMatchObject({ outcome: 'unmeasured', applied: false });
+    }
+  });
+
   it('Jev with no stored measurement keeps the kind\'s threshold; a stored one replaces it', async () => {
     const none = harness({ replies: [answer('run', 0.75, 'typesafe/jev-1.13-20260917'), answer('skip', 0.5, 'acme/rich-1')] });
     const kept = await runBuilddDecision(kind, { features: feats() }, scope, { ...none.deps, measurements: async () => [] });
@@ -275,6 +290,17 @@ describe('toDecisionLedgerInput: the fields the readout groups and counts by', (
     const rule = harness();
     await runBuilddDecision(kind, { features: feats(0.5, true) }, scope, rule.deps);
     expect(rule.rows[0]).toMatchObject({ failureClass: null, attemptCount: 0 });
+  });
+
+  it("says why a provider_error failed: the provider's status and words, in the reason", async () => {
+    // Synthetic Cloudflare rejection, as Workers AI sends it for a token without the permission.
+    const body = JSON.stringify({ success: false, errors: [{ code: 10000, message: 'Authentication error' }] });
+    const rejected = { ok: false, error: { kind: 'provider_error', status: 401, body }, latencyMs: 60, attempts: 1 };
+    const h = harness({ replies: [rejected, rejected] });
+    await runBuilddDecision(kind, { features: feats() }, scope, h.deps);
+    expect(h.rows[0]).toMatchObject({ status: 'fallback', failureClass: 'provider' });
+    expect(h.rows[0].reason).toContain('provider_error=HTTP 401: ');
+    expect(h.rows[0].reason).toContain('Authentication error');
   });
 
   it('carries an experiment assignment only when the caller drew one through the randomizer', async () => {

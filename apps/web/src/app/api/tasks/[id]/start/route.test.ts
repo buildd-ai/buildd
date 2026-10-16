@@ -894,7 +894,28 @@ describe('POST /api/tasks/[id]/start', () => {
     expect(data.cap).toBe(3);
     expect(data.queuePosition).toBe(1);
     expect(data.canExempt).toBe(true);
+    // An owner holds manage_workspace_settings, so the refusal offers raising the cap.
+    expect(data.canRaiseCap).toBe(true);
     expect(mockWakeTask).not.toHaveBeenCalled();
+  });
+
+  it('workspace_cap_reached tells a member they cannot raise the cap', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'member' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-123', title: 'New Task', status: 'pending', workspaceId: 'ws-1', dependsOn: null,
+      missionId: null, roleSlug: null, context: null,
+      workspace: { id: 'ws-1', teamId: 'team-1', repo: 'org/repo', maxConcurrentTasks: 3 },
+    });
+    mockWorkersFindMany.mockResolvedValue([{ id: 'w1' }, { id: 'w2' }, { id: 'w3' }]);
+    mockTasksFindMany.mockResolvedValue([]);
+
+    const response = await callHandler(createMockRequest(), 'task-123');
+    expect(response.status).toBe(422);
+    const data = await response.json();
+    expect(data.gateReason).toBe('workspace_cap_reached');
+    expect(data.canRaiseCap).toBe(false);
+    expect(data.canExempt).toBe(true);
   });
 
   it('workspace_cap_reached includes queuePosition=0 when no other pending tasks', async () => {

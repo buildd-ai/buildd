@@ -25,6 +25,7 @@ import { neon } from '@neondatabase/serverless';
 import { db } from '../db/index';
 import { memories, teams } from '../db/schema';
 import { sql, inArray } from 'drizzle-orm';
+import { sqlWhere } from '../db/relational-sql';
 
 /** db.execute() on the neon-http driver returns a result object, not a row array. */
 function resultRows<T = Record<string, unknown>>(res: unknown): T[] {
@@ -76,7 +77,7 @@ async function main() {
   // Identify known buildd teams
   const sourceTeamIds = [...new Set(sourceCounts.map(r => r.team_id))];
   const builddTeams = await db.query.teams.findMany({
-    where: inArray(teams.id, sourceTeamIds),
+    where: sqlWhere(inArray(teams.id, sourceTeamIds)),
     columns: { id: true },
   });
   const builddTeamSet = new Set(builddTeams.map(t => t.id));

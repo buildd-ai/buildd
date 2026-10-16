@@ -19,6 +19,17 @@
  * packages/core/db/migrate-drift.ts, which keeps this file thin enough to stay a
  * top-to-bottom script while the decisions it makes are unit-tested.
  *
+ * Reads the drizzle v1 folder layout (`<ts>_<slug>/migration.sql` + `snapshot.json`,
+ * chained by `prevIds`). The applied set is tracking-row names plus exact-ms
+ * legacy `when`s from packages/core/db/legacy-migrations.json, so it reads prod
+ * correctly both before a database's tracking table is upgraded and after. A
+ * legacy journal tree is refused: nothing produces one any more.
+ *
+ * Parallel migrations: two branches that each generated from one base leave two
+ * leaf snapshots, each holding only its own change on top of the base. CI's
+ * `drizzle-kit check` already proved they commute, so the schema is the union of
+ * the leaves, and that union is what production is compared against.
+ *
  * Reads DATABASE_URL from env. Uses information_schema for read-only introspection.
  * Run from the repo root: bun run scripts/check-schema-drift.ts
  *   --offline   skip the database entirely and report only what can be measured
@@ -30,23 +41,33 @@
  * docs/design/migration-doctrine.md Rule 7.
  */
 
-import { neon } from '@neondatabase/serverless';
-import { readFileSync, readdirSync } from 'fs';
+import { neon, neonConfig } from '@neondatabase/serverless';
+import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import {
   classifyExtraSchemaObjects,
   classifyMissingSchemaObjects,
-  loadMigrationSources,
-  loadSnapshotMetas,
+  expectedColumnsFromSnapshot,
+  loadMigrationSourcesV1,
+  loadSnapshotMetasV1,
+  snapshotLeaves,
+  unionLeafDdl,
   reconcileAppliedCount,
-  resolveSnapshotSelection,
+  resolveSnapshotSelectionV1,
+  snapshotChainGaps,
+  type MigrationSource,
 } from '../packages/core/db/migrate-drift';
+import { detectLayout, readMigrationTree, type MigrationLayout } from '../packages/core/db/migrate-tree';
+import { LEGACY_MIGRATIONS_ENV, LEGACY_MIGRATIONS_PATH, loadLegacyMap } from '../packages/core/db/legacy-migrations';
+import { assertLoopbackUrl } from '../packages/core/db/neon-local';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
-const SNAPSHOT_DIR = join(ROOT, 'packages/core/drizzle/meta');
-const MIGRATIONS_DIR = join(ROOT, 'packages/core/drizzle');
+// BUILDD_MIGRATIONS_DIR / BUILDD_LEGACY_MIGRATIONS point the gate at another
+// tree, as they do the migrator: apps/web/tests/db/migration-layout-v1.test.ts
+// runs it over a converted v1 tree. Nothing in CI's release gate sets them.
+const MIGRATIONS_DIR = process.env.BUILDD_MIGRATIONS_DIR || join(ROOT, 'packages/core/drizzle');
 
 const OFFLINE = process.argv.includes('--offline');
 
@@ -69,6 +90,16 @@ const MIGRATOR_OWNED_TABLES = new Set(['__drizzle_migrations', '__buildd_migrate
 const EXIT_DRIFT = 1;
 const EXIT_CANNOT_VERIFY = 2;
 
+// A mixed or empty migrations dir has no trustworthy reading: refuse, as for a fork.
+let LAYOUT: MigrationLayout;
+try {
+  LAYOUT = detectLayout(MIGRATIONS_DIR);
+  if (LAYOUT !== 'v1') throw new Error(`${MIGRATIONS_DIR} is in the legacy journal layout, which this gate no longer reads`);
+} catch (err) {
+  console.error(`⛔ Cannot verify: ${err instanceof Error ? err.message : String(err)}`);
+  process.exit(EXIT_CANNOT_VERIFY);
+}
+
 const DATABASE_URL = process.env.DATABASE_URL;
 if (!DATABASE_URL && !OFFLINE) {
   console.error('ERROR: DATABASE_URL is not set');
@@ -84,6 +115,15 @@ if (DATABASE_URL) {
     console.error('ERROR: DATABASE_URL is not a valid URL — check the DATABASE_URL secret value in repo settings');
     process.exit(EXIT_CANNOT_VERIFY);
   }
+}
+
+// The local neon-http shim (tests only), loopback-guarded like the migrator's
+// override in packages/core/db/neon-local.ts. Unset everywhere real.
+const NEON_LOCAL_FETCH_ENDPOINT = process.env.NEON_LOCAL_FETCH_ENDPOINT;
+if (NEON_LOCAL_FETCH_ENDPOINT && !OFFLINE) {
+  assertLoopbackUrl('NEON_LOCAL_FETCH_ENDPOINT', NEON_LOCAL_FETCH_ENDPOINT);
+  assertLoopbackUrl('DATABASE_URL', DATABASE_URL);
+  neonConfig.fetchEndpoint = () => NEON_LOCAL_FETCH_ENDPOINT;
 }
 
 // ─── Pending drops ──────────────────────────────────────────────────────────
@@ -107,23 +147,16 @@ if (DATABASE_URL) {
 function droppedByMigration(): { columns: Set<string>; tables: Set<string> } {
   const columns = new Set<string>();
   const tables = new Set<string>();
-  const migrationDir = join(SNAPSHOT_DIR, '..');
-  let files: string[];
+  let texts: string[];
   try {
-    files = readdirSync(migrationDir).filter((f) => f.endsWith('.sql'));
+    texts = readMigrationTree(MIGRATIONS_DIR).map((m) => m.sql.join('\n'));
   } catch {
     console.log('  [warn] could not read migration dir — pending drops not considered');
     return { columns, tables };
   }
   const columnRe = /ALTER\s+TABLE\s+"?(\w+)"?\s+DROP\s+COLUMN\s+(?:IF\s+EXISTS\s+)?"?(\w+)"?/gi;
   const tableRe = /DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?"?(\w+)"?/gi;
-  for (const f of files) {
-    let sqlText: string;
-    try {
-      sqlText = readFileSync(join(migrationDir, f), 'utf8');
-    } catch {
-      continue;
-    }
+  for (const sqlText of texts) {
     let m: RegExpExecArray | null;
     while ((m = columnRe.exec(sqlText)) !== null) columns.add(`${m[1]}.${m[2]}`);
     while ((m = tableRe.exec(sqlText)) !== null) tables.add(m[1]!);
@@ -133,84 +166,36 @@ function droppedByMigration(): { columns: Set<string>; tables: Set<string> } {
 
 // ─── Load latest snapshot ────────────────────────────────────────────────────
 
-function latestSnapshot(): { tables: Record<string, DrizzleTable> } {
-  const metas = loadSnapshotMetas(SNAPSHOT_DIR);
-  const selection = resolveSnapshotSelection(metas);
+function latestSnapshot(): unknown {
+  const metas = loadSnapshotMetasV1(MIGRATIONS_DIR);
+  const selection = resolveSnapshotSelectionV1(metas);
 
   if (selection.kind === 'empty') {
-    throw new Error('No snapshot files found in ' + SNAPSHOT_DIR);
-  }
-
-  if (selection.kind === 'forked') {
-    console.error('\n\u26d4 Cannot verify: the Drizzle snapshot chain is FORKED.\n');
-    console.error(`  ${selection.file} and ${selection.siblings.join(', ')}`);
-    console.error(`  all record prevId ${selection.prevId} \u2014 they are siblings, not a sequence.\n`);
-    console.error(`Two concurrent 'bun db:generate' runs each diffed against the same parent and
-each claimed the next free index. Git conflicts on neither the .sql nor the
-.json, so the fork lands silently, and each sibling holds only part of the
-schema.
-
-NO DRIFT VERDICT IS POSSIBLE in this state. Whichever sibling this gate picked,
-whatever the other one added would read as an object the snapshot has never
-heard of \u2014 indistinguishable from production having been hand-edited. Only one
-of those is an emergency, so the gate refuses to guess.
-
-This is a repo metadata problem. Production has not been inspected and is not
-implicated. To resolve, relinearize the chain: rebuild the highest-numbered
-snapshot as a true child of its sibling (its sibling's content plus its own
-delta, keeping its own id, with prevId set to the sibling's id).
-
-Do NOT delete the snapshot and re-run db:generate \u2014 that re-derives migrations
-production has already applied. The .sql files are correct and already applied;
-only the snapshot metadata is inconsistent.`);
-    process.exit(EXIT_CANNOT_VERIFY);
+    throw new Error('No snapshot files found in ' + MIGRATIONS_DIR);
   }
 
   console.log(`Using snapshot: ${selection.file} (chain tip of ${metas.length} snapshots)`);
 
-  // Older fragments dangle in this repo as residue from past renumbering, which
-  // has been harmless for a long time \u2014 surfaced, never fatal, because failing
-  // on it would block every release to re-litigate settled history.
-  const tips = metas.filter(
-    (m) => m.id && !metas.some((other) => other.prevId === m.id) && m.file !== selection.file
-  );
-  if (tips.length > 0) {
-    console.log(
-      `  [note] ${tips.length} older snapshot(s) dangle (successor removed by past ` +
-        `renumbering): ${tips.map((t) => t.file).join(', ')} \u2014 not release-blocking`
-    );
+  // Surfaced, not fatal.
+  const gaps = snapshotChainGaps(metas);
+  if (gaps.length > 0) console.log(`  [note] snapshot chain gaps: ${gaps.join('; ')} — not release-blocking`);
+
+  const read = (file: string) => JSON.parse(readFileSync(join(MIGRATIONS_DIR, file), 'utf8')) as { ddl?: unknown[] };
+  if (selection.kind === 'forked') {
+    // Parallel migrations, each generated from the same base. `drizzle-kit check`
+    // (CI, every PR) fails a pair that does not commute, so the schema is the union
+    // of the leaf snapshots. Anything a leaf holds is expected; nothing is guessed.
+    const leaves = snapshotLeaves(metas);
+    console.log(`  [note] ${leaves.length} parallel leaf snapshots (${leaves.map((l) => l.file.split('/')[0]).join(', ')}): expecting their union`);
+    const ddl = unionLeafDdl(leaves, (file) => read(file).ddl ?? []);
+    return { version: '8', dialect: 'postgres', ddl };
   }
-
-  return JSON.parse(readFileSync(join(SNAPSHOT_DIR, selection.file), 'utf8'));
+  return read(selection.file);
 }
 
-interface DrizzleColumn {
-  name: string;
-  type: string;
-  notNull: boolean;
-  primaryKey: boolean;
-}
-
-interface DrizzleTable {
-  name: string;
-  schema: string;
-  columns: Record<string, DrizzleColumn>;
-}
-
-// ─── Build expected column set from snapshot ─────────────────────────────────
-
-function expectedColumns(snapshot: ReturnType<typeof latestSnapshot>): Map<string, Set<string>> {
-  const result = new Map<string, Set<string>>();
-  for (const tableKey of Object.keys(snapshot.tables)) {
-    const table = snapshot.tables[tableKey];
-    const tableName = table.name;
-    const cols = new Set<string>();
-    for (const col of Object.values(table.columns)) {
-      cols.add(col.name);
-    }
-    result.set(tableName, cols);
-  }
-  return result;
+/** Drift sources for the tree (see packages/core/db/migrate-drift.ts). */
+function loadSources(): MigrationSource[] {
+  return loadMigrationSourcesV1(MIGRATIONS_DIR, loadLegacyMap(process.env[LEGACY_MIGRATIONS_ENV] || LEGACY_MIGRATIONS_PATH));
 }
 
 // ─── Query actual columns from DB ────────────────────────────────────────────
@@ -234,31 +219,37 @@ async function actualColumns(sql: NeonClient): Promise<Map<string, Set<string>>>
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 /**
- * Every `created_at` recorded in the tracking table. drizzle-kit creates the
- * table in the "drizzle" schema by default (not "public") unless
- * migrationsSchema is set in drizzle.config.ts — querying
- * public.__drizzle_migrations always throws and would silently report zero
- * applied migrations, which looks identical to "no migrations ever ran" even
- * against a long-lived production DB. Check both to avoid that false signal.
+ * Every tracking row's created_at and name. drizzle-kit creates the table in
+ * the "drizzle" schema by default (not "public") unless migrationsSchema is set
+ * in drizzle.config.ts — querying public.__drizzle_migrations always throws and
+ * would silently report zero applied migrations, which looks identical to "no
+ * migrations ever ran" even against a long-lived production DB. Check both to
+ * avoid that false signal.
+ *
+ * `to_jsonb(t)->>'name'` reads the v1 `name` column where it exists and NULL
+ * where it does not (a table the cutover release has not upgraded yet), in one
+ * read-only query either way.
  */
-async function appliedWhens(sql: NeonClient): Promise<Set<number> | null> {
-  const toSet = (rows: Array<{ created_at: string | number }>) =>
-    new Set(rows.map((r) => Number(r.created_at)));
+interface AppliedSet {
+  whens: Set<number>;
+  names: Set<string>;
+  total: number;
+}
+
+async function appliedRows(sql: NeonClient): Promise<AppliedSet | null> {
+  type Rows = Array<{ created_at: string | number; name: string | null }>;
+  const toSet = (rows: Rows): AppliedSet => ({
+    whens: new Set(rows.map((r) => Number(r.created_at))),
+    names: new Set(rows.map((r) => r.name).filter((n): n is string => !!n)),
+    total: rows.length,
+  });
   try {
-    return toSet(
-      (await sql`SELECT created_at FROM drizzle.__drizzle_migrations`) as Array<{
-        created_at: string | number;
-      }>
-    );
+    return toSet((await sql`SELECT created_at, to_jsonb(t)->>'name' AS name FROM drizzle.__drizzle_migrations t`) as Rows);
   } catch {
     // Fall through to the legacy location.
   }
   try {
-    return toSet(
-      (await sql`SELECT created_at FROM public.__drizzle_migrations`) as Array<{
-        created_at: string | number;
-      }>
-    );
+    return toSet((await sql`SELECT created_at, to_jsonb(t)->>'name' AS name FROM public.__drizzle_migrations t`) as Rows);
   } catch {
     // Table exists in neither schema (fresh DB). Distinct from "zero rows".
     return null;
@@ -267,10 +258,10 @@ async function appliedWhens(sql: NeonClient): Promise<Set<number> | null> {
 
 async function main() {
   const snapshot = latestSnapshot();
-  const expected = expectedColumns(snapshot);
-  const sources = loadMigrationSources(MIGRATIONS_DIR);
+  const expected = expectedColumnsFromSnapshot(snapshot);
+  const sources = loadSources();
   console.log(
-    `Snapshot expects ${expected.size} tables; journal has ${sources.length} migrations`
+    `Snapshot expects ${expected.size} tables; ${LAYOUT} tree has ${sources.length} migrations`
   );
 
   if (OFFLINE) {
@@ -293,8 +284,10 @@ async function main() {
   const sql = neon(DATABASE_URL!);
 
   const actual = await actualColumns(sql);
-  const applied = await appliedWhens(sql);
-  if (applied === null) {
+  const appliedSet = await appliedRows(sql);
+  const applied = appliedSet?.whens ?? null;
+  const appliedNames = appliedSet?.names ?? new Set<string>();
+  if (appliedSet === null) {
     console.log('Applied migrations in DB: tracking table absent');
   } else {
     // Print the arithmetic, not two bare numbers. The journal is only what this
@@ -302,7 +295,12 @@ async function main() {
     // legitimately holds rows for migrations that were renumbered or that
     // predate a rebuilt journal. Side by side those two counts invite the
     // inference that production is running migrations we do not know about.
-    const counts = reconcileAppliedCount({ sources, appliedWhens: applied });
+    const counts = reconcileAppliedCount({
+      sources,
+      appliedWhens: appliedSet.whens,
+      appliedNames,
+      appliedTotal: appliedSet.total,
+    });
     console.log(
       `Applied migrations in DB: ${counts.appliedTotal} = ` +
         `${counts.appliedFromJournal} from this ref's journal + ` +
@@ -326,6 +324,7 @@ async function main() {
   const missing = classifyMissingSchemaObjects({
     sources,
     appliedWhens: applied ?? new Set(),
+    appliedNames,
     expected,
     actual,
   });
@@ -355,6 +354,7 @@ async function main() {
   const extra = classifyExtraSchemaObjects({
     sources,
     appliedWhens: applied ?? new Set(),
+    appliedNames,
     expected,
     actual,
     droppedTables: drops.tables,

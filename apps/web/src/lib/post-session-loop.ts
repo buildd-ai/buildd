@@ -36,8 +36,12 @@ export interface PostSessionLoopReadout {
   hardTriggered: number;
   /** ...of which were routed to analysis (model or hard trigger). */
   selectedForAnalysis: number;
+  /** Skips sampled for analysis only to measure the miss rate. In no selected or act count. */
+  sampledSkips: number;
   /** Runs analysed and recorded into the finding ledger. */
   analysed: number;
+  /** Sampled skips analysed and labelled. */
+  sampledLabelled: number;
   actionable: number;
   tasksCreated: number;
   proposalsCreated: number;
@@ -74,7 +78,7 @@ function emptyReadout(enabled: boolean): PostSessionLoopReadout {
   return {
     enabled,
     policyVersion: POST_SESSION_POLICY_VERSION,
-    evaluated: 0, triaged: 0, hardTriggered: 0, selectedForAnalysis: 0, analysed: 0,
+    evaluated: 0, triaged: 0, hardTriggered: 0, selectedForAnalysis: 0, sampledSkips: 0, analysed: 0, sampledLabelled: 0,
     actionable: 0, tasksCreated: 0, proposalsCreated: 0, wouldAct: 0, duplicatesSuppressed: 0, deferred: 0,
     stageFailures: { collect: 0, triage: 0, transcript: 0, analyse: 0, act: 0 },
     stageCost: { triage: { calls: 0, usd: null, inputTokens: 0, outputTokens: 0 }, analyse: { calls: 0, usd: 0 } },
@@ -107,6 +111,7 @@ export async function runPostSessionQualityLoop(opts: PostSessionLoopOptions = {
     readout.triaged = s.triaged;
     readout.hardTriggered = s.hardTriggered;
     readout.selectedForAnalysis = s.selected;
+    readout.sampledSkips = s.sampledSkips ?? 0;
     readout.deferred += s.deferred + s.triageDeferred;
     readout.stageFailures.collect += s.failed + s.errors;
     readout.stageFailures.triage += s.triageErrors;
@@ -121,6 +126,7 @@ export async function runPostSessionQualityLoop(opts: PostSessionLoopOptions = {
   try {
     const r = await record(stage);
     readout.analysed = r.recorded;
+    readout.sampledLabelled = r.sampledLabelled ?? 0;
     readout.actionable = r.actionable;
     readout.tasksCreated = r.tasksFiled;
     readout.proposalsCreated = r.proposalsFiled;

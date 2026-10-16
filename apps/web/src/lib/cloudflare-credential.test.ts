@@ -18,6 +18,7 @@ mock.module('./credential-health', () => ({ recordCredentialAuthSuccess: mockRec
 
 const {
   parseCloudflareCredential, maskCloudflareCredential, verifyCloudflareToken, verifyCloudflareCredential,
+  checkCloudflareCapabilities, describeCloudflareCapability,
 } = await import('./cloudflare-credential');
 
 const ACCOUNT = '0123456789abcdef0123456789abcdef';
@@ -106,6 +107,58 @@ describe('verifyCloudflareToken', () => {
   });
 });
 
+// Cloudflare's answer for an active token that lacks a permission: 401, code 10000.
+const CF_AUTH_ERROR = { success: false, errors: [{ code: 10000, message: 'Authentication error' }] };
+const ACTIVE = { success: true, result: { id: 'x', status: 'active' } };
+
+/** A fake Cloudflare: the token is active; Workers AI and the gateway answer as given. */
+function cloudflare(opts: { workersAi?: number; gateway?: number } = {}) {
+  const calls: string[] = [];
+  const f = async (url: string) => {
+    calls.push(url);
+    if (url.endsWith('/tokens/verify')) return json(200, ACTIVE);
+    if (url.includes('/ai/models/search')) return opts.workersAi === 200 || opts.workersAi === undefined ? json(200, { success: true, result: [] }) : json(opts.workersAi, CF_AUTH_ERROR);
+    if (url.includes('/ai-gateway/gateways/')) return opts.gateway === 200 || opts.gateway === undefined ? json(200, { success: true, result: { id: 'buildd' } }) : json(opts.gateway, opts.gateway === 404 ? { success: false, errors: [{ code: 7002, message: 'Not Found' }] } : CF_AUTH_ERROR);
+    return json(404, {});
+  };
+  return { f, calls };
+}
+
+describe('checkCloudflareCapabilities', () => {
+  it('reports Workers AI allowed, and no gateway check without a gateway id', async () => {
+    const { f, calls } = cloudflare();
+    const caps = await checkCloudflareCapabilities({ apiToken: TOKEN, accountId: ACCOUNT }, f);
+    expect(caps).toEqual({ workersAi: { state: 'allowed' }, aiGateway: null });
+    expect(calls).toEqual([`https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}/ai/models/search?per_page=1`]);
+  });
+
+  it("reports Workers AI not allowed with Cloudflare's words, and says what to add", async () => {
+    const { f } = cloudflare({ workersAi: 401 });
+    const caps = await checkCloudflareCapabilities({ apiToken: TOKEN, accountId: ACCOUNT }, f);
+    expect(caps.workersAi).toEqual({ state: 'not_allowed', detail: 'HTTP 401: Authentication error (code 10000)' });
+    expect(describeCloudflareCapability('workersAi', caps.workersAi)).toBe('Workers AI: not allowed (add Workers AI Read to this token)');
+    expect(describeCloudflareCapability('workersAi', { state: 'allowed' })).toBe('Workers AI: allowed');
+  });
+
+  it('checks the AI Gateway when a gateway id is set', async () => {
+    const ok = cloudflare();
+    expect((await checkCloudflareCapabilities({ apiToken: TOKEN, accountId: ACCOUNT, aiGatewayId: 'buildd' }, ok.f)).aiGateway).toEqual({ state: 'allowed' });
+    expect(ok.calls).toContain(`https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}/ai-gateway/gateways/buildd`);
+
+    const denied = await checkCloudflareCapabilities({ apiToken: TOKEN, accountId: ACCOUNT, aiGatewayId: 'buildd' }, cloudflare({ gateway: 403 }).f);
+    expect(describeCloudflareCapability('aiGateway', denied.aiGateway!)).toBe('AI Gateway: not allowed (add AI Gateway Read to this token)');
+
+    const missing = await checkCloudflareCapabilities({ apiToken: TOKEN, accountId: ACCOUNT, aiGatewayId: 'buildd' }, cloudflare({ gateway: 404 }).f);
+    expect(describeCloudflareCapability('aiGateway', missing.aiGateway!)).toBe('AI Gateway: not found (check the AI Gateway ID)');
+  });
+
+  it('a network error or a 5xx is unknown, not a refusal', async () => {
+    const caps = await checkCloudflareCapabilities({ apiToken: TOKEN, accountId: ACCOUNT }, async () => { throw new Error('ECONNRESET'); });
+    expect(caps.workersAi).toEqual({ state: 'unknown', detail: 'ECONNRESET' });
+    expect(describeCloudflareCapability('workersAi', caps.workersAi)).toBe('Workers AI: could not check (ECONNRESET)');
+  });
+});
+
 describe('verifyCloudflareCredential', () => {
   beforeEach(() => {
     updates.length = 0;
@@ -119,6 +172,29 @@ describe('verifyCloudflareCredential', () => {
     expect(r.verified).toBe(true);
     expect(mockRecordSuccess).toHaveBeenCalledWith('s1');
     expect(updates[0]).toMatchObject({ lastVerificationError: null });
+  });
+
+  it('an active token without Workers AI is still verified, but says so, and keeps saying so after a reload', async () => {
+    const r = await verifyCloudflareCredential('s1', cloudflare({ workersAi: 401 }).f);
+    expect(r.verified).toBe(true);
+    expect(r.capabilities?.workersAi).toMatchObject({ state: 'not_allowed' });
+    expect(mockRecordSuccess).toHaveBeenCalledWith('s1');
+    // Stored on the row, so the card shows it after a reload, not only after Verify.
+    expect(updates[0]).toMatchObject({ lastVerificationError: 'Workers AI: not allowed (add Workers AI Read to this token)' });
+  });
+
+  it('reports the capabilities on a fully allowed token', async () => {
+    mockFindFirst.mockResolvedValue({ encryptedValue: JSON.stringify({ apiToken: TOKEN, accountId: ACCOUNT, aiGatewayId: 'buildd' }) });
+    const r = await verifyCloudflareCredential('s1', cloudflare().f);
+    expect(r.capabilities).toEqual({ workersAi: { state: 'allowed' }, aiGateway: { state: 'allowed' } });
+    expect(updates[0]).toMatchObject({ lastVerificationError: null });
+  });
+
+  it('a rejected token is not probed for capabilities', async () => {
+    const calls: string[] = [];
+    const r = await verifyCloudflareCredential('s1', async (url: string) => { calls.push(url); return json(401, { success: false, errors: [{ message: 'Invalid API Token' }] }); });
+    expect(r.capabilities).toBeUndefined();
+    expect(calls.every((u) => u.endsWith('/tokens/verify'))).toBe(true);
   });
 
   it('records a rejection as revoked', async () => {

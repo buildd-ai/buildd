@@ -1,115 +1,165 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+/**
+ * `buildd login` in the browser (spec "One runner for every team you run",
+ * R-1, R-2): the CLI's URL now ends on the runner consent page, and only
+ * pressing Connect runner mints the key and returns it to the CLI's
+ * localhost callback, in the same redirect shape as before, so the CLI needs
+ * no change.
+ */
+import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
+process.env.OAUTH_JWT_SECRET = 'cli-route-test-secret-0123456789abcdef';
+delete process.env.OAUTH_ISSUER;
+
 const mockAuth = mock(() => Promise.resolve({ user: { id: 'user-1', email: 'u@example.test' } } as any));
-const mockGetUserTeamIds = mock(() => Promise.resolve(['team-1'] as string[]));
-const mockGetUserDefaultTeamId = mock(() => Promise.resolve('team-1' as string | null));
-const mockGetUserTeamRole = mock(() => Promise.resolve('member' as string | null));
-const mockAccountsFindFirst = mock(() => null as any);
-const mockUpdate = mock(() => ({ set: () => ({ where: () => ({ returning: () => [] }) }) }));
-let inserted: any[] = [];
+const teams = [
+  { id: 'team-a', name: 'Alpha', role: 'owner', workspaces: [{ id: 'ws-a1', name: 'alpha-one', accessMode: 'open' }] },
+  { id: 'team-b', name: 'Beta', role: 'member', workspaces: [{ id: 'ws-b1', name: 'beta-one', accessMode: 'open' }] },
+];
+const mockConsentTeams = mock(async (_userId: string) => teams as any[]);
+const mockMint = mock(async (_args: any) => ({
+  ok: true, plaintextKey: 'bld_minted', accountId: 'acct-new', level: 'worker', teamId: 'team-a', workspaceIds: ['ws-a1'],
+}) as any);
 
-const mockLinkPersonal = mock((_a: { accountId: string; userId: string }) => Promise.resolve(1));
-mock.module('@/lib/personal-workspace-links', () => ({ linkAccountToPersonalWorkspaces: mockLinkPersonal }));
 mock.module('@/auth', () => ({ auth: mockAuth }));
-mock.module('@/lib/team-access', () => ({
-  getUserTeamIds: mockGetUserTeamIds,
-  getUserDefaultTeamId: mockGetUserDefaultTeamId,
-  getUserTeamRole: mockGetUserTeamRole,
-}));
-mock.module('@/lib/api-auth', () => ({
-  hashApiKey: (k: string) => `hashed_${k}`,
-  extractApiKeyPrefix: (k: string) => k.substring(0, 12),
-}));
-mock.module('@buildd/core/db', () => ({
-  db: {
-    query: { teams: { findFirst: async () => null }, accounts: { findFirst: mockAccountsFindFirst } },
-    insert: () => ({
-      values: (vals: any) => {
-        inserted.push(vals);
-        return { returning: () => [{ id: 'acct-new', ...vals }] };
-      },
-    }),
-    update: mockUpdate,
-  },
-}));
+mock.module('@/lib/runner-picks', () => ({ runnerConsentTeams: mockConsentTeams, mintRunnerKey: mockMint }));
+mock.module('@/lib/presence-token', () => ({ issuePresenceToken: async () => null }));
 
-import { GET } from './route';
+const { GET, POST } = await import('./route');
+
+const ORIGIN = 'http://localhost:3000';
 
 function cliReq(params: Record<string, string>) {
   const qs = new URLSearchParams({ callback: 'http://localhost:9876/callback', ...params });
-  return new NextRequest(`http://localhost:3000/api/auth/cli?${qs.toString()}`);
+  return new NextRequest(`${ORIGIN}/api/auth/cli?${qs.toString()}`);
 }
 
-function redirectParams(res: Response): URLSearchParams {
-  return new URL(res.headers.get('location')!).searchParams;
+/** The hidden fields of the rendered consent form, as the browser would post them. */
+function hiddenOf(html: string): Array<[string, string]> {
+  const out: Array<[string, string]> = [];
+  for (const m of html.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)">/g)) {
+    out.push([m[1], m[2].replace(/&amp;/g, '&').replace(/&quot;/g, '"')]);
+  }
+  return out;
 }
 
-describe("GET /api/auth/cli — key level follows the signed-in user's team role", () => {
-  beforeEach(() => {
-    inserted = [];
-    mockAuth.mockReset();
-    mockAuth.mockResolvedValue({ user: { id: 'user-1', email: 'u@example.test' } });
-    mockGetUserTeamIds.mockReset();
-    mockGetUserTeamIds.mockResolvedValue(['team-1']);
-    mockGetUserDefaultTeamId.mockReset();
-    mockGetUserDefaultTeamId.mockResolvedValue('team-1');
-    mockGetUserTeamRole.mockReset();
-    mockAccountsFindFirst.mockReset();
-    mockAccountsFindFirst.mockResolvedValue(null);
-    mockUpdate.mockClear();
-    mockLinkPersonal.mockClear();
+function post(fields: Array<[string, string]>, headers: Record<string, string> = { origin: ORIGIN }) {
+  return new NextRequest(`${ORIGIN}/api/auth/cli`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
+    body: new URLSearchParams(fields).toString(),
+  });
+}
+
+async function consentFor(params: Record<string, string>) {
+  const res = await GET(cliReq(params));
+  expect(res.status).toBe(200);
+  return hiddenOf(await res.text());
+}
+
+beforeEach(() => {
+  mockAuth.mockReset();
+  mockAuth.mockResolvedValue({ user: { id: 'user-1', email: 'u@example.test' } });
+  mockConsentTeams.mockClear();
+  mockMint.mockClear();
+});
+
+describe('GET /api/auth/cli', () => {
+  it('refuses a callback that is not localhost', async () => {
+    const res = await GET(cliReq({ callback: 'https://evil.example/cb' }));
+    expect(res.status).toBe(400);
   });
 
-  it('caps a team member at worker level even when admin is requested', async () => {
-    mockGetUserTeamRole.mockResolvedValue('member');
-    const res = await GET(cliReq({ client: 'cli', level: 'admin' }));
-    expect(redirectParams(res).get('token')).toStartWith('bld_');
-    expect(inserted).toHaveLength(1);
-    expect(inserted[0].level).toBe('worker');
-    expect(redirectParams(res).get('level')).toBe('worker');
+  it('sends a signed-out person to sign in, then back here', async () => {
+    mockAuth.mockResolvedValue(null as any);
+    const res = await GET(cliReq({ client: 'runner' }));
+    expect(res.status).toBe(307);
+    expect(res.headers.get('location')).toContain('/app/auth/signin?callbackUrl=');
   });
 
-  it('caps the admin-by-default CLI client for a member', async () => {
-    mockGetUserTeamRole.mockResolvedValue('member');
-    await GET(cliReq({ client: 'mcp' }));
-    expect(inserted[0].level).toBe('worker');
+  it('renders the runner consent page with every team, and mints nothing', async () => {
+    const res = await GET(cliReq({ client: 'runner' }));
+    const html = await res.text();
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/html');
+    expect(html).toContain('data-consent="runner"');
+    expect(html).toContain('Alpha');
+    expect(html).toContain('Beta');
+    expect(mockConsentTeams).toHaveBeenCalledWith('user-1');
+    expect(mockMint).not.toHaveBeenCalled();
   });
 
-  it('keeps admin level for a team owner', async () => {
-    mockGetUserTeamRole.mockResolvedValue('owner');
-    await GET(cliReq({ client: 'cli' }));
-    expect(inserted[0].level).toBe('admin');
+  it('returns an error to the CLI when the person has no workspace to pick', async () => {
+    mockConsentTeams.mockResolvedValueOnce([]);
+    const res = await GET(cliReq({ client: 'runner' }));
+    expect(new URL(res.headers.get('location')!).searchParams.get('error')).toBe('No workspaces available');
+  });
+});
+
+describe('POST /api/auth/cli', () => {
+  it('mints a key for the picks across teams and returns it to the callback, as before', async () => {
+    const hidden = await consentFor({ client: 'runner', level: 'admin' });
+    const res = await POST(post([...hidden, ['ws', 'ws-a1'], ['ws', 'ws-b1'], ['decision', 'approve']]));
+    expect(res.status).toBe(303);
+    const loc = new URL(res.headers.get('location')!);
+    expect(loc.origin + loc.pathname).toBe('http://localhost:9876/callback');
+    expect(loc.searchParams.get('token')).toBe('bld_minted');
+    expect(loc.searchParams.get('level')).toBe('worker');
+    expect(loc.searchParams.get('email')).toBe('u@example.test');
+    expect(mockMint).toHaveBeenCalledWith({ userId: 'user-1', workspaceIds: ['ws-a1', 'ws-b1'], name: 'Runner', requestedLevel: 'admin' });
   });
 
-  it('ignores an unknown level and uses the client default', async () => {
-    mockGetUserTeamRole.mockResolvedValue('owner');
-    await GET(cliReq({ client: 'runner', level: 'superuser' }));
-    expect(inserted[0].level).toBe('worker');
+  it('uses the client default level and a custom name', async () => {
+    const hidden = await consentFor({ client: 'cli', account_name: 'Laptop' });
+    await POST(post([...hidden, ['ws', 'ws-a1'], ['decision', 'approve']]));
+    expect(mockMint).toHaveBeenCalledWith(expect.objectContaining({ name: 'Laptop', requestedLevel: 'admin' }));
   });
 
-  it('creates a new key rather than rotating an existing account with the same name', async () => {
-    mockGetUserTeamRole.mockResolvedValue('owner');
-    mockAccountsFindFirst.mockResolvedValue({ id: 'acct-existing', name: 'CLI', teamId: 'team-1', level: 'admin' });
-    const res = await GET(cliReq({ client: 'cli' }));
-    expect(redirectParams(res).get('token')).toStartWith('bld_');
-    expect(mockUpdate).not.toHaveBeenCalled();
-    expect(inserted).toHaveLength(1);
+  it('Cancel returns access_denied to the CLI and mints nothing', async () => {
+    const hidden = await consentFor({ client: 'runner' });
+    const res = await POST(post([...hidden, ['decision', 'deny']]));
+    expect(new URL(res.headers.get('location')!).searchParams.get('error')).toBe('access_denied');
+    expect(mockMint).not.toHaveBeenCalled();
   });
 
-  it('refuses when the user has no role on the target team', async () => {
-    mockGetUserTeamRole.mockResolvedValue(null);
-    const res = await GET(cliReq({ client: 'cli' }));
-    expect(redirectParams(res).get('error')).toBeTruthy();
-    expect(redirectParams(res).get('token')).toBeNull();
-    expect(inserted).toHaveLength(0);
+  it('a page action re-renders and mints nothing', async () => {
+    const hidden = await consentFor({ client: 'runner' });
+    const res = await POST(post([...hidden, ['nav', 'select_all']]));
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain('value="ws-b1" checked');
+    expect(mockMint).not.toHaveBeenCalled();
   });
 
-  // `buildd login`'s token must reach the restricted "My Workspace" sign-in
-  // created, or the user's first task never gets claimed.
-  it("links the new login account to the user's personal workspaces", async () => {
-    mockGetUserTeamRole.mockResolvedValue('owner');
-    await GET(cliReq({ client: 'runner' }));
-    expect(mockLinkPersonal).toHaveBeenCalledWith({ accountId: 'acct-new', userId: 'user-1' });
+  it('refuses a workspace the page did not offer', async () => {
+    const hidden = await consentFor({ client: 'runner' });
+    const res = await POST(post([...hidden, ['ws', 'ws-not-offered'], ['decision', 'approve']]));
+    expect(res.status).toBe(403);
+    expect(mockMint).not.toHaveBeenCalled();
+  });
+
+  it('refuses a post from another origin', async () => {
+    const hidden = await consentFor({ client: 'runner' });
+    const res = await POST(post([...hidden, ['ws', 'ws-a1'], ['decision', 'approve']], { origin: 'https://evil.example' }));
+    expect(res.status).toBe(403);
+    expect(mockMint).not.toHaveBeenCalled();
+  });
+
+  it('refuses a form whose parameters were changed after the page was rendered', async () => {
+    const hidden = (await consentFor({ client: 'runner', level: 'worker' })).map(([k, v]) => [k, k === 'level' ? 'admin' : v] as [string, string]);
+    const res = await POST(post([...hidden, ['ws', 'ws-a1'], ['decision', 'approve']]));
+    expect(res.status).toBe(403);
+    expect(mockMint).not.toHaveBeenCalled();
+  });
+
+  it("refuses another person's page", async () => {
+    const hidden = await consentFor({ client: 'runner' });
+    mockAuth.mockResolvedValue({ user: { id: 'user-2', email: 'x@example.test' } });
+    const res = await POST(post([...hidden, ['ws', 'ws-a1'], ['decision', 'approve']]));
+    expect(res.status).toBe(403);
+  });
+
+  it('refuses a non-localhost callback even with a valid form', async () => {
+    const res = await POST(post([['callback', 'https://evil.example/cb'], ['decision', 'approve']]));
+    expect(res.status).toBe(400);
   });
 });

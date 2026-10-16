@@ -39,7 +39,7 @@ export function toLedgerRow(r: Row) {
     taskId: r.taskId, missionId: r.missionId, workerId: r.workerId,
     verdict: r.suggested, ruleAnswer: r.ruleVerdict, appliedAnswer: r.applied ? r.effective : null,
     effective: r.effective, applied: r.applied, confidence: r.confidence, reason: r.reason,
-    experimentArm: r.experimentArm, createdAt: r.createdAt,
+    experimentArm: r.experimentArm, latencyMs: r.latencyMs, costUsd: r.costUsd, createdAt: r.createdAt,
   };
 }
 

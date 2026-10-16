@@ -8,6 +8,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { createDbIncidentPort, updateIncidentState } from '@/lib/failure-incident-store';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ACTIONS = ['acknowledge', 'resolve'] as const;
@@ -45,7 +46,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
 
     const row = await db.query.failureIncidents.findFirst({
-      where: eq(failureIncidents.id, id),
+      where: sqlWhere(eq(failureIncidents.id, id)),
       columns: { id: true, workspaceId: true },
     });
     const wsId = row?.workspaceId ?? null;

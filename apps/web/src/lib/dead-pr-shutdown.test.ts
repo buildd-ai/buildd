@@ -121,6 +121,9 @@ mock.module('@buildd/core/pr-facts', () => ({
 
 import { shutdownDeadBuilddPrs } from './dead-pr-shutdown';
 
+/** A terminal fact goes to the funnel under the kernel's scope (S4a, pr-fact-scope.ts). */
+const FUNNEL_OPTS = { scope: expect.objectContaining({ where: expect.any(Function) }) };
+
 // ── Test helpers ──────────────────────────────────────────────────────────────
 
 const WS_ID = 'ws-1';
@@ -261,7 +264,7 @@ describe('shutdownDeadBuilddPrs', () => {
     expect(closeCall).toBeDefined();
 
     // Worker stamped closed through the fact funnel
-    expect(recordedFacts).toEqual([{ target: { workerId: 'w-loser' }, fact: { kind: 'closed' }, opts: undefined }]);
+    expect(recordedFacts).toEqual([{ target: { workerId: 'w-loser' }, fact: { kind: 'closed' }, opts: FUNNEL_OPTS }]);
   });
 
   // ── Tier 2: conflict-dead + green successor ─────────────────────────────────

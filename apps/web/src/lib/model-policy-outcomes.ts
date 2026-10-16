@@ -20,6 +20,7 @@ import {
   remotePolicyConfigFromEnv, reportPolicyOutcome, type RemotePolicyConfig,
 } from '@buildd/core/model-policy';
 import type { PolicyObservation } from '@builddai/ai-kit/policy';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface ReportTaskPolicyOutcomeDeps {
   configured: () => RemotePolicyConfig | null;
@@ -30,7 +31,7 @@ export interface ReportTaskPolicyOutcomeDeps {
 const defaultDeps: ReportTaskPolicyOutcomeDeps = {
   configured: () => remotePolicyConfigFromEnv(),
   loadContext: async (taskId) => {
-    const row = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId), columns: { context: true } });
+    const row = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { context: true } });
     return row?.context ?? null;
   },
   report: reportPolicyOutcome,

@@ -24,6 +24,7 @@
 
 import { sql } from 'drizzle-orm';
 import { normalizeRepoFullName } from '@/lib/repo-scope';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Drizzle `with` clause that loads both installation paths plus the linked
@@ -104,7 +105,7 @@ export async function installationIdForRepo(
   const { normalizedRepoSql } = await import('@/lib/repo-scope');
 
   const row = await db.query.githubRepos.findFirst({
-    where: sql`${normalizedRepoSql(githubRepos.fullName)} = ${repoFullName.toLowerCase()}`,
+    where: sqlWhere(sql`${normalizedRepoSql(githubRepos.fullName)} = ${repoFullName.toLowerCase()}`),
     columns: { id: true },
     with: { installation: { columns: { installationId: true, suspendedAt: true } } },
   });

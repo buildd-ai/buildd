@@ -17,11 +17,12 @@ import { tasks } from '@buildd/core/db/schema';
 import { and, eq, sql } from 'drizzle-orm';
 import { notifyTeamOf } from '@/lib/notify';
 import { alertOnLanding, type LandingAlertDeps, type LandingAlertInput } from '@/lib/pr-landing-alert';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 
 async function readLanding(taskId: string): Promise<Record<string, unknown>> {
-  const row = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId), columns: { context: true } });
+  const row = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, taskId)), columns: { context: true } });
   const ctx = row?.context as unknown;
   return isObj(ctx) && isObj(ctx.landing) ? ctx.landing : {};
 }

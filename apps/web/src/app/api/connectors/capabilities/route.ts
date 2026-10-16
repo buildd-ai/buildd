@@ -7,6 +7,7 @@ import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/ta
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { loadDiscoveryInput } from '@/lib/connector-capabilities-store';
 import { listCapabilities, resolveCapability } from '@/lib/connector-capabilities';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const ROLE_SLUG_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
@@ -48,7 +49,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'invalid roleSlug' }, { status: 400 });
   }
   if (!roleSlug && apiAccount?.taskScope) {
-    const task = await db.query.tasks.findFirst({ where: eq(tasks.id, apiAccount.taskScope.taskId), columns: { roleSlug: true } });
+    const task = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, apiAccount.taskScope.taskId)), columns: { roleSlug: true } });
     roleSlug = task?.roleSlug ?? null;
   }
 

@@ -32,6 +32,7 @@ import {
   type CiRedSweepResult,
   type CiRedTarget,
 } from '@/lib/ci-red-sweep';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 const TERMINAL_LIFECYCLE = [...TERMINAL_PR_LIFECYCLE];
 
@@ -87,7 +88,7 @@ export function createCiRedSweepDeps(): CiRedSweepDeps {
 
   async function loadWorkspace(id: string) {
     return db.query.workspaces.findFirst({
-      where: eq(workspaces.id, id),
+      where: sqlWhere(eq(workspaces.id, id)),
       with: WORKSPACE_INSTALLATION_WITH,
     });
   }
@@ -110,19 +111,19 @@ export function createCiRedSweepDeps(): CiRedSweepDeps {
 
     async resolveTarget(ref) {
       const worker = await db.query.workers.findFirst({
-        where: and(
+        where: sqlWhere(and(
           eq(workers.workspaceId, ref.workspaceId),
           eq(workers.prNumber, ref.prNumber),
           isNull(workers.mergedAt),
           or(isNull(workers.prLifecycleStatus), notInArray(workers.prLifecycleStatus, TERMINAL_LIFECYCLE)),
-        ),
-        orderBy: desc(workers.createdAt),
+        )),
+        orderBy: sqlOrderBy(desc(workers.createdAt)),
         columns: { id: true, taskId: true, prUrl: true },
       });
       if (!worker?.taskId) return { ok: false, skip: 'no_open_worker' };
 
       const task = await db.query.tasks.findFirst({
-        where: eq(tasks.id, worker.taskId),
+        where: sqlWhere(eq(tasks.id, worker.taskId)),
         columns: { id: true, title: true, workspaceId: true, missionId: true, status: true, context: true, result: true },
       });
       if (!task) return { ok: false, skip: 'no_open_worker' };

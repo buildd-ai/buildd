@@ -9,6 +9,7 @@ import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-
 import { isUuid } from '@/lib/uuid';
 import { requestingPerson } from '@/lib/request-person';
 import { recordPrAbandonment } from '@/lib/pr-supersession';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * POST /api/tasks/[id]/closed-pr
@@ -56,12 +57,12 @@ export async function POST(
 
   try {
     const task = await db.query.tasks.findFirst({
-      where: eq(tasks.id, id),
+      where: sqlWhere(eq(tasks.id, id)),
       columns: { id: true, workspaceId: true },
       with: {
         workers: {
           columns: { id: true, prUrl: true },
-          orderBy: [desc(workers.startedAt)],
+          orderBy: sqlOrderBy([desc(workers.startedAt)]),
           limit: 1,
         },
       },
@@ -75,8 +76,8 @@ export async function POST(
     if (!worker?.prUrl) return NextResponse.json({ error: 'Task has no PR' }, { status: 404 });
 
     const recordedBy = user?.email ?? apiAccount?.name ?? 'unknown';
-    const result = await recordPrAbandonment({ workerId: worker.id, reason, recordedBy, actor: `human:${person}` });
-    if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
+    const result = await recordPrAbandonment({ workerId: worker.id, reason, recordedBy, actor: `human:${person}`, caller: { person, account: apiAccount } });
+    if (!result.ok) return NextResponse.json(result.door?.body ?? { error: result.error }, { status: result.status, headers: result.door?.headers });
     return NextResponse.json({ ok: true, action: 'abandon' });
   } catch (error) {
     console.error('Task closed PR abandon error:', error);

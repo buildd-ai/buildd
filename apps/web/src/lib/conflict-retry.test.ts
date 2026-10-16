@@ -467,13 +467,13 @@ describe('buildConflictRetryTask', () => {
       expect(result!.description).not.toContain('merge conflicts with the base branch');
     });
 
-    it('describes a slot taken on the base as a renumber past the base, with no other PR', () => {
+    it('describes a slot taken on the base as a regenerate on top of the base, with no other PR', () => {
       const result = buildConflictRetryTask(makeInput({
         migrationCollision: { file: '0093_safe.sql', otherFile: '0093_landed.sql', otherPrNumber: null, against: 'base' },
       }));
       expect(result!.title).toBe('[builder · migration collision #1] feat: add dark mode');
       expect(result!.description).toContain('its base already has `0093_landed.sql`');
-      expect(result!.description).toContain('bun run migrations:renumber --base=origin/dev');
+      expect(result!.description).toContain('bun run migrations:regenerate --base=origin/dev');
       expect(result!.description).not.toContain('PR #null');
       expect(result!.description).not.toContain('/pull/null');
       expect((result!.context.failureContext as any).summary).toContain('already on its base');
@@ -511,28 +511,31 @@ describe('buildConflictRetryTask', () => {
       expect(result!.description).toContain('Push to the existing branch');
     });
 
-    it('runs the renumber command past the open PR slot instead of a hand recipe', () => {
+    it('runs the regenerate command, and tells a hand recipe to number past the open PR slot', () => {
       const result = buildConflictRetryTask(makeInput({
         migrationCollision: collision,
         prRefs: { headRef: 'feat/dark-mode', baseRef: 'dev' },
       }));
-      expect(result!.description).toContain('bun run migrations:renumber --base=origin/dev --min-index=94');
-      expect(result!.description).toContain('bun run migrations:index-check --base=origin/dev');
+      expect(result!.description).toContain('bun run migrations:regenerate --base=origin/dev');
+      expect(result!.description).toContain('number this one past it until that PR lands');
+      expect(result!.description).toContain('bun run migrations:layout-check --base=origin/dev');
+      expect(result!.description).toContain('bun run migrations:commute');
+      expect(result!.description).not.toContain('--min-index');
     });
 
-    it('renumbers a base collision against the PR base with no index floor', () => {
+    it('regenerates a base collision against the PR base with no open-PR note', () => {
       const result = buildConflictRetryTask(makeInput({
         migrationCollision: { file: '0093_safe.sql', otherFile: '0093_landed.sql', otherPrNumber: null, against: 'base' },
         prRefs: { headRef: 'feat/dark-mode', baseRef: 'main' },
       }));
       expect(result!.description).toContain('git merge origin/main');
-      expect(result!.description).toContain('bun run migrations:renumber --base=origin/main\n');
-      expect(result!.description).not.toContain('--min-index');
+      expect(result!.description).toContain('bun run migrations:regenerate --base=origin/main\n');
+      expect(result!.description).not.toContain('number this one past it');
     });
 
     it('tells a plain conflict retry to regenerate drizzle metadata conflicts, not merge them', () => {
       const result = buildConflictRetryTask(makeInput({}));
-      expect(result!.description).toContain('migrations:renumber');
+      expect(result!.description).toContain('migrations:regenerate');
       expect(result!.description).toContain('migration-index collision, not text to merge');
       expect(result!.description).toContain('bun run conflicts:generated');
     });

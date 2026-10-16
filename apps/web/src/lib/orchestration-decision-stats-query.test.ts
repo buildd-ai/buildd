@@ -70,3 +70,10 @@ it('rollup treats string counts from the driver as numbers', () => {
  expect(rolled.decisions.total).toBe(3);
  expect(rolled.decisions.unlabelled).toBe(2);
 });
+
+it('keeps human and Jev ledger actors separate within the same policy fingerprint', () => {
+ const rows = ['human_force', 'jev_start'].map(actor => ({ ...decisionRows[0], actor, gate: 'overlap', areaClass: 'other' }));
+ const stats = rollupOrchestrationDecisions(rows, []);
+ expect(stats.decisions.byGroup).toHaveLength(2);
+ expect(stats.decisions.byGroup.map(g => g.actor).sort()).toEqual(['human_force', 'jev_start']);
+});

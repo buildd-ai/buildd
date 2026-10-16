@@ -136,6 +136,16 @@ export async function markDue(job: string, member: string, dueAtMs: number): Pro
   await safe('zadd due', r => r.zadd(dueKey(job), { score: dueAtMs, member }), undefined);
 }
 
+/**
+ * Upsert one member's due time, keeping the EARLIEST (ZADD LT): a member already due sooner is
+ * not pushed back. For a queue whose writers fire often (a render every few seconds), where a
+ * plain ZADD would keep moving the due time into the future and the work would never come due.
+ * A new member is added as usual.
+ */
+export async function markDueEarliest(job: string, member: string, dueAtMs: number): Promise<void> {
+  await safe('zadd lt due', r => r.zadd(dueKey(job), { lt: true }, { score: dueAtMs, member }), undefined);
+}
+
 /** Drop members that no longer have pending work (ZREM). */
 export async function clearDue(job: string, members: string | string[]): Promise<void> {
   const list = Array.isArray(members) ? members : [members];

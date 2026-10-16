@@ -23,12 +23,15 @@ export function buildSkipsTypecheck(env) {
  * Guarded by src/lib/settings-route-moves.test.ts.
  */
 export const SETTINGS_ROUTE_MOVES = [
-  // Agent roles: the Team page and its editor become Settings › Roles.
-  { source: '/app/team', destination: '/app/settings/roles' },
-  { source: '/app/team/new', destination: '/app/settings/roles/new' },
-  { source: '/app/team/:slug/settings', destination: '/app/settings/roles/:slug/edit' },
-  { source: '/app/team/:slug', destination: '/app/settings/roles/:slug' },
-  { source: '/app/workspaces/:id/skills', destination: '/app/settings/roles' },
+  // Agents: the Team page and its editor became Settings › Roles, then
+  // Settings › Agents. Old links go straight to the current home.
+  { source: '/app/settings/roles', destination: '/app/settings/agents' },
+  { source: '/app/settings/roles/:path*', destination: '/app/settings/agents/:path*' },
+  { source: '/app/team', destination: '/app/settings/agents' },
+  { source: '/app/team/new', destination: '/app/settings/agents/new' },
+  { source: '/app/team/:slug/settings', destination: '/app/settings/agents/:slug/edit' },
+  { source: '/app/team/:slug', destination: '/app/settings/agents/:slug' },
+  { source: '/app/workspaces/:id/skills', destination: '/app/settings/agents' },
   // People: one Team page; another team opens there by id.
   { source: '/app/teams/new', destination: '/app/settings/team?new=1' },
   { source: '/app/teams/:id', destination: '/app/settings/team?team=:id' },
@@ -44,6 +47,14 @@ export const SETTINGS_ROUTE_MOVES = [
   { source: '/app/workspaces', destination: '/app/settings/workspaces' },
   { source: '/app/workspaces/new', destination: '/app/settings/workspaces/new' },
   { source: '/app/workspaces/:id/config', destination: '/app/settings/workspace/:id' },
+  // Team apps and agent access left Connected apps (yours) for Settings ›
+  // Team › Apps. A link that carried a team-app query still lands there; a
+  // bare link opens your own connected apps.
+  ...['connected', 'error', 'request', 'reconnect'].map((key) => ({
+    source: '/app/settings/connections',
+    has: [{ type: 'query', key }],
+    destination: '/app/settings/apps',
+  })),
 ];
 
 /**
@@ -57,7 +68,7 @@ export const PAGE_MERGES = [
   { source: '/app/settings/github', destination: '/app/settings/integrations' },
   { source: '/app/settings/storage', destination: '/app/settings/integrations' },
   { source: '/app/settings/budgets', destination: '/app/settings/billing' },
-  { source: '/app/settings/connectors', destination: '/app/settings/connections' },
+  { source: '/app/settings/connectors', destination: '/app/settings/apps' },
   // A task starts as a chat; an old link keeps the workspace it named.
   { source: '/app/tasks/new', has: [{ type: 'query', key: 'workspaceId', value: '(?<ws>[^&]+)' }], destination: '/app/chat?new=task&ws=:ws' },
   { source: '/app/tasks/new', destination: '/app/chat?new=task' },
@@ -91,7 +102,7 @@ const nextConfig = {
   // `typescript` is on that list too: lib/copy-review.ts parses PR patches with
   // it, and reviewer.ts pulls that into the server graph of every page.
   // Guarded by src/lib/next-config.test.ts.
-  transpilePackages: ['@buildd/shared', '@buildd/core', '@builddai/ai-kit', '@aws-sdk/client-s3', 'typescript'],
+  transpilePackages: ['@buildd/shared', '@buildd/core', '@buildd/workflow-kernel', '@builddai/ai-kit', '@aws-sdk/client-s3', 'typescript'],
   // @ast-grep/napi is a native napi binary loaded via dynamic import() in
   // packages/core/knowledge-store/symbol-extractor.ts. Turbopack statically
   // traces the dynamic import and cannot place the .node asset in an ESM
@@ -105,10 +116,16 @@ const nextConfig = {
   // output-file-tracing's static analysis won't discover on its own since
   // it never appears in an import/require. Force it into the serverless
   // bundle explicitly instead of relying on tracing to infer it.
+  // Same for packages/core/mcp-guidance/*.md, the topics `help {topic}`
+  // serves (packages/core/guidance-topics.ts), on both MCP endpoints.
   outputFileTracingIncludes: {
     '/api/mcp': [
       '../../.claude/skills/buildd-mcp-consumer/**',
       '../../.claude/skills/workspace-onboarding/**',
+      '../../packages/core/mcp-guidance/**',
+    ],
+    '/api/mcp-oauth/[workspace]': [
+      '../../packages/core/mcp-guidance/**',
     ],
   },
   async redirects() {

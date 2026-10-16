@@ -24,6 +24,7 @@ import { ensureIntegrationBaseForTaskPr } from '@/lib/mission-integration-branch
 import { collectRetryLineage } from '@/lib/retry-pr-supersession';
 import { verifyPrOwnership, type PrOwnershipTask } from './pr-ownership';
 import { repoProtectedBranches } from './github';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export interface ReportedPrWorker {
   id: string;
@@ -66,9 +67,9 @@ export async function verifyReportedWorkerPr(args: {
   const url = args.reported.url ?? null;
   const number = args.reported.number ?? numberFromUrl(url);
 
-  const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, worker.workspaceId) });
+  const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, worker.workspaceId)) });
   const repo = ws?.githubRepoId
-    ? await db.query.githubRepos.findFirst({ where: eq(githubRepos.id, ws.githubRepoId), with: { installation: true } })
+    ? await db.query.githubRepos.findFirst({ where: sqlWhere(eq(githubRepos.id, ws.githubRepoId)), with: { installation: true } })
     : undefined;
   if (!ws || !repo?.installation) return { accept: true, verified: false, pr: { number, url } };
 

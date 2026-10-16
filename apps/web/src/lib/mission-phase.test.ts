@@ -1,7 +1,7 @@
 import { describe, it, expect, mock } from 'bun:test';
 
 /**
- * `computePlanPhases` is the whole of Rule P1-4/P1-9: it decides which of a
+ * `computePlanPhases` is the whole of mission-legibility R-4/R-9: it decides which of a
  * plan's steps belong to which named stretch of the mission, and it is the only
  * thing that ever writes `tasks.mission_phase_*` for a plan.
  *
@@ -67,7 +67,7 @@ describe('computePlanPhases — a phase is a heading, not a tag', () => {
     ]);
   });
 
-  it('Rule P1-9: an unlabelled plan raised inside a phase keeps its children in it', () => {
+  it('mission-legibility R-9: an unlabelled plan raised inside a phase keeps its children in it', () => {
     const phases = computePlanPhases(
       [{}, {}],
       { missionPhaseIndex: 3, missionPhaseLabel: 'Rendering' },
@@ -97,7 +97,7 @@ describe('computePlanPhases — a phase is a heading, not a tag', () => {
 
   it('never derives a phase from step count, ordering depth, or title text', () => {
     // Nine steps with dependsOn layering and BUILD:/REVIEW: prefixes — every
-    // signal Rule P1-5 and P1-6 reject — and no `phase` anywhere.
+    // signal mission-legibility R-5 and R-6 reject — and no `phase` anywhere.
     const plan = [
       { ref: 'a', title: 'SPEC: x' },
       { ref: 'b', title: 'BUILD: x', dependsOn: ['a'] },

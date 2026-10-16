@@ -7,6 +7,8 @@ import {
   claimedApiRoutes,
   claimedSymbols,
   codeSurfacePaths,
+  DUPLICATE_CRITERIA_DEBT,
+  duplicateCriteriaFindings,
   resolveApiRoute,
   resolveSymbols,
   VERIFIED_BY_DEBT,
@@ -144,10 +146,52 @@ describe('verified_by ratchet', () => {
   test('no new spec joins the debt list', () => {
     // 19 pre-existing specs owed guards when the check landed on 2026-08-30, and
     // mcp-action-contracts paid its debt off with the on-demand-review guards,
-    // and credential-isolation with the runner-key exposure guards.
+    // credential-isolation with the runner-key exposure guards, and release-flow
+    // with the release-candidate guards.
     // The number is asserted so growing it requires editing this test and
     // explaining why.
     expect(VERIFIED_BY_DEBT.size).toBeLessThanOrEqual(17);
+  });
+});
+
+describe('duplicate criterion ids ratchet', () => {
+  const twice = '# S\n\n- AC-1: one\n- AC-2: two\n- AC-1: again\n';
+
+  test('a criterion id defined twice in a spec not on the baseline is an error naming the id and its lines', () => {
+    const r = duplicateCriteriaFindings('new-spec', twice, new Set());
+    expect(r.errors).toEqual(['defines criterion id AC-1 more than once (lines 3, 5); only the first is read. Renumber so each id is defined once']);
+    expect(r.warnings).toEqual([]);
+  });
+
+  test('a spec on the baseline only warns, so the files being fixed in parallel do not break the build', () => {
+    const r = duplicateCriteriaFindings('old-spec', twice, new Set(['old-spec']));
+    expect(r.errors).toEqual([]);
+    expect(r.warnings).toEqual(['defines 1 criterion id(s) more than once (AC-1); only the first of each is read. On the DUPLICATE_CRITERIA_DEBT baseline']);
+  });
+
+  test('a baseline spec that is fixed only warns that it can leave the baseline; the list shrinking never fails', () => {
+    const r = duplicateCriteriaFindings('old-spec', '# S\n\n- AC-1: one\n', new Set(['old-spec']));
+    expect(r.errors).toEqual([]);
+    expect(r.warnings).toEqual(['defines each criterion id once now; remove it from DUPLICATE_CRITERIA_DEBT in scripts/check-specs.ts']);
+    expect(duplicateCriteriaFindings('clean', '# S\n\n- AC-1: one\n', new Set())).toEqual({ errors: [], warnings: [] });
+  });
+
+  test('fenced code and table rows count the way the spec parser counts them', () => {
+    expect(duplicateCriteriaFindings('x', '- R-1: a\n```\n- R-1: code\n```\n', new Set()).errors).toEqual([]);
+    expect(duplicateCriteriaFindings('x', '- R-1: a\n| R-1 | b |\n', new Set()).errors).toHaveLength(1);
+  });
+
+  test('every spec in docs/specs not on the baseline defines each criterion id once', () => {
+    const offenders = specSlugs().filter((slug) => !DUPLICATE_CRITERIA_DEBT.has(slug)
+      && duplicateCriteriaFindings(slug, readFileSync(join(SPECS_DIR, `${slug}.md`), 'utf8'), DUPLICATE_CRITERIA_DEBT).errors.length);
+    expect(offenders).toEqual([]);
+  });
+
+  test('the baseline only shrinks', () => {
+    // The specs that defined a criterion id twice when this lint landed. A
+    // slug whose file is renamed, deleted or fixed may drop out; none may be
+    // added. Raising this number needs editing the test and saying why.
+    expect(DUPLICATE_CRITERIA_DEBT.size).toBeLessThanOrEqual(16);
   });
 });
 

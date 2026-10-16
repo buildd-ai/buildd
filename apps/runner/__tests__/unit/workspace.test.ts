@@ -327,7 +327,7 @@ describe('Git URL Matching Scenarios', () => {
 
     const candidates = [
       '/home/coder/project/dispatch-ios-old-dispatch-clone',
-      '/home/coder/project/dispatch-family',
+      '/home/coder/project/dispatch-web',
       '/home/coder/project/dispatch',
     ];
 

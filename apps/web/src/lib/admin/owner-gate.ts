@@ -3,7 +3,7 @@ import { authorizePlatformAdmin } from '@/lib/platform-admin';
 
 /**
  * Gate for the platform-owner data routes under `/api/admin/*` (the private
- * admin app's API). The principal is the same as `authorizePlatformAdmin`: an
+ * platform-owner API). The principal is the same as `authorizePlatformAdmin`: an
  * admin-level `bld_` key whose account is in BUILDD_PLATFORM_ADMIN_ACCOUNT_IDS.
  *
  * The difference is the refusal: every other caller — no credential, a team

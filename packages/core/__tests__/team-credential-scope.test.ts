@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { PgDialect } from 'drizzle-orm/pg-core';
+import { GroupingNormalisedPgDialect } from '../db/sql-grouping';
 import { eq, isNull, or } from 'drizzle-orm';
 import { secrets } from '../db/schema';
 
@@ -12,7 +12,7 @@ import {
   type TeamCredentialFilter,
 } from '../secrets/team-scope';
 
-const dialect = new PgDialect();
+const dialect = new GroupingNormalisedPgDialect();
 function render(frag: unknown): { sql: string; params: unknown[] } {
   const q = dialect.sqlToQuery(frag as never);
   return { sql: q.sql.replace(/\s+/g, ' ').trim(), params: q.params };

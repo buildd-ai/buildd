@@ -23,6 +23,20 @@ import { resolveClaudeCredential } from '@/lib/claude-credential';
 import { resolveOpenAiApiKey } from '@/lib/openai-credential';
 import { pickMostSpecificCredential, pickTeamAgentApiKey, teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { agentKeyPurposes } from '@buildd/core/providers/agent-keys';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
+
+/**
+ * True when a credential's recorded expiry has already passed. A claim never
+ * carries such a credential (model credentials spec R-3 / AC-2): the worker
+ * would die on it seconds after the claim and the task would retry forever.
+ * Left out, the runner falls back to its own login. No recorded expiry (an API
+ * key, a long-lived setup token) is never expired here.
+ */
+export function credentialExpired(expiresAt: Date | string | null | undefined, now: number = Date.now()): boolean {
+  if (!expiresAt) return false;
+  const t = new Date(expiresAt).getTime();
+  return Number.isFinite(t) && t <= now;
+}
 
 /** The claim-candidate rows the credential blocks look tasks up in. */
 type ClaimedTask = { id: string; workspaceId: string };
@@ -60,7 +74,7 @@ export async function attachServerManagedSecrets(
       if (task?.backend === 'codex') continue;
 
       const workerSecrets = await db.query.secrets.findMany({
-        where: teamCredentialWhere(
+        where: sqlWhere(teamCredentialWhere(
           { teamId: workspaceTeamId, purpose: [...agentKeyPurposes('anthropic'), 'oauth_token', 'mcp_credential'] },
           or(
             isNull(secrets.accountId),
@@ -70,10 +84,10 @@ export async function attachServerManagedSecrets(
             isNull(secrets.workspaceId),
             eq(secrets.workspaceId, task.workspaceId),
           ),
-        ),
+        )),
         columns: {
           id: true, purpose: true, label: true, healthStatus: true, updatedAt: true,
-          accountId: true, workspaceId: true, userId: true,
+          accountId: true, workspaceId: true, userId: true, tokenExpiresAt: true,
         },
       });
 
@@ -86,14 +100,19 @@ export async function attachServerManagedSecrets(
       // shadow a workspace's own key; a revoked leftover must still never shadow
       // a healthy credential.
       const scopeTarget = { accountId, workspaceId: task.workspaceId };
-      const pickBest = (purpose: string) =>
-        pickMostSpecificCredential(workerSecrets.filter(s => s.purpose === purpose), scopeTarget);
 
       // The endpoint is the only model credential for its workers; MCP secrets
       // below are not model credentials and are still delivered.
       const endpointWon = endpointWorkers.has(cw.id);
       const apiKeySecret = endpointWon ? undefined : pickTeamAgentApiKey(workerSecrets, scopeTarget, 'anthropic');
-      const oauthSecret = endpointWon ? undefined : pickBest('oauth_token');
+      // An oauth_token whose recorded expiry has passed is never delivered, and
+      // never shadows a live one at a wider scope.
+      const oauthSecret = endpointWon
+        ? undefined
+        : pickMostSpecificCredential(
+            workerSecrets.filter(s => s.purpose === 'oauth_token' && !credentialExpired(s.tokenExpiresAt)),
+            scopeTarget,
+          );
 
       const [decryptedApiKey, decryptedOauthToken] = await Promise.all([
         apiKeySecret ? provider.get(apiKeySecret.id) : null,
@@ -168,7 +187,13 @@ export async function attachCodexCredentials(
     try {
       // Resolve the most-specific credential: workspace > account > team-wide.
       // Refresh is now runner-side (pendingCredentialRefreshes); we only read the DB here.
-      const cred = await resolveCodexCredential({ teamId, accountId, workspaceId: wsId });
+      // The resolver already skips expired rows; this guard keeps a dead login
+      // off the wire even if it ever stops doing so (spec R-3 / AC-2).
+      const resolved = await resolveCodexCredential({ teamId, accountId, workspaceId: wsId });
+      const cred = resolved && !credentialExpired(resolved.tokenExpiresAt) ? resolved : null;
+      if (resolved && !cred) {
+        console.log(`[claim] Left out an expired Codex login for worker ${cw.id}; the runner uses its own login or an API key`);
+      }
       if (cred) {
         (cw as any).codexCredential = {
           credentialType: cred.credentialType,
@@ -247,7 +272,10 @@ export async function attachClaudeCredentials(
       // The first refresh after reconnect comes from the runner (workers.ts BUILDD_RUNNER_REFRESH gate).
       // Resolve the most-specific credential: workspace > account > team-wide.
       const cred = await resolveClaudeCredential({ teamId, accountId, workspaceId: wsId });
-      if (cred) {
+      if (cred && credentialExpired(cred.tokenExpiresAt)) {
+        // Spec R-3 / AC-2: never deliver an expired login; the runner uses its own.
+        console.log(`[claim] Left out an expired claude_credential for worker ${cw.id}; the runner uses its own login`);
+      } else if (cred) {
         (cw as any).claudeAccessToken = cred.accessToken;
         (cw as any).claudeTokenExpiresAt = cred.tokenExpiresAt ? cred.tokenExpiresAt.toISOString() : null;
         if (cred.scopes?.length) (cw as any).claudeTokenScopes = cred.scopes;
@@ -295,14 +323,14 @@ export async function attachPendingCredentialRefreshes(
     try {
       const twoHoursFromNow = sql`NOW() + INTERVAL '2 hours'`;
       const pendingRows = await db.query.secrets.findMany({
-        where: and(
+        where: sqlWhere(and(
           eq(secrets.teamId, teamId),
           inArray(secrets.purpose, ['claude_credential', 'codex_credential']),
           not(eq(secrets.healthStatus, 'revoked')),
           isNotNull(secrets.tokenExpiresAt),
           lt(secrets.tokenExpiresAt, twoHoursFromNow),
           or(isNull(secrets.workspaceId), eq(secrets.workspaceId, wsId)),
-        ),
+        )),
         columns: { id: true, purpose: true, tokenExpiresAt: true },
       });
 
@@ -356,14 +384,14 @@ export async function resolveAccountCredentialRefreshes(
   try {
     const twoHoursFromNow = sql`NOW() + INTERVAL '2 hours'`;
     const pendingRows = await db.query.secrets.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(secrets.teamId, account.teamId),
         inArray(secrets.purpose, ['claude_credential', 'codex_credential']),
         not(eq(secrets.healthStatus, 'revoked')),
         isNotNull(secrets.tokenExpiresAt),
         lt(secrets.tokenExpiresAt, twoHoursFromNow),
         or(isNull(secrets.accountId), eq(secrets.accountId, account.id)),
-      ),
+      )),
       columns: { id: true, purpose: true, tokenExpiresAt: true },
     });
 

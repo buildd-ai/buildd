@@ -83,6 +83,7 @@ import { openRouterModelId } from './openrouter-id';
 import { verifyByFetch, type LookupAll, type VerifyOutcome } from './net/public-address';
 import { agentKeyPurposes, isAgentKeyRow, type AgentKeyProvider } from './providers/agent-keys';
 import type { TeamReadablePurpose } from './secrets/team-scope';
+import { sqlWhere } from './db/relational-sql';
 
 export const AGENT_ENDPOINT_PURPOSE = 'agent_endpoint' as const;
 
@@ -731,11 +732,11 @@ export async function resolveAgentEndpoint(opts: { teamId: string; workspaceId?:
     const { eq, isNull, or, sql } = await import('drizzle-orm');
     const { teamCredentialWhere } = await import('./secrets/team-scope');
     const rows = await db.query.secrets.findMany({
-      where: teamCredentialWhere(
+      where: sqlWhere(teamCredentialWhere(
         { teamId: opts.teamId, purpose: AGENT_ENDPOINT_PURPOSE },
         isNull(secrets.accountId),
         or(isNull(secrets.workspaceId), opts.workspaceId ? eq(secrets.workspaceId, opts.workspaceId) : sql`false`),
-      ),
+      )),
       columns: { id: true, purpose: true, encryptedValue: true, workspaceId: true, accountId: true, userId: true, healthStatus: true, updatedAt: true },
     });
     const ranked = rankEndpointRows(rows ?? [], opts.workspaceId);
@@ -799,11 +800,11 @@ export async function resolveAgentModelRoute(opts: {
     const { eq, isNull, or } = await import('drizzle-orm');
     const { teamCredentialWhere } = await import('./secrets/team-scope');
     const rows = await db.query.secrets.findMany({
-      where: teamCredentialWhere(
+      where: sqlWhere(teamCredentialWhere(
         { teamId: opts.teamId, purpose: purposes as TeamReadablePurpose[] },
         opts.accountId ? or(isNull(secrets.accountId), eq(secrets.accountId, opts.accountId)) : isNull(secrets.accountId),
         or(isNull(secrets.workspaceId), eq(secrets.workspaceId, opts.workspaceId)),
-      ),
+      )),
       columns: { purpose: true, label: true, userId: true, accountId: true, workspaceId: true, healthStatus: true, tokenExpiresAt: true },
     });
     scopes = competingScopes(rows ?? [], opts, purposes, keyProvider);

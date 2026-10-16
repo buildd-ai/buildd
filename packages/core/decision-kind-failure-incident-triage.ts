@@ -50,6 +50,7 @@ export const FAILURE_INCIDENT_TRIAGE_RULES = [
   'provider_attribution_mismatch',
   'failure_rate_spike',
   'output_unmet_boundary',
+  'infrastructure_failure',
 ] as const;
 
 const SEVERITIES = ['low', 'medium', 'high', 'critical'] as const;

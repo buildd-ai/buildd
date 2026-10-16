@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, workerHeartbeats, workspaces } from '@buildd/core/db/schema';
+import { workers, workerHeartbeats, workspaces, teams } from '@buildd/core/db/schema';
 import { eq, gt, inArray, and } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
@@ -13,6 +13,7 @@ import { getDeployIdentity } from '@/lib/deploy-identity';
 import { browserRunnerOnline } from '@/lib/visual-audit-runner';
 import { isRunnerOnline, RUNNER_ONLINE_WINDOW_MS } from '@/lib/runner-heartbeats-shared';
 import { CAPABILITY_BROWSER, RUNNER_STALE_CUTOFF_MS, isOnceRunnerUrl, runnerFleetIdentity } from '@buildd/shared';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // "Not dead" window (2.5× the poll cycle): a runner listed here may be quiet,
 // but has not been presumed dead. Presence is judged separately below with
@@ -31,6 +32,8 @@ const HEARTBEAT_STALE_MS = RUNNER_STALE_CUTOFF_MS;
  * - maxConcurrent: Maximum concurrent workers allowed
  * - capacity: Remaining capacity (maxConcurrent - activeWorkers)
  * - workspaceIds: Workspaces this runner can work on
+ * - workspaceNames / workspaceTeamNames: their names and their teams' names,
+ *   index for index with workspaceIds (ActiveRunnerWorkspaces in @buildd/shared)
  * - browser: the heartbeat advertises the `browser` capability (envKeys)
  * - browserOnline: `browser`, a heartbeat within `onlineWindowMs`, and (with
  *   `?workspaceId=`) claim reach there: the same rule as `browserRunnerOnline`
@@ -82,7 +85,7 @@ async function getWorkspaceIdsAndNames(
     const [linkedWs, openWs] = await Promise.all([
       linkedWsIds.length > 0
         ? db.query.workspaces.findMany({
-            where: inArray(workspaces.id, linkedWsIds),
+            where: sqlWhere(inArray(workspaces.id, linkedWsIds)),
             columns: CALLER_WS_COLUMNS,
           })
         : Promise.resolve([]),
@@ -93,7 +96,7 @@ async function getWorkspaceIdsAndNames(
     const teamWsIds = await getUserWorkspaceIds(auth.user.id);
     rows = teamWsIds.length > 0
       ? (await db.query.workspaces.findMany({
-          where: inArray(workspaces.id, teamWsIds),
+          where: sqlWhere(inArray(workspaces.id, teamWsIds)),
           columns: CALLER_WS_COLUMNS,
         })) as CallerWorkspace[]
       : [];
@@ -112,6 +115,21 @@ export async function GET(req: NextRequest) {
     const userWorkspaces = await getWorkspaceIdsAndNames(auth);
     const workspaceIds = userWorkspaces.map(w => w.id);
     const workspaceNameMap = new Map(userWorkspaces.map(w => [w.id, w.name]));
+    // Each listed workspace's team name (spec bd009650 R-7, list_runners
+    // groups by it). Only the teams that own a workspace the caller already
+    // sees: nothing here widens what a caller can read.
+    const visibleTeamIds = [...new Set(userWorkspaces.map(w => w.teamId).filter((t): t is string => !!t))];
+    const teamNameById = new Map<string, string>(
+      visibleTeamIds.length > 0
+        ? ((await db.query.teams.findMany({
+            where: sqlWhere(inArray(teams.id, visibleTeamIds)),
+            columns: { id: true, name: true },
+          })) as Array<{ id: string; name: string | null }>)
+            .filter(t => !!t.name)
+            .map(t => [t.id, t.name!] as [string, string])
+        : [],
+    );
+    const workspaceTeamName = new Map(userWorkspaces.map(w => [w.id, (w.teamId && teamNameById.get(w.teamId)) || null]));
 
     const askedWorkspaceId = new URL(req.url).searchParams.get('workspaceId');
     if (askedWorkspaceId && !workspaceIds.includes(askedWorkspaceId)) {
@@ -125,7 +143,7 @@ export async function GET(req: NextRequest) {
     // Find heartbeats that are recent (within last 2 minutes)
     const cutoff = new Date(Date.now() - HEARTBEAT_STALE_MS);
     const heartbeats = await db.query.workerHeartbeats.findMany({
-      where: gt(workerHeartbeats.lastHeartbeatAt, cutoff),
+      where: sqlWhere(gt(workerHeartbeats.lastHeartbeatAt, cutoff)),
       with: {
         account: {
           columns: { id: true, name: true, maxConcurrentWorkers: true, teamId: true },
@@ -144,10 +162,10 @@ export async function GET(req: NextRequest) {
     const onceKey = (accountId: string, url: string) => `${accountId}\n${url}`;
     if (accountIds.length > 0) {
       const activeWorkerRecords = await db.query.workers.findMany({
-        where: and(
+        where: sqlWhere(and(
           inArray(workers.accountId, accountIds),
           inArray(workers.status, [...LIVE_WORKER_STATUSES]),
-        ),
+        )),
         columns: { accountId: true, localUiUrl: true, status: true, waitingFor: true, parkedUntil: true },
       });
       for (const w of activeWorkerRecords as Array<{ accountId: string | null; localUiUrl?: string | null; status?: string; waitingFor?: { type?: string } | null; parkedUntil?: Date | null }>) {
@@ -220,6 +238,8 @@ export async function GET(req: NextRequest) {
           fleet: fleet.ephemeral ? fleet : null,
           workspaceIds: overlapping,
           workspaceNames: overlapping.map(id => workspaceNameMap.get(id) || 'Unknown'),
+          // Parallel to workspaceIds: the owning team's name, null when unknown.
+          workspaceTeamNames: overlapping.map(id => workspaceTeamName.get(id) ?? null),
           environment: hb.environment || null,
           browser: Array.isArray(envKeys) && envKeys.includes(CAPABILITY_BROWSER),
           runnerCommit: hb.runnerCommit || null,
@@ -236,6 +256,10 @@ export async function GET(req: NextRequest) {
           // instead of something inferred from boot age.
           updateAvailableSince: hb.updateAvailableSince ?? null,
           trackedBranch: hb.trackedBranch || null,
+          // Which model login the runner reported (a label, never a credential).
+          modelAuthSource: hb.modelAuthSource ?? null,
+          // And its Codex login, same rule (docs/specs/runner-model-login-detect-say-report.md R-12).
+          codexAuthSource: hb.codexAuthSource ?? null,
           // Only meaningful for a `main`-tracking runner (Vercel deploys from
           // `main` only) with both sides known; otherwise null, not a guess.
           upToDateWithDeployed: hb.trackedBranch === 'main' && hb.diskCommit && deployedSha
@@ -256,7 +280,7 @@ export async function GET(req: NextRequest) {
     const now = Date.now();
     if (askedWorkspaceId) {
       const ws = await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, askedWorkspaceId),
+        where: sqlWhere(eq(workspaces.id, askedWorkspaceId)),
         columns: { id: true, teamId: true, accessMode: true, gitConfig: true, webhookConfig: true },
       });
       const { loadBrowserRunnerHeartbeats } = await import('@/lib/runner-heartbeats');

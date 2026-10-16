@@ -1,6 +1,7 @@
 import { and, inArray, not, sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * "Does any other task still depend on this one?"
@@ -41,7 +42,7 @@ export async function hasUnfinishedDependent(taskId: string | null | undefined):
   if (!taskId) return false;
 
   const dependent = await db.query.tasks.findFirst({
-    where: unfinishedDependentPredicate(taskId),
+    where: sqlWhere(unfinishedDependentPredicate(taskId)),
     columns: { id: true },
   });
   return !!dependent;

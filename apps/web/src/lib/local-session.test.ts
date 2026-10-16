@@ -23,9 +23,11 @@ const {
   handleLocalSessionEvent,
   hashClientSessionId,
   presenceTouchWhere,
+  presenceBusyWhere,
   boundWorkerTouchWhere,
   bindInsertSql,
   usageWriteWhere,
+  hasUnreadAnswerFor,
   LocalSessionError,
 } = await import('./local-session');
 type Store = import('./local-session').LocalSessionStore;
@@ -35,8 +37,8 @@ const LIVE = new Set(['idle', 'running', 'starting', 'waiting_input']);
 const NOW = new Date('2026-10-07T12:00:00Z');
 const later = (ms: number) => new Date(NOW.getTime() + ms);
 
-interface Presence { id: string; accountId: string | null; userId: string | null; kind: string; hash: string; endedAt: Date | null; lastSeenAt: Date; workspaceId: string | null; endReason?: string }
-interface Worker { id: string; accountId: string; runner: string; status: string; taskId: string | null; workspaceId: string; updatedAt: Date; pendingInstructions: string | null; ownerTeamId?: string | null; claimUserId?: string | null }
+interface Presence { id: string; accountId: string | null; userId: string | null; kind: string; hash: string; endedAt: Date | null; lastSeenAt: Date; workspaceId: string | null; endReason?: string; busySince?: Date | null }
+interface Worker { id: string; accountId: string; runner: string; status: string; taskId: string | null; workspaceId: string; updatedAt: Date; pendingInstructions: string | null; ownerTeamId?: string | null; claimUserId?: string | null; waitingFor?: { type: string; prompt?: string } | null }
 
 let presences: Presence[];
 /** local_session_workers: worker id -> presence id (primary key on the worker). */
@@ -52,10 +54,12 @@ let usageWrites: UsageWrite[];
 /** Interleaving of usage writes and detaches, to pin "usage lands before release". */
 let usageOrder: string[];
 let taskStatus: Map<string, string>;
+let withdrawals: string[];
 
 const row = (p: Presence) => ({
   id: p.id,
   endedAt: p.endedAt,
+  endReason: p.endReason ?? null,
   workerIds: [...bindings].filter(([, pid]) => pid === p.id).map(([wid]) => wid),
 });
 
@@ -70,7 +74,7 @@ function memoryStore(): Store {
         p = { id: `p${++seq}`, accountId: 'accountId' in i.owner ? i.owner.accountId : null, userId: 'userId' in i.owner ? i.owner.userId : null, kind: i.clientKind, hash: i.clientSessionHash, endedAt: null, lastSeenAt: i.now, workspaceId: i.workspaceId };
         presences.push(p);
       } else {
-        p.lastSeenAt = i.now; p.endedAt = null;
+        p.lastSeenAt = i.now; p.endedAt = null; p.endReason = undefined; p.busySince = null;
         if (i.workspaceId) p.workspaceId = i.workspaceId;
       }
       return row(p);
@@ -85,6 +89,17 @@ function memoryStore(): Store {
       if (p.endedAt || now.getTime() - p.lastSeenAt.getTime() < 60_000) return false;
       p.lastSeenAt = now; presenceWrites++;
       return true;
+    },
+    async setBusy(id, busy, now) {
+      const p = presences.find(x => x.id === id)!;
+      if (p.endedAt || (busy ? p.busySince != null : p.busySince == null)) return false;
+      p.busySince = busy ? now : null; p.lastSeenAt = now; presenceWrites++;
+      return true;
+    },
+    async adopt(from, to) {
+      const moved = [...bindings].filter(([, pid]) => pid === from).map(([wid]) => wid);
+      for (const wid of moved) bindings.set(wid, to);
+      return moved;
     },
     async touchBoundWorker(workerId, accountId, now) {
       const w = workers.get(workerId);
@@ -120,7 +135,15 @@ function memoryStore(): Store {
       const w = workers.get(id);
       if (!w) return null;
       const live = LIVE.has(w.status);
-      return { taskId: w.taskId, pendingInstructions: live && !!w.pendingInstructions, live };
+      return { taskId: w.taskId, pendingInstructions: live && !!w.pendingInstructions, live, interactive: w.runner === 'mcp' };
+    },
+    // The same compare-and-swap /respond claims an answer with: a question
+    // still open, on an interactive worker parked on it.
+    async withdrawQuestion(id) {
+      const w = workers.get(id);
+      if (!w || w.runner !== 'mcp' || w.status !== 'waiting_input' || w.waitingFor?.type !== 'question') return false;
+      w.status = 'running'; w.waitingFor = null; withdrawals.push(id);
+      return true;
     },
   };
 }
@@ -166,6 +189,7 @@ beforeEach(() => {
   detachCalls = [];
   usageWrites = [];
   usageOrder = [];
+  withdrawals = [];
   store = memoryStore();
 });
 
@@ -334,6 +358,116 @@ describe('touch of a bound worker', () => {
   });
 });
 
+// docs/specs/terminal-question-redirect.md
+describe('terminal question redirect', () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+
+  it('names the held interactive worker as where to ask (askVia)', async () => {
+    claimWorker(id);
+    await run({ event: 'bind', workerId: id });
+    const res = await run({ event: 'touch' }, ACCOUNT, later(120_000));
+    expect(res.askVia).toEqual({ workerId: id });
+  });
+
+  it('names the most recently bound live one when the session holds several', async () => {
+    const other = '22222222-2222-4222-8222-222222222222';
+    claimWorker(id);
+    claimWorker(other);
+    await run({ event: 'bind', workerId: id });
+    await run({ event: 'bind', workerId: other });
+    const res = await run({ event: 'touch' }, ACCOUNT, later(120_000));
+    expect(res.askVia).toEqual({ workerId: other });
+  });
+
+  // AC-TQR-4
+  it('gives no askVia once the held worker has ended', async () => {
+    claimWorker(id);
+    await run({ event: 'bind', workerId: id });
+    workers.get(id)!.status = 'completed';
+    const res = await run({ event: 'touch' }, ACCOUNT, later(120_000));
+    expect(res.askVia ?? null).toBeNull();
+  });
+
+  // AC-TQR-6
+  it('gives no askVia for a worker a runner manages', async () => {
+    claimWorker(id);
+    await run({ event: 'bind', workerId: id });
+    workers.get(id)!.runner = 'runner-1';
+    const res = await run({ event: 'touch' }, ACCOUNT, later(120_000));
+    expect(res.askVia ?? null).toBeNull();
+  });
+
+  it('gives no askVia to a session holding nothing', async () => {
+    const res = await run({ event: 'touch' });
+    expect(res.askVia ?? null).toBeNull();
+  });
+
+  // AC-TQR-8
+  it('a person typing at the terminal withdraws the open ask_human question', async () => {
+    claimWorker(id);
+    await run({ event: 'bind', workerId: id });
+    Object.assign(workers.get(id)!, { status: 'waiting_input', waitingFor: { type: 'question', prompt: 'Tabs or spaces?' } });
+    await run({ event: 'touch', busy: true, prompted: true }, ACCOUNT, later(120_000));
+    expect(withdrawals).toEqual([id]);
+    expect(workers.get(id)!.status).toBe('running');
+    expect(workers.get(id)!.waitingFor).toBeNull();
+  });
+
+  // AC-TQR-9
+  it('a touch that is not a typed prompt leaves the question open', async () => {
+    claimWorker(id);
+    await run({ event: 'bind', workerId: id });
+    Object.assign(workers.get(id)!, { status: 'waiting_input', waitingFor: { type: 'question', prompt: 'Tabs or spaces?' } });
+    await run({ event: 'touch', busy: true }, ACCOUNT, later(120_000));
+    await run({ event: 'touch', busy: false }, ACCOUNT, later(240_000));
+    expect(withdrawals).toEqual([]);
+    expect(workers.get(id)!.status).toBe('waiting_input');
+  });
+
+  // AC-TQR-10 / AC-TQR-11: the CAS decides; a lost race or a permission
+  // prompt is left exactly as it was.
+  it('leaves a question already answered, and a permission prompt, alone', async () => {
+    const other = '22222222-2222-4222-8222-222222222222';
+    claimWorker(id);
+    claimWorker(other);
+    await run({ event: 'bind', workerId: id });
+    await run({ event: 'bind', workerId: other });
+    Object.assign(workers.get(id)!, { status: 'running', waitingFor: null });
+    Object.assign(workers.get(other)!, { status: 'waiting_input', waitingFor: { type: 'permission' } });
+    await run({ event: 'touch', prompted: true }, ACCOUNT, later(120_000));
+    expect(withdrawals).toEqual([]);
+    expect(workers.get(other)!.status).toBe('waiting_input');
+  });
+
+  it('accepts prompted on touch only, as a boolean', () => {
+    expect(parseLocalSessionEvent({ event: 'touch', client: 'claude', clientSessionId: 's', prompted: true }).ok).toBe(true);
+    expect(parseLocalSessionEvent({ event: 'touch', client: 'claude', clientSessionId: 's', prompted: 'yes' }).ok).toBe(false);
+    expect(parseLocalSessionEvent({ event: 'start', client: 'claude', clientSessionId: 's', prompted: true }).ok).toBe(false);
+  });
+});
+
+// An answer to the session's own ask_human question waits in the task's
+// message queue, not in pendingInstructions: the hook's turn-boundary nudge
+// must fire for it too, or a session that stopped waiting never hears of it.
+describe('hasUnreadAnswerFor', () => {
+  const W = 'worker-1';
+  const answer = { id: 'msg-1', type: 'answer', body: { source: 'human', text: 'Use Postgres', workerId: W } };
+
+  it('flags an answer queued for this worker', () => {
+    expect(hasUnreadAnswerFor(W, { pendingWorkerMessages: [answer] })).toBe(true);
+  });
+
+  it('ignores an answer for another worker on the same task', () => {
+    expect(hasUnreadAnswerFor(W, { pendingWorkerMessages: [{ ...answer, body: { ...answer.body, workerId: 'worker-2' } }] })).toBe(false);
+  });
+
+  it('ignores other queued messages, and an empty or missing queue', () => {
+    expect(hasUnreadAnswerFor(W, { pendingWorkerMessages: [{ id: 'm', type: 'path_released', body: {} }] })).toBe(false);
+    expect(hasUnreadAnswerFor(W, { pendingWorkerMessages: [] })).toBe(false);
+    expect(hasUnreadAnswerFor(W, null)).toBe(false);
+  });
+});
+
 describe('a person presence token', () => {
   // The hooks hold a token for the PERSON, not a team account: their claim may
   // have been made with any of their teams' keys, or over OAuth.
@@ -486,6 +620,24 @@ describe('end', () => {
   it('an end for a session never seen is a no-op', async () => {
     expect((await run({ event: 'end', reason: 'exit' })).outcome).toBe('unknown_session');
     expect(presences).toHaveLength(0);
+  });
+
+  it('a straggler touch just after the end is a replay: it does not re-open the session or touch its workers', async () => {
+    claimWorker(id, { updatedAt: new Date(NOW.getTime() - 5 * 60_000) });
+    await run({ event: 'bind', workerId: id });
+    await run({ event: 'end', reason: 'clear' }, ACCOUNT, later(1_000));
+    const touchesBefore = workerTouches;
+    // An async PostToolUse that was in flight when the session closed.
+    expect((await run({ event: 'touch' }, ACCOUNT, later(4_000))).outcome).toBe('already_ended');
+    expect(presences[0].endedAt).toEqual(later(1_000));
+    expect(workerTouches).toBe(touchesBefore);
+  });
+
+  it('a touch well after the end is a resumed session whose start was missed: it re-opens', async () => {
+    await run({ event: 'start' });
+    await run({ event: 'end', reason: 'exit' });
+    expect((await run({ event: 'touch' }, ACCOUNT, later(5 * 60_000))).outcome).toBe('started');
+    expect(presences[0].endedAt).toBeNull();
   });
 
   it('a resumed session re-opens its presence', async () => {
@@ -694,5 +846,109 @@ describe('SQL', () => {
     // A session bound before multi-claim keeps its worker: the legacy column still guards it.
     expect(q.sql).toMatch(/"bound_worker_id" = /);
     expect(q.params).toEqual(expect.arrayContaining(['p1', 'w1']));
+  });
+});
+
+describe('turn state (busy)', () => {
+  it('a busy flip is written at once, even inside the touch throttle, and only when it changes', async () => {
+    await run({ event: 'start' });
+    const before = presenceWrites;
+    expect((await run({ event: 'touch', busy: true }, ACCOUNT, later(5_000))).outcome).toBe('touched');
+    expect(presences[0].busySince).toEqual(later(5_000));
+    expect(presences[0].lastSeenAt).toEqual(later(5_000));
+    // Already busy: nothing to write, and the mark keeps its first time.
+    expect((await run({ event: 'touch', busy: true }, ACCOUNT, later(10_000))).outcome).toBe('coalesced');
+    expect(presences[0].busySince).toEqual(later(5_000));
+    expect((await run({ event: 'touch', busy: false }, ACCOUNT, later(15_000))).outcome).toBe('touched');
+    expect(presences[0].busySince).toBeNull();
+    expect(presenceWrites).toBe(before + 2);
+  });
+
+  it('a touch with no busy field leaves the mark alone (an older hook, or a PostToolUse)', async () => {
+    await run({ event: 'start' });
+    await run({ event: 'touch', busy: true }, ACCOUNT, later(5_000));
+    await run({ event: 'touch' }, ACCOUNT, later(120_000));
+    expect(presences[0].busySince).toEqual(later(5_000));
+  });
+
+  it('a (re)start clears a mark a dead process left behind', async () => {
+    await run({ event: 'start' });
+    await run({ event: 'touch', busy: true }, ACCOUNT, later(5_000));
+    await run({ event: 'start' }, ACCOUNT, later(60 * 60_000));
+    expect(presences[0].busySince).toBeNull();
+  });
+
+  it('busy rides only on touch', () => {
+    expect(parseLocalSessionEvent({ event: 'start', client: 'claude', clientSessionId: 's', busy: true }).ok).toBe(false);
+    expect(parseLocalSessionEvent({ event: 'touch', client: 'claude', clientSessionId: 's', busy: 'yes' }).ok).toBe(false);
+    const ok = parseLocalSessionEvent({ event: 'touch', client: 'claude', clientSessionId: 's', busy: false });
+    expect(ok.ok && ok.event.busy).toBe(false);
+  });
+
+  it('the busy write only reaches an open row whose mark changes', () => {
+    const on = dialect.sqlToQuery(presenceBusyWhere('p1', true)).sql;
+    expect(on).toContain('"local_sessions"."ended_at" is null');
+    expect(on).toContain('"local_sessions"."busy_since" is null');
+    const off = dialect.sqlToQuery(presenceBusyWhere('p1', false)).sql;
+    expect(off).toContain('"local_sessions"."busy_since" is not null');
+  });
+});
+
+describe('/clear keeps the claims', () => {
+  const bindA = async () => {
+    await run({ event: 'start' });
+    await run({ event: 'bind', workerId: UUID1 });
+  };
+  const UUID1 = '11111111-1111-4111-8111-111111111111';
+  const runB = (ev: Record<string, unknown>, account = ACCOUNT, now = NOW) => run({ clientSessionId: 'sess-B', ...ev }, account, now);
+
+  beforeEach(() => {
+    workers.set(UUID1, { id: UUID1, accountId: ACCOUNT.id, runner: 'mcp', status: 'running', taskId: 't-1', workspaceId: 'ws-1', updatedAt: NOW, pendingInstructions: null });
+    taskStatus.set('t-1', 'in_progress');
+  });
+
+  it('the continuing session adopts the cleared one\'s claims, and its touches keep them alive', async () => {
+    await bindA();
+    const ended = await run({ event: 'end', reason: 'clear' }, ACCOUNT, later(1_000));
+    expect(ended.outcome).toBe('ended_kept_claim');
+    const res = await runB({ event: 'start', continuesSessionId: 'sess-A' }, ACCOUNT, later(2_000));
+    expect(res.outcome).toBe('continued');
+    expect(res.taskId).toBe('t-1');
+    const pB = presences.find(p => p.hash === hashClientSessionId('claude', 'sess-B'))!;
+    expect(bindings.get(UUID1)).toBe(pB.id);
+    expect(detachCalls).toEqual([]);
+    // Hours later, the new session's hook touch is what keeps the claim.
+    await runB({ event: 'touch' }, ACCOUNT, later(3 * 60 * 60_000));
+    expect(workers.get(UUID1)!.updatedAt).toEqual(later(3 * 60 * 60_000));
+  });
+
+  it('adopts even when the new start lands before the old end; the late end then releases nothing', async () => {
+    await bindA();
+    await runB({ event: 'start', continuesSessionId: 'sess-A' }, ACCOUNT, later(1_000));
+    const ended = await run({ event: 'end', reason: 'exit' }, ACCOUNT, later(2_000));
+    expect(ended.outcome).toBe('ended');
+    expect(detachCalls).toEqual([]);
+    expect(workers.get(UUID1)!.status).toBe('running');
+  });
+
+  it('never adopts from a session that exited (its claims were released)', async () => {
+    await bindA();
+    await run({ event: 'end', reason: 'exit' }, ACCOUNT, later(1_000));
+    const res = await runB({ event: 'start', continuesSessionId: 'sess-A' }, ACCOUNT, later(2_000));
+    expect(res.outcome).toBe('started');
+  });
+
+  it('never adopts another account\'s session', async () => {
+    await bindA();
+    await run({ event: 'end', reason: 'clear' }, ACCOUNT, later(1_000));
+    const res = await runB({ event: 'start', continuesSessionId: 'sess-A' }, OTHER_ACCOUNT, later(2_000));
+    expect(res.outcome).toBe('started');
+    expect(bindings.get(UUID1)).toBe(presences[0].id);
+  });
+
+  it('continuesSessionId rides only on start', () => {
+    expect(parseLocalSessionEvent({ event: 'touch', client: 'claude', clientSessionId: 's', continuesSessionId: 'x' }).ok).toBe(false);
+    const self = parseLocalSessionEvent({ event: 'start', client: 'claude', clientSessionId: 's', continuesSessionId: 's' });
+    expect(self.ok && self.event.continuesSessionId).toBeUndefined();
   });
 });

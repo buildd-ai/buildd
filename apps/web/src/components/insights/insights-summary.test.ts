@@ -56,7 +56,7 @@ describe('shippingSentence', () => {
 describe('timeRows', () => {
   it('one row per category in display order, shares summing to 1, each linking to its tasks', () => {
     const rows = timeRows(series({ time: { needs_input: [2 * H, 1], review: [6 * H, 3], running: [8 * H, 5], release: [4 * H, 2] } }));
-    expect(rows.map(r => r.label)).toEqual(['Needs input', 'Waiting for CI', 'In review', 'Waiting for a runner', 'Running', 'Retries after failure', 'Waiting for a release']);
+    expect(rows.map(r => r.label)).toEqual(['Has a question', 'Waiting for CI', 'In review', 'Waiting for a runner', 'Running', 'Retries after failure', 'Waiting for a release']);
     expect(rows.reduce((m, r) => m + r.share, 0)).toBeCloseTo(1);
     expect(rows.find(r => r.category === 'review')!.share).toBeCloseTo(0.3);
     expect(rows[0].href).toContain('split=needs_input');

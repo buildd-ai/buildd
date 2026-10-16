@@ -14,6 +14,8 @@ import { depsGate } from '@/app/api/workers/claim/deps-gate';
 import { refreshWorkerMergeStateIfStale } from './pr-reconcile';
 import { isBookkeeping } from '@buildd/core/mission-helpers';
 import type { PathDeclaration } from '@buildd/shared';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
+import { deliveryOwnedTaskSql, taskCols } from '@/lib/workflow/pr-fact-scope';
 
 /**
  * Result of interpreting `structuredOutput.plan`. Organizer heartbeats
@@ -130,7 +132,7 @@ export async function resolveCompletedTask(
 ): Promise<void> {
   // Check if the completed task's parent has all children done
   const completedTask = await db.query.tasks.findFirst({
-    where: eq(tasks.id, completedTaskId),
+    where: sqlWhere(eq(tasks.id, completedTaskId)),
     columns: { parentTaskId: true },
   });
 
@@ -140,7 +142,7 @@ export async function resolveCompletedTask(
 
   // Check if task is a planning task that needs mission-level handling
   const completedTaskFull = await db.query.tasks.findFirst({
-    where: eq(tasks.id, completedTaskId),
+    where: sqlWhere(eq(tasks.id, completedTaskId)),
     columns: { mode: true, missionId: true, status: true, context: true },
   });
 
@@ -159,7 +161,7 @@ export async function resolveCompletedTask(
     } else {
       // Completed planning task — auto-approve plan if present in structuredOutput
       const taskWithResult = await db.query.tasks.findFirst({
-        where: eq(tasks.id, completedTaskId),
+        where: sqlWhere(eq(tasks.id, completedTaskId)),
         columns: { result: true },
       });
       const result = taskWithResult?.result as Record<string, unknown> | null;
@@ -272,10 +274,10 @@ export async function resolveCompletedTask(
   // Check if this is a completed evaluation task — handle verdict
   if (completedTaskFull?.missionId) {
     const missionRecord = await db.query.missions.findFirst({
-      where: and(
+      where: sqlWhere(and(
         eq(missions.id, completedTaskFull.missionId),
         eq(missions.lastEvaluationTaskId, completedTaskId),
-      ),
+      )),
       columns: { id: true },
     });
     if (missionRecord) {
@@ -340,7 +342,7 @@ export async function resolveCompletedTask(
 async function supersedeRetriesOfMergedTask(taskId: string, workspaceId: string): Promise<void> {
   try {
     const merged = await db.query.workers.findFirst({
-      where: and(eq(workers.taskId, taskId), isNotNull(workers.mergedAt)),
+      where: sqlWhere(and(eq(workers.taskId, taskId), isNotNull(workers.mergedAt))),
       columns: { prNumber: true },
     });
     if (!merged) return;
@@ -361,7 +363,7 @@ async function checkChildrenCompleted(
   parentTaskId: string
 ): Promise<void> {
   const children = await db.query.tasks.findMany({
-    where: eq(tasks.parentTaskId, parentTaskId),
+    where: sqlWhere(eq(tasks.parentTaskId, parentTaskId)),
     columns: { id: true, status: true, workspaceId: true, title: true, result: true, taskClass: true },
   });
 
@@ -401,7 +403,7 @@ async function maybeCreateAggregationTask(
 ): Promise<void> {
   // Fetch parent to check if it's a planning task
   const parent = await db.query.tasks.findFirst({
-    where: eq(tasks.id, parentTaskId),
+    where: sqlWhere(eq(tasks.id, parentTaskId)),
     columns: {
       id: true, mode: true, title: true, workspaceId: true, missionId: true, roleSlug: true,
       // Who the plan is for (resolveTaskRequesterUserId): the aggregator is too.
@@ -414,7 +416,7 @@ async function maybeCreateAggregationTask(
   // Skip if the parent's mission is already completed
   if (parent.missionId) {
     const mission = await db.query.missions.findFirst({
-      where: eq(missions.id, parent.missionId),
+      where: sqlWhere(eq(missions.id, parent.missionId)),
       columns: { id: true, status: true },
     });
     if (mission?.status === 'completed') return;
@@ -532,7 +534,12 @@ async function maybeCreateAggregationTask(
  * runs after the live PR refresh so a merge that refresh discovers counts.
  */
 export async function checkDependsOnResolved(
-  completedTaskId: string
+  completedTaskId: string,
+  /**
+   * `observeOnly`: the caller is a page render's after() (pr-state-refresh), which may record a
+   * kernel-owned dependency's merge as a fact but never apply it (AC-3); the fast heal applies it.
+   */
+  opts: { observeOnly?: boolean } = {},
 ): Promise<void> {
   // Find all PENDING tasks where dependsOn contains the completed task ID.
   // Only pending tasks can be woken — completed/failed/cancelled ones are inert.
@@ -621,7 +628,7 @@ export async function checkDependsOnResolved(
       )];
       if (uniqueWsIds.length > 0) {
         const wsRecords = await db.query.workspaces.findMany({
-          where: inArray(workspaces.id, uniqueWsIds),
+          where: sqlWhere(inArray(workspaces.id, uniqueWsIds)),
           columns: { id: true },
           with: { githubInstallation: { columns: { installationId: true } } },
         });
@@ -650,9 +657,11 @@ export async function checkDependsOnResolved(
           const installationId = wsId ? wsInstallMap.get(wsId) : null;
           if (!installationId) return;
 
+          // A kernel-owned dependency's merge goes through T17 (S4a), so the workspace rides along.
           const refreshed = await refreshWorkerMergeStateIfStale(
             { id: worker.id, prNumber: worker.prNumber, prUrl: worker.prUrl },
             installationId,
+            { workspaceId: wsId, observeOnly: opts.observeOnly },
           );
           if (refreshed) {
             for (const taskId of taskIds) {
@@ -718,7 +727,7 @@ export async function checkDependsOnResolved(
  * started). A caller-declared edge to the same failed task still cascades
  * normally.
  */
-async function cascadeDependencyFailure(
+export async function cascadeDependencyFailure(
   failedTaskId: string
 ): Promise<void> {
   // Find all pending/assigned tasks where dependsOn contains the failed task ID
@@ -737,6 +746,9 @@ async function cascadeDependencyFailure(
         sql`${tasks.dependsOn}::jsonb @> ${JSON.stringify([failedTaskId])}::jsonb`,
         // Only cascade to non-terminal tasks
         sql`${tasks.status} NOT IN ('completed', 'failed', 'cancelled')`,
+        // S4b (workflow-kernel-library.md §1): a task whose PR a live kernel delivery carries is the
+        // kernel's to settle. Failing it here would contradict a delivery in review or landing.
+        sql`NOT ${deliveryOwnedTaskSql(taskCols(), { live: true })}`,
       )
     );
 
@@ -744,7 +756,7 @@ async function cascadeDependencyFailure(
 
   // Fetch the failed task's title for a meaningful error message
   const failedTask = await db.query.tasks.findFirst({
-    where: eq(tasks.id, failedTaskId),
+    where: sqlWhere(eq(tasks.id, failedTaskId)),
     columns: { title: true },
   });
   const failedTitle = failedTask?.title || failedTaskId;

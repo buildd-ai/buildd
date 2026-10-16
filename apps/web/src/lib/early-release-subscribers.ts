@@ -20,11 +20,12 @@ import { eq } from 'drizzle-orm';
 import { subscriber, type AnySubscriber } from '@/lib/core-events';
 import { scheduleEarlyReleaseDispatch } from '@/lib/early-release-dispatch-trigger';
 import { undraftStackedDependents } from '@/lib/early-release-stacking';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const earlyReleaseSubscribers: readonly AnySubscriber[] = [
   subscriber('releases', 'pr.review_ready', 'early-release-dispatch', async e => {
     const workspace = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, e.worker.workspaceId),
+      where: sqlWhere(eq(workspaces.id, e.worker.workspaceId)),
       columns: { teamId: true, gitConfig: true },
     });
     if (!workspace) return;

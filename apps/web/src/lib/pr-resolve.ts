@@ -3,6 +3,7 @@ import { workers, workspaces } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { getTeamWorkspaceIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { constrainToGranted, type GrantScopedAccount } from '@/lib/grant-scope';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * Resolve a worker by PR number across the account's accessible workspaces.
@@ -56,7 +57,7 @@ export async function resolveWorkerByPrNumberInWorkspaces(
       narrowedWsId = workspaceId;
     } else {
       const allWs = await db.query.workspaces.findMany({
-        where: inArray(workspaces.id, wsIds),
+        where: sqlWhere(inArray(workspaces.id, wsIds)),
         columns: { id: true, name: true, repo: true },
       });
       const lower = workspaceId.toLowerCase();
@@ -78,11 +79,11 @@ export async function resolveWorkerByPrNumberInWorkspaces(
   const searchIds = narrowedWsId ? [narrowedWsId] : wsIds;
 
   const matchingWorkers = await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       inArray(workers.workspaceId, searchIds),
       eq(workers.prNumber, prNumber),
       isNotNull(workers.prUrl),
-    ),
+    )),
     with: { workspace: true },
   });
 
@@ -128,7 +129,7 @@ export async function resolveOpenWorkerForUser(
       narrowedWsId = workspaceId;
     } else {
       const allWs = await db.query.workspaces.findMany({
-        where: inArray(workspaces.id, wsIds),
+        where: sqlWhere(inArray(workspaces.id, wsIds)),
         columns: { id: true, name: true, repo: true },
       });
       const lower = workspaceId.toLowerCase();
@@ -147,12 +148,12 @@ export async function resolveOpenWorkerForUser(
   const searchIds = narrowedWsId ? [narrowedWsId] : wsIds;
 
   const matchingWorkers = await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       inArray(workers.workspaceId, searchIds),
       eq(workers.prNumber, prNumber),
       isNotNull(workers.prUrl),
       isNull(workers.mergedAt),
-    ),
+    )),
     with: { task: true },
   });
 

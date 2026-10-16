@@ -127,7 +127,7 @@ export function RepoLinkCard({ workspaceId, onLinked }: { workspaceId: string; o
         <div className="py-4 first:pt-0 last:pb-0" data-testid="repo-link-card">
             <h3 className="text-sm font-medium text-text-primary mb-0.5">Link a repository</h3>
             <p className="text-xs text-text-muted mb-3">
-                No repository linked. Agents can still do work that needs no code; link one so they can open pull requests.
+                No repository linked. Agents need one to open pull requests.
             </p>
 
             {!configured || installations.length === 0 ? (

@@ -10,6 +10,12 @@ import { execSync } from 'child_process';
 import * as fs from 'fs';
 import { isTestRuntime, resolveBuilddHome } from './buildd-home';
 import { join } from 'path';
+import {
+  stageAside, restoreAside, discardAside, recoverInterruptedSwap, installInProgress, acquireInstallLock, releaseInstallLock,
+  INSTALL_TIMEOUT_MS, type TreeFs, type StagedTree,
+} from './package-tree';
+
+export { INSTALL_TIMEOUT_MS };
 import { readFileSync } from 'fs';
 import type { RunnerUpdateSnapshot } from '@buildd/shared';
 
@@ -235,6 +241,11 @@ export interface UpdateResult {
   error?: string;
   previousCommit?: string;
   newCommit?: string;
+  /**
+   * The update failed and the tree (code AND packages) was put back as it was.
+   * The caller keeps running the old version and must not roll back again.
+   */
+  rolledBack?: boolean;
 }
 
 // Non-blocking git command helper. execSync ties up the whole event loop for
@@ -272,11 +283,16 @@ async function bunVersionAsync(cwd: string, timeoutMs = 10_000): Promise<void> {
   }
 }
 
-async function bunInstallAsync(cwd: string, timeoutMs = 120_000): Promise<void> {
+async function bunInstallAsync(cwd: string, timeoutMs = INSTALL_TIMEOUT_MS): Promise<void> {
   const proc = Bun.spawn(['bun', 'install', '--frozen-lockfile'], { cwd, stdout: 'pipe', stderr: 'pipe' });
-  const timer = setTimeout(() => { try { proc.kill(); } catch { /* already gone */ } }, timeoutMs);
+  let timedOut = false;
+  // SIGKILL: a install stuck on the network or a lifecycle script ignores SIGTERM.
+  const timer = setTimeout(() => { timedOut = true; try { proc.kill('SIGKILL'); } catch { /* already gone */ } }, timeoutMs);
   const exitCode = await proc.exited;
   clearTimeout(timer);
+  if (timedOut) {
+    throw new Error(`bun install --frozen-lockfile timed out after ${Math.round(timeoutMs / 1000)}s`);
+  }
   if (exitCode !== 0) {
     const stderr = await new Response(proc.stderr).text();
     throw new Error(`bun install --frozen-lockfile failed (exit ${exitCode}): ${stderr.trim()}`);
@@ -325,36 +341,80 @@ const defaultExecOps: UpdateExecOps = {
   browserInstall: browserInstallAsync,
 };
 
+/** What the update path needs from `fs`: the package-tree moves plus the failure record. */
+export type UpdateFsOps = TreeFs;
+
+/** Where the last failed update says why (read by an operator, never by code). */
+export const UPDATE_FAILURE_FILE = '.buildd-update-failure.json';
+
+function recordUpdateFailure(
+  installDir: string,
+  fsOps: Pick<typeof fs, 'writeFileSync'>,
+  info: { kind: 'update' | 'rollback'; error: string; from?: string; packagesRestored: boolean; codeRestored: boolean },
+): void {
+  console.error(
+    `[updater] ${info.kind} failed: ${info.error} — packages ${info.packagesRestored ? 'restored' : 'NOT restored'}, ` +
+    `code ${info.codeRestored ? 'restored' : 'NOT restored'}; keeping the running version`,
+  );
+  try {
+    fsOps.writeFileSync(join(installDir, UPDATE_FAILURE_FILE), JSON.stringify({ at: new Date().toISOString(), ...info }, null, 2));
+  } catch { /* the log line above is the record of last resort */ }
+}
+
 /**
- * Clean reinstall shared by the forward path (`applyUpdate`) and rollback
- * (`rollbackTo`): verify bun is runnable, then remove node_modules and do a
- * frozen-lockfile install.
+ * Package reinstall shared by the forward path (`applyUpdate`) and rollback
+ * (`rollbackTo`): verify bun is runnable, move the current `node_modules`
+ * directories aside, do a frozen-lockfile install into the empty slot, and only
+ * then drop the old ones. On failure or timeout the old ones are moved back, so
+ * the install is never left without packages.
  *
- * Why a clean reinstall (rm + install) instead of a plain `bun install`:
- * bun's isolated store (`node_modules/.bun`) never garbage-collects superseded
- * package versions, so each self-update that bumps a dependency orphans the old
- * version forever — across ALL packages, not just the SDK. In production this
- * grew node_modules to 7.7GB (e.g. 32 versions of @aws-sdk/client-s3) and filled
- * the host disk. Removing node_modules first makes bun rebuild only the
- * lockfile-referenced tree (7.7GB -> 1.8GB observed); installs relink from the
- * warm global cache (`~/.bun/install/cache`) in a few seconds.
+ * Why not a plain in-place `bun install`: bun's isolated store
+ * (`node_modules/.bun`) never garbage-collects superseded package versions, so
+ * each self-update that bumps a dependency orphans the old version forever. In
+ * production this grew node_modules to 7.7GB (e.g. 32 versions of
+ * @aws-sdk/client-s3) and filled the host disk; rebuilding only the
+ * lockfile-referenced tree gave 1.8GB. Installs relink from the warm global
+ * cache (`~/.bun/install/cache`) in a few seconds.
  *
- * Verifying bun BEFORE deleting node_modules matters: if bun is missing or
- * broken this throws here (node_modules untouched) rather than after the rm,
- * so a bad bun can never leave the install with a wiped tree it can't rebuild.
+ * Why not `rm -rf` first (what this used to do): the removal is final and the
+ * install is not. An install that timed out or failed after the rm left every
+ * `apps/runner/node_modules/*` symlink dangling, and each restart crash-looped
+ * on `ENOENT reading ".../pusher-js"` (task c08b35ae). Renaming keeps the same
+ * disk behaviour on success and a way back on failure.
+ *
+ * Verifying bun BEFORE touching anything matters for the same reason: a missing
+ * or broken bun fails here with the tree untouched.
  */
 async function cleanReinstall(
   installDir: string,
-  fsOps: Pick<typeof fs, 'rmSync'>,
+  fsOps: UpdateFsOps,
   execOps: UpdateExecOps,
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; packagesRestored?: boolean }> {
+  const other = installInProgress(installDir, fsOps);
+  if (other !== null) {
+    // Two installs into one tree corrupt each other; the tree is untouched.
+    return { success: false, error: `another package install is running (pid ${other})`, packagesRestored: true };
+  }
+  let staged: StagedTree[] = [];
   try {
+    // A previous update killed mid-install: put its packages back before judging this one.
+    recoverInterruptedSwap(installDir, fsOps);
     await execOps.bunVersion(installDir);
-    fsOps.rmSync(join(installDir, 'node_modules'), { recursive: true, force: true });
+    // Held from before the move until after restore/discard, so a concurrent
+    // launch's preflight never mistakes this install for an interrupted one.
+    acquireInstallLock(installDir, fsOps);
+    staged = stageAside(installDir, fsOps);
     await execOps.bunInstall(installDir);
   } catch (err: any) {
-    return { success: false, error: err.message || 'Update failed' };
+    let packagesRestored = staged.length === 0;
+    if (staged.length > 0) {
+      try { restoreAside(staged, fsOps); packagesRestored = true; } catch { /* reported by the caller */ }
+    }
+    releaseInstallLock(installDir, fsOps);
+    return { success: false, error: err.message || 'Update failed', packagesRestored };
   }
+  discardAside(staged, fsOps);
+  releaseInstallLock(installDir, fsOps);
   // A Playwright bump arrives through this reinstall, and its Chromium build
   // with it. Best-effort: a host that cannot download a browser still runs,
   // it just reports browser: no, which the self-check logs with the repair.
@@ -366,6 +426,59 @@ async function cleanReinstall(
     }
   }
   return { success: true };
+}
+
+/**
+ * The workspace package directories the runner needs, read from the commit
+ * itself: apps/runner's `workspace:*` dependencies and theirs, transitively,
+ * mapped to the `packages/<dir>` whose package.json carries that name. Pure.
+ */
+export function requiredWorkspaceDirs(manifests: ReadonlyMap<string, string>, rootDir = 'apps/runner'): string[] {
+  const byName = new Map<string, string>();
+  const deps = new Map<string, string[]>();
+  for (const [dir, text] of manifests) {
+    let pkg: { name?: unknown; dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
+    try { pkg = JSON.parse(text); } catch { continue; }
+    if (typeof pkg.name === 'string') byName.set(pkg.name, dir);
+    const all = { ...pkg.dependencies, ...pkg.devDependencies };
+    deps.set(dir, Object.entries(all).filter(([, v]) => typeof v === 'string' && v.startsWith('workspace:')).map(([n]) => n));
+  }
+  const seen = new Set<string>();
+  const queue = [rootDir];
+  while (queue.length > 0) {
+    const dir = queue.shift()!;
+    for (const name of deps.get(dir) ?? []) {
+      const target = byName.get(name);
+      if (target && !seen.has(target) && target !== rootDir) { seen.add(target); queue.push(target); }
+    }
+  }
+  return [...seen].sort();
+}
+
+/**
+ * A sparse install (install.sh) checks out only the runner and the packages it
+ * listed when it was installed. A release can add a workspace package the
+ * runner now imports; `reset --hard` alone leaves that directory absent and the
+ * frozen install then fails on "@buildd/<pkg>@workspace:* failed to resolve".
+ * So after the reset, add every directory the new commit's runner tree needs.
+ * A full checkout (no sparse config) is left alone. Never widens beyond
+ * workspace packages, never narrows.
+ */
+export async function widenSparseCheckout(installDir: string, git: UpdateExecOps['git']): Promise<string[]> {
+  let sparse = '';
+  try { sparse = await git(['config', '--get', 'core.sparseCheckout'], installDir, 5000); } catch { return []; }
+  if (sparse.trim() !== 'true') return [];
+  const listed = new Set((await git(['sparse-checkout', 'list'], installDir, 5000)).split('\n').map((l) => l.trim().replace(/^\//, '').replace(/\/$/, '')).filter(Boolean));
+  const dirs = (await git(['ls-tree', '-d', '--name-only', 'HEAD', 'packages/'], installDir, 5000)).split('\n').map((l) => l.trim()).filter(Boolean);
+  const manifests = new Map<string, string>();
+  for (const dir of ['apps/runner', ...dirs]) {
+    try { manifests.set(dir, await git(['show', `HEAD:${dir}/package.json`], installDir, 5000)); } catch { /* not a package */ }
+  }
+  const missing = requiredWorkspaceDirs(manifests).filter((d) => !listed.has(d));
+  if (missing.length === 0) return [];
+  await git(['sparse-checkout', 'add', ...missing.map((d) => `${d}/`)], installDir, 30_000);
+  console.log(`[updater] sparse checkout widened for new workspace packages: ${missing.join(', ')}`);
+  return missing;
 }
 
 /**
@@ -382,10 +495,11 @@ async function cleanReinstall(
  */
 export async function applyUpdate(
   installDir: string = installDirDefault(),
-  fsOps: Pick<typeof fs, 'rmSync'> = fs,
+  fsOps: UpdateFsOps = fs,
   execOps: UpdateExecOps = defaultExecOps,
 ): Promise<UpdateResult> {
   const previousCommit = getCurrentCommit();
+  let codeMoved = false;
   try {
     // Ensure we're on the correct branch before resetting
     const currentBranch = await execOps.git(['rev-parse', '--abbrev-ref', 'HEAD'], installDir, 5000);
@@ -393,18 +507,48 @@ export async function applyUpdate(
     if (currentBranch !== BRANCH) {
       await execOps.git(['checkout', '-f', '-B', BRANCH, `origin/${BRANCH}`], installDir, 10_000);
     }
+    codeMoved = true;
     await execOps.git(['reset', '--hard', `origin/${BRANCH}`], installDir, 10_000);
+    await widenSparseCheckout(installDir, execOps.git);
 
     const reinstall = await cleanReinstall(installDir, fsOps, execOps);
     if (!reinstall.success) {
-      return { success: false, error: reinstall.error };
+      return await undoFailedUpdate(installDir, fsOps, execOps, previousCommit, reinstall.error, reinstall.packagesRestored ?? false);
     }
 
     const newCommit = getCurrentCommit();
     return { success: true, previousCommit: previousCommit || undefined, newCommit: newCommit || undefined };
   } catch (err: any) {
-    return { success: false, error: err.message || 'Update failed' };
+    const error = err.message || 'Update failed';
+    // A git failure after the reset began moves the code but never touched the packages.
+    if (codeMoved) return await undoFailedUpdate(installDir, fsOps, execOps, previousCommit, error, true);
+    return { success: false, error };
   }
+}
+
+/**
+ * The code moved to the new release and its packages did not follow. Put the
+ * code back on the commit the packages belong to, so the tree is consistent and
+ * the running (old) version simply carries on. If the old packages could not be
+ * moved back, reinstall them at the old commit, bounded like any install.
+ */
+async function undoFailedUpdate(
+  installDir: string,
+  fsOps: UpdateFsOps,
+  execOps: UpdateExecOps,
+  previousCommit: string,
+  error: string | undefined,
+  packagesRestored: boolean,
+): Promise<UpdateResult> {
+  let codeRestored = !previousCommit;
+  if (previousCommit) {
+    try { await execOps.git(['reset', '--hard', previousCommit], installDir, 10_000); codeRestored = true; } catch { /* recorded below */ }
+  }
+  if (!packagesRestored && codeRestored) {
+    try { await execOps.bunInstall(installDir); packagesRestored = true; } catch { /* recorded below */ }
+  }
+  recordUpdateFailure(installDir, fsOps, { kind: 'update', error: error || 'Update failed', from: previousCommit || undefined, packagesRestored, codeRestored });
+  return { success: false, error, rolledBack: packagesRestored && codeRestored };
 }
 
 /**
@@ -416,7 +560,7 @@ export async function applyUpdate(
 export async function rollbackTo(
   targetCommit: string,
   installDir: string = installDirDefault(),
-  fsOps: Pick<typeof fs, 'rmSync'> = fs,
+  fsOps: UpdateFsOps = fs,
   execOps: UpdateExecOps = defaultExecOps,
 ): Promise<UpdateResult> {
   const previousCommit = getCurrentCommit();
@@ -425,6 +569,12 @@ export async function rollbackTo(
 
     const reinstall = await cleanReinstall(installDir, fsOps, execOps);
     if (!reinstall.success) {
+      // The packages are back (or never moved); the code is already at the rollback target.
+      // Say why, and leave the tree as consistent as it can be made.
+      recordUpdateFailure(installDir, fsOps, {
+        kind: 'rollback', error: reinstall.error || 'Rollback failed', from: previousCommit || undefined,
+        packagesRestored: reinstall.packagesRestored ?? false, codeRestored: true,
+      });
       return { success: false, error: reinstall.error };
     }
 

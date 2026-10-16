@@ -14,23 +14,24 @@ import { githubInstallations, workspaces } from '@buildd/core/db/schema';
 import { eq, inArray } from 'drizzle-orm';
 import { getUserTeamIds } from '@/lib/team-access';
 import { teamIdsWhere } from '@/lib/permissions';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export async function getInstallationOwnerTeamIds(installationDbId: string): Promise<string[]> {
   const installation = await db.query.githubInstallations.findFirst({
-    where: eq(githubInstallations.id, installationDbId),
+    where: sqlWhere(eq(githubInstallations.id, installationDbId)),
     columns: { id: true, accountId: true, installedByUserId: true },
   });
   if (!installation) return [];
 
   const sameAccount = await db.query.githubInstallations.findMany({
-    where: eq(githubInstallations.accountId, installation.accountId),
+    where: sqlWhere(eq(githubInstallations.accountId, installation.accountId)),
     columns: { id: true },
   });
   const installationIds = [...new Set([installation.id, ...sameAccount.map(i => i.id)])];
 
   const [linked, installerTeams] = await Promise.all([
     db.query.workspaces.findMany({
-      where: inArray(workspaces.githubInstallationId, installationIds),
+      where: sqlWhere(inArray(workspaces.githubInstallationId, installationIds)),
       columns: { teamId: true },
     }),
     installation.installedByUserId ? getUserTeamIds(installation.installedByUserId) : Promise.resolve([] as string[]),
@@ -61,7 +62,7 @@ export async function getInstallationAccessForUser(
     getUserTeamIds(userId),
     teamIdsWhere({ kind: 'user', userId }, 'manage_github_installation'),
     db.query.workspaces.findMany({
-      where: eq(workspaces.githubInstallationId, installation.id),
+      where: sqlWhere(eq(workspaces.githubInstallationId, installation.id)),
       columns: { teamId: true },
     }),
   ]);

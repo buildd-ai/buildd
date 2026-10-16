@@ -13,12 +13,9 @@ import { sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
 import { depsGate } from '@/app/api/workers/claim/deps-gate';
-import { assertDbConfigured, q, seedTask, seedWorkspace } from './harness';
+import { assertDbConfigured, legacyMigrationSql, q, seedTask, seedWorkspace } from './harness';
 
-const MIGRATION = readFileSync(
-  join(import.meta.dir, '../../../../packages/core/drizzle/0267_soft_overlap_legacy_edges.sql'),
-  'utf8',
-);
+const MIGRATION = legacyMigrationSql('0267_soft_overlap_legacy_edges');
 const runMigration = () => db.execute(sql.raw(MIGRATION));
 
 let workspaceId: string;

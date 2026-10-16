@@ -39,6 +39,7 @@ import {
   type QaViewport,
   type QaVerdict,
 } from '@/lib/mission-visual-review';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // One vocabulary with the mission page's Visual review strip (pure, client-safe).
 export {
@@ -348,19 +349,19 @@ export async function loadVisualAuditEvidence(opts: {
   const { workerId, taskId, missionId, workspaceId, workerStartedAt } = opts;
 
   const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
+    where: sqlWhere(eq(tasks.id, taskId)),
     columns: { dependsOn: true, context: true },
   });
   const deps = Array.isArray(task?.dependsOn) ? (task!.dependsOn as string[]) : [];
   const depRows = deps.length > 0
-    ? await db.query.tasks.findMany({ where: inArray(tasks.id, deps), columns: { pathManifest: true, title: true, context: true } })
+    ? await db.query.tasks.findMany({ where: sqlWhere(inArray(tasks.id, deps)), columns: { pathManifest: true, title: true, context: true } })
     : [];
   const requiredRoutes = auditRequiredRoutes({ context: task?.context }, depRows);
 
   // THIS worker's screenshots only. Unlike hasDeliverableArtifact there is no
   // mission-artifact arm: a sibling's shot must never satisfy the audit.
   const shots = (await db.query.artifacts.findMany({
-    where: and(eq(artifacts.workerId, workerId), eq(artifacts.type, 'screenshot')),
+    where: sqlWhere(and(eq(artifacts.workerId, workerId), eq(artifacts.type, 'screenshot'))),
     columns: { id: true, storageKey: true, metadata: true },
     limit: MAX_SHOTS_READ,
   })) as QaShot[];
@@ -382,11 +383,11 @@ export async function loadVisualAuditEvidence(opts: {
   )];
   const linked = fixIds.length > 0
     ? await db.query.tasks.findMany({
-        where: and(
+        where: sqlWhere(and(
           inArray(tasks.id, fixIds),
           missionId ? eq(tasks.missionId, missionId) : undefined,
           eq(tasks.workspaceId, workspaceId),
-        ),
+        )),
         columns: { id: true, title: true, status: true, createdAt: true },
       })
     : [];

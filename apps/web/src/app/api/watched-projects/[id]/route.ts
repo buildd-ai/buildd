@@ -7,13 +7,14 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { parseUpdateInput } from '@/lib/watched-project-input';
 import { isUuid } from '@/lib/uuid';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 async function loadAndAuthorize(req: NextRequest, projectId: string): Promise<
   | { ok: true; row: typeof watchedProjects.$inferSelect }
   | { ok: false; status: number; error: string }
 > {
   const row = await db.query.watchedProjects.findFirst({
-    where: eq(watchedProjects.id, projectId),
+    where: sqlWhere(eq(watchedProjects.id, projectId)),
   });
   if (!row) return { ok: false, status: 404, error: 'Not found' };
 

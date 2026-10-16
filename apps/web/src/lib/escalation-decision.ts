@@ -32,7 +32,9 @@ export function escalationGateDeps(): EscalationGateDeps {
     // ledger write failed) the policy merge still runs as before; the hourly
     // sweep (sweep.pr_hourly, lib/decision-subscribers.ts) catches the rest.
     actRule: (s, action, recordId) => recordId && s.prNumber != null
+      // A deferral (the control plane did not answer) stored nothing: the label reads as not started yet.
       ? dispatchVerdictAction({ recordId, teamId: s.teamId, workspaceId: s.workspaceId, prNumber: s.prNumber, taskId: s.taskId, action, detail: s.detail })
+        .then(r => (r?.kind === 'deferred' ? null : r))
       : escalationRuleExecutor()(s, action),
   };
 }

@@ -5,6 +5,9 @@ import { describe, it, expect } from 'bun:test';
 // tasks/page.test.ts's mission-budget plumbing suite — a re-derivation of the
 // wiring in this test file would prove nothing about the actual page.
 const pageSource = await Bun.file(new URL('./page.tsx', import.meta.url)).text();
+// The load (lib/task-view.ts) and the pick it makes (lib/task-view-pick.ts).
+const taskViewSource = (await Bun.file(new URL('../../../../../lib/task-view.ts', import.meta.url)).text())
+  + (await Bun.file(new URL('../../../../../lib/task-view-pick.ts', import.meta.url)).text());
 
 describe('ship badge plumbing — tasks/[id]/page.tsx (spec §10.3)', () => {
   it('imports the single shared ship-state loader, not a local re-derivation', () => {
@@ -58,7 +61,7 @@ describe('dependency blocking — tasks/[id]/page.tsx reads every dep worker', (
   // only the newest worker hid an older worker's open PR, so the page said
   // "All dependencies resolved" while the claim gate and the list said BLOCKED.
   const depQuery = pageSource.slice(
-    pageSource.indexOf('where: inArray(tasks.id, depTaskIds)'),
+    pageSource.indexOf('inArray(tasks.id, depTaskIds)'),
     pageSource.indexOf('// Workers for this task'),
   );
 
@@ -148,8 +151,11 @@ describe('mission continuity — tasks/[id]/page.tsx (docs/design/mission-feed-m
   });
 
   it('one question, one surface: the worker view gets the linked note and the feed skips it', () => {
-    expect(pageSource).toContain('linkQuestionNote(openQuestionRows, activeWorker.id)');
-    expect(pageSource).toContain('questionNote={questionNote}');
+    // The note is linked once, in lib/task-view-pick.ts, for the page, the sheet and the board.
+    expect(taskViewSource).toContain('linkQuestionNote(openQuestions, activeWorker.id)');
+    expect(pageSource).toContain('const questionNote = taskView.questionNote;');
+    // The live run view's props are built by lib/task-live-view.ts, for the sheet too.
+    expect(pageSource).toMatch(/liveWorkerViewProps\(\{[^]*?questionNote,[^]*?\}\)/);
     expect(pageSource).toContain('excludeNoteId={questionNote?.id ?? null}');
   });
 
@@ -234,21 +240,24 @@ describe('a sign-in failure reads in plain words — tasks/[id]/page.tsx', () =>
 // active, PR worker, attempt numbering) never flip.
 describe('deterministic attempt order — tasks/[id]/page.tsx', () => {
   it('never orders workers by createdAt without an id tiebreak', () => {
-    expect(pageSource).not.toMatch(/orderBy:\s*desc\(workers\.createdAt\)\s*[,}]/);
-    expect(pageSource).not.toMatch(/orderBy:\s*\[\s*desc\(workers\.createdAt\)\s*\]/);
-    const withTiebreak = pageSource.match(/orderBy:\s*\[desc\(workers\.createdAt\), desc\(workers\.id\)\]/g) ?? [];
-    // Four reads: the PR-fact refresh no longer re-fetches workers inline (it runs in after()).
-    expect(withTiebreak.length).toBeGreaterThanOrEqual(4);
+    // `(sqlOrderBy\()?`: the same ordering, before and after the relational-query move.
+    expect(pageSource).not.toMatch(/orderBy:\s*(sqlOrderBy\()?desc\(workers\.createdAt\)\)?\s*[,}]/);
+    expect(pageSource).not.toMatch(/orderBy:\s*(sqlOrderBy\()?\[\s*desc\(workers\.createdAt\)\s*\]/);
+    const withTiebreak = pageSource.match(/orderBy:\s*(sqlOrderBy\()?\[desc\(workers\.createdAt\), desc\(workers\.id\)\]/g) ?? [];
+    // Three reads here (dependencies, CI-retry attempts, the plan chain); the
+    // task's own workers are read by lib/task-view.ts, with the same tiebreak.
+    expect(withTiebreak.length).toBeGreaterThanOrEqual(3);
+    expect(taskViewSource).toContain('orderBy: sqlOrderBy([desc(workers.createdAt), desc(workers.id)])');
   });
 
   it('never orders tasks by createdAt without an id tiebreak', () => {
-    expect(pageSource).not.toMatch(/orderBy:\s*asc\(tasks\.createdAt\)\s*[,}]/);
-    expect(pageSource).toMatch(/subTasks:\s*\{\s*columns:\s*\{[^}]*\},\s*orderBy:\s*\[asc\(tasks\.createdAt\), asc\(tasks\.id\)\]/);
+    expect(pageSource).not.toMatch(/orderBy:\s*(sqlOrderBy\()?asc\(tasks\.createdAt\)\)?\s*[,}]/);
+    expect(pageSource).toMatch(/subTasks:\s*\{\s*columns:\s*\{[^}]*\},\s*orderBy:\s*(sqlOrderBy\()?\[asc\(tasks\.createdAt\), asc\(tasks\.id\)\]/);
   });
 
   it('picks latest / active / PR worker from the shared comparator, not from row order', () => {
     expect(pageSource).toContain("from '@/lib/attempt-order'");
-    expect(pageSource).toContain('selectTaskWorkers(');
+    expect(taskViewSource).toContain('selectTaskWorkers(');
     expect(pageSource).not.toMatch(/taskWorkers\.find\(w => w\.prUrl && w\.prNumber\)/);
   });
 
@@ -280,16 +289,44 @@ describe('one verdict — tasks/[id]/page.tsx (lib/task-verdict.ts)', () => {
 });
 
 // U1 audit (task 01e6293b): below md the actions row (⋯ menu) stacked above the
-// title, left-aligned on a running task. It sits at the right of the title row
-// at every width.
-describe('task header — the menu stays on the title row', () => {
+// title, left-aligned on a running task. Task f36e76cb: beside the title the
+// actions reserved a column that wrapped a long PR title onto ~8 lines. Below
+// md the title takes the full width and the actions sit right-aligned on the
+// row under it (with the status pill); from md up they share the title row.
+describe('task header — full-width title on a phone, actions on the title row from md', () => {
   const header = pageSource.slice(pageSource.indexOf('data-testid="task-header"'), pageSource.indexOf('data-testid="task-subline"'));
-  it('the title and actions share one row at every width', () => {
+  const cls = (testid: string) => header.match(new RegExp(`data-testid="${testid}"[^>]*className=\\{?[\`"]([^\`"]*)`))?.[1] ?? '';
+  it('the actions never stack above the title', () => {
     expect(header).not.toContain('flex-col-reverse');
-    expect(header).toContain('data-testid="task-header-actions"');
+    expect(header.indexOf('<TaskTitle')).toBeLessThan(header.indexOf('data-testid="task-header-actions"'));
+  });
+  it('below md the title spans both columns and the actions take row 2; md puts them back on row 1', () => {
+    expect(header).toContain('className="min-w-0 col-span-2 row-start-1 md:col-span-1 md:col-start-1"');
+    expect(cls('task-header-actions')).toContain('row-start-2 md:row-start-1');
+    expect(cls('task-header-status')).toContain('row-start-2 self-center md:col-start-2 md:row-start-1 md:self-start');
+  });
+  it('with no status pill the sub-line shares the actions\' row on a phone, and its PR link is a 44px target', () => {
+    const sub = pageSource.slice(pageSource.indexOf('data-testid="task-subline"'), pageSource.indexOf('{/* An attempt says what it is an attempt of'));
+    expect(sub).toContain("'col-span-2 row-start-3' : 'col-start-1 row-start-2 self-center'");
+    expect(sub).toContain('md:col-span-full md:col-start-1 md:row-start-2');
+    expect(sub).toContain('inline-flex min-h-11 items-center gap-1 text-accent-text');
   });
   it('the actions are right-aligned, never spread', () => {
     const actions = header.slice(header.indexOf('data-testid="task-header-actions"') - 200, header.indexOf('data-testid="task-header-actions"'));
     expect(actions).not.toContain('justify-between');
+  });
+});
+
+describe('one worker pick — tasks/[id]/page.tsx and the sheet', () => {
+  it('reads its workers and question through loadTaskView, as /api/tasks/[id]/summary does', async () => {
+    const summarySource = await Bun.file(new URL('../../../../api/tasks/[id]/summary/route.ts', import.meta.url)).text();
+    for (const src of [pageSource, summarySource]) {
+      expect(src).toContain("import { loadTaskView } from '@/lib/task-view'");
+      expect(src).toContain('loadTaskView(task, ');
+    }
+    // No second worker pick beside it.
+    expect(pageSource).not.toContain('selectTaskWorkers(');
+    expect(pageSource).not.toContain('linkQuestionNote(');
+    expect(summarySource).not.toContain('linkQuestionNote(');
   });
 });

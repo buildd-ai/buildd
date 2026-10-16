@@ -9,6 +9,7 @@ import { callerOwnsWorker } from '@/lib/worker-owner';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { isNonReactivatableError } from '@/lib/worker-termination';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * POST /api/workers/[id]/recover
@@ -47,7 +48,7 @@ export async function POST(
   }
 
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.id, id),
+    where: sqlWhere(eq(workers.id, id)),
     with: { workspace: true },
   });
 

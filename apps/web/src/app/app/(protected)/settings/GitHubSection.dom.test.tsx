@@ -42,7 +42,7 @@ describe('GitHubSection', () => {
     await flush();
     const notice = container.querySelector('[data-testid="github-unavailable"]');
     expect(notice).not.toBeNull();
-    expect(notice!.textContent).toMatch(/paste/i);
+    expect(notice!.textContent).toMatch(/enter its URL/i);
     expect(container.querySelector('a[href="/api/github/install"]')).toBeNull();
   });
 

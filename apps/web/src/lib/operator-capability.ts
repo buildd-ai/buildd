@@ -160,7 +160,7 @@ function configOf(row: RoleGrantRow | null | undefined): OperatorGrantConfig | n
 
 /**
  * `metadata` with `operator` replaced by `config` (or dropped when `config` is
- * null or empty), every other key untouched. The admin UI writes the whole
+ * null or empty), every other key untouched. An operator client writes the whole
  * grant object on each save, same as it does for `allowedTools`/`mcpServers`
  * — there is no partial-field patch semantics here, unlike routing text.
  */

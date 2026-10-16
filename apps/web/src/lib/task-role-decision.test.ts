@@ -24,6 +24,8 @@ const {
   SHADOW_DESCRIPTION_CHARS,
   DECISION_SHADOW_LOG_PREFIX,
   TASK_KIND_QUESTION,
+  TASK_ROLE_PROMPT_ID,
+  taskRolePromptVersion,
 } = await import('./task-role-decision');
 type RoleRow = import('./task-role-decision').RoleRow;
 
@@ -359,6 +361,38 @@ describe('runTaskRoleShadow', () => {
     expect(lines[0]).not.toContain(INPUT.title);
     expect(lines[0]).not.toContain(INPUT.description);
     expect(lines[0]).not.toContain('should pick up');
+  });
+
+  it('hands back the input it asked with, for the ledger row to keep as a replayable copy', async () => {
+    const decide = mock(async (_p: unknown) => okResult('Builder', 0.91, 'engineering'));
+    const res = await runTaskRoleShadow(INPUT, {
+      resolveAccess: ALLOWED, decide: decide as never, loadRoles: ROLES, readClaimedAt: async () => null, log: () => {},
+    });
+    const asked = decide.mock.calls[0][0] as { state: Record<string, unknown>; questions: { role: { criteria: Record<string, string> } } };
+    expect(res.replay).toEqual({
+      state: {
+        ...asked.state,
+        roleOptions: {
+          builder: { label: 'Builder', criterion: asked.questions.role.criteria.Builder },
+          researcher: { label: 'Researcher', criterion: asked.questions.role.criteria.Researcher },
+        },
+      },
+      questionIds: ['role', 'kind'],
+      candidates: ['builder', 'researcher'],
+      promptRef: { id: TASK_ROLE_PROMPT_ID, version: taskRolePromptVersion(), contentHash: null },
+    });
+    // The log line is still slugs and numbers only.
+    expect(JSON.stringify(res.record)).not.toContain(INPUT.title);
+  });
+
+  it('keeps no copy when nothing answered', async () => {
+    const failed = await runTaskRoleShadow(INPUT, {
+      resolveAccess: ALLOWED, loadRoles: ROLES, log: () => {},
+      decide: (async () => ({ ok: false, error: { kind: 'timeout' }, latencyMs: 3000, attempts: 2 })) as never,
+    });
+    expect(failed.replay).toBeUndefined();
+    const sensitive = await runTaskRoleShadow({ ...INPUT, dataClass: 'sensitive' }, { resolveAccess: ALLOWED, loadRoles: ROLES, log: () => {} });
+    expect(sensitive.replay).toBeUndefined();
   });
 
   it('does not ask kind when the caller stated one', async () => {

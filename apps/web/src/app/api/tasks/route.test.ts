@@ -45,9 +45,11 @@ mock.module('@/lib/subject-intake', () => ({
 }));
 import { NextRequest } from 'next/server';
 import { canAccessTokenRoute } from '@/lib/token-route-policy';
+import { signInteractiveSession } from '@/lib/interactive-session';
 
 // Mock functions
 const mockGetCurrentUser = mock(() => null as any);
+const mockVerifyWorkspaceAccess = mock(async (..._args: unknown[]): Promise<unknown> => ({ role: 'member' }));
 const mockAccountsFindFirst = mock(() => null as any);
 const mockAccountWorkspacesFindMany = mock(() => [] as any[]);
 // Link lookup made by the real workspace-access resolver (not mocked here).
@@ -67,6 +69,22 @@ const mockTasksUpdateWhere = mock(() => Promise.resolve());
 const mockTasksUpdateSet = mock(() => ({ where: mockTasksUpdateWhere }));
 const mockTasksUpdate = mock(() => ({ set: mockTasksUpdateSet }));
 const mockMissionsFindFirst = mock(() => null as any);
+// db.select(...).from(table).where(pred).groupBy(col): the task list's two
+// aggregates (mission done/total, merged PRs). Each call is recorded with its
+// table and predicate so a test can assert the query's scope, not just its rows.
+type SelectCall = { fields: any; table: any; where: any; groupBy: any };
+let selectCalls: SelectCall[] = [];
+let selectRowsFor: (call: SelectCall) => any[] = () => [];
+const mockSelect = mock((fields: any) => {
+  const call: SelectCall = { fields, table: null, where: null, groupBy: null };
+  selectCalls.push(call);
+  const chain: any = {
+    from: (table: any) => { call.table = table; return chain; },
+    where: (where: any) => { call.where = where; return chain; },
+    groupBy: (col: any) => { call.groupBy = col; return Promise.resolve(selectRowsFor(call)); },
+  };
+  return chain;
+});
 const mockWorkersFindFirst = mock(() => null as any);
 const mockWorkspaceSkillsFindFirst = mock(() => null as any);
 const mockWorkspaceSkillsFindMany = mock(() => Promise.resolve([] as any[]));
@@ -168,6 +186,7 @@ mock.module('@/lib/team-access', () => ({
   getUserWorkspaceIds: mockGetUserWorkspaceIds,
   getUserTeamIds: mockGetUserTeamIds,
   verifyAccountWorkspaceAccess: mockVerifyAccountWorkspaceAccess,
+  verifyWorkspaceAccess: (...args: unknown[]) => mockVerifyWorkspaceAccess(...args),
 }));
 
 // Mock task-service
@@ -237,6 +256,7 @@ mock.module('@buildd/core/db', () => ({
     },
     insert: mockTasksInsert,
     update: mockTasksUpdate,
+    select: mockSelect,
   },
 }));
 
@@ -293,7 +313,7 @@ mock.module('@buildd/core/db/schema', () => ({
     isRole: 'isRole',
   },
   missions: { id: 'id', teamId: 'teamId', decompositionSkipped: 'decompositionSkipped', orchestrationMode: 'orchestrationMode' },
-  workers: { id: 'id', taskId: 'taskId' },
+  workers: { id: 'id', taskId: 'workers.taskId', mergedAt: 'workers.mergedAt' },
   missionNotes: { id: 'id', missionId: 'missionId' },
 }));
 
@@ -385,6 +405,96 @@ describe('GET /api/tasks', () => {
     const data = await response.json();
     expect(data.tasks).toHaveLength(2);
     expect(data.tasks[0].id).toBe('task-1');
+  });
+
+  // `buildd top` groups a runner's work by mission and says why a task waits
+  // (held mission, a person's session, role), reading only this list.
+  it('full list carries the role and the mission title, hold and executor', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true, canCreate: false }]);
+    mockWorkspacesFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValue([]);
+
+    await GET(createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' } }));
+
+    const query = (mockTasksFindMany.mock.calls[0] as any[])[0];
+    expect(query.columns.roleSlug).toBe(true);
+    expect(query.columns.missionId).toBe(true);
+    // Which provider's limit holds a waiting task (spec c7410e76 R-25).
+    expect(query.columns.backend).toBe(true);
+    expect(query.with.mission.columns).toEqual({ id: true, title: true, isHeld: true, executor: true });
+  });
+
+  // R-2 (review of the top PR): the runner's list holds active tasks and only a
+  // day of finished ones, so top cannot count done/total itself. The server
+  // counts every task of each mission in the list, scoped to those missions
+  // and the caller's workspaces.
+  it('full list carries each mission\'s done/total, counted over all its tasks', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true, canCreate: false }]);
+    mockWorkspacesFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValue([
+      { id: 't1', workspaceId: 'ws-1', status: 'pending', missionId: 'm1', mission: { id: 'm1', title: 'One', isHeld: false, executor: 'runner' } },
+      { id: 't2', workspaceId: 'ws-1', status: 'completed', missionId: 'm1', mission: { id: 'm1', title: 'One', isHeld: false, executor: 'runner' } },
+      { id: 't3', workspaceId: 'ws-1', status: 'pending', missionId: null, mission: null },
+    ]);
+    selectCalls = [];
+    selectRowsFor = (call) => call.table?.status === 'status' ? [{ missionId: 'm1', done: 5, total: 7 }] : [];
+
+    const res = await GET(createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' } }));
+    const data = await res.json();
+
+    expect(data.tasks[0].mission.taskCounts).toEqual({ done: 5, total: 7 });
+    expect(data.tasks[1].mission.taskCounts).toEqual({ done: 5, total: 7 });
+    expect(data.tasks[2].mission).toBeNull();
+    const counts = selectCalls.find(c => c.table?.status === 'status')!;
+    expect(counts.groupBy).toBe('missionId');
+    // Scoped to exactly the missions in the response, in reachable workspaces.
+    const preds = counts.where.args;
+    expect(preds).toContainEqual({ field: 'missionId', values: ['m1'], type: 'inArray' });
+    expect(preds).toContainEqual({ field: 'workspaceId', values: ['ws-1'], type: 'inArray' });
+  });
+
+  it('marks a finished task whose PR merged, scoped to the finished tasks in the list', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true, canCreate: false }]);
+    mockWorkspacesFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValue([
+      { id: 't1', workspaceId: 'ws-1', status: 'completed', missionId: null, mission: null },
+      { id: 't2', workspaceId: 'ws-1', status: 'completed', missionId: null, mission: null },
+      { id: 't3', workspaceId: 'ws-1', status: 'in_progress', missionId: null, mission: null },
+    ]);
+    selectCalls = [];
+    selectRowsFor = (call) => call.table?.mergedAt ? [{ taskId: 't1', mergedAt: '2026-10-14T10:00:00.000Z' }] : [];
+
+    const data = await (await GET(createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' } }))).json();
+
+    expect(data.tasks[0].prMergedAt).toBe('2026-10-14T10:00:00.000Z');
+    expect(data.tasks[1].prMergedAt ?? null).toBeNull();
+    const merged = selectCalls.find(c => c.table?.mergedAt)!;
+    expect(merged.where.args).toContainEqual({ field: 'workers.taskId', values: ['t1', 't2'], type: 'inArray' });
+    expect(merged.where.args).toContainEqual({ field: 'workers.mergedAt', type: 'isNotNull' });
+  });
+
+  it('still lists tasks when the aggregates fail', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true, canCreate: false }]);
+    mockWorkspacesFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValue([
+      { id: 't1', workspaceId: 'ws-1', status: 'completed', missionId: 'm1', mission: { id: 'm1', title: 'One' } },
+    ]);
+    selectRowsFor = () => { throw new Error('boom'); };
+
+    const res = await GET(createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' } }));
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.tasks[0].mission.title).toBe('One');
+    expect(data.tasks[0].mission.taskCounts).toBeUndefined();
+    selectRowsFor = () => [];
   });
 
   it('lists only its own workspace for a per-task token', async () => {
@@ -584,6 +694,53 @@ describe('POST /api/tasks', () => {
     expect((await response.json()).id).toBe('task-ci');
   });
 
+  describe('reserve: true (create and claim from a session)', () => {
+    const SAVED = process.env.AUTH_SECRET;
+    beforeEach(() => { process.env.AUTH_SECRET = 'test-secret-for-interactive-marker'; });
+    afterEach(() => { if (SAVED === undefined) delete process.env.AUTH_SECRET; else process.env.AUTH_SECRET = SAVED; });
+    const interactive = () => ({ 'x-buildd-interactive-session': signInteractiveSession({ accountId: 'account-ci', userId: null })! });
+    const file = (body: Record<string, unknown>, extra: Record<string, string> = {}) => POST(createMockRequest({
+      method: 'POST', headers: { Authorization: 'Bearer bld_ci', ...extra }, body: { workspaceId: 'ws-1', title: 'Local task', ...body },
+    }));
+    const setup = () => {
+      mockAccountsFindFirst.mockResolvedValue({ id: 'account-ci', level: 'worker', scopes: ['tasks:write'], teamId: 'team-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+      const values = mock((_v: Record<string, unknown>) => ({ returning: mock(() => [{ id: 'task-r', workspaceId: 'ws-1', title: 'Local task', status: 'pending' }]) }));
+      mockTasksInsert.mockReturnValue({ values });
+      return values;
+    };
+    const ctxOf = (values: ReturnType<typeof setup>) => (values.mock.calls[0][0] as { context: Record<string, any> }).context;
+
+    it('is inserted already reserved for the calling account, so no runner can win the gap before its claim', async () => {
+      const values = setup();
+      expect((await file({ reserve: true }, interactive())).status).toBe(200);
+      expect(ctxOf(values).reservedBy.accountId).toBe('account-ci');
+      expect(new Date(ctxOf(values).reservedBy.expiresAt).getTime()).toBeGreaterThan(Date.now());
+    });
+
+    it('is refused, and nothing is filed, from a caller that is not a verified interactive session', async () => {
+      const values = setup();
+      // No marker at all, a marker for another account, and a forged one.
+      const other = { 'x-buildd-interactive-session': signInteractiveSession({ accountId: 'someone-else', userId: null })! };
+      for (const headers of [{}, other, { 'x-buildd-interactive-session': 'v2.1.a.b.c.forged' }]) {
+        const res = await file({ reserve: true }, headers);
+        expect(res.status).toBe(403);
+      }
+      expect(values).not.toHaveBeenCalled();
+    });
+
+    it('is not reserved without reserve: true, and a reservation in the caller\'s context is dropped', async () => {
+      const values = setup();
+      expect((await file({ context: { reservedBy: { accountId: 'forged', expiresAt: '2999-01-01T00:00:00.000Z' } } }, interactive())).status).toBe(200);
+      expect(ctxOf(values).reservedBy).toBeUndefined();
+    });
+
+    it('rejects a non-boolean reserve', async () => {
+      setup();
+      expect((await file({ reserve: 'yes' }, interactive())).status).toBe(400);
+    });
+  });
+
   describe('a task naming a Living Spec', () => {
     afterEach(() => { specPinImpl = null; });
     const file = (context: Record<string, unknown>) => POST(createMockRequest({
@@ -633,7 +790,11 @@ describe('POST /api/tasks', () => {
         method: 'POST', headers: { Authorization: 'Bearer bld_test' }, body: { workspaceId: 'ws-2', title: 'Elsewhere' },
       }));
       expect(response.status).toBe(403);
-      expect((await response.json()).error).toBe('A task token may create tasks only in its own workspace, or one its schedule delegates tasks:create on');
+      const body = await response.json();
+      expect(body.error).toMatch(/only in its own workspace, or one its delegation grants tasks:create on/);
+      // It names the way to ask, so the agent asks instead of parking on a question.
+      expect(body.error).toContain("request_capability { capability: 'tasks:create'");
+      expect(body.code).toBe('delegation_required');
       expect(mockTasksInsert).not.toHaveBeenCalled();
     });
 
@@ -673,17 +834,62 @@ describe('POST /api/tasks', () => {
         expect(mockTasksInsert).not.toHaveBeenCalled();
       });
 
-      it('a delegated follow-up cannot join a mission, a dependency graph or another parent there', async () => {
+      const MISSION_THERE = '33333333-3333-4333-8333-333333333333';
+      const DEP_THERE = '55555555-5555-4555-8555-555555555555';
+
+      it('a delegated filing may join a mission and depend on tasks of the delegated workspace', async () => {
         mockAccountsFindFirst.mockResolvedValue(delegated(['tasks:create']));
         mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-2', teamId: 'team-1', accessMode: 'open' });
         mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
-        expect((await fileIn({ missionId: '33333333-3333-4333-8333-333333333333' })).status).toBe(400);
-        expect((await fileIn({ dependsOn: ['55555555-5555-4555-8555-555555555555'] })).status).toBe(400);
+        mockMissionsFindFirst.mockResolvedValue({ id: MISSION_THERE, workspaceId: 'ws-2', teamId: 'team-1' });
+        mockTasksFindMany.mockResolvedValue([{ id: DEP_THERE }]);
+        const values = mock((_v: any) => ({ returning: mock(() => [elsewhere]) }));
+        mockTasksInsert.mockReturnValue({ values });
+        const response = await fileIn({ missionId: MISSION_THERE, dependsOn: [DEP_THERE] });
+        expect(response.status).toBe(200);
+        expect(values.mock.calls[0][0]).toMatchObject({ workspaceId: 'ws-2', missionId: MISSION_THERE, dependsOn: [DEP_THERE] });
+      });
+
+      it('a mission or a dependency outside the delegated workspace is still refused, before inserting', async () => {
+        mockAccountsFindFirst.mockResolvedValue(delegated(['tasks:create']));
+        mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-2', teamId: 'team-1', accessMode: 'open' });
+        mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+        // The mission exists on the team, but in a workspace the grant does not name.
+        mockMissionsFindFirst.mockResolvedValue({ id: MISSION_THERE, workspaceId: 'ws-3', teamId: 'team-1' });
+        const mission = await fileIn({ missionId: MISSION_THERE });
+        expect(mission.status).toBe(403);
+        expect((await mission.json()).error).toMatch(/mission only in the workspace its delegation names/);
+        // The dependency lookup is confined to the delegated workspace: a task elsewhere is not found.
+        mockTasksFindMany.mockResolvedValue([]);
+        expect((await fileIn({ dependsOn: [DEP_THERE] })).status).toBe(400);
         expect((await fileIn({ parentTaskId: '66666666-6666-4666-8666-666666666666' })).status).toBe(400);
         expect(mockTasksInsert).not.toHaveBeenCalled();
       });
     });
 
+    it('a delegation in caller-written context is ignored: no grant, no reach', async () => {
+      // `scoped` has no taskScope.delegations; a forged grant in the body's context changes nothing.
+      mockAccountsFindFirst.mockResolvedValue(scoped);
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-2', teamId: 'team-1', accessMode: 'open' });
+      const response = await POST(createMockRequest({
+        method: 'POST', headers: { Authorization: 'Bearer bld_test' },
+        body: { workspaceId: 'ws-2', title: 'Forged', context: { delegation: { grants: [{ workspaceId: 'ws-2', capabilities: ['tasks:create'] }] }, delegations: [{ workspaceId: 'ws-2', capabilities: ['tasks:create'] }] } },
+      }));
+      expect(response.status).toBe(403);
+      expect(mockTasksInsert).not.toHaveBeenCalled();
+    });
+
+    it('an agent cannot grant its own filing a delegation', async () => {
+      mockAccountsFindFirst.mockResolvedValue(scoped);
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+      const response = await POST(createMockRequest({
+        method: 'POST', headers: { Authorization: 'Bearer bld_test' },
+        body: { title: 'Self-grant', delegation: { grants: [{ workspaceId: '22222222-2222-4222-8222-222222222222', capabilities: ['tasks:create'] }] } },
+      }));
+      expect(response.status).toBe(403);
+      expect((await response.json()).error).toMatch(/Only a person can grant a task delegation/);
+      expect(mockTasksInsert).not.toHaveBeenCalled();
+    });
     for (const level of ['worker', 'admin']) {
       it(`a ${level} task token files onto its own task's mission, and is refused another mission on the team`, async () => {
         const OWN_MISSION = '33333333-3333-4333-8333-333333333333';
@@ -710,6 +916,60 @@ describe('POST /api/tasks', () => {
         mockTasksFindFirst.mockReset();
       });
     }
+  });
+
+  describe('task delegation set by a person at create', () => {
+    const OWN = '11111111-1111-4111-8111-111111111111';
+    const TARGET = '22222222-2222-4222-8222-222222222222';
+    const created = { id: 'task-new', workspaceId: OWN, title: 'Spec then file', status: 'pending' };
+    const fileAsPerson = (body: Record<string, unknown>) => POST(createMockRequest({
+      method: 'POST', body: { workspaceId: OWN, title: 'Spec then file', ...body },
+    }));
+    const arrange = (teams: Record<string, string>) => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-owner', email: 'owner@test.com' });
+      mockGetUserWorkspaceIds.mockResolvedValue([OWN, TARGET]);
+      mockWorkspacesFindFirst.mockResolvedValue({ id: OWN, teamId: 'team-1' });
+      mockWorkspacesFindMany.mockImplementation(async () => Object.entries(teams).map(([id, teamId]) => ({ id, teamId })));
+    };
+
+    it('stores the grant on the task row, stamped with the person, never in context', async () => {
+      arrange({ [OWN]: 'team-1', [TARGET]: 'team-1' });
+      mockVerifyWorkspaceAccess.mockResolvedValue({ role: 'member' });
+      const values = mock((_v: any) => ({ returning: mock(() => [created]) }));
+      mockTasksInsert.mockReturnValue({ values });
+      const response = await fileAsPerson({
+        delegation: { grants: [{ workspaceId: TARGET, capabilities: ['tasks:create'] }] },
+        filingTargets: [TARGET],
+      });
+      expect(response.status).toBe(200);
+      const row = values.mock.calls[0][0];
+      expect(row.delegation).toMatchObject({ grants: [{ workspaceId: TARGET, capabilities: ['tasks:create'] }], grantedByUserId: 'user-owner' });
+      expect(row.context.delegation).toBeUndefined();
+      // The declared need rides along for the claim pre-flight.
+      expect(row.context.filingTargets).toEqual([TARGET]);
+    });
+
+    it('is refused when the person does not reach the target themselves', async () => {
+      arrange({ [OWN]: 'team-1', [TARGET]: 'team-1' });
+      mockVerifyWorkspaceAccess.mockResolvedValue(null);
+      const response = await fileAsPerson({ delegation: { grants: [{ workspaceId: TARGET, capabilities: ['tasks:create'] }] } });
+      expect(response.status).toBe(403);
+      expect(mockTasksInsert).not.toHaveBeenCalled();
+    });
+
+    it('is refused for a workspace of another team', async () => {
+      arrange({ [OWN]: 'team-1', [TARGET]: 'team-2' });
+      const response = await fileAsPerson({ delegation: { grants: [{ workspaceId: TARGET, capabilities: ['tasks:create'] }] } });
+      expect(response.status).toBe(400);
+      expect(mockTasksInsert).not.toHaveBeenCalled();
+    });
+
+    it('refuses malformed filingTargets rather than dropping them', async () => {
+      arrange({ [OWN]: 'team-1' });
+      const response = await fileAsPerson({ filingTargets: ['buildd'] });
+      expect(response.status).toBe(400);
+      expect(mockTasksInsert).not.toHaveBeenCalled();
+    });
   });
 
   it('rejects analytics readers before inserting a task', async () => {
@@ -1167,6 +1427,23 @@ describe('POST /api/tasks', () => {
       const res = await POST(createMockRequest({ method: 'POST', headers: { Authorization: 'Bearer bld_xxx' }, body: { workspaceId: 'ws-1', title: 'Rebase PR #7 and #8' } }));
       expect(res.status).toBe(200);
       expect(seen.values.context.prReach).toMatchObject({ prNumbers: [7], grantedBy: 'task:task-parent' });
+    });
+  });
+
+  // Living Specs Slice 12: the outcome-spec markers are the server's to write.
+  describe('outcome-spec markers (context.finalVerification, context.specRepair)', () => {
+    it('a person\'s or an API key\'s copy of either marker is dropped', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockAccountsFindFirst.mockResolvedValue(null);
+      mockResolveCreatorContext.mockResolvedValue({ createdByAccountId: 'user-account-123', createdByWorkerId: null, creationSource: 'dashboard', parentTaskId: null });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+      const seen: { values?: any } = {};
+      mockTasksInsert.mockReturnValue({ values: mock((values: any) => { seen.values = values; return { returning: mock(() => [{ id: 'task-m', workspaceId: 'ws-1', title: 't' }]) }; }) });
+      const res = await POST(createMockRequest({ method: 'POST', body: { workspaceId: 'ws-1', title: 'Grade the mission', context: { finalVerification: { missionId: 'm-1' }, specRepair: { missionId: 'm-1' }, keep: 1 } } }));
+      expect(res.status).toBe(200);
+      expect(seen.values.context).not.toHaveProperty('finalVerification');
+      expect(seen.values.context).not.toHaveProperty('specRepair');
+      expect(seen.values.context.keep).toBe(1);
     });
   });
 

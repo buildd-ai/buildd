@@ -18,6 +18,8 @@ import {
   type DecisionReadout,
   type ReadoutRows,
 } from './decision-readout';
+// A kind with no objective of its own is scored on agent audit grades.
+import { agentAuditObjective } from './decision-feature-health';
 
 export const DECISION_READOUT_MAX_ROWS = 5_000;
 const ID_CHUNK = 500;
@@ -84,6 +86,7 @@ export async function loadDecisionReadoutRows(w: DecisionReadoutWindow): Promise
       source: decisionOutcomes.source,
       label: decisionOutcomes.label,
       value: decisionOutcomes.value,
+      metadata: decisionOutcomes.metadata,
     }).from(decisionOutcomes)
       .where(and(eq(decisionOutcomes.teamId, w.teamId), inArray(decisionOutcomes.decisionRecordId, ids)))
       .orderBy(decisionOutcomes.recordedAt));
@@ -167,7 +170,7 @@ export async function readDecisionKindReadout(
     readout: computeDecisionReadout(
       { ...rows, challengerConfigured: !!def?.binding.challenger },
       { access, eligibleSubjects },
-      { minLabelled: adapter?.minLabelled ?? DEFAULT_MIN_LABELLED, ...(adapter?.objective ? { objective: adapter.objective } : {}) },
+      { minLabelled: adapter?.minLabelled ?? DEFAULT_MIN_LABELLED, objective: adapter?.objective ?? agentAuditObjective },
     ),
   };
 }

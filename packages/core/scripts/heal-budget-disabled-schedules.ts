@@ -36,7 +36,7 @@
 import { neon } from '@neondatabase/serverless';
 import { drizzle } from 'drizzle-orm/neon-http';
 import { and, eq, inArray } from 'drizzle-orm';
-import * as schema from '../db/schema';
+import { relations } from '../db/relations';
 import { missionNotes, missions, taskSchedules } from '../db/schema';
 import { disableIsConsistentWithBudgetBug, staggeredResumeAt } from './budget-schedule-heal-rule';
 
@@ -55,7 +55,7 @@ async function main() {
     console.error('ERROR: DATABASE_URL is not set');
     process.exit(1);
   }
-  const db = drizzle(neon(DATABASE_URL), { schema });
+  const db = drizzle({ client: neon(DATABASE_URL), relations });
 
   // (1) missions that carry the system exhaustion note
   const exhaustionNotes = await db

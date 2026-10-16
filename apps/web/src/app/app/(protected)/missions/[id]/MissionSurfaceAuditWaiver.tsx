@@ -43,6 +43,32 @@ export interface MissionSurfaceAuditWaiverProps {
   variant?: 'setting' | 'tile';
 }
 
+/**
+ * Records a person's waiver through the one existing path, PATCH
+ * /api/missions/[id] { surfaceAuditWaiver }. The route enforces the same
+ * minimum length and refuses agents; this only checks it first.
+ */
+export async function saveSurfaceAuditWaiver(missionId: string, reason: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const text = reason.trim();
+  if (text.length < SURFACE_AUDIT_WAIVER_MIN_REASON_LENGTH) {
+    return { ok: false, error: `Write at least ${SURFACE_AUDIT_WAIVER_MIN_REASON_LENGTH} characters.` };
+  }
+  try {
+    const res = await fetch(`/api/missions/${encodeURIComponent(missionId)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ surfaceAuditWaiver: text }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => null) as { error?: unknown } | null;
+      return { ok: false, error: typeof body?.error === 'string' && body.error ? body.error : 'Could not save the waiver. Try again.' };
+    }
+    return { ok: true };
+  } catch {
+    return { ok: false, error: 'Could not save the waiver. Try again.' };
+  }
+}
+
 const TRIGGER = 'inline-flex min-h-11 md:min-h-9 items-center border-2 border-border-strong px-3 font-mono text-meta font-medium text-text-primary hover:bg-surface-3 disabled:opacity-50';
 
 export default function MissionSurfaceAuditWaiver({
@@ -66,31 +92,14 @@ export default function MissionSurfaceAuditWaiver({
 
   async function submit() {
     const text = reason.trim();
-    if (text.length < SURFACE_AUDIT_WAIVER_MIN_REASON_LENGTH) {
-      setError(`Write at least ${SURFACE_AUDIT_WAIVER_MIN_REASON_LENGTH} characters.`);
-      return;
-    }
     setSaving(true);
     setError(null);
-    try {
-      const res = await fetch(`/api/missions/${encodeURIComponent(missionId)}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ surfaceAuditWaiver: text }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => null) as { error?: unknown } | null;
-        setError(typeof body?.error === 'string' && body.error ? body.error : 'Could not save the waiver. Try again.');
-        return;
-      }
-      setSaved({ reason: text, actorLabel: null, at: new Date().toISOString() });
-      setOpen(false);
-      router.refresh();
-    } catch {
-      setError('Could not save the waiver. Try again.');
-    } finally {
-      setSaving(false);
-    }
+    const out = await saveSurfaceAuditWaiver(missionId, text);
+    setSaving(false);
+    if (!out.ok) { setError(out.error); return; }
+    setSaved({ reason: text, actorLabel: null, at: new Date().toISOString() });
+    setOpen(false);
+    router.refresh();
   }
 
   const note = variant === 'tile' && missionBranch && !record ? (
@@ -192,6 +201,11 @@ export function MissionSurfaceAuditWaiverProvider({
   ...value
 }: Omit<MissionSurfaceAuditWaiverProps, 'variant'> & { children: ReactNode }) {
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+}
+
+/** The page's waiver context: the mission, any recorded waiver, and whether it is closed. Null off a mission page. */
+export function useSurfaceAuditWaiver(): Omit<MissionSurfaceAuditWaiverProps, 'variant'> | null {
+  return useContext(Ctx);
 }
 
 /** The waiver, as the audit task's drawer shows it; nothing outside a mission page's provider. */

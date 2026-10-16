@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { capturedWhere } from '@buildd/core/db/relational-sql';
 
 // The registry must reproduce today's call-site rules exactly. EXPECTED is
 // written out by hand from the inventory in docs/specs/team-permissions.md —
@@ -36,8 +37,6 @@ const EXPECTED: Record<Permission, Row> = {
   manage_team_settings: { roles: OA, keys: NONE },
   delete_team: { roles: O, keys: NONE },
   seed_team_timezone: { roles: O, keys: NONE },
-  manage_chat_retro: { roles: OA, keys: ADMIN_KEY },
-  activate_chat_retro_dogfood: { roles: O, keys: NONE },
   view_team_usage: { roles: OA, keys: NONE },
   manage_billing: { roles: OA, keys: NONE },
   manage_team_keys: { roles: OA, keys: NONE },
@@ -58,7 +57,6 @@ const EXPECTED: Record<Permission, Row> = {
   approve_specs: { roles: OA, keys: NONE },
   manage_connectors: { roles: OA, keys: ADMIN_KEY },
   manage_evidence_backends: { roles: OA, keys: ADMIN_KEY },
-  run_experiments: { roles: OA, keys: ADMIN_KEY },
   assign_team_roles: { roles: OA, keys: NONE },
   manage_team_credentials: { roles: OA, keys: ADMIN_KEY },
   manage_team_notifications: { roles: OA, keys: ADMIN_KEY },
@@ -163,14 +161,14 @@ function boundValues(node: unknown, seen = new Set<unknown>()): string[] {
   return out;
 }
 
-describe('can: no per-team grants (AC-G1)', () => {
+describe('can: no per-team grants (AC-14)', () => {
   const caller = { kind: 'user' as const, userId: 'u1' };
 
   it('a role holds the same permissions in every team, whatever a team row stores', async () => {
     // Legacy per-team grants on the rows: team-a widens, team-b narrows. The
     // personal-team lookup (by slug) finds nothing.
     mockTeamsFindFirst.mockImplementation(async (q: { where?: unknown }) => {
-      const values = boundValues(q?.where);
+      const values = boundValues(capturedWhere(q?.where));
       if (values.some(v => v.startsWith('personal-'))) return null;
       const everyone = Object.fromEntries(ALL.map(p => [p, ['owner', 'admin', 'member']]));
       const ownersOnly = Object.fromEntries(ALL.map(p => [p, ['owner']]));
@@ -191,7 +189,7 @@ describe('can: no per-team grants (AC-G1)', () => {
     for (const p of ALL) await can(caller, p, 'team-a');
     expect(mockTeamsFindFirst).toHaveBeenCalled();
     for (const [q] of mockTeamsFindFirst.mock.calls as unknown as [{ where?: unknown }][]) {
-      expect(boundValues(q?.where).every(v => v.startsWith('personal-'))).toBe(true);
+      expect(boundValues(capturedWhere(q?.where)).every(v => v.startsWith('personal-'))).toBe(true);
     }
   });
 });

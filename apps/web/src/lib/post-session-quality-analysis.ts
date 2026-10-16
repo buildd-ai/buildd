@@ -55,6 +55,7 @@ import {
   type VerificationResult,
 } from '@buildd/core/verification-check';
 import type { CompletedSessionTranscript } from './session-transcript';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Bump when a check, its mapping or the root-cause rules change. */
 export const POST_SESSION_ANALYSER_VERSION = 'psa1';
@@ -551,7 +552,7 @@ async function defaultLoadRun(runId: string): Promise<AnalysisRunRow | null> {
     import('drizzle-orm'),
   ]);
   const row = await db.query.postSessionRuns.findFirst({
-    where: eq(postSessionRuns.id, runId),
+    where: sqlWhere(eq(postSessionRuns.id, runId)),
     columns: {
       id: true, state: true, workerId: true, taskId: true, workspaceId: true,
       facts: true, triage: true, hardTriggerReasons: true,

@@ -5,6 +5,7 @@ import { eq, and, or, isNull, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { checkConnectorRouting } from '@/app/api/workers/claim/connector-gate';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export type ConnectorHealthStatus = 'ok' | 'auth_expired' | 'server_unreachable' | 'not_configured' | 'blocked';
 
@@ -48,7 +49,7 @@ export async function GET(
   try {
     // Get the role's connectorRefs and connector names
     const roleRows = await db.query.workspaceSkills.findMany({
-      where: and(
+      where: sqlWhere(and(
         eq(workspaceSkills.slug, roleSlug),
         eq(workspaceSkills.isRole, true),
         eq(workspaceSkills.teamId, teamId),
@@ -56,7 +57,7 @@ export async function GET(
           isNull(workspaceSkills.workspaceId),
           eq(workspaceSkills.workspaceId, workspaceId),
         ),
-      ),
+      )),
       columns: { workspaceId: true, connectorRefs: true },
     });
 
@@ -74,7 +75,7 @@ export async function GET(
 
     // Resolve connector names for all refs
     const connectorRows = await db.query.connectors.findMany({
-      where: inArray(connectors.id, refs),
+      where: sqlWhere(inArray(connectors.id, refs)),
       columns: { id: true, name: true },
     });
     const nameById = new Map(connectorRows.map(c => [c.id, c.name]));

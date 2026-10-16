@@ -15,6 +15,7 @@
 
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
+import { capturedWhere } from '@buildd/core/db/relational-sql';
 
 const mockAuthenticateApiKey = mock(() => null as any);
 const mockWorkersFindFirst = mock(() => null as any);
@@ -351,7 +352,7 @@ describe('POST /api/artifacts/upload-url', () => {
       const res = await POST(req(validBody()));
       expect(res.status).toBe(200);
       expect(mockInsertValues.mock.calls[0][0].missionId).toBe(MISSION);
-      expect((mockTasksFindFirst.mock.calls[0] as any)[0].where).toEqual({ field: 'tasks.id', value: 'task-1', type: 'eq' });
+      expect(capturedWhere((mockTasksFindFirst.mock.calls[0] as any)[0].where)).toEqual({ field: 'tasks.id', value: 'task-1', type: 'eq' });
     });
 
     // docs/design/visual-qa-auditor.md, "Decay": an auditor's screenshots land in

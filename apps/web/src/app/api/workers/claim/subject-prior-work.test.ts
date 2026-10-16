@@ -29,6 +29,7 @@ mock.module('drizzle-orm', () => ({
 }));
 
 import { buildSubjectPriorWork } from './subject-prior-work';
+import { capturedOrderBy, capturedWhere } from '@buildd/core/db/relational-sql';
 
 const ENABLED = { priorWorkInjection: true };
 const DISABLED = { priorWorkInjection: false };
@@ -231,7 +232,7 @@ describe('buildSubjectPriorWork', () => {
 
 /** Invoke a drizzle relational `orderBy` callback and report what it asked for. */
 function probeOrderBy(orderBy: any): unknown {
-  return orderBy(
+  return capturedOrderBy(orderBy,
     { createdAt: 'createdAt', updatedAt: 'updatedAt' },
     {
       desc: (col: unknown) => ({ dir: 'desc', col }),
@@ -249,7 +250,7 @@ describe('buildSubjectPriorWork — sibling query', () => {
     );
 
     const args = mockFindMany.mock.calls.at(-1)![0] as any;
-    expect(args.where).toEqual({
+    expect(capturedWhere(args.where)).toEqual({
       op: 'and',
       args: [
         { op: 'eq', a: 'workspaceId', b: 'ws-1' },
@@ -274,7 +275,7 @@ describe('buildSubjectPriorWork — sibling query', () => {
     );
 
     const args = mockFindMany.mock.calls.at(-1)![0] as any;
-    expect(args.where).toEqual({
+    expect(capturedWhere(args.where)).toEqual({
       op: 'and',
       args: [
         { op: 'eq', a: 'workspaceId', b: 'ws-1' },
@@ -294,7 +295,7 @@ describe('buildSubjectPriorWork — sibling query', () => {
     );
 
     const args = mockFindMany.mock.calls.at(-1)![0] as any;
-    expect(args.where).toEqual({
+    expect(capturedWhere(args.where)).toEqual({
       op: 'and',
       args: [
         { op: 'eq', a: 'workspaceId', b: 'ws-1' },

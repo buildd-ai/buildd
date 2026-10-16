@@ -17,6 +17,7 @@ import { RECOVERABLE_BLOCKER_REPAIR } from '@/modules';
 import { wakeMissionAfterResponse } from '@/lib/mission-wake';
 import type { MissionNoteType, MissionNoteAuthorType, MissionNoteStatus } from '@buildd/shared';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 function invalidUuid(label: string, value: string, status: 400 | 404) {
   return NextResponse.json(
@@ -49,7 +50,7 @@ async function resolveMissionAccess(req: NextRequest, missionId: string, apiAcco
   const teamIds = await resolveAccountTeamIds(user, apiAccount);
 
   const mission = await db.query.missions.findFirst({
-    where: eq(missions.id, missionId),
+    where: sqlWhere(eq(missions.id, missionId)),
     columns: { id: true, teamId: true, workspaceId: true },
   });
 
@@ -93,7 +94,7 @@ export async function GET(
     if (cursor) {
       // Fetch the cursor note's createdAt for offset
       const cursorNote = await db.query.missionNotes.findFirst({
-        where: eq(missionNotes.id, cursor),
+        where: sqlWhere(eq(missionNotes.id, cursor)),
         columns: { createdAt: true },
       });
       if (cursorNote) {
@@ -106,8 +107,8 @@ export async function GET(
     }
 
     const notes = await db.query.missionNotes.findMany({
-      where: and(...conditions),
-      orderBy: [desc(missionNotes.createdAt)],
+      where: sqlWhere(and(...conditions)),
+      orderBy: sqlOrderBy([desc(missionNotes.createdAt)]),
       limit: limit + 1, // fetch one extra to determine hasMore
     });
 
@@ -195,7 +196,7 @@ export async function POST(
     let isSensitive = false;
     if (access.mission.workspaceId) {
       const wsRow = await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, access.mission.workspaceId),
+        where: sqlWhere(eq(workspaces.id, access.mission.workspaceId)),
         columns: { dataClass: true },
       });
       isSensitive = wsRow?.dataClass === 'sensitive';

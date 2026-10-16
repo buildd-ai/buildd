@@ -24,6 +24,7 @@ import type { DecisionReplayInput, DecisionReplayLocator, DecisionReplayStore } 
 import { redactSecretShapes } from './ci-failure-excerpts';
 import type { ResolvedEvidenceBackend } from './evidence-backend';
 import { buildDecisionReplayKey } from './storage-keys';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -161,8 +162,8 @@ const defaultDeps: DecisionReplayStoreDeps = {
     const { evidenceBackends } = await import('@buildd/core/db/schema');
     const { and, desc, eq, isNull } = await import('drizzle-orm');
     const row = await db.query.evidenceBackends.findFirst({
-      where: and(eq(evidenceBackends.teamId, teamId), isNull(evidenceBackends.workspaceId)),
-      orderBy: desc(evidenceBackends.createdAt),
+      where: sqlWhere(and(eq(evidenceBackends.teamId, teamId), isNull(evidenceBackends.workspaceId))),
+      orderBy: sqlOrderBy(desc(evidenceBackends.createdAt)),
     });
     return row ? describeEvidenceBackend(row, 'team') : null;
   },
@@ -173,7 +174,7 @@ const defaultDeps: DecisionReplayStoreDeps = {
     const { db } = await import('@buildd/core/db');
     const { evidenceBackends } = await import('@buildd/core/db/schema');
     const { eq } = await import('drizzle-orm');
-    const row = await db.query.evidenceBackends.findFirst({ where: eq(evidenceBackends.id, backend.backendId) });
+    const row = await db.query.evidenceBackends.findFirst({ where: sqlWhere(eq(evidenceBackends.id, backend.backendId)) });
     if (!row) throw new Error('the evidence backend no longer exists');
     return getEvidenceS3Client(row);
   },
@@ -181,7 +182,7 @@ const defaultDeps: DecisionReplayStoreDeps = {
     const { db } = await import('@buildd/core/db');
     const { workspaces } = await import('@buildd/core/db/schema');
     const { eq } = await import('drizzle-orm');
-    const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId), columns: { dataClass: true } });
+    const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, workspaceId)), columns: { dataClass: true } });
     return ws ?? null;
   },
   serverSecretValues() {

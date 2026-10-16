@@ -28,6 +28,8 @@ const asRows = (rows: readonly PairedRow[], arm: 'current' | 'blend'): BacktestR
   rows.map(r => ({ source: 'neighbours', p50: r[arm].p50, p80: r[arm].p80, actual: r.actual, priorCompleted: r.priorCompleted }));
 
 /** Better = lower median |log error| by at least 0.05 (about 5%) over at least 30 scored tasks. */
+export const BLEND_BETTER_BAR = { minScored: 30, minLogErrorGain: 0.05 } as const;
+
 export function compareBlend(rows: readonly PairedRow[]): BlendComparison {
   const current = scoreRows(asRows(rows, 'current'));
   const blend = scoreRows(asRows(rows, 'blend'));
@@ -39,9 +41,9 @@ export function compareBlend(rows: readonly PairedRow[]): BlendComparison {
     const sub = rows.filter(r => r.currentSource === src);
     return { source: src, current: scoreRows(asRows(sub, 'current')), blend: scoreRows(asRows(sub, 'blend')) };
   });
-  const enough = Math.min(current.scored, blend.scored) >= 30;
+  const enough = Math.min(current.scored, blend.scored) >= BLEND_BETTER_BAR.minScored;
   const c = current.medianAbsLogError, k = blend.medianAbsLogError;
-  const verdict = !enough || c === null || k === null ? 'insufficient' : k <= c - 0.05 ? 'blend_better' : 'no_better';
+  const verdict = !enough || c === null || k === null ? 'insufficient' : k <= c - BLEND_BETTER_BAR.minLogErrorGain ? 'blend_better' : 'no_better';
   return { overall: { current, blend }, byHistory, byCurrentSource, verdict };
 }
 

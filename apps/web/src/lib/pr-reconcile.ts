@@ -49,7 +49,9 @@ import {
 } from '@/lib/workspace-installation';
 import { repoFullNameFromPrUrl, resolvePrRepo } from '@/lib/repo-scope';
 import { stampPrMergedOnAllRows } from '@/lib/pr-merge-stamp';
+import { releaseAndNotify } from '@/lib/path-claim-release';
 import { recordPrFact } from '@buildd/core/pr-facts';
+import { factFunnelScope } from '@/lib/workflow/pr-fact-scope';
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 import {
   TIER_SLA_MS,
@@ -61,24 +63,33 @@ import {
 import {
   evaluateMissionWorkState,
   findMissionPrOwner,
+  reconcileMissionDeliveries,
   maybeOpenMissionIntegrationPr,
   noteMissionPrOpenFailure,
 } from '@/lib/mission-pr';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 import { TERMINAL_PR_LIFECYCLE } from '@/lib/dep-gate-contract';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
- * On-demand merge-state check for a single worker.
+ * On-demand merge-state check for a single worker (the dependency gate, the admin backfill,
+ * the task and mission pages).
  *
- * Calls GET /repos/{owner}/{repo}/pulls/{prNumber} and, if the PR is merged,
- * stamps mergedAt + prLifecycleStatus='merged' in the workers table.
+ * Calls GET /repos/{owner}/{repo}/pulls/{prNumber} and, if the PR is merged, records the merge:
+ *  - for a delivery-owned PR (a kernel delivery owns it, S4a), the kernel decides: T17 runs from
+ *    the kernel's own live read (`observePrState`) and writes the worker rows in its statement.
+ *    With `observeOnly` (a page render's after(), AC-3) the merge is recorded as an unapplied fact
+ *    instead, and the fast heal (kernel-heal.ts) applies it within minutes;
+ *  - every other row carrying the PR gets the merge through the fact funnel, as before.
  *
- * Returns true when a merge was detected and written, false otherwise.
- * Safe to call speculatively — skips the GitHub call if mergedAt is already set.
+ * Returns true only when this worker's row now carries the merge (a row was written, by either
+ * path), so a caller never wakes a dependent the SQL gate would still refuse.
+ * Safe to call speculatively: skips the GitHub call if mergedAt is already set.
  */
 export async function refreshWorkerMergeStateIfStale(
   worker: { id: string; prNumber: number; prUrl: string; mergedAt?: Date | null },
   installationId: number,
+  opts: { workspaceId?: string | null; observeOnly?: boolean } = {},
 ): Promise<boolean> {
   if (worker.mergedAt) return false;
 
@@ -93,15 +104,19 @@ export async function refreshWorkerMergeStateIfStale(
 
     if (pr.merged && pr.merged_at) {
       const now = new Date();
-      // Every row carrying this PR (a retry attempt that adopted it too), through
-      // the fact funnel; see lib/pr-merge-stamp.
-      await stampPrMergedOnAllRows({ prUrl: worker.prUrl, prNumber: worker.prNumber, mergedAt: pr.merged_at });
+      if (opts.workspaceId) await recordMergeWithKernel(opts.workspaceId, repo, worker.prNumber, installationId, pr, !!opts.observeOnly);
+      // Every row carrying this PR (a retry attempt that adopted it too), through the fact funnel,
+      // whose scope keeps a delivery-owned row out unless its delivery already says merged.
+      const stamped = await stampPrMergedOnAllRows({ prUrl: worker.prUrl, prNumber: worker.prNumber, mergedAt: pr.merged_at });
       await db.update(workers)
         .set({ prLastCheckedAt: now, prLastVerifiedAt: now, prCheckFailureCount: 0, updatedAt: now })
         .where(eq(workers.id, worker.id));
       // Same dedupe key as the webhook: a merge it already reported writes nothing.
       await emit({ type: 'pr.merged', repoFullName: repo, prNumber: worker.prNumber, url: worker.prUrl });
-      return true;
+      if (stamped.some((r) => r.id === worker.id)) return true;
+      // The kernel's T17 may have written it instead: ask the row.
+      const [row] = await db.select({ mergedAt: workers.mergedAt }).from(workers).where(eq(workers.id, worker.id));
+      return !!row?.mergedAt;
     }
     return false;
   } catch (err) {
@@ -111,17 +126,36 @@ export async function refreshWorkerMergeStateIfStale(
 }
 
 /**
+ * A merge this read found goes to the kernel when it owns the PR: applied now (T17), or, from a
+ * render, recorded unapplied with the fast heal scheduled. A kernel whose own live read fails
+ * schedules that heal itself (`KernelObservationFailed`). Never throws.
+ */
+async function recordMergeWithKernel(workspaceId: string, repoFullName: string, prNumber: number, installationId: number, pull: unknown, observeOnly: boolean): Promise<void> {
+  try {
+    const seam = await import('@/lib/workflow/seam');
+    if (observeOnly) {
+      await seam.recordPrStateObserved({ workspaceId, repoFullName, prNumber, pull, source: 'render:merge-state' });
+      return;
+    }
+    await seam.observePrState({ workspaceId, repoFullName, prNumber, installationId, source: 'dependency-gate', pull });
+  } catch (err) {
+    console.warn(`[pr-reconcile] kernel merge import for ${repoFullName}#${prNumber} did not apply (a fast heal is scheduled when the kernel owns it):`, err);
+  }
+}
+
+/**
  * §11: a sweep that finds a merge or close GitHub never delivered imports it
  * into the kernel too, for a kernel-owned PR (T17 / T18 from the kernel's own
  * live read). A no-op for any PR without a kernel delivery; never fatal.
  */
-async function importClosureToKernel(workspaceId: string | null | undefined, repoFullName: string, prNumber: number, installationId: number): Promise<void> {
-  if (!workspaceId) return;
+async function importClosureToKernel(workspaceId: string | null | undefined, repoFullName: string, prNumber: number, installationId: number, pull?: unknown): Promise<boolean> {
+  if (!workspaceId) return false;
   try {
     const { observePrState } = await import('@/lib/workflow/seam');
-    await observePrState({ workspaceId, repoFullName, prNumber, installationId, source: 'sweep:pr-reconcile' });
+    return await observePrState({ workspaceId, repoFullName, prNumber, installationId, source: 'sweep:pr-reconcile', pull });
   } catch (err) {
     console.error(`[pr-reconcile] kernel close import failed for ${repoFullName}#${prNumber}:`, err);
+    return false;
   }
 }
 
@@ -250,7 +284,7 @@ async function notifyDependents(taskId: string): Promise<void> {
  */
 export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
   const candidates = await db.query.workers.findMany({
-    where: and(
+    where: sqlWhere(and(
       isNotNull(workers.prNumber),
       isNotNull(workers.prUrl),
       isNull(workers.mergedAt),
@@ -260,7 +294,7 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
         notInArray(workers.prLifecycleStatus, TERMINAL_STATUSES),
       ),
       tieredStalenessCondition(),
-    ),
+    )),
     columns: {
       id: true,
       prNumber: true,
@@ -277,7 +311,7 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
     // completes an opted-in mission's work, and the webhook that would normally
     // have opened its PR is the delivery that went missing.
     with: { task: { columns: { missionId: true } } },
-    orderBy: sql`${workers.prLastCheckedAt} ASC NULLS FIRST`,
+    orderBy: sqlOrderBy(sql`${workers.prLastCheckedAt} ASC NULLS FIRST`),
     limit: RECONCILE_BATCH_CAP,
   });
 
@@ -378,7 +412,7 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
 
   for (const [workspaceId, wsWorkers] of byWorkspace) {
     const workspace = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, workspaceId),
+      where: sqlWhere(eq(workspaces.id, workspaceId)),
       columns: { repo: true },
       with: WORKSPACE_INSTALLATION_WITH,
     });
@@ -436,15 +470,18 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
           // The merge belongs to the PR: one fact stamps this row and any other
           // carrying it (a retry attempt that adopted the PR number), whose
           // tasks' dependents are nudged too. See lib/pr-merge-stamp.
-          const siblings = (await stampPrMergedOnAllRows({
+          // A lost webhook: a kernel-owned delivery imports the same fact first (§11), so T17
+          // writes its rows in its own statement and the funnel below finds them agreeing.
+          const kernelApplied = await importClosureToKernel(worker.workspaceId, repo, worker.prNumber, installationId, pr);
+          const stampedRows = await stampPrMergedOnAllRows({
             prUrl: worker.prUrl,
             prNumber: worker.prNumber,
             mergedAt: pr.merged_at,
-          })).filter((s) => s.id !== worker.id);
+          });
+          const siblings = stampedRows.filter((s) => s.id !== worker.id);
           await recordCheck(worker.id, { prCheckFailureCount: 0, updatedAt: new Date() }, { verified: true });
-          // A lost webhook: the kernel-owned delivery imports the same fact (§11).
-          await importClosureToKernel(worker.workspaceId, repo, worker.prNumber, installationId);
-          result.stamped++;
+          // Only a real write counts: the funnel stamped a row, or the kernel took the merge in.
+          if (stampedRows.length > 0 || kernelApplied) result.stamped++;
           // Same dedupe key as the webhook: a merge it already reported writes nothing.
           await emit({ type: 'pr.merged', repoFullName: repo, prNumber: worker.prNumber, url: worker.prUrl });
           for (const s of siblings) {
@@ -501,6 +538,10 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
               console.error(`[pr-reconcile] checkDependsOnResolved failed for task ${worker.taskId}:`, err),
             );
           }
+          // A lost webhook also skipped the path-claim release (G6 in
+          // failure-incident-recovery): without it the PR's waiters wake only
+          // on the hourly lease sweep or their own next poll. Idempotent.
+          if (worker.taskId) await releaseAndNotify(worker.taskId, 'merged');
           // The fifth consumer of a merge event, and the one this route was
           // missing. The other four are above; see reconcileSubjectAnchors.
           result.subjectsReconciled += await reconcileSubjectAnchors(
@@ -511,9 +552,9 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
           // later PR on a serialized surface would wait on it forever.
           await settleSurfaceIntents(worker.workspaceId, worker.prNumber);
         } else if (pr.state === 'closed') {
-          await recordPrFact({ workerId: worker.id }, { kind: 'closed' });
+          await importClosureToKernel(worker.workspaceId, repo, worker.prNumber, installationId, pr);
+          await recordPrFact({ workerId: worker.id }, { kind: 'closed' }, { scope: factFunnelScope });
           await recordCheck(worker.id, { prCheckFailureCount: 0, updatedAt: new Date() }, { verified: true });
-          await importClosureToKernel(worker.workspaceId, repo, worker.prNumber, installationId);
           result.closed++;
           // Matches dead-pr-shutdown, which sweeps on the closed path in the
           // event-driven flow: a PR closed unmerged strands its anchors too.
@@ -627,6 +668,13 @@ export interface MissionPrSweepResult {
   alreadyShipped: number;
   /** Opener threw, or reported an API failure. Retried next run. */
   errors: number;
+  /**
+   * §6 delivery reconcile (workflow-kernel-library.md): passes the control plane
+   * could not take (an outage, or this pass's budget spent), deferred to the
+   * next tick; and passes that failed for any other reason. Absent when zero.
+   */
+  deliveriesDeferred?: number;
+  deliveryErrors?: number;
 }
 
 /**
@@ -675,16 +723,16 @@ export async function sweepMissionIntegrationPrs(): Promise<MissionPrSweepResult
   };
 
   const candidates = await db.query.missions.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(missions.integrationBranchEnabled, true),
       isNotNull(missions.workingBranch),
       // Live missions only. A paused mission is a human stop signal, and a
       // completed or archived one has no PR left to open.
       eq(missions.status, 'active'),
       missionSweepStalenessCondition(),
-    ),
+    )),
     columns: { id: true },
-    orderBy: sql`${missions.prSweepLastCheckedAt} ASC NULLS FIRST`,
+    orderBy: sqlOrderBy(sql`${missions.prSweepLastCheckedAt} ASC NULLS FIRST`),
     limit: MISSION_PR_SWEEP_CAP,
   });
 
@@ -725,6 +773,21 @@ export async function sweepMissionIntegrationPrs(): Promise<MissionPrSweepResult
 
   for (const mission of candidates) {
     try {
+      // §6 backstop: finish whatever a delivery transition left owed (a lost
+      // merge, a successor branch not yet cut, PRs left on a merged branch).
+      // Only an outage defers (ControlPlaneUnavailableError, which this pass's
+      // control-plane budget also raises once spent): the next tick retries. A
+      // refusal or the command's own failure is an error, counted as one.
+      const deliveryFailure = await Promise.resolve().then(() => reconcileMissionDeliveries(mission.id)).then(() => null, (err: unknown) => err);
+      if (deliveryFailure) {
+        const { ControlPlaneUnavailableError } = await import('@/lib/workflow/kernel-client');
+        if (deliveryFailure instanceof ControlPlaneUnavailableError) {
+          result.deliveriesDeferred = (result.deliveriesDeferred ?? 0) + 1;
+        } else {
+          result.deliveryErrors = (result.deliveryErrors ?? 0) + 1;
+          console.error(`[pr-reconcile] mission ${mission.id} delivery reconcile failed:`, deliveryFailure);
+        }
+      }
       const owner = await findMissionPrOwner(mission.id);
       // A live gate: this is the normal answer for a mission mid-review.
       if (owner?.state === 'open') {
@@ -862,7 +925,7 @@ export async function sweepManualMissionCompletions(): Promise<ManualCompletionS
 
   const secs = sql.raw(String(Math.round(MANUAL_COMPLETION_SWEEP_WINDOW_MS / 1000)));
   const candidates = await db.query.missions.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(missions.status, 'active'),
       eq(missions.orchestrationMode, 'manual'),
       eq(missions.integrationBranchEnabled, false),
@@ -883,9 +946,9 @@ export async function sweepManualMissionCompletions(): Promise<ManualCompletionS
         JOIN tasks t2 ON t2.id = w.task_id
         WHERE t2.mission_id = ${missions.id}
       ) > coalesce((${missions.goalCriteriaState}->>'evaluatedAt')::timestamptz, '-infinity'::timestamptz)`,
-    ),
+    )),
     columns: { id: true },
-    orderBy: sql`${missions.prSweepLastCheckedAt} ASC NULLS FIRST`,
+    orderBy: sqlOrderBy(sql`${missions.prSweepLastCheckedAt} ASC NULLS FIRST`),
     limit: MANUAL_COMPLETION_SWEEP_CAP,
   });
 

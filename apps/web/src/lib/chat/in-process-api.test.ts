@@ -257,7 +257,7 @@ describe('createInProcessApi — chat reach (the conversation\'s team, standard 
       routes: [{ pattern: '/api/workers/active', methods: ['GET'], reach: reachOf('/api/workers/active'), load: async () => ({ GET: async () => Response.json(body) }) }],
     });
     const rows = [
-      { localUiUrl: 'http://r-both', accountName: 'both', workspaceIds: ['ws-ok', 'ws-sensitive'], workspaceNames: ['ok', 's'] },
+      { localUiUrl: 'http://r-both', accountName: 'both', workspaceIds: ['ws-ok', 'ws-sensitive'], workspaceNames: ['ok', 's'], workspaceTeamNames: ['Team OK', 'Team Sensitive'] },
       { localUiUrl: 'http://r-out', accountName: 'out', workspaceIds: ['ws-sensitive', 'ws-other-team'], workspaceNames: ['s', 'o'] },
       { localUiUrl: 'http://r-none', accountName: 'none', workspaceIds: [], workspaceNames: [] },
       { localUiUrl: 'http://r-ok', accountName: 'ok', workspaceIds: ['ws-ok'], workspaceNames: ['ok'] },
@@ -273,6 +273,8 @@ describe('createInProcessApi — chat reach (the conversation\'s team, standard 
       const both = out.activeLocalUis[0];
       expect(both.workspaceIds).toEqual(['ws-ok']);
       expect(both.workspaceNames).toEqual(['ok']);
+      expect(both.workspaceTeamNames).toEqual(['Team OK']);
+      expect(JSON.stringify(out)).not.toContain('Team Sensitive');
       expect(JSON.stringify(out)).not.toContain('ws-sensitive');
       expect(JSON.stringify(out)).not.toContain('ws-other-team');
     });

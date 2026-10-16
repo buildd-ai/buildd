@@ -6,6 +6,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { refuseCredentialCustody } from '@/lib/credential-custody';
 import { markDue, clearDue } from '@/lib/redis';
 import { LEASE_DUE_QUEUE } from '@/lib/lease-due-queue';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // Lease TTL — broker must heartbeat within this window or the lease becomes stealable.
 const LEASE_TTL_SECONDS = 5 * 60; // 5 minutes
@@ -44,7 +45,7 @@ export async function POST(req: NextRequest) {
 
   // Verify the credential exists and belongs to this account's team.
   const credential = await db.query.secrets.findFirst({
-    where: eq(secrets.id, credentialId),
+    where: sqlWhere(eq(secrets.id, credentialId)),
     columns: { id: true, teamId: true },
   });
   if (!credential) {

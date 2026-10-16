@@ -136,4 +136,24 @@ describe('MissionVisualReviewSetting', () => {
     act(() => root.render(<MissionVisualReviewSetting missionId="m1" initialEnabled visual={null} readonly />));
     expect(sw().disabled).toBe(true);
   });
+
+  it('reads the state words from the canonical presentation instead of the audit Line', async () => {
+    const { resolveVisualReviewPolicy } = await import('@/lib/workflow/visual-review-policy');
+    const { deriveMissionVisualReview } = await import('@/lib/workflow/visual-review-state');
+    const { presentVisualReview } = await import('@/lib/workflow/visual-review-presentation');
+    const presentation = presentVisualReview(deriveMissionVisualReview({
+      policy: resolveVisualReviewPolicy({}), uiChange: { state: 'no', source: null, uiFiles: 0 }, audit: null, review: null, waiver: null,
+      branch: { headSha: null, base: null, integrationPr: null, workLanded: true },
+    }));
+    act(() => root.render(<MissionVisualReviewSetting missionId="m1" initialEnabled visual={buildVisualReviewFixtureModel('no_browser_runner')} presentation={presentation} />));
+    expect(container.querySelector('[data-testid="visual-review-line"]')).toBeNull();
+    expect(container.querySelector('[data-testid="mission-visual-review-state"]')?.textContent).toContain('No visual changes');
+    expect(container.textContent).toContain('Checked automatically');
+  });
+
+  it('under a strict workspace the switch is locked and says why', () => {
+    act(() => root.render(<MissionVisualReviewSetting missionId="m1" initialEnabled visual={null} policyLocked />));
+    expect(sw().disabled).toBe(true);
+    expect(container.querySelector('[data-testid="mission-visual-review-locked"]')?.textContent).toContain('requires visual review');
+  });
 });

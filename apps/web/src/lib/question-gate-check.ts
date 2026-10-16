@@ -57,6 +57,7 @@ import { classifyRecoverableBlocker, recoveredAnswerText, repairTaskSpec, type R
 import type { AttentionDisposition, DispositionBy } from '@buildd/core/needs-you';
 import type { DecisionAccess, DecisionReceipt } from '@buildd/core/decision-client';
 import type { DecisionLedgerInput } from '@buildd/core/decision-ledger';
+import type { DecisionReplayCapture } from '@buildd/core/decision-replay';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 import type { RiskClassName } from '@buildd/shared';
 
@@ -142,6 +143,24 @@ async function defaultRecord(input: DecisionLedgerInput): Promise<string | null>
 async function defaultRecordReceipts(receipts: DecisionReceipt[], scope: { teamId: string; accountId: string | null }): Promise<void> {
   const { insertDecisionReceipts } = await import('./memory-decisions');
   await insertDecisionReceipts(receipts, scope);
+}
+
+/**
+ * What an answered row keeps as a replayable copy (`@buildd/core/decision-replay`,
+ * through the ledger write): the state and the decision's identity, never its
+ * question text, which an eval resolves from the version.
+ */
+function replayOf(
+  decision: { id: string; version: string; fingerprint: string; questions: object },
+  state: unknown,
+  candidates: string[] | null = null,
+): DecisionReplayCapture {
+  return {
+    state,
+    questionIds: Object.keys(decision.questions),
+    candidates,
+    promptRef: { id: decision.id, version: decision.version, contentHash: decision.fingerprint },
+  };
 }
 
 /** Subject type a decided row is filed under, so the worker's end can label it. */
@@ -305,6 +324,8 @@ export async function checkQuestion(
     let error: string | undefined;
     let label: 'actionable' | 'needs_context' | undefined;
     let confidence: number | undefined;
+    // Set only once the model answered: the answered row keeps the input it was asked with.
+    let replay: DecisionReplayCapture | null = null;
     try {
       const access = await resolveAccess({ teamId: scope.teamId, workspaceId: scope.workspaceId, accountId: scope.accountId });
       if (!access.ok) {
@@ -317,16 +338,17 @@ export async function checkQuestion(
           error = 'timeout';
         } else {
           const run = deps.runGate ?? QUESTION_GATE_DECISION.run;
+          const state = buildQuestionGateState(req.question, scope.taskTitle);
           const result = await run({
             apiKey: access.apiKey,
-            state: buildQuestionGateState(req.question, scope.taskTitle),
+            state,
             timeoutMs: remaining,
             headers: { 'http-referer': 'https://buildd.dev', 'x-title': 'buildd' },
             onUsage: r => { gateReceipts.push(r); },
           });
           const read = readQuestionGateRun(result);
           if (read && 'error' in read) error = read.error;
-          else if (read) { label = read.label; confidence = read.confidence; }
+          else if (read) { label = read.label; confidence = read.confidence; replay = replayOf(QUESTION_GATE_DECISION, state); }
         }
       }
     } catch {
@@ -348,7 +370,7 @@ export async function checkQuestion(
       await record({
         ...stage1Base, verdict: label ?? null, confidence: confidence ?? null,
         applied: gated.verdict === 'pushback', status: gated.verdict === 'pushback' ? 'applied' : 'suggested',
-        appliedAnswer: gated.verdict === 'pushback' ? 'pushback' : 'send',
+        appliedAnswer: gated.verdict === 'pushback' ? 'pushback' : 'send', replay,
       }).catch(() => {});
       if (gated.verdict === 'pushback') {
         return {
@@ -387,6 +409,7 @@ export async function checkQuestion(
   const decideReceipts: DecisionReceipt[] = [];
   let decideError: string | undefined;
   let answer: QuestionDecideAnswer | undefined;
+  let decideReplay: DecisionReplayCapture | null = null;
   try {
     const access = await resolveAccess({ teamId: scope.teamId, workspaceId: scope.workspaceId, accountId: scope.accountId });
     if (!access.ok) {
@@ -399,16 +422,20 @@ export async function checkQuestion(
         decideError = 'timeout';
       } else {
         const runDecide = deps.runDecide ?? QUESTION_DECIDE_DECISION.run;
+        const state = buildQuestionGateState(req.question, scope.taskTitle);
         const result = await runDecide({
           apiKey: access.apiKey,
-          state: buildQuestionGateState(req.question, scope.taskTitle),
+          state,
           timeoutMs: remaining,
           headers: { 'http-referer': 'https://buildd.dev', 'x-title': 'buildd' },
           onUsage: r => { decideReceipts.push(r); },
         });
         const read = readQuestionDecideRun(result);
         if ('error' in read) decideError = read.error;
-        else answer = read;
+        else {
+          answer = read;
+          decideReplay = replayOf(QUESTION_DECIDE_DECISION, state, optionLabels(req.question));
+        }
       }
     }
   } catch {
@@ -432,7 +459,7 @@ export async function checkQuestion(
   const ledgerBase = {
     teamId: scope.teamId, workspaceId: scope.workspaceId, missionId: scope.missionId, taskId: scope.taskId,
     capability: 'question_gate', fingerprint, promptVersion: QUESTION_DECIDE_DECISION.version,
-    verdict: answer.disposition, confidence: resolution.confidence, latencyMs,
+    verdict: answer.disposition, confidence: resolution.confidence, latencyMs, replay: decideReplay,
   };
 
   if (resolution.disposition === 'decide' && resolution.optionIndex !== undefined) {

@@ -12,13 +12,14 @@ import { and, eq, isNotNull } from 'drizzle-orm';
 import { db } from './db/client';
 import { taskEstimateActuals, taskEstimates, tasks, workers } from './db/schema';
 import { computeTaskActuals, type ActualsSession } from './task-estimate-actuals';
+import { sqlWhere } from './db/relational-sql';
 
 export type RecordActualsOutcome = 'recorded' | 'skipped' | 'failed';
 
 export async function recordTaskActuals(taskId: string): Promise<RecordActualsOutcome> {
   try {
     const task = await db.query.tasks.findFirst({
-      where: eq(tasks.id, taskId),
+      where: sqlWhere(eq(tasks.id, taskId)),
       columns: { id: true, workspaceId: true, taskClass: true },
     });
     if (!task || (task.taskClass ?? 'work') !== 'work') return 'skipped';

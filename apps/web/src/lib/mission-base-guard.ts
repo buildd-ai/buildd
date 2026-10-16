@@ -34,6 +34,7 @@ import {
   missionIntegrationBase,
   type MissionIntegrationFields,
 } from '@buildd/core/mission-integration';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** The task fields every door already has in hand (or can select cheaply). */
 export interface MissionBaseGuardTask {
@@ -148,7 +149,7 @@ export async function loadMissionBaseGuard(args: {
   const missionId = args.task?.missionId ?? null;
   const mission = missionId
     ? (await db.query.missions.findFirst({
-        where: eq(missions.id, missionId),
+        where: sqlWhere(eq(missions.id, missionId)),
         columns: { workingBranch: true, integrationBranchEnabled: true },
       })) ?? null
     : null;

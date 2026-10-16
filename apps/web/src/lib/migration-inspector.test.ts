@@ -23,6 +23,8 @@ function github(opts: {
   base?: Record<string, string>;
   /** Migration filenames listed in the drizzle dir at the target's tip; absent = listing unavailable. */
   baseDir?: string[];
+  /** Drizzle v1 migration folders in the same listing (directory entries). */
+  baseFolders?: string[];
   baseRef?: string;
   peers?: Array<{
     number: number;
@@ -50,8 +52,11 @@ function github(opts: {
     const contents = /\/contents\/(.+)\?ref=(.+)$/.exec(url);
     if (contents) {
       const [, path, ref] = contents;
-      if (decodeURIComponent(path) === DIR && ref === BASE_SHA && opts.baseDir) {
-        return opts.baseDir.map((name) => ({ name, type: 'file' }));
+      if (decodeURIComponent(path) === DIR && ref === BASE_SHA && (opts.baseDir || opts.baseFolders)) {
+        return [
+          ...(opts.baseDir ?? []).map((name) => ({ name, type: 'file' })),
+          ...(opts.baseFolders ?? []).map((name) => ({ name, type: 'dir' })),
+        ];
       }
       const source =
         ref === 'abc123' ? opts.head
@@ -525,5 +530,240 @@ describe('inspectPullRequestMigrations — integration-refresh PR (deltaBase)', 
   it('falls back to the full PR file list when the delta cannot be read', async () => {
     refreshGithub(new Error('GitHub API error: 502'), {});
     expect(await inspectRefresh()).toMatchObject({ safe: false, reason: `deletes generated migration ${DIR}/0000_old_name.sql` });
+  });
+});
+
+describe('inspectPullRequestMigrations — a refresh PR that renumbers the mission’s migration', () => {
+  beforeEach(() => mockGithubApi.mockReset());
+
+  const OLD = `${DIR}/0309_mission_side.sql`;
+  const NEW = `${DIR}/0318_regenerated.sql`;
+  const JOURNAL = { filename: `${DIR}/meta/_journal.json`, status: 'modified' };
+
+  /**
+   * The PR's own diff against the mission branch: the merge dropped the
+   * mission's migration and regenerated it at the next free index. `mission`
+   * is SQL at the mission tip, `head` at this PR's head. The trunk delta is
+   * unreadable here, as at verdict time before it was passed (task 87c7e48d).
+   */
+  function renumberGithub(opts: {
+    files: Array<{ filename: string; status: string; previous_filename?: string }>;
+    mission: Record<string, string>;
+    head: Record<string, string>;
+  }) {
+    mockGithubApi.mockImplementation(async (_i, url) => {
+      if (url.includes('/compare/')) throw new Error('GitHub API error: 502');
+      if (url.includes('/pulls/42/files')) return opts.files;
+      if (url.includes('/git/ref/heads/')) return { object: { sha: BASE_SHA } };
+      if (url.includes('/pulls?')) return [{ number: 42 }];
+      const contents = /\/contents\/(.+)\?ref=(.+)$/.exec(url);
+      if (contents) {
+        const path = decodeURIComponent(contents[1]);
+        if (path === DIR && contents[2] === BASE_SHA) return Object.keys(opts.mission).map((p) => ({ name: p.split('/').at(-1), type: 'file' }));
+        const sql = (contents[2] === 'abc123' ? opts.head : contents[2] === BASE_SHA ? opts.mission : {})[path];
+        if (sql === undefined) throw new Error('Not Found');
+        return blob(sql);
+      }
+      throw new Error(`unexpected GitHub call ${url}`);
+    });
+  }
+  const inspectRefresh = (deltaBase: string | null = 'dev') => inspectPullRequestMigrations({
+    installationId: 1, repoFullName: 'acme/app', prNumber: 42, headSha: 'abc123', files: [],
+    baseRef: 'mission/x', ...(deltaBase ? { deltaBase } : {}),
+  });
+
+  it('drop + add of the same blob is a renumber, not lineage', async () => {
+    renumberGithub({
+      files: [{ filename: OLD, status: 'removed' }, { filename: NEW, status: 'added' }, JOURNAL],
+      mission: { [OLD]: SAFE },
+      head: { [NEW]: SAFE },
+    });
+    expect(await inspectRefresh()).toEqual({ safe: true, operationClass: 'EXPAND' });
+  });
+
+  it('a GitHub "renamed" entry with the same blob is the same renumber', async () => {
+    renumberGithub({
+      files: [{ filename: NEW, status: 'renamed', previous_filename: OLD }, JOURNAL],
+      mission: { [OLD]: SAFE },
+      head: { [NEW]: SAFE },
+    });
+    expect(await inspectRefresh()).toEqual({ safe: true, operationClass: 'EXPAND' });
+  });
+
+  it('still classifies the moved SQL: a renumber does not make a drop safe', async () => {
+    renumberGithub({
+      files: [{ filename: OLD, status: 'removed' }, { filename: NEW, status: 'added' }],
+      mission: { [OLD]: DROP_CONSTRAINT },
+      head: { [NEW]: DROP_CONSTRAINT },
+    });
+    expect(await inspectRefresh()).toMatchObject({ safe: false, operationClass: 'CONTRACT' });
+    expect((await inspectRefresh()).kind).not.toBe('lineage');
+  });
+
+  it('a renumber whose SQL differs stays lineage', async () => {
+    renumberGithub({
+      files: [{ filename: OLD, status: 'removed' }, { filename: NEW, status: 'added' }, JOURNAL],
+      mission: { [OLD]: SAFE },
+      head: { [NEW]: 'CREATE TABLE "other" ("id" uuid);' },
+    });
+    expect(await inspectRefresh()).toMatchObject({ safe: false, kind: 'lineage', reason: `deletes generated migration ${OLD}` });
+  });
+
+  it('a "renamed" entry whose SQL differs stays lineage', async () => {
+    renumberGithub({
+      files: [{ filename: NEW, status: 'renamed', previous_filename: OLD }],
+      mission: { [OLD]: SAFE },
+      head: { [NEW]: 'CREATE TABLE "other" ("id" uuid);' },
+    });
+    expect(await inspectRefresh()).toMatchObject({ safe: false, kind: 'lineage', reason: `modifies existing migration ${NEW}` });
+  });
+
+  it('a pure deletion stays lineage', async () => {
+    renumberGithub({
+      files: [{ filename: OLD, status: 'removed' }, JOURNAL],
+      mission: { [OLD]: SAFE },
+      head: {},
+    });
+    expect(await inspectRefresh()).toMatchObject({ safe: false, kind: 'lineage', reason: `deletes generated migration ${OLD}` });
+  });
+
+  it('pairs one to one: two deletions and one matching addition stays lineage', async () => {
+    const OTHER = `${DIR}/0310_mission_two.sql`;
+    renumberGithub({
+      files: [{ filename: OLD, status: 'removed' }, { filename: OTHER, status: 'removed' }, { filename: NEW, status: 'added' }],
+      mission: { [OLD]: SAFE, [OTHER]: SAFE },
+      head: { [NEW]: SAFE },
+    });
+    expect(await inspectRefresh()).toMatchObject({ safe: false, kind: 'lineage' });
+  });
+
+  it('fails closed when the deleted migration cannot be read', async () => {
+    renumberGithub({
+      files: [{ filename: OLD, status: 'removed' }, { filename: NEW, status: 'added' }],
+      mission: {},
+      head: { [NEW]: SAFE },
+    });
+    expect(await inspectRefresh()).toMatchObject({ safe: false, kind: 'lineage' });
+  });
+
+  it('is not a renumber outside an integration refresh: moving a target migration is lineage', async () => {
+    renumberGithub({
+      files: [{ filename: OLD, status: 'removed' }, { filename: NEW, status: 'added' }],
+      mission: { [OLD]: SAFE },
+      head: { [NEW]: SAFE },
+    });
+    expect(await inspectRefresh(null)).toMatchObject({ safe: false, kind: 'lineage' });
+  });
+
+  describe('drizzle v1 folders', () => {
+    const V1 = `${DIR}/20261012120000_add_busy_since/migration.sql`;
+    const V1_SNAPSHOT = `${DIR}/20261012120000_add_busy_since/snapshot.json`;
+    const BASE_FOLDERS = ['20260901090000_baseline', '20261001090000_prior'];
+
+    it('allows an additive v1 migration: a folder has no slot, so none can be "behind" the base', async () => {
+      github({
+        files: [
+          { filename: 'packages/core/db/schema.ts', status: 'modified' },
+          { filename: V1, status: 'added' },
+          { filename: V1_SNAPSHOT, status: 'added' },
+        ],
+        head: { [V1]: SAFE },
+        baseFolders: BASE_FOLDERS,
+      });
+      expect(await inspect('dev')).toEqual({ safe: true, operationClass: 'EXPAND' });
+    });
+
+    it('classifies a v1 migration body like a legacy one', async () => {
+      github({
+        files: [{ filename: V1, status: 'added' }],
+        head: { [V1]: 'ALTER TABLE "missions" DROP COLUMN "legacy";' },
+        baseFolders: BASE_FOLDERS,
+      });
+      const verdict = await inspect('dev');
+      expect(verdict.safe).toBe(false);
+      expect(verdict).toMatchObject({ reason: 'drops column missions.legacy' });
+    });
+
+    it('two open PRs each adding a different v1 folder do not collide', async () => {
+      github({
+        files: [{ filename: V1, status: 'added' }],
+        head: { [V1]: SAFE },
+        baseFolders: BASE_FOLDERS,
+        peers: [{ number: 7, files: [{ filename: `${DIR}/20261012120001_other/migration.sql`, status: 'added' }], head: { [`${DIR}/20261012120001_other/migration.sql`]: SAFE } }],
+      });
+      expect(await inspect('dev')).toEqual({ safe: true, operationClass: 'EXPAND' });
+    });
+
+    it('deleting a v1 migration is lineage, as deleting a legacy one is', async () => {
+      github({ files: [{ filename: V1, status: 'removed' }], baseFolders: BASE_FOLDERS });
+      expect(await inspect('dev')).toMatchObject({ safe: false, kind: 'lineage', reason: `deletes generated migration ${V1}` });
+    });
+
+    it('fails closed on a legacy numbered file over a v1 base: it would never be read there', async () => {
+      github({
+        files: [{ filename: 'packages/core/db/schema.ts', status: 'modified' }, { filename: `${DIR}/0400_busy.sql`, status: 'added' }],
+        head: { [`${DIR}/0400_busy.sql`]: SAFE },
+        baseFolders: BASE_FOLDERS,
+      });
+      const verdict = await inspect('dev');
+      expect(verdict).toMatchObject({ safe: false, kind: 'collision' });
+      expect((verdict as { reason: string }).reason).toMatch(/drizzle v1/);
+      expect((verdict as { reason: string }).reason).toMatch(/migrations:regenerate/);
+    });
+
+    describe('stale parent (a sibling landed after CI ran)', () => {
+      const snap = (id: string, prevIds: string[]) => JSON.stringify({ id, prevIds });
+      const OLD = '20261001090000_prior';
+      const NEW = '20261011090000_sibling';
+      const baseSnaps = (leaf: string) => ({
+        [`${DIR}/20260901090000_baseline/snapshot.json`]: snap('s-0', []),
+        [`${DIR}/${OLD}/snapshot.json`]: snap('s-1', ['s-0']),
+        ...(leaf === 's-2' ? { [`${DIR}/${NEW}/snapshot.json`]: snap('s-2', ['s-1']) } : {}),
+      });
+      const folders = (leaf: string) => ['20260901090000_baseline', OLD, ...(leaf === 's-2' ? [NEW] : [])];
+      const prFiles = [{ filename: V1, status: 'added' }, { filename: V1_SNAPSHOT, status: 'added' }];
+
+      it('lands when the parent is still the base leaf', async () => {
+        github({ files: prFiles, head: { [V1]: SAFE, [V1_SNAPSHOT]: snap('p-1', ['s-1']) }, base: baseSnaps('s-1'), baseFolders: folders('s-1') });
+        expect(await inspect('dev')).toEqual({ safe: true, operationClass: 'EXPAND' });
+      });
+
+      it('asks for fresh CI when a sibling landed on the parent', async () => {
+        github({ files: prFiles, head: { [V1]: SAFE, [V1_SNAPSHOT]: snap('p-1', ['s-1']) }, base: baseSnaps('s-2'), baseFolders: folders('s-2') });
+        const verdict = await inspect('dev');
+        expect(verdict).toMatchObject({ safe: false, kind: 'stale_parent' });
+        expect((verdict as { reason: string }).reason).toMatch(/needs rebase/);
+      });
+
+      it('accepts a chain of the PR’s own migrations whose outer parent is the leaf', async () => {
+        const V1B = `${DIR}/20261012120500_second/migration.sql`;
+        const V1B_SNAPSHOT = `${DIR}/20261012120500_second/snapshot.json`;
+        github({
+          files: [...prFiles, { filename: V1B, status: 'added' }, { filename: V1B_SNAPSHOT, status: 'added' }],
+          head: { [V1]: SAFE, [V1B]: SAFE, [V1_SNAPSHOT]: snap('p-1', ['s-1']), [V1B_SNAPSHOT]: snap('p-2', ['p-1']) },
+          base: baseSnaps('s-1'),
+          baseFolders: folders('s-1'),
+        });
+        expect(await inspect('dev')).toEqual({ safe: true, operationClass: 'EXPAND' });
+      });
+
+      it('does not apply to a legacy-layout PR', async () => {
+        github({
+          files: [{ filename: `${DIR}/0094_safe.sql`, status: 'added' }],
+          head: { [`${DIR}/0094_safe.sql`]: SAFE },
+          baseDir: ['0092_a.sql', '0093_b.sql'],
+        });
+        expect(await inspect('dev')).toEqual({ safe: true, operationClass: 'EXPAND' });
+      });
+    });
+
+    it('a legacy file over a legacy base still follows the slot rules', async () => {
+      github({
+        files: [{ filename: `${DIR}/0094_safe.sql`, status: 'added' }],
+        head: { [`${DIR}/0094_safe.sql`]: SAFE },
+        baseDir: ['0092_a.sql', '0093_b.sql'],
+      });
+      expect(await inspect('dev')).toEqual({ safe: true, operationClass: 'EXPAND' });
+    });
   });
 });

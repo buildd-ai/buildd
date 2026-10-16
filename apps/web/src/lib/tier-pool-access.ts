@@ -1,16 +1,19 @@
 /**
- * Who may read or change a team's tier pools. Everyone in the team reads;
- * only owners and admins write, as for the tier registry itself
- * (knowledge-base: buildd/design/tier-model-pools.md §9). Session only: pools are an admin
- * screen, not an API-key surface, in P1.
+ * Who may read or change a team's tier pools. Everyone in the team reads.
+ * Writes (alternates, the dial, split and explore, weights) are a platform
+ * operator control, not a team permission (lib/admin/platform-operator-caller.ts): a team
+ * owner or admin picks only the primary, through /api/model-tiers, which keeps
+ * the pool's incumbent in step. Session only: pools are a settings screen,
+ * not an API-key surface.
  */
 import { NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamRole } from '@/lib/team-access';
 import { roleHas } from '@/lib/permissions';
+import { isPlatformOperatorCaller, operatorOnlyResponse } from '@/lib/admin/platform-operator-caller';
 
 export type PoolAccess =
-  | { ok: true; userId: string; teamId: string; isAdmin: boolean }
+  | { ok: true; userId: string; teamId: string; isAdmin: boolean; isOperator: boolean }
   | { ok: false; response: NextResponse };
 
 export async function tierPoolAccess(teamId: unknown, write: boolean): Promise<PoolAccess> {
@@ -21,6 +24,7 @@ export async function tierPoolAccess(teamId: unknown, write: boolean): Promise<P
   const role = await getUserTeamRole(user.id, teamId);
   if (!role) return fail(404, 'Team not found');
   const isAdmin = roleHas(role, 'manage_model_tiers');
-  if (write && !isAdmin) return fail(403, 'Only a team owner or admin can change model traffic');
-  return { ok: true, userId: user.id, teamId, isAdmin };
+  const isOperator = await isPlatformOperatorCaller({ user });
+  if (write && !isOperator) return { ok: false, response: operatorOnlyResponse() };
+  return { ok: true, userId: user.id, teamId, isAdmin, isOperator };
 }

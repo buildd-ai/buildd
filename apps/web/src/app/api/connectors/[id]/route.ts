@@ -15,6 +15,7 @@ import { isUuid } from '@/lib/uuid';
 import { canWriteTeamConnectors } from '@/lib/connector-team-auth';
 import { hasBearer, SESSION_REQUIRED } from '@/lib/capability-grants-auth';
 import { parseToolPolicy } from '@/lib/connector-gateway';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const refuseWrite = () => NextResponse.json(
   { error: 'forbidden', message: 'Changing or deleting a connector requires the manage_connectors permission in its team.' },
@@ -45,7 +46,7 @@ async function authenticateRequest(req: NextRequest) {
 
 async function resolveConnector(id: string, teamIds: string[]) {
   const connector = await db.query.connectors.findFirst({
-    where: eq(connectors.id, id),
+    where: sqlWhere(eq(connectors.id, id)),
   });
   if (!connector) return null;
   if (!teamIds.includes(connector.teamId)) return null;
@@ -191,7 +192,7 @@ export async function PATCH(
     if (body.headerValue !== undefined && connector.authMode === 'header') {
       const provider = getSecretsProvider();
       const existingSecret = await db.query.secrets.findFirst({
-        where: teamCredentialWhere({ teamId: connector.teamId, purpose: 'mcp_connector_credential', label: id }),
+        where: sqlWhere(teamCredentialWhere({ teamId: connector.teamId, purpose: 'mcp_connector_credential', label: id })),
         columns: { id: true },
       });
       await provider.set(existingSecret?.id ?? null, body.headerValue, {
@@ -235,7 +236,7 @@ export async function DELETE(
   try {
     // Delete associated secrets first (cascade handles connectorWorkspaces)
     const secretRows = await db.query.secrets.findMany({
-      where: teamCredentialWhere({ teamId: connector.teamId, purpose: 'mcp_connector_credential', label: id }),
+      where: sqlWhere(teamCredentialWhere({ teamId: connector.teamId, purpose: 'mcp_connector_credential', label: id })),
       columns: { id: true },
     });
     const provider = getSecretsProvider();

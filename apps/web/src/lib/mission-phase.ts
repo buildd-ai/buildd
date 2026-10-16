@@ -14,6 +14,7 @@
 import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** The two phase columns a task carries, or both-null when it has no phase. */
 export interface MissionPhase {
@@ -25,7 +26,7 @@ const NO_PHASE: MissionPhase = { missionPhaseIndex: null, missionPhaseLabel: nul
 
 /**
  * Assign a mission phase to every step of a plan, in plan-array order.
- * Pure — see docs/specs/mission-legibility.md Rules P1-4 and P1-9.
+ * Pure — see docs/specs/mission-legibility.md R-4 and R-9.
  *
  * `phase` behaves like a heading, not a tag: the first labelled step opens
  * phase 1, a step whose label differs from the open one opens the next index,
@@ -69,7 +70,7 @@ export function computePlanPhases(
 }
 
 /**
- * The phase an ATTEMPT inherits from the task it is an attempt at (Rule P1-7).
+ * The phase an ATTEMPT inherits from the task it is an attempt at (mission-legibility R-7).
  *
  * Read here rather than threaded through every caller: a reviewer task, a CI
  * retry and a conflict retry are created by three different modules from three
@@ -82,7 +83,7 @@ export function computePlanPhases(
 export async function inheritPhaseFromParent(parentTaskId: string | null | undefined): Promise<MissionPhase> {
   if (!parentTaskId) return NO_PHASE;
   const parent = await db.query.tasks.findFirst({
-    where: eq(tasks.id, parentTaskId),
+    where: sqlWhere(eq(tasks.id, parentTaskId)),
     columns: { missionPhaseIndex: true, missionPhaseLabel: true },
   });
   if (parent?.missionPhaseIndex == null || parent.missionPhaseLabel == null) return NO_PHASE;

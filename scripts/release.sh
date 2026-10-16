@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Create a release PR from dev → main with auto-detected semver.
-# Uses conventional commits to determine bump: feat → minor, fix → patch, BREAKING CHANGE → major.
-# Tags main with the version after merge.
+# Release entry point. The default path dispatches .github/workflows/release.yml
+# (one implementation for local and scheduled releases); --hotfix opens a
+# branch → main PR with a patch bump; --tag tags main by hand.
 
 set -euo pipefail
 
@@ -220,54 +220,15 @@ if [ "${1:-}" = "--tag" ]; then
   exit 0
 fi
 
-# Finalize: reset dev to main after the release PR has been merged. Use after
-# `bun run release` → PR merge → `bun run release:finalize`. Keeps dev's history
-# identical to main so future release PRs aren't cluttered with prior releases'
-# individual commits (which linger because each release squashes to main).
-#
-# Destructive: force-pushes dev. Aborts if dev has commits not yet on main
-# (something landed on dev between the release merge and finalize).
-if [ "${1:-}" = "--finalize" ]; then
-  git fetch origin --prune
-
-  # Compare file contents (not commit history). Each release squashes to main
-  # so the individual commits live on in dev with different SHAs — looking at
-  # commit messages would always trip. The only thing we care about is whether
-  # dev contains file changes that didn't make it into main.
-  #
-  # Exclude package.json version bumps (transiently differ between version-bump
-  # commit on dev and the squashed release on main).
-  DIFF=$(git diff --name-only origin/main..origin/dev -- . \
-    ':(exclude)apps/*/package.json' \
-    ':(exclude)packages/*/package.json' \
-    ':(exclude)package.json' 2>/dev/null || true)
-
-  if [ -n "$DIFF" ]; then
-    echo "❌ dev has file changes that aren't on main yet:"
-    echo "$DIFF" | sed 's/^/   /'
-    echo ""
-    echo "Merge or stash them before finalizing. Re-run with --finalize-force to override."
-    exit 1
-  fi
-
-  echo "Resetting origin/dev to origin/main..."
-  git checkout dev
-  git reset --hard origin/main
-  git push --force-with-lease origin dev
-  echo "  ✅ dev is now identical to main"
-  exit 0
-fi
-
-# Same as --finalize but skips the "dev has unreleased commits" check.
-# Use only when you've inspected the diff and know what you're discarding.
-if [ "${1:-}" = "--finalize-force" ]; then
-  git fetch origin --prune
-  echo "⚠️  Force-resetting dev to main (skipping unreleased-commit check)..."
-  git checkout dev
-  git reset --hard origin/main
-  git push --force-with-lease origin dev
-  echo "  ✅ dev is now identical to main"
-  exit 0
+# --finalize / --finalize-force used to reset dev to main and force-push it.
+# That destroyed whatever landed on dev after the release cut (the same failure
+# sync-dev.yml was rewritten to stop). dev is now reconciled by sync-dev.yml
+# merging main into it, never by a reset, so both are refusals.
+if [ "${1:-}" = "--finalize" ] || [ "${1:-}" = "--finalize-force" ]; then
+  echo "❌ ${1} is gone: it force-reset dev to main and could delete work that landed after the cut."
+  echo "   sync-dev.yml merges main into dev after every merge to main. To do it by hand:"
+  echo "   git checkout dev && git merge origin/main && git push origin dev"
+  exit 1
 fi
 
 # Post-release cleanup: delete branches already in main
@@ -300,100 +261,30 @@ if [ "${1:-}" = "--cleanup" ]; then
   exit 0
 fi
 
-# Switch to dev if not already there
-CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-if [ "$CURRENT_BRANCH" != "dev" ]; then
-  echo "Switching to dev (was on ${CURRENT_BRANCH})..."
-  git checkout dev
-fi
+# Normal release: dispatch the Release workflow on dev, so a release from a
+# workstation and a scheduled one run the exact same code (release.yml decides
+# legacy vs frozen-candidate flow from the RELEASE_CANDIDATE_CUT repo variable,
+# and captures dev's SHA at dispatch time). Flags:
+#   --dry-run   frozen-candidate flow, prints the candidate, changes nothing
+#   --force     cut even with no feat/fix commits since the last tag
+# To run the candidate engine itself locally (e.g. a dry run against your own
+# fetch): bun run release:candidate -- cut --dry-run --source origin/dev
+DRY_RUN=false
+FORCE=false
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run) DRY_RUN=true ;;
+    --force) FORCE=true ;;
+    *) echo "❌ Unknown option: $arg (expected --dry-run, --force, --hotfix, --tag or --cleanup)"; exit 1 ;;
+  esac
+done
 
-# Ensure dev is up-to-date with main to avoid PR conflicts
-echo "Syncing main into dev..."
-git fetch origin
-git pull origin dev --ff-only 2>/dev/null || true
-if ! git merge origin/main --no-edit 2>/dev/null; then
-  echo "❌ Merge conflicts when syncing main into dev."
-  echo "   Resolve conflicts, commit, then re-run: bun run release"
-  exit 1
-fi
-echo "  ✅ dev is up-to-date with main"
-
-# Get the latest version tag, default to v0.0.0
-LATEST_TAG=$(git tag --sort=-v:refname --list 'v*' | head -1)
-if [ -z "$LATEST_TAG" ]; then
-  LATEST_TAG="v0.0.0"
-fi
-
-# Parse current version
-VERSION="${LATEST_TAG#v}"
-IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
-
-# Determine bump from commits since last tag
-if [ "$LATEST_TAG" = "v0.0.0" ]; then
-  COMMITS=$(git log origin/main..dev --format='%s' --no-merges 2>/dev/null || git log --format='%s' --no-merges -50)
-else
-  COMMITS=$(git log "${LATEST_TAG}..dev" --format='%s' --no-merges 2>/dev/null || echo "")
-fi
-
-BUMP="patch"
-while IFS= read -r msg; do
-  [ -z "$msg" ] && continue
-  if echo "$msg" | grep -qiE 'BREAKING[ -]CHANGE|^[a-z]+!:'; then
-    BUMP="major"
-    break
-  elif echo "$msg" | grep -qE '^feat(\(.+\))?:'; then
-    BUMP="minor"
-  fi
-done <<< "$COMMITS"
-
-# Apply bump
-case "$BUMP" in
-  major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
-  minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
-  patch) PATCH=$((PATCH + 1)) ;;
-esac
-
-NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
-SEMVER="${MAJOR}.${MINOR}.${PATCH}"
-
-echo "Current: ${LATEST_TAG} → New: ${NEW_VERSION} (${BUMP} bump)"
-
+gh workflow run release.yml --ref dev -f force="$FORCE" -f dry_run="$DRY_RUN"
+echo "Dispatched the Release workflow on dev (force=${FORCE}, dry_run=${DRY_RUN})."
 REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || echo "buildd-ai/buildd")
-bump_versions "$SEMVER" "$LATEST_TAG" "$REPO"
+echo "Follow it: https://github.com/${REPO}/actions/workflows/release.yml"
 
-# Commit version bump + CHANGELOG promotion to dev (if anything changed)
-if commit_version_bump "$NEW_VERSION"; then
-  git push origin dev
-  echo "Committed version bump to dev"
-fi
-
-# Build PR body with commit summary
-BODY=$(cat <<EOF
-## ${NEW_VERSION}
-
-### Changes
-$(git log "${LATEST_TAG}..dev" --format='- %s' --no-merges 2>/dev/null | head -30)
-
----
-*Auto-generated by \`bun run release\`*
-EOF
-)
-
-# Create or update PR
-EXISTING_PR=$(gh pr list --base main --head dev --json number --jq '.[0].number' 2>/dev/null || echo "")
-
-if [ -n "$EXISTING_PR" ]; then
-  gh api "repos/${REPO}/pulls/${EXISTING_PR}" --method PATCH \
-    -f title="Release ${NEW_VERSION}" -f body="$BODY" --silent
-  echo "Updated PR #${EXISTING_PR}: Release ${NEW_VERSION}"
-  echo "https://github.com/${REPO}/pull/${EXISTING_PR}"
-else
-  gh pr create --base main --head dev --title "Release ${NEW_VERSION}" --body "$BODY"
-fi
-
-# Note: when this PR merges, two workflows fire automatically:
-#   - release-tag.yml tags main and creates the GitHub release (title must match "Release v...")
-#   - sync-dev.yml resets dev to main so future release PRs stay clean
-# If either is bypassed, the manual escape hatches are:
-#   bun run release -- --tag        (manually tag/release main HEAD)
-#   bun run release -- --finalize   (manually reset dev to main)
+# When the release PR merges:
+#   - release-tag.yml tags main from apps/web/package.json and creates the GitHub release
+#   - sync-dev.yml merges main back into dev (never a reset)
+# Manual escape hatch if tagging was bypassed: bun run release -- --tag

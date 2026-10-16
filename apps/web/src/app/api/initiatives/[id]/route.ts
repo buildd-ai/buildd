@@ -11,6 +11,7 @@ import { parseInitiativeStatus, parseOwnerUserId, parseTargetDate } from '@/lib/
 import { isUuid } from '@/lib/uuid';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
 import { checkContextArtifactIds } from '@/lib/context-artifact-ids';
+import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Check if an initiative is accessible: team match OR open-access workspace. */
 async function hasInitiativeAccess(initiative: { teamId: string; workspaceId: string | null }, teamIds: string[], accountId?: string | null): Promise<boolean> {
@@ -44,7 +45,7 @@ export async function GET(
     const teamIds = await resolveAccountTeamIds(user, apiAccount);
 
     const initiative = await db.query.initiatives.findFirst({
-      where: eq(initiatives.id, id),
+      where: sqlWhere(eq(initiatives.id, id)),
       // Explicit columns: kpis / kpi_state / auto_verify / progress_cache are
       // deprecated and scheduled for drop, so nothing reads them.
       columns: {
@@ -60,7 +61,7 @@ export async function GET(
             workspace: { columns: { id: true, name: true } },
             tasks: {
               columns: { id: true, status: true, kind: true, title: true, mode: true, creationSource: true, category: true, parentTaskId: true, taskClass: true },
-              with: { workers: { columns: { id: true, status: true, prUrl: true, mergedAt: true }, orderBy: (w: any, { desc }: any) => [desc(w.startedAt)], limit: 1 } },
+              with: { workers: { columns: { id: true, status: true, prUrl: true, mergedAt: true }, orderBy: sqlOrderByFn((w: any, { desc }: any) => [desc(w.startedAt)]), limit: 1 } },
             },
           },
         },
@@ -82,7 +83,7 @@ export async function GET(
 
     // Initiative-level artifacts (roadmap/spec not tied to a specific mission).
     const initiativeArtifacts = await db.query.artifacts.findMany({
-      where: eq(artifacts.initiativeId, id),
+      where: sqlWhere(eq(artifacts.initiativeId, id)),
     });
 
     return NextResponse.json({
@@ -123,7 +124,7 @@ export async function PATCH(
   try {
     const teamIds = await resolveAccountTeamIds(user, apiAccount);
 
-    const existing = await db.query.initiatives.findFirst({ where: eq(initiatives.id, id) });
+    const existing = await db.query.initiatives.findFirst({ where: sqlWhere(eq(initiatives.id, id)) });
     if (!existing || !(await hasInitiativeAccess(existing, teamIds, apiAccount?.id))) {
       return NextResponse.json({ error: 'Initiative not found' }, { status: 404 });
     }
@@ -207,7 +208,7 @@ export async function DELETE(
   try {
     const teamIds = await resolveAccountTeamIds(user, apiAccount);
 
-    const existing = await db.query.initiatives.findFirst({ where: eq(initiatives.id, id) });
+    const existing = await db.query.initiatives.findFirst({ where: sqlWhere(eq(initiatives.id, id)) });
     if (!existing || !(await hasInitiativeAccess(existing, teamIds, apiAccount?.id))) {
       return NextResponse.json({ error: 'Initiative not found' }, { status: 404 });
     }

@@ -198,7 +198,8 @@ export function useTaskStart({ taskId, workspaceId, onStarted }: {
     }).catch(() => null);
     if (!res?.ok) {
       setPending(null);
-      setError('Failed to update workspace limit');
+      // The cap is a workspace admin setting (manage_workspace_settings).
+      setError(res?.status === 403 ? 'Raising the workspace limit needs a workspace admin.' : 'Failed to update workspace limit');
       setStatus('failed');
       return;
     }

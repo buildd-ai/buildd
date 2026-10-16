@@ -122,6 +122,15 @@ mock.module('./mission-pr', () => ({
   openMissionIntegrationPr: mockOpenMissionIntegrationPr,
 }));
 
+// The outcome spec (living_spec) reads mission-level verdicts and the integrated
+// target; both are tested in specs/mission-outcome-fold.test.ts. Stubbed here so
+// the wiring into the criteria fold is what is under test.
+let specStanding: any = null;
+const mockReadMissionSpecStanding = mock(async (_m: any, _c: any) => specStanding);
+const mockEnsureFinalVerification = mock(async (_id: string, _c: any, _s: any) => ({ kind: 'dispatched', taskId: 'final-verify-1' }) as any);
+mock.module('./specs/mission-outcome', () => ({ readMissionSpecStanding: mockReadMissionSpecStanding }));
+mock.module('./specs/mission-verification', () => ({ ensureFinalVerification: mockEnsureFinalVerification }));
+
 // Real @buildd/core/mission-helpers: the mechanical evaluator and the folding
 // rule are the thing under test, not a stub of them.
 import { ensureCriteriaVerdict, evaluateCriteriaNow, ON_DEMAND_NOTE_TITLE } from './mission-criteria-eval';
@@ -1373,5 +1382,82 @@ describe('evaluateCriteriaNow — mission PR opening', () => {
     expect(state).not.toBeNull();
     expect(state!.criteria[0].verdict).toBeDefined();
     expect(state!.criteria[1].verdict).toBeDefined();
+  });
+});
+
+
+// ─── Living Specs Slice 12: the mission's selected outcome spec ───────────────
+describe('living_spec criterion (mission-selected outcome spec)', () => {
+  const SEL = {
+    type: 'living_spec', specId: '11111111-1111-4111-8111-111111111111', specRevisionId: '22222222-2222-4222-8222-222222222222',
+    revision: 3, contentHash: 'h'.repeat(64), label: 'Spec "Overview" revision 3',
+  };
+  const target = { kind: 'integration', headSha: 'a'.repeat(40), branch: 'mission/m1' };
+  const standing = (verdict: string, standings: any[] = []) => ({
+    verdict, evidence: `${verdict} evidence`, targetSha: target.headSha, standings, target, scope: [{ id: 'R-1', text: 'x' }, { id: 'R-2', text: 'y' }], title: 'Overview',
+  });
+
+  beforeEach(() => {
+    reset();
+    specStanding = null;
+    mockReadMissionSpecStanding.mockClear();
+    mockEnsureFinalVerification.mockClear();
+  });
+
+  it('every PR merged and reviewed, one requirement inconclusive at the target: the mission does not pass (AC-38, AC-13)', async () => {
+    mission({ goalCriteria: [{ type: 'all_prs_merged' }, SEL] });
+    taskRows = [{ id: 't1', status: 'completed', title: 'Build it', taskClass: 'work', mode: 'execution', result: null }];
+    workerRows = [{ taskId: 't1', mergedAt: new Date('2026-01-01'), prUrl: 'https://github.example/pr/1', branch: 'task/t1', prBaseRef: 'dev' }];
+    specStanding = standing('UNVERIFIED', [{ criterionId: 'R-1', standing: 'pass', headSha: target.headSha }, { criterionId: 'R-2', standing: 'inconclusive', headSha: target.headSha }]);
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+    expect(state!.criteria[0].verdict).toBe('pass');
+    expect(state!.criteria[1].verdict).toBe('UNVERIFIED');
+    expect(state!.overall).not.toBe('pass');
+    expect(state!.criteria[1].spec?.standings.map((s) => s.standing)).toEqual(['pass', 'inconclusive']);
+  });
+
+  for (const v of ['fail', 'UNVERIFIED'] as const) {
+    it(`a ${v} outcome spec keeps the mission from passing`, async () => {
+      mission({ goalCriteria: [{ type: 'no_open_tasks' }, SEL] });
+      specStanding = standing(v);
+      const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+      expect(state!.overall).not.toBe('pass');
+    });
+  }
+
+  it('passes only on the fold\'s own pass', async () => {
+    mission({ goalCriteria: [{ type: 'no_open_tasks' }, SEL] });
+    specStanding = standing('pass');
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto' });
+    expect(state!.criteria[1].verdict).toBe('pass');
+    expect(state!.overall).toBe('pass');
+  });
+
+  it('files the final verification once the build is done, when dispatch is allowed', async () => {
+    mission({ goalCriteria: [{ type: 'no_open_tasks' }, SEL] });
+    taskRows = [{ id: 't1', status: 'completed', title: 'Build it', taskClass: 'work', mode: 'execution', result: null }];
+    specStanding = standing('UNVERIFIED');
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', allowWorkerDispatch: true });
+    expect(mockEnsureFinalVerification).toHaveBeenCalledTimes(1);
+    expect(state!.criteria[1].verdict).toBe('PENDING');
+    expect(state!.criteria[1].workerTaskId).toBe('final-verify-1');
+    expect(state!.overall).not.toBe('pass');
+  });
+
+  it('waits for the build before filing the final verification', async () => {
+    mission({ goalCriteria: [{ type: 'no_open_tasks' }, SEL] });
+    taskRows = [{ id: 't1', status: 'pending', title: 'Build it', taskClass: 'work', mode: 'execution', result: null }];
+    specStanding = standing('UNVERIFIED');
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', allowWorkerDispatch: true });
+    expect(mockEnsureFinalVerification).not.toHaveBeenCalled();
+    expect(state!.criteria[1].evidence).toContain('once the build work is done');
+  });
+
+  it('a mission with no selected spec never reads mission-level verdicts (behaviour unchanged)', async () => {
+    mission({ goalCriteria: [{ type: 'no_open_tasks' }] });
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', allowWorkerDispatch: true });
+    expect(mockReadMissionSpecStanding).not.toHaveBeenCalled();
+    expect(mockEnsureFinalVerification).not.toHaveBeenCalled();
+    expect(state!.overall).toBe('pass');
   });
 });

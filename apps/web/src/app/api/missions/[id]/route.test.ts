@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
 // The goal-criteria quality shadow (lib/goal-criteria-quality-shadow.ts) runs
@@ -145,7 +145,7 @@ let shouldFindManyReject = false;
 let tasksFindManyWhereCalls: any[] = [];
 const mockTasksFindManyForExecutorChange = mock(async (options?: any) => {
   if (options && options.where) {
-    tasksFindManyWhereCalls.push(options.where);
+    tasksFindManyWhereCalls.push(capturedWhere(options.where));
   }
   if (shouldFindManyReject) {
     throw new Error('tasks.findMany failed');
@@ -160,6 +160,13 @@ const mockEvaluateSurfaceAuditGate = mock(async (_m: any, _t: any) => surfaceGat
 mock.module('@/lib/mission-surface-audit-gate', () => ({
   evaluateSurfaceAuditGate: mockEvaluateSurfaceAuditGate,
   loadSurfaceAuditGateTasks: async () => [],
+}));
+
+// A recorded waiver retires the mission's queued audit (spec 8e137fdb AC-2);
+// the predicate itself is tested as SQL in lib/surface-audit-waiver-cancel.test.ts.
+const mockCancelWaivedSurfaceAudits = mock(async (_m: string, _r: string, _a: string) => ['audit-1']);
+mock.module('@/lib/surface-audit-waiver-cancel', () => ({
+  cancelWaivedSurfaceAudits: mockCancelWaivedSurfaceAudits,
 }));
 
 mock.module('@/lib/auth-helpers', () => ({
@@ -274,6 +281,7 @@ mock.module('@buildd/core/db/schema', () => ({
 
 import { GET, PATCH } from './route';
 import { criterionFingerprint } from '@buildd/core/mission-helpers';
+import { capturedWhere } from '@buildd/core/db/relational-sql';
 
 const makeParams = (id: string) => Promise.resolve({ id });
 
@@ -2103,6 +2111,20 @@ describe('PATCH /api/missions/[id] — surface audit gate and waiver', () => {
     expect(updatedSetData?.status).toBeUndefined();
   });
 
+  it('a recorded waiver cancels the queued audit, naming the waiver', async () => {
+    mockGetCurrentUser.mockReturnValue({ id: 'user-1', email: 'owner@example.com' } as any);
+    mockCancelWaivedSurfaceAudits.mockClear();
+    expect((await patch({ surfaceAuditWaiver: 'Mission branch cannot be captured by CI' })).status).toBe(200);
+    expect(mockCancelWaivedSurfaceAudits).toHaveBeenCalledTimes(1);
+    expect(mockCancelWaivedSurfaceAudits.mock.calls[0]).toEqual([MID, 'Mission branch cannot be captured by CI', 'user:user-1']);
+  });
+
+  it('a refused waiver cancels nothing', async () => {
+    mockCancelWaivedSurfaceAudits.mockClear();
+    expect((await patch({ surfaceAuditWaiver: 'skip' })).status).toBe(400);
+    expect(mockCancelWaivedSurfaceAudits).not.toHaveBeenCalled();
+  });
+
   it("a task's per-task token cannot set the waiver, and nothing is recorded", async () => {
     mockGetCurrentUser.mockReturnValue(null);
     mockAuthenticateApiKey.mockReturnValue({
@@ -2120,6 +2142,16 @@ describe('PATCH /api/missions/[id] — surface audit gate and waiver', () => {
     expect([403, 404]).toContain(res.status);
     expect(insertedNotes).toHaveLength(0);
     expect(updatedSetData).toBeNull();
+  });
+
+  it('strict visual review policy refuses a waiver and an opt-out with 409', async () => {
+    for (const b of [{ surfaceAuditWaiver: 'Copy-only change, checked by hand' }, { autoSurfaceAudit: false }]) {
+      mockWorkspacesFindFirst.mockReturnValueOnce({ id: 'ws-1', gitConfig: { visualReview: { policy: 'strict' } } });
+      const res = await patch(b);
+      expect(res.status).toBe(409);
+      expect((await res.json()).code).toBe('visual_review_policy_locked');
+    }
+    expect(insertedNotes).toHaveLength(0);
   });
 
   it('rejects a waiver with no real reason', async () => {
@@ -2390,5 +2422,46 @@ describe("/api/missions/[id] — an orchestration task's admin per-task token", 
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', teamId: 'team-1', level: 'admin', scopes: null });
     expect((await patch({ maxConcurrentTasks: 4 })).status).toBe(200);
     expect(updatedSetData.maxConcurrentTasks).toBe(4);
+  });
+});
+
+// Living Specs Slice 12: the outcome spec leaves only through outcomeSpec { remove: true, reason }.
+describe('PATCH /api/missions/[id] — goalCriteria cannot drop or change the outcome spec', () => {
+  const ID = '11111111-1111-4111-8111-111111111111';
+  const SPEC_CRITERION = {
+    type: 'living_spec', specId: '22222222-2222-4222-8222-222222222222', specRevisionId: '33333333-3333-4333-8333-333333333333',
+    revision: 3, contentHash: 'h'.repeat(64), label: 'Spec "Overview" revision 3',
+  };
+  const stored = [{ type: 'no_open_tasks' }, SPEC_CRITERION];
+  const send = (body: Record<string, unknown>) => PATCH(
+    new NextRequest(`http://localhost/api/missions/${ID}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    { params: makeParams(ID) },
+  );
+  const defaultMission = mockMissionsFindFirst.getMockImplementation();
+  beforeEach(() => {
+    mockMissionsFindFirst.mockImplementation(() => ({ id: ID, teamId: 'team-1', title: 'Existing Mission', workspaceId: 'ws-1', scheduleId: null, priority: 0, goalCriteria: stored }) as any);
+  });
+  afterEach(() => { if (defaultMission) mockMissionsFindFirst.mockImplementation(defaultMission); });
+
+  it('refuses goalCriteria: null', async () => {
+    const res = await send({ goalCriteria: null });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain('outcomeSpec');
+  });
+
+  it('refuses a list that omits the outcome spec', async () => {
+    const res = await send({ goalCriteria: [{ type: 'no_open_tasks' }] });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain('remove: true');
+  });
+
+  it('refuses a list that alters the outcome spec', async () => {
+    const res = await send({ goalCriteria: [{ type: 'no_open_tasks' }, { ...SPEC_CRITERION, contentHash: 'x'.repeat(64) }] });
+    expect(res.status).toBe(400);
+  });
+
+  it('accepts a full-list save that keeps it unchanged', async () => {
+    const res = await send({ goalCriteria: [...stored, { type: 'all_prs_merged' }] });
+    expect(res.status).toBe(200);
   });
 });

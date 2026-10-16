@@ -167,6 +167,11 @@ committing step MUST NOT run against a preview.
   provider failure) stays `unsure`, with a `[surface fix]` task asking for a `?state=` fixture.
   Existing fixtures: `/app/settings/team?state=multi-member` (dev server only) adds a synthetic
   second member so Remove and the role select are reachable; it never writes.
+  `/app/settings/runners?state=model-auth-machine_login|model-auth-machine_token|model-auth-api_key|model-auth-none|model-auth-not_reported`
+  (dev server only) shows that reported model login on every runner token row, including the
+  warning-hue `none` line; `not_reported` also marks each token seen so the line renders. It never writes.
+  `/app/settings/runners?state=model-auth-codex` (dev server only) shows every token on this
+  machine's Claude login and its Codex login, so the separate Codex line renders. It never writes.
   `/app/dev/fixtures?state=team-members&viewer=owner|admin|member` renders the team detail
   page (`/app/teams/[id]`) with an owner, an admin and a member, seen as each: role selects,
   Remove, Transfer ownership, the last-owner Leave gate and admin-vs-member gating. No DB; it
@@ -177,4 +182,12 @@ committing step MUST NOT run against a preview.
   window), without worker rows.
   `/app/health/insights/tasks?state=sample|large` (optionally `&band=<key>`) renders a
   synthetic band drill-down, typical or holding hundreds of rows, without band params or DB rows.
+  `/app/releases/compose?state=compose|compose-empty|confirm|reply-error|review-failing|review-exclude|review-refused|review-ready|release|error|not-enabled`
+  (dev server only) renders the release flow from a static view: the populated picker, the
+  disabled cut, the confirm card, an error reply, a candidate with failing and missing checks,
+  the leave-out notice, a refused revert, a releasable candidate, the awaiting-production step
+  a GitHub load error, and the empty state when no workspace cuts release candidates. It never POSTs.
+  `/app/releases?state=candidates|history|multi-workspace` (dev server only) draws the list from
+  synthetic rows: a pending candidate as the Next release card over healthy, degraded, failed and
+  superseded history; history alone; and rows spanning two workspaces. No DB reads.
 - Video or multi-frame capture of a state (the storyboard's `record` / `type` stay its own).

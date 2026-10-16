@@ -7,6 +7,7 @@ import { readInstallState, INSTALL_STATE_TTL_MS } from '@/lib/github-install-sta
 import { syncInstallationRepos } from '@/lib/github-repo-link';
 import { resumeAfterInstallationChange } from '@/lib/github-repo-access-store';
 import { createSign, createPrivateKey } from 'crypto';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export async function GET(req: NextRequest) {
   const session = await auth();
@@ -62,7 +63,7 @@ export async function GET(req: NextRequest) {
   try {
     // Check if installation already exists
     const existing = await db.query.githubInstallations.findFirst({
-      where: eq(githubInstallations.installationId, parseInt(installationId)),
+      where: sqlWhere(eq(githubInstallations.installationId, parseInt(installationId))),
     });
     console.log('[GitHub Callback] Existing installation:', existing?.id || 'none');
 
@@ -74,7 +75,7 @@ export async function GET(req: NextRequest) {
       let installedByUserId: string | null = existing.installedByUserId ?? null;
       if (!installedByUserId && mayRecordInstaller) {
         const inUse = await db.query.workspaces.findFirst({
-          where: eq(workspaces.githubInstallationId, existing.id),
+          where: sqlWhere(eq(workspaces.githubInstallationId, existing.id)),
           columns: { id: true },
         });
         if (!inUse) installedByUserId = session.user.id!;

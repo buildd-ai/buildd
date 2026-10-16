@@ -1317,7 +1317,7 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
         {seatShown && (
         <div className="mt-3 space-y-3 pl-3 border-l-2 border-border-default">
         <p className="text-xs text-text-muted">
-          A Claude Pro or Max login runs agents only on a runner you host and sign in on yourself. Buildd&apos;s cloud runner needs an API key.
+          A Claude Pro or Max login runs agents only on a runner you host and sign in on yourself. buildd&apos;s cloud runner needs an API key.
         </p>
       {loading ? (
         <div className="text-sm text-text-tertiary">Loading…</div>
@@ -1678,7 +1678,7 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
     : <StatusChip tone="idle">Not connected</StatusChip>;
   const where = status?.scope === 'workspace' ? 'this workspace' : 'all workspaces';
   const meta = loading ? 'Checking…'
-    : allTeams ? `Applies to all ${teamTargets.length} teams you manage`
+    : allTeams ? `All ${teamTargets.length} teams you manage`
     : status?.connected ? `${status.accountId ? `${status.accountId} · ` : ''}${where}`
     : 'ChatGPT sign-in';
   const needsSignIn = !loading && !allTeams && !device && (!status?.connected || status.expired);

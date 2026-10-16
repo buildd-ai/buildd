@@ -30,6 +30,7 @@ import {
 import { parseCreateEvidenceBackend } from '@/lib/evidence-backend-input';
 import { filterReachableEvidenceBackends, viewerReachesWorkspace } from '@/lib/evidence-backend-access';
 import { roleHas } from '@/lib/permissions';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export async function GET(req: NextRequest) {
   const who = await resolveExperimentViewer(req, req.nextUrl.searchParams.get('workspaceId'));
@@ -37,8 +38,8 @@ export async function GET(req: NextRequest) {
   const { viewer } = who;
 
   const rows = await db.query.evidenceBackends.findMany({
-    where: eq(evidenceBackends.teamId, viewer.teamId),
-    orderBy: [desc(evidenceBackends.createdAt)],
+    where: sqlWhere(eq(evidenceBackends.teamId, viewer.teamId)),
+    orderBy: sqlOrderBy([desc(evidenceBackends.createdAt)]),
   });
   const visible = await filterReachableEvidenceBackends(viewer, rows);
   return NextResponse.json({ backends: visible.map(toEvidenceBackendDTO), canManage: roleHas(viewer.role, 'manage_evidence_backends') });
@@ -64,7 +65,7 @@ export async function POST(req: NextRequest) {
 
   if (input.workspaceId) {
     const ws = await db.query.workspaces.findFirst({
-      where: and(eq(workspaces.id, input.workspaceId), eq(workspaces.teamId, viewer.teamId)),
+      where: sqlWhere(and(eq(workspaces.id, input.workspaceId), eq(workspaces.teamId, viewer.teamId))),
       columns: { id: true },
     });
     // Same reach rule as GET/PATCH/DELETE/verify, checked before the 409
@@ -83,10 +84,10 @@ export async function POST(req: NextRequest) {
 
   // No unique index on (team, workspace): one backend per scope is enforced here.
   const existing = await db.query.evidenceBackends.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(evidenceBackends.teamId, viewer.teamId),
       input.workspaceId ? eq(evidenceBackends.workspaceId, input.workspaceId) : isNull(evidenceBackends.workspaceId),
-    ),
+    )),
     columns: { id: true },
   });
   if (existing) {
@@ -129,6 +130,6 @@ export async function POST(req: NextRequest) {
   }
 
   const verification = await verifyEvidenceBackend(row.id);
-  const saved = await db.query.evidenceBackends.findFirst({ where: eq(evidenceBackends.id, row.id) });
+  const saved = await db.query.evidenceBackends.findFirst({ where: sqlWhere(eq(evidenceBackends.id, row.id)) });
   return NextResponse.json({ backend: toEvidenceBackendDTO(saved ?? row), verification }, { status: 201 });
 }

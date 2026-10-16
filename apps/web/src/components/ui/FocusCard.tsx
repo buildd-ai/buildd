@@ -42,7 +42,7 @@ export interface FocusCardProps {
   repairs?: number;
   /** What happens next, in a sentence. */
   next?: ReactNode;
-  /** The SEL-2 reason line (`reasonLine` in task-strip.ts): "After 03 …" / "Unblocks 05, 06". */
+  /** The strip R-12 reason line (`reasonLine` in task-strip.ts): "After 03 …" / "Unblocks 05, 06". */
   reason?: { lead: string; text: string } | null;
   estimate?: TimeEstimate | null;
   /** What it needs from a person. Omitted → the row is left out. */
@@ -58,20 +58,22 @@ export interface FocusCardProps {
 
 /**
  * L2: the selected task under the strip. A 6px card on --card; focused, a
- * 1.5px ink frame. Lifecycle first, then Next / reason / Time / Needs you.
+ * 1.5px ink frame from md and a 1px strong hairline on a phone, where the
+ * card already fills the width. Lifecycle first, then Next / reason / Time /
+ * Needs you.
  */
 export default function FocusCard({ meta, title, state, repairs, next, reason, estimate, needs, note, children, footer, focused = true, className = '' }: FocusCardProps) {
   return (
     <section
       data-testid="focus-card"
       aria-live="polite"
-      className={`flex flex-col gap-3 rounded-[var(--radius-card)] bg-card px-4 py-[18px] ${focused ? 'border-[1.5px] border-text-primary' : 'border border-border-default'} ${className}`}
+      className={`flex flex-col gap-2.5 rounded-[var(--radius-card)] bg-card px-3.5 py-3.5 md:gap-3 md:px-4 md:py-[18px] ${focused ? 'border border-border-strong md:border-[1.5px] md:border-text-primary' : 'border border-border-default'} ${className}`}
     >
       <div className="font-mono text-meta text-text-muted">
         {meta}
         {HELD.has(state) && <> · <StatePill state={state} variant="plain" /></>}
       </div>
-      <h2 className="text-heading font-semibold leading-tight text-text-primary [overflow-wrap:anywhere]">{title}</h2>
+      <h2 className="text-lede font-semibold leading-snug text-text-primary [overflow-wrap:anywhere] md:text-[18px]">{title}</h2>
       <Lifecycle state={state} repairs={repairs} />
       {children}
       <dl className="grid grid-cols-[82px_minmax(0,1fr)] gap-x-2.5 gap-y-1.5 text-title">
@@ -83,7 +85,7 @@ export default function FocusCard({ meta, title, state, repairs, next, reason, e
           </>
         )}
         <TimeRow estimate={estimate} state={state} />
-        {needs != null && <><dt className="text-text-muted">Needs you</dt><dd>{needs}</dd></>}
+        {needs != null && <><dt className="text-text-muted">Waiting on you</dt><dd>{needs}</dd></>}
       </dl>
       {note && (
         <p className="flex gap-2 text-body leading-normal text-text-muted">

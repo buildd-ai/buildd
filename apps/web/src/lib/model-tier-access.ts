@@ -17,11 +17,12 @@ import {
   verifyAccountWorkspaceAccess,
 } from '@/lib/team-access';
 import { roleHas } from '@/lib/permissions';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // Resolve the teamId for a given workspaceId.
 async function getTeamIdForWorkspace(workspaceId: string): Promise<string | null> {
   const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     columns: { teamId: true },
   });
   return ws?.teamId ?? null;
@@ -105,6 +106,6 @@ export async function authenticate(req: NextRequest) {
   if (apiAccount && !hasTokenRouteAdminAccess(apiAccount, req)) {
     return { error: NextResponse.json({ error: 'Admin token required' }, { status: 403 }) };
   }
-  return { user, apiAccount: apiAccount as { id: string; teamId?: string | null } | null };
+  return { user, apiAccount: apiAccount as { id: string; teamId?: string | null; level?: string | null; oauthUserId?: string | null } | null };
 }
 

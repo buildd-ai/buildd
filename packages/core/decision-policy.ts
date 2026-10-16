@@ -33,6 +33,7 @@
 import {
   normalizeDecisionFailure,
   resolveDecisionEndpoint,
+  providerErrorExcerpt,
   runChallenger,
   runDecisionKind,
   type DecisionQuestions,
@@ -103,7 +104,16 @@ function measuredRoute(
   kind: { kind: string; promptFingerprint: string; binding: Pick<BuilddDecisionKindBinding, 'measuredModels'> },
   rows: readonly StoredMeasurement[],
 ): { isMeasured: (model: string) => boolean; thresholdFor: (model: string) => number | null } {
-  const lookup = (model: string) => measurementFor(rows, { kind: kind.kind, answeringModel: model, fingerprint: kind.promptFingerprint });
+  const lookup = (model: string) => {
+    const m = measurementFor(rows, { kind: kind.kind, answeringModel: model, fingerprint: kind.promptFingerprint });
+    // This path compares the kind's interpreted confidence for every label, so
+    // a row measured on another signal or per label cannot be honoured here:
+    // it counts as no row (Jev keeps today, any other model records).
+    if (m.reason === 'measured' && (m.confidenceSource !== 'confidence' || m.labelThresholds)) {
+      return measurementFor([], { kind: kind.kind, answeringModel: model, fingerprint: kind.promptFingerprint });
+    }
+    return m;
+  };
   return {
     isMeasured: model => lookup(model).measured || isMeasuredForKind(kind.binding, model),
     thresholdFor: model => lookup(model).threshold,
@@ -131,6 +141,8 @@ export async function resolveBuilddDecisionRuntime<K extends string, F, D extend
     workspaceId: scope.workspaceId,
     accountId: scope.accountId,
     userId: scope.userId,
+    // The team's model override for this kind, if any, answers the cheap route.
+    kind: kind.kind,
     ...(scope.onUsage ? { onUsage: scope.onUsage } : {}),
   };
 
@@ -194,12 +206,16 @@ export function toDecisionLedgerInput(response: DecisionResponse, scope: BuilddD
   const applied = response.attempts.find(a => a.applied) ?? null;
   const answered = applied ?? [...response.attempts].reverse().find(a => a.decision !== null) ?? null;
   const deterministic = response.source !== 'model';
+  // The last rejection's own words (status + body excerpt, key redacted), so
+  // the ledger says why a provider_error happened, not only that it did.
+  const rejection = [...response.attempts].reverse().find(a => a.failure?.kind === 'provider_error')?.failure ?? null;
   const reason = [
     `${response.source}:${response.reasonCode}`,
     response.fallbackCause ? `cause=${response.fallbackCause}` : null,
     response.attempts.length ? `chain=${response.escalationChain.join('>')}` : null,
     response.escalationSkipped ? `escalation=${response.escalationSkipped}` : null,
     response.unavailable ? `unavailable=${response.unavailable.detail}` : null,
+    rejection?.status ? `provider_error=${providerErrorExcerpt(rejection.status, rejection.body ?? '')}` : null,
   ].filter(Boolean).join('; ');
   const inputTokens = response.attempts.reduce((s, a) => s + a.usage.inputTokens, 0);
   const failureClass = response.source !== 'fallback' ? null

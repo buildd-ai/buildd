@@ -34,6 +34,7 @@ import type { RecordGateEventInput } from '@buildd/core/gate-events';
 export type ExplicitTaskGateName =
   | 'activeWorker'
   | 'taskHeld'
+  | 'taskReserved'
   | 'missionHeld'
   | 'missionLocal'
   | 'deps'
@@ -72,6 +73,7 @@ const FORCE_HINT = 'An admin can claim it anyway with claim_task force: true, or
 const GATE_ORDER: Array<[ExplicitTaskGateName, ClaimTaskExclusionCode, string]> = [
   ['activeWorker', 'active_worker', 'The task already has a live worker.'],
   ['taskHeld', 'task_held', 'The task is held by a person. Resume it before claiming.'],
+  ['taskReserved', 'task_reserved', 'Another interactive session has reserved this task to run it locally; the reservation lapses on its own if that session goes quiet, or its owner releases it.'],
   ['missionHeld', 'mission_held', `Its mission is held. Arm the mission. ${FORCE_HINT}`],
   ['missionLocal', 'mission_local', `This mission runs in a local session: runners never pick up its tasks. Claim it from an interactive session with claim_task {taskId}, or set the mission's executor to 'runner'. ${FORCE_HINT}`],
   ['deps', 'deps_blocked', `A dependency is not satisfied yet (not completed with its PR merged, and not cancelled). ${FORCE_HINT}`],
@@ -105,14 +107,14 @@ export function classifyExplicitTaskExclusion(probe: ExplicitTaskProbe | null, n
   }
   const startAt = toDate(probe.startAt);
   if (startAt && startAt > now) {
-    return { code: 'deferred', detail: `The task is deferred until ${startAt.toISOString()}. ${FORCE_HINT}` };
+    return { code: 'deferred', detail: `The task is deferred until ${startAt.toISOString()}. ${FORCE_HINT}`, until: startAt.toISOString() };
   }
   for (const [gate, code, detail] of GATE_ORDER) {
     const v = probe.gates[gate];
     if ((v === false || v === null) && gate === 'workspacePaused') {
       const until = toDate(probe.workspacePausedUntil ?? null);
       if (until && until > now) {
-        return { code, detail: `New starts in this workspace are paused until ${until.toISOString()}. Running work carries on. Resume early from Health > Runners, claim it from your own session, or ${FORCE_HINT.charAt(0).toLowerCase()}${FORCE_HINT.slice(1)}` };
+        return { code, detail: `New starts in this workspace are paused until ${until.toISOString()}. Running work carries on. Resume early from Health > Runners, claim it from your own session, or ${FORCE_HINT.charAt(0).toLowerCase()}${FORCE_HINT.slice(1)}`, until: until.toISOString() };
       }
     }
     if (v === false || v === null) return { code, detail: gate === 'role' && probe.roleSlug === VISUAL_AUDITOR_ROLE_SLUG

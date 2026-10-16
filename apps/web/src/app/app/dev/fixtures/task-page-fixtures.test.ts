@@ -7,13 +7,23 @@ import { TASK_PAGE_CASES, taskPageFixture } from './task-page-fixtures';
 
 const text = (c: (typeof TASK_PAGE_CASES)[number]) => {
   const f = taskPageFixture(c);
-  return { f, all: [f.verdict.label, f.verdict.headline, f.track?.phrase, ...f.checks.current.map(r => r.result), f.shipped?.eyebrow].join(' | ') };
+  return { f, all: [f.verdict?.label, f.verdict?.headline, f.track?.phrase, ...f.checks.current.map(r => r.result), f.shipped?.eyebrow].join(' | ') };
 };
 
 describe('task page regression cases', () => {
+  it('the reported screen: a queued reviewer run with a long PR title, no verdict yet, Code review and Tests in progress', () => {
+    const { f } = text('review-pending');
+    expect(f.title.length).toBeGreaterThan(100);
+    expect(f.title.startsWith('PR #1234: ')).toBe(true);
+    expect(f.verdict).toBeNull();
+    expect(f.track).toEqual({ state: 'review', phrase: 'awaiting review' });
+    expect(f.checks.current.map(r => [r.name, r.result])).toEqual([['Code review', 'Awaiting review · round 1'], ['Tests', 'Checking']]);
+    expect(f.findings.get('review-1')).toEqual({ prose: null, verdict: null, status: 'pending' });
+  });
+
   it('reviewer approved, parent awaiting merge: Review approved, Land · awaiting merge, no shipped/done/repair', () => {
     const { f, all } = text('review-approved');
-    expect(f.verdict.label).toBe('Review approved');
+    expect(f.verdict?.label).toBe('Review approved');
     expect(f.track).toEqual({ state: 'landing', phrase: 'awaiting merge' });
     expect(f.shipped?.eyebrow).toBe('Review of PR #1234');
     expect(all).not.toMatch(/What shipped|Merged|Repair|\bDone\b/);
@@ -40,7 +50,7 @@ describe('task page regression cases', () => {
   });
 
   it('failed and needs-human keep their own states', () => {
-    expect(text('failed').f.verdict.state).toBe('failed');
-    expect(text('needs-human').f.verdict.state).toBe('needs_you');
+    expect(text('failed').f.verdict?.state).toBe('failed');
+    expect(text('needs-human').f.verdict?.state).toBe('needs_you');
   });
 });

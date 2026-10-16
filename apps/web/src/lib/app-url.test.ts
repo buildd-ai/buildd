@@ -15,15 +15,22 @@ import { appBaseUrl } from './app-url';
 
 const APP = process.env.NEXT_PUBLIC_APP_URL;
 const VERCEL = process.env.VERCEL_URL;
+const VERCEL_ENV = process.env.VERCEL_ENV;
+const PROD_HOST = process.env.VERCEL_PROJECT_PRODUCTION_URL;
 
-function setEnv(app?: string, vercel?: string) {
-  if (app === undefined) delete process.env.NEXT_PUBLIC_APP_URL;
-  else process.env.NEXT_PUBLIC_APP_URL = app;
-  if (vercel === undefined) delete process.env.VERCEL_URL;
-  else process.env.VERCEL_URL = vercel;
+function put(name: string, value?: string) {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
 }
 
-afterEach(() => setEnv(APP, VERCEL));
+function setEnv(app?: string, vercel?: string, vercelEnv?: string, prodHost?: string) {
+  put('NEXT_PUBLIC_APP_URL', app);
+  put('VERCEL_URL', vercel);
+  put('VERCEL_ENV', vercelEnv);
+  put('VERCEL_PROJECT_PRODUCTION_URL', prodHost);
+}
+
+afterEach(() => setEnv(APP, VERCEL, VERCEL_ENV, PROD_HOST));
 
 describe('appBaseUrl', () => {
   it('prefers NEXT_PUBLIC_APP_URL over the Vercel host', () => {
@@ -40,6 +47,24 @@ describe('appBaseUrl', () => {
   it('falls back to the Vercel deployment host', () => {
     setEnv(undefined, 'preview-xyz.vercel.app');
     expect(appBaseUrl()).toBe('https://preview-xyz.vercel.app');
+  });
+
+  // A production deployment's VERCEL_URL is its own per-deployment host,
+  // behind Vercel's login wall. A link minted there (a spec approval
+  // confirmation, an incident deep link) has to name the public domain.
+  it('uses the production domain, not the deployment host, on a production deployment', () => {
+    setEnv(undefined, 'buildd-abc123-team.vercel.app', 'production', 'buildd.dev');
+    expect(appBaseUrl()).toBe('https://buildd.dev');
+  });
+
+  it('keeps the deployment host on a preview deployment', () => {
+    setEnv(undefined, 'buildd-git-x-team.vercel.app', 'preview', 'buildd.dev');
+    expect(appBaseUrl()).toBe('https://buildd-git-x-team.vercel.app');
+  });
+
+  it('never names a deployment host on production, even without the production domain variable', () => {
+    setEnv(undefined, 'buildd-abc123-team.vercel.app', 'production', undefined);
+    expect(appBaseUrl()).toBe('https://buildd.dev');
   });
 
   it('falls back to production when nothing is configured', () => {

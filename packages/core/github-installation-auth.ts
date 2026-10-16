@@ -3,6 +3,7 @@ import { db } from './db';
 import { githubInstallations } from './db/schema';
 import { eq } from 'drizzle-orm';
 import { createSign, createPrivateKey } from 'crypto';
+import { sqlWhere } from './db/relational-sql';
 const GITHUB_APP_ID = process.env.GITHUB_APP_ID;
 const GITHUB_APP_PRIVATE_KEY = process.env.GITHUB_APP_PRIVATE_KEY_BASE64 ? Buffer.from(process.env.GITHUB_APP_PRIVATE_KEY_BASE64, 'base64').toString('utf-8') : process.env.GITHUB_APP_PRIVATE_KEY?.replace(/\\n/g, '\n');
 const base64UrlEncode = (data: string | Buffer) => Buffer.from(data).toString('base64url');
@@ -38,7 +39,7 @@ export function generateAppJWT(): string {
 export async function getInstallationToken(installationId: number): Promise<string> {
   // Check if we have a cached token
   const installation = await db.query.githubInstallations.findFirst({
-    where: eq(githubInstallations.installationId, installationId),
+    where: sqlWhere(eq(githubInstallations.installationId, installationId)),
   });
 
   if (installation?.accessToken && installation.tokenExpiresAt) {

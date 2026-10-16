@@ -20,6 +20,7 @@ import {
   prepareSubjectFiling,
   recordSubjectMatchObserved,
 } from '@/lib/subject-anchor-observer';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 type WatchedProject = typeof watchedProjects.$inferSelect;
 
@@ -99,7 +100,7 @@ interface OpenPR {
  */
 export async function runWatcherForProject(projectId: string): Promise<{ fired: number }> {
   const project = await db.query.watchedProjects.findFirst({
-    where: eq(watchedProjects.id, projectId),
+    where: sqlWhere(eq(watchedProjects.id, projectId)),
   });
   if (!project) throw new Error(`Watched project ${projectId} not found`);
   const firedPrs = await checkFailingReleasePRs(project);
@@ -202,7 +203,7 @@ async function fireProdAlert(project: WatchedProject, health: DeploymentHealth):
     return false;
   }
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, project.workspaceId),
+    where: sqlWhere(eq(workspaces.id, project.workspaceId)),
   });
   if (!workspace) return false;
 
@@ -395,7 +396,7 @@ async function firePrAlert(
   dedupeKey: string,
 ): Promise<boolean> {
   const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, project.workspaceId),
+    where: sqlWhere(eq(workspaces.id, project.workspaceId)),
   });
   if (!workspace) return false;
 
@@ -548,7 +549,7 @@ Stay surgical. Do not refactor adjacent code. Do not bypass hooks.
 export async function ensureOpsRole(workspaceId: string, slug: string): Promise<void> {
   const content = OPS_ROLE_CONTENT;
   const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     columns: { teamId: true },
   });
   if (!ws) return;

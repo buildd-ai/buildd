@@ -1,7 +1,7 @@
 import { describe, expect, it, mock } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 mock.module('next/navigation', () => ({ useRouter: () => ({ refresh() {} }), usePathname: () => '/app/home', useSearchParams: () => new URLSearchParams() }));
-const { HomeBody } = await import('./HomeBody');
+const { HomeBody, quietMissionsLine } = await import('./HomeBody');
 const { deriveHomeAttention: derive } = await import('@/lib/home-attention');
 const { isActionableChip } = await import('@/lib/action-queue');
 const deriveHomeAttention = (input: Omit<Parameters<typeof derive>[0], 'isActionable'>) => derive({ ...input, isActionable: isActionableChip });
@@ -27,7 +27,7 @@ describe('Home inbox', () => {
     expect(html).toContain('home-all-clear');
     expect(html).toContain('All clear.');
     // No empty Needs you section, no shipped placeholder, no worker rows.
-    expect(html).not.toContain('>Needs you<');
+    expect(html).not.toContain('>Waiting on you<');
     expect(html).not.toContain('Nothing shipped today');
     expect(html).not.toContain('In flight');
     expect(html.indexOf('home-all-clear')).toBeLessThan(html.indexOf('data-testid="ask"'));
@@ -50,7 +50,8 @@ describe('Home inbox', () => {
       expect(r).toContain('data-testid="mission-row"');
       expect(r).toContain('data-testid="task-strip"');
       expect(r).not.toMatch(/border-l-4|border-l-status|bg-\[var\(--chat-surface\)\]/);
-      expect(r).not.toContain('line-clamp');
+      // The shared row clamps a long title at three lines, never two.
+      expect(r).not.toContain('line-clamp-2');
       expect(r).not.toContain('Stage:');
       expect(r).toContain('>Next<');
     }
@@ -74,13 +75,14 @@ describe('Home inbox', () => {
     expect(html).not.toContain('See everything in motion');
     expect(html.match(/href="\/app\/tasks"/g)).toHaveLength(1);
     const also = html.match(/<p[^>]*data-testid="home-also"[\s\S]*?<\/p>/)?.[0] ?? '';
-    expect(also).toContain('2 more missions are waiting on capacity or another mission.');
+    expect(also).toContain('2 more missions are waiting.');
+    expect(also).not.toContain('capacity');
     expect(also).toContain('href="/app/tasks"');
   });
   it('names what is not listed when something does need you', () => {
     const html = render(deriveHomeAttention({ queue: [{ subjectKey: 'd', chip: 'DECIDE', missionId: 'mission-a', escalationReason: 'Keep the old route?' }], questions: [], held: [], missions: [] }));
     expect(html).not.toContain('home-all-clear');
-    expect(html).toContain('2 more missions are waiting on capacity or another mission.');
+    expect(html).toContain('2 more missions are waiting.');
     expect(html).not.toContain('Not listed here');
     expect(html).not.toContain('on their own');
   });
@@ -91,12 +93,12 @@ describe('Home inbox', () => {
     expect(html).toContain('Systemic · failed');
     expect(html).toContain('3 affected');
     expect(html.indexOf('data-systemic')).toBeLessThan(html.indexOf('Keep the old route?'));
-    expect(html).toContain('2 things need you.');
+    expect(html).toContain('2 waiting on you.');
   });
   it('uses one card frame and a guarded merge action', () => {
     const items = deriveHomeAttention({ queue: [{ subjectKey: 'ready', chip: 'MERGE', prNumber: 7, workspaceId: 'example', taskTitle: 'A change', prUrl: 'https://github.com/example/project/pull/7', missionMergeBlockedReason: 'Other work is still running.' }], questions: [], held: [], missions: [] });
     const html = render(items);
-    expect(html).toContain('1 thing needs you.');
+    expect(html).toContain('1 waiting on you.');
     expect(html).toContain('1 open');
     expect(html).toContain('data-testid="needs-you-card"');
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Merge/);
@@ -119,7 +121,7 @@ it('renders a mixed list with named actions, concrete reasons and no generic fal
     { subjectKey: 'b', chip: 'REVIEW', prNumber: 8, workspaceId: 'example', taskTitle: 'Another change', prUrl: 'https://github.com/example/project/pull/8', humanReview: { label: 'Review PR', reason: 'Protected migration paths changed. More detail.', decision: 'Protected migration paths changed.', blockers: [] } },
     { subjectKey: 'c', chip: 'DECIDE' },
   ], questions: [], held: [], missions: [] }));
-  expect(html).toContain('2 things need you.');
+  expect(html).toContain('2 waiting on you.');
   expect(html).toContain('1 decision · 1 review');
   expect(html).toContain('Pick a rollout order');
   expect(html).toContain('>Choose…<');
@@ -161,7 +163,7 @@ describe('one decisions list at every width', () => {
     expect(cards).toHaveLength(3);
     // 4 reviews asking the same thing are one group row (its 3 members after the card).
     expect(html.match(/data-testid="needs-you-row"/g)).toHaveLength(5);
-    expect(html).toContain('8 things need you.');
+    expect(html).toContain('8 waiting on you.');
     // The headline is the section's header: no second "Needs you · N open" count.
     expect(html).not.toContain('>8 open<');
     expect(html).not.toContain('needs-you-count');
@@ -197,12 +199,12 @@ describe('one decisions list at every width', () => {
   });
 
   it('names the hidden missions plainly', () => {
-    expect(html).toContain('7 more missions are waiting on capacity or another mission.');
+    expect(html).toContain('7 more missions are waiting.');
   });
 
   it('one waiting mission reads in the singular', () => {
     const one = renderToStaticMarkup(<HomeBody items={items} ask={null} counts={counts} milestones={[]} quietMissions={1} />);
-    expect(one).toContain('1 more mission is waiting on capacity or another mission.');
+    expect(one).toContain('1 more mission is waiting.');
   });
 
   it('a merge card carries the MergeAdvice line', () => {
@@ -232,5 +234,44 @@ describe('Home page composes one list', () => {
     // The composer, when chat works, is phone-only; desktop gets one quiet Ask link.
     expect(page).toMatch(/<div className="md:hidden">\s*<HomeChatCard/);
     expect(page).toContain('data-testid="home-ask-link"');
+  });
+});
+
+// Surface audit round 3: at phone width the setup card filled the first screen
+// while the one thing that needed the owner sat below it.
+it('puts what needs the owner before the setup card', () => {
+  const items = deriveHomeAttention({ queue: [{ subjectKey: 'd', chip: 'DECIDE', missionId: 'mission-a', escalationReason: 'Keep the old route?' }], questions: [], held: [], missions: [] });
+  const html = renderToStaticMarkup(<HomeBody items={items} ask={null} setup={<section data-testid="getting-started">Connect a runner</section>} runnerConnected={false} counts={counts} milestones={[]} quietMissions={0} />);
+  expect(html.indexOf('home-waiting-on-you')).toBeGreaterThan(-1);
+  expect(html.indexOf('home-waiting-on-you')).toBeLessThan(html.indexOf('getting-started'));
+});
+
+describe('quietMissionsLine names what the quiet missions wait on (spec 8e137fdb I-4)', () => {
+  it('one cause: says it for all of them', () => {
+    expect(quietMissionsLine(3, [{ cause: 'next in line for a runner', count: 3 }])).toBe('3 more missions are next in line for a runner.');
+    expect(quietMissionsLine(1, [{ cause: 'being planned', count: 1 }])).toBe('1 more mission is being planned.');
+  });
+  it('up to three causes: counts each in words', () => {
+    expect(quietMissionsLine(4, [
+      { cause: 'next in line for a runner', count: 2 },
+      { cause: 'waiting on visual review', count: 1 },
+      { cause: 'being planned', count: 1 },
+    ])).toBe('4 more missions: 2 are next in line for a runner, 1 is waiting on visual review, 1 is being planned.');
+  });
+  it('more than three causes, or none known: a neutral line with no invented cause', () => {
+    const four = [1, 2, 3, 4].map(i => ({ cause: `cause ${i}`, count: 1 }));
+    expect(quietMissionsLine(4, four)).toBe('4 more missions are waiting.');
+    expect(quietMissionsLine(2)).toBe('2 more missions are waiting.');
+  });
+  it('HomeBody renders the grouped line when causes are passed', () => {
+    const html = renderToStaticMarkup(<HomeBody items={[]} ask={null} counts={counts} milestones={[]} quietMissions={2} quietCauses={[{ cause: 'next in line for a runner', count: 2 }]} />);
+    expect(html).toContain('2 more missions are next in line for a runner.');
+  });
+});
+
+describe('quietMissionsLine agrees in number', () => {
+  it('a held mission reads in the singular and plural alike', () => {
+    expect(quietMissionsLine(1, [{ cause: 'on hold', count: 1 }])).toBe('1 more mission is on hold.');
+    expect(quietMissionsLine(2, [{ cause: 'on hold', count: 2 }])).toBe('2 more missions are on hold.');
   });
 });

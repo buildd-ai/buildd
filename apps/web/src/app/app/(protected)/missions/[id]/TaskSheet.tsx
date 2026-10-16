@@ -24,6 +24,7 @@
  * It owns no history: ‹ ›, "Next needing you" and close call back into
  * TaskPanelWrapper, which writes the URL (task-sheet-history.ts).
  */
+import { displayTaskTitle } from '@/lib/task-title';
 import Link from 'next/link';
 import { useCallback, useRef, useSyncExternalStore } from 'react';
 import SideSheet from '@/components/SideSheet';
@@ -143,7 +144,7 @@ function SheetContent({ taskId, mission, nav, summary, workspaceId, onChanged, o
             className="flex min-h-11 items-center gap-2 border-b border-border-default font-mono text-[12px] text-accent-text hover:underline"
           >
             <span className="shrink-0 text-text-muted">Next needing you:</span>
-            <span className="min-w-0 flex-1 truncate">{next.title}</span>
+            <span className="min-w-0 flex-1 truncate" title={next.title}>{displayTaskTitle(next.title)}</span>
             <span aria-hidden="true">›</span>
           </a>
         )}

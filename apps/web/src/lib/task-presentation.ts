@@ -507,7 +507,7 @@ export function deriveChainPosition({
  * leaving a BLOCKED task with no visible reason.
  *
  * Exported for the mission Landed strip (mission-progress-strip-ordering.md
- * ADJ-3), which feeds it the shared adjacency's edges so the Timeline rail,
+ * strip R-20), which feeds it the shared adjacency's edges so the Timeline rail,
  * the Activity grid and the strip name the same frontier.
  */
 export function reduceToFrontier<B extends Pick<BlockRef, 'id'>>(

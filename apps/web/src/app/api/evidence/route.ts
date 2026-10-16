@@ -8,6 +8,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { isUuid } from '@/lib/uuid';
 import { EVIDENCE_KINDS, auditEvidenceRead, toEvidenceObjectSummary, type EvidenceObjectRow } from '@/lib/evidence-read';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 const LIST_LIMIT = 200;
 const TASK_LIMIT = 50;
@@ -56,7 +57,7 @@ export async function GET(req: NextRequest) {
   if (evidenceId) {
     if (!isUuid(evidenceId)) return NextResponse.json({ error: 'evidenceId must be a full UUID' }, { status: 400 });
     const row = (await db.query.evidenceObjects.findFirst({
-      where: and(eq(evidenceObjects.id, evidenceId), eq(evidenceObjects.workspaceId, workspaceId)),
+      where: sqlWhere(and(eq(evidenceObjects.id, evidenceId), eq(evidenceObjects.workspaceId, workspaceId))),
     })) as EvidenceObjectRow | undefined;
     if (!row || row.id !== evidenceId || row.workspaceId !== workspaceId) {
       return NextResponse.json({ error: 'Evidence object not found' }, { status: 404 });
@@ -76,7 +77,7 @@ export async function GET(req: NextRequest) {
   }
 
   const workerRows = await db.query.workers.findMany({
-    where: and(eq(workers.workspaceId, workspaceId), eq(workers.prNumber, prNumber)),
+    where: sqlWhere(and(eq(workers.workspaceId, workspaceId), eq(workers.prNumber, prNumber))),
     columns: { taskId: true },
     limit: TASK_LIMIT,
   });
@@ -85,12 +86,12 @@ export async function GET(req: NextRequest) {
   const scope: SQL[] = [eq(evidenceObjects.prNumber, prNumber)];
   if (taskIds.length) scope.push(inArray(evidenceObjects.taskId, taskIds), inArray(evidenceObjects.rootTaskId, taskIds));
   const rows = (await db.query.evidenceObjects.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(evidenceObjects.workspaceId, workspaceId),
       or(...scope),
       ...(kind ? [eq(evidenceObjects.kind, kind as EvidenceKind)] : []),
-    ),
-    orderBy: [desc(evidenceObjects.createdAt)],
+    )),
+    orderBy: sqlOrderBy([desc(evidenceObjects.createdAt)]),
     limit: LIST_LIMIT,
   })) as EvidenceObjectRow[];
 

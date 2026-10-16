@@ -11,6 +11,7 @@ import { enqueueDispatchSql } from '@buildd/core/dispatch-outbox';
 import { and, eq } from 'drizzle-orm';
 import { resolveDeferredStart } from '@/lib/deferred-start';
 import { kickDispatch, wakeTasks } from '@/lib/dispatch-authority';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /** Longest pause one request may set. Longer holds belong on the mission (held) or the tasks (startAt). */
 export const MAX_PAUSE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -52,7 +53,7 @@ export async function setWorkspacePause(workspaceId: string, until: Date | null,
     .where(eq(workspaces.id, workspaceId));
 
   const waiting = await db.query.tasks.findMany({
-    where: and(eq(tasks.workspaceId, workspaceId), eq(tasks.status, 'pending')),
+    where: sqlWhere(and(eq(tasks.workspaceId, workspaceId), eq(tasks.status, 'pending'))),
     columns: { id: true },
     limit: WAKE_LIMIT,
   });

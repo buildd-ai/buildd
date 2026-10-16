@@ -4,7 +4,7 @@
  * answered" and read as a failure. A duplicate is an answer on record.
  */
 import { describe, expect, it, mock } from 'bun:test';
-import { AnswerSubmitError, answerOutcomeLines, classifyRespondReply, submitAnswer } from './submit-answer';
+import { AnswerSubmitError, answerOutcomeLines, classifyRespondReply, staleAnswerNotice, submitAnswer } from './submit-answer';
 
 function reply(status: number, body: unknown) {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -106,5 +106,58 @@ describe('submitAnswer', () => {
     const err = await submitAnswer({ workerId: 'w1', message: 'x' }, fetchImpl as unknown as typeof fetch).catch(e => e);
     expect(err).toBeInstanceOf(AnswerSubmitError);
     expect(err.message).toMatch(/did not send/i);
+  });
+});
+
+// What a stale card shows when /respond says nothing is waiting any more.
+describe('staleAnswerNotice', () => {
+  it('links an already-answered question to its continuation', () => {
+    expect(staleAnswerNotice({
+      error: 'This was already answered, and the work moved to a follow-up task.',
+      reasonCode: 'already_answered',
+      nextAction: { kind: 'open_task', taskId: 'task-2' },
+    }, 'task-1')).toEqual({
+      message: 'This was already answered, and the work moved to a follow-up task.',
+      href: '/app/tasks/task-2',
+      linkLabel: 'Open the follow-up task',
+    });
+  });
+
+  it('sends an ended worker to its own task page to retry or follow up', () => {
+    const notice = staleAnswerNotice({ error: 'This agent has already stopped.', reasonCode: 'worker_ended', nextAction: { kind: 'follow_up' } }, 'task-1');
+    expect(notice?.href).toBe('/app/tasks/task-1');
+    expect(notice?.linkLabel).toMatch(/retry|follow-up/i);
+  });
+
+  it('offers no link when a refresh is all it takes', () => {
+    const notice = staleAnswerNotice({ error: 'The agent moved on.', reasonCode: 'no_longer_waiting', nextAction: { kind: 'refresh' } }, 'task-1');
+    expect(notice).toEqual({ message: 'The agent moved on.', href: null, linkLabel: null });
+  });
+
+  it('is null for any other rejection, which keeps the question open', () => {
+    expect(staleAnswerNotice({ error: 'Backend credential (claude) is revoked.', credentialRevoked: true }, 'task-1')).toBeNull();
+    expect(staleAnswerNotice(null, 'task-1')).toBeNull();
+  });
+});
+
+describe('submitAnswer on a stale card', () => {
+  it('carries the stale notice on the error, with the follow-up link', async () => {
+    const fetchImpl = mock(async () => reply(400, { error: 'This agent has already stopped.', reasonCode: 'worker_ended', nextAction: { kind: 'follow_up' } }));
+    const err = await submitAnswer({ workerId: 'w1', taskId: 't1', message: 'x' }, fetchImpl as unknown as typeof fetch).catch(e => e);
+    expect(err).toBeInstanceOf(AnswerSubmitError);
+    expect(err.stale).toEqual({ message: 'This agent has already stopped.', href: '/app/tasks/t1', linkLabel: 'Retry or start a follow-up from this task' });
+  });
+
+  it('has no stale notice on an error that leaves the question open', async () => {
+    const fetchImpl = mock(async () => reply(500, { error: 'Failed to record response' }));
+    const err = await submitAnswer({ workerId: 'w1', taskId: 't1', message: 'x' }, fetchImpl as unknown as typeof fetch).catch(e => e);
+    expect(err.stale).toBeNull();
+  });
+});
+
+describe('classifyRespondReply: an earlier answer moved the work', () => {
+  it('names the follow-up task an already-answered question went to', () => {
+    const o = classifyRespondReply(409, { reasonCode: 'already_answered', recordedAnswer: 'Ship it', nextAction: { kind: 'open_task', taskId: 't2' } }, 'Ship it');
+    expect(o.kind === 'already_answered' && o.followUpTaskId).toBe('t2');
   });
 });

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
 const mockGetCurrentUser = mock(() => null as any);
@@ -169,6 +169,36 @@ describe('POST /api/prs/[prNumber]/re-review', () => {
       expect(res.status).toBe(409);
       expect(await res.json()).toMatchObject({ code: 'state_not_allowed', current, kernel: true });
       expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+    });
+
+    describe('cut over to the control plane (workflow-kernel-library §3)', () => {
+      let cp: ReturnType<typeof import('@/lib/workflow/testing/cut-over').cutOver> | null = null;
+      afterEach(() => { cp?.restore(); cp = null; });
+      const asPerson = () => { mockRequestKernelReview.mockClear(); mockCreateReviewerTask.mockClear(); mockGetCurrentUser.mockResolvedValue({ id: 'u-1', email: 'max@example.com' }); mockResolveOpenWorkerForUser.mockResolvedValue(openWorker); };
+
+      it('the control plane unreachable: 503 naming it, and no legacy reviewer is queued in its place', async () => {
+        const { cutOver } = await import('@/lib/workflow/testing/cut-over');
+        cp = cutOver();
+        asPerson();
+        const [req, ctx] = makeRequest();
+        const res = await POST(req, ctx);
+        expect(res.status).toBe(503);
+        expect(await res.json()).toMatchObject({ code: 'control_plane_unavailable', controlPlane: true, retryable: true, outcome: 'not_applied', idempotencyKey: expect.stringMatching(/^request_review:/) });
+        expect(cp.calls.map((c) => c.op)).toContain('request_review');
+        expect(mockRequestKernelReview).not.toHaveBeenCalled();
+        expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+      });
+
+      it('the control plane refuses the command: 403, not a 500, and no legacy reviewer', async () => {
+        const { cutOver, refusedByControlPlane } = await import('@/lib/workflow/testing/cut-over');
+        cp = cutOver({ reply: refusedByControlPlane });
+        asPerson();
+        const [req, ctx] = makeRequest();
+        const res = await POST(req, ctx);
+        expect(res.status).toBe(403);
+        expect(await res.json()).toMatchObject({ code: 'control_plane_refused', refusal: 'forbidden' });
+        expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+      });
     });
   });
 

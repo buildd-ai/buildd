@@ -289,7 +289,8 @@ describe('explainMission', () => {
     const answer = result!.subjects[0];
 
     expect(answer.subject.scope).toBe('mission');
-    expect(answer.state).toBe('blocked');
+    // A queued row nothing holds is next in line (spec 8e137fdb I-4).
+    expect(answer.state).toBe('waiting');
     expect(answer.waitingOn?.kind).toBe('task');
     expect(answer.because.length).toBeGreaterThan(0);
     expect(answer.because.map(l => l.order)).toEqual(answer.because.map((_, i) => i + 1));
@@ -304,9 +305,9 @@ describe('explainMission', () => {
 
     // The header chip rides on the same answer as the panel, so the two
     // cannot disagree: a blocked mission never reads AUTO/RUNNING up top.
-    // (Open work with no live worker: the view names it 'stalled' → STALLED.)
-    expect(answer.displayState).toBe('stalled');
-    expect(answer.chip.label).toBe('STALLED');
+    // (Queued work nothing holds: the view names it next in line.)
+    expect(answer.displayState).toBe('active');
+    expect(answer.chip.label).toBe('NEXT IN LINE');
     expect(['AUTO', 'RUNNING']).not.toContain(answer.chip.label);
   });
 
@@ -331,8 +332,8 @@ describe('explainMission', () => {
     const live = answer.because.find(l => l.refs.taskId === 'task-live');
     const orphan = answer.because.find(l => l.refs.taskId === 'task-orphan');
     expect(live?.claim).toBeDefined();
-    expect(live!.claim).not.toContain('no live worker');
-    expect(orphan?.claim).toBe('Task "Write the docs" is in_progress with no live worker.');
+    expect(live!.claim).toBe('"Build the page" is in progress.');
+    expect(orphan?.claim).toBe('"Write the docs" was started, but nothing is running it now.');
     // The situation block prints because[0]: the orphan, not the running task.
     expect(answer.because[0].refs.taskId).toBe('task-orphan');
   });
@@ -429,12 +430,12 @@ describe('explainTask', () => {
     taskRows = [task({ id: 'task-1', status: 'pending' })];
     const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
     expect(answer.chip.label).toBe('LOCAL');
-    expect(answer.situation.headline).toBe('Waiting for a local session to claim the open task.');
+    expect(answer.situation.headline).toBe('Ready to start from a local session.');
     expect(answer.situation.headline).not.toMatch(/stall/i);
     expect(answer.situation.nextAction ?? '').toContain('claim_task');
     expect(answer.situation.nextAction ?? '').not.toMatch(/Dispatch a worker/);
-    expect(answer.because.map(l => l.claim).join(' ')).toContain('waiting for a local session to claim it');
-    expect(answer.because.map(l => l.claim).join(' ')).not.toContain('no live worker');
+    expect(answer.because.map(l => l.claim).join(' ')).toContain('is ready to start. Claim it from a local session.');
+    expect(answer.because.map(l => l.claim).join(' ')).not.toMatch(/waiting for a runner|nothing is running it/);
   });
 
   it('the same pending task in a runner mission still reads as a stall', async () => {
@@ -1017,13 +1018,13 @@ describe('visual task browser claimability explanation', () => {
     browserHeartbeats = [];
     taskRows = [task({ status: 'pending', roleSlug: 'visual-auditor' })];
     const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
-    expect(answer.because.map(l => l.claim).join(' ')).toContain('browser capability');
+    expect(answer.because.map(l => l.claim).join(' ')).toContain('needs a runner with a browser');
   });
   it('does not invent a missing browser when the capability read failed', async () => {
     browserHeartbeats = null;
     taskRows = [task({ status: 'pending', roleSlug: 'visual-auditor' })];
     const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
-    expect(answer.because.map(l => l.claim).join(' ')).not.toContain('missing browser capability');
+    expect(answer.because.map(l => l.claim).join(' ')).not.toContain('needs a runner with a browser');
     browserHeartbeats = [];
   });
 });

@@ -32,6 +32,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { dispatchDocFix } from '@/lib/doc-fix-dispatch';
 import { isUuid } from '@/lib/uuid';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -51,7 +52,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: 'Requires admin-level API key' }, { status: 403 });
   }
 
-  const row = await db.query.specDiscrepancies.findFirst({ where: eq(specDiscrepancies.id, id) });
+  const row = await db.query.specDiscrepancies.findFirst({ where: sqlWhere(eq(specDiscrepancies.id, id)) });
   if (!row) return NextResponse.json({ error: 'Discrepancy not found' }, { status: 404 });
 
   if (user && !apiAccount) {

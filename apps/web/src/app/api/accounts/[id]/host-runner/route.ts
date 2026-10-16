@@ -7,6 +7,7 @@ import { invalidateAccountCacheByHash } from '@/lib/api-auth';
 import { getUserTeamIds, getUserTeamRole } from '@/lib/team-access';
 import { canAdministerTeamKeys } from '@/lib/key-level-policy';
 import { isUuid } from '@/lib/uuid';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 
 /**
@@ -39,7 +40,7 @@ export async function PUT(
   const teamIds = await getUserTeamIds(user.id);
   const account = teamIds.length > 0
     ? await db.query.accounts.findFirst({
-        where: and(eq(accounts.id, id), inArray(accounts.teamId, teamIds)),
+        where: sqlWhere(and(eq(accounts.id, id), inArray(accounts.teamId, teamIds))),
         columns: { id: true, teamId: true, apiKey: true },
       })
     : null;

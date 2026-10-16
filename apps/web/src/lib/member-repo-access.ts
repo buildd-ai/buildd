@@ -32,6 +32,7 @@ import {
   type MemberRepoAccessMode,
   type MemberRepoAccessResult,
 } from './member-repo-access-shared';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export * from './member-repo-access-shared';
 
@@ -133,7 +134,7 @@ const l1 = new TTLCache<MemberRepoAccessResult>({ maxSize: 2000, ttlMs: MEMBER_R
 
 export async function loadWorkspaceRepoFacts(workspaceId: string): Promise<WorkspaceRepoFacts | null> {
   const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     columns: { gitConfig: true },
     with: {
       githubRepo: {
@@ -154,7 +155,7 @@ export async function loadWorkspaceRepoFacts(workspaceId: string): Promise<Works
 export const defaultMemberRepoAccessDeps: MemberRepoAccessDeps = {
   loadWorkspace: loadWorkspaceRepoFacts,
   async loadGithubId(userId) {
-    const u = await db.query.users.findFirst({ where: eq(users.id, userId), columns: { githubId: true } });
+    const u = await db.query.users.findFirst({ where: sqlWhere(eq(users.id, userId)), columns: { githubId: true } });
     return u?.githubId ?? null;
   },
   async github(installationId, path) {

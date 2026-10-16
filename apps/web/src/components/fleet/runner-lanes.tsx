@@ -35,7 +35,7 @@ const TONE: Record<LaneBar['state'], SlotLaneBar['tone']> = {
 
 const STATE_WORD: Record<LaneBar['state'], string> = {
   running: 'Working',
-  waiting: 'Needs input',
+  waiting: 'Has a question',
   done: 'Done',
   failed: 'Failed',
 };

@@ -23,7 +23,7 @@ describe('parseChatUnavailable', () => {
 describe('chatErrorLine', () => {
   it('says what to do, never a stack', () => {
     expect(chatErrorLine(new Error(JSON.stringify({ error: 'rate_limited', message: '' })))).toMatch(/Try again/);
-    expect(chatErrorLine(new Error('TypeError: x is undefined\n at foo'))).toMatch(/send it again/);
+    expect(chatErrorLine(new Error('TypeError: x is undefined\n at foo'))).toMatch(/Send your message again/);
     expect(chatErrorLine(new Error('{"error":"Conversation not found"}'))).toBe('Conversation not found');
   });
 });

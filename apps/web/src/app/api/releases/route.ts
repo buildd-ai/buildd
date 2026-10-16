@@ -6,6 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { getUserTeamIds } from '@/lib/team-access';
 import { listReleasesQuery } from '@/lib/release-queries';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * GET /api/releases?workspaceId=&missionId=&state=&limit=
@@ -32,7 +33,7 @@ export async function GET(req: NextRequest) {
   }
 
   const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     columns: { teamId: true },
   });
   if (!ws) {

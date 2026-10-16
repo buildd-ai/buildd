@@ -117,6 +117,13 @@ export type CoreEvent =
    */
   | { type: 'task.left_mission'; taskId: string; missionId: string; workspaceId: string | null }
   /**
+   * PATCH /api/tasks/[id] replaced a task's role: `from` was set and `to` is
+   * a different role (clearing it is not a change of answer). The decisions
+   * module labels it as a person's correction of a role pick that applied
+   * `from`, if one did. `by` is the editing user or account.
+   */
+  | { type: 'task.role_changed'; taskId: string; teamId: string; from: string; to: string; by: string | null }
+  /**
    * A claim STARTed a task a gate would have HELD, because someone overrode
    * it: a person's Force start today (lib/force-start.ts), a later Jev START
    * path tomorrow. Once per overriding claim. The decisions module records it
@@ -372,7 +379,20 @@ export type CoreEvent =
    * and full scopes): the floor for module backstops whose webhook is lossy.
    * Subscribers must be bounded (the route has a 60s budget) and idempotent.
    */
-  | { type: 'sweep.pr_hourly'; at: Date };
+  | { type: 'sweep.pr_hourly'; at: Date }
+  /**
+   * A person's approval of a Living Spec revision committed (lib/specs/approval.ts),
+   * the confirmation link's included. Once per approval. The knowledge module
+   * indexes the approved text and its references (living-specs.md §8).
+   */
+  | { type: 'spec.approved'; specId: string; workspaceId: string; revision: number }
+  /**
+   * The kernel's epoch path recorded a settlement or retirement of a mission delivery
+   * (workflow/seam.ts `missionEpochCommand`, S4b). The missions module asks its one completion
+   * writer to decide: a mission held only by its deliveries completes on the transition that
+   * releases it. At most once, like every event; the next task event or schedule tick decides too.
+   */
+  | { type: 'mission.delivery_settled'; missionId: string; steps: string[] };
 
 /** The worker that owns a PR, as the webhook resolved it. */
 export interface PrOwnerFact {

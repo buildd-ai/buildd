@@ -21,7 +21,7 @@ describe('isRiskyLandingPath: where "unrelated" is never a safe assumption', () 
     'apps/web/src/lib/foo.test.ts',
   ])('%s is not', (p) => expect(isRiskyLandingPath(p)).toBe(false));
 
-  test.each(['packages/core/drizzle/0300_x.sql', 'drizzle/0001_a.sql', 'packages/core/drizzle/meta/0300_snapshot.json', 'drizzle/x.sql'])(
+  test.each(['packages/core/drizzle/0300_x.sql', 'drizzle/0001_a.sql', 'packages/core/drizzle/meta/0300_snapshot.json', 'drizzle/x.sql', 'packages/core/drizzle/20261012120000_x/migration.sql', 'packages/core/drizzle/20261012120000_x/snapshot.json'])(
     'the migration pattern agrees with migration-safety for %s', (p) => expect(isRiskyLandingPath(p)).toBe(isGeneratedMigrationPath(p)));
 });
 

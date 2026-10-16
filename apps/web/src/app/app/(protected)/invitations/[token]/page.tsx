@@ -6,6 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import AcceptInvitationButton from './AcceptButton';
 import Notice from '@/components/ui/Notice';
 import type { ReactNode } from 'react';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const FRAME = 'pt-[4.5rem] px-4 pb-24 md:px-8 md:pt-8 md:pb-10';
 
@@ -32,7 +33,7 @@ export default async function InvitationPage({ params }: { params: Promise<{ tok
   }
 
   const invitation = await db.query.teamInvitations.findFirst({
-    where: eq(teamInvitations.token, token),
+    where: sqlWhere(eq(teamInvitations.token, token)),
   });
 
   if (!invitation) {
@@ -49,14 +50,14 @@ export default async function InvitationPage({ params }: { params: Promise<{ tok
   // selects every column in schema.ts, so dropping one takes this page down for
   // the whole build window (db:migrate runs before next build).
   const team = await db.query.teams.findFirst({
-    where: eq(teams.id, invitation.teamId),
+    where: sqlWhere(eq(teams.id, invitation.teamId)),
     columns: { name: true },
   });
 
   let inviterName: string | null = null;
   if (invitation.invitedBy) {
     const inviter = await db.query.users.findFirst({
-      where: eq(users.id, invitation.invitedBy),
+      where: sqlWhere(eq(users.id, invitation.invitedBy)),
       columns: { name: true, email: true },
     });
     inviterName = inviter?.name || inviter?.email || null;

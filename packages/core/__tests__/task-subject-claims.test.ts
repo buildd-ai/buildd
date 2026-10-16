@@ -28,16 +28,18 @@ import { describe, it, expect } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { taskSubjectClaims, taskSubjectReports } from '../db/schema';
+import { loadLegacyMap, LEGACY_MIGRATIONS_PATH } from '../db/legacy-migrations';
 
 const DRIZZLE_DIR = join(import.meta.dir, '..', 'drizzle');
 
 // ── The migration that creates task_subject_claims ───────────────────────────
 //
-// It was squashed into drizzle/0000_baseline.sql, a pg_dump of the released
+// It was squashed into the baseline folder's migration.sql, a pg_dump of the released
 // schema, so these read pg_dump's spelling (`public.` qualifiers, identifiers
 // quoted only when needed, constraints as `ALTER TABLE ONLY`).
 
-const baselineSql = readFileSync(join(DRIZZLE_DIR, '0000_baseline.sql'), 'utf8');
+const baselineName = loadLegacyMap(LEGACY_MIGRATIONS_PATH).find((e) => e.baseline)!.name;
+const baselineSql = readFileSync(join(DRIZZLE_DIR, baselineName, 'migration.sql'), 'utf8');
 
 function tableBody(table: string): string {
   const start = baselineSql.indexOf(`CREATE TABLE public.${table} (`);

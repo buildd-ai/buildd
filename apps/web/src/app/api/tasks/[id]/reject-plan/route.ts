@@ -9,6 +9,7 @@ import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-
 import { attemptIdentityFrom } from '@/lib/attempt-identity';
 import { isUuid } from '@/lib/uuid';
 import { wakeTask } from '@/lib/dispatch-authority';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // POST /api/tasks/[id]/reject-plan - Reject a planning task's plan and create a revised planning task
 export async function POST(
@@ -33,7 +34,7 @@ export async function POST(
 
   try {
     const task = await db.query.tasks.findFirst({
-      where: eq(tasks.id, id),
+      where: sqlWhere(eq(tasks.id, id)),
       with: { workspace: true },
     });
 
@@ -133,7 +134,7 @@ export async function POST(
 
     // Create a new planning task with feedback context. It re-attempts the
     // rejected plan, so it carries that plan's backend, role, routing kind and
-    // phase (Rule P1-7) — its parentTaskId is the plan's parent, not the plan.
+    // phase (mission-legibility R-7) — its parentTaskId is the plan's parent, not the plan.
     const [newTask] = await db
       .insert(tasks)
       .values({

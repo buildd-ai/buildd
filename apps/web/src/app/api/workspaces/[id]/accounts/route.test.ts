@@ -9,6 +9,7 @@
  */
 import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
+import { capturedWhere } from '@buildd/core/db/relational-sql';
 
 const saved = {
   NODE_ENV: process.env.NODE_ENV,
@@ -38,7 +39,15 @@ const mockWorkspacesFindFirst = mock(async () => ({ id: 'ws-a' }) as any);
 const mockAccountsFindFirst = mock(async () => ({ id: 'acct-1', teamId: 'team-a' }) as any);
 const mockConnectionFindFirst = mock(async () => null as any);
 const mockInsert = mock(() => ({ values: async () => undefined }));
-const mockUpdate = mock(() => ({ set: () => ({ where: async () => undefined }) }));
+let updateSets: any[] = [];
+let tombstoneRows: any[] = [];
+const mockUpdate = mock(() => ({
+  set: (vals: any) => {
+    updateSets.push(vals);
+    const p: any = Promise.resolve(undefined);
+    return { where: () => Object.assign(p, { returning: async () => ('removedByUserId' in vals ? tombstoneRows : []) }) };
+  },
+}));
 const mockDelete = mock(() => ({ where: async () => undefined }));
 const mockInvalidate = mock(() => {});
 
@@ -62,6 +71,7 @@ mock.module('@buildd/core/db', () => ({
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...conditions: any[]) => ({ conditions, type: 'and' }),
+  isNotNull: (field: any) => ({ field, type: 'isNotNull' }),
 }));
 mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id' },
   users: { id: 'id', email: 'email' },
@@ -136,7 +146,7 @@ describe('GET — production', () => {
     expect(mockVerifyWorkspaceAccess).toHaveBeenCalledWith('user-a', 'ws-a');
     // The connection query is filtered to THIS workspace, not merely run after an access check.
     expect(mockConnectionsFindMany).toHaveBeenCalledTimes(1);
-    expect((mockConnectionsFindMany.mock.calls[0] as any[])[0].where).toEqual({
+    expect(capturedWhere((mockConnectionsFindMany.mock.calls[0] as any[])[0].where)).toEqual({
       field: 'workspaceId',
       value: 'ws-a',
       type: 'eq',
@@ -211,6 +221,20 @@ describe('POST / DELETE', () => {
     expect(mockInsert).toHaveBeenCalled();
     expect((await DELETE(del(), params())).status).toBe(200);
     expect(mockDelete).toHaveBeenCalled();
+  });
+
+  // Spec "One runner for every team you run", R-4: an admin's Remove of a
+  // runner's pick leaves a tombstone, so the key's owner cannot undo it
+  // through Edit (lib/runner-picks.ts replaceRunnerPicks).
+  it('production: removing a person-granted pick keeps a tombstone instead of deleting the row', async () => {
+    mockAuth.mockImplementation(async () => ({ user: { id: 'user-a' } }));
+    tombstoneRows = [{ accountId: 'acct-1' }];
+    updateSets = [];
+    mockDelete.mockClear();
+    expect((await DELETE(del(), params())).status).toBe(200);
+    expect(updateSets.at(-1)).toMatchObject({ removedByUserId: 'user-a', canClaim: false, canCreate: false });
+    expect(mockDelete).not.toHaveBeenCalled();
+    tombstoneRows = [];
   });
 
   it('production: a plain team member cannot change connections', async () => {

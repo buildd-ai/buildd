@@ -12,6 +12,7 @@ import { FAILING_CONCLUSIONS, PASSING_CONCLUSIONS, listAllCheckRuns } from '@/li
 import type { LivePr } from './commands';
 import type { GithubFactReader } from './facts';
 import type { BaseDeltaFact } from './base-delta';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 interface GithubPull {
   state?: string;
@@ -21,6 +22,7 @@ interface GithubPull {
   updated_at?: string | null;
   mergeable_state?: string | null;
   draft?: boolean;
+  merged_by?: { login?: string | null } | null;
   head?: { sha?: string; ref?: string; repo?: { full_name?: string } | null };
   base?: { ref?: string };
 }
@@ -40,6 +42,8 @@ export function toLivePr(pr: GithubPull | null | undefined): LivePr | null {
     updatedAt: pr.updated_at ?? null,
     mergeableState: pr.mergeable_state ?? null,
     ...(pr.draft ? { draft: true } : {}),
+    // Who merged it, as GitHub says (§13.13 rule 10: an external merge records its merger).
+    ...(pr.merged_by?.login ? { mergedBy: pr.merged_by.login } : {}),
   };
 }
 
@@ -69,13 +73,32 @@ export function failingNames(rows: Array<{ name?: string | null; conclusion?: st
   return [...new Set(rows.filter((r) => FAILING.has(String(r.conclusion ?? '')) && r.name).map((r) => String(r.name)))];
 }
 
-export function githubReader(installationId: number, api: typeof githubApi = githubApi): GithubFactReader {
+/**
+ * The kernel's GitHub reader. `timeoutMs` bounds every call it makes (an AbortSignal on each
+ * request): a caller with a budget, like the fast heal (kernel-heal.ts), never waits on a slow
+ * GitHub past it. A timed-out read reads as failed (null), like any other failed read.
+ */
+export function githubReader(installationId: number, rawApi: typeof githubApi = githubApi, opts: { timeoutMs?: number } = {}): GithubFactReader {
+  const timeoutMs = opts.timeoutMs;
+  const api: typeof githubApi = timeoutMs
+    ? (id, path, init = {}) => rawApi(id, path, { ...init, signal: AbortSignal.timeout(timeoutMs) })
+    : rawApi;
   return {
     async readPr(repoFullName, prNumber) {
       try {
         return toLivePr(await api(installationId, `/repos/${repoFullName}/pulls/${prNumber}`) as GithubPull);
       } catch (err) {
         console.warn(`[workflow] live read of ${repoFullName}#${prNumber} failed:`, err);
+        return null;
+      }
+    },
+    async statusOf(repoFullName, sha, context) {
+      try {
+        // The combined status lists the latest status per context.
+        const data = await api(installationId, `/repos/${repoFullName}/commits/${sha}/status?per_page=100`) as { statuses?: Array<{ context?: string; state?: string; description?: string | null }> } | null;
+        const st = (data?.statuses ?? []).find((x) => x.context === context);
+        return st?.state ? { state: st.state, description: st.description ?? '' } : null;
+      } catch {
         return null;
       }
     },
@@ -132,6 +155,15 @@ export function githubReader(installationId: number, api: typeof githubApi = git
       } catch {
         return false;
       }
+    },
+    async changedPaths(repoFullName, fromSha, toSha) {
+      const cmp = await api(installationId, `/repos/${repoFullName}/compare/${fromSha}...${toSha}`).catch(() => null) as { files?: unknown } | null;
+      const files = names(cmp?.files);
+      // A list at the compare cap may be cut: unread, not "these and no others".
+      if (!files || files.length >= COMPARE_FILE_LIMIT) return null;
+      // A renamed file counts under its old name too: a finding was anchored on that one.
+      const previous = (cmp!.files as Array<{ previous_filename?: unknown }>).map((f) => f?.previous_filename).filter((n): n is string => typeof n === 'string');
+      return [...new Set([...files, ...previous])];
     },
     async baseDelta(repoFullName, prNumber, headSha, baseRef) {
       return readBaseDelta((path) => api(installationId, path), repoFullName, prNumber, headSha, baseRef);
@@ -190,7 +222,7 @@ export interface WorkspaceRepo {
 
 export async function workspaceRepo(workspaceId: string): Promise<WorkspaceRepo | null> {
   const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, workspaceId),
+    where: sqlWhere(eq(workspaces.id, workspaceId)),
     columns: { id: true, gitConfig: true },
     with: { githubRepo: { columns: { fullName: true }, with: { installation: { columns: { installationId: true } } } } },
   });

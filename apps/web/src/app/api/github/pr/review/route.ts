@@ -27,12 +27,14 @@ import { createReviewerTask, resolvePriorVerdict, type PriorVerdict } from '@/li
 import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
-import { requestReview as requestKernelReview } from '@/lib/workflow/seam';
+import { doorErrorResponse, isDoorError, requestReview as requestKernelReview } from '@/lib/workflow/kernel-client';
+import { kernelPrincipalOf } from '@/lib/workflow/kernel-client';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { isDependencyBotAuthor } from '@/lib/dependency-bot-pr';
 import {
   findPrOwningWorker,
   findReviewTaskForPr,
+  findLiveReviewTaskForPr,
   listWorkspaceRoles,
   resolveOrAdoptPrOwner,
   waitForPrReviewStatus,
@@ -44,6 +46,7 @@ import {
   type PrReviewWaitFor,
 } from '@/lib/pr-review-status';
 import { requestingPerson } from '@/lib/request-person';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 type Account = { id: string; teamId: string; taskScope?: TaskScope; sessionUserId?: string | null } & GrantScopedAccount;
 
@@ -124,16 +127,16 @@ async function resolveTarget(
   if (wsIds.length === 0) return { error: 'No workspaces found for account', status: 403 };
 
   const owning = await db.query.workers.findFirst({
-    where: and(eq(workers.prNumber, prNumber), inArray(workers.workspaceId, wsIds)),
+    where: sqlWhere(and(eq(workers.prNumber, prNumber), inArray(workers.workspaceId, wsIds))),
     columns: { workspaceId: true },
   });
   if (owning?.workspaceId) {
-    const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, owning.workspaceId) });
+    const ws = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, owning.workspaceId)) });
     if (ws) return { workspace: ws as ResolvedTarget['workspace'] };
   }
 
   const linked = await db.query.workspaces.findMany({
-    where: and(inArray(workspaces.id, wsIds), isNotNull(workspaces.githubRepoId)),
+    where: sqlWhere(and(inArray(workspaces.id, wsIds), isNotNull(workspaces.githubRepoId))),
   });
   if (linked.length === 1) return { workspace: linked[0] as ResolvedTarget['workspace'] };
   return {
@@ -150,7 +153,7 @@ async function resolveTarget(
 async function resolveRepo(workspace: ResolvedTarget['workspace']) {
   if (!workspace.githubRepoId || !workspace.githubInstallationId) return null;
   const repo = await db.query.githubRepos.findFirst({
-    where: eq(githubRepos.id, workspace.githubRepoId),
+    where: sqlWhere(eq(githubRepos.id, workspace.githubRepoId)),
     with: { installation: true },
   });
   if (!repo?.installation) return null;
@@ -174,7 +177,7 @@ async function resolveEffectivePolicy(
   missionId: string | null,
 ) {
   const mission = missionId
-    ? await db.query.missions.findFirst({ where: eq(missions.id, missionId), columns: { mergePolicy: true } })
+    ? await db.query.missions.findFirst({ where: sqlWhere(eq(missions.id, missionId)), columns: { mergePolicy: true } })
     : null;
   return resolvePolicy(workspace as never, mission as never);
 }
@@ -245,17 +248,20 @@ export async function POST(req: NextRequest) {
   const kernel = await requestKernelReview({
     workspaceId: workspace.id, repoFullName: repo.fullName, prNumber, installationId: repo.installationId,
     forced: body.force === true, actor: person ? `human:${person}` : `agent:${account.id}`,
-  }).catch((err) => {
+  }, { principal: kernelPrincipalOf({ person, account }) }).catch((err) => {
+    // An unreachable control plane is not a reason to queue a legacy review beside the kernel's.
+    if (isDoorError(err)) return err;
     console.error(`[pr-review] workflow kernel review request failed for PR #${prNumber}:`, err);
     return null;
   });
+  if (isDoorError(kernel)) return doorErrorResponse(kernel) as NextResponse;
   // §8.1: the reviewer that answers is the round's at the live head, never the
   // newest reviewer row of the PR number (§14 Slice A retired that rule here).
   // A reviewTaskId whose row is gone is no review task at all: fall through and
   // queue one rather than report "already under review" with no status.
   const kernelReviewTask = kernel?.handled && kernel.reviewTaskId
     ? (await db.query.tasks.findFirst({
-        where: eq(tasks.id, kernel.reviewTaskId),
+        where: sqlWhere(eq(tasks.id, kernel.reviewTaskId)),
         columns: { id: true, status: true, result: true, context: true },
       })) ?? null
     : null;
@@ -280,10 +286,19 @@ export async function POST(req: NextRequest) {
         .where(eq(tasks.id, latest.id));
     }
     const kernelPolicy = await resolveEffectivePolicy(workspace, null);
+    // 1bd26ae7: never "already under review" with nothing behind it. A round with no reviewer task
+    // yet says so, with the live head it is for; the seam has re-queued its dispatch when every
+    // earlier one finished without filing a reviewer.
+    const noReviewer = !latest
+      ? { state: 'queued' as const, headSha: (pr.head?.sha as string | undefined) ?? null, reason: r.result === 'applied'
+          ? 'a review round is queued at this head; buildd is filing its reviewer now'
+          : `no reviewer task exists for this head yet (${r.reason})` }
+      : null;
     return NextResponse.json({
       ok: true,
       kernel: true,
       alreadyRequested: r.result !== 'applied',
+      ...(noReviewer ? { queued: noReviewer } : {}),
       ...(r.result === 'rejected' && r.reason === 'head_already_reviewed'
         ? { hint: person ? 'this head already has a verdict; pass force to re-review' : 'this head already has a verdict; a new round starts when the PR head moves (a forced re-review is a person\'s call)' }
         : {}),
@@ -465,8 +480,49 @@ export async function POST(req: NextRequest) {
     // This may occur if a concurrent caller (e.g., create_pr's auto-review
     // request and the explicit review request in the same milliseconds) both
     // tried to create a reviewer task for the same PR. The first wins due to
-    // the DB constraint; if the winner was not found by the fallback lookup,
-    // escalate with context for diagnosis.
+    // the DB constraint; if the winner was not found by the fallback lookup
+    // in createReviewerTask, try a broader lookup as a last resort.
+    console.warn(`[pr-review] createReviewerTask returned null for PR #${prNumber}; attempting fallback lookup`);
+
+    // Retry with a live-task-only lookup that doesn't require head SHA match.
+    // This catches cases where the concurrent winner was created just after
+    // our insert failed but before we found it. Only returns pending/assigned/in_progress
+    // tasks — never completed ones from prior heads.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt > 0) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      const fallback = await findLiveReviewTaskForPr(workspace.id, prNumber);
+      if (fallback?.id) {
+        console.log(`[pr-review] Fallback lookup found live reviewer task ${fallback.id} for PR #${prNumber}`);
+        const policy = await resolveEffectivePolicy(workspace, originalTask.missionId);
+        return NextResponse.json(
+          {
+            ok: true,
+            adopted,
+            alreadyRequested: true,
+            prNumber,
+            prUrl: pr.html_url,
+            repoFullName: repo.fullName,
+            workspaceId: workspace.id,
+            taskId: originalTask.id,
+            reviewTaskId: fallback.id,
+            deduplicated: true,
+            reviewerRole: picked.role,
+            reviewerRoleSource: picked.source,
+            autoMergeExpected: autoMergeExpectedFor(policy),
+            callback: callbackUrl ? { url: callbackUrl, on: callbackOn } : null,
+            status: derivePrReviewStatus({
+              reviewTask: fallback as any,
+              worker: ownerWorker ?? null,
+              autoMergeExpected: autoMergeExpectedFor(policy),
+            }),
+          },
+          { status: 200 },
+        );
+      }
+    }
+
     console.error(`[pr-review] Failed to create or find reviewer task for PR #${prNumber} in workspace ${workspace.id}`);
     return bad('Could not create the reviewer task (or find concurrent writer; see logs)', 500);
   }
@@ -563,7 +619,7 @@ export async function GET(req: NextRequest) {
 
   const owningWorker = await findPrOwningWorker(workspace.id, prNumber);
   const task = owningWorker?.taskId
-    ? await db.query.tasks.findFirst({ where: eq(tasks.id, owningWorker.taskId), columns: { missionId: true } })
+    ? await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, owningWorker.taskId)), columns: { missionId: true } })
     : null;
   const policy = await resolveEffectivePolicy(workspace, task?.missionId ?? null);
   const autoMergeExpected = autoMergeExpectedFor(policy);

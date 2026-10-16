@@ -8,7 +8,7 @@ export type BandKey = 'running' | 'waiting' | 'review' | 'merged' | 'released' |
 
 export const BAND_LABEL: Record<BandKey, string> = {
   running: 'Agents running',
-  waiting: 'Needs input',
+  waiting: 'Has a question',
   review: 'In review / CI',
   merged: 'Merged, not released',
   released: 'Released',
@@ -53,12 +53,12 @@ export function formatHours(h: number): string {
 }
 
 export function formatDuration(ms: number | null): string {
-  if (ms == null) return '—';
+  if (ms == null) return '';
   const h = ms / 3_600_000;
   if (h < 48) return formatHours(h);
   return `${(h / 24).toFixed(h < 240 ? 1 : 0)}d`;
 }
 
 export function formatShare(share: number | null): string {
-  return share == null ? '—' : `${Math.round(share * 100)}%`;
+  return share == null ? '' : `${Math.round(share * 100)}%`;
 }

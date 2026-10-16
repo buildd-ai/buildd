@@ -830,7 +830,7 @@ describe('POST /api/workers/[id]/respond', () => {
       mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
     }
 
-    // AC-AQR-9 — same task, same worker, no Continue: child.
+    // AC-9 — same task, same worker, no Continue: child.
     it('resumes the parked session instead of creating a continuation task', async () => {
       authorize();
       mockWorkersFindFirst.mockResolvedValue(parkedWorker());
@@ -904,7 +904,7 @@ describe('POST /api/workers/[id]/respond', () => {
       });
     });
 
-    // AC-AQR-10 — the answer rides the acknowledged instruction queue, which is
+    // AC-10 — the answer rides the acknowledged instruction queue, which is
     // the wiring the runner already drains into resumeSession.
     it('queues the answer on the same worker with an unconfirmed delivery state', async () => {
       authorize();
@@ -932,7 +932,7 @@ describe('POST /api/workers/[id]/respond', () => {
       expect(setValues.pendingInstructions).toContain('Use JWT tokens');
     });
 
-    // AC-AQR-11 — superseding a worker that goes on to finish would hide a real
+    // AC-11 — superseding a worker that goes on to finish would hide a real
     // success or failure behind an analytics exclusion.
     it('does not supersede or complete the resumed worker', async () => {
       authorize();
@@ -959,7 +959,7 @@ describe('POST /api/workers/[id]/respond', () => {
       expect(payload).toMatchObject({ action: 'message', text: 'Use JWT tokens' });
     });
 
-    // AC-AQR-12/13 — the resume path offers no second way past the single-answer guard.
+    // AC-12/13 — the resume path offers no second way past the single-answer guard.
     it('still gates on the question being open, returning 409 to a racing answer', async () => {
       authorize();
       mockWorkersFindFirst.mockResolvedValue(parkedWorker());
@@ -1024,7 +1024,7 @@ describe('POST /api/workers/[id]/respond', () => {
       expect(notesInserted[0].body).toContain('Resumed');
     });
 
-    // AC-AQR-14/15 — a fallback is never silent.
+    // AC-14/15 — a fallback is never silent.
     it.each([
       ['a worker that is no longer parked', { status: 'error' }, 'worker_not_parked'],
       [
@@ -1065,7 +1065,7 @@ describe('POST /api/workers/[id]/respond', () => {
       expect(mockReleaseAndNotify).toHaveBeenCalledWith('task-1', 'abandoned');
     });
 
-    // AC-AQR-23 — the answer is still recorded; the owner is warned separately.
+    // AC-23 — the answer is still recorded; the owner is warned separately.
     it('warns the owner when the backend credential is unhealthy, without dropping the answer', async () => {
       authorize();
       mockPreflight.mockImplementation(async () => ({
@@ -1085,7 +1085,7 @@ describe('POST /api/workers/[id]/respond', () => {
       expect(notesInserted[0].body).toContain('expired');
     });
 
-    // AC-AQR-8 — an account supplying its own key has no managed row.
+    // AC-8 — an account supplying its own key has no managed row.
     it('resumes when no managed credential row exists', async () => {
       authorize();
       mockPreflight.mockImplementation(async () => ({ state: 'unknown' as const }) as any);
@@ -1532,6 +1532,17 @@ describe('POST /api/workers/[id]/respond', () => {
       // can find the answer after the capped queue has evicted it.
       expect(mergedAnswerDelivery(tasksUpdated.at(-1))).toMatchObject({ path: 'interactive', reasonCode: 'interactive_session', workerId: WORKER_ID, messageId: message.id });
       expect(notesInserted.at(-1)?.body).toContain('session that asked');
+    });
+
+    // The wait capability ask_human minted names this ask; the record carries
+    // it so the shell waiter can tell its own answer from a later one's.
+    it('carries the open ask id into the delivery record', async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue(interactiveWorker({
+        waitingFor: { type: 'question', prompt: 'Which authentication method should we use?', waitCapId: 'ask-abc' },
+      }));
+      await POST(createMockRequest({ message: 'JWT' }), { params: mockParams });
+      expect(mergedAnswerDelivery(tasksUpdated.at(-1))).toMatchObject({ path: 'interactive', waitCapId: 'ask-abc' });
     });
 
     // Regression: the record used to be written as { ...context read before

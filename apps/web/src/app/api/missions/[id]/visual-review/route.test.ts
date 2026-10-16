@@ -24,6 +24,8 @@ mock.module('@/lib/team-access', () => ({
 }));
 mock.module('@buildd/core/db', () => ({ db: { query: { missions: { findFirst: mockMissionFindFirst } } } }));
 mock.module('@/lib/visual-review-load', () => ({ loadVisualReview: mockLoadVisualReview }));
+const mockLoadState = mock(async (_id: string) => null as any);
+mock.module('@/lib/workflow/visual-review-state-load', () => ({ getMissionVisualReviewState: mockLoadState }));
 
 const { GET } = await import('./route');
 
@@ -35,7 +37,7 @@ const call = (id = MISSION, key?: string) =>
   GET(new NextRequest(`http://localhost/api/missions/${id}/visual-review`, { headers: key ? { authorization: `Bearer ${key}` } : {} }), { params: Promise.resolve({ id }) });
 
 beforeEach(() => {
-  for (const m of [mockGetCurrentUser, mockAuthenticateApiKey, mockResolveTeamIds, mockVerifyAccountWorkspaceAccess, mockVerifyWorkspaceAccess, mockMissionFindFirst, mockLoadVisualReview]) m.mockClear();
+  for (const m of [mockGetCurrentUser, mockAuthenticateApiKey, mockResolveTeamIds, mockVerifyAccountWorkspaceAccess, mockVerifyWorkspaceAccess, mockMissionFindFirst, mockLoadVisualReview, mockLoadState]) m.mockClear();
   mockGetCurrentUser.mockResolvedValue(null);
   mockAuthenticateApiKey.mockResolvedValue(null);
   mockResolveTeamIds.mockResolvedValue([]);
@@ -78,6 +80,21 @@ describe('GET /api/missions/[id]/visual-review', () => {
     const q = new PgDialect().sqlToQuery(where);
     expect(q.sql).toBe('"missions"."id" = $1');
     expect(q.params).toEqual([MISSION]);
+  });
+
+  it('adds the canonical state line the chat and MCP tools lead with, and survives a failed read', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockResolveTeamIds.mockResolvedValue(['team-a']);
+    mockLoadState.mockResolvedValueOnce({
+      status: 'running', nextActor: 'system', staleEvidence: false, policy: { mode: 'automatic', waiverAllowed: true },
+      progress: { captured: 2, expected: 5 }, branch: { headSha: 'abc1234', base: 'dev', integrationPr: { number: 9, stage: 'open' } },
+    });
+    const body = await (await call()).json();
+    expect(body.state).toMatchObject({ stage: 'verifying', needsYou: false, line: 'Checking screens. Captured 2 of 5 screens.' });
+    mockLoadState.mockRejectedValueOnce(new Error('boom'));
+    const failed = await (await call()).json();
+    expect(failed.state).toBeNull();
+    expect(failed.model.phase).toBe('needs_you');
   });
 
   it('404s a mission of another team, and never loads its shots', async () => {

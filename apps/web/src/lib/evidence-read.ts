@@ -31,6 +31,7 @@ import type { EvidenceKind, EvidenceObjectSummary, EvidenceReadResult } from '@b
 import { and, desc, eq, or } from 'drizzle-orm';
 import { getEvidenceS3Client } from './evidence-backend';
 import { getDefaultStorageClient } from './storage';
+import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const EVIDENCE_KINDS: readonly EvidenceKind[] = ['command_output', 'test_report', 'ci_job_log', 'transcript', 'pr_diff'];
 export const EVIDENCE_READ_CAP_BYTES = 64 * 1024;
@@ -435,7 +436,7 @@ export interface OpenDeps {
 export async function evidenceObjectLocation(row: Pick<EvidenceObjectRow, 'backendId'>):
   Promise<{ client: Pick<S3Client, 'send'>; bucket: string }> {
   if (!row.backendId) return { client: getDefaultStorageClient(), bucket: config.storageBucket };
-  const backend = await db.query.evidenceBackends.findFirst({ where: eq(evidenceBackends.id, row.backendId) });
+  const backend = await db.query.evidenceBackends.findFirst({ where: sqlWhere(eq(evidenceBackends.id, row.backendId)) });
   if (!backend) throw new EvidenceReadError('the storage backend this object was written to no longer exists', 410);
   let client: Pick<S3Client, 'send'>;
   try {
@@ -505,12 +506,12 @@ export async function listTaskEvidenceObjects(
   opts: { kind?: EvidenceKind; limit?: number } = {},
 ): Promise<EvidenceObjectRow[]> {
   const rows = (await db.query.evidenceObjects.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(evidenceObjects.workspaceId, task.workspaceId),
       taskEvidenceLineage(task.id),
       ...(opts.kind ? [eq(evidenceObjects.kind, opts.kind)] : []),
-    ),
-    orderBy: [desc(evidenceObjects.createdAt)],
+    )),
+    orderBy: sqlOrderBy([desc(evidenceObjects.createdAt)]),
     limit: opts.limit ?? 200,
   })) as EvidenceObjectRow[];
   return rows.filter(r => evidenceBelongsToTask(r, task));
@@ -519,11 +520,11 @@ export async function listTaskEvidenceObjects(
 /** One object of the task's lineage, or null when it is not the task's. */
 export async function findTaskEvidenceObject(task: EvidenceTaskScope, evidenceId: string): Promise<EvidenceObjectRow | null> {
   const row = (await db.query.evidenceObjects.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(evidenceObjects.id, evidenceId),
       eq(evidenceObjects.workspaceId, task.workspaceId),
       taskEvidenceLineage(task.id),
-    ),
+    )),
   })) as EvidenceObjectRow | undefined;
   return row && row.id === evidenceId && evidenceBelongsToTask(row, task) ? row : null;
 }
@@ -550,12 +551,12 @@ export async function listScoutRunEvidenceObjects(
   opts: { kind?: EvidenceKind; limit?: number } = {},
 ): Promise<EvidenceObjectRow[]> {
   const rows = (await db.query.evidenceObjects.findMany({
-    where: and(
+    where: sqlWhere(and(
       eq(evidenceObjects.workspaceId, run.workspaceId),
       eq(evidenceObjects.scoutRunId, run.id),
       ...(opts.kind ? [eq(evidenceObjects.kind, opts.kind)] : []),
-    ),
-    orderBy: [desc(evidenceObjects.createdAt)],
+    )),
+    orderBy: sqlOrderBy([desc(evidenceObjects.createdAt)]),
     limit: opts.limit ?? 200,
   })) as EvidenceObjectRow[];
   return rows.filter(r => evidenceBelongsToScoutRun(r, run));
@@ -564,11 +565,11 @@ export async function listScoutRunEvidenceObjects(
 /** One object of the Scout run, or null when it is not the run's. */
 export async function findScoutRunEvidenceObject(run: EvidenceScoutRunScope, evidenceId: string): Promise<EvidenceObjectRow | null> {
   const row = (await db.query.evidenceObjects.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(evidenceObjects.id, evidenceId),
       eq(evidenceObjects.workspaceId, run.workspaceId),
       eq(evidenceObjects.scoutRunId, run.id),
-    ),
+    )),
   })) as EvidenceObjectRow | undefined;
   return row && row.id === evidenceId && evidenceBelongsToScoutRun(row, run) ? row : null;
 }

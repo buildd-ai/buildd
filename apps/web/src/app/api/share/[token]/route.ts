@@ -3,6 +3,7 @@ import { db } from '@buildd/core/db';
 import { artifacts } from '@buildd/core/db/schema';
 import { and, eq } from 'drizzle-orm';
 import { trackEvent } from '@/lib/axiom';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // GET /api/share/[token] - Public artifact access via share token
 export async function GET(
@@ -16,7 +17,7 @@ export async function GET(
   }
 
   const artifact = await db.query.artifacts.findFirst({
-    where: and(eq(artifacts.shareToken, token), eq(artifacts.visibility, 'public')),
+    where: sqlWhere(and(eq(artifacts.shareToken, token), eq(artifacts.visibility, 'public'))),
     with: {
       worker: {
         with: {

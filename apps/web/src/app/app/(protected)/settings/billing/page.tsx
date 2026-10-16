@@ -20,6 +20,7 @@ import { ManageBillingButton, SeatsForm, UpgradeButton } from './BillingActions'
 import CapsForm from './CapsForm';
 import { timeZoneLabel } from './timezone-label';
 import { MySpend, PeopleSpend } from './SpendTables';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 export const dynamic = 'force-dynamic';
 
@@ -54,11 +55,11 @@ export default async function BillingSettingsPage({
 
   const [teamRow, members, usage] = await Promise.all([
     db.query.teams.findFirst({
-      where: eq(teams.id, currentTeam.id),
+      where: sqlWhere(eq(teams.id, currentTeam.id)),
       columns: { ...BILLING_TEAM_COLUMNS, timezone: true, inferenceKeyPolicy: true, credentialPolicy: true },
     }).catch(() => null),
     db.query.teamMembers.findMany({
-      where: eq(teamMembers.teamId, currentTeam.id),
+      where: sqlWhere(eq(teamMembers.teamId, currentTeam.id)),
       with: { user: { columns: { id: true, name: true, email: true } } },
     }).catch(() => [] as Array<{ userId: string; user: { name: string | null; email: string | null } | null }>),
     billing ? teamSeatUsage(currentTeam.id).catch(() => ({ members: 0, pending: 0 })) : null,
@@ -90,13 +91,13 @@ export default async function BillingSettingsPage({
 
       {billing && (teamRow && usage
         ? <PlanSections view={billingView(teamRow, usage)} teamId={currentTeam.id} canManage={canManageBilling} />
-        : <p className="text-sm text-text-secondary">Could not load billing.</p>)}
+        : <p className="text-sm text-text-secondary">Couldn&apos;t load billing.</p>)}
 
       <Section
         title="Your spend"
         action={<span className="text-xs text-text-muted">{timeZoneLabel(timeZone)}</span>}
       >
-        {spend ? <MySpend me={spend.me} /> : <p className="text-sm text-text-secondary">Could not load spend.</p>}
+        {spend ? <MySpend me={spend.me} /> : <p className="text-sm text-text-secondary">Couldn&apos;t load spend.</p>}
       </Section>
 
       {perms.view_team_usage && spend && spend.people.length > 1 && (
@@ -167,7 +168,7 @@ function PlanSections({ view, teamId, canManage }: {
                 </ul>
                 {canManage && (
                   plan === 'pro' && view.proBlocked
-                    ? <p className="text-meta text-text-muted">For one person. This team has more.</p>
+                    ? <p className="text-meta text-text-muted">Pro is for one member. This team has more.</p>
                     : <UpgradeButton teamId={teamId} plan={plan} seats={plan === 'team' ? view.used : undefined} primary={plan === 'team'} />
                 )}
               </li>

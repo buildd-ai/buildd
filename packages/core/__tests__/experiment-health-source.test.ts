@@ -1,5 +1,6 @@
 import { describe, it, expect, mock } from 'bun:test';
 import { QueryBuilder } from 'drizzle-orm/pg-core';
+import { normaliseSqlGrouping } from '../db/sql-grouping';
 
 /**
  * The health check's queries rendered to real SQL (same technique as
@@ -12,7 +13,7 @@ mock.module('../db/client', () => ({
 
 const src = await import('../experiment-health-source');
 
-const norm = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
+const norm = (s: string) => normaliseSqlGrouping(s.replace(/\s+/g, ' ').trim().toLowerCase());
 const EXP_ID = '5b0f6c1e-0000-4000-8000-00000000000c';
 
 describe('experiment health queries', () => {

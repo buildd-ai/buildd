@@ -6,6 +6,7 @@ import { workers } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { callerOwnsWorker } from '@/lib/worker-owner';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // POST /api/workers/[id]/activity - Report tool usage from Claude Code hooks
 // This allows MCP workers to get automatic visibility via hooks
@@ -29,7 +30,7 @@ export async function POST(
   }
 
   const worker = await db.query.workers.findFirst({
-    where: eq(workers.id, id),
+    where: sqlWhere(eq(workers.id, id)),
     with: { workspace: { columns: { teamId: true } } },
   });
 

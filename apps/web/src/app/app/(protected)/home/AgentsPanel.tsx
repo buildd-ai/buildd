@@ -60,7 +60,7 @@ export function AgentsPanel({ model, occupancy, idle = [], idPrefix = 'home' }: 
                   {l.mission && <span className="block truncate text-meta text-text-muted">{l.mission}</span>}
                 </span>
                 <span className="shrink-0 font-mono text-meta tabular-nums text-text-muted">
-                  {l.waiting && <span className="text-accent-text">needs you{l.elapsedMs != null ? ' · ' : ''}</span>}
+                  {l.waiting && <span className="text-accent-text">waiting on you{l.elapsedMs != null ? ' · ' : ''}</span>}
                   {l.elapsedMs != null ? elapsedLabel(l.elapsedMs) : ''}
                 </span>
               </>
@@ -75,7 +75,7 @@ export function AgentsPanel({ model, occupancy, idle = [], idPrefix = 'home' }: 
           })}
         </ul>
       )}
-      {model.total > 0 && model.lines.length === 0 && <p className="mt-3 text-meta text-text-muted">Every slot is free.</p>}
+      {model.total > 0 && model.lines.length === 0 && <p className="mt-3 text-meta text-text-muted">No agents running.</p>}
     </section>
   );
 }

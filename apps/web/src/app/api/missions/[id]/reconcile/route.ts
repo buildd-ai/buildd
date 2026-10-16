@@ -8,6 +8,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { importMissionPrFacts } from '@/lib/pr-fact-import';
 import { isUuid } from '@/lib/uuid';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * POST /api/missions/[id]/reconcile
@@ -37,7 +38,7 @@ export async function POST(
   try {
     const teamIds = await resolveAccountTeamIds(user, apiAccount);
     const mission = await db.query.missions.findFirst({
-      where: eq(missions.id, id),
+      where: sqlWhere(eq(missions.id, id)),
       columns: { id: true, teamId: true, workspaceId: true },
     });
     if (!mission) {

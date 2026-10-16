@@ -7,6 +7,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { githubApi, isGitHubAppConfigured } from '@/lib/github';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * POST /api/workspaces/[id]/create-repo
@@ -44,7 +45,7 @@ export async function POST(
   // workspace's GitHub installation needs an admin-level key.
   if (apiAccount) {
     const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, id),
+      where: sqlWhere(eq(workspaces.id, id)),
       columns: { teamId: true },
     });
     if (!ws || ws.teamId !== apiAccount.teamId) {
@@ -65,7 +66,7 @@ export async function POST(
 
     // Look up the workspace and its GitHub installation
     const workspace = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, id),
+      where: sqlWhere(eq(workspaces.id, id)),
       with: {
         githubInstallation: true,
       },
@@ -87,7 +88,7 @@ export async function POST(
       let installation = null;
       if (org) {
         installation = await db.query.githubInstallations.findFirst({
-          where: eq(githubInstallations.accountLogin, org),
+          where: sqlWhere(eq(githubInstallations.accountLogin, org)),
         });
       }
 

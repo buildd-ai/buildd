@@ -28,7 +28,7 @@ import { getUserWorkspaceIds } from '@/lib/team-access';
 import { githubApi } from '@/lib/github';
 import { resolveOrAdoptPrOwner } from '@/lib/pr-review-request';
 import { checkPrIsDraft, fetchCIFailureLogs } from '@/lib/ci-failure-inspect';
-import { requestCiRetry } from '@/lib/workflow/seam';
+import { doorErrorResponse, isDoorError, requestCiRetry } from '@/lib/workflow/kernel-client';
 import { isSchemaDriftFailure, buildDriftDiagnoseTask } from '@/lib/ci-drift-diagnose';
 import { buildCIRetryTask } from '@/lib/ci-retry';
 import { policyValue } from '@/lib/policy-overrides';
@@ -38,6 +38,7 @@ import { inheritAttemptIdentity } from '@/lib/attempt-identity';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { dependencyBotPushRefusal, isDependencyBotAuthor } from '@/lib/dependency-bot-pr';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
+import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
 
 function bad(error: string, status: number, extra: Record<string, unknown> = {}) {
   return NextResponse.json({ error, ...extra }, { status });
@@ -63,14 +64,14 @@ export async function POST(
     return bad('Workspace not found or not accessible', 403);
   }
 
-  const workspace = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId) });
+  const workspace = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, workspaceId)) });
   if (!workspace) return bad('Workspace not found', 404);
   if (!workspace.githubRepoId || !workspace.githubInstallationId) {
     return bad('Workspace is not linked to a GitHub repo', 400);
   }
 
   const repo = await db.query.githubRepos.findFirst({
-    where: eq(githubRepos.id, workspace.githubRepoId),
+    where: sqlWhere(eq(githubRepos.id, workspace.githubRepoId)),
     with: { installation: true },
   });
   if (!repo?.installation) return bad('Workspace is not linked to a GitHub repo', 400);
@@ -82,14 +83,14 @@ export async function POST(
   // to context.prNumber, same field the CI-retry and drift-diagnose tasks
   // both carry, and the same field Home's ciAttemptMap reads.
   const inFlight = await db.query.tasks.findFirst({
-    where: and(
+    where: sqlWhere(and(
       eq(tasks.workspaceId, workspaceId),
       eq(tasks.taskClass, 'attempt'),
       inArray(tasks.status, [...LIVE_TASK_STATUSES]),
       sql`(${tasks.context}->>'prNumber')::int = ${prNumber}`,
-    ),
+    )),
     columns: { id: true, outputRequirement: true },
-    orderBy: (t, { desc }) => [desc(t.createdAt)],
+    orderBy: sqlOrderByFn((t, { desc }) => [desc(t.createdAt)]),
   });
   if (inFlight) {
     return NextResponse.json({
@@ -148,7 +149,8 @@ export async function POST(
     actor: `human:${user.id}`,
     maxAttempts: typeof configuredMax === 'number' ? configuredMax : policyValue('maxCiRetries'),
     reason: typeof body?.reason === 'string' && body.reason.trim() ? body.reason.trim() : 'Fix CI from the dashboard',
-  });
+  }, { principal: { kind: 'user', id: user.id } }).catch((err: unknown) => (isDoorError(err) ? err : Promise.reject(err)));
+  if (isDoorError(kernel)) return doorErrorResponse(kernel) as NextResponse;
   if (kernel.handled) {
     const r = kernel.result;
     if (r.result === 'applied' && r.decision.toState === 'REPAIRING') {
@@ -175,7 +177,7 @@ export async function POST(
     `CI failing on ${repoFullName} PR #${prNumber} (SHA: ${headSha})`;
 
   // Both the diagnose task and the fix attempt below re-attempt the PR's owner
-  // task, so they carry its backend, role, routing kind and phase (Rule P1-7).
+  // task, so they carry its backend, role, routing kind and phase (mission-legibility R-7).
   // An adopted owner has no role, so neither does its attempt.
   const identity = await inheritAttemptIdentity(originalTask.id);
 

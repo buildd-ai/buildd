@@ -10,9 +10,9 @@ interface Role {
 }
 
 const TIER_LABEL: Record<MergePolicyTier, string> = {
-  'auto-threshold': 'Auto-Threshold',
-  'agent-review': 'Agent Review',
-  'human': 'Human Gate',
+  'auto-threshold': 'Auto-merge',
+  'agent-review': 'Agent reviews',
+  'human': 'You approve',
 };
 
 const TIER_CLASS: Record<MergePolicyTier, string> = {

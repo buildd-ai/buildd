@@ -7,6 +7,7 @@ import { getBudgetForecast } from '@/lib/budget-forecast';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getTeamWorkspaceIds, resolveActiveTeamId } from '@/lib/team-access';
 import { resolveSessionTeamIds } from '@/lib/session-team-scope';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -59,7 +60,7 @@ export async function GET(req: NextRequest) {
       }
       // Validate the workspace belongs to the account's team
       const ws = await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, workspaceId),
+        where: sqlWhere(eq(workspaces.id, workspaceId)),
         columns: { id: true, teamId: true },
       });
       if (!ws || ws.teamId !== account.teamId) {
@@ -69,7 +70,7 @@ export async function GET(req: NextRequest) {
     } else {
       // All workspaces in the team
       const wsRows = await db.query.workspaces.findMany({
-        where: eq(workspaces.teamId, account.teamId),
+        where: sqlWhere(eq(workspaces.teamId, account.teamId)),
         columns: { id: true },
       });
       scopedWsIds = wsRows.map(w => w.id);
@@ -110,7 +111,7 @@ async function sessionForecast(req: NextRequest, userId: string) {
       );
     }
     const ws = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, workspaceId),
+      where: sqlWhere(eq(workspaces.id, workspaceId)),
       columns: { id: true, teamId: true },
     });
     if (!ws || !teamIds.includes(ws.teamId)) {

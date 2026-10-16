@@ -10,6 +10,7 @@ import { verifyAccountWorkspaceAccess, holdsInWorkspace } from '@/lib/team-acces
 import { REASSIGNED_WORKER_ERROR } from '@/lib/worker-termination';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { RUNNER_RECENTLY_SEEN_MS } from '@buildd/shared';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 /**
  * POST /api/tasks/[id]/reassign
@@ -56,7 +57,7 @@ export async function POST(
   try {
     // Get the task
     const task = await db.query.tasks.findFirst({
-      where: eq(tasks.id, taskId),
+      where: sqlWhere(eq(tasks.id, taskId)),
       with: { workspace: true },
     });
 
@@ -111,10 +112,10 @@ export async function POST(
 
       // Get active workers before updating
       const activeWorkers = await db.query.workers.findMany({
-        where: and(
+        where: sqlWhere(and(
           eq(workers.taskId, taskId),
           inArray(workers.status, ['running', 'starting', 'waiting_input', 'idle'])
-        ),
+        )),
       });
 
       // Mark all active workers as failed

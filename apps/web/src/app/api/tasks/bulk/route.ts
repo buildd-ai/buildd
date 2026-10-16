@@ -10,6 +10,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserWorkspaceIds, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { applyTaskCancelSideEffects } from '@/lib/task-cancel';
+import { sqlWhere } from '@buildd/core/db/relational-sql';
 
 // TERMINAL_TASK_STATUSES: @buildd/shared.
 const SIDE_EFFECT_BATCH = 10;
@@ -136,7 +137,7 @@ export async function POST(req: NextRequest) {
 
   // Find matching tasks
   const matchingTasks = await db.query.tasks.findMany({
-    where: whereClause,
+    where: sqlWhere(whereClause),
     columns: { id: true, status: true },
     limit: 1000, // Safety cap
   });

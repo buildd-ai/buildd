@@ -11,14 +11,15 @@ import { AUTOMATIC, loneProviderLine, usedForView } from './providers-view';
  * there is nothing to choose: one line says what it is used for. With two or
  * more, one picker per surface (`teams.provider_assignments`, PATCH
  * /api/providers/assignments); an option a surface cannot use is disabled with
- * what it needs. `decisions` is the decision model row, `extra` the Claude /
- * Codex switch, both drawn only in the table.
+ * what it needs. `decisions` is the decision model row (a platform operator's
+ * only; absent for everyone else), `extra` the Claude / Codex switch, both
+ * drawn only in the table.
  */
 export default function UsedForSection({ teamId, data, canManage, decisions, extra }: {
   teamId: string;
   data: ListProvidersResponse;
   canManage: boolean;
-  decisions: ReactNode;
+  decisions?: ReactNode;
   extra?: ReactNode;
 }) {
   const [assignments, setAssignments] = useState<ProviderAssignmentsResponse['assignments'] | null>(null);
@@ -62,8 +63,8 @@ export default function UsedForSection({ teamId, data, canManage, decisions, ext
       <dl className="border-y border-border-default divide-y divide-border-default" data-testid="used-for">
         {rows.map((r) => (
           <div key={r.surface} className="flex flex-wrap items-center gap-x-4 gap-y-1.5 py-2 min-h-12" data-testid={`used-for-${r.surface}`}>
-            <dt className="w-36 shrink-0 text-body text-text-primary">{r.label}</dt>
-            <dd className="min-w-0 flex-1 sm:max-w-72">
+            <dt className="w-full sm:w-36 shrink-0 text-body text-text-primary">{r.label}</dt>
+            <dd className="w-full min-w-0 sm:w-auto sm:flex-1 sm:max-w-72">
               <Select
                 value={r.value ?? AUTOMATIC}
                 onChange={(v) => { void pick(r.surface, v); }}
@@ -76,7 +77,7 @@ export default function UsedForSection({ teamId, data, canManage, decisions, ext
             </dd>
           </div>
         ))}
-        <div className="py-2" data-testid="used-for-decisions">{decisions}</div>
+        {decisions && <div className="py-2" data-testid="used-for-decisions">{decisions}</div>}
       </dl>
       {err && <p role="alert" className="text-meta text-status-error mt-2">{err}</p>}
       {extra && <div className="mt-4">{extra}</div>}

@@ -20,13 +20,13 @@ export default function DeleteWorkspaceButton({ workspaceId, workspaceName }: { 
 
       if (!res.ok) {
         const err = await res.json();
-        throw new Error(err.error || 'Failed to delete');
+        throw new Error(err.error || 'Could not delete. Try again.');
       }
 
       router.push('/app/settings/workspaces');
       router.refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete workspace');
+      setError(err instanceof Error ? err.message : 'Could not delete. Try again.');
       setDeleting(false);
     }
   }
