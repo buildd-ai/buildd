@@ -633,6 +633,19 @@ describe('POST /api/github/pr/review — idempotency', () => {
       expect(body.hint).toContain('person');
     });
 
+    // 2ded4e88: a spent review budget is a person's. The hint names where they act, not `force`: an
+    // interactive session would just retry with it.
+    it('a request on a spent review budget is a 409 that sends a person to the PR\'s page', async () => {
+      mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'rejected', reason: 'review_budget_spent', current } });
+      const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.code).toBe('review_budget_spent');
+      expect(body.hint).toContain('a person can request one more review from the PR\'s page');
+      expect(body.hint).not.toContain('force');
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+    });
+
     it('a request the table refuses is a 409 with the current view', async () => {
       mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'rejected', reason: 'state_not_allowed', current } });
       const res = await POST(post({ prNumber: 42, workspaceId: 'buildd' }));
@@ -723,6 +736,28 @@ describe('POST /api/github/pr/review — idempotency', () => {
     expect(res.status).toBe(201);
     expect(mockCarryForward).not.toHaveBeenCalled();
     expect(mockCreateReviewerTask).toHaveBeenCalledTimes(1);
+  });
+
+  // 2ded4e88: the round budget is the PR's. Spent, force at a moved head does not file a reviewer from
+  // a key or a session; the person asks from the PR's page (the dashboard re-review).
+  it.each([
+    ['an API key', {}],
+    ['an OAuth session', { sessionUserId: 'user-7' }],
+  ])('force on a spent review budget is refused for %s, even at a moved head', async (_label, extra) => {
+    mockAuthenticateApiKey.mockReturnValue({ ...ACCOUNT, ...extra });
+    mockFindReviewTaskForPr.mockReturnValue({
+      id: 'review-task-3',
+      status: 'completed',
+      result: { structuredOutput: { verdict: 'request-changes', confidence: 0.9, summary: 'still no' } },
+      context: { prNumber: 42, headSha: 'old-sha', iteration: 3, maxIterations: 3 },
+    });
+
+    const res = await POST(post({ prNumber: 42, workspaceId: 'buildd', force: true }));
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe('review_budget_spent');
+    expect(body.hint).toContain('PR\'s page');
+    expect(mockCreateReviewerTask).not.toHaveBeenCalled();
   });
 
   it('force at the head the verdict already covers is refused for an API key', async () => {
