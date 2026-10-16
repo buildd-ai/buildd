@@ -633,10 +633,12 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
                 repoFullName: repository.full_name,
                 prNumber: pr.number,
                 headSha: pr.head.sha,
+                baseRef: pr.base.ref,
                 workerId: worker.id,
                 taskId: worker.taskId,
                 workspaceId: workspace.id,
                 installationId: installation.id,
+                confidenceThreshold: policy.agentReview?.maxConfidenceThreshold,
               });
               console.log(`Requested agent review for PR #${pr.number} on ${repository.full_name} (CI green, review not previously requested)`);
             }

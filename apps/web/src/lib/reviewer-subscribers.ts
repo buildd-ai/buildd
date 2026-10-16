@@ -642,6 +642,7 @@ export const reviewerSubscribers: readonly AnySubscriber[] = [
       reviewerRole,
       installationId: e.installationId,
       repoFullName: e.repoFullName,
+      confidenceThreshold: e.confidenceThreshold,
     }).catch((err) => {
       console.error(`[reviewer] Failed to create reviewer task for PR #${e.prNumber} on CI green:`, err);
       return null;

@@ -359,10 +359,12 @@ export type CoreEvent =
       repoFullName: string;
       prNumber: number;
       headSha: string;
+      baseRef: string | null;
       installationId: number;
       workspaceId: string;
       workerId: string;
       taskId: string;
+      confidenceThreshold?: number;
     }
   /**
    * A push (`synchronize`) to an open PR a buildd worker owns: every delivery,
