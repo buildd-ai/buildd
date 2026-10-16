@@ -4,7 +4,7 @@
  * Pure, so every key is unit-tested (top-keys.test.ts).
  */
 import {
-  currentMission, currentTeam, heldNow, holdRunningWords, currentWorkspace, cycleTeam, cycleWorkspace, missionRows, scopedWorkspaces, selectedRow, taskRows, teamCount, teamList, workspaceList,
+  currentMission, currentTeam, foldKey, heldNow, holdRunningWords, currentWorkspace, cycleTeam, cycleWorkspace, missionList, scopedWorkspaces, selectedRow, taskRows, teamCount, teamList, workspaceList,
   type TaskRow, type TopState,
 } from './state';
 import { queueRowList, selectedQueueRow } from './queue';
@@ -176,10 +176,33 @@ function targetRow(state: TopState, now: number): TaskRow | null {
 }
 
 function moveMission(state: TopState, delta: number, now: number): TopState {
-  const rows = missionRows(state, now);
+  const rows = missionList(state, now);
   const cur = rows.findIndex(r => r.key === currentMission(state, now).key);
   const idx = Math.max(0, Math.min(rows.length - 1, cur + delta));
   return { ...state, missionCursor: idx, selectedMission: rows[idx].key, rowCursor: 0 };
+}
+
+/**
+ * Enter in the missions pane (R-24): on a fold row, open or close it; on a
+ * delivered mission listed under an open fold, close that fold and go back to
+ * its row. Null: not a fold matter.
+ */
+function toggleFold(state: TopState, now: number): TopState | null {
+  if (state.filter) return null;
+  const cur = currentMission(state, now);
+  if (cur.fold) {
+    const unfolded = cur.fold.open ? state.unfolded.filter(k => k !== cur.key) : [...state.unfolded, cur.key];
+    return { ...state, unfolded, selectedMission: cur.key, rowCursor: 0 };
+  }
+  if (cur.deliveredAt !== undefined) return foldAll(state, now);
+  return null;
+}
+
+/** Esc (R-24): close every open fold; a selected delivered mission hands the cursor to its fold row. */
+function foldAll(state: TopState, now: number): TopState {
+  const cur = currentMission(state, now);
+  const selectedMission = cur.deliveredAt !== undefined ? foldKey(cur.team) : state.selectedMission;
+  return { ...state, unfolded: [], selectedMission, rowCursor: 0 };
 }
 
 function moveRow(state: TopState, delta: number, now: number): TopState {
@@ -278,6 +301,10 @@ export function handleKey(state: TopState, key: Key, now: number): KeyResult {
   if (key.name === 'escape') {
     if (mode.kind === 'detail') return { state: { ...state, mode: { kind: 'list' }, status: null }, effects: [] };
     if (state.filter) return { state: { ...state, filter: '', rowCursor: 0, status: null }, effects: [] };
+    const anyOpen = state.unfolded.length > 0 || currentMission(state, now).deliveredAt !== undefined;
+    if (mode.kind === 'list' && state.view === 'missions' && anyOpen) {
+      return { state: { ...foldAll(state, now), status: null }, effects: [] };
+    }
     return { state: { ...state, status: null }, effects: [] };
   }
   // `h` (R-33): hold or resume, no confirmation, from any list or detail view.
@@ -311,7 +338,11 @@ export function handleKey(state: TopState, key: Key, now: number): KeyResult {
       // R-26: Tab switches Missions <-> Queue; ← → still move between the panes.
       return { state: { ...cleared, view: 'queue', queueCursor: 0 }, effects: [{ type: 'refreshQueue' }] };
     case 'enter': {
-      if (state.focus === 'missions') return { state: { ...cleared, focus: 'tasks', rowCursor: 0 }, effects: [] };
+      if (state.focus === 'missions') {
+        const folded = toggleFold(cleared, now);
+        if (folded) return { state: folded, effects: [] };
+        return { state: { ...cleared, focus: 'tasks', rowCursor: 0 }, effects: [] };
+      }
       const row = selectedRow(state, now);
       if (!row) return { state, effects: [] };
       return { state: { ...cleared, mode: { kind: 'detail', taskId: row.taskId } }, effects: [] };
