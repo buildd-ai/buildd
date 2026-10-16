@@ -8,6 +8,13 @@ import { BuilddClient } from './buildd';
 import type { Outbox } from './outbox';
 import { isServerRefusal, type ServerRefusalError } from './server-refusal';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
+
+/**
+ * The claim's freshness bar for the repo-scan snapshot (workspace.ts): a repo
+ * cloned by hand a minute ago is still found. Local, not imported: many unit
+ * tests stub ./workspace with only the resolver factory.
+ */
+const CLAIM_REPO_SCAN_MAX_AGE_MS = 60 * 1000;
 import { branchOfRemoteRef, cloneThrottledRecently, ensureRemoteBranch, isCloudExecutor } from './git-clone';
 import { DepsJob, createDepsGateHook, depsPrelude, DEPS_GATE_HOOK_TIMEOUT_S, type DepsGateStats } from './deps-gate';
 import { captureDependencyManifest, DEPENDENCY_MANIFEST_FILENAME } from './dependency-manifest';
@@ -50,6 +57,7 @@ import {
   authContextOf,
   classifyClaimError,
   isAuthError,
+  NO_MODEL_AUTH_PAUSE,
   nextContextWake,
   pausedContextFor,
   ContextBreaker,
@@ -92,7 +100,7 @@ import { archiveSession } from './history-store';
 import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
 import { applyModelEnv, endpointSessionModels, shouldUseClaudeCredential, TRUSTED_MODEL_BASE_URL_ENV } from './agent-model-env';
 import { resolveModelAuthSource, stripInheritedApiKeys } from './model-auth-source';
-import { applyHostSeatPolicy, decideCodexSeat, describeCodexAuthSource, describeHostSeat, describeModelAuthSource, detectCodexAuthSource, detectModelAuthSource, type CodexAuthSource, hostModelCredentialValues, hostSeatMode, localCodexAuthPath, type ModelAuthReport } from './host-seat';
+import { applyHostSeatPolicy, claudeModelAuthMissing, decideCodexSeat, describeCodexAuthSource, describeHostSeat, describeModelAuthSource, detectCodexAuthSource, detectModelAuthSource, type CodexAuthSource, hostModelCredentialValues, hostSeatMode, localCodexAuthPath, type ModelAuthReport } from './host-seat';
 import { bundledTierEntry } from '@buildd/core/model-tier-defaults';
 import type { WorkerEnvironment, ClaimDiagnostics, ClaimModelEndpoint, ClaimCredentialDecision } from '@buildd/shared';
 import { withFleetIdentity } from './fleet-identity';
@@ -219,6 +227,16 @@ export function __resetBwrapSupportForTest(): void {
   _bwrapSupported = null;
   _bwrapProbeAt = null;
   _mountIsolationBwrapSupported = null;
+}
+// The pre-spawn model-auth check (host-seat.ts claudeModelAuthMissing).
+let _modelAuthPreflight: typeof claudeModelAuthMissing = claudeModelAuthMissing;
+/**
+ * Test-only: replace the pre-spawn model-auth check; null restores it. For
+ * harnesses that spawn a mocked SDK session with no model credential, where
+ * the real check would refuse every run on a machine without a Claude login.
+ */
+export function __setModelAuthPreflightForTest(fn: typeof claudeModelAuthMissing | null): void {
+  _modelAuthPreflight = fn ?? claudeModelAuthMissing;
 }
 /** ISO timestamp of the last bwrap probe, or null if not yet probed. */
 export function getBwrapProbeAt(): string | null { return _bwrapProbeAt; }
@@ -944,6 +962,7 @@ export class WorkerManager {
     this.knowledgeIngestPoller = createKnowledgeIngestPoller({
       builddServer: config.builddServer,
       apiKey: config.apiKey,
+      // Async, TTL-cached (workspace.ts REPO_SCAN_TTL_MS): an idle poll no longer rescans every repo.
       scanRepos: () => this.resolver.scanGitRepos(),
     });
 
@@ -952,7 +971,9 @@ export class WorkerManager {
     this.scoutHostPoller = createScoutHostPoller({
       builddServer: config.builddServer,
       apiKey: config.apiKey,
-      scanRepos: () => this.resolver.scanGitRepos(),
+      // The heartbeat's Scout advert is sync and runs every beat: serve the last
+      // scan (refreshed in the background past its TTL), never a fresh one.
+      scanRepos: () => this.resolver.cachedGitRepos?.() ?? [],
       bwrapSupported: isMountIsolationBwrapSupported,
       // Busy = any worker that holds a slot, including one waiting for input.
       isBusy: () => Array.from(this.workers.values()).some(
@@ -1817,6 +1838,11 @@ export class WorkerManager {
   > {
     const task: BuilddTask | undefined = claimedWorker.task || fallbackTask;
     if (!task) return { kind: 'no_task' };
+
+    // resolve() is sync and matches against the repo-scan snapshot: bring that
+    // up to date here, async, so the claim never scans synchronously (one git
+    // child per directory under the project roots) on the event loop.
+    try { await this.resolver.warmGitCache?.({ maxAgeMs: CLAIM_REPO_SCAN_MAX_AGE_MS }); } catch { /* resolve() falls back */ }
 
     const workspacePath = this.resolver.resolve(
       {
@@ -2886,6 +2912,9 @@ export class WorkerManager {
     // (e.g. --session-id + --resume without --fork-session). This is an infra
     // failure — must not consume a task retry attempt.
     const isSteeringDeliveryCrash = stderrCollector.isSteeringDeliveryCrash;
+    // Refused before spawn for want of any model credential: the machine's
+    // setup, not the task. The server requeues it as an infra failure.
+    const isModelAuthMissing = (error as { modelAuthMissing?: unknown })?.modelAuthMissing === true;
     // Flush buffered CLI stderr into error traces so get_error_traces surfaces
     // them. Idempotent — a no-op when the eager stderr-callback flush already
     // staged this text and nothing new arrived since.
@@ -2907,7 +2936,7 @@ export class WorkerManager {
       ? closingTurnOutcome
       : isBudgetError ? ('skipped:rate_limit' as const)
       : isSessionBudgetCap ? ('skipped:session_budget_capped' as const)
-      : isSteeringDeliveryCrash ? ('skipped:infra_failure' as const)
+      : isSteeringDeliveryCrash || isModelAuthMissing ? ('skipped:infra_failure' as const)
       : closingTurnOutcome;
     // A usage/session-limit death leaves the agent's whole session in the
     // worktree, usually uncommitted. Save it before anything can remove the
@@ -2941,6 +2970,7 @@ export class WorkerManager {
       ...(isBudgetError && { budgetExhausted: true }),
       ...(isSessionBudgetCap && { sessionBudgetCapped: true }),
       ...(isSteeringDeliveryCrash && { steeringDelivery: true }),
+      ...(isModelAuthMissing && { modelAuthMissing: true }),
       ...(modelRejection && {
         unrecognizedModel: true,
         ...(modelRejection.model ? { rejectedModel: modelRejection.model } : {}),
@@ -3824,6 +3854,20 @@ export class WorkerManager {
       // if no endpoint had been configured.
       if (modelEnv.error) {
         throw new Error(modelEnv.error);
+      }
+      // Preflight (model credentials spec R-5): a Claude run headed for
+      // Anthropic with no login and no key would only die inside the run on
+      // Claude's own auth error. Refuse it here, flagged so the server hands
+      // the task back to the queue and the breaker does not read it by text.
+      const missingModelAuth = _modelAuthPreflight({
+        isCodexTask,
+        modelEnv,
+        env: cleanEnv,
+        claudeCredentialUsed: shouldUseClaudeCredential(modelEnv, worker),
+      });
+      worker.modelAuthMissing = !!missingModelAuth;
+      if (missingModelAuth) {
+        throw Object.assign(new Error(missingModelAuth), { modelAuthMissing: true });
       }
       const teamEndpointApplied = modelEnv.endpoint === 'team';
       if (teamEndpointApplied) {
@@ -5985,9 +6029,11 @@ export class WorkerManager {
       // Circuit breaker: detect errors that affect all workers and pause claims
       if (worker.status === 'error' && worker.error) {
         const err = worker.error.toLowerCase();
-        const pauseReason = classifyClaimError(err);
+        // A pre-spawn model-auth refusal is routed by its flag: its fix text
+        // says "billing", which the text classifier reads as an hour's pause.
+        const pauseReason = worker.modelAuthMissing ? NO_MODEL_AUTH_PAUSE : classifyClaimError(err);
 
-        if (isAuthError(err)) {
+        if (!worker.modelAuthMissing && isAuthError(err)) {
           // Auth failure burn-loop guard: a runner with neither local nor valid
           // server creds must not claim-then-fail forever. Invalidate the cached
           // (bad) credential for this team so a rotated/fixed one is picked up on

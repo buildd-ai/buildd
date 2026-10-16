@@ -2,13 +2,13 @@
 title: Task Estimates (Rollout and Team Switch)
 status: active
 owner: max
-last_verified: 2026-10-12
-summary: Estimates follow the team's switch or a default gated on measured quality, never order work; teams see one plain accuracy line, the platform owner the calibration and gate detail.
+last_verified: 2026-10-15
+summary: Frozen forecasts use shared evidence-aware display and auditable sample selection; estimates follow the team's switch or a quality-gated default and never order work.
 domain: tasks
 surfaces: [packages/core/task-estimate-rollout.ts, packages/core/task-estimate-source.ts, apps/web/src/app/app/(protected)/settings/features/page.tsx, apps/web/src/app/app/(protected)/health/estimates/page.tsx]
 related: [claim-ordering, bug-intake-and-quality]
 keywords: [task_estimates, taskEstimates, estimates-backtest, blend-v1, p50, p80, new-repo prior, cold start, default on, opt-out, TASK_ESTIMATES_ROLLOUT, estimate accuracy, within upper estimate, insufficient evidence, operator estimation, calibration]
-verified_by: [packages/core/__tests__/task-estimate-rollout.test.ts, packages/core/__tests__/task-estimate-source.test.ts, apps/web/src/app/api/teams/[id]/route.test.ts, apps/web/src/app/api/teams/[id]/task-estimates/route.test.ts, apps/web/src/app/app/(protected)/settings/features/TaskEstimatesFeature.dom.test.tsx, apps/web/src/app/app/(protected)/health/estimates/EstimatesOff.test.tsx, apps/web/src/app/app/(protected)/health/estimates/EstimatesClient.test.tsx, apps/web/src/app/app/(protected)/health/estimates/estimates-view.test.ts, apps/web/src/lib/task-time-row.test.ts, packages/core/__tests__/task-estimate-operator.test.ts, apps/web/src/app/api/admin/platform-owner-routes.test.ts, apps/web/src/app/api/admin/tenant-privacy.test.ts]
+verified_by: [packages/core/__tests__/task-estimate-display.test.ts, packages/core/__tests__/task-estimate-evidence.test.ts, packages/core/__tests__/task-estimate-rollout.test.ts, packages/core/__tests__/task-estimate-source.test.ts, apps/web/src/app/api/teams/[id]/route.test.ts, apps/web/src/app/api/teams/[id]/task-estimates/route.test.ts, apps/web/src/app/app/(protected)/settings/features/TaskEstimatesFeature.dom.test.tsx, apps/web/src/app/app/(protected)/health/estimates/EstimatesOff.test.tsx, apps/web/src/app/app/(protected)/health/estimates/EstimatesClient.test.tsx, apps/web/src/app/app/(protected)/health/estimates/estimates-view.test.ts, apps/web/src/lib/task-time-row.test.ts, packages/core/__tests__/task-estimate-operator.test.ts, apps/web/src/app/api/admin/platform-owner-routes.test.ts, apps/web/src/app/api/admin/tenant-privacy.test.ts]
 assertions:
   - id: "pinned-rollout"
     type: "symbol"
@@ -257,16 +257,18 @@ Score = { n, scored, sufficient: boolean, withinP80, medianRatio, medianAbsLogEr
   `byHistory` keys are the backtest bands `0`, `1-9`, `10-49`, `50+`;
   `byDay` keys are UTC dates. `byCluster`, `byKind` and `byComplexity` use
   `none` / `unknown` for a missing value.
-- Drilldown to one task's evidence is not in this response: the admin app
-  links an own-team task to its task page.
+- `selection` contains own-team per-task frozen evidence, sources/weights and
+  calibration status by estimator version. Other teams never contribute
+  per-task diagnostics. Legacy records carry null evidence; the admin app can
+  link an own-team task to its task page.
 - The same small-sample rule and "each group carries n" as the quality
   metrics in `bug-intake-and-quality.md` §7. That module is not built yet;
   when it is, estimation stays its own section (it scores forecasts, not
   defects).
 
-**Not changed by this contract**: the estimator, its version, the gate's bars,
-the current no-go verdict, the default, the team switch, and the claim route,
-scheduler and planner (which still do not read estimates).
+**Forecast policy**: the evidence/display revision below advances selection to
+`blend-v2`. The gate bars, no-go verdict, default, team switch, claim route,
+scheduler and planner retain their existing behavior; forecasts never order work.
 
 **Acceptance criteria**:
 
@@ -278,14 +280,14 @@ implementation tasks add.
 - AC-3: GIVEN the gate is go WHEN a team with `{ enabled: false }` files a task THEN no estimate row is written. Test: task-estimate-rollout.test.ts.
 - AC-4: GIVEN a member without `manage_team_settings`, or an admin of another team, WHEN they PATCH `taskEstimates` THEN the response is 403 and nothing is stored. Test: apps/web/src/app/api/teams/[id]/route.test.ts.
 - AC-5: GIVEN estimates are off WHEN an owner/admin opens Health › Estimates THEN the page links to Settings › Features. WHEN a member opens it THEN it says an owner or admin can turn them on, with no action of its own. Test: EstimatesOff.test.tsx.
-- AC-6: GIVEN an estimate whose prior weight is ≥ 0.5 WHEN the task page shows it THEN it is labelled "rough" with a one-line reason, and the range is rounded to a 1/5/15/30-minute step. Test: apps/web/src/lib/task-time-row.test.ts.
+- AC-6: GIVEN prior-only, sparse or uncalibrated evidence WHEN a task estimate renders THEN one shared formatter shows a broad outward-rounded indicative range, no minute-level point estimate and one uncertainty sentence. Headline and breakdown use identical range, units and estimator version. Test: packages/core/__tests__/task-estimate-display.test.ts, apps/web/src/lib/task-time-row.test.ts.
 - AC-7: GIVEN the estimator throws or a source is unavailable WHEN a task is created THEN creation succeeds and the write returns `failed` or uses the remaining sources. Test: task-estimate-source.test.ts.
 - AC-8: GIVEN any team WHEN Settings › Features or Health › Estimates renders THEN it shows the team's own state only: no line about other teams' default and no reason drawn from the rollout measurement. Test: TaskEstimatesFeature.dom.test.tsx, EstimatesOff.test.tsx.
 - AC-9: GIVEN 0 scored tasks WHEN Health › Estimates renders THEN it reads "Not enough finished tasks to assess estimates." with no count and no rate. GIVEN 1 or 9 THEN the same lead and "1 finished so far." / "9 finished so far.", no rate. Test: estimates-view.test.ts, EstimatesClient.test.tsx.
 - AC-10: GIVEN 10 scored tasks, 7 within p80 WHEN the page renders THEN it reads "7 in 10 tasks finished within the upper estimate." and "Across 10 finished tasks." GIVEN 40 THEN the n reads 40. Neither carries a verdict adjective, badge or date range. Test: estimates-view.test.ts.
 - AC-11: GIVEN a median actual/p50 of 1.0 THEN no typical line shows; of 1.5 THEN "Typically ran 1.5x longer than estimated."; of 0.6 THEN "…shorter…". Test: estimates-view.test.ts.
 - AC-12: GIVEN any enabled state WHEN the page renders THEN it contains no chart, no Details disclosure, no breakdown table and no tokens line, and no rendered text contains p50, p80, prior, cluster or "last N days". Test: EstimatesClient.test.tsx.
-- AC-13: GIVEN scored estimates of which some leaned mostly on the new-repo prior WHEN the page renders THEN one muted limited-history line shows the count and no rate; GIVEN none THEN no such line. Test: estimates-view.test.ts.
+- AC-13: GIVEN scored estimates of which some leaned mostly on the new-repo prior WHEN the page renders THEN one muted limited-comparable-history line shows the count and no rate; GIVEN none THEN no such line. Test: estimates-view.test.ts.
 - AC-14: GIVEN a member and an owner of the same enabled team WHEN each opens Health › Estimates THEN both see the same numbers; only the owner may see a link to Settings › Features. Test: EstimatesClient.test.tsx.
 - AC-15: GIVEN a caller who is not a member of team T and does not hold T's API key WHEN they GET T's task-estimates readout THEN the response is 404; GIVEN a member THEN the body holds T's rows only and no gate verdict or backtest figure. Test: apps/web/src/app/api/teams/[id]/task-estimates/route.test.ts.
 - AC-16: GIVEN no credential, a team API key, a team owner's session or an unset allowlist WHEN they call the operator estimates API THEN 404; GIVEN the platform owner THEN 200. Test: apps/web/src/app/api/admin/platform-owner-routes.test.ts.
@@ -333,5 +335,57 @@ Features › Turn off. Rows are kept. Full removal: `packages/core/TASK-ESTIMATE
 - `packages/core/task-estimate-operator-source.ts`: `fetchOperatorEstimateRows`, `fetchOperatorEstimateCounts`, `OPERATOR_ROW_LIMIT`
 - `apps/web/src/app/api/admin/estimates/route.ts`: the operator API; `viewEstimates` in `apps/web/src/lib/admin/tenant-privacy.ts`
 - `apps/web/src/lib/admin/owner-gate.ts`: `requirePlatformOwner`, the operator API's gate
-- `apps/web/src/lib/task-time-row.ts`: rounding and the "rough" label
+- `apps/web/src/lib/task-time-row.ts`: shared estimate display alongside agent elapsed time
+- `packages/shared/src/task-estimate.ts`: payload, evidence and shared formatting
+- `packages/core/task-estimate-evidence.ts`: common selection eligibility and counts
 - `apps/web/src/lib/task-estimate-hook.ts`: the after-response write
+
+## Evidence and display contract
+
+The frozen numeric quantiles remain internal forecast/scoring inputs. Selection
+repairs use `blend-v2`; the `blend-v1` calibration pin does not certify it. Display
+formatting is a versioned, shared projection of those quantiles and structured
+evidence, used by the task page, task API and MCP scheduling view. Stored legacy
+summary strings are not a second source of display truth.
+
+| Evidence | Display and provenance |
+| --- | --- |
+| No usable source, invalid quantiles, fewer than three contributing samples, or a spread above 20x | No numeric forecast; say that there is insufficient comparable evidence. |
+| Prior only, sparse local evidence, or calibration not passed for this version | About a broad range rounded outward in steps of at least five minutes; no point estimate. |
+| At least ten local samples and passed calibration | A rounded range; preserve the same range in expanded detail. |
+| Confirmed zero completed work tasks at cutoff | Similar tasks across Buildd; estimates improve as this repo builds history. |
+| Existing completed tasks but few comparable samples | Similar tasks across Buildd; limited comparable history in this repo. |
+| Legacy record, failed history query or unavailable local source | Say comparable evidence is unavailable; never infer zero history or a lack of matching work from a read failure. |
+
+AC-20: The collapsed time row and expanded breakdown read one canonical display
+payload, including range, units, formatting version and estimator version. A
+stored stale summary cannot reintroduce a conflicting range or repeated caveat.
+Tokens appear only in the breakdown, using compact units (for example 1.64M).
+Test: packages/core/__tests__/task-estimate-display.test.ts and task-time-row.test.ts.
+
+AC-21: Freeze evidence at task creation: total earlier repo tasks, completed work
+tasks, eligible tasks with usable completed-session actuals, exclusions, retrieved
+neighbours, contributing neighbours, available clusters, contributing cluster
+sample count, source failures, sources/weights and actual cached model cutoffs
+(which may precede the task cutoff by the model cache TTL). The current task
+size decision is read at estimate freeze and labeled that way; the normalized
+kind is also frozen so a later task edit cannot obscure a global prior fallback; historical
+size decisions and repair attempts are bounded by the history cutoff. Diff
+ingestion is read when evidence loads, not replayed from a historical index
+snapshot, so a later reconstruction must disclose that limitation. Neighbour and cluster counts
+can overlap and must not be added as a unique task count. No role, model or
+recency filter is implied when none exists. Legacy diagnostics are unknown,
+not retroactively reconstructed as if frozen. Test: task-estimate-source.test.ts.
+
+AC-22: The existing operator estimates response exposes own-team selection
+diagnostics alongside estimator version and calibration status; other tenants'
+raw evidence and path labels remain excluded. Calibration means the existing
+version-specific rollout gate, never a guessed confidence based on sample size.
+The concise team Health accuracy contract retains its layout; its limited-history
+line says limited comparable history rather than inferring little total history.
+Test: task-estimate-operator.test.ts.
+
+AC-23: Regression fixtures cover an established repo with eligible local history,
+a true cold start, existing history with no comparable neighbours, sparse or
+uncalibrated evidence, unavailable sources and legacy unknown diagnostics.
+Test: task-estimate-display.test.ts and task-estimate-source.test.ts.

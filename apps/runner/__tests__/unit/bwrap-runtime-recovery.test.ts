@@ -127,7 +127,10 @@ mock.module('../../src/env-scan', () => ({
 }));
 
 // Import WorkerManager after mocks
-const { WorkerManager, __resetBwrapSupportForTest, isBwrapSupported } = await import('../../src/workers');
+const { WorkerManager, __resetBwrapSupportForTest, isBwrapSupported, __setModelAuthPreflightForTest } = await import('../../src/workers');
+// Sessions here run a mocked SDK with no model credential: skip the
+// pre-spawn model-auth refusal (claude-model-auth-preflight.test.ts covers it).
+__setModelAuthPreflightForTest(() => null);
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 

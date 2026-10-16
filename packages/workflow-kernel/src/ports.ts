@@ -12,6 +12,7 @@
  * Versioned with the package: a breaking change to a port is a major bump.
  */
 import type { BaseDeltaFact } from './base-delta';
+import type { DeltaReading } from './delta-approval';
 import type { ApplyDecision, Command, CurrentView, EffectKind, LivePr, RecordOnly } from './commands';
 import type { AttemptSnapshot, DeliverySnapshot, DeliveryState, KernelView, RoundSnapshot } from './types';
 
@@ -226,6 +227,12 @@ export interface GithubFactReader {
    * "nothing changed".
    */
   changedPaths?(repoFullName: string, fromSha: string, toSha: string): Promise<string[] | null>;
+  /**
+   * 58c8961e: the delta from an approved head `fromSha` to `toSha`, bounded against
+   * `baseRef` (a file the base moved on its own is not in it), with the PR's own files
+   * at `fromSha`. null = unreadable or possibly cut; the round is then a full review.
+   */
+  reviewedDelta?(repoFullName: string, baseRef: string, fromSha: string, toSha: string): Promise<DeltaReading | null>;
 }
 
 /** GitHub's answer to a pinned merge call, read as the T16 outcome it is (`MergeCallResult`). */
@@ -447,8 +454,12 @@ export interface Lifecycle {
   scanSupersession(d: DeliverySnapshot): Promise<string | null>;
   /** Whatever coordinates the owner task may act now (in buildd: wake its mission). null = nothing coordinates it. */
   wakeCoordinator(d: DeliverySnapshot, reason: 'pr_resolved'): Promise<{ woken: boolean; reason?: string } | null>;
-  /** T17's once-per-merge work (the post-merge events). false = no record of the PR's author to run it for. */
-  merged(d: DeliverySnapshot): Promise<boolean>;
+  /**
+   * T17's once-per-merge work (the post-merge events). false = no record of the PR's author to run it for.
+   * `payload` is the `emit_pr_merged` effect's: a host that projects the owner task in the transition's
+   * statement says there what it did, so this work performs only side effects.
+   */
+  merged(d: DeliverySnapshot, payload?: Record<string, unknown>): Promise<boolean>;
   /** After a merge, tidy what the delivery leaves on the host (in buildd: delete a shipped mission branch). */
   finalizeMerge(d: DeliverySnapshot): Promise<void>;
 }

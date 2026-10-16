@@ -5,7 +5,6 @@ import { join } from 'path';
 import {
   attributeStoreReaches,
   storeGuardPath,
-  formatProgressLine,
   getTestTimeoutMs,
   STORE_REACH_MARKER,
   diffStoreSnapshots,
@@ -29,6 +28,7 @@ import {
   UPDATE_DURATIONS_FLAG,
   formatDurationHintsFile,
   formatDurations,
+  formatHeartbeat,
   mergeDurationHints,
   orderByDuration,
   parseRunnerArgs,
@@ -760,21 +760,16 @@ describe('duration hints file', () => {
     ], 2);
     expect(lines).toEqual(['   57.3s  b.test.ts', '    4.0s  c.test.ts']);
   });
-});
 
-describe('formatProgressLine', () => {
-  it('reports counts and the longest-running files first', () => {
-    const inFlight = new Map([['b.test.ts', 9_000], ['a.test.ts', 1_000]]);
-    const line = formatProgressLine(3, 1, 10, inFlight, 11_000);
-    expect(line).toBe('[progress] 4/10 files done (1 failed); running: a.test.ts (10s), b.test.ts (2s)');
-  });
-
-  it('caps the running list and says how many were left out', () => {
-    const inFlight = new Map([['a', 0], ['b', 1], ['c', 2]]);
-    expect(formatProgressLine(0, 0, 3, inFlight, 3_000, 2)).toContain(', +1 more');
-  });
-
-  it('omits the running section when nothing is in flight', () => {
-    expect(formatProgressLine(2, 0, 2, new Map(), 0)).toBe('[progress] 2/2 files done (0 failed)');
+  it('formatHeartbeat reports progress, flags an oversubscribed host, and omits unknown ETA', () => {
+    const base = { done: 10, total: 40, failed: 1, running: ['a.test.ts'], elapsedMs: 61_000, cpus: 4 };
+    const calm = formatHeartbeat({ ...base, load1: 2, remainingHintMs: 90_000 });
+    expect(calm).toContain('10/40 files done (1 failed)');
+    expect(calm).toContain('61s elapsed');
+    expect(calm).toContain('~90s of hinted work left');
+    expect(calm).not.toContain('oversubscribed');
+    const busy = formatHeartbeat({ ...base, load1: 9.5, remainingHintMs: null });
+    expect(busy).toContain('oversubscribed');
+    expect(busy).not.toContain('hinted work');
   });
 });

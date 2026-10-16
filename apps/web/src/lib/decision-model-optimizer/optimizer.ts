@@ -23,6 +23,12 @@
  *      and the kind is not switched), sets `decision_model.byKind` for
  *      that kind only (never the team default), writes one switch row and one
  *      decision-ledger event with the eval run id and both scores.
+ *   A kind below its minimum of graded collected cases (or with none) that has
+ *   a labelled set is then scored on that set, in a second comparison with what
+ *   the call cap has left: its own rows, never pooled with collected, one
+ *   origin at a time (the one with the most graded cases decides). A
+ *   measurement written from it is marked `labelled`: a later collected score
+ *   replaces it, and it never overrides one from collected cases.
  *   5. Auto-revert: once the switched-to model has `REVERT_MIN_GRADED` live
  *      graded decisions on that kind and its acted precision is below the bar
  *      it was switched at, the previous model is restored.
@@ -52,11 +58,13 @@ import {
   isCalibration,
   type Calibration,
   type ConfidenceSource,
+  type MeasurementCaseSource,
   type StoredMeasurement,
 } from '@buildd/core/decision-model-measurements';
 import type { DecisionLedgerInput } from '@buildd/core/decision-ledger';
 import type { ModelComparisonInput, ModelComparisonOutcome } from '../prompt-evals/compare-run';
 import type { ComparisonAbort } from '../prompt-evals/compare';
+import type { CaseSource } from '../prompt-evals/cases';
 import type { PromptEvalResultRow } from '../prompt-evals/run';
 
 /** A challenger must beat the current model's score by this much (5 points of coverage x precision). */
@@ -138,7 +146,9 @@ export type KeepReason =
   | 'pinned' | 'too_few_graded' | 'current_not_asked' | 'no_model_clears_bar' | 'current_best' | 'within_margin'
   | 'preflight_failed' | 'no_fingerprint' | 'write_failed'
   // The shared (kind x model) measurement row is retired, or in force on another signal: not one team's to change.
-  | 'measurement_retired' | 'measurement_other_signal';
+  | 'measurement_retired' | 'measurement_other_signal'
+  // The existing measurement's cutoff is above 1 (acts never), so no model should switch to it.
+  | 'measurement_never_acts';
 
 export type KindPlan =
   | { action: 'switch'; kind: string; from: ModelResult; to: ModelResult; before: number; after: number }
@@ -180,12 +190,19 @@ export function planKindSwitch(input: {
   return { action: 'switch', kind: input.kind, from: current, to: best, before, after };
 }
 
-/** A comparison's stored rows for one kind's collected cases, read back as model results. */
-export function resultsFromRows(rows: readonly PromptEvalResultRow[], kind: string, routes: readonly DecisionModelRoute[]): { results: ModelResult[]; minLabelled: number | null } {
+/**
+ * A comparison's stored rows for one kind's cases of one source (and, given
+ * one, one origin), read back as model results. Sources are never pooled.
+ */
+export function resultsFromRows(
+  rows: readonly PromptEvalResultRow[], kind: string, routes: readonly DecisionModelRoute[],
+  source: CaseSource = 'collected', origin?: string,
+): { results: ModelResult[]; minLabelled: number | null } {
   let minLabelled: number | null = null;
   const results: ModelResult[] = [];
   for (const r of rows) {
-    if (r.benchmarkSet !== kind || r.caseSource !== 'collected' || r.status !== 'scored' || !r.model) continue;
+    if (r.benchmarkSet !== kind || r.caseSource !== source || r.status !== 'scored' || !r.model) continue;
+    if (origin !== undefined && (r.caseOrigin ?? '') !== origin) continue;
     const m = (r.metrics ?? {}) as Record<string, unknown>;
     const via = typeof m.via === 'string' ? m.via : '';
     const route = routes.find(x => x.via === via && canonicalMeasuredModel(x.model) === canonicalMeasuredModel(r.model!));
@@ -250,6 +267,8 @@ export interface OptimizerDeps {
   /** The team's stored `decision_model`. */
   readDecisionModel: (teamId: string) => Promise<unknown>;
   compare: (input: ModelComparisonInput) => Promise<ModelComparisonOutcome>;
+  /** Decision kinds that have a labelled set (the prompts repo's sets, the published datasets). */
+  labelledKinds: () => Promise<readonly string[]>;
   /** One test decision through the route, as Save does. */
   preflight: (route: DecisionModelRoute, teamId: string) => Promise<{ ok: true } | { ok: false; error: string }>;
   /** The fingerprint a kind's call site reports, so a stored measurement applies. Null: unknown kind. */
@@ -271,6 +290,8 @@ export interface KindOutcome {
   kind: string;
   action: 'switch' | 'keep';
   reason?: KeepReason;
+  /** Which cases decided it: collected, or the kind's labelled set when collected fell short. */
+  source: CaseSource;
   /** On a switch: from and to, as model ids. Operator data. */
   from?: string;
   to?: string;
@@ -281,7 +302,12 @@ export interface KindOutcome {
 export type TeamOptimizeResult =
   | { teamId: string; status: 'not_opted_in' }
   | { teamId: string; status: 'skipped'; reason: string }
-  | { teamId: string; status: 'ran'; runId: string; problems: string[]; aborted: ComparisonAbort | null; kinds: KindOutcome[] };
+  | {
+    teamId: string; status: 'ran'; runId: string;
+    /** The labelled comparison's run, when one ran. */
+    labelledRunId: string | null;
+    problems: string[]; aborted: ComparisonAbort | null; kinds: KindOutcome[];
+  };
 
 export interface OptimizeOptions {
   callCap?: number;
@@ -318,18 +344,36 @@ export function calibratedCutoff(threshold: number, calibration: Calibration | n
  * A row in force on the same signal that is at least as strict is kept; any
  * other case writes the winner's measurement. For `calibrated_top_p`, strict
  * means the top p it acts at (`calibratedCutoff`), not the raw threshold.
+ *
+ * `source` is what the winner was scored on. A `labelled` row in force is a
+ * placeholder, so a collected winner replaces it whatever its signal or
+ * strictness. A labelled winner never replaces a collected row in force: it is
+ * kept (on the same signal) or refused (on another), never written over.
  */
-export function measurementPlan(rows: readonly StoredMeasurement[], kind: string, model: string, fingerprint: string, derived: DerivedAt):
-  'write' | 'keep' | 'measurement_retired' | 'measurement_other_signal' {
+export function measurementPlan(
+  rows: readonly StoredMeasurement[], kind: string, model: string, fingerprint: string, derived: DerivedAt,
+  source: MeasurementCaseSource = 'collected',
+): 'write' | 'keep' | 'measurement_retired' | 'measurement_other_signal' | 'measurement_never_acts' {
   const same = rows.filter(r => r.kind === kind && canonicalMeasuredModel(r.model) === canonicalMeasuredModel(model));
   if (same.some(r => r.status === 'retired')) return 'measurement_retired';
   const existing = same.find(r => r.status === 'active' && r.measuredFingerprint === fingerprint);
   if (!existing) return 'write';
+  const existingSource = existing.caseSource ?? 'collected';
+  if (source === 'collected' && existingSource === 'labelled') return 'write';
   if (existing.labelThresholds) return 'keep';
   if ((existing.confidenceSource ?? 'confidence') !== derived.source) return 'measurement_other_signal';
+  if (source === 'labelled' && existingSource === 'collected') return 'keep';
   if (derived.source === 'calibrated_top_p') {
     // Each threshold is read through its own map: compare where they act on top p.
-    return calibratedCutoff(existing.threshold, existing.calibration) >= calibratedCutoff(derived.threshold, derived.calibration) ? 'keep' : 'write';
+    // Exact, not an approximation: calibrate is non-decreasing, so a row acts on
+    // exactly the top p at or above its cutoff, and the higher cutoff acts on a
+    // subset of the other's. A stored row with no usable map is the strictest.
+    const existingCutoff = calibratedCutoff(existing.threshold, existing.calibration);
+    // A cutoff above 1 means the measurement never acts (either because the
+    // threshold is above the calibration curve's maximum, or there is no usable
+    // calibration). Do not switch to a model that never acts.
+    if (existingCutoff > 1) return 'measurement_never_acts';
+    return existingCutoff >= calibratedCutoff(derived.threshold, derived.calibration) ? 'keep' : 'write';
   }
   return existing.threshold >= derived.threshold ? 'keep' : 'write';
 }
@@ -361,22 +405,64 @@ export async function optimizeTeam(teamId: string, opts: OptimizeOptions, deps: 
 
   const at = new Date(now());
   const pinned = await deps.switches.pinnedKinds(teamId, at);
-  const kinds: KindOutcome[] = [];
+  const problems = [...out.problems];
+  const plans = new Map<DecisionModelKind, { plan: KindPlan; run: ScoredRun }>();
+  const collected: ScoredRun = { runId: out.runId, source: 'collected', origin: 'replay' };
   const kindIds = [...new Set(out.rows.filter(r => r.caseSource === 'collected').map(r => r.benchmarkSet))].filter(isDecisionModelKind);
   for (const kind of kindIds) {
-    const current = overrides[kind] ?? teamDefault;
     const { results, minLabelled } = resultsFromRows(out.rows, kind, routes);
-    const plan = planKindSwitch({ kind, current, results, minLabelled: minLabelled ?? Infinity, pinned: pinned.has(kind) });
-    if (plan.action === 'keep') { kinds.push({ kind, action: 'keep', reason: plan.reason }); continue; }
-    const kept = (reason: KeepReason) => kinds.push({ kind, action: 'keep', reason, from: plan.from.route.model, to: plan.to.route.model, before: plan.before, after: plan.after });
+    plans.set(kind, { run: collected, plan: planKindSwitch({ kind, current: overrides[kind] ?? teamDefault, results, minLabelled: minLabelled ?? Infinity, pinned: pinned.has(kind) }) });
+  }
+
+  // Too few graded collected cases (or none): the kind's labelled set, with what the cap has left.
+  const hasSet = new Set(await deps.labelledKinds());
+  const short = DECISION_MODEL_KINDS.filter(kind => hasSet.has(kind) && !pinned.has(kind)
+    && (!plans.has(kind) || (plans.get(kind)!.plan as { reason?: KeepReason }).reason === 'too_few_graded'));
+  const callCap = opts.callCap ?? OPTIMIZER_CALL_CAP;
+  const left = callCap - callsAsked(out.rows);
+  let labelledRunId: string | null = null;
+  let aborted = out.aborted;
+  if (short.length > 0 && !out.aborted && left > 0 && (opts.deadlineAt === undefined || now() < opts.deadlineAt)) {
+    const lab = await deps.compare({
+      teamId,
+      models: routes as DecisionModelConfig[],
+      source: 'labelled',
+      kinds: short,
+      callCap: left,
+      trigger: opts.trigger ?? 'manual',
+      ...(opts.deadlineAt !== undefined ? { deadlineAt: opts.deadlineAt } : {}),
+    });
+    if (lab.status === 'skipped') {
+      problems.push(`labelled sets: ${lab.reason}`);
+    } else {
+      labelledRunId = lab.runId;
+      aborted = lab.aborted;
+      problems.push(...lab.problems.map(p => `labelled sets: ${p}`));
+      for (const kind of short) {
+        const origin = pickOrigin(lab.rows, kind, overrides[kind] ?? teamDefault, routes);
+        if (origin === null) continue;
+        const { results, minLabelled } = resultsFromRows(lab.rows, kind, routes, 'labelled', origin);
+        plans.set(kind, {
+          run: { runId: lab.runId, source: 'labelled', origin },
+          plan: planKindSwitch({ kind, current: overrides[kind] ?? teamDefault, results, minLabelled: minLabelled ?? Infinity, pinned: false }),
+        });
+      }
+    }
+  }
+
+  const kinds: KindOutcome[] = [];
+  for (const [kind, { plan, run }] of plans) {
+    const source = run.source;
+    if (plan.action === 'keep') { kinds.push({ kind, action: 'keep', reason: plan.reason, source }); continue; }
+    const kept = (reason: KeepReason) => kinds.push({ kind, action: 'keep', reason, source, from: plan.from.route.model, to: plan.to.route.model, before: plan.before, after: plan.after });
 
     const probe = await deps.preflight(plan.to.route, teamId);
     if (!probe.ok) { kept('preflight_failed'); continue; }
     const fingerprint = await deps.fingerprintFor(kind);
     if (!fingerprint) { kept('no_fingerprint'); continue; }
     const derived = plan.to.derived!;
-    const measured = measurementPlan(await deps.measurements(), kind, plan.to.route.model, fingerprint, derived);
-    if (measured === 'measurement_retired' || measured === 'measurement_other_signal') { kept(measured); continue; }
+    const measured = measurementPlan(await deps.measurements(), kind, plan.to.route.model, fingerprint, derived, source);
+    if (measured === 'measurement_retired' || measured === 'measurement_other_signal' || measured === 'measurement_never_acts') { kept(measured); continue; }
     if (measured === 'write') {
       await deps.writeMeasurement({
         kind,
@@ -385,31 +471,58 @@ export async function optimizeTeam(teamId: string, opts: OptimizeOptions, deps: 
         precisionLower: derived.wilsonLower,
         coverage: derived.coverage,
         n: plan.to.labelled,
-        evalRunId: out.runId,
+        evalRunId: run.runId,
         measuredFingerprint: fingerprint,
         status: 'active',
         setByAccountId: null,
-        reason: 'decision model optimizer: won the comparison on collected cases',
+        reason: source === 'labelled'
+          ? `decision model optimizer: won the comparison on labelled cases (${run.origin}), until collected cases reach the minimum`
+          : 'decision model optimizer: won the comparison on collected cases',
         confidenceSource: derived.source,
         calibration: derived.calibration,
         labelThresholds: null,
+        caseSource: source,
       });
     }
-    const set = await deps.setKindModel(teamId, kind, plan.to.route, `optimizer: eval run ${out.runId}`);
+    const set = await deps.setKindModel(teamId, kind, plan.to.route, `optimizer: eval run ${run.runId}`);
     if (!set.ok) { kept('write_failed'); continue; }
 
     await deps.switches.supersede(teamId, kind, at);
     await deps.switches.insert({
       teamId, kind, cause: 'optimizer',
       fromRoute: overrides[kind] ?? null, toRoute: plan.to.route,
-      evalRunId: out.runId, beforeScore: plan.before, afterScore: plan.after,
+      evalRunId: run.runId, beforeScore: plan.before, afterScore: plan.after,
       bar: plan.to.bar ?? DEFAULT_BAR, n: plan.to.labelled,
     });
     await deps.recordLedger(switchLedgerEvent(teamId, kind, plan.from.route.model, plan.to.route.model,
-      `optimizer: eval_run=${out.runId} before=${fmt(plan.before)} after=${fmt(plan.after)} n=${plan.to.labelled}`, out.runId, plan.after));
-    kinds.push({ kind, action: 'switch', from: plan.from.route.model, to: plan.to.route.model, before: plan.before, after: plan.after });
+      `optimizer: eval_run=${run.runId} source=${source} before=${fmt(plan.before)} after=${fmt(plan.after)} n=${plan.to.labelled}`, run.runId, plan.after));
+    kinds.push({ kind, action: 'switch', source, from: plan.from.route.model, to: plan.to.route.model, before: plan.before, after: plan.after });
   }
-  return { teamId, status: 'ran', runId: out.runId, problems: out.problems, aborted: out.aborted, kinds };
+  return { teamId, status: 'ran', runId: out.runId, labelledRunId, problems, aborted, kinds };
+}
+
+/** The comparison a kind's plan was made on. */
+interface ScoredRun { runId: string; source: CaseSource; origin: string }
+
+/** Calls a comparison started: every scored row's cases it asked. */
+function callsAsked(rows: readonly PromptEvalResultRow[]): number {
+  return rows.reduce((n, r) => n + (r.status === 'scored' ? Math.max(0, r.cases - r.notRun) : 0), 0);
+}
+
+/**
+ * The labelled origin a kind is decided on: the one where the current model
+ * has the most graded cases (ties: by name). Null when the kind has no
+ * labelled row. Origins are never pooled.
+ */
+function pickOrigin(rows: readonly PromptEvalResultRow[], kind: string, current: DecisionModelRoute, routes: readonly DecisionModelRoute[]): string | null {
+  const origins = [...new Set(rows.filter(r => r.benchmarkSet === kind && r.caseSource === 'labelled' && r.status === 'scored').map(r => r.caseOrigin ?? ''))].sort();
+  let best: { origin: string; graded: number } | null = null;
+  for (const origin of origins) {
+    const own = resultsFromRows(rows, kind, routes, 'labelled', origin).results.find(r => routeKey(r.route) === routeKey(current));
+    const graded = own?.labelled ?? 0;
+    if (!best || graded > best.graded) best = { origin, graded };
+  }
+  return best?.origin ?? null;
 }
 
 function switchLedgerEvent(teamId: string, kind: string, from: string | null, to: string | null, reason: string, fingerprint: string, confidence: number | null): DecisionLedgerInput {

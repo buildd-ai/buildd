@@ -19,7 +19,8 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces } from '@buildd/core/db/schema';
 import type { Command, CurrentView, LivePr, VerdictFindings } from './commands';
 import { applyCommand, loadView, type CommandResult, type Exec } from './kernel';
-import { catchUpBase, ingestFact, type GithubFactReader } from './facts';
+import { catchUpBase, ingestFact, readDeltaForApproval, type GithubFactReader } from './facts';
+import { deltaApprovalSource, type DeltaReading } from '@buildd/workflow-kernel/delta-approval';
 import { runEffects, type DrainSummary, type EffectHandlers } from './effects';
 import { settleLanes } from './landing-lane';
 import { withPrFactEffects } from './pr-fact-effects';
@@ -514,6 +515,24 @@ export async function attemptEnded(p: {
     }
   }
   const attemptId = isRepairRole(attemptKind) ? (ctxOf(p.task).workflowAttemptId as string | undefined) : undefined;
+  // A CI repair that ended without a push (cancelled by a person, lost, failed) while the head it was
+  // bound to reads green now (an infrastructure failure re-run green) is not a failed attempt to retry:
+  // CI is fixed, so the repair ends and the delivery resumes (38442d17). Otherwise the ledger would queue
+  // another fix task that, on a mission no runner serves, nobody claims.
+  const ciAttempt = attemptId ? view.attempts.find((a) => a.id === attemptId) : undefined;
+  if (p.status !== 'completed' && ciAttempt?.family === 'ci' && d.state === 'REPAIRING' && d.boundAttemptId === ciAttempt.id
+    && live && live.state === 'open' && !live.merged && live.headSha === ciAttempt.boundHeadSha && d.currentHeadSha === live.headSha && d.repoFullName) {
+    const repo = await (deps.repoFor ?? workspaceRepo)(p.task.workspaceId);
+    const reader = repo ? readerFor(deps, repo.installationId) : null;
+    const liveChecks = reader?.checkRuns ? await reader.checkRuns(d.repoFullName, live.headSha).catch(() => null) : null;
+    if (reader?.ciGreen && liveChecks && (await reader.ciGreen(d.repoFullName, live.headSha).catch(() => null)) === true) {
+      const green = await applyCommand({ type: 'CiGreenObserved', actor: `${p.source}:ci_green`, headSha: live.headSha, liveChecks, allPassing: true }, { ref: { deliveryId }, exec: deps.exec });
+      if (green.result === 'applied') {
+        await drainDelivery(deliveryId, deps);
+        return { handled: true, result: green };
+      }
+    }
+  }
   // §5: what the repair changed since the head it was bound to, read only when an open finding names a path.
   let changedPaths: string[] | null = null;
   const boundHead = attemptId ? view.attempts.find((a) => a.id === attemptId)?.boundHeadSha ?? null : null;
@@ -532,6 +551,13 @@ export async function attemptEnded(p: {
     const reader = repo ? readerFor(deps, repo.installationId) : null;
     if (reader?.contains) proof = { liveContainsLocal: false, contentDiffChanged: await reader.contains(d.repoFullName, boundHead, live.headSha).catch(() => false) };
   }
+  // 58c8961e: a repair's head on an approved delivery may be reviewed as a delta of the approval.
+  let delta: DeltaReading | null = null;
+  if (attemptKind !== 'owner' && live && live.state === 'open' && !live.merged && d.repoFullName && deltaApprovalSource(view)) {
+    const repo = await (deps.repoFor ?? workspaceRepo)(p.task.workspaceId);
+    const reader = repo ? readerFor(deps, repo.installationId) : undefined;
+    delta = await readDeltaForApproval(view, d.repoFullName, live, reader);
+  }
   const cmd: Command = {
     type: 'AttemptEnded',
     actor: p.source,
@@ -547,6 +573,7 @@ export async function attemptEnded(p: {
     reviewRequired: true,
     ...(ci ? { ci } : {}),
     ...(changedPaths ? { changedPaths } : {}),
+    ...(delta ? { delta } : {}),
     ...(p.noopEvidence && attemptKind === 'fix' ? { noopEvidence: p.noopEvidence } : {}),
   };
   const result = await applyCommand(cmd, { ref: { deliveryId }, exec: deps.exec });

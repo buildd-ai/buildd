@@ -1,3 +1,4 @@
+import { formatTaskEstimate, type TaskEstimatePayload } from '@buildd/shared';
 /**
  * Task estimates rollout: the quality gate that decides whether estimates are
  * on by default, and how a team's stored switch reads against it. Pure and
@@ -172,4 +173,21 @@ export function resolveTaskEstimatesState(raw: unknown, defaultOn: boolean = tas
   const chosen = !!raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>).enabled : undefined;
   if (typeof chosen === 'boolean') return { enabled: chosen, source: 'team', defaultOn };
   return { enabled: defaultOn, source: 'default', defaultOn };
+}
+
+
+/** Canonical read payload: quantiles stay frozen, display is derived once. */
+export function taskEstimatePayload(
+  row: TaskEstimatePayload,
+  pin: TaskEstimatesRolloutPin = TASK_ESTIMATES_ROLLOUT,
+): TaskEstimatePayload {
+  const payload: TaskEstimatePayload = {
+    estimatorVersion: row.estimatorVersion,
+    p50Minutes: row.p50Minutes, p80Minutes: row.p80Minutes,
+    p50Tokens: row.p50Tokens, p80Tokens: row.p80Tokens,
+    expectedRepairs: row.expectedRepairs, explanation: row.explanation,
+    calibration: row.estimatorVersion !== pin.estimatorVersion ? 'unknown' : pin.verdict === 'go' ? 'passed' : 'failed',
+  };
+  const display = formatTaskEstimate(payload);
+  return { ...payload, explanation: { ...payload.explanation, summary: `${display.headline}. ${display.provenance}` } };
 }

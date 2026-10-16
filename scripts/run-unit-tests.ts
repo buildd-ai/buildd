@@ -1,5 +1,5 @@
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs';
-import { homedir, tmpdir } from 'os';
+import { cpus, homedir, loadavg, tmpdir } from 'os';
 import { join } from 'path';
 
 // Anything matching one of these prefixes and ending in .test.ts(x) is run.
@@ -388,34 +388,6 @@ export function getTestConcurrency(configured: string | undefined): number {
  */
 const DEFAULT_TEST_TIMEOUT_MS = 30_000;
 
-const PROGRESS_INTERVAL_MS = 30_000;
-
-/**
- * One-line progress for non-TTY runs. The full digest is only printed when the
- * run ends, so a caller that kills the run at its own cap (a tool timeout, a CI
- * step limit) otherwise gets nothing at all. Emitted on an interval and on
- * SIGTERM/SIGINT, it says how far the run got and which files were still in
- * flight -- the ones to suspect when a run stalls.
- */
-export function formatProgressLine(
-  passed: number,
-  failed: number,
-  total: number,
-  inFlight: ReadonlyMap<string, number>,
-  now: number,
-  maxShown = 5,
-): string {
-  const running = [...inFlight.entries()]
-    .sort((a, b) => a[1] - b[1])
-    .slice(0, maxShown)
-    .map(([file, startedAt]) => `${file} (${Math.round((now - startedAt) / 1000)}s)`);
-  const more = inFlight.size - running.length;
-  const tail = running.length
-    ? `; running: ${running.join(', ')}${more > 0 ? `, +${more} more` : ''}`
-    : '';
-  return `[progress] ${passed + failed}/${total} files done (${failed} failed)${tail}`;
-}
-
 export function getTestTimeoutMs(configured: string | undefined): number {
   const n = Number(configured);
   if (configured === undefined || configured.trim() === '' || !Number.isFinite(n) || n < 1) {
@@ -490,6 +462,35 @@ export function attributeStoreReaches(
     .filter(r => r.output.includes(STORE_REACH_MARKER))
     .map(r => r.file)
     .sort();
+}
+
+/** How often a non-TTY run prints a progress line. */
+export const HEARTBEAT_INTERVAL_MS = 30_000;
+
+/**
+ * One progress line for a run whose stdout is a log file. A silent multi-minute
+ * run is indistinguishable from a hung one; this says how far along it is, the
+ * host load (a loaded shared host is the usual reason a run is slow), and the
+ * expected remaining time from the duration hints (`null` hints => no ETA).
+ */
+export function formatHeartbeat(opts: {
+  done: number;
+  total: number;
+  failed: number;
+  running: string[];
+  elapsedMs: number;
+  load1: number;
+  cpus: number;
+  remainingHintMs: number | null;
+}): string {
+  const parts = [
+    `[progress] ${opts.done}/${opts.total} files done (${opts.failed} failed)`,
+    `${Math.round(opts.elapsedMs / 1000)}s elapsed`,
+    `load ${opts.load1.toFixed(1)} on ${opts.cpus} cpus${opts.load1 > opts.cpus * 1.5 ? ' (host oversubscribed; expect slower than documented)' : ''}`,
+  ];
+  if (opts.remainingHintMs !== null) parts.push(`~${Math.round(opts.remainingHintMs / 1000)}s of hinted work left`);
+  if (opts.running.length > 0) parts.push(`running: ${opts.running.slice(0, 3).join(', ')}`);
+  return parts.join(' | ');
 }
 
 export async function runTestFile(
@@ -857,20 +858,34 @@ async function main(): Promise<void> {
   const timings: Array<{ file: string; durationMs: number }> = [];
   const runStartedAt = performance.now();
 
-  const inFlight = new Map<string, number>();
-  const progress = (): string =>
-    formatProgressLine(passed, failures.length, files.length, inFlight, performance.now());
+  const running = new Set<string>();
   const heartbeat = process.stdout.isTTY
-    ? undefined
-    : setInterval(() => console.log(progress()), PROGRESS_INTERVAL_MS);
+    ? null
+    : setInterval(() => {
+        const finished = new Set(timings.map(t => t.file));
+        const remaining = files.filter(f => !finished.has(f));
+        const known = remaining.every(f => hints[f] !== undefined);
+        console.log(formatHeartbeat({
+          done: passed + failures.length,
+          total: files.length,
+          failed: failures.length,
+          running: [...running],
+          elapsedMs: performance.now() - runStartedAt,
+          load1: loadavg()[0],
+          cpus: cpus().length,
+          remainingHintMs: known ? remaining.reduce((s, f) => s + (hints[f] ?? 0), 0) : null,
+        }));
+      }, HEARTBEAT_INTERVAL_MS);
+  heartbeat?.unref?.();
+
   // A killed run keeps its partial result: failures so far go to the log and the
-  // progress line names what was still running.
+  // message names what was still running.
   const onKill = (signal: NodeJS.Signals): void => {
-    console.error(`\n${signal} received before the run finished. ${progress()}`);
+    console.error(`\n${signal} received before the run finished: ${passed + failures.length}/${files.length} files done (${failures.length} failed); still running: ${[...running].join(', ') || 'none'}`);
     for (const failure of failures) console.error(`  failed so far: ${failure.file}`);
     try {
       const partial = failures.map(f => `--- ${f.file} ---\n${f.output.trim()}\n`).join('\n');
-      writeFileSync(process.env.BUILDD_TEST_LOG ?? '.test-report.log', `INCOMPLETE RUN (${signal})\n${progress()}\n\n${partial}`);
+      writeFileSync(process.env.BUILDD_TEST_LOG ?? '.test-report.log', `INCOMPLETE RUN (${signal})\n\n${partial}`);
     } catch {}
     process.exit(signal === 'SIGINT' ? 130 : 143);
   };
@@ -878,9 +893,9 @@ async function main(): Promise<void> {
   process.once('SIGINT', onKill);
 
   await runWithConcurrency(files, concurrency, async file => {
-    inFlight.set(file, performance.now());
+    running.add(file);
     const result = await runTestFile(file);
-    inFlight.delete(file);
+    running.delete(file);
     timings.push({ file, durationMs: result.durationMs });
     if (result.output.includes(STORE_REACH_MARKER)) storeReaches.push(file);
     if (result.exitCode === 0) {
@@ -895,8 +910,8 @@ async function main(): Promise<void> {
       process.stdout.write(`\rUnit test files: ${passed} passed, ${failures.length} failed, ${files.length - passed - failures.length} remaining`);
     }
   });
-  if (process.stdout.isTTY) process.stdout.write('\n');
   if (heartbeat) clearInterval(heartbeat);
+  if (process.stdout.isTTY) process.stdout.write('\n');
   process.off('SIGTERM', onKill);
   process.off('SIGINT', onKill);
   const wallMs = performance.now() - runStartedAt;

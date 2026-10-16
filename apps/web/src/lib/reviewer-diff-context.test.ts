@@ -60,6 +60,7 @@ mock.module('@/lib/github', () => ({
 import {
   buildReviewerContext,
   buildDeltaReviewerContext,
+  WEAKENED_TESTS_CHECKLIST,
   REVIEWER_CONTEXT_PROMPT_ID,
   REVIEWER_CONTEXT_TEMPLATE,
   DELTA_REVIEWER_CONTEXT_PROMPT_ID,
@@ -240,8 +241,27 @@ describe('buildReviewerContext — text from the prompts table', () => {
       expect(out.startsWith('# Private delta text')).toBe(true);
       expect(out).toContain('b'.repeat(40));
       expect(out).toContain('looked fine');
+      // 58c8961e: appended outside the template, so an override row cannot drop it.
+      expect(out).toContain(WEAKENED_TESTS_CHECKLIST);
     } finally {
       resetPrompts();
     }
+  });
+
+  it('58c8961e: a delta of an approval carries the weakened-tests checklist; a delta of requested changes does not', async () => {
+    resetPrompts();
+    const approve = await buildDeltaReviewerContext({
+      ...BASE,
+      deltaFiles: BASE.prFiles,
+      priorVerdict: { headSha: 'b'.repeat(40), verdict: 'approve', confidence: 0.9, summary: 'looked fine' } as any,
+    });
+    for (const needle of ['deleted', 'loosened', 'skip', 'timeout', 'match']) expect(WEAKENED_TESTS_CHECKLIST.toLowerCase()).toContain(needle);
+    expect(approve).toContain(WEAKENED_TESTS_CHECKLIST);
+    const rc = await buildDeltaReviewerContext({
+      ...BASE,
+      deltaFiles: BASE.prFiles,
+      priorVerdict: { headSha: 'b'.repeat(40), verdict: 'request-changes', confidence: 0.9, summary: 'fix it', feedback: 'do x' } as any,
+    });
+    expect(rc).not.toContain(WEAKENED_TESTS_CHECKLIST);
   });
 });

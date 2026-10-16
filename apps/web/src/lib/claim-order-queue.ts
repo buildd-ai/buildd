@@ -258,6 +258,52 @@ async function readEstimates(teamId: string, taskIds: string[]): Promise<Estimat
     .orderBy(desc(taskEstimates.createdAt));
 }
 
+/** Build WHERE conditions for a typical claim (no force, no taskId, not interactive). */
+export function buildBroadClaimWhere(
+  caller: RunnerQueueCaller,
+  now: Date,
+  workspaceIds: string[],
+): SQL[] {
+  const conditions: SQL[] = [
+    inArray(tasks.workspaceId, workspaceIds),
+    eq(tasks.status, 'pending'),
+  ];
+
+  const gates = runnerQueueGates(caller, now);
+  // Add each gate that the route would include for a typical broad claim
+  if (gates.claimFree) conditions.push(gates.claimFree);
+  if (gates.startAt) conditions.push(gates.startAt);
+  if (gates.runnerPreference) conditions.push(gates.runnerPreference);
+  if (gates.activeWorker) conditions.push(gates.activeWorker);
+  if (gates.missionLocal) conditions.push(gates.missionLocal);
+  if (gates.missionHeld) conditions.push(gates.missionHeld);
+  if (gates.taskHeld) conditions.push(gates.taskHeld);
+  if (gates.taskReserved) conditions.push(gates.taskReserved);
+  if (gates.subject) conditions.push(gates.subject);
+  if (gates.deps) conditions.push(gates.deps);
+  if (gates.workspaceCap) conditions.push(gates.workspaceCap);
+  if (gates.workspaceExecutor) conditions.push(gates.workspaceExecutor);
+  if (gates.workspacePaused) conditions.push(gates.workspacePaused);
+  if (gates.runnerCooldown) conditions.push(gates.runnerCooldown);
+  if (gates.role) conditions.push(gates.role);
+
+  return conditions;
+}
+
+/** Fetch candidate task IDs the way the claim route does, for test verification. */
+export async function fetchBroadClaimCandidateIds(
+  builder: { select: typeof db.select },
+  opts: { workspaceIds: string[]; caller: RunnerQueueCaller; now: Date },
+): Promise<string[]> {
+  const conditions = buildBroadClaimWhere(opts.caller, opts.now, opts.workspaceIds);
+  const rows = await builder
+    .select({ id: tasks.id })
+    .from(tasks)
+    .where(and(...conditions)!)
+    .orderBy(...claimOrderBy(tasks, { desc, asc }));
+  return rows.map((r) => r.id);
+}
+
 export async function loadRunnerQueue(
   input: { workspaceIds: string[]; caller: RunnerQueueCaller; now?: Date },
   deps: RunnerQueueDeps = {},

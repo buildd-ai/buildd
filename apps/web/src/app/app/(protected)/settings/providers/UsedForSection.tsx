@@ -12,8 +12,9 @@ import { AUTOMATIC, loneProviderLine, usedForView } from './providers-view';
  * more, one picker per surface (`teams.provider_assignments`, PATCH
  * /api/providers/assignments); an option a surface cannot use is disabled with
  * what it needs. `decisions` is the decision model row (a platform operator's
- * only; absent for everyone else), `extra` the Claude / Codex switch, both
- * drawn only in the table.
+ * only; absent for everyone else), drawn under the pickers, or under the one
+ * line when there are none. `extra` is the Claude / Codex switch, drawn only
+ * with the table.
  */
 export default function UsedForSection({ teamId, data, canManage, decisions, extra }: {
   teamId: string;
@@ -54,14 +55,15 @@ export default function UsedForSection({ teamId, data, canManage, decisions, ext
     }
   }
 
-  if (!rows) {
-    return lone ? <p className="text-body text-text-secondary" data-testid="provider-lone">{lone}</p> : null;
-  }
+  const loneLine = lone && <p className="text-body text-text-secondary" data-testid="provider-lone">{lone}</p>;
+  // Fewer than two providers: no pickers, but an operator's Decisions row still shows.
+  if (!rows && !decisions) return loneLine || null;
 
   return (
     <Section title="Used for" id="used-for" className="scroll-mt-20">
-      <dl className="border-y border-border-default divide-y divide-border-default" data-testid="used-for">
-        {rows.map((r) => (
+      {!rows && loneLine && <div className="mb-3">{loneLine}</div>}
+      <dl className="border-y border-border-default divide-y divide-border-default" data-testid={rows ? 'used-for' : 'used-for-decisions-only'}>
+        {rows?.map((r) => (
           <div key={r.surface} className="flex flex-wrap items-center gap-x-4 gap-y-1.5 py-2 min-h-12" data-testid={`used-for-${r.surface}`}>
             <dt className="w-full sm:w-36 shrink-0 text-body text-text-primary">{r.label}</dt>
             <dd className="w-full min-w-0 sm:w-auto sm:flex-1 sm:max-w-72">

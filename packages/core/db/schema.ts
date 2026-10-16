@@ -2042,8 +2042,8 @@ export const workers = pgTable('workers', {
   // account-owned (NULL) one.
   claimedByUserId: uuid('claimed_by_user_id'),
   // Set at claim when a cloud container claimed this worker (executor 'cloud' or a
-  // task-token claim). There the task token is the runner's own credential, so its
-  // verification evidence counts as the runner's (lib/verification-provenance.ts).
+  // task-token claim). Read by the seat-wall attribution; verification evidence on a
+  // task token counts as the agent's either way (lib/verification-provenance.ts).
   claimedByCloud: boolean('claimed_by_cloud').default(false).notNull(),
   name: text('name').notNull(),
   runner: text('runner').notNull(),
@@ -3492,6 +3492,11 @@ export const workerHeartbeats = pgTable('worker_heartbeats', {
   // stops being true — so "how long has it been behind" is measured from this
   // column instead of inferred from boot age or heartbeat cadence.
   updateAvailableSince: timestamp('update_available_since', { withTimezone: true }),
+  // Present while the runner has halted claims to drain busy workers before a
+  // self-update (update-drain.ts): ISO `since`, ISO `endsAt` (window expiry),
+  // and `busy` workers still running. Null/absent = claiming normally. Lets
+  // list_runners explain free slots + no claims without SSH.
+  updateDrain: jsonb('update_drain').$type<{ since: string; endsAt: string; busy: number } | null>(),
   // The branch this install tracks (BUILDD_BRANCH) — already sent on every
   // heartbeat to resolve latestCommit (see the heartbeat route), but not
   // persisted until now, so GET /api/workers/active can show it per runner.
@@ -6310,6 +6315,10 @@ export const decisionModelMeasurements = pgTable('decision_model_measurements', 
   calibration: jsonb('calibration').$type<{ x: number[]; y: number[] }>(),
   // Act on these labels only, each at its own threshold; null = every label at `threshold`.
   labelThresholds: jsonb('label_thresholds').$type<Record<string, number>>(),
+  // What the threshold was derived from: 'collected' (replayed decisions graded by
+  // outcome) or 'labelled' (a labelled or synthetic set). A labelled row is a
+  // placeholder: a later collected score replaces it, never the other way round.
+  caseSource: text('case_source').notNull().default('collected').$type<'collected' | 'labelled'>(),
 }, (t) => ({
   kindModelIdx: uniqueIndex('decision_model_measurements_kind_model_idx').on(t.kind, t.model),
 }));

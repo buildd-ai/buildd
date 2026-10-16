@@ -86,6 +86,7 @@ import { fireTerminalRecord } from '@/lib/terminal-record-ledger';
 import { applyReviewerLedeCorrection } from '@/lib/pr-lede-correction';
 import { resolveDispatchedReview } from '@/lib/verdict-provenance';
 import { kernelDeliveryForPr } from '@/lib/workflow/authority';
+import { notKernelMergedTaskSql } from '@/lib/workflow/pr-fact-scope';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS, WORKERS_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { recordCredentialAuthFailure, recordCredentialAuthSuccess, getActiveClaudeSecretId } from '@/lib/credential-health';
 import { classifyAuthErrorSeverity, type AuthErrorSeverity } from '@buildd/core/auth-error-classifier';
@@ -793,8 +794,8 @@ export async function PATCH(
   if (worker.status === 'failed' || worker.status === 'completed' || worker.status === 'error') {
     // The runner's own verification report for a verification run still counts
     // when the agent made the terminal write first (lib/late-runner-evidence.ts).
-    // A task token on a host worker is the agent, so its late copy is ignored.
-    if (body.verificationEvidence && worker.taskId && !agentCredential(account, worker)) {
+    // A task token is the agent (in a cloud container too), so its late copy is ignored.
+    if (body.verificationEvidence && worker.taskId && !agentCredential(account)) {
       await emit({
         type: 'worker.late_verification_reported',
         taskId: worker.taskId,
@@ -975,9 +976,9 @@ export async function PATCH(
     siblingProbe: supportsSiblingProbe,
   } = body;
   // Stamped by the server with how it arrived (lib/verification-provenance.ts):
-  // on a host runner a task token is the agent's credential, not the runner's.
+  // a task token is the agent's credential, not the runner's, on host and cloud alike.
   const verificationEvidence = stampEvidence(rawVerificationEvidence, {
-    viaTaskToken: agentCredential(account, worker),
+    viaTaskToken: agentCredential(account),
   }) ?? undefined;
   let status = reportedStatus;
   let error = reportedError;
@@ -1474,12 +1475,16 @@ export async function PATCH(
     updates.completedAt = null;
     updates.error = null;
 
-    // Reactivate the associated task
+    // Reactivate the associated task. Not one the kernel finished (completed, its delivery
+    // MERGED): a person's follow-up on a shipped task runs the worker again, but the task keeps
+    // the status its merge gave it. Its own completion PATCH records the result; a failure or
+    // requeue of the follow-up cannot reopen shipped work (S4b review: kept guarded, see the
+    // write-site guard's ATTEMPT_MERGED_GUARD).
     if (worker.taskId) {
       await db
         .update(tasks)
         .set({ status: 'assigned', updatedAt: new Date() })
-        .where(eq(tasks.id, worker.taskId));
+        .where(and(eq(tasks.id, worker.taskId), notKernelMergedTaskSql()));
     }
   }
   // Enforce output requirement based on task.outputRequirement
@@ -1876,8 +1881,13 @@ export async function PATCH(
     // runner-reported end-of-session completion has no agent turn left to read
     // a refusal, so it keeps the requeue-once contract guard further down.
     if (isReviewerTask && (worker.runner === 'mcp' || body.viaCompleteTask === true)) {
+      // Absent or null structuredOutput (verdict only in the summary prose) is
+      // refused too: parseReviewerOutput rejects it, and the worker stays live.
+      // Only an explicit complete_task call is refused for omitting it: other
+      // interactive completions keep the server-side prose-verdict extraction.
       const submitted = body.structuredOutput as { verdict?: unknown } | null | undefined;
-      if (submitted && typeof submitted === 'object' && submitted.verdict) {
+      const omitted = submitted === undefined || submitted === null;
+      if (!omitted || body.viaCompleteTask === true) {
         const parsed = parseReviewerOutput(submitted);
         if (!parsed.ok) {
           return NextResponse.json({
@@ -2392,6 +2402,7 @@ export async function PATCH(
             eq(tasks.id, worker.taskId),
             eq(tasks.status, terminalTaskRow[0]!.status),
             sql`COALESCE(${tasks.context}->>'silentCompletionRetryCount', '0') = ${String(previousContext.silentCompletionRetryCount ?? 0)}`,
+            notKernelMergedTaskSql(),
           )).returning({ id: tasks.id });
           if (settled.length && !next.retry) {
             await db.insert(missionNotes).values({
@@ -2858,6 +2869,11 @@ export async function PATCH(
   // backoff, so the next attempt lands after GitHub's window instead of the
   // task failing outright.
   const isGithubThrottled = status === 'failed' && body.githubThrottled === true;
+  // The runner refused a Claude run before spawn: its machine has no model
+  // login or key, and the claim delivered none (model credentials spec R-5).
+  // The machine's setup, not the task: it rides the infra retry budget below,
+  // so the task goes back to the queue for a runner that has a login.
+  const isModelAuthMissing = status === 'failed' && body.modelAuthMissing === true;
   // The CLI's model version gate: this runner cannot serve the model the task
   // was routed to. A deterministic 400 before the first turn, so it is infra
   // and rides the infra retry budget below; the claim route's capability gate
@@ -2883,6 +2899,7 @@ export async function PATCH(
       taskCancelled: taskCancelledUnderSession,
       crashReconciled: isCrashReconciled,
       githubThrottled: isGithubThrottled,
+      modelAuthMissing: isModelAuthMissing,
       unrecognizedModel: isUnrecognizedModel,
       needsInput: isNeedsInput,
       budgetLimited: isBudgetError,
@@ -2939,7 +2956,7 @@ export async function PATCH(
       await db
         .update(tasks)
         .set({ status: 'pending', claimedBy: null, claimedAt: null, expiresAt: null, updatedAt: new Date() })
-        .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled'))));
+        .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled')), notKernelMergedTaskSql()));
       // An enforce-mode path collision: make the requeue wait for the holder
       // (collided path joins the manifest, so the claim route's lease
       // backstop defers it) and resume from the pushed checkpoint.
@@ -3219,7 +3236,7 @@ export async function PATCH(
           ...(failoverBackend && { failedOverFrom: taskForBudget?.backend || 'claude', failoverReason: 'budget_exhausted' }),
         },
       })
-      .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled'))));
+      .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled')), notKernelMergedTaskSql()));
 
     // A failover is claimable on the other provider now. A deferral wakes at
     // the reset and not before: an instant wake would re-claim straight into
@@ -3302,7 +3319,7 @@ export async function PATCH(
         await db
           .update(tasks)
           .set({ status: 'pending', claimedBy: null, claimedAt: null, updatedAt: new Date() })
-          .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled'))));
+          .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled')), notKernelMergedTaskSql()));
         await wakeTask(worker.taskId, 'task.requeued');
       }
       isBudgetReset = true; // reuse hold-for-retry UX: skip fail notification, re-broadcast pending
@@ -3394,7 +3411,7 @@ export async function PATCH(
                     previousWorkerId: id,
                   },
                 })
-                .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled'))));
+                .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled')), notKernelMergedTaskSql()));
 
               // Another provider can carry it now; no delay to honour.
               await wakeTask(worker.taskId, 'task.requeued');
@@ -3584,7 +3601,7 @@ export async function PATCH(
         // failed every in-flight non-mission task. A model version-gate 400
         // rides it too: bounded, backed off, and uncharged. So does a clone GitHub
         // throttled: the backoff is the point, GitHub needs time.
-        if ((isSteeringDelivery || isNonGateRefusal || isCrashReconciled || isGithubThrottled || (isUnrecognizedModel && !isModelIdRejected)) && !isBudgetReset && taskForRetry?.status !== 'cancelled') {
+        if ((isSteeringDelivery || isNonGateRefusal || isCrashReconciled || isGithubThrottled || isModelAuthMissing || (isUnrecognizedModel && !isModelIdRejected)) && !isBudgetReset && taskForRetry?.status !== 'cancelled') {
           const infraRetryCount = (taskCtxForRetry.infraRetryCount as number) || 0;
           if (infraRetryCount < MAX_INFRA_RETRIES_PATCH) {
             shouldAutoRetry = true;
@@ -4147,11 +4164,17 @@ export async function PATCH(
       }
 
       // Guard: a cancelled task must not be re-queued (shouldAutoRetry path) nor have
-      // its terminal status overridden by a worker that was aborted mid-flight.
+      // its terminal status overridden by a worker that was aborted mid-flight. Nor may a
+      // late failure or retry move a task the kernel already finished (completed, its
+      // delivery MERGED): S4b review. A completion over it still records its result.
       await db
         .update(tasks)
         .set(taskUpdate)
-        .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled'))));
+        .where(and(
+          eq(tasks.id, worker.taskId),
+          not(eq(tasks.status, 'cancelled')),
+          ...(taskUpdate.status === 'completed' ? [] : [notKernelMergedTaskSql()]),
+        ));
 
       // The routing-outcome analytics row this report produces, minus the
       // outcome. Built here so a release held for CI can keep it on the task:
@@ -4198,7 +4221,7 @@ export async function PATCH(
                 result: resultWithRelease,
                 updatedAt: new Date(),
               })
-              .where(eq(tasks.id, worker.taskId));
+              .where(and(eq(tasks.id, worker.taskId), notKernelMergedTaskSql()));
             taskUpdate.result = resultWithRelease;
             slotFailure = { slot: 'release', label: 'Release failed', reason: release.reason };
 
@@ -4854,7 +4877,7 @@ export async function PATCH(
         await db
           .update(tasks)
           .set({ status: 'failed', updatedAt: new Date() })
-          .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled'))));
+          .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled')), notKernelMergedTaskSql()));
       }
     } catch (err) {
       console.error(`[Worker ${id}] Mission budget check failed:`, err);

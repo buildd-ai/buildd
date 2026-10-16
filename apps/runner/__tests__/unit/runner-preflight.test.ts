@@ -8,7 +8,7 @@ import { join } from 'path';
 const nodeFs = require('fs') as typeof import('fs');
 const HOME: string = nodeFs.mkdtempSync(join(require('os').tmpdir(), 'preflight-'));
 const { runPreflight, fixLine, PREFLIGHT_INSTALL_TIMEOUT_MS, PREFLIGHT_RETRY_COOLDOWN_MS } = await import('../../src/preflight');
-const { findMissingPackages, INSTALL_LOCK_FILE, INSTALL_LOCK_MAX_AGE_MS } = await import('../../src/package-tree');
+const { findMissingPackages, INSTALL_LOCK_FILE, INSTALL_LOCK_MAX_AGE_MS, acquireInstallLock, releaseInstallLock, installInProgress } = await import('../../src/package-tree');
 const { busyLine } = await import('../../src/preflight');
 
 const RUNNER = join(HOME, 'apps', 'runner');
@@ -104,6 +104,45 @@ describe('runPreflight', () => {
     expect(r.ok).toBe(true);
     expect(installs).toBe(0);
     expect(findMissingPackages(HOME)).toEqual([]);
+  });
+});
+
+describe('installInProgress: atomic lock acquisition', () => {
+  const T0 = 2_000_000_000;
+
+  test('acquireInstallLock uses O_EXCL for atomicity and falls back to write', () => {
+    seed({ dangling: false });
+    const lockPath = join(HOME, INSTALL_LOCK_FILE);
+    acquireInstallLock(HOME, nodeFs, () => T0, 12345);
+    const contents = JSON.parse(nodeFs.readFileSync(lockPath, 'utf-8'));
+    expect(contents.pid).toBe(12345);
+    expect(contents.startedAt).toBe(T0);
+    releaseInstallLock(HOME, nodeFs);
+    expect(nodeFs.existsSync(lockPath)).toBe(false);
+  });
+
+  test('a second acquireInstallLock while a live lock exists leaves the first intact', () => {
+    seed({ dangling: false });
+    const lockPath = join(HOME, INSTALL_LOCK_FILE);
+    const FIRST_PID = 12345;
+    const SECOND_PID = 99999;
+    acquireInstallLock(HOME, nodeFs, () => T0, FIRST_PID, { isAlive: () => true });
+    const firstContents = JSON.parse(nodeFs.readFileSync(lockPath, 'utf-8'));
+    expect(firstContents.pid).toBe(FIRST_PID);
+    expect(firstContents.startedAt).toBe(T0);
+    acquireInstallLock(HOME, nodeFs, () => T0 + 1000, SECOND_PID, { isAlive: () => true });
+    const secondContents = JSON.parse(nodeFs.readFileSync(lockPath, 'utf-8'));
+    expect(secondContents.pid).toBe(FIRST_PID);
+    expect(secondContents.startedAt).toBe(T0);
+    releaseInstallLock(HOME, nodeFs);
+  });
+
+  test('installInProgress respects the lock age bound: old locks are stale', () => {
+    seed({ dangling: false });
+    const OLD_LOCK_AGE_MS = INSTALL_LOCK_MAX_AGE_MS + 1;
+    nodeFs.writeFileSync(join(HOME, INSTALL_LOCK_FILE), JSON.stringify({ pid: 99999, startedAt: T0 - OLD_LOCK_AGE_MS }));
+    const detected = installInProgress(HOME, nodeFs, { now: () => T0, isAlive: () => true });
+    expect(detected).toBeNull();
   });
 });
 

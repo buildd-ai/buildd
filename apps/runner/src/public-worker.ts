@@ -117,6 +117,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   costBasis: true,
   sandboxMountGap: true,
   bwrapRetryPending: true,
+  modelAuthMissing: true, // a boolean, no credential
   phaseText: true,
   phaseStart: true,
   phaseToolCount: true,
