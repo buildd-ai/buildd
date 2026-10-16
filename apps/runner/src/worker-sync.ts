@@ -362,9 +362,13 @@ export class WorkerSync {
             worker.status = 'waiting';
             worker.error = PAUSED_ERROR;
             worker.completedAt = undefined;
-            worker.waitingFor = pausedWaitingFor('crash');
+            // A pause a person had asked for (still waiting on a tool when the
+            // process died) stays theirs: it waits for them, never auto-continues.
+            const byPerson = !!worker.pauseRequestedAt;
+            worker.pauseRequestedAt = undefined;
+            worker.waitingFor = pausedWaitingFor(byPerson ? 'person' : 'crash');
             worker.currentAction = 'Paused';
-            worker.resumeOnStart = 'crash';
+            worker.resumeOnStart = byPerson ? undefined : 'crash';
             delete worker.killedByRestart;
             sessionLog(worker.id, 'info', 'restart_paused', 'runner stopped with this worker running; worktree and session intact, restored as paused', worker.taskId);
             storeSaveWorker(worker);
