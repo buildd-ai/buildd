@@ -14,7 +14,7 @@ import { asc, desc } from 'drizzle-orm';
 
 mock.module('@buildd/core/db', () => ({ db: { query: {} } }));
 
-const { buildRunnerQueueQuery, classifyRunnerQueueRow, groupRunnerQueue, loadRunnerQueue, runnerQueueGates, runnerQueueWhere, RUNNER_QUEUE_LIMIT } = await import('./claim-order-queue');
+const { buildRunnerQueueQuery, buildBroadClaimWhere, classifyRunnerQueueRow, groupRunnerQueue, loadRunnerQueue, runnerQueueGates, runnerQueueWhere, RUNNER_QUEUE_LIMIT } = await import('./claim-order-queue');
 const { claimOrderBy, compareClaimOrder, activeWorkerGate, runnerCooldownGate } = await import('./claim-order');
 const { missionNotLocal, taskNotReserved } = await import('@/app/api/workers/claim/held-gate');
 const { roleSlugGate } = await import('@/app/api/workers/claim/role-gate');
@@ -193,5 +193,32 @@ describe('loadRunnerQueue', () => {
     const out = await loadRunnerQueue({ workspaceIds: ['ws-a'], caller }, { read: async () => many, estimates: async () => null });
     expect(out.truncated).toBe(true);
     expect(out.teams[0].queue.length).toBe(RUNNER_QUEUE_LIMIT);
+  });
+});
+
+describe('buildBroadClaimWhere', () => {
+  it('renders as a valid SQL WHERE list through PgDialect', () => {
+    const conditions = buildBroadClaimWhere(caller, NOW, ['ws-a', 'ws-b']);
+    expect(conditions.length).toBeGreaterThan(0);
+    // Ensure each condition renders as valid SQL.
+    for (const cond of conditions) {
+      const { sql } = dialect.sqlToQuery(cond);
+      expect(sql).toBeTruthy();
+    }
+  });
+
+  it('includes workspace and status predicates first', () => {
+    const conditions = buildBroadClaimWhere(caller, NOW, ['ws-a', 'ws-b']);
+    const rendered = conditions.slice(0, 2).map(c => render(c));
+    expect(rendered[0]).toContain('workspace_id');
+    expect(rendered[1]).toContain('status');
+  });
+
+  it('includes gate predicates from the claim route', () => {
+    const conditions = buildBroadClaimWhere(caller, NOW, ['ws-a', 'ws-b']);
+    const rendered = conditions.map(c => render(c)).join('\n');
+    // Should include key gates the claim route checks.
+    expect(rendered).toMatch(/claimFree|expires_at/i); // claimFree or expiresAt
+    expect(rendered).toMatch(/mission_id|local/i); // missionLocal-related
   });
 });
