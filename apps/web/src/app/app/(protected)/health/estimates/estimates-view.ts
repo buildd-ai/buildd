@@ -13,7 +13,7 @@ type BacktestScore = TaskEstimateReadout['overall'];
 /** Below this many scored tasks no rate is shown, rounded or otherwise. */
 export const MIN_SCORED_FOR_VERDICT = 10;
 
-/** Sources that mean the repo had little history to go on. */
+/** Sources that supplied little comparable local evidence. */
 const LIMITED_HISTORY_SOURCES = ['prior', 'default'];
 
 export interface EstimatesReadoutView {
@@ -63,5 +63,5 @@ export function limitedHistoryLine(bySource: readonly GroupScore[]): string | nu
   const n = bySource
     .filter(g => LIMITED_HISTORY_SOURCES.includes(g.key))
     .reduce((sum, g) => sum + g.score.scored, 0);
-  return n > 0 ? `${n} of these had little history in the repo to go on.` : null;
+  return n > 0 ? `${n} of these had limited comparable history in the repo.` : null;
 }

@@ -95,3 +95,20 @@ describe('resolveTaskEstimatesState', () => {
     }
   });
 });
+
+describe('canonical frozen estimate payload', () => {
+  it('version-specific calibration cannot carry over, and legacy prose is replaced', async () => {
+    const { taskEstimatePayload } = await import('../task-estimate-rollout');
+    const row = {
+      estimatorVersion: 'old-version', p50Minutes: 6.2, p80Minutes: 14.2, p50Tokens: 100, p80Tokens: 200, expectedRepairs: 0,
+      explanation: { sources: [{ source: 'prior' as const, n: 50, weight: 1 }], priorWeight: 1, clusterLabel: null, summary: '5m; no history in this repo' },
+    };
+    const payload = taskEstimatePayload(row, go);
+    expect(payload.calibration).toBe('unknown');
+    expect(payload.explanation.summary).toContain('About 5–15 min');
+    expect(payload.explanation.summary).not.toContain('no history');
+    expect(row.explanation.summary).toContain('no history'); // frozen input untouched
+    expect(taskEstimatePayload({ ...row, estimatorVersion: go.estimatorVersion }, go).calibration).toBe('passed');
+    expect(taskEstimatePayload({ ...row, estimatorVersion: go.estimatorVersion }, { ...go, verdict: 'no_go' }).calibration).toBe('failed');
+  });
+});
