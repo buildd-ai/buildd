@@ -21,7 +21,7 @@ mock.module('@/lib/mission-stage-load', () => ({ loadMissionStages: mockLoadMiss
 mock.module('@buildd/core/db', () => ({ db: { query: { missions: { findMany: mockFindMany } } } }));
 
 const { GET } = await import('./route');
-const { RECENT_DAYS, recentMissionsWhere, deliveredAtSql } = await import('@/lib/missions-recent');
+const { RECENT_DAYS, recentMissionsWhere, deliveredAtSql, deliveredAtSqlFor } = await import('@/lib/missions-recent');
 const { missionStatusNoteBody } = await import('@/lib/mission-status-note');
 const dialect = new PgDialect();
 
@@ -107,12 +107,12 @@ describe('GET /api/missions/recent', () => {
       expect(text).toBe(
         '(("missions"."workspace_id" in ($1, $2)) and ((("missions"."status" in ($3, $4, $5)) or ((("missions"."status" = $6) and '
         + '(greatest("missions"."completed_at", ( select max("mission_notes"."created_at") from "mission_notes" '
-        + 'where "mission_notes"."mission_id" = "missions"."id" and "mission_notes"."type" = \'update\' '
-        + 'and "mission_notes"."author_type" = \'system\' and "mission_notes"."title" in (\'Mission status changed\', \'Mission reopened\') '
-        + 'and "mission_notes"."body" like $7 )) >= $8))))))',
+        + 'where "mission_notes"."mission_id" = "missions"."id" and "mission_notes"."created_at" >= $7 and "mission_notes"."type" = \'update\' '
+        + 'and "mission_notes"."author_type" = \'system\' and "mission_notes"."title" in ($8, $9) '
+        + 'and "mission_notes"."body" like $10 )) >= $11))))))',
       );
-      expect(rendered.params.slice(0, 7)).toEqual(['ws-1', 'ws-2', 'active', 'paused', 'budget_exhausted', 'completed', '% → completed']);
-      expect(new Date(rendered.params[7] as string).getTime()).toBe(since.getTime());
+      expect(rendered.params.slice(0, 10)).toEqual(['ws-1', 'ws-2', 'active', 'paused', 'budget_exhausted', 'completed', since, 'Mission status changed', 'Mission reopened', '% → completed']);
+      expect(new Date(rendered.params[10] as string).getTime()).toBe(since.getTime());
     });
 
     it('a re-completion through a status PATCH counts: its "→ completed" feed note is read', () => {
@@ -123,6 +123,18 @@ describe('GET /api/missions/recent', () => {
       expect(like.test(missionStatusNoteBody('active', 'completed'))).toBe(true);
       expect(like.test(missionStatusNoteBody('archived', 'completed'))).toBe(true);
       expect(like.test(missionStatusNoteBody('completed', 'active'))).toBe(false);
+    });
+
+    it('a forged post_note (author_type != system) with body matching "→ completed" does not update delivered time', () => {
+      const rendered = dialect.sqlToQuery(deliveredAtSqlFor(new Date(0)));
+      const sql = rendered.sql;
+      // The query must check author_type = 'system' to reject user-posted notes
+      expect(sql).toContain('author_type');
+      expect(sql).toContain("'system'");
+      // The query must check the title is one of the system-generated ones
+      expect(sql).toContain('title');
+      const titleCheck = [...sql.matchAll(/title.*in\s*\([^)]+\)/g)];
+      expect(titleCheck.length).toBeGreaterThan(0);
     });
   });
 

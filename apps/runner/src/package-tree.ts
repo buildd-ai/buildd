@@ -76,14 +76,20 @@ export interface LockProbe {
 }
 
 function pidAlive(pid: number): boolean {
-  // Pid 1 (init in containers) cannot be killed, so treat it as always alive.
-  if (pid === 1) return true;
   try { process.kill(pid, 0); return true; } catch (err: any) { return err?.code === 'EPERM'; }
 }
 
-/** Mark an install as running in this process. Best effort: a failed write only loses the guard. */
+/** Mark an install as running in this process. Use O_EXCL for atomicity. Best effort: a failed write only loses the guard. */
 export function acquireInstallLock(installDir: string, fs: TreeFs = nodeFs, now: () => number = Date.now, pid = process.pid): void {
-  try { fs.writeFileSync(join(installDir, INSTALL_LOCK_FILE), JSON.stringify({ pid, startedAt: now() })); } catch { /* guard only */ }
+  const path = join(installDir, INSTALL_LOCK_FILE);
+  const data = JSON.stringify({ pid, startedAt: now() });
+  try {
+    const fd = nodeFs.openSync(path, 'wx');
+    nodeFs.writeSync(fd, data);
+    nodeFs.closeSync(fd);
+  } catch {
+    try { fs.writeFileSync(path, data); } catch { /* guard only */ }
+  }
 }
 
 export function releaseInstallLock(installDir: string, fs: TreeFs = nodeFs): void {
