@@ -23,12 +23,30 @@ describe('queue sections (R-26)', () => {
       [2, 'feat(intake): one intake door', 'alpha', 'Bug intake', '1h', 'after 1'],
       [3, 'chore(web): cache /fonts', 'alpha', '(no mission)', '15m', 'after 2'],
       [4, 'docs: kernel commands', 'alpha', 'Workflow kernel', '-', 'after 3'],
-      [5, 'chore: rotate the logs', 'alpha', 'Workflow kernel', '-', '17:00'],
+    ]);
+    // A start time of its own is held, listed after the queue with its reason.
+    expect(one.held.map(r => [r.position, r.title, r.mission, r.starts])).toEqual([
+      [null, 'chore: rotate the logs', 'starts at its set time, 17:00', '17:00'],
     ]);
     // The organizer's planning run is not work (R-22).
     expect(one.rows.map(r => r.taskId)).not.toContain('q-plan');
     expect(two.teamName).toBe('Team Two');
     expect(two.rows.map(r => [r.position, r.est, r.starts])).toEqual([[1, null, 'next']]);
+  });
+
+  test('a retry floor far out is held with its reason and does not count toward "after N"', () => {
+    const far = new Date(NOW + 6 * 24 * 3_600_000).toISOString();
+    const t = QUEUE.teams[0];
+    const queue = { ...QUEUE, teams: [{ ...t, queue: [
+      { ...t.queue[0], holds: ['deferred' as const], holdUntil: far, holdCause: 'retry_after_failures' as const },
+      t.queue[1], t.queue[2],
+    ] }, QUEUE.teams[1]] };
+    const s = reduce({ ...queueState(), claimOutcomes: { tasks: {}, broad: null } }, { type: 'queue', queue });
+    const [one] = queueSections(s, NOW);
+    expect(one.rows.map(r => [r.position, r.starts])).toEqual([[1, 'next'], [2, 'after 1']]);
+    expect(one.held).toHaveLength(1);
+    expect(one.held[0].reason).toMatch(/^retries after failures, /);
+    expect(one.held[0].held).toBe(true);
   });
 
   test('"Not for this runner" names why: a local session, another runner, a role it lacks', () => {
