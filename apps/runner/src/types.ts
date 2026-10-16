@@ -348,6 +348,9 @@ export interface LocalWorker {
   // taxonomy to re-enable once the tightened scanner has a production track record.
   sandboxMountGap?: boolean;
   bwrapRetryPending?: boolean;  // Set when bwrap namespace denial fires mid-run; startSession will restart without sandbox
+  // Refused before spawn: no model credential for a Claude run (host-seat.ts
+  // claudeModelAuthMissing). Reported as an infra failure, paused by NO_MODEL_AUTH_PAUSE.
+  modelAuthMissing?: boolean;
   // Phase tracking (reasoning text → tool call grouping)
   phaseText: string | null;
   phaseStart: number | null;
