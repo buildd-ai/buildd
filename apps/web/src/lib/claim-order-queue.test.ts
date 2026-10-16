@@ -167,7 +167,7 @@ describe('loadRunnerQueue', () => {
     const out = await loadRunnerQueue({ workspaceIds: ['ws-a'], caller, now: NOW }, {
       read: async () => [row({ id: 't-1' }), row({ id: 't-2' }), row({ id: 't-3', teamId: 'team-b', teamName: 'Bravo' })],
       estimates: async (teamId) => teamId === 'team-1'
-        ? [{ taskId: 't-1', p50Minutes: 39.6, p80Minutes: 60 }, { taskId: 't-1', p50Minutes: 10, p80Minutes: 20 }]
+        ? [{ taskId: 't-1', p50Minutes: 39.6 }, { taskId: 't-1', p50Minutes: 10 }]
         : null,
     });
     const acme = out.teams.find(t => t.teamName === 'Acme')!;

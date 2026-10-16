@@ -19,17 +19,15 @@
 import { and, asc, desc, eq, inArray, isNull, lt, lte, or, sql, type SQL } from 'drizzle-orm';
 import { taskEstimatesEnabled } from '@buildd/core/task-estimate-source';
 import { db } from '@buildd/core/db';
-import { missions, tasks, teams, workspaces } from '@buildd/core/db/schema';
+import { missions, taskEstimates, tasks, teams, workspaces } from '@buildd/core/db/schema';
 import type { RunnerExecutor, RunnerQueueExclusion, RunnerQueueHold, RunnerQueueResponse, RunnerQueueTask, RunnerQueueTeam } from '@buildd/shared';
 import { depsGate } from '@/app/api/workers/claim/deps-gate';
 import { missionNotHeld, missionNotLocal, taskNotHeld, taskNotReserved } from '@/app/api/workers/claim/held-gate';
-import { roleSlugGate } from '@/app/api/workers/claim/role-gate';
 import { subjectLivenessCondition } from '@/app/api/workers/claim/subject-gate';
 import { workspaceCapGate } from '@/app/api/workers/claim/workspace-cap-gate';
 import { workspaceExecutorGate } from '@/app/api/workers/claim/workspace-executor-gate';
 import { workspaceNotPausedGate } from '@/app/api/workers/claim/workspace-paused-gate';
-import { loadBuildEstimateRows, type EstimateRow } from '@/lib/mission-build-estimates';
-import { CLAIM_COOLDOWN_MS, activeWorkerGate, claimOrderBy, runnerCooldownGate, runnerPreferenceGate } from '@/lib/claim-order';
+import { CLAIM_COOLDOWN_MS, activeWorkerGate, claimOrderBy, roleSlugGate, runnerCooldownGate, runnerPreferenceGate } from '@/lib/claim-order';
 
 /** At most this many waiting tasks are read, in claim order. */
 export const RUNNER_QUEUE_LIMIT = 300;
@@ -227,17 +225,20 @@ async function readRows(opts: { workspaceIds: string[]; gates: Partial<Record<Qu
   return (await buildRunnerQueueQuery(db, opts)) as unknown as RunnerQueueRow[];
 }
 
+export type EstimateRow = { taskId: string; p50Minutes: number };
+
 /**
- * Teams with task estimates on get each queued task's frozen p50 (the rows the
- * mission Overview and Plan page read); a team with them off gets none.
+ * Teams with task estimates on get each queued task's frozen p50, from the
+ * same rows the mission Overview and Plan page read, under the same team
+ * switch; a team with them off gets none (null). Newest row first.
  */
 async function readEstimates(teamId: string, taskIds: string[]): Promise<EstimateRow[] | null> {
-  let enabled = false;
-  const rows = await loadBuildEstimateRows(
-    { teamId, taskIds, finished: false },
-    { enabled: async (id) => { enabled = await taskEstimatesEnabled(id); return enabled; } },
-  );
-  return enabled ? rows : null;
+  if (taskIds.length === 0 || !(await taskEstimatesEnabled(teamId))) return null;
+  return db
+    .select({ taskId: taskEstimates.taskId, p50Minutes: taskEstimates.p50Minutes })
+    .from(taskEstimates)
+    .where(and(eq(taskEstimates.teamId, teamId), inArray(taskEstimates.taskId, taskIds)))
+    .orderBy(desc(taskEstimates.createdAt));
 }
 
 export async function loadRunnerQueue(

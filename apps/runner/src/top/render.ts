@@ -7,6 +7,7 @@
  */
 import type { Palette, PaletteToken } from '../terminal-palette';
 import { progressPieces } from './progress';
+import { queueSections, selectedQueueRow, type QueueRow, type QueueSection } from './queue';
 import {
   busySlots, currentMission, currentWorkspace, deliveredDay, describeToolCall, filterLine, formatDuration, missionMeta, missionRows, missionStageLine, missionStageWord, planOf,
   providerHoldLine, providerHolds, selectedRow,
@@ -168,12 +169,13 @@ function rule(cols: number, p: Palette): string {
   return p.fg('faint', '─'.repeat(cols));
 }
 
-const HINTS_LIST = ['↑↓ move', '⏎ open', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 'o web', 't team', 'w workspace', '/ filter', '? help', 'q quit'];
+const HINTS_LIST = ['↑↓ move', '⏎ open', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 'o web', 'tab queue', 't team', 'w workspace', '/ filter', '? help', 'q quit'];
+const HINTS_QUEUE = ['↑↓ move', 'c claim', 'o web', 'tab missions', 't team', 'w workspace', '/ filter', '? help', 'q quit'];
 const HINTS_HELP = ['o open this runner on buildd', 'any key back', 'q quit'];
 const HINTS_DETAIL = ['esc back', 'a answer', 'm message', 'p pause', 'x stop', 'c claim', 'o web', 'q quit'];
 
 /** Dropped first when the footer is too narrow; `? help`, `t`, `w` and `q quit` always stay. */
-const HINT_DROP_ORDER = ['/ filter', 'o web', '⏎ open', '↑↓ move', 'm message', 'c claim', 'p pause', 'x stop', 'a answer', 'esc back'];
+const HINT_DROP_ORDER = ['/ filter', 'o web', '⏎ open', '↑↓ move', 'tab queue', 'm message', 'c claim', 'p pause', 'x stop', 'a answer', 'esc back'];
 
 function fitHints(hints: string[], cols: number): string {
   for (const sep of ['  ', ' ']) {
@@ -210,7 +212,7 @@ function footer(state: TopState, cols: number, p: Palette): string {
     const token: PaletteToken = state.status.tone === 'error' ? 'error' : state.status.tone === 'ok' ? 'success' : 'muted';
     return p.fg(token, fit(' ' + state.status.text, cols));
   }
-  const hints = m.kind === 'detail' ? HINTS_DETAIL : m.kind === 'help' ? HINTS_HELP : HINTS_LIST;
+  const hints = m.kind === 'detail' ? HINTS_DETAIL : m.kind === 'help' ? HINTS_HELP : state.view === 'queue' ? HINTS_QUEUE : HINTS_LIST;
   return p.fg('muted', fit(fitHints(hints, cols), cols));
 }
 
@@ -441,6 +443,7 @@ const HELP_KEYS: Array<[string, string]> = [
   ['p', 'pause a running agent'],
   ['x', 'stop a running agent (asks first)'],
   ['c', 'claim a waiting task onto this runner'],
+  ['tab', 'switch between Missions and Queue (what this runner takes next)'],
   ['o', 'open the task on buildd'],
   ['t', 'show the next team, then all of them'],
   ['w', 'show the next workspace of that team, then all of them'],
@@ -471,13 +474,110 @@ export function renderFrame(state: TopState, opts: FrameOptions): string[] {
   const holdLines = providerHolds(state, now)
     .slice(0, 2)
     .map(h => p.fg('warning', fit(' ' + providerHoldLine(h, now), cols)));
-  // The line under the header always names what is shown and the keys that change it (R-23).
-  const filterRow = p.fg('muted', fit(' ' + filterLine(state), cols));
+  // The line under the header: Missions | Queue (R-26), then what is shown and the keys that change it (R-23).
+  const filterRow = tabLine(state, cols, p);
   const bodyH = Math.max(1, rows - 5 - holdLines.length);
   const body = state.mode.kind === 'detail'
     ? detailBody(state, state.mode.taskId, cols, bodyH, now, p)
     : state.mode.kind === 'help'
       ? helpBody(state, cols, bodyH, p)
-      : listBody(state, cols, bodyH, now, p);
+      : state.view === 'queue'
+        ? queueBody(state, cols, bodyH, now, p)
+        : listBody(state, cols, bodyH, now, p);
   return [header(state, cols, p), filterRow, ...holdLines, rule(cols, p), ...body, rule(cols, p), footer(state, cols, p)];
+}
+
+// ── Queue view (R-26) ───────────────────────────────────────────────────────
+
+/** ` [ Missions ]  Queue` with the filter line beside it; the filter is cut, never the tabs. */
+function tabLine(state: TopState, cols: number, p: Palette): string {
+  const missions = state.view === 'missions' ? '[ Missions ]' : 'Missions';
+  const queue = state.view === 'queue' ? '[ Queue ]' : 'Queue';
+  const tabs = ` ${missions}  ${queue}`;
+  const filter = filterLine(state);
+  const room = cols - textWidth(tabs) - 3;
+  const tail = room > 0 ? '   ' + fit(filter, room) : '';
+  const paint = (label: string, active: boolean) => p.fg(active ? 'accent' : 'muted', label);
+  const line = ' ' + paint(missions, state.view === 'missions') + '  ' + paint(queue, state.view === 'queue') + p.fg('muted', tail);
+  return fitAnsi(line, cols, p);
+}
+
+const POS_W = 3;
+const QWS_W = 13;
+const QEST_W = 6;
+/** The narrowest title the queue keeps before it drops a column. */
+const QTITLE_MIN = 30;
+
+interface QueueCols { est: boolean; workspace: boolean; mission: number; starts: number; title: number }
+
+/**
+ * The queue's columns at `cols`: est. goes first, then workspace, and below 60
+ * columns the mission and start columns narrow. Every row is exactly `cols`
+ * wide and never wraps.
+ */
+export function queueColumnsFor(cols: number, estimatesOn: boolean): QueueCols {
+  const mission = cols < 60 ? 12 : 17;
+  const starts = cols < 60 ? 10 : 13;
+  const fixed = 1 + POS_W + mission + starts;
+  const est = estimatesOn && cols - fixed - QWS_W - QEST_W >= QTITLE_MIN;
+  const workspace = cols - fixed - (est ? QEST_W : 0) - QWS_W >= QTITLE_MIN;
+  const title = Math.max(4, cols - fixed - (workspace ? QWS_W : 0) - (est ? QEST_W : 0));
+  return { est, workspace, mission, starts, title };
+}
+
+function queueHeading(section: QueueSection, cols: number, c: QueueCols, p: Palette): string {
+  const text =
+    ' ' + fit(`${section.teamName} · next for this runner`, POS_W + c.title) +
+    (c.workspace ? fit('workspace', QWS_W) : '') +
+    fit('mission', c.mission) +
+    (c.est ? fit('est.', QEST_W) : '') +
+    fit('starts', c.starts);
+  return p.fg('muted', fit(text, cols));
+}
+
+function queueRowLine(row: QueueRow, c: QueueCols, selected: boolean, p: Palette): string {
+  const pos = row.position !== null ? fit(String(row.position), POS_W - 1, 'right') + ' ' : ' '.repeat(POS_W);
+  const primary: PaletteToken = selected ? 'selectedText' : row.position === null ? 'muted' : 'text';
+  // Every column is cut with "…" and followed by a space (R-21).
+  const col = (s: string, w: number) => fit(s, w - 1) + ' ';
+  // A start held to a time stands out; "next" and "after N" do not.
+  const timed = row.position !== null && row.starts !== 'next' && !row.starts.startsWith('after') && row.starts !== '-';
+  const line =
+    (selected ? p.fg('accent', '›') : ' ') +
+    p.fg('muted', pos) +
+    p.fg(primary, col(row.title, c.title)) +
+    (c.workspace ? p.fg('muted', col(row.workspace, QWS_W)) : '') +
+    p.fg('muted', col(row.mission, c.mission)) +
+    (c.est ? p.fg('muted', col(row.est ?? '-', QEST_W)) : '') +
+    p.fg(timed ? 'warning' : 'muted', fit(row.starts, c.starts));
+  return selected ? p.selectedBg(line) : line;
+}
+
+/** The Queue view: per team in view, what this runner takes next, then what it never takes. */
+function queueBody(state: TopState, cols: number, height: number, now: number, p: Palette): string[] {
+  const sections = queueSections(state, now);
+  const sel = selectedQueueRow(state, now);
+  const lines: Array<{ text: string; taskId?: string }> = [];
+  if (!state.queue) {
+    lines.push({ text: p.fg('muted', fit(' Reading the queue…', cols)) });
+  } else if (sections.length === 0) {
+    lines.push({ text: p.fg('muted', fit(state.filter ? ' Nothing in the queue matches the filter.' : ' Nothing is waiting for this runner.', cols)) });
+  }
+  for (const section of sections) {
+    const c = queueColumnsFor(cols, section.estimatesOn);
+    lines.push({ text: queueHeading(section, cols, c, p) });
+    for (const r of section.rows) lines.push({ text: queueRowLine(r, c, sel?.taskId === r.taskId, p), taskId: r.taskId });
+    if (section.rows.length === 0) lines.push({ text: p.fg('muted', fit('    Nothing this runner takes is waiting.', cols)) });
+    if (section.notFor.length > 0) {
+      lines.push({ text: p.fg('muted', fit(' Not for this runner', cols)) });
+      for (const r of section.notFor) lines.push({ text: queueRowLine(r, c, sel?.taskId === r.taskId, p), taskId: r.taskId });
+    }
+  }
+  if (state.queue?.truncated) lines.push({ text: p.fg('muted', fit(' The queue is longer than this; o opens the rest on buildd.', cols)) });
+  // Scroll so the selected row stays in view.
+  const selLine = lines.findIndex(l => l.taskId !== undefined && l.taskId === sel?.taskId);
+  const offset = selLine >= height ? selLine - height + 1 : 0;
+  const out = lines.slice(offset, offset + height).map(l => fitAnsi(l.text, cols, p));
+  while (out.length < height) out.push(' '.repeat(cols));
+  return out;
 }

@@ -1057,6 +1057,11 @@ export class WorkerManager {
     return this.claimOutcomes.snapshot();
   }
 
+  /** What this runner's claim body says about it, for the queue read (R-26): its runner id and advertised roles. */
+  getClaimIdentity(): { runner: string | undefined; skills: string[] } {
+    return { runner: this.config.localUiUrl, skills: advertisedRoleSlugs(this.environment) ?? [] };
+  }
+
   /** Keep a claim outcome and tell `top` (one `claim_outcome` frame; no taskId = the broad claim). */
   private noteClaimOutcome(taskId: string | null, outcome: ClaimOutcome): void {
     if (taskId) {

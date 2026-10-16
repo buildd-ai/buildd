@@ -7,6 +7,8 @@
  *     candidate and taskId lookup in the claim route is bounded by it.
  *   - activeWorkerGate / runnerPreferenceGate / runnerCooldownGate: claim
  *     predicates the route used to build inline. TRUE when the task passes.
+ *   - roleSlugGate / isRoleClaimable: the role routing predicate, kept here so
+ *     a core read can apply it (claim/role-gate.ts re-exports it unchanged).
  *
  * The claim route (app/api/workers/claim/route.ts) and the runner queue read
  * (lib/claim-order-queue.ts, GET /api/workers/queue) both import these.
@@ -14,7 +16,8 @@
  */
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces } from '@buildd/core/db/schema';
-import { and, eq, inArray, or, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNull, notInArray, or, sql, type SQL } from 'drizzle-orm';
+import { EXPLICIT_ROLE_SLUGS } from '@buildd/shared';
 import { sqlWhere } from '@buildd/core/db/relational-sql';
 import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
 import { constrainToGranted, isGrantSession, type GrantScopedAccount } from '@/lib/grant-scope';
@@ -134,4 +137,72 @@ export function runnerCooldownGate(runner: string, cutoff: Date): SQL {
         AND w_cd.status IN ('error', 'failed')
         AND w_cd.updated_at > ${cutoff}
       )`;
+}
+
+/**
+ * Role-slug gate for the claim route.
+ *
+ * Two rules, applied together:
+ *
+ *   1. Explicit slugs (EXPLICIT_ROLE_SLUGS, e.g. 'visual-auditor') are opt-in.
+ *      A task routed to one is claimable ONLY by a runner that lists that slug
+ *      in `availableSkills`. An empty/omitted list no longer matches it.
+ *   2. Every other slug keeps the legacy rule: an empty list claims anything,
+ *      and a non-empty list of legacy slugs restricts claims to unrouted tasks
+ *      plus those slugs.
+ *
+ * Rule 2 considers only the legacy part of the list, so a browser runner that
+ * advertises just ['visual-auditor'] still claims builder/organizer/... tasks.
+ * Folding the explicit slug into the old `IS NULL OR IN (list)` clause would
+ * have stranded them.
+ *
+ * Returns clauses to AND into the claim's WHERE. `isRoleClaimable` is the JS
+ * mirror; keep the two in step.
+ *
+ * Slug match only, by design: personal roles share slugs across owners, so a
+ * runner advertising a personal slug may pull any task with that slug. Which
+ * row the task then runs under is decided per task by who it is for
+ * (@buildd/core/role-visibility), so another member's private role is never
+ * applied to it — and task creation refuses a slug that names only someone
+ * else's private role.
+ */
+export function roleSlugGate(availableSkills: readonly string[] | undefined): SQL[] {
+  const skills = availableSkills ?? [];
+  const explicit = skills.filter((s) => EXPLICIT_ROLE_SLUGS.includes(s));
+  const legacy = skills.filter((s) => !EXPLICIT_ROLE_SLUGS.includes(s));
+
+  // `IS NULL` is load-bearing: `NULL NOT IN (...)` is NULL, which would drop
+  // every unrouted task.
+  const clauses: SQL[] = [
+    or(
+      isNull(tasks.roleSlug),
+      notInArray(tasks.roleSlug, [...EXPLICIT_ROLE_SLUGS]),
+      ...(explicit.length > 0 ? [inArray(tasks.roleSlug, explicit)] : []),
+    )!,
+  ];
+
+  if (legacy.length > 0) {
+    // Explicit-slug tasks pass here so rule 1 alone decides them.
+    clauses.push(
+      or(
+        isNull(tasks.roleSlug),
+        inArray(tasks.roleSlug, [...EXPLICIT_ROLE_SLUGS]),
+        inArray(tasks.roleSlug, legacy),
+      )!,
+    );
+  }
+
+  return clauses;
+}
+
+/** JS mirror of `roleSlugGate`: could a runner advertising `availableSkills` claim a task with `roleSlug`? */
+export function isRoleClaimable(
+  roleSlug: string | null | undefined,
+  availableSkills: readonly string[] | undefined,
+): boolean {
+  if (!roleSlug) return true;
+  const skills = availableSkills ?? [];
+  if (EXPLICIT_ROLE_SLUGS.includes(roleSlug)) return skills.includes(roleSlug);
+  const legacy = skills.filter((s) => !EXPLICIT_ROLE_SLUGS.includes(s));
+  return legacy.length === 0 || legacy.includes(roleSlug);
 }
