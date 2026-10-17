@@ -36,7 +36,8 @@ import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { buildCIRetryTask, summarizePrFixAttempts } from '@/lib/ci-retry';
 import { captureCiJobLogEvidence } from '@/lib/ci-job-log-evidence';
-import { fetchPrRetryGate, fetchCIFailureLogs } from '@/lib/ci-failure-inspect';
+import { fetchPrRetryGate, fetchCIFailureLogs, type PrRetryGate } from '@/lib/ci-failure-inspect';
+import { buildReleaseCandidateFixTask, classifyCiRedReleasePr, RELEASE_CANDIDATE_FIX_HEAD_KEY } from '@/lib/release-candidate-ci';
 import { policyValue } from '@/lib/policy-overrides';
 import { observeCiFailure } from '@/lib/workflow/seam';
 import { notKernelMergedTaskSql } from '@/lib/workflow/pr-fact-scope';
@@ -78,7 +79,9 @@ export type CiRetrySkipReason =
   /** The workflow kernel owns this PR and decided not to dispatch now (its state is the reason). */
   | 'kernel_owned'
   /** The kernel blocked the delivery on a trunk incident (§6.10): the base branch fails the same checks. */
-  | 'blocked_on_trunk';
+  | 'blocked_on_trunk'
+  /** A frozen release candidate: never fixed on its branch; the fix is filed against its source branch instead. */
+  | 'release_candidate';
 
 /** Fixed text per code: the ledger coalesces on (gate, outcome, reason), so the PR number lives in `detail`. */
 const SKIP_REASON_TEXT: Record<CiRetrySkipReason, string> = {
@@ -97,12 +100,13 @@ const SKIP_REASON_TEXT: Record<CiRetrySkipReason, string> = {
   infra_rerun: 'no CI retry: the failure is infrastructure (registry or runner), the failed jobs were re-run',
   kernel_owned: 'no CI retry: the workflow kernel owns this PR and its state owes no CI fix now',
   blocked_on_trunk: 'no CI retry: the base branch fails the same checks; one trunk fix runs for every blocked PR',
+  release_candidate: 'no CI retry: a frozen release candidate is fixed on its source branch and then amended, never pushed to',
 };
 
 export type CiRetryOutcome =
   | { kind: 'dispatched'; taskId: string }
   | { kind: 'diagnose_dispatched'; taskId: string }
-  | { kind: 'skipped'; reason: CiRetrySkipReason; inFlightTaskId?: string; priorAttemptTaskId?: string }
+  | { kind: 'skipped'; reason: CiRetrySkipReason; inFlightTaskId?: string; priorAttemptTaskId?: string; fixTaskId?: string }
   /** Not a buildd PR (no owner, fork, unreadable, dependency bot): nothing of ours to record or fix. */
   | { kind: 'not_ours' };
 
@@ -345,6 +349,12 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
     await lookAgain(skipCtx);
     return { kind: 'skipped', reason: 'infra_rerun' };
   }
+
+  // A frozen release candidate is never repaired on its branch: a push there
+  // un-candidates it. Ahead of the kernel door, which would file a head-branch
+  // repair too.
+  const candidate = await releaseCandidateCiFailure(input, task, earlyGate, skipCtx);
+  if (candidate) return candidate;
 
   // Workflow kernel (docs/specs/workflow-state-kernel.md §5.7, T10): a PR whose
   // delivery the kernel owns gets its CI attempt from the ledger, and the
@@ -722,6 +732,84 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
   // If the fix finishes without pushing, no CI event will bring this PR back.
   await lookAgain(skipCtx);
   return { kind: 'dispatched', taskId: newTask.id };
+}
+
+/**
+ * A red frozen release candidate (lib/release-candidate-ci.ts): null for any
+ * other PR. A trusted candidate at its recorded head gets one fix task against
+ * its source branch per head (the owner task's context marker is claimed with
+ * a compare-and-set, so the webhook and the sweep file it once). A
+ * candidate-shaped PR that is not provably one (head pushed over, untrusted
+ * author) gets nothing filed: it needs an amendment, not a builder.
+ */
+async function releaseCandidateCiFailure(
+  input: CiFailureInput,
+  owner: { id: string; workspaceId: string },
+  gate: PrRetryGate,
+  skipCtx: SkipContext,
+): Promise<CiRetryOutcome | null> {
+  if (!gate.headRef || !gate.baseRef) return null;
+  const workspace = await db.query.workspaces.findFirst({ where: sqlWhere(eq(workspaces.id, owner.workspaceId)) });
+  const cls = classifyCiRedReleasePr(workspace?.releaseConfig ?? null, gate.release ?? { headRef: gate.headRef, baseRef: gate.baseRef });
+  if (cls.kind === 'ordinary') return null;
+  if (cls.kind === 'candidate_shaped') {
+    recordSkip(skipCtx, 'release_candidate', { candidateRejection: cls.reason });
+    return { kind: 'skipped', reason: 'release_candidate' };
+  }
+  // Red on an older head of a candidate: the current head is what an amendment moves.
+  if (gate.release?.headSha && gate.release.headSha !== input.headSha) {
+    recordSkip(skipCtx, 'release_candidate', { staleHead: true });
+    return { kind: 'skipped', reason: 'release_candidate' };
+  }
+
+  const claimed = await db
+    .update(tasks)
+    .set({
+      context: sql`jsonb_set(coalesce(${tasks.context}, '{}'::jsonb), ${`{${RELEASE_CANDIDATE_FIX_HEAD_KEY}}`}::text[], to_jsonb(${input.headSha}::text))`,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(tasks.id, owner.id), sql`coalesce(${tasks.context}->>${RELEASE_CANDIDATE_FIX_HEAD_KEY}, '') <> ${input.headSha}`))
+    .returning({ id: tasks.id });
+  if (claimed.length === 0) {
+    recordSkip(skipCtx, 'release_candidate', { alreadyFiled: true });
+    return { kind: 'skipped', reason: 'release_candidate' };
+  }
+
+  const ciLogs = await fetchCIFailureLogs(input.installationId, input.repoFullName, input.headSha);
+  const built = buildReleaseCandidateFixTask({
+    workspaceId: owner.workspaceId,
+    repoFullName: input.repoFullName,
+    prNumber: input.prNumber,
+    headSha: input.headSha,
+    version: cls.version,
+    headRef: cls.headRef,
+    sourceBranch: cls.sourceBranch,
+    failureContext: ciLogs.summary || `CI check suite failed on ${input.repoFullName} PR #${input.prNumber} (SHA: ${input.headSha})`,
+    ciRunUrl: ciLogs.runUrl,
+    ciFailedJobId: ciLogs.failedJobId,
+  });
+  const [fix] = await db
+    .insert(tasks)
+    .values({ ...built, status: 'pending', priority: 8 })
+    .returning();
+  if (workspace) await announceTaskCreated(fix, workspace);
+  await wakeTask(fix.id, 'ci.retry');
+  await appendPrActivity({
+    installationId: input.installationId,
+    repoFullName: input.repoFullName,
+    prNumber: input.prNumber,
+    entry: {
+      kind: 'ci_fixing',
+      detail: `fix on ${cls.sourceBranch}, then amend`,
+      note: `A release candidate is not fixed on its branch. The fix goes to \`${cls.sourceBranch}\`; once it merges, amend this candidate through the Release workflow (amend: v${cls.version}).`,
+      url: ciLogs.runUrl,
+      taskUrl: taskActivityUrl(fix.id),
+      taskTitle: built.title,
+    },
+    workspaceId: owner.workspaceId,
+  });
+  recordSkip(skipCtx, 'release_candidate', { fixTaskId: fix.id, sourceBranch: cls.sourceBranch, version: cls.version });
+  return { kind: 'skipped', reason: 'release_candidate', fixTaskId: fix.id };
 }
 
 type KernelCiOutcome =

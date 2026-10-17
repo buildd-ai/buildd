@@ -221,6 +221,44 @@ describe('recordAndDispatchRelease', () => {
     expect(flat).toContain('"pending_external"');
   });
 
+  // An amendment is a different request from the plain cut that recorded the
+  // row: a plain re-dispatch leaves an open candidate unchanged, and the
+  // amendment is the only way to move it. Deduping it on the dev SHA alone
+  // refused exactly the call a red candidate needs (task 7f71c3bb).
+  for (const inputs of [
+    { force: 'false', amend: 'v1.2.3', amend_confirm: 'v1.2.3' },
+    { force: 'false', exclude: 'abc123', exclude_confirm: 'revert' },
+  ]) {
+    it(`does not dedupe an amendment against an in-flight plain cut of the same commit (${Object.keys(inputs)[1]})`, async () => {
+      const { db, calls } = stubDb({ existingInFlight: { id: 'rel-existing' } });
+      const dispatch = mock(() => okDispatch());
+
+      const res = await recordAndDispatchRelease(params({ inputs }), {
+        db,
+        preflight: okPreflight as any,
+        dispatch: dispatch as any,
+      });
+
+      expect(res).toMatchObject({ ok: true, deduped: false });
+      expect(dispatch).toHaveBeenCalledTimes(1);
+      expect((dispatch.mock.calls[0] as any[])[3].inputs).toEqual(inputs);
+      // The row is re-armed in place (unique on workspace + commit), not raised as a 23505.
+      expect(calls.onConflict).toHaveLength(1);
+    });
+  }
+
+  it('still dedupes when the amend input is present but empty (the workflow default)', async () => {
+    const { db } = stubDb({ existingInFlight: { id: 'rel-existing' } });
+    const dispatch = mock(() => okDispatch());
+    const res = await recordAndDispatchRelease(params({ inputs: { force: 'false', amend: ' ', exclude: '' } }), {
+      db,
+      preflight: okPreflight as any,
+      dispatch: dispatch as any,
+    });
+    expect(res).toMatchObject({ ok: true, deduped: true });
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
   it('re-arms a terminal row for the same commit instead of raising a unique violation', async () => {
     // (workspace_id, head_sha) is unique across EVERY state, but the dedup
     // check only looks at in-flight ones — so re-releasing a commit whose row
