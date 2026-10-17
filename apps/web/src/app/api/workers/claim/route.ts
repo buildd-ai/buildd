@@ -159,7 +159,7 @@ import {
 } from './hold-start-shadow';
 import { evaluateSoftOverlaps, softOverlapHolderIds, type SoftHolderRow } from './soft-overlap-gate';
 import { exclusiveStartPaths, findHoldingLease, findHoldingOpenPr, overlapHolds, workspaceHardSurface } from './overlap-policy';
-import { loadSoftOverlapHolders } from './soft-overlap-store';
+import { loadIdleHolderIds, loadSoftOverlapHolders } from './soft-overlap-store';
 import { defaultPrDiffScopeDeps, prefetchPrDiffScopes } from '@/lib/claim-pr-diff-scope';
 import { loadPairProbeEvidence } from '@/lib/sibling-pair-probe';
 import { sqlOrderByFn, sqlWhere } from '@buildd/core/db/relational-sql';
@@ -1285,6 +1285,23 @@ export async function POST(req: NextRequest) {
     }));
   }
 
+  // Open-PR and lease holders that cannot start themselves (future startAt,
+  // held mission) hold nobody (./overlap-policy). A failed read leaves the set
+  // empty, so every such hold stands (fail closed).
+  let idleHolderIds = new Set<string>();
+  {
+    const named = new Set<string>();
+    for (const list of openPrTasksByWorkspace.values()) for (const pr of list) if (pr.taskId) named.add(pr.taskId);
+    for (const byTask of activePathClaimsByWorkspace.values()) for (const id of byTask.keys()) named.add(id);
+    if (named.size > 0) {
+      try {
+        idleHolderIds = await loadIdleHolderIds([...named], now);
+      } catch (err) {
+        console.warn('[claim] idle holder read failed (every open-PR and lease hold stands):', err);
+      }
+    }
+  }
+
   // Soft overlap holders (./soft-overlap-gate). Read only when a candidate
   // carries `pathDeclaration.softOverlaps`; null = the read failed, and every
   // soft entry then holds as unknown state (fail closed).
@@ -1431,8 +1448,13 @@ export async function POST(req: NextRequest) {
   const planFor = (cands: typeof filteredTasks, claimed: unknown[], capacity: number) => {
     const ctx = buildClaimPlanInput({
       candidates: cands,
-      openPrTasksByWorkspace,
-      activePathClaimsByWorkspace,
+      // A holder that cannot start orders nobody behind it either.
+      openPrTasksByWorkspace: idleHolderIds.size === 0 ? openPrTasksByWorkspace : new Map(
+        [...openPrTasksByWorkspace].map(([ws, list]) => [ws, list.filter(pr => !pr.taskId || !idleHolderIds.has(pr.taskId))]),
+      ),
+      activePathClaimsByWorkspace: idleHolderIds.size === 0 ? activePathClaimsByWorkspace : new Map(
+        [...activePathClaimsByWorkspace].map(([ws, byTask]) => [ws, new Map([...byTask].filter(([id]) => !idleHolderIds.has(id)))]),
+      ),
       missionInFlightRows,
       claimedThisBatch: claimed,
       capacity,
@@ -1624,7 +1646,7 @@ export async function POST(req: NextRequest) {
       // settles it. Only a PR on an unmergeable surface holds. Either way the
       // collector below still records the model's question (never deciding).
       const wsHardSurface = workspaceHardSurface((task as any).workspace?.gitConfig ?? null);
-      const holdingPr = blocking ? findHoldingOpenPr(taskManifest, filterOpenPrTasks, wsHardSurface) : null;
+      const holdingPr = blocking ? findHoldingOpenPr(taskManifest, filterOpenPrTasks, wsHardSurface, idleHolderIds) : null;
       const startsAlongsidePr = blocking && !holdingPr
         ? filterOpenPrTasks.find(t => (t.prNumber ?? null) === blocking.prNumber && (t.prUrl ?? null) === blocking.prUrl) ?? null
         : null;
@@ -1707,7 +1729,7 @@ export async function POST(req: NextRequest) {
         // Overlap policy (./overlap-policy): a live lease on mergeable files
         // does not hold, the task starts alongside it; an unmergeable one does,
         // and so does any lease in a workspace that enforces path claims.
-        const holdingLease = findHoldingLease(task.id, taskManifest, activePathClaimsByWorkspace.get(task.workspaceId), ownLineage(task as any).taskIds, (task as any).workspace?.gitConfig ?? null);
+        const holdingLease = findHoldingLease(task.id, taskManifest, activePathClaimsByWorkspace.get(task.workspaceId), ownLineage(task as any).taskIds, (task as any).workspace?.gitConfig ?? null, idleHolderIds);
         if (!holdingLease) {
           const sharedPaths = boundDeferralPaths(leaseBlock.overlapPaths);
           softOverlapStarted.push({

@@ -11,6 +11,10 @@
  *  - a surface the workspace marks serialized, generated or a hotspot
  *    (`touchesHardOverlapSurface`, passed in as `isHardSurface`).
  *
+ * A holder that cannot start itself (pending with a future `startAt`, or in a
+ * held mission: `holderCannotStart`) holds nobody, whatever the overlap kind:
+ * pass its id in `idle` and the open-PR and lease checks skip it.
+ *
  * The soft-overlap gate and the open-PR gate both ask `overlapHolds`. A
  * model's HOLD/START verdict is still recorded by the hold/start collector,
  * but it never decides here. Pure, no DB.
@@ -63,12 +67,14 @@ export function leaseOverlapHolds(
  * the claim, with the shared paths. Null when every overlapping PR shares only
  * mergeable files, which then start alongside it.
  */
-export function findHoldingOpenPr<T extends { pathManifest?: string[] | null; prNumber?: number | null; prUrl?: string | null }>(
+export function findHoldingOpenPr<T extends { pathManifest?: string[] | null; prNumber?: number | null; prUrl?: string | null; taskId?: string | null }>(
   manifest: string[],
   openPrs: readonly T[],
   isHardSurface: HardSurfaceCheck,
+  idle?: ReadonlySet<string>,
 ): { pr: T; paths: string[] } | null {
   for (const pr of openPrs) {
+    if (pr.taskId && idle?.has(pr.taskId)) continue;
     if (!findBlockingPr(manifest, [pr])) continue;
     const { kind, paths } = sharedPaths(manifest, pr.pathManifest ?? []);
     if (overlapHolds(paths, kind, isHardSurface)) return { pr, paths };
@@ -88,7 +94,8 @@ export function exclusiveStartPaths(paths: readonly string[], isHardSurface: Har
 /**
  * The first live lease (in map order) whose overlap with `manifest` holds the
  * claim under `leaseOverlapHolds`, shaped like `findActiveClaimBlocker`'s
- * answer. Null when every overlapping lease is on mergeable files.
+ * answer. Null when every overlapping lease is on mergeable files or held by
+ * a task in `idle`.
  */
 export function findHoldingLease(
   taskId: string,
@@ -96,11 +103,12 @@ export function findHoldingLease(
   activeClaims: Map<string, string[]> | null | undefined,
   exempt: ReadonlySet<string> | undefined,
   gitConfig: WorkspaceGitConfig | null | undefined,
+  idle?: ReadonlySet<string>,
 ): { holderTaskId: string; claimedPaths: string[]; overlapPaths: string[] } | null {
   const concrete = manifest.filter(p => p !== REPO_WIDE_SENTINEL);
   if (concrete.length === 0 || !activeClaims) return null;
   for (const [holderTaskId, claimed] of activeClaims) {
-    if (holderTaskId === taskId || exempt?.has(holderTaskId)) continue;
+    if (holderTaskId === taskId || exempt?.has(holderTaskId) || idle?.has(holderTaskId)) continue;
     const claimedPaths = claimed.filter(p => p !== REPO_WIDE_SENTINEL);
     const overlapPaths = intersectPaths(concrete, claimedPaths);
     if (overlapPaths.length === 0) continue;

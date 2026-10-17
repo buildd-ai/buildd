@@ -2,13 +2,13 @@
 title: Claim Overlap Scheduling
 status: draft
 owner: max
-last_verified: 2026-10-16
+last_verified: 2026-10-17
 summary: Overlapping work MUST start by default; an overlap holds a claim only on an unmergeable surface (one list in code, migrations, workspace hard surfaces) and only while its holder is live work.
 domain: tasks
 surfaces: [apps/web/src/app/api/workers/claim/overlap-policy.ts, packages/core/unmergeable-surfaces.ts, apps/web/src/app/api/workers/claim/soft-overlap-gate.ts, apps/web/src/app/api/workers/claim/deps-gate.ts]
 related: [path-claim-ownership, orchestration-decisions-shadow, force-start, task-dispatch-authority, claim-ordering, runner-liveness]
 keywords: [unmergeable surface, overlap start, soft_overlap_start, path_overlap, soft_overlap, inferredDependsOn, softOverlaps, legacy_inferred, unstarted holder, schema lane, migration lane, starvation, claim_loop_deferral, update drain, claims halted, dependency.satisfied]
-verified_by: [packages/core/__tests__/unmergeable-surfaces.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/workers/claim/claim-plan-input.test.ts, apps/web/src/app/api/workers/claim/coordination-gates.test.ts, apps/web/src/app/api/workers/claim/deps-gate.test.ts, apps/web/src/app/api/workers/claim/soft-overlap-gate.test.ts, apps/web/src/app/api/workers/claim/open-pr-target-base.test.ts, apps/web/src/lib/explain-coordination.test.ts, packages/core/__tests__/dispatch-dependents.test.ts, apps/web/src/lib/conflict-retry.test.ts]
+verified_by: [packages/core/__tests__/unmergeable-surfaces.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/workers/claim/claim-plan-input.test.ts, apps/web/src/app/api/workers/claim/coordination-gates.test.ts, apps/web/src/app/api/workers/claim/deps-gate.test.ts, apps/web/src/app/api/workers/claim/soft-overlap-gate.test.ts, apps/web/src/app/api/workers/claim/open-pr-target-base.test.ts, apps/web/src/lib/explain-coordination.test.ts, packages/core/__tests__/orchestration-soft-start-readout.test.ts, apps/web/src/lib/orchestration-decision-stats-query.test.ts, apps/web/src/lib/claim-order-queue.test.ts, apps/runner/__tests__/unit/top-queue.test.ts, packages/core/__tests__/dispatch-dependents.test.ts, apps/web/src/lib/conflict-retry.test.ts]
 assertions:
   - id: soft-overlap-evaluation
     skip_until: "2026-12-15"
@@ -110,9 +110,11 @@ overlap on an unmergeable surface holds while its holder is live.
   not decide: an applied model START never lifts an unmergeable hold, and a
   model HOLD never holds a mergeable overlap. The applied-START ledger is not
   read for either gate.
-- I-31 A holder that cannot start itself (future `startAt`, held mission, or
-  pending with no live worker) never holds through any overlap kind, on any
-  surface.
+- I-31 A holder that cannot start itself (`holderCannotStart`: pending with a
+  future `startAt`, in a held mission, or held by a person) never holds
+  through any overlap kind, on any surface: the soft-overlap gate skips it,
+  and the open-PR and lease checks skip the task ids `loadIdleHolderIds`
+  returns. A failed read of that state leaves every hold standing.
 - I-32 Fix attempts of one PR (conflict, CI, review) resume on that PR's
   branch: they never wait on their own PR, a PR stacked on it, or their own
   lineage's leases. The PR itself is what serializes them.
@@ -159,6 +161,10 @@ overlap on an unmergeable surface holds while its holder is live.
 - AC-28: GIVEN a holder on `packages/core/db/schema.ts` that is pending with a
   future `startAt`, or in a held mission, WHEN a candidate on the same file
   polls, THEN it is claimed and no `soft_overlap` deferral is written.
+- AC-28b: GIVEN an open PR or a live lease on an unmergeable file whose task is
+  pending with a future `startAt`, WHEN a candidate on that file polls, THEN it
+  is claimed; and GIVEN that holder state cannot be read, THEN it defers as
+  `path_overlap`.
 - AC-29: GIVEN an open PR whose task declares `apps/web/src/lib/x.ts`, WHEN a
   candidate declaring the same file polls, THEN it is claimed and a
   `soft_overlap_start` row records `gate: open_pr_overlap`, the PR number, the
@@ -184,6 +190,7 @@ overlap on an unmergeable surface holds while its holder is live.
 `tasks.pathDeclaration` (`inferredDependsOn`, `softOverlaps`), `path_claims`,
 `gate_events`. Helpers: `UNMERGEABLE_SURFACES`, `unmergeableSurfaceOf`,
 `overlapHolds`, `findHoldingOpenPr`, `findHoldingLease`, `exclusiveStartPaths`,
+`holderCannotStart`, `loadIdleHolderIds`,
 `depsGate`, `evaluateSoftOverlaps`, `partitionOpenPrsByLandingBase`,
 `acquireGatedStartPaths`, `partitionOverlapEdges`, `buildCoordinationHolds`.
 
@@ -230,6 +237,11 @@ is readable by gate and area class.
   `loadSoftStartReadoutInput`) reads every `soft_overlap_start` row of I-33 and
   grades it on the shared outcome labeller (conflict retry created, path
   collision, merge-base refusal), grouped by `gate` and `areaClass`.
+  `summarizeOverlapStartConflicts` reports, per area class and per gate in it,
+  the share of those STARTs whose PR later got a conflict retry
+  (`conflicted / observed`; a start still running is `pending`, in neither).
+  `get_decision_stats` without a capability returns it as `overlapStarts`
+  (absent with a `missionId` filter; `overlapStartsError` when the read fails).
 
 **Acceptance criteria**
 
@@ -238,7 +250,8 @@ is readable by gate and area class.
   `open_pr_overlap` / `other` cell.
 
 **Code surface.** Helpers: `loadSoftStartReadoutInput`,
-`summarizeSoftStartReadout`.
+`summarizeSoftStartReadout`, `summarizeOverlapStartConflicts`,
+`fetchOrchestrationDecisionStats`.
 
 ## Explain, the Start probe and the Failure Pattern Sentinel
 
@@ -254,7 +267,11 @@ non-live holder, are reported with the reason.
   reason.
 - I-38 When a task started past an overlap, explain and the runner's top Queue
   say "starts alongside #n (same files, merges at the end)", naming the PR or
-  holder from its `soft_overlap_start` row.
+  holder. Explain reads it from the task's newest claim's `soft_overlap_start`
+  rows (`overlapStartLink`). top's Queue reads it from the queue read's
+  `alongside` field (`queueAlongside`: the first open PR, else live lease, a
+  queued task shares only mergeable files with) and shows it under the
+  selected row; a row something holds says what it waits for instead.
 - I-11 **Unclaimed claimable**: pending, `startAt` past or unset, dependency
   gate satisfied, no hold from a live holder, no claim-loop gate event and no
   worker for 2 hours, and at least one online runner that serves the workspace
@@ -293,6 +310,7 @@ non-live holder, are reported with the reason.
 
 **Code surface.** Route: `/api/explain`. Helpers: `explainTask`,
 `evaluateCoordinationGates`, `softOverlapReasons`, `buildCoordinationHolds`,
+`overlapStartLink`, `queueAlongside`,
 `detectFailurePatterns`, `checkStarvation`.
 
 **Out of scope.** Paging policy for the new incidents (they start at the same

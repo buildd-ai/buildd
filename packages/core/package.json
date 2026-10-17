@@ -159,6 +159,7 @@
     "./orchestration-claim-risk": "./orchestration-claim-risk.ts",
     "./orchestration-claim-risk-eval": "./orchestration-claim-risk-eval.ts",
     "./orchestration-claim-source": "./orchestration-claim-source.ts",
+    "./orchestration-soft-start-readout": "./orchestration-soft-start-readout.ts",
     "./orchestration-promotion": "./orchestration-promotion.ts",
     "./decision-feature-modes": "./decision-feature-modes.ts",
     "./owner-feature-switches": "./owner-feature-switches.ts",

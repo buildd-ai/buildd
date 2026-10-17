@@ -515,11 +515,19 @@ mock.module('@/lib/sibling-pair-probe', () => ({ loadPairProbeEvidence: async ()
 // Soft-overlap holders (./soft-overlap-store): read only when a candidate
 // carries pathDeclaration.softOverlaps. Default: none known.
 const softHoldersTest = { rows: new Map<string, any>() as Map<string, any> | Error, calls: 0 };
+// Open-PR and lease holders that cannot start themselves (./overlap-policy).
+// Default: none; an Error makes the read fail.
+const idleHoldersTest = { ids: new Set<string>() as Set<string> | Error, asked: [] as string[][] };
 mock.module('./soft-overlap-store', () => ({
   loadSoftOverlapHolders: async (_ids: string[]) => {
     softHoldersTest.calls++;
     if (softHoldersTest.rows instanceof Error) throw softHoldersTest.rows;
     return softHoldersTest.rows;
+  },
+  loadIdleHolderIds: async (ids: string[]) => {
+    idleHoldersTest.asked.push(ids);
+    if (idleHoldersTest.ids instanceof Error) throw idleHoldersTest.ids;
+    return new Set(ids.filter(id => (idleHoldersTest.ids as Set<string>).has(id)));
   },
 }));
 
@@ -11122,6 +11130,50 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
       }));
       expect(unmergeable.body.workers).toHaveLength(0);
       expect(unmergeable.body.diagnostics?.deferrals?.path_overlap).toBe(1);
+    });
+
+    // A holder that cannot start itself (pending with a future startAt, or in
+    // a held mission) holds nobody, through an open PR or a lease too.
+    describe('a holder that cannot start never holds', () => {
+      afterEach(() => { idleHoldersTest.ids = new Set(); idleHoldersTest.asked = []; });
+      const schemaPr = () => arm({
+        tasks: [task({ pathManifest: ['packages/core/db/schema.ts'] })],
+        openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }],
+        prManifests: [{ id: 'pr-task', pathManifest: ['packages/core/db/schema.ts'] }],
+      });
+      const lockLease = () => arm({
+        tasks: [task({ pathManifest: ['apps/web/bun.lock'] })],
+        leases: new Map([['holder-1', ['apps/web/bun.lock']]]),
+      });
+
+      it('an open PR on an unmergeable file holds while its task can start, and not once it cannot', async () => {
+        const live = await claimWith(withStart(false), schemaPr);
+        expect(live.body.workers).toHaveLength(0);
+        expect(live.body.diagnostics?.deferrals?.path_overlap).toBe(1);
+
+        idleHoldersTest.ids = new Set(['pr-task']);
+        const idle = await claimWith(withStart(false), schemaPr);
+        expect(idle.body.workers).toHaveLength(1);
+        expect(idleHoldersTest.asked.at(-1)).toContain('pr-task');
+        expect(started().find((e: any) => e.detail.gate === 'open_pr_overlap')).toMatchObject({ detail: { holderTaskId: 'pr-task', prNumber: 41 } });
+      });
+
+      it('a live lease on an unmergeable file held by a task that cannot start does not hold', async () => {
+        idleHoldersTest.ids = new Set(['holder-1']);
+        const on = await claimWith(withStart(false), lockLease);
+        expect(on.body.workers).toHaveLength(1);
+        expect(on.body.diagnostics?.deferrals?.path_overlap ?? 0).toBe(0);
+        expect(started().find((e: any) => e.detail.gate === 'lease_overlap')).toMatchObject({ detail: { holderTaskId: 'holder-1' } });
+      });
+
+      it('an unreadable holder state fails closed: the unmergeable hold stands', async () => {
+        idleHoldersTest.ids = new Error('db down');
+        const pr = await claimWith(withStart(false), schemaPr);
+        expect(pr.body.workers).toHaveLength(0);
+        const lease = await claimWith(withStart(false), lockLease);
+        expect(lease.body.workers).toHaveLength(0);
+        expect(lease.body.diagnostics?.deferrals?.path_overlap).toBe(1);
+      });
     });
 
     it('under pathClaimEnforcement enforce, every live lease overlap still holds', async () => {
