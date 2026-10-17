@@ -581,6 +581,16 @@ export async function observeCiGreen(p: KernelOps['observe_ci_green']['input'], 
 }
 
 /**
+ * T12 from the conflict door (landing, the merge routes, auto-merge, the dead-zone sweep, the
+ * migration-collision dispatch): a conflict on a kernel-owned PR, applied where the kernel is hosted
+ * (AC-9). The live PR is read again on every sweep, so during release skew it is applied here
+ * (`doorOrHereOnSkew`) rather than leaving a conflicted PR without its repair.
+ */
+export async function observeConflict(p: KernelOps['observe_conflict']['input'], c: DoorCall): Promise<KernelOps['observe_conflict']['result']> {
+  return doorOrHereOnSkew('observe_conflict', p, c, `the conflict on ${p.repoFullName}#${p.prNumber}`);
+}
+
+/**
  * T6 from the worker PATCH: a kernel review round's verdict, applied where the kernel is hosted (AC-9).
  * The runner reports a verdict once, so during release skew it is applied here (`doorOrHereOnSkew`).
  */

@@ -1059,3 +1059,47 @@ describe('an installation the control plane could not read', () => {
     expect(requests).toBe(2);
   });
 });
+
+describe('T12 from the conflict door is a door too (AC-9)', () => {
+  const seen = { workspaceId: WS, repoFullName: 'acme/w', prNumber: 7, installationId: 1, hint: 'dirty' as const, isDependencyBot: false, maxAgentAttempts: 3, source: 'door:conflict' };
+  const sweep = { kind: 'system' as const, id: 'system:door-conflict' };
+
+  it('in own mode it is submitted to the control plane, and nothing runs here', async () => {
+    const { observeConflict } = await import('./kernel-client');
+    const l = local();
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchSpy = (async (_u: string, init: RequestInit) => { bodies.push(JSON.parse(String(init.body))); return answer({ op: 'observe_conflict', result: { handled: false } }); }) as unknown as typeof fetch;
+    const r = await observeConflict(seen, { principal: sweep, idempotencyKey: 'observe_conflict:k-0001', deps: { ...l.deps, env: OWN, fetch: fetchSpy } });
+    expect(r).toEqual({ handled: false });
+    expect(l.ran).toEqual([]);
+    expect(bodies).toEqual([{ v: 1, op: 'observe_conflict', input: seen, principal: sweep, idempotencyKey: 'observe_conflict:k-0001' }]);
+  });
+
+  it('in shadow the web host runs it itself, as before', async () => {
+    const { observeConflict } = await import('./kernel-client');
+    const l = local();
+    await observeConflict(seen, { principal: sweep, deps: { ...l.deps, env: {} } });
+    expect(l.ran).toEqual(['observe_conflict']);
+  });
+
+  it('release skew: a control plane that predates the op is refused as unknown, so the web host applies it itself and says so', async () => {
+    const { observeConflict } = await import('./kernel-client');
+    const l = local();
+    const older = (async () => Response.json({ v: 1, code: 'bad_request', error: 'unknown op "observe_conflict"' }, { status: 400 })) as unknown as typeof fetch;
+    const errors: unknown[] = [];
+    const realError = console.error;
+    console.error = (...a: unknown[]) => { errors.push(a.join(' ')); };
+    try {
+      await observeConflict(seen, { principal: sweep, deps: { ...l.deps, env: OWN, fetch: older } });
+    } finally {
+      console.error = realError;
+    }
+    expect(l.ran).toEqual(['observe_conflict']);
+    expect(String(errors[0])).toContain('SKEW');
+  });
+
+  it('the command endpoint knows the op', async () => {
+    const { isKernelOp } = await import('./command-api');
+    expect(isKernelOp('observe_conflict')).toBe(true);
+  });
+});
