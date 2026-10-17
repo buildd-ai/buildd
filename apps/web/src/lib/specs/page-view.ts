@@ -5,12 +5,13 @@ import { artifacts, specFilings, specRevisions, specs, users, workspaces } from 
 import { and, desc, eq, inArray, ne, notInArray, sql } from 'drizzle-orm';
 import type { HubWorkspace } from './hub';
 import { isUuid } from '@/lib/uuid';
-import { getSpec, listSpecs, reach, type SpecCaller, type SpecRow } from './store';
-import { listSpecComments, type CommentView } from './comments';
+import { fail, listSpecs, reach, type SpecCaller, type SpecError, type SpecRevisionRow, type SpecRow } from './store';
+import { getArtifactRevision } from '@/lib/artifact-revisions';
+import { commentsOnRevision, type CommentView } from './comments';
 import { criteriaUnreadText, specCriteria } from '@buildd/spec-contract/requirements';
 import { outlineOf } from '@buildd/core/artifact-read';
 import { specApprover } from './approval';
-import { diffSpecHunks, diffSpecRevisions, type DiffHunk } from './diff';
+import { diffSpecHunks, diffSpecRowRevisions, type DiffHunk } from './diff';
 import { linkedRepoFullName } from './repo-source';
 import { approvedDesignDrift } from './design';
 import { attachmentSources, attachmentViews, sourcesOf, type AttachmentSource, type AttachmentView } from './attachments';
@@ -279,8 +280,8 @@ export type SpecPageView =
     canPublishAnyway?: boolean;
     /** An imported spec's criteria the parser could not read, in words ("N criteria could not be read; ..."); null when none. */
     criteriaUnread?: string | null;
-    /** With `review`: the repo checks on the would-be copy (R-34). Warns, never blocks. */
-    preflight?: RepoCopyPreflight | null;
+    /** The review panel shows the repo checks on the would-be copy (R-34): the workspace writes repo copies and the reader may approve. Fetched by the panel, never read here (they ask GitHub). */
+    repoChecks?: boolean;
     /** Delivery and verification (Slice 13): the work that answered to this spec, one page. Null when it cannot be read. */
     delivery?: SpecDelivery | null;
     /** Why and by what the spec is retired (§22), when it is. */
@@ -303,32 +304,188 @@ function panes(hunks: DiffHunk[], omittedLines: number, body: string, revision: 
 /** Siblings read for a spec page; the list shows them all, the graph its own cap. */
 export const MAX_SIBLINGS = 12;
 
+type Reading = { revision: SpecRevisionRow; body: string };
+
+/** One revision of a spec row the caller already holds, and its text; null when there is no such revision. */
+async function readRevision(spec: SpecRow, n: number): Promise<Reading | null> {
+  const [revision] = await db.select().from(specRevisions).where(and(eq(specRevisions.specId, spec.id), eq(specRevisions.revision, n))).limit(1);
+  if (!revision) return null;
+  const body = (await getArtifactRevision(spec.bodyArtifactId, revision.artifactRevision))?.content ?? '';
+  return { revision, body };
+}
+
+/**
+ * What approving the head would put in force: the approved revision against
+ * the head, or with nothing approved the whole head. The caller has read the
+ * spec row, checked reach and checked that the reader may approve.
+ */
+async function reviewPanes(caller: SpecCaller, spec: SpecRow, reading: Reading | null): Promise<SpecPanes | null> {
+  const sources = attachmentSources(spec.id, spec.headRevision).catch(() => ({}));
+  let review: SpecPanes | null = null;
+  if (spec.approvedRevision != null) {
+    const d = await diffSpecRowRevisions(caller, spec, { from: spec.approvedRevision, to: spec.headRevision, rows: true });
+    if (d.ok) review = panes(d.diff.hunks ?? [], d.diff.omittedLines, d.diff.toBody ?? '', spec.headRevision, spec.approvedRevision);
+  } else {
+    const head = reading?.revision.revision === spec.headRevision ? reading : await readRevision(spec, spec.headRevision);
+    if (head) {
+      const h = diffSpecHunks('', head.body);
+      review = panes(h.hunks, h.omittedLines, head.body, spec.headRevision, null);
+    }
+  }
+  if (review) review.attachmentSources = await sources;
+  return review;
+}
+
+/**
+ * The review panel alone (R-7 to R-10), for the spec page's Review action to
+ * fetch without rebuilding the page: the same panes `specPageView` gives with
+ * `review`, plus the spec's version for Approve. Only for a person who may
+ * approve, and only while a revision waits.
+ */
+export async function specReviewView(caller: SpecCaller, specId: string): Promise<{ ok: true; review: SpecPanes & { version: number } } | SpecError> {
+  if (!isUuid(specId)) return fail(404, 'Spec not found');
+  const [row] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
+  if (!row) return fail(404, 'Spec not found');
+  const reached = reach(caller, row.workspaceId, false);
+  const [ok, approver] = await Promise.all([reached, specApprover(caller, row.workspaceId, reached)]);
+  if (!ok) return fail(404, 'Spec not found');
+  if (!approver) return fail(403, 'Only someone who may approve specs here can review a revision for approval.');
+  const pending = row.approvedRevision == null || row.headRevision > row.approvedRevision;
+  if (!pending || row.status === 'retired' || row.status === 'superseded') return fail(409, 'No revision of this spec waits for approval.');
+  const review = await reviewPanes(caller, row, null);
+  if (!review) return fail(409, `The body of revision ${row.headRevision} could not be read`);
+  return { ok: true, review: { ...review, version: row.version } };
+}
+
+/**
+ * The repo checks on the waiting revision's would-be copy (R-34), on their
+ * own request: they ask GitHub, so the review panel shows first and these
+ * after (R-9). Null when the workspace writes no repo copies. Same gate as
+ * the review panel.
+ */
+export async function specRepoChecks(caller: SpecCaller, specId: string): Promise<{ ok: true; revision: number; preflight: RepoCopyPreflight | null } | SpecError> {
+  if (!isUuid(specId)) return fail(404, 'Spec not found');
+  const [row] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
+  if (!row) return fail(404, 'Spec not found');
+  const reached = reach(caller, row.workspaceId, false);
+  const [ok, approver] = await Promise.all([reached, specApprover(caller, row.workspaceId, reached)]);
+  if (!ok) return fail(404, 'Spec not found');
+  if (!approver) return fail(403, 'Only someone who may approve specs here can see the repo checks on a waiting revision.');
+  const p = await repoCopyPreflight(row, row.headRevision).catch(() => null);
+  return { ok: true, revision: row.headRevision, preflight: p?.state === 'off' ? null : p };
+}
+
+/**
+ * The spec page. Every read that needs only the spec row starts at once, after
+ * the one reach check they all share; the ones that need the revision read
+ * wait for that read alone. neon-http pays a round trip per statement, so the
+ * page costs the longest chain of reads, not their sum.
+ */
 export async function specPageView(userId: string, specId: string, opts: { revision?: number; from?: number; to?: number; review?: boolean; deliveryCursor?: string } = {}): Promise<SpecPageView> {
   if (!isUuid(specId)) return { state: 'not_found' };
   const caller: SpecCaller = { kind: 'user', userId };
-  const [row] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
-  if (!row || !(await reach(caller, row.workspaceId, false))) return { state: 'not_found' };
+  const [spec] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
+  if (!spec) return { state: 'not_found' };
+  const reached = reach(caller, spec.workspaceId, false);
+  const approverP = specApprover(caller, spec.workspaceId, reached);
+  if (!(await reached)) {
+    await approverP.catch(() => null);
+    return { state: 'not_found' };
+  }
 
-  const pending = row.approvedRevision == null || row.headRevision > row.approvedRevision;
-  const open = row.status !== 'retired' && row.status !== 'superseded';
-  const readN = opts.revision ?? row.approvedRevision ?? row.headRevision;
-  const got = await getSpec(caller, specId, { revision: readN });
-  if (!got.ok) return { state: 'not_found' };
-  const spec = got.view.spec;
-
-  const [ws] = await db.select({ name: workspaces.name, gitConfig: workspaces.gitConfig }).from(workspaces).where(eq(workspaces.id, spec.workspaceId)).limit(1);
-  const native = nativeSourceOn(ws?.gitConfig);
-  const revRows = await db.select({
-    revision: specRevisions.revision, authorKind: specRevisions.authorKind, changeSummary: specRevisions.changeSummary,
+  const pending = spec.approvedRevision == null || spec.headRevision > spec.approvedRevision;
+  const open = spec.status !== 'retired' && spec.status !== 'superseded';
+  const readN = opts.revision ?? spec.approvedRevision ?? spec.headRevision;
+  const readP = readRevision(spec, readN);
+  const wsP = db.select({ name: workspaces.name, gitConfig: workspaces.gitConfig }).from(workspaces).where(eq(workspaces.id, spec.workspaceId)).limit(1);
+  const revRowsP = db.select({
+    id: specRevisions.id, revision: specRevisions.revision, authorKind: specRevisions.authorKind, changeSummary: specRevisions.changeSummary,
     approvedBy: specRevisions.approvedBy, approvedAt: specRevisions.approvedAt, createdAt: specRevisions.createdAt,
   }).from(specRevisions).where(eq(specRevisions.specId, specId)).orderBy(desc(specRevisions.revision));
-  const approverIds = [...new Set(revRows.map((r) => personLabel(r.approvedBy)).filter((v): v is string => !!v && isUuid(v)))];
-  const names = new Map<string, string>();
-  if (approverIds.length) {
-    for (const u of await db.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, approverIds))) {
-      if (u.name) names.set(u.id, u.name);
+  const namesP = revRowsP.then(async (revRows) => {
+    const approverIds = [...new Set(revRows.map((r) => personLabel(r.approvedBy)).filter((v): v is string => !!v && isUuid(v)))];
+    const names = new Map<string, string>();
+    if (approverIds.length) {
+      for (const u of await db.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, approverIds))) {
+        if (u.name) names.set(u.id, u.name);
+      }
     }
-  }
+    return names;
+  });
+
+  // Parent, siblings and children only from the same workspace (a parent is always there, §1).
+  const parentP = spec.parentSpecId
+    ? db.select({ id: specs.id, title: specs.title }).from(specs)
+      .where(and(eq(specs.workspaceId, spec.workspaceId), eq(specs.id, spec.parentSpecId))).limit(1)
+    : Promise.resolve([]);
+  const siblingsP = spec.parentSpecId
+    ? db.select({ id: specs.id, title: specs.title }).from(specs)
+      .where(and(eq(specs.workspaceId, spec.workspaceId), eq(specs.parentSpecId, spec.parentSpecId), ne(specs.id, spec.id)))
+      .orderBy(specs.title).limit(MAX_SIBLINGS)
+    : Promise.resolve([]);
+  const childrenP = db.select({ id: specs.id, title: specs.title }).from(specs)
+    .where(and(eq(specs.workspaceId, spec.workspaceId), eq(specs.parentSpecId, spec.id))).orderBy(specs.title);
+
+  const repoRefsP = readP.then(async (read) => {
+    const refs = read?.revision.repoRefs ?? [];
+    const fullName = refs.length ? await linkedRepoFullName(spec.workspaceId) : null;
+    return refs.map((r) => ({ path: r.path, sha: r.commitSha.slice(0, 12), href: repoRefHref(fullName, r) }));
+  });
+  const designP = readP.then(async (read): Promise<Extract<SpecPageView, { state: 'ok' }>['design']> => {
+    const d0 = read?.revision.design;
+    if (!d0) return null;
+    const [[art], changedSince] = await Promise.all([
+      d0.kind === 'artifact'
+        ? db.select({ title: artifacts.title }).from(artifacts).where(and(eq(artifacts.id, d0.ref), eq(artifacts.workspaceId, spec.workspaceId))).limit(1)
+        : Promise.resolve([]),
+      spec.approvedRevision === read.revision.revision ? approvedDesignDrift(d0) : Promise.resolve(null),
+    ]);
+    return {
+      label: art?.title ?? d0.ref,
+      href: d0.kind === 'artifact' ? (art ? `/app/artifacts/${d0.ref}` : null) : d0.ref.startsWith('https://') ? d0.ref : null,
+      version: d0.version,
+      screens: (d0.screens ?? []).map((x) => x.name),
+      changedSince,
+    };
+  });
+  const viewsP = readP.then((read) => (read ? attachmentViews(spec, read.revision.revision) : [])).catch(() => [] as AttachmentView[]);
+  const commentsP = Promise.all([readP, revRowsP])
+    .then(([read, revs]) => (read ? commentsOnRevision(spec.id, read.revision.revision, read.body, revs) : []))
+    .catch(() => [] as CommentView[]);
+  const nearbyP = readSpecNeighbours(spec.id).catch(() => [] as NearbySpec[]);
+  const filingP = currentFiling(spec.id).catch(() => null);
+
+  const compareP: Promise<Extract<SpecPageView, { state: 'ok' }>['compare']> = opts.from !== undefined && opts.to !== undefined
+    ? Promise.all([
+      diffSpecRowRevisions(caller, spec, { from: opts.from, to: opts.to, rows: true }),
+      attachmentSources(spec.id, opts.to).catch(() => ({})),
+    ]).then(([d, sources]) => (d.ok
+      ? { ...panes(d.diff.hunks ?? [], d.diff.omittedLines, d.diff.toBody ?? '', opts.to!, opts.from!), from: opts.from!, to: opts.to!, attachmentSources: sources }
+      : { error: d.error }))
+    : Promise.resolve(null);
+
+  const retirementP = open ? Promise.resolve(null) : specRetirement(spec.id).catch(() => null);
+  // The replacements a person may pick (§22): live specs of the workspace, by title.
+  const retireTargetsP = approverP.then((approver) => (approver && open
+    ? db.select({ id: specs.id, title: specs.title }).from(specs)
+      .where(and(eq(specs.workspaceId, spec.workspaceId), ne(specs.id, spec.id), notInArray(specs.status, ['retired', 'superseded'])))
+      .orderBy(specs.title).limit(200)
+    : []));
+  // The repo checks (R-34) are not read here: they ask GitHub, so the panel fetches them on its own (/api/specs/[id]/preflight).
+  const reviewP = opts.review && pending && open
+    ? Promise.all([approverP, readP]).then(([approver, read]) => (approver ? reviewPanes(caller, spec, read) : null))
+    : Promise.resolve(null);
+  // Fail-open (R-65): the page renders without the section when it cannot be read.
+  const deliveryP = readSpecDelivery(caller, spec.id, { cursor: opts.deliveryCursor ?? null, checkedSpec: spec }).catch((err) => {
+    console.warn(`[spec-page] delivery for spec ${spec.id} failed:`, err);
+    return null;
+  });
+
+  const [read, [ws], revRows, names, [parent], siblings, children, repoRefs, design, views, comments, nearby, filing, compare, approverId, retirement, retireTargets, review, delivery] = await Promise.all([
+    readP, wsP, revRowsP, namesP, parentP, siblingsP, childrenP, repoRefsP, designP, viewsP, commentsP, nearbyP, filingP, compareP, approverP, retirementP, retireTargetsP, reviewP, deliveryP,
+  ]);
+  if (!read) return { state: 'not_found' };
+
   const revisions: SpecRevisionLine[] = revRows.map((r) => {
     const pid = personLabel(r.approvedBy);
     return {
@@ -339,110 +496,35 @@ export async function specPageView(userId: string, specId: string, opts: { revis
       createdAgo: ago(r.createdAt), approvedAgo: r.approvedAt ? ago(r.approvedAt) : null,
     };
   });
-
-  // Parent and children only from the same workspace (a parent is always there, §1).
-  const [parent] = spec.parentSpecId
-    ? await db.select({ id: specs.id, title: specs.title }).from(specs)
-      .where(and(eq(specs.workspaceId, spec.workspaceId), eq(specs.id, spec.parentSpecId))).limit(1)
-    : [];
-  const children = await db.select({ id: specs.id, title: specs.title }).from(specs)
-    .where(and(eq(specs.workspaceId, spec.workspaceId), eq(specs.parentSpecId, spec.id))).orderBy(specs.title);
-  const siblings = parent
-    ? await db.select({ id: specs.id, title: specs.title }).from(specs)
-      .where(and(eq(specs.workspaceId, spec.workspaceId), eq(specs.parentSpecId, parent.id), ne(specs.id, spec.id)))
-      .orderBy(specs.title).limit(MAX_SIBLINGS)
-    : [];
-
-  const refs = got.view.revision.repoRefs ?? [];
-  const fullName = refs.length ? await linkedRepoFullName(spec.workspaceId) : null;
-  const repoRefs = refs.map((r) => ({ path: r.path, sha: r.commitSha.slice(0, 12), href: repoRefHref(fullName, r) }));
-
-  const d0 = got.view.revision.design;
-  let design: Extract<SpecPageView, { state: 'ok' }>['design'] = null;
-  if (d0) {
-    const [art] = d0.kind === 'artifact'
-      ? await db.select({ title: artifacts.title }).from(artifacts).where(and(eq(artifacts.id, d0.ref), eq(artifacts.workspaceId, spec.workspaceId))).limit(1)
-      : [];
-    design = {
-      label: art?.title ?? d0.ref,
-      href: d0.kind === 'artifact' ? (art ? `/app/artifacts/${d0.ref}` : null) : d0.ref.startsWith('https://') ? d0.ref : null,
-      version: d0.version,
-      screens: (d0.screens ?? []).map((x) => x.name),
-      changedSince: spec.approvedRevision === got.view.revision.revision ? await approvedDesignDrift(d0) : null,
-    };
-  }
-
-  const readRev = got.view.revision.revision;
-  const views = await attachmentViews(spec, readRev).catch(() => [] as AttachmentView[]);
-  const sources = sourcesOf(views);
-  const attachments = views.map((a) => ({ ...a, addedAgo: ago(a.addedAt) }));
-
-  const nearby = await readSpecNeighbours(spec.id).catch(() => [] as NearbySpec[]);
-  const filing = await currentFiling(spec.id).catch(() => null);
-  const listed = await listSpecComments(caller, specId, { revision: got.view.revision.revision }).catch(() => null);
-  const comments = listed?.ok ? listed.comments : [];
+  const readRev = read.revision.revision;
   const commentAnchors = [
-    ...specCriteria(got.view.body).map((c) => ({ kind: 'criterion' as const, id: c.id, label: c.id })),
-    ...outlineOf(got.view.body).map((s) => ({ kind: 'section' as const, id: s.id, label: s.title })),
+    ...specCriteria(read.body).map((c) => ({ kind: 'criterion' as const, id: c.id, label: c.id })),
+    ...outlineOf(read.body).map((s) => ({ kind: 'section' as const, id: s.id, label: s.title })),
   ];
-  const canComment = await reach(caller, spec.workspaceId, true);
-
-  let compare: Extract<SpecPageView, { state: 'ok' }>['compare'] = null;
-  if (opts.from !== undefined && opts.to !== undefined) {
-    const d = await diffSpecRevisions(caller, specId, { from: opts.from, to: opts.to, rows: true });
-    compare = d.ok
-      ? { ...panes(d.diff.hunks ?? [], d.diff.omittedLines, d.diff.toBody ?? '', opts.to, opts.from), from: opts.from, to: opts.to, attachmentSources: await attachmentSources(spec.id, opts.to).catch(() => ({})) }
-      : { error: d.error };
-  }
-
-  const approver = !!(await specApprover(caller, spec.workspaceId));
-  const canApprove = pending && open && approver;
-  const retirement = open ? null : await specRetirement(spec.id).catch(() => null);
-  // The replacements a person may pick (§22): live specs of the workspace, by title.
-  const retireTargets = approver && open
-    ? await db.select({ id: specs.id, title: specs.title }).from(specs)
-      .where(and(eq(specs.workspaceId, spec.workspaceId), ne(specs.id, spec.id), notInArray(specs.status, ['retired', 'superseded'])))
-      .orderBy(specs.title).limit(200)
-    : [];
-  let review: SpecPanes | null = null;
-  if (opts.review && canApprove) {
-    if (spec.approvedRevision != null) {
-      const d = await diffSpecRevisions(caller, specId, { from: spec.approvedRevision, to: spec.headRevision, rows: true });
-      if (d.ok) review = panes(d.diff.hunks ?? [], d.diff.omittedLines, d.diff.toBody ?? '', spec.headRevision, spec.approvedRevision);
-    } else {
-      const head = readN === spec.headRevision ? got : await getSpec(caller, specId, { revision: spec.headRevision });
-      if (head.ok) {
-        const h = diffSpecHunks('', head.view.body);
-        review = panes(h.hunks, h.omittedLines, head.view.body, spec.headRevision, null);
-      }
-    }
-  }
-
-  if (review) review.attachmentSources = await attachmentSources(spec.id, review.revision).catch(() => ({}));
-
-  const preflight = review && native ? await repoCopyPreflight(spec, spec.headRevision).catch(() => null) : null;
-  // Fail-open (R-65): the page renders without the section when it cannot be read.
-  const delivery = await readSpecDelivery(caller, spec.id, { cursor: opts.deliveryCursor ?? null }).catch((err) => {
-    console.warn(`[spec-page] delivery for spec ${spec.id} failed:`, err);
-    return null;
-  });
-
+  const approver = !!approverId;
+  const native = nativeSourceOn(ws?.gitConfig);
   const source = repoCopyLine(native, spec.repoCopy, spec.approvedRevision != null, spec.repoSource);
-  const canPublishAnyway = !!source?.publishAnyway && caller.kind === 'user' && !!(await specApprover(caller, spec.workspaceId).catch(() => null));
 
   return {
     state: 'ok',
     source,
-    canPublishAnyway,
+    // Slice 14, R-68: a person who may approve here.
+    canPublishAnyway: !!source?.publishAnyway && approver,
     criteriaUnread: criteriaUnreadText(spec.metadata?.criteria_unread) || null,
-    preflight,
+    repoChecks: native && pending && open && approver,
     delivery,
     spec: { id: spec.id, title: spec.title, scope: spec.scope, status: spec.status, workspaceId: spec.workspaceId, workspaceName: ws?.name ?? '', version: spec.version, headRevision: spec.headRevision, approvedRevision: spec.approvedRevision },
     standing: specStanding(spec).standing,
-    reading: { revision: got.view.revision.revision, approved: spec.approvedRevision === got.view.revision.revision, isHead: got.view.revision.revision === spec.headRevision },
+    reading: { revision: readRev, approved: spec.approvedRevision === readRev, isHead: readRev === spec.headRevision },
     waiting: pending && open ? spec.headRevision : null,
-    body: got.view.body,
-    revisions, parent: parent ?? null, children, siblings, repoRefs, design, attachments, attachmentSources: sources, nearby, filing, comments, commentAnchors, canComment, compare, canApprove, review,
+    // With the review open the page shows the review panel, which carries its own text: the read revision's is not sent twice.
+    body: review ? '' : read.body,
+    revisions, parent: parent ?? null, children, siblings, repoRefs, design,
+    attachments: views.map((a) => ({ ...a, addedAgo: ago(a.addedAt) })), attachmentSources: sourcesOf(views),
+    nearby, filing, comments, commentAnchors,
+    // For a person, write reach is the same team-membership check as read reach (workspace-access.ts).
+    canComment: true,
+    compare, canApprove: pending && open && approver, review,
     retirement, canRetire: approver, retireTargets,
   };
 }
