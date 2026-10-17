@@ -16,7 +16,7 @@
 import { db } from '@buildd/core/db';
 import { missionNotes, missions } from '@buildd/core/db/schema';
 import { sqlExtras, sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
-import { and, desc, eq, gte, inArray, or, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import { missionStatusNoteIntoPattern, MISSION_COMPLETED_MARKER, MISSION_STATUS_CHANGE_TITLES } from '@/lib/mission-status-note';
 import type { RecentMission } from '@buildd/shared';
 
