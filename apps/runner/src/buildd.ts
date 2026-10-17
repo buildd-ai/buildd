@@ -198,7 +198,10 @@ export class BuilddClient {
    */
   async getWorkerRemote(id: string): Promise<{ status: string; task?: { status: string } } | null> {
     const data = await this.fetch(`/api/workers/${id}`, {}, [404]);
-    if (!data || data.error) return null;
+    // Only the 404 body (`{ error }`, no status) means gone. A worker row has
+    // its own `error` column: a question park writes `needs_input: …` there,
+    // and reading that as a 404 made reconcile forget every parked question.
+    if (!data || (typeof data.status !== 'string' && data.error)) return null;
     if (typeof data.status !== 'string') {
       throw new Error(`getWorkerRemote(${id}): response missing status field`);
     }

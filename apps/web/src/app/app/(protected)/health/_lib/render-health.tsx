@@ -9,6 +9,7 @@ import { ServiceStatusBanner, ServiceStatusList } from '@/components/service-sta
 import { HealthClient } from '../HealthClient';
 import { sampleRunnerLanes, resolveRunnerLanesSample } from '../runners/sample-lanes';
 import { loadHealth, type HealthPageKey } from './health-data';
+import HomeAutoRefresh from '../../home/HomeAutoRefresh';
 
 export type HealthSearchParams = Promise<{ workspace?: string; window?: string; failureWindow?: string; state?: string | string[] }>;
 
@@ -40,15 +41,18 @@ export async function renderHealthPage(page: HealthPageKey, searchParams: Health
     loadServiceStatus({ userId: user.id, teamId: activeTeamId }),
   ]);
   if (loaded.kind === 'no-workspaces') return <Empty>No workspaces.</Empty>;
-  const runnerLanes = page === 'runners' && resolveRunnerLanesSample(params.state)
-    ? sampleRunnerLanes(loaded.data.now) : loaded.data.runnerLanes;
+  const { laneWorkspaceIds, ...data } = loaded.data;
+  const sample = page === 'runners' && resolveRunnerLanesSample(params.state);
+  const runnerLanes = sample ? sampleRunnerLanes(data.now) : data.runnerLanes;
   // The banner on every Health page; the quiet list on Overview, where "what needs attention now" lives.
   const statusTop = (
     <>
       {status.banner && <ServiceStatusBanner status={status.banner} />}
       {page === 'overview' && <ServiceStatusList statuses={status.statuses} />}
       {top}
+      {/* The timeline re-renders when a run starts, ends or settles, not only on reload. */}
+      {page === 'runners' && !sample && <HomeAutoRefresh workspaceIds={laneWorkspaceIds} />}
     </>
   );
-  return <HealthClient page={page} {...loaded.data} runnerLanes={runnerLanes} top={statusTop} />;
+  return <HealthClient page={page} {...data} runnerLanes={runnerLanes} top={statusTop} />;
 }
