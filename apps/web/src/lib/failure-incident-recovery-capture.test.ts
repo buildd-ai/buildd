@@ -36,7 +36,6 @@ import {
 } from './failure-incident-recovery-capture';
 import { createInfrastructureRecoveryFamily } from './failure-incident-recovery-infrastructure';
 import { mergeIncident, type IncidentStorePort, type StoredIncident } from './failure-incident-store';
-import { incidentEscalationRule } from './failure-incident-escalation';
 import { runFailurePatternSweep, type SweepDeps } from './failure-pattern-sweep';
 import { taskRecoveryView } from './incident-recovery-refs';
 import type { FailureIncidentRule } from '@buildd/shared';
@@ -146,11 +145,6 @@ describe('the rule: one incident per (workspace, component, error signature)', (
       captureFailures: [fact(AUDIT_A), fact(AUDIT_B, { errorSignature: other.errorSignature }), fact('cccccccc-0000-4000-8000-0000000000c3', { component: 'visual_qa.guard' })],
     });
     expect(candidates).toHaveLength(3);
-  });
-
-  it('before its first assessment the gate holds it as Buildd\'s, never the person\'s', () => {
-    const inc = openFrom([fact(AUDIT_A)]);
-    expect(incidentEscalationRule({ status: 'open', severity: inc.severity, rule: inc.rule } as any).owner).toBe('buildd');
   });
 });
 

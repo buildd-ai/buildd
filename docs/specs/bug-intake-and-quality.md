@@ -1099,7 +1099,6 @@ NOT run in parallel. Path claims will serialize them.
 - `apps/web/src/lib/failure-incident-actions.ts`: `actOnIncidentResults`, `buildFixTaskDraft`, `createDbFixTaskPort`, `RAISE_MIN_CONFIDENCE`, `FIX_TASK_MIN_CONFIDENCE`
 - `apps/web/src/lib/failure-pattern-sweep.ts`: `runFailurePatternSweep`
 - `apps/web/src/lib/failure-pattern-sentinel.ts`: `detectFailurePatterns`
-- `apps/web/src/lib/failure-incident-escalation.ts`: `createGatedIncidentSender`
 - `packages/core/decision-kind-failure-incident-triage.ts`
 - `packages/core/decision-kinds.ts`: `defineBuilddDecisionKind`
 - `packages/core/decision-policy.ts`: `runBuilddDecision`, `runBuilddChallenger`
@@ -1122,7 +1121,6 @@ NOT run in parallel. Path claims will serialize them.
 - `packages/spec-contract/src/requirements.ts`: `specCriteria`
 - `apps/web/src/lib/specs/pin.ts`: `pinSpecSource`
 - `apps/web/src/app/api/tasks/route.ts`: the `[friction]` dedupe branch
-- `apps/web/src/app/api/health/incidents/route.ts`: the incident list
 - `packages/core/db/schema.ts`: `failureIncidents`, `decisionRecords`, `gateEvents`, `releases`, `releaseTasks`, `specDiscrepancies`
 
 ## 16. Out of scope

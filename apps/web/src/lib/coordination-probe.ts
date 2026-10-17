@@ -26,7 +26,7 @@ import type { CoordinationHold } from '@/lib/explain-coordination';
 import { dependencySatisfied } from '@/app/api/workers/claim/deps-gate';
 import { evaluateSoftOverlaps, readSoftOverlaps } from '@/app/api/workers/claim/soft-overlap-gate';
 import { loadSoftOverlapHolders } from '@/app/api/workers/claim/soft-overlap-store';
-import { touchesHardOverlapSurface } from '@/app/api/workers/claim/hold-start-shadow';
+import { overlapHolds, workspaceHardSurface } from '@/app/api/workers/claim/overlap-policy';
 import { checkMissionLocal } from '@/app/api/workers/claim/held-gate';
 import { BYPASS_DEPS_GATE_KEY, BYPASS_HELD_GATE_KEY, hasBypassFlag } from '@/lib/bypass-flags';
 import { evaluateCoordinationGates } from '@/app/api/workers/claim/coordination-gates';
@@ -213,10 +213,10 @@ async function unsatisfiedDeps(taskId: string, deps: string[]): Promise<Set<stri
 
 /**
  * Soft overlaps (pathDeclaration.softOverlaps) the claim would hold on: the
- * claim's own `evaluateSoftOverlaps`. A deterministic hold (migration / hard
- * surface) is `serialized_surface`; an advisory one is `soft_overlap`, hard
- * when the newest claim verdict was HOLD, else ordering-only (the rule or Jev
- * may still start it).
+ * claim's own `evaluateSoftOverlaps` under the claim's overlap policy
+ * (claim/overlap-policy). Only a deterministic hold (migration, unmergeable
+ * or workspace hard surface) holds, as `serialized_surface`; an overlap on
+ * mergeable files starts at claim and is not a waiting reason.
  */
 async function softOverlapReasons(task: ProbeTask): Promise<WaitingReason[]> {
   const entries = readSoftOverlaps(task.pathDeclaration);
@@ -224,48 +224,23 @@ async function softOverlapReasons(task: ProbeTask): Promise<WaitingReason[]> {
   const holders = await loadSoftOverlapHolders([...new Set(entries.map(e => e.taskId))]).catch(() => null);
   const gitConfig = (task as { workspace?: { gitConfig?: unknown } }).workspace?.gitConfig ?? null;
   const verdicts = evaluateSoftOverlaps(task as any, holders, {
-    isHardSurface: (paths, kind) => touchesHardOverlapSurface(paths, kind, gitConfig as any),
+    isHardSurface: (paths, kind) => overlapHolds(paths, kind, workspaceHardSurface(gitConfig as any)),
   });
-  if (verdicts.length === 0) return [];
-  const lastVerdict = await latestSoftVerdicts(task.id);
-  return verdicts.map(v => {
+  return verdicts.flatMap(v => {
+    if (v.kind !== 'deterministic') return [];
     const blocker = { type: 'task' as const, id: v.holderTaskId, label: `task ${v.holderTaskId.slice(0, 8)}`, href: `/app/tasks/${v.holderTaskId}`, live: true };
-    const overlapKind = v.kind === 'deterministic' ? v.overlapKind : v.overlapKind;
     const areas = overlapAreas(v.paths).slice(0, 2).map(a => a.area).join(', ');
-    const because = v.kind === 'deterministic' && v.overlapKind === 'migration'
+    const because = v.overlapKind === 'migration'
       ? `both change migrations in ${areas}`
       : `both edit ${v.paths.length} file${v.paths.length === 1 ? '' : 's'} in ${areas}`;
-    if (v.kind === 'deterministic') {
-      return makeWaitingReason('serialized_surface', {
-        because, blocker,
-        overlap: holdOverlap(v.paths, overlapKind),
-        provenance: { source: 'probe', derivedFrom: 'tasks.pathDeclaration.softOverlaps (claim soft_overlap, deterministic)' },
-      });
-    }
-    return makeWaitingReason('soft_overlap', {
+    return [makeWaitingReason('serialized_surface', {
       because, blocker,
-      overlap: holdOverlap(v.paths, overlapKind),
-      strength: lastVerdict.get(v.holderTaskId) === 'HOLD' ? 'hard' : 'soft',
-      provenance: { source: 'ledger', derivedFrom: 'gate_events#claim_loop_deferral/soft_overlap' },
-    });
+      overlap: holdOverlap(v.paths, v.overlapKind),
+      provenance: { source: 'probe', derivedFrom: 'tasks.pathDeclaration.softOverlaps (claim soft_overlap, deterministic)' },
+    })];
   });
 }
 
-/** Newest `soft_overlap` claim verdict per holder, from the ledger. */
-async function latestSoftVerdicts(taskId: string): Promise<Map<string, string>> {
-  const rows = await db.select({ detail: gateEvents.detail })
-    .from(gateEvents)
-    .where(and(eq(gateEvents.taskId, taskId), eq(gateEvents.gate, GATE_SLUGS.CLAIM_LOOP_DEFERRAL), eq(gateEvents.reason, 'soft_overlap')))
-    .orderBy(desc(gateEvents.occurredAt))
-    .limit(20)
-    .catch(() => [] as Array<{ detail: unknown }>);
-  const out = new Map<string, string>();
-  for (const r of rows) {
-    const d = (r.detail ?? {}) as { holderTaskId?: unknown; verdict?: unknown };
-    if (typeof d.holderTaskId === 'string' && typeof d.verdict === 'string' && !out.has(d.holderTaskId)) out.set(d.holderTaskId, d.verdict);
-  }
-  return out;
-}
 
 /** A local mission's task: runners never claim it unless a person hands it over. */
 async function missionLocalReason(task: ProbeTask): Promise<WaitingReason | null> {

@@ -34,7 +34,7 @@ describe('the task adapter reads the incident, never the question text (§16.4, 
 
   it('repairing: a concise factual status owned by Buildd, and it supersedes a stale question', () => {
     const v = taskRecoveryView(incident(), { now: NOW, timeZone: 'UTC' })!;
-    expect(v).toMatchObject({ phase: 'repair_running', stateWord: 'Repair running', ownerLabel: 'Buildd', supersedesQuestion: true, holdsCompletion: true, href: '/app/incidents/i1' });
+    expect(v).toMatchObject({ phase: 'repair_running', stateWord: 'Repair running', ownerLabel: 'Buildd', supersedesQuestion: true, holdsCompletion: true });
     expect(v.sentence).toMatch(/^Buildd is repairing/);
   });
 

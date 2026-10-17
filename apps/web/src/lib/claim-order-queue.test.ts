@@ -189,6 +189,46 @@ describe('loadRunnerQueue', () => {
     expect(bravo.queue[0].estimateMinutes).toBeNull();
   });
 
+  it('names the open PR or lease a queued task would start alongside, never one that holds it', async () => {
+    const pr = (taskId: string, prNumber: number) => ({ taskId, prNumber, prUrl: `https://example.test/pull/${prNumber}`, pathManifest: null as string[] | null });
+    const out = await loadRunnerQueue({ workspaceIds: ['ws-a'], caller }, {
+      read: async () => [
+        row({ id: 't-pr', pathManifest: ['apps/web/src/lib/x.ts'] }),
+        row({ id: 't-lease', pathManifest: ['apps/web/src/lib/y.ts'] }),
+        row({ id: 't-held', pathManifest: ['packages/core/db/schema.ts'] }),
+        row({ id: 't-none', pathManifest: ['docs/a.md'] }),
+        row({ id: 't-undeclared' }),
+      ],
+      estimates: async () => null,
+      overlaps: async () => ({
+        openPrs: new Map([['ws-a', [
+          { ...pr('pr-task', 41), pathManifest: ['apps/web/src/lib/x.ts'] },
+          { ...pr('schema-task', 42), pathManifest: ['packages/core/db/schema.ts'] },
+        ]]]),
+        leases: new Map([['ws-a', new Map([['lease-task', ['apps/web/src/lib/y.ts']]])]]),
+      }),
+    });
+    const by = new Map(out.teams[0].queue.map(t => [t.id, t.alongside ?? null]));
+    expect(by.get('t-pr')).toEqual({ prNumber: 41, holderTaskId: 'pr-task' });
+    expect(by.get('t-lease')).toEqual({ prNumber: null, holderTaskId: 'lease-task' });
+    expect(by.get('t-held')).toBeNull();
+    expect(by.get('t-none')).toBeNull();
+    expect(by.get('t-undeclared')).toBeNull();
+    // Never sent to the runner.
+    expect(out.teams[0].queue[0]).not.toHaveProperty('pathManifest');
+  });
+
+  it('reads no overlaps when no queued task declares files, and a failed read only drops alongside', async () => {
+    let reads = 0;
+    await loadRunnerQueue({ workspaceIds: ['ws-a'], caller }, { read: async () => [row()], estimates: async () => null, overlaps: async () => { reads++; throw new Error('x'); } });
+    expect(reads).toBe(0);
+    const out = await loadRunnerQueue({ workspaceIds: ['ws-a'], caller }, {
+      read: async () => [row({ pathManifest: ['a.ts'] })], estimates: async () => null, overlaps: async () => { reads++; throw new Error('down'); },
+    });
+    expect(reads).toBe(1);
+    expect(out.teams[0].queue[0].alongside).toBeUndefined();
+  });
+
   it('says when the read hit its row limit', async () => {
     const many = Array.from({ length: RUNNER_QUEUE_LIMIT + 1 }, (_, i) => row({ id: `t-${i}` }));
     const out = await loadRunnerQueue({ workspaceIds: ['ws-a'], caller }, { read: async () => many, estimates: async () => null });
