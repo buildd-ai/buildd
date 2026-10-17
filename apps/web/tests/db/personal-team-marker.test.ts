@@ -6,7 +6,7 @@
  * - Every personal-team lookup (team ids, workspace ids, role, default team,
  *   permission roles, the GitHub back-link) reads the column: a team whose
  *   slug alone looks personal is an ordinary team.
- * - The backfill migration marks a team only when its slug names a user who
+ * - The migration's backfill marks a team only when its slug names a user who
  *   owns it, and is safe to run twice.
  */
 import { beforeAll, describe, expect, mock, setDefaultTimeout, test } from 'bun:test';
@@ -152,9 +152,13 @@ describe('lookups read the column, never the slug', () => {
 
 describe('the backfill marks only real personal teams', () => {
   const dir = join(import.meta.dir, '../../../../packages/core/drizzle');
-  const folder = readdirSync(dir).find((f) => f.endsWith('_backfill_personal_teams'));
-  if (!folder) throw new Error('backfill migration folder not found');
-  const backfill = readFileSync(join(dir, folder, 'migration.sql'), 'utf8');
+  const folder = readdirSync(dir).find((f) => f.endsWith('_personal_team_column'));
+  if (!folder) throw new Error('personal team migration folder not found');
+  // The migration adds the column, then backfills it. The database here is
+  // already migrated, so run only the backfill statement, exactly as written.
+  const statements = readFileSync(join(dir, folder, 'migration.sql'), 'utf8').split('--> statement-breakpoint');
+  const backfill = statements.find((st) => /^\s*UPDATE "teams"/m.test(st));
+  if (!backfill) throw new Error('backfill UPDATE not found in the personal team migration');
 
   test('slug naming a user who owns it: marked; slug-only, non-owner or unknown user: not; re-run changes nothing', async () => {
     const real = await user();

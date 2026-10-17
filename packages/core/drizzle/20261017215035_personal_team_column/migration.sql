@@ -1,3 +1,6 @@
+ALTER TABLE "teams" ADD COLUMN "personal_user_id" uuid;--> statement-breakpoint
+ALTER TABLE "teams" ADD CONSTRAINT "teams_personal_user_id_unique" UNIQUE("personal_user_id");--> statement-breakpoint
+ALTER TABLE "teams" ADD CONSTRAINT "teams_personal_user_id_users_id_fkey" FOREIGN KEY ("personal_user_id") REFERENCES "users"("id") ON DELETE SET NULL;--> statement-breakpoint
 -- Mark existing personal teams. Sign-up creates a user's personal team with
 -- the slug personal-<user id> and makes that user its owner, so a team is
 -- marked only when both hold: the slug names an existing user AND that user
