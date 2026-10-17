@@ -198,7 +198,7 @@ function primaryAction(
 ) {
   if (state === 'merged') return { label: 'Open PR', href: prUrl };
   if (isCiRed(state, ciChecks)) return { label: 'View failing checks', href: `${prUrl.replace(/\/+$/, '')}/checks` };
-  // A fix attempt is already open — the branch is about to change, so
+  // A fix is already open and will push to this branch, so
   // "Review & merge" would offer the exact action guardReviewVerdict is going
   // to refuse. Fall back to a neutral link, same as the merged case.
   if (openAttempt) return { label: 'View PR', href: prUrl };

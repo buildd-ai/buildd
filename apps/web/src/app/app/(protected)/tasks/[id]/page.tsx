@@ -1016,7 +1016,7 @@ export default async function TaskDetailPage({
             <ul>
               {[prWorker, ...ciAttemptWorkers].map((w, i) => (
                 // One line each: the runner, then its attempt number. "(retry)"
-                // is what "attempt 2" already says, and it wrapped on its own.
+                // is what "CI fix 1" already says, and it wrapped on its own.
                 <li key={w.id} className="flex min-w-0 min-h-11 md:min-h-0 items-center md:items-baseline gap-2">
                   <span className="min-w-0 truncate">{runnerLabel(w)}</span>
                   <span className="shrink-0 whitespace-nowrap text-text-muted">attempt {i + 1}</span>
