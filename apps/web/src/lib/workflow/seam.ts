@@ -44,7 +44,8 @@ import {
 import { sqlOrderBy, sqlWhere } from '@buildd/core/db/relational-sql';
 import { drainOnControlPlane, hostsKernelHere } from './kernel-client';
 import { recordPrStateObserved } from './render-observation';
-import { ownerAttemptEndOf } from './task-projection';
+import { isAttemptRow, ownerAttemptEndOf, projectOwnerEndSql } from './task-projection';
+import { isTerminalWorkerStatus } from '@buildd/shared';
 import { scheduleKernelHeal } from './kernel-heal';
 import { KernelObservationFailed } from './kernel-observation';
 import { diffTouchesFindings, isTaskId, openFindings, openRequiredFindings, pathsNamedIn } from '@buildd/workflow-kernel/findings';
@@ -282,6 +283,46 @@ export async function openKernelDelivery(p: OpenInput, deps: SeamDeps = {}): Pro
  */
 export function reviewOwedWhileOwnerRuns(task: { kind?: string | null }, live: LivePr | null): boolean {
   return task.kind === 'coordination' && !!live && live.state === 'open' && !live.merged && !live.draft;
+}
+
+/**
+ * AC-1 slice 3 (task-projection.ts `projectOwnerEndSql`): project an owner attempt's end onto its
+ * task outside a transition. The seam runs it after every owner end; the worker PATCH runs it
+ * after handing the end to the kernel, so a control plane that is down, or one too old to
+ * project, still leaves the task settled. Moves only an open owner task. Answers the status
+ * written, or null when nothing moved.
+ */
+export async function projectOwnerEnd(
+  p: { deliveryId: string; taskId: string; workerId: string; status: 'completed' | 'failed' | 'lost' | 'unproven' },
+  exec: Exec = seamExec,
+): Promise<'completed' | 'failed' | null> {
+  const fallback = p.status === 'completed' ? 'completed' : 'failed';
+  const rows = ((await exec(projectOwnerEndSql({ deliveryId: p.deliveryId, taskId: p.taskId, workerId: p.workerId, fallback }))).rows ?? []) as Array<{ status?: string }>;
+  const s = rows[0]?.status;
+  return s === 'completed' || s === 'failed' ? s : null;
+}
+
+/**
+ * AC-1 slice 3: an owner task still open whose latest worker ended (`ownerAttemptEndOf`, the
+ * floor's own settle rule) gets that end projected, for a delivery that already moved past WORKING.
+ * Answers the status written, or null.
+ */
+async function settleOwnerTask(p: { ownerTaskId: string; deliveryId: string }, deps: SeamDeps): Promise<'completed' | 'failed' | null> {
+  const task = await db.query.tasks.findFirst({ where: sqlWhere(eq(tasks.id, p.ownerTaskId)), columns: { status: true, claimedAt: true } });
+  if (!task || (task.status !== 'assigned' && task.status !== 'in_progress')) return null;
+  const rows = await db.query.workers.findMany({
+    where: sqlWhere(eq(workers.taskId, p.ownerTaskId)),
+    columns: { id: true, runner: true, status: true, createdAt: true, updatedAt: true },
+    orderBy: sqlOrderBy([desc(workers.createdAt), desc(workers.id)]),
+  });
+  // Only attempt rows: a placeholder (a second PR's sibling row) is no attempt and no end.
+  const attempts = rows.filter(isAttemptRow);
+  // A live attempt is still running the task: nothing to settle.
+  if (attempts.some((r) => !isTerminalWorkerStatus(r.status))) return null;
+  const latest = attempts[0];
+  const end = latest ? ownerAttemptEndOf(task, latest) : null;
+  if (!latest || !end) return null;
+  return projectOwnerEnd({ deliveryId: p.deliveryId, taskId: p.ownerTaskId, workerId: latest.id, status: end }, deps.exec);
 }
 
 /**
@@ -587,6 +628,13 @@ export async function attemptEnded(p: {
   const result = await applyCommand(cmd, { ref: { deliveryId }, exec: deps.exec });
   if (result.result !== 'applied' && result.result !== 'duplicate') {
     console.log(`[workflow] AttemptEnded(${attemptKind}) for task ${p.task.id}: ${result.result} (${result.reason})`);
+  }
+  // AC-1 slice 3: an applied owner end set the task in its own statement (`t_attempt`). One that
+  // applied nothing (a duplicate, a stale end) still projects, from the ledger's recorded end, so
+  // the task never strands open. A no-op once the task is settled; a requeue (the task's own
+  // retry is queued) is no end to project.
+  if (attemptKind === 'owner' && !p.taskRetryBudgetLeft) {
+    await projectOwnerEnd({ deliveryId, taskId: p.task.id, workerId: p.workerId, status: p.status }, deps.exec);
   }
   if (trunk?.incident && live && result.result === 'applied' && TRUNK_SOURCE_STATES.has(result.decision.toState)) {
     await applyCommand(
@@ -1451,6 +1499,10 @@ export async function reconcileKernelDeliveries(
           view = await loadView({ deliveryId }, deps.exec);
           if (view.delivery?.state !== 'WORKING') s.imported++;
         }
+      } else if (view.delivery) {
+        // AC-1 slice 3: past WORKING the kernel has the end, but the task may not: an older control
+        // plane applied it without projecting and the route's own projection failed. Settle it.
+        await settleOwnerTask({ ownerTaskId: view.delivery.ownerTaskId, deliveryId }, deps);
       }
       // 75c04d5d: a mechanical refresh pinned to a head the delivery already left. The head read
       // above is a duplicate (the delivery holds it), so nothing else ever ends the row.

@@ -364,7 +364,7 @@ const TASK_STATUS_WRITERS: Record<string, string> = {
   'apps/web/src/lib/pr-merged-legacy-task.ts': `${GUARDED('a merge seen by branch name (completeTaskOnBranchMatchMerge)')}. Its other writer, legacyCompleteTaskOnMerge, runs only for a PR the kernel does not own (the webhook's legacy path, or an emit_pr_merged effect queued before S4b shipped, #4856)`,
   'apps/web/src/lib/task-archive.ts': GUARDED('the weekly archive of stale failed tasks; a failed owner whose delivery is still live keeps its status'),
   'apps/web/src/lib/task-dependencies.ts': `${GUARDED('the dependency-failure cascade, for a live delivery')}. Its other writer cancels stale "Aggregate results" children of a planning task, which open no PR`,
-  'apps/web/src/app/api/workers/[id]/route.ts': `${ATTEMPT('the worker PATCH: completion snapshot, requeues on budget, mount, auth and codex deferral, mission-budget failure, release outcome')}. The reviewer-verdict writes target the reviewer task. The completion snapshot copies prUrl/prNumber from the worker row, which carries the delivery's PR (S7, projections, task c16eb202: derive on read)`,
+  'apps/web/src/app/api/workers/[id]/route.ts': `${ATTEMPT('the worker PATCH: completion snapshot, requeues on budget, mount, auth and codex deferral, mission-budget failure, release outcome')}. For the plain end of a kernel owner attempt (AC-1 slice 3) the completion snapshot writes result, loop and context but not status: T4 projects it (t_attempt, projectOwnerEnd). The reviewer-verdict writes target the reviewer task. The completion snapshot copies prUrl/prNumber from the worker row, which carries the delivery's PR (S7, projections, task c16eb202: derive on read)`,
   'apps/web/src/app/api/workers/claim/route.ts': ATTEMPT('the claim (pending to assigned) and its rollbacks; the repair-attempt defer is the kernel\'s own decision'),
   'apps/web/src/app/api/tasks/cleanup/route.ts': ATTEMPT('a stalled worker: retry-cap failure, requeue, or promotion of a completed worker\'s deliverables'),
   'apps/web/src/lib/stale-workers.ts': ATTEMPT('the reaper: silent start, retry and infra caps, requeue, released interactive leases, expired loop waits, unanswered questions; deliverable promotion already skips a kernel attempt'),
@@ -518,6 +518,22 @@ describe('S4a: the delivery columns (workers.merged_at, workers.pr_lifecycle_sta
       .filter(([, n, max]) => n !== max)
       .map(([f, n, max]) => `${f}: ${n} statements, pinned at ${max}${n < max ? ' (lower the pin: the ratchet only goes down)' : ''}`);
     expect(over).toEqual([]);
+  });
+
+  it('AC-1 slice 3: the worker PATCH leaves an owner end\'s status to the projection, and T4 projects it in its own statement', () => {
+    const route = code('apps/web/src/app/api/workers/[id]/route.ts');
+    // The completion snapshot drops status for a plain owner end, and the route projects it after the end.
+    expect(/if \(ownerEndProjects\) delete taskUpdate\.status;/.test(route)).toBe(true);
+    expect(/\bprojectOwnerEnd\(\{/.test(route)).toBe(true);
+    // The end goes to the kernel before the reads of the status in the same request.
+    const endAt = route.indexOf('await workflowAttemptEnd();');
+    expect(endAt).toBeGreaterThan(0);
+    for (const reader of ["type: 'task.terminal'", "runStep('resolve-dependencies'", "type: 'worker.reported'", 'COMPLETION_POLICIES.release.settled(']) {
+      expect(`${reader} after the end: ${route.indexOf(reader) > endAt}`).toBe(`${reader} after the end: true`);
+    }
+    const kernel = code(`${KERNEL_DIR}kernel.ts`);
+    expect(/attemptEndTaskProjectionCtes\(/.test(kernel)).toBe(true);
+    expect(/t_attempt AS \(/.test(code(`${KERNEL_DIR}task-projection.ts`))).toBe(true);
   });
 
   it('S4b: a GUARDED writer still skips a delivery-owned task in its own statement', () => {
