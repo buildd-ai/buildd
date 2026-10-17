@@ -483,6 +483,62 @@ describe('T4 is a door too (AC-9): an attempt\'s end from the web host', () => {
   });
 });
 
+describe('T10 from a sweep is a door too (AC-9): the CI-red sweep\'s and the landing path\'s CI failure', () => {
+  const seen = { workspaceId: WS, repoFullName: 'acme/w', prNumber: 7, installationId: 1, headSha: 'H1', signature: 'ci_failed', maxAttempts: 3, source: 'cron:ci-red' };
+  const sweep = { kind: 'system' as const, id: 'system:cron:ci-red' };
+
+  it('in own mode it is submitted to the control plane as buildd\'s own sweep, and nothing runs here', async () => {
+    const { observeCiFailure } = await import('./kernel-client');
+    const l = local();
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchSpy = (async (_u: string, init: RequestInit) => { bodies.push(JSON.parse(String(init.body))); return answer({ op: 'observe_ci_failure', result: { handled: false } }); }) as unknown as typeof fetch;
+    const r = await observeCiFailure(seen, { principal: sweep, idempotencyKey: 'observe_ci_failure:k-0001', deps: { ...l.deps, env: OWN, fetch: fetchSpy } });
+    expect(r).toEqual({ handled: false });
+    expect(l.ran).toEqual([]);
+    expect(bodies).toEqual([{ v: 1, op: 'observe_ci_failure', input: seen, principal: sweep, idempotencyKey: 'observe_ci_failure:k-0001' }]);
+  });
+
+  it('in shadow the web host runs it itself, as before', async () => {
+    const { observeCiFailure } = await import('./kernel-client');
+    const l = local();
+    await observeCiFailure({ ...seen, source: 'landing' }, { principal: { kind: 'system', id: 'system:landing' }, deps: { ...l.deps, env: {} } });
+    expect(l.ran).toEqual(['observe_ci_failure']);
+  });
+
+  it('release skew: a control plane that predates the op refused it as unknown, so the web host applies it itself and says so', async () => {
+    const { observeCiFailure } = await import('./kernel-client');
+    const l = local();
+    const older = (async () => Response.json({ v: 1, code: 'bad_request', error: 'unknown op "observe_ci_failure"' }, { status: 400 })) as unknown as typeof fetch;
+    const errors: unknown[] = [];
+    const realError = console.error;
+    console.error = (...a: unknown[]) => { errors.push(a.join(' ')); };
+    try {
+      await observeCiFailure(seen, { principal: sweep, deps: { ...l.deps, env: OWN, fetch: older } });
+    } finally {
+      console.error = realError;
+    }
+    expect(l.ran).toEqual(['observe_ci_failure']);
+    expect(String(errors[0])).toContain('SKEW');
+    expect(String(errors[0])).toContain('observe_ci_failure');
+  });
+
+  it('release skew only: any other refusal stays a refusal and nothing runs here', async () => {
+    const { observeCiFailure } = await import('./kernel-client');
+    for (const [status, code, error] of [[403, 'forbidden', 'principal refused'], [400, 'bad_request', 'unknown op "land"']] as const) {
+      const l = local();
+      const refusing = (async () => Response.json({ v: 1, code, error }, { status })) as unknown as typeof fetch;
+      const err = await observeCiFailure(seen, { principal: sweep, deps: { ...l.deps, env: OWN, fetch: refusing } }).catch((e) => e);
+      expect(err).toBeInstanceOf(KernelCommandRefusedError);
+      expect(l.ran).toEqual([]);
+    }
+  });
+
+  it('the command endpoint knows the op', async () => {
+    const { isKernelOp } = await import('./command-api');
+    expect(isKernelOp('observe_ci_failure')).toBe(true);
+  });
+});
+
 describe('a door after an unknown outcome', () => {
   it('submits again with the same key and returns the control plane\'s answer; a not_applied failure is not retried', async () => {
     const { landThroughKernel, DOOR_UNKNOWN_RETRIES } = await import('./kernel-client');

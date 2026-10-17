@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { missions, specOutcomeVerdicts, specs, tasks, users } from '@buildd/core/db/schema';
+import { missions, specCriterionRecords, specOutcomeVerdicts, specs, tasks, users } from '@buildd/core/db/schema';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { isUuid } from '@/lib/uuid';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
@@ -8,7 +8,7 @@ import { reach, type SpecCaller, type SpecRow } from './store';
 import { livingSpecCriteriaOf, selectedScope } from './selected-scope';
 import type { GoalCriteriaState, LivingSpecCriterionStanding } from '@buildd/shared';
 import {
-  deliveredSentence, markOf, standingSentence,
+  deliveredSentence, markOf, standingSentence, wordingMark,
   type CriterionMark, type DeliveryOutcome, type DeliveryTone,
 } from './delivery-words';
 
@@ -159,7 +159,40 @@ async function newestEvidence(pins: Array<{ taskId: string; specRevisionId: stri
   return out;
 }
 
-async function taskEntries(rows: Awaited<ReturnType<typeof pinnedTaskRows>>, approved: number | null): Promise<DeliveryEntry[]> {
+/**
+ * The stored text hash of each criterion, by revision, for the revisions
+ * named. Read-only (R-65): a revision whose records are not derived yet
+ * simply has none here, and its marks stay as they were.
+ */
+async function wordings(specId: string, revisions: number[]): Promise<Map<number, Map<string, string>>> {
+  const out = new Map<number, Map<string, string>>();
+  const want = [...new Set(revisions.filter((n) => n >= 1))];
+  if (!want.length) return out;
+  const rows = await db.select({ revision: specCriterionRecords.revision, criterionId: specCriterionRecords.criterionId, textHash: specCriterionRecords.textHash })
+    .from(specCriterionRecords).where(and(eq(specCriterionRecords.specId, specId), inArray(specCriterionRecords.revision, want)));
+  for (const r of rows) {
+    if (!out.has(r.revision)) out.set(r.revision, new Map());
+    out.get(r.revision)!.set(r.criterionId, r.textHash);
+  }
+  return out;
+}
+
+/**
+ * Whether a criterion's words on the revision in force differ from those the
+ * work was built to (R-13). False when either side is unknown, so a missing
+ * record never invents a change; true when the revision in force has both
+ * records and the criterion is not among them, or has other words.
+ */
+function wordingChanged(w: Map<number, Map<string, string>>, approved: number | null, builtTo: number, id: string, pinned?: unknown): boolean {
+  if (approved == null || approved === builtTo) return false;
+  const now = w.get(approved);
+  const own = (pinned && typeof pinned === 'object' ? (pinned as Record<string, unknown>)[id] : undefined);
+  const then = typeof own === 'string' ? own : w.get(builtTo)?.get(id);
+  if (!now || !then) return false;
+  return now.get(id) !== then;
+}
+
+async function taskEntries(rows: Awaited<ReturnType<typeof pinnedTaskRows>>, approved: number | null, w: Map<number, Map<string, string>>): Promise<DeliveryEntry[]> {
   const ids = rows.map((r) => r.id);
   const views = await getDeliveryViewsForTasks(ids).catch(() => new Map());
   const pins = rows.map((r) => ({ taskId: r.id, pin: asRecord(asRecord(r.context)?.specSource) ?? {} }));
@@ -177,7 +210,8 @@ async function taskEntries(rows: Awaited<ReturnType<typeof pinnedTaskRows>>, app
     const builtTo = outcome?.revision ?? (typeof pin.revision === 'number' ? pin.revision : 0);
     const provisional = pin.provisional === true;
     const criteria: DeliveryCriterion[] = ((outcome?.criteria ?? []) as ReadonlyArray<OutcomeView['criteria'][number]>).map((c) => ({
-      criterionId: c.criterionId, text: c.text, mark: markOf(c),
+      criterionId: c.criterionId, text: c.text,
+      mark: wordingMark(markOf(c), wordingChanged(w, approved, builtTo, c.criterionId, pin.criterionHashes)),
       evidence: evidenceLinks(evidence.get(`${r.id}:${c.criterionId}`)),
     }));
     const state: DeliveryOutcome = outcome?.outcome ?? 'unverified';
@@ -227,7 +261,7 @@ function missionMark(s: LivingSpecCriterionStanding | undefined, verdict: string
   return s.standing;
 }
 
-async function missionEntries(rows: Awaited<ReturnType<typeof selectingMissionRows>>, specId: string, approved: number | null): Promise<DeliveryEntry[]> {
+async function missionEntries(rows: Awaited<ReturnType<typeof selectingMissionRows>>, specId: string, approved: number | null, w: Map<number, Map<string, string>>): Promise<DeliveryEntry[]> {
   const picked = rows.map((r) => {
     const criterion = livingSpecCriteriaOf(r.goalCriteria).find((c) => c.specId === specId)!;
     const state = (r.goalCriteriaState as GoalCriteriaState | null)?.criteria
@@ -252,7 +286,7 @@ async function missionEntries(rows: Awaited<ReturnType<typeof selectingMissionRo
       const v = s?.verdictId ? verdicts.get(s.verdictId) : undefined;
       return {
         criterionId: ref.id, text: ref.text,
-        mark: waived.has(ref.id) ? 'waived' : missionMark(s, v?.verdict),
+        mark: waived.has(ref.id) ? 'waived' : wordingMark(missionMark(s, v?.verdict), wordingChanged(w, approved, criterion.revision, ref.id)),
         evidence: evidenceLinks(v?.evidence),
       };
     });
@@ -297,9 +331,19 @@ export async function readSpecDelivery(caller: SpecCaller, specId: string, opts:
   ].sort((a, b) => (a.at === b.at ? (a.id < b.id ? 1 : -1) : a.at < b.at ? 1 : -1));
   const page = merged.slice(0, limit);
   const keep = new Set(page.map((p) => `${p.kind}:${p.id}`));
+  const keptTasks = taskRows.filter((r) => keep.has(`task:${r.id}`));
+  const keptMissions = missionRows.filter((r) => keep.has(`mission:${r.id}`));
+  // The words each criterion had on the revisions the work was built to, and on the one in force (R-13).
+  const builtTo = [
+    ...keptTasks.map((r) => Number(asRecord(asRecord(r.context)?.specSource)?.revision)),
+    ...keptMissions.map((r) => livingSpecCriteriaOf(r.goalCriteria).find((c) => c.specId === spec.id)?.revision ?? 0),
+  ].filter((n) => Number.isInteger(n) && n !== spec.approvedRevision);
+  const w = spec.approvedRevision != null && builtTo.length
+    ? await wordings(spec.id, [spec.approvedRevision, ...builtTo]).catch(() => new Map<number, Map<string, string>>())
+    : new Map<number, Map<string, string>>();
   const [t, m] = await Promise.all([
-    taskEntries(taskRows.filter((r) => keep.has(`task:${r.id}`)), spec.approvedRevision),
-    missionEntries(missionRows.filter((r) => keep.has(`mission:${r.id}`)), spec.id, spec.approvedRevision),
+    taskEntries(keptTasks, spec.approvedRevision, w),
+    missionEntries(keptMissions, spec.id, spec.approvedRevision, w),
   ]);
   const byKey = new Map([...t, ...m].map((e) => [`${e.kind}:${e.id}`, e]));
   const entries = page.map((p) => byKey.get(`${p.kind}:${p.id}`)!).filter(Boolean);

@@ -40,7 +40,8 @@ import { captureCiJobLogEvidence } from '@/lib/ci-job-log-evidence';
 import { fetchPrRetryGate, fetchCIFailureLogs, type PrRetryGate } from '@/lib/ci-failure-inspect';
 import { buildReleaseCandidateFixTask, classifyCiRedReleasePr, RELEASE_CANDIDATE_FIX_HEAD_KEY } from '@/lib/release-candidate-ci';
 import { policyValue } from '@/lib/policy-overrides';
-import { observeCiFailure } from '@/lib/workflow/seam';
+// T10 is applied where the kernel is hosted (the control plane in own mode, AC-9), never on this host.
+import { observeCiFailure, systemPrincipal } from '@/lib/workflow/kernel-client';
 import { notKernelMergedTaskSql } from '@/lib/workflow/pr-fact-scope';
 import { isSchemaDriftFailure, buildDriftDiagnoseTask } from '@/lib/ci-drift-diagnose';
 import { inheritAttemptIdentity } from '@/lib/attempt-identity';
@@ -821,7 +822,7 @@ type KernelCiOutcome =
   | { kind: 'skipped'; reason: CiRetrySkipReason; detail: string };
 
 /**
- * The kernel door of a CI failure: T10 through the seam, mapped onto the
+ * The kernel door of a CI failure: T10 through the kernel client, mapped onto the
  * outcomes the webhook and the red-PR sweep already understand. Null = the
  * kernel does not own this PR (no delivery, released, or switched off).
  */
@@ -838,7 +839,7 @@ async function observeKernelCiFailure(input: CiFailureInput, workspaceId: string
     signature: 'ci_failed',
     maxAttempts: typeof configured === 'number' ? configured : policyValue('maxCiRetries'),
     source: input.surface,
-  });
+  }, { principal: systemPrincipal(`system:${input.surface}`) });
   if (!seen.handled) return null;
   return kernelCiOutcome(seen);
 }
