@@ -22,7 +22,7 @@ import {
   missionIntegrationBase,
   type MissionIntegrationFields,
 } from '@buildd/core/mission-integration';
-import { openDeliveryFinished, type FinishedReason } from '@buildd/workflow-kernel/delivery-epochs';
+import { openDeliveryFinished, type FinishedReason } from '@/lib/workflow/delivery-display';
 
 export type MissionIntegrationPrState =
   /** Open on trunk: this is the mission's outstanding review gate. */
