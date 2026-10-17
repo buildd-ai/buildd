@@ -15,7 +15,7 @@ import { q, seedWorkspace } from './harness';
 import { seam, world, type OpenedPr, type World } from './workflow-scenarios-world';
 
 const { handleCommandRequest } = await import('../../src/lib/workflow/command-api');
-const { submitKernelCommand, ControlPlaneUnavailableError, resetKernelModeCache, CONTROL_PLANE_URL, observeCiGreen, attemptEnded, recordReviewVerdict, adoptReviewVerdict, claimFix, systemPrincipal } = await import('../../src/lib/workflow/kernel-client');
+const { submitKernelCommand, ControlPlaneUnavailableError, resetKernelModeCache, CONTROL_PLANE_URL, observeCiGreen, observeConflict, attemptEnded, recordReviewVerdict, adoptReviewVerdict, claimFix, systemPrincipal } = await import('../../src/lib/workflow/kernel-client');
 const { drainParkedCommands, postgresCommandOutbox } = await import('../../src/lib/workflow/command-outbox');
 const { setKernelHost } = await import('../../src/lib/workflow/kernel-host');
 const { runScheduledKernelFloor, lastControlPlaneFloorAt, controlPlaneFloorStale } = await import('../../src/lib/workflow/kernel-floor');
@@ -178,6 +178,32 @@ describe('AC-9: in own mode the web host submits and the control plane applies',
     expect(cp.calls.filter((c) => c.op !== 'drain')).toEqual([{ path: '/v1/commands', op: 'observe_ci_green' }]);
     const written = await hostsSince(pr.deliveryId, before);
     expect(written.map((t) => t.command)).toContain('CiObserved');
+    expect(written.filter((t) => t.host !== 'control-plane')).toEqual([]);
+  });
+
+  test('a conflict the door saw → one observe_conflict command; the control plane reads the live PR and applies ConflictObserved, tagged control-plane', async () => {
+    process.env.EXECUTION_MODE = 'shadow';
+    w = await world();
+    const pr = await w.openPr({ branch: 'feat/own-conflict', files: { 'src/a.ts': 'export const a = 5;\n' } });
+    await w.handOn(pr);
+    process.env.EXECUTION_MODE = 'own';
+    resetKernelModeCache();
+    // A person pushes and GitHub has not computed mergeability yet, so the door's own `dirty` reading decides.
+    w.gh.push(w.repo, pr.branch, { 'src/p1.ts': 'x\n' }, { pusher: 'a-person' });
+    w.setFaults({ mergeableUnknownReads: 1 });
+    const before = (await w.delivery(pr)).version;
+    cp = installControlPlane();
+
+    const seen = await observeConflict(
+      { workspaceId: w.workspaceId, repoFullName: w.repo, prNumber: pr.prNumber, installationId: w.installationId, hint: 'dirty', isDependencyBot: false, maxAgentAttempts: 2, source: 'door:conflict' },
+      { principal: systemPrincipal('system:door-conflict') },
+    );
+
+    w.setFaults({ mergeableUnknownReads: 0 });
+    expect(seen).toMatchObject({ handled: true });
+    expect(cp.calls.filter((c) => c.op !== 'drain')).toEqual([{ path: '/v1/commands', op: 'observe_conflict' }]);
+    const written = await hostsSince(pr.deliveryId, before);
+    expect(written.map((t) => t.command)).toContain('ConflictObserved');
     expect(written.filter((t) => t.host !== 'control-plane')).toEqual([]);
   });
 

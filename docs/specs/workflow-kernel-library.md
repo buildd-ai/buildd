@@ -364,7 +364,10 @@ the control plane, authenticated as the caller).
     `record_review_verdict` / `adopt_review_verdict` (T6 from the worker
     PATCH: a kernel round's verdict, or one from outside the rounds on a PR
     the kernel owns) and `claim_fix` (T9 from the claim route, one request in
-    place of the seam's own reads), each for the caller that reported it,
+    place of the seam's own reads), and `observe_conflict` (T12 from the
+    conflict door: landing, the merge routes, auto-merge, the dead-zone sweep
+    and the migration-collision dispatch, as a `system` principal; the live PR
+    is read on the control plane), each for the caller that reported it,
     with the same skew rule; each names its workspace on the input, and the
     host acts only on a delivery of that workspace (a verdict for another
     workspace's delivery is refused, never read as a release to legacy). A
@@ -487,6 +490,17 @@ the control plane, authenticated as the caller).
   (`observePrState`, `observeHead`, attempt ended, verdicts) is not a door and
   still runs where the fact arrives; on the web host that is the render
   read-through and the sweeps, a §9 write site S3b and S4 remove.
+  What still applies a kernel command on the web host, and why each stays:
+  `observePrState` (T17 to T19, a PR closed, merged or reopened), `observeBase`
+  (T29) and `observeHead` (T3) are applied from the GitHub webhook and the
+  reconcile and refresh sweeps. A webhook is a fact about GitHub that must be
+  recorded the moment it arrives; when the kernel cannot read the live PR it
+  records the fact unapplied and the fast heal applies it, so none is lost to a
+  host that is down. They move to the control plane with S3b, when the webhook
+  receiver itself does. `recordLocalHead` is one provenance statement on an
+  attempt row, not a command. `cancelSkippedTask` writes a task row the claim
+  route owns. Every command a person or a worker actively requests is a door
+  op above.
 - Routing is off until `KERNEL_COMMAND_SECRET` is set on the web host: without
   it the web host runs the package itself, exactly as before, whatever either
   host's `EXECUTION_MODE`, and the control plane's cron does nothing. With it,
