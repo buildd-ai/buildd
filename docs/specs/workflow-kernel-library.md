@@ -360,7 +360,17 @@ the control plane, authenticated as the caller).
     `observe_ci_green` (`CiGreenObserved`, and the `CiObserved` reading
     outside a repair, from the `check_suite` success webhook as a `system`
     principal; the same skew rule applies, so a repair is never left waiting
-    on a green GitHub sends once). The same
+    on a green GitHub sends once), and
+    `record_review_verdict` / `adopt_review_verdict` (T6 from the worker
+    PATCH: a kernel round's verdict, or one from outside the rounds on a PR
+    the kernel owns) and `claim_fix` (T9 from the claim route, one request in
+    place of the seam's own reads), each for the caller that reported it,
+    with the same skew rule; each names its workspace on the input, and the
+    host acts only on a delivery of that workspace (a verdict for another
+    workspace's delivery is refused, never read as a release to legacy). A
+    claim request's fix claims share one control-plane budget; once it is
+    spent the next fix candidate defers at once as `kernel_unavailable` and
+    the rest of the batch is claimed. The same
     code runs on the web host in shadow, so the two modes cannot drift.
   - Authenticated. The request is signed: HMAC-SHA256 over timestamp, method,
     path and body (the scheme Dispatch callbacks use, `@buildd/dispatch-contract`)
