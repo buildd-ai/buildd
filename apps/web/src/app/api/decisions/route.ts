@@ -88,6 +88,10 @@ export async function GET(req: NextRequest) {
         since: since.toISOString(),
         until: (until ?? new Date()).toISOString(),
         truncated: read.truncated,
+        // A truncated read is the newest DECISION_HEALTH_MAX_ROWS decisions, so the counts are a sample.
+        sample: read.truncated
+          ? { complete: false, rows: read.rows.length, note: `Counts cover the newest ${read.rows.length} decisions in this window, not all of them. Narrow since/until to read an older part.` }
+          : { complete: true, rows: read.rows.length, note: null },
         features,
       });
     } catch (err) {
