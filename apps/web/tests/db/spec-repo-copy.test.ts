@@ -237,7 +237,7 @@ describe('the generated PR (R-15, AC-74, AC-94)', () => {
     const rc = (await specRow(spec.id)).repo_copy;
     expect(rc.state).toBe('unfiled');
     expect(gh.writes()).toEqual([]);
-    expect(repoCopy.repoCopyLine(true, rc, true)?.copy).toContain('file this spec under an area');
+    expect(repoCopy.repoCopyLine(true, rc, true)?.copy).toBe('File this spec under an area to add it to the repo.');
   });
 });
 
@@ -320,8 +320,8 @@ describe('landing under the exception (R-35, AC-97, AC-79)', () => {
     expect(row.approved_revision).toBe(1);
     const line = repoCopy.repoCopyLine(true, row.repo_copy, true)!;
     expect(line).toMatchObject({ behind: true });
-    expect(line.copy).toContain(`Repo copy is behind: Refuse hand edits to generated spec copies failed on PR #${gh.PR}`);
-    expect(line.source).toBe(`Source: buildd, repo copy at ${row.repo_copy.path}`);
+    expect(line.copy).toBe(`PR #${gh.PR} failed Refuse hand edits to generated spec copies. Fix it in a new revision.`);
+    expect(line.source).toBeNull();
   });
 
   test('a PR that is not a generated copy is left alone', async () => {
@@ -454,7 +454,7 @@ describe('publication (Slice 14, AC-49 to AC-53)', () => {
     expect(asked).toEqual([]);
     const rc = (await specRow(spec.id)).repo_copy;
     expect(rc).toMatchObject({ state: 'private', publication: { publish: false, source: 'rule', reasonCode: 'rule_no_policy', revision: 1 } });
-    expect(repoCopy.repoCopyLine(true, rc, true)!.copy).toContain('no publication policy yet');
+    expect(repoCopy.repoCopyLine(true, rc, true)).toMatchObject({ copy: null, publishAnyway: false });
   });
 
   test('AC-52 and AC-51: a public repo and a model answer below the bar: the scan and decision run first, no write, recorded as a fallback', async () => {
@@ -472,7 +472,7 @@ describe('publication (Slice 14, AC-49 to AC-53)', () => {
     expect(rc).toMatchObject({ state: 'private', publication: { publish: false, source: 'fallback', reasonCode: 'below_bar', confidence: 0.97, line: 'How a feature behaves for the people who use it.' } });
     expect(rc.publication.policyVersion).toMatch(/^[0-9a-f]{8}-r1$/);
     const line = repoCopy.repoCopyLine(true, rc, true)!;
-    expect(line.copy).toContain('Not published:');
+    expect(line.copy).toBeNull();
     expect(line.publishAnyway).toBe(true);
   });
 
@@ -507,14 +507,15 @@ describe('publication (Slice 14, AC-49 to AC-53)', () => {
     expect(asked).toEqual([]);
     const rc = (await specRow(spec.id)).repo_copy;
     expect(rc.publication).toMatchObject({ reasonCode: 'rule_marked_private' });
-    expect(repoCopy.repoCopyLine(true, rc, true)).toMatchObject({ copy: 'Not published: a person marked this spec private.', publishAnyway: false });
+    expect(repoCopy.repoCopyLine(true, rc, true)).toMatchObject({ copy: null, publishAnyway: false });
 
     const member2 = await filedSpec(wsOn);
     const [{ parent_spec_id: areaId }] = await q<{ parent_spec_id: string }>(sql`SELECT parent_spec_id FROM specs WHERE id = ${member2.id}::uuid`);
     expect((await updateSpecMetadata(user(member), areaId, { changes: { publication: 'private' }, reason: 'the whole area is operator tooling' })).ok).toBe(true);
     await approve(member2.id);
     await runQueued();
-    expect((await specRow(member2.id)).repo_copy.publication.reason).toBe('Not published: its area is marked private.');
+    const pub = (await specRow(member2.id)).repo_copy.publication;
+    expect(pub).toMatchObject({ reasonCode: 'rule_marked_private', markFrom: 'area', reason: 'Its area is marked private.' });
     expect(gh.writes()).toEqual([]);
   });
 
@@ -528,7 +529,7 @@ describe('publication (Slice 14, AC-49 to AC-53)', () => {
     expect(gh.writes()).toEqual([]);
     const rc = (await specRow(spec.id)).repo_copy;
     expect(rc.publication).toMatchObject({ reasonCode: 'rule_prod_data' });
-    expect(repoCopy.repoCopyLine(true, rc, true)!.copy).toMatch(/production data \(line \d+: a UUID/);
+    expect(repoCopy.repoCopyLine(true, rc, true)!.copy).toMatch(/^Looks like production data \(line \d+: a UUID.*\)\. Remove it in a new revision\.$/);
   });
 
   test('R-66: an agent may mark a spec private but not public', async () => {
@@ -594,7 +595,7 @@ describe('publication (Slice 14, AC-49 to AC-53)', () => {
 
     const rc = (await specRow(spec.id)).repo_copy;
     expect(rc).toMatchObject({ state: 'private', removal: { path: opened.path, prNumber: gh.PR + 5000 }, publication: { policyVersion: expect.stringMatching(/-r2$/) } });
-    expect(repoCopy.repoCopyLine(true, rc, true)!.copy).toContain(`PR #${gh.PR + 5000} removes it once a person merges it`);
+    expect(repoCopy.repoCopyLine(true, rc, true)!.copy).toContain(`Merge PR #${gh.PR + 5000} to remove it`);
     // The old copy PR's head cannot land under the exception any more.
     expect(await repoCopy.landSpecRepoCopy({ repoFullName: GH, prNumber: gh.PR, headSha: opened.headSha, conclusion: 'success', installationId: 1 }, gh.deps)).toEqual({ specId: spec.id, outcome: 'kept_private' });
   });

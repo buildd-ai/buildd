@@ -2866,8 +2866,13 @@ export interface SpecPublicationDecision {
   publish: boolean;
   source: 'rule' | 'model' | 'fallback' | 'person';
   reasonCode: string;
+  /** The sentence as worded when decided; the page words it afresh (publicationSentence). */
   reason: string;
   line?: string;
+  /** rule_prod_data: the hit it named. */
+  hit?: string;
+  /** rule_marked_private: whose mark it was. */
+  markFrom?: 'spec' | 'area';
   policyVersion: string | null;
   confidence?: number | null;
   model?: string | null;
